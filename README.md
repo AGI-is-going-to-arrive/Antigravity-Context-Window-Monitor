@@ -110,6 +110,11 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 > 压缩完成通知（🗜 图标）持续约 5 秒后恢复正常显示。
 > The compression notification (🗜 icon) shows for ~5 seconds before reverting to normal display.
 
+> [!NOTE]
+> **新对话默认显示 / Default Display for New Conversations**
+> 新建对话时，状态栏默认显示 `0k/1000k, 0.0%`（1000k 为 Gemini 系列模型的默认上下文上限）。**只有在与模型产生实际对话后**，插件才会从语言服务器获取到会话数据并更新状态栏显示。
+> When you start a new conversation, the status bar defaults to `0k/1000k, 0.0%` (1000k is the default context limit for Gemini models). The display **only updates after you interact with the model**, as the plugin needs the language server to register the conversation before it can fetch usage data.
+
 ## ⚙️ 设置 / Settings
 
 | 设置项 / Setting | 默认 / Default | 说明 / Description |
