@@ -81,8 +81,11 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ## 🚀 使用方法 / Usage
 
-1. **安装 / Install**: 通过"扩展 → 从 VSIX 安装"将 `.vsix` 文件安装到 Antigravity IDE。
-   Install the `.vsix` file via Extensions → Install from VSIX.
+1. **安装 / Install**:
+   * **OpenVSX**: 直接从 [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装。
+     Install directly from [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
+   * **手动安装 / Manual**: 通过"扩展 → 从 VSIX 安装"将 `.vsix` 文件安装到 Antigravity IDE。
+     Or install the `.vsix` file via Extensions → Install from VSIX.
 2. **查看状态 / Status Bar**: 右下角状态栏显示当前上下文使用情况（空白聊天时显示 `0k/1000k, 0.0%`）。
    The bottom-right status bar shows current context usage (displays `0k/1000k, 0.0%` for empty chats).
 3. **悬停详情 / Hover**: 将鼠标悬停在状态栏项上，查看详细信息（模型、输入/输出 Token、剩余容量、压缩状态、图片生成步骤等）。
