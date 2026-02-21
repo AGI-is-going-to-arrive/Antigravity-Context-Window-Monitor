@@ -122,6 +122,10 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | `pollingInterval` | 5 | 轮询频率（秒） / Polling interval in seconds |
 | `contextLimits` | (见默认值) | 手动覆盖模型的上下文上限 / Override context limits per model |
 
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)
+
 ---
 **作者 / Author**: AGI-is-going-to-arrive
 **版本 / Version**: 1.3.1
