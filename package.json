@@ -1,0 +1,71 @@
+{
+  "name": "antigravity-context-monitor",
+  "displayName": "Antigravity Context Window Monitor",
+  "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
+  "version": "1.3.1",
+  "publisher": "AGI-is-going-to-arrive",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "antigravity-context-monitor.showDetails",
+        "title": "Show Context Window Details / 显示上下文窗口详情"
+      },
+      {
+        "command": "antigravity-context-monitor.refresh",
+        "title": "Refresh Context Window Monitor / 刷新上下文窗口监控"
+      }
+    ],
+    "configuration": {
+      "title": "Antigravity Context Monitor / 上下文监控设置",
+      "properties": {
+        "antigravityContextMonitor.pollingInterval": {
+          "type": "number",
+          "default": 5,
+          "description": "Polling interval in seconds / 轮询间隔（秒）"
+        },
+        "antigravityContextMonitor.contextLimits": {
+          "type": "object",
+          "default": {
+            "MODEL_PLACEHOLDER_M37": 1000000,
+            "MODEL_PLACEHOLDER_M36": 1000000,
+            "MODEL_PLACEHOLDER_M18": 1000000,
+            "1008": 1000000,
+            "1007": 1000000,
+            "1018": 1000000,
+            "MODEL_PLACEHOLDER_M35": 200000,
+            "MODEL_PLACEHOLDER_M26": 200000,
+            "334": 200000,
+            "333": 200000,
+            "MODEL_OPENAI_GPT_OSS_120B_MEDIUM": 128000,
+            "342": 128000
+          },
+          "description": "Model context window limits (in tokens). Key is the model's internal ID. Override if needed. IDs: MODEL_PLACEHOLDER_M37=Gemini 3.1 Pro (High), MODEL_PLACEHOLDER_M36=Gemini 3.1 Pro (Low), MODEL_PLACEHOLDER_M18=Gemini 3 Flash, 1008=Gemini 3.0 Pro (High), 1007=Gemini 3.0 Pro (Low), MODEL_PLACEHOLDER_M35=Claude Sonnet 4.6, MODEL_PLACEHOLDER_M26=Claude Opus 4.6, MODEL_OPENAI_GPT_OSS_120B_MEDIUM=GPT-OSS 120B / 各模型上下文窗口大小（token 数），key 为模型内部 ID。如需可自行覆盖。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx -y @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}
