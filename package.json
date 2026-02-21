@@ -4,6 +4,7 @@
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
   "version": "1.3.1",
   "publisher": "AGI-is-going-to-arrive",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor.git"
