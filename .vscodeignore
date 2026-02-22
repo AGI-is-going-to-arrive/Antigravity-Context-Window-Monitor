@@ -7,3 +7,12 @@ tsconfig.json
 *.map
 package-lock.json
 *.vsix
+
+# Development-only files (not needed in the published extension)
+scripts/**
+tests/**
+.agents/**
+llmdoc/**
+docs/**
+vitest.config.ts
+.DS_Store

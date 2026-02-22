@@ -7,21 +7,32 @@ import { ContextUsage } from './tracker';
  * Format a token count for display (e.g. 45231 → "45.2k", 1500000 → "1500k").
  */
 export function formatTokenCount(count: number): string {
-    if (count >= 1_000) {
-        return `${(count / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
+    const safeCount = Math.max(0, count);
+    // CR-m1: M suffix for values >= 1M for better readability
+    if (safeCount >= 1_000_000) {
+        return `${(safeCount / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
     }
-    return count.toString();
+    if (safeCount >= 1_000) {
+        return `${(safeCount / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
+    }
+    return safeCount.toString();
 }
 
 /**
  * Format a context limit for display (e.g. 2000000 → "2000k").
  */
 export function formatContextLimit(limit: number): string {
-    if (limit >= 1_000) {
-        const val = limit / 1_000;
+    // CR2-Fix8: Clamp negative values to 0 to prevent nonsensical display
+    const safeLimit = Math.max(0, limit);
+    // CR-M7: M suffix for values >= 1M, consistent with formatTokenCount
+    if (safeLimit >= 1_000_000) {
+        return `${(safeLimit / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+    }
+    if (safeLimit >= 1_000) {
+        const val = safeLimit / 1_000;
         return val === Math.floor(val) ? `${val}k` : `${val.toFixed(1)}k`;
     }
-    return limit.toString();
+    return safeLimit.toString();
 }
 
 /**
@@ -29,7 +40,54 @@ export function formatContextLimit(limit: number): string {
  * broken rendering in VS Code tooltip MarkdownStrings.
  */
 function escapeMarkdown(text: string): string {
-    return text.replace(/([|*_~`\[\]\\#])/g, '\\$1');
+    // CR-m1: Also escape < and > to prevent MarkdownString HTML interpretation
+    return text.replace(/([|*_~`\[\]\\#<>])/g, '\\$1');
+}
+
+export interface CompressionStats {
+    source: 'context' | 'checkpoint';
+    dropTokens: number;
+    dropPercent: number;
+}
+
+/**
+ * Calculate compression amount for UI display.
+ *
+ * Priority:
+ * 1) Cross-poll context drop (previousContextUsed -> contextUsed), if available.
+ * 2) Checkpoint input drop (checkpointCompressionDrop), if available.
+ */
+export function calculateCompressionStats(usage: ContextUsage): CompressionStats | null {
+    if (!usage.compressionDetected) { return null; }
+
+    if (usage.previousContextUsed !== undefined && usage.previousContextUsed > usage.contextUsed) {
+        const dropTokens = usage.previousContextUsed - usage.contextUsed;
+        const dropPercent = usage.previousContextUsed > 0
+            ? (dropTokens / usage.previousContextUsed) * 100
+            : 0;
+        return {
+            source: 'context',
+            dropTokens,
+            dropPercent,
+        };
+    }
+
+    if (usage.checkpointCompressionDrop > 0) {
+        const currentInput = usage.lastModelUsage?.inputTokens;
+        const previousInput = currentInput !== undefined
+            ? currentInput + usage.checkpointCompressionDrop
+            : 0;
+        const dropPercent = previousInput > 0
+            ? (usage.checkpointCompressionDrop / previousInput) * 100
+            : 0;
+        return {
+            source: 'checkpoint',
+            dropTokens: usage.checkpointCompressionDrop,
+            dropPercent,
+        };
+    }
+
+    return null;
 }
 
 // ─── Status Bar Colors ────────────────────────────────────────────────────────
@@ -146,7 +204,11 @@ export class StatusBarManager {
         const severity = getSeverity(usage.usagePercent);
         const icon = getSeverityIcon(severity);
 
-        this.statusBarItem.text = `${icon} ${usedStr}/${limitStr}, ${displayPercent}%${compressIcon}`;
+        // CR2-Fix2: Show gaps warning in main status bar text (not just tooltip)
+        // so users can see data incompleteness without hovering.
+        const gapsIndicator = usage.hasGaps ? ' ⚠️' : '';
+
+        this.statusBarItem.text = `${icon} ${usedStr}/${limitStr}, ${displayPercent}%${compressIcon}${gapsIndicator}`;
         this.statusBarItem.backgroundColor = getSeverityColor(severity);
 
         // Build detailed tooltip (m5: escape dynamic content for Markdown safety)
@@ -154,6 +216,7 @@ export class StatusBarManager {
             ? '⚠️ Estimated / 估算值'
             : '✅ Precise (from checkpoint) / 精确值 (来自 checkpoint)';
         const remaining = Math.max(0, usage.contextLimit - usage.contextUsed);
+        const compressionStats = calculateCompressionStats(usage);
         const safeTitle = escapeMarkdown(usage.title || usage.cascadeId.substring(0, 8));
         const safeModelName = escapeMarkdown(usage.modelDisplayName);
 
@@ -175,14 +238,30 @@ export class StatusBarManager {
             lines.push(`🗜 Compressing / 压缩中: Model is auto-compressing context`);
             lines.push(`💡 Context will shrink after compression completes.`);
             lines.push(`   模型正自动压缩上下文，压缩完成后数值将下降。`);
-        } else if (usage.compressionDetected && usage.previousContextUsed) {
+        } else if (usage.compressionDetected) {
             // C3: Show compression completion info
             lines.push(`🗜 Compressed / 已压缩: Context was auto-compressed`);
-            lines.push(`   Before / 压缩前: ${usage.previousContextUsed.toLocaleString()} tokens`);
-            lines.push(`   After / 压缩后: ${usage.contextUsed.toLocaleString()} tokens`);
+            if (usage.previousContextUsed !== undefined) {
+                lines.push(`   Before / 压缩前: ${usage.previousContextUsed.toLocaleString()} tokens`);
+                lines.push(`   After / 压缩后: ${usage.contextUsed.toLocaleString()} tokens`);
+            }
+            if (compressionStats) {
+                const sourceLabel = compressionStats.source === 'context'
+                    ? 'Context Drop / 上下文压缩量'
+                    : 'Checkpoint Input Drop / 检查点输入压缩量';
+                lines.push(
+                    `   ${sourceLabel}: ${compressionStats.dropTokens.toLocaleString()} tokens ` +
+                    `(${compressionStats.dropPercent.toFixed(1)}%)`
+                );
+            }
             lines.push(`   上下文已被模型自动压缩。`);
         } else {
             lines.push(`📐 Remaining / 剩余: ${remaining.toLocaleString()} tokens`);
+        }
+
+        // CR-C3: Warn if step data may be incomplete
+        if (usage.hasGaps) {
+            lines.push(`⚠️ Data may be incomplete / 数据可能不完整 (some step batches failed to load)`);
         }
 
         lines.push(`🔢 Steps / 步骤数: ${usage.stepCount}`);
@@ -243,18 +322,25 @@ export class StatusBarManager {
             });
 
             const remaining = Math.max(0, currentUsage.contextLimit - currentUsage.contextUsed);
+            const compressionStats = calculateCompressionStats(currentUsage);
             const sourceTag = currentUsage.isEstimated ? '[Est/估算]' : '[Precise/精确]';
             const compressTag = currentUsage.compressionDetected ? ' [Compressed/已压缩]' : (currentUsage.usagePercent > 100 ? ' [Compressing/压缩中]' : '');
             const imageTag = currentUsage.imageGenStepCount > 0 ? ` [📷×${currentUsage.imageGenStepCount}]` : '';
+            const gapsTag = currentUsage.hasGaps ? ' [⚠️Gaps/缺失]' : '';
+            const compDetail = compressionStats
+                ? `Compression/压缩量: ${compressionStats.dropTokens.toLocaleString()} tokens ` +
+                `(${compressionStats.dropPercent.toFixed(1)}%, ${compressionStats.source === 'context' ? 'context' : 'checkpoint'})`
+                : null;
             // m6: Use newline-separated detail for readability
             items.push({
                 label: `$(pulse) ${currentUsage.title || 'Current Session / 当前会话'}`,
                 description: `${currentUsage.modelDisplayName}`,
                 detail: [
-                    `${sourceTag}${compressTag}${imageTag}`,
+                    `${sourceTag}${compressTag}${imageTag}${gapsTag}`,
                     `Used/已用: ${currentUsage.contextUsed.toLocaleString()} tokens | Limit/上限: ${currentUsage.contextLimit.toLocaleString()} tokens`,
                     `Model Out/模型输出: ${currentUsage.totalOutputTokens.toLocaleString()} | Tool Out/工具结果: ${currentUsage.totalToolCallOutputTokens.toLocaleString()}`,
-                    `Remaining/剩余: ${remaining.toLocaleString()} tokens | Usage/使用率: ${currentUsage.usagePercent.toFixed(1)}% | Steps/步骤: ${currentUsage.stepCount}`
+                    `Remaining/剩余: ${remaining.toLocaleString()} tokens | Usage/使用率: ${currentUsage.usagePercent.toFixed(1)}% | Steps/步骤: ${currentUsage.stepCount}`,
+                    ...(compDetail ? [compDetail] : [])
                 ].join('\n')
             });
         }
@@ -269,16 +355,21 @@ export class StatusBarManager {
 
             for (const usage of others.slice(0, 10)) {
                 const remaining = Math.max(0, usage.contextLimit - usage.contextUsed);
+                const compressionStats = calculateCompressionStats(usage);
                 const sourceTag = usage.isEstimated ? 'E/估' : 'P/精';
                 const imageTag = usage.imageGenStepCount > 0 ? ` 📷×${usage.imageGenStepCount}` : '';
                 const compTag = usage.compressionDetected ? ' 🗜' : '';
+                const compDetail = compressionStats
+                    ? `Comp/压缩: -${formatTokenCount(compressionStats.dropTokens)} (${compressionStats.dropPercent.toFixed(1)}%)`
+                    : null;
                 items.push({
                     label: `$(comment) ${usage.title || usage.cascadeId.substring(0, 8)}`,
                     description: `${usage.modelDisplayName} | ${usage.usagePercent.toFixed(1)}%${imageTag}${compTag}`,
                     detail: [
                         `[${sourceTag}] Used/已用: ${formatTokenCount(usage.contextUsed)} / ${formatContextLimit(usage.contextLimit)}`,
                         `MdlOut/模型出: ${formatTokenCount(usage.totalOutputTokens)} | ToolOut/工具出: ${formatTokenCount(usage.totalToolCallOutputTokens)}`,
-                        `Rem/余: ${formatTokenCount(remaining)} | ${usage.stepCount} steps/步`
+                        `Rem/余: ${formatTokenCount(remaining)} | ${usage.stepCount} steps/步`,
+                        ...(compDetail ? [compDetail] : [])
                     ].join('\n')
                 });
             }

@@ -5,6 +5,8 @@ import {
     getContextUsage,
     getContextLimit,
     normalizeUri,
+    fetchModelConfigs,
+    updateModelDisplayNames,
     ContextUsage,
     TrajectorySummary
 } from './tracker';
@@ -39,7 +41,21 @@ const previousContextUsedMap = new Map<string, number>();
 /** Whether we've completed at least one poll cycle (to populate baselines). */
 let firstPollDone = false;
 
-/** Whether we explicitly cleared the tracked cascade because the user deleted it. */
+/** CR-C1: Prevent concurrent pollContextUsage() reentrance. */
+let isPolling = false;
+
+/** CR-C1v2: Prevents schedulePoll() from creating new timers after deactivate. */
+let disposed = false;
+
+/** CR2-Fix1: Generation counter — prevents orphan timer chains.
+ *  Each schedulePoll() captures its generation; if restartPolling() increments
+ *  the counter before the finally block runs, finally skips re-scheduling. */
+let pollGeneration = 0;
+
+// TODO: isExplicitlyIdle is set when the tracked cascade is deleted/moved from the
+// qualified list, allowing differentiation between "cascade deleted → actively idle"
+// vs "window just opened → no cascade yet". Currently only written, never read.
+// Reserved for future UI improvement: show distinct idle messages per cause.
 let isExplicitlyIdle = false;
 
 /** The last known model identifier — used to show correct context limit in idle state. */
@@ -55,10 +71,24 @@ const MAX_BACKOFF_INTERVAL_MS = 60_000;
 /** Number of consecutive LS discovery failures. */
 let consecutiveFailures = 0;
 
+// A1: AbortController — used to cancel in-flight RPC requests on extension deactivate.
+let abortController = new AbortController();
+
+// A4: Compression persistence — keeps the compression indicator visible for
+// COMPRESSION_PERSIST_POLLS poll cycles after detection, so users don't miss it.
+const COMPRESSION_PERSIST_POLLS = 3;
+/** Map of cascadeId → remaining polls to show compression indicator. */
+const compressionPersistCounters = new Map<string, number>();
+
 // ─── Activation ───────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
     extensionContext = context;
+    // CR-#4: Rebuild AbortController on activation so re-activation after
+    // deactivate works (the previous controller was already aborted).
+    abortController = new AbortController();
+    // CR-C1v2: Reset disposed flag on re-activation
+    disposed = false;
     outputChannel = vscode.window.createOutputChannel('Antigravity Context Monitor');
     log('Extension activating...');
 
@@ -89,20 +119,29 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Start polling
     const config = vscode.workspace.getConfiguration('antigravityContextMonitor');
-    const intervalSec = config.get<number>('pollingInterval', 5);
+    // CR-M5: Lower bound prevents 0 or negative values from causing excessive polling
+    const intervalSec = Math.max(1, config.get<number>('pollingInterval', 5));
     baseIntervalMs = intervalSec * 1000;
     currentIntervalMs = baseIntervalMs;
 
-    pollContextUsage();
-    pollingTimer = setInterval(pollContextUsage, currentIntervalMs);
+    // S1 fix: Use setTimeout chain instead of setInterval to avoid:
+    //   - Silently skipped polls when RPC takes longer than the interval
+    //   - Timer drift from async execution time not being accounted for
+    //   - Overlapping polls (partially mitigated by isPolling guard, but
+    //     the guard causes silent skips instead)
+    // With setTimeout chain, the next poll is scheduled AFTER the current
+    // one completes, ensuring no overlap and predictable intervals.
+    schedulePoll();
 
-    // Ensure timer is cleaned up when extension is disposed
+    // Ensure timer and abort controller are cleaned up when extension is disposed
     context.subscriptions.push({
         dispose: () => {
             if (pollingTimer) {
-                clearInterval(pollingTimer);
+                clearTimeout(pollingTimer);
                 pollingTimer = undefined;
             }
+            // A1: Abort any in-flight RPC requests
+            abortController.abort();
         }
     });
 
@@ -111,7 +150,8 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('antigravityContextMonitor.pollingInterval')) {
                 const newConfig = vscode.workspace.getConfiguration('antigravityContextMonitor');
-                const newIntervalSec = newConfig.get<number>('pollingInterval', 5);
+                // CR-M5: Lower bound prevents 0 or negative values
+                const newIntervalSec = Math.max(1, newConfig.get<number>('pollingInterval', 5));
                 baseIntervalMs = newIntervalSec * 1000;
                 currentIntervalMs = baseIntervalMs;
                 consecutiveFailures = 0;
@@ -126,51 +166,72 @@ export function activate(context: vscode.ExtensionContext): void {
 // ─── Deactivation ─────────────────────────────────────────────────────────────
 
 export function deactivate(): void {
+    // CR-C1v2: Prevent schedulePoll() from creating new timers after this point
+    disposed = true;
     if (pollingTimer) {
-        clearInterval(pollingTimer);
+        clearTimeout(pollingTimer);
         pollingTimer = undefined;
     }
+    // A1: Cancel any in-flight RPC requests to prevent dangling network operations
+    abortController.abort();
     log('Extension deactivated');
 }
 
 // ─── Polling Logic ────────────────────────────────────────────────────────────
 
 async function pollContextUsage(): Promise<void> {
+    // CR-C1: Skip if a previous poll is still in-flight (prevents state races)
+    if (isPolling) { return; }
+    isPolling = true;
+    // CR2-Fix5: Snapshot cachedLsInfo to a local variable so that a concurrent
+    // refresh command setting cachedLsInfo=null during an await gap cannot
+    // cause null to be passed to downstream RPC functions.
+    let lsInfo = cachedLsInfo;
     try {
         // 1. Determine workspace URI for this window first so we can find the correct LS
         const workspaceUri = getWorkspaceUri();
         const normalizedWs = workspaceUri ? normalizeUri(workspaceUri) : '(none)';
 
         // 2. Discover LS (with caching)
-        if (!cachedLsInfo) {
+        if (!lsInfo) {
             log('Discovering language server...');
             statusBar.showInitializing();
-            cachedLsInfo = await discoverLanguageServer(workspaceUri);
+            lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal);
+            cachedLsInfo = lsInfo; // CR2-Fix5: Write back to global cache
 
-            if (!cachedLsInfo) {
+            if (!lsInfo) {
                 handleLsFailure('LS not found / 未找到 Antigravity 语言服务器');
                 return;
             }
             // LS found — reset backoff
             resetBackoff();
-            log(`LS found: port=${cachedLsInfo.port}, tls=${cachedLsInfo.useTls}`);
+            log(`LS found: port=${lsInfo.port}, tls=${lsInfo.useTls}`);
+
+            // v1.4.0: Dynamically update model display names from GetUserStatus
+            try {
+                const configs = await fetchModelConfigs(lsInfo, abortController.signal);
+                if (configs.length > 0) {
+                    updateModelDisplayNames(configs);
+                    log(`Updated model display names: ${configs.map(c => c.label).join(', ')}`);
+                }
+            } catch { /* Silent degradation — hardcoded names remain as fallback */ }
         }
 
         // 3. Get all trajectories
         let trajectories: TrajectorySummary[];
         try {
-            trajectories = await getAllTrajectories(cachedLsInfo);
+            trajectories = await getAllTrajectories(lsInfo, abortController.signal);
         } catch (err) {
             // LS might have restarted, invalidate cache and retry
             log(`RPC failed, retrying discovery: ${err}`);
-            cachedLsInfo = null;
-            cachedLsInfo = await discoverLanguageServer(workspaceUri);
-            if (!cachedLsInfo) {
+            lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal);
+            cachedLsInfo = lsInfo; // CR2-Fix5: Write back to global cache
+            if (!lsInfo) {
                 handleLsFailure('LS connection lost / 语言服务器连接断开');
                 return;
             }
             resetBackoff();
-            trajectories = await getAllTrajectories(cachedLsInfo);
+            trajectories = await getAllTrajectories(lsInfo, abortController.signal);
         }
 
         // Successful poll — ensure backoff is reset
@@ -288,11 +349,10 @@ async function pollContextUsage(): Promise<void> {
 
         // --- Find the trajectory to display ---
         let activeTrajectory: TrajectorySummary | null = null;
-        selectionReason = '';
 
         if (trackedCascadeId) {
             activeTrajectory = qualifiedTrajectories.find(t => t.cascadeId === trackedCascadeId) || null;
-            if (activeTrajectory) {
+            if (activeTrajectory && !selectionReason) {
                 selectionReason = 'tracked cascade';
             }
         }
@@ -321,7 +381,7 @@ async function pollContextUsage(): Promise<void> {
         const config = vscode.workspace.getConfiguration('antigravityContextMonitor');
         const customLimits = config.get<Record<string, number>>('contextLimits');
 
-        currentUsage = await getContextUsage(cachedLsInfo, activeTrajectory, customLimits);
+        currentUsage = await getContextUsage(lsInfo, activeTrajectory, customLimits, abortController.signal);
         statusBar.update(currentUsage);
 
         // Track the model for idle-state display
@@ -331,17 +391,58 @@ async function pollContextUsage(): Promise<void> {
             extensionContext.workspaceState.update('lastKnownModel', lastKnownModel);
         }
 
-        // C3: Cross-poll compression detection
-        // If contextUsed dropped significantly compared to the previous poll,
-        // it means the model compressed its context window.
+        // ─── Compression Detection ───────────────────────────────────────────
+        // v1.5.1: Two-layer compression detection:
+        //   Layer 1 (primary): checkpoint inputTokens diff — set by processSteps() in tracker.ts.
+        //     This is immune to Undo false positives because existing checkpoint data is immutable.
+        //   Layer 2 (fallback): cross-poll contextUsed comparison — catches compression in
+        //     conversations with < 2 checkpoints, guarded by Undo exclusion (Plan C).
+
+        // Layer 2 fallback: cross-poll contextUsed comparison
+        // Only trigger if the primary layer didn't fire AND this isn't an Undo event.
         const prevUsed = previousContextUsedMap.get(currentUsage.cascadeId);
-        if (prevUsed !== undefined && currentUsage.contextUsed < prevUsed) {
+        const prevSteps = previousStepCounts.get(activeTrajectory.cascadeId);
+        const isUndo = prevSteps !== undefined && activeTrajectory.stepCount < prevSteps;
+
+        if (!currentUsage.compressionDetected && !isUndo
+            && prevUsed !== undefined && currentUsage.contextUsed < prevUsed) {
             const drop = prevUsed - currentUsage.contextUsed;
             // Only flag as compression if the drop is meaningful (>1% of context limit)
             if (drop > currentUsage.contextLimit * 0.01) {
                 currentUsage.compressionDetected = true;
                 currentUsage.previousContextUsed = prevUsed;
-                log(`Compression detected for ${currentUsage.cascadeId.substring(0, 8)}: ${prevUsed} → ${currentUsage.contextUsed} (dropped ${drop})`);
+                // A4: Start persistence counter so the indicator stays visible
+                compressionPersistCounters.set(currentUsage.cascadeId, COMPRESSION_PERSIST_POLLS);
+                log(`Compression detected (fallback) for ${currentUsage.cascadeId.substring(0, 8)}: ${prevUsed} → ${currentUsage.contextUsed} (dropped ${drop})`);
+            }
+        }
+
+        // Primary layer logging (when compression came from checkpoint diff)
+        if (currentUsage.compressionDetected && !compressionPersistCounters.has(currentUsage.cascadeId)) {
+            if (prevUsed !== undefined) {
+                currentUsage.previousContextUsed = prevUsed;
+            }
+            compressionPersistCounters.set(currentUsage.cascadeId, COMPRESSION_PERSIST_POLLS);
+            if (currentUsage.checkpointCompressionDrop > 0) {
+                log(
+                    `Compression detected (checkpoint) for ${currentUsage.cascadeId.substring(0, 8)}: ` +
+                    `checkpoint inputTokens dropped ${currentUsage.checkpointCompressionDrop}`
+                );
+            } else {
+                log(`Compression detected (checkpoint) for ${currentUsage.cascadeId.substring(0, 8)}: checkpoint inputTokens dropped`);
+            }
+        }
+
+        // A4: Check persistence counter — keep showing compression for a few polls
+        if (!currentUsage.compressionDetected) {
+            const remaining = compressionPersistCounters.get(currentUsage.cascadeId);
+            if (remaining && remaining > 0) {
+                currentUsage.compressionDetected = true;
+                // CR-M3: Only set previousContextUsed when prevUsed is defined
+                if (prevUsed !== undefined) {
+                    currentUsage.previousContextUsed = prevUsed;
+                }
+                compressionPersistCounters.set(currentUsage.cascadeId, remaining - 1);
             }
         }
         // Store current contextUsed for next poll comparison
@@ -351,22 +452,24 @@ async function pollContextUsage(): Promise<void> {
         log(`Context: ${currentUsage.contextUsed} tokens (${sourceLabel}) | ${currentUsage.usagePercent.toFixed(1)}% | modelOut=${currentUsage.totalOutputTokens} | toolOut=${currentUsage.totalToolCallOutputTokens} | delta=${currentUsage.estimatedDeltaSinceCheckpoint} | imageGen=${currentUsage.imageGenStepCount}`);
 
         // 6. Background: compute usage for other recent trajectories
+        // M1 fix: Use Promise.all for parallel computation instead of serial await.
+        // Each getContextUsage() is an independent read-only RPC query with no shared
+        // mutable state, so parallelization is safe and significantly faster for
+        // multi-session views (e.g., 5 trajectories × 500 steps each).
         const scopeTrajectories = qualifiedTrajectories.length > 0 ? qualifiedTrajectories : trajectories;
         const recentTrajectories = scopeTrajectories.slice(0, 5);
-        const usages: ContextUsage[] = [];
-        for (const t of recentTrajectories) {
-            if (t.cascadeId === activeTrajectory.cascadeId) {
-                usages.push(currentUsage);
-            } else {
-                try {
-                    const u = await getContextUsage(cachedLsInfo, t, customLimits);
-                    usages.push(u);
-                } catch {
-                    // Skip failed trajectories
-                }
+        const usagePromises = recentTrajectories.map(async (t) => {
+            if (t.cascadeId === activeTrajectory!.cascadeId) {
+                return currentUsage!;
             }
-        }
-        allTrajectoryUsages = usages;
+            try {
+                return await getContextUsage(lsInfo!, t, customLimits, abortController.signal);
+            } catch {
+                return null; // Skip failed trajectories
+            }
+        });
+        const usageResults = await Promise.all(usagePromises);
+        allTrajectoryUsages = usageResults.filter((u): u is ContextUsage => u !== null);
 
         // 7. Update baselines for next poll
         updateBaselines(trajectories);
@@ -374,7 +477,10 @@ async function pollContextUsage(): Promise<void> {
     } catch (err) {
         log(`Polling error: ${err}`);
         handleLsFailure(`Error / 错误: ${err}`);
-        cachedLsInfo = null; // Force re-discovery next time
+        lsInfo = null;
+        cachedLsInfo = null; // Force re-discovery next time (global)
+    } finally {
+        isPolling = false;
     }
 }
 
@@ -385,6 +491,9 @@ async function pollContextUsage(): Promise<void> {
  */
 function handleLsFailure(message: string): void {
     consecutiveFailures++;
+    // CR-M4: Clear stale usage data so showDetails panel doesn't show outdated info
+    currentUsage = null;
+    allTrajectoryUsages = [];
     statusBar.showDisconnected(message);
 
     // Calculate backoff: double the interval on each failure, up to MAX
@@ -415,23 +524,68 @@ function resetBackoff(): void {
 function updateBaselines(trajectories: TrajectorySummary[]): void {
     previousStepCounts.clear();
     previousTrajectoryIds.clear();
+    const activeIds = new Set<string>();
     for (const t of trajectories) {
         previousStepCounts.set(t.cascadeId, t.stepCount);
         previousTrajectoryIds.add(t.cascadeId);
+        activeIds.add(t.cascadeId);
+    }
+    // CR-m3: Clean up stale entries from previousContextUsedMap
+    for (const id of previousContextUsedMap.keys()) {
+        if (!activeIds.has(id)) {
+            previousContextUsedMap.delete(id);
+        }
+    }
+    // M3: Clean up stale entries from compressionPersistCounters
+    for (const id of compressionPersistCounters.keys()) {
+        if (!activeIds.has(id)) {
+            compressionPersistCounters.delete(id);
+        }
     }
     firstPollDone = true;
 }
 
+/**
+ * S1 fix: Schedule the next poll using setTimeout chain.
+ * The next poll fires AFTER the current one completes — no overlap, no drift.
+ */
+function schedulePoll(): void {
+    // CR-C1v2: Do not schedule after extension has been disposed/deactivated
+    if (disposed) { return; }
+    // CR2-Fix1: Capture current generation. If restartPolling() fires during
+    // this poll's await, it increments pollGeneration and creates a new chain.
+    // The finally block below then sees a stale generation and does NOT
+    // schedule another timer — preventing orphan parallel chains.
+    const myGeneration = ++pollGeneration;
+    pollingTimer = setTimeout(async () => {
+        try {
+            await pollContextUsage();
+        } catch (err) {
+            // CR-#2: Wrap log() in its own try/catch so that if it throws
+            // (e.g. outputChannel already disposed), schedulePoll() is still
+            // reached via the finally block — preventing the polling chain
+            // from silently breaking.
+            try { log(`Unexpected polling error: ${err}`); } catch { /* ignore */ }
+        } finally {
+            // CR2-Fix1: Only re-schedule if no restartPolling() has intervened
+            if (pollGeneration === myGeneration) {
+                schedulePoll();
+            }
+        }
+    }, currentIntervalMs);
+}
+
 function restartPolling(): void {
     if (pollingTimer) {
-        clearInterval(pollingTimer);
+        clearTimeout(pollingTimer);
     }
-    pollingTimer = setInterval(pollContextUsage, currentIntervalMs);
+    schedulePoll();
     log(`Polling restarted: ${currentIntervalMs / 1000}s interval`);
 }
 
 function log(message: string): void {
-    const timestamp = new Date().toLocaleTimeString();
+    // CR-m5: Fixed ISO format instead of locale-dependent toLocaleTimeString()
+    const timestamp = new Date().toISOString().substring(11, 23);
     outputChannel.appendLine(`[${timestamp}] ${message}`);
 }
 

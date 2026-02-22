@@ -26,8 +26,8 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 ## ✨ 主要功能 / Features
 
 * **⚡ 实时 Token 监控 / Real-Time Token Usage**
-    状态栏显示当前 Token 消耗，格式如 `125k/200k, 62.5%`。Token 数据优先取自模型 checkpoint 的精确值（`inputTokens` + `outputTokens`），两次 checkpoint 之间通过估算增量实时更新。
-    Shows current token consumption in the status bar (e.g. `125k/200k, 62.5%`). Token data comes from model checkpoint values when available, with real-time estimation between checkpoints.
+    状态栏显示当前 Token 消耗，格式如 `125k/200k, 62.5%`。Token 数据优先取自模型 checkpoint 的精确值（`inputTokens` + `outputTokens`），两次 checkpoint 之间通过基于实际文本内容的字符估算实时计算增量（v1.4.0 起替代了固定常量）。仅在步骤数据结构缺失时 fallback 到固定常量。
+    Shows current token consumption in the status bar (e.g. `125k/200k, 62.5%`). Token data comes from model checkpoint values when available, with content-based character estimation between checkpoints (replaces fixed constants since v1.4.0). Fixed constants are only used as fallback when step data structure is missing.
 
 * **🌐 中英双语 / Bilingual Interface**
     状态栏、QuickPick 面板、tooltip 均提供中英文显示。
@@ -38,8 +38,8 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     Each Antigravity window only shows conversations belonging to its workspace, filtered by workspace URI.
 
 * **🗜️ 上下文压缩检测 / Context Compression Detection**
-    当模型自动压缩对话历史时（`inputTokens` 在轮询间下降超过 1%），状态栏显示 `~100% 🗜` 压缩标识，而不会错误显示超过 100%。
-    When the model auto-compresses conversation history (detected by `inputTokens` dropping >1% between polls), shows `~100% 🗜` instead of displaying >100%.
+    当模型自动压缩对话历史时，插件通过双层检测机制识别：主层比较连续 checkpoint 的 `inputTokens`（下降超过 5000 tokens 即判定，天然免疫 Undo 误报），降级层比较跨轮询 `contextUsed` 变化（带 Undo 排除守卫）。状态栏显示 `~100% 🗜` 压缩标识。
+    When the model auto-compresses conversation history, the plugin detects it via two-layer detection: primary layer compares consecutive checkpoint `inputTokens` (drop > 5000 tokens, immune to Undo false positives), fallback layer compares cross-poll `contextUsed` (with Undo exclusion guard). Shows `~100% 🗜` in the status bar.
 
 * **⏪ Undo/Rewind 支持 / Undo/Rewind Support**
     撤销对话步骤后，插件检测到 `stepCount` 减少，会重新计算 Token 用量，显示回滚后的准确值。
@@ -50,8 +50,8 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     | ![回退前](src/images/回退前.png) | ![回退后](src/images/回退后.png) |
 
 * **🔄 动态模型切换 / Dynamic Model Switching**
-    对话中切换模型时，上下文窗口上限自动更新为当前模型的限制值。
-    When switching models mid-conversation, the context window limit automatically updates to match the new model.
+    对话中切换模型时，上下文窗口上限自动更新为当前模型的限制值。v1.4.0 起通过 `GetUserStatus` API 动态获取模型显示名称。
+    When switching models mid-conversation, the context window limit automatically updates to match the new model. Since v1.4.0, model display names are dynamically fetched via the `GetUserStatus` API.
 
 * **🎨 图片生成追踪 / Image Generation Tracking**
     使用 Gemini Pro 对话中调用 Nano Banana Pro 生成图片时，相关 Token 消耗会被计入，tooltip 中以 `📷` 标记。检测逻辑基于 step type 和 generator model 名称匹配。
@@ -69,15 +69,13 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | --- | --- | --- |
 | Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M37 | 1,000,000 |
 | Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 1,000,000 |
-| Gemini 3.0 Pro (High) | 1008 | 1,000,000 |
-| Gemini 3.0 Pro (Low) | 1007 | 1,000,000 |
 | Gemini 3 Flash | MODEL_PLACEHOLDER_M18 | 1,000,000 |
 | Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 200,000 |
 | Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 200,000 |
 | GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 128,000 |
 
-*模型 ID 来自 Antigravity 本地语言服务器返回的数据。如果新增了模型，可以在 IDE 设置中手动覆盖上下文上限。*
-*Model IDs are read from the local Antigravity language server. If new models are added, you can override context limits in IDE settings.*
+*模型 ID 来自 Antigravity 本地语言服务器的 `GetUserStatus` API。如果新增了模型，可以在 IDE 设置中手动覆盖上下文上限。*
+*Model IDs are fetched from the local Antigravity language server's `GetUserStatus` API. If new models are added, you can override context limits in IDE settings.*
 
 ## 🚀 使用方法 / Usage
 
@@ -110,8 +108,8 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 > [!NOTE]
 > **上下文压缩提示 / Compression Notification**
-> 压缩完成通知（🗜 图标）持续约 5 秒后恢复正常显示。
-> The compression notification (🗜 icon) shows for ~5 seconds before reverting to normal display.
+> 压缩完成通知（🗜 图标）持续约 15 秒（3 个轮询周期）后恢复正常显示。
+> The compression notification (🗜 icon) shows for ~15 seconds (3 poll cycles) before reverting to normal display.
 
 > [!NOTE]
 > **新对话默认显示 / Default Display for New Conversations**
@@ -131,4 +129,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **作者 / Author**: AGI-is-going-to-arrive
-**版本 / Version**: 1.3.1
+**版本 / Version**: 1.5.3

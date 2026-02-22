@@ -1,5 +1,12 @@
 .DS_Store
 node_modules/
 out/
-*.vsix
 *.map
+
+# Dev-only files
+.agents/
+llmdoc/
+scripts/
+tests/
+package-lock.json
+vitest.config.ts
