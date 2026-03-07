@@ -462,7 +462,7 @@ async function pollContextUsage(): Promise<void> {
         // mutable state, so parallelization is safe and significantly faster for
         // multi-session views (e.g., 5 trajectories × 500 steps each).
         const scopeTrajectories = qualifiedTrajectories.length > 0 ? qualifiedTrajectories : trajectories;
-        const recentTrajectories = scopeTrajectories.slice(0, 5);
+        const recentTrajectories = scopeTrajectories.slice(0, 20);
         const usagePromises = recentTrajectories.map(async (t) => {
             if (t.cascadeId === activeTrajectory!.cascadeId) {
                 return currentUsage!;
