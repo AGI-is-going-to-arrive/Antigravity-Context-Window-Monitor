@@ -55,8 +55,8 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     When switching models mid-conversation, the context window limit automatically updates to match the new model. Since v1.4.0, model display names are dynamically fetched via the `GetUserStatus` API.
 
 * **📊 用量报告面板 / Usage Report Webview** *(v1.6.0)*
-    点击状态栏或通过命令面板打开 "Show Usage Report"，在 Webview 面板中查看滚动 7 天的 Token 用量统计：每日明细表、按模型费用分析、汇总卡片。支持 ◀/▶ 翻页浏览所有历史数据。数据随轮询增量积累，持久化存储。
-    Click the status bar or open "Show Usage Report" from the command palette to view a rolling 7-day token usage report: daily breakdown table, per-model cost analysis, and summary cards. Navigate with ◀/▶ buttons. Data accumulates incrementally during polling and persists across sessions.
+    点击状态栏或通过命令面板打开 "Show Usage Report"，在 Webview 面板中查看滚动 7 天的 Token 用量统计：每日明细表、按模型费用分析、汇总卡片。支持 ◀/▶ 翻页浏览所有历史数据。每轮轮询覆盖最近 **20 个对话**，数据增量积累并持久化存储。
+    Click the status bar or open "Show Usage Report" from the command palette to view a rolling 7-day token usage report: daily breakdown table, per-model cost analysis, and summary cards. Navigate with ◀/▶ buttons. Each poll cycle covers the **20 most recent conversations**, with data persisted across sessions.
 
 * **🎨 图片生成追踪 / Image Generation Tracking**
     使用 Gemini Pro 对话中调用 Nano Banana Pro 生成图片时，相关 Token 消耗会被计入，tooltip 中以 `📷` 标记。检测逻辑基于 step type 和 generator model 名称匹配。
