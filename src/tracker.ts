@@ -372,8 +372,10 @@ export function normalizeUri(uri: string): string {
     }
     // Remove trailing slash
     normalized = normalized.replace(/\/$/, '');
-    // Lowercase for macOS case-insensitive comparison
-    normalized = normalized.toLowerCase();
+    // Only lowercase on macOS (case-insensitive FS); Linux is case-sensitive
+    if (process.platform === 'darwin') {
+        normalized = normalized.toLowerCase();
+    }
     return normalized;
 }
 

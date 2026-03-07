@@ -5,8 +5,12 @@ out/
 
 # Dev-only files
 .agents/
+.gemini/
 llmdoc/
 scripts/
 tests/
 package-lock.json
 vitest.config.ts
+
+# Docker test files
+Dockerfile*

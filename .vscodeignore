@@ -16,3 +16,4 @@ llmdoc/**
 docs/**
 vitest.config.ts
 .DS_Store
+Dockerfile*

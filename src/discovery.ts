@@ -52,8 +52,11 @@ export function extractWorkspaceId(line: string): string | null {
  * Filter ps output lines for LS processes.
  */
 export function filterLsProcessLines(psOutput: string): string[] {
+    const binaryName = process.platform === 'linux'
+        ? 'language_server_linux'
+        : 'language_server_macos';
     return psOutput.split('\n').filter(l =>
-        l.includes('language_server_macos') && l.includes('antigravity')
+        l.includes(binaryName) && l.includes('antigravity')
     );
 }
 
@@ -63,6 +66,63 @@ export function filterLsProcessLines(psOutput: string): string[] {
 export function extractPort(line: string): number | null {
     const portMatch = line.match(/127\.0\.0\.1:(\d+)\s/);
     return portMatch ? parseInt(portMatch[1], 10) : null;
+}
+
+/**
+ * Extract port from a Linux `ss -tlnp` output line.
+ * Matches patterns like `127.0.0.1:12345`, `*:12345`, `0.0.0.0:12345`, `:::12345`
+ */
+export function extractPortFromSs(line: string): number | null {
+    const portMatch = line.match(/(?:127\.0\.0\.1|\*|0\.0\.0\.0|::):([\d]+)\s/);
+    return portMatch ? parseInt(portMatch[1], 10) : null;
+}
+
+/**
+ * Find listening TCP ports for a given PID.
+ * Uses lsof (macOS + most Linux), with fallback to ss (Linux default).
+ */
+async function findListeningPorts(pid: number, signal?: AbortSignal): Promise<number[]> {
+    // Try lsof first (works on both macOS and most Linux)
+    try {
+        const result = await execFileAsync('lsof', [
+            '-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)
+        ], { encoding: 'utf-8', timeout: 5000, signal });
+        const lsofOutput = result.stdout.trim();
+        if (lsofOutput) {
+            const ports: number[] = [];
+            for (const line of lsofOutput.split('\n')) {
+                const port = extractPort(line);
+                if (port !== null) {
+                    ports.push(port);
+                }
+            }
+            if (ports.length > 0) {
+                return ports;
+            }
+        }
+    } catch { /* lsof not available or failed — try fallback */ }
+
+    // Linux fallback: ss command (installed by default via iproute2)
+    if (process.platform === 'linux') {
+        try {
+            const result = await execFileAsync('ss', [
+                '-tlnp'
+            ], { encoding: 'utf-8', timeout: 5000, signal });
+            const ports: number[] = [];
+            for (const line of result.stdout.split('\n')) {
+                // ss output includes process info like: users:(("language_server_linux",pid=1234,fd=5))
+                if (line.includes(`pid=${pid},`) || line.includes(`pid=${pid})`)) {
+                    const port = extractPortFromSs(line);
+                    if (port !== null) {
+                        ports.push(port);
+                    }
+                }
+            }
+            return ports;
+        } catch { /* ss also failed */ }
+    }
+
+    return [];
 }
 
 /**
@@ -131,29 +191,8 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
         }
 
         // 2. Find listening ports
-        // S2/S3: async execFile with argument array — no shell, no injection risk.
-        let lsofOutput: string;
-        try {
-            const result = await execFileAsync('lsof', [
-                '-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)
-            ], { encoding: 'utf-8', timeout: 5000, signal });
-            lsofOutput = result.stdout.trim();
-        } catch {
-            return null;
-        }
-
-        if (!lsofOutput) {
-            return null;
-        }
-
-        // Parse ports from lsof output
-        const ports: number[] = [];
-        for (const line of lsofOutput.split('\n')) {
-            const port = extractPort(line);
-            if (port !== null) {
-                ports.push(port);
-            }
-        }
+        // Cross-platform: lsof (macOS + Linux) with ss fallback (Linux)
+        const ports = await findListeningPorts(pid, signal);
 
         if (ports.length === 0) {
             return null;
