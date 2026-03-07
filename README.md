@@ -4,16 +4,17 @@
 
 A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides real-time monitoring of context window usage across all your chat sessions.
 
----
+> 🔀 **Fork 说明**: 本仓库基于 [AGI-is-going-to-arrive](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor) 的原版 fork，新增了 **Windows 平台支持**、**等效 API 费用计算**、**7 天滚动用量报告 Webview** 等功能，注意**macOS**不支持API费用计算和滚动用量报告。
+> This repo is forked from the original [AGI-is-going-to-arrive](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor) version, adding **Windows platform support**, **equivalent API cost estimation**, and a **7-day rolling Usage Report Webview**.
 
 > [!NOTE]
 > **平台支持 / Platform Support**
 >
-> 🍏 **macOS**: 支持。通过 `ps` 和 `lsof` 命令实现进程发现。
-> macOS: Supported. Uses `ps` and `lsof` for process discovery.
+> 🍏 **macOS**: 支持（原版功能）。通过 `ps` 和 `lsof` 命令实现进程发现。
+> macOS: Supported (original). Uses `ps` and `lsof` for process discovery.
 >
-> 🪟 **Windows**: 支持。通过 `Get-CimInstance` 和 `netstat` 实现进程发现。
-> Windows: Supported. Uses `Get-CimInstance` and `netstat` for process discovery.
+> 🪟 **Windows**: 支持（本 fork 新增）。通过 `Get-CimInstance` 和 `netstat` 实现进程发现。
+> Windows: Supported (added in this fork). Uses `Get-CimInstance` and `netstat` for process discovery.
 
 ---
 
