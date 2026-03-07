@@ -6,14 +6,14 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 
-> [!WARNING]
+> [!NOTE]
 > **平台支持 / Platform Support**
 >
-> 🍏 **macOS**: 当前支持。通过 `ps` 和 `lsof` 命令实现进程发现。
-> macOS: Fully supported. Uses `ps` and `lsof` for process discovery.
+> 🍏 **macOS**: 支持。通过 `ps` 和 `lsof` 命令实现进程发现。
+> macOS: Supported. Uses `ps` and `lsof` for process discovery.
 >
-> 🪟 **Windows**: 开发中，敬请期待。
-> Windows: Coming soon.
+> 🪟 **Windows**: 支持。通过 `Get-CimInstance` 和 `netstat` 实现进程发现。
+> Windows: Supported. Uses `Get-CimInstance` and `netstat` for process discovery.
 
 ---
 
@@ -53,6 +53,10 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     对话中切换模型时，上下文窗口上限自动更新为当前模型的限制值。v1.4.0 起通过 `GetUserStatus` API 动态获取模型显示名称。
     When switching models mid-conversation, the context window limit automatically updates to match the new model. Since v1.4.0, model display names are dynamically fetched via the `GetUserStatus` API.
 
+* **📊 用量报告面板 / Usage Report Webview** *(v1.6.0)*
+    点击状态栏或通过命令面板打开 "Show Usage Report"，在 Webview 面板中查看滚动 7 天的 Token 用量统计：每日明细表、按模型费用分析、汇总卡片。支持 ◀/▶ 翻页浏览所有历史数据。数据随轮询增量积累，持久化存储。
+    Click the status bar or open "Show Usage Report" from the command palette to view a rolling 7-day token usage report: daily breakdown table, per-model cost analysis, and summary cards. Navigate with ◀/▶ buttons. Data accumulates incrementally during polling and persists across sessions.
+
 * **🎨 图片生成追踪 / Image Generation Tracking**
     使用 Gemini Pro 对话中调用 Nano Banana Pro 生成图片时，相关 Token 消耗会被计入，tooltip 中以 `📷` 标记。检测逻辑基于 step type 和 generator model 名称匹配。
     When Nano Banana Pro is invoked for image generation during Gemini Pro conversations, the associated token consumption is tracked and marked with `📷` in the tooltip. Detection is based on step type and generator model name matching.
@@ -91,10 +95,8 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
    ![悬停详情 / Hover Details](src/images/悬停详情.png)
 
-4. **点击查看 / Click**: 点击状态栏项，弹出 QuickPick 面板显示当前工作区所有被追踪的会话。
-   Click the status bar item to open a QuickPick panel listing all tracked sessions in this workspace.
-
-   ![点击查看 / Click to View](src/images/点击查看.png)
+4. **点击查看 / Click**: 点击状态栏项，打开 Usage Report 面板查看 7 天用量统计。也可通过 Ctrl+Shift+P 搜索 "Show Context Window Details" 查看旧版 QuickPick 详情面板。
+   Click the status bar item to open the Usage Report panel with 7-day statistics. The legacy QuickPick details panel is still accessible via Ctrl+Shift+P → "Show Context Window Details".
 
 ## ⚠️ 已知限制 / Known Limitations
 
@@ -128,5 +130,5 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 [![Star History Chart](https://api.star-history.com/svg?repos=AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)
 
 ---
-**作者 / Author**: AGI-is-going-to-arrive
-**版本 / Version**: 1.5.3
+**作者 / Author**: AGI-is-going-to-arrive (fork by lalalavir)
+**版本 / Version**: 1.6.0
