@@ -128,7 +128,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=lalalavir/Antigravity-Context-Window-Monitor&type=date&legend=top-left)](https://www.star-history.com/#lalalavir/Antigravity-Context-Window-Monitor&type=date&legend=top-left)
 
 ---
 **作者 / Author**: AGI-is-going-to-arrive (fork by lalalavir)
