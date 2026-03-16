@@ -28,8 +28,8 @@
 * **⚡ 实时 Token 监控**
     状态栏显示当前 Token 消耗，格式如 `125k/200k, 62.5%`。Token 数据优先取自模型 checkpoint 的精确值（`inputTokens` + `outputTokens`），两次 checkpoint 之间通过基于实际文本内容的字符估算实时计算增量（v1.4.0 起替代了固定常量）。仅在步骤数据结构缺失时 fallback 到固定常量。
 
-* **🌐 中英双语**
-    状态栏、QuickPick 面板、tooltip 均提供中英文显示。
+* **🌐 语言切换**
+    用户可选择仅中文、仅英文或双语显示模式。点击状态栏 → 设置 → 切换显示语言即可访问。偏好通过 `globalState` 跨会话持久化。
 
 * **🔒 多窗口隔离**
     每个 Antigravity 窗口只显示本工作区的对话数据。插件通过 workspace URI 过滤，多窗口之间互不干扰。
@@ -77,8 +77,8 @@
 * **⚡ 实时 Token 监控**
     状态栏显示当前 Token 消耗，格式如 `125k/200k, 62.5%`。Token 数据优先取自模型 checkpoint 的精确值（`inputTokens` + `outputTokens`），两次 checkpoint 之间通过基于实际文本内容的字符估算实时计算增量（v1.4.0 起替代了固定常量）。仅在步骤数据结构缺失时 fallback 到固定常量。
 
-* **🌐 中英双语**
-    状态栏、QuickPick 面板、tooltip 均提供中英文显示。
+* **🌐 语言切换**
+    用户可选择仅中文、仅英文或双语显示模式。点击状态栏 → 设置 → 切换显示语言即可访问。偏好通过 `globalState` 跨会话持久化。
 
 * **🔒 多窗口隔离**
     每个 Antigravity 窗口只显示本工作区的对话数据。插件通过 workspace URI 过滤，多窗口之间互不干扰。
@@ -111,8 +111,8 @@
 | Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M37 | 1,000,000 |
 | Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 1,000,000 |
 | Gemini 3 Flash | MODEL_PLACEHOLDER_M47 | 1,000,000 |
-| Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 200,000 |
-| Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 200,000 |
+| Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 1,000,000 |
+| Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 1,000,000 |
 | GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 128,000 |
 
 *模型 ID 来自 Antigravity 本地语言服务器的 `GetUserStatus` API。如果新增了模型，可以在 IDE 设置中手动覆盖上下文上限。*
@@ -149,7 +149,7 @@
 
 > [!NOTE]
 > **子智能体动态切换**
-> 使用 Claude 模型时，Antigravity 可能会调用 Gemini 2.5 Flash Lite 作为子智能体处理轻量任务。这会导致上下文上限临时跳到 1M，当 Claude 恢复执行任务时会回退到 200k。
+> 使用 Claude 模型时，Antigravity 可能会调用 Gemini 2.5 Flash Lite 作为子智能体处理轻量任务。自 v1.10.0 起，Claude 4.6 模型也拥有 1M 上下文限制（2026-03-13 GA），因此子智能体切换不再导致可见的上下文上限变化。
 ### Known Issues & Notes / 已知问题与说明
 
 - **同一工作区多窗口 / Multiple Windows in the Same Workspace**:
@@ -164,7 +164,7 @@
   Antigravity IDE 对检查点总结有一个硬编码的 7500 token "总结阈值"。这可能会导致长对话期间的计算结果出现轻微偏差。参考：[Reddit 社区讨论](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)
 
 - **子智能体动态切换 / Sub-agent Dynamic Switching**:
-  使用 Claude 模型时，Antigravity 可能会调用 Gemini 2.5 Flash Lite 作为子智能体处理轻量任务。这会导致上下文上限临时跳到 1M，当 Claude 恢复执行任务时会回退到 200k。
+  使用 Claude 模型时，Antigravity 可能会调用 Gemini 2.5 Flash Lite 作为子智能体处理轻量任务。自 v1.10.0 起，Claude 4.6 模型也拥有 1M 上下文限制（2026-03-13 GA），因此子智能体切换不再导致可见的上下文上限变化。
 
 ## ⚙️ 设置
 
@@ -173,10 +173,18 @@
 | `pollingInterval` | 5 | 轮询频率（秒） |
 | `contextLimits` | (见默认值) | 手动覆盖模型的上下文上限 |
 
+## 🔤 命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `Show Context Window Details` | 打开 QuickPick 面板显示所有被追踪的会话 |
+| `Refresh Context Window Monitor` | 重新发现语言服务器并重启轮询 |
+| `Switch Display Language` | 选择仅中文、仅英文或双语显示模式 |
+
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)
 
 ---
 **作者**: AGI-is-going-to-arrive
-**Version**: 1.9.0
+**Version**: 1.10.0

@@ -1,8 +1,8 @@
 # 🛠️ Antigravity Context Window Monitor — 技术实现说明 / Technical Implementation
 
-本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由四个核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）。
+本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。
 
-This document explains how the Antigravity Context Window Monitor plugin works. The plugin consists of four core modules: `discovery.ts` (server discovery), `tracker.ts` (token calculation), `extension.ts` (polling scheduler), and `statusbar.ts` (UI display).
+This document explains how the Antigravity Context Window Monitor plugin works. The plugin consists of the following core modules: `discovery.ts` (server discovery), `tracker.ts` (token calculation), `extension.ts` (polling scheduler), `statusbar.ts` (UI display), `rpc-client.ts` (RPC communication layer), `models.ts` (model config & display names), `constants.ts` (constants), and `i18n.ts` (internationalization system).
 
 ---
 
@@ -94,5 +94,5 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
     Color-coded by usage: <50% normal, 50-80% warning (`warningBackground`), ≥80% error (`errorBackground`). At ≥95% the icon switches to `$(zap)`.
 
 ---
-基于 TypeScript 构建，适用于 Antigravity IDE。包含 78 个 vitest 单元测试覆盖纯逻辑函数和扩展生命周期（`npm test`）：`tracker.test.ts`（45 tests）、`discovery.test.ts`（16 tests）、`statusbar.test.ts`（10 tests）、`extension.test.ts`（7 tests）。
-Built with TypeScript for the Antigravity IDE. Includes 78 vitest unit tests covering pure logic functions and extension lifecycle (`npm test`): `tracker.test.ts` (45 tests), `discovery.test.ts` (16 tests), `statusbar.test.ts` (10 tests), `extension.test.ts` (7 tests).
+基于 TypeScript 构建，适用于 Antigravity IDE。包含 37 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（10 tests）、`tracker.test.ts`（16 tests）、`statusbar.test.ts`（11 tests）。
+Built with TypeScript for the Antigravity IDE. Includes 37 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (10 tests), `tracker.test.ts` (16 tests), `statusbar.test.ts` (11 tests).
