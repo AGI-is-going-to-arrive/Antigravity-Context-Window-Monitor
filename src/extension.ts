@@ -5,13 +5,15 @@ import {
     getContextUsage,
     getContextLimit,
     normalizeUri,
-    fetchModelConfigs,
+    fetchFullUserStatus,
     updateModelDisplayNames,
     ContextUsage,
-    TrajectorySummary
+    TrajectorySummary,
+    UserStatusInfo,
 } from './tracker';
 import { StatusBarManager, formatContextLimit } from './statusbar';
 import { initI18n, showLanguagePicker } from './i18n';
+import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible } from './webview-panel';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
@@ -23,6 +25,8 @@ let pollingTimer: NodeJS.Timeout | undefined;
 let cachedLsInfo: LSInfo | null = null;
 let currentUsage: ContextUsage | null = null;
 let allTrajectoryUsages: ContextUsage[] = [];
+let cachedModelConfigs: import('./models').ModelConfig[] = [];
+let cachedUserInfo: UserStatusInfo | null = null;
 let outputChannel: vscode.OutputChannel;
 
 /** Extension context reference — needed for workspaceState persistence. */
@@ -93,7 +97,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Register commands
     context.subscriptions.push(
         vscode.commands.registerCommand('antigravity-context-monitor.showDetails', () => {
-            statusBar.showDetailsPanel(currentUsage, allTrajectoryUsages);
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context);
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
@@ -105,9 +109,12 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.switchLanguage', () => {
             showLanguagePicker(context).then(() => {
-                // Rebuild statusBar to reflect new language immediately
+                // Rebuild statusBar and WebView to reflect new language immediately
                 if (currentUsage) {
                     statusBar.update(currentUsage);
+                }
+                if (isMonitorPanelVisible()) {
+                    updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo);
                 }
             });
         }),
@@ -190,12 +197,18 @@ async function pollContextUsage(): Promise<void> {
 
             // Dynamically update model display names from GetUserStatus
             try {
-                const configs = await fetchModelConfigs(lsInfo, abortController.signal);
-                if (configs.length > 0) {
-                    updateModelDisplayNames(configs);
-                    log(`Updated model display names: ${configs.map(c => c.label).join(', ')}`);
+                const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
+                if (fullStatus.configs.length > 0) {
+                    updateModelDisplayNames(fullStatus.configs);
+                    cachedModelConfigs = fullStatus.configs;
+                    statusBar.setModelConfigs(fullStatus.configs);
+                    log(`Updated model display names: ${fullStatus.configs.map(c => c.label).join(', ')}`);
                 }
-            } catch { /* Silent degradation — hardcoded names remain as fallback */ }
+                if (fullStatus.userInfo) {
+                    cachedUserInfo = fullStatus.userInfo;
+                    log(`User: ${fullStatus.userInfo.name} (${fullStatus.userInfo.planName}) credits: prompt=${fullStatus.userInfo.availablePromptCredits} flow=${fullStatus.userInfo.availableFlowCredits}`);
+                }
+            } catch { /* Silent degradation */ }
         }
 
         // 3. Get all trajectories
@@ -346,6 +359,9 @@ async function pollContextUsage(): Promise<void> {
             statusBar.showIdle(idleLimitStr);
             currentUsage = null;
             allTrajectoryUsages = [];
+            if (isMonitorPanelVisible()) {
+                updateMonitorPanel(null, [], cachedModelConfigs, cachedUserInfo);
+            }
             updateBaselines(trajectories);
             return;
         }
@@ -424,6 +440,11 @@ async function pollContextUsage(): Promise<void> {
         });
         const usageResults = await Promise.all(usagePromises);
         allTrajectoryUsages = usageResults.filter((u): u is ContextUsage => u !== null);
+
+        // 6b. Update WebView panel if visible
+        if (isMonitorPanelVisible()) {
+            updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo);
+        }
 
         // 7. Update baselines for next poll
         updateBaselines(trajectories);

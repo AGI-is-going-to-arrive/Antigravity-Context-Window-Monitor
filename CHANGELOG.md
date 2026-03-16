@@ -1,5 +1,21 @@
 # Changelog / 变更日志
 
+## [1.10.1] - 2026-03-16
+
+### Added / 新增
+
+- **WebView Monitor Panel / WebView 监控面板**: Click the status bar to open a full dashboard showing account info, credits, model quotas, feature flags, team config, and Google AI credits — all from the existing `GetUserStatus` API (zero additional network calls).
+  点击状态栏打开全景面板，展示账户信息、Credits 余额、模型配额、功能开关、团队配置和 Google AI 额度——全部来自已有的 `GetUserStatus` API 调用（零额外网络请求）。
+
+- **Privacy Mask / 隐私遮罩**: Shield button in the panel header masks name and email. State persists across refreshes.
+  面板顶部盾牌按钮可遮罩姓名和邮箱，状态跨刷新持久化。
+
+- **Collapsible Sections / 可折叠区域**: Plan Limits, Feature Flags, Team Config, and Google AI Credits are hidden by default in collapsible sections. Open/close state persists.
+  计划限制、功能开关、团队配置和 Google AI 额度默认折叠隐藏，展开/收起状态持久化。
+
+- **Status Bar Quota Summary / 状态栏配额摘要**: Tooltip now includes per-model quota percentages with color indicators.
+  悬浮提示现在包含每模型配额百分比和颜色指示。
+
 ## [1.10.0] - 2026-03-15
 
 ### Added / 新增

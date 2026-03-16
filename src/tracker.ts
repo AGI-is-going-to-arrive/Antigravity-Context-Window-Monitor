@@ -5,6 +5,8 @@ import {
     getModelDisplayName,
     updateModelDisplayNames,
     ModelConfig,
+    FullUserStatus,
+    UserStatusInfo,
     DEFAULT_CONTEXT_LIMITS,
     DEFAULT_CONTEXT_LIMIT,
 } from './models';
@@ -26,6 +28,8 @@ export {
     getModelDisplayName,
     updateModelDisplayNames,
     ModelConfig,
+    FullUserStatus,
+    UserStatusInfo,
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -498,29 +502,113 @@ export async function getTrajectoryTokenUsage(
     return result;
 }
 
-// ─── Dynamic Model Config from GetUserStatus ─────────────────────────────────
+// ─── Full User Status from GetUserStatus ─────────────────────────────────────
 
 /**
- * Fetch model configurations from the LS GetUserStatus endpoint.
+ * Fetch full user status including model configs, plan info, and credits.
  */
-export async function fetchModelConfigs(ls: LSInfo, signal?: AbortSignal): Promise<ModelConfig[]> {
+export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Promise<FullUserStatus> {
     try {
         const resp = await rpcCall(ls, 'GetUserStatus', {
             metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
         }, 10000, signal);
         const userStatus = resp.userStatus as Record<string, unknown> | undefined;
-        const configData = userStatus?.cascadeModelConfigData as Record<string, unknown> | undefined;
-        const configs = configData?.clientModelConfigs as Array<Record<string, unknown>> | undefined;
-        if (!configs) { return []; }
+        if (!userStatus) { return { configs: [], userInfo: null }; }
 
-        return configs.map(c => ({
-            model: ((c.modelOrAlias as Record<string, unknown>)?.model as string) || '',
-            label: (c.label as string) || '',
-            supportsImages: (c.supportsImages as boolean) || false,
-        })).filter(c => c.model && c.label);
+        // ─── Model Configs ───
+        const configData = userStatus.cascadeModelConfigData as Record<string, unknown> | undefined;
+        const rawConfigs = configData?.clientModelConfigs as Array<Record<string, unknown>> | undefined;
+        const configs: ModelConfig[] = (rawConfigs || []).map(c => {
+            const qi = c.quotaInfo as Record<string, unknown> | undefined;
+            const mimeTypes = c.supportedMimeTypes as Record<string, boolean> | undefined;
+            return {
+                model: ((c.modelOrAlias as Record<string, unknown>)?.model as string) || '',
+                label: (c.label as string) || '',
+                supportsImages: (c.supportsImages as boolean) || false,
+                quotaInfo: qi ? {
+                    remainingFraction: (qi.remainingFraction as number) ?? 1,
+                    resetTime: (qi.resetTime as string) || '',
+                } : undefined,
+                allowedTiers: (c.allowedTiers as string[]) || [],
+                tagTitle: (c.tagTitle as string) || undefined,
+                mimeTypeCount: mimeTypes ? Object.keys(mimeTypes).length : 0,
+            };
+        }).filter(c => c.model && c.label);
+
+        // ─── Plan Info ───
+        const planStatus = userStatus.planStatus as Record<string, unknown> | undefined;
+        const planInfo = planStatus?.planInfo as Record<string, unknown> | undefined;
+        const userTier = userStatus.userTier as Record<string, unknown> | undefined;
+        const teamCfg = planInfo?.defaultTeamConfig as Record<string, boolean> | undefined;
+        const defaultOverride = configData?.defaultOverrideModelConfig as Record<string, unknown> | undefined;
+        const defaultModelId = (defaultOverride?.modelOrAlias as Record<string, unknown>)?.model as string || '';
+        const defaultModelCfg = configs.find(c => c.model === defaultModelId);
+        const rawCredits = (userTier?.availableCredits as Array<Record<string, unknown>>) || [];
+
+        const parseNum = (v: unknown): number => {
+            if (typeof v === 'number') { return v; }
+            if (typeof v === 'string') { const n = parseInt(v, 10); return isNaN(n) ? 0 : n; }
+            return 0;
+        };
+
+        const userInfo: UserStatusInfo | null = planInfo ? {
+            name: (userStatus.name as string) || '',
+            email: (userStatus.email as string) || '',
+            planName: (planInfo.planName as string) || '',
+            teamsTier: (planInfo.teamsTier as string) || '',
+            monthlyPromptCredits: (planInfo.monthlyPromptCredits as number) || 0,
+            monthlyFlowCredits: (planInfo.monthlyFlowCredits as number) || 0,
+            availablePromptCredits: (planStatus?.availablePromptCredits as number) ?? 0,
+            availableFlowCredits: (planStatus?.availableFlowCredits as number) ?? 0,
+            userTierName: (userTier?.name as string) || '',
+            userTierId: (userTier?.id as string) || '',
+            defaultModelLabel: defaultModelCfg?.label || defaultModelId || '',
+            planLimits: {
+                maxNumChatInputTokens: parseNum(planInfo.maxNumChatInputTokens),
+                maxNumPremiumChatMessages: parseNum(planInfo.maxNumPremiumChatMessages),
+                maxCustomChatInstructionCharacters: parseNum(planInfo.maxCustomChatInstructionCharacters),
+                maxNumPinnedContextItems: parseNum(planInfo.maxNumPinnedContextItems),
+                maxLocalIndexSize: parseNum(planInfo.maxLocalIndexSize),
+                monthlyFlexCreditPurchaseAmount: (planInfo.monthlyFlexCreditPurchaseAmount as number) || 0,
+            },
+            teamConfig: {
+                allowMcpServers: teamCfg?.allowMcpServers || false,
+                allowAutoRunCommands: teamCfg?.allowAutoRunCommands || false,
+                allowBrowserExperimentalFeatures: teamCfg?.allowBrowserExperimentalFeatures || false,
+            },
+            availableCredits: rawCredits.map(c => ({
+                creditType: (c.creditType as string) || '',
+                creditAmount: parseNum(c.creditAmount),
+                minimumCreditAmountForUsage: parseNum(c.minimumCreditAmountForUsage),
+            })),
+            // Feature flags
+            canBuyMoreCredits: (planInfo.canBuyMoreCredits as boolean) || false,
+            browserEnabled: (planInfo.browserEnabled as boolean) || false,
+            cascadeWebSearchEnabled: (planInfo.cascadeWebSearchEnabled as boolean) || false,
+            knowledgeBaseEnabled: (planInfo.knowledgeBaseEnabled as boolean) || false,
+            canGenerateCommitMessages: (planInfo.canGenerateCommitMessages as boolean) || false,
+            cascadeCanAutoRunCommands: (planInfo.cascadeCanAutoRunCommands as boolean) || false,
+            canAllowCascadeInBackground: (planInfo.canAllowCascadeInBackground as boolean) || false,
+            hasAutocompleteFastMode: (planInfo.hasAutocompleteFastMode as boolean) || false,
+            allowStickyPremiumModels: (planInfo.allowStickyPremiumModels as boolean) || false,
+            allowPremiumCommandModels: (planInfo.allowPremiumCommandModels as boolean) || false,
+            hasTabToJump: (planInfo.hasTabToJump as boolean) || false,
+            canCustomizeAppIcon: (planInfo.canCustomizeAppIcon as boolean) || false,
+        } : null;
+
+        return { configs, userInfo };
     } catch {
-        return [];  // Silent degradation
+        return { configs: [], userInfo: null };
     }
+}
+
+/**
+ * @deprecated Use `fetchFullUserStatus()` instead.
+ * Backward-compatible wrapper — returns only model configs (no user info).
+ */
+export async function fetchModelConfigs(ls: LSInfo, signal?: AbortSignal): Promise<ModelConfig[]> {
+    const result = await fetchFullUserStatus(ls, signal);
+    return result.configs;
 }
 
 /**

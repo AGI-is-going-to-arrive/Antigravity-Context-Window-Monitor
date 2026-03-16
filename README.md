@@ -78,7 +78,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
    ![Hover Details](src/images/悬停详情.png)
 
-4. **Click**: Click the status bar item to open a QuickPick panel listing all tracked sessions in this workspace.
+4. **Click**: Click the status bar item to open a **WebView monitor panel** showing full account status, model quotas, credits, and all tracked sessions.
 
    ![Click to View](src/images/点击查看.png)
 
@@ -123,4 +123,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.10.0
+**Version**: 1.10.1

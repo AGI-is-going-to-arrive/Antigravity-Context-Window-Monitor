@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ContextUsage } from './tracker';
+import { ModelConfig } from './models';
 import { t, tBi, getLanguage } from './i18n';
 
 // ─── Token Formatting ─────────────────────────────────────────────────────────
@@ -110,6 +111,7 @@ function getSeverityIcon(severity: StatusBarSeverity): string {
 
 export class StatusBarManager {
     private statusBarItem: vscode.StatusBarItem;
+    private cachedConfigs: ModelConfig[] = [];
 
     constructor() {
         this.statusBarItem = vscode.window.createStatusBarItem(
@@ -120,6 +122,13 @@ export class StatusBarManager {
         this.statusBarItem.name = t('statusBar.name');
         this.showInitializing();
         this.statusBarItem.show();
+    }
+
+    /**
+     * Cache model configs for quota display in tooltip.
+     */
+    setModelConfigs(configs: ModelConfig[]): void {
+        this.cachedConfigs = configs;
     }
 
     showInitializing(): void {
@@ -248,8 +257,21 @@ export class StatusBarManager {
 
         lines.push(`——————————`);
         lines.push(`${dataSourceLabel}`);
-        lines.push(`${t('statusBar.clickToView')}`);
 
+        // Quota summary from cached model configs
+        const quotaModels = this.cachedConfigs.filter(c => c.quotaInfo);
+        if (quotaModels.length > 0) {
+            lines.push(`——————————`);
+            lines.push(`⚡ ${tBi('Model Quota', '模型配额')}`);
+            for (const c of quotaModels) {
+                const qi = c.quotaInfo!;
+                const pct = Math.round(qi.remainingFraction * 100);
+                const bar = pct >= 80 ? '🟢' : pct >= 50 ? '🟡' : '🔴';
+                lines.push(`${bar} ${escapeMarkdown(c.label)}: ${pct}%`);
+            }
+        }
+
+        lines.push(`${t('statusBar.clickToView')}`);
         const md = new vscode.MarkdownString(lines.join('  \n'), false);
         md.supportThemeIcons = true;
         this.statusBarItem.tooltip = md;

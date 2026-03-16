@@ -14,3 +14,6 @@ vitest.config.ts
 
 # Docker test files
 Dockerfile*
+
+# VSIX build artifacts
+*.vsix

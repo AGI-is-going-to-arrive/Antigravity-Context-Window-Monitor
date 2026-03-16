@@ -2,7 +2,7 @@
 // Extracted from tracker.ts for single-responsibility.
 //
 // Real model IDs discovered from Antigravity LS via GetUserStatus API.
-// Updated: 2026-03-15
+// Updated: 2026-03-16
 //
 // The "MODEL_PLACEHOLDER_Mxx" naming is Antigravity's convention for aliased
 // models. Mapping:
@@ -71,10 +71,75 @@ export function getModelDisplayName(model: string): string {
 
 // ─── Model Config from GetUserStatus ─────────────────────────────────────────
 
+export interface QuotaInfo {
+    remainingFraction: number;
+    resetTime: string;
+}
+
 export interface ModelConfig {
     model: string;
     label: string;
     supportsImages: boolean;
+    quotaInfo?: QuotaInfo;
+    allowedTiers: string[];
+    tagTitle?: string;
+    mimeTypeCount: number;
+}
+
+export interface PlanLimits {
+    maxNumChatInputTokens: number;
+    maxNumPremiumChatMessages: number;
+    maxCustomChatInstructionCharacters: number;
+    maxNumPinnedContextItems: number;
+    maxLocalIndexSize: number;
+    monthlyFlexCreditPurchaseAmount: number;
+}
+
+export interface TeamConfig {
+    allowMcpServers: boolean;
+    allowAutoRunCommands: boolean;
+    allowBrowserExperimentalFeatures: boolean;
+}
+
+export interface CreditInfo {
+    creditType: string;
+    creditAmount: number;
+    minimumCreditAmountForUsage: number;
+}
+
+export interface UserStatusInfo {
+    name: string;
+    email: string;
+    planName: string;
+    teamsTier: string;
+    monthlyPromptCredits: number;
+    monthlyFlowCredits: number;
+    availablePromptCredits: number;
+    availableFlowCredits: number;
+    userTierName: string;
+    userTierId: string;
+    defaultModelLabel: string;
+    planLimits: PlanLimits;
+    teamConfig: TeamConfig;
+    availableCredits: CreditInfo[];
+    // Feature flags
+    canBuyMoreCredits: boolean;
+    browserEnabled: boolean;
+    cascadeWebSearchEnabled: boolean;
+    knowledgeBaseEnabled: boolean;
+    canGenerateCommitMessages: boolean;
+    cascadeCanAutoRunCommands: boolean;
+    canAllowCascadeInBackground: boolean;
+    hasAutocompleteFastMode: boolean;
+    allowStickyPremiumModels: boolean;
+    allowPremiumCommandModels: boolean;
+    hasTabToJump: boolean;
+    canCustomizeAppIcon: boolean;
+}
+
+export interface FullUserStatus {
+    configs: ModelConfig[];
+    userInfo: UserStatusInfo | null;
 }
 
 /**
