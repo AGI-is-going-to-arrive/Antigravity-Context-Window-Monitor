@@ -55,6 +55,11 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 * **🛌 Exponential Backoff Polling**
     When the language server is unreachable, polling interval increases as `baseInterval × 2^n` (default: 5s → 10s → 20s → 60s), resetting immediately on reconnection.
 
+* **📊 WebView Monitor Panel** *(v1.10.1)*
+    Click the status bar to open a side panel with a full-featured dashboard. Displays your account plan and tier, Prompt/Flow credit balance, per-model quota usage with color-coded progress bars, feature flags, team config (MCP Servers, Auto-Run, etc.), and Google AI credits. All data comes from the existing `GetUserStatus` API — zero additional network requests.
+    * **🛡️ Privacy Mask**: A shield button in the panel header masks your name and email. The toggle state persists across panel refreshes.
+    * **📂 Collapsible Sections**: Secondary info (Plan Limits, Feature Flags, Team Config, Google AI Credits) is collapsed by default. Expand/collapse state persists.
+
 ## 🤖 Supported Models
 
 | Model | Internal ID | Context Limit |
@@ -74,11 +79,17 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
    * **OpenVSX**: Install directly from [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
    * **Manual**: Install the `.vsix` file via Extensions → Install from VSIX.
 2. **Status Bar**: The bottom-right status bar shows current context usage (displays `0k/1000k, 0.0%` for empty chats).
-3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, etc.).
+3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, etc.).
 
    ![Hover Details](src/images/悬停详情.png)
 
-4. **Click**: Click the status bar item to open a **WebView monitor panel** showing full account status, model quotas, credits, and all tracked sessions.
+4. **Click — WebView Monitor Panel**: Click the status bar item to open the **WebView monitor panel** in a side panel:
+   * **Account & Credits**: See your plan name, user tier, and Prompt / Flow credit balance at a glance.
+   * **Model Quotas**: Each model shows a color-coded quota bar (green → yellow → red) with reset time.
+   * **Current Session**: Displays the active conversation's context usage, model, step count, and compression status.
+   * **Other Sessions**: Lists other recent conversations in the same workspace.
+   * **Privacy Mask**: Click the 🛡️ shield button in the header to hide your name and email. The mask toggles on/off and persists across refreshes.
+   * **Collapsible Details**: Click the ▶ triangles to expand Plan Limits, Feature Flags, Team Config, or Google AI Credits. These are collapsed by default to keep the panel clean.
 
    ![Click to View](src/images/点击查看.png)
 
