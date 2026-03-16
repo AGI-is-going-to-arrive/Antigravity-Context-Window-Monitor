@@ -66,6 +66,37 @@ export function extractPort(line: string): number | null {
 }
 
 /**
+ * Filter ps output lines for LS processes on Linux/WSL.
+ * Unlike macOS, the binary name does not contain '_macos' suffix.
+ */
+export function filterLsProcessLinesLinux(psOutput: string): string[] {
+    return psOutput.split('\n').filter(l =>
+        l.includes('language_server') &&
+        l.includes('antigravity') &&
+        !l.includes('language_server_macos')
+    );
+}
+
+/**
+ * Extract all listening ports from ss output for a given PID on Linux.
+ * Returns an array because one process may listen on multiple ports.
+ */
+export function extractPortsFromSs(ssOutput: string, pid: number): number[] {
+    const ports: number[] = [];
+    for (const line of ssOutput.split('\n')) {
+        // ss format example:   LISTEN  0  128  127.0.0.1:12345  0.0.0.0:*  users:(("language_server",pid=123,fd=3))
+        // Must match pid=N precisely — loose match on e.g. pid 123 would falsely hit port 12345
+        if (line.includes(`pid=${pid},`) || line.includes(`pid=${pid})`)) {
+            const port = extractPort(line);
+            if (port !== null) {
+                ports.push(port);
+            }
+        }
+    }
+    return ports;
+}
+
+/**
  * Discover the Antigravity language server process that belongs to this workspace.
  * Extracts PID, CSRF token from process args, and finds the listening port.
  *
@@ -77,7 +108,15 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
     if (process.platform === 'win32') {
         return discoverLanguageServerWindows(workspaceUri, signal);
     }
-    return discoverLanguageServerMacOS(workspaceUri, signal);
+    if (process.platform === 'darwin') {
+        return discoverLanguageServerMacOS(workspaceUri, signal);
+    }
+    // Linux / WSL / other Unix-like
+    if (process.platform === 'linux') {
+        return discoverLanguageServerLinux(workspaceUri, signal);
+    }
+    console.warn(`[ContextMonitor] Unsupported platform: ${process.platform}`);
+    return null;
 }
 
 // ─── Windows Discovery ───────────────────────────────────────────────────────
@@ -310,6 +349,88 @@ async function discoverLanguageServerMacOS(workspaceUri?: string, signal?: Abort
         }
         if (ports.length === 0) { return null; }
 
+        for (const port of ports) {
+            const httpsResult = await probePort(port, csrfToken, true, signal);
+            if (httpsResult) {
+                return { pid, csrfToken, port, useTls: true };
+            }
+            const httpResult = await probePort(port, csrfToken, false, signal);
+            if (httpResult) {
+                return { pid, csrfToken, port, useTls: false };
+            }
+        }
+
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+// ─── Linux/WSL Discovery ─────────────────────────────────────────────────────
+
+async function discoverLanguageServerLinux(workspaceUri?: string, signal?: AbortSignal): Promise<LSInfo | null> {
+    try {
+        // 1. Find LS processes via ps
+        let psOutput: string;
+        try {
+            const result = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
+                encoding: 'utf-8',
+                timeout: 5000,
+                signal
+            });
+            psOutput = result.stdout;
+        } catch {
+            return null;
+        }
+
+        const lines = filterLsProcessLinesLinux(psOutput);
+        if (lines.length === 0) { return null; }
+
+        // Match workspace if provided
+        let targetLine = lines[0];
+        if (workspaceUri) {
+            const expectedWorkspaceId = buildExpectedWorkspaceId(workspaceUri);
+            const matchedLine = lines.find(line => {
+                const wsId = extractWorkspaceId(line);
+                return wsId === expectedWorkspaceId;
+            });
+            if (matchedLine) { targetLine = matchedLine; }
+        }
+
+        const firstLine = targetLine.trim();
+        const pid = extractPid(firstLine);
+        if (!pid) { return null; }
+
+        const csrfToken = extractCsrfToken(firstLine);
+        if (!csrfToken) { return null; }
+
+        // 2. Find listening port — try ss first, fall back to lsof
+        let ports: number[] = [];
+
+        // Try ss (standard on modern Linux, part of iproute2)
+        try {
+            const result = await execFileAsync('ss', ['-lntp'], {
+                encoding: 'utf-8', timeout: 5000, signal
+            });
+            ports = extractPortsFromSs(result.stdout, pid);
+        } catch { /* ss not available, try next */ }
+
+        // Fallback: lsof (if installed)
+        if (ports.length === 0) {
+            try {
+                const result = await execFileAsync('lsof', [
+                    '-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)
+                ], { encoding: 'utf-8', timeout: 5000, signal });
+                for (const line of result.stdout.split('\n')) {
+                    const port = extractPort(line);
+                    if (port !== null) { ports.push(port); }
+                }
+            } catch { /* lsof not available */ }
+        }
+
+        if (ports.length === 0) { return null; }
+
+        // 3. Probe ports (same logic as macOS/Windows)
         for (const port of ports) {
             const httpsResult = await probePort(port, csrfToken, true, signal);
             if (httpsResult) {
