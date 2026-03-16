@@ -47,55 +47,6 @@
 * **🔄 动态模型切换**
     对话中切换模型时，上下文窗口上限自动更新为当前模型的限制值。v1.4.0 起通过 `GetUserStatus` API 动态获取模型显示名称。
 
-# 🌌 Antigravity 实时上下文窗口监控
-
-一个专为 **Antigravity**（Google 基于 Windsurf 修改的 IDE）开发的插件，用于实时**监控所有聊天会话的上下文窗口使用情况**。
-
-**[🇺🇸 English Documentation / 英文文档](README.md)**
-
----
-
-> [!WARNING]
-> **平台支持**
->
-> 🍏 **macOS**: 完全支持。通过 `ps` 和 `lsof` 命令实现进程发现。
->
-> 🐧 **Linux**: 完全支持（v1.6.0+）。通过 `ps` 和 `lsof`/`ss` 实现进程发现。已在 Ubuntu 22.04 (x64 & ARM64) 上测试通过。
->
-> 🪟 **Windows**: 完全支持（v1.8.0+）。通过 `wmic` 缓存和 PowerShell 回退机制优化了发现逻辑。
-
----
-
-## 📚 技术细节
-
-👉 **[阅读技术实现说明](docs/technical_implementation.md)**
-
----
-
-## ✨ 主要功能
-
-* **⚡ 实时 Token 监控**
-    状态栏显示当前 Token 消耗，格式如 `125k/200k, 62.5%`。Token 数据优先取自模型 checkpoint 的精确值（`inputTokens` + `outputTokens`），两次 checkpoint 之间通过基于实际文本内容的字符估算实时计算增量（v1.4.0 起替代了固定常量）。仅在步骤数据结构缺失时 fallback 到固定常量。
-
-* **🌐 语言切换**
-    用户可选择仅中文、仅英文或双语显示模式。点击状态栏 → 设置 → 切换显示语言即可访问。偏好通过 `globalState` 跨会话持久化。
-
-* **🔒 多窗口隔离**
-    每个 Antigravity 窗口只显示本工作区的对话数据。插件通过 workspace URI 过滤，多窗口之间互不干扰。
-
-* **🗜️ 上下文压缩检测**
-    当模型自动压缩对话历史时，插件通过双层检测机制识别：主层比较连续 checkpoint 的 `inputTokens`（下降超过 5000 tokens 即判定，天然免疫 Undo 误报），降级层比较跨轮询 `contextUsed` 变化（带 Undo 排除守卫）。状态栏显示 `~100% 🗜` 压缩标识。
-
-* **⏪ Undo/Rewind 支持**
-    撤销对话步骤后，插件检测到 `stepCount` 减少，会重新计算 Token 用量，显示回滚后的准确值。
-
-    | 回退前 | 回退后 |
-    | :---: | :---: |
-    | ![回退前](src/images/回退前.png) | ![回退后](src/images/回退后.png) |
-
-* **🔄 动态模型切换**
-    对话中切换模型时，上下文窗口上限自动更新为当前模型的限制值。v1.4.0 起通过 `GetUserStatus` API 动态获取模型显示名称。
-
 * **🎨 图片生成追踪**
     使用 Gemini Pro 对话中调用 Nano Banana Pro 生成图片时，相关 Token 消耗会被计入，tooltip 中以 `📷` 标记。检测逻辑基于 step type 和 generator model 名称匹配。
 
@@ -150,21 +101,6 @@
 > [!NOTE]
 > **子智能体动态切换**
 > 使用 Claude 模型时，Antigravity 可能会调用 Gemini 2.5 Flash Lite 作为子智能体处理轻量任务。自 v1.10.0 起，Claude 4.6 模型也拥有 1M 上下文限制（2026-03-13 GA），因此子智能体切换不再导致可见的上下文上限变化。
-### Known Issues & Notes / 已知问题与说明
-
-- **同一工作区多窗口 / Multiple Windows in the Same Workspace**:
-  如果在**同一个文件夹**上打开多个 Antigravity 窗口，它们共享相同的 workspace URI，会话数据可能会混合。
-  **解决方法**: 不同窗口打开不同的文件夹。
-
-- **上下文压缩提示 / Context Compression Hint**:
-  压缩完成通知（🗜 图标）持续约 15 秒（3 个轮询周期）后恢复正常显示。
-
-- **Summarization Threshold / 总结阈值**:
-  Antigravity IDE has a hardcoded 7500 token "Summarization Threshold" for checkpoint summaries. This may lead to slight calculation discrepancies during long conversations. Reference: [Reddit Post](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)
-  Antigravity IDE 对检查点总结有一个硬编码的 7500 token "总结阈值"。这可能会导致长对话期间的计算结果出现轻微偏差。参考：[Reddit 社区讨论](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)
-
-- **子智能体动态切换 / Sub-agent Dynamic Switching**:
-  使用 Claude 模型时，Antigravity 可能会调用 Gemini 2.5 Flash Lite 作为子智能体处理轻量任务。自 v1.10.0 起，Claude 4.6 模型也拥有 1M 上下文限制（2026-03-13 GA），因此子智能体切换不再导致可见的上下文上限变化。
 
 ## ⚙️ 设置
 
