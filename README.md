@@ -42,7 +42,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
     | Before Undo | After Undo |
     | :---: | :---: |
-    | ![Before Undo](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/回退前.png) | ![After Undo](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/回退后.png) |
+    | ![Before Undo](src/images/回退前.png) | ![After Undo](src/images/回退后.png) |
 
 * **🔄 Dynamic Model Switching**
     When switching models mid-conversation, the context window limit automatically updates to match the new model. Since v1.4.0, model display names are dynamically fetched via the `GetUserStatus` API.
@@ -50,7 +50,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 * **🎨 Image Generation Tracking**
     When Nano Banana Pro is invoked for image generation during Gemini Pro conversations, the associated token consumption is tracked and marked with `📷` in the tooltip. Detection is based on step type and generator model name matching.
 
-    ![Image Generation Tracking](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/生成图片.png)
+    ![Image Generation Tracking](src/images/生成图片.png)
 
 * **🛌 Exponential Backoff Polling**
     When the language server is unreachable, polling interval increases as `baseInterval × 2^n` (default: 5s → 10s → 20s → 60s), resetting immediately on reconnection.
@@ -81,7 +81,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 2. **Status Bar**: The bottom-right status bar shows current context usage (displays `0k/1000k, 0.0%` for empty chats).
 3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, etc.).
 
-   ![Hover Details](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/悬停详情.png)
+   ![Hover Details](src/images/悬停详情.png)
 
 4. **Click — WebView Monitor Panel**: Click the status bar item to open the **WebView monitor panel** in a side panel:
    * **Account & Credits**: See your plan name, user tier, and Prompt / Flow credit balance at a glance.
@@ -91,7 +91,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
    * **Privacy Mask**: Click the 🛡️ shield button in the header to hide your name and email. The mask toggles on/off and persists across refreshes.
    * **Collapsible Details**: Click the ▶ triangles to expand Plan Limits, Feature Flags, Team Config, or Google AI Credits. These are collapsed by default to keep the panel clean.
 
-   ![WebView Monitor Panel](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/webview_panel_en.png)
+   ![WebView Monitor Panel](src/images/webview_panel_en.png)
 
 ## ⚠️ Known Limitations
 
