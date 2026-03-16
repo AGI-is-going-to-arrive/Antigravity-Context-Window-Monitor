@@ -42,7 +42,7 @@
 
     | 回退前 | 回退后 |
     | :---: | :---: |
-    | ![回退前](src/images/回退前.png) | ![回退后](src/images/回退后.png) |
+    | ![回退前](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/回退前.png) | ![回退后](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/回退后.png) |
 
 * **🔄 动态模型切换**
     对话中切换模型时，上下文窗口上限自动更新为当前模型的限制值。v1.4.0 起通过 `GetUserStatus` API 动态获取模型显示名称。
@@ -50,7 +50,7 @@
 * **🎨 图片生成追踪**
     使用 Gemini Pro 对话中调用 Nano Banana Pro 生成图片时，相关 Token 消耗会被计入，tooltip 中以 `📷` 标记。检测逻辑基于 step type 和 generator model 名称匹配。
 
-    ![图片生成追踪](src/images/生成图片.png)
+    ![图片生成追踪](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/生成图片.png)
 
 * **🛌 自动退避轮询**
     语言服务器不可用时，轮询间隔按 `baseInterval × 2^n` 递增（默认 5s → 10s → 20s → 60s），重连后立即恢复正常间隔。
@@ -81,7 +81,7 @@
 2. **查看状态**: 右下角状态栏显示当前上下文使用情况（空白聊天时显示 `0k/1000k, 0.0%`）。
 3. **悬停详情**: 将鼠标悬停在状态栏项上，查看详细信息（模型、输入/输出 Token、剩余容量、压缩状态、图片生成步骤、每模型配额摘要等）。
 
-   ![悬停详情](src/images/悬停详情.png)
+   ![悬停详情](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/悬停详情.png)
 
 4. **点击查看 — WebView 监控面板**: 点击状态栏项，打开侧边 **WebView 监控面板**：
    * **账户与 Credits**：一览账户计划名称、用户等级、Prompt / Flow Credits 余额。
@@ -91,7 +91,7 @@
    * **隐私遮罩**：点击面板顶部 🛡️ 盾牌按钮隐藏你的姓名和邮箱，再次点击恢复。遮罩状态跨刷新持久化。
    * **折叠详情**：点击 ▶ 三角形展开查看计划限制、功能开关、团队配置或 Google AI 额度，默认折叠以保持面板简洁。
 
-   ![WebView 监控面板](src/images/webview_panel_cn.png)
+   ![WebView 监控面板](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/webview_panel_cn.png)
 
 ## ⚠️ 已知限制
 

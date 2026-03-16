@@ -7,7 +7,7 @@
 - **WebView 监控面板 / WebView Monitor Panel**: 点击状态栏打开全景仪表盘，展示账户信息、Credits 余额、模型配额、功能开关、团队配置和 Google AI 额度——全部来自已有的 `GetUserStatus` API 调用（零额外网络请求）。
   Click the status bar to open a full dashboard showing account info, credits, model quotas, feature flags, team config, and Google AI credits — all from the existing `GetUserStatus` API (zero additional network calls).
 
-  ![WebView Monitor Panel](src/images/webview_panel_en.png)
+  ![WebView Monitor Panel](https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/src/images/webview_panel_en.png)
 
 - **隐私遮罩 / Privacy Mask**: 面板顶部盾牌按钮可遮罩姓名和邮箱，状态跨刷新持久化。
   Shield button in the panel header masks name and email. State persists across refreshes.
