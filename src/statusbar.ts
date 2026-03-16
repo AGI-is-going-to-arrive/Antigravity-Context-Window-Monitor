@@ -112,6 +112,8 @@ function getSeverityIcon(severity: StatusBarSeverity): string {
 export class StatusBarManager {
     private statusBarItem: vscode.StatusBarItem;
     private cachedConfigs: ModelConfig[] = [];
+    private cachedPlanName: string = '';
+    private cachedTierName: string = '';
 
     constructor() {
         this.statusBarItem = vscode.window.createStatusBarItem(
@@ -129,6 +131,14 @@ export class StatusBarManager {
      */
     setModelConfigs(configs: ModelConfig[]): void {
         this.cachedConfigs = configs;
+    }
+
+    /**
+     * Cache plan name for tooltip display.
+     */
+    setPlanName(planName: string, tierName?: string): void {
+        this.cachedPlanName = planName;
+        if (tierName) { this.cachedTierName = tierName; }
     }
 
     showInitializing(): void {
@@ -156,10 +166,13 @@ export class StatusBarManager {
 
     showIdle(limitStr: string = '1M'): void {
         this.statusBarItem.text = `$(clock) 0k/${limitStr}, 0.0%`;
-        const md = new vscode.MarkdownString(
-            `Antigravity Context Monitor: ${t('statusBar.idle')}  \n${t('statusBar.idleDescription')}  \n${t('statusBar.clickToView')}`,
-            false
-        );
+        const lines: string[] = [
+            `Antigravity Context Monitor: ${t('statusBar.idle')}`,
+            t('statusBar.idleDescription'),
+        ];
+        lines.push(...this.buildQuotaLines());
+        lines.push(t('statusBar.clickToView'));
+        const md = new vscode.MarkdownString(lines.join('  \n'), false);
         md.supportThemeIcons = true;
         this.statusBarItem.tooltip = md;
         this.statusBarItem.backgroundColor = undefined;
@@ -258,23 +271,59 @@ export class StatusBarManager {
         lines.push(`——————————`);
         lines.push(`${dataSourceLabel}`);
 
-        // Quota summary from cached model configs
-        const quotaModels = this.cachedConfigs.filter(c => c.quotaInfo);
-        if (quotaModels.length > 0) {
-            lines.push(`——————————`);
-            lines.push(`⚡ ${tBi('Model Quota', '模型配额')}`);
-            for (const c of quotaModels) {
-                const qi = c.quotaInfo!;
-                const pct = Math.round(qi.remainingFraction * 100);
-                const bar = pct >= 80 ? '🟢' : pct >= 50 ? '🟡' : '🔴';
-                lines.push(`${bar} ${escapeMarkdown(c.label)}: ${pct}%`);
-            }
-        }
+        lines.push(...this.buildQuotaLines());
 
         lines.push(`${t('statusBar.clickToView')}`);
         const md = new vscode.MarkdownString(lines.join('  \n'), false);
         md.supportThemeIcons = true;
         this.statusBarItem.tooltip = md;
+    }
+
+    /**
+     * Build plan info + model quota lines for tooltip (shared by update & showIdle).
+     */
+    private buildQuotaLines(): string[] {
+        const result: string[] = [];
+
+        if (this.cachedPlanName) {
+            result.push(`——————————`);
+            const planStr = this.cachedTierName && this.cachedTierName !== this.cachedPlanName
+                ? `**${escapeMarkdown(this.cachedPlanName)}** · **${escapeMarkdown(this.cachedTierName)}**`
+                : `**${escapeMarkdown(this.cachedPlanName)}**`;
+            result.push(`👤 ${tBi('Plan', '计划')}: ${planStr}`);
+        }
+
+        const quotaModels = this.cachedConfigs.filter(c => c.quotaInfo);
+        if (quotaModels.length > 0) {
+            result.push(`——————————`);
+            result.push(`⚡ ${tBi('Model Quota', '模型配额')}`);
+            result.push('');
+            const now = Date.now();
+            const header = `| ${tBi('Model', '模型')} | % | ${tBi('Reset', '重置')} |`;
+            const sep = '|:--|--:|--:|';
+            const rows: string[] = [];
+            for (const c of quotaModels) {
+                const qi = c.quotaInfo!;
+                const pct = Math.round(qi.remainingFraction * 100);
+                const bar = pct >= 60 ? '🟢' : pct >= 40 ? '🟡' : '🔴';
+                let resetStr = '—';
+                if (qi.resetTime) {
+                    const diffMs = new Date(qi.resetTime).getTime() - now;
+                    if (diffMs > 0) {
+                        const h = Math.floor(diffMs / 3600000);
+                        const m = Math.floor((diffMs % 3600000) / 60000);
+                        resetStr = `${h}h${m}m`;
+                    }
+                }
+                rows.push(`| ${bar} ${escapeMarkdown(c.label)} | ${pct}% | 🔄 ${resetStr} |`);
+            }
+            result.push(header);
+            result.push(sep);
+            result.push(...rows);
+            result.push('');
+        }
+
+        return result;
     }
 
     /**
