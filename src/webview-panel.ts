@@ -590,9 +590,13 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
         return `
             <div class="setting-model-row">
                 <span class="setting-model-label">${esc(c.label)}</span>
-                <input type="number" class="threshold-input model-limit-input"
-                       data-model="${esc(c.model)}" value="${limit}"
-                       min="1000" step="100000" />
+                <div class="num-spinner">
+                    <button type="button" class="num-spinner-btn decrement">−</button>
+                    <input type="number" class="threshold-input model-limit-input"
+                           data-model="${esc(c.model)}" value="${limit}"
+                           min="1000" step="100000" />
+                    <button type="button" class="num-spinner-btn increment">+</button>
+                </div>
             </div>`;
     }).join('');
 
@@ -609,8 +613,12 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
                     '状态栏颜色基于此值判断。默认 200K 匹配 Antigravity 内建压缩线。',
                 )}</p>
                 <div class="threshold-input-row">
-                    <input type="number" id="thresholdInput" class="threshold-input"
-                           value="${currentThreshold}" min="10000" step="10000" />
+                    <div class="num-spinner">
+                        <button type="button" class="num-spinner-btn decrement" data-target="thresholdInput">−</button>
+                        <input type="number" id="thresholdInput" class="threshold-input"
+                               value="${currentThreshold}" min="10000" step="10000" />
+                        <button type="button" class="num-spinner-btn increment" data-target="thresholdInput">+</button>
+                    </div>
                     <button class="action-btn" id="thresholdSaveBtn">${tBi('Save', '保存')}</button>
                     <span id="thresholdFeedback" class="threshold-feedback"></span>
                 </div>
@@ -631,8 +639,12 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
                     '轮询间隔（秒）',
                 )}</label>
                 <div class="threshold-input-row">
-                    <input type="number" id="pollingInput" class="threshold-input"
-                           value="${pollingInterval}" min="1" max="60" step="1" />
+                    <div class="num-spinner">
+                        <button type="button" class="num-spinner-btn decrement" data-target="pollingInput">−</button>
+                        <input type="number" id="pollingInput" class="threshold-input"
+                               value="${pollingInterval}" min="1" max="60" step="1" />
+                        <button type="button" class="num-spinner-btn increment" data-target="pollingInput">+</button>
+                    </div>
                     <button class="action-btn" id="pollingSaveBtn">${tBi('Save', '保存')}</button>
                     <span id="pollingFeedback" class="threshold-feedback"></span>
                 </div>
@@ -888,6 +900,28 @@ ${getStyles()}
                     ds[this.id] = this.open;
                     s.detailsOpen = ds;
                     vscode.setState(s);
+                });
+            }
+
+            // ─── Custom number spinner buttons ───
+            var spinnerBtns = document.querySelectorAll('.num-spinner-btn');
+            for (var sb = 0; sb < spinnerBtns.length; sb++) {
+                spinnerBtns[sb].addEventListener('click', function() {
+                    var spinner = this.closest('.num-spinner');
+                    if (!spinner) return;
+                    var input = spinner.querySelector('input[type="number"]');
+                    if (!input) return;
+                    var step = parseFloat(input.step) || 1;
+                    var min = input.min !== '' ? parseFloat(input.min) : -Infinity;
+                    var max = input.max !== '' ? parseFloat(input.max) : Infinity;
+                    var val = parseFloat(input.value) || 0;
+                    if (this.classList.contains('increment')) {
+                        val = Math.min(val + step, max);
+                    } else {
+                        val = Math.max(val - step, min);
+                    }
+                    input.value = val;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
                 });
             }
 

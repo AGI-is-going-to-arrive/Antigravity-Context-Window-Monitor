@@ -504,35 +504,61 @@ export function getStyles(): string {
             color: var(--color-text);
         }
 
-        /* ─── Collapsible Sections ────── */
+        /* ─── Collapsible Sections (card style) ── */
         .collapsible {
-            border-top: 1px solid var(--color-border);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-md);
             margin-top: var(--space-2);
+            background: rgba(255,255,255,0.02);
+            overflow: hidden;
+            transition: border-color 0.2s cubic-bezier(.4,0,.2,1), background 0.2s cubic-bezier(.4,0,.2,1);
+        }
+
+        @media (hover: hover) {
+            .collapsible:hover {
+                border-color: var(--color-info);
+                background: rgba(255,255,255,0.04);
+            }
         }
 
         .collapsible summary {
             cursor: pointer;
             font-size: 0.8em;
             font-weight: 600;
-            padding: var(--space-2) 0;
+            padding: var(--space-2) var(--space-3);
             color: var(--color-text-dim);
             list-style: none;
             display: flex;
             align-items: center;
-            gap: var(--space-1);
+            gap: var(--space-2);
             user-select: none;
         }
 
         .collapsible summary::-webkit-details-marker { display: none; }
 
         .collapsible summary::before {
-            content: '▸';
-            display: inline-block;
-            transition: transform 0.2s cubic-bezier(.4,0,.2,1);
+            content: '\u25B8';
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 1.1em;
+            width: 20px;
+            height: 20px;
+            border-radius: var(--radius-sm);
+            background: rgba(255,255,255,0.06);
+            transition: transform 0.2s cubic-bezier(.4,0,.2,1), background 0.2s cubic-bezier(.4,0,.2,1);
+        }
+
+        @media (hover: hover) {
+            .collapsible summary:hover::before {
+                background: rgba(255,255,255,0.12);
+            }
         }
 
         .collapsible[open] summary::before {
             transform: rotate(90deg);
+            background: rgba(var(--color-info-rgb, 100,149,237), 0.15);
         }
 
         .collapsible summary:focus-visible {
@@ -541,7 +567,8 @@ export function getStyles(): string {
         }
 
         .details-body {
-            padding-bottom: var(--space-2);
+            padding: var(--space-1) var(--space-3) var(--space-3);
+            border-top: 1px solid var(--color-border);
         }
 
         /* ─── Detail Row ─────────────── */
@@ -710,39 +737,70 @@ export function getStyles(): string {
             border: 1px solid var(--color-border);
         }
 
-        /* ─── Inline Details (smaller) ── */
+        /* ─── Inline Details (smaller, nested) ── */
         .inline-details {
-            border-top: none;
             margin-top: var(--space-1);
+            background: rgba(255,255,255,0.01);
         }
 
         .inline-details summary {
             font-size: 0.72em;
-            padding: var(--space-1) 0;
+            padding: var(--space-1) var(--space-2);
         }
 
-        /* ─── Session Detail (expanded) ── */
-        .session-detail {
-            border-top: 1px solid var(--color-border);
+        .inline-details summary::before {
+            width: 16px;
+            height: 16px;
+            font-size: 0.9em;
+        }
+
+        /* ─── Session Detail (overrides) ── */
+        .session-detail:first-child {
             margin-top: 0;
         }
 
-        .session-detail:first-child {
-            border-top: none;
-        }
-
         .session-detail summary {
-            padding: var(--space-2) 0;
+            padding: var(--space-2) var(--space-3);
             flex-direction: column;
             align-items: stretch;
             gap: var(--space-1);
         }
 
+        /* Hide the summary-level arrow for session-detail; arrow lives inside session-summary-row instead */
+        .session-detail summary::before {
+            display: none;
+        }
+
         .session-summary-row {
             display: flex;
             align-items: center;
-            gap: var(--space-1);
+            gap: var(--space-2);
             flex-wrap: wrap;
+        }
+
+        .session-summary-row::before {
+            content: '\u25B8';
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 1.1em;
+            width: 20px;
+            height: 20px;
+            border-radius: var(--radius-sm);
+            background: rgba(255,255,255,0.06);
+            transition: transform 0.2s cubic-bezier(.4,0,.2,1), background 0.2s cubic-bezier(.4,0,.2,1);
+        }
+
+        @media (hover: hover) {
+            .session-summary-row:hover::before {
+                background: rgba(255,255,255,0.12);
+            }
+        }
+
+        .session-detail[open] .session-summary-row::before {
+            transform: rotate(90deg);
+            background: rgba(var(--color-info-rgb, 100,149,237), 0.15);
         }
 
         .session-title-text {
@@ -752,7 +810,7 @@ export function getStyles(): string {
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            max-width: 50%;
+            max-width: 55%;
         }
 
         .session-pct-inline {
@@ -762,8 +820,14 @@ export function getStyles(): string {
         }
 
         .session-bar-wrap.compact {
-            height: 3px;
+            height: 4px;
             width: 100%;
+            border-radius: 2px;
+        }
+
+        .session-detail .details-body {
+            padding: var(--space-2) var(--space-3) var(--space-3);
+            border-top: 1px solid var(--color-border);
         }
 
         /* ─── Raw Data Panel ──────────── */
@@ -813,6 +877,7 @@ export function getStyles(): string {
 
         .threshold-input {
             appearance: none;
+            -moz-appearance: textfield;
             background: rgba(0,0,0,0.3);
             border: 1px solid var(--color-border);
             border-radius: var(--radius-md);
@@ -824,10 +889,87 @@ export function getStyles(): string {
             transition: border-color 0.15s cubic-bezier(.4,0,.2,1);
         }
 
+        /* Hide native spinner */
+        .threshold-input::-webkit-outer-spin-button,
+        .threshold-input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
         .threshold-input:focus-visible {
             outline: none;
             border-color: var(--color-info);
             box-shadow: 0 0 0 2px rgba(96,165,250,0.2);
+        }
+
+        /* Custom number spinner wrapper */
+        .num-spinner {
+            display: inline-flex;
+            align-items: center;
+            gap: 0;
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            background: rgba(0,0,0,0.3);
+            transition: border-color 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        .num-spinner:focus-within {
+            border-color: var(--color-info);
+            box-shadow: 0 0 0 2px rgba(96,165,250,0.2);
+        }
+
+        .num-spinner .threshold-input {
+            border: none;
+            border-radius: 0;
+            background: transparent;
+            width: 100px;
+            text-align: center;
+        }
+
+        .num-spinner .threshold-input:focus-visible {
+            box-shadow: none;
+        }
+
+        .num-spinner-btn {
+            appearance: none;
+            border: none;
+            background: rgba(255,255,255,0.05);
+            color: var(--color-text-dim);
+            font-size: 1em;
+            font-weight: 700;
+            width: 28px;
+            height: 30px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.15s cubic-bezier(.4,0,.2,1), color 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        .num-spinner-btn:active {
+            transform: scale(0.98);
+        }
+
+        @media (hover: hover) {
+            .num-spinner-btn:hover {
+                background: rgba(255,255,255,0.12);
+                color: var(--color-text);
+            }
+        }
+
+        .num-spinner-btn:focus-visible {
+            outline: none;
+            box-shadow: inset 0 0 0 2px var(--color-info);
+        }
+
+        .num-spinner-btn.decrement {
+            border-right: 1px solid var(--color-border);
+        }
+
+        .num-spinner-btn.increment {
+            border-left: 1px solid var(--color-border);
         }
 
         .threshold-presets {

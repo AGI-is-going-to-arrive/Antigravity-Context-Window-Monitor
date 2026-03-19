@@ -27,6 +27,14 @@
 - **Polling Interval UI / 轮询间隔配置**: Modify the polling interval directly from the settings menu and save instantly.
   直接在设置菜单内修改轮询间隔，保存后即时生效。
 
+### Improved / 改进
+
+- **Card-Style Collapsible Panels / 卡片式折叠面板**: All collapsible sections (quota, features, sessions, raw data, etc.) upgraded from plain dividers to rounded card containers with hover highlights and a custom expand/collapse arrow button.
+  所有折叠区域（配额、功能、会话详情、原始数据等）由分割线升级为圆角卡片容器，附带 hover 高亮和自定义展开/折叠箭头按钮。
+
+- **Custom Number Spinners / 自定义数字微调器**: Replaced browser-default number input spinners with custom `[−]` `[+]` buttons for all numeric settings (compression threshold, polling interval, model limits).
+  所有数字设置（压缩阈值、轮询间隔、模型上限）将浏览器默认上下箭头替换为自定义 `[−]` `[+]` 按钮。
+
 ### Fixed / 修复
 
 - **State Clean-up / 状态清理**: Fixed a minor timer leak by ensuring `StatusBarManager` properly disposes the reset countdown timer when the extension is deactivated.
