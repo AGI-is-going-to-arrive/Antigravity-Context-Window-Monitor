@@ -248,10 +248,13 @@ export class StatusBarManager {
         const icon = getSeverityIcon(severity);
         const gapsIndicator = usage.hasGaps ? ' ⚠️' : '';
 
+        // Current model quota indicator (🟢85%)
+        const quotaSuffix = this.formatQuotaIndicator(usage.model);
+
         // Add reset countdown to status bar text
         const resetSuffix = this.formatResetCountdown();
 
-        this.statusBarItem.text = `${icon} ${usedStr}/${limitStr}, ${displayPercent}%${compressIcon}${gapsIndicator}${resetSuffix}`;
+        this.statusBarItem.text = `${icon} ${usedStr}/${limitStr}, ${displayPercent}%${compressIcon}${gapsIndicator}${quotaSuffix}${resetSuffix}`;
         this.statusBarItem.backgroundColor = getSeverityColor(severity);
 
         // Build detailed tooltip
@@ -500,6 +503,18 @@ export class StatusBarManager {
         if (picked && picked.label === switchLabel) {
             vscode.commands.executeCommand('antigravity-context-monitor.switchLanguage');
         }
+    }
+
+    /**
+     * Format a compact quota indicator for the current model.
+     * Returns e.g. " 🟢85%" or "" if no quota info available.
+     */
+    private formatQuotaIndicator(modelId: string): string {
+        const config = this.cachedConfigs.find(c => c.model === modelId);
+        if (!config?.quotaInfo) { return ''; }
+        const pct = Math.round(config.quotaInfo.remainingFraction * 100);
+        const dot = pct >= 60 ? '🟢' : pct >= 40 ? '🟡' : '🔴';
+        return ` ${dot}${pct}%`;
     }
 
     /**
