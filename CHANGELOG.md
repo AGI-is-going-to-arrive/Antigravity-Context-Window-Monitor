@@ -1,6 +1,6 @@
 # 变更日志 / Changelog
 
-## [1.11.0] - 2026-03-19
+## [1.10.4] - 2026-03-19
 
 最近社区讨论热烈的 1M 上下文支持度问题有了最新动态。由于 Antigravity 官方服务端目前内置的长文本缓存保留机制（自动压缩）阈值似乎仍沿用历史参数（约 200K），为了帮助长文本用户更直观地把握当前对话的实际占用情况并提前预警，本次更新引入了全新的交互式设置仪表盘！🚀🚀
 
@@ -26,6 +26,14 @@
 
 - **Polling Interval UI / 轮询间隔配置**: Modify the polling interval directly from the settings menu and save instantly.
   直接在设置菜单内修改轮询间隔，保存后即时生效。
+
+### Improved / 改进
+
+- **Card-Style Collapsible Panels / 卡片式折叠面板**: All collapsible sections (quota, features, sessions, raw data, etc.) upgraded from plain dividers to rounded card containers with hover highlights and a custom expand/collapse arrow button.
+  所有折叠区域（配额、功能、会话详情、原始数据等）由分割线升级为圆角卡片容器，附带 hover 高亮和自定义展开/折叠箭头按钮。
+
+- **Custom Number Spinners / 自定义数字微调器**: Replaced browser-default number input spinners with custom `[−]` `[+]` buttons for all numeric settings (compression threshold, polling interval, model limits).
+  所有数字设置（压缩阈值、轮询间隔、模型上限）将浏览器默认上下箭头替换为自定义 `[−]` `[+]` 按钮。
 
 ### Fixed / 修复
 
