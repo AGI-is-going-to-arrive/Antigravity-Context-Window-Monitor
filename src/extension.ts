@@ -143,6 +143,13 @@ export function activate(context: vscode.ExtensionContext): void {
     baseIntervalMs = intervalSec * 1000;
     currentIntervalMs = baseIntervalMs;
 
+    // Apply compression warning threshold
+    const threshold = config.get<number>('compressionWarningThreshold', 200_000);
+    statusBar.setWarningThreshold(threshold);
+
+    // Apply status bar display preferences
+    applyDisplayPrefs();
+
     schedulePoll();
 
     // Ensure timer and abort controller are cleaned up when extension is disposed
@@ -167,6 +174,16 @@ export function activate(context: vscode.ExtensionContext): void {
                 consecutiveFailures = 0;
                 restartPolling();
             }
+            if (e.affectsConfiguration('antigravityContextMonitor.compressionWarningThreshold')) {
+                const newConfig = vscode.workspace.getConfiguration('antigravityContextMonitor');
+                const newThreshold = newConfig.get<number>('compressionWarningThreshold', 200_000);
+                statusBar.setWarningThreshold(newThreshold);
+                log(`Compression warning threshold updated to ${newThreshold}`);
+            }
+            if (e.affectsConfiguration('antigravityContextMonitor.statusBar')) {
+                applyDisplayPrefs();
+                log('Status bar display preferences updated');
+            }
         })
     );
 
@@ -182,7 +199,21 @@ export function deactivate(): void {
         pollingTimer = undefined;
     }
     abortController.abort();
+    if (statusBar) {
+        statusBar.dispose();
+    }
     log('Extension deactivated');
+}
+
+// ─── Display Preferences ──────────────────────────────────────────────────────
+
+function applyDisplayPrefs(): void {
+    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    statusBar.setDisplayPrefs({
+        showContext: cfg.get<boolean>('statusBar.showContext', true),
+        showQuota: cfg.get<boolean>('statusBar.showQuota', true),
+        showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
+    });
 }
 
 // ─── Polling Logic ────────────────────────────────────────────────────────────

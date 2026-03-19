@@ -15,6 +15,9 @@ let lastAllUsages: ContextUsage[] = [];
 let lastConfigs: ModelConfig[] = [];
 let lastUserInfo: UserStatusInfo | null = null;
 
+/** When true, auto-refresh updates are buffered but not rendered. */
+let isPaused = false;
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -35,7 +38,7 @@ export function showMonitorPanel(
     if (context) { extensionCtx = context; }
 
     if (panel) {
-        panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo);
+        panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused);
         panel.reveal(vscode.ViewColumn.Two, true);
         return;
     }
@@ -47,26 +50,65 @@ export function showMonitorPanel(
         { enableScripts: true, retainContextWhenHidden: true },
     );
 
-    panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo);
+    panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused);
 
-    panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string }) => {
+    panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string }) => {
         if (msg.command === 'switchLanguage' && msg.lang && extensionCtx) {
             await setLanguage(msg.lang as Language, extensionCtx);
             if (panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo);
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
             }
             vscode.commands.executeCommand('antigravity-context-monitor.refresh');
         } else if (msg.command === 'refresh') {
             vscode.commands.executeCommand('antigravity-context-monitor.refresh');
+        } else if (msg.command === 'togglePause') {
+            isPaused = !isPaused;
+            if (!isPaused && panel) {
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
+            } else if (panel) {
+                panel.webview.postMessage({ command: 'setPaused', paused: isPaused });
+            }
+        } else if (msg.command === 'setThreshold' && typeof msg.value === 'number') {
+            const val = Math.max(10_000, msg.value);
+            await vscode.workspace.getConfiguration('antigravityContextMonitor')
+                .update('compressionWarningThreshold', val, vscode.ConfigurationTarget.Global);
+            if (panel) {
+                panel.webview.postMessage({ command: 'thresholdSaved' });
+            }
+        } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
+            const val = Math.max(1, Math.min(60, msg.value));
+            await vscode.workspace.getConfiguration('antigravityContextMonitor')
+                .update('pollingInterval', val, vscode.ConfigurationTarget.Global);
+            if (panel) {
+                panel.webview.postMessage({ command: 'configSaved', key: 'pollingInterval' });
+            }
+        } else if (msg.command === 'setConfig' && msg.key) {
+            const allowedKeys = [
+                'statusBar.showContext',
+                'statusBar.showQuota',
+                'statusBar.showResetCountdown',
+                'contextLimits',
+            ];
+            if (allowedKeys.includes(msg.key)) {
+                await vscode.workspace.getConfiguration('antigravityContextMonitor')
+                    .update(msg.key, msg.value, vscode.ConfigurationTarget.Global);
+                if (panel) {
+                    panel.webview.postMessage({ command: 'configSaved', key: msg.key });
+                }
+            }
         }
     });
 
-    panel.onDidDispose(() => { panel = undefined; });
+    panel.onDidDispose(() => {
+        panel = undefined;
+        isPaused = false;  // Reset pause on close
+    });
 }
 
 /**
  * Silently update the panel if it is already visible.
  * Does NOT steal focus or create a new panel.
+ * When paused, data is cached but the panel is NOT re-rendered.
  */
 export function updateMonitorPanel(
     currentUsage: ContextUsage | null,
@@ -78,8 +120,8 @@ export function updateMonitorPanel(
     lastAllUsages = allTrajectoryUsages;
     lastConfigs = modelConfigs;
     lastUserInfo = userInfo;
-    if (panel) {
-        panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo);
+    if (panel && !isPaused) {
+        panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused);
     }
 }
 
@@ -100,11 +142,14 @@ const ICON = {
     user: '<svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6m2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0m4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4m-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10s-3.516.68-4.168 1.332c-.678.678-.83 1.418-.832 1.664z"/></svg>',
     image: '<svg class="icon" viewBox="0 0 16 16" width="10" height="10"><path fill="currentColor" d="M6.002 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0"/><path fill="currentColor" d="M2.002 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v6.5l-3.777-1.947a.5.5 0 0 0-.577.093l-3.71 3.71-2.66-1.772a.5.5 0 0 0-.63.062L1.002 12V3a1 1 0 0 1 1-1z"/></svg>',
     shield: '<svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M5.338 1.59a61 61 0 0 0-2.837.856.48.48 0 0 0-.328.39c-.554 4.157.726 7.19 2.253 9.188a10.7 10.7 0 0 0 2.287 2.233c.346.244.652.42.893.533q.18.085.293.118a1 1 0 0 0 .101.025 1 1 0 0 0 .1-.025q.114-.034.294-.118c.24-.113.547-.29.893-.533a10.7 10.7 0 0 0 2.287-2.233c1.527-1.997 2.807-5.031 2.253-9.188a.48.48 0 0 0-.328-.39c-.651-.213-1.75-.56-2.837-.855C9.552 1.29 8.531 1.067 8 1.067c-.53 0-1.552.223-2.662.524zM5.072.56C6.157.265 7.31 0 8 0s1.843.265 2.928.56c1.11.3 2.229.655 2.887.87a1.54 1.54 0 0 1 1.044 1.262c.596 4.477-.787 7.795-2.465 9.99a11.8 11.8 0 0 1-2.517 2.453 7 7 0 0 1-1.048.625 2.5 2.5 0 0 1-.444.2 1 1 0 0 1-.385.063 1 1 0 0 1-.385-.063 2.5 2.5 0 0 1-.444-.2 7 7 0 0 1-1.048-.625 11.8 11.8 0 0 1-2.517-2.453C1.928 10.487.545 7.169 1.141 2.692A1.54 1.54 0 0 1 2.185 1.43 63 63 0 0 1 5.072.56"/></svg>',
+    git: '<svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M15.698 7.287 8.712.302a1.03 1.03 0 0 0-1.457 0l-1.45 1.45 1.84 1.84a1.223 1.223 0 0 1 1.55 1.56l1.773 1.774a1.224 1.224 0 1 1-.733.693l-1.654-1.654v4.353a1.226 1.226 0 1 1-1.008-.036V5.889a1.226 1.226 0 0 1-.666-1.608L5.093 2.465l-4.79 4.79a1.03 1.03 0 0 0 0 1.457l6.986 6.986a1.03 1.03 0 0 0 1.457 0l6.953-6.953a1.031 1.031 0 0 0 0-1.457"/></svg>',
+    branch: '<svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M11.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5m-2.25.75a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.5 2.5 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25M4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5M3.5 3.25a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0"/></svg>',
+    star: '<svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M3.612 15.443c-.386.198-.824-.149-.746-.592l.83-4.73L.173 6.765c-.329-.314-.158-.888.283-.95l4.898-.696L7.538.792c.197-.39.73-.39.927 0l2.184 4.327 4.898.696c.441.062.612.636.282.95l-3.522 3.356.83 4.73c.078.443-.36.79-.746.592L8 13.187l-4.389 2.256z"/></svg>',
 } as const;
 
 // ─── HTML Builder ─────────────────────────────────────────────────────────────
 
-function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], configs: ModelConfig[], userInfo: UserStatusInfo | null): string {
+function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], configs: ModelConfig[], userInfo: UserStatusInfo | null, paused = false): string {
     const sections: string[] = [];
 
     // ━━━ Account & Plan ━━━
@@ -236,7 +281,7 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
     // ━━━ Quota Monitor ━━━
     const quotaModels = configs.filter(c => c.quotaInfo);
     if (quotaModels.length > 0) {
-        const quotaRows = quotaModels.map(c => {
+        const quotaRows = quotaModels.map((c, idx) => {
             const qi = c.quotaInfo!;
             const pct = Math.round(qi.remainingFraction * 100);
             const barColor = pct <= 20 ? 'var(--color-danger)' : pct <= 50 ? 'var(--color-warn)' : 'var(--color-ok)';
@@ -249,10 +294,23 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
             }
             const tagHtml = c.tagTitle ? `<span class="badge info-badge">${esc(c.tagTitle)}</span>` : '';
             const imgTag = c.supportsImages ? `<span class="badge ok-badge">${ICON.image} IMG</span>` : '';
+            const recTag = c.isRecommended ? `<span class="badge rec-badge">${ICON.star} REC</span>` : '';
             const mimeTag = c.mimeTypeCount > 0 ? `<span class="mime-count">${c.mimeTypeCount} MIME</span>` : '';
+
+            // MIME type details (collapsible)
+            let mimeDetailsHtml = '';
+            if (c.supportedMimeTypes.length > 0) {
+                const mimeTags = c.supportedMimeTypes.map(m => `<span class="mime-tag">${esc(m)}</span>`).join('');
+                mimeDetailsHtml = `
+                    <details class="collapsible inline-details" id="d-mime-${idx}">
+                        <summary>${tBi('MIME Types', 'MIME 类型')} (${c.supportedMimeTypes.length})</summary>
+                        <div class="details-body"><div class="mime-tags-wrap">${mimeTags}</div></div>
+                    </details>`;
+            }
+
             return `
                 <div class="quota-row">
-                    <div class="quota-label">${esc(c.label)} ${tagHtml} ${imgTag}</div>
+                    <div class="quota-label">${esc(c.label)} ${tagHtml} ${imgTag} ${recTag}</div>
                     <div class="quota-bar-wrap">
                         <div class="quota-bar" style="width:${pct}%;background:${barColor}"></div>
                     </div>
@@ -261,6 +319,8 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
                         <span>${mimeTag}</span>
                         ${resetLabel ? `<span class="quota-reset">${tBi('Reset', '重置')}: ${resetLabel}</span>` : ''}
                     </div>
+                    <div class="quota-id">${esc(c.model)}</div>
+                    ${mimeDetailsHtml}
                 </div>`;
         }).join('');
 
@@ -328,6 +388,7 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
                     ${ICON.clock}
                     ${t('panel.currentSession')}
                     ${sourceTag}
+                    <span class="badge status-badge">${esc(usage.status.replace('CASCADE_RUN_STATUS_', ''))}</span>
                 </h2>
                 <div class="stat-grid">
                     <div class="stat">
@@ -339,6 +400,7 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
                         <div class="stat-value title-val">${esc(usage.title || usage.cascadeId.substring(0, 8))}</div>
                     </div>
                 </div>
+                ${buildGitInfoHtml(usage)}
                 <div class="progress-section">
                     <div class="progress-header">
                         <span>${tBi('Context Usage', '上下文使用')}</span>
@@ -373,6 +435,16 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
                 ${compressHtml}
                 ${checkpointHtml}
                 ${deltaHtml}
+                <details class="collapsible" id="d-current-times">
+                    <summary>${tBi('Timestamps', '时间戳')}</summary>
+                    <div class="details-body">
+                        <div class="detail-row"><span>${tBi('Created', '创建')}</span><span>${formatTime(usage.createdTime)}</span></div>
+                        <div class="detail-row"><span>${tBi('Last Modified', '最后修改')}</span><span>${formatTime(usage.lastModifiedTime)}</span></div>
+                        <div class="detail-row"><span>${tBi('Last User Input', '最后用户输入')}</span><span>${formatTime(usage.lastUserInputTime)}</span></div>
+                        <div class="detail-row"><span>${tBi('Last Input Step', '最后输入步骤')}</span><span>#${usage.lastUserInputStepIndex}</span></div>
+                        <div class="detail-row"><span>Cascade ID</span><span class="mono-val">${esc(usage.cascadeId)}</span></div>
+                    </div>
+                </details>
             </section>`);
     } else {
         sections.push(`
@@ -385,28 +457,112 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
             </section>`);
     }
 
-    // ━━━ Other Sessions ━━━
+    // ━━━ Other Sessions (Full Transparency) ━━━
     const others = allUsages.filter(u => u.cascadeId !== usage?.cascadeId);
     if (others.length > 0) {
-        const rows = others.slice(0, 10).map(u => {
+        const rows = others.slice(0, 10).map((u, idx) => {
             const pct = Math.min(u.usagePercent, 100);
             const barColor = pct >= 80 ? 'var(--color-danger)' : pct >= 50 ? 'var(--color-warn)' : 'var(--color-ok)';
             const compTag = u.compressionDetected ? '<span class="badge danger-badge">COMP</span>' : '';
+            const statusTag = `<span class="badge status-badge">${esc(u.status.replace('CASCADE_RUN_STATUS_', ''))}</span>`;
+            const remaining = Math.max(0, u.contextLimit - u.contextUsed);
+            const sourceTag = u.isEstimated
+                ? `<span class="badge warn-badge">${tBi('EST', '估')}</span>`
+                : `<span class="badge ok-badge">${tBi('✓', '精')}</span>`;
+
             return `
-                <div class="session-row">
-                    <div class="session-title">${esc(u.title || u.cascadeId.substring(0, 8))} ${compTag}</div>
-                    <div class="session-model">${esc(u.modelDisplayName)}</div>
-                    <div class="session-bar-wrap">
-                        <div class="session-bar" style="width:${pct}%;background:${barColor}"></div>
+                <details class="collapsible session-detail" id="d-session-${idx}">
+                    <summary>
+                        <div class="session-summary-row">
+                            <span class="session-title-text">${esc(u.title || u.cascadeId.substring(0, 8))}</span>
+                            ${compTag} ${statusTag} ${sourceTag}
+                            <span class="session-pct-inline">${u.usagePercent.toFixed(1)}%</span>
+                        </div>
+                        <div class="session-bar-wrap compact">
+                            <div class="session-bar" style="width:${pct}%;background:${barColor}"></div>
+                        </div>
+                    </summary>
+                    <div class="details-body">
+                        <div class="stat-grid four-col">
+                            <div class="stat mini">
+                                <div class="stat-label">${tBi('Used', '已用')}</div>
+                                <div class="stat-value">${formatTokenCount(u.contextUsed)}</div>
+                            </div>
+                            <div class="stat mini">
+                                <div class="stat-label">${tBi('Limit', '限制')}</div>
+                                <div class="stat-value">${formatContextLimit(u.contextLimit)}</div>
+                            </div>
+                            <div class="stat mini">
+                                <div class="stat-label">${tBi('Remaining', '剩余')}</div>
+                                <div class="stat-value">${formatTokenCount(remaining)}</div>
+                            </div>
+                            <div class="stat mini">
+                                <div class="stat-label">${t('tooltip.steps')}</div>
+                                <div class="stat-value">${u.stepCount}</div>
+                            </div>
+                        </div>
+                        <div class="stat-grid four-col">
+                            <div class="stat mini">
+                                <div class="stat-label">${t('tooltip.model')}</div>
+                                <div class="stat-value" style="font-size:0.85em">${esc(u.modelDisplayName)}</div>
+                            </div>
+                            <div class="stat mini">
+                                <div class="stat-label">${t('tooltip.modelOutput')}</div>
+                                <div class="stat-value">${formatTokenCount(u.totalOutputTokens)}</div>
+                            </div>
+                            <div class="stat mini">
+                                <div class="stat-label">${t('tooltip.toolResults')}</div>
+                                <div class="stat-value">${formatTokenCount(u.totalToolCallOutputTokens)}</div>
+                            </div>
+                            <div class="stat mini">
+                                <div class="stat-label">${t('tooltip.imageGen')}</div>
+                                <div class="stat-value">${u.imageGenStepCount}</div>
+                            </div>
+                        </div>
+                        ${buildGitInfoHtml(u)}
+                        ${u.lastModelUsage ? `
+                        <div class="checkpoint-section">
+                            <div class="section-subtitle">${t('tooltip.lastCheckpoint')}</div>
+                            <div class="stat-grid three-col">
+                                <div class="stat mini"><div class="stat-label">${t('tooltip.input')}</div><div class="stat-value">${u.lastModelUsage.inputTokens.toLocaleString()}</div></div>
+                                <div class="stat mini"><div class="stat-label">${t('tooltip.output')}</div><div class="stat-value">${u.lastModelUsage.outputTokens.toLocaleString()}</div></div>
+                                <div class="stat mini"><div class="stat-label">${t('tooltip.cache')}</div><div class="stat-value">${u.lastModelUsage.cacheReadTokens.toLocaleString()}</div></div>
+                            </div>
+                        </div>` : ''}
+                        <div class="detail-row"><span>${tBi('Created', '创建')}</span><span>${formatTime(u.createdTime)}</span></div>
+                        <div class="detail-row"><span>${tBi('Last Modified', '最后修改')}</span><span>${formatTime(u.lastModifiedTime)}</span></div>
+                        <div class="detail-row"><span>${tBi('Last User Input', '最后用户输入')}</span><span>${formatTime(u.lastUserInputTime)}</span></div>
+                        <div class="detail-row"><span>Cascade ID</span><span class="mono-val">${esc(u.cascadeId)}</span></div>
                     </div>
-                    <div class="session-pct">${u.usagePercent.toFixed(1)}% | ${formatTokenCount(u.contextUsed)}/${formatContextLimit(u.contextLimit)}</div>
-                </div>`;
+                </details>`;
         }).join('');
 
         sections.push(`
             <section class="card">
-                <h2>${ICON.chat} ${t('panel.otherSessions')}</h2>
+                <h2>${ICON.chat} ${t('panel.otherSessions')} (${others.length})</h2>
                 ${rows}
+            </section>`);
+    }
+
+    // ━━━ Raw Data (Full Transparency) ━━━
+    if (userInfo?._rawResponse) {
+        const rawJson = JSON.stringify(userInfo._rawResponse, null, 2);
+        // Truncate if absurdly large (> 200KB) to avoid freezing the webview
+        const truncated = rawJson.length > 200_000;
+        const displayJson = truncated ? rawJson.substring(0, 200_000) + '\n\n... (truncated)' : rawJson;
+        sections.push(`
+            <section class="card">
+                <h2>${ICON.shield} ${tBi('Raw LS Data', 'LS 原始数据')}</h2>
+                <p class="raw-desc">${tBi(
+                    'Full GetUserStatus response from LS — if schema changes, new fields appear here first.',
+                    'LS GetUserStatus 完整响应 — 如果 schema 变更，新字段会最先出现在这里。',
+                )}</p>
+                <details class="collapsible" id="d-raw-data">
+                    <summary>${tBi('Show JSON', '展示 JSON')} (${(rawJson.length / 1024).toFixed(1)} KB)</summary>
+                    <div class="details-body">
+                        <pre class="raw-json"><code>${esc(displayJson)}</code></pre>
+                    </div>
+                </details>
             </section>`);
     }
 
@@ -417,6 +573,113 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
                 <h2>${t('panel.noData')}</h2>
             </section>`);
     }
+
+    // ━━━ Settings Page Content ━━━
+    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    const currentThreshold = cfg.get<number>('compressionWarningThreshold', 200_000);
+    const pollingInterval = cfg.get<number>('pollingInterval', 5);
+    const contextLimits = cfg.get<Record<string, number>>('contextLimits', {});
+    const showContext = cfg.get<boolean>('statusBar.showContext', true);
+    const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
+    const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
+
+    // Build model context limits rows from configs
+    const modelLimitRows = configs.map(c => {
+        const customLimit = contextLimits[c.model];
+        const limit = customLimit ?? 1_000_000;
+        return `
+            <div class="setting-model-row">
+                <span class="setting-model-label">${esc(c.label)}</span>
+                <input type="number" class="threshold-input model-limit-input"
+                       data-model="${esc(c.model)}" value="${limit}"
+                       min="1000" step="100000" />
+            </div>`;
+    }).join('');
+
+    const settingsHtml = `
+        <section class="card">
+            <h2>${ICON.shield} ${tBi('Compression Warning', '压缩警告')}</h2>
+            <div class="setting-row">
+                <label for="thresholdInput">${tBi(
+                    'Warning threshold (tokens)',
+                    '警告阈值（token 数）',
+                )}</label>
+                <p class="raw-desc">${tBi(
+                    'Status bar turns yellow/red based on this value. Default 200K matches Antigravity\'s internal compression point.',
+                    '状态栏颜色基于此值判断。默认 200K 匹配 Antigravity 内建压缩线。',
+                )}</p>
+                <div class="threshold-input-row">
+                    <input type="number" id="thresholdInput" class="threshold-input"
+                           value="${currentThreshold}" min="10000" step="10000" />
+                    <button class="action-btn" id="thresholdSaveBtn">${tBi('Save', '保存')}</button>
+                    <span id="thresholdFeedback" class="threshold-feedback"></span>
+                </div>
+                <div class="threshold-presets">
+                    <button class="preset-btn" data-val="150000">150K</button>
+                    <button class="preset-btn" data-val="200000">200K</button>
+                    <button class="preset-btn" data-val="500000">500K</button>
+                    <button class="preset-btn" data-val="900000">900K</button>
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2>${ICON.clock} ${tBi('Polling', '轮询')}</h2>
+            <div class="setting-row">
+                <label for="pollingInput">${tBi(
+                    'Polling interval (seconds)',
+                    '轮询间隔（秒）',
+                )}</label>
+                <div class="threshold-input-row">
+                    <input type="number" id="pollingInput" class="threshold-input"
+                           value="${pollingInterval}" min="1" max="60" step="1" />
+                    <button class="action-btn" id="pollingSaveBtn">${tBi('Save', '保存')}</button>
+                    <span id="pollingFeedback" class="threshold-feedback"></span>
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2>${ICON.chart} ${tBi('Status Bar Display', '状态栏显示')}</h2>
+            <p class="raw-desc">${tBi(
+                'Toggle which elements appear in the status bar.',
+                '控制状态栏显示哪些元素。',
+            )}</p>
+            <div class="toggle-group">
+                <label class="toggle-row">
+                    <input type="checkbox" id="toggleContext" class="toggle-cb" ${showContext ? 'checked' : ''} />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>${tBi('Context usage', '上下文用量')} <code>45k/1M, 4.5%</code></span>
+                </label>
+                <label class="toggle-row">
+                    <input type="checkbox" id="toggleQuota" class="toggle-cb" ${showQuota ? 'checked' : ''} />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>${tBi('Quota indicator', '额度指示灯')} <code>🟢85%</code></span>
+                </label>
+                <label class="toggle-row">
+                    <input type="checkbox" id="toggleCountdown" class="toggle-cb" ${showResetCountdown ? 'checked' : ''} />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>${tBi('Reset countdown', '重置倒计时')} <code>⏳4h32m</code></span>
+                </label>
+            </div>
+        </section>
+
+        ${modelLimitRows ? `
+        <section class="card">
+            <h2>${ICON.shield} ${tBi('Model Context Limits', '模型上下文限制')}</h2>
+            <p class="raw-desc">${tBi(
+                'Override context window size (tokens) per model.',
+                '按模型覆盖上下文窗口大小（token 数）。',
+            )}</p>
+            <div class="setting-model-grid">
+                ${modelLimitRows}
+            </div>
+            <div class="threshold-input-row" style="margin-top: var(--space-2);">
+                <button class="action-btn" id="modelLimitsSaveBtn">${tBi('Save All', '全部保存')}</button>
+                <span id="modelLimitsFeedback" class="threshold-feedback"></span>
+            </div>
+        </section>` : ''}
+    `;
 
     const currentLang = getLanguage();
     return `<!DOCTYPE html>
@@ -440,17 +703,99 @@ ${getStyles()}
                 <button class="lang-btn${currentLang === 'en' ? ' active' : ''}" data-lang="en">EN</button>
                 <button class="lang-btn${currentLang === 'both' ? ' active' : ''}" data-lang="both">${tBi('Both', '双语')}</button>
             </div>
+            <button class="action-btn${paused ? ' paused' : ''}" id="pauseBtn" data-tooltip="${tBi(paused ? 'Resume auto-refresh' : 'Pause auto-refresh', paused ? '恢复自动刷新' : '暂停自动刷新')}">
+                <svg viewBox="0 0 16 16" width="14" height="14">${paused
+                    ? '<path fill="currentColor" d="M11.596 8.697l-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393"/>'
+                    : '<path fill="currentColor" d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5m5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5"/>'
+                }</svg>
+            </button>
             <button class="action-btn" id="refreshBtn" data-tooltip="${tBi('Refresh', '刷新')}">
                 ${ICON.refresh}
             </button>
-            <span class="update-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+            <span class="update-time">${paused ? `<span class="paused-indicator">${tBi('PAUSED', '已暂停')}</span>` : ''} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
         </div>
     </header>
-    ${sections.join('')}
+    <nav class="tab-bar">
+        <button class="tab-btn active" data-tab="monitor">${ICON.chart} ${tBi('Monitor', '监控')}</button>
+        <button class="tab-btn" data-tab="settings">${ICON.shield} ${tBi('Settings', '设置')}</button>
+    </nav>
+    <div class="tab-pane active" id="tab-monitor">
+        ${sections.join('')}
+    </div>
+    <div class="tab-pane" id="tab-settings">
+        ${settingsHtml}
+    </div>
     <script>
         (function() {
             var vscode = acquireVsCodeApi();
             var savedState = vscode.getState() || {};
+
+            // ─── Tab System ───
+            var activeTab = savedState.activeTab || 'monitor';
+            var tabBtns = document.querySelectorAll('.tab-btn');
+            var tabPanes = document.querySelectorAll('.tab-pane');
+            function switchTab(tabName) {
+                activeTab = tabName;
+                for (var i = 0; i < tabBtns.length; i++) {
+                    tabBtns[i].classList.toggle('active', tabBtns[i].dataset.tab === tabName);
+                }
+                for (var j = 0; j < tabPanes.length; j++) {
+                    tabPanes[j].classList.toggle('active', tabPanes[j].id === 'tab-' + tabName);
+                }
+                var s = vscode.getState() || {};
+                s.activeTab = tabName;
+                vscode.setState(s);
+            }
+            // Restore active tab from state
+            if (activeTab !== 'monitor') { switchTab(activeTab); }
+            for (var ti = 0; ti < tabBtns.length; ti++) {
+                tabBtns[ti].addEventListener('click', function() {
+                    switchTab(this.dataset.tab);
+                });
+            }
+
+            // ─── Settings: Polling Interval ───
+            var pollingInput = document.getElementById('pollingInput');
+            var pollingSaveBtn = document.getElementById('pollingSaveBtn');
+            if (pollingSaveBtn && pollingInput) {
+                pollingSaveBtn.addEventListener('click', function() {
+                    var val = parseInt(pollingInput.value, 10);
+                    if (val >= 1 && val <= 60) {
+                        vscode.postMessage({ command: 'setPollingInterval', value: val });
+                    }
+                });
+            }
+
+            // ─── Settings: Status Bar Toggles ───
+            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown'];
+            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown'];
+            for (var tgi = 0; tgi < toggleIds.length; tgi++) {
+                (function(idx) {
+                    var cb = document.getElementById(toggleIds[idx]);
+                    if (cb) {
+                        cb.addEventListener('change', function() {
+                            vscode.postMessage({ command: 'setConfig', key: toggleKeys[idx], value: this.checked });
+                        });
+                    }
+                })(tgi);
+            }
+
+            // ─── Settings: Model Limits Save ───
+            var modelLimitsSaveBtn = document.getElementById('modelLimitsSaveBtn');
+            if (modelLimitsSaveBtn) {
+                modelLimitsSaveBtn.addEventListener('click', function() {
+                    var inputs = document.querySelectorAll('.model-limit-input');
+                    var limits = {};
+                    for (var mi = 0; mi < inputs.length; mi++) {
+                        var model = inputs[mi].dataset.model;
+                        var val = parseInt(inputs[mi].value, 10);
+                        if (model && val >= 1000) { limits[model] = val; }
+                    }
+                    vscode.postMessage({ command: 'setConfig', key: 'contextLimits', value: limits });
+                    var fb = document.getElementById('modelLimitsFeedback');
+                    if (fb) { fb.textContent = '✓'; fb.style.opacity = '1'; setTimeout(function(){ fb.style.opacity = '0'; }, 2000); }
+                });
+            }
 
             // ─── Language Switcher ───
             var switcher = document.querySelector('.lang-switcher');
@@ -463,12 +808,71 @@ ${getStyles()}
                 });
             }
 
+            // ─── Pause Button ───
+            var pauseBtn = document.getElementById('pauseBtn');
+            if (pauseBtn) {
+                pauseBtn.addEventListener('click', function() {
+                    vscode.postMessage({ command: 'togglePause' });
+                });
+            }
+
             // ─── Refresh Button ───
             var refreshBtn = document.getElementById('refreshBtn');
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', function() {
                     this.classList.add('spinning');
                     vscode.postMessage({ command: 'refresh' });
+                });
+            }
+
+            // ─── Listen for setPaused message from extension ───
+            window.addEventListener('message', function(event) {
+                var msg = event.data;
+                if (msg.command === 'setPaused' && pauseBtn) {
+                    pauseBtn.classList.toggle('paused', msg.paused);
+                }
+                if (msg.command === 'thresholdSaved') {
+                    var fb = document.getElementById('thresholdFeedback');
+                    if (fb) {
+                        fb.textContent = '✓';
+                        fb.style.opacity = '1';
+                        setTimeout(function() { fb.style.opacity = '0'; }, 2000);
+                    }
+                }
+                if (msg.command === 'configSaved') {
+                    var feedbackMap = {
+                        'pollingInterval': 'pollingFeedback',
+                        'contextLimits': 'modelLimitsFeedback',
+                    };
+                    var fbId = feedbackMap[msg.key];
+                    if (fbId) {
+                        var cfb = document.getElementById(fbId);
+                        if (cfb) {
+                            cfb.textContent = '✓';
+                            cfb.style.opacity = '1';
+                            setTimeout(function() { cfb.style.opacity = '0'; }, 2000);
+                        }
+                    }
+                }
+            });
+
+            // ─── Threshold Settings ───
+            var thresholdInput = document.getElementById('thresholdInput');
+            var thresholdSaveBtn = document.getElementById('thresholdSaveBtn');
+            if (thresholdSaveBtn && thresholdInput) {
+                thresholdSaveBtn.addEventListener('click', function() {
+                    var val = parseInt(thresholdInput.value, 10);
+                    if (val >= 10000) {
+                        vscode.postMessage({ command: 'setThreshold', value: val });
+                    }
+                });
+            }
+            var presets = document.querySelectorAll('.preset-btn');
+            for (var p = 0; p < presets.length; p++) {
+                presets[p].addEventListener('click', function() {
+                    var val = parseInt(this.dataset.val, 10);
+                    if (thresholdInput) { thresholdInput.value = val; }
+                    vscode.postMessage({ command: 'setThreshold', value: val });
                 });
             }
 
@@ -523,6 +927,34 @@ ${getStyles()}
 </html>`;
 }
 
+// ─── Helper: Format ISO timestamp ────────────────────────────────────────────
+
+function formatTime(iso: string): string {
+    if (!iso) { return '—'; }
+    try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) { return esc(iso); }
+        return d.toLocaleString([], {
+            month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+        });
+    } catch { return esc(iso); }
+}
+
+// ─── Helper: Build Git info HTML block ───────────────────────────────────────
+
+function buildGitInfoHtml(u: ContextUsage): string {
+    if (!u.repositoryName && !u.branchName) { return ''; }
+    const parts: string[] = [];
+    if (u.repositoryName) {
+        parts.push(`<span class="git-repo">${ICON.git} ${esc(u.repositoryName)}</span>`);
+    }
+    if (u.branchName) {
+        parts.push(`<span class="git-branch">${ICON.branch} ${esc(u.branchName)}</span>`);
+    }
+    return `<div class="git-info">${parts.join('')}</div>`;
+}
+
 // ─── Escape HTML ──────────────────────────────────────────────────────────────
 
 function esc(text: string): string {
@@ -533,650 +965,5 @@ function esc(text: string): string {
         .replace(/"/g, '&quot;');
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+import { getStyles } from './webview-styles';
 
-function getStyles(): string {
-    return `
-        :root {
-            --color-ok: #4ade80;
-            --color-warn: #facc15;
-            --color-danger: #f87171;
-            --color-info: #60a5fa;
-            --color-surface: rgba(255,255,255,0.04);
-            --color-border: rgba(255,255,255,0.08);
-            --color-text: var(--vscode-foreground, #ccc);
-            --color-text-dim: var(--vscode-descriptionForeground, #888);
-            --color-bg: var(--vscode-editor-background, #1e1e1e);
-
-            --radius-sm: 4px;
-            --radius-md: 8px;
-            --radius-lg: 12px;
-
-            --space-1: 4px;
-            --space-2: 8px;
-            --space-3: 12px;
-            --space-4: 16px;
-            --space-6: 24px;
-
-            --z-dropdown: 100;
-            --z-sticky: 200;
-            --z-overlay: 300;
-            --z-modal: 400;
-            --z-toast: 500;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        ::selection {
-            background: var(--color-info);
-            color: #fff;
-        }
-
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb {
-            background: rgba(255,255,255,0.15);
-            border-radius: var(--radius-sm);
-        }
-
-        body {
-            font-family: var(--vscode-font-family, -apple-system, 'Segoe UI', sans-serif);
-            font-size: var(--vscode-font-size, 13px);
-            color: var(--color-text);
-            background: var(--color-bg);
-            padding: var(--space-4);
-            line-height: 1.5;
-            -webkit-tap-highlight-color: transparent;
-        }
-
-        /* ─── Header ────────────────── */
-        .panel-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: var(--space-4);
-            padding-bottom: var(--space-3);
-            border-bottom: 1px solid var(--color-border);
-        }
-
-        .panel-header h1 {
-            font-size: 1.1em;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-        }
-
-        .header-actions {
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-        }
-
-        .update-time {
-            color: var(--color-text-dim);
-            font-size: 0.85em;
-        }
-
-        /* ─── Language Switcher ──────── */
-        .lang-switcher {
-            display: flex;
-            border: 1px solid var(--color-border);
-            border-radius: var(--radius-md);
-            overflow: hidden;
-        }
-
-        .lang-btn {
-            appearance: none;
-            background: transparent;
-            color: var(--color-text-dim);
-            border: none;
-            padding: var(--space-1) var(--space-2);
-            font-size: 0.75em;
-            font-family: inherit;
-            cursor: pointer;
-            transition: background 0.15s cubic-bezier(.4,0,.2,1), color 0.15s cubic-bezier(.4,0,.2,1);
-            border-right: 1px solid var(--color-border);
-        }
-
-        .lang-btn:last-child { border-right: none; }
-
-        .lang-btn.active {
-            background: var(--color-info);
-            color: #fff;
-        }
-
-        .lang-btn:focus-visible {
-            box-shadow: 0 0 0 2px var(--color-info);
-            outline: none;
-        }
-
-        .lang-btn:active { transform: scale(0.98); }
-
-        @media (hover: hover) {
-            .lang-btn:not(.active):hover {
-                background: rgba(255,255,255,0.08);
-                color: var(--color-text);
-            }
-        }
-
-        /* ─── Action Button ─────────── */
-        .action-btn {
-            appearance: none;
-            background: transparent;
-            color: var(--color-text-dim);
-            border: 1px solid var(--color-border);
-            border-radius: var(--radius-md);
-            padding: var(--space-1);
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: background 0.15s cubic-bezier(.4,0,.2,1), color 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
-        }
-
-        .action-btn:focus-visible {
-            box-shadow: 0 0 0 2px var(--color-info);
-            outline: none;
-        }
-
-        .action-btn:active { transform: scale(0.98); }
-
-        @media (hover: hover) {
-            .action-btn:hover {
-                background: rgba(255,255,255,0.08);
-                color: var(--color-text);
-                border-color: rgba(255,255,255,0.15);
-            }
-        }
-
-        @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-        }
-
-        .action-btn.spinning svg {
-            animation: spin 0.6s linear;
-        }
-
-        /* ─── Icons ─────────────────── */
-        .icon {
-            width: 14px;
-            height: 14px;
-            flex-shrink: 0;
-        }
-
-        /* ─── Card ──────────────────── */
-        .card {
-            background: var(--color-surface);
-            border: 1px solid var(--color-border);
-            border-radius: var(--radius-lg);
-            padding: var(--space-4);
-            margin-bottom: var(--space-3);
-            transition: border-color 0.2s cubic-bezier(.4,0,.2,1);
-        }
-
-        @media (hover: hover) {
-            .card:hover {
-                border-color: rgba(255,255,255,0.15);
-            }
-        }
-
-        .card h2 {
-            font-size: 0.9em;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--color-text-dim);
-            margin-bottom: var(--space-3);
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-        }
-
-        .card.empty {
-            text-align: center;
-            padding: var(--space-6);
-            color: var(--color-text-dim);
-        }
-
-        .empty-desc {
-            font-size: 0.85em;
-            color: var(--color-text-dim);
-            margin-top: var(--space-2);
-            opacity: 0.7;
-        }
-
-        /* ─── Badges ─────────────────── */
-        .badge {
-            font-size: 0.7em;
-            padding: 1px 6px;
-            border-radius: var(--radius-sm);
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-            font-weight: 700;
-        }
-
-        .warn-badge {
-            background: rgba(250, 204, 21, 0.15);
-            color: var(--color-warn);
-        }
-
-        .ok-badge {
-            background: rgba(74, 222, 128, 0.15);
-            color: var(--color-ok);
-        }
-
-        .danger-badge {
-            background: rgba(248, 113, 113, 0.15);
-            color: var(--color-danger);
-            font-size: 0.65em;
-        }
-
-        /* ─── Stat Grid ──────────────── */
-        .stat-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: var(--space-2);
-            margin-bottom: var(--space-3);
-        }
-
-        .stat-grid.three-col { grid-template-columns: 1fr 1fr 1fr; }
-        .stat-grid.four-col { grid-template-columns: 1fr 1fr 1fr 1fr; }
-
-        .stat {
-            background: rgba(255,255,255,0.02);
-            border-radius: var(--radius-md);
-            padding: var(--space-2) var(--space-3);
-        }
-
-        .stat.mini { padding: var(--space-1) var(--space-2); }
-
-        .stat-label {
-            font-size: 0.75em;
-            color: var(--color-text-dim);
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-        }
-
-        .stat-value {
-            font-weight: 600;
-            font-size: 0.95em;
-            word-break: break-all;
-        }
-
-        .stat-value.title-val {
-            font-size: 0.85em;
-            font-weight: 400;
-        }
-
-        /* ─── Progress Bar ────────────── */
-        .progress-section { margin-bottom: var(--space-3); }
-
-        .progress-header {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.85em;
-            margin-bottom: var(--space-1);
-        }
-
-        .progress-pct { font-weight: 700; }
-
-        .progress-bar-wrap {
-            height: 8px;
-            background: rgba(255,255,255,0.06);
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-        }
-
-        .progress-bar {
-            height: 100%;
-            border-radius: var(--radius-sm);
-            transition: width 0.4s cubic-bezier(.4,0,.2,1);
-        }
-
-        .progress-detail {
-            font-size: 0.8em;
-            margin-top: var(--space-1);
-            color: var(--color-text-dim);
-        }
-
-        .dim { opacity: 0.6; }
-
-        /* ─── Compression Alert ────────── */
-        .compression-alert {
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-            background: rgba(248, 113, 113, 0.1);
-            border: 1px solid rgba(248, 113, 113, 0.2);
-            border-radius: var(--radius-md);
-            padding: var(--space-2) var(--space-3);
-            margin-bottom: var(--space-3);
-            font-size: 0.85em;
-            color: var(--color-danger);
-        }
-
-        /* ─── Checkpoint Section ────────── */
-        .checkpoint-section {
-            border-top: 1px solid var(--color-border);
-            padding-top: var(--space-3);
-            margin-top: var(--space-2);
-        }
-
-        .section-subtitle {
-            font-size: 0.75em;
-            color: var(--color-text-dim);
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-            margin-bottom: var(--space-2);
-        }
-
-        .delta-hint {
-            font-size: 0.8em;
-            color: var(--color-text-dim);
-            margin-top: var(--space-1);
-            font-style: italic;
-        }
-
-        /* ─── Session Rows ─────────────── */
-        .session-row {
-            display: grid;
-            grid-template-columns: 1fr auto;
-            gap: var(--space-1) var(--space-2);
-            padding: var(--space-2) 0;
-            border-bottom: 1px solid var(--color-border);
-        }
-
-        .session-row:last-child { border-bottom: none; }
-
-        .session-title {
-            font-weight: 500;
-            font-size: 0.9em;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            display: flex;
-            align-items: center;
-            gap: var(--space-1);
-        }
-
-        .session-model {
-            font-size: 0.8em;
-            color: var(--color-text-dim);
-            text-align: right;
-        }
-
-        .session-bar-wrap {
-            grid-column: 1 / -1;
-            height: 4px;
-            background: rgba(255,255,255,0.06);
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-        }
-
-        .session-bar {
-            height: 100%;
-            border-radius: var(--radius-sm);
-            transition: width 0.3s cubic-bezier(.4,0,.2,1);
-        }
-
-        .session-pct {
-            grid-column: 1 / -1;
-            font-size: 0.75em;
-            color: var(--color-text-dim);
-        }
-
-        /* ─── Quota Rows ───────────────── */
-        .quota-row {
-            margin-bottom: var(--space-2);
-        }
-
-        .quota-row:last-child { margin-bottom: 0; }
-
-        .quota-label {
-            font-size: 0.85em;
-            font-weight: 500;
-            margin-bottom: var(--space-1);
-            display: flex;
-            align-items: center;
-            gap: var(--space-1);
-        }
-
-        .quota-bar-wrap {
-            height: 6px;
-            background: rgba(255,255,255,0.06);
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-            margin-bottom: 2px;
-        }
-
-        .quota-bar {
-            height: 100%;
-            border-radius: var(--radius-sm);
-            transition: width 0.3s cubic-bezier(.4,0,.2,1);
-        }
-
-        .quota-meta {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.75em;
-            color: var(--color-text-dim);
-        }
-
-        .quota-pct { font-weight: 600; }
-        .quota-reset { opacity: 0.7; }
-
-        .info-badge {
-            background: rgba(96, 165, 250, 0.15);
-            color: var(--color-info);
-        }
-
-        .mime-count {
-            font-size: 0.7em;
-            color: var(--color-text-dim);
-            opacity: 0.6;
-        }
-
-        /* ─── Account Card ─────────────── */
-        .tier-badge {
-            font-size: 0.65em;
-            padding: 2px 8px;
-            border-radius: var(--radius-sm);
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .tier-sub { font-weight: 500; }
-
-        /* ─── Privacy Button ──────────── */
-        .privacy-btn {
-            appearance: none;
-            background: none;
-            border: 1px solid var(--color-border);
-            border-radius: var(--radius-sm);
-            color: var(--color-text-dim);
-            cursor: pointer;
-            padding: 2px 4px;
-            margin-left: auto;
-            line-height: 1;
-            transition: color 0.2s cubic-bezier(.4,0,.2,1), border-color 0.2s cubic-bezier(.4,0,.2,1);
-        }
-
-        .privacy-btn:focus-visible {
-            box-shadow: 0 0 0 2px var(--color-info);
-        }
-
-        .privacy-btn:active { transform: scale(0.98); }
-
-        @media (hover: hover) {
-            .privacy-btn:hover {
-                color: var(--color-warn);
-                border-color: var(--color-warn);
-            }
-        }
-
-        .privacy-btn.active {
-            color: var(--color-ok);
-            border-color: var(--color-ok);
-        }
-
-        /* ─── Default Model ───────────── */
-        .default-model {
-            font-size: 0.8em;
-            color: var(--color-text-dim);
-            margin-bottom: var(--space-3);
-        }
-
-        .default-model strong {
-            color: var(--color-text);
-        }
-
-        /* ─── Collapsible Sections ────── */
-        .collapsible {
-            border-top: 1px solid var(--color-border);
-            margin-top: var(--space-2);
-        }
-
-        .collapsible summary {
-            cursor: pointer;
-            font-size: 0.8em;
-            font-weight: 600;
-            padding: var(--space-2) 0;
-            color: var(--color-text-dim);
-            list-style: none;
-            display: flex;
-            align-items: center;
-            gap: var(--space-1);
-            user-select: none;
-        }
-
-        .collapsible summary::-webkit-details-marker { display: none; }
-
-        .collapsible summary::before {
-            content: '▸';
-            display: inline-block;
-            transition: transform 0.2s cubic-bezier(.4,0,.2,1);
-        }
-
-        .collapsible[open] summary::before {
-            transform: rotate(90deg);
-        }
-
-        .collapsible summary:focus-visible {
-            box-shadow: 0 0 0 2px var(--color-info);
-            border-radius: var(--radius-sm);
-        }
-
-        .details-body {
-            padding-bottom: var(--space-2);
-        }
-
-        /* ─── Detail Row ─────────────── */
-        .detail-row {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.8em;
-            padding: 2px 0;
-            color: var(--color-text-dim);
-        }
-
-        .detail-row span:last-child {
-            font-weight: 600;
-            color: var(--color-text);
-        }
-
-        .account-info {
-            display: flex;
-            align-items: baseline;
-            gap: var(--space-2);
-            margin-bottom: var(--space-3);
-        }
-
-        .account-name {
-            font-weight: 600;
-            font-size: 1em;
-        }
-
-        .account-email {
-            font-size: 0.8em;
-            color: var(--color-text-dim);
-        }
-
-        /* ─── Credits Section ──────────── */
-        .credits-section {
-            display: grid;
-            gap: var(--space-2);
-            margin-bottom: var(--space-3);
-        }
-
-        .credit-row {}
-
-        .credit-header {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.8em;
-            margin-bottom: 2px;
-        }
-
-        .credit-bar-wrap {
-            height: 6px;
-            background: rgba(255,255,255,0.06);
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-        }
-
-        .credit-bar {
-            height: 100%;
-            border-radius: var(--radius-sm);
-            transition: width 0.3s cubic-bezier(.4,0,.2,1);
-        }
-
-        /* ─── Feature Tags ───────────── */
-        .feature-tags {
-            display: flex;
-            flex-wrap: wrap;
-            gap: var(--space-1);
-        }
-
-        .feature-tag {
-            font-size: 0.7em;
-            padding: 2px 6px;
-            border-radius: var(--radius-sm);
-            background: rgba(255,255,255,0.04);
-            color: var(--color-text-dim);
-            border: 1px solid var(--color-border);
-            opacity: 0.5;
-            text-decoration: line-through;
-        }
-
-        .feature-tag.enabled {
-            opacity: 1;
-            text-decoration: none;
-            background: rgba(74, 222, 128, 0.08);
-            border-color: rgba(74, 222, 128, 0.2);
-            color: var(--color-ok);
-        }
-
-        /* ─── Reduced Motion ─────────── */
-        @media (prefers-reduced-motion: reduce) {
-            .progress-bar,
-            .session-bar,
-            .quota-bar,
-            .credit-bar,
-            .lang-btn,
-            .action-btn,
-            .card {
-                transition: none;
-            }
-            .action-btn.spinning svg {
-                animation: none;
-            }
-        }
-    `;
-}

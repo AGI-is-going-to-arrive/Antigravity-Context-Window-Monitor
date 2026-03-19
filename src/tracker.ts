@@ -45,6 +45,18 @@ export interface TrajectorySummary {
     requestedModel: string;
     generatorModel: string;
     workspaceUris: string[];
+    /** Last user input timestamp */
+    lastUserInputTime: string;
+    /** Step index of last user input */
+    lastUserInputStepIndex: number;
+    /** Git repository computed name (e.g. "user/repo") */
+    repositoryName: string;
+    /** Git remote origin URL */
+    gitOriginUrl: string;
+    /** Current git branch name */
+    branchName: string;
+    /** Git root absolute URI */
+    gitRootUri: string;
 }
 
 export interface StepTokenInfo {
@@ -143,6 +155,21 @@ export interface ContextUsage {
     previousContextUsed?: number;
     /** True when step data may be incomplete (batch fetch gaps) */
     hasGaps: boolean;
+    // ─── Extended Transparency Fields ─────────────────────────────────────
+    /** Created time of the trajectory */
+    createdTime: string;
+    /** Last user input timestamp */
+    lastUserInputTime: string;
+    /** Step index of last user input */
+    lastUserInputStepIndex: number;
+    /** Git repository computed name */
+    repositoryName: string;
+    /** Git remote origin URL */
+    gitOriginUrl: string;
+    /** Current git branch name */
+    branchName: string;
+    /** Git root absolute URI */
+    gitRootUri: string;
 }
 
 // ─── Trajectory Queries ───────────────────────────────────────────────────────
@@ -193,6 +220,14 @@ export async function getAllTrajectories(ls: LSInfo, signal?: AbortSignal): Prom
             }
         }
 
+        // Extract Git info from first workspace
+        const firstWs = workspaces?.[0] as Record<string, unknown> | undefined;
+        const repo = firstWs?.repository as Record<string, unknown> | undefined;
+        const repositoryName = (repo?.computedName as string) || '';
+        const gitOriginUrl = (repo?.gitOriginUrl as string) || '';
+        const branchName = (firstWs?.branchName as string) || '';
+        const gitRootUri = (firstWs?.gitRootAbsoluteUri as string) || '';
+
         result.push({
             cascadeId,
             trajectoryId: (data.trajectoryId as string) || '',
@@ -203,7 +238,13 @@ export async function getAllTrajectories(ls: LSInfo, signal?: AbortSignal): Prom
             createdTime: (data.createdTime as string) || '',
             requestedModel: requestedModel || generatorModel,
             generatorModel,
-            workspaceUris
+            workspaceUris,
+            lastUserInputTime: (data.lastUserInputTime as string) || '',
+            lastUserInputStepIndex: (data.lastUserInputStepIndex as number) || 0,
+            repositoryName,
+            gitOriginUrl,
+            branchName,
+            gitRootUri,
         });
     }
 
@@ -532,6 +573,8 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
                 allowedTiers: (c.allowedTiers as string[]) || [],
                 tagTitle: (c.tagTitle as string) || undefined,
                 mimeTypeCount: mimeTypes ? Object.keys(mimeTypes).length : 0,
+                isRecommended: (c.isRecommended as boolean) || false,
+                supportedMimeTypes: mimeTypes ? Object.keys(mimeTypes) : [],
             };
         }).filter(c => c.model && c.label);
 
@@ -596,7 +639,12 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
             canCustomizeAppIcon: (planInfo.canCustomizeAppIcon as boolean) || false,
         } : null;
 
-        return { configs, userInfo };
+        // Attach raw LS response for transparency panel
+        if (userInfo) {
+            userInfo._rawResponse = resp as Record<string, unknown>;
+        }
+
+        return { configs, userInfo, rawResponse: resp as Record<string, unknown> };
     } catch {
         return { configs: [], userInfo: null };
     }
@@ -651,5 +699,13 @@ export async function getContextUsage(
         compressionDetected: result.checkpointCompressionDetected,
         checkpointCompressionDrop: result.checkpointCompressionDrop,
         hasGaps: result.hasGaps,
+        // Extended transparency fields
+        createdTime: trajectory.createdTime,
+        lastUserInputTime: trajectory.lastUserInputTime,
+        lastUserInputStepIndex: trajectory.lastUserInputStepIndex,
+        repositoryName: trajectory.repositoryName,
+        gitOriginUrl: trajectory.gitOriginUrl,
+        branchName: trajectory.branchName,
+        gitRootUri: trajectory.gitRootUri,
     };
 }

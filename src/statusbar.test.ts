@@ -71,6 +71,13 @@ function makeUsage(overrides: Partial<ContextUsage>): ContextUsage {
         compressionDetected: false,
         checkpointCompressionDrop: 0,
         hasGaps: false,
+        createdTime: '',
+        lastUserInputTime: '',
+        lastUserInputStepIndex: 0,
+        repositoryName: '',
+        gitOriginUrl: '',
+        branchName: '',
+        gitRootUri: '',
         ...overrides,
     };
 }

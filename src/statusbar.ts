@@ -114,6 +114,14 @@ export class StatusBarManager {
     private cachedConfigs: ModelConfig[] = [];
     private cachedPlanName: string = '';
     private cachedTierName: string = '';
+    /** User-configurable compression warning threshold (tokens). */
+    private warningThreshold: number = 200_000;
+    /** Timer ID for reset countdown. */
+    private resetCountdownTimer: NodeJS.Timeout | undefined;
+    /** Status bar display preferences. */
+    private displayPrefs = { showContext: true, showQuota: true, showResetCountdown: true };
+    /** Last active model ID for tracking reset countdown. */
+    private lastActiveModel: string = '';
 
     constructor() {
         this.statusBarItem = vscode.window.createStatusBarItem(
@@ -131,6 +139,60 @@ export class StatusBarManager {
      */
     setModelConfigs(configs: ModelConfig[]): void {
         this.cachedConfigs = configs;
+        this.scheduleResetRefresh();
+    }
+
+    /**
+     * Set the compression warning threshold from user settings.
+     */
+    setWarningThreshold(threshold: number): void {
+        this.warningThreshold = Math.max(10_000, threshold);
+    }
+
+    /**
+     * Set status bar display preferences.
+     */
+    setDisplayPrefs(prefs: { showContext?: boolean; showQuota?: boolean; showResetCountdown?: boolean }): void {
+        if (prefs.showContext !== undefined) { this.displayPrefs.showContext = prefs.showContext; }
+        if (prefs.showQuota !== undefined) { this.displayPrefs.showQuota = prefs.showQuota; }
+        if (prefs.showResetCountdown !== undefined) { this.displayPrefs.showResetCountdown = prefs.showResetCountdown; }
+    }
+
+    /**
+     * Get the earliest quota reset time from cached configs.
+     */
+    getEarliestResetTime(): Date | null {
+        let earliest: Date | null = null;
+        const now = Date.now();
+        for (const c of this.cachedConfigs) {
+            if (c.quotaInfo?.resetTime) {
+                const resetDate = new Date(c.quotaInfo.resetTime);
+                if (resetDate.getTime() > now) {
+                    if (!earliest || resetDate < earliest) {
+                        earliest = resetDate;
+                    }
+                }
+            }
+        }
+        return earliest;
+    }
+
+    /**
+     * Schedule an auto-refresh when the earliest quota reset time arrives.
+     */
+    private scheduleResetRefresh(): void {
+        if (this.resetCountdownTimer) {
+            clearTimeout(this.resetCountdownTimer);
+            this.resetCountdownTimer = undefined;
+        }
+        const earliest = this.getEarliestResetTime();
+        if (!earliest) { return; }
+        const delayMs = earliest.getTime() - Date.now() + 3000; // +3s buffer
+        if (delayMs > 0 && delayMs < 24 * 3600_000) {
+            this.resetCountdownTimer = setTimeout(() => {
+                vscode.commands.executeCommand('antigravity-context-monitor.refresh');
+            }, delayMs);
+        }
     }
 
     /**
@@ -191,11 +253,28 @@ export class StatusBarManager {
             : usage.usagePercent.toFixed(1).replace(/\.0$/, '');
         const compressIcon = isCompressing ? ' 🗜' : '';
 
-        const severity = getSeverity(usage.usagePercent);
+        // Warning severity is based on the compression threshold, not the model limit
+        const warningPercent = this.warningThreshold > 0
+            ? (usage.contextUsed / this.warningThreshold) * 100
+            : usage.usagePercent;
+        const severity = getSeverity(warningPercent);
         const icon = getSeverityIcon(severity);
         const gapsIndicator = usage.hasGaps ? ' ⚠️' : '';
 
-        this.statusBarItem.text = `${icon} ${usedStr}/${limitStr}, ${displayPercent}%${compressIcon}${gapsIndicator}`;
+        // Current model quota indicator (🟢85%)
+        const quotaSuffix = this.displayPrefs.showQuota ? this.formatQuotaIndicator(usage.model) : '';
+
+        // Add reset countdown to status bar text (tracks current model)
+        const resetSuffix = this.displayPrefs.showResetCountdown ? this.formatResetCountdown(usage.model) : '';
+
+        // Build status bar text based on display preferences
+        const contextPart = this.displayPrefs.showContext
+            ? `${usedStr}/${limitStr}, ${displayPercent}%${compressIcon}${gapsIndicator}`
+            : '';
+
+        // If nothing is shown, show at least the icon
+        const parts = [contextPart, quotaSuffix.trim(), resetSuffix.trim()].filter(Boolean);
+        this.statusBarItem.text = `${icon} ${parts.join(' ')}`;
         this.statusBarItem.backgroundColor = getSeverityColor(severity);
 
         // Build detailed tooltip
@@ -308,11 +387,13 @@ export class StatusBarManager {
                 const bar = pct >= 60 ? '🟢' : pct >= 40 ? '🟡' : '🔴';
                 let resetStr = '—';
                 if (qi.resetTime) {
-                    const diffMs = new Date(qi.resetTime).getTime() - now;
+                    const resetDate = new Date(qi.resetTime);
+                    const diffMs = resetDate.getTime() - now;
                     if (diffMs > 0) {
                         const h = Math.floor(diffMs / 3600000);
                         const m = Math.floor((diffMs % 3600000) / 60000);
-                        resetStr = `${h}h${m}m`;
+                        const timeStr = resetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        resetStr = `${h}h${m}m (${timeStr})`;
                     }
                 }
                 rows.push(`| ${bar} ${escapeMarkdown(c.label)} | ${pct}% | 🔄 ${resetStr} |`);
@@ -321,7 +402,30 @@ export class StatusBarManager {
             result.push(sep);
             result.push(...rows);
             result.push('');
+
+            // Show earliest reset as a standalone line for quick reading
+            const earliest = this.getEarliestResetTime();
+            if (earliest) {
+                const resetTimeStr = earliest.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                result.push(`🔔 ${tBi('Earliest reset at', '最近重置时间为')}: **${resetTimeStr}**`);
+            }
+
+            // Show current model's reset time if available
+            if (this.lastActiveModel) {
+                const currentConfig = this.cachedConfigs.find(c => c.model === this.lastActiveModel);
+                if (currentConfig?.quotaInfo?.resetTime) {
+                    const resetDate = new Date(currentConfig.quotaInfo.resetTime);
+                    if (resetDate.getTime() > Date.now()) {
+                        const timeStr = resetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        result.push(`⏳ ${tBi('Current model resets at', '当前模型重置于')}: **${timeStr}** (${escapeMarkdown(currentConfig.label)})`);
+                    }
+                }
+            }
         }
+
+        // Show compression warning threshold
+        result.push(`——————————`);
+        result.push(`🎯 ${tBi('Compression warning', '压缩警告')}: **${formatTokenCount(this.warningThreshold)}**`);
 
         return result;
     }
@@ -433,7 +537,52 @@ export class StatusBarManager {
         }
     }
 
+    /**
+     * Format a compact quota indicator for the current model.
+     * Returns e.g. " 🟢85%" or "" if no quota info available.
+     */
+    private formatQuotaIndicator(modelId: string): string {
+        const config = this.cachedConfigs.find(c => c.model === modelId);
+        if (!config?.quotaInfo) { return ''; }
+        const pct = Math.round(config.quotaInfo.remainingFraction * 100);
+        const dot = pct >= 60 ? '🟢' : pct >= 40 ? '🟡' : '🔴';
+        return ` ${dot}${pct}%`;
+    }
+
+    /**
+     * Format a compact reset countdown string for StatusBar text.
+     * Tracks the specified model's reset time (current active model).
+     */
+    private formatResetCountdown(modelId?: string): string {
+        let resetDate: Date | null = null;
+
+        // Try to find the specific model's reset time
+        if (modelId) {
+            this.lastActiveModel = modelId;
+            const config = this.cachedConfigs.find(c => c.model === modelId);
+            if (config?.quotaInfo?.resetTime) {
+                resetDate = new Date(config.quotaInfo.resetTime);
+            }
+        }
+
+        // Fallback to earliest if current model has no reset info
+        if (!resetDate) {
+            resetDate = this.getEarliestResetTime();
+        }
+
+        if (!resetDate) { return ''; }
+        const diffMs = resetDate.getTime() - Date.now();
+        if (diffMs <= 0) { return ''; }
+        const h = Math.floor(diffMs / 3600_000);
+        const m = Math.floor((diffMs % 3600_000) / 60_000);
+        if (h > 0) { return ` ⏳${h}h${m}m`; }
+        return ` ⏳${m}m`;
+    }
+
     dispose(): void {
+        if (this.resetCountdownTimer) {
+            clearTimeout(this.resetCountdownTimer);
+        }
         this.statusBarItem.dispose();
     }
 }
