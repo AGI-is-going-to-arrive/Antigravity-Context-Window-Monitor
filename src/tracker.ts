@@ -639,7 +639,12 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
             canCustomizeAppIcon: (planInfo.canCustomizeAppIcon as boolean) || false,
         } : null;
 
-        return { configs, userInfo };
+        // Attach raw LS response for transparency panel
+        if (userInfo) {
+            userInfo._rawResponse = resp as Record<string, unknown>;
+        }
+
+        return { configs, userInfo, rawResponse: resp as Record<string, unknown> };
     } catch {
         return { configs: [], userInfo: null };
     }

@@ -137,11 +137,15 @@ export interface UserStatusInfo {
     allowPremiumCommandModels: boolean;
     hasTabToJump: boolean;
     canCustomizeAppIcon: boolean;
+    /** Raw LS GetUserStatus response — for diagnostic Raw Data panel */
+    _rawResponse?: Record<string, unknown>;
 }
 
 export interface FullUserStatus {
     configs: ModelConfig[];
     userInfo: UserStatusInfo | null;
+    /** Raw LS response for diagnostic / transparency display */
+    rawResponse?: Record<string, unknown>;
 }
 
 /**
