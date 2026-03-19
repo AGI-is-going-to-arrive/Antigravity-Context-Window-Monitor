@@ -120,6 +120,8 @@ export class StatusBarManager {
     private resetCountdownTimer: NodeJS.Timeout | undefined;
     /** Status bar display preferences. */
     private displayPrefs = { showContext: true, showQuota: true, showResetCountdown: true };
+    /** Last active model ID for tracking reset countdown. */
+    private lastActiveModel: string = '';
 
     constructor() {
         this.statusBarItem = vscode.window.createStatusBarItem(
@@ -262,8 +264,8 @@ export class StatusBarManager {
         // Current model quota indicator (🟢85%)
         const quotaSuffix = this.displayPrefs.showQuota ? this.formatQuotaIndicator(usage.model) : '';
 
-        // Add reset countdown to status bar text
-        const resetSuffix = this.displayPrefs.showResetCountdown ? this.formatResetCountdown() : '';
+        // Add reset countdown to status bar text (tracks current model)
+        const resetSuffix = this.displayPrefs.showResetCountdown ? this.formatResetCountdown(usage.model) : '';
 
         // Build status bar text based on display preferences
         const contextPart = this.displayPrefs.showContext
@@ -407,6 +409,18 @@ export class StatusBarManager {
                 const resetTimeStr = earliest.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                 result.push(`🔔 ${tBi('Earliest reset at', '最近重置时间为')}: **${resetTimeStr}**`);
             }
+
+            // Show current model's reset time if available
+            if (this.lastActiveModel) {
+                const currentConfig = this.cachedConfigs.find(c => c.model === this.lastActiveModel);
+                if (currentConfig?.quotaInfo?.resetTime) {
+                    const resetDate = new Date(currentConfig.quotaInfo.resetTime);
+                    if (resetDate.getTime() > Date.now()) {
+                        const timeStr = resetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        result.push(`⏳ ${tBi('Current model resets at', '当前模型重置于')}: **${timeStr}** (${escapeMarkdown(currentConfig.label)})`);
+                    }
+                }
+            }
         }
 
         // Show compression warning threshold
@@ -537,11 +551,27 @@ export class StatusBarManager {
 
     /**
      * Format a compact reset countdown string for StatusBar text.
+     * Tracks the specified model's reset time (current active model).
      */
-    private formatResetCountdown(): string {
-        const earliest = this.getEarliestResetTime();
-        if (!earliest) { return ''; }
-        const diffMs = earliest.getTime() - Date.now();
+    private formatResetCountdown(modelId?: string): string {
+        let resetDate: Date | null = null;
+
+        // Try to find the specific model's reset time
+        if (modelId) {
+            this.lastActiveModel = modelId;
+            const config = this.cachedConfigs.find(c => c.model === modelId);
+            if (config?.quotaInfo?.resetTime) {
+                resetDate = new Date(config.quotaInfo.resetTime);
+            }
+        }
+
+        // Fallback to earliest if current model has no reset info
+        if (!resetDate) {
+            resetDate = this.getEarliestResetTime();
+        }
+
+        if (!resetDate) { return ''; }
+        const diffMs = resetDate.getTime() - Date.now();
         if (diffMs <= 0) { return ''; }
         const h = Math.floor(diffMs / 3600_000);
         const m = Math.floor((diffMs % 3600_000) / 60_000);
