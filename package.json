@@ -2,7 +2,7 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Window Monitor",
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
-  "version": "1.10.3",
+  "version": "1.11.0",
   "publisher": "AGI-is-going-to-arrive",
   "license": "MIT",
   "repository": {
@@ -61,6 +61,21 @@
           "default": 200000,
           "minimum": 10000,
           "description": "Estimated compression trigger threshold (in tokens). Status bar turns yellow/red based on this value instead of the model's full context limit. Default 200K matches Antigravity's internal compression point. Set to a higher value (e.g. 900000) if your model supports larger context before compression. / 估算压缩触发阈值（token 数）。状态栏颜色基于此值而非模型上下文上限。默认 200K 匹配 Antigravity 内建压缩线。如果模型支持更大上下文可调高（如 900000）。"
+        },
+        "antigravityContextMonitor.statusBar.showContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show context usage (e.g. 45k/1M, 4.5%) in status bar / 状态栏显示上下文用量"
+        },
+        "antigravityContextMonitor.statusBar.showQuota": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show current model quota indicator (e.g. 🟢85%) in status bar / 状态栏显示当前模型额度"
+        },
+        "antigravityContextMonitor.statusBar.showResetCountdown": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show quota reset countdown (e.g. ⏳4h32m) in status bar / 状态栏显示重置倒计时"
         }
       }
     }

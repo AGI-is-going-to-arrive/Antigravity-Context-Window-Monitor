@@ -118,6 +118,8 @@ export class StatusBarManager {
     private warningThreshold: number = 200_000;
     /** Timer ID for reset countdown. */
     private resetCountdownTimer: NodeJS.Timeout | undefined;
+    /** Status bar display preferences. */
+    private displayPrefs = { showContext: true, showQuota: true, showResetCountdown: true };
 
     constructor() {
         this.statusBarItem = vscode.window.createStatusBarItem(
@@ -143,6 +145,15 @@ export class StatusBarManager {
      */
     setWarningThreshold(threshold: number): void {
         this.warningThreshold = Math.max(10_000, threshold);
+    }
+
+    /**
+     * Set status bar display preferences.
+     */
+    setDisplayPrefs(prefs: { showContext?: boolean; showQuota?: boolean; showResetCountdown?: boolean }): void {
+        if (prefs.showContext !== undefined) { this.displayPrefs.showContext = prefs.showContext; }
+        if (prefs.showQuota !== undefined) { this.displayPrefs.showQuota = prefs.showQuota; }
+        if (prefs.showResetCountdown !== undefined) { this.displayPrefs.showResetCountdown = prefs.showResetCountdown; }
     }
 
     /**
@@ -249,12 +260,19 @@ export class StatusBarManager {
         const gapsIndicator = usage.hasGaps ? ' ⚠️' : '';
 
         // Current model quota indicator (🟢85%)
-        const quotaSuffix = this.formatQuotaIndicator(usage.model);
+        const quotaSuffix = this.displayPrefs.showQuota ? this.formatQuotaIndicator(usage.model) : '';
 
         // Add reset countdown to status bar text
-        const resetSuffix = this.formatResetCountdown();
+        const resetSuffix = this.displayPrefs.showResetCountdown ? this.formatResetCountdown() : '';
 
-        this.statusBarItem.text = `${icon} ${usedStr}/${limitStr}, ${displayPercent}%${compressIcon}${gapsIndicator}${quotaSuffix}${resetSuffix}`;
+        // Build status bar text based on display preferences
+        const contextPart = this.displayPrefs.showContext
+            ? `${usedStr}/${limitStr}, ${displayPercent}%${compressIcon}${gapsIndicator}`
+            : '';
+
+        // If nothing is shown, show at least the icon
+        const parts = [contextPart, quotaSuffix.trim(), resetSuffix.trim()].filter(Boolean);
+        this.statusBarItem.text = `${icon} ${parts.join(' ')}`;
         this.statusBarItem.backgroundColor = getSeverityColor(severity);
 
         // Build detailed tooltip
@@ -387,7 +405,7 @@ export class StatusBarManager {
             const earliest = this.getEarliestResetTime();
             if (earliest) {
                 const resetTimeStr = earliest.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                result.push(`🔔 ${tBi('Next reset at', '下次重置')}: **${resetTimeStr}**`);
+                result.push(`🔔 ${tBi('Earliest reset at', '最近重置时间为')}: **${resetTimeStr}**`);
             }
         }
 

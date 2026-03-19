@@ -872,6 +872,148 @@ export function getStyles(): string {
             transition: opacity 0.3s cubic-bezier(.4,0,.2,1);
         }
 
+        /* ─── Tab Bar ─────────────────── */
+        .tab-bar {
+            display: flex;
+            gap: 0;
+            margin-bottom: var(--space-4);
+            border-bottom: 1px solid var(--color-border);
+        }
+
+        .tab-btn {
+            appearance: none;
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--color-text-dim);
+            font-family: inherit;
+            font-size: 0.85em;
+            font-weight: 600;
+            padding: var(--space-2) var(--space-4);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: var(--space-1);
+            transition: color 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        .tab-btn:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 2px var(--color-info);
+        }
+
+        .tab-btn:active { transform: scale(0.98); }
+
+        .tab-btn.active {
+            color: var(--color-info);
+            border-bottom-color: var(--color-info);
+        }
+
+        @media (hover: hover) {
+            .tab-btn:not(.active):hover {
+                color: var(--color-text);
+            }
+        }
+
+        .tab-pane {
+            display: none;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        /* ─── Toggle Switch ────────────── */
+        .toggle-group {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-2);
+        }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: var(--space-3);
+            cursor: pointer;
+            font-size: 0.85em;
+        }
+
+        .toggle-cb {
+            opacity: 0;
+            position: absolute;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-track {
+            position: relative;
+            width: 36px;
+            height: 20px;
+            background: rgba(255,255,255,0.1);
+            border-radius: var(--radius-full, 9999px);
+            flex-shrink: 0;
+            transition: background 0.2s cubic-bezier(.4,0,.2,1);
+        }
+
+        .toggle-thumb {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 16px;
+            height: 16px;
+            background: var(--color-text-dim);
+            border-radius: 50%;
+            transition: transform 0.2s cubic-bezier(.4,0,.2,1), background 0.2s cubic-bezier(.4,0,.2,1);
+        }
+
+        .toggle-cb:checked + .toggle-track {
+            background: var(--color-info);
+        }
+
+        .toggle-cb:checked + .toggle-track .toggle-thumb {
+            transform: translateX(16px);
+            background: #fff;
+        }
+
+        .toggle-cb:focus-visible + .toggle-track {
+            box-shadow: 0 0 0 2px var(--color-info);
+        }
+
+        .toggle-row code {
+            font-family: var(--vscode-editor-font-family, monospace);
+            font-size: 0.85em;
+            color: var(--color-text-dim);
+            opacity: 0.6;
+        }
+
+        /* ─── Settings Model Grid ──────── */
+        .setting-model-grid {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-2);
+        }
+
+        .setting-model-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--space-2);
+        }
+
+        .setting-model-label {
+            font-size: 0.82em;
+            font-weight: 500;
+            color: var(--color-text);
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .setting-model-row .threshold-input {
+            width: 120px;
+        }
+
         /* ─── Pause Button ────────────── */
         .action-btn.paused {
             color: var(--color-ok);

@@ -52,7 +52,7 @@ export function showMonitorPanel(
 
     panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused);
 
-    panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: number }) => {
+    panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string }) => {
         if (msg.command === 'switchLanguage' && msg.lang && extensionCtx) {
             await setLanguage(msg.lang as Language, extensionCtx);
             if (panel) {
@@ -64,10 +64,8 @@ export function showMonitorPanel(
         } else if (msg.command === 'togglePause') {
             isPaused = !isPaused;
             if (!isPaused && panel) {
-                // Unpaused → re-render with latest cached data
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
             } else if (panel) {
-                // Just update the button state via a small message
                 panel.webview.postMessage({ command: 'setPaused', paused: isPaused });
             }
         } else if (msg.command === 'setThreshold' && typeof msg.value === 'number') {
@@ -76,6 +74,27 @@ export function showMonitorPanel(
                 .update('compressionWarningThreshold', val, vscode.ConfigurationTarget.Global);
             if (panel) {
                 panel.webview.postMessage({ command: 'thresholdSaved' });
+            }
+        } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
+            const val = Math.max(1, Math.min(60, msg.value));
+            await vscode.workspace.getConfiguration('antigravityContextMonitor')
+                .update('pollingInterval', val, vscode.ConfigurationTarget.Global);
+            if (panel) {
+                panel.webview.postMessage({ command: 'configSaved', key: 'pollingInterval' });
+            }
+        } else if (msg.command === 'setConfig' && msg.key) {
+            const allowedKeys = [
+                'statusBar.showContext',
+                'statusBar.showQuota',
+                'statusBar.showResetCountdown',
+                'contextLimits',
+            ];
+            if (allowedKeys.includes(msg.key)) {
+                await vscode.workspace.getConfiguration('antigravityContextMonitor')
+                    .update(msg.key, msg.value, vscode.ConfigurationTarget.Global);
+                if (panel) {
+                    panel.webview.postMessage({ command: 'configSaved', key: msg.key });
+                }
             }
         }
     });
@@ -525,38 +544,6 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
             </section>`);
     }
 
-    // ━━━ Settings ━━━
-    {
-        const currentThreshold = vscode.workspace.getConfiguration('antigravityContextMonitor')
-            .get<number>('compressionWarningThreshold', 200_000);
-        sections.push(`
-            <section class="card">
-                <h2>${ICON.shield} ${tBi('Settings', '设置')}</h2>
-                <div class="setting-row">
-                    <label for="thresholdInput">${tBi(
-                        'Compression warning threshold (tokens)',
-                        '压缩警告阈值（token 数）',
-                    )}</label>
-                    <p class="raw-desc">${tBi(
-                        'Status bar turns yellow/red based on this value. Default 200K matches Antigravity\'s internal compression point.',
-                        '状态栏颜色基于此值判断。默认 200K 匹配 Antigravity 内建压缩线。',
-                    )}</p>
-                    <div class="threshold-input-row">
-                        <input type="number" id="thresholdInput" class="threshold-input"
-                               value="${currentThreshold}" min="10000" step="10000" />
-                        <button class="action-btn" id="thresholdSaveBtn">${tBi('Save', '保存')}</button>
-                        <span id="thresholdFeedback" class="threshold-feedback"></span>
-                    </div>
-                    <div class="threshold-presets">
-                        <button class="preset-btn" data-val="150000">150K</button>
-                        <button class="preset-btn" data-val="200000">200K</button>
-                        <button class="preset-btn" data-val="500000">500K</button>
-                        <button class="preset-btn" data-val="900000">900K</button>
-                    </div>
-                </div>
-            </section>`);
-    }
-
     // ━━━ Raw Data (Full Transparency) ━━━
     if (userInfo?._rawResponse) {
         const rawJson = JSON.stringify(userInfo._rawResponse, null, 2);
@@ -586,6 +573,113 @@ function buildHtml(usage: ContextUsage | null, allUsages: ContextUsage[], config
                 <h2>${t('panel.noData')}</h2>
             </section>`);
     }
+
+    // ━━━ Settings Page Content ━━━
+    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    const currentThreshold = cfg.get<number>('compressionWarningThreshold', 200_000);
+    const pollingInterval = cfg.get<number>('pollingInterval', 5);
+    const contextLimits = cfg.get<Record<string, number>>('contextLimits', {});
+    const showContext = cfg.get<boolean>('statusBar.showContext', true);
+    const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
+    const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
+
+    // Build model context limits rows from configs
+    const modelLimitRows = configs.map(c => {
+        const customLimit = contextLimits[c.model];
+        const limit = customLimit ?? 1_000_000;
+        return `
+            <div class="setting-model-row">
+                <span class="setting-model-label">${esc(c.label)}</span>
+                <input type="number" class="threshold-input model-limit-input"
+                       data-model="${esc(c.model)}" value="${limit}"
+                       min="1000" step="100000" />
+            </div>`;
+    }).join('');
+
+    const settingsHtml = `
+        <section class="card">
+            <h2>${ICON.shield} ${tBi('Compression Warning', '压缩警告')}</h2>
+            <div class="setting-row">
+                <label for="thresholdInput">${tBi(
+                    'Warning threshold (tokens)',
+                    '警告阈值（token 数）',
+                )}</label>
+                <p class="raw-desc">${tBi(
+                    'Status bar turns yellow/red based on this value. Default 200K matches Antigravity\'s internal compression point.',
+                    '状态栏颜色基于此值判断。默认 200K 匹配 Antigravity 内建压缩线。',
+                )}</p>
+                <div class="threshold-input-row">
+                    <input type="number" id="thresholdInput" class="threshold-input"
+                           value="${currentThreshold}" min="10000" step="10000" />
+                    <button class="action-btn" id="thresholdSaveBtn">${tBi('Save', '保存')}</button>
+                    <span id="thresholdFeedback" class="threshold-feedback"></span>
+                </div>
+                <div class="threshold-presets">
+                    <button class="preset-btn" data-val="150000">150K</button>
+                    <button class="preset-btn" data-val="200000">200K</button>
+                    <button class="preset-btn" data-val="500000">500K</button>
+                    <button class="preset-btn" data-val="900000">900K</button>
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2>${ICON.clock} ${tBi('Polling', '轮询')}</h2>
+            <div class="setting-row">
+                <label for="pollingInput">${tBi(
+                    'Polling interval (seconds)',
+                    '轮询间隔（秒）',
+                )}</label>
+                <div class="threshold-input-row">
+                    <input type="number" id="pollingInput" class="threshold-input"
+                           value="${pollingInterval}" min="1" max="60" step="1" />
+                    <button class="action-btn" id="pollingSaveBtn">${tBi('Save', '保存')}</button>
+                    <span id="pollingFeedback" class="threshold-feedback"></span>
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2>${ICON.chart} ${tBi('Status Bar Display', '状态栏显示')}</h2>
+            <p class="raw-desc">${tBi(
+                'Toggle which elements appear in the status bar.',
+                '控制状态栏显示哪些元素。',
+            )}</p>
+            <div class="toggle-group">
+                <label class="toggle-row">
+                    <input type="checkbox" id="toggleContext" class="toggle-cb" ${showContext ? 'checked' : ''} />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>${tBi('Context usage', '上下文用量')} <code>45k/1M, 4.5%</code></span>
+                </label>
+                <label class="toggle-row">
+                    <input type="checkbox" id="toggleQuota" class="toggle-cb" ${showQuota ? 'checked' : ''} />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>${tBi('Quota indicator', '额度指示灯')} <code>🟢85%</code></span>
+                </label>
+                <label class="toggle-row">
+                    <input type="checkbox" id="toggleCountdown" class="toggle-cb" ${showResetCountdown ? 'checked' : ''} />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>${tBi('Reset countdown', '重置倒计时')} <code>⏳4h32m</code></span>
+                </label>
+            </div>
+        </section>
+
+        ${modelLimitRows ? `
+        <section class="card">
+            <h2>${ICON.shield} ${tBi('Model Context Limits', '模型上下文限制')}</h2>
+            <p class="raw-desc">${tBi(
+                'Override context window size (tokens) per model.',
+                '按模型覆盖上下文窗口大小（token 数）。',
+            )}</p>
+            <div class="setting-model-grid">
+                ${modelLimitRows}
+            </div>
+            <div class="threshold-input-row" style="margin-top: var(--space-2);">
+                <button class="action-btn" id="modelLimitsSaveBtn">${tBi('Save All', '全部保存')}</button>
+                <span id="modelLimitsFeedback" class="threshold-feedback"></span>
+            </div>
+        </section>` : ''}
+    `;
 
     const currentLang = getLanguage();
     return `<!DOCTYPE html>
@@ -621,11 +715,87 @@ ${getStyles()}
             <span class="update-time">${paused ? `<span class="paused-indicator">${tBi('PAUSED', '已暂停')}</span>` : ''} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
         </div>
     </header>
-    ${sections.join('')}
+    <nav class="tab-bar">
+        <button class="tab-btn active" data-tab="monitor">${ICON.chart} ${tBi('Monitor', '监控')}</button>
+        <button class="tab-btn" data-tab="settings">${ICON.shield} ${tBi('Settings', '设置')}</button>
+    </nav>
+    <div class="tab-pane active" id="tab-monitor">
+        ${sections.join('')}
+    </div>
+    <div class="tab-pane" id="tab-settings">
+        ${settingsHtml}
+    </div>
     <script>
         (function() {
             var vscode = acquireVsCodeApi();
             var savedState = vscode.getState() || {};
+
+            // ─── Tab System ───
+            var activeTab = savedState.activeTab || 'monitor';
+            var tabBtns = document.querySelectorAll('.tab-btn');
+            var tabPanes = document.querySelectorAll('.tab-pane');
+            function switchTab(tabName) {
+                activeTab = tabName;
+                for (var i = 0; i < tabBtns.length; i++) {
+                    tabBtns[i].classList.toggle('active', tabBtns[i].dataset.tab === tabName);
+                }
+                for (var j = 0; j < tabPanes.length; j++) {
+                    tabPanes[j].classList.toggle('active', tabPanes[j].id === 'tab-' + tabName);
+                }
+                var s = vscode.getState() || {};
+                s.activeTab = tabName;
+                vscode.setState(s);
+            }
+            // Restore active tab from state
+            if (activeTab !== 'monitor') { switchTab(activeTab); }
+            for (var ti = 0; ti < tabBtns.length; ti++) {
+                tabBtns[ti].addEventListener('click', function() {
+                    switchTab(this.dataset.tab);
+                });
+            }
+
+            // ─── Settings: Polling Interval ───
+            var pollingInput = document.getElementById('pollingInput');
+            var pollingSaveBtn = document.getElementById('pollingSaveBtn');
+            if (pollingSaveBtn && pollingInput) {
+                pollingSaveBtn.addEventListener('click', function() {
+                    var val = parseInt(pollingInput.value, 10);
+                    if (val >= 1 && val <= 60) {
+                        vscode.postMessage({ command: 'setPollingInterval', value: val });
+                    }
+                });
+            }
+
+            // ─── Settings: Status Bar Toggles ───
+            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown'];
+            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown'];
+            for (var tgi = 0; tgi < toggleIds.length; tgi++) {
+                (function(idx) {
+                    var cb = document.getElementById(toggleIds[idx]);
+                    if (cb) {
+                        cb.addEventListener('change', function() {
+                            vscode.postMessage({ command: 'setConfig', key: toggleKeys[idx], value: this.checked });
+                        });
+                    }
+                })(tgi);
+            }
+
+            // ─── Settings: Model Limits Save ───
+            var modelLimitsSaveBtn = document.getElementById('modelLimitsSaveBtn');
+            if (modelLimitsSaveBtn) {
+                modelLimitsSaveBtn.addEventListener('click', function() {
+                    var inputs = document.querySelectorAll('.model-limit-input');
+                    var limits = {};
+                    for (var mi = 0; mi < inputs.length; mi++) {
+                        var model = inputs[mi].dataset.model;
+                        var val = parseInt(inputs[mi].value, 10);
+                        if (model && val >= 1000) { limits[model] = val; }
+                    }
+                    vscode.postMessage({ command: 'setConfig', key: 'contextLimits', value: limits });
+                    var fb = document.getElementById('modelLimitsFeedback');
+                    if (fb) { fb.textContent = '✓'; fb.style.opacity = '1'; setTimeout(function(){ fb.style.opacity = '0'; }, 2000); }
+                });
+            }
 
             // ─── Language Switcher ───
             var switcher = document.querySelector('.lang-switcher');
@@ -667,6 +837,21 @@ ${getStyles()}
                         fb.textContent = '✓';
                         fb.style.opacity = '1';
                         setTimeout(function() { fb.style.opacity = '0'; }, 2000);
+                    }
+                }
+                if (msg.command === 'configSaved') {
+                    var feedbackMap = {
+                        'pollingInterval': 'pollingFeedback',
+                        'contextLimits': 'modelLimitsFeedback',
+                    };
+                    var fbId = feedbackMap[msg.key];
+                    if (fbId) {
+                        var cfb = document.getElementById(fbId);
+                        if (cfb) {
+                            cfb.textContent = '✓';
+                            cfb.style.opacity = '1';
+                            setTimeout(function() { cfb.style.opacity = '0'; }, 2000);
+                        }
                     }
                 }
             });
