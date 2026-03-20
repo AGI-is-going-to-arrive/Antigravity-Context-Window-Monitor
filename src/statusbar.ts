@@ -384,7 +384,7 @@ export class StatusBarManager {
             for (const c of quotaModels) {
                 const qi = c.quotaInfo!;
                 const pct = Math.round(qi.remainingFraction * 100);
-                const bar = pct >= 60 ? '🟢' : pct >= 40 ? '🟡' : '🔴';
+                const bar = pct >= 80 ? '🟢' : pct > 20 ? '🟡' : '🔴';
                 let resetStr = '—';
                 if (qi.resetTime) {
                     const resetDate = new Date(qi.resetTime);
@@ -545,7 +545,7 @@ export class StatusBarManager {
         const config = this.cachedConfigs.find(c => c.model === modelId);
         if (!config?.quotaInfo) { return ''; }
         const pct = Math.round(config.quotaInfo.remainingFraction * 100);
-        const dot = pct >= 60 ? '🟢' : pct >= 40 ? '🟡' : '🔴';
+        const dot = pct >= 80 ? '🟢' : pct > 20 ? '🟡' : '🔴';
         return ` ${dot}${pct}%`;
     }
 
@@ -584,5 +584,49 @@ export class StatusBarManager {
             clearTimeout(this.resetCountdownTimer);
         }
         this.statusBarItem.dispose();
+    }
+}
+
+// ─── Activity Status Bar Item ────────────────────────────────────────────────
+// Second status bar item showing real-time model activity counts.
+
+export class ActivityStatusBarItem {
+    private item: vscode.StatusBarItem;
+
+    constructor() {
+        this.item = vscode.window.createStatusBarItem(
+            vscode.StatusBarAlignment.Right,
+            99  // just below the main context monitor item (priority 100)
+        );
+        this.item.command = 'antigravity-context-monitor.showActivityPanel';
+        this.item.name = tBi('Model Activity', '模型活动');
+        this.item.text = '$(beaker) 🧠0 ⚡0';
+        this.item.tooltip = tBi('Model Activity — Click to open', '模型活动 — 点击打开');
+        this.item.show();
+    }
+
+    /**
+     * Update with the latest status bar text from ActivityTracker.
+     */
+    updateText(text: string): void {
+        this.item.text = `$(beaker) ${text}`;
+    }
+
+    /**
+     * Set a detailed tooltip with model breakdown.
+     */
+    updateTooltip(lines: string[]): void {
+        const header = tBi('Model Activity', '模型活动');
+        this.item.tooltip = [header, '─'.repeat(24), ...lines].join('\n');
+    }
+
+    dispose(): void {
+        this.item.dispose();
+    }
+
+    /** Show or hide the activity status bar item based on user preference. */
+    setVisible(visible: boolean): void {
+        if (visible) { this.item.show(); }
+        else { this.item.hide(); }
     }
 }

@@ -2,7 +2,7 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Window Monitor",
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
-  "version": "1.11.1",
+  "version": "1.11.2",
   "publisher": "AGI-is-going-to-arrive",
   "license": "MIT",
   "repository": {
@@ -33,6 +33,10 @@
       {
         "command": "antigravity-context-monitor.switchLanguage",
         "title": "Switch Display Language / 切换显示语言"
+      },
+      {
+        "command": "antigravity-context-monitor.showActivityPanel",
+        "title": "Show Model Activity / 显示模型活动"
       }
     ],
     "configuration": {
@@ -76,6 +80,37 @@
           "type": "boolean",
           "default": true,
           "description": "Show quota reset countdown (e.g. ⏳4h32m) in status bar / 状态栏显示重置倒计时"
+        },
+        "antigravityContextMonitor.statusBar.showActivity": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show model activity indicator (🧠 reasoning, ⚡ tools, 🪙 tokens) in status bar / 状态栏显示模型活动指标"
+        },
+        "antigravityContextMonitor.quotaNotificationThreshold": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 99,
+          "description": "Show a warning notification when any model's remaining quota drops below this percentage (0 to disable) / 当模型剩余额度低于此百分比时弹出警告通知（设为 0 可禁用）"
+        },
+        "antigravityContextMonitor.activity.maxRecentSteps": {
+          "type": "number",
+          "default": 100,
+          "minimum": 10,
+          "maximum": 500,
+          "description": "Maximum number of recent activity steps to keep in the timeline / 活动时间线最多保留的操作条数"
+        },
+        "antigravityContextMonitor.activity.maxArchives": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum number of activity archives to keep / 活动归档最多保留份数"
+        },
+        "antigravityContextMonitor.privacy.defaultMask": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable privacy mask by default when opening the monitor panel / 打开面板时默认启用隐私遮罩"
         }
       }
     }
