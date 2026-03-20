@@ -13,7 +13,8 @@
 
 ```mermaid
 graph LR
-    A[extension.ts<br/>主 poll 循环] -->|10s 轮询| B[LS gRPC API]
+    A[extension.ts<br/>全局 poll 5s] -->|轮询| B[LS gRPC API]
+    P[extension.ts<br/>Activity poll 3s] -->|独立轮询| B
     B --> C[GetAllCascadeTrajectories]
     B --> D[GetCascadeTrajectorySteps]
     B --> E[GetUserStatus]
@@ -23,6 +24,7 @@ graph LR
     G --> H[activity-panel.ts<br/>面板渲染]
     A --> I[quota-tracker.ts<br/>额度消耗追踪]
     A --> J[webview-panel.ts<br/>面板 HTML]
+    P -.->|变化时立即刷新| H
 ```
 
 ## 核心 API
@@ -67,6 +69,8 @@ graph LR
 | `CONVERSATION_HISTORY` | 📜 | system | 历史上下文 |
 | `KNOWLEDGE_ARTIFACTS` | 📚 | system | 知识库 |
 | `EPHEMERAL_MESSAGE` | 💨 | system | 临时消息 |
+| `TASK_BOUNDARY` | 📋 | system | 任务边界（Agentic 模式） |
+| `NOTIFY_USER` | 📢 | system | 通知用户（Agentic 模式） |
 
 ### 浏览器子代理内部步骤
 
@@ -188,7 +192,9 @@ if (delta > 0 && entry.dominantModel) {
 活动追踪已完全集成到 VS Code 扩展中，随扩展自动激活。无需手动运行脚本。
 
 ```
-扩展激活 → extension.ts 轮询 → activity-tracker.ts 分类统计 → activity-panel.ts 渲染
+扩展激活
+  ├─ extension.ts 全局轮询 (5s) → 上下文/额度/用户状态
+  └─ extension.ts Activity 独立轮询 (3s) → activity-tracker.ts 分类统计 → activity-panel.ts 渲染
 ```
 
 ## PLANNER_RESPONSE 完整结构
@@ -286,18 +292,21 @@ step.userInput: {
 | [activity-panel.ts](../src/activity-panel.ts) | UI 渲染：概览卡片、模型卡片、时间线 HTML + CSS |
 | [extension.ts](../src/extension.ts) | 粘合层：poll → processTrajectories → 面板刷新 |
 
-### warm-up 策略（v1.11.2 更新）
+### warm-up 与增量策略（v1.11.2 更新）
 
 ```
 首次 poll → warmedUp = false
   ├─ 所有对话（含 IDLE）→ 拉取全部步骤 → processStep 逐步统计
   └─ warmedUp = true
-后续 poll → warmedUp = true
-  └─ 仅处理 processedIndex 之后的新步骤
+后续 poll → warmedUp = true（独立 3s 轮询）
+  ├─ 新对话 stepCount=0 → 不创建 entry，等待有步骤后首次拉取
+  ├─ 新对话 stepCount>0 → 创建 entry → 拉取全部步骤（emitEvent=true）
+  ├─ RUNNING 对话 → 重新拉取步骤，处理新增部分
+  └─ IDLE 且已处理过 → 跳过（不会再有新步骤）
 ```
 
-> v1.11.2 变更：warm-up 处理**所有**对话（包括 IDLE），以反映完整额度周期统计。
-> 配合额度重置归档，每个周期的统计数据独立保存。
+> v1.11.2 变更：Activity 追踪从全局 poll 分离为独立 3 秒轮询循环。
+> 仅对 RUNNING 对话发起步骤拉取，IDLE 对话在首次处理后跳过。
 > recheck 机制已移除（AI 回复仅捕捉 80 字符短预览，不需要回退重查）。
 
 ### 数据范围
@@ -352,9 +361,104 @@ tracking 状态 + fraction ≥ 1.0 = 额度已重置
 
 > 注：不同模型可能有独立额度周期，通过 `resetTimestamp` 可判断
 
+## 诊断脚本
+
+项目提供两个独立终端脚本，用于在扩展之外直接调试和验证 LS 数据。
+
+### diag-verify.ts — 静态数据完整性诊断
+
+对 LS API 返回的所有数据结构逐项验证，输出 PASS/FAIL 报告。
+
+```bash
+npx tsx src/diag-verify.ts
+```
+
+**验证阶段：**
+
+| 阶段 | 内容 |
+|---|---|
+| 0: LS 发现 | wmic/PowerShell 进程扫描、CSRF Token 提取、PID、netstat 端口、RPC 探测 |
+| 1: GetUserStatus | clientModelConfigs 结构、quotaInfo.remainingFraction、planInfo、模型列表 |
+| 2: GetAllCascadeTrajectories | trajectorySummaries 结构、stepCount/status/summary、workspace 信息 |
+| 3: GetCascadeTrajectorySteps | 步骤类型分类（未文档化类型检测）、USER_INPUT/PLANNER_RESPONSE/CHECKPOINT 结构验证、踩坑字段检查 |
+| 4: startIndex/endIndex | 验证 startIndex 参数是否生效（文档记录为不生效） |
+| 5: 模型名称映射 | MODEL_PLACEHOLDER_MXX → 显示名称映射正确性 |
+
+**输出示例：**
+
+```
+  ✅ PASS [D-01] wmic 进程扫描
+  ✅ PASS [S-03] 步骤类型全部已文档化
+  ❌ FAIL [S-XX] 发现 2 个未文档化类型: CORTEX_STEP_TYPE_NEW_TYPE
+```
+
+> 前提条件：Antigravity IDE 已启动且至少有一个对话。
+
+---
+
+### diag-monitor.ts — 实时步骤监视器
+
+持续轮询 LS，逐条显示每个对话的新增步骤，用于验证增量捕获是否精确。
+
+```bash
+npx tsx src/diag-monitor.ts
+# Ctrl+C 停止
+```
+
+**功能：**
+
+- 每 3 秒轮询 `GetAllCascadeTrajectories`
+- 检测到 `stepCount` 变化时，拉取步骤并精确显示新增部分
+- 显示每步的：序号、图标、类型、模型 ID、内容摘要
+- 检测 API 窗口外步骤并警告
+
+**输出示例：**
+
+```
+─── [19:14:28] Introducing Myself (IDLE) +6 步 (0→6) ───
+  API 返回 6 步 (请求 6)
+  ✓ 新步骤可精确捕获 (index 0..5):
+    [   0] 💬 USER_INPUT             "请简单自我介绍一下自己..."
+    [   1] 📜 CONVERSATION_HISTORY
+    [   2] 📚 KNOWLEDGE_ARTIFACTS
+    [   3] 💨 EPHEMERAL_MESSAGE
+    [   4] 🧠 PLANNER_RESPONSE       [MM37] thinking="..." dur=0.886s
+    [   5] 💾 CHECKPOINT             in=3166 out=77 model=MODEL_...
+```
+
+> 用于对比扩展内 activity-tracker 的捕获结果，确保两者一致。
+
+---
+
 ## 文件位置
 
-- 插件源码：`e:\AI\1\Claude\1\src\`
+- 插件源码：`src/`
+- 诊断脚本：`src/diag-verify.ts`（静态诊断）、`src/diag-monitor.ts`（实时监视）
 - 技术文档：本文件
 
 > 注：独立终端脚本 `ls-monitor.ts` 已删除（v1.11.2），功能完全集成到扩展模块中。
+
+## 踩坑记录补充（二）
+
+### 12. 增量步骤捕获 bug（已修复）
+
+**现象**：增量更新时新步骤显示为 `+N steps (estimated)` 而非逐步精确捕获
+**原因**：`processTrajectories` 增量路径在 `processedIndex > 0` 时直接使用 `stepCount` delta 估算，不重新拉取步骤
+**修复**：增量路径重新调用 `GetCascadeTrajectorySteps` 拉取步骤，仅对超出 API 窗口的步骤使用 delta 估算
+
+### 13. 新对话首消息延迟（已修复）
+
+**现象**：新对话的第一条消息不出现在 timeline，要到第二条消息才刷新
+**原因**：新对话首次出现时 `stepCount=0`（LS 还在初始化），代码创建了 `processedIndex=0` 的空 entry；下次 poll 时 `0 <= 0` → skip
+**修复**：`currSteps === 0` 的新对话不创建 entry，等到有步骤时才创建并拉取
+
+### 14. 思考时间在轮询模式下不准确
+
+**现象**：3 秒轮询捕获到正在进行中的 PLANNER_RESPONSE 时，`thinkingDuration` 为部分值
+**决策**：Timeline 行级推理事件不显示 `durationMs`（设为 0），模型卡片中的聚合 `thinkingTimeMs` 保留（累积后偏差会平衡）
+
+### 15. StreamCascadePanelReactiveUpdates（未采用）
+
+**发现**：LS 内部有 `StreamCascadePanelReactiveUpdates` 双向 gRPC 流，可实时推送 Cascade 状态变化
+**限制**：需要 protobuf 二进制解码 + HTTP/2 持久连接 + 逆向 proto 定义；当前 Connect-RPC (HTTP/JSON) 无法使用
+**现状**：保持 3 秒 HTTP 轮询方案，对 95% 的对话（< 500 步）已足够精确

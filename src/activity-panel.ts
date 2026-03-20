@@ -143,6 +143,26 @@ export function getActivityTabStyles(): string {
     .act-tl-dur { color: var(--color-text-dim); flex-shrink: 0; margin-left: auto; }
     .act-tl-reasoning .act-tl-icon { color: var(--color-ok); }
     .act-tl-tool .act-tl-icon { color: var(--color-warn); }
+    .act-tl-tool-name {
+        color: var(--color-accent);
+        font-weight: 500;
+        flex-shrink: 0;
+        background: rgba(167,139,250,0.12);
+        padding: 0 var(--space-1);
+        border-radius: var(--radius-sm);
+        font-size: 0.9em;
+        margin-right: var(--space-1);
+    }
+    .act-tl-step-idx {
+        color: var(--color-text-dim);
+        opacity: 0.5;
+        font-size: 0.8em;
+        flex-shrink: 0;
+        min-width: 28px;
+        text-align: right;
+        margin-right: var(--space-1);
+        font-variant-numeric: tabular-nums;
+    }
     .act-badge { font-size: 0.75em; opacity: 0.7; }
     .act-checkpoint-model { border-color: rgba(255,255,255,0.06); opacity: 0.85; }
 
@@ -300,14 +320,23 @@ function buildTimeline(s: ActivitySummary): string {
         const dur = e.durationMs > 0 ? `<span class="act-tl-dur">${e.durationMs < 1000 ? e.durationMs + 'ms' : (e.durationMs / 1000).toFixed(1) + 's'}</span>` : '';
         let detail = '';
         if (e.userInput) { detail = `<span class="act-tl-user">"${esc(e.userInput)}"</span>`; }
+        else if (e.toolName && e.detail) {
+            detail = `<span class="act-tl-tool-name">${esc(e.toolName)}</span><span class="act-tl-detail">${esc(e.detail)}</span>`;
+        }
+        else if (e.toolName) {
+            detail = `<span class="act-tl-tool-name">${esc(e.toolName)}</span>`;
+        }
         else if (e.aiResponse) {
             detail = `<span class="act-tl-ai-preview">${esc(e.aiResponse)}</span>`;
         }
         else if (e.detail) { detail = `<span class="act-tl-detail">${esc(e.detail)}</span>`; }
 
+        const stepIdx = e.stepIndex !== undefined ? `<span class="act-tl-step-idx">#${e.stepIndex}</span>` : '';
+
         html += `
         <div class="act-tl-item act-tl-${e.category}">
             <span class="act-tl-time">${time}</span>
+            ${stepIdx}
             <span class="act-tl-icon">${e.icon}</span>
             ${e.model ? `<span class="act-tl-model">${esc(e.model)}</span>` : ''}
             ${detail}

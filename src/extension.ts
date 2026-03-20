@@ -23,7 +23,11 @@ import { QuotaTracker } from './quota-tracker';
 // variables are window-isolated — perfect for per-window cascade tracking.
 
 let statusBar: StatusBarManager;
-let pollingTimer: NodeJS.Timeout | undefined;
+let pollingTimer: ReturnType<typeof setTimeout> | undefined;
+let activityPollingTimer: ReturnType<typeof setTimeout> | undefined;
+let pollGeneration = 0;
+let activityPollGeneration = 0;
+let disposed = false;
 let cachedLsInfo: LSInfo | null = null;
 let currentUsage: ContextUsage | null = null;
 let allTrajectoryUsages: ContextUsage[] = [];
@@ -62,12 +66,13 @@ let firstPollDone = false;
 
 /** Prevents concurrent pollContextUsage() reentrance. */
 let isPolling = false;
+let isActivityPolling = false;
 
 /** Prevents schedulePoll() from creating new timers after deactivate. */
-let disposed = false;
+// disposed declared at top of module
 
 /** Generation counter — prevents orphan timer chains. */
-let pollGeneration = 0;
+// pollGeneration declared at top of module
 
 // isExplicitlyIdle: Reserved for future UI improvement — differentiate between
 // "cascade deleted → actively idle" vs "window just opened → no cascade yet".
@@ -223,6 +228,9 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     log(`Extension activated. Polling every ${intervalSec}s`);
+
+    // Start independent activity polling (3s default)
+    scheduleActivityPoll();
 }
 
 // ─── Deactivation ─────────────────────────────────────────────────────────────
@@ -232,6 +240,10 @@ export function deactivate(): void {
     if (pollingTimer) {
         clearTimeout(pollingTimer);
         pollingTimer = undefined;
+    }
+    if (activityPollingTimer) {
+        clearTimeout(activityPollingTimer);
+        activityPollingTimer = undefined;
     }
     abortController.abort();
     // Persist activity data on deactivate
@@ -562,41 +574,7 @@ async function pollContextUsage(): Promise<void> {
         const usageResults = await Promise.all(usagePromises);
         allTrajectoryUsages = usageResults.filter((u): u is ContextUsage => u !== null);
 
-        // 6b. Activity tracker — process BEFORE panel update for instant data
-        if (lsInfo && activityTracker) {
-            try {
-                const activityChanged = await activityTracker.processTrajectories(
-                    lsInfo,
-                    trajectories.map(t => ({ cascadeId: t.cascadeId, stepCount: t.stepCount, status: t.status })),
-                    abortController.signal,
-                );
-                if (activityChanged || !activityTracker.isReady) {
-                    activityStatusBar.updateText(activityTracker.getStatusBarText());
-                    const summary = activityTracker.getSummary();
-                    const tooltipLines: string[] = [];
-                    for (const [name, ms] of Object.entries(summary.modelStats)) {
-                        if (ms.reasoning === 0 && ms.toolCalls === 0 && ms.errors === 0 && ms.checkpoints === 0) { continue; }
-                        const parts: string[] = [];
-                        if (ms.reasoning > 0) { parts.push(`🧠${ms.reasoning}`); }
-                        if (ms.toolCalls > 0) { parts.push(`⚡${ms.toolCalls}`); }
-                        if (ms.checkpoints > 0) { parts.push(`💾${ms.checkpoints}`); }
-                        if (ms.errors > 0) { parts.push(`❌${ms.errors}`); }
-                        tooltipLines.push(`${name}: ${parts.join(' ')}`);
-                    }
-                    if (tooltipLines.length > 0) { activityStatusBar.updateTooltip(tooltipLines); }
-                }
-                // Throttled persistence (max once per 30s)
-                const now = Date.now();
-                if (now - lastActivityPersistTime > 30_000) {
-                    extensionContext.globalState.update('activityTrackerState', activityTracker.serialize());
-                    lastActivityPersistTime = now;
-                }
-            } catch (err) {
-                log(`Activity tracker error: ${err}`);
-            }
-        }
-
-        // 6c. Update WebView panel if visible (with fresh activity data)
+        // 6c. Update WebView panel if visible (context data only; activity is updated independently)
         if (isMonitorPanelVisible()) {
             updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives());
         }
@@ -682,6 +660,81 @@ function restartPolling(): void {
     }
     schedulePoll();
     log(`Polling restarted: ${currentIntervalMs / 1000}s interval`);
+}
+
+// ─── Independent Activity Polling ─────────────────────────────────────────────
+
+const ACTIVITY_POLL_INTERVAL_MS = 3000;
+
+async function pollActivity(): Promise<void> {
+    if (isActivityPolling || disposed) { return; }
+    isActivityPolling = true;
+    try {
+        const lsInfo = cachedLsInfo;
+        if (!lsInfo || !activityTracker) { return; }
+
+        // Fetch trajectories — lightweight RPC
+        let trajectories: TrajectorySummary[];
+        try {
+            trajectories = await getAllTrajectories(lsInfo, abortController.signal);
+        } catch {
+            return; // LS temporarily unavailable; global poll will handle reconnect
+        }
+
+        const activityChanged = await activityTracker.processTrajectories(
+            lsInfo,
+            trajectories.map(t => ({ cascadeId: t.cascadeId, stepCount: t.stepCount, status: t.status })),
+            abortController.signal,
+        );
+
+        if (activityChanged || !activityTracker.isReady) {
+            // Update status bar immediately
+            activityStatusBar.updateText(activityTracker.getStatusBarText());
+            const summary = activityTracker.getSummary();
+            const tooltipLines: string[] = [];
+            for (const [name, ms] of Object.entries(summary.modelStats)) {
+                if (ms.reasoning === 0 && ms.toolCalls === 0 && ms.errors === 0 && ms.checkpoints === 0) { continue; }
+                const parts: string[] = [];
+                if (ms.reasoning > 0) { parts.push(`🧠${ms.reasoning}`); }
+                if (ms.toolCalls > 0) { parts.push(`⚡${ms.toolCalls}`); }
+                if (ms.checkpoints > 0) { parts.push(`💾${ms.checkpoints}`); }
+                if (ms.errors > 0) { parts.push(`❌${ms.errors}`); }
+                tooltipLines.push(`${name}: ${parts.join(' ')}`);
+            }
+            if (tooltipLines.length > 0) { activityStatusBar.updateTooltip(tooltipLines); }
+
+            // Refresh WebView immediately when activity changes
+            if (isMonitorPanelVisible() && currentUsage) {
+                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, summary, activityTracker.getArchives());
+            }
+        }
+
+        // Throttled persistence (max once per 30s)
+        const now = Date.now();
+        if (now - lastActivityPersistTime > 30_000) {
+            extensionContext.globalState.update('activityTrackerState', activityTracker.serialize());
+            lastActivityPersistTime = now;
+        }
+    } catch (err) {
+        log(`Activity poll error: ${err}`);
+    } finally {
+        isActivityPolling = false;
+    }
+}
+
+function scheduleActivityPoll(): void {
+    if (disposed) { return; }
+    const myGeneration = ++activityPollGeneration;
+    activityPollingTimer = setTimeout(async () => {
+        try {
+            await pollActivity();
+        } catch { /* ignore */ }
+        finally {
+            if (activityPollGeneration === myGeneration) {
+                scheduleActivityPoll();
+            }
+        }
+    }, ACTIVITY_POLL_INTERVAL_MS);
 }
 
 // ─── Low Quota Notification ───────────────────────────────────────────────────

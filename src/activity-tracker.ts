@@ -37,6 +37,8 @@ const STEP_CATEGORIES: Record<string, StepClassification> = {
     'CORTEX_STEP_TYPE_CONVERSATION_HISTORY': { icon: '📜', label: 'history',       category: 'system' },
     'CORTEX_STEP_TYPE_KNOWLEDGE_ARTIFACTS':  { icon: '📚', label: 'knowledge',     category: 'system' },
     'CORTEX_STEP_TYPE_EPHEMERAL_MESSAGE':    { icon: '💨', label: 'ephemeral',     category: 'system' },
+    'CORTEX_STEP_TYPE_TASK_BOUNDARY':        { icon: '📌', label: 'task_boundary', category: 'system' },
+    'CORTEX_STEP_TYPE_NOTIFY_USER':          { icon: '📢', label: 'notify_user',  category: 'system' },
 };
 
 function classifyStep(type: string): StepClassification {
@@ -73,6 +75,8 @@ export interface StepEvent {
     userInput?: string;     // user message preview (category='user')
     aiResponse?: string;    // AI response brief preview (category='reasoning')
     browserSub?: string;    // browser sub-step summary
+    toolName?: string;      // tool type label (e.g. 'view_file', 'gh/search_issues')
+    stepIndex?: number;     // step position within conversation (e.g. 142)
 }
 
 /** Archived activity snapshot (saved on quota reset) */
@@ -178,6 +182,26 @@ function extractToolDetail(step: Record<string, unknown>): string {
     return '';
 }
 
+/** Extract human-readable tool name for display in timeline */
+function extractToolName(step: Record<string, unknown>, fallbackLabel: string): string {
+    try {
+        const meta = step.metadata as Record<string, unknown> | undefined;
+        const toolCall = meta?.toolCall as Record<string, unknown> | undefined;
+        const name = (toolCall?.name as string) || '';
+        if (name) {
+            // MCP tools: shorten prefixes
+            if (name.startsWith('mcp_github-mcp-server_')) { return 'gh/' + name.replace('mcp_github-mcp-server_', ''); }
+            if (name.startsWith('mcp_web-fetcher_')) { return name.replace('mcp_web-fetcher_', ''); }
+            if (name.startsWith('mcp_memory-store_')) { return name.replace('mcp_memory-store_', ''); }
+            if (name.startsWith('mcp_sandbox_')) { return name.replace('mcp_sandbox_', ''); }
+            if (name.startsWith('mcp_sequential-thinking_')) { return 'thinking'; }
+            if (name.startsWith('mcp_')) { return name.replace('mcp_', ''); }
+            return name;
+        }
+    } catch { /* fallback */ }
+    return fallbackLabel;
+}
+
 // ─── ActivityTracker Class ───────────────────────────────────────────────────
 
 /** Maximum recent step events kept in memory (configurable via settings) */
@@ -279,12 +303,20 @@ export class ActivityTracker {
             let entry = this._trajectories.get(id);
 
             if (!entry) {
+                // New conversation with no steps yet — don't create entry, wait for steps
+                if (currSteps === 0) { continue; }
                 entry = { stepCount: 0, processedIndex: 0, dominantModel: '' };
                 this._trajectories.set(id, entry);
             }
 
-            // Skip if no new steps
+            // Skip if no new steps.
+            // For already-processed IDLE conversations, skip entirely (they won't produce more steps).
+            // But for NEVER-processed conversations (processedIndex===0), always fetch even if IDLE.
             if (currSteps <= entry.processedIndex) {
+                entry.stepCount = currSteps;
+                continue;
+            }
+            if (entry.processedIndex > 0 && info.status !== 'CASCADE_RUN_STATUS_RUNNING') {
                 entry.stepCount = currSteps;
                 continue;
             }
@@ -301,28 +333,43 @@ export class ActivityTracker {
                         15000, signal) as Record<string, unknown>;
                     const steps = (sr.steps || []) as Record<string, unknown>[];
 
-                    for (const step of steps) {
-                        this._processStep(step, this._warmedUp);
+                    for (let si = 0; si < steps.length; si++) {
+                        this._processStep(steps[si], this._warmedUp, si);
                     }
                     hasChanges = steps.length > 0;
                     entry.processedIndex = currSteps;
                     entry.dominantModel = this._detectDominantModel(steps);
                 } else {
-                    // INCREMENTAL: API can't return new steps beyond ~500 window.
-                    // Attribute delta directly to this trajectory's dominant model.
-                    const delta = currSteps - entry.stepCount;
-                    if (delta > 0 && entry.dominantModel) {
+                    // INCREMENTAL: re-fetch steps to capture new ones precisely.
+                    // API returns earliest ~500 steps; any beyond that use estimation.
+                    const sr = await rpcCall(ls, 'GetCascadeTrajectorySteps',
+                        { cascadeId: id, startIndex: 0, endIndex: currSteps },
+                        15000, signal) as Record<string, unknown>;
+                    const fetchedSteps = (sr.steps || []) as Record<string, unknown>[];
+
+                    // Process individually any NEW steps within API window
+                    if (fetchedSteps.length > entry.processedIndex) {
+                        for (let i = entry.processedIndex; i < fetchedSteps.length; i++) {
+                            this._processStep(fetchedSteps[i], true, i);
+                        }
+                        hasChanges = true;
+                        entry.processedIndex = fetchedSteps.length;
+                        entry.dominantModel = this._detectDominantModel(fetchedSteps);
+                    }
+
+                    // Any steps beyond API window → delta estimation (fallback)
+                    const beyondApi = currSteps - Math.max(fetchedSteps.length, entry.stepCount);
+                    if (beyondApi > 0 && entry.dominantModel) {
                         const s = this._getOrCreateStats(entry.dominantModel);
-                        s.totalSteps += delta;
-                        s.estSteps += delta;
+                        s.totalSteps += beyondApi;
+                        s.estSteps += beyondApi;
                         this._pushEvent({
                             timestamp: new Date().toISOString(),
                             icon: '🧠', category: 'reasoning', model: entry.dominantModel,
-                            detail: `+${delta} steps (estimated)`, durationMs: 0,
+                            detail: `+${beyondApi} steps (estimated)`, durationMs: 0,
                         });
                         hasChanges = true;
                     }
-                    entry.processedIndex = currSteps;
                 }
 
                 entry.stepCount = currSteps;
@@ -336,7 +383,7 @@ export class ActivityTracker {
 
     // ─── Step Processing ─────────────────────────────────────────────────
 
-    private _processStep(step: Record<string, unknown>, emitEvent = true): void {
+    private _processStep(step: Record<string, unknown>, emitEvent = true, stepIndex?: number): void {
         const type = (step.type as string) || '';
         const meta = (step.metadata || {}) as Record<string, unknown>;
         const modelId = (meta.generatorModel as string) || '';
@@ -354,7 +401,7 @@ export class ActivityTracker {
             const items = userInput?.items as Record<string, string>[] | undefined;
             const text = Array.isArray(items) && items.length > 0 ? (items[0].text || '') : '';
             if (emitEvent) {
-                this._pushEvent({ timestamp, icon: cls.icon, category: 'user', model: '', detail: '', durationMs: 0, userInput: text ? truncate(text, 80) : undefined });
+                this._pushEvent({ timestamp, icon: cls.icon, category: 'user', model: '', detail: '', durationMs: 0, userInput: text ? truncate(text, 80) : undefined, stepIndex });
             }
             return;
         }
@@ -385,7 +432,7 @@ export class ActivityTracker {
                 s.errors++;
             }
             if (emitEvent) {
-                this._pushEvent({ timestamp, icon: cls.icon, category: 'system', model: model || 'unknown', detail: 'error', durationMs: 0 });
+                this._pushEvent({ timestamp, icon: cls.icon, category: 'system', model: model || 'unknown', detail: 'error', durationMs: 0, stepIndex });
             }
             return;
         }
@@ -411,12 +458,11 @@ export class ActivityTracker {
             const toolCalls = pr?.toolCalls as unknown[] | undefined;
             if (Array.isArray(toolCalls) && toolCalls.length > 0) {
                 detail = `→ ${toolCalls.length} ${toolCalls.length === 1 ? 'tool' : 'tools'}`;
-            } else if (dur > 0) {
-                detail = `thinking ${dur < 1000 ? dur + 'ms' : (dur / 1000).toFixed(1) + 's'}`;
             }
             const resp = ((pr?.modifiedResponse || pr?.response || '') as string);
             if (emitEvent) {
-                this._pushEvent({ timestamp, icon: cls.icon, category: 'reasoning', model, detail, durationMs: dur, aiResponse: resp ? truncate(resp, 80) : undefined });
+                // durationMs=0 for timeline: per-step thinking time is unreliable with 3s polling
+                this._pushEvent({ timestamp, icon: cls.icon, category: 'reasoning', model, detail, durationMs: 0, aiResponse: resp ? truncate(resp, 80) : undefined, stepIndex });
             }
 
         } else if (cls.category === 'tool') {
@@ -428,8 +474,9 @@ export class ActivityTracker {
             const tokens = parseInt((meta.toolCallOutputTokens as string) || '0', 10);
             if (tokens > 0) { s.toolReturnTokens += tokens; }
             const detail = extractToolDetail(step);
+            const toolName = extractToolName(step, cls.label);
             if (emitEvent) {
-                this._pushEvent({ timestamp, icon: cls.icon, category: 'tool', model, detail, durationMs: dur });
+                this._pushEvent({ timestamp, icon: cls.icon, category: 'tool', model, detail, durationMs: dur, toolName, stepIndex });
             }
         }
     }

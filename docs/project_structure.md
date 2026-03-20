@@ -31,6 +31,8 @@ antigravity-context-monitor/
 │   ├── i18n.ts                   # 国际化系统（中 / 英 / 双语）
 │   ├── quota-tracker.ts          # 模型额度消费时间线追踪
 │   ├── activity-tracker.ts       # 模型活动追踪（推理、工具、Token）
+│   ├── diag-verify.ts            # LS 数据静态诊断脚本
+│   ├── diag-monitor.ts           # LS 数据实时监视脚本
 │   ├── discovery.test.ts         # discovery 单元测试
 │   ├── statusbar.test.ts         # statusbar 单元测试
 │   ├── tracker.test.ts           # tracker 单元测试
@@ -63,7 +65,8 @@ Extension lifecycle management hub.
 | 职责 / Responsibility | 说明 / Description |
 |---|---|
 | `activate()` / `deactivate()` | 初始化所有子系统、注册命令、清理资源 |
-| 轮询循环 / Poll loop | `pollContextUsage()` 以可配置间隔执行 |
+| 全局轮询 / Global poll | `pollContextUsage()` 以可配置间隔执行（默认 5s） |
+| Activity 独立轮询 | `pollActivity()` 独立 3 秒循环，变化时立即刷新 UI |
 | 级联追踪 / Cascade tracking | 按优先级选择活跃会话：RUNNING → stepCount 变化 → 新会话 → 最近修改 |
 | 压缩检测 / Compression | 双层检测：checkpoint inputTokens 下降 + 跨轮询 contextUsed 比较 |
 | 指数退避 / Backoff | LS 连接失败时 5s → 10s → 20s → 60s |
@@ -176,9 +179,11 @@ Tracks model activity: reasoning count, tool call breakdown, token consumption, 
 
 | 特性 / Feature | 说明 / Description |
 |---|---|
-| 步骤分类 / Step classification | 19 种步骤类型 → reasoning / tool / user / system |
+| 步骤分类 / Step classification | 21 种步骤类型 → reasoning / tool / user / system |
+| 独立轮询 / Independent poll | 3 秒独立循环，不受全局 poll 影响 |
 | 预热 / Warm-up | 首次轮询处理所有对话的全部历史步骤 |
-| 增量更新 / Incremental | 后续只处理新增步骤 |
+| 增量更新 / Incremental | 后续只对 RUNNING 对话拉取新增步骤 |
+| 工具详情 / Tool detail | 提取工具名（gh/search_issues、view_file 等）+ 参数摘要 |
 | 归档 / Archive | `archiveAndReset()` 在额度重置时保存快照 |
 | 序列化 / Serialization | `serialize()` / `restore()` 支持跨会话持久化 |
 
