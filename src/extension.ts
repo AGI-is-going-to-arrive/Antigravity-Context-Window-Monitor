@@ -11,10 +11,12 @@ import {
     TrajectorySummary,
     UserStatusInfo,
 } from './tracker';
-import { StatusBarManager, formatContextLimit } from './statusbar';
+import { StatusBarManager, formatContextLimit, ActivityStatusBarItem } from './statusbar';
 import { initI18n, showLanguagePicker } from './i18n';
 import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible } from './webview-panel';
+import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } from './constants';
+import { QuotaTracker } from './quota-tracker';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -31,6 +33,11 @@ let statusPollCount = 0;
 /** Refresh user status every N poll cycles (~60s at default 5s interval) */
 const STATUS_REFRESH_INTERVAL = 12;
 let outputChannel: vscode.OutputChannel;
+let quotaTracker: QuotaTracker;
+let activityTracker: ActivityTracker;
+let activityStatusBar: ActivityStatusBarItem;
+/** Throttle activity persistence: max once per 30s */
+let lastActivityPersistTime = 0;
 
 /** Extension context reference — needed for workspaceState persistence. */
 let extensionContext: vscode.ExtensionContext;
@@ -40,6 +47,9 @@ let trackedCascadeId: string | null = null;
 
 /** Previous poll's step counts per cascade — used to detect activity. */
 const previousStepCounts = new Map<string, number>();
+
+/** Models that have already triggered a low-quota notification (cleared when recovered). */
+const quotaNotifiedModels = new Set<string>();
 
 /** Previous poll's known trajectory IDs — used to detect new conversations. */
 const previousTrajectoryIds = new Set<string>();
@@ -86,6 +96,20 @@ export function activate(context: vscode.ExtensionContext): void {
     outputChannel = vscode.window.createOutputChannel('Antigravity Context Monitor');
     log('Extension activating...');
 
+    // Initialize quota tracker
+    quotaTracker = new QuotaTracker(context);
+    quotaTracker.onQuotaReset = () => {
+        if (activityTracker) {
+            log('Quota reset detected — archiving activity snapshot');
+            activityTracker.archiveAndReset();
+            context.globalState.update('activityTrackerState', activityTracker.serialize());
+            if (activityStatusBar) {
+                activityStatusBar.updateText(activityTracker.getStatusBarText());
+                activityStatusBar.updateTooltip([]);
+            }
+        }
+    };
+
     // Initialize i18n from persisted state
     initI18n(context);
 
@@ -96,6 +120,13 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     statusBar = new StatusBarManager();
+
+    // Initialize activity tracker
+    const savedActivity = context.globalState.get<ActivityTrackerState>('activityTrackerState');
+    activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
+    activityStatusBar = new ActivityStatusBarItem();
+    // Immediately update activity status bar with restored data
+    activityStatusBar.updateText(activityTracker.getStatusBarText());
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = context.globalState.get<import('./models').ModelConfig[]>('cachedModelConfigs');
@@ -112,7 +143,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Register commands
     context.subscriptions.push(
         vscode.commands.registerCommand('antigravity-context-monitor.showDetails', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context);
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, undefined, activityTracker?.getArchives(), activityTracker);
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
@@ -131,9 +162,13 @@ export function activate(context: vscode.ExtensionContext): void {
                 if (isMonitorPanelVisible()) {
                     updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo);
                 }
-            });
+                });
+        }),
+        vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'activity', activityTracker?.getArchives(), activityTracker);
         }),
         statusBar,
+        activityStatusBar,
         outputChannel
     );
 
@@ -199,8 +234,15 @@ export function deactivate(): void {
         pollingTimer = undefined;
     }
     abortController.abort();
+    // Persist activity data on deactivate
+    if (activityTracker && extensionContext) {
+        extensionContext.globalState.update('activityTrackerState', activityTracker.serialize());
+    }
     if (statusBar) {
         statusBar.dispose();
+    }
+    if (activityStatusBar) {
+        activityStatusBar.dispose();
     }
     log('Extension deactivated');
 }
@@ -214,6 +256,9 @@ function applyDisplayPrefs(): void {
         showQuota: cfg.get<boolean>('statusBar.showQuota', true),
         showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
     });
+    // Activity status bar item is independent
+    const showActivity = cfg.get<boolean>('statusBar.showActivity', true);
+    activityStatusBar.setVisible(showActivity !== false);
 }
 
 // ─── Polling Logic ────────────────────────────────────────────────────────────
@@ -248,6 +293,8 @@ async function pollContextUsage(): Promise<void> {
                     updateModelDisplayNames(fullStatus.configs);
                     cachedModelConfigs = fullStatus.configs;
                     statusBar.setModelConfigs(fullStatus.configs);
+                    quotaTracker.processUpdate(fullStatus.configs);
+                    checkQuotaNotification(fullStatus.configs);
                     log(`Updated model display names: ${fullStatus.configs.map(c => c.label).join(', ')}`);
                 }
                 if (fullStatus.userInfo) {
@@ -270,6 +317,8 @@ async function pollContextUsage(): Promise<void> {
                     if (fullStatus.configs.length > 0) {
                         cachedModelConfigs = fullStatus.configs;
                         statusBar.setModelConfigs(fullStatus.configs);
+                        quotaTracker.processUpdate(fullStatus.configs);
+                        checkQuotaNotification(fullStatus.configs);
                     }
                     if (fullStatus.userInfo) {
                         cachedUserInfo = fullStatus.userInfo;
@@ -432,7 +481,7 @@ async function pollContextUsage(): Promise<void> {
             currentUsage = null;
             allTrajectoryUsages = [];
             if (isMonitorPanelVisible()) {
-                updateMonitorPanel(null, [], cachedModelConfigs, cachedUserInfo);
+                updateMonitorPanel(null, [], cachedModelConfigs, cachedUserInfo, quotaTracker);
             }
             updateBaselines(trajectories);
             return;
@@ -513,9 +562,43 @@ async function pollContextUsage(): Promise<void> {
         const usageResults = await Promise.all(usagePromises);
         allTrajectoryUsages = usageResults.filter((u): u is ContextUsage => u !== null);
 
-        // 6b. Update WebView panel if visible
+        // 6b. Activity tracker — process BEFORE panel update for instant data
+        if (lsInfo && activityTracker) {
+            try {
+                const activityChanged = await activityTracker.processTrajectories(
+                    lsInfo,
+                    trajectories.map(t => ({ cascadeId: t.cascadeId, stepCount: t.stepCount, status: t.status })),
+                    abortController.signal,
+                );
+                if (activityChanged || !activityTracker.isReady) {
+                    activityStatusBar.updateText(activityTracker.getStatusBarText());
+                    const summary = activityTracker.getSummary();
+                    const tooltipLines: string[] = [];
+                    for (const [name, ms] of Object.entries(summary.modelStats)) {
+                        if (ms.reasoning === 0 && ms.toolCalls === 0 && ms.errors === 0 && ms.checkpoints === 0) { continue; }
+                        const parts: string[] = [];
+                        if (ms.reasoning > 0) { parts.push(`🧠${ms.reasoning}`); }
+                        if (ms.toolCalls > 0) { parts.push(`⚡${ms.toolCalls}`); }
+                        if (ms.checkpoints > 0) { parts.push(`💾${ms.checkpoints}`); }
+                        if (ms.errors > 0) { parts.push(`❌${ms.errors}`); }
+                        tooltipLines.push(`${name}: ${parts.join(' ')}`);
+                    }
+                    if (tooltipLines.length > 0) { activityStatusBar.updateTooltip(tooltipLines); }
+                }
+                // Throttled persistence (max once per 30s)
+                const now = Date.now();
+                if (now - lastActivityPersistTime > 30_000) {
+                    extensionContext.globalState.update('activityTrackerState', activityTracker.serialize());
+                    lastActivityPersistTime = now;
+                }
+            } catch (err) {
+                log(`Activity tracker error: ${err}`);
+            }
+        }
+
+        // 6c. Update WebView panel if visible (with fresh activity data)
         if (isMonitorPanelVisible()) {
-            updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo);
+            updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives());
         }
 
         // 7. Update baselines for next poll
@@ -599,6 +682,42 @@ function restartPolling(): void {
     }
     schedulePoll();
     log(`Polling restarted: ${currentIntervalMs / 1000}s interval`);
+}
+
+// ─── Low Quota Notification ───────────────────────────────────────────────────
+
+function checkQuotaNotification(configs: import('./models').ModelConfig[]): void {
+    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    const thresholdPct = cfg.get<number>('quotaNotificationThreshold', 20);
+    if (thresholdPct <= 0) { return; } // disabled
+
+    const thresholdFrac = thresholdPct / 100;
+
+    for (const c of configs) {
+        if (!c.quotaInfo) { continue; }
+        const label = c.label || c.model;
+        const remaining = c.quotaInfo.remainingFraction;
+
+        if (remaining <= thresholdFrac) {
+            // Only notify once per model per threshold crossing
+            if (!quotaNotifiedModels.has(label)) {
+                quotaNotifiedModels.add(label);
+                const pct = (remaining * 100).toFixed(1);
+                vscode.window.showWarningMessage(
+                    `⚠ ${label} quota low: ${pct}% remaining`,
+                    'Open Monitor',
+                ).then(choice => {
+                    if (choice === 'Open Monitor') {
+                        vscode.commands.executeCommand('antigravity-context-monitor.showDetails');
+                    }
+                });
+                log(`Low quota notification: ${label} at ${pct}%`);
+            }
+        } else {
+            // Recovered above threshold — re-arm notification
+            quotaNotifiedModels.delete(label);
+        }
+    }
 }
 
 function log(message: string): void {
