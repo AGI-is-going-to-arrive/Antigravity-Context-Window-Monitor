@@ -1,8 +1,8 @@
 # 🛠️ Antigravity Context Window Monitor — 技术实现说明 / Technical Implementation
 
-本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 监控面板）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。
+本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 面板调度）、`activity-tracker.ts`（模型活动追踪）、`activity-panel.ts`（活动面板 UI）、`quota-tracker.ts`（配额追踪）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。WebView 面板拆分为：`webview-monitor-tab.ts`、`webview-profile-tab.ts`、`webview-settings-tab.ts`、`webview-history-tab.ts`、`webview-script.ts`、`webview-styles.ts`、`webview-helpers.ts`、`webview-icons.ts`。
 
-This document explains how the Antigravity Context Window Monitor plugin works. The plugin consists of the following core modules: `discovery.ts` (server discovery), `tracker.ts` (token calculation), `extension.ts` (polling scheduler), `statusbar.ts` (UI display), `webview-panel.ts` (WebView monitor panel), `rpc-client.ts` (RPC communication layer), `models.ts` (model config & display names), `constants.ts` (constants), and `i18n.ts` (internationalization system).
+This document explains how the Antigravity Context Window Monitor plugin works. The plugin consists of the following core modules: `discovery.ts` (server discovery), `tracker.ts` (token calculation), `extension.ts` (polling scheduler), `statusbar.ts` (UI display), `webview-panel.ts` (WebView panel orchestrator), `activity-tracker.ts` (model activity tracking), `activity-panel.ts` (activity panel UI), `quota-tracker.ts` (quota tracking), `rpc-client.ts` (RPC communication layer), `models.ts` (model config & display names), `constants.ts` (constants), and `i18n.ts` (internationalization system). WebView panel split into: `webview-monitor-tab.ts`, `webview-profile-tab.ts`, `webview-settings-tab.ts`, `webview-history-tab.ts`, `webview-script.ts`, `webview-styles.ts`, `webview-helpers.ts`, `webview-icons.ts`.
 
 ---
 
@@ -116,6 +116,29 @@ Since v1.10.1, clicking the status bar opens a WebView side panel (replacing the
 * **实时刷新 / Live Refresh**: 轮询循环中通过 `updateMonitorPanel()` 推送最新数据到已打开的面板，保持数据实时同步。
   The polling loop pushes latest data to the open panel via `updateMonitorPanel()`, keeping data in real-time sync.
 
+## 🧠 6. 模型活动监控 / Model Activity Monitor
+
+> 源码：[`activity-tracker.ts`](../src/activity-tracker.ts)、[`activity-panel.ts`](../src/activity-panel.ts)、[`quota-tracker.ts`](../src/quota-tracker.ts)
+
+自 v1.11.2 起，插件追踪每个模型的实时活动数据（推理调用、工具使用、Token 消耗、耗时），并在 WebView 面板的 Activity 标签页中展示。
+
+Since v1.11.2, the plugin tracks real-time activity data per model (reasoning calls, tool usage, tokens, timing) and displays it in the WebView panel's Activity tab.
+
+* **步骤分类 / Step Classification**: 20+ 步骤类型被分类为 reasoning、tool、user、system 四个类别。每个步骤提取详细信息（文件名、命令、搜索词等）用于时间线展示。
+  20+ step types are classified into reasoning, tool, user, and system categories. Detailed info is extracted from each step (filename, command, query, etc.) for timeline display.
+
+* **暖机与增量更新 / Warm-up & Incremental**: 首次启动时处理所有对话的全部步骤（warm-up）以获取完整周期统计。之后仅增量处理新步骤。当 LS API 无法返回更多步骤（~500 步窗口限制）时，通过 `stepCount` 差值归因到每个对话的主模型（`dominantModel`）。
+  On first launch, processes all steps across all conversations (warm-up) for complete cycle stats. Subsequently only processes new steps incrementally. When the LS API can't return more steps (~500 step window), delta is attributed to each trajectory's dominant model (`dominantModel`).
+
+* **配额追踪与自动归档 / Quota Tracking & Auto-Archive**: `QuotaTracker` 监测配额变化。当 `remainingFraction` 从低值跳回 1.0 时触发 `onQuotaReset` 回调，`ActivityTracker.archiveAndReset()` 将当前活动快照归档并重置统计，保留 trajectory baselines 避免重复计数。
+  `QuotaTracker` monitors quota changes. When `remainingFraction` jumps back to 1.0, `onQuotaReset` fires, and `ActivityTracker.archiveAndReset()` archives the current snapshot and resets stats while preserving trajectory baselines to avoid re-counting.
+
+* **持久化 / Persistence**: 活动数据通过 `globalState` 序列化存储，30 秒节流写入。恢复时强制 warm-up 重校准实际计数。
+  Activity data persisted via `globalState` serialization, throttled to 30s writes. On restore, forces warm-up to recalibrate actual counts.
+
+* **低配额通知 / Low Quota Notification**: 当模型剩余配额低于用户设定阈值（默认 20%）时弹出警告通知，每个模型每次阈值跨越仅通知一次，恢复后重新启用。
+  Warning notification when model quota drops below user-configured threshold (default 20%). Each model notifies only once per threshold crossing, re-arms when recovered.
+
 ---
-基于 TypeScript 构建，适用于 Antigravity IDE。包含 37 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（10 tests）、`tracker.test.ts`（16 tests）、`statusbar.test.ts`（11 tests）。
-Built with TypeScript for the Antigravity IDE. Includes 37 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (10 tests), `tracker.test.ts` (16 tests), `statusbar.test.ts` (11 tests).
+基于 TypeScript 构建，适用于 Antigravity IDE。包含 11 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（11 tests）。
+Built with TypeScript for the Antigravity IDE. Includes 11 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (11 tests).

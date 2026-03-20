@@ -68,6 +68,14 @@
     * **🎛️ 状态栏显示开关**：独立开关控制「上下文用量」、「额度指示灯」与「重置倒计时」的显示/隐藏。
     * **⏸️ 暂停/恢复**：暂停自动刷新以冻结面板数据，方便排查问题。
 
+* **🧠 模型活动监控** *(v1.11.2 新增)*
+    新增活动标签页，实时追踪 AI 推理调用、工具使用、Token 消耗和每模型耗时。
+    * **📊 活动状态栏**：第二个状态栏指标，实时显示 `🧠5 ⚡12 🪙3.2k`。点击打开活动标签页。
+    * **💾 数据持久化**：活动统计通过 `globalState` 跨 VS Code 重启保存，写入频率限制为每 30 秒一次。
+    * **📋 自动归档**：模型额度重置时，当前活动自动归档到历史记录，生成每周期使用报告。
+    * **📊 推算步数**：当对话超过 LS API 约 500 步获取窗口时，额外步数以推算方式记录，UI 上以 `📊` 标记明确区分。
+    * **⚠️ 低额度通知**：当任意模型剩余额度低于可配置阈值（默认 20%）时弹出警告通知。
+
 ## 🤖 支持的模型
 
 | 模型 | Internal ID | 上下文上限 |
@@ -131,6 +139,11 @@
 | `statusBar.showContext` | true | 状态栏显示上下文用量（如 `45k/1M, 4.5%`） |
 | `statusBar.showQuota` | true | 状态栏显示当前模型额度指示灯（如 `🟢85%`） |
 | `statusBar.showResetCountdown` | true | 状态栏显示重置倒计时（如 `⏳4h32m`） |
+| `statusBar.showActivity` | true | 状态栏显示模型活动指标（`🧠`、`⚡`、`🪙`） |
+| `quotaNotificationThreshold` | 20 | 模型剩余额度低于此百分比时弹出警告（设为 0 可禁用） |
+| `activity.maxRecentSteps` | 100 | 活动时间线最多保留的操作条数 |
+| `activity.maxArchives` | 20 | 活动归档最多保留份数 |
+| `privacy.defaultMask` | false | 打开面板时默认启用隐私遮罩 |
 
 ## 🔤 命令
 
@@ -139,6 +152,7 @@
 | `Show Context Window Details` | 打开 QuickPick 面板显示所有被追踪的会话 |
 | `Refresh Context Window Monitor` | 重新发现语言服务器并重启轮询 |
 | `Switch Display Language` | 选择仅中文、仅英文或双语显示模式 |
+| `Show Model Activity` | 打开监控面板的活动标签页 |
 
 ## ⭐ Star History
 
@@ -146,4 +160,4 @@
 
 ---
 **作者**: AGI-is-going-to-arrive
-**Version**: 1.11.0
+**Version**: 1.11.2

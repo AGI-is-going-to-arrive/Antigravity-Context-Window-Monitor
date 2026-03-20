@@ -68,6 +68,14 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     * **🎛️ Status Bar Display Toggles**: Independent toggle switches to hide/show 'Context Usage', 'Quota Indicator', and 'Reset Countdown' in the status bar.
     * **⏸️ Pause/Resume**: Pause auto-refresh to freeze the panel while investigating data.
 
+* **🧠 Model Activity Monitor** *(v1.11.2)*
+    New Activity tab tracks real-time AI reasoning calls, tool usage, tokens, and timing per model across all conversations.
+    * **📊 Activity Status Bar**: Second status bar item showing live counts (`🧠5 ⚡12 🪙3.2k`). Click to open the Activity tab.
+    * **💾 Persistence**: Activity stats survive VS Code restarts via `globalState`. Throttled to max once per 30s.
+    * **📋 Auto-Archive**: When model quota resets, current activity is automatically archived to history, giving per-cycle usage reports.
+    * **📊 Estimated Steps**: When conversations exceed the LS API's ~500 step window, additional steps are tracked as estimated counts with clear `📊` markers.
+    * **⚠️ Low Quota Notification**: Warning popup when any model's remaining quota drops below a configurable threshold (default 20%).
+
 ## 🤖 Supported Models
 
 | Model | Internal ID | Context Limit |
@@ -131,6 +139,11 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | `statusBar.showContext` | true | Show context usage (e.g. `45k/1M, 4.5%`) in status bar |
 | `statusBar.showQuota` | true | Show current model quota indicator (e.g. `🟢85%`) in status bar |
 | `statusBar.showResetCountdown` | true | Show quota reset countdown (e.g. `⏳4h32m`) in status bar |
+| `statusBar.showActivity` | true | Show model activity indicator (`🧠`, `⚡`, `🪙`) in status bar |
+| `quotaNotificationThreshold` | 20 | Show warning when model quota drops below this % (0 to disable) |
+| `activity.maxRecentSteps` | 100 | Max recent activity steps to keep in timeline |
+| `activity.maxArchives` | 20 | Max activity archives to keep |
+| `privacy.defaultMask` | false | Enable privacy mask by default when opening the panel |
 
 ## 🔤 Commands
 
@@ -139,6 +152,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | `Show Context Window Details` | Open a QuickPick panel listing all tracked sessions |
 | `Refresh Context Window Monitor` | Re-discover the language server and restart polling |
 | `Switch Display Language` | Choose between Chinese-only, English-only, or bilingual display |
+| `Show Model Activity` | Open the Activity tab in the monitor panel |
 
 ## ⭐ Star History
 
@@ -146,4 +160,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.11.0
+**Version**: 1.11.2
