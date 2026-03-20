@@ -4,13 +4,15 @@
 
 import { tBi } from './i18n';
 import { QuotaTracker, QuotaSession } from './quota-tracker';
+import { ActivityArchive } from './activity-tracker';
+import { buildArchiveHistory } from './activity-panel';
 import { ICON } from './webview-icons';
 import { esc, formatShortTime, formatDuration } from './webview-helpers';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /** Build the complete History tab HTML. */
-export function buildHistoryHtml(tracker?: QuotaTracker): string {
+export function buildHistoryHtml(tracker?: QuotaTracker, archives?: ActivityArchive[]): string {
     if (!tracker) {
         return `
             <section class="card empty">
@@ -57,8 +59,8 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
             <section class="card">
                 <h2>${ICON.bolt} ${tBi('Active Tracking', '活跃追踪')} (${activeSessions.length})</h2>
                 <p class="raw-desc">${tBi(
-                    'Currently tracking quota consumption. Updates every ~60s.',
-                    '正在追踪额度消耗。约每 60 秒更新。',
+                    'Currently tracking quota consumption. Tracking starts instantly when quota drops; if quota stays at 100%, it auto-detects usage via reset time drift (~10 min).',
+                    '正在追踪额度消耗。额度下降时立即启动；若额度持续 100%，通过重置时间偏移自动检测（约 10 分钟）。',
                 )}</p>
                 ${activeCards}
             </section>`);
@@ -67,8 +69,8 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
             <section class="card empty">
                 <h2>${ICON.bolt} ${tBi('Active Tracking', '活跃追踪')}</h2>
                 <p class="empty-desc">${tBi(
-                    'No active quota consumption detected. Tracking starts when quota drops below 100%.',
-                    '未检测到活跃额度消耗。当额度低于 100% 时自动开始追踪。',
+                    'No active quota consumption detected. Tracking starts instantly when quota drops; if quota stays at 100%, it auto-detects usage via reset time drift (~10 min).',
+                    '未检测到活跃额度消耗。额度下降时立即启动追踪；若额度持续 100%，通过重置时间偏移自动检测（约 10 分钟）。',
                 )}</p>
             </section>`);
     }
@@ -108,7 +110,8 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
             </section>`);
     }
 
-    // History Settings 已迁入 Settings tab
+    // ── Activity Archives (moved from Activity tab) ──
+    parts.push(buildArchiveHistory(archives));
 
     return parts.join('');
 }

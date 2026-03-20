@@ -2,7 +2,7 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Window Monitor",
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
-  "version": "1.11.2",
+  "version": "1.11.3",
   "publisher": "AGI-is-going-to-arrive",
   "license": "MIT",
   "repository": {
@@ -85,6 +85,16 @@
           "type": "boolean",
           "default": true,
           "description": "Show model activity indicator (🧠 reasoning, ⚡ tools, 🪙 tokens) in status bar / 状态栏显示模型活动指标"
+        },
+        "antigravityContextMonitor.statusBar.activityDisplayMode": {
+          "type": "string",
+          "default": "global",
+          "enum": ["global", "currentModel"],
+          "enumDescriptions": [
+            "Show aggregated stats across all models / 显示所有模型的汇总统计",
+            "Show stats for the current conversation's model only / 仅显示当前对话模型的统计"
+          ],
+          "description": "Activity status bar display mode / 活动状态栏显示模式"
         },
         "antigravityContextMonitor.quotaNotificationThreshold": {
           "type": "number",

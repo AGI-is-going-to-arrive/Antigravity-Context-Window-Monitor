@@ -1128,6 +1128,57 @@ export function getStyles(): string {
             opacity: 0.6;
         }
 
+        /* ─── Radio Group ─────────────── */
+        .radio-group {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-1);
+            margin-top: var(--space-1);
+        }
+
+        .radio-row {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            cursor: pointer;
+            font-size: 0.82em;
+            padding: var(--space-1) var(--space-2);
+            border-radius: var(--radius-sm);
+            transition: background 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        @media (hover: hover) {
+            .radio-row:hover { background: rgba(255,255,255,0.04); }
+        }
+
+        .radio-row input[type="radio"] {
+            opacity: 0;
+            position: absolute;
+            width: 0;
+            height: 0;
+        }
+
+        .radio-row input[type="radio"] + span::before {
+            content: '';
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--color-text-dim);
+            border-radius: 50%;
+            margin-right: var(--space-1);
+            vertical-align: middle;
+            transition: border-color 0.15s cubic-bezier(.4,0,.2,1), box-shadow 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        .radio-row input[type="radio"]:checked + span::before {
+            border-color: var(--color-info);
+            box-shadow: inset 0 0 0 3px var(--color-info);
+        }
+
+        .radio-row input[type="radio"]:focus-visible + span::before {
+            box-shadow: 0 0 0 2px var(--color-info);
+        }
+
         /* ─── Settings Model Grid ──────── */
         .setting-model-grid {
             display: flex;

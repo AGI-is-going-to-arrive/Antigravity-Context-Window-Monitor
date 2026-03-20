@@ -13,7 +13,8 @@
 
 ```mermaid
 graph LR
-    A[extension.ts<br/>主 poll 循环] -->|10s 轮询| B[LS gRPC API]
+    A[extension.ts<br/>全局 poll 5s] -->|轮询| B[LS gRPC API]
+    P[extension.ts<br/>Activity poll 3s] -->|独立轮询| B
     B --> C[GetAllCascadeTrajectories]
     B --> D[GetCascadeTrajectorySteps]
     B --> E[GetUserStatus]
@@ -23,6 +24,7 @@ graph LR
     G --> H[activity-panel.ts<br/>面板渲染]
     A --> I[quota-tracker.ts<br/>额度消耗追踪]
     A --> J[webview-panel.ts<br/>面板 HTML]
+    P -.->|变化时立即刷新| H
 ```
 
 ## 核心 API
@@ -67,6 +69,8 @@ graph LR
 | `CONVERSATION_HISTORY` | 📜 | system | 历史上下文 |
 | `KNOWLEDGE_ARTIFACTS` | 📚 | system | 知识库 |
 | `EPHEMERAL_MESSAGE` | 💨 | system | 临时消息 |
+| `TASK_BOUNDARY` | 📋 | system | 任务边界（Agentic 模式） |
+| `NOTIFY_USER` | 📢 | system | 通知用户（Agentic 模式） |
 
 ### 浏览器子代理内部步骤
 
@@ -188,7 +192,9 @@ if (delta > 0 && entry.dominantModel) {
 活动追踪已完全集成到 VS Code 扩展中，随扩展自动激活。无需手动运行脚本。
 
 ```
-扩展激活 → extension.ts 轮询 → activity-tracker.ts 分类统计 → activity-panel.ts 渲染
+扩展激活
+  ├─ extension.ts 全局轮询 (5s) → 上下文/额度/用户状态
+  └─ extension.ts Activity 独立轮询 (3s) → activity-tracker.ts 分类统计 → activity-panel.ts 渲染
 ```
 
 ## PLANNER_RESPONSE 完整结构
@@ -286,18 +292,21 @@ step.userInput: {
 | [activity-panel.ts](../src/activity-panel.ts) | UI 渲染：概览卡片、模型卡片、时间线 HTML + CSS |
 | [extension.ts](../src/extension.ts) | 粘合层：poll → processTrajectories → 面板刷新 |
 
-### warm-up 策略（v1.11.2 更新）
+### warm-up 与增量策略（v1.11.2 更新）
 
 ```
 首次 poll → warmedUp = false
   ├─ 所有对话（含 IDLE）→ 拉取全部步骤 → processStep 逐步统计
   └─ warmedUp = true
-后续 poll → warmedUp = true
-  └─ 仅处理 processedIndex 之后的新步骤
+后续 poll → warmedUp = true（独立 3s 轮询）
+  ├─ 新对话 stepCount=0 → 不创建 entry，等待有步骤后首次拉取
+  ├─ 新对话 stepCount>0 → 创建 entry → 拉取全部步骤（emitEvent=true）
+  ├─ RUNNING 对话 → 重新拉取步骤，处理新增部分
+  └─ IDLE 且已处理过 → 跳过（不会再有新步骤）
 ```
 
-> v1.11.2 变更：warm-up 处理**所有**对话（包括 IDLE），以反映完整额度周期统计。
-> 配合额度重置归档，每个周期的统计数据独立保存。
+> v1.11.2 变更：Activity 追踪从全局 poll 分离为独立 3 秒轮询循环。
+> 仅对 RUNNING 对话发起步骤拉取，IDLE 对话在首次处理后跳过。
 > recheck 机制已移除（AI 回复仅捕捉 80 字符短预览，不需要回退重查）。
 
 ### 数据范围
@@ -352,9 +361,199 @@ tracking 状态 + fraction ≥ 1.0 = 额度已重置
 
 > 注：不同模型可能有独立额度周期，通过 `resetTimestamp` 可判断
 
+## 诊断脚本
+
+项目提供两个独立终端脚本，用于在扩展之外直接调试和验证 LS 数据。
+
+### diag-verify.ts — 静态数据完整性诊断
+
+对 LS API 返回的所有数据结构逐项验证，输出 PASS/FAIL 报告。
+
+```bash
+npx tsx src/diag-verify.ts
+```
+
+**验证阶段：**
+
+| 阶段 | 内容 |
+|---|---|
+| 0: LS 发现 | wmic/PowerShell 进程扫描、CSRF Token 提取、PID、netstat 端口、RPC 探测 |
+| 1: GetUserStatus | clientModelConfigs 结构、quotaInfo.remainingFraction、planInfo、模型列表 |
+| 2: GetAllCascadeTrajectories | trajectorySummaries 结构、stepCount/status/summary、workspace 信息 |
+| 3: GetCascadeTrajectorySteps | 步骤类型分类（未文档化类型检测）、USER_INPUT/PLANNER_RESPONSE/CHECKPOINT 结构验证、踩坑字段检查 |
+| 4: startIndex/endIndex | 验证 startIndex 参数是否生效（文档记录为不生效） |
+| 5: 模型名称映射 | MODEL_PLACEHOLDER_MXX → 显示名称映射正确性 |
+
+**输出示例：**
+
+```
+  ✅ PASS [D-01] wmic 进程扫描
+  ✅ PASS [S-03] 步骤类型全部已文档化
+  ❌ FAIL [S-XX] 发现 2 个未文档化类型: CORTEX_STEP_TYPE_NEW_TYPE
+```
+
+> 前提条件：Antigravity IDE 已启动且至少有一个对话。
+
+---
+
+### diag-monitor.ts — 实时步骤监视器
+
+持续轮询 LS，逐条显示每个对话的新增步骤，用于验证增量捕获是否精确。
+
+```bash
+npx tsx src/diag-monitor.ts
+# Ctrl+C 停止
+```
+
+**功能：**
+
+- 每 3 秒轮询 `GetAllCascadeTrajectories`
+- 检测到 `stepCount` 变化时，拉取步骤并精确显示新增部分
+- 显示每步的：序号、图标、类型、模型 ID、内容摘要
+- 检测 API 窗口外步骤并警告
+
+**输出示例：**
+
+```
+─── [19:14:28] Introducing Myself (IDLE) +6 步 (0→6) ───
+  API 返回 6 步 (请求 6)
+  ✓ 新步骤可精确捕获 (index 0..5):
+    [   0] 💬 USER_INPUT             "请简单自我介绍一下自己..."
+    [   1] 📜 CONVERSATION_HISTORY
+    [   2] 📚 KNOWLEDGE_ARTIFACTS
+    [   3] 💨 EPHEMERAL_MESSAGE
+    [   4] 🧠 PLANNER_RESPONSE       [MM37] thinking="..." dur=0.886s
+    [   5] 💾 CHECKPOINT             in=3166 out=77 model=MODEL_...
+```
+
+> 用于对比扩展内 activity-tracker 的捕获结果，确保两者一致。
+
+---
+
 ## 文件位置
 
-- 插件源码：`e:\AI\1\Claude\1\src\`
+- 插件源码：`src/`
+- 诊断脚本：`src/diag-verify.ts`（静态诊断）、`src/diag-monitor.ts`（实时监视）
 - 技术文档：本文件
 
 > 注：独立终端脚本 `ls-monitor.ts` 已删除（v1.11.2），功能完全集成到扩展模块中。
+
+## 踩坑记录补充（二）
+
+### 12. 增量步骤捕获 bug（已修复）
+
+**现象**：增量更新时新步骤显示为 `+N steps (estimated)` 而非逐步精确捕获
+**原因**：`processTrajectories` 增量路径在 `processedIndex > 0` 时直接使用 `stepCount` delta 估算，不重新拉取步骤
+**修复**：增量路径重新调用 `GetCascadeTrajectorySteps` 拉取步骤，仅对超出 API 窗口的步骤使用 delta 估算
+
+### 13. 新对话首消息延迟（已修复）
+
+**现象**：新对话的第一条消息不出现在 timeline，要到第二条消息才刷新
+**原因**：新对话首次出现时 `stepCount=0`（LS 还在初始化），代码创建了 `processedIndex=0` 的空 entry；下次 poll 时 `0 <= 0` → skip
+**修复**：`currSteps === 0` 的新对话不创建 entry，等到有步骤时才创建并拉取
+
+### 14. 思考时间在轮询模式下不准确
+
+**现象**：3 秒轮询捕获到正在进行中的 PLANNER_RESPONSE 时，`thinkingDuration` 为部分值
+**决策**：Timeline 行级推理事件不显示 `durationMs`（设为 0），模型卡片中的聚合 `thinkingTimeMs` 保留（累积后偏差会平衡）
+
+### 15. StreamCascadePanelReactiveUpdates（未采用）
+
+**发现**：LS 内部有 `StreamCascadePanelReactiveUpdates` 双向 gRPC 流，可实时推送 Cascade 状态变化
+**限制**：需要 protobuf 二进制解码 + HTTP/2 持久连接 + 逆向 proto 定义；当前 Connect-RPC (HTTP/JSON) 无法使用
+**现状**：保持 3 秒 HTTP 轮询方案，对 95% 的对话（< 500 步）已足够精确
+
+### 16. LS 进程有 3 个端口（实测 v1.11.3）
+
+**发现**：LS 进程绑定了 3 个 `127.0.0.1` 端口（如 3618、13856、13857）
+**RPC 端口**：仅其中一个是 Connect-RPC（HTTPS）端口，其余为 extension server 或其他内部用途
+**影响**：端口探测必须遍历所有 LISTENING 端口 + HTTP/HTTPS 双重尝试，取第一个可达的
+
+### 17. API 窗口边界实测数据（v1.11.3）
+
+**实测结果**（2026-03-20）：
+
+| 对话 | stepCount | API 返回 | 不可见 | 响应大小 |
+|---|---|---|---|---|
+| 505 步（RUNNING） | 505 | 426 | 79 | — |
+| 2443 步（历史） | 2443 | 419 | 2024 | 5084 KB |
+
+**结论**：
+- 窗口大小由 **响应体积（~5MB）** 决定，不是固定步数
+- 不同对话返回的步数略有差异（419 vs 426），取决于每步的数据量
+- `startIndex/endIndex` 参数持续无效（v1.11.3 验证）
+- 超出窗口的步骤用 📊 图标 + `stepIndex` 标记起始位置，保持排版一致
+
+### 18. Warm-up 吞噬首消息（v1.11.3 修复）
+
+**现象**：扩展加载/重载后，当前对话的第一条用户消息从不出现在"最近操作"时间线中
+**根因**：Warm-up 阶段用 `emitEvent=false` 处理所有已有步骤（含 USER_INPUT），设置 `processedIndex` 后，增量模式不再触碰这些步骤
+**修复**：Warm-up 完成后，对 RUNNING 对话的最近 30 步调用 `_injectTimelineEvent()`——仅创建 `StepEvent`，不重复统计。使用 LS 的 `metadata.createdAt` 作为历史时间戳
+
+### 19. 切换/回退对话：status 时序与 stepCount 回退（v1.11.3 修复）
+
+**现象**：切换到已有对话发消息，或回退/重发消息时，新步骤无法录入时间线
+**诊断**（实时脚本 2 秒轮询 `GetAllCascadeTrajectories`）：
+
+```
+21:05:15 [CHANGE] b365cb34 | status: IDLE → RUNNING | steps: 31 → 33 (+2)
+         ↳ API returned 33 steps, including USER_INPUT at [31]
+21:05:29 [CHANGE] b365cb34 | steps: 33 → 35 (+2)
+21:05:43 [CHANGE] b365cb34 | status: RUNNING → IDLE
+```
+
+**LS 行为确认**：切换对话时 LS 正常更新 status（IDLE→RUNNING）和 stepCount，API 完整返回含 USER_INPUT 的步骤
+
+**Bug 1 — statusChanged 被早期跳过拦截**：
+
+```typescript
+// BUG: 这行在 statusChanged 检测之前，直接跳过了
+if (currSteps <= entry.processedIndex) { continue; }
+// statusChanged 永远执行不到
+```
+
+**Bug 2 — stepCount 回退未被处理**：
+回退/重发时 LS 可能删除旧步骤后生成新步骤，导致 stepCount 暂时减少。
+旧 `processedIndex` 仍指向已不存在的位置，增量比较失效。
+
+**修复**：
+1. `statusChanged` 检测移到**所有跳过逻辑之前**
+2. 检测 stepCount 减少 → 重置 `processedIndex = Math.min(processedIndex, currSteps)`
+3. 所有跳过条件加 `&& !statusChanged` 保护
+4. 当 statusChanged 但 processedIndex 不变时，注入最近 20 步 timeline 事件
+
+### 20. 推理步骤 response 字段可为空
+
+**现象**：部分 `PLANNER_RESPONSE` 步骤的 `modifiedResponse` 和 `response` 均为空字符串，导致时间线行只有模型名，没有内容预览
+**原因**：LS 在推理中途被轮询捕获时，response 尚未填充；或纯思考步骤没有文本输出
+**策略**：当 response 为空且 `thinkingDuration` 存在时，显示"正在思考"作为回退文本（不显示具体秒数，因 3 秒轮询中断导致时间不准确）
+
+### 21. remainingFraction 耗尽时字段消失 + 100% 误判（v1.11.3 修复）
+
+**现象 1**：模型额度耗尽时，`quotaInfo.remainingFraction` 字段**从 API 响应中消失**（不是返回 `0`）
+**影响**：`quota-tracker.ts` 中 `fraction` 为 `undefined`，JS 比较 `undefined >= 1.0` / `undefined <= 0` 均为 `false`，状态机卡死
+**修复**：`fraction = config.quotaInfo.remainingFraction ?? 0`（与 `tracker.ts:570` 的兜底对齐）
+
+**现象 2**：模型额度为 100% 时，`last100Time` 被持续刷新。当额度终于掉档（100→80%），session 的 `startTime` 是上一轮 poll 的时间，而不是首次使用的时间
+**诊断**（`diag-quota.ts` 实测）：
+- 未使用模型的 `resetTime` 始终 ≈ `now + 5h`（实测 4h58m，官方 ~4h58m 开始计时）
+- 已使用但未掉档的模型：`resetTime` 被锁定在一个固定时间点，距现在 < 4h55m
+- 额度周期有两种：5 小时（Premium）和 7 天（低级会员）
+
+**修复**：`isUnusedModel()` 方法检查 `resetTime` 距当前时间是否接近已知周期（±5min 容错）：
+
+```
+已知周期: 5h (18,000,000ms), 7d (604,800,000ms)
+容错: ±5min (300,000ms)
+
+|timeToReset - cycle| ≤ 5min → 未使用（继续刷新 last100Time）
+否则 → 已使用（冻结 last100Time，保留 session 准确起始时间）
+```
+
+**API 实测数据**（2026-03-20）：
+
+| 模型 | remainingFraction | 距重置 | 状态 |
+|---|---|---|---|
+| Flash (M47) | `1` | 4h58m [≈5h] | 未使用 |
+| Pro (M37/M36) | `1` | 2h14m | 已用已重置 |
+| Claude/OSS (M35/M26/OSS) | **字段缺失** | 0h37m | 耗尽 |

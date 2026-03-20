@@ -21,6 +21,7 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
     const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
     const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
     const showActivity = cfg.get<boolean>('statusBar.showActivity', true);
+    const activityDisplayMode = cfg.get<string>('statusBar.activityDisplayMode', 'global');
     const quotaNotifyThreshold = cfg.get<number>('quotaNotificationThreshold', 20);
     const maxRecentSteps = cfg.get<number>('activity.maxRecentSteps', 100);
     const maxArchives = cfg.get<number>('activity.maxArchives', 20);
@@ -146,6 +147,19 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
                     <span>${tBi('Activity indicator', '活动指标')} <code>🧠5 ⚡12</code></span>
                 </label>
+            </div>
+            <div class="setting-row" style="margin-top: var(--space-2);">
+                <label>${tBi('Activity display mode', '活动显示模式')}</label>
+                <div class="radio-group">
+                    <label class="radio-row">
+                        <input type="radio" name="activityDisplayMode" value="global" ${activityDisplayMode === 'global' ? 'checked' : ''} />
+                        <span>${tBi('Global — all models combined', '全局 — 所有模型汇总')}</span>
+                    </label>
+                    <label class="radio-row">
+                        <input type="radio" name="activityDisplayMode" value="currentModel" ${activityDisplayMode === 'currentModel' ? 'checked' : ''} />
+                        <span>${tBi('Current model — active conversation only', '当前模型 — 仅活跃对话')}</span>
+                    </label>
+                </div>
             </div>
         </section>
 

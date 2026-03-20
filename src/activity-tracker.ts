@@ -37,6 +37,8 @@ const STEP_CATEGORIES: Record<string, StepClassification> = {
     'CORTEX_STEP_TYPE_CONVERSATION_HISTORY': { icon: '📜', label: 'history',       category: 'system' },
     'CORTEX_STEP_TYPE_KNOWLEDGE_ARTIFACTS':  { icon: '📚', label: 'knowledge',     category: 'system' },
     'CORTEX_STEP_TYPE_EPHEMERAL_MESSAGE':    { icon: '💨', label: 'ephemeral',     category: 'system' },
+    'CORTEX_STEP_TYPE_TASK_BOUNDARY':        { icon: '📌', label: 'task_boundary', category: 'system' },
+    'CORTEX_STEP_TYPE_NOTIFY_USER':          { icon: '📢', label: 'notify_user',  category: 'system' },
 };
 
 function classifyStep(type: string): StepClassification {
@@ -73,6 +75,8 @@ export interface StepEvent {
     userInput?: string;     // user message preview (category='user')
     aiResponse?: string;    // AI response brief preview (category='reasoning')
     browserSub?: string;    // browser sub-step summary
+    toolName?: string;      // tool type label (e.g. 'view_file', 'gh/search_issues')
+    stepIndex?: number;     // step position within conversation (e.g. 142)
 }
 
 /** Archived activity snapshot (saved on quota reset) */
@@ -178,6 +182,26 @@ function extractToolDetail(step: Record<string, unknown>): string {
     return '';
 }
 
+/** Extract human-readable tool name for display in timeline */
+function extractToolName(step: Record<string, unknown>, fallbackLabel: string): string {
+    try {
+        const meta = step.metadata as Record<string, unknown> | undefined;
+        const toolCall = meta?.toolCall as Record<string, unknown> | undefined;
+        const name = (toolCall?.name as string) || '';
+        if (name) {
+            // MCP tools: shorten prefixes
+            if (name.startsWith('mcp_github-mcp-server_')) { return 'gh/' + name.replace('mcp_github-mcp-server_', ''); }
+            if (name.startsWith('mcp_web-fetcher_')) { return name.replace('mcp_web-fetcher_', ''); }
+            if (name.startsWith('mcp_memory-store_')) { return name.replace('mcp_memory-store_', ''); }
+            if (name.startsWith('mcp_sandbox_')) { return name.replace('mcp_sandbox_', ''); }
+            if (name.startsWith('mcp_sequential-thinking_')) { return 'thinking'; }
+            if (name.startsWith('mcp_')) { return name.replace('mcp_', ''); }
+            return name;
+        }
+    } catch { /* fallback */ }
+    return fallbackLabel;
+}
+
 // ─── ActivityTracker Class ───────────────────────────────────────────────────
 
 /** Maximum recent step events kept in memory (configurable via settings) */
@@ -212,7 +236,7 @@ export class ActivityTracker {
     private _sampleTotal = 0;  // total sampled steps
 
     // Trajectory baselines — dominantModel is detected from sampled steps
-    private _trajectories = new Map<string, { stepCount: number; processedIndex: number; dominantModel: string }>();
+    private _trajectories = new Map<string, { stepCount: number; processedIndex: number; dominantModel: string; lastStatus: string }>();
     private _warmedUp = false;
 
     // Recent steps (ring buffer)
@@ -249,10 +273,13 @@ export class ActivityTracker {
 
         // Warm-up: process ALL conversations' steps for full quota-cycle stats
         if (!this._warmedUp) {
+            // Collect RUNNING conversations' steps for post-warm-up timeline injection
+            const runningSteps: { steps: Record<string, unknown>[]; status: string }[] = [];
+
             for (const [id, info] of trajMap) {
                 const sc = info.stepCount || 0;
                 if (sc === 0) {
-                    this._trajectories.set(id, { stepCount: 0, processedIndex: 0, dominantModel: '' });
+                    this._trajectories.set(id, { stepCount: 0, processedIndex: 0, dominantModel: '', lastStatus: info.status });
                     continue;
                 }
                 try {
@@ -263,12 +290,28 @@ export class ActivityTracker {
                     for (const step of allSteps) {
                         this._processStep(step, false);
                     }
-                    this._trajectories.set(id, { stepCount: sc, processedIndex: allSteps.length, dominantModel: this._detectDominantModel(allSteps) });
+                    this._trajectories.set(id, { stepCount: sc, processedIndex: allSteps.length, dominantModel: this._detectDominantModel(allSteps), lastStatus: info.status });
+
+                    // Keep RUNNING conversations' steps for timeline injection
+                    if (info.status === 'CASCADE_RUN_STATUS_RUNNING' && allSteps.length > 0) {
+                        runningSteps.push({ steps: allSteps, status: info.status });
+                    }
                 } catch {
-                    this._trajectories.set(id, { stepCount: sc, processedIndex: 0, dominantModel: '' });
+                    this._trajectories.set(id, { stepCount: sc, processedIndex: 0, dominantModel: '', lastStatus: info.status });
                 }
             }
             this._warmedUp = true;
+
+            // Post-warm-up: inject recent timeline events from RUNNING conversations
+            // Stats already counted above — this only creates StepEvent objects.
+            for (const { steps } of runningSteps) {
+                const tail = steps.slice(-30);
+                const startIdx = steps.length - tail.length;
+                for (let i = 0; i < tail.length; i++) {
+                    this._injectTimelineEvent(tail[i], startIdx + i);
+                }
+            }
+
             return true;
         }
 
@@ -279,13 +322,29 @@ export class ActivityTracker {
             let entry = this._trajectories.get(id);
 
             if (!entry) {
-                entry = { stepCount: 0, processedIndex: 0, dominantModel: '' };
+                // New conversation with no steps yet — don't create entry, wait for steps
+                if (currSteps === 0) { continue; }
+                entry = { stepCount: 0, processedIndex: 0, dominantModel: '', lastStatus: '' };
                 this._trajectories.set(id, entry);
             }
 
-            // Skip if no new steps
-            if (currSteps <= entry.processedIndex) {
+            // Detect status transition FIRST (before any skip logic)
+            const statusChanged = info.status === 'CASCADE_RUN_STATUS_RUNNING' && entry.lastStatus !== 'CASCADE_RUN_STATUS_RUNNING';
+            entry.lastStatus = info.status;
+
+            // Detect rollback/resend: stepCount decreased = steps were replaced
+            if (currSteps < entry.stepCount) {
+                entry.processedIndex = Math.min(entry.processedIndex, currSteps);
+            }
+
+            // Skip if no new steps AND no status change
+            if (currSteps <= entry.processedIndex && !statusChanged) {
                 entry.stepCount = currSteps;
+                continue;
+            }
+
+            // Skip IDLE conversations only if stepCount hasn't changed.
+            if (entry.processedIndex > 0 && info.status !== 'CASCADE_RUN_STATUS_RUNNING' && currSteps <= entry.stepCount && !statusChanged) {
                 continue;
             }
 
@@ -301,28 +360,54 @@ export class ActivityTracker {
                         15000, signal) as Record<string, unknown>;
                     const steps = (sr.steps || []) as Record<string, unknown>[];
 
-                    for (const step of steps) {
-                        this._processStep(step, this._warmedUp);
+                    for (let si = 0; si < steps.length; si++) {
+                        this._processStep(steps[si], this._warmedUp, si);
                     }
                     hasChanges = steps.length > 0;
                     entry.processedIndex = currSteps;
                     entry.dominantModel = this._detectDominantModel(steps);
                 } else {
-                    // INCREMENTAL: API can't return new steps beyond ~500 window.
-                    // Attribute delta directly to this trajectory's dominant model.
-                    const delta = currSteps - entry.stepCount;
-                    if (delta > 0 && entry.dominantModel) {
+                    // INCREMENTAL: re-fetch steps to capture new ones precisely.
+                    // API returns earliest ~500 steps; any beyond that use estimation.
+                    const sr = await rpcCall(ls, 'GetCascadeTrajectorySteps',
+                        { cascadeId: id, startIndex: 0, endIndex: currSteps },
+                        15000, signal) as Record<string, unknown>;
+                    const fetchedSteps = (sr.steps || []) as Record<string, unknown>[];
+
+                    // Process individually any NEW steps within API window
+                    if (fetchedSteps.length > entry.processedIndex) {
+                        for (let i = entry.processedIndex; i < fetchedSteps.length; i++) {
+                            this._processStep(fetchedSteps[i], true, i);
+                        }
+                        hasChanges = true;
+                        entry.processedIndex = fetchedSteps.length;
+                        entry.dominantModel = this._detectDominantModel(fetchedSteps);
+                    } else if (statusChanged && fetchedSteps.length > 0) {
+                        // Conversation switched/resumed: inject recent timeline events
+                        // even if processedIndex hasn't changed (covers resend scenarios)
+                        const tail = fetchedSteps.slice(-20);
+                        const startIdx = fetchedSteps.length - tail.length;
+                        for (let i = 0; i < tail.length; i++) {
+                            this._injectTimelineEvent(tail[i], startIdx + i);
+                        }
+                        hasChanges = true;
+                    }
+
+                    // Any steps beyond API window → delta estimation (fallback)
+                    const beyondApi = currSteps - Math.max(fetchedSteps.length, entry.stepCount);
+                    if (beyondApi > 0 && entry.dominantModel) {
                         const s = this._getOrCreateStats(entry.dominantModel);
-                        s.totalSteps += delta;
-                        s.estSteps += delta;
+                        s.totalSteps += beyondApi;
+                        s.estSteps += beyondApi;
+                        const estStart = Math.max(fetchedSteps.length, entry.stepCount);
                         this._pushEvent({
                             timestamp: new Date().toISOString(),
-                            icon: '🧠', category: 'reasoning', model: entry.dominantModel,
-                            detail: `+${delta} steps (estimated)`, durationMs: 0,
+                            icon: '📊', category: 'reasoning', model: entry.dominantModel,
+                            detail: `+${beyondApi} steps (estimated)`, durationMs: 0,
+                            stepIndex: estStart,
                         });
                         hasChanges = true;
                     }
-                    entry.processedIndex = currSteps;
                 }
 
                 entry.stepCount = currSteps;
@@ -336,7 +421,7 @@ export class ActivityTracker {
 
     // ─── Step Processing ─────────────────────────────────────────────────
 
-    private _processStep(step: Record<string, unknown>, emitEvent = true): void {
+    private _processStep(step: Record<string, unknown>, emitEvent = true, stepIndex?: number): void {
         const type = (step.type as string) || '';
         const meta = (step.metadata || {}) as Record<string, unknown>;
         const modelId = (meta.generatorModel as string) || '';
@@ -354,7 +439,7 @@ export class ActivityTracker {
             const items = userInput?.items as Record<string, string>[] | undefined;
             const text = Array.isArray(items) && items.length > 0 ? (items[0].text || '') : '';
             if (emitEvent) {
-                this._pushEvent({ timestamp, icon: cls.icon, category: 'user', model: '', detail: '', durationMs: 0, userInput: text ? truncate(text, 80) : undefined });
+                this._pushEvent({ timestamp, icon: cls.icon, category: 'user', model: '', detail: '', durationMs: 0, userInput: text ? truncate(text, 80) : undefined, stepIndex });
             }
             return;
         }
@@ -385,7 +470,7 @@ export class ActivityTracker {
                 s.errors++;
             }
             if (emitEvent) {
-                this._pushEvent({ timestamp, icon: cls.icon, category: 'system', model: model || 'unknown', detail: 'error', durationMs: 0 });
+                this._pushEvent({ timestamp, icon: cls.icon, category: 'system', model: model || 'unknown', detail: 'error', durationMs: 0, stepIndex });
             }
             return;
         }
@@ -411,12 +496,15 @@ export class ActivityTracker {
             const toolCalls = pr?.toolCalls as unknown[] | undefined;
             if (Array.isArray(toolCalls) && toolCalls.length > 0) {
                 detail = `→ ${toolCalls.length} ${toolCalls.length === 1 ? 'tool' : 'tools'}`;
-            } else if (dur > 0) {
-                detail = `thinking ${dur < 1000 ? dur + 'ms' : (dur / 1000).toFixed(1) + 's'}`;
             }
-            const resp = ((pr?.modifiedResponse || pr?.response || '') as string);
+            let resp = ((pr?.modifiedResponse || pr?.response || '') as string);
+            // Fallback: show thinking duration if no response text
+            if (!resp && tdStr) {
+                resp = '正在思考';
+            }
             if (emitEvent) {
-                this._pushEvent({ timestamp, icon: cls.icon, category: 'reasoning', model, detail, durationMs: dur, aiResponse: resp ? truncate(resp, 80) : undefined });
+                // durationMs=0 for timeline: per-step thinking time is unreliable with 3s polling
+                this._pushEvent({ timestamp, icon: cls.icon, category: 'reasoning', model, detail, durationMs: 0, aiResponse: resp ? truncate(resp, 80) : undefined, stepIndex });
             }
 
         } else if (cls.category === 'tool') {
@@ -428,9 +516,59 @@ export class ActivityTracker {
             const tokens = parseInt((meta.toolCallOutputTokens as string) || '0', 10);
             if (tokens > 0) { s.toolReturnTokens += tokens; }
             const detail = extractToolDetail(step);
+            const toolName = extractToolName(step, cls.label);
             if (emitEvent) {
-                this._pushEvent({ timestamp, icon: cls.icon, category: 'tool', model, detail, durationMs: dur });
+                this._pushEvent({ timestamp, icon: cls.icon, category: 'tool', model, detail, durationMs: dur, toolName, stepIndex });
             }
+        }
+    }
+
+    /**
+     * Inject a timeline event from a step WITHOUT modifying any stats or counters.
+     * Used after warm-up to populate the timeline with recent activity.
+     * Uses LS's metadata.createdAt for timestamps since these are historical events.
+     */
+    private _injectTimelineEvent(step: Record<string, unknown>, stepIndex: number): void {
+        const type = (step.type as string) || '';
+        const meta = (step.metadata || {}) as Record<string, unknown>;
+        const modelId = (meta.generatorModel as string) || '';
+        const model = modelId ? getModelDisplayName(modelId) : '';
+        const cls = classifyStep(type);
+
+        // Use LS createdAt for historical timestamp, fallback to session start
+        const createdAt = (meta.createdAt as string) || '';
+        const timestamp = createdAt || this._sessionStartTime;
+
+        if (cls.category === 'user') {
+            const userInput = step.userInput as Record<string, unknown> | undefined;
+            const items = userInput?.items as Record<string, string>[] | undefined;
+            const text = Array.isArray(items) && items.length > 0 ? (items[0].text || '') : '';
+            this._pushEvent({ timestamp, icon: cls.icon, category: 'user', model: '', detail: '', durationMs: 0, userInput: text ? truncate(text, 80) : undefined, stepIndex });
+            return;
+        }
+
+        if (cls.category === 'system') { return; }
+        if (!model) { return; }
+
+        if (cls.category === 'reasoning') {
+            const pr = step.plannerResponse as Record<string, unknown> | undefined;
+            let detail = '';
+            const toolCalls = pr?.toolCalls as unknown[] | undefined;
+            if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+                detail = `→ ${toolCalls.length} ${toolCalls.length === 1 ? 'tool' : 'tools'}`;
+            }
+            const resp = ((pr?.modifiedResponse || pr?.response || '') as string);
+            const tdStr = pr?.thinkingDuration as string | undefined;
+            let aiResp = resp;
+            if (!aiResp && tdStr) {
+                aiResp = '正在思考';
+            }
+            this._pushEvent({ timestamp, icon: cls.icon, category: 'reasoning', model, detail, durationMs: 0, aiResponse: aiResp ? truncate(aiResp, 80) : undefined, stepIndex });
+        } else if (cls.category === 'tool') {
+            const dur = stepDurationTool(meta);
+            const detail = extractToolDetail(step);
+            const toolName = extractToolName(step, cls.label);
+            this._pushEvent({ timestamp, icon: cls.icon, category: 'tool', model, detail, durationMs: dur, toolName, stepIndex });
         }
     }
 
@@ -519,6 +657,24 @@ export class ActivityTracker {
         return parts.length > 0 ? parts.join(' ') : '🧠0 ⚡0';
     }
 
+    /**
+     * Get status bar text for a specific model only.
+     * Falls back to global text if the model has no stats.
+     */
+    getModelStatusBarText(modelDisplayName: string): string {
+        const ms = this._modelStats.get(modelDisplayName);
+        if (!ms || ms.totalSteps === 0) { return this.getStatusBarText(); }
+        const parts: string[] = [];
+        if (ms.reasoning > 0) { parts.push(`🧠${ms.reasoning}`); }
+        if (ms.toolCalls > 0) { parts.push(`⚡${ms.toolCalls}`); }
+        if (ms.estSteps > 0) { parts.push(`📊+${ms.estSteps}`); }
+        const tokens = ms.inputTokens + ms.outputTokens;
+        if (tokens > 0) {
+            parts.push(`🪙${tokens >= 1000 ? (tokens / 1000).toFixed(1) + 'k' : String(tokens)}`);
+        }
+        return parts.length > 0 ? parts.join(' ') : '🧠0 ⚡0';
+    }
+
     /** Whether the tracker has been warmed up */
     get isReady(): boolean { return this._warmedUp; }
 
@@ -574,7 +730,7 @@ export class ActivityTracker {
     // ─── Serialization ───────────────────────────────────────────────────
 
     serialize(): ActivityTrackerState {
-        const baselines: Record<string, { stepCount: number; processedIndex: number; dominantModel: string }> = {};
+        const baselines: Record<string, { stepCount: number; processedIndex: number; dominantModel: string; lastStatus: string }> = {};
         for (const [k, v] of this._trajectories) { baselines[k] = { ...v }; }
         return {
             version: 1,
@@ -593,14 +749,35 @@ export class ActivityTracker {
         tracker._sessionStartTime = s.sessionStartTime;
         tracker._archives = data.archives || [];
 
-        // Restore estSteps from persisted model stats
+        // Fully restore all model stats from persisted summary
         for (const [name, ms] of Object.entries(s.modelStats)) {
-            if (ms.estSteps > 0) {
-                const stats = tracker._getOrCreateStats(name);
-                stats.estSteps = ms.estSteps;
-                stats.totalSteps = ms.estSteps;  // will be rebuilt + added by warm-up
-            }
+            const stats = tracker._getOrCreateStats(name);
+            stats.reasoning = ms.reasoning;
+            stats.toolCalls = ms.toolCalls;
+            stats.errors = ms.errors;
+            stats.checkpoints = ms.checkpoints;
+            stats.totalSteps = ms.totalSteps;
+            stats.thinkingTimeMs = ms.thinkingTimeMs;
+            stats.toolTimeMs = ms.toolTimeMs;
+            stats.inputTokens = ms.inputTokens;
+            stats.outputTokens = ms.outputTokens;
+            stats.toolReturnTokens = ms.toolReturnTokens;
+            stats.toolBreakdown = { ...ms.toolBreakdown };
+            stats.estSteps = ms.estSteps;
         }
+
+        // Restore global counters
+        tracker._totalUserInputs = s.totalUserInputs;
+        tracker._totalCheckpoints = s.totalCheckpoints;
+        tracker._totalErrors = s.totalErrors;
+
+        // Restore global tool stats
+        for (const [k, v] of Object.entries(s.globalToolStats)) {
+            tracker._globalToolStats.set(k, v);
+        }
+
+        // Restore recent steps (timeline)
+        tracker._recentSteps = [...s.recentSteps];
 
         // Restore trajectory baselines (including dominantModel)
         if (data.trajectoryBaselines) {
@@ -609,12 +786,19 @@ export class ActivityTracker {
                     stepCount: baseline.stepCount,
                     processedIndex: baseline.processedIndex,
                     dominantModel: (baseline as { dominantModel?: string }).dominantModel || '',
+                    lastStatus: (baseline as { lastStatus?: string }).lastStatus || '',
                 });
             }
         }
 
-        // Force warm-up to recalibrate actual counts from live LS data
-        tracker._warmedUp = false;
+        // If we have trajectory baselines, skip warm-up to avoid re-counting
+        // steps that were already archived by archiveAndReset().
+        // Stats are fully restored above, only new steps need counting.
+        if (Object.keys(data.trajectoryBaselines || {}).length > 0) {
+            tracker._warmedUp = true;  // use incremental path — only new steps
+        } else {
+            tracker._warmedUp = false; // no baselines: full warm-up needed
+        }
 
         return tracker;
     }

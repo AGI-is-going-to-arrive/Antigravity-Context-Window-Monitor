@@ -23,15 +23,19 @@ import { QuotaTracker } from './quota-tracker';
 // variables are window-isolated — perfect for per-window cascade tracking.
 
 let statusBar: StatusBarManager;
-let pollingTimer: NodeJS.Timeout | undefined;
+let pollingTimer: ReturnType<typeof setTimeout> | undefined;
+let activityPollingTimer: ReturnType<typeof setTimeout> | undefined;
+let pollGeneration = 0;
+let activityPollGeneration = 0;
+let disposed = false;
 let cachedLsInfo: LSInfo | null = null;
 let currentUsage: ContextUsage | null = null;
 let allTrajectoryUsages: ContextUsage[] = [];
 let cachedModelConfigs: import('./models').ModelConfig[] = [];
 let cachedUserInfo: UserStatusInfo | null = null;
 let statusPollCount = 0;
-/** Refresh user status every N poll cycles (~60s at default 5s interval) */
-const STATUS_REFRESH_INTERVAL = 12;
+/** Refresh user status every N poll cycles (~10s at default 5s interval) */
+const STATUS_REFRESH_INTERVAL = 2;
 let outputChannel: vscode.OutputChannel;
 let quotaTracker: QuotaTracker;
 let activityTracker: ActivityTracker;
@@ -57,17 +61,28 @@ const previousTrajectoryIds = new Set<string>();
 /** Previous poll's contextUsed per cascade — used to detect context compression. */
 const previousContextUsedMap = new Map<string, number>();
 
+/** Get activity status bar text based on user-configured display mode. */
+function getActivityDisplayText(): string {
+    const mode = vscode.workspace.getConfiguration('antigravityContextMonitor')
+        .get<string>('statusBar.activityDisplayMode', 'global');
+    if (mode === 'currentModel' && currentUsage?.modelDisplayName) {
+        return activityTracker.getModelStatusBarText(currentUsage.modelDisplayName);
+    }
+    return activityTracker.getStatusBarText();
+}
+
 /** Whether we've completed at least one poll cycle. */
 let firstPollDone = false;
 
 /** Prevents concurrent pollContextUsage() reentrance. */
 let isPolling = false;
+let isActivityPolling = false;
 
 /** Prevents schedulePoll() from creating new timers after deactivate. */
-let disposed = false;
+// disposed declared at top of module
 
 /** Generation counter — prevents orphan timer chains. */
-let pollGeneration = 0;
+// pollGeneration declared at top of module
 
 // isExplicitlyIdle: Reserved for future UI improvement — differentiate between
 // "cascade deleted → actively idle" vs "window just opened → no cascade yet".
@@ -104,7 +119,7 @@ export function activate(context: vscode.ExtensionContext): void {
             activityTracker.archiveAndReset();
             context.globalState.update('activityTrackerState', activityTracker.serialize());
             if (activityStatusBar) {
-                activityStatusBar.updateText(activityTracker.getStatusBarText());
+                activityStatusBar.updateText(getActivityDisplayText());
                 activityStatusBar.updateTooltip([]);
             }
         }
@@ -126,7 +141,7 @@ export function activate(context: vscode.ExtensionContext): void {
     activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
     activityStatusBar = new ActivityStatusBarItem();
     // Immediately update activity status bar with restored data
-    activityStatusBar.updateText(activityTracker.getStatusBarText());
+    activityStatusBar.updateText(getActivityDisplayText());
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = context.globalState.get<import('./models').ModelConfig[]>('cachedModelConfigs');
@@ -223,6 +238,9 @@ export function activate(context: vscode.ExtensionContext): void {
     );
 
     log(`Extension activated. Polling every ${intervalSec}s`);
+
+    // Start independent activity polling (3s default)
+    scheduleActivityPoll();
 }
 
 // ─── Deactivation ─────────────────────────────────────────────────────────────
@@ -232,6 +250,10 @@ export function deactivate(): void {
     if (pollingTimer) {
         clearTimeout(pollingTimer);
         pollingTimer = undefined;
+    }
+    if (activityPollingTimer) {
+        clearTimeout(activityPollingTimer);
+        activityPollingTimer = undefined;
     }
     abortController.abort();
     // Persist activity data on deactivate
@@ -562,41 +584,7 @@ async function pollContextUsage(): Promise<void> {
         const usageResults = await Promise.all(usagePromises);
         allTrajectoryUsages = usageResults.filter((u): u is ContextUsage => u !== null);
 
-        // 6b. Activity tracker — process BEFORE panel update for instant data
-        if (lsInfo && activityTracker) {
-            try {
-                const activityChanged = await activityTracker.processTrajectories(
-                    lsInfo,
-                    trajectories.map(t => ({ cascadeId: t.cascadeId, stepCount: t.stepCount, status: t.status })),
-                    abortController.signal,
-                );
-                if (activityChanged || !activityTracker.isReady) {
-                    activityStatusBar.updateText(activityTracker.getStatusBarText());
-                    const summary = activityTracker.getSummary();
-                    const tooltipLines: string[] = [];
-                    for (const [name, ms] of Object.entries(summary.modelStats)) {
-                        if (ms.reasoning === 0 && ms.toolCalls === 0 && ms.errors === 0 && ms.checkpoints === 0) { continue; }
-                        const parts: string[] = [];
-                        if (ms.reasoning > 0) { parts.push(`🧠${ms.reasoning}`); }
-                        if (ms.toolCalls > 0) { parts.push(`⚡${ms.toolCalls}`); }
-                        if (ms.checkpoints > 0) { parts.push(`💾${ms.checkpoints}`); }
-                        if (ms.errors > 0) { parts.push(`❌${ms.errors}`); }
-                        tooltipLines.push(`${name}: ${parts.join(' ')}`);
-                    }
-                    if (tooltipLines.length > 0) { activityStatusBar.updateTooltip(tooltipLines); }
-                }
-                // Throttled persistence (max once per 30s)
-                const now = Date.now();
-                if (now - lastActivityPersistTime > 30_000) {
-                    extensionContext.globalState.update('activityTrackerState', activityTracker.serialize());
-                    lastActivityPersistTime = now;
-                }
-            } catch (err) {
-                log(`Activity tracker error: ${err}`);
-            }
-        }
-
-        // 6c. Update WebView panel if visible (with fresh activity data)
+        // 6c. Update WebView panel if visible (context data only; activity is updated independently)
         if (isMonitorPanelVisible()) {
             updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives());
         }
@@ -684,6 +672,81 @@ function restartPolling(): void {
     log(`Polling restarted: ${currentIntervalMs / 1000}s interval`);
 }
 
+// ─── Independent Activity Polling ─────────────────────────────────────────────
+
+const ACTIVITY_POLL_INTERVAL_MS = 3000;
+
+async function pollActivity(): Promise<void> {
+    if (isActivityPolling || disposed) { return; }
+    isActivityPolling = true;
+    try {
+        const lsInfo = cachedLsInfo;
+        if (!lsInfo || !activityTracker) { return; }
+
+        // Fetch trajectories — lightweight RPC
+        let trajectories: TrajectorySummary[];
+        try {
+            trajectories = await getAllTrajectories(lsInfo, abortController.signal);
+        } catch {
+            return; // LS temporarily unavailable; global poll will handle reconnect
+        }
+
+        const activityChanged = await activityTracker.processTrajectories(
+            lsInfo,
+            trajectories.map(t => ({ cascadeId: t.cascadeId, stepCount: t.stepCount, status: t.status })),
+            abortController.signal,
+        );
+
+        if (activityChanged || !activityTracker.isReady) {
+            // Update status bar immediately
+            activityStatusBar.updateText(getActivityDisplayText());
+            const summary = activityTracker.getSummary();
+            const tooltipLines: string[] = [];
+            for (const [name, ms] of Object.entries(summary.modelStats)) {
+                if (ms.reasoning === 0 && ms.toolCalls === 0 && ms.errors === 0 && ms.checkpoints === 0) { continue; }
+                const parts: string[] = [];
+                if (ms.reasoning > 0) { parts.push(`🧠${ms.reasoning}`); }
+                if (ms.toolCalls > 0) { parts.push(`⚡${ms.toolCalls}`); }
+                if (ms.checkpoints > 0) { parts.push(`💾${ms.checkpoints}`); }
+                if (ms.errors > 0) { parts.push(`❌${ms.errors}`); }
+                tooltipLines.push(`${name}: ${parts.join(' ')}`);
+            }
+            if (tooltipLines.length > 0) { activityStatusBar.updateTooltip(tooltipLines); }
+
+            // Refresh WebView immediately when activity changes
+            if (isMonitorPanelVisible() && currentUsage) {
+                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, summary, activityTracker.getArchives());
+            }
+        }
+
+        // Throttled persistence (max once per 30s)
+        const now = Date.now();
+        if (now - lastActivityPersistTime > 30_000) {
+            extensionContext.globalState.update('activityTrackerState', activityTracker.serialize());
+            lastActivityPersistTime = now;
+        }
+    } catch (err) {
+        log(`Activity poll error: ${err}`);
+    } finally {
+        isActivityPolling = false;
+    }
+}
+
+function scheduleActivityPoll(): void {
+    if (disposed) { return; }
+    const myGeneration = ++activityPollGeneration;
+    activityPollingTimer = setTimeout(async () => {
+        try {
+            await pollActivity();
+        } catch { /* ignore */ }
+        finally {
+            if (activityPollGeneration === myGeneration) {
+                scheduleActivityPoll();
+            }
+        }
+    }, ACTIVITY_POLL_INTERVAL_MS);
+}
+
 // ─── Low Quota Notification ───────────────────────────────────────────────────
 
 function checkQuotaNotification(configs: import('./models').ModelConfig[]): void {
@@ -693,29 +756,37 @@ function checkQuotaNotification(configs: import('./models').ModelConfig[]): void
 
     const thresholdFrac = thresholdPct / 100;
 
+    // Group models by resetTime — shared resetTime = shared quota pool
+    const groups = new Map<string, { labels: string[]; minFraction: number }>();
     for (const c of configs) {
         if (!c.quotaInfo) { continue; }
-        const label = c.label || c.model;
-        const remaining = c.quotaInfo.remainingFraction;
+        const key = c.quotaInfo.resetTime || c.model; // fallback to model if no resetTime
+        const g = groups.get(key) || { labels: [], minFraction: 1 };
+        g.labels.push(c.label || c.model);
+        g.minFraction = Math.min(g.minFraction, c.quotaInfo.remainingFraction ?? 0);
+        groups.set(key, g);
+    }
 
-        if (remaining <= thresholdFrac) {
-            // Only notify once per model per threshold crossing
-            if (!quotaNotifiedModels.has(label)) {
-                quotaNotifiedModels.add(label);
-                const pct = (remaining * 100).toFixed(1);
+    for (const [groupKey, group] of groups) {
+        if (group.minFraction <= thresholdFrac) {
+            // Only notify once per group per threshold crossing
+            if (!quotaNotifiedModels.has(groupKey)) {
+                quotaNotifiedModels.add(groupKey);
+                const pct = (group.minFraction * 100).toFixed(1);
+                const names = group.labels.join(', ');
                 vscode.window.showWarningMessage(
-                    `⚠ ${label} quota low: ${pct}% remaining`,
+                    `⚠ ${names} quota low: ${pct}% remaining`,
                     'Open Monitor',
                 ).then(choice => {
                     if (choice === 'Open Monitor') {
                         vscode.commands.executeCommand('antigravity-context-monitor.showDetails');
                     }
                 });
-                log(`Low quota notification: ${label} at ${pct}%`);
+                log(`Low quota notification (group): ${names} at ${pct}%`);
             }
         } else {
             // Recovered above threshold — re-arm notification
-            quotaNotifiedModels.delete(label);
+            quotaNotifiedModels.delete(groupKey);
         }
     }
 }
