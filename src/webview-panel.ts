@@ -112,6 +112,7 @@ export function showMonitorPanel(
                 'statusBar.showQuota',
                 'statusBar.showResetCountdown',
                 'statusBar.showActivity',
+                'statusBar.activityDisplayMode',
                 'contextLimits',
                 'quotaNotificationThreshold',
                 'activity.maxRecentSteps',
@@ -206,7 +207,7 @@ function buildHtml(
     const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo);
     const profileHtml = buildProfileContent(userInfo, configs);
     const settingsHtml = buildSettingsContent(configs, tracker);
-    const historyHtml = buildHistoryHtml(tracker);
+    const historyHtml = buildHistoryHtml(tracker, lastArchives);
     const activityHtml = buildActivityTabContent(lastActivitySummary, configs, tracker, lastArchives);
 
     const currentLang = getLanguage();

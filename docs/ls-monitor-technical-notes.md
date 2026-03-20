@@ -527,3 +527,33 @@ if (currSteps <= entry.processedIndex) { continue; }
 **现象**：部分 `PLANNER_RESPONSE` 步骤的 `modifiedResponse` 和 `response` 均为空字符串，导致时间线行只有模型名，没有内容预览
 **原因**：LS 在推理中途被轮询捕获时，response 尚未填充；或纯思考步骤没有文本输出
 **策略**：当 response 为空且 `thinkingDuration` 存在时，显示"正在思考"作为回退文本（不显示具体秒数，因 3 秒轮询中断导致时间不准确）
+
+### 21. remainingFraction 耗尽时字段消失 + 100% 误判（v1.11.3 修复）
+
+**现象 1**：模型额度耗尽时，`quotaInfo.remainingFraction` 字段**从 API 响应中消失**（不是返回 `0`）
+**影响**：`quota-tracker.ts` 中 `fraction` 为 `undefined`，JS 比较 `undefined >= 1.0` / `undefined <= 0` 均为 `false`，状态机卡死
+**修复**：`fraction = config.quotaInfo.remainingFraction ?? 0`（与 `tracker.ts:570` 的兜底对齐）
+
+**现象 2**：模型额度为 100% 时，`last100Time` 被持续刷新。当额度终于掉档（100→80%），session 的 `startTime` 是上一轮 poll 的时间，而不是首次使用的时间
+**诊断**（`diag-quota.ts` 实测）：
+- 未使用模型的 `resetTime` 始终 ≈ `now + 5h`（实测 4h58m，官方 ~4h58m 开始计时）
+- 已使用但未掉档的模型：`resetTime` 被锁定在一个固定时间点，距现在 < 4h55m
+- 额度周期有两种：5 小时（Premium）和 7 天（低级会员）
+
+**修复**：`isUnusedModel()` 方法检查 `resetTime` 距当前时间是否接近已知周期（±5min 容错）：
+
+```
+已知周期: 5h (18,000,000ms), 7d (604,800,000ms)
+容错: ±5min (300,000ms)
+
+|timeToReset - cycle| ≤ 5min → 未使用（继续刷新 last100Time）
+否则 → 已使用（冻结 last100Time，保留 session 准确起始时间）
+```
+
+**API 实测数据**（2026-03-20）：
+
+| 模型 | remainingFraction | 距重置 | 状态 |
+|---|---|---|---|
+| Flash (M47) | `1` | 4h58m [≈5h] | 未使用 |
+| Pro (M37/M36) | `1` | 2h14m | 已用已重置 |
+| Claude/OSS (M35/M26/OSS) | **字段缺失** | 0h37m | 耗尽 |

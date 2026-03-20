@@ -58,6 +58,16 @@ const MAX_HISTORY_KEY = 'quotaMaxHistory';
 const ENABLED_KEY = 'quotaTrackingEnabled';
 const DEFAULT_MAX_HISTORY = 20;
 
+// ─── Cycle Detection ─────────────────────────────────────────────────────────
+// Known quota reset cycles. An unused model's resetTime ≈ now + cycle.
+// When resetTime drifts away from any known cycle by > TOLERANCE, the model
+// has genuinely been used.
+const KNOWN_CYCLES_MS = [
+    5 * 60 * 60 * 1000,            // 5 hours  (Premium tier)
+    7 * 24 * 60 * 60 * 1000,       // 7 days   (lower-tier membership)
+];
+const CYCLE_TOLERANCE_MS = 10 * 60 * 1000; // 10-minute tolerance for polling delay
+
 // ─── QuotaTracker ─────────────────────────────────────────────────────────────
 
 export class QuotaTracker {
@@ -79,13 +89,15 @@ export class QuotaTracker {
     /** Process a batch of model configs (called on each status refresh). */
     processUpdate(configs: ModelConfig[]): void {
         if (!this.enabled) { return; }
-        const now = new Date().toISOString();
+        const nowDate = new Date();
+        const now = nowDate.toISOString();
 
         for (const config of configs) {
             if (!config.quotaInfo) { continue; }
 
             const modelId = config.model;
-            const fraction = config.quotaInfo.remainingFraction;
+            // LS omits remainingFraction when quota is exhausted — default to 0
+            const fraction = config.quotaInfo.remainingFraction ?? 0;
             const percent = Math.round(fraction * 100);
 
             let ms = this.modelStates.get(modelId);
@@ -102,11 +114,35 @@ export class QuotaTracker {
             switch (ms.state) {
                 case 'idle':
                     if (fraction >= 1.0) {
-                        // Still idle — update last known 100% time
-                        ms.last100Time = now;
-                        ms.lastFraction = fraction;
+                        const resetTimeStr = config.quotaInfo.resetTime || '';
+                        if (this.isUnusedModel(resetTimeStr, nowDate)) {
+                            // Genuinely unused — keep refreshing baseline
+                            ms.last100Time = now;
+                            ms.lastFraction = fraction;
+                        } else {
+                            // Model IS used but still at 100% → start tracking early!
+                            // Freeze last100Time (already frozen or first detection)
+                            const session: QuotaSession = {
+                                id: `${modelId}_${Date.now()}`,
+                                modelId,
+                                modelLabel: config.label,
+                                startTime: ms.last100Time,
+                                snapshots: [
+                                    {
+                                        timestamp: ms.last100Time,
+                                        fraction: 1.0,
+                                        percent: 100,
+                                        elapsedMs: 0,
+                                    },
+                                ],
+                                completed: false,
+                            };
+                            ms.state = 'tracking';
+                            ms.currentSession = session;
+                            ms.lastFraction = fraction;
+                        }
                     } else {
-                        // First usage detected → start tracking
+                        // First usage detected (fraction < 1.0) → start tracking
                         const session: QuotaSession = {
                             id: `${modelId}_${Date.now()}`,
                             modelId,
@@ -154,7 +190,11 @@ export class QuotaTracker {
                     }
 
                     if (fraction >= 1.0) {
-                        // Reset happened! Archive current session as incomplete, go idle
+                        if (ms.lastFraction >= 1.0) {
+                            // Still at 100% — haven't dropped yet, just keep tracking
+                            break;
+                        }
+                        // Was below 100%, now back to 100% → genuine reset!
                         ms.currentSession.completed = false;
                         ms.currentSession.endTime = now;
                         ms.currentSession.totalDurationMs =
@@ -256,6 +296,24 @@ export class QuotaTracker {
     }
 
     // ─── Internal ─────────────────────────────────────────────────────────────
+
+    /**
+     * Check if a model at 100% fraction is genuinely unused.
+     * Unused models have resetTime ≈ now + full_cycle (within ±5min tolerance).
+     * Used models have resetTime locked at a fixed future point, drifting from cycle boundaries.
+     */
+    private isUnusedModel(resetTimeStr: string, now: Date): boolean {
+        if (!resetTimeStr) { return true; } // No resetTime → assume unused
+        const timeToReset = new Date(resetTimeStr).getTime() - now.getTime();
+        if (timeToReset <= 0) { return false; } // Past reset → definitely used
+
+        for (const cycle of KNOWN_CYCLES_MS) {
+            if (Math.abs(timeToReset - cycle) <= CYCLE_TOLERANCE_MS) {
+                return true; // Within tolerance of a known full cycle → unused
+            }
+        }
+        return false; // Not near any known cycle → has been used
+    }
 
     private archiveSession(session: QuotaSession): void {
         this.history.unshift(session); // newest first

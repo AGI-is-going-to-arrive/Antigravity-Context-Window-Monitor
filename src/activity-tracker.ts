@@ -657,6 +657,24 @@ export class ActivityTracker {
         return parts.length > 0 ? parts.join(' ') : '🧠0 ⚡0';
     }
 
+    /**
+     * Get status bar text for a specific model only.
+     * Falls back to global text if the model has no stats.
+     */
+    getModelStatusBarText(modelDisplayName: string): string {
+        const ms = this._modelStats.get(modelDisplayName);
+        if (!ms || ms.totalSteps === 0) { return this.getStatusBarText(); }
+        const parts: string[] = [];
+        if (ms.reasoning > 0) { parts.push(`🧠${ms.reasoning}`); }
+        if (ms.toolCalls > 0) { parts.push(`⚡${ms.toolCalls}`); }
+        if (ms.estSteps > 0) { parts.push(`📊+${ms.estSteps}`); }
+        const tokens = ms.inputTokens + ms.outputTokens;
+        if (tokens > 0) {
+            parts.push(`🪙${tokens >= 1000 ? (tokens / 1000).toFixed(1) + 'k' : String(tokens)}`);
+        }
+        return parts.length > 0 ? parts.join(' ') : '🧠0 ⚡0';
+    }
+
     /** Whether the tracker has been warmed up */
     get isReady(): boolean { return this._warmedUp; }
 
@@ -731,14 +749,35 @@ export class ActivityTracker {
         tracker._sessionStartTime = s.sessionStartTime;
         tracker._archives = data.archives || [];
 
-        // Restore estSteps from persisted model stats
+        // Fully restore all model stats from persisted summary
         for (const [name, ms] of Object.entries(s.modelStats)) {
-            if (ms.estSteps > 0) {
-                const stats = tracker._getOrCreateStats(name);
-                stats.estSteps = ms.estSteps;
-                stats.totalSteps = ms.estSteps;  // will be rebuilt + added by warm-up
-            }
+            const stats = tracker._getOrCreateStats(name);
+            stats.reasoning = ms.reasoning;
+            stats.toolCalls = ms.toolCalls;
+            stats.errors = ms.errors;
+            stats.checkpoints = ms.checkpoints;
+            stats.totalSteps = ms.totalSteps;
+            stats.thinkingTimeMs = ms.thinkingTimeMs;
+            stats.toolTimeMs = ms.toolTimeMs;
+            stats.inputTokens = ms.inputTokens;
+            stats.outputTokens = ms.outputTokens;
+            stats.toolReturnTokens = ms.toolReturnTokens;
+            stats.toolBreakdown = { ...ms.toolBreakdown };
+            stats.estSteps = ms.estSteps;
         }
+
+        // Restore global counters
+        tracker._totalUserInputs = s.totalUserInputs;
+        tracker._totalCheckpoints = s.totalCheckpoints;
+        tracker._totalErrors = s.totalErrors;
+
+        // Restore global tool stats
+        for (const [k, v] of Object.entries(s.globalToolStats)) {
+            tracker._globalToolStats.set(k, v);
+        }
+
+        // Restore recent steps (timeline)
+        tracker._recentSteps = [...s.recentSteps];
 
         // Restore trajectory baselines (including dominantModel)
         if (data.trajectoryBaselines) {
@@ -752,8 +791,14 @@ export class ActivityTracker {
             }
         }
 
-        // Force warm-up to recalibrate actual counts from live LS data
-        tracker._warmedUp = false;
+        // If we have trajectory baselines, skip warm-up to avoid re-counting
+        // steps that were already archived by archiveAndReset().
+        // Stats are fully restored above, only new steps need counting.
+        if (Object.keys(data.trajectoryBaselines || {}).length > 0) {
+            tracker._warmedUp = true;  // use incremental path — only new steps
+        } else {
+            tracker._warmedUp = false; // no baselines: full warm-up needed
+        }
 
         return tracker;
     }

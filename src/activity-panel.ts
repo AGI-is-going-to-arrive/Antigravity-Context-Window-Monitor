@@ -15,7 +15,7 @@ export function buildActivityTabContent(
     summary: ActivitySummary | null,
     _configs?: unknown,
     _quotaTracker?: unknown,
-    archives?: ActivityArchive[],
+    _archives?: ActivityArchive[],
 ): string {
     if (!summary) {
         return `<p class="empty-msg">${tBi('Waiting for activity data...', '等待活动数据...')}</p>`;
@@ -25,7 +25,6 @@ export function buildActivityTabContent(
         buildModelCards(summary),
         buildTimeline(summary),
         buildDistribution(summary),
-        buildArchiveHistory(archives),
     ].join('');
 }
 
@@ -418,7 +417,7 @@ function buildDistribution(s: ActivitySummary): string {
 
 // ─── Archive History ─────────────────────────────────────────────────────────
 
-function buildArchiveHistory(archives?: ActivityArchive[]): string {
+export function buildArchiveHistory(archives?: ActivityArchive[]): string {
     if (!archives || archives.length === 0) { return ''; }
 
     let html = `<div class="act-section">
@@ -472,7 +471,7 @@ function buildArchiveHistory(archives?: ActivityArchive[]): string {
     return html;
 }
 
-function formatDateShort(iso: string): string {
+export function formatDateShort(iso: string): string {
     try {
         const d = new Date(iso);
         const mm = String(d.getMonth() + 1).padStart(2, '0');

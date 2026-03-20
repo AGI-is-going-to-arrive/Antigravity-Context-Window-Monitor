@@ -67,6 +67,16 @@ export function getScript(): string {
                 })(tgi);
             }
 
+            // ─── Settings: Activity Display Mode Radio ───
+            var modeRadios = document.querySelectorAll('input[name="activityDisplayMode"]');
+            for (var ri = 0; ri < modeRadios.length; ri++) {
+                modeRadios[ri].addEventListener('change', function() {
+                    if (this.checked) {
+                        vscode.postMessage({ command: 'setConfig', key: 'statusBar.activityDisplayMode', value: this.value });
+                    }
+                });
+            }
+
             // ─── Settings: Model Limits Save ───
             var modelLimitsSaveBtn = document.getElementById('modelLimitsSaveBtn');
             if (modelLimitsSaveBtn) {

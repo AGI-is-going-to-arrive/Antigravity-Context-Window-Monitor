@@ -34,8 +34,8 @@ let allTrajectoryUsages: ContextUsage[] = [];
 let cachedModelConfigs: import('./models').ModelConfig[] = [];
 let cachedUserInfo: UserStatusInfo | null = null;
 let statusPollCount = 0;
-/** Refresh user status every N poll cycles (~60s at default 5s interval) */
-const STATUS_REFRESH_INTERVAL = 12;
+/** Refresh user status every N poll cycles (~10s at default 5s interval) */
+const STATUS_REFRESH_INTERVAL = 2;
 let outputChannel: vscode.OutputChannel;
 let quotaTracker: QuotaTracker;
 let activityTracker: ActivityTracker;
@@ -60,6 +60,16 @@ const previousTrajectoryIds = new Set<string>();
 
 /** Previous poll's contextUsed per cascade — used to detect context compression. */
 const previousContextUsedMap = new Map<string, number>();
+
+/** Get activity status bar text based on user-configured display mode. */
+function getActivityDisplayText(): string {
+    const mode = vscode.workspace.getConfiguration('antigravityContextMonitor')
+        .get<string>('statusBar.activityDisplayMode', 'global');
+    if (mode === 'currentModel' && currentUsage?.modelDisplayName) {
+        return activityTracker.getModelStatusBarText(currentUsage.modelDisplayName);
+    }
+    return activityTracker.getStatusBarText();
+}
 
 /** Whether we've completed at least one poll cycle. */
 let firstPollDone = false;
@@ -109,7 +119,7 @@ export function activate(context: vscode.ExtensionContext): void {
             activityTracker.archiveAndReset();
             context.globalState.update('activityTrackerState', activityTracker.serialize());
             if (activityStatusBar) {
-                activityStatusBar.updateText(activityTracker.getStatusBarText());
+                activityStatusBar.updateText(getActivityDisplayText());
                 activityStatusBar.updateTooltip([]);
             }
         }
@@ -131,7 +141,7 @@ export function activate(context: vscode.ExtensionContext): void {
     activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
     activityStatusBar = new ActivityStatusBarItem();
     // Immediately update activity status bar with restored data
-    activityStatusBar.updateText(activityTracker.getStatusBarText());
+    activityStatusBar.updateText(getActivityDisplayText());
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = context.globalState.get<import('./models').ModelConfig[]>('cachedModelConfigs');
@@ -689,7 +699,7 @@ async function pollActivity(): Promise<void> {
 
         if (activityChanged || !activityTracker.isReady) {
             // Update status bar immediately
-            activityStatusBar.updateText(activityTracker.getStatusBarText());
+            activityStatusBar.updateText(getActivityDisplayText());
             const summary = activityTracker.getSummary();
             const tooltipLines: string[] = [];
             for (const [name, ms] of Object.entries(summary.modelStats)) {
@@ -746,29 +756,37 @@ function checkQuotaNotification(configs: import('./models').ModelConfig[]): void
 
     const thresholdFrac = thresholdPct / 100;
 
+    // Group models by resetTime — shared resetTime = shared quota pool
+    const groups = new Map<string, { labels: string[]; minFraction: number }>();
     for (const c of configs) {
         if (!c.quotaInfo) { continue; }
-        const label = c.label || c.model;
-        const remaining = c.quotaInfo.remainingFraction;
+        const key = c.quotaInfo.resetTime || c.model; // fallback to model if no resetTime
+        const g = groups.get(key) || { labels: [], minFraction: 1 };
+        g.labels.push(c.label || c.model);
+        g.minFraction = Math.min(g.minFraction, c.quotaInfo.remainingFraction ?? 0);
+        groups.set(key, g);
+    }
 
-        if (remaining <= thresholdFrac) {
-            // Only notify once per model per threshold crossing
-            if (!quotaNotifiedModels.has(label)) {
-                quotaNotifiedModels.add(label);
-                const pct = (remaining * 100).toFixed(1);
+    for (const [groupKey, group] of groups) {
+        if (group.minFraction <= thresholdFrac) {
+            // Only notify once per group per threshold crossing
+            if (!quotaNotifiedModels.has(groupKey)) {
+                quotaNotifiedModels.add(groupKey);
+                const pct = (group.minFraction * 100).toFixed(1);
+                const names = group.labels.join(', ');
                 vscode.window.showWarningMessage(
-                    `⚠ ${label} quota low: ${pct}% remaining`,
+                    `⚠ ${names} quota low: ${pct}% remaining`,
                     'Open Monitor',
                 ).then(choice => {
                     if (choice === 'Open Monitor') {
                         vscode.commands.executeCommand('antigravity-context-monitor.showDetails');
                     }
                 });
-                log(`Low quota notification: ${label} at ${pct}%`);
+                log(`Low quota notification (group): ${names} at ${pct}%`);
             }
         } else {
             // Recovered above threshold — re-arm notification
-            quotaNotifiedModels.delete(label);
+            quotaNotifiedModels.delete(groupKey);
         }
     }
 }

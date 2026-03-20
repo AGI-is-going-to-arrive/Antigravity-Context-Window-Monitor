@@ -160,10 +160,19 @@ Panel framework: tab switching (Monitor / Settings / Activity / Profile / Histor
 State machine tracking quota consumption per model.
 
 ```
-IDLE (100%) ──使用开始──> TRACKING ──耗尽──> DONE
-  ↑                          │                  │
-  └──── 额度重置 (→1.0) ────┘──── 额度重置 ────┘
+IDLE (100%)
+  ├─ fraction < 1.0 ────────────> TRACKING ──耗尽──> DONE
+  └─ isUnusedModel = false ─────>    │                  │
+     (resetTime 偏离 >10min)         │                  │
+                                     │                  │
+  ↑                                  │                  │
+  └────── 额度重置 (→1.0) ──────────┘──── 额度重置 ────┘
 ```
+
+- `isUnusedModel(resetTime)` 判断 resetTime 距已知周期（5h/7d）是否超过 10 分钟容差
+- IDLE + 100% + `isUnusedModel=false`：立即创建 session 开始追踪（不等额度下降）
+- TRACKING + 100% + `lastFraction=100%`：继续追踪（不误判为重置）
+- TRACKING + 100% + `lastFraction<100%`：真正重置，归档 session
 
 额度重置时触发 `onQuotaReset` 回调，联动 `activity-tracker` 归档。
 
