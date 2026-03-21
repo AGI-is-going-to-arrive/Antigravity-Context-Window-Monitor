@@ -247,13 +247,13 @@ export function getStyles(): string {
         /* ─── Stat Grid ──────────────── */
         .stat-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
             gap: var(--space-2);
             margin-bottom: var(--space-3);
         }
 
-        .stat-grid.three-col { grid-template-columns: 1fr 1fr 1fr; }
-        .stat-grid.four-col { grid-template-columns: 1fr 1fr 1fr 1fr; }
+        .stat-grid.three-col { grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); }
+        .stat-grid.four-col { grid-template-columns: repeat(auto-fit, minmax(65px, 1fr)); }
 
         .stat {
             background: rgba(255,255,255,0.02);

@@ -11,7 +11,7 @@ import {
     TrajectorySummary,
     UserStatusInfo,
 } from './tracker';
-import { StatusBarManager, formatContextLimit, ActivityStatusBarItem } from './statusbar';
+import { StatusBarManager, formatContextLimit } from './statusbar';
 import { initI18n, showLanguagePicker } from './i18n';
 import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
@@ -39,7 +39,7 @@ const STATUS_REFRESH_INTERVAL = 2;
 let outputChannel: vscode.OutputChannel;
 let quotaTracker: QuotaTracker;
 let activityTracker: ActivityTracker;
-let activityStatusBar: ActivityStatusBarItem;
+
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
 
@@ -61,15 +61,7 @@ const previousTrajectoryIds = new Set<string>();
 /** Previous poll's contextUsed per cascade — used to detect context compression. */
 const previousContextUsedMap = new Map<string, number>();
 
-/** Get activity status bar text based on user-configured display mode. */
-function getActivityDisplayText(): string {
-    const mode = vscode.workspace.getConfiguration('antigravityContextMonitor')
-        .get<string>('statusBar.activityDisplayMode', 'global');
-    if (mode === 'currentModel' && currentUsage?.modelDisplayName) {
-        return activityTracker.getModelStatusBarText(currentUsage.modelDisplayName);
-    }
-    return activityTracker.getStatusBarText();
-}
+
 
 /** Whether we've completed at least one poll cycle. */
 let firstPollDone = false;
@@ -118,10 +110,6 @@ export function activate(context: vscode.ExtensionContext): void {
             log('Quota reset detected — archiving activity snapshot');
             activityTracker.archiveAndReset();
             context.globalState.update('activityTrackerState', activityTracker.serialize());
-            if (activityStatusBar) {
-                activityStatusBar.updateText(getActivityDisplayText());
-                activityStatusBar.updateTooltip([]);
-            }
         }
     };
 
@@ -139,9 +127,6 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize activity tracker
     const savedActivity = context.globalState.get<ActivityTrackerState>('activityTrackerState');
     activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
-    activityStatusBar = new ActivityStatusBarItem();
-    // Immediately update activity status bar with restored data
-    activityStatusBar.updateText(getActivityDisplayText());
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = context.globalState.get<import('./models').ModelConfig[]>('cachedModelConfigs');
@@ -183,7 +168,6 @@ export function activate(context: vscode.ExtensionContext): void {
             showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'activity', activityTracker?.getArchives(), activityTracker);
         }),
         statusBar,
-        activityStatusBar,
         outputChannel
     );
 
@@ -263,9 +247,7 @@ export function deactivate(): void {
     if (statusBar) {
         statusBar.dispose();
     }
-    if (activityStatusBar) {
-        activityStatusBar.dispose();
-    }
+
     log('Extension deactivated');
 }
 
@@ -278,9 +260,6 @@ function applyDisplayPrefs(): void {
         showQuota: cfg.get<boolean>('statusBar.showQuota', true),
         showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
     });
-    // Activity status bar item is independent
-    const showActivity = cfg.get<boolean>('statusBar.showActivity', true);
-    activityStatusBar.setVisible(showActivity !== false);
 }
 
 // ─── Polling Logic ────────────────────────────────────────────────────────────
@@ -698,20 +677,7 @@ async function pollActivity(): Promise<void> {
         );
 
         if (activityChanged || !activityTracker.isReady) {
-            // Update status bar immediately
-            activityStatusBar.updateText(getActivityDisplayText());
             const summary = activityTracker.getSummary();
-            const tooltipLines: string[] = [];
-            for (const [name, ms] of Object.entries(summary.modelStats)) {
-                if (ms.reasoning === 0 && ms.toolCalls === 0 && ms.errors === 0 && ms.checkpoints === 0) { continue; }
-                const parts: string[] = [];
-                if (ms.reasoning > 0) { parts.push(`🧠${ms.reasoning}`); }
-                if (ms.toolCalls > 0) { parts.push(`⚡${ms.toolCalls}`); }
-                if (ms.checkpoints > 0) { parts.push(`💾${ms.checkpoints}`); }
-                if (ms.errors > 0) { parts.push(`❌${ms.errors}`); }
-                tooltipLines.push(`${name}: ${parts.join(' ')}`);
-            }
-            if (tooltipLines.length > 0) { activityStatusBar.updateTooltip(tooltipLines); }
 
             // Refresh WebView immediately when activity changes
             if (isMonitorPanelVisible() && currentUsage) {

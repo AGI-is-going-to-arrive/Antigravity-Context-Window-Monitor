@@ -70,7 +70,6 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 * **🧠 Model Activity Monitor** *(v1.11.2)*
     New Activity tab tracks real-time AI reasoning calls, tool usage, tokens, and timing per model across all conversations.
-    * **📊 Activity Status Bar**: Second status bar item showing live counts (`🧠5 ⚡12 🪙3.2k`). Click to open the Activity tab.
     * **💾 Persistence**: Activity stats survive VS Code restarts via `globalState`. Throttled to max once per 30s.
     * **📋 Auto-Archive**: When model quota resets, current activity is automatically archived to history, giving per-cycle usage reports.
     * **📊 Estimated Steps**: When conversations exceed the LS API's ~500 step window, additional steps are tracked as estimated counts with clear `📊` markers.
@@ -139,7 +138,6 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | `statusBar.showContext` | true | Show context usage (e.g. `45k/1M, 4.5%`) in status bar |
 | `statusBar.showQuota` | true | Show current model quota indicator (e.g. `🟢85%`) in status bar |
 | `statusBar.showResetCountdown` | true | Show quota reset countdown (e.g. `⏳4h32m`) in status bar |
-| `statusBar.showActivity` | true | Show model activity indicator (`🧠`, `⚡`, `🪙`) in status bar |
 | `quotaNotificationThreshold` | 20 | Show warning when model quota drops below this % (0 to disable) |
 | `activity.maxRecentSteps` | 100 | Max recent activity steps to keep in timeline |
 | `activity.maxArchives` | 20 | Max activity archives to keep |
