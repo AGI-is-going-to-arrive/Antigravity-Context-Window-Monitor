@@ -1,6 +1,6 @@
 # LS Monitor 技术实现文档
 
-> **v1.11.2** — 2026-03-20
+> **v1.11.4** — 2026-03-21
 
 > [!NOTE]
 > 本文档所描述的监控数据**完全依赖 LS（Language Server）的 gRPC-over-HTTP API** 返回的数据进行统计和展示。受限于 API 的约 5MB 响应大小限制（约 500 步），超出此窗口的步骤只能通过 `stepCount` 差值进行推算（标注为 📊 推算步数），无法获取精确分类。如有估算偏差或数据不完整，敬请谅解。
@@ -315,21 +315,23 @@ step.userInput: {
 - warm-up 统计全部对话 → 反映完整额度周期使用量
 - 额度重置时 `archiveAndReset()` 归档快照并清零统计
 
-### 额度重置自动归档（v1.11.2 新增）
+### 额度重置自动归档（v1.11.2 新增，v1.11.6 重构）
 
 ```
-额度 tracking 中 → fraction 跳回 ≥ 1.0
-  ├─ quota-tracker: 归档 session → 状态 → idle
-  ├─ 触发 onQuotaReset 回调
-  ├─ activity-tracker.archiveAndReset()
-  │   ├─ 快照当前 getSummary() → _archives[]
-  │   ├─ 清零所有统计（modelStats/counters/recentSteps）
-  │   ├─ 保留 _trajectories 基线（避免 warm-up 重新统计历史）
-  │   └─ 保留 _warmedUp = true（增量跟踪继续）
-  └─ 持久化 → 刷新状态栏
+processUpdate() 遍历所有模型
+  ├─ 检测到 fraction 跳回 ≥ 1.0 → resetModels.push(modelId)
+  └─ 循环结束后，若 resetModels.length > 0
+     └─ 一次性触发 onQuotaReset(resetModels: string[])
+        └─ activity-tracker.archiveAndReset(modelIds)
+            ├─ 检查 totalReasoning > 0 || totalToolCalls > 0（跳过空归档）
+            ├─ 防抖：最近归档 < 5min → 合并到最近归档（triggeredBy 去重合并）
+            ├─ 否则：新建归档 → _archives.unshift({ summary, triggeredBy: modelIds })
+            ├─ 清零所有统计（modelStats/counters/recentSteps）
+            ├─ 保留 _trajectories 基线（避免 warm-up 重新统计历史）
+            └─ 保留 _warmedUp = true（增量跟踪继续）
 ```
 
-> 关键设计：归档只清零统计，不清除轨迹基线。后续增量跟踪从当前 processedIndex 继续。
+> 关键设计：同池多模型（如 Pro High/Low）只触发 1 次回调 + 1 条归档。不同池间隔 < 5min 重置时防抖合并为 1 条。
 
 ## 额度数据来源
 
@@ -363,77 +365,14 @@ tracking 状态 + fraction ≥ 1.0 = 额度已重置
 
 ## 诊断脚本
 
-项目提供两个独立终端脚本，用于在扩展之外直接调试和验证 LS 数据。
-
-### diag-verify.ts — 静态数据完整性诊断
-
-对 LS API 返回的所有数据结构逐项验证，输出 PASS/FAIL 报告。
-
-```bash
-npx tsx src/diag-verify.ts
-```
-
-**验证阶段：**
-
-| 阶段 | 内容 |
-|---|---|
-| 0: LS 发现 | wmic/PowerShell 进程扫描、CSRF Token 提取、PID、netstat 端口、RPC 探测 |
-| 1: GetUserStatus | clientModelConfigs 结构、quotaInfo.remainingFraction、planInfo、模型列表 |
-| 2: GetAllCascadeTrajectories | trajectorySummaries 结构、stepCount/status/summary、workspace 信息 |
-| 3: GetCascadeTrajectorySteps | 步骤类型分类（未文档化类型检测）、USER_INPUT/PLANNER_RESPONSE/CHECKPOINT 结构验证、踩坑字段检查 |
-| 4: startIndex/endIndex | 验证 startIndex 参数是否生效（文档记录为不生效） |
-| 5: 模型名称映射 | MODEL_PLACEHOLDER_MXX → 显示名称映射正确性 |
-
-**输出示例：**
-
-```
-  ✅ PASS [D-01] wmic 进程扫描
-  ✅ PASS [S-03] 步骤类型全部已文档化
-  ❌ FAIL [S-XX] 发现 2 个未文档化类型: CORTEX_STEP_TYPE_NEW_TYPE
-```
-
-> 前提条件：Antigravity IDE 已启动且至少有一个对话。
-
----
-
-### diag-monitor.ts — 实时步骤监视器
-
-持续轮询 LS，逐条显示每个对话的新增步骤，用于验证增量捕获是否精确。
-
-```bash
-npx tsx src/diag-monitor.ts
-# Ctrl+C 停止
-```
-
-**功能：**
-
-- 每 3 秒轮询 `GetAllCascadeTrajectories`
-- 检测到 `stepCount` 变化时，拉取步骤并精确显示新增部分
-- 显示每步的：序号、图标、类型、模型 ID、内容摘要
-- 检测 API 窗口外步骤并警告
-
-**输出示例：**
-
-```
-─── [19:14:28] Introducing Myself (IDLE) +6 步 (0→6) ───
-  API 返回 6 步 (请求 6)
-  ✓ 新步骤可精确捕获 (index 0..5):
-    [   0] 💬 USER_INPUT             "请简单自我介绍一下自己..."
-    [   1] 📜 CONVERSATION_HISTORY
-    [   2] 📚 KNOWLEDGE_ARTIFACTS
-    [   3] 💨 EPHEMERAL_MESSAGE
-    [   4] 🧠 PLANNER_RESPONSE       [MM37] thinking="..." dur=0.886s
-    [   5] 💾 CHECKPOINT             in=3166 out=77 model=MODEL_...
-```
-
-> 用于对比扩展内 activity-tracker 的捕获结果，确保两者一致。
+> 注：早期诊断脚本（`diag-verify.ts`、`diag-monitor.ts`、`diag-quota.ts`、`diag-reset.ts`）已在 v1.11.3 中删除。功能已完全集成到扩展模块中。LS 数据探索结果已记录在下方 Bug 记录中。
 
 ---
 
 ## 文件位置
 
 - 插件源码：`src/`
-- 诊断脚本：`src/diag-verify.ts`（静态诊断）、`src/diag-monitor.ts`（实时监视）
+- 单元测试：`src/*.test.ts`
 - 技术文档：本文件
 
 > 注：独立终端脚本 `ls-monitor.ts` 已删除（v1.11.2），功能完全集成到扩展模块中。
@@ -528,32 +467,104 @@ if (currSteps <= entry.processedIndex) { continue; }
 **原因**：LS 在推理中途被轮询捕获时，response 尚未填充；或纯思考步骤没有文本输出
 **策略**：当 response 为空且 `thinkingDuration` 存在时，显示"正在思考"作为回退文本（不显示具体秒数，因 3 秒轮询中断导致时间不准确）
 
-### 21. remainingFraction 耗尽时字段消失 + 100% 误判（v1.11.3 修复）
+### 21. remainingFraction 耗尽时字段消失 + 100% 动态检测（v1.11.3 修复）
 
 **现象 1**：模型额度耗尽时，`quotaInfo.remainingFraction` 字段**从 API 响应中消失**（不是返回 `0`）
 **影响**：`quota-tracker.ts` 中 `fraction` 为 `undefined`，JS 比较 `undefined >= 1.0` / `undefined <= 0` 均为 `false`，状态机卡死
 **修复**：`fraction = config.quotaInfo.remainingFraction ?? 0`（与 `tracker.ts:570` 的兜底对齐）
 
-**现象 2**：模型额度为 100% 时，`last100Time` 被持续刷新。当额度终于掉档（100→80%），session 的 `startTime` 是上一轮 poll 的时间，而不是首次使用的时间
-**诊断**（`diag-quota.ts` 实测）：
-- 未使用模型的 `resetTime` 始终 ≈ `now + 5h`（实测 4h58m，官方 ~4h58m 开始计时）
-- 已使用但未掉档的模型：`resetTime` 被锁定在一个固定时间点，距现在 < 4h55m
-- 额度周期有两种：5 小时（Premium）和 7 天（低级会员）
+**现象 2**：模型额度为 100% 时，无法区分"已使用但未掉档"和"未使用"
 
-**修复**：`isUnusedModel()` 方法检查 `resetTime` 距当前时间是否接近已知周期（±5min 容错）：
+**LS 数据探索结果**（2026-03-21）：
+- `quotaInfo` 仅包含两个字段：`remainingFraction` + `resetTime`（无隐藏字段）
+- 未使用模型：`resetTime` 每 5-10 分钟被 API 自动刷新（向前跳变 ~10min）
+- 已使用模型：`resetTime` 被锁定在当前周期的固定截止时间（永远不变）
+- 同一厂商的不同模型可能属于不同额度组（如 Gemini Flash ≠ Gemini Pro）
 
-```
-已知周期: 5h (18,000,000ms), 7d (604,800,000ms)
-容错: ±5min (300,000ms)
+**实测数据**（2026-03-21 10:57）：
 
-|timeToReset - cycle| ≤ 5min → 未使用（继续刷新 last100Time）
-否则 → 已使用（冻结 last100Time，保留 session 准确起始时间）
-```
+| 模型 | fraction | resetTime (UTC) | 距重置 | 状态 |
+|---|---|---|---|---|
+| Flash | 1 | 07:46:10 | 4h48m | 已用（resetTime 锁定） |
+| Pro High/Low | 1 | 07:54:09 | 4h56m | 未用（resetTime 刷新） |
+| Claude/GPT | 0.8 | 06:22:58 | 3h25m | 已用（额度已掉） |
 
-**API 实测数据**（2026-03-20）：
+**修复**：移除 `isUnusedModel()`（硬编码 5h/7d 周期），改为动态 resetTime 观察：
+- `OBSERVATION_WINDOW_MS = 8min`：观察窗口（超过 API 刷新间隔 ~5-10min）
+- `RESET_DRIFT_TOLERANCE_MS = 5min`：漂移阈值（未使用模型跳变 ~10min）
+- 8 分钟内 resetTime 无漂移 → 判定已使用 → 进入 tracking
+- resetTime 发生跳变 → 重置观察基线 → 保持 idle
 
-| 模型 | remainingFraction | 距重置 | 状态 |
-|---|---|---|---|
-| Flash (M47) | `1` | 4h58m [≈5h] | 未使用 |
-| Pro (M37/M36) | `1` | 2h14m | 已用已重置 |
-| Claude/OSS (M35/M26/OSS) | **字段缺失** | 0h37m | 耗尽 |
+### Bug #3: tracking 状态 100%→100% 永不归档（2026-03-21 修复）
+
+**现象**：模型通过动态检测以 100% 进入 `tracking` 后，如果额度始终保持 100%（未超过 80% 阈值），即使额度周期结束，追踪也可能永远不结束。
+
+**修复**：`tracking` 状态下 100%→100% 时增加两个检测：
+
+| 检测条件 | 含义 |
+|---|---|
+| `now >= lastResetTime` | 当前时间已过官方重置时间 → 周期结束 |
+| `新 resetTime - 旧 resetTime > 30min` | resetTime 往后跳变 → 新周期开始 |
+
+任一条件满足则归档 session，`endTime` 设为官方 `resetTime`（非本地检测时间）。
+
+**旧数据兼容**：从无 `lastResetTime` 字段的 `globalState` 恢复时，自动初始化为当前 `resetTime`，下一轮重置到达后正常归档。
+
+### 22. CHECKPOINT.modelUsage.model 是幽灵字段（v1.11.4 修复）
+
+**现象**：活动面板的 token 统计和模型归属始终显示 `Gemini 2.5 Flash Lite`，即使用户从未使用过该模型
+
+**根因**：`CHECKPOINT` 步骤中的 `metadata.modelUsage.model` 字段**始终**填写 `MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE`，不论对话实际使用哪个模型。此字段是一个静态标记，非真实生成模型。
+
+**診断数据**（5 个对话交叉验证，29 个 CHECKPOINT 100% 命中）：
+
+| 字段 | 值 | 是否准确 |
+|---|---|---|
+| `step.metadata.generatorModel` | `MODEL_PLACEHOLDER_M26` (Claude Opus 4.6) | ✅ 准确 |
+| `checkpoint.modelUsage.model` | `MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE` | ❌ 幽灵值 |
+
+**修复**：`_processStep()` 的 CHECKPOINT 处理改用 `contextModel` 参数（从对话全部步骤的 `generatorModel` 检测的 `dominantModel`）做 token 归属，优先级：`contextModel` > `generatorModel` > `modelUsage.model`（兜底）
+
+### 23. step.type vs metadata.cortexStepType（v1.11.4 修复）
+
+**现象**：`_updateConversationBreakdown()` 中用 `meta.cortexStepType` 读取步骤类型，始终匹配不到 `CORTEX_STEP_TYPE_CHECKPOINT`，导致对话分布的 token 数据全为 0
+**根因**：步骤类型字段在 LS API 返回数据中位于 `step.type`（顶层），而非 `step.metadata.cortexStepType`。`_processStep()` 正确使用了 `step.type`，但 `_updateConversationBreakdown()` 错误引用了 `meta.cortexStepType`
+**修复**：统一使用 `step.type`
+**教训**：新函数应与已有 `_processStep()` 保持一致的字段路径
+
+### 24. CHECKPOINT.modelUsage.inputTokens 是累积快照值
+
+**发现**：单个 CHECKPOINT 的 `modelUsage.inputTokens`/`outputTokens` 是该对话截止该 checkpoint 的**累积值**，不是增量值
+**影响**：不能将同一对话多个 CHECKPOINT 的 token 值相加（会严重高估），应取**最后一个 CHECKPOINT 的最大值**
+**场景**：
+- 上下文增长趋势图（`_checkpointHistory`）：逐个记录即可，反映当时的累积窗口大小
+- 对话分布（`_conversationBreakdown`）：取 `max(inputTokens)` 和 `max(outputTokens)` 作为对话总量
+
+### 25. VS Code webview 中 inline style 与 CSS class 的行为差异
+
+**现象**：工具排行条形图 `background` 通过 inline `style="background:#60a5fa"` 设置，颜色不显示
+**探索**：
+- VS Code webview 默认启用 Content Security Policy（CSP），可能限制 inline style
+- 但 SVG 属性（`stroke`、`fill`）和 legend dot 的 inline `style="background:..."` 在同一个 webview 中正常工作
+- `<span>` 元素不加 `display: block` 导致 `width`/`height` 无效，也间接让 `background` 看不到
+
+**最终方案**：
+| 属性 | 方式 | 原因 |
+|---|---|---|
+| 颜色 | CSS class `.act-rank-c0~c9` | 避免 CSP 不确定性 |
+| 宽度 | inline `style="width:X%"` | 动态值必须 inline，webview 支持 |
+| 块级 | `display: block` | `<span>` 默认 inline，必须显式声明 |
+
+### 26. 数据迁移：restore 后的 warm-up 触发条件（v1.11.4）
+
+**现象**：升级版本后新增的 `checkpointHistory` 和 `conversationBreakdown` 字段为空，因为 `restore()` 将 `_warmedUp` 设为 `true` 跳过了 warm-up
+**根因**：`restore()` 的迁移逻辑只检测了 `subAgentTokens` 缺失，没有检测新字段
+**修复**：三层迁移触发条件：
+
+| 条件 | 检测内容 |
+|---|---|
+| `needsSubAgentMigration` | 有 checkpoints 但无 subAgentTokens |
+| `needsHistoryMigration` | 有 checkpoints 但 checkpointHistory 为空 |
+| `cbAllZero` | conversationBreakdown 有条目但 token 全为 0（脏数据） |
+
+**教训**：每次新增持久化字段时，必须同步添加迁移检测条件。第三个条件（`cbAllZero`）是因为首次迁移时用了错误的字段路径（#23），产生了全 0 的脏数据，修复后需要检测并清除

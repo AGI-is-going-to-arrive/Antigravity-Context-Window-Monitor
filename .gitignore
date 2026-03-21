@@ -17,3 +17,5 @@ Dockerfile*
 
 # VSIX build artifacts
 *.vsix
+/diag-output
+/diag-scripts
