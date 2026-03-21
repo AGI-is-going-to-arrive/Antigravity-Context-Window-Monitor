@@ -194,8 +194,12 @@ Tracks model activity: reasoning count, tool call breakdown, token consumption, 
 | 增量更新 / Incremental | RUNNING 对话拉取新增步骤；检测 status 变化（IDLE→RUNNING）触发注入 |
 | 回退/重发 / Rollback/Resend | 检测 stepCount 减少 → 重置 processedIndex 以跟踪被替换的步骤 |
 | 工具详情 / Tool detail | 提取工具名（gh/search_issues、view_file 等）+ 参数摘要 |
+| 上下文趋势 / Context trend | `CheckpointSnapshot[]` 记录每个 CHECKPOINT 的 inputTokens/outputTokens + 压缩标记 |
+| 工具排行 / Tool ranking | `globalToolStats` (Map) 统计全局工具调用次数，UI 显示 Top 10 |
+| 对话分布 / Conversation breakdown | `ConversationBreakdown` 追踪每个对话步骤数 + token（取最后 CHECKPOINT 累积快照） |
+| 子智能体 / Sub-agent | 识别 CHECKPOINT 中 `modelUsage.model` 与主模型不同时，分离追踪子智能体消耗 |
 | 归档 / Archive | `archiveAndReset()` 在额度重置时保存快照 |
-| 序列化 / Serialization | `serialize()` / `restore()` 支持跨会话持久化 |
+| 序列化 / Serialization | `serialize()` / `restore()` 支持跨会话持久化，含三个迁移触发条件 |
 
 ---
 

@@ -159,5 +159,30 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
   Warning notification when model quota drops below user-configured threshold (default 20%). Each model notifies only once per threshold crossing, re-arms when recovered.
 
 ---
+
+## 📊 6. 活动面板增强 / Activity Panel Enhancements
+
+> 源码：[`activity-tracker.ts`](../src/activity-tracker.ts)（数据层）、[`activity-panel.ts`](../src/activity-panel.ts)（UI 层）
+
+* **上下文增长趋势 / Context Growth Trend**: `CheckpointSnapshot` 接口记录每个 CHECKPOINT 的 `inputTokens`、`outputTokens` 和 `compressed` 标志。压缩检测阈值为 inputTokens 下降 ≥30%（`inTok < prevCp.inputTokens * 0.7`）。UI 使用 SVG `<polyline>` + `<polygon>` 渲染面积图，压缩事件用红色 `<circle>` 标记。
+  `CheckpointSnapshot` records each CHECKPOINT's `inputTokens`, `outputTokens`, and `compressed` flag. Compression detected when inputTokens drops ≥30%. UI renders SVG area chart with red circle markers for compression events.
+
+* **工具排行 / Tool Ranking**: `globalToolStats` (Map) 统计全局工具调用次数。UI 取 Top 10 渲染 CSS 水平条形图，10 色彩虹色阶通过 CSS class `.act-rank-c0~c9` 定义（避免 inline style 被 CSP 阻止）。条形宽度通过 `style="width:X%"` 设置。
+  `globalToolStats` counts tool calls globally. UI renders top 10 as CSS horizontal bar chart with 10-color rainbow palette via CSS classes (avoiding CSP-blocked inline styles). Bar width set via inline `style="width:X%"`.
+
+* **对话级分布 / Conversation Breakdown**: `ConversationBreakdown` 接口存储每个对话的步骤数和 token 用量。token 取值方式：取该对话**最后一个 CHECKPOINT** 的 `inputTokens`/`outputTokens` 最大值（累积快照值，非逐步累加）。字段路径：`step.type`（非 `metadata.cortexStepType`）。
+  Per-conversation stats taking the max `inputTokens`/`outputTokens` from the last CHECKPOINT (cumulative snapshot). Field path: `step.type` (not `metadata.cortexStepType`).
+
+* **Summary Bar 增强**: 新增会话时长（`Date.now() - sessionStartTime`）、`totalToolReturnTokens`、`totalCheckpoints` 卡片。全部 emoji 替换为 inline SVG。布局从 flex 改为 CSS Grid（`repeat(auto-fill, minmax(90px, 1fr))`），每个统计项独立卡片带 hover 发光效果。
+  Enhanced with session duration, toolReturnTokens, checkpoint count. All emojis replaced with inline SVGs. Layout changed from flex to CSS Grid cards with hover glow.
+
+* **迁移策略 / Migration Strategy**: `restore()` 中检测三个迁移条件触发 nuclear reset + re-warm-up：
+  1. `needsSubAgentMigration`: 有 checkpoints 但无 subAgentTokens
+  2. `needsHistoryMigration`: 有 checkpoints 但 checkpointHistory 为空
+  3. `cbAllZero`: conversationBreakdown 全部 token 为 0（旧版字段路径 bug 产生的脏数据）
+
+  Three migration triggers in `restore()` force nuclear reset + re-warm-up: missing subAgentTokens, empty checkpointHistory, or all-zero conversationBreakdown (bad data from old field path bug).
+
+---
 基于 TypeScript 构建，适用于 Antigravity IDE。包含 62 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（11 tests）、`statusbar.test.ts`（11 tests）、`tracker.test.ts`（16 tests）、`quota-tracker.test.ts`（24 tests）。
 Built with TypeScript for the Antigravity IDE. Includes 62 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (11 tests), `statusbar.test.ts` (11 tests), `tracker.test.ts` (16 tests), `quota-tracker.test.ts` (24 tests).

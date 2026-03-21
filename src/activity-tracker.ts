@@ -89,6 +89,31 @@ export interface ActivityArchive {
     summary: ActivitySummary;
 }
 
+/** Sub-agent token consumption (e.g. FLASH_LITE for checkpoint summaries) */
+export interface SubAgentTokenEntry {
+    modelId: string;
+    displayName: string;
+    inputTokens: number;
+    outputTokens: number;
+    count: number;  // how many checkpoints used this sub-agent
+}
+
+/** Per-checkpoint snapshot for context growth trend */
+export interface CheckpointSnapshot {
+    timestamp: string;    // ISO
+    inputTokens: number;
+    outputTokens: number;
+    compressed: boolean;  // inputTokens < previous → compression detected
+}
+
+/** Per-conversation breakdown */
+export interface ConversationBreakdown {
+    id: string;           // cascadeId (first 8 chars)
+    steps: number;
+    inputTokens: number;
+    outputTokens: number;
+}
+
 export interface ActivitySummary {
     totalUserInputs: number;
     totalReasoning: number;
@@ -97,12 +122,19 @@ export interface ActivitySummary {
     totalCheckpoints: number;
     totalInputTokens: number;
     totalOutputTokens: number;
+    totalToolReturnTokens: number;
     /** Total estimated steps across all models (stepCount delta) */
     estSteps: number;
     modelStats: Record<string, ModelActivityStats>;
     globalToolStats: Record<string, number>;
     recentSteps: StepEvent[];
     sessionStartTime: string;   // ISO
+    /** Sub-agent token consumption detected from CHECKPOINT.modelUsage */
+    subAgentTokens: SubAgentTokenEntry[];
+    /** Context growth trend across checkpoints */
+    checkpointHistory: CheckpointSnapshot[];
+    /** Per-conversation stats */
+    conversationBreakdown: ConversationBreakdown[];
 }
 
 /** Serialized form for globalState persistence */
@@ -223,6 +255,9 @@ function getMaxArchives(): number {
 export class ActivityTracker {
     // Model stats
     private _modelStats = new Map<string, ModelActivityStats>();
+    private _subAgentTokens = new Map<string, SubAgentTokenEntry>();
+    private _checkpointHistory: CheckpointSnapshot[] = [];
+    private _conversationBreakdown = new Map<string, ConversationBreakdown>();
     private _globalToolStats = new Map<string, number>();
     private _totalUserInputs = 0;
     private _totalCheckpoints = 0;
@@ -287,10 +322,14 @@ export class ActivityTracker {
                         { cascadeId: id, startIndex: 0, endIndex: sc },
                         15000, signal) as Record<string, unknown>;
                     const allSteps = (sr.steps || []) as Record<string, unknown>[];
+                    const detectedModel = this._detectDominantModel(allSteps);
                     for (const step of allSteps) {
-                        this._processStep(step, false);
+                        this._processStep(step, false, undefined, detectedModel);
                     }
                     this._trajectories.set(id, { stepCount: sc, processedIndex: allSteps.length, dominantModel: this._detectDominantModel(allSteps), lastStatus: info.status });
+
+                    // Track per-conversation breakdown
+                    this._updateConversationBreakdown(id, allSteps);
 
                     // Keep RUNNING conversations' steps for timeline injection
                     if (info.status === 'CASCADE_RUN_STATUS_RUNNING' && allSteps.length > 0) {
@@ -360,12 +399,14 @@ export class ActivityTracker {
                         15000, signal) as Record<string, unknown>;
                     const steps = (sr.steps || []) as Record<string, unknown>[];
 
+                    const ctxModel = this._detectDominantModel(steps);
                     for (let si = 0; si < steps.length; si++) {
-                        this._processStep(steps[si], this._warmedUp, si);
+                        this._processStep(steps[si], this._warmedUp, si, ctxModel);
                     }
                     hasChanges = steps.length > 0;
                     entry.processedIndex = currSteps;
                     entry.dominantModel = this._detectDominantModel(steps);
+                    this._updateConversationBreakdown(id, steps);
                 } else {
                     // INCREMENTAL: re-fetch steps to capture new ones precisely.
                     // API returns earliest ~500 steps; any beyond that use estimation.
@@ -376,8 +417,9 @@ export class ActivityTracker {
 
                     // Process individually any NEW steps within API window
                     if (fetchedSteps.length > entry.processedIndex) {
+                        const incModel = entry.dominantModel || this._detectDominantModel(fetchedSteps);
                         for (let i = entry.processedIndex; i < fetchedSteps.length; i++) {
-                            this._processStep(fetchedSteps[i], true, i);
+                            this._processStep(fetchedSteps[i], true, i, incModel);
                         }
                         hasChanges = true;
                         entry.processedIndex = fetchedSteps.length;
@@ -421,7 +463,7 @@ export class ActivityTracker {
 
     // ─── Step Processing ─────────────────────────────────────────────────
 
-    private _processStep(step: Record<string, unknown>, emitEvent = true, stepIndex?: number): void {
+    private _processStep(step: Record<string, unknown>, emitEvent = true, stepIndex?: number, contextModel?: string): void {
         const type = (step.type as string) || '';
         const meta = (step.metadata || {}) as Record<string, unknown>;
         const modelId = (meta.generatorModel as string) || '';
@@ -445,17 +487,56 @@ export class ActivityTracker {
         }
 
         // CHECKPOINT — extract token data
+        // BUG FIX: modelUsage.model is a "ghost" field — always reports FLASH_LITE
+        // regardless of the actual generating model. Use contextModel (detected from
+        // surrounding steps' generatorModel) for accurate token attribution.
+        // Sub-agent tracking: when modelUsage.model differs from the attributed model,
+        // record it as sub-agent consumption for transparent display.
         if (type === 'CORTEX_STEP_TYPE_CHECKPOINT') {
             this._totalCheckpoints++;
             this._trackSample('', 'other');
             const mu = meta.modelUsage as Record<string, string> | undefined;
-            if (mu?.model) {
-                const cpModel = getModelDisplayName(mu.model);
-                const s = this._getOrCreateStats(cpModel);
-                s.totalSteps++;
-                s.checkpoints++;
-                s.inputTokens += parseInt(mu.inputTokens || '0', 10);
-                s.outputTokens += parseInt(mu.outputTokens || '0', 10);
+            if (mu) {
+                const inTok = parseInt(mu.inputTokens || '0', 10);
+                const outTok = parseInt(mu.outputTokens || '0', 10);
+                // Priority: contextModel (from dominantModel) > generatorModel > modelUsage.model (ghost)
+                const attrModel = contextModel || model || (mu.model ? getModelDisplayName(mu.model) : '');
+                if (attrModel) {
+                    const s = this._getOrCreateStats(attrModel);
+                    s.totalSteps++;
+                    s.checkpoints++;
+                    s.inputTokens += inTok;
+                    s.outputTokens += outTok;
+                }
+                // Track sub-agent: when modelUsage.model differs from attrModel
+                const rawModel = mu.model || '';
+                const rawDisplay = rawModel ? getModelDisplayName(rawModel) : '';
+                if (rawModel && rawDisplay && rawDisplay !== attrModel) {
+                    const key = rawModel;
+                    const existing = this._subAgentTokens.get(key);
+                    if (existing) {
+                        existing.inputTokens += inTok;
+                        existing.outputTokens += outTok;
+                        existing.count++;
+                    } else {
+                        this._subAgentTokens.set(key, {
+                            modelId: rawModel,
+                            displayName: rawDisplay,
+                            inputTokens: inTok,
+                            outputTokens: outTok,
+                            count: 1,
+                        });
+                    }
+                }
+                // Record checkpoint snapshot for context growth trend
+                const prevCp = this._checkpointHistory.length > 0
+                    ? this._checkpointHistory[this._checkpointHistory.length - 1] : undefined;
+                this._checkpointHistory.push({
+                    timestamp,
+                    inputTokens: inTok,
+                    outputTokens: outTok,
+                    compressed: prevCp ? inTok < prevCp.inputTokens * 0.7 : false,
+                });
             }
             return;
         }
@@ -603,13 +684,39 @@ export class ActivityTracker {
         return topModel;
     }
 
+    /** Update per-conversation breakdown from fetched steps */
+    private _updateConversationBreakdown(cascadeId: string, steps: Record<string, unknown>[]): void {
+        // CHECKPOINT modelUsage.inputTokens/outputTokens are CUMULATIVE snapshots,
+        // so we just take the LAST checkpoint's values as the conversation total.
+        let lastIn = 0, lastOut = 0;
+        for (const step of steps) {
+            const meta = (step.metadata || {}) as Record<string, unknown>;
+            const type = (step.type as string) || '';
+            if (type === 'CORTEX_STEP_TYPE_CHECKPOINT') {
+                const mu = meta.modelUsage as Record<string, string> | undefined;
+                if (mu) {
+                    const inTok = parseInt(mu.inputTokens || '0', 10);
+                    const outTok = parseInt(mu.outputTokens || '0', 10);
+                    if (inTok > lastIn) { lastIn = inTok; }
+                    if (outTok > lastOut) { lastOut = outTok; }
+                }
+            }
+        }
+        this._conversationBreakdown.set(cascadeId, {
+            id: cascadeId.slice(0, 8),
+            steps: steps.length,
+            inputTokens: lastIn,
+            outputTokens: lastOut,
+        });
+    }
+
     // ─── State Accessors ─────────────────────────────────────────────────
 
     getSummary(): ActivitySummary {
         const modelStats: Record<string, ModelActivityStats> = {};
         let totalReasoning = 0, totalToolCalls = 0, totalErrors = 0;
         let estSteps = 0;
-        let totalInputTokens = 0, totalOutputTokens = 0;
+        let totalInputTokens = 0, totalOutputTokens = 0, totalToolReturnTokens = 0;
 
         for (const [name, s] of this._modelStats) {
             modelStats[name] = { ...s };
@@ -619,10 +726,22 @@ export class ActivityTracker {
             estSteps += s.estSteps;
             totalInputTokens += s.inputTokens;
             totalOutputTokens += s.outputTokens;
+            totalToolReturnTokens += s.toolReturnTokens;
         }
 
         const globalToolStats: Record<string, number> = {};
         for (const [k, v] of this._globalToolStats) { globalToolStats[k] = v; }
+
+        const subAgentTokens: SubAgentTokenEntry[] = [];
+        for (const [, entry] of this._subAgentTokens) {
+            subAgentTokens.push({ ...entry });
+        }
+
+        const conversationBreakdown: ConversationBreakdown[] = [];
+        for (const [, entry] of this._conversationBreakdown) {
+            conversationBreakdown.push({ ...entry });
+        }
+        conversationBreakdown.sort((a, b) => b.steps - a.steps);
 
         return {
             totalUserInputs: this._totalUserInputs,
@@ -632,11 +751,15 @@ export class ActivityTracker {
             totalCheckpoints: this._totalCheckpoints,
             totalInputTokens,
             totalOutputTokens,
+            totalToolReturnTokens,
             estSteps,
             modelStats,
             globalToolStats,
             recentSteps: [...this._recentSteps],
             sessionStartTime: this._sessionStartTime,
+            subAgentTokens,
+            checkpointHistory: [...this._checkpointHistory],
+            conversationBreakdown,
         };
     }
 
@@ -702,6 +825,9 @@ export class ActivityTracker {
         }
         // Reset stats only — keep trajectories as baselines so warm-up doesn't re-count history
         this._modelStats.clear();
+        this._subAgentTokens.clear();
+        this._checkpointHistory = [];
+        this._conversationBreakdown.clear();
         this._globalToolStats.clear();
         this._totalUserInputs = 0;
         this._totalCheckpoints = 0;
@@ -718,6 +844,9 @@ export class ActivityTracker {
      */
     reset(): void {
         this._modelStats.clear();
+        this._subAgentTokens.clear();
+        this._checkpointHistory = [];
+        this._conversationBreakdown.clear();
         this._globalToolStats.clear();
         this._totalUserInputs = 0;
         this._totalCheckpoints = 0;
@@ -776,6 +905,25 @@ export class ActivityTracker {
             tracker._globalToolStats.set(k, v);
         }
 
+        // Restore sub-agent tokens (backward compatible: absent in older data)
+        if (Array.isArray(s.subAgentTokens)) {
+            for (const entry of s.subAgentTokens) {
+                tracker._subAgentTokens.set(entry.modelId, { ...entry });
+            }
+        }
+
+        // Restore checkpoint history (backward compatible)
+        if (Array.isArray((s as unknown as Record<string, unknown>).checkpointHistory)) {
+            tracker._checkpointHistory = [...s.checkpointHistory];
+        }
+
+        // Restore conversation breakdown (backward compatible)
+        if (Array.isArray((s as unknown as Record<string, unknown>).conversationBreakdown)) {
+            for (const cb of s.conversationBreakdown) {
+                tracker._conversationBreakdown.set(cb.id, { ...cb });
+            }
+        }
+
         // Restore recent steps (timeline)
         tracker._recentSteps = [...s.recentSteps];
 
@@ -791,10 +939,34 @@ export class ActivityTracker {
             }
         }
 
-        // If we have trajectory baselines, skip warm-up to avoid re-counting
-        // steps that were already archived by archiveAndReset().
-        // Stats are fully restored above, only new steps need counting.
-        if (Object.keys(data.trajectoryBaselines || {}).length > 0) {
+        // ── Migration: sub-agent token tracking ──
+        const needsSubAgentMigration = s.totalCheckpoints > 0
+            && (!Array.isArray(s.subAgentTokens) || s.subAgentTokens.length === 0);
+
+        // ── Migration: checkpoint history & conversation breakdown ──
+        // Also triggers when conversationBreakdown was populated with bad data (all zeros)
+        const cbEntries = [...tracker._conversationBreakdown.values()];
+        const cbAllZero = cbEntries.length > 0 && cbEntries.every(e => e.inputTokens === 0 && e.outputTokens === 0);
+        const needsHistoryMigration = s.totalCheckpoints > 0
+            && (tracker._checkpointHistory.length === 0 || cbAllZero);
+
+        if (needsSubAgentMigration || needsHistoryMigration) {
+            // Nuclear reset: clear all stats, reset trajectory processedIndex to 0
+            // so warm-up re-scans all existing steps and builds sub-agent map
+            tracker._modelStats.clear();
+            tracker._subAgentTokens.clear();
+            tracker._checkpointHistory = [];
+            tracker._conversationBreakdown.clear();
+            tracker._globalToolStats.clear();
+            tracker._totalUserInputs = 0;
+            tracker._totalCheckpoints = 0;
+            tracker._totalErrors = 0;
+            tracker._recentSteps = [];
+            for (const [id, t] of tracker._trajectories) {
+                tracker._trajectories.set(id, { ...t, processedIndex: 0 });
+            }
+            tracker._warmedUp = false; // force full re-warm-up
+        } else if (Object.keys(data.trajectoryBaselines || {}).length > 0) {
             tracker._warmedUp = true;  // use incremental path — only new steps
         } else {
             tracker._warmedUp = false; // no baselines: full warm-up needed

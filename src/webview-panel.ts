@@ -150,9 +150,14 @@ export function showMonitorPanel(
         } else if (msg.command === 'clearActivityData') {
             if (lastActivityTracker) {
                 lastActivityTracker.reset();
-                if (panel) {
-                    panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
-                }
+            }
+            // Also clear quota tracking states + history (ghost sessions, etc.)
+            if (lastQuotaTracker) {
+                lastQuotaTracker.resetTrackingStates();
+                lastQuotaTracker.clearHistory();
+            }
+            if (panel) {
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }
         }
     });

@@ -19,6 +19,18 @@
 - **Status Bar Activity Display Mode / 状态栏活动显示模式**: New `statusBar.activityDisplayMode` setting with radio buttons in the Settings tab. Choose between `global` (all models combined) and `currentModel` (stats for the active model only).
   新增 `statusBar.activityDisplayMode` 设置，设置页提供单选按钮切换。可选择「全局」（所有模型合计）或「当前模型」（仅显示当前使用模型的统计）。
 
+- **Context Growth Trend / 上下文增长趋势图**: SVG area chart visualizing inputTokens across all CHECKPOINTs. Compression events (≥30% inputTokens drop) marked with red circles. Displayable when ≥2 checkpoints exist.
+  SVG 面积图展示所有 CHECKPOINT 的 inputTokens 变化趋势。压缩事件（inputTokens 下降 ≥30%）以红色圆点标记。
+
+- **Tool Ranking / 工具排行**: Top 10 tool usage visualized as CSS horizontal bar chart with 10-color rainbow palette (CSS classes, CSP-safe). Each bar's count displayed in matching color.
+  Top 10 工具调用可视化为 CSS 水平条形图，10 色彩虹色阶（CSS class 定义，CSP 安全）。数字同色显示。
+
+- **Conversation Breakdown / 对话分布**: Per-conversation stats showing step count and token usage (input/output). Tokens extracted from last CHECKPOINT cumulative snapshot.
+  按对话维度统计步骤数和 token 用量（输入/输出），token 取自最后 CHECKPOINT 累积快照。
+
+- **Summary Bar Enhancement / 汇总栏增强**: CSS Grid card layout with session duration, checkpoint count, toolReturnTokens. All emoji icons replaced with semantically accurate inline SVGs (lightbulb for reasoning, arrows for input/output).
+  CSS Grid 卡片布局，新增会话时长、检查点数、工具返回 token。所有 emoji 图标替换为语义准确的 inline SVG（灯泡=推理、箭头=输入/输出）。
+
 ### Improved / 改进
 
 - **RUNNING-Only Step Fetching / 仅拉取 RUNNING 对话步骤**: Incremental updates now only fetch steps for `RUNNING` conversations, skipping already-processed IDLE ones. Reduces unnecessary API calls.
@@ -34,6 +46,18 @@
   `STATUS_REFRESH_INTERVAL` 从 6 降至 2（用户状态刷新间隔从约 30 秒缩短至约 10 秒），更快检测到 API 报告的额度变化。
 
 ### Fixed / 修复
+
+- **Activity Panel Migration / 活动面板数据迁移**: Fixed missing data for context trend and conversation breakdown after upgrading. Three migration triggers in `restore()` force re-warm-up: missing subAgentTokens, empty checkpointHistory, or all-zero conversationBreakdown (caused by wrong field path `meta.cortexStepType` → corrected to `step.type`).
+  修复升级后上下文趋势和对话分布数据缺失。`restore()` 中三个迁移条件强制 re-warm-up：缺少 subAgentTokens、checkpointHistory 为空、conversationBreakdown 全零（字段路径 `meta.cortexStepType` → 修正为 `step.type`）。
+
+- **Tool Ranking Bar Rendering / 工具排行条形不渲染**: Fixed invisible bar chart caused by `<span>` elements lacking `display: block`. Added CSS class-based 10-color palette to avoid CSP-blocked inline styles.
+  修复条形图不可见问题：`<span>` 元素缺少 `display: block` 导致 `width`/`height` 无效。颜色改用 CSS class 避免 CSP 阻止 inline style。
+
+- **🔥 Ghost Model Attribution / 幽灵模型归属**: Fixed critical bug where `CHECKPOINT.modelUsage.model` always reported `MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE` regardless of the actual generating model, causing all token stats to be attributed to Flash Lite. Diagnosis across 5 conversations (29 CHECKPOINTs) confirmed 100% ghost attribution. Token attribution now uses `contextModel` (detected from `generatorModel` of surrounding steps) with priority: `contextModel` > `generatorModel` > `modelUsage.model` (fallback).
+  修复关键 Bug：`CHECKPOINT.modelUsage.model` 始终报告 `FLASH_LITE`，与实际生成模型无关，导致所有 token 统计被错误归属。经 5 个对话（29 个 CHECKPOINT）诊断确认 100% 命中幽灵归属。Token 归属改用 `contextModel`（从相邻步骤的 `generatorModel` 检测），优先级：`contextModel` > `generatorModel` > `modelUsage.model`（兜底）。
+
+- **🤖 Sub-Agent Token Transparency / 子智能体 Token 透明展示**: CHECKPOINT's `modelUsage.model` (e.g. Gemini 2.5 Flash Lite) is now tracked as sub-agent token consumption when it differs from the main generating model. A new "Sub-Agent Tokens" section appears in the Activity panel showing the sub-agent's display name, token counts (in/out), and checkpoint count. This makes the sub-agent's resource usage fully visible instead of hidden.
+  当 CHECKPOINT 的 `modelUsage.model`（如 Flash Lite）与主生成模型不同时，现在作为子智能体 token 消耗单独追踪。活动面板新增"子智能体消耗"区域，展示模型名、Token 统计和检查点数量。子智能体资源消耗从此完全透明可见。
 
 - **🔥 Instant Usage Detection at 100% / 100% 即时使用检测**: Completely reworked dynamic usage detection with three-layer strategy. **Layer 1 (Instant)**: On the very first poll, calculates `elapsedInCycle = maxTimeToReset − thisTimeToReset` across all models; if ≥10 min → model is immediately tracked with backDated startTime. **Layer 2 (Drift)**: If resetTime stays locked (no API refresh) for ≥10 min → model is tracked. **Layer 3 (Fraction)**: fraction < 100% → immediate tracking. Previously required waiting 10 minutes before any detection. *Verified over a full 5-hour live cycle with Claude + Flash models.*
   彻底重构动态使用检测，三层策略：**即时层**——首次 poll 即通过 `elapsedInCycle = maxTimeToReset − thisTimeToReset` 判断，≥10 分钟立即追踪并回溯开始时间；**Drift 层**——resetTime 锁定 10 分钟后触发；**Fraction 层**——fraction < 100% 直接追踪。此前需等待 10 分钟才能检测。*经 5 小时实机验证。*
@@ -66,6 +90,12 @@
   移除时间线中每步思考时间显示（3 秒轮询捕获的是部分值，不准确）。模型统计中的聚合 `thinkingTimeMs` 保留。
 
 ### Documentation / 文档
+
+- Added gotcha #22 (Ghost Model Attribution) to `docs/ls-monitor-technical-notes.md`.
+  在技术文档中新增踩坑记录 #22（幽灵模型归属）。
+
+- Added `diag-conversation.ts` v2.0 diagnostic script with batch analysis capability.
+  新增 `diag-conversation.ts` v2.0 诊断脚本，支持批量对话分析。
 
 - Updated `docs/ls-monitor-technical-notes.md`: Architecture diagram reflects dual polling, added 9 new gotcha records (#12-#20), diagnostic scripts section, new step types (TASK_BOUNDARY, NOTIFY_USER).
   更新技术文档：架构图反映双轮询，新增 9 条踩坑记录（#12-#20），诊断脚本章节，新步骤类型。
