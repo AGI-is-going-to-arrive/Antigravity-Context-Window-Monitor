@@ -1,5 +1,27 @@
 # 变更日志 / Changelog
 
+## [1.11.6] - 2026-03-21
+
+### Fixed / 修复
+
+- **🔥 Quota Reset Archive Fragmentation / 额度重置归档碎片化**: Refactored `onQuotaReset` callback from parameterless `() => void` to `(modelIds: string[]) => void`. Previously, each model's quota reset independently triggered `archiveAndReset()`, causing fragmented archives when multiple models in the same quota pool (e.g., Gemini Pro High + Low) reset simultaneously. Now `processUpdate()` batches all resets into a single callback with the full list of reset model IDs.
+  重构 `onQuotaReset` 回调签名，从无参 `() => void` 改为 `(modelIds: string[]) => void`。此前同配额池内多模型（如 Gemini Pro High + Low）同时重置时各自独立触发归档，产生碎片化归档。现在 `processUpdate()` 在循环结束后批量收集所有重置模型，一次性触发回调。
+
+- **Archive Debounce for Cross-Pool Resets / 跨池重置防抖合并**: Added 5-minute debounce interval (`MIN_ARCHIVE_INTERVAL_MS`) to `archiveAndReset()`. When different quota pools (e.g., Gemini pool and Claude pool) reset within 5 minutes of each other, the second archive merges into the first instead of creating a separate entry. Beyond 5 minutes, independent archives are created correctly.
+  `archiveAndReset()` 新增 5 分钟防抖间隔。不同配额池（如 Gemini 池和 Claude 池）在 5 分钟内先后重置时，第二次归档合并到第一条而非创建独立条目。超过 5 分钟则正确创建独立归档。
+
+### Added / 新增
+
+- **Archive Trigger Source Tracking / 归档触发来源追踪**: `ActivityArchive` interface now includes `triggeredBy?: string[]` field recording which model ID(s) triggered each archive. Backward compatible with older archives lacking this field.
+  `ActivityArchive` 接口新增 `triggeredBy?: string[]` 字段，记录每条归档由哪些模型 ID 触发。向后兼容不含此字段的旧归档。
+
+### Tests / 测试
+
+- Added batching behavior test to `quota-tracker.test.ts`: verifies same-pool multi-model reset produces single callback with all model IDs.
+  在 `quota-tracker.test.ts` 新增批量行为测试：验证同池多模型重置产生单次回调。
+- Total test count: 63 (was 62 in v1.11.5).
+  测试总数：63（v1.11.5 为 62）。
+
 ## [1.11.5] - 2026-03-21
 
 ### Improved / 改进

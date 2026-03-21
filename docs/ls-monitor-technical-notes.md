@@ -315,21 +315,23 @@ step.userInput: {
 - warm-up 统计全部对话 → 反映完整额度周期使用量
 - 额度重置时 `archiveAndReset()` 归档快照并清零统计
 
-### 额度重置自动归档（v1.11.2 新增）
+### 额度重置自动归档（v1.11.2 新增，v1.11.6 重构）
 
 ```
-额度 tracking 中 → fraction 跳回 ≥ 1.0
-  ├─ quota-tracker: 归档 session → 状态 → idle
-  ├─ 触发 onQuotaReset 回调
-  ├─ activity-tracker.archiveAndReset()
-  │   ├─ 快照当前 getSummary() → _archives[]
-  │   ├─ 清零所有统计（modelStats/counters/recentSteps）
-  │   ├─ 保留 _trajectories 基线（避免 warm-up 重新统计历史）
-  │   └─ 保留 _warmedUp = true（增量跟踪继续）
-  └─ 持久化 → 刷新状态栏
+processUpdate() 遍历所有模型
+  ├─ 检测到 fraction 跳回 ≥ 1.0 → resetModels.push(modelId)
+  └─ 循环结束后，若 resetModels.length > 0
+     └─ 一次性触发 onQuotaReset(resetModels: string[])
+        └─ activity-tracker.archiveAndReset(modelIds)
+            ├─ 检查 totalReasoning > 0 || totalToolCalls > 0（跳过空归档）
+            ├─ 防抖：最近归档 < 5min → 合并到最近归档（triggeredBy 去重合并）
+            ├─ 否则：新建归档 → _archives.unshift({ summary, triggeredBy: modelIds })
+            ├─ 清零所有统计（modelStats/counters/recentSteps）
+            ├─ 保留 _trajectories 基线（避免 warm-up 重新统计历史）
+            └─ 保留 _warmedUp = true（增量跟踪继续）
 ```
 
-> 关键设计：归档只清零统计，不清除轨迹基线。后续增量跟踪从当前 processedIndex 继续。
+> 关键设计：同池多模型（如 Pro High/Low）只触发 1 次回调 + 1 条归档。不同池间隔 < 5min 重置时防抖合并为 1 条。
 
 ## 额度数据来源
 

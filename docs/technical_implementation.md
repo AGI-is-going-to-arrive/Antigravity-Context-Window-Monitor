@@ -130,8 +130,8 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
 * **暖机与增量更新 / Warm-up & Incremental**: 首次启动时处理所有对话的全部步骤（warm-up）以获取完整周期统计。之后仅增量处理新步骤。当 LS API 无法返回更多步骤（~500 步窗口限制）时，通过 `stepCount` 差值归因到每个对话的主模型（`dominantModel`）。
   On first launch, processes all steps across all conversations (warm-up) for complete cycle stats. Subsequently only processes new steps incrementally. When the LS API can't return more steps (~500 step window), delta is attributed to each trajectory's dominant model (`dominantModel`).
 
-* **配额追踪与自动归档 / Quota Tracking & Auto-Archive**: `QuotaTracker` 监测配额变化，通过两种机制检测重置：① `remainingFraction` 从低值跳回 1.0；② `resetTime` 到期或发生跳变（前移 > 30min）。两种情况均触发 `onQuotaReset` 回调。`endTime` 使用 API 返回的官方 `resetTime`（而非本地检测时间），确保结束时间精确。`ActivityTracker.archiveAndReset()` 将当前活动快照归档并重置统计，保留 trajectory baselines 避免重复计数。
-  `QuotaTracker` monitors quota changes via two mechanisms: ① `remainingFraction` dropping then jumping back to 1.0; ② `resetTime` expiring or jumping forward (> 30min shift). Both trigger `onQuotaReset`. Session `endTime` uses the official API `resetTime` (not local detection time) for precision. `ActivityTracker.archiveAndReset()` archives the current snapshot and resets stats while preserving trajectory baselines to avoid re-counting.
+* **配额追踪与自动归档 / Quota Tracking & Auto-Archive**: `QuotaTracker` 监测配额变化，通过两种机制检测重置：① `remainingFraction` 从低值跳回 1.0；② `resetTime` 到期或发生跳变（前移 > 30min）。`processUpdate()` 循环结束后将本批次所有重置模型 ID 收集到 `resetModels[]`，一次性触发 `onQuotaReset(resetModels)` 回调。`endTime` 使用 API 返回的官方 `resetTime`（而非本地检测时间）。`ActivityTracker.archiveAndReset(modelIds)` 归档时包含 5 分钟防抖逻辑（短间隔内合并）和 `triggeredBy` 来源追踪，保留 trajectory baselines 避免重复计数。
+  `QuotaTracker` monitors quota changes via two mechanisms: ① `remainingFraction` dropping then jumping back to 1.0; ② `resetTime` expiring or jumping forward (> 30min shift). `processUpdate()` collects all reset model IDs into `resetModels[]` after the loop, firing `onQuotaReset(resetModels)` once. Session `endTime` uses the official API `resetTime`. `ActivityTracker.archiveAndReset(modelIds)` includes 5-minute debounce (merge within short intervals) and `triggeredBy` source tracking, while preserving trajectory baselines.
 
 * **三层即时使用检测（v1.11.4）/ Three-Layer Instant Usage Detection (v1.11.4)**:
 
@@ -184,5 +184,5 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
   Three migration triggers in `restore()` force nuclear reset + re-warm-up: missing subAgentTokens, empty checkpointHistory, or all-zero conversationBreakdown (bad data from old field path bug).
 
 ---
-基于 TypeScript 构建，适用于 Antigravity IDE。包含 62 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（11 tests）、`statusbar.test.ts`（11 tests）、`tracker.test.ts`（16 tests）、`quota-tracker.test.ts`（24 tests）。
-Built with TypeScript for the Antigravity IDE. Includes 62 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (11 tests), `statusbar.test.ts` (11 tests), `tracker.test.ts` (16 tests), `quota-tracker.test.ts` (24 tests).
+基于 TypeScript 构建，适用于 Antigravity IDE。包含 63 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（11 tests）、`statusbar.test.ts`（11 tests）、`tracker.test.ts`（16 tests）、`quota-tracker.test.ts`（25 tests）。
+Built with TypeScript for the Antigravity IDE. Includes 63 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (11 tests), `statusbar.test.ts` (11 tests), `tracker.test.ts` (16 tests), `quota-tracker.test.ts` (25 tests).

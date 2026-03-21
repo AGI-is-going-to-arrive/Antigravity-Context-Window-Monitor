@@ -29,13 +29,14 @@ antigravity-context-monitor/
 │   ├── webview-history-tab.ts    # 历史标签页 HTML 生成
 │   ├── activity-panel.ts         # 活动面板 HTML 片段生成
 │   ├── i18n.ts                   # 国际化系统（中 / 英 / 双语）
-│   ├── quota-tracker.ts          # 模型额度消费时间线追踪
-│   ├── activity-tracker.ts       # 模型活动追踪（推理、工具、Token）
+│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（批量回调 + 按模型组归档）
+│   ├── activity-tracker.ts       # 模型活动追踪（推理、工具、Token、防抖归档）
 │   ├── diag-verify.ts            # LS 数据静态诊断脚本
 │   ├── diag-monitor.ts           # LS 数据实时监视脚本
 │   ├── discovery.test.ts         # discovery 单元测试
 │   ├── statusbar.test.ts         # statusbar 单元测试
 │   ├── tracker.test.ts           # tracker 单元测试
+│   ├── quota-tracker.test.ts     # quota-tracker 单元测试
 │   └── images/                   # README 截图资源
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
@@ -173,10 +174,12 @@ IDLE (100%)
 - IDLE + 100% + `isUnusedModel=false`：立即创建 session 开始追踪（不等额度下降）
 - TRACKING + 100% + `lastFraction=100%`：继续追踪（不误判为重置）
 - TRACKING + 100% + `lastFraction<100%`：真正重置，归档 session
+- **批量回调（v1.11.6）**: `processUpdate()` 循环结束后，将本批次所有重置模型 ID 收集到 `resetModels[]` 数组，一次性触发 `onQuotaReset(resetModels)`。同配额池多模型不再各自独立触发回调。
+  **Batched callback (v1.11.6)**: `processUpdate()` collects all reset model IDs into `resetModels[]` after the loop, firing `onQuotaReset(resetModels)` once. Same-pool models no longer trigger independent callbacks.
 
-额度重置时触发 `onQuotaReset` 回调，联动 `activity-tracker` 归档。
+额度重置时触发 `onQuotaReset(modelIds)` 回调，联动 `activity-tracker` 归档。
 
-Fires `onQuotaReset` callback on quota reset, triggering `activity-tracker` archival.
+Fires `onQuotaReset(modelIds)` callback on quota reset, triggering `activity-tracker` archival.
 
 ---
 
@@ -198,7 +201,7 @@ Tracks model activity: reasoning count, tool call breakdown, token consumption, 
 | 工具排行 / Tool ranking | `globalToolStats` (Map) 统计全局工具调用次数，UI 显示 Top 10 |
 | 对话分布 / Conversation breakdown | `ConversationBreakdown` 追踪每个对话步骤数 + token（取最后 CHECKPOINT 累积快照） |
 | 子智能体 / Sub-agent | 识别 CHECKPOINT 中 `modelUsage.model` 与主模型不同时，分离追踪子智能体消耗 |
-| 归档 / Archive | `archiveAndReset()` 在额度重置时保存快照 |
+| 归档 / Archive | `archiveAndReset(modelIds?)` 在额度重置时保存快照，5 分钟防抖合并，记录 `triggeredBy` 来源 |
 | 序列化 / Serialization | `serialize()` / `restore()` 支持跨会话持久化，含三个迁移触发条件 |
 
 ---
@@ -312,12 +315,13 @@ npx vsce package --no-dependencies
 
 ## 测试详情 / Test Details
 
-| 测试文件 / Test File | 覆盖范围 / Coverage |
-|---|---|
-| `discovery.test.ts` | `buildExpectedWorkspaceId` / `extractPid` / `extractCsrfToken` / `filterLsProcessLines` / 端口提取 |
-| `tracker.test.ts` | `processSteps()` 纯函数：checkpoint / 估算 / 压缩检测 / 图片生成 / 空对话 |
-| `statusbar.test.ts` | Token 格式化 / 上下文限额格式化 / 压缩统计计算 |
+| 测试文件 / Test File | 测试数 | 覆盖范围 / Coverage |
+|---|---|---|
+| `discovery.test.ts` | 11 | `buildExpectedWorkspaceId` / `extractPid` / `extractCsrfToken` / `filterLsProcessLines` / 端口提取 |
+| `tracker.test.ts` | 16 | `processSteps()` 纯函数：checkpoint / 估算 / 压缩检测 / 图片生成 / 空对话 |
+| `statusbar.test.ts` | 11 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 |
+| `quota-tracker.test.ts` | 25 | 状态机转换 / 额度重置检测 / 批量回调验证 / 同池多模型归档 |
 
-所有测试使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 63 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-All tests use `__mocks__/vscode.ts` to mock the VS Code API.
+63 total tests, using `__mocks__/vscode.ts` to mock the VS Code API.

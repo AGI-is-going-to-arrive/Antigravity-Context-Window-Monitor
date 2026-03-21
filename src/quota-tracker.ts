@@ -83,15 +83,15 @@ export class QuotaTracker {
     private maxHistory: number = DEFAULT_MAX_HISTORY;
     private enabled: boolean = false;
     private context: vscode.ExtensionContext;
-    private _onQuotaReset?: () => void;
+    private _onQuotaReset?: (modelIds: string[]) => void;
 
     constructor(context: vscode.ExtensionContext) {
         this.context = context;
         this.restore();
     }
 
-    /** Register a callback that fires when any model's quota resets (fraction → 1.0). */
-    set onQuotaReset(fn: () => void) { this._onQuotaReset = fn; }
+    /** Register a callback that fires when model quota resets. Called once per processUpdate batch with all reset modelIds. */
+    set onQuotaReset(fn: (modelIds: string[]) => void) { this._onQuotaReset = fn; }
 
     /** Process a batch of model configs (called on each status refresh). */
     processUpdate(configs: ModelConfig[]): void {
@@ -99,6 +99,7 @@ export class QuotaTracker {
         const nowDate = new Date();
         const now = nowDate.toISOString();
         const nowMs = nowDate.getTime();
+        const resetModels: string[] = [];
 
         // ── Infer cycle length from max timeToReset across all 100% models ──
         // Unused models show ≈full cycle remaining; the max is our best guess.
@@ -306,7 +307,7 @@ export class QuotaTracker {
                                 ms.lastResetTime = resetTimeStr;
                                 ms.baselineResetTime = resetTimeStr;
                                 ms.idleSince = now;
-                                if (this._onQuotaReset) { this._onQuotaReset(); }
+                                resetModels.push(modelId);
                                 break;
                             }
                             // Same cycle, still at 100% — keep tracking
@@ -328,7 +329,7 @@ export class QuotaTracker {
                         ms.lastResetTime = resetTimeStr;
                         ms.baselineResetTime = resetTimeStr;
                         ms.idleSince = now;
-                        if (this._onQuotaReset) { this._onQuotaReset(); }
+                        resetModels.push(modelId);
                         break;
                     }
 
@@ -367,7 +368,7 @@ export class QuotaTracker {
                         ms.lastResetTime = resetTimeStr;
                         ms.baselineResetTime = resetTimeStr;
                         ms.idleSince = now;
-                        if (this._onQuotaReset) { this._onQuotaReset(); }
+                        resetModels.push(modelId);
                     } else {
                         ms.lastFraction = fraction;
                         ms.lastResetTime = resetTimeStr;
@@ -376,6 +377,10 @@ export class QuotaTracker {
             }
         }
 
+        // Fire callback once with all models that reset in this batch
+        if (resetModels.length > 0 && this._onQuotaReset) {
+            this._onQuotaReset(resetModels);
+        }
         this.persist();
     }
 

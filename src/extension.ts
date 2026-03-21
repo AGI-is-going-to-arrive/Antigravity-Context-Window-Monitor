@@ -105,10 +105,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Initialize quota tracker
     quotaTracker = new QuotaTracker(context);
-    quotaTracker.onQuotaReset = () => {
+    quotaTracker.onQuotaReset = (modelIds: string[]) => {
         if (activityTracker) {
-            log('Quota reset detected — archiving activity snapshot');
-            activityTracker.archiveAndReset();
+            log(`Quota reset [${modelIds.join(', ')}] — archiving activity snapshot`);
+            activityTracker.archiveAndReset(modelIds);
             context.globalState.update('activityTrackerState', activityTracker.serialize());
         }
     };

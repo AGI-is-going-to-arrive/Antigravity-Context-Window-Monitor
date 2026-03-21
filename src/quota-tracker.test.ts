@@ -59,7 +59,7 @@ describe('QuotaTracker state machine', () => {
         tracker = new QuotaTracker(createMockContext());
         tracker.setEnabled(true);
         resetCallback = vi.fn();
-        tracker.onQuotaReset = resetCallback as () => void;
+        tracker.onQuotaReset = resetCallback as (modelIds: string[]) => void;
     });
 
     // ─── IDLE State ──────────────────────────────────────────────────────────
@@ -283,7 +283,7 @@ describe('QuotaTracker state machine', () => {
 
             expect(tracker.getActiveSessions().length).toBe(0);
             expect(tracker.getHistory().length).toBe(1);
-            expect(resetCallback).toHaveBeenCalled();
+            expect(resetCallback).toHaveBeenCalledWith(['M1']);
         });
 
         it('should use official resetTime as endTime on genuine reset', () => {
@@ -325,7 +325,7 @@ describe('QuotaTracker state machine', () => {
             const t = new QuotaTracker(ctx);
             t.setEnabled(true);
             const cb = vi.fn();
-            t.onQuotaReset = cb as () => void;
+            t.onQuotaReset = cb as (modelIds: string[]) => void;
 
             // Poll with jumped resetTime (> 30min different)
             const newReset = futureReset(now, FIVE_HOURS);
@@ -334,7 +334,7 @@ describe('QuotaTracker state machine', () => {
             expect(t.getActiveSessions().length).toBe(0);
             expect(t.getHistory().length).toBe(1);
             expect(t.getHistory()[0].endTime).toBe(resetTime);
-            expect(cb).toHaveBeenCalled();
+            expect(cb).toHaveBeenCalledWith(['M1']);
         });
 
         it('should archive 100%→100% tracking via resetTime passed', () => {
@@ -361,13 +361,13 @@ describe('QuotaTracker state machine', () => {
             const t = new QuotaTracker(ctx);
             t.setEnabled(true);
             const cb = vi.fn();
-            t.onQuotaReset = cb as () => void;
+            t.onQuotaReset = cb as (modelIds: string[]) => void;
 
             t.processUpdate([makeConfig('M1', 1.0, futureReset(now, FIVE_HOURS))]);
 
             expect(t.getActiveSessions().length).toBe(0);
             expect(t.getHistory().length).toBe(1);
-            expect(cb).toHaveBeenCalled();
+            expect(cb).toHaveBeenCalledWith(['M1']);
         });
     });
 
@@ -384,7 +384,7 @@ describe('QuotaTracker state machine', () => {
             expect(tracker.getHistory().length).toBe(1);
 
             tracker.processUpdate([makeConfig('M1', 1.0, futureReset(now, FIVE_HOURS))]);
-            expect(resetCallback).toHaveBeenCalled();
+            expect(resetCallback).toHaveBeenCalledWith(['M1']);
         });
 
         it('should stay in done while fraction remains 0', () => {
@@ -426,6 +426,24 @@ describe('QuotaTracker state machine', () => {
             expect(tracker.getActiveSessions()[0].modelId).toBe('B');
             expect(tracker.getHistory().length).toBe(1);
             expect(tracker.getHistory()[0].modelId).toBe('A');
+        });
+
+        it('should fire callback once per processUpdate with all reset modelIds', () => {
+            const now = new Date();
+            const reset = futureReset(now, FIVE_HOURS);
+
+            tracker.processUpdate([makeConfig('A', 1.0, reset), makeConfig('B', 1.0, reset)]);
+            tracker.processUpdate([makeConfig('A', 0.5, reset), makeConfig('B', 0.5, reset)]);
+
+            // Both reset at same time
+            const newReset = futureReset(now, FIVE_HOURS * 2);
+            tracker.processUpdate([makeConfig('A', 1.0, newReset), makeConfig('B', 1.0, newReset)]);
+
+            // Callback fired exactly once per processUpdate, with both modelIds
+            expect(resetCallback).toHaveBeenCalledTimes(1);
+            const calledWith = resetCallback.mock.calls[0][0] as string[];
+            expect(calledWith).toContain('A');
+            expect(calledWith).toContain('B');
         });
     });
 

@@ -87,6 +87,8 @@ export interface ActivityArchive {
     endTime: string;
     /** The full summary snapshot */
     summary: ActivitySummary;
+    /** Model IDs whose quota reset triggered this archive */
+    triggeredBy?: string[];
 }
 
 /** Sub-agent token consumption (e.g. FLASH_LITE for checkpoint summaries) */
@@ -807,20 +809,38 @@ export class ActivityTracker {
     /**
      * Archive current activity data and reset all stats.
      * Called when quota resets (fraction jumps back to 1.0).
+     * @param modelIds - Optional model IDs whose quota triggered this archive
      */
-    archiveAndReset(): void {
+    archiveAndReset(modelIds?: string[]): void {
         const summary = this.getSummary();
         const maxArchives = getMaxArchives();
         // Only archive if there's meaningful activity
         if (summary.totalReasoning > 0 || summary.totalToolCalls > 0) {
-            this._archives.unshift({
-                startTime: this._sessionStartTime,
-                endTime: new Date().toISOString(),
-                summary,
-            });
-            // Trim to max
-            if (this._archives.length > maxArchives) {
-                this._archives = this._archives.slice(0, maxArchives);
+            const now = Date.now();
+            const lastArchive = this._archives[0];
+            const lastEndMs = lastArchive ? new Date(lastArchive.endTime).getTime() : 0;
+            const MIN_ARCHIVE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+            if (lastArchive && (now - lastEndMs) < MIN_ARCHIVE_INTERVAL_MS) {
+                // Debounce: merge into the most recent archive
+                lastArchive.endTime = new Date().toISOString();
+                lastArchive.summary = summary;
+                if (modelIds) {
+                    lastArchive.triggeredBy = [
+                        ...new Set([...(lastArchive.triggeredBy || []), ...modelIds]),
+                    ];
+                }
+            } else {
+                this._archives.unshift({
+                    startTime: this._sessionStartTime,
+                    endTime: new Date().toISOString(),
+                    summary,
+                    triggeredBy: modelIds,
+                });
+                // Trim to max
+                if (this._archives.length > maxArchives) {
+                    this._archives = this._archives.slice(0, maxArchives);
+                }
             }
         }
         // Reset stats only — keep trajectories as baselines so warm-up doesn't re-count history
