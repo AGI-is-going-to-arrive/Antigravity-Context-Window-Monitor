@@ -1,6 +1,6 @@
 # 变更日志 / Changelog
 
-## [1.11.6] - 2026-03-21
+## [1.12.2] - 2026-03-21
 
 ### Fixed / 修复
 
@@ -15,12 +15,40 @@
 - **Archive Trigger Source Tracking / 归档触发来源追踪**: `ActivityArchive` interface now includes `triggeredBy?: string[]` field recording which model ID(s) triggered each archive. Backward compatible with older archives lacking this field.
   `ActivityArchive` 接口新增 `triggeredBy?: string[]` 字段，记录每条归档由哪些模型 ID 触发。向后兼容不含此字段的旧归档。
 
+### Improved / 改进
+
+- **Activity Panel SVG Icon Consistency / 活动面板 SVG 图标统一**: Replaced all remaining Emojis (🧠⚡💾❌📊🪙⏱∑🌐🔍📂📄✏️📋) in model stats, timeline, archive history, and accuracy notes with consistent inline SVG icons. Only the main status bar retains native Emojis for maximum visibility.
+  活动面板中模型统计、时间线、归档历史、精度说明的所有残余 Emoji 统一替换为内联 SVG 图标。仅主状态栏保留原生 Emoji 以确保最高可见性。
+
+- **Activity Panel Four-Section Layout / 活动面板四板块布局**: Reorganized the Activity tab into four logical sections: ① Summary + Recent Activity, ② Model Stats, ③ Model Distribution + Tool Ranking, ④ Context Growth + Conversation Breakdown. Uses CSS Grid two-column layout with `auto-fit` responsive breakpoints.
+  活动标签页重组为四个逻辑板块，使用 CSS Grid 双列布局 + `auto-fit` 响应式断点。
+
+- **Summary Stat Tooltips / 快捷统计悬浮提示**: Each stat cell in the summary bar now has a `data-tooltip` hover tooltip (CSS `::after` pseudo-element) with bilingual descriptions.
+  汇总栏每个统计格子新增 `data-tooltip` 悬浮提示（CSS `::after` 伪元素），中英双语说明。
+
+- **Model Name Word-Wrap / 模型名自动换行**: Long model names in card headers now wrap instead of being truncated (`word-break: break-word; overflow-wrap: anywhere`).
+  模型卡片标题中的超长模型名自动换行，不再被截断。
+
+- **Archive Stat Chips / 归档统计气泡标签**: Per-model stats in usage history now use `.act-archive-stat-chip` bubble tags with rounded borders, subtle background, and hover highlight for visual separation.
+  使用历史中的模型统计数字用气泡标签包裹（圆角边框 + 微妙背景 + hover 高亮），视觉上清晰分隔。
+
+- **Context Growth Chart Enhancement / 上下文增长图表增强**: Fixed `height: 240px` with `flex: 1` fill. Increased SVG viewBox height, stronger gradient fill (`stop-opacity: 0.5`), and thicker stroke for better visual presence in split layouts.
+  固定 240px 高度 + flex 填充。增大 SVG 高度、加深渐变填充、加粗折线，改善分栏布局中的视觉效果。
+
+- **Monitor Panel Responsive Stat Grid / 监控面板响应式统计网格**: `.stat-grid` upgraded to `repeat(auto-fit, minmax(...))` for fluid column layout across different panel widths.
+  `.stat-grid` 升级为流式自适应列布局。
+
+### Removed / 移除
+
+- **Activity Status Bar Item / 活动状态栏指标**: Removed the secondary status bar item (`ActivityStatusBarItem`) and its `statusBar.showActivity` configuration. The Activity tab is now accessed via the main status bar or command palette.
+  移除第二状态栏指标及其 `statusBar.showActivity` 配置项。活动标签页现通过主状态栏或命令面板访问。
+
 ### Tests / 测试
 
 - Added batching behavior test to `quota-tracker.test.ts`: verifies same-pool multi-model reset produces single callback with all model IDs.
   在 `quota-tracker.test.ts` 新增批量行为测试：验证同池多模型重置产生单次回调。
-- Total test count: 63 (was 62 in v1.11.5).
-  测试总数：63（v1.11.5 为 62）。
+- Total test count: 63.
+  测试总数：63。
 
 ## [1.12.1] - 2026-03-21
 
@@ -58,36 +86,6 @@
   在 `discovery.test.ts` 中新增 `isWSL()` 和 `extractPortFromSs()` 测试。
 - Total test count: 42 (was 40 in v1.11.3).
   测试总数：42（v1.11.3 为 40）。
-
-## [1.11.5] - 2026-03-21
-
-### Improved / 改进
-
-- **Activity Panel SVG Icon Consistency / 活动面板 SVG 图标统一**: Replaced all remaining Emojis (🧠⚡💾❌📊🪙⏱∑🌐🔍📂📄✏️📋) in model stats, timeline, archive history, and accuracy notes with consistent inline SVG icons. Only the main status bar retains native Emojis for maximum visibility.
-  活动面板中模型统计、时间线、归档历史、精度说明的所有残余 Emoji 统一替换为内联 SVG 图标。仅主状态栏保留原生 Emoji 以确保最高可见性。
-
-- **Activity Panel Four-Section Layout / 活动面板四板块布局**: Reorganized the Activity tab into four logical sections: ① Summary + Recent Activity, ② Model Stats, ③ Model Distribution + Tool Ranking, ④ Context Growth + Conversation Breakdown. Uses CSS Grid two-column layout with `auto-fit` responsive breakpoints.
-  活动标签页重组为四个逻辑板块，使用 CSS Grid 双列布局 + `auto-fit` 响应式断点。
-
-- **Summary Stat Tooltips / 快捷统计悬浮提示**: Each stat cell in the summary bar now has a `data-tooltip` hover tooltip (CSS `::after` pseudo-element) with bilingual descriptions.
-  汇总栏每个统计格子新增 `data-tooltip` 悬浮提示（CSS `::after` 伪元素），中英双语说明。
-
-- **Model Name Word-Wrap / 模型名自动换行**: Long model names in card headers now wrap instead of being truncated (`word-break: break-word; overflow-wrap: anywhere`).
-  模型卡片标题中的超长模型名自动换行，不再被截断。
-
-- **Archive Stat Chips / 归档统计气泡标签**: Per-model stats in usage history now use `.act-archive-stat-chip` bubble tags with rounded borders, subtle background, and hover highlight for visual separation.
-  使用历史中的模型统计数字用气泡标签包裹（圆角边框 + 微妙背景 + hover 高亮），视觉上清晰分隔。
-
-- **Context Growth Chart Enhancement / 上下文增长图表增强**: Fixed `height: 240px` with `flex: 1` fill. Increased SVG viewBox height, stronger gradient fill (`stop-opacity: 0.5`), and thicker stroke for better visual presence in split layouts.
-  固定 240px 高度 + flex 填充。增大 SVG 高度、加深渐变填充、加粗折线，改善分栏布局中的视觉效果。
-
-- **Monitor Panel Responsive Stat Grid / 监控面板响应式统计网格**: `.stat-grid` upgraded to `repeat(auto-fit, minmax(...))` for fluid column layout across different panel widths.
-  `.stat-grid` 升级为流式自适应列布局。
-
-### Removed / 移除
-
-- **Activity Status Bar Item / 活动状态栏指标**: Removed the secondary status bar item (`ActivityStatusBarItem`) and its `statusBar.showActivity` configuration. The Activity tab is now accessed via the main status bar or command palette.
-  移除第二状态栏指标及其 `statusBar.showActivity` 配置项。活动标签页现通过主状态栏或命令面板访问。
 
 
 ## [1.11.3] - 2026-03-20
