@@ -130,8 +130,27 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
 * **暖机与增量更新 / Warm-up & Incremental**: 首次启动时处理所有对话的全部步骤（warm-up）以获取完整周期统计。之后仅增量处理新步骤。当 LS API 无法返回更多步骤（~500 步窗口限制）时，通过 `stepCount` 差值归因到每个对话的主模型（`dominantModel`）。
   On first launch, processes all steps across all conversations (warm-up) for complete cycle stats. Subsequently only processes new steps incrementally. When the LS API can't return more steps (~500 step window), delta is attributed to each trajectory's dominant model (`dominantModel`).
 
-* **配额追踪与自动归档 / Quota Tracking & Auto-Archive**: `QuotaTracker` 监测配额变化。当 `remainingFraction` 从低值跳回 1.0 时触发 `onQuotaReset` 回调，`ActivityTracker.archiveAndReset()` 将当前活动快照归档并重置统计，保留 trajectory baselines 避免重复计数。
-  `QuotaTracker` monitors quota changes. When `remainingFraction` jumps back to 1.0, `onQuotaReset` fires, and `ActivityTracker.archiveAndReset()` archives the current snapshot and resets stats while preserving trajectory baselines to avoid re-counting.
+* **配额追踪与自动归档 / Quota Tracking & Auto-Archive**: `QuotaTracker` 监测配额变化，通过两种机制检测重置：① `remainingFraction` 从低值跳回 1.0；② `resetTime` 到期或发生跳变（前移 > 30min）。两种情况均触发 `onQuotaReset` 回调。`endTime` 使用 API 返回的官方 `resetTime`（而非本地检测时间），确保结束时间精确。`ActivityTracker.archiveAndReset()` 将当前活动快照归档并重置统计，保留 trajectory baselines 避免重复计数。
+  `QuotaTracker` monitors quota changes via two mechanisms: ① `remainingFraction` dropping then jumping back to 1.0; ② `resetTime` expiring or jumping forward (> 30min shift). Both trigger `onQuotaReset`. Session `endTime` uses the official API `resetTime` (not local detection time) for precision. `ActivityTracker.archiveAndReset()` archives the current snapshot and resets stats while preserving trajectory baselines to avoid re-counting.
+
+* **三层即时使用检测（v1.11.4）/ Three-Layer Instant Usage Detection (v1.11.4)**:
+
+  **发现过程 / How It Was Discovered**: 通过 LS 诊断脚本（`diag-snapshot.ts`）对 `GetUserStatus` 返回的 `quotaInfo.resetTime` 进行定点快照分析，发现已使用模型（如 Claude）的 `resetTime` 被锁定（不随轮询刷新），而未使用模型（如 Gemini Pro）的 `resetTime` 每次轮询都会被 API 刷新到新值。同时发现 `persist()` 方法在写入 `globalState` 时静默丢失了 `lastResetTime`、`baselineResetTime`、`idleSince` 三个字段，导致扩展重载后 drift 计算全部失效。
+  Discovered via LS diagnostic scripts (`diag-snapshot.ts`) that analyzed `quotaInfo.resetTime` snapshots from `GetUserStatus`. Used models (e.g. Claude) had their `resetTime` locked (not refreshed between polls), while unused models (e.g. Gemini Pro) got fresh `resetTime` values each poll. Additionally found that `persist()` silently dropped `lastResetTime`, `baselineResetTime`, `idleSince` from serialized `ModelState`, causing drift calculations to fail completely after extension reload.
+
+  **根因分析 / Root Cause**: 旧实现要求「被动等待 10 分钟观察 resetTime 是否锁定」，但这意味着即使模型已经使用了 1 小时，插件也需要从启动开始再等 10 分钟。加之 persist 丢字段，重载后丢失所有观察记录，必须从零开始。
+  The original design required "passively waiting 10 min to observe if resetTime stays locked", meaning even if a model had been used for 1 hour, the plugin needed to wait another 10 min from boot. Combined with persist dropping fields, all observation state was lost on reload.
+
+  **解决方案 / Solution — 三层策略**:
+  - **Layer 1（即时层 / Instant）**: 在每次 poll 前，先扫描所有 100% 模型的 `timeToReset`，取最大值作为 `maxTimeToResetMs`（≈ 周期长度）。对每个模型计算 `elapsedInCycle = maxTimeToResetMs − thisTimeToReset`。若 `elapsedInCycle ≥ 10min` → 第一次 poll 就判定模型已使用，立即创建 session 并将 `startTime` 回溯到 `resetTime − maxTimeToResetMs`（周期开始时间）。
+    On each poll, scans all 100% models' `timeToReset`, takes the max as `maxTimeToResetMs` (≈ cycle length). For each model: `elapsedInCycle = maxTimeToResetMs − thisTimeToReset`. If ≥ 10min → immediately enters tracking with `startTime` backdated to `resetTime − maxTimeToResetMs`.
+  - **Layer 2（Drift 层）**: 如果 `resetTime` 连续 10 分钟内不变（`drift < RESET_DRIFT_TOLERANCE_MS`）→ 判定为已使用（API 未刷新 resetTime = 锁定）。作为即时层在极端情况下的兜底。
+    If `resetTime` unchanged for 10 min (`drift < RESET_DRIFT_TOLERANCE_MS`) → model is used (API not refreshing resetTime = locked). Fallback for edge cases.
+  - **Layer 3（Fraction 层）**: `fraction < 1.0` → 立即进入追踪，同样使用 `resetTime − maxTimeToResetMs` 回溯 `startTime`。
+    `fraction < 1.0` → immediate tracking, also backdating `startTime` via `resetTime − maxTimeToResetMs`.
+
+  **验证 / Verification**: 经 5 小时完整额度周期实机验证：Claude 组（Sonnet/Opus/GPT-OSS）通过 Layer 3 检测（fraction = 80%）→ 回溯到 09:23 → 14:22 重置归档（4h59m）✅；Flash 通过 Layer 1 检测（`elapsedInCycle = 1h01m`）→ 回溯到 10:46 → 15:46 重置归档（4h59m）✅。
+  Verified over a full 5-hour quota cycle: Claude group (Sonnet/Opus/GPT-OSS) detected via Layer 3 (fraction=80%) → backdated to 09:23 → archived at 14:22 (4h59m) ✅; Flash detected via Layer 1 (`elapsedInCycle=1h01m`) → backdated to 10:46 → archived at 15:46 (4h59m) ✅.
 
 * **持久化 / Persistence**: 活动数据通过 `globalState` 序列化存储，30 秒节流写入。恢复时强制 warm-up 重校准实际计数。
   Activity data persisted via `globalState` serialization, throttled to 30s writes. On restore, forces warm-up to recalibrate actual counts.
@@ -140,5 +159,5 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
   Warning notification when model quota drops below user-configured threshold (default 20%). Each model notifies only once per threshold crossing, re-arms when recovered.
 
 ---
-基于 TypeScript 构建，适用于 Antigravity IDE。包含 11 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（11 tests）。
-Built with TypeScript for the Antigravity IDE. Includes 11 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (11 tests).
+基于 TypeScript 构建，适用于 Antigravity IDE。包含 62 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（11 tests）、`statusbar.test.ts`（11 tests）、`tracker.test.ts`（16 tests）、`quota-tracker.test.ts`（24 tests）。
+Built with TypeScript for the Antigravity IDE. Includes 62 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (11 tests), `statusbar.test.ts` (11 tests), `tracker.test.ts` (16 tests), `quota-tracker.test.ts` (24 tests).
