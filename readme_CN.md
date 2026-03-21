@@ -14,6 +14,8 @@
 > 🐧 **Linux**: 完全支持（v1.6.0+）。通过 `ps` 和 `lsof`/`ss` 实现进程发现。已在 Ubuntu 22.04 (x64 & ARM64) 上测试通过。
 >
 > 🪟 **Windows**: 完全支持（v1.8.0+）。通过 `wmic` 缓存和 PowerShell 回退机制优化了发现逻辑。
+>
+> 🐧🪟 **WSL**: 完全支持（v1.12.0+）。通过 `/proc/version` 检测 WSL 环境，利用 WSL 互操作调用 Windows 端工具（`WMIC.exe`、`powershell.exe`、`netstat.exe`）进行 LS 发现。
 
 ---
 
@@ -165,4 +167,4 @@
 
 ---
 **作者**: AGI-is-going-to-arrive
-**Version**: 1.11.3
+**Version**: 1.12.0
