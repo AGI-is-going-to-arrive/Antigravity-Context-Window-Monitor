@@ -14,6 +14,8 @@
 > 🐧 **Linux**: 完全支持（v1.6.0+）。通过 `ps` 和 `lsof`/`ss` 实现进程发现。已在 Ubuntu 22.04 (x64 & ARM64) 上测试通过。
 >
 > 🪟 **Windows**: 完全支持（v1.8.0+）。通过 `wmic` 缓存和 PowerShell 回退机制优化了发现逻辑。
+>
+> 🐧🪟 **WSL**: 完全支持（v1.12.0+）。通过 `/proc/version` 检测 WSL 环境，利用 WSL 互操作调用 Windows 端工具（`WMIC.exe`、`powershell.exe`、`netstat.exe`）进行 LS 发现。v1.12.1 新增 `extensionKind: ["ui", "workspace"]`，通过 Remote-WSL 或 Remote SSH 连接时扩展自动运行在本地 Windows 宿主机上——无需额外配置。
 
 ---
 
@@ -68,9 +70,13 @@
     * **🎛️ 状态栏显示开关**：独立开关控制「上下文用量」、「额度指示灯」与「重置倒计时」的显示/隐藏。
     * **⏸️ 暂停/恢复**：暂停自动刷新以冻结面板数据，方便排查问题。
 
-* **🧠 模型活动监控** *(v1.11.2 新增)*
+* **🧠 模型活动监控** *(v1.11.2 新增，v1.11.3 增强)*
     新增活动标签页，实时追踪 AI 推理调用、工具使用、Token 消耗和每模型耗时。
     * **📊 活动状态栏**：第二个状态栏指标，实时显示 `🧠5 ⚡12 🪙3.2k`。点击打开活动标签页。
+    * **🔀 活动显示模式** *(v1.11.3)*：在设置页选择「全局」（所有模型汇总）或「当前模型」（仅显示活跃对话模型的统计）。
+    * **🔧 工具名称显示** *(v1.11.3)*：时间线条目显示工具名称（如 `view_file`、`gh/search_issues`）和步骤序号标签。
+    * **⚡ 独立 Activity 轮询** *(v1.11.3)*：Activity 追踪运行在独立的 3 秒轮询循环中，与全局 5 秒轮询解耦，更新更快。
+    * **🎯 额度提前追踪** *(v1.11.3)*：额度消耗追踪现在通过 `resetTime` 偏移检测立即启动——不再等待 fraction 降至 100% 以下（此前可能延迟 20+ 分钟）。
     * **💾 数据持久化**：活动统计通过 `globalState` 跨 VS Code 重启保存，写入频率限制为每 30 秒一次。
     * **📋 自动归档**：模型额度重置时，当前活动自动归档到历史记录，生成每周期使用报告。
     * **📊 推算步数**：当对话超过 LS API 约 500 步获取窗口时，额外步数以推算方式记录，UI 上以 `📊` 标记明确区分。
@@ -140,6 +146,7 @@
 | `statusBar.showQuota` | true | 状态栏显示当前模型额度指示灯（如 `🟢85%`） |
 | `statusBar.showResetCountdown` | true | 状态栏显示重置倒计时（如 `⏳4h32m`） |
 | `statusBar.showActivity` | true | 状态栏显示模型活动指标（`🧠`、`⚡`、`🪙`） |
+| `statusBar.activityDisplayMode` | `global` | 活动显示模式：`global`（所有模型汇总）或 `currentModel`（仅当前模型） |
 | `quotaNotificationThreshold` | 20 | 模型剩余额度低于此百分比时弹出警告（设为 0 可禁用） |
 | `activity.maxRecentSteps` | 100 | 活动时间线最多保留的操作条数 |
 | `activity.maxArchives` | 20 | 活动归档最多保留份数 |
@@ -160,4 +167,4 @@
 
 ---
 **作者**: AGI-is-going-to-arrive
-**Version**: 1.11.2
+**Version**: 1.12.1

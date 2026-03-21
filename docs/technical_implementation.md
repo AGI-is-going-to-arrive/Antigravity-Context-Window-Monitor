@@ -1,57 +1,57 @@
-# 🛠️ Antigravity Context Window Monitor — 技术实现说明 / Technical Implementation
-
-本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 面板调度）、`activity-tracker.ts`（模型活动追踪）、`activity-panel.ts`（活动面板 UI）、`quota-tracker.ts`（配额追踪）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。WebView 面板拆分为：`webview-monitor-tab.ts`、`webview-profile-tab.ts`、`webview-settings-tab.ts`、`webview-history-tab.ts`、`webview-script.ts`、`webview-styles.ts`、`webview-helpers.ts`、`webview-icons.ts`。
+# 🛠️ Antigravity Context Window Monitor — Technical Implementation / 技术实现说明
 
 This document explains how the Antigravity Context Window Monitor plugin works. The plugin consists of the following core modules: `discovery.ts` (server discovery), `tracker.ts` (token calculation), `extension.ts` (polling scheduler), `statusbar.ts` (UI display), `webview-panel.ts` (WebView panel orchestrator), `activity-tracker.ts` (model activity tracking), `activity-panel.ts` (activity panel UI), `quota-tracker.ts` (quota tracking), `rpc-client.ts` (RPC communication layer), `models.ts` (model config & display names), `constants.ts` (constants), and `i18n.ts` (internationalization system). WebView panel split into: `webview-monitor-tab.ts`, `webview-profile-tab.ts`, `webview-settings-tab.ts`, `webview-history-tab.ts`, `webview-script.ts`, `webview-styles.ts`, `webview-helpers.ts`, `webview-icons.ts`.
 
+本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 面板调度）、`activity-tracker.ts`（模型活动追踪）、`activity-panel.ts`（活动面板 UI）、`quota-tracker.ts`（配额追踪）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。WebView 面板拆分为：`webview-monitor-tab.ts`、`webview-profile-tab.ts`、`webview-settings-tab.ts`、`webview-history-tab.ts`、`webview-script.ts`、`webview-styles.ts`、`webview-helpers.ts`、`webview-icons.ts`。
+
 ---
 
-## 🧭 1. 语言服务器发现 / Language Server Discovery
+## 🧭 1. Language Server Discovery / 语言服务器发现
 
-> 源码：[`discovery.ts`](../src/discovery.ts)
-
-每个 Antigravity 工作区都有一个后台进程（Language Server）处理 AI 对话请求。插件需要找到当前工作区对应的语言服务器并建立连接。
+> Source: [`discovery.ts`](../src/discovery.ts)
 
 Each Antigravity workspace has a background Language Server process handling AI conversation requests. The plugin needs to locate the correct one for the current workspace and connect to it.
 
-* **进程扫描 / Process Scanning**: 使用 macOS `ps` 命令（通过异步 `execFile` 调用，不阻塞 IDE UI 线程）查找 `language_server_macos` 进程，并通过 `--workspace_id` 参数匹配当前工作区。使用 `execFile` 而非 shell 命令拼接，避免命令注入风险。支持可选的 `AbortSignal` 参数，用于扩展停用时取消发现过程。核心解析逻辑已提取为独立导出函数（`buildExpectedWorkspaceId`、`extractPid`、`extractCsrfToken`、`extractWorkspaceId`、`filterLsProcessLines`、`extractPort`），可被单元测试直接验证。v1.5.3: `discoverLanguageServer` 内部工作区匹配现在调用 `extractWorkspaceId()` 函数，消除内联正则重复。这也是目前仅支持 macOS 的原因。
-  Uses macOS `ps` command (via async `execFile`, non-blocking to IDE UI thread) to find `language_server_macos` processes, matching the current workspace via the `--workspace_id` argument. Uses `execFile` instead of shell string concatenation to prevent command injection. Accepts optional `AbortSignal` for cancellation on extension deactivate. Core parsing logic extracted into exported functions (`buildExpectedWorkspaceId`, `extractPid`, `extractCsrfToken`, etc.) that can be directly unit-tested. v1.5.3: `discoverLanguageServer` internal workspace matching now calls `extractWorkspaceId()`, eliminating inline regex duplication. This is why only macOS is currently supported.
+每个 Antigravity 工作区都有一个后台进程（Language Server）处理 AI 对话请求。插件需要找到当前工作区对应的语言服务器并建立连接。
 
-* **提取连接参数 / Extracting Connection Info**: 从进程命令行中提取 PID 和 `csrf_token`（用于 RPC 请求鉴权）。
-  Extracts PID and `csrf_token` from process arguments (used for RPC request authentication).
+* **Process Scanning / 进程扫描**: Uses platform-specific commands (via async `execFile`, non-blocking to IDE UI thread) to find the Language Server process, matching the current workspace via the `--workspace_id` argument. macOS uses `ps`, Linux uses `ps` with `lsof`/`ss` fallback, Windows uses `wmic`/PowerShell, and WSL (v1.12.0+) uses Windows-side tools via interop (`WMIC.exe`, `powershell.exe`, `netstat.exe`). Uses `execFile` instead of shell string concatenation to prevent command injection. Accepts optional `AbortSignal` for cancellation on extension deactivate. Core parsing logic extracted into exported functions (`buildExpectedWorkspaceId`, `extractPid`, `extractCsrfToken`, etc.) that can be directly unit-tested. WSL detection uses `isWSL()` which reads `/proc/version` for Microsoft/WSL signatures (cached). Since v1.12.1, `extensionKind: ["ui", "workspace"]` ensures the extension prefers running on the local (UI) side where the LS process lives — resolving "LS not found" when connected via Remote-WSL or Remote SSH.
+  使用平台特定命令（通过异步 `execFile` 调用，不阻塞 IDE UI 线程）查找语言服务器进程，并通过 `--workspace_id` 参数匹配当前工作区。macOS 使用 `ps`，Linux 使用 `ps` 和 `lsof`/`ss` 回退，Windows 使用 `wmic`/PowerShell，WSL（v1.12.0+）通过互操作调用 Windows 端工具。使用 `execFile` 而非 shell 命令拼接，避免命令注入风险。WSL 检测通过 `isWSL()` 读取 `/proc/version` 中的 Microsoft/WSL 签名（结果缓存）。自 v1.12.1 起，`extensionKind: ["ui", "workspace"]` 确保扩展优先在本地（UI 端）运行——解决通过 Remote-WSL 或 Remote SSH 连接时的「LS 未找到」问题。
 
-* **端口发现 / Port Discovery**: 使用 `lsof -nP -iTCP -sTCP:LISTEN -a -p <PID>` 查找语言服务器监听的本地端口。
-  Uses `lsof -nP -iTCP -sTCP:LISTEN -a -p <PID>` to find the local port the language server is listening on.
+* **Extracting Connection Info / 提取连接参数**: Extracts PID and `csrf_token` from process arguments (used for RPC request authentication).
+  从进程命令行中提取 PID 和 `csrf_token`（用于 RPC 请求鉴权）。
 
-* **连接探测 / Connection Probing**: 向发现的端口发送一个轻量 RPC 请求（`GetUnleashData`）测试连接，并验证 HTTP 状态码为 2xx。先尝试 HTTPS（语言服务器通常使用自签名证书），失败则降级为 HTTP。响应流新增 `res.on('error')` 处理，避免 TCP RST 等异常导致 Promise 挂起。
-  Sends a lightweight RPC request (`GetUnleashData`) to test connectivity, verifying HTTP status code is 2xx. Tries HTTPS first (the LS typically uses self-signed certs), falls back to HTTP. Response stream now has `res.on('error')` handler to prevent Promise hang on TCP RST or similar issues.
+* **Port Discovery / 端口发现**: Uses `lsof` (macOS/Linux), `ss` fallback (Linux), `netstat -ano` (Windows), or `netstat.exe` via interop (WSL) to find the local port the language server is listening on.
+  使用 `lsof`（macOS/Linux）、`ss` 回退（Linux）、`netstat -ano`（Windows）或通过互操作的 `netstat.exe`（WSL）查找语言服务器监听的本地端口。
 
-## ♾️ 2. 对话数据跟踪 / Conversation Tracking
+* **Connection Probing / 连接探测**: Sends a lightweight RPC request (`GetUnleashData`) to test connectivity, verifying HTTP status code is 2xx. Tries HTTPS first (the LS typically uses self-signed certs), falls back to HTTP. Response stream now has `res.on('error')` handler to prevent Promise hang on TCP RST or similar issues.
+  向发现的端口发送一个轻量 RPC 请求（`GetUnleashData`）测试连接，并验证 HTTP 状态码为 2xx。先尝试 HTTPS，失败则降级为 HTTP。响应流新增 `res.on('error')` 处理。
 
-> 源码：[`tracker.ts`](../src/tracker.ts) — `getAllTrajectories()`、[`extension.ts`](../src/extension.ts) — 轮询逻辑
+## ♾️ 2. Conversation Tracking / 对话数据跟踪
 
-连接成功后，插件定期获取对话数据并跟踪变化。
+> Source: [`tracker.ts`](../src/tracker.ts) — `getAllTrajectories()`, [`extension.ts`](../src/extension.ts) — polling logic
 
 Once connected, the plugin periodically fetches conversation data and tracks changes.
 
-* **获取会话列表 / Fetching Sessions**: 调用 `GetAllCascadeTrajectories` RPC 接口获取所有对话（称为 Trajectory），包括 cascadeId、stepCount、状态、使用的模型。
-  Calls the `GetAllCascadeTrajectories` RPC endpoint to get all conversations (called Trajectories), including cascadeId, stepCount, status, and model used.
+连接成功后，插件定期获取对话数据并跟踪变化。
 
-* **工作区隔离 / Workspace Isolation**: 通过比较 trajectory 上的 `workspaceUris` 与当前窗口的 workspace URI（经过 `normalizeUri` 标准化处理），只显示属于当前工作区的对话。
-  Filters trajectories by comparing their `workspaceUris` against the current window's workspace URI (normalized via `normalizeUri`), showing only conversations belonging to this workspace.
+* **Fetching Sessions / 获取会话列表**: Calls the `GetAllCascadeTrajectories` RPC endpoint to get all conversations (called Trajectories), including cascadeId, stepCount, status, and model used.
+  调用 `GetAllCascadeTrajectories` RPC 接口获取所有对话（称为 Trajectory），包括 cascadeId、stepCount、状态、使用的模型。
 
-* **活跃会话选择 / Active Session Selection**: 按优先级选择要显示的会话：
-  Selects which session to display, by priority:
-  1. 状态为 RUNNING 的对话 / Trajectory with RUNNING status
-  2. `stepCount` 发生变化的对话（增加=新消息，减少=撤销操作）/ Trajectory with stepCount change (increase = new message, decrease = undo)
-  3. 新出现的对话 / Newly appeared trajectory
+* **Workspace Isolation / 工作区隔离**: Filters trajectories by comparing their `workspaceUris` against the current window's workspace URI (normalized via `normalizeUri`), showing only conversations belonging to this workspace.
+  通过比较 trajectory 上的 `workspaceUris` 与当前窗口的 workspace URI（经过 `normalizeUri` 标准化处理），只显示属于当前工作区的对话。
 
-* **逐步分析 / Step Analysis**: 对选中的对话调用 `GetCascadeTrajectorySteps`，通过 `Promise.allSettled` 分组获取所有批次（每批 50 步，最多 5 个并发组），然后将完整步骤数组传给纯函数 `processSteps()` 进行计算。`endIndex` 上限被限制为 `stepCount`，避免 LS API 的循环返回行为。失败的批次标记为 `hasGaps`，不阻塞其他批次。`processSteps()` 是从 `getTrajectoryTokenUsage` 中提取的无副作用纯函数，可直接用构造数据进行单元测试。
-  For the selected conversation, calls `GetCascadeTrajectorySteps` with all batches (50 steps each) fetched in groups of up to 5 concurrent batches via `Promise.allSettled`, then passes the collected steps array to the pure function `processSteps()` for computation. `endIndex` is capped at `stepCount` to prevent the LS API's wrap-around behavior. Failed batches are flagged as `hasGaps` without blocking others. `processSteps()` is a side-effect-free pure function extracted from `getTrajectoryTokenUsage`, directly unit-testable with constructed step data.
+* **Active Session Selection / 活跃会话选择**: Selects which session to display, by priority:
+  按优先级选择要显示的会话：
+  1. Trajectory with RUNNING status / 状态为 RUNNING 的对话
+  2. Trajectory with stepCount change (increase = new message, decrease = undo) / `stepCount` 发生变化的对话
+  3. Newly appeared trajectory / 新出现的对话
 
-## 🧮 3. Token 计算逻辑 / Token Calculation
+* **Step Analysis / 逐步分析**: For the selected conversation, calls `GetCascadeTrajectorySteps` with all batches (50 steps each) fetched in groups of up to 5 concurrent batches via `Promise.allSettled`, then passes the collected steps array to the pure function `processSteps()` for computation. `endIndex` is capped at `stepCount` to prevent the LS API's wrap-around behavior. Failed batches are flagged as `hasGaps` without blocking others. `processSteps()` is a side-effect-free pure function extracted from `getTrajectoryTokenUsage`, directly unit-testable with constructed step data.
+  对选中的对话调用 `GetCascadeTrajectorySteps`，通过 `Promise.allSettled` 分组获取所有批次，然后将完整步骤数组传给纯函数 `processSteps()` 进行计算。
 
-> 源码：[`tracker.ts`](../src/tracker.ts) — `processSteps()`（纯计算）、`getTrajectoryTokenUsage()`（RPC 获取 + 调用 processSteps）
+## 🧮 3. Token Calculation / Token 计算逻辑
+
+> Source: [`tracker.ts`](../src/tracker.ts) — `processSteps()` (pure computation), `getTrajectoryTokenUsage()` (RPC fetch + calls processSteps)
 
 * **精确值（Checkpoint）/ Precise Values**: 语言服务器会在 `CORTEX_STEP_TYPE_CHECKPOINT` 类型的步骤中提供 `modelUsage` 数据，包含模型实际计算的 `inputTokens` 和 `outputTokens`。插件始终使用最后一个 checkpoint 的值作为基准。
   The language server provides `modelUsage` data in `CORTEX_STEP_TYPE_CHECKPOINT` steps, containing the model's actual `inputTokens` and `outputTokens`. The plugin always uses the last checkpoint as the baseline.
@@ -71,9 +71,9 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
 * **动态模型名称 / Dynamic Model Names**: 在 LS 连接成功后，通过 `GetUserStatus` API 获取模型配置列表，动态更新 `MODEL_DISPLAY_NAMES`。硬编码值作为 fallback 保留。
   On LS connection, fetches model configs from the `GetUserStatus` API to dynamically update `MODEL_DISPLAY_NAMES`. Hardcoded values remain as fallback.
 
-## 🖥️ 4. 状态栏与轮询 / Status Bar & Polling
+## 🖥️ 4. Status Bar & Polling / 状态栏与轮询
 
-> 源码：[`statusbar.ts`](../src/statusbar.ts)、[`extension.ts`](../src/extension.ts)
+> Source: [`statusbar.ts`](../src/statusbar.ts), [`extension.ts`](../src/extension.ts)
 
 * **轮询机制 / Polling**: 默认每 5 秒调度一次 `pollContextUsage()`（使用 `setTimeout` 链式调用，确保上一次 RPC 完成后再调度下一次，避免计时器漂移和请求堆叠）。`schedulePoll()` 使用代计数器 `pollGeneration` 防止 `restartPolling()` 产生孤儿定时器链（旧链 `finally` 检测到 generation 变化后静默退出），通过 `disposed` 标志确保扩展停用后不会创建新的定时器，`catch` 中的 `log()` 调用有二次保护。`pollContextUsage()` 入口捕获 `cachedLsInfo` 到局部快照 `lsInfo`，防止 refresh 命令在 await 间隙清空全局变量。可通过 `pollingInterval` 设置修改。使用 `isPolling` 标志防止并发重入。
   Calls `pollContextUsage()` every 5 seconds by default using a `setTimeout` chain (each poll is scheduled only after the previous completes). `schedulePoll()` uses a `pollGeneration` counter to prevent `restartPolling()` from creating orphan timer chains (the old chain's `finally` detects a stale generation and exits silently), a `disposed` flag to prevent timers after deactivation, and double-wrapped `log()`. `pollContextUsage()` captures `cachedLsInfo` into a local `lsInfo` snapshot at entry to prevent the refresh command from nullifying it during await gaps. Configurable via `pollingInterval` setting. An `isPolling` flag prevents concurrent reentrance.
@@ -93,9 +93,9 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
 * **状态栏颜色 / Status Bar Colors**: 根据使用率变色——＜50% 正常、50-80% 黄色警告（`warningBackground`）、≥80% 红色（`errorBackground`）。≥95% 时图标切换为 `$(zap)`。
     Color-coded by usage: <50% normal, 50-80% warning (`warningBackground`), ≥80% error (`errorBackground`). At ≥95% the icon switches to `$(zap)`.
 
-## 📊 5. WebView 监控面板 / WebView Monitor Panel
+## 📊 5. WebView Monitor Panel / WebView 监控面板
 
-> 源码：[`webview-panel.ts`](../src/webview-panel.ts)
+> Source: [`webview-panel.ts`](../src/webview-panel.ts)
 
 自 v1.10.1 起，点击状态栏打开 WebView 侧边面板（替代之前的 QuickPick 弹窗），展示完整的用户状态仪表盘。
 
@@ -116,9 +116,9 @@ Since v1.10.1, clicking the status bar opens a WebView side panel (replacing the
 * **实时刷新 / Live Refresh**: 轮询循环中通过 `updateMonitorPanel()` 推送最新数据到已打开的面板，保持数据实时同步。
   The polling loop pushes latest data to the open panel via `updateMonitorPanel()`, keeping data in real-time sync.
 
-## 🧠 6. 模型活动监控 / Model Activity Monitor
+## 🧠 6. Model Activity Monitor / 模型活动监控
 
-> 源码：[`activity-tracker.ts`](../src/activity-tracker.ts)、[`activity-panel.ts`](../src/activity-panel.ts)、[`quota-tracker.ts`](../src/quota-tracker.ts)
+> Source: [`activity-tracker.ts`](../src/activity-tracker.ts), [`activity-panel.ts`](../src/activity-panel.ts), [`quota-tracker.ts`](../src/quota-tracker.ts)
 
 自 v1.11.2 起，插件追踪每个模型的实时活动数据（推理调用、工具使用、Token 消耗、耗时），并在 WebView 面板的 Activity 标签页中展示。
 

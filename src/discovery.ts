@@ -2,8 +2,39 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as https from 'https';
 import * as http from 'http';
+import { readFileSync } from 'fs';
 
 const execFileAsync = promisify(execFile);
+
+// ─── WSL Detection ────────────────────────────────────────────────────────────
+// Cached tri-state: null = untested, true = WSL, false = not WSL.
+let wslDetected: boolean | null = null;
+
+/**
+ * Detect if running inside Windows Subsystem for Linux.
+ * Checks /proc/version for Microsoft/WSL signature. Result is cached.
+ */
+export function isWSL(): boolean {
+    if (wslDetected !== null) {
+        return wslDetected;
+    }
+    if (process.platform !== 'linux') {
+        wslDetected = false;
+        return false;
+    }
+    try {
+        const version = readFileSync('/proc/version', 'utf-8');
+        wslDetected = /microsoft|wsl/i.test(version);
+    } catch {
+        wslDetected = false;
+    }
+    return wslDetected;
+}
+
+/** Reset WSL detection cache (exported for testing). */
+export function resetWslCache(): void {
+    wslDetected = null;
+}
 
 // ─── Windows Process Discovery: wmic availability cache ──────────────────────
 // Tri-state: null = untested, true = wmic works, false = wmic missing.
@@ -34,8 +65,8 @@ export interface LSInfo {
 export function buildExpectedWorkspaceId(workspaceUri: string): string {
     // Step 1: Strip the URI scheme separator
     let id = workspaceUri.replace(':///', '_');
-    if (process.platform === 'win32') {
-        // Windows: the LS hex-encodes the drive-letter colon as _3A_ and
+    if (process.platform === 'win32' || isWSL()) {
+        // Windows / WSL: the LS hex-encodes the drive-letter colon as _3A_ and
         // replaces hyphens with underscores. Encode colon BEFORE replacing
         // slashes to avoid double-underscore artifacts (c:/ -> c_3A_/ -> c_3A_).
         id = id.replace(/:/g, '_3A_');
@@ -44,7 +75,7 @@ export function buildExpectedWorkspaceId(workspaceUri: string): string {
     id = id.replace(/\//g, '_');
     // The LS replaces hyphens with underscores on ALL platforms
     id = id.replace(/-/g, '_');
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' || isWSL()) {
         // Collapse any double underscores from adjacent special chars (e.g., c_3A_/)
         id = id.replace(/__+/g, '_');
     }
@@ -77,9 +108,10 @@ export function extractWorkspaceId(line: string): string | null {
 
 /**
  * Filter ps output lines for LS processes.
+ * In WSL, looks for the Windows binary name since the LS runs on the Windows host.
  */
 export function filterLsProcessLines(psOutput: string): string[] {
-    const binaryName = process.platform === 'win32'
+    const binaryName = (process.platform === 'win32' || isWSL())
         ? 'language_server_windows'
         : process.platform === 'linux'
             ? 'language_server_linux'
@@ -119,12 +151,21 @@ export function extractPortFromNetstat(line: string): number | null {
  * Discover Windows LS processes via wmic (preferred) or Get-CimInstance (fallback).
  * Caches wmic availability to avoid retrying a missing executable every poll cycle.
  * Returns raw CSV output containing CommandLine and ProcessId fields.
+ *
+ * When running inside WSL, uses full paths under /mnt/c/ for Windows executables
+ * via WSL interop, falling back to bare exe names (which WSL also resolves).
  */
 async function discoverWindowsProcesses(signal?: AbortSignal): Promise<string> {
+    const inWSL = isWSL();
+
+    // Determine executable paths — WSL needs explicit /mnt/c paths or bare .exe names
+    const wmicExe = inWSL ? '/mnt/c/Windows/System32/wbem/WMIC.exe' : 'wmic';
+    const psExe = inWSL ? 'powershell.exe' : 'powershell.exe'; // WSL resolves via interop PATH
+
     // Try wmic unless already known to be unavailable
     if (wmicAvailable !== false) {
         try {
-            const result = await execFileAsync('wmic', [
+            const result = await execFileAsync(wmicExe, [
                 'process', 'where',
                 "name like 'language_server_windows%'",
                 'get', 'ProcessId,CommandLine', '/format:csv'
@@ -138,7 +179,7 @@ async function discoverWindowsProcesses(signal?: AbortSignal): Promise<string> {
     }
 
     // Fallback: PowerShell Get-CimInstance with server-side WMI filter
-    const result = await execFileAsync('powershell.exe', [
+    const result = await execFileAsync(psExe, [
         '-NoProfile', '-NoLogo', '-Command',
         'Get-CimInstance Win32_Process -Filter "Name like \'language_server_windows%\'" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation'
     ], { encoding: 'utf-8', timeout: 10000, signal });
@@ -148,12 +189,14 @@ async function discoverWindowsProcesses(signal?: AbortSignal): Promise<string> {
 /**
  * Find listening TCP ports for a given PID.
  * Uses lsof (macOS + most Linux), with fallback to ss (Linux default).
+ * In WSL, uses Windows netstat.exe since the LS is a Windows host process.
  */
 async function findListeningPorts(pid: number, signal?: AbortSignal): Promise<number[]> {
-    // Windows: use netstat -ano (native exe, ~25ms, fastest option)
-    if (process.platform === 'win32') {
+    // Windows (or WSL): use netstat -ano to find Windows host ports
+    if (process.platform === 'win32' || isWSL()) {
+        const netstatExe = isWSL() ? '/mnt/c/Windows/System32/netstat.exe' : 'netstat';
         try {
-            const result = await execFileAsync('netstat', [
+            const result = await execFileAsync(netstatExe, [
                 '-ano'
             ], { encoding: 'utf-8', timeout: 5000, signal });
             const ports: number[] = [];
@@ -228,7 +271,7 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
         let pid: number | null = null;
         let csrfToken: string | null = null;
 
-        if (process.platform === 'win32') {
+        if (process.platform === 'win32' || isWSL()) {
             // ─── Windows: wmic.exe (preferred) or Get-CimInstance (fallback) ───
             // Uses cached wmic availability to skip missing wmic on subsequent polls.
             let wmicOutput: string;

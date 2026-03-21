@@ -769,5 +769,10 @@ function getWorkspaceUri(): string | undefined {
     if (!folders || folders.length === 0) {
         return undefined;
     }
-    return folders[0].uri.toString();
+    const uri = folders[0].uri.toString();
+    // Log remote URIs for diagnostic purposes
+    if (uri.startsWith('vscode-remote://')) {
+        log(`Remote workspace URI detected: ${uri}`);
+    }
+    return uri;
 }

@@ -6,7 +6,9 @@ import {
     extractWorkspaceId, 
     filterLsProcessLines,
     extractPort,
-    extractPortFromNetstat
+    extractPortFromNetstat,
+    extractPortFromSs,
+    isWSL,
 } from './discovery';
 
 describe('discovery.ts', () => {
@@ -93,5 +95,29 @@ describe('discovery.ts', () => {
             const line = '  TCP    127.0.0.1:65432    0.0.0.0:0              LISTENING       1234';
             expect(extractPortFromNetstat(line)).toBe(65432);
         });
+
+        it('extractPortFromSs should handle ss format with 127.0.0.1', () => {
+            const line = 'LISTEN  0  128  127.0.0.1:54321  0.0.0.0:*  users:(("language_server_linux",pid=1234,fd=5))';
+            expect(extractPortFromSs(line)).toBe(54321);
+        });
+
+        it('extractPortFromSs should handle ss format with wildcard', () => {
+            const line = 'LISTEN  0  128  *:8080  *:*  users:(("node",pid=5678,fd=9))';
+            expect(extractPortFromSs(line)).toBe(8080);
+        });
+    });
+
+    describe('isWSL', () => {
+        it('should return a boolean', () => {
+            // On Windows test runner, isWSL() returns false (no /proc/version)
+            // On actual WSL, it would return true
+            expect(typeof isWSL()).toBe('boolean');
+        });
+
+        if (process.platform === 'win32') {
+            it('should return false on native Windows', () => {
+                expect(isWSL()).toBe(false);
+            });
+        }
     });
 });
