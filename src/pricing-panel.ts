@@ -19,6 +19,7 @@ export function buildPricingTabContent(summary: GMSummary | null, store: Pricing
 
     return [
         buildModelDNACards(summary),
+        buildCostVisualization(rows, grandTotal, summary),
         buildCostSummary(rows, grandTotal),
         buildEditablePricingTable(summary, merged, store.getCustom()),
     ].join('');
@@ -283,7 +284,185 @@ export function getPricingTabStyles(): string {
         font-weight: 600;
         margin-left: 4px;
     }
+
+    /* ── Cost Visualization ── */
+    .prc-viz-section {
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        padding: var(--space-3);
+        margin-bottom: var(--space-4);
+    }
+
+    .prc-viz-highlights {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+        gap: var(--space-2);
+        margin-bottom: var(--space-4);
+    }
+
+    .prc-viz-highlight {
+        text-align: center;
+        padding: var(--space-2) var(--space-3);
+        border-radius: var(--radius-md);
+        background: rgba(255,255,255,0.02);
+        border: 1px solid rgba(255,255,255,0.04);
+    }
+
+    .prc-viz-hl-val {
+        font-weight: 700;
+        font-size: 1.2em;
+    }
+
+    .prc-viz-hl-label {
+        font-size: 0.68em;
+        color: var(--color-text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-top: 2px;
+    }
+
+    .prc-bar-row {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        margin-bottom: var(--space-2);
+        font-size: 0.82em;
+    }
+
+    .prc-bar-label {
+        min-width: 90px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex-shrink: 0;
+    }
+
+    .prc-bar-track {
+        flex: 1;
+        height: 18px;
+        border-radius: var(--radius-sm);
+        background: rgba(255,255,255,0.04);
+        overflow: hidden;
+        display: flex;
+    }
+
+    .prc-bar-seg {
+        height: 100%;
+        min-width: 1px;
+        transition: width 0.3s cubic-bezier(.4,0,.2,1);
+    }
+
+    .prc-bar-seg-input { background: #60a5fa; }
+    .prc-bar-seg-output { background: #a78bfa; }
+    .prc-bar-seg-cache { background: #22d3ee; }
+    .prc-bar-seg-thinking { background: #fb923c; }
+
+    .prc-bar-val {
+        min-width: 55px;
+        text-align: right;
+        font-weight: 600;
+        font-size: 0.92em;
+        flex-shrink: 0;
+    }
+
+    .prc-bar-legend {
+        display: flex;
+        gap: var(--space-3);
+        flex-wrap: wrap;
+        font-size: 0.72em;
+        color: var(--color-text-dim);
+        margin-top: var(--space-3);
+        padding-top: var(--space-2);
+        border-top: 1px solid var(--color-border);
+    }
+
+    .prc-bar-legend-item {
+        display: flex;
+        align-items: center;
+        gap: var(--space-1);
+    }
+
+    .prc-bar-legend-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+    }
     `;
+}
+
+// ─── Cost Visualization ──────────────────────────────────────────────────────
+
+function buildCostVisualization(
+    rows: import('./pricing-store').ModelCostRow[],
+    grandTotal: number,
+    summary: GMSummary,
+): string {
+    const priced = rows.filter(r => r.pricing && r.totalCost > 0);
+    if (priced.length === 0 || grandTotal <= 0) { return ''; }
+
+    const fmtUsd = (n: number) => n < 0.01 ? `$${n.toFixed(4)}` : n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
+
+    // Highlights
+    const topModel = priced[0];
+    const avgPerCall = summary.totalCalls > 0 ? grandTotal / summary.totalCalls : 0;
+
+    let html = `<h2 class="act-section-title">${tBi('Cost Overview', '费用概览')} <span class="gm-badge-real">${tBi('Visual', '可视化')}</span></h2>`;
+    html += '<div class="prc-viz-section">';
+
+    // Highlight cards
+    html += '<div class="prc-viz-highlights">';
+    html += `<div class="prc-viz-highlight">
+        <div class="prc-viz-hl-val" style="color:#f59e0b">${fmtUsd(grandTotal)}</div>
+        <div class="prc-viz-hl-label">${tBi('Total Cost', '总费用')}</div>
+    </div>`;
+    html += `<div class="prc-viz-highlight">
+        <div class="prc-viz-hl-val" style="color:#a78bfa">${esc(topModel.name)}</div>
+        <div class="prc-viz-hl-label">${tBi('Top Spender', '最高消费')}</div>
+    </div>`;
+    html += `<div class="prc-viz-highlight">
+        <div class="prc-viz-hl-val" style="color:#60a5fa">${fmtUsd(avgPerCall)}</div>
+        <div class="prc-viz-hl-label">${tBi('Avg/Call', '平均/次')}</div>
+    </div>`;
+    html += `<div class="prc-viz-highlight">
+        <div class="prc-viz-hl-val">${priced.length}</div>
+        <div class="prc-viz-hl-label">${tBi('Models', '模型数')}</div>
+    </div>`;
+    html += '</div>';
+
+    // Bar chart
+    const maxCost = priced[0].totalCost;
+    for (const r of priced) {
+        const pct = maxCost > 0 ? (r.totalCost / maxCost) * 100 : 0;
+        const total = r.totalCost || 1;
+        const inputPct = (r.inputCost / total) * pct;
+        const outputPct = (r.outputCost / total) * pct;
+        const cachePct = ((r.cacheCost + r.cacheWriteCost) / total) * pct;
+        const thinkPct = (r.thinkingCost / total) * pct;
+
+        html += `<div class="prc-bar-row">
+            <span class="prc-bar-label">${esc(r.name)}</span>
+            <div class="prc-bar-track">
+                ${inputPct > 0 ? `<div class="prc-bar-seg prc-bar-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="Input: ${fmtUsd(r.inputCost)}"></div>` : ''}
+                ${outputPct > 0 ? `<div class="prc-bar-seg prc-bar-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="Output: ${fmtUsd(r.outputCost)}"></div>` : ''}
+                ${cachePct > 0 ? `<div class="prc-bar-seg prc-bar-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="Cache: ${fmtUsd(r.cacheCost + r.cacheWriteCost)}"></div>` : ''}
+                ${thinkPct > 0 ? `<div class="prc-bar-seg prc-bar-seg-thinking" style="width:${thinkPct.toFixed(1)}%" data-tooltip="Thinking: ${fmtUsd(r.thinkingCost)}"></div>` : ''}
+            </div>
+            <span class="prc-bar-val" style="color:#f59e0b">${fmtUsd(r.totalCost)}</span>
+        </div>`;
+    }
+
+    // Legend
+    html += `<div class="prc-bar-legend">
+        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#60a5fa"></span> Input</span>
+        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#a78bfa"></span> Output</span>
+        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#22d3ee"></span> Cache</span>
+        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#fb923c"></span> Thinking</span>
+    </div>`;
+
+    html += '</div>';
+    return html;
 }
 
 // ─── Section Builders ────────────────────────────────────────────────────────

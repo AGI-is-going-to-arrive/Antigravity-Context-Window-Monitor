@@ -26,12 +26,12 @@ antigravity-context-monitor/
 │   ├── webview-monitor-tab.ts    # 监控标签页 HTML 生成
 │   ├── webview-settings-tab.ts   # 设置标签页 HTML 生成
 │   ├── webview-profile-tab.ts    # 个人资料标签页 HTML 生成
-│   ├── webview-history-tab.ts    # 历史标签页 HTML 生成
+│   ├── webview-history-tab.ts    # 额度追踪标签页 HTML（追踪开关 + 活跃/已完成时间条）
 │   ├── activity-panel.ts         # 活动面板 HTML 片段生成
 │   ├── gm-tracker.ts             # GM 数据层：RPC + 解析 + 聚合 + 缓存
 │   ├── gm-panel.ts               # GM 数据面板 HTML（性能基线 + 缓存效率 + 上下文增长）
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算
-│   ├── pricing-panel.ts          # 价格标签页 HTML（模型 DNA + 费用估算 + 可编辑价格）
+│   ├── pricing-panel.ts          # 价格标签页 HTML（模型 DNA + 成本可视化 + 费用估算 + 可编辑价格）
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity/GM/Cost + 90 天自动清理
 │   ├── webview-calendar-tab.ts   # 日历标签页 HTML（月历网格 + 可展开日详情 + 汇总）
 │   ├── i18n.ts                   # 国际化系统（中 / 英 / 双语）
@@ -160,9 +160,9 @@ Panel framework: tab switching (Monitor / Settings / Activity / Profile / Histor
 | `webview-monitor-tab.ts` | 监控标签页 HTML |
 | `webview-settings-tab.ts` | 设置标签页 HTML |
 | `webview-profile-tab.ts` | 个人资料标签页 HTML |
-| `webview-history-tab.ts` | 历史标签页 HTML |
+| `webview-history-tab.ts` | 额度追踪标签页 HTML（追踪开关 + 活跃/已完成时间条） |
 | `gm-panel.ts` | GM Data 标签页 HTML（性能 + 缓存 + 上下文） |
-| `pricing-panel.ts` | Pricing 标签页 HTML（模型 DNA + 费用 + 可编辑价格） |
+| `pricing-panel.ts` | Pricing 标签页 HTML（模型 DNA + 成本可视化 + 费用 + 可编辑价格） |
 | `webview-calendar-tab.ts` | Calendar 标签页 HTML（月历网格 + 日详情 + 汇总） |
 
 ---
@@ -276,6 +276,7 @@ Generates complete HTML for the Pricing tab.
 | 区块 / Section | 函数 / Function | 说明 / Description |
 |---|---|---|
 | Model DNA | `buildModelDNACards` | 模型配置参数、工具、提示词段落、错误/重试 |
+| Cost Viz | `buildCostVisualization` | 亮点卡片（总成本/最贵模型/平均/模型数）+ 模型成本分色条形图 |
 | Cost Estimate | `buildCostSummary` | 按模型 × token 类型计算 USD 费用 |
 | Custom Pricing | `buildEditablePricingTable` | 可编辑价格输入 + 保存/重置按钮 |
 
@@ -289,8 +290,9 @@ Per-day aggregation of Activity + GM + Cost snapshots, with retroactive import o
 
 | 特性 / Feature | 说明 / Description |
 |---|---|
-| `addCycle()` | 从 ActivityArchive + GMSummary + costTotal 提取关键字段写入当日记录 |
-| `importArchives()` | 批量导入已有归档，按 startTime 去重，重启幂等 |
+| `ModelCycleStats` | Per-model 细分接口（reasoning/tools/errors/estSteps/tokens） |
+| `addCycle()` | 从 ActivityArchive + GMSummary + costTotal 提取关键字段 + per-model 数据写入当日记录 |
+| `importArchives()` | 批量导入已有归档，按 startTime 去重，自动回填旧数据缺失的 `modelStats`，重启幂等 |
 | `getMonthSummary()` | 按月聚合统计，驱动日历网格圆点指示器 |
 | 持久化 / Persistence | globalState (`dailyStoreState`) 存储 + 启动恢复 |
 | Auto-trim | 超过 90 天的记录自动裁剪 |
@@ -308,6 +310,7 @@ Generates Calendar tab HTML: month grid, expandable day details, cycle cards, al
 | Month View | `buildMonthView` | 7×6 网格 + 月份导航 + 有数据日期圆点 |
 | Day Detail | `buildDayDetail` | 展开面板：逐周期卡片 + 日合计 |
 | Cycle Card | `buildCycleCard` | 单周期详情：时间、模型、推理/工具/token/费用 |
+| Per-Model | `buildPerModelRows` | 每周期逐模型细分 stat chips（reasoning/tools/errors/est/tokens） |
 | Summary | `buildOverallSummary` | 全历史汇总：天数、周期数、推理、工具、费用 |
 
 ---

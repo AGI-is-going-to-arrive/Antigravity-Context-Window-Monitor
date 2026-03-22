@@ -8,6 +8,16 @@ import type { GMSummary } from './gm-tracker';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+/** Per-model breakdown within a cycle */
+export interface ModelCycleStats {
+    reasoning: number;
+    toolCalls: number;
+    errors: number;
+    estSteps: number;
+    inputTokens: number;
+    outputTokens: number;
+}
+
 /** A single quota-cycle snapshot within a day */
 export interface DailyCycleEntry {
     startTime: string;               // ISO
@@ -21,6 +31,8 @@ export interface DailyCycleEntry {
     totalOutputTokens: number;
     estSteps: number;
     modelNames: string[];            // distinct model display names
+    /** Per-model breakdown (key = display name) */
+    modelStats?: Record<string, ModelCycleStats>;
     // GM
     gmTotalCalls?: number;
     gmTotalCredits?: number;
@@ -107,6 +119,20 @@ export class DailyStore {
         }
 
         const s = archive.summary;
+
+        // Extract per-model breakdown from archive's modelStats
+        const perModel: Record<string, ModelCycleStats> = {};
+        for (const [name, ms] of Object.entries(s.modelStats)) {
+            perModel[name] = {
+                reasoning: ms.reasoning,
+                toolCalls: ms.toolCalls,
+                errors: ms.errors,
+                estSteps: ms.estSteps,
+                inputTokens: ms.inputTokens,
+                outputTokens: ms.outputTokens,
+            };
+        }
+
         const cycle: DailyCycleEntry = {
             startTime: archive.startTime,
             endTime: archive.endTime,
@@ -118,6 +144,7 @@ export class DailyStore {
             totalOutputTokens: s.totalOutputTokens,
             estSteps: s.estSteps,
             modelNames: extractModelNames(s.modelStats),
+            modelStats: Object.keys(perModel).length > 0 ? perModel : undefined,
         };
 
         if (gmSummary) {
@@ -146,16 +173,39 @@ export class DailyStore {
         costTotal?: number,
     ): number {
         let imported = 0;
+        let needsPersist = false;
         for (const archive of archives) {
             const dateKey = toDateKey(archive.endTime);
             const existing = this._records.get(dateKey);
-            // Dedup: skip if a cycle with the same startTime already exists
-            if (existing && existing.cycles.some(c => c.startTime === archive.startTime)) {
-                continue;
+            // Dedup: skip if a cycle with the same startTime already exists — BUT
+            // back-fill modelStats if the existing cycle is missing it (data upgrade).
+            if (existing) {
+                const match = existing.cycles.find(c => c.startTime === archive.startTime);
+                if (match) {
+                    if (!match.modelStats && archive.summary.modelStats) {
+                        const perModel: Record<string, ModelCycleStats> = {};
+                        for (const [name, ms] of Object.entries(archive.summary.modelStats)) {
+                            perModel[name] = {
+                                reasoning: ms.reasoning,
+                                toolCalls: ms.toolCalls,
+                                errors: ms.errors,
+                                estSteps: ms.estSteps,
+                                inputTokens: ms.inputTokens,
+                                outputTokens: ms.outputTokens,
+                            };
+                        }
+                        if (Object.keys(perModel).length > 0) {
+                            match.modelStats = perModel;
+                            needsPersist = true;
+                        }
+                    }
+                    continue;
+                }
             }
             this.addCycle(archive, gmSummary, costTotal);
             imported++;
         }
+        if (needsPersist) { this._persist(); }
         return imported;
     }
 

@@ -3,7 +3,7 @@
 // indicators, and expandable daily detail panels.
 
 import { tBi, getLanguage } from './i18n';
-import { DailyStore, DailyRecord, DailyCycleEntry, MonthCellSummary } from './daily-store';
+import { DailyStore, DailyRecord, DailyCycleEntry, MonthCellSummary, ModelCycleStats } from './daily-store';
 import { ICON } from './webview-icons';
 import { esc, formatShortTime, formatDuration } from './webview-helpers';
 
@@ -77,6 +77,7 @@ export function buildCalendarTabContent(store?: DailyStore, year?: number, month
     if (store.totalDays > 0) {
         parts.push(buildOverallSummary(store));
     }
+
 
     // ── Clear Button ──
     if (store.totalDays > 0) {
@@ -387,6 +388,21 @@ export function getCalendarTabStyles(): string {
             }
         }
 
+        /* ── Test / Restore Buttons ─── */
+        .cal-test-btn,
+        .cal-restore-btn {
+            appearance: none;
+            border-radius: var(--radius-md);
+            padding: var(--space-2) var(--space-4);
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.82em;
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-2);
+            margin: 0 var(--space-2);
+        }
+
         /* ── Overall Summary Card ─── */
         .cal-overview-grid {
             display: grid;
@@ -411,6 +427,85 @@ export function getCalendarTabStyles(): string {
             color: var(--color-text-dim);
             text-transform: uppercase;
             letter-spacing: 0.3px;
+        }
+
+        /* ── Per-Model Breakdown ─── */
+        .cal-model-rows {
+            margin-top: var(--space-2);
+            border-top: 1px solid var(--color-border);
+            padding-top: var(--space-2);
+        }
+
+        .cal-model-row {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            padding: var(--space-1) 0;
+            font-size: 0.78em;
+            flex-wrap: wrap;
+        }
+
+        .cal-model-row + .cal-model-row {
+            border-top: 1px dashed rgba(255,255,255,0.04);
+        }
+
+        .cal-model-name {
+            font-weight: 600;
+            color: var(--color-text);
+            min-width: 80px;
+            flex-shrink: 0;
+        }
+
+        .cal-model-chips {
+            display: flex;
+            gap: var(--space-1);
+            flex-wrap: wrap;
+        }
+
+        .cal-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            padding: 1px var(--space-1);
+            border-radius: var(--radius-sm);
+            font-size: 0.9em;
+            white-space: nowrap;
+        }
+
+        .cal-chip svg {
+            width: 10px;
+            height: 10px;
+            flex-shrink: 0;
+        }
+
+        .cal-chip-reasoning {
+            background: rgba(139, 92, 246, 0.1);
+            color: #a78bfa;
+            border: 1px solid rgba(139, 92, 246, 0.2);
+        }
+
+        .cal-chip-tools {
+            background: rgba(96, 165, 250, 0.1);
+            color: var(--color-info);
+            border: 1px solid rgba(96, 165, 250, 0.2);
+        }
+
+        .cal-chip-errors {
+            background: rgba(248, 113, 113, 0.1);
+            color: var(--color-danger);
+            border: 1px solid rgba(248, 113, 113, 0.2);
+        }
+
+        .cal-chip-est {
+            background: rgba(250, 204, 21, 0.1);
+            color: var(--color-warn);
+            border: 1px solid rgba(250, 204, 21, 0.2);
+        }
+
+        .cal-chip-tokens {
+            background: rgba(52, 211, 153, 0.08);
+            color: #34d399;
+            border: 1px solid rgba(52, 211, 153, 0.2);
         }
 
         @media (prefers-reduced-motion: reduce) {
@@ -605,7 +700,49 @@ function buildCycleCard(cycle: DailyCycleEntry, index: number): string {
             <div class="cal-cycle-stats" style="margin-top:var(--space-2)">
                 ${stats.join('')}
             </div>
+            ${buildPerModelRows(cycle.modelStats)}
         </div>`;
+}
+
+function buildPerModelRows(modelStats?: Record<string, ModelCycleStats>): string {
+    if (!modelStats || Object.keys(modelStats).length === 0) { return ''; }
+
+    const BRAIN = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M5.52.359A.5.5 0 0 1 6 0h4a.5.5 0 0 1 .474.658L8.694 6H12.5a.5.5 0 0 1 .395.807l-7 9a.5.5 0 0 1-.873-.454L6.823 9H3.5a.5.5 0 0 1-.48-.641z"/></svg>';
+    const TOOL = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1 0 0 1l2.2 3.081a1 1 0 0 0 .815.419h.07a1 1 0 0 1 .708.293l2.675 2.675-2.617 2.654A3.003 3.003 0 0 0 0 13a3 3 0 1 0 5.878-.851l2.654-2.617.968.968-.305.914a1 1 0 0 0 .242 1.023l3.27 3.27a.997.997 0 0 0 1.414 0l1.586-1.586a.997.997 0 0 0 0-1.414l-3.27-3.27a1 1 0 0 0-1.023-.242L10.5 9.5l-.96-.96 2.68-2.643A3.005 3.005 0 0 0 16 3c0-.269-.035-.53-.102-.777l-2.14 2.141L12 4l-.364-1.757L13.777.102a3 3 0 0 0-3.675 3.68L7.462 6.46 4.793 3.793a1 1 0 0 1-.293-.707v-.071a1 1 0 0 0-.419-.814z"/></svg>';
+    const WARN = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5m.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2"/></svg>';
+    const CHART = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M0 0h1v15h15v1H0zm14.817 3.113a.5.5 0 0 1 .07.704l-4.5 5.5a.5.5 0 0 1-.74.037L7.06 6.767l-3.656 5.027a.5.5 0 0 1-.808-.588l4-5.5a.5.5 0 0 1 .758-.06l2.609 2.61 4.15-5.073a.5.5 0 0 1 .704-.07"/></svg>';
+    const TOKEN = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1 3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1H1m0 1v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4zm6 2a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1z"/></svg>';
+
+    const fmtTok = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+
+    let html = '<div class="cal-model-rows">';
+    for (const [name, ms] of Object.entries(modelStats)) {
+        const chips: string[] = [];
+        if (ms.reasoning > 0) {
+            chips.push(`<span class="cal-chip cal-chip-reasoning">${BRAIN} ${ms.reasoning}</span>`);
+        }
+        if (ms.toolCalls > 0) {
+            chips.push(`<span class="cal-chip cal-chip-tools">${TOOL} ${ms.toolCalls}</span>`);
+        }
+        if (ms.errors > 0) {
+            chips.push(`<span class="cal-chip cal-chip-errors">${WARN} ${ms.errors}</span>`);
+        }
+        if (ms.estSteps > 0) {
+            chips.push(`<span class="cal-chip cal-chip-est">${CHART} +${ms.estSteps}</span>`);
+        }
+        const totalTok = ms.inputTokens + ms.outputTokens;
+        if (totalTok > 0) {
+            chips.push(`<span class="cal-chip cal-chip-tokens">${TOKEN} ${fmtTok(totalTok)}</span>`);
+        }
+
+        html += `
+            <div class="cal-model-row">
+                <span class="cal-model-name">${esc(name)}</span>
+                <span class="cal-model-chips">${chips.join('')}</span>
+            </div>`;
+    }
+    html += '</div>';
+    return html;
 }
 
 function buildOverallSummary(store: DailyStore): string {

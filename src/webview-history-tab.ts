@@ -1,18 +1,16 @@
-// ─── History Tab Content Builder ─────────────────────────────────────────────
-// Builds HTML for the "History" tab: quota tracking toggle, active sessions,
-// archived sessions timeline, and history settings.
+// ─── Quota Tracking Tab Content Builder ──────────────────────────────────────
+// Builds HTML for the "Quota Tracking" tab: quota tracking toggle and active
+// sessions. Archived history and usage history have been migrated to Calendar.
 
 import { tBi } from './i18n';
 import { QuotaTracker, QuotaSession } from './quota-tracker';
-import { ActivityArchive } from './activity-tracker';
-import { buildArchiveHistory } from './activity-panel';
 import { ICON } from './webview-icons';
 import { esc, formatShortTime, formatDuration } from './webview-helpers';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-/** Build the complete History tab HTML. */
-export function buildHistoryHtml(tracker?: QuotaTracker, archives?: ActivityArchive[]): string {
+/** Build the complete Quota Tracking tab HTML. */
+export function buildHistoryHtml(tracker?: QuotaTracker): string {
     if (!tracker) {
         return `
             <section class="card empty">
@@ -75,43 +73,15 @@ export function buildHistoryHtml(tracker?: QuotaTracker, archives?: ActivityArch
             </section>`);
     }
 
-    // ── Archived History ──
+    // ── Completed Sessions (history) ──
     if (history.length > 0) {
-        const historyCards = history.map(s => {
-            return `
-                <details class="collapsible" id="d-hist-${esc(s.id)}">
-                    <summary>
-                        <span>${esc(s.modelLabel)}</span>
-                        ${s.completed
-                            ? `<span class="badge ok-badge">${tBi('DONE', '完成')}</span>`
-                            : `<span class="badge warn-badge">${tBi('RESET', '重置')}</span>`}
-                        <span class="session-pct-inline">${formatDuration(s.totalDurationMs ?? 0)}</span>
-                        <span class="tl-time">${formatShortTime(s.startTime)}</span>
-                    </summary>
-                    <div class="details-body">
-                        ${buildSessionTimelineHtml(s, false)}
-                    </div>
-                </details>`;
-        }).join('');
-
+        const historyCards = history.map(s => buildSessionTimelineHtml(s, false)).join('');
         parts.push(`
             <section class="card">
-                <h2>${ICON.timeline} ${tBi('History', '历史')} (${history.length})</h2>
+                <h2>${ICON.clock} ${tBi('Completed Sessions', '已完成会话')} (${history.length}/${maxHistory})</h2>
                 ${historyCards}
             </section>`);
-    } else {
-        parts.push(`
-            <section class="card empty">
-                <h2>${ICON.timeline} ${tBi('History', '历史')}</h2>
-                <p class="empty-desc">${tBi(
-                    'No archived quota sessions yet.',
-                    '暂无归档的额度消耗记录。',
-                )}</p>
-            </section>`);
     }
-
-    // ── Activity Archives (moved from Activity tab) ──
-    parts.push(buildArchiveHistory(archives));
 
     return parts.join('');
 }
