@@ -15,7 +15,7 @@
 - **`discoverWslLanguageServer()` function**: Complete WSL-side LS discovery pipeline: process scanning → workspace_id matching → CSRF/PID extraction → port discovery → RPC probing.
   新增 `discoverWslLanguageServer()` 函数，完整的 WSL 端 LS 发现流程：进程扫描 → workspace_id 匹配 → CSRF/PID 提取 → 端口发现 → RPC 探测。
 
-## [1.12.3] - 2026-03-22
+## [1.13.1] - 2026-03-22
 
 ### Added / 新增
 
