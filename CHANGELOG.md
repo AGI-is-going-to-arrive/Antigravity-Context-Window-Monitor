@@ -10,6 +10,9 @@
 - **Archive Debounce for Cross-Pool Resets / 跨池重置防抖合并**: Added 5-minute debounce interval (`MIN_ARCHIVE_INTERVAL_MS`) to `archiveAndReset()`. When different quota pools (e.g., Gemini pool and Claude pool) reset within 5 minutes of each other, the second archive merges into the first instead of creating a separate entry. Beyond 5 minutes, independent archives are created correctly.
   `archiveAndReset()` 新增 5 分钟防抖间隔。不同配额池（如 Gemini 池和 Claude 池）在 5 分钟内先后重置时，第二次归档合并到第一条而非创建独立条目。超过 5 分钟则正确创建独立归档。
 
+- **Remote WSL Workspace Matching / 远程 WSL 工作区匹配**: `normalizeUri()` now strips `vscode-remote://` scheme+authority (e.g., `vscode-remote://wsl+Ubuntu/path` → `/path`) before comparison, so trajectory workspace filtering works correctly when the extension runs on the local (UI) side via `extensionKind`. `buildExpectedWorkspaceId()` similarly reconstructs remote URIs as `file://` before transformation. Previously, workspace matching silently failed in Remote-WSL, causing the panel to show "idle" with 0k/1M even though the LS was successfully connected.
+  `normalizeUri()` 现在会剥离 `vscode-remote://` 协议和 authority（如 `vscode-remote://wsl+Ubuntu/path` → `/path`），使得扩展在本地（UI 端）运行时工作区过滤正确匹配。`buildExpectedWorkspaceId()` 同样将远程 URI 重构为 `file://` 后再转换。此前远程 WSL 下工作区匹配静默失败，导致面板显示"空闲"和 0k/1M，尽管 LS 已成功连接。
+
 ### Added / 新增
 
 - **Archive Trigger Source Tracking / 归档触发来源追踪**: `ActivityArchive` interface now includes `triggeredBy?: string[]` field recording which model ID(s) triggered each archive. Backward compatible with older archives lacking this field.
