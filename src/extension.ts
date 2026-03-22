@@ -759,8 +759,25 @@ async function pollActivity(): Promise<void> {
             }
         } catch { /* GM fetch failure is non-critical */ }
 
+        // Inject GM precision data into activity timeline events
+        if (lastGMSummary) {
+            activityTracker.injectGMData(lastGMSummary);
+        }
+
         if (activityChanged || gmChanged || !activityTracker.isReady) {
             const summary = activityTracker.getSummary();
+
+            // Inject GM global aggregates (full precision, replaces per-step aggregation)
+            if (lastGMSummary) {
+                summary.gmTotalInputTokens = lastGMSummary.totalInputTokens;
+                summary.gmTotalOutputTokens = lastGMSummary.totalOutputTokens;
+                summary.gmTotalCacheRead = lastGMSummary.totalCacheRead;
+                summary.gmTotalCredits = lastGMSummary.totalCredits;
+                summary.gmTotalRetries = Object.values(lastGMSummary.modelBreakdown)
+                    .reduce((sum, m) => sum + m.totalRetries, 0);
+                // Pass GM model breakdown for per-card enhancement
+                (summary as any).gmModelBreakdown = lastGMSummary.modelBreakdown;
+            }
 
             // Refresh WebView immediately when activity changes
             if (isMonitorPanelVisible() && currentUsage) {

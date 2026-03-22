@@ -33,6 +33,15 @@
 - **🔥 GM Data Duplication on Quota Reset / 额度重置时 GM 数据重复**: Fixed critical bug where `gmTracker` and `lastGMSummary` were never reset during quota cycles. This caused the same full GM dataset and associated per-model costs to be archived into `dailyStore` on every quota reset, producing duplicate entries in the calendar. Now `gmTracker.reset()` + `lastGMSummary = null` are called after `dailyStore.addCycle()`, ensuring each cycle archives its own GM data and starts fresh.
   修复严重 Bug：`gmTracker` 和 `lastGMSummary` 在额度周期中从不清零，导致每次额度重置都将相同的完整 GM 数据和费用写入日历，产生重复记录。现在在 `dailyStore.addCycle()` 后调用 `gmTracker.reset()` + `lastGMSummary = null`，确保每个周期独立归档、从零开始。
 
+- **🔥 stepIndex Absolute Index Alignment / stepIndex 绝对索引对齐**: Fixed critical bug where `_recentSteps` used 0-based array indices as `stepIndex` while GM `stepIndices` used absolute conversation indices. When Steps API returns a windowed subset (e.g., 416 of 576 steps), the array index `[0..415]` misaligned with GM's `[160..575]`. Now all 5 stepIndex assignment sites use `offset = totalSteps - fetchedSteps.length` to produce absolute indices, enabling correct GM annotation and virtual event generation.
+  修复严重 Bug：`_recentSteps` 的 `stepIndex` 使用 0-based 数组下标，而 GM 使用绝对索引。当 Steps API 返回窗口子集时（如 576 步返回 416），数组下标 `[0..415]` 与 GM 的 `[160..575]` 无法对齐。现在 5 处 stepIndex 赋值全部使用 `offset = totalSteps - fetchedSteps.length` 计算绝对索引。
+
+- **Timeline GM Tags Reasoning-Only / 时间线 GM 标签仅 reasoning 显示**: GM precision tags (IN/OUT/TTFT/cache) now only display on 🧠 reasoning steps. Tool steps sharing the same LLM call no longer show duplicate GM data, reducing visual noise.
+  GM 精确数据标签（IN/OUT/TTFT/cache）现在仅在 🧠 reasoning 步骤显示。共享同一 LLM 调用的工具步骤不再重复显示。
+
+- **`activity-gm.test.ts` — GM Injection Unit Tests / GM 注入单元测试**: New test file with 12 tests covering: null/empty safety, stepIndex annotation matching, virtual event generation (window-outside/partial/all-inside), executionId dedup, sort order, step span labels, duration calculation, and 34+10 stress test.
+  新增 12 个测试覆盖：安全边界、stepIndex 注入匹配、虚拟事件生成（窗口外/部分/全内）、去重/排序/span/duration、压力测试。
+
 ### Changed / 变更
 
 - **`daily-store.ts`**: Added `GMModelCycleStats` interface with `estimatedCost` field. `addCycle()` now accepts `costPerModel` parameter to archive per-model cost breakdown alongside GM model breakdown.

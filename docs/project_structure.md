@@ -206,6 +206,9 @@ Tracks model activity: reasoning count, tool call breakdown, token consumption, 
 | 独立轮询 / Independent poll | 3 秒独立循环，不受全局 poll 影响 |
 | 预热 / Warm-up | 首次轮询处理所有对话历史步骤，RUNNING 对话注入最近 30 步到时间线 |
 | 增量更新 / Incremental | RUNNING 对话拉取新增步骤；检测 status 变化（IDLE→RUNNING）触发注入 |
+| stepIndex 绝对索引 / Absolute index | `stepIndex = arrayIndex + offset`（`offset = totalSteps - fetchedSteps.length`），与 GM `stepIndices` 精确对齐 |
+| GM 数据注入 / GM injection | `injectGMData(gmSummary)` 将 GM 精确 token 数据按 stepIndex 注入到 `_recentSteps`，在 Timeline UI 中显示 |
+| 窗口外补全 / Window gap fill | GM 调用若所有 stepIndices 低于 `minExisting`，自动生成虚拟 reasoning 事件 prepend 到 Timeline |
 | 回退/重发 / Rollback/Resend | 检测 stepCount 减少 → 重置 processedIndex 以跟踪被替换的步骤 |
 | 工具详情 / Tool detail | 提取工具名（gh/search_issues、view_file 等）+ 参数摘要 |
 | 上下文趋势 / Context trend | `CheckpointSnapshot[]` 记录每个 CHECKPOINT 的 inputTokens/outputTokens + 压缩标记 |
