@@ -50,10 +50,7 @@ antigravity-context-monitor/
 │   ├── technical_implementation.md   # 技术实现指南
 │   ├── ls-monitor-technical-notes.md # LS Monitor 技术笔记
 │   └── project_structure.md          # 本文件
-├── diag-scripts/                 # 独立诊断脚本（不打包进扩展）
-│   └── verify-step-precision.ts  # 步骤精确归属验证脚本
-├── diag-output/                  # 诊断脚本输出
-│   └── step-precision-result.txt # 验证结果
+
 ├── out/                          # tsc 编译输出（JS）
 ├── package.json                  # 扩展清单、命令、配置项
 ├── tsconfig.json                 # TypeScript 编译配置
@@ -75,11 +72,12 @@ Extension lifecycle management hub.
 
 | 职责 / Responsibility | 说明 / Description |
 |---|---|
-| `activate()` / `deactivate()` | 初始化所有子系统、注册命令、清理资源 |
+| `activate()` / `deactivate()` | 初始化所有子系统、注册命令、清理资源；恢复 GMTracker 持久化状态 |
 | 全局轮询 / Global poll | `pollContextUsage()` 以可配置间隔执行（默认 5s） |
-| Activity 独立轮询 | `pollActivity()` 独立 3 秒循环，变化时立即刷新 UI |
+| Activity 独立轮询 | `pollActivity()` 独立 3 秒循环，变化时立即刷新 UI；30s 节流同步保存 GM 状态 |
 | 级联追踪 / Cascade tracking | 按优先级选择活跃会话：RUNNING → stepCount 变化 → 新会话 → 最近修改 |
 | 压缩检测 / Compression | 双层检测：checkpoint inputTokens 下降 + 跨轮询 contextUsed 比较 |
+| 额度重置归档 / Quota reset | 归档 Activity + GM modelBreakdown + per-model 费用 → 清零 GM（`gmTracker.reset()` + `lastGMSummary = null`）|
 | 指数退避 / Backoff | LS 连接失败时 5s → 10s → 20s → 60s |
 
 ---
@@ -190,9 +188,9 @@ IDLE (100%)
 - **批量回调（v1.11.6）**: `processUpdate()` 循环结束后，将本批次所有重置模型 ID 收集到 `resetModels[]` 数组，一次性触发 `onQuotaReset(resetModels)`。同配额池多模型不再各自独立触发回调。
   **Batched callback (v1.11.6)**: `processUpdate()` collects all reset model IDs into `resetModels[]` after the loop, firing `onQuotaReset(resetModels)` once. Same-pool models no longer trigger independent callbacks.
 
-额度重置时触发 `onQuotaReset(modelIds)` 回调，联动 `activity-tracker` 归档。
+额度重置时触发 `onQuotaReset(modelIds)` 回调，联动 `activity-tracker` 归档 + GM 数据归档后清零 + 费用快照。
 
-Fires `onQuotaReset(modelIds)` callback on quota reset, triggering `activity-tracker` archival.
+Fires `onQuotaReset(modelIds)` callback on quota reset, triggering activity archival + GM data archive-then-reset + cost snapshot.
 
 ---
 
@@ -231,7 +229,9 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | 解析字段 | stepIndices、responseModel、usage（含 cacheRead/cacheCreation/thinking）、TTFT、流速、积分 |
 | 聚合 | per-model `GMModelStats` + per-conversation `GMConversationData` → `GMSummary` |
 | 智能缓存 | `_cache` Map 按 cascadeId 缓存 IDLE 对话的 generatorMetadata，避免重复 RPC |
-| 数据接口 | `GMCallEntry`、`GMModelStats`、`GMConversationData`、`GMSummary` |
+| 持久化 / Persistence | `serialize()` 剥离 `calls[]`（体积 ~1.4KB）→ globalState、`restore()` 恢复 `_lastSummary` + baseline stubs、`getCachedSummary()` 启动即用 |
+| 额度重置清零 / Reset | `reset()` 清空缓存，配合 `extension.ts` 的 `onQuotaReset` 回调：归档后清零 GM 数据，防止跨周期重复 |
+| 数据接口 | `GMCallEntry`、`GMModelStats`、`GMConversationData`、`GMSummary`、`GMTrackerState` |
 
 ---
 
@@ -290,8 +290,9 @@ Per-day aggregation of Activity + GM + Cost snapshots, with retroactive import o
 
 | 特性 / Feature | 说明 / Description |
 |---|---|
-| `ModelCycleStats` | Per-model 细分接口（reasoning/tools/errors/estSteps/tokens） |
-| `addCycle()` | 从 ActivityArchive + GMSummary + costTotal 提取关键字段 + per-model 数据写入当日记录 |
+| `ModelCycleStats` | Activity per-model 细分接口（reasoning/tools/errors/estSteps/tokens） |
+| `GMModelCycleStats` | GM per-model 细分接口（calls/credits/input·output·thinkingTokens/avgTTFT/cacheHitRate/estimatedCost） |
+| `addCycle()` | 从 ActivityArchive + GMSummary + costTotal + costPerModel 提取关键字段，写入 `modelStats` + `gmModelStats` |
 | `importArchives()` | 批量导入已有归档，按 startTime 去重，自动回填旧数据缺失的 `modelStats`，重启幂等 |
 | `getMonthSummary()` | 按月聚合统计，驱动日历网格圆点指示器 |
 | 持久化 / Persistence | globalState (`dailyStoreState`) 存储 + 启动恢复 |
@@ -310,7 +311,8 @@ Generates Calendar tab HTML: month grid, expandable day details, cycle cards, al
 | Month View | `buildMonthView` | 7×6 网格 + 月份导航 + 有数据日期圆点 |
 | Day Detail | `buildDayDetail` | 展开面板：逐周期卡片 + 日合计 |
 | Cycle Card | `buildCycleCard` | 单周期详情：时间、模型、推理/工具/token/费用 |
-| Per-Model | `buildPerModelRows` | 每周期逐模型细分 stat chips（reasoning/tools/errors/est/tokens） |
+| Per-Model | `buildPerModelRows` | Activity 逐模型细分 stat chips（reasoning/tools/errors/est/tokens） |
+| GM Breakdown | `buildGMModelRows` | GM 逐模型细分 chips（calls/credits/TTFT/cache hit rate/cost/tokens） |
 | Summary | `buildOverallSummary` | 全历史汇总：天数、周期数、推理、工具、费用 |
 
 ---

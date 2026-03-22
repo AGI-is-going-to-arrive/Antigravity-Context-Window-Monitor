@@ -22,16 +22,30 @@
 - **Pricing: Cost Overview Visualization / 价格: 费用概览可视化**: New visual section above the cost table: 4 highlight cards (Total Cost, Top Spender, Avg/Call, Models) + stacked bar chart per model showing Input/Output/Cache/Thinking cost breakdown with color-coded segments and legend.
   价格标签新增费用概览可视化区域：4 个亮点卡片 + 逐模型堆叠条形图（Input/Output/Cache/Thinking 分色段 + 图例）。
 
+- **GM Tracker Persistence / GM 追踪器持久化**: `GMTracker` now supports `serialize()` / `restore()` for cross-session persistence via globalState. `serialize()` strips raw `calls[]` arrays (~1.4KB vs 537KB full). Restored on activate, cached summary available instantly via `getCachedSummary()`.
+  `GMTracker` 新增 `serialize()` / `restore()` 方法，通过 globalState 跨会话持久化。`serialize()` 剥离原始 `calls[]` 数组（体积 ~1.4KB vs 完整 537KB）。启动时恢复，`getCachedSummary()` 即时可用。
+
+- **Calendar: GM Per-Model Breakdown / 日历: GM 逐模型明细**: Each cycle card now includes a GM Breakdown section showing per-model stats with color-coded chips: calls, credits, avg TTFT, cache hit rate, estimated cost (USD), and token counts (input/output/thinking). Data stored via new `GMModelCycleStats` interface in `DailyCycleEntry.gmModelStats`.
+  日历周期卡片新增 GM Breakdown 区域，逐模型显示：调用次数、积分、平均 TTFT、缓存命中率、估算费用（USD）、token 数。数据存储于新的 `GMModelCycleStats` 接口。
+
+### Fixed / 修复
+
+- **🔥 GM Data Duplication on Quota Reset / 额度重置时 GM 数据重复**: Fixed critical bug where `gmTracker` and `lastGMSummary` were never reset during quota cycles. This caused the same full GM dataset and associated per-model costs to be archived into `dailyStore` on every quota reset, producing duplicate entries in the calendar. Now `gmTracker.reset()` + `lastGMSummary = null` are called after `dailyStore.addCycle()`, ensuring each cycle archives its own GM data and starts fresh.
+  修复严重 Bug：`gmTracker` 和 `lastGMSummary` 在额度周期中从不清零，导致每次额度重置都将相同的完整 GM 数据和费用写入日历，产生重复记录。现在在 `dailyStore.addCycle()` 后调用 `gmTracker.reset()` + `lastGMSummary = null`，确保每个周期独立归档、从零开始。
+
 ### Changed / 变更
+
+- **`daily-store.ts`**: Added `GMModelCycleStats` interface with `estimatedCost` field. `addCycle()` now accepts `costPerModel` parameter to archive per-model cost breakdown alongside GM model breakdown.
+  新增 `GMModelCycleStats` 接口（含 `estimatedCost` 字段）。`addCycle()` 新增 `costPerModel` 参数，归档逐模型费用明细。
+
+- **`extension.ts`**: `onQuotaReset` callback now extracts per-model costs from `pricingStore.calculateCosts()`, passes them to `dailyStore.addCycle()`, then resets GM state (`gmTracker.reset()` + `lastGMSummary = null` + persist). GM state also saved in dispose and 30s throttle.
+  `onQuotaReset` 回调现提取逐模型费用并传入 `dailyStore.addCycle()`，随后清零 GM 状态并持久化。dispose 和 30s 节流中也保存 GM。
 
 - **History Tab → Quota Tracking / 历史 → 额度追踪**: Renamed "History" tab to "Quota Tracking" (额度追踪). Removed archived quota sessions and usage history sections (migrated to Calendar). Tab now only contains quota tracking toggle and active tracking.
   「历史」标签更名为「额度追踪」。移除归档历史和使用历史区块（已迁移至日历）。标签仅保留额度追踪开关和活跃追踪。
 
 - **Removed `buildArchiveHistory` / 移除归档历史构建函数**: Deleted `buildArchiveHistory()` and `formatDateShort()` from `activity-panel.ts`, along with Archive History CSS (~140 lines). Data now fully served by Calendar tab via `DailyStore`.
   从 `activity-panel.ts` 删除 `buildArchiveHistory()`、`formatDateShort()` 及 Archive History CSS（约 140 行）。数据已由日历标签的 `DailyStore` 完全承载。
-
-- **`extension.ts`**: Added DailyStore initialization and integration with quota reset hook to capture daily snapshots alongside activity archives. Added retroactive import of existing archives and live session snapshot on startup.
-  新增 DailyStore 初始化及配额重置钩子集成。启动时回溯导入历史归档 + 快照活跃会话。
 
 - **`webview-panel.ts`**: Registered Calendar as 8th tab, added calendar CSS, DailyStore parameter, month navigation and clear history message handlers.
   注册日历为第 8 个标签页，集成 CSS、DailyStore 参数、月份导航和清空历史消息处理。
@@ -137,8 +151,8 @@
 
 - Added batching behavior test to `quota-tracker.test.ts`: verifies same-pool multi-model reset produces single callback with all model IDs.
   在 `quota-tracker.test.ts` 新增批量行为测试：验证同池多模型重置产生单次回调。
-- Total test count: 63.
-  测试总数：63。
+- Total test count: 67.
+  测试总数：67。
 
 ## [1.12.1] - 2026-03-21
 

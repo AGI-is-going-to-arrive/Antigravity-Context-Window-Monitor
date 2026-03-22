@@ -17,7 +17,7 @@ import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible } from './w
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
-import { GMTracker, GMSummary } from './gm-tracker';
+import { GMTracker, GMSummary, GMTrackerState } from './gm-tracker';
 import { PricingStore } from './pricing-store';
 import { DailyStore } from './daily-store';
 
@@ -123,12 +123,26 @@ export function activate(context: vscode.ExtensionContext): void {
             if (archives.length > 0 && dailyStore) {
                 const latest = archives[0]; // most recent archive
                 let costTotal: number | undefined;
+                let costPerModel: Record<string, number> | undefined;
                 if (lastGMSummary && pricingStore) {
                     const result = pricingStore.calculateCosts(lastGMSummary);
                     costTotal = result.grandTotal;
+                    // Build per-model cost map for calendar archival
+                    costPerModel = {};
+                    for (const row of result.rows) {
+                        if (row.totalCost > 0) {
+                            costPerModel[row.name] = row.totalCost;
+                        }
+                    }
                 }
-                dailyStore.addCycle(latest, lastGMSummary, costTotal);
+                dailyStore.addCycle(latest, lastGMSummary, costTotal, costPerModel);
             }
+
+            // Reset GM state — data already archived to calendar.
+            // Next poll will fetch fresh data for the new cycle.
+            gmTracker.reset();
+            lastGMSummary = null;
+            context.globalState.update('gmTrackerState', gmTracker.serialize());
         }
     };
 
@@ -146,7 +160,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize activity tracker
     const savedActivity = context.globalState.get<ActivityTrackerState>('activityTrackerState');
     activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
-    gmTracker = new GMTracker();
+    const savedGM = context.globalState.get<GMTrackerState>('gmTrackerState');
+    gmTracker = savedGM ? GMTracker.restore(savedGM) : new GMTracker();
+    lastGMSummary = gmTracker.getCachedSummary();
     pricingStore = new PricingStore();
     pricingStore.init(context.globalState);
     dailyStore = new DailyStore();
@@ -240,6 +256,10 @@ export function activate(context: vscode.ExtensionContext): void {
             if (pollingTimer) {
                 clearTimeout(pollingTimer);
                 pollingTimer = undefined;
+            }
+            // Persist GM tracker state on dispose
+            if (gmTracker) {
+                extensionContext.globalState.update('gmTrackerState', gmTracker.serialize());
             }
             abortController.abort();
         }
@@ -752,6 +772,9 @@ async function pollActivity(): Promise<void> {
         const now = Date.now();
         if (now - lastActivityPersistTime > 30_000) {
             extensionContext.globalState.update('activityTrackerState', activityTracker.serialize());
+            if (gmTracker) {
+                extensionContext.globalState.update('gmTrackerState', gmTracker.serialize());
+            }
             lastActivityPersistTime = now;
         }
     } catch (err) {

@@ -18,6 +18,18 @@ export interface ModelCycleStats {
     outputTokens: number;
 }
 
+/** Per-model GM breakdown within a cycle */
+export interface GMModelCycleStats {
+    calls: number;
+    credits: number;
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+    avgTTFT: number;
+    cacheHitRate: number;
+    estimatedCost?: number;     // USD per-model cost
+}
+
 /** A single quota-cycle snapshot within a day */
 export interface DailyCycleEntry {
     startTime: string;               // ISO
@@ -39,6 +51,8 @@ export interface DailyCycleEntry {
     gmTotalTokens?: number;          // input + output
     // Cost
     estimatedCost?: number;          // USD grand total
+    // GM per-model breakdown
+    gmModelStats?: Record<string, GMModelCycleStats>;
 }
 
 /** All cycles for a single calendar day */
@@ -110,6 +124,7 @@ export class DailyStore {
         archive: ActivityArchive,
         gmSummary?: GMSummary | null,
         costTotal?: number,
+        costPerModel?: Record<string, number>,
     ): void {
         const dateKey = toDateKey(archive.endTime);
         let record = this._records.get(dateKey);
@@ -155,6 +170,26 @@ export class DailyStore {
 
         if (costTotal !== undefined && costTotal > 0) {
             cycle.estimatedCost = costTotal;
+        }
+
+        // GM per-model breakdown
+        if (gmSummary && gmSummary.modelBreakdown) {
+            const gmPerModel: Record<string, GMModelCycleStats> = {};
+            for (const [name, ms] of Object.entries(gmSummary.modelBreakdown)) {
+                gmPerModel[name] = {
+                    calls: ms.callCount,
+                    credits: ms.totalCredits,
+                    inputTokens: ms.totalInputTokens,
+                    outputTokens: ms.totalOutputTokens,
+                    thinkingTokens: ms.totalThinkingTokens,
+                    avgTTFT: ms.avgTTFT,
+                    cacheHitRate: ms.cacheHitRate,
+                    estimatedCost: costPerModel?.[name],
+                };
+            }
+            if (Object.keys(gmPerModel).length > 0) {
+                cycle.gmModelStats = gmPerModel;
+            }
         }
 
         record.cycles.push(cycle);

@@ -1,6 +1,6 @@
 # LS Monitor 技术实现文档
 
-> **v1.12.4** — 2026-03-22
+> **v1.13.0** — 2026-03-22
 
 > [!NOTE]
 > 本文档所描述的监控数据**完全依赖 LS（Language Server）的 gRPC-over-HTTP API** 返回的数据进行统计和展示。受限于 API 的约 5MB 响应大小限制（约 500 步），超出此窗口的步骤只能通过 `stepCount` 差值进行推算（标注为 📊 推算步数），无法获取精确分类。如有估算偏差或数据不完整，敬请谅解。
@@ -677,3 +677,41 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
 | `cacheCreationTokens` | 首次写入缓存的 token 数 | 仅在缓存未命中时产生 | 价格最高（input 的 1.25 倍） |
 
 实测缓存命中率 ~95.2%——绝大多数调用走 cacheRead（便宜），仅极少数触发 cacheCreation（昂贵）。
+
+### 32. GM 数据归档与额度重置清零
+
+**问题**：`gmTracker` 和 `lastGMSummary` 在额度重置时从不清零。每次 `onQuotaReset` → `dailyStore.addCycle()` 都写入相同的完整 GM 数据，导致日历中出现重复记录。
+
+**修复**（v1.13.0）：
+
+```
+额度重置触发 (onQuotaReset)
+  ├─ activityTracker.archiveAndReset()       ← Activity 归档 + 清零
+  ├─ pricingStore.calculateCosts(lastGMSummary)
+  │   └─ 提取 costPerModel: Record<string, number>
+  ├─ dailyStore.addCycle(archive, lastGMSummary, costTotal, costPerModel)
+  │   └─ 写入 cycle.gmModelStats (GMModelCycleStats[])
+  │       ├─ calls, credits, avgTTFT, cacheHitRate
+  │       ├─ inputTokens, outputTokens, thinkingTokens
+  │       └─ estimatedCost (from costPerModel)
+  ├─ gmTracker.reset()                       ← GM 清零
+  ├─ lastGMSummary = null                    ← 缓存清零
+  └─ context.globalState.update(gmTrackerState) ← 持久化空状态
+```
+
+**关键接口**：
+
+```typescript
+interface GMModelCycleStats {
+  calls: number;
+  credits: number;
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+  avgTTFT: number;
+  cacheHitRate: number;
+  estimatedCost?: number;   // USD, from pricingStore.calculateCosts()
+}
+```
+
+**GM 持久化**：`GMTracker.serialize()` 剥离 `calls[]` 数组（537KB → ~1.4KB），只保留 model-level 聚合数据。`restore()` 恢复 `_lastSummary` + baseline stubs。

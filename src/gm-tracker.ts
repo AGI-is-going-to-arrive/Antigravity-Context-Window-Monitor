@@ -116,6 +116,14 @@ export interface GMSummary {
     fetchedAt: string;
 }
 
+/** Serialized form for globalState persistence */
+export interface GMTrackerState {
+    version: 1;
+    summary: GMSummary;
+    /** cascadeId → stepCount baselines to skip unchanged IDLE conversations */
+    baselines: Record<string, number>;
+}
+
 // ─── Parser Helpers ──────────────────────────────────────────────────────────
 
 function parseDuration(s: string | undefined): number {
@@ -212,6 +220,8 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
 export class GMTracker {
     private _cache = new Map<string, GMConversationData>();
     private _lastFetchedAt = '';
+    /** Cached summary for instant access after restore */
+    private _lastSummary: GMSummary | null = null;
 
     /**
      * Fetch GM data for the given trajectories.
@@ -266,7 +276,8 @@ export class GMTracker {
         }
 
         this._lastFetchedAt = new Date().toISOString();
-        return this._buildSummary();
+        this._lastSummary = this._buildSummary();
+        return this._lastSummary;
     }
 
     /** Build aggregated summary from cached data */
@@ -417,9 +428,62 @@ export class GMTracker {
         };
     }
 
-    /** Clear all cached data */
+    /** Clear summary for archival boundary; keep cache to avoid cold-start RPC storm */
     reset(): void {
-        this._cache.clear();
-        this._lastFetchedAt = '';
+        // _cache is intentionally preserved — IDLE conversations' metadata
+        // doesn't change across quota resets, so re-fetching is wasteful.
+        // Only RUNNING conversations will be refreshed on the next fetchAll().
+        this._lastSummary = null;
+    }
+
+    // ─── Serialization ───────────────────────────────────────────────────
+
+    /**
+     * Return the last computed summary without re-computing.
+     * Used on startup to instantly display persisted data.
+     */
+    getCachedSummary(): GMSummary | null {
+        return this._lastSummary;
+    }
+
+    /** Export state for globalState persistence */
+    serialize(): GMTrackerState {
+        const baselines: Record<string, number> = {};
+        for (const [id, conv] of this._cache) {
+            baselines[id] = conv.totalSteps;
+        }
+        // Strip calls[] from conversations to keep globalState small.
+        // calls will be re-fetched from API on next fetchAll().
+        const raw = this._lastSummary || this._buildSummary();
+        const slim: GMSummary = {
+            ...raw,
+            conversations: raw.conversations.map(c => ({
+                ...c, calls: [],
+            })),
+        };
+        return { version: 1, summary: slim, baselines };
+    }
+
+    /** Restore from persisted state. Cache is empty — API will backfill. */
+    static restore(data: GMTrackerState): GMTracker {
+        const tracker = new GMTracker();
+        if (!data || data.version !== 1) { return tracker; }
+
+        tracker._lastSummary = data.summary;
+        tracker._lastFetchedAt = data.summary.fetchedAt || '';
+
+        // Seed baseline stubs so fetchAll() skips unchanged IDLE conversations
+        for (const [id, stepCount] of Object.entries(data.baselines)) {
+            tracker._cache.set(id, {
+                cascadeId: id,
+                title: '',  // will be filled on next fetchAll
+                totalSteps: stepCount,
+                calls: [],
+                coveredSteps: 0,
+                coverageRate: 0,
+            });
+        }
+
+        return tracker;
     }
 }

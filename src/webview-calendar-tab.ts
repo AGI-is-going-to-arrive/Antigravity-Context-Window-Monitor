@@ -3,7 +3,7 @@
 // indicators, and expandable daily detail panels.
 
 import { tBi, getLanguage } from './i18n';
-import { DailyStore, DailyRecord, DailyCycleEntry, MonthCellSummary, ModelCycleStats } from './daily-store';
+import { DailyStore, DailyRecord, DailyCycleEntry, MonthCellSummary, ModelCycleStats, GMModelCycleStats } from './daily-store';
 import { ICON } from './webview-icons';
 import { esc, formatShortTime, formatDuration } from './webview-helpers';
 
@@ -508,6 +508,33 @@ export function getCalendarTabStyles(): string {
             border: 1px solid rgba(52, 211, 153, 0.2);
         }
 
+        .cal-chip-cost {
+            background: rgba(251, 191, 36, 0.08);
+            color: #fbbf24;
+            border: 1px solid rgba(251, 191, 36, 0.2);
+        }
+
+        .cal-chip-ttft {
+            background: rgba(168, 85, 247, 0.08);
+            color: #c084fc;
+            border: 1px solid rgba(168, 85, 247, 0.2);
+        }
+
+        .cal-chip-cache {
+            background: rgba(34, 211, 238, 0.08);
+            color: #22d3ee;
+            border: 1px solid rgba(34, 211, 238, 0.2);
+        }
+
+        .cal-gm-section-label {
+            font-size: 0.68em;
+            color: var(--color-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: var(--space-1);
+            opacity: 0.7;
+        }
+
         @media (prefers-reduced-motion: reduce) {
             .cal-detail { animation: none; }
         }
@@ -701,6 +728,7 @@ function buildCycleCard(cycle: DailyCycleEntry, index: number): string {
                 ${stats.join('')}
             </div>
             ${buildPerModelRows(cycle.modelStats)}
+            ${buildGMModelRows(cycle.gmModelStats)}
         </div>`;
 }
 
@@ -733,6 +761,53 @@ function buildPerModelRows(modelStats?: Record<string, ModelCycleStats>): string
         const totalTok = ms.inputTokens + ms.outputTokens;
         if (totalTok > 0) {
             chips.push(`<span class="cal-chip cal-chip-tokens">${TOKEN} ${fmtTok(totalTok)}</span>`);
+        }
+
+        html += `
+            <div class="cal-model-row">
+                <span class="cal-model-name">${esc(name)}</span>
+                <span class="cal-model-chips">${chips.join('')}</span>
+            </div>`;
+    }
+    html += '</div>';
+    return html;
+}
+
+function buildGMModelRows(gmModelStats?: Record<string, GMModelCycleStats>): string {
+    if (!gmModelStats || Object.keys(gmModelStats).length === 0) { return ''; }
+
+    const CALLS_ICON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M2.5 1A1.5 1.5 0 0 0 1 2.5v11A1.5 1.5 0 0 0 2.5 15h11a1.5 1.5 0 0 0 1.5-1.5v-11A1.5 1.5 0 0 0 13.5 1zm4.168 4.413a.5.5 0 0 1 .497.034l3.5 2.5a.5.5 0 0 1 0 .806l-3.5 2.5A.5.5 0 0 1 6.5 10.5v-5a.5.5 0 0 1 .168-.087"/></svg>';
+    const CREDIT_ICON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path fill="currentColor" d="M4 5.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8m0 2.5a.5.5 0 0 1 .5-.5h4a.5.5 0 0 1 0 1h-4a.5.5 0 0 1-.5-.5"/></svg>';
+    const CLOCK_ICON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 3.5a.5.5 0 0 0-1 0V8a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 7.71z"/><path fill="currentColor" d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0"/></svg>';
+    const CACHE_ICON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm15 2h-4v3h4zm0 4h-4v3h4zm0 4h-4v3h3a1 1 0 0 0 1-1zm-5 3v-3H6v3zm-5 0v-3H1v2a1 1 0 0 0 1 1zm-4-4h4V8H1zm0-4h4V4H1zm5-3v3h4V4zm4 4H6v3h4z"/></svg>';
+    const DOLLAR_ICON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.3 0-1.59-.947-2.51-2.956-3.028l-.722-.187V3.467c1.122.11 1.879.714 2.07 1.616h1.47c-.166-1.6-1.54-2.748-3.54-2.875V1H7.591v1.233c-1.939.23-3.27 1.472-3.27 3.156 0 1.454.966 2.483 2.661 2.917l.61.162v4.031c-1.149-.17-1.94-.8-2.131-1.718zm3.391-3.836c-1.043-.263-1.6-.825-1.6-1.616 0-.944.704-1.641 1.8-1.828v3.495zM8.634 8.1C9.858 8.418 10.44 9 10.44 9.89c0 1.12-.789 1.816-2.007 1.931V8.1z"/></svg>';
+
+    const fmtTok = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+    const fmtCost = (n: number) => n >= 1 ? '$' + n.toFixed(2) : n > 0 ? '$' + n.toFixed(4) : '';
+
+    let html = '<div class="cal-model-rows">';
+    html += `<div class="cal-gm-section-label">GM ${tBi('Breakdown', '明细')}</div>`;
+
+    for (const [name, ms] of Object.entries(gmModelStats)) {
+        const chips: string[] = [];
+        if (ms.calls > 0) {
+            chips.push(`<span class="cal-chip cal-chip-tools">${CALLS_ICON} ${ms.calls} ${tBi('calls', '调用')}</span>`);
+        }
+        if (ms.credits > 0) {
+            chips.push(`<span class="cal-chip cal-chip-tokens">${CREDIT_ICON} ${ms.credits}</span>`);
+        }
+        if (ms.avgTTFT > 0) {
+            chips.push(`<span class="cal-chip cal-chip-ttft">${CLOCK_ICON} ${ms.avgTTFT.toFixed(1)}s</span>`);
+        }
+        if (ms.cacheHitRate > 0) {
+            chips.push(`<span class="cal-chip cal-chip-cache">${CACHE_ICON} ${(ms.cacheHitRate * 100).toFixed(0)}%</span>`);
+        }
+        if (ms.estimatedCost && ms.estimatedCost > 0) {
+            chips.push(`<span class="cal-chip cal-chip-cost">${DOLLAR_ICON} ${fmtCost(ms.estimatedCost)}</span>`);
+        }
+        const totalTok = ms.inputTokens + ms.outputTokens;
+        if (totalTok > 0) {
+            chips.push(`<span class="cal-chip cal-chip-tokens">${fmtTok(totalTok)} tok</span>`);
         }
 
         html += `
