@@ -5,6 +5,7 @@
 import { tBi } from './i18n';
 import { ActivitySummary, ActivityArchive, ModelActivityStats, CheckpointSnapshot, ConversationBreakdown } from './activity-tracker';
 import { esc, formatShortTime as formatTime } from './webview-helpers';
+import type { GMModelStats } from './gm-tracker';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -24,29 +25,15 @@ export function buildActivityTabContent(
     const distHtml = buildDistribution(summary);
     const toolsHtml = buildToolRanking(summary);
     const midSection = (distHtml || toolsHtml) ? `<div class="act-two-col">
-        ${distHtml ? `<div class="act-col">${distHtml}</div>` : ''}
         ${toolsHtml ? `<div class="act-col">${toolsHtml}</div>` : ''}
-    </div>` : '';
-
-    const contextHtml = buildContextTrend(summary);
-    const convHtml = buildConversationBreakdown(summary);
-    const bottomSection = (contextHtml || convHtml) ? `<div class="act-two-col">
-        ${contextHtml ? `<div class="act-col">${contextHtml}</div>` : ''}
-        ${convHtml ? `<div class="act-col">${convHtml}</div>` : ''}
+        ${distHtml ? `<div class="act-col">${distHtml}</div>` : ''}
     </div>` : '';
 
     return [
-        `<div class="act-two-col">
-            <div class="act-col">
-                ${buildSummaryBar(summary)}
-            </div>
-            <div class="act-col">
-                ${buildTimeline(summary)}
-            </div>
-        </div>`,
+        buildSummaryBar(summary),
+        buildTimeline(summary),
         buildModelCards(summary),
         midSection,
-        bottomSection
     ].join('');
 }
 
@@ -58,13 +45,12 @@ export function getActivityTabStyles(): string {
     return `
     /* ─── Activity Tab: Summary Bar ─── */
     .act-summary-bar {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+        display: flex;
+        flex-wrap: wrap;
         gap: var(--space-2);
         padding: var(--space-2);
         margin-bottom: var(--space-4);
-        flex: 1;
-        align-content: center;
+        justify-content: center;
     }
     .act-stat {
         display: flex;
@@ -72,13 +58,14 @@ export function getActivityTabStyles(): string {
         align-items: center;
         justify-content: center;
         gap: 2px;
-        padding: var(--space-2) var(--space-1);
+        padding: var(--space-2) var(--space-3);
         background: var(--color-surface);
         border: 1px solid var(--color-border);
         border-radius: var(--radius-md);
         transition: border-color 0.2s cubic-bezier(.4,0,.2,1), box-shadow 0.2s cubic-bezier(.4,0,.2,1);
         position: relative;
         cursor: default;
+        min-width: 70px;
     }
     @media (hover: hover) {
         .act-stat:hover {
@@ -138,7 +125,13 @@ export function getActivityTabStyles(): string {
         font-size: 0.95em;
         font-weight: 600;
         margin: var(--space-4) 0 var(--space-2) 0;
-        color: var(--color-text-dim);
+        color: var(--color-text);
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+    }
+    .act-section-title .act-badge {
+        font-weight: 400;
     }
 
     /* ─── Activity Tab: Model Cards ─── */
@@ -153,10 +146,13 @@ export function getActivityTabStyles(): string {
         border: 1px solid var(--color-border);
         border-radius: var(--radius-md);
         overflow: hidden;
-        transition: border-color 0.2s cubic-bezier(.4,0,.2,1);
+        transition: border-color 0.2s cubic-bezier(.4,0,.2,1), transform 0.15s cubic-bezier(.4,0,.2,1);
     }
     @media (hover: hover) {
-        .act-model-card:hover { border-color: var(--color-accent); }
+        .act-model-card:hover {
+            border-color: var(--color-accent);
+            transform: translateY(-1px);
+        }
     }
     .act-card-header {
         padding: var(--space-2) var(--space-3);
@@ -166,7 +162,15 @@ export function getActivityTabStyles(): string {
         border-bottom: 1px solid var(--color-border);
         word-break: break-word;
         overflow-wrap: anywhere;
+        border-left: 3px solid var(--color-accent);
     }
+    /* Model card color accents */
+    .act-model-card:nth-child(1) .act-card-header { border-left-color: #60a5fa; }
+    .act-model-card:nth-child(2) .act-card-header { border-left-color: #4ade80; }
+    .act-model-card:nth-child(3) .act-card-header { border-left-color: #facc15; }
+    .act-model-card:nth-child(4) .act-card-header { border-left-color: #f87171; }
+    .act-model-card:nth-child(5) .act-card-header { border-left-color: #a78bfa; }
+    .act-model-card:nth-child(6) .act-card-header { border-left-color: #fb923c; }
     .act-card-body { padding: var(--space-2) var(--space-3); }
     .act-card-row {
         display: flex;
@@ -193,7 +197,7 @@ export function getActivityTabStyles(): string {
 
     /* ─── Activity Tab: Timeline ─── */
     .act-timeline {
-        max-height: 360px;
+        max-height: 480px;
         overflow-y: auto;
         background: var(--color-surface);
         border: 1px solid var(--color-border);
@@ -243,6 +247,24 @@ export function getActivityTabStyles(): string {
         margin-right: var(--space-1);
         font-variant-numeric: tabular-nums;
     }
+    .act-tl-gm {
+        display: inline-flex;
+        gap: 2px;
+        margin-left: auto;
+        flex-shrink: 0;
+        font-size: 0.78em;
+        font-variant-numeric: tabular-nums;
+    }
+    .act-tl-gm-tag {
+        padding: 0 3px;
+        border-radius: var(--radius-sm);
+        white-space: nowrap;
+    }
+    .act-tl-gm-in  { background: rgba(96,165,250,0.12); color: #93c5fd; }
+    .act-tl-gm-out { background: rgba(74,222,128,0.12); color: #86efac; }
+    .act-tl-gm-ttft { background: rgba(251,191,36,0.12); color: #fcd34d; }
+    .act-tl-gm-cache { background: rgba(167,139,250,0.12); color: #c4b5fd; }
+    .act-tl-gm-retry { background: rgba(248,113,113,0.15); color: #fca5a5; }
     .act-badge { font-size: 0.75em; opacity: 0.7; }
     .act-checkpoint-model { border-color: rgba(255,255,255,0.06); opacity: 0.85; }
 
@@ -255,73 +277,6 @@ export function getActivityTabStyles(): string {
         padding: var(--space-1) var(--space-2);
         border-left: 2px solid var(--color-warn);
         line-height: 1.4;
-    }
-
-    /* ─── Activity Tab: Archive History ─── */
-    .act-archive-item {
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
-        padding: var(--space-2) var(--space-3);
-        margin-bottom: var(--space-2);
-        transition: border-color 0.2s cubic-bezier(.4,0,.2,1);
-    }
-    @media (hover: hover) {
-        .act-archive-item:hover { border-color: var(--color-accent); }
-    }
-    .act-archive-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-    }
-    .act-archive-time { color: var(--color-text-dim); font-size: 0.85em; }
-    .act-archive-total { font-weight: 600; font-size: 0.9em; }
-    .act-archive-models {
-        margin-top: var(--space-2);
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-1);
-    }
-    .act-archive-model-row {
-        display: flex;
-        align-items: center;
-        gap: var(--space-2);
-        font-size: 0.82em;
-        color: var(--color-text-dim);
-    }
-    .act-archive-model-name {
-        color: var(--color-text);
-        font-weight: 500;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        max-width: 200px;
-    }
-    .act-archive-model-stats {
-        display: flex;
-        gap: var(--space-1);
-        margin-left: auto;
-        white-space: nowrap;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-    }
-    .act-archive-stat-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 3px;
-        padding: 1px var(--space-1);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-sm);
-        background: rgba(255,255,255,0.03);
-        font-size: 0.92em;
-        line-height: 1.4;
-        transition: border-color 0.15s cubic-bezier(.4,0,.2,1);
-    }
-    @media (hover: hover) {
-        .act-archive-stat-chip:hover {
-            border-color: rgba(96,165,250,0.4);
-        }
     }
 
     /* ─── Activity Tab: Distribution ─── */
@@ -465,6 +420,26 @@ function buildSummaryBar(s: ActivitySummary): string {
         }
     } catch { durText = '-'; }
 
+    // GM vs CHECKPOINT token selection
+    const hasGM = (s.gmTotalInputTokens || 0) > 0;
+    const inTokens = hasGM ? s.gmTotalInputTokens! : s.totalInputTokens;
+    const outTokens = hasGM ? s.gmTotalOutputTokens! : s.totalOutputTokens;
+    const inTooltip = hasGM
+        ? tBi('GM precise input tokens (all conversations)', 'GM 精确输入 token（全部对话）')
+        : tBi('Cumulative input tokens consumed', '累计消耗的输入 token 数');
+    const outTooltip = hasGM
+        ? tBi('GM precise output tokens (all conversations)', 'GM 精确输出 token（全部对话）')
+        : tBi('Cumulative output tokens generated', '累计生成的输出 token 数');
+    const gmTag = hasGM ? ' <span class="act-badge" style="color:var(--color-ok)">GM</span>' : '';
+
+    // Cache card (only when GM data available)
+    const cacheTokens = s.gmTotalCacheRead || 0;
+    const cacheCard = cacheTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('GM precise cache read tokens', 'GM 精确缓存读取 token')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg></span><span class="act-stat-val">${fmt(cacheTokens)}${gmTag}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>` : '';
+
+    // Credits card (only when GM data available)
+    const credits = s.gmTotalCredits || 0;
+    const creditsCard = credits > 0 ? `<div class="act-stat" data-tooltip="${tBi('GM precise credits consumed', 'GM 精确消耗的 credits')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="act-stat-val">${credits.toFixed(1)}${gmTag}</span><span class="act-stat-label">Credits</span></div>` : '';
+
     return `
     <div class="act-summary-bar">
         ${durText ? `<div class="act-stat" data-tooltip="${tBi('Total time since extension activation', '从插件激活起累计的会话时长')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span><span class="act-stat-val">${durText}</span><span class="act-stat-label">${tBi('Session', '会话')}</span></div>` : ''}
@@ -474,63 +449,21 @@ function buildSummaryBar(s: ActivitySummary): string {
         <div class="act-stat" data-tooltip="${tBi('Error responses from AI', 'AI 返回的错误数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></span><span class="act-stat-val">${s.totalErrors}</span><span class="act-stat-label">${tBi('Err', '错误')}</span></div>
         ${s.totalCheckpoints > 0 ? `<div class="act-stat" data-tooltip="${tBi('Checkpoint snapshots saved by AI', 'AI 保存的检查点快照数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2z"/><path d="M9 21V9h6v12"/></svg></span><span class="act-stat-val">${s.totalCheckpoints}</span><span class="act-stat-label">${tBi('CP', '检查点')}</span></div>` : ''}
         ${s.estSteps > 0 ? `<div class="act-stat" data-tooltip="${tBi('Estimated steps beyond API window', '超出 API 窗口范围的推算步数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></span><span class="act-stat-val"><span class="act-est">+${s.estSteps}</span></span><span class="act-stat-label">${tBi('Est.', '推算')}</span></div>` : ''}
-        <div class="act-stat" data-tooltip="${tBi('Cumulative input tokens consumed', '累计消耗的输入 token 数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M5 10l7 7 7-7"/></svg></span><span class="act-stat-val">${fmt(s.totalInputTokens)}</span><span class="act-stat-label">${tBi('In', '输入')}</span></div>
-        <div class="act-stat" data-tooltip="${tBi('Cumulative output tokens generated', '累计生成的输出 token 数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9M5 14l7-7 7 7"/></svg></span><span class="act-stat-val">${fmt(s.totalOutputTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
+        <div class="act-stat" data-tooltip="${inTooltip}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M5 10l7 7 7-7"/></svg></span><span class="act-stat-val">${fmt(inTokens)}${gmTag}</span><span class="act-stat-label">${tBi('In', '输入')}</span></div>
+        <div class="act-stat" data-tooltip="${outTooltip}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9M5 14l7-7 7 7"/></svg></span><span class="act-stat-val">${fmt(outTokens)}${gmTag}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
         ${s.totalToolReturnTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('Tokens returned by tool calls', '工具调用返回的 token 数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg></span><span class="act-stat-val">${fmt(s.totalToolReturnTokens)}</span><span class="act-stat-label">${tBi('Tool Output', '工具输出')}</span></div>` : ''}
+        ${cacheCard}
+        ${creditsCard}
     </div>`;
 }
 
-function buildContextTrend(s: ActivitySummary): string {
-    const history = s.checkpointHistory;
-    if (!history || history.length < 2) { return ''; }
-
-    const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    const W = 380, H = 160, PAD = 6;
-    const maxTok = Math.max(...history.map(h => h.inputTokens));
-    if (maxTok <= 0) { return ''; }
-
-    const xStep = (W - PAD * 2) / (history.length - 1);
-    const yScale = (v: number) => H - PAD - ((v / maxTok) * (H - PAD * 2));
-
-    // Build polyline points
-    const points = history.map((h, i) => `${PAD + i * xStep},${yScale(h.inputTokens)}`).join(' ');
-    // Build area polygon (close to bottom)
-    const areaPoints = `${PAD},${H - PAD} ${points} ${PAD + (history.length - 1) * xStep},${H - PAD}`;
-
-    // Compression markers
-    let markers = '';
-    for (let i = 0; i < history.length; i++) {
-        if (history[i].compressed) {
-            const cx = PAD + i * xStep;
-            const cy = yScale(history[i].inputTokens);
-            markers += `<circle cx="${cx}" cy="${cy}" r="4" fill="#f87171" stroke="var(--color-bg)" stroke-width="1.5"/>`;
-        }
-    }
-
-    const compressCount = history.filter(h => h.compressed).length;
-    const compressNote = compressCount > 0
-        ? `<span class="act-compress-note">● ${compressCount} ${tBi('compression', '压缩')}</span>` : '';
-
-    // area fill gradient should be stronger to look "filled"
-    return `
-    <h2 class="act-section-title">${tBi('Context Growth', '上下文增长')}${compressNote}</h2>
-    <div class="act-trend-container">
-        <svg class="act-trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-            <defs><linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3b82f6" stop-opacity="0.5"/><stop offset="100%" stop-color="#3b82f6" stop-opacity="0.1"/></linearGradient></defs>
-            <polygon points="${areaPoints}" fill="url(#trendFill)" />
-            <polyline points="${points}" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linejoin="round"/>
-            ${markers}
-        </svg>
-        <div class="act-trend-labels"><span>${fmt(history[0].inputTokens)}</span><span>${fmt(history[history.length - 1].inputTokens)}</span></div>
-    </div>`;
-}
 
 function buildToolRanking(s: ActivitySummary): string {
     const entries = Object.entries(s.globalToolStats).sort((a, b) => b[1] - a[1]).slice(0, 10);
     if (entries.length === 0) { return ''; }
 
     const max = entries[0][1];
-    let html = `<h2 class="act-section-title">${tBi('Tool Usage', '工具排行')}</h2><ul class="act-rank-list">`;
+    let html = `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>${tBi('Tool Usage', '工具排行')}</h2><ul class="act-rank-list">`;
     for (let i = 0; i < entries.length; i++) {
         const [name, count] = entries[i];
         const pct = Math.round((count / max) * 100);
@@ -545,25 +478,8 @@ function buildToolRanking(s: ActivitySummary): string {
     return html;
 }
 
-function buildConversationBreakdown(s: ActivitySummary): string {
-    const items = s.conversationBreakdown;
-    if (!items || items.length === 0) { return ''; }
 
-    const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    let html = `<h2 class="act-section-title">${tBi('Conversations', '对话分布')}</h2><div class="act-conv-list">`;
-    for (const cb of items) {
-        html += `<div class="act-conv-item">
-            <span class="act-conv-id">${esc(cb.id)}</span>
-            <span class="act-conv-stats">
-                <span>${cb.steps} ${tBi('steps', '步')}</span>
-                <span>${fmt(cb.inputTokens)} in</span>
-                <span>${fmt(cb.outputTokens)} out</span>
-            </span>
-        </div>`;
-    }
-    html += `</div>`;
-    return html;
-}
+
 
 function buildModelCards(s: ActivitySummary): string {
     const entries = Object.entries(s.modelStats).sort((a, b) => b[1].totalSteps - a[1].totalSteps);
@@ -582,7 +498,7 @@ function buildModelCards(s: ActivitySummary): string {
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
     const fmtMs = (ms: number) => ms <= 0 ? '-' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 
-    let html = `<h2 class="act-section-title">${tBi('Model Stats', '模型统计')}</h2>`;
+    let html = `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>${tBi('Model Stats', '模型统计')}</h2>`;
 
     // Accuracy note: shown when estimated steps exist
     const totalEst = entries.reduce((a, [, ms]) => a + ms.estSteps, 0);
@@ -595,6 +511,8 @@ function buildModelCards(s: ActivitySummary): string {
     }
 
     html += `<div class="act-cards-grid">`;
+    // Get GM model breakdown if available
+    const gmBreak = s.gmModelBreakdown;
     for (const [name, ms] of entries) {
         const isCheckpointOnly = ms.reasoning === 0 && ms.toolCalls === 0 && ms.checkpoints > 0 && ms.estSteps === 0;
         const avgThink = ms.reasoning > 0 ? fmtMs(Math.round(ms.thinkingTimeMs / ms.reasoning)) : '-';
@@ -608,6 +526,25 @@ function buildModelCards(s: ActivitySummary): string {
         const totalLabel = ms.estSteps > 0
             ? tBi(`${actualSteps}+${ms.estSteps} steps`, `${actualSteps}+${ms.estSteps} 步`)
             : tBi(`${actualSteps} steps`, `共 ${actualSteps} 步`);
+
+        // GM per-model precision data
+        let gmSection = '';
+        if (gmBreak) {
+            // Direct key match — both sides use getModelDisplayName()
+            const gmStats = gmBreak[name];
+            if (gmStats && gmStats.callCount > 0) {
+                const gmTag = '<span class="act-badge" style="color:var(--color-ok)">GM</span>';
+                gmSection = `
+                <div class="act-card-divider"></div>
+                <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val">${gmStats.avgTTFT.toFixed(1)}s ${gmTag}</span></div>
+                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val">${fmt(gmStats.totalInputTokens)} ${gmTag}</span></div>
+                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(gmStats.totalOutputTokens)} ${gmTag}</span></div>
+                ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gmStats.totalCacheRead)} ${gmTag}</span></div>` : ''}
+                ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>Credits</span></span><span class="val">${gmStats.totalCredits.toFixed(1)} ${gmTag}</span></div>` : ''}
+                ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gmStats.cacheHitRate * 100).toFixed(0)}% ${gmTag}</span></div>` : ''}
+                `;
+            }
+        }
 
         html += `
         <div class="act-model-card${isCheckpointOnly ? ' act-checkpoint-model' : ''}">
@@ -623,11 +560,7 @@ function buildModelCards(s: ActivitySummary): string {
                 <div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Think', '推理')}</span></span><span class="val">${fmtMs(ms.thinkingTimeMs)}</span></div>
                 ` : ''}
                 ${ms.toolCalls > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Tool', '工具')}</span></span><span class="val">${fmtMs(ms.toolTimeMs)}</span></div>` : ''}
-                ${ms.inputTokens > 0 || ms.outputTokens > 0 ? `
-                <div class="act-card-divider"></div>
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val">${fmt(ms.inputTokens)}</span></div>
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(ms.outputTokens)}</span></div>
-                ` : ''}
+                ${gmSection}
             </div>
             ${toolList ? `<div class="act-card-footer">${toolList}</div>` : ''}
         </div>`;
@@ -636,15 +569,19 @@ function buildModelCards(s: ActivitySummary): string {
 
     // Sub-agent token display
     if (s.subAgentTokens && s.subAgentTokens.length > 0) {
-        html += `<h2 class="act-section-title">${tBi('Sub-Agent Tokens', '子智能体消耗')}</h2>`;
+        html += `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4v2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h2V6a4 4 0 0 1 4-4z"/><circle cx="12" cy="15" r="2"/></svg>${tBi('Sub-Agent Tokens', '子智能体消耗')}</h2>`;
         html += `<div class="act-cards-grid">`;
         for (const sa of s.subAgentTokens) {
+            const avgInput = sa.count > 0 ? Math.round(sa.inputTokens / sa.count) : 0;
             html += `
             <div class="act-model-card act-checkpoint-model">
                 <div class="act-card-header"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><path d="M12 2a4 4 0 0 1 4 4v2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h2V6a4 4 0 0 1 4-4z"/><circle cx="12" cy="15" r="2"/></svg>${esc(sa.displayName)} <span class="act-badge">${tBi(`${sa.count} checkpoints`, `${sa.count} 检查点`)}</span></div>
                 <div class="act-card-body">
                     <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val">${fmt(sa.inputTokens)}</span></div>
                     <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(sa.outputTokens)}</span></div>
+                    <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Cache Read', '缓存读取')}</span></span><span class="val">${fmt(sa.cacheReadTokens)}</span></div>
+                    <div class="act-card-row"><span>${ICONS.tool} <span>${tBi('Avg In/CP', '均值输入/CP')}</span></span><span class="val">${fmt(avgInput)}</span></div>${sa.compressionEvents > 0 ? `
+                    <div class="act-card-row"><span><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg> <span>${tBi('Compressions', '压缩次数')}</span></span><span class="val" style="color:var(--color-warning,#f97316)">${sa.compressionEvents}</span></div>` : ''}
                 </div>
             </div>`;
         }
@@ -657,6 +594,8 @@ function buildModelCards(s: ActivitySummary): string {
 function buildTimeline(s: ActivitySummary): string {
     const events = s.recentSteps.slice(-30).reverse();
     if (events.length === 0) { return ''; }
+
+    const fmtTok = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 
     const getTimelineIcon = (e: any) => {
         // SVG Mapping for categories/emojis
@@ -676,7 +615,13 @@ function buildTimeline(s: ActivitySummary): string {
         return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
     };
 
-    let html = `<h2 class="act-section-title">${tBi('Recent Activity', '最近操作')}</h2><div class="act-timeline">`;
+    // GM coverage badge
+    const gmRate = s.gmCoverageRate;
+    const gmBadge = gmRate !== undefined && gmRate > 0
+        ? ` <span class="act-badge" style="color:var(--color-ok)">${tBi('GM', 'GM')} ${(gmRate * 100).toFixed(0)}%</span>`
+        : '';
+
+    let html = `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>${tBi('Recent Activity', '最近操作')}${gmBadge}</h2><div class="act-timeline">`;
     for (const e of events) {
         const time = formatTime(e.timestamp);
         const dur = e.durationMs > 0 ? `<span class="act-tl-dur">${e.durationMs < 1000 ? e.durationMs + 'ms' : (e.durationMs / 1000).toFixed(1) + 's'}</span>` : '';
@@ -696,6 +641,18 @@ function buildTimeline(s: ActivitySummary): string {
         const stepIdx = e.stepIndex !== undefined ? `<span class="act-tl-step-idx">#${e.stepIndex}</span>` : '';
         const svgIcon = getTimelineIcon(e);
 
+        // GM precision data tags — only show on reasoning steps (tools share the same GM call)
+        let gmTags = '';
+        if (e.category === 'reasoning' && e.gmInputTokens !== undefined) {
+            const parts: string[] = [];
+            parts.push(`<span class="act-tl-gm-tag act-tl-gm-in">${fmtTok(e.gmInputTokens)}in</span>`);
+            if (e.gmOutputTokens) { parts.push(`<span class="act-tl-gm-tag act-tl-gm-out">${fmtTok(e.gmOutputTokens)}out</span>`); }
+            if (e.gmTTFT && e.gmTTFT > 0) { parts.push(`<span class="act-tl-gm-tag act-tl-gm-ttft">${e.gmTTFT.toFixed(1)}s</span>`); }
+            if (e.gmCacheReadTokens && e.gmCacheReadTokens > 0) { parts.push(`<span class="act-tl-gm-tag act-tl-gm-cache">${fmtTok(e.gmCacheReadTokens)}$</span>`); }
+            if (e.gmRetries && e.gmRetries > 1) { parts.push(`<span class="act-tl-gm-tag act-tl-gm-retry">r${e.gmRetries}</span>`); }
+            gmTags = `<span class="act-tl-gm">${parts.join('')}</span>`;
+        }
+
         html += `
         <div class="act-tl-item act-tl-${e.category}">
             <span class="act-tl-time">${time}</span>
@@ -704,6 +661,7 @@ function buildTimeline(s: ActivitySummary): string {
             ${e.model ? `<span class="act-tl-model">${esc(e.model)}</span>` : ''}
             ${detail}
             ${dur}
+            ${gmTags}
         </div>`;
     }
     html += `</div>`;
@@ -720,7 +678,7 @@ function buildDistribution(s: ActivitySummary): string {
     const total = entries.reduce((a, [, ms]) => a + getUsage(ms), 0);
     const colors = ['#60a5fa', '#4ade80', '#facc15', '#f87171', '#a78bfa', '#fb923c'];
 
-    let html = `<h2 class="act-section-title">${tBi('Model Distribution', '模型分布')}</h2><div class="act-dist-container">`;
+    let html = `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#f472b6" stroke-width="2"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><path d="M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0"/></svg>${tBi('Model Distribution', '模型分布')}</h2><div class="act-dist-container">`;
 
     const size = 140;
     const r = 55;
@@ -755,77 +713,3 @@ function buildDistribution(s: ActivitySummary): string {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 // esc() and formatTime() are now imported from webview-helpers.ts
-
-
-// ─── Archive History ─────────────────────────────────────────────────────────
-
-export function buildArchiveHistory(archives?: ActivityArchive[]): string {
-    if (!archives || archives.length === 0) { return ''; }
-
-    let html = `<div class="act-section">
-        <h3 class="act-section-title"><svg width="1.1em" height="1.1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-0.2em;margin-right:0.3em"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>${tBi('Usage History', '使用历史')}</h3>`;
-
-    for (const a of archives) {
-        const start = formatDateShort(a.startTime);
-        const end = formatDateShort(a.endTime);
-        const s = a.summary;
-
-        // Compute total steps and build per-model rows
-        let totalSteps = 0;
-        let estTotal = 0;
-        const modelRows: string[] = [];
-        const entries = Object.entries(s.modelStats)
-            .sort((a, b) => b[1].totalSteps - a[1].totalSteps);
-
-        for (const [name, ms] of entries) {
-            totalSteps += ms.totalSteps;
-            estTotal += ms.estSteps;
-            const ICONS = {
-                think: `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-0.125em"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.2 6H8.2C6.3 13.7 5 11.5 5 9a7 7 0 0 1 7-7z"/><path d="M9 17h6M10 21h4"/></svg>`,
-                tool: `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-0.125em"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
-                error: `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-0.125em"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`,
-                bar: `<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-0.125em"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`
-            };
-            const stats: string[] = [];
-            if (ms.reasoning > 0) { stats.push(`<span class="act-archive-stat-chip"><span style="color:var(--color-text-dim)">${ICONS.think}</span>${ms.reasoning}</span>`); }
-            if (ms.toolCalls > 0) { stats.push(`<span class="act-archive-stat-chip"><span style="color:var(--color-text-dim)">${ICONS.tool}</span>${ms.toolCalls}</span>`); }
-            if (ms.errors > 0) { stats.push(`<span class="act-archive-stat-chip"><span style="color:var(--color-text-dim)">${ICONS.error}</span>${ms.errors}</span>`); }
-            if (ms.estSteps > 0) { stats.push(`<span class="act-archive-stat-chip"><span style="color:var(--color-text-dim)">${ICONS.bar}</span>+${ms.estSteps}</span>`); }
-            if (stats.length > 0) {
-                modelRows.push(`<div class="act-archive-model-row">
-                    <span class="act-archive-model-name">${esc(name)}</span>
-                    <span class="act-archive-model-stats">${stats.join(' ')}</span>
-                </div>`);
-            }
-        }
-
-        const totalLabel = estTotal > 0
-            ? `${totalSteps - estTotal}+${estTotal}`
-            : `${totalSteps}`;
-
-        html += `
-        <div class="act-archive-item">
-            <div class="act-archive-header">
-                <span class="act-archive-time">${start} → ${end}</span>
-                <span class="act-archive-total">${totalLabel} ${tBi('steps', '步')}</span>
-            </div>
-            ${modelRows.length > 0
-                ? `<div class="act-archive-models">${modelRows.join('')}</div>`
-                : ''}
-        </div>`;
-    }
-
-    html += `</div>`;
-    return html;
-}
-
-export function formatDateShort(iso: string): string {
-    try {
-        const d = new Date(iso);
-        const mm = String(d.getMonth() + 1).padStart(2, '0');
-        const dd = String(d.getDate()).padStart(2, '0');
-        const hh = String(d.getHours()).padStart(2, '0');
-        const mi = String(d.getMinutes()).padStart(2, '0');
-        return `${mm}/${dd} ${hh}:${mi}`;
-    } catch { return iso; }
-}

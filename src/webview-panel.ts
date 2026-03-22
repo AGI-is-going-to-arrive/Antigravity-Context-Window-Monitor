@@ -5,11 +5,17 @@ import { ModelConfig, UserStatusInfo } from './models';
 import { QuotaTracker } from './quota-tracker';
 import { ActivityTracker, ActivitySummary, ActivityArchive } from './activity-tracker';
 import { buildActivityTabContent, getActivityTabStyles } from './activity-panel';
+import { buildGMTabContent, getGMTabStyles } from './gm-panel';
+import { buildPricingTabContent, getPricingTabStyles } from './pricing-panel';
+import { PricingStore, ModelPricing } from './pricing-store';
+import { GMSummary } from './gm-tracker';
 import { ICON } from './webview-icons';
 import { buildMonitorSections } from './webview-monitor-tab';
 import { buildProfileContent } from './webview-profile-tab';
 import { buildSettingsContent } from './webview-settings-tab';
 import { buildHistoryHtml } from './webview-history-tab';
+import { buildCalendarTabContent, getCalendarTabStyles } from './webview-calendar-tab';
+import { DailyStore } from './daily-store';
 import { getScript } from './webview-script';
 import { getStyles } from './webview-styles';
 
@@ -27,9 +33,16 @@ let lastQuotaTracker: QuotaTracker | undefined;
 let lastActivitySummary: ActivitySummary | null = null;
 let lastActivityTracker: ActivityTracker | undefined;
 let lastArchives: ActivityArchive[] = [];
+let lastGMSummary: GMSummary | null = null;
+let lastPricingStore: PricingStore | undefined;
+let lastDailyStore: DailyStore | undefined;
 
 /** When true, auto-refresh updates are buffered but not rendered. */
 let isPaused = false;
+
+/** Calendar month navigation state (defaults to current month) */
+let calendarYear = new Date().getFullYear();
+let calendarMonth = new Date().getMonth() + 1;
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -48,6 +61,9 @@ export function showMonitorPanel(
     initialTab?: string,
     archives?: ActivityArchive[],
     activityTracker?: ActivityTracker,
+    gmSummary?: GMSummary | null,
+    pricingStore?: PricingStore,
+    dailyStore?: DailyStore,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -58,6 +74,9 @@ export function showMonitorPanel(
     if (activitySummary !== undefined) { lastActivitySummary = activitySummary; }
     if (archives) { lastArchives = archives; }
     if (activityTracker) { lastActivityTracker = activityTracker; }
+    if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
+    if (pricingStore) { lastPricingStore = pricingStore; }
+    if (dailyStore) { lastDailyStore = dailyStore; }
 
     if (panel) {
         panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
@@ -159,6 +178,34 @@ export function showMonitorPanel(
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }
+        } else if (msg.command === 'savePricing' && lastPricingStore) {
+            const data = msg.value as Record<string, ModelPricing>;
+            if (data && typeof data === 'object') {
+                lastPricingStore.setAll(data).then(() => {
+                    if (panel) {
+                        panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                        panel.webview.postMessage({ command: 'pricingSaved' });
+                    }
+                });
+            }
+        } else if (msg.command === 'resetPricing' && lastPricingStore) {
+            lastPricingStore.reset().then(() => {
+                if (panel) {
+                    panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                    panel.webview.postMessage({ command: 'pricingReset' });
+                }
+            });
+        } else if (msg.command === 'clearCalendarHistory' && lastDailyStore) {
+            lastDailyStore.clear();
+            if (panel) {
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+            }
+        } else if (msg.command === 'switchCalendarMonth' && typeof (msg as Record<string,unknown>).year === 'number') {
+            calendarYear = (msg as Record<string,unknown>).year as number;
+            calendarMonth = (msg as Record<string,unknown>).month as number;
+            if (panel) {
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+            }
         }
     });
 
@@ -181,6 +228,7 @@ export function updateMonitorPanel(
     tracker?: QuotaTracker,
     activitySummary?: ActivitySummary | null,
     archives?: ActivityArchive[],
+    gmSummary?: GMSummary | null,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -189,9 +237,37 @@ export function updateMonitorPanel(
     if (tracker) { lastQuotaTracker = tracker; }
     if (activitySummary !== undefined) { lastActivitySummary = activitySummary; }
     if (archives) { lastArchives = archives; }
+    if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
     if (panel && !isPaused) {
-        panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
+        // Incremental update: send tab contents via postMessage — no DOM teardown
+        panel.webview.postMessage({
+            command: 'updateTabs',
+            tabs: buildTabContents(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, lastQuotaTracker),
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        });
     }
+}
+
+/** Build HTML for each tab pane (shared between full rebuild and incremental refresh). */
+function buildTabContents(
+    usage: ContextUsage | null,
+    allUsages: ContextUsage[],
+    configs: ModelConfig[],
+    userInfo: UserStatusInfo | null,
+    tracker?: QuotaTracker,
+): Record<string, string> {
+    return {
+        monitor: buildMonitorSections(usage, allUsages, configs, userInfo),
+        profile: buildProfileContent(userInfo, configs),
+        activity: buildActivityTabContent(lastActivitySummary, configs, tracker, lastArchives),
+        gmdata: buildGMTabContent(lastGMSummary),
+        pricing: lastPricingStore
+            ? buildPricingTabContent(lastGMSummary, lastPricingStore)
+            : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`,
+        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth),
+        history: buildHistoryHtml(tracker),
+        settings: buildSettingsContent(configs, tracker),
+    };
 }
 
 /** Whether the monitor panel is currently open. */
@@ -212,8 +288,13 @@ function buildHtml(
     const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo);
     const profileHtml = buildProfileContent(userInfo, configs);
     const settingsHtml = buildSettingsContent(configs, tracker);
-    const historyHtml = buildHistoryHtml(tracker, lastArchives);
+    const historyHtml = buildHistoryHtml(tracker);
     const activityHtml = buildActivityTabContent(lastActivitySummary, configs, tracker, lastArchives);
+    const gmHtml = buildGMTabContent(lastGMSummary);
+    const pricingHtml = lastPricingStore
+        ? buildPricingTabContent(lastGMSummary, lastPricingStore)
+        : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
+    const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth);
 
     const currentLang = getLanguage();
     return `<!DOCTYPE html>
@@ -224,6 +305,9 @@ function buildHtml(
 <style>
 ${getStyles()}
 ${getActivityTabStyles()}
+${getGMTabStyles()}
+${getPricingTabStyles()}
+${getCalendarTabStyles()}
 </style>
 </head>
 <body data-privacy-default="${vscode.workspace.getConfiguration('antigravityContextMonitor').get('privacy.defaultMask', false)}">
@@ -250,11 +334,29 @@ ${getActivityTabStyles()}
             <span class="update-time">${paused ? `<span class="paused-indicator">${tBi('PAUSED', '已暂停')}</span>` : ''} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
         </div>
     </header>
+    <details class="disclaimer-banner" id="d-disclaimer">
+        <summary>
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>
+            ${tBi(
+                'Data Disclaimer — Data shown is estimated and may be inaccurate. Click to expand.',
+                '数据声明 — 所示数据为估算值，可能存在偏差。点击展开详情。'
+            )}
+        </summary>
+        <div class="disclaimer-body">
+            ${tBi(
+                'All data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Token counts, credit usage, model attribution, and other metrics are provided on a <strong>best-effort</strong> basis and may not reflect actual billing or usage. This extension is an independent, community project with <strong>no official endorsement</strong>. Use this data as a reference only.',
+                '所有数据均通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。Token 数量、积分消耗、模型归属等指标均为<strong>尽力而为</strong>的估算，不代表实际计费或用量。本扩展为独立社区项目，<strong>未获得官方认可</strong>。请仅将数据作为参考。'
+            )}
+        </div>
+    </details>
     <nav class="tab-bar">
         <button class="tab-btn active" data-tab="monitor">${ICON.chart} ${tBi('Monitor', '监控')}</button>
         <button class="tab-btn" data-tab="profile">${ICON.user} ${tBi('Profile', '个人')}</button>
         <button class="tab-btn" data-tab="activity">${ICON.bolt} ${tBi('Activity', '活动')}</button>
-        <button class="tab-btn" data-tab="history">${ICON.timeline} ${tBi('History', '历史')}</button>
+        <button class="tab-btn" data-tab="gmdata"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M8 4a.5.5 0 0 1 .5.5V6H10a.5.5 0 0 1 0 1H8.5v1.5a.5.5 0 0 1-1 0V7H6a.5.5 0 0 1 0-1h1.5V4.5A.5.5 0 0 1 8 4M3.732 12H4.5a.5.5 0 0 1 0 1H1.5a.5.5 0 0 1 0-1h.768l3.5-7H4.5a.5.5 0 0 1 0-1h3a.5.5 0 0 1 0 1h-.768zM7.5 11h3a.5.5 0 0 1 0 1H9.268l1.75 3.5H12.5a.5.5 0 0 1 0 1h-3a.5.5 0 0 1 0-1h1.232l-1.75-3.5H7.5a.5.5 0 0 1 0-1"/></svg> ${tBi('GM Data', 'GM 数据')}</button>
+        <button class="tab-btn" data-tab="pricing"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.315 0-1.667-1.104-2.512-3.233-3.037l-.445-.107V3.63c1.213.183 1.968.91 2.141 1.88h1.762c-.112-1.796-1.519-2.965-3.455-3.124V1.036H8.59v1.383C6.408 2.583 5.008 3.9 5.003 5.54c0 1.592 1.063 2.457 3.146 2.963l.399.1v3.979c-1.29-.183-2.113-.879-2.275-1.8H4zm4.586-4.34C7.494 6.137 6.94 5.695 6.94 5.092c0-.66.52-1.183 1.575-1.37v2.72h.071zm.889 2.283c1.335.36 1.942.846 1.942 1.548 0 .781-.633 1.35-1.823 1.493V8.851l-.119-.127z"/></svg> ${tBi('Pricing', '价格')}</button>
+        <button class="tab-btn" data-tab="calendar"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/></svg> ${tBi('Calendar', '日历')}</button>
+        <button class="tab-btn" data-tab="history">${ICON.timeline} ${tBi('Quota Tracking', '额度追踪')}</button>
         <button class="tab-btn" data-tab="settings">${ICON.shield} ${tBi('Settings', '设置')}</button>
     </nav>
     <div class="tab-pane active" id="tab-monitor">
@@ -265,6 +367,15 @@ ${getActivityTabStyles()}
     </div>
     <div class="tab-pane" id="tab-activity">
         ${activityHtml}
+    </div>
+    <div class="tab-pane" id="tab-gmdata">
+        ${gmHtml}
+    </div>
+    <div class="tab-pane" id="tab-pricing">
+        ${pricingHtml}
+    </div>
+    <div class="tab-pane" id="tab-calendar">
+        ${calendarHtml}
     </div>
     <div class="tab-pane" id="tab-history">
         ${historyHtml}

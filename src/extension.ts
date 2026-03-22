@@ -17,6 +17,9 @@ import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible } from './w
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
+import { GMTracker, GMSummary, GMTrackerState } from './gm-tracker';
+import { PricingStore } from './pricing-store';
+import { DailyStore } from './daily-store';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -39,6 +42,10 @@ const STATUS_REFRESH_INTERVAL = 2;
 let outputChannel: vscode.OutputChannel;
 let quotaTracker: QuotaTracker;
 let activityTracker: ActivityTracker;
+let gmTracker: GMTracker;
+let lastGMSummary: GMSummary | null = null;
+let pricingStore: PricingStore;
+let dailyStore: DailyStore;
 
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
@@ -110,6 +117,32 @@ export function activate(context: vscode.ExtensionContext): void {
             log(`Quota reset [${modelIds.join(', ')}] — archiving activity snapshot`);
             activityTracker.archiveAndReset(modelIds);
             context.globalState.update('activityTrackerState', activityTracker.serialize());
+
+            // Write daily calendar snapshot
+            const archives = activityTracker.getArchives();
+            if (archives.length > 0 && dailyStore) {
+                const latest = archives[0]; // most recent archive
+                let costTotal: number | undefined;
+                let costPerModel: Record<string, number> | undefined;
+                if (lastGMSummary && pricingStore) {
+                    const result = pricingStore.calculateCosts(lastGMSummary);
+                    costTotal = result.grandTotal;
+                    // Build per-model cost map for calendar archival
+                    costPerModel = {};
+                    for (const row of result.rows) {
+                        if (row.totalCost > 0) {
+                            costPerModel[row.name] = row.totalCost;
+                        }
+                    }
+                }
+                dailyStore.addCycle(latest, lastGMSummary, costTotal, costPerModel);
+            }
+
+            // Reset GM state — data already archived to calendar.
+            // Next poll will fetch fresh data for the new cycle.
+            gmTracker.reset();
+            lastGMSummary = null;
+            context.globalState.update('gmTrackerState', gmTracker.serialize());
         }
     };
 
@@ -127,6 +160,37 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize activity tracker
     const savedActivity = context.globalState.get<ActivityTrackerState>('activityTrackerState');
     activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
+    const savedGM = context.globalState.get<GMTrackerState>('gmTrackerState');
+    gmTracker = savedGM ? GMTracker.restore(savedGM) : new GMTracker();
+    lastGMSummary = gmTracker.getCachedSummary();
+    pricingStore = new PricingStore();
+    pricingStore.init(context.globalState);
+    dailyStore = new DailyStore();
+    dailyStore.init(context.globalState);
+
+    // Retroactive import: backfill existing archives into calendar
+    const existingArchives = activityTracker.getArchives();
+    if (existingArchives.length > 0) {
+        const imported = dailyStore.importArchives(existingArchives);
+        if (imported > 0) {
+            log(`Calendar: retroactively imported ${imported} archive(s) from activity history`);
+        }
+    }
+
+    // Snapshot current active session into today (live data)
+    const currentSummary = activityTracker.getSummary();
+    if (currentSummary && (currentSummary.totalReasoning > 0 || currentSummary.totalToolCalls > 0)) {
+        const now = new Date();
+        const sessionArchive: import('./activity-tracker').ActivityArchive = {
+            startTime: currentSummary.sessionStartTime,
+            endTime: now.toISOString(),
+            summary: currentSummary,
+            triggeredBy: ['live-snapshot'],
+        };
+        // Only import if not already present (dedup by startTime)
+        dailyStore.importArchives([sessionArchive], lastGMSummary);
+        log('Calendar: snapshotted current active session into today');
+    }
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = context.globalState.get<import('./models').ModelConfig[]>('cachedModelConfigs');
@@ -143,7 +207,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Register commands
     context.subscriptions.push(
         vscode.commands.registerCommand('antigravity-context-monitor.showDetails', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, undefined, activityTracker?.getArchives(), activityTracker);
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, undefined, activityTracker?.getArchives(), activityTracker, lastGMSummary, pricingStore, dailyStore);
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
@@ -165,7 +229,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'activity', activityTracker?.getArchives(), activityTracker);
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'activity', activityTracker?.getArchives(), activityTracker, lastGMSummary, pricingStore, dailyStore);
         }),
         statusBar,
         outputChannel
@@ -192,6 +256,10 @@ export function activate(context: vscode.ExtensionContext): void {
             if (pollingTimer) {
                 clearTimeout(pollingTimer);
                 pollingTimer = undefined;
+            }
+            // Persist GM tracker state on dispose
+            if (gmTracker) {
+                extensionContext.globalState.update('gmTrackerState', gmTracker.serialize());
             }
             abortController.abort();
         }
@@ -676,12 +744,33 @@ async function pollActivity(): Promise<void> {
             abortController.signal,
         );
 
-        if (activityChanged || !activityTracker.isReady) {
+        // Fetch GM data (piggyback on activity poll)
+        let gmChanged = false;
+        try {
+            const gmSummary = await gmTracker.fetchAll(
+                lsInfo,
+                trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
+                abortController.signal,
+            );
+            if (gmSummary.totalCalls !== (lastGMSummary?.totalCalls ?? 0)
+                || gmSummary.totalStepsCovered !== (lastGMSummary?.totalStepsCovered ?? 0)) {
+                lastGMSummary = gmSummary;
+                gmChanged = true;
+            }
+        } catch { /* GM fetch failure is non-critical */ }
+
+        // Inject GM precision data into activity timeline events
+        if (lastGMSummary) {
+            activityTracker.injectGMData(lastGMSummary);
+        }
+
+        if (activityChanged || gmChanged || !activityTracker.isReady) {
             const summary = activityTracker.getSummary();
+            // GM data is now embedded in getSummary() via cached _gmTotals — no override needed
 
             // Refresh WebView immediately when activity changes
             if (isMonitorPanelVisible() && currentUsage) {
-                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, summary, activityTracker.getArchives());
+                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, summary, activityTracker.getArchives(), lastGMSummary);
             }
         }
 
@@ -689,6 +778,9 @@ async function pollActivity(): Promise<void> {
         const now = Date.now();
         if (now - lastActivityPersistTime > 30_000) {
             extensionContext.globalState.update('activityTrackerState', activityTracker.serialize());
+            if (gmTracker) {
+                extensionContext.globalState.update('gmTrackerState', gmTracker.serialize());
+            }
             lastActivityPersistTime = now;
         }
     } catch (err) {

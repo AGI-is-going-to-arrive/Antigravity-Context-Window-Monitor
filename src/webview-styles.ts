@@ -60,6 +60,16 @@ export function getStyles(): string {
             -webkit-tap-highlight-color: transparent;
         }
 
+        /* ─── Kill native number spinners ── */
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type="number"] {
+            -moz-appearance: textfield;
+        }
+
         /* ─── Header ────────────────── */
         .panel-header {
             display: flex;
@@ -68,6 +78,64 @@ export function getStyles(): string {
             margin-bottom: var(--space-4);
             padding-bottom: var(--space-3);
             border-bottom: 1px solid var(--color-border);
+        }
+
+        /* ─── Disclaimer Banner ────────── */
+        .disclaimer-banner {
+            margin-bottom: var(--space-3);
+            border: 1px solid rgba(250, 204, 21, 0.15);
+            border-radius: var(--radius-md);
+            background: rgba(250, 204, 21, 0.04);
+            font-size: 0.78em;
+            color: var(--color-text-dim);
+            overflow: hidden;
+        }
+
+        .disclaimer-banner summary {
+            cursor: pointer;
+            padding: var(--space-1) var(--space-2);
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            list-style: none;
+            user-select: none;
+            color: rgba(250, 204, 21, 0.7);
+            transition: color 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        .disclaimer-banner summary::-webkit-details-marker { display: none; }
+
+        .disclaimer-banner summary:focus-visible {
+            box-shadow: 0 0 0 2px var(--color-warn);
+            outline: none;
+            border-radius: var(--radius-md);
+        }
+
+        @media (hover: hover) {
+            .disclaimer-banner summary:hover {
+                color: var(--color-warn);
+            }
+        }
+
+        .disclaimer-banner svg {
+            flex-shrink: 0;
+        }
+
+        .disclaimer-banner[open] {
+            border-color: rgba(250, 204, 21, 0.25);
+            background: rgba(250, 204, 21, 0.06);
+        }
+
+        .disclaimer-body {
+            padding: var(--space-1) var(--space-3) var(--space-2);
+            border-top: 1px solid rgba(250, 204, 21, 0.1);
+            line-height: 1.6;
+            color: var(--color-text-dim);
+        }
+
+        .disclaimer-body strong {
+            color: var(--color-warn);
+            font-weight: 600;
         }
 
         .panel-header h1 {
