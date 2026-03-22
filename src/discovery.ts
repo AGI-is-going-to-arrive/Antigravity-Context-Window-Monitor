@@ -156,6 +156,114 @@ export function extractPortFromNetstat(line: string): number | null {
 }
 
 /**
+ * Extract WSL distro name from a vscode-remote:// workspace URI.
+ * e.g., "vscode-remote://wsl%2Bubuntu/path" → "Ubuntu"
+ *       "vscode-remote://wsl+Ubuntu/path"  → "Ubuntu"
+ * Returns null if the URI is not a WSL remote URI.
+ */
+export function extractWslDistro(uri: string): string | null {
+    // Handle both URL-encoded (%2B → +) and raw + in WSL authority
+    const decoded = decodeURIComponent(uri);
+    const match = decoded.match(/^vscode-remote:\/\/wsl\+([^/]+)\//i);
+    return match ? match[1] : null;
+}
+
+/**
+ * Discover the Antigravity LS running INSIDE a WSL distro.
+ * This handles the Remote-WSL scenario where the IDE spawns
+ * language_server_linux_x64 inside the WSL environment.
+ *
+ * Strategy:
+ * 1. Run `wsl -d <distro> -- ps aux` to find the LS process
+ * 2. Match workspace_id if available
+ * 3. Extract CSRF token and PID
+ * 4. Run `wsl -d <distro> -- ss -tlnp` to find listening ports
+ * 5. Probe ports from Windows (WSL2 auto-forwards to localhost)
+ */
+async function discoverWslLanguageServer(
+    distro: string,
+    workspaceUri: string,
+    signal?: AbortSignal
+): Promise<LSInfo | null> {
+    try {
+        // 1. Find LS process inside WSL
+        const psResult = await execFileAsync('wsl', [
+            '-d', distro, '--', 'bash', '-c',
+            'ps aux | grep language_server | grep -v grep'
+        ], { encoding: 'utf-8', timeout: 10000, signal });
+
+        const psLines = psResult.stdout.split('\n').filter(l =>
+            l.includes('language_server') && l.includes('antigravity')
+        );
+
+        if (psLines.length === 0) {
+            return null;
+        }
+
+        // 2. Match workspace_id if possible
+        let targetLine = psLines[0];
+        const expectedWsId = buildExpectedWorkspaceId(workspaceUri);
+        const matchedLine = psLines.find(line => {
+            const wsId = extractWorkspaceId(line);
+            return wsId === expectedWsId;
+        });
+        if (matchedLine) {
+            targetLine = matchedLine;
+        }
+
+        // 3. Extract CSRF token
+        const csrfToken = extractCsrfToken(targetLine);
+        if (!csrfToken) {
+            return null;
+        }
+
+        // 4. Extract PID from ps aux format (column 2)
+        const pidMatch = targetLine.trim().match(/^\S+\s+(\d+)/);
+        const pid = pidMatch ? parseInt(pidMatch[1], 10) : null;
+        if (!pid) {
+            return null;
+        }
+
+        // 5. Find listening ports via ss inside WSL
+        let ports: number[] = [];
+        try {
+            const ssResult = await execFileAsync('wsl', [
+                '-d', distro, '--', 'ss', '-tlnp'
+            ], { encoding: 'utf-8', timeout: 5000, signal });
+
+            for (const line of ssResult.stdout.split('\n')) {
+                if (line.includes(`pid=${pid},`) || line.includes(`pid=${pid})`)) {
+                    const port = extractPortFromSs(line);
+                    if (port !== null) {
+                        ports.push(port);
+                    }
+                }
+            }
+        } catch { /* ss failed */ }
+
+        if (ports.length === 0) {
+            return null;
+        }
+
+        // 6. Probe ports from Windows (WSL2 auto-forwards localhost ports)
+        for (const port of ports) {
+            const httpsOk = await probePort(port, csrfToken, true, signal);
+            if (httpsOk) {
+                return { pid, csrfToken, port, useTls: true };
+            }
+            const httpOk = await probePort(port, csrfToken, false, signal);
+            if (httpOk) {
+                return { pid, csrfToken, port, useTls: false };
+            }
+        }
+
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Discover Windows LS processes via wmic (preferred) or Get-CimInstance (fallback).
  * Caches wmic availability to avoid retrying a missing executable every poll cycle.
  * Returns raw CSV output containing CommandLine and ProcessId fields.
@@ -276,6 +384,23 @@ async function findListeningPorts(pid: number, signal?: AbortSignal): Promise<nu
  */
 export async function discoverLanguageServer(workspaceUri?: string, signal?: AbortSignal): Promise<LSInfo | null> {
     try {
+        // ─── Remote-WSL: discover LS running inside WSL distro ──────────
+        // When workspace is vscode-remote://wsl+<distro>/..., the IDE
+        // spawns language_server_linux_x64 inside the WSL environment.
+        // Try WSL discovery FIRST before falling back to Windows LS.
+        if (process.platform === 'win32' && workspaceUri) {
+            const wslDistro = extractWslDistro(workspaceUri);
+            if (wslDistro) {
+                console.log(`[ContextMonitor] Attempting WSL LS discovery in distro "${wslDistro}"`);
+                const wslResult = await discoverWslLanguageServer(wslDistro, workspaceUri, signal);
+                if (wslResult) {
+                    console.log(`[ContextMonitor] Found WSL LS: port=${wslResult.port}, pid=${wslResult.pid}`);
+                    return wslResult;
+                }
+                console.log('[ContextMonitor] WSL LS not found, falling back to Windows LS');
+            }
+        }
+
         let pid: number | null = null;
         let csrfToken: string | null = null;
 

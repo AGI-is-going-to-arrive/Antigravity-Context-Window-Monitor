@@ -1,5 +1,20 @@
 # 变更日志 / Changelog
 
+## [1.13.0] - 2026-03-22
+
+### Fixed / 修复
+
+- **🔥 Remote-WSL LS Discovery / 远程 WSL 语言服务器发现**: When connected via Remote-WSL, the Antigravity IDE spawns a separate `language_server_linux_x64` process **inside** the WSL distro. Previously, the extension (running on the Windows UI side via `extensionKind`) only discovered the Windows-side LS, completely missing the WSL LS and its trajectory data. The extension now detects `vscode-remote://wsl+<distro>/...` workspace URIs, runs `wsl -d <distro> -- ps aux` to locate the LS inside WSL, extracts connection info (CSRF token, PID), discovers listening ports via `ss -tlnp`, and probes them from Windows via localhost (WSL2 auto-forwarding). This resolves the "idle / 0k/1M" display in Remote-WSL workspaces.
+  通过 Remote-WSL 连接时，Antigravity IDE 会在 WSL 发行版**内部**启动独立的 `language_server_linux_x64` 进程。此前扩展（通过 `extensionKind` 运行在 Windows UI 端）只发现 Windows 端的 LS，完全遗漏了 WSL 内的 LS 及其对话数据。现在扩展检测到 `vscode-remote://wsl+<distro>/...` 工作区 URI 后，通过 `wsl -d <distro> -- ps aux` 定位 WSL 内的 LS，提取连接信息（CSRF token、PID），通过 `ss -tlnp` 发现监听端口，然后从 Windows 通过 localhost 探测（WSL2 自动端口转发）。解决了 Remote-WSL 工作区中显示"空闲 / 0k/1M"的问题。
+
+### Added / 新增
+
+- **`extractWslDistro()` helper**: Extracts WSL distro name from `vscode-remote://` URIs, handling both URL-encoded (`wsl%2Bubuntu`) and raw (`wsl+Ubuntu`) formats.
+  新增 `extractWslDistro()` 辅助函数，从 `vscode-remote://` URI 中提取 WSL 发行版名称，兼容 URL 编码和原始格式。
+
+- **`discoverWslLanguageServer()` function**: Complete WSL-side LS discovery pipeline: process scanning → workspace_id matching → CSRF/PID extraction → port discovery → RPC probing.
+  新增 `discoverWslLanguageServer()` 函数，完整的 WSL 端 LS 发现流程：进程扫描 → workspace_id 匹配 → CSRF/PID 提取 → 端口发现 → RPC 探测。
+
 ## [1.12.3] - 2026-03-22
 
 ### Added / 新增
