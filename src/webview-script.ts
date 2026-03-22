@@ -304,6 +304,31 @@ export function getScript(): string {
                 });
             }
 
+            // ─── Pricing: Save / Reset ───
+            var pricingSaveBtn = document.getElementById('pricingSaveBtn');
+            var pricingResetBtn = document.getElementById('pricingResetBtn');
+            var pricingFeedback = document.getElementById('pricingFeedback');
+            if (pricingSaveBtn) {
+                pricingSaveBtn.addEventListener('click', function() {
+                    var inputs = document.querySelectorAll('.pricing-input');
+                    var data = {};
+                    for (var pi = 0; pi < inputs.length; pi++) {
+                        var inp = inputs[pi];
+                        var model = inp.getAttribute('data-model');
+                        var field = inp.getAttribute('data-field');
+                        var val = parseFloat(inp.value) || 0;
+                        if (!data[model]) { data[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 }; }
+                        data[model][field] = val;
+                    }
+                    vscode.postMessage({ command: 'savePricing', value: data });
+                });
+            }
+            if (pricingResetBtn) {
+                pricingResetBtn.addEventListener('click', function() {
+                    vscode.postMessage({ command: 'resetPricing' });
+                });
+            }
+
             // ─── Privacy mask toggle (persisted) ───
             var privacyBtn = document.getElementById('privacyToggle');
             if (privacyBtn) {
@@ -340,6 +365,13 @@ export function getScript(): string {
                 var msg = event.data;
                 if (msg && msg.command === 'switchToTab' && msg.tab) {
                     switchTab(msg.tab);
+                } else if (msg && (msg.command === 'pricingSaved' || msg.command === 'pricingReset')) {
+                    var fb = document.getElementById('pricingFeedback');
+                    if (fb) {
+                        fb.textContent = msg.command === 'pricingSaved' ? '✓ Saved' : '✓ Reset';
+                        fb.style.opacity = '1';
+                        setTimeout(function() { fb.style.opacity = '0'; }, 2000);
+                    }
                 }
             });
         })();

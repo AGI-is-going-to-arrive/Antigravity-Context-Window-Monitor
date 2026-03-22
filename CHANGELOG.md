@@ -1,5 +1,29 @@
 # 变更日志 / Changelog
 
+## [1.12.4] - 2026-03-22
+
+### Added / 新增
+
+- **Pricing Tab — Model DNA & Custom Pricing / 价格标签页 — 模型 DNA 与自定义定价**: New "Pricing" tab in WebView panel. Displays model DNA cards (completionConfig, tools, promptSections, systemPrompt indicator, error/retry counts), cost estimation table, and **editable** custom pricing inputs with globalState persistence.
+  WebView 面板新增「价格」标签页。展示模型 DNA 卡片、费用估算表、**可编辑**自定义价格输入（通过 globalState 持久化）。
+
+- **`pricing-store.ts` — Pricing Data Layer / 定价数据层**: New module managing pricing data: DEFAULT_PRICING table (5 active models, sourced from official Claude/Google Cloud docs as of 2026-03-22), 3-tier fuzzy model lookup, cost calculation engine, PricingStore class with globalState persistence.
+  新增定价数据层：DEFAULT_PRICING 表（5 个活跃模型，来源官方定价文档 2026-03-22）、三级模糊匹配、费用计算引擎、globalState 持久化。
+
+- **`pricing-panel.ts` — Pricing UI Builder / 定价 UI 构建器**: New module rendering Pricing tab HTML: model DNA grid cards, cost summary table, editable pricing form with save/reset buttons.
+  新增渲染价格标签页 HTML：模型 DNA 网格卡片、费用概要表、可编辑价格表单（含保存/重置按钮）。
+
+- **Model DNA Capture / 模型 DNA 捕获**: Extended `gm-tracker.ts` GMCallEntry/GMModelStats interfaces with: `completionConfig` (maxTokens, temperature, topK/topP, stopPatterns), `systemPromptSnippet`, `toolNames`/`toolCount`, `promptSectionTitles`, `retries`, `errorMessage`/`errorCount`. New `GMCompletionConfig` interface and `parseCompletionConfig()` parser.
+  扩展 `gm-tracker.ts` 接口，新增模型 DNA 字段和解析器。
+
+### Refactored / 重构
+
+- **Pricing code migrated from `gm-panel.ts`**: Removed legacy `DEFAULT_PRICING` table, `ModelPricing` interface, `findPricing()`, `buildCostSummary()`, `buildPricingTable()`, and all related CSS from `gm-panel.ts` (552 → 279 lines). All pricing/cost functionality now lives in `pricing-store.ts` + `pricing-panel.ts`.
+  价格代码从 `gm-panel.ts` 迁移：删除旧的 DEFAULT_PRICING、ModelPricing 接口、findPricing、buildCostSummary、buildPricingTable 及相关 CSS（552 → 279 行）。所有价格/费用功能现在位于独立模块。
+
+- **Removed built-in pricing reference section**: Deleted `buildBuiltInReference()` collapsible table from `pricing-panel.ts`. Default prices now shown inline in the editable table with "Built-in" source indicator.
+  删除内置价格参考折叠区块。默认价格现在在可编辑表格中内联显示，标注「内置」来源。
+
 ## [1.12.3] - 2026-03-22
 
 ### Added / 新增
@@ -10,14 +34,14 @@
 - **Cost Estimation / 费用估算**: Per-model cost breakdown table calculating USD costs from token counts × public API pricing. Supports 5 token types: Input, Output, Cache Read, Cache Write, Thinking. Hover tooltips show raw token counts and per-token prices. Grand Total aggregated across all models.
   按模型费用明细表，使用 token 数 × 公开 API 价格计算 USD 费用。支持 5 种 token 类型：输入、输出、缓存读取、缓存写入、思考。悬停提示显示原始 token 数和单价。跨模型汇总总计。
 
-- **Dynamic Pricing Reference Table / 动态价格参考表**: Pricing table dynamically displays only models captured in the current session — no hardcoded model list. Auto-matches prices from built-in `DEFAULT_PRICING` (Claude / GPT / Gemini series); unmatched models show $0 with "Default 0" indicator. Users can customize `DEFAULT_PRICING` in `gm-panel.ts`.
-  价格参考表仅动态展示当前会话捕捉到的模型——不硬编码模型列表。自动从内置 `DEFAULT_PRICING`（Claude / GPT / Gemini 系列）匹配价格；未匹配模型显示 $0 并标注「Default 0」。用户可在 `gm-panel.ts` 中自定义 `DEFAULT_PRICING`。
+- **Dynamic Pricing Reference Table / 动态价格参考表**: Pricing table dynamically displays only models captured in the current session — no hardcoded model list. Auto-matches prices from `pricing-store.ts` `DEFAULT_PRICING`; unmatched models show $0 with editable inputs in the Pricing tab.
+  价格参考表仅动态展示当前会话捕捉到的模型。自动从 `pricing-store.ts` 匹配价格；未匹配模型显示 $0，可在 Pricing 标签页编辑。
 
 - **`gm-tracker.ts` — GM Data Layer / GM 数据层**: New module (325 lines) implementing `GMTracker` class. Calls `GetCascadeTrajectoryGeneratorMetadata` RPC, parses `generatorMetadata[]` entries (stepIndices, responseModel, usage, TTFT, streaming duration, cache tokens, consumed credits), aggregates per-model stats (`GMModelStats`) and per-conversation data (`GMConversationData`), produces `GMSummary` for the panel layer. Includes smart caching to avoid redundant RPC calls.
   新增模块（325 行），实现 `GMTracker` 类。调用 `GetCascadeTrajectoryGeneratorMetadata` RPC，解析 `generatorMetadata[]` 条目（stepIndices、responseModel、usage、TTFT、流式时长、缓存 token、消耗积分），聚合每模型统计和每对话数据，生成 `GMSummary` 供面板层使用。包含智能缓存避免重复 RPC 调用。
 
-- **`gm-panel.ts` — GM Data Panel / GM 数据面板**: New module (551 lines) generating all HTML for the GM Data tab. 8 builder functions: `buildSummaryBar`, `buildModelCards`, `buildCostSummary`, `buildPerformanceBaseline`, `buildCacheEfficiency`, `buildContextGrowth`, `buildConversationList`, `buildPricingTable`. CSS variables for styling, SVG charts for cache/context visualizations.
-  新增模块（551 行），生成 GM Data 标签页的全部 HTML。8 个构建函数。CSS 变量样式体系，SVG 图表用于缓存/上下文可视化。
+- **`gm-panel.ts` — GM Data Panel / GM 数据面板**: New module (~280 lines) generating HTML for the GM Data tab. 6 builder functions: `buildSummaryBar`, `buildModelCards`, `buildPerformanceBaseline`, `buildCacheEfficiency`, `buildContextGrowth`, `buildConversationList`. CSS variables for styling, SVG charts for cache/context visualizations.
+  新增模块（~280 行），生成 GM Data 标签页的 HTML。6 个构建函数。CSS 变量样式体系，SVG 图表用于缓存/上下文可视化。
 
 ### Documentation / 文档
 

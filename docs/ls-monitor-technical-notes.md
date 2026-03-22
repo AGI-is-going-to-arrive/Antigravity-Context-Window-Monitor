@@ -1,6 +1,6 @@
 # LS Monitor 技术实现文档
 
-> **v1.12.2** — 2026-03-22
+> **v1.12.4** — 2026-03-22
 
 > [!NOTE]
 > 本文档所描述的监控数据**完全依赖 LS（Language Server）的 gRPC-over-HTTP API** 返回的数据进行统计和展示。受限于 API 的约 5MB 响应大小限制（约 500 步），超出此窗口的步骤只能通过 `stepCount` 差值进行推算（标注为 📊 推算步数），无法获取精确分类。如有估算偏差或数据不完整，敬请谅解。
@@ -648,24 +648,26 @@ generatorMetadata[i] = {
 
 ### 30. 费用估算设计
 
-`gm-panel.ts` 中内置 `DEFAULT_PRICING` 常量，格式为 USD per 1 million tokens：
+`pricing-store.ts` 中内置 `DEFAULT_PRICING` 常量，格式为 USD per 1 million tokens：
 
 ```typescript
-const DEFAULT_PRICING: Record<string, ModelPricing> = {
-  'claude-opus-4': { input: 15, output: 75, cacheRead: 1.875 },
-  'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30 },
-  'gemini-2.5-flash': { input: 0.15, output: 0.60, cacheRead: 0.0375 },
-  // ... 更多模型
+// pricing-store.ts
+export const DEFAULT_PRICING: Record<string, ModelPricing> = {
+  'claude-opus-4-6':   { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25, thinking: 25 },
+  'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
+  'gpt-oss-120b':      { input: 0.09, output: 0.36, ... },
+  'gemini-3.1-pro':    { input: 2, output: 12, ... },
+  'gemini-3-flash':    { input: 0.50, output: 3, ... },
 };
 ```
 
 **价格匹配逻辑** — `findPricing()` 三级匹配：
 
 1. **精确匹配**：`responseModel === key`
-2. **前缀匹配**：`responseModel.startsWith(key)` — 覆盖像 `claude-opus-4-6-thinking` 匹配 `claude-opus-4` 的情况
+2. **前缀匹配**：`responseModel.startsWith(key)` — 覆盖像 `claude-opus-4-6-thinking` 匹配 `claude-opus-4-6`、`gemini-3.1-pro-high` 匹配 `gemini-3.1-pro` 的情况
 3. **子串匹配**：`responseModel.includes(key)` — 兜底
 
-**价格参考表**只展示会话中实际捕捉到的模型，不硬编码模型列表。标注匹配来源（「Auto」= 成功匹配，「Default 0」= 无匹配默认 $0）。
+**费用计算**在 Pricing 标签页的 `pricing-panel.ts` 中展示（从 `gm-panel.ts` 迁移）。用户可通过 Pricing 标签页的可编辑价格表自定义价格，覆盖 `DEFAULT_PRICING` 的值，并通过 `globalState` 持久化。
 
 ### 31. cacheCreationTokens vs cacheReadTokens 的区别
 

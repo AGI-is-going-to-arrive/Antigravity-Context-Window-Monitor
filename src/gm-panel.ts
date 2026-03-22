@@ -7,39 +7,6 @@ import { tBi } from './i18n';
 import { GMSummary, GMModelStats, GMConversationData } from './gm-tracker';
 import { esc } from './webview-helpers';
 
-// ─── Built-in Model Pricing (per 1M tokens, USD) ────────────────────────
-
-export interface ModelPricing {
-    input: number;       // $ per 1M input tokens
-    output: number;      // $ per 1M output tokens
-    cacheRead: number;   // $ per 1M cache read tokens
-    cacheWrite: number;  // $ per 1M cache creation tokens
-    thinking: number;    // $ per 1M thinking tokens (same as output for most)
-}
-
-/** Default pricing table — users can override via WebView message */
-export const DEFAULT_PRICING: Record<string, ModelPricing> = {
-    // Claude family
-    'claude-opus-4-6-thinking':   { input: 15, output: 75, cacheRead: 1.875, cacheWrite: 18.75, thinking: 75 },
-    'claude-opus-4-20250514':     { input: 15, output: 75, cacheRead: 1.875, cacheWrite: 18.75, thinking: 75 },
-    'claude-sonnet-4-20250514':   { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
-    'claude-sonnet-4-6-thinking': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
-    'claude-3.5-sonnet':          { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
-    'claude-3-opus':              { input: 15, output: 75, cacheRead: 1.875, cacheWrite: 18.75, thinking: 75 },
-    'claude-3-haiku':             { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.30, thinking: 1.25 },
-    // GPT family
-    'gpt-4o':                     { input: 2.50, output: 10, cacheRead: 1.25, cacheWrite: 2.50, thinking: 10 },
-    'gpt-4o-mini':                { input: 0.15, output: 0.60, cacheRead: 0.075, cacheWrite: 0.15, thinking: 0.60 },
-    'gpt-4.1':                    { input: 2, output: 8, cacheRead: 0.50, cacheWrite: 2, thinking: 8 },
-    'gpt-4.1-mini':               { input: 0.40, output: 1.60, cacheRead: 0.10, cacheWrite: 0.40, thinking: 1.60 },
-    'gpt-4.1-nano':               { input: 0.10, output: 0.40, cacheRead: 0.025, cacheWrite: 0.10, thinking: 0.40 },
-    'o3':                         { input: 2, output: 8, cacheRead: 0.50, cacheWrite: 2, thinking: 8 },
-    // Gemini family
-    'gemini-2.5-pro':             { input: 1.25, output: 10, cacheRead: 0.3125, cacheWrite: 4.50, thinking: 10 },
-    'gemini-2.5-flash':           { input: 0.15, output: 0.60, cacheRead: 0.0375, cacheWrite: 0.15, thinking: 3.50 },
-    'gemini-2.0-flash':           { input: 0.10, output: 0.40, cacheRead: 0.025, cacheWrite: 0.10, thinking: 0.40 },
-};
-
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export function buildGMTabContent(summary: GMSummary | null): string {
@@ -50,7 +17,7 @@ export function buildGMTabContent(summary: GMSummary | null): string {
     return [
         buildGMSummaryBar(summary),
         buildGMModelCards(summary),
-        buildCostSummary(summary),
+
         `<div class="act-two-col">
             <div class="act-col">${buildPerformanceChart(summary)}</div>
             <div class="act-col">${buildCacheEfficiency(summary)}</div>
@@ -59,7 +26,7 @@ export function buildGMTabContent(summary: GMSummary | null): string {
             <div class="act-col">${buildContextGrowth(summary)}</div>
             <div class="act-col">${buildConversations(summary)}</div>
         </div>`,
-        buildPricingTable(summary),
+
     ].join('');
 }
 
@@ -135,71 +102,7 @@ export function getGMTabStyles(): string {
         color: var(--color-info);
         margin-top: var(--space-1);
     }
-    .gm-cost-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.85em;
-        margin-bottom: var(--space-4);
-    }
-    .gm-cost-table th,
-    .gm-cost-table td {
-        padding: var(--space-1) var(--space-2);
-        text-align: right;
-        border-bottom: 1px solid var(--color-border);
-    }
-    .gm-cost-table th {
-        font-size: 0.75em;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: var(--color-text-dim);
-        font-weight: 600;
-    }
-    .gm-cost-table td:first-child,
-    .gm-cost-table th:first-child {
-        text-align: left;
-    }
-    .gm-cost-table tr:last-child td {
-        border-bottom: none;
-        font-weight: 700;
-    }
-    .gm-cost-total {
-        color: #f59e0b;
-    }
-    .gm-cost-section {
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
-        padding: var(--space-3);
-        margin-bottom: var(--space-4);
-    }
-    .gm-price-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.78em;
-    }
-    .gm-price-table th,
-    .gm-price-table td {
-        padding: 3px var(--space-2);
-        text-align: right;
-        border-bottom: 1px solid rgba(255,255,255,0.04);
-    }
-    .gm-price-table th {
-        font-size: 0.72em;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: var(--color-text-dim);
-        font-weight: 600;
-    }
-    .gm-price-table td:first-child,
-    .gm-price-table th:first-child {
-        text-align: left;
-    }
-    .gm-price-note {
-        font-size: 0.72em;
-        color: var(--color-text-dim);
-        margin-top: var(--space-2);
-        font-style: italic;
-    }
+
     `;
 }
 
@@ -370,182 +273,6 @@ function buildConversations(s: GMSummary): string {
             </span>
         </div>`;
     }
-    html += `</div>`;
-    return html;
-}
-
-// ─── Pricing Functions ──────────────────────────────────────────────────────
-
-/** Find pricing for a model by matching responseModel against the pricing table */
-function findPricing(responseModel: string): ModelPricing | null {
-    // Exact match first
-    if (DEFAULT_PRICING[responseModel]) { return DEFAULT_PRICING[responseModel]; }
-    // Partial match: find a key that the responseModel starts with
-    for (const [key, pricing] of Object.entries(DEFAULT_PRICING)) {
-        if (responseModel.startsWith(key) || key.startsWith(responseModel)) {
-            return pricing;
-        }
-    }
-    // Fuzzy: check if any key is a substring of responseModel
-    for (const [key, pricing] of Object.entries(DEFAULT_PRICING)) {
-        if (responseModel.includes(key) || key.includes(responseModel.split('-').slice(0, 3).join('-'))) {
-            return pricing;
-        }
-    }
-    return null;
-}
-
-function buildCostSummary(s: GMSummary): string {
-    const entries = Object.entries(s.modelBreakdown);
-    if (entries.length === 0) { return ''; }
-
-    const fmtUsd = (n: number) => n < 0.01 ? `$${n.toFixed(4)}` : n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
-    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    const calcCost = (tokens: number, pricePerM: number) => (tokens / 1_000_000) * pricePerM;
-
-    interface ModelCost {
-        name: string;
-        responseModel: string;
-        inputCost: number;
-        outputCost: number;
-        cacheCost: number;
-        cacheWriteCost: number;
-        thinkingCost: number;
-        totalCost: number;
-        inputTokens: number;
-        outputTokens: number;
-        cacheTokens: number;
-        cacheWriteTokens: number;
-        thinkingTokens: number;
-        pricing: ModelPricing | null;
-    }
-
-    const rows: ModelCost[] = [];
-    let grandTotal = 0;
-
-    for (const [name, ms] of entries) {
-        const pricing = findPricing(ms.responseModel);
-        if (!pricing) {
-            rows.push({
-                name, responseModel: ms.responseModel,
-                inputCost: 0, outputCost: 0, cacheCost: 0, cacheWriteCost: 0, thinkingCost: 0, totalCost: 0,
-                inputTokens: ms.totalInputTokens, outputTokens: ms.totalOutputTokens,
-                cacheTokens: ms.totalCacheRead, cacheWriteTokens: ms.totalCacheCreation,
-                thinkingTokens: ms.totalThinkingTokens, pricing: null,
-            });
-            continue;
-        }
-
-        const inputCost = calcCost(ms.totalInputTokens, pricing.input);
-        const outputCost = calcCost(ms.totalOutputTokens, pricing.output);
-        const cacheCost = calcCost(ms.totalCacheRead, pricing.cacheRead);
-        const cacheWriteCost = calcCost(ms.totalCacheCreation, pricing.cacheWrite);
-        const thinkingCost = calcCost(ms.totalThinkingTokens, pricing.thinking);
-        const totalCost = inputCost + outputCost + cacheCost + cacheWriteCost + thinkingCost;
-        grandTotal += totalCost;
-
-        rows.push({
-            name, responseModel: ms.responseModel,
-            inputCost, outputCost, cacheCost, cacheWriteCost, thinkingCost, totalCost,
-            inputTokens: ms.totalInputTokens, outputTokens: ms.totalOutputTokens,
-            cacheTokens: ms.totalCacheRead, cacheWriteTokens: ms.totalCacheCreation,
-            thinkingTokens: ms.totalThinkingTokens, pricing,
-        });
-    }
-
-    // Sort by total cost desc
-    rows.sort((a, b) => b.totalCost - a.totalCost);
-
-    let html = `<h2 class="act-section-title">${tBi('Cost Estimate', '费用估算')} <span class="gm-badge-real">${tBi('Based on API pricing', '基于 API 价格')}</span></h2>`;
-    html += `<div class="gm-cost-section">`;
-    html += `<table class="gm-cost-table">
-        <thead><tr>
-            <th>${tBi('Model', '模型')}</th>
-            <th>${tBi('Input', '输入')}</th>
-            <th>${tBi('Output', '输出')}</th>
-            <th>${tBi('Cache Read', '缓存读取')}</th>
-            <th>${tBi('Cache Write', '缓存写入')}</th>
-            <th>${tBi('Thinking', '思考')}</th>
-            <th>${tBi('Total', '合计')}</th>
-        </tr></thead><tbody>`;
-
-    for (const r of rows) {
-        if (!r.pricing) {
-            html += `<tr>
-                <td>${esc(r.name)}</td>
-                <td colspan="5" style="text-align:center;color:var(--color-text-dim);font-size:0.85em">${tBi('No pricing data', '无价格数据')}</td>
-                <td>-</td>
-            </tr>`;
-            continue;
-        }
-        html += `<tr>
-            <td data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</td>
-            <td data-tooltip="${fmt(r.inputTokens)} tok × $${r.pricing.input}/M">${fmtUsd(r.inputCost)}</td>
-            <td data-tooltip="${fmt(r.outputTokens)} tok × $${r.pricing.output}/M">${fmtUsd(r.outputCost)}</td>
-            <td data-tooltip="${fmt(r.cacheTokens)} tok × $${r.pricing.cacheRead}/M">${fmtUsd(r.cacheCost)}</td>
-            <td data-tooltip="${fmt(r.cacheWriteTokens)} tok × $${r.pricing.cacheWrite}/M">${fmtUsd(r.cacheWriteCost)}</td>
-            <td data-tooltip="${fmt(r.thinkingTokens)} tok × $${r.pricing.thinking}/M">${r.thinkingTokens > 0 ? fmtUsd(r.thinkingCost) : '-'}</td>
-            <td class="gm-cost-total">${fmtUsd(r.totalCost)}</td>
-        </tr>`;
-    }
-
-    // Grand total row
-    html += `<tr>
-        <td><strong>${tBi('Total', '合计')}</strong></td>
-        <td></td><td></td><td></td><td></td><td></td>
-        <td class="gm-cost-total" style="font-size:1.1em">${fmtUsd(grandTotal)}</td>
-    </tr>`;
-
-    html += `</tbody></table>`;
-    html += `<p class="gm-price-note">${tBi(
-        'Costs are estimates based on public API pricing. Actual billing may differ with enterprise agreements.',
-        '费用基于公开 API 价格估算。实际计费可能因企业协议而不同。'
-    )}</p>`;
-    html += `</div>`;
-
-    return html;
-}
-
-function buildPricingTable(s: GMSummary): string {
-    const entries = Object.entries(s.modelBreakdown);
-    if (entries.length === 0) { return ''; }
-
-    let html = `<h2 class="act-section-title">${tBi('Model Pricing Reference', '模型价格参考')} <span style="font-size:0.72em;color:var(--color-text-dim)">(USD / 1M tokens)</span></h2>`;
-    html += `<div class="gm-cost-section">`;
-    html += `<table class="gm-price-table">
-        <thead><tr>
-            <th>${tBi('Model', '模型')}</th>
-            <th>Input</th>
-            <th>Output</th>
-            <th>Cache Read</th>
-            <th>Cache Write</th>
-            <th>Thinking</th>
-            <th>${tBi('Source', '来源')}</th>
-        </tr></thead><tbody>`;
-
-    for (const [name, ms] of entries) {
-        const matched = findPricing(ms.responseModel);
-        const p = matched || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
-        const sourceLabel = matched
-            ? `<span style="color:#34d399">${tBi('Auto', '自动')}</span>`
-            : `<span style="color:var(--color-text-dim)">${tBi('Default 0', '默认 0')}</span>`;
-
-        html += `<tr>
-            <td data-tooltip="${esc(ms.responseModel)}">${esc(name)}</td>
-            <td>$${p.input}</td>
-            <td>$${p.output}</td>
-            <td>$${p.cacheRead}</td>
-            <td>$${p.cacheWrite}</td>
-            <td>$${p.thinking}</td>
-            <td>${sourceLabel}</td>
-        </tr>`;
-    }
-
-    html += `</tbody></table>`;
-    html += `<p class="gm-price-note">${tBi(
-        'Auto-matched prices from built-in table. Edit gm-panel.ts DEFAULT_PRICING to add/modify.',
-        '价格自动匹配内置表。编辑 gm-panel.ts DEFAULT_PRICING 可添加/修改。'
-    )}</p>`;
     html += `</div>`;
     return html;
 }

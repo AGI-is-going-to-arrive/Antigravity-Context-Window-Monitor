@@ -1,0 +1,477 @@
+// ─── Pricing Tab Content Builder ─────────────────────────────────────────────
+// Renders the "Pricing" tab: model DNA cards, cost estimation, editable pricing
+// table, and built-in pricing reference. All pricing logic uses pricing-store.ts.
+
+import { tBi } from './i18n';
+import { GMSummary, GMModelStats, GMCompletionConfig } from './gm-tracker';
+import { PricingStore, DEFAULT_PRICING, PRICING_LAST_UPDATED, findPricing, ModelPricing } from './pricing-store';
+import { esc } from './webview-helpers';
+
+// ─── Public API ──────────────────────────────────────────────────────────────
+
+export function buildPricingTabContent(summary: GMSummary | null, store: PricingStore): string {
+    if (!summary || summary.totalCalls === 0) {
+        return `<p class="empty-msg">${tBi('Waiting for GM data...', '等待 GM 数据...')}</p>`;
+    }
+
+    const { rows, grandTotal } = store.calculateCosts(summary);
+    const merged = store.getMerged();
+
+    return [
+        buildModelDNACards(summary),
+        buildCostSummary(rows, grandTotal),
+        buildEditablePricingTable(summary, merged, store.getCustom()),
+    ].join('');
+}
+
+export function getPricingTabStyles(): string {
+    return `
+    /* ── Model DNA Cards ── */
+    .prc-dna-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: var(--space-3);
+        margin-bottom: var(--space-4);
+    }
+    .prc-dna-card {
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        padding: var(--space-3);
+        position: relative;
+        overflow: hidden;
+    }
+    .prc-dna-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, var(--color-accent, #8b5cf6), var(--color-info, #60a5fa));
+        border-radius: var(--radius-md) var(--radius-md) 0 0;
+    }
+    .prc-dna-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--space-2);
+    }
+    .prc-dna-model {
+        font-weight: 700;
+        font-size: 1em;
+    }
+    .prc-dna-provider {
+        display: inline-block;
+        font-size: 0.72em;
+        padding: 1px var(--space-1);
+        border-radius: var(--radius-sm);
+        background: rgba(96,165,250,0.1);
+        color: var(--color-info);
+    }
+    .prc-dna-grid-inner {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+        gap: var(--space-1);
+    }
+    .prc-dna-field {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        padding: var(--space-1);
+        border-radius: var(--radius-sm);
+        background: rgba(255,255,255,0.02);
+        border: 1px solid rgba(255,255,255,0.04);
+    }
+    .prc-dna-label {
+        font-size: 0.68em;
+        color: var(--color-text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .prc-dna-val {
+        font-weight: 700;
+        font-size: 0.95em;
+    }
+    .prc-dna-sections {
+        margin-top: var(--space-2);
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-1);
+    }
+    .prc-section-tag {
+        display: inline-block;
+        font-size: 0.68em;
+        padding: 1px var(--space-1);
+        border-radius: var(--radius-sm);
+        background: rgba(139,92,246,0.1);
+        color: #a78bfa;
+    }
+    .prc-tool-tag {
+        display: inline-block;
+        font-size: 0.68em;
+        padding: 1px var(--space-1);
+        border-radius: var(--radius-sm);
+        background: rgba(52,211,153,0.1);
+        color: #34d399;
+    }
+    .prc-error-tag {
+        display: inline-block;
+        font-size: 0.68em;
+        padding: 1px var(--space-1);
+        border-radius: var(--radius-sm);
+        background: rgba(239,68,68,0.1);
+        color: #ef4444;
+    }
+
+    /* ── Cost Table ── */
+    .prc-cost-section {
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        padding: var(--space-3);
+        margin-bottom: var(--space-4);
+    }
+    .prc-cost-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85em;
+    }
+    .prc-cost-table th,
+    .prc-cost-table td {
+        padding: var(--space-1) var(--space-2);
+        text-align: right;
+        border-bottom: 1px solid var(--color-border);
+    }
+    .prc-cost-table th {
+        font-size: 0.72em;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--color-text-dim);
+        font-weight: 600;
+    }
+    .prc-cost-table td:first-child,
+    .prc-cost-table th:first-child {
+        text-align: left;
+    }
+    .prc-cost-table tr:last-child td {
+        border-bottom: none;
+        font-weight: 700;
+    }
+    .prc-cost-total {
+        color: #f59e0b;
+    }
+    .prc-note {
+        font-size: 0.72em;
+        color: var(--color-text-dim);
+        margin-top: var(--space-2);
+        font-style: italic;
+    }
+
+    /* ── Editable Pricing ── */
+    .prc-edit-section {
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        padding: var(--space-3);
+        margin-bottom: var(--space-4);
+    }
+    .prc-edit-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.82em;
+    }
+    .prc-edit-table th,
+    .prc-edit-table td {
+        padding: var(--space-1) var(--space-1);
+        text-align: right;
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .prc-edit-table th {
+        font-size: 0.72em;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--color-text-dim);
+        font-weight: 600;
+    }
+    .prc-edit-table td:first-child,
+    .prc-edit-table th:first-child {
+        text-align: left;
+    }
+    .prc-edit-input {
+        appearance: none;
+        width: 72px;
+        padding: 2px var(--space-1);
+        font-size: 0.9em;
+        font-family: inherit;
+        text-align: right;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        color: inherit;
+        transition: border-color 0.2s cubic-bezier(.4,0,.2,1), background 0.2s cubic-bezier(.4,0,.2,1);
+    }
+    .prc-edit-input:focus {
+        outline: none;
+        border-color: var(--color-accent, #8b5cf6);
+        background: rgba(139,92,246,0.08);
+    }
+    @media (hover: hover) {
+        .prc-edit-input:hover {
+            border-color: rgba(255,255,255,0.2);
+        }
+    }
+    .prc-edit-input:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+    }
+    .prc-edit-actions {
+        display: flex;
+        gap: var(--space-2);
+        align-items: center;
+        margin-top: var(--space-3);
+    }
+    .prc-btn {
+        appearance: none;
+        padding: var(--space-1) var(--space-3);
+        font-size: 0.82em;
+        font-family: inherit;
+        font-weight: 600;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        background: rgba(255,255,255,0.06);
+        color: inherit;
+        cursor: pointer;
+        transition: background 0.2s cubic-bezier(.4,0,.2,1), border-color 0.2s cubic-bezier(.4,0,.2,1), transform 0.1s;
+    }
+    @media (hover: hover) {
+        .prc-btn:hover {
+            background: rgba(255,255,255,0.1);
+            border-color: rgba(255,255,255,0.2);
+        }
+    }
+    .prc-btn:active {
+        transform: scale(0.98);
+    }
+    .prc-btn:focus-visible {
+        box-shadow: 0 0 0 2px var(--color-accent, #8b5cf6);
+    }
+    .prc-btn-primary {
+        background: rgba(139,92,246,0.15);
+        border-color: rgba(139,92,246,0.3);
+        color: #c4b5fd;
+    }
+    @media (hover: hover) {
+        .prc-btn-primary:hover {
+            background: rgba(139,92,246,0.25);
+        }
+    }
+    .prc-feedback {
+        font-size: 0.85em;
+        color: #34d399;
+        font-weight: 600;
+        opacity: 0;
+        transition: opacity 0.3s cubic-bezier(.4,0,.2,1);
+    }
+    .prc-custom-badge {
+        display: inline-block;
+        font-size: 0.62em;
+        padding: 0 4px;
+        border-radius: var(--radius-sm);
+        background: rgba(251,191,36,0.15);
+        color: #fbbf24;
+        font-weight: 600;
+        margin-left: 4px;
+    }
+    `;
+}
+
+// ─── Section Builders ────────────────────────────────────────────────────────
+
+function buildModelDNACards(s: GMSummary): string {
+    const entries = Object.entries(s.modelBreakdown).sort((a, b) => b[1].stepsCovered - a[1].stepsCovered);
+    if (entries.length === 0) { return ''; }
+
+    let html = `<h2 class="act-section-title">${tBi('Model DNA', '模型 DNA')} <span class="gm-badge-real">${tBi('From LS', '来自 LS')}</span></h2>`;
+    html += `<div class="prc-dna-grid">`;
+
+    for (const [name, ms] of entries) {
+        const providerShort = ms.apiProvider.replace('API_PROVIDER_', '').replace(/_/g, ' ');
+        const cc = ms.completionConfig;
+
+        html += `<div class="prc-dna-card">`;
+        html += `<div class="prc-dna-header">
+            <span class="prc-dna-model">${esc(name)}</span>
+            ${providerShort ? `<span class="prc-dna-provider">${esc(providerShort)}</span>` : ''}
+        </div>`;
+
+        // Response model name
+        if (ms.responseModel) {
+            html += `<div style="font-size:0.78em;color:var(--color-text-dim);margin-bottom:var(--space-2)">${esc(ms.responseModel)}</div>`;
+        }
+
+        // Config grid
+        html += `<div class="prc-dna-grid-inner">`;
+        if (cc) {
+            html += buildDNAField('maxTokens', String(cc.maxTokens));
+            html += buildDNAField('temperature', cc.temperature.toString());
+            html += buildDNAField('firstTemp', cc.firstTemperature.toString());
+            html += buildDNAField('topK', String(cc.topK));
+            html += buildDNAField('topP', cc.topP.toString());
+            html += buildDNAField('stopPatterns', String(cc.stopPatternCount));
+        } else {
+            html += buildDNAField('config', tBi('N/A', '无'));
+        }
+        html += buildDNAField(tBi('Calls', '调用'), String(ms.callCount));
+        html += buildDNAField(tBi('Steps', '步骤'), String(ms.stepsCovered));
+        html += buildDNAField(tBi('Credits', '积分'), String(ms.totalCredits));
+        if (ms.totalRetries > 0) {
+            html += buildDNAField(tBi('Retries', '重试'), String(ms.totalRetries));
+        }
+        if (ms.errorCount > 0) {
+            html += `<div class="prc-dna-field"><span class="prc-dna-label">${tBi('Errors', '错误')}</span><span class="prc-dna-val" style="color:#ef4444">${ms.errorCount}</span></div>`;
+        }
+        html += `</div>`;
+
+        // Tags row: prompt sections + tools + system prompt indicator
+        const hasTags = ms.promptSectionTitles.length > 0 || ms.toolCount > 0 || ms.hasSystemPrompt;
+        if (hasTags) {
+            html += `<div class="prc-dna-sections">`;
+            if (ms.hasSystemPrompt) {
+                html += `<span class="prc-section-tag">systemPrompt</span>`;
+            }
+            for (const title of ms.promptSectionTitles) {
+                html += `<span class="prc-section-tag">${esc(title)}</span>`;
+            }
+            if (ms.toolCount > 0) {
+                html += `<span class="prc-tool-tag">${ms.toolCount} ${tBi('tools', '工具')}</span>`;
+            }
+            if (ms.errorCount > 0) {
+                html += `<span class="prc-error-tag">${ms.errorCount} ${tBi('errors', '错误')}</span>`;
+            }
+            html += `</div>`;
+        }
+
+        html += `</div>`;
+    }
+
+    html += `</div>`;
+    return html;
+}
+
+function buildDNAField(label: string, value: string): string {
+    return `<div class="prc-dna-field"><span class="prc-dna-label">${esc(label)}</span><span class="prc-dna-val">${esc(value)}</span></div>`;
+}
+
+function buildCostSummary(rows: import('./pricing-store').ModelCostRow[], grandTotal: number): string {
+    if (rows.length === 0) { return ''; }
+
+    const fmtUsd = (n: number) => n < 0.01 ? `$${n.toFixed(4)}` : n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
+    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+
+    let html = `<h2 class="act-section-title">${tBi('Cost Estimate', '费用估算')} <span class="gm-badge-real">${tBi('Based on pricing table', '基于价格表')}</span></h2>`;
+    html += `<div class="prc-cost-section">`;
+    html += `<table class="prc-cost-table">
+        <thead><tr>
+            <th>${tBi('Model', '模型')}</th>
+            <th>${tBi('Input', '输入')}</th>
+            <th>${tBi('Output', '输出')}</th>
+            <th>${tBi('Cache Read', '缓存读取')}</th>
+            <th>${tBi('Cache Write', '缓存写入')}</th>
+            <th>${tBi('Thinking', '思考')}</th>
+            <th>${tBi('Total', '合计')}</th>
+        </tr></thead><tbody>`;
+
+    for (const r of rows) {
+        if (!r.pricing) {
+            html += `<tr>
+                <td>${esc(r.name)}</td>
+                <td colspan="5" style="text-align:center;color:var(--color-text-dim);font-size:0.85em">${tBi('No pricing data', '无价格数据')}</td>
+                <td>-</td>
+            </tr>`;
+            continue;
+        }
+        html += `<tr>
+            <td data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</td>
+            <td data-tooltip="${fmt(r.inputTokens)} tok × $${r.pricing.input}/M">${fmtUsd(r.inputCost)}</td>
+            <td data-tooltip="${fmt(r.outputTokens)} tok × $${r.pricing.output}/M">${fmtUsd(r.outputCost)}</td>
+            <td data-tooltip="${fmt(r.cacheTokens)} tok × $${r.pricing.cacheRead}/M">${fmtUsd(r.cacheCost)}</td>
+            <td data-tooltip="${fmt(r.cacheWriteTokens)} tok × $${r.pricing.cacheWrite}/M">${fmtUsd(r.cacheWriteCost)}</td>
+            <td data-tooltip="${fmt(r.thinkingTokens)} tok × $${r.pricing.thinking}/M">${r.thinkingTokens > 0 ? fmtUsd(r.thinkingCost) : '-'}</td>
+            <td class="prc-cost-total">${fmtUsd(r.totalCost)}</td>
+        </tr>`;
+    }
+
+    html += `<tr>
+        <td><strong>${tBi('Total', '合计')}</strong></td>
+        <td></td><td></td><td></td><td></td><td></td>
+        <td class="prc-cost-total" style="font-size:1.1em">${fmtUsd(grandTotal)}</td>
+    </tr>`;
+
+    html += `</tbody></table>`;
+    html += `<p class="prc-note">${tBi(
+        'Costs are estimates based on the pricing table below. Actual billing may differ with enterprise agreements.',
+        '费用基于下方价格表估算。实际计费可能因企业协议而不同。'
+    )}</p>`;
+    html += `</div>`;
+    return html;
+}
+
+function buildEditablePricingTable(
+    summary: GMSummary,
+    merged: Record<string, ModelPricing>,
+    custom: Record<string, ModelPricing>,
+): string {
+    const entries = Object.entries(summary.modelBreakdown);
+    if (entries.length === 0) { return ''; }
+
+    const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'cacheWrite', 'thinking'];
+    const fieldLabels: Record<string, string> = {
+        input: 'Input',
+        output: 'Output',
+        cacheRead: 'Cache Read',
+        cacheWrite: 'Cache Write',
+        thinking: 'Thinking',
+    };
+
+    let html = `<h2 class="act-section-title">${tBi('Custom Pricing', '自定义价格')} <span style="font-size:0.72em;color:var(--color-text-dim)">(USD / 1M tokens)</span></h2>`;
+    html += `<div class="prc-edit-section">`;
+    html += `<table class="prc-edit-table">
+        <thead><tr>
+            <th>${tBi('Model', '模型')}</th>
+            ${fields.map(f => `<th>${fieldLabels[f]}</th>`).join('')}
+            <th>${tBi('Source', '来源')}</th>
+        </tr></thead><tbody>`;
+
+    for (const [name, ms] of entries) {
+        const pricing = findPricing(ms.responseModel, merged);
+        const isCustom = !!custom[ms.responseModel];
+        const p = pricing || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
+
+        html += `<tr>`;
+        html += `<td data-tooltip="${esc(ms.responseModel)}">${esc(name)}${isCustom ? '<span class="prc-custom-badge">CUSTOM</span>' : ''}</td>`;
+        for (const f of fields) {
+            html += `<td><input type="number" class="prc-edit-input pricing-input" data-model="${esc(ms.responseModel)}" data-field="${f}" value="${p[f]}" step="0.01" min="0"></td>`;
+        }
+        const sourceLabel = isCustom
+            ? `<span style="color:#fbbf24">${tBi('Custom', '自定义')}</span>`
+            : pricing
+                ? `<span style="color:#34d399">${tBi('Built-in', '内置')}</span>`
+                : `<span style="color:var(--color-text-dim)">${tBi('None', '无')}</span>`;
+        html += `<td>${sourceLabel}</td>`;
+        html += `</tr>`;
+    }
+
+    html += `</tbody></table>`;
+    html += `<div class="prc-edit-actions">
+        <button class="prc-btn prc-btn-primary" id="pricingSaveBtn">${tBi('Save Prices', '保存价格')}</button>
+        <button class="prc-btn" id="pricingResetBtn">${tBi('Reset to Default', '恢复默认')}</button>
+        <span class="prc-feedback" id="pricingFeedback"></span>
+    </div>`;
+    html += `<p class="prc-note">${tBi(
+        `Edit prices above and click Save. Changes are persisted across sessions. Reset restores built-in defaults. Default prices last updated: ${PRICING_LAST_UPDATED}.`,
+        `编辑上方价格后点击保存。修改跨会话持久化。重置恢复内置默认值。默认价格最后更新：${PRICING_LAST_UPDATED}。`
+    )}</p>`;
+    html += `</div>`;
+    return html;
+}

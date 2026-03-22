@@ -18,6 +18,7 @@ import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
 import { GMTracker, GMSummary } from './gm-tracker';
+import { PricingStore } from './pricing-store';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -42,6 +43,7 @@ let quotaTracker: QuotaTracker;
 let activityTracker: ActivityTracker;
 let gmTracker: GMTracker;
 let lastGMSummary: GMSummary | null = null;
+let pricingStore: PricingStore;
 
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
@@ -131,6 +133,8 @@ export function activate(context: vscode.ExtensionContext): void {
     const savedActivity = context.globalState.get<ActivityTrackerState>('activityTrackerState');
     activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
     gmTracker = new GMTracker();
+    pricingStore = new PricingStore();
+    pricingStore.init(context.globalState);
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = context.globalState.get<import('./models').ModelConfig[]>('cachedModelConfigs');
@@ -147,7 +151,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Register commands
     context.subscriptions.push(
         vscode.commands.registerCommand('antigravity-context-monitor.showDetails', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, undefined, activityTracker?.getArchives(), activityTracker);
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, undefined, activityTracker?.getArchives(), activityTracker, lastGMSummary, pricingStore);
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
@@ -169,7 +173,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'activity', activityTracker?.getArchives(), activityTracker);
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'activity', activityTracker?.getArchives(), activityTracker, lastGMSummary, pricingStore);
         }),
         statusBar,
         outputChannel

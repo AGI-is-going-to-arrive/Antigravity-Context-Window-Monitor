@@ -11,6 +11,17 @@ import { getModelDisplayName } from './models';
 
 // ─── Exported Types ──────────────────────────────────────────────────────────
 
+/** completionConfig extracted from chatModel */
+export interface GMCompletionConfig {
+    maxTokens: number;
+    temperature: number;
+    firstTemperature: number;
+    topK: number;
+    topP: number;
+    numCompletions: number;
+    stopPatternCount: number;
+}
+
 /** A single LLM invocation entry from generatorMetadata */
 export interface GMCallEntry {
     stepIndices: number[];
@@ -30,8 +41,21 @@ export interface GMCallEntry {
     credits: number;
     creditType: string;
     hasError: boolean;
+    errorMessage: string;
     /** Context window usage at call time (if available) */
     contextTokensUsed: number;
+    /** Model configuration parameters */
+    completionConfig: GMCompletionConfig | null;
+    /** First N chars of system prompt (if available) */
+    systemPromptSnippet: string;
+    /** Number of tools available */
+    toolCount: number;
+    /** Tool names list */
+    toolNames: string[];
+    /** Prompt section titles */
+    promptSectionTitles: string[];
+    /** Number of retries for this call */
+    retries: number;
 }
 
 /** Aggregated per-model statistics */
@@ -51,6 +75,18 @@ export interface GMModelStats {
     cacheHitRate: number;   // fraction of calls with cache > 0
     responseModel: string;
     apiProvider: string;
+    /** Model DNA: completionConfig (latest seen) */
+    completionConfig: GMCompletionConfig | null;
+    /** Whether system prompt was seen for this model */
+    hasSystemPrompt: boolean;
+    /** Number of tools available */
+    toolCount: number;
+    /** Names of prompt sections */
+    promptSectionTitles: string[];
+    /** Total retries across all calls */
+    totalRetries: number;
+    /** Total error count */
+    errorCount: number;
 }
 
 /** Per-conversation GM data */
@@ -94,6 +130,20 @@ function parseInt0(s: string | undefined): number {
     return isNaN(n) ? 0 : n;
 }
 
+function parseCompletionConfig(cc: Record<string, unknown> | undefined): GMCompletionConfig | null {
+    if (!cc || typeof cc !== 'object') { return null; }
+    const stopPatterns = cc.stopPatterns as unknown[];
+    return {
+        maxTokens: parseInt0(cc.maxTokens as string),
+        temperature: typeof cc.temperature === 'number' ? cc.temperature : 0,
+        firstTemperature: typeof cc.firstTemperature === 'number' ? cc.firstTemperature : 0,
+        topK: parseInt0(cc.topK as string),
+        topP: typeof cc.topP === 'number' ? cc.topP : 0,
+        numCompletions: parseInt0(cc.numCompletions as string),
+        stopPatternCount: Array.isArray(stopPatterns) ? stopPatterns.length : 0,
+    };
+}
+
 function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
     const cm = (gm.chatModel || {}) as Record<string, unknown>;
     const usage = (cm.usage || {}) as Record<string, unknown>;
@@ -110,6 +160,23 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
     }
 
     const modelId = (cm.model as string) || '';
+
+    // Model DNA fields
+    const completionConfig = parseCompletionConfig(cm.completionConfig as Record<string, unknown>);
+
+    const systemPrompt = (cm.systemPrompt as string) || '';
+    const systemPromptSnippet = systemPrompt.length > 120
+        ? systemPrompt.substring(0, 120) + '...'
+        : systemPrompt;
+
+    const tools = (cm.tools as Record<string, unknown>[]) || [];
+    const toolNames = tools.map(t => (t.name as string) || '?');
+
+    const promptSections = (cm.promptSections as Record<string, unknown>[]) || [];
+    const promptSectionTitles = promptSections.map(p => (p.title as string) || '?');
+
+    const retries = parseInt0(cm.retries as string);
+    const errorMessage = (gm.error as string) || '';
 
     return {
         stepIndices: (gm.stepIndices as number[]) || [],
@@ -128,8 +195,15 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         streamingSeconds: parseDuration(cm.streamingDuration as string),
         credits,
         creditType,
-        hasError: !!(cm.error as string),
+        hasError: !!(errorMessage),
+        errorMessage,
         contextTokensUsed: (cwm?.estimatedTokensUsed as number) || 0,
+        completionConfig,
+        systemPromptSnippet,
+        toolCount: tools.length,
+        toolNames,
+        promptSectionTitles,
+        retries,
     };
 }
 
@@ -205,6 +279,12 @@ export class GMTracker {
             ttfts: number[]; streams: number[];
             cacheHits: number;
             responseModel: string; apiProvider: string;
+            completionConfig: GMCompletionConfig | null;
+            hasSystemPrompt: boolean;
+            toolCount: number;
+            promptSectionTitles: string[];
+            totalRetries: number;
+            errorCount: number;
         }>();
 
         let totalCalls = 0;
@@ -253,6 +333,12 @@ export class GMTracker {
                         cacheHits: 0,
                         responseModel: c.responseModel,
                         apiProvider: c.apiProvider,
+                        completionConfig: c.completionConfig,
+                        hasSystemPrompt: false,
+                        toolCount: 0,
+                        promptSectionTitles: [],
+                        totalRetries: 0,
+                        errorCount: 0,
                     };
                     modelAgg.set(key, agg);
                 }
@@ -269,6 +355,14 @@ export class GMTracker {
                 if (c.cacheReadTokens > 0) { agg.cacheHits++; }
                 if (c.responseModel) { agg.responseModel = c.responseModel; }
                 if (c.apiProvider) { agg.apiProvider = c.apiProvider; }
+                if (c.completionConfig) { agg.completionConfig = c.completionConfig; }
+                if (c.systemPromptSnippet) { agg.hasSystemPrompt = true; }
+                if (c.toolCount > agg.toolCount) { agg.toolCount = c.toolCount; }
+                if (c.promptSectionTitles.length > agg.promptSectionTitles.length) {
+                    agg.promptSectionTitles = c.promptSectionTitles;
+                }
+                agg.totalRetries += c.retries;
+                if (c.hasError) { agg.errorCount++; }
             }
         }
 
@@ -298,6 +392,12 @@ export class GMTracker {
                 cacheHitRate: agg.callCount > 0 ? agg.cacheHits / agg.callCount : 0,
                 responseModel: agg.responseModel,
                 apiProvider: agg.apiProvider,
+                completionConfig: agg.completionConfig,
+                hasSystemPrompt: agg.hasSystemPrompt,
+                toolCount: agg.toolCount,
+                promptSectionTitles: agg.promptSectionTitles,
+                totalRetries: agg.totalRetries,
+                errorCount: agg.errorCount,
             };
         }
 

@@ -6,6 +6,8 @@ import { QuotaTracker } from './quota-tracker';
 import { ActivityTracker, ActivitySummary, ActivityArchive } from './activity-tracker';
 import { buildActivityTabContent, getActivityTabStyles } from './activity-panel';
 import { buildGMTabContent, getGMTabStyles } from './gm-panel';
+import { buildPricingTabContent, getPricingTabStyles } from './pricing-panel';
+import { PricingStore, ModelPricing } from './pricing-store';
 import { GMSummary } from './gm-tracker';
 import { ICON } from './webview-icons';
 import { buildMonitorSections } from './webview-monitor-tab';
@@ -30,6 +32,7 @@ let lastActivitySummary: ActivitySummary | null = null;
 let lastActivityTracker: ActivityTracker | undefined;
 let lastArchives: ActivityArchive[] = [];
 let lastGMSummary: GMSummary | null = null;
+let lastPricingStore: PricingStore | undefined;
 
 /** When true, auto-refresh updates are buffered but not rendered. */
 let isPaused = false;
@@ -52,6 +55,7 @@ export function showMonitorPanel(
     archives?: ActivityArchive[],
     activityTracker?: ActivityTracker,
     gmSummary?: GMSummary | null,
+    pricingStore?: PricingStore,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -63,6 +67,7 @@ export function showMonitorPanel(
     if (archives) { lastArchives = archives; }
     if (activityTracker) { lastActivityTracker = activityTracker; }
     if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
+    if (pricingStore) { lastPricingStore = pricingStore; }
 
     if (panel) {
         panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
@@ -164,6 +169,23 @@ export function showMonitorPanel(
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }
+        } else if (msg.command === 'savePricing' && lastPricingStore) {
+            const data = msg.value as Record<string, ModelPricing>;
+            if (data && typeof data === 'object') {
+                lastPricingStore.setAll(data).then(() => {
+                    if (panel) {
+                        panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                        panel.webview.postMessage({ command: 'pricingSaved' });
+                    }
+                });
+            }
+        } else if (msg.command === 'resetPricing' && lastPricingStore) {
+            lastPricingStore.reset().then(() => {
+                if (panel) {
+                    panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                    panel.webview.postMessage({ command: 'pricingReset' });
+                }
+            });
         }
     });
 
@@ -222,6 +244,9 @@ function buildHtml(
     const historyHtml = buildHistoryHtml(tracker, lastArchives);
     const activityHtml = buildActivityTabContent(lastActivitySummary, configs, tracker, lastArchives);
     const gmHtml = buildGMTabContent(lastGMSummary);
+    const pricingHtml = lastPricingStore
+        ? buildPricingTabContent(lastGMSummary, lastPricingStore)
+        : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
 
     const currentLang = getLanguage();
     return `<!DOCTYPE html>
@@ -233,6 +258,7 @@ function buildHtml(
 ${getStyles()}
 ${getActivityTabStyles()}
 ${getGMTabStyles()}
+${getPricingTabStyles()}
 </style>
 </head>
 <body data-privacy-default="${vscode.workspace.getConfiguration('antigravityContextMonitor').get('privacy.defaultMask', false)}">
@@ -264,6 +290,7 @@ ${getGMTabStyles()}
         <button class="tab-btn" data-tab="profile">${ICON.user} ${tBi('Profile', '个人')}</button>
         <button class="tab-btn" data-tab="activity">${ICON.bolt} ${tBi('Activity', '活动')}</button>
         <button class="tab-btn" data-tab="gmdata"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M8 4a.5.5 0 0 1 .5.5V6H10a.5.5 0 0 1 0 1H8.5v1.5a.5.5 0 0 1-1 0V7H6a.5.5 0 0 1 0-1h1.5V4.5A.5.5 0 0 1 8 4M3.732 12H4.5a.5.5 0 0 1 0 1H1.5a.5.5 0 0 1 0-1h.768l3.5-7H4.5a.5.5 0 0 1 0-1h3a.5.5 0 0 1 0 1h-.768zM7.5 11h3a.5.5 0 0 1 0 1H9.268l1.75 3.5H12.5a.5.5 0 0 1 0 1h-3a.5.5 0 0 1 0-1h1.232l-1.75-3.5H7.5a.5.5 0 0 1 0-1"/></svg> ${tBi('GM Data', 'GM 数据')}</button>
+        <button class="tab-btn" data-tab="pricing"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.315 0-1.667-1.104-2.512-3.233-3.037l-.445-.107V3.63c1.213.183 1.968.91 2.141 1.88h1.762c-.112-1.796-1.519-2.965-3.455-3.124V1.036H8.59v1.383C6.408 2.583 5.008 3.9 5.003 5.54c0 1.592 1.063 2.457 3.146 2.963l.399.1v3.979c-1.29-.183-2.113-.879-2.275-1.8H4zm4.586-4.34C7.494 6.137 6.94 5.695 6.94 5.092c0-.66.52-1.183 1.575-1.37v2.72h.071zm.889 2.283c1.335.36 1.942.846 1.942 1.548 0 .781-.633 1.35-1.823 1.493V8.851l-.119-.127z"/></svg> ${tBi('Pricing', '价格')}</button>
         <button class="tab-btn" data-tab="history">${ICON.timeline} ${tBi('History', '历史')}</button>
         <button class="tab-btn" data-tab="settings">${ICON.shield} ${tBi('Settings', '设置')}</button>
     </nav>
@@ -278,6 +305,9 @@ ${getGMTabStyles()}
     </div>
     <div class="tab-pane" id="tab-gmdata">
         ${gmHtml}
+    </div>
+    <div class="tab-pane" id="tab-pricing">
+        ${pricingHtml}
     </div>
     <div class="tab-pane" id="tab-history">
         ${historyHtml}
