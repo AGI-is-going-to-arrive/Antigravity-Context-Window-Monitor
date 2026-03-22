@@ -428,12 +428,16 @@ export class GMTracker {
         };
     }
 
-    /** Clear summary for archival boundary; keep cache to avoid cold-start RPC storm */
+    /**
+     * Full reset on quota boundary: clear all cached data.
+     * Pre-reset snapshot is already archived to dailyStore.addCycle()
+     * in extension.ts, so no data is lost.
+     * Next fetchAll() will re-fetch GM data for active conversations.
+     */
     reset(): void {
-        // _cache is intentionally preserved — IDLE conversations' metadata
-        // doesn't change across quota resets, so re-fetching is wasteful.
-        // Only RUNNING conversations will be refreshed on the next fetchAll().
+        this._cache.clear();
         this._lastSummary = null;
+        this._lastFetchedAt = '';
     }
 
     // ─── Serialization ───────────────────────────────────────────────────

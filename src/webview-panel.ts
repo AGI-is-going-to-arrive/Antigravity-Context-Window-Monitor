@@ -239,8 +239,35 @@ export function updateMonitorPanel(
     if (archives) { lastArchives = archives; }
     if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
     if (panel && !isPaused) {
-        panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
+        // Incremental update: send tab contents via postMessage — no DOM teardown
+        panel.webview.postMessage({
+            command: 'updateTabs',
+            tabs: buildTabContents(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, lastQuotaTracker),
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        });
     }
+}
+
+/** Build HTML for each tab pane (shared between full rebuild and incremental refresh). */
+function buildTabContents(
+    usage: ContextUsage | null,
+    allUsages: ContextUsage[],
+    configs: ModelConfig[],
+    userInfo: UserStatusInfo | null,
+    tracker?: QuotaTracker,
+): Record<string, string> {
+    return {
+        monitor: buildMonitorSections(usage, allUsages, configs, userInfo),
+        profile: buildProfileContent(userInfo, configs),
+        activity: buildActivityTabContent(lastActivitySummary, configs, tracker, lastArchives),
+        gmdata: buildGMTabContent(lastGMSummary),
+        pricing: lastPricingStore
+            ? buildPricingTabContent(lastGMSummary, lastPricingStore)
+            : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`,
+        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth),
+        history: buildHistoryHtml(tracker),
+        settings: buildSettingsContent(configs, tracker),
+    };
 }
 
 /** Whether the monitor panel is currently open. */
@@ -307,6 +334,21 @@ ${getCalendarTabStyles()}
             <span class="update-time">${paused ? `<span class="paused-indicator">${tBi('PAUSED', '已暂停')}</span>` : ''} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
         </div>
     </header>
+    <details class="disclaimer-banner" id="d-disclaimer">
+        <summary>
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>
+            ${tBi(
+                'Data Disclaimer — Data shown is estimated and may be inaccurate. Click to expand.',
+                '数据声明 — 所示数据为估算值，可能存在偏差。点击展开详情。'
+            )}
+        </summary>
+        <div class="disclaimer-body">
+            ${tBi(
+                'All data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Token counts, credit usage, model attribution, and other metrics are provided on a <strong>best-effort</strong> basis and may not reflect actual billing or usage. This extension is an independent, community project with <strong>no official endorsement</strong>. Use this data as a reference only.',
+                '所有数据均通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。Token 数量、积分消耗、模型归属等指标均为<strong>尽力而为</strong>的估算，不代表实际计费或用量。本扩展为独立社区项目，<strong>未获得官方认可</strong>。请仅将数据作为参考。'
+            )}
+        </div>
+    </details>
     <nav class="tab-bar">
         <button class="tab-btn active" data-tab="monitor">${ICON.chart} ${tBi('Monitor', '监控')}</button>
         <button class="tab-btn" data-tab="profile">${ICON.user} ${tBi('Profile', '个人')}</button>
