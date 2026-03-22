@@ -5,6 +5,8 @@ import { ModelConfig, UserStatusInfo } from './models';
 import { QuotaTracker } from './quota-tracker';
 import { ActivityTracker, ActivitySummary, ActivityArchive } from './activity-tracker';
 import { buildActivityTabContent, getActivityTabStyles } from './activity-panel';
+import { buildGMTabContent, getGMTabStyles } from './gm-panel';
+import { GMSummary } from './gm-tracker';
 import { ICON } from './webview-icons';
 import { buildMonitorSections } from './webview-monitor-tab';
 import { buildProfileContent } from './webview-profile-tab';
@@ -27,6 +29,7 @@ let lastQuotaTracker: QuotaTracker | undefined;
 let lastActivitySummary: ActivitySummary | null = null;
 let lastActivityTracker: ActivityTracker | undefined;
 let lastArchives: ActivityArchive[] = [];
+let lastGMSummary: GMSummary | null = null;
 
 /** When true, auto-refresh updates are buffered but not rendered. */
 let isPaused = false;
@@ -48,6 +51,7 @@ export function showMonitorPanel(
     initialTab?: string,
     archives?: ActivityArchive[],
     activityTracker?: ActivityTracker,
+    gmSummary?: GMSummary | null,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -58,6 +62,7 @@ export function showMonitorPanel(
     if (activitySummary !== undefined) { lastActivitySummary = activitySummary; }
     if (archives) { lastArchives = archives; }
     if (activityTracker) { lastActivityTracker = activityTracker; }
+    if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
 
     if (panel) {
         panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
@@ -181,6 +186,7 @@ export function updateMonitorPanel(
     tracker?: QuotaTracker,
     activitySummary?: ActivitySummary | null,
     archives?: ActivityArchive[],
+    gmSummary?: GMSummary | null,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -189,6 +195,7 @@ export function updateMonitorPanel(
     if (tracker) { lastQuotaTracker = tracker; }
     if (activitySummary !== undefined) { lastActivitySummary = activitySummary; }
     if (archives) { lastArchives = archives; }
+    if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
     if (panel && !isPaused) {
         panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
     }
@@ -214,6 +221,7 @@ function buildHtml(
     const settingsHtml = buildSettingsContent(configs, tracker);
     const historyHtml = buildHistoryHtml(tracker, lastArchives);
     const activityHtml = buildActivityTabContent(lastActivitySummary, configs, tracker, lastArchives);
+    const gmHtml = buildGMTabContent(lastGMSummary);
 
     const currentLang = getLanguage();
     return `<!DOCTYPE html>
@@ -224,6 +232,7 @@ function buildHtml(
 <style>
 ${getStyles()}
 ${getActivityTabStyles()}
+${getGMTabStyles()}
 </style>
 </head>
 <body data-privacy-default="${vscode.workspace.getConfiguration('antigravityContextMonitor').get('privacy.defaultMask', false)}">
@@ -254,6 +263,7 @@ ${getActivityTabStyles()}
         <button class="tab-btn active" data-tab="monitor">${ICON.chart} ${tBi('Monitor', '监控')}</button>
         <button class="tab-btn" data-tab="profile">${ICON.user} ${tBi('Profile', '个人')}</button>
         <button class="tab-btn" data-tab="activity">${ICON.bolt} ${tBi('Activity', '活动')}</button>
+        <button class="tab-btn" data-tab="gmdata"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M8 4a.5.5 0 0 1 .5.5V6H10a.5.5 0 0 1 0 1H8.5v1.5a.5.5 0 0 1-1 0V7H6a.5.5 0 0 1 0-1h1.5V4.5A.5.5 0 0 1 8 4M3.732 12H4.5a.5.5 0 0 1 0 1H1.5a.5.5 0 0 1 0-1h.768l3.5-7H4.5a.5.5 0 0 1 0-1h3a.5.5 0 0 1 0 1h-.768zM7.5 11h3a.5.5 0 0 1 0 1H9.268l1.75 3.5H12.5a.5.5 0 0 1 0 1h-3a.5.5 0 0 1 0-1h1.232l-1.75-3.5H7.5a.5.5 0 0 1 0-1"/></svg> ${tBi('GM Data', 'GM 数据')}</button>
         <button class="tab-btn" data-tab="history">${ICON.timeline} ${tBi('History', '历史')}</button>
         <button class="tab-btn" data-tab="settings">${ICON.shield} ${tBi('Settings', '设置')}</button>
     </nav>
@@ -265,6 +275,9 @@ ${getActivityTabStyles()}
     </div>
     <div class="tab-pane" id="tab-activity">
         ${activityHtml}
+    </div>
+    <div class="tab-pane" id="tab-gmdata">
+        ${gmHtml}
     </div>
     <div class="tab-pane" id="tab-history">
         ${historyHtml}

@@ -1,6 +1,6 @@
 # LS Monitor 技术实现文档
 
-> **v1.11.4** — 2026-03-21
+> **v1.12.2** — 2026-03-22
 
 > [!NOTE]
 > 本文档所描述的监控数据**完全依赖 LS（Language Server）的 gRPC-over-HTTP API** 返回的数据进行统计和展示。受限于 API 的约 5MB 响应大小限制（约 500 步），超出此窗口的步骤只能通过 `stepCount` 差值进行推算（标注为 📊 推算步数），无法获取精确分类。如有估算偏差或数据不完整，敬请谅解。
@@ -43,6 +43,7 @@ graph LR
 | `GetUserStatus` | 获取可用模型列表 (`clientModelConfigs`) |
 | `GetAllCascadeTrajectories` | 获取所有对话的 `stepCount` 和状态 |
 | `GetCascadeTrajectorySteps` | 获取某对话的全部步骤详情 |
+| `GetCascadeTrajectoryGeneratorMetadata` | 获取某对话的 `generatorMetadata[]`（轻量，不含完整 trajectory） |
 
 ## 步骤类型分类
 
@@ -568,3 +569,109 @@ if (currSteps <= entry.processedIndex) { continue; }
 | `cbAllZero` | conversationBreakdown 有条目但 token 全为 0（脏数据） |
 
 **教训**：每次新增持久化字段时，必须同步添加迁移检测条件。第三个条件（`cbAllZero`）是因为首次迁移时用了错误的字段路径（#23），产生了全 0 的脏数据，修复后需要检测并清除
+
+---
+
+## GM Data 基础设施（v1.12.2 新增）
+
+### 27. GetCascadeTrajectoryGeneratorMetadata — 轻量 RPC 端点
+
+**用途**：获取对话中每次 LLM 调用的精确数据，无需拉取完整 trajectory 或步骤数据。
+
+**请求**：`{ cascadeId }` — 只需对话 ID
+
+**返回 `generatorMetadata[]` 结构**：
+
+```
+generatorMetadata[i] = {
+  stepIndices: [4, 5, 6, ...],          // 该次 LLM 调用产生的步骤索引
+  chatModel: {
+    responseModel: "claude-opus-4-6-thinking",  // 真实模型名
+    usage: {
+      inputTokens:        12345,
+      outputTokens:        2345,
+      cacheReadTokens:    75000,         // 缓存读取（通常是 input 的 ~6 倍）
+      cacheCreationTokens:  5000,        // 缓存写入
+      thinkingOutputTokens: 1200,        // 思考 token（Gemini 独有）
+      apiProvider: "VERTEX_AI",          // API 路由
+    },
+    timeToFirstToken:  "3034567890",     // TTFT 纳秒
+    streamingDuration: "11090000000",    // 流式传输纳秒
+    consumedCredits: [{ creditAmount: 10, ... }],
+    completionConfig: { temperature: 0.4 },
+  },
+  chatStartMetadata: {
+    contextWindowMetadata: {
+      estimatedTokensUsed: 45000,        // LS 侧精确上下文用量
+      tokenBreakdown: [                  // 按来源分类的 token 分拆
+        { section: "system_prompt", tokens: 10000 },
+        { section: "conversation",  tokens: 35000 },
+      ],
+    },
+    timeSinceLastInvocation: "15000000000",  // 调用间隔纳秒
+    systemPromptCache: { contentChecksum: "abc123" },
+  },
+  hasError: false,
+}
+```
+
+**覆盖率实测**（3 个对话）：
+
+| 对话 | 总步数 | GM 调用 | 覆盖步数 | 覆盖率 |
+|---|---|---|---|---|
+| Android App Adaptation | 1349 | 381 | 904 | 67.0% |
+| Analyzing Model Capture Fixes | 1266 | 341 | 830 | 65.6% |
+| Refining Activity Panel | 938 | 256 | 620 | 66.1% |
+
+**覆盖率未达 100% 是正常的**——用户输入、工具执行、检查点恢复步骤不产生 LLM 调用，因此没有 `generatorMetadata`。
+
+### 28. responseModel vs generatorModel — 模型名称精度差异
+
+| 字段 | 来源 | 值 | 精度 |
+|---|---|---|---|
+| `step.metadata.generatorModel` | GetCascadeTrajectorySteps | `MODEL_PLACEHOLDER_M26` | ❌ 占位符 |
+| `chatModel.responseModel` | GetCascadeTrajectoryGeneratorMetadata | `claude-opus-4-6-thinking` | ✅ 真实模型名 |
+
+**教训**：如需精确模型名（如计费），必须使用 `generatorMetadata` 而非 step metadata。
+
+### 29. consumedCredits 积分计算规则
+
+**实测数据**（2026-03-21）：
+
+| responseModel | creditAmount |
+|---|---|
+| `claude-opus-4-6-thinking` | **10** |
+| `claude-3.5-sonnet` | **6** |
+| `gemini-2.5-flash-thinking` | **0** |
+
+**注**：`creditAmount` 表示该次 LLM 调用消耗的积分数。Gemini 模型免费（0），Claude Opus 最高（10）。
+
+### 30. 费用估算设计
+
+`gm-panel.ts` 中内置 `DEFAULT_PRICING` 常量，格式为 USD per 1 million tokens：
+
+```typescript
+const DEFAULT_PRICING: Record<string, ModelPricing> = {
+  'claude-opus-4': { input: 15, output: 75, cacheRead: 1.875 },
+  'claude-sonnet-4': { input: 3, output: 15, cacheRead: 0.30 },
+  'gemini-2.5-flash': { input: 0.15, output: 0.60, cacheRead: 0.0375 },
+  // ... 更多模型
+};
+```
+
+**价格匹配逻辑** — `findPricing()` 三级匹配：
+
+1. **精确匹配**：`responseModel === key`
+2. **前缀匹配**：`responseModel.startsWith(key)` — 覆盖像 `claude-opus-4-6-thinking` 匹配 `claude-opus-4` 的情况
+3. **子串匹配**：`responseModel.includes(key)` — 兜底
+
+**价格参考表**只展示会话中实际捕捉到的模型，不硬编码模型列表。标注匹配来源（「Auto」= 成功匹配，「Default 0」= 无匹配默认 $0）。
+
+### 31. cacheCreationTokens vs cacheReadTokens 的区别
+
+| 字段 | 含义 | 典型值 | 计费影响 |
+|---|---|---|---|
+| `cacheReadTokens` | 从缓存中读取已有内容的 token 数 | 高（是 input 的 ~6 倍） | 价格最低（input 的 1/8） |
+| `cacheCreationTokens` | 首次写入缓存的 token 数 | 仅在缓存未命中时产生 | 价格最高（input 的 1.25 倍） |
+
+实测缓存命中率 ~95.2%——绝大多数调用走 cacheRead（便宜），仅极少数触发 cacheCreation（昂贵）。

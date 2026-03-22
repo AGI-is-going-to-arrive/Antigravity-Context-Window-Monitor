@@ -17,6 +17,7 @@ import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible } from './w
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
+import { GMTracker, GMSummary } from './gm-tracker';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -39,6 +40,8 @@ const STATUS_REFRESH_INTERVAL = 2;
 let outputChannel: vscode.OutputChannel;
 let quotaTracker: QuotaTracker;
 let activityTracker: ActivityTracker;
+let gmTracker: GMTracker;
+let lastGMSummary: GMSummary | null = null;
 
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
@@ -127,6 +130,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize activity tracker
     const savedActivity = context.globalState.get<ActivityTrackerState>('activityTrackerState');
     activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
+    gmTracker = new GMTracker();
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = context.globalState.get<import('./models').ModelConfig[]>('cachedModelConfigs');
@@ -676,12 +680,27 @@ async function pollActivity(): Promise<void> {
             abortController.signal,
         );
 
-        if (activityChanged || !activityTracker.isReady) {
+        // Fetch GM data (piggyback on activity poll)
+        let gmChanged = false;
+        try {
+            const gmSummary = await gmTracker.fetchAll(
+                lsInfo,
+                trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
+                abortController.signal,
+            );
+            if (gmSummary.totalCalls !== (lastGMSummary?.totalCalls ?? 0)
+                || gmSummary.totalStepsCovered !== (lastGMSummary?.totalStepsCovered ?? 0)) {
+                lastGMSummary = gmSummary;
+                gmChanged = true;
+            }
+        } catch { /* GM fetch failure is non-critical */ }
+
+        if (activityChanged || gmChanged || !activityTracker.isReady) {
             const summary = activityTracker.getSummary();
 
             // Refresh WebView immediately when activity changes
             if (isMonitorPanelVisible() && currentUsage) {
-                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, summary, activityTracker.getArchives());
+                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, summary, activityTracker.getArchives(), lastGMSummary);
             }
         }
 
