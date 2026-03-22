@@ -15,7 +15,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 >
 > 🪟 **Windows**: Fully supported (v1.8.0+). Optimized discovery with `wmic` caching and PowerShell fallbacks.
 >
-> 🐧🪟 **WSL**: Fully supported (v1.12.0+). Detects WSL environment via `/proc/version` and uses Windows-side tools (`WMIC.exe`, `powershell.exe`, `netstat.exe`) through WSL interop for LS discovery. v1.12.1 adds `extensionKind: ["ui", "workspace"]` so the extension runs on the local Windows host when connected via Remote-WSL or Remote SSH — no extra configuration needed.
+> 🐧🪟 **WSL**: Fully supported (v1.12.0+). Detects WSL environment via `/proc/version` and uses Windows-side tools (`WMIC.exe`, `powershell.exe`, `netstat.exe`) through WSL interop for LS discovery. v1.12.1 adds `extensionKind: ["ui", "workspace"]` so the extension runs on the local Windows host when connected via Remote-WSL or Remote SSH. v1.12.2 fixes workspace URI matching for `vscode-remote://` URIs so conversation data displays correctly.
 
 ---
 
@@ -70,15 +70,14 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     * **🎛️ Status Bar Display Toggles**: Independent toggle switches to hide/show 'Context Usage', 'Quota Indicator', and 'Reset Countdown' in the status bar.
     * **⏸️ Pause/Resume**: Pause auto-refresh to freeze the panel while investigating data.
 
-* **🧠 Model Activity Monitor** *(v1.11.2, enhanced in v1.11.3)*
-    New Activity tab tracks real-time AI reasoning calls, tool usage, tokens, and timing per model across all conversations.
-    * **📊 Activity Status Bar**: Second status bar item showing live counts (`🧠5 ⚡12 🪙3.2k`). Click to open the Activity tab.
-    * **🔀 Activity Display Mode** *(v1.11.3)*: Choose between `global` (all models combined) or `currentModel` (stats for the active conversation's model only) in Settings.
+* **🧠 Model Activity Monitor** *(v1.11.2, enhanced in v1.11.3 & v1.12.2)*
+    New Activity tab tracks real-time AI reasoning calls, tool usage, tokens, and timing per model across all conversations. Access via the main status bar item or the `Show Model Activity` command.
     * **🔧 Tool Name Display** *(v1.11.3)*: Timeline entries show the tool name (e.g., `view_file`, `gh/search_issues`) with step index badges.
     * **⚡ Independent Activity Polling** *(v1.11.3)*: Activity tracking runs on a separate 3-second polling loop, decoupled from the global 5-second poll for faster updates.
-    * **🎯 Early Quota Tracking** *(v1.11.3)*: Quota consumption tracking now starts immediately when usage is detected via `resetTime` drift — no more 20+ minute delay waiting for fraction to drop below 100%.
+    * **🎯 Three-Layer Quota Detection** *(v1.12.2)*: Instant detection via elapsed-in-cycle comparison, drift-based detection via resetTime observation, and fraction-based detection. No more hardcoded cycle lengths — adapts to any quota cycle automatically.
+    * **🔀 Archive Debounce** *(v1.12.2)*: Cross-pool resets within 5 minutes are merged into a single archive entry, preventing fragmentation.
     * **💾 Persistence**: Activity stats survive VS Code restarts via `globalState`. Throttled to max once per 30s.
-    * **📋 Auto-Archive**: When model quota resets, current activity is automatically archived to history, giving per-cycle usage reports.
+    * **📋 Auto-Archive**: When model quota resets, current activity is automatically archived to history with source tracking (`triggeredBy`), giving per-cycle usage reports.
     * **📊 Estimated Steps**: When conversations exceed the LS API's ~500 step window, additional steps are tracked as estimated counts with clear `📊` markers.
     * **⚠️ Low Quota Notification**: Warning popup when any model's remaining quota drops below a configurable threshold (default 20%).
 
@@ -145,8 +144,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | `statusBar.showContext` | true | Show context usage (e.g. `45k/1M, 4.5%`) in status bar |
 | `statusBar.showQuota` | true | Show current model quota indicator (e.g. `🟢85%`) in status bar |
 | `statusBar.showResetCountdown` | true | Show quota reset countdown (e.g. `⏳4h32m`) in status bar |
-| `statusBar.showActivity` | true | Show model activity indicator (`🧠`, `⚡`, `🪙`) in status bar |
-| `statusBar.activityDisplayMode` | `global` | Activity display mode: `global` (all models) or `currentModel` (active model only) |
+
 | `quotaNotificationThreshold` | 20 | Show warning when model quota drops below this % (0 to disable) |
 | `activity.maxRecentSteps` | 100 | Max recent activity steps to keep in timeline |
 | `activity.maxArchives` | 20 | Max activity archives to keep |
@@ -167,4 +165,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.12.1
+**Version**: 1.12.2

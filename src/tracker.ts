@@ -260,6 +260,7 @@ export async function getAllTrajectories(ls: LSInfo, signal?: AbortSignal): Prom
 
 /**
  * Normalize a URI for comparison:
+ * - Strip vscode-remote:// scheme+authority (e.g., vscode-remote://wsl+Ubuntu/path → /path)
  * - Strip file:// prefix
  * - URL-decode (handle %20 etc.)
  * - Remove trailing slash
@@ -267,6 +268,13 @@ export async function getAllTrajectories(ls: LSInfo, signal?: AbortSignal): Prom
  */
 export function normalizeUri(uri: string): string {
     let normalized = uri;
+    // Handle vscode-remote:// URIs — extract just the path portion
+    // e.g., vscode-remote://wsl+Ubuntu/home/user/project → /home/user/project
+    // e.g., vscode-remote://ssh-remote+host/home/user/project → /home/user/project
+    const remoteMatch = normalized.match(/^vscode-remote:\/\/[^/]+(\/.*)/);
+    if (remoteMatch) {
+        normalized = remoteMatch[1];
+    }
     normalized = normalized.replace(/^file:\/\/\//, '/');
     normalized = normalized.replace(/^file:\/\//, '');
     try {

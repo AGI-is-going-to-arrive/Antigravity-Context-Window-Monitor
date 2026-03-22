@@ -63,8 +63,16 @@ export interface LSInfo {
  * Mirrors the conversion Antigravity uses for --workspace_id process argument.
  */
 export function buildExpectedWorkspaceId(workspaceUri: string): string {
+    let id = workspaceUri;
+    // Handle vscode-remote:// URIs — strip scheme+authority to get file path
+    // e.g., vscode-remote://wsl+Ubuntu/home/user/project → /home/user/project
+    const remoteMatch = id.match(/^vscode-remote:\/\/[^/]+(\/.*)/);
+    if (remoteMatch) {
+        // Reconstruct as file URI for consistent workspace_id generation
+        id = 'file://' + remoteMatch[1];
+    }
     // Step 1: Strip the URI scheme separator
-    let id = workspaceUri.replace(':///', '_');
+    id = id.replace(':///', '_');
     if (process.platform === 'win32' || isWSL()) {
         // Windows / WSL: the LS hex-encodes the drive-letter colon as _3A_ and
         // replaces hyphens with underscores. Encode colon BEFORE replacing

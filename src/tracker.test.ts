@@ -2,8 +2,41 @@ import { describe, it, expect } from 'vitest';
 import {
     processSteps,
     estimateTokensFromText,
+    normalizeUri,
 } from './tracker';
 import { StepType } from './constants';
+
+// ─── normalizeUri ────────────────────────────────────────────────────────────
+
+describe('normalizeUri', () => {
+    it('should strip file:/// prefix', () => {
+        expect(normalizeUri('file:///home/user/project')).toBe('/home/user/project');
+    });
+
+    it('should strip vscode-remote:// scheme+authority (WSL)', () => {
+        const result = normalizeUri('vscode-remote://wsl+Ubuntu/home/user/project');
+        expect(result).toBe('/home/user/project');
+    });
+
+    it('should strip vscode-remote:// scheme+authority (SSH)', () => {
+        const result = normalizeUri('vscode-remote://ssh-remote+myhost/home/user/project');
+        expect(result).toBe('/home/user/project');
+    });
+
+    it('should produce same result for file:// and vscode-remote:// with same path', () => {
+        const fileUri = normalizeUri('file:///home/user/project');
+        const remoteUri = normalizeUri('vscode-remote://wsl+Ubuntu/home/user/project');
+        expect(remoteUri).toBe(fileUri);
+    });
+
+    it('should decode URL-encoded characters', () => {
+        expect(normalizeUri('file:///home/user/my%20project')).toBe('/home/user/my project');
+    });
+
+    it('should remove trailing slash', () => {
+        expect(normalizeUri('file:///home/user/project/')).toBe('/home/user/project');
+    });
+});
 
 // ─── estimateTokensFromText ──────────────────────────────────────────────────
 
