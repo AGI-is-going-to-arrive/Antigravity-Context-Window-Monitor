@@ -318,6 +318,9 @@ export class ActivityTracker {
     private _checkpointHistory: CheckpointSnapshot[] = [];
     private _conversationBreakdown = new Map<string, ConversationBreakdown>();
     private _globalToolStats = new Map<string, number>();
+    // GM-sourced sub-agent supplements (runtime-only, rebuilt each injectGMData() call)
+    // Covers GM calls OUTSIDE the Steps API ~500 step window → no double-count with CP-based data
+    private _gmSubAgentTokens = new Map<string, SubAgentTokenEntry>();
     private _totalUserInputs = 0;
     private _totalCheckpoints = 0;
     private _totalErrors = 0;
@@ -942,6 +945,109 @@ export class ActivityTracker {
             virtualEvents.sort((a, b) => (a.stepIndex ?? 0) - (b.stepIndex ?? 0));
             this._recentSteps = [...virtualEvents, ...this._recentSteps];
         }
+
+        // ── GM-based sub-agent supplement: covers calls OUTSIDE the Steps API window ──
+        // Rebuilt from scratch each call → no dedup state needed
+        this._gmSubAgentTokens.clear();
+        for (const conv of gmSummary.conversations) {
+            // Determine the CP processing window boundary for this conversation
+            const trajEntry = this._trajectories.get(conv.cascadeId);
+            const cpWindowStart = trajEntry
+                ? trajEntry.stepCount - trajEntry.processedIndex
+                : 0;
+
+            // Determine dominant model: prefer trajectory cache, fall back to GM frequency
+            let dominantModel = trajEntry?.dominantModel || '';
+            if (!dominantModel && conv.calls.length > 0) {
+                const freq = new Map<string, number>();
+                for (const c of conv.calls) {
+                    const dm = c.modelDisplay || c.responseModel || '';
+                    if (dm) { freq.set(dm, (freq.get(dm) || 0) + 1); }
+                }
+                let topCount = 0;
+                for (const [m, cnt] of freq) {
+                    if (cnt > topCount) { topCount = cnt; dominantModel = m; }
+                }
+            }
+            if (!dominantModel) { continue; }
+
+            for (const call of conv.calls) {
+                // Skip calls within the CP processing window (already captured by _processStep)
+                const allInsideWindow = call.stepIndices.length > 0
+                    && call.stepIndices.every(idx => idx >= cpWindowStart);
+                if (allInsideWindow) { continue; }
+
+                // Skip if this is the main model (not a sub-agent)
+                const callDisplay = call.modelDisplay || call.responseModel || '';
+                if (!callDisplay || callDisplay === dominantModel) { continue; }
+
+                // This is a sub-agent call from OUTSIDE the CP window → supplement
+                const key = `${call.model}::${dominantModel}`;
+                const existing = this._gmSubAgentTokens.get(key);
+                if (existing) {
+                    existing.inputTokens += call.inputTokens;
+                    existing.outputTokens += call.outputTokens;
+                    existing.cacheReadTokens += call.cacheReadTokens;
+                    existing.count++;
+                    if (conv.cascadeId && !existing.cascadeIds?.includes(conv.cascadeId)) {
+                        (existing.cascadeIds ??= []).push(conv.cascadeId);
+                    }
+                } else {
+                    this._gmSubAgentTokens.set(key, {
+                        modelId: call.model,
+                        displayName: callDisplay,
+                        ownerModel: dominantModel,
+                        cascadeIds: [conv.cascadeId],
+                        inputTokens: call.inputTokens,
+                        outputTokens: call.outputTokens,
+                        cacheReadTokens: call.cacheReadTokens,
+                        count: 1,
+                        compressionEvents: 0,
+                        lastInputTokens: call.inputTokens,
+                    });
+                }
+            }
+        }
+
+        // ── P2: Correct conversationBreakdown steps count from GM ──
+        // Steps API window limits the step count visible to _updateConversationBreakdown.
+        // GM's totalSteps is accurate (no window limit).
+        for (const conv of gmSummary.conversations) {
+            const existing = this._conversationBreakdown.get(conv.cascadeId);
+            if (existing && conv.totalSteps > existing.steps) {
+                existing.steps = conv.totalSteps;
+            }
+        }
+
+        // ── P3: Supplement checkpointHistory with GM contextGrowth ──
+        // GM contextGrowth has per-call context token snapshots (no window limit).
+        // Prepend data points from OUTSIDE the step window to fill history gaps.
+        // Guard: only inject once (detect by checking if head already has virtual snapshots)
+        const alreadyInjected = this._checkpointHistory.length > 0
+            && this._checkpointHistory[0].timestamp === '';
+        if (!alreadyInjected && gmSummary.contextGrowth.length > 0 && existingIndices.size > 0) {
+            const cpMinStep = Math.min(...existingIndices);
+            const outsideGrowth = gmSummary.contextGrowth
+                .filter(pt => pt.step < cpMinStep && pt.tokens > 0);
+
+            if (outsideGrowth.length > 0) {
+                // Build virtual CheckpointSnapshots from GM contextGrowth
+                const virtualHistory: CheckpointSnapshot[] = outsideGrowth.map(pt => ({
+                    timestamp: '',   // GM doesn't provide per-point timestamps
+                    inputTokens: pt.tokens,
+                    outputTokens: 0, // GM contextGrowth only provides total context size
+                    compressed: false,
+                }));
+                // Detect compression in virtual history
+                for (let i = 1; i < virtualHistory.length; i++) {
+                    if (virtualHistory[i].inputTokens < virtualHistory[i - 1].inputTokens * 0.7) {
+                        virtualHistory[i].compressed = true;
+                    }
+                }
+                // Prepend to existing checkpoint history (which only covers the step window)
+                this._checkpointHistory = [...virtualHistory, ...this._checkpointHistory];
+            }
+        }
     }
 
     // ─── State Accessors ───────────────────────────────────────────────────
@@ -976,10 +1082,33 @@ export class ActivityTracker {
             }
         }
 
-        const subAgentTokens: SubAgentTokenEntry[] = [];
-        for (const [, entry] of this._subAgentTokens) {
-            subAgentTokens.push({ ...entry });
+        // Merge CP-based sub-agent data with GM supplements (window-outside calls)
+        const subAgentMerged = new Map<string, SubAgentTokenEntry>();
+        // 1. Start with CP-based data (persisted, within step window)
+        for (const [key, entry] of this._subAgentTokens) {
+            subAgentMerged.set(key, { ...entry });
         }
+        // 2. Merge GM supplements (outside step window, runtime-only)
+        for (const [key, gmEntry] of this._gmSubAgentTokens) {
+            const existing = subAgentMerged.get(key);
+            if (existing) {
+                existing.inputTokens += gmEntry.inputTokens;
+                existing.outputTokens += gmEntry.outputTokens;
+                existing.cacheReadTokens += gmEntry.cacheReadTokens;
+                existing.count += gmEntry.count;
+                // Merge cascadeIds
+                if (gmEntry.cascadeIds) {
+                    for (const cid of gmEntry.cascadeIds) {
+                        if (!existing.cascadeIds?.includes(cid)) {
+                            (existing.cascadeIds ??= []).push(cid);
+                        }
+                    }
+                }
+            } else {
+                subAgentMerged.set(key, { ...gmEntry, cascadeIds: [...(gmEntry.cascadeIds || [])] });
+            }
+        }
+        const subAgentTokens: SubAgentTokenEntry[] = [...subAgentMerged.values()];
 
         const conversationBreakdown: ConversationBreakdown[] = [];
         for (const [, entry] of this._conversationBreakdown) {
@@ -1213,6 +1342,11 @@ export class ActivityTracker {
                     this._subAgentTokens.delete(key);
                 }
             }
+            for (const [key, entry] of this._gmSubAgentTokens) {
+                if (entry.ownerModel && poolDisplayNames.has(entry.ownerModel)) {
+                    this._gmSubAgentTokens.delete(key);
+                }
+            }
             // Recompute _gmTotals from remaining breakdown
             if (this._gmModelBreakdown && Object.keys(this._gmModelBreakdown).length > 0) {
                 let inp = 0, out = 0, cache = 0, credits = 0, retries = 0;
@@ -1235,6 +1369,7 @@ export class ActivityTracker {
             // Global reset — clear everything
             this._modelStats.clear();
             this._subAgentTokens.clear();
+            this._gmSubAgentTokens.clear();
             this._checkpointHistory = [];
             this._conversationBreakdown.clear();
             this._globalToolStats.clear();
@@ -1260,6 +1395,7 @@ export class ActivityTracker {
     reset(): void {
         this._modelStats.clear();
         this._subAgentTokens.clear();
+        this._gmSubAgentTokens.clear();
         this._checkpointHistory = [];
         this._conversationBreakdown.clear();
         this._globalToolStats.clear();
@@ -1341,9 +1477,15 @@ export class ActivityTracker {
         }
 
         // Restore conversation breakdown (backward compatible)
+        // BUG FIX: ConversationBreakdown.id stores short 8-char ID, but Map key should be
+        // full cascadeId (matching _updateConversationBreakdown). Use trajectory baselines to
+        // reconstruct full cascadeId keys.
         if (Array.isArray((s as unknown as Record<string, unknown>).conversationBreakdown)) {
+            const trajKeys = Object.keys(data.trajectoryBaselines || {});
             for (const cb of s.conversationBreakdown) {
-                tracker._conversationBreakdown.set(cb.id, { ...cb });
+                // Try to find full cascadeId from trajectory baselines
+                const fullKey = trajKeys.find(k => k.startsWith(cb.id)) || cb.id;
+                tracker._conversationBreakdown.set(fullKey, { ...cb });
             }
         }
 

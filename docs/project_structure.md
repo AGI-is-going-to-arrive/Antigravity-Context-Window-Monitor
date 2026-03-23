@@ -204,9 +204,13 @@ Tracks model activity details: reasoning count, tool usage, token consumption, t
 | 步骤分类 / Step classification | 22 种步骤类型 → reasoning / tool / user / system |
 | 独立轮询 / Independent poll | 3 秒独立循环，不受全局 poll 影响 |
 | GM 注入 / GM injection | 将 GM 精确 token / cache / credits 注入 Timeline |
-| 池级归档 / Per-pool archive | 只清空匹配 pool 的模型统计、Timeline、GM breakdown、sub-agent 归属 |
+| GM 窗口突破 / GM window bypass | `_gmSubAgentTokens`（运行时 Map）从无窗口限制的 GM 数据提取步骤窗口外的子智能体调用，在 `getSummary()` 中与 CP 数据合并 |
+| GM 步数修正 / GM steps fix | 用 `GMConversationData.totalSteps` 修正 `_conversationBreakdown.steps`（不受 ~500 步窗口限制） |
+| GM 增长历史 / GM growth history | 用 `contextGrowth` 补充 `_checkpointHistory` 中窗口外的上下文增长数据（含压缩检测，一次性注入） |
+| 子智能体归属 / Sub-agent attribution | `SubAgentTokenEntry.cascadeIds` 追踪消耗来源对话，`_processStep()` 透传 `cascadeId` |
+| 池级归档 / Per-pool archive | 只清空匹配 pool 的模型统计、Timeline、GM breakdown、sub-agent 归属（含 `_gmSubAgentTokens`） |
 | 口径清理 / Metric cleanup | 工具排行从剩余 `modelStats.toolBreakdown` 重算，避免跨池残留 |
-| 序列化 / Serialization | `serialize()` / `restore()` 支持跨会话恢复与迁移检测 |
+| 序列化 / Serialization | `serialize()` / `restore()` 支持跨会话恢复与迁移检测，`_conversationBreakdown` key 通过 trajectory baselines 重建 |
 
 ---
 
