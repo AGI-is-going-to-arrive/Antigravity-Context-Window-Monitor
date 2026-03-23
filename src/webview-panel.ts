@@ -94,6 +94,32 @@ function refreshLocalStorageDiagnostics(): void {
     };
 }
 
+function clearDisposedPanel(): void {
+    panel = undefined;
+    isPaused = false;
+}
+
+function isDisposedWebviewError(err: unknown): boolean {
+    return err instanceof Error && /disposed/i.test(err.message);
+}
+
+/**
+ * VS Code currently throws disposed WebView errors synchronously from postMessage().
+ * Keep this as a sync try/catch so non-disposed failures preserve their call stack.
+ */
+function safePostMessage(message: unknown): void {
+    if (!panel) { return; }
+    try {
+        panel.webview.postMessage(message);
+    } catch (err) {
+        if (isDisposedWebviewError(err)) {
+            clearDisposedPanel();
+            return;
+        }
+        throw err;
+    }
+}
+
 /** When true, auto-refresh updates are buffered but not rendered. */
 let isPaused = false;
 
@@ -142,7 +168,7 @@ export function showMonitorPanel(
     if (panel) {
         panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
         panel.reveal(vscode.ViewColumn.Two, true);
-        if (initialTab) { setTimeout(() => panel?.webview.postMessage({ command: 'switchToTab', tab: initialTab }), 100); }
+        if (initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: initialTab }), 100); }
         return;
     }
 
@@ -154,7 +180,7 @@ export function showMonitorPanel(
     );
 
     panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
-    if (initialTab) { setTimeout(() => panel?.webview.postMessage({ command: 'switchToTab', tab: initialTab }), 100); }
+    if (initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: initialTab }), 100); }
 
     panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string }) => {
         if (msg.command === 'switchLanguage' && msg.lang && extensionCtx) {
@@ -170,21 +196,21 @@ export function showMonitorPanel(
             if (!isPaused && panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             } else if (panel) {
-                panel.webview.postMessage({ command: 'setPaused', paused: isPaused });
+                safePostMessage({ command: 'setPaused', paused: isPaused });
             }
         } else if (msg.command === 'setThreshold' && typeof msg.value === 'number') {
             const val = Math.max(10_000, msg.value);
             await vscode.workspace.getConfiguration('antigravityContextMonitor')
                 .update('compressionWarningThreshold', val, vscode.ConfigurationTarget.Global);
             if (panel) {
-                panel.webview.postMessage({ command: 'thresholdSaved' });
+                safePostMessage({ command: 'thresholdSaved' });
             }
         } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
             const val = Math.max(1, Math.min(60, msg.value));
             await vscode.workspace.getConfiguration('antigravityContextMonitor')
                 .update('pollingInterval', val, vscode.ConfigurationTarget.Global);
             if (panel) {
-                panel.webview.postMessage({ command: 'configSaved', key: 'pollingInterval' });
+                safePostMessage({ command: 'configSaved', key: 'pollingInterval' });
             }
         } else if (msg.command === 'setConfig' && msg.key) {
             const allowedKeys = [
@@ -202,12 +228,12 @@ export function showMonitorPanel(
                 await vscode.workspace.getConfiguration('antigravityContextMonitor')
                     .update(msg.key, normalizedValue, vscode.ConfigurationTarget.Global);
                 if (panel) {
-                    panel.webview.postMessage({ command: 'configSaved', key: msg.key });
+                    safePostMessage({ command: 'configSaved', key: msg.key });
                 }
             }
         } else if (msg.command === 'copyStatePath' && lastStorageDiagnostics?.stateFilePath) {
             await vscode.env.clipboard.writeText(lastStorageDiagnostics.stateFilePath);
-            panel?.webview.postMessage({ command: 'configSaved', key: 'statePath' });
+            safePostMessage({ command: 'configSaved', key: 'statePath' });
         } else if (msg.command === 'openStateFile' && lastStorageDiagnostics?.stateFilePath) {
             const uri = vscode.Uri.file(lastStorageDiagnostics.stateFilePath);
             const exists = await vscode.workspace.fs.stat(uri).then(() => true, () => false);
@@ -235,7 +261,7 @@ export function showMonitorPanel(
             if (lastQuotaTracker) {
                 lastQuotaTracker.setMaxHistory(clamp(msg.value, 1, 100));
                 if (panel) {
-                    panel.webview.postMessage({ command: 'configSaved', key: 'quotaMaxHistory' });
+                    safePostMessage({ command: 'configSaved', key: 'quotaMaxHistory' });
                 }
             }
         } else if (msg.command === 'toggleQuotaTracking') {
@@ -278,7 +304,7 @@ export function showMonitorPanel(
                     refreshLocalStorageDiagnostics();
                     if (panel) {
                         panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
-                        panel.webview.postMessage({ command: 'pricingSaved' });
+                        safePostMessage({ command: 'pricingSaved' });
                     }
                 });
             }
@@ -287,7 +313,7 @@ export function showMonitorPanel(
                 refreshLocalStorageDiagnostics();
                 if (panel) {
                     panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
-                    panel.webview.postMessage({ command: 'pricingReset' });
+                    safePostMessage({ command: 'pricingReset' });
                 }
             });
         } else if (msg.command === 'clearCalendarHistory' && lastDailyStore) {
@@ -321,8 +347,7 @@ export function showMonitorPanel(
     });
 
     panel.onDidDispose(() => {
-        panel = undefined;
-        isPaused = false;  // Reset pause on close
+        clearDisposedPanel();
     });
 }
 
@@ -355,7 +380,7 @@ export function updateMonitorPanel(
     if (storageDiagnostics) { lastStorageDiagnostics = storageDiagnostics; }
     if (panel && !isPaused) {
         // Incremental update: send tab contents via postMessage — no DOM teardown
-        panel.webview.postMessage({
+        safePostMessage({
             command: 'updateTabs',
             tabs: buildTabContents(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, lastQuotaTracker),
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),

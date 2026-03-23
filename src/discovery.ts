@@ -64,6 +64,11 @@ export interface LSInfo {
  */
 export function buildExpectedWorkspaceId(workspaceUri: string): string {
     let id = workspaceUri;
+    try {
+        id = decodeURIComponent(id);
+    } catch {
+        // Keep the raw URI if decoding fails.
+    }
     // Handle vscode-remote:// URIs — strip scheme+authority to get file path
     // e.g., vscode-remote://wsl+Ubuntu/home/user/project → /home/user/project
     const remoteMatch = id.match(/^vscode-remote:\/\/[^/]+(\/.*)/);
@@ -112,6 +117,22 @@ export function extractCsrfToken(line: string): string | null {
 export function extractWorkspaceId(line: string): string | null {
     const match = line.match(/--workspace_id\s+([^\s]+)/);
     return match ? match[1] : null;
+}
+
+/**
+ * Select the LS process line for the current workspace.
+ * Without a workspace URI, falls back to the first discovered LS.
+ * With a workspace URI, fail closed if no exact workspace_id match exists.
+ */
+export function selectMatchingProcessLine(lines: readonly string[], workspaceUri?: string): string | null {
+    if (lines.length === 0) {
+        return null;
+    }
+    if (!workspaceUri) {
+        return lines[0];
+    }
+    const expectedWorkspaceId = buildExpectedWorkspaceId(workspaceUri);
+    return lines.find(line => extractWorkspaceId(line) === expectedWorkspaceId) ?? null;
 }
 
 /**
@@ -201,14 +222,9 @@ async function discoverWslLanguageServer(
         }
 
         // 2. Match workspace_id if possible
-        let targetLine = psLines[0];
-        const expectedWsId = buildExpectedWorkspaceId(workspaceUri);
-        const matchedLine = psLines.find(line => {
-            const wsId = extractWorkspaceId(line);
-            return wsId === expectedWsId;
-        });
-        if (matchedLine) {
-            targetLine = matchedLine;
+        const targetLine = selectMatchingProcessLine(psLines, workspaceUri);
+        if (!targetLine) {
+            return null;
         }
 
         // 3. Extract CSRF token
@@ -425,16 +441,9 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
             }
 
             // Find the line matching our workspace
-            let targetLine = lines[0];
-            if (workspaceUri) {
-                const expectedWorkspaceId = buildExpectedWorkspaceId(workspaceUri);
-                const matchedLine = lines.find(line => {
-                    const wsId = extractWorkspaceId(line);
-                    return wsId === expectedWorkspaceId;
-                });
-                if (matchedLine) {
-                    targetLine = matchedLine;
-                }
+            const targetLine = selectMatchingProcessLine(lines, workspaceUri);
+            if (!targetLine) {
+                return null;
             }
 
             // Extract CSRF token from the command line string
@@ -489,22 +498,9 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
                 return null;
             }
 
-            let targetLine = lines[0]; // fallback to first if no specific match
-
-            if (workspaceUri) {
-                // Antigravity replaces ':///' with '_' and '/' with '_' for the workspace_id arg
-                // e.g. file:///Users/foo/bar -> file_Users_foo_bar
-                const expectedWorkspaceId = buildExpectedWorkspaceId(workspaceUri);
-
-                // Look for the specific process serving this workspace
-                const matchedLine = lines.find(line => {
-                    const wsId = extractWorkspaceId(line);
-                    return wsId === expectedWorkspaceId;
-                });
-
-                if (matchedLine) {
-                    targetLine = matchedLine;
-                }
+            const targetLine = selectMatchingProcessLine(lines, workspaceUri);
+            if (!targetLine) {
+                return null;
             }
 
             const firstLine = targetLine.trim();

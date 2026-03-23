@@ -9,6 +9,7 @@ import {
     extractPortFromNetstat,
     extractPortFromSs,
     isWSL,
+    selectMatchingProcessLine,
 } from '../src/discovery';
 
 describe('discovery.ts', () => {
@@ -42,6 +43,12 @@ describe('discovery.ts', () => {
                 const uri = 'file:///c:/my-project';
                 const result = buildExpectedWorkspaceId(uri);
                 expect(result).toBe('file_c_3A_my_project');
+            });
+
+            it('should decode percent-encoded Windows drive letters before building workspace id', () => {
+                const uri = 'file:///c%3A/Users/foo/my-project';
+                const result = buildExpectedWorkspaceId(uri);
+                expect(result).toBe('file_c_3A_Users_foo_my_project');
             });
         }
     });
@@ -82,6 +89,54 @@ describe('discovery.ts', () => {
             const filtered = filterLsProcessLines(lines);
             expect(filtered).toHaveLength(2);
             expect(filtered[0]).toContain('100');
+        });
+    });
+
+    describe('selectMatchingProcessLine', () => {
+        function workspaceUriForCurrentPlatform(name: string): string {
+            return process.platform === 'win32'
+                ? `file:///c:/Users/foo/${name}`
+                : `file:///Users/foo/${name}`;
+        }
+
+        function makeLine(workspaceId?: string): string {
+            const suffix = workspaceId ? ` --workspace_id ${workspaceId}` : '';
+            return `language_server_windows --csrf_token token${suffix}`;
+        }
+
+        it('falls back to the first line when workspaceUri is missing', () => {
+            const lines = [makeLine('ws_a'), makeLine('ws_b')];
+            expect(selectMatchingProcessLine(lines)).toBe(lines[0]);
+        });
+
+        it('returns the exact workspace match when one exists', () => {
+            const workspaceUri = workspaceUriForCurrentPlatform('project-b');
+            const expected = buildExpectedWorkspaceId(workspaceUri);
+            const lines = [makeLine('other_workspace'), makeLine(expected)];
+            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(lines[1]);
+        });
+
+        it('returns null when workspaceUri exists but no line matches', () => {
+            const workspaceUri = workspaceUriForCurrentPlatform('project-c');
+            const lines = [makeLine('different_workspace')];
+            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(null);
+        });
+
+        it('returns null when lines do not include a workspace_id flag', () => {
+            const workspaceUri = workspaceUriForCurrentPlatform('project-d');
+            const lines = [makeLine()];
+            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(null);
+        });
+
+        it('returns null for empty input', () => {
+            expect(selectMatchingProcessLine([], workspaceUriForCurrentPlatform('project-e'))).toBe(null);
+        });
+
+        it('still finds the exact match among mixed lines', () => {
+            const workspaceUri = workspaceUriForCurrentPlatform('project-f');
+            const expected = buildExpectedWorkspaceId(workspaceUri);
+            const lines = [makeLine(), makeLine('unrelated_workspace'), makeLine(expected)];
+            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(lines[2]);
         });
     });
 
