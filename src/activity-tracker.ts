@@ -50,7 +50,6 @@ function classifyStep(type: string): StepClassification {
 
 export interface ModelActivityStats {
     modelName: string;
-    userInputs: number;
     reasoning: number;
     toolCalls: number;
     errors: number;
@@ -64,8 +63,6 @@ export interface ModelActivityStats {
     toolBreakdown: Record<string, number>;
     /** Estimated steps from stepCount delta (beyond API ~500 step window) */
     estSteps: number;
-    /** Earliest observed timestamp for this model in current cycle */
-    firstSeenAt?: string;
 }
 
 /** A single step event for the timeline */
@@ -107,16 +104,10 @@ export interface ActivityArchive {
     recentSteps?: StepEvent[];
 }
 
-interface ArchiveResetOptions {
-    startTime?: string;
-    endTime?: string;
-}
-
 /** Sub-agent token consumption (e.g. FLASH_LITE for checkpoint summaries) */
 export interface SubAgentTokenEntry {
     modelId: string;
     displayName: string;
-    ownerModel?: string;
     inputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;     // cache read tokens consumed
@@ -278,18 +269,6 @@ function extractToolName(step: Record<string, unknown>, fallbackLabel: string): 
         }
     } catch { /* fallback */ }
     return fallbackLabel;
-}
-
-function sameTriggeredByScope(a?: string[], b?: string[]): boolean {
-    if (!a?.length && !b?.length) {
-        return true;
-    }
-    if (!a?.length || !b?.length || a.length !== b.length) {
-        return false;
-    }
-    const left = [...a].sort();
-    const right = [...b].sort();
-    return left.every((value, index) => value === right[index]);
 }
 
 // ─── ActivityTracker Class ───────────────────────────────────────────────────
@@ -562,19 +541,11 @@ export class ActivityTracker {
         const dur = cls.category === 'tool' ? stepDurationTool(meta) : stepDurationReasoning(meta);
         // Use our own clock for reliable local timezone; LS's createdAt may lack TZ info
         const timestamp = emitEvent ? new Date().toISOString() : '';
-        const observedAt = (meta.createdAt as string) || new Date().toISOString();
 
         // USER_INPUT
         if (cls.category === 'user') {
             this._totalUserInputs++;
             this._trackSample('', 'other');
-            if (contextModel) {
-                const s = this._getOrCreateStats(contextModel);
-                s.userInputs++;
-                if (!s.firstSeenAt || new Date(observedAt).getTime() < new Date(s.firstSeenAt).getTime()) {
-                    s.firstSeenAt = observedAt;
-                }
-            }
             const userInput = step.userInput as Record<string, unknown> | undefined;
             const items = userInput?.items as Record<string, string>[] | undefined;
             const text = Array.isArray(items) && items.length > 0 ? (items[0].text || '') : '';
@@ -605,16 +576,13 @@ export class ActivityTracker {
                     s.checkpoints++;
                     s.inputTokens += inTok;
                     s.outputTokens += outTok;
-                    if (!s.firstSeenAt || new Date(observedAt).getTime() < new Date(s.firstSeenAt).getTime()) {
-                        s.firstSeenAt = observedAt;
-                    }
                 }
                 // Track sub-agent: when modelUsage.model differs from attrModel
                 const rawModel = mu.model || '';
                 const rawDisplay = rawModel ? getModelDisplayName(rawModel) : '';
                 const cacheTok = parseInt(mu.cacheReadTokens || '0', 10);
                 if (rawModel && rawDisplay && rawDisplay !== attrModel) {
-                    const key = `${rawModel}::${attrModel || 'unknown'}`;
+                    const key = rawModel;
                     const existing = this._subAgentTokens.get(key);
                     if (existing) {
                         // Detect compression: inputTokens dropped ≥30% vs previous checkpoint
@@ -629,7 +597,6 @@ export class ActivityTracker {
                         this._subAgentTokens.set(key, {
                             modelId: rawModel,
                             displayName: rawDisplay,
-                            ownerModel: attrModel || undefined,
                             inputTokens: inTok,
                             outputTokens: outTok,
                             cacheReadTokens: cacheTok,
@@ -660,9 +627,6 @@ export class ActivityTracker {
                 const s = this._getOrCreateStats(model);
                 s.totalSteps++;
                 s.errors++;
-                if (!s.firstSeenAt || new Date(observedAt).getTime() < new Date(s.firstSeenAt).getTime()) {
-                    s.firstSeenAt = observedAt;
-                }
             }
             if (emitEvent) {
                 this._pushEvent({ timestamp, icon: cls.icon, category: 'system', model: model || 'unknown', detail: 'error', durationMs: 0, stepIndex });
@@ -675,9 +639,6 @@ export class ActivityTracker {
 
         const s = this._getOrCreateStats(model);
         s.totalSteps++;
-        if (!s.firstSeenAt || new Date(observedAt).getTime() < new Date(s.firstSeenAt).getTime()) {
-            s.firstSeenAt = observedAt;
-        }
 
         if (cls.category === 'reasoning') {
             s.reasoning++;
@@ -942,33 +903,23 @@ export class ActivityTracker {
 
     getSummary(): ActivitySummary {
         const modelStats: Record<string, ModelActivityStats> = {};
-        let totalUserInputs = 0, totalReasoning = 0, totalToolCalls = 0, totalErrors = 0, totalCheckpoints = 0;
+        let totalReasoning = 0, totalToolCalls = 0, totalErrors = 0;
         let estSteps = 0;
         let totalInputTokens = 0, totalOutputTokens = 0, totalToolReturnTokens = 0;
-        let sessionStartTime = this._sessionStartTime;
 
         for (const [name, s] of this._modelStats) {
             modelStats[name] = { ...s };
-            totalUserInputs += s.userInputs;
             totalReasoning += s.reasoning;
             totalToolCalls += s.toolCalls;
             totalErrors += s.errors;
-            totalCheckpoints += s.checkpoints;
             estSteps += s.estSteps;
             totalInputTokens += s.inputTokens;
             totalOutputTokens += s.outputTokens;
             totalToolReturnTokens += s.toolReturnTokens;
-            if (s.firstSeenAt && (!sessionStartTime || new Date(s.firstSeenAt).getTime() < new Date(sessionStartTime).getTime())) {
-                sessionStartTime = s.firstSeenAt;
-            }
         }
 
         const globalToolStats: Record<string, number> = {};
-        for (const stats of Object.values(modelStats)) {
-            for (const [toolName, count] of Object.entries(stats.toolBreakdown)) {
-                globalToolStats[toolName] = (globalToolStats[toolName] || 0) + count;
-            }
-        }
+        for (const [k, v] of this._globalToolStats) { globalToolStats[k] = v; }
 
         const subAgentTokens: SubAgentTokenEntry[] = [];
         for (const [, entry] of this._subAgentTokens) {
@@ -1001,11 +952,11 @@ export class ActivityTracker {
         ).length;
 
         return {
-            totalUserInputs,
+            totalUserInputs: this._totalUserInputs,
             totalReasoning,
             totalToolCalls,
-            totalErrors,
-            totalCheckpoints,
+            totalErrors: this._totalErrors,
+            totalCheckpoints: this._totalCheckpoints,
             totalInputTokens,
             totalOutputTokens,
             totalToolReturnTokens,
@@ -1013,7 +964,7 @@ export class ActivityTracker {
             modelStats,
             globalToolStats,
             recentSteps: [...this._recentSteps],
-            sessionStartTime,
+            sessionStartTime: this._sessionStartTime,
             subAgentTokens,
             checkpointHistory: [...this._checkpointHistory],
             conversationBreakdown,
@@ -1070,181 +1021,63 @@ export class ActivityTracker {
     getArchives(): ActivityArchive[] { return [...this._archives]; }
 
     /**
-     * Archive current activity data and reset stats.
+     * Archive current activity data and reset all stats.
      * Called when quota resets (fraction jumps back to 1.0).
-     * @param modelIds - Optional model IDs whose quota triggered this archive.
-     *   When provided, only stats for those models are archived and cleared;
-     *   other models' data is preserved (per-pool isolation).
+     * @param modelIds - Optional model IDs whose quota triggered this archive
      */
-    archiveAndReset(modelIds?: string[], options?: ArchiveResetOptions): ActivityArchive | null {
+    archiveAndReset(modelIds?: string[]): void {
+        const summary = this.getSummary();
         const maxArchives = getMaxArchives();
-        const archiveStartTime = options?.startTime || this._sessionStartTime;
-        const archiveEndTime = options?.endTime || new Date().toISOString();
-
-        // ── Determine which display names belong to the resetting pool ──
-        const poolDisplayNames = new Set<string>();
-        if (modelIds && modelIds.length > 0) {
-            for (const id of modelIds) {
-                poolDisplayNames.add(getModelDisplayName(id));
-            }
-        }
-        const isPoolReset = poolDisplayNames.size > 0;
-
-        // ── Build summary ──
-        // For pool resets: build a filtered summary containing only pool models.
-        // For global resets (no modelIds): use full summary.
-        const fullSummary = this.getSummary();
-        let archiveSummary: ActivitySummary = fullSummary;
-
-        if (isPoolReset) {
-            // Filter modelStats to pool models only
-            const poolModelStats: Record<string, ModelActivityStats> = {};
-            let poolReasoning = 0, poolToolCalls = 0, poolErrors = 0;
-            let poolEstSteps = 0, poolInputTokens = 0, poolOutputTokens = 0, poolToolReturnTokens = 0;
-            for (const [name, s] of Object.entries(fullSummary.modelStats)) {
-                if (poolDisplayNames.has(name)) {
-                    poolModelStats[name] = { ...s };
-                    poolReasoning += s.reasoning;
-                    poolToolCalls += s.toolCalls;
-                    poolErrors += s.errors;
-                    poolEstSteps += s.estSteps;
-                    poolInputTokens += s.inputTokens;
-                    poolOutputTokens += s.outputTokens;
-                    poolToolReturnTokens += s.toolReturnTokens;
-                }
-            }
-            // Filter timeline events to pool models
-            const poolSteps = fullSummary.recentSteps.filter(ev =>
-                !ev.model || poolDisplayNames.has(ev.model)
-            );
-            archiveSummary = {
-                ...fullSummary,
-                modelStats: poolModelStats,
-                totalReasoning: poolReasoning,
-                totalToolCalls: poolToolCalls,
-                totalErrors: poolErrors,
-                estSteps: poolEstSteps,
-                totalInputTokens: poolInputTokens,
-                totalOutputTokens: poolOutputTokens,
-                totalToolReturnTokens: poolToolReturnTokens,
-                recentSteps: poolSteps,
-                subAgentTokens: archiveSummary.subAgentTokens.filter(entry =>
-                    !!entry.ownerModel && poolDisplayNames.has(entry.ownerModel)
-                ),
-                // Filter GM breakdown to pool models
-                gmModelBreakdown: fullSummary.gmModelBreakdown
-                    ? Object.fromEntries(
-                        Object.entries(fullSummary.gmModelBreakdown)
-                            .filter(([name]) => poolDisplayNames.has(name))
-                    )
-                    : undefined,
-            };
-        } else {
-            archiveSummary = fullSummary;
-        }
-
         // BUG FIX: preserve timeline events into archive before clearing
-        const archivedSteps = isPoolReset
-            ? archiveSummary.recentSteps
-            : [...this._recentSteps];
-
-        // Only archive if there's meaningful activity for the pool
-        const hasActivity = archiveSummary.totalReasoning > 0 || archiveSummary.totalToolCalls > 0;
-        let archivedEntry: ActivityArchive | null = null;
-        if (hasActivity) {
+        const archivedSteps = [...this._recentSteps];
+        // Only archive if there's meaningful activity
+        if (summary.totalReasoning > 0 || summary.totalToolCalls > 0) {
             const now = Date.now();
             const lastArchive = this._archives[0];
             const lastEndMs = lastArchive ? new Date(lastArchive.endTime).getTime() : 0;
             const MIN_ARCHIVE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-            if (lastArchive
-                && (now - lastEndMs) < MIN_ARCHIVE_INTERVAL_MS
-                && sameTriggeredByScope(lastArchive.triggeredBy, modelIds)) {
+            if (lastArchive && (now - lastEndMs) < MIN_ARCHIVE_INTERVAL_MS) {
                 // Debounce: merge into the most recent archive
-                lastArchive.endTime = archiveEndTime;
-                lastArchive.summary = archiveSummary;
+                lastArchive.endTime = new Date().toISOString();
+                lastArchive.summary = summary;
                 lastArchive.recentSteps = archivedSteps;
                 if (modelIds) {
                     lastArchive.triggeredBy = [
                         ...new Set([...(lastArchive.triggeredBy || []), ...modelIds]),
                     ];
                 }
-                archivedEntry = lastArchive;
             } else {
-                archivedEntry = {
-                    startTime: archiveStartTime,
-                    endTime: archiveEndTime,
-                    summary: archiveSummary,
+                this._archives.unshift({
+                    startTime: this._sessionStartTime,
+                    endTime: new Date().toISOString(),
+                    summary,
                     triggeredBy: modelIds,
                     recentSteps: archivedSteps,
-                };
-                this._archives.unshift(archivedEntry);
+                });
                 // Trim to max
                 if (this._archives.length > maxArchives) {
                     this._archives = this._archives.slice(0, maxArchives);
                 }
             }
         }
-
-        // ── Reset: pool-scoped or global ──
-        if (isPoolReset) {
-            // Only clear stats for models in the resetting pool
-            for (const name of poolDisplayNames) {
-                this._modelStats.delete(name);
-            }
-            // Remove pool-model timeline events, keep others
-            this._recentSteps = this._recentSteps.filter(ev =>
-                ev.model && !poolDisplayNames.has(ev.model)
-            );
-            // Clear pool-specific GM breakdown entries
-            if (this._gmModelBreakdown) {
-                for (const name of poolDisplayNames) {
-                    delete this._gmModelBreakdown[name];
-                }
-            }
-            for (const [key, entry] of this._subAgentTokens) {
-                if (entry.ownerModel && poolDisplayNames.has(entry.ownerModel)) {
-                    this._subAgentTokens.delete(key);
-                }
-            }
-            // Recompute _gmTotals from remaining breakdown
-            if (this._gmModelBreakdown && Object.keys(this._gmModelBreakdown).length > 0) {
-                let inp = 0, out = 0, cache = 0, credits = 0, retries = 0;
-                for (const m of Object.values(this._gmModelBreakdown)) {
-                    inp += m.totalInputTokens || 0;
-                    out += m.totalOutputTokens || 0;
-                    cache += m.totalCacheRead || 0;
-                    credits += m.totalCredits || 0;
-                    retries += m.totalRetries || 0;
-                }
-                this._gmTotals = { inputTokens: inp, outputTokens: out, cacheRead: cache, credits, retries };
-            } else {
-                this._gmTotals = null;
-                this._gmModelBreakdown = null;
-            }
-            // Note: _subAgentTokens, _checkpointHistory, _conversationBreakdown,
-            // _globalToolStats are conversation-scoped (not model-scoped) — keep intact.
-            // They'll be fully reset on next global reset or cleared via clearActivityData.
-        } else {
-            // Global reset — clear everything
-            this._modelStats.clear();
-            this._subAgentTokens.clear();
-            this._checkpointHistory = [];
-            this._conversationBreakdown.clear();
-            this._globalToolStats.clear();
-            this._sampleDist.clear();
-            this._sampleTotal = 0;
-            this._totalUserInputs = 0;
-            this._totalCheckpoints = 0;
-            this._totalErrors = 0;
-            this._recentSteps = [];
-            this._gmTotals = null;
-            this._gmModelBreakdown = null;
-            this._sessionStartTime = new Date().toISOString();
-        }
+        // Reset stats only — keep trajectories as baselines so warm-up doesn't re-count history
+        this._modelStats.clear();
+        this._subAgentTokens.clear();
+        this._checkpointHistory = [];
+        this._conversationBreakdown.clear();
+        this._globalToolStats.clear();
+        this._sampleDist.clear();
+        this._sampleTotal = 0;
+        this._totalUserInputs = 0;
+        this._totalCheckpoints = 0;
+        this._totalErrors = 0;
+        this._recentSteps = [];
+        this._gmTotals = null;
+        this._gmModelBreakdown = null;
+        this._sessionStartTime = new Date().toISOString();
         // DO NOT clear _trajectories or set _warmedUp=false!
         // Existing processedIndex values serve as baselines — only new steps after this point are counted.
-        return archivedEntry;
     }
 
     /**
@@ -1294,7 +1127,6 @@ export class ActivityTracker {
         // Fully restore all model stats from persisted summary
         for (const [name, ms] of Object.entries(s.modelStats)) {
             const stats = tracker._getOrCreateStats(name);
-            stats.userInputs = ms.userInputs || 0;
             stats.reasoning = ms.reasoning;
             stats.toolCalls = ms.toolCalls;
             stats.errors = ms.errors;
@@ -1307,7 +1139,6 @@ export class ActivityTracker {
             stats.toolReturnTokens = ms.toolReturnTokens;
             stats.toolBreakdown = { ...ms.toolBreakdown };
             stats.estSteps = ms.estSteps;
-            stats.firstSeenAt = ms.firstSeenAt;
         }
 
         // Restore global counters
@@ -1414,7 +1245,7 @@ export class ActivityTracker {
     private _getOrCreateStats(model: string): ModelActivityStats {
         if (!this._modelStats.has(model)) {
             this._modelStats.set(model, {
-                modelName: model, userInputs: 0, reasoning: 0, toolCalls: 0, errors: 0, checkpoints: 0,
+                modelName: model, reasoning: 0, toolCalls: 0, errors: 0, checkpoints: 0,
                 totalSteps: 0, thinkingTimeMs: 0, toolTimeMs: 0, inputTokens: 0,
                 estSteps: 0,
                 outputTokens: 0, toolReturnTokens: 0, toolBreakdown: {},

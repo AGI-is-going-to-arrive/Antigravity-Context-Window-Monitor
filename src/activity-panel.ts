@@ -6,7 +6,7 @@
 import { tBi } from './i18n';
 import { ActivitySummary, ActivityArchive, ModelActivityStats, CheckpointSnapshot, ConversationBreakdown } from './activity-tracker';
 import { esc, formatShortTime as formatTime } from './webview-helpers';
-import type { GMSummary, GMModelStats, GMConversationData, TokenBreakdownGroup } from './gm-tracker';
+import type { GMSummary, GMModelStats, GMConversationData } from './gm-tracker';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -69,17 +69,6 @@ export function buildGMDataTabContent(
             parts.push(`<div class="act-two-col">
                 ${ctx ? `<div class="act-col">${ctx}</div>` : ''}
                 ${conv ? `<div class="act-col">${conv}</div>` : ''}
-            </div>`);
-        }
-    }
-    // ── Retry Overhead + Token Breakdown (GM — new probes)
-    if (gmSummary && gmSummary.totalCalls > 0) {
-        const retry = buildRetryOverhead(gmSummary);
-        const breakdown = buildTokenBreakdownChart(gmSummary);
-        if (retry || breakdown) {
-            parts.push(`<div class="act-two-col">
-                ${retry ? `<div class="act-col">${retry}</div>` : ''}
-                ${breakdown ? `<div class="act-col">${breakdown}</div>` : ''}
             </div>`);
         }
     }
@@ -462,57 +451,6 @@ export function getGMDataTabStyles(): string {
     .gm-badge-real { display: inline-block; font-size: 0.65em; padding: 1px var(--space-1); border-radius: var(--radius-sm); background: rgba(52,211,153,0.15); color: #34d399; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; vertical-align: middle; margin-left: var(--space-1); }
     .gm-provider-tag { display: inline-block; font-size: 0.72em; padding: 1px var(--space-1); border-radius: var(--radius-sm); background: rgba(96,165,250,0.1); color: var(--color-info); margin-top: var(--space-1); }
 
-    /* ─── Retry Overhead ─── */
-    .act-stat-warn { border-color: rgba(248,113,113,0.3); }
-    @media (hover: hover) {
-        .act-stat-warn:hover { border-color: rgba(248,113,113,0.6); box-shadow: 0 0 8px rgba(248,113,113,0.15); }
-    }
-    .gm-retry-card {
-        background: var(--color-surface);
-        border: 1px solid rgba(248,113,113,0.2);
-        border-radius: var(--radius-md);
-        padding: var(--space-3);
-        margin-bottom: var(--space-4);
-    }
-    .gm-retry-grid {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: var(--space-2);
-        text-align: center;
-    }
-    .gm-retry-metric {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        padding: var(--space-2);
-        border-radius: var(--radius-sm);
-        background: rgba(248,113,113,0.06);
-        border: 1px solid rgba(248,113,113,0.1);
-    }
-    .gm-retry-val { font-weight: 700; font-size: 1.1em; color: #f87171; }
-    .gm-retry-label { font-size: 0.72em; color: var(--color-text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
-    .gm-retry-stops {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--space-1);
-        margin-top: var(--space-3);
-        padding-top: var(--space-2);
-        border-top: 1px solid rgba(255,255,255,0.06);
-    }
-    .gm-stop-tag {
-        display: inline-block;
-        font-size: 0.72em;
-        padding: 2px var(--space-2);
-        border-radius: var(--radius-sm);
-        background: rgba(52,211,153,0.1);
-        color: #34d399;
-        font-weight: 500;
-    }
-    .gm-stop-err {
-        background: rgba(248,113,113,0.1);
-        color: #f87171;
-    }
-
     `;
 }
 
@@ -531,7 +469,6 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null): strin
             <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9M5 14l7-7 7 7"/></svg></span><span class="act-stat-val">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
             <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg></span><span class="act-stat-val">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>
             ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="act-stat-val">${gm.totalCredits}</span><span class="act-stat-label">Credits</span></div>` : ''}
-            ${gm.totalRetryTokens > 0 ? `<div class="act-stat act-stat-warn" data-tooltip="${tBi('Tokens wasted on retries (input + output)', '重试浪费的 token（输入+输出）')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span><span class="act-stat-val">${fmt(gm.totalRetryTokens)}</span><span class="act-stat-label">${tBi('Retry Waste', '重试浪费')}</span></div>` : ''}
         </div>`;
     }
 
@@ -594,7 +531,6 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null): strin
         ${s.totalToolReturnTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('Tokens returned by tool calls', '工具调用返回的 token 数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg></span><span class="act-stat-val">${fmt(s.totalToolReturnTokens)}</span><span class="act-stat-label">${tBi('Tool Output', '工具输出')}</span></div>` : ''}
         ${cacheCard}
         ${creditsCard}
-        ${gm && gm.totalRetryTokens > 0 ? `<div class="act-stat act-stat-warn" data-tooltip="${tBi('Tokens wasted on retries (input + output)', '重试浪费的 token（输入+输出）')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span><span class="act-stat-val">${fmt(gm.totalRetryTokens)}</span><span class="act-stat-label">${tBi('Retry', '重试')}</span></div>` : ''}
     </div>`;
 }
 
@@ -961,93 +897,4 @@ function buildConversations(s: GMSummary): string {
     }
     html += `</div>`;
     return html;
-}
-
-// ─── Retry Overhead Section ─────────────────────────────────────────────────
-
-function buildRetryOverhead(s: GMSummary): string {
-    if (s.totalRetryTokens <= 0 && s.totalRetryCount <= 0) { return ''; }
-    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    const pctOfTotal = (s.totalInputTokens + s.totalOutputTokens) > 0
-        ? ((s.totalRetryTokens / (s.totalInputTokens + s.totalOutputTokens)) * 100).toFixed(1)
-        : '0';
-
-    // Stop reason distribution
-    let stopHtml = '';
-    const srEntries = Object.entries(s.stopReasonCounts);
-    if (srEntries.length > 0) {
-        stopHtml = `<div class="gm-retry-stops">`;
-        for (const [reason, count] of srEntries.sort((a, b) => b[1] - a[1])) {
-            const isErr = reason !== 'STOP_PATTERN' && reason !== 'END_TURN';
-            stopHtml += `<span class="gm-stop-tag${isErr ? ' gm-stop-err' : ''}">${esc(reason)} ×${count}</span>`;
-        }
-        stopHtml += `</div>`;
-    }
-
-    return `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>${tBi('Retry Overhead', '重试开销')} <span class="gm-badge-real">${tBi('Probe', '探针')}</span></h2>
-    <div class="gm-retry-card">
-        <div class="gm-retry-grid">
-            <div class="gm-retry-metric">
-                <span class="gm-retry-val">${fmt(s.totalRetryTokens)}</span>
-                <span class="gm-retry-label">${tBi('Tokens Wasted', 'Token 浪费')}</span>
-            </div>
-            <div class="gm-retry-metric">
-                <span class="gm-retry-val">${s.totalRetryCredits > 0 ? s.totalRetryCredits.toFixed(1) : '0'}</span>
-                <span class="gm-retry-label">${tBi('Credits Lost', 'Credits 损耗')}</span>
-            </div>
-            <div class="gm-retry-metric">
-                <span class="gm-retry-val">${s.totalRetryCount}</span>
-                <span class="gm-retry-label">${tBi('Retry Calls', '重试次数')}</span>
-            </div>
-            <div class="gm-retry-metric">
-                <span class="gm-retry-val">${pctOfTotal}%</span>
-                <span class="gm-retry-label">${tBi('of Total', '占总量')}</span>
-            </div>
-        </div>
-        ${stopHtml}
-    </div>`;
-}
-
-// ─── Token Breakdown Chart ──────────────────────────────────────────────────
-
-function buildTokenBreakdownChart(s: GMSummary): string {
-    const groups = s.latestTokenBreakdown;
-    if (!groups || groups.length === 0) { return ''; }
-
-    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    const total = groups.reduce((a, g) => a + g.tokens, 0);
-    if (total <= 0) { return ''; }
-
-    const colors = ['#8b5cf6', '#06b6d4', '#f59e0b', '#10b981', '#ec4899', '#6366f1', '#f97316', '#14b8a6'];
-    const size = 140;
-    const r = 55;
-    const cx = size / 2;
-    const cy = size / 2;
-    const circumference = 2 * Math.PI * r;
-    let offset = 0;
-
-    let donut = `<svg class="act-donut-chart" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">`;
-    for (let i = 0; i < groups.length; i++) {
-        const pct = groups[i].tokens / total;
-        const len = pct * circumference;
-        donut += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${colors[i % colors.length]}" stroke-width="16" stroke-dasharray="${len} ${circumference - len}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"/>`;
-        offset += len;
-    }
-    donut += `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" fill="var(--color-text)" font-size="16" font-weight="600">${fmt(total)}</text>`;
-    donut += `</svg>`;
-
-    let legend = `<div class="act-dist-legend">`;
-    for (let i = 0; i < groups.length; i++) {
-        const g = groups[i];
-        const pct = ((g.tokens / total) * 100).toFixed(1);
-        const name = g.name || g.type.replace('TOKEN_TYPE_', '').replace(/_/g, ' ');
-        legend += `<div class="act-legend-item"><span class="act-legend-dot" style="background:${colors[i % colors.length]}"></span>${esc(name)} <span class="act-legend-pct">${pct}% (${fmt(g.tokens)})</span></div>`;
-    }
-    legend += `</div>`;
-
-    return `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 12V2"/><path d="M12 12h10"/></svg>${tBi('Context Composition', '上下文组成')} <span class="gm-badge-real">${tBi('Probe', '探针')}</span></h2>
-    <div class="act-dist-container">
-        ${donut}
-        ${legend}
-    </div>`;
 }

@@ -137,13 +137,6 @@ export interface UserStatusInfo {
     allowPremiumCommandModels: boolean;
     hasTabToJump: boolean;
     canCustomizeAppIcon: boolean;
-    // ─── Deep-mined fields (discovered via diag-deep-mine-profile) ────────
-    /** Tier description from userTier.description (e.g. "Google AI Ultra") */
-    userTierDescription: string;
-    /** Subscription status text from userTier.upgradeSubscriptionText */
-    upgradeSubscriptionText: string;
-    /** LS recommended model sort order from clientModelSorts */
-    modelSortOrder: string[];
     /** Raw LS GetUserStatus response — for diagnostic Raw Data panel */
     _rawResponse?: Record<string, unknown>;
 }

@@ -12,18 +12,14 @@ import {
     UserStatusInfo,
 } from './tracker';
 import { StatusBarManager, formatContextLimit } from './statusbar';
-import { initI18n, initI18nFromState, showLanguagePicker } from './i18n';
+import { initI18n, showLanguagePicker } from './i18n';
 import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
-import { GMTracker, GMSummary, GMTrackerState, filterGMSummaryByModels } from './gm-tracker';
+import { GMTracker, GMSummary, GMTrackerState } from './gm-tracker';
 import { PricingStore } from './pricing-store';
 import { DailyStore } from './daily-store';
-import { MonitorStore } from './monitor-store';
-import { findLatestQuotaSessionForPool, groupModelIdsByResetPool } from './pool-utils';
-import { DurableState, StateBucket } from './durable-state';
-import type { StorageDiagnostics } from './webview-settings-tab';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -50,12 +46,6 @@ let gmTracker: GMTracker;
 let lastGMSummary: GMSummary | null = null;
 let pricingStore: PricingStore;
 let dailyStore: DailyStore;
-let monitorStore: MonitorStore;
-let durableState: DurableState;
-let durableGlobalState: StateBucket;
-let durableWorkspaceState: StateBucket;
-let durableFileGlobalState: StateBucket;
-let durableFileWorkspaceState: StateBucket;
 
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
@@ -119,90 +109,64 @@ export function activate(context: vscode.ExtensionContext): void {
     disposed = false;
     outputChannel = vscode.window.createOutputChannel('Antigravity Context Monitor');
     log('Extension activating...');
-    const workspaceKey = normalizeUri(getWorkspaceUri() || 'no-workspace');
-    durableState = new DurableState();
-    durableGlobalState = durableState.globalBucket(context.globalState);
-    durableWorkspaceState = durableState.workspaceBucket(workspaceKey, context.workspaceState);
-    durableFileGlobalState = durableState.globalBucket();
-    durableFileWorkspaceState = durableState.workspaceBucket(workspaceKey);
 
     // Initialize quota tracker
-    quotaTracker = new QuotaTracker(context, durableGlobalState);
+    quotaTracker = new QuotaTracker(context);
     quotaTracker.onQuotaReset = (modelIds: string[]) => {
         if (activityTracker) {
-            const preResetGMSummary = lastGMSummary;
-            const quotaHistory = quotaTracker.getHistory();
-            const resetPools = groupModelIdsByResetPool(modelIds, cachedModelConfigs);
+            log(`Quota reset [${modelIds.join(', ')}] — archiving activity snapshot`);
+            activityTracker.archiveAndReset(modelIds);
+            context.globalState.update('activityTrackerState', activityTracker.serialize());
 
-            for (const poolModelIds of resetPools) {
-                log(`Quota reset [${poolModelIds.join(', ')}] — archiving pool snapshot`);
-
-                const quotaSession = findLatestQuotaSessionForPool(
-                    poolModelIds,
-                    cachedModelConfigs,
-                    quotaHistory,
-                );
-                const poolGMSummary = filterGMSummaryByModels(preResetGMSummary, poolModelIds);
-                const archive = activityTracker.archiveAndReset(poolModelIds, {
-                    startTime: quotaSession?.startTime,
-                    endTime: quotaSession?.endTime,
-                });
-
-                if (archive && dailyStore) {
-                    let costTotal: number | undefined;
-                    let costPerModel: Record<string, number> | undefined;
-                    if (poolGMSummary && pricingStore) {
-                        const result = pricingStore.calculateCosts(poolGMSummary);
-                        if (result.grandTotal > 0) {
-                            costTotal = result.grandTotal;
-                        }
-                        costPerModel = {};
-                        for (const row of result.rows) {
-                            if (row.totalCost > 0) {
-                                costPerModel[row.name] = row.totalCost;
-                            }
+            // Write daily calendar snapshot
+            const archives = activityTracker.getArchives();
+            if (archives.length > 0 && dailyStore) {
+                const latest = archives[0]; // most recent archive
+                let costTotal: number | undefined;
+                let costPerModel: Record<string, number> | undefined;
+                if (lastGMSummary && pricingStore) {
+                    const result = pricingStore.calculateCosts(lastGMSummary);
+                    costTotal = result.grandTotal;
+                    // Build per-model cost map for calendar archival
+                    costPerModel = {};
+                    for (const row of result.rows) {
+                        if (row.totalCost > 0) {
+                            costPerModel[row.name] = row.totalCost;
                         }
                     }
-                    dailyStore.addCycle(archive, poolGMSummary, costTotal, costPerModel);
                 }
-
-                gmTracker.reset(poolModelIds);
+                dailyStore.addCycle(latest, lastGMSummary, costTotal, costPerModel);
             }
 
-            durableGlobalState.update('activityTrackerState', activityTracker.serialize());
-            lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
-            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-            durableFileGlobalState.update('gmDetailedSummary', lastGMSummary);
+            // Reset GM state — data already archived to calendar.
+            // Next poll will fetch fresh data for the new cycle.
+            gmTracker.reset();
+            lastGMSummary = null;
+            context.globalState.update('gmTrackerState', gmTracker.serialize());
         }
     };
 
     // Initialize i18n from persisted state
     initI18n(context);
-    initI18nFromState(durableGlobalState);
 
     // Restore persisted lastKnownModel from workspaceState
-    lastKnownModel = durableWorkspaceState.get<string>('lastKnownModel', '');
+    lastKnownModel = context.workspaceState.get<string>('lastKnownModel', '');
     if (lastKnownModel) {
         log(`Restored lastKnownModel from workspaceState: ${lastKnownModel}`);
     }
-    monitorStore = new MonitorStore();
-    monitorStore.init(durableFileWorkspaceState);
-    const restoredMonitor = monitorStore.restore();
-    currentUsage = restoredMonitor.currentUsage;
-    allTrajectoryUsages = restoredMonitor.allUsages;
 
     statusBar = new StatusBarManager();
 
     // Initialize activity tracker
-    const savedActivity = durableGlobalState.get<ActivityTrackerState | undefined>('activityTrackerState', undefined);
+    const savedActivity = context.globalState.get<ActivityTrackerState>('activityTrackerState');
     activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
-    const savedGM = durableGlobalState.get<GMTrackerState | undefined>('gmTrackerState', undefined);
+    const savedGM = context.globalState.get<GMTrackerState>('gmTrackerState');
     gmTracker = savedGM ? GMTracker.restore(savedGM) : new GMTracker();
-    lastGMSummary = durableFileGlobalState.get<GMSummary | null>('gmDetailedSummary', gmTracker.getCachedSummary());
+    lastGMSummary = gmTracker.getCachedSummary();
     pricingStore = new PricingStore();
-    pricingStore.init(durableGlobalState);
+    pricingStore.init(context.globalState);
     dailyStore = new DailyStore();
-    dailyStore.init(durableGlobalState);
+    dailyStore.init(context.globalState);
 
     // Retroactive import: backfill existing archives into calendar
     const existingArchives = activityTracker.getArchives();
@@ -218,9 +182,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // This eliminates duplicate cycle entries and GM data inconsistencies.
 
     // Restore cached user status from globalState for instant tooltip display
-    const savedConfigs = durableGlobalState.get<import('./models').ModelConfig[]>('cachedModelConfigs', []);
-    const savedPlan = durableGlobalState.get<string>('cachedPlanName', '');
-    const savedTier = durableGlobalState.get<string>('cachedTierName', '');
+    const savedConfigs = context.globalState.get<import('./models').ModelConfig[]>('cachedModelConfigs');
+    const savedPlan = context.globalState.get<string>('cachedPlanName', '');
+    const savedTier = context.globalState.get<string>('cachedTierName', '');
     if (savedConfigs && savedConfigs.length > 0) {
         cachedModelConfigs = savedConfigs;
         statusBar.setModelConfigs(savedConfigs);
@@ -232,7 +196,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Register commands
     context.subscriptions.push(
         vscode.commands.registerCommand('antigravity-context-monitor.showDetails', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, undefined, activityTracker?.getArchives(), activityTracker, lastGMSummary, monitorStore.getGMConversations(), pricingStore, dailyStore, getStorageDiagnostics());
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, undefined, activityTracker?.getArchives(), activityTracker, lastGMSummary, pricingStore, dailyStore);
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
@@ -243,25 +207,25 @@ export function activate(context: vscode.ExtensionContext): void {
             pollContextUsage();
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.switchLanguage', () => {
-            showLanguagePicker(context, durableGlobalState).then(() => {
+            showLanguagePicker(context).then(() => {
                 // Rebuild statusBar and WebView to reflect new language immediately
                 if (currentUsage) {
                     statusBar.update(currentUsage);
                 }
                 if (isMonitorPanelVisible()) {
-                    updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, undefined, undefined, undefined, undefined, monitorStore.getGMConversations(), getStorageDiagnostics());
+                    updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo);
                 }
                 });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'gmdata', activityTracker?.getArchives(), activityTracker, lastGMSummary, monitorStore.getGMConversations(), pricingStore, dailyStore, getStorageDiagnostics());
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'gmdata', activityTracker?.getArchives(), activityTracker, lastGMSummary, pricingStore, dailyStore);
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.devSimulateReset', () => {
             if (!activityTracker) { return; }
             log('[Dev] Simulating quota reset...');
             const modelIds = ['[simulate]'];
             activityTracker.archiveAndReset(modelIds);
-            durableGlobalState.update('activityTrackerState', activityTracker.serialize());
+            context.globalState.update('activityTrackerState', activityTracker.serialize());
             const archives = activityTracker.getArchives();
             if (archives.length > 0 && dailyStore) {
                 const latest = archives[0];
@@ -277,24 +241,21 @@ export function activate(context: vscode.ExtensionContext): void {
                 }
                 dailyStore.addCycle(latest, lastGMSummary, costTotal, costPerModel);
             }
-            gmTracker.reset(); // dev simulate = global reset
+            gmTracker.reset();
             lastGMSummary = null;
-            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-            durableFileGlobalState.update('gmDetailedSummary', null);
+            context.globalState.update('gmTrackerState', gmTracker.serialize());
             log('[Dev] Quota reset simulated — activity archived, GM baselines set');
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.devClearGM', () => {
             log('[Dev] Full GM reset (clear all data + baselines)...');
             gmTracker.fullReset();
-            monitorStore.clearGMConversations();
             lastGMSummary = null;
-            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-            durableFileGlobalState.update('gmDetailedSummary', null);
+            context.globalState.update('gmTrackerState', gmTracker.serialize());
             log('[Dev] GM data fully cleared — next fetch will baseline all API data');
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.devPersistActivity', () => {
             if (activityTracker) {
-                durableGlobalState.update('activityTrackerState', activityTracker.serialize());
+                context.globalState.update('activityTrackerState', activityTracker.serialize());
                 log('[Dev] Activity tracker state persisted to globalState');
             }
         }),
@@ -326,7 +287,7 @@ export function activate(context: vscode.ExtensionContext): void {
             }
             // Persist GM tracker state on dispose
             if (gmTracker) {
-                durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+                extensionContext.globalState.update('gmTrackerState', gmTracker.serialize());
             }
             abortController.abort();
         }
@@ -383,7 +344,7 @@ export function deactivate(): void {
     abortController.abort();
     // Persist activity data on deactivate
     if (activityTracker && extensionContext) {
-        durableGlobalState.update('activityTrackerState', activityTracker.serialize());
+        extensionContext.globalState.update('activityTrackerState', activityTracker.serialize());
     }
     if (statusBar) {
         statusBar.dispose();
@@ -443,9 +404,9 @@ async function pollContextUsage(): Promise<void> {
                     cachedUserInfo = fullStatus.userInfo;
                     statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
                     // Persist for instant display on next activation
-                    durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
-                    durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
-                    durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
+                    extensionContext.globalState.update('cachedModelConfigs', cachedModelConfigs);
+                    extensionContext.globalState.update('cachedPlanName', fullStatus.userInfo.planName);
+                    extensionContext.globalState.update('cachedTierName', fullStatus.userInfo.userTierName);
                     log(`User: ${fullStatus.userInfo.name} (${fullStatus.userInfo.planName}) credits: prompt=${fullStatus.userInfo.availablePromptCredits} flow=${fullStatus.userInfo.availableFlowCredits}`);
                 }
             } catch { /* Silent degradation */ }
@@ -465,9 +426,9 @@ async function pollContextUsage(): Promise<void> {
                     if (fullStatus.userInfo) {
                         cachedUserInfo = fullStatus.userInfo;
                         statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
-                        durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
-                        durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
-                        durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
+                        extensionContext.globalState.update('cachedModelConfigs', cachedModelConfigs);
+                        extensionContext.globalState.update('cachedPlanName', fullStatus.userInfo.planName);
+                        extensionContext.globalState.update('cachedTierName', fullStatus.userInfo.userTierName);
                     }
                     log('Refreshed user status (periodic)');
                 } catch { /* Silent — keep cached data */ }
@@ -499,7 +460,7 @@ async function pollContextUsage(): Promise<void> {
             const noConvLimitStr = formatContextLimit(noConvLimit);
             statusBar.showNoConversation(noConvLimitStr);
             currentUsage = null;
-            allTrajectoryUsages = monitorStore.getAll();
+            allTrajectoryUsages = [];
             updateBaselines(trajectories);
             return;
         }
@@ -621,9 +582,9 @@ async function pollContextUsage(): Promise<void> {
             log(`No active trajectory — showing idle (model=${lastKnownModel || 'default'}, limit=${idleLimitStr})`);
             statusBar.showIdle(idleLimitStr);
             currentUsage = null;
-            allTrajectoryUsages = monitorStore.getAll();
+            allTrajectoryUsages = [];
             if (isMonitorPanelVisible()) {
-                updateMonitorPanel(null, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics());
+                updateMonitorPanel(null, [], cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary);
             }
             updateBaselines(trajectories);
             return;
@@ -642,7 +603,7 @@ async function pollContextUsage(): Promise<void> {
         // Track the model for idle-state display
         if (currentUsage.model) {
             lastKnownModel = currentUsage.model;
-            durableWorkspaceState.update('lastKnownModel', lastKnownModel);
+            extensionContext.workspaceState.update('lastKnownModel', lastKnownModel);
         }
 
         // ─── Compression Detection ─────────────────────────────────────────
@@ -703,12 +664,10 @@ async function pollContextUsage(): Promise<void> {
         });
         const usageResults = await Promise.all(usagePromises);
         allTrajectoryUsages = usageResults.filter((u): u is ContextUsage => u !== null);
-        monitorStore.record(allTrajectoryUsages, currentUsage.cascadeId);
-        allTrajectoryUsages = monitorStore.getAll();
 
         // 6c. Update WebView panel if visible (context data only; activity is updated independently)
         if (isMonitorPanelVisible()) {
-            updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics());
+            updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary);
         }
 
         // 7. Update baselines for next poll
@@ -727,11 +686,8 @@ async function pollContextUsage(): Promise<void> {
 function handleLsFailure(message: string): void {
     consecutiveFailures++;
     currentUsage = null;
-    allTrajectoryUsages = monitorStore.getAll();
+    allTrajectoryUsages = [];
     statusBar.showDisconnected(message);
-    if (isMonitorPanelVisible()) {
-        updateMonitorPanel(null, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics());
-    }
 
     const backoffMs = Math.min(baseIntervalMs * Math.pow(2, consecutiveFailures - 1), MAX_BACKOFF_INTERVAL_MS);
 
@@ -830,12 +786,10 @@ async function pollActivity(): Promise<void> {
                 trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
                 abortController.signal,
             );
-            monitorStore.recordGMConversations(gmTracker.getAllConversationData());
-            durableFileGlobalState.update('gmDetailedSummary', gmTracker.getDetailedSummary());
             if (!lastGMSummary
                 || gmSummary.totalCalls !== lastGMSummary.totalCalls
                 || gmSummary.totalStepsCovered !== lastGMSummary.totalStepsCovered) {
-                lastGMSummary = gmTracker.getDetailedSummary() || gmSummary;
+                lastGMSummary = gmSummary;
                 gmChanged = true;
             }
         } catch { /* GM fetch failure is non-critical */ }
@@ -851,17 +805,16 @@ async function pollActivity(): Promise<void> {
 
             // Refresh WebView immediately when activity changes
             if (isMonitorPanelVisible() && currentUsage) {
-                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, summary, activityTracker.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics());
+                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, summary, activityTracker.getArchives(), lastGMSummary);
             }
         }
 
         // Throttled persistence (max once per 30s)
         const now = Date.now();
         if (now - lastActivityPersistTime > 30_000) {
-            durableGlobalState.update('activityTrackerState', activityTracker.serialize());
+            extensionContext.globalState.update('activityTrackerState', activityTracker.serialize());
             if (gmTracker) {
-                durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-                durableFileGlobalState.update('gmDetailedSummary', gmTracker.getDetailedSummary());
+                extensionContext.globalState.update('gmTrackerState', gmTracker.serialize());
             }
             lastActivityPersistTime = now;
         }
@@ -929,32 +882,6 @@ function checkQuotaNotification(configs: import('./models').ModelConfig[]): void
             quotaNotifiedModels.delete(groupKey);
         }
     }
-}
-
-function getStorageDiagnostics(): StorageDiagnostics {
-    let calendarCycleCount = 0;
-    if (dailyStore) {
-        for (const date of dailyStore.getDatesWithData()) {
-            const record = dailyStore.getRecord(date);
-            if (record) {
-                calendarCycleCount += record.cycles.length;
-            }
-        }
-    }
-
-    return {
-        stateFilePath: durableState.getFilePath(),
-        stateFileExists: durableState.exists(),
-        monitorSnapshotCount: monitorStore?.getAll().length || 0,
-        monitorGMConversationCount: Object.keys(monitorStore?.getGMConversations() || {}).length,
-        gmConversationCount: lastGMSummary?.conversations.length || 0,
-        gmCallCount: lastGMSummary?.totalCalls || 0,
-        quotaHistoryCount: quotaTracker?.getHistory().length || 0,
-        activityArchiveCount: activityTracker?.getArchives().length || 0,
-        calendarDayCount: dailyStore?.totalDays || 0,
-        calendarCycleCount,
-        pricingOverrideCount: Object.keys(pricingStore?.getCustom() || {}).length,
-    };
 }
 
 function log(message: string): void {

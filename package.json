@@ -2,7 +2,7 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Window Monitor",
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
-  "version": "1.13.3",
+  "version": "1.13.2",
   "publisher": "AGI-is-going-to-arrive",
   "license": "MIT",
   "repository": {
@@ -85,7 +85,7 @@
         "antigravityContextMonitor.quotaNotificationThreshold": {
           "type": "number",
           "default": 20,
-          "minimum": 0,
+          "minimum": 1,
           "maximum": 99,
           "description": "Show a warning notification when any model's remaining quota drops below this percentage (0 to disable) / 当模型剩余额度低于此百分比时弹出警告通知（设为 0 可禁用）"
         },

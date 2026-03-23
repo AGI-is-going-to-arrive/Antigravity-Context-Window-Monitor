@@ -22,14 +22,6 @@ export interface GMCompletionConfig {
     stopPatternCount: number;
 }
 
-/** Token source breakdown group from chatStartMetadata.contextWindowMetadata.tokenBreakdown */
-export interface TokenBreakdownGroup {
-    name: string;     // e.g. "System Prompt", "Chat Messages"
-    type: string;     // e.g. TOKEN_TYPE_SYSTEM_PROMPT
-    tokens: number;
-    children: { name: string; tokens: number }[];
-}
-
 /** A single LLM invocation entry from generatorMetadata */
 export interface GMCallEntry {
     stepIndices: number[];
@@ -64,20 +56,6 @@ export interface GMCallEntry {
     promptSectionTitles: string[];
     /** Number of retries for this call */
     retries: number;
-    /** Stop reason from plannerResponse (e.g. STOP_REASON_STOP_PATTERN) */
-    stopReason: string;
-    /** Retry overhead: total input tokens wasted across all retries */
-    retryTokensIn: number;
-    /** Retry overhead: total output tokens wasted across all retries */
-    retryTokensOut: number;
-    /** Retry overhead: total credits consumed by retries */
-    retryCredits: number;
-    /** Retry error messages */
-    retryErrors: string[];
-    /** Seconds since last LLM invocation */
-    timeSinceLastInvocation: number;
-    /** Token breakdown groups: context composition at call time */
-    tokenBreakdownGroups: TokenBreakdownGroup[];
 }
 
 /** Aggregated per-model statistics */
@@ -136,16 +114,6 @@ export interface GMSummary {
     /** Context growth data points: step → tokens */
     contextGrowth: { step: number; tokens: number; model: string }[];
     fetchedAt: string;
-    /** Global retry overhead: total tokens wasted (input + output) */
-    totalRetryTokens: number;
-    /** Global retry overhead: credits consumed */
-    totalRetryCredits: number;
-    /** Global retry count */
-    totalRetryCount: number;
-    /** Latest token breakdown snapshot (from most recent GM entry) */
-    latestTokenBreakdown: TokenBreakdownGroup[];
-    /** Stop reason distribution: reason → count */
-    stopReasonCounts: Record<string, number>;
 }
 
 /** Serialized form for globalState persistence */
@@ -156,203 +124,6 @@ export interface GMTrackerState {
     baselines: Record<string, number>;
     /** cascadeId → call count baselines to isolate quota cycles (added v1.13.2) */
     callBaselines?: Record<string, number>;
-    /** executionIds of calls archived to dailyStore by per-pool resets (added v1.13.4) */
-    archivedCallIds?: string[];
-}
-
-export function filterGMSummaryByModels(
-    summary: GMSummary | null | undefined,
-    modelIds: string[],
-): GMSummary | null {
-    if (!summary || modelIds.length === 0) {
-        return null;
-    }
-
-    const modelSet = new Set(modelIds);
-    const conversations: GMConversationData[] = [];
-    const modelBreakdown: Record<string, GMModelStats> = {};
-    const stopReasonCounts: Record<string, number> = {};
-    const contextGrowth: { step: number; tokens: number; model: string }[] = [];
-
-    let totalCalls = 0;
-    let totalStepsCovered = 0;
-    let totalCredits = 0;
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-    let totalCacheRead = 0;
-    let totalCacheCreation = 0;
-    let totalThinkingTokens = 0;
-    let totalRetryTokens = 0;
-    let totalRetryCredits = 0;
-    let totalRetryCount = 0;
-    let latestTokenBreakdown: TokenBreakdownGroup[] = [];
-
-    for (const conversation of summary.conversations) {
-        const calls = conversation.calls.filter(call => modelSet.has(call.model));
-        if (calls.length === 0) {
-            continue;
-        }
-
-        const coveredSteps = calls.reduce((sum, call) => sum + call.stepIndices.length, 0);
-        conversations.push({
-            ...conversation,
-            calls,
-            coveredSteps,
-            coverageRate: conversation.totalSteps > 0 ? coveredSteps / conversation.totalSteps : 0,
-        });
-
-        for (const call of calls) {
-            totalCalls++;
-            totalStepsCovered += call.stepIndices.length;
-            totalCredits += call.credits;
-            totalInputTokens += call.inputTokens;
-            totalOutputTokens += call.outputTokens;
-            totalCacheRead += call.cacheReadTokens;
-            totalCacheCreation += call.cacheCreationTokens;
-            totalThinkingTokens += call.thinkingTokens;
-            totalRetryTokens += call.retryTokensIn + call.retryTokensOut;
-            totalRetryCredits += call.retryCredits;
-            if (call.retries > 0) {
-                totalRetryCount++;
-            }
-            if (call.contextTokensUsed > 0 && call.stepIndices.length > 0) {
-                contextGrowth.push({
-                    step: call.stepIndices[0],
-                    tokens: call.contextTokensUsed,
-                    model: call.modelDisplay,
-                });
-            }
-            if (call.stopReason) {
-                const stopReason = call.stopReason.replace('STOP_REASON_', '');
-                stopReasonCounts[stopReason] = (stopReasonCounts[stopReason] || 0) + 1;
-            }
-            if (call.tokenBreakdownGroups.length > 0) {
-                latestTokenBreakdown = call.tokenBreakdownGroups;
-            }
-
-            const key = call.modelDisplay || call.model;
-            const existing = modelBreakdown[key];
-            if (existing) {
-                const ttftSamples = existing.callCount;
-                existing.callCount += 1;
-                existing.stepsCovered += call.stepIndices.length;
-                existing.totalInputTokens += call.inputTokens;
-                existing.totalOutputTokens += call.outputTokens;
-                existing.totalThinkingTokens += call.thinkingTokens;
-                existing.totalCacheRead += call.cacheReadTokens;
-                existing.totalCacheCreation += call.cacheCreationTokens;
-                existing.totalCredits += call.credits;
-                existing.avgTTFT = call.ttftSeconds > 0
-                    ? ((existing.avgTTFT * ttftSamples) + call.ttftSeconds) / (ttftSamples + 1)
-                    : existing.avgTTFT;
-                existing.minTTFT = existing.minTTFT > 0
-                    ? Math.min(existing.minTTFT, call.ttftSeconds || existing.minTTFT)
-                    : call.ttftSeconds;
-                existing.maxTTFT = Math.max(existing.maxTTFT, call.ttftSeconds);
-                existing.avgStreaming = call.streamingSeconds > 0
-                    ? ((existing.avgStreaming * ttftSamples) + call.streamingSeconds) / (ttftSamples + 1)
-                    : existing.avgStreaming;
-                const cacheHitCalls = Math.round(existing.cacheHitRate * ttftSamples) + (call.cacheReadTokens > 0 ? 1 : 0);
-                existing.cacheHitRate = existing.callCount > 0 ? cacheHitCalls / existing.callCount : 0;
-                if (call.responseModel) {
-                    existing.responseModel = call.responseModel;
-                }
-                if (call.apiProvider) {
-                    existing.apiProvider = call.apiProvider;
-                }
-                if (call.completionConfig) {
-                    existing.completionConfig = call.completionConfig;
-                }
-                existing.hasSystemPrompt = existing.hasSystemPrompt || !!call.systemPromptSnippet;
-                existing.toolCount = Math.max(existing.toolCount, call.toolCount);
-                if (call.promptSectionTitles.length > existing.promptSectionTitles.length) {
-                    existing.promptSectionTitles = call.promptSectionTitles;
-                }
-                existing.totalRetries += call.retries;
-                if (call.hasError) {
-                    existing.errorCount += 1;
-                }
-                continue;
-            }
-
-            modelBreakdown[key] = {
-                callCount: 1,
-                stepsCovered: call.stepIndices.length,
-                totalInputTokens: call.inputTokens,
-                totalOutputTokens: call.outputTokens,
-                totalThinkingTokens: call.thinkingTokens,
-                totalCacheRead: call.cacheReadTokens,
-                totalCacheCreation: call.cacheCreationTokens,
-                totalCredits: call.credits,
-                avgTTFT: call.ttftSeconds,
-                minTTFT: call.ttftSeconds,
-                maxTTFT: call.ttftSeconds,
-                avgStreaming: call.streamingSeconds,
-                cacheHitRate: call.cacheReadTokens > 0 ? 1 : 0,
-                responseModel: call.responseModel,
-                apiProvider: call.apiProvider,
-                completionConfig: call.completionConfig,
-                hasSystemPrompt: !!call.systemPromptSnippet,
-                toolCount: call.toolCount,
-                promptSectionTitles: call.promptSectionTitles,
-                totalRetries: call.retries,
-                errorCount: call.hasError ? 1 : 0,
-            };
-        }
-    }
-
-    if (totalCalls === 0) {
-        return null;
-    }
-
-    conversations.sort((a, b) => b.totalSteps - a.totalSteps);
-    contextGrowth.sort((a, b) => a.step - b.step);
-
-    return {
-        conversations,
-        modelBreakdown,
-        totalCalls,
-        totalStepsCovered,
-        totalCredits,
-        totalInputTokens,
-        totalOutputTokens,
-        totalCacheRead,
-        totalCacheCreation,
-        totalThinkingTokens,
-        contextGrowth,
-        fetchedAt: summary.fetchedAt,
-        totalRetryTokens,
-        totalRetryCredits,
-        totalRetryCount,
-        latestTokenBreakdown,
-        stopReasonCounts,
-    };
-}
-
-function cloneTokenBreakdownGroups(groups: TokenBreakdownGroup[]): TokenBreakdownGroup[] {
-    return groups.map(group => ({
-        ...group,
-        children: group.children.map(child => ({ ...child })),
-    }));
-}
-
-function cloneGMCallEntry(call: GMCallEntry): GMCallEntry {
-    return {
-        ...call,
-        stepIndices: [...call.stepIndices],
-        toolNames: [...call.toolNames],
-        promptSectionTitles: [...call.promptSectionTitles],
-        retryErrors: [...call.retryErrors],
-        tokenBreakdownGroups: cloneTokenBreakdownGroups(call.tokenBreakdownGroups),
-        completionConfig: call.completionConfig ? { ...call.completionConfig } : null,
-    };
-}
-
-function cloneConversationData(conversation: GMConversationData): GMConversationData {
-    return {
-        ...conversation,
-        calls: conversation.calls.map(cloneGMCallEntry),
-    };
 }
 
 // ─── Parser Helpers ──────────────────────────────────────────────────────────
@@ -417,47 +188,6 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
     const retries = parseInt0(cm.retries as string);
     const errorMessage = (gm.error as string) || '';
 
-    // ── retryInfos aggregation ─────────────────────────────────────────────
-    let retryTokensIn = 0, retryTokensOut = 0, retryCredits = 0;
-    const retryErrors: string[] = [];
-    const retryInfos = cm.retryInfos as Record<string, unknown>[] | undefined;
-    if (Array.isArray(retryInfos)) {
-        for (const ri of retryInfos) {
-            const ru = (ri.usage || {}) as Record<string, unknown>;
-            retryTokensIn += parseInt0(ru.inputTokens as string);
-            retryTokensOut += parseInt0(ru.outputTokens as string);
-            const rCredits = ri.consumedCredits as Record<string, string>[] | undefined;
-            if (Array.isArray(rCredits)) {
-                for (const rc of rCredits) { retryCredits += parseInt0(rc.creditAmount); }
-            }
-            const errMsg = ri.error as string;
-            if (errMsg) { retryErrors.push(errMsg.substring(0, 120)); }
-        }
-    }
-
-    // ── stopReason ─────────────────────────────────────────────────────────
-    const stopReason = (cm.stopReason as string) || '';
-
-    // ── timeSinceLastInvocation ────────────────────────────────────────────
-    const timeSinceLastInvocation = parseDuration(csm.timeSinceLastInvocation as string);
-
-    // ── tokenBreakdown groups ─────────────────────────────────────────────
-    const tokenBreakdownGroups: TokenBreakdownGroup[] = [];
-    const tb = (cwm.tokenBreakdown || {}) as Record<string, unknown>;
-    const tbGroups = (tb.groups || []) as Record<string, unknown>[];
-    for (const g of tbGroups) {
-        const children = ((g.children || []) as Record<string, unknown>[]).map(c => ({
-            name: (c.name as string) || '',
-            tokens: typeof c.numTokens === 'number' ? c.numTokens : parseInt0(c.numTokens as string),
-        }));
-        tokenBreakdownGroups.push({
-            name: (g.name as string) || '',
-            type: (g.type as string) || '',
-            tokens: typeof g.numTokens === 'number' ? g.numTokens : parseInt0(g.numTokens as string),
-            children,
-        });
-    }
-
     return {
         stepIndices: (gm.stepIndices as number[]) || [],
         executionId: (gm.executionId as string) || '',
@@ -484,13 +214,6 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         toolNames,
         promptSectionTitles,
         retries,
-        stopReason,
-        retryTokensIn,
-        retryTokensOut,
-        retryCredits,
-        retryErrors,
-        timeSinceLastInvocation,
-        tokenBreakdownGroups,
     };
 }
 
@@ -505,8 +228,6 @@ export class GMTracker {
     private _callBaselines = new Map<string, number>();
     /** When true, first fetchAll() baselines all existing API data (set only by fullReset) */
     private _needsBaselineInit = false;
-    /** executionIds of calls already archived by per-pool resets — excluded from _buildSummary() */
-    private _archivedCallIds = new Set<string>();
 
     /**
      * Fetch GM data for the given trajectories.
@@ -607,21 +328,12 @@ export class GMTracker {
         let totalCache = 0;
         let totalCacheCreation = 0;
         let totalThinking = 0;
-        let totalRetryTokens = 0;
-        let totalRetryCredits = 0;
-        let totalRetryCount = 0;
-        let latestTokenBreakdown: TokenBreakdownGroup[] = [];
-        const stopReasonCounts: Record<string, number> = {};
         const contextGrowth: { step: number; tokens: number; model: string }[] = [];
 
         for (const [, conv] of this._cache) {
             // Only aggregate calls from the current cycle (after baseline)
             const baseline = this._callBaselines.get(conv.cascadeId) || 0;
-            const sliced = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
-            // Filter out calls already archived by per-pool resets
-            const activeCalls = this._archivedCallIds.size > 0
-                ? sliced.filter(c => !this._archivedCallIds.has(c.executionId))
-                : sliced;
+            const activeCalls = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
             const activeStepsCovered = activeCalls.reduce((sum, c) => sum + c.stepIndices.length, 0);
             conversations.push({
                 ...conv,
@@ -693,25 +405,6 @@ export class GMTracker {
                 }
                 agg.totalRetries += c.retries;
                 if (c.hasError) { agg.errorCount++; }
-
-                // Retry overhead aggregation
-                const retryTok = c.retryTokensIn + c.retryTokensOut;
-                if (retryTok > 0) {
-                    totalRetryTokens += retryTok;
-                    totalRetryCredits += c.retryCredits;
-                    totalRetryCount++;
-                }
-
-                // Stop reason distribution
-                if (c.stopReason) {
-                    const sr = c.stopReason.replace('STOP_REASON_', '');
-                    stopReasonCounts[sr] = (stopReasonCounts[sr] || 0) + 1;
-                }
-
-                // Keep latest tokenBreakdown snapshot
-                if (c.tokenBreakdownGroups.length > 0) {
-                    latestTokenBreakdown = c.tokenBreakdownGroups;
-                }
             }
         }
 
@@ -763,41 +456,23 @@ export class GMTracker {
             totalThinkingTokens: totalThinking,
             contextGrowth,
             fetchedAt: this._lastFetchedAt,
-            totalRetryTokens,
-            totalRetryCredits,
-            totalRetryCount,
-            latestTokenBreakdown,
-            stopReasonCounts,
         };
     }
 
     /**
-     * Per-pool reset: archive only calls from specified models.
-     * When modelIds is empty/undefined, falls back to global reset (all calls).
+     * Full reset on quota boundary.
      * Pre-reset snapshot is already archived to dailyStore.addCycle()
      * in extension.ts, so no data is lost.
+     * Preserves call baselines so _buildSummary() only counts new-cycle calls.
+     * Analogous to activityTracker's trajectory baseline preservation.
      */
-    reset(modelIds?: string[]): void {
-        if (modelIds && modelIds.length > 0) {
-            // ── Per-pool reset: only archive calls from specified models ──
-            const modelSet = new Set(modelIds);
-            for (const [, conv] of this._cache) {
-                for (const c of conv.calls) {
-                    if (modelSet.has(c.model) || modelSet.has(c.responseModel)) {
-                        this._archivedCallIds.add(c.executionId);
-                    }
-                }
-            }
-            this._lastSummary = this._buildSummary();
-            return;
-        }
-        // ── Global reset (fallback) ──
+    reset(): void {
         // Record call baselines: for conversations that were fetched from API
         // (calls.length > 0), set baseline to their absolute call count.
         // Stubs (calls=[]) keep their existing baseline from previous reset.
-        for (const [, conv] of this._cache) {
+        for (const [id, conv] of this._cache) {
             if (conv.calls.length > 0) {
-                this._callBaselines.set(conv.cascadeId, conv.calls.length);
+                this._callBaselines.set(id, conv.calls.length);
             }
         }
         // Keep cache entries with stepCount so fetchAll() skips unchanged IDLE
@@ -810,7 +485,6 @@ export class GMTracker {
                 coverageRate: 0,
             });
         }
-        this._archivedCallIds.clear();
         this._lastSummary = null;
         this._lastFetchedAt = '';
     }
@@ -823,7 +497,6 @@ export class GMTracker {
     fullReset(): void {
         this._cache.clear();
         this._callBaselines.clear();
-        this._archivedCallIds.clear();
         this._lastSummary = null;
         this._lastFetchedAt = '';
         this._needsBaselineInit = true;
@@ -837,29 +510,6 @@ export class GMTracker {
      */
     getCachedSummary(): GMSummary | null {
         return this._lastSummary;
-    }
-
-    /** Full current-cycle summary for UI persistence (retains per-call data). */
-    getDetailedSummary(): GMSummary | null {
-        const summary = this._lastSummary || this._buildSummary();
-        if (!summary) { return null; }
-        return {
-            ...summary,
-            conversations: summary.conversations.map(cloneConversationData),
-            contextGrowth: summary.contextGrowth.map(point => ({ ...point })),
-            latestTokenBreakdown: cloneTokenBreakdownGroups(summary.latestTokenBreakdown),
-            modelBreakdown: Object.fromEntries(
-                Object.entries(summary.modelBreakdown).map(([name, stats]) => [name, { ...stats }]),
-            ),
-            stopReasonCounts: { ...summary.stopReasonCounts },
-        };
-    }
-
-    /** Raw conversation cache for monitor persistence (ignores quota-cycle filtering). */
-    getAllConversationData(): GMConversationData[] {
-        return [...this._cache.values()]
-            .map(cloneConversationData)
-            .sort((a, b) => b.totalSteps - a.totalSteps);
     }
 
     /** Export state for globalState persistence */
@@ -882,7 +532,7 @@ export class GMTracker {
                 ...c, calls: [],
             })),
         };
-        return { version: 1, summary: slim, baselines, callBaselines, archivedCallIds: this._archivedCallIds.size > 0 ? [...this._archivedCallIds] : undefined };
+        return { version: 1, summary: slim, baselines, callBaselines };
     }
 
     /** Restore from persisted state. Cache is empty — API will backfill. */
@@ -913,14 +563,9 @@ export class GMTracker {
             }
         } else {
             // Migrating from pre-callBaselines version: no cycle boundary info.
+            // Baseline all existing API data on first fetch to avoid showing
+            // data from previous archived cycles.
             tracker._needsBaselineInit = true;
-        }
-
-        // Restore archived call IDs from per-pool resets
-        if (Array.isArray(data.archivedCallIds)) {
-            for (const id of data.archivedCallIds) {
-                tracker._archivedCallIds.add(id);
-            }
         }
 
         return tracker;

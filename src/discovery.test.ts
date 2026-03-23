@@ -9,7 +9,7 @@ import {
     extractPortFromNetstat,
     extractPortFromSs,
     isWSL,
-} from '../src/discovery';
+} from './discovery';
 
 describe('discovery.ts', () => {
     describe('buildExpectedWorkspaceId', () => {

@@ -8,7 +8,6 @@
 
 import * as vscode from 'vscode';
 import { ModelConfig } from './models';
-import type { StateBucket } from './durable-state';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -86,12 +85,10 @@ export class QuotaTracker {
     private maxHistory: number = DEFAULT_MAX_HISTORY;
     private enabled: boolean = false;
     private context: vscode.ExtensionContext;
-    private state: StateBucket;
     private _onQuotaReset?: (modelIds: string[]) => void;
 
-    constructor(context: vscode.ExtensionContext, state?: StateBucket) {
+    constructor(context: vscode.ExtensionContext) {
         this.context = context;
-        this.state = state || context.globalState;
         this.restore();
     }
 
@@ -492,7 +489,7 @@ export class QuotaTracker {
     /** Enable or disable tracking. */
     setEnabled(val: boolean): void {
         this.enabled = val;
-        this.state.update(ENABLED_KEY, val);
+        this.context.globalState.update(ENABLED_KEY, val);
     }
 
     // ─── Internal ─────────────────────────────────────────────────────────────
@@ -511,9 +508,9 @@ export class QuotaTracker {
     }
 
     private persist(): void {
-        this.state.update(STORAGE_KEY, this.history);
-        this.state.update(MAX_HISTORY_KEY, this.maxHistory);
-        this.state.update(ENABLED_KEY, this.enabled);
+        this.context.globalState.update(STORAGE_KEY, this.history);
+        this.context.globalState.update(MAX_HISTORY_KEY, this.maxHistory);
+        this.context.globalState.update(ENABLED_KEY, this.enabled);
 
         // Serialize active tracking state — ALL fields must be persisted
         const activeState: Record<string, ModelState> = {};
@@ -528,15 +525,15 @@ export class QuotaTracker {
                 idleSince: ms.idleSince,
             };
         }
-        this.state.update(ACTIVE_KEY, activeState);
+        this.context.globalState.update(ACTIVE_KEY, activeState);
     }
 
     private restore(): void {
-        this.history = this.state.get<QuotaSession[]>(STORAGE_KEY, []);
-        this.maxHistory = this.state.get<number>(MAX_HISTORY_KEY, DEFAULT_MAX_HISTORY);
-        this.enabled = this.state.get<boolean>(ENABLED_KEY, false);
+        this.history = this.context.globalState.get<QuotaSession[]>(STORAGE_KEY, []);
+        this.maxHistory = this.context.globalState.get<number>(MAX_HISTORY_KEY, DEFAULT_MAX_HISTORY);
+        this.enabled = this.context.globalState.get<boolean>(ENABLED_KEY, false);
 
-        const activeState = this.state.get<Record<string, ModelState> | undefined>(ACTIVE_KEY, undefined);
+        const activeState = this.context.globalState.get<Record<string, ModelState>>(ACTIVE_KEY);
         if (activeState) {
             const now = new Date().toISOString();
             for (const [modelId, ms] of Object.entries(activeState)) {

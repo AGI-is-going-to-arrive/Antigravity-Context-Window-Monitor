@@ -596,18 +596,6 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
         const defaultModelCfg = configs.find(c => c.model === defaultModelId);
         const rawCredits = (userTier?.availableCredits as Array<Record<string, unknown>>) || [];
 
-        // Deep-mined fields
-        const tierDescription = (userTier?.description as string) || '';
-        const upgradeText = (userTier?.upgradeSubscriptionText as string) || '';
-        const clientModelSorts = (configData?.clientModelSorts as Array<Record<string, unknown>>) || [];
-        let modelSortOrder: string[] = [];
-        if (clientModelSorts.length > 0) {
-            const sortGroups = (clientModelSorts[0].groups as Array<Record<string, unknown>>) || [];
-            if (sortGroups.length > 0) {
-                modelSortOrder = (sortGroups[0].modelLabels as string[]) || [];
-            }
-        }
-
         const parseNum = (v: unknown): number => {
             if (typeof v === 'number') { return v; }
             if (typeof v === 'string') { const n = parseInt(v, 10); return isNaN(n) ? 0 : n; }
@@ -657,10 +645,6 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
             allowPremiumCommandModels: (planInfo.allowPremiumCommandModels as boolean) || false,
             hasTabToJump: (planInfo.hasTabToJump as boolean) || false,
             canCustomizeAppIcon: (planInfo.canCustomizeAppIcon as boolean) || false,
-            // Deep-mined fields
-            userTierDescription: tierDescription,
-            upgradeSubscriptionText: upgradeText,
-            modelSortOrder,
         } : null;
 
         // Attach raw LS response for transparency panel

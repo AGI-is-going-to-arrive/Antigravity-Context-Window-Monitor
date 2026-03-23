@@ -3,8 +3,8 @@ import {
     processSteps,
     estimateTokensFromText,
     normalizeUri,
-} from '../src/tracker';
-import { StepType } from '../src/constants';
+} from './tracker';
+import { StepType } from './constants';
 
 // ─── normalizeUri ────────────────────────────────────────────────────────────
 

@@ -155,11 +155,6 @@ export function getScript(): string {
                     var feedbackMap = {
                         'pollingInterval': 'pollingFeedback',
                         'contextLimits': 'modelLimitsFeedback',
-                        'quotaNotificationThreshold': 'quotaNotifyFeedback',
-                        'activity.maxRecentSteps': 'maxRecentStepsFeedback',
-                        'activity.maxArchives': 'maxArchivesFeedback',
-                        'quotaMaxHistory': 'maxHistoryFeedback',
-                        'statePath': 'statePathFeedback'
                     };
                     var fbId = feedbackMap[msg.key];
                     if (fbId) {
@@ -339,26 +334,6 @@ export function getScript(): string {
             if (devClearGMBtn) {
                 devClearGMBtn.addEventListener('click', function() {
                     vscode.postMessage({ command: 'devClearGM' });
-                });
-            }
-
-            // ─── Persistent State File Helpers ───
-            var copyStatePathBtn = document.getElementById('copyStatePath');
-            if (copyStatePathBtn) {
-                copyStatePathBtn.addEventListener('click', function() {
-                    vscode.postMessage({ command: 'copyStatePath' });
-                });
-            }
-            var openStateFileBtn = document.getElementById('openStateFile');
-            if (openStateFileBtn) {
-                openStateFileBtn.addEventListener('click', function() {
-                    vscode.postMessage({ command: 'openStateFile' });
-                });
-            }
-            var revealStateFileBtn = document.getElementById('revealStateFile');
-            if (revealStateFileBtn) {
-                revealStateFileBtn.addEventListener('click', function() {
-                    vscode.postMessage({ command: 'revealStateFile' });
                 });
             }
 
@@ -631,31 +606,14 @@ export function getScript(): string {
                         });
                     }
 
-                    // Re-apply privacy mask if active AND re-bind toggle button
+                    // Re-apply privacy mask if active
                     var privState = vscode.getState() || {};
-                    var isMasked = !!privState.privacyMasked;
-                    if (isMasked) {
+                    if (privState.privacyMasked) {
                         var targets = document.querySelectorAll('[data-real][data-masked]');
                         for (var pj = 0; pj < targets.length; pj++) {
                             var el = targets[pj];
                             el.textContent = el.getAttribute('data-masked');
                         }
-                    }
-                    // Re-bind privacy toggle button (old button destroyed by innerHTML swap)
-                    var newPrivBtn = document.getElementById('privacyToggle');
-                    if (newPrivBtn) {
-                        if (isMasked) { newPrivBtn.classList.add('active'); }
-                        newPrivBtn.addEventListener('click', function() {
-                            var st = vscode.getState() || {};
-                            var m = !st.privacyMasked;
-                            st.privacyMasked = m;
-                            vscode.setState(st);
-                            var tgts = document.querySelectorAll('[data-real][data-masked]');
-                            for (var k = 0; k < tgts.length; k++) {
-                                tgts[k].textContent = m ? tgts[k].getAttribute('data-masked') : tgts[k].getAttribute('data-real');
-                            }
-                            newPrivBtn.classList.toggle('active', m);
-                        });
                     }
                 }
             });

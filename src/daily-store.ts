@@ -49,9 +49,6 @@ export interface DailyCycleEntry {
     gmTotalCalls?: number;
     gmTotalCredits?: number;
     gmTotalTokens?: number;          // input + output
-    gmRetryTokens?: number;          // retry overhead: tokens wasted
-    gmRetryCredits?: number;         // retry overhead: credits lost
-    gmRetryCount?: number;           // retry overhead: number of retried calls
     // Cost
     estimatedCost?: number;          // USD grand total
     // GM per-model breakdown
@@ -173,11 +170,6 @@ export class DailyStore {
             cycle.gmTotalCalls = gmSummary.totalCalls;
             cycle.gmTotalCredits = gmSummary.totalCredits;
             cycle.gmTotalTokens = gmSummary.totalInputTokens + gmSummary.totalOutputTokens;
-            if (gmSummary.totalRetryTokens > 0) {
-                cycle.gmRetryTokens = gmSummary.totalRetryTokens;
-                cycle.gmRetryCredits = gmSummary.totalRetryCredits;
-                cycle.gmRetryCount = gmSummary.totalRetryCount;
-            }
         }
 
         if (costTotal !== undefined && costTotal > 0) {

@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import type { StateBucket } from './durable-state';
 
 // ─── Language Types ───────────────────────────────────────────────────────────
 
@@ -97,14 +96,7 @@ let currentLanguage: Language = 'both';
  * Call once during extension activation.
  */
 export function initI18n(context: vscode.ExtensionContext): void {
-    const saved = context.globalState.get<Language>('displayLanguage', 'both');
-    if (saved && (saved === 'zh' || saved === 'en' || saved === 'both')) {
-        currentLanguage = saved;
-    }
-}
-
-export function initI18nFromState(state: StateBucket): void {
-    const saved = state.get<Language>('displayLanguage', 'both');
+    const saved = context.globalState.get<Language>('displayLanguage');
     if (saved && (saved === 'zh' || saved === 'en' || saved === 'both')) {
         currentLanguage = saved;
     }
@@ -123,11 +115,6 @@ export function getLanguage(): Language {
 export async function setLanguage(lang: Language, context: vscode.ExtensionContext): Promise<void> {
     currentLanguage = lang;
     await context.globalState.update('displayLanguage', lang);
-}
-
-export async function setLanguageToState(lang: Language, state: StateBucket): Promise<void> {
-    currentLanguage = lang;
-    await state.update('displayLanguage', lang);
 }
 
 /**
@@ -177,7 +164,7 @@ export function tBi(en: string, zh: string, separator: string = ' / '): string {
 /**
  * Show a QuickPick for the user to select display language.
  */
-export async function showLanguagePicker(context: vscode.ExtensionContext, state?: StateBucket): Promise<void> {
+export async function showLanguagePicker(context: vscode.ExtensionContext): Promise<void> {
     const items: vscode.QuickPickItem[] = [
         {
             label: '$(globe) 中文',
@@ -213,10 +200,5 @@ export async function showLanguagePicker(context: vscode.ExtensionContext, state
         lang = 'both';
     }
 
-    if (state) {
-        await setLanguageToState(lang, state);
-        await context.globalState.update('displayLanguage', lang);
-        return;
-    }
     await setLanguage(lang, context);
 }

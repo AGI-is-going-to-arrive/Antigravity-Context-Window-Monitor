@@ -9,28 +9,10 @@ import { QuotaTracker } from './quota-tracker';
 import { ICON } from './webview-icons';
 import { esc } from './webview-helpers';
 
-export interface StorageDiagnostics {
-    stateFilePath: string;
-    stateFileExists: boolean;
-    monitorSnapshotCount: number;
-    monitorGMConversationCount: number;
-    gmConversationCount: number;
-    gmCallCount: number;
-    quotaHistoryCount: number;
-    activityArchiveCount: number;
-    calendarDayCount: number;
-    calendarCycleCount: number;
-    pricingOverrideCount: number;
-}
-
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /** Build the Settings tab HTML from current VS Code configuration. */
-export function buildSettingsContent(
-    configs: ModelConfig[],
-    tracker?: QuotaTracker,
-    storage?: StorageDiagnostics,
-): string {
+export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTracker): string {
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
     const currentThreshold = cfg.get<number>('compressionWarningThreshold', 200_000);
     const pollingInterval = cfg.get<number>('pollingInterval', 5);
@@ -60,41 +42,8 @@ export function buildSettingsContent(
     }).join('');
 
     const maxHistory = tracker?.getMaxHistory() ?? 20;
-    const storageCard = storage ? `
-        <section class="card">
-            <h2>${ICON.database} ${tBi('Persistent Storage', '持久化存储')}</h2>
-            <p class="raw-desc">${tBi(
-                'This file is stored outside the extension state database, so it survives uninstall/reinstall unless you delete it manually.',
-                '该文件存储在扩展状态数据库之外，因此只要你不手动删除，它会跨卸载/重装保留。',
-            )}</p>
-            <div class="storage-path-box">
-                <code class="storage-path-text">${esc(storage.stateFilePath)}</code>
-                <span class="storage-path-state ${storage.stateFileExists ? 'is-ready' : 'is-missing'}">
-                    ${storage.stateFileExists ? tBi('Ready', '已存在') : tBi('Missing', '不存在')}
-                </span>
-            </div>
-            <div class="storage-actions">
-                <button class="action-btn" id="copyStatePath">${ICON.copy} ${tBi('Copy Path', '复制路径')}</button>
-                <button class="action-btn" id="openStateFile">${ICON.file} ${tBi('Open File', '打开文件')}</button>
-                <button class="action-btn" id="revealStateFile">${ICON.folder} ${tBi('Reveal', '定位文件')}</button>
-                <span id="statePathFeedback" class="threshold-feedback"></span>
-            </div>
-            <div class="storage-stat-grid">
-                <div class="storage-stat"><span class="storage-stat-val">${storage.monitorSnapshotCount}</span><span class="storage-stat-label">${tBi('Monitor Sessions', '监控会话')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.monitorGMConversationCount}</span><span class="storage-stat-label">${tBi('Monitor GM Snapshots', '监控 GM 快照')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.gmConversationCount}</span><span class="storage-stat-label">${tBi('GM Conversations', 'GM 对话')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.gmCallCount}</span><span class="storage-stat-label">${tBi('GM Calls', 'GM 调用')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.activityArchiveCount}</span><span class="storage-stat-label">${tBi('Activity Archives', '活动归档')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.quotaHistoryCount}</span><span class="storage-stat-label">${tBi('Quota History', '额度历史')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.calendarDayCount}</span><span class="storage-stat-label">${tBi('Calendar Days', '日历天数')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.calendarCycleCount}</span><span class="storage-stat-label">${tBi('Calendar Cycles', '日历周期')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.pricingOverrideCount}</span><span class="storage-stat-label">${tBi('Price Overrides', '价格覆盖')}</span></div>
-            </div>
-        </section>` : '';
 
     return `
-        ${storageCard}
-
         <section class="card">
             <h2>${ICON.shield} ${tBi('Compression Warning', '压缩警告')}</h2>
             <div class="setting-row">
