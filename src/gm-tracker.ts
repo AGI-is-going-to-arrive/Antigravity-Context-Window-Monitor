@@ -30,6 +30,14 @@ export interface TokenBreakdownGroup {
     children: { name: string; tokens: number }[];
 }
 
+export type GMModelAccuracy = 'exact' | 'placeholder';
+export type GMPromptSource = 'none' | 'messagePrompts' | 'messageMetadata';
+
+export interface GMUserMessageAnchor {
+    stepIndex: number;
+    text: string;
+}
+
 /** A single LLM invocation entry from generatorMetadata */
 export interface GMCallEntry {
     stepIndices: number[];
@@ -37,6 +45,7 @@ export interface GMCallEntry {
     model: string;           // e.g. MODEL_PLACEHOLDER_M26
     modelDisplay: string;    // e.g. Claude Opus 4
     responseModel: string;   // e.g. claude-opus-4-6-thinking
+    modelAccuracy: GMModelAccuracy;
     inputTokens: number;
     outputTokens: number;
     thinkingTokens: number;
@@ -62,6 +71,18 @@ export interface GMCallEntry {
     toolNames: string[];
     /** Prompt section titles */
     promptSectionTitles: string[];
+    /** Best-effort prompt snippet recovered from GM payload */
+    promptSnippet: string;
+    /** Which GM field produced promptSnippet */
+    promptSource: GMPromptSource;
+    /** Number of messagePrompts entries if present */
+    messagePromptCount: number;
+    /** messageMetadata top-level keys */
+    messageMetadataKeys: string[];
+    /** responseHeader top-level keys */
+    responseHeaderKeys: string[];
+    /** Explicit user messages recovered from messagePrompts */
+    userMessageAnchors: GMUserMessageAnchor[];
     /** Number of retries for this call */
     retries: number;
     /** Stop reason from plannerResponse (e.g. STOP_REASON_STOP_PATTERN) */
@@ -78,6 +99,14 @@ export interface GMCallEntry {
     timeSinceLastInvocation: number;
     /** Token breakdown groups: context composition at call time */
     tokenBreakdownGroups: TokenBreakdownGroup[];
+    /** chatStartMetadata.createdAt */
+    createdAt: string;
+    /** chatStartMetadata.latestStableMessageIndex */
+    latestStableMessageIndex: number;
+    /** chatStartMetadata.startStepIndex */
+    startStepIndex: number;
+    /** chatStartMetadata.checkpointIndex */
+    checkpointIndex: number;
 }
 
 /** Aggregated per-model statistics */
@@ -109,6 +138,10 @@ export interface GMModelStats {
     totalRetries: number;
     /** Total error count */
     errorCount: number;
+    /** Calls with exact responseModel */
+    exactCallCount: number;
+    /** Calls that only expose placeholder model IDs */
+    placeholderOnlyCalls: number;
 }
 
 /** Per-conversation GM data */
@@ -272,6 +305,11 @@ export function filterGMSummaryByModels(
                 if (call.hasError) {
                     existing.errorCount += 1;
                 }
+                if (call.modelAccuracy === 'exact') {
+                    existing.exactCallCount += 1;
+                } else {
+                    existing.placeholderOnlyCalls += 1;
+                }
                 continue;
             }
 
@@ -297,6 +335,8 @@ export function filterGMSummaryByModels(
                 promptSectionTitles: call.promptSectionTitles,
                 totalRetries: call.retries,
                 errorCount: call.hasError ? 1 : 0,
+                exactCallCount: call.modelAccuracy === 'exact' ? 1 : 0,
+                placeholderOnlyCalls: call.modelAccuracy === 'placeholder' ? 1 : 0,
             };
         }
     }
@@ -342,6 +382,9 @@ function cloneGMCallEntry(call: GMCallEntry): GMCallEntry {
         stepIndices: [...call.stepIndices],
         toolNames: [...call.toolNames],
         promptSectionTitles: [...call.promptSectionTitles],
+        messageMetadataKeys: [...call.messageMetadataKeys],
+        responseHeaderKeys: [...call.responseHeaderKeys],
+        userMessageAnchors: call.userMessageAnchors.map(anchor => ({ ...anchor })),
         retryErrors: [...call.retryErrors],
         tokenBreakdownGroups: cloneTokenBreakdownGroups(call.tokenBreakdownGroups),
         completionConfig: call.completionConfig ? { ...call.completionConfig } : null,
@@ -357,16 +400,249 @@ function cloneConversationData(conversation: GMConversationData): GMConversation
 
 // ─── Parser Helpers ──────────────────────────────────────────────────────────
 
-function parseDuration(s: string | undefined): number {
+function parseDuration(s: unknown): number {
+    if (typeof s === 'number') { return s; }
     if (!s || typeof s !== 'string') { return 0; }
     const n = parseFloat(s.replace('s', ''));
     return isNaN(n) ? 0 : n;
 }
 
-function parseInt0(s: string | undefined): number {
+function parseInt0(s: unknown): number {
+    if (typeof s === 'number') { return Math.round(s); }
     if (!s) { return 0; }
-    const n = parseInt(s, 10);
+    const n = parseInt(String(s), 10);
     return isNaN(n) ? 0 : n;
+}
+
+function uniqueStrings(values: string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const value of values) {
+        if (!value || seen.has(value)) { continue; }
+        seen.add(value);
+        out.push(value);
+    }
+    return out;
+}
+
+function collectStringLeaves(
+    value: unknown,
+    prefix: string,
+    out: Array<{ path: string; value: string }>,
+    depth = 0,
+): void {
+    if (depth > 4 || value === null || value === undefined) { return; }
+    if (typeof value === 'string') {
+        const trimmed = value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+        if (trimmed.length > 0) {
+            out.push({ path: prefix, value: trimmed });
+        }
+        return;
+    }
+    if (Array.isArray(value)) {
+        for (let i = 0; i < Math.min(value.length, 6); i++) {
+            collectStringLeaves(value[i], `${prefix}[${i}]`, out, depth + 1);
+        }
+        return;
+    }
+    if (typeof value === 'object') {
+        for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+            collectStringLeaves(v, prefix ? `${prefix}.${k}` : k, out, depth + 1);
+        }
+    }
+}
+
+function pickPromptSnippet(value: unknown): string {
+    const strings: Array<{ path: string; value: string }> = [];
+    collectStringLeaves(value, '', strings);
+    if (strings.length === 0) { return ''; }
+
+    const preferred = [
+        'text',
+        'content',
+        'message',
+        'prompt',
+        'summary',
+        'query',
+        'command',
+        'task',
+        'title',
+        'name',
+        'path',
+    ];
+
+    const filtered = strings
+        .filter(entry => {
+            const lowerPath = entry.path.toLowerCase();
+            const lowerValue = entry.value.toLowerCase();
+            if (lowerPath.includes('systemprompt')) { return false; }
+            if (lowerPath.includes('checksum')) { return false; }
+            if (lowerValue.startsWith('http://') || lowerValue.startsWith('https://')) { return false; }
+            return entry.value.length >= 8;
+        })
+        .sort((a, b) => {
+            const aScore = preferred.findIndex(token => a.path.toLowerCase().includes(token));
+            const bScore = preferred.findIndex(token => b.path.toLowerCase().includes(token));
+            const aRank = aScore === -1 ? 999 : aScore;
+            const bRank = bScore === -1 ? 999 : bScore;
+            if (aRank !== bRank) { return aRank - bRank; }
+            return b.value.length - a.value.length;
+        });
+
+    return filtered[0]?.value || '';
+}
+
+function cleanUserPromptText(prompt: string): string {
+    return prompt
+        .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, ' ')
+        .replace(/<USER_REQUEST>/gi, ' ')
+        .replace(/<\/USER_REQUEST>/gi, ' ')
+        .replace(/Step Id:\s*\d+/gi, ' ')
+        .replace(/[\r\n\t]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function extractUserMessageAnchors(messagePrompts: unknown): GMUserMessageAnchor[] {
+    if (!Array.isArray(messagePrompts)) { return []; }
+    const anchors: GMUserMessageAnchor[] = [];
+    const seen = new Set<number>();
+
+    for (const item of messagePrompts) {
+        if (!item || typeof item !== 'object') { continue; }
+        const prompt = String((item as Record<string, unknown>).prompt || '');
+        const source = String((item as Record<string, unknown>).source || '');
+        if (!prompt) { continue; }
+
+        const explicit = prompt.match(/Step Id:\s*(\d+)[\s\S]*?<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i);
+        if (explicit) {
+            const stepIndex = parseInt0(explicit[1]);
+            const text = cleanUserPromptText(explicit[2]);
+            if (stepIndex > 0 && text && !seen.has(stepIndex)) {
+                anchors.push({ stepIndex, text });
+                seen.add(stepIndex);
+            }
+            continue;
+        }
+
+        if (source !== 'CHAT_MESSAGE_SOURCE_USER') { continue; }
+        if (/^<(user_information|mcp_servers|artifacts|conversation_history|system_prompt|tools?)>/i.test(prompt.trim())) {
+            continue;
+        }
+        const generic = prompt.match(/Step Id:\s*(\d+)\s*([\s\S]*)/i);
+        if (!generic) { continue; }
+        const stepIndex = parseInt0(generic[1]);
+        const text = cleanUserPromptText(generic[2]);
+        if (stepIndex > 0 && text && !seen.has(stepIndex)) {
+            anchors.push({ stepIndex, text });
+            seen.add(stepIndex);
+        }
+    }
+
+    anchors.sort((a, b) => a.stepIndex - b.stepIndex);
+    return anchors;
+}
+
+function extractPromptData(cm: Record<string, unknown>): {
+    promptSnippet: string;
+    promptSource: GMPromptSource;
+    messagePromptCount: number;
+    messageMetadataKeys: string[];
+    responseHeaderKeys: string[];
+    userMessageAnchors: GMUserMessageAnchor[];
+} {
+    const messagePrompts = cm.messagePrompts;
+    const messageMetadata = cm.messageMetadata;
+    const responseHeader = cm.responseHeader;
+    const userMessageAnchors = extractUserMessageAnchors(messagePrompts);
+
+    const fromPrompts = pickPromptSnippet(messagePrompts);
+    if (fromPrompts) {
+        return {
+            promptSnippet: fromPrompts,
+            promptSource: 'messagePrompts',
+            messagePromptCount: Array.isArray(messagePrompts) ? messagePrompts.length : 0,
+            messageMetadataKeys: messageMetadata && typeof messageMetadata === 'object' && !Array.isArray(messageMetadata)
+                ? Object.keys(messageMetadata as Record<string, unknown>)
+                : [],
+            responseHeaderKeys: responseHeader && typeof responseHeader === 'object' && !Array.isArray(responseHeader)
+                ? Object.keys(responseHeader as Record<string, unknown>)
+                : [],
+            userMessageAnchors,
+        };
+    }
+
+    const fromMetadata = pickPromptSnippet(messageMetadata);
+    return {
+        promptSnippet: fromMetadata,
+        promptSource: fromMetadata ? 'messageMetadata' : 'none',
+        messagePromptCount: Array.isArray(messagePrompts) ? messagePrompts.length : 0,
+        messageMetadataKeys: messageMetadata && typeof messageMetadata === 'object' && !Array.isArray(messageMetadata)
+            ? Object.keys(messageMetadata as Record<string, unknown>)
+            : [],
+        responseHeaderKeys: responseHeader && typeof responseHeader === 'object' && !Array.isArray(responseHeader)
+            ? Object.keys(responseHeader as Record<string, unknown>)
+            : [],
+        userMessageAnchors,
+    };
+}
+
+function buildGMMatchKey(call: Pick<GMCallEntry, 'executionId' | 'stepIndices' | 'model' | 'responseModel'>): string {
+    if (call.executionId) {
+        return `exec:${call.executionId}`;
+    }
+    return `steps:${call.stepIndices.join(',')}|model:${call.responseModel || call.model}`;
+}
+
+function mergeGMCallEntries(primary: GMCallEntry, fallback: GMCallEntry): GMCallEntry {
+    const useFallbackPrompt = !primary.promptSnippet && !!fallback.promptSnippet;
+    return {
+        ...primary,
+        responseModel: primary.responseModel || fallback.responseModel,
+        modelAccuracy: primary.responseModel || fallback.responseModel ? 'exact' : primary.modelAccuracy,
+        systemPromptSnippet: primary.systemPromptSnippet || fallback.systemPromptSnippet,
+        toolCount: Math.max(primary.toolCount, fallback.toolCount),
+        toolNames: uniqueStrings([...primary.toolNames, ...fallback.toolNames]),
+        promptSectionTitles: primary.promptSectionTitles.length >= fallback.promptSectionTitles.length
+            ? primary.promptSectionTitles
+            : fallback.promptSectionTitles,
+        promptSnippet: useFallbackPrompt ? fallback.promptSnippet : primary.promptSnippet,
+        promptSource: useFallbackPrompt ? fallback.promptSource : primary.promptSource,
+        messagePromptCount: Math.max(primary.messagePromptCount, fallback.messagePromptCount),
+        messageMetadataKeys: primary.messageMetadataKeys.length > 0
+            ? primary.messageMetadataKeys
+            : fallback.messageMetadataKeys,
+        responseHeaderKeys: primary.responseHeaderKeys.length > 0
+            ? primary.responseHeaderKeys
+            : fallback.responseHeaderKeys,
+        userMessageAnchors: primary.userMessageAnchors.length > 0
+            ? primary.userMessageAnchors
+            : fallback.userMessageAnchors,
+        stopReason: primary.stopReason || fallback.stopReason,
+        createdAt: primary.createdAt || fallback.createdAt,
+        latestStableMessageIndex: primary.latestStableMessageIndex || fallback.latestStableMessageIndex,
+        startStepIndex: primary.startStepIndex || fallback.startStepIndex,
+        checkpointIndex: primary.checkpointIndex || fallback.checkpointIndex,
+    };
+}
+
+function maybeEnrichCallsFromTrajectory(calls: GMCallEntry[], embeddedCalls: GMCallEntry[]): GMCallEntry[] {
+    if (calls.length === 0 || embeddedCalls.length === 0) { return calls; }
+    const embeddedByKey = new Map<string, GMCallEntry>();
+    for (const call of embeddedCalls) {
+        embeddedByKey.set(buildGMMatchKey(call), call);
+    }
+    return calls.map(call => {
+        const embedded = embeddedByKey.get(buildGMMatchKey(call));
+        return embedded ? mergeGMCallEntries(call, embedded) : call;
+    });
+}
+
+function shouldEnrichConversation(stepCount: number, calls: GMCallEntry[]): boolean {
+    if (calls.some(call => call.modelAccuracy === 'placeholder')) {
+        return true;
+    }
+    return stepCount >= 350;
 }
 
 function parseCompletionConfig(cc: Record<string, unknown> | undefined): GMCompletionConfig | null {
@@ -399,6 +675,8 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
     }
 
     const modelId = (cm.model as string) || '';
+    const responseModel = (cm.responseModel as string) || '';
+    const modelAccuracy: GMModelAccuracy = responseModel ? 'exact' : 'placeholder';
 
     // Model DNA fields
     const completionConfig = parseCompletionConfig(cm.completionConfig as Record<string, unknown>);
@@ -413,6 +691,7 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
 
     const promptSections = (cm.promptSections as Record<string, unknown>[]) || [];
     const promptSectionTitles = promptSections.map(p => (p.title as string) || '?');
+    const promptData = extractPromptData(cm);
 
     const retries = parseInt0(cm.retries as string);
     const errorMessage = (gm.error as string) || '';
@@ -463,7 +742,8 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         executionId: (gm.executionId as string) || '',
         model: modelId,
         modelDisplay: modelId ? getModelDisplayName(modelId) : modelId,
-        responseModel: (cm.responseModel as string) || '',
+        responseModel,
+        modelAccuracy,
         inputTokens: parseInt0(usage.inputTokens as string),
         outputTokens: parseInt0(usage.outputTokens as string),
         thinkingTokens: parseInt0(usage.thinkingOutputTokens as string),
@@ -483,6 +763,12 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         toolCount: tools.length,
         toolNames,
         promptSectionTitles,
+        promptSnippet: promptData.promptSnippet,
+        promptSource: promptData.promptSource,
+        messagePromptCount: promptData.messagePromptCount,
+        messageMetadataKeys: promptData.messageMetadataKeys,
+        responseHeaderKeys: promptData.responseHeaderKeys,
+        userMessageAnchors: promptData.userMessageAnchors,
         retries,
         stopReason,
         retryTokensIn,
@@ -491,6 +777,10 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         retryErrors,
         timeSinceLastInvocation,
         tokenBreakdownGroups,
+        createdAt: (csm.createdAt as string) || '',
+        latestStableMessageIndex: parseInt0(csm.latestStableMessageIndex),
+        startStepIndex: parseInt0(csm.startStepIndex),
+        checkpointIndex: parseInt0(csm.checkpointIndex),
     };
 }
 
@@ -535,9 +825,25 @@ export class GMTracker {
             try {
                 const resp = await rpcCall(ls, 'GetCascadeTrajectoryGeneratorMetadata',
                     { cascadeId: t.cascadeId, ...meta }, 30000, signal) as Record<string, unknown>;
-                const rawGM = (resp.generatorMetadata || []) as Record<string, unknown>[];
+        const rawGM = (resp.generatorMetadata || []) as Record<string, unknown>[];
 
-                const calls = rawGM.map(parseGMEntry);
+                let calls = rawGM.map(parseGMEntry);
+                if (shouldEnrichConversation(t.stepCount, calls)) {
+                    try {
+                        const fullResp = await rpcCall(ls, 'GetCascadeTrajectory',
+                            { cascadeId: t.cascadeId, ...meta }, 60000, signal) as Record<string, unknown>;
+                        const trajectory = (fullResp.trajectory || {}) as Record<string, unknown>;
+                        const embeddedRawGM = (trajectory.generatorMetadata || []) as Record<string, unknown>[];
+                        if (embeddedRawGM.length > 0) {
+                            calls = maybeEnrichCallsFromTrajectory(
+                                calls,
+                                embeddedRawGM.map(parseGMEntry),
+                            );
+                        }
+                    } catch {
+                        // Enrichment is best-effort only; keep lightweight GM payload.
+                    }
+                }
                 let coveredSteps = 0;
                 for (const c of calls) { coveredSteps += c.stepIndices.length; }
 
@@ -597,6 +903,8 @@ export class GMTracker {
             promptSectionTitles: string[];
             totalRetries: number;
             errorCount: number;
+            exactCallCount: number;
+            placeholderOnlyCalls: number;
         }>();
 
         let totalCalls = 0;
@@ -669,6 +977,8 @@ export class GMTracker {
                         promptSectionTitles: [],
                         totalRetries: 0,
                         errorCount: 0,
+                        exactCallCount: 0,
+                        placeholderOnlyCalls: 0,
                     };
                     modelAgg.set(key, agg);
                 }
@@ -693,6 +1003,8 @@ export class GMTracker {
                 }
                 agg.totalRetries += c.retries;
                 if (c.hasError) { agg.errorCount++; }
+                if (c.modelAccuracy === 'exact') { agg.exactCallCount++; }
+                else { agg.placeholderOnlyCalls++; }
 
                 // Retry overhead aggregation
                 const retryTok = c.retryTokensIn + c.retryTokensOut;
@@ -747,6 +1059,8 @@ export class GMTracker {
                 promptSectionTitles: agg.promptSectionTitles,
                 totalRetries: agg.totalRetries,
                 errorCount: agg.errorCount,
+                exactCallCount: agg.exactCallCount,
+                placeholderOnlyCalls: agg.placeholderOnlyCalls,
             };
         }
 

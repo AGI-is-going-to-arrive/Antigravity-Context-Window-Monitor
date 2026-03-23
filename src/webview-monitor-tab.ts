@@ -28,6 +28,10 @@ interface GMSessionStats {
     avgTTFT: number;
     avgStreaming: number;
     cacheHitRate: number;
+    exactCalls: number;
+    aliasOnlyCalls: number;
+    latestCallModel: string;
+    latestCallAccuracy: 'exact' | 'placeholder' | 'none';
     stopReasons: Record<string, number>;
     hasData: boolean;
 }
@@ -53,6 +57,8 @@ function aggregateGMForSession(
         cacheRead: 0, cacheCreate: 0, credits: 0,
         retryCount: 0, retryTokens: 0, retryCredits: 0,
         avgTTFT: 0, avgStreaming: 0, cacheHitRate: 0,
+        exactCalls: 0, aliasOnlyCalls: 0,
+        latestCallModel: '', latestCallAccuracy: 'none',
         stopReasons: {}, hasData: false,
     };
     const conv = getConversationData(gmSummary, gmConversations, cascadeId);
@@ -85,6 +91,10 @@ function aggregateGMForSession(
         }
     }
 
+    const latestCall = conv.calls[conv.calls.length - 1];
+    const exactCalls = conv.calls.filter(c => c.modelAccuracy === 'exact').length;
+    const aliasOnlyCalls = conv.calls.filter(c => c.modelAccuracy === 'placeholder').length;
+
     return {
         calls: conv.calls.length,
         totalInput, totalOutput, thinkingTokens: thinking, responseTokens: response,
@@ -93,6 +103,9 @@ function aggregateGMForSession(
         avgTTFT: ttftN > 0 ? ttftSum / ttftN : 0,
         avgStreaming: streamN > 0 ? streamSum / streamN : 0,
         cacheHitRate: conv.calls.length > 0 ? cacheHits / conv.calls.length : 0,
+        exactCalls, aliasOnlyCalls,
+        latestCallModel: latestCall ? (latestCall.responseModel || latestCall.modelDisplay || latestCall.model) : '',
+        latestCallAccuracy: latestCall ? latestCall.modelAccuracy : 'none',
         stopReasons: stops, hasData: true,
     };
 }
@@ -264,6 +277,9 @@ function buildCurrentSessionSection(
     let gmStatsHtml = '';
     if (gs.hasData) {
         const statItems: string[] = [];
+        const accuracyBits: string[] = [];
+        if (gs.exactCalls > 0) { accuracyBits.push(`${tBi('精确', '精确')} ${gs.exactCalls}`); }
+        if (gs.aliasOnlyCalls > 0) { accuracyBits.push(`${tBi('别名', '别名')} ${gs.aliasOnlyCalls}`); }
         // Credits
         if (gs.credits > 0) {
             statItems.push(`<div class="stat mini"><div class="stat-label">${IC.coin} ${tBi('Credits', '积分')}</div><div class="stat-value">${gs.credits.toLocaleString()}</div></div>`);
@@ -287,6 +303,8 @@ function buildCurrentSessionSection(
             gmStatsHtml = `
                 <div class="gm-stats-section">
                     <div class="section-subtitle">${ICON.bolt} ${tBi('GM Precision', 'GM 精确数据')} <span class="badge ok-badge">${tBi('Precise', '精确')}</span></div>
+                    ${gs.latestCallModel ? `<div class="detail-row"><span>${tBi('Latest GM Model', '最后 GM 模型')}</span><span>${esc(gs.latestCallModel)} ${gs.latestCallAccuracy === 'exact' ? `<span class="badge ok-badge">${tBi('Exact', '精确')}</span>` : `<span class="badge warn-badge">${tBi('Alias', '别名')}</span>`}</span></div>` : ''}
+                    ${accuracyBits.length > 0 ? `<div class="detail-row"><span>${tBi('Model Accuracy', '模型精度')}</span><span>${accuracyBits.join(' · ')}</span></div>` : ''}
                     <div class="stat-grid four-col">${statItems.join('')}</div>
                 </div>`;
         }
@@ -432,6 +450,12 @@ function buildOtherSessionsSection(
             if (gs.cacheHitRate > 0) { parts.push(`${tBi('Cache', '缓存')} ${Math.round(gs.cacheHitRate * 100)}%`); }
             if (gs.retryCount > 0) { parts.push(`${tBi('Retry', '重试')} ${gs.retryCount}`); }
             if (gs.credits > 0) { parts.push(`${gs.credits} ${tBi('cr', '积分')}`); }
+            if (gs.latestCallModel) {
+                parts.push(`${tBi('Last', '最后')}: ${esc(gs.latestCallModel)}`);
+            }
+            if (gs.aliasOnlyCalls > 0) {
+                parts.push(`${tBi('Alias', '别名')} ${gs.aliasOnlyCalls}`);
+            }
             gmMiniHtml = parts.length > 0
                 ? `<div class="gm-mini-row"><span class="badge ok-badge">GM</span> ${parts.join(' · ')}</div>`
                 : '';
@@ -728,15 +752,23 @@ function buildCallDetailsSection(
         const stopTag = abnormal ? `<span class="badge danger-badge">${esc(sr)}</span>` : `<span class="dim">${esc(sr)}</span>`;
         const retryTag = c.retries > 0 ? `<span class="badge warn-badge">${c.retries} ${tBi('retry', '重试')}</span>` : '';
         const cacheTag = c.cacheReadTokens > 0 ? `<span class="dim">${tBi('cache', '缓存')} ${formatTokenCount(c.cacheReadTokens)}</span>` : '';
+        const accuracyTag = c.modelAccuracy === 'exact'
+            ? `<span class="badge ok-badge">${tBi('Exact', '精确')}</span>`
+            : `<span class="badge warn-badge">${tBi('Alias', '别名')}</span>`;
+        const rawModelTag = c.responseModel
+            ? `<span class="dim">${esc(c.responseModel)}</span>`
+            : c.model
+                ? `<span class="dim">${esc(c.model)}</span>`
+                : '';
 
         return `<div class="call-row">
                     <div class="call-header">
                         <span class="call-idx">#${idx}</span>
                         <span class="call-model">${esc(c.modelDisplay || c.responseModel)}</span>
-                        ${retryTag} ${stopTag}
+                        ${accuracyTag} ${retryTag} ${stopTag}
                     </div>
                     <div class="call-stats">
-                        ${tBi('In', '输入')}: ${formatTokenCount(c.inputTokens)} · ${tBi('Out', '输出')}: ${formatTokenCount(c.outputTokens)}${c.thinkingTokens > 0 ? ` (${tBi('think', '思考')}: ${formatTokenCount(c.thinkingTokens)})` : ''}${c.credits > 0 ? ` · ${c.credits} ${tBi('cr', '积分')}` : ''}${c.ttftSeconds > 0 ? ` · TTFT ${c.ttftSeconds.toFixed(1)}s` : ''}${cacheTag ? ` · ${cacheTag}` : ''}
+                        ${tBi('In', '输入')}: ${formatTokenCount(c.inputTokens)} · ${tBi('Out', '输出')}: ${formatTokenCount(c.outputTokens)}${c.thinkingTokens > 0 ? ` (${tBi('think', '思考')}: ${formatTokenCount(c.thinkingTokens)})` : ''}${c.credits > 0 ? ` · ${c.credits} ${tBi('cr', '积分')}` : ''}${c.ttftSeconds > 0 ? ` · TTFT ${c.ttftSeconds.toFixed(1)}s` : ''}${cacheTag ? ` · ${cacheTag}` : ''}${rawModelTag ? ` · ${rawModelTag}` : ''}
                     </div>
                 </div>`;
     }).join('');

@@ -374,7 +374,7 @@ function buildTabContents(
     return {
         monitor: buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations),
         profile: buildProfileContent(userInfo, configs),
-        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary),
+        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage),
         pricing: lastPricingStore
             ? buildPricingTabContent(lastGMSummary, lastPricingStore)
             : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`,
@@ -405,7 +405,7 @@ function buildHtml(
     const profileHtml = buildProfileContent(userInfo, configs);
     const settingsHtml = buildSettingsContent(configs, tracker, lastStorageDiagnostics);
     const historyHtml = buildHistoryHtml(tracker);
-    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary);
+    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(lastGMSummary, lastPricingStore)
         : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;

@@ -818,7 +818,13 @@ async function pollActivity(): Promise<void> {
 
         const activityChanged = await activityTracker.processTrajectories(
             lsInfo,
-            trajectories.map(t => ({ cascadeId: t.cascadeId, stepCount: t.stepCount, status: t.status })),
+            trajectories.map(t => ({
+                cascadeId: t.cascadeId,
+                stepCount: t.stepCount,
+                status: t.status,
+                requestedModel: t.requestedModel,
+                generatorModel: t.generatorModel,
+            })),
             abortController.signal,
         );
 
@@ -830,12 +836,17 @@ async function pollActivity(): Promise<void> {
                 trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
                 abortController.signal,
             );
+            const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
             monitorStore.recordGMConversations(gmTracker.getAllConversationData());
-            durableFileGlobalState.update('gmDetailedSummary', gmTracker.getDetailedSummary());
+            durableFileGlobalState.update('gmDetailedSummary', detailedSummary);
+            const prevSummary = lastGMSummary;
+            lastGMSummary = detailedSummary;
             if (!lastGMSummary
-                || gmSummary.totalCalls !== lastGMSummary.totalCalls
-                || gmSummary.totalStepsCovered !== lastGMSummary.totalStepsCovered) {
-                lastGMSummary = gmTracker.getDetailedSummary() || gmSummary;
+                || !prevSummary
+                || gmSummary.totalCalls !== prevSummary.totalCalls
+                || gmSummary.totalStepsCovered !== prevSummary.totalStepsCovered
+                || gmSummary.totalRetryCount !== prevSummary.totalRetryCount
+                || gmSummary.totalCredits !== prevSummary.totalCredits) {
                 gmChanged = true;
             }
         } catch { /* GM fetch failure is non-critical */ }

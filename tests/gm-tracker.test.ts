@@ -19,6 +19,7 @@ describe('filterGMSummaryByModels', () => {
                             model: 'sonnet',
                             modelDisplay: 'Claude Sonnet',
                             responseModel: 'claude-sonnet-4-6',
+                            modelAccuracy: 'exact',
                             inputTokens: 100,
                             outputTokens: 50,
                             thinkingTokens: 10,
@@ -38,6 +39,12 @@ describe('filterGMSummaryByModels', () => {
                             toolCount: 0,
                             toolNames: [],
                             promptSectionTitles: [],
+                            promptSnippet: '',
+                            promptSource: 'none',
+                            messagePromptCount: 0,
+                            messageMetadataKeys: [],
+                            responseHeaderKeys: [],
+                            userMessageAnchors: [],
                             retries: 0,
                             stopReason: 'STOP_REASON_END_TURN',
                             retryTokensIn: 0,
@@ -46,6 +53,10 @@ describe('filterGMSummaryByModels', () => {
                             retryErrors: [],
                             timeSinceLastInvocation: 0,
                             tokenBreakdownGroups: [],
+                            createdAt: '',
+                            latestStableMessageIndex: 0,
+                            startStepIndex: 0,
+                            checkpointIndex: 0,
                         },
                         {
                             stepIndices: [2],
@@ -53,6 +64,7 @@ describe('filterGMSummaryByModels', () => {
                             model: 'gemini-flash',
                             modelDisplay: 'Gemini Flash',
                             responseModel: 'gemini-3-flash',
+                            modelAccuracy: 'exact',
                             inputTokens: 200,
                             outputTokens: 80,
                             thinkingTokens: 0,
@@ -72,6 +84,12 @@ describe('filterGMSummaryByModels', () => {
                             toolCount: 0,
                             toolNames: [],
                             promptSectionTitles: [],
+                            promptSnippet: '',
+                            promptSource: 'none',
+                            messagePromptCount: 0,
+                            messageMetadataKeys: [],
+                            responseHeaderKeys: [],
+                            userMessageAnchors: [],
                             retries: 0,
                             stopReason: 'STOP_REASON_END_TURN',
                             retryTokensIn: 0,
@@ -80,6 +98,10 @@ describe('filterGMSummaryByModels', () => {
                             retryErrors: [],
                             timeSinceLastInvocation: 0,
                             tokenBreakdownGroups: [],
+                            createdAt: '',
+                            latestStableMessageIndex: 0,
+                            startStepIndex: 0,
+                            checkpointIndex: 0,
                         },
                     ],
                 },
@@ -111,5 +133,7 @@ describe('filterGMSummaryByModels', () => {
         expect(Object.keys(filtered?.modelBreakdown || {})).toEqual(['Claude Sonnet']);
         expect(filtered?.conversations[0].calls).toHaveLength(1);
         expect(filtered?.conversations[0].calls[0].model).toBe('sonnet');
+        expect(filtered?.modelBreakdown['Claude Sonnet']?.exactCallCount).toBe(1);
+        expect(filtered?.modelBreakdown['Claude Sonnet']?.placeholderOnlyCalls).toBe(0);
     });
 });
