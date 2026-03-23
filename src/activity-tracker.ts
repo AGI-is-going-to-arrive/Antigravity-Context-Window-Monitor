@@ -117,6 +117,7 @@ export interface SubAgentTokenEntry {
     modelId: string;
     displayName: string;
     ownerModel?: string;
+    cascadeIds?: string[];       // conversation IDs that generated this consumption
     inputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;     // cache read tokens consumed
@@ -394,7 +395,7 @@ export class ActivityTracker {
                     const allSteps = (sr.steps || []) as Record<string, unknown>[];
                     const detectedModel = this._detectDominantModel(allSteps);
                     for (const step of allSteps) {
-                        this._processStep(step, false, undefined, detectedModel);
+                        this._processStep(step, false, undefined, detectedModel, id);
                     }
                     this._trajectories.set(id, { stepCount: sc, processedIndex: allSteps.length, dominantModel: this._detectDominantModel(allSteps), lastStatus: info.status });
 
@@ -489,7 +490,7 @@ export class ActivityTracker {
 
                     const ctxModel = this._detectDominantModel(steps);
                     for (let si = 0; si < steps.length; si++) {
-                        this._processStep(steps[si], this._warmedUp, si + absOffset, ctxModel);
+                        this._processStep(steps[si], this._warmedUp, si + absOffset, ctxModel, id);
                     }
                     hasChanges = steps.length > 0;
                     entry.processedIndex = currSteps;
@@ -509,7 +510,7 @@ export class ActivityTracker {
                     if (fetchedSteps.length > entry.processedIndex) {
                         const incModel = entry.dominantModel || this._detectDominantModel(fetchedSteps);
                         for (let i = entry.processedIndex; i < fetchedSteps.length; i++) {
-                            this._processStep(fetchedSteps[i], true, i + incOffset, incModel);
+                            this._processStep(fetchedSteps[i], true, i + incOffset, incModel, id);
                         }
                         hasChanges = true;
                         entry.processedIndex = fetchedSteps.length;
@@ -553,7 +554,7 @@ export class ActivityTracker {
 
     // ─── Step Processing ─────────────────────────────────────────────────
 
-    private _processStep(step: Record<string, unknown>, emitEvent = true, stepIndex?: number, contextModel?: string): void {
+    private _processStep(step: Record<string, unknown>, emitEvent = true, stepIndex?: number, contextModel?: string, cascadeId?: string): void {
         const type = (step.type as string) || '';
         const meta = (step.metadata || {}) as Record<string, unknown>;
         const modelId = (meta.generatorModel as string) || '';
@@ -625,11 +626,16 @@ export class ActivityTracker {
                         existing.count++;
                         if (isCompression) { existing.compressionEvents++; }
                         existing.lastInputTokens = inTok;
+                        // Track conversation attribution
+                        if (cascadeId && !existing.cascadeIds?.includes(cascadeId)) {
+                            (existing.cascadeIds ??= []).push(cascadeId);
+                        }
                     } else {
                         this._subAgentTokens.set(key, {
                             modelId: rawModel,
                             displayName: rawDisplay,
                             ownerModel: attrModel || undefined,
+                            cascadeIds: cascadeId ? [cascadeId] : [],
                             inputTokens: inTok,
                             outputTokens: outTok,
                             cacheReadTokens: cacheTok,
@@ -1323,7 +1329,9 @@ export class ActivityTracker {
         // Restore sub-agent tokens (backward compatible: absent in older data)
         if (Array.isArray(s.subAgentTokens)) {
             for (const entry of s.subAgentTokens) {
-                tracker._subAgentTokens.set(entry.modelId, { ...entry });
+                // Use composite key matching creation logic (rawModel::ownerModel)
+                const restoreKey = `${entry.modelId}::${entry.ownerModel || 'unknown'}`;
+                tracker._subAgentTokens.set(restoreKey, { ...entry });
             }
         }
 
@@ -1363,14 +1371,11 @@ export class ActivityTracker {
         }
 
         // ── Migration: sub-agent token tracking ──
-        // Trigger nuclear reset when:
-        //   (a) subAgentTokens entirely missing (old format), OR
-        //   (b) subAgentTokens.count sum is far below totalCheckpoints (stale data from partial warm-up)
-        const subAgentTotalCount = Array.isArray(s.subAgentTokens)
-            ? s.subAgentTokens.reduce((sum, e) => sum + (e.count || 0), 0) : 0;
+        // Only trigger when sub-agent data is entirely absent (old format).
+        // Removed aggressive ratio-based check that falsely triggered nuclear reset
+        // when sub-agent activity was legitimately low relative to checkpoints.
         const needsSubAgentMigration = s.totalCheckpoints > 0
-            && (!Array.isArray(s.subAgentTokens) || s.subAgentTokens.length === 0
-                || (s.totalCheckpoints > 2 && subAgentTotalCount < s.totalCheckpoints * 0.5));
+            && (!Array.isArray(s.subAgentTokens) || s.subAgentTokens.length === 0);
 
         // ── Migration: checkpoint history & conversation breakdown ──
         // Also triggers when conversationBreakdown was populated with bad data (all zeros)

@@ -1,5 +1,23 @@
 # 变更日志 / Changelog
 
+## [1.13.4] - 2026-03-23
+
+### Fixed / 修复
+
+- **🔥 Sub-Agent Data Loss on Restore — Key Mismatch / 恢复时子智能体数据丢失 — Key 不匹配**: Fixed critical bug where `restore()` used `entry.modelId` as the Map key when restoring `_subAgentTokens`, but creation used composite key `${rawModel}::${ownerModel}`. When the same sub-agent model served multiple parent models (e.g., Flash Lite for both Sonnet and Opus), restoration collapsed entries via last-write-wins, permanently losing data.
+  修复严重 Bug：`restore()` 恢复 `_subAgentTokens` 时使用 `entry.modelId` 作为 Map key，但创建时使用复合 key `${rawModel}::${ownerModel}`。当同一子智能体模型服务多个父模型时（如 Flash Lite 同时服务 Sonnet 和 Opus），恢复时后者覆盖前者，数据永久丢失。
+
+- **🔥 Sub-Agent Migration False Trigger — Ratio Threshold Too Aggressive / 子智能体迁移误触发 — 比例阈值过于激进**: Fixed bug where `needsSubAgentMigration` check used `subAgentTotalCount < totalCheckpoints * 0.5` — a ratio-based threshold that falsely triggered nuclear reset when sub-agent activity was legitimately low relative to checkpoints. Nuclear reset cleared all restored data and forced re-warm-up, which could only see ~500 steps per conversation via API window, permanently losing older historical sub-agent data. Now only triggers when sub-agent data is entirely absent (old format migration).
+  修复 Bug：`needsSubAgentMigration` 使用 `subAgentTotalCount < totalCheckpoints * 0.5` 比例阈值，在子智能体活动合法偏低时误触发核弹重置。核弹重置清空所有已恢复数据并强制 re-warm-up，但 API 窗口每对话仅可见 ~500 步，导致更早的历史子智能体数据永久丢失。现仅在数据完全缺失（旧格式迁移）时触发。
+
+- **Timeline Model Name Truncation / 时间线模型名被截断**: Fixed `.act-tl-model` CSS that used `white-space: nowrap; overflow: hidden; text-overflow: ellipsis` to truncate long model names. Changed to `word-break: break-word; overflow-wrap: anywhere` to allow natural wrapping, consistent with `.act-card-header` behavior.
+  修复 `.act-tl-model` CSS 使用 `nowrap + ellipsis` 截断长模型名的问题。改为 `break-word + anywhere` 允许自然换行，与 `.act-card-header` 行为一致。
+
+### Added / 新增
+
+- **Sub-Agent Conversation Attribution / 子智能体对话归属**: `SubAgentTokenEntry` interface extended with `cascadeIds?: string[]` field tracking which conversations generated the sub-agent consumption. `_processStep()` now receives `cascadeId` parameter, transparently passed from all 4 call sites in `processTrajectories()`. Activity panel sub-agent cards now display: conversation count row, owner model badge (`→ ownerModel`), and footer with conversation ID short tags.
+  `SubAgentTokenEntry` 接口新增 `cascadeIds` 字段追踪消耗来源对话。`_processStep()` 新增 `cascadeId` 参数，从 `processTrajectories()` 的全部 4 个调用点透传。子智能体卡片新增：对话数量行、ownerModel 标签、底部对话短 ID 标签。
+
 ## [1.13.3] - 2026-03-23
 
 ### Added / 新增
