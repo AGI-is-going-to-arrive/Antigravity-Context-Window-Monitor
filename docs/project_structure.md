@@ -97,9 +97,9 @@ Cross-platform Antigravity Language Server process locator.
 | WSL | Windows 端工具（interop） | `netstat.exe`（interop） |
 | Remote-WSL (v1.13.0) | `wsl -d <distro> -- ps aux` | `wsl -d <distro> -- ss -tlnp` |
 
-核心解析函数 `buildExpectedWorkspaceId()`、`extractPid()`、`extractCsrfToken()` 等均作为独立导出函数，支持直接单元测试。
+核心解析函数 `buildExpectedWorkspaceId()`、`extractPid()`、`extractCsrfToken()`、`selectMatchingProcessLine()` 等均作为独立导出函数，支持直接单元测试。`selectMatchingProcessLine()`（v1.13.3）实现失败关闭策略，有 `workspaceUri` 时执行精确 `workspace_id` 匹配，不匹配则返回 `null`（不再回退到第一个进程）。`buildExpectedWorkspaceId()` 新增 `decodeURIComponent` 防御，处理百分号编码的工作区 URI。
 
-Core parsing functions `buildExpectedWorkspaceId()`, `extractPid()`, `extractCsrfToken()`, etc. are exported independently for direct unit testing.
+Core parsing functions `buildExpectedWorkspaceId()`, `extractPid()`, `extractCsrfToken()`, `selectMatchingProcessLine()`, etc. are exported independently for direct unit testing. `selectMatchingProcessLine()` (v1.13.3) implements fail-closed workspace matching — returns `null` when `workspaceUri` is provided but no matching LS process exists. `buildExpectedWorkspaceId()` now includes `decodeURIComponent` defense for percent-encoded workspace URIs.
 
 ---
 
@@ -460,11 +460,11 @@ npx vsce package --no-dependencies
 
 | 测试文件 / Test File | 测试数 | 覆盖范围 / Coverage |
 |---|---|---|
-| `discovery.test.ts` | 15 | `buildExpectedWorkspaceId` / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / 端口提取（lsof / netstat / ss）/ `isWSL` |
+| `discovery.test.ts` | 22 | `buildExpectedWorkspaceId`（含百分号编码） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / 端口提取（lsof / netstat / ss）/ `isWSL` / `selectMatchingProcessLine`（6 分支测试） |
 | `tracker.test.ts` | 22 | `normalizeUri`（file / vscode-remote / URL 解码）/ `estimateTokensFromText`（ASCII / 非 ASCII / 混合）/ `processSteps()` 纯函数：checkpoint / 估算 / 压缩检测 / 图片生成 / 空对话 / requestedModel 优先级 |
 | `statusbar.test.ts` | 11 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 |
 | `quota-tracker.test.ts` | 26 | 状态机转换 / 额度重置检测 / 批量回调验证 / 同池多模型归档 / 同池去重（共享 resetTime） |
 
-共 74 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 81 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-74 total tests, using `__mocks__/vscode.ts` to mock the VS Code API.
+81 total tests, using `__mocks__/vscode.ts` to mock the VS Code API.
