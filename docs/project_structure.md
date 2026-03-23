@@ -76,7 +76,7 @@ Extension lifecycle management hub.
 | Activity 独立轮询 | `pollActivity()` 独立 3 秒循环，变化时立即刷新 UI；30s 节流同步保存 GM 状态 |
 | 级联追踪 / Cascade tracking | 按优先级选择活跃会话：RUNNING(本工作区) → RUNNING(无工作区) → stepCount 变化 → 新会话 → 最近修改 |
 | 压缩检测 / Compression | 双层检测：checkpoint inputTokens 下降 + 跨轮询 contextUsed 比较 |
-| 额度重置归档 / Quota reset | 归档 Activity + GM modelBreakdown + per-model 费用 → 清零 GM（`gmTracker.reset()` + `lastGMSummary = null`）|
+| 额度重置归档 / Quota reset | `expandToPool()` 按 resetTime 扩展 pool 成员 → 归档 Activity + GM modelBreakdown + per-model 费用 → per-pool 清零 GM（`gmTracker.reset(poolModelIds)` + `lastGMSummary = null`）|
 | 指数退避 / Backoff | LS 连接失败时 5s → 10s → 20s → 40s → 60s（上限） |
 | 开发命令 / Dev commands | `devSimulateReset`：模拟完整额度重置周期（归档 → 基线重置）；`devClearGM`：核重置 GM 数据和基线 |
 | 即时首轮询 / Immediate first poll | `activate()` 末尾立即触发 `pollContextUsage()` → `pollActivity()` 链，将面板数据就绪时间从 ~6s 降至 ~1-2s |
@@ -221,7 +221,7 @@ Tracks model activity: reasoning count, tool call breakdown, token consumption, 
 | 工具排行 / Tool ranking | `globalToolStats` (Map) 统计全局工具调用次数，UI 显示 Top 10 |
 | 对话分布 / Conversation breakdown | `ConversationBreakdown` 追踪每个对话步骤数 + token（取最后 CHECKPOINT 累积快照） |
 | 子智能体 / Sub-agent | 识别 CHECKPOINT 中 `modelUsage.model` 与主模型不同时，分离追踪子智能体消耗 |
-| 归档 / Archive | `archiveAndReset(modelIds?)` 在额度重置时保存快照，5 分钟防抖合并，记录 `triggeredBy` 来源 |
+| 归档 / Archive | `archiveAndReset(modelIds?)` 在额度重置时保存快照，5 分钟防抖合并，记录 `triggeredBy` 来源。**v1.13.3 per-pool 隔离**：传入 modelIds 时仅归档+清空匹配 pool 的 `_modelStats`、timeline 事件、GM breakdown，其他模型数据完整保留 |
 | 序列化 / Serialization | `serialize()` / `restore()` 支持跨会话持久化，含三个迁移触发条件 |
 
 ---
@@ -240,9 +240,9 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | 智能缓存 | `_cache` Map 按 cascadeId 缓存 IDLE 对话的 generatorMetadata，避免重复 RPC；restore 后空 calls 的 IDLE 对话在首次 `fetchAll()` 时自动回填 |
 | Call Baselines（v1.13.2） | `_callBaselines` Map 记录每个对话在额度重置前的调用数量，`_buildSummary()` 仅聚合新周期的调用；旧版迁移时自动设置 `_needsBaselineInit` |
 | 持久化 / Persistence | `serialize()` 剥离 `calls[]`（体积 ~1.4KB）→ globalState，含 `callBaselines`；`restore()` 恢复 `_lastSummary` + baseline stubs + call baselines |
-| `reset()` | 额度重置：设置 call baselines → 保留缓存条目（stepCount 避免重复 RPC）但清空 calls → 下次 `_buildSummary()` 仅计入新周期调用 |
-| `fullReset()` | 核重置：清空缓存 + call baselines + 设置 `_needsBaselineInit`，下次 `fetchAll()` 将所有已有 API 数据视为历史基线 |
-| 数据接口 | `GMCallEntry`、`GMModelStats`、`GMConversationData`、`GMSummary`、`GMTrackerState` |
+| `reset(modelIds?)` | **v1.13.3 per-pool 隔离**：传入 modelIds 时仅将匹配 pool 的调用 executionId 加入 `_archivedCallIds`，`_buildSummary()` 过滤已归档调用；不传则全局重置清空 `_archivedCallIds` |
+| `fullReset()` | 核重置：清空缓存 + call baselines + `_archivedCallIds` + 设置 `_needsBaselineInit`，下次 `fetchAll()` 将所有已有 API 数据视为历史基线 |
+| 数据接口 | `GMCallEntry`、`GMModelStats`、`GMConversationData`、`GMSummary`、`GMTrackerState`（含 `archivedCallIds`） |
 
 ---
 
@@ -463,8 +463,8 @@ npx vsce package --no-dependencies
 | `discovery.test.ts` | 15 | `buildExpectedWorkspaceId` / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / 端口提取（lsof / netstat / ss）/ `isWSL` |
 | `tracker.test.ts` | 22 | `normalizeUri`（file / vscode-remote / URL 解码）/ `estimateTokensFromText`（ASCII / 非 ASCII / 混合）/ `processSteps()` 纯函数：checkpoint / 估算 / 压缩检测 / 图片生成 / 空对话 / requestedModel 优先级 |
 | `statusbar.test.ts` | 11 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 |
-| `quota-tracker.test.ts` | 26 | 状态机转换 / 额度重置检测 / 批量回调验证 / 同池多模型归档 / 同池去重（共享 resetTime） |
+| `quota-tracker.test.ts` | 27 | 状态机转换 / 额度重置检测 / 批量回调验证 / 同池多模型归档 / 同池去重（共享 resetTime）/ poolModels 填充 |
 
-共 74 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 75 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-74 total tests, using `__mocks__/vscode.ts` to mock the VS Code API.
+75 total tests, using `__mocks__/vscode.ts` to mock the VS Code API.

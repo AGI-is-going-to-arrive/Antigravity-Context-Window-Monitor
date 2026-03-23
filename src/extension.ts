@@ -115,6 +115,13 @@ export function activate(context: vscode.ExtensionContext): void {
     quotaTracker.onQuotaReset = (modelIds: string[]) => {
         if (activityTracker) {
             log(`Quota reset [${modelIds.join(', ')}] — archiving activity snapshot`);
+
+            // Expand modelIds to full pool: models sharing the same resetTime
+            const poolModelIds = expandToPool(modelIds, cachedModelConfigs);
+            if (poolModelIds.length > modelIds.length) {
+                log(`  Pool expansion: [${modelIds.join(', ')}] → [${poolModelIds.join(', ')}]`);
+            }
+
             activityTracker.archiveAndReset(modelIds);
             context.globalState.update('activityTrackerState', activityTracker.serialize());
 
@@ -138,9 +145,9 @@ export function activate(context: vscode.ExtensionContext): void {
                 dailyStore.addCycle(latest, lastGMSummary, costTotal, costPerModel);
             }
 
-            // Reset GM state — data already archived to calendar.
-            // Next poll will fetch fresh data for the new cycle.
-            gmTracker.reset();
+            // Per-pool GM reset: only archive calls from the resetting pool's models.
+            // Other pools' GM data stays intact in the Monitor tab.
+            gmTracker.reset(poolModelIds);
             lastGMSummary = null;
             context.globalState.update('gmTrackerState', gmTracker.serialize());
         }
@@ -241,7 +248,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 }
                 dailyStore.addCycle(latest, lastGMSummary, costTotal, costPerModel);
             }
-            gmTracker.reset();
+            gmTracker.reset(); // dev simulate = global reset
             lastGMSummary = null;
             context.globalState.update('gmTrackerState', gmTracker.serialize());
             log('[Dev] Quota reset simulated — activity archived, GM baselines set');
@@ -838,6 +845,33 @@ function scheduleActivityPoll(): void {
             }
         }
     }, ACTIVITY_POLL_INTERVAL_MS);
+}
+
+// ─── Pool Expansion Helper ────────────────────────────────────────────────────
+
+/**
+ * Expand a list of model IDs to include all models sharing the same
+ * quota pool (identified by resetTime). E.g. if Claude Sonnet resets
+ * and Opus/GPT-OSS share the same resetTime, all three are returned.
+ */
+function expandToPool(modelIds: string[], configs: import('./models').ModelConfig[]): string[] {
+    // 1. Collect resetTimes for the input models
+    const targetResetTimes = new Set<string>();
+    for (const c of configs) {
+        if (modelIds.includes(c.model) && c.quotaInfo?.resetTime) {
+            targetResetTimes.add(c.quotaInfo.resetTime);
+        }
+    }
+    if (targetResetTimes.size === 0) { return modelIds; }
+
+    // 2. Find all models sharing those resetTimes
+    const poolModels = new Set(modelIds);
+    for (const c of configs) {
+        if (c.quotaInfo?.resetTime && targetResetTimes.has(c.quotaInfo.resetTime)) {
+            poolModels.add(c.model);
+        }
+    }
+    return [...poolModels];
 }
 
 // ─── Low Quota Notification ───────────────────────────────────────────────────

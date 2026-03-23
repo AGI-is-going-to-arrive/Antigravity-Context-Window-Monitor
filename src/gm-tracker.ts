@@ -156,6 +156,8 @@ export interface GMTrackerState {
     baselines: Record<string, number>;
     /** cascadeId → call count baselines to isolate quota cycles (added v1.13.2) */
     callBaselines?: Record<string, number>;
+    /** executionIds of calls archived to dailyStore by per-pool resets (added v1.13.4) */
+    archivedCallIds?: string[];
 }
 
 // ─── Parser Helpers ──────────────────────────────────────────────────────────
@@ -308,6 +310,8 @@ export class GMTracker {
     private _callBaselines = new Map<string, number>();
     /** When true, first fetchAll() baselines all existing API data (set only by fullReset) */
     private _needsBaselineInit = false;
+    /** executionIds of calls already archived by per-pool resets — excluded from _buildSummary() */
+    private _archivedCallIds = new Set<string>();
 
     /**
      * Fetch GM data for the given trajectories.
@@ -418,7 +422,11 @@ export class GMTracker {
         for (const [, conv] of this._cache) {
             // Only aggregate calls from the current cycle (after baseline)
             const baseline = this._callBaselines.get(conv.cascadeId) || 0;
-            const activeCalls = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
+            const sliced = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
+            // Filter out calls already archived by per-pool resets
+            const activeCalls = this._archivedCallIds.size > 0
+                ? sliced.filter(c => !this._archivedCallIds.has(c.executionId))
+                : sliced;
             const activeStepsCovered = activeCalls.reduce((sum, c) => sum + c.stepIndices.length, 0);
             conversations.push({
                 ...conv,
@@ -569,19 +577,33 @@ export class GMTracker {
     }
 
     /**
-     * Full reset on quota boundary.
+     * Per-pool reset: archive only calls from specified models.
+     * When modelIds is empty/undefined, falls back to global reset (all calls).
      * Pre-reset snapshot is already archived to dailyStore.addCycle()
      * in extension.ts, so no data is lost.
-     * Preserves call baselines so _buildSummary() only counts new-cycle calls.
-     * Analogous to activityTracker's trajectory baseline preservation.
      */
-    reset(): void {
+    reset(modelIds?: string[]): void {
+        if (modelIds && modelIds.length > 0) {
+            // ── Per-pool reset: only archive calls from specified models ──
+            const modelSet = new Set(modelIds);
+            for (const [, conv] of this._cache) {
+                for (const c of conv.calls) {
+                    if (modelSet.has(c.model) || modelSet.has(c.responseModel)) {
+                        this._archivedCallIds.add(c.executionId);
+                    }
+                }
+            }
+            this._lastSummary = null;
+            this._lastFetchedAt = '';
+            return;
+        }
+        // ── Global reset (fallback) ──
         // Record call baselines: for conversations that were fetched from API
         // (calls.length > 0), set baseline to their absolute call count.
         // Stubs (calls=[]) keep their existing baseline from previous reset.
-        for (const [id, conv] of this._cache) {
+        for (const [, conv] of this._cache) {
             if (conv.calls.length > 0) {
-                this._callBaselines.set(id, conv.calls.length);
+                this._callBaselines.set(conv.cascadeId, conv.calls.length);
             }
         }
         // Keep cache entries with stepCount so fetchAll() skips unchanged IDLE
@@ -594,6 +616,7 @@ export class GMTracker {
                 coverageRate: 0,
             });
         }
+        this._archivedCallIds.clear();
         this._lastSummary = null;
         this._lastFetchedAt = '';
     }
@@ -606,6 +629,7 @@ export class GMTracker {
     fullReset(): void {
         this._cache.clear();
         this._callBaselines.clear();
+        this._archivedCallIds.clear();
         this._lastSummary = null;
         this._lastFetchedAt = '';
         this._needsBaselineInit = true;
@@ -641,7 +665,7 @@ export class GMTracker {
                 ...c, calls: [],
             })),
         };
-        return { version: 1, summary: slim, baselines, callBaselines };
+        return { version: 1, summary: slim, baselines, callBaselines, archivedCallIds: this._archivedCallIds.size > 0 ? [...this._archivedCallIds] : undefined };
     }
 
     /** Restore from persisted state. Cache is empty — API will backfill. */
@@ -672,9 +696,14 @@ export class GMTracker {
             }
         } else {
             // Migrating from pre-callBaselines version: no cycle boundary info.
-            // Baseline all existing API data on first fetch to avoid showing
-            // data from previous archived cycles.
             tracker._needsBaselineInit = true;
+        }
+
+        // Restore archived call IDs from per-pool resets
+        if (Array.isArray(data.archivedCallIds)) {
+            for (const id of data.archivedCallIds) {
+                tracker._archivedCallIds.add(id);
+            }
         }
 
         return tracker;

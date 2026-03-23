@@ -1021,17 +1021,82 @@ export class ActivityTracker {
     getArchives(): ActivityArchive[] { return [...this._archives]; }
 
     /**
-     * Archive current activity data and reset all stats.
+     * Archive current activity data and reset stats.
      * Called when quota resets (fraction jumps back to 1.0).
-     * @param modelIds - Optional model IDs whose quota triggered this archive
+     * @param modelIds - Optional model IDs whose quota triggered this archive.
+     *   When provided, only stats for those models are archived and cleared;
+     *   other models' data is preserved (per-pool isolation).
      */
     archiveAndReset(modelIds?: string[]): void {
-        const summary = this.getSummary();
         const maxArchives = getMaxArchives();
+
+        // ── Determine which display names belong to the resetting pool ──
+        const poolDisplayNames = new Set<string>();
+        if (modelIds && modelIds.length > 0) {
+            for (const id of modelIds) {
+                poolDisplayNames.add(getModelDisplayName(id));
+            }
+        }
+        const isPoolReset = poolDisplayNames.size > 0;
+
+        // ── Build summary ──
+        // For pool resets: build a filtered summary containing only pool models.
+        // For global resets (no modelIds): use full summary.
+        const fullSummary = this.getSummary();
+        let archiveSummary: ActivitySummary;
+
+        if (isPoolReset) {
+            // Filter modelStats to pool models only
+            const poolModelStats: Record<string, ModelActivityStats> = {};
+            let poolReasoning = 0, poolToolCalls = 0, poolErrors = 0;
+            let poolEstSteps = 0, poolInputTokens = 0, poolOutputTokens = 0, poolToolReturnTokens = 0;
+            for (const [name, s] of Object.entries(fullSummary.modelStats)) {
+                if (poolDisplayNames.has(name)) {
+                    poolModelStats[name] = { ...s };
+                    poolReasoning += s.reasoning;
+                    poolToolCalls += s.toolCalls;
+                    poolErrors += s.errors;
+                    poolEstSteps += s.estSteps;
+                    poolInputTokens += s.inputTokens;
+                    poolOutputTokens += s.outputTokens;
+                    poolToolReturnTokens += s.toolReturnTokens;
+                }
+            }
+            // Filter timeline events to pool models
+            const poolSteps = fullSummary.recentSteps.filter(ev =>
+                !ev.model || poolDisplayNames.has(ev.model)
+            );
+            archiveSummary = {
+                ...fullSummary,
+                modelStats: poolModelStats,
+                totalReasoning: poolReasoning,
+                totalToolCalls: poolToolCalls,
+                totalErrors: poolErrors,
+                estSteps: poolEstSteps,
+                totalInputTokens: poolInputTokens,
+                totalOutputTokens: poolOutputTokens,
+                totalToolReturnTokens: poolToolReturnTokens,
+                recentSteps: poolSteps,
+                // Filter GM breakdown to pool models
+                gmModelBreakdown: fullSummary.gmModelBreakdown
+                    ? Object.fromEntries(
+                        Object.entries(fullSummary.gmModelBreakdown)
+                            .filter(([name]) => poolDisplayNames.has(name))
+                    )
+                    : undefined,
+            };
+        } else {
+            archiveSummary = fullSummary;
+        }
+
         // BUG FIX: preserve timeline events into archive before clearing
-        const archivedSteps = [...this._recentSteps];
-        // Only archive if there's meaningful activity
-        if (summary.totalReasoning > 0 || summary.totalToolCalls > 0) {
+        const archivedSteps = isPoolReset
+            ? archiveSummary.recentSteps
+            : [...this._recentSteps];
+
+        // Only archive if there's meaningful activity for the pool
+        const hasActivity = archiveSummary.totalReasoning > 0 || archiveSummary.totalToolCalls > 0;
+        if (hasActivity) {
             const now = Date.now();
             const lastArchive = this._archives[0];
             const lastEndMs = lastArchive ? new Date(lastArchive.endTime).getTime() : 0;
@@ -1040,7 +1105,7 @@ export class ActivityTracker {
             if (lastArchive && (now - lastEndMs) < MIN_ARCHIVE_INTERVAL_MS) {
                 // Debounce: merge into the most recent archive
                 lastArchive.endTime = new Date().toISOString();
-                lastArchive.summary = summary;
+                lastArchive.summary = archiveSummary;
                 lastArchive.recentSteps = archivedSteps;
                 if (modelIds) {
                     lastArchive.triggeredBy = [
@@ -1051,7 +1116,7 @@ export class ActivityTracker {
                 this._archives.unshift({
                     startTime: this._sessionStartTime,
                     endTime: new Date().toISOString(),
-                    summary,
+                    summary: archiveSummary,
                     triggeredBy: modelIds,
                     recentSteps: archivedSteps,
                 });
@@ -1061,21 +1126,58 @@ export class ActivityTracker {
                 }
             }
         }
-        // Reset stats only — keep trajectories as baselines so warm-up doesn't re-count history
-        this._modelStats.clear();
-        this._subAgentTokens.clear();
-        this._checkpointHistory = [];
-        this._conversationBreakdown.clear();
-        this._globalToolStats.clear();
-        this._sampleDist.clear();
-        this._sampleTotal = 0;
-        this._totalUserInputs = 0;
-        this._totalCheckpoints = 0;
-        this._totalErrors = 0;
-        this._recentSteps = [];
-        this._gmTotals = null;
-        this._gmModelBreakdown = null;
-        this._sessionStartTime = new Date().toISOString();
+
+        // ── Reset: pool-scoped or global ──
+        if (isPoolReset) {
+            // Only clear stats for models in the resetting pool
+            for (const name of poolDisplayNames) {
+                this._modelStats.delete(name);
+            }
+            // Remove pool-model timeline events, keep others
+            this._recentSteps = this._recentSteps.filter(ev =>
+                ev.model && !poolDisplayNames.has(ev.model)
+            );
+            // Clear pool-specific GM breakdown entries
+            if (this._gmModelBreakdown) {
+                for (const name of poolDisplayNames) {
+                    delete this._gmModelBreakdown[name];
+                }
+            }
+            // Recompute _gmTotals from remaining breakdown
+            if (this._gmModelBreakdown && Object.keys(this._gmModelBreakdown).length > 0) {
+                let inp = 0, out = 0, cache = 0, credits = 0, retries = 0;
+                for (const m of Object.values(this._gmModelBreakdown)) {
+                    inp += m.totalInputTokens || 0;
+                    out += m.totalOutputTokens || 0;
+                    cache += m.totalCacheRead || 0;
+                    credits += m.totalCredits || 0;
+                    retries += m.totalRetries || 0;
+                }
+                this._gmTotals = { inputTokens: inp, outputTokens: out, cacheRead: cache, credits, retries };
+            } else {
+                this._gmTotals = null;
+                this._gmModelBreakdown = null;
+            }
+            // Note: _subAgentTokens, _checkpointHistory, _conversationBreakdown,
+            // _globalToolStats are conversation-scoped (not model-scoped) — keep intact.
+            // They'll be fully reset on next global reset or cleared via clearActivityData.
+        } else {
+            // Global reset — clear everything
+            this._modelStats.clear();
+            this._subAgentTokens.clear();
+            this._checkpointHistory = [];
+            this._conversationBreakdown.clear();
+            this._globalToolStats.clear();
+            this._sampleDist.clear();
+            this._sampleTotal = 0;
+            this._totalUserInputs = 0;
+            this._totalCheckpoints = 0;
+            this._totalErrors = 0;
+            this._recentSteps = [];
+            this._gmTotals = null;
+            this._gmModelBreakdown = null;
+            this._sessionStartTime = new Date().toISOString();
+        }
         // DO NOT clear _trajectories or set _warmedUp=false!
         // Existing processedIndex values serve as baselines — only new steps after this point are counted.
     }

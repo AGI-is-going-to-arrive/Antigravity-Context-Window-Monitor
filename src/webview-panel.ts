@@ -279,7 +279,7 @@ function buildTabContents(
     tracker?: QuotaTracker,
 ): Record<string, string> {
     return {
-        monitor: buildMonitorSections(usage, allUsages, configs, userInfo),
+        monitor: buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary),
         profile: buildProfileContent(userInfo, configs),
         gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary),
         pricing: lastPricingStore
@@ -308,7 +308,7 @@ function buildHtml(
     paused = false,
     tracker?: QuotaTracker,
 ): string {
-    const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo);
+    const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary);
     const profileHtml = buildProfileContent(userInfo, configs);
     const settingsHtml = buildSettingsContent(configs, tracker);
     const historyHtml = buildHistoryHtml(tracker);
@@ -359,14 +359,14 @@ ${getCalendarTabStyles()}
         <summary>
             <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>
             ${tBi(
-                'Data Disclaimer — Data shown is estimated and may be inaccurate. Click to expand.',
-                '数据声明 — 所示数据为估算值，可能存在偏差。点击展开详情。'
+                'Data Disclaimer — Data sourced from internal APIs. GM-badged data is precise; others may be estimated. Click to expand.',
+                '数据声明 — 数据来自内部 API。标有 GM 的为精确值，其余可能为估算。点击展开详情。'
             )}
         </summary>
         <div class="disclaimer-body">
             ${tBi(
-                'All data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Token counts, credit usage, model attribution, and other metrics are provided on a <strong>best-effort</strong> basis and may not reflect actual billing or usage. This extension is an independent, community project with <strong>no official endorsement</strong>. Use this data as a reference only.',
-                '所有数据均通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。Token 数量、积分消耗、模型归属等指标均为<strong>尽力而为</strong>的估算，不代表实际计费或用量。本扩展为独立社区项目，<strong>未获得官方认可</strong>。请仅将数据作为参考。'
+                'Data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Items marked with a <strong style="color:var(--color-ok)">GM</strong> badge come from Generator Metadata and are <strong>precise per-call values</strong>. Other metrics (context usage, token estimates) are derived from checkpoint snapshots or character-based heuristics and may have deviations. This extension is an independent, community project with <strong>no official endorsement</strong>. Use this data as a reference only.',
+                '数据通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。标有 <strong style="color:var(--color-ok)">GM</strong> 徽章的数据来自 Generator Metadata，为<strong>逐调用精确值</strong>。其余指标（上下文用量、Token 估算）基于 Checkpoint 快照或字符启发式计算，可能存在偏差。本扩展为独立社区项目，<strong>未获得官方认可</strong>。请仅将数据作为参考。'
             )}
         </div>
     </details>
