@@ -187,5 +187,5 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
   Three migration triggers in `restore()` force nuclear reset + re-warm-up: missing subAgentTokens, empty checkpointHistory, or all-zero conversationBreakdown (bad data from old field path bug).
 
 ---
-基于 TypeScript 构建，适用于 Antigravity IDE。包含 73 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（15 tests）、`statusbar.test.ts`（11 tests）、`tracker.test.ts`（22 tests）、`quota-tracker.test.ts`（25 tests）。另有 18 个诊断脚本（本地 `diag-scripts/` 目录，已 gitignore），覆盖 CHECKPOINT/Sub-Agent 探测（deep17）、GM 数据真实性验证（deep18）等领域。
-Built with TypeScript for the Antigravity IDE. Includes 73 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (15 tests), `statusbar.test.ts` (11 tests), `tracker.test.ts` (22 tests), `quota-tracker.test.ts` (25 tests). 18 diagnostic scripts exist in the local `diag-scripts/` directory (gitignored), covering CHECKPOINT/Sub-Agent probing (deep17), GM data accuracy verification (deep18), and more.
+基于 TypeScript 构建，适用于 Antigravity IDE。包含 75 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（15 tests）、`statusbar.test.ts`（11 tests）、`tracker.test.ts`（22 tests）、`quota-tracker.test.ts`（27 tests）。
+Built with TypeScript for the Antigravity IDE. Includes 75 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (15 tests), `statusbar.test.ts` (11 tests), `tracker.test.ts` (22 tests), `quota-tracker.test.ts` (27 tests).

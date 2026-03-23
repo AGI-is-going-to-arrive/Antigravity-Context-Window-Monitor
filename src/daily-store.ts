@@ -74,6 +74,8 @@ export interface MonthCellSummary {
 interface DailyStoreState {
     version: 1;
     records: Record<string, DailyRecord>;
+    /** True once importArchives has completed — prevents re-importing on every activate */
+    backfilled?: boolean;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -102,6 +104,7 @@ const DEFAULT_MAX_DAYS = 90;
 export class DailyStore {
     private _records = new Map<string, DailyRecord>();
     private _maxDays = DEFAULT_MAX_DAYS;
+    private _backfilled = false;
     private _globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): Thenable<void> } | null = null;
 
     /** Initialize from globalState */
@@ -112,6 +115,7 @@ export class DailyStore {
             for (const [date, record] of Object.entries(saved.records)) {
                 this._records.set(date, record);
             }
+            this._backfilled = !!saved.backfilled;
         }
         this._trimOld();
     }
@@ -198,15 +202,18 @@ export class DailyStore {
     }
 
     /**
-     * Bulk import existing archives into the store (retroactive fill).
-     * Skips any archives whose startTime already exists to avoid duplicates.
-     * Called once at startup to backfill from activityTracker.getArchives().
+     * Bulk import existing archives into the store (ONE-TIME retroactive fill).
+     * Skips entirely if already backfilled. Sets backfilled flag after completion
+     * so subsequent activations don't re-import cleared data.
      */
     importArchives(
         archives: ActivityArchive[],
         gmSummary?: GMSummary | null,
         costTotal?: number,
     ): number {
+        // Already backfilled — skip to prevent resurrecting cleared calendar data
+        if (this._backfilled) { return 0; }
+
         let imported = 0;
         let needsPersist = false;
         for (const archive of archives) {
@@ -240,7 +247,9 @@ export class DailyStore {
             this.addCycle(archive, gmSummary, costTotal);
             imported++;
         }
-        if (needsPersist) { this._persist(); }
+        // Mark as backfilled so subsequent activations skip this path
+        this._backfilled = true;
+        this._persist();
         return imported;
     }
 
@@ -282,9 +291,10 @@ export class DailyStore {
     /** Total number of recorded days */
     get totalDays(): number { return this._records.size; }
 
-    /** Clear all history */
+    /** Clear all history. Also sets backfilled=true to prevent importArchives from re-populating. */
     clear(): void {
         this._records.clear();
+        this._backfilled = true;
         this._persist();
     }
 
@@ -294,7 +304,7 @@ export class DailyStore {
         for (const [date, record] of this._records) {
             records[date] = record;
         }
-        return { version: 1, records };
+        return { version: 1, records, backfilled: this._backfilled };
     }
 
     // ─── Internal ────────────────────────────────────────────────────────

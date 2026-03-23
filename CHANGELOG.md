@@ -1,5 +1,81 @@
 # 变更日志 / Changelog
 
+## [1.13.2] - 2026-03-23
+
+### Added / 新增
+
+- **Unified GM Data Tab / 统一 GM 数据标签页**: Merged the former "Activity" and "GM Data" tabs into a single "GM Data" tab. Activity tracking (timeline, tools, distribution) and GM precision data (performance, cache efficiency, context growth, conversations) now coexist in one view. Former `gm-panel.ts` deleted; all rendering consolidated into `activity-panel.ts` via `buildGMDataTabContent()`. Tab count reduced from 8 to 7.
+  将「活动」和「GM 数据」两个标签页合并为统一的「GM 数据」标签页。Activity 追踪（时间线、工具、分布）与 GM 精确数据（性能、缓存效率、上下文增长、对话）共存于同一视图。原 `gm-panel.ts` 删除，全部渲染逻辑合并到 `activity-panel.ts`。标签数从 8 减至 7。
+
+- **GM Call Baselines — Cycle Isolation / GM 调用基线 — 周期隔离**: `GMTracker` now tracks per-conversation call baselines (`_callBaselines` Map) to isolate quota cycles. `_buildSummary()` uses `calls.slice(baseline)` to count only current-cycle calls. Baselines are persisted in `GMTrackerState.callBaselines` and restored across sessions. `reset()` sets baselines and preserves cache stubs; `fullReset()` clears everything and sets `_needsBaselineInit` for zero-start counting.
+  `GMTracker` 新增每对话调用基线（`_callBaselines` Map）实现额度周期隔离。`_buildSummary()` 使用 `calls.slice(baseline)` 仅计入当前周期调用。基线通过 `GMTrackerState.callBaselines` 跨会话持久化。`reset()` 设置基线并保留缓存；`fullReset()` 清空一切，设 `_needsBaselineInit` 从零计数。
+
+- **Quota Pool Deduplication / 配额池去重**: `QuotaTracker.processUpdate()` now groups models sharing the same `resetTime` into pools. Only one representative per pool is tracked (lowest fraction, alphabetical tie-break), preventing duplicate sessions in history from same-pool models (e.g., Claude Sonnet/Opus sharing quota).
+  `processUpdate()` 按 `resetTime` 分组识别共享配额池的模型，每个池仅追踪一个代表（最低 fraction → 字母排序），避免同池模型在历史记录中产生重复 session。
+
+- **Quota Pool Model Labels / 配额池模型标签**: `QuotaSession` now includes `poolModels?: string[]` field collecting display labels of all models in the same quota pool. `processUpdate()` builds a `poolLabelsForModel` map and injects it into sessions at creation and during tracking updates. The Quota Tracking tab renders additional pool members as `.pool-badge` tags next to the primary model label.
+  `QuotaSession` 新增 `poolModels` 字段，收集同配额池所有模型的显示标签。`processUpdate()` 构建 `poolLabelsForModel` 映射并注入到 session。额度追踪标签页将额外的池成员渲染为紫色 `.pool-badge` 标签。
+
+- **Debug / Testing Section in Settings / 设置中的调试测试区块**: New section with two developer tools: "Simulate Quota Reset" (archives Activity + GM + Cost to Calendar, then resets baselines) and "Clear GM Data & Baselines" (nuclear reset, baselines all existing API data on next fetch).
+  设置标签新增调试区块：「模拟额度重置」（归档当前数据到日历后重置基线）和「清除 GM 数据和基线」（核重置，下次获取时基线化所有 API 数据）。
+
+- **Default Pricing Table / 默认价格表**: Pricing tab now shows an editable default pricing table even when no GM data is available, via `buildDefaultPricingTable()`. Users can configure custom prices before any AI conversations.
+  Pricing 标签在无 GM 数据时也显示可编辑的默认价格表，用户可以提前配置自定义价格。
+
+- **Immediate First Poll / 即时首轮询**: `activate()` now triggers `pollContextUsage()` → `pollActivity()` chain immediately, reducing panel data readiness from ~6s to ~1-2s. Scheduled polls continue in parallel; `isPolling`/`isActivityPolling` guards prevent duplication.
+  `activate()` 末尾立即触发 poll 链，将面板数据就绪时间从 ~6s 降至 ~1-2s。常规定时轮询照常并行运行，防重入保护防止重复。
+
+- **`devPersistActivity` Command / 持久化活动状态命令**: New internal command `antigravity-context-monitor.devPersistActivity` persists the current `activityTracker` state to `globalState`. Called by `clearActivityData` to ensure the cleared state survives extension reload/reinstall.
+  新增内部命令，将当前 `activityTracker` 状态持久化到 `globalState`。由 `clearActivityData` 调用，确保清空状态在重载/重装后不被还原。
+
+### Fixed / 修复
+
+- **🔥 IDLE Conversations GM Data Lost After Restart / 重启后 IDLE 对话 GM 数据丢失**: Fixed critical bug where `serialize()` strips `calls[]` for storage efficiency, but `fetchAll()` skipped IDLE conversations with matching `totalSteps` — never re-fetching their calls. After restart, only RUNNING conversations had GM data; all IDLE conversations showed 0 calls. Fix: skip condition now requires `cached.calls.length > 0`, forcing a one-time re-fetch for restored stubs with empty calls.
+  修复严重 Bug：`serialize()` 为节省空间剥离 `calls[]`，但 `fetchAll()` 跳过 `totalSteps` 匹配的 IDLE 对话，永不重新获取。重启后仅 RUNNING 对话有 GM 数据，所有 IDLE 对话显示 0 调用。修复：跳过条件增加 `calls.length > 0`，restore 后空 calls 的 IDLE 对话在首次 `fetchAll()` 时自动回填。
+
+- **🔥 Settings Tab Buttons/Toggles Unresponsive / 设置标签按钮和开关无响应**: Fixed critical bug where `updateTabs` incremental refresh replaced Settings tab `innerHTML` every 3-5s, destroying all event listeners on toggles, dev buttons, and inputs. Fix: Settings tab excluded from `buildTabContents()` incremental updates; only rebuilt during full HTML renders (panel open, language switch, user actions).
+  修复严重 Bug：`updateTabs` 增量刷新每 3-5 秒替换 Settings 标签的 `innerHTML`，销毁所有 toggle、按钮、输入框的事件监听器。修复：Settings 从增量更新中排除，仅在完整 HTML 重建时渲染。
+
+- **Panel Shows Stale GM Data After Quota Reset / 额度重置后面板显示陈旧 GM 数据**: Fixed desync where `onQuotaReset` set `extension.ts lastGMSummary = null` but `pollContextUsage()`'s `updateMonitorPanel()` call didn't pass `lastGMSummary`, leaving the panel's cached copy unchanged. Both `updateMonitorPanel` calls in `pollContextUsage()` (idle path and normal path) now pass `lastGMSummary`.
+  修复同步问题：`onQuotaReset` 清空了 `extension.ts` 的 `lastGMSummary`，但 `pollContextUsage()` 的 `updateMonitorPanel()` 不传该参数，面板缓存未更新。修复：两处 `updateMonitorPanel` 调用均补全 `lastGMSummary`。
+
+- **GM Change Detection Failure on null→empty / null→空 summary 变更检测失败**: Fixed edge case where `lastGMSummary = null` after reset, then `fetchAll()` returns `totalCalls=0` — `0 !== (null?.totalCalls ?? 0)` evaluated to false, leaving `lastGMSummary` permanently null. Fix: explicit `!lastGMSummary` check triggers update when transitioning from null to any valid summary.
+  修复边界情况：`lastGMSummary = null` 后 `fetchAll()` 返回 `totalCalls=0`，`0 !== (null?.x ?? 0)` 恒 false，`lastGMSummary` 永留 null。修复：`!lastGMSummary` 显式判断确保从 null 过渡到有效对象。
+
+- **Old Version Upgrade Shows Archived Data / 旧版升级显示归档数据**: Fixed migration issue where upgrading from pre-callBaselines version (no `callBaselines` in persisted state) caused all historical API data to display unfiltered. `restore()` now sets `_needsBaselineInit = true` when `callBaselines` is absent, baselining all existing API data on first fetch.
+  修复迁移问题：从无 `callBaselines` 的旧版升级后，所有 API 历史数据无过滤显示。`restore()` 检测到缺少 `callBaselines` 时设置 `_needsBaselineInit = true`，首次获取时自动基线化。
+
+- **🔥 Calendar Data Persists After Clear + Reinstall / 清除后重装日历数据残留**: Fixed critical bug where calendar highlights reappeared after "Clear Activity Data" → extension reinstall. Root cause: `importArchives()` ran on every `activate()`, re-populating `DailyStore` from `activityTracker.getArchives()` unconditionally. Also `clearActivityData` was missing `dailyStore.clear()` and didn't persist the cleared `activityTracker` state. Fix: (1) `DailyStoreState` now includes `backfilled?: boolean` flag; `importArchives()` skips entirely when `_backfilled` is true, and sets it after first run. (2) `clear()` sets `_backfilled = true` to prevent re-import. (3) `clearActivityData` now calls `dailyStore.clear()` and `devPersistActivity`.
+  修复严重 Bug：「清除活动数据」后重装插件，日历高亮重新出现。根因：`importArchives()` 在每次 `activate()` 时无条件从 `activityTracker.getArchives()` 回填日历。且 `clearActivityData` 未调用 `dailyStore.clear()`、未持久化清空后的 activityTracker 状态。修复：① `DailyStoreState` 新增 `backfilled` 标记，`importArchives()` 检测到后跳过，首次执行后设置；② `clear()` 设置 `backfilled=true` 阻止重新回填；③ `clearActivityData` 联动 `dailyStore.clear()` + `devPersistActivity`。
+
+- **Calendar Data Duplication from Live Snapshot / live-snapshot 导致日历数据重复**: Removed the live-snapshot code path from `extension.ts activate()` that wrote current active session data into `DailyStore` on every activation. Calendar data is now written exclusively via `onQuotaReset` callback (authoritative) and `importArchives` one-time cold-start backfill, eliminating duplicate cycle entries.
+  移除 `extension.ts activate()` 中的 live-snapshot 数据写入路径。日历数据现仅通过 `onQuotaReset` 回调（权威来源）和 `importArchives` 一次性冷启动回填写入，消除重复周期条目。
+
+### Changed / 变更
+
+- **Removed `gm-panel.ts` / 删除 GM 面板**: Content merged into `activity-panel.ts`. Functions `buildPerformanceChart`, `buildCacheEfficiency`, `buildContextGrowth`, `buildConversations` migrated. Exports renamed: `buildActivityTabContent` → `buildGMDataTabContent`, `getActivityTabStyles` → `getGMDataTabStyles`.
+  内容合并到 `activity-panel.ts`。四个 GM 区块构建函数迁移。导出重命名。
+
+- **Removed `statusBar.showActivity` and `activityDisplayMode` / 移除状态栏活动指标配置**: Removed `statusBar.showActivity` toggle and `activityDisplayMode` radio (global/currentModel) from both `package.json` configuration and Settings tab UI. Related script handlers also removed.
+  从 `package.json` 和设置标签中移除 `statusBar.showActivity` 开关和 `activityDisplayMode` 单选框。相关脚本处理也一并移除。
+
+- **`showActivityPanel` command now opens GM Data tab / 活动面板命令现在打开 GM 数据标签**: The command `antigravity-context-monitor.showActivityPanel` now sets `initialTab` to `'gmdata'` instead of `'activity'`.
+  命令现在将 `initialTab` 设为 `'gmdata'`。
+
+- **`clearActivityData` Full-Chain Cleanup / 清除活动数据全链路清理**: "Clear Activity Data" now also clears `DailyStore` (calendar data), persists the cleared `activityTracker` state to `globalState`, resets quota tracking states, clears quota history, and triggers `devClearGM`. All data subsystems are synchronized.
+  「清除活动数据」现在联动清除 `DailyStore`（日历数据）、持久化清空后的 `activityTracker` 状态、重置额度追踪、清空额度历史、触发 `devClearGM`。所有数据子系统完全同步。
+
+- **`importArchives` One-Time Migration / 归档导入一次性迁移**: `DailyStore.importArchives()` is now a one-time operation. Once backfill completes, a `backfilled` flag is persisted to `globalState`, preventing subsequent `activate()` calls from re-importing cleared data. `clear()` also sets this flag.
+  `DailyStore.importArchives()` 现为一次性操作。回填完成后持久化 `backfilled` 标记到 `globalState`，防止后续 `activate()` 重新导入已清除的数据。`clear()` 也设置此标记。
+
+### Tests / 测试
+
+- Added `poolModels` population test in `quota-tracker.test.ts`.
+  在 `quota-tracker.test.ts` 中新增 `poolModels` 填充测试。
+- Total test count: 75 (was 67 in v1.12.2).
+  测试总数：75（v1.12.2 为 67）。
+
+
 ## [1.13.0] - 2026-03-22
 
 ### Fixed / 修复

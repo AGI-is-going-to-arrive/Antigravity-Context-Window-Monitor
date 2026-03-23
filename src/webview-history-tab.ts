@@ -129,10 +129,18 @@ function buildSessionTimelineHtml(session: QuotaSession, isActive: boolean): str
             ? `<span class="badge info-badge">${tBi('ACTIVE', '追踪中')}</span>`
             : `<span class="badge warn-badge">${tBi('RESET', '已重置')}</span>`;
 
+    // Pool models: show additional models sharing the same quota
+    const poolBadges = (session.poolModels && session.poolModels.length > 1)
+        ? session.poolModels
+            .filter(l => l !== session.modelLabel)
+            .map(l => `<span class="badge pool-badge">+ ${esc(l)}</span>`)
+            .join('')
+        : '';
+
     return `
         <div class="timeline-card${isActive ? ' active-timeline' : ''}">
             <div class="timeline-header">
-                <span class="timeline-model">${esc(session.modelLabel)}</span>
+                <span class="timeline-model">${esc(session.modelLabel)}${poolBadges}</span>
                 ${statusBadge}
             </div>
             <div class="timeline-meta">

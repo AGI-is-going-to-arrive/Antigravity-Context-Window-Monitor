@@ -122,6 +122,8 @@ export interface GMTrackerState {
     summary: GMSummary;
     /** cascadeId → stepCount baselines to skip unchanged IDLE conversations */
     baselines: Record<string, number>;
+    /** cascadeId → call count baselines to isolate quota cycles (added v1.13.2) */
+    callBaselines?: Record<string, number>;
 }
 
 // ─── Parser Helpers ──────────────────────────────────────────────────────────
@@ -222,6 +224,10 @@ export class GMTracker {
     private _lastFetchedAt = '';
     /** Cached summary for instant access after restore */
     private _lastSummary: GMSummary | null = null;
+    /** Per-conversation baseline call counts — calls[0..baseline-1] are from prior cycles */
+    private _callBaselines = new Map<string, number>();
+    /** When true, first fetchAll() baselines all existing API data (set only by fullReset) */
+    private _needsBaselineInit = false;
 
     /**
      * Fetch GM data for the given trajectories.
@@ -238,8 +244,12 @@ export class GMTracker {
             if (t.stepCount === 0) { continue; }
 
             const cached = this._cache.get(t.cascadeId);
-            // Skip IDLE conversations that haven't changed
-            if (cached && t.status !== 'CASCADE_RUN_STATUS_RUNNING' && cached.totalSteps === t.stepCount) {
+            // Skip IDLE conversations that haven't changed AND already have calls data.
+            // After restore (calls stripped for storage), cached.calls is empty —
+            // must re-fetch to repopulate. Once populated, normal skip logic resumes.
+            if (cached && cached.calls.length > 0
+                && t.status !== 'CASCADE_RUN_STATUS_RUNNING'
+                && cached.totalSteps === t.stepCount) {
                 continue;
             }
 
@@ -276,6 +286,18 @@ export class GMTracker {
         }
 
         this._lastFetchedAt = new Date().toISOString();
+
+        // On fresh start (no persisted state), baseline all existing API data
+        // so only calls from this point forward are counted.
+        if (this._needsBaselineInit) {
+            for (const [id, conv] of this._cache) {
+                if (!this._callBaselines.has(id)) {
+                    this._callBaselines.set(id, conv.calls.length);
+                }
+            }
+            this._needsBaselineInit = false;
+        }
+
         this._lastSummary = this._buildSummary();
         return this._lastSummary;
     }
@@ -309,9 +331,18 @@ export class GMTracker {
         const contextGrowth: { step: number; tokens: number; model: string }[] = [];
 
         for (const [, conv] of this._cache) {
-            conversations.push(conv);
+            // Only aggregate calls from the current cycle (after baseline)
+            const baseline = this._callBaselines.get(conv.cascadeId) || 0;
+            const activeCalls = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
+            const activeStepsCovered = activeCalls.reduce((sum, c) => sum + c.stepIndices.length, 0);
+            conversations.push({
+                ...conv,
+                calls: activeCalls,
+                coveredSteps: activeStepsCovered,
+                coverageRate: conv.totalSteps > 0 ? activeStepsCovered / conv.totalSteps : 0,
+            });
 
-            for (const c of conv.calls) {
+            for (const c of activeCalls) {
                 totalCalls++;
                 totalStepsCovered += c.stepIndices.length;
                 totalCredits += c.credits;
@@ -429,15 +460,46 @@ export class GMTracker {
     }
 
     /**
-     * Full reset on quota boundary: clear all cached data.
+     * Full reset on quota boundary.
      * Pre-reset snapshot is already archived to dailyStore.addCycle()
      * in extension.ts, so no data is lost.
-     * Next fetchAll() will re-fetch GM data for active conversations.
+     * Preserves call baselines so _buildSummary() only counts new-cycle calls.
+     * Analogous to activityTracker's trajectory baseline preservation.
      */
     reset(): void {
-        this._cache.clear();
+        // Record call baselines: for conversations that were fetched from API
+        // (calls.length > 0), set baseline to their absolute call count.
+        // Stubs (calls=[]) keep their existing baseline from previous reset.
+        for (const [id, conv] of this._cache) {
+            if (conv.calls.length > 0) {
+                this._callBaselines.set(id, conv.calls.length);
+            }
+        }
+        // Keep cache entries with stepCount so fetchAll() skips unchanged IDLE
+        // conversations, but clear calls to save memory.
+        for (const [id, conv] of this._cache) {
+            this._cache.set(id, {
+                ...conv,
+                calls: [],
+                coveredSteps: 0,
+                coverageRate: 0,
+            });
+        }
         this._lastSummary = null;
         this._lastFetchedAt = '';
+    }
+
+    /**
+     * Nuclear reset — clears all internal state and starts counting from zero.
+     * Next fetchAll() will baseline all existing API data, so only truly new
+     * calls (made after this reset) are counted.
+     */
+    fullReset(): void {
+        this._cache.clear();
+        this._callBaselines.clear();
+        this._lastSummary = null;
+        this._lastFetchedAt = '';
+        this._needsBaselineInit = true;
     }
 
     // ─── Serialization ───────────────────────────────────────────────────
@@ -456,6 +518,11 @@ export class GMTracker {
         for (const [id, conv] of this._cache) {
             baselines[id] = conv.totalSteps;
         }
+        // Persist call baselines for cycle isolation across extension restarts
+        const callBaselines: Record<string, number> = {};
+        for (const [id, count] of this._callBaselines) {
+            callBaselines[id] = count;
+        }
         // Strip calls[] from conversations to keep globalState small.
         // calls will be re-fetched from API on next fetchAll().
         const raw = this._lastSummary || this._buildSummary();
@@ -465,7 +532,7 @@ export class GMTracker {
                 ...c, calls: [],
             })),
         };
-        return { version: 1, summary: slim, baselines };
+        return { version: 1, summary: slim, baselines, callBaselines };
     }
 
     /** Restore from persisted state. Cache is empty — API will backfill. */
@@ -473,6 +540,7 @@ export class GMTracker {
         const tracker = new GMTracker();
         if (!data || data.version !== 1) { return tracker; }
 
+        tracker._needsBaselineInit = false; // restored = not a manual clear
         tracker._lastSummary = data.summary;
         tracker._lastFetchedAt = data.summary.fetchedAt || '';
 
@@ -486,6 +554,18 @@ export class GMTracker {
                 coveredSteps: 0,
                 coverageRate: 0,
             });
+        }
+
+        // Restore call baselines for cycle isolation
+        if (data.callBaselines) {
+            for (const [id, count] of Object.entries(data.callBaselines)) {
+                tracker._callBaselines.set(id, count);
+            }
+        } else {
+            // Migrating from pre-callBaselines version: no cycle boundary info.
+            // Baseline all existing API data on first fetch to avoid showing
+            // data from previous archived cycles.
+            tracker._needsBaselineInit = true;
         }
 
         return tracker;

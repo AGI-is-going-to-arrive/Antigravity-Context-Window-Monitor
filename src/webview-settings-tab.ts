@@ -20,8 +20,6 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
     const showContext = cfg.get<boolean>('statusBar.showContext', true);
     const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
     const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
-    const showActivity = cfg.get<boolean>('statusBar.showActivity', true);
-    const activityDisplayMode = cfg.get<string>('statusBar.activityDisplayMode', 'global');
     const quotaNotifyThreshold = cfg.get<number>('quotaNotificationThreshold', 20);
     const maxRecentSteps = cfg.get<number>('activity.maxRecentSteps', 100);
     const maxArchives = cfg.get<number>('activity.maxArchives', 20);
@@ -142,24 +140,6 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
                     <span>${tBi('Reset countdown', '重置倒计时')} <code>⏳4h32m</code></span>
                 </label>
-                <label class="toggle-row">
-                    <input type="checkbox" id="toggleActivity" class="toggle-cb" ${showActivity ? 'checked' : ''} />
-                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBi('Activity indicator', '活动指标')} <code>🧠5 ⚡12</code></span>
-                </label>
-            </div>
-            <div class="setting-row" style="margin-top: var(--space-2);">
-                <label>${tBi('Activity display mode', '活动显示模式')}</label>
-                <div class="radio-group">
-                    <label class="radio-row">
-                        <input type="radio" name="activityDisplayMode" value="global" ${activityDisplayMode === 'global' ? 'checked' : ''} />
-                        <span>${tBi('Global — all models combined', '全局 — 所有模型汇总')}</span>
-                    </label>
-                    <label class="radio-row">
-                        <input type="radio" name="activityDisplayMode" value="currentModel" ${activityDisplayMode === 'currentModel' ? 'checked' : ''} />
-                        <span>${tBi('Current model — active conversation only', '当前模型 — 仅活跃对话')}</span>
-                    </label>
-                </div>
             </div>
         </section>
 
@@ -272,6 +252,33 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
                 )}</p>
                 <button class="action-btn danger-action" id="clearQuotaHistory">
                     ${ICON.trash} ${tBi('Clear All History', '清除所有历史')}
+                </button>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2>${ICON.bolt} ${tBi('Debug / Testing', '调试 / 测试')}</h2>
+            <p class="raw-desc">${tBi(
+                'Developer tools for testing quota reset archival and clearing stale data.',
+                '用于测试额度重置归档以及清除过期数据的开发者工具。',
+            )}</p>
+            <div class="setting-row" style="margin-top: var(--space-2);">
+                <p class="raw-desc">${tBi(
+                    'Simulate a full quota reset cycle: archive current Activity + GM + Cost data to Calendar, then reset GM baselines for the new cycle.',
+                    '模拟完整的额度重置周期：将当前 Activity + GM + 费用数据归档到日历，然后为新周期重置 GM 基线。',
+                )}</p>
+                <button class="action-btn" id="devSimulateReset">
+                    ${ICON.timeline} ${tBi('Simulate Quota Reset', '模拟额度重置')}
+                </button>
+                <span id="devSimulateFeedback" class="threshold-feedback"></span>
+            </div>
+            <div class="setting-row" style="margin-top: var(--space-3);">
+                <p class="raw-desc">${tBi(
+                    'Clear all GM data and baselines (nuclear reset). Next poll will treat all existing API data as historical baseline — starts counting from zero.',
+                    '清除所有 GM 数据和基线（核重置）。下次轮询会将 API 中所有已有数据视为历史基线 — 从零开始计数。',
+                )}</p>
+                <button class="action-btn danger-action" id="devClearGM">
+                    ${ICON.trash} ${tBi('Clear GM Data & Baselines', '清除 GM 数据和基线')}
                 </button>
             </div>
         </section>

@@ -10,18 +10,26 @@ import { esc } from './webview-helpers';
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export function buildPricingTabContent(summary: GMSummary | null, store: PricingStore): string {
-    if (!summary || summary.totalCalls === 0) {
-        return `<p class="empty-msg">${tBi('Waiting for GM data...', '等待 GM 数据...')}</p>`;
+    const hasGM = summary && summary.totalCalls > 0;
+
+    if (hasGM) {
+        const { rows, grandTotal } = store.calculateCosts(summary);
+        const merged = store.getMerged();
+        return [
+            buildModelDNACards(summary),
+            buildCostVisualization(rows, grandTotal, summary),
+            buildCostSummary(rows, grandTotal),
+            buildEditablePricingTable(summary, merged, store.getCustom()),
+        ].join('');
     }
 
-    const { rows, grandTotal } = store.calculateCosts(summary);
-    const merged = store.getMerged();
-
+    // No GM data yet — still show the editable pricing table with defaults
     return [
-        buildModelDNACards(summary),
-        buildCostVisualization(rows, grandTotal, summary),
-        buildCostSummary(rows, grandTotal),
-        buildEditablePricingTable(summary, merged, store.getCustom()),
+        `<p class="empty-msg">${tBi(
+            'Cost analysis will appear after GM data is available. You can configure custom prices below.',
+            '费用分析将在 GM 数据可用后显示。您可以在下方配置自定义价格。',
+        )}</p>`,
+        buildDefaultPricingTable(store.getMerged(), store.getCustom()),
     ].join('');
 }
 
@@ -652,5 +660,42 @@ function buildEditablePricingTable(
         `编辑上方价格后点击保存。修改跨会话持久化。重置恢复内置默认值。默认价格最后更新：${PRICING_LAST_UPDATED}。`
     )}</p>`;
     html += `</div>`;
+    return html;
+}
+
+/** Pricing table using DEFAULT_PRICING keys — shown when no GM data is available. */
+function buildDefaultPricingTable(
+    merged: Record<string, ModelPricing>,
+    custom: Record<string, ModelPricing>,
+): string {
+    const entries = Object.entries(merged);
+    if (entries.length === 0) { return ''; }
+
+    const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'cacheWrite', 'thinking'];
+    const fieldLabels: Record<string, string> = {
+        input: 'Input', output: 'Output', cacheRead: 'Cache Read', cacheWrite: 'Cache Write', thinking: 'Thinking',
+    };
+
+    let html = `<h2 class="act-section-title">${tBi('Custom Pricing', '自定义价格')} <span style="font-size:0.72em;color:var(--color-text-dim)">(USD / 1M tokens)</span></h2>`;
+    html += `<div class="prc-edit-section"><table class="prc-edit-table"><thead><tr><th>${tBi('Model', '模型')}</th>${fields.map(f => `<th>${fieldLabels[f]}</th>`).join('')}<th>${tBi('Source', '来源')}</th></tr></thead><tbody>`;
+
+    for (const [model, p] of entries) {
+        const isCustom = !!custom[model];
+        html += `<tr><td>${esc(model)}${isCustom ? '<span class="prc-custom-badge">CUSTOM</span>' : ''}</td>`;
+        for (const f of fields) {
+            html += `<td><input type="number" class="prc-edit-input pricing-input" data-model="${esc(model)}" data-field="${f}" value="${p[f]}" step="0.01" min="0"></td>`;
+        }
+        const sourceLabel = isCustom
+            ? `<span style="color:#fbbf24">${tBi('Custom', '自定义')}</span>`
+            : `<span style="color:#34d399">${tBi('Built-in', '内置')}</span>`;
+        html += `<td>${sourceLabel}</td></tr>`;
+    }
+
+    html += `</tbody></table>`;
+    html += `<div class="prc-edit-actions"><button class="prc-btn prc-btn-primary" id="pricingSaveBtn">${tBi('Save Prices', '保存价格')}</button><button class="prc-btn" id="pricingResetBtn">${tBi('Reset to Default', '恢复默认')}</button><span class="prc-feedback" id="pricingFeedback"></span></div>`;
+    html += `<p class="prc-note">${tBi(
+        `Edit prices above and click Save. Changes are persisted across sessions. Default prices last updated: ${PRICING_LAST_UPDATED}.`,
+        `编辑上方价格后点击保存。修改跨会话持久化。默认价格最后更新：${PRICING_LAST_UPDATED}。`
+    )}</p></div>`;
     return html;
 }

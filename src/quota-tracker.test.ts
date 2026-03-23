@@ -430,20 +430,63 @@ describe('QuotaTracker state machine', () => {
 
         it('should fire callback once per processUpdate with all reset modelIds', () => {
             const now = new Date();
-            const reset = futureReset(now, FIVE_HOURS);
+            const resetA = futureReset(now, FIVE_HOURS);
+            const resetB = futureReset(now, FIVE_HOURS + 1000); // different pool (different resetTime)
 
-            tracker.processUpdate([makeConfig('A', 1.0, reset), makeConfig('B', 1.0, reset)]);
-            tracker.processUpdate([makeConfig('A', 0.5, reset), makeConfig('B', 0.5, reset)]);
+            tracker.processUpdate([makeConfig('A', 1.0, resetA), makeConfig('B', 1.0, resetB)]);
+            tracker.processUpdate([makeConfig('A', 0.5, resetA), makeConfig('B', 0.5, resetB)]);
 
             // Both reset at same time
-            const newReset = futureReset(now, FIVE_HOURS * 2);
-            tracker.processUpdate([makeConfig('A', 1.0, newReset), makeConfig('B', 1.0, newReset)]);
+            const newResetA = futureReset(now, FIVE_HOURS * 2);
+            const newResetB = futureReset(now, FIVE_HOURS * 2 + 1000);
+            tracker.processUpdate([makeConfig('A', 1.0, newResetA), makeConfig('B', 1.0, newResetB)]);
 
             // Callback fired exactly once per processUpdate, with both modelIds
             expect(resetCallback).toHaveBeenCalledTimes(1);
             const calledWith = resetCallback.mock.calls[0][0] as string[];
             expect(calledWith).toContain('A');
             expect(calledWith).toContain('B');
+        });
+
+        it('should deduplicate same-pool models (shared resetTime)', () => {
+            const now = new Date();
+            const reset = futureReset(now, FIVE_HOURS);
+
+            // A and B share resetTime (same pool) — only one should be tracked
+            tracker.processUpdate([makeConfig('A', 1.0, reset), makeConfig('B', 1.0, reset)]);
+            tracker.processUpdate([makeConfig('A', 0.5, reset), makeConfig('B', 0.5, reset)]);
+
+            // Only 1 active session (representative), not 2
+            expect(tracker.getActiveSessions().length).toBe(1);
+
+            // Reset: only representative triggers callback
+            const newReset = futureReset(now, FIVE_HOURS * 2);
+            tracker.processUpdate([makeConfig('A', 1.0, newReset), makeConfig('B', 1.0, newReset)]);
+            expect(resetCallback).toHaveBeenCalledTimes(1);
+            expect(resetCallback.mock.calls[0][0].length).toBe(1);
+        });
+
+        it('should populate poolModels with all pool member labels', () => {
+            const now = new Date();
+            const reset = futureReset(now, FIVE_HOURS);
+
+            // A, B, C share resetTime (same pool)
+            tracker.processUpdate([
+                makeConfig('A', 1.0, reset, 'Alpha'),
+                makeConfig('B', 1.0, reset, 'Beta'),
+                makeConfig('C', 1.0, reset, 'Charlie'),
+            ]);
+            tracker.processUpdate([
+                makeConfig('A', 0.5, reset, 'Alpha'),
+                makeConfig('B', 0.5, reset, 'Beta'),
+                makeConfig('C', 0.5, reset, 'Charlie'),
+            ]);
+
+            const sessions = tracker.getActiveSessions();
+            expect(sessions.length).toBe(1);
+            // poolModels should contain all 3 labels, sorted
+            expect(sessions[0].poolModels).toBeDefined();
+            expect(sessions[0].poolModels).toEqual(['Alpha', 'Beta', 'Charlie']);
         });
     });
 

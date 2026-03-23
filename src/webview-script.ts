@@ -79,8 +79,8 @@ export function getScript(): string {
             }
 
             // ─── Settings: Status Bar Toggles ───
-            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'toggleActivity', 'togglePrivacyDefault'];
-            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'statusBar.showActivity', 'privacy.defaultMask'];
+            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'togglePrivacyDefault'];
+            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'privacy.defaultMask'];
             for (var tgi = 0; tgi < toggleIds.length; tgi++) {
                 (function(idx) {
                     var cb = document.getElementById(toggleIds[idx]);
@@ -90,16 +90,6 @@ export function getScript(): string {
                         });
                     }
                 })(tgi);
-            }
-
-            // ─── Settings: Activity Display Mode Radio ───
-            var modeRadios = document.querySelectorAll('input[name="activityDisplayMode"]');
-            for (var ri = 0; ri < modeRadios.length; ri++) {
-                modeRadios[ri].addEventListener('change', function() {
-                    if (this.checked) {
-                        vscode.postMessage({ command: 'setConfig', key: 'statusBar.activityDisplayMode', value: this.value });
-                    }
-                });
             }
 
             // ─── Settings: Model Limits Save ───
@@ -326,6 +316,24 @@ export function getScript(): string {
             if (clearActBtn) {
                 clearActBtn.addEventListener('click', function() {
                     vscode.postMessage({ command: 'clearActivityData' });
+                });
+            }
+
+            // ─── Dev: Simulate Quota Reset ───
+            var devSimBtn = document.getElementById('devSimulateReset');
+            if (devSimBtn) {
+                devSimBtn.addEventListener('click', function() {
+                    vscode.postMessage({ command: 'devSimulateReset' });
+                    var fb = document.getElementById('devSimulateFeedback');
+                    if (fb) { fb.textContent = 'Done'; setTimeout(function() { fb.textContent = ''; }, 2000); }
+                });
+            }
+
+            // ─── Dev: Clear GM Data & Baselines ───
+            var devClearGMBtn = document.getElementById('devClearGM');
+            if (devClearGMBtn) {
+                devClearGMBtn.addEventListener('click', function() {
+                    vscode.postMessage({ command: 'devClearGM' });
                 });
             }
 

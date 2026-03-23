@@ -177,20 +177,9 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     }
 
-    // Snapshot current active session into today (live data)
-    const currentSummary = activityTracker.getSummary();
-    if (currentSummary && (currentSummary.totalReasoning > 0 || currentSummary.totalToolCalls > 0)) {
-        const now = new Date();
-        const sessionArchive: import('./activity-tracker').ActivityArchive = {
-            startTime: currentSummary.sessionStartTime,
-            endTime: now.toISOString(),
-            summary: currentSummary,
-            triggeredBy: ['live-snapshot'],
-        };
-        // Only import if not already present (dedup by startTime)
-        dailyStore.importArchives([sessionArchive], lastGMSummary);
-        log('Calendar: snapshotted current active session into today');
-    }
+    // NOTE: live-snapshot removed — calendar data is written exclusively via
+    // onQuotaReset callback (authoritative source) + importArchives cold-start backfill.
+    // This eliminates duplicate cycle entries and GM data inconsistencies.
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = context.globalState.get<import('./models').ModelConfig[]>('cachedModelConfigs');
@@ -229,7 +218,46 @@ export function activate(context: vscode.ExtensionContext): void {
                 });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'activity', activityTracker?.getArchives(), activityTracker, lastGMSummary, pricingStore, dailyStore);
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'gmdata', activityTracker?.getArchives(), activityTracker, lastGMSummary, pricingStore, dailyStore);
+        }),
+        vscode.commands.registerCommand('antigravity-context-monitor.devSimulateReset', () => {
+            if (!activityTracker) { return; }
+            log('[Dev] Simulating quota reset...');
+            const modelIds = ['[simulate]'];
+            activityTracker.archiveAndReset(modelIds);
+            context.globalState.update('activityTrackerState', activityTracker.serialize());
+            const archives = activityTracker.getArchives();
+            if (archives.length > 0 && dailyStore) {
+                const latest = archives[0];
+                let costTotal: number | undefined;
+                let costPerModel: Record<string, number> | undefined;
+                if (lastGMSummary && pricingStore) {
+                    const result = pricingStore.calculateCosts(lastGMSummary);
+                    costTotal = result.grandTotal;
+                    costPerModel = {};
+                    for (const row of result.rows) {
+                        if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
+                    }
+                }
+                dailyStore.addCycle(latest, lastGMSummary, costTotal, costPerModel);
+            }
+            gmTracker.reset();
+            lastGMSummary = null;
+            context.globalState.update('gmTrackerState', gmTracker.serialize());
+            log('[Dev] Quota reset simulated — activity archived, GM baselines set');
+        }),
+        vscode.commands.registerCommand('antigravity-context-monitor.devClearGM', () => {
+            log('[Dev] Full GM reset (clear all data + baselines)...');
+            gmTracker.fullReset();
+            lastGMSummary = null;
+            context.globalState.update('gmTrackerState', gmTracker.serialize());
+            log('[Dev] GM data fully cleared — next fetch will baseline all API data');
+        }),
+        vscode.commands.registerCommand('antigravity-context-monitor.devPersistActivity', () => {
+            if (activityTracker) {
+                context.globalState.update('activityTrackerState', activityTracker.serialize());
+                log('[Dev] Activity tracker state persisted to globalState');
+            }
         }),
         statusBar,
         outputChannel
@@ -293,6 +321,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Start independent activity polling (3s default)
     scheduleActivityPoll();
+
+    // Immediate first poll: reduces panel "waiting" state from ~6s to ~1-2s.
+    // Scheduled polls continue in parallel; isPolling/isActivityPolling guards prevent duplication.
+    void pollContextUsage().then(() => {
+        if (cachedLsInfo && !disposed) { void pollActivity(); }
+    });
 }
 
 // ─── Deactivation ─────────────────────────────────────────────────────────────
@@ -550,7 +584,7 @@ async function pollContextUsage(): Promise<void> {
             currentUsage = null;
             allTrajectoryUsages = [];
             if (isMonitorPanelVisible()) {
-                updateMonitorPanel(null, [], cachedModelConfigs, cachedUserInfo, quotaTracker);
+                updateMonitorPanel(null, [], cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary);
             }
             updateBaselines(trajectories);
             return;
@@ -633,7 +667,7 @@ async function pollContextUsage(): Promise<void> {
 
         // 6c. Update WebView panel if visible (context data only; activity is updated independently)
         if (isMonitorPanelVisible()) {
-            updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives());
+            updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary);
         }
 
         // 7. Update baselines for next poll
@@ -752,8 +786,9 @@ async function pollActivity(): Promise<void> {
                 trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
                 abortController.signal,
             );
-            if (gmSummary.totalCalls !== (lastGMSummary?.totalCalls ?? 0)
-                || gmSummary.totalStepsCovered !== (lastGMSummary?.totalStepsCovered ?? 0)) {
+            if (!lastGMSummary
+                || gmSummary.totalCalls !== lastGMSummary.totalCalls
+                || gmSummary.totalStepsCovered !== lastGMSummary.totalStepsCovered) {
                 lastGMSummary = gmSummary;
                 gmChanged = true;
             }

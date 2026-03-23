@@ -1,15 +1,20 @@
 # LS Monitor 技术实现文档
 
-> **v1.12.3** — 2026-03-22
+> **v1.13.0** — 2026-03-23
 
 > [!NOTE]
 > 本文档所描述的监控数据**完全依赖 LS（Language Server）的 gRPC-over-HTTP API** 返回的数据进行统计和展示。受限于 API 的约 5MB 响应大小限制（约 500 步），超出此窗口的步骤只能通过 `stepCount` 差值进行推算（标注为 📊 推算步数），无法获取精确分类。如有估算偏差或数据不完整，敬请谅解。
+> v1.13.0 新增 Remote-WSL LS Discovery，支持在 WSL 远程环境中自动发现 Language Server 进程。
 
-## 概述
+---
+
+## 1. 概述
 
 通过轮询 LS 的 gRPC-over-HTTP API，精确追踪每次 AI 推理调用、工具使用、耗时和 token 消耗。核心逻辑已完全集成到 VS Code 扩展模块中（早期独立脚本 `ls-monitor.ts` 已移除）。
 
-## 架构
+---
+
+## 2. 架构
 
 ```mermaid
 graph LR
@@ -27,7 +32,9 @@ graph LR
     P -.->|变化时立即刷新| H
 ```
 
-## 核心 API
+---
+
+## 3. 核心 API
 
 ### LS 发现
 
@@ -45,7 +52,9 @@ graph LR
 | `GetCascadeTrajectorySteps` | 获取某对话的全部步骤详情 |
 | `GetCascadeTrajectoryGeneratorMetadata` | 获取某对话的 `generatorMetadata[]`（轻量，不含完整 trajectory） |
 
-## 步骤类型分类
+---
+
+## 4. 步骤类型分类
 
 ### 已识别的步骤类型
 
@@ -55,6 +64,7 @@ graph LR
 | `VIEW_FILE` | 📄 | tool | 查看文件 |
 | `CODE_ACTION` | ✏️ | tool | 编辑代码 |
 | `RUN_COMMAND` | ⚡ | tool | 执行命令 |
+| `SEND_COMMAND_INPUT` | 📥 | tool | 向运行中命令发送输入 |
 | `COMMAND_STATUS` | 📟 | tool | 命令状态 |
 | `LIST_DIRECTORY` | 📂 | tool | 列出目录 |
 | `FIND` | 🔍 | tool | 搜索 |
@@ -77,16 +87,19 @@ graph LR
 
 | 内部类型 | 标签 | 说明 |
 |---|---|---|
-| `BROWSER_PRESS_KEY` | 按键 | 模拟键盘输入 |
-| `CLICK_BROWSER_PIXEL` | 点击 | 点击像素坐标 |
-| `BROWSER_MOUSE_WHEEL` | 滚动 | 鼠标滚轮 |
-| `BROWSER_GET_DOM` | DOM | 获取 DOM |
 | `OPEN_BROWSER_URL` | 打开URL | 导航到 URL |
 | `WAIT` | 等待 | 延迟等待 |
+| `CAPTURE_BROWSER_SCREENSHOT` | 截屏 | 捕获页面截图 |
+| `BROWSER_PRESS_KEY` | 按键 | 模拟键盘输入（未观测到） |
+| `CLICK_BROWSER_PIXEL` | 点击 | 点击像素坐标（未观测到） |
+| `BROWSER_MOUSE_WHEEL` | 滚动 | 鼠标滚轮（未观测到） |
+| `BROWSER_GET_DOM` | DOM | 获取 DOM（未观测到） |
 
-## 关键数据字段
+---
 
-### 步骤元数据 (step.metadata)
+## 5. 关键数据字段
+
+### 5.1 step.metadata
 
 ```
 metadata: {
@@ -104,7 +117,54 @@ metadata: {
 }
 ```
 
-### BROWSER_SUBAGENT 结构
+### 5.2 PLANNER_RESPONSE 完整结构
+
+```
+plannerResponse: {
+  thinking:           "思考过程..."          // AI 思维链（可选）
+  thinkingSignature:  "base64..."           // 思考签名（可选）
+  thinkingDuration:   "2.780691100s"        // ✅ 精确思考耗时
+  response:           "以下是..."            // ✅ 最终回复文本
+  modifiedResponse:   "以下是..."            // 修改后版本
+  messageId:          "bot-uuid..."         // 消息 ID
+  toolCalls:          { 0: {...}, ... }     // 工具调用（可选）
+  stopReason:         "STOP_REASON_STOP_PATTERN"
+}
+```
+
+> ⚠️ `plannerResponse.text` 不存在！正确路径是 `.response` 或 `.modifiedResponse`
+
+### 5.3 CHECKPOINT.modelUsage
+
+```
+metadata.modelUsage: {
+  model:                "MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE"
+  inputTokens:          "2544"              // ✅ 精确输入 token
+  outputTokens:         "46"                // ✅ 精确输出 token
+  responseOutputTokens: "46"
+  apiProvider:          "API_PROVIDER_GOOGLE_GEMINI"
+  responseId:           "..."
+  responseHeader:       { sessionID: "..." }
+}
+```
+
+> Token 数据**仅**在 CHECKPOINT 步骤中出现，PLANNER_RESPONSE 的 metadata 里没有 token 字段
+
+### 5.4 USER_INPUT 结构
+
+```
+step.userInput: {
+  items:          [{ text: "用户消息" }]    // ✅ 用户文本在这里
+  userResponse:   { 0:"查", 1:"询", ... }  // 逐字流式输入
+  activeUserState: { ... }
+  clientType:     "CHAT_CLIENT_REQUEST_STREAM_CLIENT_TYPE_IDE"
+  userConfig:     { ... }
+}
+```
+
+> ⚠️ `userInput.text` 不存在！正确路径是 `userInput.items[0].text`
+
+### 5.5 BROWSER_SUBAGENT 结构
 
 ```
 step: {
@@ -123,167 +183,155 @@ step: {
 }
 ```
 
-## 踩坑记录
+---
 
-### 1. completedAt 实时不可用
+## 6. GM Data 基础设施
 
-**现象**：推理步骤在实时轮询时 `completedAt = undefined`
-**原因**：LS 在步骤完成后并不立即写入 `completedAt`，只在对话结束/checkpoint 后回填
-**修复**：推理耗时用 `finishedGeneratingAt`（实时可用），工具耗时用 `completedAt`
+### 27. GetCascadeTrajectoryGeneratorMetadata — 轻量 RPC 端点
 
-### 2. stepCount 波动
+**用途**：获取对话中每次 LLM 调用的精确数据，无需拉取完整 trajectory 或步骤数据。
 
-**现象**：`stepCount` 从 16→15→16 波动，导致增量检测失败
-**原因**：LS 在 RUNNING 状态下 `stepCount` 可能短暂下降
-**修复**：当 `curr < prev` 时重置基线为 `currSteps`
+**请求**：`{ cascadeId }` — 只需对话 ID
 
-### 3. toolCallOutputTokens 含义
-
-- **不是**模型的输入/输出 token
-- **是**工具返回给模型的输出内容的 token 数
-- 精确度：✅ LS 内部追踪，用于配额计费
-- 仅在工具步骤出现，推理步骤为 `undefined`
-
-### 4. 模型名称映射
-
-- LS 内部用 `MODEL_PLACEHOLDER_M26` 等占位符
-- 通过 `GetUserStatus` → `clientModelConfigs` 获取 `{ model → label }` 映射
-- 例：`MODEL_PLACEHOLDER_M26` → `Gemini 3.1 Pro (High)`
-
-### 5. API 响应 ~5MB 大小限制（startIndex 在当前 LS 版本无效）
-
-- `GetCascadeTrajectorySteps` 每次返回 **≈5.2MB** 数据（约 400-500 步）
-- 这是 **5MB 响应大小限制**（经第三方开发者确认），不是步骤数量限制
-- 在当前 LS 版本中，`startIndex/endIndex` 参数不生效 — 无论传什么值，始终返回相同的首批步骤
-- 所有步骤类型中，**AI 生成的步骤**（PLANNER_RESPONSE、tool 类）都有 `metadata.generatorModel` 字段
-- **系统/用户步骤**（EPHEMERAL_MESSAGE、USER_INPUT、CHECKPOINT）没有模型名
-
-**诊断数据（diag-steps.ts）：**
+**返回 `generatorMetadata[]` 结构**：
 
 ```
-RUNNING 对话 (1217 steps):
-  [0-50]    → 506 步, 5219KB  (请求 50 步，返回 506)
-  [50-100]  → 506 步, 5219KB  (完全相同)
-  [1167-1217] → 506 步, 5219KB  (完全相同)
-
-IDLE 对话 (2443 steps):
-  7 种 startIndex/endIndex 组合 → 全部返回 419 步, 5293KB
-  camelCase/snake_case 字段名 → 无差异
+generatorMetadata[i] = {
+  stepIndices: [4, 5, 6, ...],          // 该次 LLM 调用产生的步骤索引
+  chatModel: {
+    responseModel: "claude-opus-4-6-thinking",  // 真实模型名
+    usage: {
+      inputTokens:        12345,
+      outputTokens:        2345,
+      cacheReadTokens:    75000,         // 缓存读取（通常是 input 的 ~6 倍）
+      cacheCreationTokens:  5000,        // 缓存写入
+      thinkingOutputTokens: 1200,        // 思考 token（Gemini 独有）
+      apiProvider: "VERTEX_AI",          // API 路由
+    },
+    timeToFirstToken:  "3034567890",     // TTFT 纳秒
+    streamingDuration: "11090000000",    // 流式传输纳秒
+    consumedCredits: [{ creditAmount: 10, ... }],
+    completionConfig: { temperature: 0.4 },
+    chatStartMetadata: {                 // ← INSIDE chatModel
+      contextWindowMetadata: {
+        estimatedTokensUsed: 45000,        // LS 侧精确上下文用量
+        tokenBreakdown: [                  // 按来源分类的 token 分拆
+          { section: "system_prompt", tokens: 10000 },
+          { section: "conversation",  tokens: 35000 },
+        ],
+      },
+      timeSinceLastInvocation: "15000000000",  // 调用间隔纳秒
+      systemPromptCache: { contentChecksum: "abc123" },
+    },
+  },
+  hasError: false,
+}
 ```
 
-**解决方案：Per-Trajectory dominantModel 归属**
+**覆盖率实测**（3 个对话）：
+
+| 对话 | 总步数 | GM 调用 | 覆盖步数 | 覆盖率 |
+|---|---|---|---|---|
+| Android App Adaptation | 1349 | 381 | 904 | 67.0% |
+| Analyzing Model Capture Fixes | 1266 | 341 | 830 | 65.6% |
+| Refining Activity Panel | 938 | 256 | 620 | 66.1% |
+
+**覆盖率未达 100% 是正常的**——用户输入、工具执行、检查点恢复步骤不产生 LLM 调用，因此没有 `generatorMetadata`。
+
+### 28. responseModel vs generatorModel — 模型名称精度差异
+
+| 字段 | 来源 | 值 | 精度 |
+|---|---|---|---|
+| `step.metadata.generatorModel` | GetCascadeTrajectorySteps | `MODEL_PLACEHOLDER_M26` | ❌ 占位符 |
+| `chatModel.responseModel` | GetCascadeTrajectoryGeneratorMetadata | `claude-opus-4-6-thinking` | ✅ 真实模型名 |
+
+**教训**：如需精确模型名（如计费），必须使用 `generatorMetadata` 而非 step metadata。
+
+### 29. consumedCredits 积分计算规则
+
+**实测数据**（2026-03-21）：
+
+| responseModel | creditAmount |
+|---|---|
+| `claude-opus-4-6-thinking` | **10** |
+| `claude-3.5-sonnet` | **6** |
+| `gemini-2.5-flash-thinking` | **0** |
+
+**注**：`creditAmount` 表示该次 LLM 调用消耗的积分数。Gemini 模型免费（0），Claude Opus 最高（10）。
+
+### 30. 费用估算设计
+
+`pricing-store.ts` 中内置 `DEFAULT_PRICING` 常量，格式为 USD per 1 million tokens：
 
 ```typescript
-// 1. 初次处理 API 返回的 ~500 步时，检测该对话的主模型
-entry.dominantModel = _detectDominantModel(steps);
+// pricing-store.ts
+export const DEFAULT_PRICING: Record<string, ModelPricing> = {
+  'claude-opus-4-6':   { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25, thinking: 25 },
+  'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
+  'gpt-oss-120b':      { input: 0.09, output: 0.36, ... },
+  'gemini-3.1-pro':    { input: 2, output: 12, ... },
+  'gemini-3-flash':    { input: 0.50, output: 3, ... },
+};
+```
 
-// 2. 后续 stepCount 增长（delta > 0）时，直接归属到该模型的 estSteps
-if (delta > 0 && entry.dominantModel) {
-    const s = _getOrCreateStats(entry.dominantModel);
-    s.estSteps += delta;   // 独立计数，不混入 reasoning/toolCalls
-    s.totalSteps += delta;
+**价格匹配逻辑** — `findPricing()` 三级匹配：
+
+1. **精确匹配**：`responseModel === key`
+2. **前缀匹配**：`responseModel.startsWith(key)` — 覆盖像 `claude-opus-4-6-thinking` 匹配 `claude-opus-4-6`、`gemini-3.1-pro-high` 匹配 `gemini-3.1-pro` 的情况
+3. **子串匹配**：`responseModel.includes(key)` — 兜底
+
+**费用计算**在 Pricing 标签页的 `pricing-panel.ts` 中展示（从 `gm-panel.ts` 迁移）。用户可通过 Pricing 标签页的可编辑价格表自定义价格，覆盖 `DEFAULT_PRICING` 的值，并通过 `globalState` 持久化。
+
+### 31. cacheCreationTokens vs cacheReadTokens 的区别
+
+| 字段 | 含义 | 典型值 | 计费影响 |
+|---|---|---|---|
+| `cacheReadTokens` | 从缓存中读取已有内容的 token 数 | 高（是 input 的 ~6 倍） | 价格最低（input 的 1/8） |
+| `cacheCreationTokens` | 首次写入缓存的 token 数 | 仅在缓存未命中时产生 | 价格最高（input 的 1.25 倍） |
+
+实测缓存命中率 ~95.2%——绝大多数调用走 cacheRead（便宜），仅极少数触发 cacheCreation（昂贵）。
+
+### 32. GM 数据归档与额度重置清零
+
+**问题**：`gmTracker` 和 `lastGMSummary` 在额度重置时从不清零。每次 `onQuotaReset` → `dailyStore.addCycle()` 都写入相同的完整 GM 数据，导致日历中出现重复记录。
+
+**修复**（v1.12.3）：
+
+```
+额度重置触发 (onQuotaReset)
+  ├─ activityTracker.archiveAndReset()       ← Activity 归档 + 清零
+  ├─ pricingStore.calculateCosts(lastGMSummary)
+  │   └─ 提取 costPerModel: Record<string, number>
+  ├─ dailyStore.addCycle(archive, lastGMSummary, costTotal, costPerModel)
+  │   └─ 写入 cycle.gmModelStats (GMModelCycleStats[])
+  │       ├─ calls, credits, avgTTFT, cacheHitRate
+  │       ├─ inputTokens, outputTokens, thinkingTokens
+  │       └─ estimatedCost (from costPerModel)
+  ├─ gmTracker.reset()                       ← GM 清零
+  ├─ lastGMSummary = null                    ← 缓存清零
+  └─ context.globalState.update(gmTrackerState) ← 持久化空状态
+```
+
+**关键接口**：
+
+```typescript
+interface GMModelCycleStats {
+  calls: number;
+  credits: number;
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+  avgTTFT: number;
+  cacheHitRate: number;
+  estimatedCost?: number;   // USD, from pricingStore.calculateCosts()
 }
 ```
 
-> ⚠️ 推算步数（📊 标注）仅记录总增量，无法区分 reasoning / toolCalls / errors。
-> `dominantModel` 和 `estSteps` 均通过 `globalState` 持久化，跨重启保留。
+**GM 持久化**：`GMTracker.serialize()` 剥离 `calls[]` 数组（537KB → ~1.4KB），只保留 model-level 聚合数据。`restore()` 恢复 `_lastSummary` + baseline stubs。
 
-## 运行方式
+---
 
-活动追踪已完全集成到 VS Code 扩展中，随扩展自动激活。无需手动运行脚本。
-
-```
-扩展激活
-  ├─ extension.ts 全局轮询 (5s) → 上下文/额度/用户状态
-  └─ extension.ts Activity 独立轮询 (3s) → activity-tracker.ts 分类统计 → activity-panel.ts 渲染
-```
-
-## PLANNER_RESPONSE 完整结构
-
-```
-plannerResponse: {
-  thinking:           "思考过程..."          // AI 思维链（可选）
-  thinkingSignature:  "base64..."           // 思考签名（可选）
-  thinkingDuration:   "2.780691100s"        // ✅ 精确思考耗时
-  response:           "以下是..."            // ✅ 最终回复文本
-  modifiedResponse:   "以下是..."            // 修改后版本
-  messageId:          "bot-uuid..."         // 消息 ID
-  toolCalls:          { 0: {...}, ... }     // 工具调用（可选）
-  stopReason:         "STOP_REASON_STOP_PATTERN"
-}
-```
-
-> ⚠️ `plannerResponse.text` 不存在！正确路径是 `.response` 或 `.modifiedResponse`
-
-## CHECKPOINT.modelUsage — 精确 Token 数据
-
-```
-metadata.modelUsage: {
-  model:                "MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE"
-  inputTokens:          "2544"              // ✅ 精确输入 token
-  outputTokens:         "46"                // ✅ 精确输出 token
-  responseOutputTokens: "46"
-  apiProvider:          "API_PROVIDER_GOOGLE_GEMINI"
-  responseId:           "..."
-  responseHeader:       { sessionID: "..." }
-}
-```
-
-> Token 数据**仅**在 CHECKPOINT 步骤中出现，PLANNER_RESPONSE 的 metadata 里没有 token 字段
-
-## USER_INPUT 结构
-
-```
-step.userInput: {
-  items:          [{ text: "用户消息" }]    // ✅ 用户文本在这里
-  userResponse:   { 0:"查", 1:"询", ... }  // 逐字流式输入
-  activeUserState: { ... }
-  clientType:     "CHAT_CLIENT_REQUEST_STREAM_CLIENT_TYPE_IDE"
-  userConfig:     { ... }
-}
-```
-
-> ⚠️ `userInput.text` 不存在！正确路径是 `userInput.items[0].text`
-
-## 踩坑记录补充
-
-### 6. userInput.text 不存在
-
-**现象**：`step.userInput.text` 返回 `undefined`
-**正确路径**：`step.userInput.items[0].text`
-**说明**：`items` 是数组，通常只有一个元素
-
-### 7. plannerResponse.text 不存在
-
-**现象**：`step.plannerResponse.text` 返回 `undefined`
-**正确路径**：`.response` 或 `.modifiedResponse`
-**说明**：AI 仅发工具调用时 `response` 为空字符串或不存在
-
-### 8. thinkingDuration 是字符串
-
-**格式**：`"2.780691100s"` — 纳秒级精度
-**解析**：`parseFloat(str.replace('s',''))` → 秒数
-
-### 9. stopReason 实时不可靠
-
-**现象**：流式输出中 `plannerResponse.stopReason` 为 `undefined`
-**原因**：LS 在模型输出完成前不设置 `stopReason`
-**修复**：不用 `stopReason` 判断是否有回复，直接读取 `modifiedResponse || response` 内容
-**补充**：AI 回复现在仅捕捉 80 字符短预览，不再需要精确完整回复
-
-### 10. warm-up 必须处理所有对话
-
-**现象**：长时间对话（500+ 步骤）只更新了步骤数但模型统计全 0
-**原因**：IDLE 对话在 warm-up 时被设为 `processedIndex = stepCount`（跳过所有步骤）
-**修复**：warm-up 对所有对话（含 IDLE）都拉取并处理步骤
-
-### 11. toggle 事件绑定错误
-
-**现象**：点击切换开关无反应
-**原因**：`change` 事件绑在 `<label>` 上，但 `change` 只在 `<input>` 上触发
-**修复**：通过 `querySelector('input[type="checkbox"]')` 找到内部 checkbox 绑定
-
-## Activity Tracker 架构
+## 7. Activity Tracker 架构
 
 ### 模块分工
 
@@ -334,7 +382,9 @@ processUpdate() 遍历所有模型
 
 > 关键设计：同池多模型（如 Pro High/Low）只触发 1 次回调 + 1 条归档。不同池间隔 < 5min 重置时防抖合并为 1 条。
 
-## 额度数据来源
+---
+
+## 8. 额度数据来源
 
 ### API 路径
 
@@ -364,13 +414,19 @@ tracking 状态 + fraction ≥ 1.0 = 额度已重置
 
 > 注：不同模型可能有独立额度周期，通过 `resetTimestamp` 可判断
 
-## 诊断脚本
-
-> 注：早期诊断脚本（`diag-verify.ts`、`diag-monitor.ts`、`diag-quota.ts`、`diag-reset.ts`）已在 v1.11.3 中删除。功能已完全集成到扩展模块中。LS 数据探索结果已记录在下方 Bug 记录中。
-
 ---
 
-## 文件位置
+## 9. 运行方式与文件位置
+
+活动追踪已完全集成到 VS Code 扩展中，随扩展自动激活。无需手动运行脚本。
+
+```
+扩展激活
+  ├─ extension.ts 全局轮询 (5s) → 上下文/额度/用户状态
+  └─ extension.ts Activity 独立轮询 (3s) → activity-tracker.ts 分类统计 → activity-panel.ts 渲染
+```
+
+### 文件位置
 
 - 插件源码：`src/`
 - 单元测试：`src/*.test.ts`
@@ -378,7 +434,112 @@ tracking 状态 + fraction ≥ 1.0 = 额度已重置
 
 > 注：独立终端脚本 `ls-monitor.ts` 已删除（v1.11.2），功能完全集成到扩展模块中。
 
-## 踩坑记录补充（二）
+### 诊断脚本
+
+> 注：早期诊断脚本（`diag-verify.ts`、`diag-monitor.ts`、`diag-quota.ts`、`diag-reset.ts`）已在 v1.11.3 中删除。功能已完全集成到扩展模块中。LS 数据探索结果已记录在下方踩坑记录中。
+
+---
+
+## 10. 踩坑记录
+
+### 1. completedAt 实时不可用
+
+**现象**：推理步骤在实时轮询时 `completedAt = undefined`
+**原因**：LS 在步骤完成后并不立即写入 `completedAt`，只在对话结束/checkpoint 后回填
+**修复**：推理耗时用 `finishedGeneratingAt`（实时可用），工具耗时用 `completedAt`
+
+### 2. stepCount 波动
+
+**现象**：`stepCount` 从 16→15→16 波动，导致增量检测失败
+**原因**：LS 在 RUNNING 状态下 `stepCount` 可能短暂下降
+**修复**：当 `curr < prev` 时重置基线为 `currSteps`
+
+### 3. toolCallOutputTokens 含义
+
+- **不是**模型的输入/输出 token
+- **是**工具返回给模型的输出内容的 token 数
+- 精确度：✅ LS 内部追踪，用于配额计费
+- 仅在工具步骤出现，推理步骤为 `undefined`
+
+### 4. 模型名称映射
+
+- LS 内部用 `MODEL_PLACEHOLDER_M26` 等占位符
+- 通过 `GetUserStatus` → `clientModelConfigs` 获取 `{ model → label }` 映射
+- 例：`MODEL_PLACEHOLDER_M26` → `Claude Opus 4.6 (Thinking)`
+
+### 5. API 响应 ~5MB 大小限制（startIndex 在当前 LS 版本无效）
+
+- `GetCascadeTrajectorySteps` 每次返回 **≈5.2MB** 数据（约 400-500 步）
+- 这是 **5MB 响应大小限制**（经第三方开发者确认），不是步骤数量限制
+- 在当前 LS 版本中，`startIndex/endIndex` 参数不生效 — 无论传什么值，始终返回相同的首批步骤
+- 所有步骤类型中，**AI 生成的步骤**（PLANNER_RESPONSE、tool 类）都有 `metadata.generatorModel` 字段
+- **系统/用户步骤**（EPHEMERAL_MESSAGE、USER_INPUT、CHECKPOINT）没有模型名
+
+**诊断数据（diag-steps.ts）：**
+
+```
+RUNNING 对话 (1217 steps):
+  [0-50]    → 506 步, 5219KB  (请求 50 步，返回 506)
+  [50-100]  → 506 步, 5219KB  (完全相同)
+  [1167-1217] → 506 步, 5219KB  (完全相同)
+
+IDLE 对话 (2443 steps):
+  7 种 startIndex/endIndex 组合 → 全部返回 419 步, 5293KB
+  camelCase/snake_case 字段名 → 无差异
+```
+
+**解决方案：Per-Trajectory dominantModel 归属**
+
+```typescript
+// 1. 初次处理 API 返回的 ~500 步时，检测该对话的主模型
+entry.dominantModel = _detectDominantModel(steps);
+
+// 2. 后续 stepCount 增长（delta > 0）时，直接归属到该模型的 estSteps
+if (delta > 0 && entry.dominantModel) {
+    const s = _getOrCreateStats(entry.dominantModel);
+    s.estSteps += delta;   // 独立计数，不混入 reasoning/toolCalls
+    s.totalSteps += delta;
+}
+```
+
+> ⚠️ 推算步数（📊 标注）仅记录总增量，无法区分 reasoning / toolCalls / errors。
+> `dominantModel` 和 `estSteps` 均通过 `globalState` 持久化，跨重启保留。
+
+### 6. userInput.text 不存在
+
+**现象**：`step.userInput.text` 返回 `undefined`
+**正确路径**：`step.userInput.items[0].text`
+**说明**：`items` 是数组，通常只有一个元素
+
+### 7. plannerResponse.text 不存在
+
+**现象**：`step.plannerResponse.text` 返回 `undefined`
+**正确路径**：`.response` 或 `.modifiedResponse`
+**说明**：AI 仅发工具调用时 `response` 为空字符串或不存在
+
+### 8. thinkingDuration 是字符串
+
+**格式**：`"2.780691100s"` — 纳秒级精度
+**解析**：`parseFloat(str.replace('s',''))` → 秒数
+
+### 9. stopReason 实时不可靠
+
+**现象**：流式输出中 `plannerResponse.stopReason` 为 `undefined`
+**原因**：LS 在模型输出完成前不设置 `stopReason`
+**修复**：不用 `stopReason` 判断是否有回复，直接读取 `modifiedResponse || response` 内容
+**补充**：AI 回复现在仅捕捉 80 字符短预览，不再需要精确完整回复
+
+### 10. warm-up 必须处理所有对话
+
+**现象**：长时间对话（500+ 步骤）只更新了步骤数但模型统计全 0
+**原因**：IDLE 对话在 warm-up 时被设为 `processedIndex = stepCount`（跳过所有步骤）
+**修复**：warm-up 对所有对话（含 IDLE）都拉取并处理步骤
+
+### 11. toggle 事件绑定错误
+
+**现象**：点击切换开关无反应
+**原因**：`change` 事件绑在 `<label>` 上，但 `change` 只在 `<input>` 上触发
+**修复**：通过 `querySelector('input[type="checkbox"]')` 找到内部 checkbox 绑定
 
 ### 12. 增量步骤捕获 bug（已修复）
 
@@ -569,149 +730,3 @@ if (currSteps <= entry.processedIndex) { continue; }
 | `cbAllZero` | conversationBreakdown 有条目但 token 全为 0（脏数据） |
 
 **教训**：每次新增持久化字段时，必须同步添加迁移检测条件。第三个条件（`cbAllZero`）是因为首次迁移时用了错误的字段路径（#23），产生了全 0 的脏数据，修复后需要检测并清除
-
----
-
-## GM Data 基础设施（v1.12.2 新增）
-
-### 27. GetCascadeTrajectoryGeneratorMetadata — 轻量 RPC 端点
-
-**用途**：获取对话中每次 LLM 调用的精确数据，无需拉取完整 trajectory 或步骤数据。
-
-**请求**：`{ cascadeId }` — 只需对话 ID
-
-**返回 `generatorMetadata[]` 结构**：
-
-```
-generatorMetadata[i] = {
-  stepIndices: [4, 5, 6, ...],          // 该次 LLM 调用产生的步骤索引
-  chatModel: {
-    responseModel: "claude-opus-4-6-thinking",  // 真实模型名
-    usage: {
-      inputTokens:        12345,
-      outputTokens:        2345,
-      cacheReadTokens:    75000,         // 缓存读取（通常是 input 的 ~6 倍）
-      cacheCreationTokens:  5000,        // 缓存写入
-      thinkingOutputTokens: 1200,        // 思考 token（Gemini 独有）
-      apiProvider: "VERTEX_AI",          // API 路由
-    },
-    timeToFirstToken:  "3034567890",     // TTFT 纳秒
-    streamingDuration: "11090000000",    // 流式传输纳秒
-    consumedCredits: [{ creditAmount: 10, ... }],
-    completionConfig: { temperature: 0.4 },
-  },
-  chatStartMetadata: {
-    contextWindowMetadata: {
-      estimatedTokensUsed: 45000,        // LS 侧精确上下文用量
-      tokenBreakdown: [                  // 按来源分类的 token 分拆
-        { section: "system_prompt", tokens: 10000 },
-        { section: "conversation",  tokens: 35000 },
-      ],
-    },
-    timeSinceLastInvocation: "15000000000",  // 调用间隔纳秒
-    systemPromptCache: { contentChecksum: "abc123" },
-  },
-  hasError: false,
-}
-```
-
-**覆盖率实测**（3 个对话）：
-
-| 对话 | 总步数 | GM 调用 | 覆盖步数 | 覆盖率 |
-|---|---|---|---|---|
-| Android App Adaptation | 1349 | 381 | 904 | 67.0% |
-| Analyzing Model Capture Fixes | 1266 | 341 | 830 | 65.6% |
-| Refining Activity Panel | 938 | 256 | 620 | 66.1% |
-
-**覆盖率未达 100% 是正常的**——用户输入、工具执行、检查点恢复步骤不产生 LLM 调用，因此没有 `generatorMetadata`。
-
-### 28. responseModel vs generatorModel — 模型名称精度差异
-
-| 字段 | 来源 | 值 | 精度 |
-|---|---|---|---|
-| `step.metadata.generatorModel` | GetCascadeTrajectorySteps | `MODEL_PLACEHOLDER_M26` | ❌ 占位符 |
-| `chatModel.responseModel` | GetCascadeTrajectoryGeneratorMetadata | `claude-opus-4-6-thinking` | ✅ 真实模型名 |
-
-**教训**：如需精确模型名（如计费），必须使用 `generatorMetadata` 而非 step metadata。
-
-### 29. consumedCredits 积分计算规则
-
-**实测数据**（2026-03-21）：
-
-| responseModel | creditAmount |
-|---|---|
-| `claude-opus-4-6-thinking` | **10** |
-| `claude-3.5-sonnet` | **6** |
-| `gemini-2.5-flash-thinking` | **0** |
-
-**注**：`creditAmount` 表示该次 LLM 调用消耗的积分数。Gemini 模型免费（0），Claude Opus 最高（10）。
-
-### 30. 费用估算设计
-
-`pricing-store.ts` 中内置 `DEFAULT_PRICING` 常量，格式为 USD per 1 million tokens：
-
-```typescript
-// pricing-store.ts
-export const DEFAULT_PRICING: Record<string, ModelPricing> = {
-  'claude-opus-4-6':   { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25, thinking: 25 },
-  'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
-  'gpt-oss-120b':      { input: 0.09, output: 0.36, ... },
-  'gemini-3.1-pro':    { input: 2, output: 12, ... },
-  'gemini-3-flash':    { input: 0.50, output: 3, ... },
-};
-```
-
-**价格匹配逻辑** — `findPricing()` 三级匹配：
-
-1. **精确匹配**：`responseModel === key`
-2. **前缀匹配**：`responseModel.startsWith(key)` — 覆盖像 `claude-opus-4-6-thinking` 匹配 `claude-opus-4-6`、`gemini-3.1-pro-high` 匹配 `gemini-3.1-pro` 的情况
-3. **子串匹配**：`responseModel.includes(key)` — 兜底
-
-**费用计算**在 Pricing 标签页的 `pricing-panel.ts` 中展示（从 `gm-panel.ts` 迁移）。用户可通过 Pricing 标签页的可编辑价格表自定义价格，覆盖 `DEFAULT_PRICING` 的值，并通过 `globalState` 持久化。
-
-### 31. cacheCreationTokens vs cacheReadTokens 的区别
-
-| 字段 | 含义 | 典型值 | 计费影响 |
-|---|---|---|---|
-| `cacheReadTokens` | 从缓存中读取已有内容的 token 数 | 高（是 input 的 ~6 倍） | 价格最低（input 的 1/8） |
-| `cacheCreationTokens` | 首次写入缓存的 token 数 | 仅在缓存未命中时产生 | 价格最高（input 的 1.25 倍） |
-
-实测缓存命中率 ~95.2%——绝大多数调用走 cacheRead（便宜），仅极少数触发 cacheCreation（昂贵）。
-
-### 32. GM 数据归档与额度重置清零
-
-**问题**：`gmTracker` 和 `lastGMSummary` 在额度重置时从不清零。每次 `onQuotaReset` → `dailyStore.addCycle()` 都写入相同的完整 GM 数据，导致日历中出现重复记录。
-
-**修复**（v1.12.3）：
-
-```
-额度重置触发 (onQuotaReset)
-  ├─ activityTracker.archiveAndReset()       ← Activity 归档 + 清零
-  ├─ pricingStore.calculateCosts(lastGMSummary)
-  │   └─ 提取 costPerModel: Record<string, number>
-  ├─ dailyStore.addCycle(archive, lastGMSummary, costTotal, costPerModel)
-  │   └─ 写入 cycle.gmModelStats (GMModelCycleStats[])
-  │       ├─ calls, credits, avgTTFT, cacheHitRate
-  │       ├─ inputTokens, outputTokens, thinkingTokens
-  │       └─ estimatedCost (from costPerModel)
-  ├─ gmTracker.reset()                       ← GM 清零
-  ├─ lastGMSummary = null                    ← 缓存清零
-  └─ context.globalState.update(gmTrackerState) ← 持久化空状态
-```
-
-**关键接口**：
-
-```typescript
-interface GMModelCycleStats {
-  calls: number;
-  credits: number;
-  inputTokens: number;
-  outputTokens: number;
-  thinkingTokens: number;
-  avgTTFT: number;
-  cacheHitRate: number;
-  estimatedCost?: number;   // USD, from pricingStore.calculateCosts()
-}
-```
-
-**GM 持久化**：`GMTracker.serialize()` 剥离 `calls[]` 数组（537KB → ~1.4KB），只保留 model-level 聚合数据。`restore()` 恢复 `_lastSummary` + baseline stubs。

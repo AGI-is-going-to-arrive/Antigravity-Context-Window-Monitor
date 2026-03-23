@@ -1,47 +1,86 @@
-// ─── Activity Tab Content Builder ────────────────────────────────────────────
-// Provides HTML + CSS for the "Activity" tab within the main monitor panel.
+// ─── GM Data Tab Content Builder ─────────────────────────────────────────────
+// Provides HTML + CSS for the unified "GM Data" tab within the main monitor panel.
+// Merges Activity tracking data with GM precision data into a single view.
 // This module is a content-only builder — the panel itself is managed by webview-panel.ts.
 
 import { tBi } from './i18n';
 import { ActivitySummary, ActivityArchive, ModelActivityStats, CheckpointSnapshot, ConversationBreakdown } from './activity-tracker';
 import { esc, formatShortTime as formatTime } from './webview-helpers';
-import type { GMModelStats } from './gm-tracker';
+import type { GMSummary, GMModelStats, GMConversationData } from './gm-tracker';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Build the complete HTML content for the Activity tab pane.
+ * Build the complete HTML content for the unified GM Data tab.
+ * Merges Activity tracking (timeline, tools, distribution) with GM precision data
+ * (performance, cache efficiency, context growth, conversations).
  */
-export function buildActivityTabContent(
+export function buildGMDataTabContent(
     summary: ActivitySummary | null,
-    _configs?: unknown,
-    _quotaTracker?: unknown,
-    _archives?: ActivityArchive[],
+    gmSummary: GMSummary | null,
 ): string {
-    if (!summary) {
-        return `<p class="empty-msg">${tBi('Waiting for activity data...', '等待活动数据...')}</p>`;
+    if (!summary && (!gmSummary || gmSummary.totalCalls === 0)) {
+        return `<p class="empty-msg">${tBi(
+            'Waiting for data... GM and Activity information will appear automatically.',
+            '正在等待数据... GM 和活动信息将自动显示。',
+        )}</p>`;
     }
 
-    const distHtml = buildDistribution(summary);
-    const toolsHtml = buildToolRanking(summary);
-    const midSection = (distHtml || toolsHtml) ? `<div class="act-two-col">
-        ${toolsHtml ? `<div class="act-col">${toolsHtml}</div>` : ''}
-        ${distHtml ? `<div class="act-col">${distHtml}</div>` : ''}
-    </div>` : '';
+    const parts: string[] = [];
 
-    return [
-        buildSummaryBar(summary),
-        buildTimeline(summary),
-        buildModelCards(summary),
-        midSection,
-    ].join('');
+    // ── Summary Bar (merged activity + GM)
+    parts.push(buildSummaryBar(summary, gmSummary));
+
+    // ── Recent Timeline (activity)
+    if (summary) { parts.push(buildTimeline(summary)); }
+
+    // ── Model Cards (merged activity counts + GM precision)
+    parts.push(buildModelCards(summary, gmSummary));
+
+    // ── Tool Ranking + Model Distribution (activity)
+    if (summary) {
+        const distHtml = buildDistribution(summary);
+        const toolsHtml = buildToolRanking(summary);
+        if (distHtml || toolsHtml) {
+            parts.push(`<div class="act-two-col">
+                ${toolsHtml ? `<div class="act-col">${toolsHtml}</div>` : ''}
+                ${distHtml ? `<div class="act-col">${distHtml}</div>` : ''}
+            </div>`);
+        }
+    }
+
+    // ── Performance + Cache Efficiency (GM)
+    if (gmSummary && gmSummary.totalCalls > 0) {
+        const perf = buildPerformanceChart(gmSummary);
+        const cache = buildCacheEfficiency(gmSummary);
+        if (perf || cache) {
+            parts.push(`<div class="act-two-col">
+                ${perf ? `<div class="act-col">${perf}</div>` : ''}
+                ${cache ? `<div class="act-col">${cache}</div>` : ''}
+            </div>`);
+        }
+    }
+
+    // ── Context Growth + Conversations (GM)
+    if (gmSummary && gmSummary.totalCalls > 0) {
+        const ctx = buildContextGrowth(gmSummary);
+        const conv = buildConversations(gmSummary);
+        if (ctx || conv) {
+            parts.push(`<div class="act-two-col">
+                ${ctx ? `<div class="act-col">${ctx}</div>` : ''}
+                ${conv ? `<div class="act-col">${conv}</div>` : ''}
+            </div>`);
+        }
+    }
+
+    return parts.join('');
 }
 
 /**
  * Return CSS styles specific to the Activity tab.
  * Merged into the main panel's <style> block by webview-panel.ts.
  */
-export function getActivityTabStyles(): string {
+export function getGMDataTabStyles(): string {
     return `
     /* ─── Activity Tab: Summary Bar ─── */
     .act-summary-bar {
@@ -401,13 +440,50 @@ export function getActivityTabStyles(): string {
     .act-conv-stats { margin-left: auto; display: flex; gap: var(--space-3); white-space: nowrap; }
     .act-conv-stats span { font-weight: 500; }
 
+    /* ─── GM Precision Sections ─── */
+    .gm-perf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-2); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-3); margin-bottom: var(--space-4); }
+    .gm-perf-item { display: flex; flex-direction: column; gap: 2px; padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04); }
+    .gm-perf-label { font-size: 0.72em; color: var(--color-text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+    .gm-perf-val { font-weight: 700; font-size: 1.05em; }
+    .gm-perf-sub { font-size: 0.75em; color: var(--color-text-dim); }
+    .gm-cache-bar-bg { height: 20px; background: rgba(255,255,255,0.06); border-radius: var(--radius-sm); overflow: hidden; margin-bottom: var(--space-1); }
+    .gm-cache-bar { height: 100%; border-radius: var(--radius-sm); background: linear-gradient(90deg, #3b82f6, #60a5fa); transition: width 0.3s cubic-bezier(.4,0,.2,1); }
+    .gm-badge-real { display: inline-block; font-size: 0.65em; padding: 1px var(--space-1); border-radius: var(--radius-sm); background: rgba(52,211,153,0.15); color: #34d399; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; vertical-align: middle; margin-left: var(--space-1); }
+    .gm-provider-tag { display: inline-block; font-size: 0.72em; padding: 1px var(--space-1); border-radius: var(--radius-sm); background: rgba(96,165,250,0.1); color: var(--color-info); margin-top: var(--space-1); }
+
     `;
 }
 
 // ─── Section Builders ────────────────────────────────────────────────────────
 
-function buildSummaryBar(s: ActivitySummary): string {
-    const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null): string {
+    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+
+    // When no activity data, show GM-only summary
+    if (!s && gm) {
+        const models = Object.keys(gm.modelBreakdown).length;
+        return `<div class="act-summary-bar">
+            <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span><span class="act-stat-val">${gm.totalCalls}</span><span class="act-stat-label">${tBi('Calls', '调用')}</span></div>
+            <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></span><span class="act-stat-val">${models}</span><span class="act-stat-label">${tBi('Models', '模型')}</span></div>
+            <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M5 10l7 7 7-7"/></svg></span><span class="act-stat-val">${fmt(gm.totalInputTokens)}</span><span class="act-stat-label">${tBi('In', '输入')}</span></div>
+            <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9M5 14l7-7 7 7"/></svg></span><span class="act-stat-val">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
+            <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg></span><span class="act-stat-val">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>
+            ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="act-stat-val">${gm.totalCredits}</span><span class="act-stat-label">Credits</span></div>` : ''}
+        </div>`;
+    }
+
+    if (!s) { return ''; }
+
+    // GM-specific stats to prepend (total calls, steps covered, models count)
+    let gmStatCards = '';
+    if (gm && gm.totalCalls > 0) {
+        const models = Object.keys(gm.modelBreakdown).length;
+        gmStatCards = `
+        <div class="act-stat" data-tooltip="${tBi('Total LLM API calls (GM precise)', 'LLM API 调用总次数（GM 精确）')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span><span class="act-stat-val">${gm.totalCalls} <span class="gm-badge-real">GM</span></span><span class="act-stat-label">${tBi('Calls', '调用')}</span></div>
+        <div class="act-stat" data-tooltip="${tBi('Steps precisely attributed to models', '精确归属到模型的步骤数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span><span class="act-stat-val">${gm.totalStepsCovered}</span><span class="act-stat-label">${tBi('Steps', '步骤')}</span></div>
+        <div class="act-stat" data-tooltip="${tBi('Number of distinct models used', '使用的不同模型数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></span><span class="act-stat-val">${models}</span><span class="act-stat-label">${tBi('Models', '模型')}</span></div>
+        `;
+    }
 
     // Session duration
     let durText = '';
@@ -442,6 +518,7 @@ function buildSummaryBar(s: ActivitySummary): string {
 
     return `
     <div class="act-summary-bar">
+        ${gmStatCards}
         ${durText ? `<div class="act-stat" data-tooltip="${tBi('Total time since extension activation', '从插件激活起累计的会话时长')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span><span class="act-stat-val">${durText}</span><span class="act-stat-label">${tBi('Session', '会话')}</span></div>` : ''}
         <div class="act-stat" data-tooltip="${tBi('Total user messages sent', '用户发送的消息总数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span><span class="act-stat-val">${s.totalUserInputs}</span><span class="act-stat-label">${tBi('Msgs', '消息')}</span></div>
         <div class="act-stat" data-tooltip="${tBi('AI reasoning/reply steps', 'AI 推理回复步数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.2 6H8.2C6.3 13.7 5 11.5 5 9a7 7 0 0 1 7-7z"/><path d="M9 17h6M10 21h4"/></svg></span><span class="act-stat-val">${s.totalReasoning}</span><span class="act-stat-label">${tBi('Think', '推理')}</span></div>
@@ -481,8 +558,20 @@ function buildToolRanking(s: ActivitySummary): string {
 
 
 
-function buildModelCards(s: ActivitySummary): string {
-    const entries = Object.entries(s.modelStats).sort((a, b) => b[1].totalSteps - a[1].totalSteps);
+function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): string {
+    const actEntries = s ? Object.entries(s.modelStats).sort((a, b) => b[1].totalSteps - a[1].totalSteps) : [];
+    // Collect model names that exist only in GM data (not in Activity)
+    const actNames = new Set(actEntries.map(([n]) => n));
+    const gmOnlyEntries: [string, GMModelStats][] = [];
+    if (gm) {
+        for (const [name, ms] of Object.entries(gm.modelBreakdown)) {
+            if (!actNames.has(name) && ms.callCount > 0) {
+                gmOnlyEntries.push([name, ms]);
+            }
+        }
+        gmOnlyEntries.sort((a, b) => b[1].stepsCovered - a[1].stepsCovered);
+    }
+    const entries = actEntries;
     const ICONS = {
         think: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.2 6H8.2C6.3 13.7 5 11.5 5 9a7 7 0 0 1 7-7z"/><path d="M9 17h6M10 21h4"/></svg>`,
         tool: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
@@ -493,7 +582,7 @@ function buildModelCards(s: ActivitySummary): string {
         sum: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
         coin: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`
     };
-    if (entries.length === 0) { return ''; }
+    if (entries.length === 0 && gmOnlyEntries.length === 0) { return ''; }
 
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
     const fmtMs = (ms: number) => ms <= 0 ? '-' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
@@ -511,8 +600,10 @@ function buildModelCards(s: ActivitySummary): string {
     }
 
     html += `<div class="act-cards-grid">`;
-    // Get GM model breakdown if available
-    const gmBreak = s.gmModelBreakdown;
+    // Prefer full GMSummary.modelBreakdown (has responseModel/provider/streaming)
+    // Fall back to ActivitySummary.gmModelBreakdown (simpler subset)
+    const gmBreak: Record<string, GMModelStats> | null = gm?.modelBreakdown ?? s?.gmModelBreakdown ?? null;
+    const fmtSec = (n: number) => n <= 0 ? '-' : n < 1 ? `${(n * 1000).toFixed(0)}ms` : `${n.toFixed(2)}s`;
     for (const [name, ms] of entries) {
         const isCheckpointOnly = ms.reasoning === 0 && ms.toolCalls === 0 && ms.checkpoints > 0 && ms.estSteps === 0;
         const avgThink = ms.reasoning > 0 ? fmtMs(Math.round(ms.thinkingTimeMs / ms.reasoning)) : '-';
@@ -527,22 +618,33 @@ function buildModelCards(s: ActivitySummary): string {
             ? tBi(`${actualSteps}+${ms.estSteps} steps`, `${actualSteps}+${ms.estSteps} 步`)
             : tBi(`${actualSteps} steps`, `共 ${actualSteps} 步`);
 
-        // GM per-model precision data
+        // GM per-model precision data (prefer full GMModelStats when available)
         let gmSection = '';
+        let gmFooterTags = '';
         if (gmBreak) {
-            // Direct key match — both sides use getModelDisplayName()
             const gmStats = gmBreak[name];
             if (gmStats && gmStats.callCount > 0) {
-                const gmTag = '<span class="act-badge" style="color:var(--color-ok)">GM</span>';
+                const gmTag = ' <span class="gm-badge-real">GM</span>';
                 gmSection = `
                 <div class="act-card-divider"></div>
-                <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val">${gmStats.avgTTFT.toFixed(1)}s ${gmTag}</span></div>
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val">${fmt(gmStats.totalInputTokens)} ${gmTag}</span></div>
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(gmStats.totalOutputTokens)} ${gmTag}</span></div>
-                ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gmStats.totalCacheRead)} ${gmTag}</span></div>` : ''}
-                ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>Credits</span></span><span class="val">${gmStats.totalCredits.toFixed(1)} ${gmTag}</span></div>` : ''}
-                ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gmStats.cacheHitRate * 100).toFixed(0)}% ${gmTag}</span></div>` : ''}
+                <div class="act-card-row"><span>${ICONS.tool} <span>${tBi('Calls', '调用')}</span></span><span class="val">${gmStats.callCount}${gmTag}</span></div>
+                <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val">${fmtSec(gmStats.avgTTFT)}${gmTag}</span></div>
+                ${'avgStreaming' in gmStats && gmStats.avgStreaming > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Avg Stream', '平均流速')}</span></span><span class="val">${fmtSec(gmStats.avgStreaming)}${gmTag}</span></div>` : ''}
+                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val">${fmt(gmStats.totalInputTokens)}${gmTag}</span></div>
+                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(gmStats.totalOutputTokens)}${gmTag}</span></div>
+                ${'totalThinkingTokens' in gmStats && gmStats.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val">${fmt(gmStats.totalThinkingTokens)}${gmTag}</span></div>` : ''}
+                ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gmStats.totalCacheRead)}${gmTag}</span></div>` : ''}
+                ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>Credits</span></span><span class="val">${gmStats.totalCredits.toFixed(1)}${gmTag}</span></div>` : ''}
+                ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gmStats.cacheHitRate * 100).toFixed(0)}%${gmTag}</span></div>` : ''}
                 `;
+                // Footer tags from full GMModelStats (responseModel, apiProvider)
+                if ('responseModel' in gmStats && gmStats.responseModel) {
+                    gmFooterTags += `<span class="act-tool-tag">${esc(gmStats.responseModel)}</span>`;
+                }
+                if ('apiProvider' in gmStats && gmStats.apiProvider) {
+                    const providerShort = gmStats.apiProvider.replace('API_PROVIDER_', '').replace(/_/g, ' ');
+                    gmFooterTags += `<span class="gm-provider-tag">${esc(providerShort)}</span>`;
+                }
             }
         }
 
@@ -562,13 +664,38 @@ function buildModelCards(s: ActivitySummary): string {
                 ${ms.toolCalls > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Tool', '工具')}</span></span><span class="val">${fmtMs(ms.toolTimeMs)}</span></div>` : ''}
                 ${gmSection}
             </div>
-            ${toolList ? `<div class="act-card-footer">${toolList}</div>` : ''}
+            ${(toolList || gmFooterTags) ? `<div class="act-card-footer">${gmFooterTags}${toolList}</div>` : ''}
+        </div>`;
+    }
+    // GM-only models: models in GM data but not in Activity modelStats
+    for (const [name, gms] of gmOnlyEntries) {
+        const providerShort = gms.apiProvider ? gms.apiProvider.replace('API_PROVIDER_', '').replace(/_/g, ' ') : '';
+        html += `
+        <div class="act-model-card">
+            <div class="act-card-header">${esc(name)} <span class="act-badge">${gms.callCount} ${tBi('calls', '调用')}</span> <span class="gm-badge-real">GM</span></div>
+            <div class="act-card-body">
+                <div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Steps', '步骤')}</span></span><span class="val">${gms.stepsCovered}</span></div>
+                <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val">${fmtSec(gms.avgTTFT)}</span></div>
+                ${'avgStreaming' in gms && gms.avgStreaming > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Avg Stream', '平均流速')}</span></span><span class="val">${fmtSec(gms.avgStreaming)}</span></div>` : ''}
+                <div class="act-card-divider"></div>
+                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val">${fmt(gms.totalInputTokens)}</span></div>
+                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(gms.totalOutputTokens)}</span></div>
+                ${'totalThinkingTokens' in gms && gms.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val">${fmt(gms.totalThinkingTokens)}</span></div>` : ''}
+                ${gms.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gms.totalCacheRead)}</span></div>` : ''}
+                ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>Credits</span></span><span class="val">${gms.totalCredits.toFixed(1)}</span></div>` : ''}
+                ${gms.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gms.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
+            </div>
+            <div class="act-card-footer">
+                ${'responseModel' in gms && gms.responseModel ? `<span class="act-tool-tag">${esc(gms.responseModel)}</span>` : ''}
+                ${providerShort ? `<span class="gm-provider-tag">${esc(providerShort)}</span>` : ''}
+                <span class="act-tool-tag">${tBi('Cache', '缓存')} ${(gms.cacheHitRate * 100).toFixed(0)}%</span>
+            </div>
         </div>`;
     }
     html += `</div>`;
 
     // Sub-agent token display
-    if (s.subAgentTokens && s.subAgentTokens.length > 0) {
+    if (s && s.subAgentTokens && s.subAgentTokens.length > 0) {
         html += `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4v2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h2V6a4 4 0 0 1 4-4z"/><circle cx="12" cy="15" r="2"/></svg>${tBi('Sub-Agent Tokens', '子智能体消耗')}</h2>`;
         html += `<div class="act-cards-grid">`;
         for (const sa of s.subAgentTokens) {
@@ -713,3 +840,61 @@ function buildDistribution(s: ActivitySummary): string {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 // esc() and formatTime() are now imported from webview-helpers.ts
+
+// ─── GM Precision Section Builders (migrated from gm-panel.ts) ──────────────
+
+function buildPerformanceChart(s: GMSummary): string {
+    const entries = Object.entries(s.modelBreakdown).filter(([, ms]) => ms.avgTTFT > 0);
+    if (entries.length === 0) { return ''; }
+    const fmtSec = (n: number) => n <= 0 ? '-' : `${n.toFixed(2)}s`;
+    let html = `<h2 class="act-section-title">${tBi('Performance Baseline', '性能基线')}</h2><div class="gm-perf-grid">`;
+    for (const [name, ms] of entries) {
+        html += `<div class="gm-perf-item"><span class="gm-perf-label">${esc(name)}</span><span class="gm-perf-val">${fmtSec(ms.avgTTFT)}</span><span class="gm-perf-sub">TTFT avg (${fmtSec(ms.minTTFT)}–${fmtSec(ms.maxTTFT)})</span></div>`;
+        html += `<div class="gm-perf-item"><span class="gm-perf-label">${esc(name)} ${tBi('Stream', '流速')}</span><span class="gm-perf-val">${fmtSec(ms.avgStreaming)}</span><span class="gm-perf-sub">${ms.callCount} ${tBi('samples', '样本')}</span></div>`;
+    }
+    html += `</div>`;
+    return html;
+}
+
+function buildCacheEfficiency(s: GMSummary): string {
+    const entries = Object.entries(s.modelBreakdown).filter(([, ms]) => ms.totalInputTokens > 0);
+    if (entries.length === 0) { return ''; }
+    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+    let html = `<h2 class="act-section-title">${tBi('Cache Efficiency', '缓存效率')}</h2>`;
+    for (const [name, ms] of entries) {
+        const ratio = ms.totalInputTokens > 0 ? ms.totalCacheRead / ms.totalInputTokens : 0;
+        const pct = Math.min(ratio * 10, 100);
+        html += `<div style="margin-bottom:var(--space-3)"><div style="display:flex;justify-content:space-between;font-size:0.85em;margin-bottom:var(--space-1)"><span>${esc(name)}</span><span style="color:var(--color-info);font-weight:600">${ratio.toFixed(1)}× ${tBi('cache ratio', '缓存倍率')}</span></div><div class="gm-cache-bar-bg"><div class="gm-cache-bar" style="width:${pct.toFixed(1)}%"></div></div><div style="display:flex;justify-content:space-between;font-size:0.75em;color:var(--color-text-dim)"><span>${tBi('Input', '输入')}: ${fmt(ms.totalInputTokens)}</span><span>${tBi('Cache Read', '缓存读取')}: ${fmt(ms.totalCacheRead)}</span></div></div>`;
+    }
+    return html;
+}
+
+function buildContextGrowth(s: GMSummary): string {
+    const data = s.contextGrowth;
+    if (!data || data.length < 2) { return ''; }
+    const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+    const W = 380, H = 160, PAD = 6;
+    const maxTok = Math.max(...data.map(d => d.tokens));
+    if (maxTok <= 0) { return ''; }
+    const xStep = (W - PAD * 2) / (data.length - 1);
+    const yScale = (v: number) => H - PAD - ((v / maxTok) * (H - PAD * 2));
+    const points = data.map((d, i) => `${PAD + i * xStep},${yScale(d.tokens)}`).join(' ');
+    const areaPoints = `${PAD},${H - PAD} ${points} ${PAD + (data.length - 1) * xStep},${H - PAD}`;
+    return `<h2 class="act-section-title">${tBi('Context Growth', '上下文增长')} <span class="gm-badge-real">${tBi('Per-Call', '每次调用')}</span></h2><div class="act-trend-container"><svg class="act-trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="gmTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.5"/><stop offset="100%" stop-color="#8b5cf6" stop-opacity="0.1"/></linearGradient></defs><polygon points="${areaPoints}" fill="url(#gmTrendFill)"/><polyline points="${points}" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linejoin="round"/></svg><div class="act-trend-labels"><span>${fmt(data[0].tokens)}</span><span>${data.length} ${tBi('calls', '调用')}</span><span>${fmt(data[data.length - 1].tokens)}</span></div></div>`;
+}
+
+function buildConversations(s: GMSummary): string {
+    const convs = s.conversations.filter(c => c.calls.length > 0);
+    if (convs.length === 0) { return ''; }
+    const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+    let html = `<h2 class="act-section-title">${tBi('Conversations', '对话分布')}</h2><div class="act-conv-list">`;
+    for (const c of convs) {
+        const title = c.title.length > 30 ? c.title.substring(0, 27) + '...' : c.title;
+        const covPct = (c.coverageRate * 100).toFixed(0);
+        let totalIn = 0;
+        for (const call of c.calls) { totalIn += call.inputTokens; }
+        html += `<div class="act-conv-item"><span class="act-conv-id" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" data-tooltip="${esc(c.title)}">${esc(title)}</span><span class="act-conv-stats"><span>${c.calls.length} ${tBi('calls', '调用')}</span><span>${covPct}% ${tBi('coverage', '覆盖')}</span><span>${fmt(totalIn)} in</span></span></div>`;
+    }
+    html += `</div>`;
+    return html;
+}

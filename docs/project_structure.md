@@ -17,25 +17,24 @@ antigravity-context-monitor/
 │   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
 │   ├── models.ts                 # 模型配置、上下文限额、显示名称
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
-│   ├── statusbar.ts              # 状态栏 UI（StatusBarManager + ActivityStatusBarItem）
+│   ├── statusbar.ts              # 状态栏 UI（StatusBarManager）
 │   ├── webview-panel.ts          # WebView 面板框架（标签切换 + 消息通信）
 │   ├── webview-styles.ts         # WebView 面板的 CSS 样式
-│   ├── webview-script.ts         # WebView 客户端 JS（标签切换、折叠面板等）
+│   ├── webview-script.ts         # WebView 客户端 JS（标签切换、折叠面板、开发工具按钮等）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标
 │   ├── webview-monitor-tab.ts    # 监控标签页 HTML 生成
-│   ├── webview-settings-tab.ts   # 设置标签页 HTML 生成
+│   ├── webview-settings-tab.ts   # 设置标签页 HTML 生成（含 Debug/Testing 区块）
 │   ├── webview-profile-tab.ts    # 个人资料标签页 HTML 生成
 │   ├── webview-history-tab.ts    # 额度追踪标签页 HTML（追踪开关 + 活跃/已完成时间条）
-│   ├── activity-panel.ts         # 活动面板 HTML 片段生成
-│   ├── gm-tracker.ts             # GM 数据层：RPC + 解析 + 聚合 + 缓存
-│   ├── gm-panel.ts               # GM 数据面板 HTML（性能基线 + 缓存效率 + 上下文增长）
+│   ├── activity-panel.ts         # GM Data 统一标签页 HTML（合并 Activity + GM 精确数据）
+│   ├── gm-tracker.ts             # GM 数据层：RPC + 解析 + 聚合 + 缓存 + 周期基线 + call baselines
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算
-│   ├── pricing-panel.ts          # 价格标签页 HTML（模型 DNA + 成本可视化 + 费用估算 + 可编辑价格）
+│   ├── pricing-panel.ts          # 价格标签页 HTML（模型 DNA + 成本可视化 + 费用估算 + 可编辑价格 + 默认价格表）
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity/GM/Cost + 90 天自动清理
 │   ├── webview-calendar-tab.ts   # 日历标签页 HTML（月历网格 + 可展开日详情 + 汇总）
 │   ├── i18n.ts                   # 国际化系统（中 / 英 / 双语）
-│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（批量回调 + 按模型组归档）
+│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（批量回调 + 同池去重 + 按模型组归档）
 │   ├── activity-tracker.ts       # 模型活动追踪（推理、工具、Token、防抖归档）
 │   ├── discovery.test.ts         # discovery 单元测试
 │   ├── statusbar.test.ts         # statusbar 单元测试
@@ -51,11 +50,13 @@ antigravity-context-monitor/
 
 ├── out/                          # tsc 编译输出（JS）
 ├── package.json                  # 扩展清单、命令、配置项
+├── package-lock.json             # 依赖锁定文件
 ├── tsconfig.json                 # TypeScript 编译配置
 ├── vitest.config.ts              # 测试框架配置
 ├── README.md                     # 英文文档
 ├── readme_CN.md                  # 中文文档
-└── CHANGELOG.md                  # 变更日志
+├── CHANGELOG.md                  # 变更日志
+└── LICENSE                       # 许可证
 ```
 
 ---
@@ -73,10 +74,12 @@ Extension lifecycle management hub.
 | `activate()` / `deactivate()` | 初始化所有子系统、注册命令、清理资源；恢复 GMTracker 持久化状态 |
 | 全局轮询 / Global poll | `pollContextUsage()` 以可配置间隔执行（默认 5s） |
 | Activity 独立轮询 | `pollActivity()` 独立 3 秒循环，变化时立即刷新 UI；30s 节流同步保存 GM 状态 |
-| 级联追踪 / Cascade tracking | 按优先级选择活跃会话：RUNNING → stepCount 变化 → 新会话 → 最近修改 |
+| 级联追踪 / Cascade tracking | 按优先级选择活跃会话：RUNNING(本工作区) → RUNNING(无工作区) → stepCount 变化 → 新会话 → 最近修改 |
 | 压缩检测 / Compression | 双层检测：checkpoint inputTokens 下降 + 跨轮询 contextUsed 比较 |
 | 额度重置归档 / Quota reset | 归档 Activity + GM modelBreakdown + per-model 费用 → 清零 GM（`gmTracker.reset()` + `lastGMSummary = null`）|
-| 指数退避 / Backoff | LS 连接失败时 5s → 10s → 20s → 60s |
+| 指数退避 / Backoff | LS 连接失败时 5s → 10s → 20s → 40s → 60s（上限） |
+| 开发命令 / Dev commands | `devSimulateReset`：模拟完整额度重置周期（归档 → 基线重置）；`devClearGM`：核重置 GM 数据和基线 |
+| 即时首轮询 / Immediate first poll | `activate()` 末尾立即触发 `pollContextUsage()` → `pollActivity()` 链，将面板数据就绪时间从 ~6s 降至 ~1-2s |
 
 ---
 
@@ -91,6 +94,8 @@ Cross-platform Antigravity Language Server process locator.
 | macOS | `ps -ax` | `lsof` |
 | Linux | `ps -ax` | `lsof` → `ss` fallback |
 | Windows | `wmic` → `Get-CimInstance` fallback | `netstat -ano` |
+| WSL | Windows 端工具（interop） | `netstat.exe`（interop） |
+| Remote-WSL (v1.13.0) | `wsl -d <distro> -- ps aux` | `wsl -d <distro> -- ss -tlnp` |
 
 核心解析函数 `buildExpectedWorkspaceId()`、`extractPid()`、`extractCsrfToken()` 等均作为独立导出函数，支持直接单元测试。
 
@@ -108,9 +113,9 @@ Generic Connect-RPC caller handling HTTPS/HTTP transport, CSRF authentication, A
 
 ### 📊 tracker.ts — Token 计算 + 数据获取
 
-最大的数据处理模块。
+核心数据处理模块：对话列表获取、Token 计算、上下文用量组装。
 
-The main data processing module.
+Core data processing module: trajectory listing, token computation, context usage assembly.
 
 | 函数 / Function | 说明 / Description |
 |---|---|
@@ -134,31 +139,30 @@ Model context limits, display names (i18n-aware), and core interface definitions
 
 | 类 / Class | 说明 / Description |
 |---|---|
-| `StatusBarManager` | 主状态栏项：上下文用量、颜色编码、额度指示、重置倒计时 |
-| `ActivityStatusBarItem` | 辅状态栏项：模型活动计数 (🧠推理 ⚡工具) |
+| `StatusBarManager` | 状态栏项：上下文用量、颜色编码、额度指示、重置倒计时 |
 
 ---
 
 ### 🖥️ webview-panel.ts — WebView 面板框架
 
-面板总框架：标签切换（Monitor / Settings / Activity / Profile / History / GM Data / Pricing / Calendar）、CSP 安全策略、消息通信。各标签内容由独立模块生成。
+面板总框架：标签切换（Monitor / Profile / GM Data / Pricing / Calendar / Quota Tracking / Settings）、消息通信。各标签内容由独立模块生成。
 
-Panel framework: tab switching (Monitor / Settings / Activity / Profile / History / GM Data / Pricing / Calendar), CSP policy, message communication. Each tab's content is generated by independent modules.
+Panel framework: tab switching (Monitor / Profile / GM Data / Pricing / Calendar / Quota Tracking / Settings), message communication. Each tab's content is generated by independent modules.
 
 #### 拆分模块 / Split Modules
 
 | 模块 / Module | 职责 / Responsibility |
 |---|---|
 | `webview-styles.ts` | CSS 样式（Design Token 体系） |
-| `webview-script.ts` | 客户端 JS（标签切换、折叠面板、交互逻辑） |
+| `webview-script.ts` | 客户端 JS（标签切换、折叠面板、交互逻辑、开发工具按钮）；增量刷新时重绑定 Copy/Pricing/SwitchTab 事件，Settings 标签排除在增量刷新之外以保留事件监听器 |
 | `webview-helpers.ts` | 共享工具函数（HTML 转义、时间格式化等） |
 | `webview-icons.ts` | 内联 SVG 图标 |
 | `webview-monitor-tab.ts` | 监控标签页 HTML |
-| `webview-settings-tab.ts` | 设置标签页 HTML |
+| `webview-settings-tab.ts` | 设置标签页 HTML（含 Debug/Testing 区块：模拟额度重置 + 核重置 GM） |
 | `webview-profile-tab.ts` | 个人资料标签页 HTML |
 | `webview-history-tab.ts` | 额度追踪标签页 HTML（追踪开关 + 活跃/已完成时间条） |
-| `gm-panel.ts` | GM Data 标签页 HTML（性能 + 缓存 + 上下文） |
-| `pricing-panel.ts` | Pricing 标签页 HTML（模型 DNA + 成本可视化 + 费用 + 可编辑价格） |
+| `activity-panel.ts` | GM Data 统一标签页 HTML（合并 Activity 时间线/工具/分布 + GM 性能/缓存/上下文/对话） |
+| `pricing-panel.ts` | Pricing 标签页 HTML（模型 DNA + 成本可视化 + 费用 + 可编辑价格 + 默认价格表） |
 | `webview-calendar-tab.ts` | Calendar 标签页 HTML（月历网格 + 日详情 + 汇总） |
 
 ---
@@ -171,20 +175,24 @@ State machine tracking quota consumption per model.
 
 ```
 IDLE (100%)
-  ├─ fraction < 1.0 ────────────> TRACKING ──耗尽──> DONE
-  └─ isUnusedModel = false ─────>    │                  │
-     (resetTime 偏离 >10min)         │                  │
-                                     │                  │
-  ↑                                  │                  │
-  └────── 额度重置 (→1.0) ──────────┘──── 额度重置 ────┘
+  ├─ Layer 1 Instant: elapsedInCycle ≥ 10min ─> TRACKING
+  ├─ Layer 2 Drift: resetTime locked ≥ 10min ─> TRACKING
+  ├─ Layer 3 Fraction: fraction < 1.0 ────────> TRACKING ──耗尽──> DONE
+  │                                                │                  │
+  ↑                                                │                  │
+  └────── 额度重置 (→1.0) ────────────────────────┘──── 额度重置 ────┘
 ```
 
-- `isUnusedModel(resetTime)` 判断 resetTime 距已知周期（5h/7d）是否超过 10 分钟容差
-- IDLE + 100% + `isUnusedModel=false`：立即创建 session 开始追踪（不等额度下降）
-- TRACKING + 100% + `lastFraction=100%`：继续追踪（不误判为重置）
+- **三层即时检测（v1.11.4）**: 无硬编码周期，动态推断 cycle 长度
+  - Layer 1: `maxTimeToResetMs - thisTimeToReset ≥ 10min` → 立即进入 tracking，startTime 回溯到周期开始
+  - Layer 2: resetTime 连续 10 分钟不变（drift < 3min 容差）→ 已使用（API 未刷新 resetTime = 锁定）
+  - Layer 3: `fraction < 1.0` → 立即进入 tracking
+- TRACKING + 100% + `lastFraction=100%`：检测 resetTime 到期或跳变 > 30min → 归档
 - TRACKING + 100% + `lastFraction<100%`：真正重置，归档 session
 - **批量回调（v1.11.6）**: `processUpdate()` 循环结束后，将本批次所有重置模型 ID 收集到 `resetModels[]` 数组，一次性触发 `onQuotaReset(resetModels)`。同配额池多模型不再各自独立触发回调。
   **Batched callback (v1.11.6)**: `processUpdate()` collects all reset model IDs into `resetModels[]` after the loop, firing `onQuotaReset(resetModels)` once. Same-pool models no longer trigger independent callbacks.
+- **同池去重（v1.13.2）**: 按 resetTime 分组识别共享配额池的模型（如 Claude Sonnet/Opus/GPT-OSS），每个池仅追踪一个代表（最低 fraction → 字母排序），避免 history 中产生重复 session。
+  **Pool deduplication (v1.13.2)**: Groups models sharing the same resetTime into pools, tracks only one representative per pool (lowest fraction, alphabetical tie-break), preventing duplicate sessions in history.
 
 额度重置时触发 `onQuotaReset(modelIds)` 回调，联动 `activity-tracker` 归档 + GM 数据归档后清零 + 费用快照。
 
@@ -200,7 +208,7 @@ Tracks model activity: reasoning count, tool call breakdown, token consumption, 
 
 | 特性 / Feature | 说明 / Description |
 |---|---|
-| 步骤分类 / Step classification | 21 种步骤类型 → reasoning / tool / user / system |
+| 步骤分类 / Step classification | 22 种步骤类型 → reasoning / tool / user / system |
 | 独立轮询 / Independent poll | 3 秒独立循环，不受全局 poll 影响 |
 | 预热 / Warm-up | 首次轮询处理所有对话历史步骤，RUNNING 对话注入最近 30 步到时间线 |
 | 增量更新 / Incremental | RUNNING 对话拉取新增步骤；检测 status 变化（IDLE→RUNNING）触发注入 |
@@ -229,27 +237,33 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | RPC 端点 | `GetCascadeTrajectoryGeneratorMetadata` — 轻量端点，只返回 generatorMetadata |
 | 解析字段 | stepIndices、responseModel、usage（含 cacheRead/cacheCreation/thinking）、TTFT、流速、积分 |
 | 聚合 | per-model `GMModelStats` + per-conversation `GMConversationData` → `GMSummary` |
-| 智能缓存 | `_cache` Map 按 cascadeId 缓存 IDLE 对话的 generatorMetadata，避免重复 RPC |
-| 持久化 / Persistence | `serialize()` 剥离 `calls[]`（体积 ~1.4KB）→ globalState、`restore()` 恢复 `_lastSummary` + baseline stubs、`getCachedSummary()` 启动即用 |
-| 额度重置清零 / Reset | `reset()` 清空缓存，配合 `extension.ts` 的 `onQuotaReset` 回调：归档后清零 GM 数据，防止跨周期重复 |
+| 智能缓存 | `_cache` Map 按 cascadeId 缓存 IDLE 对话的 generatorMetadata，避免重复 RPC；restore 后空 calls 的 IDLE 对话在首次 `fetchAll()` 时自动回填 |
+| Call Baselines（v1.13.2） | `_callBaselines` Map 记录每个对话在额度重置前的调用数量，`_buildSummary()` 仅聚合新周期的调用；旧版迁移时自动设置 `_needsBaselineInit` |
+| 持久化 / Persistence | `serialize()` 剥离 `calls[]`（体积 ~1.4KB）→ globalState，含 `callBaselines`；`restore()` 恢复 `_lastSummary` + baseline stubs + call baselines |
+| `reset()` | 额度重置：设置 call baselines → 保留缓存条目（stepCount 避免重复 RPC）但清空 calls → 下次 `_buildSummary()` 仅计入新周期调用 |
+| `fullReset()` | 核重置：清空缓存 + call baselines + 设置 `_needsBaselineInit`，下次 `fetchAll()` 将所有已有 API 数据视为历史基线 |
 | 数据接口 | `GMCallEntry`、`GMModelStats`、`GMConversationData`、`GMSummary`、`GMTrackerState` |
 
 ---
 
-### 💰 gm-panel.ts — GM Data 面板渲染
+### 📊 activity-panel.ts — GM Data 统一面板渲染
 
-生成 GM Data 标签页的 HTML（费用和价格相关功能已迁移至 `pricing-store.ts` / `pricing-panel.ts`）。
+合并原 Activity 面板和 GM Data 面板为统一的「GM 数据」标签页（v1.13.2 合并，原 `gm-panel.ts` 已删除）。
 
-Generates HTML for the GM Data tab (cost/pricing functions migrated to `pricing-store.ts` / `pricing-panel.ts`).
+Unified "GM Data" tab merging the former Activity and GM Data panels (v1.13.2 merge, former `gm-panel.ts` deleted).
 
 | 区块 / Section | 函数 / Function | 说明 / Description |
 |---|---|---|
-| Summary Bar | `buildSummaryBar` | 调用数、步骤数、模型数、token 合计、积分 |
-| Model Cards | `buildModelCards` | 每模型的调用数、TTFT、流速、token 明细 |
-| Performance | `buildPerformanceBaseline` | TTFT avg/min/max、流速统计 |
-| Cache | `buildCacheEfficiency` | 缓存倍率可视化条形图 |
-| Context | `buildContextGrowth` | 上下文 token 增长趋势 SVG 折线图 |
-| Conversations | `buildConversationList` | 各对话的调用数和覆盖率 |
+| Summary Bar | `buildSummaryBar` | GM 调用数/步骤/模型数 + Activity 计数 + Token/Cache/Credits（支持 GM-only 和 Activity+GM 两种模式） |
+| Timeline | `buildTimeline` | 最近操作时间线（含 GM 精确标签） |
+| Model Cards | `buildModelCards` | Activity 计数 + GM 精确数据（Calls/TTFT/流速/Token/Thinking/Credits/Provider） + GM-only 模型卡片 + responseModel/apiProvider 标签 |
+| Tool Ranking | `buildToolRanking` | 工具使用 Top 10 排行 |
+| Distribution | `buildDistribution` | 模型使用分布甜甜圈图 |
+| Performance | `buildPerformanceChart` | TTFT avg/min/max、流速统计（GM） |
+| Cache | `buildCacheEfficiency` | 缓存倍率可视化条形图（GM） |
+| Context | `buildContextGrowth` | 上下文 token 增长趋势 SVG 折线图（GM） |
+| Conversations | `buildConversations` | 各对话的调用数、覆盖率和输入 token（GM） |
+| Sub-Agent | (inline) | 子智能体 token 消耗（Activity） |
 
 ---
 
@@ -279,7 +293,8 @@ Generates complete HTML for the Pricing tab.
 | Model DNA | `buildModelDNACards` | 模型配置参数、工具、提示词段落、错误/重试 |
 | Cost Viz | `buildCostVisualization` | 亮点卡片（总成本/最贵模型/平均/模型数）+ 模型成本分色条形图 |
 | Cost Estimate | `buildCostSummary` | 按模型 × token 类型计算 USD 费用 |
-| Custom Pricing | `buildEditablePricingTable` | 可编辑价格输入 + 保存/重置按钮 |
+| Custom Pricing | `buildEditablePricingTable` | 可编辑价格输入 + 保存/重置按钮（有 GM 数据时显示） |
+| Default Pricing | `buildDefaultPricingTable` | 无 GM 数据时显示默认价格表，支持自定义编辑（v1.13.2） |
 
 ---
 
@@ -350,18 +365,21 @@ extension.ts (入口 + 调度)
 │   └── i18n.ts
 ├── webview-panel.ts      ← WebView 面板
 │   ├── webview-styles.ts ← CSS 样式
-│   ├── activity-panel.ts ← 活动面板 HTML
-│   ├── gm-panel.ts       ← GM 数据面板 HTML
+│   ├── activity-panel.ts ← GM Data 统一面板 HTML（Activity + GM 精确数据）
 │   └── pricing-panel.ts  ← Pricing 标签页 HTML
 │       └── pricing-store.ts ← 定价数据层
 ├── gm-tracker.ts         ← GM 数据层
 │   ├── rpc-client.ts     ← RPC 通信
-│   └── tracker.ts (types)
+│   ├── discovery.ts (LSInfo type)
+│   └── models.ts (getModelDisplayName)
 ├── daily-store.ts        ← 日历数据层
-│   └── activity-tracker.ts (types)
+│   ├── activity-tracker.ts (types)
+│   └── gm-tracker.ts (types)
 ├── activity-tracker.ts   ← 活动追踪
 │   ├── rpc-client.ts
-│   └── models.ts
+│   ├── discovery.ts (LSInfo type)
+│   ├── models.ts
+│   └── gm-tracker.ts (types)
 ├── quota-tracker.ts      ← 额度追踪
 │   └── models.ts
 ├── i18n.ts
@@ -383,19 +401,18 @@ Antigravity Language Server (localhost)
         │             ▼                       ▼               ▼
         │    activity-tracker.ts        quota-tracker.ts   gm-tracker.ts
         │             │                       │               │
-        │             ▼                       │               ▼
-        │    activity-panel.ts                │          gm-panel.ts
-        │             │                       │               │
         │             │                       │          pricing-store.ts
         │             │                       │               │
-        │             │                       │          pricing-panel.ts
         │             │                       ▼               │
-        ▼             ▼                 onQuotaReset          ▼
-    statusbar.ts   webview-panel.ts     callback       webview-panel.ts
-        │             │                       │               │
-        │             │                  daily-store.ts        │
-        │             │                  (calendar data)       │
-        ▼             ▼                       ▼               ▼
+        │             │                 onQuotaReset          │
+        │             ▼                  callback             ▼
+        │    activity-panel.ts ◄──────────────┤────── pricing-panel.ts
+        │    (unified GM Data)                │
+        │             │                       │
+        ▼             ▼                       ▼
+    statusbar.ts   webview-panel.ts     daily-store.ts
+        │             │                 (calendar data)
+        ▼             ▼                       ▼
     VS Code        VS Code WebView     activity archival
     Status Bar     Side Panel          + calendar snapshot
 ```
@@ -443,11 +460,11 @@ npx vsce package --no-dependencies
 
 | 测试文件 / Test File | 测试数 | 覆盖范围 / Coverage |
 |---|---|---|
-| `discovery.test.ts` | 11 | `buildExpectedWorkspaceId` / `extractPid` / `extractCsrfToken` / `filterLsProcessLines` / 端口提取 |
-| `tracker.test.ts` | 16 | `processSteps()` 纯函数：checkpoint / 估算 / 压缩检测 / 图片生成 / 空对话 |
+| `discovery.test.ts` | 15 | `buildExpectedWorkspaceId` / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / 端口提取（lsof / netstat / ss）/ `isWSL` |
+| `tracker.test.ts` | 22 | `normalizeUri`（file / vscode-remote / URL 解码）/ `estimateTokensFromText`（ASCII / 非 ASCII / 混合）/ `processSteps()` 纯函数：checkpoint / 估算 / 压缩检测 / 图片生成 / 空对话 / requestedModel 优先级 |
 | `statusbar.test.ts` | 11 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 |
-| `quota-tracker.test.ts` | 25 | 状态机转换 / 额度重置检测 / 批量回调验证 / 同池多模型归档 |
+| `quota-tracker.test.ts` | 26 | 状态机转换 / 额度重置检测 / 批量回调验证 / 同池多模型归档 / 同池去重（共享 resetTime） |
 
-共 67 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 74 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-67 total tests, using `__mocks__/vscode.ts` to mock the VS Code API.
+74 total tests, using `__mocks__/vscode.ts` to mock the VS Code API.
