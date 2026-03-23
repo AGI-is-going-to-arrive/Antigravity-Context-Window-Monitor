@@ -465,6 +465,29 @@ describe('QuotaTracker state machine', () => {
             expect(resetCallback).toHaveBeenCalledTimes(1);
             expect(resetCallback.mock.calls[0][0].length).toBe(1);
         });
+
+        it('should populate poolModels with all pool member labels', () => {
+            const now = new Date();
+            const reset = futureReset(now, FIVE_HOURS);
+
+            // A, B, C share resetTime (same pool)
+            tracker.processUpdate([
+                makeConfig('A', 1.0, reset, 'Alpha'),
+                makeConfig('B', 1.0, reset, 'Beta'),
+                makeConfig('C', 1.0, reset, 'Charlie'),
+            ]);
+            tracker.processUpdate([
+                makeConfig('A', 0.5, reset, 'Alpha'),
+                makeConfig('B', 0.5, reset, 'Beta'),
+                makeConfig('C', 0.5, reset, 'Charlie'),
+            ]);
+
+            const sessions = tracker.getActiveSessions();
+            expect(sessions.length).toBe(1);
+            // poolModels should contain all 3 labels, sorted
+            expect(sessions[0].poolModels).toBeDefined();
+            expect(sessions[0].poolModels).toEqual(['Alpha', 'Beta', 'Charlie']);
+        });
     });
 
     // ─── resetTrackingStates ─────────────────────────────────────────────────

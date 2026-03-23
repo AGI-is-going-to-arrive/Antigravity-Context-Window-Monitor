@@ -177,20 +177,9 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     }
 
-    // Snapshot current active session into today (live data)
-    const currentSummary = activityTracker.getSummary();
-    if (currentSummary && (currentSummary.totalReasoning > 0 || currentSummary.totalToolCalls > 0)) {
-        const now = new Date();
-        const sessionArchive: import('./activity-tracker').ActivityArchive = {
-            startTime: currentSummary.sessionStartTime,
-            endTime: now.toISOString(),
-            summary: currentSummary,
-            triggeredBy: ['live-snapshot'],
-        };
-        // Only import if not already present (dedup by startTime)
-        dailyStore.importArchives([sessionArchive], lastGMSummary);
-        log('Calendar: snapshotted current active session into today');
-    }
+    // NOTE: live-snapshot removed — calendar data is written exclusively via
+    // onQuotaReset callback (authoritative source) + importArchives cold-start backfill.
+    // This eliminates duplicate cycle entries and GM data inconsistencies.
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = context.globalState.get<import('./models').ModelConfig[]>('cachedModelConfigs');
@@ -263,6 +252,12 @@ export function activate(context: vscode.ExtensionContext): void {
             lastGMSummary = null;
             context.globalState.update('gmTrackerState', gmTracker.serialize());
             log('[Dev] GM data fully cleared — next fetch will baseline all API data');
+        }),
+        vscode.commands.registerCommand('antigravity-context-monitor.devPersistActivity', () => {
+            if (activityTracker) {
+                context.globalState.update('activityTrackerState', activityTracker.serialize());
+                log('[Dev] Activity tracker state persisted to globalState');
+            }
         }),
         statusBar,
         outputChannel

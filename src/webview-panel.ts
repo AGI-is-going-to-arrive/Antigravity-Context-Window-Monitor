@@ -175,9 +175,16 @@ export function showMonitorPanel(
                 lastQuotaTracker.resetTrackingStates();
                 lastQuotaTracker.clearHistory();
             }
+            // Clear calendar data — prevents stale highlights after reinstall
+            if (lastDailyStore) {
+                lastDailyStore.clear();
+            }
             // Clear GM cached data so it matches the reset activity state
             lastGMSummary = null;
             await vscode.commands.executeCommand('antigravity-context-monitor.devClearGM');
+            // Persist cleared activity state to globalState — prevents restore from
+            // resurrecting old archives after reinstall → importArchives re-populating calendar
+            await vscode.commands.executeCommand('antigravity-context-monitor.devPersistActivity');
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }

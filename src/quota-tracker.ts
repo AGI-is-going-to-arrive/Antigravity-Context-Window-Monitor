@@ -29,6 +29,8 @@ export interface QuotaSession {
     modelId: string;
     /** Model display label */
     modelLabel: string;
+    /** All model labels sharing the same quota pool (e.g. Claude Sonnet + Opus + GPT-OSS) */
+    poolModels?: string[];
     /** ISO timestamp: last time we saw 100% before tracking started */
     startTime: string;
     /** ISO timestamp: when 0% was reached */
@@ -129,6 +131,7 @@ export class QuotaTracker {
         // For multi-model pools, pick the representative: prefer lowest fraction
         // (most usage evidence), then alphabetical label as tie-break.
         const poolSkip = new Set<string>();
+        const poolLabelsForModel = new Map<string, string[]>();
         for (const pool of poolByResetTime.values()) {
             if (pool.length <= 1) { continue; }
             pool.sort((a, b) => {
@@ -137,6 +140,9 @@ export class QuotaTracker {
                 if (fa !== fb) { return fa - fb; } // lowest fraction first
                 return a.label.localeCompare(b.label);
             });
+            // Collect all labels in this pool for the representative
+            const allLabels = pool.map(c => c.label).sort();
+            poolLabelsForModel.set(pool[0].model, allLabels);
             // First is representative; rest are skipped
             for (let i = 1; i < pool.length; i++) {
                 poolSkip.add(pool[i].model);
@@ -221,6 +227,7 @@ export class QuotaTracker {
                                 id: `${modelId}_${Date.now()}`,
                                 modelId,
                                 modelLabel: config.label,
+                                poolModels: poolLabelsForModel.get(modelId),
                                 startTime: estimatedStart,
                                 snapshots: [{
                                     timestamp: estimatedStart,
@@ -245,6 +252,7 @@ export class QuotaTracker {
                                 id: `${modelId}_${Date.now()}`,
                                 modelId,
                                 modelLabel: config.label,
+                                poolModels: poolLabelsForModel.get(modelId),
                                 startTime: ms.last100Time,
                                 snapshots: [{
                                     timestamp: ms.last100Time,
@@ -274,6 +282,7 @@ export class QuotaTracker {
                             id: `${modelId}_${Date.now()}`,
                             modelId,
                             modelLabel: config.label,
+                            poolModels: poolLabelsForModel.get(modelId),
                             startTime: estimatedStart,
                             snapshots: [
                                 {
@@ -316,6 +325,12 @@ export class QuotaTracker {
                         ms.lastFraction = fraction;
                         ms.lastResetTime = resetTimeStr;
                         break;
+                    }
+
+                    // Keep poolModels up-to-date with latest pool membership
+                    const latestPoolLabels = poolLabelsForModel.get(modelId);
+                    if (latestPoolLabels) {
+                        ms.currentSession.poolModels = latestPoolLabels;
                     }
 
                     if (fraction >= 1.0) {

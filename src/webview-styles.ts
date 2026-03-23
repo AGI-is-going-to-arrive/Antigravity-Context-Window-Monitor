@@ -312,6 +312,15 @@ export function getStyles(): string {
             font-size: 0.65em;
         }
 
+        .pool-badge {
+            background: rgba(192, 132, 252, 0.12);
+            color: #c084fc;
+            font-size: 0.65em;
+            font-weight: 500;
+            text-transform: none;
+            margin-left: var(--space-1);
+        }
+
         /* ─── Stat Grid ──────────────── */
         .stat-grid {
             display: grid;
