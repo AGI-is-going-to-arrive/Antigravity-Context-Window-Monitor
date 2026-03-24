@@ -989,6 +989,15 @@ export class ActivityTracker {
      * Uses LS's metadata.createdAt for timestamps since these are historical events.
      */
     private _injectTimelineEvent(step: Record<string, unknown>, stepIndex: number, cascadeId?: string): void {
+        // BUG FIX: deduplicate — skip if a step event with the same cascadeId+stepIndex
+        // already exists. Without this, every statusChanged transition re-injects the last
+        // 20 steps, producing duplicate timeline rows that accumulate over time.
+        if (cascadeId !== undefined) {
+            const exists = this._recentSteps.some(ev =>
+                ev.cascadeId === cascadeId && ev.stepIndex === stepIndex && ev.source === 'step'
+            );
+            if (exists) { return; }
+        }
         const type = (step.type as string) || '';
         const meta = (step.metadata || {}) as Record<string, unknown>;
         const modelId = (meta.generatorModel as string) || '';

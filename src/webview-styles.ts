@@ -1465,6 +1465,7 @@ export function getStyles(): string {
         .stg-card[data-accent="activity"] { --stg-accent: #fb923c; }
         .stg-card[data-accent="history"]  { --stg-accent: #2dd4bf; }
         .stg-card[data-accent="debug"]    { --stg-accent: var(--color-danger); }
+        .stg-card[data-accent="zoom"]     { --stg-accent: #a78bfa; }
 
         .stg-header {
             display: flex;
@@ -1651,6 +1652,81 @@ export function getStyles(): string {
             font-weight: 700;
             opacity: 0;
             transition: opacity 0.3s cubic-bezier(.4,0,.2,1);
+        }
+
+        /* ─── Zoom Control ─────────────── */
+        .zoom-control {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-3);
+        }
+
+        .zoom-presets {
+            display: flex;
+            gap: var(--space-1);
+            flex-wrap: wrap;
+        }
+
+        .zoom-preset.is-active {
+            background: rgba(167, 139, 250, 0.2);
+            color: #a78bfa;
+            border-color: #a78bfa;
+            font-weight: 700;
+        }
+
+        .zoom-slider-row {
+            display: flex;
+            align-items: center;
+            gap: var(--space-3);
+        }
+
+        .zoom-range {
+            -webkit-appearance: none;
+            appearance: none;
+            flex: 1;
+            height: 4px;
+            border-radius: 2px;
+            background: var(--color-border);
+            outline: none;
+            transition: background 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        .zoom-range::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #a78bfa;
+            border: 2px solid rgba(0,0,0,0.3);
+            cursor: pointer;
+            transition: transform 0.15s cubic-bezier(.4,0,.2,1), box-shadow 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        @media (hover: hover) {
+            .zoom-range::-webkit-slider-thumb:hover {
+                transform: scale(1.2);
+                box-shadow: 0 0 0 4px rgba(167, 139, 250, 0.2);
+            }
+        }
+
+        .zoom-range:focus-visible::-webkit-slider-thumb {
+            box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.4);
+        }
+
+        .zoom-value {
+            font-family: var(--vscode-editor-font-family, monospace);
+            font-size: 0.88em;
+            font-weight: 700;
+            color: #a78bfa;
+            min-width: 3.5em;
+            text-align: right;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .zoom-range::-webkit-slider-thumb {
+                transition: none;
+            }
         }
 
         /* ─── Tab Bar ─────────────────── */

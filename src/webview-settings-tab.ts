@@ -208,6 +208,32 @@ export function buildSettingsContent(
             </div>
         </section>
 
+        <section class="stg-card" data-accent="zoom">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.zoom}</span>
+                <h2>${tBi('Interface Zoom', '界面缩放')}</h2>
+            </div>
+            <p class="raw-desc">${tBi(
+                'Scale all content in the panel. Applies to text, icons, and spacing.',
+                '缩放面板中的所有内容。对文字、图标和间距统一生效。',
+            )}</p>
+            <div class="zoom-control">
+                <div class="zoom-presets">
+                    <button class="preset-btn zoom-preset" data-zoom="80">80%</button>
+                    <button class="preset-btn zoom-preset" data-zoom="90">90%</button>
+                    <button class="preset-btn zoom-preset" data-zoom="100">100%</button>
+                    <button class="preset-btn zoom-preset" data-zoom="110">110%</button>
+                    <button class="preset-btn zoom-preset" data-zoom="120">120%</button>
+                    <button class="preset-btn zoom-preset" data-zoom="130">130%</button>
+                </div>
+                <div class="zoom-slider-row">
+                    <input type="range" id="zoomRange" class="zoom-range"
+                           min="60" max="150" step="5" value="100" />
+                    <span class="zoom-value" id="zoomValue">100%</span>
+                </div>
+            </div>
+        </section>
+
         ${modelLimitRows ? `
         <section class="stg-card" data-accent="model">
             <div class="stg-header">

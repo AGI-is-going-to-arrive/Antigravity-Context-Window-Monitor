@@ -84,6 +84,50 @@ export function getScript(): string {
                 });
             }
 
+            // ─── Zoom Control ───
+            var zoomLevel = savedState.zoomLevel || 100;
+            function applyZoom(level) {
+                zoomLevel = level;
+                document.body.style.zoom = (level / 100).toString();
+                var valEl = document.getElementById('zoomValue');
+                if (valEl) { valEl.textContent = level + '%'; }
+                var rangeEl = document.getElementById('zoomRange');
+                if (rangeEl) { rangeEl.value = level; }
+                // Highlight active preset
+                var presets = document.querySelectorAll('.zoom-preset');
+                for (var zi = 0; zi < presets.length; zi++) {
+                    presets[zi].classList.toggle('is-active', parseInt(presets[zi].dataset.zoom, 10) === level);
+                }
+                // Persist
+                var s = vscode.getState() || {};
+                s.zoomLevel = level;
+                vscode.setState(s);
+            }
+            // Apply on load
+            if (zoomLevel !== 100) { applyZoom(zoomLevel); }
+            // Preset buttons
+            var zoomPresets = document.querySelectorAll('.zoom-preset');
+            for (var zpi = 0; zpi < zoomPresets.length; zpi++) {
+                zoomPresets[zpi].addEventListener('click', function() {
+                    applyZoom(parseInt(this.dataset.zoom, 10));
+                });
+                // Mark initial active
+                if (parseInt(zoomPresets[zpi].dataset.zoom, 10) === zoomLevel) {
+                    zoomPresets[zpi].classList.add('is-active');
+                }
+            }
+            // Range slider
+            var zoomRange = document.getElementById('zoomRange');
+            if (zoomRange) {
+                zoomRange.value = zoomLevel;
+                zoomRange.addEventListener('input', function() {
+                    applyZoom(parseInt(this.value, 10));
+                });
+            }
+            // Initial value display
+            var zoomValEl = document.getElementById('zoomValue');
+            if (zoomValEl) { zoomValEl.textContent = zoomLevel + '%'; }
+
             // ─── Settings: Status Bar Toggles ───
             var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown'];
             var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown'];
