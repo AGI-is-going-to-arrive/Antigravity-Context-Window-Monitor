@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { tBi, getLanguage, setLanguage, Language } from './i18n';
 import { ContextUsage } from './tracker';
 import { ModelConfig, UserStatusInfo } from './models';
@@ -7,11 +8,11 @@ import { ActivityTracker, ActivitySummary, ActivityArchive } from './activity-tr
 import { buildGMDataTabContent, getGMDataTabStyles } from './activity-panel';
 import { buildPricingTabContent, getPricingTabStyles } from './pricing-panel';
 import { PricingStore, ModelPricing } from './pricing-store';
-import { GMSummary } from './gm-tracker';
+import { GMSummary, GMConversationData } from './gm-tracker';
 import { ICON } from './webview-icons';
 import { buildMonitorSections } from './webview-monitor-tab';
 import { buildProfileContent } from './webview-profile-tab';
-import { buildSettingsContent } from './webview-settings-tab';
+import { buildSettingsContent, StorageDiagnostics } from './webview-settings-tab';
 import { buildHistoryHtml } from './webview-history-tab';
 import { buildCalendarTabContent, getCalendarTabStyles } from './webview-calendar-tab';
 import { DailyStore } from './daily-store';
@@ -33,8 +34,64 @@ let lastActivitySummary: ActivitySummary | null = null;
 let lastActivityTracker: ActivityTracker | undefined;
 let lastArchives: ActivityArchive[] = [];
 let lastGMSummary: GMSummary | null = null;
+let lastGMConversations: Record<string, GMConversationData> = {};
 let lastPricingStore: PricingStore | undefined;
 let lastDailyStore: DailyStore | undefined;
+let lastStorageDiagnostics: StorageDiagnostics | undefined;
+
+function clamp(value: number, min: number, max: number): number {
+    return Math.min(Math.max(value, min), max);
+}
+
+function sanitizeConfigValue(key: string, value: unknown): unknown {
+    switch (key) {
+        case 'statusBar.showContext':
+        case 'statusBar.showQuota':
+        case 'statusBar.showResetCountdown':
+            return !!value;
+        case 'quotaNotificationThreshold':
+            return clamp(Number(value) || 0, 0, 99);
+        case 'activity.maxRecentSteps':
+            return clamp(Number(value) || 100, 10, 500);
+        case 'activity.maxArchives':
+            return clamp(Number(value) || 20, 1, 100);
+        case 'contextLimits': {
+            const raw = (value && typeof value === 'object') ? value as Record<string, unknown> : {};
+            const normalized: Record<string, number> = {};
+            for (const [model, limit] of Object.entries(raw)) {
+                normalized[model] = Math.max(1000, Math.round(Number(limit) || 1000));
+            }
+            return normalized;
+        }
+        default:
+            return value;
+    }
+}
+
+function refreshLocalStorageDiagnostics(): void {
+    if (!lastStorageDiagnostics) { return; }
+    let calendarCycleCount = 0;
+    if (lastDailyStore) {
+        for (const date of lastDailyStore.getDatesWithData()) {
+            const record = lastDailyStore.getRecord(date);
+            if (record) {
+                calendarCycleCount += record.cycles.length;
+            }
+        }
+    }
+    lastStorageDiagnostics = {
+        ...lastStorageDiagnostics,
+        monitorSnapshotCount: lastAllUsages.length,
+        monitorGMConversationCount: Object.keys(lastGMConversations).length,
+        gmConversationCount: lastGMSummary?.conversations.length || 0,
+        gmCallCount: lastGMSummary?.totalCalls || 0,
+        quotaHistoryCount: lastQuotaTracker?.getHistory().length || 0,
+        activityArchiveCount: lastArchives.length,
+        calendarDayCount: lastDailyStore?.totalDays || 0,
+        calendarCycleCount,
+        pricingOverrideCount: Object.keys(lastPricingStore?.getCustom() || {}).length,
+    };
+}
 
 function clearDisposedPanel(): void {
     panel = undefined;
@@ -87,8 +144,10 @@ export function showMonitorPanel(
     archives?: ActivityArchive[],
     activityTracker?: ActivityTracker,
     gmSummary?: GMSummary | null,
+    gmConversations?: Record<string, GMConversationData>,
     pricingStore?: PricingStore,
     dailyStore?: DailyStore,
+    storageDiagnostics?: StorageDiagnostics,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -100,8 +159,10 @@ export function showMonitorPanel(
     if (archives) { lastArchives = archives; }
     if (activityTracker) { lastActivityTracker = activityTracker; }
     if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
+    if (gmConversations) { lastGMConversations = gmConversations; }
     if (pricingStore) { lastPricingStore = pricingStore; }
     if (dailyStore) { lastDailyStore = dailyStore; }
+    if (storageDiagnostics) { lastStorageDiagnostics = storageDiagnostics; }
 
     if (panel) {
         panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
@@ -159,26 +220,45 @@ export function showMonitorPanel(
                 'quotaNotificationThreshold',
                 'activity.maxRecentSteps',
                 'activity.maxArchives',
-                'privacy.defaultMask',
+
             ];
             if (allowedKeys.includes(msg.key)) {
+                const normalizedValue = sanitizeConfigValue(msg.key, msg.value);
                 await vscode.workspace.getConfiguration('antigravityContextMonitor')
-                    .update(msg.key, msg.value, vscode.ConfigurationTarget.Global);
+                    .update(msg.key, normalizedValue, vscode.ConfigurationTarget.Global);
                 if (panel) {
                     safePostMessage({ command: 'configSaved', key: msg.key });
                 }
             }
+        } else if (msg.command === 'copyStatePath' && lastStorageDiagnostics?.stateFilePath) {
+            await vscode.env.clipboard.writeText(lastStorageDiagnostics.stateFilePath);
+            safePostMessage({ command: 'configSaved', key: 'statePath' });
+        } else if (msg.command === 'openStateFile' && lastStorageDiagnostics?.stateFilePath) {
+            const uri = vscode.Uri.file(lastStorageDiagnostics.stateFilePath);
+            const exists = await vscode.workspace.fs.stat(uri).then(() => true, () => false);
+            if (!exists) {
+                void vscode.window.showWarningMessage(tBi('State file has not been created yet.', '状态文件尚未生成。'));
+                return;
+            }
+            const doc = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
+        } else if (msg.command === 'revealStateFile' && lastStorageDiagnostics?.stateFilePath) {
+            const uri = vscode.Uri.file(lastStorageDiagnostics.stateFilePath);
+            const exists = await vscode.workspace.fs.stat(uri).then(() => true, () => false);
+            const target = exists ? uri : vscode.Uri.file(path.dirname(lastStorageDiagnostics.stateFilePath));
+            await vscode.commands.executeCommand('revealFileInOS', target);
         } else if (msg.command === 'clearQuotaHistory') {
             if (lastQuotaTracker) {
                 lastQuotaTracker.resetTrackingStates();
                 lastQuotaTracker.clearHistory();
+                refreshLocalStorageDiagnostics();
                 if (panel) {
                     panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
                 }
             }
         } else if (msg.command === 'setQuotaMaxHistory' && typeof msg.value === 'number') {
             if (lastQuotaTracker) {
-                lastQuotaTracker.setMaxHistory(Math.max(1, msg.value));
+                lastQuotaTracker.setMaxHistory(clamp(msg.value, 1, 100));
                 if (panel) {
                     safePostMessage({ command: 'configSaved', key: 'quotaMaxHistory' });
                 }
@@ -207,6 +287,8 @@ export function showMonitorPanel(
             }
             // Clear GM cached data so it matches the reset activity state
             lastGMSummary = null;
+            lastGMConversations = {};
+            refreshLocalStorageDiagnostics();
             await vscode.commands.executeCommand('antigravity-context-monitor.devClearGM');
             // Persist cleared activity state to globalState — prevents restore from
             // resurrecting old archives after reinstall → importArchives re-populating calendar
@@ -218,6 +300,7 @@ export function showMonitorPanel(
             const data = msg.value as Record<string, ModelPricing>;
             if (data && typeof data === 'object') {
                 lastPricingStore.setAll(data).then(() => {
+                    refreshLocalStorageDiagnostics();
                     if (panel) {
                         panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
                         safePostMessage({ command: 'pricingSaved' });
@@ -226,6 +309,7 @@ export function showMonitorPanel(
             }
         } else if (msg.command === 'resetPricing' && lastPricingStore) {
             lastPricingStore.reset().then(() => {
+                refreshLocalStorageDiagnostics();
                 if (panel) {
                     panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
                     safePostMessage({ command: 'pricingReset' });
@@ -233,6 +317,7 @@ export function showMonitorPanel(
             });
         } else if (msg.command === 'clearCalendarHistory' && lastDailyStore) {
             lastDailyStore.clear();
+            refreshLocalStorageDiagnostics();
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }
@@ -245,12 +330,15 @@ export function showMonitorPanel(
         } else if (msg.command === 'devSimulateReset') {
             await vscode.commands.executeCommand('antigravity-context-monitor.devSimulateReset');
             lastGMSummary = null;
+            refreshLocalStorageDiagnostics();
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }
         } else if (msg.command === 'devClearGM') {
             await vscode.commands.executeCommand('antigravity-context-monitor.devClearGM');
             lastGMSummary = null;
+            lastGMConversations = {};
+            refreshLocalStorageDiagnostics();
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }
@@ -276,6 +364,8 @@ export function updateMonitorPanel(
     activitySummary?: ActivitySummary | null,
     archives?: ActivityArchive[],
     gmSummary?: GMSummary | null,
+    gmConversations?: Record<string, GMConversationData>,
+    storageDiagnostics?: StorageDiagnostics,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -285,6 +375,8 @@ export function updateMonitorPanel(
     if (activitySummary !== undefined) { lastActivitySummary = activitySummary; }
     if (archives) { lastArchives = archives; }
     if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
+    if (gmConversations) { lastGMConversations = gmConversations; }
+    if (storageDiagnostics) { lastStorageDiagnostics = storageDiagnostics; }
     if (panel && !isPaused) {
         // Incremental update: send tab contents via postMessage — no DOM teardown
         safePostMessage({
@@ -304,9 +396,9 @@ function buildTabContents(
     tracker?: QuotaTracker,
 ): Record<string, string> {
     return {
-        monitor: buildMonitorSections(usage, allUsages, configs, userInfo),
+        monitor: buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations),
         profile: buildProfileContent(userInfo, configs),
-        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary),
+        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage),
         pricing: lastPricingStore
             ? buildPricingTabContent(lastGMSummary, lastPricingStore)
             : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`,
@@ -333,19 +425,20 @@ function buildHtml(
     paused = false,
     tracker?: QuotaTracker,
 ): string {
-    const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo);
+    const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations);
     const profileHtml = buildProfileContent(userInfo, configs);
-    const settingsHtml = buildSettingsContent(configs, tracker);
+    const settingsHtml = buildSettingsContent(configs, tracker, lastStorageDiagnostics);
     const historyHtml = buildHistoryHtml(tracker);
-    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary);
+    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(lastGMSummary, lastPricingStore)
         : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
     const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth);
 
     const currentLang = getLanguage();
+    const htmlLang = currentLang === 'zh' ? 'zh-CN' : currentLang === 'en' ? 'en' : 'zh-CN';
     return `<!DOCTYPE html>
-<html lang="en">
+<html lang="${htmlLang}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -356,7 +449,7 @@ ${getPricingTabStyles()}
 ${getCalendarTabStyles()}
 </style>
 </head>
-<body data-privacy-default="${vscode.workspace.getConfiguration('antigravityContextMonitor').get('privacy.defaultMask', false)}">
+<body data-privacy-default="true">
     <header class="panel-header">
         <h1>
             ${ICON.chart}
@@ -380,18 +473,41 @@ ${getCalendarTabStyles()}
             <span class="update-time">${paused ? `<span class="paused-indicator">${tBi('PAUSED', '已暂停')}</span>` : ''} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
         </div>
     </header>
+    <div class="info-banner github-banner">
+        <span class="info-banner-icon">${ICON.git}</span>
+        <span class="info-banner-text">
+            ${tBi(
+                'By <strong>AGI-is-going-to-arrive</strong> — open-source on GitHub. If you find it helpful, a',
+                '作者 <strong>AGI-is-going-to-arrive</strong> — 项目已在 GitHub 开源。如果觉得有帮助，点个',
+            )}
+            <span class="star-inline">${ICON.star}</span>
+            ${tBi('would be appreciated.', '就是最大的支持。')}
+        </span>
+        <a class="info-banner-link" href="https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor" target="_blank" rel="noopener noreferrer">
+            ${ICON.externalLink} GitHub
+        </a>
+    </div>
+    <div class="info-banner multiwin-banner">
+        <span class="info-banner-icon">${ICON.windows}</span>
+        <span class="info-banner-text">
+            ${tBi(
+                'Recommended: use a single IDE window. Multi-window setups may cause data desync between instances (e.g. activity timeline, quota tracking).',
+                '建议使用单窗口运行。多窗口可能导致实例间数据不同步（如活动时间线、额度追踪等）。',
+            )}
+        </span>
+    </div>
     <details class="disclaimer-banner" id="d-disclaimer">
         <summary>
             <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>
             ${tBi(
-                'Data Disclaimer — Data shown is estimated and may be inaccurate. Click to expand.',
-                '数据声明 — 所示数据为估算值，可能存在偏差。点击展开详情。'
+                'Data Disclaimer — All data is best-effort. GM-badged items have higher fidelity; others are estimated. Click to expand.',
+                '数据声明 — 所有数据均为尽力计算。标有 GM 的精度较高，其余为估算。点击展开详情。'
             )}
         </summary>
         <div class="disclaimer-body">
             ${tBi(
-                'All data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Token counts, credit usage, model attribution, and other metrics are provided on a <strong>best-effort</strong> basis and may not reflect actual billing or usage. This extension is an independent, community project with <strong>no official endorsement</strong>. Use this data as a reference only.',
-                '所有数据均通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。Token 数量、积分消耗、模型归属等指标均为<strong>尽力而为</strong>的估算，不代表实际计费或用量。本扩展为独立社区项目，<strong>未获得官方认可</strong>。请仅将数据作为参考。'
+                'Data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Items marked with a <strong style="color:var(--color-ok)">GM</strong> badge come from Generator Metadata and have <strong>higher per-call fidelity</strong>. Other metrics (context usage, token estimates) are derived from checkpoint snapshots or character-based heuristics and may have deviations. <strong>All numbers are best-effort approximations.</strong> This extension is an independent, community project with <strong>no official endorsement</strong>. Use this data as a reference only.',
+                '数据通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。标有 <strong style="color:var(--color-ok)">GM</strong> 徽章的数据来自 <strong>Generator Metadata（生成元数据）</strong>，<strong>单次调用精度较高</strong>。其余指标（上下文用量、Token 估算）基于 <strong>Checkpoint（检查点）</strong> 快照或字符启发式计算，可能存在偏差。<strong>所有数值均为尽力计算的近似值。</strong>本扩展为独立社区项目，<strong>未获得官方认可</strong>。请仅将数据作为参考。'
             )}
         </div>
     </details>

@@ -8,8 +8,8 @@ vi.mock('vscode', () => ({
     },
 }));
 
-import { QuotaTracker } from './quota-tracker';
-import { ModelConfig } from './models';
+import { QuotaTracker } from '../src/quota-tracker';
+import { ModelConfig } from '../src/models';
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 

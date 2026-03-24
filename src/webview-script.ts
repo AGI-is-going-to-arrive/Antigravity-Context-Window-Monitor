@@ -1,3 +1,5 @@
+import { tBi } from './i18n';
+
 // ─── WebView Client-Side Script ──────────────────────────────────────────────
 // Frontend JavaScript injected into the WebView panel.
 // Handles tab switching, settings controls, privacy mask, scroll persistence,
@@ -9,6 +11,10 @@ export function getScript(): string {
         (function() {
             var vscode = acquireVsCodeApi();
             var savedState = vscode.getState() || {};
+            var copiedText = ${JSON.stringify(`✓ ${tBi('Copied', '已复制')}`)};
+            var doneText = ${JSON.stringify(`✓ ${tBi('Done', '完成')}`)};
+            var savedText = ${JSON.stringify(`✓ ${tBi('Saved', '已保存')}`)};
+            var resetText = ${JSON.stringify(`✓ ${tBi('Reset', '已重置')}`)};
 
             // ─── Tab System ───
             var activeTab = savedState.activeTab || 'monitor';
@@ -78,9 +84,53 @@ export function getScript(): string {
                 });
             }
 
+            // ─── Zoom Control ───
+            var zoomLevel = savedState.zoomLevel || 100;
+            function applyZoom(level) {
+                zoomLevel = level;
+                document.body.style.zoom = (level / 100).toString();
+                var valEl = document.getElementById('zoomValue');
+                if (valEl) { valEl.textContent = level + '%'; }
+                var rangeEl = document.getElementById('zoomRange');
+                if (rangeEl) { rangeEl.value = level; }
+                // Highlight active preset
+                var presets = document.querySelectorAll('.zoom-preset');
+                for (var zi = 0; zi < presets.length; zi++) {
+                    presets[zi].classList.toggle('is-active', parseInt(presets[zi].dataset.zoom, 10) === level);
+                }
+                // Persist
+                var s = vscode.getState() || {};
+                s.zoomLevel = level;
+                vscode.setState(s);
+            }
+            // Apply on load
+            if (zoomLevel !== 100) { applyZoom(zoomLevel); }
+            // Preset buttons
+            var zoomPresets = document.querySelectorAll('.zoom-preset');
+            for (var zpi = 0; zpi < zoomPresets.length; zpi++) {
+                zoomPresets[zpi].addEventListener('click', function() {
+                    applyZoom(parseInt(this.dataset.zoom, 10));
+                });
+                // Mark initial active
+                if (parseInt(zoomPresets[zpi].dataset.zoom, 10) === zoomLevel) {
+                    zoomPresets[zpi].classList.add('is-active');
+                }
+            }
+            // Range slider
+            var zoomRange = document.getElementById('zoomRange');
+            if (zoomRange) {
+                zoomRange.value = zoomLevel;
+                zoomRange.addEventListener('input', function() {
+                    applyZoom(parseInt(this.value, 10));
+                });
+            }
+            // Initial value display
+            var zoomValEl = document.getElementById('zoomValue');
+            if (zoomValEl) { zoomValEl.textContent = zoomLevel + '%'; }
+
             // ─── Settings: Status Bar Toggles ───
-            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'togglePrivacyDefault'];
-            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'privacy.defaultMask'];
+            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown'];
+            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown'];
             for (var tgi = 0; tgi < toggleIds.length; tgi++) {
                 (function(idx) {
                     var cb = document.getElementById(toggleIds[idx]);
@@ -155,6 +205,11 @@ export function getScript(): string {
                     var feedbackMap = {
                         'pollingInterval': 'pollingFeedback',
                         'contextLimits': 'modelLimitsFeedback',
+                        'quotaNotificationThreshold': 'quotaNotifyFeedback',
+                        'activity.maxRecentSteps': 'maxRecentStepsFeedback',
+                        'activity.maxArchives': 'maxArchivesFeedback',
+                        'quotaMaxHistory': 'maxHistoryFeedback',
+                        'statePath': 'statePathFeedback'
                     };
                     var fbId = feedbackMap[msg.key];
                     if (fbId) {
@@ -246,7 +301,7 @@ export function getScript(): string {
                     navigator.clipboard.writeText(text).then(function() {
                         copyBtn.classList.add('copied');
                         var origHtml = copyBtn.innerHTML;
-                        copyBtn.textContent = '✓ Copied';
+                        copyBtn.textContent = copiedText;
                         setTimeout(function() {
                             copyBtn.innerHTML = origHtml;
                             copyBtn.classList.remove('copied');
@@ -325,7 +380,7 @@ export function getScript(): string {
                 devSimBtn.addEventListener('click', function() {
                     vscode.postMessage({ command: 'devSimulateReset' });
                     var fb = document.getElementById('devSimulateFeedback');
-                    if (fb) { fb.textContent = 'Done'; setTimeout(function() { fb.textContent = ''; }, 2000); }
+                    if (fb) { fb.textContent = doneText; setTimeout(function() { fb.textContent = ''; }, 2000); }
                 });
             }
 
@@ -334,6 +389,26 @@ export function getScript(): string {
             if (devClearGMBtn) {
                 devClearGMBtn.addEventListener('click', function() {
                     vscode.postMessage({ command: 'devClearGM' });
+                });
+            }
+
+            // ─── Persistent State File Helpers ───
+            var copyStatePathBtn = document.getElementById('copyStatePath');
+            if (copyStatePathBtn) {
+                copyStatePathBtn.addEventListener('click', function() {
+                    vscode.postMessage({ command: 'copyStatePath' });
+                });
+            }
+            var openStateFileBtn = document.getElementById('openStateFile');
+            if (openStateFileBtn) {
+                openStateFileBtn.addEventListener('click', function() {
+                    vscode.postMessage({ command: 'openStateFile' });
+                });
+            }
+            var revealStateFileBtn = document.getElementById('revealStateFile');
+            if (revealStateFileBtn) {
+                revealStateFileBtn.addEventListener('click', function() {
+                    vscode.postMessage({ command: 'revealStateFile' });
                 });
             }
 
@@ -416,6 +491,25 @@ export function getScript(): string {
             document.body.addEventListener('click', function(e) {
                 var target = e.target;
 
+                // ── Timeline: expand/collapse full text ──
+                var tlItem = target.closest && target.closest('[data-expand-target]');
+                if (tlItem) {
+                    var expandId = tlItem.getAttribute('data-expand-target');
+                    if (expandId) {
+                        var expandEl = document.getElementById(expandId);
+                        if (expandEl) {
+                            var isOpen = expandEl.classList.toggle('act-tl-expand-open');
+                            // Persist expand state across poll refreshes
+                            var st = vscode.getState() || {};
+                            var te = st.tlExpands || {};
+                            te[expandId] = isOpen;
+                            st.tlExpands = te;
+                            vscode.setState(st);
+                        }
+                    }
+                    return;
+                }
+
                 // ── Date Cell Click: expand/collapse detail panel ──
                 var cell = target.closest && target.closest('.cal-cell.has-data');
                 if (cell) {
@@ -476,7 +570,7 @@ export function getScript(): string {
                 } else if (msg && (msg.command === 'pricingSaved' || msg.command === 'pricingReset')) {
                     var fb = document.getElementById('pricingFeedback');
                     if (fb) {
-                        fb.textContent = msg.command === 'pricingSaved' ? '✓ Saved' : '✓ Reset';
+                        fb.textContent = msg.command === 'pricingSaved' ? savedText : resetText;
                         fb.style.opacity = '1';
                         setTimeout(function() { fb.style.opacity = '0'; }, 2000);
                     }
@@ -485,7 +579,7 @@ export function getScript(): string {
                     var tabs = msg.tabs;
 
                     // Save scrollTop of inner scrollable elements before DOM swap
-                    var scrollableSelectors = ['.raw-json', '.act-timeline', '.details-body'];
+                    var scrollableSelectors = ['.raw-json', '.act-timeline', '.details-body', '.xray-body'];
                     var savedScrolls = {};
                     for (var ss = 0; ss < scrollableSelectors.length; ss++) {
                         var sel = scrollableSelectors[ss];
@@ -521,6 +615,15 @@ export function getScript(): string {
                             s.detailsOpen = dso;
                             vscode.setState(s);
                         });
+                    }
+
+                    // Restore timeline expand blocks
+                    var tlExpands = (vscode.getState() || {}).tlExpands || {};
+                    var expEls = document.querySelectorAll('.act-tl-expand');
+                    for (var ei = 0; ei < expEls.length; ei++) {
+                        if (tlExpands[expEls[ei].id]) {
+                            expEls[ei].classList.add('act-tl-expand-open');
+                        }
                     }
 
                     // NOW restore scrollTop (details are open, heights are correct)
@@ -568,7 +671,7 @@ export function getScript(): string {
                             navigator.clipboard.writeText(rawEl.textContent || '').then(function() {
                                 newCopyBtn.classList.add('copied');
                                 var origHtml = newCopyBtn.innerHTML;
-                                newCopyBtn.textContent = '✓ Copied';
+                                newCopyBtn.textContent = copiedText;
                                 setTimeout(function() { newCopyBtn.innerHTML = origHtml; newCopyBtn.classList.remove('copied'); }, 1500);
                             });
                         });
@@ -606,14 +709,31 @@ export function getScript(): string {
                         });
                     }
 
-                    // Re-apply privacy mask if active
+                    // Re-apply privacy mask if active AND re-bind toggle button
                     var privState = vscode.getState() || {};
-                    if (privState.privacyMasked) {
+                    var isMasked = privState.privacyMasked !== undefined ? !!privState.privacyMasked : (document.body.getAttribute('data-privacy-default') === 'true');
+                    if (isMasked) {
                         var targets = document.querySelectorAll('[data-real][data-masked]');
                         for (var pj = 0; pj < targets.length; pj++) {
                             var el = targets[pj];
                             el.textContent = el.getAttribute('data-masked');
                         }
+                    }
+                    // Re-bind privacy toggle button (old button destroyed by innerHTML swap)
+                    var newPrivBtn = document.getElementById('privacyToggle');
+                    if (newPrivBtn) {
+                        if (isMasked) { newPrivBtn.classList.add('active'); }
+                        newPrivBtn.addEventListener('click', function() {
+                            var st = vscode.getState() || {};
+                            var m = !st.privacyMasked;
+                            st.privacyMasked = m;
+                            vscode.setState(st);
+                            var tgts = document.querySelectorAll('[data-real][data-masked]');
+                            for (var k = 0; k < tgts.length; k++) {
+                                tgts[k].textContent = m ? tgts[k].getAttribute('data-masked') : tgts[k].getAttribute('data-real');
+                            }
+                            newPrivBtn.classList.toggle('active', m);
+                        });
                     }
                 }
             });

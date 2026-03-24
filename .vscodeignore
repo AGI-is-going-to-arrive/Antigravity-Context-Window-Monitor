@@ -4,6 +4,8 @@
 src/**
 !src/images/**
 node_modules/**
+out/**/*.test.js
+out/**/*.test.d.ts
 tsconfig.json
 *.map
 package-lock.json

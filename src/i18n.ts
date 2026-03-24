@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { StateBucket } from './durable-state';
 
 // ─── Language Types ───────────────────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ const translations: Record<string, TranslationEntry> = {
     'tooltip.output': { en: 'Output', zh: '输出' },
     'tooltip.cache': { en: 'Cache', zh: '缓存' },
     'tooltip.estimated': { en: 'Estimated', zh: '估算值' },
-    'tooltip.precise': { en: 'Precise (from checkpoint)', zh: '精确值 (来自 checkpoint)' },
+    'tooltip.precise': { en: 'GM data (from checkpoint)', zh: 'GM 数据 (来自 checkpoint)' },
 
     // ─ QuickPick Panel
     'panel.title': { en: 'Antigravity Context Window Monitor', zh: '上下文窗口使用情况' },
@@ -68,7 +69,7 @@ const translations: Record<string, TranslationEntry> = {
     'panel.stepsLabel': { en: 'Steps', zh: '步骤' },
     'panel.compression': { en: 'Compression', zh: '压缩量' },
     'panel.estimated': { en: 'Est', zh: '估' },
-    'panel.preciseShort': { en: 'Precise', zh: '精确' },
+    'panel.preciseShort': { en: 'GM', zh: 'GM' },
     'panel.compressed': { en: 'Compressed', zh: '已压缩' },
     'panel.compressing': { en: 'Compressing', zh: '压缩中' },
     'panel.gaps': { en: 'Gaps', zh: '缺失' },
@@ -96,7 +97,14 @@ let currentLanguage: Language = 'both';
  * Call once during extension activation.
  */
 export function initI18n(context: vscode.ExtensionContext): void {
-    const saved = context.globalState.get<Language>('displayLanguage');
+    const saved = context.globalState.get<Language>('displayLanguage', 'both');
+    if (saved && (saved === 'zh' || saved === 'en' || saved === 'both')) {
+        currentLanguage = saved;
+    }
+}
+
+export function initI18nFromState(state: StateBucket): void {
+    const saved = state.get<Language>('displayLanguage', 'both');
     if (saved && (saved === 'zh' || saved === 'en' || saved === 'both')) {
         currentLanguage = saved;
     }
@@ -115,6 +123,11 @@ export function getLanguage(): Language {
 export async function setLanguage(lang: Language, context: vscode.ExtensionContext): Promise<void> {
     currentLanguage = lang;
     await context.globalState.update('displayLanguage', lang);
+}
+
+export async function setLanguageToState(lang: Language, state: StateBucket): Promise<void> {
+    currentLanguage = lang;
+    await state.update('displayLanguage', lang);
 }
 
 /**
@@ -164,7 +177,7 @@ export function tBi(en: string, zh: string, separator: string = ' / '): string {
 /**
  * Show a QuickPick for the user to select display language.
  */
-export async function showLanguagePicker(context: vscode.ExtensionContext): Promise<void> {
+export async function showLanguagePicker(context: vscode.ExtensionContext, state?: StateBucket): Promise<void> {
     const items: vscode.QuickPickItem[] = [
         {
             label: '$(globe) 中文',
@@ -173,7 +186,7 @@ export async function showLanguagePicker(context: vscode.ExtensionContext): Prom
         },
         {
             label: '$(globe) English',
-            description: 'English Only',
+            description: 'English Only — 仅显示英文',
             detail: currentLanguage === 'en' ? '✅ Current / 当前' : '',
         },
         {
@@ -200,5 +213,10 @@ export async function showLanguagePicker(context: vscode.ExtensionContext): Prom
         lang = 'both';
     }
 
+    if (state) {
+        await setLanguageToState(lang, state);
+        await context.globalState.update('displayLanguage', lang);
+        return;
+    }
     await setLanguage(lang, context);
 }

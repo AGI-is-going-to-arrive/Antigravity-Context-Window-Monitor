@@ -9,10 +9,28 @@ import { QuotaTracker } from './quota-tracker';
 import { ICON } from './webview-icons';
 import { esc } from './webview-helpers';
 
+export interface StorageDiagnostics {
+    stateFilePath: string;
+    stateFileExists: boolean;
+    monitorSnapshotCount: number;
+    monitorGMConversationCount: number;
+    gmConversationCount: number;
+    gmCallCount: number;
+    quotaHistoryCount: number;
+    activityArchiveCount: number;
+    calendarDayCount: number;
+    calendarCycleCount: number;
+    pricingOverrideCount: number;
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /** Build the Settings tab HTML from current VS Code configuration. */
-export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTracker): string {
+export function buildSettingsContent(
+    configs: ModelConfig[],
+    tracker?: QuotaTracker,
+    storage?: StorageDiagnostics,
+): string {
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
     const currentThreshold = cfg.get<number>('compressionWarningThreshold', 200_000);
     const pollingInterval = cfg.get<number>('pollingInterval', 5);
@@ -23,7 +41,6 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
     const quotaNotifyThreshold = cfg.get<number>('quotaNotificationThreshold', 20);
     const maxRecentSteps = cfg.get<number>('activity.maxRecentSteps', 100);
     const maxArchives = cfg.get<number>('activity.maxArchives', 20);
-    const privacyDefault = cfg.get<boolean>('privacy.defaultMask', false);
 
     const modelLimitRows = configs.map(c => {
         const customLimit = contextLimits[c.model];
@@ -42,10 +59,49 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
     }).join('');
 
     const maxHistory = tracker?.getMaxHistory() ?? 20;
+    const storageCard = storage ? `
+        <section class="stg-card" data-accent="storage">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.database}</span>
+                <h2>${tBi('Persistent Storage', '持久化存储')}</h2>
+            </div>
+            <p class="raw-desc">${tBi(
+                'This file is stored outside the extension state database, so it survives uninstall/reinstall unless you delete it manually.',
+                '该文件存储在扩展状态数据库之外，因此只要你不手动删除，它会跨卸载/重装保留。',
+            )}</p>
+            <div class="storage-path-box">
+                <code class="storage-path-text">${esc(storage.stateFilePath)}</code>
+                <span class="storage-path-state ${storage.stateFileExists ? 'is-ready' : 'is-missing'}">
+                    ${storage.stateFileExists ? tBi('Ready', '已存在') : tBi('Missing', '不存在')}
+                </span>
+            </div>
+            <div class="storage-actions">
+                <button class="action-btn" id="copyStatePath">${ICON.copy} ${tBi('Copy Path', '复制路径')}</button>
+                <button class="action-btn" id="openStateFile">${ICON.file} ${tBi('Open File', '打开文件')}</button>
+                <button class="action-btn" id="revealStateFile">${ICON.folder} ${tBi('Reveal', '定位文件')}</button>
+                <span id="statePathFeedback" class="threshold-feedback"></span>
+            </div>
+            <div class="storage-stat-grid">
+                <div class="storage-stat"><span class="storage-stat-val">${storage.monitorSnapshotCount}</span><span class="storage-stat-label">${tBi('Monitor Sessions', '监控会话')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.monitorGMConversationCount}</span><span class="storage-stat-label">${tBi('Monitor GM Snapshots', '监控 GM 快照')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.gmConversationCount}</span><span class="storage-stat-label">${tBi('GM Conversations', 'GM 对话')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.gmCallCount}</span><span class="storage-stat-label">${tBi('GM Calls', 'GM 调用')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.activityArchiveCount}</span><span class="storage-stat-label">${tBi('Activity Archives', '活动归档')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.quotaHistoryCount}</span><span class="storage-stat-label">${tBi('Quota History', '额度历史')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.calendarDayCount}</span><span class="storage-stat-label">${tBi('Calendar Days', '日历天数')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.calendarCycleCount}</span><span class="storage-stat-label">${tBi('Calendar Cycles', '日历周期')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.pricingOverrideCount}</span><span class="storage-stat-label">${tBi('Price Overrides', '价格覆盖')}</span></div>
+            </div>
+        </section>` : '';
 
     return `
-        <section class="card">
-            <h2>${ICON.shield} ${tBi('Compression Warning', '压缩警告')}</h2>
+        ${storageCard}
+
+        <section class="stg-card" data-accent="warn">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.shield}</span>
+                <h2>${tBi('Compression Warning', '压缩警告')}</h2>
+            </div>
             <div class="setting-row">
                 <label for="thresholdInput">${tBi(
                     'Warning threshold (tokens)',
@@ -74,8 +130,11 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
             </div>
         </section>
 
-        <section class="card">
-            <h2>${ICON.bolt} ${tBi('Quota Notification', '额度通知')}</h2>
+        <section class="stg-card" data-accent="quota">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.bolt}</span>
+                <h2>${tBi('Quota Notification', '额度通知')}</h2>
+            </div>
             <div class="setting-row">
                 <label for="quotaNotifyInput">${tBi(
                     'Low quota warning threshold (%)',
@@ -98,8 +157,11 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
             </div>
         </section>
 
-        <section class="card">
-            <h2>${ICON.clock} ${tBi('Polling', '轮询')}</h2>
+        <section class="stg-card" data-accent="poll">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.clock}</span>
+                <h2>${tBi('Polling', '轮询')}</h2>
+            </div>
             <div class="setting-row">
                 <label for="pollingInput">${tBi(
                     'Polling interval (seconds)',
@@ -118,8 +180,11 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
             </div>
         </section>
 
-        <section class="card">
-            <h2>${ICON.chart} ${tBi('Status Bar Display', '状态栏显示')}</h2>
+        <section class="stg-card" data-accent="display">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.chart}</span>
+                <h2>${tBi('Status Bar Display', '状态栏显示')}</h2>
+            </div>
             <p class="raw-desc">${tBi(
                 'Toggle which elements appear in the status bar.',
                 '控制状态栏显示哪些元素。',
@@ -143,9 +208,38 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
             </div>
         </section>
 
+        <section class="stg-card" data-accent="zoom">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.zoom}</span>
+                <h2>${tBi('Interface Zoom', '界面缩放')}</h2>
+            </div>
+            <p class="raw-desc">${tBi(
+                'Scale all content in the panel. Applies to text, icons, and spacing.',
+                '缩放面板中的所有内容。对文字、图标和间距统一生效。',
+            )}</p>
+            <div class="zoom-control">
+                <div class="zoom-presets">
+                    <button class="preset-btn zoom-preset" data-zoom="80">80%</button>
+                    <button class="preset-btn zoom-preset" data-zoom="90">90%</button>
+                    <button class="preset-btn zoom-preset" data-zoom="100">100%</button>
+                    <button class="preset-btn zoom-preset" data-zoom="110">110%</button>
+                    <button class="preset-btn zoom-preset" data-zoom="120">120%</button>
+                    <button class="preset-btn zoom-preset" data-zoom="130">130%</button>
+                </div>
+                <div class="zoom-slider-row">
+                    <input type="range" id="zoomRange" class="zoom-range"
+                           min="60" max="150" step="5" value="100" />
+                    <span class="zoom-value" id="zoomValue">100%</span>
+                </div>
+            </div>
+        </section>
+
         ${modelLimitRows ? `
-        <section class="card">
-            <h2>${ICON.shield} ${tBi('Model Context Limits', '模型上下文限制')}</h2>
+        <section class="stg-card" data-accent="model">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.shield}</span>
+                <h2>${tBi('Model Context Limits', '模型上下文限制')}</h2>
+            </div>
             <p class="raw-desc">${tBi(
                 'Override context window size (tokens) per model.',
                 '按模型覆盖上下文窗口大小（token 数）。',
@@ -159,8 +253,11 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
             </div>
         </section>` : ''}
 
-        <section class="card">
-            <h2>${ICON.chart} ${tBi('Activity Settings', '活动设置')}</h2>
+        <section class="stg-card" data-accent="activity">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.chart}</span>
+                <h2>${tBi('Activity Settings', '活动设置')}</h2>
+            </div>
             <div class="setting-row">
                 <label for="maxRecentStepsInput">${tBi(
                     'Max timeline entries',
@@ -212,23 +309,12 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
             </div>
         </section>
 
-        <section class="card">
-            <h2>${ICON.shield} ${tBi('Privacy', '隐私')}</h2>
-            <div class="toggle-group">
-                <label class="toggle-row">
-                    <input type="checkbox" id="togglePrivacyDefault" class="toggle-cb" ${privacyDefault ? 'checked' : ''} />
-                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBi('Enable privacy mask by default', '默认启用隐私遮罩')}</span>
-                </label>
-            </div>
-            <p class="raw-desc">${tBi(
-                'When enabled, sensitive data (account ID, email, etc.) will be masked by default when opening the monitor panel.',
-                '启用后，打开监控面板时会默认遮住敏感数据（账户 ID、邮箱等）。',
-            )}</p>
-        </section>
 
-        <section class="card">
-            <h2>${ICON.timeline} ${tBi('History Settings', '历史设置')}</h2>
+        <section class="stg-card" data-accent="history">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.timeline}</span>
+                <h2>${tBi('History Settings', '历史设置')}</h2>
+            </div>
             <div class="setting-row">
                 <label for="maxHistoryInput">${tBi(
                     'Max archived records',
@@ -256,8 +342,11 @@ export function buildSettingsContent(configs: ModelConfig[], tracker?: QuotaTrac
             </div>
         </section>
 
-        <section class="card">
-            <h2>${ICON.bolt} ${tBi('Debug / Testing', '调试 / 测试')}</h2>
+        <section class="stg-card" data-accent="debug">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.bolt}</span>
+                <h2>${tBi('Debug / Testing', '调试 / 测试')}</h2>
+            </div>
             <p class="raw-desc">${tBi(
                 'Developer tools for testing quota reset archival and clearing stale data.',
                 '用于测试额度重置归档以及清除过期数据的开发者工具。',

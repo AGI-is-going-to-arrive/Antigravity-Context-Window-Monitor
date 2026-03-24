@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { formatTokenCount, formatContextLimit, calculateCompressionStats } from './statusbar';
-import { ContextUsage, ModelUsageInfo } from './tracker';
+import { formatTokenCount, formatContextLimit, calculateCompressionStats } from '../src/statusbar';
+import { ContextUsage, ModelUsageInfo } from '../src/tracker';
 
 // ─── formatTokenCount ─────────────────────────────────────────────────────────
 

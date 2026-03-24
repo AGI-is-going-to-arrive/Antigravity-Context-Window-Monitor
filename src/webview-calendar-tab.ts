@@ -33,6 +33,22 @@ function formatCost(usd: number): string {
     return '—';
 }
 
+// ── Shared SVG icons for model/GM chip rows ──
+const CAL_ICON = {
+    brain: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M5.52.359A.5.5 0 0 1 6 0h4a.5.5 0 0 1 .474.658L8.694 6H12.5a.5.5 0 0 1 .395.807l-7 9a.5.5 0 0 1-.873-.454L6.823 9H3.5a.5.5 0 0 1-.48-.641z"/></svg>',
+    tool: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1 0 0 1l2.2 3.081a1 1 0 0 0 .815.419h.07a1 1 0 0 1 .708.293l2.675 2.675-2.617 2.654A3.003 3.003 0 0 0 0 13a3 3 0 1 0 5.878-.851l2.654-2.617.968.968-.305.914a1 1 0 0 0 .242 1.023l3.27 3.27a.997.997 0 0 0 1.414 0l1.586-1.586a.997.997 0 0 0 0-1.414l-3.27-3.27a1 1 0 0 0-1.023-.242L10.5 9.5l-.96-.96 2.68-2.643A3.005 3.005 0 0 0 16 3c0-.269-.035-.53-.102-.777l-2.14 2.141L12 4l-.364-1.757L13.777.102a3 3 0 0 0-3.675 3.68L7.462 6.46 4.793 3.793a1 1 0 0 1-.293-.707v-.071a1 1 0 0 0-.419-.814z"/></svg>',
+    warn: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5m.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2"/></svg>',
+    chart: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M0 0h1v15h15v1H0zm14.817 3.113a.5.5 0 0 1 .07.704l-4.5 5.5a.5.5 0 0 1-.74.037L7.06 6.767l-3.656 5.027a.5.5 0 0 1-.808-.588l4-5.5a.5.5 0 0 1 .758-.06l2.609 2.61 4.15-5.073a.5.5 0 0 1 .704-.07"/></svg>',
+    token: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1 3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1H1m0 1v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4zm6 2a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1z"/></svg>',
+    calls: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M2.5 1A1.5 1.5 0 0 0 1 2.5v11A1.5 1.5 0 0 0 2.5 15h11a1.5 1.5 0 0 0 1.5-1.5v-11A1.5 1.5 0 0 0 13.5 1zm4.168 4.413a.5.5 0 0 1 .497.034l3.5 2.5a.5.5 0 0 1 0 .806l-3.5 2.5A.5.5 0 0 1 6.5 10.5v-5a.5.5 0 0 1 .168-.087"/></svg>',
+    credit: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path fill="currentColor" d="M4 5.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8m0 2.5a.5.5 0 0 1 .5-.5h4a.5.5 0 0 1 0 1h-4a.5.5 0 0 1-.5-.5"/></svg>',
+    clock: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 3.5a.5.5 0 0 0-1 0V8a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 7.71z"/><path fill="currentColor" d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0"/></svg>',
+    cache: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm15 2h-4v3h4zm0 4h-4v3h4zm0 4h-4v3h3a1 1 0 0 0 1-1zm-5 3v-3H6v3zm-5 0v-3H1v2a1 1 0 0 0 1 1zm-4-4h4V8H1zm0-4h4V4H1zm5-3v3h4V4zm4 4H6v3h4z"/></svg>',
+    dollar: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.3 0-1.59-.947-2.51-2.956-3.028l-.722-.187V3.467c1.122.11 1.879.714 2.07 1.616h1.47c-.166-1.6-1.54-2.748-3.54-2.875V1H7.591v1.233c-1.939.23-3.27 1.472-3.27 3.156 0 1.454.966 2.483 2.661 2.917l.61.162v4.031c-1.149-.17-1.94-.8-2.131-1.718zm3.391-3.836c-1.043-.263-1.6-.825-1.6-1.616 0-.944.704-1.641 1.8-1.828v3.495zM8.634 8.1C9.858 8.418 10.44 9 10.44 9.89c0 1.12-.789 1.816-2.007 1.931V8.1z"/></svg>',
+} as const;
+const fmtTok = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+const fmtCostShort = (n: number) => n >= 1 ? '$' + n.toFixed(2) : n > 0 ? '$' + n.toFixed(4) : '';
+
 /** Get days in month and what weekday the 1st falls on (0=Mon) */
 function getMonthGrid(year: number, month: number): { daysInMonth: number; startDay: number } {
     const daysInMonth = new Date(year, month, 0).getDate();
@@ -70,19 +86,18 @@ export function buildCalendarTabContent(store?: DailyStore, year?: number, month
 
     const parts: string[] = [];
 
-    // ── Month Navigation + Grid ──
-    parts.push(buildMonthView(store, currentYear, currentMonth));
-
-    // ── Stats Summary ──
+    // ── Stats Summary (top position for quick overview) ──
     if (store.totalDays > 0) {
         parts.push(buildOverallSummary(store));
     }
 
+    // ── Month Navigation + Grid ──
+    parts.push(buildMonthView(store, currentYear, currentMonth));
 
     // ── Clear Button ──
     if (store.totalDays > 0) {
         parts.push(`
-            <section class="card" style="text-align:center">
+            <section class="card cal-clear-section">
                 <button class="cal-clear-btn" id="clearCalendarBtn">
                     ${ICON.trash} ${tBi('Clear All Calendar History', '清空所有日历历史')}
                 </button>
@@ -127,7 +142,7 @@ export function getCalendarTabStyles(): string {
 
         @media (hover: hover) {
             .cal-nav-btn:hover {
-                background: rgba(255,255,255,0.08);
+                background: var(--color-surface-hover);
                 color: var(--color-text);
             }
         }
@@ -148,7 +163,7 @@ export function getCalendarTabStyles(): string {
 
         .cal-header-cell {
             text-align: center;
-            font-size: 0.7em;
+            font-size: 0.8em;
             font-weight: 600;
             color: var(--color-text-dim);
             padding: var(--space-1) 0;
@@ -158,12 +173,12 @@ export function getCalendarTabStyles(): string {
 
         .cal-cell {
             position: relative;
-            aspect-ratio: 1;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            border-radius: var(--radius-md);
+            padding: var(--space-1) 0;
+            border-radius: var(--radius-sm);
             font-size: 0.82em;
             color: var(--color-text-dim);
             transition: background 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
@@ -174,7 +189,7 @@ export function getCalendarTabStyles(): string {
         .cal-cell.has-data {
             cursor: pointer;
             color: var(--color-text);
-            background: rgba(255,255,255,0.03);
+            background: var(--color-surface);
         }
 
         .cal-cell.has-data:focus-visible {
@@ -253,7 +268,7 @@ export function getCalendarTabStyles(): string {
             display: flex;
             gap: var(--space-3);
             flex-wrap: wrap;
-            font-size: 0.8em;
+            font-size: 0.85em;
             color: var(--color-text-dim);
         }
 
@@ -269,13 +284,13 @@ export function getCalendarTabStyles(): string {
             border-radius: var(--radius-md);
             padding: var(--space-3);
             margin-bottom: var(--space-2);
-            background: rgba(255,255,255,0.02);
+            background: var(--color-surface);
             transition: border-color 0.2s cubic-bezier(.4,0,.2,1);
         }
 
         @media (hover: hover) {
             .cal-cycle:hover {
-                border-color: rgba(255,255,255,0.15);
+                border-color: var(--color-border-hover);
             }
         }
 
@@ -286,7 +301,7 @@ export function getCalendarTabStyles(): string {
             align-items: center;
             justify-content: space-between;
             margin-bottom: var(--space-2);
-            font-size: 0.82em;
+            font-size: 0.88em;
         }
 
         .cal-cycle-time {
@@ -300,7 +315,7 @@ export function getCalendarTabStyles(): string {
         }
 
         .cal-model-chip {
-            font-size: 0.7em;
+            font-size: 0.8em;
             padding: 1px 6px;
             border-radius: var(--radius-sm);
             background: rgba(96, 165, 250, 0.1);
@@ -312,7 +327,7 @@ export function getCalendarTabStyles(): string {
             display: flex;
             gap: var(--space-3);
             flex-wrap: wrap;
-            font-size: 0.8em;
+            font-size: 0.88em;
         }
 
         .cal-stat {
@@ -351,10 +366,14 @@ export function getCalendarTabStyles(): string {
         }
 
         .cal-day-total-label {
-            font-size: 0.7em;
+            font-size: 0.8em;
             color: var(--color-text-dim);
             text-transform: uppercase;
             letter-spacing: 0.3px;
+        }
+
+        .cal-day-total-danger {
+            color: var(--color-danger);
         }
 
         /* ── Clear Button ─── */
@@ -423,7 +442,7 @@ export function getCalendarTabStyles(): string {
         }
 
         .cal-overview-label {
-            font-size: 0.7em;
+            font-size: 0.8em;
             color: var(--color-text-dim);
             text-transform: uppercase;
             letter-spacing: 0.3px;
@@ -479,9 +498,9 @@ export function getCalendarTabStyles(): string {
         }
 
         .cal-chip-reasoning {
-            background: rgba(139, 92, 246, 0.1);
-            color: #a78bfa;
-            border: 1px solid rgba(139, 92, 246, 0.2);
+            background: rgba(251, 146, 60, 0.1);
+            color: #fb923c;
+            border: 1px solid rgba(251, 146, 60, 0.2);
         }
 
         .cal-chip-tools {
@@ -515,9 +534,9 @@ export function getCalendarTabStyles(): string {
         }
 
         .cal-chip-ttft {
-            background: rgba(168, 85, 247, 0.08);
-            color: #c084fc;
-            border: 1px solid rgba(168, 85, 247, 0.2);
+            background: rgba(255,255,255,0.06);
+            color: var(--color-text-dim);
+            border: 1px solid rgba(255,255,255,0.1);
         }
 
         .cal-chip-cache {
@@ -527,7 +546,7 @@ export function getCalendarTabStyles(): string {
         }
 
         .cal-gm-section-label {
-            font-size: 0.68em;
+            font-size: 0.78em;
             color: var(--color-text-dim);
             text-transform: uppercase;
             letter-spacing: 0.5px;
@@ -535,9 +554,70 @@ export function getCalendarTabStyles(): string {
             opacity: 0.7;
         }
 
+        .cal-clear-section {
+            text-align: center;
+        }
+
+        .cal-cycle-stats-spaced {
+            margin-top: var(--space-2);
+        }
+
+        .cal-cycles-details {
+            margin-top: var(--space-2);
+        }
+
+        .cal-cycles-summary {
+            cursor: pointer;
+            font-size: 0.85em;
+            font-weight: 600;
+            color: var(--color-info);
+            padding: var(--space-2);
+            border-radius: var(--radius-sm);
+            background: rgba(96,165,250,0.06);
+            border: 1px solid rgba(96,165,250,0.15);
+            list-style: none;
+            transition: background 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        .cal-cycles-summary::-webkit-details-marker { display: none; }
+
+        .cal-cycles-summary::before {
+            content: '▶ ';
+            font-size: 0.78em;
+        }
+
+        .cal-cycles-details[open] > .cal-cycles-summary::before {
+            content: '▼ ';
+        }
+
+        @media (hover: hover) {
+            .cal-cycles-summary:hover {
+                background: rgba(96,165,250,0.12);
+            }
+        }
+
+        .cal-cycles-summary:focus-visible {
+            box-shadow: 0 0 0 2px var(--color-info);
+            outline: none;
+        }
+
         @media (prefers-reduced-motion: reduce) {
             .cal-detail { animation: none; }
         }
+
+        /* ─── Light Theme: Calendar Chips ──── */
+        body.vscode-light .cal-model-chip { background: rgba(37,99,235,0.08); color: #1d4ed8; border-color: rgba(37,99,235,0.2); }
+        body.vscode-light .cal-chip-reasoning { background: rgba(234,88,12,0.08); color: #c2410c; border-color: rgba(234,88,12,0.2); }
+        body.vscode-light .cal-chip-tools { background: rgba(37,99,235,0.08); color: #1e40af; border-color: rgba(37,99,235,0.2); }
+        body.vscode-light .cal-chip-errors { background: rgba(220,38,38,0.08); color: #991b1b; border-color: rgba(220,38,38,0.2); }
+        body.vscode-light .cal-chip-est { background: rgba(202,138,4,0.08); color: #92400e; border-color: rgba(202,138,4,0.2); }
+        body.vscode-light .cal-chip-tokens { background: rgba(22,163,74,0.06); color: #15803d; border-color: rgba(22,163,74,0.2); }
+        body.vscode-light .cal-chip-cost { background: rgba(202,138,4,0.06); color: #92400e; border-color: rgba(202,138,4,0.2); }
+        body.vscode-light .cal-chip-ttft { background: rgba(0,0,0,0.04); color: rgba(0,0,0,0.55); border-color: rgba(0,0,0,0.1); }
+        body.vscode-light .cal-chip-cache { background: rgba(13,148,136,0.06); color: #0f766e; border-color: rgba(13,148,136,0.2); }
+        body.vscode-light .cal-cell.has-data { background: rgba(0,0,0,0.03); }
+        body.vscode-light .cal-cycle { background: rgba(0,0,0,0.015); }
+        body.vscode-light .cal-detail { background: rgba(37,99,235,0.03); border-color: rgba(37,99,235,0.15); }
     `;
 }
 
@@ -625,10 +705,14 @@ function buildMonthView(store: DailyStore, year: number, month: number): string 
 }
 
 function buildDayDetail(record: DailyRecord, dateStr: string): string {
-    // Aggregate totals
+    // ── Aggregate totals across all cycles ──
     let totalReasoning = 0, totalToolCalls = 0, totalErrors = 0;
     let totalInput = 0, totalOutput = 0, totalCost = 0;
     let totalGMCalls = 0, totalGMCredits = 0;
+
+    // ── Aggregate per-model stats across cycles ──
+    const mergedModel: Record<string, { reasoning: number; toolCalls: number; errors: number; estSteps: number; inputTokens: number; outputTokens: number }> = {};
+    const mergedGM: Record<string, { calls: number; credits: number; inputTokens: number; outputTokens: number; thinkingTokens: number; ttftSum: number; ttftWeight: number; cacheSum: number; cacheWeight: number; cost: number }> = {};
 
     for (const c of record.cycles) {
         totalReasoning += c.totalReasoning;
@@ -639,13 +723,60 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
         totalCost += c.estimatedCost || 0;
         totalGMCalls += c.gmTotalCalls || 0;
         totalGMCredits += c.gmTotalCredits || 0;
+
+        if (c.modelStats) {
+            for (const [name, ms] of Object.entries(c.modelStats)) {
+                const m = mergedModel[name] || (mergedModel[name] = { reasoning: 0, toolCalls: 0, errors: 0, estSteps: 0, inputTokens: 0, outputTokens: 0 });
+                m.reasoning += ms.reasoning;
+                m.toolCalls += ms.toolCalls;
+                m.errors += ms.errors;
+                m.estSteps += ms.estSteps;
+                m.inputTokens += ms.inputTokens;
+                m.outputTokens += ms.outputTokens;
+            }
+        }
+
+        if (c.gmModelStats) {
+            for (const [name, gm] of Object.entries(c.gmModelStats)) {
+                const g = mergedGM[name] || (mergedGM[name] = { calls: 0, credits: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0, ttftSum: 0, ttftWeight: 0, cacheSum: 0, cacheWeight: 0, cost: 0 });
+                g.calls += gm.calls;
+                g.credits += gm.credits;
+                g.inputTokens += gm.inputTokens;
+                g.outputTokens += gm.outputTokens;
+                g.thinkingTokens += gm.thinkingTokens;
+                if (gm.avgTTFT > 0 && gm.calls > 0) { g.ttftSum += gm.avgTTFT * gm.calls; g.ttftWeight += gm.calls; }
+                if (gm.cacheHitRate > 0 && gm.calls > 0) { g.cacheSum += gm.cacheHitRate * gm.calls; g.cacheWeight += gm.calls; }
+                g.cost += gm.estimatedCost || 0;
+            }
+        }
     }
 
+    // ── Derive GM-level aggregates for top bar ──
+    let gmTotalTokens = 0;
+    let gmCacheWeightedSum = 0, gmCacheWeightTotal = 0;
+    for (const ms of Object.values(mergedGM)) {
+        gmTotalTokens += ms.inputTokens + ms.outputTokens;
+        if (ms.cacheWeight > 0) {
+            gmCacheWeightedSum += ms.cacheSum;
+            gmCacheWeightTotal += ms.cacheWeight;
+        }
+    }
+    // Use GM tokens when available (more accurate than Activity tracker)
+    const displayTokens = gmTotalTokens > 0 ? gmTotalTokens : (totalInput + totalOutput);
+    const avgCacheRate = gmCacheWeightTotal > 0 ? gmCacheWeightedSum / gmCacheWeightTotal : 0;
+
+    const mergedModelHtml = buildMergedModelRows(mergedModel);
+    const mergedGMHtml = buildMergedGMRows(mergedGM);
     const cycleCards = record.cycles.map((c, idx) => buildCycleCard(c, idx + 1)).join('');
 
     const todayBadge = isToday(dateStr)
         ? `<span class="badge info-badge">${tBi('TODAY', '今天')}</span>`
         : '';
+
+    const cycleCount = record.cycles.length;
+    const cycleSection = cycleCount > 1
+        ? `<details class="cal-cycles-details" id="d-cal-cycles-${dateStr}"><summary class="cal-cycles-summary">${tBi(`View ${cycleCount} Individual Cycles`, `查看 ${cycleCount} 个独立周期`)}</summary>${cycleCards}</details>`
+        : cycleCards;
 
     return `
         <div class="cal-detail" id="cal-detail-${dateStr}" style="display:none" data-cal-detail="${dateStr}">
@@ -654,10 +785,9 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
                     ${CALENDAR_ICON} ${dateStr} ${todayBadge}
                 </span>
                 <div class="cal-detail-summary">
-                    <span class="cal-sum-item"><span class="cal-stat-val">${record.cycles.length}</span> ${tBi('cycles', '周期')}</span>
+                    <span class="cal-sum-item"><span class="cal-stat-val">${cycleCount}</span> ${tBi('cycles', '周期')}</span>
                 </div>
             </div>
-            ${cycleCards}
             <div class="cal-day-summary">
                 <div class="cal-day-total">
                     <div class="cal-day-total-val">${totalReasoning}</div>
@@ -668,7 +798,7 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
                     <div class="cal-day-total-label">${tBi('Tools', '工具')}</div>
                 </div>
                 <div class="cal-day-total">
-                    <div class="cal-day-total-val">${formatTokensK(totalInput + totalOutput)}</div>
+                    <div class="cal-day-total-val">${formatTokensK(displayTokens)}</div>
                     <div class="cal-day-total-label">${tBi('Tokens', '令牌')}</div>
                 </div>
                 ${totalCost > 0 ? `
@@ -681,8 +811,71 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
                     <div class="cal-day-total-val">${totalGMCredits}</div>
                     <div class="cal-day-total-label">${tBi('Credits', '积分')}</div>
                 </div>` : ''}
+                ${totalGMCalls > 0 ? `
+                <div class="cal-day-total">
+                    <div class="cal-day-total-val">${totalGMCalls}</div>
+                    <div class="cal-day-total-label">${tBi('GM Calls', 'GM 调用')}</div>
+                </div>` : ''}
+                ${avgCacheRate > 0 ? `
+                <div class="cal-day-total">
+                    <div class="cal-day-total-val">${(avgCacheRate * 100).toFixed(0)}%</div>
+                    <div class="cal-day-total-label">${tBi('Cache', '缓存')}</div>
+                </div>` : ''}
+                ${totalErrors > 0 ? `
+                <div class="cal-day-total">
+                    <div class="cal-day-total-val cal-day-total-danger">${totalErrors}</div>
+                    <div class="cal-day-total-label">${tBi('Errors', '错误')}</div>
+                </div>` : ''}
             </div>
+            ${mergedModelHtml}
+            ${mergedGMHtml}
+            ${cycleSection}
         </div>`;
+}
+
+/** Merged per-model activity rows across all cycles */
+function buildMergedModelRows(merged: Record<string, { reasoning: number; toolCalls: number; errors: number; estSteps: number; inputTokens: number; outputTokens: number }>): string {
+    const entries = Object.entries(merged);
+    if (entries.length === 0) { return ''; }
+
+    let html = '<div class="cal-model-rows">';
+    html += `<div class="cal-gm-section-label">${tBi('Model Summary', '模型汇总')}</div>`;
+    for (const [name, ms] of entries) {
+        const chips: string[] = [];
+        if (ms.reasoning > 0) { chips.push(`<span class="cal-chip cal-chip-reasoning">${CAL_ICON.brain} ${ms.reasoning}</span>`); }
+        if (ms.toolCalls > 0) { chips.push(`<span class="cal-chip cal-chip-tools">${CAL_ICON.tool} ${ms.toolCalls}</span>`); }
+        if (ms.errors > 0) { chips.push(`<span class="cal-chip cal-chip-errors">${CAL_ICON.warn} ${ms.errors}</span>`); }
+        if (ms.estSteps > 0) { chips.push(`<span class="cal-chip cal-chip-est">${CAL_ICON.chart} +${ms.estSteps}</span>`); }
+        const totalTok = ms.inputTokens + ms.outputTokens;
+        if (totalTok > 0) { chips.push(`<span class="cal-chip cal-chip-tokens">${CAL_ICON.token} ${fmtTok(totalTok)}</span>`); }
+        html += `<div class="cal-model-row"><span class="cal-model-name">${esc(name)}</span><span class="cal-model-chips">${chips.join('')}</span></div>`;
+    }
+    html += '</div>';
+    return html;
+}
+
+/** Merged per-model GM rows across all cycles (with weighted averages) */
+function buildMergedGMRows(merged: Record<string, { calls: number; credits: number; inputTokens: number; outputTokens: number; thinkingTokens: number; ttftSum: number; ttftWeight: number; cacheSum: number; cacheWeight: number; cost: number }>): string {
+    const entries = Object.entries(merged);
+    if (entries.length === 0) { return ''; }
+
+    let html = '<div class="cal-model-rows">';
+    html += `<div class="cal-gm-section-label">GM ${tBi('Summary', '汇总')}</div>`;
+    for (const [name, ms] of entries) {
+        const chips: string[] = [];
+        if (ms.calls > 0) { chips.push(`<span class="cal-chip cal-chip-tools">${CAL_ICON.calls} ${ms.calls} ${tBi('calls', '调用')}</span>`); }
+        if (ms.credits > 0) { chips.push(`<span class="cal-chip cal-chip-tokens">${CAL_ICON.credit} ${ms.credits}</span>`); }
+        const avgTTFT = ms.ttftWeight > 0 ? ms.ttftSum / ms.ttftWeight : 0;
+        if (avgTTFT > 0) { chips.push(`<span class="cal-chip cal-chip-ttft">${CAL_ICON.clock} ${avgTTFT.toFixed(1)}s</span>`); }
+        const avgCache = ms.cacheWeight > 0 ? ms.cacheSum / ms.cacheWeight : 0;
+        if (avgCache > 0) { chips.push(`<span class="cal-chip cal-chip-cache">${CAL_ICON.cache} ${(avgCache * 100).toFixed(0)}%</span>`); }
+        if (ms.cost > 0) { chips.push(`<span class="cal-chip cal-chip-cost">${CAL_ICON.dollar} ${fmtCostShort(ms.cost)}</span>`); }
+        const totalTok = ms.inputTokens + ms.outputTokens;
+        if (totalTok > 0) { chips.push(`<span class="cal-chip cal-chip-tokens">${fmtTok(totalTok)} ${tBi('tok', '令牌')}</span>`); }
+        html += `<div class="cal-model-row"><span class="cal-model-name">${esc(name)}</span><span class="cal-model-chips">${chips.join('')}</span></div>`;
+    }
+    html += '</div>';
+    return html;
 }
 
 function buildCycleCard(cycle: DailyCycleEntry, index: number): string {
@@ -713,7 +906,7 @@ function buildCycleCard(cycle: DailyCycleEntry, index: number): string {
         stats.push(`<span class="cal-stat"><span class="cal-stat-val">${cycle.gmTotalCredits}</span> <span class="cal-stat-label">${tBi('credits', '积分')}</span></span>`);
     }
     if (cycle.totalErrors > 0) {
-        stats.push(`<span class="cal-stat" style="color:var(--color-danger)"><span class="cal-stat-val">${cycle.totalErrors}</span> <span class="cal-stat-label">${tBi('errors', '错误')}</span></span>`);
+        stats.push(`<span class="cal-stat cal-day-total-danger"><span class="cal-stat-val">${cycle.totalErrors}</span> <span class="cal-stat-label">${tBi('errors', '错误')}</span></span>`);
     }
 
     return `
@@ -724,7 +917,7 @@ function buildCycleCard(cycle: DailyCycleEntry, index: number): string {
                 </span>
             </div>
             ${modelChips ? `<div class="cal-cycle-models">${modelChips}</div>` : ''}
-            <div class="cal-cycle-stats" style="margin-top:var(--space-2)">
+            <div class="cal-cycle-stats cal-cycle-stats-spaced">
                 ${stats.join('')}
             </div>
             ${buildPerModelRows(cycle.modelStats)}
@@ -735,32 +928,24 @@ function buildCycleCard(cycle: DailyCycleEntry, index: number): string {
 function buildPerModelRows(modelStats?: Record<string, ModelCycleStats>): string {
     if (!modelStats || Object.keys(modelStats).length === 0) { return ''; }
 
-    const BRAIN = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M5.52.359A.5.5 0 0 1 6 0h4a.5.5 0 0 1 .474.658L8.694 6H12.5a.5.5 0 0 1 .395.807l-7 9a.5.5 0 0 1-.873-.454L6.823 9H3.5a.5.5 0 0 1-.48-.641z"/></svg>';
-    const TOOL = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1 0 0 1l2.2 3.081a1 1 0 0 0 .815.419h.07a1 1 0 0 1 .708.293l2.675 2.675-2.617 2.654A3.003 3.003 0 0 0 0 13a3 3 0 1 0 5.878-.851l2.654-2.617.968.968-.305.914a1 1 0 0 0 .242 1.023l3.27 3.27a.997.997 0 0 0 1.414 0l1.586-1.586a.997.997 0 0 0 0-1.414l-3.27-3.27a1 1 0 0 0-1.023-.242L10.5 9.5l-.96-.96 2.68-2.643A3.005 3.005 0 0 0 16 3c0-.269-.035-.53-.102-.777l-2.14 2.141L12 4l-.364-1.757L13.777.102a3 3 0 0 0-3.675 3.68L7.462 6.46 4.793 3.793a1 1 0 0 1-.293-.707v-.071a1 1 0 0 0-.419-.814z"/></svg>';
-    const WARN = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5m.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2"/></svg>';
-    const CHART = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M0 0h1v15h15v1H0zm14.817 3.113a.5.5 0 0 1 .07.704l-4.5 5.5a.5.5 0 0 1-.74.037L7.06 6.767l-3.656 5.027a.5.5 0 0 1-.808-.588l4-5.5a.5.5 0 0 1 .758-.06l2.609 2.61 4.15-5.073a.5.5 0 0 1 .704-.07"/></svg>';
-    const TOKEN = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1 3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1H1m0 1v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4zm6 2a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1z"/></svg>';
-
-    const fmtTok = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-
     let html = '<div class="cal-model-rows">';
     for (const [name, ms] of Object.entries(modelStats)) {
         const chips: string[] = [];
         if (ms.reasoning > 0) {
-            chips.push(`<span class="cal-chip cal-chip-reasoning">${BRAIN} ${ms.reasoning}</span>`);
+            chips.push(`<span class="cal-chip cal-chip-reasoning">${CAL_ICON.brain} ${ms.reasoning}</span>`);
         }
         if (ms.toolCalls > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tools">${TOOL} ${ms.toolCalls}</span>`);
+            chips.push(`<span class="cal-chip cal-chip-tools">${CAL_ICON.tool} ${ms.toolCalls}</span>`);
         }
         if (ms.errors > 0) {
-            chips.push(`<span class="cal-chip cal-chip-errors">${WARN} ${ms.errors}</span>`);
+            chips.push(`<span class="cal-chip cal-chip-errors">${CAL_ICON.warn} ${ms.errors}</span>`);
         }
         if (ms.estSteps > 0) {
-            chips.push(`<span class="cal-chip cal-chip-est">${CHART} +${ms.estSteps}</span>`);
+            chips.push(`<span class="cal-chip cal-chip-est">${CAL_ICON.chart} +${ms.estSteps}</span>`);
         }
         const totalTok = ms.inputTokens + ms.outputTokens;
         if (totalTok > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tokens">${TOKEN} ${fmtTok(totalTok)}</span>`);
+            chips.push(`<span class="cal-chip cal-chip-tokens">${CAL_ICON.token} ${fmtTok(totalTok)}</span>`);
         }
 
         html += `
@@ -776,38 +961,29 @@ function buildPerModelRows(modelStats?: Record<string, ModelCycleStats>): string
 function buildGMModelRows(gmModelStats?: Record<string, GMModelCycleStats>): string {
     if (!gmModelStats || Object.keys(gmModelStats).length === 0) { return ''; }
 
-    const CALLS_ICON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M2.5 1A1.5 1.5 0 0 0 1 2.5v11A1.5 1.5 0 0 0 2.5 15h11a1.5 1.5 0 0 0 1.5-1.5v-11A1.5 1.5 0 0 0 13.5 1zm4.168 4.413a.5.5 0 0 1 .497.034l3.5 2.5a.5.5 0 0 1 0 .806l-3.5 2.5A.5.5 0 0 1 6.5 10.5v-5a.5.5 0 0 1 .168-.087"/></svg>';
-    const CREDIT_ICON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path fill="currentColor" d="M4 5.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8m0 2.5a.5.5 0 0 1 .5-.5h4a.5.5 0 0 1 0 1h-4a.5.5 0 0 1-.5-.5"/></svg>';
-    const CLOCK_ICON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 3.5a.5.5 0 0 0-1 0V8a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 7.71z"/><path fill="currentColor" d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0"/></svg>';
-    const CACHE_ICON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm15 2h-4v3h4zm0 4h-4v3h4zm0 4h-4v3h3a1 1 0 0 0 1-1zm-5 3v-3H6v3zm-5 0v-3H1v2a1 1 0 0 0 1 1zm-4-4h4V8H1zm0-4h4V4H1zm5-3v3h4V4zm4 4H6v3h4z"/></svg>';
-    const DOLLAR_ICON = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.3 0-1.59-.947-2.51-2.956-3.028l-.722-.187V3.467c1.122.11 1.879.714 2.07 1.616h1.47c-.166-1.6-1.54-2.748-3.54-2.875V1H7.591v1.233c-1.939.23-3.27 1.472-3.27 3.156 0 1.454.966 2.483 2.661 2.917l.61.162v4.031c-1.149-.17-1.94-.8-2.131-1.718zm3.391-3.836c-1.043-.263-1.6-.825-1.6-1.616 0-.944.704-1.641 1.8-1.828v3.495zM8.634 8.1C9.858 8.418 10.44 9 10.44 9.89c0 1.12-.789 1.816-2.007 1.931V8.1z"/></svg>';
-
-    const fmtTok = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    const fmtCost = (n: number) => n >= 1 ? '$' + n.toFixed(2) : n > 0 ? '$' + n.toFixed(4) : '';
-
     let html = '<div class="cal-model-rows">';
     html += `<div class="cal-gm-section-label">GM ${tBi('Breakdown', '明细')}</div>`;
 
     for (const [name, ms] of Object.entries(gmModelStats)) {
         const chips: string[] = [];
         if (ms.calls > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tools">${CALLS_ICON} ${ms.calls} ${tBi('calls', '调用')}</span>`);
+            chips.push(`<span class="cal-chip cal-chip-tools">${CAL_ICON.calls} ${ms.calls} ${tBi('calls', '调用')}</span>`);
         }
         if (ms.credits > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tokens">${CREDIT_ICON} ${ms.credits}</span>`);
+            chips.push(`<span class="cal-chip cal-chip-tokens">${CAL_ICON.credit} ${ms.credits}</span>`);
         }
         if (ms.avgTTFT > 0) {
-            chips.push(`<span class="cal-chip cal-chip-ttft">${CLOCK_ICON} ${ms.avgTTFT.toFixed(1)}s</span>`);
+            chips.push(`<span class="cal-chip cal-chip-ttft">${CAL_ICON.clock} ${ms.avgTTFT.toFixed(1)}s</span>`);
         }
         if (ms.cacheHitRate > 0) {
-            chips.push(`<span class="cal-chip cal-chip-cache">${CACHE_ICON} ${(ms.cacheHitRate * 100).toFixed(0)}%</span>`);
+            chips.push(`<span class="cal-chip cal-chip-cache">${CAL_ICON.cache} ${(ms.cacheHitRate * 100).toFixed(0)}%</span>`);
         }
         if (ms.estimatedCost && ms.estimatedCost > 0) {
-            chips.push(`<span class="cal-chip cal-chip-cost">${DOLLAR_ICON} ${fmtCost(ms.estimatedCost)}</span>`);
+            chips.push(`<span class="cal-chip cal-chip-cost">${CAL_ICON.dollar} ${fmtCostShort(ms.estimatedCost)}</span>`);
         }
         const totalTok = ms.inputTokens + ms.outputTokens;
         if (totalTok > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tokens">${fmtTok(totalTok)} tok</span>`);
+            chips.push(`<span class="cal-chip cal-chip-tokens">${fmtTok(totalTok)} ${tBi('tok', '令牌')}</span>`);
         }
 
         html += `
@@ -823,6 +999,7 @@ function buildGMModelRows(gmModelStats?: Record<string, GMModelCycleStats>): str
 function buildOverallSummary(store: DailyStore): string {
     const dates = store.getDatesWithData();
     let totalReasoning = 0, totalToolCalls = 0, totalCost = 0, totalCycles = 0;
+    let totalErrors = 0, totalGMCalls = 0, totalGMCredits = 0, totalGMTokens = 0;
 
     for (const date of dates) {
         const record = store.getRecord(date);
@@ -832,6 +1009,14 @@ function buildOverallSummary(store: DailyStore): string {
             totalReasoning += c.totalReasoning;
             totalToolCalls += c.totalToolCalls;
             totalCost += c.estimatedCost || 0;
+            totalErrors += c.totalErrors;
+            totalGMCalls += c.gmTotalCalls || 0;
+            totalGMCredits += c.gmTotalCredits || 0;
+            if (c.gmModelStats) {
+                for (const gm of Object.values(c.gmModelStats)) {
+                    totalGMTokens += gm.inputTokens + gm.outputTokens;
+                }
+            }
         }
     }
 
@@ -855,10 +1040,30 @@ function buildOverallSummary(store: DailyStore): string {
                     <div class="cal-overview-val">${totalToolCalls}</div>
                     <div class="cal-overview-label">${tBi('Tools', '工具')}</div>
                 </div>
+                ${totalGMTokens > 0 ? `
+                <div class="cal-overview-item">
+                    <div class="cal-overview-val">${formatTokensK(totalGMTokens)}</div>
+                    <div class="cal-overview-label">${tBi('Tokens', '令牌')}</div>
+                </div>` : ''}
                 ${totalCost > 0 ? `
                 <div class="cal-overview-item">
                     <div class="cal-overview-val">${formatCost(totalCost)}</div>
                     <div class="cal-overview-label">${tBi('Total Cost', '总费用')}</div>
+                </div>` : ''}
+                ${totalGMCredits > 0 ? `
+                <div class="cal-overview-item">
+                    <div class="cal-overview-val">${totalGMCredits}</div>
+                    <div class="cal-overview-label">${tBi('Credits', '积分')}</div>
+                </div>` : ''}
+                ${totalGMCalls > 0 ? `
+                <div class="cal-overview-item">
+                    <div class="cal-overview-val">${totalGMCalls}</div>
+                    <div class="cal-overview-label">${tBi('GM Calls', 'GM 调用')}</div>
+                </div>` : ''}
+                ${totalErrors > 0 ? `
+                <div class="cal-overview-item">
+                    <div class="cal-overview-val cal-day-total-danger">${totalErrors}</div>
+                    <div class="cal-overview-label">${tBi('Errors', '错误')}</div>
                 </div>` : ''}
             </div>
         </section>`;

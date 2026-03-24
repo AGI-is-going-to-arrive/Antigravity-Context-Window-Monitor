@@ -58,7 +58,7 @@
     语言服务器不可用时，轮询间隔按 `baseInterval × 2^n` 递增（默认 5s → 10s → 20s → 60s），重连后立即恢复正常间隔。
 
 * **📊 WebView 监控面板** *(v1.10.1 新增)*
-    点击状态栏打开侧边面板全景仪表盘。展示账户计划与等级、Prompt/Flow Credits 余额、每模型配额使用量（带颜色进度条）、功能开关、团队配置（MCP Servers、Auto-Run 等）、Google AI 额度。所有数据来自已有的 `GetUserStatus` API——零额外网络请求。
+    点击状态栏打开侧边面板全景仪表盘。展示账户计划与等级、Prompt / Flow Credits（额度）余额、每模型配额使用量（带颜色进度条）、功能开关、团队配置（MCP Servers、Auto-Run 等）、Google AI 额度。所有数据来自已有的 `GetUserStatus` API——零额外网络请求。
     * **🛡️ 隐私遮罩**：面板顶部盾牌按钮可遮罩姓名和邮箱，开关状态跨刷新持久化。
     * **📂 可折叠区域**：次要信息（计划限制、功能开关、团队配置、Google AI 额度）默认折叠，展开/收起状态持久化。
 
@@ -83,7 +83,7 @@
 
 ## 🤖 支持的模型
 
-| 模型 | Internal ID | 上下文上限 |
+| 模型 | Internal ID / 内部 ID | 上下文上限 |
 | --- | --- | --- |
 | Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M37 | 1,000,000 |
 | Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 1,000,000 |
@@ -105,7 +105,7 @@
    ![悬停详情](src/images/悬停详情.png)
 
 4. **点击查看 — WebView 监控面板**: 点击状态栏项，打开侧边 **WebView 监控面板**：
-   * **账户与 Credits**：一览账户计划名称、用户等级、Prompt / Flow Credits 余额。
+   * **账户与额度**：一览账户计划名称、用户等级、Prompt / Flow Credits 余额。
    * **模型配额**：每个模型显示颜色进度条（绿 → 黄 → 红），附带配额重置时间。
    * **当前会话**：展示当前活跃对话的上下文使用量、模型、步骤数、压缩状态。
    * **其他会话**：列出同一工作区的其他近期对话。
@@ -128,7 +128,7 @@
 
 > [!IMPORTANT]
 > **Antigravity 内部总结机制**
-> Antigravity IDE 对检查点总结有一个硬编码的 7500 token "总结阈值" (Summarization Threshold)。这当对话非常长且跨过该阈值后，Token 计数可能会出现轻微偏差。更多细节请参考 [Reddit 社区讨论](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)。
+> Antigravity IDE 对检查点总结有一个硬编码的 7500 token "总结阈值" (Summarization Threshold)。这意味着当对话非常长且跨过该阈值后，Token 计数可能会出现轻微偏差。更多细节请参考 [Reddit 社区讨论](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)。
 
 > [!NOTE]
 > **子智能体动态切换**
@@ -159,10 +159,10 @@
 | `Switch Display Language` | 选择仅中文、仅英文或双语显示模式 |
 | `Show Model Activity` | 打开监控面板的活动标签页 |
 
-## ⭐ Star History
+## ⭐ Star History / Star 趋势
 
 [![Star History Chart](https://api.star-history.com/svg?repos=AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)
 
 ---
 **作者**: AGI-is-going-to-arrive
-**Version**: 1.13.3
+**版本 / Version**: 1.13.3

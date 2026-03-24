@@ -285,6 +285,7 @@ export class StatusBarManager {
         const compressionStats = calculateCompressionStats(usage);
         const safeTitle = escapeMarkdown(usage.title || usage.cascadeId.substring(0, 8));
         const safeModelName = escapeMarkdown(usage.modelDisplayName);
+        const tokenUnit = tBi('tokens', '令牌');
 
         const lines = [
             `📊 ${t('tooltip.title')}`,
@@ -293,10 +294,10 @@ export class StatusBarManager {
             `📝 ${t('tooltip.session')}: ${safeTitle}`,
             `——————————`,
             `📥 ${t('tooltip.totalContextUsed')}:`,
-            `     ${usage.contextUsed.toLocaleString()} tokens`,
-            `📤 ${t('tooltip.modelOutput')}: ${usage.totalOutputTokens.toLocaleString()} tokens`,
-            `🔧 ${t('tooltip.toolResults')}: ${usage.totalToolCallOutputTokens.toLocaleString()} tokens`,
-            `📦 ${t('tooltip.limit')}: ${usage.contextLimit.toLocaleString()} tokens`,
+            `     ${usage.contextUsed.toLocaleString()} ${tokenUnit}`,
+            `📤 ${t('tooltip.modelOutput')}: ${usage.totalOutputTokens.toLocaleString()} ${tokenUnit}`,
+            `🔧 ${t('tooltip.toolResults')}: ${usage.totalToolCallOutputTokens.toLocaleString()} ${tokenUnit}`,
+            `📦 ${t('tooltip.limit')}: ${usage.contextLimit.toLocaleString()} ${tokenUnit}`,
             `📊 ${t('tooltip.usage')}: ${usage.usagePercent.toFixed(1)}%`,
         ];
 
@@ -306,20 +307,20 @@ export class StatusBarManager {
         } else if (usage.compressionDetected) {
             lines.push(`🗜 ${t('tooltip.compressed')}`);
             if (usage.previousContextUsed !== undefined) {
-                lines.push(`   ${t('tooltip.before')}: ${usage.previousContextUsed.toLocaleString()} tokens`);
-                lines.push(`   ${t('tooltip.after')}: ${usage.contextUsed.toLocaleString()} tokens`);
+                lines.push(`   ${t('tooltip.before')}: ${usage.previousContextUsed.toLocaleString()} ${tokenUnit}`);
+                lines.push(`   ${t('tooltip.after')}: ${usage.contextUsed.toLocaleString()} ${tokenUnit}`);
             }
             if (compressionStats) {
                 const sourceLabel = compressionStats.source === 'context'
                     ? t('tooltip.contextDrop')
                     : t('tooltip.checkpointDrop');
                 lines.push(
-                    `   ${sourceLabel}: ${compressionStats.dropTokens.toLocaleString()} tokens ` +
+                    `   ${sourceLabel}: ${compressionStats.dropTokens.toLocaleString()} ${tokenUnit} ` +
                     `(${compressionStats.dropPercent.toFixed(1)}%)`
                 );
             }
         } else {
-            lines.push(`📐 ${t('tooltip.remaining')}: ${remaining.toLocaleString()} tokens`);
+            lines.push(`📐 ${t('tooltip.remaining')}: ${remaining.toLocaleString()} ${tokenUnit}`);
         }
 
         if (usage.hasGaps) {
@@ -333,7 +334,7 @@ export class StatusBarManager {
         }
 
         if (usage.estimatedDeltaSinceCheckpoint > 0 && usage.lastModelUsage) {
-            lines.push(`📏 ${t('tooltip.estDelta')}: +${usage.estimatedDeltaSinceCheckpoint.toLocaleString()} tokens (${t('tooltip.sinceCheckpoint')})`);
+            lines.push(`📏 ${t('tooltip.estDelta')}: +${usage.estimatedDeltaSinceCheckpoint.toLocaleString()} ${tokenUnit} (${t('tooltip.sinceCheckpoint')})`);
         }
 
         lines.push(`——————————`);
@@ -462,9 +463,13 @@ export class StatusBarManager {
                 : (currentUsage.usagePercent > 100 ? ` [${t('panel.compressing')}]` : '');
             const imageTag = currentUsage.imageGenStepCount > 0 ? ` [📷×${currentUsage.imageGenStepCount}]` : '';
             const gapsTag = currentUsage.hasGaps ? ` [⚠️${t('panel.gaps')}]` : '';
+            const tokenUnit = tBi('tokens', '令牌');
+            const compressionSource = compressionStats
+                ? (compressionStats.source === 'context' ? t('tooltip.contextDrop') : t('tooltip.checkpointDrop'))
+                : '';
             const compDetail = compressionStats
-                ? `${t('panel.compression')}: ${compressionStats.dropTokens.toLocaleString()} tokens ` +
-                `(${compressionStats.dropPercent.toFixed(1)}%, ${compressionStats.source})`
+                ? `${t('panel.compression')}: ${compressionStats.dropTokens.toLocaleString()} ${tokenUnit} ` +
+                `(${compressionStats.dropPercent.toFixed(1)}%, ${compressionSource})`
                 : null;
 
             items.push({
@@ -472,9 +477,9 @@ export class StatusBarManager {
                 description: `${currentUsage.modelDisplayName}`,
                 detail: [
                     `${sourceTag}${compressTag}${imageTag}${gapsTag}`,
-                    `${t('panel.used')}: ${currentUsage.contextUsed.toLocaleString()} tokens | ${t('panel.limitLabel')}: ${currentUsage.contextLimit.toLocaleString()} tokens`,
+                    `${t('panel.used')}: ${currentUsage.contextUsed.toLocaleString()} ${tokenUnit} | ${t('panel.limitLabel')}: ${currentUsage.contextLimit.toLocaleString()} ${tokenUnit}`,
                     `${t('panel.modelOut')}: ${currentUsage.totalOutputTokens.toLocaleString()} | ${t('panel.toolOut')}: ${currentUsage.totalToolCallOutputTokens.toLocaleString()}`,
-                    `${t('panel.remaining')}: ${remaining.toLocaleString()} tokens | ${t('panel.usageLabel')}: ${currentUsage.usagePercent.toFixed(1)}% | ${t('panel.stepsLabel')}: ${currentUsage.stepCount}`,
+                    `${t('panel.remaining')}: ${remaining.toLocaleString()} ${tokenUnit} | ${t('panel.usageLabel')}: ${currentUsage.usagePercent.toFixed(1)}% | ${t('panel.stepsLabel')}: ${currentUsage.stepCount}`,
                     ...(compDetail ? [compDetail] : [])
                 ].join('\n')
             });

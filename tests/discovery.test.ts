@@ -10,7 +10,7 @@ import {
     extractPortFromSs,
     isWSL,
     selectMatchingProcessLine,
-} from './discovery';
+} from '../src/discovery';
 
 describe('discovery.ts', () => {
     describe('buildExpectedWorkspaceId', () => {
