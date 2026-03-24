@@ -231,9 +231,9 @@ export function getStyles(): string {
 
         @media (hover: hover) {
             .action-btn:hover {
-                background: rgba(255,255,255,0.08);
+                background: var(--color-surface-hover);
                 color: var(--color-text);
-                border-color: rgba(255,255,255,0.15);
+                border-color: var(--color-border-hover);
             }
         }
 
@@ -1489,7 +1489,7 @@ export function getStyles(): string {
         .num-spinner-btn {
             appearance: none;
             border: none;
-            background: rgba(255,255,255,0.05);
+            background: var(--color-surface);
             color: var(--color-text-dim);
             font-size: 1em;
             font-weight: 700;
@@ -1535,7 +1535,7 @@ export function getStyles(): string {
 
         .preset-btn {
             appearance: none;
-            background: rgba(255,255,255,0.04);
+            background: var(--color-surface);
             border: 1px solid var(--color-border);
             border-radius: var(--radius-sm);
             color: var(--color-text-dim);
@@ -1768,7 +1768,7 @@ export function getStyles(): string {
             gap: var(--space-2);
             padding: var(--space-2) var(--space-3);
             margin-bottom: var(--space-2);
-            background: rgba(255,255,255,0.03);
+            background: var(--color-surface);
             border: 1px solid var(--color-border);
             border-radius: var(--radius-md);
         }
@@ -1823,7 +1823,7 @@ export function getStyles(): string {
             flex-direction: column;
             gap: 2px;
             padding: var(--space-2);
-            background: rgba(255,255,255,0.03);
+            background: var(--color-surface);
             border: 1px solid var(--color-border);
             border-radius: var(--radius-md);
         }
@@ -1885,7 +1885,7 @@ export function getStyles(): string {
         /* ─── Copy Button ────────────── */
         .copy-btn {
             appearance: none;
-            background: rgba(255,255,255,0.04);
+            background: var(--color-surface);
             border: 1px solid var(--color-border);
             border-radius: var(--radius-sm);
             color: var(--color-text-dim);
@@ -1923,7 +1923,7 @@ export function getStyles(): string {
         /* ─── Danger Action Button ─────── */
         .danger-action {
             color: var(--color-danger);
-            border-color: rgba(248,113,113,0.3);
+            border-color: var(--color-danger-border, rgba(248,113,113,0.3));
             display: inline-flex;
             align-items: center;
             gap: var(--space-1);
@@ -1933,7 +1933,7 @@ export function getStyles(): string {
 
         @media (hover: hover) {
             .danger-action:hover {
-                background: rgba(248,113,113,0.12);
+                background: var(--color-danger-surface, rgba(248,113,113,0.12));
                 color: var(--color-danger);
                 border-color: var(--color-danger);
             }
@@ -2312,6 +2312,21 @@ export function getStyles(): string {
         body.vscode-light .disclaimer-banner[open] { border-color: rgba(180,83,9,0.35); background: rgba(180,83,9,0.06); }
         body.vscode-light .disclaimer-body { color: rgba(0,0,0,0.7); border-top-color: rgba(180,83,9,0.15); }
         body.vscode-light .disclaimer-body strong { color: #92400e; }
+
+        /* ─── Light Theme: Settings Panel ──── */
+        body.vscode-light .toggle-track { background: rgba(0,0,0,0.12); }
+        body.vscode-light .toggle-cb:checked + .toggle-track { background: var(--color-info); }
+        body.vscode-light .num-spinner { background: rgba(0,0,0,0.03); }
+        body.vscode-light .threshold-input { background: rgba(0,0,0,0.03); }
+        body.vscode-light .threshold-input:focus-visible { box-shadow: 0 0 0 2px rgba(37,99,235,0.2); }
+        body.vscode-light .num-spinner:focus-within { box-shadow: 0 0 0 2px rgba(37,99,235,0.2); }
+        body.vscode-light .raw-json { background: rgba(0,0,0,0.03); }
+        body.vscode-light .danger-action {
+            --color-danger-border: rgba(220,38,38,0.25);
+            --color-danger-surface: rgba(220,38,38,0.08);
+        }
+        body.vscode-light .storage-path-state.is-ready { background: rgba(22,163,74,0.1); }
+        body.vscode-light .storage-path-state.is-missing { background: rgba(220,38,38,0.1); }
 
         /* ─── High Contrast Overrides ──── */
         body.vscode-high-contrast {
