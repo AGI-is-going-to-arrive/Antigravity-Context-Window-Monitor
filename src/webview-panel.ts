@@ -473,6 +473,29 @@ ${getCalendarTabStyles()}
             <span class="update-time">${paused ? `<span class="paused-indicator">${tBi('PAUSED', '已暂停')}</span>` : ''} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
         </div>
     </header>
+    <div class="info-banner github-banner">
+        <span class="info-banner-icon">${ICON.git}</span>
+        <span class="info-banner-text">
+            ${tBi(
+                'By <strong>AGI-is-going-to-arrive</strong> — open-source on GitHub. If you find it helpful, a',
+                '作者 <strong>AGI-is-going-to-arrive</strong> — 项目已在 GitHub 开源。如果觉得有帮助，点个',
+            )}
+            <span class="star-inline">${ICON.star}</span>
+            ${tBi('would be appreciated.', '就是最大的支持。')}
+        </span>
+        <a class="info-banner-link" href="https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor" target="_blank" rel="noopener noreferrer">
+            ${ICON.externalLink} GitHub
+        </a>
+    </div>
+    <div class="info-banner multiwin-banner">
+        <span class="info-banner-icon">${ICON.windows}</span>
+        <span class="info-banner-text">
+            ${tBi(
+                'Recommended: use a single IDE window. Multi-window setups may cause data desync between instances (e.g. activity timeline, quota tracking).',
+                '建议使用单窗口运行。多窗口可能导致实例间数据不同步（如活动时间线、额度追踪等）。',
+            )}
+        </span>
+    </div>
     <details class="disclaimer-banner" id="d-disclaimer">
         <summary>
             <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>

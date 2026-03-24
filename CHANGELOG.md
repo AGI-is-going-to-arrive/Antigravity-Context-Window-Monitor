@@ -1,20 +1,17 @@
 # 变更日志 / Changelog
 
-## [1.13.5] - 2026-03-24
+## [1.13.4] - 2026-03-24
 
 ### Added / 新增
 
 - **Interface Zoom Control / 界面缩放控件**: New zoom control card in the Settings tab allows users to scale all WebView content (text, icons, spacing) from 60% to 150%. Features 6 preset buttons (80%–130%) and a fine-grained range slider (step 5%). Zoom level is persisted in WebView State (`vscode.getState()`) — survives poll refreshes, tab switches, language changes, and panel hide/reveal. Implementation uses CSS `zoom` on `<body>` (native Chromium support). New `ICON.zoom` (magnifier-plus SVG) and `data-accent="zoom"` purple accent (`#a78bfa`). Custom range slider thumb with hover scale animation and focus-visible ring.
   设置标签页新增界面缩放控件卡片，支持 60%–150% 等比缩放面板全部内容（文字、图标、间距）。6 个预设按钮（80%–130%）+ 精细 range 滑块（步进 5%）。缩放级别通过 WebView State 持久化，轮询刷新、标签切换、语言变更、面板隐藏/显示均不丢失。底层使用 CSS `zoom`（Chromium 原生支持）。新增 `ICON.zoom` 放大镜 SVG 图标和紫色 accent 主题色。自定义滑块 thumb 含 hover 缩放动画和 focus-visible 光环。
 
-### Bug Fixes / 修复
+- **GitHub Project Banner / GitHub 项目链接**: Added an info banner above the data disclaimer crediting the original author (**AGI-is-going-to-arrive**) with a direct link to the GitHub repository. Includes an inline star icon as a gentle encouragement for users to support the project. New `ICON.externalLink` SVG icon. Styled with green accent border (`--color-ok`) and a compact link button with hover/focus/active states. Full light-theme overrides included.
+  在数据声明上方新增 GitHub 项目信息条，署名原作者 **AGI-is-going-to-arrive** 并提供仓库直链。内联星标图标温和引导用户支持项目。新增 `ICON.externalLink` SVG 图标。绿色主题色边框 + 紧凑外链按钮（含 hover/focus/active 三态）。包含完整亮色主题覆盖。
 
-- **Timeline Step Deduplication / 时间线步骤去重**: Fixed bug where `_injectTimelineEvent()` in `activity-tracker.ts` injected the most recent 20 steps on every `statusChanged` (IDLE→RUNNING) transition without checking for existing entries. Since `_pushEvent()` only performs `push` + `sort` with no dedup, this caused identical step events to accumulate in `_recentSteps`, producing duplicate AI and user entries in the "Recent Activity" timeline when scrolling down. Fix: added `cascadeId` + `stepIndex` + `source='step'` dedup guard at the entry of `_injectTimelineEvent()`.
-  修复 `activity-tracker.ts` 中 `_injectTimelineEvent()` 在每次 `statusChanged`（IDLE→RUNNING）转换时无条件注入最近 20 步、且 `_pushEvent()` 仅 push+sort 无去重逻辑，导致相同步骤事件在 `_recentSteps` 中重复累积的 Bug。修复：在 `_injectTimelineEvent()` 入口添加 `cascadeId` + `stepIndex` + `source='step'` 去重检查。
-
-## [1.13.4] - 2026-03-24
-
-### Added / 新增
+- **Multi-Window Usage Warning / 多窗口使用提示**: Added an amber-toned info banner recommending single-window usage. Multi-window setups may cause data desync between extension instances (activity timeline, quota tracking, etc.). New `ICON.windows` SVG icon. Styled consistently with the GitHub banner using the `.info-banner` base class.
+  新增琥珀色调信息条，建议用户使用单窗口运行。多窗口可能导致扩展实例间数据不同步（活动时间线、额度追踪等）。新增 `ICON.windows` SVG 图标。与 GitHub banner 共用 `.info-banner` 基础样式。
 
 - **Daily Aggregation Summary / 每日跨周期聚合汇总**: `webview-calendar-tab.ts` now merges all quota cycles for a single day into a unified summary card. Per-model stats (reasoning, toolCalls, errors, estSteps, tokens) are summed across cycles; GM stats (calls, credits, tokens) are summed with TTFT and cache hit rate computed as call-weighted averages. When a day has >1 cycle, individual cycle cards collapse into a `<details>` element; single-cycle days render inline.
   日历日详情面板新增跨周期聚合：同一天的所有配额周期按模型合并统计，TTFT 和缓存率使用调用数加权平均。多周期时原始卡片折叠到 `<details>` 中。
@@ -97,6 +94,9 @@
   Session 卡片左边框按状态着色 + 水平进度条（呼吸动画）+ chip 式 meta 行；历史汇总新增统计栏（平均/最快/最慢/完成数/重置数）；时间线垂直轨道渐变色 + 长时间线自动折叠 + 字号增大；reduced-motion 降级关闭动画。
 
 ### Bug Fixes / 修复
+
+- **Timeline Step Deduplication / 时间线步骤去重**: Fixed bug where `_injectTimelineEvent()` in `activity-tracker.ts` injected the most recent 20 steps on every `statusChanged` (IDLE→RUNNING) transition without checking for existing entries. Since `_pushEvent()` only performs `push` + `sort` with no dedup, this caused identical step events to accumulate in `_recentSteps`, producing duplicate AI and user entries in the "Recent Activity" timeline when scrolling down. Fix: added `cascadeId` + `stepIndex` + `source='step'` dedup guard at the entry of `_injectTimelineEvent()`.
+  修复 `activity-tracker.ts` 中 `_injectTimelineEvent()` 在每次 `statusChanged`（IDLE→RUNNING）转换时无条件注入最近 20 步、且 `_pushEvent()` 仅 push+sort 无去重逻辑，导致相同步骤事件在 `_recentSteps` 中重复累积的 Bug。修复：在 `_injectTimelineEvent()` 入口添加 `cascadeId` + `stepIndex` + `source='step'` 去重检查。
 
 - **Estimated Event Placeholder / 估算事件占位符**: Replaced hardcoded `等待 GM...` with `estimatedModel` variable.
   将硬编码占位符替换为 `estimatedModel` 变量。

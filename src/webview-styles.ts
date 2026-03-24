@@ -88,6 +88,98 @@ export function getStyles(): string {
             border-bottom: 1px solid var(--color-border);
         }
 
+        /* ─── Info Banners (GitHub / Multi-Window) ── */
+        .info-banner {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            margin-bottom: var(--space-2);
+            padding: var(--space-1) var(--space-2);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-md);
+            font-size: 0.78em;
+            color: var(--color-text-dim);
+            transition: border-color 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        .info-banner-icon {
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+        }
+
+        .info-banner-text {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .star-inline {
+            display: inline-flex;
+            vertical-align: middle;
+            color: var(--color-warn);
+        }
+
+        .star-inline .icon {
+            width: 12px;
+            height: 12px;
+        }
+
+        .github-banner {
+            border-color: rgba(74, 222, 128, 0.15);
+            background: rgba(74, 222, 128, 0.03);
+        }
+
+        .github-banner .info-banner-icon {
+            color: var(--color-ok);
+        }
+
+        .info-banner-link {
+            appearance: none;
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-1);
+            padding: 2px var(--space-2);
+            border: 1px solid rgba(74, 222, 128, 0.2);
+            border-radius: var(--radius-sm);
+            background: rgba(74, 222, 128, 0.08);
+            color: var(--color-ok);
+            font-size: 0.9em;
+            font-weight: 600;
+            font-family: inherit;
+            text-decoration: none;
+            cursor: pointer;
+            transition: background 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1), transform 0.1s;
+        }
+
+        .info-banner-link:active { transform: scale(0.98); }
+
+        .info-banner-link:focus-visible {
+            box-shadow: 0 0 0 2px var(--color-ok);
+            outline: none;
+        }
+
+        .info-banner-link .icon {
+            width: 11px;
+            height: 11px;
+        }
+
+        @media (hover: hover) {
+            .info-banner-link:hover {
+                background: rgba(74, 222, 128, 0.15);
+                border-color: rgba(74, 222, 128, 0.35);
+            }
+        }
+
+        .multiwin-banner {
+            border-color: rgba(250, 204, 21, 0.12);
+            background: rgba(250, 204, 21, 0.03);
+        }
+
+        .multiwin-banner .info-banner-icon {
+            color: rgba(250, 204, 21, 0.6);
+        }
+
         /* ─── Disclaimer Banner ────────── */
         .disclaimer-banner {
             margin-bottom: var(--space-3);
@@ -2481,6 +2573,11 @@ export function getStyles(): string {
         body.vscode-light .act-tl-tool-name { background: rgba(0,0,0,0.05); }
         body.vscode-light .act-tl-expand { background: rgba(0,0,0,0.03); }
         body.vscode-light .act-dist-note { color: #92400e; opacity: 1; border-left-color: #b45309; }
+        body.vscode-light .github-banner { border-color: rgba(22,163,74,0.2); background: rgba(22,163,74,0.04); }
+        body.vscode-light .github-banner .info-banner-icon { color: #16a34a; }
+        body.vscode-light .info-banner-link { border-color: rgba(22,163,74,0.25); background: rgba(22,163,74,0.08); color: #16a34a; }
+        body.vscode-light .multiwin-banner { border-color: rgba(180,83,9,0.15); background: rgba(180,83,9,0.03); }
+        body.vscode-light .multiwin-banner .info-banner-icon { color: #b45309; }
         body.vscode-light .disclaimer-banner { border-color: rgba(180,83,9,0.25); background: rgba(180,83,9,0.04); }
         body.vscode-light .disclaimer-banner summary { color: #92400e; }
         body.vscode-light .disclaimer-banner[open] { border-color: rgba(180,83,9,0.35); background: rgba(180,83,9,0.06); }
