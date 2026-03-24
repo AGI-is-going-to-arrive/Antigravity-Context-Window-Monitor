@@ -148,7 +148,6 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | `quotaNotificationThreshold` | 20 | Show warning when model quota drops below this % (0 to disable) |
 | `activity.maxRecentSteps` | 100 | Max recent activity steps to keep in timeline |
 | `activity.maxArchives` | 20 | Max activity archives to keep |
-| `privacy.defaultMask` | false | Enable privacy mask by default when opening the panel |
 
 ## 🔤 Commands
 
@@ -165,4 +164,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.13.3
+**Version**: 1.13.4

@@ -148,7 +148,6 @@
 | `quotaNotificationThreshold` | 20 | 模型剩余额度低于此百分比时弹出警告（设为 0 可禁用） |
 | `activity.maxRecentSteps` | 100 | 活动时间线最多保留的操作条数 |
 | `activity.maxArchives` | 20 | 活动归档最多保留份数 |
-| `privacy.defaultMask` | false | 打开面板时默认启用隐私遮罩 |
 
 ## 🔤 命令
 
@@ -165,4 +164,4 @@
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.13.3
+**版本 / Version**: 1.13.4
