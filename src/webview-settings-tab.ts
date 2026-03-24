@@ -61,8 +61,11 @@ export function buildSettingsContent(
 
     const maxHistory = tracker?.getMaxHistory() ?? 20;
     const storageCard = storage ? `
-        <section class="card">
-            <h2>${ICON.database} ${tBi('Persistent Storage', '持久化存储')}</h2>
+        <section class="stg-card" data-accent="storage">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.database}</span>
+                <h2>${tBi('Persistent Storage', '持久化存储')}</h2>
+            </div>
             <p class="raw-desc">${tBi(
                 'This file is stored outside the extension state database, so it survives uninstall/reinstall unless you delete it manually.',
                 '该文件存储在扩展状态数据库之外，因此只要你不手动删除，它会跨卸载/重装保留。',
@@ -95,8 +98,11 @@ export function buildSettingsContent(
     return `
         ${storageCard}
 
-        <section class="card">
-            <h2>${ICON.shield} ${tBi('Compression Warning', '压缩警告')}</h2>
+        <section class="stg-card" data-accent="warn">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.shield}</span>
+                <h2>${tBi('Compression Warning', '压缩警告')}</h2>
+            </div>
             <div class="setting-row">
                 <label for="thresholdInput">${tBi(
                     'Warning threshold (tokens)',
@@ -125,8 +131,11 @@ export function buildSettingsContent(
             </div>
         </section>
 
-        <section class="card">
-            <h2>${ICON.bolt} ${tBi('Quota Notification', '额度通知')}</h2>
+        <section class="stg-card" data-accent="quota">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.bolt}</span>
+                <h2>${tBi('Quota Notification', '额度通知')}</h2>
+            </div>
             <div class="setting-row">
                 <label for="quotaNotifyInput">${tBi(
                     'Low quota warning threshold (%)',
@@ -149,8 +158,11 @@ export function buildSettingsContent(
             </div>
         </section>
 
-        <section class="card">
-            <h2>${ICON.clock} ${tBi('Polling', '轮询')}</h2>
+        <section class="stg-card" data-accent="poll">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.clock}</span>
+                <h2>${tBi('Polling', '轮询')}</h2>
+            </div>
             <div class="setting-row">
                 <label for="pollingInput">${tBi(
                     'Polling interval (seconds)',
@@ -169,8 +181,11 @@ export function buildSettingsContent(
             </div>
         </section>
 
-        <section class="card">
-            <h2>${ICON.chart} ${tBi('Status Bar Display', '状态栏显示')}</h2>
+        <section class="stg-card" data-accent="display">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.chart}</span>
+                <h2>${tBi('Status Bar Display', '状态栏显示')}</h2>
+            </div>
             <p class="raw-desc">${tBi(
                 'Toggle which elements appear in the status bar.',
                 '控制状态栏显示哪些元素。',
@@ -195,8 +210,11 @@ export function buildSettingsContent(
         </section>
 
         ${modelLimitRows ? `
-        <section class="card">
-            <h2>${ICON.shield} ${tBi('Model Context Limits', '模型上下文限制')}</h2>
+        <section class="stg-card" data-accent="model">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.shield}</span>
+                <h2>${tBi('Model Context Limits', '模型上下文限制')}</h2>
+            </div>
             <p class="raw-desc">${tBi(
                 'Override context window size (tokens) per model.',
                 '按模型覆盖上下文窗口大小（token 数）。',
@@ -210,8 +228,11 @@ export function buildSettingsContent(
             </div>
         </section>` : ''}
 
-        <section class="card">
-            <h2>${ICON.chart} ${tBi('Activity Settings', '活动设置')}</h2>
+        <section class="stg-card" data-accent="activity">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.chart}</span>
+                <h2>${tBi('Activity Settings', '活动设置')}</h2>
+            </div>
             <div class="setting-row">
                 <label for="maxRecentStepsInput">${tBi(
                     'Max timeline entries',
@@ -263,8 +284,11 @@ export function buildSettingsContent(
             </div>
         </section>
 
-        <section class="card">
-            <h2>${ICON.shield} ${tBi('Privacy', '隐私')}</h2>
+        <section class="stg-card" data-accent="privacy">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.shield}</span>
+                <h2>${tBi('Privacy', '隐私')}</h2>
+            </div>
             <div class="toggle-group">
                 <label class="toggle-row">
                     <input type="checkbox" id="togglePrivacyDefault" class="toggle-cb" ${privacyDefault ? 'checked' : ''} />
@@ -272,14 +296,17 @@ export function buildSettingsContent(
                     <span>${tBi('Enable privacy mask by default', '默认启用隐私遮罩')}</span>
                 </label>
             </div>
-            <p class="raw-desc">${tBi(
+            <p class="raw-desc" style="margin-top: var(--space-2);">${tBi(
                 'When enabled, sensitive data (account ID, email, etc.) will be masked by default when opening the monitor panel.',
                 '启用后，打开监控面板时会默认遮住敏感数据（账户 ID、邮箱等）。',
             )}</p>
         </section>
 
-        <section class="card">
-            <h2>${ICON.timeline} ${tBi('History Settings', '历史设置')}</h2>
+        <section class="stg-card" data-accent="history">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.timeline}</span>
+                <h2>${tBi('History Settings', '历史设置')}</h2>
+            </div>
             <div class="setting-row">
                 <label for="maxHistoryInput">${tBi(
                     'Max archived records',
@@ -307,8 +334,11 @@ export function buildSettingsContent(
             </div>
         </section>
 
-        <section class="card">
-            <h2>${ICON.bolt} ${tBi('Debug / Testing', '调试 / 测试')}</h2>
+        <section class="stg-card" data-accent="debug">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.bolt}</span>
+                <h2>${tBi('Debug / Testing', '调试 / 测试')}</h2>
+            </div>
             <p class="raw-desc">${tBi(
                 'Developer tools for testing quota reset archival and clearing stale data.',
                 '用于测试额度重置归档以及清除过期数据的开发者工具。',

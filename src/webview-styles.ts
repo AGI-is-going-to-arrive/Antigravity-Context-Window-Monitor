@@ -1415,6 +1415,80 @@ export function getStyles(): string {
         }
 
         /* ─── Settings Card ───────────── */
+        .stg-card {
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-lg);
+            padding: var(--space-4);
+            margin-bottom: var(--space-3);
+            position: relative;
+            overflow: hidden;
+            transition: border-color 0.2s cubic-bezier(.4,0,.2,1), box-shadow 0.2s cubic-bezier(.4,0,.2,1);
+        }
+
+        .stg-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            width: 3px;
+            background: var(--stg-accent, var(--color-border));
+            border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+        }
+
+        @media (hover: hover) {
+            .stg-card:hover {
+                border-color: var(--color-border-hover);
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            }
+        }
+
+        /* Accent colors per section type */
+        .stg-card[data-accent="storage"]  { --stg-accent: var(--color-info); }
+        .stg-card[data-accent="warn"]     { --stg-accent: var(--color-warn); }
+        .stg-card[data-accent="quota"]    { --stg-accent: var(--color-ok); }
+        .stg-card[data-accent="poll"]     { --stg-accent: #818cf8; }
+        .stg-card[data-accent="display"]  { --stg-accent: #38bdf8; }
+        .stg-card[data-accent="model"]    { --stg-accent: #f472b6; }
+        .stg-card[data-accent="activity"] { --stg-accent: #fb923c; }
+        .stg-card[data-accent="privacy"]  { --stg-accent: #a78bfa; }
+        .stg-card[data-accent="history"]  { --stg-accent: #2dd4bf; }
+        .stg-card[data-accent="debug"]    { --stg-accent: var(--color-danger); }
+
+        .stg-header {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            margin-bottom: var(--space-3);
+        }
+
+        .stg-header-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: var(--radius-md);
+            background: color-mix(in srgb, var(--stg-accent, var(--color-border)) 15%, transparent);
+            color: var(--stg-accent, var(--color-text));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .stg-header-icon svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
+        .stg-header h2 {
+            font-size: 0.88em;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+            color: var(--color-text);
+            margin: 0;
+        }
+
         .setting-row label {
             font-size: 0.85em;
             font-weight: 600;
@@ -1814,31 +1888,43 @@ export function getStyles(): string {
 
         .storage-stat-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
             gap: var(--space-2);
         }
 
         .storage-stat {
             display: flex;
             flex-direction: column;
+            align-items: center;
             gap: 2px;
             padding: var(--space-2);
             background: var(--color-surface);
             border: 1px solid var(--color-border);
             border-radius: var(--radius-md);
+            text-align: center;
+            transition: border-color 0.15s cubic-bezier(.4,0,.2,1), transform 0.15s cubic-bezier(.4,0,.2,1), box-shadow 0.15s cubic-bezier(.4,0,.2,1);
+        }
+
+        @media (hover: hover) {
+            .storage-stat:hover {
+                border-color: var(--color-info);
+                transform: translateY(-1px);
+                box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+            }
         }
 
         .storage-stat-val {
-            font-size: 1.05em;
+            font-size: 1.15em;
             font-weight: 700;
-            color: var(--color-text);
+            color: var(--color-info);
         }
 
         .storage-stat-label {
-            font-size: 0.72em;
+            font-size: 0.68em;
             color: var(--color-text-dim);
             text-transform: uppercase;
             letter-spacing: 0.4px;
+            line-height: 1.2;
         }
 
         /* ─── Pause Button ────────────── */
@@ -1926,9 +2012,11 @@ export function getStyles(): string {
             border-color: var(--color-danger-border, rgba(248,113,113,0.3));
             display: inline-flex;
             align-items: center;
-            gap: var(--space-1);
+            gap: var(--space-2);
             font-size: 0.82em;
-            padding: var(--space-1) var(--space-3);
+            font-weight: 600;
+            padding: var(--space-2) var(--space-3);
+            border-radius: var(--radius-md);
         }
 
         @media (hover: hover) {
@@ -2327,6 +2415,11 @@ export function getStyles(): string {
         }
         body.vscode-light .storage-path-state.is-ready { background: rgba(22,163,74,0.1); }
         body.vscode-light .storage-path-state.is-missing { background: rgba(220,38,38,0.1); }
+        body.vscode-light .stg-header-icon {
+            background: color-mix(in srgb, var(--stg-accent, var(--color-border)) 12%, transparent);
+        }
+        body.vscode-light .storage-stat-val { color: #1d4ed8; }
+        body.vscode-light .storage-stat:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 
         /* ─── High Contrast Overrides ──── */
         body.vscode-high-contrast {
