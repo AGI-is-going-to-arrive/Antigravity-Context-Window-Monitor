@@ -64,13 +64,15 @@ export interface LSInfo {
  */
 export function buildExpectedWorkspaceId(workspaceUri: string): string {
     let id = workspaceUri;
-    try {
-        id = decodeURIComponent(id);
-    } catch {
-        // Keep the raw URI if decoding fails.
-    }
+    // NOTE: Do NOT decodeURIComponent here. The LS builds workspace_id from
+    // the RAW URI, replacing ALL non-alphanumeric characters with underscores.
+    // Decoding first would convert %20→space, losing the "20" digits that the
+    // LS preserves as "_20". This caused workspace_id mismatches for any path
+    // containing percent-encoded characters (e.g., spaces → %20).
+
     // Handle vscode-remote:// URIs — strip scheme+authority to get file path
-    // e.g., vscode-remote://wsl+Ubuntu/home/user/project → /home/user/project
+    // e.g., vscode-remote://wsl%2BUbuntu/home/user/project → /home/user/project
+    // (The regex works on raw URIs: %2B is part of the authority, not a slash.)
     const remoteMatch = id.match(/^vscode-remote:\/\/[^/]+(\/.*)/);
     if (remoteMatch) {
         // Reconstruct as file URI for consistent workspace_id generation
@@ -79,15 +81,16 @@ export function buildExpectedWorkspaceId(workspaceUri: string): string {
     // Step 1: Strip the URI scheme separator
     id = id.replace(':///', '_');
     if (process.platform === 'win32' || isWSL()) {
-        // Windows / WSL: the LS hex-encodes the drive-letter colon as _3A_ and
-        // replaces hyphens with underscores. Encode colon BEFORE replacing
-        // slashes to avoid double-underscore artifacts (c:/ -> c_3A_/ -> c_3A_).
+        // Windows / WSL: the LS hex-encodes the drive-letter colon as _3A_
+        // Encode colon BEFORE the catch-all replacement to preserve the
+        // hex-encoding format (c:/ -> c_3A_/ -> c_3A_).
         id = id.replace(/:/g, '_3A_');
     }
-    // Replace path separators
-    id = id.replace(/\//g, '_');
-    // The LS replaces hyphens with underscores on ALL platforms
-    id = id.replace(/-/g, '_');
+    // Catch-all: replace ANY non-alphanumeric, non-underscore character with '_'.
+    // This mirrors the LS behavior exactly and covers all special characters:
+    // slashes (/), hyphens (-), percent signs (%), spaces, parens, etc.
+    // Using a catch-all prevents future mismatches if paths contain unusual chars.
+    id = id.replace(/[^a-zA-Z0-9_]/g, '_');
     if (process.platform === 'win32' || isWSL()) {
         // Collapse any double underscores from adjacent special chars (e.g., c_3A_/)
         id = id.replace(/__+/g, '_');

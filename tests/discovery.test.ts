@@ -15,17 +15,37 @@ import {
 describe('discovery.ts', () => {
     describe('buildExpectedWorkspaceId', () => {
         it('should handle standard Posix workspace URIs', () => {
-            // Mirrors: id = workspaceUri.replace(':///', '_'); id = id.replace(/\//g, '_');
             const uri = 'file:///Users/foo/bar';
-            const expected = 'file_Users_foo_bar';
-            expect(buildExpectedWorkspaceId(uri)).toBe(expected);
+            expect(buildExpectedWorkspaceId(uri)).toBe('file_Users_foo_bar');
         });
 
         it('should replace hyphens with underscores on all platforms', () => {
-            // The LS converts hyphens to underscores in --workspace_id on ALL platforms
             const uri = 'file:///Users/foo/my-project';
-            const expected = 'file_Users_foo_my_project';
-            expect(buildExpectedWorkspaceId(uri)).toBe(expected);
+            expect(buildExpectedWorkspaceId(uri)).toBe('file_Users_foo_my_project');
+        });
+
+        it('should handle percent-encoded spaces (%20) → _20', () => {
+            // The LS keeps raw %20, replacing % → _, producing _20
+            const uri = 'file:///Users/yangjunjie/Desktop/linux%20do/final/test';
+            expect(buildExpectedWorkspaceId(uri)).toBe(
+                'file_Users_yangjunjie_Desktop_linux_20do_final_test'
+            );
+        });
+
+        it('should handle multiple percent-encoded characters', () => {
+            const uri = 'file:///Users/foo/my%20project%20v2';
+            expect(buildExpectedWorkspaceId(uri)).toBe('file_Users_foo_my_20project_20v2');
+        });
+
+        it('should handle parentheses, @, # and other special chars', () => {
+            // Catch-all regex replaces ALL non-alphanumeric chars
+            const uri = 'file:///Users/foo/project(v2)';
+            expect(buildExpectedWorkspaceId(uri)).toBe('file_Users_foo_project_v2_');
+        });
+
+        it('should handle vscode-remote URIs without decoding authority', () => {
+            const uri = 'vscode-remote://wsl%2BUbuntu/home/user/project';
+            expect(buildExpectedWorkspaceId(uri)).toBe('file_home_user_project');
         });
 
         if (process.platform === 'win32') {
@@ -45,9 +65,11 @@ describe('discovery.ts', () => {
                 expect(result).toBe('file_c_3A_my_project');
             });
 
-            it('should decode percent-encoded Windows drive letters before building workspace id', () => {
+            it('should handle percent-encoded Windows drive letters without decoding', () => {
+                // %3A stays raw: % → _ produces _3A, then : replacement also applies
                 const uri = 'file:///c%3A/Users/foo/my-project';
                 const result = buildExpectedWorkspaceId(uri);
+                // %3A → _3A (percent replaced), then : encoding also runs
                 expect(result).toBe('file_c_3A_Users_foo_my_project');
             });
         }

@@ -1,5 +1,17 @@
 # 变更日志 / Changelog
 
+## [1.13.5] - 2026-03-24
+
+### Fixed / 修复
+
+- **🔥 Workspace ID Mismatch for Paths with Special Characters / 含特殊字符路径的工作区 ID 不匹配**: Fixed critical bug where `buildExpectedWorkspaceId()` called `decodeURIComponent()` before constructing the workspace ID, but the Language Server builds workspace IDs from the **raw** (percent-encoded) URI. For paths containing spaces (e.g., `linux%20do/final/test`), the extension produced `linux do` (with space) while the LS produced `linux_20do` (percent sign replaced by underscore, preserving the `20` digits). This mismatch caused `selectMatchingProcessLine()` to fail, making LS discovery permanently fail for any workspace path containing spaces, parentheses, or other special characters. Fix: removed `decodeURIComponent()` and replaced individual character substitutions (`/`, `-`, `%`) with a single catch-all regex `[^a-zA-Z0-9_]` → `_`, exactly mirroring the LS's workspace ID generation behavior. This comprehensively handles all special characters and prevents future mismatches.
+  修复严重 Bug：`buildExpectedWorkspaceId()` 在构建工作区 ID 前调用 `decodeURIComponent()`，但语言服务器基于**原始**（百分号编码）URI 构建工作区 ID。路径含空格时（如 `linux%20do/final/test`），扩展生成 `linux do`（带空格），而 LS 生成 `linux_20do`（`%` 替换为 `_`，保留 `20` 数字）。此不匹配导致 `selectMatchingProcessLine()` 失败，使所有路径含空格、括号等特殊字符的工作区永久无法发现 LS。修复：移除 `decodeURIComponent()`，用通配正则 `[^a-zA-Z0-9_]` → `_` 替代逐字符替换，精确镜像 LS 的工作区 ID 生成行为，一次性覆盖所有特殊字符。
+
+### Tests / 测试
+
+- Added 4 new tests for `buildExpectedWorkspaceId()` in `discovery.test.ts`: percent-encoded spaces (`%20` → `_20`), multiple percent-encoded characters, parentheses/special chars, and `vscode-remote://` URIs.
+  在 `discovery.test.ts` 中新增 4 个 `buildExpectedWorkspaceId()` 测试：百分号编码空格（`%20` → `_20`）、多个百分号编码字符、括号等特殊字符、`vscode-remote://` URI。
+
 ## [1.13.4] - 2026-03-24
 
 ### Added / 新增
