@@ -1,6 +1,7 @@
 // ─── Quota Tracking Tab Content Builder ──────────────────────────────────────
-// Builds HTML for the "Quota Tracking" tab: quota tracking toggle and active
-// sessions. Archived history and usage history have been migrated to Calendar.
+// Builds HTML for the "Quota Tracking" tab: quota tracking toggle, active
+// sessions with progress bars, and completed session history with summary stats.
+// Archived history and usage history have been migrated to Calendar.
 
 import { tBi } from './i18n';
 import { QuotaTracker, QuotaSession } from './quota-tracker';
@@ -52,7 +53,7 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
 
     // ── Active Tracking ──
     if (activeSessions.length > 0) {
-        const activeCards = activeSessions.map(s => buildSessionTimelineHtml(s, true)).join('');
+        const activeCards = activeSessions.map(s => buildSessionCard(s, true)).join('');
         parts.push(`
             <section class="card">
                 <h2>${ICON.bolt} ${tBi('Active Tracking', '活跃追踪')} (${activeSessions.length})</h2>
@@ -75,10 +76,12 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
 
     // ── Completed Sessions (history) ──
     if (history.length > 0) {
-        const historyCards = history.map(s => buildSessionTimelineHtml(s, false)).join('');
+        const summaryBar = buildHistorySummary(history, maxHistory);
+        const historyCards = history.map(s => buildSessionCard(s, false)).join('');
         parts.push(`
             <section class="card">
                 <h2>${ICON.clock} ${tBi('Completed Sessions', '已完成会话')} (${history.length}/${maxHistory})</h2>
+                ${summaryBar}
                 ${historyCards}
             </section>`);
     }
@@ -86,23 +89,121 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
     return parts.join('');
 }
 
-// ─── Session Timeline ────────────────────────────────────────────────────────
+// ─── History Summary Stats ───────────────────────────────────────────────────
 
-function buildSessionTimelineHtml(session: QuotaSession, isActive: boolean): string {
+function buildHistorySummary(history: QuotaSession[], max: number): string {
+    const durations = history
+        .map(s => s.totalDurationMs ?? 0)
+        .filter(d => d > 0);
+
+    if (durations.length === 0) { return ''; }
+
+    const avgMs = durations.reduce((a, b) => a + b, 0) / durations.length;
+    const minMs = Math.min(...durations);
+    const maxMs = Math.max(...durations);
+    const completedCount = history.filter(s => s.completed).length;
+    const resetCount = history.length - completedCount;
+
+    return `
+        <div class="qt-summary-grid">
+            <div class="qt-summary-item">
+                <span class="qt-summary-val">${formatDuration(avgMs)}</span>
+                <span class="qt-summary-label">${tBi('Avg Duration', '平均耗时')}</span>
+            </div>
+            <div class="qt-summary-item">
+                <span class="qt-summary-val">${formatDuration(minMs)}</span>
+                <span class="qt-summary-label">${tBi('Fastest', '最快')}</span>
+            </div>
+            <div class="qt-summary-item">
+                <span class="qt-summary-val">${formatDuration(maxMs)}</span>
+                <span class="qt-summary-label">${tBi('Slowest', '最慢')}</span>
+            </div>
+            <div class="qt-summary-item">
+                <span class="qt-summary-val">${completedCount}<span class="qt-summary-dim">/${history.length}</span></span>
+                <span class="qt-summary-label">${tBi('Completed', '耗尽')}</span>
+            </div>
+            ${resetCount > 0 ? `<div class="qt-summary-item">
+                <span class="qt-summary-val qt-summary-warn">${resetCount}</span>
+                <span class="qt-summary-label">${tBi('Reset', '重置')}</span>
+            </div>` : ''}
+        </div>`;
+}
+
+// ─── Session Card ────────────────────────────────────────────────────────────
+
+function buildSessionCard(session: QuotaSession, isActive: boolean): string {
     const now = Date.now();
     const startMs = new Date(session.startTime).getTime();
     const elapsed = isActive ? (now - startMs) : (session.totalDurationMs ?? 0);
 
-    // Timeline nodes
-    const nodes = session.snapshots.map((snap, idx) => {
-        const isFirst = idx === 0;
-        const isLast = idx === session.snapshots.length - 1 && session.completed;
+    // Current percentage (last snapshot)
+    const lastSnap = session.snapshots[session.snapshots.length - 1];
+    const currentPct = lastSnap?.percent ?? 100;
+
+    // ── Progress bar (horizontal, shows remaining quota) ──
+    const barColor = currentPct <= 20 ? 'var(--color-danger)' : currentPct < 80 ? 'var(--color-warn)' : 'var(--color-ok)';
+    const progressBar = `
+        <div class="qt-progress-wrap">
+            <div class="qt-progress-track">
+                <div class="qt-progress-fill${isActive ? ' qt-progress-active' : ''}" style="width:${currentPct}%;background:${barColor}"></div>
+            </div>
+            <span class="qt-progress-label" style="color:${barColor}">${currentPct}%</span>
+        </div>`;
+
+    // ── Status badge ──
+    const statusBadge = session.completed
+        ? `<span class="badge ok-badge">${tBi('COMPLETE', '已完成')}</span>`
+        : isActive
+            ? `<span class="badge info-badge">${tBi('ACTIVE', '追踪中')}</span>`
+            : `<span class="badge warn-badge">${tBi('RESET', '已重置')}</span>`;
+
+    // ── Pool models ──
+    const poolBadges = (session.poolModels && session.poolModels.length > 1)
+        ? session.poolModels
+            .filter(l => l !== session.modelLabel)
+            .map(l => `<span class="badge pool-badge">+ ${esc(l)}</span>`)
+            .join('')
+        : '';
+
+    // ── Meta chips ──
+    const metaChips: string[] = [];
+    metaChips.push(`<span class="qt-meta-chip">${ICON.clock} ${formatShortTime(session.startTime)}</span>`);
+    if (session.endTime) {
+        metaChips.push(`<span class="qt-meta-chip">${ICON.clock} ${formatShortTime(session.endTime)}</span>`);
+    }
+    metaChips.push(`<span class="qt-meta-chip qt-meta-duration">${ICON.timeline} ${formatDuration(elapsed)}</span>`);
+    if (session.snapshots.length > 1) {
+        metaChips.push(`<span class="qt-meta-chip">${session.snapshots.length} ${tBi('snapshots', '快照')}</span>`);
+    }
+
+    // ── Timeline nodes (collapsible if > 6) ──
+    const snapshotCount = session.snapshots.length;
+    const shouldCollapse = snapshotCount > 6;
+    const visibleSnapshots = shouldCollapse
+        ? [...session.snapshots.slice(0, 3), ...session.snapshots.slice(-2)]
+        : session.snapshots;
+    const hiddenCount = shouldCollapse ? snapshotCount - 5 : 0;
+
+    const nodes = visibleSnapshots.map((snap, idx) => {
+        // After the first 3, if collapsed, insert a "hidden" marker
+        const showHiddenMarker = shouldCollapse && idx === 3;
         const pct = snap.percent;
         const nodeColor = pct <= 20 ? 'var(--color-danger)' : pct < 80 ? 'var(--color-warn)' : 'var(--color-ok)';
         const timeStr = formatShortTime(snap.timestamp);
         const elapsedStr = snap.elapsedMs > 0 ? formatDuration(snap.elapsedMs) : '';
 
-        return `
+        const hiddenMarkerHtml = showHiddenMarker ? `
+            <div class="tl-node tl-hidden-node">
+                <div class="tl-dot tl-dot-hidden"></div>
+                <div class="tl-content">
+                    <span class="tl-pct tl-hidden-label">+${hiddenCount} ${tBi('more', '更多')}</span>
+                </div>
+            </div>` : '';
+
+        const isFirst = shouldCollapse ? idx === 0 : idx === 0;
+        const isLast = (shouldCollapse ? idx === visibleSnapshots.length - 1 : idx === session.snapshots.length - 1) && session.completed;
+
+        return `${hiddenMarkerHtml}
             <div class="tl-node${isFirst ? ' tl-first' : ''}${isLast ? ' tl-last' : ''}">
                 <div class="tl-dot" style="background:${nodeColor}"></div>
                 <div class="tl-content">
@@ -123,30 +224,18 @@ function buildSessionTimelineHtml(session: QuotaSession, isActive: boolean): str
             </div>
         </div>` : '';
 
-    const statusBadge = session.completed
-        ? `<span class="badge ok-badge">${tBi('COMPLETE', '已完成')}</span>`
-        : isActive
-            ? `<span class="badge info-badge">${tBi('ACTIVE', '追踪中')}</span>`
-            : `<span class="badge warn-badge">${tBi('RESET', '已重置')}</span>`;
-
-    // Pool models: show additional models sharing the same quota
-    const poolBadges = (session.poolModels && session.poolModels.length > 1)
-        ? session.poolModels
-            .filter(l => l !== session.modelLabel)
-            .map(l => `<span class="badge pool-badge">+ ${esc(l)}</span>`)
-            .join('')
-        : '';
+    // ── Card accent color based on status ──
+    const accentClass = isActive ? 'qt-card-active' : session.completed ? 'qt-card-complete' : 'qt-card-reset';
 
     return `
-        <div class="timeline-card${isActive ? ' active-timeline' : ''}">
+        <div class="timeline-card ${accentClass}">
             <div class="timeline-header">
                 <span class="timeline-model">${esc(session.modelLabel)}${poolBadges}</span>
                 ${statusBadge}
             </div>
-            <div class="timeline-meta">
-                <span>${tBi('Start', '开始')}: ${formatShortTime(session.startTime)}</span>
-                ${session.endTime ? `<span>${tBi('End', '结束')}: ${formatShortTime(session.endTime)}</span>` : ''}
-                <span>${tBi('Duration', '耗时')}: ${formatDuration(elapsed)}</span>
+            ${progressBar}
+            <div class="qt-meta-row">
+                ${metaChips.join('')}
             </div>
             <div class="tl-track">
                 ${nodes}

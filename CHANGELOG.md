@@ -1,6 +1,6 @@
 # 变更日志 / Changelog
 
-## [1.13.5] - 2026-03-24
+## [1.13.4] - 2026-03-24
 
 ### Added / 新增
 
@@ -24,7 +24,6 @@
 - **Inline Style Cleanup / 内联样式清理**: Migrated remaining inline `style="..."` attributes to dedicated CSS classes (`.cal-clear-section`, `.cal-cycle-stats-spaced`, `.cal-day-total-danger`, `.cal-cycles-details`, `.cal-cycles-summary`).
   内联样式提取为 CSS class。
 
-## [1.13.4] - 2026-03-24
 
 ### Changed / 变更
 
@@ -59,6 +58,17 @@
   7. **Default-collapsed expert blocks** — Wrapped Output Breakdown, Cache Efficiency, GM Stats, and Context X-ray in `<details>` (default collapsed). Users can expand at will.
   8. **Compression History redesign** — Replaced plain `detail-row` with `.compress-card` cards: left warn-color accent, before/after progress bar, token counts with arrow.
   9. **Timestamps redesign** — Replaced flat rows with a 2×2 `.ts-grid` of `.ts-card` icon cards. Each card shows SVG icon + uppercase label + value. Cascade ID moved to a separate bottom strip.
+
+- **Pricing Panel Card Redesign / 价格面板卡片化重构**: Cost breakdown table replaced from 7-column table to responsive card grid. Edit pricing table replaced from wide table to 2-column field cards. Font sizes systematically increased (0.68→0.78em, 0.72→0.82em). All text labels bilingualized (legends, tooltips, column headers, badges). Remaining inline `style="..."` migrated to CSS classes.
+  费用明细从 7 列表格改为响应式卡片网格；编辑定价从宽表改为双列字段卡片。字体整体增大。全部文本双语化（图例/tooltip/列头/badge）。内联样式提取为 CSS class。
+
+- **Quota Tracking Tab UI Overhaul / 额度追踪 Tab UI 全面升级**:
+  - **Session Cards / Session 卡片**: Left border coloring by state (active=blue, completed=green, reset=yellow). New horizontal progress bar (current%→0%, breathing animation when active). Meta row redesigned from plain text to chip-style (icon + background + border). Header switched to `space-between` layout.
+  - **History Summary / 历史汇总**: New stats bar showing average duration, fastest, slowest, completed count, and reset count with flex-distributed layout.
+  - **Timeline Enhancements / 时间线优化**: Vertical track changed to gradient (green→yellow→red, 0.4 opacity). Long timelines (>6 nodes) auto-collapse middle entries with "+N more" indicator. Font sizes increased (tl-content 0.82→0.88em, tl-time 0.9→0.92em).
+  - **Motion / 动效**: `prefers-reduced-motion` degradation disables progress bar and pulse animations. Progress bar fill uses 0.4s transition.
+
+  Session 卡片左边框按状态着色 + 水平进度条（呼吸动画）+ chip 式 meta 行；历史汇总新增统计栏（平均/最快/最慢/完成数/重置数）；时间线垂直轨道渐变色 + 长时间线自动折叠 + 字号增大；reduced-motion 降级关闭动画。
 
 ### Bug Fixes / 修复
 

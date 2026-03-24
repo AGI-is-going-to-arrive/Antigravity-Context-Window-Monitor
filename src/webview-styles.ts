@@ -1935,42 +1935,134 @@ export function getStyles(): string {
         .timeline-card {
             background: rgba(255,255,255,0.02);
             border: 1px solid var(--color-border);
+            border-left: 3px solid var(--color-border);
             border-radius: var(--radius-md);
             padding: var(--space-3);
             margin-bottom: var(--space-2);
-            transition: border-color 0.2s cubic-bezier(.4,0,.2,1);
+            transition: border-color 0.2s cubic-bezier(.4,0,.2,1), background 0.2s cubic-bezier(.4,0,.2,1);
         }
-
-        .timeline-card.active-timeline {
-            border-color: rgba(96,165,250,0.3);
+        .timeline-card.qt-card-active {
+            border-left-color: var(--color-info, #60a5fa);
             background: rgba(96,165,250,0.04);
+        }
+        .timeline-card.qt-card-complete {
+            border-left-color: var(--color-ok, #34d399);
+        }
+        .timeline-card.qt-card-reset {
+            border-left-color: var(--color-warn, #fbbf24);
         }
 
         @media (hover: hover) {
             .timeline-card:hover {
                 border-color: rgba(255,255,255,0.15);
+                background: rgba(255,255,255,0.03);
             }
         }
 
         .timeline-header {
             display: flex;
             align-items: center;
+            justify-content: space-between;
             gap: var(--space-2);
             margin-bottom: var(--space-2);
         }
 
         .timeline-model {
             font-weight: 600;
-            font-size: 0.9em;
+            font-size: 0.95em;
         }
 
-        .timeline-meta {
+        /* ─── Quota Progress Bar ──────── */
+        .qt-progress-wrap {
             display: flex;
-            gap: var(--space-3);
-            font-size: 0.75em;
-            color: var(--color-text-dim);
-            margin-bottom: var(--space-3);
+            align-items: center;
+            gap: var(--space-2);
+            margin-bottom: var(--space-2);
+        }
+        .qt-progress-track {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(255,255,255,0.06);
+            overflow: hidden;
+        }
+        .qt-progress-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.4s cubic-bezier(.4,0,.2,1);
+        }
+        .qt-progress-active {
+            animation: qtProgressPulse 2s ease-in-out infinite;
+        }
+        @keyframes qtProgressPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        .qt-progress-label {
+            font-weight: 700;
+            font-size: 0.92em;
+            min-width: 40px;
+            text-align: right;
+        }
+
+        /* ─── Meta Chips Row ──────────── */
+        .qt-meta-row {
+            display: flex;
             flex-wrap: wrap;
+            gap: var(--space-1);
+            margin-bottom: var(--space-2);
+        }
+        .qt-meta-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            font-size: 0.82em;
+            padding: 2px var(--space-2);
+            border-radius: var(--radius-sm);
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.06);
+            color: var(--color-text-dim);
+        }
+        .qt-meta-duration {
+            font-weight: 600;
+            color: var(--color-text);
+        }
+
+        /* ─── History Summary Grid ────── */
+        .qt-summary-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-2);
+            margin-bottom: var(--space-3);
+            padding: var(--space-2);
+            border-radius: var(--radius-md);
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+        .qt-summary-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            flex: 1;
+            min-width: 70px;
+            padding: var(--space-1) var(--space-2);
+        }
+        .qt-summary-val {
+            font-weight: 700;
+            font-size: 1em;
+        }
+        .qt-summary-dim {
+            font-weight: 400;
+            color: var(--color-text-dim);
+            font-size: 0.85em;
+        }
+        .qt-summary-warn { color: var(--color-warn, #fbbf24); }
+        .qt-summary-label {
+            font-size: 0.78em;
+            color: var(--color-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-top: 2px;
         }
 
         /* ─── Timeline Track ──────────── */
@@ -1986,8 +2078,9 @@ export function getStyles(): string {
             top: 0;
             bottom: 0;
             width: 2px;
-            background: var(--color-border);
+            background: linear-gradient(180deg, var(--color-ok, #34d399) 0%, var(--color-warn, #fbbf24) 50%, var(--color-danger, #ef4444) 100%);
             border-radius: 1px;
+            opacity: 0.4;
         }
 
         .tl-node {
@@ -2008,27 +2101,41 @@ export function getStyles(): string {
             flex-shrink: 0;
             z-index: 1;
         }
+        .tl-dot-hidden {
+            width: 6px;
+            height: 6px;
+            left: calc(var(--space-4) * -1 + 5px);
+            background: var(--color-text-dim);
+            opacity: 0.4;
+            border: none;
+        }
 
         .tl-content {
             display: flex;
             align-items: center;
             gap: var(--space-2);
-            font-size: 0.82em;
+            font-size: 0.88em;
         }
 
         .tl-pct {
             font-weight: 700;
             min-width: 36px;
         }
+        .tl-hidden-label {
+            color: var(--color-text-dim);
+            font-weight: 400;
+            font-style: italic;
+            font-size: 0.9em;
+        }
 
         .tl-time {
             color: var(--color-text-dim);
-            font-size: 0.9em;
+            font-size: 0.92em;
         }
 
         .tl-elapsed {
             color: var(--color-text-dim);
-            font-size: 0.85em;
+            font-size: 0.88em;
             opacity: 0.7;
         }
 
@@ -2042,6 +2149,11 @@ export function getStyles(): string {
             background: var(--color-info);
             animation: tlPulse 2s ease-in-out infinite;
         }
+
+        @media (prefers-reduced-motion: reduce) {
+            .tl-pulse, .qt-progress-active { animation: none; }
+        }
+
 
         /* ─── Mini Quota Bar (Monitor) ─── */
         .mini-quota-section { padding: var(--space-2) var(--space-3); }
