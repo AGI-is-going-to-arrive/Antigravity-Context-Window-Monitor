@@ -31,9 +31,7 @@ import type { StorageDiagnostics } from './webview-settings-tab';
 
 let statusBar: StatusBarManager;
 let pollingTimer: ReturnType<typeof setTimeout> | undefined;
-let activityPollingTimer: ReturnType<typeof setTimeout> | undefined;
 let pollGeneration = 0;
-let activityPollGeneration = 0;
 let disposed = false;
 let cachedLsInfo: LSInfo | null = null;
 let currentUsage: ContextUsage | null = null;
@@ -85,7 +83,6 @@ let firstPollDone = false;
 
 /** Prevents concurrent pollContextUsage() reentrance. */
 let isPolling = false;
-let isActivityPolling = false;
 
 /** Prevents schedulePoll() from creating new timers after deactivate. */
 // disposed declared at top of module
@@ -358,14 +355,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
     log(`Extension activated. Polling every ${intervalSec}s`);
 
-    // Start independent activity polling (3s default)
-    scheduleActivityPoll();
-
     // Immediate first poll: reduces panel "waiting" state from ~6s to ~1-2s.
-    // Scheduled polls continue in parallel; isPolling/isActivityPolling guards prevent duplication.
-    void pollContextUsage().then(() => {
-        if (cachedLsInfo && !disposed) { void pollActivity(); }
-    });
+    // Activity processing is now merged into pollContextUsage — single unified loop.
+    void pollContextUsage();
 }
 
 // ─── Deactivation ─────────────────────────────────────────────────────────────
@@ -375,10 +367,6 @@ export function deactivate(): void {
     if (pollingTimer) {
         clearTimeout(pollingTimer);
         pollingTimer = undefined;
-    }
-    if (activityPollingTimer) {
-        clearTimeout(activityPollingTimer);
-        activityPollingTimer = undefined;
     }
     abortController.abort();
     // Persist activity data on deactivate
@@ -714,7 +702,66 @@ async function pollContextUsage(): Promise<void> {
         monitorStore.record(allTrajectoryUsages, currentUsage.cascadeId);
         allTrajectoryUsages = monitorStore.getAll();
 
-        // 6c. Update WebView panel if visible (context data only; activity is updated independently)
+        // 6c. Activity processing (merged — reuses already-fetched trajectories, no duplicate RPC)
+        if (activityTracker && lsInfo) {
+            try {
+                const activityChanged = await activityTracker.processTrajectories(
+                    lsInfo,
+                    trajectories.map(t => ({
+                        cascadeId: t.cascadeId,
+                        stepCount: t.stepCount,
+                        status: t.status,
+                        requestedModel: t.requestedModel,
+                        generatorModel: t.generatorModel,
+                    })),
+                    abortController.signal,
+                );
+
+                // Fetch GM data (piggyback on same poll cycle)
+                let gmChanged = false;
+                try {
+                    const gmSummary = await gmTracker.fetchAll(
+                        lsInfo,
+                        trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
+                        abortController.signal,
+                    );
+                    const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
+                    monitorStore.recordGMConversations(gmTracker.getAllConversationData());
+                    durableFileGlobalState.update('gmDetailedSummary', detailedSummary);
+                    const prevSummary = lastGMSummary;
+                    lastGMSummary = detailedSummary;
+                    if (!lastGMSummary
+                        || !prevSummary
+                        || gmSummary.totalCalls !== prevSummary.totalCalls
+                        || gmSummary.totalStepsCovered !== prevSummary.totalStepsCovered
+                        || gmSummary.totalRetryCount !== prevSummary.totalRetryCount
+                        || gmSummary.totalCredits !== prevSummary.totalCredits) {
+                        gmChanged = true;
+                    }
+                } catch { /* GM fetch failure is non-critical */ }
+
+                // Inject GM precision data into activity timeline events
+                let timelineChanged = false;
+                if (lastGMSummary) {
+                    timelineChanged = activityTracker.injectGMData(lastGMSummary);
+                }
+
+                // Throttled activity persistence (max once per 30s)
+                const now = Date.now();
+                if (now - lastActivityPersistTime > 30_000) {
+                    durableGlobalState.update('activityTrackerState', activityTracker.serialize());
+                    if (gmTracker) {
+                        durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+                        durableFileGlobalState.update('gmDetailedSummary', gmTracker.getDetailedSummary());
+                    }
+                    lastActivityPersistTime = now;
+                }
+            } catch (err) {
+                log(`Activity processing error: ${err}`);
+            }
+        }
+
+        // 6d. Update WebView panel if visible (single unified refresh point)
         if (isMonitorPanelVisible()) {
             updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics());
         }
@@ -804,109 +851,6 @@ function restartPolling(): void {
     schedulePoll();
     log(`Polling restarted: ${currentIntervalMs / 1000}s interval`);
 }
-
-// ─── Independent Activity Polling ─────────────────────────────────────────────
-
-const ACTIVITY_POLL_INTERVAL_MS = 3000;
-
-async function pollActivity(): Promise<void> {
-    if (isActivityPolling || disposed) { return; }
-    isActivityPolling = true;
-    try {
-        const lsInfo = cachedLsInfo;
-        if (!lsInfo || !activityTracker) { return; }
-
-        // Fetch trajectories — lightweight RPC
-        let trajectories: TrajectorySummary[];
-        try {
-            trajectories = await getAllTrajectories(lsInfo, abortController.signal);
-        } catch {
-            return; // LS temporarily unavailable; global poll will handle reconnect
-        }
-
-        const activityChanged = await activityTracker.processTrajectories(
-            lsInfo,
-            trajectories.map(t => ({
-                cascadeId: t.cascadeId,
-                stepCount: t.stepCount,
-                status: t.status,
-                requestedModel: t.requestedModel,
-                generatorModel: t.generatorModel,
-            })),
-            abortController.signal,
-        );
-
-        // Fetch GM data (piggyback on activity poll)
-        let gmChanged = false;
-        try {
-            const gmSummary = await gmTracker.fetchAll(
-                lsInfo,
-                trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
-                abortController.signal,
-            );
-            const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
-            monitorStore.recordGMConversations(gmTracker.getAllConversationData());
-            durableFileGlobalState.update('gmDetailedSummary', detailedSummary);
-            const prevSummary = lastGMSummary;
-            lastGMSummary = detailedSummary;
-            if (!lastGMSummary
-                || !prevSummary
-                || gmSummary.totalCalls !== prevSummary.totalCalls
-                || gmSummary.totalStepsCovered !== prevSummary.totalStepsCovered
-                || gmSummary.totalRetryCount !== prevSummary.totalRetryCount
-                || gmSummary.totalCredits !== prevSummary.totalCredits) {
-                gmChanged = true;
-            }
-        } catch { /* GM fetch failure is non-critical */ }
-
-        // Inject GM precision data into activity timeline events
-        let timelineChanged = false;
-        if (lastGMSummary) {
-            timelineChanged = activityTracker.injectGMData(lastGMSummary);
-        }
-
-        if (activityChanged || gmChanged || timelineChanged || !activityTracker.isReady) {
-            const summary = activityTracker.getSummary();
-            // GM data is now embedded in getSummary() via cached _gmTotals — no override needed
-
-            // Refresh WebView immediately when activity changes
-            if (isMonitorPanelVisible() && currentUsage) {
-                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, summary, activityTracker.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics());
-            }
-        }
-
-        // Throttled persistence (max once per 30s)
-        const now = Date.now();
-        if (now - lastActivityPersistTime > 30_000) {
-            durableGlobalState.update('activityTrackerState', activityTracker.serialize());
-            if (gmTracker) {
-                durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-                durableFileGlobalState.update('gmDetailedSummary', gmTracker.getDetailedSummary());
-            }
-            lastActivityPersistTime = now;
-        }
-    } catch (err) {
-        log(`Activity poll error: ${err}`);
-    } finally {
-        isActivityPolling = false;
-    }
-}
-
-function scheduleActivityPoll(): void {
-    if (disposed) { return; }
-    const myGeneration = ++activityPollGeneration;
-    activityPollingTimer = setTimeout(async () => {
-        try {
-            await pollActivity();
-        } catch { /* ignore */ }
-        finally {
-            if (activityPollGeneration === myGeneration) {
-                scheduleActivityPoll();
-            }
-        }
-    }, ACTIVITY_POLL_INTERVAL_MS);
-}
-
 // ─── Low Quota Notification ───────────────────────────────────────────────────
 
 function checkQuotaNotification(configs: import('./models').ModelConfig[]): void {

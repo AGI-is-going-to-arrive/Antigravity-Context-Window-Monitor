@@ -1,5 +1,31 @@
 # 变更日志 / Changelog
 
+## [1.13.6] - 2026-03-25
+
+### ⚡ Refactored / 重构
+
+- **Unified Polling Loop / 轮询机制统一化**: Eliminated the redundant dual-loop polling architecture (`pollContextUsage` 5s + `pollActivity` 3s) and merged all data collection into a single global loop. Reduces `getAllTrajectories()` RPC calls from ~8 to ~3 per 15-second window, eliminating UI flickering caused by double WebView refreshes. Activity data processing now reuses the trajectory cache from the main poll instead of making independent RPC calls.
+  消除了冗余的双轮询架构（`pollContextUsage` 5s + `pollActivity` 3s），将全部数据采集合并至单一全局循环。15 秒内 `getAllTrajectories()` RPC 调用从约 8 次降至约 3 次，消除了双重 WebView 刷新导致的 UI 闪烁。Activity 数据处理复用主轮询已获取的 Trajectory 缓存。
+
+- **Dead Code Removal / 死代码清理**: Removed `activityPollingTimer`, `activityPollGeneration`, `isActivityPolling`, `pollActivity()`, `scheduleActivityPoll()` and a non-existent `statusBar.registerModelAliases()` call that was a latent compile risk.
+  移除 `activityPollingTimer`、`activityPollGeneration`、`isActivityPolling`、`pollActivity()`、`scheduleActivityPoll()` 及不存在的 `statusBar.registerModelAliases()` 调用。
+
+### Changed / 变更
+
+- **Compression Warning Threshold Default / 压缩警告阈值默认值**: Lowered default `compressionWarningThreshold` from **200K** to **150K** tokens. Antigravity does not utilize the full 1M context window; actual effective context is roughly 128K–200K.
+  默认压缩警告阈值从 **200K** 降至 **150K** Token。Antigravity 未适配 1M 上下文窗口，实际有效上下文大致 128K–200K。
+
+- **Data Disclaimer Enhancements / 数据声明优化**:
+  - Added `▸` indicator to "Click to expand" text for clearer interactive affordance.
+    "点击展开详情"增加 `▸` 指示符，提升可点击感知。
+  - Added **Context Window Limitation** section: documents that the effective context is ~128K–200K, not the model's nominal 1M.
+    新增**上下文窗口限制**说明段落。
+  - Added **Language Switching** hint: directs users to the 中文 | EN | 双语 buttons in the top-right corner.
+    新增**语言切换**提示，指引用户使用面板右上角的语言按钮。
+
+- **Status Bar Tooltip Enhancement / 状态栏提示增强**: The "Click to view details" line at the bottom of all tooltip variants (no conversation, idle, active) now renders with a `$(link-external)` icon, separator line, and **bold** Markdown formatting, making the clickable action immediately obvious.
+  所有 tooltip 场景底部的"点击查看详情"现在带有 `$(link-external)` 图标、分隔线和**加粗** Markdown 格式，让可点击操作一目了然。
+
 ## [1.13.5] - 2026-03-24
 
 ### Fixed / 修复

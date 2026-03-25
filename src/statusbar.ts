@@ -218,7 +218,7 @@ export class StatusBarManager {
     showNoConversation(limitStr: string = '1M'): void {
         this.statusBarItem.text = `$(comment-discussion) 0k/${limitStr}, 0.0%`;
         const md = new vscode.MarkdownString(
-            `Antigravity Context Monitor: ${t('statusBar.noConversationTooltip')}  \n${t('statusBar.clickToView')}`,
+            `Antigravity Context Monitor: ${t('statusBar.noConversationTooltip')}  \n——————————  \n$(link-external) **${t('statusBar.clickToView')}**`,
             false
         );
         md.supportThemeIcons = true;
@@ -233,7 +233,8 @@ export class StatusBarManager {
             t('statusBar.idleDescription'),
         ];
         lines.push(...this.buildQuotaLines());
-        lines.push(t('statusBar.clickToView'));
+        lines.push(`——————————`);
+        lines.push(`$(link-external) **${t('statusBar.clickToView')}**`);
         const md = new vscode.MarkdownString(lines.join('  \n'), false);
         md.supportThemeIcons = true;
         this.statusBarItem.tooltip = md;
@@ -353,7 +354,8 @@ export class StatusBarManager {
 
         lines.push(...this.buildQuotaLines());
 
-        lines.push(`${t('statusBar.clickToView')}`);
+        lines.push(`——————————`);
+        lines.push(`$(link-external) **${t('statusBar.clickToView')}**`);
         const md = new vscode.MarkdownString(lines.join('  \n'), false);
         md.supportThemeIcons = true;
         this.statusBarItem.tooltip = md;
