@@ -18,6 +18,7 @@ import { buildCalendarTabContent, getCalendarTabStyles } from './webview-calenda
 import { DailyStore } from './daily-store';
 import { getScript } from './webview-script';
 import { getStyles } from './webview-styles';
+import type { StateBucket } from './durable-state';
 
 // ─── Panel State ──────────────────────────────────────────────────────────────
 
@@ -38,6 +39,12 @@ let lastGMConversations: Record<string, GMConversationData> = {};
 let lastPricingStore: PricingStore | undefined;
 let lastDailyStore: DailyStore | undefined;
 let lastStorageDiagnostics: StorageDiagnostics | undefined;
+let panelDurableState: StateBucket | undefined;
+
+/** Provide a durable state bucket for panel-level persistence (zoom, etc.). */
+export function setPanelDurableState(state: StateBucket): void {
+    panelDurableState = state;
+}
 
 function clamp(value: number, min: number, max: number): number {
     return Math.min(Math.max(value, min), max);
@@ -278,6 +285,11 @@ export function showMonitorPanel(
                     panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
                 }
             }
+        } else if (msg.command === 'setZoomLevel' && typeof msg.value === 'number') {
+            const zoom = clamp(Math.round(msg.value as number), 50, 200);
+            if (panelDurableState) {
+                panelDurableState.update('panelZoomLevel', zoom);
+            }
         } else if (msg.command === 'clearActivityData') {
             if (lastActivityTracker) {
                 lastActivityTracker.reset();
@@ -457,7 +469,7 @@ ${getPricingTabStyles()}
 ${getCalendarTabStyles()}
 </style>
 </head>
-<body data-privacy-default="true">
+<body data-privacy-default="true" data-zoom="${panelDurableState?.get<number>('panelZoomLevel', 100) ?? 100}">
     <header class="panel-header">
         <h1>
             ${ICON.chart}

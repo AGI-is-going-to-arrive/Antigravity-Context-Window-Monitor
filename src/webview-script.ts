@@ -110,7 +110,8 @@ export function getScript(): string {
             }
 
             // ─── Zoom Control ───
-            var zoomLevel = savedState.zoomLevel || 100;
+            var bodyZoom = document.body.dataset.zoom ? parseInt(document.body.dataset.zoom, 10) : 0;
+            var zoomLevel = bodyZoom || savedState.zoomLevel || 100;
             function applyZoom(level) {
                 zoomLevel = level;
                 document.body.style.zoom = (level / 100).toString();
@@ -123,10 +124,11 @@ export function getScript(): string {
                 for (var zi = 0; zi < presets.length; zi++) {
                     presets[zi].classList.toggle('is-active', parseInt(presets[zi].dataset.zoom, 10) === level);
                 }
-                // Persist
+                // Persist (webview state + durable backend)
                 var s = vscode.getState() || {};
                 s.zoomLevel = level;
                 vscode.setState(s);
+                vscode.postMessage({ command: 'setZoomLevel', value: level });
             }
             // Apply on load
             if (zoomLevel !== 100) { applyZoom(zoomLevel); }

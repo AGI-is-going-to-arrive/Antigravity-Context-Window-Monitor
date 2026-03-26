@@ -34,6 +34,9 @@
 - **Clear Active Tracking Button Not Responding / 清理按钮无响应**: The button lost its event listener after incremental poll updates (`innerHTML` swap). Added re-bind logic in the `updateTabs` message handler.
   清理按钮在增量刷新后失去事件监听器。在 `updateTabs` 处理中添加了事件重绑定。
 
+- **Zoom Level Not Persisted / 界面缩放无法保存**: Fixed zoom settings being lost when the panel was closed or the extension was restarted. Previously stored only in webview-internal state (`vscode.getState()`), which is volatile. Now persisted to `DurableState` file (`%APPDATA%/Antigravity Context Monitor/state-v1.json`), surviving panel close, extension reload, VS Code updates, and even uninstall/reinstall.
+  修复界面缩放设置关闭面板后丢失的问题。原先仅存 webview 内存态，现通过 `DurableState` 持久化到文件系统，卸载重装也不丢。
+
 ### ✨ Added / 新增 (cont.)
 
 - **Clear Active Tracking Button / 清理活跃追踪按钮**: Added a "Clear" button next to the "Active Tracking" section header. Resets all tracking states without clearing archived history, useful for troubleshooting stuck sessions.

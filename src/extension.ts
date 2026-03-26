@@ -13,7 +13,7 @@ import {
 } from './tracker';
 import { StatusBarManager, formatContextLimit } from './statusbar';
 import { initI18n, initI18nFromState, showLanguagePicker, tBi } from './i18n';
-import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible } from './webview-panel';
+import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
@@ -122,6 +122,9 @@ export function activate(context: vscode.ExtensionContext): void {
     durableWorkspaceState = durableState.workspaceBucket(workspaceKey, context.workspaceState);
     durableFileGlobalState = durableState.globalBucket();
     durableFileWorkspaceState = durableState.workspaceBucket(workspaceKey);
+
+    // Inject durable state into webview-panel for zoom persistence
+    setPanelDurableState(durableFileGlobalState);
 
     // Initialize quota tracker
     quotaTracker = new QuotaTracker(context, durableGlobalState);
