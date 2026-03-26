@@ -150,6 +150,8 @@ export interface GMConversationData {
     title: string;
     totalSteps: number;
     calls: GMCallEntry[];
+    /** Max calls observed for this conversation across rewinds/reloads. */
+    lifetimeCalls?: number;
     coveredSteps: number;
     coverageRate: number;   // coveredSteps / totalSteps
 }
@@ -230,6 +232,7 @@ export function filterGMSummaryByModels(
         conversations.push({
             ...conversation,
             calls,
+            lifetimeCalls: calls.length,
             coveredSteps,
             coverageRate: conversation.totalSteps > 0 ? coveredSteps / conversation.totalSteps : 0,
         });
@@ -852,6 +855,7 @@ export class GMTracker {
                     title: t.title,
                     totalSteps: t.stepCount,
                     calls,
+                    lifetimeCalls: Math.max(cached?.lifetimeCalls ?? cached?.calls.length ?? 0, calls.length),
                     coveredSteps,
                     coverageRate: t.stepCount > 0 ? coveredSteps / t.stepCount : 0,
                 });
@@ -863,6 +867,7 @@ export class GMTracker {
                         title: t.title,
                         totalSteps: t.stepCount,
                         calls: [],
+                        lifetimeCalls: 0,
                         coveredSteps: 0,
                         coverageRate: 0,
                     });
@@ -934,6 +939,7 @@ export class GMTracker {
             conversations.push({
                 ...conv,
                 calls: activeCalls,
+                lifetimeCalls: conv.lifetimeCalls ?? conv.calls.length,
                 coveredSteps: activeStepsCovered,
                 coverageRate: conv.totalSteps > 0 ? activeStepsCovered / conv.totalSteps : 0,
             });
@@ -1120,6 +1126,7 @@ export class GMTracker {
             this._cache.set(id, {
                 ...conv,
                 calls: [],
+                lifetimeCalls: conv.lifetimeCalls ?? conv.calls.length,
                 coveredSteps: 0,
                 coverageRate: 0,
             });
@@ -1215,6 +1222,7 @@ export class GMTracker {
                 title: '',  // will be filled on next fetchAll
                 totalSteps: stepCount,
                 calls: [],
+                lifetimeCalls: data.summary.conversations.find(c => c.cascadeId === id)?.lifetimeCalls ?? 0,
                 coveredSteps: 0,
                 coverageRate: 0,
             });

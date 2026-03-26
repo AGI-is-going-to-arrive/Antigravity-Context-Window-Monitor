@@ -1,5 +1,26 @@
 # 变更日志 / Changelog
 
+## [1.13.8] - 2026-03-26
+
+### 🐛 Fixed / 修复
+
+- **Quota Tracker No Longer Assumes Another Pool's Window / 额度追踪不再误借别的池周期**: Removed the old "borrow the max `timeToReset` across all 100% models" behavior when backdating tracking start time. This could incorrectly project a short-window model or pool onto a different provider's longer window. `quota-tracker.ts` now only trusts the same model/pool's previously learned full-window duration (`knownWindowMs`), and otherwise falls back to conservative official `resetTime` observation instead of inventing a 5-hour-style start point.
+  移除旧的“拿所有 100% 模型里最大的 `timeToReset` 来回推起点”的行为。旧逻辑会把别的 provider / 别的额度池的周期误套到当前模型上。现在 `quota-tracker.ts` 只使用同模型 / 同池已学到的完整窗口长度（`knownWindowMs`）；若没有可靠窗口，则保守依赖官方 `resetTime` 观测，不再伪造类似固定 5 小时的起点。
+
+- **0% Rebound Handling / 0% 回弹处理**: A session that reaches `0%` is no longer locked into a stale completed state. If the service later reports quota rising again (for example `0% → 20%`) before the quota cycle truly ends, the tracker now clears the completed marker and resumes active tracking instead of splitting or corrupting the session.
+  达到 `0%` 的会话不再被永久锁死在已完成状态。如果服务端在额度周期真正结束前又返回更高额度（例如 `0% → 20%`），追踪器现在会清除 completed 标记并恢复活跃追踪，避免会话拆裂或统计损坏。
+
+- **Monitor Lifetime Call Counter Survives Rewind / Monitor 累计调用数不再随回退倒退**: Added per-conversation `lifetimeCalls` to GM conversation data and surfaced it in the Monitor tab. The current branch's call count may still shrink after rewind, but the new lifetime counter preserves cumulative usage history so users can distinguish "current visible calls" from "all calls ever made in this conversation".
+  为 GM 对话数据新增 `lifetimeCalls`，并在 Monitor 标签页中展示。回退后当前分支调用数仍可能变少，但新增的累计调用数会保留整个对话历史中的总调用量，让用户能够区分“当前可见调用”和“历史累计调用”。
+
+- **Reset Time Display Now Includes Date Context / 重置时间显示补上日期语义**: Reset UI no longer renders long-window resets as a misleading bare clock like `09:05`. Status bar, Profile, and Quota Tracking views now format reset information as countdown plus local date/time, e.g. `1d19h (03/28 09:05)`, making long rolling windows immediately understandable.
+  重置时间显示不再把长周期重置渲染成容易误解的裸时分，例如 `09:05`。状态栏、Profile 和 Quota Tracking 现在统一显示为“倒计时 + 本地日期时间”，例如 `1d19h (03/28 09:05)`，长滚动窗口的语义更直观。
+
+### ✅ Tests / 测试
+
+- Added `reset-time.test.ts` to lock the new reset-time formatting behavior and expanded `quota-tracker.test.ts` to cover `0%` completion persistence, genuine reset archival, and rebound recovery.
+  新增 `reset-time.test.ts` 锁定新的重置时间格式化行为，并扩展 `quota-tracker.test.ts`，覆盖 `0%` 完成态保持、真实 reset 归档，以及额度回弹恢复追踪。
+
 ## [1.13.7] - 2026-03-26
 
 ### ✨ Added / 新增

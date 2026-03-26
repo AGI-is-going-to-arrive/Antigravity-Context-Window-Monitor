@@ -15,6 +15,7 @@ import { GMSummary, GMConversationData, GMCallEntry } from './gm-tracker';
 
 interface GMSessionStats {
     calls: number;
+    lifetimeCalls: number;
     totalInput: number;
     totalOutput: number;
     thinkingTokens: number;
@@ -51,8 +52,10 @@ function aggregateGMForSession(
     gmConversations: Record<string, GMConversationData> | undefined,
     cascadeId: string,
 ): GMSessionStats {
+    const liveConv = gmSummary?.conversations.find(c => c.cascadeId === cascadeId) || null;
+    const storedConv = gmConversations?.[cascadeId] || null;
     const empty: GMSessionStats = {
-        calls: 0, totalInput: 0, totalOutput: 0,
+        calls: 0, lifetimeCalls: 0, totalInput: 0, totalOutput: 0,
         thinkingTokens: 0, responseTokens: 0,
         cacheRead: 0, cacheCreate: 0, credits: 0,
         retryCount: 0, retryTokens: 0, retryCredits: 0,
@@ -61,8 +64,15 @@ function aggregateGMForSession(
         latestCallModel: '', latestCallAccuracy: 'none',
         stopReasons: {}, hasData: false,
     };
-    const conv = getConversationData(gmSummary, gmConversations, cascadeId);
-    if (!conv || conv.calls.length === 0) { return empty; }
+    const lifetimeCalls = Math.max(
+        liveConv?.lifetimeCalls ?? liveConv?.calls.length ?? 0,
+        storedConv?.lifetimeCalls ?? storedConv?.calls.length ?? 0,
+        liveConv?.calls.length ?? 0,
+        storedConv?.calls.length ?? 0,
+    );
+    const conv = liveConv || storedConv;
+    const currentCalls = liveConv ? liveConv.calls : (storedConv?.calls || []);
+    if ((!conv || currentCalls.length === 0) && lifetimeCalls === 0) { return empty; }
 
     let totalInput = 0, totalOutput = 0, thinking = 0, response = 0;
     let cacheRead = 0, cacheCreate = 0, credits = 0;
@@ -71,7 +81,7 @@ function aggregateGMForSession(
     let cacheHits = 0;
     const stops: Record<string, number> = {};
 
-    for (const c of conv.calls) {
+    for (const c of currentCalls) {
         totalInput += c.inputTokens;
         totalOutput += c.outputTokens;
         thinking += c.thinkingTokens;
@@ -91,22 +101,23 @@ function aggregateGMForSession(
         }
     }
 
-    const latestCall = conv.calls[conv.calls.length - 1];
-    const exactCalls = conv.calls.filter(c => c.modelAccuracy === 'exact').length;
-    const aliasOnlyCalls = conv.calls.filter(c => c.modelAccuracy === 'placeholder').length;
+    const latestCall = currentCalls[currentCalls.length - 1];
+    const exactCalls = currentCalls.filter(c => c.modelAccuracy === 'exact').length;
+    const aliasOnlyCalls = currentCalls.filter(c => c.modelAccuracy === 'placeholder').length;
 
     return {
-        calls: conv.calls.length,
+        calls: currentCalls.length,
+        lifetimeCalls,
         totalInput, totalOutput, thinkingTokens: thinking, responseTokens: response,
         cacheRead, cacheCreate, credits,
         retryCount, retryTokens, retryCredits,
         avgTTFT: ttftN > 0 ? ttftSum / ttftN : 0,
         avgStreaming: streamN > 0 ? streamSum / streamN : 0,
-        cacheHitRate: conv.calls.length > 0 ? cacheHits / conv.calls.length : 0,
+        cacheHitRate: currentCalls.length > 0 ? cacheHits / currentCalls.length : 0,
         exactCalls, aliasOnlyCalls,
         latestCallModel: latestCall ? (latestCall.responseModel || latestCall.modelDisplay || latestCall.model) : '',
         latestCallAccuracy: latestCall ? latestCall.modelAccuracy : 'none',
-        stopReasons: stops, hasData: true,
+        stopReasons: stops, hasData: currentCalls.length > 0 || lifetimeCalls > 0,
     };
 }
 
@@ -283,6 +294,26 @@ function buildCurrentSessionSection(
     // Per-call details
     const callDetailsHtml = buildCallDetailsSection(gs, gm, gmConversations, usage.cascadeId);
 
+    const gmSessionStatsHtml = gs.hasData ? `
+                <div class="stat-grid four-col">
+                    <div class="stat mini">
+                        <div class="stat-label">${tBi('Calls', '调用')}</div>
+                        <div class="stat-value">${gs.calls}</div>
+                    </div>
+                    <div class="stat mini">
+                        <div class="stat-label">${tBi('Lifetime', '累计调用')}</div>
+                        <div class="stat-value">${gs.lifetimeCalls}</div>
+                    </div>
+                    <div class="stat mini">
+                        <div class="stat-label">${tBi('Retry', '重试')}</div>
+                        <div class="stat-value">${gs.retryCount}</div>
+                    </div>
+                    <div class="stat mini">
+                        <div class="stat-label">${tBi('Cache Hit', '缓存命中')}</div>
+                        <div class="stat-value">${Math.round(gs.cacheHitRate * 100)}%</div>
+                    </div>
+                </div>` : '';
+
     // Delta hint
     let deltaHtml = '';
     if (usage.estimatedDeltaSinceCheckpoint > 0 && usage.lastModelUsage) {
@@ -342,6 +373,7 @@ function buildCurrentSessionSection(
                         <div class="stat-value">${usage.imageGenStepCount}</div>
                     </div>
                 </div>
+                ${gmSessionStatsHtml}
                 ${compressHtml}
                 ${outputSplitHtml}
                 ${cacheHtml}
@@ -408,6 +440,7 @@ function buildOtherSessionsSection(
         if (gs.hasData) {
             const parts: string[] = [];
             if (gs.calls > 0) { parts.push(`${gs.calls} ${tBi('calls', '调用')}`); }
+            if (gs.lifetimeCalls > 0) { parts.push(`${tBi('Lifetime', '累计')} ${gs.lifetimeCalls}`); }
             if (gs.cacheHitRate > 0) { parts.push(`${tBi('Cache', '缓存')} ${Math.round(gs.cacheHitRate * 100)}%`); }
             if (gs.retryCount > 0) { parts.push(`${tBi('Retry', '重试')} ${gs.retryCount}`); }
             if (gs.credits > 0) { parts.push(`${gs.credits} ${tBi('cr', '积分')}`); }
@@ -622,8 +655,8 @@ function buildCallDetailsSection(
     }).join('');
 
     const header = skipped > 0
-        ? `${tBi('LLM Call Details', 'LLM 调用明细')} (${tBi(`latest ${shown.length} of ${conv.calls.length}`, `最近 ${shown.length} / 共 ${conv.calls.length}`)})`
-        : `${tBi('LLM Call Details', 'LLM 调用明细')} (${conv.calls.length})`;
+        ? `${tBi('LLM Call Details', 'LLM 调用明细')} (${tBi(`latest ${shown.length} of ${conv.calls.length}`, `最近 ${shown.length} / 当前 ${conv.calls.length}`)} · ${tBi('Lifetime', '累计')} ${gs.lifetimeCalls})`
+        : `${tBi('LLM Call Details', 'LLM 调用明细')} (${tBi('Current', '当前')} ${conv.calls.length} · ${tBi('Lifetime', '累计')} ${gs.lifetimeCalls})`;
 
     return `
                 <details class="collapsible" id="d-call-details">

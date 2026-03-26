@@ -60,6 +60,8 @@ interface ModelState {
     baselineResetTime: string;
     /** When we started observing this model in idle at 100% (ISO) */
     idleSince: string;
+    /** Last known full-window remaining time for this model/pool (ms). */
+    knownWindowMs: number;
 }
 
 const STORAGE_KEY = 'quotaHistory';
@@ -70,7 +72,7 @@ const DEFAULT_MAX_HISTORY = 20;
 
 // ─── Tracking Strategy ───────────────────────────────────────────────────────
 // Usage detection at 100%:
-//   1. Instant: compare model's timeToReset with max across all models (≈cycle).
+//   1. Instant: compare model's timeToReset with its OWN known full window.
 //      If elapsedInCycle > ELAPSED_THRESHOLD → model is already in use.
 //   2. Drift: if resetTime stays locked (no refresh) for ≥ OBSERVATION_WINDOW
 //      → model IS used. Unused models get refreshed resetTime periodically.
@@ -79,6 +81,18 @@ const ELAPSED_THRESHOLD_MS = 10 * 60 * 1000;     // 10 min elapsed in cycle → 
 const OBSERVATION_WINDOW_MS = 10 * 60 * 1000;    // 10 min stable resetTime → drift-based detect
 const RESET_DRIFT_TOLERANCE_MS = 3 * 60 * 1000;  // 3 min — API variance threshold
 const CYCLE_END_JUMP_MS = 30 * 60 * 1000;        // 30 min — resetTime jump = new cycle
+
+function getUsableKnownWindowMs(knownWindowMs: number, currentTimeToResetMs: number): number {
+    if (knownWindowMs <= 0 || currentTimeToResetMs <= 0) {
+        return 0;
+    }
+    // If current remaining time is far LONGER than what we previously learned,
+    // service-side rules likely changed. Don't backdate with stale assumptions.
+    if (currentTimeToResetMs > knownWindowMs + CYCLE_END_JUMP_MS) {
+        return 0;
+    }
+    return knownWindowMs;
+}
 
 // ─── QuotaTracker ─────────────────────────────────────────────────────────────
 
@@ -107,19 +121,6 @@ export class QuotaTracker {
         const now = nowDate.toISOString();
         const nowMs = nowDate.getTime();
         const resetModels: string[] = [];
-
-        // ── Infer cycle length from max timeToReset across all 100% models ──
-        // Unused models show ≈full cycle remaining; the max is our best guess.
-        let maxTimeToResetMs = 0;
-        for (const c of configs) {
-            if (!c.quotaInfo) { continue; }
-            const f = c.quotaInfo.remainingFraction ?? 0;
-            const rt = c.quotaInfo.resetTime;
-            if (f >= 1.0 && rt) {
-                const ttr = new Date(rt).getTime() - nowMs;
-                if (ttr > maxTimeToResetMs) { maxTimeToResetMs = ttr; }
-            }
-        }
 
         // ── Pool deduplication: group models sharing the same resetTime ──
         // Same-pool models (e.g., Claude Sonnet/Opus/GPT-OSS) share quota and
@@ -184,6 +185,7 @@ export class QuotaTracker {
                     currentSession: null,
                     baselineResetTime: config.quotaInfo.resetTime || '',
                     idleSince: now,
+                    knownWindowMs: 0,
                 };
                 this.modelStates.set(modelId, ms);
             }
@@ -203,11 +205,12 @@ export class QuotaTracker {
                         const currentResetMs = resetTimeStr
                             ? new Date(resetTimeStr).getTime() : 0;
                         const timeToResetMs = currentResetMs - nowMs;
+                        const knownWindowMs = getUsableKnownWindowMs(ms.knownWindowMs, timeToResetMs);
 
-                        // Strategy 1: Instant detection via elapsed-in-cycle
+                        // Strategy 1: Instant detection via the model's own known window
                         let instantDetect = false;
-                        if (maxTimeToResetMs > 0 && timeToResetMs > 0) {
-                            const elapsedInCycle = maxTimeToResetMs - timeToResetMs;
+                        if (knownWindowMs > 0 && timeToResetMs > 0) {
+                            const elapsedInCycle = knownWindowMs - timeToResetMs;
                             if (elapsedInCycle >= ELAPSED_THRESHOLD_MS) {
                                 instantDetect = true;
                             }
@@ -221,7 +224,7 @@ export class QuotaTracker {
 
                         if (instantDetect) {
                             const estimatedStart = new Date(
-                                currentResetMs - maxTimeToResetMs
+                                currentResetMs - knownWindowMs
                             ).toISOString();
                             this.startTracking(ms, modelId, config.label, estimatedStart, resetTimeStr, fraction, poolLabelsForModel.get(modelId));
                         } else if (resetTimeDrift > RESET_DRIFT_TOLERANCE_MS) {
@@ -230,8 +233,14 @@ export class QuotaTracker {
                             ms.idleSince = now;
                             ms.last100Time = now;
                             ms.lastFraction = fraction;
+                            if (timeToResetMs > 0) {
+                                ms.knownWindowMs = timeToResetMs;
+                            }
                         } else if (idleDuration >= OBSERVATION_WINDOW_MS) {
-                            this.startTracking(ms, modelId, config.label, ms.last100Time, resetTimeStr, fraction, poolLabelsForModel.get(modelId));
+                            const detectedStart = (knownWindowMs > 0 && currentResetMs > 0)
+                                ? new Date(currentResetMs - knownWindowMs).toISOString()
+                                : ms.last100Time;
+                            this.startTracking(ms, modelId, config.label, detectedStart, resetTimeStr, fraction, poolLabelsForModel.get(modelId));
                         } else {
                             ms.last100Time = now;
                             ms.lastFraction = fraction;
@@ -240,17 +249,23 @@ export class QuotaTracker {
                         // Actual usage detected (fraction < 1.0) → start tracking
                         const curResetMs = resetTimeStr
                             ? new Date(resetTimeStr).getTime() : 0;
-                        const estimatedStart = (maxTimeToResetMs > 0 && curResetMs > 0)
-                            ? new Date(curResetMs - maxTimeToResetMs).toISOString()
-                            : ms.last100Time;
-                        this.startTracking(ms, modelId, config.label, estimatedStart, resetTimeStr, 1.0, poolLabelsForModel.get(modelId));
-                        // Add the current fraction as second snapshot
-                        ms.currentSession!.snapshots.push({
-                            timestamp: now,
-                            fraction,
-                            percent,
-                            elapsedMs: nowMs - new Date(estimatedStart).getTime(),
-                        });
+                        const timeToResetMs = curResetMs - nowMs;
+                        const knownWindowMs = getUsableKnownWindowMs(ms.knownWindowMs, timeToResetMs);
+                        const observedFullBeforeDrop = ms.lastFraction >= 1.0;
+                        const startTime = (knownWindowMs > 0 && curResetMs > 0)
+                            ? new Date(curResetMs - knownWindowMs).toISOString()
+                            : (observedFullBeforeDrop ? ms.last100Time : now);
+                        const initialFraction = (knownWindowMs > 0 || observedFullBeforeDrop) ? 1.0 : fraction;
+                        this.startTracking(ms, modelId, config.label, startTime, resetTimeStr, initialFraction, poolLabelsForModel.get(modelId));
+                        // Add the current fraction only when it differs from the initial snapshot.
+                        if (Math.round(initialFraction * 100) !== percent) {
+                            ms.currentSession!.snapshots.push({
+                                timestamp: now,
+                                fraction,
+                                percent,
+                                elapsedMs: nowMs - new Date(startTime).getTime(),
+                            });
+                        }
                         if (fraction <= 0) { ms.currentSession!.completed = true; }
                         ms.lastFraction = fraction;
                     }
@@ -285,6 +300,10 @@ export class QuotaTracker {
                         ms.lastResetTime = resetTimeStr;
                         ms.baselineResetTime = resetTimeStr;
                         ms.idleSince = now;
+                        const nextWindowMs = resetTimeStr ? new Date(resetTimeStr).getTime() - nowMs : 0;
+                        if (nextWindowMs > 0) {
+                            ms.knownWindowMs = nextWindowMs;
+                        }
                         resetModels.push(modelId);
                         break;
                     }
@@ -304,6 +323,11 @@ export class QuotaTracker {
                     // Mark completed at 0% but DO NOT archive — wait for cycle end
                     if (fraction <= 0 && !ms.currentSession.completed) {
                         ms.currentSession.completed = true;
+                    } else if (fraction > 0 && ms.currentSession.completed) {
+                        // If the service later reports quota back above 0%,
+                        // treat the session as active again instead of keeping
+                        // the stale "completed" badge.
+                        ms.currentSession.completed = false;
                     }
                     ms.lastFraction = fraction;
                     ms.lastResetTime = resetTimeStr;
@@ -436,16 +460,17 @@ export class QuotaTracker {
         // Serialize active tracking state — ALL fields must be persisted
         const activeState: Record<string, ModelState> = {};
         for (const [modelId, ms] of this.modelStates.entries()) {
-            activeState[modelId] = {
-                state: ms.state,
-                lastFraction: ms.lastFraction,
-                last100Time: ms.last100Time,
-                lastResetTime: ms.lastResetTime,
-                currentSession: ms.currentSession,
-                baselineResetTime: ms.baselineResetTime,
-                idleSince: ms.idleSince,
-            };
-        }
+                activeState[modelId] = {
+                    state: ms.state,
+                    lastFraction: ms.lastFraction,
+                    last100Time: ms.last100Time,
+                    lastResetTime: ms.lastResetTime,
+                    currentSession: ms.currentSession,
+                    baselineResetTime: ms.baselineResetTime,
+                    idleSince: ms.idleSince,
+                    knownWindowMs: ms.knownWindowMs,
+                };
+            }
         this.state.update(ACTIVE_KEY, activeState);
     }
 
@@ -462,6 +487,7 @@ export class QuotaTracker {
                 if (!ms.lastResetTime) { ms.lastResetTime = ''; }
                 if (!ms.baselineResetTime) { ms.baselineResetTime = ms.lastResetTime; }
                 if (!ms.idleSince) { ms.idleSince = now; }
+                if (!ms.knownWindowMs) { ms.knownWindowMs = 0; }
                 // Migrate: 'done' state removed in v1.13.7 → treat as idle
                 if ((ms.state as string) === 'done') {
                     ms.state = 'idle';

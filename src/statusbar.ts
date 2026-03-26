@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ContextUsage } from './tracker';
 import { ModelConfig } from './models';
 import { t, tBi, getLanguage } from './i18n';
+import { formatResetAbsolute, formatResetContext, formatResetCountdownFromMs } from './reset-time';
 
 // ─── Token Formatting ─────────────────────────────────────────────────────────
 
@@ -393,10 +394,7 @@ export class StatusBarManager {
                     const resetDate = new Date(qi.resetTime);
                     const diffMs = resetDate.getTime() - now;
                     if (diffMs > 0) {
-                        const h = Math.floor(diffMs / 3600000);
-                        const m = Math.floor((diffMs % 3600000) / 60000);
-                        const timeStr = resetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                        resetStr = `${h}h${m}m (${timeStr})`;
+                        resetStr = formatResetContext(qi.resetTime, { nowMs: now });
                     }
                 }
                 rows.push(`| ${bar} ${escapeMarkdown(c.label)} | ${pct}% | 🔄 ${resetStr} |`);
@@ -409,8 +407,11 @@ export class StatusBarManager {
             // Show earliest reset as a standalone line for quick reading
             const earliest = this.getEarliestResetTime();
             if (earliest) {
-                const resetTimeStr = earliest.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                result.push(`🔔 ${tBi('Earliest reset at', '最近重置时间为')}: **${resetTimeStr}**`);
+                const earliestIso = earliest.toISOString();
+                result.push(
+                    `🔔 ${tBi('Earliest reset at', '最近重置时间为')}: **${formatResetAbsolute(earliestIso, { includeSeconds: true })}** ` +
+                    `(${formatResetCountdownFromMs(earliest.getTime() - Date.now())})`
+                );
             }
 
             // Show current model's reset time if available
@@ -419,8 +420,11 @@ export class StatusBarManager {
                 if (currentConfig?.quotaInfo?.resetTime) {
                     const resetDate = new Date(currentConfig.quotaInfo.resetTime);
                     if (resetDate.getTime() > Date.now()) {
-                        const timeStr = resetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                        result.push(`⏳ ${tBi('Current model resets at', '当前模型重置于')}: **${timeStr}** (${escapeMarkdown(currentConfig.label)})`);
+                        result.push(
+                            `⏳ ${tBi('Current model resets at', '当前模型重置于')}: ` +
+                            `**${formatResetAbsolute(currentConfig.quotaInfo.resetTime, { includeSeconds: true })}** ` +
+                            `(${formatResetCountdownFromMs(resetDate.getTime() - Date.now())}, ${escapeMarkdown(currentConfig.label)})`
+                        );
                     }
                 }
             }
@@ -580,10 +584,7 @@ export class StatusBarManager {
         if (!resetDate) { return ''; }
         const diffMs = resetDate.getTime() - Date.now();
         if (diffMs <= 0) { return ''; }
-        const h = Math.floor(diffMs / 3600_000);
-        const m = Math.floor((diffMs % 3600_000) / 60_000);
-        if (h > 0) { return ` ⏳${h}h${m}m`; }
-        return ` ⏳${m}m`;
+        return ` ⏳${formatResetCountdownFromMs(diffMs)}`;
     }
 
     dispose(): void {

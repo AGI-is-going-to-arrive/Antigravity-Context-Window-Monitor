@@ -4,6 +4,7 @@
 
 import { tBi } from './i18n';
 import { ModelConfig, UserStatusInfo } from './models';
+import { formatResetAbsolute, formatResetCountdown } from './reset-time';
 import { ICON } from './webview-icons';
 import { esc } from './webview-helpers';
 
@@ -183,10 +184,9 @@ function buildModelQuotaGrid(configs: ModelConfig[]): string {
 
         let resetLabel = '';
         if (qi.resetTime) {
-            try {
-                const d = new Date(qi.resetTime);
-                resetLabel = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            } catch { resetLabel = ''; }
+            const countdown = formatResetCountdown(qi.resetTime);
+            const absolute = formatResetAbsolute(qi.resetTime);
+            resetLabel = countdown ? `${countdown} · ${absolute}` : absolute;
         }
 
         // Tag badge (e.g. "New")
