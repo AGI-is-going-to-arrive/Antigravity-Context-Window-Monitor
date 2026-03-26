@@ -15,13 +15,14 @@ antigravity-context-monitor/
 │   ├── discovery.ts              # Language Server 进程发现（跨平台）
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
 │   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
-│   ├── models.ts                 # 模型配置、上下文限额、显示名称
+│   ├── models.ts                 # 模型配置、上下文限额、显示名称、跨语言归一化
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
 │   ├── statusbar.ts              # 状态栏 UI（StatusBarManager）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
 │   ├── monitor-store.ts          # 监控页持久化：按对话保存 ContextUsage + GM 会话快照
 │   ├── pool-utils.ts             # 配额池工具：按 resetTime 分组 / 扩池 / 查找最近 quota session
-│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（批量回调 + 同池去重）
+│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（per-model knownWindowMs + 同池去重）
+│   ├── reset-time.ts             # 重置时间格式化工具（倒计时 + 绝对日期时间）
 │   ├── activity-tracker.ts       # 模型活动追踪（推理、工具、Token、池级归档）
 │   ├── gm-tracker.ts             # GM 数据层：RPC + 解析 + 聚合 + 缓存 + 基线
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算
@@ -45,10 +46,12 @@ antigravity-context-monitor/
 ├── tests/                        # Vitest 测试目录（开发用，不参与插件运行时）
 │   ├── discovery.test.ts         # discovery 单元测试
 │   ├── durable-state.test.ts     # durable-state 单元测试
-│   ├── gm-tracker.test.ts        # gm-tracker 单元测试
+│   ├── activity-tracker.test.ts  # activity-tracker 单元测试（跨语言归一化、planner step 修复）
+│   ├── gm-tracker.test.ts        # gm-tracker 单元测试（含跨语言恢复回归）
 │   ├── monitor-store.test.ts     # monitor-store 单元测试
 │   ├── pool-utils.test.ts        # pool-utils 单元测试
-│   ├── quota-tracker.test.ts     # quota-tracker 单元测试
+│   ├── quota-tracker.test.ts     # quota-tracker 单元测试（含 0% 回弹恢复）
+│   ├── reset-time.test.ts        # reset-time 单元测试
 │   ├── statusbar.test.ts         # statusbar 单元测试
 │   └── tracker.test.ts           # tracker 单元测试
 ├── docs/
@@ -131,9 +134,11 @@ Core data processing module: trajectory listing, token computation, context usag
 
 ---
 
-### 🤖 models.ts — 模型配置
+### 🤖 models.ts — 模型配置与归一化
 
-模型上下文限额、显示名称（i18n 感知）以及 `ModelConfig`、`UserStatusInfo` 等核心接口定义。
+模型上下文限额、显示名称（i18n 感知）以及 `ModelConfig`、`UserStatusInfo` 等核心接口定义。v1.13.8 新增 `normalizeModelDisplayName()`（EN/ZH/双语显示名归一到当前语言唯一显示名）和 `resolveModelId()`（任意显示名 → 内部 modelId），为 Activity / GM / Quota 跨模块归一化提供统一锚点。
+
+Model context limits, display names (i18n-aware), and core interfaces. v1.13.8 adds `normalizeModelDisplayName()` (unifies EN/ZH/bilingual names to one canonical current-language name) and `resolveModelId()` (any display name → internal modelId), serving as the unified normalization anchor across Activity / GM / Quota modules.
 
 ---
 
@@ -192,9 +197,9 @@ Helpers for shared quota-pool operations based on `quotaInfo.resetTime`.
 
 ### ⚡ quota-tracker.ts — 额度消费追踪
 
-状态机追踪每个模型的额度消费过程（`idle→tracking→(archive)→idle`），并按共享 resetTime 自动去重同池模型。v1.13.7 移除 `done` 状态，引入 `cycleResetTime` 和 `isCycleEnded()` 统一周期结束判定。
+状态机追踪每个模型的额度消费过程（`idle→tracking→(archive)→idle`），并按共享 resetTime 自动去重同池模型。v1.13.7 移除 `done` 状态，引入 `cycleResetTime` 和 `isCycleEnded()`。v1.13.8 移除全局 `maxTimeToResetMs` 跨模型推算，改为 per-model `knownWindowMs`（每个模型只信任自己学到的完整窗口长度），新增 `getUsableKnownWindowMs()` 安全校验函数，并修复 0% 额度锁死 bug（`completed` 标记可逆）。
 
-State machine tracking per-model quota consumption (`idle→tracking→(archive)→idle`) with shared-pool deduplication. v1.13.7 removes `done` state, adds `cycleResetTime` and `isCycleEnded()` for unified cycle-end detection.
+State machine tracking per-model quota consumption (`idle→tracking→(archive)→idle`) with shared-pool deduplication. v1.13.7 removes `done` state, adds `cycleResetTime` and `isCycleEnded()`. v1.13.8 replaces global `maxTimeToResetMs` cross-model inference with per-model `knownWindowMs`, adds `getUsableKnownWindowMs()` safety check, and fixes the 0% lock-dead bug (completed marker is now reversible).
 
 ---
 
@@ -444,12 +449,14 @@ npx vsce package --no-dependencies
 | `discovery.test.ts` | 22 | `buildExpectedWorkspaceId`（含百分号编码） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / `extractPort` / `extractPortFromNetstat` / `extractPortFromSs` / `isWSL` / `selectMatchingProcessLine`（6 分支测试） |
 | `tracker.test.ts` | 22 | `normalizeUri`（file / vscode-remote / URL 解码）/ `estimateTokensFromText`（ASCII / 非 ASCII / 混合）/ `processSteps()` 纯函数 |
 | `statusbar.test.ts` | 11 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 |
-| `quota-tracker.test.ts` | 28 | 状态机转换 / 额度重置检测 / 批量回调 / 同池去重 / 周期结束归档 / legacy done 迁移 |
+| `quota-tracker.test.ts` | 29 | 状态机转换 / 额度重置检测 / 批量回调 / 同池去重 / 周期结束归档 / legacy done 迁移 / 0% 回弹恢复 |
 | `pool-utils.test.ts` | 3 | 配额池扩展 / 分组 / quota session 匹配 |
 | `monitor-store.test.ts` | 1 | Monitor 快照与 GM 会话快照恢复 |
-| `gm-tracker.test.ts` | 1 | `filterGMSummaryByModels()` 按模型池过滤 |
+| `gm-tracker.test.ts` | 2 | `filterGMSummaryByModels()` 按模型池过滤 / 跨语言恢复回归 |
+| `activity-tracker.test.ts` | 4 | planner step 延迟补全 / 短对话恢复自愈 / stepIndex 重排清理 / 跨语言模型桶合并 |
+| `reset-time.test.ts` | 3 | 倒计时格式化 / 绝对日期时间格式化 / 上下文拼接格式 |
 | `durable-state.test.ts` | 1 | 外部持久化文件创建 / fallback 迁移 / 重装恢复 |
 
-共 92 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 102 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-92 total tests, using `__mocks__/vscode.ts` to mock VS Code API.
+102 total tests, using `__mocks__/vscode.ts` to mock VS Code API.
