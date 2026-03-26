@@ -316,6 +316,14 @@ export function getScript(): string {
                 }
             }
 
+            // ─── Clear Active Tracking ───
+            var clearActiveBtn = document.getElementById('clearActiveTracking');
+            if (clearActiveBtn) {
+                clearActiveBtn.addEventListener('click', function() {
+                    vscode.postMessage({ command: 'clearActiveTracking' });
+                });
+            }
+
             // ─── Copy Raw JSON ───
             var copyBtn = document.getElementById('copyRawJson');
             if (copyBtn) {
@@ -723,6 +731,14 @@ export function getScript(): string {
                     if (newPricingReset) {
                         newPricingReset.addEventListener('click', function() {
                             vscode.postMessage({ command: 'resetPricing' });
+                        });
+                    }
+
+                    // Re-bind Clear Active Tracking button (inside history tab pane)
+                    var newClearActiveBtn = document.getElementById('clearActiveTracking');
+                    if (newClearActiveBtn) {
+                        newClearActiveBtn.addEventListener('click', function() {
+                            vscode.postMessage({ command: 'clearActiveTracking' });
                         });
                     }
 

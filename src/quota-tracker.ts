@@ -1,10 +1,9 @@
 // ─── Quota Consumption Timeline Tracker ──────────────────────────────────────
 // Tracks per-model quota consumption over time.
-// State machine per model: IDLE → TRACKING → DONE
+// State machine per model: IDLE → TRACKING → (archive) → IDLE
 //
-// IDLE: fraction == 1.0, waiting for first usage
-// TRACKING: fraction < 1.0, recording snapshots on each change
-// DONE: fraction == 0, session archived
+// IDLE: waiting for first usage detection
+// TRACKING: recording snapshots until cycle ends (resetTime passes or shifts)
 
 import * as vscode from 'vscode';
 import { ModelConfig } from './models';
@@ -34,17 +33,19 @@ export interface QuotaSession {
     poolModels?: string[];
     /** ISO timestamp: last time we saw 100% before tracking started */
     startTime: string;
-    /** ISO timestamp: when 0% was reached */
+    /** ISO timestamp: when the session ended (cycle reset) */
     endTime?: string;
     /** Total duration from start to end in milliseconds */
     totalDurationMs?: number;
     /** Ordered snapshots */
     snapshots: QuotaSnapshot[];
-    /** Whether the session reached 0% */
+    /** Whether the session reached 0% at some point */
     completed: boolean;
+    /** The API resetTime observed when tracking started — used for cycle-end detection */
+    cycleResetTime?: string;
 }
 
-type TrackingState = 'idle' | 'tracking' | 'done';
+type TrackingState = 'idle' | 'tracking';
 
 interface ModelState {
     state: TrackingState;
@@ -77,6 +78,7 @@ const DEFAULT_MAX_HISTORY = 20;
 const ELAPSED_THRESHOLD_MS = 10 * 60 * 1000;     // 10 min elapsed in cycle → instant detect
 const OBSERVATION_WINDOW_MS = 10 * 60 * 1000;    // 10 min stable resetTime → drift-based detect
 const RESET_DRIFT_TOLERANCE_MS = 3 * 60 * 1000;  // 3 min — API variance threshold
+const CYCLE_END_JUMP_MS = 30 * 60 * 1000;        // 30 min — resetTime jump = new cycle
 
 // ─── QuotaTracker ─────────────────────────────────────────────────────────────
 
@@ -203,9 +205,6 @@ export class QuotaTracker {
                         const timeToResetMs = currentResetMs - nowMs;
 
                         // Strategy 1: Instant detection via elapsed-in-cycle
-                        // If maxTimeToReset ≈ cycle length and this model's
-                        // timeToReset is significantly shorter, it's already
-                        // been in a used cycle for (max - this) time.
                         let instantDetect = false;
                         if (maxTimeToResetMs > 0 && timeToResetMs > 0) {
                             const elapsedInCycle = maxTimeToResetMs - timeToResetMs;
@@ -221,28 +220,10 @@ export class QuotaTracker {
                         const idleDuration = nowMs - new Date(ms.idleSince).getTime();
 
                         if (instantDetect) {
-                            // Model has been in-cycle for >10min → used!
-                            // Backdate startTime to estimated cycle start
                             const estimatedStart = new Date(
                                 currentResetMs - maxTimeToResetMs
                             ).toISOString();
-                            const session: QuotaSession = {
-                                id: `${modelId}_${Date.now()}`,
-                                modelId,
-                                modelLabel: config.label,
-                                poolModels: poolLabelsForModel.get(modelId),
-                                startTime: estimatedStart,
-                                snapshots: [{
-                                    timestamp: estimatedStart,
-                                    fraction: 1.0,
-                                    percent: 100,
-                                    elapsedMs: 0,
-                                }],
-                                completed: false,
-                            };
-                            ms.state = 'tracking';
-                            ms.currentSession = session;
-                            ms.lastFraction = fraction;
+                            this.startTracking(ms, modelId, config.label, estimatedStart, resetTimeStr, fraction, poolLabelsForModel.get(modelId));
                         } else if (resetTimeDrift > RESET_DRIFT_TOLERANCE_MS) {
                             // resetTime shifted — API is refreshing → model is unused
                             ms.baselineResetTime = resetTimeStr;
@@ -250,133 +231,49 @@ export class QuotaTracker {
                             ms.last100Time = now;
                             ms.lastFraction = fraction;
                         } else if (idleDuration >= OBSERVATION_WINDOW_MS) {
-                            // resetTime locked for ≥10min → model IS used!
-                            const session: QuotaSession = {
-                                id: `${modelId}_${Date.now()}`,
-                                modelId,
-                                modelLabel: config.label,
-                                poolModels: poolLabelsForModel.get(modelId),
-                                startTime: ms.last100Time,
-                                snapshots: [{
-                                    timestamp: ms.last100Time,
-                                    fraction: 1.0,
-                                    percent: 100,
-                                    elapsedMs: 0,
-                                }],
-                                completed: false,
-                            };
-                            ms.state = 'tracking';
-                            ms.currentSession = session;
-                            ms.lastFraction = fraction;
+                            this.startTracking(ms, modelId, config.label, ms.last100Time, resetTimeStr, fraction, poolLabelsForModel.get(modelId));
                         } else {
-                            // Still observing
                             ms.last100Time = now;
                             ms.lastFraction = fraction;
                         }
                     } else {
                         // Actual usage detected (fraction < 1.0) → start tracking
-                        // Backdate startTime to estimated cycle start when possible
                         const curResetMs = resetTimeStr
                             ? new Date(resetTimeStr).getTime() : 0;
                         const estimatedStart = (maxTimeToResetMs > 0 && curResetMs > 0)
                             ? new Date(curResetMs - maxTimeToResetMs).toISOString()
                             : ms.last100Time;
-                        const session: QuotaSession = {
-                            id: `${modelId}_${Date.now()}`,
-                            modelId,
-                            modelLabel: config.label,
-                            poolModels: poolLabelsForModel.get(modelId),
-                            startTime: estimatedStart,
-                            snapshots: [
-                                {
-                                    timestamp: estimatedStart,
-                                    fraction: 1.0,
-                                    percent: 100,
-                                    elapsedMs: 0,
-                                },
-                                {
-                                    timestamp: now,
-                                    fraction,
-                                    percent,
-                                    elapsedMs: nowMs - new Date(estimatedStart).getTime(),
-                                },
-                            ],
-                            completed: false,
-                        };
-
-                        if (fraction <= 0) {
-                            // Directly went to 0 (edge case)
-                            session.endTime = now;
-                            session.totalDurationMs = nowMs - new Date(estimatedStart).getTime();
-                            session.completed = true;
-                            this.archiveSession(session);
-                            ms.state = 'done';
-                            ms.currentSession = null;
-                        } else {
-                            ms.state = 'tracking';
-                            ms.currentSession = session;
-                        }
+                        this.startTracking(ms, modelId, config.label, estimatedStart, resetTimeStr, 1.0, poolLabelsForModel.get(modelId));
+                        // Add the current fraction as second snapshot
+                        ms.currentSession!.snapshots.push({
+                            timestamp: now,
+                            fraction,
+                            percent,
+                            elapsedMs: nowMs - new Date(estimatedStart).getTime(),
+                        });
+                        if (fraction <= 0) { ms.currentSession!.completed = true; }
                         ms.lastFraction = fraction;
                     }
                     ms.lastResetTime = resetTimeStr;
                     break;
 
-                case 'tracking':
+                case 'tracking': {
                     if (!ms.currentSession) {
-                        // Shouldn't happen — reset to idle
                         ms.state = 'idle';
                         ms.lastFraction = fraction;
                         ms.lastResetTime = resetTimeStr;
                         break;
                     }
 
-                    // Keep poolModels up-to-date with latest pool membership
+                    // Keep poolModels up-to-date
                     const latestPoolLabels = poolLabelsForModel.get(modelId);
                     if (latestPoolLabels) {
                         ms.currentSession.poolModels = latestPoolLabels;
                     }
 
-                    if (fraction >= 1.0) {
-                        if (ms.lastFraction >= 1.0) {
-                            // Entered tracking at 100% via dynamic detection.
-                            // Check if the quota cycle has ended via resetTime:
-                            //   • resetTime passed (now >= lastResetTime)
-                            //   • resetTime jumped forward significantly (new cycle)
-                            const lastResetMs = ms.lastResetTime
-                                ? new Date(ms.lastResetTime).getTime() : 0;
-                            const curResetMs = resetTimeStr
-                                ? new Date(resetTimeStr).getTime() : 0;
-                            const resetTimePassed = lastResetMs > 0
-                                && lastResetMs <= nowDate.getTime();
-                            const resetTimeJumped = lastResetMs > 0 && curResetMs > 0
-                                && Math.abs(curResetMs - lastResetMs) > 30 * 60 * 1000;
-
-                            if (resetTimePassed || resetTimeJumped) {
-                                // Quota cycle ended — archive
-                                const endTimeStr = ms.lastResetTime || now;
-                                ms.currentSession.completed = false;
-                                ms.currentSession.endTime = endTimeStr;
-                                ms.currentSession.totalDurationMs =
-                                    new Date(endTimeStr).getTime() - new Date(ms.currentSession.startTime).getTime();
-                                this.archiveSession(ms.currentSession);
-                                ms.currentSession = null;
-                                ms.state = 'idle';
-                                ms.last100Time = now;
-                                ms.lastFraction = fraction;
-                                ms.lastResetTime = resetTimeStr;
-                                ms.baselineResetTime = resetTimeStr;
-                                ms.idleSince = now;
-                                resetModels.push(modelId);
-                                break;
-                            }
-                            // Same cycle, still at 100% — keep tracking
-                            ms.lastResetTime = resetTimeStr;
-                            break;
-                        }
-                        // Was below 100%, now back to 100% → genuine reset!
-                        // Use the stored resetTime as endTime (official reset point)
-                        const endTimeStr = ms.lastResetTime || now;
-                        ms.currentSession.completed = false;
+                    // ── Cycle-end detection via cycleResetTime ──
+                    if (this.isCycleEnded(ms.currentSession, resetTimeStr, nowMs)) {
+                        const endTimeStr = ms.currentSession.cycleResetTime || ms.lastResetTime || now;
                         ms.currentSession.endTime = endTimeStr;
                         ms.currentSession.totalDurationMs =
                             new Date(endTimeStr).getTime() - new Date(ms.currentSession.startTime).getTime();
@@ -392,7 +289,7 @@ export class QuotaTracker {
                         break;
                     }
 
-                    // Record if fraction changed (rounded to integer %)
+                    // Record snapshot if fraction changed (integer %)
                     if (Math.round(fraction * 100) !== Math.round(ms.lastFraction * 100)) {
                         const lastSnap = ms.currentSession.snapshots[ms.currentSession.snapshots.length - 1];
                         const elapsedMs = new Date(now).getTime() - new Date(lastSnap.timestamp).getTime();
@@ -404,35 +301,14 @@ export class QuotaTracker {
                         });
                     }
 
-                    if (fraction <= 0) {
-                        // Reached 0% → session complete!
-                        ms.currentSession.endTime = now;
-                        ms.currentSession.totalDurationMs =
-                            new Date(now).getTime() - new Date(ms.currentSession.startTime).getTime();
+                    // Mark completed at 0% but DO NOT archive — wait for cycle end
+                    if (fraction <= 0 && !ms.currentSession.completed) {
                         ms.currentSession.completed = true;
-                        this.archiveSession(ms.currentSession);
-                        ms.currentSession = null;
-                        ms.state = 'done';
                     }
                     ms.lastFraction = fraction;
                     ms.lastResetTime = resetTimeStr;
                     break;
-
-                case 'done':
-                    if (fraction >= 1.0) {
-                        // Reset after done → go idle
-                        ms.state = 'idle';
-                        ms.last100Time = now;
-                        ms.lastFraction = fraction;
-                        ms.lastResetTime = resetTimeStr;
-                        ms.baselineResetTime = resetTimeStr;
-                        ms.idleSince = now;
-                        resetModels.push(modelId);
-                    } else {
-                        ms.lastFraction = fraction;
-                        ms.lastResetTime = resetTimeStr;
-                    }
-                    break;
+                }
             }
         }
 
@@ -497,7 +373,49 @@ export class QuotaTracker {
 
     // ─── Internal ─────────────────────────────────────────────────────────────
 
+    /** Helper: begin a tracking session. */
+    private startTracking(
+        ms: ModelState, modelId: string, label: string,
+        startTime: string, resetTime: string, initialFraction: number,
+        poolModels?: string[],
+    ): void {
+        const session: QuotaSession = {
+            id: `${modelId}_${Date.now()}`,
+            modelId,
+            modelLabel: label,
+            poolModels,
+            startTime,
+            snapshots: [{
+                timestamp: startTime,
+                fraction: initialFraction,
+                percent: Math.round(initialFraction * 100),
+                elapsedMs: 0,
+            }],
+            completed: false,
+            cycleResetTime: resetTime,
+        };
+        ms.state = 'tracking';
+        ms.currentSession = session;
+        ms.lastFraction = initialFraction;
+    }
 
+    /** Detect if the quota cycle has ended.
+     *  Two signals: (a) cycleResetTime has passed, (b) API resetTime jumped > 30 min. */
+    private isCycleEnded(session: QuotaSession, currentResetTimeStr: string, nowMs: number): boolean {
+        const cycleMs = session.cycleResetTime
+            ? new Date(session.cycleResetTime).getTime() : 0;
+        const curMs = currentResetTimeStr
+            ? new Date(currentResetTimeStr).getTime() : 0;
+
+        // (a) The expected reset time has passed
+        if (cycleMs > 0 && cycleMs <= nowMs) { return true; }
+
+        // (b) API resetTime jumped forward significantly → new cycle
+        if (cycleMs > 0 && curMs > 0 && Math.abs(curMs - cycleMs) > CYCLE_END_JUMP_MS) {
+            return true;
+        }
+        return false;
+    }
 
     private archiveSession(session: QuotaSession): void {
         this.history.unshift(session); // newest first
@@ -544,6 +462,16 @@ export class QuotaTracker {
                 if (!ms.lastResetTime) { ms.lastResetTime = ''; }
                 if (!ms.baselineResetTime) { ms.baselineResetTime = ms.lastResetTime; }
                 if (!ms.idleSince) { ms.idleSince = now; }
+                // Migrate: 'done' state removed in v1.13.7 → treat as idle
+                if ((ms.state as string) === 'done') {
+                    ms.state = 'idle';
+                    ms.currentSession = null;
+                    ms.last100Time = now;
+                }
+                // Migrate: backfill cycleResetTime for sessions created before v1.13.7
+                if (ms.currentSession && !ms.currentSession.cycleResetTime) {
+                    ms.currentSession.cycleResetTime = ms.lastResetTime;
+                }
                 this.modelStates.set(modelId, ms);
             }
         }

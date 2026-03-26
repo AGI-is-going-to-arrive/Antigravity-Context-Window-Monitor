@@ -56,7 +56,12 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
         const activeCards = activeSessions.map(s => buildSessionCard(s, true)).join('');
         parts.push(`
             <section class="card">
-                <h2>${ICON.bolt} ${tBi('Active Tracking', '活跃追踪')} (${activeSessions.length})</h2>
+                <div class="card-header-row">
+                    <h2>${ICON.bolt} ${tBi('Active Tracking', '活跃追踪')} (${activeSessions.length})</h2>
+                    <button class="action-btn danger-action qt-clear-active" id="clearActiveTracking">
+                        ${ICON.trash} ${tBi('Clear', '清理')}
+                    </button>
+                </div>
                 <p class="raw-desc">${tBi(
                     'Currently tracking quota consumption. Tracking starts instantly when quota drops; if quota stays at 100%, it auto-detects usage via reset time drift (~10 min).',
                     '正在追踪额度消耗。额度下降时立即启动；若额度持续 100%，通过重置时间偏移自动检测（约 10 分钟）。',

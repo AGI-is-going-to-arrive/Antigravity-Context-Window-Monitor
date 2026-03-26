@@ -23,6 +23,33 @@
 - All new animations include `@media (prefers-reduced-motion: reduce)` overrides to disable motion for users who prefer reduced motion. Tab slider transition is also disabled under this preference.
   所有新增动画均包含 `prefers-reduced-motion` 降级，关闭运动偏好时禁用动画。胶囊滑块过渡同样在此偏好下禁用。
 
+### 🐛 Fixed / 修复
+
+- **Quota Tracker "Resurrection" Bug / 额度追踪"回光返照"问题**: Fixed a critical bug where reaching 0% immediately archived the session and entered a `done` state. If the API subsequently reported the fraction bouncing back (e.g., to 20%), the data would split and corrupt. Now, 0% only marks the session as `completed` while tracking continues until the actual quota cycle ends (detected via `cycleResetTime`).
+  修复额度到 0% 后立即归档导致的"回光返照"数据分裂问题。现在 0% 仅标记完成，继续追踪直到周期实际结束。
+
+- **Quota Tracker Stale "Tracking..." Bug / 额度追踪永久"追踪中"问题**: Fixed a bug where sessions stayed stuck in "追踪中" forever. Root cause: `lastResetTime` was overwritten every poll cycle, so if the API's `resetTime` transitioned from T1→T2 between two polls, the old value was lost and cycle-end could never be detected. Introduced `cycleResetTime` (locked at tracking start) as the immutable anchor for cycle-end detection.
+  修复追踪永远卡在"追踪中"的问题。根因：`lastResetTime` 每次 poll 被覆盖。新增 `cycleResetTime` 锁定入场时的重置时间作为周期结束判定锚点。
+
+- **Clear Active Tracking Button Not Responding / 清理按钮无响应**: The button lost its event listener after incremental poll updates (`innerHTML` swap). Added re-bind logic in the `updateTabs` message handler.
+  清理按钮在增量刷新后失去事件监听器。在 `updateTabs` 处理中添加了事件重绑定。
+
+### ✨ Added / 新增 (cont.)
+
+- **Clear Active Tracking Button / 清理活跃追踪按钮**: Added a "Clear" button next to the "Active Tracking" section header. Resets all tracking states without clearing archived history, useful for troubleshooting stuck sessions.
+  在"活跃追踪"标题旁新增清理按钮。仅重置追踪状态，不清归档历史。
+
+### Architecture / 架构
+
+- **Eliminated `done` state from quota tracker**: Simplified state machine from `idle→tracking→done` to `idle→tracking→(archive)→idle`. Legacy `done` states are auto-migrated to `idle` on extension load.
+  废除额度追踪的 `done` 状态。旧 `done` 状态在加载时自动迁移为 `idle`。
+
+- **Extracted `startTracking()` helper**: Deduplicated 3 identical session-creation code paths into a single `startTracking()` method.
+  提取 `startTracking()` 方法，合并 3 处重复的 session 创建逻辑。
+
+- **Added `isCycleEnded()` method**: Centralizes cycle-end detection logic: (a) `cycleResetTime` has passed, or (b) API `resetTime` jumped >30 min.
+  新增 `isCycleEnded()` 方法统一周期结束判定。
+
 ## [1.13.6] - 2026-03-25
 
 ### ⚡ Refactored / 重构

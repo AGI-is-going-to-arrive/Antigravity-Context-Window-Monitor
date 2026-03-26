@@ -247,6 +247,14 @@ export function showMonitorPanel(
             const exists = await vscode.workspace.fs.stat(uri).then(() => true, () => false);
             const target = exists ? uri : vscode.Uri.file(path.dirname(lastStorageDiagnostics.stateFilePath));
             await vscode.commands.executeCommand('revealFileInOS', target);
+        } else if (msg.command === 'clearActiveTracking') {
+            if (lastQuotaTracker) {
+                lastQuotaTracker.resetTrackingStates();
+                refreshLocalStorageDiagnostics();
+                if (panel) {
+                    panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                }
+            }
         } else if (msg.command === 'clearQuotaHistory') {
             if (lastQuotaTracker) {
                 lastQuotaTracker.resetTrackingStates();

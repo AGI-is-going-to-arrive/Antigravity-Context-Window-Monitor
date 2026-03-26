@@ -2277,6 +2277,20 @@ export function getStyles(): string {
             }
         }
 
+        /* ─── Card Header Row (title + action side by side) ─── */
+        .card-header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--space-3);
+        }
+        .card-header-row h2 { margin: 0; }
+        .card-header-row .qt-clear-active {
+            flex-shrink: 0;
+            font-size: 0.75em;
+            padding: var(--space-1) var(--space-3);
+        }
+
         /* ─── Timeline Card ───────────── */
         .timeline-card {
             background: rgba(255,255,255,0.02);
