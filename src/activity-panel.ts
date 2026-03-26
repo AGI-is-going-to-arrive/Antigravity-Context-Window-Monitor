@@ -30,6 +30,23 @@ export function buildGMDataTabContent(
 
     const parts: string[] = [];
 
+    // ── Data scope explanation
+    parts.push(`<details class="act-tl-legend gm-scope-note" id="gmScopeNote">
+        <summary>${tBi('ℹ Data Scope', 'ℹ 数据范围')}</summary>
+        <div class="act-tl-legend-body">
+            <div class="act-tl-legend-note act-tl-legend-note-info">
+                <svg class="act-tl-legend-note-icon" viewBox="0 0 16 16"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path fill="currentColor" d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>
+                <div>
+                    <b>${tBi('Counting cycle = Quota cycle, not per-session or per-day.', '统计周期 = 额度周期，而非单个会话或单日。')}</b><br/>
+                    ${tBi(
+                        'All metrics (calls, tokens, credits) below accumulate within the <b>current quota cycle</b>. When a model pool\'s quota resets, only that pool\'s data is archived — other pools continue counting. For example, Claude + OSS models share one reset cycle, while Gemini Pro has its own independent cycle.',
+                        '以下所有指标（调用次数、token、credits）均在<b>当前额度周期</b>内累计。当某个模型池的额度重置时，仅归档该池的数据——其他模型池的统计继续。例如 Claude + OSS 共用一个重置周期，而 Gemini Pro 拥有独立的周期。',
+                    )}
+                </div>
+            </div>
+        </div>
+    </details>`);
+
     // ── Summary Bar (merged activity + GM)
     parts.push(buildSummaryBar(summary, gmSummary));
 

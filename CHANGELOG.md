@@ -39,6 +39,9 @@
 - **Clear Active Tracking Button / 清理活跃追踪按钮**: Added a "Clear" button next to the "Active Tracking" section header. Resets all tracking states without clearing archived history, useful for troubleshooting stuck sessions.
   在"活跃追踪"标题旁新增清理按钮。仅重置追踪状态，不清归档历史。
 
+- **GM Data Scope Note / GM 数据范围说明**: Added a collapsible "Data Scope" info panel at the top of the GM Data tab. Explains that metrics accumulate per quota cycle (not per-session or per-day) and that each model pool (e.g., Claude+OSS vs Gemini Pro) resets independently.
+  在 GM 数据 Tab 顶部新增可折叠「数据范围」说明，解释统计周期为额度周期且各模型池独立重置。
+
 ### Architecture / 架构
 
 - **Eliminated `done` state from quota tracker**: Simplified state machine from `idle→tracking→done` to `idle→tracking→(archive)→idle`. Legacy `done` states are auto-migrated to `idle` on extension load.
