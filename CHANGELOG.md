@@ -2,7 +2,19 @@
 
 ## [1.13.8] - 2026-03-26
 
+### ✨ Added / 新增
+
+- **Sticky TopBar — Fixed Navigation & Info Chips / 固定顶部栏 — 导航与信息容器化**: Consolidated header, three information banners (GitHub, multi-window notice, data disclaimer), and the capsule tab bar into a single `position: sticky` top container (`.panel-topbar`). The tab bar is now always visible during scrolling, enabling instant tab switching at any scroll depth. Fixed-area vertical footprint reduced from ~172px to ~92px (−47%).
+  将标题栏、三个信息横幅（GitHub、多窗口提示、数据声明）和胶囊 Tab 栏合并进一个 `position: sticky` 的固定顶部容器（`.panel-topbar`）。Tab 栏在滚动时始终可见，任意深度均可即时切换标签。固定区垂直占用从 ~172px 降至 ~92px（−47%）。
+
+- **Info Chips with Dropdown Panels / 信息胶囊与下拉面板**: Three banners compressed into compact chip buttons (`[GitHub ↗]` `[⚠ 提示]` `[ℹ 声明]`). Clicking a chip toggles its dropdown panel with mutually exclusive behavior (opening one auto-closes others). Expanded state persisted via `vscode.setState()` to survive auto-refresh and tab switches.
+  三个占位横幅压缩为水平排列的信息胶囊按钮。点击展开/收起对应下拉面板，互斥逻辑确保同时只展开一个。展开状态通过 `vscode.setState()` 持久化，自动刷新和标签切换都不丢失。
+
+- **Frosted Glass & Scroll Shadow / 毛玻璃与滚动阴影**: TopBar background uses `backdrop-filter: blur(16px)` with 92% opacity for frosted glass translucency. A subtle bottom shadow (`.scrolled` class) appears when `scrollY > 8px`, reinforcing the visual separation between fixed header and scrolling content.
+  顶部栏背景使用 `backdrop-filter: blur(16px)` + 92% 透明度实现毛玻璃质感。滚动超过 8px 时底部出现柔和阴影（`.scrolled` 类），增强固定栏与滚动内容的视觉层级。
+
 ### 🐛 Fixed / 修复
+
 
 - **Quota Tracker No Longer Assumes Another Pool's Window / 额度追踪不再误借别的池周期**: Removed the old "borrow the max `timeToReset` across all 100% models" behavior when backdating tracking start time. This could incorrectly project a short-window model or pool onto a different provider's longer window. `quota-tracker.ts` now only trusts the same model/pool's previously learned full-window duration (`knownWindowMs`), and otherwise falls back to conservative official `resetTime` observation instead of inventing a 5-hour-style start point.
   移除旧的“拿所有 100% 模型里最大的 `timeToReset` 来回推起点”的行为。旧逻辑会把别的 provider / 别的额度池的周期误套到当前模型上。现在 `quota-tracker.ts` 只使用同模型 / 同池已学到的完整窗口长度（`knownWindowMs`）；若没有可靠窗口，则保守依赖官方 `resetTime` 观测，不再伪造类似固定 5 小时的起点。
@@ -22,6 +34,9 @@
 - **Deterministic Recent-Activity Ordering / 最近操作确定性排序**: Added a render-time fallback sort in `activity-panel.ts` using `timestamp → stepIndex → source` so restored state, GM enrichment, and late repairs cannot accidentally shuffle the timeline order. The view remains a debugging-oriented execution timeline, but row order is now stable even when events are patched after the first render.
   在 `activity-panel.ts` 中新增渲染前兜底排序，按 `timestamp → stepIndex → source` 做确定性排序。这样即使遇到持久化恢复、GM 富化或后补修复，时间线也不会因为事件晚到而发生偶发乱序。视图仍然保持调试型执行时间线语义，但顺序更稳定。
 
+- **Recent Activity Stale-Row Cleanup / 最近操作失效旧行清理**: Fixed another timeline corruption case where a later poll could insert internal non-rendered steps (such as image-generation or ephemeral system steps) before a final planner response, shifting the visible step numbers. The old repair logic added the new rows but failed to delete the obsolete reasoning row that previously occupied that `stepIndex`, making Claude conversations appear to "send the same AI message twice". `activity-tracker.ts` now removes stale `step` events whenever a tail re-scan proves that a given `stepIndex` now belongs to a non-rendered internal step. This is the same model-agnostic repair path used for step reordering, not a Claude-only special case.
+  修复另一种“最近操作”时间线损坏场景：后续轮询可能会在最终 planner response 之前插入图片生成或系统瞬时消息等内部步骤，导致可见 `stepIndex` 重新排列。旧的修复逻辑只会补入新行，却不会删掉原本占据该 `stepIndex` 的旧推理行，于是 Claude 对话里会看起来像“同一句 AI 回复发了两次”。现在 `activity-tracker.ts` 在尾部重扫时，如果确认某个 `stepIndex` 现在属于不该渲染的内部步骤，就会主动移除对应的失效 `step` 事件。该修复走的是同一套模型无关的 step 重排修复路径，不是只对 Claude 特判。
+
 ### ✅ Tests / 测试
 
 - Added `reset-time.test.ts` to lock the new reset-time formatting behavior and expanded `quota-tracker.test.ts` to cover `0%` completion persistence, genuine reset archival, and rebound recovery.
@@ -29,6 +44,9 @@
 
 - Added `activity-tracker.test.ts` coverage for late-filled planner responses: one case verifies that an empty planner step is repaired when the same `stepIndex` later gains a real response without `stepCount` growth, and another verifies that short restored conversations self-heal on the next poll.
   新增 `activity-tracker.test.ts`，覆盖延迟补全文本的 planner response：一条用例验证同一 `stepIndex` 在 `stepCount` 不增长的情况下后补正文时可被修复，另一条验证短对话在恢复持久化状态后会于下一轮轮询自动自愈。
+
+- Expanded `activity-tracker.test.ts` again to cover step-index shifts caused by later insertion of internal non-rendered steps. The test asserts that stale reasoning rows are removed and only the final, still-valid response remains visible in the timeline.
+  继续扩展 `activity-tracker.test.ts`，覆盖“后续插入内部不可渲染步骤导致 stepIndex 重排”的场景。测试会断言旧的推理残留行会被清掉，时间线中只保留最终仍然有效的那条响应。
 
 ## [1.13.7] - 2026-03-26
 

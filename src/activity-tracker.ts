@@ -1220,6 +1220,10 @@ export class ActivityTracker {
                 continue;
             }
 
+            if (this._removeStepTimelineEvent(cascadeId, stepIndex)) {
+                changed = true;
+            }
+
             if ((step.type as string) !== 'CORTEX_STEP_TYPE_PLANNER_RESPONSE') {
                 continue;
             }
@@ -1229,6 +1233,14 @@ export class ActivityTracker {
         }
 
         return changed;
+    }
+
+    private _removeStepTimelineEvent(cascadeId: string, stepIndex: number): boolean {
+        const before = this._recentSteps.length;
+        this._recentSteps = this._recentSteps.filter(ev =>
+            !(ev.source === 'step' && ev.cascadeId === cascadeId && ev.stepIndex === stepIndex)
+        );
+        return this._recentSteps.length !== before;
     }
 
     private _hasPendingPlannerSteps(cascadeId: string): boolean {
