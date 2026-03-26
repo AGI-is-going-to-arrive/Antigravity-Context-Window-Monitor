@@ -5,6 +5,7 @@
 
 import { tBi } from './i18n';
 import { QuotaTracker, QuotaSession } from './quota-tracker';
+import { formatResetContext } from './reset-time';
 import { ICON } from './webview-icons';
 import { esc, formatShortTime, formatDuration } from './webview-helpers';
 
@@ -38,8 +39,8 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
                 </label>
             </div>
             <p class="raw-desc">${tBi(
-                'Tracks how long it takes to consume model quota from 100% to 0%. Default off.',
-                '追踪模型额度从 100% 消耗到 0% 所用时间。默认关闭。',
+                'Tracks quota usage against the official resetTime. No fixed 5-hour assumption. Default off.',
+                '基于官方 resetTime 追踪额度使用，不再假设固定 5 小时周期。默认关闭。',
             )}</p>
         </section>`);
 
@@ -63,8 +64,8 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
                     </button>
                 </div>
                 <p class="raw-desc">${tBi(
-                    'Currently tracking quota consumption. Tracking starts instantly when quota drops; if quota stays at 100%, it auto-detects usage via reset time drift (~10 min).',
-                    '正在追踪额度消耗。额度下降时立即启动；若额度持续 100%，通过重置时间偏移自动检测（约 10 分钟）。',
+                    'Currently tracking quota against the official resetTime. Quota drop starts immediately; 100% models fall back to resetTime drift observation (~10 min).',
+                    '正在基于官方 resetTime 追踪额度。额度下降时立即启动；100% 模型则回退到 resetTime 漂移观测（约 10 分钟）。',
                 )}</p>
                 ${activeCards}
             </section>`);
@@ -73,8 +74,8 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
             <section class="card empty">
                 <h2>${ICON.bolt} ${tBi('Active Tracking', '活跃追踪')}</h2>
                 <p class="empty-desc">${tBi(
-                    'No active quota consumption detected. Tracking starts instantly when quota drops; if quota stays at 100%, it auto-detects usage via reset time drift (~10 min).',
-                    '未检测到活跃额度消耗。额度下降时立即启动追踪；若额度持续 100%，通过重置时间偏移自动检测（约 10 分钟）。',
+                    'No active quota consumption detected. Tracking follows official resetTime and adapts to different quota windows.',
+                    '未检测到活跃额度消耗。追踪逻辑跟随官方 resetTime，自动适配不同额度窗口。',
                 )}</p>
             </section>`);
     }
@@ -177,6 +178,9 @@ function buildSessionCard(session: QuotaSession, isActive: boolean): string {
         metaChips.push(`<span class="qt-meta-chip">${ICON.clock} ${formatShortTime(session.endTime)}</span>`);
     }
     metaChips.push(`<span class="qt-meta-chip qt-meta-duration">${ICON.timeline} ${formatDuration(elapsed)}</span>`);
+    if (session.cycleResetTime) {
+        metaChips.push(`<span class="qt-meta-chip">${ICON.clock} ${tBi('Reset', '重置')} ${formatResetContext(session.cycleResetTime, { includeSeconds: true })}</span>`);
+    }
     if (session.snapshots.length > 1) {
         metaChips.push(`<span class="qt-meta-chip">${session.snapshots.length} ${tBi('snapshots', '快照')}</span>`);
     }

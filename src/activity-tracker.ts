@@ -4,7 +4,7 @@
 
 import { LSInfo } from './discovery';
 import { rpcCall } from './rpc-client';
-import { getModelDisplayName } from './models';
+import { normalizeModelDisplayName } from './models';
 import { tBi } from './i18n';
 import type { GMSummary, GMCallEntry, GMModelStats } from './gm-tracker';
 
@@ -386,6 +386,82 @@ function sameStepDistribution(a: Record<string, number>, b: Record<string, numbe
     return true;
 }
 
+function mergeCountRecord(target: Record<string, number>, source: Record<string, number>): Record<string, number> {
+    for (const [key, value] of Object.entries(source)) {
+        if (!value) { continue; }
+        target[key] = (target[key] || 0) + value;
+    }
+    return target;
+}
+
+function mergeActivityStats(target: ModelActivityStats, source: ModelActivityStats): void {
+    target.userInputs += source.userInputs || 0;
+    target.reasoning += source.reasoning;
+    target.toolCalls += source.toolCalls;
+    target.errors += source.errors;
+    target.checkpoints += source.checkpoints;
+    target.totalSteps += source.totalSteps;
+    target.thinkingTimeMs += source.thinkingTimeMs;
+    target.toolTimeMs += source.toolTimeMs;
+    target.inputTokens += source.inputTokens;
+    target.outputTokens += source.outputTokens;
+    target.toolReturnTokens += source.toolReturnTokens;
+    target.estSteps += source.estSteps;
+    mergeCountRecord(target.toolBreakdown, source.toolBreakdown);
+    if (source.firstSeenAt && (!target.firstSeenAt || new Date(source.firstSeenAt).getTime() < new Date(target.firstSeenAt).getTime())) {
+        target.firstSeenAt = source.firstSeenAt;
+    }
+}
+
+function mergeGMStats(target: GMModelStats, source: GMModelStats): void {
+    const targetCallsBefore = target.callCount;
+    const sourceCalls = source.callCount;
+    const totalCalls = targetCallsBefore + sourceCalls;
+
+    target.callCount = totalCalls;
+    target.stepsCovered += source.stepsCovered;
+    target.totalInputTokens += source.totalInputTokens;
+    target.totalOutputTokens += source.totalOutputTokens;
+    target.totalThinkingTokens += source.totalThinkingTokens;
+    target.totalCacheRead += source.totalCacheRead;
+    target.totalCacheCreation += source.totalCacheCreation;
+    target.totalCredits += source.totalCredits;
+    target.minTTFT = target.minTTFT > 0 && source.minTTFT > 0
+        ? Math.min(target.minTTFT, source.minTTFT)
+        : Math.max(target.minTTFT, source.minTTFT);
+    target.maxTTFT = Math.max(target.maxTTFT, source.maxTTFT);
+    target.avgTTFT = totalCalls > 0
+        ? ((target.avgTTFT * targetCallsBefore) + (source.avgTTFT * sourceCalls)) / totalCalls
+        : 0;
+    target.avgStreaming = totalCalls > 0
+        ? ((target.avgStreaming * targetCallsBefore) + (source.avgStreaming * sourceCalls)) / totalCalls
+        : 0;
+    const targetCacheHits = Math.round(target.cacheHitRate * targetCallsBefore);
+    const sourceCacheHits = Math.round(source.cacheHitRate * sourceCalls);
+    target.cacheHitRate = totalCalls > 0 ? (targetCacheHits + sourceCacheHits) / totalCalls : 0;
+    if (source.responseModel) { target.responseModel = source.responseModel; }
+    if (source.apiProvider) { target.apiProvider = source.apiProvider; }
+    if (source.completionConfig) { target.completionConfig = source.completionConfig; }
+    target.hasSystemPrompt = target.hasSystemPrompt || source.hasSystemPrompt;
+    target.toolCount = Math.max(target.toolCount, source.toolCount);
+    if (source.promptSectionTitles.length > target.promptSectionTitles.length) {
+        target.promptSectionTitles = [...source.promptSectionTitles];
+    }
+    target.totalRetries += source.totalRetries;
+    target.errorCount += source.errorCount;
+    target.exactCallCount += source.exactCallCount;
+    target.placeholderOnlyCalls += source.placeholderOnlyCalls;
+}
+
+function normalizeStepsByModelRecord(stepsByModel: Record<string, number>): Record<string, number> {
+    const normalized: Record<string, number> = {};
+    for (const [modelName, steps] of Object.entries(stepsByModel)) {
+        const key = normalizeModelDisplayName(modelName) || modelName;
+        normalized[key] = (normalized[key] || 0) + steps;
+    }
+    return normalized;
+}
+
 // ─── ActivityTracker Class ───────────────────────────────────────────────────
 
 /** Maximum recent step events kept in memory (configurable via settings) */
@@ -403,6 +479,14 @@ function getMaxArchives(): number {
         return vscode.workspace.getConfiguration('antigravityContextMonitor').get('activity.maxArchives', 20) || 20;
     } catch { return 20; }
 }
+
+/**
+ * Re-scan a small tail window so late-filled planner responses can replace
+ * earlier empty placeholder steps without rebuilding the whole timeline.
+ */
+const STEP_TAIL_REFRESH_WINDOW = 12;
+const STEP_TAIL_RESTORE_WINDOW = 64;
+const MAX_PENDING_PLANNER_REFRESH_ATTEMPTS = 6;
 
 export class ActivityTracker {
     // Model stats
@@ -438,6 +522,8 @@ export class ActivityTracker {
 
     // Recent steps (ring buffer)
     private _recentSteps: StepEvent[] = [];
+    private _pendingPlannerSteps = new Map<string, Map<number, number>>();
+    private _tailRefreshQueue = new Set<string>();
     private _sessionStartTime: string;
 
     // Archive history
@@ -483,6 +569,7 @@ export class ActivityTracker {
         }[],
         signal?: AbortSignal,
     ): Promise<boolean> {
+        this._normalizeModelState();
         const trajMap = new Map<string, {
             stepCount: number;
             status: string;
@@ -493,8 +580,8 @@ export class ActivityTracker {
             trajMap.set(t.cascadeId, {
                 stepCount: t.stepCount,
                 status: t.status,
-                requestedModel: t.requestedModel ? getModelDisplayName(t.requestedModel) : '',
-                generatorModel: t.generatorModel ? getModelDisplayName(t.generatorModel) : '',
+                requestedModel: t.requestedModel ? normalizeModelDisplayName(t.requestedModel) : '',
+                generatorModel: t.generatorModel ? normalizeModelDisplayName(t.generatorModel) : '',
             });
         }
 
@@ -619,19 +706,30 @@ export class ActivityTracker {
             if (currSteps < entry.stepCount) {
                 entry.processedIndex = Math.min(entry.processedIndex, currSteps);
                 this._clearWindowOutsideAttribution(id);
+                this._clearPendingPlannerStepsFrom(id, currSteps);
                 this._recentSteps = this._recentSteps.filter(ev =>
                     ev.cascadeId !== id || ev.stepIndex === undefined || ev.stepIndex < currSteps
                 );
             }
 
+            const hasPendingPlannerSteps = this._hasPendingPlannerSteps(id);
+            const needsTailRefresh = this._tailRefreshQueue.has(id);
+
             // Skip if no new steps AND no status change
-            if (currSteps <= entry.processedIndex && !statusChanged) {
+            if (currSteps <= entry.processedIndex && !statusChanged && !hasPendingPlannerSteps && !needsTailRefresh) {
                 entry.stepCount = currSteps;
                 continue;
             }
 
             // Skip IDLE conversations only if stepCount hasn't changed.
-            if (entry.processedIndex > 0 && info.status !== 'CASCADE_RUN_STATUS_RUNNING' && currSteps <= entry.stepCount && !statusChanged) {
+            if (
+                entry.processedIndex > 0
+                && info.status !== 'CASCADE_RUN_STATUS_RUNNING'
+                && currSteps <= entry.stepCount
+                && !statusChanged
+                && !hasPendingPlannerSteps
+                && !needsTailRefresh
+            ) {
                 continue;
             }
 
@@ -659,6 +757,10 @@ export class ActivityTracker {
                     entry.processedIndex = steps.length;
                     entry.dominantModel = this._detectDominantModel(steps);
                     this._updateConversationBreakdown(id, steps);
+                    if (this._refreshTimelineTail(steps, absOffset, id)) {
+                        hasChanges = true;
+                    }
+                    this._tailRefreshQueue.delete(id);
                 } else {
                     // INCREMENTAL: re-fetch steps to capture new ones precisely.
                     // API returns earliest ~500 steps; any beyond that use estimation.
@@ -670,6 +772,7 @@ export class ActivityTracker {
                     // Process individually any NEW steps within API window
                     // stepIndex uses ABSOLUTE index (offset-based) to align with GM stepIndices
                     const incOffset = currSteps - fetchedSteps.length;
+                    const previousProcessedIndex = entry.processedIndex;
                     if (fetchedSteps.length > entry.processedIndex) {
                         const incModel = entry.dominantModel || this._detectDominantModel(fetchedSteps);
                         for (let i = entry.processedIndex; i < fetchedSteps.length; i++) {
@@ -688,6 +791,21 @@ export class ActivityTracker {
                         }
                         hasChanges = true;
                     }
+
+                    if (
+                        fetchedSteps.length > 0
+                        && (
+                            previousProcessedIndex !== entry.processedIndex
+                            || statusChanged
+                            || hasPendingPlannerSteps
+                            || needsTailRefresh
+                        )
+                    ) {
+                        if (this._refreshTimelineTail(fetchedSteps, incOffset, id)) {
+                            hasChanges = true;
+                        }
+                    }
+                    this._tailRefreshQueue.delete(id);
 
                     // Any steps beyond API window → delta estimation (fallback)
                     const beyondApi = currSteps - Math.max(fetchedSteps.length, entry.stepCount);
@@ -732,7 +850,7 @@ export class ActivityTracker {
         const type = (step.type as string) || '';
         const meta = (step.metadata || {}) as Record<string, unknown>;
         const modelId = (meta.generatorModel as string) || '';
-        const model = modelId ? getModelDisplayName(modelId) : '';
+        const model = normalizeModelDisplayName(modelId);
         const cls = classifyStep(type);
         const dur = cls.category === 'tool' ? stepDurationTool(meta) : stepDurationReasoning(meta);
         const observedAt = (meta.createdAt as string) || new Date().toISOString();
@@ -786,7 +904,7 @@ export class ActivityTracker {
                 const inTok = parseInt(mu.inputTokens || '0', 10);
                 const outTok = parseInt(mu.outputTokens || '0', 10);
                 // Priority: contextModel (from dominantModel) > generatorModel > modelUsage.model (ghost)
-                const attrModel = contextModel || model || (mu.model ? getModelDisplayName(mu.model) : '');
+                const attrModel = normalizeModelDisplayName(contextModel || model || mu.model || '');
                 if (attrModel) {
                     const s = this._getOrCreateStats(attrModel);
                     s.totalSteps++;
@@ -799,7 +917,7 @@ export class ActivityTracker {
                 }
                 // Track sub-agent: when modelUsage.model differs from attrModel
                 const rawModel = mu.model || '';
-                const rawDisplay = rawModel ? getModelDisplayName(rawModel) : '';
+                const rawDisplay = normalizeModelDisplayName(rawModel);
                 const cacheTok = parseInt(mu.cacheReadTokens || '0', 10);
                 if (rawModel && rawDisplay && rawDisplay !== attrModel) {
                     const key = `${rawModel}::${attrModel || 'unknown'}`;
@@ -953,6 +1071,9 @@ export class ActivityTracker {
                     source: 'step',
                     modelBasis: 'step',
                 });
+                this._clearPendingPlannerStep(cascadeId, stepIndex);
+            } else if (emitEvent) {
+                this._markPendingPlannerStep(cascadeId, stepIndex);
             }
 
         } else if (cls.category === 'tool') {
@@ -989,22 +1110,23 @@ export class ActivityTracker {
      * Uses LS's metadata.createdAt for timestamps since these are historical events.
      */
     private _injectTimelineEvent(step: Record<string, unknown>, stepIndex: number, cascadeId?: string): void {
-        // BUG FIX: deduplicate — skip if a step event with the same cascadeId+stepIndex
-        // already exists. Without this, every statusChanged transition re-injects the last
-        // 20 steps, producing duplicate timeline rows that accumulate over time.
-        if (cascadeId !== undefined) {
-            const exists = this._recentSteps.some(ev =>
-                ev.cascadeId === cascadeId && ev.stepIndex === stepIndex && ev.source === 'step'
-            );
-            if (exists) { return; }
+        const event = this._buildStepTimelineEvent(step, stepIndex, cascadeId);
+        if (event) {
+            this._upsertStepTimelineEvent(event);
+            this._clearPendingPlannerStep(cascadeId, stepIndex);
+            return;
         }
+        if ((step.type as string) === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE') {
+            this._markPendingPlannerStep(cascadeId, stepIndex);
+        }
+    }
+
+    private _buildStepTimelineEvent(step: Record<string, unknown>, stepIndex: number, cascadeId?: string): StepEvent | null {
         const type = (step.type as string) || '';
         const meta = (step.metadata || {}) as Record<string, unknown>;
         const modelId = (meta.generatorModel as string) || '';
-        const model = modelId ? getModelDisplayName(modelId) : '';
+        const model = normalizeModelDisplayName(modelId);
         const cls = classifyStep(type);
-
-        // Use LS createdAt for historical timestamp, fallback to session start
         const createdAt = (meta.createdAt as string) || '';
         const timestamp = createdAt || this._sessionStartTime;
 
@@ -1013,7 +1135,7 @@ export class ActivityTracker {
             const items = userInput?.items as Record<string, string>[] | undefined;
             const text = (Array.isArray(items) && items.length > 0 ? (items[0].text || '') : '')
                 || (typeof userInput?.userResponse === 'string' ? userInput.userResponse : '');
-            this._pushEvent({
+            return {
                 timestamp,
                 icon: cls.icon,
                 category: 'user',
@@ -1026,35 +1148,30 @@ export class ActivityTracker {
                 cascadeId,
                 source: 'step',
                 modelBasis: 'step',
-            });
-            return;
+            };
         }
 
-        // NOTIFY_USER — AI 回复用户的实际正文
         if (type === 'CORTEX_STEP_TYPE_NOTIFY_USER') {
             const nu = (step.notifyUser || {}) as Record<string, unknown>;
             const text = ((nu.notificationContent || nu.message || '') as string).trim();
-            if (text) {
-                this._pushEvent({
-                    timestamp,
-                    icon: '📢',
-                    category: 'reasoning',
-                    model: model || '',
-                    detail: '',
-                    durationMs: 0,
-                    aiResponse: truncate(text, 96),
-                    fullAiResponse: text.length > 96 ? truncate(text, 2000) : undefined,
-                    stepIndex,
-                    cascadeId,
-                    source: 'step',
-                    modelBasis: model ? 'step' : undefined,
-                });
-            }
-            return;
+            if (!text) { return null; }
+            return {
+                timestamp,
+                icon: '📢',
+                category: 'reasoning',
+                model: model || '',
+                detail: '',
+                durationMs: 0,
+                aiResponse: truncate(text, 96),
+                fullAiResponse: text.length > 96 ? truncate(text, 2000) : undefined,
+                stepIndex,
+                cascadeId,
+                source: 'step',
+                modelBasis: model ? 'step' : undefined,
+            };
         }
 
-        if (cls.category === 'system') { return; }
-        if (!model) { return; }
+        if (cls.category === 'system' || !model) { return null; }
 
         if (cls.category === 'reasoning') {
             const pr = step.plannerResponse as Record<string, unknown> | undefined;
@@ -1063,22 +1180,19 @@ export class ActivityTracker {
             if (Array.isArray(toolCalls) && toolCalls.length > 0) {
                 detail = `→ ${toolCalls.length} ${toolCalls.length === 1 ? 'tool' : 'tools'}`;
             }
-            const resp = ((pr?.modifiedResponse || pr?.response || '') as string);
             const tdStr = pr?.thinkingDuration as string | undefined;
-            let aiResp = resp;
-            // Fallback: extract notify_user Message from toolCalls (actual AI reply)
+            let aiResp = ((pr?.modifiedResponse || pr?.response || '') as string);
             const notifyMsg = extractNotifyMessage(toolCalls as unknown[] | undefined);
             if (!aiResp && notifyMsg) {
                 aiResp = notifyMsg;
-                detail = '';  // 清除 '→ N tools'
+                detail = '';
             }
             if (!aiResp && tdStr) {
                 aiResp = '正在思考';
             }
-            // BUG FIX: skip empty PLANNER_RESPONSE (no response, no toolCalls)
             const hasContent = aiResp || (Array.isArray(toolCalls) && toolCalls.length > 0);
-            if (!hasContent) { return; }
-            this._pushEvent({
+            if (!hasContent) { return null; }
+            return {
                 timestamp,
                 icon: cls.icon,
                 category: 'reasoning',
@@ -1091,24 +1205,168 @@ export class ActivityTracker {
                 cascadeId,
                 source: 'step',
                 modelBasis: 'step',
-            });
-        } else if (cls.category === 'tool') {
-            const dur = stepDurationTool(meta);
-            const detail = extractToolDetail(step);
-            const toolName = extractToolName(step, cls.label);
-            this._pushEvent({
+            };
+        }
+
+        if (cls.category === 'tool') {
+            return {
                 timestamp,
                 icon: cls.icon,
                 category: 'tool',
                 model,
-                detail,
-                durationMs: dur,
-                toolName,
+                detail: extractToolDetail(step),
+                durationMs: stepDurationTool(meta),
+                toolName: extractToolName(step, cls.label),
                 stepIndex,
                 cascadeId,
                 source: 'step',
                 modelBasis: 'step',
-            });
+            };
+        }
+
+        return null;
+    }
+
+    private _upsertStepTimelineEvent(event: StepEvent): boolean {
+        const existing = this._recentSteps.find(ev =>
+            ev.source === 'step'
+            && ev.cascadeId === event.cascadeId
+            && ev.stepIndex === event.stepIndex
+        );
+        if (!existing) {
+            this._pushEvent(event);
+            return true;
+        }
+
+        let changed = false;
+        const mergeKeys: Array<keyof StepEvent> = [
+            'timestamp',
+            'icon',
+            'category',
+            'model',
+            'detail',
+            'durationMs',
+            'userInput',
+            'fullUserInput',
+            'aiResponse',
+            'fullAiResponse',
+            'browserSub',
+            'toolName',
+            'modelBasis',
+        ];
+        for (const key of mergeKeys) {
+            if (existing[key] !== event[key]) {
+                existing[key] = event[key] as never;
+                changed = true;
+            }
+        }
+        if (changed) {
+            this._sortRecentSteps();
+        }
+        return changed;
+    }
+
+    private _refreshTimelineTail(steps: Record<string, unknown>[], absOffset: number, cascadeId: string): boolean {
+        if (steps.length === 0) { return false; }
+
+        const pending = this._pendingPlannerSteps.get(cascadeId);
+        const targetIndices = new Set<number>();
+        const tailStart = Math.max(0, steps.length - STEP_TAIL_REFRESH_WINDOW);
+        for (let i = tailStart; i < steps.length; i++) {
+            targetIndices.add(i);
+        }
+        if (pending) {
+            for (const stepIndex of pending.keys()) {
+                const localIndex = stepIndex - absOffset;
+                if (localIndex >= 0 && localIndex < steps.length) {
+                    targetIndices.add(localIndex);
+                }
+            }
+        }
+
+        let changed = false;
+        for (const localIndex of [...targetIndices].sort((a, b) => a - b)) {
+            const step = steps[localIndex];
+            const stepIndex = localIndex + absOffset;
+            const event = this._buildStepTimelineEvent(step, stepIndex, cascadeId);
+            if (event) {
+                if (this._upsertStepTimelineEvent(event)) {
+                    changed = true;
+                }
+                this._clearPendingPlannerStep(cascadeId, stepIndex);
+                continue;
+            }
+
+            if (this._removeStepTimelineEvent(cascadeId, stepIndex)) {
+                changed = true;
+            }
+
+            if ((step.type as string) !== 'CORTEX_STEP_TYPE_PLANNER_RESPONSE') {
+                continue;
+            }
+            if (this._markPendingPlannerStep(cascadeId, stepIndex)) {
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    private _removeStepTimelineEvent(cascadeId: string, stepIndex: number): boolean {
+        const before = this._recentSteps.length;
+        this._recentSteps = this._recentSteps.filter(ev =>
+            !(ev.source === 'step' && ev.cascadeId === cascadeId && ev.stepIndex === stepIndex)
+        );
+        return this._recentSteps.length !== before;
+    }
+
+    private _hasPendingPlannerSteps(cascadeId: string): boolean {
+        return (this._pendingPlannerSteps.get(cascadeId)?.size || 0) > 0;
+    }
+
+    private _markPendingPlannerStep(cascadeId?: string, stepIndex?: number): boolean {
+        if (!cascadeId || stepIndex === undefined) { return false; }
+        let pending = this._pendingPlannerSteps.get(cascadeId);
+        if (!pending) {
+            pending = new Map<number, number>();
+            this._pendingPlannerSteps.set(cascadeId, pending);
+        }
+        const attempts = pending.get(stepIndex);
+        if (attempts === undefined) {
+            pending.set(stepIndex, 0);
+            return true;
+        }
+        if (attempts + 1 >= MAX_PENDING_PLANNER_REFRESH_ATTEMPTS) {
+            pending.delete(stepIndex);
+            if (pending.size === 0) {
+                this._pendingPlannerSteps.delete(cascadeId);
+            }
+            return false;
+        }
+        pending.set(stepIndex, attempts + 1);
+        return false;
+    }
+
+    private _clearPendingPlannerStep(cascadeId?: string, stepIndex?: number): void {
+        if (!cascadeId || stepIndex === undefined) { return; }
+        const pending = this._pendingPlannerSteps.get(cascadeId);
+        if (!pending) { return; }
+        pending.delete(stepIndex);
+        if (pending.size === 0) {
+            this._pendingPlannerSteps.delete(cascadeId);
+        }
+    }
+
+    private _clearPendingPlannerStepsFrom(cascadeId: string, minStepIndexExclusive: number): void {
+        const pending = this._pendingPlannerSteps.get(cascadeId);
+        if (!pending) { return; }
+        for (const stepIndex of [...pending.keys()]) {
+            if (stepIndex >= minStepIndexExclusive) {
+                pending.delete(stepIndex);
+            }
+        }
+        if (pending.size === 0) {
+            this._pendingPlannerSteps.delete(cascadeId);
         }
     }
 
@@ -1117,8 +1375,9 @@ export class ActivityTracker {
     /** Record a step's model+category into the sample distribution table */
     private _trackSample(model: string, cat: 'reasoning' | 'toolCalls' | 'errors' | 'other'): void {
         this._sampleTotal++;
-        let d = this._sampleDist.get(model);
-        if (!d) { d = { reasoning: 0, toolCalls: 0, errors: 0, other: 0 }; this._sampleDist.set(model, d); }
+        const normalizedModel = normalizeModelDisplayName(model) || model;
+        let d = this._sampleDist.get(normalizedModel);
+        if (!d) { d = { reasoning: 0, toolCalls: 0, errors: 0, other: 0 }; this._sampleDist.set(normalizedModel, d); }
         d[cat]++;
     }
 
@@ -1132,7 +1391,7 @@ export class ActivityTracker {
             const meta = (step.metadata || {}) as Record<string, unknown>;
             const modelId = (meta.generatorModel as string) || '';
             if (!modelId) { continue; }
-            const model = getModelDisplayName(modelId);
+            const model = normalizeModelDisplayName(modelId);
             counts.set(model, (counts.get(model) || 0) + 1);
         }
         let topModel = '';
@@ -1177,6 +1436,7 @@ export class ActivityTracker {
      * Uses stepIndex matching to correlate GM calls → StepEvents.
      */
     injectGMData(gmSummary: GMSummary | null): boolean {
+        this._normalizeModelState();
         let timelineChanged = false;
         // Cache global aggregates — getSummary() will always return these
         // regardless of which poll path triggers the panel update
@@ -1189,7 +1449,21 @@ export class ActivityTracker {
                 retries: Object.values(gmSummary.modelBreakdown)
                     .reduce((sum, m) => sum + m.totalRetries, 0),
             };
-            this._gmModelBreakdown = { ...gmSummary.modelBreakdown };
+            const mergedBreakdown: Record<string, GMModelStats> = {};
+            for (const [name, stats] of Object.entries(gmSummary.modelBreakdown)) {
+                const normalizedName = normalizeModelDisplayName(name) || name;
+                const existing = mergedBreakdown[normalizedName];
+                if (existing) {
+                    mergeGMStats(existing, stats);
+                } else {
+                    mergedBreakdown[normalizedName] = {
+                        ...stats,
+                        promptSectionTitles: [...stats.promptSectionTitles],
+                        completionConfig: stats.completionConfig ? { ...stats.completionConfig } : null,
+                    };
+                }
+            }
+            this._gmModelBreakdown = mergedBreakdown;
         }
         if (!gmSummary) { return false; }
 
@@ -1222,7 +1496,7 @@ export class ActivityTracker {
             });
             const recoveredStepsByModel: Record<string, number> = {};
             for (const call of sortedOutsideCalls) {
-                const modelName = call.modelDisplay || call.responseModel || call.model;
+                const modelName = normalizeModelDisplayName(call.modelDisplay || call.model) || call.responseModel || call.modelDisplay || call.model;
                 if (!modelName) { continue; }
                 recoveredStepsByModel[modelName] = (recoveredStepsByModel[modelName] || 0) + call.stepIndices.length;
             }
@@ -1281,7 +1555,7 @@ export class ActivityTracker {
                     timestamp: call.createdAt || '',
                     icon: '🧠',
                     category: 'reasoning',
-                    model: call.modelDisplay || '',
+                    model: normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model || '',
                     detail: preview.detail,
                     durationMs: Math.round((call.ttftSeconds + call.streamingSeconds) * 1000),
                     cascadeId: conv.cascadeId,
@@ -1348,7 +1622,7 @@ export class ActivityTracker {
             // must follow the GM result as well. Otherwise users see "Opus" on the left
             // but "exact sonnet" in GM tags on the right, which is misleading.
             if (gm.modelDisplay && (ev.source === 'estimated' || ev.source === 'gm_virtual' || gm.modelAccuracy === 'exact')) {
-                ev.model = gm.modelDisplay;
+                ev.model = normalizeModelDisplayName(gm.modelDisplay || gm.model) || gm.modelDisplay || gm.model;
             }
             if (gm.modelAccuracy === 'exact') {
                 ev.modelBasis = 'gm_exact';
@@ -1360,7 +1634,7 @@ export class ActivityTracker {
                 if (gm.promptSnippet.length > 96) { ev.fullAiResponse = truncate(gm.promptSnippet, 2000); }
             }
             if (ev.source === 'estimated' && gm.modelDisplay) {
-                ev.model = gm.modelDisplay;
+                ev.model = normalizeModelDisplayName(gm.modelDisplay || gm.model) || gm.modelDisplay || gm.model;
             }
         }
 
@@ -1382,7 +1656,11 @@ export class ActivityTracker {
 
             ev.estimatedResolved = true;
             timelineChanged = true;
-            const modelNames = [...new Set(matchedCalls.map(call => call.modelDisplay).filter(Boolean))];
+            const modelNames = [...new Set(
+                matchedCalls
+                    .map(call => normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model)
+                    .filter(Boolean)
+            )];
             if (modelNames.length === 1) {
                 ev.model = modelNames[0];
             }
@@ -1434,7 +1712,7 @@ export class ActivityTracker {
             if (!dominantModel && conv.calls.length > 0) {
                 const freq = new Map<string, number>();
                 for (const c of conv.calls) {
-                    const dm = c.modelDisplay || c.responseModel || '';
+                    const dm = normalizeModelDisplayName(c.modelDisplay || c.model) || c.responseModel || c.modelDisplay || c.model || '';
                     if (dm) { freq.set(dm, (freq.get(dm) || 0) + 1); }
                 }
                 let topCount = 0;
@@ -1451,7 +1729,7 @@ export class ActivityTracker {
                 if (allInsideWindow) { continue; }
 
                 // Skip if this is the main model (not a sub-agent)
-                const callDisplay = call.modelDisplay || call.responseModel || '';
+                const callDisplay = normalizeModelDisplayName(call.modelDisplay || call.model) || call.responseModel || call.modelDisplay || call.model || '';
                 if (!callDisplay || callDisplay === dominantModel) { continue; }
 
                 // This is a sub-agent call from OUTSIDE the CP window → supplement
@@ -1529,6 +1807,7 @@ export class ActivityTracker {
     // ─── State Accessors ───────────────────────────────────────────────────
 
     getSummary(): ActivitySummary {
+        this._normalizeModelState();
         const modelStats: Record<string, ModelActivityStats> = {};
         let totalUserInputs = 0, totalReasoning = 0, totalToolCalls = 0, totalErrors = 0, totalCheckpoints = 0;
         let estSteps = 0;
@@ -1662,7 +1941,8 @@ export class ActivityTracker {
      * Falls back to global text if the model has no stats.
      */
     getModelStatusBarText(modelDisplayName: string): string {
-        const ms = this._modelStats.get(modelDisplayName);
+        this._normalizeModelState();
+        const ms = this._modelStats.get(normalizeModelDisplayName(modelDisplayName) || modelDisplayName);
         if (!ms || ms.totalSteps === 0) { return this.getStatusBarText(); }
         const parts: string[] = [];
         if (ms.reasoning > 0) { parts.push(`🧠${ms.reasoning}`); }
@@ -1689,6 +1969,7 @@ export class ActivityTracker {
      *   other models' data is preserved (per-pool isolation).
      */
     archiveAndReset(modelIds?: string[], options?: ArchiveResetOptions): ActivityArchive | null {
+        this._normalizeModelState();
         const maxArchives = getMaxArchives();
         const archiveStartTime = options?.startTime || this._sessionStartTime;
         const archiveEndTime = options?.endTime || new Date().toISOString();
@@ -1697,7 +1978,7 @@ export class ActivityTracker {
         const poolDisplayNames = new Set<string>();
         if (modelIds && modelIds.length > 0) {
             for (const id of modelIds) {
-                poolDisplayNames.add(getModelDisplayName(id));
+                poolDisplayNames.add(normalizeModelDisplayName(id));
             }
         }
         const isPoolReset = poolDisplayNames.size > 0;
@@ -1870,6 +2151,8 @@ export class ActivityTracker {
             this._totalCheckpoints = 0;
             this._totalErrors = 0;
             this._recentSteps = [];
+            this._pendingPlannerSteps.clear();
+            this._tailRefreshQueue.clear();
             this._gmTotals = null;
             this._gmModelBreakdown = null;
             this._windowOutsideAttribution.clear();
@@ -1895,6 +2178,8 @@ export class ActivityTracker {
         this._totalCheckpoints = 0;
         this._totalErrors = 0;
         this._recentSteps = [];
+        this._pendingPlannerSteps.clear();
+        this._tailRefreshQueue.clear();
         this._archives = [];
         this._gmTotals = null;
         this._gmModelBreakdown = null;
@@ -1948,21 +2233,19 @@ export class ActivityTracker {
 
         // Fully restore all model stats from persisted summary
         for (const [name, ms] of Object.entries(s.modelStats)) {
-            const stats = tracker._getOrCreateStats(name);
-            stats.userInputs = ms.userInputs || 0;
-            stats.reasoning = ms.reasoning;
-            stats.toolCalls = ms.toolCalls;
-            stats.errors = ms.errors;
-            stats.checkpoints = ms.checkpoints;
-            stats.totalSteps = ms.totalSteps;
-            stats.thinkingTimeMs = ms.thinkingTimeMs;
-            stats.toolTimeMs = ms.toolTimeMs;
-            stats.inputTokens = ms.inputTokens;
-            stats.outputTokens = ms.outputTokens;
-            stats.toolReturnTokens = ms.toolReturnTokens;
-            stats.toolBreakdown = { ...ms.toolBreakdown };
-            stats.estSteps = ms.estSteps;
-            stats.firstSeenAt = ms.firstSeenAt;
+            const normalizedName = normalizeModelDisplayName(name) || name;
+            const existing = tracker._modelStats.get(normalizedName);
+            const restoredStats: ModelActivityStats = {
+                ...ms,
+                modelName: normalizedName,
+                userInputs: ms.userInputs || 0,
+                toolBreakdown: { ...ms.toolBreakdown },
+            };
+            if (existing) {
+                mergeActivityStats(existing, restoredStats);
+            } else {
+                tracker._modelStats.set(normalizedName, restoredStats);
+            }
         }
 
         // Restore global counters
@@ -2009,8 +2292,9 @@ export class ActivityTracker {
         if (data.gmTotals) {
             tracker._gmTotals = { ...data.gmTotals };
         }
-        if (data.gmModelBreakdown) {
-            tracker._gmModelBreakdown = { ...data.gmModelBreakdown };
+        const restoredGMBreakdown = data.gmModelBreakdown || s.gmModelBreakdown;
+        if (restoredGMBreakdown) {
+            tracker._gmModelBreakdown = { ...restoredGMBreakdown };
         }
         if (data.windowOutsideAttribution) {
             for (const [cascadeId, attribution] of Object.entries(data.windowOutsideAttribution)) {
@@ -2066,6 +2350,8 @@ export class ActivityTracker {
             tracker._totalCheckpoints = 0;
             tracker._totalErrors = 0;
             tracker._recentSteps = [];
+            tracker._pendingPlannerSteps.clear();
+            tracker._tailRefreshQueue.clear();
             tracker._windowOutsideAttribution.clear();
             for (const [id, t] of tracker._trajectories) {
                 tracker._trajectories.set(id, { ...t, processedIndex: 0 });
@@ -2073,29 +2359,158 @@ export class ActivityTracker {
             tracker._warmedUp = false; // force full re-warm-up
         } else if (Object.keys(data.trajectoryBaselines || {}).length > 0) {
             tracker._warmedUp = true;  // use incremental path — only new steps
+            for (const [id, baseline] of Object.entries(data.trajectoryBaselines || {})) {
+                if (baseline.processedIndex > 0 && baseline.stepCount > 0 && baseline.stepCount <= STEP_TAIL_RESTORE_WINDOW) {
+                    tracker._tailRefreshQueue.add(id);
+                }
+            }
         } else {
             tracker._warmedUp = false; // no baselines: full warm-up needed
         }
 
+        tracker._normalizeModelState();
         return tracker;
     }
 
     // ─── Private Helpers ─────────────────────────────────────────────────
 
+    private _normalizeModelState(): void {
+        if (this._modelStats.size > 0) {
+            const merged = new Map<string, ModelActivityStats>();
+            for (const [name, stats] of this._modelStats) {
+                const normalizedName = normalizeModelDisplayName(name) || name;
+                const existing = merged.get(normalizedName);
+                if (existing) {
+                    mergeActivityStats(existing, stats);
+                } else {
+                    merged.set(normalizedName, {
+                        ...stats,
+                        modelName: normalizedName,
+                        toolBreakdown: { ...stats.toolBreakdown },
+                    });
+                }
+            }
+            this._modelStats = merged;
+        }
+
+        if (this._sampleDist.size > 0) {
+            const merged = new Map<string, { reasoning: number; toolCalls: number; errors: number; other: number }>();
+            for (const [name, dist] of this._sampleDist) {
+                const normalizedName = normalizeModelDisplayName(name) || name;
+                const existing = merged.get(normalizedName);
+                if (existing) {
+                    existing.reasoning += dist.reasoning;
+                    existing.toolCalls += dist.toolCalls;
+                    existing.errors += dist.errors;
+                    existing.other += dist.other;
+                } else {
+                    merged.set(normalizedName, { ...dist });
+                }
+            }
+            this._sampleDist = merged;
+        }
+
+        if (this._recentSteps.length > 0) {
+            this._recentSteps = this._recentSteps.map(event => event.model
+                ? { ...event, model: normalizeModelDisplayName(event.model) || event.model }
+                : event
+            );
+        }
+
+        if (this._gmModelBreakdown) {
+            const merged: Record<string, GMModelStats> = {};
+            for (const [name, stats] of Object.entries(this._gmModelBreakdown)) {
+                const normalizedName = normalizeModelDisplayName(name) || name;
+                const existing = merged[normalizedName];
+                if (existing) {
+                    mergeGMStats(existing, stats);
+                } else {
+                    merged[normalizedName] = {
+                        ...stats,
+                        promptSectionTitles: [...stats.promptSectionTitles],
+                        completionConfig: stats.completionConfig ? { ...stats.completionConfig } : null,
+                    };
+                }
+            }
+            this._gmModelBreakdown = Object.keys(merged).length > 0 ? merged : null;
+        }
+
+        const normalizeSubAgentMap = (source: Map<string, SubAgentTokenEntry>): Map<string, SubAgentTokenEntry> => {
+            const normalized = new Map<string, SubAgentTokenEntry>();
+            for (const entry of source.values()) {
+                const displayName = normalizeModelDisplayName(entry.displayName || entry.modelId) || entry.displayName || entry.modelId;
+                const ownerModel = entry.ownerModel ? (normalizeModelDisplayName(entry.ownerModel) || entry.ownerModel) : undefined;
+                const key = `${entry.modelId}::${ownerModel || 'unknown'}`;
+                const existing = normalized.get(key);
+                if (existing) {
+                    existing.inputTokens += entry.inputTokens;
+                    existing.outputTokens += entry.outputTokens;
+                    existing.cacheReadTokens += entry.cacheReadTokens;
+                    existing.count += entry.count;
+                    existing.compressionEvents += entry.compressionEvents;
+                    existing.lastInputTokens = Math.max(existing.lastInputTokens, entry.lastInputTokens);
+                    if (entry.cascadeIds) {
+                        for (const cascadeId of entry.cascadeIds) {
+                            if (!existing.cascadeIds?.includes(cascadeId)) {
+                                (existing.cascadeIds ??= []).push(cascadeId);
+                            }
+                        }
+                    }
+                } else {
+                    normalized.set(key, {
+                        ...entry,
+                        displayName,
+                        ownerModel,
+                        cascadeIds: entry.cascadeIds ? [...entry.cascadeIds] : [],
+                    });
+                }
+            }
+            return normalized;
+        };
+
+        if (this._subAgentTokens.size > 0) {
+            this._subAgentTokens = normalizeSubAgentMap(this._subAgentTokens);
+        }
+        if (this._gmSubAgentTokens.size > 0) {
+            this._gmSubAgentTokens = normalizeSubAgentMap(this._gmSubAgentTokens);
+        }
+
+        if (this._windowOutsideAttribution.size > 0) {
+            for (const [cascadeId, attribution] of this._windowOutsideAttribution) {
+                this._windowOutsideAttribution.set(cascadeId, {
+                    basis: attribution.basis,
+                    stepsByModel: normalizeStepsByModelRecord(attribution.stepsByModel),
+                });
+            }
+        }
+
+        if (this._trajectories.size > 0) {
+            for (const [cascadeId, baseline] of this._trajectories) {
+                this._trajectories.set(cascadeId, {
+                    ...baseline,
+                    dominantModel: normalizeModelDisplayName(baseline.dominantModel) || baseline.dominantModel,
+                    requestedModel: normalizeModelDisplayName(baseline.requestedModel) || baseline.requestedModel,
+                    generatorModel: normalizeModelDisplayName(baseline.generatorModel) || baseline.generatorModel,
+                });
+            }
+        }
+    }
+
     private _getOrCreateStats(model: string): ModelActivityStats {
-        if (!this._modelStats.has(model)) {
-            this._modelStats.set(model, {
-                modelName: model, userInputs: 0, reasoning: 0, toolCalls: 0, errors: 0, checkpoints: 0,
+        const normalizedModel = normalizeModelDisplayName(model) || model;
+        if (!this._modelStats.has(normalizedModel)) {
+            this._modelStats.set(normalizedModel, {
+                modelName: normalizedModel, userInputs: 0, reasoning: 0, toolCalls: 0, errors: 0, checkpoints: 0,
                 totalSteps: 0, thinkingTimeMs: 0, toolTimeMs: 0, inputTokens: 0,
                 estSteps: 0,
                 outputTokens: 0, toolReturnTokens: 0, toolBreakdown: {},
             });
         }
-        return this._modelStats.get(model)!;
+        return this._modelStats.get(normalizedModel)!;
     }
 
     private _applyWindowOutsideDelta(stepsByModel: Record<string, number>, direction: 1 | -1): void {
-        for (const [model, steps] of Object.entries(stepsByModel)) {
+        for (const [model, steps] of Object.entries(normalizeStepsByModelRecord(stepsByModel))) {
             if (!model || !steps) { continue; }
             const stats = this._getOrCreateStats(model);
             stats.totalSteps = Math.max(0, stats.totalSteps + (steps * direction));
@@ -2108,17 +2523,18 @@ export class ActivityTracker {
         basis: 'estimated' | 'gm_recovered',
         stepsByModel: Record<string, number>,
     ): void {
+        const normalizedStepsByModel = normalizeStepsByModelRecord(stepsByModel);
         const existing = this._windowOutsideAttribution.get(cascadeId);
-        if (existing && existing.basis === basis && sameStepDistribution(existing.stepsByModel, stepsByModel)) {
+        if (existing && existing.basis === basis && sameStepDistribution(existing.stepsByModel, normalizedStepsByModel)) {
             return;
         }
         if (existing) {
             this._applyWindowOutsideDelta(existing.stepsByModel, -1);
         }
-        this._applyWindowOutsideDelta(stepsByModel, 1);
+        this._applyWindowOutsideDelta(normalizedStepsByModel, 1);
         this._windowOutsideAttribution.set(cascadeId, {
             basis,
-            stepsByModel: { ...stepsByModel },
+            stepsByModel: { ...normalizedStepsByModel },
         });
     }
 

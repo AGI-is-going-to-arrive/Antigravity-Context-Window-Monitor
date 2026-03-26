@@ -78,41 +78,184 @@ export function getStyles(): string {
             -moz-appearance: textfield;
         }
 
-        /* ─── Header ────────────────── */
-        .panel-header {
+        /* ─── Sticky TopBar Container ── */
+        .panel-topbar {
+            position: sticky;
+            top: 0;
+            z-index: var(--z-sticky);
+            background: rgba(30, 30, 30, 0.92);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--color-border);
+            padding: var(--space-2) var(--space-4);
+            margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) var(--space-4);
+            width: calc(100% + var(--space-4) * 2);
+            transition: box-shadow 0.25s cubic-bezier(.4,0,.2,1), border-color 0.25s cubic-bezier(.4,0,.2,1);
+        }
+
+        .panel-topbar.scrolled {
+            box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+            border-bottom-color: var(--color-border-hover);
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .panel-topbar { transition: none; }
+        }
+
+        /* ─── TopBar Title (Layer 1) ──── */
+        .topbar-title {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: var(--space-4);
-            padding-bottom: var(--space-3);
-            border-bottom: 1px solid var(--color-border);
+            margin-bottom: var(--space-2);
         }
 
-        /* ─── Info Banners (GitHub / Multi-Window) ── */
-        .info-banner {
+        /* ─── TopBar Chips (Layer 2) ──── */
+        .topbar-chips {
             display: flex;
-            align-items: center;
-            gap: var(--space-2);
+            gap: var(--space-1);
             margin-bottom: var(--space-2);
-            padding: var(--space-1) var(--space-2);
+            flex-wrap: wrap;
+        }
+
+        .info-chip {
+            appearance: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            padding: 2px var(--space-2);
+            border-radius: var(--radius-full, 9999px);
+            font-size: 0.72em;
+            font-family: inherit;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid transparent;
+            background: transparent;
+            transition: background 0.2s cubic-bezier(.4,0,.2,1), border-color 0.2s cubic-bezier(.4,0,.2,1), color 0.2s cubic-bezier(.4,0,.2,1);
+        }
+
+        .info-chip .icon {
+            width: 11px;
+            height: 11px;
+        }
+
+        .info-chip:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 2px var(--color-accent);
+        }
+
+        .info-chip:active { transform: scale(0.97); }
+
+        /* GitHub chip */
+        .chip-github {
+            color: rgba(74, 222, 128, 0.6);
+            background: rgba(74, 222, 128, 0.05);
+            border-color: rgba(74, 222, 128, 0.1);
+        }
+
+        .chip-github.active {
+            color: var(--color-ok);
+            background: rgba(74, 222, 128, 0.12);
+            border-color: rgba(74, 222, 128, 0.35);
+        }
+
+        @media (hover: hover) {
+            .chip-github:not(.active):hover {
+                color: rgba(74, 222, 128, 0.85);
+                background: rgba(74, 222, 128, 0.08);
+                border-color: rgba(74, 222, 128, 0.2);
+            }
+        }
+
+        /* Warning / Info chips */
+        .chip-warn {
+            color: rgba(250, 204, 21, 0.5);
+            background: rgba(250, 204, 21, 0.04);
+            border-color: rgba(250, 204, 21, 0.08);
+        }
+
+        .chip-warn.active {
+            color: var(--color-warn);
+            background: rgba(250, 204, 21, 0.1);
+            border-color: rgba(250, 204, 21, 0.3);
+        }
+
+        @media (hover: hover) {
+            .chip-warn:not(.active):hover {
+                color: rgba(250, 204, 21, 0.75);
+                background: rgba(250, 204, 21, 0.06);
+                border-color: rgba(250, 204, 21, 0.15);
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .info-chip { transition: none; }
+        }
+
+        /* ─── Chip Dropdown Panels ────── */
+        .chip-dropdown {
+            margin-top: var(--space-1);
             border: 1px solid var(--color-border);
             border-radius: var(--radius-md);
+            padding: var(--space-2) var(--space-3);
             font-size: 0.78em;
             color: var(--color-text-dim);
-            transition: border-color 0.15s cubic-bezier(.4,0,.2,1);
+            line-height: 1.6;
+            animation: chipDropIn 0.2s cubic-bezier(.4,0,.2,1);
         }
 
-        .info-banner-icon {
-            flex-shrink: 0;
+        .chip-dropdown[hidden] { display: none; }
+
+        @keyframes chipDropIn {
+            from { opacity: 0; transform: translateY(-4px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .chip-dropdown { animation: none; }
+        }
+
+        .chip-dropdown-github {
+            border-color: rgba(74, 222, 128, 0.15);
+            background: rgba(74, 222, 128, 0.03);
+        }
+
+        .chip-dropdown-notice {
+            border-color: rgba(250, 204, 21, 0.12);
+            background: rgba(250, 204, 21, 0.03);
+        }
+
+        .chip-dropdown-disclaimer {
+            border-color: rgba(250, 204, 21, 0.12);
+            background: rgba(250, 204, 21, 0.03);
+        }
+
+        .chip-dropdown-content {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
+            gap: var(--space-2);
+            flex-wrap: wrap;
         }
 
-        .info-banner-text {
+        .chip-dropdown-text {
             flex: 1;
             min-width: 0;
         }
 
+        /* ─── Disclaimer body (reused in chip dropdown) ── */
+        .disclaimer-body {
+            padding: 0;
+            line-height: 1.6;
+            color: var(--color-text-dim);
+            display: block;
+        }
+
+        .disclaimer-body strong {
+            color: var(--color-warn);
+            font-weight: 600;
+        }
+
+        /* ─── Star / Heart inline (inside chip dropdowns) ── */
         .star-inline {
             display: inline-flex;
             vertical-align: middle;
@@ -158,15 +301,7 @@ export function getStyles(): string {
             .heart-inline { animation: none; }
         }
 
-        .github-banner {
-            border-color: rgba(74, 222, 128, 0.15);
-            background: rgba(74, 222, 128, 0.03);
-        }
-
-        .github-banner .info-banner-icon {
-            color: var(--color-ok);
-        }
-
+        /* ─── GitHub Link Button (reused in dropdown) ── */
         .info-banner-link {
             appearance: none;
             flex-shrink: 0;
@@ -205,74 +340,8 @@ export function getStyles(): string {
             }
         }
 
-        .multiwin-banner {
-            border-color: rgba(250, 204, 21, 0.12);
-            background: rgba(250, 204, 21, 0.03);
-        }
-
-        .multiwin-banner .info-banner-icon {
-            color: rgba(250, 204, 21, 0.6);
-        }
-
-        /* ─── Disclaimer Banner ────────── */
-        .disclaimer-banner {
-            margin-bottom: var(--space-3);
-            border: 1px solid rgba(250, 204, 21, 0.15);
-            border-radius: var(--radius-md);
-            background: rgba(250, 204, 21, 0.04);
-            font-size: 0.78em;
-            color: var(--color-text-dim);
-            overflow: hidden;
-        }
-
-        .disclaimer-banner summary {
-            cursor: pointer;
-            padding: var(--space-1) var(--space-2);
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-            list-style: none;
-            user-select: none;
-            color: rgba(250, 204, 21, 0.7);
-            transition: color 0.15s cubic-bezier(.4,0,.2,1);
-        }
-
-        .disclaimer-banner summary::-webkit-details-marker { display: none; }
-
-        .disclaimer-banner summary:focus-visible {
-            box-shadow: 0 0 0 2px var(--color-warn);
-            outline: none;
-            border-radius: var(--radius-md);
-        }
-
-        @media (hover: hover) {
-            .disclaimer-banner summary:hover {
-                color: var(--color-warn);
-            }
-        }
-
-        .disclaimer-banner svg {
-            flex-shrink: 0;
-        }
-
-        .disclaimer-banner[open] {
-            border-color: rgba(250, 204, 21, 0.25);
-            background: rgba(250, 204, 21, 0.06);
-        }
-
-        .disclaimer-body {
-            padding: var(--space-1) var(--space-3) var(--space-2);
-            border-top: 1px solid rgba(250, 204, 21, 0.1);
-            line-height: 1.6;
-            color: var(--color-text-dim);
-        }
-
-        .disclaimer-body strong {
-            color: var(--color-warn);
-            font-weight: 600;
-        }
-
-        .panel-header h1 {
+        /* ─── TopBar Title h1 ────────── */
+        .topbar-title h1 {
             font-size: 1.1em;
             font-weight: 600;
             display: flex;
@@ -1868,7 +1937,8 @@ export function getStyles(): string {
         .tab-bar {
             display: flex;
             gap: 2px;
-            margin-bottom: var(--space-4);
+            margin-bottom: 0;
+            margin-top: var(--space-1);
             background: var(--color-surface);
             border-radius: var(--radius-full, 9999px);
             padding: 3px;
@@ -2689,6 +2759,70 @@ export function getStyles(): string {
         }
         body.vscode-light .storage-stat-val { color: #1d4ed8; }
         body.vscode-light .storage-stat:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+
+        /* ─── Light Theme: Sticky TopBar ──── */
+        body.vscode-light .panel-topbar {
+            background: rgba(255, 255, 255, 0.92);
+        }
+        body.vscode-light .panel-topbar.scrolled {
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+        }
+
+        /* ─── Light Theme: Info Chips ──── */
+        body.vscode-light .chip-github {
+            color: #16a34a;
+            background: rgba(22,163,74,0.06);
+            border-color: rgba(22,163,74,0.15);
+        }
+        body.vscode-light .chip-github.active {
+            color: #15803d;
+            background: rgba(22,163,74,0.12);
+            border-color: rgba(22,163,74,0.35);
+        }
+        @media (hover: hover) {
+            body.vscode-light .chip-github:not(.active):hover {
+                color: #15803d;
+                background: rgba(22,163,74,0.1);
+                border-color: rgba(22,163,74,0.25);
+            }
+        }
+        body.vscode-light .chip-warn {
+            color: #a16207;
+            background: rgba(202,138,4,0.05);
+            border-color: rgba(202,138,4,0.12);
+        }
+        body.vscode-light .chip-warn.active {
+            color: #92400e;
+            background: rgba(202,138,4,0.12);
+            border-color: rgba(202,138,4,0.3);
+        }
+        @media (hover: hover) {
+            body.vscode-light .chip-warn:not(.active):hover {
+                color: #92400e;
+                background: rgba(202,138,4,0.08);
+                border-color: rgba(202,138,4,0.2);
+            }
+        }
+
+        /* ─── Light Theme: Chip Dropdowns ──── */
+        body.vscode-light .chip-dropdown-github {
+            border-color: rgba(22,163,74,0.2);
+            background: rgba(22,163,74,0.04);
+        }
+        body.vscode-light .chip-dropdown-notice {
+            border-color: rgba(180,83,9,0.15);
+            background: rgba(180,83,9,0.03);
+        }
+        body.vscode-light .chip-dropdown-disclaimer {
+            border-color: rgba(180,83,9,0.2);
+            background: rgba(180,83,9,0.04);
+        }
+        body.vscode-light .chip-dropdown {
+            color: rgba(0,0,0,0.7);
+        }
+        body.vscode-light .chip-dropdown .disclaimer-body strong {
+            color: #92400e;
+        }
 
         /* ─── High Contrast Overrides ──── */
         body.vscode-high-contrast {

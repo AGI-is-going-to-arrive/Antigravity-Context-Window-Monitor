@@ -380,9 +380,9 @@ describe('QuotaTracker state machine', () => {
         });
     });
 
-    // ─── Cycle-End Archival (replaces old DONE state) ─────────────────────────
+    // ─── Cycle-End / Rebound Handling ────────────────────────────────────────
 
-    describe('cycle-end archival', () => {
+    describe('cycle-end / rebound handling', () => {
         it('should archive and fire reset callback when cycle ends after 0%', () => {
             const now = new Date();
             const resetTime = futureReset(now, FIVE_HOURS);
@@ -412,6 +412,20 @@ describe('QuotaTracker state machine', () => {
             tracker.processUpdate([makeConfig('M1', 0, resetTime)]);
             expect(tracker.getActiveSessions().length).toBe(1);
             expect(tracker.getHistory().length).toBe(0);
+            expect(tracker.getActiveSessions()[0].completed).toBe(true);
+        });
+
+        it('should resume active tracking when quota rebounds above 0 before reset', () => {
+            const now = new Date();
+            const resetTime = futureReset(now, FIVE_HOURS);
+
+            tracker.processUpdate([makeConfig('M1', 1.0, resetTime)]);
+            tracker.processUpdate([makeConfig('M1', 0, resetTime)]);
+            tracker.processUpdate([makeConfig('M1', 0.2, resetTime)]);
+
+            expect(tracker.getHistory().length).toBe(0);
+            expect(tracker.getActiveSessions().length).toBe(1);
+            expect(tracker.getActiveSessions()[0].completed).toBe(false);
         });
 
         it('should migrate legacy done state to idle on restore', () => {
@@ -593,6 +607,7 @@ describe('QuotaTracker state machine', () => {
             const active = tracker.getActiveSessions();
             expect(active.length).toBe(1);
             expect(active[0].completed).toBe(true);
+            expect(tracker.getHistory().length).toBe(0);
         });
     });
 });

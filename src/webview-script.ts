@@ -97,6 +97,56 @@ export function getScript(): string {
                 });
             }
 
+            // ─── Info Chip Toggle ───
+            function bindChipToggles() {
+                var chips = document.querySelectorAll('.info-chip');
+                for (var ci = 0; ci < chips.length; ci++) {
+                    chips[ci].addEventListener('click', function() {
+                        var chipName = this.dataset.chip;
+                        var panelId = 'chip-' + chipName;
+                        var panel = document.getElementById(panelId);
+                        var allChips = document.querySelectorAll('.info-chip');
+                        var allDropdowns = document.querySelectorAll('.chip-dropdown');
+                        // Close others
+                        for (var ai = 0; ai < allChips.length; ai++) {
+                            if (allChips[ai] !== this) { allChips[ai].classList.remove('active'); }
+                        }
+                        for (var di = 0; di < allDropdowns.length; di++) {
+                            if (allDropdowns[di].id !== panelId) { allDropdowns[di].hidden = true; }
+                        }
+                        // Toggle this
+                        if (panel) {
+                            panel.hidden = !panel.hidden;
+                            this.classList.toggle('active', !panel.hidden);
+                        }
+                        // Persist
+                        var s = vscode.getState() || {};
+                        s.activeChip = panel && !panel.hidden ? chipName : '';
+                        vscode.setState(s);
+                    });
+                }
+            }
+            bindChipToggles();
+
+            // Restore chip state from saved state
+            var savedChip = savedState.activeChip || '';
+            if (savedChip) {
+                var chipPanel = document.getElementById('chip-' + savedChip);
+                var chipBtn = document.querySelector('.info-chip[data-chip="' + savedChip + '"]');
+                if (chipPanel) { chipPanel.hidden = false; }
+                if (chipBtn) { chipBtn.classList.add('active'); }
+            }
+
+            // ─── Scroll Shadow on TopBar ───
+            var topbar = document.querySelector('.panel-topbar');
+            if (topbar) {
+                window.addEventListener('scroll', function() {
+                    topbar.classList.toggle('scrolled', window.scrollY > 8);
+                }, { passive: true });
+                // Apply immediately in case restored scroll > 0
+                topbar.classList.toggle('scrolled', window.scrollY > 8);
+            }
+
             // ─── Settings: Polling Interval ───
             var pollingInput = document.getElementById('pollingInput');
             var pollingSaveBtn = document.getElementById('pollingSaveBtn');
@@ -751,6 +801,11 @@ export function getScript(): string {
                             switchTab(this.dataset.switchTab);
                         });
                     }
+
+                    // Re-bind info chip toggles (chips are inside topbar, NOT swapped by updateTabs,
+                    // but re-bind in case future refactor moves them)
+                    // Note: chips are in .panel-topbar which is outside tab-panes,
+                    // so they are NOT destroyed by innerHTML swap. No re-bind needed.
 
                     // Re-apply privacy mask if active AND re-bind toggle button
                     var privState = vscode.getState() || {};

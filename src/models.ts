@@ -42,6 +42,14 @@ let modelDisplayNames: Record<string, Record<'en' | 'zh', string>> = {
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': { en: 'GPT-OSS 120B (Medium)', zh: 'GPT-OSS 120B (中)' },
 };
 
+function getDisplayCandidates(modelId: string, entry: Record<'en' | 'zh', string>): string[] {
+    const candidates = [modelId, entry.en, entry.zh];
+    if (entry.en !== entry.zh) {
+        candidates.push(`${entry.en} / ${entry.zh}`);
+    }
+    return [...new Set(candidates.map(value => value.trim()).filter(Boolean))];
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -67,6 +75,32 @@ export function getModelDisplayName(model: string): string {
         return tBi(entry.en, entry.zh);
     }
     return model || tBi('Unknown Model', '未知模型');
+}
+
+/**
+ * Resolve either a model ID or any known localized display label back to model ID.
+ */
+export function resolveModelId(modelOrDisplay: string): string | undefined {
+    const clean = modelOrDisplay.trim();
+    if (!clean) { return undefined; }
+    if (modelDisplayNames[clean]) { return clean; }
+    for (const [modelId, entry] of Object.entries(modelDisplayNames)) {
+        if (getDisplayCandidates(modelId, entry).includes(clean)) {
+            return modelId;
+        }
+    }
+    return undefined;
+}
+
+/**
+ * Normalize a model ID or historical display label to the current-language display name.
+ * Unknown values are returned unchanged.
+ */
+export function normalizeModelDisplayName(modelOrDisplay: string): string {
+    const clean = modelOrDisplay.trim();
+    if (!clean) { return ''; }
+    const modelId = resolveModelId(clean);
+    return modelId ? getModelDisplayName(modelId) : clean;
 }
 
 // ─── Model Config from GetUserStatus ─────────────────────────────────────────

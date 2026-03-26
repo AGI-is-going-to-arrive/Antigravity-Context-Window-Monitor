@@ -7,7 +7,7 @@
 
 import { LSInfo } from './discovery';
 import { rpcCall } from './rpc-client';
-import { getModelDisplayName } from './models';
+import { getModelDisplayName, normalizeModelDisplayName } from './models';
 
 // ─── Exported Types ──────────────────────────────────────────────────────────
 
@@ -150,6 +150,8 @@ export interface GMConversationData {
     title: string;
     totalSteps: number;
     calls: GMCallEntry[];
+    /** Max calls observed for this conversation across rewinds/reloads. */
+    lifetimeCalls?: number;
     coveredSteps: number;
     coverageRate: number;   // coveredSteps / totalSteps
 }
@@ -221,20 +223,27 @@ export function filterGMSummaryByModels(
     let latestTokenBreakdown: TokenBreakdownGroup[] = [];
 
     for (const conversation of summary.conversations) {
-        const calls = conversation.calls.filter(call => modelSet.has(call.model));
-        if (calls.length === 0) {
+        const matchingCalls = conversation.calls.filter(call => modelSet.has(call.model));
+        if (matchingCalls.length === 0) {
             continue;
         }
+
+        const calls = matchingCalls.map(call => ({
+            ...call,
+            modelDisplay: normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model,
+        }));
 
         const coveredSteps = calls.reduce((sum, call) => sum + call.stepIndices.length, 0);
         conversations.push({
             ...conversation,
             calls,
+            lifetimeCalls: calls.length,
             coveredSteps,
             coverageRate: conversation.totalSteps > 0 ? coveredSteps / conversation.totalSteps : 0,
         });
 
         for (const call of calls) {
+            const normalizedDisplay = normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model;
             totalCalls++;
             totalStepsCovered += call.stepIndices.length;
             totalCredits += call.credits;
@@ -252,7 +261,7 @@ export function filterGMSummaryByModels(
                 contextGrowth.push({
                     step: call.stepIndices[0],
                     tokens: call.contextTokensUsed,
-                    model: call.modelDisplay,
+                    model: normalizedDisplay || call.modelDisplay,
                 });
             }
             if (call.stopReason) {
@@ -263,7 +272,7 @@ export function filterGMSummaryByModels(
                 latestTokenBreakdown = call.tokenBreakdownGroups;
             }
 
-            const key = call.modelDisplay || call.model;
+            const key = normalizedDisplay || call.modelDisplay || call.model;
             const existing = modelBreakdown[key];
             if (existing) {
                 const ttftSamples = existing.callCount;
@@ -366,6 +375,83 @@ export function filterGMSummaryByModels(
         totalRetryCount,
         latestTokenBreakdown,
         stopReasonCounts,
+    };
+}
+
+function mergeGMModelStats(target: GMModelStats, source: GMModelStats): void {
+    const targetCallsBefore = target.callCount;
+    const sourceCalls = source.callCount;
+    const totalCalls = targetCallsBefore + sourceCalls;
+
+    target.callCount = totalCalls;
+    target.stepsCovered += source.stepsCovered;
+    target.totalInputTokens += source.totalInputTokens;
+    target.totalOutputTokens += source.totalOutputTokens;
+    target.totalThinkingTokens += source.totalThinkingTokens;
+    target.totalCacheRead += source.totalCacheRead;
+    target.totalCacheCreation += source.totalCacheCreation;
+    target.totalCredits += source.totalCredits;
+    target.minTTFT = target.minTTFT > 0 && source.minTTFT > 0
+        ? Math.min(target.minTTFT, source.minTTFT)
+        : Math.max(target.minTTFT, source.minTTFT);
+    target.maxTTFT = Math.max(target.maxTTFT, source.maxTTFT);
+    target.avgTTFT = totalCalls > 0
+        ? ((target.avgTTFT * targetCallsBefore) + (source.avgTTFT * sourceCalls)) / totalCalls
+        : 0;
+    target.avgStreaming = totalCalls > 0
+        ? ((target.avgStreaming * targetCallsBefore) + (source.avgStreaming * sourceCalls)) / totalCalls
+        : 0;
+    const targetCacheHits = Math.round(target.cacheHitRate * targetCallsBefore);
+    const sourceCacheHits = Math.round(source.cacheHitRate * sourceCalls);
+    target.cacheHitRate = totalCalls > 0 ? (targetCacheHits + sourceCacheHits) / totalCalls : 0;
+    if (source.responseModel) { target.responseModel = source.responseModel; }
+    if (source.apiProvider) { target.apiProvider = source.apiProvider; }
+    if (source.completionConfig) { target.completionConfig = source.completionConfig; }
+    target.hasSystemPrompt = target.hasSystemPrompt || source.hasSystemPrompt;
+    target.toolCount = Math.max(target.toolCount, source.toolCount);
+    if (source.promptSectionTitles.length > target.promptSectionTitles.length) {
+        target.promptSectionTitles = [...source.promptSectionTitles];
+    }
+    target.totalRetries += source.totalRetries;
+    target.errorCount += source.errorCount;
+    target.exactCallCount += source.exactCallCount;
+    target.placeholderOnlyCalls += source.placeholderOnlyCalls;
+}
+
+function normalizeGMSummary(summary: GMSummary): GMSummary {
+    const normalizedConversations = summary.conversations.map(conversation => ({
+        ...conversation,
+        calls: conversation.calls.map(call => ({
+            ...call,
+            modelDisplay: normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model,
+        })),
+    }));
+
+    const modelBreakdown: Record<string, GMModelStats> = {};
+    for (const [name, stats] of Object.entries(summary.modelBreakdown)) {
+        const key = normalizeModelDisplayName(name) || name;
+        const existing = modelBreakdown[key];
+        if (existing) {
+            mergeGMModelStats(existing, stats);
+        } else {
+            modelBreakdown[key] = {
+                ...stats,
+                promptSectionTitles: [...stats.promptSectionTitles],
+                completionConfig: stats.completionConfig ? { ...stats.completionConfig } : null,
+            };
+        }
+    }
+
+    return {
+        ...summary,
+        conversations: normalizedConversations,
+        modelBreakdown,
+        contextGrowth: summary.contextGrowth.map(point => ({
+            ...point,
+            model: normalizeModelDisplayName(point.model) || point.model,
+        })),
+        latestTokenBreakdown: cloneTokenBreakdownGroups(summary.latestTokenBreakdown),
+        stopReasonCounts: { ...summary.stopReasonCounts },
     };
 }
 
@@ -741,7 +827,7 @@ function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         stepIndices: (gm.stepIndices as number[]) || [],
         executionId: (gm.executionId as string) || '',
         model: modelId,
-        modelDisplay: modelId ? getModelDisplayName(modelId) : modelId,
+        modelDisplay: normalizeModelDisplayName(modelId || ''),
         responseModel,
         modelAccuracy,
         inputTokens: parseInt0(usage.inputTokens as string),
@@ -852,6 +938,7 @@ export class GMTracker {
                     title: t.title,
                     totalSteps: t.stepCount,
                     calls,
+                    lifetimeCalls: Math.max(cached?.lifetimeCalls ?? cached?.calls.length ?? 0, calls.length),
                     coveredSteps,
                     coverageRate: t.stepCount > 0 ? coveredSteps / t.stepCount : 0,
                 });
@@ -863,6 +950,7 @@ export class GMTracker {
                         title: t.title,
                         totalSteps: t.stepCount,
                         calls: [],
+                        lifetimeCalls: 0,
                         coveredSteps: 0,
                         coverageRate: 0,
                     });
@@ -934,6 +1022,7 @@ export class GMTracker {
             conversations.push({
                 ...conv,
                 calls: activeCalls,
+                lifetimeCalls: conv.lifetimeCalls ?? conv.calls.length,
                 coveredSteps: activeStepsCovered,
                 coverageRate: conv.totalSteps > 0 ? activeStepsCovered / conv.totalSteps : 0,
             });
@@ -953,13 +1042,13 @@ export class GMTracker {
                     contextGrowth.push({
                         step: c.stepIndices[0],
                         tokens: c.contextTokensUsed,
-                        model: c.modelDisplay,
-                    });
-                }
+                    model: normalizeModelDisplayName(c.modelDisplay || c.model) || c.modelDisplay || c.model,
+                });
+            }
 
-                // Per-model aggregation
-                const key = c.modelDisplay || c.model;
-                if (!key) { continue; }
+            // Per-model aggregation
+            const key = normalizeModelDisplayName(c.modelDisplay || c.model) || c.modelDisplay || c.model;
+            if (!key) { continue; }
 
                 let agg = modelAgg.get(key);
                 if (!agg) {
@@ -1120,6 +1209,7 @@ export class GMTracker {
             this._cache.set(id, {
                 ...conv,
                 calls: [],
+                lifetimeCalls: conv.lifetimeCalls ?? conv.calls.length,
                 coveredSteps: 0,
                 coverageRate: 0,
             });
@@ -1150,13 +1240,16 @@ export class GMTracker {
      * Used on startup to instantly display persisted data.
      */
     getCachedSummary(): GMSummary | null {
+        if (!this._lastSummary) { return null; }
+        this._lastSummary = normalizeGMSummary(this._lastSummary);
         return this._lastSummary;
     }
 
     /** Full current-cycle summary for UI persistence (retains per-call data). */
     getDetailedSummary(): GMSummary | null {
-        const summary = this._lastSummary || this._buildSummary();
+        const summary = normalizeGMSummary(this._lastSummary || this._buildSummary());
         if (!summary) { return null; }
+        this._lastSummary = summary;
         return {
             ...summary,
             conversations: summary.conversations.map(cloneConversationData),
@@ -1189,7 +1282,8 @@ export class GMTracker {
         }
         // Strip calls[] from conversations to keep globalState small.
         // calls will be re-fetched from API on next fetchAll().
-        const raw = this._lastSummary || this._buildSummary();
+        const raw = normalizeGMSummary(this._lastSummary || this._buildSummary());
+        this._lastSummary = raw;
         const slim: GMSummary = {
             ...raw,
             conversations: raw.conversations.map(c => ({
@@ -1205,8 +1299,8 @@ export class GMTracker {
         if (!data || data.version !== 1) { return tracker; }
 
         tracker._needsBaselineInit = false; // restored = not a manual clear
-        tracker._lastSummary = data.summary;
-        tracker._lastFetchedAt = data.summary.fetchedAt || '';
+        tracker._lastSummary = normalizeGMSummary(data.summary);
+        tracker._lastFetchedAt = tracker._lastSummary.fetchedAt || '';
 
         // Seed baseline stubs so fetchAll() skips unchanged IDLE conversations
         for (const [id, stepCount] of Object.entries(data.baselines)) {
@@ -1215,6 +1309,7 @@ export class GMTracker {
                 title: '',  // will be filled on next fetchAll
                 totalSteps: stepCount,
                 calls: [],
+                lifetimeCalls: tracker._lastSummary.conversations.find(c => c.cascadeId === id)?.lifetimeCalls ?? 0,
                 coveredSteps: 0,
                 coverageRate: 0,
             });
