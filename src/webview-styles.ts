@@ -1234,6 +1234,55 @@ export function getStyles(): string {
             margin-bottom: var(--space-3);
         }
 
+        .profile-two-col {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: var(--space-3);
+            margin-bottom: var(--space-3);
+        }
+
+        .profile-panel-card {
+            height: 100%;
+        }
+
+        .profile-metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: var(--space-2);
+            margin-top: var(--space-2);
+        }
+
+        .profile-metric-card {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: var(--space-2) var(--space-3);
+            border-radius: var(--radius-md);
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--color-border);
+        }
+
+        .profile-metric-label {
+            font-size: 0.74em;
+            color: var(--color-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.35px;
+        }
+
+        .profile-metric-value {
+            font-size: 0.98em;
+            font-weight: 700;
+            color: var(--color-text);
+            line-height: 1.35;
+        }
+
+        .profile-chip-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-2);
+            margin-top: var(--space-2);
+        }
+
         .credit-row {}
 
         .credit-header {
@@ -1270,8 +1319,8 @@ export function getStyles(): string {
             background: rgba(255,255,255,0.04);
             color: var(--color-text-dim);
             border: 1px solid var(--color-border);
-            opacity: 0.5;
-            text-decoration: line-through;
+            opacity: 0.72;
+            text-decoration: none;
         }
 
         .feature-tag.enabled {

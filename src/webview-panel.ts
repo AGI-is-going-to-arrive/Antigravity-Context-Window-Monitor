@@ -11,6 +11,7 @@ import { PricingStore, ModelPricing } from './pricing-store';
 import { GMSummary, GMConversationData } from './gm-tracker';
 import { ICON } from './webview-icons';
 import { buildMonitorSections } from './webview-monitor-tab';
+import { buildModelsTabContent } from './webview-models-tab';
 import { buildProfileContent } from './webview-profile-tab';
 import { buildSettingsContent, StorageDiagnostics } from './webview-settings-tab';
 import { buildHistoryHtml } from './webview-history-tab';
@@ -19,6 +20,7 @@ import { DailyStore } from './daily-store';
 import { getScript } from './webview-script';
 import { getStyles } from './webview-styles';
 import type { StateBucket } from './durable-state';
+import type { PersistedModelDNA } from './model-dna-store';
 
 // ─── Panel State ──────────────────────────────────────────────────────────────
 
@@ -40,6 +42,7 @@ let lastPricingStore: PricingStore | undefined;
 let lastDailyStore: DailyStore | undefined;
 let lastStorageDiagnostics: StorageDiagnostics | undefined;
 let panelDurableState: StateBucket | undefined;
+let lastModelDNA: Record<string, PersistedModelDNA> = {};
 
 /** Provide a durable state bucket for panel-level persistence (zoom, etc.). */
 export function setPanelDurableState(state: StateBucket): void {
@@ -155,6 +158,7 @@ export function showMonitorPanel(
     pricingStore?: PricingStore,
     dailyStore?: DailyStore,
     storageDiagnostics?: StorageDiagnostics,
+    modelDNA?: Record<string, PersistedModelDNA>,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -170,6 +174,7 @@ export function showMonitorPanel(
     if (pricingStore) { lastPricingStore = pricingStore; }
     if (dailyStore) { lastDailyStore = dailyStore; }
     if (storageDiagnostics) { lastStorageDiagnostics = storageDiagnostics; }
+    if (modelDNA) { lastModelDNA = modelDNA; }
 
     if (panel) {
         panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
@@ -386,6 +391,7 @@ export function updateMonitorPanel(
     gmSummary?: GMSummary | null,
     gmConversations?: Record<string, GMConversationData>,
     storageDiagnostics?: StorageDiagnostics,
+    modelDNA?: Record<string, PersistedModelDNA>,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -397,6 +403,7 @@ export function updateMonitorPanel(
     if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
     if (gmConversations) { lastGMConversations = gmConversations; }
     if (storageDiagnostics) { lastStorageDiagnostics = storageDiagnostics; }
+    if (modelDNA) { lastModelDNA = modelDNA; }
     if (panel && !isPaused) {
         // Incremental update: send tab contents via postMessage — no DOM teardown
         safePostMessage({
@@ -417,13 +424,14 @@ function buildTabContents(
 ): Record<string, string> {
     return {
         monitor: buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations),
-        profile: buildProfileContent(userInfo, configs),
         gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage),
         pricing: lastPricingStore
             ? buildPricingTabContent(lastGMSummary, lastPricingStore)
             : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`,
-        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth),
+        models: buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA),
         history: buildHistoryHtml(tracker),
+        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth),
+        profile: buildProfileContent(userInfo, configs),
         // Settings tab excluded from incremental updates: its content is mostly static
         // and replacing innerHTML destroys event listeners on toggles, buttons, inputs.
         // Settings is only rendered via full buildHtml() (panel open, language switch, etc.).
@@ -446,14 +454,15 @@ function buildHtml(
     tracker?: QuotaTracker,
 ): string {
     const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations);
-    const profileHtml = buildProfileContent(userInfo, configs);
-    const settingsHtml = buildSettingsContent(configs, tracker, lastStorageDiagnostics);
-    const historyHtml = buildHistoryHtml(tracker);
     const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(lastGMSummary, lastPricingStore)
         : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
+    const modelsHtml = buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA);
+    const historyHtml = buildHistoryHtml(tracker);
     const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth);
+    const profileHtml = buildProfileContent(userInfo, configs);
+    const settingsHtml = buildSettingsContent(configs, tracker, lastStorageDiagnostics);
 
     const currentLang = getLanguage();
     const htmlLang = currentLang === 'zh' ? 'zh-CN' : currentLang === 'en' ? 'en' : 'zh-CN';
@@ -546,19 +555,17 @@ ${getCalendarTabStyles()}
         <nav class="tab-bar">
         <div class="tab-slider"></div>
         <button class="tab-btn active" data-tab="monitor" data-color="blue">${ICON.chart} ${tBi('Monitor', '监控')}</button>
-        <button class="tab-btn" data-tab="profile" data-color="green">${ICON.user} ${tBi('Profile', '个人')}</button>
         <button class="tab-btn" data-tab="gmdata" data-color="orange">${ICON.bolt} ${tBi('GM Data', 'GM 数据')}</button>
-        <button class="tab-btn" data-tab="pricing" data-color="purple"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.315 0-1.667-1.104-2.512-3.233-3.037l-.445-.107V3.63c1.213.183 1.968.91 2.141 1.88h1.762c-.112-1.796-1.519-2.965-3.455-3.124V1.036H8.59v1.383C6.408 2.583 5.008 3.9 5.003 5.54c0 1.592 1.063 2.457 3.146 2.963l.399.1v3.979c-1.29-.183-2.113-.879-2.275-1.8H4zm4.586-4.34C7.494 6.137 6.94 5.695 6.94 5.092c0-.66.52-1.183 1.575-1.37v2.72h.071zm.889 2.283c1.335.36 1.942.846 1.942 1.548 0 .781-.633 1.35-1.823 1.493V8.851l-.119-.127z"/></svg> ${tBi('Pricing', '价格')}</button>
+        <button class="tab-btn" data-tab="pricing" data-color="purple"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.315 0-1.667-1.104-2.512-3.233-3.037l-.445-.107V3.63c1.213.183 1.968.91 2.141 1.88h1.762c-.112-1.796-1.519-2.965-3.455-3.124V1.036H8.59v1.383C6.408 2.583 5.008 3.9 5.003 5.54c0 1.592 1.063 2.457 3.146 2.963l.399.1v3.979c-1.29-.183-2.113-.879-2.275-1.8H4zm4.586-4.34C7.494 6.137 6.94 5.695 6.94 5.092c0-.66.52-1.183 1.575-1.37v2.72h.071zm.889 2.283c1.335.36 1.942.846 1.942 1.548 0 .781-.633 1.35-1.823 1.493V8.851l-.119-.127z"/></svg> ${tBi('Cost', '成本')}</button>
+        <button class="tab-btn" data-tab="models" data-color="green">${ICON.bolt} ${tBi('Models', '模型')}</button>
+        <button class="tab-btn" data-tab="history" data-color="yellow">${ICON.timeline} ${tBi('Quota Tracking', '额度追踪')}</button>
         <button class="tab-btn" data-tab="calendar" data-color="cyan"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/></svg> ${tBi('Calendar', '日历')}</button>
-        <button class="tab-btn" data-tab="history" data-color="yellow">${ICON.timeline} ${tBi('Quota', '额度')}</button>
+        <button class="tab-btn" data-tab="profile" data-color="gray">${ICON.user} ${tBi('Profile', '个人')}</button>
         <button class="tab-btn" data-tab="settings" data-color="gray">${ICON.shield} ${tBi('Settings', '设置')}</button>
     </nav>
     </div>
     <div class="tab-pane active" id="tab-monitor">
         ${monitorHtml}
-    </div>
-    <div class="tab-pane" id="tab-profile">
-        ${profileHtml}
     </div>
     <div class="tab-pane" id="tab-gmdata">
         ${gmDataHtml}
@@ -566,11 +573,17 @@ ${getCalendarTabStyles()}
     <div class="tab-pane" id="tab-pricing">
         ${pricingHtml}
     </div>
-    <div class="tab-pane" id="tab-calendar">
-        ${calendarHtml}
+    <div class="tab-pane" id="tab-models">
+        ${modelsHtml}
     </div>
     <div class="tab-pane" id="tab-history">
         ${historyHtml}
+    </div>
+    <div class="tab-pane" id="tab-calendar">
+        ${calendarHtml}
+    </div>
+    <div class="tab-pane" id="tab-profile">
+        ${profileHtml}
     </div>
     <div class="tab-pane" id="tab-settings">
         ${settingsHtml}

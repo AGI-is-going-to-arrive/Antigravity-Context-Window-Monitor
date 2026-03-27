@@ -161,7 +161,7 @@ export function buildMonitorSections(
 
 // ─── Section Builders ────────────────────────────────────────────────────────
 
-/** Compact single-row quota overview — click jumps to Profile tab for details. */
+/** Compact single-row quota overview — click jumps to Models tab for details. */
 function buildMiniQuotaBar(sections: string[], configs: ModelConfig[]): void {
     const quotaModels = configs.filter(c => c.quotaInfo);
     if (quotaModels.length === 0) { return; }
@@ -181,7 +181,7 @@ function buildMiniQuotaBar(sections: string[], configs: ModelConfig[]): void {
         <section class="card mini-quota-section">
             <div class="mini-quota-header">
                 <span>${ICON.bolt} ${tBi('Quota', '额度')}</span>
-                <button class="link-btn" data-switch-tab="profile">${tBi('Details', '详情')} →</button>
+                <button class="link-btn" data-switch-tab="models">${tBi('Details', '详情')} →</button>
             </div>
             <div class="mini-quota-row">${pills}</div>
         </section>`);

@@ -1,11 +1,13 @@
 // ─── Pricing Tab Content Builder ─────────────────────────────────────────────
-// Renders the "Pricing" tab: model DNA cards, cost estimation, editable pricing
-// table, and built-in pricing reference. All pricing logic uses pricing-store.ts.
+// Renders the "Pricing" tab: cost estimation and editable pricing table.
+// Model DNA is rendered in the dedicated Models tab.
 
 import { tBi } from './i18n';
 import { GMSummary, GMModelStats, GMCompletionConfig } from './gm-tracker';
 import { PricingStore, DEFAULT_PRICING, PRICING_LAST_UPDATED, findPricing, ModelPricing } from './pricing-store';
 import { esc } from './webview-helpers';
+import { getModelDNAKey, type PersistedModelDNA } from './model-dna-store';
+import { ModelConfig, normalizeModelDisplayName } from './models';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -16,7 +18,6 @@ export function buildPricingTabContent(summary: GMSummary | null, store: Pricing
         const { rows, grandTotal } = store.calculateCosts(summary);
         const merged = store.getMerged();
         return [
-            buildModelDNACards(summary),
             buildCostVisualization(rows, grandTotal, summary),
             buildCostSummary(rows, grandTotal),
             buildEditablePricingTable(summary, merged, store.getCustom()),
@@ -62,7 +63,7 @@ export function getPricingTabStyles(): string {
     }
     .prc-dna-header {
         display: flex;
-        justify-content: space-between;
+        justify-content: flex-start;
         align-items: center;
         margin-bottom: var(--space-2);
     }
@@ -73,15 +74,25 @@ export function getPricingTabStyles(): string {
     .prc-dna-provider {
         display: inline-block;
         font-size: 0.78em;
-        padding: 2px var(--space-2);
-        border-radius: var(--radius-sm);
-        background: rgba(96,165,250,0.1);
-        color: var(--color-info);
+        color: var(--color-text-dim);
+        opacity: 0.8;
     }
     .prc-dna-response-model {
         font-size: 0.82em;
         color: var(--color-text-dim);
         margin-bottom: var(--space-2);
+    }
+    .prc-dna-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+        align-items: center;
+        margin-bottom: var(--space-2);
+        font-size: 0.8em;
+        color: var(--color-text-dim);
+    }
+    .prc-dna-sep {
+        opacity: 0.45;
     }
     .prc-dna-grid-inner {
         display: grid;
@@ -107,37 +118,6 @@ export function getPricingTabStyles(): string {
         font-weight: 700;
         font-size: 0.95em;
     }
-    .prc-dna-sections {
-        margin-top: var(--space-2);
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--space-1);
-    }
-    .prc-section-tag {
-        display: inline-block;
-        font-size: 0.78em;
-        padding: 2px var(--space-2);
-        border-radius: var(--radius-sm);
-        background: var(--color-surface-hover);
-        color: var(--color-text-dim);
-    }
-    .prc-tool-tag {
-        display: inline-block;
-        font-size: 0.78em;
-        padding: 2px var(--space-2);
-        border-radius: var(--radius-sm);
-        background: rgba(52,211,153,0.1);
-        color: #34d399;
-    }
-    .prc-error-tag {
-        display: inline-block;
-        font-size: 0.78em;
-        padding: 2px var(--space-2);
-        border-radius: var(--radius-sm);
-        background: rgba(239,68,68,0.1);
-        color: #ef4444;
-    }
-
     /* ── Cost Visualization ── */
     .prc-viz-section {
         background: var(--color-surface);
@@ -553,69 +533,122 @@ function buildCostVisualization(
 
 // ─── Section Builders ────────────────────────────────────────────────────────
 
-function buildModelDNACards(s: GMSummary): string {
-    const entries = Object.entries(s.modelBreakdown).sort((a, b) => b[1].stepsCovered - a[1].stepsCovered);
-    if (entries.length === 0) { return ''; }
+export function buildModelDNACards(
+    s: GMSummary | null,
+    persisted: Record<string, PersistedModelDNA> = {},
+    configs: ModelConfig[] = [],
+): string {
+    const currentEntries = Object.entries(s?.modelBreakdown || {});
+    const currentByKey = new Map<string, [string, GMModelStats]>();
+    for (const [name, stats] of currentEntries) {
+        currentByKey.set(getModelDNAKey(name, stats.responseModel), [name, stats]);
+    }
 
-    let html = `<h2 class="act-section-title">${tBi('Model DNA', '模型 DNA')} <span class="gm-badge-real">${tBi('From LS', '来自 LS')}</span></h2>`;
+    const allKeys = new Set<string>([
+        ...Object.keys(persisted),
+        ...currentByKey.keys(),
+    ]);
+    if (allKeys.size === 0) { return ''; }
+
+    const entries = [...allKeys].map(key => {
+        const current = currentByKey.get(key);
+        const persistedEntry = persisted[key];
+        return { key, current, persisted: persistedEntry };
+    }).sort((a, b) => {
+        const aSteps = a.current?.[1].stepsCovered || 0;
+        const bSteps = b.current?.[1].stepsCovered || 0;
+        if (aSteps !== bSteps) { return bSteps - aSteps; }
+        const aName = a.current?.[0] || a.persisted?.displayName || a.key;
+        const bName = b.current?.[0] || b.persisted?.displayName || b.key;
+        return aName.localeCompare(bName);
+    });
+
+    const configByLabel = new Map<string, ModelConfig>();
+    for (const config of configs) {
+        const normalizedLabel = normalizeModelDisplayName(config.label) || config.label;
+        configByLabel.set(normalizedLabel, config);
+    }
+
+    let html = `<h2 class="act-section-title">${tBi('Model Info', '模型信息')}</h2>`;
     html += `<div class="prc-dna-grid">`;
 
-    for (const [name, ms] of entries) {
-        const providerShort = ms.apiProvider.replace('API_PROVIDER_', '').replace(/_/g, ' ');
-        const cc = ms.completionConfig;
+    for (const entry of entries) {
+        const current = entry.current?.[1];
+        const persistedEntry = entry.persisted;
+        const name = entry.current?.[0] || persistedEntry?.displayName || entry.key;
+        const config = configByLabel.get(normalizeModelDisplayName(name) || name);
+        const provider = current?.apiProvider || persistedEntry?.apiProvider || '';
+        const providerShort = provider.replace('API_PROVIDER_', '').replace(/_/g, ' ');
+        const cc = current?.completionConfig || persistedEntry?.completionConfig || null;
+        const responseModel = current?.responseModel || persistedEntry?.responseModel || '';
+        const callCount = current?.callCount || 0;
+        const stepsCovered = current?.stepsCovered || 0;
+        const totalCredits = current?.totalCredits || 0;
+        const totalRetries = current?.totalRetries || 0;
+        const errorCount = current?.errorCount || 0;
+        const isPersistedOnly = !current && !!persistedEntry;
+        const entryId = toDomSafeId(entry.key);
+        const supportedMimeTypes = config?.supportedMimeTypes || [];
+        const mimeDetailsHtml = supportedMimeTypes.length > 0
+            ? `
+                <details class="collapsible inline-details" id="d-model-mime-${entryId}">
+                    <summary>${tBi('MIME Types', 'MIME 类型')} (${supportedMimeTypes.length})</summary>
+                    <div class="details-body">
+                        <div class="mime-tags-wrap">
+                            ${supportedMimeTypes.map(mime => `<span class="mime-tag">${esc(mime)}</span>`).join('')}
+                        </div>
+                    </div>
+                </details>`
+            : '';
+        const techDetailsHtml = cc
+            ? `
+                <details class="collapsible inline-details" id="d-model-tech-${entryId}">
+                    <summary>${tBi('Technical Params', '技术参数')}</summary>
+                    <div class="details-body">
+                        <div class="prc-dna-grid-inner">
+                            ${buildDNAField('maxTokens', String(cc.maxTokens))}
+                            ${buildDNAField(tBi('temp', '温度'), cc.temperature.toString())}
+                            ${buildDNAField(tBi('firstTemp', '初始温度'), cc.firstTemperature.toString())}
+                            ${buildDNAField('topK', String(cc.topK))}
+                            ${buildDNAField('topP', cc.topP.toString())}
+                            ${buildDNAField(tBi('stops', '停止词'), String(cc.stopPatternCount))}
+                        </div>
+                    </div>
+                </details>`
+            : '';
 
         html += `<div class="prc-dna-card">`;
         html += `<div class="prc-dna-header">
             <span class="prc-dna-model">${esc(name)}</span>
-            ${providerShort ? `<span class="prc-dna-provider">${esc(providerShort)}</span>` : ''}
         </div>`;
 
-        // Response model name
-        if (ms.responseModel) {
-            html += `<div class="prc-dna-response-model">${esc(ms.responseModel)}</div>`;
+        const metaParts: string[] = [];
+        if (responseModel) {
+            metaParts.push(`<span class="prc-dna-response-model">${esc(responseModel)}</span>`);
+        }
+        if (providerShort) {
+            metaParts.push(`<span class="prc-dna-provider">${esc(providerShort)}</span>`);
+        }
+        if (isPersistedOnly) {
+            metaParts.push(`<span class="prc-dna-provider">${tBi('cached', '已缓存')}</span>`);
+        }
+        if (metaParts.length > 0) {
+            html += `<div class="prc-dna-meta">${metaParts.join('<span class="prc-dna-sep">·</span>')}</div>`;
         }
 
-        // Config grid
         html += `<div class="prc-dna-grid-inner">`;
-        if (cc) {
-            html += buildDNAField('maxTokens', String(cc.maxTokens));
-            html += buildDNAField(tBi('temp', '温度'), cc.temperature.toString());
-            html += buildDNAField(tBi('firstTemp', '初始温度'), cc.firstTemperature.toString());
-            html += buildDNAField('topK', String(cc.topK));
-            html += buildDNAField('topP', cc.topP.toString());
-            html += buildDNAField(tBi('stops', '停止词'), String(cc.stopPatternCount));
-        } else {
-            html += buildDNAField('config', tBi('N/A', '无'));
+        html += buildDNAField(tBi('Calls', '调用'), String(callCount));
+        html += buildDNAField(tBi('Steps', '步骤'), String(stepsCovered));
+        html += buildDNAField(tBi('Credits', '积分'), String(totalCredits));
+        if (totalRetries > 0) {
+            html += buildDNAField(tBi('Retries', '重试'), String(totalRetries));
         }
-        html += buildDNAField(tBi('Calls', '调用'), String(ms.callCount));
-        html += buildDNAField(tBi('Steps', '步骤'), String(ms.stepsCovered));
-        html += buildDNAField(tBi('Credits', '积分'), String(ms.totalCredits));
-        if (ms.totalRetries > 0) {
-            html += buildDNAField(tBi('Retries', '重试'), String(ms.totalRetries));
-        }
-        if (ms.errorCount > 0) {
-            html += `<div class="prc-dna-field"><span class="prc-dna-label">${tBi('Errors', '错误')}</span><span class="prc-dna-val" style="color:#ef4444">${ms.errorCount}</span></div>`;
+        if (errorCount > 0) {
+            html += `<div class="prc-dna-field"><span class="prc-dna-label">${tBi('Errors', '错误')}</span><span class="prc-dna-val" style="color:#ef4444">${errorCount}</span></div>`;
         }
         html += `</div>`;
-
-        // Tags row: prompt sections + tools + system prompt indicator
-        const hasTags = ms.promptSectionTitles.length > 0 || ms.toolCount > 0 || ms.hasSystemPrompt;
-        if (hasTags) {
-            html += `<div class="prc-dna-sections">`;
-            if (ms.hasSystemPrompt) {
-                html += `<span class="prc-section-tag">systemPrompt</span>`;
-            }
-            for (const title of ms.promptSectionTitles) {
-                html += `<span class="prc-section-tag">${esc(title)}</span>`;
-            }
-            if (ms.toolCount > 0) {
-                html += `<span class="prc-tool-tag">${ms.toolCount} ${tBi('tools', '工具')}</span>`;
-            }
-            if (ms.errorCount > 0) {
-                html += `<span class="prc-error-tag">${ms.errorCount} ${tBi('errors', '错误')}</span>`;
-            }
-            html += `</div>`;
-        }
+        html += mimeDetailsHtml;
+        html += techDetailsHtml;
 
         html += `</div>`;
     }
@@ -626,6 +659,10 @@ function buildModelDNACards(s: GMSummary): string {
 
 function buildDNAField(label: string, value: string): string {
     return `<div class="prc-dna-field"><span class="prc-dna-label">${esc(label)}</span><span class="prc-dna-val">${esc(value)}</span></div>`;
+}
+
+function toDomSafeId(value: string): string {
+    return value.replace(/[^a-zA-Z0-9_-]+/g, '-');
 }
 
 // ─── Cost Summary (Card-based) ───────────────────────────────────────────────

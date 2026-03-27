@@ -23,6 +23,7 @@ import { DailyStore } from './daily-store';
 import { MonitorStore } from './monitor-store';
 import { findLatestQuotaSessionForPool, groupModelIdsByResetPool } from './pool-utils';
 import { DurableState, StateBucket } from './durable-state';
+import { mergeModelDNAState, PersistedModelDNA, restoreModelDNAState, serializeModelDNAState, type ModelDNAStoreState } from './model-dna-store';
 import type { StorageDiagnostics } from './webview-settings-tab';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
@@ -54,6 +55,7 @@ let durableGlobalState: StateBucket;
 let durableWorkspaceState: StateBucket;
 let durableFileGlobalState: StateBucket;
 let durableFileWorkspaceState: StateBucket;
+let persistedModelDNA: Record<string, PersistedModelDNA> = {};
 
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
@@ -199,6 +201,9 @@ export function activate(context: vscode.ExtensionContext): void {
     const savedGM = durableGlobalState.get<GMTrackerState | undefined>('gmTrackerState', undefined);
     gmTracker = savedGM ? GMTracker.restore(savedGM) : new GMTracker();
     lastGMSummary = durableFileGlobalState.get<GMSummary | null>('gmDetailedSummary', gmTracker.getCachedSummary());
+    persistedModelDNA = restoreModelDNAState(
+        durableGlobalState.get<ModelDNAStoreState | null>('modelDNAState', null),
+    );
     pricingStore = new PricingStore();
     pricingStore.init(durableGlobalState);
     dailyStore = new DailyStore();
@@ -246,7 +251,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Register commands
     context.subscriptions.push(
         vscode.commands.registerCommand('antigravity-context-monitor.showDetails', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, undefined, activityTracker?.getArchives(), activityTracker, lastGMSummary, monitorStore.getGMConversations(), pricingStore, dailyStore, getStorageDiagnostics());
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, undefined, activityTracker?.getArchives(), activityTracker, lastGMSummary, monitorStore.getGMConversations(), pricingStore, dailyStore, getStorageDiagnostics(), persistedModelDNA);
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
@@ -268,7 +273,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'gmdata', activityTracker?.getArchives(), activityTracker, lastGMSummary, monitorStore.getGMConversations(), pricingStore, dailyStore, getStorageDiagnostics());
+            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'gmdata', activityTracker?.getArchives(), activityTracker, lastGMSummary, monitorStore.getGMConversations(), pricingStore, dailyStore, getStorageDiagnostics(), persistedModelDNA);
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.devSimulateReset', () => {
             if (!activityTracker) { return; }
@@ -636,7 +641,7 @@ async function pollContextUsage(): Promise<void> {
             currentUsage = null;
             allTrajectoryUsages = monitorStore.getAll();
             if (isMonitorPanelVisible()) {
-                updateMonitorPanel(null, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics());
+                updateMonitorPanel(null, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics(), persistedModelDNA);
             }
             updateBaselines(trajectories);
             return;
@@ -745,6 +750,11 @@ async function pollContextUsage(): Promise<void> {
                     const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
                     monitorStore.recordGMConversations(gmTracker.getAllConversationData());
                     durableFileGlobalState.update('gmDetailedSummary', detailedSummary);
+                    const mergedDNA = mergeModelDNAState(persistedModelDNA, detailedSummary);
+                    if (mergedDNA.changed) {
+                        persistedModelDNA = mergedDNA.entries;
+                        durableGlobalState.update('modelDNAState', serializeModelDNAState(persistedModelDNA));
+                    }
                     const prevSummary = lastGMSummary;
                     lastGMSummary = detailedSummary;
                     if (!lastGMSummary
@@ -780,7 +790,7 @@ async function pollContextUsage(): Promise<void> {
 
         // 6d. Update WebView panel if visible (single unified refresh point)
         if (isMonitorPanelVisible()) {
-            updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics());
+            updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics(), persistedModelDNA);
         }
 
         // 7. Update baselines for next poll
@@ -802,7 +812,7 @@ function handleLsFailure(message: string): void {
     allTrajectoryUsages = monitorStore.getAll();
     statusBar.showDisconnected(message);
     if (isMonitorPanelVisible()) {
-        updateMonitorPanel(null, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics());
+        updateMonitorPanel(null, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics(), persistedModelDNA);
     }
 
     const backoffMs = Math.min(baseIntervalMs * Math.pow(2, consecutiveFailures - 1), MAX_BACKOFF_INTERVAL_MS);

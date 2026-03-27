@@ -1141,33 +1141,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
     }
     html += `</div>`;
 
-    // Sub-agent token display
-    if (s && s.subAgentTokens && s.subAgentTokens.length > 0) {
-        html += `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4v2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h2V6a4 4 0 0 1 4-4z"/><circle cx="12" cy="15" r="2"/></svg>${tBi('Sub-Agent Tokens', '子智能体消耗')}</h2>`;
-        html += `<div class="act-cards-grid">`;
-        for (const sa of s.subAgentTokens) {
-            const avgInput = sa.count > 0 ? Math.round(sa.inputTokens / sa.count) : 0;
-            const convCount = sa.cascadeIds?.length || 0;
-            const convTags = (sa.cascadeIds || []).map(id =>
-                `<span class="act-tool-tag">${esc(id.slice(0, 8))}</span>`
-            ).join('');
-            html += `
-            <div class="act-model-card act-checkpoint-model">
-                <div class="act-card-header"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><path d="M12 2a4 4 0 0 1 4 4v2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h2V6a4 4 0 0 1 4-4z"/><circle cx="12" cy="15" r="2"/></svg>${esc(sa.displayName)} <span class="act-badge">${tBi(`${sa.count} checkpoints`, `${sa.count} 检查点`)}</span>${sa.ownerModel ? ` <span class="act-badge" style="color:var(--color-text-dim)">→ ${esc(sa.ownerModel)}</span>` : ''}</div>
-                <div class="act-card-body">
-                    <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val">${fmt(sa.inputTokens)}</span></div>
-                    <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(sa.outputTokens)}</span></div>
-                    <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Cache Read', '缓存读取')}</span></span><span class="val">${fmt(sa.cacheReadTokens)}</span></div>
-                    <div class="act-card-row"><span>${ICONS.tool} <span>${tBi('Avg In/CP', '均值输入/CP')}</span></span><span class="val">${fmt(avgInput)}</span></div>${sa.compressionEvents > 0 ? `
-                    <div class="act-card-row"><span><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg> <span>${tBi('Compressions', '压缩次数')}</span></span><span class="val" style="color:var(--color-warning,#f97316)">${sa.compressionEvents}</span></div>` : ''}${convCount > 0 ? `
-                    <div class="act-card-row"><span><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> <span>${tBi('Conversations', '对话')}</span></span><span class="val">${convCount}</span></div>` : ''}
-                </div>
-                ${convTags ? `<div class="act-card-footer">${convTags}</div>` : ''}
-            </div>`;
-        }
-        html += `</div>`;
-    }
-
     return html;
 }
 
