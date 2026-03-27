@@ -451,6 +451,79 @@ describe('QuotaTracker state machine', () => {
             t.processUpdate([makeConfig('M1', 0.5, resetTime)]);
             expect(t.getActiveSessions().length).toBe(1);
         });
+
+        it('should clamp fraction-drop tracking startTime when stale knownWindow would place it in the future', () => {
+            const ctx = createMockContext();
+            const now = new Date();
+            const resetTime = futureReset(now, FIVE_HOURS + 20 * 60 * 1000);
+            const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+
+            ctx.globalState.update('quotaActiveTracking', {
+                'M1': {
+                    state: 'idle',
+                    lastFraction: 1.0,
+                    last100Time: oneHourAgo,
+                    lastResetTime: resetTime,
+                    currentSession: null,
+                    baselineResetTime: resetTime,
+                    idleSince: oneHourAgo,
+                    knownWindowMs: FIVE_HOURS,
+                },
+            });
+
+            const t = new QuotaTracker(ctx);
+            t.setEnabled(true);
+            t.processUpdate([makeConfig('M1', 0.2, resetTime)]);
+
+            const active = t.getActiveSessions();
+            expect(active.length).toBe(1);
+            expect(Date.parse(active[0].startTime)).toBeLessThanOrEqual(now.getTime());
+            expect(active[0].startTime).toBe(oneHourAgo);
+            expect(active[0].snapshots[0].timestamp).toBe(oneHourAgo);
+        });
+
+        it('should sanitize restored active sessions with future start snapshots', () => {
+            const ctx = createMockContext();
+            const now = new Date();
+            const pastSnap = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+            const futureSnap = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
+            const resetTime = futureReset(now, 24 * 60 * 60 * 1000);
+
+            ctx.globalState.update('quotaActiveTracking', {
+                'M1': {
+                    state: 'tracking',
+                    lastFraction: 0.2,
+                    last100Time: pastSnap,
+                    lastResetTime: resetTime,
+                    baselineResetTime: resetTime,
+                    idleSince: pastSnap,
+                    knownWindowMs: 0,
+                    currentSession: {
+                        id: 'M1_test',
+                        modelId: 'M1',
+                        modelLabel: 'M1',
+                        startTime: futureSnap,
+                        snapshots: [
+                            { timestamp: futureSnap, fraction: 1.0, percent: 100, elapsedMs: 0 },
+                            { timestamp: pastSnap, fraction: 0.2, percent: 20, elapsedMs: -1000 },
+                        ],
+                        completed: false,
+                        cycleResetTime: resetTime,
+                    },
+                },
+            });
+
+            const t = new QuotaTracker(ctx);
+            t.setEnabled(true);
+
+            const active = t.getActiveSessions();
+            expect(active.length).toBe(1);
+            expect(active[0].startTime).toBe(pastSnap);
+            expect(active[0].snapshots).toHaveLength(1);
+            expect(active[0].snapshots[0].timestamp).toBe(pastSnap);
+            expect(active[0].snapshots[0].fraction).toBe(0.2);
+            expect(active[0].snapshots[0].elapsedMs).toBe(0);
+        });
     });
 
     // ─── Multi-model ─────────────────────────────────────────────────────────
@@ -542,6 +615,94 @@ describe('QuotaTracker state machine', () => {
             // poolModels should contain all 3 labels, sorted
             expect(sessions[0].poolModels).toBeDefined();
             expect(sessions[0].poolModels).toEqual(['Alpha', 'Beta', 'Charlie']);
+        });
+
+        it('should keep Gemini Flash separate from Gemini Pro even when resetTime matches', () => {
+            const now = new Date();
+            const reset = futureReset(now, FIVE_HOURS);
+
+            tracker.processUpdate([
+                makeConfig('MODEL_PLACEHOLDER_M37', 1.0, reset, 'Gemini 3.1 Pro (High)'),
+                makeConfig('MODEL_PLACEHOLDER_M36', 1.0, reset, 'Gemini 3.1 Pro (Low)'),
+                makeConfig('MODEL_PLACEHOLDER_M47', 1.0, reset, 'Gemini 3 Flash'),
+            ]);
+            tracker.processUpdate([
+                makeConfig('MODEL_PLACEHOLDER_M37', 0.5, reset, 'Gemini 3.1 Pro (High)'),
+                makeConfig('MODEL_PLACEHOLDER_M36', 0.5, reset, 'Gemini 3.1 Pro (Low)'),
+                makeConfig('MODEL_PLACEHOLDER_M47', 0.5, reset, 'Gemini 3 Flash'),
+            ]);
+
+            const sessions = tracker.getActiveSessions();
+            expect(sessions.length).toBe(2);
+            expect(sessions.some(s => s.modelId === 'MODEL_PLACEHOLDER_M37')).toBe(true);
+            expect(sessions.some(s => s.modelId === 'MODEL_PLACEHOLDER_M47')).toBe(true);
+            expect(sessions.find(s => s.modelId === 'MODEL_PLACEHOLDER_M37')?.poolModels).toEqual([
+                'Gemini 3.1 Pro (High)',
+                'Gemini 3.1 Pro (Low)',
+            ]);
+            expect(sessions.find(s => s.modelId === 'MODEL_PLACEHOLDER_M47')?.poolModels).toBeUndefined();
+        });
+
+        it('should keep an already-tracking pool representative stable so passed resetTime can archive correctly', () => {
+            const ctx = createMockContext();
+            const now = new Date();
+            const pastReset = futureReset(now, -1000);
+            const nextReset = futureReset(now, FIVE_HOURS);
+
+            ctx.globalState.update('quotaActiveTracking', {
+                'Z': {
+                    state: 'tracking',
+                    lastFraction: 1.0,
+                    last100Time: new Date(now.getTime() - 2 * 3600e3).toISOString(),
+                    lastResetTime: nextReset,
+                    baselineResetTime: pastReset,
+                    idleSince: new Date(now.getTime() - 2 * 3600e3).toISOString(),
+                    currentSession: {
+                        id: 'Z_test',
+                        modelId: 'Z',
+                        modelLabel: 'Zeta',
+                        poolModels: ['Alpha', 'Zeta'],
+                        startTime: new Date(now.getTime() - 2 * 3600e3).toISOString(),
+                        snapshots: [{
+                            timestamp: new Date(now.getTime() - 2 * 3600e3).toISOString(),
+                            fraction: 1.0,
+                            percent: 100,
+                            elapsedMs: 0,
+                        }],
+                        completed: false,
+                        cycleResetTime: pastReset,
+                    },
+                    knownWindowMs: FIVE_HOURS,
+                },
+                'A': {
+                    state: 'idle',
+                    lastFraction: 1.0,
+                    last100Time: now.toISOString(),
+                    lastResetTime: nextReset,
+                    currentSession: null,
+                    baselineResetTime: nextReset,
+                    idleSince: now.toISOString(),
+                    knownWindowMs: FIVE_HOURS,
+                },
+            });
+
+            const t = new QuotaTracker(ctx);
+            t.setEnabled(true);
+            const cb = vi.fn();
+            t.onQuotaReset = cb as (modelIds: string[]) => void;
+
+            // Without a stable representative, alphabetical sorting would pick Alpha
+            // and the stale Zeta tracking session would be skipped forever.
+            t.processUpdate([
+                makeConfig('A', 1.0, nextReset, 'Alpha'),
+                makeConfig('Z', 1.0, nextReset, 'Zeta'),
+            ]);
+
+            expect(t.getActiveSessions().length).toBe(0);
+            expect(t.getHistory().length).toBe(1);
+            expect(t.getHistory()[0].modelId).toBe('Z');
+            expect(t.getHistory()[0].endTime).toBe(pastReset);
+            expect(cb).toHaveBeenCalledWith(['Z']);
         });
     });
 

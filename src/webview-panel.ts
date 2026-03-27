@@ -11,6 +11,7 @@ import { PricingStore, ModelPricing } from './pricing-store';
 import { GMSummary, GMConversationData } from './gm-tracker';
 import { ICON } from './webview-icons';
 import { buildMonitorSections } from './webview-monitor-tab';
+import { buildModelsTabContent } from './webview-models-tab';
 import { buildProfileContent } from './webview-profile-tab';
 import { buildSettingsContent, StorageDiagnostics } from './webview-settings-tab';
 import { buildHistoryHtml } from './webview-history-tab';
@@ -19,6 +20,7 @@ import { DailyStore } from './daily-store';
 import { getScript } from './webview-script';
 import { getStyles } from './webview-styles';
 import type { StateBucket } from './durable-state';
+import type { PersistedModelDNA } from './model-dna-store';
 
 // ─── Panel State ──────────────────────────────────────────────────────────────
 
@@ -40,6 +42,7 @@ let lastPricingStore: PricingStore | undefined;
 let lastDailyStore: DailyStore | undefined;
 let lastStorageDiagnostics: StorageDiagnostics | undefined;
 let panelDurableState: StateBucket | undefined;
+let lastModelDNA: Record<string, PersistedModelDNA> = {};
 
 /** Provide a durable state bucket for panel-level persistence (zoom, etc.). */
 export function setPanelDurableState(state: StateBucket): void {
@@ -155,6 +158,7 @@ export function showMonitorPanel(
     pricingStore?: PricingStore,
     dailyStore?: DailyStore,
     storageDiagnostics?: StorageDiagnostics,
+    modelDNA?: Record<string, PersistedModelDNA>,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -170,6 +174,7 @@ export function showMonitorPanel(
     if (pricingStore) { lastPricingStore = pricingStore; }
     if (dailyStore) { lastDailyStore = dailyStore; }
     if (storageDiagnostics) { lastStorageDiagnostics = storageDiagnostics; }
+    if (modelDNA) { lastModelDNA = modelDNA; }
 
     if (panel) {
         panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
@@ -386,6 +391,7 @@ export function updateMonitorPanel(
     gmSummary?: GMSummary | null,
     gmConversations?: Record<string, GMConversationData>,
     storageDiagnostics?: StorageDiagnostics,
+    modelDNA?: Record<string, PersistedModelDNA>,
 ): void {
     lastUsage = currentUsage;
     lastAllUsages = allTrajectoryUsages;
@@ -397,6 +403,7 @@ export function updateMonitorPanel(
     if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
     if (gmConversations) { lastGMConversations = gmConversations; }
     if (storageDiagnostics) { lastStorageDiagnostics = storageDiagnostics; }
+    if (modelDNA) { lastModelDNA = modelDNA; }
     if (panel && !isPaused) {
         // Incremental update: send tab contents via postMessage — no DOM teardown
         safePostMessage({
@@ -416,14 +423,15 @@ function buildTabContents(
     tracker?: QuotaTracker,
 ): Record<string, string> {
     return {
-        monitor: buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations),
-        profile: buildProfileContent(userInfo, configs),
+        monitor: buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations, tracker, lastPricingStore),
         gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage),
         pricing: lastPricingStore
             ? buildPricingTabContent(lastGMSummary, lastPricingStore)
             : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`,
-        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth),
+        models: buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA),
         history: buildHistoryHtml(tracker),
+        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth),
+        profile: buildProfileContent(userInfo, configs),
         // Settings tab excluded from incremental updates: its content is mostly static
         // and replacing innerHTML destroys event listeners on toggles, buttons, inputs.
         // Settings is only rendered via full buildHtml() (panel open, language switch, etc.).
@@ -445,15 +453,16 @@ function buildHtml(
     paused = false,
     tracker?: QuotaTracker,
 ): string {
-    const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations);
-    const profileHtml = buildProfileContent(userInfo, configs);
-    const settingsHtml = buildSettingsContent(configs, tracker, lastStorageDiagnostics);
-    const historyHtml = buildHistoryHtml(tracker);
+    const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations, tracker, lastPricingStore);
     const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(lastGMSummary, lastPricingStore)
         : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
+    const modelsHtml = buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA);
+    const historyHtml = buildHistoryHtml(tracker);
     const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth);
+    const profileHtml = buildProfileContent(userInfo, configs);
+    const settingsHtml = buildSettingsContent(configs, tracker, lastStorageDiagnostics);
 
     const currentLang = getLanguage();
     const htmlLang = currentLang === 'zh' ? 'zh-CN' : currentLang === 'en' ? 'en' : 'zh-CN';
@@ -520,7 +529,7 @@ ${getCalendarTabStyles()}
                     ${tBi('would be appreciated.', '就是最大的支持。')}
                     <span class="heart-inline">${ICON.heart}</span>
                 </span>
-                <a class="info-banner-link" href="https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor" target="_blank" rel="noopener noreferrer">
+<a class="info-banner-link" href="https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor" target="_blank" rel="noopener noreferrer">
                     ${ICON.externalLink} GitHub
                 </a>
             </div>
@@ -538,27 +547,25 @@ ${getCalendarTabStyles()}
         <div class="chip-dropdown chip-dropdown-disclaimer" id="chip-disclaimer" hidden>
             <div class="chip-dropdown-content disclaimer-body">
                 ${tBi(
-                    '<p>Data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Items marked with a <strong style="color:var(--color-ok)">GM</strong> badge come from Generator Metadata and have <strong>higher per-call fidelity</strong>. Other metrics (context usage, token estimates) are derived from checkpoint snapshots or character-based heuristics and may have deviations. <strong>All numbers are best-effort approximations.</strong> This extension is an independent, community project with <strong>no official endorsement</strong>. Use this data as a reference only.</p><p style="margin-top:var(--space-2)"><strong>⚠️ Context Window Limitation:</strong> Antigravity (Windsurf) does not utilize the full 1M context window advertised by the underlying model. The effective context is roughly <strong>128K–200K tokens</strong>. The compression warning threshold defaults to <strong>150K</strong> accordingly.</p><p style="margin-top:var(--space-2)"><strong>🌐 Language:</strong> This extension supports <strong>Chinese / English / Bilingual</strong> display. Use the <strong>中文 | EN | 双语</strong> buttons in the top-right corner of this panel to switch.</p>',
-                    '<p>数据通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。标有 <strong style="color:var(--color-ok)">GM</strong> 徽章的数据来自 <strong>Generator Metadata（生成元数据）</strong>，<strong>单次调用精度较高</strong>。其余指标（上下文用量、Token 估算）基于 <strong>Checkpoint（检查点）</strong> 快照或字符启发式计算，可能存在偏差。<strong>所有数值均为尽力计算的近似值。</strong>本扩展为独立社区项目，<strong>未获得官方认可</strong>。请仅将数据作为参考。</p><p style="margin-top:var(--space-2)"><strong>⚠️ 上下文窗口限制：</strong>Antigravity（Windsurf）并未适配底层模型标称的 1M 上下文窗口，实际有效上下文大致为 <strong>128K–200K Token</strong>。压缩警告阈值默认设为 <strong>150K</strong>。</p><p style="margin-top:var(--space-2)"><strong>🌐 语言切换：</strong>本插件支持 <strong>中文 / English / 双语</strong> 显示。请使用面板右上角的 <strong>中文 | EN | 双语</strong> 按钮切换。</p>'
+                    '<p style="margin-bottom:var(--space-2); color:var(--vscode-editorError-foreground);"><strong>⚠️ Disclaimer: This is an unofficial community project and is not affiliated with, endorsed by, or associated with Google. It acts strictly in read-only mode to visualize usage data. Use at your own risk.</strong></p><p>Data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Items marked with a <strong style="color:var(--color-ok)">GM</strong> badge come from Generator Metadata and have <strong>higher per-call fidelity</strong>. Other metrics (context usage, token estimates) are derived from checkpoint snapshots or character-based heuristics and may have deviations. <strong>All numbers are best-effort approximations.</strong> Use this data as a reference only.</p><p style="margin-top:var(--space-2)"><strong>⚠️ Context Window Limitation:</strong> Antigravity (Windsurf) does not utilize the full 1M context window advertised by the underlying model. The effective context is roughly <strong>128K–200K tokens</strong>. The compression warning threshold defaults to <strong>150K</strong> accordingly.</p><p style="margin-top:var(--space-2)"><strong>🌐 Language:</strong> This extension supports <strong>Chinese / English / Bilingual</strong> display. Use the <strong>中文 | EN | 双语</strong> buttons in the top-right corner of this panel to switch.</p>',
+                    '<p style="margin-bottom:var(--space-2); color:var(--vscode-editorError-foreground);"><strong>⚠️ 极客免责声明：本分支扩展为非官方社区开源项目，与 Google 没有任何关联或官方背书。本工具仅以只读模式监控本地内部 API 用于可视化个人日常数据，产生的所有可能影响由使用者自行承担，使用风险自负。</strong></p><p>数据通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。标有 <strong style="color:var(--color-ok)">GM</strong> 徽章的数据来自 <strong>Generator Metadata（生成元数据）</strong>，<strong>单次调用精度较高</strong>。其余指标（上下文用量、Token 估算）基于 <strong>Checkpoint（检查点）</strong> 快照或字符启发式计算，可能存在偏差。<strong>所有数值均为尽力计算的近似值。</strong>请仅将数据作为参考。</p><p style="margin-top:var(--space-2)"><strong>⚠️ 上下文窗口限制：</strong>Antigravity（Windsurf）并未适配底层模型标称的 1M 上下文窗口，实际有效上下文大致为 <strong>128K–200K Token</strong>。压缩警告阈值默认设为 <strong>150K</strong>。</p><p style="margin-top:var(--space-2)"><strong>🌐 语言切换：</strong>本插件支持 <strong>中文 / English / 双语</strong> 显示。请使用面板右上角的 <strong>中文 | EN | 双语</strong> 按钮切换。</p>'
                 )}
             </div>
         </div>
         <nav class="tab-bar">
         <div class="tab-slider"></div>
         <button class="tab-btn active" data-tab="monitor" data-color="blue">${ICON.chart} ${tBi('Monitor', '监控')}</button>
-        <button class="tab-btn" data-tab="profile" data-color="green">${ICON.user} ${tBi('Profile', '个人')}</button>
         <button class="tab-btn" data-tab="gmdata" data-color="orange">${ICON.bolt} ${tBi('GM Data', 'GM 数据')}</button>
-        <button class="tab-btn" data-tab="pricing" data-color="purple"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.315 0-1.667-1.104-2.512-3.233-3.037l-.445-.107V3.63c1.213.183 1.968.91 2.141 1.88h1.762c-.112-1.796-1.519-2.965-3.455-3.124V1.036H8.59v1.383C6.408 2.583 5.008 3.9 5.003 5.54c0 1.592 1.063 2.457 3.146 2.963l.399.1v3.979c-1.29-.183-2.113-.879-2.275-1.8H4zm4.586-4.34C7.494 6.137 6.94 5.695 6.94 5.092c0-.66.52-1.183 1.575-1.37v2.72h.071zm.889 2.283c1.335.36 1.942.846 1.942 1.548 0 .781-.633 1.35-1.823 1.493V8.851l-.119-.127z"/></svg> ${tBi('Pricing', '价格')}</button>
+        <button class="tab-btn" data-tab="pricing" data-color="purple"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.315 0-1.667-1.104-2.512-3.233-3.037l-.445-.107V3.63c1.213.183 1.968.91 2.141 1.88h1.762c-.112-1.796-1.519-2.965-3.455-3.124V1.036H8.59v1.383C6.408 2.583 5.008 3.9 5.003 5.54c0 1.592 1.063 2.457 3.146 2.963l.399.1v3.979c-1.29-.183-2.113-.879-2.275-1.8H4zm4.586-4.34C7.494 6.137 6.94 5.695 6.94 5.092c0-.66.52-1.183 1.575-1.37v2.72h.071zm.889 2.283c1.335.36 1.942.846 1.942 1.548 0 .781-.633 1.35-1.823 1.493V8.851l-.119-.127z"/></svg> ${tBi('Cost', '成本')}</button>
+        <button class="tab-btn" data-tab="models" data-color="green">${ICON.bolt} ${tBi('Models', '模型')}</button>
+        <button class="tab-btn" data-tab="history" data-color="yellow">${ICON.timeline} ${tBi('Quota Tracking', '额度追踪')}</button>
         <button class="tab-btn" data-tab="calendar" data-color="cyan"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/></svg> ${tBi('Calendar', '日历')}</button>
-        <button class="tab-btn" data-tab="history" data-color="yellow">${ICON.timeline} ${tBi('Quota', '额度')}</button>
+        <button class="tab-btn" data-tab="profile" data-color="gray">${ICON.user} ${tBi('Profile', '个人')}</button>
         <button class="tab-btn" data-tab="settings" data-color="gray">${ICON.shield} ${tBi('Settings', '设置')}</button>
     </nav>
     </div>
     <div class="tab-pane active" id="tab-monitor">
         ${monitorHtml}
-    </div>
-    <div class="tab-pane" id="tab-profile">
-        ${profileHtml}
     </div>
     <div class="tab-pane" id="tab-gmdata">
         ${gmDataHtml}
@@ -566,11 +573,17 @@ ${getCalendarTabStyles()}
     <div class="tab-pane" id="tab-pricing">
         ${pricingHtml}
     </div>
-    <div class="tab-pane" id="tab-calendar">
-        ${calendarHtml}
+    <div class="tab-pane" id="tab-models">
+        ${modelsHtml}
     </div>
     <div class="tab-pane" id="tab-history">
         ${historyHtml}
+    </div>
+    <div class="tab-pane" id="tab-calendar">
+        ${calendarHtml}
+    </div>
+    <div class="tab-pane" id="tab-profile">
+        ${profileHtml}
     </div>
     <div class="tab-pane" id="tab-settings">
         ${settingsHtml}

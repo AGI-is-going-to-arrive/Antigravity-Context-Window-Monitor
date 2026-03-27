@@ -6,7 +6,7 @@
 // TRACKING: recording snapshots until cycle ends (resetTime passes or shifts)
 
 import * as vscode from 'vscode';
-import { ModelConfig } from './models';
+import { getQuotaPoolKey, ModelConfig } from './models';
 import type { StateBucket } from './durable-state';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -81,6 +81,7 @@ const ELAPSED_THRESHOLD_MS = 10 * 60 * 1000;     // 10 min elapsed in cycle → 
 const OBSERVATION_WINDOW_MS = 10 * 60 * 1000;    // 10 min stable resetTime → drift-based detect
 const RESET_DRIFT_TOLERANCE_MS = 3 * 60 * 1000;  // 3 min — API variance threshold
 const CYCLE_END_JUMP_MS = 30 * 60 * 1000;        // 30 min — resetTime jump = new cycle
+const FUTURE_TOLERANCE_MS = 2 * 60 * 1000;       // 2 min — tolerate small clock drift only
 
 function getUsableKnownWindowMs(knownWindowMs: number, currentTimeToResetMs: number): number {
     if (knownWindowMs <= 0 || currentTimeToResetMs <= 0) {
@@ -122,25 +123,40 @@ export class QuotaTracker {
         const nowMs = nowDate.getTime();
         const resetModels: string[] = [];
 
-        // ── Pool deduplication: group models sharing the same resetTime ──
-        // Same-pool models (e.g., Claude Sonnet/Opus/GPT-OSS) share quota and
-        // identical resetTime. Only track one representative per pool to avoid
-        // cluttering history with duplicate sessions.
-        const poolByResetTime = new Map<string, ModelConfig[]>();
+        for (const [modelId, ms] of this.modelStates.entries()) {
+            this.sanitizeModelState(modelId, ms, nowDate);
+        }
+
+        // ── Pool deduplication: group models by stable quota-pool key ──
+        // Known pools are model-family based (e.g. Gemini Pro High/Low, Claude+OSS),
+        // not merely "same resetTime". Different independent pools can refresh at the
+        // same moment, so resetTime equality alone is not sufficient.
+        const poolByKey = new Map<string, ModelConfig[]>();
         for (const c of configs) {
-            const rt = c.quotaInfo?.resetTime;
-            if (!rt) { continue; }
-            let pool = poolByResetTime.get(rt);
-            if (!pool) { pool = []; poolByResetTime.set(rt, pool); }
+            const key = getQuotaPoolKey(c.model, c.quotaInfo?.resetTime);
+            let pool = poolByKey.get(key);
+            if (!pool) { pool = []; poolByKey.set(key, pool); }
             pool.push(c);
         }
         // For multi-model pools, pick the representative: prefer lowest fraction
         // (most usage evidence), then alphabetical label as tie-break.
         const poolSkip = new Set<string>();
         const poolLabelsForModel = new Map<string, string[]>();
-        for (const pool of poolByResetTime.values()) {
+        for (const pool of poolByKey.values()) {
             if (pool.length <= 1) { continue; }
             pool.sort((a, b) => {
+                const aTracking = this.modelStates.get(a.model)?.state === 'tracking'
+                    && !!this.modelStates.get(a.model)?.currentSession;
+                const bTracking = this.modelStates.get(b.model)?.state === 'tracking'
+                    && !!this.modelStates.get(b.model)?.currentSession;
+                if (aTracking !== bTracking) { return aTracking ? -1 : 1; }
+
+                const aStart = this.modelStates.get(a.model)?.currentSession?.startTime || '';
+                const bStart = this.modelStates.get(b.model)?.currentSession?.startTime || '';
+                if (aTracking && bTracking && aStart !== bStart) {
+                    return aStart.localeCompare(bStart);
+                }
+
                 const fa = a.quotaInfo?.remainingFraction ?? 1;
                 const fb = b.quotaInfo?.remainingFraction ?? 1;
                 if (fa !== fb) { return fa - fb; } // lowest fraction first
@@ -252,9 +268,15 @@ export class QuotaTracker {
                         const timeToResetMs = curResetMs - nowMs;
                         const knownWindowMs = getUsableKnownWindowMs(ms.knownWindowMs, timeToResetMs);
                         const observedFullBeforeDrop = ms.lastFraction >= 1.0;
-                        const startTime = (knownWindowMs > 0 && curResetMs > 0)
+                        const startTimeCandidate = (knownWindowMs > 0 && curResetMs > 0)
                             ? new Date(curResetMs - knownWindowMs).toISOString()
                             : (observedFullBeforeDrop ? ms.last100Time : now);
+                        const startTime = this.sanitizeTrackingStartTime(
+                            startTimeCandidate,
+                            observedFullBeforeDrop ? ms.last100Time : now,
+                            resetTimeStr,
+                            nowDate,
+                        );
                         const initialFraction = (knownWindowMs > 0 || observedFullBeforeDrop) ? 1.0 : fraction;
                         this.startTracking(ms, modelId, config.label, startTime, resetTimeStr, initialFraction, poolLabelsForModel.get(modelId));
                         // Add the current fraction only when it differs from the initial snapshot.
@@ -446,6 +468,98 @@ export class QuotaTracker {
         this.trimHistory();
     }
 
+    private sanitizeTrackingStartTime(
+        candidateIso: string,
+        fallbackIso: string,
+        resetTimeIso: string,
+        now: Date,
+    ): string {
+        const nowMs = now.getTime();
+        const candidateMs = Date.parse(candidateIso);
+        const fallbackMs = Date.parse(fallbackIso);
+        const resetMs = resetTimeIso ? Date.parse(resetTimeIso) : 0;
+
+        const candidateValid = !isNaN(candidateMs)
+            && candidateMs <= nowMs + FUTURE_TOLERANCE_MS
+            && (!resetMs || candidateMs <= resetMs);
+        if (candidateValid) {
+            return new Date(candidateMs).toISOString();
+        }
+
+        const fallbackValid = !isNaN(fallbackMs)
+            && fallbackMs <= nowMs + FUTURE_TOLERANCE_MS
+            && (!resetMs || fallbackMs <= resetMs);
+        if (fallbackValid) {
+            return new Date(fallbackMs).toISOString();
+        }
+
+        return now.toISOString();
+    }
+
+    private sanitizeModelState(modelId: string, ms: ModelState, now: Date): void {
+        const nowMs = now.getTime();
+        const sanitizeIso = (iso: string, fallback = now.toISOString()): string => {
+            const parsed = Date.parse(iso);
+            if (isNaN(parsed)) { return fallback; }
+            return new Date(parsed).toISOString();
+        };
+
+        ms.last100Time = sanitizeIso(ms.last100Time);
+        ms.idleSince = sanitizeIso(ms.idleSince, ms.last100Time);
+        ms.lastResetTime = ms.lastResetTime ? sanitizeIso(ms.lastResetTime, '') : '';
+        ms.baselineResetTime = ms.baselineResetTime ? sanitizeIso(ms.baselineResetTime, ms.lastResetTime) : ms.lastResetTime;
+
+        if (!ms.currentSession) { return; }
+
+        const originalSnapshots = Array.isArray(ms.currentSession.snapshots) ? ms.currentSession.snapshots : [];
+        const snapshots = originalSnapshots
+            .filter(s => Number.isFinite(s.fraction) && Number.isFinite(s.percent))
+            .map(s => {
+                const parsed = Date.parse(s.timestamp);
+                return Number.isNaN(parsed)
+                    ? null
+                    : { ...s, timestamp: new Date(parsed).toISOString(), elapsedMs: Math.max(0, s.elapsedMs || 0) };
+            })
+            .filter((s): s is QuotaSnapshot => !!s)
+            .filter(s => Date.parse(s.timestamp) <= nowMs + FUTURE_TOLERANCE_MS)
+            .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+
+        if (snapshots.length === 0) {
+            ms.currentSession = null;
+            ms.state = 'idle';
+            ms.lastFraction = 1.0;
+            ms.last100Time = now.toISOString();
+            ms.idleSince = now.toISOString();
+            return;
+        }
+
+        snapshots[0].elapsedMs = 0;
+        for (let i = 1; i < snapshots.length; i++) {
+            const prevMs = Date.parse(snapshots[i - 1].timestamp);
+            const currMs = Date.parse(snapshots[i].timestamp);
+            snapshots[i].elapsedMs = Math.max(0, currMs - prevMs);
+        }
+
+        const earliestSnapshot = snapshots[0].timestamp;
+        ms.currentSession.snapshots = snapshots;
+        ms.currentSession.startTime = this.sanitizeTrackingStartTime(
+            ms.currentSession.startTime,
+            earliestSnapshot,
+            ms.currentSession.cycleResetTime || ms.lastResetTime,
+            now,
+        );
+        if (Date.parse(ms.currentSession.startTime) > Date.parse(earliestSnapshot)) {
+            ms.currentSession.startTime = earliestSnapshot;
+        }
+        if (ms.currentSession.cycleResetTime) {
+            ms.currentSession.cycleResetTime = sanitizeIso(ms.currentSession.cycleResetTime, ms.lastResetTime);
+        }
+        ms.lastFraction = snapshots[snapshots.length - 1].fraction;
+        if (ms.state === 'tracking' && !ms.currentSession.id) {
+            ms.currentSession.id = `${modelId}_${Date.now()}`;
+        }
+    }
+
     private trimHistory(): void {
         if (this.history.length > this.maxHistory) {
             this.history = this.history.slice(0, this.maxHistory);
@@ -498,6 +612,7 @@ export class QuotaTracker {
                 if (ms.currentSession && !ms.currentSession.cycleResetTime) {
                     ms.currentSession.cycleResetTime = ms.lastResetTime;
                 }
+                this.sanitizeModelState(modelId, ms, new Date());
                 this.modelStates.set(modelId, ms);
             }
         }

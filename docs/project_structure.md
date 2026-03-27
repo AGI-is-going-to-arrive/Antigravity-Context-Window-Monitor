@@ -20,12 +20,13 @@ antigravity-context-monitor/
 │   ├── statusbar.ts              # 状态栏 UI（StatusBarManager）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
 │   ├── monitor-store.ts          # 监控页持久化：按对话保存 ContextUsage + GM 会话快照
-│   ├── pool-utils.ts             # 配额池工具：按 resetTime 分组 / 扩池 / 查找最近 quota session
-│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（per-model knownWindowMs + 同池去重）
+│   ├── pool-utils.ts             # 配额池工具：按稳定 pool key 分组 / 扩池 / 查找最近 quota session
+│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（per-model knownWindowMs + 稳定池代表）
 │   ├── reset-time.ts             # 重置时间格式化工具（倒计时 + 绝对日期时间）
 │   ├── activity-tracker.ts       # 模型活动追踪（推理、工具、Token、池级归档）
 │   ├── gm-tracker.ts             # GM 数据层：RPC + 解析 + 聚合 + 缓存 + 基线
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算
+│   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost
 │   ├── webview-panel.ts          # WebView 面板框架（标签切换 + 消息通信）
 │   ├── webview-styles.ts         # WebView 面板 CSS 样式
@@ -33,11 +34,12 @@ antigravity-context-monitor/
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标
 │   ├── webview-monitor-tab.ts    # Monitor 标签页 HTML（支持 GM 快照回退）
+│   ├── webview-models-tab.ts     # Models 标签页 HTML（默认模型 + 模型配额 + 模型信息）
 │   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含持久化状态诊断）
-│   ├── webview-profile-tab.ts    # Profile 标签页 HTML
+│   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队）
 │   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
 │   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据）
-│   ├── pricing-panel.ts          # Pricing 标签页 HTML
+│   ├── pricing-panel.ts          # Cost 标签页 HTML（费用分析 + 模型信息卡片构建器）
 │   ├── webview-calendar-tab.ts   # Calendar 标签页 HTML
 │   ├── i18n.ts                   # 国际化：语言模式、翻译表、偏好持久化
 │   └── images/                   # README 截图资源
@@ -48,6 +50,7 @@ antigravity-context-monitor/
 │   ├── durable-state.test.ts     # durable-state 单元测试
 │   ├── activity-tracker.test.ts  # activity-tracker 单元测试（跨语言归一化、planner step 修复）
 │   ├── gm-tracker.test.ts        # gm-tracker 单元测试（含跨语言恢复回归）
+│   ├── model-dna-store.test.ts   # model-dna-store 单元测试（模型信息持久化）
 │   ├── monitor-store.test.ts     # monitor-store 单元测试
 │   ├── pool-utils.test.ts        # pool-utils 单元测试
 │   ├── quota-tracker.test.ts     # quota-tracker 单元测试（含 0% 回弹恢复）
@@ -55,6 +58,7 @@ antigravity-context-monitor/
 │   ├── statusbar.test.ts         # statusbar 单元测试
 │   └── tracker.test.ts           # tracker 单元测试
 ├── docs/
+│   ├── archive_gm_troubleshooting.md  # GM / 归档排障地图
 │   ├── technical_implementation.md   # 技术实现指南
 │   └── project_structure.md          # 本文件
 ├── out/                          # tsc 编译输出（插件运行时代码）
@@ -85,7 +89,7 @@ Extension lifecycle management hub.
 | Activity 统一轮询 / Unified activity poll | Activity 数据处理已合并至 `pollContextUsage()` 主循环，复用已获取的 trajectory 缓存，消除重复 RPC 调用 |
 | 会话选择 / Session selection | 按 RUNNING → 当前 tracked cascade 的 stepCount 变化 → 新会话 → 最近修改 的优先级选当前对话，已建立的当前会话会尽量保持稳定不被其他对话抢占 |
 | 额度池归档 / Pool archival | 使用 `groupModelIdsByResetPool()` 将一次 reset 回调拆成多个共享额度池，逐池归档 Activity + GM + Pricing + Calendar |
-| 持久化协调 / Persistence orchestration | 协调 `durable-state.ts`、`monitor-store.ts`、`activity-tracker.ts`、`gm-tracker.ts`、`daily-store.ts` 的恢复与写回 |
+| 持久化协调 / Persistence orchestration | 协调 `durable-state.ts`、`monitor-store.ts`、`activity-tracker.ts`、`gm-tracker.ts`、`daily-store.ts`、`model-dna-store.ts` 的恢复与写回 |
 | 开发命令 / Dev commands | `devSimulateReset`、`devClearGM`、`devPersistActivity` |
 
 ---
@@ -136,9 +140,9 @@ Core data processing module: trajectory listing, token computation, context usag
 
 ### 🤖 models.ts — 模型配置与归一化
 
-模型上下文限额、显示名称（i18n 感知）以及 `ModelConfig`、`UserStatusInfo` 等核心接口定义。v1.13.8 新增 `normalizeModelDisplayName()`（EN/ZH/双语显示名归一到当前语言唯一显示名）和 `resolveModelId()`（任意显示名 → 内部 modelId），为 Activity / GM / Quota 跨模块归一化提供统一锚点。
+模型上下文限额、显示名称（i18n 感知）以及 `ModelConfig`、`UserStatusInfo` 等核心接口定义。v1.13.8 新增 `normalizeModelDisplayName()`（EN/ZH/双语显示名归一到当前语言唯一显示名）和 `resolveModelId()`（任意显示名 → 内部 modelId），为 Activity / GM / Quota 跨模块归一化提供统一锚点；后续又补了 `getQuotaPoolKey()`，显式固定已知模型的共享额度池，避免再靠 `resetTime` 猜池。
 
-Model context limits, display names (i18n-aware), and core interfaces. v1.13.8 adds `normalizeModelDisplayName()` (unifies EN/ZH/bilingual names to one canonical current-language name) and `resolveModelId()` (any display name → internal modelId), serving as the unified normalization anchor across Activity / GM / Quota modules.
+Model context limits, display names (i18n-aware), and core interfaces. v1.13.8 adds `normalizeModelDisplayName()` (unifies EN/ZH/bilingual names to one canonical current-language name) and `resolveModelId()` (any display name → internal modelId), serving as the unified normalization anchor across Activity / GM / Quota modules; later `getQuotaPoolKey()` explicitly pins known shared-quota pools so the extension no longer guesses pools purely from `resetTime`.
 
 ---
 
@@ -183,9 +187,9 @@ Persists `ContextUsage` and `GMConversationData` per conversation for the Monito
 
 ### 🧩 pool-utils.ts — 配额池工具
 
-围绕 `quotaInfo.resetTime` 提供共享配额池的辅助操作。
+围绕 `models.ts` 中的稳定 pool key 提供共享配额池的辅助操作；未知未来模型才回退到 `resetTime` / `modelId`。
 
-Helpers for shared quota-pool operations based on `quotaInfo.resetTime`.
+Helpers for shared quota-pool operations based on stable pool keys from `models.ts`; unknown future models fall back to `resetTime` / `modelId`.
 
 | 函数 / Function | 说明 / Description |
 |---|---|
@@ -197,9 +201,9 @@ Helpers for shared quota-pool operations based on `quotaInfo.resetTime`.
 
 ### ⚡ quota-tracker.ts — 额度消费追踪
 
-状态机追踪每个模型的额度消费过程（`idle→tracking→(archive)→idle`），并按共享 resetTime 自动去重同池模型。v1.13.7 移除 `done` 状态，引入 `cycleResetTime` 和 `isCycleEnded()`。v1.13.8 移除全局 `maxTimeToResetMs` 跨模型推算，改为 per-model `knownWindowMs`（每个模型只信任自己学到的完整窗口长度），新增 `getUsableKnownWindowMs()` 安全校验函数，并修复 0% 额度锁死 bug（`completed` 标记可逆）。
+状态机追踪每个模型的额度消费过程（`idle→tracking→(archive)→idle`），并按稳定 pool key 去重同池模型。v1.13.7 移除 `done` 状态，引入 `cycleResetTime` 和 `isCycleEnded()`。v1.13.8 移除全局 `maxTimeToResetMs` 跨模型推算，改为 per-model `knownWindowMs`（每个模型只信任自己学到的完整窗口长度），新增 `getUsableKnownWindowMs()` 安全校验函数，并修复 0% 额度锁死 bug（`completed` 标记可逆）。后续补丁又加入“已在 tracking 的池代表优先保留”和脏 active session 自愈，避免跨轮询代表切换导致归档卡死。
 
-State machine tracking per-model quota consumption (`idle→tracking→(archive)→idle`) with shared-pool deduplication. v1.13.7 removes `done` state, adds `cycleResetTime` and `isCycleEnded()`. v1.13.8 replaces global `maxTimeToResetMs` cross-model inference with per-model `knownWindowMs`, adds `getUsableKnownWindowMs()` safety check, and fixes the 0% lock-dead bug (completed marker is now reversible).
+State machine tracking per-model quota consumption (`idle→tracking→(archive)→idle`) with stable pool-key deduplication. v1.13.7 removes `done` state, adds `cycleResetTime` and `isCycleEnded()`. v1.13.8 replaces global `maxTimeToResetMs` cross-model inference with per-model `knownWindowMs`, adds `getUsableKnownWindowMs()` safety check, and fixes the 0% lock-dead bug (completed marker is now reversible). Later patches also preserve the active pool representative across polls and self-heal dirty active sessions.
 
 ---
 
@@ -262,9 +266,26 @@ Unified "GM Data" tab merging Activity and GM precise data.
 
 ---
 
-### 💎 pricing-panel.ts — Pricing 标签页渲染
+### 🧬 model-dna-store.ts — 模型信息持久化
 
-生成 Pricing 标签页的完整 HTML。
+持久化跨周期保留的模型静态信息。当前周期的调用 / 步骤 / 积分等动态统计仍来自 `GMSummary`，但 `responseModel`、provider、completionConfig、MIME 能力线索等静态画像在归档后不会直接消失。
+
+Persists model-level static information across quota cycles. Dynamic counters such as calls / steps / credits still come from the current-cycle `GMSummary`, while static model traits survive resets.
+
+| 函数 / Function | 说明 / Description |
+|---|---|
+| `restoreModelDNAState()` | 恢复并归并历史模型信息，优先按稳定 `modelId` 去重 |
+| `mergeModelDNAState()` | 将本轮 `GMSummary.modelBreakdown` 合并进持久化快照 |
+| `serializeModelDNAState()` | 将持久化模型信息写回 durable state |
+| `getModelDNAKey()` | 统一模型信息的稳定 key，避免显示名 / responseModel 混用拆卡 |
+
+---
+
+### 💎 pricing-panel.ts — Cost 标签页渲染
+
+生成 Cost 标签页的完整 HTML，同时导出 `buildModelDNACards()` 供 Models 标签页复用「模型信息」卡片。
+
+Builds the full Cost tab HTML and also exports `buildModelDNACards()` for the Models tab.
 
 ---
 
@@ -282,19 +303,20 @@ Unified "GM Data" tab merging Activity and GM precise data.
 
 ### 🖥️ webview-panel.ts — WebView 面板框架
 
-面板总框架：标签切换（Monitor / Profile / GM Data / Pricing / Calendar / Quota Tracking / Settings）、消息通信。各标签内容由独立模块生成。
+面板总框架：标签切换（Monitor / GM Data / Cost / Models / Quota Tracking / Calendar / Profile / Settings）、消息通信。各标签内容由独立模块生成。
 
 | 模块 / Module | 职责 / Responsibility |
 |---|---|
 | `webview-monitor-tab.ts` | Monitor 标签页 HTML；支持实时 `gmSummary` 与 `monitor-store` GM 快照双数据源 |
+| `webview-models-tab.ts` | Models 标签页 HTML；聚合默认模型、模型配额、模型信息 |
 | `webview-settings-tab.ts` | Settings 标签页 HTML；含持久化状态诊断卡片 |
 | `webview-script.ts` | 客户端 JS；处理设置、状态文件按钮、开发按钮、增量刷新重绑定 |
 | `webview-styles.ts` | CSS 样式（Design Token 体系） |
 | `webview-icons.ts` | 内联 SVG 图标 |
 | `activity-panel.ts` | GM Data 标签页 HTML |
-| `pricing-panel.ts` | Pricing 标签页 HTML |
+| `pricing-panel.ts` | Cost 标签页 HTML；同时提供模型信息卡片构建器 |
 | `webview-calendar-tab.ts` | Calendar 标签页 HTML |
-| `webview-profile-tab.ts` | Profile 标签页 HTML |
+| `webview-profile-tab.ts` | Profile 标签页 HTML；现主要承载账户、计划限制、功能与团队信息 |
 | `webview-history-tab.ts` | Quota Tracking 标签页 HTML |
 
 ---
@@ -350,6 +372,9 @@ extension.ts (入口 + 调度)
 │   └── models.ts
 ├── pricing-store.ts      ← 定价数据层
 │   └── gm-tracker.ts (types)
+├── model-dna-store.ts    ← 模型信息持久化
+│   ├── models.ts
+│   └── gm-tracker.ts (types)
 ├── daily-store.ts        ← 日历数据层
 │   ├── activity-tracker.ts (types)
 │   └── gm-tracker.ts (types)
@@ -361,8 +386,10 @@ extension.ts (入口 + 调度)
     ├── activity-tracker.ts
     ├── gm-tracker.ts
     ├── pricing-store.ts
+    ├── model-dna-store.ts (types)
     ├── daily-store.ts
     ├── webview-monitor-tab.ts
+    ├── webview-models-tab.ts
     ├── webview-profile-tab.ts
     ├── webview-settings-tab.ts
     ├── activity-panel.ts
@@ -386,16 +413,16 @@ Antigravity Language Server (localhost)
         ▼
     rpc-client.ts ────► tracker.ts ────► extension.ts (轮询中心)
         │                                     │
-        │             ┌───────────────┬───────┼───────────────┐
-        │             ▼               ▼       ▼               ▼
-        │    activity-tracker.ts  monitor-store.ts  quota-tracker.ts  gm-tracker.ts
-        │             │               │       │               │
-        │             │               │       │          pricing-store.ts
-        │             │               │       │               │
-        │             │               │       ▼               │
-        │             │               │  onQuotaReset         │
-        │             ▼               │   callback            ▼
-        │    activity-panel.ts ◄──────┴────────────── pricing-panel.ts
+        │             ┌───────────────┬───────┬───────────────┬────────────────┐
+        │             ▼               ▼       ▼               ▼                ▼
+        │    activity-tracker.ts  monitor-store.ts  quota-tracker.ts  gm-tracker.ts  model-dna-store.ts
+        │             │               │       │               │                │
+        │             │               │       │          pricing-store.ts      │
+        │             │               │       │               │                │
+        │             │               │       ▼               │                │
+        │             │               │  onQuotaReset         │                │
+        │             ▼               │   callback            ▼                │
+        │    activity-panel.ts ◄──────┴────────────── pricing-panel.ts         │
         │             │
         ▼             ▼
     statusbar.ts   webview-panel.ts ─────► daily-store.ts
@@ -446,17 +473,18 @@ npx vsce package --no-dependencies
 
 | 测试文件 / Test File | 测试数 | 覆盖范围 / Coverage |
 |---|---|---|
-| `discovery.test.ts` | 22 | `buildExpectedWorkspaceId`（含百分号编码） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / `extractPort` / `extractPortFromNetstat` / `extractPortFromSs` / `isWSL` / `selectMatchingProcessLine`（6 分支测试） |
+| `discovery.test.ts` | 26 | `buildExpectedWorkspaceId`（含百分号编码） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / `extractPort` / `extractPortFromNetstat` / `extractPortFromSs` / `isWSL` / `selectMatchingProcessLine`（6 分支测试） |
 | `tracker.test.ts` | 22 | `normalizeUri`（file / vscode-remote / URL 解码）/ `estimateTokensFromText`（ASCII / 非 ASCII / 混合）/ `processSteps()` 纯函数 |
 | `statusbar.test.ts` | 11 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 |
-| `quota-tracker.test.ts` | 29 | 状态机转换 / 额度重置检测 / 批量回调 / 同池去重 / 周期结束归档 / legacy done 迁移 / 0% 回弹恢复 |
-| `pool-utils.test.ts` | 3 | 配额池扩展 / 分组 / quota session 匹配 |
+| `quota-tracker.test.ts` | 33 | 状态机转换 / 额度重置检测 / 批量回调 / 同池去重 / 周期结束归档 / legacy done 迁移 / 0% 回弹恢复 / 稳定池代表 / 脏 active session 自愈 |
+| `pool-utils.test.ts` | 4 | 配额池扩展 / 分组 / quota session 匹配 / 已知模型固定池规则 |
 | `monitor-store.test.ts` | 1 | Monitor 快照与 GM 会话快照恢复 |
-| `gm-tracker.test.ts` | 2 | `filterGMSummaryByModels()` 按模型池过滤 / 跨语言恢复回归 |
+| `gm-tracker.test.ts` | 3 | `filterGMSummaryByModels()` 按模型池过滤 / 跨语言恢复回归 / 历史残留 GM 修理 |
 | `activity-tracker.test.ts` | 4 | planner step 延迟补全 / 短对话恢复自愈 / stepIndex 重排清理 / 跨语言模型桶合并 |
+| `model-dna-store.test.ts` | 1 | 模型静态信息跨周期持久化 |
 | `reset-time.test.ts` | 3 | 倒计时格式化 / 绝对日期时间格式化 / 上下文拼接格式 |
 | `durable-state.test.ts` | 1 | 外部持久化文件创建 / fallback 迁移 / 重装恢复 |
 
-共 102 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 109 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-102 total tests, using `__mocks__/vscode.ts` to mock VS Code API.
+109 total tests, using `__mocks__/vscode.ts` to mock VS Code API.

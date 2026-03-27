@@ -1,5 +1,78 @@
 # 变更日志 / Changelog
 
+## [1.13.9] - 2026-03-27
+
+### 🐛 Fixed / 修复
+
+- **Quota Pool Representative Stability / 额度池代表稳定性**: Fixed a pool-dedup edge case where an already-tracking representative model could be replaced by another member of the same shared `resetTime` pool on a later poll. Once replaced, the old representative stopped receiving cycle-end checks, so a session could remain stuck in "tracking" even after its `cycleResetTime` had already passed. Pool selection now prefers members that are already actively tracking, ensuring reset archival still fires on time.
+  修复共享 `resetTime` 额度池中的代表模型切换问题：旧逻辑会在后续轮询中让同池其他成员抢走代表位，导致已经处于 tracking 的旧代表不再执行周期结束判定，进而出现 `cycleResetTime` 已经过了却仍卡在“追踪中”的情况。现在额度池会优先保留已经处于活跃追踪的成员作为代表，确保到期后仍能正常归档。
+
+- **Quota Active-Session Sanitization / 额度活跃会话自愈**: Hardened restore and tracking-start logic against dirty persisted sessions. The tracker now clamps future `startTime` values, drops future/invalid snapshots, re-sorts restored snapshots, and recomputes elapsed durations so corrupted sessions no longer render impossible timelines such as `0s` duration with older snapshots beneath them.
+  强化额度活跃会话的恢复与建档自愈逻辑。追踪器现在会钳制未来 `startTime`、丢弃未来或无效快照、重新排序恢复出来的快照，并重算持续时间，避免脏状态继续渲染出类似“顶部 0s、下面却挂着更早快照”的不可能时间线。
+
+- **Explicit Quota-Pool Mapping / 显式额度池映射**: Replaced the old “same resetTime means same pool” assumption with explicit known pool rules. Gemini Pro High/Low now share one pool, Gemini Flash is tracked independently, and Claude Sonnet / Claude Opus / GPT-OSS remain in the same shared pool. This prevents independent models that happen to refresh at the same moment from being incorrectly archived together.
+  用显式已知池规则替代了旧的“`resetTime` 相同就视为同池”的假设。现在 Gemini Pro High/Low 共池，Gemini Flash 独立追踪，Claude Sonnet / Claude Opus / GPT-OSS 继续共用同一池。这样就不会再把“只是恰好同一时刻刷新”的独立模型误归档到一起。
+
+- **Targeted GM Residue Repair / 定向 GM 残留修复**: Startup-time GM repair is now limited to clearly provable historical contamination only. The extension only prunes GM calls when old quota history explicitly shows a session’s recorded `poolModels` contained models that do not belong to that model’s real pool, avoiding accidental removal of valid current-cycle counts before archive.
+  启动时的 GM 修理逻辑已收窄为“仅处理有明确证据的历史污染”。只有当旧 quota 历史明确记录某条 session 的 `poolModels` 混入了不属于该真实额度池的模型时，扩展才会剪掉对应的旧 GM 调用，避免在归档前误清正常的当前周期计数。
+
+### ✅ Tests / 测试
+
+- Expanded `quota-tracker.test.ts` again to cover shared-pool representative stability and dirty active-session sanitization, including the case where a previously tracking pool member must remain the representative so `resetTime`-based archival still triggers correctly.
+  继续扩展 `quota-tracker.test.ts`，覆盖共享额度池代表稳定性和脏 active session 自愈，特别是“已在 tracking 的池成员必须继续保留代表位，才能正确触发基于 `resetTime` 的归档”这一场景。
+
+- Added pool-regression coverage so Gemini Flash and Gemini Pro remain separate even when their `resetTime` happens to be identical, and expanded GM tracker tests to verify only historically contaminated residual calls are repaired during startup.
+  新增额度池回归测试，确保 Gemini Flash 与 Gemini Pro 即使 `resetTime` 完全相同也仍然分池；同时扩展 GM Tracker 测试，验证启动时只会修理历史污染留下的残留调用，不会误删当前周期的正常计数。
+
+### ✨ Added / 新增
+
+- **Model Tab + Persistent Model DNA / 模型标签页与持久化模型 DNA**: Added a dedicated `Models / 模型` tab to centralize model-related information. Personal model quota, default model, and GM-derived model DNA are now grouped together instead of being scattered across `Profile` and `Pricing`. Model DNA is now persisted independently from quota-cycle archives: static fields such as `responseModel`, provider, completion config, tool count, prompt sections, and system-prompt availability remain visible after archive, while current-cycle counters like calls, steps, credits, retries, and errors still reset normally with the quota cycle.
+  新增独立的 `模型` 标签页，把模型相关信息集中起来展示。个人模型配额、默认模型和 GM 推导出的模型 DNA 不再分散在 `个人` 和 `价格` 页面里。模型 DNA 现在也会独立持久化：`responseModel`、提供商、completion config、工具数、prompt 分段、是否有 system prompt 这类静态信息在归档后仍然保留；而调用数、步骤数、积分、重试、错误等当前周期动态值仍然会随着额度归档正常清零。
+
+- **Archive / GM Troubleshooting Map / 归档与 GM 排障地图文档**: Added a new document [docs/archive_gm_troubleshooting.md](/E:/AI/1/Claude/1/docs/archive_gm_troubleshooting.md) to explain archive triggers, GM cycle boundaries, per-page data scope differences, related persisted state keys, and a symptom-to-module troubleshooting map for faster diagnosis of quota and GM issues.
+  新增排障文档 [docs/archive_gm_troubleshooting.md](/E:/AI/1/Claude/1/docs/archive_gm_troubleshooting.md)，专门说明归档触发链路、GM 当前周期边界、各页面口径差异、相关持久化键以及“出现什么现象该优先查哪个模块”的排障地图，方便后续快速定位额度和 GM 相关问题。
+
+### Changed / 变更
+
+- **Tab Order and Naming Cleanup / 标签页顺序与命名整理**: Reordered the main panel tabs to match daily usage priority: `Monitor → GM Data → Cost → Models → Quota Tracking → Calendar → Profile → Settings`. Renamed `Pricing / 价格` to `Cost / 成本` to better reflect that the page includes both estimation and editable pricing, and renamed `Quota / 额度` to `Quota Tracking / 额度追踪` to distinguish it from the current model quota cards now shown in the `Models` tab.
+  重新整理主面板的标签页顺序，按日常使用频率调整为：`监控 → GM 数据 → 成本 → 模型 → 额度追踪 → 日历 → 个人 → 设置`。同时把 `价格` 改名为 `成本`，更贴合“费用估算 + 单价编辑”这页的实际内容；把 `额度` 改名为 `额度追踪`，避免与 `模型` 页里展示的当前模型配额卡片混淆。
+
+- **Models Tab UI Cleanup / 模型页界面收口**: Simplified the new `Models` tab so it reads like product UI instead of a diagnostics console. Model quota cards now focus on quota and reset timing only, while MIME capability evidence was moved into the `Model Info / 模型信息` cards as expandable details. `Model DNA / 模型 DNA` was renamed to `Model Info / 模型信息`, the dense chip-style metadata strip was removed, raw model IDs were removed from quota cards, and low-value fields were collapsed into a `Technical Params / 技术参数` details section.
+  继续收口新的 `模型` 标签页，让它更像产品界面而不是调试面板。模型配额卡片现在只关注额度和重置时间；MIME 能力证明已移到 `模型信息` 卡里，并通过可展开明细展示。`模型 DNA` 更名为 `模型信息`，移除了那排密集的气泡元数据，模型配额卡也不再展示原始模型 ID，低价值技术参数统一收进 `技术参数` 折叠区。
+
+### 🐛 Fixed / 修复
+
+- **Checkpoint Ghost Models Removed from GM Data Surface / GM 数据页不再暴露 CHECKPOINT 幽灵模型卡片**: Removed the `Sub-Agent Tokens / 子智能体消耗` card group from the GM Data tab. Those cards were primarily surfacing internal checkpoint-related models such as `MODEL_PLACEHOLDER_M50` and `MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE`, which are useful for low-level diagnostics but confusing in the main UI because they look like normal user-facing models and can be mistaken for archive residue or quota bugs.
+  从 GM 数据页移除了 `子智能体消耗` 卡片组。那组卡片主要暴露的是 `MODEL_PLACEHOLDER_M50`、`MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE` 这类 CHECKPOINT 内部模型；它们适合低层排障，不适合直接作为主界面的用户可见模型卡展示，否则很容易被误解成正常模型调用、归档残留或额度异常。
+
+- **Model Info Details Stay Open Across Auto-Refresh / 模型信息折叠项不再因自动刷新收起**: Added stable detail IDs for the `MIME Types` and `Technical Params` sections so WebView incremental refresh can restore their expanded state correctly instead of collapsing them after every `updateTabs` render.
+  给 `MIME 类型` 和 `技术参数` 两个折叠区补上了稳定的 detail ID。这样 WebView 在 `updateTabs` 增量刷新后可以正确恢复展开状态，不会再每次自动刷新都把它们收起来。
+
+- **Duplicate Model Cards Merged by Stable DNA Key / 模型信息重复卡片归并**: Tightened model-DNA key normalization so known models are keyed by stable internal model identity first, rather than allowing history to keep separate entries for display name, placeholder ID, and `responseModel`. This prevents the `Models` tab from showing duplicated “current + cached” cards for the same model after restore.
+  收紧了模型 DNA 的 key 归一化逻辑。已知模型现在优先按稳定内部模型身份归并，不再让历史状态同时保留显示名、占位 ID 和 `responseModel` 三套 key。这样恢复状态后，`模型` 页就不会再把同一模型拆成“当前 + 已缓存”两张重复卡片。
+
+### ✅ Tests / 测试
+
+- Added `model-dna-store.test.ts` to lock the new persistence semantics: model DNA remains available after archive even when the current-cycle GM summary becomes empty, while the live counters still follow the active quota cycle.
+  新增 `model-dna-store.test.ts`，锁定新的持久化语义：即使归档后当前周期 GM 汇总已经为空，模型 DNA 仍然保留；而实时计数继续跟随当前额度周期。
+
+### Changed / 变更
+
+- **Monitor Tab Upgraded from Session View to Overview Dashboard / 监控页从会话页升级为总览仪表盘**: Reworked the `Monitor / 监控` tab into a real overview surface instead of a quota-only landing page. The top section now combines four concise summaries: model quota health, GM totals, cost snapshot, and quota-tracking status, while the current session and other-session sections remain below. This makes the first tab answer the core questions immediately: "what am I using now, how much have I called, how much did it cost, and which quotas are still active?"
+  将 `监控` 页从“只看配额和当前会话”的入口重组为真正的总览仪表盘。顶部现在集中展示模型配额、GM 总览、成本快照和额度追踪状态，下面再接当前会话与其他会话。这样首页就能直接回答最关键的几个问题：现在在用什么、这一周期调用了多少、花了多少、哪些额度还在追踪。
+
+- **Quota Overview Simplified / 配额概览改成关键信息首页卡**: Removed the old `Details / 详情` 跳转按钮 and replaced the previous one-line quota pills with a denser quota-health card. The monitor page now shows all visible models directly, highlights the current model, lowest remaining model, and nearest reset, and keeps each model's reset countdown inside the card instead of pushing the user elsewhere for basic quota awareness.
+  移除了旧的 `详情` 跳转按钮，把原来一排轻量 pill 的配额区改成更适合首页的关键信息卡。监控页现在会直接展示全部模型，突出当前模型、最低剩余额度模型和最近重置模型，并把每个模型自己的重置倒计时直接放进卡片里，不再要求用户为了看基础配额信息反复跳页。
+
+- **Mini GM Summary + Dense Model Call Grid / GM 总览补充模型调用分布**: Added a compact GM overview card with calls, input, output, thinking, cache hit rate, and average TTFT, then filled the previously empty lower area with a dense top-4 model call grid. Each mini card now shows the model name, call count, and call-share percentage so the monitor page exposes useful GM trends without requiring users to jump into the full `GM 数据` tab for every glance.
+  新增 GM 总览卡，集中显示调用、输入、输出、思考、缓存命中率和平均 TTFT；同时把原来偏空的下半区补成前四模型调用分布。每个小卡会展示模型名、调用次数和调用占比，让 `监控` 页也能承担 GM 趋势总览，而不是每次都要切去完整的 `GM 数据` 页。
+
+- **Cost Snapshot Now Uses Total-Cost Share / 成本速览改成按总成本占比展示**: The cost list in the monitor tab no longer uses a "relative to the most expensive model" progress bar, which looked visually full even when the real share was much smaller. Bars now represent each model's share of the total cycle cost, and each row shows the model's call count, total-cost percentage, and final USD estimate. This makes the mini cost panel behave like a real bill summary rather than an ambiguous ranking strip.
+  监控页里的成本列表不再使用“相对最高成本模型”的进度条，那种条宽会让用户误以为某个模型几乎占满总成本。现在每条进度条都表示“占本周期总成本的比例”，并在同一行直接展示调用次数、成本占比和美元估值，让这块更像真正的账单摘要，而不是语义模糊的排行榜。
+
+- **Quota Tracking Snapshot Redesigned / 追踪快照重做为全宽状态卡**: The quota-tracking summary is no longer reduced to a single "lowest remaining" number. It has been redesigned as a full-width active-tracking card that lists each currently tracked model with status, remaining percentage, elapsed tracking time, reset countdown, and absolute reset time. This makes the monitor page much more useful for judging whether tracking is alive and whether archive timing still looks sane.
+  `追踪快照` 不再只剩一个“最低剩余比例”数字，而是重做成一张全宽的活跃状态卡。现在它会列出每个正在追踪的模型，包含状态、剩余百分比、已追踪时长、重置倒计时和绝对重置时间，更适合在首页判断追踪系统是否在正常工作、归档节奏是否合理。
+
 ## [1.13.8] - 2026-03-26
 
 ### ✨ Added / 新增

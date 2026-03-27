@@ -1,6 +1,6 @@
 // ─── Monitor Tab Content Builder ─────────────────────────────────────────────
-// Builds HTML sections for the "Monitor" tab: Mini Quota Overview,
-// Current Session (with GM precision data), Other Sessions.
+// Builds HTML sections for the "Monitor" tab: quota / GM / cost / tracking
+// overview cards, Current Session (with GM precision data), Other Sessions.
 // Account / Plan / Features moved to Profile tab.
 
 import { t, tBi } from './i18n';
@@ -8,8 +8,11 @@ import { ContextUsage } from './tracker';
 import { ModelConfig, UserStatusInfo } from './models';
 import { formatTokenCount, formatContextLimit, calculateCompressionStats } from './statusbar';
 import { ICON } from './webview-icons';
-import { esc, formatTime } from './webview-helpers';
+import { esc, formatDuration, formatTime } from './webview-helpers';
 import { GMSummary, GMConversationData, GMCallEntry } from './gm-tracker';
+import { PricingStore } from './pricing-store';
+import { QuotaTracker } from './quota-tracker';
+import { formatResetAbsolute, formatResetCountdown } from './reset-time';
 
 // ─── GM Data Aggregation ─────────────────────────────────────────────────────
 
@@ -142,10 +145,12 @@ export function buildMonitorSections(
     userInfo: UserStatusInfo | null,
     gmSummary?: GMSummary | null,
     gmConversations?: Record<string, GMConversationData>,
+    tracker?: QuotaTracker,
+    pricingStore?: PricingStore,
 ): string {
     const sections: string[] = [];
 
-    buildMiniQuotaBar(sections, configs);
+    buildOverviewGrid(sections, usage, configs, gmSummary ?? null, tracker, pricingStore);
     buildCurrentSessionSection(sections, usage, gmSummary ?? null, gmConversations);
     buildOtherSessionsSection(sections, usage, allUsages, gmSummary ?? null, gmConversations);
 
@@ -161,30 +166,350 @@ export function buildMonitorSections(
 
 // ─── Section Builders ────────────────────────────────────────────────────────
 
-/** Compact single-row quota overview — click jumps to Profile tab for details. */
-function buildMiniQuotaBar(sections: string[], configs: ModelConfig[]): void {
-    const quotaModels = configs.filter(c => c.quotaInfo);
-    if (quotaModels.length === 0) { return; }
+function formatUsd(value: number): string {
+    if (value <= 0) { return '$0'; }
+    if (value < 0.01) { return '<$0.01'; }
+    if (value < 1) { return `$${value.toFixed(2)}`; }
+    if (value < 100) { return `$${value.toFixed(2)}`; }
+    return `$${Math.round(value).toLocaleString()}`;
+}
 
-    const pills = quotaModels.map(c => {
+function formatPercent(fraction: number): string {
+    return `${Math.round(fraction * 100)}%`;
+}
+
+function buildOverviewGrid(
+    sections: string[],
+    usage: ContextUsage | null,
+    configs: ModelConfig[],
+    gmSummary: GMSummary | null,
+    tracker?: QuotaTracker,
+    pricingStore?: PricingStore,
+): void {
+    const cards = [
+        buildQuotaOverviewCard(usage, configs),
+        buildGMOverviewCard(gmSummary),
+        buildCostOverviewCard(gmSummary, pricingStore),
+    ].filter(Boolean).join('');
+
+    const trackingCard = buildQuotaTrackingOverviewCard(tracker);
+
+    if (cards) {
+        sections.push(`<div class="monitor-overview-grid">${cards}</div>`);
+    }
+    if (trackingCard) {
+        sections.push(trackingCard);
+    }
+}
+
+/** Compact quota overview focused on key status, not navigation. */
+function buildQuotaOverviewCard(
+    usage: ContextUsage | null,
+    configs: ModelConfig[],
+): string {
+    const quotaModels = configs.filter(c => c.quotaInfo);
+    if (quotaModels.length === 0) { return ''; }
+
+    const sorted = [...quotaModels].sort((a, b) => {
+        const af = a.quotaInfo?.remainingFraction ?? 1;
+        const bf = b.quotaInfo?.remainingFraction ?? 1;
+        if (af !== bf) { return af - bf; }
+        return a.label.localeCompare(b.label);
+    });
+    const currentModel = usage?.modelDisplayName || usage?.model || '';
+    const lowest = sorted[0];
+    const currentConfig = sorted.find(c => c.label === currentModel || c.model === usage?.model) || null;
+    const nextReset = sorted
+        .filter(c => c.quotaInfo?.resetTime)
+        .sort((a, b) => Date.parse(a.quotaInfo?.resetTime || '') - Date.parse(b.quotaInfo?.resetTime || ''))[0];
+    const rows = sorted.map(c => {
         const qi = c.quotaInfo!;
         const pct = Math.round(qi.remainingFraction * 100);
         const color = pct <= 20 ? 'var(--color-danger)' : pct < 80 ? 'var(--color-warn)' : 'var(--color-ok)';
-        const short = c.label.length > 20 ? c.label.substring(0, 18) + '…' : c.label;
-        return `<span class="mini-quota-pill" style="--bar-pct:${pct}%;--bar-color:${color}">
-                    <span class="mini-quota-label">${esc(short)}</span>
-                    <span class="mini-quota-pct" style="color:${color}">${pct}%</span>
-                </span>`;
+        const countdown = qi.resetTime ? formatResetCountdown(qi.resetTime) : '';
+        return `<div class="monitor-quota-item">
+            <div class="monitor-quota-top">
+                <span class="monitor-quota-name">${esc(c.label)}</span>
+                <span class="monitor-quota-pct" style="color:${color}">${pct}%</span>
+            </div>
+            <div class="monitor-quota-track">
+                <div class="monitor-quota-fill" style="width:${pct}%;background:${color}"></div>
+            </div>
+            <div class="monitor-quota-meta">${countdown || tBi('No reset time', '无重置时间')}</div>
+        </div>`;
     }).join('');
 
-    sections.push(`
-        <section class="card mini-quota-section">
-            <div class="mini-quota-header">
-                <span>${ICON.bolt} ${tBi('Quota', '额度')}</span>
-                <button class="link-btn" data-switch-tab="profile">${tBi('Details', '详情')} →</button>
+    const chips: string[] = [];
+    if (currentConfig?.quotaInfo) {
+        chips.push(`<span class="monitor-mini-tag">${tBi('Current', '当前')} ${esc(currentConfig.label)} ${formatPercent(currentConfig.quotaInfo.remainingFraction)}</span>`);
+    }
+    if (lowest?.quotaInfo && (!currentConfig || lowest.model !== currentConfig.model)) {
+        chips.push(`<span class="monitor-mini-tag is-warn">${tBi('Lowest', '最低')} ${esc(lowest.label)} ${formatPercent(lowest.quotaInfo.remainingFraction)}</span>`);
+    }
+    if (nextReset?.quotaInfo?.resetTime) {
+        chips.push(`<span class="monitor-mini-tag">${tBi('Next reset', '最近重置')} ${formatResetCountdown(nextReset.quotaInfo.resetTime)}</span>`);
+    }
+
+    return `
+        <section class="card monitor-summary-card monitor-summary-card-quota">
+            <div class="monitor-summary-head">
+                <div>
+                    <div class="monitor-summary-kicker">${tBi('Quota Overview', '额度概览')}</div>
+                    <h2>${ICON.bolt} ${tBi('Model Quota', '模型配额')}</h2>
+                </div>
+                <div class="monitor-summary-note">${quotaModels.length} ${tBi('models', '个模型')}</div>
             </div>
-            <div class="mini-quota-row">${pills}</div>
-        </section>`);
+            ${chips.length > 0 ? `<div class="monitor-mini-tags">${chips.join('')}</div>` : ''}
+            <div class="monitor-quota-list">${rows}</div>
+        </section>`;
+}
+
+function buildGMOverviewCard(gmSummary: GMSummary | null): string {
+    if (!gmSummary || gmSummary.totalCalls <= 0) {
+        return `
+            <section class="card monitor-summary-card">
+                <div class="monitor-summary-head">
+                    <div>
+                        <div class="monitor-summary-kicker">${tBi('GM Snapshot', 'GM 快照')}</div>
+                        <h2>${ICON.bolt} ${tBi('GM Overview', 'GM 总览')}</h2>
+                    </div>
+                </div>
+                <p class="monitor-summary-empty">${tBi(
+                    'GM data will appear automatically after the first precise call is captured.',
+                    '捕捉到第一批精确 GM 调用后，这里会自动显示。',
+                )}</p>
+            </section>`;
+    }
+
+    const modelStats = Object.values(gmSummary.modelBreakdown);
+    let weightedTTFT = 0;
+    let weightedStreaming = 0;
+    let weightedCacheHit = 0;
+    let exactCalls = 0;
+    for (const stats of modelStats) {
+        weightedTTFT += stats.avgTTFT * stats.callCount;
+        weightedStreaming += stats.avgStreaming * stats.callCount;
+        weightedCacheHit += stats.cacheHitRate * stats.callCount;
+        exactCalls += stats.exactCallCount;
+    }
+    const callCount = Math.max(gmSummary.totalCalls, 1);
+    const avgTTFT = weightedTTFT / callCount;
+    const avgStreaming = weightedStreaming / callCount;
+    const cacheHitRate = weightedCacheHit / callCount;
+    const exactRate = exactCalls / callCount;
+    const topModels = Object.entries(gmSummary.modelBreakdown)
+        .sort((a, b) => {
+            if (b[1].callCount !== a[1].callCount) { return b[1].callCount - a[1].callCount; }
+            return a[0].localeCompare(b[0]);
+        })
+        .slice(0, 4)
+        .map(([name, stats]) => {
+            const ratio = callCount > 0 ? Math.round((stats.callCount / callCount) * 100) : 0;
+            return `<div class="monitor-gm-model-item">
+                <div class="monitor-gm-model-name">${esc(name)}</div>
+                <div class="monitor-gm-model-metrics">
+                    <span class="monitor-gm-model-main">${stats.callCount}</span>
+                    <span class="monitor-gm-model-sub">${ratio}%</span>
+                </div>
+            </div>`;
+        }).join('');
+
+    return `
+        <section class="card monitor-summary-card monitor-summary-card-gm">
+            <div class="monitor-summary-head">
+                <div>
+                    <div class="monitor-summary-kicker">${tBi('GM Snapshot', 'GM 快照')}</div>
+                    <h2>${ICON.bolt} ${tBi('GM Overview', 'GM 总览')}</h2>
+                </div>
+                <div class="monitor-summary-note"><span class="badge ok-badge">GM</span></div>
+            </div>
+            <div class="stat-grid">
+                <div class="stat">
+                    <div class="stat-label">${tBi('Calls', '调用')}</div>
+                    <div class="stat-value">${gmSummary.totalCalls}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">${tBi('Input', '输入')}</div>
+                    <div class="stat-value">${formatTokenCount(gmSummary.totalInputTokens)}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">${tBi('Output', '输出')}</div>
+                    <div class="stat-value">${formatTokenCount(gmSummary.totalOutputTokens)}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">${tBi('Thinking', '思考')}</div>
+                    <div class="stat-value">${formatTokenCount(gmSummary.totalThinkingTokens)}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">${tBi('Avg TTFT', '平均 TTFT')}</div>
+                    <div class="stat-value">${avgTTFT > 0 ? `${avgTTFT.toFixed(2)}s` : '—'}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">${tBi('Cache Hit', '缓存命中')}</div>
+                    <div class="stat-value">${Math.round(cacheHitRate * 100)}%</div>
+                </div>
+            </div>
+            <div class="monitor-mini-tags">
+                <span class="monitor-mini-tag">${tBi('Exact', '精确调用')} ${Math.round(exactRate * 100)}%</span>
+                <span class="monitor-mini-tag">${tBi('Streaming', '流式')} ${avgStreaming > 0 ? `${avgStreaming.toFixed(2)}s` : '—'}</span>
+                <span class="monitor-mini-tag">${tBi('Models', '模型数')} ${modelStats.length}</span>
+            </div>
+            ${topModels ? `
+                <div class="monitor-inline-section">
+                    <div class="monitor-inline-title">${tBi('Top Models by Calls', '模型调用分布')}</div>
+                    <div class="monitor-gm-model-grid">${topModels}</div>
+                </div>` : ''}
+        </section>`;
+}
+
+function buildCostOverviewCard(
+    gmSummary: GMSummary | null,
+    pricingStore?: PricingStore,
+): string {
+    if (!pricingStore || !gmSummary || gmSummary.totalCalls <= 0) {
+        return `
+            <section class="card monitor-summary-card">
+                <div class="monitor-summary-head">
+                    <div>
+                        <div class="monitor-summary-kicker">${tBi('Cost Snapshot', '成本快照')}</div>
+                        <h2>${IC.coin} ${tBi('Cost Overview', '成本速览')}</h2>
+                    </div>
+                </div>
+                <p class="monitor-summary-empty">${tBi(
+                    'Cost overview will appear after GM data and pricing are both available.',
+                    'GM 数据和价格表都就绪后，这里会自动显示成本速览。',
+                )}</p>
+            </section>`;
+    }
+
+    const { rows, grandTotal } = pricingStore.calculateCosts(gmSummary);
+    const pricedRows = rows.filter(r => r.pricing);
+    const topCost = rows[0] || null;
+    const totalCostValue = Math.max(grandTotal, 0.000001);
+    const modelList = rows.map(row => {
+        const stats = gmSummary.modelBreakdown[row.name];
+        const ratio = row.pricing ? Math.max(0, Math.min(100, (row.totalCost / totalCostValue) * 100)) : 0;
+        const ratioLabel = row.pricing ? `${Math.round(ratio)}%` : '';
+        return `<div class="monitor-cost-model">
+            <div class="monitor-cost-model-bar" style="width:${ratio}%"></div>
+            <div class="monitor-cost-model-main">
+                <span class="monitor-cost-model-name">${esc(row.name)}</span>
+                <span class="monitor-cost-model-calls">${stats?.callCount ?? 0} ${tBi('calls', '次调用')}${ratioLabel ? ` · ${ratioLabel}` : ''}</span>
+            </div>
+            <div class="monitor-cost-model-side">
+                <span class="monitor-cost-model-cost">${row.pricing ? formatUsd(row.totalCost) : tBi('Unpriced', '未定价')}</span>
+            </div>
+        </div>`;
+    }).join('');
+
+    return `
+        <section class="card monitor-summary-card monitor-summary-card-cost">
+            <div class="monitor-summary-head">
+                <div>
+                    <div class="monitor-summary-kicker">${tBi('Cost Snapshot', '成本快照')}</div>
+                    <h2>${IC.coin} ${tBi('Cost Overview', '成本速览')}</h2>
+                </div>
+                <div class="monitor-summary-note">${formatUsd(grandTotal)}</div>
+            </div>
+            <div class="stat-grid three-col">
+                <div class="stat">
+                    <div class="stat-label">${tBi('Cycle Total', '周期总计')}</div>
+                    <div class="stat-value">${formatUsd(grandTotal)}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">${tBi('Priced Models', '已定价模型')}</div>
+                    <div class="stat-value">${pricedRows.length}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">${tBi('Most Expensive', '最高成本')}</div>
+                    <div class="stat-value">${topCost ? formatUsd(topCost.totalCost) : '$0'}</div>
+                </div>
+            </div>
+            <div class="monitor-mini-tags">
+                ${topCost ? `<span class="monitor-mini-tag">${tBi('Top model', '最高模型')} ${esc(topCost.name)}</span>` : ''}
+                <span class="monitor-mini-tag">${tBi('Used models', '使用模型')} ${rows.length}</span>
+            </div>
+            <div class="monitor-cost-list">${modelList}</div>
+        </section>`;
+}
+
+function buildQuotaTrackingOverviewCard(tracker?: QuotaTracker): string {
+    if (!tracker || !tracker.isEnabled()) { return ''; }
+
+    const active = tracker.getActiveSessions();
+    const history = tracker.getHistory();
+    const latestReset = [...history]
+        .filter(session => !!session.endTime)
+        .sort((a, b) => Date.parse(b.endTime || '') - Date.parse(a.endTime || ''))[0];
+    const activeRows = active
+        .sort((a, b) => {
+            const ap = a.snapshots[a.snapshots.length - 1]?.fraction ?? 1;
+            const bp = b.snapshots[b.snapshots.length - 1]?.fraction ?? 1;
+            if (ap !== bp) { return ap - bp; }
+            return a.modelLabel.localeCompare(b.modelLabel);
+        })
+        .map(session => {
+            const lastSnap = session.snapshots[session.snapshots.length - 1];
+            const pct = lastSnap?.percent ?? 100;
+            const color = pct <= 20 ? 'var(--color-danger)' : pct < 80 ? 'var(--color-warn)' : 'var(--color-ok)';
+            const countdown = session.cycleResetTime ? formatResetCountdown(session.cycleResetTime) : '';
+            const absolute = session.cycleResetTime ? formatResetAbsolute(session.cycleResetTime) : '';
+            const elapsed = formatDuration(Date.now() - Date.parse(session.startTime));
+            const statusText = session.completed
+                ? tBi('Completed, waiting for reset', '已耗尽，等待重置')
+                : tBi('Tracking', '追踪中');
+            return `<div class="monitor-track-row">
+                <div class="monitor-track-main">
+                    <div class="monitor-track-top">
+                        <span class="monitor-track-name">${esc(session.modelLabel)}</span>
+                        <span class="monitor-track-pct" style="color:${color}">${pct}%</span>
+                    </div>
+                    <div class="monitor-track-bar">
+                        <div class="monitor-track-fill" style="width:${pct}%;background:${color}"></div>
+                    </div>
+                    <div class="monitor-track-meta">
+                        <span class="monitor-mini-tag${session.completed ? ' is-warn' : ''}">${statusText}</span>
+                        <span class="monitor-mini-tag">${tBi('Elapsed', '已追踪')} ${elapsed}</span>
+                        ${countdown ? `<span class="monitor-mini-tag">${tBi('Reset in', '重置剩余')} ${countdown}</span>` : ''}
+                        ${absolute ? `<span class="monitor-mini-tag">${tBi('At', '时间')} ${absolute}</span>` : ''}
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+
+    return `
+        <section class="card monitor-summary-card monitor-summary-card-tracking monitor-tracking-card">
+            <div class="monitor-summary-head">
+                <div>
+                    <div class="monitor-summary-kicker">${tBi('Tracking Snapshot', '追踪快照')}</div>
+                    <h2>${ICON.timeline} ${tBi('Quota Tracking', '额度追踪')}</h2>
+                </div>
+                <div class="monitor-summary-note">${active.length} ${tBi('active', '活跃')}</div>
+            </div>
+            <div class="stat-grid three-col">
+                <div class="stat">
+                    <div class="stat-label">${tBi('Active', '活跃')}</div>
+                    <div class="stat-value">${active.length}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">${tBi('Archived', '归档')}</div>
+                    <div class="stat-value">${history.length}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">${tBi('Last Archived', '最近归档')}</div>
+                    <div class="stat-value">${latestReset?.endTime ? formatResetAbsolute(latestReset.endTime) : '—'}</div>
+                </div>
+            </div>
+            ${activeRows
+                ? `<div class="monitor-tracking-list">${activeRows}</div>`
+                : `<p class="monitor-summary-empty">${tBi(
+                    'Tracking is enabled, but there are no active quota sessions right now.',
+                    '额度追踪已启用，但当前没有活跃追踪会话。',
+                )}</p>`}
+            ${latestReset?.endTime ? `<div class="monitor-mini-tags">
+                <span class="monitor-mini-tag">${tBi('Latest archive', '最近归档')} ${formatResetAbsolute(latestReset.endTime)}</span>
+            </div>` : ''}
+        </section>`;
 }
 
 function buildCurrentSessionSection(

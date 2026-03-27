@@ -7,7 +7,8 @@
 
 import { LSInfo } from './discovery';
 import { rpcCall } from './rpc-client';
-import { getModelDisplayName, normalizeModelDisplayName } from './models';
+import { getModelDisplayName, getQuotaPoolKey, normalizeModelDisplayName, type ModelConfig } from './models';
+import type { QuotaSession } from './quota-tracker';
 
 // ─── Exported Types ──────────────────────────────────────────────────────────
 
@@ -452,6 +453,156 @@ function normalizeGMSummary(summary: GMSummary): GMSummary {
         })),
         latestTokenBreakdown: cloneTokenBreakdownGroups(summary.latestTokenBreakdown),
         stopReasonCounts: { ...summary.stopReasonCounts },
+    };
+}
+
+function buildSummaryFromConversations(
+    inputConversations: GMConversationData[],
+    fetchedAt: string,
+): GMSummary | null {
+    const conversations: GMConversationData[] = [];
+    const modelBreakdown: Record<string, GMModelStats> = {};
+    const stopReasonCounts: Record<string, number> = {};
+    const contextGrowth: { step: number; tokens: number; model: string }[] = [];
+
+    let totalCalls = 0;
+    let totalStepsCovered = 0;
+    let totalCredits = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCacheRead = 0;
+    let totalCacheCreation = 0;
+    let totalThinkingTokens = 0;
+    let totalRetryTokens = 0;
+    let totalRetryCredits = 0;
+    let totalRetryCount = 0;
+    let latestTokenBreakdown: TokenBreakdownGroup[] = [];
+
+    for (const conversation of inputConversations) {
+        if (conversation.calls.length === 0) { continue; }
+        const calls = conversation.calls.map(call => ({
+            ...call,
+            modelDisplay: normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model,
+        }));
+        const coveredSteps = calls.reduce((sum, call) => sum + call.stepIndices.length, 0);
+        conversations.push({
+            ...conversation,
+            calls,
+            coveredSteps,
+            coverageRate: conversation.totalSteps > 0 ? coveredSteps / conversation.totalSteps : 0,
+        });
+
+        for (const call of calls) {
+            const normalizedDisplay = normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model;
+            totalCalls++;
+            totalStepsCovered += call.stepIndices.length;
+            totalCredits += call.credits;
+            totalInputTokens += call.inputTokens;
+            totalOutputTokens += call.outputTokens;
+            totalCacheRead += call.cacheReadTokens;
+            totalCacheCreation += call.cacheCreationTokens;
+            totalThinkingTokens += call.thinkingTokens;
+            totalRetryTokens += call.retryTokensIn + call.retryTokensOut;
+            totalRetryCredits += call.retryCredits;
+            if (call.retries > 0) {
+                totalRetryCount++;
+            }
+            if (call.contextTokensUsed > 0 && call.stepIndices.length > 0) {
+                contextGrowth.push({
+                    step: call.stepIndices[0],
+                    tokens: call.contextTokensUsed,
+                    model: normalizedDisplay || call.modelDisplay,
+                });
+            }
+            if (call.stopReason) {
+                const stopReason = call.stopReason.replace('STOP_REASON_', '');
+                stopReasonCounts[stopReason] = (stopReasonCounts[stopReason] || 0) + 1;
+            }
+            if (call.tokenBreakdownGroups.length > 0) {
+                latestTokenBreakdown = call.tokenBreakdownGroups;
+            }
+
+            const key = normalizedDisplay || call.modelDisplay || call.model;
+            const existing = modelBreakdown[key];
+            if (existing) {
+                mergeGMModelStats(existing, {
+                    callCount: 1,
+                    stepsCovered: call.stepIndices.length,
+                    totalInputTokens: call.inputTokens,
+                    totalOutputTokens: call.outputTokens,
+                    totalThinkingTokens: call.thinkingTokens,
+                    totalCacheRead: call.cacheReadTokens,
+                    totalCacheCreation: call.cacheCreationTokens,
+                    totalCredits: call.credits,
+                    avgTTFT: call.ttftSeconds,
+                    minTTFT: call.ttftSeconds,
+                    maxTTFT: call.ttftSeconds,
+                    avgStreaming: call.streamingSeconds,
+                    cacheHitRate: call.cacheReadTokens > 0 ? 1 : 0,
+                    responseModel: call.responseModel,
+                    apiProvider: call.apiProvider,
+                    completionConfig: call.completionConfig,
+                    hasSystemPrompt: !!call.systemPromptSnippet,
+                    toolCount: call.toolCount,
+                    promptSectionTitles: call.promptSectionTitles,
+                    totalRetries: call.retries,
+                    errorCount: call.hasError ? 1 : 0,
+                    exactCallCount: call.modelAccuracy === 'exact' ? 1 : 0,
+                    placeholderOnlyCalls: call.modelAccuracy === 'placeholder' ? 1 : 0,
+                });
+            } else {
+                modelBreakdown[key] = {
+                    callCount: 1,
+                    stepsCovered: call.stepIndices.length,
+                    totalInputTokens: call.inputTokens,
+                    totalOutputTokens: call.outputTokens,
+                    totalThinkingTokens: call.thinkingTokens,
+                    totalCacheRead: call.cacheReadTokens,
+                    totalCacheCreation: call.cacheCreationTokens,
+                    totalCredits: call.credits,
+                    avgTTFT: call.ttftSeconds,
+                    minTTFT: call.ttftSeconds,
+                    maxTTFT: call.ttftSeconds,
+                    avgStreaming: call.streamingSeconds,
+                    cacheHitRate: call.cacheReadTokens > 0 ? 1 : 0,
+                    responseModel: call.responseModel,
+                    apiProvider: call.apiProvider,
+                    completionConfig: call.completionConfig,
+                    hasSystemPrompt: !!call.systemPromptSnippet,
+                    toolCount: call.toolCount,
+                    promptSectionTitles: call.promptSectionTitles,
+                    totalRetries: call.retries,
+                    errorCount: call.hasError ? 1 : 0,
+                    exactCallCount: call.modelAccuracy === 'exact' ? 1 : 0,
+                    placeholderOnlyCalls: call.modelAccuracy === 'placeholder' ? 1 : 0,
+                };
+            }
+        }
+    }
+
+    if (totalCalls === 0) { return null; }
+
+    conversations.sort((a, b) => b.totalSteps - a.totalSteps);
+    contextGrowth.sort((a, b) => a.step - b.step);
+
+    return {
+        conversations,
+        modelBreakdown,
+        totalCalls,
+        totalStepsCovered,
+        totalCredits,
+        totalInputTokens,
+        totalOutputTokens,
+        totalCacheRead,
+        totalCacheCreation,
+        totalThinkingTokens,
+        contextGrowth,
+        fetchedAt,
+        totalRetryTokens,
+        totalRetryCredits,
+        totalRetryCount,
+        latestTokenBreakdown,
+        stopReasonCounts,
     };
 }
 
@@ -1231,6 +1382,83 @@ export class GMTracker {
         this._lastSummary = null;
         this._lastFetchedAt = '';
         this._needsBaselineInit = true;
+    }
+
+    /**
+     * One-time repair path for persisted detailed summaries that still contain
+     * calls from quota cycles already archived by the quota tracker.
+     */
+    repairSummaryFromQuotaHistory(
+        detailedSummary: GMSummary | null | undefined,
+        history: QuotaSession[],
+        configs: ModelConfig[],
+    ): GMSummary | null {
+        if (!detailedSummary || history.length === 0) {
+            return detailedSummary || null;
+        }
+
+        const labelToModelId = new Map<string, string>();
+        for (const config of configs) {
+            labelToModelId.set(config.label, config.model);
+        }
+
+        const contaminatedCutoffByModelId = new Map<string, number>();
+        for (const session of history) {
+            if (!session.endTime || !session.poolModels || session.poolModels.length === 0) { continue; }
+            const endMs = Date.parse(session.endTime);
+            if (Number.isNaN(endMs)) { continue; }
+            const config = configs.find(item => item.model === session.modelId);
+            const actualPoolKey = getQuotaPoolKey(session.modelId, config?.quotaInfo?.resetTime);
+            const actualPoolModelIds = new Set(
+                configs
+                    .filter(item => getQuotaPoolKey(item.model, item.quotaInfo?.resetTime) === actualPoolKey)
+                    .map(item => item.model),
+            );
+
+            for (const label of session.poolModels) {
+                const modelId = labelToModelId.get(label);
+                if (!modelId || actualPoolModelIds.has(modelId)) { continue; }
+                const prev = contaminatedCutoffByModelId.get(modelId) || 0;
+                if (endMs > prev) {
+                    contaminatedCutoffByModelId.set(modelId, endMs);
+                }
+            }
+        }
+        if (contaminatedCutoffByModelId.size === 0) {
+            return detailedSummary;
+        }
+
+        const removedIds = new Set<string>();
+        const keptConversations: GMConversationData[] = [];
+        for (const conversation of detailedSummary.conversations) {
+            const keptCalls = conversation.calls.filter(call => {
+                const poolEndMs = contaminatedCutoffByModelId.get(call.model) || 0;
+                const createdMs = Date.parse(call.createdAt || '');
+                const shouldArchive = poolEndMs > 0 && !Number.isNaN(createdMs) && createdMs <= poolEndMs;
+                if (shouldArchive && call.executionId) {
+                    removedIds.add(call.executionId);
+                }
+                return !shouldArchive;
+            });
+            if (keptCalls.length > 0) {
+                keptConversations.push({
+                    ...conversation,
+                    calls: keptCalls,
+                });
+            }
+        }
+
+        if (removedIds.size === 0) {
+            return detailedSummary;
+        }
+
+        for (const id of removedIds) {
+            this._archivedCallIds.add(id);
+        }
+
+        const rebuilt = buildSummaryFromConversations(keptConversations, detailedSummary.fetchedAt);
+        this._lastSummary = rebuilt ? normalizeGMSummary(rebuilt) : null;
+        return rebuilt;
     }
 
     // ─── Serialization ───────────────────────────────────────────────────

@@ -1,25 +1,25 @@
-import type { ModelConfig } from './models';
+import { getQuotaPoolKey, type ModelConfig } from './models';
 import type { QuotaSession } from './quota-tracker';
 
 function getPoolKey(modelId: string, configs: ModelConfig[]): string {
     const config = configs.find(c => c.model === modelId);
-    return config?.quotaInfo?.resetTime || modelId;
+    return getQuotaPoolKey(modelId, config?.quotaInfo?.resetTime);
 }
 
 export function expandModelIdsToPool(modelIds: string[], configs: ModelConfig[]): string[] {
-    const targetResetTimes = new Set<string>();
+    const targetPoolKeys = new Set<string>();
     for (const config of configs) {
-        if (modelIds.includes(config.model) && config.quotaInfo?.resetTime) {
-            targetResetTimes.add(config.quotaInfo.resetTime);
+        if (modelIds.includes(config.model)) {
+            targetPoolKeys.add(getQuotaPoolKey(config.model, config.quotaInfo?.resetTime));
         }
     }
-    if (targetResetTimes.size === 0) {
+    if (targetPoolKeys.size === 0) {
         return [...new Set(modelIds)];
     }
 
     const poolModels = new Set(modelIds);
     for (const config of configs) {
-        if (config.quotaInfo?.resetTime && targetResetTimes.has(config.quotaInfo.resetTime)) {
+        if (targetPoolKeys.has(getQuotaPoolKey(config.model, config.quotaInfo?.resetTime))) {
             poolModels.add(config.model);
         }
     }

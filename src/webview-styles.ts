@@ -1234,6 +1234,55 @@ export function getStyles(): string {
             margin-bottom: var(--space-3);
         }
 
+        .profile-two-col {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: var(--space-3);
+            margin-bottom: var(--space-3);
+        }
+
+        .profile-panel-card {
+            height: 100%;
+        }
+
+        .profile-metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: var(--space-2);
+            margin-top: var(--space-2);
+        }
+
+        .profile-metric-card {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: var(--space-2) var(--space-3);
+            border-radius: var(--radius-md);
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--color-border);
+        }
+
+        .profile-metric-label {
+            font-size: 0.74em;
+            color: var(--color-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.35px;
+        }
+
+        .profile-metric-value {
+            font-size: 0.98em;
+            font-weight: 700;
+            color: var(--color-text);
+            line-height: 1.35;
+        }
+
+        .profile-chip-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-2);
+            margin-top: var(--space-2);
+        }
+
         .credit-row {}
 
         .credit-header {
@@ -1270,8 +1319,8 @@ export function getStyles(): string {
             background: rgba(255,255,255,0.04);
             color: var(--color-text-dim);
             border: 1px solid var(--color-border);
-            opacity: 0.5;
-            text-decoration: line-through;
+            opacity: 0.72;
+            text-decoration: none;
         }
 
         .feature-tag.enabled {
@@ -2585,60 +2634,299 @@ export function getStyles(): string {
         }
 
 
-        /* ─── Mini Quota Bar (Monitor) ─── */
-        .mini-quota-section { padding: var(--space-2) var(--space-3); }
-        .mini-quota-header {
+        /* ─── Monitor Overview ─── */
+        .monitor-overview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: var(--space-3);
+            margin-bottom: var(--space-3);
+        }
+        .monitor-summary-card {
+            position: relative;
+            overflow: hidden;
+            min-height: 220px;
+        }
+        .monitor-summary-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, rgba(96,165,250,0.95), rgba(45,212,191,0.75));
+        }
+        .monitor-summary-card-quota::before {
+            background: linear-gradient(90deg, rgba(74,222,128,0.95), rgba(96,165,250,0.75));
+        }
+        .monitor-summary-card-gm::before {
+            background: linear-gradient(90deg, rgba(251,146,60,0.95), rgba(250,204,21,0.75));
+        }
+        .monitor-summary-card-cost::before {
+            background: linear-gradient(90deg, rgba(167,139,250,0.95), rgba(96,165,250,0.75));
+        }
+        .monitor-summary-card-tracking::before {
+            background: linear-gradient(90deg, rgba(250,204,21,0.95), rgba(248,113,113,0.75));
+        }
+        .monitor-tracking-card {
+            min-height: 0;
+        }
+        .monitor-summary-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: var(--space-2);
+            margin-bottom: var(--space-3);
+        }
+        .monitor-summary-kicker {
+            font-size: 0.72em;
+            color: var(--color-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            margin-bottom: 2px;
+        }
+        .monitor-summary-head .card h2 {
+            margin-bottom: 0;
+        }
+        .monitor-summary-head h2 {
+            margin-bottom: 0;
+        }
+        .monitor-summary-note {
+            font-size: 0.8em;
+            color: var(--color-text-dim);
+            text-align: right;
+            line-height: 1.4;
+        }
+        .monitor-summary-empty {
+            color: var(--color-text-dim);
+            font-size: 0.86em;
+            line-height: 1.6;
+            opacity: 0.9;
+        }
+        .monitor-mini-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-1);
+            margin-top: var(--space-2);
+        }
+        .monitor-mini-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px var(--space-2);
+            border-radius: var(--radius-full, 9999px);
+            border: 1px solid var(--color-border);
+            background: rgba(255,255,255,0.03);
+            color: var(--color-text-dim);
+            font-size: 0.75em;
+            line-height: 1.5;
+        }
+        .monitor-mini-tag.is-warn {
+            border-color: rgba(250,204,21,0.2);
+            background: rgba(250,204,21,0.08);
+            color: var(--color-warn);
+        }
+        .monitor-inline-section {
+            margin-top: var(--space-3);
+        }
+        .monitor-inline-title {
+            font-size: 0.76em;
+            color: var(--color-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: var(--space-2);
+        }
+        .monitor-gm-model-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: var(--space-1);
+        }
+        .monitor-gm-model-item {
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-md);
+            background: rgba(255,255,255,0.02);
+            padding: 6px var(--space-2);
+            min-width: 0;
+        }
+        .monitor-gm-model-name {
+            font-size: 0.71em;
+            color: var(--color-text-dim);
+            line-height: 1.4;
+            min-height: 2.1em;
+            margin-bottom: 4px;
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            overflow: hidden;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+        .monitor-gm-model-metrics {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: var(--space-1);
+        }
+        .monitor-gm-model-main {
+            font-size: 0.95em;
+            font-weight: 700;
+            color: var(--color-text);
+            line-height: 1.2;
+        }
+        .monitor-gm-model-sub {
+            font-size: 0.7em;
+            color: var(--color-text-dim);
+        }
+        .monitor-quota-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: var(--space-2);
+        }
+        .monitor-quota-item {
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-md);
+            padding: var(--space-2);
+            background: rgba(255,255,255,0.02);
+        }
+        .monitor-quota-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--space-2);
+            margin-bottom: var(--space-1);
+        }
+        .monitor-quota-name {
+            font-size: 0.82em;
+            font-weight: 600;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .monitor-quota-pct {
+            flex-shrink: 0;
+            font-size: 0.84em;
+            font-weight: 700;
+        }
+        .monitor-quota-track {
+            height: 6px;
+            border-radius: var(--radius-full, 9999px);
+            background: rgba(255,255,255,0.06);
+            overflow: hidden;
+        }
+        .monitor-quota-fill {
+            height: 100%;
+            border-radius: inherit;
+            transition: width 0.25s cubic-bezier(.4,0,.2,1), background 0.25s cubic-bezier(.4,0,.2,1);
+        }
+        .monitor-quota-meta {
+            margin-top: 6px;
+            font-size: 0.74em;
+            color: var(--color-text-dim);
+        }
+        .monitor-cost-list {
+            display: grid;
+            gap: var(--space-2);
+            margin-top: var(--space-3);
+        }
+        .monitor-cost-model {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: var(--space-2);
-            font-size: 0.85em;
-            font-weight: 600;
-        }
-        .mini-quota-row {
-            display: flex;
-            flex-wrap: wrap;
             gap: var(--space-2);
-        }
-        .mini-quota-pill {
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-            padding: var(--space-1) var(--space-2);
-            background: var(--color-surface);
+            padding: var(--space-2);
             border: 1px solid var(--color-border);
             border-radius: var(--radius-md);
-            font-size: 0.8em;
+            background: rgba(255,255,255,0.02);
             position: relative;
             overflow: hidden;
         }
-        .mini-quota-pill::after {
-            content: '';
+        .monitor-cost-model-bar {
             position: absolute;
             left: 0;
+            top: 0;
             bottom: 0;
-            height: 2px;
-            width: var(--bar-pct, 0%);
-            background: var(--bar-color, var(--color-ok));
-            transition: width 0.3s cubic-bezier(.4,0,.2,1);
+            width: 0;
+            background: linear-gradient(90deg, rgba(167,139,250,0.16), rgba(96,165,250,0.06));
+            border-right: 1px solid rgba(167,139,250,0.18);
+            transition: width 0.25s cubic-bezier(.4,0,.2,1);
         }
-        .mini-quota-label { color: var(--color-text); }
-        .mini-quota-pct { font-weight: 600; font-size: 0.9em; }
-        .link-btn {
-            background: none;
-            border: none;
-            color: var(--color-accent);
-            cursor: pointer;
-            font-size: 0.8em;
-            padding: var(--space-1);
-            border-radius: var(--radius-sm);
-            transition: opacity 0.2s cubic-bezier(.4,0,.2,1);
+        .monitor-cost-model-main {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            position: relative;
+            z-index: 1;
         }
-        @media (hover: hover) {
-            .link-btn:hover { opacity: 0.8; }
+        .monitor-cost-model-name {
+            font-size: 0.82em;
+            font-weight: 600;
+            color: var(--color-text);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
-        .link-btn:focus-visible {
-            box-shadow: 0 0 0 2px var(--color-accent);
+        .monitor-cost-model-calls {
+            font-size: 0.73em;
+            color: var(--color-text-dim);
+        }
+        .monitor-cost-model-side {
+            flex-shrink: 0;
+            text-align: right;
+            position: relative;
+            z-index: 1;
+        }
+        .monitor-cost-model-cost {
+            font-size: 0.82em;
+            font-weight: 700;
+            color: var(--color-warn);
+        }
+        .monitor-tracking-list {
+            display: grid;
+            gap: var(--space-2);
+            margin-top: var(--space-3);
+        }
+        .monitor-track-row {
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-md);
+            background: rgba(255,255,255,0.02);
+            padding: var(--space-2) var(--space-3);
+        }
+        .monitor-track-main {
+            display: grid;
+            gap: var(--space-2);
+        }
+        .monitor-track-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: var(--space-2);
+        }
+        .monitor-track-name {
+            font-size: 0.84em;
+            font-weight: 700;
+            color: var(--color-text);
+        }
+        .monitor-track-pct {
+            font-size: 0.84em;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+        .monitor-track-bar {
+            height: 6px;
+            border-radius: var(--radius-full, 9999px);
+            background: rgba(255,255,255,0.06);
+            overflow: hidden;
+        }
+        .monitor-track-fill {
+            height: 100%;
+            border-radius: inherit;
+            transition: width 0.25s cubic-bezier(.4,0,.2,1), background 0.25s cubic-bezier(.4,0,.2,1);
+        }
+        .monitor-track-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-1);
         }
 
         /* ─── Profile Tab ────────────── */

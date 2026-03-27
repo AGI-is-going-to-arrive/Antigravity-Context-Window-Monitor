@@ -39,6 +39,25 @@ describe('pool-utils', () => {
         expect(groups).toContainEqual(['gemini-flash']);
     });
 
+    it('does not merge Gemini Flash into Gemini Pro pool even if resetTime matches exactly', () => {
+        const sameReset = '2026-03-23T12:00:00.000Z';
+        const sameResetConfigs = [
+            makeConfig('MODEL_PLACEHOLDER_M37', 'Gemini Pro High', sameReset),
+            makeConfig('MODEL_PLACEHOLDER_M36', 'Gemini Pro Low', sameReset),
+            makeConfig('MODEL_PLACEHOLDER_M47', 'Gemini Flash', sameReset),
+        ];
+
+        expect(expandModelIdsToPool(['MODEL_PLACEHOLDER_M37'], sameResetConfigs)).toEqual(
+            expect.arrayContaining(['MODEL_PLACEHOLDER_M37', 'MODEL_PLACEHOLDER_M36']),
+        );
+        expect(expandModelIdsToPool(['MODEL_PLACEHOLDER_M37'], sameResetConfigs)).not.toContain('MODEL_PLACEHOLDER_M47');
+
+        const groups = groupModelIdsByResetPool(['MODEL_PLACEHOLDER_M37', 'MODEL_PLACEHOLDER_M47'], sameResetConfigs);
+        expect(groups).toHaveLength(2);
+        expect(groups).toContainEqual(expect.arrayContaining(['MODEL_PLACEHOLDER_M37', 'MODEL_PLACEHOLDER_M36']));
+        expect(groups).toContainEqual(['MODEL_PLACEHOLDER_M47']);
+    });
+
     it('finds the latest matching quota session for a pool', () => {
         const history: QuotaSession[] = [
             {

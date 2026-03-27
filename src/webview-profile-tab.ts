@@ -1,21 +1,12 @@
 // ─── Profile Tab Content Builder ─────────────────────────────────────────────
-// Builds HTML for the "Profile" tab: Account info, Model quota grid,
-// Plan limits, Feature flags, Team config — with deep-mined data supplements.
+// Builds HTML for the "Profile" tab: Account info, plan limits,
+// and feature/team config. Model-specific content is rendered in Models tab.
 
 import { tBi } from './i18n';
 import { ModelConfig, UserStatusInfo } from './models';
 import { formatResetAbsolute, formatResetCountdown } from './reset-time';
 import { ICON } from './webview-icons';
 import { esc } from './webview-helpers';
-
-// ─── MIME Category Helpers ───────────────────────────────────────────────────
-
-interface MimeCategory {
-    icon: string;
-    label: string;
-    labelZh: string;
-    count: number;
-}
 
 function formatCreditTypeLabel(creditType: string): string {
     const key = creditType.replace('CREDIT_TYPE_', '');
@@ -29,30 +20,6 @@ function formatCreditTypeLabel(creditType: string): string {
     return mapped ? tBi(mapped[0], mapped[1]) : key.replace(/_/g, ' ');
 }
 
-function categorizeMimeTypes(mimeTypes: string[]): MimeCategory[] {
-    let docs = 0, code = 0, images = 0, media = 0;
-    for (const m of mimeTypes) {
-        if (m.startsWith('image/')) { images++; }
-        else if (m.startsWith('video/') || m.startsWith('audio/')) { media++; }
-        else if (
-            m.includes('javascript') || m.includes('typescript') ||
-            m.includes('python') || m.includes('ipynb')
-        ) { code++; }
-        else { docs++; }
-    }
-    const cats: MimeCategory[] = [];
-    if (docs > 0)   { cats.push({ icon: docIcon,   label: 'Docs',  labelZh: '文档', count: docs }); }
-    if (code > 0)   { cats.push({ icon: codeIcon,  label: 'Code',  labelZh: '代码', count: code }); }
-    if (images > 0) { cats.push({ icon: imgIcon,   label: 'Image', labelZh: '图片', count: images }); }
-    if (media > 0)  { cats.push({ icon: mediaIcon, label: 'Media', labelZh: '音视频', count: media }); }
-    return cats;
-}
-
-// Inline SVG micro-icons (12×12)
-const docIcon = '<svg class="mime-icon" viewBox="0 0 16 16" width="12" height="12"><path fill="currentColor" d="M4 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4.414A2 2 0 0 0 13.414 3L11 .586A2 2 0 0 0 9.586 0zm5.5 1.5v2a1 1 0 0 0 1 1h2zM4.5 8a.5.5 0 0 1 0-1h7a.5.5 0 0 1 0 1zm0 2a.5.5 0 0 1 0-1h7a.5.5 0 0 1 0 1zm0 2a.5.5 0 0 1 0-1h4a.5.5 0 0 1 0 1z"/></svg>';
-const codeIcon = '<svg class="mime-icon" viewBox="0 0 16 16" width="12" height="12"><path fill="currentColor" d="M5.854 4.854a.5.5 0 1 0-.708-.708l-3.5 3.5a.5.5 0 0 0 0 .708l3.5 3.5a.5.5 0 0 0 .708-.708L2.707 8zm4.292 0a.5.5 0 0 1 .708-.708l3.5 3.5a.5.5 0 0 1 0 .708l-3.5 3.5a.5.5 0 0 1-.708-.708L13.293 8z"/></svg>';
-const imgIcon = '<svg class="mime-icon" viewBox="0 0 16 16" width="12" height="12"><path fill="currentColor" d="M6.002 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0"/><path fill="currentColor" d="M2.002 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v6.5l-3.777-1.947a.5.5 0 0 0-.577.093l-3.71 3.71-2.66-1.772a.5.5 0 0 0-.63.062L1.002 12V3a1 1 0 0 1 1-1z"/></svg>';
-const mediaIcon = '<svg class="mime-icon" viewBox="0 0 16 16" width="12" height="12"><path fill="currentColor" d="M6.79 5.093A.5.5 0 0 0 6 5.5v5a.5.5 0 0 0 .79.407l3.5-2.5a.5.5 0 0 0 0-.814z"/><path fill="currentColor" d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm15 0a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1z"/></svg>';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -72,20 +39,16 @@ export function buildProfileContent(
             </section>`;
     }
 
-    // Sort models by LS recommended order if available
-    const sortedConfigs = sortModels(configs, userInfo.modelSortOrder);
-
     return [
         buildAccountSection(userInfo),
-        buildModelQuotaGrid(sortedConfigs),
         buildLimitsSection(userInfo),
-        buildFeaturesAndTeamSection(userInfo),
+        buildFeatureAndTeamGrid(userInfo),
     ].join('');
 }
 
 // ─── Model Sort ──────────────────────────────────────────────────────────────
 
-function sortModels(configs: ModelConfig[], sortOrder: string[]): ModelConfig[] {
+export function sortModels(configs: ModelConfig[], sortOrder: string[]): ModelConfig[] {
     if (!sortOrder || sortOrder.length === 0) { return configs; }
     const orderMap = new Map(sortOrder.map((label, i) => [label, i]));
     return [...configs].sort((a, b) => {
@@ -147,7 +110,6 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
                 'Privacy mask is ON by default. Click the shield button above to reveal sensitive data.',
                 '隐私遮罩默认开启。点击上方 🛡️ 按钮可显示/隐藏真实信息。',
             )}</p>
-            ${userInfo.defaultModelLabel ? `<div class="default-model">${tBi('Default Model', '默认模型')}: <strong>${esc(userInfo.defaultModelLabel)}</strong></div>` : ''}
             ${subHint}
             <div class="credits-section">
                 <div class="credit-row">
@@ -173,11 +135,11 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
         </section>`;
 }
 
-function buildModelQuotaGrid(configs: ModelConfig[]): string {
+export function buildModelQuotaGrid(configs: ModelConfig[]): string {
     const quotaModels = configs.filter(c => c.quotaInfo);
     if (quotaModels.length === 0) { return ''; }
 
-    const cards = quotaModels.map((c, idx) => {
+    const cards = quotaModels.map((c) => {
         const qi = c.quotaInfo!;
         const pct = Math.round(qi.remainingFraction * 100);
         const barColor = pct <= 20 ? 'var(--color-danger)' : pct < 80 ? 'var(--color-warn)' : 'var(--color-ok)';
@@ -193,25 +155,6 @@ function buildModelQuotaGrid(configs: ModelConfig[]): string {
         const tagBadge = c.tagTitle
             ? `<span class="model-tag-badge">${esc(c.tagTitle)}</span>` : '';
 
-        // MIME category chips
-        const mimeCategories = categorizeMimeTypes(c.supportedMimeTypes);
-        const mimeChipsHtml = mimeCategories.length > 0
-            ? `<div class="mime-chips">${mimeCategories.map(cat =>
-                `<span class="mime-chip">${cat.icon} ${cat.count}</span>`
-            ).join('')}</div>`
-            : `<div class="mime-chips"><span class="mime-chip mime-chip-none">${tBi('No file upload', '不支持文件')}</span></div>`;
-
-        // Full MIME list (collapsible)
-        let mimeDetailsHtml = '';
-        if (c.supportedMimeTypes.length > 0) {
-            const mimeTags = c.supportedMimeTypes.map(m => `<span class="mime-tag">${esc(m)}</span>`).join('');
-            mimeDetailsHtml = `
-                <details class="collapsible inline-details" id="d-mime-${idx}">
-                    <summary>${tBi('All MIME Types', '所有 MIME 类型')} (${c.supportedMimeTypes.length})</summary>
-                    <div class="details-body"><div class="mime-tags-wrap">${mimeTags}</div></div>
-                </details>`;
-        }
-
         return `
             <div class="model-card">
                 <div class="model-card-header">
@@ -222,11 +165,8 @@ function buildModelQuotaGrid(configs: ModelConfig[]): string {
                     <div class="quota-bar" style="width:${pct}%;background:${barColor}"></div>
                 </div>
                 <div class="model-card-meta">
-                    ${mimeChipsHtml}
                     ${resetLabel ? `<span class="model-card-reset">${tBi('Reset', '重置')} ${resetLabel}</span>` : ''}
                 </div>
-                <div class="quota-id">${esc(c.model)}</div>
-                ${mimeDetailsHtml}
             </div>`;
     }).join('');
 
@@ -239,10 +179,22 @@ function buildModelQuotaGrid(configs: ModelConfig[]): string {
         </section>`;
 }
 
+export function buildDefaultModelCard(userInfo: UserStatusInfo | null): string {
+    if (!userInfo?.defaultModelLabel) { return ''; }
+    return `
+        <section class="card">
+            <h2>${ICON.bolt} ${tBi('Default Model', '默认模型')}</h2>
+            <div class="default-model">${tBi('Current default', '当前默认')}: <strong>${esc(userInfo.defaultModelLabel)}</strong></div>
+            ${userInfo.userTierDescription
+                ? `<p class="raw-desc">${esc(userInfo.userTierDescription)}</p>`
+                : ''}
+        </section>`;
+}
+
 function buildLimitsSection(userInfo: UserStatusInfo): string {
     const fmtLimit = (v: number): string => v === -1 ? '∞' : v.toLocaleString();
     const pl = userInfo.planLimits;
-    const limitsRows = [
+    const limitCards = [
         [tBi('Max Input Tokens', '最大输入'), fmtLimit(pl.maxNumChatInputTokens)],
         [tBi('Premium Messages', '高级消息数'), fmtLimit(pl.maxNumPremiumChatMessages)],
         [tBi('Custom Instructions', '自定义指令'), tBi(
@@ -255,18 +207,20 @@ function buildLimitsSection(userInfo: UserStatusInfo): string {
             `${pl.monthlyFlexCreditPurchaseAmount.toLocaleString()} / mo`,
             `${pl.monthlyFlexCreditPurchaseAmount.toLocaleString()} /月`,
         )],
-    ].map(([k, v]) => `<div class="detail-row"><span>${k}</span><span>${v}</span></div>`).join('');
+    ].map(([k, v]) => `
+        <div class="profile-metric-card">
+            <span class="profile-metric-label">${k}</span>
+            <span class="profile-metric-value">${v}</span>
+        </div>`).join('');
 
     return `
         <section class="card">
-            <details class="collapsible" id="d-limits">
-                <summary>${ICON.shield} ${tBi('Plan Limits', '计划限制')}</summary>
-                <div class="details-body">${limitsRows}</div>
-            </details>
+            <h2>${ICON.shield} ${tBi('Plan Limits', '计划限制')}</h2>
+            <div class="profile-metric-grid">${limitCards}</div>
         </section>`;
 }
 
-function buildFeaturesAndTeamSection(userInfo: UserStatusInfo): string {
+function buildFeatureAndTeamGrid(userInfo: UserStatusInfo): string {
     // Feature flags
     const allFeatures: { label: string; enabled: boolean }[] = [
         { label: tBi('Web Search', '网页搜索'), enabled: userInfo.cascadeWebSearchEnabled },
@@ -295,15 +249,14 @@ function buildFeaturesAndTeamSection(userInfo: UserStatusInfo): string {
     ].map(f => `<span class="feature-tag${f.enabled ? ' enabled' : ''}">${f.label}</span>`).join('');
 
     return `
-        <section class="card">
-            <details class="collapsible" id="d-features">
-                <summary>${ICON.bolt} ${tBi('Features & Team', '功能与团队')}</summary>
-                <div class="details-body">
-                    <div class="section-subtitle">${tBi('Feature Flags', '功能开关')}</div>
-                    <div class="feature-tags">${featureTags}</div>
-                    <div class="section-subtitle" style="margin-top:var(--space-3)">${tBi('Team Config', '团队配置')}</div>
-                    <div class="feature-tags">${teamTags}</div>
-                </div>
-            </details>
-        </section>`;
+        <div class="profile-two-col">
+            <section class="card profile-panel-card">
+                <h2>${ICON.bolt} ${tBi('Feature Flags', '功能开关')}</h2>
+                <div class="profile-chip-grid">${featureTags}</div>
+            </section>
+            <section class="card profile-panel-card">
+                <h2>${ICON.shield} ${tBi('Team Config', '团队配置')}</h2>
+                <div class="profile-chip-grid">${teamTags}</div>
+            </section>
+        </div>`;
 }

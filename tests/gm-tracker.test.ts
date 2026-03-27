@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { GMSummary, GMTrackerState } from '../src/gm-tracker';
 import { filterGMSummaryByModels, GMTracker } from '../src/gm-tracker';
+import type { ModelConfig } from '../src/models';
+import type { QuotaSession } from '../src/quota-tracker';
 import { initI18nFromState } from '../src/i18n';
 
 function setLanguage(lang: 'zh' | 'en' | 'both') {
@@ -336,5 +338,201 @@ describe('filterGMSummaryByModels', () => {
         expect(Object.keys(summary?.modelBreakdown || {})).toEqual([zhName]);
         expect(summary?.modelBreakdown[zhName]?.callCount).toBe(2);
         expect(summary?.conversations[0].calls.every(call => call.modelDisplay === zhName)).toBe(true);
+    });
+
+    it('repairs detailed summaries by pruning calls that belong to already-archived quota cycles', () => {
+        setLanguage('zh');
+
+        const tracker = new GMTracker();
+        const configs: ModelConfig[] = [
+            {
+                model: 'MODEL_PLACEHOLDER_M37',
+                label: 'Gemini 3.1 Pro (High)',
+                supportsImages: false,
+                quotaInfo: { remainingFraction: 1, resetTime: '2026-03-27T05:00:00.000Z' },
+                allowedTiers: [],
+                mimeTypeCount: 0,
+                isRecommended: false,
+                supportedMimeTypes: [],
+            },
+            {
+                model: 'MODEL_PLACEHOLDER_M47',
+                label: 'Gemini 3 Flash',
+                supportsImages: false,
+                quotaInfo: { remainingFraction: 1, resetTime: '2026-03-27T05:00:00.000Z' },
+                allowedTiers: [],
+                mimeTypeCount: 0,
+                isRecommended: false,
+                supportedMimeTypes: [],
+            },
+        ];
+        const history: QuotaSession[] = [
+            {
+                id: 'flash-reset',
+                modelId: 'MODEL_PLACEHOLDER_M47',
+                modelLabel: 'Gemini 3 Flash',
+                poolModels: ['Gemini 3 Flash', 'Gemini 3.1 Pro (High)'],
+                startTime: '2026-03-26T00:00:00.000Z',
+                endTime: '2026-03-26T11:54:10.000Z',
+                totalDurationMs: 0,
+                snapshots: [],
+                completed: false,
+            },
+        ];
+        const detailedSummary: GMSummary = {
+            conversations: [
+                {
+                    cascadeId: 'conv-1',
+                    title: 'Gemini Session',
+                    totalSteps: 4,
+                    coveredSteps: 4,
+                    coverageRate: 1,
+                    lifetimeCalls: 2,
+                    calls: [
+                        {
+                            stepIndices: [1],
+                            executionId: 'old-call',
+                            model: 'MODEL_PLACEHOLDER_M37',
+                            modelDisplay: 'Gemini 3.1 Pro (High)',
+                            responseModel: 'gemini-3.1-pro-high',
+                            modelAccuracy: 'exact',
+                            inputTokens: 100,
+                            outputTokens: 20,
+                            thinkingTokens: 0,
+                            responseTokens: 20,
+                            cacheReadTokens: 0,
+                            cacheCreationTokens: 0,
+                            apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
+                            ttftSeconds: 1,
+                            streamingSeconds: 2,
+                            credits: 0,
+                            creditType: 'prompt',
+                            hasError: false,
+                            errorMessage: '',
+                            contextTokensUsed: 100,
+                            completionConfig: null,
+                            systemPromptSnippet: '',
+                            toolCount: 0,
+                            toolNames: [],
+                            promptSectionTitles: [],
+                            promptSnippet: '',
+                            promptSource: 'none',
+                            messagePromptCount: 0,
+                            messageMetadataKeys: [],
+                            responseHeaderKeys: [],
+                            userMessageAnchors: [],
+                            retries: 0,
+                            stopReason: 'STOP_REASON_END_TURN',
+                            retryTokensIn: 0,
+                            retryTokensOut: 0,
+                            retryCredits: 0,
+                            retryErrors: [],
+                            timeSinceLastInvocation: 0,
+                            tokenBreakdownGroups: [],
+                            createdAt: '2026-03-26T10:00:00.000Z',
+                            latestStableMessageIndex: 0,
+                            startStepIndex: 0,
+                            checkpointIndex: 0,
+                        },
+                        {
+                            stepIndices: [3],
+                            executionId: 'new-call',
+                            model: 'MODEL_PLACEHOLDER_M37',
+                            modelDisplay: 'Gemini 3.1 Pro (High)',
+                            responseModel: 'gemini-3.1-pro-high',
+                            modelAccuracy: 'exact',
+                            inputTokens: 200,
+                            outputTokens: 40,
+                            thinkingTokens: 0,
+                            responseTokens: 40,
+                            cacheReadTokens: 0,
+                            cacheCreationTokens: 0,
+                            apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
+                            ttftSeconds: 2,
+                            streamingSeconds: 3,
+                            credits: 0,
+                            creditType: 'prompt',
+                            hasError: false,
+                            errorMessage: '',
+                            contextTokensUsed: 200,
+                            completionConfig: null,
+                            systemPromptSnippet: '',
+                            toolCount: 0,
+                            toolNames: [],
+                            promptSectionTitles: [],
+                            promptSnippet: '',
+                            promptSource: 'none',
+                            messagePromptCount: 0,
+                            messageMetadataKeys: [],
+                            responseHeaderKeys: [],
+                            userMessageAnchors: [],
+                            retries: 0,
+                            stopReason: 'STOP_REASON_END_TURN',
+                            retryTokensIn: 0,
+                            retryTokensOut: 0,
+                            retryCredits: 0,
+                            retryErrors: [],
+                            timeSinceLastInvocation: 0,
+                            tokenBreakdownGroups: [],
+                            createdAt: '2026-03-26T12:30:00.000Z',
+                            latestStableMessageIndex: 0,
+                            startStepIndex: 0,
+                            checkpointIndex: 0,
+                        },
+                    ],
+                },
+            ],
+            modelBreakdown: {
+                'Gemini 3.1 Pro (High)': {
+                    callCount: 2,
+                    stepsCovered: 2,
+                    totalInputTokens: 300,
+                    totalOutputTokens: 60,
+                    totalThinkingTokens: 0,
+                    totalCacheRead: 0,
+                    totalCacheCreation: 0,
+                    totalCredits: 0,
+                    avgTTFT: 1.5,
+                    minTTFT: 1,
+                    maxTTFT: 2,
+                    avgStreaming: 2.5,
+                    cacheHitRate: 0,
+                    responseModel: 'gemini-3.1-pro-high',
+                    apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
+                    completionConfig: null,
+                    hasSystemPrompt: false,
+                    toolCount: 0,
+                    promptSectionTitles: [],
+                    totalRetries: 0,
+                    errorCount: 0,
+                    exactCallCount: 2,
+                    placeholderOnlyCalls: 0,
+                },
+            },
+            totalCalls: 2,
+            totalStepsCovered: 2,
+            totalCredits: 0,
+            totalInputTokens: 300,
+            totalOutputTokens: 60,
+            totalCacheRead: 0,
+            totalCacheCreation: 0,
+            totalThinkingTokens: 0,
+            contextGrowth: [],
+            fetchedAt: '2026-03-27T00:56:40.998Z',
+            totalRetryTokens: 0,
+            totalRetryCredits: 0,
+            totalRetryCount: 0,
+            latestTokenBreakdown: [],
+            stopReasonCounts: {},
+        };
+
+        const repaired = tracker.repairSummaryFromQuotaHistory(detailedSummary, history, configs);
+        const state = tracker.serialize();
+
+        expect(repaired?.totalCalls).toBe(1);
+        expect(repaired?.conversations[0].calls).toHaveLength(1);
+        expect(repaired?.conversations[0].calls[0].executionId).toBe('new-call');
+        expect(repaired?.modelBreakdown['Gemini 3.1 Pro (强)']?.callCount).toBe(1);
+        expect(state.archivedCallIds).toContain('old-call');
     });
 });

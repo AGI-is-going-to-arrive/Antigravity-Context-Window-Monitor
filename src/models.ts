@@ -42,6 +42,16 @@ let modelDisplayNames: Record<string, Record<'en' | 'zh', string>> = {
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': { en: 'GPT-OSS 120B (Medium)', zh: 'GPT-OSS 120B (中)' },
 };
 
+const KNOWN_QUOTA_POOLS: Record<string, string> = {
+    'MODEL_PLACEHOLDER_M37': 'gemini-pro',
+    'MODEL_PLACEHOLDER_M36': 'gemini-pro',
+    'MODEL_PLACEHOLDER_M47': 'gemini-flash',
+    'MODEL_PLACEHOLDER_M18': 'gemini-flash',
+    'MODEL_PLACEHOLDER_M35': 'claude-premium',
+    'MODEL_PLACEHOLDER_M26': 'claude-premium',
+    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'claude-premium',
+};
+
 function getDisplayCandidates(modelId: string, entry: Record<'en' | 'zh', string>): string[] {
     const candidates = [modelId, entry.en, entry.zh];
     if (entry.en !== entry.zh) {
@@ -101,6 +111,18 @@ export function normalizeModelDisplayName(modelOrDisplay: string): string {
     if (!clean) { return ''; }
     const modelId = resolveModelId(clean);
     return modelId ? getModelDisplayName(modelId) : clean;
+}
+
+/**
+ * Return a stable quota-pool key for models known to share quota.
+ * Falls back to resetTime/modelId for unknown future models.
+ */
+export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
+    const fixedPool = KNOWN_QUOTA_POOLS[modelId];
+    if (fixedPool) {
+        return fixedPool;
+    }
+    return resetTime || modelId;
 }
 
 // ─── Model Config from GetUserStatus ─────────────────────────────────────────
