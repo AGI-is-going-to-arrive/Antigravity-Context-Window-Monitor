@@ -29,8 +29,8 @@
 - **Model Tab + Persistent Model DNA / 模型标签页与持久化模型 DNA**: Added a dedicated `Models / 模型` tab to centralize model-related information. Personal model quota, default model, and GM-derived model DNA are now grouped together instead of being scattered across `Profile` and `Pricing`. Model DNA is now persisted independently from quota-cycle archives: static fields such as `responseModel`, provider, completion config, tool count, prompt sections, and system-prompt availability remain visible after archive, while current-cycle counters like calls, steps, credits, retries, and errors still reset normally with the quota cycle.
   新增独立的 `模型` 标签页，把模型相关信息集中起来展示。个人模型配额、默认模型和 GM 推导出的模型 DNA 不再分散在 `个人` 和 `价格` 页面里。模型 DNA 现在也会独立持久化：`responseModel`、提供商、completion config、工具数、prompt 分段、是否有 system prompt 这类静态信息在归档后仍然保留；而调用数、步骤数、积分、重试、错误等当前周期动态值仍然会随着额度归档正常清零。
 
-- **Archive / GM Troubleshooting Map / 归档与 GM 排障地图文档**: Added a new document [docs/archive_gm_troubleshooting.md](/E:/AI/1/Claude/1/docs/archive_gm_troubleshooting.md) to explain archive triggers, GM cycle boundaries, per-page data scope differences, related persisted state keys, and a symptom-to-module troubleshooting map for faster diagnosis of quota and GM issues.
-  新增排障文档 [docs/archive_gm_troubleshooting.md](/E:/AI/1/Claude/1/docs/archive_gm_troubleshooting.md)，专门说明归档触发链路、GM 当前周期边界、各页面口径差异、相关持久化键以及“出现什么现象该优先查哪个模块”的排障地图，方便后续快速定位额度和 GM 相关问题。
+- **Archive / GM Troubleshooting Map / 归档与 GM 排障地图文档**: Added a new document [docs/archive_gm_troubleshooting.md](docs/archive_gm_troubleshooting.md) to explain archive triggers, GM cycle boundaries, per-page data scope differences, related persisted state keys, and a symptom-to-module troubleshooting map for faster diagnosis of quota and GM issues.
+  新增排障文档 [docs/archive_gm_troubleshooting.md](docs/archive_gm_troubleshooting.md)，专门说明归档触发链路、GM 当前周期边界、各页面口径差异、相关持久化键以及“出现什么现象该优先查哪个模块”的排障地图，方便后续快速定位额度和 GM 相关问题。
 
 ### Changed / 变更
 
