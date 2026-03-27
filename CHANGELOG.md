@@ -1,5 +1,49 @@
 # 变更日志 / Changelog
 
+## [1.13.91] - 2026-03-27
+
+### 🐛 Fixed / 修复
+
+- **GM Archive Resurrection / GM 归档后旧调用复活**: Fixed a quota-cycle bug where GM calls archived during a reset could reappear in the next poll if the same historical invocation came back with a different `executionId`. GM reset now keeps both the original `executionId` marker and a stable archive key built from step indices, model identity, and call timestamp, so old calls no longer leak back into `GM 数据`、`成本`、`模型`、`监控` after archive.
+  修复 GM 归档后的“旧调用复活”问题。旧逻辑只靠 `executionId` 记录已归档调用，如果同一条历史调用下一轮被重新抓到但换了 `executionId`，它就会重新混进当前周期，导致 `GM 数据`、`成本`、`模型`、`监控` 看起来都没归零。现在归档过滤同时记录原始 `executionId` 和一份稳定归档键（步序号 + 模型身份 + 调用时间），旧调用不会再漏回当前周期。
+
+- **Monitor GM Fallback No Longer Rehydrates Archived Data / 监控页不再用旧快照顶回已归档 GM 数据**: Tightened the Monitor tab fallback path so once live `gmSummary` exists, it no longer mixes in stale `monitor-store` GM conversation snapshots for the current cycle. This prevents post-reset monitor cards from being repopulated by historical per-conversation GM data.
+  收紧了 `监控` 页的 GM fallback 逻辑：只要 live `gmSummary` 已经存在，就不再把 `monitor-store` 里的旧 GM 会话快照混进当前周期。这样额度归档后，监控页不会再被历史快照“顶回去”。
+
+- **Calendar Import Backfill Completeness / 日历历史回填不完整**: Fixed `DailyStore.importArchives()` so when it encounters an existing cycle, it now backfills the missing fields instead of only patching `modelStats`. Older calendar entries can now补齐 `triggeredBy`、`gmTotalCalls`、`gmTotalCredits`、`gmTotalTokens`、`gmRetry*`、`estimatedCost`、`gmModelStats`，避免出现“活动统计有了，但 GM/费用/触发来源缺半边”的日历脏数据。
+  修复 `DailyStore.importArchives()` 只补 `modelStats` 不补其他字段的问题。现在命中旧 cycle 后，会一并回填 `triggeredBy`、`gmTotalCalls`、`gmTotalCredits`、`gmTotalTokens`、`gmRetry*`、`estimatedCost`、`gmModelStats`，避免旧日历记录长期缺 GM / 费用 / 触发来源。
+
+- **Calendar Cache Hit Rate Weighting / 日历缓存命中率加权偏高**: Fixed the calendar summary's GM cache-hit aggregation so `0%` hit cycles are no longer dropped from the denominator. Cache hit rates are now weighted by actual call count even when a cycle had zero cache hits, preventing the daily merged cache rate from being systematically inflated.
+  修复日历里 GM 缓存命中率的加权错误。旧逻辑会把 `0%` 命中的周期直接跳过，导致日级汇总缓存命中率被系统性抬高。现在只要该周期有调用，就会按真实 `calls` 参与加权，`0%` 也会计入分母。
+
+- **Dev Reset Simulation Now Clears Activity for Real / 模拟额度重置现在会真正清空 Activity 当前周期**: The dev reset button previously passed a fake model scope into `activityTracker.archiveAndReset()`, which meant GM/Cost/Model panes reset while `GM 数据` 里的 Activity 统计还残留。 The simulation path now performs a real global Activity archive/reset before rebuilding GM summaries, so the test result matches actual quota-cycle behavior.
+  修复“模拟额度重置”按钮只重置 GM、不真正清空 Activity 当前周期的问题。旧实现给 `activityTracker.archiveAndReset()` 传了假的模型范围，导致 `GM 数据` 页里仍残留旧的推理 / 工具 / 步数统计。现在模拟路径会先做真正的全局 Activity 归档与清空，再重建 GM 摘要，测试结果终于和真实额度归档一致。
+
+- **Gemini Recent Activity Duplicate / Replacement Fix / Gemini 最近操作重复与串行替换修复**: Fixed a timeline bug that was most visible on Gemini Pro conversations, where user messages could appear twice, earlier AI replies could be repeated, or GM exact data could make a user row look like it had been "replaced". The tracker no longer treats `stepIndex` as the only stable identity for recent-step deduplication. Real step rows now carry a stable fingerprint built from conversation, step type, and creation time, so recent activity remains consistent even when the visible steps window shifts.
+  修复 Gemini Pro 对话里“最近操作”出现用户消息重复、AI 回复重复、甚至用户行看起来像被替换的问题。时间线现在不再把 `stepIndex` 当成最近步骤去重的唯一身份，而是给真实 step 行增加由对话、步骤类型和创建时间组成的稳定指纹。这样即使可见步骤窗口发生重映射，最近操作也不会再把同一条消息重复灌进去，或把不同步骤错误地贴到同一个编号上。
+
+- **Startup Timeline Self-Healing / 启动时自动清洗历史脏时间线**: Added a startup repair pass for persisted recent activity state. When the extension restores old timeline data containing duplicated step rows or user rows polluted by GM metadata, it now compacts and sanitizes that state immediately and writes the cleaned result back to persistence, so users do not need to wait for later polls to gradually self-heal stale duplicates.
+  新增启动时的历史时间线自愈。扩展恢复旧的最近操作状态时，如果发现持久化里已经存在重复 step 行，或者用户行被 GM 元数据污染，现在会立即完成压缩清洗并把修正后的结果回写到持久化状态里，不需要再等后续轮询慢慢自愈。
+
+### Changed / 变更
+
+- **Reset Test Tools Are Now Reversible / 重置测试工具支持回滚**: The Settings tab's debug tools now revolve around a single safe flow: `模拟额度重置` captures a snapshot first, performs the reset simulation, and exposes a shared `恢复快照` button to roll Activity / GM / Calendar back to the pre-test state in the same extension session.
+  设置页里的调试工具现在统一走“先抓快照、后测试、可回滚”的安全流程。`模拟额度重置` 会先保存一份快照，再执行模拟归档；随后可通过同一区块里的 `恢复快照`，把 Activity / GM / Calendar 一并回滚到测试前状态。
+
+- **Settings Tab Simplified / 设置页继续做减法**: Removed `活动设置` and `历史设置` from the Settings tab, and also removed the unreliable `初始化 GM 数据` test entry. The debug area now keeps only the reset simulation + restore pair, reducing confusion and lowering the chance of users accidentally mutating internal counters in unsupported ways.
+  继续精简 `设置` 页：移除了 `活动设置`、`历史设置` 两整块 UI，也删掉了不稳定的 `初始化 GM 数据` 测试入口。现在调试区只保留“模拟额度重置 + 恢复快照”这一组，减少误操作和无效入口。
+
+### ✅ Tests / 测试
+
+- Added a new `daily-store.test.ts` to lock the calendar import/backfill behavior and ensure old cycles can recover missing GM and cost fields.
+  新增 `daily-store.test.ts`，锁定日历历史导入与回填行为，确保旧 cycle 能正确补回缺失的 GM / 成本字段。
+
+- Expanded `gm-tracker.test.ts` with a regression case covering archived GM calls being refetched under a different `executionId`, ensuring they stay hidden after reset.
+  扩展 `gm-tracker.test.ts`，新增“同一条历史 GM 调用换了 `executionId` 再次被抓回”这一回归用例，确保归档后的旧调用不会再复活。
+
+- Expanded `activity-tracker.test.ts` with Gemini-specific timeline regressions covering unstable `stepIndex` remapping, user-row GM pollution, and persisted duplicate cleanup on restore.
+  扩展 `activity-tracker.test.ts`，新增 Gemini 时间线回归用例，覆盖 `stepIndex` 重映射导致的重复、用户行被 GM 数据污染，以及恢复旧状态时自动清理历史重复时间线。
+
 ## [1.13.9] - 2026-03-27
 
 ### 🐛 Fixed / 修复

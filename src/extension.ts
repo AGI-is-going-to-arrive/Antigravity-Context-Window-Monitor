@@ -19,7 +19,7 @@ import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } fro
 import { QuotaTracker } from './quota-tracker';
 import { GMTracker, GMSummary, GMTrackerState, filterGMSummaryByModels } from './gm-tracker';
 import { PricingStore } from './pricing-store';
-import { DailyStore } from './daily-store';
+import { DailyStore, type DailyStoreState } from './daily-store';
 import { MonitorStore } from './monitor-store';
 import { findLatestQuotaSessionForPool, groupModelIdsByResetPool } from './pool-utils';
 import { DurableState, StateBucket } from './durable-state';
@@ -56,6 +56,13 @@ let durableWorkspaceState: StateBucket;
 let durableFileGlobalState: StateBucket;
 let durableFileWorkspaceState: StateBucket;
 let persistedModelDNA: Record<string, PersistedModelDNA> = {};
+type DevResetSnapshot = {
+    activityState: ActivityTrackerState;
+    gmTrackerState: GMTrackerState;
+    gmDetailedSummary: GMSummary | null;
+    dailyState: DailyStoreState;
+};
+let devResetSnapshot: DevResetSnapshot | null = null;
 
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
@@ -109,6 +116,37 @@ let abortController = new AbortController();
 
 /** Map of cascadeId → remaining polls to show compression indicator. */
 const compressionPersistCounters = new Map<string, number>();
+
+function clonePlain<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function persistResetSensitiveState(): void {
+    durableGlobalState.update('activityTrackerState', activityTracker.serialize());
+    durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+    durableFileGlobalState.update('gmDetailedSummary', lastGMSummary);
+}
+
+function captureDevResetSnapshot(): void {
+    devResetSnapshot = {
+        activityState: clonePlain(activityTracker.serialize()),
+        gmTrackerState: clonePlain(gmTracker.serialize()),
+        gmDetailedSummary: lastGMSummary ? clonePlain(lastGMSummary) : null,
+        dailyState: clonePlain(dailyStore.serialize()),
+    };
+}
+
+function restoreDevResetSnapshot(): boolean {
+    if (!devResetSnapshot) { return false; }
+    activityTracker = ActivityTracker.restore(clonePlain(devResetSnapshot.activityState));
+    gmTracker = GMTracker.restore(clonePlain(devResetSnapshot.gmTrackerState));
+    gmTracker.setDetailedSummary(devResetSnapshot.gmDetailedSummary ? clonePlain(devResetSnapshot.gmDetailedSummary) : null);
+    lastGMSummary = devResetSnapshot.gmDetailedSummary ? clonePlain(devResetSnapshot.gmDetailedSummary) : null;
+    dailyStore.restoreSnapshot(clonePlain(devResetSnapshot.dailyState));
+    devResetSnapshot = null;
+    persistResetSensitiveState();
+    return true;
+}
 
 // ─── Activation ───────────────────────────────────────────────────────────────
 
@@ -198,6 +236,13 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize activity tracker
     const savedActivity = durableGlobalState.get<ActivityTrackerState | undefined>('activityTrackerState', undefined);
     activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
+    if (savedActivity) {
+        const normalizedActivityState = activityTracker.serialize();
+        if (JSON.stringify(savedActivity) !== JSON.stringify(normalizedActivityState)) {
+            durableGlobalState.update('activityTrackerState', normalizedActivityState);
+            log('Activity tracker state normalized during startup repair');
+        }
+    }
     const savedGM = durableGlobalState.get<GMTrackerState | undefined>('gmTrackerState', undefined);
     gmTracker = savedGM ? GMTracker.restore(savedGM) : new GMTracker();
     lastGMSummary = durableFileGlobalState.get<GMSummary | null>('gmDetailedSummary', gmTracker.getCachedSummary());
@@ -277,13 +322,13 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.devSimulateReset', () => {
             if (!activityTracker) { return; }
+            captureDevResetSnapshot();
             log('[Dev] Simulating quota reset...');
-            const modelIds = ['[simulate]'];
-            activityTracker.archiveAndReset(modelIds);
-            durableGlobalState.update('activityTrackerState', activityTracker.serialize());
-            const archives = activityTracker.getArchives();
-            if (archives.length > 0 && dailyStore) {
-                const latest = archives[0];
+            const archive = activityTracker.archiveAndReset();
+            if (archive) {
+                archive.triggeredBy = ['[simulate]'];
+            }
+            if (archive && dailyStore) {
                 let costTotal: number | undefined;
                 let costPerModel: Record<string, number> | undefined;
                 if (lastGMSummary && pricingStore) {
@@ -294,22 +339,25 @@ export function activate(context: vscode.ExtensionContext): void {
                         if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
                     }
                 }
-                dailyStore.addCycle(latest, lastGMSummary, costTotal, costPerModel);
+                dailyStore.addCycle(archive, lastGMSummary, costTotal, costPerModel);
             }
-            gmTracker.reset(); // dev simulate = global reset
-            lastGMSummary = null;
-            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-            durableFileGlobalState.update('gmDetailedSummary', null);
-            log('[Dev] Quota reset simulated — activity archived, GM baselines set');
+            const allModelIds = cachedModelConfigs.map(config => config.model);
+            gmTracker.reset(allModelIds);
+            lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
+            persistResetSensitiveState();
+            if (isMonitorPanelVisible()) {
+                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics(), persistedModelDNA);
+            }
+            log('[Dev] Quota reset simulated — snapshot captured, activity archived, GM summary reset');
         }),
-        vscode.commands.registerCommand('antigravity-context-monitor.devClearGM', () => {
-            log('[Dev] Full GM reset (clear all data + baselines)...');
-            gmTracker.fullReset();
-            monitorStore.clearGMConversations();
-            lastGMSummary = null;
-            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-            durableFileGlobalState.update('gmDetailedSummary', null);
-            log('[Dev] GM data fully cleared — next fetch will baseline all API data');
+        vscode.commands.registerCommand('antigravity-context-monitor.devRestoreReset', () => {
+            const restored = restoreDevResetSnapshot();
+            if (restored && isMonitorPanelVisible()) {
+                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics(), persistedModelDNA);
+            }
+            log(restored
+                ? '[Dev] Restored simulated quota reset snapshot'
+                : '[Dev] No simulated quota reset snapshot to restore');
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.devPersistActivity', () => {
             if (activityTracker) {
@@ -949,6 +997,7 @@ function getStorageDiagnostics(): StorageDiagnostics {
         calendarDayCount: dailyStore?.totalDays || 0,
         calendarCycleCount,
         pricingOverrideCount: Object.keys(pricingStore?.getCustom() || {}).length,
+        hasDevResetSnapshot: !!devResetSnapshot,
     };
 }
 

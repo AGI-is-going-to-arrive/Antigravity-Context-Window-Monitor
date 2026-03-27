@@ -354,18 +354,17 @@ export function showMonitorPanel(
             }
         } else if (msg.command === 'devSimulateReset') {
             await vscode.commands.executeCommand('antigravity-context-monitor.devSimulateReset');
-            lastGMSummary = null;
             refreshLocalStorageDiagnostics();
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                safePostMessage({ command: 'switchToTab', tab: 'settings' });
             }
-        } else if (msg.command === 'devClearGM') {
-            await vscode.commands.executeCommand('antigravity-context-monitor.devClearGM');
-            lastGMSummary = null;
-            lastGMConversations = {};
+        } else if (msg.command === 'devRestoreReset') {
+            await vscode.commands.executeCommand('antigravity-context-monitor.devRestoreReset');
             refreshLocalStorageDiagnostics();
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                safePostMessage({ command: 'switchToTab', tab: 'settings' });
             }
         }
     });

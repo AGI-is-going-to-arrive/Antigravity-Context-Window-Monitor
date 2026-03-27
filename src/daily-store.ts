@@ -4,7 +4,7 @@
 // Persisted via globalState for cross-session survival.
 
 import type { ActivityArchive } from './activity-tracker';
-import type { GMSummary } from './gm-tracker';
+import type { GMSummary, GMModelStats } from './gm-tracker';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -74,7 +74,7 @@ export interface MonthCellSummary {
 }
 
 /** Serialized state for globalState */
-interface DailyStoreState {
+export interface DailyStoreState {
     version: 1;
     records: Record<string, DailyRecord>;
     /** True once importArchives has completed — prevents re-importing on every activate */
@@ -95,6 +95,52 @@ function toDateKey(iso: string): string {
 /** Get distinct model names from an ActivitySummary's modelStats */
 function extractModelNames(modelStats: Record<string, unknown>): string[] {
     return Object.keys(modelStats);
+}
+
+function buildPerModelStats(modelStats: Record<string, {
+    reasoning: number;
+    toolCalls: number;
+    errors: number;
+    estSteps: number;
+    inputTokens: number;
+    outputTokens: number;
+}>): Record<string, ModelCycleStats> | undefined {
+    const perModel: Record<string, ModelCycleStats> = {};
+    for (const [name, ms] of Object.entries(modelStats)) {
+        perModel[name] = {
+            reasoning: ms.reasoning,
+            toolCalls: ms.toolCalls,
+            errors: ms.errors,
+            estSteps: ms.estSteps,
+            inputTokens: ms.inputTokens,
+            outputTokens: ms.outputTokens,
+        };
+    }
+    return Object.keys(perModel).length > 0 ? perModel : undefined;
+}
+
+function buildGMPerModelStats(
+    gmSummaryOrBreakdown?: GMSummary | Record<string, GMModelStats> | null,
+    costPerModel?: Record<string, number>,
+): Record<string, GMModelCycleStats> | undefined {
+    const breakdown = gmSummaryOrBreakdown && 'modelBreakdown' in gmSummaryOrBreakdown
+        ? gmSummaryOrBreakdown.modelBreakdown
+        : gmSummaryOrBreakdown || undefined;
+    if (!breakdown) { return undefined; }
+    const gmPerModel: Record<string, GMModelCycleStats> = {};
+    for (const [name, ms] of Object.entries(breakdown)) {
+        gmPerModel[name] = {
+            calls: ms.callCount,
+            credits: ms.totalCredits,
+            inputTokens: ms.totalInputTokens,
+            outputTokens: ms.totalOutputTokens,
+            thinkingTokens: ms.totalThinkingTokens,
+            avgTTFT: ms.avgTTFT,
+            cacheHitRate: ms.cacheHitRate,
+            estimatedCost: costPerModel?.[name],
+        };
+    }
+    return Object.keys(gmPerModel).length > 0 ? gmPerModel : undefined;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -143,18 +189,6 @@ export class DailyStore {
         const s = archive.summary;
 
         // Extract per-model breakdown from archive's modelStats
-        const perModel: Record<string, ModelCycleStats> = {};
-        for (const [name, ms] of Object.entries(s.modelStats)) {
-            perModel[name] = {
-                reasoning: ms.reasoning,
-                toolCalls: ms.toolCalls,
-                errors: ms.errors,
-                estSteps: ms.estSteps,
-                inputTokens: ms.inputTokens,
-                outputTokens: ms.outputTokens,
-            };
-        }
-
         const cycle: DailyCycleEntry = {
             startTime: archive.startTime,
             endTime: archive.endTime,
@@ -166,7 +200,7 @@ export class DailyStore {
             totalOutputTokens: s.totalOutputTokens,
             estSteps: s.estSteps,
             modelNames: extractModelNames(s.modelStats),
-            modelStats: Object.keys(perModel).length > 0 ? perModel : undefined,
+            modelStats: buildPerModelStats(s.modelStats),
         };
 
         if (gmSummary) {
@@ -185,24 +219,7 @@ export class DailyStore {
         }
 
         // GM per-model breakdown
-        if (gmSummary && gmSummary.modelBreakdown) {
-            const gmPerModel: Record<string, GMModelCycleStats> = {};
-            for (const [name, ms] of Object.entries(gmSummary.modelBreakdown)) {
-                gmPerModel[name] = {
-                    calls: ms.callCount,
-                    credits: ms.totalCredits,
-                    inputTokens: ms.totalInputTokens,
-                    outputTokens: ms.totalOutputTokens,
-                    thinkingTokens: ms.totalThinkingTokens,
-                    avgTTFT: ms.avgTTFT,
-                    cacheHitRate: ms.cacheHitRate,
-                    estimatedCost: costPerModel?.[name],
-                };
-            }
-            if (Object.keys(gmPerModel).length > 0) {
-                cycle.gmModelStats = gmPerModel;
-            }
-        }
+        cycle.gmModelStats = buildGMPerModelStats(gmSummary, costPerModel);
 
         record.cycles.push(cycle);
         this._trimOld();
@@ -228,26 +245,59 @@ export class DailyStore {
             const dateKey = toDateKey(archive.endTime);
             const existing = this._records.get(dateKey);
             // Dedup: skip if a cycle with the same startTime already exists — BUT
-            // back-fill modelStats if the existing cycle is missing it (data upgrade).
+            // back-fill missing fields if the existing cycle is incomplete (data upgrade).
             if (existing) {
                 const match = existing.cycles.find(c => c.startTime === archive.startTime);
                 if (match) {
-                    if (!match.modelStats && archive.summary.modelStats) {
-                        const perModel: Record<string, ModelCycleStats> = {};
-                        for (const [name, ms] of Object.entries(archive.summary.modelStats)) {
-                            perModel[name] = {
-                                reasoning: ms.reasoning,
-                                toolCalls: ms.toolCalls,
-                                errors: ms.errors,
-                                estSteps: ms.estSteps,
-                                inputTokens: ms.inputTokens,
-                                outputTokens: ms.outputTokens,
-                            };
-                        }
-                        if (Object.keys(perModel).length > 0) {
-                            match.modelStats = perModel;
-                            needsPersist = true;
-                        }
+                    const upgradedModelStats = buildPerModelStats(archive.summary.modelStats);
+                    const archiveGMBreakdown = archive.summary.gmModelBreakdown;
+                    const upgradedGMModelStats = buildGMPerModelStats(gmSummary?.modelBreakdown || archiveGMBreakdown);
+                    const gmTotalCalls = gmSummary?.totalCalls
+                        ?? (archiveGMBreakdown ? Object.values(archiveGMBreakdown).reduce((sum, ms) => sum + ms.callCount, 0) : 0);
+                    const gmTotalCredits = gmSummary?.totalCredits
+                        ?? (archiveGMBreakdown ? Object.values(archiveGMBreakdown).reduce((sum, ms) => sum + ms.totalCredits, 0) : 0);
+                    const gmTotalTokens = gmSummary
+                        ? gmSummary.totalInputTokens + gmSummary.totalOutputTokens
+                        : (archiveGMBreakdown
+                            ? Object.values(archiveGMBreakdown).reduce((sum, ms) => sum + ms.totalInputTokens + ms.totalOutputTokens, 0)
+                            : 0);
+                    const gmRetryTokens = gmSummary?.totalRetryTokens ?? 0;
+                    const gmRetryCredits = gmSummary?.totalRetryCredits ?? 0;
+                    const gmRetryCount = gmSummary?.totalRetryCount ?? 0;
+
+                    if (!match.modelStats && upgradedModelStats) {
+                        match.modelStats = upgradedModelStats;
+                        needsPersist = true;
+                    }
+                    if (!match.triggeredBy && archive.triggeredBy && archive.triggeredBy.length > 0) {
+                        match.triggeredBy = [...archive.triggeredBy];
+                        needsPersist = true;
+                    }
+                    if ((match.gmTotalCalls === undefined || match.gmTotalCalls === 0) && gmTotalCalls > 0) {
+                        match.gmTotalCalls = gmTotalCalls;
+                        needsPersist = true;
+                    }
+                    if ((match.gmTotalCredits === undefined || match.gmTotalCredits === 0) && gmTotalCredits > 0) {
+                        match.gmTotalCredits = gmTotalCredits;
+                        needsPersist = true;
+                    }
+                    if ((match.gmTotalTokens === undefined || match.gmTotalTokens === 0) && gmTotalTokens > 0) {
+                        match.gmTotalTokens = gmTotalTokens;
+                        needsPersist = true;
+                    }
+                    if ((match.gmRetryTokens === undefined || match.gmRetryTokens === 0) && gmRetryTokens > 0) {
+                        match.gmRetryTokens = gmRetryTokens;
+                        match.gmRetryCredits = gmRetryCredits;
+                        match.gmRetryCount = gmRetryCount;
+                        needsPersist = true;
+                    }
+                    if ((match.estimatedCost === undefined || match.estimatedCost === 0) && (costTotal || 0) > 0) {
+                        match.estimatedCost = costTotal;
+                        needsPersist = true;
+                    }
+                    if (!match.gmModelStats && upgradedGMModelStats) {
+                        match.gmModelStats = upgradedGMModelStats;
+                        needsPersist = true;
                     }
                     continue;
                 }
@@ -313,6 +363,21 @@ export class DailyStore {
             records[date] = record;
         }
         return { version: 1, records, backfilled: this._backfilled };
+    }
+
+    /** Restore the full in-memory snapshot and persist it back to storage. */
+    restoreSnapshot(state: DailyStoreState): void {
+        this._records.clear();
+        if (state && state.version === 1 && state.records) {
+            for (const [date, record] of Object.entries(state.records)) {
+                this._records.set(date, record);
+            }
+            this._backfilled = !!state.backfilled;
+        } else {
+            this._backfilled = false;
+        }
+        this._trimOld();
+        this._persist();
     }
 
     // ─── Internal ────────────────────────────────────────────────────────

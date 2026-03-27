@@ -416,6 +416,13 @@ export function getStyles(): string {
             justify-content: center;
             transition: background 0.15s cubic-bezier(.4,0,.2,1), color 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
         }
+        .action-btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.45;
+            color: var(--color-text-dim);
+            border-color: var(--color-border);
+            background: rgba(255,255,255,0.01);
+        }
 
         .action-btn:focus-visible {
             box-shadow: 0 0 0 2px var(--color-info);
@@ -429,6 +436,11 @@ export function getStyles(): string {
                 background: var(--color-surface-hover);
                 color: var(--color-text);
                 border-color: var(--color-border-hover);
+            }
+            .action-btn:disabled:hover {
+                background: rgba(255,255,255,0.01);
+                color: var(--color-text-dim);
+                border-color: var(--color-border);
             }
         }
 

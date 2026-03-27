@@ -106,6 +106,8 @@ export interface StepEvent {
     gmLatestStableMessageIndex?: number;
     gmStartStepIndex?: number;
     gmContextTokensUsed?: number;
+    /** Stable identity for a real step across shifting API windows */
+    stepFingerprint?: string;
 }
 
 /** Archived activity snapshot (saved on quota reset) */
@@ -321,6 +323,30 @@ function sameTriggeredByScope(a?: string[], b?: string[]): boolean {
 
 function buildGMEventKey(cascadeId: string | undefined, stepIndex: number | undefined): string {
     return `${cascadeId || 'unknown'}::${stepIndex ?? -1}`;
+}
+
+function buildRawStepFingerprint(step: Record<string, unknown>, cascadeId?: string): string | undefined {
+    const type = (step.type as string) || '';
+    const meta = (step.metadata || {}) as Record<string, unknown>;
+    const createdAt = (meta.createdAt as string) || '';
+    if (!cascadeId || !type || !createdAt) { return undefined; }
+    return `${cascadeId}|${type}|${createdAt}`;
+}
+
+function buildLegacyStepEventIdentity(event: StepEvent): string {
+    return [
+        event.cascadeId || '',
+        event.source || '',
+        event.category,
+        event.timestamp || '',
+        event.icon || '',
+        event.toolName || '',
+        event.detail || '',
+        event.userInput || '',
+        event.fullUserInput || '',
+        event.aiResponse || '',
+        event.fullAiResponse || '',
+    ].join('|');
 }
 
 function isLowSignalPromptSnippet(snippet: string): boolean {
@@ -855,6 +881,7 @@ export class ActivityTracker {
         const dur = cls.category === 'tool' ? stepDurationTool(meta) : stepDurationReasoning(meta);
         const observedAt = (meta.createdAt as string) || new Date().toISOString();
         const timestamp = emitEvent ? observedAt : '';
+        const stepFingerprint = buildRawStepFingerprint(step, cascadeId);
 
         // USER_INPUT
         if (cls.category === 'user') {
@@ -872,7 +899,7 @@ export class ActivityTracker {
             const text = (Array.isArray(items) && items.length > 0 ? (items[0].text || '') : '')
                 || (typeof userInput?.userResponse === 'string' ? userInput.userResponse : '');
             if (emitEvent) {
-                this._pushEvent({
+                this._upsertStepTimelineEvent({
                     timestamp,
                     icon: cls.icon,
                     category: 'user',
@@ -885,6 +912,7 @@ export class ActivityTracker {
                     cascadeId,
                     source: 'step',
                     modelBasis: 'step',
+                    stepFingerprint,
                 });
             }
             return;
@@ -997,7 +1025,7 @@ export class ActivityTracker {
             const nu = (step.notifyUser || {}) as Record<string, unknown>;
             const text = ((nu.notificationContent || nu.message || '') as string).trim();
             if (text && emitEvent) {
-                this._pushEvent({
+                this._upsertStepTimelineEvent({
                     timestamp,
                     icon: '📢',
                     category: 'reasoning',
@@ -1010,6 +1038,7 @@ export class ActivityTracker {
                     cascadeId,
                     source: 'step',
                     modelBasis: model ? 'step' : undefined,
+                    stepFingerprint,
                 });
             }
             return;
@@ -1057,7 +1086,7 @@ export class ActivityTracker {
             const hasContent = resp || (Array.isArray(toolCalls) && toolCalls.length > 0);
             if (emitEvent && hasContent) {
                 // durationMs=0 for timeline: per-step thinking time is unreliable with 3s polling
-                this._pushEvent({
+                this._upsertStepTimelineEvent({
                     timestamp,
                     icon: cls.icon,
                     category: 'reasoning',
@@ -1070,6 +1099,7 @@ export class ActivityTracker {
                     cascadeId,
                     source: 'step',
                     modelBasis: 'step',
+                    stepFingerprint,
                 });
                 this._clearPendingPlannerStep(cascadeId, stepIndex);
             } else if (emitEvent) {
@@ -1087,7 +1117,7 @@ export class ActivityTracker {
             const detail = extractToolDetail(step);
             const toolName = extractToolName(step, cls.label);
             if (emitEvent) {
-                this._pushEvent({
+                this._upsertStepTimelineEvent({
                     timestamp,
                     icon: cls.icon,
                     category: 'tool',
@@ -1099,6 +1129,7 @@ export class ActivityTracker {
                     cascadeId,
                     source: 'step',
                     modelBasis: 'step',
+                    stepFingerprint,
                 });
             }
         }
@@ -1129,6 +1160,7 @@ export class ActivityTracker {
         const cls = classifyStep(type);
         const createdAt = (meta.createdAt as string) || '';
         const timestamp = createdAt || this._sessionStartTime;
+        const stepFingerprint = buildRawStepFingerprint(step, cascadeId);
 
         if (cls.category === 'user') {
             const userInput = step.userInput as Record<string, unknown> | undefined;
@@ -1148,6 +1180,7 @@ export class ActivityTracker {
                 cascadeId,
                 source: 'step',
                 modelBasis: 'step',
+                stepFingerprint,
             };
         }
 
@@ -1168,6 +1201,7 @@ export class ActivityTracker {
                 cascadeId,
                 source: 'step',
                 modelBasis: model ? 'step' : undefined,
+                stepFingerprint,
             };
         }
 
@@ -1205,6 +1239,7 @@ export class ActivityTracker {
                 cascadeId,
                 source: 'step',
                 modelBasis: 'step',
+                stepFingerprint,
             };
         }
 
@@ -1221,23 +1256,27 @@ export class ActivityTracker {
                 cascadeId,
                 source: 'step',
                 modelBasis: 'step',
+                stepFingerprint,
             };
         }
 
         return null;
     }
 
-    private _upsertStepTimelineEvent(event: StepEvent): boolean {
-        const existing = this._recentSteps.find(ev =>
+    private _findMatchingStepTimelineEvent(event: StepEvent): StepEvent | undefined {
+        const fingerprint = event.stepFingerprint;
+        const legacyIdentity = buildLegacyStepEventIdentity(event);
+        return this._recentSteps.find(ev =>
             ev.source === 'step'
             && ev.cascadeId === event.cascadeId
-            && ev.stepIndex === event.stepIndex
+            && (
+                (!!fingerprint && !!ev.stepFingerprint && ev.stepFingerprint === fingerprint)
+                || (!fingerprint && !ev.stepFingerprint && buildLegacyStepEventIdentity(ev) === legacyIdentity)
+            )
         );
-        if (!existing) {
-            this._pushEvent(event);
-            return true;
-        }
+    }
 
+    private _mergeStepTimelineEvent(existing: StepEvent, event: StepEvent): boolean {
         let changed = false;
         const mergeKeys: Array<keyof StepEvent> = [
             'timestamp',
@@ -1253,15 +1292,90 @@ export class ActivityTracker {
             'browserSub',
             'toolName',
             'modelBasis',
+            'stepIndex',
+            'stepFingerprint',
         ];
         for (const key of mergeKeys) {
+            if (!(key in event)) { continue; }
             if (existing[key] !== event[key]) {
                 existing[key] = event[key] as never;
                 changed = true;
             }
         }
+        return changed;
+    }
+
+    private _sanitizeUserTimelineEvent(event: StepEvent): boolean {
+        if (event.category !== 'user') { return false; }
+        let changed = false;
+        if (event.model) {
+            event.model = '';
+            changed = true;
+        }
+        if (event.source === 'step' && event.modelBasis !== 'step') {
+            event.modelBasis = 'step';
+            changed = true;
+        }
+        const gmKeys: Array<keyof StepEvent> = [
+            'gmInputTokens',
+            'gmOutputTokens',
+            'gmThinkingTokens',
+            'gmCacheReadTokens',
+            'gmCredits',
+            'gmTTFT',
+            'gmStreamingDuration',
+            'gmRetries',
+            'gmModel',
+            'gmModelAccuracy',
+            'gmPromptSnippet',
+            'gmPromptSource',
+            'gmExecutionId',
+            'gmLatestStableMessageIndex',
+            'gmStartStepIndex',
+            'gmContextTokensUsed',
+        ];
+        for (const key of gmKeys) {
+            if (event[key] !== undefined) {
+                delete event[key];
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    private _compactRecentSteps(): void {
+        const deduped = new Map<string, StepEvent>();
+        for (const rawEvent of this._recentSteps) {
+            const event = { ...rawEvent };
+            this._sanitizeUserTimelineEvent(event);
+            const dedupeKey = event.source === 'step'
+                ? `${event.cascadeId || ''}|${event.stepFingerprint || buildLegacyStepEventIdentity(event)}`
+                : `${event.cascadeId || ''}|${event.source || ''}|${buildLegacyStepEventIdentity(event)}`;
+            const existing = deduped.get(dedupeKey);
+            if (!existing) {
+                deduped.set(dedupeKey, event);
+                continue;
+            }
+            this._mergeStepTimelineEvent(existing, event);
+        }
+        this._recentSteps = [...deduped.values()];
+        this._sortRecentSteps();
+        const max = getMaxRecentSteps();
+        if (this._recentSteps.length > max) {
+            this._recentSteps = this._recentSteps.slice(-max);
+        }
+    }
+
+    private _upsertStepTimelineEvent(event: StepEvent): boolean {
+        const existing = this._findMatchingStepTimelineEvent(event);
+        if (!existing) {
+            this._pushEvent(event);
+            return true;
+        }
+
+        const changed = this._mergeStepTimelineEvent(existing, event);
         if (changed) {
-            this._sortRecentSteps();
+            this._compactRecentSteps();
         }
         return changed;
     }
@@ -1297,7 +1411,7 @@ export class ActivityTracker {
                 continue;
             }
 
-            if (this._removeStepTimelineEvent(cascadeId, stepIndex)) {
+            if (this._removeStepTimelineEvent(cascadeId, stepIndex, step)) {
                 changed = true;
             }
 
@@ -1312,10 +1426,25 @@ export class ActivityTracker {
         return changed;
     }
 
-    private _removeStepTimelineEvent(cascadeId: string, stepIndex: number): boolean {
+    private _removeStepTimelineEvent(cascadeId: string, stepIndex: number, rawStep?: Record<string, unknown>): boolean {
+        const fingerprint = rawStep ? buildRawStepFingerprint(rawStep, cascadeId) : undefined;
+        const category = rawStep ? classifyStep((rawStep.type as string) || '').category : undefined;
         const before = this._recentSteps.length;
         this._recentSteps = this._recentSteps.filter(ev =>
-            !(ev.source === 'step' && ev.cascadeId === cascadeId && ev.stepIndex === stepIndex)
+            !(
+                ev.source === 'step'
+                && ev.cascadeId === cascadeId
+                && (
+                    (!!fingerprint && ev.stepFingerprint === fingerprint)
+                    || (
+                        ev.stepIndex === stepIndex
+                        && (
+                            category === undefined
+                            || (category === 'system' ? ev.category === 'reasoning' : ev.category === category)
+                        )
+                    )
+                )
+            )
         );
         return this._recentSteps.length !== before;
     }
@@ -1587,6 +1716,15 @@ export class ActivityTracker {
 
         // Annotate existing StepEvents
         for (const ev of this._recentSteps) {
+            if (ev.category === 'user') {
+                if (this._sanitizeUserTimelineEvent(ev)) {
+                    timelineChanged = true;
+                }
+                continue;
+            }
+            if (ev.source === 'step' && ev.category !== 'reasoning') {
+                continue;
+            }
             if (ev.stepIndex === undefined || !ev.cascadeId) { continue; }
             let gm = gmByStep.get(buildGMEventKey(ev.cascadeId, ev.stepIndex));
             // Fallback: some PLANNER_RESPONSE steps share an LLM call with adjacent steps
@@ -1692,11 +1830,7 @@ export class ActivityTracker {
         if (dedupedUserAnchors.length > 0 || virtualEvents.length > 0) {
             timelineChanged = true;
             this._recentSteps = [...this._recentSteps, ...dedupedUserAnchors, ...virtualEvents];
-            this._sortRecentSteps();
-            const max = getMaxRecentSteps();
-            if (this._recentSteps.length > max) {
-                this._recentSteps = this._recentSteps.slice(-max);
-            }
+            this._compactRecentSteps();
         }
 
         // ── GM-based sub-agent supplement: covers calls OUTSIDE the Steps API window ──
@@ -1801,6 +1935,7 @@ export class ActivityTracker {
                 this._checkpointHistory = [...this._checkpointHistory, ...virtualHistory];
             }
         }
+        this._compactRecentSteps();
         return timelineChanged;
     }
 
@@ -2287,6 +2422,7 @@ export class ActivityTracker {
 
         // Restore recent steps (timeline)
         tracker._recentSteps = [...s.recentSteps];
+        tracker._compactRecentSteps();
 
         // Restore cached GM totals (prevents flicker on startup)
         if (data.gmTotals) {
@@ -2570,10 +2706,6 @@ export class ActivityTracker {
 
     private _pushEvent(event: StepEvent): void {
         this._recentSteps.push(event);
-        this._sortRecentSteps();
-        const max = getMaxRecentSteps();
-        if (this._recentSteps.length > max) {
-            this._recentSteps = this._recentSteps.slice(-max);
-        }
+        this._compactRecentSteps();
     }
 }

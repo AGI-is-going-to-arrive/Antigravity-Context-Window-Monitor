@@ -745,7 +745,7 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
                 g.outputTokens += gm.outputTokens;
                 g.thinkingTokens += gm.thinkingTokens;
                 if (gm.avgTTFT > 0 && gm.calls > 0) { g.ttftSum += gm.avgTTFT * gm.calls; g.ttftWeight += gm.calls; }
-                if (gm.cacheHitRate > 0 && gm.calls > 0) { g.cacheSum += gm.cacheHitRate * gm.calls; g.cacheWeight += gm.calls; }
+                if (gm.calls > 0) { g.cacheSum += gm.cacheHitRate * gm.calls; g.cacheWeight += gm.calls; }
                 g.cost += gm.estimatedCost || 0;
             }
         }

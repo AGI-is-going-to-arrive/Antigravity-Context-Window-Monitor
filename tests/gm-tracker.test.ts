@@ -535,4 +535,130 @@ describe('filterGMSummaryByModels', () => {
         expect(repaired?.modelBreakdown['Gemini 3.1 Pro (强)']?.callCount).toBe(1);
         expect(state.archivedCallIds).toContain('old-call');
     });
+
+    it('keeps per-pool archived GM calls hidden even if the same historical call is refetched with a new executionId', () => {
+        setLanguage('zh');
+
+        const tracker = new GMTracker() as any;
+        tracker._lastFetchedAt = '2026-03-27T10:00:00.000Z';
+        tracker._cache.set('conv-reset', {
+            cascadeId: 'conv-reset',
+            title: 'Gemini Reset',
+            totalSteps: 4,
+            lifetimeCalls: 1,
+            coveredSteps: 1,
+            coverageRate: 0.25,
+            calls: [
+                {
+                    stepIndices: [3],
+                    executionId: 'exec-old',
+                    model: 'MODEL_PLACEHOLDER_M37',
+                    modelDisplay: 'Gemini 3.1 Pro (强)',
+                    responseModel: 'gemini-3.1-pro-high',
+                    modelAccuracy: 'exact',
+                    inputTokens: 100,
+                    outputTokens: 20,
+                    thinkingTokens: 0,
+                    responseTokens: 20,
+                    cacheReadTokens: 0,
+                    cacheCreationTokens: 0,
+                    apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
+                    ttftSeconds: 1,
+                    streamingSeconds: 2,
+                    credits: 0,
+                    creditType: 'prompt',
+                    hasError: false,
+                    errorMessage: '',
+                    contextTokensUsed: 100,
+                    completionConfig: null,
+                    systemPromptSnippet: '',
+                    toolCount: 0,
+                    toolNames: [],
+                    promptSectionTitles: [],
+                    promptSnippet: '',
+                    promptSource: 'none',
+                    messagePromptCount: 0,
+                    messageMetadataKeys: [],
+                    responseHeaderKeys: [],
+                    userMessageAnchors: [],
+                    retries: 0,
+                    stopReason: 'STOP_REASON_END_TURN',
+                    retryTokensIn: 0,
+                    retryTokensOut: 0,
+                    retryCredits: 0,
+                    retryErrors: [],
+                    timeSinceLastInvocation: 0,
+                    tokenBreakdownGroups: [],
+                    createdAt: '2026-03-27T09:55:00.000Z',
+                    latestStableMessageIndex: 0,
+                    startStepIndex: 0,
+                    checkpointIndex: 0,
+                },
+            ],
+        });
+
+        tracker.reset(['MODEL_PLACEHOLDER_M37']);
+        expect(tracker.getDetailedSummary()?.totalCalls).toBe(0);
+
+        tracker._cache.set('conv-reset', {
+            cascadeId: 'conv-reset',
+            title: 'Gemini Reset',
+            totalSteps: 4,
+            lifetimeCalls: 1,
+            coveredSteps: 1,
+            coverageRate: 0.25,
+            calls: [
+                {
+                    stepIndices: [3],
+                    executionId: 'exec-refetched',
+                    model: 'MODEL_PLACEHOLDER_M37',
+                    modelDisplay: 'Gemini 3.1 Pro (强)',
+                    responseModel: 'gemini-3.1-pro-high',
+                    modelAccuracy: 'exact',
+                    inputTokens: 100,
+                    outputTokens: 20,
+                    thinkingTokens: 0,
+                    responseTokens: 20,
+                    cacheReadTokens: 0,
+                    cacheCreationTokens: 0,
+                    apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
+                    ttftSeconds: 1,
+                    streamingSeconds: 2,
+                    credits: 0,
+                    creditType: 'prompt',
+                    hasError: false,
+                    errorMessage: '',
+                    contextTokensUsed: 100,
+                    completionConfig: null,
+                    systemPromptSnippet: '',
+                    toolCount: 0,
+                    toolNames: [],
+                    promptSectionTitles: [],
+                    promptSnippet: '',
+                    promptSource: 'none',
+                    messagePromptCount: 0,
+                    messageMetadataKeys: [],
+                    responseHeaderKeys: [],
+                    userMessageAnchors: [],
+                    retries: 0,
+                    stopReason: 'STOP_REASON_END_TURN',
+                    retryTokensIn: 0,
+                    retryTokensOut: 0,
+                    retryCredits: 0,
+                    retryErrors: [],
+                    timeSinceLastInvocation: 0,
+                    tokenBreakdownGroups: [],
+                    createdAt: '2026-03-27T09:55:00.000Z',
+                    latestStableMessageIndex: 0,
+                    startStepIndex: 0,
+                    checkpointIndex: 0,
+                },
+            ],
+        });
+        tracker._lastSummary = null;
+
+        const summary = tracker.getDetailedSummary();
+        expect(summary?.totalCalls).toBe(0);
+        expect(Object.keys(summary?.modelBreakdown || {})).toHaveLength(0);
+    });
 });

@@ -831,6 +831,10 @@ function buildGMMatchKey(call: Pick<GMCallEntry, 'executionId' | 'stepIndices' |
     return `steps:${call.stepIndices.join(',')}|model:${call.responseModel || call.model}`;
 }
 
+function buildGMArchiveKey(call: Pick<GMCallEntry, 'stepIndices' | 'model' | 'responseModel' | 'createdAt'>): string {
+    return `steps:${call.stepIndices.join(',')}|model:${call.responseModel || call.model}|created:${call.createdAt || ''}`;
+}
+
 function mergeGMCallEntries(primary: GMCallEntry, fallback: GMCallEntry): GMCallEntry {
     const useFallbackPrompt = !primary.promptSnippet && !!fallback.promptSnippet;
     return {
@@ -1167,7 +1171,10 @@ export class GMTracker {
             const sliced = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
             // Filter out calls already archived by per-pool resets
             const activeCalls = this._archivedCallIds.size > 0
-                ? sliced.filter(c => !this._archivedCallIds.has(c.executionId))
+                ? sliced.filter(c =>
+                    !this._archivedCallIds.has(c.executionId)
+                    && !this._archivedCallIds.has(buildGMArchiveKey(c))
+                )
                 : sliced;
             const activeStepsCovered = activeCalls.reduce((sum, c) => sum + c.stepIndices.length, 0);
             conversations.push({
@@ -1338,7 +1345,10 @@ export class GMTracker {
             for (const [, conv] of this._cache) {
                 for (const c of conv.calls) {
                     if (modelSet.has(c.model) || modelSet.has(c.responseModel)) {
-                        this._archivedCallIds.add(c.executionId);
+                        if (c.executionId) {
+                            this._archivedCallIds.add(c.executionId);
+                        }
+                        this._archivedCallIds.add(buildGMArchiveKey(c));
                     }
                 }
             }
@@ -1438,6 +1448,9 @@ export class GMTracker {
                 if (shouldArchive && call.executionId) {
                     removedIds.add(call.executionId);
                 }
+                if (shouldArchive) {
+                    removedIds.add(buildGMArchiveKey(call));
+                }
                 return !shouldArchive;
             });
             if (keptCalls.length > 0) {
@@ -1495,6 +1508,12 @@ export class GMTracker {
         return [...this._cache.values()]
             .map(cloneConversationData)
             .sort((a, b) => b.totalSteps - a.totalSteps);
+    }
+
+    /** Replace the cached summary used for UI restore / dev snapshot rollback. */
+    setDetailedSummary(summary: GMSummary | null): void {
+        this._lastSummary = summary ? normalizeGMSummary(summary) : null;
+        this._lastFetchedAt = this._lastSummary?.fetchedAt || '';
     }
 
     /** Export state for globalState persistence */

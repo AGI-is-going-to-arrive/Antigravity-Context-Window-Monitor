@@ -45,9 +45,10 @@ function getConversationData(
     gmConversations: Record<string, GMConversationData> | undefined,
     cascadeId: string,
 ): GMConversationData | null {
-    return gmSummary?.conversations.find(c => c.cascadeId === cascadeId)
-        || gmConversations?.[cascadeId]
-        || null;
+    if (gmSummary) {
+        return gmSummary.conversations.find(c => c.cascadeId === cascadeId) || null;
+    }
+    return gmConversations?.[cascadeId] || null;
 }
 
 function aggregateGMForSession(
@@ -56,7 +57,7 @@ function aggregateGMForSession(
     cascadeId: string,
 ): GMSessionStats {
     const liveConv = gmSummary?.conversations.find(c => c.cascadeId === cascadeId) || null;
-    const storedConv = gmConversations?.[cascadeId] || null;
+    const storedConv = gmSummary ? null : (gmConversations?.[cascadeId] || null);
     const empty: GMSessionStats = {
         calls: 0, lifetimeCalls: 0, totalInput: 0, totalOutput: 0,
         thinkingTokens: 0, responseTokens: 0,

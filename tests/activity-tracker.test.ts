@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActivityTracker, type ActivityTrackerState } from '../src/activity-tracker';
 import { rpcCall } from '../src/rpc-client';
 import { initI18nFromState } from '../src/i18n';
+import type { GMSummary } from '../src/gm-tracker';
 
 vi.mock('../src/rpc-client', () => ({
     rpcCall: vi.fn(),
@@ -35,6 +36,109 @@ function makePlannerStep(createdAt: string, response = '') {
         plannerResponse: response
             ? { response, modifiedResponse: response }
             : {},
+    };
+}
+
+function makeReasoningSummary(cascadeId: string, stepIndex: number, createdAt: string): GMSummary {
+    return {
+        conversations: [
+            {
+                cascadeId,
+                title: 'conv',
+                totalSteps: stepIndex + 1,
+                coveredSteps: 1,
+                coverageRate: 1,
+                calls: [
+                    {
+                        stepIndices: [stepIndex],
+                        executionId: 'exec-1',
+                        model: 'MODEL_PLACEHOLDER_M37',
+                        modelDisplay: 'Gemini 3.1 Pro (High)',
+                        responseModel: 'gemini-3.1-pro-high',
+                        modelAccuracy: 'exact',
+                        inputTokens: 123,
+                        outputTokens: 45,
+                        thinkingTokens: 6,
+                        responseTokens: 45,
+                        cacheReadTokens: 78,
+                        cacheCreationTokens: 0,
+                        apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
+                        ttftSeconds: 1.2,
+                        streamingSeconds: 2.3,
+                        credits: 0,
+                        creditType: '',
+                        hasError: false,
+                        errorMessage: '',
+                        contextTokensUsed: 999,
+                        completionConfig: null,
+                        systemPromptSnippet: '',
+                        toolCount: 0,
+                        toolNames: [],
+                        promptSectionTitles: [],
+                        promptSnippet: '',
+                        promptSource: 'none',
+                        messagePromptCount: 0,
+                        messageMetadataKeys: [],
+                        responseHeaderKeys: [],
+                        userMessageAnchors: [],
+                        retries: 0,
+                        stopReason: '',
+                        retryTokensIn: 0,
+                        retryTokensOut: 0,
+                        retryCredits: 0,
+                        retryErrors: [],
+                        timeSinceLastInvocation: 0,
+                        tokenBreakdownGroups: [],
+                        createdAt,
+                        latestStableMessageIndex: stepIndex,
+                        startStepIndex: 0,
+                        checkpointIndex: 0,
+                    },
+                ],
+            },
+        ],
+        modelBreakdown: {
+            'Gemini 3.1 Pro (High)': {
+                callCount: 1,
+                stepsCovered: 1,
+                totalInputTokens: 123,
+                totalOutputTokens: 45,
+                totalThinkingTokens: 6,
+                totalCacheRead: 78,
+                totalCacheCreation: 0,
+                totalCredits: 0,
+                avgTTFT: 1.2,
+                minTTFT: 1.2,
+                maxTTFT: 1.2,
+                avgStreaming: 2.3,
+                cacheHitRate: 1,
+                responseModel: 'gemini-3.1-pro-high',
+                apiProvider: 'API_PROVIDER_GOOGLE_GEMINI',
+                completionConfig: null,
+                hasSystemPrompt: false,
+                toolCount: 0,
+                promptSectionTitles: [],
+                totalRetries: 0,
+                errorCount: 0,
+                exactCallCount: 1,
+                placeholderOnlyCalls: 0,
+            },
+        },
+        totalCalls: 1,
+        totalStepsCovered: 1,
+        totalCredits: 0,
+        totalInputTokens: 123,
+        totalOutputTokens: 45,
+        totalCacheRead: 78,
+        totalCacheCreation: 0,
+        totalThinkingTokens: 6,
+        contextGrowth: [],
+        fetchedAt: createdAt,
+        totalRetryTokens: 0,
+        totalRetryCredits: 0,
+        totalRetryCount: 0,
+        latestTokenBreakdown: [],
+        stopReasonCounts: {},
     };
 }
 
@@ -115,6 +219,89 @@ describe('ActivityTracker planner refresh', () => {
         const summary = restored.getSummary();
         const repairedEvent = summary.recentSteps.find(e => e.stepIndex === 1);
         expect(repairedEvent?.aiResponse).toContain('restored final answer');
+    });
+
+    it('dedupes remapped Gemini step events by raw-step fingerprint instead of unstable stepIndex', () => {
+        const tracker = new ActivityTracker() as any;
+        const step = makeUserStep('same prompt', '2026-03-27T13:14:46.058Z');
+
+        const first = tracker._buildStepTimelineEvent(step, 318, 'conv-shifted');
+        const second = tracker._buildStepTimelineEvent(step, 320, 'conv-shifted');
+
+        tracker._upsertStepTimelineEvent(first);
+        tracker._upsertStepTimelineEvent(second);
+
+        const events = tracker.getSummary().recentSteps.filter((event: any) => event.cascadeId === 'conv-shifted');
+        expect(events).toHaveLength(1);
+        expect(events[0].stepIndex).toBe(320);
+        expect(events[0].userInput).toContain('same prompt');
+    });
+
+    it('keeps user rows clean when GM exact attribution lands on the same step index', () => {
+        const tracker = new ActivityTracker() as any;
+        const cascadeId = 'conv-user';
+        const createdAt = '2026-03-27T13:08:53.982Z';
+        const userEvent = tracker._buildStepTimelineEvent(makeUserStep('用户消息', createdAt), 264, cascadeId);
+
+        tracker._upsertStepTimelineEvent(userEvent);
+        tracker.injectGMData(makeReasoningSummary(cascadeId, 264, createdAt));
+
+        const restoredUser = tracker.getSummary().recentSteps.find((event: any) =>
+            event.cascadeId === cascadeId && event.category === 'user'
+        );
+        expect(restoredUser?.model).toBe('');
+        expect(restoredUser?.modelBasis).toBe('step');
+        expect(restoredUser?.gmInputTokens).toBeUndefined();
+        expect(restoredUser?.gmExecutionId).toBeUndefined();
+    });
+
+    it('compacts duplicated persisted recent steps during restore so stale state self-heals on reload', () => {
+        const createdAt = '2026-03-27T13:14:46.058Z';
+        const duplicateEvent = {
+            timestamp: createdAt,
+            icon: '💬',
+            category: 'user' as const,
+            model: 'Gemini 3.1 Pro (强)',
+            detail: '',
+            durationMs: 0,
+            userInput: '重复用户消息',
+            fullUserInput: '重复用户消息',
+            stepIndex: 318,
+            cascadeId: 'conv-persist',
+            source: 'step' as const,
+            modelBasis: 'gm_exact' as const,
+            gmInputTokens: 123,
+            gmExecutionId: 'exec-dup',
+        };
+
+        const restored = ActivityTracker.restore({
+            version: 1,
+            warmedUp: true,
+            trajectoryBaselines: {},
+            summary: {
+                totalUserInputs: 1,
+                totalReasoning: 0,
+                totalToolCalls: 0,
+                totalErrors: 0,
+                totalCheckpoints: 0,
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                totalToolReturnTokens: 0,
+                estSteps: 0,
+                modelStats: {},
+                globalToolStats: {},
+                recentSteps: [duplicateEvent, { ...duplicateEvent }],
+                sessionStartTime: createdAt,
+                subAgentTokens: [],
+                checkpointHistory: [],
+                conversationBreakdown: [],
+            },
+        });
+
+        const steps = restored.getSummary().recentSteps.filter(event => event.cascadeId === 'conv-persist');
+        expect(steps).toHaveLength(1);
+        expect(steps[0].model).toBe('');
+        expect(steps[0].gmExecutionId).toBeUndefined();
     });
 
     it('removes stale planner rows when later polls insert non-renderable internal steps before the final response', async () => {

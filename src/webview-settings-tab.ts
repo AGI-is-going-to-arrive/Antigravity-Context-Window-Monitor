@@ -21,6 +21,7 @@ export interface StorageDiagnostics {
     calendarDayCount: number;
     calendarCycleCount: number;
     pricingOverrideCount: number;
+    hasDevResetSnapshot: boolean;
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -39,8 +40,6 @@ export function buildSettingsContent(
     const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
     const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
     const quotaNotifyThreshold = cfg.get<number>('quotaNotificationThreshold', 20);
-    const maxRecentSteps = cfg.get<number>('activity.maxRecentSteps', 100);
-    const maxArchives = cfg.get<number>('activity.maxArchives', 20);
 
     const modelLimitRows = configs.map(c => {
         const customLimit = contextLimits[c.model];
@@ -58,7 +57,6 @@ export function buildSettingsContent(
             </div>`;
     }).join('');
 
-    const maxHistory = tracker?.getMaxHistory() ?? 20;
     const storageCard = storage ? `
         <section class="stg-card" data-accent="storage">
             <div class="stg-header">
@@ -253,95 +251,6 @@ export function buildSettingsContent(
             </div>
         </section>` : ''}
 
-        <section class="stg-card" data-accent="activity">
-            <div class="stg-header">
-                <span class="stg-header-icon">${ICON.chart}</span>
-                <h2>${tBi('Activity Settings', '活动设置')}</h2>
-            </div>
-            <div class="setting-row">
-                <label for="maxRecentStepsInput">${tBi(
-                    'Max timeline entries',
-                    '时间线最大条数',
-                )}</label>
-                <p class="raw-desc">${tBi(
-                    'Maximum number of recent operations displayed in the Activity timeline. Range: 10–500.',
-                    '活动时间线中显示的最近操作最大条数。范围：10–500。',
-                )}</p>
-                <div class="threshold-input-row">
-                    <div class="num-spinner">
-                        <button type="button" class="num-spinner-btn decrement">−</button>
-                        <input type="number" id="maxRecentStepsInput" class="threshold-input"
-                               value="${maxRecentSteps}" min="10" max="500" step="10" />
-                        <button type="button" class="num-spinner-btn increment">+</button>
-                    </div>
-                    <button class="action-btn" id="maxRecentStepsSaveBtn">${tBi('Save', '保存')}</button>
-                    <span id="maxRecentStepsFeedback" class="threshold-feedback"></span>
-                </div>
-            </div>
-            <div class="setting-row" style="margin-top: var(--space-3);">
-                <label for="maxArchivesInput">${tBi(
-                    'Max activity archives',
-                    '活动归档最大份数',
-                )}</label>
-                <p class="raw-desc">${tBi(
-                    'Maximum number of activity snapshots archived when quota resets. Range: 1–100.',
-                    '额度重置时保留的活动快照最大份数。范围：1–100。',
-                )}</p>
-                <div class="threshold-input-row">
-                    <div class="num-spinner">
-                        <button type="button" class="num-spinner-btn decrement">−</button>
-                        <input type="number" id="maxArchivesInput" class="threshold-input"
-                               value="${maxArchives}" min="1" max="100" step="1" />
-                        <button type="button" class="num-spinner-btn increment">+</button>
-                    </div>
-                    <button class="action-btn" id="maxArchivesSaveBtn">${tBi('Save', '保存')}</button>
-                    <span id="maxArchivesFeedback" class="threshold-feedback"></span>
-                </div>
-            </div>
-            <div class="setting-row" style="margin-top: var(--space-3);">
-                <p class="raw-desc">${tBi(
-                    'Clear all model statistics, operation timeline, and archive records. Current session monitoring data is not affected — activity will restart counting from zero.',
-                    '清除所有模型统计、操作时间线和归档记录。当前会话的监控数据不受影响，活动将重新从零开始计数。',
-                )}</p>
-                <button class="action-btn danger-action" id="clearActivityData">
-                    ${ICON.trash} ${tBi('Clear Activity Data', '清除活动数据')}
-                </button>
-            </div>
-        </section>
-
-
-        <section class="stg-card" data-accent="history">
-            <div class="stg-header">
-                <span class="stg-header-icon">${ICON.timeline}</span>
-                <h2>${tBi('History Settings', '历史设置')}</h2>
-            </div>
-            <div class="setting-row">
-                <label for="maxHistoryInput">${tBi(
-                    'Max archived records',
-                    '最多保留记录数',
-                )}</label>
-                <div class="threshold-input-row">
-                    <div class="num-spinner">
-                        <button type="button" class="num-spinner-btn decrement">−</button>
-                        <input type="number" id="maxHistoryInput" class="threshold-input"
-                               value="${maxHistory}" min="1" max="100" step="1" />
-                        <button type="button" class="num-spinner-btn increment">+</button>
-                    </div>
-                    <button class="action-btn" id="maxHistorySaveBtn">${tBi('Save', '保存')}</button>
-                    <span id="maxHistoryFeedback" class="threshold-feedback"></span>
-                </div>
-            </div>
-            <div class="setting-row" style="margin-top: var(--space-3);">
-                <p class="raw-desc">${tBi(
-                    'Clear all quota consumption tracking archives (100%→0% change snapshots). Does not affect current monitoring data or activity statistics.',
-                    '清除额度消耗追踪的归档记录（从 100%→0% 的变化快照），不影响当前监控数据和活动统计。',
-                )}</p>
-                <button class="action-btn danger-action" id="clearQuotaHistory">
-                    ${ICON.trash} ${tBi('Clear All History', '清除所有历史')}
-                </button>
-            </div>
-        </section>
-
         <section class="stg-card" data-accent="debug">
             <div class="stg-header">
                 <span class="stg-header-icon">${ICON.bolt}</span>
@@ -353,22 +262,29 @@ export function buildSettingsContent(
             )}</p>
             <div class="setting-row" style="margin-top: var(--space-2);">
                 <p class="raw-desc">${tBi(
-                    'Simulate a full quota reset cycle: archive current Activity + GM + Cost data to Calendar, then reset GM baselines for the new cycle.',
-                    '模拟完整的额度重置周期：将当前 Activity + GM + 费用数据归档到日历，然后为新周期重置 GM 基线。',
+                    'Simulate a full quota reset cycle: archive current Activity + GM + Cost data to Calendar, then reset GM baselines for the new cycle. A restorable snapshot is captured first so you can roll back after verifying the UI.',
+                    '模拟完整的额度重置周期：先抓取一份可恢复快照，再将当前 Activity + GM + 费用数据归档到日历，并为新周期重置 GM 基线。验证完 UI 后可一键恢复。',
                 )}</p>
-                <button class="action-btn" id="devSimulateReset">
-                    ${ICON.timeline} ${tBi('Simulate Quota Reset', '模拟额度重置')}
-                </button>
-                <span id="devSimulateFeedback" class="threshold-feedback"></span>
-            </div>
-            <div class="setting-row" style="margin-top: var(--space-3);">
-                <p class="raw-desc">${tBi(
-                    'Clear all GM data and baselines (nuclear reset). Next poll will treat all existing API data as historical baseline — starts counting from zero.',
-                    '清除所有 GM 数据和基线（核重置）。下次轮询会将 API 中所有已有数据视为历史基线 — 从零开始计数。',
-                )}</p>
-                <button class="action-btn danger-action" id="devClearGM">
-                    ${ICON.trash} ${tBi('Clear GM Data & Baselines', '清除 GM 数据和基线')}
-                </button>
+                <div class="storage-actions">
+                    <button class="action-btn" id="devSimulateReset">
+                        ${ICON.timeline} ${tBi('Simulate Quota Reset', '模拟额度重置')}
+                    </button>
+                    <button class="action-btn${storage?.hasDevResetSnapshot ? '' : ' danger-action'}" id="devRestoreReset"${storage?.hasDevResetSnapshot ? '' : ' disabled'}>
+                        ${ICON.refresh} ${tBi('Restore Snapshot', '恢复快照')}
+                    </button>
+                    <span id="devSimulateFeedback" class="threshold-feedback"></span>
+                </div>
+                <p class="raw-desc" style="margin-top: var(--space-2);">
+                    ${storage?.hasDevResetSnapshot
+                        ? tBi(
+                            'A reset test snapshot is currently available for this extension session. Restoring will roll Activity / GM / Calendar back to the pre-test state.',
+                            '当前这次扩展运行里已有一份可恢复的重置测试快照。恢复后会把 Activity / GM / Calendar 一并回滚到测试前状态。',
+                        )
+                        : tBi(
+                            'No reset test snapshot is stored right now. Trigger one simulation first if you want an undo point in this extension session.',
+                            '当前这次扩展运行里没有可恢复的重置测试快照。若要回滚，请先触发一次模拟额度重置。',
+                        )}
+                </p>
             </div>
         </section>
     `;

@@ -283,9 +283,6 @@ export function getScript(): string {
                         'pollingInterval': 'pollingFeedback',
                         'contextLimits': 'modelLimitsFeedback',
                         'quotaNotificationThreshold': 'quotaNotifyFeedback',
-                        'activity.maxRecentSteps': 'maxRecentStepsFeedback',
-                        'activity.maxArchives': 'maxArchivesFeedback',
-                        'quotaMaxHistory': 'maxHistoryFeedback',
                         'statePath': 'statePathFeedback'
                     };
                     var fbId = feedbackMap[msg.key];
@@ -395,26 +392,6 @@ export function getScript(): string {
                 });
             }
 
-            // ─── Clear Quota History ───
-            var clearHistBtn = document.getElementById('clearQuotaHistory');
-            if (clearHistBtn) {
-                clearHistBtn.addEventListener('click', function() {
-                    vscode.postMessage({ command: 'clearQuotaHistory' });
-                });
-            }
-
-            // ─── Quota Max History ───
-            var maxHistBtn = document.getElementById('maxHistorySaveBtn');
-            var maxHistInput = document.getElementById('maxHistoryInput');
-            if (maxHistBtn && maxHistInput) {
-                maxHistBtn.addEventListener('click', function() {
-                    var val = parseInt(maxHistInput.value, 10);
-                    if (val >= 1) {
-                        vscode.postMessage({ command: 'setQuotaMaxHistory', value: val });
-                    }
-                });
-            }
-
             // ─── Quota Notification Threshold ───
             var quotaNotifyBtn = document.getElementById('quotaNotifySaveBtn');
             var quotaNotifyInput = document.getElementById('quotaNotifyInput');
@@ -427,38 +404,6 @@ export function getScript(): string {
                 });
             }
 
-            // ─── Activity: Max Recent Steps ───
-            var maxStepsBtn = document.getElementById('maxRecentStepsSaveBtn');
-            var maxStepsInput = document.getElementById('maxRecentStepsInput');
-            if (maxStepsBtn && maxStepsInput) {
-                maxStepsBtn.addEventListener('click', function() {
-                    var val = parseInt(maxStepsInput.value, 10);
-                    if (val >= 10 && val <= 500) {
-                        vscode.postMessage({ command: 'setConfig', key: 'activity.maxRecentSteps', value: val });
-                    }
-                });
-            }
-
-            // ─── Activity: Max Archives ───
-            var maxArchBtn = document.getElementById('maxArchivesSaveBtn');
-            var maxArchInput = document.getElementById('maxArchivesInput');
-            if (maxArchBtn && maxArchInput) {
-                maxArchBtn.addEventListener('click', function() {
-                    var val = parseInt(maxArchInput.value, 10);
-                    if (val >= 1 && val <= 100) {
-                        vscode.postMessage({ command: 'setConfig', key: 'activity.maxArchives', value: val });
-                    }
-                });
-            }
-
-            // ─── Clear Activity Data ───
-            var clearActBtn = document.getElementById('clearActivityData');
-            if (clearActBtn) {
-                clearActBtn.addEventListener('click', function() {
-                    vscode.postMessage({ command: 'clearActivityData' });
-                });
-            }
-
             // ─── Dev: Simulate Quota Reset ───
             var devSimBtn = document.getElementById('devSimulateReset');
             if (devSimBtn) {
@@ -468,12 +413,13 @@ export function getScript(): string {
                     if (fb) { fb.textContent = doneText; setTimeout(function() { fb.textContent = ''; }, 2000); }
                 });
             }
-
-            // ─── Dev: Clear GM Data & Baselines ───
-            var devClearGMBtn = document.getElementById('devClearGM');
-            if (devClearGMBtn) {
-                devClearGMBtn.addEventListener('click', function() {
-                    vscode.postMessage({ command: 'devClearGM' });
+            var devRestoreBtn = document.getElementById('devRestoreReset');
+            if (devRestoreBtn) {
+                devRestoreBtn.addEventListener('click', function() {
+                    if (devRestoreBtn.disabled) return;
+                    vscode.postMessage({ command: 'devRestoreReset' });
+                    var fb = document.getElementById('devSimulateFeedback');
+                    if (fb) { fb.textContent = resetText; setTimeout(function() { fb.textContent = ''; }, 2000); }
                 });
             }
 
