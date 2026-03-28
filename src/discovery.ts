@@ -91,10 +91,12 @@ export function buildExpectedWorkspaceId(workspaceUri: string): string {
     // slashes (/), hyphens (-), percent signs (%), spaces, parens, etc.
     // Using a catch-all prevents future mismatches if paths contain unusual chars.
     id = id.replace(/[^a-zA-Z0-9_]/g, '_');
-    if (process.platform === 'win32' || isWSL()) {
-        // Collapse any double underscores from adjacent special chars (e.g., c_3A_/)
-        id = id.replace(/__+/g, '_');
-    }
+    // Collapse consecutive underscores on ALL platforms.
+    // The LS does this universally — adjacent special chars (e.g., /% in
+    // percent-encoded CJK paths like /%E7%AE%80) produce __ which the LS
+    // collapses to _. Previously this was Windows-only, causing workspace_id
+    // mismatches for CJK folder names on macOS/Linux.
+    id = id.replace(/__+/g, '_');
     return id;
 }
 

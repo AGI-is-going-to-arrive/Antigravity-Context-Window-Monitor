@@ -1,5 +1,17 @@
 # 变更日志 / Changelog
 
+## [1.14.0] - 2026-03-28
+
+### 🐛 Fixed / 修复
+
+- **Workspace ID Mismatch for CJK (Chinese/Japanese/Korean) Folder Names / 中日韩文件夹名的工作区 ID 不匹配**: Fixed a critical bug where workspaces with non-ASCII folder names (e.g., `简历投递`, `テスト`) could never discover the Language Server, permanently showing "LS not found". Root cause: when percent-encoded CJK characters appear in the URI (e.g., `%E7%AE%80`), the directory separator `/` and the percent sign `%` are both replaced by `_`, producing adjacent double underscores (`__E7`). The Language Server collapses `__` → `_` on all platforms, but the plugin only performed this collapse on Windows/WSL, causing a permanent `workspace_id` mismatch on macOS and Linux. Fix: moved the `/__+/g` → `_` collapse out of the Windows-only branch so it executes on all platforms, exactly mirroring the LS behavior.
+  修复严重 Bug：工作区文件夹名包含中日韩字符（如 `简历投递`、`テスト`）时，插件始终无法发现语言服务器，永久显示"LS not found"。根因：URI 中的 CJK 百分号编码（如 `%E7%AE%80`）在目录边界 `/%E7` 处，`/` 和 `%` 各自被替换为 `_`，产生相邻双下划线 `__E7`。语言服务器在所有平台都会折叠 `__` → `_`，但插件仅在 Windows/WSL 执行此折叠，导致 macOS 和 Linux 上 `workspace_id` 永久不匹配。修复：将 `/__+/g` → `_` 折叠从 Windows 专属分支移出，改为全平台执行，精确镜像 LS 行为。
+
+### ✅ Tests / 测试
+
+- Added 3 new `buildExpectedWorkspaceId()` tests in `discovery.test.ts`: Chinese folder names (`%E7%AE%80%E5%8E%86%E6%8A%95%E9%80%92`), mixed space + CJK paths (`linux%20do/%E7%AE%80%E5%8E%86`), and Japanese folder names (`%E3%83%86%E3%82%B9%E3%83%88`). All 25 discovery tests pass.
+  在 `discovery.test.ts` 中新增 3 个 `buildExpectedWorkspaceId()` 测试：中文文件夹名、空格 + 中文混合路径、日文文件夹名。全部 25 个 discovery 测试通过。
+
 ## [1.13.91] - 2026-03-27
 
 ### 🐛 Fixed / 修复

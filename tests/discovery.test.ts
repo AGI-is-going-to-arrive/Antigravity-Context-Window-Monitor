@@ -43,6 +43,31 @@ describe('discovery.ts', () => {
             expect(buildExpectedWorkspaceId(uri)).toBe('file_Users_foo_project_v2_');
         });
 
+        it('should handle percent-encoded CJK characters (Chinese folder names)', () => {
+            // 简历投递 encoded as %E7%AE%80%E5%8E%86%E6%8A%95%E9%80%92
+            // The /% boundary produces adjacent _'s which must be collapsed
+            const uri = 'file:///Users/yangjunjie/Desktop/%E7%AE%80%E5%8E%86%E6%8A%95%E9%80%92';
+            expect(buildExpectedWorkspaceId(uri)).toBe(
+                'file_Users_yangjunjie_Desktop_E7_AE_80_E5_8E_86_E6_8A_95_E9_80_92'
+            );
+        });
+
+        it('should handle mixed space and CJK percent-encoded paths', () => {
+            // /linux do/简历 → /linux%20do/%E7%AE%80%E5%8E%86
+            const uri = 'file:///Users/yangjunjie/Desktop/linux%20do/%E7%AE%80%E5%8E%86';
+            expect(buildExpectedWorkspaceId(uri)).toBe(
+                'file_Users_yangjunjie_Desktop_linux_20do_E7_AE_80_E5_8E_86'
+            );
+        });
+
+        it('should handle Japanese percent-encoded characters', () => {
+            // テスト encoded as %E3%83%86%E3%82%B9%E3%83%88
+            const uri = 'file:///Users/foo/%E3%83%86%E3%82%B9%E3%83%88';
+            expect(buildExpectedWorkspaceId(uri)).toBe(
+                'file_Users_foo_E3_83_86_E3_82_B9_E3_83_88'
+            );
+        });
+
         it('should handle vscode-remote URIs without decoding authority', () => {
             const uri = 'vscode-remote://wsl%2BUbuntu/home/user/project';
             expect(buildExpectedWorkspaceId(uri)).toBe('file_home_user_project');
