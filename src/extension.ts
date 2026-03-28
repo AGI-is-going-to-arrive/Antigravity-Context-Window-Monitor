@@ -13,7 +13,7 @@ import {
 } from './tracker';
 import { StatusBarManager, formatContextLimit } from './statusbar';
 import { initI18n, initI18nFromState, showLanguagePicker, tBi } from './i18n';
-import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState } from './webview-panel';
+import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
@@ -296,7 +296,13 @@ export function activate(context: vscode.ExtensionContext): void {
     // Register commands
     context.subscriptions.push(
         vscode.commands.registerCommand('antigravity-context-monitor.showDetails', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, undefined, activityTracker?.getArchives(), activityTracker, lastGMSummary, monitorStore.getGMConversations(), pricingStore, dailyStore, getStorageDiagnostics(), persistedModelDNA);
+            showMonitorPanel({
+                currentUsage, allTrajectoryUsages, modelConfigs: cachedModelConfigs, userInfo: cachedUserInfo,
+                context, tracker: quotaTracker, activitySummary: activityTracker?.getSummary() ?? null,
+                archives: activityTracker?.getArchives(), activityTracker,
+                gmSummary: lastGMSummary, gmConversations: monitorStore.getGMConversations(),
+                pricingStore, dailyStore, storageDiagnostics: getStorageDiagnostics(), modelDNA: persistedModelDNA,
+            });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
@@ -313,12 +319,21 @@ export function activate(context: vscode.ExtensionContext): void {
                     statusBar.update(currentUsage);
                 }
                 if (isMonitorPanelVisible()) {
-                    updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, undefined, undefined, undefined, undefined, monitorStore.getGMConversations(), getStorageDiagnostics());
+                    updateMonitorPanel({
+                        currentUsage, allTrajectoryUsages, modelConfigs: cachedModelConfigs, userInfo: cachedUserInfo,
+                        gmConversations: monitorStore.getGMConversations(), storageDiagnostics: getStorageDiagnostics(),
+                    });
                 }
                 });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
-            showMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, context, quotaTracker, activityTracker?.getSummary() ?? null, 'gmdata', activityTracker?.getArchives(), activityTracker, lastGMSummary, monitorStore.getGMConversations(), pricingStore, dailyStore, getStorageDiagnostics(), persistedModelDNA);
+            showMonitorPanel({
+                currentUsage, allTrajectoryUsages, modelConfigs: cachedModelConfigs, userInfo: cachedUserInfo,
+                context, tracker: quotaTracker, activitySummary: activityTracker?.getSummary() ?? null,
+                initialTab: 'gmdata', archives: activityTracker?.getArchives(), activityTracker,
+                gmSummary: lastGMSummary, gmConversations: monitorStore.getGMConversations(),
+                pricingStore, dailyStore, storageDiagnostics: getStorageDiagnostics(), modelDNA: persistedModelDNA,
+            });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.devSimulateReset', () => {
             if (!activityTracker) { return; }
@@ -346,14 +361,24 @@ export function activate(context: vscode.ExtensionContext): void {
             lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
             persistResetSensitiveState();
             if (isMonitorPanelVisible()) {
-                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics(), persistedModelDNA);
+                updateMonitorPanel({
+                    currentUsage, allTrajectoryUsages, modelConfigs: cachedModelConfigs, userInfo: cachedUserInfo,
+                    tracker: quotaTracker, activitySummary: activityTracker?.getSummary() ?? null,
+                    archives: activityTracker?.getArchives(), gmSummary: lastGMSummary,
+                    gmConversations: monitorStore.getGMConversations(), storageDiagnostics: getStorageDiagnostics(), modelDNA: persistedModelDNA,
+                });
             }
             log('[Dev] Quota reset simulated — snapshot captured, activity archived, GM summary reset');
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.devRestoreReset', () => {
             const restored = restoreDevResetSnapshot();
             if (restored && isMonitorPanelVisible()) {
-                updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics(), persistedModelDNA);
+                updateMonitorPanel({
+                    currentUsage, allTrajectoryUsages, modelConfigs: cachedModelConfigs, userInfo: cachedUserInfo,
+                    tracker: quotaTracker, activitySummary: activityTracker?.getSummary() ?? null,
+                    archives: activityTracker?.getArchives(), gmSummary: lastGMSummary,
+                    gmConversations: monitorStore.getGMConversations(), storageDiagnostics: getStorageDiagnostics(), modelDNA: persistedModelDNA,
+                });
             }
             log(restored
                 ? '[Dev] Restored simulated quota reset snapshot'
@@ -689,7 +714,12 @@ async function pollContextUsage(): Promise<void> {
             currentUsage = null;
             allTrajectoryUsages = monitorStore.getAll();
             if (isMonitorPanelVisible()) {
-                updateMonitorPanel(null, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics(), persistedModelDNA);
+                updateMonitorPanel({
+                    currentUsage: null, allTrajectoryUsages, modelConfigs: cachedModelConfigs, userInfo: cachedUserInfo,
+                    tracker: quotaTracker, activitySummary: activityTracker?.getSummary() ?? null,
+                    archives: activityTracker?.getArchives(), gmSummary: lastGMSummary,
+                    gmConversations: monitorStore.getGMConversations(), storageDiagnostics: getStorageDiagnostics(), modelDNA: persistedModelDNA,
+                });
             }
             updateBaselines(trajectories);
             return;
@@ -838,7 +868,12 @@ async function pollContextUsage(): Promise<void> {
 
         // 6d. Update WebView panel if visible (single unified refresh point)
         if (isMonitorPanelVisible()) {
-            updateMonitorPanel(currentUsage, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics(), persistedModelDNA);
+            updateMonitorPanel({
+                currentUsage, allTrajectoryUsages, modelConfigs: cachedModelConfigs, userInfo: cachedUserInfo,
+                tracker: quotaTracker, activitySummary: activityTracker?.getSummary() ?? null,
+                archives: activityTracker?.getArchives(), gmSummary: lastGMSummary,
+                gmConversations: monitorStore.getGMConversations(), storageDiagnostics: getStorageDiagnostics(), modelDNA: persistedModelDNA,
+            });
         }
 
         // 7. Update baselines for next poll
@@ -860,7 +895,12 @@ function handleLsFailure(message: string): void {
     allTrajectoryUsages = monitorStore.getAll();
     statusBar.showDisconnected(message);
     if (isMonitorPanelVisible()) {
-        updateMonitorPanel(null, allTrajectoryUsages, cachedModelConfigs, cachedUserInfo, quotaTracker, activityTracker?.getSummary() ?? null, activityTracker?.getArchives(), lastGMSummary, monitorStore.getGMConversations(), getStorageDiagnostics(), persistedModelDNA);
+        updateMonitorPanel({
+            currentUsage: null, allTrajectoryUsages, modelConfigs: cachedModelConfigs, userInfo: cachedUserInfo,
+            tracker: quotaTracker, activitySummary: activityTracker?.getSummary() ?? null,
+            archives: activityTracker?.getArchives(), gmSummary: lastGMSummary,
+            gmConversations: monitorStore.getGMConversations(), storageDiagnostics: getStorageDiagnostics(), modelDNA: persistedModelDNA,
+        });
     }
 
     const backoffMs = Math.min(baseIntervalMs * Math.pow(2, consecutiveFailures - 1), MAX_BACKOFF_INTERVAL_MS);

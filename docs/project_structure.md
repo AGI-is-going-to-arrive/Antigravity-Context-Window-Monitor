@@ -59,7 +59,6 @@ antigravity-context-monitor/
 │   ├── statusbar.test.ts         # statusbar 单元测试
 │   └── tracker.test.ts           # tracker 单元测试
 ├── docs/
-│   ├── archive_gm_troubleshooting.md  # GM / 归档排障地图
 │   ├── technical_implementation.md   # 技术实现指南
 │   └── project_structure.md          # 本文件
 ├── out/                          # tsc 编译输出（插件运行时代码）

@@ -89,13 +89,7 @@ export function getScript(): string {
                     switchTab(this.dataset.tab);
                 });
             }
-            // data-switch-tab links (e.g. Monitor → Profile "Details →")
-            var switchLinks = document.querySelectorAll('[data-switch-tab]');
-            for (var si = 0; si < switchLinks.length; si++) {
-                switchLinks[si].addEventListener('click', function() {
-                    switchTab(this.dataset.switchTab);
-                });
-            }
+            // data-switch-tab links: handled by body delegation below
 
             // ─── Info Chip Toggle ───
             function bindChipToggles() {
@@ -365,32 +359,9 @@ export function getScript(): string {
                 }
             }
 
-            // ─── Clear Active Tracking ───
-            var clearActiveBtn = document.getElementById('clearActiveTracking');
-            if (clearActiveBtn) {
-                clearActiveBtn.addEventListener('click', function() {
-                    vscode.postMessage({ command: 'clearActiveTracking' });
-                });
-            }
+            // clearActiveTracking: handled by body delegation below
 
-            // ─── Copy Raw JSON ───
-            var copyBtn = document.getElementById('copyRawJson');
-            if (copyBtn) {
-                copyBtn.addEventListener('click', function() {
-                    var rawEl = document.getElementById('rawJsonContent');
-                    if (!rawEl) return;
-                    var text = rawEl.textContent || '';
-                    navigator.clipboard.writeText(text).then(function() {
-                        copyBtn.classList.add('copied');
-                        var origHtml = copyBtn.innerHTML;
-                        copyBtn.textContent = copiedText;
-                        setTimeout(function() {
-                            copyBtn.innerHTML = origHtml;
-                            copyBtn.classList.remove('copied');
-                        }, 2000);
-                    });
-                });
-            }
+            // copyRawJson: handled by body delegation below
 
             // ─── Quota Notification Threshold ───
             var quotaNotifyBtn = document.getElementById('quotaNotifySaveBtn');
@@ -443,52 +414,19 @@ export function getScript(): string {
                 });
             }
 
-            // ─── Pricing: Save / Reset ───
-            var pricingSaveBtn = document.getElementById('pricingSaveBtn');
-            var pricingResetBtn = document.getElementById('pricingResetBtn');
-            var pricingFeedback = document.getElementById('pricingFeedback');
-            if (pricingSaveBtn) {
-                pricingSaveBtn.addEventListener('click', function() {
-                    var inputs = document.querySelectorAll('.pricing-input');
-                    var data = {};
-                    for (var pi = 0; pi < inputs.length; pi++) {
-                        var inp = inputs[pi];
-                        var model = inp.getAttribute('data-model');
-                        var field = inp.getAttribute('data-field');
-                        var val = parseFloat(inp.value) || 0;
-                        if (!data[model]) { data[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 }; }
-                        data[model][field] = val;
-                    }
-                    vscode.postMessage({ command: 'savePricing', value: data });
-                });
-            }
-            if (pricingResetBtn) {
-                pricingResetBtn.addEventListener('click', function() {
-                    vscode.postMessage({ command: 'resetPricing' });
-                });
-            }
+            // pricing Save/Reset: handled by body delegation below
 
-            // ─── Privacy mask toggle (persisted) ───
-            var privacyBtn = document.getElementById('privacyToggle');
-            if (privacyBtn) {
-                var privacyDefault = document.body.getAttribute('data-privacy-default') === 'true';
-                var masked = savedState.privacyMasked !== undefined ? !!savedState.privacyMasked : privacyDefault;
-                function applyMask(m) {
-                    var targets = document.querySelectorAll('[data-real][data-masked]');
-                    for (var j = 0; j < targets.length; j++) {
-                        var el = targets[j];
-                        el.textContent = m ? el.getAttribute('data-masked') : el.getAttribute('data-real');
-                    }
-                    privacyBtn.classList.toggle('active', m);
+            // privacy mask: handled by body delegation below
+            // Apply initial mask state (read-only, no binding)
+            var privacyDefault = document.body.getAttribute('data-privacy-default') === 'true';
+            var initialMasked = savedState.privacyMasked !== undefined ? !!savedState.privacyMasked : privacyDefault;
+            if (initialMasked) {
+                var initTargets = document.querySelectorAll('[data-real][data-masked]');
+                for (var imj = 0; imj < initTargets.length; imj++) {
+                    initTargets[imj].textContent = initTargets[imj].getAttribute('data-masked');
                 }
-                if (masked) { applyMask(true); }
-                privacyBtn.addEventListener('click', function() {
-                    masked = !masked;
-                    applyMask(masked);
-                    var s = vscode.getState() || {};
-                    s.privacyMasked = masked;
-                    vscode.setState(s);
-                });
+                var initBtn = document.getElementById('privacyToggle');
+                if (initBtn) { initBtn.classList.add('active'); }
             }
 
             // ─── Restore scroll position (per-tab, debounced) ───
@@ -518,9 +456,72 @@ export function getScript(): string {
                     vscode.setState(s);
                 }, 150);
             });
-            // ─── Calendar: Event Delegation ───
             document.body.addEventListener('click', function(e) {
                 var target = e.target;
+
+                // ── data-switch-tab links (e.g. Monitor → Profile "Details →") ──
+                var switchLink = target.closest && target.closest('[data-switch-tab]');
+                if (switchLink) {
+                    switchTab(switchLink.dataset.switchTab);
+                    return;
+                }
+
+                // ── Copy Raw JSON ──
+                if (target.closest && target.closest('#copyRawJson')) {
+                    var cpyBtn = target.closest('#copyRawJson');
+                    var rawEl = document.getElementById('rawJsonContent');
+                    if (!rawEl) return;
+                    navigator.clipboard.writeText(rawEl.textContent || '').then(function() {
+                        cpyBtn.classList.add('copied');
+                        var origHtml = cpyBtn.innerHTML;
+                        cpyBtn.textContent = copiedText;
+                        setTimeout(function() { cpyBtn.innerHTML = origHtml; cpyBtn.classList.remove('copied'); }, 2000);
+                    });
+                    return;
+                }
+
+                // ── Pricing Save ──
+                if (target.closest && target.closest('#pricingSaveBtn')) {
+                    var inputs = document.querySelectorAll('.pricing-input');
+                    var data = {};
+                    for (var pi = 0; pi < inputs.length; pi++) {
+                        var inp = inputs[pi];
+                        var model = inp.getAttribute('data-model');
+                        var field = inp.getAttribute('data-field');
+                        var val = parseFloat(inp.value) || 0;
+                        if (!data[model]) { data[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 }; }
+                        data[model][field] = val;
+                    }
+                    vscode.postMessage({ command: 'savePricing', value: data });
+                    return;
+                }
+
+                // ── Pricing Reset ──
+                if (target.closest && target.closest('#pricingResetBtn')) {
+                    vscode.postMessage({ command: 'resetPricing' });
+                    return;
+                }
+
+                // ── Clear Active Tracking ──
+                if (target.closest && target.closest('#clearActiveTracking')) {
+                    vscode.postMessage({ command: 'clearActiveTracking' });
+                    return;
+                }
+
+                // ── Privacy Mask Toggle ──
+                if (target.closest && target.closest('#privacyToggle')) {
+                    var pBtn = target.closest('#privacyToggle');
+                    var st = vscode.getState() || {};
+                    var m = !st.privacyMasked;
+                    st.privacyMasked = m;
+                    vscode.setState(st);
+                    var tgts = document.querySelectorAll('[data-real][data-masked]');
+                    for (var k = 0; k < tgts.length; k++) {
+                        tgts[k].textContent = m ? tgts[k].getAttribute('data-masked') : tgts[k].getAttribute('data-real');
+                    }
+                    pBtn.classList.toggle('active', m);
+                    return;
+                }
 
                 // ── Timeline: expand/collapse full text ──
                 var tlItem = target.closest && target.closest('[data-expand-target]');
@@ -693,92 +694,21 @@ export function getScript(): string {
                         if (calCell) { calCell.classList.add('selected'); }
                     }
 
-                    // Re-bind Copy Raw JSON button (inside monitor tab pane)
-                    var newCopyBtn = document.getElementById('copyRawJson');
-                    if (newCopyBtn) {
-                        newCopyBtn.addEventListener('click', function() {
-                            var rawEl = document.getElementById('rawJsonContent');
-                            if (!rawEl) return;
-                            navigator.clipboard.writeText(rawEl.textContent || '').then(function() {
-                                newCopyBtn.classList.add('copied');
-                                var origHtml = newCopyBtn.innerHTML;
-                                newCopyBtn.textContent = copiedText;
-                                setTimeout(function() { newCopyBtn.innerHTML = origHtml; newCopyBtn.classList.remove('copied'); }, 1500);
-                            });
-                        });
-                    }
-
-                    // Re-bind Pricing Save/Reset (inside pricing tab pane)
-                    var newPricingSave = document.getElementById('pricingSaveBtn');
-                    if (newPricingSave) {
-                        newPricingSave.addEventListener('click', function() {
-                            var inputs = document.querySelectorAll('.pricing-input');
-                            var data = {};
-                            for (var pi = 0; pi < inputs.length; pi++) {
-                                var inp = inputs[pi];
-                                var model = inp.getAttribute('data-model');
-                                var field = inp.getAttribute('data-field');
-                                var val = parseFloat(inp.value) || 0;
-                                if (!data[model]) { data[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 }; }
-                                data[model][field] = val;
-                            }
-                            vscode.postMessage({ command: 'savePricing', value: data });
-                        });
-                    }
-                    var newPricingReset = document.getElementById('pricingResetBtn');
-                    if (newPricingReset) {
-                        newPricingReset.addEventListener('click', function() {
-                            vscode.postMessage({ command: 'resetPricing' });
-                        });
-                    }
-
-                    // Re-bind Clear Active Tracking button (inside history tab pane)
-                    var newClearActiveBtn = document.getElementById('clearActiveTracking');
-                    if (newClearActiveBtn) {
-                        newClearActiveBtn.addEventListener('click', function() {
-                            vscode.postMessage({ command: 'clearActiveTracking' });
-                        });
-                    }
-
-                    // Re-bind data-switch-tab links
-                    var newSwitchLinks = document.querySelectorAll('[data-switch-tab]');
-                    for (var nsi = 0; nsi < newSwitchLinks.length; nsi++) {
-                        newSwitchLinks[nsi].addEventListener('click', function() {
-                            switchTab(this.dataset.switchTab);
-                        });
-                    }
-
-                    // Re-bind info chip toggles (chips are inside topbar, NOT swapped by updateTabs,
-                    // but re-bind in case future refactor moves them)
-                    // Note: chips are in .panel-topbar which is outside tab-panes,
-                    // so they are NOT destroyed by innerHTML swap. No re-bind needed.
-
-                    // Re-apply privacy mask if active AND re-bind toggle button
+                    // Re-apply privacy mask if active (delegation handles clicks, just restore visual state)
                     var privState = vscode.getState() || {};
                     var isMasked = privState.privacyMasked !== undefined ? !!privState.privacyMasked : (document.body.getAttribute('data-privacy-default') === 'true');
                     if (isMasked) {
                         var targets = document.querySelectorAll('[data-real][data-masked]');
                         for (var pj = 0; pj < targets.length; pj++) {
-                            var el = targets[pj];
-                            el.textContent = el.getAttribute('data-masked');
+                            targets[pj].textContent = targets[pj].getAttribute('data-masked');
                         }
+                        var privBtnEl = document.getElementById('privacyToggle');
+                        if (privBtnEl) { privBtnEl.classList.add('active'); }
                     }
-                    // Re-bind privacy toggle button (old button destroyed by innerHTML swap)
-                    var newPrivBtn = document.getElementById('privacyToggle');
-                    if (newPrivBtn) {
-                        if (isMasked) { newPrivBtn.classList.add('active'); }
-                        newPrivBtn.addEventListener('click', function() {
-                            var st = vscode.getState() || {};
-                            var m = !st.privacyMasked;
-                            st.privacyMasked = m;
-                            vscode.setState(st);
-                            var tgts = document.querySelectorAll('[data-real][data-masked]');
-                            for (var k = 0; k < tgts.length; k++) {
-                                tgts[k].textContent = m ? tgts[k].getAttribute('data-masked') : tgts[k].getAttribute('data-real');
-                            }
-                            newPrivBtn.classList.toggle('active', m);
-                        });
-                    }
+
+                    // Recalculate tab slider position after content swap
+                    // (tab button widths may change due to language or data updates)
+                    updateTabSlider();
                 }
             });
         })();

@@ -1,5 +1,43 @@
 # 变更日志 / Changelog
 
+## [1.14.0.2] - 2026-03-28
+
+### ⚡ Refactored / 重构
+
+- **PanelPayload Interface — Parameter Object Refactoring / PanelPayload 接口化 — 参数对象重构**: Replaced the 17-positional-parameter signatures of `showMonitorPanel()` and `updateMonitorPanel()` with a single `PanelPayload` object interface. All 9 call sites in `extension.ts` updated. Added `buildPanelPayload()` helper to construct payloads from cached state. Improves readability, type safety, and extensibility — new fields can be added without touching call sites.
+  将 `showMonitorPanel()` 和 `updateMonitorPanel()` 的 17 个位置参数签名替换为单一 `PanelPayload` 对象接口。`extension.ts` 中全部 9 处调用点已更新。新增 `buildPanelPayload()` 辅助函数从缓存状态构建 payload。提升可读性、类型安全和可扩展性——新增字段无需修改调用点。
+
+- **Event Delegation — Eliminate Re-binding / 事件委托 — 消灭重复绑定**: Migrated 5 categories of button event handlers (Copy JSON, Pricing Save/Reset, Clear Active Tracking, Privacy Toggle, Tab Switching) from individual `addEventListener` bindings to a single `document.body`-level click delegation handler using `closest()` matching. Completely eliminated the ~130-line re-binding block inside the `updateTabs` message handler. Body-level delegation survives `innerHTML` swaps during incremental updates, so `updateTabs` now only needs to restore DOM visual state (privacy mask, active classes) without re-attaching any event listeners.
+  将 5 类按钮事件处理器（复制 JSON、价格保存/重置、清理活跃追踪、隐私切换、Tab 切换）从逐个 `addEventListener` 绑定迁移为单一 `document.body` 级 click 委托，使用 `closest()` 匹配。完全消除 `updateTabs` 消息处理器中 ~130 行的重新绑定代码。body 级委托不受增量更新时 `innerHTML` 替换的影响，`updateTabs` 现在只需恢复 DOM 视觉状态（隐私遮罩、active 类），无需重新绑定任何事件监听器。
+
+- **Light Theme Tokenization / 亮色主题 Token 化**: Replaced 60+ hardcoded `rgba()` and hex color values in the `body.vscode-light` CSS overrides with 18 semantic CSS variables (`--lt-green`, `--lt-green-text`, `--lt-green-deep`, `--lt-amber`, `--lt-blue`, `--lt-red`, `--lt-orange`, `--lt-teal` and their text/deep variants). Future light-mode color adjustments can be made in one place (the variable declarations) rather than across 80+ individual CSS rules.
+  将 `body.vscode-light` CSS 覆盖中 60+ 个硬编码 `rgba()` 和 hex 颜色值替换为 18 个语义 CSS 变量（`--lt-green`、`--lt-green-text`、`--lt-green-deep`、`--lt-amber`、`--lt-blue`、`--lt-red`、`--lt-orange`、`--lt-teal` 及其 text/deep 变体）。未来亮色模式配色调整只需修改变量声明处，无需逐条修改 80+ 条 CSS 规则。
+
+- **CSS Deduplication — Profile Tab Redundancy Removal / CSS 去重 — Profile Tab 冗余清理**: Removed ~50 lines of duplicate CSS declarations in the Profile Tab region (`.credit-header`, `.credit-bar-wrap`, `.credit-bar`, `.feature-tag`, `.feature-tag.enabled`, `.default-model`, `.mime-count`) where identical selectors appeared twice — later declarations silently overriding earlier ones. Unique properties from the later block were merged back into the first definition.
+  删除 Profile Tab 区域 ~50 行重复 CSS 声明（`.credit-header`、`.credit-bar-wrap`、`.credit-bar`、`.feature-tag`、`.feature-tag.enabled`、`.default-model`、`.mime-count`），这些选择器出现了两次，后者静默覆盖前者。后者中的独有属性已合并回首次定义处。
+
+### 🐛 Fixed / 修复
+
+- **`::selection` Missing `color` Declaration / `::selection` 缺少 `color` 声明**: Added `color: var(--vscode-editor-selectionForeground, #fff)` to the global `::selection` rule. Previously only `background` was set, which could result in invisible selected text on certain VS Code themes where the selection background color is close to the default text color.
+  为全局 `::selection` 规则补充 `color: var(--vscode-editor-selectionForeground, #fff)`。此前仅设置了 `background`，在某些 VS Code 主题下选中文本背景色接近默认文字色时，可能导致选中文本不可见。
+
+- **Tab Slider Position Drift After Incremental Update / 增量更新后 Tab 滑块位置偏移**: Added `updateTabSlider()` call at the end of the `updateTabs` message handler. Previously, after `innerHTML` replacement changed tab button text width (e.g., due to language differences or dynamic content), the capsule slider position was not recalculated, causing it to drift from the active tab.
+  在 `updateTabs` 消息处理末尾追加 `updateTabSlider()` 调用。此前 `innerHTML` 替换改变 tab 按钮文字宽度后（如语言差异或动态内容），胶囊滑块位置未重新计算，导致偏移。
+
+### 📊 Stats / 统计
+
+- **Net reduction**: ~230 lines removed across 4 files
+- **TypeScript compile**: Zero errors
+- **Vitest**: 12 files / 117 cases — all passing
+- **Visual regression**: None — zero UI/UX changes
+
+## [1.14.0.1] - 2026-03-28
+
+### 🐛 Fixed / 修复
+
+- **GM Data Persists After Quota Reset (Empty Cache Race) / 额度重置后 GM 数据残留（空缓存竞态）**: Fixed a critical data persistence bug where Gemini model statistics (call counts, tokens, credits, cards) remained visible in the UI after a quota reset. Root cause: `serialize()` strips `calls[]` to save space, so after an extension restart, `_cache.calls` is empty. When `onQuotaReset` fired before `fetchAll()` repopulated the cache, the per-call `_archivedCallIds` mechanism had nothing to archive — and when `fetchAll()` later returned old calls from the API, they passed through unfiltered. Fix: replaced the permanent model-level blacklist (`_archivedModelIds: Set<string>`) with a **timestamp-based cutoff mechanism** (`_archivedModelCutoffs: Map<string, string>`). `reset()` now records `new Date().toISOString()` as the cutoff for each resetting model. `_buildSummary()` compares each call's `createdAt` against its model's cutoff — calls created at or before the cutoff are filtered out, while new calls in subsequent quota cycles pass through normally. Cutoffs survive extension restarts via `serialize()`/`restore()`. Calls with missing or unparseable `createdAt` are treated as stale and filtered by default.
+  修复额度重置后 Gemini 模型统计数据（调用次数、token、积分、卡片）未清零的严重 BUG。根因：`serialize()` 为节省空间会剥离 `calls[]`，扩展重启后 `_cache.calls` 为空。当 `onQuotaReset` 在 `fetchAll()` 回填缓存之前触发时，基于 callId 的归档机制无数据可归档——随后 `fetchAll()` 从 API 拿回旧调用时，它们会绕过过滤全量显示。修复：将永久模型级黑名单（`_archivedModelIds: Set<string>`）替换为**时间戳截止线机制**（`_archivedModelCutoffs: Map<string, string>`）。`reset()` 为每个重置模型记录 `new Date().toISOString()` 作为截止线。`_buildSummary()` 将每个调用的 `createdAt` 与其模型的截止线比较——截止线之前（含）的调用被过滤，新周期的新调用正常通过。截止线通过 `serialize()`/`restore()` 跨重启持久化。`createdAt` 缺失或无法解析的调用默认视为旧调用并过滤。
+
 ## [1.14.0] - 2026-03-28
 
 ### 🐛 Fixed / 修复

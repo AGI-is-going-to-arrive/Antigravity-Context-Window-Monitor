@@ -22,6 +22,28 @@ import { getStyles } from './webview-styles';
 import type { StateBucket } from './durable-state';
 import type { PersistedModelDNA } from './model-dna-store';
 
+// ─── Panel Payload ────────────────────────────────────────────────────────────
+
+/** Unified data payload for showMonitorPanel / updateMonitorPanel. */
+export interface PanelPayload {
+    currentUsage: ContextUsage | null;
+    allTrajectoryUsages: ContextUsage[];
+    modelConfigs: ModelConfig[];
+    userInfo: UserStatusInfo | null;
+    context?: vscode.ExtensionContext;
+    tracker?: QuotaTracker;
+    activitySummary?: ActivitySummary | null;
+    initialTab?: string;
+    archives?: ActivityArchive[];
+    activityTracker?: ActivityTracker;
+    gmSummary?: GMSummary | null;
+    gmConversations?: Record<string, GMConversationData>;
+    pricingStore?: PricingStore;
+    dailyStore?: DailyStore;
+    storageDiagnostics?: StorageDiagnostics;
+    modelDNA?: Record<string, PersistedModelDNA>;
+}
+
 // ─── Panel State ──────────────────────────────────────────────────────────────
 
 let panel: vscode.WebviewPanel | undefined;
@@ -142,44 +164,27 @@ let calendarMonth = new Date().getMonth() + 1;
  * Show or reveal the WebView monitor panel.
  * Creates the panel on first call, reveals it on subsequent calls.
  */
-export function showMonitorPanel(
-    currentUsage: ContextUsage | null,
-    allTrajectoryUsages: ContextUsage[],
-    modelConfigs: ModelConfig[],
-    userInfo: UserStatusInfo | null,
-    context?: vscode.ExtensionContext,
-    tracker?: QuotaTracker,
-    activitySummary?: ActivitySummary | null,
-    initialTab?: string,
-    archives?: ActivityArchive[],
-    activityTracker?: ActivityTracker,
-    gmSummary?: GMSummary | null,
-    gmConversations?: Record<string, GMConversationData>,
-    pricingStore?: PricingStore,
-    dailyStore?: DailyStore,
-    storageDiagnostics?: StorageDiagnostics,
-    modelDNA?: Record<string, PersistedModelDNA>,
-): void {
-    lastUsage = currentUsage;
-    lastAllUsages = allTrajectoryUsages;
-    lastConfigs = modelConfigs;
-    lastUserInfo = userInfo;
-    if (context) { extensionCtx = context; }
-    if (tracker) { lastQuotaTracker = tracker; }
-    if (activitySummary !== undefined) { lastActivitySummary = activitySummary; }
-    if (archives) { lastArchives = archives; }
-    if (activityTracker) { lastActivityTracker = activityTracker; }
-    if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
-    if (gmConversations) { lastGMConversations = gmConversations; }
-    if (pricingStore) { lastPricingStore = pricingStore; }
-    if (dailyStore) { lastDailyStore = dailyStore; }
-    if (storageDiagnostics) { lastStorageDiagnostics = storageDiagnostics; }
-    if (modelDNA) { lastModelDNA = modelDNA; }
+export function showMonitorPanel(p: PanelPayload): void {
+    lastUsage = p.currentUsage;
+    lastAllUsages = p.allTrajectoryUsages;
+    lastConfigs = p.modelConfigs;
+    lastUserInfo = p.userInfo;
+    if (p.context) { extensionCtx = p.context; }
+    if (p.tracker) { lastQuotaTracker = p.tracker; }
+    if (p.activitySummary !== undefined) { lastActivitySummary = p.activitySummary; }
+    if (p.archives) { lastArchives = p.archives; }
+    if (p.activityTracker) { lastActivityTracker = p.activityTracker; }
+    if (p.gmSummary !== undefined) { lastGMSummary = p.gmSummary; }
+    if (p.gmConversations) { lastGMConversations = p.gmConversations; }
+    if (p.pricingStore) { lastPricingStore = p.pricingStore; }
+    if (p.dailyStore) { lastDailyStore = p.dailyStore; }
+    if (p.storageDiagnostics) { lastStorageDiagnostics = p.storageDiagnostics; }
+    if (p.modelDNA) { lastModelDNA = p.modelDNA; }
 
     if (panel) {
-        panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
+        panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused, lastQuotaTracker);
         panel.reveal(vscode.ViewColumn.Two, true);
-        if (initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: initialTab }), 100); }
+        if (p.initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: p.initialTab }), 100); }
         return;
     }
 
@@ -190,8 +195,8 @@ export function showMonitorPanel(
         { enableScripts: true, retainContextWhenHidden: true },
     );
 
-    panel.webview.html = buildHtml(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, isPaused, lastQuotaTracker);
-    if (initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: initialTab }), 100); }
+    panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused, lastQuotaTracker);
+    if (p.initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: p.initialTab }), 100); }
 
     panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string }) => {
         if (msg.command === 'switchLanguage' && msg.lang && extensionCtx) {
@@ -379,35 +384,23 @@ export function showMonitorPanel(
  * Does NOT steal focus or create a new panel.
  * When paused, data is cached but the panel is NOT re-rendered.
  */
-export function updateMonitorPanel(
-    currentUsage: ContextUsage | null,
-    allTrajectoryUsages: ContextUsage[],
-    modelConfigs: ModelConfig[],
-    userInfo: UserStatusInfo | null,
-    tracker?: QuotaTracker,
-    activitySummary?: ActivitySummary | null,
-    archives?: ActivityArchive[],
-    gmSummary?: GMSummary | null,
-    gmConversations?: Record<string, GMConversationData>,
-    storageDiagnostics?: StorageDiagnostics,
-    modelDNA?: Record<string, PersistedModelDNA>,
-): void {
-    lastUsage = currentUsage;
-    lastAllUsages = allTrajectoryUsages;
-    lastConfigs = modelConfigs;
-    lastUserInfo = userInfo;
-    if (tracker) { lastQuotaTracker = tracker; }
-    if (activitySummary !== undefined) { lastActivitySummary = activitySummary; }
-    if (archives) { lastArchives = archives; }
-    if (gmSummary !== undefined) { lastGMSummary = gmSummary; }
-    if (gmConversations) { lastGMConversations = gmConversations; }
-    if (storageDiagnostics) { lastStorageDiagnostics = storageDiagnostics; }
-    if (modelDNA) { lastModelDNA = modelDNA; }
+export function updateMonitorPanel(p: PanelPayload): void {
+    lastUsage = p.currentUsage;
+    lastAllUsages = p.allTrajectoryUsages;
+    lastConfigs = p.modelConfigs;
+    lastUserInfo = p.userInfo;
+    if (p.tracker) { lastQuotaTracker = p.tracker; }
+    if (p.activitySummary !== undefined) { lastActivitySummary = p.activitySummary; }
+    if (p.archives) { lastArchives = p.archives; }
+    if (p.gmSummary !== undefined) { lastGMSummary = p.gmSummary; }
+    if (p.gmConversations) { lastGMConversations = p.gmConversations; }
+    if (p.storageDiagnostics) { lastStorageDiagnostics = p.storageDiagnostics; }
+    if (p.modelDNA) { lastModelDNA = p.modelDNA; }
     if (panel && !isPaused) {
         // Incremental update: send tab contents via postMessage — no DOM teardown
         safePostMessage({
             command: 'updateTabs',
-            tabs: buildTabContents(currentUsage, allTrajectoryUsages, modelConfigs, userInfo, lastQuotaTracker),
+            tabs: buildTabContents(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, lastQuotaTracker),
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         });
     }

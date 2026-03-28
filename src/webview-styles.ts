@@ -43,6 +43,7 @@ export function getStyles(): string {
 
         ::selection {
             background: var(--vscode-editor-selectionBackground, rgba(0,127,212,0.35));
+            color: var(--vscode-editor-selectionForeground, #fff);
         }
 
         ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -1132,9 +1133,9 @@ export function getStyles(): string {
 
         /* ─── Default Model ───────────── */
         .default-model {
-            font-size: 0.8em;
+            font-size: 0.85em;
             color: var(--color-text-dim);
-            margin-bottom: var(--space-3);
+            margin-top: var(--space-1);
         }
 
         .default-model strong {
@@ -1243,6 +1244,7 @@ export function getStyles(): string {
         .credits-section {
             display: grid;
             gap: var(--space-2);
+            margin-top: var(--space-3);
             margin-bottom: var(--space-3);
         }
 
@@ -1295,25 +1297,26 @@ export function getStyles(): string {
             margin-top: var(--space-2);
         }
 
-        .credit-row {}
+        .credit-row { margin-bottom: var(--space-2); }
 
         .credit-header {
             display: flex;
             justify-content: space-between;
-            font-size: 0.8em;
-            margin-bottom: 2px;
+            font-size: 0.85em;
+            margin-bottom: var(--space-1);
         }
 
         .credit-bar-wrap {
+            width: 100%;
             height: 6px;
-            background: rgba(255,255,255,0.06);
-            border-radius: var(--radius-sm);
+            background: rgba(255,255,255,0.08);
+            border-radius: 3px;
             overflow: hidden;
         }
 
         .credit-bar {
             height: 100%;
-            border-radius: var(--radius-sm);
+            border-radius: 3px;
             transition: width 0.3s cubic-bezier(.4,0,.2,1);
         }
 
@@ -1325,22 +1328,20 @@ export function getStyles(): string {
         }
 
         .feature-tag {
-            font-size: 0.7em;
-            padding: 2px 6px;
+            display: inline-block;
+            font-size: 0.75em;
+            padding: 2px var(--space-2);
             border-radius: var(--radius-sm);
             background: rgba(255,255,255,0.04);
             color: var(--color-text-dim);
             border: 1px solid var(--color-border);
-            opacity: 0.72;
-            text-decoration: none;
+            transition: background-color 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
         }
 
         .feature-tag.enabled {
-            opacity: 1;
-            text-decoration: none;
-            background: rgba(74, 222, 128, 0.08);
-            border-color: rgba(74, 222, 128, 0.2);
+            background: rgba(74,222,128,0.12);
             color: var(--color-ok);
+            border-color: rgba(74,222,128,0.25);
         }
 
         /* ─── Git Info ────────────────── */
@@ -2941,64 +2942,33 @@ export function getStyles(): string {
             gap: var(--space-1);
         }
 
-        /* ─── Profile Tab ────────────── */
-        .credit-row { margin-bottom: var(--space-2); }
-        .credit-header {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.85em;
-            margin-bottom: var(--space-1);
-        }
-        .credit-bar-wrap {
-            width: 100%;
-            height: 6px;
-            background: rgba(255,255,255,0.08);
-            border-radius: 3px;
-            overflow: hidden;
-        }
-        .credit-bar {
-            height: 100%;
-            border-radius: 3px;
-            transition: width 0.3s cubic-bezier(.4,0,.2,1);
-        }
-        .credits-section { margin-top: var(--space-3); }
-        .default-model {
-            font-size: 0.85em;
-            color: var(--color-text-dim);
-            margin-top: var(--space-1);
-        }
-        .feature-tags {
-            display: flex;
-            flex-wrap: wrap;
-            gap: var(--space-1);
-        }
-        .feature-tag {
-            display: inline-block;
-            padding: 2px var(--space-2);
-            font-size: 0.75em;
-            border-radius: var(--radius-sm);
-            background: rgba(255,255,255,0.04);
-            color: var(--color-text-dim);
-            border: 1px solid var(--color-border);
-            transition: background-color 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
-        }
-        .feature-tag.enabled {
-            background: rgba(74,222,128,0.12);
-            color: var(--color-ok);
-            border-color: rgba(74,222,128,0.25);
-        }
-        .mime-count {
-            font-size: 0.7em;
-            color: var(--color-text-dim);
-            opacity: 0.6;
-        }
+
 
         /* ─── Light Theme Overrides ────── */
         body.vscode-light {
-            --color-ok: #16a34a;
-            --color-warn: #ca8a04;
-            --color-danger: #dc2626;
-            --color-info: #2563eb;
+            /* Semantic palette tokens for light mode */
+            --lt-green: 22,163,74;
+            --lt-green-text: #16a34a;
+            --lt-green-deep: #15803d;
+            --lt-amber: 202,138,4;
+            --lt-amber-text: #a16207;
+            --lt-amber-deep: #92400e;
+            --lt-blue: 37,99,235;
+            --lt-blue-text: #2563eb;
+            --lt-blue-deep: #1d4ed8;
+            --lt-red: 220,38,38;
+            --lt-red-text: #dc2626;
+            --lt-red-deep: #b91c1c;
+            --lt-orange: 180,83,9;
+            --lt-orange-text: #b45309;
+            --lt-teal: 13,148,136;
+            --lt-teal-text: #0f766e;
+
+            /* Override core semantic tokens */
+            --color-ok: var(--lt-green-text);
+            --color-warn: var(--lt-amber-text);
+            --color-danger: var(--lt-red-text);
+            --color-info: var(--lt-blue-text);
             --color-surface: rgba(0,0,0,0.03);
             --color-border: rgba(0,0,0,0.1);
             --color-border-hover: rgba(0,0,0,0.22);
@@ -3006,17 +2976,17 @@ export function getStyles(): string {
         }
 
         /* ─── Light Theme: Activity GM Chips ──── */
-        body.vscode-light .act-tl-gm-in  { background: rgba(37,99,235,0.1); color: #1d4ed8; }
-        body.vscode-light .act-tl-gm-out { background: rgba(22,163,74,0.1); color: #15803d; }
-        body.vscode-light .act-tl-gm-ttft { background: rgba(202,138,4,0.1); color: #a16207; }
-        body.vscode-light .act-tl-gm-cache { background: rgba(13,148,136,0.1); color: #0f766e; }
-        body.vscode-light .act-tl-gm-retry { background: rgba(220,38,38,0.1); color: #b91c1c; }
+        body.vscode-light .act-tl-gm-in  { background: rgba(var(--lt-blue),0.1); color: var(--lt-blue-deep); }
+        body.vscode-light .act-tl-gm-out { background: rgba(var(--lt-green),0.1); color: var(--lt-green-deep); }
+        body.vscode-light .act-tl-gm-ttft { background: rgba(var(--lt-amber),0.1); color: var(--lt-amber-text); }
+        body.vscode-light .act-tl-gm-cache { background: rgba(var(--lt-teal),0.1); color: var(--lt-teal-text); }
+        body.vscode-light .act-tl-gm-retry { background: rgba(var(--lt-red),0.1); color: var(--lt-red-deep); }
 
         /* ─── Light Theme: Activity Timeline Tags ──── */
-        body.vscode-light .act-tl-tag-alias { background: rgba(202,138,4,0.1); color: #92400e; border-color: rgba(202,138,4,0.2); }
-        body.vscode-light .act-tl-tag-struct { background: rgba(37,99,235,0.1); color: #1e40af; border-color: rgba(37,99,235,0.2); }
-        body.vscode-light .act-tl-tag-est { background: rgba(220,38,38,0.08); color: #991b1b; border-color: rgba(220,38,38,0.2); }
-        body.vscode-light .act-tl-tag-basis { background: rgba(13,148,136,0.1); color: #0f766e; border-color: rgba(13,148,136,0.2); }
+        body.vscode-light .act-tl-tag-alias { background: rgba(var(--lt-amber),0.1); color: var(--lt-amber-deep); border-color: rgba(var(--lt-amber),0.2); }
+        body.vscode-light .act-tl-tag-struct { background: rgba(var(--lt-blue),0.1); color: var(--lt-blue-deep); border-color: rgba(var(--lt-blue),0.2); }
+        body.vscode-light .act-tl-tag-est { background: rgba(var(--lt-red),0.08); color: #991b1b; border-color: rgba(var(--lt-red),0.2); }
+        body.vscode-light .act-tl-tag-basis { background: rgba(var(--lt-teal),0.1); color: var(--lt-teal-text); border-color: rgba(var(--lt-teal),0.2); }
         body.vscode-light .act-tl-tag-model { background: rgba(0,0,0,0.04); color: rgba(0,0,0,0.5); border-color: rgba(0,0,0,0.08); }
         body.vscode-light .act-tl-ai-preview { color: #c2410c; }
 
@@ -3028,36 +2998,36 @@ export function getStyles(): string {
         body.vscode-light .act-tool-tag { background: rgba(0,0,0,0.05); }
         body.vscode-light .act-tl-tool-name { background: rgba(0,0,0,0.05); }
         body.vscode-light .act-tl-expand { background: rgba(0,0,0,0.03); }
-        body.vscode-light .act-dist-note { color: #92400e; opacity: 1; border-left-color: #b45309; }
-        body.vscode-light .github-banner { border-color: rgba(22,163,74,0.2); background: rgba(22,163,74,0.04); }
-        body.vscode-light .github-banner .info-banner-icon { color: #16a34a; }
-        body.vscode-light .info-banner-link { border-color: rgba(22,163,74,0.25); background: rgba(22,163,74,0.08); color: #16a34a; }
-        body.vscode-light .multiwin-banner { border-color: rgba(180,83,9,0.15); background: rgba(180,83,9,0.03); }
-        body.vscode-light .multiwin-banner .info-banner-icon { color: #b45309; }
-        body.vscode-light .disclaimer-banner { border-color: rgba(180,83,9,0.25); background: rgba(180,83,9,0.04); }
-        body.vscode-light .disclaimer-banner summary { color: #92400e; }
-        body.vscode-light .disclaimer-banner[open] { border-color: rgba(180,83,9,0.35); background: rgba(180,83,9,0.06); }
-        body.vscode-light .disclaimer-body { color: rgba(0,0,0,0.7); border-top-color: rgba(180,83,9,0.15); }
-        body.vscode-light .disclaimer-body strong { color: #92400e; }
+        body.vscode-light .act-dist-note { color: var(--lt-amber-deep); opacity: 1; border-left-color: var(--lt-orange-text); }
+        body.vscode-light .github-banner { border-color: rgba(var(--lt-green),0.2); background: rgba(var(--lt-green),0.04); }
+        body.vscode-light .github-banner .info-banner-icon { color: var(--lt-green-text); }
+        body.vscode-light .info-banner-link { border-color: rgba(var(--lt-green),0.25); background: rgba(var(--lt-green),0.08); color: var(--lt-green-text); }
+        body.vscode-light .multiwin-banner { border-color: rgba(var(--lt-orange),0.15); background: rgba(var(--lt-orange),0.03); }
+        body.vscode-light .multiwin-banner .info-banner-icon { color: var(--lt-orange-text); }
+        body.vscode-light .disclaimer-banner { border-color: rgba(var(--lt-orange),0.25); background: rgba(var(--lt-orange),0.04); }
+        body.vscode-light .disclaimer-banner summary { color: var(--lt-amber-deep); }
+        body.vscode-light .disclaimer-banner[open] { border-color: rgba(var(--lt-orange),0.35); background: rgba(var(--lt-orange),0.06); }
+        body.vscode-light .disclaimer-body { color: rgba(0,0,0,0.7); border-top-color: rgba(var(--lt-orange),0.15); }
+        body.vscode-light .disclaimer-body strong { color: var(--lt-amber-deep); }
 
         /* ─── Light Theme: Settings Panel ──── */
         body.vscode-light .toggle-track { background: rgba(0,0,0,0.12); }
         body.vscode-light .toggle-cb:checked + .toggle-track { background: var(--color-info); }
         body.vscode-light .num-spinner { background: rgba(0,0,0,0.03); }
         body.vscode-light .threshold-input { background: rgba(0,0,0,0.03); }
-        body.vscode-light .threshold-input:focus-visible { box-shadow: 0 0 0 2px rgba(37,99,235,0.2); }
-        body.vscode-light .num-spinner:focus-within { box-shadow: 0 0 0 2px rgba(37,99,235,0.2); }
+        body.vscode-light .threshold-input:focus-visible { box-shadow: 0 0 0 2px rgba(var(--lt-blue),0.2); }
+        body.vscode-light .num-spinner:focus-within { box-shadow: 0 0 0 2px rgba(var(--lt-blue),0.2); }
         body.vscode-light .raw-json { background: rgba(0,0,0,0.03); }
         body.vscode-light .danger-action {
-            --color-danger-border: rgba(220,38,38,0.25);
-            --color-danger-surface: rgba(220,38,38,0.08);
+            --color-danger-border: rgba(var(--lt-red),0.25);
+            --color-danger-surface: rgba(var(--lt-red),0.08);
         }
-        body.vscode-light .storage-path-state.is-ready { background: rgba(22,163,74,0.1); }
-        body.vscode-light .storage-path-state.is-missing { background: rgba(220,38,38,0.1); }
+        body.vscode-light .storage-path-state.is-ready { background: rgba(var(--lt-green),0.1); }
+        body.vscode-light .storage-path-state.is-missing { background: rgba(var(--lt-red),0.1); }
         body.vscode-light .stg-header-icon {
             background: color-mix(in srgb, var(--stg-accent, var(--color-border)) 12%, transparent);
         }
-        body.vscode-light .storage-stat-val { color: #1d4ed8; }
+        body.vscode-light .storage-stat-val { color: var(--lt-blue-deep); }
         body.vscode-light .storage-stat:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 
         /* ─── Light Theme: Sticky TopBar ──── */
@@ -3070,58 +3040,58 @@ export function getStyles(): string {
 
         /* ─── Light Theme: Info Chips ──── */
         body.vscode-light .chip-github {
-            color: #16a34a;
-            background: rgba(22,163,74,0.06);
-            border-color: rgba(22,163,74,0.15);
+            color: var(--lt-green-text);
+            background: rgba(var(--lt-green),0.06);
+            border-color: rgba(var(--lt-green),0.15);
         }
         body.vscode-light .chip-github.active {
-            color: #15803d;
-            background: rgba(22,163,74,0.12);
-            border-color: rgba(22,163,74,0.35);
+            color: var(--lt-green-deep);
+            background: rgba(var(--lt-green),0.12);
+            border-color: rgba(var(--lt-green),0.35);
         }
         @media (hover: hover) {
             body.vscode-light .chip-github:not(.active):hover {
-                color: #15803d;
-                background: rgba(22,163,74,0.1);
-                border-color: rgba(22,163,74,0.25);
+                color: var(--lt-green-deep);
+                background: rgba(var(--lt-green),0.1);
+                border-color: rgba(var(--lt-green),0.25);
             }
         }
         body.vscode-light .chip-warn {
-            color: #a16207;
-            background: rgba(202,138,4,0.05);
-            border-color: rgba(202,138,4,0.12);
+            color: var(--lt-amber-text);
+            background: rgba(var(--lt-amber),0.05);
+            border-color: rgba(var(--lt-amber),0.12);
         }
         body.vscode-light .chip-warn.active {
-            color: #92400e;
-            background: rgba(202,138,4,0.12);
-            border-color: rgba(202,138,4,0.3);
+            color: var(--lt-amber-deep);
+            background: rgba(var(--lt-amber),0.12);
+            border-color: rgba(var(--lt-amber),0.3);
         }
         @media (hover: hover) {
             body.vscode-light .chip-warn:not(.active):hover {
-                color: #92400e;
-                background: rgba(202,138,4,0.08);
-                border-color: rgba(202,138,4,0.2);
+                color: var(--lt-amber-deep);
+                background: rgba(var(--lt-amber),0.08);
+                border-color: rgba(var(--lt-amber),0.2);
             }
         }
 
         /* ─── Light Theme: Chip Dropdowns ──── */
         body.vscode-light .chip-dropdown-github {
-            border-color: rgba(22,163,74,0.2);
-            background: rgba(22,163,74,0.04);
+            border-color: rgba(var(--lt-green),0.2);
+            background: rgba(var(--lt-green),0.04);
         }
         body.vscode-light .chip-dropdown-notice {
-            border-color: rgba(180,83,9,0.15);
-            background: rgba(180,83,9,0.03);
+            border-color: rgba(var(--lt-orange),0.15);
+            background: rgba(var(--lt-orange),0.03);
         }
         body.vscode-light .chip-dropdown-disclaimer {
-            border-color: rgba(180,83,9,0.2);
-            background: rgba(180,83,9,0.04);
+            border-color: rgba(var(--lt-orange),0.2);
+            background: rgba(var(--lt-orange),0.04);
         }
         body.vscode-light .chip-dropdown {
             color: rgba(0,0,0,0.7);
         }
         body.vscode-light .chip-dropdown .disclaimer-body strong {
-            color: #92400e;
+            color: var(--lt-amber-deep);
         }
 
         /* ─── High Contrast Overrides ──── */
