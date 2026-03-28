@@ -31,6 +31,11 @@
 - **Vitest**: 12 files / 117 cases — all passing
 - **Visual regression**: None — zero UI/UX changes
 
+### Contributors / 贡献者
+
+- Thanks to [@NightMin2002](https://github.com/NightMin2002) for the bug fix and code quality refactors ([PR #35](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/35)).
+  感谢 [@NightMin2002](https://github.com/NightMin2002) 提交 Bug 修复和代码质量重构（[PR #35](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/35)）。
+
 ## [1.14.0.1] - 2026-03-28
 
 ### 🐛 Fixed / 修复
