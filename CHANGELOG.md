@@ -1,5 +1,12 @@
 # 变更日志 / Changelog
 
+## [1.14.0.1] - 2026-03-28
+
+### 🐛 Fixed / 修复
+
+- **GM Data Persists After Quota Reset (Empty Cache Race) / 额度重置后 GM 数据残留（空缓存竞态）**: Fixed a critical data persistence bug where Gemini model statistics (call counts, tokens, credits, cards) remained visible in the UI after a quota reset. Root cause: `serialize()` strips `calls[]` to save space, so after an extension restart, `_cache.calls` is empty. When `onQuotaReset` fired before `fetchAll()` repopulated the cache, the per-call `_archivedCallIds` mechanism had nothing to archive — and when `fetchAll()` later returned old calls from the API, they passed through unfiltered. Fix: replaced the permanent model-level blacklist (`_archivedModelIds: Set<string>`) with a **timestamp-based cutoff mechanism** (`_archivedModelCutoffs: Map<string, string>`). `reset()` now records `new Date().toISOString()` as the cutoff for each resetting model. `_buildSummary()` compares each call's `createdAt` against its model's cutoff — calls created at or before the cutoff are filtered out, while new calls in subsequent quota cycles pass through normally. Cutoffs survive extension restarts via `serialize()`/`restore()`. Calls with missing or unparseable `createdAt` are treated as stale and filtered by default.
+  修复额度重置后 Gemini 模型统计数据（调用次数、token、积分、卡片）未清零的严重 BUG。根因：`serialize()` 为节省空间会剥离 `calls[]`，扩展重启后 `_cache.calls` 为空。当 `onQuotaReset` 在 `fetchAll()` 回填缓存之前触发时，基于 callId 的归档机制无数据可归档——随后 `fetchAll()` 从 API 拿回旧调用时，它们会绕过过滤全量显示。修复：将永久模型级黑名单（`_archivedModelIds: Set<string>`）替换为**时间戳截止线机制**（`_archivedModelCutoffs: Map<string, string>`）。`reset()` 为每个重置模型记录 `new Date().toISOString()` 作为截止线。`_buildSummary()` 将每个调用的 `createdAt` 与其模型的截止线比较——截止线之前（含）的调用被过滤，新周期的新调用正常通过。截止线通过 `serialize()`/`restore()` 跨重启持久化。`createdAt` 缺失或无法解析的调用默认视为旧调用并过滤。
+
 ## [1.14.0] - 2026-03-28
 
 ### 🐛 Fixed / 修复

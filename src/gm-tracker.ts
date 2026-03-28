@@ -194,6 +194,8 @@ export interface GMTrackerState {
     callBaselines?: Record<string, number>;
     /** executionIds of calls archived to dailyStore by per-pool resets (added v1.13.4) */
     archivedCallIds?: string[];
+    /** Model ID → ISO cutoff timestamp: calls created before cutoff are excluded (added v1.14.0) */
+    archivedModelCutoffs?: Record<string, string>;
 }
 
 export function filterGMSummaryByModels(
@@ -1038,6 +1040,8 @@ export class GMTracker {
     private _needsBaselineInit = false;
     /** executionIds of calls already archived by per-pool resets — excluded from _buildSummary() */
     private _archivedCallIds = new Set<string>();
+    /** Model ID → ISO cutoff: calls with createdAt ≤ cutoff are excluded — survives empty _cache.calls */
+    private _archivedModelCutoffs = new Map<string, string>();
 
     /**
      * Fetch GM data for the given trajectories.
@@ -1170,11 +1174,29 @@ export class GMTracker {
             const baseline = this._callBaselines.get(conv.cascadeId) || 0;
             const sliced = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
             // Filter out calls already archived by per-pool resets
-            const activeCalls = this._archivedCallIds.size > 0
-                ? sliced.filter(c =>
-                    !this._archivedCallIds.has(c.executionId)
-                    && !this._archivedCallIds.has(buildGMArchiveKey(c))
-                )
+            const hasCallFilter = this._archivedCallIds.size > 0;
+            const hasModelFilter = this._archivedModelCutoffs.size > 0;
+            const activeCalls = (hasCallFilter || hasModelFilter)
+                ? sliced.filter(c => {
+                    if (hasModelFilter) {
+                        const cutoff = this._archivedModelCutoffs.get(c.model)
+                            || (c.responseModel ? this._archivedModelCutoffs.get(c.responseModel) : undefined);
+                        if (cutoff) {
+                            const callMs = Date.parse(c.createdAt || '');
+                            const cutoffMs = Date.parse(cutoff);
+                            // If createdAt is missing or unparseable, assume old call -> filter it out
+                            if (isNaN(callMs) || callMs <= cutoffMs) {
+                                return false;
+                            }
+                        }
+                    }
+                    if (hasCallFilter
+                        && (this._archivedCallIds.has(c.executionId)
+                            || this._archivedCallIds.has(buildGMArchiveKey(c)))) {
+                        return false;
+                    }
+                    return true;
+                })
                 : sliced;
             const activeStepsCovered = activeCalls.reduce((sum, c) => sum + c.stepIndices.length, 0);
             conversations.push({
@@ -1342,6 +1364,13 @@ export class GMTracker {
         if (modelIds && modelIds.length > 0) {
             // ── Per-pool reset: only archive calls from specified models ──
             const modelSet = new Set(modelIds);
+            // Always record model-level cutoff timestamps — effective even when
+            // _cache.calls is empty (e.g. after serialize/restore strips calls).
+            // Calls with createdAt ≤ cutoff are excluded; newer calls pass through.
+            const cutoff = new Date().toISOString();
+            for (const id of modelIds) {
+                this._archivedModelCutoffs.set(id, cutoff);
+            }
             for (const [, conv] of this._cache) {
                 for (const c of conv.calls) {
                     if (modelSet.has(c.model) || modelSet.has(c.responseModel)) {
@@ -1376,6 +1405,7 @@ export class GMTracker {
             });
         }
         this._archivedCallIds.clear();
+        this._archivedModelCutoffs.clear();
         this._lastSummary = null;
         this._lastFetchedAt = '';
     }
@@ -1389,6 +1419,7 @@ export class GMTracker {
         this._cache.clear();
         this._callBaselines.clear();
         this._archivedCallIds.clear();
+        this._archivedModelCutoffs.clear();
         this._lastSummary = null;
         this._lastFetchedAt = '';
         this._needsBaselineInit = true;
@@ -1537,7 +1568,11 @@ export class GMTracker {
                 ...c, calls: [],
             })),
         };
-        return { version: 1, summary: slim, baselines, callBaselines, archivedCallIds: this._archivedCallIds.size > 0 ? [...this._archivedCallIds] : undefined };
+        return {
+            version: 1, summary: slim, baselines, callBaselines,
+            archivedCallIds: this._archivedCallIds.size > 0 ? [...this._archivedCallIds] : undefined,
+            archivedModelCutoffs: this._archivedModelCutoffs.size > 0 ? Object.fromEntries(this._archivedModelCutoffs) : undefined,
+        };
     }
 
     /** Restore from persisted state. Cache is empty — API will backfill. */
@@ -1576,6 +1611,14 @@ export class GMTracker {
         if (Array.isArray(data.archivedCallIds)) {
             for (const id of data.archivedCallIds) {
                 tracker._archivedCallIds.add(id);
+            }
+        }
+        // Restore model-level cutoff timestamps (added v1.14.0)
+        if (data.archivedModelCutoffs && typeof data.archivedModelCutoffs === 'object') {
+            for (const [id, cutoff] of Object.entries(data.archivedModelCutoffs)) {
+                if (typeof cutoff === 'string') {
+                    tracker._archivedModelCutoffs.set(id, cutoff);
+                }
             }
         }
 
