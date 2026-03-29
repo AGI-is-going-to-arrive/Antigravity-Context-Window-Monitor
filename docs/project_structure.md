@@ -28,16 +28,17 @@ antigravity-context-monitor/
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost
-│   ├── webview-panel.ts          # WebView 面板框架（标签切换 + 消息通信）
-│   ├── webview-styles.ts         # WebView 面板 CSS 样式
+│   ├── webview-panel.ts          # WebView 面板框架（9 标签切换 + 消息通信）
+│   ├── webview-styles.ts         # WebView 面板 CSS 样式（Design Token 体系）
 │   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、开发按钮等）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标
 │   ├── webview-monitor-tab.ts    # Monitor 标签页 HTML（支持 GM 快照回退）
 │   ├── webview-models-tab.ts     # Models 标签页 HTML（默认模型 + 模型配额 + 模型信息）
-│   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含持久化状态诊断）
+│   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含持久化状态诊断 + 界面提示偏好）
 │   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队）
 │   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
+│   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（会话目录 — 全量对话列表 + 筛选）
 │   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据）
 │   ├── pricing-panel.ts          # Cost 标签页 HTML（费用分析 + 模型信息卡片构建器）
 │   ├── webview-calendar-tab.ts   # Calendar 标签页 HTML
@@ -260,6 +261,23 @@ Unified "GM Data" tab merging Activity and GM precise data.
 
 ---
 
+### 💬 webview-chat-history-tab.ts — Sessions / 会话目录
+
+按工作区 / 仓库分组展示全量 Cascade 对话列表，提供筛选与操作入口。
+
+Displays all Cascade conversations grouped by workspace/repository with filtering and action buttons.
+
+| 特性 / Feature | 说明 / Description |
+|---|---|
+| 统计汇总 / Summary | 会话数 + 总积分消耗一行展示 |
+| 快捷卡片 / Shortcut cards | 当前工作区 / 当前仓库 / 运行中 / 可录制 四类快速筛选入口 |
+| 搜索 / Search | 自由文本搜索对话标题和 cascadeId |
+| 筛选 / Filters | 全部 / 当前工作区 / 当前仓库 / 运行中 / 可录制 工具栏按钮 |
+| 逐会话操作 / Actions | 打开工作区文件夹、Brain 目录、原始 `.pb` 文件 |
+| 数据源 / Data source | 复用 `lastTrajectories`（Trajectory 列表）+ GM 会话数据 |
+
+---
+
 ### 💲 pricing-store.ts — 定价数据层
 
 管理模型定价：默认价格表、用户自定义持久化、模糊匹配、费用计算。
@@ -303,16 +321,19 @@ Builds the full Cost tab HTML and also exports `buildModelDNACards()` for the Mo
 
 ### 🖥️ webview-panel.ts — WebView 面板框架
 
-面板总框架：标签切换（Monitor / GM Data / Cost / Models / Quota Tracking / Calendar / Profile / Settings）、消息通信。各标签内容由独立模块生成。
+面板总框架：9 标签切换（Monitor / GM Data / Sessions / Cost / Models / Quota Tracking / Calendar / Profile / Settings）、消息通信。各标签内容由独立模块生成。
+
+Panel framework: 9-tab navigation (Monitor / GM Data / Sessions / Cost / Models / Quota Tracking / Calendar / Profile / Settings) and message communication. Tab content rendered by independent modules.
 
 | 模块 / Module | 职责 / Responsibility |
 |---|---|
 | `webview-monitor-tab.ts` | Monitor 标签页 HTML；支持实时 `gmSummary` 与 `monitor-store` GM 快照双数据源 |
 | `webview-models-tab.ts` | Models 标签页 HTML；聚合默认模型、模型配额、模型信息 |
-| `webview-settings-tab.ts` | Settings 标签页 HTML；含持久化状态诊断卡片 |
-| `webview-script.ts` | 客户端 JS；处理设置、状态文件按钮、开发按钮、增量刷新重绑定 |
+| `webview-settings-tab.ts` | Settings 标签页 HTML；含持久化状态诊断卡片、界面提示偏好（Tab Scroll Hint） |
+| `webview-script.ts` | 客户端 JS；事件委托、标签切换、设置交互、增量刷新、`<details>` 状态恢复 |
 | `webview-styles.ts` | CSS 样式（Design Token 体系） |
 | `webview-icons.ts` | 内联 SVG 图标 |
+| `webview-chat-history-tab.ts` | Sessions / 会话标签页 HTML；全量对话列表、快捷卡片、筛选/搜索、逐会话操作按钮 |
 | `activity-panel.ts` | GM Data 标签页 HTML |
 | `pricing-panel.ts` | Cost 标签页 HTML；同时提供模型信息卡片构建器 |
 | `webview-calendar-tab.ts` | Calendar 标签页 HTML |
@@ -392,6 +413,7 @@ extension.ts (入口 + 调度)
     ├── webview-models-tab.ts
     ├── webview-profile-tab.ts
     ├── webview-settings-tab.ts
+    ├── webview-chat-history-tab.ts  ← 会话目录
     ├── activity-panel.ts
     ├── pricing-panel.ts
     ├── webview-calendar-tab.ts
@@ -423,6 +445,8 @@ Antigravity Language Server (localhost)
         │             │               │  onQuotaReset         │                │
         │             ▼               │   callback            ▼                │
         │    activity-panel.ts ◄──────┴────────────── pricing-panel.ts         │
+        │             │                                                        │
+        │    webview-chat-history-tab.ts ◄─── trajectories + GM conversations  │
         │             │
         ▼             ▼
     statusbar.ts   webview-panel.ts ─────► daily-store.ts

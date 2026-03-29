@@ -27,19 +27,46 @@ export function getScript(): string {
                 purple: '167,139,250', cyan: '34,211,238', yellow: '250,204,21',
                 gray: '148,163,184'
             };
+            function isTabHintEnabled() {
+                return document.body.getAttribute('data-tab-hint-enabled') !== 'false';
+            }
+            function setTabHintState(enabled) {
+                document.body.setAttribute('data-tab-hint-enabled', enabled ? 'true' : 'false');
+                var badge = document.getElementById('tabHintState');
+                if (badge) {
+                    badge.textContent = enabled ? ${JSON.stringify(tBi('Auto Hint Enabled', '自动提示已开启'))} : ${JSON.stringify(tBi('Auto Hint Disabled', '自动提示已关闭'))};
+                    badge.classList.toggle('is-ready', !!enabled);
+                    badge.classList.toggle('is-missing', !enabled);
+                }
+            }
             function updateTabSlider() {
                 var bar = document.querySelector('.tab-bar');
                 var slider = document.querySelector('.tab-slider');
                 var active = document.querySelector('.tab-btn.active');
                 if (!bar || !slider || !active) return;
-                var barRect = bar.getBoundingClientRect();
-                var btnRect = active.getBoundingClientRect();
-                slider.style.left = (btnRect.left - barRect.left) + 'px';
-                slider.style.width = btnRect.width + 'px';
+                slider.style.left = active.offsetLeft + 'px';
+                slider.style.width = active.offsetWidth + 'px';
                 var c = active.dataset.color;
                 if (c && colorMap[c]) {
                     slider.style.setProperty('--slider-c', colorMap[c]);
                 }
+            }
+            function updateTabOverflowHint() {
+                var bar = document.querySelector('.tab-bar');
+                var hint = document.getElementById('tabScrollHint');
+                if (!bar || !hint) return;
+                if (!isTabHintEnabled()) {
+                    hint.hidden = true;
+                    return;
+                }
+                /* data-force-show: 用户手动"立即显示"时设置，跳过 overflow 判断 */
+                if (hint.hasAttribute('data-force-show')) {
+                    hint.hidden = false;
+                    return;
+                }
+                var overflowX = Math.ceil(bar.scrollWidth - bar.clientWidth);
+                var needsHint = overflowX > 8;
+                hint.hidden = !needsHint;
             }
             function switchTab(tabName) {
                 // Save outgoing tab scroll position
@@ -59,6 +86,7 @@ export function getScript(): string {
                 vscode.setState(s);
 
                 updateTabSlider();
+                updateTabOverflowHint();
 
                 // Restore incoming tab scroll position
                 tabScrolls = ts; // Update local ref
@@ -68,7 +96,27 @@ export function getScript(): string {
             // Restore active tab from state
             if (activeTab !== 'monitor') { switchTab(activeTab); }
             // Init slider position (must wait for layout)
-            requestAnimationFrame(function() { updateTabSlider(); });
+            requestAnimationFrame(function() { updateTabSlider(); updateTabOverflowHint(); });
+            var tabBarEl = document.querySelector('.tab-bar');
+            if (tabBarEl) {
+                tabBarEl.addEventListener('scroll', function() {
+                    updateTabOverflowHint();
+                }, { passive: true });
+            }
+            window.addEventListener('resize', function() {
+                updateTabSlider();
+                updateTabOverflowHint();
+            });
+            var dismissTabHintBtn = document.getElementById('dismissTabScrollHint');
+            if (dismissTabHintBtn) {
+                dismissTabHintBtn.addEventListener('click', function() {
+                    var dHint = document.getElementById('tabScrollHint');
+                    if (dHint) { dHint.removeAttribute('data-force-show'); }
+                    setTabHintState(false);
+                    updateTabOverflowHint();
+                    vscode.postMessage({ command: 'setPanelPref', key: 'panelShowTabScrollHint', value: false });
+                });
+            }
 
             // ─── Calendar: Restore expanded date after refresh ───
             var calSelectedDate = savedState.calendarSelectedDate || '';
@@ -121,6 +169,103 @@ export function getScript(): string {
                 }
             }
             bindChipToggles();
+
+            function restoreDetailsState(rootState) {
+                var ds = (rootState && rootState.detailsOpen) || {};
+                var dd = document.querySelectorAll('details[id]');
+                for (var di = 0; di < dd.length; di++) {
+                    var det = dd[di];
+                    if (Object.prototype.hasOwnProperty.call(ds, det.id)) {
+                        det.open = !!ds[det.id];
+                    }
+                    det.addEventListener('toggle', function() {
+                        var s = vscode.getState() || {};
+                        var dso = s.detailsOpen || {};
+                        dso[this.id] = this.open;
+                        s.detailsOpen = dso;
+                        vscode.setState(s);
+                    });
+                }
+            }
+
+            function bindHistoryCatalog() {
+                var searchInput = document.getElementById('historySearchInput');
+                var filterBtns = document.querySelectorAll('.history-filter-btn');
+                if (!searchInput && filterBtns.length === 0) { return; }
+
+                var state = vscode.getState() || {};
+                var activeFilter = state.historyFilter || 'all';
+                if (searchInput) {
+                    searchInput.value = state.historySearch || '';
+                }
+
+                function applyHistoryFilters() {
+                    var query = searchInput ? (searchInput.value || '').toLowerCase().trim() : '';
+                    var rows = document.querySelectorAll('[data-history-row="true"]');
+                    for (var ri = 0; ri < rows.length; ri++) {
+                        var row = rows[ri];
+                        var searchText = (row.getAttribute('data-search') || '').toLowerCase();
+                        var matchesSearch = !query || searchText.indexOf(query) !== -1;
+                        var matchesFilter = true;
+                        if (activeFilter === 'current') {
+                            matchesFilter = row.getAttribute('data-current-workspace') === 'true';
+                        } else if (activeFilter === 'currentrepo') {
+                            matchesFilter = row.getAttribute('data-current-repo') === 'true';
+                        } else if (activeFilter === 'running') {
+                            matchesFilter = row.getAttribute('data-running') === 'true';
+                        } else if (activeFilter === 'recordable') {
+                            matchesFilter = row.getAttribute('data-recordable') === 'true';
+                        }
+                        row.hidden = !(matchesSearch && matchesFilter);
+                    }
+
+                    var groups = document.querySelectorAll('.history-group');
+                    for (var gi = 0; gi < groups.length; gi++) {
+                        var visibleRows = groups[gi].querySelectorAll('[data-history-row="true"]:not([hidden])');
+                        groups[gi].hidden = visibleRows.length === 0;
+                    }
+                }
+
+                if (searchInput) {
+                    searchInput.addEventListener('input', function() {
+                        var s = vscode.getState() || {};
+                        s.historySearch = this.value || '';
+                        vscode.setState(s);
+                        applyHistoryFilters();
+                    });
+                }
+
+                for (var fi = 0; fi < filterBtns.length; fi++) {
+                    filterBtns[fi].addEventListener('click', function() {
+                        activeFilter = this.dataset.historyFilter || 'all';
+                        var s = vscode.getState() || {};
+                        s.historyFilter = activeFilter;
+                        vscode.setState(s);
+                        for (var bi = 0; bi < filterBtns.length; bi++) {
+                            filterBtns[bi].classList.toggle('is-active', filterBtns[bi] === this);
+                        }
+                        applyHistoryFilters();
+                    });
+                    filterBtns[fi].classList.toggle('is-active', filterBtns[fi].dataset.historyFilter === activeFilter);
+                }
+
+                var shortcutBtns = document.querySelectorAll('[data-history-shortcut]');
+                for (var si = 0; si < shortcutBtns.length; si++) {
+                    shortcutBtns[si].addEventListener('click', function() {
+                        activeFilter = this.dataset.historyShortcut || 'all';
+                        var s = vscode.getState() || {};
+                        s.historyFilter = activeFilter;
+                        vscode.setState(s);
+                        for (var bi = 0; bi < filterBtns.length; bi++) {
+                            filterBtns[bi].classList.toggle('is-active', filterBtns[bi].dataset.historyFilter === activeFilter);
+                        }
+                        applyHistoryFilters();
+                    });
+                }
+
+                applyHistoryFilters();
+            }
+            bindHistoryCatalog();
 
             // Restore chip state from saved state
             var savedChip = savedState.activeChip || '';
@@ -264,6 +409,13 @@ export function getScript(): string {
                 if (msg.command === 'setPaused' && pauseBtn) {
                     pauseBtn.classList.toggle('paused', msg.paused);
                 }
+                if (msg.command === 'panelPrefUpdated' && msg.key === 'panelShowTabScrollHint') {
+                    setTabHintState(!!msg.value);
+                    /* 启用时不调用 updateTabOverflowHint，避免覆盖 force-show 状态 */
+                    if (!msg.value) {
+                        updateTabOverflowHint();
+                    }
+                }
                 if (msg.command === 'thresholdSaved') {
                     var fb = document.getElementById('thresholdFeedback');
                     if (fb) {
@@ -277,7 +429,8 @@ export function getScript(): string {
                         'pollingInterval': 'pollingFeedback',
                         'contextLimits': 'modelLimitsFeedback',
                         'quotaNotificationThreshold': 'quotaNotifyFeedback',
-                        'statePath': 'statePathFeedback'
+                        'statePath': 'statePathFeedback',
+                        'panelShowTabScrollHint': 'panelHintFeedback'
                     };
                     var fbId = feedbackMap[msg.key];
                     if (fbId) {
@@ -312,19 +465,7 @@ export function getScript(): string {
             }
 
             // ─── Restore & persist ALL <details> states ───
-            var detailsOpen = savedState.detailsOpen || {};
-            var allDetails = document.querySelectorAll('details[id]');
-            for (var i = 0; i < allDetails.length; i++) {
-                var d = allDetails[i];
-                if (detailsOpen[d.id]) { d.setAttribute('open', ''); }
-                d.addEventListener('toggle', function() {
-                    var s = vscode.getState() || {};
-                    var ds = s.detailsOpen || {};
-                    ds[this.id] = this.open;
-                    s.detailsOpen = ds;
-                    vscode.setState(s);
-                });
-            }
+            restoreDetailsState(savedState);
 
             // ─── Custom number spinner buttons ───
             var spinnerBtns = document.querySelectorAll('.num-spinner-btn');
@@ -411,6 +552,18 @@ export function getScript(): string {
             if (revealStateFileBtn) {
                 revealStateFileBtn.addEventListener('click', function() {
                     vscode.postMessage({ command: 'revealStateFile' });
+                });
+            }
+            var restoreTabHintBtn = document.getElementById('restoreTabScrollHint');
+            if (restoreTabHintBtn) {
+                restoreTabHintBtn.addEventListener('click', function() {
+                    setTabHintState(true);
+                    var hint = document.getElementById('tabScrollHint');
+                    if (hint) {
+                        hint.setAttribute('data-force-show', 'true');
+                        hint.hidden = false;
+                    }
+                    vscode.postMessage({ command: 'setPanelPref', key: 'panelShowTabScrollHint', value: true });
                 });
             }
 
@@ -582,6 +735,19 @@ export function getScript(): string {
                     return;
                 }
 
+                // ── Chat History actions ──
+                var historyBtn = target.closest && target.closest('[data-history-action]');
+                if (historyBtn) {
+                    if (historyBtn.disabled) { return; }
+                    vscode.postMessage({
+                        command: 'historyAction',
+                        action: historyBtn.getAttribute('data-history-action'),
+                        cascadeId: historyBtn.getAttribute('data-cascade-id') || '',
+                        uri: historyBtn.getAttribute('data-history-uri') || ''
+                    });
+                    return;
+                }
+
                 // ── Month Navigation Buttons ──
                 var navBtn = target.closest && target.closest('.cal-nav-btn');
                 if (navBtn) {
@@ -635,19 +801,7 @@ export function getScript(): string {
                     // Otherwise: details closed → page height shrinks → scrollTop read
                     // forces layout → browser adjusts scroll position → details reopen
                     // too late → scroll stuck in wrong position ("Monitor tab jumps").
-                    var ds = (vscode.getState() || {}).detailsOpen || {};
-                    var dd = document.querySelectorAll('details[id]');
-                    for (var di = 0; di < dd.length; di++) {
-                        var det = dd[di];
-                        if (ds[det.id]) { det.setAttribute('open', ''); }
-                        det.addEventListener('toggle', function() {
-                            var s = vscode.getState() || {};
-                            var dso = s.detailsOpen || {};
-                            dso[this.id] = this.open;
-                            s.detailsOpen = dso;
-                            vscode.setState(s);
-                        });
-                    }
+                    restoreDetailsState(vscode.getState() || {});
 
                     // Restore timeline expand blocks
                     var tlExpands = (vscode.getState() || {}).tlExpands || {};
@@ -709,6 +863,8 @@ export function getScript(): string {
                     // Recalculate tab slider position after content swap
                     // (tab button widths may change due to language or data updates)
                     updateTabSlider();
+                    updateTabOverflowHint();
+                    bindHistoryCatalog();
                 }
             });
         })();

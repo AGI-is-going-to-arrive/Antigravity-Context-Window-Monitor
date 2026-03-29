@@ -347,6 +347,7 @@ export function getGMDataTabStyles(): string {
     .act-tl-gm-out { background: rgba(74,222,128,0.12); color: #86efac; }
     .act-tl-gm-ttft { background: rgba(251,191,36,0.12); color: #fcd34d; }
     .act-tl-gm-cache { background: rgba(45,212,191,0.12); color: #5eead4; }
+    .act-tl-gm-credit { background: rgba(248,113,113,0.16); color: #fca5a5; }
     .act-tl-gm-retry { background: rgba(248,113,113,0.15); color: #fca5a5; }
     .act-tl-segment {
         border: 1px solid rgba(255,255,255,0.05);
@@ -713,6 +714,10 @@ export function getGMDataTabStyles(): string {
         font-size: 0.85em;
         color: var(--color-text-dim);
         flex-shrink: 0;
+    }
+    .act-conv-gm {
+        color: #fcd34d;
+        font-weight: 600;
     }
     .act-conv-stats { margin-left: auto; display: flex; gap: var(--space-3); white-space: nowrap; }
     .act-conv-stats span { font-weight: 500; }
@@ -1235,6 +1240,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null): 
                     <div class="act-tl-legend-row"><div class="act-tl-legend-sample"><span class="act-tl-gm-tag act-tl-gm-out" style="display:inline">117 ${tBi('out', '输出')}</span></div><div class="act-tl-legend-desc">${tBi('Output tokens generated', '模型输出 token')}</div></div>
                     <div class="act-tl-legend-row"><div class="act-tl-legend-sample"><span class="act-tl-gm-tag act-tl-gm-ttft" style="display:inline">2.1s</span></div><div class="act-tl-legend-desc">${tBi('TTFT — Time To First Token', 'TTFT — 首 Token 延迟')}</div></div>
                     <div class="act-tl-legend-row"><div class="act-tl-legend-sample"><span class="act-tl-gm-tag act-tl-gm-cache" style="display:inline">176.8k ${tBi('cache', '缓存')}</span></div><div class="act-tl-legend-desc">${tBi('Cache read tokens', '缓存读取 token')}</div></div>
+                    <div class="act-tl-legend-row"><div class="act-tl-legend-sample"><span class="act-tl-gm-tag act-tl-gm-credit" style="display:inline">9 ${tBi('cr', '积分')}</span></div><div class="act-tl-legend-desc">${tBi('Credits consumed by this call', '这次调用消耗的积分')}</div></div>
                 </div>
                 <div class="act-tl-legend-formula">${tBi('Context', '上下文')} ≈ ${tBi('Input', '输入')} + ${tBi('Cache', '缓存')} + ${tBi('overhead', '系统开销')}</div>
             </div>
@@ -1281,6 +1287,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null): 
             if (e.gmOutputTokens) { parts.push(`<span class="act-tl-gm-tag act-tl-gm-out">${fmtTok(e.gmOutputTokens)} ${tBi('out', '输出')}</span>`); }
             if (e.gmTTFT && e.gmTTFT > 0) { parts.push(`<span class="act-tl-gm-tag act-tl-gm-ttft">${e.gmTTFT.toFixed(1)}s</span>`); }
             if (e.gmCacheReadTokens && e.gmCacheReadTokens > 0) { parts.push(`<span class="act-tl-gm-tag act-tl-gm-cache">${fmtTok(e.gmCacheReadTokens)} ${tBi('cache', '缓存')}</span>`); }
+            if (e.gmCredits && e.gmCredits > 0) { parts.push(`<span class="act-tl-gm-tag act-tl-gm-credit">${e.gmCredits} ${tBi('cr', '积分')}</span>`); }
             if (e.gmRetries && e.gmRetries > 1) { parts.push(`<span class="act-tl-gm-tag act-tl-gm-retry">r${e.gmRetries}</span>`); }
             gmTags = `<span class="act-tl-gm">${parts.join('')}</span>`;
         }
@@ -1438,11 +1445,15 @@ function buildConversations(s: GMSummary): string {
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
     let html = `<h2 class="act-section-title">${tBi('Conversations', '对话分布')}</h2><div class="act-conv-list">`;
     for (const c of convs) {
-        const title = c.title.length > 30 ? c.title.substring(0, 27) + '...' : c.title;
         const covPct = (c.coverageRate * 100).toFixed(0);
         let totalIn = 0;
-        for (const call of c.calls) { totalIn += call.inputTokens; }
-        html += `<div class="act-conv-item"><span class="act-conv-id" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" data-tooltip="${esc(c.title)}">${esc(title)}</span><span class="act-conv-stats"><span>${c.calls.length} ${tBi('calls', '调用')}</span><span>${covPct}% ${tBi('coverage', '覆盖')}</span><span>${fmt(totalIn)} ${tBi('in', '输入')}</span></span></div>`;
+        let totalCredits = 0;
+        for (const call of c.calls) {
+            totalIn += call.inputTokens;
+            totalCredits += call.credits;
+        }
+        const shortId = c.cascadeId.substring(0, 8);
+        html += `<div class="act-conv-item"><span class="act-conv-id">${tBi('Session', '会话')} ${esc(shortId)}</span><span class="act-conv-stats"><span>${c.calls.length} ${tBi('calls', '调用')}</span><span>${covPct}% ${tBi('coverage', '覆盖')}</span><span>${fmt(totalIn)} ${tBi('in', '输入')}</span>${totalCredits > 0 ? `<span class="act-conv-gm">${totalCredits} ${tBi('cr', '积分')}</span>` : ''}</span></div>`;
     }
     html += `</div>`;
     return html;

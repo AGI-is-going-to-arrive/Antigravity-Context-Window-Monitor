@@ -24,6 +24,10 @@ export interface StorageDiagnostics {
     hasDevResetSnapshot: boolean;
 }
 
+export interface PanelHintPreferences {
+    showTabScrollHint: boolean;
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /** Build the Settings tab HTML from current VS Code configuration. */
@@ -31,6 +35,7 @@ export function buildSettingsContent(
     configs: ModelConfig[],
     tracker?: QuotaTracker,
     storage?: StorageDiagnostics,
+    panelPrefs?: PanelHintPreferences,
 ): string {
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
     const currentThreshold = cfg.get<number>('compressionWarningThreshold', 150_000);
@@ -40,6 +45,7 @@ export function buildSettingsContent(
     const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
     const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
     const quotaNotifyThreshold = cfg.get<number>('quotaNotificationThreshold', 20);
+    const tabScrollHintEnabled = panelPrefs?.showTabScrollHint ?? true;
 
     const modelLimitRows = configs.map(c => {
         const customLimit = contextLimits[c.model];
@@ -229,6 +235,24 @@ export function buildSettingsContent(
                            min="60" max="150" step="5" value="100" />
                     <span class="zoom-value" id="zoomValue">100%</span>
                 </div>
+            </div>
+        </section>
+
+        <section class="stg-card" data-accent="history">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.timeline}</span>
+                <h2>${tBi('Panel Tips', '界面提示')}</h2>
+            </div>
+            <p class="raw-desc">${tBi(
+                'This state only means whether auto-display is enabled. It does not mean the hint is currently visible at the top. Use the button below to show it immediately once.',
+                '这里的状态只表示“是否启用自动提示”，不代表顶部当前一定可见。要立刻看到这条提示，请用下面的按钮显示一次。',
+            )}</p>
+            <div class="storage-actions">
+                <button class="action-btn" id="restoreTabScrollHint">${ICON.refresh} ${tBi('Show Hint Now', '立即显示一次提示')}</button>
+                <span class="storage-path-state ${tabScrollHintEnabled ? 'is-ready' : 'is-missing'}" id="tabHintState">
+                    ${tabScrollHintEnabled ? tBi('Auto Hint Enabled', '自动提示已开启') : tBi('Auto Hint Disabled', '自动提示已关闭')}
+                </span>
+                <span id="panelHintFeedback" class="threshold-feedback"></span>
             </div>
         </section>
 

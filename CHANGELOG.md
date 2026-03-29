@@ -1,6 +1,50 @@
 # 变更日志 / Changelog
 
-## [1.14.0.2] - 2026-03-28
+## [1.14.3] - 2026-03-29
+
+### ✨ Added / 新增
+
+- **Session Catalog Tab / 会话目录标签页**: New `Sessions / 会话` tab displaying all Cascade conversations grouped by workspace/repository. Features include: session count & total credits summary, quick-access shortcut cards (current workspace / current repo / running / recordable), search bar with text filtering, filter toolbar (All / Current Workspace / Current Repo / Running / Recordable), and per-session action buttons to reveal workspace folders, brain directories, or raw `.pb` files. New file `webview-chat-history-tab.ts` (484 lines).
+  新增「会话」标签页，按工作区/仓库分组展示所有 Cascade 对话。包含：会话数 & 总积分汇总、快捷卡片（当前工作区/当前仓库/运行中/可录制）、文本搜索框、筛选工具栏（全部/当前工作区/当前仓库/运行中/可录制），以及逐会话操作按钮（打开工作区文件夹、Brain 目录、原始 `.pb` 文件）。新增文件 `webview-chat-history-tab.ts`（484 行）。
+
+- **Tab Scroll Hint / 标签栏溢出提示**: When the tab bar overflows horizontally (9 tabs), a hint banner appears below suggesting Shift+Scroll navigation. Users can dismiss the hint, and the preference is persisted via `DurableState`. A "Show hint now" button in Settings allows re-enabling it.
+  当标签栏水平溢出（9 个标签）时，下方显示提示条建议使用 Shift+滚轮导航。用户可关闭提示，偏好通过 `DurableState` 持久化。设置中提供「立即显示一次提示」按钮可重新启用。
+
+- **GM Credit Display in Activity Panel / GM 数据面板积分展示**: Conversation distribution section now shows total credit consumption per session, and session list entries display short cascade IDs alongside credit usage.
+  对话分布区新增每会话积分消耗展示，会话列表条目显示短 cascadeId 和积分用量。
+
+### ⚡ Refactored / 重构
+
+- **`makePanelPayload()` Helper / 面板参数构建统一化**: Extracted a `makePanelPayload()` helper in `extension.ts` that constructs the full `PanelPayload` from cached state. Replaced 7 inline payload object literals across `showMonitorPanel` / `updateMonitorPanel` call sites, eliminating parameter duplication and ensuring consistent data delivery. Also added `lastTrajectories` caching to avoid redundant RPC calls.
+  在 `extension.ts` 中提取 `makePanelPayload()` 辅助函数，从缓存状态构建完整 `PanelPayload`。替换 7 处内联 payload 字面量，消除参数重复，确保数据传递一致性。同时新增 `lastTrajectories` 缓存避免冗余 RPC 调用。
+
+- **`restoreDetailsState()` Extraction / `<details>` 状态恢复提取**: Extracted `<details>` open/closed state restoration into a reusable `restoreDetailsState()` function in `webview-script.ts`, called both on initial load and after each `updateTabs` incremental refresh. Eliminates the previous pattern of duplicating restoration logic in two places.
+  将 `<details>` 展开/收起状态恢复提取为 `webview-script.ts` 中的可复用函数 `restoreDetailsState()`，在初始加载和每次 `updateTabs` 增量刷新后统一调用，消除两处重复的恢复逻辑。
+
+### 🐛 Fixed / 修复
+
+- **Tab Scroll Hint Disappearing After "Show Now" / 点击「立即显示」后提示框闪现即消**: Fixed a race condition where clicking "Show hint now" in Settings triggered a `setPanelPref` message round-trip. The backend responded with `panelPrefUpdated`, which called `updateTabOverflowHint()` — this re-checked overflow width and hid the hint if tabs didn't overflow at that moment. Fix: introduced `data-force-show` attribute mechanism. When user manually shows the hint, the attribute is set on `#tabScrollHint`, and `updateTabOverflowHint()` skips auto-hide when it detects this attribute. The attribute is only removed when user explicitly clicks the dismiss button.
+  修复竞态条件：在设置中点击「立即显示一次提示」触发 `setPanelPref` 消息往返，后端回复 `panelPrefUpdated` 调用 `updateTabOverflowHint()` 重新检测溢出量——若此时标签栏未溢出则立即隐藏提示。修复：引入 `data-force-show` 属性机制。用户手动显示时设置该属性，`updateTabOverflowHint()` 检测到后跳过自动隐藏。仅在用户点击关闭按钮时移除该属性。
+
+- **Settings Hint Badge Not Updating in Real-Time / 设置界面提示状态徽章未实时更新**: Fixed the "Panel Tips" section in Settings where the enabled/disabled badge did not react to the `panelPrefUpdated` message when toggling the hint from the hint bar itself. The `configSaved` feedback path now correctly maps `panelShowTabScrollHint` to its feedback element.
+  修复设置中「界面提示」区域的启用/禁用徽章在从提示条本身切换时不随 `panelPrefUpdated` 消息更新的问题。`configSaved` 反馈路径现已正确映射 `panelShowTabScrollHint` 到其反馈元素。
+
+### Changed / 变更
+
+- **Tab Bar Compacted / 标签栏紧凑化**: Reduced tab bar `gap` (6px→4px), `padding` (6px→4px), tab button `padding` (10px 16px→7px 12px), `font-size` (0.8em→0.76em), `gap` (6px→5px), and slider inset (6px→4px) to better accommodate 9 tabs within typical VS Code panel widths.
+  缩减标签栏 `gap`（6→4px）、`padding`（6→4px）、按钮内距（10px 16px→7px 12px）、字号（0.8→0.76em）、图标间距（6→5px）和滑块内缩（6→4px），使 9 个标签在 VS Code 面板宽度内更紧凑地排列。
+
+- **Session Catalog Tab Label Shortened / 标签文字缩短**: Tab button text changed from `Session Catalog / 会话目录` to `Sessions / 会话` for horizontal space savings.
+  标签按钮文字从「Session Catalog / 会话目录」缩短为「Sessions / 会话」，节省水平空间。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 7 (6 modified + 1 new)
+- **TypeScript compile**: Zero errors
+- **New file**: `src/webview-chat-history-tab.ts` (484 lines)
+- **Net addition**: ~900+ lines across styles, script logic, and tab content
+
+## [1.14.2] - 2026-03-28
 
 ### ⚡ Refactored / 重构
 
@@ -36,7 +80,7 @@
 - Thanks to [@NightMin2002](https://github.com/NightMin2002) for the bug fix and code quality refactors ([PR #35](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/35)).
   感谢 [@NightMin2002](https://github.com/NightMin2002) 提交 Bug 修复和代码质量重构（[PR #35](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/35)）。
 
-## [1.14.0.1] - 2026-03-28
+## [1.14.1] - 2026-03-28
 
 ### 🐛 Fixed / 修复
 
