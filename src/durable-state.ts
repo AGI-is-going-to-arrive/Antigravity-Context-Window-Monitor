@@ -35,12 +35,20 @@ function hasOwn(target: Record<string, unknown>, key: string): boolean {
 }
 
 export class DurableState {
+    private static readonly SAVE_DEBOUNCE_MS = 250;
     private readonly _filePath: string;
     private _data: DurableStateFile;
+    private _lastSerialized: string;
+    private _saveTimer: ReturnType<typeof setTimeout> | undefined;
+    private _pendingVersion = 0;
+    private _writtenVersion = 0;
+    private _flushInFlight: Promise<void> | null = null;
+    private _waiters = new Map<number, Array<() => void>>();
 
     constructor(filePath: string = getDefaultStateFilePath()) {
         this._filePath = filePath;
         this._data = this._load();
+        this._lastSerialized = this._serialize(this._data);
     }
 
     globalBucket(fallback?: StateBucket): StateBucket {
@@ -73,7 +81,7 @@ export class DurableState {
                 return fallbackValue;
             },
             update: async (key: string, value: unknown): Promise<void> => {
-                this._set(kind, key, value, workspaceKey);
+                await this._set(kind, key, value, workspaceKey);
                 if (fallback) {
                     await fallback.update(key, value);
                 }
@@ -81,7 +89,7 @@ export class DurableState {
         };
     }
 
-    private _set(kind: 'global' | 'workspace', key: string, value: unknown, workspaceKey?: string): void {
+    private _set(kind: 'global' | 'workspace', key: string, value: unknown, workspaceKey?: string): Promise<void> {
         if (kind === 'global') {
             this._data.global[key] = value;
         } else {
@@ -91,7 +99,7 @@ export class DurableState {
             }
             this._data.workspaces[bucketKey][key] = value;
         }
-        this._save();
+        return this._scheduleSave();
     }
 
     private _load(): DurableStateFile {
@@ -114,12 +122,72 @@ export class DurableState {
         }
     }
 
-    private _save(): void {
-        try {
-            fs.mkdirSync(path.dirname(this._filePath), { recursive: true });
-            fs.writeFileSync(this._filePath, JSON.stringify(this._data, null, 2), 'utf8');
-        } catch {
-            // Ignore persistence failures; VS Code state remains as fallback.
+    private _serialize(data: DurableStateFile): string {
+        return JSON.stringify(data, null, 2);
+    }
+
+    private _scheduleSave(): Promise<void> {
+        this._pendingVersion++;
+        const version = this._pendingVersion;
+        const pending = new Promise<void>(resolve => {
+            const waiters = this._waiters.get(version) || [];
+            waiters.push(resolve);
+            this._waiters.set(version, waiters);
+        });
+
+        if (this._saveTimer) {
+            clearTimeout(this._saveTimer);
         }
+        this._saveTimer = setTimeout(() => {
+            this._saveTimer = undefined;
+            void this._flush();
+        }, DurableState.SAVE_DEBOUNCE_MS);
+
+        return pending;
+    }
+
+    private _resolveWaitersUpTo(version: number): void {
+        for (const waiterVersion of [...this._waiters.keys()]) {
+            if (waiterVersion > version) { continue; }
+            const waiters = this._waiters.get(waiterVersion) || [];
+            this._waiters.delete(waiterVersion);
+            for (const resolve of waiters) {
+                resolve();
+            }
+        }
+    }
+
+    private async _flush(): Promise<void> {
+        if (this._flushInFlight) {
+            await this._flushInFlight;
+            return;
+        }
+
+        const targetVersion = this._pendingVersion;
+        const serialized = this._serialize(this._data);
+        if (serialized === this._lastSerialized) {
+            this._writtenVersion = Math.max(this._writtenVersion, targetVersion);
+            this._resolveWaitersUpTo(this._writtenVersion);
+            return;
+        }
+
+        this._flushInFlight = (async () => {
+            try {
+                await fs.promises.mkdir(path.dirname(this._filePath), { recursive: true });
+                await fs.promises.writeFile(this._filePath, serialized, 'utf8');
+                this._lastSerialized = serialized;
+            } catch {
+                // Ignore persistence failures; VS Code state remains as fallback.
+            } finally {
+                this._writtenVersion = Math.max(this._writtenVersion, targetVersion);
+                this._resolveWaitersUpTo(this._writtenVersion);
+                this._flushInFlight = null;
+                if (!this._saveTimer && this._pendingVersion > this._writtenVersion) {
+                    void this._flush();
+                }
+            }
+        })();
+
+        await this._flushInFlight;
     }
 }

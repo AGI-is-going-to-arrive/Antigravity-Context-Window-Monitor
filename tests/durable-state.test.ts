@@ -38,6 +38,9 @@ describe('DurableState', () => {
         const bucket = state.globalBucket(fallback);
         const migrated = bucket.get<Record<string, unknown>>('activityTrackerState', {});
         expect(migrated.value).toBe('from-fallback');
+        for (let i = 0; i < 20 && !fs.existsSync(filePath); i++) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+        }
         expect(fs.existsSync(filePath)).toBe(true);
 
         await bucket.update('activityTrackerState', { version: 1, value: 'from-file' });

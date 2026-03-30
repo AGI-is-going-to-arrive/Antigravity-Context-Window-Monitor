@@ -5,6 +5,7 @@ import {
     getAllTrajectories,
     getContextUsage,
     getContextLimit,
+    getModelDisplayName,
     normalizeUri,
     fetchFullUserStatus,
     updateModelDisplayNames,
@@ -121,6 +122,59 @@ const compressionPersistCounters = new Map<string, number>();
 
 function clonePlain<T>(value: T): T {
     return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function hasSameUsageInputs(
+    cached: ContextUsage | null | undefined,
+    trajectory: Pick<TrajectorySummary, 'cascadeId' | 'stepCount' | 'lastModifiedTime'>,
+): cached is ContextUsage {
+    return !!cached
+        && cached.cascadeId === trajectory.cascadeId
+        && cached.stepCount === trajectory.stepCount
+        && cached.lastModifiedTime === trajectory.lastModifiedTime;
+}
+
+function rehydrateUsageForDisplay(
+    usage: ContextUsage,
+    customLimits?: Record<string, number>,
+): ContextUsage {
+    const model = usage.model || usage.lastModelUsage?.model || '';
+    const modelDisplayName = getModelDisplayName(model);
+    const contextLimit = getContextLimit(model, customLimits);
+    const usagePercent = contextLimit > 0 ? (usage.contextUsed / contextLimit) * 100 : 0;
+    if (
+        model === usage.model
+        && modelDisplayName === usage.modelDisplayName
+        && contextLimit === usage.contextLimit
+        && usagePercent === usage.usagePercent
+    ) {
+        return usage;
+    }
+    return {
+        ...usage,
+        model,
+        modelDisplayName,
+        contextLimit,
+        usagePercent,
+    };
+}
+
+function hasGMSummaryChanged(prev: GMSummary | null | undefined, next: GMSummary | null | undefined): boolean {
+    if (!!prev !== !!next) { return true; }
+    if (!prev || !next) { return false; }
+    return prev.totalCalls !== next.totalCalls
+        || prev.totalStepsCovered !== next.totalStepsCovered
+        || prev.totalCredits !== next.totalCredits
+        || prev.totalInputTokens !== next.totalInputTokens
+        || prev.totalOutputTokens !== next.totalOutputTokens
+        || prev.totalCacheRead !== next.totalCacheRead
+        || prev.totalCacheCreation !== next.totalCacheCreation
+        || prev.totalThinkingTokens !== next.totalThinkingTokens
+        || prev.totalRetryCount !== next.totalRetryCount
+        || prev.totalRetryTokens !== next.totalRetryTokens
+        || prev.totalRetryCredits !== next.totalRetryCredits
+        || prev.conversations.length !== next.conversations.length
+        || Object.keys(prev.modelBreakdown).length !== Object.keys(next.modelBreakdown).length;
 }
 
 function persistResetSensitiveState(): void {
@@ -726,7 +780,14 @@ async function pollContextUsage(): Promise<void> {
         const config = vscode.workspace.getConfiguration('antigravityContextMonitor');
         const customLimits = config.get<Record<string, number>>('contextLimits');
 
-        currentUsage = await getContextUsage(lsInfo, activeTrajectory, customLimits, abortController.signal);
+        const persistedUsage = monitorStore.getSnapshot(activeTrajectory.cascadeId);
+        if (hasSameUsageInputs(currentUsage, activeTrajectory)) {
+            currentUsage = rehydrateUsageForDisplay(currentUsage, customLimits);
+        } else if (hasSameUsageInputs(persistedUsage, activeTrajectory)) {
+            currentUsage = rehydrateUsageForDisplay(persistedUsage, customLimits);
+        } else {
+            currentUsage = await getContextUsage(lsInfo, activeTrajectory, customLimits, abortController.signal);
+        }
         log(`  → contextUsed=${currentUsage.contextUsed} model=${currentUsage.model} steps=${currentUsage.stepCount} estimated=${currentUsage.isEstimated} ckpt_in=${currentUsage.lastModelUsage?.inputTokens ?? 'none'} ckpt_out=${currentUsage.lastModelUsage?.outputTokens ?? 'none'} estDelta=${currentUsage.estimatedDeltaSinceCheckpoint}`);
         statusBar.update(currentUsage);
 
@@ -786,6 +847,10 @@ async function pollContextUsage(): Promise<void> {
             if (t.cascadeId === activeTrajectory!.cascadeId) {
                 return currentUsage!;
             }
+            const cachedUsage = monitorStore.getSnapshot(t.cascadeId);
+            if (hasSameUsageInputs(cachedUsage, t)) {
+                return rehydrateUsageForDisplay(cachedUsage, customLimits);
+            }
             try {
                 return await getContextUsage(lsInfo!, t, customLimits, abortController.signal);
             } catch {
@@ -815,44 +880,41 @@ async function pollContextUsage(): Promise<void> {
                 // Fetch GM data (piggyback on same poll cycle)
                 let gmChanged = false;
                 try {
+                    const prevSummary = lastGMSummary;
                     const gmSummary = await gmTracker.fetchAll(
                         lsInfo,
                         trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
                         abortController.signal,
                     );
-                    const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
-                    monitorStore.recordGMConversations(gmTracker.getAllConversationData());
-                    durableFileGlobalState.update('gmDetailedSummary', detailedSummary);
-                    const mergedDNA = mergeModelDNAState(persistedModelDNA, detailedSummary);
-                    if (mergedDNA.changed) {
-                        persistedModelDNA = mergedDNA.entries;
-                        durableGlobalState.update('modelDNAState', serializeModelDNAState(persistedModelDNA));
-                    }
-                    const prevSummary = lastGMSummary;
-                    lastGMSummary = detailedSummary;
-                    if (!lastGMSummary
-                        || !prevSummary
-                        || gmSummary.totalCalls !== prevSummary.totalCalls
-                        || gmSummary.totalStepsCovered !== prevSummary.totalStepsCovered
-                        || gmSummary.totalRetryCount !== prevSummary.totalRetryCount
-                        || gmSummary.totalCredits !== prevSummary.totalCredits) {
-                        gmChanged = true;
+                    gmChanged = hasGMSummaryChanged(prevSummary, gmSummary);
+                    if (gmChanged || !lastGMSummary) {
+                        const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
+                        monitorStore.recordGMConversations(gmTracker.getAllConversationData());
+                        durableFileGlobalState.update('gmDetailedSummary', detailedSummary);
+                        const mergedDNA = mergeModelDNAState(persistedModelDNA, detailedSummary);
+                        if (mergedDNA.changed) {
+                            persistedModelDNA = mergedDNA.entries;
+                            durableGlobalState.update('modelDNAState', serializeModelDNAState(persistedModelDNA));
+                        }
+                        lastGMSummary = detailedSummary;
                     }
                 } catch { /* GM fetch failure is non-critical */ }
 
                 // Inject GM precision data into activity timeline events
                 let timelineChanged = false;
-                if (lastGMSummary) {
+                if (lastGMSummary && (activityChanged || gmChanged)) {
                     timelineChanged = activityTracker.injectGMData(lastGMSummary);
                 }
 
                 // Throttled activity persistence (max once per 30s)
                 const now = Date.now();
-                if (now - lastActivityPersistTime > 30_000) {
+                if ((activityChanged || gmChanged || timelineChanged) && now - lastActivityPersistTime > 30_000) {
                     durableGlobalState.update('activityTrackerState', activityTracker.serialize());
                     if (gmTracker) {
                         durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-                        durableFileGlobalState.update('gmDetailedSummary', gmTracker.getDetailedSummary());
+                        if (lastGMSummary) {
+                            durableFileGlobalState.update('gmDetailedSummary', lastGMSummary);
+                        }
                     }
                     lastActivityPersistTime = now;
                 }

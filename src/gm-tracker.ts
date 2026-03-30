@@ -1036,8 +1036,8 @@ export class GMTracker {
     private _lastSummary: GMSummary | null = null;
     /** Per-conversation baseline call counts — calls[0..baseline-1] are from prior cycles */
     private _callBaselines = new Map<string, number>();
-    /** When true, first fetchAll() baselines all existing API data (set only by fullReset) */
-    private _needsBaselineInit = false;
+    /** When true, first fetchAll() baselines all existing API data before counting new calls. */
+    private _needsBaselineInit = true;
     /** executionIds of calls already archived by per-pool resets — excluded from _buildSummary() */
     private _archivedCallIds = new Set<string>();
     /** Model ID → ISO cutoff: calls with createdAt ≤ cutoff are excluded — survives empty _cache.calls */
