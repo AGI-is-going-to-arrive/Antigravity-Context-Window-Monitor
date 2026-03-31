@@ -253,10 +253,19 @@ export class QuotaTracker {
                                 ms.knownWindowMs = timeToResetMs;
                             }
                         } else if (idleDuration >= OBSERVATION_WINDOW_MS) {
-                            const detectedStart = (knownWindowMs > 0 && currentResetMs > 0)
-                                ? new Date(currentResetMs - knownWindowMs).toISOString()
-                                : ms.last100Time;
-                            this.startTracking(ms, modelId, config.label, detectedStart, resetTimeStr, fraction, poolLabelsForModel.get(modelId));
+                            // Guard: if resetTime is already in the past, the API
+                            // hasn't refreshed to the new cycle yet. Entering
+                            // tracking now would cause isCycleEnded() to fire
+                            // immediately → ghost session → archive loop.
+                            if (currentResetMs > 0 && currentResetMs <= nowMs) {
+                                ms.lastFraction = fraction;
+                                ms.last100Time = now;
+                            } else {
+                                const detectedStart = (knownWindowMs > 0 && currentResetMs > 0)
+                                    ? new Date(currentResetMs - knownWindowMs).toISOString()
+                                    : ms.last100Time;
+                                this.startTracking(ms, modelId, config.label, detectedStart, resetTimeStr, fraction, poolLabelsForModel.get(modelId));
+                            }
                         } else {
                             ms.last100Time = now;
                             ms.lastFraction = fraction;
@@ -265,6 +274,21 @@ export class QuotaTracker {
                         // Actual usage detected (fraction < 1.0) → start tracking
                         const curResetMs = resetTimeStr
                             ? new Date(resetTimeStr).getTime() : 0;
+
+                        // ── Stale-resetTime guard ────────────────────────────
+                        // After a quota reset the API may still report the OLD
+                        // resetTime (already in the past) for several minutes.
+                        // If we enter tracking with a past cycleResetTime,
+                        // isCycleEnded() fires immediately on the next poll →
+                        // archive → back to idle → re-enter → infinite ghost-
+                        // session loop.  Stay idle until API provides a future
+                        // resetTime for the new cycle.
+                        if (curResetMs > 0 && curResetMs <= nowMs) {
+                            ms.lastFraction = fraction;
+                            ms.lastResetTime = resetTimeStr;
+                            break;
+                        }
+
                         const timeToResetMs = curResetMs - nowMs;
                         const knownWindowMs = getUsableKnownWindowMs(ms.knownWindowMs, timeToResetMs);
                         const observedFullBeforeDrop = ms.lastFraction >= 1.0;

@@ -195,6 +195,8 @@ export async function confirmLargeStateFileOpen(fileSizeBytes: number): Promise<
 function getPanelHintPreferences(): PanelHintPreferences {
     return {
         showTabScrollHint: panelDurableState?.get<boolean>('panelShowTabScrollHint', true) ?? true,
+        showScrollbar: panelDurableState?.get<boolean>('panelShowScrollbar', false) ?? false,
+        showEndOfContent: panelDurableState?.get<boolean>('panelShowEndOfContent', true) ?? true,
     };
 }
 
@@ -430,9 +432,9 @@ export function showMonitorPanel(p: PanelPayload): void {
             } else if ((msg.action === 'record' || msg.action === 'pb') && msg.cascadeId) {
                 await revealUriOrParent(getConversationTarget(msg.cascadeId, msg.action));
             }
-        } else if (msg.command === 'setPanelPref' && msg.key === 'panelShowTabScrollHint') {
+        } else if (msg.command === 'setPanelPref' && msg.key && ['panelShowTabScrollHint', 'panelShowScrollbar', 'panelShowEndOfContent'].includes(msg.key)) {
             if (panelDurableState) {
-                panelDurableState.update('panelShowTabScrollHint', !!msg.value);
+                panelDurableState.update(msg.key, !!msg.value);
             }
             safePostMessage({ command: 'panelPrefUpdated', key: msg.key, value: !!msg.value });
             safePostMessage({ command: 'configSaved', key: msg.key });
@@ -588,17 +590,18 @@ function buildTabContents(
     userInfo: UserStatusInfo | null,
     tracker?: QuotaTracker,
 ): Record<string, string> {
+    const eoc = `<div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>`;
     return {
-        monitor: buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations, tracker, lastPricingStore),
-        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage),
-        chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri),
-        pricing: lastPricingStore
+        monitor: buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations, tracker, lastPricingStore) + eoc,
+        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage) + eoc,
+        chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
+        pricing: (lastPricingStore
             ? buildPricingTabContent(lastGMSummary, lastPricingStore)
-            : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`,
-        models: buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA),
-        history: buildHistoryHtml(tracker),
-        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth),
-        profile: buildProfileContent(userInfo, configs),
+            : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`) + eoc,
+        models: buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA) + eoc,
+        history: buildHistoryHtml(tracker) + eoc,
+        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth) + eoc,
+        profile: buildProfileContent(userInfo, configs) + eoc,
         // Settings tab excluded from incremental updates: its content is mostly static
         // and replacing innerHTML destroys event listeners on toggles, buttons, inputs.
         // Settings is only rendered via full buildHtml() (panel open, language switch, etc.).
@@ -636,7 +639,7 @@ function buildHtml(
     const currentLang = getLanguage();
     const htmlLang = currentLang === 'zh' ? 'zh-CN' : currentLang === 'en' ? 'en' : 'zh-CN';
     return `<!DOCTYPE html>
-<html lang="${htmlLang}">
+<html lang="${htmlLang}" data-hide-scrollbar="${panelHintPrefs.showScrollbar ? 'false' : 'true'}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -647,7 +650,7 @@ ${getPricingTabStyles()}
 ${getCalendarTabStyles()}
 </style>
 </head>
-<body data-privacy-default="true" data-zoom="${panelDurableState?.get<number>('panelZoomLevel', 100) ?? 100}" data-tab-hint-enabled="${panelHintPrefs.showTabScrollHint ? 'true' : 'false'}">
+<body data-privacy-default="true" data-zoom="${panelDurableState?.get<number>('panelZoomLevel', 100) ?? 100}" data-tab-hint-enabled="${panelHintPrefs.showTabScrollHint ? 'true' : 'false'}" data-hide-scrollbar="${panelHintPrefs.showScrollbar ? 'false' : 'true'}" data-hide-eoc="${panelHintPrefs.showEndOfContent ? 'false' : 'true'}">
     <div class="panel-topbar">
         <header class="topbar-title">
             <h1>
@@ -742,30 +745,39 @@ ${getCalendarTabStyles()}
     </div>
     <div class="tab-pane active" id="tab-monitor">
         ${monitorHtml}
+        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
     <div class="tab-pane" id="tab-gmdata">
         ${gmDataHtml}
+        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
     <div class="tab-pane" id="tab-chats">
         ${chatsHtml}
+        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
     <div class="tab-pane" id="tab-pricing">
         ${pricingHtml}
+        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
     <div class="tab-pane" id="tab-models">
         ${modelsHtml}
+        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
     <div class="tab-pane" id="tab-history">
         ${historyHtml}
+        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
     <div class="tab-pane" id="tab-calendar">
         ${calendarHtml}
+        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
     <div class="tab-pane" id="tab-profile">
         ${profileHtml}
+        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
     <div class="tab-pane" id="tab-settings">
         ${settingsHtml}
+        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
     <script>
         ${getScript()}

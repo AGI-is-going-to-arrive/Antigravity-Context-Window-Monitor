@@ -28,6 +28,8 @@ export interface StorageDiagnostics {
 
 export interface PanelHintPreferences {
     showTabScrollHint: boolean;
+    showScrollbar: boolean;
+    showEndOfContent: boolean;
 }
 
 
@@ -50,6 +52,8 @@ export function buildSettingsContent(
     const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
     const quotaNotifyThreshold = cfg.get<number>('quotaNotificationThreshold', 20);
     const tabScrollHintEnabled = panelPrefs?.showTabScrollHint ?? true;
+    const showScrollbar = panelPrefs?.showScrollbar ?? false;
+    const showEndOfContent = panelPrefs?.showEndOfContent ?? true;
     const stateFileSizeLabel = storage ? formatFileSize(storage.stateFileSizeBytes) : '0 B';
     const stateFileOpenWarnLabel = storage ? formatFileSize(storage.stateFileOpenWarnBytes) : '0 B';
 
@@ -265,6 +269,29 @@ export function buildSettingsContent(
                     ${tabScrollHintEnabled ? tBi('Auto Hint Enabled', '自动提示已开启') : tBi('Auto Hint Disabled', '自动提示已关闭')}
                 </span>
                 <span id="panelHintFeedback" class="threshold-feedback"></span>
+            </div>
+        </section>
+
+        <section class="stg-card" data-accent="display">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.chart}</span>
+                <h2>${tBi('Scrollbar Appearance', '滚动条外观')}</h2>
+            </div>
+            <p class="raw-desc">${tBi(
+                'Control scrollbar visibility and end-of-content indicators across all tabs.',
+                '控制所有选项卡的滚动条可见性和「已到底」提示。',
+            )}</p>
+            <div class="toggle-group">
+                <label class="toggle-row">
+                    <input type="checkbox" id="toggleScrollbar" class="toggle-cb" ${showScrollbar ? 'checked' : ''} />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>${tBi('Show scrollbar', '显示滚动条')}</span>
+                </label>
+                <label class="toggle-row">
+                    <input type="checkbox" id="toggleEndOfContent" class="toggle-cb" ${showEndOfContent ? 'checked' : ''} />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>${tBi('Show "end of content" indicator', '显示「已到底」提示')}</span>
+                </label>
             </div>
         </section>
 

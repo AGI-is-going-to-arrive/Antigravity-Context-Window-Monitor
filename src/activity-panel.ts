@@ -304,14 +304,14 @@ export function getGMDataTabStyles(): string {
     .act-tl-expand::-webkit-scrollbar-track { background: transparent; }
     .act-tl-expand::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: var(--radius-full); }
     .act-tl-meta { margin-left: auto; display: flex; align-items: center; gap: 3px; flex-shrink: 0; white-space: nowrap; }
-    .act-tl-dur { color: var(--color-text-dim); flex-shrink: 0; }
+    .act-tl-dur { color: var(--color-text-dim); flex-shrink: 0; padding: 0 3px; border-radius: var(--radius-sm); background: var(--color-surface, rgba(128,128,128,0.1)); border: 1px solid var(--color-border, rgba(128,128,128,0.15)); font-size: 0.78em; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .act-tl-reasoning .act-tl-icon { color: var(--color-ok); }
     .act-tl-tool .act-tl-icon { color: var(--color-warn); }
     .act-tl-tool-name {
         color: var(--color-text-dim);
         font-weight: 500;
         flex-shrink: 0;
-        background: rgba(255,255,255,0.06);
+        background: var(--color-surface, rgba(128,128,128,0.1));
         padding: 0 var(--space-1);
         border-radius: var(--radius-sm);
         font-size: 0.9em;
@@ -325,7 +325,7 @@ export function getGMDataTabStyles(): string {
         min-width: 30px;
         text-align: center;
         padding: 1px 3px;
-        background: rgba(255,255,255,0.05);
+        background: var(--color-surface, rgba(128,128,128,0.1));
         border-radius: var(--radius-sm);
         font-variant-numeric: tabular-nums;
         font-weight: 500;
@@ -343,16 +343,22 @@ export function getGMDataTabStyles(): string {
         border-radius: var(--radius-sm);
         white-space: nowrap;
     }
-    .act-tl-gm-in  { background: rgba(96,165,250,0.12); color: #93c5fd; }
-    .act-tl-gm-out { background: rgba(74,222,128,0.12); color: #86efac; }
-    .act-tl-gm-ttft { background: rgba(251,191,36,0.12); color: #fcd34d; }
-    .act-tl-gm-cache { background: rgba(45,212,191,0.12); color: #5eead4; }
-    .act-tl-gm-credit { background: rgba(248,113,113,0.16); color: #fca5a5; }
-    .act-tl-gm-retry { background: rgba(248,113,113,0.15); color: #fca5a5; }
+    .act-tl-gm-in  { background: rgba(37,99,235,0.12); color: #2563eb; }
+    .act-tl-gm-out { background: rgba(22,163,74,0.12);  color: #16a34a; }
+    .act-tl-gm-ttft { background: rgba(202,138,4,0.12);  color: #ca8a04; }
+    .act-tl-gm-cache { background: rgba(13,148,136,0.12); color: #0d9488; }
+    .act-tl-gm-credit { background: rgba(220,38,38,0.14); color: #dc2626; }
+    .act-tl-gm-retry { background: rgba(220,38,38,0.12);  color: #dc2626; }
+    body.vscode-dark .act-tl-gm-in  { background: rgba(96,165,250,0.12);  color: #93c5fd; }
+    body.vscode-dark .act-tl-gm-out { background: rgba(74,222,128,0.12);  color: #86efac; }
+    body.vscode-dark .act-tl-gm-ttft { background: rgba(251,191,36,0.12); color: #fcd34d; }
+    body.vscode-dark .act-tl-gm-cache { background: rgba(45,212,191,0.12); color: #5eead4; }
+    body.vscode-dark .act-tl-gm-credit { background: rgba(248,113,113,0.16); color: #fca5a5; }
+    body.vscode-dark .act-tl-gm-retry { background: rgba(248,113,113,0.15); color: #fca5a5; }
     .act-tl-segment {
-        border: 1px solid rgba(255,255,255,0.05);
+        border: 1px solid var(--color-border, rgba(128,128,128,0.12));
         border-radius: var(--radius-md);
-        background: rgba(255,255,255,0.02);
+        background: var(--color-surface, rgba(128,128,128,0.04));
         overflow: hidden;
         margin-bottom: var(--space-2);
     }
@@ -433,20 +439,20 @@ export function getGMDataTabStyles(): string {
         border-color: rgba(45,212,191,0.2);
     }
     .act-tl-tag-model {
-        background: rgba(255,255,255,0.04);
+        background: var(--color-surface, rgba(128,128,128,0.08));
         color: var(--color-text-dim);
-        border-color: rgba(255,255,255,0.08);
+        border-color: var(--color-border, rgba(128,128,128,0.12));
         max-width: 200px;
         overflow: hidden;
         text-overflow: ellipsis;
     }
     .act-tl-tag-marker {
-        background: rgba(255,255,255,0.04);
+        background: var(--color-surface, rgba(128,128,128,0.08));
         color: var(--color-text-dim);
-        border-color: rgba(255,255,255,0.08);
+        border-color: var(--color-border, rgba(128,128,128,0.12));
     }
     .act-badge { font-size: 0.75em; opacity: 0.7; }
-    .act-checkpoint-model { border-color: rgba(255,255,255,0.06); opacity: 0.85; }
+    .act-checkpoint-model { border-color: var(--color-border, rgba(128,128,128,0.1)); opacity: 0.85; }
 
     /* ─── Activity Tab: Timeline Legend ─── */
     .act-tl-legend {
@@ -1464,9 +1470,17 @@ function buildConversations(s: GMSummary): string {
 function buildRetryOverhead(s: GMSummary): string {
     if (s.totalRetryTokens <= 0 && s.totalRetryCount <= 0) { return ''; }
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    const pctOfTotal = (s.totalInputTokens + s.totalOutputTokens) > 0
-        ? ((s.totalRetryTokens / (s.totalInputTokens + s.totalOutputTokens)) * 100).toFixed(1)
-        : '0';
+    // Use successful-call tokens as denominator. Retry tokens are EXTRA overhead,
+    // not part of the useful work — this prevents misleading 100%+ when retries dominate.
+    const successfulTokens = s.totalInputTokens + s.totalOutputTokens;
+    const pctRaw = successfulTokens > 0
+        ? (s.totalRetryTokens / successfulTokens) * 100
+        : 0;
+    // Bounded display: '<0.1' for trace amounts, '>999' for extreme edge cases
+    const pctDisplay = pctRaw <= 0 ? '0'
+        : pctRaw < 0.1 ? '<0.1'
+        : pctRaw > 999 ? '>999'
+        : pctRaw.toFixed(1);
 
     // Stop reason distribution
     let stopHtml = '';
@@ -1496,8 +1510,8 @@ function buildRetryOverhead(s: GMSummary): string {
                 <span class="gm-retry-label">${tBi('Retry Calls', '重试次数')}</span>
             </div>
             <div class="gm-retry-metric">
-                <span class="gm-retry-val">${pctOfTotal}%</span>
-                <span class="gm-retry-label">${tBi('of Total', '占总量')}</span>
+                <span class="gm-retry-val">${pctDisplay}%</span>
+                <span class="gm-retry-label">${tBi('Overhead Rate', '额外开销率')}</span>
             </div>
         </div>
         ${stopHtml}

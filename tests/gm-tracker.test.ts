@@ -16,6 +16,11 @@ describe('filterGMSummaryByModels', () => {
         setLanguage('both');
     });
 
+    it('starts fresh instances in baseline mode so first install does not count historical GM calls', () => {
+        const tracker = new GMTracker() as unknown as { _needsBaselineInit?: boolean };
+        expect(tracker._needsBaselineInit).toBe(true);
+    });
+
     it('keeps only the selected pool models in the archived snapshot', () => {
         const summary: GMSummary = {
             conversations: [

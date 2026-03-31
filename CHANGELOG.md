@@ -4,14 +4,42 @@
 
 ### 🐛 Fixed / 修复
 
-- **Multi-Window LS Discovery Failure / 多窗口语言服务器发现失败**: Fixed a critical bug where opening a second VS Code window with a different workspace caused permanent "LS not found" failure. Root cause: `selectMatchingProcessLine()` used a fail-closed strategy (v1.13.3), returning `null` when no exact `--workspace_id` match existed. Since Antigravity shares a single LS process across all windows, the second window's workspace_id never matched, making the context monitor completely unusable. Fix: `selectMatchingProcessLine()` now prefers an exact workspace_id match but **falls back to the first available LS** when no match exists, enabling all windows to connect to the shared LS.
-  修复了一个严重 bug：打开第二个 VS Code 窗口（不同工作区）时，插件永久显示"LS not found"无法使用。根因：`selectMatchingProcessLine()`（v1.13.3）采用失败关闭策略，`--workspace_id` 不匹配时返回 `null`。由于 Antigravity 所有窗口共享同一个 LS 进程，第二个窗口的 workspace_id 永远匹配不上，导致上下文监控完全不可用。修复：`selectMatchingProcessLine()` 现在优先精确匹配 workspace_id，**匹配失败时回退到第一个可用的 LS**，使所有窗口都能连接共享 LS。
+- **Multi-Window LS Discovery Failure / 多窗口语言服务器发现失败**: Fixed a critical bug where opening a second VS Code window with a different workspace caused permanent “LS not found” failure. Root cause: `selectMatchingProcessLine()` used a fail-closed strategy (v1.13.3), returning `null` when no exact `--workspace_id` match existed. Since Antigravity shares a single LS process across all windows, the second window's workspace_id never matched, making the context monitor completely unusable. Fix: `selectMatchingProcessLine()` now prefers an exact workspace_id match but **falls back to the first available LS** when no match exists, enabling all windows to connect to the shared LS.
+  修复了一个严重 bug：打开第二个 VS Code 窗口（不同工作区）时，插件永久显示”LS not found”无法使用。根因：`selectMatchingProcessLine()`（v1.13.3）采用失败关闭策略，`--workspace_id` 不匹配时返回 `null`。由于 Antigravity 所有窗口共享同一个 LS 进程，第二个窗口的 workspace_id 永远匹配不上，导致上下文监控完全不可用。修复：`selectMatchingProcessLine()` 现在优先精确匹配 workspace_id，**匹配失败时回退到第一个可用的 LS**，使所有窗口都能连接共享 LS。
 
 - **No-Workspace Window Always Shows 0k / 无工作区窗口始终显示 0k**: Fixed a bug where opening a window without any folder (no workspace) caused the context monitor to permanently show `0k/1M` even while conversations were active. Root cause: the trajectory filter used `t.workspaceUris.length === 0` for no-workspace windows, but Antigravity assigns workspace URIs to all conversations regardless, so every trajectory was filtered out. Fix: when no workspace is open, show **all trajectories** instead of filtering — since there is no folder to filter by.
   修复了无工作区窗口（未打开任何文件夹）中上下文监控始终显示 `0k/1M` 的 bug，即使对话已在进行中。根因：trajectory 过滤器对无工作区窗口使用 `t.workspaceUris.length === 0`，但 Antigravity 会给所有对话分配 workspace URI，导致所有 trajectory 被过滤掉。修复：无工作区时**显示所有 trajectory**，不做过滤。
 
 - **LS Re-Discovery After RPC Failure Also Used Aggressive Backoff / RPC 失败后重新发现 LS 使用了过长的退避间隔**: When an RPC call failed and the extension attempted to re-discover the LS, a failed re-discovery (`handleLsFailure('LS connection lost')`) incorrectly used the 60-second RPC backoff cap instead of the faster 15-second discovery cap. Now correctly applies the discovery backoff.
   当 RPC 调用失败后扩展尝试重新发现 LS 时，`handleLsFailure('LS connection lost')` 错误地使用了 60 秒的 RPC 退避上限，而非更快的 15 秒发现退避上限。现已修正为使用发现退避。
+
+- **Light-Theme Visibility — Timeline Tags / 浅色主题可见性 — 时间线标签**: Fixed near-invisible GM data tags, duration capsules, context labels, and credit indicators in light theme. Root cause: backgrounds used `rgba(255,255,255,0.xx)` (transparent white-on-white) and text colors used pastel hex values designed for dark backgrounds only. Fix: GM tag colors now default to dark-saturated variants (e.g., `#2563eb`, `#16a34a`, `#dc2626`), with `body.vscode-dark` overrides restoring the original pastel palette. Duration, tool-name, step-index, model, and context-marker backgrounds replaced with `var(--color-surface)` + `var(--color-border)`. Segment borders and checkpoint-model borders also updated.
+  修复浅色主题下 GM 数据标签、时长胶囊、上下文标签和积分指示器几乎不可见的问题。根因：背景使用 `rgba(255,255,255,0.xx)`（白底上完全透明）、文字使用暗色主题专属淡色 hex 值。修复：GM 标签文字色默认改为深饱和色系；`body.vscode-dark` 选择器覆盖回原淡色调色板。时长、工具名、步序号、模型、上下文标签的背景统一改用 `var(--color-surface)` + `var(--color-border)`。
+
+- **VS Code Theme Detection — `body.vscode-dark` vs `prefers-color-scheme` / VS Code 主题检测方法修正**: Replaced incorrect `@media (prefers-color-scheme: dark)` with `body.vscode-dark` selectors for dark-theme overrides. VS Code WebViews signal theme via body class (`vscode-dark` / `vscode-light`), not the CSS media query, which is unreliable in embedded Chromium WebViews.
+  将错误的 `@media (prefers-color-scheme: dark)` 替换为 `body.vscode-dark` 选择器。VS Code WebView 通过 body class（`vscode-dark` / `vscode-light`）标识主题，而非 CSS 媒体查询——后者在嵌入式 Chromium WebView 中不可靠。
+
+- **Quota Tracking Ghost-Session Loop / 额度追踪幽灵会话死循环**: Fixed an infinite loop where quota tracking would repeatedly create and immediately archive 0-second ghost sessions after a quota reset. Root cause: the API continues reporting the OLD `resetTime` (already in the past) for several minutes after a reset. `QuotaTracker` entered tracking with a stale `cycleResetTime`, causing `isCycleEnded()` to fire on the very next poll → archive → idle → re-enter tracking → loop. Each iteration also triggered `onQuotaReset`, causing duplicate Activity/GM archives. Fix: added a **stale-resetTime guard** at both idle→tracking entry paths — if `resetTime <= now`, the model stays idle until the API provides a future `resetTime` for the new cycle.
+  修复额度重置后追踪器反复创建并立即归档 0 秒幽灵会话的无限循环。根因：API 在重置后数分钟内仍报告旧的 `resetTime`（已过期），追踪器用过期时间作为 `cycleResetTime` 进入 tracking → `isCycleEnded()` 下个 poll 立即判定周期结束 → 归档 → idle → 再进入 → 死循环。每次循环还触发 `onQuotaReset`，导致 Activity/GM 重复归档。修复：在两个 idle→tracking 入口添加**过期 resetTime 防护**——若 `resetTime <= now` 则保持 idle，等待 API 返回新周期的未来时间。
+
+### ✨ Added / 新增
+
+- **Scrollbar Hiding — Defense in Depth / 滚动条隐藏 — 纵深防御**: Implemented a three-layer scrollbar hiding mechanism to reliably override VS Code WebView's injected UA stylesheets:
+  1. **Layer 1 — Static CSS**: `html[data-hide-scrollbar=”true”]` selectors with `scrollbar-width: none !important` + `::-webkit-scrollbar { display: none; width: 0; height: 0 }`.
+  2. **Layer 2 — HTML attributes**: `data-hide-scrollbar` set on both `<html>` and `<body>` elements for full selector reach.
+  3. **Layer 3 — Runtime JS injection**: `applyScrollbarHide()` dynamically creates a `<style id=”ag-scrollbar-override”>` element appended to `<head>` tail for maximum specificity, bypassing VS Code's injected stylesheets.
+  Default is **hidden** (`showScrollbar: false`); users can re-enable scrollbars in Settings.
+  实现三层纵深防御的滚动条隐藏机制，确保覆盖 VS Code WebView 注入的 UA 样式表：
+  ① 静态 CSS：`html[data-hide-scrollbar]` 选择器 + `!important` + `-ms-overflow-style: none`；
+  ② HTML 属性：`<html>` 和 `<body>` 同时设置 `data-hide-scrollbar=”true”`；
+  ③ 运行时 JS 注入：`applyScrollbarHide()` 动态创建最高优先级 `<style>` 标签插入 `<head>` 末尾。
+  默认**隐藏**。用户可在设置→滚动条外观中勾选”显示滚动条”恢复。
+
+- **End-of-Content Sentinel / 到底提示**: Added persistent `— 已到底 —` indicator at the bottom of all tab panes. Sentinels are appended in `buildTabContents()` to survive `innerHTML` swaps during incremental updates. An `IntersectionObserver` shows/hides the sentinel with a fade-in animation, re-binding after every `updateTabs` poll refresh. Configurable via Settings (independent toggle for EOC indicator visibility).
+  所有标签页底部新增「已到底」提示。标记在 `buildTabContents()` 中追加，确保增量更新的 `innerHTML` 替换后不丢失。`IntersectionObserver` 控制淡入显示/隐藏，在每次 `updateTabs` 轮询刷新后重新绑定。可在设置中独立启用/关闭。
+
+- **Scrollbar Appearance Settings Card / 滚动条外观设置卡**: Added a “Scrollbar Appearance” card in the Settings tab with two independent toggles: scrollbar visibility and EOC indicator visibility. Preferences are persisted via `PanelHintPreferences` in `DurableState`.
+  设置标签页新增「滚动条外观」卡片，提供两个独立开关：滚动条显示和到底提示显示。偏好通过 `DurableState` 持久化。
 
 ### ✨ Improved / 改进
 
@@ -21,6 +49,18 @@
 - **WebView Panel Lightweight Mode / WebView 面板轻量化**: Removed `retainContextWhenHidden` from the WebView panel options. The panel now rebuilds its content when re-shown, reducing memory footprint and avoiding potential ServiceWorker scope conflicts in multi-window Electron environments.
   移除 WebView 面板的 `retainContextWhenHidden` 选项。面板重新显示时重建内容，减少内存占用并避免多窗口 Electron 环境下潜在的 ServiceWorker 作用域冲突。
 
+- **Polling Overhead Reduction / 轮询开销优化**: The main polling loop now reuses cached `ContextUsage` for unchanged conversations instead of recomputing token usage every cycle. Recent-session background refresh also skips unchanged snapshots, reducing redundant `GetCascadeTrajectorySteps` RPC batches, repeated token estimation, and idle-time CPU spikes on long conversations.
+  主轮询现在会复用未变化会话的 `ContextUsage`，而不是每个轮询周期都重新计算 token 用量。最近会话的后台刷新同样会跳过未变化快照，减少冗余的 `GetCascadeTrajectorySteps` 批量 RPC、重复 token 估算，以及长对话空闲期的 CPU 尖峰。
+
+- **Fresh-Install GM Baseline / 首装 GM 基线修正**: New `GMTracker` instances now start in baseline mode, so existing historical GM calls are treated as pre-existing data on first install / first launch instead of being counted directly into the current cycle. This prevents the “first install immediately shows a huge amount of GM data” problem.
+  新建 `GMTracker` 现在默认以 baseline 模式启动，因此首次安装 / 首次启动时，已有历史 GM 调用会被视为预存数据，而不会直接计入当前周期。修复了”刚安装就出现大量 GM 数据”的问题。
+
+- **GM Snapshot Persistence De-duplication / GM 快照持久化去重**: `gmDetailedSummary`, Monitor GM conversation snapshots, and related model-DNA persistence now only update when GM aggregates actually change. This cuts repeated deep clones, repeated JSON serialization, and unnecessary external-state writes during idle polling.
+  `gmDetailedSummary`、Monitor GM 会话快照以及相关 model DNA 持久化现在仅在 GM 聚合结果真实变化时才会更新，减少空闲轮询期间重复深拷贝、重复 JSON 序列化和不必要的外部状态写入。
+
+- **Durable State Batched Writes / 持久化状态批量写入**: External `state-v1.json` persistence was changed from synchronous whole-file rewrites on every update to async debounced batch flushes with unchanged-content short-circuiting. This significantly lowers disk writes while preserving the same recovery model.
+  外部 `state-v1.json` 持久化从”每次 update 都同步整文件重写”改为”异步防抖批量落盘 + 内容未变直接跳过”，在保持恢复模型不变的前提下显著降低磁盘写入。
+
 ### 🧪 Tests / 测试
 
 - **21 new discovery tests** (50 total, was 29): Multi-window fallback simulation (2nd/3rd window different workspace), exact match preference, edge cases (empty URI, undefined URI), Windows-specific tests (drive letter encoding, CJK paths `%E6%95%B0%E6%8D%AE`, cross-workspace CJK fallback), WSL/vscode-remote URI tests, and backoff constant validation (discovery caps at 15s, RPC caps at 60s, custom base intervals).
@@ -28,10 +68,9 @@
 
 ### 📊 Stats / 统计
 
-- **Files changed**: 5 (4 source + 1 test)
+- **Files changed**: 15 (13 source + 2 tests)
 - **TypeScript compile**: Zero errors
-- **Vitest**: 12 files / 138 cases — 136 passing, 2 pre-existing timezone-related failures in `reset-time.test.ts`
-- **Net addition**: ~120 lines (source) + ~120 lines (tests)
+- **Vitest**: 12 files / 139 cases — 137 passing, 2 pre-existing timezone-related failures in `reset-time.test.ts`
 
 ---
 

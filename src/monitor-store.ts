@@ -22,6 +22,55 @@ function sortByLastModified(usages: ContextUsage[]): ContextUsage[] {
     );
 }
 
+function sameModelUsage(a: ContextUsage['lastModelUsage'], b: ContextUsage['lastModelUsage']): boolean {
+    if (!a && !b) { return true; }
+    if (!a || !b) { return false; }
+    return a.model === b.model
+        && a.inputTokens === b.inputTokens
+        && a.outputTokens === b.outputTokens
+        && a.responseOutputTokens === b.responseOutputTokens
+        && a.cacheReadTokens === b.cacheReadTokens;
+}
+
+function sameUsageSnapshot(prev: ContextUsage, next: ContextUsage): boolean {
+    return prev.cascadeId === next.cascadeId
+        && prev.model === next.model
+        && prev.modelDisplayName === next.modelDisplayName
+        && prev.contextUsed === next.contextUsed
+        && prev.totalOutputTokens === next.totalOutputTokens
+        && prev.totalToolCallOutputTokens === next.totalToolCallOutputTokens
+        && prev.contextLimit === next.contextLimit
+        && prev.usagePercent === next.usagePercent
+        && prev.stepCount === next.stepCount
+        && prev.lastModifiedTime === next.lastModifiedTime
+        && prev.status === next.status
+        && prev.isEstimated === next.isEstimated
+        && sameModelUsage(prev.lastModelUsage, next.lastModelUsage)
+        && prev.estimatedDeltaSinceCheckpoint === next.estimatedDeltaSinceCheckpoint
+        && prev.imageGenStepCount === next.imageGenStepCount
+        && prev.compressionDetected === next.compressionDetected
+        && prev.checkpointCompressionDrop === next.checkpointCompressionDrop
+        && prev.previousContextUsed === next.previousContextUsed
+        && prev.hasGaps === next.hasGaps
+        && prev.createdTime === next.createdTime
+        && prev.lastUserInputTime === next.lastUserInputTime
+        && prev.lastUserInputStepIndex === next.lastUserInputStepIndex
+        && prev.repositoryName === next.repositoryName
+        && prev.gitOriginUrl === next.gitOriginUrl
+        && prev.branchName === next.branchName
+        && prev.gitRootUri === next.gitRootUri;
+}
+
+function sameGMConversationSnapshot(prev: GMConversationData, next: GMConversationData): boolean {
+    return prev.cascadeId === next.cascadeId
+        && prev.title === next.title
+        && prev.totalSteps === next.totalSteps
+        && prev.coveredSteps === next.coveredSteps
+        && prev.coverageRate === next.coverageRate
+        && (prev.lifetimeCalls || 0) === (next.lifetimeCalls || 0)
+        && prev.calls.length === next.calls.length;
+}
+
 export class MonitorStore {
     private _workspaceState: WorkspaceStateLike | null = null;
     private _snapshots = new Map<string, ContextUsage>();
@@ -56,22 +105,40 @@ export class MonitorStore {
     }
 
     record(usages: ContextUsage[], currentCascadeId?: string): void {
+        let changed = false;
         for (const usage of usages) {
-            this._snapshots.set(usage.cascadeId, { ...usage });
+            const prev = this._snapshots.get(usage.cascadeId);
+            const next = { ...usage };
+            if (prev && sameUsageSnapshot(prev, next)) {
+                continue;
+            }
+            this._snapshots.set(usage.cascadeId, next);
+            changed = true;
         }
-        if (currentCascadeId) {
+        if (currentCascadeId && currentCascadeId !== this._currentCascadeId) {
             this._currentCascadeId = currentCascadeId;
+            changed = true;
         }
-        this._trim();
-        this._persist();
+        changed = this._trim() || changed;
+        if (changed) {
+            this._persist();
+        }
     }
 
     recordGMConversations(conversations: GMConversationData[]): void {
+        let changed = false;
         for (const conversation of conversations) {
+            const prev = this._gmConversations.get(conversation.cascadeId);
+            if (prev && sameGMConversationSnapshot(prev, conversation)) {
+                continue;
+            }
             this._gmConversations.set(conversation.cascadeId, conversation);
+            changed = true;
         }
-        this._trim();
-        this._persist();
+        changed = this._trim() || changed;
+        if (changed) {
+            this._persist();
+        }
     }
 
     clearGMConversations(): void {
@@ -83,30 +150,39 @@ export class MonitorStore {
         return sortByLastModified([...this._snapshots.values()]);
     }
 
+    getSnapshot(cascadeId: string): ContextUsage | null {
+        return this._snapshots.get(cascadeId) || null;
+    }
+
     getGMConversations(): Record<string, GMConversationData> {
         return Object.fromEntries(this._gmConversations.entries());
     }
 
-    private _trim(): void {
+    private _trim(): boolean {
         const sorted = sortByLastModified([...this._snapshots.values()]);
         if (sorted.length <= MAX_SNAPSHOTS) {
-            return;
+            return false;
         }
 
+        let changed = false;
         const keepIds = new Set(sorted.slice(0, MAX_SNAPSHOTS).map(usage => usage.cascadeId));
         for (const cascadeId of [...this._snapshots.keys()]) {
             if (!keepIds.has(cascadeId)) {
                 this._snapshots.delete(cascadeId);
+                changed = true;
             }
         }
         for (const cascadeId of [...this._gmConversations.keys()]) {
             if (!keepIds.has(cascadeId)) {
                 this._gmConversations.delete(cascadeId);
+                changed = true;
             }
         }
         if (this._currentCascadeId && !this._snapshots.has(this._currentCascadeId)) {
             this._currentCascadeId = sorted[0]?.cascadeId || null;
+            changed = true;
         }
+        return changed;
     }
 
     private _persist(): void {
