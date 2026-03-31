@@ -16,7 +16,7 @@ import { StatusBarManager, formatContextLimit } from './statusbar';
 import { initI18n, initI18nFromState, showLanguagePicker, tBi } from './i18n';
 import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
-import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, COMPRESSION_PERSIST_POLLS } from './constants';
+import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
 import { GMTracker, GMSummary, GMTrackerState, filterGMSummaryByModels } from './gm-tracker';
 import { PricingStore } from './pricing-store';
@@ -504,7 +504,7 @@ async function pollContextUsage(): Promise<void> {
             cachedLsInfo = lsInfo;
 
             if (!lsInfo) {
-                handleLsFailure('LS not found');
+                handleLsFailure('LS not found', true);
                 return;
             }
             resetBackoff();
@@ -565,7 +565,7 @@ async function pollContextUsage(): Promise<void> {
             lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal);
             cachedLsInfo = lsInfo;
             if (!lsInfo) {
-                handleLsFailure('LS connection lost');
+                handleLsFailure('LS connection lost', true);
                 return;
             }
             resetBackoff();
@@ -592,13 +592,13 @@ async function pollContextUsage(): Promise<void> {
             log(`  Trajectory "${t.summary?.substring(0, 30)}" status=${t.status} steps=${t.stepCount} workspaces=[${wsUris}]`);
         }
 
-        // 4. Per-window cascade tracking — STRICT Workspace Isolation
-        const qualifiedTrajectories = trajectories.filter(t => {
-            if (workspaceUri) {
-                return t.workspaceUris.some(u => normalizeUri(u) === normalizedWs);
-            }
-            return t.workspaceUris.length === 0;
-        });
+        // 4. Per-window cascade tracking — Workspace Isolation
+        // With a workspace: strict filter — only show trajectories belonging to this workspace.
+        // Without a workspace (no folder opened): show ALL trajectories, since there is
+        // no folder to filter by and Antigravity assigns workspace URIs to all conversations.
+        const qualifiedTrajectories = workspaceUri
+            ? trajectories.filter(t => t.workspaceUris.some(u => normalizeUri(u) === normalizedWs))
+            : trajectories;
 
         const qualifiedRunning = qualifiedTrajectories.filter(t => t.status === CascadeStatus.RUNNING);
         let newCandidateId: string | null = null;
@@ -879,7 +879,7 @@ async function pollContextUsage(): Promise<void> {
     }
 }
 
-function handleLsFailure(message: string): void {
+function handleLsFailure(message: string, isDiscoveryFailure = false): void {
     consecutiveFailures++;
     currentUsage = null;
     allTrajectoryUsages = monitorStore.getAll();
@@ -888,7 +888,10 @@ function handleLsFailure(message: string): void {
         updateMonitorPanel(makePanelPayload({ currentUsage: null }));
     }
 
-    const backoffMs = Math.min(baseIntervalMs * Math.pow(2, consecutiveFailures - 1), MAX_BACKOFF_INTERVAL_MS);
+    // Use a lower cap for discovery failures (LS not yet started) so the
+    // extension detects a newly launched LS within ~15s instead of ~60s.
+    const maxBackoff = isDiscoveryFailure ? MAX_DISCOVERY_BACKOFF_MS : MAX_BACKOFF_INTERVAL_MS;
+    const backoffMs = Math.min(baseIntervalMs * Math.pow(2, consecutiveFailures - 1), maxBackoff);
 
     if (backoffMs !== currentIntervalMs) {
         currentIntervalMs = backoffMs;

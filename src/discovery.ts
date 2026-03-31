@@ -127,7 +127,9 @@ export function extractWorkspaceId(line: string): string | null {
 /**
  * Select the LS process line for the current workspace.
  * Without a workspace URI, falls back to the first discovered LS.
- * With a workspace URI, fail closed if no exact workspace_id match exists.
+ * With a workspace URI, prefers an exact workspace_id match but falls back
+ * to the first discovered LS if no match exists. This handles the common
+ * case where a single shared LS serves multiple VS Code windows/workspaces.
  */
 export function selectMatchingProcessLine(lines: readonly string[], workspaceUri?: string): string | null {
     if (lines.length === 0) {
@@ -137,7 +139,7 @@ export function selectMatchingProcessLine(lines: readonly string[], workspaceUri
         return lines[0];
     }
     const expectedWorkspaceId = buildExpectedWorkspaceId(workspaceUri);
-    return lines.find(line => extractWorkspaceId(line) === expectedWorkspaceId) ?? null;
+    return lines.find(line => extractWorkspaceId(line) === expectedWorkspaceId) ?? lines[0];
 }
 
 /**

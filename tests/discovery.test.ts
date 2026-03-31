@@ -151,6 +151,7 @@ describe('discovery.ts', () => {
             return `language_server_windows --csrf_token token${suffix}`;
         }
 
+        // ─── Basic behavior ─────────────────────────────────────────────
         it('falls back to the first line when workspaceUri is missing', () => {
             const lines = [makeLine('ws_a'), makeLine('ws_b')];
             expect(selectMatchingProcessLine(lines)).toBe(lines[0]);
@@ -163,20 +164,12 @@ describe('discovery.ts', () => {
             expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(lines[1]);
         });
 
-        it('returns null when workspaceUri exists but no line matches', () => {
-            const workspaceUri = workspaceUriForCurrentPlatform('project-c');
-            const lines = [makeLine('different_workspace')];
-            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(null);
-        });
-
-        it('returns null when lines do not include a workspace_id flag', () => {
-            const workspaceUri = workspaceUriForCurrentPlatform('project-d');
-            const lines = [makeLine()];
-            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(null);
-        });
-
         it('returns null for empty input', () => {
             expect(selectMatchingProcessLine([], workspaceUriForCurrentPlatform('project-e'))).toBe(null);
+        });
+
+        it('returns null for empty input without workspaceUri', () => {
+            expect(selectMatchingProcessLine([])).toBe(null);
         });
 
         it('still finds the exact match among mixed lines', () => {
@@ -184,6 +177,131 @@ describe('discovery.ts', () => {
             const expected = buildExpectedWorkspaceId(workspaceUri);
             const lines = [makeLine(), makeLine('unrelated_workspace'), makeLine(expected)];
             expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(lines[2]);
+        });
+
+        // ─── Fallback behavior (shared LS / multi-window) ──────────────
+        it('falls back to first line when workspaceUri exists but no line matches', () => {
+            const workspaceUri = workspaceUriForCurrentPlatform('project-c');
+            const lines = [makeLine('different_workspace')];
+            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(lines[0]);
+        });
+
+        it('falls back to first line when lines do not include a workspace_id flag', () => {
+            const workspaceUri = workspaceUriForCurrentPlatform('project-d');
+            const lines = [makeLine()];
+            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(lines[0]);
+        });
+
+        it('falls back to first line among multiple non-matching LS processes', () => {
+            const workspaceUri = workspaceUriForCurrentPlatform('my-project');
+            const lines = [
+                makeLine('workspace_a'),
+                makeLine('workspace_b'),
+                makeLine('workspace_c'),
+            ];
+            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(lines[0]);
+        });
+
+        it('falls back to first line when only one LS has no workspace_id and no match exists', () => {
+            const workspaceUri = workspaceUriForCurrentPlatform('unrelated');
+            const lines = [makeLine(), makeLine('some_other_ws')];
+            // First line has no workspace_id so extractWorkspaceId returns null,
+            // no match → fallback to lines[0]
+            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(lines[0]);
+        });
+
+        // ─── Multi-window scenario simulation ──────────────────────────
+        // Simulates: Window A opens workspace X, LS started with workspace X.
+        // Window B opens workspace Y → no match → should fallback to shared LS.
+        it('second window with different workspace falls back to shared LS', () => {
+            // LS was started for workspace "data-analysis"
+            const lsWorkspaceId = buildExpectedWorkspaceId(
+                workspaceUriForCurrentPlatform('data-analysis')
+            );
+            const lines = [makeLine(lsWorkspaceId)];
+
+            // Window B has workspace "my-extension" — doesn't match LS
+            const windowBUri = workspaceUriForCurrentPlatform('my-extension');
+            const result = selectMatchingProcessLine(lines, windowBUri);
+            expect(result).toBe(lines[0]);
+            // Should still be usable (has csrf_token)
+            expect(result).toContain('--csrf_token');
+        });
+
+        // Simulates: Two LS processes for two workspaces, third window opens a
+        // third workspace → should fallback to first LS.
+        it('third window falls back to first of multiple LS processes', () => {
+            const wsA = buildExpectedWorkspaceId(workspaceUriForCurrentPlatform('ws-a'));
+            const wsB = buildExpectedWorkspaceId(workspaceUriForCurrentPlatform('ws-b'));
+            const lines = [makeLine(wsA), makeLine(wsB)];
+
+            const windowCUri = workspaceUriForCurrentPlatform('ws-c');
+            expect(selectMatchingProcessLine(lines, windowCUri)).toBe(lines[0]);
+        });
+
+        // ─── Exact match still preferred ────────────────────────────────
+        it('exact match is preferred over fallback even when first line differs', () => {
+            const targetUri = workspaceUriForCurrentPlatform('target-project');
+            const targetId = buildExpectedWorkspaceId(targetUri);
+            const lines = [makeLine('wrong_ws'), makeLine('also_wrong'), makeLine(targetId)];
+            // Should find exact match at index 2, not fallback to index 0
+            expect(selectMatchingProcessLine(lines, targetUri)).toBe(lines[2]);
+        });
+
+        // ─── Edge cases ─────────────────────────────────────────────────
+        it('handles workspaceUri with empty string (no folder opened)', () => {
+            // Empty string is truthy, so it enters the matching branch
+            const lines = [makeLine('some_ws')];
+            // buildExpectedWorkspaceId('') produces '' after replacements
+            // which won't match 'some_ws', so falls back to lines[0]
+            expect(selectMatchingProcessLine(lines, '')).toBe(lines[0]);
+        });
+
+        it('handles undefined workspaceUri explicitly', () => {
+            const lines = [makeLine('ws_a')];
+            expect(selectMatchingProcessLine(lines, undefined)).toBe(lines[0]);
+        });
+
+        if (process.platform === 'win32') {
+            // Windows-specific: workspace URIs with drive letters and CJK paths
+            it('Windows: matches workspace with drive letter colon encoding', () => {
+                const uri = 'file:///c:/Users/8bit/Desktop/project';
+                const expectedId = buildExpectedWorkspaceId(uri);
+                const lines = [makeLine('wrong'), makeLine(expectedId)];
+                expect(selectMatchingProcessLine(lines, uri)).toBe(lines[1]);
+            });
+
+            it('Windows: falls back when CJK workspace URI does not match LS workspace', () => {
+                // LS started for Chinese path "数据", Window opens for "antigravity"
+                const lsUri = 'file:///c:/Users/8bit/Desktop/%E6%95%B0%E6%8D%AE';
+                const lsId = buildExpectedWorkspaceId(lsUri);
+                const lines = [makeLine(lsId)];
+
+                const windowUri = 'file:///c:/Users/8bit/Desktop/antigravity';
+                expect(selectMatchingProcessLine(lines, windowUri)).toBe(lines[0]);
+            });
+
+            it('Windows: exact match for CJK workspace URI', () => {
+                const uri = 'file:///c:/Users/8bit/Desktop/%E6%95%B0%E6%8D%AE';
+                const expectedId = buildExpectedWorkspaceId(uri);
+                const lines = [makeLine('other'), makeLine(expectedId)];
+                expect(selectMatchingProcessLine(lines, uri)).toBe(lines[1]);
+            });
+        }
+
+        // ─── WSL / vscode-remote URIs ───────────────────────────────────
+        it('handles vscode-remote workspace URI with fallback', () => {
+            const wslUri = 'vscode-remote://wsl%2BUbuntu/home/user/project';
+            const lines = [makeLine('completely_different_ws')];
+            // No match → falls back to first LS
+            expect(selectMatchingProcessLine(lines, wslUri)).toBe(lines[0]);
+        });
+
+        it('handles vscode-remote workspace URI with exact match', () => {
+            const wslUri = 'vscode-remote://wsl%2BUbuntu/home/user/project';
+            const expectedId = buildExpectedWorkspaceId(wslUri);
+            const lines = [makeLine('other'), makeLine(expectedId)];
+            expect(selectMatchingProcessLine(lines, wslUri)).toBe(lines[1]);
         });
     });
 
@@ -221,5 +339,92 @@ describe('discovery.ts', () => {
                 expect(isWSL()).toBe(false);
             });
         }
+    });
+});
+
+// ─── Backoff Constants & Behavior ────────────────────────────────────────────
+// Tests verify that the discovery backoff caps at a lower interval than
+// the RPC backoff, ensuring fast LS detection in multi-window scenarios.
+
+describe('backoff constants', () => {
+    // Import from constants to verify the actual values used at runtime
+    let MAX_BACKOFF_INTERVAL_MS: number;
+    let MAX_DISCOVERY_BACKOFF_MS: number;
+
+    // Dynamic import so the test doesn't fail if the module has side effects
+    it('loads constants', async () => {
+        const mod = await import('../src/constants');
+        MAX_BACKOFF_INTERVAL_MS = mod.MAX_BACKOFF_INTERVAL_MS;
+        MAX_DISCOVERY_BACKOFF_MS = mod.MAX_DISCOVERY_BACKOFF_MS;
+        expect(MAX_BACKOFF_INTERVAL_MS).toBeTypeOf('number');
+        expect(MAX_DISCOVERY_BACKOFF_MS).toBeTypeOf('number');
+    });
+
+    it('discovery backoff cap is strictly lower than RPC backoff cap', async () => {
+        const mod = await import('../src/constants');
+        expect(mod.MAX_DISCOVERY_BACKOFF_MS).toBeLessThan(mod.MAX_BACKOFF_INTERVAL_MS);
+    });
+
+    it('discovery backoff cap is at most 15 seconds', async () => {
+        const mod = await import('../src/constants');
+        expect(mod.MAX_DISCOVERY_BACKOFF_MS).toBeLessThanOrEqual(15_000);
+    });
+
+    it('RPC backoff cap is 60 seconds', async () => {
+        const mod = await import('../src/constants');
+        expect(mod.MAX_BACKOFF_INTERVAL_MS).toBe(60_000);
+    });
+
+    // Simulate the backoff calculation used in handleLsFailure
+    function computeBackoff(baseMs: number, failures: number, maxMs: number): number {
+        return Math.min(baseMs * Math.pow(2, failures - 1), maxMs);
+    }
+
+    it('discovery backoff sequence caps at 15s (base=5s)', async () => {
+        const mod = await import('../src/constants');
+        const base = 5000;
+        const max = mod.MAX_DISCOVERY_BACKOFF_MS;
+
+        expect(computeBackoff(base, 1, max)).toBe(5000);   // 5s
+        expect(computeBackoff(base, 2, max)).toBe(10000);  // 10s
+        expect(computeBackoff(base, 3, max)).toBe(15000);  // 15s (capped)
+        expect(computeBackoff(base, 4, max)).toBe(15000);  // still 15s
+        expect(computeBackoff(base, 5, max)).toBe(15000);  // still 15s
+        expect(computeBackoff(base, 10, max)).toBe(15000); // still 15s
+    });
+
+    it('RPC backoff sequence caps at 60s (base=5s)', async () => {
+        const mod = await import('../src/constants');
+        const base = 5000;
+        const max = mod.MAX_BACKOFF_INTERVAL_MS;
+
+        expect(computeBackoff(base, 1, max)).toBe(5000);   // 5s
+        expect(computeBackoff(base, 2, max)).toBe(10000);  // 10s
+        expect(computeBackoff(base, 3, max)).toBe(20000);  // 20s
+        expect(computeBackoff(base, 4, max)).toBe(40000);  // 40s
+        expect(computeBackoff(base, 5, max)).toBe(60000);  // 60s (capped)
+        expect(computeBackoff(base, 6, max)).toBe(60000);  // still 60s
+    });
+
+    it('custom base interval still respects discovery cap', async () => {
+        const mod = await import('../src/constants');
+        const base = 10000; // user set 10s polling interval
+        const max = mod.MAX_DISCOVERY_BACKOFF_MS;
+
+        expect(computeBackoff(base, 1, max)).toBe(10000);  // 10s
+        expect(computeBackoff(base, 2, max)).toBe(15000);  // 15s (capped, not 20s)
+        expect(computeBackoff(base, 3, max)).toBe(15000);  // still 15s
+    });
+
+    it('base interval of 1s reaches discovery cap quickly', async () => {
+        const mod = await import('../src/constants');
+        const base = 1000;
+        const max = mod.MAX_DISCOVERY_BACKOFF_MS;
+
+        expect(computeBackoff(base, 1, max)).toBe(1000);   // 1s
+        expect(computeBackoff(base, 2, max)).toBe(2000);   // 2s
+        expect(computeBackoff(base, 3, max)).toBe(4000);   // 4s
+        expect(computeBackoff(base, 4, max)).toBe(8000);   // 8s
+        expect(computeBackoff(base, 5, max)).toBe(15000);  // 15s (capped, not 16s)
     });
 });

@@ -322,7 +322,7 @@ export function showMonitorPanel(p: PanelPayload): void {
         'antigravityMonitor',
         `${tBi('Context Monitor', '上下文监控')}`,
         { viewColumn: vscode.ViewColumn.Two, preserveFocus: true },
-        { enableScripts: true, retainContextWhenHidden: true },
+        { enableScripts: true },
     );
 
     panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused, lastQuotaTracker);

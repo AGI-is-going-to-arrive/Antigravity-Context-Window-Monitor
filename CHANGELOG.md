@@ -1,5 +1,40 @@
 # 变更日志 / Changelog
 
+## [1.14.4] - 2026-04-01
+
+### 🐛 Fixed / 修复
+
+- **Multi-Window LS Discovery Failure / 多窗口语言服务器发现失败**: Fixed a critical bug where opening a second VS Code window with a different workspace caused permanent "LS not found" failure. Root cause: `selectMatchingProcessLine()` used a fail-closed strategy (v1.13.3), returning `null` when no exact `--workspace_id` match existed. Since Antigravity shares a single LS process across all windows, the second window's workspace_id never matched, making the context monitor completely unusable. Fix: `selectMatchingProcessLine()` now prefers an exact workspace_id match but **falls back to the first available LS** when no match exists, enabling all windows to connect to the shared LS.
+  修复了一个严重 bug：打开第二个 VS Code 窗口（不同工作区）时，插件永久显示"LS not found"无法使用。根因：`selectMatchingProcessLine()`（v1.13.3）采用失败关闭策略，`--workspace_id` 不匹配时返回 `null`。由于 Antigravity 所有窗口共享同一个 LS 进程，第二个窗口的 workspace_id 永远匹配不上，导致上下文监控完全不可用。修复：`selectMatchingProcessLine()` 现在优先精确匹配 workspace_id，**匹配失败时回退到第一个可用的 LS**，使所有窗口都能连接共享 LS。
+
+- **No-Workspace Window Always Shows 0k / 无工作区窗口始终显示 0k**: Fixed a bug where opening a window without any folder (no workspace) caused the context monitor to permanently show `0k/1M` even while conversations were active. Root cause: the trajectory filter used `t.workspaceUris.length === 0` for no-workspace windows, but Antigravity assigns workspace URIs to all conversations regardless, so every trajectory was filtered out. Fix: when no workspace is open, show **all trajectories** instead of filtering — since there is no folder to filter by.
+  修复了无工作区窗口（未打开任何文件夹）中上下文监控始终显示 `0k/1M` 的 bug，即使对话已在进行中。根因：trajectory 过滤器对无工作区窗口使用 `t.workspaceUris.length === 0`，但 Antigravity 会给所有对话分配 workspace URI，导致所有 trajectory 被过滤掉。修复：无工作区时**显示所有 trajectory**，不做过滤。
+
+- **LS Re-Discovery After RPC Failure Also Used Aggressive Backoff / RPC 失败后重新发现 LS 使用了过长的退避间隔**: When an RPC call failed and the extension attempted to re-discover the LS, a failed re-discovery (`handleLsFailure('LS connection lost')`) incorrectly used the 60-second RPC backoff cap instead of the faster 15-second discovery cap. Now correctly applies the discovery backoff.
+  当 RPC 调用失败后扩展尝试重新发现 LS 时，`handleLsFailure('LS connection lost')` 错误地使用了 60 秒的 RPC 退避上限，而非更快的 15 秒发现退避上限。现已修正为使用发现退避。
+
+### ✨ Improved / 改进
+
+- **Faster LS Discovery Backoff / 更快的 LS 发现退避**: Introduced a separate `MAX_DISCOVERY_BACKOFF_MS` (15 seconds) for LS discovery failures, distinct from the `MAX_BACKOFF_INTERVAL_MS` (60 seconds) used for RPC communication failures. This ensures the extension detects a newly started or restarted LS within ~15 seconds instead of ~60 seconds. Backoff sequence: 5s → 10s → 15s (capped) vs. the previous 5s → 10s → 20s → 40s → 60s.
+  新增独立的 `MAX_DISCOVERY_BACKOFF_MS`（15 秒）用于 LS 发现失败，与 RPC 通信失败的 `MAX_BACKOFF_INTERVAL_MS`（60 秒）区分。确保扩展在 LS 启动或重启后 ~15 秒内检测到，而非之前的 ~60 秒。退避序列：5s → 10s → 15s（封顶）vs 之前的 5s → 10s → 20s → 40s → 60s。
+
+- **WebView Panel Lightweight Mode / WebView 面板轻量化**: Removed `retainContextWhenHidden` from the WebView panel options. The panel now rebuilds its content when re-shown, reducing memory footprint and avoiding potential ServiceWorker scope conflicts in multi-window Electron environments.
+  移除 WebView 面板的 `retainContextWhenHidden` 选项。面板重新显示时重建内容，减少内存占用并避免多窗口 Electron 环境下潜在的 ServiceWorker 作用域冲突。
+
+### 🧪 Tests / 测试
+
+- **21 new discovery tests** (50 total, was 29): Multi-window fallback simulation (2nd/3rd window different workspace), exact match preference, edge cases (empty URI, undefined URI), Windows-specific tests (drive letter encoding, CJK paths `%E6%95%B0%E6%8D%AE`, cross-workspace CJK fallback), WSL/vscode-remote URI tests, and backoff constant validation (discovery caps at 15s, RPC caps at 60s, custom base intervals).
+  **新增 21 项发现测试**（共 50 项，原 29 项）：多窗口回退模拟（第二/第三窗口不同工作区）、精确匹配优先级、边界情况（空 URI、undefined URI）、Windows 特定测试（盘符编码、CJK 路径、跨工作区 CJK 回退）、WSL/vscode-remote URI 测试，以及退避常量验证（发现退避封顶 15s、RPC 退避封顶 60s、自定义基础间隔）。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 5 (4 source + 1 test)
+- **TypeScript compile**: Zero errors
+- **Vitest**: 12 files / 138 cases — 136 passing, 2 pre-existing timezone-related failures in `reset-time.test.ts`
+- **Net addition**: ~120 lines (source) + ~120 lines (tests)
+
+---
+
 ## [1.14.3] - 2026-03-29
 
 ### ✨ Added / 新增

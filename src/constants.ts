@@ -52,8 +52,12 @@ export const STEP_BATCH_SIZE = 50;
 
 // ─── Polling Backoff ─────────────────────────────────────────────────────────
 
-/** Maximum backoff interval: 60 seconds. */
+/** Maximum backoff interval for RPC communication failures: 60 seconds. */
 export const MAX_BACKOFF_INTERVAL_MS = 60_000;
+
+/** Maximum backoff interval for LS discovery failures: 15 seconds.
+ *  Lower than RPC backoff so the extension detects a newly started LS quickly. */
+export const MAX_DISCOVERY_BACKOFF_MS = 15_000;
 
 /** Number of poll cycles to persist the compression indicator. */
 export const COMPRESSION_PERSIST_POLLS = 3;

@@ -34,7 +34,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     Users can choose between Chinese-only, English-only, or bilingual display mode. Accessible from the details panel: click status bar → Settings → Switch Language. Preference is persisted via `globalState` across sessions.
 
 * **🔒 Multi-Window Isolation**
-    Each Antigravity window only shows conversations belonging to its workspace, filtered by workspace URI.
+    Each Antigravity window only shows conversations belonging to its workspace, filtered by workspace URI. Windows without a workspace folder show all conversations.
 
 * **🗜️ Context Compression Detection**
     When the model auto-compresses conversation history, the plugin detects it via two-layer detection: primary layer compares consecutive checkpoint `inputTokens` (drop > 5000 tokens, immune to Undo false positives), fallback layer compares cross-poll `contextUsed` (with Undo exclusion guard). Shows `~100% 🗜` in the status bar.
@@ -55,7 +55,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     ![Image Generation Tracking](src/images/生成图片.png)
 
 * **🛌 Exponential Backoff Polling**
-    When the language server is unreachable, polling interval increases as `baseInterval × 2^n` (default: 5s → 10s → 20s → 60s), resetting immediately on reconnection.
+    When the language server is unreachable, polling interval increases as `baseInterval × 2^n` with dual caps: discovery failures cap at 15s (5s → 10s → 15s) for fast LS detection, RPC failures cap at 60s. Resets immediately on reconnection.
 
 * **📊 WebView Monitor Panel** *(v1.10.1)*
     Click the status bar to open a side panel with a full-featured dashboard. Displays your account plan and tier, Prompt/Flow credit balance, per-model quota usage with color-coded progress bars, feature flags, team config (MCP Servers, Auto-Run, etc.), and Google AI credits. All data comes from the existing `GetUserStatus` API — zero additional network requests.

@@ -109,9 +109,9 @@ Cross-platform Antigravity Language Server process locator.
 | WSL | Windows 端工具（interop） | `netstat.exe`（interop） |
 | Remote-WSL (v1.13.0) | `wsl -d <distro> -- ps aux` | `wsl -d <distro> -- ss -tlnp` |
 
-核心解析函数 `buildExpectedWorkspaceId()`、`extractPid()`、`extractCsrfToken()`、`selectMatchingProcessLine()` 等均作为独立导出函数，支持直接单元测试。`selectMatchingProcessLine()`（v1.13.3）实现失败关闭策略，有 `workspaceUri` 时执行精确 `workspace_id` 匹配，不匹配则返回 `null`（不再回退到第一个进程）。`buildExpectedWorkspaceId()` 新增 `decodeURIComponent` 防御，处理百分号编码的工作区 URI。
+核心解析函数 `buildExpectedWorkspaceId()`、`extractPid()`、`extractCsrfToken()`、`selectMatchingProcessLine()` 等均作为独立导出函数，支持直接单元测试。`selectMatchingProcessLine()`（v1.14.4）采用优先匹配、回退到首个策略，有 `workspaceUri` 时先尝试精确 `workspace_id` 匹配，不匹配则回退到第一个可用的 LS 进程（解决多窗口共享 LS 场景下的发现失败问题）。`buildExpectedWorkspaceId()` 新增 `decodeURIComponent` 防御，处理百分号编码的工作区 URI。
 
-Core parsing functions `buildExpectedWorkspaceId()`, `extractPid()`, `extractCsrfToken()`, `selectMatchingProcessLine()`, etc. are exported independently for direct unit testing. `selectMatchingProcessLine()` (v1.13.3) implements fail-closed workspace matching — returns `null` when `workspaceUri` is provided but no matching LS process exists. `buildExpectedWorkspaceId()` now includes `decodeURIComponent` defense for percent-encoded workspace URIs.
+Core parsing functions `buildExpectedWorkspaceId()`, `extractPid()`, `extractCsrfToken()`, `selectMatchingProcessLine()`, etc. are exported independently for direct unit testing. `selectMatchingProcessLine()` (v1.14.4) uses a prefer-match, fallback-to-first strategy — prefers exact `workspace_id` match, falls back to the first available LS process when no match exists (fixes multi-window shared LS discovery failure). `buildExpectedWorkspaceId()` now includes `decodeURIComponent` defense for percent-encoded workspace URIs.
 
 ---
 
@@ -497,7 +497,7 @@ npx vsce package --no-dependencies
 
 | 测试文件 / Test File | 测试数 | 覆盖范围 / Coverage |
 |---|---|---|
-| `discovery.test.ts` | 25 | `buildExpectedWorkspaceId`（含百分号编码、CJK 路径、空格+中文混合路径、日文路径） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / `extractPort` / `extractPortFromNetstat` / `extractPortFromSs` / `isWSL` / `selectMatchingProcessLine`（6 分支测试） |
+| `discovery.test.ts` | 50 | `buildExpectedWorkspaceId`（含百分号编码、CJK 路径、空格+中文混合路径、日文路径） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / `extractPort` / `extractPortFromNetstat` / `extractPortFromSs` / `isWSL` / `selectMatchingProcessLine`（多窗口回退 + CJK + WSL/vscode-remote + 边界情况） / 退避常量验证（发现 15s / RPC 60s） |
 | `tracker.test.ts` | 22 | `normalizeUri`（file / vscode-remote / URL 解码）/ `estimateTokensFromText`（ASCII / 非 ASCII / 混合）/ `processSteps()` 纯函数 |
 | `statusbar.test.ts` | 11 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 |
 | `quota-tracker.test.ts` | 33 | 状态机转换 / 额度重置检测 / 批量回调 / 同池去重 / 周期结束归档 / legacy done 迁移 / 0% 回弹恢复 / 稳定池代表 / 脏 active session 自愈 |
