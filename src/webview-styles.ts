@@ -59,6 +59,60 @@ export function getStyles(): string {
             }
         }
 
+        /* ─── Scrollbar Hide Mode ─── */
+        /* VS Code WebView uses Chromium's overlay scrollbar — standard CSS
+           may be overridden by VS Code's injected UA stylesheets.
+           We use !important + multiple selector strategies to ensure coverage.
+           data-hide-scrollbar is set on BOTH <html> AND <body> for full reach. */
+        html[data-hide-scrollbar="true"],
+        html[data-hide-scrollbar="true"] body,
+        html[data-hide-scrollbar="true"] * {
+            scrollbar-width: none !important;
+            -ms-overflow-style: none !important;
+        }
+        html[data-hide-scrollbar="true"]::-webkit-scrollbar,
+        html[data-hide-scrollbar="true"] body::-webkit-scrollbar,
+        html[data-hide-scrollbar="true"] *::-webkit-scrollbar {
+            display: none !important;
+            width: 0 !important;
+            height: 0 !important;
+            background: transparent !important;
+        }
+
+        /* ─── End-of-Content Indicator ─── */
+        .eoc-sentinel {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: var(--space-2, 8px);
+            padding: var(--space-4, 16px) 0 var(--space-3, 12px);
+            margin-top: var(--space-3, 12px);
+            opacity: 0;
+            transition: opacity 0.4s ease-out;
+            pointer-events: none;
+            user-select: none;
+        }
+        .eoc-sentinel.eoc-visible {
+            opacity: 1;
+        }
+        .eoc-sentinel::before,
+        .eoc-sentinel::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--color-border), transparent);
+        }
+        .eoc-sentinel-text {
+            font-size: 0.72em;
+            color: var(--color-text-dim);
+            opacity: 0.6;
+            white-space: nowrap;
+            letter-spacing: 0.05em;
+        }
+        body[data-hide-eoc="true"] .eoc-sentinel {
+            display: none;
+        }
+
         body {
             font-family: var(--vscode-font-family, -apple-system, 'Segoe UI', sans-serif);
             font-size: var(--vscode-font-size, 13px);

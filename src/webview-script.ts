@@ -377,6 +377,44 @@ export function getScript(): string {
                 })(tgi);
             }
 
+            // ─── Settings: Scrollbar & End-of-Content Toggles ───
+            function applyScrollbarHide(hide) {
+                document.body.setAttribute('data-hide-scrollbar', hide ? 'true' : 'false');
+                document.documentElement.setAttribute('data-hide-scrollbar', hide ? 'true' : 'false');
+                // Runtime style injection — highest specificity, bypasses VS Code UA stylesheet
+                var dynId = 'ag-scrollbar-override';
+                var existing = document.getElementById(dynId);
+                if (hide) {
+                    if (!existing) {
+                        var s = document.createElement('style');
+                        s.id = dynId;
+                        s.textContent = 'html, body, * { scrollbar-width: none !important; } ' +
+                            '::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }';
+                        document.head.appendChild(s);
+                    }
+                } else {
+                    if (existing) { existing.remove(); }
+                }
+            }
+            // Apply on load based on body attribute
+            if (document.body.getAttribute('data-hide-scrollbar') === 'true') {
+                applyScrollbarHide(true);
+            }
+            var scrollbarCb = document.getElementById('toggleScrollbar');
+            if (scrollbarCb) {
+                scrollbarCb.addEventListener('change', function() {
+                    applyScrollbarHide(!this.checked);
+                    vscode.postMessage({ command: 'setPanelPref', key: 'panelShowScrollbar', value: this.checked });
+                });
+            }
+            var eocCb = document.getElementById('toggleEndOfContent');
+            if (eocCb) {
+                eocCb.addEventListener('change', function() {
+                    document.body.setAttribute('data-hide-eoc', this.checked ? 'false' : 'true');
+                    vscode.postMessage({ command: 'setPanelPref', key: 'panelShowEndOfContent', value: this.checked });
+                });
+            }
+
             // ─── Settings: Model Limits Save ───
             var modelLimitsSaveBtn = document.getElementById('modelLimitsSaveBtn');
             if (modelLimitsSaveBtn) {
@@ -434,6 +472,12 @@ export function getScript(): string {
                     if (!msg.value) {
                         updateTabOverflowHint();
                     }
+                }
+                if (msg.command === 'panelPrefUpdated' && msg.key === 'panelShowScrollbar') {
+                    applyScrollbarHide(!msg.value);
+                }
+                if (msg.command === 'panelPrefUpdated' && msg.key === 'panelShowEndOfContent') {
+                    document.body.setAttribute('data-hide-eoc', msg.value ? 'false' : 'true');
                 }
                 if (msg.command === 'thresholdSaved') {
                     var fb = document.getElementById('thresholdFeedback');
@@ -893,8 +937,25 @@ export function getScript(): string {
                     updateTabSlider();
                     updateTabOverflowHint();
                     bindHistoryCatalog();
+                    bindEocObserver();
                 }
             });
+            // ─── End-of-Content IntersectionObserver ───
+            var _eocObserver = null;
+            function bindEocObserver() {
+                if (typeof IntersectionObserver === 'undefined') { return; }
+                if (_eocObserver) { _eocObserver.disconnect(); }
+                _eocObserver = new IntersectionObserver(function(entries) {
+                    for (var ei = 0; ei < entries.length; ei++) {
+                        entries[ei].target.classList.toggle('eoc-visible', entries[ei].isIntersecting);
+                    }
+                }, { rootMargin: '0px', threshold: 0.1 });
+                var eocEls = document.querySelectorAll('.eoc-sentinel');
+                for (var eoi = 0; eoi < eocEls.length; eoi++) {
+                    _eocObserver.observe(eocEls[eoi]);
+                }
+            }
+            bindEocObserver();
         })();
     `;
 }

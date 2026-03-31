@@ -1,5 +1,59 @@
 # 变更日志 / Changelog
 
+## [1.14.4] - 2026-03-31
+
+### ✨ Added / 新增
+
+- **Scrollbar Hiding — Defense in Depth / 滚动条隐藏 — 纵深防御**: Implemented a three-layer scrollbar hiding mechanism to reliably override VS Code WebView's injected UA stylesheets:
+  1. **Layer 1 — Static CSS**: `html[data-hide-scrollbar="true"]` selectors with `scrollbar-width: none !important` + `::-webkit-scrollbar { display: none; width: 0; height: 0 }`.
+  2. **Layer 2 — HTML attributes**: `data-hide-scrollbar` set on both `<html>` and `<body>` elements for full selector reach.
+  3. **Layer 3 — Runtime JS injection**: `applyScrollbarHide()` dynamically creates a `<style id="ag-scrollbar-override">` element appended to `<head>` tail for maximum specificity, bypassing VS Code's injected stylesheets.
+  Default is **hidden** (`showScrollbar: false`); users can re-enable scrollbars in Settings.
+  实现三层纵深防御的滚动条隐藏机制，确保覆盖 VS Code WebView 注入的 UA 样式表：
+  ① 静态 CSS：`html[data-hide-scrollbar]` 选择器 + `!important` + `-ms-overflow-style: none`；
+  ② HTML 属性：`<html>` 和 `<body>` 同时设置 `data-hide-scrollbar="true"`；
+  ③ 运行时 JS 注入：`applyScrollbarHide()` 动态创建最高优先级 `<style>` 标签插入 `<head>` 末尾。
+  默认**隐藏**。用户可在设置→滚动条外观中勾选"显示滚动条"恢复。
+
+- **End-of-Content Sentinel / 到底提示**: Added persistent `— 已到底 —` indicator at the bottom of all tab panes. Sentinels are appended in `buildTabContents()` to survive `innerHTML` swaps during incremental updates. An `IntersectionObserver` shows/hides the sentinel with a fade-in animation, re-binding after every `updateTabs` poll refresh. Configurable via Settings (independent toggle for EOC indicator visibility).
+  所有标签页底部新增「已到底」提示。标记在 `buildTabContents()` 中追加，确保增量更新的 `innerHTML` 替换后不丢失。`IntersectionObserver` 控制淡入显示/隐藏，在每次 `updateTabs` 轮询刷新后重新绑定。可在设置中独立启用/关闭。
+
+- **Scrollbar Appearance Settings Card / 滚动条外观设置卡**: Added a "Scrollbar Appearance" card in the Settings tab with two independent toggles: scrollbar visibility and EOC indicator visibility. Preferences are persisted via `PanelHintPreferences` in `DurableState`.
+  设置标签页新增「滚动条外观」卡片，提供两个独立开关：滚动条显示和到底提示显示。偏好通过 `DurableState` 持久化。
+
+### 🐛 Fixed / 修复
+
+- **Light-Theme Visibility — Timeline Tags / 浅色主题可见性 — 时间线标签**: Fixed near-invisible GM data tags, duration capsules, context labels, and credit indicators in light theme. Root cause: backgrounds used `rgba(255,255,255,0.xx)` (transparent white-on-white) and text colors used pastel hex values designed for dark backgrounds only. Fix: GM tag colors now default to dark-saturated variants (e.g., `#2563eb`, `#16a34a`, `#dc2626`), with `body.vscode-dark` overrides restoring the original pastel palette. Duration, tool-name, step-index, model, and context-marker backgrounds replaced with `var(--color-surface)` + `var(--color-border)`. Segment borders and checkpoint-model borders also updated.
+  修复浅色主题下 GM 数据标签、时长胶囊、上下文标签和积分指示器几乎不可见的问题。根因：背景使用 `rgba(255,255,255,0.xx)`（白底上完全透明）、文字使用暗色主题专属淡色 hex 值。修复：GM 标签文字色默认改为深饱和色系；`body.vscode-dark` 选择器覆盖回原淡色调色板。时长、工具名、步序号、模型、上下文标签的背景统一改用 `var(--color-surface)` + `var(--color-border)`。
+
+- **VS Code Theme Detection — `body.vscode-dark` vs `prefers-color-scheme` / VS Code 主题检测方法修正**: Replaced incorrect `@media (prefers-color-scheme: dark)` with `body.vscode-dark` selectors for dark-theme overrides. VS Code WebViews signal theme via body class (`vscode-dark` / `vscode-light`), not the CSS media query, which is unreliable in embedded Chromium WebViews.
+  将错误的 `@media (prefers-color-scheme: dark)` 替换为 `body.vscode-dark` 选择器。VS Code WebView 通过 body class（`vscode-dark` / `vscode-light`）标识主题，而非 CSS 媒体查询——后者在嵌入式 Chromium WebView 中不可靠。
+
+- **Quota Tracking Ghost-Session Loop / 额度追踪幽灵会话死循环**: Fixed an infinite loop where quota tracking would repeatedly create and immediately archive 0-second ghost sessions after a quota reset. Root cause: the API continues reporting the OLD `resetTime` (already in the past) for several minutes after a reset. `QuotaTracker` entered tracking with a stale `cycleResetTime`, causing `isCycleEnded()` to fire on the very next poll → archive → idle → re-enter tracking → loop. Each iteration also triggered `onQuotaReset`, causing duplicate Activity/GM archives. Fix: added a **stale-resetTime guard** at both idle→tracking entry paths — if `resetTime <= now`, the model stays idle until the API provides a future `resetTime` for the new cycle.
+  修复额度重置后追踪器反复创建并立即归档 0 秒幽灵会话的无限循环。根因：API 在重置后数分钟内仍报告旧的 `resetTime`（已过期），追踪器用过期时间作为 `cycleResetTime` 进入 tracking → `isCycleEnded()` 下个 poll 立即判定周期结束 → 归档 → idle → 再进入 → 死循环。每次循环还触发 `onQuotaReset`，导致 Activity/GM 重复归档。修复：在两个 idle→tracking 入口添加**过期 resetTime 防护**——若 `resetTime <= now` 则保持 idle，等待 API 返回新周期的未来时间。
+
+### ⚡ Improved / 优化
+
+- **Polling Overhead Reduction / 轮询开销优化**: The main polling loop now reuses cached `ContextUsage` for unchanged conversations instead of recomputing token usage every cycle. Recent-session background refresh also skips unchanged snapshots, reducing redundant `GetCascadeTrajectorySteps` RPC batches, repeated token estimation, and idle-time CPU spikes on long conversations.
+  主轮询现在会复用未变化会话的 `ContextUsage`，而不是每个轮询周期都重新计算 token 用量。最近会话的后台刷新同样会跳过未变化快照，减少冗余的 `GetCascadeTrajectorySteps` 批量 RPC、重复 token 估算，以及长对话空闲期的 CPU 尖峰。
+
+- **Fresh-Install GM Baseline / 首装 GM 基线修正**: New `GMTracker` instances now start in baseline mode, so existing historical GM calls are treated as pre-existing data on first install / first launch instead of being counted directly into the current cycle. This prevents the "first install immediately shows a huge amount of GM data" problem.
+  新建 `GMTracker` 现在默认以 baseline 模式启动，因此首次安装 / 首次启动时，已有历史 GM 调用会被视为预存数据，而不会直接计入当前周期。修复了“刚安装就出现大量 GM 数据”的问题。
+
+- **GM Snapshot Persistence De-duplication / GM 快照持久化去重**: `gmDetailedSummary`, Monitor GM conversation snapshots, and related model-DNA persistence now only update when GM aggregates actually change. This cuts repeated deep clones, repeated JSON serialization, and unnecessary external-state writes during idle polling.
+  `gmDetailedSummary`、Monitor GM 会话快照以及相关 model DNA 持久化现在仅在 GM 聚合结果真实变化时才会更新，减少空闲轮询期间重复深拷贝、重复 JSON 序列化和不必要的外部状态写入。
+
+- **Durable State Batched Writes / 持久化状态批量写入**: External `state-v1.json` persistence was changed from synchronous whole-file rewrites on every update to async debounced batch flushes with unchanged-content short-circuiting. This significantly lowers disk writes while preserving the same recovery model.
+  外部 `state-v1.json` 持久化从“每次 update 都同步整文件重写”改为“异步防抖批量落盘 + 内容未变直接跳过”，在保持恢复模型不变的前提下显著降低磁盘写入。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 6 (activity-panel.ts, quota-tracker.ts, webview-panel.ts, webview-script.ts, webview-settings-tab.ts, webview-styles.ts)
+- **Net addition**: ~217 lines
+- **TypeScript compile**: Zero errors
+- **Performance optimization verification**: `npm run compile` passed; `npm test` passed with 14 files / 124 tests.
+- **性能优化验证**：`npm run compile` 通过；`npm test` 通过，共 14 个测试文件 / 124 个测试。
+
 ## [1.14.3] - 2026-03-29
 
 ### ✨ Added / 新增
