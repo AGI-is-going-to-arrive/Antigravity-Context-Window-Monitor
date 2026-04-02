@@ -1,5 +1,20 @@
 # 变更日志 / Changelog
 
+## [1.14.6] - 2026-04-02
+
+### 🐛 Fixed / 修复
+
+- **Light Theme — Full Panel Visibility / 浅色主题 — 全面板可见性**: Fixed ~50 UI components that remained invisible or near-invisible when VS Code was set to a light theme. Root cause: hardcoded `rgba(255,255,255,X)` backgrounds (white overlays on dark backgrounds) became white-on-white in light mode. Fix: added comprehensive `body.vscode-light` CSS overrides across all three style sources — `webview-styles.ts` (+107 lines), `activity-panel.ts` (+29 lines), and `webview-calendar-tab.ts` (+3 lines). Covers: action buttons, stat cards, progress bar tracks, quota bars, model cards, timeline cards, pool badges, feature/MIME tags, chat history cards (including gradient replacements), monitor mini panel, activity card headers, timeline legend, GM perf items, X-ray visualization, rank bars, and calendar navigation. The v1.14.5 fix only addressed GM data tags and timeline tags; this release extends light theme support to the entire panel.
+  修复了约 50 个 UI 组件在 VS Code 浅色主题下不可见或几乎不可见的问题。根因：硬编码的 `rgba(255,255,255,X)` 背景（深色背景上的白色叠加层）在浅色模式下变成白色覆白色。修复：在三个样式源文件中添加了全面的 `body.vscode-light` CSS 覆盖——`webview-styles.ts`（+107 行）、`activity-panel.ts`（+29 行）、`webview-calendar-tab.ts`（+3 行）。覆盖范围：操作按钮、统计卡片、进度条轨道、额度条、模型卡片、时间线卡片、池标签、功能/MIME 标签、聊天历史卡片（含渐变替换）、监控迷你面板、活动面板卡头、时间线图例、GM 性能条目、X-ray 可视化、排行条、日历导航。v1.14.5 仅修复了 GM 数据标签和时间线标签；本版本将浅色主题支持扩展到整个面板。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 4 (3 source + 1 package.json)
+- **Lines added**: 139 (pure CSS overrides, zero logic changes)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## [1.14.5] - 2026-04-01
 
 ### 🐛 Fixed / 修复

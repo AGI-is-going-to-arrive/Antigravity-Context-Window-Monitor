@@ -899,6 +899,35 @@ export function getGMDataTabStyles(): string {
         .xray-bar { transition: none; }
     }
 
+    /* ─── Light Theme: Activity Panel ──── */
+    body.vscode-light .act-card-header { background: rgba(0,0,0,0.03); }
+    body.vscode-light .act-tool-tag { background: rgba(0,0,0,0.05); }
+    body.vscode-light .act-tl-expand { background: rgba(0,0,0,0.03); }
+    body.vscode-light .act-tl-segment-body .act-tl-item::before { background: rgba(0,0,0,0.16); }
+    body.vscode-light .act-tl-legend-row { border-bottom-color: rgba(0,0,0,0.04); }
+    body.vscode-light .act-tl-item { border-bottom-color: rgba(0,0,0,0.04); }
+    @media (hover: hover) {
+        body.vscode-light .act-tl-item:hover { background: rgba(0,0,0,0.03); }
+    }
+    body.vscode-light .act-tl-legend { border-color: rgba(0,0,0,0.08); background: rgba(0,0,0,0.015); }
+    body.vscode-light .act-tl-legend-group { border-color: rgba(0,0,0,0.06); background: rgba(0,0,0,0.015); }
+    body.vscode-light .act-tl-legend-group-title { background: rgba(0,0,0,0.03); border-bottom-color: rgba(0,0,0,0.06); }
+    body.vscode-light .act-tl-legend-formula { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.06); }
+    body.vscode-light .act-tl-segment-caption { background: rgba(0,0,0,0.02); border-bottom-color: rgba(0,0,0,0.04); }
+    body.vscode-light .act-conv-item { border-bottom-color: rgba(0,0,0,0.04); }
+    body.vscode-light .gm-perf-item { background: rgba(0,0,0,0.02); border-color: rgba(0,0,0,0.06); }
+    body.vscode-light .gm-cache-bar-bg { background: rgba(0,0,0,0.06); }
+    body.vscode-light .gm-retry-stops { border-top-color: rgba(0,0,0,0.06); }
+    body.vscode-light .act-rank-bar-bg { background: rgba(0,0,0,0.06); }
+    body.vscode-light .act-xray-details { border-color: rgba(0,0,0,0.08); background: rgba(0,0,0,0.015); }
+    body.vscode-light .xray-bar-wrap { background: rgba(0,0,0,0.06); }
+    body.vscode-light .xray-chip { background: rgba(0,0,0,0.03); }
+    @media (hover: hover) {
+        body.vscode-light .act-tl-legend-row:hover { background: rgba(0,0,0,0.02); }
+        body.vscode-light .xray-chip:hover { background: rgba(0,0,0,0.06); }
+    }
+    body.vscode-light .xray-total { border-top-color: rgba(0,0,0,0.06); }
+
     `;
 }
 

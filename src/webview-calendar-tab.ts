@@ -618,6 +618,9 @@ export function getCalendarTabStyles(): string {
         body.vscode-light .cal-cell.has-data { background: rgba(0,0,0,0.03); }
         body.vscode-light .cal-cycle { background: rgba(0,0,0,0.015); }
         body.vscode-light .cal-detail { background: rgba(37,99,235,0.03); border-color: rgba(37,99,235,0.15); }
+        body.vscode-light .cal-nav-btn { background: rgba(0,0,0,0.04); }
+        body.vscode-light .cal-overview-item { background: rgba(0,0,0,0.02); }
+        body.vscode-light .cal-model-row + .cal-model-row { border-top-color: rgba(0,0,0,0.06); }
     `;
 }
 

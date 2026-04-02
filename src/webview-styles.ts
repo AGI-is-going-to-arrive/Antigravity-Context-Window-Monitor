@@ -3902,6 +3902,113 @@ export function getStyles(): string {
             color: var(--lt-amber-deep);
         }
 
+        /* ─── Light Theme: Buttons & Inputs ──── */
+        body.vscode-light .action-btn { background: rgba(0,0,0,0.04); }
+        body.vscode-light .action-btn:disabled { background: rgba(0,0,0,0.01); }
+        body.vscode-light .stg-card .action-btn {
+            background: linear-gradient(180deg, rgba(0,0,0,0.05), rgba(0,0,0,0.02));
+        }
+        @media (hover: hover) {
+            body.vscode-light .action-btn:hover { background: rgba(0,0,0,0.08); }
+            body.vscode-light .action-btn:disabled:hover { background: rgba(0,0,0,0.01); }
+            body.vscode-light .stg-card .action-btn:hover { background: rgba(0,0,0,0.10); }
+            body.vscode-light .lang-btn:not(.active):hover { background: rgba(0,0,0,0.06); }
+            body.vscode-light .tab-btn:not(.active):hover { background: rgba(0,0,0,0.04); }
+            body.vscode-light .tab-scroll-hint-close:hover { background: rgba(0,0,0,0.06); }
+        }
+
+        /* ─── Light Theme: Cards & Surfaces ──── */
+        body.vscode-light .stat { background: rgba(0,0,0,0.02); }
+        body.vscode-light .pool-badge { background: rgba(0,0,0,0.05); }
+        body.vscode-light .call-card { background: rgba(0,0,0,0.02); }
+        body.vscode-light .call-chip { background: rgba(0,0,0,0.04); }
+        body.vscode-light .compress-card { background: rgba(0,0,0,0.02); }
+        body.vscode-light .ts-card { background: rgba(0,0,0,0.02); }
+        body.vscode-light .ts-cascade { background: rgba(0,0,0,0.02); }
+        body.vscode-light .collapsible { background: rgba(0,0,0,0.02); }
+        body.vscode-light .model-card { background: rgba(0,0,0,0.02); }
+        body.vscode-light .profile-metric-card { background: rgba(0,0,0,0.03); }
+        body.vscode-light .feature-tag { background: rgba(0,0,0,0.04); }
+        body.vscode-light .mime-tag { background: rgba(0,0,0,0.04); }
+        body.vscode-light .mime-chip { background: rgba(0,0,0,0.04); }
+        body.vscode-light .inline-details { background: rgba(0,0,0,0.01); }
+        body.vscode-light .timeline-card { background: rgba(0,0,0,0.02); }
+
+        /* ─── Light Theme: Progress Bars ──── */
+        body.vscode-light .progress-bar-wrap { background: rgba(0,0,0,0.06); }
+        body.vscode-light .output-split-bar { background: rgba(0,0,0,0.06); }
+        body.vscode-light .session-bar-wrap { background: rgba(0,0,0,0.06); }
+        body.vscode-light .quota-bar-wrap { background: rgba(0,0,0,0.06); }
+        body.vscode-light .credit-bar-wrap { background: rgba(0,0,0,0.06); }
+        body.vscode-light .qt-progress-track { background: rgba(0,0,0,0.06); }
+        body.vscode-light .qt-meta-chip { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.08); }
+        body.vscode-light .qt-summary-grid { background: rgba(0,0,0,0.02); border-color: rgba(0,0,0,0.06); }
+
+        /* ─── Light Theme: Monitor Mini Panel ──── */
+        body.vscode-light .monitor-mini-tag { background: rgba(0,0,0,0.03); }
+        body.vscode-light .monitor-gm-model-item { background: rgba(0,0,0,0.02); }
+        body.vscode-light .monitor-quota-item { background: rgba(0,0,0,0.02); }
+        body.vscode-light .monitor-quota-track { background: rgba(0,0,0,0.06); }
+        body.vscode-light .monitor-cost-model { background: rgba(0,0,0,0.02); }
+        body.vscode-light .monitor-track-row { background: rgba(0,0,0,0.02); }
+        body.vscode-light .monitor-track-bar { background: rgba(0,0,0,0.06); }
+
+        /* ─── Light Theme: Chat History ──── */
+        body.vscode-light .history-stat-card {
+            background:
+                radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 55%),
+                linear-gradient(180deg, rgba(0,0,0,0.03), rgba(0,0,0,0.015));
+        }
+        body.vscode-light .history-toolbar-card {
+            background:
+                linear-gradient(135deg, rgba(6, 182, 212, 0.06), transparent 40%),
+                linear-gradient(180deg, rgba(0,0,0,0.03), rgba(0,0,0,0.015));
+        }
+        body.vscode-light .history-shortcut-card {
+            border-color: rgba(0,0,0,0.08);
+            background:
+                linear-gradient(135deg, rgba(6, 182, 212, 0.06), transparent 50%),
+                linear-gradient(180deg, rgba(0,0,0,0.03), rgba(0,0,0,0.015));
+        }
+        body.vscode-light .history-search-input { background: rgba(0,0,0,0.03); }
+        body.vscode-light .history-search-input:disabled { background: rgba(0,0,0,0.02); }
+        @media (hover: hover) {
+            body.vscode-light .history-search-input:hover { background: rgba(0,0,0,0.04); }
+            body.vscode-light .history-search-input:disabled:hover { background: rgba(0,0,0,0.02); }
+        }
+        body.vscode-light .history-filter-btn { background: rgba(0,0,0,0.03); }
+        @media (hover: hover) {
+            body.vscode-light .history-filter-btn:hover { background: rgba(0,0,0,0.06); }
+        }
+        body.vscode-light .history-group {
+            border-color: rgba(37, 99, 235, 0.12);
+            background:
+                linear-gradient(180deg, rgba(0,0,0,0.02), rgba(0,0,0,0.01)),
+                radial-gradient(circle at top right, rgba(37, 99, 235, 0.06), transparent 55%);
+        }
+        body.vscode-light .history-group-chip,
+        body.vscode-light .history-storage-badge,
+        body.vscode-light .history-badge,
+        body.vscode-light .history-meta-chip { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.08); }
+        body.vscode-light .history-row {
+            border-color: rgba(0,0,0,0.08);
+            background: linear-gradient(180deg, rgba(0,0,0,0.025), rgba(0,0,0,0.01));
+        }
+        body.vscode-light .history-row.is-current-session {
+            border-color: rgba(22, 163, 74, 0.22);
+            background:
+                linear-gradient(135deg, rgba(22, 163, 74, 0.06), transparent 45%),
+                linear-gradient(180deg, rgba(0,0,0,0.025), rgba(0,0,0,0.01));
+        }
+        @media (hover: hover) {
+            body.vscode-light .history-row:hover { border-color: rgba(0,0,0,0.18); }
+        }
+        body.vscode-light .history-spotlight-card { background: rgba(0,0,0,0.02); border-color: rgba(0,0,0,0.06); }
+        body.vscode-light .history-action-btn { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.08); }
+        @media (hover: hover) {
+            body.vscode-light .history-action-btn:hover { background: rgba(0,0,0,0.06); border-color: rgba(0,0,0,0.15); }
+        }
+
         /* ─── High Contrast Overrides ──── */
         body.vscode-high-contrast {
             --color-border: rgba(255,255,255,0.25);
