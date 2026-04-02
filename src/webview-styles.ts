@@ -4092,6 +4092,15 @@ export function getStyles(): string {
             body.vscode-light .tab-scroll-hint-close:hover { background: rgba(0,0,0,0.06); }
         }
 
+        /* ─── Light Theme: Tab Color Tokens ──── */
+        body.vscode-light .tab-btn[data-color="blue"]   { --tab-c: var(--lt-blue); }
+        body.vscode-light .tab-btn[data-color="green"]  { --tab-c: var(--lt-green); }
+        body.vscode-light .tab-btn[data-color="orange"] { --tab-c: var(--lt-orange); }
+        body.vscode-light .tab-btn[data-color="purple"] { --tab-c: 124, 58, 237; }
+        body.vscode-light .tab-btn[data-color="cyan"]   { --tab-c: 8, 145, 178; }
+        body.vscode-light .tab-btn[data-color="yellow"] { --tab-c: var(--lt-amber); }
+        body.vscode-light .tab-btn[data-color="gray"]   { --tab-c: 71, 85, 105; }
+
         /* ─── Light Theme: Cards & Surfaces ──── */
         body.vscode-light .stat { background: rgba(0,0,0,0.02); }
         body.vscode-light .pool-badge { background: rgba(0,0,0,0.05); }
@@ -4145,13 +4154,27 @@ export function getStyles(): string {
                 linear-gradient(135deg, rgba(6, 182, 212, 0.06), transparent 50%),
                 linear-gradient(180deg, rgba(0,0,0,0.03), rgba(0,0,0,0.015));
         }
-        body.vscode-light .history-search-input { background: rgba(0,0,0,0.03); }
+        body.vscode-light .history-shortcut-count {
+            color: var(--lt-teal-text);
+            background: rgba(var(--lt-teal), 0.1);
+        }
+        body.vscode-light .history-search-input { color: var(--color-text); background: rgba(0,0,0,0.03); }
+        body.vscode-light .history-search-input::placeholder { color: rgba(0,0,0,0.45); }
+        body.vscode-light .history-search-input:focus-visible { border-color: rgba(var(--lt-blue), 0.35); box-shadow: 0 0 0 3px rgba(var(--lt-blue), 0.1); }
         body.vscode-light .history-search-input:disabled { background: rgba(0,0,0,0.02); }
         @media (hover: hover) {
             body.vscode-light .history-search-input:hover { background: rgba(0,0,0,0.04); }
             body.vscode-light .history-search-input:disabled:hover { background: rgba(0,0,0,0.02); }
         }
         body.vscode-light .history-filter-btn { background: rgba(0,0,0,0.03); }
+        body.vscode-light .history-filter-btn.is-active {
+            color: var(--lt-teal-text);
+            border-color: rgba(var(--lt-teal), 0.35);
+            background: rgba(var(--lt-teal), 0.1);
+        }
+        body.vscode-light .history-filter-btn:focus-visible {
+            box-shadow: 0 0 0 3px rgba(var(--lt-teal), 0.15);
+        }
         @media (hover: hover) {
             body.vscode-light .history-filter-btn:hover { background: rgba(0,0,0,0.06); }
         }
@@ -4165,6 +4188,12 @@ export function getStyles(): string {
         body.vscode-light .history-storage-badge,
         body.vscode-light .history-badge,
         body.vscode-light .history-meta-chip { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.08); }
+        
+        body.vscode-light .history-group-chip.is-workspace,
+        body.vscode-light .history-badge.is-workspace { color: var(--lt-teal-text); border-color: rgba(var(--lt-teal), 0.3); background: rgba(var(--lt-teal), 0.08); }
+        body.vscode-light .history-badge.is-repo { color: var(--lt-blue-deep); border-color: rgba(var(--lt-blue), 0.25); background: rgba(var(--lt-blue), 0.08); }
+        body.vscode-light .history-badge.is-current { color: var(--lt-green-deep); border-color: rgba(var(--lt-green), 0.3); background: rgba(var(--lt-green), 0.1); }
+        body.vscode-light .history-badge.is-running { color: var(--lt-amber-deep); border-color: rgba(var(--lt-amber), 0.3); background: rgba(var(--lt-amber), 0.1); }
         body.vscode-light .history-row {
             border-color: rgba(0,0,0,0.08);
             background: linear-gradient(180deg, rgba(0,0,0,0.025), rgba(0,0,0,0.01));
