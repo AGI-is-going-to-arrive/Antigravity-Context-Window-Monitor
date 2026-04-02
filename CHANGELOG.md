@@ -1,5 +1,12 @@
 # 变更日志 / Changelog
 
+## [1.14.8] - 2026-04-02
+
+### 🐛 Fixed / 修复
+
+- **Light Theme — Session Panel Visibility / 浅色主题 — 会话面板可见性** (PR #40 by @NightMin2002): Fixed multiple visibility issues in the session history panel when using a light VS Code theme. Includes: search input text and placeholder color now properly contrast against light backgrounds; all cyan/blue-leaning Tab color tokens overridden with darker variants for light mode; shortcut card count bubble uses proper teal contrast; filter button active and focus-visible states added for light theme; workspace/repo/current/running badge colors unified with the CSS variable token system (`--lt-teal`, `--lt-blue`, `--lt-green`, `--lt-amber`).
+  修复了会话历史面板在 VS Code 浅色主题下的多个可见性问题。包括：搜索输入框文本和占位符颜色现在在浅色背景上有正确对比度；所有偏青蓝的 Tab 颜色 token 被更深的浅色模式变体覆盖；快捷卡片数量气泡使用正确的 teal 对比色；筛选按钮激活态和 focus-visible 状态新增浅色适配；workspace/repo/current/running badge 颜色统一使用 CSS 变量 token 体系。
+
 ## [1.14.7] - 2026-04-02
 
 ### ✨ Added / 新增

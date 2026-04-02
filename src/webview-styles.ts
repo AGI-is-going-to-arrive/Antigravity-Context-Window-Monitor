@@ -3004,10 +3004,7 @@ export function getStyles(): string {
         body.vscode-light .history-row-actions {
             border-top-color: rgba(0,0,0,0.06);
         }
-        body.vscode-light .history-badge.is-workspace { color: #0891b2; border-color: rgba(8,145,178,0.2); background: rgba(8,145,178,0.08); }
-        body.vscode-light .history-badge.is-repo { color: #7c3aed; border-color: rgba(124,58,237,0.2); background: rgba(124,58,237,0.08); }
-        body.vscode-light .history-badge.is-current { color: #16a34a; border-color: rgba(22,163,74,0.2); background: rgba(22,163,74,0.08); }
-        body.vscode-light .history-badge.is-running { color: #d97706; border-color: rgba(217,119,6,0.2); background: rgba(217,119,6,0.08); }
+        /* badge light-theme colors: see consolidated section below (~line 4190+) using CSS variable tokens */
         body.vscode-light .history-foot-item.is-gm { color: #d97706; }
 
         @media (max-width: 920px) {
