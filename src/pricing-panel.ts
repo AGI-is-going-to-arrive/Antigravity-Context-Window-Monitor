@@ -4,34 +4,50 @@
 
 import { tBi } from './i18n';
 import { GMSummary, GMModelStats, GMCompletionConfig } from './gm-tracker';
-import { PricingStore, DEFAULT_PRICING, PRICING_LAST_UPDATED, findPricing, ModelPricing } from './pricing-store';
+import { PricingStore, DEFAULT_PRICING, PRICING_LAST_UPDATED, findPricing, ModelPricing, ModelCostRow } from './pricing-store';
 import { esc } from './webview-helpers';
+import type { MonthCostBreakdown } from './daily-store';
 import { getModelDNAKey, type PersistedModelDNA } from './model-dna-store';
 import { ModelConfig, normalizeModelDisplayName } from './models';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-export function buildPricingTabContent(summary: GMSummary | null, store: PricingStore): string {
+export function buildPricingTabContent(
+    summary: GMSummary | null,
+    store: PricingStore,
+    monthBreakdown?: MonthCostBreakdown,
+): string {
     const hasGM = summary && summary.totalCalls > 0;
+    const parts: string[] = [];
 
-    if (hasGM) {
-        const { rows, grandTotal } = store.calculateCosts(summary);
+    // Pre-calculate costs once (used by both monthly summary and current cycle view)
+    const costResult = hasGM ? store.calculateCosts(summary) : null;
+
+    // Monthly total cost summary (always shown if breakdown data exists)
+    if (monthBreakdown) {
+        parts.push(buildMonthlyCostSummary(monthBreakdown, costResult?.grandTotal ?? 0, costResult?.rows ?? []));
+    }
+
+    if (hasGM && costResult) {
+        const { rows, grandTotal } = costResult;
         const merged = store.getMerged();
-        return [
+        parts.push(
             buildCostVisualization(rows, grandTotal, summary),
             buildCostSummary(rows, grandTotal),
             buildEditablePricingTable(summary, merged, store.getCustom()),
-        ].join('');
+        );
+    } else {
+        // No GM data yet — still show the editable pricing table with defaults
+        parts.push(
+            `<p class="empty-msg">${tBi(
+                'Cost analysis will appear after GM data is available. You can configure custom prices below.',
+                '费用分析将在 GM 数据可用后显示。您可以在下方配置自定义价格。',
+            )}</p>`,
+            buildDefaultPricingTable(store.getMerged(), store.getCustom()),
+        );
     }
 
-    // No GM data yet — still show the editable pricing table with defaults
-    return [
-        `<p class="empty-msg">${tBi(
-            'Cost analysis will appear after GM data is available. You can configure custom prices below.',
-            '费用分析将在 GM 数据可用后显示。您可以在下方配置自定义价格。',
-        )}</p>`,
-        buildDefaultPricingTable(store.getMerged(), store.getCustom()),
-    ].join('');
+    return parts.join('');
 }
 
 export function getPricingTabStyles(): string {
@@ -441,7 +457,149 @@ export function getPricingTabStyles(): string {
     }
 
     @media (prefers-reduced-motion: reduce) {
-        .prc-bar-seg, .prc-edit-input, .prc-cost-card, .prc-edit-card { transition: none; }
+        .prc-bar-seg, .prc-edit-input, .prc-cost-card, .prc-edit-card, .prc-monthly-card { transition: none; }
+    }
+
+    /* ── Monthly Cost Summary ── */
+    .prc-monthly-section {
+        margin-bottom: var(--space-4);
+    }
+    .prc-monthly-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-2);
+        margin-bottom: var(--space-3);
+    }
+    .prc-monthly-header h2 {
+        margin-bottom: 0;
+    }
+    .prc-monthly-grand {
+        display: flex;
+        align-items: baseline;
+        gap: var(--space-2);
+        padding: var(--space-3) var(--space-4);
+        background: rgba(251, 191, 36, 0.06);
+        border: 1px solid rgba(251, 191, 36, 0.18);
+        border-left: 3px solid #f59e0b;
+        border-radius: var(--radius-md);
+        margin-bottom: var(--space-3);
+    }
+    .prc-monthly-grand-val {
+        font-size: 1.6em;
+        font-weight: 800;
+        color: #f59e0b;
+        letter-spacing: -0.02em;
+    }
+    .prc-monthly-grand-label {
+        font-size: 0.85em;
+        color: var(--color-text-dim);
+    }
+    .prc-monthly-grand-breakdown {
+        font-size: 0.78em;
+        color: var(--color-text-dim);
+        margin-left: auto;
+    }
+    .prc-monthly-models {
+        display: grid;
+        gap: var(--space-2);
+    }
+    .prc-monthly-card {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+        padding: var(--space-2) var(--space-3);
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        transition: background 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
+    }
+    @media (hover: hover) {
+        .prc-monthly-card:hover {
+            background: var(--color-surface-hover);
+            border-color: var(--color-border-hover);
+        }
+    }
+    .prc-monthly-model-name {
+        font-weight: 600;
+        font-size: 0.9em;
+        min-width: 100px;
+    }
+    .prc-monthly-bar-wrap {
+        flex: 1;
+        height: 6px;
+        background: rgba(255,255,255,0.06);
+        border-radius: var(--radius-full);
+        overflow: hidden;
+    }
+    .prc-monthly-bar-fill {
+        height: 100%;
+        border-radius: var(--radius-full);
+        background: linear-gradient(90deg, #f59e0b, #fb923c);
+        transition: width 0.4s cubic-bezier(.4,0,.2,1);
+    }
+    .prc-monthly-model-cost {
+        font-weight: 700;
+        font-size: 0.92em;
+        color: #f59e0b;
+        min-width: 60px;
+        text-align: right;
+    }
+    .prc-monthly-chips {
+        display: flex;
+        gap: var(--space-1);
+        flex-wrap: wrap;
+        font-size: 0.78em;
+    }
+    .prc-monthly-chip {
+        padding: 1px var(--space-1);
+        border-radius: var(--radius-sm);
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.08);
+        color: var(--color-text-dim);
+        white-space: nowrap;
+    }
+    .prc-monthly-note {
+        margin-top: var(--space-2);
+        font-size: 0.78em;
+        color: var(--color-text-dim);
+        font-style: italic;
+        display: flex;
+        align-items: center;
+        gap: var(--space-1);
+    }
+    .prc-monthly-calendar-link {
+        appearance: none;
+        background: rgba(96,165,250,0.08);
+        border: 1px solid rgba(96,165,250,0.2);
+        border-radius: var(--radius-sm);
+        color: var(--color-info);
+        padding: var(--space-1) var(--space-2);
+        font: inherit;
+        font-size: 0.82em;
+        font-weight: 600;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-1);
+        transition: background 0.15s cubic-bezier(.4,0,.2,1), transform 0.1s;
+    }
+    .prc-monthly-calendar-link:focus-visible {
+        box-shadow: 0 0 0 2px var(--color-info);
+        outline: none;
+    }
+    .prc-monthly-calendar-link:active { transform: scale(0.97); }
+    @media (hover: hover) {
+        .prc-monthly-calendar-link:hover {
+            background: rgba(96,165,250,0.15);
+        }
+    }
+    .prc-monthly-empty {
+        color: var(--color-text-dim);
+        font-size: 0.85em;
+        text-align: center;
+        padding: var(--space-3) 0;
+        opacity: 0.7;
     }
 
     /* ── Light Theme Overrides ── */
@@ -455,6 +613,13 @@ export function getPricingTabStyles(): string {
     body.vscode-light .prc-edit-source-custom { color: #92400e; }
     body.vscode-light .prc-edit-source-builtin { color: #15803d; }
     body.vscode-light .prc-feedback { color: #15803d; }
+    body.vscode-light .prc-monthly-grand { background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.2); border-left-color: #d97706; }
+    body.vscode-light .prc-monthly-grand-val { color: #b45309; }
+    body.vscode-light .prc-monthly-model-cost { color: #b45309; }
+    body.vscode-light .prc-monthly-bar-wrap { background: rgba(0,0,0,0.06); }
+    body.vscode-light .prc-monthly-bar-fill { background: linear-gradient(90deg, #d97706, #ea580c); }
+    body.vscode-light .prc-monthly-chip { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.08); }
+    body.vscode-light .prc-monthly-calendar-link { background: rgba(37,99,235,0.06); border-color: rgba(37,99,235,0.2); color: #1d4ed8; }
     `;
 }
 
@@ -852,5 +1017,161 @@ function buildDefaultPricingTable(
         `Edit prices above and click Save. Changes are persisted across sessions. Default prices last updated: ${PRICING_LAST_UPDATED}.`,
         `编辑上方价格后点击保存。修改跨会话持久化。默认价格最后更新：${PRICING_LAST_UPDATED}。`
     )}</p></div>`;
+    return html;
+}
+
+// ─── Monthly Cost Summary Builder ────────────────────────────────────────────
+
+const MONTH_NAMES_EN = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const MONTH_NAMES_ZH = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+
+const CALENDAR_LINK_ICON = '<svg viewBox="0 0 16 16" width="12" height="12"><path fill="currentColor" d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/></svg>';
+const DOLLAR_ICON = '<svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.3 0-1.59-.947-2.51-2.956-3.028l-.722-.187V3.467c1.122.11 1.879.714 2.07 1.616h1.47c-.166-1.6-1.54-2.748-3.54-2.875V1H7.591v1.233c-1.939.23-3.27 1.472-3.27 3.156 0 1.454.966 2.483 2.661 2.917l.61.162v4.031c-1.149-.17-1.94-.8-2.131-1.718zm3.391-3.836c-1.043-.263-1.6-.825-1.6-1.616 0-.944.704-1.641 1.8-1.828v3.495zM8.634 8.1C9.858 8.418 10.44 9 10.44 9.89c0 1.12-.789 1.816-2.007 1.931V8.1z"/></svg>';
+
+function fmtCost(n: number): string {
+    if (n >= 100) { return '$' + n.toFixed(0); }
+    if (n >= 1) { return '$' + n.toFixed(2); }
+    if (n > 0) { return '$' + n.toFixed(4); }
+    return '$0.00';
+}
+
+function fmtTokensK(n: number): string {
+    if (n >= 1_000_000) { return (n / 1_000_000).toFixed(1) + 'M'; }
+    if (n >= 1_000) { return (n / 1_000).toFixed(1) + 'k'; }
+    return String(n);
+}
+
+/** Build the monthly cost summary section for the Pricing tab. */
+function buildMonthlyCostSummary(
+    breakdown: MonthCostBreakdown,
+    currentCycleCost: number,
+    currentCycleRows: ModelCostRow[],
+): string {
+    const monthEn = MONTH_NAMES_EN[breakdown.month - 1];
+    const monthZh = MONTH_NAMES_ZH[breakdown.month - 1];
+    const now = new Date();
+    const isCurrentMonth = breakdown.year === now.getFullYear() && breakdown.month === (now.getMonth() + 1);
+
+    // Merge archived data with current live cycle
+    const mergedModels = new Map<string, { name: string; totalCost: number; calls: number; inputTokens: number; outputTokens: number; thinkingTokens: number }>();
+
+    // 1. Archived cycles from DailyStore
+    for (const m of breakdown.models) {
+        mergedModels.set(m.name, {
+            name: m.name,
+            totalCost: m.totalCost,
+            calls: m.calls,
+            inputTokens: m.inputTokens,
+            outputTokens: m.outputTokens,
+            thinkingTokens: m.thinkingTokens,
+        });
+    }
+
+    // 2. Current live cycle (not yet archived)
+    if (isCurrentMonth && currentCycleRows.length > 0) {
+        for (const row of currentCycleRows) {
+            const key = row.name;
+            const existing = mergedModels.get(key);
+            if (existing) {
+                existing.totalCost += row.totalCost;
+                existing.calls += 1; // approximate
+                existing.inputTokens += row.inputTokens;
+                existing.outputTokens += row.outputTokens;
+                existing.thinkingTokens += row.thinkingTokens;
+            } else {
+                mergedModels.set(key, {
+                    name: key,
+                    totalCost: row.totalCost,
+                    calls: 1,
+                    inputTokens: row.inputTokens,
+                    outputTokens: row.outputTokens,
+                    thinkingTokens: row.thinkingTokens,
+                });
+            }
+        }
+    }
+
+    const grandTotal = breakdown.grandTotal + (isCurrentMonth ? currentCycleCost : 0);
+    const totalCycles = breakdown.cycleCount + (isCurrentMonth && currentCycleCost > 0 ? 1 : 0);
+    const models = [...mergedModels.values()].sort((a, b) => b.totalCost - a.totalCost);
+    const maxCost = models.length > 0 ? models[0].totalCost : 1;
+
+    // Determine if data is incomplete (started mid-month)
+    let dataCoverageNote = '';
+    if (breakdown.earliestDate && isCurrentMonth) {
+        const dayNum = parseInt(breakdown.earliestDate.split('-')[2], 10);
+        if (dayNum > 1) {
+            dataCoverageNote = tBi(
+                `Data recorded from ${breakdown.earliestDate}. Earlier usage in this month is not tracked.`,
+                `数据从 ${breakdown.earliestDate} 开始记录。本月更早的用量未被追踪。`,
+            );
+        }
+    }
+
+    let html = `<section class="card prc-monthly-section">`;
+
+    // Header with title and calendar link
+    html += `<div class="prc-monthly-header">
+        <h2>${DOLLAR_ICON} ${tBi(`${monthEn} ${breakdown.year} Cost`, `${breakdown.year}年${monthZh}费用`)}</h2>
+        <button class="prc-monthly-calendar-link" data-switch-tab="calendar">
+            ${CALENDAR_LINK_ICON} ${tBi('View History', '查看历史')}
+        </button>
+    </div>`;
+
+    if (models.length === 0 && grandTotal === 0) {
+        html += `<p class="prc-monthly-empty">${tBi(
+            'No cost data recorded for this month yet.',
+            '本月暂无费用数据。',
+        )}</p>`;
+        html += `</section>`;
+        return html;
+    }
+
+    // Grand total highlight
+    const archivedLabel = isCurrentMonth
+        ? tBi(
+            `${breakdown.cycleCount} archived cycle${breakdown.cycleCount !== 1 ? 's' : ''} + current`,
+            `${breakdown.cycleCount} 个已归档周期 + 当前`,
+        )
+        : tBi(
+            `${totalCycles} cycle${totalCycles !== 1 ? 's' : ''}`,
+            `${totalCycles} 个周期`,
+        );
+
+    html += `<div class="prc-monthly-grand">
+        <span class="prc-monthly-grand-val">${fmtCost(grandTotal)}</span>
+        <span class="prc-monthly-grand-label">${tBi('Total', '总计')}</span>
+        <span class="prc-monthly-grand-breakdown">${archivedLabel}</span>
+    </div>`;
+
+    // Per-model rows with proportional bar
+    html += `<div class="prc-monthly-models">`;
+    for (const m of models) {
+        const pct = maxCost > 0 ? Math.max(2, (m.totalCost / maxCost) * 100) : 0;
+        html += `<div class="prc-monthly-card">
+            <span class="prc-monthly-model-name">${esc(m.name)}</span>
+            <div class="prc-monthly-bar-wrap">
+                <div class="prc-monthly-bar-fill" style="width:${pct.toFixed(1)}%"></div>
+            </div>
+            <span class="prc-monthly-model-cost">${fmtCost(m.totalCost)}</span>
+        </div>
+        <div class="prc-monthly-chips" style="padding-left:var(--space-3); margin-top:-4px; margin-bottom:var(--space-1)">
+            <span class="prc-monthly-chip">${fmtTokensK(m.inputTokens)} in</span>
+            <span class="prc-monthly-chip">${fmtTokensK(m.outputTokens)} out</span>
+            ${m.thinkingTokens > 0 ? `<span class="prc-monthly-chip">${fmtTokensK(m.thinkingTokens)} think</span>` : ''}
+            <span class="prc-monthly-chip">${m.calls} ${tBi('calls', '调用')}</span>
+        </div>`;
+    }
+    html += `</div>`;
+
+    // Data coverage note
+    if (dataCoverageNote) {
+        html += `<p class="prc-monthly-note">
+            <svg viewBox="0 0 16 16" width="12" height="12"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path fill="currentColor" d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>
+            ${dataCoverageNote}
+        </p>`;
+    }
+
+    html += `</section>`;
     return html;
 }

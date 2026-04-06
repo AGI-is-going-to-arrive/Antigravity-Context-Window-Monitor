@@ -1,5 +1,39 @@
 # 变更日志 / Changelog
 
+## [1.14.9] - 2026-04-06
+
+### ✨ Improved / 改进
+
+- **Panel Title Rename / 面板标题更名**: Renamed the WebView panel from "Context Monitor / 上下文监控" to "Antigravity Monitor / Antigravity 监控面板". The panel now hosts 9 feature tabs well beyond basic context monitoring, and the new name better reflects its role as a comprehensive monitoring dashboard.
+  面板标题从「Context Monitor / 上下文监控」更名为「Antigravity Monitor / Antigravity 监控面板」。面板已集成 9 个功能标签页，早已超越基础上下文监控的范畴，新名称更准确反映其综合监控仪表盘的定位。
+
+### ✨ Added / 新增
+
+- **Monthly Total Cost Summary / 月度总成本汇总**: Added a new "Monthly Cost" summary section at the top of the Pricing tab. Features:
+  - Displays the aggregated monthly total cost across all archived quota cycles **plus** the current active cycle's real-time cost, ensuring the total is always up-to-date.
+  - Per-model cost breakdown with proportional bar visualization and token usage chips (input/output/thinking/calls).
+  - Handles incomplete months: shows a note when data recording started mid-month.
+  - "View History" button navigates directly to the Calendar tab for historical cost exploration via `data-switch-tab` delegation.
+  - Architecture: new `DailyStore.getMonthCostBreakdown()` method aggregates per-model cost from `gmModelStats` in archived cycles; new `MonthModelCost` and `MonthCostBreakdown` exported types; `buildPricingTabContent()` signature extended with optional `monthBreakdown` and `currentCycleCost` parameters.
+  在成本标签页顶部新增「月度总成本」汇总区域。功能包括：
+  - 汇总当月所有已归档额度周期 + 当前活跃周期的实时费用，确保总额始终最新。
+  - 按模型分拆费用，配有比例条形图和 token 用量标签（输入/输出/思考/调用次数）。
+  - 处理不完整的月份：当数据从月中开始记录时显示提示。
+  - 「查看历史」按钮通过 `data-switch-tab` 委托直接导航到日历标签页浏览历史费用。
+  - 架构：`DailyStore` 新增 `getMonthCostBreakdown()` 方法从归档周期的 `gmModelStats` 聚合按模型费用；新增 `MonthModelCost` 和 `MonthCostBreakdown` 导出类型；`buildPricingTabContent()` 签名扩展可选参数 `monthBreakdown` 和 `currentCycleCost`。
+
+### 🐛 Fixed / 修复
+
+- **Stale Data Flash on Panel Re-Show / 面板恢复可见时闪旧数据**: Fixed a visual glitch where switching away from the WebView panel and returning would briefly display stale data before the next polling cycle refreshed it. Root cause: VS Code destroys the webview DOM when the panel is hidden (default `retainContextWhenHidden: false`), and restores from the last `webview.html` snapshot on re-show — which contains old data. Fix: added `panel.onDidChangeViewState` listener that immediately sends an `updateTabs` message with the latest cached data (`lastUsage`, `lastAllUsages`, `lastConfigs`, `lastUserInfo`, `lastQuotaTracker`) when the panel becomes visible again, eliminating the 5-second polling gap.
+  修复切换离开 WebView 面板再返回时短暂显示旧数据的视觉问题。根因：VS Code 在面板隐藏时销毁 webview DOM（默认不启用 `retainContextWhenHidden`），恢复可见时从上次设置的 `webview.html` 快照中重建——那是旧数据。修复：新增 `panel.onDidChangeViewState` 监听器，面板重新可见时立即用最新缓存数据（`lastUsage`、`lastAllUsages`、`lastConfigs`、`lastUserInfo`、`lastQuotaTracker`）发送 `updateTabs` 消息，消除 5 秒轮询间隔。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 5 (`daily-store.ts`, `pricing-panel.ts`, `webview-panel.ts`, `i18n.ts`, `CHANGELOG.md`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## [1.14.8] - 2026-04-02
 
 ### 🐛 Fixed / 修复

@@ -612,7 +612,11 @@ function buildTabContents(
         gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage) + eoc,
         chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
         pricing: (lastPricingStore
-            ? buildPricingTabContent(lastGMSummary, lastPricingStore)
+            ? buildPricingTabContent(
+                lastGMSummary,
+                lastPricingStore,
+                lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
+            )
             : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`) + eoc,
         models: buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA) + eoc,
         history: buildHistoryHtml(tracker) + eoc,
@@ -643,7 +647,11 @@ function buildHtml(
     const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage);
     const chatsHtml = buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri);
     const pricingHtml = lastPricingStore
-        ? buildPricingTabContent(lastGMSummary, lastPricingStore)
+        ? buildPricingTabContent(
+            lastGMSummary,
+            lastPricingStore,
+            lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
+        )
         : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
     const modelsHtml = buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA);
     const historyHtml = buildHistoryHtml(tracker);

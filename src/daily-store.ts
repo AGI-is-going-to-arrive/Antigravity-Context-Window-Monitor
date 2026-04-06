@@ -73,6 +73,27 @@ export interface MonthCellSummary {
     totalCost: number;
 }
 
+/** Per-model cost aggregation for a month */
+export interface MonthModelCost {
+    name: string;
+    totalCost: number;
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+    credits: number;
+}
+
+/** Monthly cost breakdown result */
+export interface MonthCostBreakdown {
+    year: number;
+    month: number;
+    grandTotal: number;
+    cycleCount: number;
+    earliestDate: string;           // earliest recorded date in this month ('' if none)
+    models: MonthModelCost[];
+}
+
 /** Serialized state for globalState */
 export interface DailyStoreState {
     version: 1;
@@ -344,6 +365,57 @@ export class DailyStore {
         }
 
         return results;
+    }
+
+    /**
+     * Aggregate per-model cost data across all cycles in a given month.
+     * Returns per-model breakdown and a grand total from archived cycles.
+     */
+    getMonthCostBreakdown(year: number, month: number): MonthCostBreakdown {
+        const prefix = `${year}-${String(month).padStart(2, '0')}`;
+        const models = new Map<string, MonthModelCost>();
+        let grandTotal = 0;
+        let cycleCount = 0;
+        let earliestDate = '';
+
+        for (const [date, record] of this._records) {
+            if (!date.startsWith(prefix)) { continue; }
+            if (!earliestDate || date < earliestDate) { earliestDate = date; }
+
+            for (const cycle of record.cycles) {
+                cycleCount++;
+                const cycleCost = cycle.estimatedCost || 0;
+                grandTotal += cycleCost;
+
+                // Aggregate per-model from gmModelStats
+                if (cycle.gmModelStats) {
+                    for (const [name, gms] of Object.entries(cycle.gmModelStats)) {
+                        let entry = models.get(name);
+                        if (!entry) {
+                            entry = { name, totalCost: 0, calls: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0, credits: 0 };
+                            models.set(name, entry);
+                        }
+                        entry.totalCost += gms.estimatedCost || 0;
+                        entry.calls += gms.calls;
+                        entry.inputTokens += gms.inputTokens;
+                        entry.outputTokens += gms.outputTokens;
+                        entry.thinkingTokens += gms.thinkingTokens;
+                        entry.credits += gms.credits;
+                    }
+                }
+            }
+        }
+
+        const modelRows = [...models.values()].sort((a, b) => b.totalCost - a.totalCost);
+
+        return {
+            year,
+            month,
+            grandTotal,
+            cycleCount,
+            earliestDate,
+            models: modelRows,
+        };
     }
 
     /** Total number of recorded days */
