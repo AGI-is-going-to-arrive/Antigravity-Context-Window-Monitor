@@ -1074,7 +1074,7 @@ function buildMonthlyCostSummary(
             const existing = mergedModels.get(key);
             if (existing) {
                 existing.totalCost += row.totalCost;
-                existing.calls += 1; // approximate
+                existing.calls += row.inputTokens > 0 ? 1 : 0; // ModelCostRow is per-model aggregate; count as 1 active model entry
                 existing.inputTokens += row.inputTokens;
                 existing.outputTokens += row.outputTokens;
                 existing.thinkingTokens += row.thinkingTokens;

@@ -2,7 +2,7 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Window Monitor",
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
-  "version": "1.14.8",
+  "version": "1.14.9",
   "publisher": "AGI-is-going-to-arrive",
   "license": "MIT",
   "repository": {

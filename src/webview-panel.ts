@@ -553,7 +553,7 @@ export function showMonitorPanel(p: PanelPayload): void {
     // the panel is updated with the latest cached data as soon as it reappears,
     // instead of waiting for the next polling cycle.
     panel.onDidChangeViewState((e) => {
-        if (e.webviewPanel.visible) {
+        if (e.webviewPanel.visible && !isPaused) {
             safePostMessage({
                 command: 'updateTabs',
                 tabs: buildTabContents(

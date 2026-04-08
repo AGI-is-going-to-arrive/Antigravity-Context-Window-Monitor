@@ -1,6 +1,6 @@
 # 变更日志 / Changelog
 
-## [1.14.9] - 2026-04-06
+## [1.14.9] - 2026-04-08
 
 ### ✨ Improved / 改进
 
@@ -27,9 +27,15 @@
 - **Stale Data Flash on Panel Re-Show / 面板恢复可见时闪旧数据**: Fixed a visual glitch where switching away from the WebView panel and returning would briefly display stale data before the next polling cycle refreshed it. Root cause: VS Code destroys the webview DOM when the panel is hidden (default `retainContextWhenHidden: false`), and restores from the last `webview.html` snapshot on re-show — which contains old data. Fix: added `panel.onDidChangeViewState` listener that immediately sends an `updateTabs` message with the latest cached data (`lastUsage`, `lastAllUsages`, `lastConfigs`, `lastUserInfo`, `lastQuotaTracker`) when the panel becomes visible again, eliminating the 5-second polling gap.
   修复切换离开 WebView 面板再返回时短暂显示旧数据的视觉问题。根因：VS Code 在面板隐藏时销毁 webview DOM（默认不启用 `retainContextWhenHidden`），恢复可见时从上次设置的 `webview.html` 快照中重建——那是旧数据。修复：新增 `panel.onDidChangeViewState` 监听器，面板重新可见时立即用最新缓存数据（`lastUsage`、`lastAllUsages`、`lastConfigs`、`lastUserInfo`、`lastQuotaTracker`）发送 `updateTabs` 消息，消除 5 秒轮询间隔。
 
+- **Pause-Aware Visibility Refresh / 暂停状态下不刷新**: The `onDidChangeViewState` handler now respects the pause state — when paused, re-showing the panel no longer forces a data refresh, preserving the frozen snapshot the user expects.
+  `onDidChangeViewState` 处理器现在尊重暂停状态——面板暂停时重新显示不再强制刷新数据，保留用户期望的冻结快照。
+
+- **Monthly Cost Call Count Accuracy / 月度成本调用次数修正**: Improved call count attribution in the monthly cost summary when merging current cycle data with archived cycles.
+  改进月度成本汇总中合并当前周期数据与归档周期时的调用次数归因准确性。
+
 ### 📊 Stats / 统计
 
-- **Files changed**: 5 (`daily-store.ts`, `pricing-panel.ts`, `webview-panel.ts`, `i18n.ts`, `CHANGELOG.md`)
+- **Files changed**: 6 (`daily-store.ts`, `pricing-panel.ts`, `webview-panel.ts`, `i18n.ts`, `CHANGELOG.md`, `project_structure.md`)
 - **TypeScript compile**: Zero errors
 
 ---
