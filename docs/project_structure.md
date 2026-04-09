@@ -109,9 +109,9 @@ Cross-platform Antigravity Language Server process locator.
 | WSL | Windows 端工具（interop） | `netstat.exe`（interop） |
 | Remote-WSL (v1.13.0) | `wsl -d <distro> -- ps aux` | `wsl -d <distro> -- ss -tlnp` |
 
-核心解析函数 `buildExpectedWorkspaceId()`、`extractPid()`、`extractCsrfToken()`、`selectMatchingProcessLine()` 等均作为独立导出函数，支持直接单元测试。`selectMatchingProcessLine()`（v1.14.4）采用优先匹配、回退到首个策略，有 `workspaceUri` 时先尝试精确 `workspace_id` 匹配，不匹配则回退到第一个可用的 LS 进程（解决多窗口共享 LS 场景下的发现失败问题）。`buildExpectedWorkspaceId()` 新增 `decodeURIComponent` 防御，处理百分号编码的工作区 URI。
+核心解析函数 `buildExpectedWorkspaceId()`、`extractPid()`、`extractCsrfToken()`、`selectMatchingProcessLine()` 等均作为独立导出函数，支持直接单元测试。`selectMatchingProcessLine()`（v1.15.0）采用**优先新架构、回退到匹配**策略：(1) 无 `--workspace_id` 的进程（Antigravity 1.22.2+ 共享 LS）优先；(2) 回退到精确 `workspace_id` 匹配（旧架构兼容）；(3) 兜底到第一个发现的进程。轮询循环包含定期 PID 重校验（~30s）和带 `stalenessConfirmedIdle` 守卫的僵尸检测启发式。
 
-Core parsing functions `buildExpectedWorkspaceId()`, `extractPid()`, `extractCsrfToken()`, `selectMatchingProcessLine()`, etc. are exported independently for direct unit testing. `selectMatchingProcessLine()` (v1.14.4) uses a prefer-match, fallback-to-first strategy — prefers exact `workspace_id` match, falls back to the first available LS process when no match exists (fixes multi-window shared LS discovery failure). `buildExpectedWorkspaceId()` now includes `decodeURIComponent` defense for percent-encoded workspace URIs.
+Core parsing functions `buildExpectedWorkspaceId()`, `extractPid()`, `extractCsrfToken()`, `selectMatchingProcessLine()`, etc. are exported independently for direct unit testing. `selectMatchingProcessLine()` (v1.15.0) uses a **prefer-new-style, fallback-to-match** strategy: (1) processes WITHOUT `--workspace_id` (Antigravity 1.22.2+ shared LS) are preferred; (2) falls back to exact `workspace_id` match (legacy compatibility); (3) last resort: first discovered process. The polling loop includes periodic PID revalidation (~30s) and a staleness heuristic with `stalenessConfirmedIdle` guard.
 
 ---
 
@@ -499,7 +499,8 @@ npx vsce package --no-dependencies
 
 | 测试文件 / Test File | 测试数 | 覆盖范围 / Coverage |
 |---|---|---|
-| `discovery.test.ts` | 50 | `buildExpectedWorkspaceId`（含百分号编码、CJK 路径、空格+中文混合路径、日文路径） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / `extractPort` / `extractPortFromNetstat` / `extractPortFromSs` / `isWSL` / `selectMatchingProcessLine`（多窗口回退 + CJK + WSL/vscode-remote + 边界情况） / 退避常量验证（发现 15s / RPC 60s） |
+| `discovery.test.ts` | 50 | `buildExpectedWorkspaceId`（含百分号编码、CJK 路径、空格+中文混合路径、日文路径） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / `extractPort` / `extractPortFromNetstat` / `extractPortFromSs` / `isWSL` / `selectMatchingProcessLine`（优先级反转 + 多窗口回退 + CJK + WSL/vscode-remote + 边界情况） / 退避常量验证（发现 15s / RPC 60s） |
+| `pr43-improvements.test.ts` | 35 | `selectMatchingProcessLine` 新架构优先级（双 LS 共存 / 向后兼容 / 真实场景模拟） / 轮询状态机（僵尸检测 / PID 重校验 / `stalenessConfirmedIdle` 守卫 / cascade 切换重置 / corner cases） |
 | `tracker.test.ts` | 22 | `normalizeUri`（file / vscode-remote / URL 解码）/ `estimateTokensFromText`（ASCII / 非 ASCII / 混合）/ `processSteps()` 纯函数 |
 | `statusbar.test.ts` | 11 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 |
 | `quota-tracker.test.ts` | 33 | 状态机转换 / 额度重置检测 / 批量回调 / 同池去重 / 周期结束归档 / legacy done 迁移 / 0% 回弹恢复 / 稳定池代表 / 脏 active session 自愈 |
@@ -512,6 +513,6 @@ npx vsce package --no-dependencies
 | `reset-time.test.ts` | 3 | 倒计时格式化 / 绝对日期时间格式化 / 上下文拼接格式 |
 | `durable-state.test.ts` | 1 | 外部持久化文件创建 / fallback 迁移 / 重装恢复 |
 
-共 113 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 178 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-113 total tests, using `__mocks__/vscode.ts` to mock VS Code API.
+178 total tests, using `__mocks__/vscode.ts` to mock VS Code API.

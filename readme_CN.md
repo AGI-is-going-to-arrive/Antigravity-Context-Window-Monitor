@@ -164,4 +164,4 @@
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.14.9
+**版本 / Version**: 1.15.0

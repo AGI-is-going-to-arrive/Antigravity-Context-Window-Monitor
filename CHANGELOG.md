@@ -1,6 +1,6 @@
 # 变更日志 / Changelog
 
-## [1.14.10] - 2026-04-09
+## [1.15.0] - 2026-04-10
 
 ### 🐛 Fixed / 修复
 
@@ -16,10 +16,19 @@
 - **New Conversation First-Poll Delay / 新对话首轮延迟**: Fixed a UX issue where starting a new conversation required two poll cycles before data appeared. Root cause: the new-trajectory detection priority (`Priority 3`) was gated by `!trackedCascadeId` — it only switched to new conversations when NO cascade was being tracked. Since the plugin always has a sticky tracked cascade, new conversations were silently ignored on their first appearance. Fix: removed the `!trackedCascadeId` guard so new trajectories immediately take priority over sticky tracking.
   修复新对话需要两个轮询周期才能显示数据的体验问题。根因：新对话检测（Priority 3）受 `!trackedCascadeId` 条件限制——只有在没有任何被追踪对话时才会切换到新对话。由于插件始终有一个粘性追踪的对话，新对话在首次出现时被静默忽略。修复：移除 `!trackedCascadeId` 限制，使新对话立即获得优先级。
 
+### ✨ Improved / 改进
+
+- **Staleness Idle Guard / 僵尸检测空闲守卫**: Added `stalenessConfirmedIdle` flag to prevent the staleness heuristic from repeatedly calling `discoverLanguageServer()` on genuinely idle workspaces. After confirming the LS PID is unchanged (false alarm), the flag suppresses further staleness checks until activity resumes. Reduces idle-state discovery calls from ~15/min to ~2/min (PID revalidation only).
+  新增 `stalenessConfirmedIdle` 标志，防止僵尸检测启发式在真正空闲的工作区上反复调用 `discoverLanguageServer()`。确认 LS PID 未变（误报）后，标志抑制后续僵尸检测直到活动恢复。空闲状态下发现调用从约 15 次/分钟降至约 2 次/分钟（仅 PID 重校验）。
+
+- **Cascade Switch State Reset / 级联切换状态重置**: Reset `consecutiveIdlePolls` and `stalenessConfirmedIdle` when the tracked cascade changes. Prevents idle poll counts from one conversation carrying over to another, which could cause premature staleness detection for the newly tracked cascade.
+  当追踪的级联切换时重置 `consecutiveIdlePolls` 和 `stalenessConfirmedIdle`。防止一个对话的空闲轮询计数延续到另一个对话，避免对新追踪的级联过早触发僵尸检测。
+
 ### 📊 Stats / 统计
 
-- **Files changed**: 2 (`discovery.ts`, `extension.ts`)
+- **Files changed**: 3 (`discovery.ts`, `extension.ts`, `discovery.test.ts`)
 - **TypeScript compile**: Zero errors
+- **Tests**: 85 discovery + state-machine tests passing
 
 ---
 
