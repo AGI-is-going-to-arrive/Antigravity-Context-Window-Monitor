@@ -1,5 +1,28 @@
 # 变更日志 / Changelog
 
+## [1.14.10] - 2026-04-09
+
+### 🐛 Fixed / 修复
+
+- **🔥 Stale LS Connection After Antigravity Update — workspace_id Architecture Change / Antigravity 更新后连接旧 LS — workspace_id 架构变更**: Fixed a critical bug where the context monitor stopped tracking real-time data after Antigravity updated to v1.22.2+. Root cause: Antigravity 1.22.2 changed its Language Server (LS) architecture from per-workspace processes (with `--workspace_id` argument) to a single shared LS process (without `--workspace_id`). When the IDE updated, the old LS process (with workspace_id) remained alive alongside the new shared LS (without workspace_id). The plugin's `selectMatchingProcessLine()` prioritized exact workspace_id matches, so it **always connected to the old stale LS** — which responded to RPC calls but returned frozen data (wrong step counts, no RUNNING status, missing new conversations). Fix: reversed the selection priority in `selectMatchingProcessLine()` — processes WITHOUT `--workspace_id` (new shared LS architecture) are now preferred over those WITH workspace_id (legacy per-workspace LS). Falls back to workspace_id matching only when no new-style LS exists, maintaining backward compatibility.
+  修复一个严重 Bug：Antigravity 更新至 v1.22.2+ 后，上下文监控完全停止实时数据追踪。根因：Antigravity 1.22.2 将语言服务器（LS）从按工作区独立进程（带 `--workspace_id` 参数）改为单一共享 LS（不带 `--workspace_id`）。IDE 更新后，旧 LS 进程（带 workspace_id）仍然存活，与新 LS 共存。插件的 `selectMatchingProcessLine()` 优先精确匹配 workspace_id，因此**始终连接到旧的僵尸 LS**——该进程能正常响应 RPC 调用，但返回的数据完全过时（步数冻结、无 RUNNING 状态、新对话不可见）。修复：反转 `selectMatchingProcessLine()` 的选择优先级——无 `--workspace_id` 的进程（新架构共享 LS）现在优先于有 workspace_id 的进程（旧架构按工作区 LS）。当无新架构 LS 时仍回退到 workspace_id 匹配，保持向后兼容。
+
+- **Periodic LS PID Re-validation / 定期 LS PID 重校验**: Added a periodic PID re-validation mechanism to the polling loop. Every ~30 seconds, the plugin re-runs `discoverLanguageServer()` and compares the current LS PID with the cached PID. If they differ (e.g., Antigravity spawned a new LS after a silent update), the plugin automatically reconnects without requiring a window reload.
+  轮询循环中新增定期 PID 重校验机制。每约 30 秒自动重新发现 LS 并对比 PID，若 PID 已变（如 Antigravity 静默更新后生成了新 LS），插件自动重连，无需手动刷新窗口。
+
+- **Staleness Heuristic for Zombie LS Detection / 僵尸 LS 检测启发式**: Added a secondary defense layer: if the plugin is tracking a conversation but the LS reports all conversations as IDLE for 4+ consecutive polls, the plugin assumes the LS is stale and forces a re-discovery attempt. This catches edge cases where the PID doesn't change but the LS data becomes outdated.
+  新增二级防御：当插件正在追踪对话但 LS 连续 4+ 轮报告所有对话为 IDLE 时，插件判定 LS 已过时并强制重新发现。捕捉 PID 未变但数据已过期的边缘情况。
+
+- **New Conversation First-Poll Delay / 新对话首轮延迟**: Fixed a UX issue where starting a new conversation required two poll cycles before data appeared. Root cause: the new-trajectory detection priority (`Priority 3`) was gated by `!trackedCascadeId` — it only switched to new conversations when NO cascade was being tracked. Since the plugin always has a sticky tracked cascade, new conversations were silently ignored on their first appearance. Fix: removed the `!trackedCascadeId` guard so new trajectories immediately take priority over sticky tracking.
+  修复新对话需要两个轮询周期才能显示数据的体验问题。根因：新对话检测（Priority 3）受 `!trackedCascadeId` 条件限制——只有在没有任何被追踪对话时才会切换到新对话。由于插件始终有一个粘性追踪的对话，新对话在首次出现时被静默忽略。修复：移除 `!trackedCascadeId` 限制，使新对话立即获得优先级。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 2 (`discovery.ts`, `extension.ts`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## [1.14.9] - 2026-04-08
 
 ### ✨ Improved / 改进

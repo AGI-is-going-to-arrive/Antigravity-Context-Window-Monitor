@@ -112,6 +112,19 @@ let lastKnownModel = '';
 // ─── Exponential Backoff State ────────────────────────────────────────────────
 let baseIntervalMs = 5000;
 let currentIntervalMs = 5000;
+
+// ─── LS PID Revalidation ──────────────────────────────────────────────────────
+// BUG FIX: When Antigravity updates its LS, the old process may stay alive and
+// keep responding to RPC calls with stale data. The plugin caches the old
+// connection and never discovers the new LS. This counter forces periodic
+// re-discovery to compare PIDs and detect stale connections.
+let lsRevalidationCounter = 0;
+/** Re-validate LS PID every N poll cycles. At 5s polling = ~30s. */
+const LS_REVALIDATION_INTERVAL = 6;
+/** Tracks consecutive polls where workspace has 0 RUNNING conversations. */
+let consecutiveIdlePolls = 0;
+/** If we're tracking a cascade and it stays IDLE for this many polls, assume stale LS. */
+const STALE_LS_IDLE_THRESHOLD = 4;
 let consecutiveFailures = 0;
 
 // AbortController — cancel in-flight RPC requests on extension deactivate.
@@ -550,19 +563,21 @@ async function pollContextUsage(): Promise<void> {
         const workspaceUri = getWorkspaceUri();
         const normalizedWs = workspaceUri ? normalizeUri(workspaceUri) : '(none)';
 
-        // 2. Discover LS (with caching)
+        // 2. Discover LS (with caching + periodic PID revalidation)
         if (!lsInfo) {
             log('Discovering language server...');
             statusBar.showInitializing();
             lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal);
             cachedLsInfo = lsInfo;
+            lsRevalidationCounter = 0;
+            consecutiveIdlePolls = 0;
 
             if (!lsInfo) {
                 handleLsFailure('LS not found', true);
                 return;
             }
             resetBackoff();
-            log(`LS found: port=${lsInfo.port}, tls=${lsInfo.useTls}`);
+            log(`LS found: pid=${lsInfo.pid} port=${lsInfo.port}, tls=${lsInfo.useTls}`);
 
             // Dynamically update model display names from GetUserStatus
             try {
@@ -586,6 +601,45 @@ async function pollContextUsage(): Promise<void> {
                 }
             } catch { /* Silent degradation */ }
         } else {
+            // ─── Periodic LS PID Revalidation ─────────────────────────────────
+            // BUG FIX: When Antigravity updates, a new LS may start while the old
+            // one is still alive and responding with stale data. This periodic
+            // check detects PID changes and forces reconnection.
+            lsRevalidationCounter++;
+            if (lsRevalidationCounter >= LS_REVALIDATION_INTERVAL) {
+                lsRevalidationCounter = 0;
+                try {
+                    const freshLs = await discoverLanguageServer(workspaceUri, abortController.signal);
+                    if (freshLs && freshLs.pid !== lsInfo.pid) {
+                        log(`⚠ LS PID changed: ${lsInfo.pid} → ${freshLs.pid} (port: ${lsInfo.port} → ${freshLs.port}). Reconnecting to new LS.`);
+                        lsInfo = freshLs;
+                        cachedLsInfo = freshLs;
+                        consecutiveIdlePolls = 0;
+                        // Re-fetch user status from new LS
+                        try {
+                            const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
+                            if (fullStatus.configs.length > 0) {
+                                updateModelDisplayNames(fullStatus.configs);
+                                cachedModelConfigs = fullStatus.configs;
+                                statusBar.setModelConfigs(fullStatus.configs);
+                                quotaTracker.processUpdate(fullStatus.configs);
+                                checkQuotaNotification(fullStatus.configs);
+                            }
+                            if (fullStatus.userInfo) {
+                                cachedUserInfo = fullStatus.userInfo;
+                                statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
+                                durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
+                                durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
+                                durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
+                            }
+                        } catch { /* Silent */ }
+                    }
+                } catch {
+                    // Discovery failed — keep using current connection
+                    log('LS revalidation: discovery failed, keeping current connection');
+                }
+            }
+
             // Periodic refresh of user status (every STATUS_REFRESH_INTERVAL polls)
             statusPollCount++;
             if (statusPollCount >= STATUS_REFRESH_INTERVAL) {
@@ -660,6 +714,36 @@ async function pollContextUsage(): Promise<void> {
 
         log(`Trajectories: ${trajectories.length} total, ${qualifiedTrajectories.length} qualified in ws, ${qualifiedRunning.length} running in ws`);
 
+        // ─── Staleness Heuristic ───────────────────────────────────────────
+        // BUG FIX: If we're tracking a RUNNING cascade but LS reports it as IDLE
+        // for too many consecutive polls, the LS is probably stale. Force re-discovery.
+        if (qualifiedRunning.length === 0 && trackedCascadeId) {
+            consecutiveIdlePolls++;
+            if (consecutiveIdlePolls >= STALE_LS_IDLE_THRESHOLD) {
+                log(`⚠ Staleness detected: tracked cascade ${trackedCascadeId.substring(0, 8)} has been IDLE for ${consecutiveIdlePolls} consecutive polls. Forcing LS re-discovery.`);
+                consecutiveIdlePolls = 0;
+                try {
+                    const freshLs = await discoverLanguageServer(workspaceUri, abortController.signal);
+                    if (freshLs && freshLs.pid !== lsInfo.pid) {
+                        log(`⚠ Stale LS confirmed: PID ${lsInfo.pid} → ${freshLs.pid}. Reconnecting.`);
+                        lsInfo = freshLs;
+                        cachedLsInfo = freshLs;
+                        lsRevalidationCounter = 0;
+                        // Re-fetch trajectories from the new LS
+                        trajectories = await getAllTrajectories(lsInfo, abortController.signal);
+                        lastTrajectories = trajectories;
+                    } else if (freshLs) {
+                        log('LS PID unchanged — staleness was a false alarm (cascade genuinely IDLE)');
+                    }
+                } catch {
+                    log('Staleness re-discovery failed, keeping current connection');
+                }
+            }
+        } else {
+            consecutiveIdlePolls = 0;
+        }
+
+
         // --- Priority 1: RUNNING status detection ---
         if (qualifiedRunning.length > 0) {
             const currentStillRunning = qualifiedRunning.find(t => t.cascadeId === trackedCascadeId);
@@ -702,7 +786,10 @@ async function pollContextUsage(): Promise<void> {
         }
 
         // --- Priority 3: New trajectory detection ---
-        if (!newCandidateId && firstPollDone && !trackedCascadeId) {
+        // Switch to new conversations immediately — even if we're already tracking
+        // another cascade. Without this, a new conversation would be ignored on
+        // its first poll cycle, causing a visible one-cycle delay before data appears.
+        if (!newCandidateId && firstPollDone) {
             const newlyCreated = qualifiedTrajectories.filter(t => !previousTrajectoryIds.has(t.cascadeId));
             if (newlyCreated.length > 0) {
                 newCandidateId = newlyCreated[0].cascadeId;

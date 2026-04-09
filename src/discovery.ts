@@ -126,20 +126,47 @@ export function extractWorkspaceId(line: string): string | null {
 
 /**
  * Select the LS process line for the current workspace.
- * Without a workspace URI, falls back to the first discovered LS.
- * With a workspace URI, prefers an exact workspace_id match but falls back
- * to the first discovered LS if no match exists. This handles the common
- * case where a single shared LS serves multiple VS Code windows/workspaces.
+ *
+ * PRIORITY ORDER (Antigravity 1.22.2+ compatibility):
+ * 1. Processes WITHOUT --workspace_id → new shared LS architecture (preferred)
+ * 2. Processes WITH matching workspace_id → old per-workspace LS (fallback)
+ * 3. First discovered LS → last resort
+ *
+ * BUG FIX: Antigravity 1.22.2+ launches a single shared LS without
+ * --workspace_id. When an old LS (with workspace_id) is still alive,
+ * the previous logic always picked the old stale LS because it had a
+ * matching workspace_id. The new shared LS (without workspace_id) is
+ * the active instance and should be preferred.
  */
 export function selectMatchingProcessLine(lines: readonly string[], workspaceUri?: string): string | null {
     if (lines.length === 0) {
         return null;
     }
-    if (!workspaceUri) {
+    if (lines.length === 1) {
         return lines[0];
     }
-    const expectedWorkspaceId = buildExpectedWorkspaceId(workspaceUri);
-    return lines.find(line => extractWorkspaceId(line) === expectedWorkspaceId) ?? lines[0];
+
+    // Separate processes into new-style (no workspace_id) and old-style (has workspace_id)
+    const newStyleLines = lines.filter(line => extractWorkspaceId(line) === null);
+    const oldStyleLines = lines.filter(line => extractWorkspaceId(line) !== null);
+
+    // Priority 1: Prefer new-style shared LS (no workspace_id)
+    // These are Antigravity 1.22.2+ processes — the active instance.
+    if (newStyleLines.length > 0) {
+        return newStyleLines[0];
+    }
+
+    // Priority 2: Old-style LS — match by workspace_id if available
+    if (workspaceUri && oldStyleLines.length > 0) {
+        const expectedWorkspaceId = buildExpectedWorkspaceId(workspaceUri);
+        const match = oldStyleLines.find(line => extractWorkspaceId(line) === expectedWorkspaceId);
+        if (match) {
+            return match;
+        }
+    }
+
+    // Priority 3: First discovered line
+    return lines[0];
 }
 
 /**
