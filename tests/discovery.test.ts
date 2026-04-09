@@ -172,11 +172,14 @@ describe('discovery.ts', () => {
             expect(selectMatchingProcessLine([])).toBe(null);
         });
 
-        it('still finds the exact match among mixed lines', () => {
+        it('prefers new-style LS (no workspace_id) over exact workspace_id match', () => {
+            // Antigravity 1.22.2+: new shared LS (no workspace_id) is preferred
+            // over old per-workspace LS (with matching workspace_id)
             const workspaceUri = workspaceUriForCurrentPlatform('project-f');
             const expected = buildExpectedWorkspaceId(workspaceUri);
             const lines = [makeLine(), makeLine('unrelated_workspace'), makeLine(expected)];
-            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(lines[2]);
+            // Priority 1: new-style (no workspace_id) → lines[0]
+            expect(selectMatchingProcessLine(lines, workspaceUri)).toBe(lines[0]);
         });
 
         // ─── Fallback behavior (shared LS / multi-window) ──────────────

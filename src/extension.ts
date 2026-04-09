@@ -125,6 +125,8 @@ const LS_REVALIDATION_INTERVAL = 6;
 let consecutiveIdlePolls = 0;
 /** If we're tracking a cascade and it stays IDLE for this many polls, assume stale LS. */
 const STALE_LS_IDLE_THRESHOLD = 4;
+/** Set after staleness check confirms same PID — avoids repeated discovery for genuinely idle workspaces. */
+let stalenessConfirmedIdle = false;
 let consecutiveFailures = 0;
 
 // AbortController — cancel in-flight RPC requests on extension deactivate.
@@ -719,7 +721,7 @@ async function pollContextUsage(): Promise<void> {
         // for too many consecutive polls, the LS is probably stale. Force re-discovery.
         if (qualifiedRunning.length === 0 && trackedCascadeId) {
             consecutiveIdlePolls++;
-            if (consecutiveIdlePolls >= STALE_LS_IDLE_THRESHOLD) {
+            if (consecutiveIdlePolls >= STALE_LS_IDLE_THRESHOLD && !stalenessConfirmedIdle) {
                 log(`⚠ Staleness detected: tracked cascade ${trackedCascadeId.substring(0, 8)} has been IDLE for ${consecutiveIdlePolls} consecutive polls. Forcing LS re-discovery.`);
                 consecutiveIdlePolls = 0;
                 try {
@@ -729,11 +731,13 @@ async function pollContextUsage(): Promise<void> {
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
                         lsRevalidationCounter = 0;
+                        stalenessConfirmedIdle = false;
                         // Re-fetch trajectories from the new LS
                         trajectories = await getAllTrajectories(lsInfo, abortController.signal);
                         lastTrajectories = trajectories;
                     } else if (freshLs) {
                         log('LS PID unchanged — staleness was a false alarm (cascade genuinely IDLE)');
+                        stalenessConfirmedIdle = true;
                     }
                 } catch {
                     log('Staleness re-discovery failed, keeping current connection');
@@ -741,8 +745,8 @@ async function pollContextUsage(): Promise<void> {
             }
         } else {
             consecutiveIdlePolls = 0;
+            stalenessConfirmedIdle = false;
         }
-
 
         // --- Priority 1: RUNNING status detection ---
         if (qualifiedRunning.length > 0) {
@@ -820,6 +824,8 @@ async function pollContextUsage(): Promise<void> {
                 log(`Switched cascade: ${trackedCascadeId?.substring(0, 8) || 'none'} → ${newCandidateId.substring(0, 8)} (${selectionReason})`);
                 trackedCascadeId = newCandidateId;
                 isExplicitlyIdle = false;
+                consecutiveIdlePolls = 0;
+                stalenessConfirmedIdle = false;
             } else if (selectionReason) {
                 log(`Refreshing cascade ${trackedCascadeId?.substring(0, 8)} (${selectionReason})`);
             }
