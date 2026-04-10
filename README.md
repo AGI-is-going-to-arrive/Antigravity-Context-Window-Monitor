@@ -174,7 +174,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | --- | --- | --- |
 | `pollingInterval` | 5 | Polling interval in seconds |
 | `contextLimits` | (see defaults) | Override context limits per model |
-| `compressionWarningThreshold` | 200000 | Compression warning threshold (tokens). Status bar color is based on this value. |
+| `compressionWarningThreshold` | 150000 | Compression warning threshold (tokens). Status bar color is based on this value. |
 | `statusBar.showContext` | true | Show context usage (e.g. `45k/1M, 4.5%`) in status bar |
 | `statusBar.showQuota` | true | Show current model quota indicator (e.g. `🟢85%`) in status bar |
 | `statusBar.showResetCountdown` | true | Show quota reset countdown (e.g. `⏳4h32m`) in status bar |
@@ -190,7 +190,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | `Show Context Window Details` | Open a QuickPick panel listing all tracked sessions |
 | `Refresh Context Window Monitor` | Re-discover the language server and restart polling |
 | `Switch Display Language` | Choose between Chinese-only, English-only, or bilingual display |
-| `Show Model Activity` | Open the Activity tab in the monitor panel |
+| `Show Model Activity` | Open the GM Data tab in the monitor panel |
 
 ## ⭐ Star History
 

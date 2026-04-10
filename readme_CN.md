@@ -174,7 +174,7 @@
 | --- | --- | --- |
 | `pollingInterval` | 5 | 轮询频率（秒） |
 | `contextLimits` | (见默认值) | 手动覆盖模型的上下文上限 |
-| `compressionWarningThreshold` | 200000 | 压缩警告阈值（token 数）。状态栏颜色基于此值判断。 |
+| `compressionWarningThreshold` | 150000 | 压缩警告阈值（token 数）。状态栏颜色基于此值判断。 |
 | `statusBar.showContext` | true | 状态栏显示上下文用量（如 `45k/1M, 4.5%`） |
 | `statusBar.showQuota` | true | 状态栏显示当前模型额度指示灯（如 `🟢85%`） |
 | `statusBar.showResetCountdown` | true | 状态栏显示重置倒计时（如 `⏳4h32m`） |
@@ -190,7 +190,7 @@
 | `Show Context Window Details` | 打开 QuickPick 面板显示所有被追踪的会话 |
 | `Refresh Context Window Monitor` | 重新发现语言服务器并重启轮询 |
 | `Switch Display Language` | 选择仅中文、仅英文或双语显示模式 |
-| `Show Model Activity` | 打开监控面板的活动标签页 |
+| `Show Model Activity` | 打开监控面板的 GM 数据标签页 |
 
 ## ⭐ Star History / Star 趋势
 
