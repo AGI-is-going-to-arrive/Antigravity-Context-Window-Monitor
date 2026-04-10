@@ -19,3 +19,4 @@ Dockerfile*
 *.vsix
 /diag-output
 /diag-scripts
+.playwright-mcp/

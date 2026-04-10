@@ -102,17 +102,51 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 2. **Status Bar**: The bottom-right status bar shows current context usage (displays `0k/1000k, 0.0%` for empty chats).
 3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, etc.).
 
-   ![Hover Details](src/images/悬停详情.png)
+   ![Hover Details](src/images/悬停详情new.png)
 
-4. **Click — WebView Monitor Panel**: Click the status bar item to open the **WebView monitor panel** in a side panel:
-   * **Account & Credits**: See your plan name, user tier, and Prompt / Flow credit balance at a glance.
-   * **Model Quotas**: Each model shows a color-coded quota bar (green → yellow → red) with reset time.
-   * **Current Session**: Displays the active conversation's context usage, model, step count, and compression status.
-   * **Other Sessions**: Lists other recent conversations in the same workspace.
-   * **Privacy Mask**: Click the 🛡️ shield button in the header to hide your name and email. The mask toggles on/off and persists across refreshes.
-   * **Collapsible Details**: Click the ▶ triangles to expand Plan Limits, Feature Flags, Team Config, or Google AI Credits. These are collapsed by default to keep the panel clean.
+4. **Click — WebView Monitor Panel**: Click the status bar item to open a comprehensive **9-tab monitoring dashboard**:
 
-   ![WebView Monitor Panel](src/images/webview_panel_en.png)
+   **Monitor** — Quota overview, GM snapshot, cost snapshot, active session details with output breakdown and LLM call details.
+
+   ![Monitor Tab](src/images/montior1.png)
+
+   ![Monitor Tab - Session Details](src/images/monitor2.png)
+
+   **GM Data** — Detailed per-model token usage, call counts, cache hit rates, and retry statistics.
+
+   ![GM Data Tab](src/images/gmdata1.png)
+
+   ![GM Data Tab - Details](src/images/gmdata2.png)
+
+   **Sessions** — Browse all conversation sessions with context usage, step counts, and model info.
+
+   ![Sessions Tab](src/images/session.png)
+
+   **Cost** — Monthly cost breakdown with per-model pricing, cost overview visualization, and custom pricing editor.
+
+   ![Cost Tab](src/images/cost.png)
+
+   **Models** — All available models with quota status, context limits, and reset countdowns.
+
+   ![Models Tab](src/images/model.png)
+
+   **Quota Tracking** — Real-time quota tracking with archived cycle history and reset time monitoring.
+
+   ![Quota Tracking Tab](src/images/额度追踪.png)
+
+   **Calendar** — Historical usage data organized by date, with per-cycle cost and token breakdowns.
+
+   ![Calendar Tab](src/images/日历_全部.png)
+
+   **Profile** — Account information, plan details, and credit balances.
+
+   ![Profile Tab](src/images/profile.png)
+
+   **Settings** — Configure extension behaviors: compression threshold, status bar toggles, polling interval, and more.
+
+   ![Settings Tab](src/images/settings1.png)
+
+   ![Settings Tab - Advanced](src/images/settings2.png)
 
 ## ⚠️ Known Limitations
 
