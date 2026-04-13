@@ -67,8 +67,12 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
         'TEAMS_TIER_TEAMS': { bg: 'rgba(96,165,250,0.15)', color: 'var(--color-info)' },
         'TEAMS_TIER_ENTERPRISE_SAAS': { bg: 'rgba(156,163,175,0.15)', color: '#9ca3af' },
         'TEAMS_TIER_PRO_ULTIMATE': { bg: 'rgba(250,204,21,0.15)', color: 'var(--color-warn)' },
+        'CLOUD_TIER_FREE': { bg: 'rgba(156,163,175,0.15)', color: '#9ca3af' },
+        'CLOUD_TIER_STANDARD': { bg: 'rgba(74,222,128,0.15)', color: 'var(--color-ok)' },
+        'CLOUD_TIER_PRO': { bg: 'rgba(74,222,128,0.15)', color: 'var(--color-ok)' },
+        'CLOUD_TIER_UNKNOWN': { bg: 'rgba(96,165,250,0.15)', color: 'var(--color-info)' },
     };
-    const tier = tierMap[userInfo.teamsTier] || tierMap['TEAMS_TIER_PRO'];
+    const tier = tierMap[userInfo.teamsTier] || tierMap['CLOUD_TIER_UNKNOWN'];
     const maskedEmail = userInfo.email.replace(/^(.{2}).*(@.*)$/, '$1****$2');
 
     const promptPct = userInfo.monthlyPromptCredits > 0
@@ -81,6 +85,21 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
     // Subscription hint
     const subHint = userInfo.upgradeSubscriptionText
         ? `<div class="subscription-hint">${esc(userInfo.upgradeSubscriptionText)}</div>` : '';
+    const displaySecondaryLabel = userInfo.planDetailName || userInfo.userTierName;
+    const planSourceNote = userInfo.planSource === 'cloud'
+        ? `<p class="raw-desc">${esc(tBi(
+            `Cloud verified plan: ${userInfo.cloudTierName || userInfo.planName}. LS compatibility tier: ${userInfo.lsPlanName || '-'} / ${userInfo.lsTeamsTier || '-'}.`,
+            `云端校验计划：${userInfo.cloudTierName || userInfo.planName}。LS 兼容层级：${userInfo.lsPlanName || '-'} / ${userInfo.lsTeamsTier || '-'}。`,
+        ))}</p>`
+        : userInfo.planSource === 'cloud-cache'
+            ? `<p class="raw-desc">${esc(tBi(
+                `Showing the last cloud-verified plan: ${userInfo.cloudTierName || userInfo.planName}. Current poll fell back to LS compatibility tier ${userInfo.lsPlanName || '-'} / ${userInfo.lsTeamsTier || '-'}.`,
+                `当前展示的是上次云端校验成功的计划：${userInfo.cloudTierName || userInfo.planName}。本轮轮询已退回 LS 兼容层级 ${userInfo.lsPlanName || '-'} / ${userInfo.lsTeamsTier || '-'}。`,
+            ))}</p>`
+            : `<p class="raw-desc">${esc(tBi(
+                `Plan is currently coming from LS compatibility data: ${userInfo.lsPlanName || userInfo.planName} / ${userInfo.lsTeamsTier || userInfo.teamsTier}. Cloud verification is unavailable in this poll.`,
+                `当前计划来自 LS 兼容层数据：${userInfo.lsPlanName || userInfo.planName} / ${userInfo.lsTeamsTier || userInfo.teamsTier}。本轮未拿到云端校验结果。`,
+            ))}</p>`;
 
     // Google AI Credits inline
     const validCredits = userInfo.availableCredits.filter(c => c.creditAmount > 0);
@@ -99,7 +118,7 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
                 ${ICON.user}
                 ${tBi('Account', '账户')}
                 <span class="tier-badge" style="background:${tier.bg};color:${tier.color}">${esc(userInfo.planName)}</span>
-                ${userInfo.userTierName ? `<span class="tier-badge tier-sub" style="background:rgba(255,255,255,0.06);color:var(--color-text-dim)">${esc(userInfo.userTierName)}</span>` : ''}
+                ${displaySecondaryLabel ? `<span class="tier-badge tier-sub" style="background:rgba(255,255,255,0.06);color:var(--color-text-dim)">${esc(displaySecondaryLabel)}</span>` : ''}
                 <button class="privacy-btn" id="privacyToggle" aria-label="${tBi('Toggle privacy mask', '切换隐私遮罩')}">${ICON.shield}</button>
             </h2>
             <div class="account-info">
@@ -110,6 +129,7 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
                 'Privacy mask is ON by default. Click the shield button above to reveal sensitive data.',
                 '隐私遮罩默认开启。点击上方 🛡️ 按钮可显示/隐藏真实信息。',
             )}</p>
+            ${planSourceNote}
             ${subHint}
             <div class="credits-section">
                 <div class="credit-row">
@@ -185,8 +205,8 @@ export function buildDefaultModelCard(userInfo: UserStatusInfo | null): string {
         <section class="card">
             <h2>${ICON.bolt} ${tBi('Default Model', '默认模型')}</h2>
             <div class="default-model">${tBi('Current default', '当前默认')}: <strong>${esc(userInfo.defaultModelLabel)}</strong></div>
-            ${userInfo.userTierDescription
-                ? `<p class="raw-desc">${esc(userInfo.userTierDescription)}</p>`
+            ${userInfo.planDescription
+                ? `<p class="raw-desc">${esc(userInfo.planDescription)}</p>`
                 : ''}
         </section>`;
 }

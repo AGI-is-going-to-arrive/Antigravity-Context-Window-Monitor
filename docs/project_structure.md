@@ -15,6 +15,7 @@ antigravity-context-monitor/
 │   ├── discovery.ts              # Language Server 进程发现（跨平台）
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
 │   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
+│   ├── cloud-plan.ts             # 云端计划查询与稳定缓存（计划真值优先级控制）
 │   ├── models.ts                 # 模型配置、上下文限额、显示名称、跨语言归一化
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
 │   ├── statusbar.ts              # 状态栏 UI（StatusBarManager）
@@ -36,7 +37,7 @@ antigravity-context-monitor/
 │   ├── webview-monitor-tab.ts    # Monitor 标签页 HTML（支持 GM 快照回退）
 │   ├── webview-models-tab.ts     # Models 标签页 HTML（默认模型 + 模型配额 + 模型信息）
 │   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含持久化状态诊断 + 界面提示偏好）
-│   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队）
+│   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队 / 计划来源说明）
 │   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
 │   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（会话目录 — 全量对话列表 + 筛选）
 │   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据）
@@ -135,15 +136,29 @@ Core data processing module: trajectory listing, token computation, context usag
 | `getTrajectoryTokenUsage()` | 分批获取步骤（50 步/批，5 并发组）+ 调用 `processSteps()` |
 | `processSteps()` | 纯函数：步骤数组 → Token 统计（checkpoint 精确值 + 文本估算增量） |
 | `getContextUsage()` | 组装 `ContextUsage` 对象供 UI 层使用 |
-| `fetchFullUserStatus()` | 获取完整用户状态（模型配置、计划信息、Feature Flags） |
+| `fetchFullUserStatus()` | 获取完整用户状态（模型配置、计划信息、Feature Flags），并在可能时合并云端校验过的计划显示 |
+
+---
+
+### ☁️ cloud-plan.ts — 云端计划真值与稳定缓存
+
+负责补充计划显示这条数据链，让 UI 不只依赖 LS 兼容层标签。
+
+Provides the plan-verification path so the UI does not rely solely on LS compatibility labels.
+
+| 函数 / Function | 说明 / Description |
+|---|---|
+| `fetchCloudPlanInfo()` | 查询当前账号的云端计划，并做短期缓存 |
+| `discoverCloudTokens()` | 优先当前窗口 LS，再尝试其他候选 token，降低抓取抖动 |
+| stale cloud reuse | 云端临时失败时复用最近一次成功结果，避免 hover 中的计划行来回跳变 |
 
 ---
 
 ### 🤖 models.ts — 模型配置与归一化
 
-模型上下文限额、显示名称（i18n 感知）以及 `ModelConfig`、`UserStatusInfo` 等核心接口定义。v1.13.8 新增 `normalizeModelDisplayName()`（EN/ZH/双语显示名归一到当前语言唯一显示名）和 `resolveModelId()`（任意显示名 → 内部 modelId），为 Activity / GM / Quota 跨模块归一化提供统一锚点；后续又补了 `getQuotaPoolKey()`，显式固定已知模型的共享额度池，避免再靠 `resetTime` 猜池。
+模型上下文限额、显示名称（i18n 感知）以及 `ModelConfig`、`UserStatusInfo` 等核心接口定义。v1.13.8 新增 `normalizeModelDisplayName()`（EN/ZH/双语显示名归一到当前语言唯一显示名）和 `resolveModelId()`（任意显示名 → 内部 modelId），为 Activity / GM / Quota 跨模块归一化提供统一锚点；后续又补了 `getQuotaPoolKey()`，显式固定已知模型的共享额度池，避免再靠 `resetTime` 猜池。当前 `UserStatusInfo` 也包含计划来源、LS 原始计划字段与 cloud 校验字段，供状态栏与 Profile 页透明显示。
 
-Model context limits, display names (i18n-aware), and core interfaces. v1.13.8 adds `normalizeModelDisplayName()` (unifies EN/ZH/bilingual names to one canonical current-language name) and `resolveModelId()` (any display name → internal modelId), serving as the unified normalization anchor across Activity / GM / Quota modules; later `getQuotaPoolKey()` explicitly pins known shared-quota pools so the extension no longer guesses pools purely from `resetTime`.
+Model context limits, display names (i18n-aware), and core interfaces. v1.13.8 adds `normalizeModelDisplayName()` (unifies EN/ZH/bilingual names to one canonical current-language name) and `resolveModelId()` (any display name → internal modelId), serving as the unified normalization anchor across Activity / GM / Quota modules; later `getQuotaPoolKey()` explicitly pins known shared-quota pools so the extension no longer guesses pools purely from `resetTime`. `UserStatusInfo` now also carries plan-source metadata plus raw LS/cloud plan fields for transparent UI display.
 
 ---
 
@@ -151,7 +166,7 @@ Model context limits, display names (i18n-aware), and core interfaces. v1.13.8 a
 
 | 类 / Class | 说明 / Description |
 |---|---|
-| `StatusBarManager` | 状态栏项：上下文用量、颜色编码、额度指示、重置倒计时 |
+| `StatusBarManager` | 状态栏项：上下文用量、颜色编码、额度指示、重置倒计时、计划来源说明 |
 
 ---
 

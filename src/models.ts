@@ -165,17 +165,44 @@ export interface CreditInfo {
     minimumCreditAmountForUsage: number;
 }
 
+export interface CloudAllowedTierInfo {
+    id: string;
+    name: string;
+    description: string;
+    isDefault: boolean;
+}
+
 export interface UserStatusInfo {
     name: string;
     email: string;
     planName: string;
     teamsTier: string;
+    /** Secondary plan label shown in UI (for example cloud tier long name). */
+    planDetailName: string;
+    /** Which backend is used for the displayed plan fields. */
+    planSource: 'ls' | 'cloud' | 'cloud-cache';
     monthlyPromptCredits: number;
     monthlyFlowCredits: number;
     availablePromptCredits: number;
     availableFlowCredits: number;
     userTierName: string;
     userTierId: string;
+    /** Raw LS plan label before any cloud override. */
+    lsPlanName: string;
+    /** Raw LS teams tier before any cloud override. */
+    lsTeamsTier: string;
+    /** Cloud tier id returned by loadCodeAssist (e.g. free-tier). */
+    cloudTierId: string;
+    /** Cloud tier name returned by loadCodeAssist. */
+    cloudTierName: string;
+    /** Cloud tier description returned by loadCodeAssist. */
+    cloudTierDescription: string;
+    /** Cloud upgrade CTA target. */
+    cloudUpgradeSubscriptionUri: string;
+    /** Cloud upgrade type (e.g. GOOGLE_ONE_HELIUM). */
+    cloudUpgradeSubscriptionType: string;
+    /** Raw allowed tiers from cloud loadCodeAssist. */
+    cloudAllowedTiers: CloudAllowedTierInfo[];
     defaultModelLabel: string;
     planLimits: PlanLimits;
     teamConfig: TeamConfig;
@@ -196,12 +223,81 @@ export interface UserStatusInfo {
     // ─── Deep-mined fields (discovered via diag-deep-mine-profile) ────────
     /** Tier description from userTier.description (e.g. "Google AI Ultra") */
     userTierDescription: string;
+    /** Human-readable description for the displayed plan (cloud preferred, LS fallback). */
+    planDescription: string;
     /** Subscription status text from userTier.upgradeSubscriptionText */
     upgradeSubscriptionText: string;
     /** LS recommended model sort order from clientModelSorts */
     modelSortOrder: string[];
     /** Raw LS GetUserStatus response — for diagnostic Raw Data panel */
     _rawResponse?: Record<string, unknown>;
+    /** Raw cloud loadCodeAssist response — for diagnostic Raw Data panel */
+    _rawCloudPlanResponse?: Record<string, unknown>;
+}
+
+function isSameAccount(prev: UserStatusInfo, next: UserStatusInfo): boolean {
+    if (prev.email && next.email) {
+        return prev.email === next.email;
+    }
+    if (prev.name && next.name) {
+        return prev.name === next.name;
+    }
+    return false;
+}
+
+/**
+ * Keep the last cloud-verified plan visible when a later poll degrades to LS fallback.
+ *
+ * Diagnostics show that GetUserStatus can keep reporting a compatibility label
+ * such as "Pro" even when the cloud truth was previously captured as "Free".
+ * When that happens, preserve the earlier cloud-backed display plan and keep the
+ * rest of the freshly-polled quota/feature data from LS.
+ */
+export function stabilizeUserStatusInfo(
+    previous: UserStatusInfo | null,
+    current: UserStatusInfo | null,
+): UserStatusInfo | null {
+    if (!current) { return previous; }
+    if (!previous) { return current; }
+    if (current.planSource !== 'ls' || previous.planSource === 'ls') {
+        return current;
+    }
+    if (!isSameAccount(previous, current)) {
+        return current;
+    }
+    const previousCloudBacked = !!(
+        previous.cloudTierId
+        || previous.cloudTierName
+        || previous.planSource === 'cloud'
+        || previous.planSource === 'cloud-cache'
+    );
+    if (!previousCloudBacked) {
+        return current;
+    }
+    const planChanged = previous.planName !== current.planName
+        || previous.planDetailName !== current.planDetailName
+        || previous.teamsTier !== current.teamsTier;
+    if (!planChanged) {
+        return current;
+    }
+    return {
+        ...current,
+        planName: previous.planName,
+        teamsTier: previous.teamsTier,
+        planDetailName: previous.planDetailName,
+        planSource: 'cloud-cache',
+        planDescription: previous.planDescription || current.planDescription,
+        upgradeSubscriptionText: previous.upgradeSubscriptionText || current.upgradeSubscriptionText,
+        cloudTierId: previous.cloudTierId,
+        cloudTierName: previous.cloudTierName,
+        cloudTierDescription: previous.cloudTierDescription,
+        cloudUpgradeSubscriptionUri: previous.cloudUpgradeSubscriptionUri,
+        cloudUpgradeSubscriptionType: previous.cloudUpgradeSubscriptionType,
+        cloudAllowedTiers: previous.cloudAllowedTiers.length > 0
+            ? previous.cloudAllowedTiers
+            : current.cloudAllowedTiers,
+        _rawCloudPlanResponse: previous._rawCloudPlanResponse,
+    };
 }
 
 export interface FullUserStatus {

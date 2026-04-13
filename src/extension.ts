@@ -8,6 +8,7 @@ import {
     getModelDisplayName,
     normalizeUri,
     fetchFullUserStatus,
+    stabilizeUserStatusInfo,
     updateModelDisplayNames,
     ContextUsage,
     TrajectorySummary,
@@ -241,6 +242,21 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
     };
 }
 
+function updateCachedUserStatus(userInfo: UserStatusInfo): void {
+    const stableUserInfo = stabilizeUserStatusInfo(cachedUserInfo, userInfo);
+    if (!stableUserInfo) { return; }
+    cachedUserInfo = stableUserInfo;
+    statusBar.setPlanName(
+        stableUserInfo.planName,
+        stableUserInfo.planDetailName,
+        stableUserInfo.planSource,
+    );
+    durableGlobalState.update('cachedUserInfo', stableUserInfo);
+    durableGlobalState.update('cachedPlanName', stableUserInfo.planName);
+    durableGlobalState.update('cachedTierName', stableUserInfo.planDetailName);
+    durableGlobalState.update('cachedPlanSource', stableUserInfo.planSource);
+}
+
 // ─── Activation ───────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -362,14 +378,19 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = durableGlobalState.get<import('./models').ModelConfig[]>('cachedModelConfigs', []);
+    const savedUserInfo = durableGlobalState.get<UserStatusInfo | null>('cachedUserInfo', null);
     const savedPlan = durableGlobalState.get<string>('cachedPlanName', '');
     const savedTier = durableGlobalState.get<string>('cachedTierName', '');
+    const savedPlanSource = durableGlobalState.get<UserStatusInfo['planSource'] | ''>('cachedPlanSource', '');
     if (savedConfigs && savedConfigs.length > 0) {
         cachedModelConfigs = savedConfigs;
         statusBar.setModelConfigs(savedConfigs);
     }
-    if (savedPlan) {
-        statusBar.setPlanName(savedPlan, savedTier);
+    if (savedUserInfo) {
+        cachedUserInfo = savedUserInfo;
+        statusBar.setPlanName(savedUserInfo.planName, savedUserInfo.planDetailName, savedUserInfo.planSource);
+    } else if (savedPlan) {
+        statusBar.setPlanName(savedPlan, savedTier, savedPlanSource || undefined);
     }
 
     if (lastGMSummary && cachedModelConfigs.length > 0) {
@@ -593,13 +614,12 @@ async function pollContextUsage(): Promise<void> {
                     log(`Updated model display names: ${fullStatus.configs.map(c => c.label).join(', ')}`);
                 }
                 if (fullStatus.userInfo) {
-                    cachedUserInfo = fullStatus.userInfo;
-                    statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
+                    updateCachedUserStatus(fullStatus.userInfo);
                     // Persist for instant display on next activation
                     durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
-                    durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
-                    durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
-                    log(`User: ${fullStatus.userInfo.name} (${fullStatus.userInfo.planName}) credits: prompt=${fullStatus.userInfo.availablePromptCredits} flow=${fullStatus.userInfo.availableFlowCredits}`);
+                    if (cachedUserInfo) {
+                        log(`User: ${cachedUserInfo.name} (${cachedUserInfo.planName}, source=${cachedUserInfo.planSource}) credits: prompt=${cachedUserInfo.availablePromptCredits} flow=${cachedUserInfo.availableFlowCredits}`);
+                    }
                 }
             } catch { /* Silent degradation */ }
         } else {
@@ -628,11 +648,8 @@ async function pollContextUsage(): Promise<void> {
                                 checkQuotaNotification(fullStatus.configs);
                             }
                             if (fullStatus.userInfo) {
-                                cachedUserInfo = fullStatus.userInfo;
-                                statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
+                                updateCachedUserStatus(fullStatus.userInfo);
                                 durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
-                                durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
-                                durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
                             }
                         } catch { /* Silent */ }
                     }
@@ -655,11 +672,8 @@ async function pollContextUsage(): Promise<void> {
                         checkQuotaNotification(fullStatus.configs);
                     }
                     if (fullStatus.userInfo) {
-                        cachedUserInfo = fullStatus.userInfo;
-                        statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
+                        updateCachedUserStatus(fullStatus.userInfo);
                         durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
-                        durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
-                        durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
                     }
                     log('Refreshed user status (periodic)');
                 } catch { /* Silent — keep cached data */ }

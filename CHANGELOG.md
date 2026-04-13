@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### ✨ Improved / 改进
+
+- **Stable Current Plan Display in Status Bar Hover / 状态栏悬浮计划显示稳定化**: The plan row in the status bar hover now prefers the current cloud-verified plan when available, instead of relying only on the LS compatibility label. If cloud verification is temporarily unavailable, the extension keeps the last verified plan visible instead of immediately snapping back to the LS fallback value. The hover tooltip also shows a source label (`Cloud verified`, `Cloud verified (cached)`, or `LS fallback`) so the displayed membership state is explicit.
+  状态栏悬浮面板中的计划行现在会优先显示当前云端校验过的计划，而不是只依赖 LS 的兼容层标签。若本轮暂时无法完成云端校验，扩展会保留上次成功校验过的计划显示，不再立刻跳回 LS fallback 值。悬浮提示同时新增来源标记（`Cloud verified`、`Cloud verified (cached)`、`LS fallback`），让当前会员状态口径可见。
+
+- **Profile Plan Messaging / Profile 计划说明增强**: The Profile tab now explains whether the displayed plan is live cloud data, cached cloud truth, or an LS compatibility fallback, reducing confusion when plan labels differ.
+  Profile 页现在会明确说明当前展示的是实时云端计划、缓存的云端真值，还是 LS 兼容层 fallback，避免计划标签不一致时产生误解。
+
 ### 🐛 Fixed / 修复
 
 - **Stale Plan Tier Label in Status Bar Tooltip / 状态栏悬浮计划层级标签残留**: Fixed a UI cache bug where the status bar tooltip could keep showing an old secondary tier label such as `Google AI Ultra` even after Antigravity stopped returning `userTierName`. Root cause: `StatusBarManager.setPlanName()` only updated the cached tier name when the new value was truthy, so an empty latest tier never cleared the old in-memory value. Fix: the cached tier label is now always overwritten, and empty values explicitly clear the stale tier suffix. This keeps the tooltip aligned with the latest live `GetUserStatus` result.
@@ -11,6 +19,9 @@
 
 - **Status Bar Tier Cache Regression Test / 状态栏层级缓存回归测试**: Added a regression test covering the exact transition from `Pro · Google AI Ultra` to `Pro` when the latest tier name becomes empty.
   新增状态栏层级缓存回归测试，覆盖 `Pro · Google AI Ultra` 在最新 tier 为空后正确回落为 `Pro` 的场景。
+
+- **Cloud Plan Stability Regression Tests / 云端计划稳定性回归测试**: Added coverage for preserving the last cloud-verified plan when a later poll degrades to LS fallback, plus tooltip source-label rendering.
+  新增云端计划稳定性回归测试，覆盖“后续轮询退回 LS 时仍保留上次云端真值”和悬浮提示来源标记渲染两类场景。
 
 ---
 

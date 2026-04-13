@@ -115,6 +115,7 @@ export class StatusBarManager {
     private cachedConfigs: ModelConfig[] = [];
     private cachedPlanName: string = '';
     private cachedTierName: string = '';
+    private cachedPlanSource: 'ls' | 'cloud' | 'cloud-cache' | '' = '';
     /** User-configurable compression warning threshold (tokens). */
     private warningThreshold: number = 150_000;
     /** Timer ID for reset countdown. */
@@ -199,9 +200,10 @@ export class StatusBarManager {
     /**
      * Cache plan name for tooltip display.
      */
-    setPlanName(planName: string, tierName?: string): void {
+    setPlanName(planName: string, tierName?: string, source?: 'ls' | 'cloud' | 'cloud-cache'): void {
         this.cachedPlanName = planName;
         this.cachedTierName = tierName || '';
+        this.cachedPlanSource = source || '';
     }
 
     showInitializing(): void {
@@ -374,6 +376,10 @@ export class StatusBarManager {
                 ? `**${escapeMarkdown(this.cachedPlanName)}** · **${escapeMarkdown(this.cachedTierName)}**`
                 : `**${escapeMarkdown(this.cachedPlanName)}**`;
             result.push(`👤 ${tBi('Plan', '计划')}: ${planStr}`);
+            const sourceLabel = this.getPlanSourceLabel();
+            if (sourceLabel) {
+                result.push(`🔎 ${tBi('Source', '来源')}: ${sourceLabel}`);
+            }
         }
 
         const quotaModels = this.cachedConfigs.filter(c => c.quotaInfo);
@@ -435,6 +441,19 @@ export class StatusBarManager {
         result.push(`🎯 ${tBi('Compression warning', '压缩警告')}: **${formatTokenCount(this.warningThreshold)}**`);
 
         return result;
+    }
+
+    private getPlanSourceLabel(): string {
+        switch (this.cachedPlanSource) {
+            case 'cloud':
+                return tBi('Cloud verified', '云端校验');
+            case 'cloud-cache':
+                return tBi('Cloud verified (cached)', '云端校验（缓存）');
+            case 'ls':
+                return tBi('LS fallback', 'LS 兼容层');
+            default:
+                return '';
+        }
     }
 
     /**

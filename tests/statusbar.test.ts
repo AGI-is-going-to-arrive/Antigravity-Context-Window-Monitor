@@ -133,4 +133,13 @@ describe('StatusBarManager plan cache', () => {
         expect(tooltip).toContain('**Pro**');
         expect(tooltip).not.toContain('Google AI Ultra');
     });
+
+    it('shows the plan source in the hover tooltip when available', () => {
+        const manager = new StatusBarManager();
+        manager.setPlanName('Free', 'Gemini Code Assist for individuals', 'cloud-cache');
+        manager.showIdle();
+
+        const tooltip = ((manager as any).statusBarItem.tooltip as { value: string }).value;
+        expect(tooltip).toContain('Cloud verified (cached)');
+    });
 });

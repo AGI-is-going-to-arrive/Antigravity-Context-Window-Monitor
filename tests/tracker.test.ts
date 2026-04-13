@@ -4,6 +4,8 @@ import {
     estimateTokensFromText,
     normalizeUri,
 } from '../src/tracker';
+import { mapCloudTierToDisplayPlan } from '../src/cloud-plan';
+import { stabilizeUserStatusInfo, type UserStatusInfo } from '../src/models';
 import { StepType } from '../src/constants';
 
 // ─── normalizeUri ────────────────────────────────────────────────────────────
@@ -58,6 +60,133 @@ describe('estimateTokensFromText', () => {
     it('should handle mixed ASCII and non-ASCII', () => {
         const text = 'Hello 你好'; // 6 ASCII + 2 non-ASCII → ceil(6/4 + 2/1.5) = ceil(1.5 + 1.33) = 3
         expect(estimateTokensFromText(text)).toBe(3);
+    });
+});
+
+describe('mapCloudTierToDisplayPlan', () => {
+    it('should map free-tier to Free display plan', () => {
+        expect(mapCloudTierToDisplayPlan('free-tier', 'Gemini Code Assist for individuals')).toEqual({
+            displayPlanName: 'Free',
+            displayTierKey: 'CLOUD_TIER_FREE',
+            planDetailName: 'Gemini Code Assist for individuals',
+        });
+    });
+
+    it('should map standard-tier to Standard display plan', () => {
+        expect(mapCloudTierToDisplayPlan('standard-tier', 'Gemini Code Assist')).toEqual({
+            displayPlanName: 'Standard',
+            displayTierKey: 'CLOUD_TIER_STANDARD',
+            planDetailName: 'Gemini Code Assist',
+        });
+    });
+
+    it('should preserve unknown cloud tiers as-is', () => {
+        expect(mapCloudTierToDisplayPlan('mystery-tier', 'Custom Tier')).toEqual({
+            displayPlanName: 'Custom Tier',
+            displayTierKey: 'CLOUD_TIER_UNKNOWN',
+            planDetailName: '',
+        });
+    });
+});
+
+function makeUserStatus(overrides: Partial<UserStatusInfo>): UserStatusInfo {
+    return {
+        name: 'Gemini',
+        email: 'geminimoon2005@gmail.com',
+        planName: 'Pro',
+        teamsTier: 'TEAMS_TIER_PRO',
+        planDetailName: '',
+        planSource: 'ls',
+        monthlyPromptCredits: 50_000,
+        monthlyFlowCredits: 150_000,
+        availablePromptCredits: 500,
+        availableFlowCredits: 100,
+        userTierName: '',
+        userTierId: '',
+        lsPlanName: 'Pro',
+        lsTeamsTier: 'TEAMS_TIER_PRO',
+        cloudTierId: '',
+        cloudTierName: '',
+        cloudTierDescription: '',
+        cloudUpgradeSubscriptionUri: '',
+        cloudUpgradeSubscriptionType: '',
+        cloudAllowedTiers: [],
+        defaultModelLabel: 'Gemini 3.1 Pro (High)',
+        planLimits: {
+            maxNumChatInputTokens: 16384,
+            maxNumPremiumChatMessages: -1,
+            maxCustomChatInstructionCharacters: 600,
+            maxNumPinnedContextItems: -1,
+            maxLocalIndexSize: -1,
+            monthlyFlexCreditPurchaseAmount: 25_000,
+        },
+        teamConfig: {
+            allowMcpServers: true,
+            allowAutoRunCommands: true,
+            allowBrowserExperimentalFeatures: true,
+        },
+        availableCredits: [],
+        canBuyMoreCredits: true,
+        browserEnabled: true,
+        cascadeWebSearchEnabled: true,
+        knowledgeBaseEnabled: true,
+        canGenerateCommitMessages: true,
+        cascadeCanAutoRunCommands: true,
+        canAllowCascadeInBackground: true,
+        hasAutocompleteFastMode: true,
+        allowStickyPremiumModels: true,
+        allowPremiumCommandModels: true,
+        hasTabToJump: true,
+        canCustomizeAppIcon: true,
+        userTierDescription: '',
+        planDescription: '',
+        upgradeSubscriptionText: '',
+        modelSortOrder: [],
+        ...overrides,
+    };
+}
+
+describe('stabilizeUserStatusInfo', () => {
+    it('keeps the last cloud-verified plan when a later poll falls back to LS', () => {
+        const previous = makeUserStatus({
+            planName: 'Free',
+            teamsTier: 'CLOUD_TIER_FREE',
+            planDetailName: 'Gemini Code Assist for individuals',
+            planSource: 'cloud',
+            cloudTierId: 'free-tier',
+            cloudTierName: 'Gemini Code Assist for individuals',
+            cloudTierDescription: 'Gemini-powered code suggestions and chat in multiple IDEs',
+            planDescription: 'Gemini-powered code suggestions and chat in multiple IDEs',
+        });
+        const current = makeUserStatus({
+            availablePromptCredits: 420,
+            availableFlowCredits: 90,
+        });
+
+        const stabilized = stabilizeUserStatusInfo(previous, current);
+        expect(stabilized?.planName).toBe('Free');
+        expect(stabilized?.planDetailName).toBe('Gemini Code Assist for individuals');
+        expect(stabilized?.planSource).toBe('cloud-cache');
+        expect(stabilized?.availablePromptCredits).toBe(420);
+        expect(stabilized?.cloudTierId).toBe('free-tier');
+    });
+
+    it('does not reuse a previous cloud plan for a different account', () => {
+        const previous = makeUserStatus({
+            planName: 'Free',
+            teamsTier: 'CLOUD_TIER_FREE',
+            planDetailName: 'Gemini Code Assist for individuals',
+            planSource: 'cloud',
+            cloudTierId: 'free-tier',
+            cloudTierName: 'Gemini Code Assist for individuals',
+        });
+        const current = makeUserStatus({
+            email: 'other@example.com',
+        });
+
+        const stabilized = stabilizeUserStatusInfo(previous, current);
+        expect(stabilized?.planName).toBe('Pro');
+        expect(stabilized?.planSource).toBe('ls');
     });
 });
 

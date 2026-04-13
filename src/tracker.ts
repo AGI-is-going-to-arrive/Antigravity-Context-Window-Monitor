@@ -1,9 +1,11 @@
 import { LSInfo } from './discovery';
 import { rpcCall } from './rpc-client';
+import { fetchCloudPlanInfo } from './cloud-plan';
 import {
     getContextLimit,
     getModelDisplayName,
     updateModelDisplayNames,
+    stabilizeUserStatusInfo,
     ModelConfig,
     FullUserStatus,
     UserStatusInfo,
@@ -27,6 +29,7 @@ export {
     getContextLimit,
     getModelDisplayName,
     updateModelDisplayNames,
+    stabilizeUserStatusInfo,
     ModelConfig,
     FullUserStatus,
     UserStatusInfo,
@@ -614,17 +617,37 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
             return 0;
         };
 
+        const lsPlanName = (planInfo?.planName as string) || '';
+        const lsTeamsTier = (planInfo?.teamsTier as string) || '';
+        const lsUserTierName = (userTier?.name as string) || '';
+        const cloudPlan = await fetchCloudPlanInfo(ls, signal);
+        const displayPlanName = cloudPlan?.displayPlanName || lsPlanName;
+        const displayTeamsTier = cloudPlan?.displayTierKey || lsTeamsTier;
+        const planDetailName = cloudPlan?.planDetailName || lsUserTierName;
+        const effectiveUpgradeText = cloudPlan?.upgradeSubscriptionText || upgradeText;
+        const effectivePlanDescription = cloudPlan?.currentTierDescription || tierDescription;
+
         const userInfo: UserStatusInfo | null = planInfo ? {
             name: (userStatus.name as string) || '',
             email: (userStatus.email as string) || '',
-            planName: (planInfo.planName as string) || '',
-            teamsTier: (planInfo.teamsTier as string) || '',
+            planName: displayPlanName,
+            teamsTier: displayTeamsTier,
+            planDetailName,
+            planSource: cloudPlan ? (cloudPlan.isStale ? 'cloud-cache' : 'cloud') : 'ls',
             monthlyPromptCredits: (planInfo.monthlyPromptCredits as number) || 0,
             monthlyFlowCredits: (planInfo.monthlyFlowCredits as number) || 0,
             availablePromptCredits: (planStatus?.availablePromptCredits as number) ?? 0,
             availableFlowCredits: (planStatus?.availableFlowCredits as number) ?? 0,
-            userTierName: (userTier?.name as string) || '',
+            userTierName: lsUserTierName,
             userTierId: (userTier?.id as string) || '',
+            lsPlanName,
+            lsTeamsTier,
+            cloudTierId: cloudPlan?.currentTierId || '',
+            cloudTierName: cloudPlan?.currentTierName || '',
+            cloudTierDescription: cloudPlan?.currentTierDescription || '',
+            cloudUpgradeSubscriptionUri: cloudPlan?.upgradeSubscriptionUri || '',
+            cloudUpgradeSubscriptionType: cloudPlan?.upgradeSubscriptionType || '',
+            cloudAllowedTiers: cloudPlan?.allowedTiers || [],
             defaultModelLabel: defaultModelCfg?.label || defaultModelId || '',
             planLimits: {
                 maxNumChatInputTokens: parseNum(planInfo.maxNumChatInputTokens),
@@ -659,13 +682,15 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
             canCustomizeAppIcon: (planInfo.canCustomizeAppIcon as boolean) || false,
             // Deep-mined fields
             userTierDescription: tierDescription,
-            upgradeSubscriptionText: upgradeText,
+            planDescription: effectivePlanDescription,
+            upgradeSubscriptionText: effectiveUpgradeText,
             modelSortOrder,
         } : null;
 
         // Attach raw LS response for transparency panel
         if (userInfo) {
             userInfo._rawResponse = resp as Record<string, unknown>;
+            userInfo._rawCloudPlanResponse = cloudPlan?.rawResponse;
         }
 
         return { configs, userInfo, rawResponse: resp as Record<string, unknown> };
