@@ -685,6 +685,12 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
             planDescription: effectivePlanDescription,
             upgradeSubscriptionText: effectiveUpgradeText,
             modelSortOrder,
+            // Environment fields (from Unleash context + Cloud endpoints)
+            ideVersion: cloudPlan?.ideVersion || '',
+            installationId: cloudPlan?.installationId || '',
+            regionCode: cloudPlan?.regionCode || '',
+            hasAnthropicModelAccess: cloudPlan?.hasAnthropicModelAccess || false,
+            hasCloudProject: cloudPlan?.hasCloudProject || false,
         } : null;
 
         // Attach raw LS response for transparency panel

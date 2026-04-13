@@ -6,6 +6,7 @@ import { LSInfo } from './discovery';
 import { rpcCall } from './rpc-client';
 
 const CLOUD_PLAN_ENDPOINT = '/v1internal:loadCodeAssist';
+const CLOUD_USER_INFO_ENDPOINT = '/v1internal:fetchUserInfo';
 const CLOUD_PLAN_HOST = 'cloudcode-pa.googleapis.com';
 const CLOUD_PLAN_TIMEOUT_MS = 10_000;
 const CLOUD_PLAN_FRESH_CACHE_MS = 60_000;
@@ -33,6 +34,17 @@ export interface CloudPlanInfo {
     capturedAtIso: string;
     isStale: boolean;
     rawResponse?: Record<string, unknown>;
+    // ─── Environment fields ──────────────────────────────────────────────
+    /** User region from Cloud fetchUserInfo (e.g. "US") */
+    regionCode: string;
+    /** Whether user has a custom GCP Cloud AI Companion project */
+    hasCloudProject: boolean;
+    /** Antigravity IDE version from Unleash context */
+    ideVersion: string;
+    /** Unique installation ID from Unleash context */
+    installationId: string;
+    /** Whether user has Anthropic model access from Unleash context */
+    hasAnthropicModelAccess: boolean;
 }
 
 interface RegistryProcess {
@@ -62,18 +74,28 @@ export function mapCloudTierToDisplayPlan(
             planDetailName: tierName && tierName !== 'Free' ? tierName : '',
         };
     }
-    if (id.includes('standard')) {
+    if (id.includes('ultra')) {
         return {
-            displayPlanName: 'Standard',
-            displayTierKey: 'CLOUD_TIER_STANDARD',
-            planDetailName: tierName && tierName !== 'Standard' ? tierName : '',
+            displayPlanName: tierName || 'Ultra',
+            displayTierKey: 'CLOUD_TIER_ULTRA',
+            planDetailName: '',
         };
     }
     if (id.includes('pro')) {
         return {
-            displayPlanName: 'Pro',
+            displayPlanName: tierName || 'Pro',
             displayTierKey: 'CLOUD_TIER_PRO',
-            planDetailName: tierName && tierName !== 'Pro' ? tierName : '',
+            planDetailName: '',
+        };
+    }
+    // Google's "standard-tier" is the paid plan (e.g. "Gemini Code Assist"),
+    // not a mid-level tier. Use the cloud-provided tier name as display name
+    // to avoid misleading users into thinking they're on a lower plan.
+    if (id.includes('standard')) {
+        return {
+            displayPlanName: tierName || 'Standard',
+            displayTierKey: 'CLOUD_TIER_STANDARD',
+            planDetailName: '',
         };
     }
     return {
@@ -209,6 +231,7 @@ function cloudPostJson(
     bearerToken: string,
     body: Record<string, unknown>,
     signal?: AbortSignal,
+    pathname = CLOUD_PLAN_ENDPOINT,
 ): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
         if (signal?.aborted) {
@@ -234,7 +257,7 @@ function cloudPostJson(
         const req = https.request({
             hostname: CLOUD_PLAN_HOST,
             port: 443,
-            path: CLOUD_PLAN_ENDPOINT,
+            path: pathname,
             method: 'POST',
             headers: {
                 Authorization: `Bearer ${bearerToken}`,
@@ -329,6 +352,19 @@ export async function fetchCloudPlanInfo(ls: LSInfo, signal?: AbortSignal): Prom
         return cachedCloudPlan.value;
     }
 
+    // Extract unleash context properties for environment fields
+    let unleashIdeVersion = '';
+    let unleashInstallationId = '';
+    let unleashHasAnthropicAccess = false;
+    try {
+        const unleash = await getUnleashData(ls, signal);
+        const ctx = (unleash?.context || {}) as Record<string, unknown>;
+        const props = (ctx.properties || {}) as Record<string, unknown>;
+        unleashIdeVersion = (props.ideVersion as string) || '';
+        unleashInstallationId = (props.installationId as string) || '';
+        unleashHasAnthropicAccess = props.hasAnthropicModelAccess === 'true' || props.hasAnthropicModelAccess === true;
+    } catch { /* non-critical */ }
+
     try {
         const tokens = await discoverCloudTokens(ls, signal);
         if (tokens.length === 0) {
@@ -352,6 +388,13 @@ export async function fetchCloudPlanInfo(ls: LSInfo, signal?: AbortSignal): Prom
                 const { displayPlanName, displayTierKey, planDetailName } =
                     mapCloudTierToDisplayPlan(currentTierId, currentTierName);
 
+                // Fetch regionCode from Cloud fetchUserInfo (non-blocking)
+                let regionCode = '';
+                try {
+                    const userInfoResp = await cloudPostJson(token, {}, signal, CLOUD_USER_INFO_ENDPOINT);
+                    regionCode = (userInfoResp.regionCode as string) || '';
+                } catch { /* regionCode is best-effort */ }
+
                 const plan: CloudPlanInfo = {
                     currentTierId,
                     currentTierName,
@@ -366,6 +409,12 @@ export async function fetchCloudPlanInfo(ls: LSInfo, signal?: AbortSignal): Prom
                     capturedAtIso: new Date(now).toISOString(),
                     isStale: false,
                     rawResponse: resp,
+                    // Environment fields
+                    regionCode,
+                    hasCloudProject: !!currentTier.userDefinedCloudaicompanionProject,
+                    ideVersion: unleashIdeVersion,
+                    installationId: unleashInstallationId,
+                    hasAnthropicModelAccess: unleashHasAnthropicAccess,
                 };
                 cacheCloudPlan(plan, now, CLOUD_PLAN_FRESH_CACHE_MS, CLOUD_PLAN_STALE_REUSE_MS);
                 return plan;

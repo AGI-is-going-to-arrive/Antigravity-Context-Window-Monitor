@@ -1,6 +1,6 @@
 # 变更日志 / Changelog
 
-## [Unreleased]
+## [1.15.1] - 2026-04-13
 
 ### ✨ Improved / 改进
 
@@ -10,10 +10,17 @@
 - **Profile Plan Messaging / Profile 计划说明增强**: The Profile tab now explains whether the displayed plan is live cloud data, cached cloud truth, or an LS compatibility fallback, reducing confusion when plan labels differ.
   Profile 页现在会明确说明当前展示的是实时云端计划、缓存的云端真值，还是 LS 兼容层 fallback，避免计划标签不一致时产生误解。
 
+
+- **Environment Info Card in Profile Tab / 个人面板新增环境信息卡**: Added a new "Environment" section in the Profile tab displaying 5 diagnostic fields mined from LS `GetUnleashData` context and Cloud endpoints: IDE version (`ideVersion`), installation ID (`installationId`), region code (`regionCode` from Cloud `fetchUserInfo`), Anthropic model access flag, and custom GCP Cloud AI Companion project status. These help users quickly verify their environment configuration during troubleshooting without needing to run diagnostic scripts.
+  个人面板新增`环境`卡片，展示从 LS `GetUnleashData` 上下文和 Cloud 端点挖掘的 5 个诊断字段：IDE 版本、安装 ID、地区代码（来自 Cloud `fetchUserInfo`）、Anthropic 模型访问权限和自定义 GCP Cloud AI Companion 项目状态。帮助用户在排障时快速确认环境配置，无需手动运行诊断脚本。
+
 ### 🐛 Fixed / 修复
 
 - **Stale Plan Tier Label in Status Bar Tooltip / 状态栏悬浮计划层级标签残留**: Fixed a UI cache bug where the status bar tooltip could keep showing an old secondary tier label such as `Google AI Ultra` even after Antigravity stopped returning `userTierName`. Root cause: `StatusBarManager.setPlanName()` only updated the cached tier name when the new value was truthy, so an empty latest tier never cleared the old in-memory value. Fix: the cached tier label is now always overwritten, and empty values explicitly clear the stale tier suffix. This keeps the tooltip aligned with the latest live `GetUserStatus` result.
   修复状态栏悬浮提示中的计划层级标签残留问题：即使 Antigravity 已不再返回 `userTierName`，提示里仍可能继续显示旧的二级标签，例如 `Google AI Ultra`。根因：`StatusBarManager.setPlanName()` 只有在新 `tierName` 为真值时才更新缓存，导致最新值为空时，旧的内存缓存不会被清掉。修复后，计划层级缓存每次都会被覆盖，空值会显式清空旧后缀，使悬浮提示与最新的 `GetUserStatus` 实时结果保持一致。
+
+- **Cloud Tier "Standard" Mislabel for Paid Plans / 云端层级对付费计划误标为"Standard"**: Fixed a misleading plan display where the status bar and Profile tab showed "Standard" for paid Gemini subscribers. Root cause: Google's cloud API returns `standard-tier` as the tier ID for the paid plan ("Gemini Code Assist"), but `mapCloudTierToDisplayPlan()` hardcoded the display name to `"Standard"` for any tier containing "standard" in its ID. Since Google's `standard-tier` is actually the premium paid plan (description: "Unlimited coding assistant with the most powerful Gemini models"), displayying "Standard" confused users into thinking they were on a lower-tier plan. Fix: `mapCloudTierToDisplayPlan()` now uses the cloud-provided `tierName` (e.g., "Gemini Code Assist") as the display name for `standard`, `pro`, and `ultra` tier IDs instead of hardcoding generic labels. Free tier retains the hardcoded "Free" label. Also added a future-proof `ultra` tier branch (`CLOUD_TIER_ULTRA`) with a gold badge style in the Profile tab.
+  修复状态栏和个人面板对付费 Gemini 订阅用户误显示"Standard"的问题。根因：Google 云端 API 对付费计划返回的 tier ID 是 `standard-tier`，但 `mapCloudTierToDisplayPlan()` 把所有 ID 含 "standard" 的 tier 写死显示为 `"Standard"`。事实上 `standard-tier` 是 Google 新体系中的付费计划统称（description 为"Unlimited coding assistant with the most powerful Gemini models"），显示"Standard"会让用户误以为自己在低级计划上。修复后，`standard`、`pro`、`ultra` 分支现在使用云端返回的 `tierName`（如"Gemini Code Assist"）作为显示名，不再写死通用标签；Free 分支保持原样。同时新增 `ultra` 预留分支（`CLOUD_TIER_ULTRA`）和 Profile 面板金色徽章样式。
 
 ### 🧪 Tests / 测试
 
@@ -22,6 +29,9 @@
 
 - **Cloud Plan Stability Regression Tests / 云端计划稳定性回归测试**: Added coverage for preserving the last cloud-verified plan when a later poll degrades to LS fallback, plus tooltip source-label rendering.
   新增云端计划稳定性回归测试，覆盖“后续轮询退回 LS 时仍保留上次云端真值”和悬浮提示来源标记渲染两类场景。
+
+- **Cloud Tier Name Display Test Update / 云端层级名称显示测试更新**: Updated the `mapCloudTierToDisplayPlan` test for `standard-tier` to verify it now uses the cloud-provided tier name ("Gemini Code Assist") instead of the hardcoded "Standard" label.
+  更新 `mapCloudTierToDisplayPlan` 对 `standard-tier` 的测试：现在验证使用云端返回的 tier name（"Gemini Code Assist"）而非硬编码的 "Standard" 标签。
 
 ---
 

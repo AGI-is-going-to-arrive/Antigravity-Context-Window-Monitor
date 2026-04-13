@@ -1,4 +1,4 @@
-// ─── Profile Tab Content Builder ─────────────────────────────────────────────
+﻿// ─── Profile Tab Content Builder ─────────────────────────────────────────────
 // Builds HTML for the "Profile" tab: Account info, plan limits,
 // and feature/team config. Model-specific content is rendered in Models tab.
 
@@ -42,6 +42,7 @@ export function buildProfileContent(
     return [
         buildAccountSection(userInfo),
         buildLimitsSection(userInfo),
+        buildEnvironmentSection(userInfo),
         buildFeatureAndTeamGrid(userInfo),
     ].join('');
 }
@@ -70,6 +71,7 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
         'CLOUD_TIER_FREE': { bg: 'rgba(156,163,175,0.15)', color: '#9ca3af' },
         'CLOUD_TIER_STANDARD': { bg: 'rgba(74,222,128,0.15)', color: 'var(--color-ok)' },
         'CLOUD_TIER_PRO': { bg: 'rgba(74,222,128,0.15)', color: 'var(--color-ok)' },
+        'CLOUD_TIER_ULTRA': { bg: 'rgba(250,204,21,0.15)', color: 'var(--color-warn)' },
         'CLOUD_TIER_UNKNOWN': { bg: 'rgba(96,165,250,0.15)', color: 'var(--color-info)' },
     };
     const tier = tierMap[userInfo.teamsTier] || tierMap['CLOUD_TIER_UNKNOWN'];
@@ -279,4 +281,46 @@ function buildFeatureAndTeamGrid(userInfo: UserStatusInfo): string {
                 <div class="profile-chip-grid">${teamTags}</div>
             </section>
         </div>`;
+}
+
+function buildEnvironmentSection(userInfo: UserStatusInfo): string {
+    const envItems: [string, string][] = [];
+    if (userInfo.ideVersion) {
+        envItems.push([tBi('IDE Version', 'IDE 版本'), esc(userInfo.ideVersion)]);
+    }
+    if (userInfo.installationId) {
+        const short = userInfo.installationId.length > 12
+            ? userInfo.installationId.substring(0, 12) + '\u2026'
+            : userInfo.installationId;
+        envItems.push([tBi('Installation ID', '安装 ID'), `<span title="${esc(userInfo.installationId)}">${esc(short)}</span>`]);
+    }
+    if (userInfo.regionCode) {
+        envItems.push([tBi('Region', '地区'), esc(userInfo.regionCode)]);
+    }
+    envItems.push([
+        tBi('Anthropic Models', 'Anthropic 模型'),
+        userInfo.hasAnthropicModelAccess
+            ? `<span style="color:var(--color-ok)">\u2713</span>`
+            : `<span style="color:var(--color-text-dim)">\u2717</span>`,
+    ]);
+    envItems.push([
+        tBi('Cloud Project', '云端项目'),
+        userInfo.hasCloudProject
+            ? `<span style="color:var(--color-ok)">\u2713</span>`
+            : `<span style="color:var(--color-text-dim)">\u2717</span>`,
+    ]);
+
+    if (envItems.length === 0) { return ''; }
+
+    const grid = envItems.map(([k, v]) => `
+        <div class="profile-metric-card">
+            <span class="profile-metric-label">${k}</span>
+            <span class="profile-metric-value">${v}</span>
+        </div>`).join('');
+
+    return `
+        <section class="card">
+            <h2>${ICON.bolt} ${tBi('Environment', '环境')}</h2>
+            <div class="profile-metric-grid">${grid}</div>
+        </section>`;
 }

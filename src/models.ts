@@ -229,6 +229,17 @@ export interface UserStatusInfo {
     upgradeSubscriptionText: string;
     /** LS recommended model sort order from clientModelSorts */
     modelSortOrder: string[];
+    // ─── Environment fields (from Unleash context + Cloud endpoints) ──────
+    /** Antigravity IDE version from GetUnleashData.context.properties.ideVersion */
+    ideVersion: string;
+    /** Unique installation ID from GetUnleashData.context.properties.installationId */
+    installationId: string;
+    /** User region code from Cloud fetchUserInfo (e.g. "US") */
+    regionCode: string;
+    /** Whether user has Anthropic model access from Unleash context */
+    hasAnthropicModelAccess: boolean;
+    /** Whether user has a custom GCP Cloud AI Companion project */
+    hasCloudProject: boolean;
     /** Raw LS GetUserStatus response — for diagnostic Raw Data panel */
     _rawResponse?: Record<string, unknown>;
     /** Raw cloud loadCodeAssist response — for diagnostic Raw Data panel */

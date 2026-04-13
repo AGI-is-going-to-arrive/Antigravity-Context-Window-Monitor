@@ -72,11 +72,11 @@ describe('mapCloudTierToDisplayPlan', () => {
         });
     });
 
-    it('should map standard-tier to Standard display plan', () => {
+    it('should map standard-tier to display plan using cloud tier name', () => {
         expect(mapCloudTierToDisplayPlan('standard-tier', 'Gemini Code Assist')).toEqual({
-            displayPlanName: 'Standard',
+            displayPlanName: 'Gemini Code Assist',
             displayTierKey: 'CLOUD_TIER_STANDARD',
-            planDetailName: 'Gemini Code Assist',
+            planDetailName: '',
         });
     });
 
@@ -142,6 +142,11 @@ function makeUserStatus(overrides: Partial<UserStatusInfo>): UserStatusInfo {
         planDescription: '',
         upgradeSubscriptionText: '',
         modelSortOrder: [],
+        ideVersion: '',
+        installationId: '',
+        regionCode: '',
+        hasAnthropicModelAccess: false,
+        hasCloudProject: false,
         ...overrides,
     };
 }
