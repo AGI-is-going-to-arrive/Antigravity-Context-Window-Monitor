@@ -1,5 +1,19 @@
 # 变更日志 / Changelog
 
+## [Unreleased]
+
+### 🐛 Fixed / 修复
+
+- **Stale Plan Tier Label in Status Bar Tooltip / 状态栏悬浮计划层级标签残留**: Fixed a UI cache bug where the status bar tooltip could keep showing an old secondary tier label such as `Google AI Ultra` even after Antigravity stopped returning `userTierName`. Root cause: `StatusBarManager.setPlanName()` only updated the cached tier name when the new value was truthy, so an empty latest tier never cleared the old in-memory value. Fix: the cached tier label is now always overwritten, and empty values explicitly clear the stale tier suffix. This keeps the tooltip aligned with the latest live `GetUserStatus` result.
+  修复状态栏悬浮提示中的计划层级标签残留问题：即使 Antigravity 已不再返回 `userTierName`，提示里仍可能继续显示旧的二级标签，例如 `Google AI Ultra`。根因：`StatusBarManager.setPlanName()` 只有在新 `tierName` 为真值时才更新缓存，导致最新值为空时，旧的内存缓存不会被清掉。修复后，计划层级缓存每次都会被覆盖，空值会显式清空旧后缀，使悬浮提示与最新的 `GetUserStatus` 实时结果保持一致。
+
+### 🧪 Tests / 测试
+
+- **Status Bar Tier Cache Regression Test / 状态栏层级缓存回归测试**: Added a regression test covering the exact transition from `Pro · Google AI Ultra` to `Pro` when the latest tier name becomes empty.
+  新增状态栏层级缓存回归测试，覆盖 `Pro · Google AI Ultra` 在最新 tier 为空后正确回落为 `Pro` 的场景。
+
+---
+
 ## [1.15.0] - 2026-04-10
 
 ### 🐛 Fixed / 修复

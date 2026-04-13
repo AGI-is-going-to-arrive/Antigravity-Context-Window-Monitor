@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatTokenCount, formatContextLimit, calculateCompressionStats } from '../src/statusbar';
+import { formatTokenCount, formatContextLimit, calculateCompressionStats, StatusBarManager } from '../src/statusbar';
 import { ContextUsage, ModelUsageInfo } from '../src/tracker';
 
 // ─── formatTokenCount ─────────────────────────────────────────────────────────
@@ -119,5 +119,18 @@ describe('calculateCompressionStats', () => {
         expect(stats!.dropTokens).toBe(50_000);
         // previousInput = 80K + 50K = 130K → dropPercent = 50K/130K ≈ 38.5%
         expect(stats!.dropPercent).toBeCloseTo(38.46, 1);
+    });
+});
+
+describe('StatusBarManager plan cache', () => {
+    it('should clear stale tier name when the latest status omits it', () => {
+        const manager = new StatusBarManager();
+        manager.setPlanName('Pro', 'Google AI Ultra');
+        manager.setPlanName('Pro', '');
+        manager.showIdle();
+
+        const tooltip = ((manager as any).statusBarItem.tooltip as { value: string }).value;
+        expect(tooltip).toContain('**Pro**');
+        expect(tooltip).not.toContain('Google AI Ultra');
     });
 });
