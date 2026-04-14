@@ -2,6 +2,23 @@
 
 ## [1.15.2] - 2026-04-14
 
+### 🐛 Fixed / 修复
+
+- **CHECKPOINT Ghost Model Leaking into UI / CHECKPOINT 幽灵模型泄漏到 UI**: Fixed a bug where `MODEL_PLACEHOLDER_M50` (Flash Lite — an internal CHECKPOINT summarization model) could override the real user-facing model in the status bar tooltip and monitor panel. Root cause: `processSteps()` in `tracker.ts` unconditionally promoted `checkpoint.modelUsage.model` over `generatorModel`, but M50 is a ghost model that only appears in checkpoint metadata and does not represent the user's actual conversation model. Fix: introduced `GHOST_CHECKPOINT_MODELS` set in `models.ts` containing known internal checkpoint model IDs; `processSteps()` now skips model override when the checkpoint's model is in this set.
+  修复 `MODEL_PLACEHOLDER_M50`（Flash Lite — 内部 CHECKPOINT 摘要模型）覆盖状态栏和监控面板中真实用户模型的问题。根因：`tracker.ts` 中 `processSteps()` 无条件将 checkpoint 的 `modelUsage.model` 提升为会话模型，但 M50 是仅出现在 checkpoint 元数据中的幽灵模型，不代表用户实际使用的模型。修复：在 `models.ts` 中引入 `GHOST_CHECKPOINT_MODELS` 集合，`processSteps()` 现在跳过该集合中的模型，不让它覆盖真实模型。
+
+- **M50 Display Name Mapping / M50 显示名映射**: Added `MODEL_PLACEHOLDER_M50` to the `modelDisplayNames` map with display name `Flash Lite (Internal)` / `Flash Lite (内部)`. Previously, if M50 appeared in any UI surface, it would show the raw placeholder string `MODEL_PLACEHOLDER_M50`.
+  将 `MODEL_PLACEHOLDER_M50` 加入 `modelDisplayNames` 映射表，显示名为 `Flash Lite (内部)`。此前若 M50 出现在任何 UI 表面，会直接显示原始占位符字符串。
+
+- **Gemini 3.1 Pro Chinese Translation / Gemini 3.1 Pro 中文翻译修正**: Fixed incorrect Chinese translations for Gemini 3.1 Pro quality variants: `强` → `高` (High), `弱` → `低` (Low).
+  修正 Gemini 3.1 Pro 质量变体的中文翻译：`强` → `高`，`弱` → `低`。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 2 (`models.ts`, `tracker.ts`)
+- **TypeScript compile**: Zero errors
+
+
 ### ✨ Improved / 改进
 
 - **Cross-Workspace Conversation Tracking / 跨工作区对话追踪**: Simplified the workspace isolation filter to a clean two-rule system: (1) IDLE conversations filtered by workspace match; (2) ANY RUNNING conversation is always visible regardless of workspace. Previously, the filter required either a tracked cascade match or empty workspaceUris — neither condition was met when a user switched from workspace A to B mid-conversation, because the conversation's workspaceUris still pointed to A and the plugin in B had never tracked it. The new approach eliminates all edge cases: if a conversation is RUNNING, it's visible to every workspace instance. IDLE conversations from other workspaces remain correctly excluded.
