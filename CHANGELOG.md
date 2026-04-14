@@ -1,5 +1,19 @@
 # 变更日志 / Changelog
 
+## [1.15.2] - 2026-04-14
+
+### ✨ Improved / 改进
+
+- **Cross-Workspace Conversation Tracking / 跨工作区对话追踪**: Simplified the workspace isolation filter to a clean two-rule system: (1) IDLE conversations filtered by workspace match; (2) ANY RUNNING conversation is always visible regardless of workspace. Previously, the filter required either a tracked cascade match or empty workspaceUris — neither condition was met when a user switched from workspace A to B mid-conversation, because the conversation's workspaceUris still pointed to A and the plugin in B had never tracked it. The new approach eliminates all edge cases: if a conversation is RUNNING, it's visible to every workspace instance. IDLE conversations from other workspaces remain correctly excluded.
+  简化工作区隔离过滤器为两条简洁规则：(1) IDLE 对话按工作区匹配过滤；(2) 任何 RUNNING 对话始终可见，不受工作区限制。此前的过滤器要求已追踪的 cascade 匹配或 workspaceUris 为空——当用户从工作区 A 切换到 B 时，两个条件都不满足（对话的 workspaceUris 仍指向 A，且 B 的插件实例从未追踪过它）。新方案消除了所有边缘情况：只要对话在 RUNNING，它就对每个工作区实例可见。其它工作区的 IDLE 对话仍被正确排除。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 1 (`extension.ts`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## [1.15.1] - 2026-04-14
 
 ### 🐛 Fixed / 修复

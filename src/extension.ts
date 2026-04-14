@@ -408,7 +408,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 if (isMonitorPanelVisible()) {
                     updateMonitorPanel(makePanelPayload());
                 }
-                });
+            });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
             showMonitorPanel(makePanelPayload({ context, initialTab: 'gmdata' }));
@@ -702,12 +702,20 @@ async function pollContextUsage(): Promise<void> {
             log(`  Trajectory "${t.summary?.substring(0, 30)}" status=${t.status} steps=${t.stepCount} workspaces=[${wsUris}]`);
         }
 
-        // 4. Per-window cascade tracking — Workspace Isolation
-        // With a workspace: strict filter — only show trajectories belonging to this workspace.
-        // Without a workspace (no folder opened): show ALL trajectories, since there is
-        // no folder to filter by and Antigravity assigns workspace URIs to all conversations.
+        // 4. Per-window cascade tracking — Workspace Isolation + Cross-Workspace Visibility
+        // With a workspace: filter IDLE trajectories to current workspace only.
+        // ANY RUNNING trajectory is always visible regardless of workspace — this ensures
+        // that when a user switches from workspace A to B mid-conversation, the active
+        // conversation remains tracked even though its workspaceUris still points to A.
+        // Without a workspace (no folder opened): show ALL trajectories.
         const qualifiedTrajectories = workspaceUri
-            ? trajectories.filter(t => t.workspaceUris.some(u => normalizeUri(u) === normalizedWs))
+            ? trajectories.filter(t => {
+                // Rule 1: Strict workspace match
+                if (t.workspaceUris.some(u => normalizeUri(u) === normalizedWs)) { return true; }
+                // Rule 2: ANY RUNNING cascade is always visible cross-workspace
+                if (t.status === CascadeStatus.RUNNING) { return true; }
+                return false;
+            })
             : trajectories;
 
         const qualifiedRunning = qualifiedTrajectories.filter(t => t.status === CascadeStatus.RUNNING);
