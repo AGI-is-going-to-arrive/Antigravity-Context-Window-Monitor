@@ -65,8 +65,10 @@ export const GHOST_CHECKPOINT_MODELS = new Set([
 // workspaceState data. Mapped to their corresponding model ID so that
 // resolveModelId() can still resolve them after translation updates.
 const LEGACY_DISPLAY_ALIASES: Record<string, string> = {
-    'Gemini 3.1 Pro (强)': 'MODEL_PLACEHOLDER_M37',   // v1.15.1: 强→高
-    'Gemini 3.1 Pro (弱)': 'MODEL_PLACEHOLDER_M36',   // v1.15.1: 弱→低
+    'Gemini 3.1 Pro (强)': 'MODEL_PLACEHOLDER_M37',                       // v1.15.1: 强→高 (zh-only)
+    'Gemini 3.1 Pro (弱)': 'MODEL_PLACEHOLDER_M36',                       // v1.15.1: 弱→低 (zh-only)
+    'Gemini 3.1 Pro (High) / Gemini 3.1 Pro (强)': 'MODEL_PLACEHOLDER_M37', // v1.15.1: bilingual mode
+    'Gemini 3.1 Pro (Low) / Gemini 3.1 Pro (弱)': 'MODEL_PLACEHOLDER_M36',  // v1.15.1: bilingual mode
 };
 
 function getDisplayCandidates(modelId: string, entry: Record<'en' | 'zh', string>): string[] {

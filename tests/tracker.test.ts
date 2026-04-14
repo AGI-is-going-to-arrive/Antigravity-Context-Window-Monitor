@@ -259,4 +259,50 @@ describe('processSteps', () => {
         // estimatedDelta should be small (only "Short" ≈ 2 tokens)
         expect(result.estimatedDeltaSinceCheckpoint).toBeLessThan(100);
     });
+
+    it('should NOT let ghost checkpoint model (M50) override real model', () => {
+        const steps = [
+            {
+                type: StepType.USER_INPUT,
+                content: 'Hello',
+                metadata: { generatorModel: 'MODEL_PLACEHOLDER_M37' }
+            },
+            {
+                type: StepType.CHECKPOINT,
+                metadata: {
+                    modelUsage: {
+                        model: 'MODEL_PLACEHOLDER_M50', // Ghost model — should be skipped
+                        inputTokens: '5000',
+                        outputTokens: '500',
+                    }
+                }
+            }
+        ];
+        const result = processSteps(steps);
+        // M50 is in GHOST_CHECKPOINT_MODELS — must NOT override the real model
+        expect(result.model).toBe('MODEL_PLACEHOLDER_M37');
+    });
+
+    it('should still use non-ghost checkpoint model to override generatorModel', () => {
+        const steps = [
+            {
+                type: StepType.USER_INPUT,
+                content: 'Hello',
+                metadata: { generatorModel: 'MODEL_PLACEHOLDER_M36' }
+            },
+            {
+                type: StepType.CHECKPOINT,
+                metadata: {
+                    modelUsage: {
+                        model: 'MODEL_PLACEHOLDER_M37', // Real model — should override
+                        inputTokens: '5000',
+                        outputTokens: '500',
+                    }
+                }
+            }
+        ];
+        const result = processSteps(steps);
+        // Non-ghost checkpoint model should still take priority
+        expect(result.model).toBe('MODEL_PLACEHOLDER_M37');
+    });
 });

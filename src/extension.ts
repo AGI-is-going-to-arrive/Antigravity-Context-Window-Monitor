@@ -719,7 +719,13 @@ async function pollContextUsage(): Promise<void> {
         // ─── Staleness Heuristic ───────────────────────────────────────────
         // BUG FIX: If we're tracking a RUNNING cascade but LS reports it as IDLE
         // for too many consecutive polls, the LS is probably stale. Force re-discovery.
-        if (qualifiedRunning.length === 0 && trackedCascadeId) {
+        // Also check if the tracked cascade is still RUNNING globally — when Priority 1c
+        // selects a cross-workspace cascade, it won't be in qualifiedRunning but is
+        // genuinely active, so we must not treat it as stale.
+        const trackedStillRunningGlobally = trackedCascadeId
+            ? trajectories.some(t => t.cascadeId === trackedCascadeId && t.status === CascadeStatus.RUNNING)
+            : false;
+        if (qualifiedRunning.length === 0 && trackedCascadeId && !trackedStillRunningGlobally) {
             consecutiveIdlePolls++;
             if (consecutiveIdlePolls >= STALE_LS_IDLE_THRESHOLD && !stalenessConfirmedIdle) {
                 log(`⚠ Staleness detected: tracked cascade ${trackedCascadeId.substring(0, 8)} has been IDLE for ${consecutiveIdlePolls} consecutive polls. Forcing LS re-discovery.`);
@@ -776,7 +782,8 @@ async function pollContextUsage(): Promise<void> {
         // conversation's workspaceUris still points to A. Neither Priority 1 nor 1b
         // will find it. As a last-resort before falling back to stepCount detection,
         // check for any RUNNING conversation across all workspaces.
-        // This does NOT affect staleness detection (which uses qualifiedRunning).
+        // Staleness detection uses trackedStillRunningGlobally to avoid false
+        // stale-LS triggers when the tracked cascade is a cross-workspace RUNNING.
         if (!newCandidateId && workspaceUri) {
             const crossWsRunning = trajectories.filter(t =>
                 t.status === CascadeStatus.RUNNING &&
