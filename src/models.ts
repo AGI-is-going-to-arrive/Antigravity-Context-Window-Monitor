@@ -12,6 +12,7 @@
 //   M18 = Gemini 3 Flash [Legacy, kept for backward compat]
 //   M35 = Claude Sonnet 4.6 (Thinking mode) — 1M context (GA since 2026-03-13)
 //   M26 = Claude Opus 4.6 (Thinking mode)  — 1M context (GA since 2026-03-13)
+//   M50 = Flash Lite — CHECKPOINT ghost model (internal, not user-facing)
 
 import { tBi } from './i18n';
 
@@ -33,13 +34,14 @@ export const DEFAULT_CONTEXT_LIMIT = 1_000_000;
 // `let` — this map is mutated at runtime by `updateModelDisplayNames()`
 
 let modelDisplayNames: Record<string, Record<'en' | 'zh', string>> = {
-    'MODEL_PLACEHOLDER_M37': { en: 'Gemini 3.1 Pro (High)', zh: 'Gemini 3.1 Pro (强)' },
-    'MODEL_PLACEHOLDER_M36': { en: 'Gemini 3.1 Pro (Low)', zh: 'Gemini 3.1 Pro (弱)' },
+    'MODEL_PLACEHOLDER_M37': { en: 'Gemini 3.1 Pro (High)', zh: 'Gemini 3.1 Pro (高)' },
+    'MODEL_PLACEHOLDER_M36': { en: 'Gemini 3.1 Pro (Low)', zh: 'Gemini 3.1 Pro (低)' },
     'MODEL_PLACEHOLDER_M47': { en: 'Gemini 3 Flash', zh: 'Gemini 3 Flash' },
     'MODEL_PLACEHOLDER_M18': { en: 'Gemini 3 Flash', zh: 'Gemini 3 Flash' },  // [Legacy] old ID
     'MODEL_PLACEHOLDER_M35': { en: 'Claude Sonnet 4.6 (Thinking)', zh: 'Claude Sonnet 4.6 (思考)' },
     'MODEL_PLACEHOLDER_M26': { en: 'Claude Opus 4.6 (Thinking)', zh: 'Claude Opus 4.6 (思考)' },
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': { en: 'GPT-OSS 120B (Medium)', zh: 'GPT-OSS 120B (中)' },
+    'MODEL_PLACEHOLDER_M50': { en: 'Flash Lite (Internal)', zh: 'Flash Lite (内部)' },
 };
 
 const KNOWN_QUOTA_POOLS: Record<string, string> = {
@@ -50,6 +52,21 @@ const KNOWN_QUOTA_POOLS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M35': 'claude-premium',
     'MODEL_PLACEHOLDER_M26': 'claude-premium',
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'claude-premium',
+};
+
+// Ghost models used internally by CHECKPOINT / summarization — should never
+// override the real user-facing model in UI displays.
+export const GHOST_CHECKPOINT_MODELS = new Set([
+    'MODEL_PLACEHOLDER_M50',                // Flash Lite — checkpoint summarization
+    'MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE',   // alternate checkpoint ID (if seen)
+]);
+
+// Legacy display name aliases — old translations that may exist in persisted
+// workspaceState data. Mapped to their corresponding model ID so that
+// resolveModelId() can still resolve them after translation updates.
+const LEGACY_DISPLAY_ALIASES: Record<string, string> = {
+    'Gemini 3.1 Pro (强)': 'MODEL_PLACEHOLDER_M37',   // v1.15.1: 强→高
+    'Gemini 3.1 Pro (弱)': 'MODEL_PLACEHOLDER_M36',   // v1.15.1: 弱→低
 };
 
 function getDisplayCandidates(modelId: string, entry: Record<'en' | 'zh', string>): string[] {
@@ -98,6 +115,10 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
         if (getDisplayCandidates(modelId, entry).includes(clean)) {
             return modelId;
         }
+    }
+    // Check legacy display name aliases (old translations from prior versions)
+    if (LEGACY_DISPLAY_ALIASES[clean]) {
+        return LEGACY_DISPLAY_ALIASES[clean];
     }
     return undefined;
 }

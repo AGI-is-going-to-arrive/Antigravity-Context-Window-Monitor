@@ -37,8 +37,8 @@ describe('DailyStore', () => {
                 totalToolReturnTokens: 0,
                 recentSteps: [],
                 modelStats: {
-                    'Gemini 3.1 Pro (强)': {
-                        modelName: 'Gemini 3.1 Pro (强)',
+                    'Gemini 3.1 Pro (高)': {
+                        modelName: 'Gemini 3.1 Pro (高)',
                         reasoning: 3,
                         toolCalls: 1,
                         checkPoints: 0,
@@ -66,7 +66,7 @@ describe('DailyStore', () => {
         const gmSummary: GMSummary = {
             conversations: [],
             modelBreakdown: {
-                'Gemini 3.1 Pro (强)': {
+                'Gemini 3.1 Pro (高)': {
                     callCount: 2,
                     stepsCovered: 3,
                     totalInputTokens: 120,
@@ -124,7 +124,7 @@ describe('DailyStore', () => {
                         totalInputTokens: 120,
                         totalOutputTokens: 60,
                         estSteps: 0,
-                        modelNames: ['Gemini 3.1 Pro (强)'],
+                        modelNames: ['Gemini 3.1 Pro (高)'],
                     }],
                 },
             },
@@ -138,6 +138,6 @@ describe('DailyStore', () => {
         expect(record?.cycles[0].gmTotalCalls).toBe(2);
         expect(record?.cycles[0].gmTotalTokens).toBe(180);
         expect(record?.cycles[0].estimatedCost).toBe(1.23);
-        expect(record?.cycles[0].gmModelStats?.['Gemini 3.1 Pro (强)']?.cacheHitRate).toBe(0.5);
+        expect(record?.cycles[0].gmModelStats?.['Gemini 3.1 Pro (高)']?.cacheHitRate).toBe(0.5);
     });
 });

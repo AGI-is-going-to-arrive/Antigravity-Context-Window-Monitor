@@ -9,6 +9,7 @@ import {
     UserStatusInfo,
     DEFAULT_CONTEXT_LIMITS,
     DEFAULT_CONTEXT_LIMIT,
+    GHOST_CHECKPOINT_MODELS,
 } from './models';
 import {
     StepType,
@@ -444,8 +445,9 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         // Track the latest model used (for dynamic model switching)
         if (stepModel) { model = stepModel; }
 
-        // Checkpoint modelUsage.model has higher priority than generatorModel
-        if (lastModelUsage && lastModelUsage.model) {
+        // Checkpoint modelUsage.model has higher priority than generatorModel,
+        // BUT skip ghost/internal models (e.g. M50 = Flash Lite used for checkpoint summarization)
+        if (lastModelUsage && lastModelUsage.model && !GHOST_CHECKPOINT_MODELS.has(lastModelUsage.model)) {
             model = lastModelUsage.model;
         }
 

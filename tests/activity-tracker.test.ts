@@ -346,7 +346,7 @@ describe('ActivityTracker planner refresh', () => {
             timestamp: createdAt,
             icon: '💬',
             category: 'user' as const,
-            model: 'Gemini 3.1 Pro (强)',
+            model: 'Gemini 3.1 Pro (高)',
             detail: '',
             durationMs: 0,
             userInput: '重复用户消息',
@@ -456,7 +456,7 @@ describe('ActivityTracker planner refresh', () => {
                     stepCount: 23,
                     processedIndex: 23,
                     dominantModel: 'Gemini 3.1 Pro (High)',
-                    requestedModel: 'Gemini 3.1 Pro (强)',
+                    requestedModel: 'Gemini 3.1 Pro (高)',
                     generatorModel: 'MODEL_PLACEHOLDER_M37',
                 },
             },
@@ -487,8 +487,8 @@ describe('ActivityTracker planner refresh', () => {
                         toolBreakdown: { mcp_tool: 1, view_file: 1 },
                         estSteps: 0,
                     },
-                    'Gemini 3.1 Pro (强)': {
-                        modelName: 'Gemini 3.1 Pro (强)',
+                    'Gemini 3.1 Pro (高)': {
+                        modelName: 'Gemini 3.1 Pro (高)',
                         userInputs: 0,
                         reasoning: 10,
                         toolCalls: 7,
@@ -550,7 +550,7 @@ describe('ActivityTracker planner refresh', () => {
                         exactCallCount: 1,
                         placeholderOnlyCalls: 0,
                     },
-                    'Gemini 3.1 Pro (强)': {
+                    'Gemini 3.1 Pro (高)': {
                         callCount: 10,
                         stepsCovered: 20,
                         totalInputTokens: 1000,
@@ -582,7 +582,7 @@ describe('ActivityTracker planner refresh', () => {
 
         const tracker = ActivityTracker.restore(state);
         const summary = tracker.getSummary();
-        const zhName = 'Gemini 3.1 Pro (强)';
+        const zhName = 'Gemini 3.1 Pro (高)';
 
         expect(Object.keys(summary.modelStats)).toEqual([zhName]);
         expect(summary.modelStats[zhName]?.totalSteps).toBe(23);

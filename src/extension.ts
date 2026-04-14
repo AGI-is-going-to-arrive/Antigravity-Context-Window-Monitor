@@ -408,7 +408,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 if (isMonitorPanelVisible()) {
                     updateMonitorPanel(makePanelPayload());
                 }
-                });
+            });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
             showMonitorPanel(makePanelPayload({ context, initialTab: 'gmdata' }));
@@ -769,6 +769,24 @@ async function pollContextUsage(): Promise<void> {
                 newCandidateId = allRunning[0].cascadeId;
                 selectionReason = 'RUNNING cascade without workspace (new conversation)';
                 log(`Priority 1b: found RUNNING trajectory ${newCandidateId!.substring(0, 8)} without workspace URI`);
+            }
+        }
+        // --- Priority 1c: Cross-workspace RUNNING fallback ---
+        // When a user switches from workspace A to B mid-conversation, the RUNNING
+        // conversation's workspaceUris still points to A. Neither Priority 1 nor 1b
+        // will find it. As a last-resort before falling back to stepCount detection,
+        // check for any RUNNING conversation across all workspaces.
+        // This does NOT affect staleness detection (which uses qualifiedRunning).
+        if (!newCandidateId && workspaceUri) {
+            const crossWsRunning = trajectories.filter(t =>
+                t.status === CascadeStatus.RUNNING &&
+                t.workspaceUris.length > 0 &&
+                !t.workspaceUris.some(u => normalizeUri(u) === normalizedWs)
+            );
+            if (crossWsRunning.length > 0) {
+                newCandidateId = crossWsRunning[0].cascadeId;
+                selectionReason = 'RUNNING cascade from another workspace (cross-workspace fallback)';
+                log(`Priority 1c: found cross-workspace RUNNING trajectory ${newCandidateId!.substring(0, 8)}`);
             }
         }
         // --- Priority 2: stepCount CHANGE detection ---

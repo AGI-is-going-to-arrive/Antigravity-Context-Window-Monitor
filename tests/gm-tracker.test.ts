@@ -242,7 +242,7 @@ describe('filterGMSummaryByModels', () => {
                                 stepIndices: [2],
                                 executionId: 'b',
                                 model: 'MODEL_PLACEHOLDER_M37',
-                                modelDisplay: 'Gemini 3.1 Pro (强)',
+                                modelDisplay: 'Gemini 3.1 Pro (高)',
                                 responseModel: 'gemini-3.1-pro-high',
                                 modelAccuracy: 'exact',
                                 inputTokens: 200,
@@ -312,7 +312,7 @@ describe('filterGMSummaryByModels', () => {
                         exactCallCount: 1,
                         placeholderOnlyCalls: 0,
                     },
-                    'Gemini 3.1 Pro (强)': {
+                    'Gemini 3.1 Pro (高)': {
                         callCount: 1,
                         stepsCovered: 1,
                         totalInputTokens: 200,
@@ -358,7 +358,7 @@ describe('filterGMSummaryByModels', () => {
 
         const tracker = GMTracker.restore(state);
         const summary = tracker.getCachedSummary();
-        const zhName = 'Gemini 3.1 Pro (强)';
+        const zhName = 'Gemini 3.1 Pro (高)';
 
         expect(summary).not.toBeNull();
         expect(Object.keys(summary?.modelBreakdown || {})).toEqual([zhName]);
@@ -558,7 +558,7 @@ describe('filterGMSummaryByModels', () => {
         expect(repaired?.totalCalls).toBe(1);
         expect(repaired?.conversations[0].calls).toHaveLength(1);
         expect(repaired?.conversations[0].calls[0].executionId).toBe('new-call');
-        expect(repaired?.modelBreakdown['Gemini 3.1 Pro (强)']?.callCount).toBe(1);
+        expect(repaired?.modelBreakdown['Gemini 3.1 Pro (高)']?.callCount).toBe(1);
         expect(state.archivedCallIds).toContain('old-call');
     });
 
@@ -579,7 +579,7 @@ describe('filterGMSummaryByModels', () => {
                     stepIndices: [3],
                     executionId: 'exec-old',
                     model: 'MODEL_PLACEHOLDER_M37',
-                    modelDisplay: 'Gemini 3.1 Pro (强)',
+                    modelDisplay: 'Gemini 3.1 Pro (高)',
                     responseModel: 'gemini-3.1-pro-high',
                     modelAccuracy: 'exact',
                     inputTokens: 100,
@@ -638,7 +638,7 @@ describe('filterGMSummaryByModels', () => {
                     stepIndices: [3],
                     executionId: 'exec-refetched',
                     model: 'MODEL_PLACEHOLDER_M37',
-                    modelDisplay: 'Gemini 3.1 Pro (强)',
+                    modelDisplay: 'Gemini 3.1 Pro (高)',
                     responseModel: 'gemini-3.1-pro-high',
                     modelAccuracy: 'exact',
                     inputTokens: 100,

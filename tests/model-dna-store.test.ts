@@ -16,7 +16,7 @@ describe('model-dna-store', () => {
         const summary: GMSummary = {
             conversations: [],
             modelBreakdown: {
-                'Gemini 3.1 Pro (强)': {
+                'Gemini 3.1 Pro (高)': {
                     callCount: 3,
                     stepsCovered: 5,
                     totalInputTokens: 1200,
