@@ -30,6 +30,9 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 * **⚡ Real-Time Token Usage**
     Shows current token consumption in the status bar (e.g. `125k/200k, 62.5%`). Token data comes from model checkpoint values when available, with content-based character estimation between checkpoints (replaces fixed constants since v1.4.0). Fixed constants are only used as fallback when step data structure is missing.
 
+* **🪪 Stable Plan Tier Hover**
+    The status bar hover now clears stale secondary plan/tier suffixes when Antigravity stops returning the latest `userTierName`, preventing outdated labels from lingering across later polls.
+
 * **🌐 Language Switching**
     Users can choose between Chinese-only, English-only, or bilingual display mode. Accessible from the details panel: click status bar → Settings → Switch Language. Preference is persisted via `globalState` across sessions.
 
@@ -202,4 +205,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.15.0
+**Version**: 1.15.1

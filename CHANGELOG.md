@@ -1,5 +1,27 @@
 # 变更日志 / Changelog
 
+## [1.15.1] - 2026-04-14
+
+### 🐛 Fixed / 修复
+
+- **Status Bar Plan Tier Cache / 状态栏计划层级缓存**: Fixed a stale hover-label bug where the status bar could keep showing an old secondary plan tier such as `Google AI Ultra` after Antigravity stopped returning the latest `userTierName`. `StatusBarManager.setPlanName()` now always overwrites the cached tier value, and an empty latest tier explicitly clears the old suffix.
+  修复状态栏悬浮提示的计划层级缓存残留问题：当 Antigravity 不再返回最新 `userTierName` 时，状态栏仍可能继续显示旧的二级层级标签，例如 `Google AI Ultra`。现在 `StatusBarManager.setPlanName()` 每次都会覆盖缓存，最新 tier 为空时会显式清除旧后缀。
+
+### 🧪 Tests / 测试
+
+- **Status Bar Hover Regression Test / 状态栏悬浮回归测试**: Added a regression test covering the transition from `Pro · Google AI Ultra` to `Pro` when the newest tier field becomes empty.
+  新增状态栏悬浮回归测试，覆盖最新 tier 字段变为空时，显示从 `Pro · Google AI Ultra` 正确回落为 `Pro` 的场景。
+
+- **Timezone-Safe Reset-Time Tests / 时区安全的 reset-time 测试**: Updated `reset-time.test.ts` to derive expected absolute local time from the current runtime timezone instead of hardcoding a single timezone-specific clock value. This makes `npm test` pass consistently across environments.
+  更新 `reset-time.test.ts`，不再把绝对时间预期写死为单一时区的固定时刻，而是根据当前运行环境的本地时区动态推导预期值，使 `npm test` 在不同环境下都能稳定通过。
+
+### 📝 Docs / 文档
+
+- Refreshed README, README_CN, and technical docs for the `v1.15.1` release. Thanks to contributor @NightMin2002 for surfacing the stale plan-tier behavior and helping narrow the safe merge scope.
+  更新 README、README_CN 和技术文档以匹配 `v1.15.1` 发布内容。感谢 contributor @NightMin2002 帮助暴露状态栏计划层级残留问题，并协助缩小这次安全合并范围。
+
+---
+
 ## [1.15.0] - 2026-04-10
 
 ### 🐛 Fixed / 修复

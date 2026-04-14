@@ -15,6 +15,7 @@ package-lock.json
 scripts/**
 tests/**
 .agents/**
+.playwright-mcp/**
 llmdoc/**
 docs/**
 vitest.config.ts

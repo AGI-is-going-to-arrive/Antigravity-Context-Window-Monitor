@@ -220,9 +220,7 @@ class StatusBarManager {
      */
     setPlanName(planName, tierName) {
         this.cachedPlanName = planName;
-        if (tierName) {
-            this.cachedTierName = tierName;
-        }
+        this.cachedTierName = tierName || '';
     }
     showInitializing() {
         this.statusBarItem.text = '$(sync~spin) Context...';

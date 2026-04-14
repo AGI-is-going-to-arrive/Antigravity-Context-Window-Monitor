@@ -93,6 +93,9 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
 * **状态栏颜色 / Status Bar Colors**: 根据使用率变色——＜50% 正常、50-80% 黄色警告（`warningBackground`）、≥80% 红色（`errorBackground`）。≥95% 时图标切换为 `$(zap)`。
     Color-coded by usage: <50% normal, 50-80% warning (`warningBackground`), ≥80% error (`errorBackground`). At ≥95% the icon switches to `$(zap)`.
 
+* **计划层级缓存清理 / Plan-Tier Cache Clearing (v1.15.1)**: 状态栏 hover 中的计划信息通过 `StatusBarManager.setPlanName()` 缓存。自 v1.15.1 起，最新轮询如果未返回 `userTierName`，缓存会被显式清空，而不是保留旧的二级层级后缀，避免历史标签残留在后续 hover 中。
+  The plan row in the status bar hover is cached through `StatusBarManager.setPlanName()`. Since v1.15.1, when a later poll omits `userTierName`, the cached secondary tier is explicitly cleared instead of preserving the old suffix, preventing stale labels from lingering in later hovers.
+
 ## 📊 5. WebView Monitor Panel / WebView 监控面板
 
 > Source: [`webview-panel.ts`](../src/webview-panel.ts)
@@ -205,5 +208,5 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
   Three migration triggers in `restore()` force nuclear reset + re-warm-up: missing subAgentTokens, empty checkpointHistory, or all-zero conversationBreakdown (bad data from old field path bug).
 
 ---
-基于 TypeScript 构建，适用于 Antigravity IDE。包含 178 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）：`discovery.test.ts`（50 tests，含 `selectMatchingProcessLine` 优先级反转 + 多窗口回退 + CJK 路径 + WSL/vscode-remote URI + 退避常量验证）、`pr43-improvements.test.ts`（35 tests，LS 选择优先级 + 轮询状态机 + 僵尸检测 + 级联切换）、`statusbar.test.ts`（11 tests）、`tracker.test.ts`（22 tests）、`quota-tracker.test.ts`（27 tests）。
-Built with TypeScript for the Antigravity IDE. Includes 178 vitest unit tests covering pure logic functions (`npm test`): `discovery.test.ts` (50 tests, incl. `selectMatchingProcessLine` priority reversal + multi-window fallback + CJK paths + WSL/vscode-remote URIs + backoff constant validation), `pr43-improvements.test.ts` (35 tests, LS selection priority + polling state machine + zombie detection + cascade switch), `statusbar.test.ts` (11 tests), `tracker.test.ts` (22 tests), `quota-tracker.test.ts` (27 tests).
+基于 TypeScript 构建，适用于 Antigravity IDE。当前共有 179 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）。其中 `statusbar.test.ts` 已包含计划层级缓存清理回归测试，`reset-time.test.ts` 采用基于运行时本地时区的动态断言，避免跨时区环境下的假失败。
+Built with TypeScript for the Antigravity IDE. The repository currently contains 179 vitest unit tests covering pure logic (`npm test`). `statusbar.test.ts` now includes a regression case for clearing stale plan-tier cache, and `reset-time.test.ts` derives local-time expectations from the active runtime timezone to avoid cross-timezone false failures.

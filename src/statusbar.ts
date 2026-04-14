@@ -201,7 +201,7 @@ export class StatusBarManager {
      */
     setPlanName(planName: string, tierName?: string): void {
         this.cachedPlanName = planName;
-        if (tierName) { this.cachedTierName = tierName; }
+        this.cachedTierName = tierName || '';
     }
 
     showInitializing(): void {

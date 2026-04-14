@@ -17,7 +17,7 @@ antigravity-context-monitor/
 │   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
 │   ├── models.ts                 # 模型配置、上下文限额、显示名称、跨语言归一化
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
-│   ├── statusbar.ts              # 状态栏 UI（StatusBarManager）
+│   ├── statusbar.ts              # 状态栏 UI（StatusBarManager，含计划层级 hover 缓存）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
 │   ├── monitor-store.ts          # 监控页持久化：按对话保存 ContextUsage + GM 会话快照
 │   ├── pool-utils.ts             # 配额池工具：按稳定 pool key 分组 / 扩池 / 查找最近 quota session
@@ -151,7 +151,7 @@ Model context limits, display names (i18n-aware), and core interfaces. v1.13.8 a
 
 | 类 / Class | 说明 / Description |
 |---|---|
-| `StatusBarManager` | 状态栏项：上下文用量、颜色编码、额度指示、重置倒计时 |
+| `StatusBarManager` | 状态栏项：上下文用量、颜色编码、额度指示、重置倒计时、计划层级 hover 缓存 |
 
 ---
 
@@ -502,7 +502,7 @@ npx vsce package --no-dependencies
 | `discovery.test.ts` | 50 | `buildExpectedWorkspaceId`（含百分号编码、CJK 路径、空格+中文混合路径、日文路径） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / `extractPort` / `extractPortFromNetstat` / `extractPortFromSs` / `isWSL` / `selectMatchingProcessLine`（优先级反转 + 多窗口回退 + CJK + WSL/vscode-remote + 边界情况） / 退避常量验证（发现 15s / RPC 60s） |
 | `pr43-improvements.test.ts` | 35 | `selectMatchingProcessLine` 新架构优先级（双 LS 共存 / 向后兼容 / 真实场景模拟） / 轮询状态机（僵尸检测 / PID 重校验 / `stalenessConfirmedIdle` 守卫 / cascade 切换重置 / corner cases） |
 | `tracker.test.ts` | 22 | `normalizeUri`（file / vscode-remote / URL 解码）/ `estimateTokensFromText`（ASCII / 非 ASCII / 混合）/ `processSteps()` 纯函数 |
-| `statusbar.test.ts` | 11 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 |
+| `statusbar.test.ts` | 12 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 / 计划层级缓存清理 |
 | `quota-tracker.test.ts` | 33 | 状态机转换 / 额度重置检测 / 批量回调 / 同池去重 / 周期结束归档 / legacy done 迁移 / 0% 回弹恢复 / 稳定池代表 / 脏 active session 自愈 |
 | `pool-utils.test.ts` | 4 | 配额池扩展 / 分组 / quota session 匹配 / 已知模型固定池规则 |
 | `monitor-store.test.ts` | 1 | Monitor 快照与 GM 会话快照恢复 |
@@ -510,9 +510,9 @@ npx vsce package --no-dependencies
 | `activity-tracker.test.ts` | 7 | planner step 延迟补全 / 短对话恢复自愈 / stepIndex 重排清理 / 跨语言模型桶合并 / Gemini stepIndex 重映射去重 / 用户行 GM 污染清洗 / 恢复时历史重复自愈 |
 | `daily-store.test.ts` | 2 | 日历导入回填（新 cycle 插入 / 旧 cycle 字段补全） |
 | `model-dna-store.test.ts` | 1 | 模型静态信息跨周期持久化 |
-| `reset-time.test.ts` | 3 | 倒计时格式化 / 绝对日期时间格式化 / 上下文拼接格式 |
+| `reset-time.test.ts` | 3 | 倒计时格式化 / 绝对日期时间格式化 / 上下文拼接格式（按本地时区动态断言） |
 | `durable-state.test.ts` | 1 | 外部持久化文件创建 / fallback 迁移 / 重装恢复 |
 
-共 178 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 179 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-178 total tests, using `__mocks__/vscode.ts` to mock VS Code API.
+179 total tests, using `__mocks__/vscode.ts` to mock VS Code API.
