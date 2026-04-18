@@ -1980,20 +1980,17 @@ function buildTokenBreakdownChart(s: GMSummary): string {
 // ─── Checkpoint Viewer Section ──────────────────────────────────────────────
 
 function buildCheckpointViewer(s: GMSummary): string {
-    // Find the most recently active conversation with checkpoints
-    // (latest createdAt on calls = currently running conversation)
+    // Find the most recently active conversation, then check if it has checkpoints.
+    // Never fall back to an older conversation's stale checkpoints — that's confusing.
     let primary = null as typeof s.conversations[0] | null;
     let latestTime = '';
     for (const conv of s.conversations) {
-        if ((conv.checkpointSummaries || []).length === 0) { continue; }
         for (const call of conv.calls) {
             if (call.createdAt && call.createdAt > latestTime) {
                 latestTime = call.createdAt;
                 primary = conv;
             }
         }
-        // Fallback: if no calls have timestamps, take first with checkpoints
-        if (!primary) { primary = conv; }
     }
     if (!primary) { return ''; }
     const cps = primary.checkpointSummaries || [];
