@@ -3965,17 +3965,24 @@ function getStyles() {
         body.vscode-light .act-tl-gm-retry { background: rgba(var(--lt-red),0.1); color: var(--lt-red-deep); }
 
         /* ─── Light Theme: Activity Timeline Tags ──── */
-        body.vscode-light .act-tl-tag-alias { background: rgba(var(--lt-amber),0.1); color: var(--lt-amber-deep); border-color: rgba(var(--lt-amber),0.2); }
         body.vscode-light .act-tl-tag-struct { background: rgba(var(--lt-blue),0.1); color: var(--lt-blue-deep); border-color: rgba(var(--lt-blue),0.2); }
         body.vscode-light .act-tl-tag-est { background: rgba(var(--lt-red),0.08); color: #991b1b; border-color: rgba(var(--lt-red),0.2); }
-        body.vscode-light .act-tl-tag-basis { background: rgba(var(--lt-teal),0.1); color: var(--lt-teal-text); border-color: rgba(var(--lt-teal),0.2); }
         body.vscode-light .act-tl-tag-model { background: rgba(0,0,0,0.04); color: rgba(0,0,0,0.5); border-color: rgba(0,0,0,0.08); }
         body.vscode-light .act-tl-ai-preview { color: #c2410c; }
 
         /* ─── Light Theme: Activity Misc ──── */
-        body.vscode-light .act-tl-segment { border-color: rgba(0,0,0,0.06); background: rgba(0,0,0,0.015); }
-        body.vscode-light .act-tl-segment-caption { background: rgba(0,0,0,0.02); border-color: rgba(0,0,0,0.06); }
+        body.vscode-light .act-tl-turn { border-color: rgba(0,0,0,0.06); background: rgba(0,0,0,0.015); }
+        body.vscode-light .act-tl-turn[open] { border-color: rgba(22,163,74,0.2); }
+        body.vscode-light .act-tl-turn-header:hover { background: rgba(0,0,0,0.03); }
         body.vscode-light .act-tl-segment-body .act-tl-item::before { background: rgba(0,0,0,0.16); }
+        body.vscode-light .seg-chip { background: rgba(0,0,0,0.04); }
+        body.vscode-light .seg-chip-model { color: var(--lt-blue-deep); background: rgba(var(--lt-blue),0.08); border-color: rgba(var(--lt-blue),0.15); }
+        body.vscode-light .seg-chip-calls { color: var(--lt-green-deep); background: rgba(var(--lt-green),0.08); border-color: rgba(var(--lt-green),0.15); }
+        body.vscode-light .seg-chip-tools { color: var(--lt-amber-deep); background: rgba(var(--lt-amber),0.08); border-color: rgba(var(--lt-amber),0.15); }
+        body.vscode-light .seg-chip-tok { color: var(--lt-red-deep); background: rgba(var(--lt-red),0.06); border-color: rgba(var(--lt-red),0.12); }
+        body.vscode-light .seg-chip-cache { color: var(--lt-teal-text); background: rgba(var(--lt-teal),0.08); border-color: rgba(var(--lt-teal),0.15); }
+        body.vscode-light .seg-chip-credits { color: var(--lt-orange-text); background: rgba(var(--lt-orange),0.08); border-color: rgba(var(--lt-orange),0.15); }
+        body.vscode-light .seg-chip-dur { color: #334155; background: rgba(0,0,0,0.05); border-color: rgba(0,0,0,0.12); }
         body.vscode-light .act-tl-item { border-bottom-color: rgba(0,0,0,0.04); }
         body.vscode-light .act-tool-tag { background: rgba(0,0,0,0.05); }
         body.vscode-light .act-tl-tool-name { background: rgba(0,0,0,0.05); }

@@ -39,9 +39,9 @@ export function buildGMDataTabContent(
                 <div>
                     <b>${tBi('Counting cycle = Quota cycle, not per-session or per-day.', '统计周期 = 额度周期，而非单个会话或单日。')}</b><br/>
                     ${tBi(
-                        'All metrics (calls, tokens, credits) below accumulate within the <b>current quota cycle</b>. When a model pool\'s quota resets, only that pool\'s data is archived — other pools continue counting. For example, Claude + OSS models share one reset cycle, while Gemini Pro has its own independent cycle.',
-                        '以下所有指标（调用次数、token、credits）均在<b>当前额度周期</b>内累计。当某个模型池的额度重置时，仅归档该池的数据——其他模型池的统计继续。例如 Claude + OSS 共用一个重置周期，而 Gemini Pro 拥有独立的周期。',
-                    )}
+        'All metrics (calls, tokens, credits) below accumulate within the <b>current quota cycle</b>. When a model pool\'s quota resets, only that pool\'s data is archived — other pools continue counting. For example, Claude + OSS models share one reset cycle, while Gemini Pro has its own independent cycle.',
+        '以下所有指标（调用次数、token、credits）均在<b>当前额度周期</b>内累计。当某个模型池的额度重置时，仅归档该池的数据——其他模型池的统计继续。例如 Claude + OSS 共用一个重置周期，而 Gemini Pro 拥有独立的周期。',
+    )}
                 </div>
             </div>
         </div>
@@ -355,15 +355,119 @@ export function getGMDataTabStyles(): string {
     body.vscode-dark .act-tl-gm-cache { background: rgba(45,212,191,0.12); color: #5eead4; }
     body.vscode-dark .act-tl-gm-credit { background: rgba(248,113,113,0.16); color: #fca5a5; }
     body.vscode-dark .act-tl-gm-retry { background: rgba(248,113,113,0.15); color: #fca5a5; }
-    .act-tl-segment {
+    /* ─── Turn Groups (collapsible segments) ─── */
+    .act-tl-turn {
         border: 1px solid var(--color-border, rgba(128,128,128,0.12));
         border-radius: var(--radius-md);
         background: var(--color-surface, rgba(128,128,128,0.04));
         overflow: hidden;
         margin-bottom: var(--space-2);
+        transition: border-color 0.2s cubic-bezier(.4,0,.2,1);
     }
-    .act-tl-segment:last-child {
+    .act-tl-turn:last-child {
         margin-bottom: 0;
+    }
+    .act-tl-turn[open] {
+        border-color: rgba(74,222,128,0.25);
+    }
+    .act-tl-turn-header {
+        display: flex;
+        align-items: center;
+        gap: var(--space-1);
+        padding: var(--space-2);
+        cursor: pointer;
+        user-select: none;
+        font-size: 0.85em;
+        color: var(--color-text);
+        list-style: none;
+        transition: background 0.15s cubic-bezier(.4,0,.2,1);
+    }
+    .act-tl-turn-header::-webkit-details-marker { display: none; }
+    .act-tl-turn-header::before {
+        content: '';
+        width: 0; height: 0;
+        border-left: 5px solid currentColor;
+        border-top: 4px solid transparent;
+        border-bottom: 4px solid transparent;
+        transition: transform 0.2s cubic-bezier(.4,0,.2,1);
+        flex-shrink: 0;
+        opacity: 0.5;
+    }
+    .act-tl-turn[open] > .act-tl-turn-header::before {
+        transform: rotate(90deg);
+    }
+    @media (hover: hover) {
+        .act-tl-turn-header:hover { background: rgba(255,255,255,0.04); }
+    }
+    .act-tl-turn-icon {
+        flex-shrink: 0;
+        color: #4ade80;
+        display: flex;
+        align-items: center;
+    }
+    .act-tl-turn-icon .act-icon { width: 14px; height: 14px; }
+    .act-tl-turn-text {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 500;
+        min-width: 0;
+    }
+    .seg-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 3px;
+        align-items: center;
+        flex-shrink: 0;
+    }
+    .seg-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 1px 5px;
+        border-radius: var(--radius-sm);
+        font-size: 0.72em;
+        line-height: 1.5;
+        white-space: nowrap;
+        border: 1px solid transparent;
+        background: rgba(255,255,255,0.06);
+        color: var(--color-text-dim);
+    }
+    .seg-chip-model {
+        color: var(--color-info, #60a5fa);
+        border-color: rgba(96,165,250,0.2);
+        background: rgba(96,165,250,0.08);
+        font-weight: 500;
+    }
+    .seg-chip-calls {
+        border-color: rgba(74,222,128,0.2);
+        background: rgba(74,222,128,0.08);
+        color: #86efac;
+    }
+    .seg-chip-tools {
+        border-color: rgba(250,204,21,0.2);
+        background: rgba(250,204,21,0.08);
+        color: #fde68a;
+    }
+    .seg-chip-tok {
+        border-color: rgba(248,113,113,0.2);
+        background: rgba(248,113,113,0.08);
+        color: #fca5a5;
+    }
+    .seg-chip-cache {
+        border-color: rgba(45,212,191,0.2);
+        background: rgba(45,212,191,0.08);
+        color: #5eead4;
+    }
+    .seg-chip-credits {
+        border-color: rgba(249,115,22,0.2);
+        background: rgba(249,115,22,0.08);
+        color: #fdba74;
+    }
+    .seg-chip-dur {
+        border-color: rgba(148,163,184,0.2);
+        background: rgba(148,163,184,0.08);
+        color: #cbd5e1;
     }
     .act-tl-segment-user {
         background: rgba(74, 222, 128, 0.04);
@@ -381,6 +485,7 @@ export function getGMDataTabStyles(): string {
     .act-tl-segment-body {
         display: flex;
         flex-direction: column;
+        border-top: 1px solid rgba(255,255,255,0.04);
     }
     .act-tl-segment-body .act-tl-item {
         padding-left: var(--space-2);
@@ -393,13 +498,6 @@ export function getGMDataTabStyles(): string {
         background: rgba(255,255,255,0.16);
         flex-shrink: 0;
         margin-right: var(--space-1);
-    }
-    .act-tl-segment-caption {
-        padding: 4px var(--space-2);
-        font-size: 0.76em;
-        color: var(--color-text-dim);
-        background: rgba(255,255,255,0.02);
-        border-bottom: 1px solid rgba(255,255,255,0.04);
     }
     .act-tl-tags {
         display: inline-flex;
@@ -913,7 +1011,6 @@ export function getGMDataTabStyles(): string {
     body.vscode-light .act-tl-legend-group { border-color: rgba(0,0,0,0.06); background: rgba(0,0,0,0.015); }
     body.vscode-light .act-tl-legend-group-title { background: rgba(0,0,0,0.03); border-bottom-color: rgba(0,0,0,0.06); }
     body.vscode-light .act-tl-legend-formula { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.06); }
-    body.vscode-light .act-tl-segment-caption { background: rgba(0,0,0,0.02); border-bottom-color: rgba(0,0,0,0.04); }
     body.vscode-light .act-conv-item { border-bottom-color: rgba(0,0,0,0.04); }
     body.vscode-light .gm-perf-item { background: rgba(0,0,0,0.02); border-color: rgba(0,0,0,0.06); }
     body.vscode-light .gm-cache-bar-bg { background: rgba(0,0,0,0.06); }
@@ -1226,16 +1323,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null): 
             tags.push(`<span class="act-tl-tag act-tl-tag-est">${e.estimatedResolved ? tBi('Recovered', '已补回') : tBi('Est.', '推算')}</span>`);
         }
 
-        if (e.modelBasis === 'gm_placeholder') {
-            tags.push(`<span class="act-tl-tag act-tl-tag-alias">${tBi('Alias', '别名')}</span>`);
-        } else if (e.modelBasis === 'summary') {
-            tags.push(`<span class="act-tl-tag act-tl-tag-basis">${tBi('Summary', '摘要')}</span>`);
-        } else if (e.modelBasis === 'generator') {
-            tags.push(`<span class="act-tl-tag act-tl-tag-basis">${tBi('Generator', '生成器')}</span>`);
-        } else if (e.modelBasis === 'dominant') {
-            tags.push(`<span class="act-tl-tag act-tl-tag-basis">${tBi('Dominant', '主模型')}</span>`);
-        }
-
+        // Removed alias/placeholder tags — GM provides exact model via responseModel
         if (e.gmModel && e.gmModelAccuracy === 'exact') {
             tags.push(`<span class="act-tl-tag act-tl-tag-model">${esc(e.gmModel)}</span>`);
         }
@@ -1282,9 +1370,9 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null): 
             <div class="act-tl-legend-note act-tl-legend-note-info">
                 <svg class="act-tl-legend-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                 <div>${tBi(
-                    '<b>Why do some rows only show "Ctx"?</b><br/>Detailed metrics (in/out/TTFT/cache) appear only on <b>reasoning rows</b> (🧠). Tool rows (⚡) share the same LLM call — tokens are counted on the reasoning row to avoid double-counting.',
-                    '<b>为什么有些行只显示「上下文」？</b><br/>详细指标（输入/输出/TTFT/缓存）仅出现在<b>推理行</b>（🧠）上。工具行（⚡）共享同一次 LLM 调用 — token 在推理行统计，避免重复计数。'
-                )}</div>
+        '<b>Why do some rows only show "Ctx"?</b><br/>Detailed metrics (in/out/TTFT/cache) appear only on <b>reasoning rows</b> (🧠). Tool rows (⚡) share the same LLM call — tokens are counted on the reasoning row to avoid double-counting.',
+        '<b>为什么有些行只显示「上下文」？</b><br/>详细指标（输入/输出/TTFT/缓存）仅出现在<b>推理行</b>（🧠）上。工具行（⚡）共享同一次 LLM 调用 — token 在推理行统计，避免重复计数。'
+    )}</div>
             </div>
         </div>
     </details><div class="act-timeline">`;
@@ -1366,21 +1454,92 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null): 
         currentSegment.actions.push(event);
     }
 
-    for (const segment of [...segments].reverse()) {
-        html += `<div class="act-tl-segment">`;
-        if (segment.actions.length > 0) {
-            html += `<div class="act-tl-segment-body">`;
-            for (const action of [...segment.actions].reverse()) {
-                html += renderEventRow(action);
+    // Helper: aggregate GM stats from a segment's actions
+    const buildSegmentStats = (actions: any[]) => {
+        let totalIn = 0, totalOut = 0, totalThinking = 0, totalCache = 0, totalCredits = 0;
+        let toolCount = 0, reasoningCount = 0;
+        let model = '';
+        let minTime = '', maxTime = '';
+        const models = new Set<string>();
+        for (const a of actions) {
+            if (a.category === 'tool') { toolCount++; }
+            if (a.category === 'reasoning') {
+                reasoningCount++;
+                if (a.gmInputTokens) { totalIn += a.gmInputTokens; }
+                if (a.gmOutputTokens) { totalOut += a.gmOutputTokens; }
+                if (a.gmThinkingTokens) { totalThinking += a.gmThinkingTokens; }
+                if (a.gmCacheReadTokens) { totalCache += a.gmCacheReadTokens; }
+                if (a.gmCredits) { totalCredits += a.gmCredits; }
             }
-            html += `</div>`;
+            if (a.model) { models.add(a.model); }
+            if (a.gmModel) { models.add(a.gmModel); }
+            if (!minTime || (a.timestamp && a.timestamp < minTime)) { minTime = a.timestamp; }
+            if (!maxTime || (a.timestamp && a.timestamp > maxTime)) { maxTime = a.timestamp; }
+        }
+        // Pick the most specific model name
+        if (models.size === 1) { model = [...models][0]; }
+        else if (models.size > 1) { model = [...models].filter(m => !m.startsWith('MODEL_PLACEHOLDER')).pop() || [...models][0]; }
+        let durationSec = 0;
+        try {
+            if (minTime && maxTime) {
+                durationSec = Math.round((new Date(maxTime).getTime() - new Date(minTime).getTime()) / 1000);
+            }
+        } catch { /* ignore */ }
+        return { totalIn, totalOut, totalThinking, totalCache, totalCredits, toolCount, reasoningCount, model, durationSec };
+    };
+
+    const reversedSegments = [...segments].reverse();
+    for (let si = 0; si < reversedSegments.length; si++) {
+        const segment = reversedSegments[si];
+        const isLatest = si === 0;
+        const stats = buildSegmentStats(segment.actions);
+
+        // Build summary chips for the segment header
+        const chips: string[] = [];
+        if (stats.model) { chips.push(`<span class="seg-chip seg-chip-model">${esc(stats.model)}</span>`); }
+        if (stats.reasoningCount > 0) { chips.push(`<span class="seg-chip seg-chip-calls">${stats.reasoningCount} ${tBi('calls', '调用')}</span>`); }
+        if (stats.toolCount > 0) { chips.push(`<span class="seg-chip seg-chip-tools">🔧${stats.toolCount}</span>`); }
+        if (stats.totalIn > 0 || stats.totalOut > 0) {
+            chips.push(`<span class="seg-chip seg-chip-tok">${fmtTok(stats.totalIn + stats.totalOut)} tok</span>`);
+        }
+        if (stats.totalCache > 0) {
+            chips.push(`<span class="seg-chip seg-chip-cache">${fmtTok(stats.totalCache)} ${tBi('cache', '缓存')}</span>`);
+        }
+        if (stats.totalCredits > 0) {
+            chips.push(`<span class="seg-chip seg-chip-credits">${stats.totalCredits.toFixed(1)} cr</span>`);
+        }
+        if (stats.durationSec > 0) {
+            const durLabel = stats.durationSec >= 60 ? `${Math.floor(stats.durationSec / 60)}m${stats.durationSec % 60}s` : `${stats.durationSec}s`;
+            chips.push(`<span class="seg-chip seg-chip-dur">${durLabel}</span>`);
+        }
+        const chipsHtml = chips.length > 0 ? `<span class="seg-chips">${chips.join('')}</span>` : '';
+
+        // User anchor text for the summary line
+        const userPreview = segment.user
+            ? esc((segment.user.userInput || segment.user.detail || '').replace(/\s*\n\s*/g, ' '))
+            : tBi('AI actions (no user anchor)', 'AI 动作（缺少用户锚点）');
+
+        html += `<details class="act-tl-turn" id="turn-${si}"${isLatest ? ' open' : ''}>`;
+        html += `<summary class="act-tl-turn-header">`;
+        if (segment.user) {
+            html += `<span class="act-tl-turn-icon"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>`;
+        } else {
+            html += `<span class="act-tl-turn-icon"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.2 6H8.2C6.3 13.7 5 11.5 5 9a7 7 0 0 1 7-7z"/><path d="M9 17h6M10 21h4"/></svg></span>`;
+        }
+        html += `<span class="act-tl-turn-text">${userPreview}</span>`;
+        html += chipsHtml;
+        html += `</summary>`;
+
+        // Segment body: actions first (newest at top), user anchor at bottom
+        html += `<div class="act-tl-segment-body">`;
+        for (const action of [...segment.actions].reverse()) {
+            html += renderEventRow(action);
         }
         if (segment.user) {
             html += renderEventRow(segment.user, 'act-tl-segment-user');
-        } else {
-            html += `<div class="act-tl-segment-caption">${tBi('AI actions (user anchor unavailable)', 'AI 动作（缺少用户锚点）')}</div>`;
         }
         html += `</div>`;
+        html += `</details>`;
     }
     html += `</div>`;
     return html;
@@ -1508,8 +1667,8 @@ function buildRetryOverhead(s: GMSummary): string {
     // Bounded display: '<0.1' for trace amounts, '>999' for extreme edge cases
     const pctDisplay = pctRaw <= 0 ? '0'
         : pctRaw < 0.1 ? '<0.1'
-        : pctRaw > 999 ? '>999'
-        : pctRaw.toFixed(1);
+            : pctRaw > 999 ? '>999'
+                : pctRaw.toFixed(1);
 
     // Stop reason distribution
     let stopHtml = '';

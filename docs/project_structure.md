@@ -69,7 +69,8 @@ antigravity-context-monitor/
 ├── vitest.config.ts              # 测试框架配置
 ├── README.md                     # 英文文档
 ├── readme_CN.md                  # 中文文档
-├── CHANGELOG.md                  # 变更日志
+├── CHANGELOG.md                  # 变更日志（v1.0.0 – v1.15.1 历史版本）
+├── CHANGELOG-v2.md               # 变更日志 v2（v1.15.2+ 增量更新）
 └── LICENSE                       # 许可证
 ```
 
