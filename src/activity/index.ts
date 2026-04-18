@@ -1,8 +1,8 @@
-// ─── Activity Tracker (Barrel Re-export) ─────────────────────────────────────
-// This file exists for backward compatibility.
-// All logic has been modularized into src/activity/.
-// External consumers can continue to:  import { ... } from './activity-tracker';
+// ─── Activity Module Barrel ──────────────────────────────────────────────────
+// Re-exports everything so external consumers can still use:
+//   import { ActivityTracker, ActivitySummary, ... } from './activity';
 
+// Types
 export type {
     StepCategory,
     StepClassification,
@@ -15,8 +15,9 @@ export type {
     ConversationBreakdown,
     ActivitySummary,
     ActivityTrackerState,
-} from './activity';
+} from './types';
 
+// Helpers
 export {
     classifyStep,
     truncate,
@@ -36,5 +37,7 @@ export {
     mergeActivityStats,
     mergeGMStats,
     normalizeStepsByModelRecord,
-    ActivityTracker,
-} from './activity';
+} from './helpers';
+
+// Tracker Class
+export { ActivityTracker } from './tracker';

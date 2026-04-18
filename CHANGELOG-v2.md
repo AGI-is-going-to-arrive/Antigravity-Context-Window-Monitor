@@ -134,11 +134,26 @@
   GM rows no longer echo the user's input text as a fallback preview. GM rows should only display AI behavior (responses, tool calls, or status).
   GM 行不再将用户输入作为兜底预览，只显示 AI 行为。
 
+- **Activity Module Modularization / Activity 模块化拆分**:
+  Split `activity-tracker.ts` (2718 lines) into 3 focused sub-modules under `src/activity/`:
+  将 `activity-tracker.ts`（2718 行）拆分为 `src/activity/` 下的 3 个专注子模块：
+
+  | Module | Lines | Responsibility |
+  |--------|:-----:|----------------|
+  | `types.ts` | ~180 | 所有 Activity 类型定义 |
+  | `helpers.ts` | ~280 | 工具函数（分类/提取/合并/预览构建） |
+  | `tracker.ts` | ~2260 | ActivityTracker 类核心 |
+  | `index.ts` | ~45 | barrel re-export |
+
+  Original `activity-tracker.ts` reduced to a ~40-line backward-compatible re-export shim.
+  All 4 external import sites (`import { ... } from './activity-tracker'`) work unchanged.
+  原 `activity-tracker.ts` 缩减为约 40 行的向后兼容 re-export，4 个外部 import 全部无需修改。
+
 ### 📊 Stats / 统计
 
 - **Files changed**: 4 (`gm-tracker.ts`, `activity-tracker.ts`, `docs/project_structure.md`, `CHANGELOG-v2.md`)
-- **Files created**: 5 (`src/gm/types.ts`, `parser.ts`, `summary.ts`, `tracker.ts`, `index.ts`)
+- **Files created**: 9 (`src/gm/{types,parser,summary,tracker,index}.ts`, `src/activity/{types,helpers,tracker,index}.ts`)
 - **TypeScript compile**: Zero errors
-- **Net LOC**: ~40 (re-export shim) replaces ~1728 (monolith) — zero logic change
+- **Net LOC**: ~80 (2 re-export shims) replaces ~4446 (2 monoliths) — zero logic change
 
 ---

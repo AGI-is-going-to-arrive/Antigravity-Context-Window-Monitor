@@ -23,7 +23,12 @@ antigravity-context-monitor/
 │   ├── pool-utils.ts             # 配额池工具：按稳定 pool key 分组 / 扩池 / 查找最近 quota session
 │   ├── quota-tracker.ts          # 模型额度消费时间线追踪（per-model knownWindowMs + 稳定池代表）
 │   ├── reset-time.ts             # 重置时间格式化工具（倒计时 + 绝对日期时间）
-│   ├── activity-tracker.ts       # 模型活动追踪（推理、工具、Token、池级归档）
+│   ├── activity-tracker.ts       # 活动追踪 re-export shim（向后兼容，实际代码在 activity/）
+│   ├── activity/                 # Activity 模块（从 activity-tracker.ts 拆分）
+│   │   ├── index.ts              #   barrel re-export
+│   │   ├── types.ts              #   所有 Activity 类型定义
+│   │   ├── helpers.ts            #   工具函数（分类/提取/合并/预览构建）
+│   │   └── tracker.ts            #   ActivityTracker 类核心
 │   ├── gm-tracker.ts             # GM 数据层 re-export shim（向后兼容，实际代码在 gm/）
 │   ├── gm/                       # GM 模块（从 gm-tracker.ts 拆分）
 │   │   ├── index.ts              #   barrel re-export
