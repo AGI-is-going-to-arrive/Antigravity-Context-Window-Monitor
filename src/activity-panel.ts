@@ -8,6 +8,39 @@ import { ActivitySummary, ActivityArchive, ModelActivityStats, CheckpointSnapsho
 import { esc, formatShortTime as formatTime } from './webview-helpers';
 import type { ContextUsage } from './tracker';
 import type { GMSummary, GMModelStats, GMConversationData, TokenBreakdownGroup } from './gm-tracker';
+import { formatResetCountdown, formatResetAbsolute, parseResetDate } from './reset-time';
+
+// ─── Account Snapshot Type ───────────────────────────────────────────────────
+
+/** A quota reset pool — models sharing the same reset time. */
+export interface ResetPool {
+    /** ISO timestamp when this pool resets */
+    resetTime: string;
+    /** Model labels in this pool (e.g. ["Claude 3.5 Sonnet", "GPT-4o"]) */
+    modelLabels: string[];
+}
+
+/** Snapshot of an account's key status, cached per-email for multi-account display. */
+export interface AccountSnapshot {
+    /** Account email — natural unique key */
+    email: string;
+    /** Display name */
+    name: string;
+    /** Plan tier name (e.g. "Pro", "Free") */
+    planName: string;
+    /** Tier display name */
+    tierName: string;
+    /** Earliest quota reset time ISO across all models (the soonest expiring pool) */
+    earliestResetTime: string;
+    /** All distinct reset times across model pools (for multi-pool visibility) */
+    allResetTimes: string[];
+    /** Per-pool breakdown: each pool has a resetTime and the model labels sharing it */
+    resetPools: ResetPool[];
+    /** Whether this is the currently active (logged-in) account */
+    isActive: boolean;
+    /** Last time this snapshot was updated (ISO timestamp) */
+    lastSeen: string;
+}
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -20,15 +53,26 @@ export function buildGMDataTabContent(
     summary: ActivitySummary | null,
     gmSummary: GMSummary | null,
     currentUsage?: ContextUsage | null,
+    accountSnapshots?: AccountSnapshot[],
 ): string {
+    // Always render account status panel if we have snapshots
+    const accountPanel = (accountSnapshots && accountSnapshots.length > 0)
+        ? buildAccountStatusPanel(accountSnapshots)
+        : '';
+
     if (!summary && (!gmSummary || gmSummary.totalCalls === 0)) {
-        return `<p class="empty-msg">${tBi(
+        return `${accountPanel}<p class="empty-msg">${tBi(
             'Waiting for data... GM and Activity information will appear automatically.',
             '正在等待数据... GM 和活动信息将自动显示。',
         )}</p>`;
     }
 
     const parts: string[] = [];
+
+    // ── Account Status Panel (multi-account)
+    if (accountPanel) {
+        parts.push(accountPanel);
+    }
 
     // ── Data scope explanation
     parts.push(`<details class="act-tl-legend gm-scope-note" id="gmScopeNote">
@@ -117,6 +161,189 @@ export function buildGMDataTabContent(
  */
 export function getGMDataTabStyles(): string {
     return `
+    /* ─── Account Status Panel ─── */
+    .acct-panel {
+        margin-bottom: var(--space-4);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+    }
+    .acct-panel-header {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-2) var(--space-3);
+        background: rgba(255,255,255,0.03);
+        border-bottom: 1px solid var(--color-border);
+        font-size: 0.88em;
+        font-weight: 600;
+        color: var(--color-text);
+    }
+    .acct-panel-header svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .acct-panel-count {
+        font-weight: 400;
+        font-size: 0.82em;
+        opacity: 0.6;
+    }
+    .acct-card {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+        padding: var(--space-2) var(--space-3);
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+        font-size: 0.85em;
+        transition: background 0.15s cubic-bezier(.4,0,.2,1);
+    }
+    .acct-card:last-child { border-bottom: none; }
+    @media (hover: hover) {
+        .acct-card:hover { background: rgba(255,255,255,0.03); }
+    }
+    .acct-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+    .acct-indicator-active {
+        background: #4ade80;
+        box-shadow: 0 0 6px rgba(74,222,128,0.5);
+        animation: acctPulse 2s ease-in-out infinite;
+    }
+    .acct-indicator-cached {
+        background: var(--color-text-dim);
+        opacity: 0.4;
+    }
+    @keyframes acctPulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.6; transform: scale(0.85); }
+    }
+    .acct-identity {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        min-width: 0;
+        flex: 1;
+    }
+    .acct-name {
+        font-weight: 600;
+        color: var(--color-text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .acct-email {
+        font-size: 0.82em;
+        color: var(--color-text-dim);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .acct-plan {
+        flex-shrink: 0;
+        padding: 1px 6px;
+        border-radius: var(--radius-sm);
+        font-size: 0.75em;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .acct-plan-pro {
+        background: rgba(96,165,250,0.12);
+        color: #93c5fd;
+        border: 1px solid rgba(96,165,250,0.25);
+    }
+    .acct-plan-free {
+        background: rgba(148,163,184,0.12);
+        color: #94a3b8;
+        border: 1px solid rgba(148,163,184,0.2);
+    }
+    .acct-plan-ultra {
+        background: rgba(167,139,250,0.12);
+        color: #a78bfa;
+        border: 1px solid rgba(167,139,250,0.25);
+    }
+    .acct-plan-team {
+        background: rgba(74,222,128,0.12);
+        color: #86efac;
+        border: 1px solid rgba(74,222,128,0.25);
+    }
+    .acct-reset {
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 1px;
+        min-width: 100px;
+    }
+    .acct-reset-countdown {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        color: var(--color-text);
+    }
+    .acct-reset-countdown-warn {
+        color: #fbbf24;
+    }
+    .acct-reset-countdown-expired {
+        color: #f87171;
+        font-weight: 700;
+    }
+    .acct-reset-abs {
+        font-size: 0.78em;
+        color: var(--color-text-dim);
+        font-variant-numeric: tabular-nums;
+    }
+    .acct-pools {
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+    }
+    .acct-pool-row {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        justify-content: flex-end;
+    }
+    .acct-pool-models {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px;
+        align-items: center;
+        justify-content: flex-end;
+    }
+    .acct-pool-model {
+        display: inline-block;
+        padding: 0 4px;
+        border-radius: var(--radius-sm);
+        font-size: 0.72em;
+        line-height: 1.6;
+        white-space: nowrap;
+        background: rgba(255,255,255,0.06);
+        color: var(--color-text-dim);
+        border: 1px solid rgba(255,255,255,0.08);
+        max-width: 100px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .acct-pool-more {
+        display: inline-block;
+        padding: 0 3px;
+        font-size: 0.68em;
+        color: var(--color-text-dim);
+        opacity: 0.6;
+    }
+    .acct-tag-active {
+        font-size: 0.72em;
+        color: #4ade80;
+        font-weight: 500;
+    }
+    .acct-tag-cached {
+        font-size: 0.72em;
+        color: var(--color-text-dim);
+        opacity: 0.6;
+    }
+
     /* ─── Activity Tab: Summary Bar ─── */
     .act-summary-bar {
         display: flex;
@@ -2031,5 +2258,99 @@ function buildCheckpointViewer(s: GMSummary): string {
 
     return `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2z"/><path d="M9 21V9h6v12"/></svg>${tBi('Context Checkpoints', '上下文检查点')} <span class="gm-badge-real">#${maxCPNum}</span>${titleChip}</h2>
     <div class="cp-viewer">${cards}</div>`;
+}
+
+// ─── Account Status Panel ───────────────────────────────────────────────────
+
+function getPlanClass(planName: string): string {
+    const lower = planName.toLowerCase();
+    if (lower.includes('ultra')) { return 'acct-plan-ultra'; }
+    if (lower.includes('pro')) { return 'acct-plan-pro'; }
+    if (lower.includes('team')) { return 'acct-plan-team'; }
+    return 'acct-plan-free';
+}
+
+function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
+    const nowMs = Date.now();
+    // Sort: active first, then by lastSeen desc
+    const sorted = [...snapshots].sort((a, b) => {
+        if (a.isActive !== b.isActive) { return a.isActive ? -1 : 1; }
+        return b.lastSeen.localeCompare(a.lastSeen);
+    });
+
+    const cards = sorted.map(snap => {
+        const indicatorClass = snap.isActive ? 'acct-indicator-active' : 'acct-indicator-cached';
+        const planClass = getPlanClass(snap.planName || snap.tierName);
+        const planLabel = snap.tierName || snap.planName || 'Unknown';
+
+        // Build per-pool reset rows
+        const pools = snap.resetPools || [];
+        let resetHtml = '';
+
+        if (pools.length > 0) {
+            // Deduplicate pools that have the same countdown (within 1 minute)
+            const poolRows = pools.map(pool => {
+                const resetDate = parseResetDate(pool.resetTime);
+                if (!resetDate) { return ''; }
+                const diffMs = resetDate.getTime() - nowMs;
+
+                // Condense model labels: show up to 3, then "+N"
+                const maxShow = 3;
+                const labels = pool.modelLabels;
+                const shown = labels.slice(0, maxShow);
+                const extra = labels.length > maxShow ? labels.length - maxShow : 0;
+                const modelChips = shown.map(l =>
+                    `<span class="acct-pool-model">${esc(l)}</span>`
+                ).join('');
+                const extraChip = extra > 0 ? `<span class="acct-pool-more">+${extra}</span>` : '';
+
+                if (diffMs <= 0) {
+                    return `<div class="acct-pool-row">
+                        <div class="acct-pool-models">${modelChips}${extraChip}</div>
+                        <span class="acct-reset-countdown acct-reset-countdown-expired">${tBi('Ready', '已就绪')}</span>
+                    </div>`;
+                }
+
+                const countdown = formatResetCountdown(pool.resetTime, nowMs);
+                const warnClass = diffMs < 30 * 60 * 1000 ? ' acct-reset-countdown-warn' : '';
+                return `<div class="acct-pool-row">
+                    <div class="acct-pool-models">${modelChips}${extraChip}</div>
+                    <span class="acct-reset-countdown${warnClass}">${countdown}</span>
+                </div>`;
+            }).filter(Boolean).join('');
+
+            resetHtml = `<div class="acct-pools">${poolRows}</div>`;
+        } else if (!snap.isActive) {
+            resetHtml = `<div class="acct-reset">
+                <span class="acct-tag-cached">${tBi('cached', '已缓存')}</span>
+            </div>`;
+        }
+
+        const statusTag = snap.isActive
+            ? `<span class="acct-tag-active">${tBi('active', '在线')}</span>`
+            : `<span class="acct-tag-cached">${tBi('cached', '已缓存')}</span>`;
+
+        return `<div class="acct-card">
+            <div class="acct-indicator ${indicatorClass}"></div>
+            <div class="acct-identity">
+                <span class="acct-name">${esc(snap.name || '—')} ${statusTag}</span>
+                <span class="acct-email">${esc(snap.email)}</span>
+            </div>
+            <span class="acct-plan ${planClass}">${esc(planLabel)}</span>
+            ${resetHtml}
+        </div>`;
+    }).join('');
+
+    // Header icon: person SVG
+    const userIcon = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6m2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0m4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4m-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10s-3.516.68-4.168 1.332c-.678.678-.83 1.418-.832 1.664z"/></svg>`;
+
+    return `<div class="acct-panel">
+        <div class="acct-panel-header">
+            ${userIcon}
+            ${tBi('Account Status', '账号状态')}
+            <span class="acct-panel-count">(${sorted.length})</span>
+        </div>
+        ${cards}
+    </div>`;
 }
 

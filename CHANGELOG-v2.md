@@ -416,3 +416,67 @@
 - **TypeScript compile**: Zero errors
 - **Key architectural decision**: Lossy persistence is safe because all text content is re-fetched from API within 5 seconds of startup; only structural/statistical data needs to survive restarts
 
+---
+
+## [1.15.9] - 2026-04-20
+
+### ✨ Added / 新增
+
+- **Multi-Account Status Panel / 多账号状态面板**:
+  在 GM Data 标签页顶部新增多账号状态面板。每次 `fetchFullUserStatus` 成功后，自动从 `email` + `ModelConfig.quotaInfo.resetTime` 提取账号快照，按 email 存入 `Map<email, AccountSnapshot>` 并持久化至 `state-v1.json`。切换账号时，旧账号快照保留为「已缓存」状态，新账号标记为「在线」。
+  New multi-account status panel at the top of the GM Data tab. On each successful `fetchFullUserStatus`, the current account's snapshot is upserted into a `Map<email, AccountSnapshot>` and persisted to `state-v1.json`. When switching accounts, the previous account remains as "cached" while the new one is marked "active".
+
+  | 字段 / Field | 说明 / Description |
+  |---|---|
+  | 在线指示灯 / Active indicator | 绿色脉动 = 在线；灰色 = 已缓存 |
+  | Plan 徽章 / Plan badge | Pro (蓝) / Ultra (紫) / Team (绿) / Free (灰) |
+  | 模型池倒计时 / Per-pool countdown | 每个额度池独立倒计时，显示池内模型标签 |
+  | 到期提示 / Expiry label | 倒计时到期后显示红色「已就绪」 |
+  | 预警 / Warning | 倒计时 < 30 分钟时变黄色 |
+
+- **Per-Pool Model Countdown / 按模型池独立倒计时**:
+  新增 `ResetPool` 类型，每个池记录 `resetTime` + `modelLabels[]`。账号卡片右侧按池分行显示模型标签芯片和独立倒计时，而非单一笼统时间。例如：Claude + GPT 共享一个池，Gemini Pro 独立一个池，Gemini Flash 又是单独的池——各自显示独立的重置倒计时。
+  New `ResetPool` type with `resetTime` + `modelLabels[]`. Each account card shows per-pool rows with model chips and independent countdowns. Models sharing the same `quotaInfo.resetTime` are automatically grouped into one pool — no hardcoded rules.
+
+- **Cached Account Reset Notification / 缓存账号额度重置通知**:
+  新增 `checkCachedAccountResets()`，在每次轮询中自动检查非在线缓存账号的额度池是否已重置。到期时弹出一次性 VS Code 通知：`✅ Night Min: Claude 3.5 Sonnet, GPT-4o 额度已重置，可以切换到该账号了。` 附带「打开监控」按钮。通过 `email:resetTime` 去重，每个重置事件只通知一次，无需额外设置。
+  New `checkCachedAccountResets()` checks all cached accounts' quota pools on every poll cycle. When a pool expires, a one-time VS Code notification prompts the user to switch accounts. Deduplication via `email:resetTime` key ensures no spam.
+
+### 🏗 Technical / 技术细节
+
+- **Data Flow / 数据流**:
+  ```
+  fetchFullUserStatus() → userInfo.email + configs[].quotaInfo.resetTime
+    → updateAccountSnapshot()
+      → poolMap: Map<resetTime, modelLabels[]>
+      → AccountSnapshot { email, name, planName, resetPools, isActive, lastSeen }
+      → persistAccountSnapshots() → durableFileGlobalState → state-v1.json
+    → PanelPayload.accountSnapshots → buildGMDataTabContent()
+      → buildAccountStatusPanel() → per-pool HTML with countdowns
+  ```
+
+- **New Types / 新增类型** (`activity-panel.ts`):
+  - `ResetPool { resetTime: string; modelLabels: string[] }`
+  - `AccountSnapshot { email, name, planName, tierName, earliestResetTime, allResetTimes, resetPools, isActive, lastSeen }`
+
+- **Persistence Key / 持久化键**: `durableFileGlobalState → 'accountSnapshots'` (Array\<AccountSnapshot\>)
+
+### 🎨 Styles / 样式
+
+- **Account Status Panel CSS / 账号状态面板样式**:
+  - `.acct-panel` / `.acct-panel-header` — 容器 + 标题栏
+  - `.acct-card` — 账号行（flex 布局，hover 反馈）
+  - `.acct-indicator-active` — 绿色脉动动画 (`@keyframes acctPulse`)
+  - `.acct-indicator-cached` — 灰色静态
+  - `.acct-plan-pro/free/ultra/team` — Plan 徽章 4 色系
+  - `.acct-pools` / `.acct-pool-row` / `.acct-pool-model` — 模型池布局 + 模型标签芯片
+  - `.acct-reset-countdown-warn` — 黄色 (<30min)
+  - `.acct-reset-countdown-expired` — 红色 (已到期)
+
+### 📊 Stats / 统计
+
+- **Files changed**: 3 (`src/extension.ts`, `src/activity-panel.ts`, `src/webview-panel.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **Net change**: ~280 lines added (types + snapshot management + UI + CSS + notification)
+- **No settings required**: Account reset notifications work automatically with zero configuration

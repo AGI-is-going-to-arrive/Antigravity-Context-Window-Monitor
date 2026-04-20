@@ -103,6 +103,7 @@ Extension lifecycle management hub.
 | 会话选择 / Session selection | 按 RUNNING → 当前 tracked cascade 的 stepCount 变化 → 新会话 → 最近修改 的优先级选当前对话，已建立的当前会话会尽量保持稳定不被其他对话抢占 |
 | 额度池归档 / Pool archival | 使用 `groupModelIdsByResetPool()` 将一次 reset 回调拆成多个共享额度池，逐池归档 Activity + GM + Pricing + Calendar |
 | 持久化协调 / Persistence orchestration | 协调 `durable-state.ts`、`monitor-store.ts`、`activity-tracker.ts`、`gm-tracker.ts`、`daily-store.ts`、`model-dna-store.ts` 的恢复与写回 |
+| 多账号快照 / Multi-account snapshots | `updateAccountSnapshot()` 在每次 `fetchFullUserStatus` 后提取 email + resetPools，按 email 维护 `AccountSnapshot` Map 并持久化至文件；`checkCachedAccountResets()` 在轮询中检查缓存账号额度重置并弹出一次性通知 |
 | 开发命令 / Dev commands | `devSimulateReset`、`devClearGM`、`devPersistActivity` |
 
 ---
@@ -278,6 +279,7 @@ Unified "GM Data" tab merging Activity and GM precise data.
 | 特性 / Feature | 说明 / Description |
 |---|---|
 | 检查点查看器 / Checkpoint Viewer | `buildCheckpointViewer()` 渲染当前活跃对话（通过最新 `createdAt` 定位）的 `{{ CHECKPOINT N }}` 压缩摘要全文，琥珀色可折叠卡片 + 限高滚动容器 |
+| 多账号状态面板 / Account Status Panel | `buildAccountStatusPanel()` 在 GM Data 顶部渲染多账号状态卡片：`AccountSnapshot[]` → 按 email 分行，显示在线/缓存状态、Plan 徽章、按模型池独立倒计时（`ResetPool[]`），到期显示红色「已就绪」|
 | 增量刷新保护 / Refresh preservation | `<details>` 展开状态通过 `restoreDetailsState()` 自动保护；`.cp-viewer` / `.cp-card-body` 滚动位置通过 `scrollableSelectors` 保留 |
 
 ---

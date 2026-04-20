@@ -7,7 +7,7 @@ import { ContextUsage, TrajectorySummary } from './tracker';
 import { ModelConfig, UserStatusInfo } from './models';
 import { QuotaTracker } from './quota-tracker';
 import { ActivityTracker, ActivitySummary, ActivityArchive } from './activity-tracker';
-import { buildGMDataTabContent, getGMDataTabStyles } from './activity-panel';
+import { buildGMDataTabContent, getGMDataTabStyles, type AccountSnapshot } from './activity-panel';
 import { buildPricingTabContent, getPricingTabStyles } from './pricing-panel';
 import { PricingStore, ModelPricing } from './pricing-store';
 import { GMSummary, GMConversationData } from './gm-tracker';
@@ -48,6 +48,7 @@ export interface PanelPayload {
     dailyStore?: DailyStore;
     storageDiagnostics?: StorageDiagnostics;
     modelDNA?: Record<string, PersistedModelDNA>;
+    accountSnapshots?: AccountSnapshot[];
 }
 
 // ─── Panel State ──────────────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ let lastDailyStore: DailyStore | undefined;
 let lastStorageDiagnostics: StorageDiagnostics | undefined;
 let panelDurableState: StateBucket | undefined;
 let lastModelDNA: Record<string, PersistedModelDNA> = {};
+let lastAccountSnapshots: AccountSnapshot[] = [];
 export const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
 
 /** Provide a durable state bucket for panel-level persistence (zoom, etc.). */
@@ -324,6 +326,7 @@ export function showMonitorPanel(p: PanelPayload): void {
     if (p.dailyStore) { lastDailyStore = p.dailyStore; }
     if (p.storageDiagnostics) { lastStorageDiagnostics = p.storageDiagnostics; }
     if (p.modelDNA) { lastModelDNA = p.modelDNA; }
+    if (p.accountSnapshots) { lastAccountSnapshots = p.accountSnapshots; }
 
     if (panel) {
         panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused, lastQuotaTracker);
@@ -600,6 +603,7 @@ export function updateMonitorPanel(p: PanelPayload): void {
     if (p.gmConversations) { lastGMConversations = p.gmConversations; }
     if (p.storageDiagnostics) { lastStorageDiagnostics = p.storageDiagnostics; }
     if (p.modelDNA) { lastModelDNA = p.modelDNA; }
+    if (p.accountSnapshots) { lastAccountSnapshots = p.accountSnapshots; }
     if (panel && !isPaused) {
         // Incremental update: send tab contents via postMessage — no DOM teardown
         safePostMessage({
@@ -621,7 +625,7 @@ function buildTabContents(
     const eoc = `<div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>`;
     return {
         monitor: buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations, tracker, lastPricingStore) + eoc,
-        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage) + eoc,
+        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots) + eoc,
         chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
         pricing: (lastPricingStore
             ? buildPricingTabContent(
@@ -656,7 +660,7 @@ function buildHtml(
     tracker?: QuotaTracker,
 ): string {
     const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations, tracker, lastPricingStore);
-    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage);
+    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots);
     const chatsHtml = buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(

@@ -27,6 +27,7 @@ import { findLatestQuotaSessionForPool, groupModelIdsByResetPool } from './pool-
 import { DurableState, StateBucket } from './durable-state';
 import { mergeModelDNAState, PersistedModelDNA, restoreModelDNAState, serializeModelDNAState, type ModelDNAStoreState } from './model-dna-store';
 import type { StorageDiagnostics } from './webview-settings-tab';
+import type { AccountSnapshot } from './activity-panel';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -66,6 +67,12 @@ type DevResetSnapshot = {
     dailyState: DailyStoreState;
 };
 let devResetSnapshot: DevResetSnapshot | null = null;
+
+// ─── Multi-Account Snapshot State ─────────────────────────────────────────────
+/** Map of email → AccountSnapshot, persisted across sessions. */
+let accountSnapshots = new Map<string, AccountSnapshot>();
+/** Tracks already-notified reset events to avoid duplicate popups. Key = `email:resetTime` */
+const notifiedAccountResets = new Set<string>();
 
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
@@ -242,8 +249,87 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         dailyStore,
         storageDiagnostics: getStorageDiagnostics(),
         modelDNA: persistedModelDNA,
+        accountSnapshots: getAccountSnapshotArray(),
         ...extra,
     };
+}
+
+// ─── Account Snapshot Helpers ─────────────────────────────────────────────────
+
+function updateAccountSnapshot(
+    userInfo: UserStatusInfo,
+    configs: import('./models').ModelConfig[],
+): void {
+    const email = userInfo.email;
+    if (!email) { return; }
+
+    // Group models by their resetTime to form pools
+    const poolMap = new Map<string, string[]>();
+    for (const c of configs) {
+        if (c.quotaInfo?.resetTime) {
+            const rt = c.quotaInfo.resetTime;
+            if (!poolMap.has(rt)) { poolMap.set(rt, []); }
+            const labels = poolMap.get(rt)!;
+            if (!labels.includes(c.label)) {
+                labels.push(c.label);
+            }
+        }
+    }
+
+    // Build resetPools sorted by resetTime (earliest first)
+    const resetPools: import('./activity-panel').ResetPool[] = [];
+    const allResetTimes: string[] = [];
+    for (const [resetTime, modelLabels] of [...poolMap.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+        resetPools.push({ resetTime, modelLabels });
+        allResetTimes.push(resetTime);
+    }
+    const earliestResetTime = allResetTimes.length > 0 ? allResetTimes[0] : '';
+
+    // Mark all existing snapshots as inactive
+    for (const snap of accountSnapshots.values()) {
+        snap.isActive = false;
+    }
+
+    // Upsert current account
+    accountSnapshots.set(email, {
+        email,
+        name: userInfo.name || '',
+        planName: userInfo.planName || '',
+        tierName: userInfo.userTierName || '',
+        earliestResetTime,
+        allResetTimes,
+        resetPools,
+        isActive: true,
+        lastSeen: new Date().toISOString(),
+    });
+
+    // Persist to durable state
+    persistAccountSnapshots();
+}
+
+function persistAccountSnapshots(): void {
+    const arr: AccountSnapshot[] = [];
+    for (const snap of accountSnapshots.values()) {
+        arr.push(snap);
+    }
+    durableFileGlobalState.update('accountSnapshots', arr);
+}
+
+function restoreAccountSnapshots(): void {
+    const saved = durableFileGlobalState.get<AccountSnapshot[] | null>('accountSnapshots', null);
+    if (saved && Array.isArray(saved)) {
+        accountSnapshots = new Map();
+        for (const snap of saved) {
+            if (snap.email) {
+                // All restored snapshots start as inactive until a live fetch confirms
+                accountSnapshots.set(snap.email, { ...snap, isActive: false });
+            }
+        }
+    }
+}
+
+function getAccountSnapshotArray(): AccountSnapshot[] {
+    return [...accountSnapshots.values()];
 }
 
 // ─── Activation ───────────────────────────────────────────────────────────────
@@ -349,6 +435,8 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     pricingStore = new PricingStore();
     pricingStore.init(durableGlobalState);
+    // Restore multi-account snapshots from file-backed state
+    restoreAccountSnapshots();
     dailyStore = new DailyStore();
     dailyStore.init(durableGlobalState);
 
@@ -605,6 +693,7 @@ async function pollContextUsage(): Promise<void> {
                     durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
                     durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
                     log(`User: ${fullStatus.userInfo.name} (${fullStatus.userInfo.planName}) credits: prompt=${fullStatus.userInfo.availablePromptCredits} flow=${fullStatus.userInfo.availableFlowCredits}`);
+                    updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                 }
             } catch { /* Silent degradation */ }
         } else {
@@ -638,6 +727,7 @@ async function pollContextUsage(): Promise<void> {
                                 durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
                                 durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
                                 durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
+                                updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                             }
                         } catch { /* Silent */ }
                     }
@@ -665,6 +755,7 @@ async function pollContextUsage(): Promise<void> {
                         durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
                         durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
                         durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
+                        updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                     }
                     log('Refreshed user status (periodic)');
                 } catch { /* Silent — keep cached data */ }
@@ -1021,7 +1112,10 @@ async function pollContextUsage(): Promise<void> {
             }
         }
 
-        // 6d. Update WebView panel if visible (single unified refresh point)
+        // 6d. Check cached account quota resets (notify user to switch)
+        checkCachedAccountResets();
+
+        // 6e. Update WebView panel if visible (single unified refresh point)
         if (isMonitorPanelVisible()) {
             updateMonitorPanel(makePanelPayload());
         }
@@ -1161,6 +1255,54 @@ function checkQuotaNotification(configs: import('./models').ModelConfig[]): void
         }
     }
 }
+
+/**
+ * Check if any cached (non-active) account's quota has reset.
+ * Sends a one-time VS Code notification per reset event.
+ */
+function checkCachedAccountResets(): void {
+    const nowMs = Date.now();
+    for (const snap of accountSnapshots.values()) {
+        // Only notify for cached/inactive accounts
+        if (snap.isActive) { continue; }
+
+        // Check each pool's reset time
+        const pools = snap.resetPools || [];
+        for (const pool of pools) {
+            if (!pool.resetTime) { continue; }
+            const resetDate = new Date(pool.resetTime);
+            if (isNaN(resetDate.getTime())) { continue; }
+
+            const diffMs = resetDate.getTime() - nowMs;
+            if (diffMs > 0) { continue; } // Not yet expired
+
+            // Only notify if not already notified for this exact resetTime
+            const key = `${snap.email}:${pool.resetTime}`;
+            if (notifiedAccountResets.has(key)) { continue; }
+            notifiedAccountResets.add(key);
+
+            // Build notification message
+            const modelNames = pool.modelLabels.slice(0, 3).join(', ');
+            const extra = pool.modelLabels.length > 3 ? ` +${pool.modelLabels.length - 3}` : '';
+            const displayName = snap.name || snap.email;
+            const openMonitorLabel = tBi('Open Monitor', '打开监控');
+
+            vscode.window.showInformationMessage(
+                tBi(
+                    `✅ ${displayName}: ${modelNames}${extra} quota has reset. You can switch to this account now.`,
+                    `✅ ${displayName}: ${modelNames}${extra} 额度已重置，可以切换到该账号了。`,
+                ),
+                openMonitorLabel,
+            ).then(choice => {
+                if (choice === openMonitorLabel) {
+                    vscode.commands.executeCommand('antigravity-context-monitor.showDetails');
+                }
+            });
+            log(`Account reset notification: ${displayName} — ${modelNames}${extra}`);
+        }
+    }
+}
+
 
 function computeAllTimeCost(): number {
     let total = 0;
