@@ -51,6 +51,10 @@ export class GMTracker {
     private _archivedCallIds = new Set<string>();
     /** Model ID → ISO cutoff: calls with createdAt ≤ cutoff are excluded — survives empty _cache.calls */
     private _archivedModelCutoffs = new Map<string, string>();
+    /** Current active account email — stamped onto newly fetched GM calls */
+    private _currentAccountEmail = '';
+    /** Persistent map: executionId → accountEmail. Survives cache overwrites from re-fetches. */
+    private _callAccountMap = new Map<string, string>();
 
     /**
      * Fetch GM data for the given trajectories.
@@ -98,6 +102,27 @@ export class GMTracker {
                         // Enrichment is best-effort only; keep lightweight GM payload.
                     }
                 }
+
+                // Restore/tag accountEmail using persistent call-key map.
+                // The map survives cache overwrites — each call's account is
+                // recorded once and never overwritten on subsequent re-fetches.
+                // Key = cascadeId + array index. The GM API returns calls in stable
+                // chronological order; new calls are appended at the end, so existing
+                // calls maintain their index across re-fetches.
+                for (let i = 0; i < calls.length; i++) {
+                    const c = calls[i];
+                    const key = `${t.cascadeId}:${i}`;
+                    const known = this._callAccountMap.get(key);
+                    if (known) {
+                        // Already tracked — restore original account
+                        c.accountEmail = known;
+                    } else if (this._currentAccountEmail) {
+                        // New call — tag with current account and remember
+                        c.accountEmail = this._currentAccountEmail;
+                        this._callAccountMap.set(key, this._currentAccountEmail);
+                    }
+                }
+
                 let coveredSteps = 0;
                 for (const c of calls) { coveredSteps += c.stepIndices.length; }
 
@@ -433,6 +458,7 @@ export class GMTracker {
         this._callBaselines.clear();
         this._archivedCallIds.clear();
         this._archivedModelCutoffs.clear();
+        this._callAccountMap.clear();
         this._lastSummary = null;
         this._lastFetchedAt = '';
         this._needsBaselineInit = true;
@@ -585,6 +611,8 @@ export class GMTracker {
             version: 1, summary: slim, baselines, callBaselines,
             archivedCallIds: this._archivedCallIds.size > 0 ? [...this._archivedCallIds] : undefined,
             archivedModelCutoffs: this._archivedModelCutoffs.size > 0 ? Object.fromEntries(this._archivedModelCutoffs) : undefined,
+            currentAccountEmail: this._currentAccountEmail || undefined,
+            callAccountMap: this._callAccountMap.size > 0 ? Object.fromEntries(this._callAccountMap) : undefined,
         };
     }
 
@@ -636,6 +664,30 @@ export class GMTracker {
             }
         }
 
+        // Restore current account email
+        if (typeof (data as any).currentAccountEmail === 'string') {
+            tracker._currentAccountEmail = (data as any).currentAccountEmail;
+        }
+
+        // Restore executionId → accountEmail map
+        if (data.callAccountMap && typeof data.callAccountMap === 'object') {
+            for (const [execId, email] of Object.entries(data.callAccountMap)) {
+                if (typeof email === 'string') {
+                    tracker._callAccountMap.set(execId, email);
+                }
+            }
+        }
+
         return tracker;
+    }
+
+    /** Set the current account email. New calls will be tagged with this. */
+    setCurrentAccount(email: string): void {
+        this._currentAccountEmail = email;
+    }
+
+    /** Get the current account email. */
+    getCurrentAccount(): string {
+        return this._currentAccountEmail;
     }
 }

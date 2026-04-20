@@ -8,6 +8,7 @@ import { ActivitySummary, ActivityArchive, ModelActivityStats, CheckpointSnapsho
 import { esc, formatShortTime as formatTime } from './webview-helpers';
 import type { ContextUsage } from './tracker';
 import type { GMSummary, GMModelStats, GMConversationData, TokenBreakdownGroup } from './gm-tracker';
+import { normalizeModelDisplayName } from './models';
 import { formatResetCountdown, formatResetAbsolute, parseResetDate } from './reset-time';
 
 // ─── Account Snapshot Type ───────────────────────────────────────────────────
@@ -1092,6 +1093,9 @@ export function getGMDataTabStyles(): string {
     .gm-cache-bar { height: 100%; border-radius: var(--radius-sm); background: linear-gradient(90deg, #3b82f6, #60a5fa); transition: width 0.3s cubic-bezier(.4,0,.2,1); }
     .gm-badge-real { display: inline-block; font-size: 0.65em; padding: 1px var(--space-1); border-radius: var(--radius-sm); background: rgba(52,211,153,0.15); color: #34d399; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; vertical-align: middle; margin-left: var(--space-1); }
     .gm-provider-tag { display: inline-block; font-size: 0.72em; padding: 1px var(--space-1); border-radius: var(--radius-sm); background: rgba(96,165,250,0.1); color: var(--color-info); margin-top: var(--space-1); }
+    .gm-account-row { display: flex; flex-direction: column; gap: 3px; padding: 2px 0 2px 22px; }
+    .gm-account-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 0.72em; padding: 2px 8px; border-radius: 10px; background: rgba(139,92,246,0.1); color: rgba(196,181,253,0.85); letter-spacing: 0.2px; width: fit-content; }
+    .gm-account-tag b { font-weight: 700; color: #a78bfa; }
 
     /* ─── Retry Overhead ─── */
     .act-stat-warn { border-color: rgba(248,113,113,0.3); }
@@ -1533,6 +1537,39 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
     const fmtMs = (ms: number) => ms <= 0 ? '-' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 
+    // ── Build per-account call counts for each model ──
+    // Map<modelDisplayName, Map<accountEmail, callCount>>
+    const accountCallsByModel = new Map<string, Map<string, number>>();
+    if (gm) {
+        for (const conv of gm.conversations) {
+            for (const call of conv.calls) {
+                const email = call.accountEmail || '';
+                if (!email) { continue; }
+                const modelName = normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model;
+                if (!modelName) { continue; }
+                let byAccount = accountCallsByModel.get(modelName);
+                if (!byAccount) {
+                    byAccount = new Map<string, number>();
+                    accountCallsByModel.set(modelName, byAccount);
+                }
+                byAccount.set(email, (byAccount.get(email) || 0) + 1);
+            }
+        }
+    }
+    /** Build account breakdown tags HTML for a model (only shown when >1 account) */
+    const buildAccountTags = (modelName: string): string => {
+        const byAccount = accountCallsByModel.get(modelName);
+        if (!byAccount || byAccount.size < 1) { return ''; }
+        const tags = [...byAccount.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([email, count]) => {
+                const prefix = email.split('@')[0];
+                return `<span class="gm-account-tag">${esc(prefix)} <b>${count}</b></span>`;
+            })
+            .join('');
+        return `<div class="act-card-row gm-account-row">${tags}</div>`;
+    };
+
     let html = `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>${tBi('Model Stats', '模型统计')}</h2>`;
 
     // Accuracy note: shown when estimated steps exist
@@ -1582,19 +1619,10 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
                 ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gmStats.totalCacheRead)}${gmTag}</span></div>` : ''}
                 ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>Credits</span></span><span class="val">${gmStats.totalCredits.toFixed(1)}${gmTag}</span></div>` : ''}
                 ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gmStats.cacheHitRate * 100).toFixed(0)}%${gmTag}</span></div>` : ''}
-                ${'exactCallCount' in gmStats && gmStats.exactCallCount > 0 ? `<div class="act-card-row"><span>${ICONS.tool} <span>${tBi('Exact Calls', '精确调用')}</span></span><span class="val">${gmStats.exactCallCount}${gmTag}</span></div>` : ''}
-                ${'placeholderOnlyCalls' in gmStats && gmStats.placeholderOnlyCalls > 0 ? `<div class="act-card-row"><span>${ICONS.error} <span>${tBi('Alias Only', '仅别名')}</span></span><span class="val">${gmStats.placeholderOnlyCalls}${gmTag}</span></div>` : ''}
                 `;
                 // Footer tags from full GMModelStats (responseModel, apiProvider)
                 if ('responseModel' in gmStats && gmStats.responseModel) {
                     gmFooterTags += `<span class="act-tool-tag">${esc(gmStats.responseModel)}</span>`;
-                }
-                if ('placeholderOnlyCalls' in gmStats && gmStats.placeholderOnlyCalls > 0) {
-                    gmFooterTags += `<span class="gm-provider-tag">${tBi(`Alias ${gmStats.placeholderOnlyCalls}`, `别名 ${gmStats.placeholderOnlyCalls}`)}</span>`;
-                }
-                if ('apiProvider' in gmStats && gmStats.apiProvider) {
-                    const providerShort = gmStats.apiProvider.replace('API_PROVIDER_', '').replace(/_/g, ' ');
-                    gmFooterTags += `<span class="gm-provider-tag">${esc(providerShort)}</span>`;
                 }
             }
         }
@@ -1615,7 +1643,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
                 ${ms.toolCalls > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Tool', '工具')}</span></span><span class="val">${fmtMs(ms.toolTimeMs)}</span></div>` : ''}
                 ${gmSection}
             </div>
-            ${(toolList || gmFooterTags) ? `<div class="act-card-footer">${gmFooterTags}${toolList}</div>` : ''}
+            ${(toolList || gmFooterTags || buildAccountTags(name)) ? `<div class="act-card-footer">${buildAccountTags(name)}${gmFooterTags}${toolList}</div>` : ''}
         </div>`;
     }
     // GM-only models: models in GM data but not in Activity modelStats
@@ -1635,13 +1663,10 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
                 ${gms.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gms.totalCacheRead)}</span></div>` : ''}
                 ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>Credits</span></span><span class="val">${gms.totalCredits.toFixed(1)}</span></div>` : ''}
                 ${gms.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gms.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
-                ${'exactCallCount' in gms && gms.exactCallCount > 0 ? `<div class="act-card-row"><span>${ICONS.tool} <span>${tBi('Exact Calls', '精确调用')}</span></span><span class="val">${gms.exactCallCount}</span></div>` : ''}
-                ${'placeholderOnlyCalls' in gms && gms.placeholderOnlyCalls > 0 ? `<div class="act-card-row"><span>${ICONS.error} <span>${tBi('Alias Only', '仅别名')}</span></span><span class="val">${gms.placeholderOnlyCalls}</span></div>` : ''}
             </div>
             <div class="act-card-footer">
+                ${buildAccountTags(name)}
                 ${'responseModel' in gms && gms.responseModel ? `<span class="act-tool-tag">${esc(gms.responseModel)}</span>` : ''}
-                ${providerShort ? `<span class="gm-provider-tag">${esc(providerShort)}</span>` : ''}
-                ${'placeholderOnlyCalls' in gms && gms.placeholderOnlyCalls > 0 ? `<span class="gm-provider-tag">${tBi(`Alias ${gms.placeholderOnlyCalls}`, `别名 ${gms.placeholderOnlyCalls}`)}</span>` : ''}
                 <span class="act-tool-tag">${tBi('Cache', '缓存')} ${(gms.cacheHitRate * 100).toFixed(0)}%</span>
             </div>
         </div>`;

@@ -8,6 +8,44 @@
 
 ---
 
+## [1.15.3] - 2026-04-20
+
+### ✨ Added / 新增
+
+- **跨账号配额隔离 / Cross-Account Quota Isolation**:
+  完整实现多账号 GM 调用归属追踪与隔离。每个 LLM 调用通过 `_callAccountMap`（`cascadeId:index → email` 持久映射）永久记录其归属账号，跨 re-fetch 和 VS Code 重启稳定保留。
+  Full multi-account GM call attribution and isolation. Each LLM call is permanently mapped to its originating account via `_callAccountMap` (`cascadeId:index → email`), surviving re-fetches and VS Code restarts.
+
+- **账号切换防护 / Account Switch Guard**:
+  `handleAccountSwitchIfNeeded()` 在三个 `fetchFullUserStatus` 入口点（初始发现、定期轮询、LS PID 重校验）检测账号切换，立即重置 `quotaTracker` 追踪状态防止旧 `resetTime` 触发误归档。
+  `handleAccountSwitchIfNeeded()` detects account switches at all three `fetchFullUserStatus` entry points, immediately reseting `quotaTracker` to prevent stale `resetTime` from triggering false archival.
+
+- **零用量归档卫兵 / Zero-Usage Archive Guard**:
+  `onQuotaReset` 回调在归档前验证当前账号 GM 调用数 + Activity 步数均为零时跳过，防止切换账号时产生空归档。
+  `onQuotaReset` verifies current account's GM calls + activity steps are both zero before archiving, preventing empty archives on account switches.
+
+- **日历账号标记 / Calendar Account Tags**:
+  `DailyCycleEntry` 新增 `accountEmail` 字段，`addCycle()` 从 `extension.ts` 接收当前账号参数。日历周期卡片标题尾部显示紫色 `.cal-account-tag` 账号标签，支持亮色/暗色主题。
+  `DailyCycleEntry` now includes `accountEmail`. Calendar cycle cards show purple account tags at the end of the header line.
+
+- **模型卡片账号分布 / Model Card Account Breakdown**:
+  模型统计卡片 footer 区域垂直排列紫色药丸标签，按 `accountEmail` 分组显示各账号的调用次数，完整展示邮箱前缀。
+  Model stat card footers show vertical purple pill tags grouped by account email with full prefix display.
+
+### 🗑 Removed / 移除
+
+- **冗余模型标签 / Redundant Model Tags**:
+  移除模型卡片中的「精确调用」「仅别名」行和 footer 区域的「别名 N」「ANTHROPIC VERTEX」等 API provider 标签，减少视觉噪音。
+  Removed "Exact Calls", "Alias Only" rows and API provider / alias count tags from model card footers.
+
+### 🔧 Fixed / 修复
+
+- **模拟额度重置缺少账号标记 / Dev Simulate Reset Missing Account Tag**:
+  `devSimulateReset` 命令调用 `dailyStore.addCycle()` 时未传入 `currentAccountEmail`，导致日历归档缺少账号标记。
+  Fixed `devSimulateReset` not passing `currentAccountEmail` to `dailyStore.addCycle()`.
+
+---
+
 ## [1.15.2] - 2026-04-18
 
 ### ✨ Added / 新增

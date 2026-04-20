@@ -1704,6 +1704,22 @@ export class ActivityTracker {
     getArchives(): ActivityArchive[] { return [...this._archives]; }
 
     /**
+     * Get total step count currently recorded for the given model IDs.
+     * Used to detect zero-usage pools (likely a false archival trigger from
+     * an account switch rather than a genuine quota reset).
+     */
+    getCurrentStepCountForModels(modelIds: string[]): number {
+        const normalizedIds = new Set(modelIds.map(id => normalizeModelDisplayName(id) || id));
+        let total = 0;
+        for (const [name, stats] of this._modelStats) {
+            if (normalizedIds.has(name)) {
+                total += stats.reasoning + stats.toolCalls;
+            }
+        }
+        return total;
+    }
+
+    /**
      * Archive current activity data and reset stats.
      * Called when quota resets (fraction jumps back to 1.0).
      * @param modelIds - Optional model IDs whose quota triggered this archive.

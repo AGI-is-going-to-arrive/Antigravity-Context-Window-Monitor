@@ -16,10 +16,10 @@ const CHEVRON_RIGHT = '<svg viewBox="0 0 16 16" width="12" height="12"><path fil
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const MONTH_NAMES_ZH = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
-const MONTH_NAMES_EN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const DAY_HEADERS_ZH = ['一','二','三','四','五','六','日'];
-const DAY_HEADERS_EN = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const MONTH_NAMES_ZH = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
+const MONTH_NAMES_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DAY_HEADERS_ZH = ['一', '二', '三', '四', '五', '六', '日'];
+const DAY_HEADERS_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 function formatTokensK(n: number): string {
     if (n >= 1_000_000) { return (n / 1_000_000).toFixed(1) + 'M'; }
@@ -74,9 +74,9 @@ export function buildCalendarTabContent(store?: DailyStore, year?: number, month
             <section class="card empty">
                 <h2>${CALENDAR_ICON} ${tBi('Calendar', '日历')}</h2>
                 <p class="empty-desc">${tBi(
-                    'Calendar data is not initialized yet.',
-                    '日历数据尚未初始化。',
-                )}</p>
+            'Calendar data is not initialized yet.',
+            '日历数据尚未初始化。',
+        )}</p>
             </section>`;
     }
 
@@ -575,6 +575,24 @@ export function getCalendarTabStyles(): string {
             text-align: center;
         }
 
+        .cal-account-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            font-size: 0.72em;
+            padding: 1px 6px;
+            border-radius: 10px;
+            background: rgba(139,92,246,0.12);
+            color: rgba(196,181,253,0.9);
+            letter-spacing: 0.2px;
+            margin-left: var(--space-1);
+            vertical-align: middle;
+        }
+        body.vscode-light .cal-account-tag {
+            background: rgba(109,40,217,0.08);
+            color: #6d28d9;
+        }
+
         .cal-cycle-stats-spaced {
             margin-top: var(--space-2);
         }
@@ -998,11 +1016,19 @@ function buildCycleCard(cycle: DailyCycleEntry, index: number): string {
         stats.push(`<span class="cal-stat cal-day-total-danger"><span class="cal-stat-val">${cycle.totalErrors}</span> <span class="cal-stat-label">${tBi('errors', '错误')}</span></span>`);
     }
 
+    const accountTag = cycle.accountEmail
+        ? (() => {
+            const prefix = cycle.accountEmail.split('@')[0];
+            const short = prefix.length > 12 ? prefix.slice(0, 12) + '…' : prefix;
+            return ` <span class="cal-account-tag">${esc(short)}</span>`;
+        })()
+        : '';
+
     return `
         <div class="cal-cycle">
             <div class="cal-cycle-header">
                 <span class="cal-cycle-time">
-                    #${index} · ${startTime} — ${endTime} · ${duration}
+                    #${index} · ${startTime} — ${endTime} · ${duration}${accountTag}
                 </span>
             </div>
             ${modelChips ? `<div class="cal-cycle-models">${modelChips}</div>` : ''}

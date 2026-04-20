@@ -56,6 +56,8 @@ export interface DailyCycleEntry {
     estimatedCost?: number;          // USD grand total
     // GM per-model breakdown
     gmModelStats?: Record<string, GMModelCycleStats>;
+    /** Account email that produced this cycle (multi-account isolation) */
+    accountEmail?: string;
 }
 
 /** All cycles for a single calendar day */
@@ -199,6 +201,7 @@ export class DailyStore {
         gmSummary?: GMSummary | null,
         costTotal?: number,
         costPerModel?: Record<string, number>,
+        accountEmail?: string,
     ): void {
         const dateKey = toDateKey(archive.endTime);
         let record = this._records.get(dateKey);
@@ -241,6 +244,11 @@ export class DailyStore {
 
         // GM per-model breakdown
         cycle.gmModelStats = buildGMPerModelStats(gmSummary, costPerModel);
+
+        // Account email
+        if (accountEmail) {
+            cycle.accountEmail = accountEmail;
+        }
 
         record.cycles.push(cycle);
         this._trimOld();

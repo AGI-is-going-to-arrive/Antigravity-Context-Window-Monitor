@@ -104,6 +104,7 @@ Extension lifecycle management hub.
 | 额度池归档 / Pool archival | 使用 `groupModelIdsByResetPool()` 将一次 reset 回调拆成多个共享额度池，逐池归档 Activity + GM + Pricing + Calendar |
 | 持久化协调 / Persistence orchestration | 协调 `durable-state.ts`、`monitor-store.ts`、`activity-tracker.ts`、`gm-tracker.ts`、`daily-store.ts`、`model-dna-store.ts` 的恢复与写回 |
 | 多账号快照 / Multi-account snapshots | `updateAccountSnapshot()` 在每次 `fetchFullUserStatus` 后提取 email + resetPools，按 email 维护 `AccountSnapshot` Map 并持久化至文件；`checkCachedAccountResets()` 在轮询中检查缓存账号额度重置并弹出一次性通知 |
+| 跨账号隔离 / Cross-account isolation | `handleAccountSwitchIfNeeded()` 在每次状态拉取前检测账号切换，重置 `quotaTracker` 追踪状态防止旧 resetTime 触发误归档；`onQuotaReset` 零用量卫兵验证当前账号 GM 调用数 + Activity 步数均为零时跳过归档；`filterGMSummaryByModels()` 按 `currentAccountEmail` 过滤归档数据 |
 | 开发命令 / Dev commands | `devSimulateReset`、`devClearGM`、`devPersistActivity` |
 
 ---
@@ -267,6 +268,7 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | Detailed summary | `getDetailedSummary()` 返回完整 `GMSummary`（含 calls），写盘前通过 `slimSummaryForPersistence()` 剥离文本字段（prompt / chat / checkpoint summaries / token breakdown / tools），仅保留 token/credits 计费数据 |
 | Monitor fallback | `getAllConversationData()` 导出对话级 GM 明细，供 Monitor 标签页回退展示 |
 | Per-pool reset | `reset(modelIds?)` 仅归档并隐藏匹配 pool 的调用 |
+| 跨账号调用标记 / Account tagging | `_currentAccountEmail` 记录当前活跃账号；`_callAccountMap`（`cascadeId:index → email`）持久映射每个调用的归属账号，跨 re-fetch 和 VS Code 重启稳定保留。`serialize()` / `restore()` 负责映射表的序列化和恢复 |
 
 ---
 
@@ -281,6 +283,7 @@ Unified "GM Data" tab merging Activity and GM precise data.
 | 检查点查看器 / Checkpoint Viewer | `buildCheckpointViewer()` 渲染当前活跃对话（通过最新 `createdAt` 定位）的 `{{ CHECKPOINT N }}` 压缩摘要全文，琥珀色可折叠卡片 + 限高滚动容器 |
 | 多账号状态面板 / Account Status Panel | `buildAccountStatusPanel()` 在 GM Data 顶部渲染多账号状态卡片：`AccountSnapshot[]` → 按 email 分行，显示在线/缓存状态、Plan 徽章、按模型池独立倒计时（`ResetPool[]`），到期显示红色「已就绪」|
 | 增量刷新保护 / Refresh preservation | `<details>` 展开状态通过 `restoreDetailsState()` 自动保护；`.cp-viewer` / `.cp-card-body` 滚动位置通过 `scrollableSelectors` 保留 |
+| 账号分布标签 / Account breakdown tags | 模型卡片 footer 区域垂直排列紫色药丸标签，按 `accountEmail` 分组显示各账号的调用次数，支持完整邮箱前缀展示 |
 
 ---
 
@@ -332,13 +335,13 @@ Builds the full Cost tab HTML and also exports `buildModelDNACards()` for the Mo
 
 ### 📅 daily-store.ts — 日历数据层
 
-按天聚合 Activity + GM + Cost 的快照数据，支持回溯导入历史归档。
+按天聚合 Activity + GM + Cost 的快照数据，支持回溯导入历史归档。`DailyCycleEntry` 包含 `accountEmail` 字段标记产生该周期的账号，`addCycle()` 从 `extension.ts` 接收 `currentAccountEmail` 参数并存入归档记录。
 
 ---
 
 ### 📅 webview-calendar-tab.ts — Calendar 标签页渲染
 
-生成 Calendar 标签页 HTML：月历网格、可展开日详情、周期卡片、历史汇总。
+生成 Calendar 标签页 HTML：月历网格、可展开日详情、周期卡片、历史汇总。周期卡片标题尾部显示紫色 `.cal-account-tag` 账号标签（截取 email 前缀），支持亮色/暗色主题。
 
 ---
 

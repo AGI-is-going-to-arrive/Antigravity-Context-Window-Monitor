@@ -114,6 +114,8 @@ export interface GMCallEntry {
     checkpointIndex: number;
     /** Checkpoint summaries extracted from messagePrompts */
     checkpointSummaries: GMCheckpointSummary[];
+    /** Account email that triggered this call (for multi-account isolation) */
+    accountEmail?: string;
 }
 
 /** Aggregated per-model statistics */
@@ -204,6 +206,10 @@ export interface GMTrackerState {
     archivedCallIds?: string[];
     /** Model ID → ISO cutoff timestamp: calls created before cutoff are excluded (added v1.14.0) */
     archivedModelCutoffs?: Record<string, string>;
+    /** Current active account email for GM call tagging (added v1.15.9) */
+    currentAccountEmail?: string;
+    /** Persistent executionId → accountEmail mapping (added v1.15.10) */
+    callAccountMap?: Record<string, string>;
 }
 
 // ─── Clone Utilities ─────────────────────────────────────────────────────────
@@ -298,6 +304,7 @@ export function slimCallForPersistence(call: GMCallEntry): GMCallEntry {
         startStepIndex: call.startStepIndex,
         checkpointIndex: call.checkpointIndex,
         checkpointSummaries: [],
+        accountEmail: call.accountEmail,
     };
 }
 

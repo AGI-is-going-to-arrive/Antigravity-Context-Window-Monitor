@@ -73,6 +73,8 @@ let devResetSnapshot: DevResetSnapshot | null = null;
 let accountSnapshots = new Map<string, AccountSnapshot>();
 /** Tracks already-notified reset events to avoid duplicate popups. Key = `email:resetTime` */
 const notifiedAccountResets = new Set<string>();
+/** Currently active account email for switch detection. */
+let currentAccountEmail = '';
 
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
@@ -332,6 +334,31 @@ function getAccountSnapshotArray(): AccountSnapshot[] {
     return [...accountSnapshots.values()];
 }
 
+/**
+ * Detect account switch and reset quota/GM state to prevent false archival.
+ * Must be called BEFORE quotaTracker.processUpdate() on every status fetch.
+ * Returns true if an account switch was detected.
+ */
+function handleAccountSwitchIfNeeded(newEmail: string): boolean {
+    if (!newEmail) { return false; }
+    if (currentAccountEmail && currentAccountEmail !== newEmail) {
+        log(`⚠ Account switch detected: ${currentAccountEmail} → ${newEmail}`);
+        // Reset quota tracker model states — prevents false cycle-end detection
+        // from the new account's different resetTime values
+        quotaTracker.resetTrackingStates();
+        log('QuotaTracker states reset to prevent false archive trigger');
+        currentAccountEmail = newEmail;
+        // Update GMTracker account tag for new calls
+        gmTracker.setCurrentAccount(newEmail);
+        return true;
+    }
+    if (!currentAccountEmail) {
+        currentAccountEmail = newEmail;
+        gmTracker.setCurrentAccount(newEmail);
+    }
+    return false;
+}
+
 // ─── Activation ───────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -359,14 +386,32 @@ export function activate(context: vscode.ExtensionContext): void {
             const resetPools = groupModelIdsByResetPool(modelIds, cachedModelConfigs);
 
             for (const poolModelIds of resetPools) {
-                log(`Quota reset [${poolModelIds.join(', ')}] — archiving pool snapshot`);
+                // ── Account-switch false-archival guard ──────────────────────
+                // A real quota reset always has some recorded usage.
+                // Zero GM calls + zero activity steps = almost certainly a
+                // false trigger from an account switch (new account's resetTime
+                // looks like the old cycle ended). Skip archival in that case.
+                const poolSummary = filterGMSummaryByModels(preResetGMSummary, poolModelIds, currentAccountEmail);
+                const poolGMCallCount = poolSummary
+                    ? poolSummary.conversations.reduce((n, c) => n + c.calls.length, 0)
+                    : 0;
+                const poolActivitySteps = activityTracker
+                    .getCurrentStepCountForModels(poolModelIds);
+
+                if (poolGMCallCount === 0 && poolActivitySteps === 0) {
+                    log(`Quota reset [${poolModelIds.join(', ')}] — SKIPPED (zero usage, likely account switch)`);
+                    continue;
+                }
+
+                log(`Quota reset [${poolModelIds.join(', ')}] — archiving pool (GM calls: ${poolGMCallCount}, steps: ${poolActivitySteps})`);
 
                 const quotaSession = findLatestQuotaSessionForPool(
                     poolModelIds,
                     cachedModelConfigs,
                     quotaHistory,
                 );
-                const poolGMSummary = filterGMSummaryByModels(preResetGMSummary, poolModelIds);
+                // Filter by BOTH model pool AND account email — prevents cross-account contamination
+                const poolGMSummary = filterGMSummaryByModels(preResetGMSummary, poolModelIds, currentAccountEmail);
                 const archive = activityTracker.archiveAndReset(poolModelIds, {
                     startTime: quotaSession?.startTime,
                     endTime: quotaSession?.endTime,
@@ -387,7 +432,7 @@ export function activate(context: vscode.ExtensionContext): void {
                             }
                         }
                     }
-                    dailyStore.addCycle(archive, poolGMSummary, costTotal, costPerModel);
+                    dailyStore.addCycle(archive, poolGMSummary, costTotal, costPerModel, currentAccountEmail);
                 }
 
                 gmTracker.reset(poolModelIds);
@@ -437,6 +482,8 @@ export function activate(context: vscode.ExtensionContext): void {
     pricingStore.init(durableGlobalState);
     // Restore multi-account snapshots from file-backed state
     restoreAccountSnapshots();
+    // Restore current account email from GMTracker persisted state
+    currentAccountEmail = gmTracker.getCurrentAccount();
     dailyStore = new DailyStore();
     dailyStore.init(durableGlobalState);
 
@@ -525,7 +572,7 @@ export function activate(context: vscode.ExtensionContext): void {
                         if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
                     }
                 }
-                dailyStore.addCycle(archive, lastGMSummary, costTotal, costPerModel);
+                dailyStore.addCycle(archive, lastGMSummary, costTotal, costPerModel, currentAccountEmail);
             }
             const allModelIds = cachedModelConfigs.map(config => config.model);
             gmTracker.reset(allModelIds);
@@ -681,6 +728,10 @@ async function pollContextUsage(): Promise<void> {
                     updateModelDisplayNames(fullStatus.configs);
                     cachedModelConfigs = fullStatus.configs;
                     statusBar.setModelConfigs(fullStatus.configs);
+                    // Detect account switch BEFORE quota processing
+                    if (fullStatus.userInfo?.email) {
+                        handleAccountSwitchIfNeeded(fullStatus.userInfo.email);
+                    }
                     quotaTracker.processUpdate(fullStatus.configs);
                     checkQuotaNotification(fullStatus.configs);
                     log(`Updated model display names: ${fullStatus.configs.map(c => c.label).join(', ')}`);
@@ -718,6 +769,9 @@ async function pollContextUsage(): Promise<void> {
                                 updateModelDisplayNames(fullStatus.configs);
                                 cachedModelConfigs = fullStatus.configs;
                                 statusBar.setModelConfigs(fullStatus.configs);
+                                if (fullStatus.userInfo?.email) {
+                                    handleAccountSwitchIfNeeded(fullStatus.userInfo.email);
+                                }
                                 quotaTracker.processUpdate(fullStatus.configs);
                                 checkQuotaNotification(fullStatus.configs);
                             }
@@ -746,6 +800,9 @@ async function pollContextUsage(): Promise<void> {
                     if (fullStatus.configs.length > 0) {
                         cachedModelConfigs = fullStatus.configs;
                         statusBar.setModelConfigs(fullStatus.configs);
+                        if (fullStatus.userInfo?.email) {
+                            handleAccountSwitchIfNeeded(fullStatus.userInfo.email);
+                        }
                         quotaTracker.processUpdate(fullStatus.configs);
                         checkQuotaNotification(fullStatus.configs);
                     }
