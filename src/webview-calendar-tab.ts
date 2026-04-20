@@ -764,9 +764,9 @@ function buildMonthView(store: DailyStore, year: number, month: number): string 
         const hasData = cellData !== undefined;
 
         if (hasData) {
-            const highActivity = cellData.totalReasoning > 20 || cellData.cycleCount > 2;
+            const highActivity = cellData.totalReasoning > 20 || cellData.totalCost > 0.5;
             cells.push(`
-                <button class="cal-cell has-data${todayClass}" data-cal-date="${dateStr}" data-tooltip="${cellData.cycleCount} ${tBi('cycles', '周期')}">
+                <button class="cal-cell has-data${todayClass}" data-cal-date="${dateStr}" data-tooltip="${tBi('has data', '有数据')}">
                     ${day}
                     <div class="cal-dot${highActivity ? ' high-activity' : ''}"></div>
                 </button>`);
@@ -874,16 +874,9 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
 
     const mergedModelHtml = buildMergedModelRows(mergedModel);
     const mergedGMHtml = buildMergedGMRows(mergedGM);
-    const cycleCards = record.cycles.map((c, idx) => buildCycleCard(c, idx + 1)).join('');
-
     const todayBadge = isToday(dateStr)
         ? `<span class="badge info-badge">${tBi('TODAY', '今天')}</span>`
         : '';
-
-    const cycleCount = record.cycles.length;
-    const cycleSection = cycleCount > 1
-        ? `<details class="cal-cycles-details" id="d-cal-cycles-${dateStr}"><summary class="cal-cycles-summary">${tBi(`View ${cycleCount} Individual Cycles`, `查看 ${cycleCount} 个独立周期`)}</summary>${cycleCards}</details>`
-        : cycleCards;
 
     return `
         <div class="cal-detail" id="cal-detail-${dateStr}" style="display:none" data-cal-detail="${dateStr}">
@@ -891,9 +884,6 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
                 <span class="cal-detail-date">
                     ${CALENDAR_ICON} ${dateStr} ${todayBadge}
                 </span>
-                <div class="cal-detail-summary">
-                    <span class="cal-sum-item"><span class="cal-stat-val">${cycleCount}</span> ${tBi('cycles', '周期')}</span>
-                </div>
             </div>
             <div class="cal-day-summary">
                 <div class="cal-day-total">
@@ -936,7 +926,6 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
             </div>
             ${mergedModelHtml}
             ${mergedGMHtml}
-            ${cycleSection}
         </div>`;
 }
 

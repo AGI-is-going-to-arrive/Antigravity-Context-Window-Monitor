@@ -392,36 +392,10 @@ export class GMTracker {
     }
 
     /**
-     * Per-pool reset: archive only calls from specified models.
-     * When modelIds is empty/undefined, falls back to global reset (all calls).
-     * Pre-reset snapshot is already archived to dailyStore.addCycle()
-     * in extension.ts, so no data is lost.
+     * Global reset: archive call baselines, clear all calls, reset summary.
+     * Called during daily archival when the date rolls over.
      */
-    reset(modelIds?: string[]): void {
-        if (modelIds && modelIds.length > 0) {
-            // ── Per-pool reset: only archive calls from specified models ──
-            const modelSet = new Set(modelIds);
-            // Always record model-level cutoff timestamps — effective even when
-            // _cache.calls is empty (e.g. after serialize/restore strips calls).
-            // Calls with createdAt ≤ cutoff are excluded; newer calls pass through.
-            const cutoff = new Date().toISOString();
-            for (const id of modelIds) {
-                this._archivedModelCutoffs.set(id, cutoff);
-            }
-            for (const [, conv] of this._cache) {
-                for (const c of conv.calls) {
-                    if (modelSet.has(c.model) || modelSet.has(c.responseModel)) {
-                        if (c.executionId) {
-                            this._archivedCallIds.add(c.executionId);
-                        }
-                        this._archivedCallIds.add(buildGMArchiveKey(c));
-                    }
-                }
-            }
-            this._lastSummary = this._buildSummary();
-            return;
-        }
-        // ── Global reset (fallback) ──
+    reset(): void {
         // Record call baselines: for conversations that were fetched from API
         // (calls.length > 0), set baseline to their absolute call count.
         // Stubs (calls=[]) keep their existing baseline from previous reset.

@@ -147,7 +147,7 @@ function refreshLocalStorageDiagnostics(): void {
             if (lastGMSummary && lastPricingStore) { total += lastPricingStore.calculateCosts(lastGMSummary).grandTotal; }
             return total;
         })(),
-        quotaResetCount: lastArchives.length,
+        quotaResetCount: lastDailyStore?.totalDays || 0,
         calendarDayCount: lastDailyStore?.totalDays || 0,
         calendarCycleCount,
     };
@@ -508,8 +508,7 @@ export function showMonitorPanel(p: PanelPayload): void {
             lastGMConversations = {};
             refreshLocalStorageDiagnostics();
             await vscode.commands.executeCommand('antigravity-context-monitor.devClearGM');
-            // Persist cleared activity state to globalState — prevents restore from
-            // resurrecting old archives after reinstall → importArchives re-populating calendar
+            // Persist cleared activity state to globalState
             await vscode.commands.executeCommand('antigravity-context-monitor.devPersistActivity');
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);

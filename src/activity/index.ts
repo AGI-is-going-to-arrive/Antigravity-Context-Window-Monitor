@@ -25,7 +25,6 @@ export {
     stepDurationTool,
     extractToolDetail,
     extractToolName,
-    sameTriggeredByScope,
     buildGMEventKey,
     buildRawStepFingerprint,
     buildLegacyStepEventIdentity,

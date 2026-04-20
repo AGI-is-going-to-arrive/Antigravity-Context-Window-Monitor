@@ -19,11 +19,15 @@ import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDu
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
-import { GMTracker, GMSummary, GMTrackerState, filterGMSummaryByModels, slimSummaryForPersistence } from './gm-tracker';
+import { GMTracker, GMSummary, GMTrackerState, slimSummaryForPersistence } from './gm-tracker';
 import { PricingStore } from './pricing-store';
 import { DailyStore, type DailyStoreState } from './daily-store';
 import { MonitorStore } from './monitor-store';
-import { findLatestQuotaSessionForPool, groupModelIdsByResetPool } from './pool-utils';
+import {
+    toLocalDateKey,
+    performDailyArchival as performDailyArchivalCore,
+    type DailyArchivalContext,
+} from './daily-archival';
 import { DurableState, StateBucket } from './durable-state';
 import { mergeModelDNAState, PersistedModelDNA, restoreModelDNAState, serializeModelDNAState, type ModelDNAStoreState } from './model-dna-store';
 import type { StorageDiagnostics } from './webview-settings-tab';
@@ -75,6 +79,9 @@ let accountSnapshots = new Map<string, AccountSnapshot>();
 const notifiedAccountResets = new Set<string>();
 /** Currently active account email for switch detection. */
 let currentAccountEmail = '';
+
+/** Last archived local date key ('YYYY-MM-DD'), used to detect date rollover. */
+let lastArchivalDateKey: string = '';
 
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
@@ -335,20 +342,14 @@ function getAccountSnapshotArray(): AccountSnapshot[] {
 }
 
 /**
- * Detect account switch and reset quota/GM state to prevent false archival.
- * Must be called BEFORE quotaTracker.processUpdate() on every status fetch.
- * Returns true if an account switch was detected.
+ * Detect account switch for GM call attribution.
+ * No longer resets QuotaTracker — daily archival is not triggered by quota cycles.
  */
 function handleAccountSwitchIfNeeded(newEmail: string): boolean {
     if (!newEmail) { return false; }
     if (currentAccountEmail && currentAccountEmail !== newEmail) {
-        log(`⚠ Account switch detected: ${currentAccountEmail} → ${newEmail}`);
-        // Reset quota tracker model states — prevents false cycle-end detection
-        // from the new account's different resetTime values
-        quotaTracker.resetTrackingStates();
-        log('QuotaTracker states reset to prevent false archive trigger');
+        log(`Account switch detected: ${currentAccountEmail} → ${newEmail}`);
         currentAccountEmail = newEmail;
-        // Update GMTracker account tag for new calls
         gmTracker.setCurrentAccount(newEmail);
         return true;
     }
@@ -357,6 +358,39 @@ function handleAccountSwitchIfNeeded(newEmail: string): boolean {
         gmTracker.setCurrentAccount(newEmail);
     }
     return false;
+}
+
+/** Extract local date key — re-exported from daily-archival for backward compat. */
+// toLocalDateKey is imported from './daily-archival'
+
+/**
+ * Perform daily archival by delegating to the testable core logic.
+ * Wires module-level state into a DailyArchivalContext.
+ */
+function performDailyArchival(force = false): void {
+    const ctx: DailyArchivalContext = {
+        activityTracker,
+        gmTracker,
+        dailyStore,
+        pricingStore,
+        lastGMSummary,
+        persistedModelDNA,
+        lastArchivalDateKey,
+        persist: (updates) => {
+            lastArchivalDateKey = updates.lastArchivalDateKey;
+            lastGMSummary = updates.lastGMSummary;
+            if (updates.modelDNAChanged && updates.persistedModelDNA) {
+                persistedModelDNA = updates.persistedModelDNA;
+                durableGlobalState.update('modelDNAState', serializeModelDNAState(persistedModelDNA));
+            }
+            durableGlobalState.update('lastArchivalDateKey', lastArchivalDateKey);
+            durableGlobalState.update('activityTrackerState', activityTracker.serialize());
+            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+            persistGMSummaryToFile(lastGMSummary);
+        },
+        log,
+    };
+    performDailyArchivalCore(ctx, force);
 }
 
 // ─── Activation ───────────────────────────────────────────────────────────────
@@ -380,69 +414,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize quota tracker
     quotaTracker = new QuotaTracker(context, durableGlobalState);
     quotaTracker.onQuotaReset = (modelIds: string[]) => {
-        if (activityTracker) {
-            const preResetGMSummary = lastGMSummary;
-            const quotaHistory = quotaTracker.getHistory();
-            const resetPools = groupModelIdsByResetPool(modelIds, cachedModelConfigs);
-
-            for (const poolModelIds of resetPools) {
-                // ── Account-switch false-archival guard ──────────────────────
-                // A real quota reset always has some recorded usage.
-                // Zero GM calls + zero activity steps = almost certainly a
-                // false trigger from an account switch (new account's resetTime
-                // looks like the old cycle ended). Skip archival in that case.
-                const poolSummary = filterGMSummaryByModels(preResetGMSummary, poolModelIds, currentAccountEmail);
-                const poolGMCallCount = poolSummary
-                    ? poolSummary.conversations.reduce((n, c) => n + c.calls.length, 0)
-                    : 0;
-                const poolActivitySteps = activityTracker
-                    .getCurrentStepCountForModels(poolModelIds);
-
-                if (poolGMCallCount === 0 && poolActivitySteps === 0) {
-                    log(`Quota reset [${poolModelIds.join(', ')}] — SKIPPED (zero usage, likely account switch)`);
-                    continue;
-                }
-
-                log(`Quota reset [${poolModelIds.join(', ')}] — archiving pool (GM calls: ${poolGMCallCount}, steps: ${poolActivitySteps})`);
-
-                const quotaSession = findLatestQuotaSessionForPool(
-                    poolModelIds,
-                    cachedModelConfigs,
-                    quotaHistory,
-                );
-                // Filter by BOTH model pool AND account email — prevents cross-account contamination
-                const poolGMSummary = filterGMSummaryByModels(preResetGMSummary, poolModelIds, currentAccountEmail);
-                const archive = activityTracker.archiveAndReset(poolModelIds, {
-                    startTime: quotaSession?.startTime,
-                    endTime: quotaSession?.endTime,
-                });
-
-                if (archive && dailyStore) {
-                    let costTotal: number | undefined;
-                    let costPerModel: Record<string, number> | undefined;
-                    if (poolGMSummary && pricingStore) {
-                        const result = pricingStore.calculateCosts(poolGMSummary);
-                        if (result.grandTotal > 0) {
-                            costTotal = result.grandTotal;
-                        }
-                        costPerModel = {};
-                        for (const row of result.rows) {
-                            if (row.totalCost > 0) {
-                                costPerModel[row.name] = row.totalCost;
-                            }
-                        }
-                    }
-                    dailyStore.addCycle(archive, poolGMSummary, costTotal, costPerModel, currentAccountEmail);
-                }
-
-                gmTracker.reset(poolModelIds);
-            }
-
-            durableGlobalState.update('activityTrackerState', activityTracker.serialize());
-            lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
-            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-            persistGMSummaryToFile(lastGMSummary);
-        }
+        // Data archival has been moved to performDailyArchival().
+        // QuotaTracker still archives its own sessions internally.
+        log(`Quota reset detected: [${modelIds.join(', ')}] — session archived by QuotaTracker`);
     };
 
     // Initialize i18n from persisted state
@@ -487,18 +461,8 @@ export function activate(context: vscode.ExtensionContext): void {
     dailyStore = new DailyStore();
     dailyStore.init(durableGlobalState);
 
-    // Retroactive import: backfill existing archives into calendar
-    const existingArchives = activityTracker.getArchives();
-    if (existingArchives.length > 0) {
-        const imported = dailyStore.importArchives(existingArchives);
-        if (imported > 0) {
-            log(`Calendar: retroactively imported ${imported} archive(s) from activity history`);
-        }
-    }
-
-    // NOTE: live-snapshot removed — calendar data is written exclusively via
-    // onQuotaReset callback (authoritative source) + importArchives cold-start backfill.
-    // This eliminates duplicate cycle entries and GM data inconsistencies.
+    // Restore daily archival date key
+    lastArchivalDateKey = durableGlobalState.get<string>('lastArchivalDateKey', '');
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = durableGlobalState.get<import('./models').ModelConfig[]>('cachedModelConfigs', []);
@@ -556,32 +520,12 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('antigravity-context-monitor.devSimulateReset', () => {
             if (!activityTracker) { return; }
             captureDevResetSnapshot();
-            log('[Dev] Simulating quota reset...');
-            const archive = activityTracker.archiveAndReset();
-            if (archive) {
-                archive.triggeredBy = ['[simulate]'];
-            }
-            if (archive && dailyStore) {
-                let costTotal: number | undefined;
-                let costPerModel: Record<string, number> | undefined;
-                if (lastGMSummary && pricingStore) {
-                    const result = pricingStore.calculateCosts(lastGMSummary);
-                    costTotal = result.grandTotal;
-                    costPerModel = {};
-                    for (const row of result.rows) {
-                        if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
-                    }
-                }
-                dailyStore.addCycle(archive, lastGMSummary, costTotal, costPerModel, currentAccountEmail);
-            }
-            const allModelIds = cachedModelConfigs.map(config => config.model);
-            gmTracker.reset(allModelIds);
-            lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
-            persistResetSensitiveState();
+            log('[Dev] Simulating daily archival...');
+            performDailyArchival(true);
             if (isMonitorPanelVisible()) {
                 updateMonitorPanel(makePanelPayload());
             }
-            log('[Dev] Quota reset simulated — snapshot captured, activity archived, GM summary reset');
+            log('[Dev] Daily archival simulated — snapshot captured, data archived & reset');
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.devRestoreReset', () => {
             const restored = restoreDevResetSnapshot();
@@ -1172,7 +1116,10 @@ async function pollContextUsage(): Promise<void> {
         // 6d. Check cached account quota resets (notify user to switch)
         checkCachedAccountResets();
 
-        // 6e. Update WebView panel if visible (single unified refresh point)
+        // 6e. Daily archival — archive & reset when local date rolls over
+        performDailyArchival();
+
+        // 6f. Update WebView panel if visible (single unified refresh point)
         if (isMonitorPanelVisible()) {
             updateMonitorPanel(makePanelPayload());
         }
@@ -1408,7 +1355,7 @@ function getStorageDiagnostics(): StorageDiagnostics {
         gmTotalOutputTokens: lastGMSummary?.totalOutputTokens || 0,
         gmTotalCredits: lastGMSummary?.totalCredits || 0,
         estimatedCostAllTime: computeAllTimeCost(),
-        quotaResetCount: activityTracker?.getArchives().length || 0,
+        quotaResetCount: dailyStore?.totalDays || 0,
         calendarDayCount: dailyStore?.totalDays || 0,
         calendarCycleCount,
         hasDevResetSnapshot: !!devResetSnapshot,

@@ -1,9 +1,9 @@
 // ─── Daily Store ─────────────────────────────────────────────────────────────
 // Aggregates Activity, GM, and Pricing snapshots by date for the Calendar tab.
-// Each quota-reset archive creates a "cycle" entry under that day's record.
+// Each day gets a single aggregated entry, written when the local date rolls over.
 // Persisted via globalState for cross-session survival.
 
-import type { ActivityArchive } from './activity-tracker';
+import type { ActivityArchive, ActivitySummary } from './activity-tracker';
 import type { GMSummary, GMModelStats } from './gm-tracker';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -100,8 +100,6 @@ export interface MonthCostBreakdown {
 export interface DailyStoreState {
     version: 1;
     records: Record<string, DailyRecord>;
-    /** True once importArchives has completed — prevents re-importing on every activate */
-    backfilled?: boolean;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -176,7 +174,6 @@ const DEFAULT_MAX_DAYS = 90;
 export class DailyStore {
     private _records = new Map<string, DailyRecord>();
     private _maxDays = DEFAULT_MAX_DAYS;
-    private _backfilled = false;
     private _globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): Thenable<void> } | null = null;
 
     /** Initialize from globalState */
@@ -187,14 +184,67 @@ export class DailyStore {
             for (const [date, record] of Object.entries(saved.records)) {
                 this._records.set(date, record);
             }
-            this._backfilled = !!saved.backfilled;
         }
         this._trimOld();
     }
 
     /**
-     * Add a cycle entry from an ActivityArchive snapshot.
-     * Called when quota resets (archiveAndReset).
+     * Add a daily snapshot from Activity + GM summaries.
+     * Called when the local date rolls over (performDailyArchival).
+     * Each day gets exactly one entry; calling again for the same date replaces it.
+     */
+    addDailySnapshot(
+        dateKey: string,
+        activitySummary: ActivitySummary,
+        gmSummary: GMSummary | null,
+        costTotal?: number,
+        costPerModel?: Record<string, number>,
+    ): void {
+        let record = this._records.get(dateKey);
+        if (!record) {
+            record = { date: dateKey, cycles: [] };
+            this._records.set(dateKey, record);
+        }
+
+        const entry: DailyCycleEntry = {
+            startTime: `${dateKey}T00:00:00`,
+            endTime: new Date().toISOString(),
+            totalReasoning: activitySummary.totalReasoning,
+            totalToolCalls: activitySummary.totalToolCalls,
+            totalErrors: activitySummary.totalErrors,
+            totalInputTokens: activitySummary.totalInputTokens,
+            totalOutputTokens: activitySummary.totalOutputTokens,
+            estSteps: activitySummary.estSteps,
+            modelNames: extractModelNames(activitySummary.modelStats),
+            modelStats: buildPerModelStats(activitySummary.modelStats),
+        };
+
+        if (gmSummary) {
+            entry.gmTotalCalls = gmSummary.totalCalls;
+            entry.gmTotalCredits = gmSummary.totalCredits;
+            entry.gmTotalTokens = gmSummary.totalInputTokens + gmSummary.totalOutputTokens;
+            if (gmSummary.totalRetryTokens > 0) {
+                entry.gmRetryTokens = gmSummary.totalRetryTokens;
+                entry.gmRetryCredits = gmSummary.totalRetryCredits;
+                entry.gmRetryCount = gmSummary.totalRetryCount;
+            }
+        }
+
+        if (costTotal !== undefined && costTotal > 0) {
+            entry.estimatedCost = costTotal;
+        }
+
+        entry.gmModelStats = buildGMPerModelStats(gmSummary, costPerModel);
+
+        // One entry per day — replace existing
+        record.cycles = [entry];
+        this._trimOld();
+        this._persist();
+    }
+
+    /**
+     * @deprecated Legacy method — kept for backward compatibility with old archive format.
+     * New code should use addDailySnapshot() instead.
      */
     addCycle(
         archive: ActivityArchive,
@@ -211,8 +261,6 @@ export class DailyStore {
         }
 
         const s = archive.summary;
-
-        // Extract per-model breakdown from archive's modelStats
         const cycle: DailyCycleEntry = {
             startTime: archive.startTime,
             endTime: archive.endTime,
@@ -241,104 +289,15 @@ export class DailyStore {
         if (costTotal !== undefined && costTotal > 0) {
             cycle.estimatedCost = costTotal;
         }
-
-        // GM per-model breakdown
         cycle.gmModelStats = buildGMPerModelStats(gmSummary, costPerModel);
-
-        // Account email
-        if (accountEmail) {
-            cycle.accountEmail = accountEmail;
-        }
+        if (accountEmail) { cycle.accountEmail = accountEmail; }
 
         record.cycles.push(cycle);
         this._trimOld();
         this._persist();
     }
 
-    /**
-     * Bulk import existing archives into the store (ONE-TIME retroactive fill).
-     * Skips entirely if already backfilled. Sets backfilled flag after completion
-     * so subsequent activations don't re-import cleared data.
-     */
-    importArchives(
-        archives: ActivityArchive[],
-        gmSummary?: GMSummary | null,
-        costTotal?: number,
-    ): number {
-        // Already backfilled — skip to prevent resurrecting cleared calendar data
-        if (this._backfilled) { return 0; }
-
-        let imported = 0;
-        let needsPersist = false;
-        for (const archive of archives) {
-            const dateKey = toDateKey(archive.endTime);
-            const existing = this._records.get(dateKey);
-            // Dedup: skip if a cycle with the same startTime already exists — BUT
-            // back-fill missing fields if the existing cycle is incomplete (data upgrade).
-            if (existing) {
-                const match = existing.cycles.find(c => c.startTime === archive.startTime);
-                if (match) {
-                    const upgradedModelStats = buildPerModelStats(archive.summary.modelStats);
-                    const archiveGMBreakdown = archive.summary.gmModelBreakdown;
-                    const upgradedGMModelStats = buildGMPerModelStats(gmSummary?.modelBreakdown || archiveGMBreakdown);
-                    const gmTotalCalls = gmSummary?.totalCalls
-                        ?? (archiveGMBreakdown ? Object.values(archiveGMBreakdown).reduce((sum, ms) => sum + ms.callCount, 0) : 0);
-                    const gmTotalCredits = gmSummary?.totalCredits
-                        ?? (archiveGMBreakdown ? Object.values(archiveGMBreakdown).reduce((sum, ms) => sum + ms.totalCredits, 0) : 0);
-                    const gmTotalTokens = gmSummary
-                        ? gmSummary.totalInputTokens + gmSummary.totalOutputTokens
-                        : (archiveGMBreakdown
-                            ? Object.values(archiveGMBreakdown).reduce((sum, ms) => sum + ms.totalInputTokens + ms.totalOutputTokens, 0)
-                            : 0);
-                    const gmRetryTokens = gmSummary?.totalRetryTokens ?? 0;
-                    const gmRetryCredits = gmSummary?.totalRetryCredits ?? 0;
-                    const gmRetryCount = gmSummary?.totalRetryCount ?? 0;
-
-                    if (!match.modelStats && upgradedModelStats) {
-                        match.modelStats = upgradedModelStats;
-                        needsPersist = true;
-                    }
-                    if (!match.triggeredBy && archive.triggeredBy && archive.triggeredBy.length > 0) {
-                        match.triggeredBy = [...archive.triggeredBy];
-                        needsPersist = true;
-                    }
-                    if ((match.gmTotalCalls === undefined || match.gmTotalCalls === 0) && gmTotalCalls > 0) {
-                        match.gmTotalCalls = gmTotalCalls;
-                        needsPersist = true;
-                    }
-                    if ((match.gmTotalCredits === undefined || match.gmTotalCredits === 0) && gmTotalCredits > 0) {
-                        match.gmTotalCredits = gmTotalCredits;
-                        needsPersist = true;
-                    }
-                    if ((match.gmTotalTokens === undefined || match.gmTotalTokens === 0) && gmTotalTokens > 0) {
-                        match.gmTotalTokens = gmTotalTokens;
-                        needsPersist = true;
-                    }
-                    if ((match.gmRetryTokens === undefined || match.gmRetryTokens === 0) && gmRetryTokens > 0) {
-                        match.gmRetryTokens = gmRetryTokens;
-                        match.gmRetryCredits = gmRetryCredits;
-                        match.gmRetryCount = gmRetryCount;
-                        needsPersist = true;
-                    }
-                    if ((match.estimatedCost === undefined || match.estimatedCost === 0) && (costTotal || 0) > 0) {
-                        match.estimatedCost = costTotal;
-                        needsPersist = true;
-                    }
-                    if (!match.gmModelStats && upgradedGMModelStats) {
-                        match.gmModelStats = upgradedGMModelStats;
-                        needsPersist = true;
-                    }
-                    continue;
-                }
-            }
-            this.addCycle(archive, gmSummary, costTotal);
-            imported++;
-        }
-        // Mark as backfilled so subsequent activations skip this path
-        this._backfilled = true;
-        this._persist();
-        return imported;
-    }
+    // importArchives() removed — daily archival no longer needs retroactive backfill.
 
     /** Get record for a specific date, or null */
     getRecord(date: string): DailyRecord | null {
@@ -429,10 +388,9 @@ export class DailyStore {
     /** Total number of recorded days */
     get totalDays(): number { return this._records.size; }
 
-    /** Clear all history. Also sets backfilled=true to prevent importArchives from re-populating. */
+    /** Clear all history. */
     clear(): void {
         this._records.clear();
-        this._backfilled = true;
         this._persist();
     }
 
@@ -442,7 +400,7 @@ export class DailyStore {
         for (const [date, record] of this._records) {
             records[date] = record;
         }
-        return { version: 1, records, backfilled: this._backfilled };
+        return { version: 1, records };
     }
 
     /** Restore the full in-memory snapshot and persist it back to storage. */
@@ -452,9 +410,6 @@ export class DailyStore {
             for (const [date, record] of Object.entries(state.records)) {
                 this._records.set(date, record);
             }
-            this._backfilled = !!state.backfilled;
-        } else {
-            this._backfilled = false;
         }
         this._trimOld();
         this._persist();

@@ -12,6 +12,7 @@ This document describes the source code organization, module responsibilities, a
 antigravity-context-monitor/
 ├── src/                          # TypeScript 源码
 │   ├── extension.ts              # 扩展入口：激活/停用、轮询调度、命令注册、状态恢复
+│   ├── daily-archival.ts         # 每日归档核心逻辑（可测试纯函数，依赖注入）
 │   ├── discovery.ts              # Language Server 进程发现（跨平台）
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
 │   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
@@ -38,7 +39,7 @@ antigravity-context-monitor/
 │   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize）
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
-│   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost
+│   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照）
 │   ├── webview-panel.ts          # WebView 面板框架（9 标签切换 + 消息通信）
 │   ├── webview-styles.ts         # WebView 面板 CSS 样式（Design Token 体系）
 │   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、开发按钮等）
@@ -61,13 +62,14 @@ antigravity-context-monitor/
 │   ├── discovery.test.ts         # discovery 单元测试
 │   ├── durable-state.test.ts     # durable-state 单元测试
 │   ├── activity-tracker.test.ts  # activity-tracker 单元测试（跨语言归一化、planner step 修复）
+│   ├── daily-archival.test.ts    # daily-archival 单元测试（日期触发、午夜边界、force 模式）
 │   ├── gm-tracker.test.ts        # gm-tracker 单元测试（含跨语言恢复回归）
 │   ├── model-dna-store.test.ts   # model-dna-store 单元测试（模型信息持久化）
 │   ├── monitor-store.test.ts     # monitor-store 单元测试
 │   ├── pool-utils.test.ts        # pool-utils 单元测试
 │   ├── quota-tracker.test.ts     # quota-tracker 单元测试（含 0% 回弹恢复）
 │   ├── reset-time.test.ts        # reset-time 单元测试
-│   ├── daily-store.test.ts       # daily-store 单元测试（日历导入回填）
+│   ├── daily-store.test.ts       # daily-store 单元测试（addDailySnapshot、序列化、向后兼容）
 │   ├── statusbar.test.ts         # statusbar 单元测试
 │   └── tracker.test.ts           # tracker 单元测试
 ├── docs/
@@ -98,14 +100,14 @@ Extension lifecycle management hub.
 | 职责 / Responsibility | 说明 / Description |
 |---|---|
 | `activate()` / `deactivate()` | 初始化所有子系统、注册命令、恢复 / 持久化关键状态 |
-| 全局轮询 / Global poll | `pollContextUsage()` 以可配置间隔执行（默认 5s） |
+| 全局轮询 / Global poll | `pollContextUsage()` 以可配置间隔执行（默认 5s），每次轮询调用 `performDailyArchival()` 检查日期变更 |
 | Activity 统一轮询 / Unified activity poll | Activity 数据处理已合并至 `pollContextUsage()` 主循环，复用已获取的 trajectory 缓存，消除重复 RPC 调用 |
 | 会话选择 / Session selection | 按 RUNNING → 当前 tracked cascade 的 stepCount 变化 → 新会话 → 最近修改 的优先级选当前对话，已建立的当前会话会尽量保持稳定不被其他对话抢占 |
-| 额度池归档 / Pool archival | 使用 `groupModelIdsByResetPool()` 将一次 reset 回调拆成多个共享额度池，逐池归档 Activity + GM + Pricing + Calendar |
+| 每日归档 / Daily archival | 通过 `daily-archival.ts` 核心逻辑委托；`extension.ts` 构造 `DailyArchivalContext` 注入所有运行时状态 |
 | 持久化协调 / Persistence orchestration | 协调 `durable-state.ts`、`monitor-store.ts`、`activity-tracker.ts`、`gm-tracker.ts`、`daily-store.ts`、`model-dna-store.ts` 的恢复与写回 |
 | 多账号快照 / Multi-account snapshots | `updateAccountSnapshot()` 在每次 `fetchFullUserStatus` 后提取 email + resetPools，按 email 维护 `AccountSnapshot` Map 并持久化至文件；`checkCachedAccountResets()` 在轮询中检查缓存账号额度重置并弹出一次性通知 |
-| 跨账号隔离 / Cross-account isolation | `handleAccountSwitchIfNeeded()` 在每次状态拉取前检测账号切换，重置 `quotaTracker` 追踪状态防止旧 resetTime 触发误归档；`onQuotaReset` 零用量卫兵验证当前账号 GM 调用数 + Activity 步数均为零时跳过归档；`filterGMSummaryByModels()` 按 `currentAccountEmail` 过滤归档数据 |
-| 开发命令 / Dev commands | `devSimulateReset`、`devClearGM`、`devPersistActivity` |
+| 跨账号隔离 / Cross-account isolation | `handleAccountSwitchIfNeeded()` 在每次状态拉取前检测账号切换，重置 `quotaTracker` 追踪状态防止旧 resetTime 触发误归档 |
+| 开发命令 / Dev commands | `devSimulateReset`（模拟每日归档）、`devClearGM`、`devPersistActivity` |
 
 ---
 
@@ -226,9 +228,9 @@ State machine tracking per-model quota consumption (`idle→tracking→(archive)
 
 ### 🧠 activity-tracker.ts — 模型活动追踪
 
-追踪模型活动细节：推理次数、工具调用、Token 消耗、耗时统计，以及池级归档。
+追踪模型活动细节：推理次数、工具调用、Token 消耗、耗时统计。`archiveAndReset()` 执行全局重置（无池级分支），由每日归档逻辑统一触发。
 
-Tracks model activity details: reasoning count, tool usage, token consumption, timing stats, and pool-scoped archival.
+Tracks model activity details: reasoning count, tool usage, token consumption, timing stats. `archiveAndReset()` performs a global reset (no per-pool branching), triggered uniformly by the daily archival logic.
 
 | 特性 / Feature | 说明 / Description |
 |---|---|
@@ -241,10 +243,9 @@ Tracks model activity details: reasoning count, tool usage, token consumption, t
 | GM 窗口突破 / GM window bypass | `_gmSubAgentTokens`（运行时 Map）从无窗口限制的 GM 数据提取步骤窗口外的子智能体调用，在 `getSummary()` 中与 CP 数据合并 |
 | GM 步数修正 / GM steps fix | 用 `GMConversationData.totalSteps` 修正 `_conversationBreakdown.steps`（不受 ~500 步窗口限制） |
 | GM 增长历史 / GM growth history | 用 `contextGrowth` 补充 `_checkpointHistory` 中窗口外的上下文增长数据（含压缩检测，一次性注入） |
-| 窗口外归属账本 / Outside-window attribution | `_windowOutsideAttribution` 按对话记录超出 Steps API 窗口的步数归属，GM 到来后可按真实模型重结算，并在 rewind / pool reset 时清理 |
+| 窗口外归属账本 / Outside-window attribution | `_windowOutsideAttribution` 按对话记录超出 Steps API 窗口的步数归属，GM 到来后可按真实模型重结算，并在 rewind 时清理 |
 | 子智能体归属 / Sub-agent attribution | `SubAgentTokenEntry.cascadeIds` 追踪消耗来源对话，`_processStep()` 透传 `cascadeId` |
-| 池级归档 / Per-pool archive | 只清空匹配 pool 的模型统计、Timeline、GM breakdown、sub-agent 归属（含 `_gmSubAgentTokens`） |
-| 口径清理 / Metric cleanup | 工具排行从剩余 `modelStats.toolBreakdown` 重算，避免跨池残留 |
+| 全局归档 / Global archive | `archiveAndReset()` 全局重置所有模型统计、Timeline、GM breakdown、sub-agent 归属，由 `daily-archival.ts` 在日期变更时调用 |
 | 序列化 / Serialization | `serialize()` / `restore()` 支持跨会话恢复与迁移检测，`_conversationBreakdown` key 通过 trajectory baselines 重建 |
 | 持久化瘦身 / Slim-on-write | `serialize()` 通过 `slimStepEventForPersistence()` 剥离 `fullUserInput` / `fullAiResponse` / `gmPromptSnippet` / `browserSub` 文本字段，截断长 preview，仅保留结构化统计数据 |
 
@@ -263,11 +264,11 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | 模型精度 / Model accuracy | 每次调用区分 `exact`（有 `responseModel`）与 `placeholder`（仅 alias / placeholder），供 UI 透明显示 |
 | 富化 / Enrichment | 对大对话或精确模型缺失的调用，按需用 `GetCascadeTrajectory` 中的内嵌 `generatorMetadata` 补充 prompt / tools / systemPrompt / user anchors |
 | 检查点提取 / Checkpoint extraction | `extractCheckpointSummaries()` 从 `messagePrompts` 中提取 `{{ CHECKPOINT N }}` 标记后的压缩摘要（跳过系统前导，限 8000 字符），`shouldEnrichConversation()` 在 `checkpointIndex > 0` 时自动触发完整轨迹拉取 |
-| Call baselines | `_callBaselines` 隔离新旧 quota cycle 的调用 |
+| Call baselines | `_callBaselines` 隔离新旧 cycle 的调用 |
 | Slim persistence | `serialize()` 去掉 `calls[]`，用于快速恢复基线 |
 | Detailed summary | `getDetailedSummary()` 返回完整 `GMSummary`（含 calls），写盘前通过 `slimSummaryForPersistence()` 剥离文本字段（prompt / chat / checkpoint summaries / token breakdown / tools），仅保留 token/credits 计费数据 |
 | Monitor fallback | `getAllConversationData()` 导出对话级 GM 明细，供 Monitor 标签页回退展示 |
-| Per-pool reset | `reset(modelIds?)` 仅归档并隐藏匹配 pool 的调用 |
+| 全局重置 / Global reset | `reset()` 全局重置所有调用基线和缓存，由每日归档逻辑统一调用 |
 | 跨账号调用标记 / Account tagging | `_currentAccountEmail` 记录当前活跃账号；`_callAccountMap`（`cascadeId:index → email`）持久映射每个调用的归属账号，跨 re-fetch 和 VS Code 重启稳定保留。`serialize()` / `restore()` 负责映射表的序列化和恢复 |
 
 ---
@@ -333,15 +334,37 @@ Builds the full Cost tab HTML and also exports `buildModelDNACards()` for the Mo
 
 ---
 
+### 📅 daily-archival.ts — 每日归档核心逻辑
+
+从 `extension.ts` 提取的可测试纯函数模块。所有运行时依赖通过 `DailyArchivalContext` 接口注入，时间通过 `now` 参数控制，使日期变更检测可在单元测试中精确模拟。
+
+Testable pure-function module extracted from `extension.ts`. All runtime dependencies are injected via `DailyArchivalContext`, and time is controllable via the `now` parameter for precise date-change testing.
+
+| 函数 / Function | 说明 / Description |
+|---|---|
+| `toLocalDateKey(date?)` | 提取本地日期字符串 `YYYY-MM-DD` |
+| `performDailyArchival(ctx, force?, now?)` | 核心归档流程：检测日期变更 → 快照 Activity/GM/Cost → 写入 DailyStore → 全局重置 Tracker → 持久化 |
+
+**归档触发规则**：
+- 首次运行：仅记录当前日期，不归档
+- 同日：无操作
+- 日期滚动：归档昨日数据，更新日期为今天
+- Force 模式：跳过日期检查，归档到当天（dev 模拟用）
+- 无数据：跳过 DailyStore 写入，仍更新日期和重置 Tracker
+
+---
+
 ### 📅 daily-store.ts — 日历数据层
 
-按天聚合 Activity + GM + Cost 的快照数据，支持回溯导入历史归档。`DailyCycleEntry` 包含 `accountEmail` 字段标记产生该周期的账号，`addCycle()` 从 `extension.ts` 接收 `currentAccountEmail` 参数并存入归档记录。
+按天聚合 Activity + GM + Cost 的快照数据。每天仅一条 `DailyCycleEntry`（通过 `addDailySnapshot()` 写入，重复调用会替换而非追加）。旧版 `addCycle()` 保留向后兼容。
+
+Aggregates Activity + GM + Cost snapshots per day. Each day has exactly one `DailyCycleEntry` (written via `addDailySnapshot()`, re-calls replace rather than append). Legacy `addCycle()` retained for backward compatibility.
 
 ---
 
 ### 📅 webview-calendar-tab.ts — Calendar 标签页渲染
 
-生成 Calendar 标签页 HTML：月历网格、可展开日详情、周期卡片、历史汇总。周期卡片标题尾部显示紫色 `.cal-account-tag` 账号标签（截取 email 前缀），支持亮色/暗色主题。
+生成 Calendar 标签页 HTML：月历网格、可展开日详情（汇总视图 + 模型/GM 明细行）。每天只显示一个聚合快照，不再展示独立周期卡片。
 
 ---
 
@@ -355,7 +378,7 @@ Panel framework titled \"Antigravity Monitor\": 9-tab navigation and message com
 |---|---|
 | `webview-monitor-tab.ts` | Monitor 标签页 HTML；支持实时 `gmSummary` 与 `monitor-store` GM 快照双数据源 |
 | `webview-models-tab.ts` | Models 标签页 HTML；聚合默认模型、模型配额、模型信息 |
-| `webview-settings-tab.ts` | Settings 标签页 HTML；含持久化存储概览（文件大小 / Input·Output Tokens / Credits / 估算总费用 / 额度重置次数 / 日历天数·周期数）、界面提示偏好 |
+| `webview-settings-tab.ts` | Settings 标签页 HTML；含持久化存储概览（文件大小 / Input·Output Tokens / Credits / 估算总费用 / 归档天数 / 日历天数·周期数）+ 模拟每日归档按钮、界面提示偏好 |
 | `webview-script.ts` | 客户端 JS；事件委托、标签切换、设置交互、增量刷新、`<details>` 状态恢复、内部滚动位置保留（含 `.cp-viewer` / `.cp-card-body`） |
 | `webview-styles.ts` | CSS 样式（Design Token 体系） |
 | `webview-icons.ts` | 内联 SVG 图标 |
@@ -390,6 +413,12 @@ This diagram shows the main direct source-level dependencies (omitting Node / VS
 
 ```text
 extension.ts (入口 + 调度)
+├── daily-archival.ts     ← 每日归档核心逻辑（纯函数）
+│   ├── activity-tracker.ts
+│   ├── gm-tracker.ts
+│   ├── daily-store.ts
+│   ├── pricing-store.ts
+│   └── model-dna-store.ts
 ├── durable-state.ts      ← 扩展外部持久化
 ├── monitor-store.ts      ← Monitor 快照持久化
 │   ├── tracker.ts (types)
@@ -467,16 +496,21 @@ Antigravity Language Server (localhost)
         │             │               │       │               │                │
         │             │               │       │          pricing-store.ts      │
         │             │               │       │               │                │
-        │             │               │       ▼               │                │
-        │             │               │  onQuotaReset         │                │
-        │             ▼               │   callback            ▼                │
-        │    activity-panel.ts ◄──────┴────────────── pricing-panel.ts         │
+        │             │               │       │               │                │
+        │             └───────────────┴───────┴───────────────┘                │
+        │                             │                                        │
+        │                   daily-archival.ts (每日归档纯逻辑)                  │
+        │                             │                                        │
+        │                             ▼                                        │
+        │                      daily-store.ts (日历数据)                       │
+        │                                                                      │
+        │    activity-panel.ts ◄─────────────────── pricing-panel.ts           │
         │             │                                                        │
         │    webview-chat-history-tab.ts ◄─── trajectories + GM conversations  │
         │             │
         ▼             ▼
-    statusbar.ts   webview-panel.ts ─────► daily-store.ts
-        │             │                      (calendar data)
+    statusbar.ts   webview-panel.ts
+        │             │
         │             ▼
         │        durable-state.ts
         │        (external JSON file)
@@ -531,12 +565,13 @@ npx vsce package --no-dependencies
 | `pool-utils.test.ts` | 4 | 配额池扩展 / 分组 / quota session 匹配 / 已知模型固定池规则 |
 | `monitor-store.test.ts` | 1 | Monitor 快照与 GM 会话快照恢复 |
 | `gm-tracker.test.ts` | 4 | `filterGMSummaryByModels()` 按模型池过滤 / 跨语言恢复回归 / 历史残留 GM 修理 / GM 归档复活回归 |
-| `activity-tracker.test.ts` | 7 | planner step 延迟补全 / 短对话恢复自愈 / stepIndex 重排清理 / 跨语言模型桶合并 / Gemini stepIndex 重映射去重 / 用户行 GM 污染清洗 / 恢复时历史重复自愈 |
-| `daily-store.test.ts` | 2 | 日历导入回填（新 cycle 插入 / 旧 cycle 字段补全） |
+| `activity-tracker.test.ts` | 7 | planner step 延迟补全 / 短对话恢复自愈 / stepIndex 重排清理 / 跨语言模型桶合并（archiveAndReset 全局重置）/ Gemini stepIndex 重映射去重 / 用户行 GM 污染清洗 / 恢复时历史重复自愈 |
+| `daily-archival.test.ts` | 13 | `toLocalDateKey` 日期格式化（含跨年、零填充）/ `performDailyArchival` 首次运行 / 同日无操作 / 日期滚动触发 / 无数据跳过 / 多日间隔 / force 模式 / 连续天数 / 23:59→00:00 午夜边界 / 无 DailyStore 容错 |
+| `daily-store.test.ts` | 5 | `addDailySnapshot` 写入与替换 / 无 GM 写入 / 旧版 `addCycle` 兼容 / 序列化往返 / `clear` 清空 |
 | `model-dna-store.test.ts` | 1 | 模型静态信息跨周期持久化 |
 | `reset-time.test.ts` | 3 | 倒计时格式化 / 绝对日期时间格式化 / 上下文拼接格式（按本地时区动态断言） |
 | `durable-state.test.ts` | 1 | 外部持久化文件创建 / fallback 迁移 / 重装恢复 |
 
-共 149 个测试（13 个文件），使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 166 个测试（14 个文件），使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-149 total tests (13 files), using `__mocks__/vscode.ts` to mock VS Code API.
+166 total tests (14 files), using `__mocks__/vscode.ts` to mock VS Code API.

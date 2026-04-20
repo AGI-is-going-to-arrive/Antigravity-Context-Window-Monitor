@@ -595,7 +595,7 @@ describe('ActivityTracker planner refresh', () => {
         expect(summary.gmModelBreakdown?.[zhName]?.callCount).toBe(11);
         expect(summary.recentSteps.every(event => !event.model || event.model === zhName)).toBe(true);
 
-        const archive = tracker.archiveAndReset(['MODEL_PLACEHOLDER_M37']);
+        const archive = tracker.archiveAndReset();
         expect(archive?.summary.modelStats[zhName]?.totalSteps).toBe(23);
         expect(archive?.summary.gmModelBreakdown?.[zhName]?.callCount).toBe(11);
         expect(Object.keys(tracker.getSummary().modelStats)).toHaveLength(0);

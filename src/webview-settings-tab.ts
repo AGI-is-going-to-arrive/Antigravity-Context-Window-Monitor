@@ -115,7 +115,7 @@ export function buildSettingsContent(
                 <div class="storage-stat"><span class="storage-stat-val">${formatTokenCount(storage.gmTotalOutputTokens)}</span><span class="storage-stat-label">${tBi('Output Tokens', '输出 Tokens')}</span></div>
                 <div class="storage-stat"><span class="storage-stat-val">${storage.gmTotalCredits > 0 ? storage.gmTotalCredits.toFixed(1) : '0'}</span><span class="storage-stat-label">${tBi('Credits Used', '已用积分')}</span></div>
                 <div class="storage-stat"><span class="storage-stat-val">${storage.estimatedCostAllTime > 0 ? '$' + storage.estimatedCostAllTime.toFixed(2) : '$0'}</span><span class="storage-stat-label">${tBi('Est. Total Cost', '估算总费用')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.quotaResetCount}</span><span class="storage-stat-label">${tBi('Quota Resets', '额度重置次数')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.quotaResetCount}</span><span class="storage-stat-label">${tBi('Archival Days', '归档天数')}</span></div>
                 <div class="storage-stat"><span class="storage-stat-val">${storage.calendarDayCount}</span><span class="storage-stat-label">${tBi('Calendar Days', '日历天数')}</span></div>
                 <div class="storage-stat"><span class="storage-stat-val">${storage.calendarCycleCount}</span><span class="storage-stat-label">${tBi('Calendar Cycles', '日历周期')}</span></div>
             </div>
@@ -345,17 +345,17 @@ export function buildSettingsContent(
                 <h2>${tBi('Debug / Testing', '调试 / 测试')}</h2>
             </div>
             <p class="raw-desc">${tBi(
-        'Developer tools for testing quota reset archival and clearing stale data.',
-        '用于测试额度重置归档以及清除过期数据的开发者工具。',
+        'Developer tools for testing daily archival and clearing stale data.',
+        '用于测试每日归档以及清除过期数据的开发者工具。',
     )}</p>
             <div class="setting-row" style="margin-top: var(--space-2);">
                 <p class="raw-desc">${tBi(
-        'Simulate a full quota reset cycle: archive current Activity + GM + Cost data to Calendar, then reset GM baselines for the new cycle. A restorable snapshot is captured first so you can roll back after verifying the UI.',
-        '模拟完整的额度重置周期：先抓取一份可恢复快照，再将当前 Activity + GM + 费用数据归档到日历，并为新周期重置 GM 基线。验证完 UI 后可一键恢复。',
+        'Simulate a full daily archival: archive current Activity + GM + Cost data to Calendar, then reset for the new day. A restorable snapshot is captured first so you can roll back after verifying the UI.',
+        '模拟完整的每日归档：先抓取一份可恢复快照，再将当前 Activity + GM + 费用数据归档到日历，并为新的一天重置。验证完 UI 后可一键恢复。',
     )}</p>
                 <div class="storage-actions">
                     <button class="action-btn" id="devSimulateReset">
-                        ${ICON.timeline} ${tBi('Simulate Quota Reset', '模拟额度重置')}
+                        ${ICON.timeline} ${tBi('Simulate Daily Archival', '模拟每日归档')}
                     </button>
                     <button class="action-btn${storage?.hasDevResetSnapshot ? '' : ' danger-action'}" id="devRestoreReset"${storage?.hasDevResetSnapshot ? '' : ' disabled'}>
                         ${ICON.refresh} ${tBi('Restore Snapshot', '恢复快照')}
@@ -365,12 +365,12 @@ export function buildSettingsContent(
                 <p class="raw-desc" style="margin-top: var(--space-2);">
                     ${storage?.hasDevResetSnapshot
             ? tBi(
-                'A reset test snapshot is currently available for this extension session. Restoring will roll Activity / GM / Calendar back to the pre-test state.',
-                '当前这次扩展运行里已有一份可恢复的重置测试快照。恢复后会把 Activity / GM / Calendar 一并回滚到测试前状态。',
+                'A daily archival snapshot is currently available for this extension session. Restoring will roll Activity / GM / Calendar back to the pre-test state.',
+                '当前这次扩展运行里已有一份可恢复的归档测试快照。恢复后会把 Activity / GM / Calendar 一并回滚到测试前状态。',
             )
             : tBi(
-                'No reset test snapshot is stored right now. Trigger one simulation first if you want an undo point in this extension session.',
-                '当前这次扩展运行里没有可恢复的重置测试快照。若要回滚，请先触发一次模拟额度重置。',
+                'No archival test snapshot is stored right now. Trigger one simulation first if you want an undo point in this extension session.',
+                '当前这次扩展运行里没有可恢复的归档测试快照。若要回滚，请先触发一次模拟每日归档。',
             )}
                 </p>
             </div>

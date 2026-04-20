@@ -456,6 +456,78 @@
 
 ---
 
+## [1.15.10] - 2026-04-20
+
+### 🏗 Refactored / 重构
+
+- **每日归档架构重构 / Daily Archival Architecture**:
+  将归档触发机制从复杂的「池级额度重置回调」彻底切换为简洁的「基于日期的每日归档」。系统不再依赖 `onQuotaReset` 回调进行分池归档，改为在每次轮询中检测本地日期变化，日期滚动时自动归档前一天的所有数据并全局重置 Tracker。
+  Replaced the complex per-pool quota-reset callback archival with a streamlined daily date-based archival. The system no longer depends on `onQuotaReset` for per-pool archiving; instead, it detects local date changes on each poll and automatically archives the previous day's data with a global tracker reset.
+
+  **架构变更 / Architecture changes**:
+  
+  | 组件 / Component | 变更 / Change |
+  |---|---|
+  | `daily-archival.ts` | **新增** — 可测试纯函数模块，所有依赖通过 `DailyArchivalContext` 注入，时间通过 `now` 参数可控 |
+  | `extension.ts` | `performDailyArchival()` 改为委托调用；`onQuotaReset` 瘦身为仅日志记录 |
+  | `daily-store.ts` | 新增 `addDailySnapshot()` 每日单快照接口；移除 `importArchives()` 和 `backfilled` 标志 |
+  | `activity/tracker.ts` | `archiveAndReset()` 删除池级过滤分支（-145 行），仅保留全局重置 |
+  | `gm/tracker.ts` | `reset()` 删除 per-pool 分支（-26 行），仅保留全局重置 |
+  | `gm/summary.ts` | `filterGMSummaryByModels()` 移除 `accountEmail` 参数 |
+  
+  **归档触发规则 / Trigger rules**:
+  - 首次运行：记录当前日期，不归档
+  - 同日重复调用：无操作
+  - 日期滚动（如 23:59→00:00）：归档昨日数据，重置 Tracker
+  - Force 模式：跳过日期检查（dev 模拟按钮用）
+  - 无数据日：跳过 DailyStore 写入，仍更新日期
+
+### ✨ Improved / 改进
+
+- **日历 UI 简化 / Calendar UI Simplification**:
+  移除多 cycle 折叠逻辑（`<details>` + 独立周期卡片），每天只显示一个聚合快照视图。高亮条件从 `cycleCount > 2` 改为 `totalCost > 0.5`。
+  Removed multi-cycle collapsible details; each day now shows a single aggregated snapshot. High-activity highlight changed from cycle count to cost threshold.
+
+- **Settings 文案更新 / Settings Copy Update**:
+  「模拟额度重置」→「模拟每日归档」；「额度重置次数」→「归档天数」；所有描述文案同步更新。
+  "Simulate Quota Reset" → "Simulate Daily Archival"; "Quota Resets" → "Archival Days"; all description copy updated.
+
+- **存储诊断修正 / Storage Diagnostics Fix**:
+  `quotaResetCount` 数据源从 `lastArchives.length` 修正为 `lastDailyStore.totalDays`。
+  Fixed `quotaResetCount` data source from archive count to daily store day count.
+
+### 🗑 Removed / 移除
+
+- **池级归档逻辑 / Per-Pool Archival Logic**:
+  移除 `ActivityTracker.getCurrentStepCountForModels()`、`archiveAndReset()` 的 modelIds 参数、`GMTracker.reset()` 的 modelIds 参数、`filterGMSummaryByModels()` 的 accountEmail 参数。
+  Removed pool-scoped archival methods and parameters that are no longer needed.
+
+- **旧版 barrel export**:
+  从 `activity/index.ts` 和 `activity-tracker.ts` 移除不再使用的 `sameTriggeredByScope` 导出。
+  Removed unused `sameTriggeredByScope` export from barrel files.
+
+- **`daily-archival-refactor-plan.md`**: 计划文档已完成，删除。
+
+### 🧪 Tests / 测试
+
+- **`daily-archival.test.ts`**: 新增 13 个测试用例覆盖 `toLocalDateKey`（日期格式化、跨年、零填充）和 `performDailyArchival`（首次运行、同日、日期滚动、无数据、多日间隔、force、连续天数、23:59→00:00 午夜边界、无 DailyStore 容错）。
+  13 new test cases covering date formatting, rollover detection, midnight boundary, force mode, and error resilience.
+
+- **`daily-store.test.ts`**: 重写为 `addDailySnapshot` 测试（5 用例：写入与替换、无 GM、旧版 addCycle 兼容、序列化往返、clear）。
+  Rewritten with 5 test cases for `addDailySnapshot`.
+
+- **`activity-tracker.test.ts`**: 更新 `archiveAndReset()` 调用，移除不再需要的 modelIds 参数。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 11 (`src/daily-archival.ts` [new], `src/extension.ts`, `src/daily-store.ts`, `src/activity/tracker.ts`, `src/gm/tracker.ts`, `src/gm/summary.ts`, `src/webview-calendar-tab.ts`, `src/webview-settings-tab.ts`, `src/webview-panel.ts`, `src/activity/index.ts`, `src/activity-tracker.ts`)
+- **Tests changed**: 3 (`tests/daily-archival.test.ts` [new], `tests/daily-store.test.ts` [rewritten], `tests/activity-tracker.test.ts` [updated])
+- **Final test count**: 166 tests across 14 files — all passing
+- **TypeScript compile**: Zero errors
+- **Key architectural decision**: Daily time-based archival replaces event-driven per-pool archival; testability achieved through dependency injection and injectable time
+
+---
+
 ## [1.15.9] - 2026-04-20
 
 ### ✨ Added / 新增

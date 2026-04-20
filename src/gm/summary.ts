@@ -14,8 +14,6 @@ import { cloneTokenBreakdownGroups } from './types';
 export function filterGMSummaryByModels(
     summary: GMSummary | null | undefined,
     modelIds: string[],
-    /** When provided, only include calls from this account */
-    accountEmail?: string,
 ): GMSummary | null {
     if (!summary || modelIds.length === 0) {
         return null;
@@ -43,7 +41,6 @@ export function filterGMSummaryByModels(
     for (const conversation of summary.conversations) {
         const matchingCalls = conversation.calls.filter(call =>
             modelSet.has(call.model)
-            && (!accountEmail || !call.accountEmail || call.accountEmail === accountEmail)
         );
         if (matchingCalls.length === 0) {
             continue;
