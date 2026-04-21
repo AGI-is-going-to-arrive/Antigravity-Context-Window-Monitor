@@ -15,6 +15,7 @@ export type {
     GMConversationData,
     GMSummary,
     GMTrackerState,
+    PendingArchiveEntry,
 } from './types';
 export { cloneTokenBreakdownGroups, cloneGMCallEntry, cloneConversationData, slimCallForPersistence, slimSummaryForPersistence, slimConversationForPersistence } from './types';
 
@@ -45,4 +46,4 @@ export {
 } from './summary';
 
 // Tracker Class
-export { GMTracker, type PendingArchiveEntry } from './tracker';
+export { GMTracker } from './tracker';

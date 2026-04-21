@@ -8,6 +8,42 @@
 
 ---
 
+## [1.16.0] - 2026-04-21
+
+### 修复 / Fixed
+
+- **待归档区持久化 / PendingArchive Persistence**:
+  `_pendingArchives` 之前是纯内存数据，插件重启即丢失。现在通过 `serialize()`/`restore()` 持久化至 `state-v1.json`（文件级存储，独立于插件安装目录），跨重启和重装保留。仅在午夜 `reset()` 时清空。
+  `_pendingArchives` was pure in-memory data, lost on restart. Now persisted via `serialize()`/`restore()` to `state-v1.json` (file-level, independent of extension install dir). Only cleared on midnight `reset()`.
+
+- **归档数量不准确 / Inaccurate Archive Count**:
+  `baselineForQuotaReset()` 仅遍历 `_cache` 中已加载的 calls，导致部分对话调用被遗漏（实测 20 vs 126）。修复：优先从 `_lastSummary`（已聚合完整视图）统计准确数据；新增 `_archivedAccountModelCutoffs`（`email|model` → ISO 时间戳），以当前时间为截断点，确保即使 `_cache` 不完整，后续 `_buildSummary()` 也能正确过滤已归档调用。
+  `baselineForQuotaReset()` only iterated loaded calls in `_cache`, missing conversations not yet re-fetched (observed 20 vs 126). Fix: prioritize `_lastSummary` for accurate stats; new `_archivedAccountModelCutoffs` (`email|model` → ISO timestamp) with cutoff at `now` ensures future `_buildSummary()` filters correctly even with incomplete cache.
+
+- **跨池误归档 / Cross-Pool Over-Archival**:
+  `baselineForQuotaReset()` 归档了账号下**所有**模型的调用，而非仅限已重置的额度池。例如 Claude+GPT 池重置时，Gemini Pro 和 Flash 池的调用也被一起归档。修复：新增 `poolModelFilter` 参数，通过 `normalizeModelDisplayName` 匹配，只归档池内模型。两个调用点——`onQuotaReset`（传 `modelIds`）和 `checkCachedAccountResets`（传 `pool.modelLabels`）——均已更新。
+  `baselineForQuotaReset()` archived ALL models for an account instead of only the reset pool's models. Fix: new `poolModelFilter` parameter with `normalizeModelDisplayName` matching. Both callsites — `onQuotaReset` (passes `modelIds`) and `checkCachedAccountResets` (passes `pool.modelLabels`) — updated.
+
+### 改进 / Improved
+
+- **缓存账号预快照 / Cached Account Pre-Baseline Snapshot**:
+  缓存账号额度重置路径 (`checkCachedAccountResets`) 之前直接 baseline 不做 DailyStore 预快照，导致数据在午夜 `reset()` 时可能丢失。现在与在线账号行为一致：先 `preBaselineSummary → DailyStore`（append），再 `baselineForQuotaReset`。
+  Cached account quota reset path now snapshots data to DailyStore before baselining (same as active account), preventing data loss at midnight `reset()`.
+
+### 重构 / Refactored
+
+- **`PendingArchiveEntry` 类型迁移**:
+  从 `gm/tracker.ts` 移至 `gm/types.ts`，消除 barrel 循环依赖风险。`gm/index.ts` 和 `gm-tracker.ts` 导出链已更新。
+  `PendingArchiveEntry` moved from `gm/tracker.ts` to `gm/types.ts` to avoid circular dependency. Export chain updated.
+
+### 统计 / Stats
+
+- **Files changed**: 4 (`src/gm/types.ts`, `src/gm/tracker.ts`, `src/gm/index.ts`, `src/extension.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## [1.15.13] - 2026-04-21
 
 ### 🗑 Removed / 移除

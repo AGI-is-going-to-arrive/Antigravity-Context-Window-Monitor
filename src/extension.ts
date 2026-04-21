@@ -503,8 +503,8 @@ export function activate(context: vscode.ExtensionContext): void {
             log(`Pre-baseline snapshot appended to DailyStore for ${todayKey}`);
         }
 
-        // ── Step 2: Baseline current account's GM calls ──
-        const baselinedCount = gmTracker.baselineForQuotaReset();
+        // ── Step 2: Baseline current account's GM calls for the reset pool ──
+        const baselinedCount = gmTracker.baselineForQuotaReset(undefined, modelIds);
         log(`Quota reset detected: [${modelIds.join(', ')}] — ${baselinedCount} GM calls baselined for new cycle`);
 
         // Update cached summary and persist
@@ -1391,9 +1391,36 @@ function checkCachedAccountResets(): void {
             const openMonitorLabel = tBi('Open Monitor', '打开监控');
 
 
-            // Baseline this cached account's GM calls so data is clean
-            // even before the user switches to it.
-            const baselinedCount = gmTracker.baselineForQuotaReset(snap.email);
+            // ── Step 1: Snapshot to DailyStore BEFORE baselining (same as active account) ──
+            // This preserves the outgoing pool's data in the calendar so midnight
+            // reset() doesn't lose it.
+            const preBaselineSummary = gmTracker.getDetailedSummary();
+            if (preBaselineSummary && preBaselineSummary.totalCalls > 0 && dailyStore) {
+                const todayKey = toLocalDateKey();
+                let costTotal: number | undefined;
+                let costPerModel: Record<string, number> | undefined;
+                if (pricingStore) {
+                    const result = pricingStore.calculateCosts(preBaselineSummary);
+                    if (result.grandTotal > 0) { costTotal = result.grandTotal; }
+                    costPerModel = {};
+                    for (const row of result.rows) {
+                        if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
+                    }
+                }
+                dailyStore.addDailySnapshot(
+                    todayKey,
+                    activityTracker.getSummary(),
+                    preBaselineSummary,
+                    costTotal,
+                    costPerModel,
+                    true, // append — preserve intra-day quota-reset cycles
+                );
+                log(`Cached account ${snap.email}: pre-baseline snapshot appended to DailyStore`);
+            }
+
+            // ── Step 2: Baseline this cached account's GM calls for the expired pool only ──
+            // (not all models — other pools may still be active)
+            const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelLabels);
             if (baselinedCount > 0) {
                 log(`Cached account ${snap.email}: ${baselinedCount} GM calls baselined on quota expiry`);
                 lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();

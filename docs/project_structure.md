@@ -106,7 +106,7 @@ Extension lifecycle management hub.
 | 每日归档 / Daily archival | 通过 `daily-archival.ts` 核心逻辑委托；`extension.ts` 构造 `DailyArchivalContext` 注入所有运行时状态 |
 | 持久化协调 / Persistence orchestration | 协调 `durable-state.ts`、`monitor-store.ts`、`activity-tracker.ts`、`gm-tracker.ts`、`daily-store.ts`、`model-dna-store.ts` 的恢复与写回 |
 | 多账号快照 / Multi-account snapshots | `updateAccountSnapshot()` 在每次 `fetchFullUserStatus` 后提取 email + resetPools（含 `hasUsage` 额度消耗检测），按 email 维护 `AccountSnapshot` Map 并持久化至文件；`checkCachedAccountResets()` 在轮询中检查缓存账号额度重置、自动基线化 GM 调用并弹出一次性通知；`removeAccountSnapshot()` 支持 UI 端删除缓存账号 |
-| 额度重置归档 / Quota-reset archival | `onQuotaReset` 回调先预快照当前数据到 DailyStore（append 模式），再调用 `baselineForQuotaReset()` 标记旧调用为已归档，确保数据不因额度周期切换而丢失 |
+| 额度重置归档 / Quota-reset archival | `onQuotaReset` 回调先预快照当前数据到 DailyStore（append 模式），再调用 `baselineForQuotaReset(email, poolModelFilter)` 仅标记**已重置池**的调用为已归档（不连带其他池），确保数据不因额度周期切换而丢失。缓存账号重置路径 (`checkCachedAccountResets`) 也同样执行 pre-baseline DailyStore 快照 |
 | 跨账号隔离 / Cross-account isolation | `handleAccountSwitchIfNeeded()` 在每次状态拉取前检测账号切换，重置 `quotaTracker` 追踪状态防止旧 resetTime 触发误归档 |
 | 开发命令 / Dev commands | `devSimulateReset`（模拟每日归档）、`devClearGM`、`devPersistActivity` |
 
@@ -270,12 +270,13 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | 富化 / Enrichment | 对大对话或精确模型缺失的调用，按需用 `GetCascadeTrajectory` 中的内嵌 `generatorMetadata` 补充 prompt / tools / systemPrompt / user anchors |
 | 检查点提取 / Checkpoint extraction | `extractCheckpointSummaries()` 从 `messagePrompts` 中提取 `{{ CHECKPOINT N }}` 标记后的压缩摘要（跳过系统前导，限 8000 字符），`shouldEnrichConversation()` 在 `checkpointIndex > 0` 时自动触发完整轨迹拉取 |
 | Call baselines | `_callBaselines` 隔离新旧 cycle 的调用 |
-| 额度周期基线化 / Quota-cycle baseline | `baselineForQuotaReset(targetEmail?)` 按账号标记调用为已归档（`_archivedCallIds` + `_archivedModelCutoffs`），累加统计生成 `PendingArchiveEntry`。`getPendingArchives()` 提供待归档列表供 UI 展示 |
-| 按账号过滤 / Account filtering | `_buildSummary()` 通过 `_currentAccountEmail` 过滤 `accountFilteredCalls`，确保 `totalCalls`/`modelBreakdown` 等统计只计当前在线账号的调用 |
+| 额度周期基线化 / Quota-cycle baseline | `baselineForQuotaReset(targetEmail?, poolModelFilter?)` 按账号 + 池级模型过滤标记调用为已归档。双重数据源：优先从 `_lastSummary` 取准确统计（防止 `_cache` 未完全加载导致漏计），同时遍历 `_cache` 标记 `_archivedCallIds`。新增 `_archivedAccountModelCutoffs`（`email|model` → ISO 时间戳）确保后续 re-fetch 的调用也被排除 |
+| 待归档持久化 / PendingArchive persistence | `_pendingArchives` 通过 `serialize()`/`restore()` 持久化至 `state-v1.json`，跨插件重启和重装保留；仅在午夜 `reset()` 时清空 |
+| 按账号过滤 / Account filtering | `_buildSummary()` 通过 `_currentAccountEmail` 过滤 `accountFilteredCalls`，确保 `totalCalls`/`modelBreakdown` 等统计只计当前在线账号的调用。新增 `_archivedAccountModelCutoffs` 过滤层，按 `email|model` 精确排除已归档调用 |
 | Slim persistence | `serialize()` 去掉 `calls[]`，用于快速恢复基线 |
 | Detailed summary | `getDetailedSummary()` 返回完整 `GMSummary`（含 calls），写盘前通过 `slimSummaryForPersistence()` 剥离文本字段，仅保留 token/credits 计费数据 |
 | Monitor fallback | `getAllConversationData()` 导出对话级 GM 明细，供 Monitor 标签页回退展示 |
-| 全局重置 / Global reset | `reset()` 全局重置所有调用基线、缓存、`_callAccountMap` 和 `_pendingArchives`，由每日归档逻辑统一调用 |
+| 全局重置 / Global reset | `reset()` 全局重置所有调用基线、缓存、`_callAccountMap`、`_archivedAccountModelCutoffs` 和 `_pendingArchives`，由每日归档逻辑统一调用 |
 | 跨账号调用标记 / Account tagging | `_currentAccountEmail` 记录当前活跃账号；`_callAccountMap` 持久映射每个调用的归属账号，随午夜 `reset()` 清空防止无限增长 |
 
 ---

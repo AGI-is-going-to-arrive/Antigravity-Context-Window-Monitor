@@ -13,6 +13,7 @@ import type {
     GMModelStats,
     GMSummary,
     GMTrackerState,
+    PendingArchiveEntry,
     TokenBreakdownGroup,
 } from './types';
 import { cloneConversationData, cloneTokenBreakdownGroups } from './types';
@@ -38,23 +39,7 @@ function deduplicateCheckpoints(calls: GMCallEntry[]): GMCheckpointSummary[] {
     return [...byStep.values()].sort((a, b) => a.stepIndex - b.stepIndex);
 }
 
-/** Lightweight snapshot of a baselined quota cycle ("pending archive"). */
-export interface PendingArchiveEntry {
-    /** ISO timestamp when the baseline was created */
-    timestamp: string;
-    /** Account email that was baselined */
-    accountEmail: string;
-    /** Number of calls baselined */
-    totalCalls: number;
-    /** Total input tokens */
-    totalInputTokens: number;
-    /** Total output tokens */
-    totalOutputTokens: number;
-    /** Total credits consumed */
-    totalCredits: number;
-    /** Per-model call counts */
-    modelCalls: Record<string, number>;
-}
+// PendingArchiveEntry is now defined in ./types and re-exported from this module.
 
 export class GMTracker {
     private _cache = new Map<string, GMConversationData>();
@@ -73,6 +58,8 @@ export class GMTracker {
     private _currentAccountEmail = '';
     /** Persistent map: executionId → accountEmail. Survives cache overwrites from re-fetches. */
     private _callAccountMap = new Map<string, string>();
+    /** Per-account+model ISO cutoffs: key="email|normalizedModel" — calls before cutoff are excluded */
+    private _archivedAccountModelCutoffs = new Map<string, string>();
     /** Baselined cycle snapshots waiting for midnight archival */
     private _pendingArchives: PendingArchiveEntry[] = [];
 
@@ -232,8 +219,23 @@ export class GMTracker {
             // Filter out calls already archived by per-pool resets
             const hasCallFilter = this._archivedCallIds.size > 0;
             const hasModelFilter = this._archivedModelCutoffs.size > 0;
-            const activeCalls = (hasCallFilter || hasModelFilter)
+            const hasAccountModelFilter = this._archivedAccountModelCutoffs.size > 0;
+            const activeCalls = (hasCallFilter || hasModelFilter || hasAccountModelFilter)
                 ? sliced.filter(c => {
+                    // Per-account+model cutoff (pool-scoped archival)
+                    if (hasAccountModelFilter && c.accountEmail) {
+                        const modelName = normalizeModelDisplayName(c.modelDisplay || c.model)
+                            || c.modelDisplay || c.model;
+                        const amKey = `${c.accountEmail}|${modelName}`;
+                        const amCutoff = this._archivedAccountModelCutoffs.get(amKey);
+                        if (amCutoff) {
+                            const callMs = Date.parse(c.createdAt || '');
+                            const cutoffMs = Date.parse(amCutoff);
+                            if (isNaN(callMs) || callMs <= cutoffMs) {
+                                return false;
+                            }
+                        }
+                    }
                     if (hasModelFilter) {
                         const cutoff = this._archivedModelCutoffs.get(c.model)
                             || (c.responseModel ? this._archivedModelCutoffs.get(c.responseModel) : undefined);
@@ -424,82 +426,144 @@ export class GMTracker {
     }
 
     /**
-     * Global reset: archive call baselines, clear all calls, reset summary.
-     * Called during daily archival when the date rolls over.
-     */
-    /**
-     * Quota-cycle baseline: mark all current account's calls as archived
+     * Quota-cycle baseline: mark calls from the target account's reset pool as archived
      * so _buildSummary() excludes them. The new cycle starts with zero counts.
      * Calls remain in cache — midnight's performDailyArchival() will sweep them.
      *
      * @param targetEmail  Optional — baselines calls for this account.
      *                     Defaults to _currentAccountEmail (active account).
+     * @param poolModelFilter  Optional — model names (display labels or IDs) to filter by.
+     *                         Only calls matching these models are archived.
+     *                         If omitted, ALL models for the account are archived.
      * @returns number of calls baselined
      */
-    baselineForQuotaReset(targetEmail?: string): number {
-        let count = 0;
-        let totalInputTokens = 0;
-        let totalOutputTokens = 0;
-        let totalCredits = 0;
-        const modelCallCounts = new Map<string, number>();
+    baselineForQuotaReset(targetEmail?: string, poolModelFilter?: string[]): number {
         const email = targetEmail || this._currentAccountEmail;
+        const now = new Date().toISOString();
+
+        // Build a normalized set of pool model names for matching
+        const poolSet = poolModelFilter && poolModelFilter.length > 0
+            ? new Set(poolModelFilter.flatMap(m => {
+                const norm = normalizeModelDisplayName(m);
+                return norm ? [m, norm] : [m];
+            }))
+            : null; // null = all models
+
+        // Helper: check if a call belongs to the target pool
+        const callMatchesPool = (call: GMCallEntry): boolean => {
+            if (!poolSet) { return true; }
+            const candidates = [
+                call.model,
+                call.modelDisplay,
+                call.responseModel,
+                normalizeModelDisplayName(call.modelDisplay || call.model),
+                normalizeModelDisplayName(call.responseModel),
+            ].filter(Boolean) as string[];
+            return candidates.some(c => poolSet.has(c));
+        };
+
+        // ── Step 1: Compute accurate stats from _lastSummary (full picture) ──
+        // The summary has already been built by fetchAll() and includes all loaded calls.
+        // Using it ensures we don't undercount due to partial cache loading.
+        const summary = this._lastSummary;
+        let summaryCount = 0;
+        let summaryInputTokens = 0;
+        let summaryOutputTokens = 0;
+        let summaryCredits = 0;
+        const summaryModelCalls = new Map<string, number>();
+        const archivedModelNames = new Set<string>();
+
+        if (summary) {
+            for (const conv of summary.conversations) {
+                for (const call of conv.calls) {
+                    if (email && call.accountEmail && call.accountEmail !== email) { continue; }
+                    if (!call.accountEmail && email) { continue; } // skip untagged when filtering by email
+                    if (!callMatchesPool(call)) { continue; }
+                    summaryCount++;
+                    summaryInputTokens += call.inputTokens;
+                    summaryOutputTokens += call.outputTokens;
+                    summaryCredits += call.credits;
+                    const modelKey = normalizeModelDisplayName(
+                        call.modelDisplay || call.model,
+                    ) || call.responseModel || call.model;
+                    summaryModelCalls.set(modelKey, (summaryModelCalls.get(modelKey) || 0) + 1);
+                    archivedModelNames.add(modelKey);
+                }
+            }
+        }
+
+        // ── Step 2: Set per-account+model cutoffs to NOW ──
+        // This guarantees ALL existing calls for this account+model combo
+        // are excluded in future _buildSummary() calls, even if _cache
+        // wasn't fully loaded when this method ran.
+        for (const modelName of archivedModelNames) {
+            const amKey = `${email}|${modelName}`;
+            this._archivedAccountModelCutoffs.set(amKey, now);
+        }
+        // Also set cutoffs for pool model names (belt and suspenders)
+        if (poolSet && email) {
+            for (const m of poolSet) {
+                const norm = normalizeModelDisplayName(m) || m;
+                const amKey = `${email}|${norm}`;
+                if (!this._archivedAccountModelCutoffs.has(amKey)) {
+                    this._archivedAccountModelCutoffs.set(amKey, now);
+                }
+            }
+        }
+
+        // ── Step 3: Also mark individual calls in _archivedCallIds (from _cache) ──
+        let cacheCount = 0;
+        let cacheInputTokens = 0;
+        let cacheOutputTokens = 0;
+        let cacheCredits = 0;
+        const cacheModelCalls = new Map<string, number>();
+
         for (const [, conv] of this._cache) {
             const baseline = this._callBaselines.get(conv.cascadeId) || 0;
             const activeCalls = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
             for (const call of activeCalls) {
-                // Only baseline calls belonging to the current account
-                if (email && call.accountEmail && call.accountEmail !== email) {
-                    continue;
-                }
-                // Skip already-archived calls
+                if (email && call.accountEmail && call.accountEmail !== email) { continue; }
+                if (!callMatchesPool(call)) { continue; }
                 const archKey = buildGMArchiveKey(call);
-                if (this._archivedCallIds.has(call.executionId) || this._archivedCallIds.has(archKey)) {
-                    continue;
-                }
-                // Mark as archived
-                if (call.executionId) {
-                    this._archivedCallIds.add(call.executionId);
-                }
+                if (this._archivedCallIds.has(call.executionId) || this._archivedCallIds.has(archKey)) { continue; }
+                if (call.executionId) { this._archivedCallIds.add(call.executionId); }
                 this._archivedCallIds.add(archKey);
-                // Also record model cutoff so new calls to the same model aren't filtered
-                if (call.createdAt) {
-                    const existing = this._archivedModelCutoffs.get(call.model);
-                    if (!existing || call.createdAt > existing) {
-                        this._archivedModelCutoffs.set(call.model, call.createdAt);
-                    }
-                    if (call.responseModel) {
-                        const existingResp = this._archivedModelCutoffs.get(call.responseModel);
-                        if (!existingResp || call.createdAt > existingResp) {
-                            this._archivedModelCutoffs.set(call.responseModel, call.createdAt);
-                        }
-                    }
-                }
-                // Accumulate stats
-                totalInputTokens += call.inputTokens;
-                totalOutputTokens += call.outputTokens;
-                totalCredits += call.credits;
-                const modelKey = call.responseModel || call.model;
-                modelCallCounts.set(modelKey, (modelCallCounts.get(modelKey) || 0) + 1);
-                count++;
+                cacheCount++;
+                cacheInputTokens += call.inputTokens;
+                cacheOutputTokens += call.outputTokens;
+                cacheCredits += call.credits;
+                const modelKey = normalizeModelDisplayName(
+                    call.modelDisplay || call.model,
+                ) || call.responseModel || call.model;
+                cacheModelCalls.set(modelKey, (cacheModelCalls.get(modelKey) || 0) + 1);
             }
         }
+
+        // ── Step 4: Use the more accurate of summary vs cache stats ──
+        const useSummary = summaryCount >= cacheCount;
+        const finalCount = useSummary ? summaryCount : cacheCount;
+        const finalInputTokens = useSummary ? summaryInputTokens : cacheInputTokens;
+        const finalOutputTokens = useSummary ? summaryOutputTokens : cacheOutputTokens;
+        const finalCredits = useSummary ? summaryCredits : cacheCredits;
+        const finalModelCalls = useSummary ? summaryModelCalls : cacheModelCalls;
+
         // Record pending archive entry
-        if (count > 0) {
+        if (finalCount > 0) {
             const modelCalls: Record<string, number> = {};
-            for (const [model, c] of modelCallCounts) { modelCalls[model] = c; }
+            for (const [model, c] of finalModelCalls) { modelCalls[model] = c; }
             this._pendingArchives.push({
-                timestamp: new Date().toISOString(),
+                timestamp: now,
                 accountEmail: email,
-                totalCalls: count,
-                totalInputTokens,
-                totalOutputTokens,
-                totalCredits,
+                totalCalls: finalCount,
+                totalInputTokens: finalInputTokens,
+                totalOutputTokens: finalOutputTokens,
+                totalCredits: finalCredits,
                 modelCalls,
             });
         }
         // Invalidate cached summary so next access rebuilds
         this._lastSummary = null;
-        return count;
+        return finalCount;
     }
 
     /** Get all pending archive entries (waiting for midnight sweep). */
@@ -530,6 +594,7 @@ export class GMTracker {
         }
         this._archivedCallIds.clear();
         this._archivedModelCutoffs.clear();
+        this._archivedAccountModelCutoffs.clear();
         this._callAccountMap.clear();
         this._pendingArchives = [];
         this._lastSummary = null;
@@ -546,6 +611,7 @@ export class GMTracker {
         this._callBaselines.clear();
         this._archivedCallIds.clear();
         this._archivedModelCutoffs.clear();
+        this._archivedAccountModelCutoffs.clear();
         this._callAccountMap.clear();
         this._pendingArchives = [];
         this._lastSummary = null;
@@ -702,6 +768,8 @@ export class GMTracker {
             archivedModelCutoffs: this._archivedModelCutoffs.size > 0 ? Object.fromEntries(this._archivedModelCutoffs) : undefined,
             currentAccountEmail: this._currentAccountEmail || undefined,
             callAccountMap: this._callAccountMap.size > 0 ? Object.fromEntries(this._callAccountMap) : undefined,
+            pendingArchives: this._pendingArchives.length > 0 ? this._pendingArchives : undefined,
+            archivedAccountModelCutoffs: this._archivedAccountModelCutoffs.size > 0 ? Object.fromEntries(this._archivedAccountModelCutoffs) : undefined,
         };
     }
 
@@ -763,6 +831,20 @@ export class GMTracker {
             for (const [execId, email] of Object.entries(data.callAccountMap)) {
                 if (typeof email === 'string') {
                     tracker._callAccountMap.set(execId, email);
+                }
+            }
+        }
+
+        // Restore pending archives (added v1.16.0)
+        if (Array.isArray(data.pendingArchives)) {
+            tracker._pendingArchives = data.pendingArchives;
+        }
+
+        // Restore per-account+model cutoffs (added v1.16.0)
+        if (data.archivedAccountModelCutoffs && typeof data.archivedAccountModelCutoffs === 'object') {
+            for (const [key, cutoff] of Object.entries(data.archivedAccountModelCutoffs)) {
+                if (typeof cutoff === 'string') {
+                    tracker._archivedAccountModelCutoffs.set(key, cutoff);
                 }
             }
         }
