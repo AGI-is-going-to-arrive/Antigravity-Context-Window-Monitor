@@ -250,6 +250,34 @@ export function extractAISnippetsByStep(messagePrompts: unknown): Record<number,
     return snippets;
 }
 
+/**
+ * Extract AI-invoked tool call names from SYSTEM messages in messagePrompts,
+ * keyed by stepIdx. Each entry contains the tool names the AI decided to call
+ * at that particular step. Used for tool call frequency statistics.
+ */
+export function extractToolCallsByStep(messagePrompts: unknown): Record<number, string[]> {
+    const result: Record<number, string[]> = {};
+    if (!Array.isArray(messagePrompts)) { return result; }
+
+    for (const item of messagePrompts) {
+        if (!item || typeof item !== 'object') { continue; }
+        const rec = item as Record<string, unknown>;
+        if (String(rec.source || '') !== 'CHAT_MESSAGE_SOURCE_SYSTEM') { continue; }
+
+        const stepIdx = typeof rec.stepIdx === 'number' ? rec.stepIdx : -1;
+        if (stepIdx < 0) { continue; }
+
+        const toolCalls = rec.toolCalls as Array<Record<string, unknown>> | undefined;
+        if (!Array.isArray(toolCalls) || toolCalls.length === 0) { continue; }
+
+        const names = toolCalls.map(tc => String(tc.name || '')).filter(n => n.length > 0);
+        if (names.length > 0) {
+            result[stepIdx] = names;
+        }
+    }
+    return result;
+}
+
 export function extractPromptData(cm: Record<string, unknown>): {
     promptSnippet: string;
     promptSource: GMPromptSource;
@@ -259,6 +287,7 @@ export function extractPromptData(cm: Record<string, unknown>): {
     userMessageAnchors: GMUserMessageAnchor[];
     aiSnippetsByStep: Record<number, string>;
     checkpointSummaries: GMCheckpointSummary[];
+    toolCallsByStep: Record<number, string[]>;
 } {
     const messagePrompts = cm.messagePrompts;
     const messageMetadata = cm.messageMetadata;
@@ -266,6 +295,7 @@ export function extractPromptData(cm: Record<string, unknown>): {
     const userMessageAnchors = extractUserMessageAnchors(messagePrompts);
     const aiSnippetsByStep = extractAISnippetsByStep(messagePrompts);
     const checkpointSummaries = extractCheckpointSummaries(messagePrompts);
+    const toolCallsByStep = extractToolCallsByStep(messagePrompts);
 
     const fromPrompts = pickPromptSnippet(messagePrompts);
     if (fromPrompts) {
@@ -282,6 +312,7 @@ export function extractPromptData(cm: Record<string, unknown>): {
             userMessageAnchors,
             aiSnippetsByStep,
             checkpointSummaries,
+            toolCallsByStep,
         };
     }
 
@@ -299,6 +330,7 @@ export function extractPromptData(cm: Record<string, unknown>): {
         userMessageAnchors,
         aiSnippetsByStep,
         checkpointSummaries,
+        toolCallsByStep,
     };
 }
 
@@ -345,6 +377,9 @@ export function mergeGMCallEntries(primary: GMCallEntry, fallback: GMCallEntry):
         checkpointSummaries: primary.checkpointSummaries.length > 0
             ? primary.checkpointSummaries
             : fallback.checkpointSummaries,
+        toolCallsByStep: Object.keys(primary.toolCallsByStep).length > 0
+            ? primary.toolCallsByStep
+            : fallback.toolCallsByStep,
         stopReason: primary.stopReason || fallback.stopReason,
         createdAt: primary.createdAt || fallback.createdAt,
         latestStableMessageIndex: primary.latestStableMessageIndex || fallback.latestStableMessageIndex,
@@ -393,6 +428,21 @@ export function maybeEnrichCallsFromTrajectory(calls: GMCallEntry[], embeddedCal
         for (const call of merged) {
             if (call.checkpointSummaries.length < richestCheckpoints.length) {
                 call.checkpointSummaries = richestCheckpoints;
+            }
+        }
+    }
+
+    // Broadcast: toolCallsByStep for tool invocation statistics.
+    let richestToolCalls: Record<number, string[]> = {};
+    for (const call of [...merged, ...embeddedCalls]) {
+        if (Object.keys(call.toolCallsByStep).length > Object.keys(richestToolCalls).length) {
+            richestToolCalls = call.toolCallsByStep;
+        }
+    }
+    if (Object.keys(richestToolCalls).length > 0) {
+        for (const call of merged) {
+            if (Object.keys(call.toolCallsByStep).length < Object.keys(richestToolCalls).length) {
+                call.toolCallsByStep = richestToolCalls;
             }
         }
     }
@@ -557,5 +607,6 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         startStepIndex: parseInt0(csm.startStepIndex),
         checkpointIndex: parseInt0(csm.checkpointIndex),
         checkpointSummaries: promptData.checkpointSummaries,
+        toolCallsByStep: promptData.toolCallsByStep,
     };
 }

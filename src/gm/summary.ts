@@ -23,6 +23,7 @@ export function filterGMSummaryByModels(
     const conversations: GMConversationData[] = [];
     const modelBreakdown: Record<string, GMModelStats> = {};
     const stopReasonCounts: Record<string, number> = {};
+    const toolCallCounts: Record<string, number> = {};
     const contextGrowth: { step: number; tokens: number; model: string }[] = [];
 
     let totalCalls = 0;
@@ -87,6 +88,9 @@ export function filterGMSummaryByModels(
                 const stopReason = call.stopReason.replace('STOP_REASON_', '');
                 stopReasonCounts[stopReason] = (stopReasonCounts[stopReason] || 0) + 1;
             }
+            // Aggregate tool call counts from source summary (preserves existing counts)
+            // Note: toolCallsByStep-based counting happens in _buildSummary();
+            // here we just pass through any pre-computed counts from the source.
             if (call.tokenBreakdownGroups.length > 0) {
                 latestTokenBreakdown = call.tokenBreakdownGroups;
             }
@@ -194,6 +198,9 @@ export function filterGMSummaryByModels(
         totalRetryCount,
         latestTokenBreakdown,
         stopReasonCounts,
+        toolCallCounts: Object.keys(toolCallCounts).length > 0
+            ? toolCallCounts
+            : { ...(summary.toolCallCounts || {}) },
     };
 }
 
@@ -271,6 +278,7 @@ export function normalizeGMSummary(summary: GMSummary): GMSummary {
         })),
         latestTokenBreakdown: cloneTokenBreakdownGroups(summary.latestTokenBreakdown),
         stopReasonCounts: { ...summary.stopReasonCounts },
+        toolCallCounts: { ...(summary.toolCallCounts || {}) },
     };
 }
 
@@ -422,5 +430,6 @@ export function buildSummaryFromConversations(
         totalRetryCount,
         latestTokenBreakdown,
         stopReasonCounts,
+        toolCallCounts: {},
     };
 }

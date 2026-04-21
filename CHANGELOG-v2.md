@@ -8,6 +8,55 @@
 
 ---
 
+## [1.16.1] - 2026-04-21
+
+### ✨ Added / 新增
+
+- **工具调用排行榜 / Tool Call Ranking**:
+  在 GM Data 面板新增工具调用频率排行榜（`buildToolCallRanking()`），直接从 GM `messagePrompts` SYSTEM 消息的 `toolCalls[]` 字段提取 AI 实际发起的工具调用名称和次数，按 stepIdx 全局去重后聚合。
+  New tool call ranking section in the GM Data tab, extracting AI-invoked tool names from `messagePrompts` SYSTEM entries' `toolCalls[]` field, deduplicated by stepIdx.
+
+  **数据管线 / Data Pipeline**:
+  ```
+  messagePrompts → SYSTEM messages with { stepIdx, toolCalls[{ functionName }] }
+    → extractToolCallsByStep() → Record<stepIdx, toolName[]>
+    → maybeEnrichCallsFromTrajectory() broadcasts to all calls
+    → _buildSummary() aggregates → GMSummary.toolCallCounts
+    → buildToolCallRanking() renders bar chart
+  ```
+
+  **特性 / Features**:
+  - 水平条形图，6 色循环（蓝、绿、黄、红、青、紫），nth-child 自动轮替
+  - 跨对话累加：当前计费周期内所有对话的工具调用合并统计
+  - 绿色 `+x` 增量标注：当存在多对话数据时，最新活跃对话的贡献量以绿色增量显示
+  - 当天持久化：`toolCallCounts` 通过 `GMSummary` 在 `serialize()/restore()` 中跨重启保留
+  - 每日自动清零：daily archival `reset()` 清空 `_lastSummary`，工具统计从零重算
+  - 最多显示 15 个工具，超出部分以 `+N 个更多` 提示
+  - 底部汇总行显示工具种类数、总调用次数、参与对话数
+
+- **`extractToolCallsByStep()` 解析函数 / Parser Function**:
+  新增 `parser.ts` 中的工具调用提取函数，从 `messagePrompts` SYSTEM 消息中按 `stepIdx` 提取 `toolCalls[].functionName`，生成 `Record<number, string[]>` 映射。集成至 `extractPromptData()` 和 `parseGMEntry()` 输出，并在 `maybeEnrichCallsFromTrajectory()` 中广播至同对话所有调用。
+  New parser function that extracts tool call names from SYSTEM messages by stepIdx. Integrated into the extraction pipeline and broadcast via trajectory enrichment.
+
+### 🏗 Improved / 改进
+
+- **`GMCallEntry.toolCallsByStep`**:
+  新增 `Record<number, string[]>` 字段存储每个 step 的 AI 工具调用列表。`slimCallForPersistence()` 中清空为 `{}`（运行时从 API 回填），不增加持久化文件体积。
+  New field storing per-step tool call names. Cleared in `slimCallForPersistence()` to keep state file lean; repopulated from API on restart.
+
+- **`GMSummary.toolCallCounts`**:
+  新增 `Record<string, number>` 字段存储聚合的工具频率统计。`filterGMSummaryByModels()`、`normalizeGMSummary()`、`buildSummaryFromConversations()` 全部透传。
+  New field for aggregated tool frequency counts, propagated through all summary functions.
+
+### 📊 Stats / 统计
+
+- **Files changed**: 5 (`src/gm/types.ts`, `src/gm/parser.ts`, `src/gm/tracker.ts`, `src/gm/summary.ts`, `src/activity-panel.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **Key design**: 工具统计不持久化原始数据（`toolCallsByStep`），仅持久化聚合结果（`toolCallCounts`），重启后从 API 回填原始数据重新计算
+
+---
+
 ## [1.16.0] - 2026-04-21
 
 ### 修复 / Fixed

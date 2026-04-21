@@ -109,6 +109,11 @@ export function buildGMDataTabContent(
     // ── Model Cards (merged activity counts + GM precision)
     parts.push(buildModelCards(summary, gmSummary));
 
+    // ── Tool Call Ranking (from GM messagePrompts SYSTEM toolCalls)
+    if (gmSummary && Object.keys(gmSummary.toolCallCounts || {}).length > 0) {
+        parts.push(buildToolCallRanking(gmSummary));
+    }
+
     // ── Checkpoint Viewer (context compressions from GM)
     if (gmSummary && gmSummary.totalCalls > 0) {
         parts.push(buildCheckpointViewer(gmSummary));
@@ -1480,6 +1485,94 @@ export function getGMDataTabStyles(): string {
     body.vscode-light .cp-card-chip-tok { background: rgba(202,138,4,0.1); color: #92400e; border-color: rgba(202,138,4,0.2); }
     body.vscode-light .cp-card-body h1, body.vscode-light .cp-card-body h2, body.vscode-light .cp-card-body h3 { color: #b45309; }
 
+    /* ─── Tool Call Ranking ─── */
+    .tool-rank-section {
+        margin-bottom: var(--space-4);
+    }
+    .tool-rank-list {
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        padding: var(--space-2) var(--space-3);
+        list-style: none;
+        margin: 0;
+    }
+    .tool-rank-row {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: 3px 0;
+        font-size: 0.82em;
+        border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .tool-rank-row:last-child { border-bottom: none; }
+    .tool-rank-idx {
+        width: 18px;
+        text-align: right;
+        color: var(--color-text-dim);
+        font-size: 0.78em;
+        font-variant-numeric: tabular-nums;
+        flex-shrink: 0;
+        opacity: 0.6;
+    }
+    .tool-rank-name {
+        width: 180px;
+        flex-shrink: 0;
+        font-weight: 500;
+        color: var(--color-text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .tool-rank-bar-wrap {
+        flex: 1;
+        min-width: 40px;
+        height: 14px;
+        background: rgba(255,255,255,0.04);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+    }
+    .tool-rank-bar {
+        display: block;
+        height: 100%;
+        border-radius: var(--radius-sm);
+        background: linear-gradient(90deg, rgba(96,165,250,0.6), rgba(96,165,250,0.3));
+        transition: width 0.3s cubic-bezier(.4,0,.2,1);
+        min-width: 2px;
+    }
+    /* Color cycling for bar rows */
+    .tool-rank-row:nth-child(6n+1) .tool-rank-bar { background: linear-gradient(90deg, rgba(96,165,250,0.7), rgba(96,165,250,0.3)); }
+    .tool-rank-row:nth-child(6n+2) .tool-rank-bar { background: linear-gradient(90deg, rgba(74,222,128,0.7), rgba(74,222,128,0.3)); }
+    .tool-rank-row:nth-child(6n+3) .tool-rank-bar { background: linear-gradient(90deg, rgba(250,204,21,0.65), rgba(250,204,21,0.25)); }
+    .tool-rank-row:nth-child(6n+4) .tool-rank-bar { background: linear-gradient(90deg, rgba(248,113,113,0.65), rgba(248,113,113,0.25)); }
+    .tool-rank-row:nth-child(6n+5) .tool-rank-bar { background: linear-gradient(90deg, rgba(45,212,191,0.65), rgba(45,212,191,0.25)); }
+    .tool-rank-row:nth-child(6n+6) .tool-rank-bar { background: linear-gradient(90deg, rgba(167,139,250,0.65), rgba(167,139,250,0.25)); }
+    .tool-rank-count {
+        width: 36px;
+        text-align: right;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        color: var(--color-text);
+        flex-shrink: 0;
+    }
+    .tool-rank-summary {
+        display: flex;
+        gap: var(--space-3);
+        font-size: 0.78em;
+        color: var(--color-text-dim);
+        margin-top: var(--space-1);
+        padding-top: var(--space-1);
+        border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .tool-rank-summary b { color: var(--color-text); }
+    .tool-rank-delta {
+        color: #4ade80;
+        font-size: 0.82em;
+        font-weight: 500;
+        margin-left: 2px;
+        white-space: nowrap;
+    }
+
     `;
 }
 
@@ -2092,6 +2185,92 @@ function buildConversations(s: GMSummary): string {
     }
     html += `</div>`;
     return html;
+}
+
+// ─── Tool Call Ranking Section ──────────────────────────────────────────────
+
+function buildToolCallRanking(gm: GMSummary): string {
+    const counts = gm.toolCallCounts || {};
+    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    if (entries.length === 0) { return ''; }
+
+    const totalInvocations = entries.reduce((sum, [, c]) => sum + c, 0);
+    const maxCount = entries[0][1];
+    const top = entries.slice(0, 15);
+
+    // ── Compute current (most recently active) conversation's tool call contribution ──
+    const currentConvCounts: Record<string, number> = {};
+    const multiConv = gm.conversations.filter(c => c.calls.length > 0).length > 1;
+    if (multiConv) {
+        let latestConvIdx = -1;
+        let latestCallTime = '';
+        for (let ci = 0; ci < gm.conversations.length; ci++) {
+            for (const call of gm.conversations[ci].calls) {
+                if (call.createdAt && call.createdAt > latestCallTime) {
+                    latestCallTime = call.createdAt;
+                    latestConvIdx = ci;
+                }
+            }
+        }
+        if (latestConvIdx >= 0) {
+            const conv = gm.conversations[latestConvIdx];
+            const counted = new Set<number>();
+            for (const call of conv.calls) {
+                for (const stepIdx of call.stepIndices) {
+                    if (counted.has(stepIdx)) { continue; }
+                    const names = call.toolCallsByStep?.[stepIdx];
+                    if (names) {
+                        counted.add(stepIdx);
+                        for (const name of names) {
+                            currentConvCounts[name] = (currentConvCounts[name] || 0) + 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    const wrenchIcon = `<svg class="act-icon" viewBox="0 0 16 16"><path fill="currentColor" d="M12.7 3.3a1 1 0 0 1 0 1.4l-1.2 1.2 1.5 1.5a1 1 0 0 1-.7 1.7H10a1 1 0 0 1-1-1V5.8a1 1 0 0 1 1.7-.7l1.5 1.5 1.2-1.2a1 1 0 0 1 1.3-.1zM4.5 2A2.5 2.5 0 0 0 2 4.5v7A2.5 2.5 0 0 0 4.5 14h7a2.5 2.5 0 0 0 2.5-2.5V10h-1v1.5a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 11.5v-7A1.5 1.5 0 0 1 4.5 3H6V2H4.5z"/></svg>`;
+
+    const rows = top.map(([name, count], i) => {
+        const pct = maxCount > 0 ? (count / maxCount * 100).toFixed(1) : '0';
+        const delta = currentConvCounts[name] || 0;
+        const deltaHtml = delta > 0
+            ? `<span class="tool-rank-delta">+${delta}</span>`
+            : '';
+        return `<li class="tool-rank-row">
+            <span class="tool-rank-idx">${i + 1}</span>
+            <span class="tool-rank-name" title="${esc(name)}">${esc(name)}</span>
+            <span class="tool-rank-bar-wrap"><span class="tool-rank-bar" style="width:${pct}%"></span></span>
+            <span class="tool-rank-count">${count}${deltaHtml}</span>
+        </li>`;
+    }).join('');
+
+    const moreNote = entries.length > 15
+        ? `<span>${tBi(`+${entries.length - 15} more`, `+${entries.length - 15} 个更多`)}</span>`
+        : '';
+
+    const convCount = gm.conversations.filter(c => c.calls.length > 0).length;
+    const convNote = convCount > 1
+        ? `<span>${tBi(`${convCount} conversations`, `${convCount} 个对话`)}</span>`
+        : '';
+
+    return `<div class="tool-rank-section">
+        <h3 class="act-section-title">
+            ${wrenchIcon}
+            ${tBi('Tool Call Ranking', '工具调用排行')}
+            <span class="act-badge">${tBi(`${totalInvocations} invocations`, `${totalInvocations} 次调用`)}</span>
+        </h3>
+        <ul class="tool-rank-list">
+            ${rows}
+            <li class="tool-rank-summary">
+                <span>${tBi('Unique Tools', '工具种类')}: <b>${entries.length}</b></span>
+                <span>${tBi('Total', '合计')}: <b>${totalInvocations}</b></span>
+                ${convNote}
+                ${moreNote}
+            </li>
+        </ul>
+    </div>`;
 }
 
 // ─── Retry Overhead Section ─────────────────────────────────────────────────

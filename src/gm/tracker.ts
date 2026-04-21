@@ -210,6 +210,7 @@ export class GMTracker {
         let totalRetryCount = 0;
         let latestTokenBreakdown: TokenBreakdownGroup[] = [];
         const stopReasonCounts: Record<string, number> = {};
+        const toolCallCounts: Record<string, number> = {};
         const contextGrowth: { step: number; tokens: number; model: string }[] = [];
 
         for (const [, conv] of this._cache) {
@@ -278,6 +279,11 @@ export class GMTracker {
                 checkpointSummaries: conv.checkpointSummaries || deduplicateCheckpoints(activeCalls),
             });
 
+            // ── Tool call counting: use stepIdx as dedup key ──
+            // toolCallsByStep is shared/broadcast across calls in a conversation,
+            // so we use a per-conversation Set to ensure each step is counted once.
+            const countedToolSteps = new Set<number>();
+
             for (const c of accountFilteredCalls) {
                 totalCalls++;
                 totalStepsCovered += c.stepIndices.length;
@@ -295,6 +301,18 @@ export class GMTracker {
                         tokens: c.contextTokensUsed,
                         model: normalizeModelDisplayName(c.modelDisplay || c.model) || c.modelDisplay || c.model,
                     });
+                }
+
+                // ── Tool invocation counting (from messagePrompts SYSTEM toolCalls) ──
+                for (const stepIdx of c.stepIndices) {
+                    if (countedToolSteps.has(stepIdx)) { continue; }
+                    const toolNames = c.toolCallsByStep[stepIdx];
+                    if (toolNames) {
+                        countedToolSteps.add(stepIdx);
+                        for (const name of toolNames) {
+                            toolCallCounts[name] = (toolCallCounts[name] || 0) + 1;
+                        }
+                    }
                 }
 
                 // Per-model aggregation
@@ -422,6 +440,7 @@ export class GMTracker {
             totalRetryCount,
             latestTokenBreakdown,
             stopReasonCounts,
+            toolCallCounts,
         };
     }
 

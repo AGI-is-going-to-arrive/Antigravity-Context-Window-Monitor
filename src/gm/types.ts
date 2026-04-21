@@ -116,6 +116,9 @@ export interface GMCallEntry {
     checkpointSummaries: GMCheckpointSummary[];
     /** Account email that triggered this call (for multi-account isolation) */
     accountEmail?: string;
+    /** Per-step AI tool invocations: stepIdx → tool names invoked at that step.
+     *  Extracted from messagePrompts SYSTEM entries' toolCalls[]. */
+    toolCallsByStep: Record<number, string[]>;
 }
 
 /** Aggregated per-model statistics */
@@ -192,6 +195,8 @@ export interface GMSummary {
     latestTokenBreakdown: TokenBreakdownGroup[];
     /** Stop reason distribution: reason → count */
     stopReasonCounts: Record<string, number>;
+    /** Tool invocation frequency: tool name → call count (from messagePrompts SYSTEM toolCalls) */
+    toolCallCounts: Record<string, number>;
 }
 
 /** Lightweight snapshot of a baselined quota cycle ("pending archive"). */
@@ -256,6 +261,9 @@ export function cloneGMCallEntry(call: GMCallEntry): GMCallEntry {
         tokenBreakdownGroups: cloneTokenBreakdownGroups(call.tokenBreakdownGroups),
         completionConfig: call.completionConfig ? { ...call.completionConfig } : null,
         checkpointSummaries: call.checkpointSummaries.map(cs => ({ ...cs })),
+        toolCallsByStep: Object.fromEntries(
+            Object.entries(call.toolCallsByStep).map(([k, v]) => [k, [...v]]),
+        ),
     };
 }
 
@@ -327,6 +335,7 @@ export function slimCallForPersistence(call: GMCallEntry): GMCallEntry {
         checkpointIndex: call.checkpointIndex,
         checkpointSummaries: [],
         accountEmail: call.accountEmail,
+        toolCallsByStep: {},
     };
 }
 
@@ -353,6 +362,7 @@ export function slimSummaryForPersistence(summary: GMSummary): GMSummary {
             }]),
         ),
         stopReasonCounts: { ...summary.stopReasonCounts },
+        toolCallCounts: { ...summary.toolCallCounts },
     };
 }
 

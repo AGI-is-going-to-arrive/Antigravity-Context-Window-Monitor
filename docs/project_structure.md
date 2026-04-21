@@ -33,10 +33,10 @@ antigravity-context-monitor/
 │   ├── gm-tracker.ts             # GM 数据层 re-export shim（向后兼容，实际代码在 gm/）
 │   ├── gm/                       # GM 模块（从 gm-tracker.ts 拆分）
 │   │   ├── index.ts              #   barrel re-export
-│   │   ├── types.ts              #   所有 GM 类型定义 + clone 工具 + 持久化 slim 函数
-│   │   ├── parser.ts             #   解析器 + 提取器 + 匹配/合并/增强 + 检查点摘要提取
-│   │   ├── summary.ts            #   汇总构建 + 过滤 + 标准化
-│   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize）
+│   │   ├── types.ts              #   所有 GM 类型定义 + clone 工具 + 持久化 slim 函数（含 toolCallsByStep / toolCallCounts）
+│   │   ├── parser.ts             #   解析器 + 提取器 + 匹配/合并/增强 + 检查点摘要提取 + 工具调用提取
+│   │   ├── summary.ts            #   汇总构建 + 过滤 + 标准化（含 toolCallCounts 透传）
+│   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize + toolCallCounts 聚合）
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照）
@@ -293,6 +293,7 @@ Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sou
 | GM 重试统计 / Retry Stats | 当 `gm.totalRetryCount > 0` 时显示红色重试卡片（计数 + GM 徽章），tooltip 展示浪费的 token 数。合并了原来分开的重试次数和浪费 token 两张卡片 |
 | Tooltip 边缘适配 / Tooltip Edge Anchoring | 向下弹出（`top`）避免顶部裁剪；`:first-child` 靠左对齐、`:last-child` 靠右对齐，防止左右溢出 webview 边界 |
 | 检查点查看器 / Checkpoint Viewer | `buildCheckpointViewer()` 渲染当前活跃对话（通过最新 `createdAt` 定位）的 `{{ CHECKPOINT N }}` 压缩摘要全文，琥珀色可折叠卡片 + 限高滚动容器 |
+| 工具调用排行 / Tool Call Ranking | `buildToolCallRanking()` 渲染 GM 精确的工具调用频率排行榜（水平条形图，6 色循环），数据源为 `GMSummary.toolCallCounts`（从 `messagePrompts` SYSTEM `toolCalls[]` 提取，按 stepIdx 去重）。跨对话累加，当天持久化，每日归档后自动清零。当存在多对话数据时，最新对话的贡献量以绿色 `+x` 增量标注 |
 | 多账号状态面板 / Account Status Panel | `buildAccountStatusPanel()` 在 GM Data 顶部渲染多账号状态卡片：`AccountSnapshot[]` → 按 email 分行，显示在线/缓存状态、Plan 徽章、按模型池独立倒计时（`ResetPool[]` 含 `hasUsage` 检测），到期显示红色「已就绪」，未消耗额度池显示灰色「未使用」；缓存账号卡片右侧有删除按钮（X），在线账号卡片有等宽占位符保持对齐 |
 | 待归档面板 / Pending Archive Panel | `buildPendingArchivePanel()` 在账号面板下方渲染黄色主题的待归档区域，显示基线化周期的调用数/token/credits 统计和 per-model 分布芯片；额度重置前不可见 |
 | 增量刷新保护 / Refresh preservation | `<details>` 展开状态通过 `restoreDetailsState()` 自动保护；`.cp-viewer` / `.cp-card-body` 滚动位置通过 `scrollableSelectors` 保留 |
