@@ -8,6 +8,52 @@
 
 ---
 
+## [1.17.1] - 2026-04-22
+
+### 修复 / Fixed
+
+- **重试计数虚报 / Retry Count False Positive**:
+  `parser.ts` 中 `cm.retries` 是 GM payload 的"总尝试次数"（成功一次 = `1`），不是"失败重试次数"。旧逻辑直接 `parseInt0(cm.retries)` 导致每个调用都有 `retries=1`，全部被计为重试。例如 43 次正常调用会显示为「43 重试」。
+  `cm.retries` in the GM payload means "total attempts" (1 = first-try success), not "failed retry count". The old parser used this value directly, causing every call to have `retries=1`.
+
+  **修复**: 改为只计算 `retryInfos[]` 中有 `error` 字段的条目数（与 `gm-live-watcher.ts` 诊断脚本逻辑一致）。当 `retryInfos` 不可用但 `cm.retries > 1` 时，使用 `cm.retries - 1` 作为降级值。
+  Fix: Only count `retryInfos` entries with actual error messages as retries. Fallback: `cm.retries - 1` when no retryInfos available.
+
+### 重构 / Refactored
+
+- **错误报告现代化 / Error Reporting Modernization**:
+  重试中心化的诊断报告全面替换为错误码感知系统：
+
+  **数据层**:
+  - `GMSummary` 新增 `retryErrorCodes: Record<string, number>` 和 `recentErrors: string[]`
+  - 新增 `parseErrorCode()` 从错误消息解析 HTTP 状态码或类别（`429`/`503`/`400`/`stream_error`/`timeout`/`unknown`）
+  - `_buildSummary()`、`filterGMSummaryByModels()`、`buildSummaryFromConversations()` 三条汇总路径均聚合错误码
+  - `getDetailedSummary()`/`getFullSummary()` 透传新字段
+
+  **UI 改动**:
+  | 区域 | 改前 | 改后 |
+  |------|------|------|
+  | Summary Bar | "N GM 重试" | "N 报错"（仅真实错误计数），tooltip 展示错误码分布 |
+  | Timeline | `retry(1)⚠429` | `error(N)` |
+  | Turn header | `retry(N)⚠429` | `error(N)` |
+  | GM Data 面板 | 「重试开销」4 格卡片 (`buildRetryOverhead`) | 「错误详情」区块 (`buildErrorDetailsSection`)：错误码分类标签 + 开销统计 + 最近报错消息 |
+
+### 移除 / Removed
+
+- **`buildRetryOverhead()` 函数**: 整个"重试开销"卡片（4 格 grid: token 浪费 / credits 损耗 / 重试次数 / 开销率 + stopReason 分布标签）移除，功能分散至 Summary Bar tooltip 和 `buildErrorDetailsSection()`
+- **`retry429` 死 CSS**: 移除 `.act-tl-gm-retry429`、`.seg-chip-retry429` 及对应暗色主题覆盖
+- **`has429` turn 变量**: `buildTimeline()` 中 turn header 不再单独追踪 429 状态
+- **`StepEvent.gmRetryHas429`**: 标记为 `@deprecated`（保留以兼容序列化）
+
+### 统计 / Stats
+
+- **Files changed**: 6 (`src/gm/parser.ts`, `src/gm/types.ts`, `src/gm/summary.ts`, `src/gm/tracker.ts`, `src/activity-panel.ts`, `src/activity/types.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **Key fix insight**: `retryInfos` 始终包含成功调用作为末尾 entry（无 error 字段），只有有 error 的 entry 才是真正的失败重试
+
+---
+
 ## [1.17.0] - 2026-04-22
 
 ### 🏗 Refactored / 重构

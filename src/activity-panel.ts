@@ -144,14 +144,14 @@ export function buildGMDataTabContent(
             </div>`);
         }
     }
-    // ── Retry Overhead + Token Breakdown (GM — new probes)
+    // ── Token Breakdown + Error Details (GM — new probes)
     if (gmSummary && gmSummary.totalCalls > 0) {
-        const retry = buildRetryOverhead(gmSummary);
         const breakdown = buildTokenBreakdownChart(gmSummary);
-        if (retry || breakdown) {
+        const errorDetails = buildErrorDetailsSection(gmSummary);
+        if (breakdown || errorDetails) {
             parts.push(`<div class="act-two-col">
-                ${retry ? `<div class="act-col">${retry}</div>` : ''}
                 ${breakdown ? `<div class="act-col">${breakdown}</div>` : ''}
+                ${errorDetails ? `<div class="act-col">${errorDetails}</div>` : ''}
             </div>`);
         }
     }
@@ -720,7 +720,6 @@ export function getGMDataTabStyles(): string {
     .act-tl-gm-cache { background: rgba(13,148,136,0.12); color: #0d9488; }
     .act-tl-gm-credit { background: rgba(220,38,38,0.14); color: #dc2626; }
     .act-tl-gm-retry { background: rgba(220,38,38,0.12);  color: #dc2626; }
-    .act-tl-gm-retry429 { background: rgba(234,88,12,0.14); color: #ea580c; }
     .act-tl-gm-tool { background: rgba(100,116,139,0.12); color: #64748b; font-size: 0.88em; }
     .act-tl-gm-ctx { background: rgba(139,92,246,0.10); color: #8b5cf6; }
     body.vscode-dark .act-tl-gm-in  { background: rgba(96,165,250,0.12);  color: #93c5fd; }
@@ -729,7 +728,6 @@ export function getGMDataTabStyles(): string {
     body.vscode-dark .act-tl-gm-cache { background: rgba(45,212,191,0.12); color: #5eead4; }
     body.vscode-dark .act-tl-gm-credit { background: rgba(248,113,113,0.16); color: #fca5a5; }
     body.vscode-dark .act-tl-gm-retry { background: rgba(248,113,113,0.15); color: #fca5a5; }
-    body.vscode-dark .act-tl-gm-retry429 { background: rgba(251,146,60,0.15); color: #fdba74; }
     body.vscode-dark .act-tl-gm-tool { background: rgba(148,163,184,0.12); color: #94a3b8; }
     body.vscode-dark .act-tl-gm-ctx { background: rgba(167,139,250,0.12); color: #a78bfa; }
     /* ─── Turn Groups (collapsible segments) ─── */
@@ -850,11 +848,6 @@ export function getGMDataTabStyles(): string {
         border-color: rgba(248,113,113,0.2);
         background: rgba(248,113,113,0.08);
         color: #fca5a5;
-    }
-    .seg-chip-retry429 {
-        border-color: rgba(251,146,60,0.2);
-        background: rgba(251,146,60,0.08);
-        color: #fdba74;
     }
     .act-tl-segment-user {
         background: rgba(74, 222, 128, 0.04);
@@ -1188,51 +1181,56 @@ export function getGMDataTabStyles(): string {
     @media (hover: hover) {
         .act-stat-warn:hover { border-color: rgba(248,113,113,0.6); box-shadow: 0 0 8px rgba(248,113,113,0.15); }
     }
-    .gm-retry-card {
+    /* ── Error Details Section ── */
+    .gm-err-card {
         background: var(--color-surface);
         border: 1px solid rgba(248,113,113,0.2);
         border-radius: var(--radius-md);
         padding: var(--space-3);
         margin-bottom: var(--space-4);
     }
-    .gm-retry-grid {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: var(--space-2);
-        text-align: center;
-    }
-    .gm-retry-metric {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        padding: var(--space-2);
-        border-radius: var(--radius-sm);
-        background: rgba(248,113,113,0.06);
-        border: 1px solid rgba(248,113,113,0.1);
-    }
-    .gm-retry-val { font-weight: 700; font-size: 1.1em; color: #f87171; }
-    .gm-retry-label { font-size: 0.72em; color: var(--color-text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
-    .gm-retry-stops {
+    .gm-err-codes {
         display: flex;
         flex-wrap: wrap;
         gap: var(--space-1);
-        margin-top: var(--space-3);
+        margin-bottom: var(--space-2);
+    }
+    .gm-err-tag {
+        display: inline-block;
+        font-size: 0.75em;
+        font-weight: 600;
+        padding: 2px var(--space-2);
+        border-radius: var(--radius-sm);
+        letter-spacing: 0.3px;
+    }
+    .gm-err-tag-ratelimit { background: rgba(234,88,12,0.15); color: #f97316; }
+    .gm-err-tag-server    { background: rgba(248,113,113,0.12); color: #f87171; }
+    .gm-err-tag-other     { background: rgba(148,163,184,0.12); color: #94a3b8; }
+    .gm-err-overhead {
+        font-size: 0.75em;
+        color: var(--color-text-dim);
+        padding: var(--space-1) 0;
+        border-top: 1px solid rgba(255,255,255,0.06);
+        margin-top: var(--space-1);
+    }
+    .gm-err-list {
+        margin-top: var(--space-2);
         padding-top: var(--space-2);
         border-top: 1px solid rgba(255,255,255,0.06);
     }
-    .gm-stop-tag {
-        display: inline-block;
+    .gm-err-msg {
         font-size: 0.72em;
-        padding: 2px var(--space-2);
+        font-family: var(--font-mono, monospace);
+        color: #fca5a5;
+        padding: 3px var(--space-2);
+        margin-bottom: 2px;
         border-radius: var(--radius-sm);
-        background: rgba(52,211,153,0.1);
-        color: #34d399;
-        font-weight: 500;
+        background: rgba(248,113,113,0.06);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
-    .gm-stop-err {
-        background: rgba(248,113,113,0.1);
-        color: #f87171;
-    }
+
 
     /* ─── Context X-ray Details ─── */
     .act-xray-details {
@@ -1591,7 +1589,7 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null): strin
             <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9M5 14l7-7 7 7"/></svg></span><span class="act-stat-val">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
             <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg></span><span class="act-stat-val">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>
             ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="act-stat-val">${gm.totalCredits}</span><span class="act-stat-label">Credits</span></div>` : ''}
-            ${gm.totalRetryTokens > 0 ? `<div class="act-stat act-stat-warn" data-tooltip="${tBi('Tokens wasted on retries (input + output)', '重试浪费的 token（输入+输出）')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span><span class="act-stat-val">${fmt(gm.totalRetryTokens)}</span><span class="act-stat-label">${tBi('Retry Waste', '重试浪费')}</span></div>` : ''}
+            ${gm.totalRetryTokens > 0 || Object.keys(gm.retryErrorCodes || {}).length > 0 ? (() => { const errTotal = Object.values(gm.retryErrorCodes || {}).reduce((a, b) => a + b, 0); const errCodes = Object.entries(gm.retryErrorCodes || {}).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ×${n}`).join(', '); const tip = errCodes ? `${errTotal} ${tBi('errors', '报错')} (${errCodes})` : `${fmt(gm.totalRetryTokens)} ${tBi('tokens wasted', 'token 浪费')}`; return `<div class="act-stat act-stat-warn" data-tooltip="${esc(tip)}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span><span class="act-stat-val">${errTotal > 0 ? errTotal : fmt(gm.totalRetryTokens)}</span><span class="act-stat-label">${tBi('Errors', '报错')}</span></div>`; })() : ''}
         </div>`;
     }
 
@@ -1649,7 +1647,7 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null): strin
         ${s.totalToolReturnTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('Tokens returned by tool calls', '工具调用返回的 token 数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg></span><span class="act-stat-val">${fmt(s.totalToolReturnTokens)}</span><span class="act-stat-label">${tBi('Tool Output', '工具输出')}</span></div>` : ''}
         ${cacheCard}
         ${creditsCard}
-        ${gm && gm.totalRetryCount > 0 ? `<div class="act-stat act-stat-warn" data-tooltip="${tBi(`${gm.totalRetryCount} retries (${fmt(gm.totalRetryTokens)} tokens wasted)`, `${gm.totalRetryCount} 次重试（浪费 ${fmt(gm.totalRetryTokens)} token）`)}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span><span class="act-stat-val">${gm.totalRetryCount} <span class="gm-badge-real">GM</span></span><span class="act-stat-label">${tBi('Retries', '重试')}</span></div>` : ''}
+        ${(() => { if (!gm) return ''; const errTotal = Object.values(gm.retryErrorCodes || {}).reduce((a, b) => a + b, 0); if (errTotal <= 0 && gm.totalRetryCount <= 0) return ''; const errCodes = Object.entries(gm.retryErrorCodes || {}).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ×${n}`).join(', '); const wasteInfo = gm.totalRetryTokens > 0 ? ` | ${fmt(gm.totalRetryTokens)} ${tBi('tokens wasted', 'token 浪费')}` : ''; const tipText = errCodes ? `${errCodes}${wasteInfo}` : `${gm.totalRetryCount} ${tBi('retries', '重试')}${wasteInfo}`; return `<div class="act-stat act-stat-warn" data-tooltip="${esc(tipText)}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span><span class="act-stat-val">${errTotal > 0 ? errTotal : gm.totalRetryCount} <span class="gm-badge-real">GM</span></span><span class="act-stat-label">${tBi('Errors', '报错')}</span></div>`; })()}
     </div>`;
 }
 
@@ -1945,11 +1943,9 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null): 
 
             const statusParts: string[] = [];
             // Order from right→left: duration, TTFT, tools, retry
-            // 1. Retry (leftmost)
+            // 1. Error indicator (leftmost) — broader than just retries
             if (e.gmRetries && e.gmRetries > 0) {
-                const retryClass = e.gmRetryHas429 ? 'act-tl-gm-retry429' : 'act-tl-gm-retry';
-                const retryLabel = e.gmRetryHas429 ? `retry(${e.gmRetries})\u26a0429` : `retry(${e.gmRetries})`;
-                statusParts.push(`<span class="act-tl-gm-tag ${retryClass}">${retryLabel}</span>`);
+                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-retry">error(${e.gmRetries})</span>`);
             }
             // 2. Tools
             if (e.detail) {
@@ -2021,7 +2017,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null): 
         let minTime = '', maxTime = '';
         const models = new Set<string>();
         let gmToolTotal = 0;
-        let retryTotal = 0, has429 = false;
+        let retryTotal = 0;
         for (const a of actions) {
             if (a.category === 'tool') { toolCount++; }
             if (a.category === 'reasoning') {
@@ -2033,7 +2029,6 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null): 
                 if (a.gmCredits) { totalCredits += a.gmCredits; }
                 if (a.gmRetries && a.gmRetries > 0) {
                     retryTotal += a.gmRetries;
-                    if (a.gmRetryHas429) has429 = true;
                 }
             }
             // Collect tool counts from detail's → suffix (e.g. "→ 1 tool")
@@ -2058,7 +2053,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null): 
             }
         } catch { /* ignore */ }
         const toolNames = gmToolTotal;
-        return { totalIn, totalOut, totalThinking, totalCache, totalCredits, toolCount, reasoningCount, model, durationSec, toolNames, retryTotal, has429 };
+        return { totalIn, totalOut, totalThinking, totalCache, totalCredits, toolCount, reasoningCount, model, durationSec, toolNames, retryTotal };
     };
 
     const reversedSegments = [...segments].reverse();
@@ -2086,9 +2081,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null): 
             chips.push(`<span class="seg-chip seg-chip-credits">${stats.totalCredits.toFixed(1)} cr</span>`);
         }
         if (stats.retryTotal > 0) {
-            const retryChipClass = stats.has429 ? 'seg-chip-retry429' : 'seg-chip-retry';
-            const retryLabel = stats.has429 ? `retry(${stats.retryTotal})⚠429` : `retry(${stats.retryTotal})`;
-            chips.push(`<span class="seg-chip ${retryChipClass}">${retryLabel}</span>`);
+            chips.push(`<span class="seg-chip seg-chip-retry">error(${stats.retryTotal})</span>`);
         }
         if (stats.durationSec > 0) {
             const durLabel = stats.durationSec >= 60 ? `${Math.floor(stats.durationSec / 60)}m${stats.durationSec % 60}s` : `${stats.durationSec}s`;
@@ -2253,56 +2246,47 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
     </div>`;
 }
 
-// ─── Retry Overhead Section ─────────────────────────────────────────────────
+// Retry overhead section has been removed.
+// Error details and token waste are now displayed in buildErrorDetailsSection() and Summary Bar tooltips.
 
-function buildRetryOverhead(s: GMSummary): string {
-    if (s.totalRetryTokens <= 0 && s.totalRetryCount <= 0) { return ''; }
+/** Build a collapsible error details section showing recent errors and error code breakdown */
+function buildErrorDetailsSection(s: GMSummary): string {
+    const errorCodes = s.retryErrorCodes || {};
+    const recentErrors = s.recentErrors || [];
+    const errTotal = Object.values(errorCodes).reduce((a, b) => a + b, 0);
+    if (errTotal <= 0 && recentErrors.length === 0 && s.totalRetryCount <= 0) { return ''; }
+
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    // Use successful-call tokens as denominator. Retry tokens are EXTRA overhead,
-    // not part of the useful work — this prevents misleading 100%+ when retries dominate.
-    const successfulTokens = s.totalInputTokens + s.totalOutputTokens;
-    const pctRaw = successfulTokens > 0
-        ? (s.totalRetryTokens / successfulTokens) * 100
-        : 0;
-    // Bounded display: '<0.1' for trace amounts, '>999' for extreme edge cases
-    const pctDisplay = pctRaw <= 0 ? '0'
-        : pctRaw < 0.1 ? '<0.1'
-            : pctRaw > 999 ? '>999'
-                : pctRaw.toFixed(1);
 
-    // Stop reason distribution
-    let stopHtml = '';
-    const srEntries = Object.entries(s.stopReasonCounts);
-    if (srEntries.length > 0) {
-        stopHtml = `<div class="gm-retry-stops">`;
-        for (const [reason, count] of srEntries.sort((a, b) => b[1] - a[1])) {
-            const isErr = reason !== 'STOP_PATTERN' && reason !== 'END_TURN';
-            stopHtml += `<span class="gm-stop-tag${isErr ? ' gm-stop-err' : ''}">${esc(reason)} ×${count}</span>`;
-        }
-        stopHtml += `</div>`;
-    }
+    // Error code distribution tags
+    const codeTags = Object.entries(errorCodes)
+        .sort((a, b) => b[1] - a[1])
+        .map(([code, count]) => {
+            const isRateLimit = code === '429';
+            const isServer = code === '503' || code === '500' || code === '504';
+            const tagClass = isRateLimit ? 'gm-err-tag-ratelimit' : isServer ? 'gm-err-tag-server' : 'gm-err-tag-other';
+            return `<span class="gm-err-tag ${tagClass}">${esc(code)} ×${count}</span>`;
+        }).join('');
 
-    return `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>${tBi('Retry Overhead', '重试开销')} <span class="gm-badge-real">${tBi('Probe', '探针')}</span></h2>
-    <div class="gm-retry-card">
-        <div class="gm-retry-grid">
-            <div class="gm-retry-metric">
-                <span class="gm-retry-val">${fmt(s.totalRetryTokens)}</span>
-                <span class="gm-retry-label">${tBi('Tokens Wasted', 'Token 浪费')}</span>
-            </div>
-            <div class="gm-retry-metric">
-                <span class="gm-retry-val">${s.totalRetryCredits > 0 ? s.totalRetryCredits.toFixed(1) : '0'}</span>
-                <span class="gm-retry-label">${tBi('Credits Lost', 'Credits 损耗')}</span>
-            </div>
-            <div class="gm-retry-metric">
-                <span class="gm-retry-val">${s.totalRetryCount}</span>
-                <span class="gm-retry-label">${tBi('Retry Calls', '重试次数')}</span>
-            </div>
-            <div class="gm-retry-metric">
-                <span class="gm-retry-val">${pctDisplay}%</span>
-                <span class="gm-retry-label">${tBi('Overhead Rate', '额外开销率')}</span>
-            </div>
-        </div>
-        ${stopHtml}
+    // Recent error messages (truncated)
+    const errorList = recentErrors.slice(0, 8).map(msg =>
+        `<div class="gm-err-msg">${esc(msg)}</div>`
+    ).join('');
+
+    // Overhead stats (token waste + credits) — shown as a compact info line
+    const overheadParts: string[] = [];
+    if (s.totalRetryTokens > 0) { overheadParts.push(`${fmt(s.totalRetryTokens)} ${tBi('tokens wasted', 'token 浪费')}`); }
+    if (s.totalRetryCredits > 0) { overheadParts.push(`${s.totalRetryCredits.toFixed(1)} ${tBi('credits lost', 'credits 损耗')}`); }
+    if (s.totalRetryCount > 0) { overheadParts.push(`${s.totalRetryCount} ${tBi('calls with retries', '含重试调用')}`); }
+    const overheadLine = overheadParts.length > 0
+        ? `<div class="gm-err-overhead">${overheadParts.join(' · ')}</div>`
+        : '';
+
+    return `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>${tBi('Error Details', '错误详情')} <span class="gm-badge-real">${tBi('Probe', '探针')}</span></h2>
+    <div class="gm-err-card">
+        ${codeTags ? `<div class="gm-err-codes">${codeTags}</div>` : ''}
+        ${overheadLine}
+        ${errorList ? `<div class="gm-err-list">${errorList}</div>` : ''}
     </div>`;
 }
 

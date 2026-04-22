@@ -273,6 +273,7 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | 额度周期基线化 / Quota-cycle baseline | `baselineForQuotaReset(targetEmail?, poolModelFilter?)` 按账号 + 池级模型过滤标记调用为已归档。双重数据源：优先从 `_lastSummary` 取准确统计（防止 `_cache` 未完全加载导致漏计），同时遍历 `_cache` 标记 `_archivedCallIds`。新增 `_archivedAccountModelCutoffs`（`email|model` → ISO 时间戳）确保后续 re-fetch 的调用也被排除 |
 | 待归档持久化 / PendingArchive persistence | `_pendingArchives` 通过 `serialize()`/`restore()` 持久化至 `state-v1.json`，跨插件重启和重装保留；仅在午夜 `reset()` 时清空 |
 | 按账号过滤 / Account filtering | `_buildSummary()` 通过 `_currentAccountEmail` 过滤 `accountFilteredCalls`，确保 `totalCalls`/`modelBreakdown` 等统计只计当前在线账号的调用。新增 `_archivedAccountModelCutoffs` 过滤层，按 `email|model` 精确排除已归档调用 |
+| 错误码聚合 / Error code aggregation | `_buildSummary()` 遍历每个调用的 `retryErrors[]` 和 `errorMessage`，通过 `parseErrorCode()` 解析为短错误码（如 `429`/`503`/`stream_error`），聚合至 `GMSummary.retryErrorCodes` 和 `recentErrors`（最近 20 条）。Parser 修复：`cm.retries` 是"总尝试次数"（成功=1），改为仅计 `retryInfos` 中有 error 的条目 |
 | Slim persistence | `serialize()` 去掉 `calls[]`，用于快速恢复基线 |
 | Detailed summary | `getDetailedSummary()` 返回完整 `GMSummary`（含 calls），写盘前通过 `slimSummaryForPersistence()` 剥离文本字段，仅保留 token/credits 计费数据 |
 | Monitor fallback | `getAllConversationData()` 导出对话级 GM 明细，供 Monitor 标签页回退展示 |
@@ -289,8 +290,8 @@ Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sou
 
 | 特性 / Feature | 说明 / Description |
 |---|---|
-| Dashboard Grid 概览 / Dashboard Grid | `buildSummaryBar()` 使用 CSS Grid (`auto-fill, minmax(85px, 1fr)`) 统一面板布局，1px 间隙网格分隔线，取代旧的 flex-wrap 松散卡片。仅显示 GM 精确数据：调用、步骤、模型、会话、消息、输入/输出 token、缓存、重试 |
-| GM 重试统计 / Retry Stats | 当 `gm.totalRetryCount > 0` 时显示红色重试卡片（计数 + GM 徽章），tooltip 展示浪费的 token 数。合并了原来分开的重试次数和浪费 token 两张卡片 |
+| Dashboard Grid 概览 / Dashboard Grid | `buildSummaryBar()` 使用 CSS Grid (`auto-fill, minmax(85px, 1fr)`) 统一面板布局，1px 间隙网格分隔线。仅显示 GM 精确数据：调用、步骤、模型、会话、消息、输入/输出 token、缓存、错误 |
+| GM 错误报告 / Error Reporting | Summary Bar 末位显示红色「报错」卡片（错误总数 + GM 徽章），tooltip 展示错误码分布（如 `429 ×2, 503 ×1`）和 token 浪费明细。`buildErrorDetailsSection()` 在 GM Data 面板中渲染独立的「错误详情」区块：错误码分类标签（限流/服务端/其他颜色编码）+ 开销统计行 + 最近 8 条错误消息列表。时间线和 Turn header 使用 `error(N)` 标签替代旧的 `retry(N)` 格式 |
 | Tooltip 边缘适配 / Tooltip Edge Anchoring | 向下弹出（`top`）避免顶部裁剪；`:first-child` 靠左对齐、`:last-child` 靠右对齐，防止左右溢出 webview 边界 |
 | 检查点查看器 / Checkpoint Viewer | `buildCheckpointViewer()` 渲染当前活跃对话（通过最新 `createdAt` 定位）的 `{{ CHECKPOINT N }}` 压缩摘要全文，琥珀色可折叠卡片 + 限高滚动容器 |
 | 工具调用排行 / Tool Call Ranking | `buildToolCallRanking()` 渲染 GM 精确的工具调用频率排行榜（水平条形图，6 色循环），数据源为 `GMSummary.toolCallCounts`（从 `messagePrompts` SYSTEM `toolCalls[]` 提取，按 stepIdx 去重，基于 `sliced` 不受额度重置归档影响）。统计范围为全账号、全对话，通过 `_persistedToolCounts` 跨重启 max-wins 合并保障数据完整。`+x` 增量通过 `currentUsage.cascadeId` 精确匹配当前对话（不依赖时间戳），仅在 ≥2 对话时显示。每日 `reset()` 清零 |

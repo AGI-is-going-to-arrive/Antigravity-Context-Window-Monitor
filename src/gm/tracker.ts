@@ -23,7 +23,7 @@ import {
     shouldEnrichConversation,
     buildGMArchiveKey,
 } from './parser';
-import { buildSummaryFromConversations, normalizeGMSummary } from './summary';
+import { buildSummaryFromConversations, normalizeGMSummary, parseErrorCode } from './summary';
 
 /** Deduplicate checkpoint summaries from multiple GM calls, keyed by stepIndex */
 function deduplicateCheckpoints(calls: GMCallEntry[]): GMCheckpointSummary[] {
@@ -216,6 +216,8 @@ export class GMTracker {
         let totalRetryCount = 0;
         let latestTokenBreakdown: TokenBreakdownGroup[] = [];
         const stopReasonCounts: Record<string, number> = {};
+        const retryErrorCodes: Record<string, number> = {};
+        const recentErrors: string[] = [];
         const toolCallCounts: Record<string, number> = {};
         const toolCallCountsByConv: Record<string, Record<string, number>> = {};
         const contextGrowth: { step: number; tokens: number; model: string }[] = [];
@@ -376,6 +378,17 @@ export class GMTracker {
                     const sr = c.stopReason.replace('STOP_REASON_', '');
                     stopReasonCounts[sr] = (stopReasonCounts[sr] || 0) + 1;
                 }
+                // Aggregate error codes from retryErrors
+                for (const errMsg of c.retryErrors) {
+                    const code = parseErrorCode(errMsg);
+                    retryErrorCodes[code] = (retryErrorCodes[code] || 0) + 1;
+                    if (recentErrors.length < 20) { recentErrors.push(errMsg); }
+                }
+                if (c.hasError && c.errorMessage) {
+                    const code = parseErrorCode(c.errorMessage);
+                    retryErrorCodes[code] = (retryErrorCodes[code] || 0) + 1;
+                    if (recentErrors.length < 20) { recentErrors.push(c.errorMessage); }
+                }
 
                 // Keep latest tokenBreakdown snapshot
                 if (c.tokenBreakdownGroups.length > 0) {
@@ -439,6 +452,8 @@ export class GMTracker {
             totalRetryCount,
             latestTokenBreakdown,
             stopReasonCounts,
+            retryErrorCodes,
+            recentErrors,
             toolCallCounts,
             toolCallCountsByConv,
         };
@@ -782,6 +797,8 @@ export class GMTracker {
                 Object.entries(summary.modelBreakdown).map(([name, stats]) => [name, { ...stats }]),
             ),
             stopReasonCounts: { ...summary.stopReasonCounts },
+            retryErrorCodes: { ...(summary.retryErrorCodes || {}) },
+            recentErrors: [...(summary.recentErrors || [])],
         };
     }
 
@@ -802,6 +819,8 @@ export class GMTracker {
                 Object.entries(summary.modelBreakdown).map(([name, stats]) => [name, { ...stats }]),
             ),
             stopReasonCounts: { ...summary.stopReasonCounts },
+            retryErrorCodes: { ...(summary.retryErrorCodes || {}) },
+            recentErrors: [...(summary.recentErrors || [])],
         };
     }
 

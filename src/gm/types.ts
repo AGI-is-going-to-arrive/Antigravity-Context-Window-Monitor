@@ -195,6 +195,10 @@ export interface GMSummary {
     latestTokenBreakdown: TokenBreakdownGroup[];
     /** Stop reason distribution: reason → count */
     stopReasonCounts: Record<string, number>;
+    /** Retry error code distribution: parsed error code → count (e.g. '429' → 3, '503' → 1, 'stream_error' → 2) */
+    retryErrorCodes: Record<string, number>;
+    /** Most recent error messages (capped, newest first) for error detail display */
+    recentErrors: string[];
     /** Tool invocation frequency: tool name → call count (from messagePrompts SYSTEM toolCalls) */
     toolCallCounts: Record<string, number>;
     /** Per-conversation tool call counts: cascadeId → { toolName → count }.

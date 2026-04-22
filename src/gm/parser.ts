@@ -511,15 +511,20 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
     const promptSectionTitles = promptSections.map(p => (p.title as string) || '?');
     const promptData = extractPromptData(cm);
 
-    let retries = parseInt0(cm.retries as string);
     const errorMessage = (gm.error as string) || '';
 
     // ── retryInfos aggregation ─────────────────────────────────────────────
+    // IMPORTANT: cm.retries is "total attempts" (includes the successful one),
+    // NOT "failed retry count". E.g. retries=1 means first-try success (0 failures).
+    // We derive the TRUE retry count from retryInfos entries that have an error field.
     let retryTokensIn = 0, retryTokensOut = 0, retryCredits = 0;
     const retryErrors: string[] = [];
     const retryInfos = cm.retryInfos as Record<string, unknown>[] | undefined;
     if (Array.isArray(retryInfos)) {
         for (const ri of retryInfos) {
+            const errMsg = ri.error as string;
+            if (!errMsg) { continue; } // Skip successful attempt entry
+            retryErrors.push(errMsg.substring(0, 120));
             const ru = (ri.usage || {}) as Record<string, unknown>;
             retryTokensIn += parseInt0(ru.inputTokens as string);
             retryTokensOut += parseInt0(ru.outputTokens as string);
@@ -527,15 +532,14 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
             if (Array.isArray(rCredits)) {
                 for (const rc of rCredits) { retryCredits += parseInt0(rc.creditAmount); }
             }
-            const errMsg = ri.error as string;
-            if (errMsg) { retryErrors.push(errMsg.substring(0, 120)); }
         }
-        // Derive retries from retryInfos when cm.retries is missing/zero.
-        // retryInfos always includes the successful attempt (no error) as an entry,
-        // so only count entries WITH errors as actual retries.
-        if (retries === 0 && retryErrors.length > 0) {
-            retries = retryErrors.length;
-        }
+    }
+    // retries = number of FAILED attempts (entries with errors in retryInfos).
+    // Fallback: if no retryInfos but cm.retries > 1, use cm.retries - 1 (subtract the successful attempt).
+    const cmRetries = parseInt0(cm.retries as string);
+    let retries = retryErrors.length;
+    if (retries === 0 && cmRetries > 1) {
+        retries = cmRetries - 1;
     }
 
     // ── stopReason ─────────────────────────────────────────────────────────

@@ -11,6 +11,60 @@ import type {
 } from './types';
 import { cloneTokenBreakdownGroups } from './types';
 
+/** Maximum number of recent error messages to keep */
+const MAX_RECENT_ERRORS = 20;
+
+/**
+ * Parse an error message into a short error code for bucketing.
+ * Examples:
+ *   'RESOURCE_EXHAUSTED (code 429): You have...' → '429'
+ *   'UNAVAILABLE (code 503): No capacity...'     → '503'
+ *   'stream reading error: unexpected EOF...'     → 'stream_error'
+ *   'INVALID_ARGUMENT (code 400): ...'            → '400'
+ *   'unknown error message'                       → 'unknown'
+ */
+export function parseErrorCode(errorMsg: string): string {
+    // Pattern: (code NNN)
+    const codeMatch = errorMsg.match(/\(code\s+(\d{3})\)/);
+    if (codeMatch) { return codeMatch[1]; }
+    // Pattern: gRPC/HTTP status codes like RESOURCE_EXHAUSTED, UNAVAILABLE
+    if (/RESOURCE_EXHAUSTED/i.test(errorMsg)) { return '429'; }
+    if (/UNAVAILABLE/i.test(errorMsg)) { return '503'; }
+    if (/INVALID_ARGUMENT/i.test(errorMsg)) { return '400'; }
+    if (/PERMISSION_DENIED/i.test(errorMsg)) { return '403'; }
+    if (/NOT_FOUND/i.test(errorMsg)) { return '404'; }
+    if (/DEADLINE_EXCEEDED/i.test(errorMsg)) { return '504'; }
+    if (/INTERNAL/i.test(errorMsg)) { return '500'; }
+    // Stream errors
+    if (/stream.*error|unexpected.*EOF/i.test(errorMsg)) { return 'stream_error'; }
+    // Timeout
+    if (/timeout/i.test(errorMsg)) { return 'timeout'; }
+    return 'unknown';
+}
+
+/** Aggregate retryErrors from a call into error code counts and recent errors list */
+function aggregateRetryErrors(
+    call: GMCallEntry,
+    retryErrorCodes: Record<string, number>,
+    recentErrors: string[],
+): void {
+    for (const errMsg of call.retryErrors) {
+        const code = parseErrorCode(errMsg);
+        retryErrorCodes[code] = (retryErrorCodes[code] || 0) + 1;
+        if (recentErrors.length < MAX_RECENT_ERRORS) {
+            recentErrors.push(errMsg);
+        }
+    }
+    // Also capture the call's own error (not from retries)
+    if (call.hasError && call.errorMessage) {
+        const code = parseErrorCode(call.errorMessage);
+        retryErrorCodes[code] = (retryErrorCodes[code] || 0) + 1;
+        if (recentErrors.length < MAX_RECENT_ERRORS) {
+            recentErrors.push(call.errorMessage);
+        }
+    }
+}
+
 export function filterGMSummaryByModels(
     summary: GMSummary | null | undefined,
     modelIds: string[],
@@ -24,6 +78,8 @@ export function filterGMSummaryByModels(
     const modelBreakdown: Record<string, GMModelStats> = {};
     const stopReasonCounts: Record<string, number> = {};
     const toolCallCounts: Record<string, number> = {};
+    const retryErrorCodes: Record<string, number> = {};
+    const recentErrors: string[] = [];
     const contextGrowth: { step: number; tokens: number; model: string }[] = [];
 
     let totalCalls = 0;
@@ -88,6 +144,8 @@ export function filterGMSummaryByModels(
                 const stopReason = call.stopReason.replace('STOP_REASON_', '');
                 stopReasonCounts[stopReason] = (stopReasonCounts[stopReason] || 0) + 1;
             }
+            // Aggregate error codes from retryErrors
+            aggregateRetryErrors(call, retryErrorCodes, recentErrors);
             // Aggregate tool call counts from source summary (preserves existing counts)
             // Note: toolCallsByStep-based counting happens in _buildSummary();
             // here we just pass through any pre-computed counts from the source.
@@ -198,6 +256,8 @@ export function filterGMSummaryByModels(
         totalRetryCount,
         latestTokenBreakdown,
         stopReasonCounts,
+        retryErrorCodes,
+        recentErrors,
         toolCallCounts: Object.keys(toolCallCounts).length > 0
             ? toolCallCounts
             : { ...(summary.toolCallCounts || {}) },
@@ -278,6 +338,8 @@ export function normalizeGMSummary(summary: GMSummary): GMSummary {
         })),
         latestTokenBreakdown: cloneTokenBreakdownGroups(summary.latestTokenBreakdown),
         stopReasonCounts: { ...summary.stopReasonCounts },
+        retryErrorCodes: { ...(summary.retryErrorCodes || {}) },
+        recentErrors: [...(summary.recentErrors || [])],
         toolCallCounts: { ...(summary.toolCallCounts || {}) },
     };
 }
@@ -289,6 +351,8 @@ export function buildSummaryFromConversations(
     const conversations: GMConversationData[] = [];
     const modelBreakdown: Record<string, GMModelStats> = {};
     const stopReasonCounts: Record<string, number> = {};
+    const retryErrorCodes: Record<string, number> = {};
+    const recentErrors: string[] = [];
     const contextGrowth: { step: number; tokens: number; model: string }[] = [];
 
     let totalCalls = 0;
@@ -345,6 +409,8 @@ export function buildSummaryFromConversations(
                 const stopReason = call.stopReason.replace('STOP_REASON_', '');
                 stopReasonCounts[stopReason] = (stopReasonCounts[stopReason] || 0) + 1;
             }
+            // Aggregate error codes from retryErrors
+            aggregateRetryErrors(call, retryErrorCodes, recentErrors);
             if (call.tokenBreakdownGroups.length > 0) {
                 latestTokenBreakdown = call.tokenBreakdownGroups;
             }
@@ -430,6 +496,8 @@ export function buildSummaryFromConversations(
         totalRetryCount,
         latestTokenBreakdown,
         stopReasonCounts,
+        retryErrorCodes,
+        recentErrors,
         toolCallCounts: {},
     };
 }
