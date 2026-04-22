@@ -40,7 +40,7 @@ antigravity-context-monitor/
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照）
-│   ├── webview-panel.ts          # WebView 面板框架（9 标签切换 + 消息通信）
+│   ├── webview-panel.ts          # WebView 面板框架（9 标签切换 + 消息通信 + 全局账号面板 dropdown）
 │   ├── webview-styles.ts         # WebView 面板 CSS 样式（Design Token 体系）
 │   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、开发按钮等）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
@@ -51,7 +51,7 @@ antigravity-context-monitor/
 │   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队）
 │   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
 │   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（会话目录 — 全量对话列表 + 筛选）
-│   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据 + 检查点查看器）
+│   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据 + 检查点查看器 + 账号面板构建器）
 │   ├── pricing-panel.ts          # Cost 标签页 HTML（费用分析 + 模型信息卡片构建器）
 │   ├── webview-calendar-tab.ts   # Calendar 标签页 HTML
 │   ├── i18n.ts                   # 国际化：语言模式、翻译表、偏好持久化
@@ -296,8 +296,9 @@ Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sou
 | Tooltip 边缘适配 / Tooltip Edge Anchoring | 向下弹出（`top`）避免顶部裁剪；`:first-child` 靠左对齐、`:last-child` 靠右对齐，防止左右溢出 webview 边界 |
 | 检查点查看器 / Checkpoint Viewer | `buildCheckpointViewer()` 渲染当前活跃对话（通过最新 `createdAt` 定位）的 `{{ CHECKPOINT N }}` 压缩摘要全文，琥珀色可折叠卡片 + 限高滚动容器 |
 | 工具调用排行 / Tool Call Ranking | `buildToolCallRanking()` 渲染 GM 精确的工具调用频率排行榜（水平条形图，6 色循环），数据源为 `GMSummary.toolCallCounts`（从 `messagePrompts` SYSTEM `toolCalls[]` 提取，按 stepIdx 去重，基于 `sliced` 不受额度重置归档影响）。统计范围为全账号、全对话，通过 `_persistedToolCounts` 跨重启 max-wins 合并保障数据完整。`+x` 增量通过 `currentUsage.cascadeId` 精确匹配当前对话（不依赖时间戳），仅在 ≥2 对话时显示。每日 `reset()` 清零 |
-| 多账号状态面板 / Account Status Panel | `buildAccountStatusPanel()` 在 GM Data 顶部渲染多账号状态卡片：`AccountSnapshot[]` → 按 email 分行，显示在线/缓存状态、Plan 徽章、按模型池独立倒计时（`ResetPool[]` 含 `hasUsage` 检测），到期显示红色「已就绪」，未消耗额度池显示灰色「未使用」；缓存账号卡片右侧有删除按钮（X），在线账号卡片有等宽占位符保持对齐 |
-| 待归档面板 / Pending Archive Panel | `buildPendingArchivePanel()` 在账号面板下方渲染黄色主题的待归档区域，显示基线化周期的调用数/token/credits 统计和 per-model 分布芯片；额度重置前不可见 |
+| 账号面板构建器 / Account Panel Builder | `buildAccountStatusPanel()`（已 export）渲染多账号状态卡片：`AccountSnapshot[]` → 按 email 分行，显示在线/缓存状态、Plan 徽章、按模型池独立倒计时（`ResetPool[]` 含 `hasUsage` 检测），到期显示红色「已就绪」，未消耗额度池显示灰色「未使用」。缓存账号名字行内显示红色「移除」文字链接。**v1.17.3 起已从 GM Data 标签页迁出至全局 dropdown**（由 `webview-panel.ts` 调用），`buildGMDataTabContent()` 不再包含账号面板 |
+| 红点检测 / Ready Pool Detection | `hasAccountReadyPool()` 遍历所有账号检测是否存在已过期且有使用记录的额度池，用于全局按钮上的红色脉冲指示器 |
+| 待归档面板 / Pending Archive Panel | `buildPendingArchivePanel()` 在 GM Data 标签页顶部渲染黄色主题的待归档区域，显示基线化周期的调用数/token/credits 统计和 per-model 分布芯片；额度重置前不可见 |
 | 增量刷新保护 / Refresh preservation | `<details>` 展开状态通过 `restoreDetailsState()` 自动保护；`.cp-viewer` / `.cp-card-body` 滚动位置通过 `scrollableSelectors` 保留 |
 | 账号分布行 / Account breakdown | 模型卡片 body 底部以分割线隔开，每个账号独立一行（用户 SVG 图标 + 邮箱前缀 + 紫色数字）。当前在线账号自动置顶并以绿色选中态高亮（绿色左竖线 + 边框 + 背景 + 图标/数字变色）。卡片头部不再冗余显示调用次数 |
 | 模型统计汇总行 / Model Stats Total | 模型卡片网格下方的芯片条汇总行，显示跨账号总调用数、模型数、输入/输出/缓存 token。数据从 `gm.conversations[].calls[]` 全量遍历，不受账号过滤影响。Sigma SVG 图标 + 蓝色标签 + 独立芯片边框 |
@@ -390,18 +391,21 @@ Aggregates Activity + GM + Cost snapshots per day. `addDailySnapshot()` supports
 
 面板总框架：标题「Antigravity Monitor / Antigravity 监控面板」，9 标签切换（Monitor / GM Data / Sessions / Cost / Models / Quota Tracking / Calendar / Profile / Settings）、消息通信。各标签内容由独立模块生成。新增 `onDidChangeViewState` 监听，面板从隐藏恢复可见时立即用缓存数据执行增量刷新，避免用户看到旧数据闪烁。
 
-Panel framework titled \"Antigravity Monitor\": 9-tab navigation and message communication. Tab content rendered by independent modules. Adds `onDidChangeViewState` listener to immediately refresh tabs with cached data when the panel becomes visible again, eliminating stale-data flash.
+Panel framework titled \"Antigravity Monitor\": 9-tab navigation, global account panel dropdown, and message communication. Tab content rendered by independent modules. Adds `onDidChangeViewState` listener to immediately refresh tabs with cached data when the panel becomes visible again, eliminating stale-data flash.
+
+**全局账号面板 / Global Account Panel (v1.17.3)**:
+topbar 标题旁药丸按钮 → 向下弹出 dropdown 面板（`panel-topbar` 直接子元素，`left/right` 撑满居中，`scaleY` 动画）。内容通过 `buildAccountStatusPanel()` / `hasAccountReadyPool()`（从 `activity-panel.ts` 导入）构建。增量刷新时通过 `updateTabs` 消息中的 `accountPopover` / `accountPopoverHasReady` 字段仅更新面板内容 HTML，不触碰 dropdown 的开/关 DOM 状态。额度就绪时按钮显示红色脉冲圆点。
 
 | 模块 / Module | 职责 / Responsibility |
 |---|---|
 | `webview-monitor-tab.ts` | Monitor 标签页 HTML；支持实时 `gmSummary` 与 `monitor-store` GM 快照双数据源 |
 | `webview-models-tab.ts` | Models 标签页 HTML；聚合默认模型、模型配额、模型信息 |
 | `webview-settings-tab.ts` | Settings 标签页 HTML；含持久化存储概览（文件大小 / Input·Output Tokens / Credits / 估算总费用 / 归档天数 / 日历天数·周期数）+ 模拟每日归档按钮、界面提示偏好 |
-| `webview-script.ts` | 客户端 JS；事件委托、标签切换、设置交互、增量刷新、`<details>` 状态恢复、内部滚动位置保留（含 `.cp-viewer` / `.cp-card-body`） |
+| `webview-script.ts` | 客户端 JS；事件委托、标签切换、设置交互、增量刷新、`<details>` 状态恢复、内部滚动位置保留（含 `.cp-viewer` / `.cp-card-body`）、账号面板 dropdown 切换 + click-outside 关闭 + 增量内容刷新 |
 | `webview-styles.ts` | CSS 样式（Design Token 体系） |
 | `webview-icons.ts` | 内联 SVG 图标 |
 | `webview-chat-history-tab.ts` | Sessions / 会话标签页 HTML；全量对话列表、快捷卡片、筛选/搜索、逐会话操作按钮 |
-| `activity-panel.ts` | GM Data 标签页 HTML |
+| `activity-panel.ts` | GM Data 标签页 HTML + 账号面板构建器（`buildAccountStatusPanel` / `hasAccountReadyPool` 导出供 topbar 复用） |
 | `pricing-panel.ts` | Cost 标签页 HTML；同时提供模型信息卡片构建器 |
 | `webview-calendar-tab.ts` | Calendar 标签页 HTML |
 | `webview-profile-tab.ts` | Profile 标签页 HTML；现主要承载账户、计划限制、功能与团队信息 |
