@@ -178,7 +178,7 @@ export class GMTracker {
     }
 
     /** Build aggregated summary from cached data */
-    private _buildSummary(): GMSummary {
+    private _buildSummary(skipAccountFilter = false): GMSummary {
         const conversations: GMConversationData[] = [];
         const modelAgg = new Map<string, {
             callCount: number; stepsCovered: number;
@@ -250,7 +250,7 @@ export class GMTracker {
             // global totals only count calls belonging to the current online account.
             // Calls with empty accountEmail (legacy / pre-tagging data) are included
             // as a migration courtesy — they'll be tagged on next re-fetch.
-            const accountFilteredCalls = this._currentAccountEmail
+            const accountFilteredCalls = (this._currentAccountEmail && !skipAccountFilter)
                 ? activeCalls.filter(c =>
                     !c.accountEmail || c.accountEmail === this._currentAccountEmail)
                 : activeCalls;
@@ -566,6 +566,21 @@ export class GMTracker {
         return this._pendingArchives;
     }
 
+    /**
+     * Check if a pool has already been archived for a given account.
+     * Uses persisted _archivedAccountModelCutoffs to survive restarts.
+     * @param email  Account email
+     * @param modelLabels  Pool model labels (display names or model IDs)
+     * @returns true if ANY model in the pool has a cutoff entry
+     */
+    isPoolArchived(email: string, modelLabels: string[]): boolean {
+        if (this._archivedAccountModelCutoffs.size === 0) { return false; }
+        return modelLabels.some(label => {
+            const modelId = resolveModelId(label) || label;
+            return this._archivedAccountModelCutoffs.has(`${email}|${modelId}`);
+        });
+    }
+
     reset(): void {
         // Record call baselines: for conversations that were fetched from API
         // (calls.length > 0), set baseline to their absolute call count.
@@ -711,6 +726,26 @@ export class GMTracker {
         const summary = normalizeGMSummary(this._lastSummary || this._buildSummary());
         if (!summary) { return null; }
         this._lastSummary = summary;
+        return {
+            ...summary,
+            conversations: summary.conversations.map(cloneConversationData),
+            contextGrowth: summary.contextGrowth.map(point => ({ ...point })),
+            latestTokenBreakdown: cloneTokenBreakdownGroups(summary.latestTokenBreakdown),
+            modelBreakdown: Object.fromEntries(
+                Object.entries(summary.modelBreakdown).map(([name, stats]) => [name, { ...stats }]),
+            ),
+            stopReasonCounts: { ...summary.stopReasonCounts },
+        };
+    }
+
+    /**
+     * Full summary with ALL accounts' calls included in totals (no account filtering).
+     * Used by DailyStore archival to ensure cross-account data is preserved in calendar.
+     * Unlike getDetailedSummary(), this always rebuilds from cache (not cached).
+     */
+    getFullSummary(): GMSummary | null {
+        const summary = normalizeGMSummary(this._buildSummary(true));
+        if (!summary) { return null; }
         return {
             ...summary,
             conversations: summary.conversations.map(cloneConversationData),

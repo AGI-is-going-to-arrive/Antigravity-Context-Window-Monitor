@@ -478,8 +478,8 @@ export function activate(context: vscode.ExtensionContext): void {
     quotaTracker = new QuotaTracker(context, durableGlobalState);
     quotaTracker.onQuotaReset = (modelIds: string[]) => {
         // ── Step 1: Snapshot current data to DailyStore BEFORE baselining ──
-        // This preserves the outgoing cycle's stats in the calendar.
-        const preBaselineSummary = gmTracker.getDetailedSummary();
+        // Use getFullSummary() to include ALL accounts' calls in the snapshot.
+        const preBaselineSummary = gmTracker.getFullSummary();
         if (preBaselineSummary && preBaselineSummary.totalCalls > 0 && dailyStore) {
             const todayKey = toLocalDateKey();
             let costTotal: number | undefined;
@@ -1391,10 +1391,19 @@ function checkCachedAccountResets(): void {
             const openMonitorLabel = tBi('Open Monitor', '打开监控');
 
 
-            // ── Step 1: Snapshot to DailyStore BEFORE baselining (same as active account) ──
-            // This preserves the outgoing pool's data in the calendar so midnight
-            // reset() doesn't lose it.
-            const preBaselineSummary = gmTracker.getDetailedSummary();
+            // ── Guard: skip if this pool was already archived (persisted state) ──
+            // On extension restart/reinstall, notifiedAccountResets (in-memory) is
+            // empty but _archivedAccountModelCutoffs (persisted) remembers. Without
+            // this check, pre-baseline snapshots would duplicate data in DailyStore.
+            if (gmTracker.isPoolArchived(snap.email, pool.modelLabels)) {
+                notifiedAccountResets.add(key);
+                log(`Cached account ${snap.email}: pool [${modelNames}] already archived — skipped`);
+                continue;
+            }
+
+            // ── Step 1: Snapshot to DailyStore BEFORE baselining ──
+            // Use getFullSummary() to include ALL accounts' calls.
+            const preBaselineSummary = gmTracker.getFullSummary();
             if (preBaselineSummary && preBaselineSummary.totalCalls > 0 && dailyStore) {
                 const todayKey = toLocalDateKey();
                 let costTotal: number | undefined;
@@ -1419,7 +1428,6 @@ function checkCachedAccountResets(): void {
             }
 
             // ── Step 2: Baseline this cached account's GM calls for the expired pool only ──
-            // (not all models — other pools may still be active)
             const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelLabels);
             if (baselinedCount > 0) {
                 log(`Cached account ${snap.email}: ${baselinedCount} GM calls baselined on quota expiry`);

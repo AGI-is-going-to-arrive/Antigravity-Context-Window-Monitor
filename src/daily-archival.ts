@@ -96,8 +96,8 @@ export function performDailyArchival(
     const hasActivity = activitySummary.totalReasoning > 0
         || activitySummary.totalToolCalls > 0;
 
-    // 2. Snapshot GM
-    const gmSummary = ctx.lastGMSummary || ctx.gmTracker.getDetailedSummary();
+    // 2. Snapshot GM (all accounts — DailyStore needs cross-account totals)
+    const gmSummary = ctx.gmTracker.getFullSummary() || ctx.lastGMSummary;
     const hasGM = gmSummary && gmSummary.totalCalls > 0;
 
     // 3. Calculate cost
