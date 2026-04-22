@@ -8,6 +8,34 @@
 
 ---
 
+## [1.17.6] - 2026-04-22
+
+### 修复 / Fixed
+
+- **扩展重启后错误统计归属错误 / Error Attribution After Extension Restart**:
+  扩展重启后 `_currentAccountEmail` 从持久化恢复为上一次的账号（可能已过时），但 `handleAccountSwitchIfNeeded()` 要等到第 2 个轮询周期才执行（`STATUS_REFRESH_INTERVAL = 2`）。在此期间，`gmTracker.fetchAll()` 会用旧账号标记所有新调用 → 这些调用后续被 `accountFilteredCalls` 过滤 → 错误统计少计。
+
+  After extension restart, `_currentAccountEmail` restored from persistence with a stale account email. `handleAccountSwitchIfNeeded()` only runs every 2nd poll cycle, so the first `fetchAll()` tagged new calls with the wrong account. These calls were then filtered out of `accountFilteredCalls`, under-counting errors.
+
+  **修复**: `pollContextUsage()` 中首次轮询（`!firstPollDone`）强制刷新用户状态，确保 `_currentAccountEmail` 在第一次 `fetchAll()` 前更新为实际登录账号。
+  Fix: Force user status refresh on first poll (`!firstPollDone`), ensuring `_currentAccountEmail` is updated before the first `fetchAll()`.
+
+### 改进 / Improved
+
+- **`_callAccountMap` key 改用调用身份标识 / Identity-Based Call Account Mapping**:
+  `_callAccountMap` 的 key 从数组下标（`cascadeId:index`）改为调用身份（`exec:{executionId}` 或 `cascadeId:stepIndices:model` 回退）。数组下标依赖 API 返回的稳定顺序，如果调用顺序因增强/重新排序而变化，标记会错位。新 key 绑定调用本身而非位置，同时兼容 legacy key 迁移。
+
+  `_callAccountMap` key changed from array index (`cascadeId:index`) to call identity (`exec:{executionId}` or `cascadeId:stepIndices:model` fallback). Array index depends on stable API ordering; identity-based keys are immune to reordering. Legacy key migration included.
+
+### 统计 / Stats
+
+- **Files changed**: 2 (`src/extension.ts`, `src/gm/tracker.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **Root cause**: `STATUS_REFRESH_INTERVAL(2)` 导致首次轮询跳过账号刷新 → `fetchAll()` 用 restore 的旧账号标记新调用 → 错误被归到错误账号
+
+---
+
 ## [1.17.5] - 2026-04-22
 
 ### 修复 / Fixed

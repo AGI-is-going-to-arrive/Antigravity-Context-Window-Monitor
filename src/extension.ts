@@ -940,8 +940,12 @@ async function pollContextUsage(): Promise<void> {
             }
 
             // Periodic refresh of user status (every STATUS_REFRESH_INTERVAL polls)
+            // IMPORTANT: force refresh on first poll (!firstPollDone) so that
+            // _currentAccountEmail is set BEFORE the first fetchAll(). Without this,
+            // fetchAll() on restart would tag new calls with the stale account email
+            // restored from persistence, causing error attribution mismatch.
             statusPollCount++;
-            if (statusPollCount >= STATUS_REFRESH_INTERVAL) {
+            if (statusPollCount >= STATUS_REFRESH_INTERVAL || !firstPollDone) {
                 statusPollCount = 0;
                 try {
                     const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);

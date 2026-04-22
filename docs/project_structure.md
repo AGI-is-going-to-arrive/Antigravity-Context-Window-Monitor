@@ -279,7 +279,7 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | Detailed summary | `getDetailedSummary()` 返回完整 `GMSummary`（含 calls），写盘前通过 `slimSummaryForPersistence()` 剥离文本字段，仅保留 token/credits 计费数据 |
 | Monitor fallback | `getAllConversationData()` 导出对话级 GM 明细，供 Monitor 标签页回退展示 |
 | 全局重置 / Global reset | `reset()` 全局重置所有调用基线、缓存、`_callAccountMap`、`_archivedAccountModelCutoffs` 和 `_pendingArchives`，由每日归档逻辑统一调用 |
-| 跨账号调用标记 / Account tagging | `_currentAccountEmail` 记录当前活跃账号；`_callAccountMap` 持久映射每个调用的归属账号，随午夜 `reset()` 清空防止无限增长 |
+| 跨账号调用标记 / Account tagging | `_currentAccountEmail` 记录当前活跃账号（首次轮询强制刷新，v1.17.6 修复）；`_callAccountMap` 以调用身份（`exec:{executionId}` 或 `cascadeId:stepIndices:model`）为 key 持久映射归属账号，随午夜 `reset()` 清空防止无限增长 |
 
 ---
 

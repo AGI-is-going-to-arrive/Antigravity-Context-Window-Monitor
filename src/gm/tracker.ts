@@ -128,16 +128,27 @@ export class GMTracker {
                 // Restore/tag accountEmail using persistent call-key map.
                 // The map survives cache overwrites — each call's account is
                 // recorded once and never overwritten on subsequent re-fetches.
-                // Key = cascadeId + array index. The GM API returns calls in stable
-                // chronological order; new calls are appended at the end, so existing
-                // calls maintain their index across re-fetches.
+                // Key = executionId (unique per call). Falls back to
+                // cascadeId:stepIndices for calls without executionId.
+                // v1.17.6: changed from cascadeId:arrayIndex to identity-based keys
+                // to prevent stale account tags after extension restart when the
+                // API returns the same calls at different array positions.
                 for (let i = 0; i < calls.length; i++) {
                     const c = calls[i];
-                    const key = `${t.cascadeId}:${i}`;
-                    const known = this._callAccountMap.get(key);
+                    const key = c.executionId
+                        ? `exec:${c.executionId}`
+                        : `${t.cascadeId}:${c.stepIndices.join(',')}:${c.model}`;
+                    // Also check legacy index-based key for migration
+                    const legacyKey = `${t.cascadeId}:${i}`;
+                    const known = this._callAccountMap.get(key)
+                        || this._callAccountMap.get(legacyKey);
                     if (known) {
                         // Already tracked — restore original account
                         c.accountEmail = known;
+                        // Migrate legacy key to new identity-based key
+                        if (!this._callAccountMap.has(key)) {
+                            this._callAccountMap.set(key, known);
+                        }
                     } else if (this._currentAccountEmail) {
                         // New call — tag with current account and remember
                         c.accountEmail = this._currentAccountEmail;
