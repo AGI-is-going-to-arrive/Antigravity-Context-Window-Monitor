@@ -8,6 +8,55 @@
 
 ---
 
+## [1.17.2] - 2026-04-22
+
+### 重构 / Refactored
+
+- **模型卡片账号分布重设计 / Model Card Account Breakdown Redesign**:
+  将模型卡片 footer 中的紫色药丸气泡标签（`gm-account-tag`）重设计为 card-body 内的结构化数据行：
+  - 分割线隔开统计区域和账号区域，与 GM 统计行风格统一
+  - 每行使用用户 SVG 图标 + 邮箱前缀（左侧） + 紫色加粗调用次数（右侧）
+  - `justify-content: space-between` 布局，与上方的调用/TTFT 等行视觉对齐
+
+  Redesigned account breakdown from purple pill bubbles in card footer to structured data rows inside card body, with divider separator, user SVG icons, and consistent layout with other stat rows.
+
+- **活跃账号高亮 / Active Account Highlight**:
+  当前在线账号行以绿色选中态展示：2px 左竖线 + 绿色边框 + 微妙绿色背景 + 用户图标变绿 + 名字变亮白 + 数字变绿。自动置顶排序。通过 `accountSnapshots.find(s => s.isActive)` 获取当前账号并传入 `buildModelCards()`。
+
+  Active account row highlighted with green selected state: left border + border + background + icon/text color change. Auto-sorted to top.
+
+### 新增 / Added
+
+- **模型统计汇总行 / Model Stats Total Row**:
+  模型卡片网格下方新增芯片条汇总行，显示跨全部账号的总调用数、模型数、输入/输出/缓存 token。数据从 `gm.conversations[].calls[]` 全量遍历计算（`allAccountTotalCalls` / `allAccountTotalIn` / `allAccountTotalOut` / `allAccountTotalCache`），不使用经 `accountFilteredCalls` 过滤的 `gm.totalCalls` 等字段。
+
+  New summary chip-bar below model cards grid showing cross-account totals (calls, models, in/out/cache tokens), computed from raw `gm.conversations[].calls[]` to bypass account filtering.
+
+  **视觉设计 / Visual Design**:
+  - Sigma (Σ) SVG 图标 + 蓝色 "合计" 标签 + 独立芯片卡片（边框 + 背景 + 圆角 + hover 效果）
+  - 浅色/深色主题完整适配
+  - 各统计项内数值加粗、标签暗色，层次清晰
+
+### 移除 / Removed
+
+- **卡片头部调用徽章 / Card Header Call Badge**:
+  移除模型卡片头部的 `<span class="act-badge act-badge-total">xx 调用</span>` 和 GM-only 卡片的 `<span class="act-badge">xx calls</span>`。调用次数现在仅在卡片内统计行和账号分布区展示，消除冗余。
+
+  Removed redundant call count badges from model card headers. Call counts are now shown only in the card body stats row and account breakdown section.
+
+### 清理 / Cleanup
+
+- **死代码清理**: 移除 `totalLabel` 删除后遗留的 `gmStatsForLabel` 变量和从未使用的 `avgThink` 变量
+
+### 统计 / Stats
+
+- **Files changed**: 1 (`src/activity-panel.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **Key design**: 汇总行数据源使用 `gm.conversations[].calls[]`（全账号全量遍历），确保与卡片内账号分布的数据源一致，避免账号过滤导致的数据不匹配
+
+---
+
 ## [1.17.1] - 2026-04-22
 
 ### 修复 / Fixed

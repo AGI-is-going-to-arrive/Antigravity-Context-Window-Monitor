@@ -107,7 +107,8 @@ export function buildGMDataTabContent(
     if (summary) { parts.push(buildTimeline(summary, currentUsage)); }
 
     // ── Model Cards (merged activity counts + GM precision)
-    parts.push(buildModelCards(summary, gmSummary));
+    const activeEmail = accountSnapshots?.find(s => s.isActive)?.email || '';
+    parts.push(buildModelCards(summary, gmSummary, activeEmail));
 
     // ── Tool Call Ranking (from GM messagePrompts SYSTEM toolCalls)
     if (gmSummary && Object.keys(gmSummary.toolCallCounts || {}).length > 0) {
@@ -1172,9 +1173,127 @@ export function getGMDataTabStyles(): string {
     .gm-cache-bar { height: 100%; border-radius: var(--radius-sm); background: linear-gradient(90deg, #3b82f6, #60a5fa); transition: width 0.3s cubic-bezier(.4,0,.2,1); }
     .gm-badge-real { display: inline-block; font-size: 0.65em; padding: 1px var(--space-1); border-radius: var(--radius-sm); background: rgba(52,211,153,0.15); color: #34d399; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; vertical-align: middle; margin-left: var(--space-1); }
     .gm-provider-tag { display: inline-block; font-size: 0.72em; padding: 1px var(--space-1); border-radius: var(--radius-sm); background: rgba(96,165,250,0.1); color: var(--color-info); margin-top: var(--space-1); }
-    .gm-account-row { display: flex; flex-direction: column; gap: 3px; padding: 2px 0 2px 22px; }
-    .gm-account-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 0.72em; padding: 2px 8px; border-radius: 10px; background: rgba(139,92,246,0.1); color: rgba(196,181,253,0.85); letter-spacing: 0.2px; width: fit-content; }
-    .gm-account-tag b { font-weight: 700; color: #a78bfa; }
+    .gm-account-section {
+        padding: var(--space-1) 0 0;
+    }
+    .gm-account-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 2px 0;
+        font-size: 0.82em;
+    }
+    .gm-account-row .gm-account-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--color-text-dim);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+    }
+    .gm-account-row .gm-account-label svg {
+        width: 12px; height: 12px;
+        flex-shrink: 0;
+        opacity: 0.6;
+    }
+    .gm-account-row .gm-account-count {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        color: #a78bfa;
+        flex-shrink: 0;
+    }
+    /* Active account highlight */
+    .gm-account-row.gm-account-active {
+        background: rgba(52,211,153,0.06);
+        border: 1px solid rgba(52,211,153,0.2);
+        border-left: 2px solid #34d399;
+        border-radius: var(--radius-sm);
+        padding: 3px 8px 3px 6px;
+        margin: 1px -8px 1px -8px;
+    }
+    .gm-account-row.gm-account-active .gm-account-label {
+        color: var(--color-text);
+    }
+    .gm-account-row.gm-account-active .gm-account-label svg {
+        stroke: #34d399;
+        opacity: 1;
+    }
+    .gm-account-row.gm-account-active .gm-account-count {
+        color: #34d399;
+    }
+    /* ── Model Stats Summary Row ── */
+    .model-stats-total {
+        display: flex;
+        align-items: center;
+        gap: 0;
+        padding: 6px 12px;
+        margin-top: var(--space-3);
+        font-size: 0.8em;
+        color: var(--color-text-dim);
+        background: rgba(96,165,250,0.04);
+        border: 1px solid rgba(96,165,250,0.12);
+        border-radius: var(--radius-md);
+    }
+    .model-stats-total .mst-icon {
+        width: 14px; height: 14px;
+        flex-shrink: 0;
+        margin-right: 6px;
+        opacity: 0.5;
+    }
+    .model-stats-total .mst-label {
+        font-weight: 600;
+        color: rgba(96,165,250,0.7);
+        margin-right: 8px;
+        letter-spacing: 0.3px;
+    }
+    .model-stats-total .mst-items {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-left: auto;
+    }
+    .model-stats-total .mst-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        white-space: nowrap;
+        padding: 2px 8px;
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(148,163,184,0.1);
+        border-radius: var(--radius-sm);
+        transition: border-color 0.15s ease;
+    }
+    @media (hover: hover) {
+        .model-stats-total .mst-item:hover {
+            border-color: rgba(96,165,250,0.3);
+            background: rgba(96,165,250,0.06);
+        }
+    }
+    .model-stats-total .mst-val {
+        font-weight: 600;
+        color: var(--color-text);
+        font-variant-numeric: tabular-nums;
+    }
+    body.vscode-light .model-stats-total {
+        background: rgba(37,99,235,0.04);
+        border-color: rgba(37,99,235,0.12);
+    }
+    body.vscode-light .model-stats-total .mst-label {
+        color: rgba(37,99,235,0.7);
+    }
+    body.vscode-light .model-stats-total .mst-item {
+        background: rgba(0,0,0,0.02);
+        border-color: rgba(0,0,0,0.08);
+    }
+    @media (hover: hover) {
+        body.vscode-light .model-stats-total .mst-item:hover {
+            border-color: rgba(37,99,235,0.3);
+            background: rgba(37,99,235,0.06);
+        }
+    }
 
     /* ─── Retry Overhead ─── */
     .act-stat-warn { border-color: rgba(248,113,113,0.3); }
@@ -1706,7 +1825,7 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null): strin
 
 
 
-function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): string {
+function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, activeEmail = ''): string {
     const actEntries = s ? Object.entries(s.modelStats).sort((a, b) => b[1].totalSteps - a[1].totalSteps) : [];
     // Collect model names that exist only in GM data (not in Activity)
     const actNames = new Set(actEntries.map(([n]) => n));
@@ -1744,12 +1863,22 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
     const fmtMs = (ms: number) => ms <= 0 ? '-' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 
-    // ── Build per-account call counts for each model ──
+    // ── Build per-account call counts for each model + cross-account totals ──
     // Map<modelDisplayName, Map<accountEmail, callCount>>
     const accountCallsByModel = new Map<string, Map<string, number>>();
+    let allAccountTotalCalls = 0;
+    let allAccountTotalIn = 0;
+    let allAccountTotalOut = 0;
+    let allAccountTotalCache = 0;
     if (gm) {
         for (const conv of gm.conversations) {
             for (const call of conv.calls) {
+                // Accumulate cross-account totals from raw calls
+                allAccountTotalCalls++;
+                allAccountTotalIn += call.inputTokens || 0;
+                allAccountTotalOut += call.outputTokens || 0;
+                allAccountTotalCache += call.cacheReadTokens || 0;
+
                 const email = call.accountEmail || '';
                 if (!email) { continue; }
                 const modelName = normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model;
@@ -1763,18 +1892,28 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
             }
         }
     }
-    /** Build account breakdown tags HTML for a model (only shown when >1 account) */
-    const buildAccountTags = (modelName: string): string => {
+    const userSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+    /** Build account breakdown section inside card body (divider + per-account rows, active highlighted) */
+    const buildAccountSection = (modelName: string): string => {
         const byAccount = accountCallsByModel.get(modelName);
         if (!byAccount || byAccount.size < 1) { return ''; }
-        const tags = [...byAccount.entries()]
-            .sort((a, b) => b[1] - a[1])
+        const sorted = [...byAccount.entries()].sort((a, b) => {
+            // Active account always first
+            if (activeEmail) {
+                if (a[0] === activeEmail) { return -1; }
+                if (b[0] === activeEmail) { return 1; }
+            }
+            return b[1] - a[1];
+        });
+        const rows = sorted
             .map(([email, count]) => {
                 const prefix = email.split('@')[0];
-                return `<span class="gm-account-tag">${esc(prefix)} <b>${count}</b></span>`;
+                const isActive = activeEmail && email === activeEmail;
+                const cls = isActive ? ' gm-account-active' : '';
+                return `<div class="gm-account-row${cls}"><span class="gm-account-label">${userSvg} ${esc(prefix)}</span><span class="gm-account-count">${count}</span></div>`;
             })
             .join('');
-        return `<div class="act-card-row gm-account-row">${tags}</div>`;
+        return `<div class="act-card-divider"></div><div class="gm-account-section">${rows}</div>`;
     };
 
     let html = `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>${tBi('Model Stats', '模型统计')}</h2>`;
@@ -1794,12 +1933,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
     const fmtSec = (n: number) => n <= 0 ? '-' : n < 1 ? `${(n * 1000).toFixed(0)}ms` : `${n.toFixed(2)}s`;
     for (const [name, ms] of entries) {
         const isCheckpointOnly = ms.reasoning === 0 && ms.toolCalls === 0 && ms.checkpoints > 0 && ms.estSteps === 0;
-        const avgThink = ms.reasoning > 0 ? fmtMs(Math.round(ms.thinkingTimeMs / ms.reasoning)) : '-';
-        // Always use GM callCount for header label (entries are pre-filtered to have GM data)
-        const gmStatsForLabel = gmBreak?.[name];
-        const totalLabel = gmStatsForLabel
-            ? tBi(`${gmStatsForLabel.callCount} calls`, `${gmStatsForLabel.callCount} 调用`)
-            : '';
 
         // GM per-model precision data (prefer full GMModelStats when available)
         let gmSection = '';
@@ -1829,11 +1962,12 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
 
         html += `
         <div class="act-model-card${isCheckpointOnly ? ' act-checkpoint-model' : ''}">
-            <div class="act-card-header">${esc(name)}${isCheckpointOnly ? ` <span class="act-badge">${ICONS.save}</span>` : ''} <span class="act-badge act-badge-total">${totalLabel}</span></div>
+            <div class="act-card-header">${esc(name)}${isCheckpointOnly ? ` <span class="act-badge">${ICONS.save}</span>` : ''}</div>
             <div class="act-card-body">
                 ${gmSection}
+                ${buildAccountSection(name)}
             </div>
-            ${(gmFooterTags || buildAccountTags(name)) ? `<div class="act-card-footer">${buildAccountTags(name)}${gmFooterTags}</div>` : ''}
+            ${gmFooterTags ? `<div class="act-card-footer">${gmFooterTags}</div>` : ''}
         </div>`;
     }
     // GM-only models: models in GM data but not in Activity modelStats
@@ -1841,7 +1975,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
         const providerShort = gms.apiProvider ? gms.apiProvider.replace('API_PROVIDER_', '').replace(/_/g, ' ') : '';
         html += `
         <div class="act-model-card">
-            <div class="act-card-header">${esc(name)} <span class="act-badge">${gms.callCount} ${tBi('calls', '调用')}</span> <span class="gm-badge-real">GM</span></div>
+            <div class="act-card-header">${esc(name)} <span class="gm-badge-real">GM</span></div>
             <div class="act-card-body">
                 <div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Steps', '步骤')}</span></span><span class="val">${gms.stepsCovered}</span></div>
                 <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val">${fmtSec(gms.avgTTFT)}</span></div>
@@ -1853,15 +1987,30 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null): strin
                 ${gms.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gms.totalCacheRead)}</span></div>` : ''}
                 ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>Credits</span></span><span class="val">${gms.totalCredits.toFixed(1)}</span></div>` : ''}
                 ${gms.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gms.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
+                ${buildAccountSection(name)}
             </div>
             <div class="act-card-footer">
-                ${buildAccountTags(name)}
                 ${'responseModel' in gms && gms.responseModel ? `<span class="act-tool-tag">${esc(gms.responseModel)}</span>` : ''}
                 <span class="act-tool-tag">${tBi('Cache', '缓存')} ${(gms.cacheHitRate * 100).toFixed(0)}%</span>
             </div>
         </div>`;
     }
     html += `</div>`;
+
+    // ── Totals summary row below cards grid (uses cross-account totals) ──
+    if (allAccountTotalCalls > 0) {
+        const totalModels = accountCallsByModel.size;
+        const sigmaSvg = `<svg class="mst-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 4 8 4 14 12 8 20 18 20"/></svg>`;
+        const items: string[] = [];
+        items.push(`<span class="mst-item"><span class="mst-val">${allAccountTotalCalls}</span> ${tBi('calls', '调用')}</span>`);
+        items.push(`<span class="mst-item"><span class="mst-val">${totalModels}</span> ${tBi('models', '模型')}</span>`);
+        items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalIn)}</span> ${tBi('in', '输入')}</span>`);
+        items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalOut)}</span> ${tBi('out', '输出')}</span>`);
+        if (allAccountTotalCache > 0) {
+            items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalCache)}</span> ${tBi('cache', '缓存')}</span>`);
+        }
+        html += `<div class="model-stats-total">${sigmaSvg}<span class="mst-label">${tBi('Total', '合计')}</span><span class="mst-items">${items.join('')}</span></div>`;
+    }
 
     return html;
 }
