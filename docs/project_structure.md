@@ -273,8 +273,8 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | 额度周期基线化 / Quota-cycle baseline | `baselineForQuotaReset(targetEmail?, poolModelFilter?)` 按账号 + 池级模型过滤标记调用为已归档。双重数据源：优先从 `_lastSummary` 取准确统计（防止 `_cache` 未完全加载导致漏计），同时遍历 `_cache` 标记 `_archivedCallIds`。新增 `_archivedAccountModelCutoffs`（`email|model` → ISO 时间戳）确保后续 re-fetch 的调用也被排除 |
 | 待归档持久化 / PendingArchive persistence | `_pendingArchives` 通过 `serialize()`/`restore()` 持久化至 `state-v1.json`，跨插件重启和重装保留；仅在午夜 `reset()` 时清空 |
 | 按账号过滤 / Account filtering | `_buildSummary()` 通过 `_currentAccountEmail` 过滤 `accountFilteredCalls`，确保 `totalCalls`/`modelBreakdown` 等统计只计当前在线账号的调用。新增 `_archivedAccountModelCutoffs` 过滤层，按 `email|model` 精确排除已归档调用 |
-| 错误码聚合 / Error code aggregation | `_buildSummary()` 遍历每个调用的 `retryErrors[]`（`errorMessage` 仅在无 `retryErrors` 时降级收集），通过 `parseErrorCode()` 解析为短错误码（如 `429`/`503`/`stream_error`），聚合至 `GMSummary.retryErrorCodes` 和 `recentErrors`（最近 30 条）。新增 `retryErrorCodesByConv`（cascadeId → 错误码计数）用于 UI 红色 `+x` 增量显示。Parser 清洗：移除 API 内部重复文本（`"msg.: msg."` → `"msg."`），完整捕获不截断 |
-| 错误持久化 / Error persistence | 分账号隔离：`_persistedRetryErrorCodesByAccount`（email → 错误码计数）+ `_persistedRecentErrorsByAccount`（email → 消息列表）存入 `state-v1.json`。切换账号时各账号数据独立保存不丢失，切回时恢复。errorCodes 使用 max-wins 合并（按账号桶隔离）。旧版全局字段（`_persistedRetryErrorCodes`/`_persistedRecentErrors`）自动迁移至当前账号桶。午夜 `reset()` 清空 |
+| 错误码聚合 / Error code aggregation | `_buildSummary()` 遍历每个调用的 `retryErrors[]`（`errorMessage` 仅在无 `retryErrors` 时降级收集），通过 `parseErrorCode()` 解析为短错误码（如 `429`/`503`/`stream_error`），聚合至 `GMSummary.retryErrorCodes` 和 `recentErrors`（最近 30 条）。新增 `retryErrorCodesByConv`（cascadeId → 错误码计数）用于 UI 红色 `+x` 增量显示，使用 `accountFilteredCalls`（与总数相同数据源），确保 `+x` 不会超过总数。Parser 清洗：移除 API 内部重复文本（`"msg.: msg."` → `"msg."`），完整捕获不截断 |
+| 错误持久化 / Error persistence | 分账号隔离：`_persistedRetryErrorCodesByAccount`（email → 错误码计数）+ `_persistedRecentErrorsByAccount`（email → 消息列表）存入 `state-v1.json`。切换账号时各账号数据独立保存不丢失，切回时恢复。errorCodes 使用 max-wins 合并（按账号桶隔离）。`baselineForQuotaReset()` 清除被归档账号的持久化错误数据，防止 max-wins 合并恢复已归档计数。旧版全局字段自动迁移至当前账号桶。午夜 `reset()` 清空 |
 | Slim persistence | `serialize()` 去掉 `calls[]`，用于快速恢复基线 |
 | Detailed summary | `getDetailedSummary()` 返回完整 `GMSummary`（含 calls），写盘前通过 `slimSummaryForPersistence()` 剥离文本字段，仅保留 token/credits 计费数据 |
 | Monitor fallback | `getAllConversationData()` 导出对话级 GM 明细，供 Monitor 标签页回退展示 |
@@ -298,9 +298,9 @@ Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sou
 | 工具调用排行 / Tool Call Ranking | `buildToolCallRanking()` 渲染 GM 精确的工具调用频率排行榜（水平条形图，6 色循环），数据源为 `GMSummary.toolCallCounts`（从 `messagePrompts` SYSTEM `toolCalls[]` 提取，按 stepIdx 去重，基于 `sliced` 不受额度重置归档影响）。统计范围为全账号、全对话，通过 `_persistedToolCounts` 跨重启 max-wins 合并保障数据完整。`+x` 增量通过 `currentUsage.cascadeId` 精确匹配当前对话（不依赖时间戳），仅在 ≥2 对话时显示。每日 `reset()` 清零 |
 | 账号面板构建器 / Account Panel Builder | `buildAccountStatusPanel()`（已 export）渲染多账号状态卡片：`AccountSnapshot[]` → 按 email 分行，显示在线/缓存状态、Plan 徽章、按模型池独立倒计时（`ResetPool[]` 含 `hasUsage` 检测），到期显示红色「已就绪」，未消耗额度池显示灰色「未使用」。缓存账号名字行内显示红色「移除」文字链接。**v1.17.3 起已从 GM Data 标签页迁出至全局 dropdown**（由 `webview-panel.ts` 调用），`buildGMDataTabContent()` 不再包含账号面板 |
 | 红点检测 / Ready Pool Detection | `hasAccountReadyPool()` 遍历所有账号检测是否存在已过期且有使用记录的额度池，用于全局按钮上的红色脉冲指示器 |
-| 待归档面板 / Pending Archive Panel | `buildPendingArchivePanel()` 在 GM Data 标签页顶部渲染黄色主题的待归档区域，显示基线化周期的调用数/token/credits 统计和 per-model 分布芯片；额度重置前不可见 |
+| 待归档面板 / Pending Archive Panel | `buildPendingArchivePanel()` 在模型统计合计行下方渲染黄色主题的待归档区域，显示基线化周期的调用数/token/credits 统计和 per-model 分布芯片；额度重置前不可见 |
 | 增量刷新保护 / Refresh preservation | `<details>` 展开状态通过 `restoreDetailsState()` 自动保护；`.cp-viewer` / `.cp-card-body` 滚动位置通过 `scrollableSelectors` 保留 |
-| 账号分布行 / Account breakdown | 模型卡片 body 底部以分割线隔开，每个账号独立一行（用户 SVG 图标 + 邮箱前缀 + 紫色数字）。当前在线账号自动置顶并以绿色选中态高亮（绿色左竖线 + 边框 + 背景 + 图标/数字变色）。卡片头部不再冗余显示调用次数 |
+| 账号分布行 / Account breakdown | 模型卡片 body 底部以分割线隔开，每个账号独立一行（用户 SVG 图标 + 邮箱前缀 + 紫色调用次数）。当前在线账号自动置顶并以绿色选中态高亮（绿色左竖线 + 边框 + 背景 + 图标/数字变色）。每个账号行可选显示红色 `+N` 报错次数药丸标签（per-model per-account 独立统计，互不混合）。通过标题栏「报错」药丸开关控制显隐（默认隐藏），状态通过 webview state 持久化 |
 | 模型统计汇总行 / Model Stats Total | 模型卡片网格下方的芯片条汇总行，显示跨账号总调用数、模型数、输入/输出/缓存 token。数据从 `gm.conversations[].calls[]` 全量遍历，不受账号过滤影响。Sigma SVG 图标 + 蓝色标签 + 独立芯片边框 |
 | 已移除 / Removed | `buildToolRanking()`（Step API 工具排行）、`buildDistribution()`（Step API 模型分布甜甜圈图）、Summary Bar 中的推理/工具/错误/检查点/推算卡片、模型卡片中的 Step API 行和工具标签 |
 

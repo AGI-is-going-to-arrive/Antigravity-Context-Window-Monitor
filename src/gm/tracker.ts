@@ -307,12 +307,13 @@ export class GMTracker {
                 toolCallCountsByConv[conv.cascadeId] = convToolCounts;
             }
 
-            // ── Per-conversation error counting (ALL accounts, immune to quota-reset archival) ──
-            // Uses `sliced` (post-baseline, pre-archival) so quota resets during
-            // the day don't cause error counts to drop. Only midnight reset()
-            // clears the counts for a new day.
+            // ── Per-conversation error counting (account-filtered + archive-filtered) ──
+            // Uses `accountFilteredCalls` (same source as retryErrorCodes totals)
+            // so the per-conv delta (+x) never exceeds the global total.
+            // Quota resets clear errors for the archived account; midnight reset()
+            // clears all counts for a new day.
             const convErrorCodes: Record<string, number> = {};
-            for (const c of sliced) {
+            for (const c of accountFilteredCalls) {
                 for (const errMsg of c.retryErrors) {
                     const code = parseErrorCode(errMsg);
                     convErrorCodes[code] = (convErrorCodes[code] || 0) + 1;
@@ -680,6 +681,14 @@ export class GMTracker {
                 modelCalls,
             });
         }
+
+        // ── Step 5: Clear persisted error data for the archived account ──
+        // Without this, the max-wins merge in _buildSummary() would restore
+        // the pre-archival error counts, defeating the quota-reset clear.
+        const accountKey = email || '__global__';
+        delete this._persistedRetryErrorCodesByAccount[accountKey];
+        delete this._persistedRecentErrorsByAccount[accountKey];
+
         // Invalidate cached summary so next access rebuilds
         this._lastSummary = null;
         return finalCount;

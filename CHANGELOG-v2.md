@@ -8,6 +8,64 @@
 
 ---
 
+## [1.17.4] - 2026-04-22
+
+### 修复 / Fixed
+
+- **报错增量 `+x` 大于总数 / Error Delta Exceeds Total**:
+  `retryErrorCodesByConv`（per-conversation 错误增量）使用 `sliced`（未过滤账号和归档），而 `retryErrorCodes`（总数）使用 `accountFilteredCalls`（已过滤），导致 `+x` 可能大于总数。修复：`retryErrorCodesByConv` 改用 `accountFilteredCalls`，确保增量和总数使用相同数据源。
+
+  `retryErrorCodesByConv` used `sliced` (no account/archive filtering) while `retryErrorCodes` used `accountFilteredCalls`, causing `+x` to exceed the total. Fix: both now use `accountFilteredCalls`.
+
+- **额度重置后报错未清零 / Errors Not Cleared After Quota Reset**:
+  `baselineForQuotaReset()` 归档调用后，`_persistedRetryErrorCodesByAccount` 和 `_persistedRecentErrorsByAccount` 仍保留旧值，max-wins 合并将已归档的错误计数恢复。修复：归档时清除目标账号的持久化错误数据。
+
+  `baselineForQuotaReset()` did not clear persisted error data, causing max-wins merge to restore archived counts. Fix: delete target account's persisted error entries on archival.
+
+### 重构 / Refactored
+
+- **待归档面板位置调整 / Pending Archive Panel Repositioned**:
+  `buildPendingArchivePanel()` 从 GM Data 标签页**顶部**移至**模型统计合计行下方**，减少顶部视觉干扰，与统计数据上下文更贴合。
+
+  Moved pending archive panel from tab top to below model stats total row.
+
+### 新增 / Added
+
+- **模型卡片 per-model 报错次数 / Per-Model Error Counts in Model Cards**:
+  新增 `accountErrorsByModel: Map<modelName, Map<email, errorCount>>`，遍历 `gm.conversations[].calls[]` 按模型 + 账号分桶统计每个调用的 `retryErrors.length` + 降级 `errorMessage`。每个模型卡片的账号行显示红色 `+N` 药丸标签（浅红背景 + 红色细边框），与该模型的调用次数并列显示。
+
+  New per-model per-account error counting. Each account row in model cards shows a red `+N` pill badge alongside the call count, independently scoped to that model.
+
+  **数据格式 / Format**: `调用次数` `+报错次数` → 例如 `15 +3`（15次调用，3次报错）
+
+- **报错开关按钮 / Error Toggle Button**:
+  「模型统计」标题行文字旁新增药丸形状的报错显隐开关（`#modelStatsErrToggle`）。
+
+  | 维度 | 说明 |
+  |------|------|
+  | 默认 | 关闭（灰暗 `.is-off`），报错次数隐藏 |
+  | 开启 | 红色高亮，所有模型卡片账号行显示 `+N` |
+  | 条件渲染 | 仅在 `hasAnyAccountErrors = true` 时显示按钮 |
+  | 持久化 | `vscode.getState().modelStatsShowErrors`，跨 poll 刷新和页面重载保持 |
+  | CSS 机制 | `.act-cards-grid.model-stats-show-errors .gm-account-err { display: inline }` |
+  | 增量刷新 | 双向显式恢复（on: 移除 `is-off` + 添加 `show-errors`；off: 确保 `is-off` + 移除 `show-errors`） |
+
+### 样式 / Styles
+
+- **`.gm-account-err`** — 红色药丸报错标签（`display: none` 默认隐藏，浅红背景 + 红色细边框 + tabular-nums）
+- **`.model-stats-err-toggle`** — 药丸开关按钮（红色激活态 / `.is-off` 灰暗态 / hover + light theme 适配）
+- **`.model-stats-show-errors`** — 应用于 `.act-cards-grid` 的控制类，显示所有 `.gm-account-err` 元素
+
+### 统计 / Stats
+
+- **Files changed**: 3 (`src/gm/tracker.ts`, `src/activity-panel.ts`, `src/webview-script.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **Tests**: gm-tracker 7/7 passed
+- **Key fix**: `retryErrorCodesByConv` 和 `retryErrorCodes` 使用相同的 `accountFilteredCalls` 数据源；`baselineForQuotaReset()` 清除持久化错误数据防止 max-wins 恢复
+
+---
+
 ## [1.17.3] - 2026-04-22
 
 ### 重构 / Refactored
@@ -135,7 +193,7 @@
   | 错误详情标题 | 红色 `+x 本对话` | `错误详情 探针 +6 本对话` |
   | 错误码标签 | 每个标签内红色 `+x` | `429 ×8 +6` |
 
-  **数据源**: `GMSummary.retryErrorCodesByConv`（cascadeId → { errorCode → count }），使用 `sliced` 数据（免疫归档）。仅在 ≥2 个对话有错误时显示增量。
+  **数据源**: `GMSummary.retryErrorCodesByConv`（cascadeId → { errorCode → count }），使用 `accountFilteredCalls` 数据源（v1.17.4 修正，与总数一致）。仅在 ≥2 个对话有错误时显示增量。
 
   Mirrors the tool call ranking `+x` pattern for error tracking. Shows per-conversation error contribution in red across Summary Bar, tooltips, and Error Details section.
 

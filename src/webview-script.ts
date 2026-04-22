@@ -429,6 +429,14 @@ export function getScript(): string {
                 if (chipBtn) { chipBtn.classList.add('active'); }
             }
 
+            // Restore model stats error toggle state (default: hidden)
+            if (savedState.modelStatsShowErrors) {
+                var errToggle = document.getElementById('modelStatsErrToggle');
+                if (errToggle) { errToggle.classList.remove('is-off'); }
+                var cardsGrid = document.querySelector('.act-cards-grid');
+                if (cardsGrid) { cardsGrid.classList.add('model-stats-show-errors'); }
+            }
+
             // ─── Scroll Shadow on TopBar ───
             var topbar = document.querySelector('.panel-topbar');
             if (topbar) {
@@ -947,6 +955,22 @@ export function getScript(): string {
                     return;
                 }
 
+                // ── Model Stats Error Toggle ──
+                if (target.closest('#modelStatsErrToggle')) {
+                    var errBtn = target.closest('#modelStatsErrToggle');
+                    var st = vscode.getState() || {};
+                    var wasOn = !!st.modelStatsShowErrors;
+                    st.modelStatsShowErrors = !wasOn;
+                    vscode.setState(st);
+                    errBtn.classList.toggle('is-off', wasOn);
+                    // Toggle CSS class on the cards grid ancestor
+                    var cardsGrid = document.querySelector('.act-cards-grid');
+                    if (cardsGrid) {
+                        cardsGrid.classList.toggle('model-stats-show-errors', !wasOn);
+                    }
+                    return;
+                }
+
                 // ── Clear History Button ──
                 if (target.closest('#clearCalendarBtn')) {
                     vscode.postMessage({ command: 'clearCalendarHistory' });
@@ -1150,6 +1174,17 @@ export function getScript(): string {
                     updateTabOverflowHint();
                     bindHistoryCatalog();
                     bindEocObserver();
+
+                    // Restore model stats error toggle state (default: hidden)
+                    var errToggle2 = document.getElementById('modelStatsErrToggle');
+                    var cardsGrid2 = document.querySelector('.act-cards-grid');
+                    if ((vscode.getState() || {}).modelStatsShowErrors) {
+                        if (errToggle2) { errToggle2.classList.remove('is-off'); }
+                        if (cardsGrid2) { cardsGrid2.classList.add('model-stats-show-errors'); }
+                    } else {
+                        if (errToggle2) { errToggle2.classList.add('is-off'); }
+                        if (cardsGrid2) { cardsGrid2.classList.remove('model-stats-show-errors'); }
+                    }
                 }
             });
             // ─── End-of-Content IntersectionObserver ───

@@ -68,11 +68,6 @@ export function buildGMDataTabContent(
 
     const parts: string[] = [];
 
-    // ── Pending Archive Panel (baselined cycles awaiting midnight sweep)
-    if (pendingArchives && pendingArchives.length > 0) {
-        parts.push(buildPendingArchivePanel(pendingArchives));
-    }
-
     // ── Data scope explanation
     parts.push(`<details class="act-tl-legend gm-scope-note" id="gmScopeNote">
         <summary>${tBi('ℹ Data Scope', 'ℹ 数据范围')}</summary>
@@ -99,6 +94,11 @@ export function buildGMDataTabContent(
     // ── Model Cards (merged activity counts + GM precision)
     const activeEmail = accountSnapshots?.find(s => s.isActive)?.email || '';
     parts.push(buildModelCards(summary, gmSummary, activeEmail));
+
+    // ── Pending Archive Panel (moved below model stats total row)
+    if (pendingArchives && pendingArchives.length > 0) {
+        parts.push(buildPendingArchivePanel(pendingArchives));
+    }
 
     // ── Tool Call Ranking (from GM messagePrompts SYSTEM toolCalls)
     if (gmSummary && Object.keys(gmSummary.toolCallCounts || {}).length > 0) {
@@ -1201,6 +1201,75 @@ export function getGMDataTabStyles(): string {
     .gm-account-row.gm-account-active .gm-account-count {
         color: #34d399;
     }
+    /* ── Error count in account rows ── */
+    .gm-account-err {
+        color: #f87171;
+        font-weight: 600;
+        font-size: 0.82em;
+        font-variant-numeric: tabular-nums;
+        margin-left: 3px;
+        white-space: nowrap;
+        padding: 0 4px;
+        border-radius: var(--radius-sm);
+        background: rgba(248,113,113,0.12);
+        border: 1px solid rgba(248,113,113,0.18);
+        display: none; /* hidden by default */
+    }
+    .gm-account-row.gm-account-active .gm-account-err {
+        color: #f87171;
+    }
+    /* Shown when toggle is ON */
+    .model-stats-show-errors .gm-account-err {
+        display: inline;
+    }
+    /* ── Error Toggle Button ── */
+    .model-stats-err-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 1px 8px;
+        border-radius: var(--radius-full);
+        border: 1px solid rgba(248,113,113,0.25);
+        background: rgba(248,113,113,0.08);
+        color: #f87171;
+        font-size: 0.72em;
+        font-weight: 600;
+        cursor: pointer;
+        user-select: none;
+        transition: all 0.15s cubic-bezier(.4,0,.2,1);
+        flex-shrink: 0;
+        line-height: 1.6;
+    }
+    .model-stats-err-toggle svg {
+        width: 10px; height: 10px;
+        flex-shrink: 0;
+    }
+    @media (hover: hover) {
+        .model-stats-err-toggle:hover {
+            background: rgba(248,113,113,0.15);
+            border-color: rgba(248,113,113,0.4);
+        }
+    }
+    .model-stats-err-toggle.is-off {
+        background: rgba(255,255,255,0.03);
+        border-color: rgba(255,255,255,0.1);
+        color: var(--color-text-dim);
+        opacity: 0.6;
+    }
+    @media (hover: hover) {
+        .model-stats-err-toggle.is-off:hover {
+            opacity: 0.9;
+            background: rgba(255,255,255,0.06);
+        }
+    }
+    body.vscode-light .model-stats-err-toggle {
+        background: rgba(248,113,113,0.06);
+        border-color: rgba(220,38,38,0.2);
+    }
+    body.vscode-light .model-stats-err-toggle.is-off {
+        background: rgba(0,0,0,0.03);
+        border-color: rgba(0,0,0,0.1);
+    }
     /* ── Model Stats Summary Row ── */
     .model-stats-total {
         display: flex;
@@ -1841,13 +1910,16 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
     const fmtMs = (ms: number) => ms <= 0 ? '-' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 
-    // ── Build per-account call counts for each model + cross-account totals ──
+    // ── Build per-account call counts + error counts for each model + cross-account totals ──
     // Map<modelDisplayName, Map<accountEmail, callCount>>
     const accountCallsByModel = new Map<string, Map<string, number>>();
+    // Map<modelDisplayName, Map<accountEmail, errorCount>>
+    const accountErrorsByModel = new Map<string, Map<string, number>>();
     let allAccountTotalCalls = 0;
     let allAccountTotalIn = 0;
     let allAccountTotalOut = 0;
     let allAccountTotalCache = 0;
+    let hasAnyAccountErrors = false;
     if (gm) {
         for (const conv of gm.conversations) {
             for (const call of conv.calls) {
@@ -1861,20 +1933,36 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 if (!email) { continue; }
                 const modelName = normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model;
                 if (!modelName) { continue; }
+
+                // Call counts
                 let byAccount = accountCallsByModel.get(modelName);
                 if (!byAccount) {
                     byAccount = new Map<string, number>();
                     accountCallsByModel.set(modelName, byAccount);
                 }
                 byAccount.set(email, (byAccount.get(email) || 0) + 1);
+
+                // Error counts (per-model per-account)
+                const callErrors = call.retryErrors.length
+                    + ((call.hasError && call.errorMessage && call.retryErrors.length === 0) ? 1 : 0);
+                if (callErrors > 0) {
+                    hasAnyAccountErrors = true;
+                    let errByAccount = accountErrorsByModel.get(modelName);
+                    if (!errByAccount) {
+                        errByAccount = new Map<string, number>();
+                        accountErrorsByModel.set(modelName, errByAccount);
+                    }
+                    errByAccount.set(email, (errByAccount.get(email) || 0) + callErrors);
+                }
             }
         }
     }
     const userSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
-    /** Build account breakdown section inside card body (divider + per-account rows, active highlighted) */
+    /** Build account breakdown section inside card body (divider + per-account rows, active highlighted, with optional error counts) */
     const buildAccountSection = (modelName: string): string => {
         const byAccount = accountCallsByModel.get(modelName);
         if (!byAccount || byAccount.size < 1) { return ''; }
+        const errByAccount = accountErrorsByModel.get(modelName);
         const sorted = [...byAccount.entries()].sort((a, b) => {
             // Active account always first
             if (activeEmail) {
@@ -1888,13 +1976,22 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 const prefix = email.split('@')[0];
                 const isActive = activeEmail && email === activeEmail;
                 const cls = isActive ? ' gm-account-active' : '';
-                return `<div class="gm-account-row${cls}"><span class="gm-account-label">${userSvg} ${esc(prefix)}</span><span class="gm-account-count">${count}</span></div>`;
+                const errCount = errByAccount?.get(email) || 0;
+                const errHtml = errCount > 0
+                    ? `<span class="gm-account-err">+${errCount}</span>`
+                    : '';
+                return `<div class="gm-account-row${cls}"><span class="gm-account-label">${userSvg} ${esc(prefix)}</span><span class="gm-account-count">${count}${errHtml}</span></div>`;
             })
             .join('');
         return `<div class="act-card-divider"></div><div class="gm-account-section">${rows}</div>`;
     };
 
-    let html = `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>${tBi('Model Stats', '模型统计')}</h2>`;
+    // Error toggle button (only shown when any account has errors)
+    const errToggleSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
+    const errToggleBtn = hasAnyAccountErrors
+        ? `<span class="model-stats-err-toggle is-off" id="modelStatsErrToggle" title="${tBi('Toggle error count visibility', '切换报错次数显示')}">${errToggleSvg} ${tBi('Errors', '报错')}</span>`
+        : '';
+    let html = `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>${tBi('Model Stats', '模型统计')}${errToggleBtn}</h2>`;
 
     // Accuracy note: shown when estimated steps exist
     const totalEst = entries.reduce((a, [, ms]) => a + ms.estSteps, 0);
