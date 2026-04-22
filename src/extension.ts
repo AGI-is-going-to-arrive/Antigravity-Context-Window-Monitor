@@ -474,32 +474,10 @@ function baselineExpiredPoolsForAccount(email: string): void {
 
         notifiedAccountResets.add(key);
 
-        // ── Step 1: Snapshot to DailyStore BEFORE baselining ──
-        const preBaselineSummary = gmTracker.getFullSummary();
-        if (preBaselineSummary && preBaselineSummary.totalCalls > 0 && dailyStore) {
-            const todayKey = toLocalDateKey();
-            let costTotal: number | undefined;
-            let costPerModel: Record<string, number> | undefined;
-            if (pricingStore) {
-                const result = pricingStore.calculateCosts(preBaselineSummary);
-                if (result.grandTotal > 0) { costTotal = result.grandTotal; }
-                costPerModel = {};
-                for (const row of result.rows) {
-                    if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
-                }
-            }
-            dailyStore.addDailySnapshot(
-                todayKey,
-                activityTracker.getSummary(),
-                preBaselineSummary,
-                costTotal,
-                costPerModel,
-                true, // append
-            );
-            log(`Account switch baseline: ${email} pre-baseline snapshot appended to DailyStore`);
-        }
-
-        // ── Step 2: Baseline GM calls for the expired pool ──
+        // ── Baseline GM calls for the expired pool ──
+        // No DailyStore snapshot here — midnight archival will use
+        // getArchivalSummary() which includes both pending-archive and
+        // active calls, giving DailyStore the complete day's picture.
         const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelLabels);
         if (baselinedCount > 0) {
             log(`Account switch baseline: ${email} — ${baselinedCount} GM calls baselined for pool [${pool.modelLabels.slice(0, 3).join(', ')}]`);
@@ -582,33 +560,10 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize quota tracker
     quotaTracker = new QuotaTracker(context, durableGlobalState);
     quotaTracker.onQuotaReset = (modelIds: string[]) => {
-        // ── Step 1: Snapshot current data to DailyStore BEFORE baselining ──
-        // Use getFullSummary() to include ALL accounts' calls in the snapshot.
-        const preBaselineSummary = gmTracker.getFullSummary();
-        if (preBaselineSummary && preBaselineSummary.totalCalls > 0 && dailyStore) {
-            const todayKey = toLocalDateKey();
-            let costTotal: number | undefined;
-            let costPerModel: Record<string, number> | undefined;
-            if (pricingStore) {
-                const result = pricingStore.calculateCosts(preBaselineSummary);
-                if (result.grandTotal > 0) { costTotal = result.grandTotal; }
-                costPerModel = {};
-                for (const row of result.rows) {
-                    if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
-                }
-            }
-            dailyStore.addDailySnapshot(
-                todayKey,
-                activityTracker.getSummary(),
-                preBaselineSummary,
-                costTotal,
-                costPerModel,
-                true, // append — don't replace existing cycles
-            );
-            log(`Pre-baseline snapshot appended to DailyStore for ${todayKey}`);
-        }
-
-        // ── Step 2: Baseline current account's GM calls for the reset pool ──
+        // ── Baseline current account's GM calls for the reset pool ──
+        // No DailyStore snapshot here — midnight archival will use
+        // getArchivalSummary() which includes both pending-archive and
+        // active calls, giving DailyStore the complete day's picture.
         const baselinedCount = gmTracker.baselineForQuotaReset(undefined, modelIds);
         log(`Quota reset detected: [${modelIds.join(', ')}] — ${baselinedCount} GM calls baselined for new cycle`);
 
@@ -1528,33 +1483,10 @@ function checkCachedAccountResets(): void {
             const displayName = snap.name || snap.email;
             const openMonitorLabel = tBi('Open Monitor', '打开监控');
 
-            // ── Step 1: Snapshot to DailyStore BEFORE baselining ──
-            // Use getFullSummary() to include ALL accounts' calls.
-            const preBaselineSummary = gmTracker.getFullSummary();
-            if (preBaselineSummary && preBaselineSummary.totalCalls > 0 && dailyStore) {
-                const todayKey = toLocalDateKey();
-                let costTotal: number | undefined;
-                let costPerModel: Record<string, number> | undefined;
-                if (pricingStore) {
-                    const result = pricingStore.calculateCosts(preBaselineSummary);
-                    if (result.grandTotal > 0) { costTotal = result.grandTotal; }
-                    costPerModel = {};
-                    for (const row of result.rows) {
-                        if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
-                    }
-                }
-                dailyStore.addDailySnapshot(
-                    todayKey,
-                    activityTracker.getSummary(),
-                    preBaselineSummary,
-                    costTotal,
-                    costPerModel,
-                    true, // append — preserve intra-day quota-reset cycles
-                );
-                log(`[ResetCheck]   pre-baseline snapshot appended to DailyStore`);
-            }
-
-            // ── Step 2: Baseline this cached account's GM calls for the expired pool only ──
+            // ── Baseline this cached account's GM calls for the expired pool only ──
+            // No DailyStore snapshot here — midnight archival will use
+            // getArchivalSummary() which includes both pending-archive and
+            // active calls, giving DailyStore the complete day's picture.
             const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelLabels);
             if (baselinedCount > 0) {
                 log(`[ResetCheck]   ${baselinedCount} GM calls baselined`);

@@ -214,7 +214,7 @@ export class GMTracker {
     }
 
     /** Build aggregated summary from cached data */
-    private _buildSummary(skipAccountFilter = false): GMSummary {
+    private _buildSummary(skipAccountFilter = false, skipArchivalFilter = false): GMSummary {
         const conversations: GMConversationData[] = [];
         const modelAgg = new Map<string, {
             callCount: number; stepsCovered: number;
@@ -258,8 +258,10 @@ export class GMTracker {
             const baseline = this._callBaselines.get(conv.cascadeId) || 0;
             const sliced = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
             // Filter out calls already archived by per-pool resets
-            const hasCallFilter = this._archivedCallIds.size > 0;
-            const hasAccountModelFilter = this._archivedAccountModelCutoffs.size > 0;
+            // skipArchivalFilter: used by getArchivalSummary() for midnight archival
+            // — includes both pending-archive and active calls for DailyStore.
+            const hasCallFilter = !skipArchivalFilter && this._archivedCallIds.size > 0;
+            const hasAccountModelFilter = !skipArchivalFilter && this._archivedAccountModelCutoffs.size > 0;
             const activeCalls = (hasCallFilter || hasAccountModelFilter)
                 ? sliced.filter(c => {
                     // Per-account+model cutoff (pool-scoped archival)
@@ -936,6 +938,29 @@ export class GMTracker {
      */
     getFullSummary(): GMSummary | null {
         const summary = normalizeGMSummary(this._buildSummary(true));
+        if (!summary) { return null; }
+        return {
+            ...summary,
+            conversations: summary.conversations.map(cloneConversationData),
+            contextGrowth: summary.contextGrowth.map(point => ({ ...point })),
+            latestTokenBreakdown: cloneTokenBreakdownGroups(summary.latestTokenBreakdown),
+            modelBreakdown: Object.fromEntries(
+                Object.entries(summary.modelBreakdown).map(([name, stats]) => [name, { ...stats }]),
+            ),
+            stopReasonCounts: { ...summary.stopReasonCounts },
+            retryErrorCodes: { ...(summary.retryErrorCodes || {}) },
+            recentErrors: [...(summary.recentErrors || [])],
+        };
+    }
+
+    /**
+     * Full summary for midnight archival — includes ALL calls from this cycle:
+     * both "pending archive" (already baselined by quota resets) and still-active calls.
+     * Skips both account filtering and archival filtering so DailyStore receives
+     * the true complete picture of the day's usage.
+     */
+    getArchivalSummary(): GMSummary | null {
+        const summary = normalizeGMSummary(this._buildSummary(true, true));
         if (!summary) { return null; }
         return {
             ...summary,

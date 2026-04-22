@@ -106,7 +106,7 @@ Extension lifecycle management hub.
 | 每日归档 / Daily archival | 通过 `daily-archival.ts` 核心逻辑委托；`extension.ts` 构造 `DailyArchivalContext` 注入所有运行时状态 |
 | 持久化协调 / Persistence orchestration | 协调 `durable-state.ts`、`monitor-store.ts`、`activity-tracker.ts`、`gm-tracker.ts`、`daily-store.ts`、`model-dna-store.ts` 的恢复与写回 |
 | 多账号快照 / Multi-account snapshots | `updateAccountSnapshot()` 在每次 `fetchFullUserStatus` 后提取 email + resetPools（含 `hasUsage` 额度消耗检测），按 email 维护 `AccountSnapshot` Map 并持久化至文件；`checkCachedAccountResets()` 在轮询 `finally` 块中独立执行（不依赖网络请求成功），检查缓存账号额度重置、自动基线化 GM 调用并弹出一次性通知；`removeAccountSnapshot()` 支持 UI 端删除缓存账号 |
-| 额度重置归档 / Quota-reset archival | `onQuotaReset` 回调先预快照当前数据到 DailyStore（append 模式），再调用 `baselineForQuotaReset(email, poolModelFilter)` 仅标记**已重置池**的调用为已归档（不连带其他池），同时清空所有持久化错误基线防止 max-wins 合并恢复已归档数据的错误计数。`isPoolArchived()` 通过实际扫描未归档调用判断（而非仅检查 cutoff key 存在性），防止旧周期残留阻止新周期归档 |
+| 额度重置归档 / Quota-reset archival | `onQuotaReset` / `checkCachedAccountResets` / `baselineExpiredPoolsForAccount` 仅调用 `baselineForQuotaReset(email, poolModelFilter)` 标记**已重置池**的调用为待归档（不连带其他池），**不写 DailyStore**。日历数据仅在午夜 `performDailyArchival()` 时通过 `getArchivalSummary()`（跳过归档过滤，包含待归档+活跃调用）一次性写入，防止多次额度重置导致数据翻倍。`isPoolArchived()` 通过实际扫描未归档调用判断（而非仅检查 cutoff key 存在性），防止旧周期残留阻止新周期归档 |
 | 跨账号隔离 / Cross-account isolation | `handleAccountSwitchIfNeeded()` 在每次状态拉取前检测账号切换，调用 `baselineExpiredPoolsForAccount()` 为切出和切入账号检查过期池并执行归档，防止切换后 `updateAccountSnapshot()` 用新 resetTime 覆盖旧的过期时间而错过归档窗口 |
 | 开发命令 / Dev commands | `devSimulateReset`（模拟每日归档）、`devClearGM`、`devPersistActivity` |
 
@@ -273,7 +273,7 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | Call baselines | `_callBaselines` 隔离新旧 cycle 的调用 |
 | 额度周期基线化 / Quota-cycle baseline | `baselineForQuotaReset(targetEmail?, poolModelFilter?)` 按账号 + 池级模型过滤标记调用为已归档。双重数据源：优先从 `_lastSummary` 取准确统计（防止 `_cache` 未完全加载导致漏计），同时遍历 `_cache` 标记 `_archivedCallIds`。新增 `_archivedAccountModelCutoffs`（`email|model` → ISO 时间戳）确保后续 re-fetch 的调用也被排除 |
 | 待归档持久化 / PendingArchive persistence | `_pendingArchives` 通过 `serialize()`/`restore()` 持久化至 `state-v1.json`，跨插件重启和重装保留；仅在午夜 `reset()` 时清空 |
-| 按账号过滤 / Account filtering | `_buildSummary()` 通过 `_currentAccountEmail` 过滤 `accountFilteredCalls`，确保 `totalCalls`/`modelBreakdown` 等统计只计当前在线账号的调用。新增 `_archivedAccountModelCutoffs` 过滤层，按 `email|model` 精确排除已归档调用 |
+| 按账号过滤 / Account filtering | `_buildSummary(skipAccountFilter?, skipArchivalFilter?)` 通过 `_currentAccountEmail` 过滤 `accountFilteredCalls`，确保 `totalCalls`/`modelBreakdown` 等统计只计当前在线账号的调用。新增 `_archivedAccountModelCutoffs` 过滤层，按 `email|model` 精确排除已归档调用。`skipArchivalFilter=true` 跳过归档过滤，由 `getArchivalSummary()` 用于午夜归档获取全量数据 |
 | 错误码聚合 / Error code aggregation | `_buildSummary()` 遍历每个调用的 `retryErrors[]`（`errorMessage` 仅在无 `retryErrors` 时降级收集），通过 `parseErrorCode()` 解析为短错误码（如 `429`/`503`/`stream_error`），聚合至 `GMSummary.retryErrorCodes` 和 `recentErrors`（最近 30 条）。新增 `retryErrorCodesByConv`（cascadeId → 错误码计数）用于 UI 红色 `+x` 增量显示，使用 `accountFilteredCalls`（与总数相同数据源），确保 `+x` 不会超过总数。Parser 清洗：移除 API 内部重复文本（`"msg.: msg."` → `"msg."`），完整捕获不截断 |
 | 错误持久化 / Error persistence | 分账号隔离：`_persistedRetryErrorCodesByAccount`（email → 错误码计数）+ `_persistedRecentErrorsByAccount`（email → 消息列表）存入 `state-v1.json`。切换账号时各账号数据独立保存不丢失，切回时恢复。errorCodes 使用 max-wins 合并（按账号桶隔离）。`baselineForQuotaReset()` 清除被归档账号的持久化错误数据，防止 max-wins 合并恢复已归档计数。旧版全局字段自动迁移至当前账号桶。午夜 `reset()` 清空 |
 | Slim persistence | `serialize()` 去掉 `calls[]`，用于快速恢复基线 |
@@ -363,7 +363,7 @@ Testable pure-function module extracted from `extension.ts`. All runtime depende
 | 函数 / Function | 说明 / Description |
 |---|---|
 | `toLocalDateKey(date?)` | 提取本地日期字符串 `YYYY-MM-DD` |
-| `performDailyArchival(ctx, force?, now?)` | 核心归档流程：检测日期变更 → 快照 Activity/GM/Cost → 写入 DailyStore（append 模式，保留白天额度重置的预快照） → 全局重置 Tracker → 持久化 |
+| `performDailyArchival(ctx, force?, now?)` | 核心归档流程：检测日期变更 → 通过 `getArchivalSummary()` 快照 Activity/GM/Cost（含待归档+活跃调用全量数据） → 写入 DailyStore（replace 模式，一天一条） → 全局重置 Tracker → 持久化 |
 
 **归档触发规则**：
 - 首次运行：仅记录当前日期，不归档
@@ -376,7 +376,7 @@ Testable pure-function module extracted from `extension.ts`. All runtime depende
 
 ### 📅 daily-store.ts — 日历数据层
 
-按天聚合 Activity + GM + Cost 的快照数据。`addDailySnapshot()` 支持 `append` 参数：默认为 replace 模式（单快照），`append=true` 时追加周期（额度重置时保留白天预快照 + 午夜追加最终数据，同一天可含多个周期）。旧版 `addCycle()` 保留向后兼容。
+按天聚合 Activity + GM + Cost 的快照数据。`addDailySnapshot()` 支持 `append` 参数：默认为 replace 模式（单快照，一天一条），午夜归档使用 replace 模式写入完整日数据。`append=true` 保留用于向后兼容，但当前不再使用。旧版 `addCycle()` 保留向后兼容。
 
 Aggregates Activity + GM + Cost snapshots per day. `addDailySnapshot()` supports an `append` parameter: defaults to replace mode (single snapshot), `append=true` appends a cycle (preserving intra-day quota-reset pre-snapshots + midnight final data, allowing multiple cycles per day). Legacy `addCycle()` retained for backward compatibility.
 

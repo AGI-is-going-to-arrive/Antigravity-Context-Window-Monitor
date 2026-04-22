@@ -8,6 +8,53 @@
 
 ---
 
+## [1.17.9] - 2026-04-22
+
+### 修复 / Fixed
+
+- **日历数据翻倍 / Calendar Data Duplication**:
+  每次额度重置触发时（`onQuotaReset`/`checkCachedAccountResets`/`baselineExpiredPoolsForAccount`），代码先调用 `getFullSummary()` 获取当前全量未归档数据的完整快照，然后以 `append` 模式追加到 DailyStore 的同一天。日历渲染时将所有 cycles 的数据求和，导致同一天内发生多次额度重置时数据成倍增长（如 1124 → 2248 → 3372）。成本数据同步翻倍。
+
+  Each quota reset event called `getFullSummary()` for a complete snapshot and appended it to DailyStore. Calendar rendering summed all cycles, causing N× duplication when N resets fired on the same day (e.g., 1124 → 2248 → 3372). Costs doubled accordingly.
+
+  **修复**: 彻底重构归档数据流——额度重置时**只做 baseline**（标记调用为待归档），不再写 DailyStore。日历数据仅在午夜 `performDailyArchival()` 时一次性写入。
+
+  Fix: Restructured archival data flow — quota resets only baseline calls (mark as pending archive), no DailyStore writes. Calendar data is written once at midnight by `performDailyArchival()`.
+
+### 新增 / Added
+
+- **`getArchivalSummary()` 全量归档快照 / Full Archival Snapshot**:
+  `GMTracker` 新增 `getArchivalSummary()` 方法，调用 `_buildSummary(skipAccountFilter=true, skipArchivalFilter=true)`。跳过账号过滤和归档过滤，返回当天全量数据（待归档区 + 活跃调用），确保午夜归档时 DailyStore 获得完整的一天数据。
+
+  New `GMTracker.getArchivalSummary()` method bypasses both account filtering and archival filtering, returning complete day data (pending-archive + active calls) for midnight DailyStore writes.
+
+- **`_buildSummary()` `skipArchivalFilter` 参数 / New Parameter**:
+  `_buildSummary()` 新增第二参数 `skipArchivalFilter`（默认 `false`）。为 `true` 时跳过 `_archivedCallIds` 和 `_archivedAccountModelCutoffs` 过滤，直接使用 `sliced`（全部当前周期调用）。
+
+  New `skipArchivalFilter` parameter for `_buildSummary()`. When `true`, skips archival filtering and uses all current-cycle calls.
+
+### 重构 / Refactored
+
+- **额度重置预快照移除 / Pre-Reset Snapshot Removal**:
+  从 `extension.ts` 的三处额度重置回调中完全移除 `addDailySnapshot` 预快照逻辑（约 75 行）。额度重置回调现在只调用 `baselineForQuotaReset()`，不再涉及日历数据。
+
+  Removed ~75 lines of pre-baseline DailyStore snapshot code from all three quota reset callbacks in `extension.ts`.
+
+- **午夜归档数据源 / Midnight Archival Data Source**:
+  `performDailyArchival()` 从 `getFullSummary()`（排除已归档调用）切换为 `getArchivalSummary()`（包含全部调用），确保午夜归档包含当天的完整用量数据。
+
+  `performDailyArchival()` switched from `getFullSummary()` to `getArchivalSummary()`, ensuring midnight archival captures complete daily usage including already-baselined calls.
+
+### 统计 / Stats
+
+- **Files changed**: 3 (`src/extension.ts`, `src/gm/tracker.ts`, `src/daily-archival.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **Tests**: 24/24 passed (daily-archival, daily-store, gm-tracker)
+- **Root cause**: `getFullSummary()` 返回累积快照 + `append` 追加模式 → 同一天 N 次重置 = N 倍数据；修复后额度重置不写日历，午夜用 `getArchivalSummary()` 一次写入完整数据
+
+---
+
 ## [1.17.8] - 2026-04-22
 
 ### 重构 / Refactored

@@ -96,8 +96,12 @@ export function performDailyArchival(
     const hasActivity = activitySummary.totalReasoning > 0
         || activitySummary.totalToolCalls > 0;
 
-    // 2. Snapshot GM (all accounts — DailyStore needs cross-account totals)
-    const gmSummary = ctx.gmTracker.getFullSummary() || ctx.lastGMSummary;
+    // 2. Snapshot GM (all accounts, including pending-archive calls)
+    // getArchivalSummary() skips both account filtering and archival filtering,
+    // so it returns ALL calls from this cycle: calls already baselined by
+    // intra-day quota resets (pending-archive) + still-active calls.
+    // This gives DailyStore the complete picture of the day's usage.
+    const gmSummary = ctx.gmTracker.getArchivalSummary() || ctx.lastGMSummary;
     const hasGM = gmSummary && gmSummary.totalCalls > 0;
 
     // 3. Calculate cost
@@ -120,7 +124,8 @@ export function performDailyArchival(
             gmSummary || null,
             costTotal,
             costPerModel,
-            true, // append — preserve intra-day quota-reset cycles
+            // replace mode: getFullSummary() is cumulative — appending
+            // would duplicate data already captured by pre-reset snapshots.
         );
         ctx.log(`Daily snapshot written for ${archiveDateKey}`);
     } else {
