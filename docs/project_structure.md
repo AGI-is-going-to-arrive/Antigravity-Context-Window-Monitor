@@ -273,8 +273,8 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 | 额度周期基线化 / Quota-cycle baseline | `baselineForQuotaReset(targetEmail?, poolModelFilter?)` 按账号 + 池级模型过滤标记调用为已归档。双重数据源：优先从 `_lastSummary` 取准确统计（防止 `_cache` 未完全加载导致漏计），同时遍历 `_cache` 标记 `_archivedCallIds`。新增 `_archivedAccountModelCutoffs`（`email|model` → ISO 时间戳）确保后续 re-fetch 的调用也被排除 |
 | 待归档持久化 / PendingArchive persistence | `_pendingArchives` 通过 `serialize()`/`restore()` 持久化至 `state-v1.json`，跨插件重启和重装保留；仅在午夜 `reset()` 时清空 |
 | 按账号过滤 / Account filtering | `_buildSummary()` 通过 `_currentAccountEmail` 过滤 `accountFilteredCalls`，确保 `totalCalls`/`modelBreakdown` 等统计只计当前在线账号的调用。新增 `_archivedAccountModelCutoffs` 过滤层，按 `email|model` 精确排除已归档调用 |
-| 错误码聚合 / Error code aggregation | `_buildSummary()` 遍历每个调用的 `retryErrors[]`（`errorMessage` 仅在无 `retryErrors` 时降级收集），通过 `parseErrorCode()` 解析为短错误码（如 `429`/`503`/`stream_error`），聚合至 `GMSummary.retryErrorCodes` 和 `recentErrors`（最近 30 条）。Parser 清洗：移除 API 内部重复文本（`"msg.: msg."` → `"msg."`），完整捕获不截断 |
-| 错误持久化 / Error persistence | `_persistedRecentErrors` + `_persistedRetryErrorCodes` 存入 `state-v1.json`。errorCodes 使用 max-wins 合并，recentErrors 在新鲜数据为空时用持久化兜底。推算步骤(estimated)排除 error 标签和 turn 统计 |
+| 错误码聚合 / Error code aggregation | `_buildSummary()` 遍历每个调用的 `retryErrors[]`（`errorMessage` 仅在无 `retryErrors` 时降级收集），通过 `parseErrorCode()` 解析为短错误码（如 `429`/`503`/`stream_error`），聚合至 `GMSummary.retryErrorCodes` 和 `recentErrors`（最近 30 条）。新增 `retryErrorCodesByConv`（cascadeId → 错误码计数）用于 UI 红色 `+x` 增量显示。Parser 清洗：移除 API 内部重复文本（`"msg.: msg."` → `"msg."`），完整捕获不截断 |
+| 错误持久化 / Error persistence | 分账号隔离：`_persistedRetryErrorCodesByAccount`（email → 错误码计数）+ `_persistedRecentErrorsByAccount`（email → 消息列表）存入 `state-v1.json`。切换账号时各账号数据独立保存不丢失，切回时恢复。errorCodes 使用 max-wins 合并（按账号桶隔离）。旧版全局字段（`_persistedRetryErrorCodes`/`_persistedRecentErrors`）自动迁移至当前账号桶。午夜 `reset()` 清空 |
 | Slim persistence | `serialize()` 去掉 `calls[]`，用于快速恢复基线 |
 | Detailed summary | `getDetailedSummary()` 返回完整 `GMSummary`（含 calls），写盘前通过 `slimSummaryForPersistence()` 剥离文本字段，仅保留 token/credits 计费数据 |
 | Monitor fallback | `getAllConversationData()` 导出对话级 GM 明细，供 Monitor 标签页回退展示 |

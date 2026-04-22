@@ -204,6 +204,9 @@ export interface GMSummary {
     /** Per-conversation tool call counts: cascadeId → { toolName → count }.
      *  Immune to quota-reset archival, used for +x delta rendering in UI. */
     toolCallCountsByConv?: Record<string, Record<string, number>>;
+    /** Per-conversation error code counts: cascadeId → { errorCode → count }.
+     *  Uses sliced calls (immune to archival), used for red +x delta rendering. */
+    retryErrorCodesByConv?: Record<string, Record<string, number>>;
 }
 
 /** Lightweight snapshot of a baselined quota cycle ("pending archive"). */
@@ -252,6 +255,10 @@ export interface GMTrackerState {
     persistedRecentErrors?: string[];
     /** Persisted error code counts across restarts (added v1.17.1) */
     persistedRetryErrorCodes?: Record<string, number>;
+    /** Per-account persisted error code counts: email → { code → count } (added v1.17.2) */
+    persistedRetryErrorCodesByAccount?: Record<string, Record<string, number>>;
+    /** Per-account persisted recent errors: email → string[] (added v1.17.2) */
+    persistedRecentErrorsByAccount?: Record<string, string[]>;
 }
 
 // ─── Clone Utilities ─────────────────────────────────────────────────────────

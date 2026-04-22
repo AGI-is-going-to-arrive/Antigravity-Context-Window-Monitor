@@ -48,12 +48,36 @@
 
 - **死代码清理**: 移除 `totalLabel` 删除后遗留的 `gmStatsForLabel` 变量和从未使用的 `avgThink` 变量
 
+### 增强 / Enhanced
+
+- **错误追踪分账号隔离 / Per-Account Error Isolation**:
+  错误码持久化从全局单桶（`_persistedRetryErrorCodes`）重构为分账号独立存储（`_persistedRetryErrorCodesByAccount`: email → { code → count }）。切换账号时各账号的错误数据独立保存不丢失，切回时恢复。
+
+  Error persistence refactored from global single-bucket to per-account isolated storage. Each account retains its own error history across account switches.
+
+  **迁移逻辑**: `restore()` 检测旧版全局字段，自动归入当前账号桶。迁移完成后清空旧字段。
+  Migration: `restore()` detects legacy global fields and attributes them to the current account.
+
+- **错误增量显示 / Error Delta Display (+x)**:
+  参照工具调用排行的 `+x` 增量模式，新增分对话错误统计：
+
+  | 位置 | 显示 | 示例 |
+  |------|------|------|
+  | Summary Bar 报错卡片 | 红色 `+x` | `11 +6` |
+  | Summary Bar tooltip | 每个错误码带 `(+x)` | `429 ×8 (+6), 500 ×2` |
+  | 错误详情标题 | 红色 `+x 本对话` | `错误详情 探针 +6 本对话` |
+  | 错误码标签 | 每个标签内红色 `+x` | `429 ×8 +6` |
+
+  **数据源**: `GMSummary.retryErrorCodesByConv`（cascadeId → { errorCode → count }），使用 `sliced` 数据（免疫归档）。仅在 ≥2 个对话有错误时显示增量。
+
+  Mirrors the tool call ranking `+x` pattern for error tracking. Shows per-conversation error contribution in red across Summary Bar, tooltips, and Error Details section.
+
 ### 统计 / Stats
 
-- **Files changed**: 1 (`src/activity-panel.ts`)
+- **Files changed**: 3 (`src/gm/types.ts`, `src/gm/tracker.ts`, `src/activity-panel.ts`)
 - **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
 - **TypeScript compile**: Zero errors
-- **Key design**: 汇总行数据源使用 `gm.conversations[].calls[]`（全账号全量遍历），确保与卡片内账号分布的数据源一致，避免账号过滤导致的数据不匹配
+- **Key design**: 基础数字 = 当前账号所有对话总和（`retryErrorCodes` from `accountFilteredCalls`）；红色 `+x` = 当前对话贡献（`retryErrorCodesByConv[cascadeId]` from `sliced`）
 
 ---
 

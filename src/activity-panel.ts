@@ -101,7 +101,7 @@ export function buildGMDataTabContent(
     </details>`);
 
     // ── Summary Bar (merged activity + GM)
-    parts.push(buildSummaryBar(summary, gmSummary));
+    parts.push(buildSummaryBar(summary, gmSummary, currentUsage?.cascadeId));
 
     // ── Recent Timeline (activity)
     if (summary) { parts.push(buildTimeline(summary, currentUsage)); }
@@ -148,7 +148,7 @@ export function buildGMDataTabContent(
     // ── Token Breakdown + Error Details (GM — new probes)
     if (gmSummary && gmSummary.totalCalls > 0) {
         const breakdown = buildTokenBreakdownChart(gmSummary);
-        const errorDetails = buildErrorDetailsSection(gmSummary);
+        const errorDetails = buildErrorDetailsSection(gmSummary, currentUsage?.cascadeId);
         if (breakdown || errorDetails) {
             parts.push(`<div class="act-two-col">
                 ${breakdown ? `<div class="act-col">${breakdown}</div>` : ''}
@@ -1748,7 +1748,7 @@ export function getGMDataTabStyles(): string {
 
 // ─── Section Builders ────────────────────────────────────────────────────────
 
-function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null): string {
+function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, currentCascadeId?: string): string {
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 
     // When no activity data, show GM-only summary
@@ -1761,7 +1761,7 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null): strin
             <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9M5 14l7-7 7 7"/></svg></span><span class="act-stat-val">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
             <div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg></span><span class="act-stat-val">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>
             ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="act-stat-val">${gm.totalCredits}</span><span class="act-stat-label">Credits</span></div>` : ''}
-            ${gm.totalRetryTokens > 0 || Object.keys(gm.retryErrorCodes || {}).length > 0 ? (() => { const errTotal = Object.values(gm.retryErrorCodes || {}).reduce((a, b) => a + b, 0); const errCodes = Object.entries(gm.retryErrorCodes || {}).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ×${n}`).join(', '); const tip = errCodes ? `${errTotal} ${tBi('errors', '报错')} (${errCodes})` : `${fmt(gm.totalRetryTokens)} ${tBi('tokens wasted', 'token 浪费')}`; return `<div class="act-stat act-stat-warn" data-tooltip="${esc(tip)}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span><span class="act-stat-val">${errTotal > 0 ? errTotal : fmt(gm.totalRetryTokens)}</span><span class="act-stat-label">${tBi('Errors', '报错')}</span></div>`; })() : ''}
+            ${gm.totalRetryTokens > 0 || Object.keys(gm.retryErrorCodes || {}).length > 0 ? (() => { const errTotal = Object.values(gm.retryErrorCodes || {}).reduce((a, b) => a + b, 0); const byConv = gm.retryErrorCodesByConv || {}; const convCount = Object.keys(byConv).length; const currentConvErrs: Record<string, number> = (currentCascadeId && convCount > 1) ? (byConv[currentCascadeId] || {}) : {}; const convDelta = Object.values(currentConvErrs).reduce((a, b) => a + b, 0); const errCodes = Object.entries(gm.retryErrorCodes || {}).sort((a, b) => b[1] - a[1]).map(([c, n]) => { const d = currentConvErrs[c] || 0; return d > 0 ? `${c} ×${n} (+${d})` : `${c} ×${n}`; }).join(', '); const deltaHtml = convDelta > 0 ? ` <span style="color:#f87171;font-size:0.75em;font-weight:600">+${convDelta}</span>` : ''; const tip = errCodes ? `${errTotal} ${tBi('errors', '报错')} (${errCodes})` : `${fmt(gm.totalRetryTokens)} ${tBi('tokens wasted', 'token 浪费')}`; return `<div class="act-stat act-stat-warn" data-tooltip="${esc(tip)}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span><span class="act-stat-val">${errTotal > 0 ? errTotal : fmt(gm.totalRetryTokens)}${deltaHtml}</span><span class="act-stat-label">${tBi('Errors', '报错')}</span></div>`; })() : ''}
         </div>`;
     }
 
@@ -1819,7 +1819,7 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null): strin
         ${s.totalToolReturnTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('Tokens returned by tool calls', '工具调用返回的 token 数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg></span><span class="act-stat-val">${fmt(s.totalToolReturnTokens)}</span><span class="act-stat-label">${tBi('Tool Output', '工具输出')}</span></div>` : ''}
         ${cacheCard}
         ${creditsCard}
-        ${(() => { if (!gm) return ''; const errTotal = Object.values(gm.retryErrorCodes || {}).reduce((a, b) => a + b, 0); if (errTotal <= 0 && gm.totalRetryCount <= 0) return ''; const errCodes = Object.entries(gm.retryErrorCodes || {}).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ×${n}`).join(', '); const wasteInfo = gm.totalRetryTokens > 0 ? ` | ${fmt(gm.totalRetryTokens)} ${tBi('tokens wasted', 'token 浪费')}` : ''; const tipText = errCodes ? `${errCodes}${wasteInfo}` : `${gm.totalRetryCount} ${tBi('retries', '重试')}${wasteInfo}`; return `<div class="act-stat act-stat-warn" data-tooltip="${esc(tipText)}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span><span class="act-stat-val">${errTotal > 0 ? errTotal : gm.totalRetryCount} <span class="gm-badge-real">GM</span></span><span class="act-stat-label">${tBi('Errors', '报错')}</span></div>`; })()}
+        ${(() => { if (!gm) return ''; const errTotal = Object.values(gm.retryErrorCodes || {}).reduce((a, b) => a + b, 0); if (errTotal <= 0 && gm.totalRetryCount <= 0) return ''; const byConv = gm.retryErrorCodesByConv || {}; const convCount = Object.keys(byConv).length; const currentConvErrs: Record<string, number> = (currentCascadeId && convCount > 1) ? (byConv[currentCascadeId] || {}) : {}; const convDelta = Object.values(currentConvErrs).reduce((a, b) => a + b, 0); const errCodes = Object.entries(gm.retryErrorCodes || {}).sort((a, b) => b[1] - a[1]).map(([c, n]) => { const d = currentConvErrs[c] || 0; return d > 0 ? `${c} ×${n} (+${d})` : `${c} ×${n}`; }).join(', '); const wasteInfo = gm.totalRetryTokens > 0 ? ` | ${fmt(gm.totalRetryTokens)} ${tBi('tokens wasted', 'token 浪费')}` : ''; const tipText = errCodes ? `${errCodes}${wasteInfo}` : `${gm.totalRetryCount} ${tBi('retries', '重试')}${wasteInfo}`; const deltaHtml = convDelta > 0 ? ` <span style="color:#f87171;font-size:0.75em;font-weight:600">+${convDelta}</span>` : ''; return `<div class="act-stat act-stat-warn" data-tooltip="${esc(tipText)}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span><span class="act-stat-val">${errTotal > 0 ? errTotal : gm.totalRetryCount}${deltaHtml} <span class="gm-badge-real">GM</span></span><span class="act-stat-label">${tBi('Errors', '报错')}</span></div>`; })()}
     </div>`;
 }
 
@@ -2452,7 +2452,7 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
 // Error details and token waste are now displayed in buildErrorDetailsSection() and Summary Bar tooltips.
 
 /** Build a collapsible error details section showing recent errors and error code breakdown */
-function buildErrorDetailsSection(s: GMSummary): string {
+function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): string {
     const errorCodes = s.retryErrorCodes || {};
     const recentErrors = s.recentErrors || [];
     const errTotal = Object.values(errorCodes).reduce((a, b) => a + b, 0);
@@ -2460,15 +2460,32 @@ function buildErrorDetailsSection(s: GMSummary): string {
 
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 
-    // Error code distribution tags
+    // Per-conversation error delta (for +x display, like tool ranking)
+    const byConv = s.retryErrorCodesByConv || {};
+    const convCount = Object.keys(byConv).length;
+    const currentConvErrors: Record<string, number> = (currentCascadeId && convCount > 1)
+        ? (byConv[currentCascadeId] || {})
+        : {};
+    const currentConvTotal = Object.values(currentConvErrors).reduce((a, b) => a + b, 0);
+
+    // Error code distribution tags — with per-conversation +x delta
     const codeTags = Object.entries(errorCodes)
         .sort((a, b) => b[1] - a[1])
         .map(([code, count]) => {
             const isRateLimit = code === '429';
             const isServer = code === '503' || code === '500' || code === '504';
             const tagClass = isRateLimit ? 'gm-err-tag-ratelimit' : isServer ? 'gm-err-tag-server' : 'gm-err-tag-other';
-            return `<span class="gm-err-tag ${tagClass}">${esc(code)} ×${count}</span>`;
+            const delta = currentConvErrors[code] || 0;
+            const deltaHtml = delta > 0
+                ? `<span style="color:#f87171;font-size:0.85em;font-weight:600;margin-left:2px">+${delta}</span>`
+                : '';
+            return `<span class="gm-err-tag ${tagClass}">${esc(code)} \u00d7${count}${deltaHtml}</span>`;
         }).join('');
+
+    // Section title with conversation delta badge
+    const convDeltaBadge = currentConvTotal > 0
+        ? ` <span style="color:#f87171;font-size:0.8em;font-weight:600">+${currentConvTotal} ${tBi('this session', '\u672c\u5bf9\u8bdd')}</span>`
+        : '';
 
     // Recent error messages — CSS-driven truncation: summary auto-truncates via ellipsis,
     // click to expand full text. No fixed character threshold needed.
@@ -2481,14 +2498,14 @@ function buildErrorDetailsSection(s: GMSummary): string {
 
     // Overhead stats (token waste + credits) — shown as a compact info line
     const overheadParts: string[] = [];
-    if (s.totalRetryTokens > 0) { overheadParts.push(`${fmt(s.totalRetryTokens)} ${tBi('tokens wasted', 'token 浪费')}`); }
-    if (s.totalRetryCredits > 0) { overheadParts.push(`${s.totalRetryCredits.toFixed(1)} ${tBi('credits lost', 'credits 损耗')}`); }
-    if (s.totalRetryCount > 0) { overheadParts.push(`${s.totalRetryCount} ${tBi('calls with retries', '含重试调用')}`); }
+    if (s.totalRetryTokens > 0) { overheadParts.push(`${fmt(s.totalRetryTokens)} ${tBi('tokens wasted', 'token \u6d6a\u8d39')}`); }
+    if (s.totalRetryCredits > 0) { overheadParts.push(`${s.totalRetryCredits.toFixed(1)} ${tBi('credits lost', 'credits \u635f\u8017')}`); }
+    if (s.totalRetryCount > 0) { overheadParts.push(`${s.totalRetryCount} ${tBi('calls with retries', '\u542b\u91cd\u8bd5\u8c03\u7528')}`); }
     const overheadLine = overheadParts.length > 0
-        ? `<div class="gm-err-overhead">${overheadParts.join(' · ')}</div>`
+        ? `<div class="gm-err-overhead">${overheadParts.join(' \u00b7 ')}</div>`
         : '';
 
-    return `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>${tBi('Error Details', '错误详情')} <span class="gm-badge-real">${tBi('Probe', '探针')}</span></h2>
+    return `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>${tBi('Error Details', '\u9519\u8bef\u8be6\u60c5')} <span class="gm-badge-real">${tBi('Probe', '\u63a2\u9488')}</span>${convDeltaBadge}</h2>
     <div class="gm-err-card">
         ${codeTags ? `<div class="gm-err-codes">${codeTags}</div>` : ''}
         ${overheadLine}

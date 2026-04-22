@@ -72,6 +72,11 @@ export class GMTracker {
     private _persistedRecentErrors: string[] = [];
     /** Persisted error code frequency — survives restarts and reinstalls. */
     private _persistedRetryErrorCodes: Record<string, number> = {};
+    /** Per-account persisted error code counts: email → { code → count }.
+     *  Survives account switches — each account retains its own error history. */
+    private _persistedRetryErrorCodesByAccount: Record<string, Record<string, number>> = {};
+    /** Per-account persisted recent error messages: email → string[]. */
+    private _persistedRecentErrorsByAccount: Record<string, string[]> = {};
 
     /**
      * Fetch GM data for the given trajectories.
@@ -224,6 +229,7 @@ export class GMTracker {
         const recentErrors: string[] = [];
         const toolCallCounts: Record<string, number> = {};
         const toolCallCountsByConv: Record<string, Record<string, number>> = {};
+        const retryErrorCodesByConv: Record<string, Record<string, number>> = {};
         const contextGrowth: { step: number; tokens: number; model: string }[] = [];
 
         for (const [, conv] of this._cache) {
@@ -299,6 +305,25 @@ export class GMTracker {
             }
             if (Object.keys(convToolCounts).length > 0) {
                 toolCallCountsByConv[conv.cascadeId] = convToolCounts;
+            }
+
+            // ── Per-conversation error counting (ALL accounts, immune to quota-reset archival) ──
+            // Uses `sliced` (post-baseline, pre-archival) so quota resets during
+            // the day don't cause error counts to drop. Only midnight reset()
+            // clears the counts for a new day.
+            const convErrorCodes: Record<string, number> = {};
+            for (const c of sliced) {
+                for (const errMsg of c.retryErrors) {
+                    const code = parseErrorCode(errMsg);
+                    convErrorCodes[code] = (convErrorCodes[code] || 0) + 1;
+                }
+                if (c.hasError && c.errorMessage && c.retryErrors.length === 0) {
+                    const code = parseErrorCode(c.errorMessage);
+                    convErrorCodes[code] = (convErrorCodes[code] || 0) + 1;
+                }
+            }
+            if (Object.keys(convErrorCodes).length > 0) {
+                retryErrorCodesByConv[conv.cascadeId] = convErrorCodes;
             }
 
             for (const c of accountFilteredCalls) {
@@ -462,6 +487,7 @@ export class GMTracker {
             recentErrors,
             toolCallCounts,
             toolCallCountsByConv,
+            retryErrorCodesByConv,
         };
 
         // Merge persisted baselines with fresh data (max-wins per tool)
@@ -491,23 +517,39 @@ export class GMTracker {
         this._persistedToolCounts = { ...result.toolCallCounts };
         this._persistedToolCountsByConv = JSON.parse(JSON.stringify(result.toolCallCountsByConv || {}));
 
-        // Merge persisted error data (max-wins for codes, union for messages)
+        // Merge persisted error data — per-account scoped (v1.17.2+)
+        // Each account's errors are stored independently, so switching accounts
+        // doesn't lose data and returning to an account restores its errors.
+        const accountKey = this._currentAccountEmail || '__global__';
+        const acctCodes = this._persistedRetryErrorCodesByAccount[accountKey] || {};
+        for (const [code, count] of Object.entries(acctCodes)) {
+            if (!result.retryErrorCodes[code] || result.retryErrorCodes[code] < count) {
+                result.retryErrorCodes[code] = count;
+            }
+        }
+        // Also merge legacy global persisted data (migration from v1.17.1)
         for (const [code, count] of Object.entries(this._persistedRetryErrorCodes)) {
             if (!result.retryErrorCodes[code] || result.retryErrorCodes[code] < count) {
                 result.retryErrorCodes[code] = count;
             }
         }
         // Persisted recent errors: use fresh data when available, persisted as fallback
-        // (after restart, retryErrors are empty until API backfill — persisted bridges the gap)
-        if (result.recentErrors.length === 0 && this._persistedRecentErrors.length > 0) {
+        const acctRecentErrors = this._persistedRecentErrorsByAccount[accountKey] || [];
+        if (result.recentErrors.length === 0 && acctRecentErrors.length > 0) {
+            result.recentErrors = [...acctRecentErrors];
+        } else if (result.recentErrors.length === 0 && this._persistedRecentErrors.length > 0) {
+            // Legacy fallback
             result.recentErrors = [...this._persistedRecentErrors];
         }
 
-        // Update persisted baselines (only when we have fresh data)
-        this._persistedRetryErrorCodes = { ...result.retryErrorCodes };
+        // Update per-account persisted baselines (only when we have fresh data)
+        this._persistedRetryErrorCodesByAccount[accountKey] = { ...result.retryErrorCodes };
         if (result.recentErrors.length > 0) {
-            this._persistedRecentErrors = [...result.recentErrors];
+            this._persistedRecentErrorsByAccount[accountKey] = [...result.recentErrors];
         }
+        // Clear legacy global fields — migrated to per-account
+        this._persistedRetryErrorCodes = {};
+        this._persistedRecentErrors = [];
 
         return result;
     }
@@ -693,6 +735,8 @@ export class GMTracker {
         this._persistedToolCountsByConv = {};
         this._persistedRecentErrors = [];
         this._persistedRetryErrorCodes = {};
+        this._persistedRetryErrorCodesByAccount = {};
+        this._persistedRecentErrorsByAccount = {};
         this._lastSummary = null;
         this._lastFetchedAt = '';
     }
@@ -714,6 +758,8 @@ export class GMTracker {
         this._persistedToolCountsByConv = {};
         this._persistedRecentErrors = [];
         this._persistedRetryErrorCodes = {};
+        this._persistedRetryErrorCodesByAccount = {};
+        this._persistedRecentErrorsByAccount = {};
         this._lastSummary = null;
         this._lastFetchedAt = '';
         this._needsBaselineInit = true;
@@ -898,6 +944,8 @@ export class GMTracker {
             persistedToolCallCountsByConv: Object.keys(this._persistedToolCountsByConv).length > 0 ? this._persistedToolCountsByConv : undefined,
             persistedRecentErrors: this._persistedRecentErrors.length > 0 ? this._persistedRecentErrors : undefined,
             persistedRetryErrorCodes: Object.keys(this._persistedRetryErrorCodes).length > 0 ? this._persistedRetryErrorCodes : undefined,
+            persistedRetryErrorCodesByAccount: Object.keys(this._persistedRetryErrorCodesByAccount).length > 0 ? this._persistedRetryErrorCodesByAccount : undefined,
+            persistedRecentErrorsByAccount: Object.keys(this._persistedRecentErrorsByAccount).length > 0 ? this._persistedRecentErrorsByAccount : undefined,
         };
     }
 
@@ -995,6 +1043,25 @@ export class GMTracker {
         }
         if (data.persistedRetryErrorCodes && typeof data.persistedRetryErrorCodes === 'object') {
             tracker._persistedRetryErrorCodes = { ...data.persistedRetryErrorCodes };
+        }
+        // Restore per-account error data (added v1.17.2)
+        if (data.persistedRetryErrorCodesByAccount && typeof data.persistedRetryErrorCodesByAccount === 'object') {
+            tracker._persistedRetryErrorCodesByAccount = JSON.parse(JSON.stringify(data.persistedRetryErrorCodesByAccount));
+        }
+        if (data.persistedRecentErrorsByAccount && typeof data.persistedRecentErrorsByAccount === 'object') {
+            tracker._persistedRecentErrorsByAccount = JSON.parse(JSON.stringify(data.persistedRecentErrorsByAccount));
+        }
+        // Migration: if legacy global error data exists but no per-account data,
+        // attribute it to the current account (if known)
+        if (Object.keys(tracker._persistedRetryErrorCodesByAccount).length === 0
+            && Object.keys(tracker._persistedRetryErrorCodes).length > 0
+            && tracker._currentAccountEmail) {
+            tracker._persistedRetryErrorCodesByAccount[tracker._currentAccountEmail] = { ...tracker._persistedRetryErrorCodes };
+        }
+        if (Object.keys(tracker._persistedRecentErrorsByAccount).length === 0
+            && tracker._persistedRecentErrors.length > 0
+            && tracker._currentAccountEmail) {
+            tracker._persistedRecentErrorsByAccount[tracker._currentAccountEmail] = [...tracker._persistedRecentErrors];
         }
 
         return tracker;
