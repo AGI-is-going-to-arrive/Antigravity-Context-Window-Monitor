@@ -35,8 +35,7 @@ export function buildPricingTabContent(
         const fullTotal = grandTotal + (pendingArchiveCost ?? 0);
         const merged = store.getMerged();
         parts.push(
-            buildCostVisualization(rows, fullTotal, summary),
-            buildCostSummary(rows, fullTotal),
+            buildCostPanel(rows, fullTotal, summary),
             buildEditablePricingTable(summary, merged, store.getCustom()),
         );
     } else {
@@ -151,46 +150,53 @@ export function getPricingTabStyles(): string {
         font-weight: 700;
         font-size: 0.95em;
     }
-    /* ── Cost Visualization ── */
-    .prc-viz-section {
+    /* ── Unified Cost Panel (cost-*) ── */
+    .cost-panel {
         background: var(--color-surface);
         border: 1px solid var(--color-border);
         border-radius: var(--radius-md);
         padding: var(--space-3);
         margin-bottom: var(--space-4);
     }
-    .prc-viz-highlights {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-        gap: var(--space-2);
-        margin-bottom: var(--space-4);
+
+    /* Summary chips bar */
+    .cost-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: var(--space-3);
+        padding-bottom: var(--space-2);
+        border-bottom: 1px solid var(--color-border-subtle);
     }
-    .prc-viz-highlight {
-        text-align: center;
-        padding: var(--space-2) var(--space-3);
-        border-radius: var(--radius-md);
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-    }
-    .prc-viz-hl-val {
-        font-weight: 700;
-        font-size: 1.2em;
-    }
-    .prc-viz-hl-label {
-        font-size: 0.78em;
+    .cost-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 2px 10px;
+        border-radius: var(--radius-full);
+        border: 1px solid var(--color-border-subtle);
+        background: rgba(255,255,255,0.02);
         color: var(--color-text-dim);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-top: 2px;
+        font-size: 0.78em;
+        font-weight: 500;
+        white-space: nowrap;
     }
-    .prc-bar-row {
+    .cost-chip-total {
+        color: var(--color-warn);
+        border-color: var(--color-warn-border);
+        font-weight: 700;
+        font-size: 0.88em;
+    }
+
+    /* Bar chart rows */
+    .cost-bar-row {
         display: flex;
         align-items: center;
         gap: var(--space-2);
-        margin-bottom: var(--space-2);
+        margin-bottom: var(--space-1);
         font-size: 0.88em;
     }
-    .prc-bar-label {
+    .cost-bar-label {
         min-width: 90px;
         font-weight: 600;
         white-space: nowrap;
@@ -198,133 +204,109 @@ export function getPricingTabStyles(): string {
         text-overflow: ellipsis;
         flex-shrink: 0;
     }
-    .prc-bar-track {
+    .cost-bar-track {
         flex: 1;
-        height: 18px;
+        height: 16px;
         border-radius: var(--radius-sm);
-        background: var(--color-surface);
+        background: rgba(255,255,255,0.04);
         overflow: hidden;
         display: flex;
     }
-    .prc-bar-seg {
+    .cost-bar-seg {
         height: 100%;
         min-width: 1px;
         transition: width 0.3s cubic-bezier(.4,0,.2,1);
     }
-    .prc-bar-seg-input { background: #60a5fa; }
-    .prc-bar-seg-output { background: #2dd4bf; }
-    .prc-bar-seg-cache { background: #22d3ee; }
-    .prc-bar-seg-thinking { background: #fb923c; }
-    .prc-bar-val {
+    .cost-seg-input { background: #60a5fa; }
+    .cost-seg-output { background: #2dd4bf; }
+    .cost-seg-cache { background: #22d3ee; }
+    .cost-seg-think { background: #fb923c; }
+    .cost-bar-val {
         min-width: 55px;
         text-align: right;
-        font-weight: 600;
+        font-weight: 700;
         font-size: 0.92em;
+        color: var(--color-warn);
         flex-shrink: 0;
     }
-    .prc-bar-legend {
+
+    /* Legend */
+    .cost-legend {
         display: flex;
         gap: var(--space-3);
         flex-wrap: wrap;
-        font-size: 0.82em;
+        font-size: 0.78em;
         color: var(--color-text-dim);
-        margin-top: var(--space-3);
+        margin-top: var(--space-2);
         padding-top: var(--space-2);
-        border-top: 1px solid var(--color-border);
+        border-top: 1px solid var(--color-border-subtle);
     }
-    .prc-bar-legend-item {
+    .cost-legend-item {
         display: flex;
         align-items: center;
-        gap: var(--space-1);
+        gap: 4px;
     }
-    .prc-bar-legend-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 2px;
-    }
-
-    /* ── Cost Summary Cards ── */
-    .prc-cost-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: var(--space-2);
-        margin-bottom: var(--space-3);
-    }
-    .prc-cost-card {
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-left: 3px solid var(--color-info);
-        border-radius: var(--radius-md);
-        padding: var(--space-3);
-        transition: background 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
-    }
-    @media (hover: hover) {
-        .prc-cost-card:hover {
-            background: var(--color-surface-hover);
-            border-color: var(--color-border-hover);
-        }
-    }
-    .prc-cost-card-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: var(--space-2);
-        padding-bottom: var(--space-1);
-        border-bottom: 1px solid var(--color-border);
-    }
-    .prc-cost-card-name {
-        font-weight: 600;
-        font-size: 0.92em;
-    }
-    .prc-cost-card-total {
-        font-weight: 700;
-        font-size: 1em;
-        color: #f59e0b;
-    }
-    .prc-cost-card-body {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: var(--space-1);
-    }
-    .prc-cost-item {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 0.85em;
-        padding: 2px var(--space-1);
-        border-radius: var(--radius-sm);
-    }
-    .prc-cost-item-label {
-        display: flex;
-        align-items: center;
-        gap: var(--space-1);
-        color: var(--color-text-dim);
-    }
-    .prc-cost-item-dot {
-        width: 6px;
-        height: 6px;
+    .cost-legend-dot {
+        width: 7px;
+        height: 7px;
         border-radius: 2px;
         flex-shrink: 0;
     }
-    .prc-cost-item-val {
-        font-weight: 600;
+
+    /* Per-model detail rows */
+    .cost-detail-rows {
+        margin-top: var(--space-3);
+        padding-top: var(--space-2);
+        border-top: 1px solid var(--color-border-subtle);
+        display: grid;
+        gap: var(--space-1);
     }
-    .prc-cost-card.prc-cost-grand {
-        border-left-color: #f59e0b;
-        background: rgba(245,158,11,0.04);
-    }
-    .prc-cost-grand-val {
-        font-size: 1.4em;
-        font-weight: 700;
-        color: #f59e0b;
-    }
-    .prc-cost-no-pricing {
-        font-size: 0.85em;
-        color: var(--color-text-dim);
-        font-style: italic;
-    }
-    .prc-note {
+    .cost-detail-row {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-1) var(--space-2);
+        border-radius: var(--radius-sm);
         font-size: 0.82em;
+        transition: background 0.12s ease;
+    }
+    @media (hover: hover) {
+        .cost-detail-row:hover {
+            background: rgba(255,255,255,0.03);
+        }
+    }
+    .cost-detail-name {
+        min-width: 90px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex-shrink: 0;
+    }
+    .cost-detail-items {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        flex: 1;
+        min-width: 0;
+    }
+    .cost-detail-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        color: var(--color-text-dim);
+        font-variant-numeric: tabular-nums;
+    }
+    .cost-detail-total {
+        font-weight: 700;
+        color: var(--color-warn);
+        min-width: 55px;
+        text-align: right;
+        flex-shrink: 0;
+    }
+
+    .cost-note {
+        font-size: 0.78em;
         color: var(--color-text-dim);
         margin-top: var(--space-2);
         font-style: italic;
@@ -474,7 +456,7 @@ export function getPricingTabStyles(): string {
     }
 
     @media (prefers-reduced-motion: reduce) {
-        .prc-bar-seg, .prc-edit-input, .prc-cost-card, .prc-edit-card, .prc-monthly-card { transition: none; }
+        .cost-bar-seg, .prc-edit-input, .prc-edit-card, .prc-monthly-card { transition: none; }
     }
 
     /* ── Monthly Cost Summary ── */
@@ -624,13 +606,16 @@ export function getPricingTabStyles(): string {
     body.vscode-light .prc-dna-meta-bar { background: rgba(0,0,0,0.02); border-color: rgba(0,0,0,0.08); border-left-color: rgba(37,99,235,0.3); }
     body.vscode-light .prc-tool-tag { background: rgba(22,163,74,0.08); color: #15803d; }
     body.vscode-light .prc-error-tag { background: rgba(220,38,38,0.08); color: #dc2626; }
-    body.vscode-light .prc-cost-card-total { color: #b45309; }
-    body.vscode-light .prc-cost-grand-val { color: #b45309; }
-    body.vscode-light .prc-cost-card.prc-cost-grand { border-left-color: #d97706; background: rgba(217,119,6,0.05); }
     body.vscode-light .prc-custom-badge { background: rgba(202,138,4,0.12); color: #92400e; }
     body.vscode-light .prc-edit-source-custom { color: #92400e; }
     body.vscode-light .prc-edit-source-builtin { color: #15803d; }
     body.vscode-light .prc-feedback { color: #15803d; }
+    body.vscode-light .cost-chip { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.08); }
+    body.vscode-light .cost-chip-total { color: #b45309; border-color: rgba(217,119,6,0.25); }
+    body.vscode-light .cost-bar-track { background: rgba(0,0,0,0.05); }
+    body.vscode-light .cost-bar-val { color: #b45309; }
+    body.vscode-light .cost-detail-total { color: #b45309; }
+    body.vscode-light .cost-detail-row:hover { background: rgba(0,0,0,0.02); }
     body.vscode-light .prc-monthly-grand { background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.2); border-left-color: #d97706; }
     body.vscode-light .prc-monthly-grand-val { color: #b45309; }
     body.vscode-light .prc-monthly-model-cost { color: #b45309; }
@@ -641,80 +626,124 @@ export function getPricingTabStyles(): string {
     `;
 }
 
-// ─── Cost Visualization ──────────────────────────────────────────────────────
+// ─── Shared Formatters ───────────────────────────────────────────────────────
 
-function buildCostVisualization(
+function fmtUsd(n: number): string {
+    if (n < 0.01) { return `$${n.toFixed(4)}`; }
+    if (n < 1) { return `$${n.toFixed(3)}`; }
+    return `$${n.toFixed(2)}`;
+}
+
+function fmtTok(n: number): string {
+    if (n >= 1_000_000) { return (n / 1_000_000).toFixed(1) + 'M'; }
+    if (n >= 1_000) { return (n / 1_000).toFixed(1) + 'k'; }
+    return String(n);
+}
+
+// ─── Unified Cost Panel ──────────────────────────────────────────────────────
+
+function buildCostPanel(
     rows: import('./pricing-store').ModelCostRow[],
     grandTotal: number,
     summary: GMSummary,
 ): string {
     const priced = rows.filter(r => r.pricing && r.totalCost > 0);
-    if (priced.length === 0 || grandTotal <= 0) { return ''; }
+    const unpriced = rows.filter(r => !r.pricing);
+    if (priced.length === 0 && grandTotal <= 0) { return ''; }
 
-    const fmtUsd = (n: number) => n < 0.01 ? `$${n.toFixed(4)}` : n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
-
-    // Highlights
-    const topModel = priced[0];
+    const topModel = priced.length > 0 ? priced[0] : null;
     const avgPerCall = summary.totalCalls > 0 ? grandTotal / summary.totalCalls : 0;
 
-    let html = `<h2 class="act-section-title">${tBi('Cost Overview', '费用概览')}</h2>`;
-    html += '<div class="prc-viz-section">';
+    let html = `<h2 class="act-section-title">${tBi('Cost Analysis', '费用分析')}</h2>`;
+    html += '<div class="cost-panel">';
 
-    // Highlight cards
-    html += '<div class="prc-viz-highlights">';
-    html += `<div class="prc-viz-highlight">
-        <div class="prc-viz-hl-val" style="color:#f59e0b">${fmtUsd(grandTotal)}</div>
-        <div class="prc-viz-hl-label">${tBi('Total Cost', '总费用')}</div>
-    </div>`;
-    html += `<div class="prc-viz-highlight">
-        <div class="prc-viz-hl-val" style="color:#2dd4bf">${esc(topModel.name)}</div>
-        <div class="prc-viz-hl-label">${tBi('Top Spender', '最高消费')}</div>
-    </div>`;
-    html += `<div class="prc-viz-highlight">
-        <div class="prc-viz-hl-val" style="color:#60a5fa">${fmtUsd(avgPerCall)}</div>
-        <div class="prc-viz-hl-label">${tBi('Avg/Call', '平均/次')}</div>
-    </div>`;
-    html += `<div class="prc-viz-highlight">
-        <div class="prc-viz-hl-val">${priced.length}</div>
-        <div class="prc-viz-hl-label">${tBi('Models', '模型数')}</div>
-    </div>`;
+    // ── Summary chips (inline, compact) ──
+    html += '<div class="cost-chips">';
+    html += `<span class="cost-chip cost-chip-total">${fmtUsd(grandTotal)}</span>`;
+    if (topModel) {
+        html += `<span class="cost-chip" data-tooltip="${tBi('Top Spender', '最高消费')}">${esc(topModel.name)} ${fmtUsd(topModel.totalCost)}</span>`;
+    }
+    html += `<span class="cost-chip" data-tooltip="${tBi('Avg per Call', '平均每次')}">${fmtUsd(avgPerCall)}/${tBi('call', '次')}</span>`;
+    html += `<span class="cost-chip" data-tooltip="${tBi('Models with pricing', '有定价的模型')}">${priced.length} ${tBi('models', '模型')}</span>`;
+    if (summary.totalCalls > 0) {
+        html += `<span class="cost-chip">${summary.totalCalls} ${tBi('calls', '调用')}</span>`;
+    }
     html += '</div>';
 
-    // Bar chart
-    const maxCost = priced[0].totalCost;
-    for (const r of priced) {
-        const pct = maxCost > 0 ? (r.totalCost / maxCost) * 100 : 0;
-        const total = r.totalCost || 1;
-        const inputPct = (r.inputCost / total) * pct;
-        const outputPct = (r.outputCost / total) * pct;
-        const cachePct = (r.cacheCost / total) * pct;
-        const thinkPct = (r.thinkingCost / total) * pct;
+    // ── Bar chart (proportional per-model) ──
+    if (priced.length > 0) {
+        const maxCost = priced[0].totalCost;
+        for (const r of priced) {
+            const pct = maxCost > 0 ? (r.totalCost / maxCost) * 100 : 0;
+            const total = r.totalCost || 1;
+            const inputPct = (r.inputCost / total) * pct;
+            const outputPct = (r.outputCost / total) * pct;
+            const cachePct = (r.cacheCost / total) * pct;
+            const thinkPct = (r.thinkingCost / total) * pct;
 
-        html += `<div class="prc-bar-row">
-            <span class="prc-bar-label">${esc(r.name)}</span>
-            <div class="prc-bar-track">
-                ${inputPct > 0 ? `<div class="prc-bar-seg prc-bar-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="${tBi('Input', '输入')}: ${fmtUsd(r.inputCost)}"></div>` : ''}
-                ${outputPct > 0 ? `<div class="prc-bar-seg prc-bar-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="${tBi('Output', '输出')}: ${fmtUsd(r.outputCost)}"></div>` : ''}
-                ${cachePct > 0 ? `<div class="prc-bar-seg prc-bar-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="${tBi('Cache', '缓存')}: ${fmtUsd(r.cacheCost)}"></div>` : ''}
-                ${thinkPct > 0 ? `<div class="prc-bar-seg prc-bar-seg-thinking" style="width:${thinkPct.toFixed(1)}%" data-tooltip="${tBi('Thinking', '思考')}: ${fmtUsd(r.thinkingCost)}"></div>` : ''}
-            </div>
-            <span class="prc-bar-val" style="color:#f59e0b">${fmtUsd(r.totalCost)}</span>
+            html += `<div class="cost-bar-row">
+                <span class="cost-bar-label" data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</span>
+                <div class="cost-bar-track">
+                    ${inputPct > 0 ? `<div class="cost-bar-seg cost-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="${tBi('Input', '输入')}: ${fmtUsd(r.inputCost)} (${fmtTok(r.inputTokens)} tok)"></div>` : ''}
+                    ${outputPct > 0 ? `<div class="cost-bar-seg cost-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="${tBi('Output', '输出')}: ${fmtUsd(r.outputCost)} (${fmtTok(r.outputTokens)} tok)"></div>` : ''}
+                    ${cachePct > 0 ? `<div class="cost-bar-seg cost-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="${tBi('Cache', '缓存')}: ${fmtUsd(r.cacheCost)} (${fmtTok(r.cacheTokens)} tok)"></div>` : ''}
+                    ${thinkPct > 0 ? `<div class="cost-bar-seg cost-seg-think" style="width:${thinkPct.toFixed(1)}%" data-tooltip="${tBi('Thinking', '思考')}: ${fmtUsd(r.thinkingCost)} (${fmtTok(r.thinkingTokens)} tok)"></div>` : ''}
+                </div>
+                <span class="cost-bar-val">${fmtUsd(r.totalCost)}</span>
+            </div>`;
+        }
+
+        // Legend
+        html += `<div class="cost-legend">
+            <span class="cost-legend-item"><span class="cost-legend-dot" style="background:#60a5fa"></span>${tBi('Input', '输入')}</span>
+            <span class="cost-legend-item"><span class="cost-legend-dot" style="background:#2dd4bf"></span>${tBi('Output', '输出')}</span>
+            <span class="cost-legend-item"><span class="cost-legend-dot" style="background:#22d3ee"></span>${tBi('Cache', '缓存')}</span>
+            <span class="cost-legend-item"><span class="cost-legend-dot" style="background:#fb923c"></span>${tBi('Thinking', '思考')}</span>
         </div>`;
     }
 
-    // Legend
-    html += `<div class="prc-bar-legend">
-        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#60a5fa"></span> ${tBi('Input', '输入')}</span>
-        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#2dd4bf"></span> ${tBi('Output', '输出')}</span>
-        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#22d3ee"></span> ${tBi('Cache', '缓存')}</span>
-        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#fb923c"></span> ${tBi('Thinking', '思考')}</span>
-    </div>`;
+    // ── Per-model cost breakdown (compact rows, replaces old card grid) ──
+    if (priced.length > 0) {
+        html += '<div class="cost-detail-rows">';
+        for (const r of priced) {
+            html += `<div class="cost-detail-row">
+                <span class="cost-detail-name" data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</span>
+                <div class="cost-detail-items">
+                    <span class="cost-detail-item" data-tooltip="${fmtTok(r.inputTokens)} tok × $${r.pricing!.input}/M">
+                        <span class="cost-legend-dot" style="background:#60a5fa"></span>${fmtUsd(r.inputCost)}
+                    </span>
+                    <span class="cost-detail-item" data-tooltip="${fmtTok(r.outputTokens)} tok × $${r.pricing!.output}/M">
+                        <span class="cost-legend-dot" style="background:#2dd4bf"></span>${fmtUsd(r.outputCost)}
+                    </span>
+                    <span class="cost-detail-item" data-tooltip="${fmtTok(r.cacheTokens)} tok × $${r.pricing!.cacheRead}/M">
+                        <span class="cost-legend-dot" style="background:#22d3ee"></span>${fmtUsd(r.cacheCost)}
+                    </span>
+                    ${r.thinkingTokens > 0 ? `<span class="cost-detail-item" data-tooltip="${fmtTok(r.thinkingTokens)} tok × $${r.pricing!.thinking}/M">
+                        <span class="cost-legend-dot" style="background:#fb923c"></span>${fmtUsd(r.thinkingCost)}
+                    </span>` : ''}
+                </div>
+                <span class="cost-detail-total">${fmtUsd(r.totalCost)}</span>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Unpriced models note
+    if (unpriced.length > 0) {
+        html += `<p class="cost-note">${unpriced.length} ${tBi(
+            'model(s) have no pricing data',
+            '个模型暂无价格数据',
+        )}: ${unpriced.map(r => esc(r.name)).join(', ')}</p>`;
+    }
+
+    html += `<p class="cost-note">${tBi(
+        'Costs are estimates based on the pricing table below. Actual billing may differ.',
+        '费用基于下方价格表估算。实际计费可能不同。',
+    )}</p>`;
 
     html += '</div>';
     return html;
 }
-
-// ─── Section Builders ────────────────────────────────────────────────────────
 
 export function buildModelDNACards(
     s: GMSummary | null,
@@ -903,85 +932,8 @@ function toDomSafeId(value: string): string {
     return value.replace(/[^a-zA-Z0-9_-]+/g, '-');
 }
 
-// ─── Cost Summary (Card-based) ───────────────────────────────────────────────
 
-function buildCostSummary(rows: import('./pricing-store').ModelCostRow[], grandTotal: number): string {
-    if (rows.length === 0) { return ''; }
 
-    const fmtUsd = (n: number) => n < 0.01 ? `$${n.toFixed(4)}` : n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
-    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-
-    let html = `<h2 class="act-section-title">${tBi('Cost Breakdown', '费用明细')}</h2>`;
-
-    // Grand total card
-    html += `<div class="prc-cost-grid">`;
-    html += `<div class="prc-cost-card prc-cost-grand">
-        <div class="prc-cost-card-header">
-            <span class="prc-cost-card-name">${tBi('Grand Total', '总计')}</span>
-        </div>
-        <div class="prc-cost-grand-val">${fmtUsd(grandTotal)}</div>
-        <div class="prc-note" style="margin-top:var(--space-1)">${rows.filter(r => r.pricing).length} ${tBi('models priced', '个模型有定价')}</div>
-    </div>`;
-
-    // Per-model cards
-    for (const r of rows) {
-        if (!r.pricing) {
-            html += `<div class="prc-cost-card">
-                <div class="prc-cost-card-header">
-                    <span class="prc-cost-card-name" data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</span>
-                </div>
-                <div class="prc-cost-no-pricing">${tBi('No pricing data available', '暂无价格数据')}</div>
-            </div>`;
-            continue;
-        }
-
-        html += `<div class="prc-cost-card">
-            <div class="prc-cost-card-header">
-                <span class="prc-cost-card-name" data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</span>
-                <span class="prc-cost-card-total">${fmtUsd(r.totalCost)}</span>
-            </div>
-            <div class="prc-cost-card-body">
-                <div class="prc-cost-item" data-tooltip="${tBi(
-            `${fmt(r.inputTokens)} tok × $${r.pricing.input}/M`,
-            `${fmt(r.inputTokens)} 令牌 × $${r.pricing.input}/百万`,
-        )}">
-                    <span class="prc-cost-item-label"><span class="prc-cost-item-dot" style="background:#60a5fa"></span>${tBi('Input', '输入')}</span>
-                    <span class="prc-cost-item-val">${fmtUsd(r.inputCost)}</span>
-                </div>
-                <div class="prc-cost-item" data-tooltip="${tBi(
-            `${fmt(r.outputTokens)} tok × $${r.pricing.output}/M`,
-            `${fmt(r.outputTokens)} 令牌 × $${r.pricing.output}/百万`,
-        )}">
-                    <span class="prc-cost-item-label"><span class="prc-cost-item-dot" style="background:#2dd4bf"></span>${tBi('Output', '输出')}</span>
-                    <span class="prc-cost-item-val">${fmtUsd(r.outputCost)}</span>
-                </div>
-                <div class="prc-cost-item" data-tooltip="${tBi(
-            `${fmt(r.cacheTokens)} tok × $${r.pricing.cacheRead}/M`,
-            `${fmt(r.cacheTokens)} 令牌 × $${r.pricing.cacheRead}/百万`,
-        )}">
-                    <span class="prc-cost-item-label"><span class="prc-cost-item-dot" style="background:#22d3ee"></span>${tBi('Cache Read', '缓存读取')}</span>
-                    <span class="prc-cost-item-val">${fmtUsd(r.cacheCost)}</span>
-                </div>
-                ${r.thinkingTokens > 0 ? `<div class="prc-cost-item" data-tooltip="${tBi(
-            `${fmt(r.thinkingTokens)} tok × $${r.pricing.thinking}/M`,
-            `${fmt(r.thinkingTokens)} 令牌 × $${r.pricing.thinking}/百万`,
-        )}">
-                    <span class="prc-cost-item-label"><span class="prc-cost-item-dot" style="background:#fb923c"></span>${tBi('Thinking', '思考')}</span>
-                    <span class="prc-cost-item-val">${fmtUsd(r.thinkingCost)}</span>
-                </div>` : ''}
-            </div>
-        </div>`;
-    }
-
-    html += `</div>`;
-    html += `<p class="prc-note">${tBi(
-        'Costs are estimates based on the pricing table below. Actual billing may differ with enterprise agreements.',
-        '费用基于下方价格表估算。实际计费可能因企业协议而不同。'
-    )}</p>`;
-    return html;
-}
-
-// ─── Editable Pricing (Card-based) ───────────────────────────────────────────
 
 const FIELD_LABELS: Record<string, [string, string]> = {
     input: ['Input', '输入'],
@@ -1094,19 +1046,6 @@ const MONTH_NAMES_ZH = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', 
 const CALENDAR_LINK_ICON = '<svg viewBox="0 0 16 16" width="12" height="12"><path fill="currentColor" d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/></svg>';
 const DOLLAR_ICON = '<svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.3 0-1.59-.947-2.51-2.956-3.028l-.722-.187V3.467c1.122.11 1.879.714 2.07 1.616h1.47c-.166-1.6-1.54-2.748-3.54-2.875V1H7.591v1.233c-1.939.23-3.27 1.472-3.27 3.156 0 1.454.966 2.483 2.661 2.917l.61.162v4.031c-1.149-.17-1.94-.8-2.131-1.718zm3.391-3.836c-1.043-.263-1.6-.825-1.6-1.616 0-.944.704-1.641 1.8-1.828v3.495zM8.634 8.1C9.858 8.418 10.44 9 10.44 9.89c0 1.12-.789 1.816-2.007 1.931V8.1z"/></svg>';
 
-function fmtCost(n: number): string {
-    if (n >= 100) { return '$' + n.toFixed(0); }
-    if (n >= 1) { return '$' + n.toFixed(2); }
-    if (n > 0) { return '$' + n.toFixed(4); }
-    return '$0.00';
-}
-
-function fmtTokensK(n: number): string {
-    if (n >= 1_000_000) { return (n / 1_000_000).toFixed(1) + 'M'; }
-    if (n >= 1_000) { return (n / 1_000).toFixed(1) + 'k'; }
-    return String(n);
-}
-
 /** Build the monthly cost summary section for the Pricing tab. */
 function buildMonthlyCostSummary(
     breakdown: MonthCostBreakdown,
@@ -1207,7 +1146,7 @@ function buildMonthlyCostSummary(
         );
 
     html += `<div class="prc-monthly-grand">
-        <span class="prc-monthly-grand-val">${fmtCost(grandTotal)}</span>
+        <span class="prc-monthly-grand-val">${fmtUsd(grandTotal)}</span>
         <span class="prc-monthly-grand-label">${tBi('Total', '总计')}</span>
         <span class="prc-monthly-grand-breakdown">${archivedLabel}</span>
     </div>`;
@@ -1221,7 +1160,7 @@ function buildMonthlyCostSummary(
             <div class="prc-monthly-bar-wrap">
                 <div class="prc-monthly-bar-fill" style="width:${pct.toFixed(1)}%"></div>
             </div>
-            <span class="prc-monthly-model-cost">${fmtCost(m.totalCost)}</span>
+            <span class="prc-monthly-model-cost">${fmtUsd(m.totalCost)}</span>
         </div>`;
     }
     html += `</div>`;

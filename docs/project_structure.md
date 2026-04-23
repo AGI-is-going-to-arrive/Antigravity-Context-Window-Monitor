@@ -52,7 +52,7 @@ antigravity-context-monitor/
 │   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
 │   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（ses-* 命名空间 — 紧凑行式卡片 + shortcut 芯片 + 工具栏 + CSS tooltip）
 │   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据 + 检查点查看器 + 账号面板构建器 + 模型卡片/汇总行/待归档费用显示 + respOut 费用计算）
-│   ├── pricing-panel.ts          # Cost 标签页 HTML（费用分析 + 待归档费用纳入月总计 + cacheWrite UI 清理）v1.17.14 模型信息卡 UI 重构为 act-model-card 行式布局 + 同名模型去重 + responseModel 智能隐藏
+│   ├── pricing-panel.ts          # Cost 标签页 HTML（cost-* 统一面板 — 芯片 summary bar + 分色柱状图 + 紧凑行式明细 + 月费用汇总 + 可编辑价格表 + 模型信息卡）
 │   ├── webview-calendar-tab.ts   # Calendar 标签页 HTML
 │   ├── i18n.ts                   # 国际化：语言模式、翻译表、偏好持久化
 │   └── images/                   # README 截图资源

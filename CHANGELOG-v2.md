@@ -8,6 +8,48 @@
 
 ---
 
+## [1.17.21] - 2026-04-23
+
+### 重构 / Refactored
+
+- **成本标签页 UI 重构 / Cost Tab UI Overhaul**:
+  合并「费用概览」和「费用明细」为统一的「费用分析」面板，消除三处重复的 Grand Total 显示。CSS 命名从 `prc-viz-*` / `prc-cost-*` 双命名空间统一为 `cost-*`。
+
+  Merged "Cost Overview" and "Cost Breakdown" into a unified "Cost Analysis" panel, eliminating triple Grand Total display. CSS namespace unified from `prc-viz-*` / `prc-cost-*` to `cost-*`.
+
+  | 维度 | 改前 | 改后 |
+  |------|------|------|
+  | 费用总计 | 3 处显示（月汇总 + 4 卡片 highlight + Grand Total 卡片） | 1 处（summary bar 芯片） |
+  | 费用概览 | 4 个独立 highlight 卡片（总费用/最高消费/平均/模型数） | 紧凑 summary bar 芯片条 |
+  | 柱状图 | 保持，改进 tooltip（新增 token 数量显示） | 保持 |
+  | 费用明细 | 独立 `prc-cost-grid` 卡片网格（per-model 2×2 grid） | 紧凑行式（模型名 + 分色分项 + 总费用），合入面板 |
+  | Grand Total 卡片 | 独立黄色边框大卡片 | **移除**（summary bar 已显示） |
+  | CSS 命名 | `prc-viz-*` + `prc-cost-*`（~180 行） | `cost-*`（~150 行） |
+
+- **重复函数清理 / Duplicate Function Cleanup**:
+  `fmtUsd` / `fmtCost` / `fmtTokensK` 三个格式化函数合并为文件级共享的 `fmtUsd()` + `fmtTok()`。`buildMonthlyCostSummary` 改用共享 `fmtUsd()`。
+
+  Deduplicated three formatting functions into shared file-level `fmtUsd()` + `fmtTok()`.
+
+### 移除 / Removed
+
+- `buildCostVisualization()` — 合并入 `buildCostPanel()`
+- `buildCostSummary()` — 合并入 `buildCostPanel()`
+- `fmtCost()` / `fmtTokensK()` — 用 `fmtUsd()` / `fmtTok()` 替代
+- `prc-viz-*` CSS（~90 行 highlight + bar chart 样式）
+- `prc-cost-*` CSS（~90 行 card grid 样式）
+- 3 条 Light Theme 覆盖（`prc-cost-card-total` / `prc-cost-grand-val` / `prc-cost-card.prc-cost-grand`）
+
+### 统计 / Stats
+
+- **Files changed**: 1 (`src/pricing-panel.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **Net lines**: ~-120
+- **New CSS classes**: `cost-panel`, `cost-chips`, `cost-chip`, `cost-bar-*`, `cost-detail-*`, `cost-legend-*`, `cost-note`
+
+---
+
 ## [1.17.20] - 2026-04-23
 
 ### 重构 / Refactored
