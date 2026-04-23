@@ -292,10 +292,10 @@ Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sou
 
 | 特性 / Feature | 说明 / Description |
 |---|---|
-| Dashboard Grid 概览 / Dashboard Grid | `buildSummaryBar()` 使用 CSS Grid (`auto-fill, minmax(85px, 1fr)`) 统一面板布局，1px 间隙网格分隔线。仅显示 GM 精确数据：调用、步骤、模型、会话、消息、输入/输出 token、缓存、错误 |
-| GM 错误报告 / Error Reporting | Summary Bar 末位显示红色「报错」卡片（错误总数 + GM 徽章），tooltip 展示错误码分布（如 `429 ×2, 503 ×1`）和 token 浪费明细。`buildErrorDetailsSection()` 在 GM Data 面板中渲染独立的「错误详情」区块：错误码分类标签（限流/服务端/其他颜色编码）+ 开销统计行 + 最近 8 条错误消息列表。时间线和 Turn header 使用 `error(N)` 标签替代旧的 `retry(N)` 格式 |
+| Dashboard Grid 概览 / Dashboard Grid | `buildSummaryBar()` 使用 CSS Grid (`auto-fill, minmax(85px, 1fr)`) 统一面板布局，1px 间隙网格分隔线。仅显示 GM 精确数据：调用、步骤、模型、会话、消息、输入/输出 token、缓存、错误。已移除所有装饰性 GM 徽章（数据源 100% GM，无需标注）|
+| GM 错误报告 / Error Reporting | Summary Bar 末位显示红色「报错」卡片（错误总数），tooltip 展示错误码分布（如 `429 ×2, 503 ×1`）和 token 浪费明细。`buildErrorDetailsSection()` 在 GM Data 面板中渲染独立的「错误详情」区块：错误码分类标签（限流/服务端/其他颜色编码）+ 开销统计行 + 最近 8 条错误消息列表。时间线和 Turn header 使用 `error(N)` 标签替代旧的 `retry(N)` 格式 |
 | Tooltip 边缘适配 / Tooltip Edge Anchoring | 向下弹出（`top`）避免顶部裁剪；`:first-child` 靠左对齐、`:last-child` 靠右对齐，防止左右溢出 webview 边界 |
-| 检查点查看器 / Checkpoint Viewer | `buildCheckpointViewer()` 渲染当前活跃对话（通过最新 `createdAt` 定位）的 `{{ CHECKPOINT N }}` 压缩摘要全文，琥珀色可折叠卡片 + 限高滚动容器 |
+| 检查点查看器 / Checkpoint Viewer | `buildCheckpointViewer()` 渲染当前活跃对话（通过最新 `createdAt` 定位）的 `{{ CHECKPOINT N }}` 压缩摘要全文，琥珀色可折叠卡片 + 限高滚动容器。已从独立 section 移入「最近操作」Timeline 区块顶部（标题 → 检查点 → 时间线事件流） |
 | 工具调用排行 / Tool Call Ranking | `buildToolCallRanking()` 渲染 GM 精确的工具调用频率排行榜（水平条形图，6 色循环），数据源为 `GMSummary.toolCallCounts`（从 `messagePrompts` SYSTEM `toolCalls[]` 提取，按 stepIdx 去重，基于 `sliced` 不受额度重置归档影响）。统计范围为全账号、全对话，通过 `_persistedToolCounts` 跨重启 max-wins 合并保障数据完整。`+x` 增量通过 `currentUsage.cascadeId` 精确匹配当前对话（不依赖时间戳），仅在 ≥2 对话时显示。每日 `reset()` 清零 |
 | 账号面板构建器 / Account Panel Builder | `buildAccountStatusPanel()`（已 export）渲染多账号状态卡片：`AccountSnapshot[]` → 按 email 分行，显示在线/缓存状态、Plan 徽章、按模型池独立倒计时（`ResetPool[]` 含 `hasUsage` 检测），到期显示红色「已就绪」，未消耗额度池显示灰色「未使用」。缓存账号名字行内显示红色「移除」文字链接。**v1.17.3 起已从 GM Data 标签页迁出至全局 dropdown**（由 `webview-panel.ts` 调用），`buildGMDataTabContent()` 不再包含账号面板 |
 | 红点检测 / Ready Pool Detection | `hasAccountReadyPool()` 遍历所有账号检测是否存在已过期且有使用记录的额度池，用于全局按钮上的红色脉冲指示器 |
@@ -303,7 +303,10 @@ Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sou
 | 增量刷新保护 / Refresh preservation | `<details>` 展开状态通过 `restoreDetailsState()` 自动保护；`.cp-viewer` / `.cp-card-body` 滚动位置通过 `scrollableSelectors` 保留 |
 | 账号分布行 / Account breakdown | 模型卡片 body 底部以分割线隔开，每个账号独立一行（用户 SVG 图标 + 邮箱前缀 + 紫色调用次数）。当前在线账号自动置顶并以绿色选中态高亮（绿色左竖线 + 边框 + 背景 + 图标/数字变色）。每个账号行可选显示红色 `+N` 报错次数药丸标签（per-model per-account 独立统计，互不混合）。通过标题栏「报错」药丸开关控制显隐（默认隐藏），状态通过 webview state 持久化 |
 | 模型统计汇总行 / Model Stats Total | 模型卡片网格下方的芯片条汇总行，显示跨账号总调用数、模型数、输入/输出/缓存 token。数据从 `gm.conversations[].calls[]` 全量遍历，不受账号过滤影响。Sigma SVG 图标 + 蓝色标签 + 独立芯片边框 |
-| 已移除 / Removed | `buildToolRanking()`（Step API 工具排行）、`buildDistribution()`（Step API 模型分布甜甜圈图）、Summary Bar 中的推理/工具/错误/检查点/推算卡片、模型卡片中的 Step API 行和工具标签 |
+| 时间线图例 / Timeline Legend | 「最近操作」标题右侧 18px 圆形 `(?)` 帮助按钮，hover 弹出 280×260px 不透明浮动面板，精简展示步骤基础和 Token 指标的样本+说明。替代了原有占用大量页面高度的可折叠 `<details>` 图例块 |
+| 对话标题解析 / Conversation Title | Timeline 标题 badge 和对话分布卡片从 `gmSummary.conversations` 查找实际对话标题（`GMConversationData.title`），hover 显示完整 cascadeId。无标题时 fallback 到 cascadeId 前 8 位 |
+| 对话分布卡片 / Conversation Cards | `buildConversations()` 渲染带彩色左边框的卡片列表（6色循环），每卡单行水平布局：标题气泡芯片（`flex:1` 截断）+ 右侧固定指标（调用次数 + credits + 日期范围 `MM/DD HH:mm → MM/DD HH:mm`），hover 微位移动画，自定义 4px 细滚动条 |
+| 已移除 / Removed | `buildToolRanking()`（Step API 工具排行）、`buildDistribution()`（Step API 模型分布甜甜圈图）、Summary Bar 中的推理/工具/错误/检查点/推算卡片、模型卡片中的 Step API 行和工具标签、所有装饰性 `gm-badge-real` 徽章、独立的 Performance Baseline 区块、独立的 Cache Efficiency 区块、可折叠时间线图例、对话分布中的覆盖率百分比和输入 token |
 
 
 ---

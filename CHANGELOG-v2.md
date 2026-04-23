@@ -8,6 +8,72 @@
 
 ---
 
+## [1.17.10] - 2026-04-23
+
+### 重构 / Refactored
+
+- **GM Data 面板视觉精简 / GM Data Panel Visual Refinement**:
+  全面清除面板中的信息冗余和视觉噪音，提升信噪比。
+
+  | 维度 | 改前 | 改后 |
+  |------|------|------|
+  | GM 徽章 | ~20+ 处绿色 `gm-badge-real` 装饰标注 | 全部移除（数据源 100% GM，无需标注） |
+  | Performance Baseline | 独立双列区块 | 移除（TTFT 数据已在 Model Cards 显示） |
+  | Cache Efficiency | 独立双列区块 | 移除（Cache Hit Rate 已在 Model Cards 显示） |
+  | GM 覆盖率 | Timeline 标题旁 `GM 85%` badge | 移除（无实际用途） |
+
+- **时间线图例重设计 / Timeline Legend Redesign**:
+  原占用 ~36 行页面高度的可折叠 `<details>` 图例块替换为标题右侧 18px 圆形 `(?)` 帮助按钮。hover 时弹出 280×260px 不透明浮动面板（`#1e1e2e` 实色背景 + `backdrop-filter: blur`），精简展示步骤基础和 Token 指标的样本+说明。
+
+  Legend replaced from large collapsible block to a compact `(?)` hover tooltip button in the section title bar.
+
+- **检查点查看器移入 Timeline / Checkpoint Viewer Embedded in Timeline**:
+  从独立 section 移入「最近操作」区块顶部（标题 → 检查点 → 时间线事件流），与当前对话上下文贴合。同步移除了标题中冗余的对话标题文字（已在 Timeline badge 显示）。
+
+  Checkpoint viewer moved from standalone section into the Timeline section header area.
+
+- **对话分布卡片化重设计 / Conversation Cards Redesign**:
+  扁平文本列表重设计为带彩色左边框的独立卡片（6 色循环：蓝/绿/黄/红/青/紫）：
+
+  | 元素 | 改前 | 改后 |
+  |------|------|------|
+  | 标题 | `会话 xxxxxxxx`（截断 ID） | 实际对话标题气泡芯片（`act-conv-title-chip`） |
+  | 布局 | 双行堆叠 | 单行水平（标题 `flex:1` 截断 + 右侧 `flex-shrink:0` 固定） |
+  | 指标 | 调用 + 覆盖率% + 输入 token + credits | 调用次数 + credits + 日期范围 |
+  | 日期 | 无 | `MM/DD HH:mm → MM/DD HH:mm`（从 calls.createdAt 提取） |
+  | 交互 | 无 | hover 微位移 + 完整 cascadeId tooltip |
+  | 滚动 | 固定 240px | max-height 300px + 自定义 4px 细滚动条 |
+
+### 新增 / Added
+
+- **对话标题解析 / Conversation Title Resolution**:
+  Timeline 标题 badge 和对话分布卡片从 `gmSummary.conversations` 查找实际对话标题（`GMConversationData.title`），无标题时 fallback 到 cascadeId 前 8 位。hover 显示完整 cascadeId。`buildTimeline()` 新增可选 `gm` 参数用于标题查找。
+
+  Timeline title and conversation cards now resolve actual conversation titles from GM data.
+
+### 移除 / Removed
+
+- 所有 `gm-badge-real` 装饰徽章（`activity-panel.ts` ~20 处 + `pricing-panel.ts` 2 处）
+- Performance Baseline 独立区块（`buildPerformanceChart()` 调用入口）
+- Cache Efficiency 独立区块（`buildCacheEfficiency()` 调用入口）
+- 可折叠时间线图例 `<details>` 块 + ~140 行 `.act-tl-legend-*` CSS + 6 个 light theme override
+- Summary Bar `gmTag` 逻辑
+- Timeline `GM xx%` 覆盖率 badge
+- Timeline「当前对话」四字标签
+- 对话分布中的覆盖率百分比、输入 token、`会话` 前缀
+- 检查点查看器标题中的对话标题文字
+
+### 统计 / Stats
+
+- **Files changed**: 2 (`src/activity-panel.ts`, `src/pricing-panel.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **Tests**: 32/32 passed (activity-tracker, gm-tracker, daily-archival, daily-store)
+- **CSS net**: 删除 ~140 行旧 legend CSS，新增 ~100 行 tooltip CSS + ~90 行 conversation card CSS
+- **Design principle**: 信噪比优先 — 合并冗余指标、移除无意义装饰、将关联内容合并（检查点→Timeline）、按需展示（图例→tooltip）
+
+---
+
 ## [1.17.9] - 2026-04-22
 
 ### 修复 / Fixed

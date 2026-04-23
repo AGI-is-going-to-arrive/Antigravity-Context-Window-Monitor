@@ -639,7 +639,7 @@ function buildCostVisualization(
     const topModel = priced[0];
     const avgPerCall = summary.totalCalls > 0 ? grandTotal / summary.totalCalls : 0;
 
-    let html = `<h2 class="act-section-title">${tBi('Cost Overview', '费用概览')} <span class="gm-badge-real">${tBi('Visual', '可视化')}</span></h2>`;
+    let html = `<h2 class="act-section-title">${tBi('Cost Overview', '费用概览')}</h2>`;
     html += '<div class="prc-viz-section">';
 
     // Highlight cards
@@ -839,7 +839,7 @@ function buildCostSummary(rows: import('./pricing-store').ModelCostRow[], grandT
     const fmtUsd = (n: number) => n < 0.01 ? `$${n.toFixed(4)}` : n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 
-    let html = `<h2 class="act-section-title">${tBi('Cost Breakdown', '费用明细')} <span class="gm-badge-real">${tBi('Per Model', '按模型')}</span></h2>`;
+    let html = `<h2 class="act-section-title">${tBi('Cost Breakdown', '费用明细')}</h2>`;
 
     // Grand total card
     html += `<div class="prc-cost-grid">`;
