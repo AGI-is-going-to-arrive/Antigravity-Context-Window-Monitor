@@ -229,6 +229,8 @@ export class GMTracker {
             promptSectionTitles: string[];
             totalRetries: number;
             errorCount: number;
+            /** Number of calls that consumed credits (credits > 0) */
+            creditCallCount: number;
             exactCallCount: number;
             placeholderOnlyCalls: number;
         }>();
@@ -298,6 +300,7 @@ export class GMTracker {
                 : activeCalls;
 
             const activeStepsCovered = activeCalls.reduce((sum, c) => sum + c.stepIndices.length, 0);
+            const accountCredits = accountFilteredCalls.reduce((sum, c) => sum + c.credits, 0);
             conversations.push({
                 ...conv,
                 calls: activeCalls,
@@ -305,6 +308,7 @@ export class GMTracker {
                 coveredSteps: activeStepsCovered,
                 coverageRate: conv.totalSteps > 0 ? activeStepsCovered / conv.totalSteps : 0,
                 checkpointSummaries: conv.checkpointSummaries || deduplicateCheckpoints(activeCalls),
+                accountCredits,
             });
 
             // ── Tool call counting (ALL accounts, immune to quota-reset archival) ──
@@ -389,6 +393,7 @@ export class GMTracker {
                         promptSectionTitles: [],
                         totalRetries: 0,
                         errorCount: 0,
+                        creditCallCount: 0,
                         exactCallCount: 0,
                         placeholderOnlyCalls: 0,
                     };
@@ -402,6 +407,7 @@ export class GMTracker {
                 agg.totalCache += c.cacheReadTokens;
                 agg.totalCacheCreation += c.cacheCreationTokens;
                 agg.totalCredits += c.credits;
+                if (c.credits > 0) { agg.creditCallCount++; }
                 if (c.ttftSeconds > 0) { agg.ttfts.push(c.ttftSeconds); }
                 if (c.streamingSeconds > 0) { agg.streams.push(c.streamingSeconds); }
                 if (c.cacheReadTokens > 0) { agg.cacheHits++; }
@@ -484,6 +490,7 @@ export class GMTracker {
                 promptSectionTitles: agg.promptSectionTitles,
                 totalRetries: agg.totalRetries,
                 errorCount: agg.errorCount,
+                creditCallCount: agg.creditCallCount,
                 exactCallCount: agg.exactCallCount,
                 placeholderOnlyCalls: agg.placeholderOnlyCalls,
             };

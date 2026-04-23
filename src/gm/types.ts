@@ -150,6 +150,8 @@ export interface GMModelStats {
     totalRetries: number;
     /** Total error count */
     errorCount: number;
+    /** Number of calls that consumed credits (credits > 0) */
+    creditCallCount: number;
     /** Calls with exact responseModel */
     exactCallCount: number;
     /** Calls that only expose placeholder model IDs */
@@ -168,6 +170,8 @@ export interface GMConversationData {
     coverageRate: number;   // coveredSteps / totalSteps
     /** Deduplicated checkpoint summaries across all calls in this conversation */
     checkpointSummaries: GMCheckpointSummary[];
+    /** Credits consumed by current account only (account-filtered). Undefined = not computed. */
+    accountCredits?: number;
 }
 
 /** Full GM summary for UI rendering */

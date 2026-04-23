@@ -265,7 +265,7 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 
 | 特性 / Feature | 说明 / Description |
 |---|---|
-| 聚合 / Aggregation | per-model `GMModelStats` + per-conversation `GMConversationData` → `GMSummary` |
+| 聚合 / Aggregation | per-model `GMModelStats`（含 `creditCallCount` 积分调用次数统计）+ per-conversation `GMConversationData`（含 `accountCredits` 当前账号积分贡献）→ `GMSummary` |
 | 智能缓存 / Smart cache | `_cache` Map 按 cascadeId 缓存 IDLE 对话的 GM 数据。`_lastRunningStatus` 跟踪 RUNNING → IDLE 转换，转换时强制一次额外 re-fetch 防止最后一个 GM 调用丢失 |
 | 模型精度 / Model accuracy | 每次调用区分 `exact`（有 `responseModel`）与 `placeholder`（仅 alias / placeholder），供 UI 透明显示 |
 | 富化 / Enrichment | 对大对话或精确模型缺失的调用，按需用 `GetCascadeTrajectory` 中的内嵌 `generatorMetadata` 补充 prompt / tools / systemPrompt / user anchors |
@@ -305,8 +305,9 @@ Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sou
 | 模型统计汇总行 / Model Stats Total | 模型卡片网格下方的芯片条汇总行，显示跨账号总调用数、模型数、输入/输出/缓存 token。数据从 `gm.conversations[].calls[]` 全量遍历，不受账号过滤影响。Sigma SVG 图标 + 蓝色标签 + 独立芯片边框 |
 | 时间线图例 / Timeline Legend | 「最近操作」标题右侧 18px 圆形 `(?)` 帮助按钮，hover 弹出 280×260px 不透明浮动面板，精简展示步骤基础和 Token 指标的样本+说明。替代了原有占用大量页面高度的可折叠 `<details>` 图例块 |
 | 对话标题解析 / Conversation Title | Timeline 标题 badge 和对话分布卡片从 `gmSummary.conversations` 查找实际对话标题（`GMConversationData.title`），hover 显示完整 cascadeId。无标题时 fallback 到 cascadeId 前 8 位 |
-| 对话分布卡片 / Conversation Cards | `buildConversations()` 渲染带彩色左边框的卡片列表（6色循环），每卡单行水平布局：标题气泡芯片（`flex:1` 截断）+ 右侧固定指标（调用次数 + credits + 日期范围 `MM/DD HH:mm → MM/DD HH:mm`），hover 微位移动画，自定义 4px 细滚动条 |
-| 已移除 / Removed | `buildToolRanking()`（Step API 工具排行）、`buildDistribution()`（Step API 模型分布甜甜圈图）、Summary Bar 中的推理/工具/错误/检查点/推算卡片、模型卡片中的 Step API 行和工具标签、所有装饰性 `gm-badge-real` 徽章、独立的 Performance Baseline 区块、独立的 Cache Efficiency 区块、可折叠时间线图例、对话分布中的覆盖率百分比和输入 token |
+| 对话分布卡片 / Conversation Cards | `buildConversations()` 渲染带彩色左边框的卡片列表（6色循环），每卡单行水平布局：标题气泡芯片（`flex:1` 截断）+ 右侧固定指标（调用次数 + credits + 日期范围 `MM/DD HH:mm → MM/DD HH:mm`），hover 微位移动画，自定义 4px 细滚动条。积分显示全部账号累计（对话内可能切换账号），当仅部分来自当前账号时显示橙色 `+x` 标注（`accountCredits`） |
+| 模型卡片积分行 / Model Card Credits | 模型卡片 Credits 行显示 `189.0 (22次)` 格式 — 总积分消耗 + 橙色小字积分调用次数标注（`.act-credit-calls`），数据源为 `GMModelStats.creditCallCount` |
+| 已移除 / Removed | `buildToolRanking()`（Step API 工具排行）、`buildDistribution()`（Step API 模型分布甜甜圈图）、Summary Bar 中的推理/工具/错误/检查点/推算卡片、模型卡片中的 Step API 行和工具标签、所有装饰性 `gm-badge-real` 徽章、独立的 Performance Baseline 区块、独立的 Cache Efficiency 区块、可折叠时间线图例、对话分布中的覆盖率百分比和输入 token、Timeline `buildMetaTags()` 冗余模型气泡（蓝色 `act-tl-model` 已在事件行内显示）、模型卡片底部冗余的 `responseModel` raw API 名称标签（卡片头部已显示 normalized 名称） |
 
 
 ---

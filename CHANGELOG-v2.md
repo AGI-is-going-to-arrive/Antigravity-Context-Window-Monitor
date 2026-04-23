@@ -8,6 +8,56 @@
 
 ---
 
+## [1.17.11] - 2026-04-23
+
+### 重构 / Refactored
+
+- **Credits 显示统一 (i18n) / Credits Display Unification**:
+  全面统一 GM 数据面板中所有 credits/积分 的显示格式，从硬编码英文缩写 `cr` / `Credits` 改为 `tBi` 双语切换。
+
+  | 位置 | 改前 | 改后 |
+  |------|------|------|
+  | Summary Bar 芯片 label | `Credits` | `tBi('Credits', '积分')` |
+  | Summary Bar tooltip | `消耗的 credits` | `消耗的积分` |
+  | 模型卡片 Credits 行 | `Credits` | `tBi('Credits', '积分')` |
+  | Timeline 事件行 tag | `cr` | `tBi('credits', '积分')` |
+  | Timeline segment header chip | `87.0 cr` | `87.0 credits/积分` |
+  | Timeline 帮助面板示例 | `9 cr` | `9 credits/积分` |
+  | 对话分布 credits chip | `cr` | `tBi('credits', '积分')` |
+
+### 新增 / Added
+
+- **积分调用次数 / Credit Call Count**:
+  模型卡片 Credits 行新增积分调用次数标注（橙色小字），显示消耗了积分的调用数。
+
+  - 类型层: `GMModelStats` 新增 `creditCallCount: number`
+  - 数据层: `tracker.ts` + `summary.ts` 三条聚合路径统计 `credits > 0` 的调用数
+  - UI: `189.0 (22次)` — 括号内橙色小字，默认可见
+  - CSS: 新增 `.act-credit-calls`（`font-size:0.82em`, `color:var(--color-orange-light)`, `opacity:0.7`）
+
+- **对话分布账号贡献标注 / Per-Account Credit Annotation in Conversations**:
+  对话分布中总积分保持全部账号累计（对话内可能切换账号），同时新增当前账号贡献的 `+x` 标注。
+
+  - 类型层: `GMConversationData` 新增 `accountCredits?: number`
+  - 数据层: `tracker.ts` 用 `accountFilteredCalls` 预计算当前账号贡献
+  - UI: `821 积分 +292`（仅当部分来自当前账号时显示 `+x`）
+
+### 移除 / Removed
+
+- **Timeline 冗余模型气泡 / Timeline Redundant Model Chip**:
+  `buildMetaTags()` 不再输出 `act-tl-tag-model` 模型气泡（蓝色 `act-tl-model` 已在事件行内显示相同信息）
+
+- **模型卡片冗余 responseModel footer / Model Card Redundant Footer Tag**:
+  移除模型卡片底部的 `claude-opus-4-6-thinking` raw API 名称标签（卡片头部已显示 normalized 名称 `Claude Opus 4.6 (Thinking)`）。同时移除 GM-only 卡片的相同冗余标签。
+
+### 统计 / Stats
+
+- **Files changed**: 4 (`src/activity-panel.ts`, `src/gm/types.ts`, `src/gm/tracker.ts`, `src/gm/summary.ts`)
+- **TypeScript compile**: Zero errors
+- **Net lines**: +38 -19
+
+---
+
 ## [1.17.10] - 2026-04-23
 
 ### 重构 / Refactored

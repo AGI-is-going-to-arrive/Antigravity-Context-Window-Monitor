@@ -1134,6 +1134,14 @@ export function getGMDataTabStyles(): string {
     .gm-account-row.gm-account-active .gm-account-count {
         color: var(--color-ok-dim);
     }
+    /* ── Credit call count annotation ── */
+    .act-credit-calls {
+        font-size: 0.82em;
+        font-weight: 400;
+        color: var(--color-orange-light);
+        opacity: 0.7;
+        margin-left: 2px;
+    }
     /* ── Error count in account rows ── */
     .gm-account-err {
         color: var(--color-danger);
@@ -1801,7 +1809,7 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
 
     // Credits chip
     const credits = s.gmTotalCredits || 0;
-    const creditsChip = credits > 0 ? `<div class="act-stat" data-tooltip="${tBi('Credits consumed', '消耗的 credits')}"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val">${credits.toFixed(1)}</span><span class="act-stat-label">Credits</span></div>` : '';
+    const creditsChip = credits > 0 ? `<div class="act-stat" data-tooltip="${tBi('Credits consumed', '消耗的积分')}"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val">${credits.toFixed(1)}</span><span class="act-stat-label">${tBi('Credits', '积分')}</span></div>` : '';
 
     // Tool output chip
     const toolOutChip = s.totalToolReturnTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('Tokens returned by tool calls', '工具调用返回的 token 数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg></span><span class="act-stat-val">${fmt(s.totalToolReturnTokens)}</span><span class="act-stat-label">${tBi('Tool Out', '工具输出')}</span></div>` : '';
@@ -1964,13 +1972,10 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(gmStats.totalOutputTokens)}</span></div>
                 ${'totalThinkingTokens' in gmStats && gmStats.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val">${fmt(gmStats.totalThinkingTokens)}</span></div>` : ''}
                 ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gmStats.totalCacheRead)}</span></div>` : ''}
-                ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>Credits</span></span><span class="val">${gmStats.totalCredits.toFixed(1)}</span></div>` : ''}
+                ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val">${gmStats.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gmStats.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
                 ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gmStats.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
                 `;
-                // Footer tags from full GMModelStats (responseModel, apiProvider)
-                if ('responseModel' in gmStats && gmStats.responseModel) {
-                    gmFooterTags += `<span class="act-tool-tag">${esc(gmStats.responseModel)}</span>`;
-                }
+                // responseModel footer removed — card header already shows normalized model name
             }
         }
 
@@ -1999,12 +2004,11 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(gms.totalOutputTokens)}</span></div>
                 ${'totalThinkingTokens' in gms && gms.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val">${fmt(gms.totalThinkingTokens)}</span></div>` : ''}
                 ${gms.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gms.totalCacheRead)}</span></div>` : ''}
-                ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>Credits</span></span><span class="val">${gms.totalCredits.toFixed(1)}</span></div>` : ''}
+                ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val">${gms.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gms.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
                 ${gms.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gms.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
                 ${buildAccountSection(name)}
             </div>
             <div class="act-card-footer">
-                ${'responseModel' in gms && gms.responseModel ? `<span class="act-tool-tag">${esc(gms.responseModel)}</span>` : ''}
                 <span class="act-tool-tag">${tBi('Cache', '缓存')} ${(gms.cacheHitRate * 100).toFixed(0)}%</span>
             </div>
         </div>`;
@@ -2063,13 +2067,10 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
     };
 
-    const buildMetaTags = (e: any) => {
-        const tags: string[] = [];
-        // GM provides exact model via responseModel
-        if (e.gmModel && e.gmModelAccuracy === 'exact') {
-            tags.push(`<span class="act-tl-tag act-tl-tag-model">${esc(e.gmModel)}</span>`);
-        }
-        return tags.length > 0 ? `<span class="act-tl-tags">${tags.join('')}</span>` : '';
+    const buildMetaTags = (_e: any) => {
+        // Model name already displayed in event row via act-tl-model (line ~2186).
+        // No additional meta tags needed.
+        return '';
     };
 
     // Resolve current conversation title from GM data
@@ -2099,7 +2100,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-out" style="display:inline">117 ${tBi('out', '输出')}</span></div><div class="act-tl-help-desc">${tBi('Output tokens', '输出 token')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ttft" style="display:inline">2.1s</span></div><div class="act-tl-help-desc">TTFT</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-cache" style="display:inline">176k ${tBi('cache', '缓存')}</span></div><div class="act-tl-help-desc">${tBi('Cache read', '缓存读取')}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-credit" style="display:inline">9 cr</span></div><div class="act-tl-help-desc">${tBi('Credits', '积分')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-credit" style="display:inline">9 ${tBi('credits', '积分')}</span></div><div class="act-tl-help-desc">${tBi('Credits', '积分')}</div></div>
         </div>
     </div>`;
 
@@ -2144,7 +2145,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-in">${fmtTok(e.gmInputTokens)} ${tBi('in', '输入')}</span>`);
             if (e.gmOutputTokens) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-out">${fmtTok(e.gmOutputTokens)} ${tBi('out', '输出')}</span>`); }
             if (e.gmCacheReadTokens && e.gmCacheReadTokens > 0) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-cache">${fmtTok(e.gmCacheReadTokens)} ${tBi('cache', '缓存')}</span>`); }
-            if (e.gmCredits && e.gmCredits > 0) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-credit">${e.gmCredits} ${tBi('cr', '积分')}</span>`); }
+            if (e.gmCredits && e.gmCredits > 0) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-credit">${e.gmCredits} ${tBi('credits', '积分')}</span>`); }
 
             const statusParts: string[] = [];
             // Order from right→left: duration, TTFT, tools, retry
@@ -2278,7 +2279,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             chips.push(`<span class="seg-chip seg-chip-cache">${fmtTok(stats.totalCache)} ${tBi('cache', '缓存')}</span>`);
         }
         if (stats.totalCredits > 0) {
-            chips.push(`<span class="seg-chip seg-chip-credits">${stats.totalCredits.toFixed(1)} cr</span>`);
+            chips.push(`<span class="seg-chip seg-chip-credits">${stats.totalCredits.toFixed(1)} ${tBi('credits', '积分')}</span>`);
         }
         if (stats.retryTotal > 0) {
             chips.push(`<span class="seg-chip seg-chip-retry">error(${stats.retryTotal})</span>`);
@@ -2401,8 +2402,9 @@ function buildConversations(s: GMSummary): string {
         const dateChip = startStr
             ? `<span class="act-conv-meta-chip act-conv-date">${iconClock} ${startStr}${lastStr && lastStr !== startStr ? ` → ${lastStr}` : ''}</span>`
             : '';
+        const acctCredits = c.accountCredits ?? 0;
         const creditsChip = totalCredits > 0
-            ? `<span class="act-conv-meta-chip act-conv-credits"><b>${totalCredits}</b> cr</span>`
+            ? `<span class="act-conv-meta-chip act-conv-credits"><b>${totalCredits}</b> ${tBi('credits', '积分')}${acctCredits > 0 && acctCredits < totalCredits ? ` <span class="act-credit-calls">+${acctCredits}</span>` : ''}</span>`
             : '';
 
         html += `<div class="act-conv-item" title="${esc(c.cascadeId)}">

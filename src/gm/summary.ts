@@ -165,6 +165,7 @@ export function filterGMSummaryByModels(
                 existing.totalCacheRead += call.cacheReadTokens;
                 existing.totalCacheCreation += call.cacheCreationTokens;
                 existing.totalCredits += call.credits;
+                if (call.credits > 0) { existing.creditCallCount = (existing.creditCallCount || 0) + 1; }
                 existing.avgTTFT = call.ttftSeconds > 0
                     ? ((existing.avgTTFT * ttftSamples) + call.ttftSeconds) / (ttftSamples + 1)
                     : existing.avgTTFT;
@@ -195,6 +196,7 @@ export function filterGMSummaryByModels(
                 if (call.hasError) {
                     existing.errorCount += 1;
                 }
+                if (call.credits > 0) { existing.creditCallCount = (existing.creditCallCount || 0) + 1; }
                 if (call.modelAccuracy === 'exact') {
                     existing.exactCallCount += 1;
                 } else {
@@ -225,6 +227,7 @@ export function filterGMSummaryByModels(
                 promptSectionTitles: call.promptSectionTitles,
                 totalRetries: call.retries,
                 errorCount: call.hasError ? 1 : 0,
+                creditCallCount: call.credits > 0 ? 1 : 0,
                 exactCallCount: call.modelAccuracy === 'exact' ? 1 : 0,
                 placeholderOnlyCalls: call.modelAccuracy === 'placeholder' ? 1 : 0,
             };
@@ -300,6 +303,7 @@ export function mergeGMModelStats(target: GMModelStats, source: GMModelStats): v
     }
     target.totalRetries += source.totalRetries;
     target.errorCount += source.errorCount;
+    target.creditCallCount = (target.creditCallCount || 0) + (source.creditCallCount || 0);
     target.exactCallCount += source.exactCallCount;
     target.placeholderOnlyCalls += source.placeholderOnlyCalls;
 }
@@ -440,6 +444,7 @@ export function buildSummaryFromConversations(
                     promptSectionTitles: call.promptSectionTitles,
                     totalRetries: call.retries,
                     errorCount: call.hasError ? 1 : 0,
+                    creditCallCount: call.credits > 0 ? 1 : 0,
                     exactCallCount: call.modelAccuracy === 'exact' ? 1 : 0,
                     placeholderOnlyCalls: call.modelAccuracy === 'placeholder' ? 1 : 0,
                 });
@@ -466,6 +471,7 @@ export function buildSummaryFromConversations(
                     promptSectionTitles: call.promptSectionTitles,
                     totalRetries: call.retries,
                     errorCount: call.hasError ? 1 : 0,
+                    creditCallCount: call.credits > 0 ? 1 : 0,
                     exactCallCount: call.modelAccuracy === 'exact' ? 1 : 0,
                     placeholderOnlyCalls: call.modelAccuracy === 'placeholder' ? 1 : 0,
                 };
