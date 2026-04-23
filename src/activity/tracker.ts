@@ -878,9 +878,18 @@ export class ActivityTracker {
         for (const rawEvent of this._recentSteps) {
             const event = { ...rawEvent };
             this._sanitizeUserTimelineEvent(event);
-            const dedupeKey = event.source === 'step'
-                ? `${event.cascadeId || ''}|${event.stepFingerprint || buildLegacyStepEventIdentity(event)}`
-                : `${event.cascadeId || ''}|${event.source || ''}|${buildLegacyStepEventIdentity(event)}`;
+            let dedupeKey: string;
+            if (event.source === 'step') {
+                dedupeKey = `${event.cascadeId || ''}|${event.stepFingerprint || buildLegacyStepEventIdentity(event)}`;
+            } else if ((event.source === 'gm_user' || event.source === 'gm_virtual') && event.stepIndex !== undefined) {
+                // GM events: use cascadeId + stepIndex as stable identity.
+                // buildLegacyStepEventIdentity includes timestamp, which is unstable
+                // for gm_user events (anchorTimestamp = nextCall?.createdAt shifts
+                // as new calls appear between polls), causing duplicates.
+                dedupeKey = `${event.cascadeId || ''}|${event.source}|${event.stepIndex}|${event.category || ''}`;
+            } else {
+                dedupeKey = `${event.cascadeId || ''}|${event.source || ''}|${buildLegacyStepEventIdentity(event)}`;
+            }
             const existing = deduped.get(dedupeKey);
             if (!existing) {
                 deduped.set(dedupeKey, event);
@@ -1318,7 +1327,16 @@ export class ActivityTracker {
 
         const gmConvIds = new Set(gmSummary.conversations.map(c => c.cascadeId));
         const gmUserTextSet = new Set(
-            userAnchorEvents.map(ev => (ev.userInput || '').trim().slice(0, 120)),
+            userAnchorEvents
+                .filter(ev => ev.category === 'user')
+                .map(ev => (ev.userInput || '').trim().slice(0, 120)),
+        );
+        // Also build stepIndex-based lookup for robust dedup when text differs
+        // (Steps API text can be empty after warm-up, or truncated differently)
+        const gmUserStepKeys = new Set(
+            userAnchorEvents
+                .filter(ev => ev.category === 'user' && ev.stepIndex !== undefined)
+                .map(ev => `${ev.cascadeId}:${ev.stepIndex}`),
         );
         this._recentSteps = this._recentSteps.filter(ev => {
             // Keep events from conversations without GM data
@@ -1328,9 +1346,16 @@ export class ActivityTracker {
             // Remove ALL estimated events
             if (ev.source === 'estimated') { return false; }
             // Step-source user events: keep only if no GM duplicate
+            // Use BOTH text matching AND stepIndex matching for robustness
             if (ev.source === 'step' && ev.category === 'user') {
                 const userText = (ev.userInput || '').trim().slice(0, 120);
-                return !gmUserTextSet.has(userText);
+                if (userText && gmUserTextSet.has(userText)) { return false; }
+                // Fallback: stepIndex match (text can differ due to warm-up, truncation, etc.)
+                if (ev.stepIndex !== undefined) {
+                    const stepKey = `${ev.cascadeId}:${ev.stepIndex}`;
+                    if (gmUserStepKeys.has(stepKey)) { return false; }
+                }
+                return true;
             }
             // Step-source reasoning/tool events: keep only if BEYOND GM coverage
             // (GM API hasn't caught up yet — Steps API saw it first)

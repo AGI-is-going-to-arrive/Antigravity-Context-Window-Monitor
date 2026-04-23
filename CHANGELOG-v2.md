@@ -41,6 +41,32 @@
 
 ---
 
+## Timeline 用户消息重复修复 — 2026-04-23
+
+### 修复 / Fixed
+
+- **用户消息重复显示 / Duplicate User Messages in Timeline**:
+  Timeline 中同一条用户消息出现在两个相邻的"轮"中（如第 3 轮底部和第 2 轮顶部同时显示 step #36 的用户消息），导致出现无统计数据的空"幽灵轮"。插件每次重启/重装后必现。
+
+  **双层根因 / Two-Layer Root Cause**:
+
+  1. **`_compactRecentSteps` dedup key 不稳定**: `gm_user` 事件的 dedup key 使用了 `buildLegacyStepEventIdentity()`，其中包含 `timestamp`。但用户锚点的时间戳依赖 `nextCall?.createdAt`（下一个 AI 调用的创建时间），随新调用出现而变化。时间戳漂移导致同一 `gm_user` 事件在不同轮询中产生不同的 dedup key → 重复。
+
+  2. **step-source 与 gm_user 共存**: `injectGMData` 用纯文本匹配来过滤 step-source 用户事件（`gmUserTextSet.has(userText)`），但 Steps API warm-up 后 step-source 的 `userInput` 可能为空或截断不同 → 文本匹配失败 → step-source 用户事件与 gm_user 事件共存 → 重复。
+
+  **修复 / Fix**:
+  - `_compactRecentSteps`: `gm_user`/`gm_virtual` 事件改用 `cascadeId+stepIndex+category` 作为稳定的 dedup key
+  - `injectGMData` step-source 过滤: 新增 `gmUserStepKeys`（`cascadeId:stepIndex`）作为兜底匹配条件，即使文本不一致也能去重
+
+  Duplicate user messages appeared in adjacent turns (e.g., same step #36 in Turn 3 and Turn 2). Two-layer fix: (1) stable dedup key using cascadeId+stepIndex instead of drifting timestamp, (2) stepIndex-based fallback for filtering step-source user events when text matching fails.
+
+### 统计 / Stats
+
+- **Files changed**: 1 (`src/activity/tracker.ts`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## 成本标签页 UI 重构 — 2026-04-23
 
 ### 重构 / Refactored
