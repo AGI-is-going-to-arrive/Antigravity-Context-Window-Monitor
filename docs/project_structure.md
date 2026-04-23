@@ -59,19 +59,7 @@ antigravity-context-monitor/
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
 ├── tests/                        # Vitest 测试目录（开发用，不参与插件运行时）
-│   ├── discovery.test.ts         # discovery 单元测试
-│   ├── durable-state.test.ts     # durable-state 单元测试
-│   ├── activity-tracker.test.ts  # activity-tracker 单元测试（跨语言归一化、planner step 修复）
-│   ├── daily-archival.test.ts    # daily-archival 单元测试（日期触发、午夜边界、force 模式）
-│   ├── gm-tracker.test.ts        # gm-tracker 单元测试（含跨语言恢复回归）
-│   ├── model-dna-store.test.ts   # model-dna-store 单元测试（模型信息持久化）
-│   ├── monitor-store.test.ts     # monitor-store 单元测试
-│   ├── pool-utils.test.ts        # pool-utils 单元测试
-│   ├── quota-tracker.test.ts     # quota-tracker 单元测试（含 0% 回弹恢复）
-│   ├── reset-time.test.ts        # reset-time 单元测试
-│   ├── daily-store.test.ts       # daily-store 单元测试（addDailySnapshot、序列化、向后兼容）
-│   ├── statusbar.test.ts         # statusbar 单元测试
-│   └── tracker.test.ts           # tracker 单元测试
+│   └── discovery.test.ts         # discovery 单元测试（原作者 FlorianHuo 提供）
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   └── project_structure.md          # 本文件
@@ -649,20 +637,7 @@ npx vsce package --no-dependencies
 | 测试文件 / Test File | 测试数 | 覆盖范围 / Coverage |
 |---|---|---|
 | `discovery.test.ts` | 50 | `buildExpectedWorkspaceId`（含百分号编码、CJK 路径、空格+中文混合路径、日文路径） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / `extractPort` / `extractPortFromNetstat` / `extractPortFromSs` / `isWSL` / `selectMatchingProcessLine`（优先级反转 + 多窗口回退 + CJK + WSL/vscode-remote + 边界情况） / 退避常量验证（发现 15s / RPC 60s） |
-| `pr43-improvements.test.ts` | 35 | `selectMatchingProcessLine` 新架构优先级（双 LS 共存 / 向后兼容 / 真实场景模拟） / 轮询状态机（僵尸检测 / PID 重校验 / `stalenessConfirmedIdle` 守卫 / cascade 切换重置 / corner cases） |
-| `tracker.test.ts` | 22 | `normalizeUri`（file / vscode-remote / URL 解码）/ `estimateTokensFromText`（ASCII / 非 ASCII / 混合）/ `processSteps()` 纯函数 |
-| `statusbar.test.ts` | 12 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 / 计划层级缓存清理 |
-| `quota-tracker.test.ts` | 33 | 状态机转换 / 额度重置检测 / 批量回调 / 同池去重 / 周期结束归档 / legacy done 迁移 / 0% 回弹恢复 / 稳定池代表 / 脏 active session 自愈 |
-| `pool-utils.test.ts` | 4 | 配额池扩展 / 分组 / quota session 匹配 / 已知模型固定池规则 |
-| `monitor-store.test.ts` | 1 | Monitor 快照与 GM 会话快照恢复 |
-| `gm-tracker.test.ts` | 4 | `filterGMSummaryByModels()` 按模型池过滤 / 跨语言恢复回归 / 历史残留 GM 修理 / GM 归档复活回归 |
-| `activity-tracker.test.ts` | 7 | planner step 延迟补全 / 短对话恢复自愈 / stepIndex 重排清理 / 跨语言模型桶合并（archiveAndReset 全局重置）/ Gemini stepIndex 重映射去重 / 用户行 GM 污染清洗 / 恢复时历史重复自愈 |
-| `daily-archival.test.ts` | 13 | `toLocalDateKey` 日期格式化（含跨年、零填充）/ `performDailyArchival` 首次运行 / 同日无操作 / 日期滚动触发 / 无数据跳过 / 多日间隔 / force 模式 / 连续天数 / 23:59→00:00 午夜边界 / 无 DailyStore 容错 |
-| `daily-store.test.ts` | 5 | `addDailySnapshot` 写入与替换 / 无 GM 写入 / 旧版 `addCycle` 兼容 / 序列化往返 / `clear` 清空 |
-| `model-dna-store.test.ts` | 1 | 模型静态信息跨周期持久化 |
-| `reset-time.test.ts` | 3 | 倒计时格式化 / 绝对日期时间格式化 / 上下文拼接格式（按本地时区动态断言） |
-| `durable-state.test.ts` | 1 | 外部持久化文件创建 / fallback 迁移 / 重装恢复 |
 
-共 166 个测试（14 个文件），使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 50 个测试（1 个文件），使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-166 total tests (14 files), using `__mocks__/vscode.ts` to mock VS Code API.
+50 total tests (1 file), using `__mocks__/vscode.ts` to mock VS Code API.
