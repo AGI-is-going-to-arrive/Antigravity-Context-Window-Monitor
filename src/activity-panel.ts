@@ -9,6 +9,7 @@ import { esc, formatShortTime as formatTime } from './webview-helpers';
 import type { ContextUsage } from './tracker';
 import type { GMSummary, GMModelStats, GMConversationData, TokenBreakdownGroup, PendingArchiveEntry } from './gm-tracker';
 import { normalizeModelDisplayName } from './models';
+import { findPricing } from './pricing-store';
 import { formatResetCountdown, formatResetAbsolute, parseResetDate } from './reset-time';
 
 // ─── Account Snapshot Type ───────────────────────────────────────────────────
@@ -653,6 +654,8 @@ export function getGMDataTabStyles(): string {
     .act-tl-gm-out { background: rgba(22,163,74,0.12);  color: #16a34a; }
     .act-tl-gm-ttft { background: rgba(202,138,4,0.12);  color: #ca8a04; }
     .act-tl-gm-cache { background: rgba(13,148,136,0.12); color: #0d9488; }
+    .act-tl-gm-cost  { background: rgba(34,197,94,0.12);  color: #16a34a; }
+    .act-tl-gm-cost svg { width: 10px; height: 10px; vertical-align: -1px; margin-right: 1px; }
     .act-tl-gm-credit { background: rgba(220,38,38,0.14); color: #dc2626; }
     .act-tl-gm-retry { background: rgba(220,38,38,0.12);  color: #dc2626; }
     .act-tl-gm-tool { background: rgba(100,116,139,0.12); color: #64748b; font-size: 0.88em; }
@@ -661,6 +664,7 @@ export function getGMDataTabStyles(): string {
     body.vscode-dark .act-tl-gm-out { background: var(--color-ok-bg);  color: var(--color-ok-light); }
     body.vscode-dark .act-tl-gm-ttft { background: var(--color-amber-border-dim); color: var(--color-amber-light); }
     body.vscode-dark .act-tl-gm-cache { background: var(--color-teal-bg); color: var(--color-teal-light); }
+    body.vscode-dark .act-tl-gm-cost  { background: rgba(34,197,94,0.10); color: var(--color-ok-light); }
     body.vscode-dark .act-tl-gm-credit { background: rgba(248,113,113,0.16); color: var(--color-danger-light); }
     body.vscode-dark .act-tl-gm-retry { background: var(--color-danger-bg-hover); color: var(--color-danger-light); }
     body.vscode-dark .act-tl-gm-tool { background: var(--color-muted-border); color: var(--color-muted); }
@@ -773,6 +777,12 @@ export function getGMDataTabStyles(): string {
         border-color: var(--color-orange-border);
         background: rgba(249,115,22,0.08);
         color: var(--color-orange-light);
+    }
+    .seg-chip-cost {
+        border-color: rgba(34,197,94,0.25);
+        background: rgba(34,197,94,0.08);
+        color: #22c55e;
+        font-weight: 600;
     }
     .seg-chip-ctx {
         border-color: var(--color-purple-border);
@@ -2142,20 +2152,44 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         let gmTags = '';
         if (e.category === 'reasoning' && e.gmInputTokens !== undefined) {
             // Fixed token metrics (always present when GM data exists)
+            const costSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>`;
             const tokenParts: string[] = [];
+            // 1. Per-call cost (leftmost in token section)
+            if (e.gmModel) {
+                const pricing = findPricing(e.gmModel);
+                if (pricing) {
+                    const callCost = (
+                        (e.gmInputTokens || 0) * pricing.input +
+                        (e.gmOutputTokens || 0) * pricing.output +
+                        (e.gmCacheReadTokens || 0) * pricing.cacheRead +
+                        (e.gmThinkingTokens || 0) * pricing.thinking
+                    ) / 1_000_000;
+                    if (callCost > 0) {
+                        const costStr = callCost < 0.001 ? callCost.toFixed(4) : callCost < 0.01 ? callCost.toFixed(3) : callCost.toFixed(2);
+                        tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-cost">${costSvg}$${costStr}</span>`);
+                    }
+                }
+            }
+            // 2. Cache read tokens
             if (e.gmCacheReadTokens && e.gmCacheReadTokens > 0) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-cache">${fmtTok(e.gmCacheReadTokens)} ${tBi('cache', '缓存')}</span>`); }
+            // 3. Input tokens
             tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-in">${fmtTok(e.gmInputTokens)} ${tBi('in', '输入')}</span>`);
+            // 4. Output tokens
             if (e.gmOutputTokens) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-out">${fmtTok(e.gmOutputTokens)} ${tBi('out', '输出')}</span>`); }
+            // 5. Context window (rightmost anchor)
             if (e.gmContextTokensUsed) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-ctx">${tBi('Ctx', '上下文')} ${fmtTok(e.gmContextTokensUsed)}</span>`); }
-            if (e.gmCredits && e.gmCredits > 0) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-credit">${e.gmCredits} ${tBi('credits', '积分')}</span>`); }
 
             const statusParts: string[] = [];
-            // Order from right→left: duration, TTFT, tools, retry
+            // Order from right→left: duration, TTFT, tools, credits, error
             // 1. Error indicator (leftmost)
             if (e.gmRetries && e.gmRetries > 0) {
                 statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-retry">error(${e.gmRetries})</span>`);
             }
-            // 2. Tools
+            // 2. Credits
+            if (e.gmCredits && e.gmCredits > 0) {
+                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-credit">${e.gmCredits} ${tBi('credits', '积分')}</span>`);
+            }
+            // 3. Tools
             if (e.detail) {
                 const toolMatch = e.detail.match(/\u2192\s*(\d+)\s*/);
                 if (toolMatch) {
@@ -2165,9 +2199,9 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
                     }
                 }
             }
-            // 3. TTFT
+            // 4. TTFT
             if (e.gmTTFT && e.gmTTFT > 0) { statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-ttft">TTFT ${e.gmTTFT.toFixed(1)}s</span>`); }
-            // 4. Duration (rightmost, closest to tokenParts)
+            // 5. Duration (rightmost, closest to tokenParts)
             if (e.durationMs > 0) {
                 statusParts.push(`<span class="act-tl-dur">${e.durationMs < 1000 ? e.durationMs + 'ms' : (e.durationMs / 1000).toFixed(1) + 's'}</span>`);
             }
@@ -2214,7 +2248,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
 
     // Helper: aggregate GM stats from a segment's actions
     const buildSegmentStats = (actions: any[]) => {
-        let totalIn = 0, totalOut = 0, totalThinking = 0, totalCache = 0, totalCredits = 0;
+        let totalIn = 0, totalOut = 0, totalThinking = 0, totalCache = 0, totalCredits = 0, totalCost = 0;
         let toolCount = 0, reasoningCount = 0;
         let model = '';
         const models = new Set<string>();
@@ -2230,6 +2264,18 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
                 if (a.gmThinkingTokens) { totalThinking += a.gmThinkingTokens; }
                 if (a.gmCacheReadTokens) { totalCache += a.gmCacheReadTokens; }
                 if (a.gmCredits) { totalCredits += a.gmCredits; }
+                // Per-call cost accumulation
+                if (a.gmModel) {
+                    const pricing = findPricing(a.gmModel);
+                    if (pricing) {
+                        totalCost += (
+                            (a.gmInputTokens || 0) * pricing.input +
+                            (a.gmOutputTokens || 0) * pricing.output +
+                            (a.gmCacheReadTokens || 0) * pricing.cacheRead +
+                            (a.gmThinkingTokens || 0) * pricing.thinking
+                        ) / 1_000_000;
+                    }
+                }
                 if (a.gmRetries && a.gmRetries > 0) {
                     retryTotal += a.gmRetries;
                 }
@@ -2252,7 +2298,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         if (models.size === 1) { model = [...models][0]; }
         else if (models.size > 1) { model = [...models].filter(m => !m.startsWith('MODEL_PLACEHOLDER')).pop() || [...models][0]; }
         const toolNames = gmToolTotal;
-        return { totalIn, totalOut, totalThinking, totalCache, totalCredits, toolCount, reasoningCount, model, toolNames, retryTotal, lastContextTokens };
+        return { totalIn, totalOut, totalThinking, totalCache, totalCredits, totalCost, toolCount, reasoningCount, model, toolNames, retryTotal, lastContextTokens };
     };
 
     const reversedSegments = [...segments].reverse();
@@ -2269,19 +2315,24 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         if (stats.retryTotal > 0) {
             chips.push(`<span class="seg-chip seg-chip-retry">error(${stats.retryTotal})</span>`);
         }
-        // 2. Tool calls — occasional
+        // 2. Credits — occasional
+        if (stats.totalCredits > 0) {
+            chips.push(`<span class="seg-chip seg-chip-credits">${stats.totalCredits.toFixed(1)} ${tBi('credits', '积分')}</span>`);
+        }
+        // 3. Tool calls — occasional
         if (stats.toolNames > 0) {
             chips.push(`<span class="seg-chip seg-chip-tools">\ud83d\udd27${stats.toolNames} ${tBi('tools', '\u5de5\u5177')}</span>`);
         } else if (stats.toolCount > 0) {
             chips.push(`<span class="seg-chip seg-chip-tools">\ud83d\udd27${stats.toolCount}</span>`);
         }
-        // 3. Credits — occasional
-        if (stats.totalCredits > 0) {
-            chips.push(`<span class="seg-chip seg-chip-credits">${stats.totalCredits.toFixed(1)} ${tBi('credits', '积分')}</span>`);
-        }
         // 4. Call count — almost always
         if (stats.reasoningCount > 0) { chips.push(`<span class="seg-chip seg-chip-calls">${stats.reasoningCount} ${tBi('calls', '调用')}</span>`); }
-        // 5. Cache read tokens — almost always
+        // 5. Cost — almost always (when pricing data exists)
+        if (stats.totalCost > 0) {
+            const costStr = stats.totalCost < 0.01 ? stats.totalCost.toFixed(3) : stats.totalCost.toFixed(2);
+            chips.push(`<span class="seg-chip seg-chip-cost">$${costStr}</span>`);
+        }
+        // 6. Cache read tokens — almost always
         if (stats.totalCache > 0) {
             chips.push(`<span class="seg-chip seg-chip-cache">${fmtTok(stats.totalCache)} ${tBi('cache', '缓存')}</span>`);
         }
@@ -2699,6 +2750,7 @@ function buildPendingArchivePanel(entries: PendingArchiveEntry[]): string {
     const totalCalls = entries.reduce((s, e) => s + e.totalCalls, 0);
     const totalIn = entries.reduce((s, e) => s + e.totalInputTokens, 0);
     const totalOut = entries.reduce((s, e) => s + e.totalOutputTokens, 0);
+    const totalCache = entries.reduce((s, e) => s + (e.totalCacheRead || 0), 0);
     const totalCredits = entries.reduce((s, e) => s + e.totalCredits, 0);
 
     // Aggregate per-model across all entries
@@ -2727,7 +2779,8 @@ function buildPendingArchivePanel(entries: PendingArchiveEntry[]): string {
             <span class="pending-stat">${tBi('Calls', '调用')} <b>${totalCalls}</b></span>
             <span class="pending-stat">${tBi('Input', '输入')} <b>${formatK(totalIn)}</b></span>
             <span class="pending-stat">${tBi('Output', '输出')} <b>${formatK(totalOut)}</b></span>
-            ${totalCredits > 0 ? `<span class="pending-stat">Credits <b>${totalCredits}</b></span>` : ''}
+            ${totalCache > 0 ? `<span class="pending-stat">${tBi('Cache', '缓存')} <b>${formatK(totalCache)}</b></span>` : ''}
+            ${totalCredits > 0 ? `<span class="pending-stat">${tBi('Credits', '积分')} <b>${totalCredits}</b></span>` : ''}
         </div>
         <div class="pending-archive-models">${modelChips}</div>
         <div class="pending-archive-note">${tBi(

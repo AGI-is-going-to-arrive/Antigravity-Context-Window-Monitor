@@ -225,6 +225,8 @@ export interface PendingArchiveEntry {
     totalInputTokens: number;
     /** Total output tokens */
     totalOutputTokens: number;
+    /** Total cache read tokens */
+    totalCacheRead: number;
     /** Total credits consumed */
     totalCredits: number;
     /** Per-model call counts */

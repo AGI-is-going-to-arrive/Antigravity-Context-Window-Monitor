@@ -303,7 +303,7 @@ Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sou
 | 工具调用排行 / Tool Call Ranking | `buildToolCallRanking()` 渲染 GM 精确的工具调用频率排行榜（水平条形图，6 色循环），数据源为 `GMSummary.toolCallCounts`（从 `messagePrompts` SYSTEM `toolCalls[]` 提取，按 stepIdx 去重，基于 `sliced` 不受额度重置归档影响）。统计范围为全账号、全对话，通过 `_persistedToolCounts` 跨重启 max-wins 合并保障数据完整。`+x` 增量通过 `currentUsage.cascadeId` 精确匹配当前对话（不依赖时间戳），仅在 ≥2 对话时显示。每日 `reset()` 清零 |
 | 账号面板构建器 / Account Panel Builder | `buildAccountStatusPanel()`（已 export）渲染多账号状态卡片：`AccountSnapshot[]` → 按 email 分行，显示在线/缓存状态、Plan 徽章、按模型池独立倒计时（`ResetPool[]` 含 `hasUsage` 检测），到期显示红色「已就绪」，未消耗额度池显示灰色「未使用」。缓存账号名字行内显示红色「移除」文字链接。**v1.17.3 起已从 GM Data 标签页迁出至全局 dropdown**（由 `webview-panel.ts` 调用），`buildGMDataTabContent()` 不再包含账号面板 |
 | 红点检测 / Ready Pool Detection | `hasAccountReadyPool()` 遍历所有账号检测是否存在已过期且有使用记录的额度池，用于全局按钮上的红色脉冲指示器 |
-| 待归档面板 / Pending Archive Panel | `buildPendingArchivePanel()` 在模型统计合计行下方渲染黄色主题的待归档区域，显示基线化周期的调用数/token/credits 统计和 per-model 分布芯片；额度重置前不可见 |
+| 待归档面板 / Pending Archive Panel | `buildPendingArchivePanel()` 在模型统计合计行下方渲染黄色主题的待归档区域，显示基线化周期的调用数/输入/输出/缓存(`totalCacheRead`)/积分统计和 per-model 分布芯片；额度重置前不可见。Credits 标签使用 `tBi('Credits', '积分')` i18n |
 | 增量刷新保护 / Refresh preservation | `<details>` 展开状态通过 `restoreDetailsState()` 自动保护；`.cp-viewer` / `.cp-card-body` 滚动位置通过 `scrollableSelectors` 保留 |
 | 账号分布行 / Account breakdown | 模型卡片 body 底部以分割线隔开，每个账号独立一行（用户 SVG 图标 + 邮箱前缀 + 紫色调用次数）。当前在线账号自动置顶并以绿色选中态高亮（绿色左竖线 + 边框 + 背景 + 图标/数字变色）。每个账号行可选显示红色 `+N` 报错次数药丸标签（per-model per-account 独立统计，互不混合）。通过标题栏「报错」药丸开关控制显隐（默认隐藏），状态通过 webview state 持久化 |
 | 模型统计汇总行 / Model Stats Total | 模型卡片网格下方的芯片条汇总行，显示跨账号总调用数、模型数、输入/输出/缓存 token。数据从 `gm.conversations[].calls[]` 全量遍历，不受账号过滤影响。Sigma SVG 图标 + 蓝色标签 + 独立芯片边框 |
@@ -311,8 +311,8 @@ Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sou
 | 对话标题解析 / Conversation Title | Timeline 标题 badge 和对话分布卡片从 `gmSummary.conversations` 查找实际对话标题（`GMConversationData.title`），hover 显示完整 cascadeId。无标题时 fallback 到 cascadeId 前 8 位 |
 | 对话分布卡片 / Conversation Cards | `buildConversations()` 渲染带彩色左边框的卡片列表（6色循环），每卡单行水平布局：标题气泡芯片（`flex:1` 截断）+ 右侧固定指标（调用次数 + credits + 日期范围 `MM/DD HH:mm → MM/DD HH:mm`），hover 微位移动画，自定义 4px 细滚动条。积分显示全部账号累计（对话内可能切换账号），当仅部分来自当前账号时显示橙色 `+x` 标注（`accountCredits`） |
 | 模型卡片积分行 / Model Card Credits | 模型卡片 Credits 行显示 `189.0 (22次)` 格式 — 总积分消耗 + 橙色小字积分调用次数标注（`.act-credit-calls`），数据源为 `GMModelStats.creditCallCount` |
-| Turn Header 气泡排序 / Turn Chip Order | 右对齐稳定排列（左→右）：`error` · `工具` · `积分` · `调用` · `缓存` · `输入/输出` · `上下文`（rightmost anchor）。右侧锚定几乎每轮都有的元素，偶尔/罕见元素往左生长不破坏对齐。`seg-chip-ctx`（紫色）显示该轮最后一条 reasoning 的 `gmContextTokensUsed` |
-| 事件行标签排序 / Event Row Tag Order | reasoning 事件行右侧 GM 标签排列（左→右）：`缓存 → 输入 → 输出 → 上下文 → 积分`，上下文作为最右侧锚点与 Turn header 对齐 |
+| Turn Header 气泡排序 / Turn Chip Order | 右对齐稳定排列（左→右）：`error` · `积分` · `工具` · `调用` · `费用($)` · `缓存` · `输入/输出` · `上下文`（rightmost anchor）。右侧锚定几乎每轮都有的元素，偶尔/罕见元素往左生长不破坏对齐。`seg-chip-cost`（绿色加粗）通过 `findPricing()` 逐 action 累加计算 USD 费用合计 |
+| 事件行标签排序 / Event Row Tag Order | reasoning 事件行右侧分两区：**statusParts**（偶现区，左→右）：`error` · `积分` · `工具` · `TTFT` · `耗时`；**tokenParts**（固定区，左→右）：`费用($)` · `缓存` · `输入` · `输出` · `上下文`。费用通过 `findPricing(gmModel)` 实时计算（input×price + output×price + cacheRead×price + thinking×price），绿色美元 SVG 图标 |
 | 已移除 / Removed | `buildToolRanking()`（Step API 工具排行）、`buildDistribution()`（Step API 模型分布甜甜圈图）、Summary Bar 中的推理/工具/错误/检查点/推算卡片、模型卡片中的 Step API 行和工具标签、所有装饰性 `gm-badge-real` 徽章、独立的 Performance Baseline 区块、独立的 Cache Efficiency 区块、可折叠时间线图例、对话分布中的覆盖率百分比和输入 token、Timeline `buildMetaTags()` 冗余模型气泡（蓝色 `act-tl-model` 已在事件行内显示）、模型卡片底部冗余的 `responseModel` raw API 名称标签（卡片头部已显示 normalized 名称）、`seg-chip-dur` 耗时气泡（不精确）、`seg-chip-model` 模型名气泡（事件行内已有）|
 
 

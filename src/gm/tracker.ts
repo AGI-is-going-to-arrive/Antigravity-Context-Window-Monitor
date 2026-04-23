@@ -621,6 +621,7 @@ export class GMTracker {
         let summaryCount = 0;
         let summaryInputTokens = 0;
         let summaryOutputTokens = 0;
+        let summaryCacheRead = 0;
         let summaryCredits = 0;
         const summaryModelCalls = new Map<string, number>();
         const archivedModelIds = new Set<string>();
@@ -634,6 +635,7 @@ export class GMTracker {
                     summaryCount++;
                     summaryInputTokens += call.inputTokens;
                     summaryOutputTokens += call.outputTokens;
+                    summaryCacheRead += call.cacheReadTokens;
                     summaryCredits += call.credits;
                     const modelKey = normalizeModelDisplayName(
                         call.modelDisplay || call.model,
@@ -664,6 +666,7 @@ export class GMTracker {
         let cacheCount = 0;
         let cacheInputTokens = 0;
         let cacheOutputTokens = 0;
+        let cacheCacheRead = 0;
         let cacheCredits = 0;
         const cacheModelCalls = new Map<string, number>();
 
@@ -680,6 +683,7 @@ export class GMTracker {
                 cacheCount++;
                 cacheInputTokens += call.inputTokens;
                 cacheOutputTokens += call.outputTokens;
+                cacheCacheRead += call.cacheReadTokens;
                 cacheCredits += call.credits;
                 const modelKey = normalizeModelDisplayName(
                     call.modelDisplay || call.model,
@@ -694,6 +698,7 @@ export class GMTracker {
         const finalCount = useSummary ? summaryCount : cacheCount;
         const finalInputTokens = useSummary ? summaryInputTokens : cacheInputTokens;
         const finalOutputTokens = useSummary ? summaryOutputTokens : cacheOutputTokens;
+        const finalCacheRead = useSummary ? summaryCacheRead : cacheCacheRead;
         const finalCredits = useSummary ? summaryCredits : cacheCredits;
         const finalModelCalls = useSummary ? summaryModelCalls : cacheModelCalls;
 
@@ -707,6 +712,7 @@ export class GMTracker {
                 totalCalls: finalCount,
                 totalInputTokens: finalInputTokens,
                 totalOutputTokens: finalOutputTokens,
+                totalCacheRead: finalCacheRead,
                 totalCredits: finalCredits,
                 modelCalls,
             });

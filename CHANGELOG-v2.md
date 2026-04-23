@@ -8,6 +8,49 @@
 
 ---
 
+## [1.17.16] - 2026-04-23
+
+### 新增 / Added
+
+- **时间线实时费用标签 / Per-Call Cost Tags in Timeline**:
+  每条 reasoning 事件行新增 USD 费用标签（`act-tl-gm-cost`，绿色美元符号 SVG），通过 `findPricing(gmModel)` 查定价表实时计算。公式：`(input × price.input + output × price.output + cacheRead × price.cacheRead + thinking × price.thinking) / 1M`。位于 tokenParts 最左侧（费用 → 缓存 → 输入 → 输出 → 上下文）。
+
+  New per-call USD cost tag on each reasoning event row, calculated via `findPricing(gmModel)` using the pricing table. Green dollar-sign SVG icon, placed leftmost in tokenParts.
+
+- **Turn Header 费用合计芯片 / Turn Header Cost Chip**:
+  气泡组新增 `seg-chip-cost`（绿色加粗），`buildSegmentStats()` 逐 action 调用 `findPricing()` 累加费用。位于调用和缓存之间。
+
+  New `seg-chip-cost` in Turn headers showing aggregated per-turn USD cost, placed between calls and cache chips.
+
+- **待归档区缓存 Token 统计 / Pending Archive Cache Token Stats**:
+  `PendingArchiveEntry` 新增 `totalCacheRead: number` 字段。`baselineForQuotaReset()` 两条聚合路径（summary/cache）均累加 `cacheReadTokens`。`buildPendingArchivePanel()` 在输出和积分之间渲染缓存芯片（`totalCache > 0` 时显示）。
+
+  New `totalCacheRead` field in `PendingArchiveEntry`. Both aggregation paths in `baselineForQuotaReset()` accumulate `cacheReadTokens`. Cache chip rendered in pending archive stats between output and credits.
+
+### 重构 / Refactored
+
+- **积分标签位置调整 / Credits Tag Repositioned**:
+  事件行：积分从 tokenParts（右侧固定区）移到 statusParts（左侧偶现区），位于报错后面。Turn Header：积分从工具后面移到报错后面。最终顺序（左→右）：报错 → 积分 → 工具 → TTFT → 耗时 | 费用 → 缓存 → 输入 → 输出 → 上下文。
+
+  Credits moved from tokenParts (right-anchored) to statusParts (occasional zone), placed after error. Final order: error → credits → tools → TTFT → duration | cost → cache → in → out → ctx.
+
+### 修复 / Fixed
+
+- **待归档 Credits i18n 缺失 / Pending Archive Credits Missing i18n**:
+  `buildPendingArchivePanel()` 中 Credits 标签从硬编码英文 `Credits` 改为 `tBi('Credits', '积分')`。
+
+  Credits label in pending archive changed from hardcoded `Credits` to `tBi('Credits', '积分')`.
+
+### 统计 / Stats
+
+- **Files changed**: 3 (`src/activity-panel.ts`, `src/gm/tracker.ts`, `src/gm/types.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **New CSS classes**: `.act-tl-gm-cost` (event row), `.seg-chip-cost` (turn header)
+- **New import**: `findPricing` from `pricing-store.ts` into `activity-panel.ts`
+
+---
+
 ## [1.17.15] - 2026-04-23
 
 ### 重构 / Refactored
