@@ -311,7 +311,9 @@ Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sou
 | 对话标题解析 / Conversation Title | Timeline 标题 badge 和对话分布卡片从 `gmSummary.conversations` 查找实际对话标题（`GMConversationData.title`），hover 显示完整 cascadeId。无标题时 fallback 到 cascadeId 前 8 位 |
 | 对话分布卡片 / Conversation Cards | `buildConversations()` 渲染带彩色左边框的卡片列表（6色循环），每卡单行水平布局：标题气泡芯片（`flex:1` 截断）+ 右侧固定指标（调用次数 + credits + 日期范围 `MM/DD HH:mm → MM/DD HH:mm`），hover 微位移动画，自定义 4px 细滚动条。积分显示全部账号累计（对话内可能切换账号），当仅部分来自当前账号时显示橙色 `+x` 标注（`accountCredits`） |
 | 模型卡片积分行 / Model Card Credits | 模型卡片 Credits 行显示 `189.0 (22次)` 格式 — 总积分消耗 + 橙色小字积分调用次数标注（`.act-credit-calls`），数据源为 `GMModelStats.creditCallCount` |
-| 已移除 / Removed | `buildToolRanking()`（Step API 工具排行）、`buildDistribution()`（Step API 模型分布甜甜圈图）、Summary Bar 中的推理/工具/错误/检查点/推算卡片、模型卡片中的 Step API 行和工具标签、所有装饰性 `gm-badge-real` 徽章、独立的 Performance Baseline 区块、独立的 Cache Efficiency 区块、可折叠时间线图例、对话分布中的覆盖率百分比和输入 token、Timeline `buildMetaTags()` 冗余模型气泡（蓝色 `act-tl-model` 已在事件行内显示）、模型卡片底部冗余的 `responseModel` raw API 名称标签（卡片头部已显示 normalized 名称） |
+| Turn Header 气泡排序 / Turn Chip Order | 右对齐稳定排列（左→右）：`error` · `工具` · `积分` · `调用` · `缓存` · `输入/输出` · `上下文`（rightmost anchor）。右侧锚定几乎每轮都有的元素，偶尔/罕见元素往左生长不破坏对齐。`seg-chip-ctx`（紫色）显示该轮最后一条 reasoning 的 `gmContextTokensUsed` |
+| 事件行标签排序 / Event Row Tag Order | reasoning 事件行右侧 GM 标签排列（左→右）：`缓存 → 输入 → 输出 → 上下文 → 积分`，上下文作为最右侧锚点与 Turn header 对齐 |
+| 已移除 / Removed | `buildToolRanking()`（Step API 工具排行）、`buildDistribution()`（Step API 模型分布甜甜圈图）、Summary Bar 中的推理/工具/错误/检查点/推算卡片、模型卡片中的 Step API 行和工具标签、所有装饰性 `gm-badge-real` 徽章、独立的 Performance Baseline 区块、独立的 Cache Efficiency 区块、可折叠时间线图例、对话分布中的覆盖率百分比和输入 token、Timeline `buildMetaTags()` 冗余模型气泡（蓝色 `act-tl-model` 已在事件行内显示）、模型卡片底部冗余的 `responseModel` raw API 名称标签（卡片头部已显示 normalized 名称）、`seg-chip-dur` 耗时气泡（不精确）、`seg-chip-model` 模型名气泡（事件行内已有）|
 
 
 ---

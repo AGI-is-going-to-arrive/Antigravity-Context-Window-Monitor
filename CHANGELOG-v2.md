@@ -8,6 +8,55 @@
 
 ---
 
+## [1.17.15] - 2026-04-23
+
+### 重构 / Refactored
+
+- **Turn Header 气泡组重排 / Turn Header Chip Reordering**:
+  Timeline「最近操作」中每轮 Turn header 的气泡组（`seg-chips`）从左到右重新排序，基于右对齐稳定性原则：右侧边缘锚定最常出现的元素，左侧放置偶尔/罕见元素。消失的偶尔元素不会破坏右侧对齐。
+
+  Turn header chips reordered for right-alignment stability: stable elements anchor the right edge, occasional items grow leftward when present.
+
+  | 位置（左→右） | 气泡 | 出现频率 |
+  |---|---|---|
+  | 最左（罕见） | `error(N)` | 仅出错时 |
+  | ← | `🔧N 工具` | 仅使用工具时 |
+  | ← | `N.N 积分` | 仅积分计费时 |
+  | → | `N 调用` | 几乎每轮 |
+  | → | `Nk 缓存` | 几乎每轮 |
+  | → | `Nk 输入 / Nk 输出` | 几乎每轮 |
+  | 最右（锚定） | `上下文 Nk` | 几乎每轮 |
+
+- **事件行标签重排 / Event Row Tag Reordering**:
+  Timeline 每条 reasoning 事件行的右侧 GM 精确标签同步重排，从左到右：`缓存 → 输入 → 输出 → 上下文 → 积分`。上下文作为最右侧锚点，与 Turn header 对齐。
+
+  Event row GM tags reordered (left→right): cache → in → out → ctx → credits. Context anchors the right edge, matching Turn headers.
+
+### 新增 / Added
+
+- **上下文窗口气泡 / Context Window Chip**:
+  Turn header 新增 `seg-chip-ctx`（紫色主题），显示该轮最后一条 reasoning 事件的 `gmContextTokensUsed`，标注格式 `上下文 Nk` / `Ctx Nk`。
+
+  New `seg-chip-ctx` (purple theme) showing the last reasoning event's context window size per turn.
+
+### 移除 / Removed
+
+- **耗时气泡 / Duration Chip**: 移除 `seg-chip-dur`（基于首尾事件时间差的秒数），因为不精确（1 次调用 = 0s）。同步移除 `buildSegmentStats()` 中的 `durationSec` / `minTime` / `maxTime` 计算。
+
+  Removed imprecise duration chip (depended on first/last event timestamp diff). Removed `durationSec` calculation from `buildSegmentStats()`.
+
+- **模型名气泡 / Model Name Chip**: 从 Turn header 移除 `seg-chip-model`，因为每条事件行内已通过 `act-tl-model` 显示模型名，header 重复显示无价值。
+
+  Removed `seg-chip-model` from Turn headers — model name already displayed per-event-row via `act-tl-model`.
+
+### 统计 / Stats
+
+- **Files changed**: 1 (`src/activity-panel.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## [1.17.14] - 2026-04-23
 
 ### 重构 / Refactored

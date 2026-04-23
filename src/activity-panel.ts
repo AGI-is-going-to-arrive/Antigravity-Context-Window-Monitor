@@ -591,7 +591,7 @@ export function getGMDataTabStyles(): string {
         .act-tl-item:hover { background: var(--color-surface); }
     }
     .act-tl-item:last-child { border-bottom: none; }
-    .act-tl-time { color: var(--color-text-dim); flex-shrink: 0; width: 42px; font-size: 0.78em; font-variant-numeric: tabular-nums; }
+    .act-tl-time { color: var(--color-text-dim); flex-shrink: 0; width: 42px; font-size: 0.78em; font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 3px; border-radius: var(--radius-sm); background: var(--color-surface, rgba(128,128,128,0.1)); border: 1px solid var(--color-border, rgba(128,128,128,0.15)); text-align: center; }
     .act-tl-icon { flex-shrink: 0; width: 18px; text-align: center; }
     .act-tl-content { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); overflow: hidden; }
     .act-tl-model { color: var(--color-info); font-weight: 500; flex-shrink: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -774,10 +774,10 @@ export function getGMDataTabStyles(): string {
         background: rgba(249,115,22,0.08);
         color: var(--color-orange-light);
     }
-    .seg-chip-dur {
-        border-color: rgba(148,163,184,0.2);
-        background: var(--color-muted-bg);
-        color: #cbd5e1;
+    .seg-chip-ctx {
+        border-color: var(--color-purple-border);
+        background: rgba(168,85,247,0.08);
+        color: var(--color-purple-light);
     }
     .seg-chip-retry {
         border-color: var(--color-danger-border);
@@ -2092,15 +2092,17 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             <div class="act-tl-help-group-label">${tBi('Step Basics', '步骤基础')}</div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-time" style="display:inline">08:20</span></div><div class="act-tl-help-desc">${tBi('Timestamp', '步骤时间')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-step-idx" style="display:inline">#115</span></div><div class="act-tl-help-desc">${tBi('Step index', '步骤索引')}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span style="color:var(--color-text-dim)">538ms</span></div><div class="act-tl-help-desc">${tBi('Duration', '耗时')}</div></div>
             <div class="act-tl-help-divider"></div>
             <div class="act-tl-help-group-label">${tBi('Token Metrics', 'Token 指标')}</div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-tag act-tl-tag-marker" style="display:inline">${tBi('Ctx 142k', '上下文 142k')}</span></div><div class="act-tl-help-desc">${tBi('Context window size', '上下文窗口大小')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-cache" style="display:inline">176k ${tBi('cache', '缓存')}</span></div><div class="act-tl-help-desc">${tBi('Cache read', '缓存读取')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-in" style="display:inline">1.3k ${tBi('in', '输入')}</span></div><div class="act-tl-help-desc">${tBi('Input tokens', '输入 token')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-out" style="display:inline">117 ${tBi('out', '输出')}</span></div><div class="act-tl-help-desc">${tBi('Output tokens', '输出 token')}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ttft" style="display:inline">2.1s</span></div><div class="act-tl-help-desc">TTFT</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-cache" style="display:inline">176k ${tBi('cache', '缓存')}</span></div><div class="act-tl-help-desc">${tBi('Cache read', '缓存读取')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ctx" style="display:inline">${tBi('Ctx 142k', '上下文 142k')}</span></div><div class="act-tl-help-desc">${tBi('Context window size', '上下文窗口大小')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-credit" style="display:inline">9 ${tBi('credits', '积分')}</span></div><div class="act-tl-help-desc">${tBi('Credits', '积分')}</div></div>
+            <div class="act-tl-help-divider"></div>
+            <div class="act-tl-help-group-label">${tBi('Performance', '性能')}</div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ttft" style="display:inline">TTFT 2.1s</span></div><div class="act-tl-help-desc">${tBi('Time to first token', '首 token 延迟')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-dur" style="display:inline">538ms</span></div><div class="act-tl-help-desc">${tBi('Duration', '耗时')}</div></div>
         </div>
     </div>`;
 
@@ -2141,10 +2143,10 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         if (e.category === 'reasoning' && e.gmInputTokens !== undefined) {
             // Fixed token metrics (always present when GM data exists)
             const tokenParts: string[] = [];
-            if (e.gmContextTokensUsed) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-ctx">${tBi('Ctx', '上下文')} ${fmtTok(e.gmContextTokensUsed)}</span>`); }
+            if (e.gmCacheReadTokens && e.gmCacheReadTokens > 0) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-cache">${fmtTok(e.gmCacheReadTokens)} ${tBi('cache', '缓存')}</span>`); }
             tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-in">${fmtTok(e.gmInputTokens)} ${tBi('in', '输入')}</span>`);
             if (e.gmOutputTokens) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-out">${fmtTok(e.gmOutputTokens)} ${tBi('out', '输出')}</span>`); }
-            if (e.gmCacheReadTokens && e.gmCacheReadTokens > 0) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-cache">${fmtTok(e.gmCacheReadTokens)} ${tBi('cache', '缓存')}</span>`); }
+            if (e.gmContextTokensUsed) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-ctx">${tBi('Ctx', '上下文')} ${fmtTok(e.gmContextTokensUsed)}</span>`); }
             if (e.gmCredits && e.gmCredits > 0) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-credit">${e.gmCredits} ${tBi('credits', '积分')}</span>`); }
 
             const statusParts: string[] = [];
@@ -2215,10 +2217,10 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         let totalIn = 0, totalOut = 0, totalThinking = 0, totalCache = 0, totalCredits = 0;
         let toolCount = 0, reasoningCount = 0;
         let model = '';
-        let minTime = '', maxTime = '';
         const models = new Set<string>();
         let gmToolTotal = 0;
         let retryTotal = 0;
+        let lastContextTokens = 0;
         for (const a of actions) {
             if (a.category === 'tool') { toolCount++; }
             if (a.category === 'reasoning') {
@@ -2231,6 +2233,10 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
                 if (a.gmRetries && a.gmRetries > 0) {
                     retryTotal += a.gmRetries;
                 }
+                // Track the latest context window size (last reasoning event wins)
+                if (a.gmContextTokensUsed && a.gmContextTokensUsed > 0) {
+                    lastContextTokens = a.gmContextTokensUsed;
+                }
             }
             // Collect tool counts from detail's → suffix (e.g. "→ 1 tool")
             if (a.detail) {
@@ -2241,20 +2247,12 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             }
             if (a.model) { models.add(a.model); }
             if (a.gmModel) { models.add(a.gmModel); }
-            if (!minTime || (a.timestamp && a.timestamp < minTime)) { minTime = a.timestamp; }
-            if (!maxTime || (a.timestamp && a.timestamp > maxTime)) { maxTime = a.timestamp; }
         }
         // Pick the most specific model name
         if (models.size === 1) { model = [...models][0]; }
         else if (models.size > 1) { model = [...models].filter(m => !m.startsWith('MODEL_PLACEHOLDER')).pop() || [...models][0]; }
-        let durationSec = 0;
-        try {
-            if (minTime && maxTime) {
-                durationSec = Math.round((new Date(maxTime).getTime() - new Date(minTime).getTime()) / 1000);
-            }
-        } catch { /* ignore */ }
         const toolNames = gmToolTotal;
-        return { totalIn, totalOut, totalThinking, totalCache, totalCredits, toolCount, reasoningCount, model, durationSec, toolNames, retryTotal };
+        return { totalIn, totalOut, totalThinking, totalCache, totalCredits, toolCount, reasoningCount, model, toolNames, retryTotal, lastContextTokens };
     };
 
     const reversedSegments = [...segments].reverse();
@@ -2264,29 +2262,36 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         const stats = buildSegmentStats(segment.actions);
 
         // Build summary chips for the segment header
+        // Right-aligned: rightmost = most stable, leftmost = rare
+        // Visual order (left → right): error | tools | credits | calls | in/out | ctx | cache
         const chips: string[] = [];
-        if (stats.model) { chips.push(`<span class="seg-chip seg-chip-model">${esc(stats.model)}</span>`); }
-        if (stats.reasoningCount > 0) { chips.push(`<span class="seg-chip seg-chip-calls">${stats.reasoningCount} ${tBi('calls', '调用')}</span>`); }
+        // 1. Errors — rare (leftmost)
+        if (stats.retryTotal > 0) {
+            chips.push(`<span class="seg-chip seg-chip-retry">error(${stats.retryTotal})</span>`);
+        }
+        // 2. Tool calls — occasional
         if (stats.toolNames > 0) {
             chips.push(`<span class="seg-chip seg-chip-tools">\ud83d\udd27${stats.toolNames} ${tBi('tools', '\u5de5\u5177')}</span>`);
         } else if (stats.toolCount > 0) {
             chips.push(`<span class="seg-chip seg-chip-tools">\ud83d\udd27${stats.toolCount}</span>`);
         }
-        if (stats.totalIn > 0 || stats.totalOut > 0) {
-            chips.push(`<span class="seg-chip seg-chip-tok">${fmtTok(stats.totalIn)} ${tBi('in', '输入')} / ${fmtTok(stats.totalOut)} ${tBi('out', '输出')}</span>`);
-        }
-        if (stats.totalCache > 0) {
-            chips.push(`<span class="seg-chip seg-chip-cache">${fmtTok(stats.totalCache)} ${tBi('cache', '缓存')}</span>`);
-        }
+        // 3. Credits — occasional
         if (stats.totalCredits > 0) {
             chips.push(`<span class="seg-chip seg-chip-credits">${stats.totalCredits.toFixed(1)} ${tBi('credits', '积分')}</span>`);
         }
-        if (stats.retryTotal > 0) {
-            chips.push(`<span class="seg-chip seg-chip-retry">error(${stats.retryTotal})</span>`);
+        // 4. Call count — almost always
+        if (stats.reasoningCount > 0) { chips.push(`<span class="seg-chip seg-chip-calls">${stats.reasoningCount} ${tBi('calls', '调用')}</span>`); }
+        // 5. Cache read tokens — almost always
+        if (stats.totalCache > 0) {
+            chips.push(`<span class="seg-chip seg-chip-cache">${fmtTok(stats.totalCache)} ${tBi('cache', '缓存')}</span>`);
         }
-        if (stats.durationSec > 0) {
-            const durLabel = stats.durationSec >= 60 ? `${Math.floor(stats.durationSec / 60)}m${stats.durationSec % 60}s` : `${stats.durationSec}s`;
-            chips.push(`<span class="seg-chip seg-chip-dur">${durLabel}</span>`);
+        // 6. Input / Output tokens — almost always
+        if (stats.totalIn > 0 || stats.totalOut > 0) {
+            chips.push(`<span class="seg-chip seg-chip-tok">${fmtTok(stats.totalIn)} ${tBi('in', '输入')} / ${fmtTok(stats.totalOut)} ${tBi('out', '输出')}</span>`);
+        }
+        // 7. Context window size — rightmost anchor
+        if (stats.lastContextTokens > 0) {
+            chips.push(`<span class="seg-chip seg-chip-ctx">${tBi('Ctx', '上下文')} ${fmtTok(stats.lastContextTokens)}</span>`);
         }
         const chipsHtml = chips.length > 0 ? `<span class="seg-chips">${chips.join('')}</span>` : '';
 
