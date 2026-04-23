@@ -372,6 +372,12 @@ export function getGMDataTabStyles(): string {
         color: var(--color-text);
         margin-left: 3px;
     }
+    .pending-stat-cost b {
+        color: rgba(74,222,128,0.9);
+    }
+    body.vscode-light .pending-stat-cost b {
+        color: rgba(22,163,74,0.85);
+    }
     .pending-archive-models {
         display: flex;
         flex-wrap: wrap;
@@ -552,6 +558,8 @@ export function getGMDataTabStyles(): string {
         font-size: 0.85em;
     }
     .act-card-row .val { font-weight: 600; }
+    .act-card-row-cost .val { color: rgba(74,222,128,0.9); }
+    body.vscode-light .act-card-row-cost .val { color: rgba(22,163,74,0.85); }
     .act-card-divider { border-top: 1px solid var(--color-border); margin: var(--space-1) 0; }
     .act-card-footer {
         padding: var(--space-1) var(--space-3) var(--space-2);
@@ -1292,6 +1300,20 @@ export function getGMDataTabStyles(): string {
             background: rgba(37,99,235,0.06);
         }
     }
+    .model-stats-total .mst-item-cost {
+        border-color: rgba(74,222,128,0.25);
+        background: rgba(74,222,128,0.06);
+    }
+    .model-stats-total .mst-item-cost .mst-val {
+        color: rgba(74,222,128,0.9);
+    }
+    body.vscode-light .model-stats-total .mst-item-cost {
+        border-color: rgba(22,163,74,0.2);
+        background: rgba(22,163,74,0.04);
+    }
+    body.vscode-light .model-stats-total .mst-item-cost .mst-val {
+        color: rgba(22,163,74,0.85);
+    }
 
     /* ─── Retry Overhead ─── */
     .act-stat-warn { border-color: var(--color-danger-border-strong); }
@@ -1932,6 +1954,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
     let allAccountTotalIn = 0;
     let allAccountTotalOut = 0;
     let allAccountTotalCache = 0;
+    let allAccountTotalCost = 0;
     let hasAnyAccountErrors = false;
     if (gm) {
         for (const conv of gm.conversations) {
@@ -1941,6 +1964,18 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 allAccountTotalIn += call.inputTokens || 0;
                 allAccountTotalOut += call.outputTokens || 0;
                 allAccountTotalCache += call.cacheReadTokens || 0;
+                // Per-call cost for cross-account active total
+                {
+                    const pr = findPricing(call.responseModel) || findPricing(call.modelDisplay || call.model);
+                    if (pr) {
+                        allAccountTotalCost += (
+                            (call.inputTokens || 0) * pr.input +
+                            (call.outputTokens || 0) * pr.output +
+                            (call.cacheReadTokens || 0) * pr.cacheRead +
+                            (call.thinkingTokens || 0) * pr.thinking
+                        ) / 1_000_000;
+                    }
+                }
 
                 const email = call.accountEmail || '';
                 if (!email) { continue; }
@@ -2030,6 +2065,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 ${'totalThinkingTokens' in gmStats && gmStats.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val">${fmt(gmStats.totalThinkingTokens)}</span></div>` : ''}
                 ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gmStats.totalCacheRead)}</span></div>` : ''}
                 ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val">${gmStats.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gmStats.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
+                ${(() => { const pr = findPricing(gmStats.responseModel) || findPricing(name); if (!pr) { return ''; } const cost = (gmStats.totalInputTokens * pr.input + gmStats.totalOutputTokens * pr.output + gmStats.totalCacheRead * pr.cacheRead + gmStats.totalThinkingTokens * pr.thinking) / 1_000_000; if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val">$${costStr}</span></div>`; })()}
                 ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gmStats.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
                 `;
                 // responseModel footer removed — card header already shows normalized model name
@@ -2062,6 +2098,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 ${'totalThinkingTokens' in gms && gms.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val">${fmt(gms.totalThinkingTokens)}</span></div>` : ''}
                 ${gms.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gms.totalCacheRead)}</span></div>` : ''}
                 ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val">${gms.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gms.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
+                ${(() => { const pr = findPricing(gms.responseModel) || findPricing(name); if (!pr) { return ''; } const cost = (gms.totalInputTokens * pr.input + gms.totalOutputTokens * pr.output + gms.totalCacheRead * pr.cacheRead + gms.totalThinkingTokens * pr.thinking) / 1_000_000; if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val">$${costStr}</span></div>`; })()}
                 ${gms.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gms.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
                 ${buildAccountSection(name)}
             </div>
@@ -2083,6 +2120,10 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
         items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalOut)}</span> ${tBi('out', '输出')}</span>`);
         if (allAccountTotalCache > 0) {
             items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalCache)}</span> ${tBi('cache', '缓存')}</span>`);
+        }
+        if (allAccountTotalCost > 0) {
+            const costStr = allAccountTotalCost < 0.01 ? allAccountTotalCost.toFixed(4) : allAccountTotalCost < 1 ? allAccountTotalCost.toFixed(3) : allAccountTotalCost.toFixed(2);
+            items.push(`<span class="mst-item mst-item-cost"><span class="mst-val">$${costStr}</span> ${tBi('cost', '费用')}</span>`);
         }
         html += `<div class="model-stats-total">${sigmaSvg}<span class="mst-label">${tBi('Total', '合计')}</span><span class="mst-items">${items.join('')}</span></div>`;
     }
@@ -2884,6 +2925,9 @@ function buildPendingArchivePanel(entries: PendingArchiveEntry[]): string {
     const totalCache = entries.reduce((s, e) => s + (e.totalCacheRead || 0), 0);
     const totalCredits = entries.reduce((s, e) => s + e.totalCredits, 0);
 
+    // Cost: pre-computed at baseline time using responseModel pricing
+    const totalCost = entries.reduce((s, e) => s + (e.estimatedCost || 0), 0);
+
     // Aggregate per-model across all entries
     const allModels = new Map<string, number>();
     for (const e of entries) {
@@ -2912,6 +2956,7 @@ function buildPendingArchivePanel(entries: PendingArchiveEntry[]): string {
             <span class="pending-stat">${tBi('Output', '输出')} <b>${formatK(totalOut)}</b></span>
             ${totalCache > 0 ? `<span class="pending-stat">${tBi('Cache', '缓存')} <b>${formatK(totalCache)}</b></span>` : ''}
             ${totalCredits > 0 ? `<span class="pending-stat">${tBi('Credits', '积分')} <b>${totalCredits}</b></span>` : ''}
+            ${totalCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBi('Cost', '费用')} <b>$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost < 1 ? totalCost.toFixed(3) : totalCost.toFixed(2)}</b></span>` : ''}
         </div>
         <div class="pending-archive-models">${modelChips}</div>
         <div class="pending-archive-note">${tBi(

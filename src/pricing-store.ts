@@ -45,23 +45,24 @@ export const PRICING_LAST_UPDATED = '2026-03-22';
 
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     // ── Claude (platform.claude.com/docs/en/about-claude/pricing) ─────
-    'claude-opus-4-6':              { input: 5,    output: 25,   cacheRead: 0.50,  cacheWrite: 6.25,  thinking: 25   },
-    'claude-sonnet-4-6':            { input: 3,    output: 15,   cacheRead: 0.30,  cacheWrite: 3.75,  thinking: 15   },
+    'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25, thinking: 25 },
+    'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
     // ── GPT-OSS (cloud.google.com/vertex-ai/generative-ai/pricing) ───
-    'gpt-oss-120b':                 { input: 0.09, output: 0.36, cacheRead: 0,     cacheWrite: 0,     thinking: 0.36 },
+    'gpt-oss-120b': { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0, thinking: 0.36 },
     // ── Gemini 3.x (cloud.google.com/vertex-ai/generative-ai/pricing) ─
-    'gemini-3.1-pro':               { input: 2,    output: 12,   cacheRead: 0.20,  cacheWrite: 2.50,  thinking: 12   },
-    'gemini-3-flash':               { input: 0.50, output: 3,    cacheRead: 0.05,  cacheWrite: 0.625, thinking: 3    },
+    'gemini-3.1-pro': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },
+    'gemini-3-flash': { input: 0.50, output: 3, cacheRead: 0.05, cacheWrite: 0.625, thinking: 3 },
 };
 
 // ─── Pricing Lookup ──────────────────────────────────────────────────────────
 
 /** Find pricing for a model by matching responseModel against a pricing table.
- *  Strategy: exact match → prefix match → fuzzy substring match */
+ *  Strategy: exact match → prefix match → fuzzy substring match → displayName fallback */
 export function findPricing(
     responseModel: string,
     table: Record<string, ModelPricing> = DEFAULT_PRICING,
 ): ModelPricing | null {
+    if (!responseModel) { return null; }
     if (table[responseModel]) { return table[responseModel]; }
     for (const [key, pricing] of Object.entries(table)) {
         if (responseModel.startsWith(key) || key.startsWith(responseModel)) {
@@ -71,6 +72,19 @@ export function findPricing(
     for (const [key, pricing] of Object.entries(table)) {
         if (responseModel.includes(key) || key.includes(responseModel.split('-').slice(0, 3).join('-'))) {
             return pricing;
+        }
+    }
+    // Fallback: if responseModel looks like a display name (contains spaces/parens),
+    // normalize to kebab-case and retry (e.g. "Claude Opus 4.6 (Thinking)" → "claude-opus-4.6-thinking")
+    if (/[A-Z\s(]/.test(responseModel)) {
+        const kebab = responseModel
+            .replace(/[()]/g, '')
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/(\d+)\.(\d+)/g, '$1-$2');  // "4.6" → "4-6"
+        if (kebab && kebab !== responseModel) {
+            return findPricing(kebab, table);
         }
     }
     return null;

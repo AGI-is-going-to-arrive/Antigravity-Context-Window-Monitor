@@ -8,6 +8,57 @@
 
 ---
 
+## [1.17.18] - 2026-04-23
+
+### 修复 / Fixed
+
+- **Cost 标签页仅显示当前账号费用 / Cost Tab Only Showing Active Account**:
+  `GMTracker._buildSummary()` 默认按当前账号过滤 `modelBreakdown`，导致 Cost 标签页只反映活跃账号的费用。
+
+  Fix: `PanelPayload` 新增 `gmFullSummary` 字段，通过 `gmTracker.getFullSummary()`（`skipAccountFilter=true`）获取全量数据。Cost 标签页和 Settings `estimatedCostAllTime` 改用 `lastGMFullSummary`。
+
+### 新增 / Added
+
+- **模型卡片费用行 / Per-Model Cost Row in Model Cards**:
+  每个模型卡片（普通 + GM-only）在 Credits 行下方新增绿色 **Cost / 费用** 行，使用 `findPricing(responseModel) || findPricing(displayName)` 双重查找。数据源为 `gm.modelBreakdown`（当前账号）。
+
+  New green Cost row in each model card, showing current account's per-model estimated cost.
+
+- **模型统计汇总行费用 / Cost in Model Stats Total Row**:
+  Sigma 合计行新增绿色费用标签，遍历 `conversations[].calls` 计算跨账号未归档总费用。
+
+  New cost chip in the model stats total row, aggregating active (non-archived) costs across all accounts.
+
+- **待归档区费用 / Cost in Pending Archive Panel**:
+  `PendingArchiveEntry` 新增 `estimatedCost?: number` 字段。`baselineForQuotaReset()` 在归档时用 `findPricing(call.responseModel)` 即时计算费用存入。待归档面板直接读取累加显示。
+
+  New `estimatedCost` field in `PendingArchiveEntry`, pre-computed at baseline time using `responseModel` pricing. Pending archive panel displays the sum.
+
+  > 已有历史 entries 无此字段，下次额度重置后新 entries 自动包含。
+
+- **findPricing display name fallback / Display Name Matching Enhancement**:
+  `findPricing()` 新增第四层匹配：当输入看起来像 display name（含大写/空格/括号）时，自动转为 kebab-case 重试（如 `Claude Opus 4.6 (Thinking)` → `claude-opus-4-6-thinking` → prefix match `claude-opus-4-6`）。同时增加空字符串保护。
+
+  Enhanced `findPricing()` with display name fallback: auto-converts to kebab-case for retry matching. Added empty string guard.
+
+### 三层费用展示逻辑 / Three-Layer Cost Display
+
+| 位置 / Location | 范围 / Scope | 数据源 / Source |
+|---|---|---|
+| 模型卡片 / Model Card | 当前账号 / Current account | `gm.modelBreakdown` |
+| 汇总行 / Total Row | 全账号、未归档 / All accounts, active | `conversations[].calls` |
+| 待归档区 / Pending Archive | 全账号、已归档 / All accounts, archived | `PendingArchiveEntry.estimatedCost` |
+| Cost 标签页 / Cost Tab | 全账号、全量 / All accounts, all | `gmFullSummary.modelBreakdown` |
+
+### 统计 / Stats
+
+- **Files changed**: 6 (`src/pricing-store.ts`, `src/activity-panel.ts`, `src/gm/types.ts`, `src/gm/tracker.ts`, `src/webview-panel.ts`, `src/extension.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **New CSS classes**: `.act-card-row-cost`, `.mst-item-cost`, `.pending-stat-cost`
+
+---
+
 ## [1.17.17] - 2026-04-23
 
 ### 新增 / Added

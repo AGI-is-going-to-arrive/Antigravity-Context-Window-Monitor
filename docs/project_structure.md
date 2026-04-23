@@ -33,14 +33,14 @@ antigravity-context-monitor/
 │   ├── gm-tracker.ts             # GM 数据层 re-export shim（向后兼容，实际代码在 gm/）
 │   ├── gm/                       # GM 模块（从 gm-tracker.ts 拆分）
 │   │   ├── index.ts              #   barrel re-export
-│   │   ├── types.ts              #   所有 GM 类型定义 + clone 工具 + 持久化 slim 函数（含 toolCallsByStep / toolCallCounts / toolCallCountsByConv / GMSystemContextItem）
+│   │   ├── types.ts              #   所有 GM 类型定义 + clone 工具 + 持久化 slim 函数（含 toolCallsByStep / toolCallCounts / toolCallCountsByConv / GMSystemContextItem / PendingArchiveEntry.estimatedCost）
 │   │   ├── parser.ts             #   解析器 + 提取器 + 匹配/合并/增强 + 检查点摘要提取 + 工具调用提取 + 系统上下文提取（classifySystemContext / extractSystemContextItems）
 │   │   ├── summary.ts            #   汇总构建 + 过滤 + 标准化（含 toolCallCounts 透传）
-│   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize + toolCallCounts 聚合 + persistedToolCounts 跨重启合并）
-│   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算
+│   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize + toolCallCounts 聚合 + persistedToolCounts 跨重启合并 + baseline 时预算 estimatedCost）
+│   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算 + findPricing display name fallback
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照）
-│   ├── webview-panel.ts          # WebView 面板框架（9 标签切换 + 消息通信 + 全局账号面板 dropdown）
+│   ├── webview-panel.ts          # WebView 面板框架（9 标签切换 + 消息通信 + 全局账号面板 dropdown + gmFullSummary 跨账号费用）
 │   ├── webview-styles.ts         # WebView 面板 CSS 样式（Design Token 体系）
 │   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、开发按钮等）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
@@ -51,7 +51,7 @@ antigravity-context-monitor/
 │   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队）
 │   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
 │   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（会话目录 — 全量对话列表 + 筛选）
-│   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据 + 检查点查看器 + 账号面板构建器）
+│   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据 + 检查点查看器 + 账号面板构建器 + 模型卡片/汇总行/待归档费用显示）
 │   ├── pricing-panel.ts          # Cost 标签页 HTML（费用分析 + 模型信息卡片构建器）v1.17.14 模型信息卡 UI 重构为 act-model-card 行式布局 + 同名模型去重 + responseModel 智能隐藏
 │   ├── webview-calendar-tab.ts   # Calendar 标签页 HTML
 │   ├── i18n.ts                   # 国际化：语言模式、翻译表、偏好持久化

@@ -45,6 +45,8 @@ export interface PanelPayload {
     archives?: ActivityArchive[];
     activityTracker?: ActivityTracker;
     gmSummary?: GMSummary | null;
+    /** Full summary with ALL accounts (no account filtering) — used by Cost tab. */
+    gmFullSummary?: GMSummary | null;
     gmConversations?: Record<string, GMConversationData>;
     pricingStore?: PricingStore;
     dailyStore?: DailyStore;
@@ -71,6 +73,8 @@ let lastActivitySummary: ActivitySummary | null = null;
 let lastActivityTracker: ActivityTracker | undefined;
 let lastArchives: ActivityArchive[] = [];
 let lastGMSummary: GMSummary | null = null;
+/** Full summary with ALL accounts — Cost tab uses this for cross-account cost calculation. */
+let lastGMFullSummary: GMSummary | null = null;
 let lastGMConversations: Record<string, GMConversationData> = {};
 let lastPricingStore: PricingStore | undefined;
 let lastDailyStore: DailyStore | undefined;
@@ -148,7 +152,7 @@ function refreshLocalStorageDiagnostics(): void {
                     if (record) { for (const c of record.cycles) { total += c.estimatedCost || 0; } }
                 }
             }
-            if (lastGMSummary && lastPricingStore) { total += lastPricingStore.calculateCosts(lastGMSummary).grandTotal; }
+            if ((lastGMFullSummary || lastGMSummary) && lastPricingStore) { total += lastPricingStore.calculateCosts(lastGMFullSummary || lastGMSummary!).grandTotal; }
             return total;
         })(),
         quotaResetCount: lastDailyStore?.totalDays || 0,
@@ -325,6 +329,7 @@ export function showMonitorPanel(p: PanelPayload): void {
     if (p.archives) { lastArchives = p.archives; }
     if (p.activityTracker) { lastActivityTracker = p.activityTracker; }
     if (p.gmSummary !== undefined) { lastGMSummary = p.gmSummary; }
+    if (p.gmFullSummary !== undefined) { lastGMFullSummary = p.gmFullSummary; }
     if (p.gmConversations) { lastGMConversations = p.gmConversations; }
     if (p.pricingStore) { lastPricingStore = p.pricingStore; }
     if (p.dailyStore) { lastDailyStore = p.dailyStore; }
@@ -610,6 +615,7 @@ export function updateMonitorPanel(p: PanelPayload): void {
     if (p.activitySummary !== undefined) { lastActivitySummary = p.activitySummary; }
     if (p.archives) { lastArchives = p.archives; }
     if (p.gmSummary !== undefined) { lastGMSummary = p.gmSummary; }
+    if (p.gmFullSummary !== undefined) { lastGMFullSummary = p.gmFullSummary; }
     if (p.gmConversations) { lastGMConversations = p.gmConversations; }
     if (p.storageDiagnostics) { lastStorageDiagnostics = p.storageDiagnostics; }
     if (p.modelDNA) { lastModelDNA = p.modelDNA; }
@@ -640,7 +646,7 @@ function buildTabContents(
         chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
         pricing: (lastPricingStore
             ? buildPricingTabContent(
-                lastGMSummary,
+                lastGMFullSummary || lastGMSummary,
                 lastPricingStore,
                 lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
             )
@@ -678,7 +684,7 @@ function buildHtml(
     const chatsHtml = buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(
-            lastGMSummary,
+            lastGMFullSummary || lastGMSummary,
             lastPricingStore,
             lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
         )

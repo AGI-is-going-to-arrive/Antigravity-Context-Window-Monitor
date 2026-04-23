@@ -262,6 +262,8 @@ export interface PendingArchiveEntry {
     totalCredits: number;
     /** Per-model call counts */
     modelCalls: Record<string, number>;
+    /** Pre-computed estimated USD cost (calculated at baseline time from responseModel pricing) */
+    estimatedCost?: number;
 }
 
 /** Serialized form for globalState persistence */

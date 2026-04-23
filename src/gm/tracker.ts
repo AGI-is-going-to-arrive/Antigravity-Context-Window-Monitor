@@ -5,6 +5,7 @@ import { LSInfo } from '../discovery';
 import { rpcCall } from '../rpc-client';
 import { normalizeModelDisplayName, getQuotaPoolKey, resolveModelId, type ModelConfig } from '../models';
 import type { QuotaSession } from '../quota-tracker';
+import { findPricing } from '../pricing-store';
 import type {
     GMCallEntry,
     GMCheckpointSummary,
@@ -642,6 +643,7 @@ export class GMTracker {
         let summaryOutputTokens = 0;
         let summaryCacheRead = 0;
         let summaryCredits = 0;
+        let summaryCost = 0;
         const summaryModelCalls = new Map<string, number>();
         const archivedModelIds = new Set<string>();
 
@@ -656,6 +658,18 @@ export class GMTracker {
                     summaryOutputTokens += call.outputTokens;
                     summaryCacheRead += call.cacheReadTokens;
                     summaryCredits += call.credits;
+                    // Per-call cost using responseModel pricing
+                    if (call.responseModel) {
+                        const pr = findPricing(call.responseModel);
+                        if (pr) {
+                            summaryCost += (
+                                (call.inputTokens || 0) * pr.input +
+                                (call.outputTokens || 0) * pr.output +
+                                (call.cacheReadTokens || 0) * pr.cacheRead +
+                                (call.thinkingTokens || 0) * pr.thinking
+                            ) / 1_000_000;
+                        }
+                    }
                     const modelKey = normalizeModelDisplayName(
                         call.modelDisplay || call.model,
                     ) || call.responseModel || call.model;
@@ -687,6 +701,7 @@ export class GMTracker {
         let cacheOutputTokens = 0;
         let cacheCacheRead = 0;
         let cacheCredits = 0;
+        let cacheCost = 0;
         const cacheModelCalls = new Map<string, number>();
 
         for (const [, conv] of this._cache) {
@@ -704,6 +719,18 @@ export class GMTracker {
                 cacheOutputTokens += call.outputTokens;
                 cacheCacheRead += call.cacheReadTokens;
                 cacheCredits += call.credits;
+                // Per-call cost using responseModel pricing
+                if (call.responseModel) {
+                    const pr = findPricing(call.responseModel);
+                    if (pr) {
+                        cacheCost += (
+                            (call.inputTokens || 0) * pr.input +
+                            (call.outputTokens || 0) * pr.output +
+                            (call.cacheReadTokens || 0) * pr.cacheRead +
+                            (call.thinkingTokens || 0) * pr.thinking
+                        ) / 1_000_000;
+                    }
+                }
                 const modelKey = normalizeModelDisplayName(
                     call.modelDisplay || call.model,
                 ) || call.responseModel || call.model;
@@ -720,6 +747,7 @@ export class GMTracker {
         const finalCacheRead = useSummary ? summaryCacheRead : cacheCacheRead;
         const finalCredits = useSummary ? summaryCredits : cacheCredits;
         const finalModelCalls = useSummary ? summaryModelCalls : cacheModelCalls;
+        const finalCost = useSummary ? summaryCost : cacheCost;
 
         // Record pending archive entry
         if (finalCount > 0) {
@@ -734,6 +762,7 @@ export class GMTracker {
                 totalCacheRead: finalCacheRead,
                 totalCredits: finalCredits,
                 modelCalls,
+                estimatedCost: finalCost,
             });
         }
 

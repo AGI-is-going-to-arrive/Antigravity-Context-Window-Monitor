@@ -253,6 +253,7 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         archives: activityTracker?.getArchives(),
         activityTracker,
         gmSummary: lastGMSummary,
+        gmFullSummary: gmTracker.getFullSummary(),
         gmConversations: monitorStore.getGMConversations(),
         pricingStore,
         dailyStore,
