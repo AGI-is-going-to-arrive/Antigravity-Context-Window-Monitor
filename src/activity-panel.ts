@@ -1343,6 +1343,8 @@ export function getGMDataTabStyles(): string {
         background: var(--color-danger-bg-dim);
     }
     .gm-err-msg-summary {
+        display: block;
+        min-width: 0;
         cursor: pointer;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -1360,16 +1362,25 @@ export function getGMDataTabStyles(): string {
         color: rgba(252,165,165,0.45);
         vertical-align: middle;
     }
-    .gm-err-expand[open] > .gm-err-msg-summary::before {
-        transform: rotate(90deg);
+    /* Non-overflowing: hide expand arrow + disable pointer */
+    .gm-err-expand.no-overflow > .gm-err-msg-summary {
+        cursor: default;
+        pointer-events: none;
     }
+    .gm-err-expand.no-overflow > .gm-err-msg-summary::before {
+        display: none;
+    }
+    .gm-err-expand[open] > .gm-err-msg-summary::before {
+        display: none;
+    }
+    /* When expanded: fully hide summary — collapse is via .gm-err-msg-full click */
     .gm-err-expand[open] > .gm-err-msg-summary {
-        white-space: normal;
-        word-break: break-all;
-        border-bottom: 1px solid var(--color-danger-border-dim);
-        margin-bottom: 0;
-        opacity: 0.55;
-        font-size: 0.65em;
+        height: 0;
+        padding: 0;
+        margin: 0;
+        overflow: hidden;
+        border: none;
+        pointer-events: none;
     }
     .gm-err-msg-full {
         font-size: 0.72em;
@@ -1378,9 +1389,16 @@ export function getGMDataTabStyles(): string {
         white-space: pre-wrap;
         word-break: break-all;
         line-height: 1.6;
-        padding: 5px var(--space-2) 5px calc(var(--space-2) + 1.8em);
-        border-left: 2px solid var(--color-danger-border-strong);
-        margin-left: var(--space-2);
+        padding: 5px var(--space-2);
+        cursor: pointer;
+    }
+    .gm-err-msg-full::before {
+        content: '\u25bc';
+        display: inline-block;
+        font-size: 0.65em;
+        margin-right: 4px;
+        color: rgba(252,165,165,0.45);
+        vertical-align: middle;
     }
 
 
@@ -2499,13 +2517,14 @@ function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): stri
         ? ` <span class="err-delta" style="font-size:0.8em">+${currentConvTotal} ${tBi('this session', '\u672c\u5bf9\u8bdd')}</span>`
         : '';
 
-    // Recent error messages — CSS-driven truncation: summary auto-truncates via ellipsis,
-    // click to expand full text. No fixed character threshold needed.
+    // Recent error messages — rendered with details/summary for expand.
+    // After mount, JS checks scrollWidth vs clientWidth; if no overflow,
+    // adds .no-overflow to disable expand arrow and pointer.
     const reversed = [...recentErrors].reverse().slice(0, 10);
     const total = recentErrors.length;
     const errorList = reversed.map((msg, i) => {
         const idx = `#${total - i}`;
-        return `<details class="gm-err-expand" id="d-err-${i}"><summary class="gm-err-msg gm-err-msg-summary"><span class="gm-err-idx">${idx}</span> ${esc(msg)}</summary><div class="gm-err-msg gm-err-msg-full">${esc(msg)}</div></details>`;
+        return `<details class="gm-err-expand" id="d-err-${i}"><summary class="gm-err-msg gm-err-msg-summary"><span class="gm-err-idx">${idx}</span> ${esc(msg)}</summary><div class="gm-err-msg gm-err-msg-full"><span class="gm-err-idx">${idx}</span> ${esc(msg)}</div></details>`;
     }).join('');
 
     // Overhead stats (token waste + credits) — shown as a compact info line

@@ -678,8 +678,27 @@ export function getScript(): string {
                 });
             }
 
+            // ─── Error message overflow detection ───
+            // Marks .gm-err-expand items whose summary text fits without
+            // CSS truncation as .no-overflow (hides expand arrow, disables click).
+            function initErrorOverflow() {
+                var items = document.querySelectorAll('.gm-err-expand:not([data-overflow-checked])');
+                for (var eoi = 0; eoi < items.length; eoi++) {
+                    var det = items[eoi];
+                    var sum = det.querySelector('.gm-err-msg-summary');
+                    if (!sum) continue;
+                    det.setAttribute('data-overflow-checked', 'true');
+                    // scrollWidth > clientWidth means CSS ellipsis is active
+                    if (sum.scrollWidth <= sum.clientWidth) {
+                        det.classList.add('no-overflow');
+                    }
+                }
+            }
+
             // ─── Restore & persist ALL <details> states ───
             restoreDetailsState(savedState);
+            // Run overflow check after layout settles
+            requestAnimationFrame(function() { initErrorOverflow(); });
 
             // ─── Custom number spinner buttons ───
             var spinnerBtns = document.querySelectorAll('.num-spinner-btn');
@@ -797,6 +816,14 @@ export function getScript(): string {
                     ? e.target
                     : (e.target && e.target.parentElement ? e.target.parentElement : null);
                 if (!target || !target.closest) { return; }
+
+                // ── Error message full-text click → collapse ──
+                var errFull = target.closest('.gm-err-msg-full');
+                if (errFull) {
+                    var det = errFull.closest('details.gm-err-expand');
+                    if (det) { det.removeAttribute('open'); }
+                    return;
+                }
 
                 // ── data-switch-tab links (e.g. Monitor → Profile "Details →") ──
                 var switchLink = target.closest('[data-switch-tab]');
@@ -1150,6 +1177,7 @@ export function getScript(): string {
                     updateTabOverflowHint();
                     bindHistoryCatalog();
                     bindEocObserver();
+                    requestAnimationFrame(function() { initErrorOverflow(); });
 
                     // Restore model stats error toggle state (default: hidden)
                     var errToggle2 = document.getElementById('modelStatsErrToggle');

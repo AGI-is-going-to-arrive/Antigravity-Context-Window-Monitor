@@ -72,6 +72,23 @@
 - **CSS net**: 删除 ~140 行旧 legend CSS，新增 ~100 行 tooltip CSS + ~90 行 conversation card CSS
 - **Design principle**: 信噪比优先 — 合并冗余指标、移除无意义装饰、将关联内容合并（检查点→Timeline）、按需展示（图例→tooltip）
 
+### 修复 / Fixed
+
+- **错误详情展开/收缩交互修复 / Error Details Expand/Collapse Fix**:
+  修复错误消息 `<details>/<summary>` 展开组件的多个交互缺陷：
+
+  | # | 问题 | 原因 | 修复 |
+  |---|------|------|------|
+  | 1 | 展开后内容重复 | summary 和 full div 同时显示完整文本 | 展开时完全隐藏 summary |
+  | 2 | 短消息不应可展开 | 所有消息无条件使用 `<details>` | JS 检测 `scrollWidth <= clientWidth`，未溢出加 `.no-overflow` 禁用箭头和点击 |
+  | 3 | 长消息截断但无法展开 | summary 缺少 `display:block; min-width:0` | 补齐 CSS 使 `text-overflow:ellipsis` 正常工作 |
+  | 4 | 展开后无法收缩 | summary 完全隐藏后无点击目标 | body 事件代理：点击展开后的完整文字即可收缩 |
+  | 5 | 展开/收缩箭头消失致布局跳动 | `font-size:0` 导致 `0.65em` 箭头也为 0 | 折叠态 summary 显示 `▶`，展开态 `.gm-err-msg-full::before` 显示 `▼`，各自独立 |
+
+  **最终交互**: 短消息无箭头直接显示全文；长消息 `▶ + 截断...` → 点击展开 → `▼ + 完整文字` → 点击收缩。
+
+  Files changed: 2 (`src/activity-panel.ts`, `src/webview-script.ts`)
+
 ---
 
 ## [1.17.9] - 2026-04-22
