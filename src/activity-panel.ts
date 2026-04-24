@@ -2085,11 +2085,30 @@ export function getGMDataTabStyles(): string {
         white-space: nowrap;
     }
     /* ── Tool Catalog Chips ── */
+    .tool-cat-section {
+        margin-top: var(--space-3);
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        padding: var(--space-2) var(--space-3);
+    }
+    .tool-cat-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.82em;
+        color: var(--color-text-dim);
+        margin-bottom: var(--space-2);
+    }
+    .tool-cat-header svg {
+        width: 13px;
+        height: 13px;
+        opacity: 0.6;
+    }
     .tool-cat-chips {
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
-        padding: var(--space-2);
     }
     .tool-cat-chip {
         font-family: var(--font-mono);
@@ -2105,6 +2124,10 @@ export function getGMDataTabStyles(): string {
     .tool-cat-chip:hover {
         background: rgba(255, 255, 255, 0.1);
         border-color: var(--color-text-dim);
+    }
+    /* Fix tooltip font size in nested contexts (prevent 0.68em × parent shrink) */
+    .tool-cat-chip[data-tooltip]::after {
+        font-size: 12px;
     }
 
     `;
@@ -2863,7 +2886,6 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
 
     const totalInvocations = entries.reduce((sum, [, c]) => sum + c, 0);
     const maxCount = entries[0][1];
-    const top = entries.slice(0, 15);
 
     // ── Current conversation's tool call contribution (from pre-computed, archival-immune data) ──
     const byConv = gm.toolCallCountsByConv || {};
@@ -2874,7 +2896,7 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
 
     const wrenchIcon = `<svg class="act-icon" viewBox="0 0 16 16"><path fill="currentColor" d="M12.7 3.3a1 1 0 0 1 0 1.4l-1.2 1.2 1.5 1.5a1 1 0 0 1-.7 1.7H10a1 1 0 0 1-1-1V5.8a1 1 0 0 1 1.7-.7l1.5 1.5 1.2-1.2a1 1 0 0 1 1.3-.1zM4.5 2A2.5 2.5 0 0 0 2 4.5v7A2.5 2.5 0 0 0 4.5 14h7a2.5 2.5 0 0 0 2.5-2.5V10h-1v1.5a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 11.5v-7A1.5 1.5 0 0 1 4.5 3H6V2H4.5z"/></svg>`;
 
-    const rows = top.map(([name, count], i) => {
+    const rows = entries.map(([name, count], i) => {
         const pct = maxCount > 0 ? (count / maxCount * 100).toFixed(1) : '0';
         const delta = currentConvCounts[name] || 0;
         const deltaHtml = delta > 0
@@ -2887,10 +2909,6 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
             <span class="tool-rank-count">${count}${deltaHtml}</span>
         </li>`;
     }).join('');
-
-    const moreNote = entries.length > 15
-        ? `<span>${tBi(`+${entries.length - 15} more`, `+${entries.length - 15} 个更多`)}</span>`
-        : '';
 
     const convNote = convCount > 1
         ? `<span>${tBi(`${convCount} conversations`, `${convCount} 个对话`)}</span>`
@@ -2921,12 +2939,28 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
             browser_subagent: '\u6d4f\u89c8\u5668\u81ea\u52a8\u5316',
             view_content_chunk: '\u67e5\u770b\u6587\u6863\u5206\u7247',
         };
-        const chips = catalog.map(entry => {
+        // Sort catalog chips by call count (descending), matching the ranking order.
+        // Tools not in the ranking sink to the bottom, ordered by firstSeen.
+        const sortedCatalog = [...catalog].sort((a, b) => {
+            const ca = counts[a.name] || 0;
+            const cb = counts[b.name] || 0;
+            if (ca !== cb) { return cb - ca; }
+            return a.firstSeen.localeCompare(b.firstSeen);
+        });
+        const chips = sortedCatalog.map(entry => {
             const desc = toolDesc[entry.name] || '';
             const tooltipAttr = desc ? ` data-tooltip="${esc(desc)}"` : '';
             return `<span class="tool-cat-chip"${tooltipAttr}>${esc(entry.name)}</span>`;
         }).join('');
-        catalogHtml = `<div class="tool-cat-chips">${chips}</div>`;
+        const catalogIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`;
+        catalogHtml = `<div class="tool-cat-section">
+            <div class="tool-cat-header">
+                ${catalogIcon}
+                ${tBi('Tool Catalog', '\u5de5\u5177\u76ee\u5f55')}
+                <span class="act-badge">${catalog.length}</span>
+            </div>
+            <div class="tool-cat-chips">${chips}</div>
+        </div>`;
     }
 
     return `<div class="tool-rank-section">
@@ -2941,7 +2975,6 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
                 <span>${tBi('Unique Tools', '\u5de5\u5177\u79cd\u7c7b')}: <b>${entries.length}</b></span>
                 <span>${tBi('Total', '\u5408\u8ba1')}: <b>${totalInvocations}</b></span>
                 ${convNote}
-                ${moreNote}
             </li>
         </ul>
         ${catalogHtml}

@@ -929,10 +929,9 @@ export class GMTracker {
         // Clear ALL persisted error baselines — after archiving calls, the max-wins
         // merge must recalculate from actual remaining calls instead of restoring
         // stale totals that included now-archived data.
+        // Note: unique error catalog and tool catalog are permanent — NOT cleared here.
         this._persistedRetryErrorCodesByAccount = {};
         this._persistedRecentErrorsByAccount = {};
-        this._persistedUniqueErrorsByAccount = {};
-        this._persistedToolCatalogByAccount = {};
         this._persistedRetryErrorCodes = {};
         this._persistedRecentErrors = [];
 
@@ -1014,8 +1013,10 @@ export class GMTracker {
         this._persistedRetryErrorCodes = {};
         this._persistedRetryErrorCodesByAccount = {};
         this._persistedRecentErrorsByAccount = {};
-        this._persistedUniqueErrorsByAccount = {};
-        this._persistedToolCatalogByAccount = {};
+        // Note: _persistedUniqueErrorsByAccount is NOT cleared here — unique error
+        // catalog is permanent, recording all error kinds ever encountered (never reset).
+        // Note: _persistedToolCatalogByAccount is NOT cleared here — tool catalog
+        // is permanent and accumulates across all days (never reset).
         this._lastSummary = null;
         this._lastFetchedAt = '';
     }

@@ -8,7 +8,51 @@
 
 ---
 
-## 错误种类按内容去重 + 跨账号可见 — 2026-04-24
+## 工具目录 UI 升级 + 永久目录保护 — 2026-04-24
+
+### 改进 / Improved
+
+- **工具目录容器化 / Tool Catalog Container**:
+  工具目录气泡区域从裸露散落改为与排行榜列表统一的容器样式（`background + border + border-radius + padding`），新增标题行：书本 SVG 图标 + "工具目录" 文字 + 数量 badge。
+
+  Tool catalog chips now wrapped in a proper container matching the ranking list style, with header row (book icon + title + count badge).
+
+- **气泡按调用次数排序 / Catalog Chips Sorted by Usage**:
+  工具目录气泡按调用次数降序排列，与排行榜顺序一致。高频工具在前，低频/MCP 工具自然沉底。午夜 counts 清零后按 `firstSeen` 排序降级。
+
+  Catalog chips sorted by call count descending (matching ranking order). After midnight reset, falls back to firstSeen order.
+
+- **排行榜显示全部工具 / Ranking Shows All Tools**:
+  移除 top 15 截断限制，排行榜显示所有工具的条形图。移除 "+X 个更多" 提示。
+
+  Removed `entries.slice(0, 15)` limit — ranking now shows all tools. Removed "+X more" note.
+
+- **Tooltip 字体修复 / Tooltip Font Size Fix**:
+  工具目录气泡的 hover tooltip 从嵌套缩小的 `~0.53em` 修正为固定 `12px`，确保可读。
+
+  Fixed tooltip font-size from nested-shrunk ~0.53em to fixed 12px for readability.
+
+### 修复 / Fixed
+
+- **永久目录保护 / Permanent Catalog Persistence**:
+  错误种类目录（`_persistedUniqueErrorsByAccount`）和工具目录（`_persistedToolCatalogByAccount`）改为永久持久化，不再被午夜 `reset()` 和额度重置 `baselineForQuotaReset()` 清除。仅 `fullReset()`（核弹级重置）清除。
+
+  Unique error catalog and tool catalog are now permanent — NOT cleared by midnight `reset()` or quota `baselineForQuotaReset()`. Only `fullReset()` (nuclear) clears them.
+
+  | 清除点 | 错误种类 | 工具目录 | 错误计数/日志 |
+  |---|---|---|---|
+  | `reset()`（午夜） | 保留 | 保留 | 清除 |
+  | `baselineForQuotaReset()`（额度重置） | 保留 | 保留 | 清除 |
+  | `fullReset()`（核弹级） | 清除 | 清除 | 清除 |
+
+### 统计 / Stats
+
+- **Files changed**: 2 (`src/gm/tracker.ts`, `src/activity-panel.ts`)
+- **TypeScript compile**: Zero errors
+- **Tests**: 50 passed
+- **New CSS classes**: `.tool-cat-section`, `.tool-cat-header`
+
+---
 
 ### 改进 / Improved
 
