@@ -583,6 +583,34 @@ export function activate(context: vscode.ExtensionContext): void {
     initI18n(context);
     initI18nFromState(durableGlobalState);
 
+    // ── One-time migration: contextLimits 1M → 160K/120K (platform truncation thresholds) ──
+    // Old versions used 1M (model native limits) as default contextLimits.
+    // GM data confirmed the platform actually truncates at 160K (Claude) / ~120K (Gemini Pro).
+    // This migration detects stale 1M values and resets to package.json new defaults.
+    {
+        const migrationKey = 'contextLimitsMigrationV';
+        const migrationVersion = durableGlobalState.get<number>(migrationKey, 0);
+        if (migrationVersion < 1) {
+            const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+            const inspection = cfg.inspect<Record<string, number>>('contextLimits');
+            // Check if user has explicit global/workspace settings with old 1M values
+            const hasOldGlobal = inspection?.globalValue && Object.values(inspection.globalValue).some(v => v >= 1_000_000);
+            const hasOldWorkspace = inspection?.workspaceValue && Object.values(inspection.workspaceValue).some(v => v >= 1_000_000);
+            if (hasOldGlobal) {
+                cfg.update('contextLimits', undefined, vscode.ConfigurationTarget.Global);
+                log('Migration v1: Reset global contextLimits from 1M to new platform defaults (160K/120K)');
+            }
+            if (hasOldWorkspace) {
+                cfg.update('contextLimits', undefined, vscode.ConfigurationTarget.Workspace);
+                log('Migration v1: Reset workspace contextLimits from 1M to new platform defaults (160K/120K)');
+            }
+            durableGlobalState.update(migrationKey, 1);
+            if (hasOldGlobal || hasOldWorkspace) {
+                log('Context limits migration complete — old 1M values cleared, new package.json defaults (160K/120K) will take effect');
+            }
+        }
+    }
+
     // Restore persisted lastKnownModel from workspaceState
     lastKnownModel = durableWorkspaceState.get<string>('lastKnownModel', '');
     if (lastKnownModel) {
@@ -808,6 +836,34 @@ function applyDisplayPrefs(): void {
         showQuota: cfg.get<boolean>('statusBar.showQuota', true),
         showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
     });
+}
+
+/**
+ * Extract the latest GM contextTokensUsed for a given cascade from a GMSummary.
+ * Returns the value if found and > 0, otherwise 0.
+ */
+function getLatestGMContextUsed(summary: GMSummary, cascadeId: string): number {
+    const conv = summary.conversations.find(c => c.cascadeId === cascadeId);
+    if (!conv || conv.calls.length === 0) { return 0; }
+    let latest = 0;
+    let latestTime = '';
+    for (const call of conv.calls) {
+        if (call.contextTokensUsed > 0 && call.createdAt > latestTime) {
+            latestTime = call.createdAt;
+            latest = call.contextTokensUsed;
+        }
+    }
+    return latest;
+}
+
+/** Apply GM precision contextTokensUsed to a ContextUsage object. Returns true if value changed. */
+function applyGMContextToUsage(usage: ContextUsage, gmContextUsed: number): boolean {
+    if (gmContextUsed <= 0 || gmContextUsed === usage.contextUsed) { return false; }
+    usage.contextUsed = gmContextUsed;
+    usage.isEstimated = false;
+    usage.usagePercent = usage.contextLimit > 0
+        ? (gmContextUsed / usage.contextLimit) * 100 : 0;
+    return true;
 }
 
 // ─── Polling Logic ────────────────────────────────────────────────────────────
@@ -1155,6 +1211,11 @@ async function pollContextUsage(): Promise<void> {
             currentUsage = await getContextUsage(lsInfo, activeTrajectory, customLimits, abortController.signal);
         }
         log(`  → contextUsed=${currentUsage.contextUsed} model=${currentUsage.model} steps=${currentUsage.stepCount} estimated=${currentUsage.isEstimated} ckpt_in=${currentUsage.lastModelUsage?.inputTokens ?? 'none'} ckpt_out=${currentUsage.lastModelUsage?.outputTokens ?? 'none'} estDelta=${currentUsage.estimatedDeltaSinceCheckpoint}`);
+
+        // ── Pre-enhance with cached GM data to prevent step→GM flickering ──
+        if (lastGMSummary && trackedCascadeId) {
+            applyGMContextToUsage(currentUsage, getLatestGMContextUsed(lastGMSummary, trackedCascadeId));
+        }
         statusBar.update(currentUsage);
 
         // Track the model for idle-state display
@@ -1271,6 +1332,16 @@ async function pollContextUsage(): Promise<void> {
                 let timelineChanged = false;
                 if (lastGMSummary) {
                     timelineChanged = activityTracker.injectGMData(lastGMSummary);
+
+                    // ── Enhance status bar with fresh GM data (new calls since last poll) ──
+                    if (currentUsage && trackedCascadeId) {
+                        const gmCtx = getLatestGMContextUsed(lastGMSummary, trackedCascadeId);
+                        const oldUsed = currentUsage.contextUsed;
+                        if (applyGMContextToUsage(currentUsage, gmCtx)) {
+                            statusBar.update(currentUsage);
+                            log(`Status bar enhanced with GM precision: contextUsed ${oldUsed} → ${gmCtx}`);
+                        }
+                    }
                 }
 
                 // Throttled activity persistence (max once per 30s)

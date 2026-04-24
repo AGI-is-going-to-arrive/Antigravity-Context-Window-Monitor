@@ -8,6 +8,37 @@
 
 ---
 
+## 状态栏上下文窗口精准化 — GM 数据驱动 — 2026-04-24
+
+### 变更 / Changed
+
+- **上下文窗口限制改用平台截断阈值 / Context Limits Now Use Platform Truncation Thresholds**:
+  `DEFAULT_CONTEXT_LIMITS` 从模型原生窗口（1M）改为 GM `plannerConfig.truncationThresholdTokens` 确认的平台实际截断值。
+
+  | 模型 | 旧值 | 新值 | 依据 |
+  |---|---|---|---|
+  | Claude Opus/Sonnet | 1,000,000 | 160,000 | GM plannerConfig |
+  | Gemini 3.1 Pro | 1,000,000 | 120,000 | 实测压缩触发点 ~125K |
+  | Gemini Flash | 1,000,000 | 160,000 | GM plannerConfig |
+  | GPT-OSS 120B | 128,000 | 128,000 | 不变 |
+
+- **状态栏 contextUsed 改用 GM 精准数据 / Status Bar Uses GM Precision Data**:
+  poll 循环中 GM 获取完成后，用 `contextTokensUsed`（来自 `contextWindowMetadata`）替换 step-based 估算值，确保状态栏与 Context Intelligence 面板数值一致。
+
+  After GM fetch, `currentUsage.contextUsed` is overridden with GM's `contextTokensUsed` for precision.
+
+- **旧版本自动迁移 / Automatic Migration for Old Versions**:
+  新增一次性迁移逻辑，检测旧版 1M 默认值并自动清除，让新 `package.json` 默认值生效。使用 `inspect()` + `contextLimitsMigrationV` 标记确保只运行一次。
+
+  One-time migration detects stale 1M defaults and resets to new platform thresholds.
+
+### 统计 / Stats
+
+- **Files changed**: 3 (`src/models.ts`, `src/extension.ts`, `package.json`)
+- **Impact**: 状态栏百分比从 `~13%` (基于1M) 变为 `~82%` (基于160K)，准确反映实际上下文压力
+
+---
+
 ## Model DNA 会话隔离修复 — 2026-04-24
 
 ### 修复 / Fixed

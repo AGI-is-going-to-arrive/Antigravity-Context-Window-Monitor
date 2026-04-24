@@ -16,7 +16,7 @@ antigravity-context-monitor/
 │   ├── discovery.ts              # Language Server 进程发现（跨平台）
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
 │   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
-│   ├── models.ts                 # 模型配置、上下文限额、显示名称、跨语言归一化
+│   ├── models.ts                 # 模型配置、平台截断阈值（非原生窗口）、显示名称、跨语言归一化
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
 │   ├── statusbar.ts              # 状态栏 UI（StatusBarManager，含计划层级 hover 缓存）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像

@@ -11,16 +11,20 @@
 // ─── Default Context Limits ──────────────────────────────────────────────────
 
 export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
-    'MODEL_PLACEHOLDER_M37': 1_000_000,  // Gemini 3.1 Pro (High)
-    'MODEL_PLACEHOLDER_M36': 1_000_000,  // Gemini 3.1 Pro (Low)
-    'MODEL_PLACEHOLDER_M47': 1_000_000,  // Gemini 3 Flash (renamed from M18 as of 2026-03-15)
-    'MODEL_PLACEHOLDER_M18': 1_000_000,  // [Legacy] Gemini 3 Flash (old ID, kept for backward compat)
-    'MODEL_PLACEHOLDER_M35': 1_000_000,  // Claude Sonnet 4.6 (Thinking) — updated from 200K
-    'MODEL_PLACEHOLDER_M26': 1_000_000,  // Claude Opus 4.6 (Thinking)  — updated from 200K
+    // ── Platform truncation thresholds (from GM plannerConfig.truncationThresholdTokens) ──
+    // These are the ACTUAL context window limits enforced by the platform,
+    // NOT the model's native context window size.
+    // Verified via diag-scripts/overview/model-compare.ts (2026-04-24).
+    'MODEL_PLACEHOLDER_M37': 120_000,   // Gemini 3.1 Pro (High) — platform says 160K but compression triggers at ~125K
+    'MODEL_PLACEHOLDER_M36': 120_000,   // Gemini 3.1 Pro (Low)  — same pool as High
+    'MODEL_PLACEHOLDER_M47': 160_000,   // Gemini 3 Flash
+    'MODEL_PLACEHOLDER_M18': 160_000,   // [Legacy] Gemini 3 Flash (old ID)
+    'MODEL_PLACEHOLDER_M35': 160_000,   // Claude Sonnet 4.6 (Thinking) — truncationThresholdTokens=160000
+    'MODEL_PLACEHOLDER_M26': 160_000,   // Claude Opus 4.6 (Thinking)  — truncationThresholdTokens=160000
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 128_000,  // GPT-OSS 120B (Medium)
 };
 
-export const DEFAULT_CONTEXT_LIMIT = 1_000_000;
+export const DEFAULT_CONTEXT_LIMIT = 160_000;
 
 // ─── Model Display Names ─────────────────────────────────────────────────────
 // Starts empty — populated dynamically by `updateModelDisplayNames()` from
