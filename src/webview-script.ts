@@ -36,7 +36,7 @@ export function getScript(): string {
             }
 
             // ─── Tab System ───
-            var activeTab = savedState.activeTab || 'monitor';
+            var activeTab = savedState.activeTab || 'gmdata';
             var tabBtns = document.querySelectorAll('.tab-btn');
             var tabPanes = document.querySelectorAll('.tab-pane');
             var lastTabHtmls = {};
@@ -157,7 +157,7 @@ export function getScript(): string {
                 requestAnimationFrame(function() { window.scrollTo(0, targetY); });
             }
             // Restore active tab from state
-            if (activeTab !== 'monitor') { switchTab(activeTab); }
+            if (activeTab !== 'gmdata') { switchTab(activeTab); }
             // Init slider position (must wait for layout)
             requestAnimationFrame(function() { updateTabSlider(); updateTabOverflowHint(); });
             var tabBarEl = document.querySelector('.tab-bar');

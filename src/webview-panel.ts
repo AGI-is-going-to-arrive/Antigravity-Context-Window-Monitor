@@ -15,7 +15,7 @@ import { PricingStore, ModelPricing } from './pricing-store';
 import { GMSummary, GMConversationData } from './gm-tracker';
 import { ICON } from './webview-icons';
 import { formatFileSize } from './webview-helpers';
-import { buildMonitorSections } from './webview-monitor-tab';
+// Monitor tab removed — GM Data is now the primary dashboard
 import { buildModelsTabContent } from './webview-models-tab';
 import { buildProfileContent } from './webview-profile-tab';
 import { buildSettingsContent, StorageDiagnostics, PanelHintPreferences } from './webview-settings-tab';
@@ -641,7 +641,7 @@ function buildTabContents(
 ): Record<string, string | boolean> {
     const eoc = `<div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>`;
     return {
-        monitor: buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations, tracker, lastPricingStore) + eoc,
+
         gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastPendingArchives) + eoc,
         chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
         pricing: (lastPricingStore
@@ -680,7 +680,7 @@ function buildHtml(
     paused = false,
     tracker?: QuotaTracker,
 ): string {
-    const monitorHtml = buildMonitorSections(usage, allUsages, configs, userInfo, lastGMSummary, lastGMConversations, tracker, lastPricingStore);
+
     const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastPendingArchives);
     const chatsHtml = buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri);
     const pricingHtml = lastPricingStore
@@ -801,8 +801,7 @@ ${getCalendarTabStyles()}
         </button>
         <nav class="tab-bar" id="tabBar">
         <div class="tab-slider"></div>
-        <button class="tab-btn active" data-tab="monitor" data-color="blue">${ICON.chart} ${tBi('Monitor', '监控')}</button>
-        <button class="tab-btn" data-tab="gmdata" data-color="orange">${ICON.bolt} ${tBi('GM Data', 'GM 数据')}</button>
+        <button class="tab-btn active" data-tab="gmdata" data-color="orange">${ICON.bolt} ${tBi('GM Data', 'GM 数据')}</button>
         <button class="tab-btn" data-tab="chats" data-color="cyan">${ICON.chat} ${tBi('Sessions', '会话')}</button>
         <button class="tab-btn" data-tab="pricing" data-color="purple"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.315 0-1.667-1.104-2.512-3.233-3.037l-.445-.107V3.63c1.213.183 1.968.91 2.141 1.88h1.762c-.112-1.796-1.519-2.965-3.455-3.124V1.036H8.59v1.383C6.408 2.583 5.008 3.9 5.003 5.54c0 1.592 1.063 2.457 3.146 2.963l.399.1v3.979c-1.29-.183-2.113-.879-2.275-1.8H4zm4.586-4.34C7.494 6.137 6.94 5.695 6.94 5.092c0-.66.52-1.183 1.575-1.37v2.72h.071zm.889 2.283c1.335.36 1.942.846 1.942 1.548 0 .781-.633 1.35-1.823 1.493V8.851l-.119-.127z"/></svg> ${tBi('Cost', '成本')}</button>
         <button class="tab-btn" data-tab="models" data-color="green">${ICON.bolt} ${tBi('Models', '模型')}</button>
@@ -828,11 +827,7 @@ ${getCalendarTabStyles()}
         </div>
     </div>
     </div>
-    <div class="tab-pane active" id="tab-monitor">
-        ${monitorHtml}
-        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
-    </div>
-    <div class="tab-pane" id="tab-gmdata">
+    <div class="tab-pane active" id="tab-gmdata">
         ${gmDataHtml}
         <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>

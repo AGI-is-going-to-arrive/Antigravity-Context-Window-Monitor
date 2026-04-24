@@ -8,7 +8,28 @@
 
 ---
 
-## 工具目录 UI 升级 + 永久目录保护 — 2026-04-24
+## 移除监控标签页 — 2026-04-24
+
+### 移除 / Removed
+
+- **监控标签页 / Monitor Tab**:
+  完全移除"监控"标签页（`webview-monitor-tab.ts`，1008 行）。该标签页的所有功能已被 GM 数据面板全面覆盖，属于冗余。GM 数据标签页成为默认首页。
+
+  Removed the entire "Monitor" tab (~1008 lines). All functionality was superseded by the GM Data dashboard. GM Data is now the default landing tab.
+
+  移除内容：GM 总览卡片、成本速览卡片、额度概览/追踪卡片、当前/其他会话区块、压缩历史、调用明细、输出分拆、缓存效率。
+
+- **monitor-\* CSS（约 300 行）**: 全部清除
+- **Light Theme monitor 覆盖（7 行）**: 清除
+
+### 统计 / Stats
+
+- **Files deleted**: 1 (`src/webview-monitor-tab.ts`)
+- **Files changed**: 3 (`src/webview-panel.ts`, `src/webview-styles.ts`, `src/webview-script.ts`)
+- **Lines removed**: ~1600+
+- **TypeScript compile**: Zero errors
+
+---
 
 ### 改进 / Improved
 
