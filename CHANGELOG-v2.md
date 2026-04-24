@@ -8,7 +8,7 @@
 
 ---
 
-## 移除监控标签页 — 2026-04-24
+## 移除监控标签页 + 账号面板额度进度条 — 2026-04-24
 
 ### 移除 / Removed
 
@@ -22,11 +22,14 @@
 - **monitor-\* CSS（约 300 行）**: 全部清除
 - **Light Theme monitor 覆盖（7 行）**: 清除
 
+### 新增 / Added
+
+- **账号面板额度进度条**: 在每个模型池行左侧显示 50px 迷你进度条，展示剩余额度百分比。颜色语义化：绿色 > 40%、橙色 20–40%、红色 < 20%。仅在有消耗的 active 池显示，idle/ready 状态不显示。数据来源为 `ModelConfig.quotaInfo.remainingFraction`（20% 步进精度）。
+
 ### 统计 / Stats
 
 - **Files deleted**: 1 (`src/webview-monitor-tab.ts`)
-- **Files changed**: 3 (`src/webview-panel.ts`, `src/webview-styles.ts`, `src/webview-script.ts`)
-- **Lines removed**: ~1600+
+- **Files changed**: 5 (`src/webview-panel.ts`, `src/webview-styles.ts`, `src/webview-script.ts`, `src/activity-panel.ts`, `src/extension.ts`)
 - **TypeScript compile**: Zero errors
 
 ---

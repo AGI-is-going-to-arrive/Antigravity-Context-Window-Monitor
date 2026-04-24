@@ -294,11 +294,11 @@ function updateAccountSnapshot(
 
     // Group models by their resetTime to form pools, tracking usage
     // Also build a modelId → resetTime mapping for GMTracker cross-reference
-    const poolMap = new Map<string, { labels: string[]; modelIds: string[]; hasUsage: boolean }>();
+    const poolMap = new Map<string, { labels: string[]; modelIds: string[]; hasUsage: boolean; minFraction: number }>();
     for (const c of configs) {
         if (c.quotaInfo?.resetTime) {
             const rt = c.quotaInfo.resetTime;
-            if (!poolMap.has(rt)) { poolMap.set(rt, { labels: [], modelIds: [], hasUsage: false }); }
+            if (!poolMap.has(rt)) { poolMap.set(rt, { labels: [], modelIds: [], hasUsage: false, minFraction: 1.0 }); }
             const pool = poolMap.get(rt)!;
             if (!pool.labels.includes(c.label)) {
                 pool.labels.push(c.label);
@@ -311,6 +311,9 @@ function updateAccountSnapshot(
             const frac = c.quotaInfo.remainingFraction;
             if (frac === undefined || frac < 1.0) {
                 pool.hasUsage = true;
+            }
+            if (frac !== undefined && frac < pool.minFraction) {
+                pool.minFraction = frac;
             }
         }
     }
@@ -341,7 +344,8 @@ function updateAccountSnapshot(
     const resetPools: import('./activity-panel').ResetPool[] = [];
     const allResetTimes: string[] = [];
     for (const [resetTime, pool] of [...poolMap.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-        resetPools.push({ resetTime, modelLabels: pool.labels, hasUsage: pool.hasUsage });
+        const remainingPct = pool.hasUsage ? Math.round(pool.minFraction * 100) : undefined;
+        resetPools.push({ resetTime, modelLabels: pool.labels, hasUsage: pool.hasUsage, remainingPercent: remainingPct });
         allResetTimes.push(resetTime);
     }
     const earliestResetTime = allResetTimes.length > 0 ? allResetTimes[0] : '';

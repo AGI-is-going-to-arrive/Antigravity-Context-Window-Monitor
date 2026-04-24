@@ -22,6 +22,8 @@ export interface ResetPool {
     modelLabels: string[];
     /** Whether at least one model in this pool has consumed quota (remainingFraction < 1.0) */
     hasUsage?: boolean;
+    /** Minimum remaining quota percentage across all models in this pool (0–100). undefined = unknown */
+    remainingPercent?: number;
 }
 
 /** Snapshot of an account's key status, cached per-email for multi-account display. */
@@ -317,6 +319,27 @@ export function getGMDataTabStyles(): string {
         opacity: 0.7;
         font-style: italic;
     }
+    /* ─── Quota Progress Bar (Account Panel) ─── */
+    .acct-quota-bar {
+        width: 50px;
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(255,255,255,0.08);
+        flex-shrink: 0;
+        overflow: hidden;
+        position: relative;
+    }
+    .acct-quota-fill {
+        position: absolute;
+        top: 0;
+        left: 0;
+        height: 100%;
+        border-radius: 2px;
+        transition: width 0.3s cubic-bezier(.4,0,.2,1);
+    }
+    .acct-quota-ok { background: var(--color-ok); opacity: 0.7; }
+    .acct-quota-warn { background: var(--color-amber); opacity: 0.85; }
+    .acct-quota-danger { background: var(--color-danger); opacity: 0.9; }
     .acct-delete-link {
         font-size: 0.72em;
         font-weight: 500;
@@ -3654,6 +3677,13 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
                 ).join('');
                 const extraChip = extra > 0 ? `<span class="acct-pool-more">+${extra}</span>` : '';
 
+                // Build compact quota bar — only shown for active pools
+                const buildQuotaBar = (pct: number | undefined): string => {
+                    const p = pct ?? 100;
+                    const colorClass = p > 40 ? 'acct-quota-ok' : p > 20 ? 'acct-quota-warn' : 'acct-quota-danger';
+                    return `<div class="acct-quota-bar" title="${p}% ${tBi('remaining', '剩余')}"><div class="acct-quota-fill ${colorClass}" style="width:${p}%"></div></div>`;
+                };
+
                 // Pool has no usage — show "未使用" instead of fake countdown
                 if (pool.hasUsage === false) {
                     return `<div class="acct-pool-row acct-pool-idle">
@@ -3672,10 +3702,13 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
                 const countdown = formatResetCountdown(pool.resetTime, nowMs);
                 const warnClass = diffMs < 30 * 60 * 1000 ? ' acct-reset-countdown-warn' : '';
                 return `<div class="acct-pool-row">
+                    ${buildQuotaBar(pool.remainingPercent)}
                     <div class="acct-pool-models">${modelChips}${extraChip}</div>
                     <span class="acct-reset-countdown${warnClass}">${countdown}</span>
                 </div>`;
             }).filter(Boolean).join('');
+
+
 
             resetHtml = `<div class="acct-pools">${poolRows}</div>`;
         } else if (!snap.isActive) {
