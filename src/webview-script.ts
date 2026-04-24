@@ -832,6 +832,13 @@ export function getScript(): string {
                     return;
                 }
 
+                // ── About page: data-navigate-tab cards ──
+                var navCard = target.closest('[data-navigate-tab]');
+                if (navCard) {
+                    switchTab(navCard.dataset.navigateTab);
+                    return;
+                }
+
                 // ── Copy Raw JSON ──
                 if (target.closest('#copyRawJson')) {
                     var cpyBtn = target.closest('#copyRawJson');

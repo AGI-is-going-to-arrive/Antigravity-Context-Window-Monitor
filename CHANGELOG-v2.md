@@ -8,6 +8,43 @@
 
 ---
 
+## 新增"关于"标签页 + 移除 TopBar Chips — 2026-04-24
+
+### 新增 / Added
+
+- **"关于"标签页 / About Tab**:
+  新增最末位的"关于"标签页，包含：
+  - **Hero 头部**：插件名称 + 一句话简介 + 渐变橙色图标
+  - **功能导航**：8 张可点击卡片（GM 数据、会话、成本、模型、额度追踪、日历、个人、设置），每张含彩色 SVG 图标 + 描述，点击直接跳转对应标签
+  - **GitHub 开源**：作者链接 + Star 按钮
+  - **使用提示**：单窗口建议
+  - **免责声明**：数据来源、精度说明、上下文限制
+  - **语言切换**：多语言支持提示
+
+  New "About" tab at the end of the tab bar with feature navigation cards, GitHub info, tips, disclaimer, and language hints.
+
+### 移除 / Removed
+
+- **TopBar Chips (GitHub / 提示 / 声明)**:
+  从顶部栏移除三个下拉面板按钮（GitHub、Notice、Disclaimer），内容迁移至"关于"标签页常驻展示，减少顶栏视觉噪声。
+
+  Removed GitHub/Notice/Disclaimer chip dropdowns from topbar; content relocated to the About tab for permanent display.
+
+### 修复 / Fixed
+
+- **浅色主题可见性 / Light Theme Visibility**:
+  关于页的功能导航卡片图标和 GitHub 链接按钮在浅色主题下颜色过淡。通过在 `.about-card-icon` 作用域内重定义 CSS 变量（`--color-ok-light` → `#16a34a` 等）和加深 GitHub 按钮色值（`#15803d`），确保所有信息区域的左侧彩色边框在浅色主题下同样醒目。
+
+  Fix: CSS variable overrides scoped to `.about-card-icon` for light theme; GitHub link button and info boxes use darker accent colors.
+
+### 统计 / Stats
+
+- **New file**: `src/webview-about-tab.ts` (About tab builder + styles)
+- **Files changed**: 3 (`src/webview-panel.ts`, `src/webview-script.ts`, `src/webview-about-tab.ts`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## 错误种类去重增强 + API 重复消息清洗 — 2026-04-24
 
 ### 修复 / Fixed

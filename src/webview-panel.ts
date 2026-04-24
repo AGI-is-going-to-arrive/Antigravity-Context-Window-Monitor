@@ -20,6 +20,7 @@ import { buildModelsTabContent } from './webview-models-tab';
 import { buildProfileContent } from './webview-profile-tab';
 import { buildSettingsContent, StorageDiagnostics, PanelHintPreferences } from './webview-settings-tab';
 import { buildHistoryHtml } from './webview-history-tab';
+import { buildAboutTabContent, getAboutTabStyles } from './webview-about-tab';
 import { buildCalendarTabContent, getCalendarTabStyles } from './webview-calendar-tab';
 import { buildChatHistoryTabContent } from './webview-chat-history-tab';
 import { DailyStore } from './daily-store';
@@ -656,6 +657,7 @@ function buildTabContents(
         history: buildHistoryHtml(tracker, lastUserInfo?.email) + eoc,
         calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth) + eoc,
         profile: buildProfileContent(userInfo, configs) + eoc,
+        about: buildAboutTabContent() + eoc,
         // Account popover: content-only update, does NOT affect open/close state
         accountPopover: lastAccountSnapshots.length > 0 ? buildAccountStatusPanel(lastAccountSnapshots) : '',
         accountPopoverHasReady: lastAccountSnapshots.length > 0 ? hasAccountReadyPool(lastAccountSnapshots) : false,
@@ -710,6 +712,7 @@ ${getStyles()}
 ${getGMDataTabStyles()}
 ${getPricingTabStyles()}
 ${getCalendarTabStyles()}
+${getAboutTabStyles()}
 </style>
 </head>
 <body data-privacy-default="true" data-zoom="${panelDurableState?.get<number>('panelZoomLevel', 100) ?? 100}" data-tab-hint-enabled="${panelHintPrefs.showTabScrollHint ? 'true' : 'false'}" data-hide-scrollbar="${panelHintPrefs.showScrollbar ? 'false' : 'true'}" data-hide-eoc="${panelHintPrefs.showEndOfContent ? 'false' : 'true'}">
@@ -746,55 +749,7 @@ ${getCalendarTabStyles()}
                 <span class="update-time">${paused ? `<span class="paused-indicator">${tBi('PAUSED', '已暂停')}</span>` : ''} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
             </div>
         </header>
-        <div class="topbar-chips">
-            <button class="info-chip chip-github" data-chip="github">
-                ${ICON.git}
-                <span>GitHub</span>
-                ${ICON.externalLink}
-            </button>
-            <button class="info-chip chip-warn" data-chip="notice">
-                ${ICON.windows}
-                <span>${tBi('Notice', '提示')}</span>
-            </button>
-            <button class="info-chip chip-warn" data-chip="disclaimer">
-                <svg class="icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg>
-                <span>${tBi('Disclaimer', '声明')}</span>
-            </button>
-        </div>
-        <div class="chip-dropdown chip-dropdown-github" id="chip-github" hidden>
-            <div class="chip-dropdown-content">
-                <span class="chip-dropdown-text">
-                    ${tBi(
-            'By <strong>AGI-is-going-to-arrive</strong> — open-source on GitHub. If you find it helpful, a',
-            '作者 <strong>AGI-is-going-to-arrive</strong> — 项目已在 GitHub 开源。如果觉得有帮助，点个',
-        )}
-                    <span class="star-inline">${ICON.star}</span>
-                    ${tBi('would be appreciated.', '就是最大的支持。')}
-                    <span class="heart-inline">${ICON.heart}</span>
-                </span>
-<a class="info-banner-link" href="https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor" target="_blank" rel="noopener noreferrer">
-                    ${ICON.externalLink} GitHub
-                </a>
-            </div>
-        </div>
-        <div class="chip-dropdown chip-dropdown-notice" id="chip-notice" hidden>
-            <div class="chip-dropdown-content">
-                <span class="chip-dropdown-text">
-                    ${tBi(
-            'Recommended: use a single IDE window. Multi-window setups may cause data desync between instances (e.g. activity timeline, quota tracking).',
-            '建议使用单窗口运行。多窗口可能导致实例间数据不同步（如活动时间线、额度追踪等）。',
-        )}
-                </span>
-            </div>
-        </div>
-        <div class="chip-dropdown chip-dropdown-disclaimer" id="chip-disclaimer" hidden>
-            <div class="chip-dropdown-content disclaimer-body">
-                ${tBi(
-            '<p style="margin-bottom:var(--space-2); color:var(--vscode-editorError-foreground);"><strong>⚠️ Disclaimer: This is an unofficial community project and is not affiliated with, endorsed by, or associated with Google. It acts strictly in read-only mode to visualize usage data. Use at your own risk.</strong></p><p>Data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Items marked with a <strong style="color:var(--color-ok)">GM</strong> badge come from Generator Metadata and have <strong>higher per-call fidelity</strong>. Other metrics (context usage, token estimates) are derived from checkpoint snapshots or character-based heuristics and may have deviations. <strong>All numbers are best-effort approximations.</strong> Use this data as a reference only.</p><p style="margin-top:var(--space-2)"><strong>⚠️ Context Window Limitation:</strong> Antigravity (Windsurf) does not utilize the full 1M context window advertised by the underlying model. The effective context is roughly <strong>128K–200K tokens</strong>. The compression warning threshold defaults to <strong>150K</strong> accordingly.</p><p style="margin-top:var(--space-2)"><strong>🌐 Language:</strong> This extension supports <strong>Chinese / English / Bilingual</strong> display. Use the <strong>中文 | EN | 双语</strong> buttons in the top-right corner of this panel to switch.</p>',
-            '<p style="margin-bottom:var(--space-2); color:var(--vscode-editorError-foreground);"><strong>⚠️ 极客免责声明：本分支扩展为非官方社区开源项目，与 Google 没有任何关联或官方背书。本工具仅以只读模式监控本地内部 API 用于可视化个人日常数据，产生的所有可能影响由使用者自行承担，使用风险自负。</strong></p><p>数据通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。标有 <strong style="color:var(--color-ok)">GM</strong> 徽章的数据来自 <strong>Generator Metadata（生成元数据）</strong>，<strong>单次调用精度较高</strong>。其余指标（上下文用量、Token 估算）基于 <strong>Checkpoint（检查点）</strong> 快照或字符启发式计算，可能存在偏差。<strong>所有数值均为尽力计算的近似值。</strong>请仅将数据作为参考。</p><p style="margin-top:var(--space-2)"><strong>⚠️ 上下文窗口限制：</strong>Antigravity（Windsurf）并未适配底层模型标称的 1M 上下文窗口，实际有效上下文大致为 <strong>128K–200K Token</strong>。压缩警告阈值默认设为 <strong>150K</strong>。</p><p style="margin-top:var(--space-2)"><strong>🌐 语言切换：</strong>本插件支持 <strong>中文 / English / 双语</strong> 显示。请使用面板右上角的 <strong>中文 | EN | 双语</strong> 按钮切换。</p>'
-        )}
-            </div>
-        </div>
+
         <div class="tab-bar-wrapper">
         <button class="tab-arrow tab-arrow-left is-faded" id="tabArrowLeft" aria-label="${tBi('Scroll tabs left', '向左滚动标签')}">
             <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0"/></svg>
@@ -809,6 +764,7 @@ ${getCalendarTabStyles()}
         <button class="tab-btn" data-tab="calendar" data-color="cyan"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/></svg> ${tBi('Calendar', '日历')}</button>
         <button class="tab-btn" data-tab="profile" data-color="gray">${ICON.user} ${tBi('Profile', '个人')}</button>
         <button class="tab-btn" data-tab="settings" data-color="gray">${ICON.shield} ${tBi('Settings', '设置')}</button>
+        <button class="tab-btn" data-tab="about" data-color="orange"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0"/></svg> ${tBi('About', '关于')}</button>
     </nav>
         <button class="tab-arrow tab-arrow-right is-faded" id="tabArrowRight" aria-label="${tBi('Scroll tabs right', '向右滚动标签')}">
             <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708"/></svg>
@@ -857,6 +813,10 @@ ${getCalendarTabStyles()}
     </div>
     <div class="tab-pane" id="tab-settings">
         ${settingsHtml}
+        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
+    </div>
+    <div class="tab-pane" id="tab-about">
+        ${buildAboutTabContent()}
         <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
 
