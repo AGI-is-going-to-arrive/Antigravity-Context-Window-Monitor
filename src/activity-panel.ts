@@ -3319,9 +3319,17 @@ function buildContextIntelViewer(s: GMSummary): string {
     const promptIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
     const configIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>';
 
-    // Per-model iteration for DNA cards
+    // Per-model iteration for DNA cards — only show models from the current conversation (primary)
+    const primaryModels = new Set<string>();
+    for (const call of primary.calls) {
+        const mn = normalizeModelDisplayName(call.modelDisplay || call.model);
+        if (mn) { primaryModels.add(mn); }
+    }
+
     for (const [modelName, ms] of Object.entries(s.modelBreakdown)) {
         if (ms.callCount <= 0) { continue; }
+        // Skip models not used in the current conversation
+        if (!primaryModels.has(modelName)) { continue; }
 
         // 1. System Prompt Structure card
         if (ms.promptSectionTitles && ms.promptSectionTitles.length > 0) {
@@ -3347,19 +3355,19 @@ function buildContextIntelViewer(s: GMSummary): string {
         // 2. Completion Config card (with context window capacity)
         if (ms.completionConfig) {
             const cc = ms.completionConfig;
-            // Find the latest call for this model to get contextTokensUsed
+            // Find context data from current conversation only (not cross-session)
             let latestContextUsed = 0;
+            let latestCallTime = '';
             let maxContextSeen = 0;
-            for (const conv of s.conversations) {
-                for (const call of conv.calls) {
-                    const callModel = normalizeModelDisplayName(call.modelDisplay || call.model);
-                    if (callModel === modelName && call.contextTokensUsed > 0) {
-                        if (!latestContextUsed || call.createdAt > latestTime) {
-                            latestContextUsed = call.contextTokensUsed;
-                        }
-                        if (call.contextTokensUsed > maxContextSeen) {
-                            maxContextSeen = call.contextTokensUsed;
-                        }
+            for (const call of primary.calls) {
+                const callModel = normalizeModelDisplayName(call.modelDisplay || call.model);
+                if (callModel === modelName && call.contextTokensUsed > 0) {
+                    if (!latestCallTime || call.createdAt > latestCallTime) {
+                        latestCallTime = call.createdAt;
+                        latestContextUsed = call.contextTokensUsed;
+                    }
+                    if (call.contextTokensUsed > maxContextSeen) {
+                        maxContextSeen = call.contextTokensUsed;
                     }
                 }
             }

@@ -8,6 +8,22 @@
 
 ---
 
+## Model DNA 会话隔离修复 — 2026-04-24
+
+### 修复 / Fixed
+
+- **DNA 卡片跨会话污染 / Cross-session DNA Card Leakage**:
+  修复了切换模型后，上下文情报同时显示所有历史模型（如 Claude + Gemini）DNA 卡片的问题。现在仅显示当前对话中使用过的模型。
+
+  Fixed DNA cards showing models from all sessions. Now filtered to current conversation's models only via `primaryModels` set.
+
+- **上下文窗口数据跨会话取值 / Context Window Cross-session Data**:
+  修复了上下文窗口进度条的 `latestContextUsed` / `maxContextSeen` 从全账号对话取值导致数据错误的问题，改为仅从当前对话取值。
+
+  Fixed context window progress bar pulling data from all conversations instead of the current one.
+
+---
+
 ## 上下文情报升级 — Model DNA + 上下文窗口容量 — 2026-04-24
 
 ### 新增 / Added
