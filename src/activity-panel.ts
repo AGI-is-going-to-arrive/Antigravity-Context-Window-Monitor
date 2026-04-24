@@ -222,9 +222,9 @@ export function getGMDataTabStyles(): string {
         border: 1px solid rgba(148,163,184,0.2);
     }
     .acct-plan-ultra {
-        background: var(--color-purple-bg);
-        color: var(--color-purple);
-        border: 1px solid var(--color-purple-border);
+        background: rgba(6,182,212,0.08);
+        color: var(--color-cyan);
+        border: 1px solid rgba(6,182,212,0.25);
     }
     .acct-plan-team {
         background: var(--color-ok-bg);
@@ -564,11 +564,38 @@ export function getGMDataTabStyles(): string {
     .act-card-row {
         display: flex;
         justify-content: space-between;
-        padding: 2px 0;
+        padding: 2px var(--space-1);
         font-size: 0.85em;
+        border-radius: var(--radius-sm);
+        transition: background 0.1s ease;
     }
-    .act-card-row .val { font-weight: 600; }
-    .act-card-row-cost .val { color: rgba(74,222,128,0.9); }
+    .act-card-row:nth-child(even) {
+        background: rgba(255, 255, 255, 0.02);
+    }
+    .act-card-row:hover {
+        background: rgba(255, 255, 255, 0.06);
+    }
+    .act-card-row .val { font-weight: 600; padding: 0 4px; border-radius: var(--radius-sm); border: 1px solid transparent; }
+    /* -- Value color coding (aligned with timeline tag colors) -- */
+    .act-card-row .val-calls { color: var(--color-info-light); background: rgba(96,165,250,0.08); border-color: rgba(96,165,250,0.2); }
+    .act-card-row .val-time { color: var(--color-amber-light); background: rgba(252,211,77,0.08); border-color: rgba(252,211,77,0.2); }
+    .act-card-row .val-in { color: var(--color-info-light); background: rgba(96,165,250,0.08); border-color: rgba(96,165,250,0.2); }
+    .act-card-row .val-out { color: var(--color-ok-light); background: rgba(74,222,128,0.08); border-color: rgba(74,222,128,0.2); }
+    .act-card-row .val-cache { color: var(--color-teal-light); background: rgba(45,212,191,0.08); border-color: rgba(45,212,191,0.2); }
+    .act-card-row .val-cost { color: var(--color-ok-light); background: rgba(34,197,94,0.08); border-color: rgba(34,197,94,0.25); }
+    .act-card-row .val-hit { color: var(--color-amber); background: rgba(251,191,36,0.08); border-color: rgba(251,191,36,0.2); }
+    .act-card-row .val-credits { color: var(--color-danger-light); background: rgba(248,113,113,0.08); border-color: rgba(248,113,113,0.2); }
+    .act-card-row-cost .val { color: var(--color-ok-light); }
+    body.vscode-light .act-card-row:nth-child(even) { background: rgba(0, 0, 0, 0.02); }
+    body.vscode-light .act-card-row:hover { background: rgba(0, 0, 0, 0.05); }
+    body.vscode-light .act-card-row .val-calls { color: #2563eb; background: rgba(37,99,235,0.06); border-color: rgba(37,99,235,0.15); }
+    body.vscode-light .act-card-row .val-time { color: #ca8a04; background: rgba(202,138,4,0.06); border-color: rgba(202,138,4,0.15); }
+    body.vscode-light .act-card-row .val-in { color: #2563eb; background: rgba(37,99,235,0.06); border-color: rgba(37,99,235,0.15); }
+    body.vscode-light .act-card-row .val-out { color: #16a34a; background: rgba(22,163,74,0.06); border-color: rgba(22,163,74,0.15); }
+    body.vscode-light .act-card-row .val-cache { color: #0d9488; background: rgba(13,148,136,0.06); border-color: rgba(13,148,136,0.15); }
+    body.vscode-light .act-card-row .val-cost { color: #16a34a; background: rgba(22,163,74,0.06); border-color: rgba(22,163,74,0.15); }
+    body.vscode-light .act-card-row .val-hit { color: #d97706; background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.15); }
+    body.vscode-light .act-card-row .val-credits { color: #dc2626; background: rgba(220,38,38,0.06); border-color: rgba(220,38,38,0.15); }
     body.vscode-light .act-card-row-cost .val { color: rgba(22,163,74,0.85); }
     .act-card-divider { border-top: 1px solid var(--color-border); margin: var(--space-1) 0; }
     .act-card-footer {
@@ -667,17 +694,18 @@ export function getGMDataTabStyles(): string {
         padding: 0 3px;
         border-radius: var(--radius-sm);
         white-space: nowrap;
+        border: 1px solid transparent;
     }
-    .act-tl-gm-in  { background: rgba(37,99,235,0.12); color: #2563eb; }
-    .act-tl-gm-out { background: rgba(22,163,74,0.12);  color: #16a34a; }
-    .act-tl-gm-ttft { background: rgba(202,138,4,0.12);  color: #ca8a04; }
-    .act-tl-gm-cache { background: rgba(13,148,136,0.12); color: #0d9488; }
-    .act-tl-gm-cost  { background: rgba(34,197,94,0.12);  color: #16a34a; }
+    .act-tl-gm-in  { background: rgba(37,99,235,0.12); color: #2563eb; border-color: rgba(37,99,235,0.25); }
+    .act-tl-gm-out { background: rgba(22,163,74,0.12);  color: #16a34a; border-color: rgba(22,163,74,0.25); }
+    .act-tl-gm-ttft { background: rgba(202,138,4,0.12);  color: #ca8a04; border-color: rgba(202,138,4,0.25); }
+    .act-tl-gm-cache { background: rgba(13,148,136,0.12); color: #0d9488; border-color: rgba(13,148,136,0.25); }
+    .act-tl-gm-cost  { background: rgba(34,197,94,0.12);  color: #16a34a; border-color: rgba(34,197,94,0.25); }
     .act-tl-gm-cost svg { width: 10px; height: 10px; vertical-align: -1px; margin-right: 1px; }
-    .act-tl-gm-credit { background: rgba(220,38,38,0.14); color: #dc2626; }
-    .act-tl-gm-retry { background: rgba(220,38,38,0.12);  color: #dc2626; }
-    .act-tl-gm-tool { background: rgba(100,116,139,0.12); color: #64748b; font-size: 0.88em; }
-    .act-tl-gm-ctx { background: rgba(139,92,246,0.10); color: #8b5cf6; }
+    .act-tl-gm-credit { background: rgba(220,38,38,0.14); color: #dc2626; border-color: rgba(220,38,38,0.25); }
+    .act-tl-gm-retry { background: rgba(220,38,38,0.12);  color: #dc2626; border-color: rgba(220,38,38,0.25); }
+    .act-tl-gm-tool { background: rgba(100,116,139,0.12); color: #64748b; font-size: 0.88em; border-color: rgba(100,116,139,0.2); }
+    .act-tl-gm-ctx { background: rgba(251,146,60,0.10); color: #fb923c; border-color: rgba(251,146,60,0.25); }
     body.vscode-dark .act-tl-gm-in  { background: var(--color-info-border-dim);  color: var(--color-info-light); }
     body.vscode-dark .act-tl-gm-out { background: var(--color-ok-bg);  color: var(--color-ok-light); }
     body.vscode-dark .act-tl-gm-ttft { background: var(--color-amber-border-dim); color: var(--color-amber-light); }
@@ -686,7 +714,8 @@ export function getGMDataTabStyles(): string {
     body.vscode-dark .act-tl-gm-credit { background: rgba(248,113,113,0.16); color: var(--color-danger-light); }
     body.vscode-dark .act-tl-gm-retry { background: var(--color-danger-bg-hover); color: var(--color-danger-light); }
     body.vscode-dark .act-tl-gm-tool { background: var(--color-muted-border); color: var(--color-muted); }
-    body.vscode-dark .act-tl-gm-ctx { background: var(--color-purple-bg); color: var(--color-purple); }
+    body.vscode-dark .act-tl-gm-ctx { background: var(--color-orange-bg, rgba(251,146,60,0.10)); color: var(--color-orange); }
+    body.vscode-light .act-tl-gm-tool { background: rgba(51,65,85,0.08); color: #334155; border-color: rgba(51,65,85,0.2); }
     /* ─── Turn Groups (collapsible segments) ─── */
     .act-tl-turn {
         border: 1px solid var(--color-border, rgba(128,128,128,0.12));
@@ -803,15 +832,16 @@ export function getGMDataTabStyles(): string {
         font-weight: 600;
     }
     .seg-chip-ctx {
-        border-color: var(--color-purple-border);
-        background: rgba(168,85,247,0.08);
-        color: var(--color-purple-light);
+        border-color: var(--color-orange-border);
+        background: rgba(251,146,60,0.08);
+        color: var(--color-orange-light);
     }
     .seg-chip-retry {
         border-color: var(--color-danger-border);
         background: var(--color-danger-bg);
         color: var(--color-danger-light);
     }
+    body.vscode-light .seg-chip-tools { color: #b45309; border-color: rgba(180,83,9,0.2); background: rgba(180,83,9,0.06); }
     .act-tl-segment-user {
         background: var(--color-ok-bg-dim);
         padding-left: var(--space-2);
@@ -1060,7 +1090,7 @@ export function getGMDataTabStyles(): string {
     .act-conv-item:nth-child(6n+3) { border-left-color: var(--color-warn); }
     .act-conv-item:nth-child(6n+4) { border-left-color: var(--color-danger); }
     .act-conv-item:nth-child(6n+5) { border-left-color: var(--color-teal); }
-    .act-conv-item:nth-child(6n+6) { border-left-color: var(--color-purple); }
+    .act-conv-item:nth-child(6n+6) { border-left-color: var(--color-orange); }
     .act-conv-title-chip {
         flex: 1;
         min-width: 0;
@@ -1119,7 +1149,7 @@ export function getGMDataTabStyles(): string {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 2px 0;
+        padding: 2px var(--space-1);
         font-size: 0.82em;
     }
     .gm-account-row .gm-account-label {
@@ -1140,17 +1170,17 @@ export function getGMDataTabStyles(): string {
     .gm-account-row .gm-account-count {
         font-weight: 600;
         font-variant-numeric: tabular-nums;
-        color: var(--color-purple);
+        color: var(--color-info);
         flex-shrink: 0;
+        padding: 0 4px;
+        border-radius: var(--radius-sm);
+        background: rgba(96,165,250,0.08);
+        border: 1px solid rgba(96,165,250,0.2);
     }
     /* Active account highlight */
     .gm-account-row.gm-account-active {
         background: var(--color-ok-bg-dim);
-        border: 1px solid rgba(52,211,153,0.2);
-        border-left: 2px solid var(--color-ok-dim);
         border-radius: var(--radius-sm);
-        padding: 3px 8px 3px 6px;
-        margin: 1px -8px 1px -8px;
     }
     .gm-account-row.gm-account-active .gm-account-label {
         color: var(--color-text);
@@ -1161,6 +1191,8 @@ export function getGMDataTabStyles(): string {
     }
     .gm-account-row.gm-account-active .gm-account-count {
         color: var(--color-ok-dim);
+        background: rgba(52,211,153,0.08);
+        border-color: rgba(52,211,153,0.2);
     }
     /* ── Credit call count annotation ── */
     .act-credit-calls {
@@ -2058,11 +2090,11 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
     // When no activity data, show GM-only summary
     if (!s && gm) {
         return `<div class="act-summary-bar">
-            <div class="act-stat"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val">${gm.totalCalls}</span><span class="act-stat-label">${tBi('Calls', '调用')}</span></div>
-            <div class="act-stat"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val">${fmt(gm.totalInputTokens)}</span><span class="act-stat-label">${tBi('In', '输入')}</span></div>
-            <div class="act-stat"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
-            ${gm.totalCacheRead > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>` : ''}
-            ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val">${gm.totalCredits.toFixed(1)}</span><span class="act-stat-label">Credits</span></div>` : ''}
+            <div class="act-stat"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val val-calls">${gm.totalCalls}</span><span class="act-stat-label">${tBi('Calls', '调用')}</span></div>
+            <div class="act-stat"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(gm.totalInputTokens)}</span><span class="act-stat-label">${tBi('In', '输入')}</span></div>
+            <div class="act-stat"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
+            ${gm.totalCacheRead > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>` : ''}
+            ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${gm.totalCredits.toFixed(1)}</span><span class="act-stat-label">Credits</span></div>` : ''}
             ${buildErrorChip(gm)}
         </div>`;
     }
@@ -2072,7 +2104,7 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
     // GM-specific: calls chip
     let gmCallsChip = '';
     if (gm && gm.totalCalls > 0) {
-        gmCallsChip = `<div class="act-stat" data-tooltip="${tBi('Total LLM API calls', 'LLM API 调用总次数')}"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val">${gm.totalCalls}</span><span class="act-stat-label">${tBi('Calls', '调用')}</span></div>`;
+        gmCallsChip = `<div class="act-stat" data-tooltip="${tBi('Total LLM API calls', 'LLM API 调用总次数')}"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val val-calls">${gm.totalCalls}</span><span class="act-stat-label">${tBi('Calls', '调用')}</span></div>`;
     }
 
     // GM vs CHECKPOINT token selection
@@ -2088,11 +2120,11 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
 
     // Cache chip
     const cacheTokens = s.gmTotalCacheRead || 0;
-    const cacheChip = cacheTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('Cache read tokens', '缓存读取 token')}"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val">${fmt(cacheTokens)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>` : '';
+    const cacheChip = cacheTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('Cache read tokens', '缓存读取 token')}"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(cacheTokens)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>` : '';
 
     // Credits chip
     const credits = s.gmTotalCredits || 0;
-    const creditsChip = credits > 0 ? `<div class="act-stat" data-tooltip="${tBi('Credits consumed', '消耗的积分')}"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val">${credits.toFixed(1)}</span><span class="act-stat-label">${tBi('Credits', '积分')}</span></div>` : '';
+    const creditsChip = credits > 0 ? `<div class="act-stat" data-tooltip="${tBi('Credits consumed', '消耗的积分')}"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${credits.toFixed(1)}</span><span class="act-stat-label">${tBi('Credits', '积分')}</span></div>` : '';
 
     // Tool output chip
     const toolOutChip = s.totalToolReturnTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('Tokens returned by tool calls', '工具调用返回的 token 数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg></span><span class="act-stat-val">${fmt(s.totalToolReturnTokens)}</span><span class="act-stat-label">${tBi('Tool Out', '工具输出')}</span></div>` : '';
@@ -2100,8 +2132,8 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
     return `
     <div class="act-summary-bar">
         ${gmCallsChip}
-        <div class="act-stat" data-tooltip="${inTooltip}"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val">${fmt(inTokens)}</span><span class="act-stat-label">${tBi('In', '输入')}</span></div>
-        <div class="act-stat" data-tooltip="${outTooltip}"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val">${fmt(outTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
+        <div class="act-stat" data-tooltip="${inTooltip}"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(inTokens)}</span><span class="act-stat-label">${tBi('In', '输入')}</span></div>
+        <div class="act-stat" data-tooltip="${outTooltip}"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(outTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
         ${toolOutChip}
         ${cacheChip}
         ${creditsChip}
@@ -2262,16 +2294,16 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
             if (gmStats && gmStats.callCount > 0) {
                 gmSection = `
                 <div class="act-card-divider"></div>
-                <div class="act-card-row"><span>${ICONS.tool} <span>${tBi('Calls', '调用')}</span></span><span class="val">${gmStats.callCount}</span></div>
-                <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val">${fmtSec(gmStats.avgTTFT)}</span></div>
-                ${'avgStreaming' in gmStats && gmStats.avgStreaming > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Avg Stream', '平均流速')}</span></span><span class="val">${fmtSec(gmStats.avgStreaming)}</span></div>` : ''}
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val">${fmt(gmStats.totalInputTokens)}</span></div>
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(gmStats.totalOutputTokens)}</span></div>
-                ${'totalThinkingTokens' in gmStats && gmStats.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val">${fmt(gmStats.totalThinkingTokens)}</span></div>` : ''}
-                ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gmStats.totalCacheRead)}</span></div>` : ''}
-                ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val">${gmStats.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gmStats.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
-                ${(() => { const pr = findPricing(gmStats.responseModel) || findPricing(name); if (!pr) { return ''; } const cost = (gmStats.totalInputTokens * pr.input + gmStats.totalOutputTokens * pr.output + gmStats.totalCacheRead * pr.cacheRead + gmStats.totalThinkingTokens * pr.thinking) / 1_000_000; if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val">$${costStr}</span></div>`; })()}
-                ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gmStats.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
+                <div class="act-card-row"><span>${ICONS.tool} <span>${tBi('Calls', '调用')}</span></span><span class="val val-calls">${gmStats.callCount}</span></div>
+                <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val val-time">${fmtSec(gmStats.avgTTFT)}</span></div>
+                ${'avgStreaming' in gmStats && gmStats.avgStreaming > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Avg Stream', '平均流速')}</span></span><span class="val val-time">${fmtSec(gmStats.avgStreaming)}</span></div>` : ''}
+                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val val-in">${fmt(gmStats.totalInputTokens)}</span></div>
+                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val val-out">${fmt(gmStats.totalOutputTokens)}</span></div>
+                ${'totalThinkingTokens' in gmStats && gmStats.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val val-out">${fmt(gmStats.totalThinkingTokens)}</span></div>` : ''}
+                ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val val-cache">${fmt(gmStats.totalCacheRead)}</span></div>` : ''}
+                ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val val-credits">${gmStats.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gmStats.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
+                ${(() => { const pr = findPricing(gmStats.responseModel) || findPricing(name); if (!pr) { return ''; } const cost = (gmStats.totalInputTokens * pr.input + gmStats.totalOutputTokens * pr.output + gmStats.totalCacheRead * pr.cacheRead + gmStats.totalThinkingTokens * pr.thinking) / 1_000_000; if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${costStr}</span></div>`; })()}
+                ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val val-hit">${(gmStats.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
                 `;
                 // responseModel footer removed — card header already shows normalized model name
             }
@@ -2294,17 +2326,17 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
         <div class="act-model-card">
             <div class="act-card-header">${esc(name)}</div>
             <div class="act-card-body">
-                <div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Steps', '步骤')}</span></span><span class="val">${gms.stepsCovered}</span></div>
-                <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val">${fmtSec(gms.avgTTFT)}</span></div>
-                ${'avgStreaming' in gms && gms.avgStreaming > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Avg Stream', '平均流速')}</span></span><span class="val">${fmtSec(gms.avgStreaming)}</span></div>` : ''}
+                <div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Steps', '步骤')}</span></span><span class="val val-calls">${gms.stepsCovered}</span></div>
+                <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val val-time">${fmtSec(gms.avgTTFT)}</span></div>
+                ${'avgStreaming' in gms && gms.avgStreaming > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Avg Stream', '平均流速')}</span></span><span class="val val-time">${fmtSec(gms.avgStreaming)}</span></div>` : ''}
                 <div class="act-card-divider"></div>
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val">${fmt(gms.totalInputTokens)}</span></div>
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val">${fmt(gms.totalOutputTokens)}</span></div>
-                ${'totalThinkingTokens' in gms && gms.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val">${fmt(gms.totalThinkingTokens)}</span></div>` : ''}
-                ${gms.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val">${fmt(gms.totalCacheRead)}</span></div>` : ''}
-                ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val">${gms.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gms.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
-                ${(() => { const pr = findPricing(gms.responseModel) || findPricing(name); if (!pr) { return ''; } const cost = (gms.totalInputTokens * pr.input + gms.totalOutputTokens * pr.output + gms.totalCacheRead * pr.cacheRead + gms.totalThinkingTokens * pr.thinking) / 1_000_000; if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val">$${costStr}</span></div>`; })()}
-                ${gms.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val">${(gms.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
+                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val val-in">${fmt(gms.totalInputTokens)}</span></div>
+                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val val-out">${fmt(gms.totalOutputTokens)}</span></div>
+                ${'totalThinkingTokens' in gms && gms.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val val-out">${fmt(gms.totalThinkingTokens)}</span></div>` : ''}
+                ${gms.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val val-cache">${fmt(gms.totalCacheRead)}</span></div>` : ''}
+                ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val val-credits">${gms.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gms.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
+                ${(() => { const pr = findPricing(gms.responseModel) || findPricing(name); if (!pr) { return ''; } const cost = (gms.totalInputTokens * pr.input + gms.totalOutputTokens * pr.output + gms.totalCacheRead * pr.cacheRead + gms.totalThinkingTokens * pr.thinking) / 1_000_000; if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${costStr}</span></div>`; })()}
+                ${gms.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val val-hit">${(gms.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
                 ${buildAccountSection(name)}
             </div>
             <div class="act-card-footer">
@@ -2489,7 +2521,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
                 if (toolMatch) {
                     const count = parseInt(toolMatch[1], 10);
                     if (count > 0) {
-                        statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-tool">\ud83d\udd27${count} ${tBi(count === 1 ? 'tool' : 'tools', '\u5de5\u5177')}</span>`);
+                        statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-tool"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>${count} ${tBi(count === 1 ? 'tool' : 'tools', '工具')}</span>`);
                     }
                 }
             }
@@ -2616,9 +2648,9 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         }
         // 3. Tool calls — occasional
         if (stats.toolNames > 0) {
-            chips.push(`<span class="seg-chip seg-chip-tools">\ud83d\udd27${stats.toolNames} ${tBi('tools', '\u5de5\u5177')}</span>`);
+            chips.push(`<span class="seg-chip seg-chip-tools"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>${stats.toolNames} ${tBi('tools', '工具')}</span>`);
         } else if (stats.toolCount > 0) {
-            chips.push(`<span class="seg-chip seg-chip-tools">\ud83d\udd27${stats.toolCount}</span>`);
+            chips.push(`<span class="seg-chip seg-chip-tools"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>${stats.toolCount}</span>`);
         }
         // 4. Call count — almost always
         if (stats.reasoningCount > 0) { chips.push(`<span class="seg-chip seg-chip-calls">${stats.reasoningCount} ${tBi('calls', '调用')}</span>`); }
@@ -3164,7 +3196,7 @@ function buildContextIntelViewer(s: GMSummary): string {
         },
         user_rules: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
-            color: '#a78bfa',
+            color: '#06b6d4',
             label: tBi('User Rules', '用户规则'),
         },
         mcp_servers: {

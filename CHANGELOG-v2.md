@@ -8,6 +8,60 @@
 
 ---
 
+## 全局颜色统一 + 去紫色化 — 2026-04-24
+
+### 改进 / Improved
+
+- **全局颜色对齐**:
+  时间线标签、Summary Bar 芯片、模型统计卡片三处数值颜色系统统一对齐，所有同类数据使用相同颜色。
+
+  Unified color system across timeline tags, summary bar chips, and model stats card values.
+
+  | 类别 | 颜色 | CSS 变量 |
+  |---|---|---|
+  | 调用 | 蓝 | `--color-info-light` |
+  | 输入 | 蓝 | `--color-info-light` |
+  | 输出 | 绿 | `--color-ok-light` |
+  | 时间 (TTFT/流速) | 琥珀 | `--color-amber-light` |
+  | 缓存 | 青绿 | `--color-teal-light` |
+  | 费用 | 绿 | `--color-ok-light` |
+  | 积分 | 红 | `--color-danger-light` |
+  | 上下文 | 橙 | `--color-orange` |
+
+- **去紫色化**:
+  紫色作为 AI 象征色，从全局 UI 中移除。上下文标签→橙色，Ultra 徽章→青色，账号计数→蓝色，对话循环色→橙色。
+
+  Removed purple (AI-symbolic color) globally: ctx→orange, Ultra badge→cyan, account count→info blue.
+
+- **时间线标签添加边框**:
+  所有 `.act-tl-gm-tag` 添加同色系半透明边框，与 Summary Bar 芯片风格统一。
+
+  Added matching `border-color` to all timeline tags for visual consistency with summary bar chips.
+
+- **工具图标 SVG 化**:
+  🔧 emoji 替换为 `stroke="currentColor"` 的 SVG 扳手图标，解决浅色主题下不可见问题。
+
+  Replaced wrench emoji with SVG icon using `currentColor` for theme-adaptive visibility.
+
+- **浅色主题可见性修复**:
+  工具标签在浅色主题下使用更深的颜色（深石板灰 / 深琥珀），确保白色背景下可见。
+
+  Improved light theme contrast for tool tags with darker text colors.
+
+- **数值芯片化**:
+  模型卡片中所有数值和账号计数均添加同色系半透明背景 + 边框，形成与 Summary Bar 芯片一致的视觉层级感。
+
+  All model card values and account counts now have chip-style backgrounds and borders matching summary bar chips.
+
+### 统计 / Stats
+
+- **Files changed**: 1 (`src/activity-panel.ts`)
+- **TypeScript compile**: Zero errors
+- **Tests**: 50 passed
+- **New CSS classes**: `.val-in`, `.val-out`, `.val-time`, `.val-calls`, `.val-cache`, `.val-cost`, `.val-hit`, `.val-credits`
+
+---
+
 ## 工具目录气泡标签 — 2026-04-24
 
 ### 新增 / Added
