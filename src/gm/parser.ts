@@ -16,6 +16,25 @@ import type {
 
 // ─── Primitive Parsers ───────────────────────────────────────────────────────
 
+/**
+ * Clean API-duplicated error text: "MSG: MSG" → "MSG".
+ * The server sometimes returns the same error text doubled with ": " separator.
+ * Scans all ": " positions to find the split point where both halves match.
+ * Covers patterns like "msg.: msg.", "server: UNAVAILABLE...", "canceled: request..." etc.
+ */
+export function deduplicateApiErrorText(msg: string): string {
+    let sf = 0;
+    while (sf < msg.length) {
+        const si = msg.indexOf(': ', sf);
+        if (si < 0 || si >= msg.length - 2) { break; }
+        const first = msg.substring(0, si);
+        const second = msg.substring(si + 2);
+        if (first === second) { return first; }
+        sf = si + 2;
+    }
+    return msg;
+}
+
 export function parseDuration(s: unknown): number {
     if (typeof s === 'number') { return s; }
     if (!s || typeof s !== 'string') { return 0; }
@@ -663,13 +682,8 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         for (const ri of retryInfos) {
             let errMsg = ri.error as string;
             if (!errMsg) { continue; } // Skip successful attempt entry
-            // API bug cleanup: server sometimes doubles the error text as "msg.: msg."
-            const sepIdx = errMsg.indexOf('.: ');
-            if (sepIdx > 0 && sepIdx < errMsg.length - 3) {
-                const first = errMsg.substring(0, sepIdx + 1);
-                const second = errMsg.substring(sepIdx + 3);
-                if (first === second) { errMsg = first; }
-            }
+            // API bug cleanup: server sometimes doubles the error text as "MSG: MSG"
+            errMsg = deduplicateApiErrorText(errMsg);
             retryErrors.push(errMsg);
             const ru = (ri.usage || {}) as Record<string, unknown>;
             retryTokensIn += parseInt0(ru.inputTokens as string);

@@ -27,6 +27,7 @@ import {
     maybeEnrichCallsFromTrajectory,
     shouldEnrichConversation,
     buildGMArchiveKey,
+    deduplicateApiErrorText,
 } from './parser';
 import { buildSummaryFromConversations, normalizeGMSummary, parseErrorCode, normalizeErrorMessage } from './summary';
 
@@ -751,12 +752,23 @@ export class GMTracker {
             }
         }
         // Rebuild uniqueErrors from merged state (re-parse code from message)
+        // Apply deduplicateApiErrorText() to clean persisted messages that were saved
+        // before the parser cleanup was added (old "MSG: MSG" duplicates).
         if (Object.keys(acctUniqueErrors).length > 0) {
-            result.uniqueErrors = Object.entries(acctUniqueErrors)
+            const cleanedUniqueErrors: Record<string, { message: string; firstSeen: string }> = {};
+            for (const [, { message, firstSeen }] of Object.entries(acctUniqueErrors)) {
+                const cleaned = deduplicateApiErrorText(message);
+                const normKey = normalizeErrorMessage(cleaned);
+                const existing = cleanedUniqueErrors[normKey];
+                if (!existing || (firstSeen && firstSeen < existing.firstSeen)) {
+                    cleanedUniqueErrors[normKey] = { message: cleaned, firstSeen };
+                }
+            }
+            result.uniqueErrors = Object.entries(cleanedUniqueErrors)
                 .map(([, { message, firstSeen }]) => ({ code: parseErrorCode(message), message, firstSeen }))
                 .sort((a, b) => a.firstSeen.localeCompare(b.firstSeen));
-            // Persist back
-            this._persistedUniqueErrorsByAccount[accountKey] = { ...acctUniqueErrors };
+            // Persist back cleaned version
+            this._persistedUniqueErrorsByAccount[accountKey] = { ...cleanedUniqueErrors };
         }
 
         return result;

@@ -8,6 +8,39 @@
 
 ---
 
+## 错误种类去重增强 + API 重复消息清洗 — 2026-04-24
+
+### 修复 / Fixed
+
+- **复合时间格式未归一化 / Compound Duration Not Normalized**:
+  `normalizeErrorMessage()` 的正则 `/reset after \d+s/` 只能匹配纯秒数（如 `1s`），无法匹配 API 返回的复合时间格式（如 `19h22m14s`、`3h12m38s`）。导致同一种 429 额度耗尽错误因等待时间不同被记为多个"种类"。
+
+  修正：正则改为 `/reset after \d+[hms][\dhms]*/`，覆盖所有时间组合，统一归一化为 `reset after <time>`。
+
+  Fix: regex now matches compound durations (`19h22m14s`, `3h12m38s`, `1s`) instead of only seconds.
+
+- **API 重复消息未折叠 / API Duplicated Error Messages Not Collapsed**:
+  API 服务端 bug 返回 `MSG: MSG` 格式的重复错误消息（如 `UNAVAILABLE ...server: UNAVAILABLE ...server`）。旧逻辑仅检测 `.: ` 分隔符，无法处理 `server: UNAVAILABLE` 或 `canceled: request` 等分隔模式。
+
+  修正：提取 `deduplicateApiErrorText()` 公共函数，遍历所有 `: ` 位置检测两半匹配，覆盖所有重复模式。
+
+  Fix: new `deduplicateApiErrorText()` scans all `: ` positions for split-point matching, covering all duplication patterns.
+
+- **持久化旧消息未清洗 / Persisted Messages Not Cleaned**:
+  `_persistedUniqueErrorsByAccount` 中存储的旧消息（含未折叠的 API 重复）在 `_buildSummary()` 合并时因 `firstSeen` 更早而"赢"过新的已清洗消息，导致 UI 持续显示重复文本。
+
+  修正：重建 `uniqueErrors` 时对所有持久化 message 应用 `deduplicateApiErrorText()` 清洗，并回写清洗后的版本。一次性自动修复所有历史脏数据。
+
+  Fix: persisted messages are now cleaned through `deduplicateApiErrorText()` during merge, with cleaned versions written back to storage.
+
+### 统计 / Stats
+
+- **Files changed**: 3 (`src/gm/summary.ts`, `src/gm/parser.ts`, `src/gm/tracker.ts`)
+- **New export**: `deduplicateApiErrorText()` (parser.ts)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## 移除监控标签页 + 账号面板额度进度条 — 2026-04-24
 
 ### 移除 / Removed

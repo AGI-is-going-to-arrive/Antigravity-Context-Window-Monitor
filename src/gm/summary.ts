@@ -49,18 +49,35 @@ export function parseErrorCode(errorMsg: string): string {
  * "kind" if their normalized forms match.
  *
  * Examples:
- *   'RESOURCE_EXHAUSTED ... reset after 0s.' → same kind as 'reset after 1s.'
- *   'write tcp 198.18.0.1:14266->...:443' → same kind as '198.18.0.1:5167->...:443'
- *   'failed to read file: open e:/path/file1.txt' → different from 'file2.txt'
+ *   'RESOURCE_EXHAUSTED ... reset after 0s.'      → same kind as 'reset after 19h22m14s.'
+ *   'RESOURCE_EXHAUSTED ... reset after 3h12m38s.' → same kind as 'reset after 1s.'
+ *   'write tcp 198.18.0.1:14266->...:443'          → same kind as '198.18.0.1:5167->...:443'
+ *   'failed to read file: open e:/path/file1.txt'  → different from 'file2.txt'
  */
 export function normalizeErrorMessage(msg: string): string {
-    return msg
-        // Normalize "Your quota will reset after Ns." — the wait time is volatile
-        .replace(/reset after \d+s/g, 'reset after Ns')
+    let result = msg
+        // Normalize "Your quota will reset after Xh Ym Zs." — compound duration is volatile
+        // Matches: "1s", "22m14s", "19h22m14s", "3h12m38s" etc.
+        .replace(/reset after \d+[hms][\dhms]*/g, 'reset after <time>')
         // Normalize TCP source port: "198.18.0.1:14266->" → "198.18.0.1:PORT->"
         .replace(/(\d+\.\d+\.\d+\.\d+):\d+(->)/g, '$1:PORT$2')
         // Trim trailing whitespace for consistency
         .trim();
+    // Collapse API-duplicated messages: "MSG.: MSG." → "MSG." or "MSG: MSG" → "MSG"
+    // The API server sometimes returns the same error text doubled with ": " separator.
+    // parser.ts already handles this with ".: " detection, but we add a fallback here
+    // for messages that slip through (e.g. different separator patterns).
+    // Scan ALL ": " positions (not just the first) because the message itself may contain ": ".
+    let searchFrom = 0;
+    while (searchFrom < result.length) {
+        const colonIdx = result.indexOf(': ', searchFrom);
+        if (colonIdx < 0 || colonIdx >= result.length - 2) { break; }
+        const first = result.substring(0, colonIdx);
+        const second = result.substring(colonIdx + 2);
+        if (first === second) { result = first; break; }
+        searchFrom = colonIdx + 2;
+    }
+    return result;
 }
 
 /** Aggregate retryErrors from a call into error code counts and recent errors list */
