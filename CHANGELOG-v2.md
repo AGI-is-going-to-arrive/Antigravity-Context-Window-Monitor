@@ -8,6 +8,39 @@
 
 ---
 
+## 错误种类 / 工具目录全局共享 + 去重增强 — 2026-04-25
+
+### 修复 / Fixed
+
+- **错误种类 / 工具目录多账号未共享 / Error Types & Tool Catalog Not Shared Across Accounts**:
+  「错误种类」(`uniqueErrors`) 和「工具目录」(`toolCatalog`) 的持久化以 per-account email 为 key 隔离存储，切换账号后显示不同数量的错误种类/工具。应作为全局共享的永久目录。
+
+  Root cause: `_persistedUniqueErrorsByAccount` 和 `_persistedToolCatalogByAccount` 在 `_buildSummary()` 中仅读取当前 `_currentAccountEmail` 桶，写入也仅存当前桶。
+
+  **修复**: 读取时聚合**所有**账号桶数据（含旧 per-account 桶），写入时合并到单一 `__shared__` 桶。旧 per-account 数据在首次重建时自动迁移，后续统一使用 `__shared__` 桶。切换账号后错误种类和工具目录数量保持一致。
+
+  Error types and tool catalog were stored per-account, showing inconsistent counts when switching accounts. Fix: read phase aggregates ALL account buckets; write phase merges into a single `__shared__` bucket. Legacy per-account data is automatically migrated on first rebuild.
+
+- **"关于"标签图标深色主题不可见 / About Tab Icon Invisible in Dark Theme**:
+  标签栏"关于"按钮的 SVG 信息图标中，圆圈内"i"字形的 `<path>` 缺少 `fill="currentColor"`，使用默认黑色填充，在深色主题下不可见。
+
+  Fix: Added `fill="currentColor"` to the second `<path>` in the About tab button SVG icon.
+
+### 改进 / Improved
+
+- **错误去重增强：目标 IP 归一化 / Enhanced Error Dedup: Destination IP Normalization**:
+  `normalizeErrorMessage()` 新增对 TCP 目标 IP:port 的归一化（`->198.18.0.57:443` → `->HOST:443`）。同一种 TCP 连接错误（如 `wsasend: connection forcibly closed`）因后端服务器 IP 不同而被识别为多个种类，现在正确合并。
+
+  New normalization rule for TCP destination `IP:port` in `normalizeErrorMessage()`. Connection errors to different backend IPs (e.g., `.22` vs `.57`) are now correctly collapsed into a single error type.
+
+### 统计 / Stats
+
+- **Files changed**: 3 (`src/gm/tracker.ts`, `src/gm/summary.ts`, `src/webview-panel.ts`)
+- **Docs updated**: 1 (`docs/project_structure.md`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## 账号面板视觉优化 — 2026-04-25
 
 ### 改进 / Improved

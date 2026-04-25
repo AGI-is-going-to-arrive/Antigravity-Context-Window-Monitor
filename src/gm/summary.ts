@@ -61,6 +61,9 @@ export function normalizeErrorMessage(msg: string): string {
         .replace(/reset after \d+[hms][\dhms]*/g, 'reset after <time>')
         // Normalize TCP source port: "198.18.0.1:14266->" → "198.18.0.1:PORT->"
         .replace(/(\d+\.\d+\.\d+\.\d+):\d+(->)/g, '$1:PORT$2')
+        // Normalize TCP destination IP:port: "->198.18.0.57:443" → "->HOST:443"
+        // Backend server IPs vary per request but the error kind is the same.
+        .replace(/->\d+\.\d+\.\d+\.\d+:\d+/g, '->HOST:443')
         // Trim trailing whitespace for consistency
         .trim();
     // Collapse API-duplicated messages: "MSG.: MSG." → "MSG." or "MSG: MSG" → "MSG"

@@ -619,33 +619,32 @@ export class GMTracker {
             .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
             .slice(0, 20);
 
-        // ── Merge tool catalog with persisted data ──
-        const acctKey = this._currentAccountEmail || '__default__';
-        const persistedCatalog = this._persistedToolCatalogByAccount[acctKey] || {};
-        // Merge persisted → fresh map (keep earliest firstSeen + carry descriptions)
-        for (const [name, persisted] of Object.entries(persistedCatalog)) {
-            const fresh = toolCatalogMap.get(name);
-            if (!fresh) {
-                // Tool only exists in persisted data (API didn't return it yet)
-                toolCatalogMap.set(name, { name, firstSeen: persisted.firstSeen, description: persisted.description });
-            } else if (persisted.firstSeen && persisted.firstSeen < fresh.firstSeen) {
-                // Persisted has an earlier firstSeen
-                fresh.firstSeen = persisted.firstSeen;
-                if (persisted.description) { fresh.description = persisted.description; }
-            } else if (persisted.description && !fresh.description) {
-                fresh.description = persisted.description;
+        // ── Merge tool catalog with persisted data (globally shared across all accounts) ──
+        // Tool catalog is a permanent, cross-account inventory — merge ALL per-account
+        // buckets so switching accounts never loses previously discovered tools.
+        for (const [, acctCatalog] of Object.entries(this._persistedToolCatalogByAccount)) {
+            for (const [name, persisted] of Object.entries(acctCatalog)) {
+                const fresh = toolCatalogMap.get(name);
+                if (!fresh) {
+                    toolCatalogMap.set(name, { name, firstSeen: persisted.firstSeen, description: persisted.description });
+                } else if (persisted.firstSeen && persisted.firstSeen < fresh.firstSeen) {
+                    fresh.firstSeen = persisted.firstSeen;
+                    if (persisted.description) { fresh.description = persisted.description; }
+                } else if (persisted.description && !fresh.description) {
+                    fresh.description = persisted.description;
+                }
             }
         }
         result.toolCatalog = [...toolCatalogMap.values()].sort((a, b) =>
             a.firstSeen.localeCompare(b.firstSeen),
         );
-        // Write back to persisted store
+        // Write back to a single shared bucket, consolidating all per-account data
         const catalogPersist: Record<string, { firstSeen: string; description?: string }> = {};
         for (const entry of result.toolCatalog) {
             catalogPersist[entry.name] = { firstSeen: entry.firstSeen };
             if (entry.description) { catalogPersist[entry.name].description = entry.description; }
         }
-        this._persistedToolCatalogByAccount[acctKey] = catalogPersist;
+        this._persistedToolCatalogByAccount = { '__shared__': catalogPersist };
 
         // Merge persisted baselines with fresh data (max-wins per tool)
         // This ensures tool counts survive restarts even if the API doesn't
@@ -726,37 +725,38 @@ export class GMTracker {
         this._persistedRetryErrorCodes = {};
         this._persistedRecentErrors = [];
 
-        // ── Merge persisted unique errors (per-account, keyed by normalized message) ──
-        // v1.17.x changed dedup key from errorCode to normalizeErrorMessage(msg)
-        // so different messages under the same code are tracked separately.
+        // ── Merge persisted unique errors (globally shared across all accounts) ──
+        // Unique error catalog is a permanent, cross-account inventory — merge ALL
+        // per-account buckets so switching accounts never loses error history.
         // Migration: re-key ALL persisted entries through normalizeErrorMessage()
         // to collapse old errorCode-keyed entries into the new format.
-        const rawPersistedUE = this._persistedUniqueErrorsByAccount[accountKey] || {};
-        const acctUniqueErrors: Record<string, { message: string; firstSeen: string }> = {};
-        for (const [, value] of Object.entries(rawPersistedUE)) {
-            if (!value.message) { continue; } // skip corrupt entries
-            const normKey = normalizeErrorMessage(value.message);
-            const existing = acctUniqueErrors[normKey];
-            if (!existing || (value.firstSeen && value.firstSeen < existing.firstSeen)) {
-                acctUniqueErrors[normKey] = { message: value.message, firstSeen: value.firstSeen };
+        const mergedUniqueErrors: Record<string, { message: string; firstSeen: string }> = {};
+        for (const [, acctUE] of Object.entries(this._persistedUniqueErrorsByAccount)) {
+            for (const [, value] of Object.entries(acctUE)) {
+                if (!value.message) { continue; } // skip corrupt entries
+                const normKey = normalizeErrorMessage(value.message);
+                const existing = mergedUniqueErrors[normKey];
+                if (!existing || (value.firstSeen && value.firstSeen < existing.firstSeen)) {
+                    mergedUniqueErrors[normKey] = { message: value.message, firstSeen: value.firstSeen };
+                }
             }
         }
         if (result.uniqueErrors && result.uniqueErrors.length > 0) {
-            // Merge fresh unique errors with migrated persisted: keep earliest firstSeen per normalized message
+            // Merge fresh unique errors with persisted: keep earliest firstSeen per normalized message
             for (const entry of result.uniqueErrors) {
                 const normKey = normalizeErrorMessage(entry.message);
-                const persisted = acctUniqueErrors[normKey];
+                const persisted = mergedUniqueErrors[normKey];
                 if (!persisted || (entry.firstSeen && entry.firstSeen < persisted.firstSeen)) {
-                    acctUniqueErrors[normKey] = { message: entry.message, firstSeen: entry.firstSeen };
+                    mergedUniqueErrors[normKey] = { message: entry.message, firstSeen: entry.firstSeen };
                 }
             }
         }
         // Rebuild uniqueErrors from merged state (re-parse code from message)
         // Apply deduplicateApiErrorText() to clean persisted messages that were saved
         // before the parser cleanup was added (old "MSG: MSG" duplicates).
-        if (Object.keys(acctUniqueErrors).length > 0) {
+        if (Object.keys(mergedUniqueErrors).length > 0) {
             const cleanedUniqueErrors: Record<string, { message: string; firstSeen: string }> = {};
-            for (const [, { message, firstSeen }] of Object.entries(acctUniqueErrors)) {
+            for (const [, { message, firstSeen }] of Object.entries(mergedUniqueErrors)) {
                 const cleaned = deduplicateApiErrorText(message);
                 const normKey = normalizeErrorMessage(cleaned);
                 const existing = cleanedUniqueErrors[normKey];
@@ -767,8 +767,8 @@ export class GMTracker {
             result.uniqueErrors = Object.entries(cleanedUniqueErrors)
                 .map(([, { message, firstSeen }]) => ({ code: parseErrorCode(message), message, firstSeen }))
                 .sort((a, b) => a.firstSeen.localeCompare(b.firstSeen));
-            // Persist back cleaned version
-            this._persistedUniqueErrorsByAccount[accountKey] = { ...cleanedUniqueErrors };
+            // Persist back to a single shared bucket, consolidating all per-account data
+            this._persistedUniqueErrorsByAccount = { '__shared__': cleanedUniqueErrors };
         }
 
         return result;
