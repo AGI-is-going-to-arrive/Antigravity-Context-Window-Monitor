@@ -3633,7 +3633,9 @@ export function getStyles(): string {
             padding: 3px 10px 3px 7px;
             border: 1px solid rgba(255,255,255,0.08);
             border-radius: var(--radius-full, 9999px);
-            background: linear-gradient(135deg, rgba(96,165,250,0.08), rgba(167,139,250,0.06));
+            background: rgba(148,163,184,0.08);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
             color: var(--color-text-dim);
             font-size: 0.72em;
             font-weight: 500;
@@ -3649,15 +3651,15 @@ export function getStyles(): string {
         }
         @media (hover: hover) {
             .acct-popover-trigger:hover {
-                border-color: rgba(96,165,250,0.3);
-                background: linear-gradient(135deg, rgba(96,165,250,0.14), rgba(167,139,250,0.1));
+                border-color: rgba(148,163,184,0.25);
+                background: rgba(148,163,184,0.14);
                 color: var(--color-text);
             }
             .acct-popover-trigger:hover svg { opacity: 1; }
         }
         .acct-popover-trigger.is-open {
-            border-color: rgba(96,165,250,0.4);
-            background: linear-gradient(135deg, rgba(96,165,250,0.18), rgba(167,139,250,0.12));
+            border-color: rgba(148,163,184,0.3);
+            background: rgba(148,163,184,0.18);
             color: var(--color-text);
         }
         .acct-popover-trigger.is-open svg { opacity: 1; }
@@ -3689,15 +3691,14 @@ export function getStyles(): string {
             max-height: 70vh;
             overflow-y: auto;
             overscroll-behavior: contain;
-            border: 1px solid rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.1);
             border-radius: var(--radius-lg, 12px);
-            background: linear-gradient(180deg, rgba(34,34,50,0.97), rgba(28,28,42,0.98));
-            backdrop-filter: blur(12px) saturate(1.3);
-            -webkit-backdrop-filter: blur(12px) saturate(1.3);
+            background: rgb(24,24,30);
+            /* backdrop-filter not supported in VS Code WebView */
             box-shadow:
-                0 8px 32px rgba(0,0,0,0.35),
-                0 2px 8px rgba(0,0,0,0.2),
-                0 0 1px rgba(255,255,255,0.04) inset;
+                0 8px 32px rgba(0,0,0,0.4),
+                0 2px 8px rgba(0,0,0,0.25),
+                inset 0 1px 0 rgba(255,255,255,0.06);
             transform-origin: top center;
             transform: scaleY(0.96) translateY(-4px);
             opacity: 0;
@@ -3734,29 +3735,31 @@ export function getStyles(): string {
 
         /* Light theme overrides for popover */
         body.vscode-light .acct-popover-trigger {
-            background: linear-gradient(135deg, rgba(37,99,235,0.06), rgba(124,58,237,0.04));
+            background: rgba(100,116,139,0.06);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
             border-color: rgba(0,0,0,0.08);
             color: rgba(0,0,0,0.55);
         }
         @media (hover: hover) {
             body.vscode-light .acct-popover-trigger:hover {
-                border-color: rgba(37,99,235,0.25);
-                background: linear-gradient(135deg, rgba(37,99,235,0.1), rgba(124,58,237,0.06));
+                border-color: rgba(100,116,139,0.2);
+                background: rgba(100,116,139,0.1);
                 color: rgba(0,0,0,0.8);
             }
         }
         body.vscode-light .acct-popover-trigger.is-open {
-            border-color: rgba(37,99,235,0.35);
-            background: linear-gradient(135deg, rgba(37,99,235,0.14), rgba(124,58,237,0.08));
+            border-color: rgba(100,116,139,0.25);
+            background: rgba(100,116,139,0.14);
             color: rgba(0,0,0,0.9);
         }
         body.vscode-light .acct-popover-dropdown {
-            background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.99));
+            background: rgb(250,250,252);
             border-color: rgba(0,0,0,0.1);
             box-shadow:
-                0 8px 32px rgba(0,0,0,0.12),
+                0 8px 32px rgba(0,0,0,0.1),
                 0 2px 8px rgba(0,0,0,0.06),
-                0 0 1px rgba(0,0,0,0.06) inset;
+                inset 0 1px 0 rgba(255,255,255,0.8);
         }
 
         /* ─── High Contrast Overrides ──── */

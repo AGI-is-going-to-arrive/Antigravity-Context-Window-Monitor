@@ -8,6 +8,27 @@
 
 ---
 
+## 账号面板视觉优化 — 2026-04-25
+
+### 改进 / Improved
+
+- **账号面板去紫色化 / Account Popover De-purple**:
+  Account Popover（触发按钮 + 下拉面板）全面清除残留的紫色调渐变，改为中性灰蓝色（slate `rgba(148,163,184,*)`）。下拉面板背景从冷紫调 `rgba(34,34,50)` 改为纯中性深灰 `rgb(24,24,30)`。Light theme 同步从 `rgba(124,58,237)` 紫色改为 slate 灰。
+
+  Removed all purple-tinted gradients from Account Popover (trigger + dropdown). Replaced with neutral slate tones. Dark dropdown background changed from cold-purple to neutral dark gray `rgb(24,24,30)`. Light theme updated from purple to slate gray.
+
+- **进度条对齐修复 / Quota Progress Bar Alignment Fix**:
+  账号面板各模型池行的 countdown 文字（如 `1d5h`、`6d10h`、`已就绪`、`未使用`）因长度不同导致进度条和模型标签水平错位。统一设置 `font-size: 0.85em` + `min-width: 5em` + `text-align: right` + `flex-shrink: 0`，确保所有行右侧占位一致。
+
+  Fixed misaligned quota bars caused by varying countdown text widths. Unified `font-size`, `min-width`, and `flex-shrink` across `.acct-reset-countdown` and `.acct-reset-idle` for consistent right-side spacing.
+
+### 统计 / Stats
+
+- **Files changed**: 2 (`src/webview-styles.ts`, `src/activity-panel.ts`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## 新增"关于"标签页 + 移除 TopBar Chips — 2026-04-24
 
 ### 新增 / Added

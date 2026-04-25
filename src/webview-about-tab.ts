@@ -140,8 +140,8 @@ export function buildAboutTabContent(): string {
         </div>
         <h2 class="about-hero-title">Antigravity Context Window Monitor</h2>
         <p class="about-hero-subtitle">${tBi(
-        'An open-source community plugin for real-time monitoring and analytics of AI model usage in Antigravity (Windsurf).',
-        '一款开源社区插件，用于实时监控和分析 Antigravity (Windsurf) 中 AI 模型的使用情况。',
+        'An open-source community plugin for real-time monitoring and analytics of AI model usage in Antigravity.',
+        '一款开源社区插件，用于实时监控和分析 Antigravity 中 AI 模型的使用情况。',
     )}</p>
     </div>`;
 

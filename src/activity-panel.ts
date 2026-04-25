@@ -243,8 +243,12 @@ export function getGMDataTabStyles(): string {
     }
     .acct-reset-countdown {
         font-weight: 600;
+        font-size: 0.85em;
         font-variant-numeric: tabular-nums;
         color: var(--color-text);
+        min-width: 5em;
+        text-align: right;
+        flex-shrink: 0;
     }
     .acct-reset-countdown-warn {
         color: var(--color-amber);
@@ -313,11 +317,14 @@ export function getGMDataTabStyles(): string {
         opacity: 0.45;
     }
     .acct-reset-idle {
-        font-size: 0.82em;
+        font-size: 0.85em;
         font-weight: 400;
         color: var(--color-text-dim);
         opacity: 0.7;
         font-style: italic;
+        min-width: 5em;
+        text-align: right;
+        flex-shrink: 0;
     }
     /* ─── Quota Progress Bar (Account Panel) ─── */
     .acct-quota-bar {
