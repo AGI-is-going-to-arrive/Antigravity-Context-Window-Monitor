@@ -1,5 +1,36 @@
 # 变更日志 / Changelog
 
+## [1.16.0] - 2026-04-26
+
+### 🚀 Major / 重大更新
+
+- **Full-stack evolutionary improvements**: Merged 71 commits from contributor @NightMin2002 covering GM-only Timeline rewrite, full UI modernization, precise cost analysis, context intelligence, multi-account architecture, lossy persistence (~245MB → ~1MB state files), daily archival refactor, and code modularization (activity/ and gm/ modules).
+  全栈进化改进：合并贡献者 @NightMin2002 的 71 个提交，涵盖 GM-only Timeline 重写、全面 UI 现代化、精确费用分析、上下文情报、多账号架构、有损持久化（~245MB → ~1MB 状态文件）、每日归档重构、代码模块化（activity/ 和 gm/ 模块）。
+
+### 🐛 Fixed / 修复
+
+- **creditCallCount double-counting**: Fixed duplicate `creditCallCount` increment in `gm/summary.ts` that inflated credit-bearing call counts by 2x.
+  修复 `gm/summary.ts` 中 `creditCallCount` 重复递增导致计费调用数膨胀 2 倍的 bug。
+
+- **recentErrors cap inconsistency**: Aligned hardcoded `30` in `gm/tracker.ts` to match `MAX_RECENT_ERRORS = 20` constant in `gm/summary.ts`.
+  统一 `gm/tracker.ts` 中硬编码的 `30` 上限为 `gm/summary.ts` 中定义的 `MAX_RECENT_ERRORS = 20`。
+
+- **Undefined CSS variable**: Added missing `--color-warn-border` CSS custom property to `:root` in `webview-styles.ts`, fixing invisible border on `.cost-chip-total` in dark theme.
+  添加缺失的 `--color-warn-border` CSS 变量定义，修复暗色主题下 `.cost-chip-total` 边框不可见的问题。
+
+- **Dead import cleanup**: Removed unused `toLocalDateKey` import from `extension.ts`.
+  移除 `extension.ts` 中未使用的 `toLocalDateKey` 导入。
+
+- **Redundant function call**: Removed duplicate `checkCachedAccountResets()` call inside try block (already called in finally block) in `extension.ts`.
+  移除 `extension.ts` 中 try 块内多余的 `checkCachedAccountResets()` 调用（finally 块已覆盖）。
+
+### 📝 Docs / 文档
+
+- Updated version to 1.16.0 across `package.json`, `readme.md`, `readme_CN.md`, and `changelog.md`.
+  更新 `package.json`、`readme.md`、`readme_CN.md` 和 `changelog.md` 中的版本号为 1.16.0。
+
+---
+
 ## [1.15.1] - 2026-04-14
 
 ### 🐛 Fixed / 修复

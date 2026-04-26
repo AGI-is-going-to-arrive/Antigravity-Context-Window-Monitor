@@ -12,7 +12,7 @@ import type {
 import { cloneTokenBreakdownGroups } from './types';
 
 /** Maximum number of recent error messages to keep */
-const MAX_RECENT_ERRORS = 20;
+export const MAX_RECENT_ERRORS = 20;
 
 /**
  * Parse an error message into a short error code for bucketing.
@@ -248,7 +248,6 @@ export function filterGMSummaryByModels(
                 if (call.hasError) {
                     existing.errorCount += 1;
                 }
-                if (call.credits > 0) { existing.creditCallCount = (existing.creditCallCount || 0) + 1; }
                 if (call.modelAccuracy === 'exact') {
                     existing.exactCallCount += 1;
                 } else {

@@ -44,6 +44,7 @@ export {
 
 // Summary
 export {
+    MAX_RECENT_ERRORS,
     filterGMSummaryByModels,
     mergeGMModelStats,
     normalizeGMSummary,

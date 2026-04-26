@@ -29,7 +29,7 @@ import {
     buildGMArchiveKey,
     deduplicateApiErrorText,
 } from './parser';
-import { buildSummaryFromConversations, normalizeGMSummary, parseErrorCode, normalizeErrorMessage } from './summary';
+import { buildSummaryFromConversations, normalizeGMSummary, parseErrorCode, normalizeErrorMessage, MAX_RECENT_ERRORS } from './summary';
 
 /** Deduplicate checkpoint summaries from multiple GM calls, keyed by stepIndex */
 function deduplicateCheckpoints(calls: GMCallEntry[]): GMCheckpointSummary[] {
@@ -481,14 +481,14 @@ export class GMTracker {
                 for (const errMsg of c.retryErrors) {
                     const code = parseErrorCode(errMsg);
                     retryErrorCodes[code] = (retryErrorCodes[code] || 0) + 1;
-                    if (recentErrors.length < 30) { recentErrors.push(errMsg); }
+                    if (recentErrors.length < MAX_RECENT_ERRORS) { recentErrors.push(errMsg); }
                 }
                 // Fallback: use top-level errorMessage only when retryErrors is empty
                 // (retryInfos and gm.error often contain the same error text)
                 if (c.hasError && c.errorMessage && c.retryErrors.length === 0) {
                     const code = parseErrorCode(c.errorMessage);
                     retryErrorCodes[code] = (retryErrorCodes[code] || 0) + 1;
-                    if (recentErrors.length < 30) { recentErrors.push(c.errorMessage); }
+                    if (recentErrors.length < MAX_RECENT_ERRORS) { recentErrors.push(c.errorMessage); }
                 }
 
                 // Keep latest tokenBreakdown snapshot

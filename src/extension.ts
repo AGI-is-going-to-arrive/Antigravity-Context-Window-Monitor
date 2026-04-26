@@ -24,7 +24,6 @@ import { PricingStore } from './pricing-store';
 import { DailyStore, type DailyStoreState } from './daily-store';
 import { MonitorStore } from './monitor-store';
 import {
-    toLocalDateKey,
     performDailyArchival as performDailyArchivalCore,
     type DailyArchivalContext,
 } from './daily-archival';
@@ -510,9 +509,6 @@ function baselineExpiredPoolsForAccount(email: string): void {
         log(`Account switch reset notification: ${displayName} — ${modelNames}${extra}`);
     }
 }
-
-/** Extract local date key — re-exported from daily-archival for backward compat. */
-// toLocalDateKey is imported from './daily-archival'
 
 /**
  * Perform daily archival by delegating to the testable core logic.
@@ -1365,13 +1361,10 @@ async function pollContextUsage(): Promise<void> {
             }
         }
 
-        // 6d. Check cached account quota resets (notify user to switch)
-        checkCachedAccountResets();
-
-        // 6e. Daily archival — archive & reset when local date rolls over
+        // 6d. Daily archival — archive & reset when local date rolls over
         performDailyArchival();
 
-        // 6f. Update WebView panel if visible (single unified refresh point)
+        // 6e. Update WebView panel if visible (single unified refresh point)
         if (isMonitorPanelVisible()) {
             updateMonitorPanel(makePanelPayload());
         }

@@ -10,6 +10,7 @@ export function getStyles(): string {
             --color-ok-light: #86efac;
             --color-ok-dim: #34d399;
             --color-warn: #facc15;
+            --color-warn-border: rgba(250, 204, 21, 0.25);
             --color-danger: #f87171;
             --color-danger-light: #fca5a5;
             --color-info: #60a5fa;
