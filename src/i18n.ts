@@ -51,8 +51,7 @@ const translations: Record<string, TranslationEntry> = {
     'tooltip.input': { en: 'Input', zh: '输入' },
     'tooltip.output': { en: 'Output', zh: '输出' },
     'tooltip.cache': { en: 'Cache', zh: '缓存' },
-    'tooltip.estimated': { en: 'Estimated', zh: '估算值' },
-    'tooltip.precise': { en: 'GM data (from checkpoint)', zh: 'GM 数据 (来自 checkpoint)' },
+
 
     // ─ QuickPick Panel
     'panel.title': { en: 'Antigravity Monitor', zh: 'Antigravity 监控面板' },

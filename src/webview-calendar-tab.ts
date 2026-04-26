@@ -3,9 +3,10 @@
 // indicators, and expandable daily detail panels.
 
 import { tBi, getLanguage } from './i18n';
-import { DailyStore, DailyRecord, DailyCycleEntry, MonthCellSummary, ModelCycleStats, GMModelCycleStats } from './daily-store';
+import { DailyStore, DailyRecord, MonthCellSummary } from './daily-store';
 import { ICON } from './webview-icons';
-import { esc, formatShortTime, formatDuration } from './webview-helpers';
+import { esc } from './webview-helpers';
+import { normalizeModelDisplayName } from './models';
 
 // ─── SVG Icons ───────────────────────────────────────────────────────────────
 
@@ -16,10 +17,10 @@ const CHEVRON_RIGHT = '<svg viewBox="0 0 16 16" width="12" height="12"><path fil
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const MONTH_NAMES_ZH = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
-const MONTH_NAMES_EN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const DAY_HEADERS_ZH = ['一','二','三','四','五','六','日'];
-const DAY_HEADERS_EN = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const MONTH_NAMES_ZH = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
+const MONTH_NAMES_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DAY_HEADERS_ZH = ['一', '二', '三', '四', '五', '六', '日'];
+const DAY_HEADERS_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 function formatTokensK(n: number): string {
     if (n >= 1_000_000) { return (n / 1_000_000).toFixed(1) + 'M'; }
@@ -74,9 +75,9 @@ export function buildCalendarTabContent(store?: DailyStore, year?: number, month
             <section class="card empty">
                 <h2>${CALENDAR_ICON} ${tBi('Calendar', '日历')}</h2>
                 <p class="empty-desc">${tBi(
-                    'Calendar data is not initialized yet.',
-                    '日历数据尚未初始化。',
-                )}</p>
+            'Calendar data is not initialized yet.',
+            '日历数据尚未初始化。',
+        )}</p>
             </section>`;
     }
 
@@ -575,6 +576,24 @@ export function getCalendarTabStyles(): string {
             text-align: center;
         }
 
+        .cal-account-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            font-size: 0.72em;
+            padding: 1px 6px;
+            border-radius: 10px;
+            background: rgba(139,92,246,0.12);
+            color: rgba(196,181,253,0.9);
+            letter-spacing: 0.2px;
+            margin-left: var(--space-1);
+            vertical-align: middle;
+        }
+        body.vscode-light .cal-account-tag {
+            background: rgba(109,40,217,0.08);
+            color: #6d28d9;
+        }
+
         .cal-cycle-stats-spaced {
             margin-top: var(--space-2);
         }
@@ -746,9 +765,9 @@ function buildMonthView(store: DailyStore, year: number, month: number): string 
         const hasData = cellData !== undefined;
 
         if (hasData) {
-            const highActivity = cellData.totalReasoning > 20 || cellData.cycleCount > 2;
+            const highActivity = (cellData.gmCalls || 0) > 20 || cellData.totalCost > 0.5;
             cells.push(`
-                <button class="cal-cell has-data${todayClass}" data-cal-date="${dateStr}" data-tooltip="${cellData.cycleCount} ${tBi('cycles', '周期')}">
+                <button class="cal-cell has-data${todayClass}" data-cal-date="${dateStr}" data-tooltip="${tBi('has data', '有数据')}">
                     ${day}
                     <div class="cal-dot${highActivity ? ' high-activity' : ''}"></div>
                 </button>`);
@@ -795,38 +814,19 @@ function buildMonthView(store: DailyStore, year: number, month: number): string 
 
 function buildDayDetail(record: DailyRecord, dateStr: string): string {
     // ── Aggregate totals across all cycles ──
-    let totalReasoning = 0, totalToolCalls = 0, totalErrors = 0;
-    let totalInput = 0, totalOutput = 0, totalCost = 0;
-    let totalGMCalls = 0, totalGMCredits = 0;
+    let totalCost = 0, totalGMCalls = 0, totalGMCredits = 0;
 
-    // ── Aggregate per-model stats across cycles ──
-    const mergedModel: Record<string, { reasoning: number; toolCalls: number; errors: number; estSteps: number; inputTokens: number; outputTokens: number }> = {};
+    // ── Aggregate per-model GM stats across cycles ──
     const mergedGM: Record<string, { calls: number; credits: number; inputTokens: number; outputTokens: number; thinkingTokens: number; ttftSum: number; ttftWeight: number; cacheSum: number; cacheWeight: number; cost: number }> = {};
 
     for (const c of record.cycles) {
-        totalReasoning += c.totalReasoning;
-        totalToolCalls += c.totalToolCalls;
-        totalErrors += c.totalErrors;
-        totalInput += c.totalInputTokens;
-        totalOutput += c.totalOutputTokens;
         totalCost += c.estimatedCost || 0;
         totalGMCalls += c.gmTotalCalls || 0;
         totalGMCredits += c.gmTotalCredits || 0;
 
-        if (c.modelStats) {
-            for (const [name, ms] of Object.entries(c.modelStats)) {
-                const m = mergedModel[name] || (mergedModel[name] = { reasoning: 0, toolCalls: 0, errors: 0, estSteps: 0, inputTokens: 0, outputTokens: 0 });
-                m.reasoning += ms.reasoning;
-                m.toolCalls += ms.toolCalls;
-                m.errors += ms.errors;
-                m.estSteps += ms.estSteps;
-                m.inputTokens += ms.inputTokens;
-                m.outputTokens += ms.outputTokens;
-            }
-        }
-
         if (c.gmModelStats) {
-            for (const [name, gm] of Object.entries(c.gmModelStats)) {
+            for (const [rawName, gm] of Object.entries(c.gmModelStats)) {
+                const name = normalizeModelDisplayName(rawName) || rawName;
                 const g = mergedGM[name] || (mergedGM[name] = { calls: 0, credits: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0, ttftSum: 0, ttftWeight: 0, cacheSum: 0, cacheWeight: 0, cost: 0 });
                 g.calls += gm.calls;
                 g.credits += gm.credits;
@@ -842,30 +842,13 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
 
     // ── Derive GM-level aggregates for top bar ──
     let gmTotalTokens = 0;
-    let gmCacheWeightedSum = 0, gmCacheWeightTotal = 0;
     for (const ms of Object.values(mergedGM)) {
         gmTotalTokens += ms.inputTokens + ms.outputTokens;
-        if (ms.cacheWeight > 0) {
-            gmCacheWeightedSum += ms.cacheSum;
-            gmCacheWeightTotal += ms.cacheWeight;
-        }
     }
-    // Use GM tokens when available (more accurate than Activity tracker)
-    const displayTokens = gmTotalTokens > 0 ? gmTotalTokens : (totalInput + totalOutput);
-    const avgCacheRate = gmCacheWeightTotal > 0 ? gmCacheWeightedSum / gmCacheWeightTotal : 0;
-
-    const mergedModelHtml = buildMergedModelRows(mergedModel);
     const mergedGMHtml = buildMergedGMRows(mergedGM);
-    const cycleCards = record.cycles.map((c, idx) => buildCycleCard(c, idx + 1)).join('');
-
     const todayBadge = isToday(dateStr)
         ? `<span class="badge info-badge">${tBi('TODAY', '今天')}</span>`
         : '';
-
-    const cycleCount = record.cycles.length;
-    const cycleSection = cycleCount > 1
-        ? `<details class="cal-cycles-details" id="d-cal-cycles-${dateStr}"><summary class="cal-cycles-summary">${tBi(`View ${cycleCount} Individual Cycles`, `查看 ${cycleCount} 个独立周期`)}</summary>${cycleCards}</details>`
-        : cycleCards;
 
     return `
         <div class="cal-detail" id="cal-detail-${dateStr}" style="display:none" data-cal-detail="${dateStr}">
@@ -873,23 +856,18 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
                 <span class="cal-detail-date">
                     ${CALENDAR_ICON} ${dateStr} ${todayBadge}
                 </span>
-                <div class="cal-detail-summary">
-                    <span class="cal-sum-item"><span class="cal-stat-val">${cycleCount}</span> ${tBi('cycles', '周期')}</span>
-                </div>
             </div>
             <div class="cal-day-summary">
+                ${totalGMCalls > 0 ? `
                 <div class="cal-day-total">
-                    <div class="cal-day-total-val">${totalReasoning}</div>
-                    <div class="cal-day-total-label">${tBi('Reasoning', '推理')}</div>
-                </div>
+                    <div class="cal-day-total-val">${totalGMCalls}</div>
+                    <div class="cal-day-total-label">${tBi('GM Calls', 'GM 调用')}</div>
+                </div>` : ''}
+                ${gmTotalTokens > 0 ? `
                 <div class="cal-day-total">
-                    <div class="cal-day-total-val">${totalToolCalls}</div>
-                    <div class="cal-day-total-label">${tBi('Tools', '工具')}</div>
-                </div>
-                <div class="cal-day-total">
-                    <div class="cal-day-total-val">${formatTokensK(displayTokens)}</div>
+                    <div class="cal-day-total-val">${formatTokensK(gmTotalTokens)}</div>
                     <div class="cal-day-total-label">${tBi('Tokens', '令牌')}</div>
-                </div>
+                </div>` : ''}
                 ${totalCost > 0 ? `
                 <div class="cal-day-total">
                     <div class="cal-day-total-val">${formatCost(totalCost)}</div>
@@ -900,48 +878,11 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
                     <div class="cal-day-total-val">${totalGMCredits}</div>
                     <div class="cal-day-total-label">${tBi('Credits', '积分')}</div>
                 </div>` : ''}
-                ${totalGMCalls > 0 ? `
-                <div class="cal-day-total">
-                    <div class="cal-day-total-val">${totalGMCalls}</div>
-                    <div class="cal-day-total-label">${tBi('GM Calls', 'GM 调用')}</div>
-                </div>` : ''}
-                ${avgCacheRate > 0 ? `
-                <div class="cal-day-total">
-                    <div class="cal-day-total-val">${(avgCacheRate * 100).toFixed(0)}%</div>
-                    <div class="cal-day-total-label">${tBi('Cache', '缓存')}</div>
-                </div>` : ''}
-                ${totalErrors > 0 ? `
-                <div class="cal-day-total">
-                    <div class="cal-day-total-val cal-day-total-danger">${totalErrors}</div>
-                    <div class="cal-day-total-label">${tBi('Errors', '错误')}</div>
-                </div>` : ''}
             </div>
-            ${mergedModelHtml}
             ${mergedGMHtml}
-            ${cycleSection}
         </div>`;
 }
 
-/** Merged per-model activity rows across all cycles */
-function buildMergedModelRows(merged: Record<string, { reasoning: number; toolCalls: number; errors: number; estSteps: number; inputTokens: number; outputTokens: number }>): string {
-    const entries = Object.entries(merged);
-    if (entries.length === 0) { return ''; }
-
-    let html = '<div class="cal-model-rows">';
-    html += `<div class="cal-gm-section-label">${tBi('Model Summary', '模型汇总')}</div>`;
-    for (const [name, ms] of entries) {
-        const chips: string[] = [];
-        if (ms.reasoning > 0) { chips.push(`<span class="cal-chip cal-chip-reasoning">${CAL_ICON.brain} ${ms.reasoning}</span>`); }
-        if (ms.toolCalls > 0) { chips.push(`<span class="cal-chip cal-chip-tools">${CAL_ICON.tool} ${ms.toolCalls}</span>`); }
-        if (ms.errors > 0) { chips.push(`<span class="cal-chip cal-chip-errors">${CAL_ICON.warn} ${ms.errors}</span>`); }
-        if (ms.estSteps > 0) { chips.push(`<span class="cal-chip cal-chip-est">${CAL_ICON.chart} +${ms.estSteps}</span>`); }
-        const totalTok = ms.inputTokens + ms.outputTokens;
-        if (totalTok > 0) { chips.push(`<span class="cal-chip cal-chip-tokens">${CAL_ICON.token} ${fmtTok(totalTok)}</span>`); }
-        html += `<div class="cal-model-row"><span class="cal-model-name">${esc(name)}</span><span class="cal-model-chips">${chips.join('')}</span></div>`;
-    }
-    html += '</div>';
-    return html;
-}
 
 /** Merged per-model GM rows across all cycles (with weighted averages) */
 function buildMergedGMRows(merged: Record<string, { calls: number; credits: number; inputTokens: number; outputTokens: number; thinkingTokens: number; ttftSum: number; ttftWeight: number; cacheSum: number; cacheWeight: number; cost: number }>): string {
@@ -967,138 +908,16 @@ function buildMergedGMRows(merged: Record<string, { calls: number; credits: numb
     return html;
 }
 
-function buildCycleCard(cycle: DailyCycleEntry, index: number): string {
-    const startTime = formatShortTime(cycle.startTime);
-    const endTime = formatShortTime(cycle.endTime);
-    const duration = formatDuration(
-        new Date(cycle.endTime).getTime() - new Date(cycle.startTime).getTime(),
-    );
-
-    const modelChips = cycle.modelNames
-        .map(m => `<span class="cal-model-chip">${esc(m)}</span>`)
-        .join('');
-
-    const stats: string[] = [];
-    if (cycle.totalReasoning > 0) {
-        stats.push(`<span class="cal-stat"><span class="cal-stat-val">${cycle.totalReasoning}</span> <span class="cal-stat-label">${tBi('reasoning', '推理')}</span></span>`);
-    }
-    if (cycle.totalToolCalls > 0) {
-        stats.push(`<span class="cal-stat"><span class="cal-stat-val">${cycle.totalToolCalls}</span> <span class="cal-stat-label">${tBi('tools', '工具')}</span></span>`);
-    }
-    if (cycle.totalInputTokens + cycle.totalOutputTokens > 0) {
-        stats.push(`<span class="cal-stat"><span class="cal-stat-val">${formatTokensK(cycle.totalInputTokens + cycle.totalOutputTokens)}</span> <span class="cal-stat-label">${tBi('tokens', '令牌')}</span></span>`);
-    }
-    if (cycle.estimatedCost && cycle.estimatedCost > 0) {
-        stats.push(`<span class="cal-stat"><span class="cal-stat-val">${formatCost(cycle.estimatedCost)}</span> <span class="cal-stat-label">${tBi('cost', '费用')}</span></span>`);
-    }
-    if (cycle.gmTotalCredits && cycle.gmTotalCredits > 0) {
-        stats.push(`<span class="cal-stat"><span class="cal-stat-val">${cycle.gmTotalCredits}</span> <span class="cal-stat-label">${tBi('credits', '积分')}</span></span>`);
-    }
-    if (cycle.totalErrors > 0) {
-        stats.push(`<span class="cal-stat cal-day-total-danger"><span class="cal-stat-val">${cycle.totalErrors}</span> <span class="cal-stat-label">${tBi('errors', '错误')}</span></span>`);
-    }
-
-    return `
-        <div class="cal-cycle">
-            <div class="cal-cycle-header">
-                <span class="cal-cycle-time">
-                    #${index} · ${startTime} — ${endTime} · ${duration}
-                </span>
-            </div>
-            ${modelChips ? `<div class="cal-cycle-models">${modelChips}</div>` : ''}
-            <div class="cal-cycle-stats cal-cycle-stats-spaced">
-                ${stats.join('')}
-            </div>
-            ${buildPerModelRows(cycle.modelStats)}
-            ${buildGMModelRows(cycle.gmModelStats)}
-        </div>`;
-}
-
-function buildPerModelRows(modelStats?: Record<string, ModelCycleStats>): string {
-    if (!modelStats || Object.keys(modelStats).length === 0) { return ''; }
-
-    let html = '<div class="cal-model-rows">';
-    for (const [name, ms] of Object.entries(modelStats)) {
-        const chips: string[] = [];
-        if (ms.reasoning > 0) {
-            chips.push(`<span class="cal-chip cal-chip-reasoning">${CAL_ICON.brain} ${ms.reasoning}</span>`);
-        }
-        if (ms.toolCalls > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tools">${CAL_ICON.tool} ${ms.toolCalls}</span>`);
-        }
-        if (ms.errors > 0) {
-            chips.push(`<span class="cal-chip cal-chip-errors">${CAL_ICON.warn} ${ms.errors}</span>`);
-        }
-        if (ms.estSteps > 0) {
-            chips.push(`<span class="cal-chip cal-chip-est">${CAL_ICON.chart} +${ms.estSteps}</span>`);
-        }
-        const totalTok = ms.inputTokens + ms.outputTokens;
-        if (totalTok > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tokens">${CAL_ICON.token} ${fmtTok(totalTok)}</span>`);
-        }
-
-        html += `
-            <div class="cal-model-row">
-                <span class="cal-model-name">${esc(name)}</span>
-                <span class="cal-model-chips">${chips.join('')}</span>
-            </div>`;
-    }
-    html += '</div>';
-    return html;
-}
-
-function buildGMModelRows(gmModelStats?: Record<string, GMModelCycleStats>): string {
-    if (!gmModelStats || Object.keys(gmModelStats).length === 0) { return ''; }
-
-    let html = '<div class="cal-model-rows">';
-    html += `<div class="cal-gm-section-label">GM ${tBi('Breakdown', '明细')}</div>`;
-
-    for (const [name, ms] of Object.entries(gmModelStats)) {
-        const chips: string[] = [];
-        if (ms.calls > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tools">${CAL_ICON.calls} ${ms.calls} ${tBi('calls', '调用')}</span>`);
-        }
-        if (ms.credits > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tokens">${CAL_ICON.credit} ${ms.credits}</span>`);
-        }
-        if (ms.avgTTFT > 0) {
-            chips.push(`<span class="cal-chip cal-chip-ttft">${CAL_ICON.clock} ${ms.avgTTFT.toFixed(1)}s</span>`);
-        }
-        if (ms.cacheHitRate > 0) {
-            chips.push(`<span class="cal-chip cal-chip-cache">${CAL_ICON.cache} ${(ms.cacheHitRate * 100).toFixed(0)}%</span>`);
-        }
-        if (ms.estimatedCost && ms.estimatedCost > 0) {
-            chips.push(`<span class="cal-chip cal-chip-cost">${CAL_ICON.dollar} ${fmtCostShort(ms.estimatedCost)}</span>`);
-        }
-        const totalTok = ms.inputTokens + ms.outputTokens;
-        if (totalTok > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tokens">${fmtTok(totalTok)} ${tBi('tok', '令牌')}</span>`);
-        }
-
-        html += `
-            <div class="cal-model-row">
-                <span class="cal-model-name">${esc(name)}</span>
-                <span class="cal-model-chips">${chips.join('')}</span>
-            </div>`;
-    }
-    html += '</div>';
-    return html;
-}
 
 function buildOverallSummaryGrid(store: DailyStore): string {
     const dates = store.getDatesWithData();
-    let totalReasoning = 0, totalToolCalls = 0, totalCost = 0, totalCycles = 0;
-    let totalErrors = 0, totalGMCalls = 0, totalGMCredits = 0, totalGMTokens = 0;
+    let totalCost = 0, totalGMCalls = 0, totalGMCredits = 0, totalGMTokens = 0;
 
     for (const date of dates) {
         const record = store.getRecord(date);
         if (!record) { continue; }
         for (const c of record.cycles) {
-            totalCycles++;
-            totalReasoning += c.totalReasoning;
-            totalToolCalls += c.totalToolCalls;
             totalCost += c.estimatedCost || 0;
-            totalErrors += c.totalErrors;
             totalGMCalls += c.gmTotalCalls || 0;
             totalGMCredits += c.gmTotalCredits || 0;
             if (c.gmModelStats) {
@@ -1109,7 +928,7 @@ function buildOverallSummaryGrid(store: DailyStore): string {
         }
     }
 
-    return buildSummaryOverviewGrid(dates.length, totalCycles, totalReasoning, totalToolCalls, totalGMTokens, totalCost, totalGMCredits, totalGMCalls, totalErrors);
+    return buildSummaryOverviewGrid(dates.length, totalGMTokens, totalCost, totalGMCredits, totalGMCalls);
 }
 
 function buildMonthlySummaryGrid(store: DailyStore, year: number, month: number): string {
@@ -1127,18 +946,13 @@ function buildMonthlySummaryGrid(store: DailyStore, year: number, month: number)
         )}</p>`;
     }
 
-    let totalReasoning = 0, totalToolCalls = 0, totalCost = 0, totalCycles = 0;
-    let totalErrors = 0, totalGMCalls = 0, totalGMCredits = 0, totalGMTokens = 0;
+    let totalCost = 0, totalGMCalls = 0, totalGMCredits = 0, totalGMTokens = 0;
 
     for (const date of dates) {
         const record = store.getRecord(date);
         if (!record) { continue; }
         for (const c of record.cycles) {
-            totalCycles++;
-            totalReasoning += c.totalReasoning;
-            totalToolCalls += c.totalToolCalls;
             totalCost += c.estimatedCost || 0;
-            totalErrors += c.totalErrors;
             totalGMCalls += c.gmTotalCalls || 0;
             totalGMCredits += c.gmTotalCredits || 0;
             if (c.gmModelStats) {
@@ -1149,16 +963,14 @@ function buildMonthlySummaryGrid(store: DailyStore, year: number, month: number)
         }
     }
 
-    return buildSummaryOverviewGrid(dates.length, totalCycles, totalReasoning, totalToolCalls, totalGMTokens, totalCost, totalGMCredits, totalGMCalls, totalErrors);
+    return buildSummaryOverviewGrid(dates.length, totalGMTokens, totalCost, totalGMCredits, totalGMCalls);
 }
 
 /** Shared grid builder for all-time and monthly summaries */
 function buildSummaryOverviewGrid(
-    dayCount: number, cycleCount: number,
-    reasoning: number, toolCalls: number,
+    dayCount: number,
     gmTokens: number, cost: number,
     gmCredits: number, gmCalls: number,
-    errors: number,
 ): string {
     return `
             <div class="cal-overview-grid">
@@ -1166,18 +978,11 @@ function buildSummaryOverviewGrid(
                     <div class="cal-overview-val">${dayCount}</div>
                     <div class="cal-overview-label">${tBi('Days', '天数')}</div>
                 </div>
+                ${gmCalls > 0 ? `
                 <div class="cal-overview-item">
-                    <div class="cal-overview-val">${cycleCount}</div>
-                    <div class="cal-overview-label">${tBi('Cycles', '周期')}</div>
-                </div>
-                <div class="cal-overview-item">
-                    <div class="cal-overview-val">${reasoning}</div>
-                    <div class="cal-overview-label">${tBi('Reasoning', '推理')}</div>
-                </div>
-                <div class="cal-overview-item">
-                    <div class="cal-overview-val">${toolCalls}</div>
-                    <div class="cal-overview-label">${tBi('Tools', '工具')}</div>
-                </div>
+                    <div class="cal-overview-val">${gmCalls}</div>
+                    <div class="cal-overview-label">${tBi('GM Calls', 'GM 调用')}</div>
+                </div>` : ''}
                 ${gmTokens > 0 ? `
                 <div class="cal-overview-item">
                     <div class="cal-overview-val">${formatTokensK(gmTokens)}</div>
@@ -1192,16 +997,6 @@ function buildSummaryOverviewGrid(
                 <div class="cal-overview-item">
                     <div class="cal-overview-val">${gmCredits}</div>
                     <div class="cal-overview-label">${tBi('Credits', '积分')}</div>
-                </div>` : ''}
-                ${gmCalls > 0 ? `
-                <div class="cal-overview-item">
-                    <div class="cal-overview-val">${gmCalls}</div>
-                    <div class="cal-overview-label">${tBi('GM Calls', 'GM 调用')}</div>
-                </div>` : ''}
-                ${errors > 0 ? `
-                <div class="cal-overview-item">
-                    <div class="cal-overview-val cal-day-total-danger">${errors}</div>
-                    <div class="cal-overview-label">${tBi('Errors', '错误')}</div>
                 </div>` : ''}
             </div>`;
 }

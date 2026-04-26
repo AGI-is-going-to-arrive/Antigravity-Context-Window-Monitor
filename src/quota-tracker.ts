@@ -43,6 +43,8 @@ export interface QuotaSession {
     completed: boolean;
     /** The API resetTime observed when tracking started — used for cycle-end detection */
     cycleResetTime?: string;
+    /** Account email that owns this session (for multi-account isolation) */
+    accountEmail?: string;
 }
 
 type TrackingState = 'idle' | 'tracking';
@@ -71,14 +73,10 @@ const ENABLED_KEY = 'quotaTrackingEnabled';
 const DEFAULT_MAX_HISTORY = 20;
 
 // ─── Tracking Strategy ───────────────────────────────────────────────────────
-// Usage detection at 100%:
-//   1. Instant: compare model's timeToReset with its OWN known full window.
-//      If elapsedInCycle > ELAPSED_THRESHOLD → model is already in use.
-//   2. Drift: if resetTime stays locked (no refresh) for ≥ OBSERVATION_WINDOW
-//      → model IS used. Unused models get refreshed resetTime periodically.
-//   3. Fraction: fraction < 1.0 → enter tracking immediately.
-const ELAPSED_THRESHOLD_MS = 10 * 60 * 1000;     // 10 min elapsed in cycle → instant detect
-const OBSERVATION_WINDOW_MS = 10 * 60 * 1000;    // 10 min stable resetTime → drift-based detect
+// Usage detection:
+//   1. Primary: fraction < 1.0 → enter tracking immediately.
+//   2. GMTracker: usedModelIds from caller confirms actual LLM calls at frac=1.0.
+//   3. Drift: if resetTime shifts (sliding window refresh), reset baseline.
 const RESET_DRIFT_TOLERANCE_MS = 3 * 60 * 1000;  // 3 min — API variance threshold
 const CYCLE_END_JUMP_MS = 30 * 60 * 1000;        // 30 min — resetTime jump = new cycle
 const FUTURE_TOLERANCE_MS = 2 * 60 * 1000;       // 2 min — tolerate small clock drift only
@@ -115,16 +113,22 @@ export class QuotaTracker {
     /** Register a callback that fires when model quota resets. Called once per processUpdate batch with all reset modelIds. */
     set onQuotaReset(fn: (modelIds: string[]) => void) { this._onQuotaReset = fn; }
 
-    /** Process a batch of model configs (called on each status refresh). */
-    processUpdate(configs: ModelConfig[]): void {
+    /** Process a batch of model configs (called on each status refresh).
+     *  @param usedModelIds — model IDs with confirmed LLM calls in this cycle (from GMTracker).
+     *  @param accountEmail — current account email for per-account state isolation. */
+    processUpdate(configs: ModelConfig[], usedModelIds?: Set<string>, accountEmail?: string): void {
         if (!this.enabled) { return; }
+        const emailPrefix = accountEmail ? `${accountEmail}:` : '';
         const nowDate = new Date();
         const now = nowDate.toISOString();
         const nowMs = nowDate.getTime();
         const resetModels: string[] = [];
 
-        for (const [modelId, ms] of this.modelStates.entries()) {
-            this.sanitizeModelState(modelId, ms, nowDate);
+        // Only sanitize states belonging to the current account
+        for (const [stateKey, ms] of this.modelStates.entries()) {
+            if (stateKey.startsWith(emailPrefix) || (!emailPrefix && !stateKey.includes(':'))) {
+                this.sanitizeModelState(stateKey, ms, nowDate);
+            }
         }
 
         // ── Pool deduplication: group models by stable quota-pool key ──
@@ -145,14 +149,16 @@ export class QuotaTracker {
         for (const pool of poolByKey.values()) {
             if (pool.length <= 1) { continue; }
             pool.sort((a, b) => {
-                const aTracking = this.modelStates.get(a.model)?.state === 'tracking'
-                    && !!this.modelStates.get(a.model)?.currentSession;
-                const bTracking = this.modelStates.get(b.model)?.state === 'tracking'
-                    && !!this.modelStates.get(b.model)?.currentSession;
+                const aKey = `${emailPrefix}${a.model}`;
+                const bKey = `${emailPrefix}${b.model}`;
+                const aTracking = this.modelStates.get(aKey)?.state === 'tracking'
+                    && !!this.modelStates.get(aKey)?.currentSession;
+                const bTracking = this.modelStates.get(bKey)?.state === 'tracking'
+                    && !!this.modelStates.get(bKey)?.currentSession;
                 if (aTracking !== bTracking) { return aTracking ? -1 : 1; }
 
-                const aStart = this.modelStates.get(a.model)?.currentSession?.startTime || '';
-                const bStart = this.modelStates.get(b.model)?.currentSession?.startTime || '';
+                const aStart = this.modelStates.get(aKey)?.currentSession?.startTime || '';
+                const bStart = this.modelStates.get(bKey)?.currentSession?.startTime || '';
                 if (aTracking && bTracking && aStart !== bStart) {
                     return aStart.localeCompare(bStart);
                 }
@@ -175,11 +181,12 @@ export class QuotaTracker {
             if (!config.quotaInfo) { continue; }
 
             const modelId = config.model;
+            const stateKey = `${emailPrefix}${modelId}`;
 
             // Skip non-representative pool members (same quota pool, different model)
             if (poolSkip.has(modelId)) {
                 // Still update basic state so it stays in sync, but never enter tracking
-                const existing = this.modelStates.get(modelId);
+                const existing = this.modelStates.get(stateKey);
                 if (existing) {
                     existing.lastFraction = config.quotaInfo.remainingFraction ?? 0;
                     existing.lastResetTime = config.quotaInfo.resetTime || '';
@@ -191,7 +198,7 @@ export class QuotaTracker {
             const fraction = config.quotaInfo.remainingFraction ?? 0;
             const percent = Math.round(fraction * 100);
 
-            let ms = this.modelStates.get(modelId);
+            let ms = this.modelStates.get(stateKey);
             if (!ms) {
                 ms = {
                     state: 'idle',
@@ -203,7 +210,7 @@ export class QuotaTracker {
                     idleSince: now,
                     knownWindowMs: 0,
                 };
-                this.modelStates.set(modelId, ms);
+                this.modelStates.set(stateKey, ms);
             }
 
             // Current API resetTime for this model
@@ -217,58 +224,38 @@ export class QuotaTracker {
             switch (ms.state) {
                 case 'idle':
                     if (fraction >= 1.0) {
-                        // ── Usage detection at 100% ─────────────────────────
+                        // ── frac=1.0: maintain baseline + GMTracker-assisted detection ──
+                        // remainingFraction is quantized in 20% steps, so frac=1.0
+                        // could mean 0–19% consumed. Learn resetTime patterns and
+                        // enter tracking only when GMTracker confirms actual usage.
                         const currentResetMs = resetTimeStr
                             ? new Date(resetTimeStr).getTime() : 0;
                         const timeToResetMs = currentResetMs - nowMs;
                         const knownWindowMs = getUsableKnownWindowMs(ms.knownWindowMs, timeToResetMs);
 
-                        // Strategy 1: Instant detection via the model's own known window
-                        let instantDetect = false;
-                        if (knownWindowMs > 0 && timeToResetMs > 0) {
-                            const elapsedInCycle = knownWindowMs - timeToResetMs;
-                            if (elapsedInCycle >= ELAPSED_THRESHOLD_MS) {
-                                instantDetect = true;
-                            }
-                        }
-
-                        // Strategy 2: Drift-based detection (fallback)
                         const baselineMs = ms.baselineResetTime
                             ? new Date(ms.baselineResetTime).getTime() : 0;
                         const resetTimeDrift = Math.abs(currentResetMs - baselineMs);
-                        const idleDuration = nowMs - new Date(ms.idleSince).getTime();
 
-                        if (instantDetect) {
-                            const estimatedStart = new Date(
-                                currentResetMs - knownWindowMs
-                            ).toISOString();
-                            this.startTracking(ms, modelId, config.label, estimatedStart, resetTimeStr, fraction, poolLabelsForModel.get(modelId));
-                        } else if (resetTimeDrift > RESET_DRIFT_TOLERANCE_MS) {
-                            // resetTime shifted — API is refreshing → model is unused
+                        if (resetTimeDrift > RESET_DRIFT_TOLERANCE_MS) {
+                            // resetTime shifted — API is refreshing (sliding window)
                             ms.baselineResetTime = resetTimeStr;
                             ms.idleSince = now;
+                        }
+
+                        // GMTracker confirms this model has been called in current cycle
+                        // → enter tracking immediately, even though frac is still 1.0
+                        if (usedModelIds?.has(modelId) && currentResetMs > nowMs) {
+                            const estimatedStart = (knownWindowMs > 0 && currentResetMs > 0)
+                                ? new Date(currentResetMs - knownWindowMs).toISOString()
+                                : ms.last100Time;
+                            this.startTracking(ms, modelId, config.label, estimatedStart, resetTimeStr, fraction, poolLabelsForModel.get(modelId), accountEmail);
+                        } else {
                             ms.last100Time = now;
                             ms.lastFraction = fraction;
                             if (timeToResetMs > 0) {
                                 ms.knownWindowMs = timeToResetMs;
                             }
-                        } else if (idleDuration >= OBSERVATION_WINDOW_MS) {
-                            // Guard: if resetTime is already in the past, the API
-                            // hasn't refreshed to the new cycle yet. Entering
-                            // tracking now would cause isCycleEnded() to fire
-                            // immediately → ghost session → archive loop.
-                            if (currentResetMs > 0 && currentResetMs <= nowMs) {
-                                ms.lastFraction = fraction;
-                                ms.last100Time = now;
-                            } else {
-                                const detectedStart = (knownWindowMs > 0 && currentResetMs > 0)
-                                    ? new Date(currentResetMs - knownWindowMs).toISOString()
-                                    : ms.last100Time;
-                                this.startTracking(ms, modelId, config.label, detectedStart, resetTimeStr, fraction, poolLabelsForModel.get(modelId));
-                            }
-                        } else {
-                            ms.last100Time = now;
-                            ms.lastFraction = fraction;
                         }
                     } else {
                         // Actual usage detected (fraction < 1.0) → start tracking
@@ -302,7 +289,7 @@ export class QuotaTracker {
                             nowDate,
                         );
                         const initialFraction = (knownWindowMs > 0 || observedFullBeforeDrop) ? 1.0 : fraction;
-                        this.startTracking(ms, modelId, config.label, startTime, resetTimeStr, initialFraction, poolLabelsForModel.get(modelId));
+                        this.startTracking(ms, modelId, config.label, startTime, resetTimeStr, initialFraction, poolLabelsForModel.get(modelId), accountEmail);
                         // Add the current fraction only when it differs from the initial snapshot.
                         if (Math.round(initialFraction * 100) !== percent) {
                             ms.currentSession!.snapshots.push({
@@ -441,6 +428,48 @@ export class QuotaTracker {
         this.state.update(ENABLED_KEY, val);
     }
 
+    /** Archive active tracking sessions for a specific account whose quota has expired.
+     *  Called by checkCachedAccountResets() when a cached (non-active) account's
+     *  quota pool resets — the QuotaTracker never receives API config updates for
+     *  these accounts, so their sessions would stay in 'tracking' state forever.
+     *  @param email — account email to match against session.accountEmail
+     *  @param modelLabels — model labels in the expired pool (used to scope archival)
+     *  @returns number of sessions archived */
+    archiveExpiredSessions(email: string, modelLabels: string[]): number {
+        if (!email) { return 0; }
+        const now = new Date();
+        const nowIso = now.toISOString();
+        const labelSet = new Set(modelLabels.map(l => l.toLowerCase()));
+        let count = 0;
+
+        for (const [stateKey, ms] of this.modelStates.entries()) {
+            if (!ms.currentSession) { continue; }
+            // Match by account email prefix in stateKey (format: "email:modelId")
+            if (!stateKey.startsWith(`${email}:`)) { continue; }
+            // Match by model label (pool scope)
+            const sessionLabel = ms.currentSession.modelLabel?.toLowerCase() || '';
+            const hasPoolMatch = labelSet.has(sessionLabel)
+                || (ms.currentSession.poolModels || []).some(p => labelSet.has(p.toLowerCase()));
+            if (!hasPoolMatch && labelSet.size > 0) { continue; }
+
+            // Archive the session with resetTime as end time
+            const endTime = ms.currentSession.cycleResetTime || nowIso;
+            ms.currentSession.endTime = endTime;
+            ms.currentSession.totalDurationMs =
+                new Date(endTime).getTime() - new Date(ms.currentSession.startTime).getTime();
+            this.archiveSession(ms.currentSession);
+            ms.currentSession = null;
+            ms.state = 'idle';
+            ms.last100Time = nowIso;
+            ms.lastFraction = 1.0;
+            ms.idleSince = nowIso;
+            count++;
+        }
+
+        if (count > 0) { this.persist(); }
+        return count;
+    }
+
     // ─── Internal ─────────────────────────────────────────────────────────────
 
     /** Helper: begin a tracking session. */
@@ -448,6 +477,7 @@ export class QuotaTracker {
         ms: ModelState, modelId: string, label: string,
         startTime: string, resetTime: string, initialFraction: number,
         poolModels?: string[],
+        accountEmail?: string,
     ): void {
         const session: QuotaSession = {
             id: `${modelId}_${Date.now()}`,
@@ -463,6 +493,7 @@ export class QuotaTracker {
             }],
             completed: false,
             cycleResetTime: resetTime,
+            accountEmail,
         };
         ms.state = 'tracking';
         ms.currentSession = session;
@@ -598,17 +629,17 @@ export class QuotaTracker {
         // Serialize active tracking state — ALL fields must be persisted
         const activeState: Record<string, ModelState> = {};
         for (const [modelId, ms] of this.modelStates.entries()) {
-                activeState[modelId] = {
-                    state: ms.state,
-                    lastFraction: ms.lastFraction,
-                    last100Time: ms.last100Time,
-                    lastResetTime: ms.lastResetTime,
-                    currentSession: ms.currentSession,
-                    baselineResetTime: ms.baselineResetTime,
-                    idleSince: ms.idleSince,
-                    knownWindowMs: ms.knownWindowMs,
-                };
-            }
+            activeState[modelId] = {
+                state: ms.state,
+                lastFraction: ms.lastFraction,
+                last100Time: ms.last100Time,
+                lastResetTime: ms.lastResetTime,
+                currentSession: ms.currentSession,
+                baselineResetTime: ms.baselineResetTime,
+                idleSince: ms.idleSince,
+                knownWindowMs: ms.knownWindowMs,
+            };
+        }
         this.state.update(ACTIVE_KEY, activeState);
     }
 

@@ -185,229 +185,205 @@ function buildGroups(entries: HistoryEntry[]): HistoryGroup[] {
         });
 }
 
-function renderSummary(entries: HistoryEntry[], groups: HistoryGroup[]): string {
-    const currentWorkspaceCount = entries.filter(entry => entry.isCurrentWorkspace).length;
-    const runningCount = entries.filter(entry => entry.status === 'RUNNING').length;
-    const recordableCount = entries.filter(entry => entry.hasBrain || entry.hasPb || entry.hasRecording).length;
+// ── Inline SVG Icons ──
+const IC = {
+    calls: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+    clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+    credits: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>',
+    model: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
+    pulse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
+    workspace: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
+    brain: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"/><line x1="9" y1="21" x2="15" y2="21"/></svg>',
+};
 
-    return `
-        <div class="history-stats-grid">
-            <section class="card history-stat-card">
-                <div class="history-stat-value">${entries.length}</div>
-                <div class="history-stat-label">${tBi('Conversations', '对话')} · ${groups.length} ${tBi('groups', '组')}</div>
-            </section>
-            <section class="card history-stat-card">
-                <div class="history-stat-value">${currentWorkspaceCount}</div>
-                <div class="history-stat-label">${tBi('Workspace', '工作区')} · ${runningCount} ${tBi('running', '运行中')}</div>
-            </section>
-            <section class="card history-stat-card">
-                <div class="history-stat-value">${recordableCount}</div>
-                <div class="history-stat-label">${tBi('Recordable', '可备份')}</div>
-            </section>
-        </div>`;
+// ── Compact date formatting ──
+function fmtCompactDate(iso: string): string {
+    if (!iso) { return ''; }
+    try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) { return ''; }
+        const p = (n: number) => String(n).padStart(2, '0');
+        return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    } catch { return ''; }
 }
 
+// ── Shortcut filter cards ──
 function renderShortcuts(entries: HistoryEntry[], currentUsage: ContextUsage | null): string {
-    const currentRepoName = currentUsage?.repositoryName || entries.find(entry => entry.isCurrentRepo)?.repositoryName || '';
-    const currentWorkspaceCount = entries.filter(entry => entry.isCurrentWorkspace).length;
-    const currentRepoCount = currentRepoName ? entries.filter(entry => entry.isCurrentRepo).length : 0;
-    const recordableCount = entries.filter(entry => entry.hasBrain || entry.hasPb || entry.hasRecording).length;
+    const currentRepoName = currentUsage?.repositoryName || entries.find(e => e.isCurrentRepo)?.repositoryName || '';
+    const currentWorkspaceCount = entries.filter(e => e.isCurrentWorkspace).length;
+    const currentRepoCount = currentRepoName ? entries.filter(e => e.isCurrentRepo).length : 0;
+    const recordableCount = entries.filter(e => e.hasBrain || e.hasPb || e.hasRecording).length;
 
     const cards = [
         {
             filter: 'current',
             icon: ICON.folder,
-            kicker: tBi('Quick Entry', '固定入口'),
             title: tBi('Current Workspace', '当前工作区'),
-            subtitle: tBi(`${currentWorkspaceCount} conversations ready to continue`, `${currentWorkspaceCount} 条对话可继续`),
             count: currentWorkspaceCount,
             active: currentWorkspaceCount > 0,
         },
         {
             filter: 'currentrepo',
             icon: ICON.git,
-            kicker: tBi('Quick Entry', '固定入口'),
-            title: currentRepoName || tBi('Current Repository', '当前仓库'),
-            subtitle: currentRepoName
-                ? tBi(`${currentRepoCount} conversations under this repo`, `${currentRepoCount} 条对话归属这个仓库`)
-                : tBi('Current conversation has no repository metadata yet', '当前对话暂时没有仓库元数据'),
+            title: currentRepoName || tBi('Current Repo', '当前仓库'),
             count: currentRepoCount,
             active: currentRepoCount > 0,
         },
         {
             filter: 'recordable',
             icon: ICON.database,
-            kicker: tBi('Quick Entry', '固定入口'),
-            title: tBi('Backup Ready', '可备份记录'),
-            subtitle: tBi(`${recordableCount} conversations already have local artifacts`, `${recordableCount} 条对话已有本地记录`),
+            title: tBi('Backup Ready', '可备份'),
             count: recordableCount,
             active: recordableCount > 0,
         },
     ];
 
     return `
-        <section class="history-shortcuts-grid">
+        <div class="ses-shortcuts">
             ${cards.map(card => `
                 <button
-                    class="history-shortcut-card${card.active ? '' : ' is-disabled'}"
+                    class="ses-shortcut${card.active ? '' : ' is-disabled'}"
                     data-history-shortcut="${card.filter}"
                     ${card.active ? '' : 'disabled'}
                 >
-                    <div class="history-shortcut-head">
-                        <span class="history-shortcut-kicker">${card.kicker}</span>
-                        <span class="history-shortcut-count">${card.count}</span>
-                    </div>
-                    <div class="history-shortcut-title">${card.icon} ${esc(card.title)}</div>
-                    <div class="history-shortcut-subtitle">${esc(card.subtitle)}</div>
+                    <span class="ses-shortcut-icon">${card.icon}</span>
+                    <span class="ses-shortcut-title">${esc(card.title)}</span>
+                    <span class="ses-shortcut-count">${card.count}</span>
                 </button>
             `).join('')}
-        </section>`;
+        </div>`;
 }
 
+// ── Compact toolbar (search + filters) ──
 function renderToolbar(): string {
     return `
-        <section class="card history-toolbar-card">
-            <div class="history-toolbar-grid">
-                <label class="history-search-field">
-                    <span class="history-search-label">${ICON.chat} ${tBi('Search', '搜索')}</span>
-                    <input
-                        id="historySearchInput"
-                        class="history-search-input"
-                        type="text"
-                        placeholder="${esc(tBi('Search title / folder / repo / model', '搜索标题 / 文件夹 / 仓库 / 模型'))}"
-                        autocomplete="off"
-                        spellcheck="false"
-                    />
-                </label>
-                <div class="history-filter-bar" role="tablist" aria-label="${esc(tBi('Session catalog filters', '会话目录筛选'))}">
-                    <button class="history-filter-btn is-active" data-history-filter="all">${tBi('All', '全部')}</button>
-                    <button class="history-filter-btn" data-history-filter="current">${tBi('Current Workspace', '当前工作区')}</button>
-                    <button class="history-filter-btn" data-history-filter="currentrepo">${tBi('Current Repo', '当前仓库')}</button>
-                    <button class="history-filter-btn" data-history-filter="running">${tBi('Running', '运行中')}</button>
-                    <button class="history-filter-btn" data-history-filter="recordable">${tBi('Recordable', '可备份')}</button>
-                </div>
+        <div class="ses-toolbar">
+            <div class="ses-search-wrap">
+                ${ICON.chat}
+                <input
+                    id="historySearchInput"
+                    class="ses-search-input"
+                    type="text"
+                    placeholder="${esc(tBi('Search title / folder / repo / model...', '搜索标题 / 文件夹 / 仓库 / 模型...'))}"
+                    autocomplete="off"
+                    spellcheck="false"
+                />
             </div>
-        </section>`;
+            <div class="ses-filters" role="tablist" aria-label="${esc(tBi('Session catalog filters', '会话目录筛选'))}">
+                <button class="ses-filter-btn is-active" data-history-filter="all">${tBi('All', '全部')}</button>
+                <button class="ses-filter-btn" data-history-filter="current">${tBi('Workspace', '工作区')}</button>
+                <button class="ses-filter-btn" data-history-filter="currentrepo">${tBi('Repo', '仓库')}</button>
+                <button class="ses-filter-btn" data-history-filter="running">${tBi('Running', '运行中')}</button>
+                <button class="ses-filter-btn" data-history-filter="recordable">${tBi('Recordable', '可备份')}</button>
+            </div>
+        </div>`;
 }
 
-function renderGroup(group: HistoryGroup, index: number): string {
-    const runningCount = group.entries.filter(entry => entry.status === 'RUNNING').length;
-    const recordableCount = group.entries.filter(entry => entry.hasPb || entry.hasBrain || entry.hasRecording).length;
-    const openAttr = group.isCurrentWorkspace || index === 0 ? ' open' : '';
+// ── Single session row (compact card) ──
+function renderRow(entry: HistoryEntry): string {
+    const searchCorpus = [
+        entry.title, entry.workspaceLabel, entry.workspacePath,
+        entry.repositoryName, entry.branchName, entry.modelLabel, entry.latestGMModel,
+    ].join(' ').toLowerCase();
 
-    const rows = group.entries.map((entry) => {
-        const searchCorpus = [
-            entry.title,
-            entry.workspaceLabel,
-            entry.workspacePath,
-            entry.repositoryName,
-            entry.branchName,
-            entry.modelLabel,
-            entry.latestGMModel,
-        ].join(' ').toLowerCase();
+    const statusClass = entry.status === 'RUNNING' ? 'is-running'
+        : entry.status === 'FINISHED' ? 'is-finished' : 'is-idle';
 
-        const statusClass = entry.status === 'RUNNING'
-            ? 'is-running'
-            : entry.status === 'FINISHED'
-                ? 'is-finished'
-                : 'is-idle';
+    // ── Context line: repo/branch ──
+    const contextParts: string[] = [];
+    if (entry.repositoryName) { contextParts.push(esc(entry.repositoryName)); }
+    if (entry.branchName) { contextParts.push(`<span class="ses-ctx-branch">${ICON.branch} ${esc(entry.branchName)}</span>`); }
 
-        const storageBadges: string[] = [];
-        if (entry.hasBrain) { storageBadges.push(`<span class="history-storage-badge">${tBi('Brain', 'Brain')}</span>`); }
-        if (entry.hasRecording) { storageBadges.push(`<span class="history-storage-badge">${tBi('Recording', '录屏')}</span>`); }
-        if (entry.hasPb) { storageBadges.push(`<span class="history-storage-badge">${tBi('PB', 'PB')}</span>`); }
+    // ── Metric chips (time only; calls/credits/steps shown elsewhere) ──
+    const chips: string[] = [];
 
-        const gmBits: string[] = [];
-        if (entry.gmCalls > 0) { gmBits.push(`${entry.gmCalls} ${tBi('calls', '调用')}`); }
-        if (entry.gmCredits > 0) { gmBits.push(`${entry.gmCredits} ${tBi('cr', '积分')}`); }
-        if (entry.latestGMModel) { gmBits.push(entry.latestGMModel); }
+    // ── Time range ──
+    const created = fmtCompactDate(entry.createdTime);
+    const modified = fmtCompactDate(entry.lastModifiedTime);
+    if (created || modified) {
+        const timeStr = created && modified && created !== modified
+            ? `${created} → ${modified}`
+            : (modified || created);
+        chips.push(`<span class="ses-chip ses-chip-time">${IC.clock} ${timeStr}</span>`);
+    }
 
-        return `
-            <article
-                class="history-row${entry.isCurrentSession ? ' is-current-session' : ''}"
-                data-history-row="true"
-                data-search="${esc(searchCorpus)}"
-                data-current-workspace="${entry.isCurrentWorkspace ? 'true' : 'false'}"
-                data-current-repo="${entry.isCurrentRepo ? 'true' : 'false'}"
-                data-running="${entry.status === 'RUNNING' ? 'true' : 'false'}"
-                data-recordable="${entry.hasPb || entry.hasBrain || entry.hasRecording ? 'true' : 'false'}"
-            >
-                <div class="history-row-main">
-                    <div class="history-row-header">
-                        <div class="history-row-title-wrap">
-                            <h3 class="history-row-title">${esc(entry.title)}</h3>
-                            <div class="history-row-subtitle">${esc(entry.repositoryName || entry.workspaceLabel)}</div>
-                        </div>
-                        <div class="history-row-badges">
-                            ${entry.isCurrentSession ? `<span class="history-badge is-current">${tBi('Current', '当前')}</span>` : ''}
-                            ${entry.isCurrentWorkspace ? `<span class="history-badge is-workspace">${tBi('Workspace', '本工作区')}</span>` : ''}
-                            ${entry.isCurrentRepo ? `<span class="history-badge is-repo">${tBi('Repo', '当前仓库')}</span>` : ''}
-                            <span class="history-badge ${statusClass}">${esc(entry.status || 'UNKNOWN')}</span>
-                        </div>
-                    </div>
-                    <div class="history-row-meta">
-                        <span class="history-meta-chip">${ICON.folder} ${esc(entry.workspaceLabel)}</span>
-                        ${entry.branchName ? `<span class="history-meta-chip">${ICON.branch} ${esc(entry.branchName)}</span>` : ''}
-                        ${entry.modelLabel ? `<span class="history-meta-chip">${ICON.bolt} ${esc(entry.modelLabel)}</span>` : ''}
-                        <span class="history-meta-chip">${ICON.chart} ${entry.stepCount} ${tBi('steps', '步')}</span>
-                    </div>
-                    <div class="history-spotlight-grid">
-                        <div class="history-spotlight-card is-credit${entry.gmCredits > 0 ? '' : ' is-muted'}">
-                            <div class="history-spotlight-label">${tBi('Cumulative Credits', '累计积分')}</div>
-                            <div class="history-spotlight-value">${entry.gmCredits > 0 ? `${entry.gmCredits} ${tBi('cr', '积分')}` : '—'}</div>
-                        </div>
-                        <div class="history-spotlight-card is-model${entry.latestGMModel ? '' : ' is-muted'}">
-                            <div class="history-spotlight-label">${tBi('Latest Actual Model', '最后实际模型')}</div>
-                            <div class="history-spotlight-value is-model-name">${entry.latestGMModel ? esc(entry.latestGMModel) : '—'}</div>
-                        </div>
-                    </div>
-                    <div class="history-row-foot">
-                        <span class="history-foot-item">${tBi('Modified', '修改')} ${formatTime(entry.lastModifiedTime)}</span>
-                        <span class="history-foot-item">${tBi('Created', '创建')} ${formatTime(entry.createdTime)}</span>
-                        ${gmBits.length > 0 ? `<span class="history-foot-item is-gm">${gmBits.join(' · ')}</span>` : ''}
-                    </div>
-                    ${storageBadges.length > 0 ? `<div class="history-storage-row">${storageBadges.join('')}</div>` : ''}
-                </div>
-                <div class="history-row-actions">
-                    <button
-                        class="history-action-btn"
-                        data-history-action="workspace"
-                        data-history-uri="${esc(entry.workspaceUri)}"
-                        ${entry.workspaceUri ? '' : 'disabled'}
-                    >${ICON.folder} ${tBi('Workspace', '工作区')}</button>
-                    <button
-                        class="history-action-btn is-accent"
-                        data-history-action="record"
-                        data-cascade-id="${esc(entry.cascadeId)}"
-                    >${ICON.chat} ${tBi('Record Folder', '记录目录')}</button>
-                    <button
-                        class="history-action-btn"
-                        data-history-action="pb"
-                        data-cascade-id="${esc(entry.cascadeId)}"
-                        ${entry.hasPb ? '' : 'disabled'}
-                    >${ICON.file} ${tBi('PB File', 'PB 文件')}</button>
-                </div>
-            </article>`;
-    }).join('');
+    // ── Storage badges (inline, minimal) ──
+    const storageParts: string[] = [];
+    if (entry.hasBrain) { storageParts.push('Brain'); }
+    if (entry.hasRecording) { storageParts.push(tBi('Rec', '录屏')); }
+    if (entry.hasPb) { storageParts.push('PB'); }
+
+    // ── Action buttons (icon-only, compact, CSS tooltip) ──
+    const actions = `
+        <div class="ses-row-actions">
+            <button
+                class="ses-act-btn" data-tooltip="${esc(tBi('Open Workspace', '打开工作区'))}"
+                data-history-action="workspace"
+                data-history-uri="${esc(entry.workspaceUri)}"
+                ${entry.workspaceUri ? '' : 'disabled'}
+            >${ICON.folder}</button>
+            <button
+                class="ses-act-btn ses-act-accent" data-tooltip="${esc(tBi('Record Folder', '记录目录'))}"
+                data-history-action="record"
+                data-cascade-id="${esc(entry.cascadeId)}"
+            >${ICON.chat}</button>
+            <button
+                class="ses-act-btn" data-tooltip="${esc(tBi('PB File', 'PB 文件'))}"
+                data-history-action="pb"
+                data-cascade-id="${esc(entry.cascadeId)}"
+                ${entry.hasPb ? '' : 'disabled'}
+            >${ICON.file}</button>
+        </div>`;
 
     return `
-        <details class="collapsible history-group" id="history-group-${index}"${openAttr}>
+        <article
+            class="ses-row${entry.isCurrentSession ? ' is-current' : ''}"
+            data-history-row="true"
+            data-search="${esc(searchCorpus)}"
+            data-current-workspace="${entry.isCurrentWorkspace ? 'true' : 'false'}"
+            data-current-repo="${entry.isCurrentRepo ? 'true' : 'false'}"
+            data-running="${entry.status === 'RUNNING' ? 'true' : 'false'}"
+            data-recordable="${entry.hasPb || entry.hasBrain || entry.hasRecording ? 'true' : 'false'}"
+        >
+            <div class="ses-row-head">
+                <h3 class="ses-row-title" title="${esc(entry.cascadeId)}">${esc(entry.title)}</h3>
+                <div class="ses-row-badges">
+                    ${entry.isCurrentSession ? `<span class="ses-badge is-current">${tBi('Current', '当前')}</span>` : ''}
+                    ${entry.isCurrentWorkspace ? `<span class="ses-badge is-workspace">${tBi('WS', '本区')}</span>` : ''}
+                    <span class="ses-badge ${statusClass}">${esc(entry.status || 'UNKNOWN')}</span>
+                </div>
+            </div>
+            ${contextParts.length > 0 ? `<div class="ses-row-ctx">${contextParts.join(' <span class="ses-ctx-sep">·</span> ')}</div>` : ''}
+            <div class="ses-row-metrics">
+                <div class="ses-chips">${chips.join('')}</div>
+                ${storageParts.length > 0 ? `<div class="ses-storage">${storageParts.map(s => `<span class="ses-storage-tag">${s}</span>`).join('')}</div>` : ''}
+            </div>
+            ${actions}
+        </article>`;
+}
+
+// ── Group (collapsible) ──
+function renderGroup(group: HistoryGroup, index: number): string {
+    const runningCount = group.entries.filter(e => e.status === 'RUNNING').length;
+    const openAttr = group.isCurrentWorkspace || index === 0 ? ' open' : '';
+
+    return `
+        <details class="collapsible ses-group" id="history-group-${index}"${openAttr}>
             <summary>
-                <div class="history-group-summary">
-                    <div class="history-group-labels">
-                        <span class="history-group-title">${esc(group.label)}</span>
-                        <span class="history-group-subtitle">${esc(group.subtitle)}</span>
+                <div class="ses-group-head">
+                    <div class="ses-group-labels">
+                        <span class="ses-group-title">${esc(group.label)}</span>
+                        <span class="ses-group-path">${esc(group.subtitle)}</span>
                     </div>
-                    <div class="history-group-metrics">
-                        ${group.isCurrentWorkspace ? `<span class="history-group-chip is-workspace">${tBi('Current Workspace', '当前工作区')}</span>` : ''}
-                        <span class="history-group-chip">${group.entries.length} ${tBi('items', '条')}</span>
-                        <span class="history-group-chip">${runningCount} ${tBi('running', '运行中')}</span>
-                        <span class="history-group-chip">${recordableCount} ${tBi('recordable', '可备份')}</span>
+                    <div class="ses-group-chips">
+                        ${group.isCurrentWorkspace ? `<span class="ses-group-chip is-ws">${tBi('Current', '当前')}</span>` : ''}
+                        <span class="ses-group-chip">${group.entries.length}</span>
+                        ${runningCount > 0 ? `<span class="ses-group-chip is-run">${runningCount} ${tBi('run', '运行')}</span>` : ''}
                     </div>
                 </div>
             </summary>
-            <div class="details-body history-group-body">
-                ${rows}
+            <div class="details-body ses-group-body">
+                ${group.entries.map(e => renderRow(e)).join('')}
             </div>
         </details>`;
 }
@@ -430,10 +406,9 @@ export function buildChatHistoryTabContent(
     const groups = buildGroups(entries);
 
     return `
-        ${renderSummary(entries, groups)}
         ${renderShortcuts(entries, currentUsage)}
         ${renderToolbar()}
-        <section class="history-groups" id="historyGroups">
+        <section class="ses-groups" id="historyGroups">
             ${groups.map((group, index) => renderGroup(group, index)).join('')}
         </section>`;
 }

@@ -9,20 +9,30 @@ import { QuotaTracker } from './quota-tracker';
 import { ICON } from './webview-icons';
 import { esc, formatFileSize } from './webview-helpers';
 
+/** Format token count for display (e.g. 1.2M, 345K, 1,234) */
+function formatTokenCount(tokens: number): string {
+    if (!tokens || tokens <= 0) { return '0'; }
+    if (tokens >= 1_000_000) { return (tokens / 1_000_000).toFixed(1) + 'M'; }
+    if (tokens >= 10_000) { return Math.round(tokens / 1_000) + 'K'; }
+    if (tokens >= 1_000) { return (tokens / 1_000).toFixed(1) + 'K'; }
+    return String(tokens);
+}
+
 export interface StorageDiagnostics {
     stateFilePath: string;
     stateFileExists: boolean;
     stateFileSizeBytes: number;
     stateFileOpenWarnBytes: number;
-    monitorSnapshotCount: number;
-    monitorGMConversationCount: number;
-    gmConversationCount: number;
+    // GM cycle stats (current quota period)
     gmCallCount: number;
-    quotaHistoryCount: number;
-    activityArchiveCount: number;
+    gmTotalInputTokens: number;
+    gmTotalOutputTokens: number;
+    gmTotalCredits: number;
+    estimatedCostAllTime: number;
+    // Historical stats
+    quotaResetCount: number;
     calendarDayCount: number;
     calendarCycleCount: number;
-    pricingOverrideCount: number;
     hasDevResetSnapshot: boolean;
 }
 
@@ -55,7 +65,6 @@ export function buildSettingsContent(
     const showScrollbar = panelPrefs?.showScrollbar ?? false;
     const showEndOfContent = panelPrefs?.showEndOfContent ?? true;
     const stateFileSizeLabel = storage ? formatFileSize(storage.stateFileSizeBytes) : '0 B';
-    const stateFileOpenWarnLabel = storage ? formatFileSize(storage.stateFileOpenWarnBytes) : '0 B';
 
     const modelLimitRows = configs.map(c => {
         const customLimit = contextLimits[c.model];
@@ -80,9 +89,9 @@ export function buildSettingsContent(
                 <h2>${tBi('Persistent Storage', '持久化存储')}</h2>
             </div>
             <p class="raw-desc">${tBi(
-                'This file is stored outside the extension state database, so it survives uninstall/reinstall unless you delete it manually.',
-                '该文件存储在扩展状态数据库之外，因此只要你不手动删除，它会跨卸载/重装保留。',
-            )}</p>
+        'This file is stored outside the extension state database, so it survives uninstall/reinstall unless you delete it manually.',
+        '该文件存储在扩展状态数据库之外，因此只要你不手动删除，它会跨卸载/重装保留。',
+    )}</p>
             <div class="storage-path-box">
                 <code class="storage-path-text">${esc(storage.stateFilePath)}</code>
                 <span class="storage-path-state ${storage.stateFileExists ? 'is-ready' : 'is-missing'}">
@@ -96,21 +105,19 @@ export function buildSettingsContent(
                 <span id="statePathFeedback" class="threshold-feedback"></span>
             </div>
             <p class="raw-desc">${tBi(
-                `Current file size: ${stateFileSizeLabel}. Large-file warning appears at ${stateFileOpenWarnLabel}, because opening huge JSON directly may stall the editor.`,
-                `当前文件大小：${stateFileSizeLabel}。超过 ${stateFileOpenWarnLabel} 时会先弹出大文件警告，因为直接打开超大 JSON 可能导致编辑器卡顿。`,
-            )}</p>
+        `Current file size: ${stateFileSizeLabel}. Stats below reflect the current quota cycle and historical archives.`,
+        `当前文件大小：${stateFileSizeLabel}。以下统计反映当前额度周期和历史归档数据。`,
+    )}</p>
             <div class="storage-stat-grid">
                 <div class="storage-stat"><span class="storage-stat-val">${stateFileSizeLabel}</span><span class="storage-stat-label">${tBi('File Size', '文件大小')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${stateFileOpenWarnLabel}</span><span class="storage-stat-label">${tBi('Open Warn At', '打开警告阈值')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.monitorSnapshotCount}</span><span class="storage-stat-label">${tBi('Monitor Sessions', '监控会话')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.monitorGMConversationCount}</span><span class="storage-stat-label">${tBi('Monitor GM Snapshots', '监控 GM 快照')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.gmConversationCount}</span><span class="storage-stat-label">${tBi('GM Conversations', 'GM 对话')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.gmCallCount}</span><span class="storage-stat-label">${tBi('GM Calls', 'GM 调用')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.activityArchiveCount}</span><span class="storage-stat-label">${tBi('Activity Archives', '活动归档')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.quotaHistoryCount}</span><span class="storage-stat-label">${tBi('Quota History', '额度历史')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.gmCallCount}</span><span class="storage-stat-label">${tBi('GM Calls (Cycle)', 'GM 调用 (周期)')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${formatTokenCount(storage.gmTotalInputTokens)}</span><span class="storage-stat-label">${tBi('Input Tokens', '输入 Tokens')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${formatTokenCount(storage.gmTotalOutputTokens)}</span><span class="storage-stat-label">${tBi('Output Tokens', '输出 Tokens')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.gmTotalCredits > 0 ? storage.gmTotalCredits.toFixed(1) : '0'}</span><span class="storage-stat-label">${tBi('Credits Used', '已用积分')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.estimatedCostAllTime > 0 ? '$' + storage.estimatedCostAllTime.toFixed(2) : '$0'}</span><span class="storage-stat-label">${tBi('Est. Total Cost', '估算总费用')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${storage.quotaResetCount}</span><span class="storage-stat-label">${tBi('Archival Days', '归档天数')}</span></div>
                 <div class="storage-stat"><span class="storage-stat-val">${storage.calendarDayCount}</span><span class="storage-stat-label">${tBi('Calendar Days', '日历天数')}</span></div>
                 <div class="storage-stat"><span class="storage-stat-val">${storage.calendarCycleCount}</span><span class="storage-stat-label">${tBi('Calendar Cycles', '日历周期')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.pricingOverrideCount}</span><span class="storage-stat-label">${tBi('Price Overrides', '价格覆盖')}</span></div>
             </div>
         </section>` : '';
 
@@ -124,13 +131,13 @@ export function buildSettingsContent(
             </div>
             <div class="setting-row">
                 <label for="thresholdInput">${tBi(
-                    'Warning threshold (tokens)',
-                    '警告阈值（token 数）',
-                )}</label>
+        'Warning threshold (tokens)',
+        '警告阈值（token 数）',
+    )}</label>
                 <p class="raw-desc">${tBi(
-                    'Status bar turns yellow/red based on this value. Default 200K matches Antigravity\'s internal compression point.',
-                    '状态栏颜色基于此值判断。默认 200K 匹配 Antigravity 内建压缩线。',
-                )}</p>
+        'Status bar turns yellow/red based on this value. Default 200K matches Antigravity\'s internal compression point.',
+        '状态栏颜色基于此值判断。默认 200K 匹配 Antigravity 内建压缩线。',
+    )}</p>
                 <div class="threshold-input-row">
                     <div class="num-spinner">
                         <button type="button" class="num-spinner-btn decrement" data-target="thresholdInput">−</button>
@@ -157,13 +164,13 @@ export function buildSettingsContent(
             </div>
             <div class="setting-row">
                 <label for="quotaNotifyInput">${tBi(
-                    'Low quota warning threshold (%)',
-                    '低额度警告阈值（%）',
-                )}</label>
+        'Low quota warning threshold (%)',
+        '低额度警告阈值（%）',
+    )}</label>
                 <p class="raw-desc">${tBi(
-                    'Show a warning notification when any model\'s remaining quota drops below this percentage. Set to 0 to disable.',
-                    '当任何模型剩余额度低于此百分比时弹出系统警告通知。设为 0 可禁用。',
-                )}</p>
+        'Show a warning notification when any model\'s remaining quota drops below this percentage. Set to 0 to disable.',
+        '当任何模型剩余额度低于此百分比时弹出系统警告通知。设为 0 可禁用。',
+    )}</p>
                 <div class="threshold-input-row">
                     <div class="num-spinner">
                         <button type="button" class="num-spinner-btn decrement">−</button>
@@ -183,9 +190,9 @@ export function buildSettingsContent(
                 <h2>${tBi('Quota Timeline Tracking', '额度时间线追踪')}</h2>
             </div>
             <p class="raw-desc">${tBi(
-                'Tracks quota consumption against the official resetTime. Lightweight and always-on by default. Disable only if you never use the Quota Tracking tab.',
-                '基于官方 resetTime 追踪额度消耗。默认始终开启，性能开销极小。仅在完全不使用「额度追踪」标签页时才需关闭。',
-            )}</p>
+        'Tracks quota consumption against the official resetTime. Lightweight and always-on by default. Disable only if you never use the Quota Tracking tab.',
+        '基于官方 resetTime 追踪额度消耗。默认始终开启，性能开销极小。仅在完全不使用「额度追踪」标签页时才需关闭。',
+    )}</p>
             <div class="toggle-group">
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleQuotaTracking" class="toggle-cb" ${tracker?.isEnabled() ? 'checked' : ''} />
@@ -202,9 +209,9 @@ export function buildSettingsContent(
             </div>
             <div class="setting-row">
                 <label for="pollingInput">${tBi(
-                    'Polling interval (seconds)',
-                    '轮询间隔（秒）',
-                )}</label>
+        'Polling interval (seconds)',
+        '轮询间隔（秒）',
+    )}</label>
                 <div class="threshold-input-row">
                     <div class="num-spinner">
                         <button type="button" class="num-spinner-btn decrement" data-target="pollingInput">−</button>
@@ -224,9 +231,9 @@ export function buildSettingsContent(
                 <h2>${tBi('Status Bar Display', '状态栏显示')}</h2>
             </div>
             <p class="raw-desc">${tBi(
-                'Toggle which elements appear in the status bar.',
-                '控制状态栏显示哪些元素。',
-            )}</p>
+        'Toggle which elements appear in the status bar.',
+        '控制状态栏显示哪些元素。',
+    )}</p>
             <div class="toggle-group">
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleContext" class="toggle-cb" ${showContext ? 'checked' : ''} />
@@ -252,9 +259,9 @@ export function buildSettingsContent(
                 <h2>${tBi('Interface Zoom', '界面缩放')}</h2>
             </div>
             <p class="raw-desc">${tBi(
-                'Scale all content in the panel. Applies to text, icons, and spacing.',
-                '缩放面板中的所有内容。对文字、图标和间距统一生效。',
-            )}</p>
+        'Scale all content in the panel. Applies to text, icons, and spacing.',
+        '缩放面板中的所有内容。对文字、图标和间距统一生效。',
+    )}</p>
             <div class="zoom-control">
                 <div class="zoom-presets">
                     <button class="preset-btn zoom-preset" data-zoom="80">80%</button>
@@ -278,9 +285,9 @@ export function buildSettingsContent(
                 <h2>${tBi('Panel Tips', '界面提示')}</h2>
             </div>
             <p class="raw-desc">${tBi(
-                'This state only means whether auto-display is enabled. It does not mean the hint is currently visible at the top. Use the button below to show it immediately once.',
-                '这里的状态只表示“是否启用自动提示”，不代表顶部当前一定可见。要立刻看到这条提示，请用下面的按钮显示一次。',
-            )}</p>
+        'This state only means whether auto-display is enabled. It does not mean the hint is currently visible at the top. Use the button below to show it immediately once.',
+        '这里的状态只表示“是否启用自动提示”，不代表顶部当前一定可见。要立刻看到这条提示，请用下面的按钮显示一次。',
+    )}</p>
             <div class="storage-actions">
                 <button class="action-btn" id="restoreTabScrollHint">${ICON.refresh} ${tBi('Show Hint Now', '立即显示一次提示')}</button>
                 <span class="storage-path-state ${tabScrollHintEnabled ? 'is-ready' : 'is-missing'}" id="tabHintState">
@@ -296,9 +303,9 @@ export function buildSettingsContent(
                 <h2>${tBi('Scrollbar Appearance', '滚动条外观')}</h2>
             </div>
             <p class="raw-desc">${tBi(
-                'Control scrollbar visibility and end-of-content indicators across all tabs.',
-                '控制所有选项卡的滚动条可见性和「已到底」提示。',
-            )}</p>
+        'Control scrollbar visibility and end-of-content indicators across all tabs.',
+        '控制所有选项卡的滚动条可见性和「已到底」提示。',
+    )}</p>
             <div class="toggle-group">
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleScrollbar" class="toggle-cb" ${showScrollbar ? 'checked' : ''} />
@@ -320,9 +327,9 @@ export function buildSettingsContent(
                 <h2>${tBi('Model Context Limits', '模型上下文限制')}</h2>
             </div>
             <p class="raw-desc">${tBi(
-                'Override context window size (tokens) per model.',
-                '按模型覆盖上下文窗口大小（token 数）。',
-            )}</p>
+        'Override context window size (tokens) per model.',
+        '按模型覆盖上下文窗口大小（token 数）。',
+    )}</p>
             <div class="setting-model-grid">
                 ${modelLimitRows}
             </div>
@@ -338,17 +345,17 @@ export function buildSettingsContent(
                 <h2>${tBi('Debug / Testing', '调试 / 测试')}</h2>
             </div>
             <p class="raw-desc">${tBi(
-                'Developer tools for testing quota reset archival and clearing stale data.',
-                '用于测试额度重置归档以及清除过期数据的开发者工具。',
-            )}</p>
+        'Developer tools for testing daily archival and clearing stale data.',
+        '用于测试每日归档以及清除过期数据的开发者工具。',
+    )}</p>
             <div class="setting-row" style="margin-top: var(--space-2);">
                 <p class="raw-desc">${tBi(
-                    'Simulate a full quota reset cycle: archive current Activity + GM + Cost data to Calendar, then reset GM baselines for the new cycle. A restorable snapshot is captured first so you can roll back after verifying the UI.',
-                    '模拟完整的额度重置周期：先抓取一份可恢复快照，再将当前 Activity + GM + 费用数据归档到日历，并为新周期重置 GM 基线。验证完 UI 后可一键恢复。',
-                )}</p>
+        'Simulate a full daily archival: archive current Activity + GM + Cost data to Calendar, then reset for the new day. A restorable snapshot is captured first so you can roll back after verifying the UI.',
+        '模拟完整的每日归档：先抓取一份可恢复快照，再将当前 Activity + GM + 费用数据归档到日历，并为新的一天重置。验证完 UI 后可一键恢复。',
+    )}</p>
                 <div class="storage-actions">
                     <button class="action-btn" id="devSimulateReset">
-                        ${ICON.timeline} ${tBi('Simulate Quota Reset', '模拟额度重置')}
+                        ${ICON.timeline} ${tBi('Simulate Daily Archival', '模拟每日归档')}
                     </button>
                     <button class="action-btn${storage?.hasDevResetSnapshot ? '' : ' danger-action'}" id="devRestoreReset"${storage?.hasDevResetSnapshot ? '' : ' disabled'}>
                         ${ICON.refresh} ${tBi('Restore Snapshot', '恢复快照')}
@@ -357,14 +364,14 @@ export function buildSettingsContent(
                 </div>
                 <p class="raw-desc" style="margin-top: var(--space-2);">
                     ${storage?.hasDevResetSnapshot
-                        ? tBi(
-                            'A reset test snapshot is currently available for this extension session. Restoring will roll Activity / GM / Calendar back to the pre-test state.',
-                            '当前这次扩展运行里已有一份可恢复的重置测试快照。恢复后会把 Activity / GM / Calendar 一并回滚到测试前状态。',
-                        )
-                        : tBi(
-                            'No reset test snapshot is stored right now. Trigger one simulation first if you want an undo point in this extension session.',
-                            '当前这次扩展运行里没有可恢复的重置测试快照。若要回滚，请先触发一次模拟额度重置。',
-                        )}
+            ? tBi(
+                'A daily archival snapshot is currently available for this extension session. Restoring will roll Activity / GM / Calendar back to the pre-test state.',
+                '当前这次扩展运行里已有一份可恢复的归档测试快照。恢复后会把 Activity / GM / Calendar 一并回滚到测试前状态。',
+            )
+            : tBi(
+                'No archival test snapshot is stored right now. Trigger one simulation first if you want an undo point in this extension session.',
+                '当前这次扩展运行里没有可恢复的归档测试快照。若要回滚，请先触发一次模拟每日归档。',
+            )}
                 </p>
             </div>
         </section>

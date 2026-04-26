@@ -12,64 +12,67 @@ This document describes the source code organization, module responsibilities, a
 antigravity-context-monitor/
 ├── src/                          # TypeScript 源码
 │   ├── extension.ts              # 扩展入口：激活/停用、轮询调度、命令注册、状态恢复
+│   ├── daily-archival.ts         # 每日归档核心逻辑（可测试纯函数，依赖注入）
 │   ├── discovery.ts              # Language Server 进程发现（跨平台）
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
 │   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
-│   ├── models.ts                 # 模型配置、上下文限额、显示名称、跨语言归一化
+│   ├── models.ts                 # 模型配置、平台截断阈值（非原生窗口）、显示名称、跨语言归一化
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
 │   ├── statusbar.ts              # 状态栏 UI（StatusBarManager，含计划层级 hover 缓存）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
 │   ├── monitor-store.ts          # 监控页持久化：按对话保存 ContextUsage + GM 会话快照
 │   ├── pool-utils.ts             # 配额池工具：按稳定 pool key 分组 / 扩池 / 查找最近 quota session
-│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（per-model knownWindowMs + 稳定池代表）
+│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（per-account 隔离 + GMTracker 辅助检测 + 稳定池代表）
 │   ├── reset-time.ts             # 重置时间格式化工具（倒计时 + 绝对日期时间）
-│   ├── activity-tracker.ts       # 模型活动追踪（推理、工具、Token、池级归档）
-│   ├── gm-tracker.ts             # GM 数据层：RPC + 解析 + 聚合 + 缓存 + 基线
-│   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算
+│   ├── activity-tracker.ts       # 活动追踪 re-export shim（向后兼容，实际代码在 activity/）
+│   ├── activity/                 # Activity 模块（从 activity-tracker.ts 拆分）
+│   │   ├── index.ts              #   barrel re-export
+│   │   ├── types.ts              #   所有 Activity 类型定义
+│   │   ├── helpers.ts            #   工具函数（分类/提取/合并/预览构建/持久化瘦身）
+│   │   └── tracker.ts            #   ActivityTracker 类核心
+│   ├── gm-tracker.ts             # GM 数据层 re-export shim（向后兼容，实际代码在 gm/）
+│   ├── gm/                       # GM 模块（从 gm-tracker.ts 拆分）
+│   │   ├── index.ts              #   barrel re-export
+│   │   ├── types.ts              #   所有 GM 类型定义 + clone 工具 + 持久化 slim 函数（含 toolCallsByStep / toolCallCounts / toolCallCountsByConv / GMSystemContextItem / PendingArchiveEntry.estimatedCost）
+│   │   ├── parser.ts             #   解析器 + 提取器 + 匹配/合并/增强 + 检查点摘要提取 + 工具调用提取 + 系统上下文提取（classifySystemContext / extractSystemContextItems）+ API 重复消息清洗（deduplicateApiErrorText）
+│   │   ├── summary.ts            #   汇总构建 + 过滤 + 标准化（含 toolCallCounts 透传）
+│   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize + toolCallCounts 聚合 + persistedToolCounts 跨重启合并 + baseline 时预算 estimatedCost）
+│   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算（respOut = output - thinking 避免 double-counting）+ findPricing display name fallback
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
-│   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost
-│   ├── webview-panel.ts          # WebView 面板框架（9 标签切换 + 消息通信）
+│   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照）
+│   ├── webview-panel.ts          # WebView 面板框架（10 标签切换 + 消息通信 + 全局账号面板 dropdown + gmFullSummary 跨账号费用）
 │   ├── webview-styles.ts         # WebView 面板 CSS 样式（Design Token 体系）
 │   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、开发按钮等）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标
-│   ├── webview-monitor-tab.ts    # Monitor 标签页 HTML（支持 GM 快照回退）
+
 │   ├── webview-models-tab.ts     # Models 标签页 HTML（默认模型 + 模型配额 + 模型信息）
-│   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含持久化状态诊断 + 界面提示偏好）
+│   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含持久化存储概览 + 费用统计 + 界面提示偏好）
 │   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队）
 │   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
-│   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（会话目录 — 全量对话列表 + 筛选）
-│   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据）
-│   ├── pricing-panel.ts          # Cost 标签页 HTML（费用分析 + 模型信息卡片构建器）
+│   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（ses-* 命名空间 — 紧凑行式卡片 + shortcut 芯片 + 工具栏 + CSS tooltip）
+│   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据 + 检查点查看器 + 账号面板构建器 + 模型卡片/汇总行/待归档费用显示 + respOut 费用计算）
+│   ├── pricing-panel.ts          # Cost 标签页 HTML（cost-* 统一面板 — 芯片 summary bar + 分色柱状图 + 紧凑行式明细 + 月费用汇总 + 可编辑价格表 + 模型信息卡）
 │   ├── webview-calendar-tab.ts   # Calendar 标签页 HTML
+│   ├── webview-about-tab.ts      # About 标签页 HTML（Hero + 功能导航卡片 + GitHub + 提示 + 兼容性验证 + 免责声明 + 语言，从 TopBar Chips 迁移）
 │   ├── i18n.ts                   # 国际化：语言模式、翻译表、偏好持久化
 │   └── images/                   # README 截图资源
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
 ├── tests/                        # Vitest 测试目录（开发用，不参与插件运行时）
-│   ├── discovery.test.ts         # discovery 单元测试
-│   ├── durable-state.test.ts     # durable-state 单元测试
-│   ├── activity-tracker.test.ts  # activity-tracker 单元测试（跨语言归一化、planner step 修复）
-│   ├── gm-tracker.test.ts        # gm-tracker 单元测试（含跨语言恢复回归）
-│   ├── model-dna-store.test.ts   # model-dna-store 单元测试（模型信息持久化）
-│   ├── monitor-store.test.ts     # monitor-store 单元测试
-│   ├── pool-utils.test.ts        # pool-utils 单元测试
-│   ├── quota-tracker.test.ts     # quota-tracker 单元测试（含 0% 回弹恢复）
-│   ├── reset-time.test.ts        # reset-time 单元测试
-│   ├── daily-store.test.ts       # daily-store 单元测试（日历导入回填）
-│   ├── statusbar.test.ts         # statusbar 单元测试
-│   └── tracker.test.ts           # tracker 单元测试
+│   └── discovery.test.ts         # discovery 单元测试（原作者 FlorianHuo 提供）
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   └── project_structure.md          # 本文件
-├── out/                          # tsc 编译输出（插件运行时代码）
+├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── package.json                  # 扩展清单、命令、配置项
 ├── package-lock.json             # 依赖锁定文件
 ├── tsconfig.json                 # TypeScript 编译配置
 ├── vitest.config.ts              # 测试框架配置
 ├── README.md                     # 英文文档
 ├── readme_CN.md                  # 中文文档
-├── CHANGELOG.md                  # 变更日志
+├── CHANGELOG.md                  # 变更日志（v1.0.0 – v1.15.1 历史版本）
+├── CHANGELOG-v2.md               # 变更日志 v2（v1.15.2+ 增量更新）
 └── LICENSE                       # 许可证
 ```
 
@@ -86,12 +89,15 @@ Extension lifecycle management hub.
 | 职责 / Responsibility | 说明 / Description |
 |---|---|
 | `activate()` / `deactivate()` | 初始化所有子系统、注册命令、恢复 / 持久化关键状态 |
-| 全局轮询 / Global poll | `pollContextUsage()` 以可配置间隔执行（默认 5s） |
+| 全局轮询 / Global poll | `pollContextUsage()` 以可配置间隔执行（默认 5s），每次轮询调用 `performDailyArchival()` 检查日期变更 |
 | Activity 统一轮询 / Unified activity poll | Activity 数据处理已合并至 `pollContextUsage()` 主循环，复用已获取的 trajectory 缓存，消除重复 RPC 调用 |
 | 会话选择 / Session selection | 按 RUNNING → 当前 tracked cascade 的 stepCount 变化 → 新会话 → 最近修改 的优先级选当前对话，已建立的当前会话会尽量保持稳定不被其他对话抢占 |
-| 额度池归档 / Pool archival | 使用 `groupModelIdsByResetPool()` 将一次 reset 回调拆成多个共享额度池，逐池归档 Activity + GM + Pricing + Calendar |
+| 每日归档 / Daily archival | 通过 `daily-archival.ts` 核心逻辑委托；`extension.ts` 构造 `DailyArchivalContext` 注入所有运行时状态 |
 | 持久化协调 / Persistence orchestration | 协调 `durable-state.ts`、`monitor-store.ts`、`activity-tracker.ts`、`gm-tracker.ts`、`daily-store.ts`、`model-dna-store.ts` 的恢复与写回 |
-| 开发命令 / Dev commands | `devSimulateReset`、`devClearGM`、`devPersistActivity` |
+| 多账号快照 / Multi-account snapshots | `updateAccountSnapshot()` 在每次 `fetchFullUserStatus` 后提取 email + resetPools（含 `hasUsage` 额度消耗检测），按 email 维护 `AccountSnapshot` Map 并持久化至文件；`checkCachedAccountResets()` 在轮询 `finally` 块中独立执行（不依赖网络请求成功），检查缓存账号额度重置、自动基线化 GM 调用并弹出一次性通知；`removeAccountSnapshot()` 支持 UI 端删除缓存账号 |
+| 额度重置归档 / Quota-reset archival | `onQuotaReset` / `checkCachedAccountResets` / `baselineExpiredPoolsForAccount` 仅调用 `baselineForQuotaReset(email, poolModelFilter)` 标记**已重置池**的调用为待归档（不连带其他池），**不写 DailyStore**。日历数据仅在午夜 `performDailyArchival()` 时通过 `getArchivalSummary()`（跳过归档过滤，包含待归档+活跃调用）一次性写入，防止多次额度重置导致数据翻倍。`isPoolArchived()` 通过实际扫描未归档调用判断（而非仅检查 cutoff key 存在性），防止旧周期残留阻止新周期归档 |
+| 跨账号隔离 / Cross-account isolation | `handleAccountSwitchIfNeeded()` 在每次状态拉取前检测账号切换，调用 `baselineExpiredPoolsForAccount()` 为切出和切入账号检查过期池并执行归档，防止切换后 `updateAccountSnapshot()` 用新 resetTime 覆盖旧的过期时间而错过归档窗口 |
+| 开发命令 / Dev commands | `devSimulateReset`（模拟每日归档）、`devClearGM`、`devPersistActivity` |
 
 ---
 
@@ -180,7 +186,7 @@ Persists `ContextUsage` and `GMConversationData` per conversation for the Monito
 | 特性 / Feature | 说明 / Description |
 |---|---|
 | `record()` | 保存最近会话的 `ContextUsage`，自 v1.14.5 起通过 `sameUsageSnapshot()` 深比较跳过未变化快照（Since v1.14.5, skips unchanged snapshots via deep comparison） |
-| `recordGMConversations()` | 保存每个对话的 GM 细节快照（含 calls），自 v1.14.5 起通过 `sameGMConversationSnapshot()` 去重（Since v1.14.5, de-duplicated via snapshot comparison） |
+| `recordGMConversations()` | 保存每个对话的 GM 细节快照（含 calls），写盘前通过 `slimConversationForPersistence()` 剥离文本字段，自 v1.14.5 起通过 `sameGMConversationSnapshot()` 去重 |
 | `getSnapshot(cascadeId)` | 自 v1.14.5 新增，按 cascadeId 获取单个缓存快照用于轮询复用（Since v1.14.5, retrieves single cached snapshot for poll reuse） |
 | `restore()` | 恢复当前会话、会话列表和 GM 会话快照 |
 | 独立于额度归档 / Independent from quota archives | 不因 quota reset 归档而清空 Monitor 数据 |
@@ -206,32 +212,41 @@ Helpers for shared quota-pool operations based on stable pool keys from `models.
 
 状态机追踪每个模型的额度消费过程（`idle→tracking→(archive)→idle`），并按稳定 pool key 去重同池模型。v1.13.7 移除 `done` 状态，引入 `cycleResetTime` 和 `isCycleEnded()`。v1.13.8 移除全局 `maxTimeToResetMs` 跨模型推算，改为 per-model `knownWindowMs`（每个模型只信任自己学到的完整窗口长度），新增 `getUsableKnownWindowMs()` 安全校验函数，并修复 0% 额度锁死 bug（`completed` 标记可逆）。后续补丁又加入“已在 tracking 的池代表优先保留”和脏 active session 自愈，避免跨轮询代表切换导致归档卡死。
 
-State machine tracking per-model quota consumption (`idle→tracking→(archive)→idle`) with stable pool-key deduplication. v1.13.7 removes `done` state, adds `cycleResetTime` and `isCycleEnded()`. v1.13.8 replaces global `maxTimeToResetMs` cross-model inference with per-model `knownWindowMs`, adds `getUsableKnownWindowMs()` safety check, and fixes the 0% lock-dead bug (completed marker is now reversible). Later patches also preserve the active pool representative across polls and self-heal dirty active sessions.
+State machine tracking per-model quota consumption (`idle->tracking->(archive)->idle`) with stable pool-key deduplication. v1.13.7 removes `done` state, adds `cycleResetTime` and `isCycleEnded()`. v1.13.8 replaces global `maxTimeToResetMs` cross-model inference with per-model `knownWindowMs`, adds `getUsableKnownWindowMs()` safety check, and fixes the 0% lock-dead bug (completed marker is now reversible). Later patches also preserve the active pool representative across polls and self-heal dirty active sessions.
+
+v1.15.2 重构使用检测策略：移除 instant detect 和 observation window（均依赖时间窗口推算，在 20% 量化下不可靠），改为 GMTracker 辅助检测。调用方传入 `usedModelIds`（从 GMTracker 调用记录按 account 过滤构建），frac=1.0 时若确认有实际调用则立即进入追踪。同时引入 per-account 状态隔离：`modelStates` key 从 `modelId` 变更为 `email:modelId`，`QuotaSession` 新增 `accountEmail` 字段，切换账号后各自独立追踪。
+
+v1.15.2 overhauls usage detection: removes instant detect and observation window (both unreliable under 20% quantization), replacing them with GMTracker-assisted detection. Callers pass `usedModelIds` (built from GMTracker call records filtered by account), entering tracking immediately at frac=1.0 when actual API calls are confirmed. Also introduces per-account state isolation: `modelStates` key changes from `modelId` to `email:modelId`, `QuotaSession` gains an `accountEmail` field, ensuring tracking states remain independent across account switches.
+
+v1.17.13 新增 `archiveExpiredSessions(email, modelLabels)` 方法，解决缓存（非活跃）账号的追踪会话永不结束的问题。`processUpdate()` 只接收当前登录账号的 API configs，缓存账号的 `ModelState` 永远无法走到 `isCycleEnded()` 检查。新方法允许 `checkCachedAccountResets()` 在检测到额度过期时主动归档对应会话。
+
+v1.17.13 adds `archiveExpiredSessions(email, modelLabels)` to fix cached (non-active) account tracking sessions never ending. Since `processUpdate()` only receives API configs for the logged-in account, cached accounts' `ModelState` never reaches `isCycleEnded()`. The new method allows `checkCachedAccountResets()` to proactively archive matching sessions when quota expiry is detected.
 
 ---
 
 ### 🧠 activity-tracker.ts — 模型活动追踪
 
-追踪模型活动细节：推理次数、工具调用、Token 消耗、耗时统计，以及池级归档。
+追踪模型活动细节：推理次数、工具调用、Token 消耗、耗时统计。`archiveAndReset()` 执行全局重置（无池级分支），由每日归档逻辑统一触发。
 
-Tracks model activity details: reasoning count, tool usage, token consumption, timing stats, and pool-scoped archival.
+Tracks model activity details: reasoning count, tool usage, token consumption, timing stats. `archiveAndReset()` performs a global reset (no per-pool branching), triggered uniformly by the daily archival logic.
 
 | 特性 / Feature | 说明 / Description |
 |---|---|
 | 步骤分类 / Step classification | 22 种步骤类型 → reasoning / tool / user / system |
 | 统一轮询 / Unified poll | Activity 处理已合并至 `pollContextUsage()` 主循环（v1.13.6），复用 trajectory 缓存，消除独立 RPC 调用 |
-| GM 注入 / GM injection | 将 GM 精确 token / cache / credits 注入 Timeline |
+| GM 注入 / GM injection | **GM-only Timeline**（v1.17.7）：`injectGMData()` 作为 Timeline 唯一数据源，全量删除 `step`/`estimated` 事件后用 `gm_virtual`（reasoning）+ `gm_user`（用户锚点）重建。Coverage Boundary 保护：保留 `stepIndex > maxGMStep` 的 step 事件（GM API 延迟时暂显），GM 追上后自然替换。`extension.ts` 中无条件执行（不受 `activityChanged`/`gmChanged` 限制） |
 | 当前对话过滤 / Current-session timeline | GM Data 标签页默认只渲染当前 `cascadeId` 的最近操作，底层仍保留全量 `_recentSteps` 用于归档和恢复 |
 | 用户锚点 / GM user anchors | 从 `messagePrompts` 中提取 `<USER_REQUEST>` 恢复为 `gm_user` 事件，作为窗口外用户消息锚点 |
+| 系统事件 / System events | CHECKPOINT 和会话历史注入不再被过滤，创建为 `category: 'system'` 事件（`Checkpoint N` / `上下文注入` 标签），以橙色背景 + 剪贴板 SVG 显示。EPHEMERAL 仍跳过 |
 | 模型透明度 / Model transparency | 区分 `gm_exact` / `gm_placeholder` / `summary` / `generator` / `dominant` 等来源，避免将估算模型冒充为真实逐调用模型 |
 | GM 窗口突破 / GM window bypass | `_gmSubAgentTokens`（运行时 Map）从无窗口限制的 GM 数据提取步骤窗口外的子智能体调用，在 `getSummary()` 中与 CP 数据合并 |
 | GM 步数修正 / GM steps fix | 用 `GMConversationData.totalSteps` 修正 `_conversationBreakdown.steps`（不受 ~500 步窗口限制） |
 | GM 增长历史 / GM growth history | 用 `contextGrowth` 补充 `_checkpointHistory` 中窗口外的上下文增长数据（含压缩检测，一次性注入） |
-| 窗口外归属账本 / Outside-window attribution | `_windowOutsideAttribution` 按对话记录超出 Steps API 窗口的步数归属，GM 到来后可按真实模型重结算，并在 rewind / pool reset 时清理 |
+| 窗口外归属账本 / Outside-window attribution | `_windowOutsideAttribution` 按对话记录超出 Steps API 窗口的步数归属，GM 到来后可按真实模型重结算，并在 rewind 时清理 |
 | 子智能体归属 / Sub-agent attribution | `SubAgentTokenEntry.cascadeIds` 追踪消耗来源对话，`_processStep()` 透传 `cascadeId` |
-| 池级归档 / Per-pool archive | 只清空匹配 pool 的模型统计、Timeline、GM breakdown、sub-agent 归属（含 `_gmSubAgentTokens`） |
-| 口径清理 / Metric cleanup | 工具排行从剩余 `modelStats.toolBreakdown` 重算，避免跨池残留 |
+| 全局归档 / Global archive | `archiveAndReset()` 全局重置所有模型统计、Timeline、GM breakdown、sub-agent 归属，由 `daily-archival.ts` 在日期变更时调用 |
 | 序列化 / Serialization | `serialize()` / `restore()` 支持跨会话恢复与迁移检测，`_conversationBreakdown` key 通过 trajectory baselines 重建 |
+| 持久化瘦身 / Slim-on-write | `serialize()` 通过 `slimStepEventForPersistence()` 剥离 `fullUserInput` / `fullAiResponse` / `gmPromptSnippet` / `browserSub` 文本字段，截断长 preview，仅保留结构化统计数据 |
 
 ---
 
@@ -243,23 +258,52 @@ Fetches per-LLM-call data via `GetCascadeTrajectoryGeneratorMetadata`.
 
 | 特性 / Feature | 说明 / Description |
 |---|---|
-| 聚合 / Aggregation | per-model `GMModelStats` + per-conversation `GMConversationData` → `GMSummary` |
-| 智能缓存 / Smart cache | `_cache` Map 按 cascadeId 缓存 IDLE 对话的 GM 数据 |
+| 聚合 / Aggregation | per-model `GMModelStats`（含 `creditCallCount` 积分调用次数统计）+ per-conversation `GMConversationData`（含 `accountCredits` 当前账号积分贡献）→ `GMSummary` |
+| 智能缓存 / Smart cache | `_cache` Map 按 cascadeId 缓存 IDLE 对话的 GM 数据。`_lastRunningStatus` 跟踪 RUNNING → IDLE 转换，转换时强制一次额外 re-fetch 防止最后一个 GM 调用丢失 |
 | 模型精度 / Model accuracy | 每次调用区分 `exact`（有 `responseModel`）与 `placeholder`（仅 alias / placeholder），供 UI 透明显示 |
 | 富化 / Enrichment | 对大对话或精确模型缺失的调用，按需用 `GetCascadeTrajectory` 中的内嵌 `generatorMetadata` 补充 prompt / tools / systemPrompt / user anchors |
-| Call baselines | `_callBaselines` 隔离新旧 quota cycle 的调用 |
+| 检查点提取 / Checkpoint extraction | `extractCheckpointSummaries()` 从 `messagePrompts` 中提取 `{{ CHECKPOINT N }}` 标记后的压缩摘要（跳过系统前导，限 8000 字符），`shouldEnrichConversation()` 在 `checkpointIndex > 0` 时自动触发完整轨迹拉取 |
+| Call baselines | `_callBaselines` 隔离新旧 cycle 的调用 |
+| 额度周期基线化 / Quota-cycle baseline | `baselineForQuotaReset(targetEmail?, poolModelFilter?)` 按账号 + 池级模型过滤标记调用为已归档。双重数据源：优先从 `_lastSummary` 取准确统计（防止 `_cache` 未完全加载导致漏计），同时遍历 `_cache` 标记 `_archivedCallIds`。新增 `_archivedAccountModelCutoffs`（`email|model` → ISO 时间戳）确保后续 re-fetch 的调用也被排除 |
+| 待归档持久化 / PendingArchive persistence | `_pendingArchives` 通过 `serialize()`/`restore()` 持久化至 `state-v1.json`，跨插件重启和重装保留；仅在午夜 `reset()` 时清空 |
+| 按账号过滤 / Account filtering | `_buildSummary(skipAccountFilter?, skipArchivalFilter?)` 通过 `_currentAccountEmail` 过滤 `accountFilteredCalls`，确保 `totalCalls`/`modelBreakdown` 等统计只计当前在线账号的调用。新增 `_archivedAccountModelCutoffs` 过滤层，按 `email|model` 精确排除已归档调用。`skipArchivalFilter=true` 跳过归档过滤，由 `getArchivalSummary()` 用于午夜归档获取全量数据 |
+| 错误码聚合 / Error code aggregation | `_buildSummary()` 遍历每个调用的 `retryErrors[]`（`errorMessage` 仅在无 `retryErrors` 时降级收集），通过 `parseErrorCode()` 解析为短错误码（如 `429`/`503`/`stream_error`），聚合至 `GMSummary.retryErrorCodes` 和 `recentErrors`（最近 30 条）。新增 `retryErrorCodesByConv`（cascadeId → 错误码计数）用于 UI 红色 `+x` 增量显示，使用 `accountFilteredCalls`（与总数相同数据源），确保 `+x` 不会超过总数。Parser 清洗：`deduplicateApiErrorText()` 遍历所有 `: ` 分隔位置检测 API 内部重复文本（`"MSG: MSG"` → `"MSG"`），覆盖 `.: `、`server: `、`canceled: ` 等所有重复模式。同一循环中收集 `UniqueErrorEntry[]`（按 `normalizeErrorMessage()` 规范化内容去重，跨所有账号收集，保留首次触发的完整消息+时间；`normalizeErrorMessage()` 将源端口号、目标 IP:port（`->HOST:443`）、quota reset 复合等待时间（`19h22m14s` 等）规范化为占位符，并作为兜底折叠 API 重复消息）和 `RecentErrorEntry[]`（结构化报错日志，含 code+createdAt，仅当前账号，按时间倒序最新 20 条） |
+| 错误持久化 / Error persistence | 分账号隔离存入 `state-v1.json`。**临时数据**（午夜 `reset()` 和 `baselineForQuotaReset()` 清除）：`_persistedRetryErrorCodesByAccount`（email → 错误码计数，max-wins 合并）+ `_persistedRecentErrorsByAccount`（email → 消息列表）。**永久目录・全局共享**（仅 `fullReset()` 清除）：`_persistedUniqueErrorsByAccount`（`__shared__` → 规范化消息 → `{ message, firstSeen }`，key 为 `normalizeErrorMessage(msg)` 而非 errorCode）。v1.19+ 改为**全局共享**：读取时聚合所有账号桶数据，写入时合并到单一 `__shared__` 桶，旧 per-account 数据自动迁移。切换账号后错误种类数量保持一致。重建时通过 `deduplicateApiErrorText()` 清洗持久化的旧脏消息并回写，一次性修复历史数据。旧版 errorCode-keyed 条目自动通过 `normalizeErrorMessage()` 重新分桶迁移 |
 | Slim persistence | `serialize()` 去掉 `calls[]`，用于快速恢复基线 |
-| Detailed summary | `getDetailedSummary()` 返回完整 `GMSummary`（含 calls），用于外部文件持久化 |
-| Monitor fallback | `getAllConversationData()` 导出对话级 GM 明细，供 Monitor 标签页回退展示 |
-| Per-pool reset | `reset(modelIds?)` 仅归档并隐藏匹配 pool 的调用 |
+| Detailed summary | `getDetailedSummary()` 返回完整 `GMSummary`（含 calls），写盘前通过 `slimSummaryForPersistence()` 剥离文本字段，仅保留 token/credits 计费数据 |
+| Monitor fallback | `getAllConversationData()` 导出对话级 GM 明细（历史遗留，Monitor 标签页已移除） |
+| 全局重置 / Global reset | `reset()` 全局重置所有调用基线、缓存、`_callAccountMap`、`_archivedAccountModelCutoffs` 和 `_pendingArchives`，由每日归档逻辑统一调用 |
+| 跨账号调用标记 / Account tagging | `_currentAccountEmail` 记录当前活跃账号（首次轮询强制刷新，v1.17.6 修复）；`_callAccountMap` 以调用身份（`exec:{executionId}` 或 `cascadeId:stepIndices:model`）为 key 持久映射归属账号，随午夜 `reset()` 清空防止无限增长 |
 
 ---
 
 ### 📊 activity-panel.ts — GM Data 统一面板渲染
 
-合并原 Activity 面板和 GM Data 面板为统一的「GM 数据」标签页。
+合并原 Activity 面板和 GM Data 面板为统一的「GM 数据」标签页。所有统计数据均来自 GM 精确源，已完全移除 Step API 不可信数据（推理、工具、错误、推算等）。
 
-Unified "GM Data" tab merging Activity and GM precise data.
+Unified "GM Data" tab merging Activity and GM precise data. All stats are GM-sourced; Step API unreliable metrics (reasoning, tools, errors, est. steps) have been fully removed.
+
+| 特性 / Feature | 说明 / Description |
+|---|---|
+| Dashboard Grid 概览 / Dashboard Grid | `buildSummaryBar()` 使用 CSS Grid (`auto-fill, minmax(85px, 1fr)`) 统一面板布局，1px 间隙网格分隔线。仅显示 GM 精确数据：调用、步骤、模型、会话、消息、输入/输出 token、缓存、错误。已移除所有装饰性 GM 徽章（数据源 100% GM，无需标注）|
+| GM 错误报告 / Error Reporting | Summary Bar 末位显示红色「报错」卡片（错误总数），tooltip 展示错误码分布（如 `429 ×2, 503 ×1`）和 token 浪费明细。`buildErrorDetailsSection()` 渲染独立的「错误详情」区块：错误码分类标签（限流/服务端/其他颜色编码）+ 「错误种类」可折叠子区块（`UniqueErrorEntry[]` 按 `normalizeErrorMessage()` 规范化消息内容去重，跨所有账号收集，持久化跨重启）+ 开销统计行 + 「报错日志」可折叠子区块（`RecentErrorEntry[]` 结构化报错含 code+timestamp，仅当前账号，默认展开）。统一行格式：序号+颜色编码标签+时间戳+消息预览→展开看完整内容。标题级复制按钮（自定义 CSS tooltip）一键复制全部错误数据（种类+日志+开销）到剪贴板。时间线和 Turn header 使用 `error(N)` 标签替代旧的 `retry(N)` 格式 |
+| Tooltip 边缘适配 / Tooltip Edge Anchoring | 向下弹出（`top`）避免顶部裁剪；`:first-child` 靠左对齐、`:last-child` 靠右对齐，防止左右溢出 webview 边界 |
+| 上下文情报 / Context Intelligence | `buildContextIntelViewer()` 渲染当前活跃对话的所有系统注入内容（`GMSystemContextItem[]`），统一展示 Checkpoint 压缩摘要、上下文注入（Conversation History）、用户信息（`<user_information>`）、用户规则（`<user_rules>`）、MCP 服务（`<mcp_servers>`）、工作流（`<workflows>`）、Artifacts（`<artifacts>`）等 9 种类型。每种类型独立 SVG 图标 + 颜色（金/蓝/绿/紫/青/粉/灰/紫），可折叠卡片。外层 `<details id="ciSection">` 双重折叠 + `restoreDetailsState()` 状态记忆。标题栏按类型统计 badge（数量为 1 时不显示数字）+ 琥珀色 Model DNA badge。底部追加 3 张 Model DNA 可折叠卡片：(1) 系统提示词结构（`promptSectionTitles` 彩色标签 + 工具/区段计数），(2) 生成配置（`completionConfig` 参数表 + 上下文窗口进度条，容量阈值从 `plannerConfig.truncationThresholdTokens` 通过 `gm.plannerConfig` → `contextWindowCapacity` 全链路直取，非启发式推断），(3) Token 组成（`latestTokenBreakdown` 横向条形图）。重装/无数据时显示空状态提示。数据从 `messagePrompts` 的 USER 消息中由 `classifySystemContext()` 分类 + `extractSystemContextItems()` 提取，通过 `maybeEnrichCallsFromTrajectory()` 广播所有 call，`deduplicateSystemContextItems()` 在 conversation 级去重 |
+| 工具调用排行 / Tool Call Ranking | `buildToolCallRanking()` 渲染 GM 精确的工具调用频率排行榜（水平条形图，6 色循环，显示全部工具无截断），数据源为 `GMSummary.toolCallCounts`（从 `messagePrompts` SYSTEM `toolCalls[]` 提取，按 stepIdx 去重，基于 `sliced` 不受额度重置归档影响）。统计范围为全账号、全对话，通过 `_persistedToolCounts` 跨重启 max-wins 合并保障数据完整。`+x` 增量通过 `currentUsage.cascadeId` 精确匹配当前对话（不依赖时间戳），仅在 ≥2 对话时显示。排行榜底部嵌入工具目录容器（`tool-cat-section`，与排行榜列表统一样式），标题行含书本图标 + "工具目录" + 数量 badge。气泡（`ToolCatalogEntry[]`）按调用次数降序排列（与排行榜顺序一致），无 counts 时按 `firstSeen` 降级；hover 弹出中文描述 tooltip（内置 19 种工具映射，固定 12px 字体）。工具目录通过 `_persistedToolCatalogByAccount` **永久持久化・全局共享**（`reset()` 和 `baselineForQuotaReset()` 不清除，仅 `fullReset()` 清除）。v1.19+ 改为全局共享：读取时聚合所有账号桶，写入时合并到 `__shared__` 桶，切换账号后工具目录数量保持一致 |
+| 账号面板构建器 / Account Panel Builder | `buildAccountStatusPanel()`（已 export）渲染多账号状态卡片：`AccountSnapshot[]` → 按 email 分行，显示在线/缓存状态、Plan 徽章、按模型池独立倒计时（`ResetPool[]` 含 `hasUsage` 检测），到期显示红色「已就绪」，未消耗额度池显示灰色「未使用」。缓存账号名字行内显示红色「移除」文字链接。**v1.17.3 起已从 GM Data 标签页迁出至全局 dropdown**（由 `webview-panel.ts` 调用），`buildGMDataTabContent()` 不再包含账号面板 |
+| 红点检测 / Ready Pool Detection | `hasAccountReadyPool()` 遍历所有账号检测是否存在已过期且有使用记录的额度池，用于全局按钮上的红色脉冲指示器 |
+| 待归档面板 / Pending Archive Panel | `buildPendingArchivePanel()` 在模型统计合计行下方渲染黄色主题的待归档区域，显示基线化周期的调用数/输入/输出/缓存(`totalCacheRead`)/积分统计和 per-model 分布芯片；额度重置前不可见。Credits 标签使用 `tBi('Credits', '积分')` i18n |
+| 增量刷新保护 / Refresh preservation | `<details>` 展开状态通过 `restoreDetailsState()` 自动保护；`.cp-viewer` / `.cp-card-body` 滚动位置通过 `scrollableSelectors` 保留 |
+| 账号分布行 / Account breakdown | 模型卡片 body 底部以分割线隔开，每个账号独立一行（用户 SVG 图标 + 邮箱前缀 + 紫色调用次数）。当前在线账号自动置顶并以绿色选中态高亮（绿色左竖线 + 边框 + 背景 + 图标/数字变色）。每个账号行可选显示红色 `+N` 报错次数药丸标签（per-model per-account 独立统计，互不混合）。通过标题栏「报错」药丸开关控制显隐（默认隐藏），状态通过 webview state 持久化 |
+| 模型统计汇总行 / Model Stats Total | 模型卡片网格下方的芯片条汇总行，显示跨账号总调用数、模型数、输入/输出/缓存 token。数据从 `gm.conversations[].calls[]` 全量遍历，不受账号过滤影响。Sigma SVG 图标 + 蓝色标签 + 独立芯片边框 |
+| 时间线图例 / Timeline Legend | 「最近操作」标题右侧 18px 圆形 `(?)` 帮助按钮，hover 弹出 280×260px 不透明浮动面板，精简展示步骤基础和 Token 指标的样本+说明。替代了原有占用大量页面高度的可折叠 `<details>` 图例块 |
+| 对话标题解析 / Conversation Title | Timeline 标题 badge 和对话分布卡片从 `gmSummary.conversations` 查找实际对话标题（`GMConversationData.title`），hover 显示完整 cascadeId。无标题时 fallback 到 cascadeId 前 8 位 |
+| 对话分布卡片 / Conversation Cards | `buildConversations()` 渲染带彩色左边框的卡片列表（6色循环），每卡单行水平布局：标题气泡芯片（`flex:1` 截断）+ 右侧固定指标（调用次数 + credits + 日期范围 `MM/DD HH:mm → MM/DD HH:mm`），hover 微位移动画，自定义 4px 细滚动条。积分显示全部账号累计（对话内可能切换账号），当仅部分来自当前账号时显示橙色 `+x` 标注（`accountCredits`） |
+| 模型卡片积分行 / Model Card Credits | 模型卡片 Credits 行显示 `189.0 (22次)` 格式 — 总积分消耗 + 橙色小字积分调用次数标注（`.act-credit-calls`），数据源为 `GMModelStats.creditCallCount` |
+| Turn Header 气泡排序 / Turn Chip Order | 右对齐稳定排列（左→右）：`error` · `积分` · `工具` · `调用` · `费用($)` · `缓存` · `输入/输出` · `上下文`（rightmost anchor）。右侧锚定几乎每轮都有的元素，偶尔/罕见元素往左生长不破坏对齐。`seg-chip-cost`（绿色加粗）通过 `findPricing()` 逐 action 累加计算 USD 费用合计 |
+| 事件行标签排序 / Event Row Tag Order | reasoning 事件行右侧分两区：**statusParts**（偶现区，左→右）：`error` · `积分` · `工具` · `TTFT` · `耗时`；**tokenParts**（固定区，左→右）：`费用($)` · `缓存` · `输入` · `输出` · `上下文`。费用通过 `findPricing(gmModel)` 实时计算（input×price + output×price + cacheRead×price + thinking×price），绿色美元 SVG 图标 |
+| 已移除 / Removed | `buildToolRanking()`（Step API 工具排行）、`buildDistribution()`（Step API 模型分布甜甜圈图）、Summary Bar 中的推理/工具/错误/检查点/推算卡片、模型卡片中的 Step API 行和工具标签、所有装饰性 `gm-badge-real` 徽章、独立的 Performance Baseline 区块、独立的 Cache Efficiency 区块、可折叠时间线图例、对话分布中的覆盖率百分比和输入 token、Timeline `buildMetaTags()` 冗余模型气泡（蓝色 `act-tl-model` 已在事件行内显示）、模型卡片底部冗余的 `responseModel` raw API 名称标签（卡片头部已显示 normalized 名称）、`seg-chip-dur` 耗时气泡（不精确）、`seg-chip-model` 模型名气泡（事件行内已有）|
+
 
 ---
 
@@ -309,15 +353,37 @@ Builds the full Cost tab HTML and also exports `buildModelDNACards()` for the Mo
 
 ---
 
+### 📅 daily-archival.ts — 每日归档核心逻辑
+
+从 `extension.ts` 提取的可测试纯函数模块。所有运行时依赖通过 `DailyArchivalContext` 接口注入，时间通过 `now` 参数控制，使日期变更检测可在单元测试中精确模拟。
+
+Testable pure-function module extracted from `extension.ts`. All runtime dependencies are injected via `DailyArchivalContext`, and time is controllable via the `now` parameter for precise date-change testing.
+
+| 函数 / Function | 说明 / Description |
+|---|---|
+| `toLocalDateKey(date?)` | 提取本地日期字符串 `YYYY-MM-DD` |
+| `performDailyArchival(ctx, force?, now?)` | 核心归档流程：检测日期变更 → 通过 `getArchivalSummary()` 快照 Activity/GM/Cost（含待归档+活跃调用全量数据） → 写入 DailyStore（replace 模式，一天一条） → 全局重置 Tracker → 持久化 |
+
+**归档触发规则**：
+- 首次运行：仅记录当前日期，不归档
+- 同日：无操作
+- 日期滚动：归档昨日数据，更新日期为今天
+- Force 模式：跳过日期检查，归档到当天（dev 模拟用）
+- 无数据：跳过 DailyStore 写入，仍更新日期和重置 Tracker
+
+---
+
 ### 📅 daily-store.ts — 日历数据层
 
-按天聚合 Activity + GM + Cost 的快照数据，支持回溯导入历史归档。
+按天聚合 Activity + GM + Cost 的快照数据。`addDailySnapshot()` 支持 `append` 参数：默认为 replace 模式（单快照，一天一条），午夜归档使用 replace 模式写入完整日数据。`append=true` 保留用于向后兼容，但当前不再使用。旧版 `addCycle()` 保留向后兼容。
+
+Aggregates Activity + GM + Cost snapshots per day. `addDailySnapshot()` supports an `append` parameter: defaults to replace mode (single snapshot), `append=true` appends a cycle (preserving intra-day quota-reset pre-snapshots + midnight final data, allowing multiple cycles per day). Legacy `addCycle()` retained for backward compatibility.
 
 ---
 
 ### 📅 webview-calendar-tab.ts — Calendar 标签页渲染
 
-生成 Calendar 标签页 HTML：月历网格、可展开日详情、周期卡片、历史汇总。
+生成 Calendar 标签页 HTML：月历网格、可展开日详情（GM 调用/令牌/费用/积分汇总 + GM 模型明细行）。每天只显示一个聚合快照，不再展示独立周期卡片。汇总网格仅显示 GM 精确数据（天数/GM调用/令牌/费用/积分），已移除过时的 Step API 数据（错误/推理/工具计数/周期）和缓存命中率。
 
 ---
 
@@ -325,18 +391,20 @@ Builds the full Cost tab HTML and also exports `buildModelDNACards()` for the Mo
 
 面板总框架：标题「Antigravity Monitor / Antigravity 监控面板」，9 标签切换（Monitor / GM Data / Sessions / Cost / Models / Quota Tracking / Calendar / Profile / Settings）、消息通信。各标签内容由独立模块生成。新增 `onDidChangeViewState` 监听，面板从隐藏恢复可见时立即用缓存数据执行增量刷新，避免用户看到旧数据闪烁。
 
-Panel framework titled \"Antigravity Monitor\": 9-tab navigation and message communication. Tab content rendered by independent modules. Adds `onDidChangeViewState` listener to immediately refresh tabs with cached data when the panel becomes visible again, eliminating stale-data flash.
+Panel framework titled \"Antigravity Monitor\": 9-tab navigation, global account panel dropdown, and message communication. Tab content rendered by independent modules. Adds `onDidChangeViewState` listener to immediately refresh tabs with cached data when the panel becomes visible again, eliminating stale-data flash.
+
+**全局账号面板 / Global Account Panel (v1.17.3)**:
+topbar 标题旁药丸按钮 → 向下弹出 dropdown 面板（`panel-topbar` 直接子元素，`left/right` 撑满居中，`scaleY` 动画）。内容通过 `buildAccountStatusPanel()` / `hasAccountReadyPool()`（从 `activity-panel.ts` 导入）构建。增量刷新时通过 `updateTabs` 消息中的 `accountPopover` / `accountPopoverHasReady` 字段仅更新面板内容 HTML，不触碰 dropdown 的开/关 DOM 状态。额度就绪时按钮显示红色脉冲圆点。
 
 | 模块 / Module | 职责 / Responsibility |
 |---|---|
-| `webview-monitor-tab.ts` | Monitor 标签页 HTML；支持实时 `gmSummary` 与 `monitor-store` GM 快照双数据源 |
 | `webview-models-tab.ts` | Models 标签页 HTML；聚合默认模型、模型配额、模型信息 |
-| `webview-settings-tab.ts` | Settings 标签页 HTML；含持久化状态诊断卡片、界面提示偏好（Tab Scroll Hint） |
-| `webview-script.ts` | 客户端 JS；事件委托、标签切换、设置交互、增量刷新、`<details>` 状态恢复 |
+| `webview-settings-tab.ts` | Settings 标签页 HTML；含持久化存储概览（文件大小 / Input·Output Tokens / Credits / 估算总费用 / 归档天数 / 日历天数·周期数）+ 模拟每日归档按钮、界面提示偏好 |
+| `webview-script.ts` | 客户端 JS；事件委托、标签切换、设置交互、增量刷新、`<details>` 状态恢复、内部滚动位置保留（含 `.cp-viewer` / `.cp-card-body`）、账号面板 dropdown 切换 + click-outside 关闭 + 增量内容刷新 |
 | `webview-styles.ts` | CSS 样式（Design Token 体系） |
 | `webview-icons.ts` | 内联 SVG 图标 |
 | `webview-chat-history-tab.ts` | Sessions / 会话标签页 HTML；全量对话列表、快捷卡片、筛选/搜索、逐会话操作按钮 |
-| `activity-panel.ts` | GM Data 标签页 HTML |
+| `activity-panel.ts` | GM Data 标签页 HTML + 账号面板构建器（`buildAccountStatusPanel` / `hasAccountReadyPool` 导出供 topbar 复用） |
 | `pricing-panel.ts` | Cost 标签页 HTML；同时提供模型信息卡片构建器 |
 | `webview-calendar-tab.ts` | Calendar 标签页 HTML |
 | `webview-profile-tab.ts` | Profile 标签页 HTML；现主要承载账户、计划限制、功能与团队信息 |
@@ -366,6 +434,12 @@ This diagram shows the main direct source-level dependencies (omitting Node / VS
 
 ```text
 extension.ts (入口 + 调度)
+├── daily-archival.ts     ← 每日归档核心逻辑（纯函数）
+│   ├── activity-tracker.ts
+│   ├── gm-tracker.ts
+│   ├── daily-store.ts
+│   ├── pricing-store.ts
+│   └── model-dna-store.ts
 ├── durable-state.ts      ← 扩展外部持久化
 ├── monitor-store.ts      ← Monitor 快照持久化
 │   ├── tracker.ts (types)
@@ -428,6 +502,64 @@ extension.ts (入口 + 调度)
 
 ---
 
+## CSS 编码规范 / CSS Coding Guidelines
+
+> **强制约束**：所有 WebView CSS 中的颜色值**必须**使用 `webview-styles.ts` `:root` 中定义的 Design Token。**禁止**在 `activity-panel.ts`、`pricing-panel.ts`、`webview-calendar-tab.ts` 等面板文件中新增硬编码的 `rgba()`、`#hex` 或 `hsl()` 颜色值。
+>
+> **Mandatory**: All color values in WebView CSS **MUST** use Design Tokens defined in `webview-styles.ts` `:root`. **DO NOT** add new hardcoded `rgba()`, `#hex`, or `hsl()` values in panel files.
+
+### Token 体系结构 / Token Hierarchy
+
+`webview-styles.ts` 的 `:root` 定义了完整的语义色彩 token 体系，`body.vscode-light` 块自动翻转所有 token 为浅色主题适配值。
+
+| 层级 | 命名模式 | 示例 | 用途 |
+|---|---|---|---|
+| 核心语义色 | `--color-{semantic}` | `--color-ok`, `--color-danger`, `--color-info` | 文本、图标、边框的主色 |
+| 色彩变体 | `--color-{semantic}-{variant}` | `--color-ok-light`, `--color-danger-dim` | 浅色/暗色文本变体 |
+| 背景梯度 | `--color-{semantic}-bg` | `--color-danger-bg`, `--color-info-bg` | 低透明度背景填充 |
+| 背景变体 | `--color-{semantic}-bg-{variant}` | `--color-danger-bg-dim`, `--color-danger-bg-hover` | 更浅/hover 态背景 |
+| 边框梯度 | `--color-{semantic}-border` | `--color-ok-border`, `--color-info-border` | 中透明度边框 |
+| 边框变体 | `--color-{semantic}-border-{variant}` | `--color-danger-border-dim`, `--color-danger-border-strong` | 浅/深边框 |
+| 中性表面 | `--color-surface-{level}` | `--color-surface-subtle`, `--color-surface-hover` | 容器背景 |
+| 中性边框 | `--color-border-{level}` | `--color-border-subtle`, `--color-border-strong` | 容器边框 |
+| 分隔线 | `--color-divider` / `--color-divider-subtle` | | 水平/垂直分隔 |
+
+**可用的语义色族 / Available color families**: `ok`(绿), `danger`(红), `info`(蓝), `warn`(黄), `amber`(琥珀), `orange`(橙), `teal`(青), `purple`(紫), `muted`(灰蓝)
+
+### 使用规则 / Usage Rules
+
+```css
+/* CORRECT — 使用 token */
+.my-card { background: var(--color-surface); border: 1px solid var(--color-border); }
+.my-error { color: var(--color-danger); background: var(--color-danger-bg); }
+.my-divider { border-top: 1px solid var(--color-divider); }
+
+/* WRONG — 硬编码颜色（禁止） */
+.my-card { background: rgba(255,255,255,0.04); }  /* 应使用 var(--color-surface) */
+.my-error { color: #f87171; }                      /* 应使用 var(--color-danger) */
+```
+
+### 合理例外 / Acceptable Exceptions
+
+以下情况允许保留硬编码值：
+
+| 场景 | 说明 | 示例 |
+|---|---|---|
+| `linear-gradient` 端点 | CSS 变量无法用于渐变函数内部的颜色插值 | `background: linear-gradient(90deg, rgba(96,165,250,0.7), rgba(96,165,250,0.3))` |
+| JS 运行时 colors 数组 | 内联 `style` 中无法引用 CSS 变量 | `const colors = ['#06b6d4', '#f59e0b', ...]` |
+| `var()` fallback 基线 | 作为 CSS 变量未定义时的降级值 | `background: var(--color-surface, rgba(128,128,128,0.1))` |
+| Light theme `rgba(var(--lt-*))` | `body.vscode-light` 内用 RGB triplet 变量构造 | `background: rgba(var(--lt-blue),0.1)` |
+| `box-shadow` / `text-shadow` | 阴影颜色通常是固定的黑色半透明 | `box-shadow: 0 2px 8px rgba(0,0,0,0.25)` |
+
+### 新增颜色的流程 / Adding New Colors
+
+1. 在 `webview-styles.ts` 的 `:root` 中定义新 token（暗色主题值）
+2. 在 `body.vscode-light` 块中定义对应的浅色主题覆盖值
+3. 在面板文件中通过 `var(--color-xxx)` 引用
+4. **永远不要**跳过步骤 1-2 直接在面板中写硬编码值
+
+---
+
 ## 数据流 / Data Flow
 
 ```text
@@ -443,16 +575,21 @@ Antigravity Language Server (localhost)
         │             │               │       │               │                │
         │             │               │       │          pricing-store.ts      │
         │             │               │       │               │                │
-        │             │               │       ▼               │                │
-        │             │               │  onQuotaReset         │                │
-        │             ▼               │   callback            ▼                │
-        │    activity-panel.ts ◄──────┴────────────── pricing-panel.ts         │
+        │             │               │       │               │                │
+        │             └───────────────┴───────┴───────────────┘                │
+        │                             │                                        │
+        │                   daily-archival.ts (每日归档纯逻辑)                  │
+        │                             │                                        │
+        │                             ▼                                        │
+        │                      daily-store.ts (日历数据)                       │
+        │                                                                      │
+        │    activity-panel.ts ◄─────────────────── pricing-panel.ts           │
         │             │                                                        │
         │    webview-chat-history-tab.ts ◄─── trajectories + GM conversations  │
         │             │
         ▼             ▼
-    statusbar.ts   webview-panel.ts ─────► daily-store.ts
-        │             │                      (calendar data)
+    statusbar.ts   webview-panel.ts
+        │             │
         │             ▼
         │        durable-state.ts
         │        (external JSON file)
@@ -500,19 +637,7 @@ npx vsce package --no-dependencies
 | 测试文件 / Test File | 测试数 | 覆盖范围 / Coverage |
 |---|---|---|
 | `discovery.test.ts` | 50 | `buildExpectedWorkspaceId`（含百分号编码、CJK 路径、空格+中文混合路径、日文路径） / `extractPid` / `extractCsrfToken` / `extractWorkspaceId` / `filterLsProcessLines` / `extractPort` / `extractPortFromNetstat` / `extractPortFromSs` / `isWSL` / `selectMatchingProcessLine`（优先级反转 + 多窗口回退 + CJK + WSL/vscode-remote + 边界情况） / 退避常量验证（发现 15s / RPC 60s） |
-| `pr43-improvements.test.ts` | 35 | `selectMatchingProcessLine` 新架构优先级（双 LS 共存 / 向后兼容 / 真实场景模拟） / 轮询状态机（僵尸检测 / PID 重校验 / `stalenessConfirmedIdle` 守卫 / cascade 切换重置 / corner cases） |
-| `tracker.test.ts` | 22 | `normalizeUri`（file / vscode-remote / URL 解码）/ `estimateTokensFromText`（ASCII / 非 ASCII / 混合）/ `processSteps()` 纯函数 |
-| `statusbar.test.ts` | 12 | Token 格式化 / 上下文限额格式化 / 压缩统计计算 / 计划层级缓存清理 |
-| `quota-tracker.test.ts` | 33 | 状态机转换 / 额度重置检测 / 批量回调 / 同池去重 / 周期结束归档 / legacy done 迁移 / 0% 回弹恢复 / 稳定池代表 / 脏 active session 自愈 |
-| `pool-utils.test.ts` | 4 | 配额池扩展 / 分组 / quota session 匹配 / 已知模型固定池规则 |
-| `monitor-store.test.ts` | 1 | Monitor 快照与 GM 会话快照恢复 |
-| `gm-tracker.test.ts` | 4 | `filterGMSummaryByModels()` 按模型池过滤 / 跨语言恢复回归 / 历史残留 GM 修理 / GM 归档复活回归 |
-| `activity-tracker.test.ts` | 7 | planner step 延迟补全 / 短对话恢复自愈 / stepIndex 重排清理 / 跨语言模型桶合并 / Gemini stepIndex 重映射去重 / 用户行 GM 污染清洗 / 恢复时历史重复自愈 |
-| `daily-store.test.ts` | 2 | 日历导入回填（新 cycle 插入 / 旧 cycle 字段补全） |
-| `model-dna-store.test.ts` | 1 | 模型静态信息跨周期持久化 |
-| `reset-time.test.ts` | 3 | 倒计时格式化 / 绝对日期时间格式化 / 上下文拼接格式（按本地时区动态断言） |
-| `durable-state.test.ts` | 1 | 外部持久化文件创建 / fallback 迁移 / 重装恢复 |
 
-共 179 个测试，使用 `__mocks__/vscode.ts` 模拟 VS Code API。
+共 50 个测试（1 个文件），使用 `__mocks__/vscode.ts` 模拟 VS Code API。
 
-179 total tests, using `__mocks__/vscode.ts` to mock VS Code API.
+50 total tests (1 file), using `__mocks__/vscode.ts` to mock VS Code API.

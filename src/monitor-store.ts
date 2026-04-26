@@ -1,5 +1,6 @@
 import type { ContextUsage } from './tracker';
 import type { GMConversationData } from './gm-tracker';
+import { slimConversationForPersistence } from './gm-tracker';
 
 interface WorkspaceStateLike {
     get<T>(key: string, defaultValue: T): T;
@@ -196,7 +197,7 @@ export class MonitorStore {
         }
         const gmConversations: Record<string, GMConversationData> = {};
         for (const [cascadeId, conversation] of this._gmConversations) {
-            gmConversations[cascadeId] = conversation;
+            gmConversations[cascadeId] = slimConversationForPersistence(conversation);
         }
 
         this._workspaceState.update(STORAGE_KEY, {

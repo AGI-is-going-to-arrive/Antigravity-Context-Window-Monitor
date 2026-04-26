@@ -5,6 +5,7 @@
 // Extracted from gm-panel.ts to enable the dedicated Pricing tab.
 
 import type { GMSummary, GMModelStats } from './gm-tracker';
+import { normalizeModelDisplayName } from './models';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -20,15 +21,13 @@ export interface ModelCostRow {
     name: string;
     responseModel: string;
     inputCost: number;
-    outputCost: number;
+    outputCost: number;      // cost of responseOutputTokens only (excludes thinking)
     cacheCost: number;
-    cacheWriteCost: number;
     thinkingCost: number;
     totalCost: number;
     inputTokens: number;
-    outputTokens: number;
+    outputTokens: number;    // responseOutputTokens (= totalOutputTokens - totalThinkingTokens)
     cacheTokens: number;
-    cacheWriteTokens: number;
     thinkingTokens: number;
     pricing: ModelPricing | null;
 }
@@ -45,23 +44,24 @@ export const PRICING_LAST_UPDATED = '2026-03-22';
 
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     // ── Claude (platform.claude.com/docs/en/about-claude/pricing) ─────
-    'claude-opus-4-6':              { input: 5,    output: 25,   cacheRead: 0.50,  cacheWrite: 6.25,  thinking: 25   },
-    'claude-sonnet-4-6':            { input: 3,    output: 15,   cacheRead: 0.30,  cacheWrite: 3.75,  thinking: 15   },
+    'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25, thinking: 25 },
+    'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
     // ── GPT-OSS (cloud.google.com/vertex-ai/generative-ai/pricing) ───
-    'gpt-oss-120b':                 { input: 0.09, output: 0.36, cacheRead: 0,     cacheWrite: 0,     thinking: 0.36 },
+    'gpt-oss-120b': { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0, thinking: 0.36 },
     // ── Gemini 3.x (cloud.google.com/vertex-ai/generative-ai/pricing) ─
-    'gemini-3.1-pro':               { input: 2,    output: 12,   cacheRead: 0.20,  cacheWrite: 2.50,  thinking: 12   },
-    'gemini-3-flash':               { input: 0.50, output: 3,    cacheRead: 0.05,  cacheWrite: 0.625, thinking: 3    },
+    'gemini-3.1-pro': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },
+    'gemini-3-flash': { input: 0.50, output: 3, cacheRead: 0.05, cacheWrite: 0.625, thinking: 3 },
 };
 
 // ─── Pricing Lookup ──────────────────────────────────────────────────────────
 
 /** Find pricing for a model by matching responseModel against a pricing table.
- *  Strategy: exact match → prefix match → fuzzy substring match */
+ *  Strategy: exact match → prefix match → fuzzy substring match → displayName fallback */
 export function findPricing(
     responseModel: string,
     table: Record<string, ModelPricing> = DEFAULT_PRICING,
 ): ModelPricing | null {
+    if (!responseModel) { return null; }
     if (table[responseModel]) { return table[responseModel]; }
     for (const [key, pricing] of Object.entries(table)) {
         if (responseModel.startsWith(key) || key.startsWith(responseModel)) {
@@ -71,6 +71,19 @@ export function findPricing(
     for (const [key, pricing] of Object.entries(table)) {
         if (responseModel.includes(key) || key.includes(responseModel.split('-').slice(0, 3).join('-'))) {
             return pricing;
+        }
+    }
+    // Fallback: if responseModel looks like a display name (contains spaces/parens),
+    // normalize to kebab-case and retry (e.g. "Claude Opus 4.6 (Thinking)" → "claude-opus-4.6-thinking")
+    if (/[A-Z\s(]/.test(responseModel)) {
+        const kebab = responseModel
+            .replace(/[()]/g, '')
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/(\d+)\.(\d+)/g, '$1-$2');  // "4.6" → "4-6"
+        if (kebab && kebab !== responseModel) {
+            return findPricing(kebab, table);
         }
     }
     return null;
@@ -90,31 +103,34 @@ export function calculateCosts(
     const calcCost = (tokens: number, pricePerM: number) => (tokens / 1_000_000) * pricePerM;
 
     for (const [name, ms] of entries) {
+        const displayName = normalizeModelDisplayName(name);
         const pricing = findPricing(ms.responseModel, mergedTable);
+        // responseOutputTokens = totalOutputTokens - totalThinkingTokens
+        // This avoids double-counting: outputTokens includes thinking already.
+        const responseOutputTokens = Math.max(0, ms.totalOutputTokens - ms.totalThinkingTokens);
         if (!pricing) {
             rows.push({
-                name, responseModel: ms.responseModel,
-                inputCost: 0, outputCost: 0, cacheCost: 0, cacheWriteCost: 0, thinkingCost: 0, totalCost: 0,
-                inputTokens: ms.totalInputTokens, outputTokens: ms.totalOutputTokens,
-                cacheTokens: ms.totalCacheRead, cacheWriteTokens: ms.totalCacheCreation,
+                name: displayName, responseModel: ms.responseModel,
+                inputCost: 0, outputCost: 0, cacheCost: 0, thinkingCost: 0, totalCost: 0,
+                inputTokens: ms.totalInputTokens, outputTokens: responseOutputTokens,
+                cacheTokens: ms.totalCacheRead,
                 thinkingTokens: ms.totalThinkingTokens, pricing: null,
             });
             continue;
         }
 
         const inputCost = calcCost(ms.totalInputTokens, pricing.input);
-        const outputCost = calcCost(ms.totalOutputTokens, pricing.output);
+        const outputCost = calcCost(responseOutputTokens, pricing.output);
         const cacheCost = calcCost(ms.totalCacheRead, pricing.cacheRead);
-        const cacheWriteCost = calcCost(ms.totalCacheCreation, pricing.cacheWrite);
         const thinkingCost = calcCost(ms.totalThinkingTokens, pricing.thinking);
-        const totalCost = inputCost + outputCost + cacheCost + cacheWriteCost + thinkingCost;
+        const totalCost = inputCost + outputCost + cacheCost + thinkingCost;
         grandTotal += totalCost;
 
         rows.push({
-            name, responseModel: ms.responseModel,
-            inputCost, outputCost, cacheCost, cacheWriteCost, thinkingCost, totalCost,
-            inputTokens: ms.totalInputTokens, outputTokens: ms.totalOutputTokens,
-            cacheTokens: ms.totalCacheRead, cacheWriteTokens: ms.totalCacheCreation,
+            name: displayName, responseModel: ms.responseModel,
+            inputCost, outputCost, cacheCost, thinkingCost, totalCost,
+            inputTokens: ms.totalInputTokens, outputTokens: responseOutputTokens,
+            cacheTokens: ms.totalCacheRead,
             thinkingTokens: ms.totalThinkingTokens, pricing,
         });
     }

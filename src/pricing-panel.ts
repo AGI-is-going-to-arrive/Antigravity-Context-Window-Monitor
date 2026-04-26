@@ -16,6 +16,7 @@ export function buildPricingTabContent(
     summary: GMSummary | null,
     store: PricingStore,
     monthBreakdown?: MonthCostBreakdown,
+    pendingArchiveCost?: number,
 ): string {
     const hasGM = summary && summary.totalCalls > 0;
     const parts: string[] = [];
@@ -25,15 +26,16 @@ export function buildPricingTabContent(
 
     // Monthly total cost summary (always shown if breakdown data exists)
     if (monthBreakdown) {
-        parts.push(buildMonthlyCostSummary(monthBreakdown, costResult?.grandTotal ?? 0, costResult?.rows ?? []));
+        parts.push(buildMonthlyCostSummary(monthBreakdown, costResult?.grandTotal ?? 0, costResult?.rows ?? [], pendingArchiveCost ?? 0));
     }
 
     if (hasGM && costResult) {
         const { rows, grandTotal } = costResult;
+        // Include pending archive costs in the displayed totals
+        const fullTotal = grandTotal + (pendingArchiveCost ?? 0);
         const merged = store.getMerged();
         parts.push(
-            buildCostVisualization(rows, grandTotal, summary),
-            buildCostSummary(rows, grandTotal),
+            buildCostPanel(rows, fullTotal, summary),
             buildEditablePricingTable(summary, merged, store.getCustom()),
         );
     } else {
@@ -110,6 +112,20 @@ export function getPricingTabStyles(): string {
     .prc-dna-sep {
         opacity: 0.45;
     }
+    .prc-dna-meta-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+        align-items: center;
+        margin-bottom: var(--space-2);
+        padding: var(--space-1) var(--space-2);
+        font-size: 0.8em;
+        color: var(--color-text-dim);
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-left: 2px solid rgba(96,165,250,0.35);
+        border-radius: var(--radius-sm);
+    }
     .prc-dna-grid-inner {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
@@ -134,46 +150,53 @@ export function getPricingTabStyles(): string {
         font-weight: 700;
         font-size: 0.95em;
     }
-    /* ── Cost Visualization ── */
-    .prc-viz-section {
+    /* ── Unified Cost Panel (cost-*) ── */
+    .cost-panel {
         background: var(--color-surface);
         border: 1px solid var(--color-border);
         border-radius: var(--radius-md);
         padding: var(--space-3);
         margin-bottom: var(--space-4);
     }
-    .prc-viz-highlights {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-        gap: var(--space-2);
-        margin-bottom: var(--space-4);
+
+    /* Summary chips bar */
+    .cost-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: var(--space-3);
+        padding-bottom: var(--space-2);
+        border-bottom: 1px solid var(--color-border-subtle);
     }
-    .prc-viz-highlight {
-        text-align: center;
-        padding: var(--space-2) var(--space-3);
-        border-radius: var(--radius-md);
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-    }
-    .prc-viz-hl-val {
-        font-weight: 700;
-        font-size: 1.2em;
-    }
-    .prc-viz-hl-label {
-        font-size: 0.78em;
+    .cost-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 2px 10px;
+        border-radius: var(--radius-full);
+        border: 1px solid var(--color-border-subtle);
+        background: rgba(255,255,255,0.02);
         color: var(--color-text-dim);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-top: 2px;
+        font-size: 0.78em;
+        font-weight: 500;
+        white-space: nowrap;
     }
-    .prc-bar-row {
+    .cost-chip-total {
+        color: var(--color-warn);
+        border-color: var(--color-warn-border);
+        font-weight: 700;
+        font-size: 0.88em;
+    }
+
+    /* Bar chart rows */
+    .cost-bar-row {
         display: flex;
         align-items: center;
         gap: var(--space-2);
-        margin-bottom: var(--space-2);
+        margin-bottom: var(--space-1);
         font-size: 0.88em;
     }
-    .prc-bar-label {
+    .cost-bar-label {
         min-width: 90px;
         font-weight: 600;
         white-space: nowrap;
@@ -181,133 +204,109 @@ export function getPricingTabStyles(): string {
         text-overflow: ellipsis;
         flex-shrink: 0;
     }
-    .prc-bar-track {
+    .cost-bar-track {
         flex: 1;
-        height: 18px;
+        height: 16px;
         border-radius: var(--radius-sm);
-        background: var(--color-surface);
+        background: rgba(255,255,255,0.04);
         overflow: hidden;
         display: flex;
     }
-    .prc-bar-seg {
+    .cost-bar-seg {
         height: 100%;
         min-width: 1px;
         transition: width 0.3s cubic-bezier(.4,0,.2,1);
     }
-    .prc-bar-seg-input { background: #60a5fa; }
-    .prc-bar-seg-output { background: #2dd4bf; }
-    .prc-bar-seg-cache { background: #22d3ee; }
-    .prc-bar-seg-thinking { background: #fb923c; }
-    .prc-bar-val {
+    .cost-seg-input { background: #60a5fa; }
+    .cost-seg-output { background: #2dd4bf; }
+    .cost-seg-cache { background: #22d3ee; }
+    .cost-seg-think { background: #fb923c; }
+    .cost-bar-val {
         min-width: 55px;
         text-align: right;
-        font-weight: 600;
+        font-weight: 700;
         font-size: 0.92em;
+        color: var(--color-warn);
         flex-shrink: 0;
     }
-    .prc-bar-legend {
+
+    /* Legend */
+    .cost-legend {
         display: flex;
         gap: var(--space-3);
         flex-wrap: wrap;
-        font-size: 0.82em;
+        font-size: 0.78em;
         color: var(--color-text-dim);
-        margin-top: var(--space-3);
+        margin-top: var(--space-2);
         padding-top: var(--space-2);
-        border-top: 1px solid var(--color-border);
+        border-top: 1px solid var(--color-border-subtle);
     }
-    .prc-bar-legend-item {
+    .cost-legend-item {
         display: flex;
         align-items: center;
-        gap: var(--space-1);
+        gap: 4px;
     }
-    .prc-bar-legend-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 2px;
-    }
-
-    /* ── Cost Summary Cards ── */
-    .prc-cost-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: var(--space-2);
-        margin-bottom: var(--space-3);
-    }
-    .prc-cost-card {
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-left: 3px solid var(--color-info);
-        border-radius: var(--radius-md);
-        padding: var(--space-3);
-        transition: background 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
-    }
-    @media (hover: hover) {
-        .prc-cost-card:hover {
-            background: var(--color-surface-hover);
-            border-color: var(--color-border-hover);
-        }
-    }
-    .prc-cost-card-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: var(--space-2);
-        padding-bottom: var(--space-1);
-        border-bottom: 1px solid var(--color-border);
-    }
-    .prc-cost-card-name {
-        font-weight: 600;
-        font-size: 0.92em;
-    }
-    .prc-cost-card-total {
-        font-weight: 700;
-        font-size: 1em;
-        color: #f59e0b;
-    }
-    .prc-cost-card-body {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: var(--space-1);
-    }
-    .prc-cost-item {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 0.85em;
-        padding: 2px var(--space-1);
-        border-radius: var(--radius-sm);
-    }
-    .prc-cost-item-label {
-        display: flex;
-        align-items: center;
-        gap: var(--space-1);
-        color: var(--color-text-dim);
-    }
-    .prc-cost-item-dot {
-        width: 6px;
-        height: 6px;
+    .cost-legend-dot {
+        width: 7px;
+        height: 7px;
         border-radius: 2px;
         flex-shrink: 0;
     }
-    .prc-cost-item-val {
-        font-weight: 600;
+
+    /* Per-model detail rows */
+    .cost-detail-rows {
+        margin-top: var(--space-3);
+        padding-top: var(--space-2);
+        border-top: 1px solid var(--color-border-subtle);
+        display: grid;
+        gap: var(--space-1);
     }
-    .prc-cost-card.prc-cost-grand {
-        border-left-color: #f59e0b;
-        background: rgba(245,158,11,0.04);
-    }
-    .prc-cost-grand-val {
-        font-size: 1.4em;
-        font-weight: 700;
-        color: #f59e0b;
-    }
-    .prc-cost-no-pricing {
-        font-size: 0.85em;
-        color: var(--color-text-dim);
-        font-style: italic;
-    }
-    .prc-note {
+    .cost-detail-row {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-1) var(--space-2);
+        border-radius: var(--radius-sm);
         font-size: 0.82em;
+        transition: background 0.12s ease;
+    }
+    @media (hover: hover) {
+        .cost-detail-row:hover {
+            background: rgba(255,255,255,0.03);
+        }
+    }
+    .cost-detail-name {
+        min-width: 90px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex-shrink: 0;
+    }
+    .cost-detail-items {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        flex: 1;
+        min-width: 0;
+    }
+    .cost-detail-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        color: var(--color-text-dim);
+        font-variant-numeric: tabular-nums;
+    }
+    .cost-detail-total {
+        font-weight: 700;
+        color: var(--color-warn);
+        min-width: 55px;
+        text-align: right;
+        flex-shrink: 0;
+    }
+
+    .cost-note {
+        font-size: 0.78em;
         color: var(--color-text-dim);
         margin-top: var(--space-2);
         font-style: italic;
@@ -457,7 +456,7 @@ export function getPricingTabStyles(): string {
     }
 
     @media (prefers-reduced-motion: reduce) {
-        .prc-bar-seg, .prc-edit-input, .prc-cost-card, .prc-edit-card, .prc-monthly-card { transition: none; }
+        .cost-bar-seg, .prc-edit-input, .prc-edit-card, .prc-monthly-card { transition: none; }
     }
 
     /* ── Monthly Cost Summary ── */
@@ -604,15 +603,19 @@ export function getPricingTabStyles(): string {
 
     /* ── Light Theme Overrides ── */
     body.vscode-light .prc-dna-provider { background: rgba(37,99,235,0.1); color: #1d4ed8; }
+    body.vscode-light .prc-dna-meta-bar { background: rgba(0,0,0,0.02); border-color: rgba(0,0,0,0.08); border-left-color: rgba(37,99,235,0.3); }
     body.vscode-light .prc-tool-tag { background: rgba(22,163,74,0.08); color: #15803d; }
     body.vscode-light .prc-error-tag { background: rgba(220,38,38,0.08); color: #dc2626; }
-    body.vscode-light .prc-cost-card-total { color: #b45309; }
-    body.vscode-light .prc-cost-grand-val { color: #b45309; }
-    body.vscode-light .prc-cost-card.prc-cost-grand { border-left-color: #d97706; background: rgba(217,119,6,0.05); }
     body.vscode-light .prc-custom-badge { background: rgba(202,138,4,0.12); color: #92400e; }
     body.vscode-light .prc-edit-source-custom { color: #92400e; }
     body.vscode-light .prc-edit-source-builtin { color: #15803d; }
     body.vscode-light .prc-feedback { color: #15803d; }
+    body.vscode-light .cost-chip { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.08); }
+    body.vscode-light .cost-chip-total { color: #b45309; border-color: rgba(217,119,6,0.25); }
+    body.vscode-light .cost-bar-track { background: rgba(0,0,0,0.05); }
+    body.vscode-light .cost-bar-val { color: #b45309; }
+    body.vscode-light .cost-detail-total { color: #b45309; }
+    body.vscode-light .cost-detail-row:hover { background: rgba(0,0,0,0.02); }
     body.vscode-light .prc-monthly-grand { background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.2); border-left-color: #d97706; }
     body.vscode-light .prc-monthly-grand-val { color: #b45309; }
     body.vscode-light .prc-monthly-model-cost { color: #b45309; }
@@ -623,80 +626,124 @@ export function getPricingTabStyles(): string {
     `;
 }
 
-// ─── Cost Visualization ──────────────────────────────────────────────────────
+// ─── Shared Formatters ───────────────────────────────────────────────────────
 
-function buildCostVisualization(
+function fmtUsd(n: number): string {
+    if (n < 0.01) { return `$${n.toFixed(4)}`; }
+    if (n < 1) { return `$${n.toFixed(3)}`; }
+    return `$${n.toFixed(2)}`;
+}
+
+function fmtTok(n: number): string {
+    if (n >= 1_000_000) { return (n / 1_000_000).toFixed(1) + 'M'; }
+    if (n >= 1_000) { return (n / 1_000).toFixed(1) + 'k'; }
+    return String(n);
+}
+
+// ─── Unified Cost Panel ──────────────────────────────────────────────────────
+
+function buildCostPanel(
     rows: import('./pricing-store').ModelCostRow[],
     grandTotal: number,
     summary: GMSummary,
 ): string {
     const priced = rows.filter(r => r.pricing && r.totalCost > 0);
-    if (priced.length === 0 || grandTotal <= 0) { return ''; }
+    const unpriced = rows.filter(r => !r.pricing);
+    if (priced.length === 0 && grandTotal <= 0) { return ''; }
 
-    const fmtUsd = (n: number) => n < 0.01 ? `$${n.toFixed(4)}` : n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
-
-    // Highlights
-    const topModel = priced[0];
+    const topModel = priced.length > 0 ? priced[0] : null;
     const avgPerCall = summary.totalCalls > 0 ? grandTotal / summary.totalCalls : 0;
 
-    let html = `<h2 class="act-section-title">${tBi('Cost Overview', '费用概览')} <span class="gm-badge-real">${tBi('Visual', '可视化')}</span></h2>`;
-    html += '<div class="prc-viz-section">';
+    let html = `<h2 class="act-section-title">${tBi('Cost Analysis', '费用分析')}</h2>`;
+    html += '<div class="cost-panel">';
 
-    // Highlight cards
-    html += '<div class="prc-viz-highlights">';
-    html += `<div class="prc-viz-highlight">
-        <div class="prc-viz-hl-val" style="color:#f59e0b">${fmtUsd(grandTotal)}</div>
-        <div class="prc-viz-hl-label">${tBi('Total Cost', '总费用')}</div>
-    </div>`;
-    html += `<div class="prc-viz-highlight">
-        <div class="prc-viz-hl-val" style="color:#2dd4bf">${esc(topModel.name)}</div>
-        <div class="prc-viz-hl-label">${tBi('Top Spender', '最高消费')}</div>
-    </div>`;
-    html += `<div class="prc-viz-highlight">
-        <div class="prc-viz-hl-val" style="color:#60a5fa">${fmtUsd(avgPerCall)}</div>
-        <div class="prc-viz-hl-label">${tBi('Avg/Call', '平均/次')}</div>
-    </div>`;
-    html += `<div class="prc-viz-highlight">
-        <div class="prc-viz-hl-val">${priced.length}</div>
-        <div class="prc-viz-hl-label">${tBi('Models', '模型数')}</div>
-    </div>`;
+    // ── Summary chips (inline, compact) ──
+    html += '<div class="cost-chips">';
+    html += `<span class="cost-chip cost-chip-total">${fmtUsd(grandTotal)}</span>`;
+    if (topModel) {
+        html += `<span class="cost-chip" data-tooltip="${tBi('Top Spender', '最高消费')}">${esc(topModel.name)} ${fmtUsd(topModel.totalCost)}</span>`;
+    }
+    html += `<span class="cost-chip" data-tooltip="${tBi('Avg per Call', '平均每次')}">${fmtUsd(avgPerCall)}/${tBi('call', '次')}</span>`;
+    html += `<span class="cost-chip" data-tooltip="${tBi('Models with pricing', '有定价的模型')}">${priced.length} ${tBi('models', '模型')}</span>`;
+    if (summary.totalCalls > 0) {
+        html += `<span class="cost-chip">${summary.totalCalls} ${tBi('calls', '调用')}</span>`;
+    }
     html += '</div>';
 
-    // Bar chart
-    const maxCost = priced[0].totalCost;
-    for (const r of priced) {
-        const pct = maxCost > 0 ? (r.totalCost / maxCost) * 100 : 0;
-        const total = r.totalCost || 1;
-        const inputPct = (r.inputCost / total) * pct;
-        const outputPct = (r.outputCost / total) * pct;
-        const cachePct = ((r.cacheCost + r.cacheWriteCost) / total) * pct;
-        const thinkPct = (r.thinkingCost / total) * pct;
+    // ── Bar chart (proportional per-model) ──
+    if (priced.length > 0) {
+        const maxCost = priced[0].totalCost;
+        for (const r of priced) {
+            const pct = maxCost > 0 ? (r.totalCost / maxCost) * 100 : 0;
+            const total = r.totalCost || 1;
+            const inputPct = (r.inputCost / total) * pct;
+            const outputPct = (r.outputCost / total) * pct;
+            const cachePct = (r.cacheCost / total) * pct;
+            const thinkPct = (r.thinkingCost / total) * pct;
 
-        html += `<div class="prc-bar-row">
-            <span class="prc-bar-label">${esc(r.name)}</span>
-            <div class="prc-bar-track">
-                ${inputPct > 0 ? `<div class="prc-bar-seg prc-bar-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="${tBi('Input', '输入')}: ${fmtUsd(r.inputCost)}"></div>` : ''}
-                ${outputPct > 0 ? `<div class="prc-bar-seg prc-bar-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="${tBi('Output', '输出')}: ${fmtUsd(r.outputCost)}"></div>` : ''}
-                ${cachePct > 0 ? `<div class="prc-bar-seg prc-bar-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="${tBi('Cache', '缓存')}: ${fmtUsd(r.cacheCost + r.cacheWriteCost)}"></div>` : ''}
-                ${thinkPct > 0 ? `<div class="prc-bar-seg prc-bar-seg-thinking" style="width:${thinkPct.toFixed(1)}%" data-tooltip="${tBi('Thinking', '思考')}: ${fmtUsd(r.thinkingCost)}"></div>` : ''}
-            </div>
-            <span class="prc-bar-val" style="color:#f59e0b">${fmtUsd(r.totalCost)}</span>
+            html += `<div class="cost-bar-row">
+                <span class="cost-bar-label" data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</span>
+                <div class="cost-bar-track">
+                    ${inputPct > 0 ? `<div class="cost-bar-seg cost-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="${tBi('Input', '输入')}: ${fmtUsd(r.inputCost)} (${fmtTok(r.inputTokens)} tok)"></div>` : ''}
+                    ${outputPct > 0 ? `<div class="cost-bar-seg cost-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="${tBi('Output', '输出')}: ${fmtUsd(r.outputCost)} (${fmtTok(r.outputTokens)} tok)"></div>` : ''}
+                    ${cachePct > 0 ? `<div class="cost-bar-seg cost-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="${tBi('Cache', '缓存')}: ${fmtUsd(r.cacheCost)} (${fmtTok(r.cacheTokens)} tok)"></div>` : ''}
+                    ${thinkPct > 0 ? `<div class="cost-bar-seg cost-seg-think" style="width:${thinkPct.toFixed(1)}%" data-tooltip="${tBi('Thinking', '思考')}: ${fmtUsd(r.thinkingCost)} (${fmtTok(r.thinkingTokens)} tok)"></div>` : ''}
+                </div>
+                <span class="cost-bar-val">${fmtUsd(r.totalCost)}</span>
+            </div>`;
+        }
+
+        // Legend
+        html += `<div class="cost-legend">
+            <span class="cost-legend-item"><span class="cost-legend-dot" style="background:#60a5fa"></span>${tBi('Input', '输入')}</span>
+            <span class="cost-legend-item"><span class="cost-legend-dot" style="background:#2dd4bf"></span>${tBi('Output', '输出')}</span>
+            <span class="cost-legend-item"><span class="cost-legend-dot" style="background:#22d3ee"></span>${tBi('Cache', '缓存')}</span>
+            <span class="cost-legend-item"><span class="cost-legend-dot" style="background:#fb923c"></span>${tBi('Thinking', '思考')}</span>
         </div>`;
     }
 
-    // Legend
-    html += `<div class="prc-bar-legend">
-        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#60a5fa"></span> ${tBi('Input', '输入')}</span>
-        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#2dd4bf"></span> ${tBi('Output', '输出')}</span>
-        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#22d3ee"></span> ${tBi('Cache', '缓存')}</span>
-        <span class="prc-bar-legend-item"><span class="prc-bar-legend-dot" style="background:#fb923c"></span> ${tBi('Thinking', '思考')}</span>
-    </div>`;
+    // ── Per-model cost breakdown (compact rows, replaces old card grid) ──
+    if (priced.length > 0) {
+        html += '<div class="cost-detail-rows">';
+        for (const r of priced) {
+            html += `<div class="cost-detail-row">
+                <span class="cost-detail-name" data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</span>
+                <div class="cost-detail-items">
+                    <span class="cost-detail-item" data-tooltip="${fmtTok(r.inputTokens)} tok × $${r.pricing!.input}/M">
+                        <span class="cost-legend-dot" style="background:#60a5fa"></span>${fmtUsd(r.inputCost)}
+                    </span>
+                    <span class="cost-detail-item" data-tooltip="${fmtTok(r.outputTokens)} tok × $${r.pricing!.output}/M">
+                        <span class="cost-legend-dot" style="background:#2dd4bf"></span>${fmtUsd(r.outputCost)}
+                    </span>
+                    <span class="cost-detail-item" data-tooltip="${fmtTok(r.cacheTokens)} tok × $${r.pricing!.cacheRead}/M">
+                        <span class="cost-legend-dot" style="background:#22d3ee"></span>${fmtUsd(r.cacheCost)}
+                    </span>
+                    ${r.thinkingTokens > 0 ? `<span class="cost-detail-item" data-tooltip="${fmtTok(r.thinkingTokens)} tok × $${r.pricing!.thinking}/M">
+                        <span class="cost-legend-dot" style="background:#fb923c"></span>${fmtUsd(r.thinkingCost)}
+                    </span>` : ''}
+                </div>
+                <span class="cost-detail-total">${fmtUsd(r.totalCost)}</span>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Unpriced models note
+    if (unpriced.length > 0) {
+        html += `<p class="cost-note">${unpriced.length} ${tBi(
+            'model(s) have no pricing data',
+            '个模型暂无价格数据',
+        )}: ${unpriced.map(r => esc(r.name)).join(', ')}</p>`;
+    }
+
+    html += `<p class="cost-note">${tBi(
+        'Costs are estimates based on the pricing table below. Actual billing may differ.',
+        '费用基于下方价格表估算。实际计费可能不同。',
+    )}</p>`;
 
     html += '</div>';
     return html;
 }
-
-// ─── Section Builders ────────────────────────────────────────────────────────
 
 export function buildModelDNACards(
     s: GMSummary | null,
@@ -728,19 +775,57 @@ export function buildModelDNACards(
         return aName.localeCompare(bName);
     });
 
+    // Deduplicate by normalized display name — same model can appear under
+    // different DNA keys (e.g. responseModel changed). Prefer the entry with
+    // current GM data; merge persisted config/MIME from the duplicate.
+    const seenNames = new Map<string, number>();
+    const deduped: typeof entries = [];
+    for (const entry of entries) {
+        const rawName = entry.current?.[0] || entry.persisted?.displayName || entry.key;
+        const normName = (normalizeModelDisplayName(rawName) || rawName).toLowerCase();
+        const existingIdx = seenNames.get(normName);
+        if (existingIdx === undefined) {
+            seenNames.set(normName, deduped.length);
+            deduped.push(entry);
+        } else {
+            // Merge: if existing has no current data but this one does, swap
+            const existing = deduped[existingIdx];
+            if (!existing.current && entry.current) {
+                // Keep new entry's GM data, merge persisted from old
+                if (!entry.persisted && existing.persisted) {
+                    entry.persisted = existing.persisted;
+                }
+                deduped[existingIdx] = entry;
+            }
+            // Otherwise just skip the duplicate (persisted-only or lower priority)
+        }
+    }
+
     const configByLabel = new Map<string, ModelConfig>();
     for (const config of configs) {
         const normalizedLabel = normalizeModelDisplayName(config.label) || config.label;
         configByLabel.set(normalizedLabel, config);
     }
 
-    let html = `<h2 class="act-section-title">${tBi('Model Info', '模型信息')}</h2>`;
-    html += `<div class="prc-dna-grid">`;
+    // SVG icons for card rows (matching GM Data tab style)
+    const ICONS = {
+        bolt: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+        bar: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,
+        coin: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
+        error: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`,
+        retry: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>`,
+        provider: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`,
+    };
+    const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 
-    for (const entry of entries) {
+    let html = `<h2 class="act-section-title">${tBi('Model Info', '模型信息')}</h2>`;
+    html += `<div class="act-cards-grid">`;
+
+    for (const entry of deduped) {
         const current = entry.current?.[1];
         const persistedEntry = entry.persisted;
-        const name = entry.current?.[0] || persistedEntry?.displayName || entry.key;
+        const rawName = entry.current?.[0] || persistedEntry?.displayName || entry.key;
+        const name = normalizeModelDisplayName(rawName) || rawName;
         const config = configByLabel.get(normalizeModelDisplayName(name) || name);
         const provider = current?.apiProvider || persistedEntry?.apiProvider || '';
         const providerShort = provider.replace('API_PROVIDER_', '').replace(/_/g, ' ');
@@ -754,8 +839,55 @@ export function buildModelDNACards(
         const isPersistedOnly = !current && !!persistedEntry;
         const entryId = toDomSafeId(entry.key);
         const supportedMimeTypes = config?.supportedMimeTypes || [];
-        const mimeDetailsHtml = supportedMimeTypes.length > 0
-            ? `
+
+        // ── Card header ──
+        const headerBadge = isPersistedOnly
+            ? ` <span class="act-badge" style="opacity:0.7">${tBi('cached', '已缓存')}</span>`
+            : '';
+        html += `<div class="act-model-card${isPersistedOnly ? ' act-checkpoint-model' : ''}">`;
+        html += `<div class="act-card-header">${esc(name)}${headerBadge}</div>`;
+        html += `<div class="act-card-body">`;
+
+        // ── Meta row: response model + provider ──
+        // Suppress responseModel when it's essentially the same as card title
+        const normTitle = name.toLowerCase().replace(/[\s().\-]+/g, '');
+        const normResp = responseModel.toLowerCase().replace(/[\s().\-]+/g, '');
+        const showResponseModel = responseModel && normResp !== normTitle;
+        if (showResponseModel || providerShort) {
+            html += `<div class="prc-dna-meta-bar">`;
+            if (showResponseModel) {
+                html += `<span class="prc-dna-response-model">${esc(responseModel)}</span>`;
+            }
+            if (providerShort) {
+                html += `${showResponseModel ? '<span class="prc-dna-sep">·</span>' : ''}<span class="prc-dna-provider">${esc(providerShort)}</span>`;
+            }
+            if (isPersistedOnly) {
+                html += `${(showResponseModel || providerShort) ? '<span class="prc-dna-sep">·</span>' : ''}<span class="prc-dna-provider">${tBi('cached', '已缓存')}</span>`;
+            }
+            html += `</div>`;
+        }
+
+        // ── Stats rows (GM Data card style) ──
+        html += `<div class="act-card-row"><span>${ICONS.bolt} <span>${tBi('Calls', '调用')}</span></span><span class="val">${fmt(callCount)}</span></div>`;
+        html += `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Steps', '步骤')}</span></span><span class="val">${fmt(stepsCovered)}</span></div>`;
+        if (totalCredits > 0) {
+            html += `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val">${totalCredits.toFixed(1)}</span></div>`;
+        }
+        if (totalRetries > 0) {
+            html += `<div class="act-card-divider"></div>`;
+            html += `<div class="act-card-row"><span>${ICONS.retry} <span>${tBi('Retries', '重试')}</span></span><span class="val">${totalRetries}</span></div>`;
+        }
+        if (errorCount > 0) {
+            if (totalRetries <= 0) { html += `<div class="act-card-divider"></div>`; }
+            html += `<div class="act-card-row"><span>${ICONS.error} <span>${tBi('Errors', '错误')}</span></span><span class="val" style="color:#ef4444">${errorCount}</span></div>`;
+        }
+
+        html += `</div>`; // act-card-body
+
+        // ── Footer: MIME + Tech params (collapsible) ──
+        const footerParts: string[] = [];
+        if (supportedMimeTypes.length > 0) {
+            footerParts.push(`
                 <details class="collapsible inline-details" id="d-model-mime-${entryId}">
                     <summary>${tBi('MIME Types', 'MIME 类型')} (${supportedMimeTypes.length})</summary>
                     <div class="details-body">
@@ -763,10 +895,10 @@ export function buildModelDNACards(
                             ${supportedMimeTypes.map(mime => `<span class="mime-tag">${esc(mime)}</span>`).join('')}
                         </div>
                     </div>
-                </details>`
-            : '';
-        const techDetailsHtml = cc
-            ? `
+                </details>`);
+        }
+        if (cc) {
+            footerParts.push(`
                 <details class="collapsible inline-details" id="d-model-tech-${entryId}">
                     <summary>${tBi('Technical Params', '技术参数')}</summary>
                     <div class="details-body">
@@ -779,43 +911,13 @@ export function buildModelDNACards(
                             ${buildDNAField(tBi('stops', '停止词'), String(cc.stopPatternCount))}
                         </div>
                     </div>
-                </details>`
-            : '';
-
-        html += `<div class="prc-dna-card">`;
-        html += `<div class="prc-dna-header">
-            <span class="prc-dna-model">${esc(name)}</span>
-        </div>`;
-
-        const metaParts: string[] = [];
-        if (responseModel) {
-            metaParts.push(`<span class="prc-dna-response-model">${esc(responseModel)}</span>`);
+                </details>`);
         }
-        if (providerShort) {
-            metaParts.push(`<span class="prc-dna-provider">${esc(providerShort)}</span>`);
-        }
-        if (isPersistedOnly) {
-            metaParts.push(`<span class="prc-dna-provider">${tBi('cached', '已缓存')}</span>`);
-        }
-        if (metaParts.length > 0) {
-            html += `<div class="prc-dna-meta">${metaParts.join('<span class="prc-dna-sep">·</span>')}</div>`;
+        if (footerParts.length > 0) {
+            html += `<div class="act-card-footer" style="padding:var(--space-2) var(--space-3)">${footerParts.join('')}</div>`;
         }
 
-        html += `<div class="prc-dna-grid-inner">`;
-        html += buildDNAField(tBi('Calls', '调用'), String(callCount));
-        html += buildDNAField(tBi('Steps', '步骤'), String(stepsCovered));
-        html += buildDNAField(tBi('Credits', '积分'), String(totalCredits));
-        if (totalRetries > 0) {
-            html += buildDNAField(tBi('Retries', '重试'), String(totalRetries));
-        }
-        if (errorCount > 0) {
-            html += `<div class="prc-dna-field"><span class="prc-dna-label">${tBi('Errors', '错误')}</span><span class="prc-dna-val" style="color:#ef4444">${errorCount}</span></div>`;
-        }
-        html += `</div>`;
-        html += mimeDetailsHtml;
-        html += techDetailsHtml;
-
-        html += `</div>`;
+        html += `</div>`; // act-model-card
     }
 
     html += `</div>`;
@@ -830,99 +932,15 @@ function toDomSafeId(value: string): string {
     return value.replace(/[^a-zA-Z0-9_-]+/g, '-');
 }
 
-// ─── Cost Summary (Card-based) ───────────────────────────────────────────────
 
-function buildCostSummary(rows: import('./pricing-store').ModelCostRow[], grandTotal: number): string {
-    if (rows.length === 0) { return ''; }
 
-    const fmtUsd = (n: number) => n < 0.01 ? `$${n.toFixed(4)}` : n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
-    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-
-    let html = `<h2 class="act-section-title">${tBi('Cost Breakdown', '费用明细')} <span class="gm-badge-real">${tBi('Per Model', '按模型')}</span></h2>`;
-
-    // Grand total card
-    html += `<div class="prc-cost-grid">`;
-    html += `<div class="prc-cost-card prc-cost-grand">
-        <div class="prc-cost-card-header">
-            <span class="prc-cost-card-name">${tBi('Grand Total', '总计')}</span>
-        </div>
-        <div class="prc-cost-grand-val">${fmtUsd(grandTotal)}</div>
-        <div class="prc-note" style="margin-top:var(--space-1)">${rows.filter(r => r.pricing).length} ${tBi('models priced', '个模型有定价')}</div>
-    </div>`;
-
-    // Per-model cards
-    for (const r of rows) {
-        if (!r.pricing) {
-            html += `<div class="prc-cost-card">
-                <div class="prc-cost-card-header">
-                    <span class="prc-cost-card-name" data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</span>
-                </div>
-                <div class="prc-cost-no-pricing">${tBi('No pricing data available', '暂无价格数据')}</div>
-            </div>`;
-            continue;
-        }
-
-        html += `<div class="prc-cost-card">
-            <div class="prc-cost-card-header">
-                <span class="prc-cost-card-name" data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</span>
-                <span class="prc-cost-card-total">${fmtUsd(r.totalCost)}</span>
-            </div>
-            <div class="prc-cost-card-body">
-                <div class="prc-cost-item" data-tooltip="${tBi(
-                    `${fmt(r.inputTokens)} tok × $${r.pricing.input}/M`,
-                    `${fmt(r.inputTokens)} 令牌 × $${r.pricing.input}/百万`,
-                )}">
-                    <span class="prc-cost-item-label"><span class="prc-cost-item-dot" style="background:#60a5fa"></span>${tBi('Input', '输入')}</span>
-                    <span class="prc-cost-item-val">${fmtUsd(r.inputCost)}</span>
-                </div>
-                <div class="prc-cost-item" data-tooltip="${tBi(
-                    `${fmt(r.outputTokens)} tok × $${r.pricing.output}/M`,
-                    `${fmt(r.outputTokens)} 令牌 × $${r.pricing.output}/百万`,
-                )}">
-                    <span class="prc-cost-item-label"><span class="prc-cost-item-dot" style="background:#2dd4bf"></span>${tBi('Output', '输出')}</span>
-                    <span class="prc-cost-item-val">${fmtUsd(r.outputCost)}</span>
-                </div>
-                <div class="prc-cost-item" data-tooltip="${tBi(
-                    `${fmt(r.cacheTokens)} tok × $${r.pricing.cacheRead}/M`,
-                    `${fmt(r.cacheTokens)} 令牌 × $${r.pricing.cacheRead}/百万`,
-                )}">
-                    <span class="prc-cost-item-label"><span class="prc-cost-item-dot" style="background:#22d3ee"></span>${tBi('Cache Read', '缓存读取')}</span>
-                    <span class="prc-cost-item-val">${fmtUsd(r.cacheCost)}</span>
-                </div>
-                <div class="prc-cost-item" data-tooltip="${tBi(
-                    `${fmt(r.cacheWriteTokens)} tok × $${r.pricing.cacheWrite}/M`,
-                    `${fmt(r.cacheWriteTokens)} 令牌 × $${r.pricing.cacheWrite}/百万`,
-                )}">
-                    <span class="prc-cost-item-label"><span class="prc-cost-item-dot" style="background:#22d3ee"></span>${tBi('Cache Write', '缓存写入')}</span>
-                    <span class="prc-cost-item-val">${fmtUsd(r.cacheWriteCost)}</span>
-                </div>
-                ${r.thinkingTokens > 0 ? `<div class="prc-cost-item" data-tooltip="${tBi(
-                    `${fmt(r.thinkingTokens)} tok × $${r.pricing.thinking}/M`,
-                    `${fmt(r.thinkingTokens)} 令牌 × $${r.pricing.thinking}/百万`,
-                )}">
-                    <span class="prc-cost-item-label"><span class="prc-cost-item-dot" style="background:#fb923c"></span>${tBi('Thinking', '思考')}</span>
-                    <span class="prc-cost-item-val">${fmtUsd(r.thinkingCost)}</span>
-                </div>` : ''}
-            </div>
-        </div>`;
-    }
-
-    html += `</div>`;
-    html += `<p class="prc-note">${tBi(
-        'Costs are estimates based on the pricing table below. Actual billing may differ with enterprise agreements.',
-        '费用基于下方价格表估算。实际计费可能因企业协议而不同。'
-    )}</p>`;
-    return html;
-}
-
-// ─── Editable Pricing (Card-based) ───────────────────────────────────────────
 
 const FIELD_LABELS: Record<string, [string, string]> = {
-    input:      ['Input',       '输入'],
-    output:     ['Output',      '输出'],
-    cacheRead:  ['Cache Read',  '缓存读取'],
+    input: ['Input', '输入'],
+    output: ['Output', '输出'],
+    cacheRead: ['Cache Read', '缓存读取'],
     cacheWrite: ['Cache Write', '缓存写入'],
-    thinking:   ['Thinking',    '思考'],
+    thinking: ['Thinking', '思考'],
 };
 
 function buildEditablePricingTable(
@@ -933,7 +951,7 @@ function buildEditablePricingTable(
     const entries = Object.entries(summary.modelBreakdown);
     if (entries.length === 0) { return ''; }
 
-    const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'cacheWrite', 'thinking'];
+    const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'thinking'];
 
     let html = `<h2 class="act-section-title">${tBi('Custom Pricing', '自定义价格')} <span style="font-size:0.82em;color:var(--color-text-dim)">(${tBi('USD / 1M tokens', 'USD / 100万令牌')})</span></h2>`;
     html += `<div class="prc-edit-section">`;
@@ -985,7 +1003,7 @@ function buildDefaultPricingTable(
     const entries = Object.entries(merged);
     if (entries.length === 0) { return ''; }
 
-    const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'cacheWrite', 'thinking'];
+    const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'thinking'];
 
     let html = `<h2 class="act-section-title">${tBi('Custom Pricing', '自定义价格')} <span style="font-size:0.82em;color:var(--color-text-dim)">(${tBi('USD / 1M tokens', 'USD / 100万令牌')})</span></h2>`;
     html += `<div class="prc-edit-section"><div class="prc-edit-grid">`;
@@ -1022,30 +1040,18 @@ function buildDefaultPricingTable(
 
 // ─── Monthly Cost Summary Builder ────────────────────────────────────────────
 
-const MONTH_NAMES_EN = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-const MONTH_NAMES_ZH = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+const MONTH_NAMES_EN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const MONTH_NAMES_ZH = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 
 const CALENDAR_LINK_ICON = '<svg viewBox="0 0 16 16" width="12" height="12"><path fill="currentColor" d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/></svg>';
 const DOLLAR_ICON = '<svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.3 0-1.59-.947-2.51-2.956-3.028l-.722-.187V3.467c1.122.11 1.879.714 2.07 1.616h1.47c-.166-1.6-1.54-2.748-3.54-2.875V1H7.591v1.233c-1.939.23-3.27 1.472-3.27 3.156 0 1.454.966 2.483 2.661 2.917l.61.162v4.031c-1.149-.17-1.94-.8-2.131-1.718zm3.391-3.836c-1.043-.263-1.6-.825-1.6-1.616 0-.944.704-1.641 1.8-1.828v3.495zM8.634 8.1C9.858 8.418 10.44 9 10.44 9.89c0 1.12-.789 1.816-2.007 1.931V8.1z"/></svg>';
-
-function fmtCost(n: number): string {
-    if (n >= 100) { return '$' + n.toFixed(0); }
-    if (n >= 1) { return '$' + n.toFixed(2); }
-    if (n > 0) { return '$' + n.toFixed(4); }
-    return '$0.00';
-}
-
-function fmtTokensK(n: number): string {
-    if (n >= 1_000_000) { return (n / 1_000_000).toFixed(1) + 'M'; }
-    if (n >= 1_000) { return (n / 1_000).toFixed(1) + 'k'; }
-    return String(n);
-}
 
 /** Build the monthly cost summary section for the Pricing tab. */
 function buildMonthlyCostSummary(
     breakdown: MonthCostBreakdown,
     currentCycleCost: number,
     currentCycleRows: ModelCostRow[],
+    pendingArchiveCost: number,
 ): string {
     const monthEn = MONTH_NAMES_EN[breakdown.month - 1];
     const monthZh = MONTH_NAMES_ZH[breakdown.month - 1];
@@ -1057,8 +1063,9 @@ function buildMonthlyCostSummary(
 
     // 1. Archived cycles from DailyStore
     for (const m of breakdown.models) {
-        mergedModels.set(m.name, {
-            name: m.name,
+        const cleanName = normalizeModelDisplayName(m.name) || m.name;
+        mergedModels.set(cleanName, {
+            name: cleanName,
             totalCost: m.totalCost,
             calls: m.calls,
             inputTokens: m.inputTokens,
@@ -1070,7 +1077,7 @@ function buildMonthlyCostSummary(
     // 2. Current live cycle (not yet archived)
     if (isCurrentMonth && currentCycleRows.length > 0) {
         for (const row of currentCycleRows) {
-            const key = row.name;
+            const key = normalizeModelDisplayName(row.name) || row.name;
             const existing = mergedModels.get(key);
             if (existing) {
                 existing.totalCost += row.totalCost;
@@ -1091,7 +1098,7 @@ function buildMonthlyCostSummary(
         }
     }
 
-    const grandTotal = breakdown.grandTotal + (isCurrentMonth ? currentCycleCost : 0);
+    const grandTotal = breakdown.grandTotal + (isCurrentMonth ? currentCycleCost : 0) + (isCurrentMonth ? pendingArchiveCost : 0);
     const totalCycles = breakdown.cycleCount + (isCurrentMonth && currentCycleCost > 0 ? 1 : 0);
     const models = [...mergedModels.values()].sort((a, b) => b.totalCost - a.totalCost);
     const maxCost = models.length > 0 ? models[0].totalCost : 1;
@@ -1139,7 +1146,7 @@ function buildMonthlyCostSummary(
         );
 
     html += `<div class="prc-monthly-grand">
-        <span class="prc-monthly-grand-val">${fmtCost(grandTotal)}</span>
+        <span class="prc-monthly-grand-val">${fmtUsd(grandTotal)}</span>
         <span class="prc-monthly-grand-label">${tBi('Total', '总计')}</span>
         <span class="prc-monthly-grand-breakdown">${archivedLabel}</span>
     </div>`;
@@ -1153,13 +1160,7 @@ function buildMonthlyCostSummary(
             <div class="prc-monthly-bar-wrap">
                 <div class="prc-monthly-bar-fill" style="width:${pct.toFixed(1)}%"></div>
             </div>
-            <span class="prc-monthly-model-cost">${fmtCost(m.totalCost)}</span>
-        </div>
-        <div class="prc-monthly-chips" style="padding-left:var(--space-3); margin-top:-4px; margin-bottom:var(--space-1)">
-            <span class="prc-monthly-chip">${fmtTokensK(m.inputTokens)} in</span>
-            <span class="prc-monthly-chip">${fmtTokensK(m.outputTokens)} out</span>
-            ${m.thinkingTokens > 0 ? `<span class="prc-monthly-chip">${fmtTokensK(m.thinkingTokens)} think</span>` : ''}
-            <span class="prc-monthly-chip">${m.calls} ${tBi('calls', '调用')}</span>
+            <span class="prc-monthly-model-cost">${fmtUsd(m.totalCost)}</span>
         </div>`;
     }
     html += `</div>`;

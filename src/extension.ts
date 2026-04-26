@@ -19,14 +19,19 @@ import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDu
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
-import { GMTracker, GMSummary, GMTrackerState, filterGMSummaryByModels } from './gm-tracker';
+import { GMTracker, GMSummary, GMTrackerState, slimSummaryForPersistence } from './gm-tracker';
 import { PricingStore } from './pricing-store';
 import { DailyStore, type DailyStoreState } from './daily-store';
 import { MonitorStore } from './monitor-store';
-import { findLatestQuotaSessionForPool, groupModelIdsByResetPool } from './pool-utils';
+import {
+    toLocalDateKey,
+    performDailyArchival as performDailyArchivalCore,
+    type DailyArchivalContext,
+} from './daily-archival';
 import { DurableState, StateBucket } from './durable-state';
 import { mergeModelDNAState, PersistedModelDNA, restoreModelDNAState, serializeModelDNAState, type ModelDNAStoreState } from './model-dna-store';
 import type { StorageDiagnostics } from './webview-settings-tab';
+import type { AccountSnapshot } from './activity-panel';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -66,6 +71,17 @@ type DevResetSnapshot = {
     dailyState: DailyStoreState;
 };
 let devResetSnapshot: DevResetSnapshot | null = null;
+
+// ─── Multi-Account Snapshot State ─────────────────────────────────────────────
+/** Map of email → AccountSnapshot, persisted across sessions. */
+let accountSnapshots = new Map<string, AccountSnapshot>();
+/** Tracks already-notified reset events to avoid duplicate popups. Key = `email:resetTime` */
+const notifiedAccountResets = new Set<string>();
+/** Currently active account email for switch detection. */
+let currentAccountEmail = '';
+
+/** Last archived local date key ('YYYY-MM-DD'), used to detect date rollover. */
+let lastArchivalDateKey: string = '';
 
 /** Throttle activity persistence: max once per 30s */
 let lastActivityPersistTime = 0;
@@ -195,7 +211,12 @@ function hasGMSummaryChanged(prev: GMSummary | null | undefined, next: GMSummary
 function persistResetSensitiveState(): void {
     durableGlobalState.update('activityTrackerState', activityTracker.serialize());
     durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-    durableFileGlobalState.update('gmDetailedSummary', lastGMSummary);
+    persistGMSummaryToFile(lastGMSummary);
+}
+
+/** Write GM summary to external file, stripping heavy text/metadata fields. */
+function persistGMSummaryToFile(summary: GMSummary | null | undefined): void {
+    durableFileGlobalState.update('gmDetailedSummary', summary ? slimSummaryForPersistence(summary) : null);
 }
 
 function captureDevResetSnapshot(): void {
@@ -232,13 +253,295 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         archives: activityTracker?.getArchives(),
         activityTracker,
         gmSummary: lastGMSummary,
+        gmFullSummary: gmTracker.getFullSummary(),
         gmConversations: monitorStore.getGMConversations(),
         pricingStore,
         dailyStore,
         storageDiagnostics: getStorageDiagnostics(),
         modelDNA: persistedModelDNA,
+        accountSnapshots: getAccountSnapshotArray(),
+        pendingArchives: gmTracker.getPendingArchives(),
         ...extra,
     };
+}
+
+// ─── Account Snapshot Helpers ─────────────────────────────────────────────────
+
+/**
+ * Build a set of model IDs that have confirmed LLM calls in the current cycle
+ * for the given account. Used by both account snapshot hasUsage detection and
+ * QuotaTracker's early tracking entry.
+ */
+function buildUsedModelIds(email?: string): Set<string> {
+    const ids = new Set<string>();
+    if (!lastGMSummary?.conversations) { return ids; }
+    for (const conv of lastGMSummary.conversations) {
+        for (const call of conv.calls) {
+            if ((!call.accountEmail || call.accountEmail === email) && call.model) {
+                ids.add(call.model);
+            }
+        }
+    }
+    return ids;
+}
+
+function updateAccountSnapshot(
+    userInfo: UserStatusInfo,
+    configs: import('./models').ModelConfig[],
+): void {
+    const email = userInfo.email;
+    if (!email) { return; }
+
+    // Group models by their resetTime to form pools, tracking usage
+    // Also build a modelId → resetTime mapping for GMTracker cross-reference
+    const poolMap = new Map<string, { labels: string[]; modelIds: string[]; hasUsage: boolean; minFraction: number }>();
+    for (const c of configs) {
+        if (c.quotaInfo?.resetTime) {
+            const rt = c.quotaInfo.resetTime;
+            if (!poolMap.has(rt)) { poolMap.set(rt, { labels: [], modelIds: [], hasUsage: false, minFraction: 1.0 }); }
+            const pool = poolMap.get(rt)!;
+            if (!pool.labels.includes(c.label)) {
+                pool.labels.push(c.label);
+            }
+            if (c.model && !pool.modelIds.includes(c.model)) {
+                pool.modelIds.push(c.model);
+            }
+            // remainingFraction < 1.0 means quota has been consumed (crossed 20% threshold)
+            // LS omits the field (undefined) when exhausted → treat as used
+            const frac = c.quotaInfo.remainingFraction;
+            if (frac === undefined || frac < 1.0) {
+                pool.hasUsage = true;
+            }
+            if (frac !== undefined && frac < pool.minFraction) {
+                pool.minFraction = frac;
+            }
+        }
+    }
+
+    // ── Enhanced usage detection: GMTracker cross-reference ──────────────
+    // remainingFraction is quantized in 20% steps (1.0→0.8→0.6→0.4→0.2→0.0),
+    // so frac=1.0 does NOT mean "unused" — it could mean consumption < 20%.
+    // The reliable signal: check GMTracker's actual call records for this cycle.
+    // If any model in a pool has been called by THIS account, the pool is "used".
+    //
+    // Match by model ID (language-independent), NOT display name.
+    // e.g. pool has "Gemini 3.1 Pro (High)" but call.modelDisplay may differ
+    //      both share model ID "MODEL_PLACEHOLDER_M37" — this always matches.
+    const usedModelIds = buildUsedModelIds(email);
+    if (usedModelIds.size > 0) {
+        for (const [, pool] of poolMap) {
+            if (pool.hasUsage) { continue; } // already confirmed ≥20% consumed
+            for (const mid of pool.modelIds) {
+                if (usedModelIds.has(mid)) {
+                    pool.hasUsage = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Build resetPools sorted by resetTime (earliest first)
+    const resetPools: import('./activity-panel').ResetPool[] = [];
+    const allResetTimes: string[] = [];
+    for (const [resetTime, pool] of [...poolMap.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+        const remainingPct = pool.hasUsage ? Math.round(pool.minFraction * 100) : undefined;
+        resetPools.push({ resetTime, modelLabels: pool.labels, hasUsage: pool.hasUsage, remainingPercent: remainingPct });
+        allResetTimes.push(resetTime);
+    }
+    const earliestResetTime = allResetTimes.length > 0 ? allResetTimes[0] : '';
+
+    // Mark all existing snapshots as inactive
+    for (const snap of accountSnapshots.values()) {
+        snap.isActive = false;
+    }
+
+    // Upsert current account
+    accountSnapshots.set(email, {
+        email,
+        name: userInfo.name || '',
+        planName: userInfo.planName || '',
+        tierName: userInfo.userTierName || '',
+        earliestResetTime,
+        allResetTimes,
+        resetPools,
+        isActive: true,
+        lastSeen: new Date().toISOString(),
+    });
+
+    // Persist to durable state
+    persistAccountSnapshots();
+}
+
+function persistAccountSnapshots(): void {
+    const arr: AccountSnapshot[] = [];
+    for (const snap of accountSnapshots.values()) {
+        arr.push(snap);
+    }
+    durableFileGlobalState.update('accountSnapshots', arr);
+}
+
+function restoreAccountSnapshots(): void {
+    const saved = durableFileGlobalState.get<AccountSnapshot[] | null>('accountSnapshots', null);
+    if (saved && Array.isArray(saved)) {
+        accountSnapshots = new Map();
+        for (const snap of saved) {
+            if (snap.email) {
+                // All restored snapshots start as inactive until a live fetch confirms
+                accountSnapshots.set(snap.email, { ...snap, isActive: false });
+            }
+        }
+    }
+}
+
+/** Remove a cached (non-active) account snapshot. Returns updated snapshot list. */
+export function removeAccountSnapshot(email: string): AccountSnapshot[] {
+    const snap = accountSnapshots.get(email);
+    if (!snap || snap.isActive) {
+        // Don't remove the currently active account
+        return [...accountSnapshots.values()];
+    }
+    accountSnapshots.delete(email);
+    persistAccountSnapshots();
+    return [...accountSnapshots.values()];
+}
+
+function getAccountSnapshotArray(): AccountSnapshot[] {
+    return [...accountSnapshots.values()];
+}
+
+/**
+ * Detect account switch for GM call attribution.
+ * Also checks expired quota pools for BOTH the outgoing and incoming accounts,
+ * since checkCachedAccountResets() only covers inactive accounts and would miss
+ * the incoming account once it becomes active.
+ */
+function handleAccountSwitchIfNeeded(newEmail: string): boolean {
+    if (!newEmail) { return false; }
+    if (currentAccountEmail && currentAccountEmail !== newEmail) {
+        log(`Account switch detected: ${currentAccountEmail} → ${newEmail}`);
+
+        // Before switching, check both accounts for expired pools that need archival.
+        // The OLD account (currentAccountEmail) is about to become "cached" (inactive),
+        // and the NEW account (newEmail) is about to become "active".
+        // checkCachedAccountResets() only checks isActive===false, so the new account
+        // would be skipped once it becomes active. We must handle it HERE.
+        baselineExpiredPoolsForAccount(currentAccountEmail);
+        baselineExpiredPoolsForAccount(newEmail);
+
+        currentAccountEmail = newEmail;
+        gmTracker.setCurrentAccount(newEmail);
+        return true;
+    }
+    if (!currentAccountEmail) {
+        currentAccountEmail = newEmail;
+        gmTracker.setCurrentAccount(newEmail);
+        // On first connection after extension restart, the account may already
+        // have expired pools from a previous session. Baseline them now before
+        // updateAccountSnapshot() refreshes the snapshot with a new resetTime.
+        baselineExpiredPoolsForAccount(newEmail);
+    }
+    return false;
+}
+
+/**
+ * Check a specific account's snapshot for expired quota pools and baseline them.
+ * This is the same logic as checkCachedAccountResets() but operates on a single
+ * account regardless of its isActive state. Used during account switching to
+ * ensure expired pools are archived before the account's active state changes.
+ */
+function baselineExpiredPoolsForAccount(email: string): void {
+    const snap = accountSnapshots.get(email);
+    if (!snap) { return; }
+
+    const nowMs = Date.now();
+    const pools = snap.resetPools || [];
+    for (const pool of pools) {
+        if (!pool.resetTime) { continue; }
+        const resetDate = new Date(pool.resetTime);
+        if (isNaN(resetDate.getTime())) { continue; }
+
+        const diffMs = resetDate.getTime() - nowMs;
+        if (diffMs > 0) { continue; } // Not yet expired
+
+        // Skip pools with no confirmed usage — matches UI "Ready" logic
+        if (pool.hasUsage === false) { continue; }
+
+        // Skip if already notified/archived
+        const key = `${email}:${pool.resetTime}`;
+        if (notifiedAccountResets.has(key)) { continue; }
+
+        // Skip if already archived in persisted state
+        if (gmTracker.isPoolArchived(email, pool.modelLabels)) {
+            notifiedAccountResets.add(key);
+            log(`Account switch baseline: ${email} pool [${pool.modelLabels.slice(0, 3).join(', ')}] already archived — skipped`);
+            continue;
+        }
+
+        notifiedAccountResets.add(key);
+
+        // ── Baseline GM calls for the expired pool ──
+        // No DailyStore snapshot here — midnight archival will use
+        // getArchivalSummary() which includes both pending-archive and
+        // active calls, giving DailyStore the complete day's picture.
+        const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelLabels);
+        if (baselinedCount > 0) {
+            log(`Account switch baseline: ${email} — ${baselinedCount} GM calls baselined for pool [${pool.modelLabels.slice(0, 3).join(', ')}]`);
+            lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
+            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+            persistGMSummaryToFile(lastGMSummary);
+        }
+
+        // ── Step 3: Show notification ──
+        const modelNames = pool.modelLabels.slice(0, 3).join(', ');
+        const extra = pool.modelLabels.length > 3 ? ` +${pool.modelLabels.length - 3}` : '';
+        const displayName = snap.name || snap.email;
+        const openMonitorLabel = tBi('Open Monitor', '打开监控');
+        vscode.window.showInformationMessage(
+            tBi(
+                `✅ ${displayName}: ${modelNames}${extra} quota has reset. You can switch to this account now.`,
+                `✅ ${displayName}: ${modelNames}${extra} 额度已重置，可以切换到该账号了。`,
+            ),
+            openMonitorLabel,
+        ).then(choice => {
+            if (choice === openMonitorLabel) {
+                vscode.commands.executeCommand('antigravity-context-monitor.showDetails');
+            }
+        });
+        log(`Account switch reset notification: ${displayName} — ${modelNames}${extra}`);
+    }
+}
+
+/** Extract local date key — re-exported from daily-archival for backward compat. */
+// toLocalDateKey is imported from './daily-archival'
+
+/**
+ * Perform daily archival by delegating to the testable core logic.
+ * Wires module-level state into a DailyArchivalContext.
+ */
+function performDailyArchival(force = false): void {
+    const ctx: DailyArchivalContext = {
+        activityTracker,
+        gmTracker,
+        dailyStore,
+        pricingStore,
+        lastGMSummary,
+        persistedModelDNA,
+        lastArchivalDateKey,
+        persist: (updates) => {
+            lastArchivalDateKey = updates.lastArchivalDateKey;
+            lastGMSummary = updates.lastGMSummary;
+            if (updates.modelDNAChanged && updates.persistedModelDNA) {
+                persistedModelDNA = updates.persistedModelDNA;
+                durableGlobalState.update('modelDNAState', serializeModelDNAState(persistedModelDNA));
+            }
+            durableGlobalState.update('lastArchivalDateKey', lastArchivalDateKey);
+            durableGlobalState.update('activityTrackerState', activityTracker.serialize());
+            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+            persistGMSummaryToFile(lastGMSummary);
+        },
+        log,
+    };
+    performDailyArchivalCore(ctx, force);
 }
 
 // ─── Activation ───────────────────────────────────────────────────────────────
@@ -262,56 +565,55 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize quota tracker
     quotaTracker = new QuotaTracker(context, durableGlobalState);
     quotaTracker.onQuotaReset = (modelIds: string[]) => {
-        if (activityTracker) {
-            const preResetGMSummary = lastGMSummary;
-            const quotaHistory = quotaTracker.getHistory();
-            const resetPools = groupModelIdsByResetPool(modelIds, cachedModelConfigs);
+        // ── Baseline current account's GM calls for the reset pool ──
+        // No DailyStore snapshot here — midnight archival will use
+        // getArchivalSummary() which includes both pending-archive and
+        // active calls, giving DailyStore the complete day's picture.
+        const baselinedCount = gmTracker.baselineForQuotaReset(undefined, modelIds);
+        log(`Quota reset detected: [${modelIds.join(', ')}] — ${baselinedCount} GM calls baselined for new cycle`);
 
-            for (const poolModelIds of resetPools) {
-                log(`Quota reset [${poolModelIds.join(', ')}] — archiving pool snapshot`);
+        // Update cached summary and persist
+        lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
+        durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+        persistGMSummaryToFile(lastGMSummary);
 
-                const quotaSession = findLatestQuotaSessionForPool(
-                    poolModelIds,
-                    cachedModelConfigs,
-                    quotaHistory,
-                );
-                const poolGMSummary = filterGMSummaryByModels(preResetGMSummary, poolModelIds);
-                const archive = activityTracker.archiveAndReset(poolModelIds, {
-                    startTime: quotaSession?.startTime,
-                    endTime: quotaSession?.endTime,
-                });
-
-                if (archive && dailyStore) {
-                    let costTotal: number | undefined;
-                    let costPerModel: Record<string, number> | undefined;
-                    if (poolGMSummary && pricingStore) {
-                        const result = pricingStore.calculateCosts(poolGMSummary);
-                        if (result.grandTotal > 0) {
-                            costTotal = result.grandTotal;
-                        }
-                        costPerModel = {};
-                        for (const row of result.rows) {
-                            if (row.totalCost > 0) {
-                                costPerModel[row.name] = row.totalCost;
-                            }
-                        }
-                    }
-                    dailyStore.addCycle(archive, poolGMSummary, costTotal, costPerModel);
-                }
-
-                gmTracker.reset(poolModelIds);
-            }
-
-            durableGlobalState.update('activityTrackerState', activityTracker.serialize());
-            lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
-            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-            durableFileGlobalState.update('gmDetailedSummary', lastGMSummary);
+        // Refresh panel immediately so user sees fresh counts
+        if (isMonitorPanelVisible()) {
+            updateMonitorPanel(makePanelPayload());
         }
     };
 
     // Initialize i18n from persisted state
     initI18n(context);
     initI18nFromState(durableGlobalState);
+
+    // ── One-time migration: contextLimits 1M → 160K/120K (platform truncation thresholds) ──
+    // Old versions used 1M (model native limits) as default contextLimits.
+    // GM data confirmed the platform actually truncates at 160K (Claude) / ~120K (Gemini Pro).
+    // This migration detects stale 1M values and resets to package.json new defaults.
+    {
+        const migrationKey = 'contextLimitsMigrationV';
+        const migrationVersion = durableGlobalState.get<number>(migrationKey, 0);
+        if (migrationVersion < 1) {
+            const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+            const inspection = cfg.inspect<Record<string, number>>('contextLimits');
+            // Check if user has explicit global/workspace settings with old 1M values
+            const hasOldGlobal = inspection?.globalValue && Object.values(inspection.globalValue).some(v => v >= 1_000_000);
+            const hasOldWorkspace = inspection?.workspaceValue && Object.values(inspection.workspaceValue).some(v => v >= 1_000_000);
+            if (hasOldGlobal) {
+                cfg.update('contextLimits', undefined, vscode.ConfigurationTarget.Global);
+                log('Migration v1: Reset global contextLimits from 1M to new platform defaults (160K/120K)');
+            }
+            if (hasOldWorkspace) {
+                cfg.update('contextLimits', undefined, vscode.ConfigurationTarget.Workspace);
+                log('Migration v1: Reset workspace contextLimits from 1M to new platform defaults (160K/120K)');
+            }
+            durableGlobalState.update(migrationKey, 1);
+            if (hasOldGlobal || hasOldWorkspace) {
+                log('Context limits migration complete — old 1M values cleared, new package.json defaults (160K/120K) will take effect');
+            }
+        }
+    }
 
     // Restore persisted lastKnownModel from workspaceState
     lastKnownModel = durableWorkspaceState.get<string>('lastKnownModel', '');
@@ -344,21 +646,15 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     pricingStore = new PricingStore();
     pricingStore.init(durableGlobalState);
+    // Restore multi-account snapshots from file-backed state
+    restoreAccountSnapshots();
+    // Restore current account email from GMTracker persisted state
+    currentAccountEmail = gmTracker.getCurrentAccount();
     dailyStore = new DailyStore();
     dailyStore.init(durableGlobalState);
 
-    // Retroactive import: backfill existing archives into calendar
-    const existingArchives = activityTracker.getArchives();
-    if (existingArchives.length > 0) {
-        const imported = dailyStore.importArchives(existingArchives);
-        if (imported > 0) {
-            log(`Calendar: retroactively imported ${imported} archive(s) from activity history`);
-        }
-    }
-
-    // NOTE: live-snapshot removed — calendar data is written exclusively via
-    // onQuotaReset callback (authoritative source) + importArchives cold-start backfill.
-    // This eliminates duplicate cycle entries and GM data inconsistencies.
+    // Restore daily archival date key
+    lastArchivalDateKey = durableGlobalState.get<string>('lastArchivalDateKey', '');
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = durableGlobalState.get<import('./models').ModelConfig[]>('cachedModelConfigs', []);
@@ -381,8 +677,20 @@ export function activate(context: vscode.ExtensionContext): void {
         if (repairedGMSummary !== lastGMSummary) {
             lastGMSummary = repairedGMSummary;
             durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-            durableFileGlobalState.update('gmDetailedSummary', lastGMSummary);
+            persistGMSummaryToFile(lastGMSummary);
             log('GM summary repaired from quota history during startup');
+        }
+    }
+
+    // Bootstrap timeline from file-backed GM summary after reinstall.
+    // When globalState is wiped (uninstall/reinstall), activityTracker starts fresh
+    // but gmDetailedSummary survives in file storage. Use it to pre-populate the
+    // timeline so users see historical data immediately, not an empty panel.
+    if (!savedActivity && lastGMSummary && lastGMSummary.conversations.length > 0) {
+        const bootstrapped = activityTracker.injectGMData(lastGMSummary);
+        if (bootstrapped) {
+            durableGlobalState.update('activityTrackerState', activityTracker.serialize());
+            log(`Timeline bootstrapped from file-backed GM summary (${lastGMSummary.conversations.length} convs, ${lastGMSummary.totalCalls} calls)`);
         }
     }
 
@@ -408,7 +716,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 if (isMonitorPanelVisible()) {
                     updateMonitorPanel(makePanelPayload());
                 }
-                });
+            });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
             showMonitorPanel(makePanelPayload({ context, initialTab: 'gmdata' }));
@@ -416,32 +724,12 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('antigravity-context-monitor.devSimulateReset', () => {
             if (!activityTracker) { return; }
             captureDevResetSnapshot();
-            log('[Dev] Simulating quota reset...');
-            const archive = activityTracker.archiveAndReset();
-            if (archive) {
-                archive.triggeredBy = ['[simulate]'];
-            }
-            if (archive && dailyStore) {
-                let costTotal: number | undefined;
-                let costPerModel: Record<string, number> | undefined;
-                if (lastGMSummary && pricingStore) {
-                    const result = pricingStore.calculateCosts(lastGMSummary);
-                    costTotal = result.grandTotal;
-                    costPerModel = {};
-                    for (const row of result.rows) {
-                        if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
-                    }
-                }
-                dailyStore.addCycle(archive, lastGMSummary, costTotal, costPerModel);
-            }
-            const allModelIds = cachedModelConfigs.map(config => config.model);
-            gmTracker.reset(allModelIds);
-            lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
-            persistResetSensitiveState();
+            log('[Dev] Simulating daily archival...');
+            performDailyArchival(true);
             if (isMonitorPanelVisible()) {
                 updateMonitorPanel(makePanelPayload());
             }
-            log('[Dev] Quota reset simulated — snapshot captured, activity archived, GM summary reset');
+            log('[Dev] Daily archival simulated — snapshot captured, data archived & reset');
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.devRestoreReset', () => {
             const restored = restoreDevResetSnapshot();
@@ -554,6 +842,34 @@ function applyDisplayPrefs(): void {
     });
 }
 
+/**
+ * Extract the latest GM contextTokensUsed for a given cascade from a GMSummary.
+ * Returns the value if found and > 0, otherwise 0.
+ */
+function getLatestGMContextUsed(summary: GMSummary, cascadeId: string): number {
+    const conv = summary.conversations.find(c => c.cascadeId === cascadeId);
+    if (!conv || conv.calls.length === 0) { return 0; }
+    let latest = 0;
+    let latestTime = '';
+    for (const call of conv.calls) {
+        if (call.contextTokensUsed > 0 && call.createdAt > latestTime) {
+            latestTime = call.createdAt;
+            latest = call.contextTokensUsed;
+        }
+    }
+    return latest;
+}
+
+/** Apply GM precision contextTokensUsed to a ContextUsage object. Returns true if value changed. */
+function applyGMContextToUsage(usage: ContextUsage, gmContextUsed: number): boolean {
+    if (gmContextUsed <= 0 || gmContextUsed === usage.contextUsed) { return false; }
+    usage.contextUsed = gmContextUsed;
+    usage.isEstimated = false;
+    usage.usagePercent = usage.contextLimit > 0
+        ? (gmContextUsed / usage.contextLimit) * 100 : 0;
+    return true;
+}
+
 // ─── Polling Logic ────────────────────────────────────────────────────────────
 
 async function pollContextUsage(): Promise<void> {
@@ -588,7 +904,11 @@ async function pollContextUsage(): Promise<void> {
                     updateModelDisplayNames(fullStatus.configs);
                     cachedModelConfigs = fullStatus.configs;
                     statusBar.setModelConfigs(fullStatus.configs);
-                    quotaTracker.processUpdate(fullStatus.configs);
+                    // Detect account switch BEFORE quota processing
+                    if (fullStatus.userInfo?.email) {
+                        handleAccountSwitchIfNeeded(fullStatus.userInfo.email);
+                    }
+                    quotaTracker.processUpdate(fullStatus.configs, buildUsedModelIds(fullStatus.userInfo?.email), fullStatus.userInfo?.email);
                     checkQuotaNotification(fullStatus.configs);
                     log(`Updated model display names: ${fullStatus.configs.map(c => c.label).join(', ')}`);
                 }
@@ -600,6 +920,7 @@ async function pollContextUsage(): Promise<void> {
                     durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
                     durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
                     log(`User: ${fullStatus.userInfo.name} (${fullStatus.userInfo.planName}) credits: prompt=${fullStatus.userInfo.availablePromptCredits} flow=${fullStatus.userInfo.availableFlowCredits}`);
+                    updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                 }
             } catch { /* Silent degradation */ }
         } else {
@@ -624,7 +945,10 @@ async function pollContextUsage(): Promise<void> {
                                 updateModelDisplayNames(fullStatus.configs);
                                 cachedModelConfigs = fullStatus.configs;
                                 statusBar.setModelConfigs(fullStatus.configs);
-                                quotaTracker.processUpdate(fullStatus.configs);
+                                if (fullStatus.userInfo?.email) {
+                                    handleAccountSwitchIfNeeded(fullStatus.userInfo.email);
+                                }
+                                quotaTracker.processUpdate(fullStatus.configs, buildUsedModelIds(fullStatus.userInfo?.email), fullStatus.userInfo?.email);
                                 checkQuotaNotification(fullStatus.configs);
                             }
                             if (fullStatus.userInfo) {
@@ -633,6 +957,7 @@ async function pollContextUsage(): Promise<void> {
                                 durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
                                 durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
                                 durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
+                                updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                             }
                         } catch { /* Silent */ }
                     }
@@ -643,15 +968,22 @@ async function pollContextUsage(): Promise<void> {
             }
 
             // Periodic refresh of user status (every STATUS_REFRESH_INTERVAL polls)
+            // IMPORTANT: force refresh on first poll (!firstPollDone) so that
+            // _currentAccountEmail is set BEFORE the first fetchAll(). Without this,
+            // fetchAll() on restart would tag new calls with the stale account email
+            // restored from persistence, causing error attribution mismatch.
             statusPollCount++;
-            if (statusPollCount >= STATUS_REFRESH_INTERVAL) {
+            if (statusPollCount >= STATUS_REFRESH_INTERVAL || !firstPollDone) {
                 statusPollCount = 0;
                 try {
                     const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
                     if (fullStatus.configs.length > 0) {
                         cachedModelConfigs = fullStatus.configs;
                         statusBar.setModelConfigs(fullStatus.configs);
-                        quotaTracker.processUpdate(fullStatus.configs);
+                        if (fullStatus.userInfo?.email) {
+                            handleAccountSwitchIfNeeded(fullStatus.userInfo.email);
+                        }
+                        quotaTracker.processUpdate(fullStatus.configs, buildUsedModelIds(fullStatus.userInfo?.email), fullStatus.userInfo?.email);
                         checkQuotaNotification(fullStatus.configs);
                     }
                     if (fullStatus.userInfo) {
@@ -660,6 +992,7 @@ async function pollContextUsage(): Promise<void> {
                         durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
                         durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
                         durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
+                        updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                     }
                     log('Refreshed user status (periodic)');
                 } catch { /* Silent — keep cached data */ }
@@ -882,6 +1215,11 @@ async function pollContextUsage(): Promise<void> {
             currentUsage = await getContextUsage(lsInfo, activeTrajectory, customLimits, abortController.signal);
         }
         log(`  → contextUsed=${currentUsage.contextUsed} model=${currentUsage.model} steps=${currentUsage.stepCount} estimated=${currentUsage.isEstimated} ckpt_in=${currentUsage.lastModelUsage?.inputTokens ?? 'none'} ckpt_out=${currentUsage.lastModelUsage?.outputTokens ?? 'none'} estDelta=${currentUsage.estimatedDeltaSinceCheckpoint}`);
+
+        // ── Pre-enhance with cached GM data to prevent step→GM flickering ──
+        if (lastGMSummary && trackedCascadeId) {
+            applyGMContextToUsage(currentUsage, getLatestGMContextUsed(lastGMSummary, trackedCascadeId));
+        }
         statusBar.update(currentUsage);
 
         // Track the model for idle-state display
@@ -983,7 +1321,7 @@ async function pollContextUsage(): Promise<void> {
                     if (gmChanged || !lastGMSummary) {
                         const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
                         monitorStore.recordGMConversations(gmTracker.getAllConversationData());
-                        durableFileGlobalState.update('gmDetailedSummary', detailedSummary);
+                        persistGMSummaryToFile(detailedSummary);
                         const mergedDNA = mergeModelDNAState(persistedModelDNA, detailedSummary);
                         if (mergedDNA.changed) {
                             persistedModelDNA = mergedDNA.entries;
@@ -993,10 +1331,21 @@ async function pollContextUsage(): Promise<void> {
                     }
                 } catch { /* GM fetch failure is non-critical */ }
 
-                // Inject GM precision data into activity timeline events
+                // Inject GM precision data into activity timeline events.
+                // GM is the SOLE source of truth for timeline — always inject when data exists.
                 let timelineChanged = false;
-                if (lastGMSummary && (activityChanged || gmChanged)) {
+                if (lastGMSummary) {
                     timelineChanged = activityTracker.injectGMData(lastGMSummary);
+
+                    // ── Enhance status bar with fresh GM data (new calls since last poll) ──
+                    if (currentUsage && trackedCascadeId) {
+                        const gmCtx = getLatestGMContextUsed(lastGMSummary, trackedCascadeId);
+                        const oldUsed = currentUsage.contextUsed;
+                        if (applyGMContextToUsage(currentUsage, gmCtx)) {
+                            statusBar.update(currentUsage);
+                            log(`Status bar enhanced with GM precision: contextUsed ${oldUsed} → ${gmCtx}`);
+                        }
+                    }
                 }
 
                 // Throttled activity persistence (max once per 30s)
@@ -1006,7 +1355,7 @@ async function pollContextUsage(): Promise<void> {
                     if (gmTracker) {
                         durableGlobalState.update('gmTrackerState', gmTracker.serialize());
                         if (lastGMSummary) {
-                            durableFileGlobalState.update('gmDetailedSummary', lastGMSummary);
+                            persistGMSummaryToFile(lastGMSummary);
                         }
                     }
                     lastActivityPersistTime = now;
@@ -1016,7 +1365,13 @@ async function pollContextUsage(): Promise<void> {
             }
         }
 
-        // 6d. Update WebView panel if visible (single unified refresh point)
+        // 6d. Check cached account quota resets (notify user to switch)
+        checkCachedAccountResets();
+
+        // 6e. Daily archival — archive & reset when local date rolls over
+        performDailyArchival();
+
+        // 6f. Update WebView panel if visible (single unified refresh point)
         if (isMonitorPanelVisible()) {
             updateMonitorPanel(makePanelPayload());
         }
@@ -1030,6 +1385,13 @@ async function pollContextUsage(): Promise<void> {
         lsInfo = null;
         cachedLsInfo = null;
     } finally {
+        // Always run cached-account reset check — independent of polling success/failure.
+        // Wrapped in its own try/catch so errors are logged, never silently swallowed.
+        try {
+            checkCachedAccountResets();
+        } catch (resetErr) {
+            log(`[ResetCheck] ERROR: ${resetErr}`);
+        }
         isPolling = false;
     }
 }
@@ -1157,10 +1519,108 @@ function checkQuotaNotification(configs: import('./models').ModelConfig[]): void
     }
 }
 
+/**
+ * Check if any cached (non-active) account's quota has reset.
+ * Sends a one-time VS Code notification per reset event.
+ */
+function checkCachedAccountResets(): void {
+    const nowMs = Date.now();
+    for (const snap of accountSnapshots.values()) {
+        if (snap.isActive) { continue; }
+
+        const pools = snap.resetPools || [];
+        for (const pool of pools) {
+            if (!pool.resetTime) { continue; }
+            const resetDate = new Date(pool.resetTime);
+            if (isNaN(resetDate.getTime())) { continue; }
+
+            const diffMs = resetDate.getTime() - nowMs;
+            if (diffMs > 0) { continue; }
+
+            // Skip pools with no confirmed usage — matches UI "Ready" logic
+            if (pool.hasUsage === false) { continue; }
+
+            const modelNames = pool.modelLabels.slice(0, 3).join(', ');
+            const key = `${snap.email}:${pool.resetTime}`;
+            if (notifiedAccountResets.has(key)) { continue; }
+
+            // ── Guard: skip if this pool was already archived (persisted state) ──
+            if (gmTracker.isPoolArchived(snap.email, pool.modelLabels)) {
+                notifiedAccountResets.add(key);
+                log(`[ResetCheck] ${snap.email} [${modelNames}]: already-archived — skipped`);
+                continue;
+            }
+
+            // ── WILL TRIGGER ──
+            log(`[ResetCheck]   [${modelNames}] >>> TRIGGERING archival for ${snap.email}`);
+            notifiedAccountResets.add(key);
+
+            const extra = pool.modelLabels.length > 3 ? ` +${pool.modelLabels.length - 3}` : '';
+            const displayName = snap.name || snap.email;
+            const openMonitorLabel = tBi('Open Monitor', '打开监控');
+
+            // ── Baseline this cached account's GM calls for the expired pool only ──
+            // No DailyStore snapshot here — midnight archival will use
+            // getArchivalSummary() which includes both pending-archive and
+            // active calls, giving DailyStore the complete day's picture.
+            const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelLabels);
+            // Also archive any active QuotaTracker sessions for this cached account's pool.
+            // Without this, sessions stay in 'tracking' forever because processUpdate()
+            // never receives API configs for non-active accounts.
+            const archivedSessions = quotaTracker.archiveExpiredSessions(snap.email, pool.modelLabels);
+            if (baselinedCount > 0 || archivedSessions > 0) {
+                log(`[ResetCheck]   ${baselinedCount} GM calls baselined, ${archivedSessions} quota sessions archived`);
+                lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
+                durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+                persistGMSummaryToFile(lastGMSummary);
+            } else {
+                log(`[ResetCheck]   baselineForQuotaReset returned 0 — no calls to archive`);
+            }
+
+            vscode.window.showInformationMessage(
+                tBi(
+                    `✅ ${displayName}: ${modelNames}${extra} quota has reset. You can switch to this account now.`,
+                    `✅ ${displayName}: ${modelNames}${extra} 额度已重置，可以切换到该账号了。`,
+                ),
+                openMonitorLabel,
+            ).then(choice => {
+                if (choice === openMonitorLabel) {
+                    vscode.commands.executeCommand('antigravity-context-monitor.showDetails');
+                }
+            });
+            log(`[ResetCheck]   Notification sent: ${displayName} — ${modelNames}${extra}`);
+        }
+    }
+}
+
+
+function computeAllTimeCost(): number {
+    let total = 0;
+    // Sum all archived cycle costs from dailyStore
+    if (dailyStore) {
+        for (const date of dailyStore.getDatesWithData()) {
+            const record = dailyStore.getRecord(date);
+            if (record) {
+                for (const cycle of record.cycles) {
+                    total += cycle.estimatedCost || 0;
+                }
+            }
+        }
+    }
+    // Add current (in-progress) cycle cost
+    if (lastGMSummary && pricingStore) {
+        total += pricingStore.calculateCosts(lastGMSummary).grandTotal;
+    }
+    return total;
+}
+
 function getStorageDiagnostics(): StorageDiagnostics {
     const stateFilePath = durableState.getFilePath();
     const stateFileExists = durableState.exists();
-    const stateFileSizeBytes = stateFileExists ? fs.statSync(stateFilePath).size : 0;
+    let stateFileSizeBytes = 0;
+    try {
+        stateFileSizeBytes = stateFileExists ? fs.statSync(stateFilePath).size : 0;
+    } catch { /* ignore stat errors */ }
     let calendarCycleCount = 0;
     if (dailyStore) {
         for (const date of dailyStore.getDatesWithData()) {
@@ -1176,15 +1636,14 @@ function getStorageDiagnostics(): StorageDiagnostics {
         stateFileExists,
         stateFileSizeBytes,
         stateFileOpenWarnBytes: LARGE_STATE_FILE_WARN_BYTES,
-        monitorSnapshotCount: monitorStore?.getAll().length || 0,
-        monitorGMConversationCount: Object.keys(monitorStore?.getGMConversations() || {}).length,
-        gmConversationCount: lastGMSummary?.conversations.length || 0,
         gmCallCount: lastGMSummary?.totalCalls || 0,
-        quotaHistoryCount: quotaTracker?.getHistory().length || 0,
-        activityArchiveCount: activityTracker?.getArchives().length || 0,
+        gmTotalInputTokens: lastGMSummary?.totalInputTokens || 0,
+        gmTotalOutputTokens: lastGMSummary?.totalOutputTokens || 0,
+        gmTotalCredits: lastGMSummary?.totalCredits || 0,
+        estimatedCostAllTime: computeAllTimeCost(),
+        quotaResetCount: dailyStore?.totalDays || 0,
         calendarDayCount: dailyStore?.totalDays || 0,
         calendarCycleCount,
-        pricingOverrideCount: Object.keys(pricingStore?.getCustom() || {}).length,
         hasDevResetSnapshot: !!devResetSnapshot,
     };
 }

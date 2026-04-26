@@ -54,21 +54,21 @@
         "antigravityContextMonitor.contextLimits": {
           "type": "object",
           "default": {
-            "MODEL_PLACEHOLDER_M37": 1000000,
-            "MODEL_PLACEHOLDER_M36": 1000000,
-            "MODEL_PLACEHOLDER_M47": 1000000,
-            "MODEL_PLACEHOLDER_M18": 1000000,
-            "MODEL_PLACEHOLDER_M35": 1000000,
-            "MODEL_PLACEHOLDER_M26": 1000000,
+            "MODEL_PLACEHOLDER_M37": 120000,
+            "MODEL_PLACEHOLDER_M36": 120000,
+            "MODEL_PLACEHOLDER_M47": 160000,
+            "MODEL_PLACEHOLDER_M18": 160000,
+            "MODEL_PLACEHOLDER_M35": 160000,
+            "MODEL_PLACEHOLDER_M26": 160000,
             "MODEL_OPENAI_GPT_OSS_120B_MEDIUM": 128000
           },
-          "description": "Model context window limits (in tokens). Key is the model's internal ID. Override if needed. IDs: MODEL_PLACEHOLDER_M37=Gemini 3.1 Pro (High), MODEL_PLACEHOLDER_M36=Gemini 3.1 Pro (Low), MODEL_PLACEHOLDER_M47=Gemini 3 Flash, MODEL_PLACEHOLDER_M35=Claude Sonnet 4.6 (1M GA), MODEL_PLACEHOLDER_M26=Claude Opus 4.6 (1M GA), MODEL_OPENAI_GPT_OSS_120B_MEDIUM=GPT-OSS 120B / 各模型上下文窗口大小（token 数），key 为模型内部 ID。如需可自行覆盖。"
+          "description": "Model context window limits (in tokens). These are platform-level truncation thresholds (from GM plannerConfig), NOT model native limits. Key is the model's internal ID. Override if needed. / 各模型上下文窗口大小（token 数），基于 GM 平台截断阈值（非模型原生限制）。如需可自行覆盖。"
         },
         "antigravityContextMonitor.compressionWarningThreshold": {
           "type": "number",
           "default": 150000,
           "minimum": 10000,
-          "description": "Estimated compression trigger threshold (in tokens). Status bar turns yellow/red based on this value instead of the model's full context limit. Default 150K — Antigravity does not utilize the full 1M context window; actual effective context is roughly 128K–200K. / 估算压缩触发阈值（token 数）。状态栏颜色基于此值而非模型上下文上限。默认 150K — Antigravity 未适配 1M 上下文窗口，实际有效上下文大致 128K–200K。"
+          "description": "Estimated compression trigger threshold (in tokens). Status bar turns yellow/red based on this value instead of the model's full context limit. Default 150K matches typical platform truncation behavior. / 估算压缩触发阈值（token 数）。状态栏颜色基于此值。默认 150K 接近平台 160K 截断阈值。"
         },
         "antigravityContextMonitor.statusBar.showContext": {
           "type": "boolean",

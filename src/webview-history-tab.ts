@@ -11,16 +11,17 @@ import { esc, formatShortTime, formatDuration } from './webview-helpers';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-/** Build the complete Quota Tracking tab HTML. */
-export function buildHistoryHtml(tracker?: QuotaTracker): string {
+/** Build the complete Quota Tracking tab HTML.
+ *  @param currentAccountEmail — the currently logged-in account, used for sorting and highlighting. */
+export function buildHistoryHtml(tracker?: QuotaTracker, currentAccountEmail?: string): string {
     if (!tracker) {
         return `
             <section class="card empty">
                 <h2>${ICON.timeline} ${tBi('Quota Timeline', '额度时间线')}</h2>
                 <p class="empty-desc">${tBi(
-                    'Quota tracking is not initialized yet.',
-                    '额度追踪尚未初始化。',
-                )}</p>
+            'Quota tracking is not initialized yet.',
+            '额度追踪尚未初始化。',
+        )}</p>
             </section>`;
     }
 
@@ -32,9 +33,9 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
             <section class="card empty">
                 <h2>${ICON.timeline} ${tBi('Quota Timeline', '额度时间线')}</h2>
                 <p class="empty-desc">${tBi(
-                    'Quota timeline tracking is currently disabled. Enable it in the Settings tab to start monitoring quota consumption.',
-                    '额度时间线追踪已关闭。请在「设置」标签页中启用以开始监控额度消耗。',
-                )}</p>
+            'Quota timeline tracking is currently disabled. Enable it in the Settings tab to start monitoring quota consumption.',
+            '额度时间线追踪已关闭。请在「设置」标签页中启用以开始监控额度消耗。',
+        )}</p>
                 <button class="action-btn" id="goToSettingsFromQuota" style="margin-top:var(--space-2)">
                     ${ICON.shield} ${tBi('Go to Settings', '前往设置')}
                 </button>
@@ -49,7 +50,16 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
 
     // ── Active Tracking ──
     if (activeSessions.length > 0) {
-        const activeCards = activeSessions.map(s => buildSessionCard(s, true)).join('');
+        // Sort: current account sessions first, then by start time (newest first)
+        if (currentAccountEmail) {
+            activeSessions.sort((a, b) => {
+                const aCurrent = a.accountEmail === currentAccountEmail ? 0 : 1;
+                const bCurrent = b.accountEmail === currentAccountEmail ? 0 : 1;
+                if (aCurrent !== bCurrent) { return aCurrent - bCurrent; }
+                return new Date(b.startTime).getTime() - new Date(a.startTime).getTime();
+            });
+        }
+        const activeCards = activeSessions.map(s => buildSessionCard(s, true, s.accountEmail === currentAccountEmail)).join('');
         parts.push(`
             <section class="card">
                 <div class="card-header-row">
@@ -59,9 +69,9 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
                     </button>
                 </div>
                 <p class="raw-desc">${tBi(
-                    'Currently tracking quota against the official resetTime. Quota drop starts immediately; 100% models fall back to resetTime drift observation (~10 min).',
-                    '正在基于官方 resetTime 追踪额度。额度下降时立即启动；100% 模型则回退到 resetTime 漂移观测（约 10 分钟）。',
-                )}</p>
+            'Currently tracking quota against the official resetTime. Quota drop starts immediately; 100% models enter tracking when GMTracker confirms actual usage.',
+            '正在基于官方 resetTime 追踪额度。额度下降时立即启动；100% 模型在 GMTracker 确认实际调用后开始追踪。',
+        )}</p>
                 ${activeCards}
             </section>`);
     } else {
@@ -69,9 +79,9 @@ export function buildHistoryHtml(tracker?: QuotaTracker): string {
             <section class="card empty">
                 <h2>${ICON.bolt} ${tBi('Active Tracking', '活跃追踪')}</h2>
                 <p class="empty-desc">${tBi(
-                    'No active quota consumption detected. Tracking follows official resetTime and adapts to different quota windows.',
-                    '未检测到活跃额度消耗。追踪逻辑跟随官方 resetTime，自动适配不同额度窗口。',
-                )}</p>
+            'No active quota consumption detected. Tracking follows official resetTime and adapts to different quota windows.',
+            '未检测到活跃额度消耗。追踪逻辑跟随官方 resetTime，自动适配不同额度窗口。',
+        )}</p>
             </section>`);
     }
 
@@ -137,7 +147,7 @@ function buildHistorySummary(history: QuotaSession[], max: number): string {
 
 // ─── Session Card ────────────────────────────────────────────────────────────
 
-function buildSessionCard(session: QuotaSession, isActive: boolean): string {
+function buildSessionCard(session: QuotaSession, isActive: boolean, isCurrentAccount = false): string {
     const now = Date.now();
     const startMs = new Date(session.startTime).getTime();
     const elapsed = isActive ? (now - startMs) : (session.totalDurationMs ?? 0);
@@ -183,6 +193,10 @@ function buildSessionCard(session: QuotaSession, isActive: boolean): string {
     }
     if (session.snapshots.length > 1) {
         metaChips.push(`<span class="qt-meta-chip">${session.snapshots.length} ${tBi('snapshots', '快照')}</span>`);
+    }
+    if (session.accountEmail) {
+        const shortName = session.accountEmail.split('@')[0];
+        metaChips.push(`<span class="qt-meta-chip" style="background:rgba(130,170,255,0.15);color:rgba(130,170,255,0.9)"><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-1px;margin-right:2px"><path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6m2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0m4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4m-1-.004c0-.246-.178-.986-.96-1.728C11.265 10.514 10.065 10 8 10s-3.265.514-4.04 1.268c-.782.742-.96 1.482-.96 1.728z"/></svg> ${esc(shortName)}</span>`);
     }
 
     // ── Timeline nodes (collapsible if > 6) ──
@@ -234,7 +248,9 @@ function buildSessionCard(session: QuotaSession, isActive: boolean): string {
         </div>` : '';
 
     // ── Card accent color based on status ──
-    const accentClass = isActive ? 'qt-card-active' : session.completed ? 'qt-card-complete' : 'qt-card-reset';
+    const accentClass = isActive
+        ? (isCurrentAccount ? 'qt-card-active qt-card-current' : 'qt-card-active')
+        : session.completed ? 'qt-card-complete' : 'qt-card-reset';
 
     return `
         <div class="timeline-card ${accentClass}">

@@ -280,9 +280,6 @@ export class StatusBarManager {
         this.statusBarItem.backgroundColor = getSeverityColor(severity);
 
         // Build detailed tooltip
-        const dataSourceLabel = usage.isEstimated
-            ? `⚠️ ${t('tooltip.estimated')}`
-            : `✅ ${t('tooltip.precise')}`;
         const remaining = Math.max(0, usage.contextLimit - usage.contextUsed);
         const compressionStats = calculateCompressionStats(usage);
         const safeTitle = escapeMarkdown(usage.title || usage.cascadeId.substring(0, 8));
@@ -351,7 +348,6 @@ export class StatusBarManager {
         }
 
         lines.push(`——————————`);
-        lines.push(`${dataSourceLabel}`);
 
         lines.push(...this.buildQuotaLines());
 

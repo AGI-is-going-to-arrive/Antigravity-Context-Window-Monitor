@@ -36,7 +36,7 @@ export function getScript(): string {
             }
 
             // ─── Tab System ───
-            var activeTab = savedState.activeTab || 'monitor';
+            var activeTab = savedState.activeTab || 'gmdata';
             var tabBtns = document.querySelectorAll('.tab-btn');
             var tabPanes = document.querySelectorAll('.tab-pane');
             var lastTabHtmls = {};
@@ -157,7 +157,7 @@ export function getScript(): string {
                 requestAnimationFrame(function() { window.scrollTo(0, targetY); });
             }
             // Restore active tab from state
-            if (activeTab !== 'monitor') { switchTab(activeTab); }
+            if (activeTab !== 'gmdata') { switchTab(activeTab); }
             // Init slider position (must wait for layout)
             requestAnimationFrame(function() { updateTabSlider(); updateTabOverflowHint(); });
             var tabBarEl = document.querySelector('.tab-bar');
@@ -240,36 +240,48 @@ export function getScript(): string {
             }
             // data-switch-tab links: handled by body delegation below
 
-            // ─── Info Chip Toggle ───
-            function bindChipToggles() {
-                var chips = document.querySelectorAll('.info-chip');
-                for (var ci = 0; ci < chips.length; ci++) {
-                    chips[ci].addEventListener('click', function() {
-                        var chipName = this.dataset.chip;
-                        var panelId = 'chip-' + chipName;
-                        var panel = document.getElementById(panelId);
-                        var allChips = document.querySelectorAll('.info-chip');
-                        var allDropdowns = document.querySelectorAll('.chip-dropdown');
-                        // Close others
-                        for (var ai = 0; ai < allChips.length; ai++) {
-                            if (allChips[ai] !== this) { allChips[ai].classList.remove('active'); }
-                        }
-                        for (var di = 0; di < allDropdowns.length; di++) {
-                            if (allDropdowns[di].id !== panelId) { allDropdowns[di].hidden = true; }
-                        }
-                        // Toggle this
-                        if (panel) {
-                            panel.hidden = !panel.hidden;
-                            this.classList.toggle('active', !panel.hidden);
-                        }
-                        // Persist
-                        var s = vscode.getState() || {};
-                        s.activeChip = panel && !panel.hidden ? chipName : '';
-                        vscode.setState(s);
+
+            // ─── Account Popover Toggle ───
+            var acctPopoverOpen = false;
+            function toggleAccountPopover(forceClose) {
+                var trigger = document.getElementById('acctPopoverTrigger');
+                var dropdown = document.getElementById('acctPopoverPanel');
+                if (!trigger || !dropdown) return;
+                if (forceClose === true) {
+                    acctPopoverOpen = false;
+                } else {
+                    acctPopoverOpen = !acctPopoverOpen;
+                }
+                trigger.classList.toggle('is-open', acctPopoverOpen);
+                if (acctPopoverOpen) {
+                    dropdown.hidden = false;
+                    requestAnimationFrame(function() {
+                        dropdown.classList.add('is-visible');
                     });
+                } else {
+                    dropdown.classList.remove('is-visible');
+                    // Wait for transition to finish before hiding
+                    setTimeout(function() {
+                        if (!acctPopoverOpen) { dropdown.hidden = true; }
+                    }, 200);
                 }
             }
-            bindChipToggles();
+            var acctTriggerBtn = document.getElementById('acctPopoverTrigger');
+            if (acctTriggerBtn) {
+                acctTriggerBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    toggleAccountPopover();
+                });
+            }
+            // Close on click outside
+            document.addEventListener('click', function(e) {
+                if (!acctPopoverOpen) return;
+                var anchor = document.querySelector('.acct-popover-anchor');
+                var ddPanel = document.getElementById('acctPopoverPanel');
+                if (anchor && anchor.contains(e.target)) return;
+                if (ddPanel && ddPanel.contains(e.target)) return;
+                toggleAccountPopover(true);
+            });
 
             function restoreDetailsState(rootState) {
                 var ds = (rootState && rootState.detailsOpen) || {};
@@ -294,7 +306,7 @@ export function getScript(): string {
 
             function bindHistoryCatalog() {
                 var searchInput = document.getElementById('historySearchInput');
-                var filterBtns = document.querySelectorAll('.history-filter-btn');
+                var filterBtns = document.querySelectorAll('.ses-filter-btn');
                 if (!searchInput && filterBtns.length === 0) { return; }
 
                 var state = vscode.getState() || {};
@@ -323,7 +335,7 @@ export function getScript(): string {
                         row.hidden = !(matchesSearch && matchesFilter);
                     }
 
-                    var groups = document.querySelectorAll('.history-group');
+                    var groups = document.querySelectorAll('.ses-group');
                     for (var gi = 0; gi < groups.length; gi++) {
                         var visibleRows = groups[gi].querySelectorAll('[data-history-row="true"]:not([hidden])');
                         groups[gi].hidden = visibleRows.length === 0;
@@ -378,13 +390,13 @@ export function getScript(): string {
             }
             bindHistoryCatalog();
 
-            // Restore chip state from saved state
-            var savedChip = savedState.activeChip || '';
-            if (savedChip) {
-                var chipPanel = document.getElementById('chip-' + savedChip);
-                var chipBtn = document.querySelector('.info-chip[data-chip="' + savedChip + '"]');
-                if (chipPanel) { chipPanel.hidden = false; }
-                if (chipBtn) { chipBtn.classList.add('active'); }
+
+            // Restore model stats error toggle state (default: hidden)
+            if (savedState.modelStatsShowErrors) {
+                var errToggle = document.getElementById('modelStatsErrToggle');
+                if (errToggle) { errToggle.classList.remove('is-off'); }
+                var cardsGrid = document.querySelector('.act-cards-grid');
+                if (cardsGrid) { cardsGrid.classList.add('model-stats-show-errors'); }
             }
 
             // ─── Scroll Shadow on TopBar ───
@@ -628,8 +640,27 @@ export function getScript(): string {
                 });
             }
 
+            // ─── Error message overflow detection ───
+            // Marks .gm-err-expand items whose summary text fits without
+            // CSS truncation as .no-overflow (hides expand arrow, disables click).
+            function initErrorOverflow() {
+                var items = document.querySelectorAll('.gm-err-expand:not([data-overflow-checked])');
+                for (var eoi = 0; eoi < items.length; eoi++) {
+                    var det = items[eoi];
+                    var sum = det.querySelector('.gm-err-msg-summary');
+                    if (!sum) continue;
+                    det.setAttribute('data-overflow-checked', 'true');
+                    // scrollWidth > clientWidth means CSS ellipsis is active
+                    if (sum.scrollWidth <= sum.clientWidth) {
+                        det.classList.add('no-overflow');
+                    }
+                }
+            }
+
             // ─── Restore & persist ALL <details> states ───
             restoreDetailsState(savedState);
+            // Run overflow check after layout settles
+            requestAnimationFrame(function() { initErrorOverflow(); });
 
             // ─── Custom number spinner buttons ───
             var spinnerBtns = document.querySelectorAll('.num-spinner-btn');
@@ -748,10 +779,25 @@ export function getScript(): string {
                     : (e.target && e.target.parentElement ? e.target.parentElement : null);
                 if (!target || !target.closest) { return; }
 
+                // ── Error message full-text click → collapse ──
+                var errFull = target.closest('.gm-err-msg-full');
+                if (errFull) {
+                    var det = errFull.closest('details.gm-err-expand');
+                    if (det) { det.removeAttribute('open'); }
+                    return;
+                }
+
                 // ── data-switch-tab links (e.g. Monitor → Profile "Details →") ──
                 var switchLink = target.closest('[data-switch-tab]');
                 if (switchLink) {
                     switchTab(switchLink.dataset.switchTab);
+                    return;
+                }
+
+                // ── About page: data-navigate-tab cards ──
+                var navCard = target.closest('[data-navigate-tab]');
+                if (navCard) {
+                    switchTab(navCard.dataset.navigateTab);
                     return;
                 }
 
@@ -765,6 +811,22 @@ export function getScript(): string {
                         var origHtml = cpyBtn.innerHTML;
                         cpyBtn.textContent = copiedText;
                         setTimeout(function() { cpyBtn.innerHTML = origHtml; cpyBtn.classList.remove('copied'); }, 2000);
+                    });
+                    return;
+                }
+
+                // ── Copy All Errors ──
+                if (target.closest('#copyAllErrors')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    var ueBtn = target.closest('#copyAllErrors');
+                    var ueData = document.getElementById('ueClipboardData');
+                    if (!ueData) return;
+                    navigator.clipboard.writeText(ueData.textContent || '').then(function() {
+                        ueBtn.classList.add('copied');
+                        var origUeHtml = ueBtn.innerHTML;
+                        ueBtn.textContent = copiedText;
+                        setTimeout(function() { ueBtn.innerHTML = origUeHtml; ueBtn.classList.remove('copied'); }, 2000);
                     });
                     return;
                 }
@@ -842,24 +904,7 @@ export function getScript(): string {
                     return;
                 }
 
-                // ── Timeline: expand/collapse full text ──
-                var tlItem = target.closest('[data-expand-target]');
-                if (tlItem) {
-                    var expandId = tlItem.getAttribute('data-expand-target');
-                    if (expandId) {
-                        var expandEl = document.getElementById(expandId);
-                        if (expandEl) {
-                            var isOpen = expandEl.classList.toggle('act-tl-expand-open');
-                            // Persist expand state across poll refreshes
-                            var st = vscode.getState() || {};
-                            var te = st.tlExpands || {};
-                            te[expandId] = isOpen;
-                            st.tlExpands = te;
-                            vscode.setState(st);
-                        }
-                    }
-                    return;
-                }
+
 
                 // ── Date Cell Click: expand/collapse detail panel ──
                 var cell = target.closest('.cal-cell.has-data');
@@ -892,6 +937,32 @@ export function getScript(): string {
                     var cs = vscode.getState() || {};
                     cs.calendarSelectedDate = newSelected;
                     vscode.setState(cs);
+                    return;
+                }
+
+                // ── Remove Cached Account ──
+                var acctDelBtn = target.closest('.acct-delete-btn');
+                if (acctDelBtn) {
+                    var email = acctDelBtn.getAttribute('data-email');
+                    if (email) {
+                        vscode.postMessage({ command: 'removeAccount', email: email });
+                    }
+                    return;
+                }
+
+                // ── Model Stats Error Toggle ──
+                if (target.closest('#modelStatsErrToggle')) {
+                    var errBtn = target.closest('#modelStatsErrToggle');
+                    var st = vscode.getState() || {};
+                    var wasOn = !!st.modelStatsShowErrors;
+                    st.modelStatsShowErrors = !wasOn;
+                    vscode.setState(st);
+                    errBtn.classList.toggle('is-off', wasOn);
+                    // Toggle CSS class on the cards grid ancestor
+                    var cardsGrid = document.querySelector('.act-cards-grid');
+                    if (cardsGrid) {
+                        cardsGrid.classList.toggle('model-stats-show-errors', !wasOn);
+                    }
                     return;
                 }
 
@@ -976,7 +1047,7 @@ export function getScript(): string {
                     var changedTabKeys = [];
 
                     // Save scrollTop of inner scrollable elements before DOM swap
-                    var scrollableSelectors = ['.raw-json', '.act-timeline', '.details-body', '.xray-body'];
+                    var scrollableSelectors = ['.raw-json', '.act-timeline', '.details-body', '.cp-viewer', '.cp-card-body'];
                     var savedScrolls = {};
                     for (var ss = 0; ss < scrollableSelectors.length; ss++) {
                         var sel = scrollableSelectors[ss];
@@ -1013,14 +1084,7 @@ export function getScript(): string {
                     // too late → scroll stuck in wrong position ("Monitor tab jumps").
                     restoreDetailsState(vscode.getState() || {});
 
-                    // Restore timeline expand blocks
-                    var tlExpands = (vscode.getState() || {}).tlExpands || {};
-                    var expEls = document.querySelectorAll('.act-tl-expand');
-                    for (var ei = 0; ei < expEls.length; ei++) {
-                        if (tlExpands[expEls[ei].id]) {
-                            expEls[ei].classList.add('act-tl-expand-open');
-                        }
-                    }
+
 
                     // NOW restore scrollTop (details are open, heights are correct)
                     for (var rs = 0; rs < scrollableSelectors.length; rs++) {
@@ -1070,12 +1134,46 @@ export function getScript(): string {
                         if (privBtnEl) { privBtnEl.classList.add('active'); }
                     }
 
+                    // ── Account Popover: content-only refresh, preserve open/close state ──
+                    if (typeof tabs.accountPopover === 'string') {
+                        var popBody = document.getElementById('acctPopoverBody');
+                        if (popBody && tabs.accountPopover) {
+                            popBody.innerHTML = tabs.accountPopover;
+                        }
+                    }
+                    // Red-dot sync
+                    var dotEl = document.querySelector('.acct-popover-dot');
+                    if (tabs.accountPopoverHasReady) {
+                        if (!dotEl) {
+                            var trigEl = document.getElementById('acctPopoverTrigger');
+                            if (trigEl) {
+                                var d = document.createElement('span');
+                                d.className = 'acct-popover-dot';
+                                trigEl.appendChild(d);
+                            }
+                        }
+                    } else {
+                        if (dotEl) { dotEl.remove(); }
+                    }
+
                     // Recalculate tab slider position after content swap
                     // (tab button widths may change due to language or data updates)
                     updateTabSlider();
                     updateTabOverflowHint();
                     bindHistoryCatalog();
                     bindEocObserver();
+                    requestAnimationFrame(function() { initErrorOverflow(); });
+
+                    // Restore model stats error toggle state (default: hidden)
+                    var errToggle2 = document.getElementById('modelStatsErrToggle');
+                    var cardsGrid2 = document.querySelector('.act-cards-grid');
+                    if ((vscode.getState() || {}).modelStatsShowErrors) {
+                        if (errToggle2) { errToggle2.classList.remove('is-off'); }
+                        if (cardsGrid2) { cardsGrid2.classList.add('model-stats-show-errors'); }
+                    } else {
+                        if (errToggle2) { errToggle2.classList.add('is-off'); }
+                        if (cardsGrid2) { cardsGrid2.classList.remove('model-stats-show-errors'); }
+                    }
                 }
             });
             // ─── End-of-Content IntersectionObserver ───
