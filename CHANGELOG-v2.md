@@ -8,6 +8,29 @@
 
 ---
 
+## 移除重复的"上下文组成"区块 — 2026-04-26
+
+### 移除 / Removed
+
+- **独立"上下文组成"饼图区块 / Standalone Context Composition Donut Chart**:
+  删除 `buildTokenBreakdownChart()` 函数及其关联的 CSS（`act-legend-dot`、`act-xray-details`、`xray-*` 等约 200 行）。该区块与"上下文情报"标签内的"Token 组成"卡片（`buildContextIntelViewer()` 内）使用相同的 `GMSummary.latestTokenBreakdown` 数据源，属于重复渲染。
+
+  Removed `buildTokenBreakdownChart()` and its associated CSS (~200 lines). This standalone donut chart + X-ray breakdown duplicated the "Token Composition" card already present inside `buildContextIntelViewer()`, both consuming the same `GMSummary.latestTokenBreakdown` data.
+
+  清理项 / Cleanup items:
+  - `buildTokenBreakdownChart()` 函数（饼图 SVG + 图例 + X-ray 可折叠详情）
+  - 调用处两列布局（`act-two-col`）改为 `errorDetails` 单独渲染
+  - CSS: `act-legend-dot`、`act-xray-details`、`xray-body/item/header/bar-wrap/bar/chips/chip/chip-val/total` + light theme 覆盖
+  - `webview-script.ts`: `scrollableSelectors` 移除 `.xray-body`
+
+### 统计 / Stats
+
+- **Files changed**: 2 (`src/activity-panel.ts`, `src/webview-script.ts`)
+- **TypeScript compile**: Zero errors
+- **Net change**: ~-200 行（CSS + 渲染函数 + light theme 覆盖）
+
+---
+
 ## 错误种类 / 工具目录全局共享 + 去重增强 — 2026-04-25
 
 ### 修复 / Fixed

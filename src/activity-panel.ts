@@ -106,15 +106,11 @@ export function buildGMDataTabContent(
             </div>`);
         }
     }
-    // ── Token Breakdown + Error Details (GM — new probes)
+    // ── Error Details (GM)
     if (gmSummary && gmSummary.totalCalls > 0) {
-        const breakdown = buildTokenBreakdownChart(gmSummary);
         const errorDetails = buildErrorDetailsSection(gmSummary, currentUsage?.cascadeId);
-        if (breakdown || errorDetails) {
-            parts.push(`<div class="act-two-col">
-                ${breakdown ? `<div class="act-col">${breakdown}</div>` : ''}
-                ${errorDetails ? `<div class="act-col">${errorDetails}</div>` : ''}
-            </div>`);
+        if (errorDetails) {
+            parts.push(errorDetails);
         }
     }
 
@@ -1053,13 +1049,6 @@ export function getGMDataTabStyles(): string {
     body.vscode-light .act-tl-help-btn { background: var(--color-muted-bg); border-color: var(--color-border-strong); }
 
 
-    /* ─── Shared Legend Styles (used by X-ray) ─── */
-    .act-legend-dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        flex-shrink: 0;
-    }
 
     /* ─── Activity Tab: Context Trend Chart ─── */
     .act-trend-container {
@@ -1686,114 +1675,7 @@ export function getGMDataTabStyles(): string {
         padding-left: var(--space-2);
     }
 
-    /* ─── Context X-ray Details ─── */
-    .act-xray-details {
-        margin-top: var(--space-3);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
-        background: var(--color-surface-raised);
-        font-size: 0.85em;
-    }
-    .act-xray-details summary {
-        padding: var(--space-2) var(--space-3);
-        cursor: pointer;
-        color: var(--color-text-dim);
-        user-select: none;
-        list-style: none;
-        display: flex;
-        align-items: center;
-        gap: var(--space-1);
-        font-size: 0.88em;
-        font-weight: 500;
-        transition: color 0.15s cubic-bezier(.4,0,.2,1);
-    }
-    .act-xray-details summary::before {
-        content: '▸';
-        display: inline-block;
-        transition: transform 0.15s cubic-bezier(.4,0,.2,1);
-        font-size: 0.8em;
-    }
-    .act-xray-details[open] summary::before { transform: rotate(90deg); }
-    @media (hover: hover) {
-        .act-xray-details summary:hover { color: var(--color-text); }
-    }
-    .xray-body {
-        padding: var(--space-2) var(--space-3) var(--space-3);
-        display: grid;
-        gap: var(--space-2);
-        max-height: 280px;
-        overflow-y: auto;
-    }
-    .xray-body::-webkit-scrollbar { width: 4px; }
-    .xray-body::-webkit-scrollbar-track { background: transparent; }
-    .xray-body::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: var(--radius-full); }
-    .xray-item { font-size: 0.88em; }
-    .xray-header {
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 3px;
-        color: var(--color-text-dim);
-        font-size: 0.92em;
-    }
-    .xray-header span:first-child {
-        display: flex;
-        align-items: center;
-        gap: var(--space-1);
-        font-weight: 500;
-    }
-    .xray-bar-wrap {
-        height: 5px;
-        background: var(--color-surface-hover);
-        border-radius: var(--radius-sm);
-        overflow: hidden;
-    }
-    .xray-bar {
-        height: 100%;
-        border-radius: var(--radius-sm);
-        transition: width 0.3s cubic-bezier(.4,0,.2,1);
-    }
-    .xray-chips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--space-1);
-        margin-top: var(--space-1);
-        padding-left: var(--space-3);
-    }
-    .xray-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 3px;
-        padding: 2px var(--space-2);
-        border-radius: var(--radius-sm);
-        font-size: 0.78em;
-        background: var(--color-surface);
-        border: 1px solid var(--chip-color, var(--color-border));
-        border-left: 2px solid var(--chip-color, var(--color-info));
-        color: var(--color-text-dim);
-        transition: background 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
-    }
-    @media (hover: hover) {
-        .xray-chip:hover {
-            background: var(--color-border);
-            border-color: var(--chip-color, var(--color-info));
-        }
-    }
-    .xray-chip-val {
-        font-weight: 600;
-        color: var(--color-text);
-        font-size: 0.95em;
-    }
-    .xray-total {
-        font-size: 0.78em;
-        color: var(--color-text-dim);
-        text-align: right;
-        font-weight: 600;
-        padding-top: var(--space-1);
-        border-top: 1px solid var(--color-divider);
-    }
-    @media (prefers-reduced-motion: reduce) {
-        .xray-bar { transition: none; }
-    }
+
 
     /* ─── Light Theme: Activity Panel ──── */
     body.vscode-light .act-card-header { background: var(--color-surface-dim); }
@@ -1807,13 +1689,7 @@ export function getGMDataTabStyles(): string {
     body.vscode-light .gm-cache-bar-bg { background: var(--color-surface-hover); }
     body.vscode-light .gm-retry-stops { border-top-color: var(--color-divider); }
     body.vscode-light .act-rank-bar-bg { background: var(--color-surface-hover); }
-    body.vscode-light .act-xray-details { border-color: var(--color-border); background: var(--color-surface-raised); }
-    body.vscode-light .xray-bar-wrap { background: var(--color-surface-hover); }
-    body.vscode-light .xray-chip { background: var(--color-surface-dim); }
-    @media (hover: hover) {
-        body.vscode-light .xray-chip:hover { background: var(--color-surface-hover); }
-    }
-    body.vscode-light .xray-total { border-top-color: var(--color-divider); }
+
 
     /* ─── Context Intelligence Section ─── */
     .ci-section {
@@ -3162,85 +3038,7 @@ function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): stri
     </div>`;
 }
 
-// ─── Token Breakdown Chart ──────────────────────────────────────────────────
 
-function buildTokenBreakdownChart(s: GMSummary): string {
-    const groups = s.latestTokenBreakdown;
-    if (!groups || groups.length === 0) { return ''; }
-
-    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    const total = groups.reduce((a, g) => a + g.tokens, 0);
-    if (total <= 0) { return ''; }
-
-    const colors = ['#06b6d4', '#f59e0b', '#10b981', '#f87171', '#ec4899', '#60a5fa', '#f97316', '#14b8a6'];
-    const size = 140;
-    const r = 55;
-    const cx = size / 2;
-    const cy = size / 2;
-    const circumference = 2 * Math.PI * r;
-    let offset = 0;
-
-    let donut = `<svg class="act-donut-chart" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">`;
-    for (let i = 0; i < groups.length; i++) {
-        const pct = groups[i].tokens / total;
-        const len = pct * circumference;
-        donut += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${colors[i % colors.length]}" stroke-width="16" stroke-dasharray="${len} ${circumference - len}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"/>`;
-        offset += len;
-    }
-    donut += `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" fill="var(--color-text)" font-size="16" font-weight="600">${fmt(total)}</text>`;
-    donut += `</svg>`;
-
-    let legend = `<div class="act-dist-legend">`;
-    for (let i = 0; i < groups.length; i++) {
-        const g = groups[i];
-        const pct = ((g.tokens / total) * 100).toFixed(1);
-        const name = g.name || g.type.replace('TOKEN_TYPE_', '').replace(/_/g, ' ');
-        legend += `<div class="act-legend-item"><span class="act-legend-dot" style="background:${colors[i % colors.length]}"></span>${esc(name)} <span class="act-legend-pct">${pct}% (${fmt(g.tokens)})</span></div>`;
-    }
-    legend += `</div>`;
-
-    // X-ray detail bars (collapsible)
-    let xrayHtml = '';
-    if (groups.length > 0) {
-        const bars = groups.map((g, i) => {
-            const pct = Math.max(1, Math.round(g.tokens / total * 100));
-            const col = colors[i % colors.length];
-            const name = g.name || g.type.replace('TOKEN_TYPE_', '').replace(/_/g, ' ');
-            let childrenHtml = '';
-            if (g.children.length > 0) {
-                const chips = g.children.map(ch => {
-                    const chPct = g.tokens > 0 ? Math.round(ch.tokens / g.tokens * 100) : 0;
-                    return `<span class="xray-chip" style="--chip-color:${col}">${esc(ch.name)} <span class="xray-chip-val">${fmt(ch.tokens)}${chPct > 0 ? ` (${chPct}%)` : ''}</span></span>`;
-                }).join('');
-                childrenHtml = `<div class="xray-chips">${chips}</div>`;
-            }
-            return `<div class="xray-item">
-                <div class="xray-header">
-                    <span><span class="act-legend-dot" style="background:${col}"></span>${esc(name)}</span>
-                    <span>${fmt(g.tokens)} (${pct}%)</span>
-                </div>
-                <div class="xray-bar-wrap"><div class="xray-bar" style="width:${pct}%;background:${col}"></div></div>
-                ${childrenHtml}
-            </div>`;
-        }).join('');
-
-        xrayHtml = `
-        <details class="act-xray-details" id="d-xray-detail">
-            <summary>${tBi('Context X-ray — Detailed Breakdown', '上下文 X 光 — 详细分解')}</summary>
-            <div class="xray-body">
-                ${bars}
-                <div class="xray-total">${tBi('Total', '合计')}: ${fmt(total)}</div>
-            </div>
-        </details>`;
-    }
-
-    return `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 12V2"/><path d="M12 12h10"/></svg>${tBi('Context Composition', '上下文组成')}</h2>
-    <div class="act-dist-container">
-        ${donut}
-        ${legend}
-    </div>
-    ${xrayHtml}`;
-}
 
 // ─── Checkpoint Viewer Section ──────────────────────────────────────────────
 
