@@ -578,7 +578,7 @@ export class GMTracker {
                     const normKey = normalizeErrorMessage(errMsg);
                     const existing = uniqueErrorMap.get(normKey);
                     if (!existing || (callTime && callTime < existing.firstSeen)) {
-                        uniqueErrorMap.set(normKey, { code, message: errMsg, firstSeen: callTime });
+                        uniqueErrorMap.set(normKey, { code, message: normKey, firstSeen: callTime });
                     }
                 }
                 if (c.hasError && c.errorMessage && c.retryErrors.length === 0) {
@@ -586,7 +586,7 @@ export class GMTracker {
                     const normKey = normalizeErrorMessage(c.errorMessage);
                     const existing = uniqueErrorMap.get(normKey);
                     if (!existing || (callTime && callTime < existing.firstSeen)) {
-                        uniqueErrorMap.set(normKey, { code, message: c.errorMessage, firstSeen: callTime });
+                        uniqueErrorMap.set(normKey, { code, message: normKey, firstSeen: callTime });
                     }
                 }
             }
@@ -737,7 +737,7 @@ export class GMTracker {
                 const normKey = normalizeErrorMessage(value.message);
                 const existing = mergedUniqueErrors[normKey];
                 if (!existing || (value.firstSeen && value.firstSeen < existing.firstSeen)) {
-                    mergedUniqueErrors[normKey] = { message: value.message, firstSeen: value.firstSeen };
+                    mergedUniqueErrors[normKey] = { message: normKey, firstSeen: value.firstSeen };
                 }
             }
         }
@@ -747,7 +747,7 @@ export class GMTracker {
                 const normKey = normalizeErrorMessage(entry.message);
                 const persisted = mergedUniqueErrors[normKey];
                 if (!persisted || (entry.firstSeen && entry.firstSeen < persisted.firstSeen)) {
-                    mergedUniqueErrors[normKey] = { message: entry.message, firstSeen: entry.firstSeen };
+                    mergedUniqueErrors[normKey] = { message: normKey, firstSeen: entry.firstSeen };
                 }
             }
         }

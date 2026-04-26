@@ -8,6 +8,30 @@
 
 ---
 
+## 错误种类去重增强：超长消息截断 + 文件路径归一化 — 2026-04-26
+
+### 改进 / Improved
+
+- **超长错误消息截断 / Long Error Message Truncation**:
+  `normalizeErrorMessage()` 新增 3 条规范化规则：
+  1. `trying to unmarshal args to {TargetFile:... CodeContent:...整个文件内容...}` → `trying to unmarshal args to {…}`（截断嵌入的文件内容）
+  2. `failed to read file: open e:/path/to/file.txt` → `failed to read file: open <path>`（文件路径归一化）
+  3. 任何超过 300 字符的消息截断到 297 + `...`（通用兜底）
+
+  New normalization rules: (1) truncate unmarshal errors embedding entire file contents, (2) normalize file paths in error messages, (3) general 300-char max-length truncation.
+
+- **错误种类展示使用规范化消息 / Display Normalized Messages in Error Catalog**:
+  错误种类目录的 `message` 字段从存储原始消息改为存储 `normalizeErrorMessage()` 结果。IP/端口/路径/超长内容等都在展示中归一化，不再显示冗长的原始文本。持久化数据在下次重建时自动清洗。
+
+  Error type catalog now stores the normalized message for display instead of the raw original. Persisted data is automatically cleaned on next rebuild.
+
+### 统计 / Stats
+
+- **Files changed**: 2 (`src/gm/summary.ts`, `src/gm/tracker.ts`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## 移除重复的"上下文组成"区块 — 2026-04-26
 
 ### 移除 / Removed

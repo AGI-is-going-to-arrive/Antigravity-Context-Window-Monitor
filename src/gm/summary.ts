@@ -80,6 +80,17 @@ export function normalizeErrorMessage(msg: string): string {
         if (first === second) { result = first; break; }
         searchFrom = colonIdx + 2;
     }
+    // Truncate unmarshal / JSON-body errors: the message embeds entire file contents
+    // after "to {TargetFile:... CodeContent:..." — only the prefix matters for dedup.
+    result = result.replace(/(trying to unmarshal args to )\{[\s\S]*/m, '$1{…}');
+    // Normalize file paths: "open e:/path/to/file.txt: ..." → "open <path>: ..."
+    // Different files produce different messages but the error kind (file not found) is the same.
+    result = result.replace(/(failed to read file: open )\S+/i, '$1<path>');
+    // General max-length truncation: any message still over 300 chars is truncated.
+    // Error "kind" identity doesn't need the full payload — just the semantic prefix.
+    if (result.length > 300) {
+        result = result.substring(0, 297) + '...';
+    }
     return result;
 }
 
