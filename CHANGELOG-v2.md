@@ -8,6 +8,42 @@
 
 ---
 
+## Settings 持久化存储统计精简 — 2026-04-28
+
+### 移除 / Removed
+
+- **7 个冗余存储统计卡片 / 7 Redundant Storage Stat Cards**:
+  Settings 标签页「持久化存储」区域原有 9 个统计卡片，审查后精简为 2 个。移除的 7 个卡片均属于与其他标签页重复或数据源相同的冗余项。
+
+  Reviewed 9 storage stat cards in the Settings tab's \"Persistent Storage\" section. Reduced to 2 after removing duplicates and stats already shown in other tabs.
+
+  | 移除项 | 移除原因 |
+  |--------|---------|
+  | GM Calls (Cycle) | GM 数据标签页 Dashboard Grid 已显示 |
+  | Input Tokens | 无归档时始终为 0，GM 数据面板已显示 |
+  | Output Tokens | 同上 |
+  | Credits Used | GM 数据面板已显示 |
+  | Est. Total Cost | 成本标签页已显示 |
+  | Archival Days | 与 Calendar Days 数据源完全相同（`dailyStore.totalDays`）|
+  | Calendar Cycles | 一天一归档后与天数等价 |
+
+  **保留项 / Retained**: File Size（文件大小）、Calendar Days（日历天数）
+
+### 清理 / Cleanup
+
+- **`formatTokenCount()` 函数移除**: 该函数仅被已删除的 Input/Output Tokens 卡片使用，现为死代码
+- **`computeAllTimeCost()` 函数移除**: 该函数仅被已删除的 Est. Total Cost 字段使用，现为死代码
+- **`StorageDiagnostics` 接口精简**: 从 11 个字段减至 6 个（移除 `gmCallCount`、`gmTotalInputTokens`、`gmTotalOutputTokens`、`gmTotalCredits`、`estimatedCostAllTime`、`quotaResetCount`、`calendarCycleCount`）
+- **`refreshLocalStorageDiagnostics()` 精简**: 移除 `calendarCycleCount` 遍历循环和 7 个冗余字段赋值（含内联 `estimatedCostAllTime` IIFE）
+
+### 统计 / Stats
+
+- **Files changed**: 3 (`src/webview-settings-tab.ts`, `src/extension.ts`, `src/webview-panel.ts`)
+- **Docs updated**: 1 (`docs/project_structure.md`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## About 兼容性验证 + 浅色主题上下文情报颜色适配 — 2026-04-26
 
 ### 新增 / Added

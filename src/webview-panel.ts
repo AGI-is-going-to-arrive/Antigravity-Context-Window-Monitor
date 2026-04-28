@@ -127,38 +127,12 @@ function refreshLocalStorageDiagnostics(): void {
     try {
         stateFileSizeBytes = stateFileExists ? fs.statSync(lastStorageDiagnostics.stateFilePath).size : 0;
     } catch { /* ignore stat errors */ }
-    let calendarCycleCount = 0;
-    if (lastDailyStore) {
-        for (const date of lastDailyStore.getDatesWithData()) {
-            const record = lastDailyStore.getRecord(date);
-            if (record) {
-                calendarCycleCount += record.cycles.length;
-            }
-        }
-    }
     lastStorageDiagnostics = {
         ...lastStorageDiagnostics,
         stateFileExists,
         stateFileSizeBytes,
         stateFileOpenWarnBytes: LARGE_STATE_FILE_WARN_BYTES,
-        gmCallCount: lastGMSummary?.totalCalls || 0,
-        gmTotalInputTokens: lastGMSummary?.totalInputTokens || 0,
-        gmTotalOutputTokens: lastGMSummary?.totalOutputTokens || 0,
-        gmTotalCredits: lastGMSummary?.totalCredits || 0,
-        estimatedCostAllTime: (() => {
-            let total = 0;
-            if (lastDailyStore) {
-                for (const date of lastDailyStore.getDatesWithData()) {
-                    const record = lastDailyStore.getRecord(date);
-                    if (record) { for (const c of record.cycles) { total += c.estimatedCost || 0; } }
-                }
-            }
-            if ((lastGMFullSummary || lastGMSummary) && lastPricingStore) { total += lastPricingStore.calculateCosts(lastGMFullSummary || lastGMSummary!).grandTotal; }
-            return total;
-        })(),
-        quotaResetCount: lastDailyStore?.totalDays || 0,
         calendarDayCount: lastDailyStore?.totalDays || 0,
-        calendarCycleCount,
     };
 }
 

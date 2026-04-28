@@ -9,30 +9,14 @@ import { QuotaTracker } from './quota-tracker';
 import { ICON } from './webview-icons';
 import { esc, formatFileSize } from './webview-helpers';
 
-/** Format token count for display (e.g. 1.2M, 345K, 1,234) */
-function formatTokenCount(tokens: number): string {
-    if (!tokens || tokens <= 0) { return '0'; }
-    if (tokens >= 1_000_000) { return (tokens / 1_000_000).toFixed(1) + 'M'; }
-    if (tokens >= 10_000) { return Math.round(tokens / 1_000) + 'K'; }
-    if (tokens >= 1_000) { return (tokens / 1_000).toFixed(1) + 'K'; }
-    return String(tokens);
-}
+
 
 export interface StorageDiagnostics {
     stateFilePath: string;
     stateFileExists: boolean;
     stateFileSizeBytes: number;
     stateFileOpenWarnBytes: number;
-    // GM cycle stats (current quota period)
-    gmCallCount: number;
-    gmTotalInputTokens: number;
-    gmTotalOutputTokens: number;
-    gmTotalCredits: number;
-    estimatedCostAllTime: number;
-    // Historical stats
-    quotaResetCount: number;
     calendarDayCount: number;
-    calendarCycleCount: number;
     hasDevResetSnapshot: boolean;
 }
 
@@ -104,20 +88,9 @@ export function buildSettingsContent(
                 <button class="action-btn" id="revealStateFile">${ICON.folder} ${tBi('Reveal', '定位文件')}</button>
                 <span id="statePathFeedback" class="threshold-feedback"></span>
             </div>
-            <p class="raw-desc">${tBi(
-        `Current file size: ${stateFileSizeLabel}. Stats below reflect the current quota cycle and historical archives.`,
-        `当前文件大小：${stateFileSizeLabel}。以下统计反映当前额度周期和历史归档数据。`,
-    )}</p>
             <div class="storage-stat-grid">
                 <div class="storage-stat"><span class="storage-stat-val">${stateFileSizeLabel}</span><span class="storage-stat-label">${tBi('File Size', '文件大小')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.gmCallCount}</span><span class="storage-stat-label">${tBi('GM Calls (Cycle)', 'GM 调用 (周期)')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${formatTokenCount(storage.gmTotalInputTokens)}</span><span class="storage-stat-label">${tBi('Input Tokens', '输入 Tokens')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${formatTokenCount(storage.gmTotalOutputTokens)}</span><span class="storage-stat-label">${tBi('Output Tokens', '输出 Tokens')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.gmTotalCredits > 0 ? storage.gmTotalCredits.toFixed(1) : '0'}</span><span class="storage-stat-label">${tBi('Credits Used', '已用积分')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.estimatedCostAllTime > 0 ? '$' + storage.estimatedCostAllTime.toFixed(2) : '$0'}</span><span class="storage-stat-label">${tBi('Est. Total Cost', '估算总费用')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.quotaResetCount}</span><span class="storage-stat-label">${tBi('Archival Days', '归档天数')}</span></div>
                 <div class="storage-stat"><span class="storage-stat-val">${storage.calendarDayCount}</span><span class="storage-stat-label">${tBi('Calendar Days', '日历天数')}</span></div>
-                <div class="storage-stat"><span class="storage-stat-val">${storage.calendarCycleCount}</span><span class="storage-stat-label">${tBi('Calendar Cycles', '日历周期')}</span></div>
             </div>
         </section>` : '';
 
