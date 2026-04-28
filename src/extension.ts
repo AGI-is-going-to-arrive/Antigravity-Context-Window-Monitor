@@ -1587,26 +1587,6 @@ function checkCachedAccountResets(): void {
 }
 
 
-function computeAllTimeCost(): number {
-    let total = 0;
-    // Sum all archived cycle costs from dailyStore
-    if (dailyStore) {
-        for (const date of dailyStore.getDatesWithData()) {
-            const record = dailyStore.getRecord(date);
-            if (record) {
-                for (const cycle of record.cycles) {
-                    total += cycle.estimatedCost || 0;
-                }
-            }
-        }
-    }
-    // Add current (in-progress) cycle cost
-    if (lastGMSummary && pricingStore) {
-        total += pricingStore.calculateCosts(lastGMSummary).grandTotal;
-    }
-    return total;
-}
-
 function getStorageDiagnostics(): StorageDiagnostics {
     const stateFilePath = durableState.getFilePath();
     const stateFileExists = durableState.exists();
@@ -1614,29 +1594,13 @@ function getStorageDiagnostics(): StorageDiagnostics {
     try {
         stateFileSizeBytes = stateFileExists ? fs.statSync(stateFilePath).size : 0;
     } catch { /* ignore stat errors */ }
-    let calendarCycleCount = 0;
-    if (dailyStore) {
-        for (const date of dailyStore.getDatesWithData()) {
-            const record = dailyStore.getRecord(date);
-            if (record) {
-                calendarCycleCount += record.cycles.length;
-            }
-        }
-    }
 
     return {
         stateFilePath,
         stateFileExists,
         stateFileSizeBytes,
         stateFileOpenWarnBytes: LARGE_STATE_FILE_WARN_BYTES,
-        gmCallCount: lastGMSummary?.totalCalls || 0,
-        gmTotalInputTokens: lastGMSummary?.totalInputTokens || 0,
-        gmTotalOutputTokens: lastGMSummary?.totalOutputTokens || 0,
-        gmTotalCredits: lastGMSummary?.totalCredits || 0,
-        estimatedCostAllTime: computeAllTimeCost(),
-        quotaResetCount: dailyStore?.totalDays || 0,
         calendarDayCount: dailyStore?.totalDays || 0,
-        calendarCycleCount,
         hasDevResetSnapshot: !!devResetSnapshot,
     };
 }
