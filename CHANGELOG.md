@@ -1,5 +1,19 @@
 # 变更日志 / Changelog
 
+## [1.16.2] - 2026-04-29
+
+### 🧹 Refactor / 重构
+
+- **Simplify Settings storage stats — remove 7 redundant cards (#49)**: Reduced Settings tab's "Persistent Storage" section from 9 stat cards to 2 (File Size + Calendar Days). Removed 7 cards that duplicated stats already shown in GM Data, Cost, and Calendar tabs: GM Calls, Input Tokens, Output Tokens, Credits Used, Est. Total Cost, Archival Days (identical to Calendar Days), Calendar Cycles (equivalent to days). Cleaned up dead code: `formatTokenCount()`, `computeAllTimeCost()`, and 7 `StorageDiagnostics` interface fields.
+  精简 Settings 标签页「持久化存储」区域：9 个统计卡片减至 2 个（文件大小 + 日历天数）。移除 7 个与 GM 数据/成本/日历面板重复的卡片。清理死代码：`formatTokenCount()`、`computeAllTimeCost()` 和 7 个 `StorageDiagnostics` 接口字段。
+
+### 📝 Docs / 文档
+
+- Updated version to 1.16.2 across `package.json`, `README.md`, `readme_CN.md`, and `CHANGELOG.md`.
+  更新 `package.json`、`README.md`、`readme_CN.md` 和 `CHANGELOG.md` 中的版本号为 1.16.2。
+
+---
+
 ## [1.16.1] - 2026-04-28
 
 ### 🐛 Fixed / 修复

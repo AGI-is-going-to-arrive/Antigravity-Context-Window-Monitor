@@ -205,4 +205,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.1
+**Version**: 1.16.2
