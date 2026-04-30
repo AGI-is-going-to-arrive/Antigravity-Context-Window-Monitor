@@ -1,5 +1,19 @@
 # 变更日志 / Changelog
 
+## [1.16.3] - 2026-04-30
+
+### 🐛 Fixed / 修复
+
+- **🔥 Model quota showing 100% when actually exhausted (proto3 regression) / 额度耗尽时仍显示 100%（proto3 回归 bug）**: The v1.16.1 fix (`?? 0` → `?? 1`) corrected untouched-quota display but introduced a regression: when quota is truly exhausted, proto3 JSON serialization omits `remainingFraction` (default `0.0` is elided), and `?? 1` incorrectly treated this as "full". Fix: replaced blind `?? 1` with `resolveRemainingFraction()` that uses `resetTime` as discriminator — epoch `1970-01-01T00:00:00Z` (or empty) means untouched → 1.0; real future date means exhausted (proto3 default omission) → 0.0; explicit value used as-is.
+  v1.16.1 的修复（`?? 0` → `?? 1`）解决了未初始化额度显示 0% 的问题，但引入了回归：额度真正耗尽时，proto3 JSON 序列化省略 `remainingFraction`（默认值 `0.0` 被省略），`?? 1` 错误地将其视为"满额"。修复：用 `resolveRemainingFraction()` 替代盲目的 `?? 1`，通过 `resetTime` 判断——epoch 时间戳或空值意味着未初始化（100%），真实未来时间意味着已耗尽（proto3 默认值省略 → 0%），显式值原样使用。
+
+### 📝 Docs / 文档
+
+- Updated version to 1.16.3 across `package.json`, `README.md`, `readme_CN.md`, and `CHANGELOG.md`.
+  更新 `package.json`、`README.md`、`readme_CN.md` 和 `CHANGELOG.md` 中的版本号为 1.16.3。
+
+---
+
 ## [1.16.2] - 2026-04-29
 
 ### 🧹 Refactor / 重构

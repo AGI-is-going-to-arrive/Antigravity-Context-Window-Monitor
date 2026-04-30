@@ -570,12 +570,22 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
         const configs: ModelConfig[] = (rawConfigs || []).map(c => {
             const qi = c.quotaInfo as Record<string, unknown> | undefined;
             const mimeTypes = c.supportedMimeTypes as Record<string, boolean> | undefined;
+            // Proto3 omits float fields when value is 0.0 (the default).
+            // Two reasons remainingFraction can be missing:
+            //   1. Quota untouched (resetTime is epoch 1970) → treat as 1.0 (full)
+            //   2. Quota exhausted (resetTime is real future date) → treat as 0.0
+            const resolveRemainingFraction = (q: Record<string, unknown>): number => {
+                if (q.remainingFraction != null) { return q.remainingFraction as number; }
+                const rt = (q.resetTime as string) || '';
+                if (!rt || rt === '1970-01-01T00:00:00Z') { return 1; }
+                return 0;
+            };
             return {
                 model: ((c.modelOrAlias as Record<string, unknown>)?.model as string) || '',
                 label: (c.label as string) || '',
                 supportsImages: (c.supportsImages as boolean) || false,
                 quotaInfo: qi ? {
-                    remainingFraction: (qi.remainingFraction as number) ?? 1, // LS omits field when quota is full (untouched)
+                    remainingFraction: resolveRemainingFraction(qi),
                     resetTime: (qi.resetTime as string) || '',
                 } : undefined,
                 allowedTiers: (c.allowedTiers as string[]) || [],
