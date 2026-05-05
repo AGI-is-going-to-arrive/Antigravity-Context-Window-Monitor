@@ -8,6 +8,55 @@
 
 ---
 
+## 状态栏影子模型修复 + Checkpoint 模型透明化 — 2026-05-05
+
+### 修复 / Fixed
+
+- **影子模型污染状态栏显示 / Shadow Model Polluting Status Bar**:
+  状态栏 tooltip 的「模型」字段会显示 `MODEL_PLACEHOLDER_M50`（Flash Lite 影子模型），而非用户实际使用的主模型（如 Claude Opus 4.6）。
+
+  **根因**: `processSteps()` 的模型追踪逻辑中，CHECKPOINT 步骤的 `generatorModel` 和 `lastModelUsage.model` 会覆盖顶层 `model` 字段。当 M50 的 CHECKPOINT 出现在步骤序列末尾时（新对话或上下文压缩后），显示模型被污染为 M50。
+
+  **修复**: 结构性隔离 — CHECKPOINT 步骤一律不参与显示模型追踪（`stepType !== StepType.CHECKPOINT`）。同时移除 `lastModelUsage.model → model` 覆盖路径。`lastModelUsage` 仍正常用于 token 计算。此方案不依赖模型名称匹配，任何未来新增的影子模型都自动被排除。
+
+  Status bar tooltip showed `MODEL_PLACEHOLDER_M50` (shadow model) instead of the user's actual model. Root cause: CHECKPOINT steps' `generatorModel` and `modelUsage.model` overrode the display model. Fix: structural isolation — CHECKPOINT steps never participate in display model tracking. Future-proof without hardcoded model ID patterns.
+
+  模型优先级（修复后）:
+  1. `requestedModel`（用户选择）
+  2. `generatorModel`（仅非 CHECKPOINT 步骤）
+  3. `trajectory.requestedModel || trajectory.generatorModel`（对话级兜底）
+
+### 新增 / Added
+
+- **Checkpoint 影子模型透明化 / Checkpoint Shadow Model Transparency**:
+  状态栏 tooltip 的「最近 checkpoint」行旁显示影子模型标识（如 `(M50)`），方便观测影子模型变化。
+
+  Status bar tooltip now shows the shadow model identifier next to "Last Checkpoint" (e.g. `(M50)`), enabling visibility into shadow model changes.
+
+  | 数据链路 | 改动 |
+  |---|---|
+  | `TokenUsageResult.checkpointModel` | 新增字段，从 `lastModelUsage.model` 捕获 |
+  | `ContextUsage.checkpointModel` | 新增字段，透传到 UI 层 |
+  | `shortenShadowModelId()` | 新增工具函数，将原始 ID 转为人类可读名称 |
+
+  名称转换示例:
+
+  | 原始 ID | 显示名称 |
+  |---|---|
+  | `MODEL_PLACEHOLDER_M50` | M50 |
+  | `MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE` | Gemini 2.5 Flash Lite |
+  | `MODEL_PLACEHOLDER_M84` | M84 |
+
+### 统计 / Stats
+
+- **Files changed**: 2 (`src/tracker.ts`, `src/statusbar.ts`)
+- **TypeScript compile**: Zero errors
+- **Tests**: 50 passed
+- **New fields**: `TokenUsageResult.checkpointModel`, `ContextUsage.checkpointModel`
+- **New function**: `shortenShadowModelId()`
+
+---
+
 ## 工具目录 UX 优化 + 清空功能 — 2026-05-05
 
 ### 改进 / Improved
