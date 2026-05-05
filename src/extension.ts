@@ -306,9 +306,8 @@ function updateAccountSnapshot(
                 pool.modelIds.push(c.model);
             }
             // remainingFraction < 1.0 means quota has been consumed (crossed 20% threshold)
-            // LS omits the field when quota is full (untouched) — treat as unused
             const frac = c.quotaInfo.remainingFraction;
-            if (frac !== undefined && frac < 1.0) {
+            if (frac < 1.0) {
                 pool.hasUsage = true;
             }
             if (frac !== undefined && frac < pool.minFraction) {
