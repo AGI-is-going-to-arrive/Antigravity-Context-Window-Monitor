@@ -61,6 +61,100 @@ export function getPricingTabStyles(): string {
         gap: var(--space-3);
         margin-bottom: var(--space-4);
     }
+    /* ── Model DNA Row List (horizontal layout) ── */
+    .dna-row-list {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+        margin-bottom: var(--space-4);
+    }
+    .dna-row-card {
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+        transition: border-color 0.2s cubic-bezier(.4,0,.2,1);
+    }
+    @media (hover: hover) {
+        .dna-row-card:hover {
+            border-color: var(--color-accent);
+        }
+    }
+    .dna-row-card:nth-child(1) { border-left: 3px solid var(--color-info); }
+    .dna-row-card:nth-child(2) { border-left: 3px solid var(--color-ok); }
+    .dna-row-card:nth-child(3) { border-left: 3px solid var(--color-warn); }
+    .dna-row-card:nth-child(4) { border-left: 3px solid var(--color-danger); }
+    .dna-row-card:nth-child(5) { border-left: 3px solid var(--color-teal); }
+    .dna-row-card:nth-child(6) { border-left: 3px solid var(--color-orange); }
+    .dna-row-header {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-2) var(--space-3);
+        background: var(--color-surface-dim);
+        border-bottom: 1px solid var(--color-border);
+        font-weight: 600;
+        font-size: 0.9em;
+    }
+    .dna-row-header .act-badge { margin-left: auto; }
+    .dna-row-body {
+        display: flex;
+        gap: 0;
+        min-height: 0;
+    }
+    /* Left: compact stats column */
+    .dna-row-stats {
+        flex: 0 0 auto;
+        min-width: 150px;
+        max-width: 200px;
+        padding: var(--space-2) var(--space-3);
+        border-right: 1px solid var(--color-border);
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+    }
+    .dna-row-stats .act-card-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 2px var(--space-1);
+        font-size: 0.85em;
+        border-radius: var(--radius-sm);
+        transition: background 0.1s ease;
+    }
+    .dna-row-stats .act-card-row:nth-child(even) {
+        background: rgba(255,255,255,0.02);
+    }
+    .dna-row-stats .act-card-row:hover {
+        background: rgba(255,255,255,0.06);
+    }
+    /* Right: expandable details */
+    .dna-row-details {
+        flex: 1;
+        min-width: 0;
+        padding: var(--space-2) var(--space-3);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-1);
+    }
+    .dna-row-details .inline-details {
+        margin-top: 0;
+    }
+    .dna-row-details .inline-details + .inline-details {
+        margin-top: var(--space-1);
+    }
+    /* Responsive: stack vertically on narrow panels */
+    @media (max-width: 380px) {
+        .dna-row-body {
+            flex-direction: column;
+        }
+        .dna-row-stats {
+            max-width: none;
+            border-right: none;
+            border-bottom: 1px solid var(--color-border);
+        }
+    }
+    body.vscode-light .dna-row-stats .act-card-row:nth-child(even) { background: rgba(0,0,0,0.02); }
+    body.vscode-light .dna-row-stats .act-card-row:hover { background: rgba(0,0,0,0.05); }
     .prc-dna-card {
         background: var(--color-surface);
         border: 1px solid var(--color-border);
@@ -819,7 +913,7 @@ export function buildModelDNACards(
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 
     let html = `<h2 class="act-section-title">${tBi('Model Info', '模型信息')}</h2>`;
-    html += `<div class="act-cards-grid">`;
+    html += `<div class="dna-row-list">`;
 
     for (const entry of deduped) {
         const current = entry.current?.[1];
@@ -840,34 +934,27 @@ export function buildModelDNACards(
         const entryId = toDomSafeId(entry.key);
         const supportedMimeTypes = config?.supportedMimeTypes || [];
 
-        // ── Card header ──
+        // ── Card header: model name + provider tag + badges ──
         const headerBadge = isPersistedOnly
             ? ` <span class="act-badge" style="opacity:0.7">${tBi('cached', '已缓存')}</span>`
             : '';
-        html += `<div class="act-model-card${isPersistedOnly ? ' act-checkpoint-model' : ''}">`;
-        html += `<div class="act-card-header">${esc(name)}${headerBadge}</div>`;
-        html += `<div class="act-card-body">`;
-
-        // ── Meta row: response model + provider ──
-        // Suppress responseModel when it's essentially the same as card title
         const normTitle = name.toLowerCase().replace(/[\s().\-]+/g, '');
         const normResp = responseModel.toLowerCase().replace(/[\s().\-]+/g, '');
         const showResponseModel = responseModel && normResp !== normTitle;
-        if (showResponseModel || providerShort) {
-            html += `<div class="prc-dna-meta-bar">`;
-            if (showResponseModel) {
-                html += `<span class="prc-dna-response-model">${esc(responseModel)}</span>`;
-            }
-            if (providerShort) {
-                html += `${showResponseModel ? '<span class="prc-dna-sep">·</span>' : ''}<span class="prc-dna-provider">${esc(providerShort)}</span>`;
-            }
-            if (isPersistedOnly) {
-                html += `${(showResponseModel || providerShort) ? '<span class="prc-dna-sep">·</span>' : ''}<span class="prc-dna-provider">${tBi('cached', '已缓存')}</span>`;
-            }
-            html += `</div>`;
+        let headerMeta = '';
+        if (providerShort) {
+            headerMeta += `<span class="prc-dna-provider" style="margin-left:var(--space-2)">${esc(providerShort)}</span>`;
+        }
+        if (showResponseModel) {
+            headerMeta += `<span class="prc-dna-response-model" style="margin-left:var(--space-2);font-weight:400;font-size:0.85em">${esc(responseModel)}</span>`;
         }
 
-        // ── Stats rows (GM Data card style) ──
+        html += `<div class="dna-row-card${isPersistedOnly ? ' act-checkpoint-model' : ''}">`;
+        html += `<div class="dna-row-header">${esc(name)}${headerMeta}${headerBadge}</div>`;
+        html += `<div class="dna-row-body">`;
+
+        // ── Left: compact stats ──
+        html += `<div class="dna-row-stats">`;
         html += `<div class="act-card-row"><span>${ICONS.bolt} <span>${tBi('Calls', '调用')}</span></span><span class="val">${fmt(callCount)}</span></div>`;
         html += `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Steps', '步骤')}</span></span><span class="val">${fmt(stepsCovered)}</span></div>`;
         if (totalCredits > 0) {
@@ -881,13 +968,12 @@ export function buildModelDNACards(
             if (totalRetries <= 0) { html += `<div class="act-card-divider"></div>`; }
             html += `<div class="act-card-row"><span>${ICONS.error} <span>${tBi('Errors', '错误')}</span></span><span class="val" style="color:#ef4444">${errorCount}</span></div>`;
         }
+        html += `</div>`; // dna-row-stats
 
-        html += `</div>`; // act-card-body
-
-        // ── Footer: MIME + Tech params (collapsible) ──
-        const footerParts: string[] = [];
+        // ── Right: expandable MIME + Tech params ──
+        html += `<div class="dna-row-details">`;
         if (supportedMimeTypes.length > 0) {
-            footerParts.push(`
+            html += `
                 <details class="collapsible inline-details" id="d-model-mime-${entryId}">
                     <summary>${tBi('MIME Types', 'MIME 类型')} (${supportedMimeTypes.length})</summary>
                     <div class="details-body">
@@ -895,10 +981,10 @@ export function buildModelDNACards(
                             ${supportedMimeTypes.map(mime => `<span class="mime-tag">${esc(mime)}</span>`).join('')}
                         </div>
                     </div>
-                </details>`);
+                </details>`;
         }
         if (cc) {
-            footerParts.push(`
+            html += `
                 <details class="collapsible inline-details" id="d-model-tech-${entryId}">
                     <summary>${tBi('Technical Params', '技术参数')}</summary>
                     <div class="details-body">
@@ -911,13 +997,15 @@ export function buildModelDNACards(
                             ${buildDNAField(tBi('stops', '停止词'), String(cc.stopPatternCount))}
                         </div>
                     </div>
-                </details>`);
+                </details>`;
         }
-        if (footerParts.length > 0) {
-            html += `<div class="act-card-footer" style="padding:var(--space-2) var(--space-3)">${footerParts.join('')}</div>`;
+        if (supportedMimeTypes.length === 0 && !cc) {
+            html += `<span style="font-size:0.8em;color:var(--color-text-dim);opacity:0.5">${tBi('No additional info', '暂无更多信息')}</span>`;
         }
+        html += `</div>`; // dna-row-details
 
-        html += `</div>`; // act-model-card
+        html += `</div>`; // dna-row-body
+        html += `</div>`; // dna-row-card
     }
 
     html += `</div>`;

@@ -8,6 +8,33 @@
 
 ---
 
+## 模型信息卡片横向行式布局重构 — 2026-05-05
+
+### 改进 / Improved
+
+- **模型卡片从网格布局改为横向行式布局 / Model Info Cards: Grid to Horizontal Row Layout**:
+  Models 标签页的「模型信息」卡片从 `act-cards-grid`（2 列自适应网格）重构为 `dna-row-list`（单列全宽行）。每个模型独占一行，内部分为左右两栏：
+
+  - **左栏**（`dna-row-stats`，150-200px）：紧凑的统计数据（调用、步骤、积分、重试、错误）
+  - **右栏**（`dna-row-details`，弹性填充）：可折叠的 MIME 类型和技术参数
+
+  解决了旧网格布局下展开 MIME 类型或技术参数后卡片高度失控、多卡片同行时布局不协调的问题。
+
+  Model Info cards redesigned from 2-column auto-fill grid to full-width horizontal rows. Each model takes one row with left stats column (150-200px) and right expandable details (flex fill). Fixes layout distortion when expanding MIME types or technical parameters.
+
+  - Provider 和 responseModel 信息整合到卡片头部行，不再占用独立的 meta bar
+  - 左侧彩色边框标识不同模型（6色循环）
+  - 窄屏（`<380px`）自动切换为上下堆叠布局
+  - 无额外信息时显示"暂无更多信息"占位文本
+
+### 统计 / Stats
+
+- **Files changed**: 1 (`src/pricing-panel.ts`)
+- **TypeScript compile**: Zero errors
+- **New CSS classes**: `.dna-row-list`, `.dna-row-card`, `.dna-row-header`, `.dna-row-body`, `.dna-row-stats`, `.dna-row-details`
+
+---
+
 ## 上下文情报容器滚动穿透修复 + 间距优化 — 2026-05-05
 
 ### 修复 / Fixed
