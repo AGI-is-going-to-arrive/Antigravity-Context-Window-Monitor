@@ -1743,14 +1743,14 @@ export function getGMDataTabStyles(): string {
         margin-bottom: var(--space-4);
         max-height: 400px;
         overflow-y: auto;
+        overscroll-behavior: contain;
         border: 1px solid var(--color-amber-border-dim);
         border-radius: var(--radius-lg);
         background: rgba(251,191,36,0.015);
-        padding: var(--space-3);
+        padding: var(--space-3) var(--space-6);
+        scrollbar-width: none;
     }
-    .cp-viewer::-webkit-scrollbar { width: 4px; }
-    .cp-viewer::-webkit-scrollbar-track { background: transparent; }
-    .cp-viewer::-webkit-scrollbar-thumb { background: rgba(251,191,36,0.25); border-radius: var(--radius-full); }
+    .cp-viewer::-webkit-scrollbar { display: none; }
     .cp-card {
         border: 1px solid var(--color-amber-border);
         border-radius: var(--radius-md);
@@ -1823,6 +1823,7 @@ export function getGMDataTabStyles(): string {
         color: var(--color-text);
         max-height: 280px;
         overflow-y: auto;
+        overscroll-behavior: contain;
         white-space: pre-wrap;
         word-break: break-word;
     }

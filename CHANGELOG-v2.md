@@ -8,6 +8,39 @@
 
 ---
 
+## 上下文情报容器滚动穿透修复 + 间距优化 — 2026-05-05
+
+### 修复 / Fixed
+
+- **展开容器后滚动穿透到整个页面 / Scroll Leak Through to Page**:
+  展开「上下文情报」区块后，内部卡片列表滚动到底部时继续滚轮操作会导致整个 WebView 页面跟着滚动。
+
+  Root cause: `.cp-viewer`（`max-height: 400px; overflow-y: auto`）和 `.cp-card-body`（`max-height: 280px`）均缺少 `overscroll-behavior: contain`，滚动到达边界后事件自然冒泡到页面级。
+
+  **修复**: 对 `.cp-viewer` 和 `.cp-card-body` 均添加 `overscroll-behavior: contain`，滚动在容器边界处截止，不再穿透。
+
+  Fix: Added `overscroll-behavior: contain` to both `.cp-viewer` and `.cp-card-body` to prevent scroll chaining to the page.
+
+### 改进 / Improved
+
+- **隐藏滚动条保留滑动 / Hidden Scrollbar with Swipe Support**:
+  `.cp-viewer` 容器滚动条完全隐藏（`scrollbar-width: none` + `::-webkit-scrollbar { display: none }`），保留鼠标滚轮和触控板滑动功能，视觉更干净。`.cp-card-body` 保留 4px 细滚动条（单卡内容可能很长，需要位置指示）。
+
+  Hidden scrollbar on `.cp-viewer` (still scrollable via wheel/trackpad). `.cp-card-body` retains thin 4px scrollbar for position indication in long content.
+
+- **卡片两侧间距加宽 / Wider Card Side Padding**:
+  `.cp-viewer` 左右内边距从 `var(--space-3)`（12px）增大到 `var(--space-6)`（24px），在卡片两侧形成更宽的沟槽区域，方便鼠标放在边缘进行滚动操作。
+
+  Increased `.cp-viewer` horizontal padding from 12px to 24px, creating wider gutters on card sides for comfortable mouse scrolling.
+
+### 统计 / Stats
+
+- **Files changed**: 1 (`src/activity-panel.ts`)
+- **TypeScript compile**: Zero errors
+- **CSS properties added**: `overscroll-behavior: contain`, `scrollbar-width: none`
+
+---
+
 ## 状态栏影子模型修复 + Checkpoint 模型透明化 — 2026-05-05
 
 ### 修复 / Fixed
