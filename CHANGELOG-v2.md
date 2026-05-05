@@ -8,6 +8,65 @@
 
 ---
 
+## 工具目录 UX 优化 + 清空功能 — 2026-05-05
+
+### 改进 / Improved
+
+- **工具目录可折叠 / Collapsible Tool Catalog**:
+  工具目录从静态列表改为 `<details>/<summary>` 可折叠结构，展开状态通过 `restoreDetailsState()` 跨刷新持久化。header 含旋转箭头动画（`▸`）、书本 SVG 图标、数量 badge。
+
+  Tool catalog converted to collapsible `<details>` element with state persistence via `restoreDetailsState()`.
+
+- **CSS Grid 布局 / Grid Layout for Chips**:
+  工具 chips 从 `flex-wrap` 改为 CSS Grid（`repeat(auto-fill, minmax(140px, 1fr))`），确保整齐对齐。
+
+  Chips layout changed from flex-wrap to CSS Grid for uniform alignment.
+
+- **智能 Tooltip / Intelligent Tooltips**:
+  `bindToolCatalogTooltips()` 在 `mouseenter` 时动态检测文本是否截断（`scrollWidth > clientWidth`）：截断时 tooltip 显示「全名 — 描述」，未截断时仅显示描述。chip HTML 重构为双层结构：外层 `.tool-cat-chip`（`overflow: visible`，tooltip 定位）+ 内层 `.tool-cat-chip-text`（`overflow: hidden; text-overflow: ellipsis`，文本截断）。tooltip 最大宽度 200px + `word-break: break-word` 防溢出。
+
+  Dynamic truncation detection on `mouseenter`: truncated chips show "Full Name — Description", non-truncated show description only. Chip HTML refactored to dual-layer structure for tooltip rendering.
+
+- **排行名称 Chip 化 / Ranking Name Chip Styling**:
+  `.tool-rank-name` 添加 chip 风格外观：mono 字体 + 半透明背景 `rgba(255,255,255,0.04)` + 圆角边框 + hover 加深反馈，增加视觉层级感。
+
+  `.tool-rank-name` styled as chips: mono font + semi-transparent bg + rounded border + hover darkening for visual depth.
+
+### 新增 / Added
+
+- **清空目录功能 / Clear Catalog Feature**:
+  工具目录底部新增右对齐「清空目录」按钮（默认低透明度，hover 变红色），仅清空持久化的工具目录数据，不影响工具调用排行。
+
+  New "Clear Catalog" button at catalog footer. Clears only persisted tool inventory; call ranking unaffected.
+
+  | 层级 | 改动 |
+  |---|---|
+  | `GMTracker.clearToolCatalog()` | 清空 `_persistedToolCatalogByAccount`，patch `_lastSummary.toolCatalog=[]`（避免 `serialize()` → `_buildSummary()` 重建撤销清空）|
+  | `extension.ts` | 注册 VS Code command，同步更新模块级 `lastGMSummary` 后持久化 |
+  | `webview-panel.ts` | 处理 `clearToolCatalog` webview 消息，委托 VS Code command + 刷新面板 |
+  | `webview-script.ts` | body click delegation 处理按钮点击 |
+
+### 修复 / Fixed
+
+- **`_buildSummary()` 工具目录写回副作用 / Tool Catalog Write-back Side Effect**:
+  `_buildSummary()` 行 647 无条件将重建的工具目录写回 `_persistedToolCatalogByAccount`。`getFullSummary()` 调用 `_buildSummary(true)` 绕过缓存，导致 `makePanelPayload()` 每次调用都撤销 `clearToolCatalog()` 的效果。
+
+  修正：写回逻辑加 `if (!skipAccountFilter)` 守卫，仅主路径（正常 poll 周期）写回，`getFullSummary()` / `getArchivalSummary()` 路径不写回。
+
+  Fix: `_buildSummary()` unconditionally wrote back rebuilt catalog, undoing `clearToolCatalog()` via `getFullSummary()` → `makePanelPayload()` chain. Added `!skipAccountFilter` guard so only the primary poll path persists catalog data.
+
+
+### 统计 / Stats
+
+- **Files changed**: 5 (`src/activity-panel.ts`, `src/extension.ts`, `src/gm/tracker.ts`, `src/webview-panel.ts`, `src/webview-script.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **New CSS classes**: `.tool-cat-footer`, `.tool-cat-clear-btn`, `.tool-cat-chip-text`
+- **New method**: `GMTracker.clearToolCatalog()`
+- **New command**: `antigravity-context-monitor.clearToolCatalog`
+
+---
+
 ## [1.16.2] Settings 持久化存储统计精简 — 2026-04-29
 
 ### 移除 / Removed

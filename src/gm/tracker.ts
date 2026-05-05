@@ -638,13 +638,19 @@ export class GMTracker {
         result.toolCatalog = [...toolCatalogMap.values()].sort((a, b) =>
             a.firstSeen.localeCompare(b.firstSeen),
         );
-        // Write back to a single shared bucket, consolidating all per-account data
-        const catalogPersist: Record<string, { firstSeen: string; description?: string }> = {};
-        for (const entry of result.toolCatalog) {
-            catalogPersist[entry.name] = { firstSeen: entry.firstSeen };
-            if (entry.description) { catalogPersist[entry.name].description = entry.description; }
+        // Write back to a single shared bucket, consolidating all per-account data.
+        // Only persist from the primary path (normal poll cycle). The full-summary path
+        // (skipAccountFilter=true, used by Cost tab / getFullSummary) must NOT write back,
+        // otherwise clearToolCatalog() gets instantly undone by makePanelPayload() calling
+        // getFullSummary() which always runs _buildSummary(true).
+        if (!skipAccountFilter) {
+            const catalogPersist: Record<string, { firstSeen: string; description?: string }> = {};
+            for (const entry of result.toolCatalog) {
+                catalogPersist[entry.name] = { firstSeen: entry.firstSeen };
+                if (entry.description) { catalogPersist[entry.name].description = entry.description; }
+            }
+            this._persistedToolCatalogByAccount = { '__shared__': catalogPersist };
         }
-        this._persistedToolCatalogByAccount = { '__shared__': catalogPersist };
 
         // Merge persisted baselines with fresh data (max-wins per tool)
         // This ensures tool counts survive restarts even if the API doesn't
@@ -1057,6 +1063,24 @@ export class GMTracker {
         this._lastSummary = null;
         this._lastFetchedAt = '';
         this._needsBaselineInit = true;
+    }
+
+    /**
+     * Clear only the tool catalog — removes all persisted tool inventory entries.
+     * Does NOT affect tool call counts (ranking) or any other tracking data.
+     * Use this to clean up stale tools that are no longer in use.
+     */
+    clearToolCatalog(): void {
+        this._persistedToolCatalogByAccount = {};
+        // Patch the cached summary's toolCatalog to empty instead of nulling _lastSummary.
+        // Nulling would force serialize() → _buildSummary() → repopulate from cached calls,
+        // instantly undoing the clear. Patching preserves the summary for serialize()
+        // while showing an empty catalog immediately. The next poll cycle's _buildSummary()
+        // will rebuild from active calls only (persisted is now empty, so historical tools
+        // that are no longer in the cache won't come back).
+        if (this._lastSummary) {
+            this._lastSummary = { ...this._lastSummary, toolCatalog: [] };
+        }
     }
 
     /**

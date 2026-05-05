@@ -549,6 +549,11 @@ export function showMonitorPanel(p: PanelPayload): void {
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }
+        } else if (msg.command === 'clearToolCatalog') {
+            await vscode.commands.executeCommand('antigravity-context-monitor.clearToolCatalog');
+            if (panel) {
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+            }
         }
     });
 

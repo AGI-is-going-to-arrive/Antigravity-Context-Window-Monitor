@@ -1936,11 +1936,22 @@ export function getGMDataTabStyles(): string {
     .tool-rank-name {
         width: 180px;
         flex-shrink: 0;
+        font-family: var(--font-mono);
         font-weight: 500;
+        font-size: 0.92em;
         color: var(--color-text);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        background: rgba(255, 255, 255, 0.04);
+        padding: 1px 7px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .tool-rank-name:hover {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.12);
     }
     .tool-rank-bar-wrap {
         flex: 1;
@@ -1996,7 +2007,6 @@ export function getGMDataTabStyles(): string {
         background: var(--color-surface);
         border: 1px solid var(--color-border);
         border-radius: var(--radius-md);
-        padding: var(--space-2) var(--space-3);
     }
     .tool-cat-header {
         display: flex;
@@ -2004,7 +2014,27 @@ export function getGMDataTabStyles(): string {
         gap: 6px;
         font-size: 0.82em;
         color: var(--color-text-dim);
-        margin-bottom: var(--space-2);
+        padding: var(--space-2) var(--space-3);
+        cursor: pointer;
+        user-select: none;
+        list-style: none;
+        transition: background 0.15s ease;
+    }
+    .tool-cat-header::-webkit-details-marker { display: none; }
+    .tool-cat-header::before {
+        content: '▸';
+        display: inline-block;
+        font-size: 0.7em;
+        transition: transform 0.2s ease;
+        opacity: 0.5;
+        flex-shrink: 0;
+    }
+    .tool-cat-section[open] > .tool-cat-header::before {
+        transform: rotate(90deg);
+        opacity: 0.8;
+    }
+    @media (hover: hover) {
+        .tool-cat-header:hover { background: var(--color-surface-hover); }
     }
     .tool-cat-header svg {
         width: 13px;
@@ -2012,28 +2042,85 @@ export function getGMDataTabStyles(): string {
         opacity: 0.6;
     }
     .tool-cat-chips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 5px;
+        padding: var(--space-2) var(--space-3);
     }
     .tool-cat-chip {
+        position: relative;
         font-family: var(--font-mono);
-        font-size: 0.78em;
-        padding: 2px 8px;
+        font-size: 0.75em;
+        padding: 3px 8px;
         border-radius: 10px;
         background: rgba(255, 255, 255, 0.05);
         border: 1px solid var(--color-border);
         color: var(--color-text);
-        white-space: nowrap;
+        text-align: center;
         transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .tool-cat-chip-text {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     .tool-cat-chip:hover {
         background: rgba(255, 255, 255, 0.1);
         border-color: var(--color-text-dim);
     }
-    /* Fix tooltip font size in nested contexts (prevent 0.68em × parent shrink) */
+    /* Tooltip for tool catalog chips */
     .tool-cat-chip[data-tooltip]::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 6px);
+        transform: translateX(-50%) scale(0.92);
+        padding: var(--space-1) var(--space-2);
+        background: var(--color-bg);
+        color: var(--color-text);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
         font-size: 12px;
+        font-weight: 400;
+        white-space: normal;
+        word-break: break-word;
+        max-width: 200px;
+        width: max-content;
+        text-align: center;
+        z-index: var(--z-tooltip, 500);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.15s ease, transform 0.15s ease;
+    }
+    .tool-cat-chip[data-tooltip]:hover::after {
+        opacity: 1;
+        transform: translateX(-50%) scale(1);
+    }
+    .tool-cat-footer {
+        display: flex;
+        justify-content: flex-end;
+        padding: var(--space-1) var(--space-3) var(--space-2);
+    }
+    .tool-cat-clear-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 0.72em;
+        color: var(--color-text-dim);
+        background: none;
+        border: 1px solid transparent;
+        border-radius: var(--radius-sm);
+        padding: 2px 8px;
+        cursor: pointer;
+        opacity: 0.5;
+        transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+    .tool-cat-clear-btn:hover {
+        opacity: 1;
+        color: #f87171;
+        border-color: rgba(248, 113, 113, 0.3);
     }
 
     `;
@@ -2855,18 +2942,26 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
         });
         const chips = sortedCatalog.map(entry => {
             const desc = toolDesc[entry.name] || '';
+            const nameAttr = ` data-tooltip-name="${esc(entry.name)}"`;
+            const descAttr = desc ? ` data-tooltip-desc="${esc(desc)}"` : '';
             const tooltipAttr = desc ? ` data-tooltip="${esc(desc)}"` : '';
-            return `<span class="tool-cat-chip"${tooltipAttr}>${esc(entry.name)}</span>`;
+            return `<span class="tool-cat-chip"${nameAttr}${descAttr}${tooltipAttr}><span class="tool-cat-chip-text">${esc(entry.name)}</span></span>`;
         }).join('');
         const catalogIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`;
-        catalogHtml = `<div class="tool-cat-section">
-            <div class="tool-cat-header">
+        catalogHtml = `<details class="tool-cat-section" id="toolCatSection">
+            <summary class="tool-cat-header">
                 ${catalogIcon}
                 ${tBi('Tool Catalog', '\u5de5\u5177\u76ee\u5f55')}
                 <span class="act-badge">${catalog.length}</span>
-            </div>
+            </summary>
             <div class="tool-cat-chips">${chips}</div>
-        </div>`;
+            <div class="tool-cat-footer">
+                <button class="tool-cat-clear-btn" id="clearToolCatalogBtn">
+                    <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/><path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/></svg>
+                    ${tBi('Clear Catalog', '\u6e05\u7a7a\u76ee\u5f55')}
+                </button>
+            </div>
+        </details>`;
     }
 
     return `<div class="tool-rank-section">

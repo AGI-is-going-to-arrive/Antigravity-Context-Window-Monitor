@@ -741,6 +741,17 @@ export function activate(context: vscode.ExtensionContext): void {
                 log('[Dev] Activity tracker state persisted to globalState');
             }
         }),
+        vscode.commands.registerCommand('antigravity-context-monitor.clearToolCatalog', () => {
+            gmTracker.clearToolCatalog();
+            // Update the module-level lastGMSummary with the patched summary (empty catalog)
+            // so makePanelPayload() doesn't serve stale data with the old catalog.
+            lastGMSummary = gmTracker.getCachedSummary();
+            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+            log('[UI] Tool catalog cleared');
+            if (isMonitorPanelVisible()) {
+                updateMonitorPanel(makePanelPayload());
+            }
+        }),
         statusBar,
         outputChannel
     );
