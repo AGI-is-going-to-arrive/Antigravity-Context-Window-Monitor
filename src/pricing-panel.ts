@@ -283,12 +283,46 @@ export function getPricingTabStyles(): string {
     }
 
     /* Bar chart rows */
+    .cost-bar-section {
+        background: rgba(255,255,255,0.015);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        padding: var(--space-2) var(--space-3);
+        margin-bottom: var(--space-2);
+    }
+    .cost-sub-header {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        font-size: 0.78em;
+        font-weight: 600;
+        color: var(--color-text-dim);
+        margin-bottom: var(--space-2);
+        padding-bottom: var(--space-1);
+        border-bottom: 1px solid var(--color-divider-subtle, var(--color-border));
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+    }
+    .cost-sub-header svg {
+        width: 13px;
+        height: 13px;
+        opacity: 0.6;
+        flex-shrink: 0;
+    }
     .cost-bar-row {
         display: flex;
         align-items: center;
         gap: var(--space-2);
         margin-bottom: var(--space-1);
         font-size: 0.88em;
+        padding: 2px 0;
+        border-radius: var(--radius-sm);
+        transition: background 0.1s ease;
+    }
+    @media (hover: hover) {
+        .cost-bar-row:hover {
+            background: rgba(255,255,255,0.03);
+        }
     }
     .cost-bar-label {
         min-width: 90px;
@@ -322,6 +356,10 @@ export function getPricingTabStyles(): string {
         font-size: 0.92em;
         color: var(--color-warn);
         flex-shrink: 0;
+        padding: 1px 6px;
+        border-radius: var(--radius-sm);
+        background: rgba(251,191,36,0.06);
+        border: 1px solid rgba(251,191,36,0.15);
     }
 
     /* Legend */
@@ -333,7 +371,7 @@ export function getPricingTabStyles(): string {
         color: var(--color-text-dim);
         margin-top: var(--space-2);
         padding-top: var(--space-2);
-        border-top: 1px solid var(--color-border-subtle);
+        border-top: 1px solid var(--color-border-subtle, var(--color-border));
     }
     .cost-legend-item {
         display: flex;
@@ -348,12 +386,15 @@ export function getPricingTabStyles(): string {
     }
 
     /* Per-model detail rows */
+    .cost-detail-section {
+        background: rgba(255,255,255,0.015);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        padding: var(--space-2) var(--space-3);
+    }
     .cost-detail-rows {
-        margin-top: var(--space-3);
-        padding-top: var(--space-2);
-        border-top: 1px solid var(--color-border-subtle);
         display: grid;
-        gap: var(--space-1);
+        gap: 2px;
     }
     .cost-detail-row {
         display: flex;
@@ -364,9 +405,12 @@ export function getPricingTabStyles(): string {
         font-size: 0.82em;
         transition: background 0.12s ease;
     }
+    .cost-detail-row:nth-child(odd) {
+        background: rgba(255,255,255,0.02);
+    }
     @media (hover: hover) {
         .cost-detail-row:hover {
-            background: rgba(255,255,255,0.03);
+            background: rgba(255,255,255,0.06);
         }
     }
     .cost-detail-name {
@@ -390,6 +434,10 @@ export function getPricingTabStyles(): string {
         gap: 3px;
         color: var(--color-text-dim);
         font-variant-numeric: tabular-nums;
+        padding: 1px 6px;
+        border-radius: var(--radius-sm);
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
     }
     .cost-detail-total {
         font-weight: 700;
@@ -397,7 +445,19 @@ export function getPricingTabStyles(): string {
         min-width: 55px;
         text-align: right;
         flex-shrink: 0;
+        padding: 1px 6px;
+        border-radius: var(--radius-sm);
+        background: rgba(251,191,36,0.06);
+        border: 1px solid rgba(251,191,36,0.15);
     }
+    body.vscode-light .cost-bar-section { background: rgba(0,0,0,0.015); }
+    body.vscode-light .cost-bar-row:hover { background: rgba(0,0,0,0.03); }
+    body.vscode-light .cost-bar-val { background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.15); }
+    body.vscode-light .cost-detail-section { background: rgba(0,0,0,0.015); }
+    body.vscode-light .cost-detail-row:nth-child(odd) { background: rgba(0,0,0,0.02); }
+    body.vscode-light .cost-detail-row:hover { background: rgba(0,0,0,0.05); }
+    body.vscode-light .cost-detail-item { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.06); }
+    body.vscode-light .cost-detail-total { color: #b45309; background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.15); }
 
     .cost-note {
         font-size: 0.78em;
@@ -405,68 +465,146 @@ export function getPricingTabStyles(): string {
         margin-top: var(--space-2);
         font-style: italic;
     }
+    /* ── Structured Info Bar ── */
+    .prc-info-bar {
+        display: flex;
+        gap: var(--space-2);
+        margin-top: var(--space-3);
+        padding: var(--space-2) var(--space-3);
+        background: rgba(148,163,184,0.06);
+        border: 1px solid rgba(148,163,184,0.12);
+        border-left: 3px solid rgba(148,163,184,0.35);
+        border-radius: var(--radius-md);
+        font-size: 0.78em;
+        color: var(--color-text-dim);
+        line-height: 1.6;
+    }
+    .prc-info-bar svg {
+        flex-shrink: 0;
+        width: 14px;
+        height: 14px;
+        margin-top: 2px;
+        opacity: 0.6;
+    }
+    .prc-info-bar-body {
+        flex: 1;
+        min-width: 0;
+    }
+    .prc-info-bar-body ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+    .prc-info-bar-body li {
+        position: relative;
+        padding-left: 12px;
+    }
+    .prc-info-bar-body li::before {
+        content: '·';
+        position: absolute;
+        left: 2px;
+        color: var(--color-text-dim);
+        opacity: 0.5;
+        font-weight: 700;
+    }
+    .prc-info-bar-body li + li {
+        margin-top: 1px;
+    }
+    .prc-info-bar .prc-info-date {
+        font-weight: 600;
+        opacity: 0.8;
+    }
+    .prc-info-bar.prc-info-warn {
+        background: rgba(251,191,36,0.05);
+        border-color: rgba(251,191,36,0.12);
+        border-left-color: rgba(251,191,36,0.35);
+    }
+    body.vscode-light .prc-info-bar {
+        background: rgba(0,0,0,0.02);
+        border-color: rgba(0,0,0,0.08);
+        border-left-color: rgba(100,116,139,0.3);
+    }
+    body.vscode-light .prc-info-bar.prc-info-warn {
+        background: rgba(217,119,6,0.04);
+        border-color: rgba(217,119,6,0.12);
+        border-left-color: rgba(217,119,6,0.3);
+    }
 
-    /* ── Editable Pricing Cards ── */
+    /* ── Editable Pricing Rows ── */
     .prc-edit-section {
         margin-bottom: var(--space-4);
     }
-    .prc-edit-grid {
+    .prc-edit-list {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        grid-template-columns: max-content 1fr;
         gap: var(--space-2);
         margin-bottom: var(--space-3);
     }
-    .prc-edit-card {
+    .prc-edit-row {
+        display: grid;
+        grid-template-columns: subgrid;
+        grid-column: 1 / -1;
+        align-items: stretch;
         background: var(--color-surface);
         border: 1px solid var(--color-border);
         border-radius: var(--radius-md);
-        padding: var(--space-3);
+        overflow: hidden;
         transition: border-color 0.15s cubic-bezier(.4,0,.2,1);
     }
     @media (hover: hover) {
-        .prc-edit-card:hover {
+        .prc-edit-row:hover {
             border-color: var(--color-border-hover);
         }
     }
-    .prc-edit-card-header {
+    .prc-edit-row.prc-edit-uncalled {
+        opacity: 0.55;
+    }
+    .prc-edit-row.prc-edit-uncalled:hover,
+    .prc-edit-row.prc-edit-uncalled:focus-within {
+        opacity: 1;
+    }
+    .prc-edit-row-left {
         display: flex;
-        justify-content: space-between;
         align-items: center;
-        margin-bottom: var(--space-2);
+        padding: var(--space-2) var(--space-3);
+        border-right: 1px solid var(--color-border);
+        background: rgba(255,255,255,0.015);
     }
     .prc-edit-card-name {
         font-weight: 600;
-        font-size: 0.95em;
+        font-size: 0.88em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
-    .prc-edit-source {
-        font-size: 0.78em;
-        font-weight: 600;
-    }
-    .prc-edit-source-custom { color: #fbbf24; }
-    .prc-edit-source-builtin { color: #34d399; }
-    .prc-edit-source-none { color: var(--color-text-dim); }
-    .prc-edit-fields {
+    .prc-edit-row-right {
+        flex: 1;
+        min-width: 0;
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: var(--space-2);
+        gap: 1px var(--space-3);
+        padding: var(--space-1) var(--space-3);
+        align-items: center;
     }
     .prc-edit-field {
         display: flex;
-        flex-direction: column;
-        gap: 3px;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 0;
     }
     .prc-edit-field-label {
-        font-size: 0.78em;
+        font-size: 0.75em;
         color: var(--color-text-dim);
-        text-transform: uppercase;
-        letter-spacing: 0.3px;
-        font-weight: 500;
+        white-space: nowrap;
+        min-width: 42px;
+        flex-shrink: 0;
     }
     .prc-edit-input {
         appearance: none;
         width: 100%;
-        padding: var(--space-1) var(--space-2);
-        font-size: 0.92em;
+        min-width: 45px;
+        padding: 2px var(--space-2);
+        font-size: 0.88em;
         font-family: inherit;
         text-align: right;
         background: var(--color-surface);
@@ -490,6 +628,8 @@ export function getPricingTabStyles(): string {
         opacity: 0.4;
         cursor: not-allowed;
     }
+    body.vscode-light .prc-edit-row.prc-edit-uncalled { opacity: 0.5; }
+    body.vscode-light .prc-edit-row-left { background: rgba(0,0,0,0.015); }
     .prc-edit-actions {
         display: flex;
         gap: var(--space-2);
@@ -707,9 +847,8 @@ export function getPricingTabStyles(): string {
     body.vscode-light .cost-chip { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.08); }
     body.vscode-light .cost-chip-total { color: #b45309; border-color: rgba(217,119,6,0.25); }
     body.vscode-light .cost-bar-track { background: rgba(0,0,0,0.05); }
-    body.vscode-light .cost-bar-val { color: #b45309; }
-    body.vscode-light .cost-detail-total { color: #b45309; }
-    body.vscode-light .cost-detail-row:hover { background: rgba(0,0,0,0.02); }
+    body.vscode-light .cost-bar-val { color: #b45309; background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.15); }
+    body.vscode-light .cost-detail-total { color: #b45309; background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.15); }
     body.vscode-light .prc-monthly-grand { background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.2); border-left-color: #d97706; }
     body.vscode-light .prc-monthly-grand-val { color: #b45309; }
     body.vscode-light .prc-monthly-model-cost { color: #b45309; }
@@ -765,7 +904,11 @@ function buildCostPanel(
     html += '</div>';
 
     // ── Bar chart (proportional per-model) ──
+    const chartSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`;
+    const detailSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
     if (priced.length > 0) {
+        html += `<div class="cost-bar-section">`;
+        html += `<div class="cost-sub-header">${chartSvg}${tBi('Cost Distribution', '费用分布')}</div>`;
         const maxCost = priced[0].totalCost;
         for (const r of priced) {
             const pct = maxCost > 0 ? (r.totalCost / maxCost) * 100 : 0;
@@ -794,10 +937,13 @@ function buildCostPanel(
             <span class="cost-legend-item"><span class="cost-legend-dot" style="background:#22d3ee"></span>${tBi('Cache', '缓存')}</span>
             <span class="cost-legend-item"><span class="cost-legend-dot" style="background:#fb923c"></span>${tBi('Thinking', '思考')}</span>
         </div>`;
+        html += `</div>`; // cost-bar-section
     }
 
-    // ── Per-model cost breakdown (compact rows, replaces old card grid) ──
+    // ── Per-model cost breakdown ──
     if (priced.length > 0) {
+        html += `<div class="cost-detail-section">`;
+        html += `<div class="cost-sub-header">${detailSvg}${tBi('Cost Breakdown', '费用明细')}</div>`;
         html += '<div class="cost-detail-rows">';
         for (const r of priced) {
             html += `<div class="cost-detail-row">
@@ -820,6 +966,7 @@ function buildCostPanel(
             </div>`;
         }
         html += '</div>';
+        html += '</div>'; // cost-detail-section
     }
 
     // Unpriced models note
@@ -830,10 +977,11 @@ function buildCostPanel(
         )}: ${unpriced.map(r => esc(r.name)).join(', ')}</p>`;
     }
 
-    html += `<p class="cost-note">${tBi(
+    const infoSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
+    html += `<div class="prc-info-bar prc-info-warn">${infoSvg}<span class="prc-info-bar-body">${tBi(
         'Costs are estimates based on the pricing table below. Actual billing may differ.',
-        '费用基于下方价格表估算。实际计费可能不同。',
-    )}</p>`;
+        '费用基于下方价格表估算，实际计费可能不同。',
+    )}</span></div>`;
 
     html += '</div>';
     return html;
@@ -1036,34 +1184,57 @@ function buildEditablePricingTable(
     merged: Record<string, ModelPricing>,
     custom: Record<string, ModelPricing>,
 ): string {
-    const entries = Object.entries(summary.modelBreakdown);
-    if (entries.length === 0) { return ''; }
+    // Merge called models + default pricing models
+    const calledEntries = Object.entries(summary.modelBreakdown);
+
+    // Build a set of DEFAULT_PRICING keys already covered by called models (fuzzy match)
+    const coveredDefaultKeys = new Set<string>();
+    for (const [, ms] of calledEntries) {
+        for (const defaultKey of Object.keys(merged)) {
+            if (ms.responseModel === defaultKey ||
+                ms.responseModel.startsWith(defaultKey) ||
+                defaultKey.startsWith(ms.responseModel) ||
+                ms.responseModel.includes(defaultKey) ||
+                defaultKey.includes(ms.responseModel.split('-').slice(0, 3).join('-'))) {
+                coveredDefaultKeys.add(defaultKey);
+            }
+        }
+    }
+
+    // Build unified list: called models first, then uncalled defaults
+    interface PricingEntry { name: string; responseModel: string; isCalled: boolean }
+    const allEntries: PricingEntry[] = [];
+    for (const [name, ms] of calledEntries) {
+        allEntries.push({ name, responseModel: ms.responseModel, isCalled: true });
+    }
+    for (const [model] of Object.entries(merged)) {
+        if (!coveredDefaultKeys.has(model)) {
+            const displayName = model.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            allEntries.push({ name: displayName, responseModel: model, isCalled: false });
+        }
+    }
+    if (allEntries.length === 0) { return ''; }
 
     const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'thinking'];
 
     let html = `<h2 class="act-section-title">${tBi('Custom Pricing', '自定义价格')} <span style="font-size:0.82em;color:var(--color-text-dim)">(${tBi('USD / 1M tokens', 'USD / 100万令牌')})</span></h2>`;
     html += `<div class="prc-edit-section">`;
-    html += `<div class="prc-edit-grid">`;
+    html += `<div class="prc-edit-list">`;
 
-    for (const [name, ms] of entries) {
-        const pricing = findPricing(ms.responseModel, merged);
-        const isCustom = !!custom[ms.responseModel];
+    for (const entry of allEntries) {
+        const pricing = findPricing(entry.responseModel, merged);
+        const isCustom = !!custom[entry.responseModel];
         const p = pricing || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
+        const uncalledClass = entry.isCalled ? '' : ' prc-edit-uncalled';
 
-        const sourceClass = isCustom ? 'prc-edit-source-custom' : pricing ? 'prc-edit-source-builtin' : 'prc-edit-source-none';
-        const sourceText = isCustom ? tBi('Custom', '自定义') : pricing ? tBi('Built-in', '内置') : tBi('None', '无');
-
-        html += `<div class="prc-edit-card">`;
-        html += `<div class="prc-edit-card-header">
-            <span class="prc-edit-card-name">${esc(name)}${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}</span>
-            <span class="prc-edit-source ${sourceClass}">${sourceText}</span>
-        </div>`;
-        html += `<div class="prc-edit-fields">`;
+        html += `<div class="prc-edit-row${uncalledClass}">`;
+        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" data-tooltip="${esc(entry.responseModel)}">${esc(entry.name)}${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}</span></div>`;
+        html += `<div class="prc-edit-row-right">`;
         for (const f of fields) {
             const [en, zh] = FIELD_LABELS[f] || [f, f];
             html += `<div class="prc-edit-field">
                 <span class="prc-edit-field-label">${tBi(en, zh)}</span>
-                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(ms.responseModel)}" data-field="${f}" value="${p[f]}" step="0.01" min="0">
+                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(entry.responseModel)}" data-field="${f}" value="${p[f]}" step="0.01" min="0">
             </div>`;
         }
         html += `</div></div>`;
@@ -1075,10 +1246,12 @@ function buildEditablePricingTable(
         <button class="prc-btn" id="pricingResetBtn">${tBi('Reset to Default', '恢复默认')}</button>
         <span class="prc-feedback" id="pricingFeedback"></span>
     </div>`;
-    html += `<p class="prc-note">${tBi(
-        `Edit prices above and click Save. Changes are persisted across sessions. Reset restores built-in defaults. Default prices last updated: ${PRICING_LAST_UPDATED}.`,
-        `编辑上方价格后点击保存。修改跨会话持久化。重置恢复内置默认值。默认价格最后更新：${PRICING_LAST_UPDATED}。`
-    )}</p>`;
+    const infoSvg2 = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
+    html += `<div class="prc-info-bar">${infoSvg2}<div class="prc-info-bar-body"><ul>
+        <li>${tBi('Edit prices above and click <b>Save</b>. Changes persist across sessions.', '编辑上方价格后点击<b>保存</b>，修改跨会话持久化。')}</li>
+        <li>${tBi('<b>Reset</b> restores built-in default prices.', '<b>恢复默认</b>将还原内置价格。')}</li>
+        <li>${tBi('Default prices last updated:', '默认价格最后更新：')} <span class="prc-info-date">${PRICING_LAST_UPDATED}</span></li>
+    </ul></div></div>`;
     html += `</div>`;
     return html;
 }
@@ -1094,19 +1267,15 @@ function buildDefaultPricingTable(
     const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'thinking'];
 
     let html = `<h2 class="act-section-title">${tBi('Custom Pricing', '自定义价格')} <span style="font-size:0.82em;color:var(--color-text-dim)">(${tBi('USD / 1M tokens', 'USD / 100万令牌')})</span></h2>`;
-    html += `<div class="prc-edit-section"><div class="prc-edit-grid">`;
+    html += `<div class="prc-edit-section"><div class="prc-edit-list">`;
 
     for (const [model, p] of entries) {
         const isCustom = !!custom[model];
-        const sourceClass = isCustom ? 'prc-edit-source-custom' : 'prc-edit-source-builtin';
-        const sourceText = isCustom ? tBi('Custom', '自定义') : tBi('Built-in', '内置');
+        const displayName = model.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-        html += `<div class="prc-edit-card">`;
-        html += `<div class="prc-edit-card-header">
-            <span class="prc-edit-card-name">${esc(model)}${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}</span>
-            <span class="prc-edit-source ${sourceClass}">${sourceText}</span>
-        </div>`;
-        html += `<div class="prc-edit-fields">`;
+        html += `<div class="prc-edit-row">`;
+        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" data-tooltip="${esc(model)}">${esc(displayName)}${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}</span></div>`;
+        html += `<div class="prc-edit-row-right">`;
         for (const f of fields) {
             const [en, zh] = FIELD_LABELS[f] || [f, f];
             html += `<div class="prc-edit-field">
@@ -1119,10 +1288,11 @@ function buildDefaultPricingTable(
 
     html += `</div>`;
     html += `<div class="prc-edit-actions"><button class="prc-btn prc-btn-primary" id="pricingSaveBtn">${tBi('Save Prices', '保存价格')}</button><button class="prc-btn" id="pricingResetBtn">${tBi('Reset to Default', '恢复默认')}</button><span class="prc-feedback" id="pricingFeedback"></span></div>`;
-    html += `<p class="prc-note">${tBi(
-        `Edit prices above and click Save. Changes are persisted across sessions. Default prices last updated: ${PRICING_LAST_UPDATED}.`,
-        `编辑上方价格后点击保存。修改跨会话持久化。默认价格最后更新：${PRICING_LAST_UPDATED}。`
-    )}</p></div>`;
+    const infoSvg3 = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
+    html += `<div class="prc-info-bar">${infoSvg3}<div class="prc-info-bar-body"><ul>
+        <li>${tBi('Edit prices above and click <b>Save</b>. Changes persist across sessions.', '编辑上方价格后点击<b>保存</b>，修改跨会话持久化。')}</li>
+        <li>${tBi('Default prices last updated:', '默认价格最后更新：')} <span class="prc-info-date">${PRICING_LAST_UPDATED}</span></li>
+    </ul></div></div></div>`;
     return html;
 }
 

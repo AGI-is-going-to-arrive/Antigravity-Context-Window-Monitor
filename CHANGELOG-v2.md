@@ -6,6 +6,44 @@
 > This file tracks incremental updates starting from v1.15.2.  
 > For historical versions, see [`CHANGELOG.md`](./CHANGELOG.md) (v1.0.0 – v1.15.1).
 
+## 成本标签页视觉层次优化 + 自定义价格表重构 — 2026-05-05
+
+### 改进 / Improved
+
+- **费用分析面板层次化设计 / Cost Analysis Visual Hierarchy**:
+  费用分布和费用明细区域从平面行列升级为带圆角边框的独立子容器（`.cost-bar-section`、`.cost-detail-section`），配合子标题行（SVG 图标 + 大写标签）划分视觉区域。
+
+  - 柱状图价格值和明细总计改为 chip 样式（琥珀色半透明背景 + 边框）
+  - 明细行内费用项添加独立 chip 容器，奇数行交替底色
+  - 柱状行增加 hover 高亮效果
+  - 所有新样式均有浅色主题适配
+
+- **底部提示文本结构化 / Footer Notes → Structured Info Bars**:
+  `cost-note` 和 `prc-note` 裸 `<p>` 标签替换为 `.prc-info-bar` 组件 — 带左侧彩色边框 + SVG 信息图标 + 结构化要点列表。费用估算声明使用琥珀色变体（`.prc-info-warn`）突出警示。
+
+- **自定义价格表横向行式布局 / Pricing Table: Card Grid → Horizontal Rows**:
+  从 `prc-edit-grid`（2 列卡片网格）重构为 `prc-edit-list`（单列行式），每行左右分栏：
+  - **左栏**：模型名（CSS `subgrid` + `max-content` 自动对齐最宽名称）
+  - **右栏**：2x2 网格排列4个价格字段（标签 + 输入框同行）
+  - 移除来源标签（内置/自定义），简化视觉
+
+- **成本标签颜色更换 / Cost Tab Color: Purple → Blue**:
+  从紫色（`#a78bfa`）改为蓝色（`#60a5fa`），更专业、与金融/分析主题契合。
+
+### 修复 / Fixed
+
+- **未调用模型缺失问题 / Uncalled Models Missing from Pricing Table**:
+  `buildEditablePricingTable` 仅显示 `modelBreakdown` 中已调用的模型。现在合并 `DEFAULT_PRICING` 键值，未调用模型以半透明样式追加在列表末尾（hover/focus 时恢复全透明度），确保所有已知模型均可编辑价格。
+
+- **价格表模型重复问题 / Duplicate Model Entries**:
+  去重逻辑从精确匹配（`Set.has`）改为模糊匹配（前缀/子串），避免 `claude-opus-4-6`（DEFAULT_PRICING key）和 `claude-opus-4-6-20250625`（实际 responseModel）作为两个独立条目出现。
+
+### 统计 / Stats
+
+- **Files changed**: 2 (`src/pricing-panel.ts`, `src/webview-panel.ts`)
+- **TypeScript compile**: Zero errors
+- **New CSS classes**: `.cost-bar-section`, `.cost-detail-section`, `.cost-sub-header`, `.prc-info-bar`, `.prc-info-warn`, `.prc-edit-list`, `.prc-edit-row`, `.prc-edit-row-left`, `.prc-edit-row-right`, `.prc-edit-uncalled`
+
 ---
 
 ## 模型信息卡片横向行式布局重构 — 2026-05-05
