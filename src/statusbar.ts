@@ -45,6 +45,38 @@ function escapeMarkdown(text: string): string {
     return text.replace(/([|*_~`\[\]\\#<>])/g, '\\$1');
 }
 
+/**
+ * Shorten a raw shadow model ID to a human-readable label.
+ * e.g. MODEL_PLACEHOLDER_M50 → "M50"
+ *      MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE → "Gemini 2.5 Flash Lite"
+ *      Already short IDs are returned as-is.
+ */
+function shortenShadowModelId(raw: string): string {
+    if (!raw) { return ''; }
+    // MODEL_PLACEHOLDER_Mxx → Mxx
+    const placeholderMatch = raw.match(/^MODEL_PLACEHOLDER_(M\d+)$/);
+    if (placeholderMatch) { return placeholderMatch[1]; }
+    // MODEL_GOOGLE_GEMINI_x_y_z → Gemini x.y z (capitalize words)
+    if (raw.startsWith('MODEL_GOOGLE_GEMINI_')) {
+        const tail = raw.replace('MODEL_GOOGLE_GEMINI_', '');
+        // Convert underscored segments: 2_5_FLASH_LITE → 2.5 Flash Lite
+        const parts = tail.split('_');
+        const result: string[] = [];
+        for (let i = 0; i < parts.length; i++) {
+            const p = parts[i];
+            // Merge consecutive digits with dot: "2","5" → "2.5"
+            if (i > 0 && /^\d+$/.test(p) && /^\d+$/.test(parts[i - 1])) {
+                result[result.length - 1] += `.${p}`;
+            } else {
+                result.push(p.charAt(0).toUpperCase() + p.slice(1).toLowerCase());
+            }
+        }
+        return `Gemini ${result.join(' ')}`;
+    }
+    // Fallback: strip MODEL_ prefix if present
+    return raw.replace(/^MODEL_/, '');
+}
+
 export interface CompressionStats {
     source: 'context' | 'checkpoint';
     dropTokens: number;
@@ -339,7 +371,10 @@ export class StatusBarManager {
         lines.push(`——————————`);
 
         if (usage.lastModelUsage) {
-            lines.push(`📎 ${t('tooltip.lastCheckpoint')}:`);
+            const cpLabel = usage.checkpointModel
+                ? ` (${escapeMarkdown(shortenShadowModelId(usage.checkpointModel))})`
+                : '';
+            lines.push(`📎 ${t('tooltip.lastCheckpoint')}:${cpLabel}`);
             lines.push(`  ${t('tooltip.input')}: ${usage.lastModelUsage.inputTokens.toLocaleString()}`);
             lines.push(`  ${t('tooltip.output')}: ${usage.lastModelUsage.outputTokens.toLocaleString()}`);
             if (usage.lastModelUsage.cacheReadTokens > 0) {

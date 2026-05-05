@@ -164,6 +164,37 @@ export function getStyles(): string {
             background: transparent !important;
         }
 
+        /* ─── Empty State Messages ─── */
+        .empty-msg {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            margin: var(--space-3) 0;
+            padding: var(--space-3) var(--space-4);
+            background: rgba(148,163,184,0.06);
+            border: 1px solid rgba(148,163,184,0.12);
+            border-left: 3px solid rgba(148,163,184,0.3);
+            border-radius: var(--radius-md);
+            font-size: 0.85em;
+            color: var(--color-text-dim);
+            line-height: 1.5;
+        }
+        .empty-msg::before {
+            content: '';
+            flex-shrink: 0;
+            width: 16px;
+            height: 16px;
+            opacity: 0.5;
+            background: currentColor;
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cline x1='12' y1='16' x2='12' y2='12'/%3E%3Cline x1='12' y1='8' x2='12.01' y2='8'/%3E%3C/svg%3E") center / contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cline x1='12' y1='16' x2='12' y2='12'/%3E%3Cline x1='12' y1='8' x2='12.01' y2='8'/%3E%3C/svg%3E") center / contain no-repeat;
+        }
+        body.vscode-light .empty-msg {
+            background: rgba(0,0,0,0.02);
+            border-color: rgba(0,0,0,0.08);
+            border-left-color: rgba(100,116,139,0.25);
+        }
+
         /* ─── End-of-Content Indicator ─── */
         .eoc-sentinel {
             display: flex;

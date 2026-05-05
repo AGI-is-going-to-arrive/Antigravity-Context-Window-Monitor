@@ -101,6 +101,8 @@ export interface TokenUsageResult {
     checkpointCompressionDetected: boolean;
     /** Size of the inputTokens drop between consecutive checkpoints (0 if none) */
     checkpointCompressionDrop: number;
+    /** Model ID from the last checkpoint's modelUsage (shadow model, e.g. M50 Flash Lite) */
+    checkpointModel: string;
 }
 
 // ─── Token Estimation from Text ──────────────────────────────────────────────
@@ -155,6 +157,8 @@ export interface ContextUsage {
     previousContextUsed?: number;
     /** True when step data may be incomplete (batch fetch gaps) */
     hasGaps: boolean;
+    /** Shadow model used by the last checkpoint (e.g. M50 Flash Lite) for transparency */
+    checkpointModel: string;
     // ─── Extended Transparency Fields ─────────────────────────────────────
     /** Created time of the trajectory */
     createdTime: string;
@@ -441,12 +445,12 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
             });
         }
 
-        // Track the latest model used (for dynamic model switching)
-        if (stepModel) { model = stepModel; }
-
-        // Checkpoint modelUsage.model has higher priority than generatorModel
-        if (lastModelUsage && lastModelUsage.model) {
-            model = lastModelUsage.model;
+        // Track the latest model used (for dynamic model switching).
+        // Skip CHECKPOINT steps — their generatorModel belongs to internal
+        // shadow models (e.g. M50 Flash Lite for title/intent/compression).
+        // Display model should only reflect user-facing model selections.
+        if (stepModel && stepType !== StepType.CHECKPOINT) {
+            model = stepModel;
         }
 
         // requestedModel is highest priority (user's explicit selection)
@@ -472,6 +476,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
             hasGaps: false,
             checkpointCompressionDetected,
             checkpointCompressionDrop,
+            checkpointModel: lastModelUsage.model,
         };
     }
 
@@ -492,6 +497,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         hasGaps: false,
         checkpointCompressionDetected: false,
         checkpointCompressionDrop: 0,
+        checkpointModel: '',
     };
 }
 
@@ -733,6 +739,7 @@ export async function getContextUsage(
         compressionDetected: result.checkpointCompressionDetected,
         checkpointCompressionDrop: result.checkpointCompressionDrop,
         hasGaps: result.hasGaps,
+        checkpointModel: result.checkpointModel,
         // Extended transparency fields
         createdTime: trajectory.createdTime,
         lastUserInputTime: trajectory.lastUserInputTime,

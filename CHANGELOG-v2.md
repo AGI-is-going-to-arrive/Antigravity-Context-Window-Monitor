@@ -6,6 +6,212 @@
 > This file tracks incremental updates starting from v1.15.2.  
 > For historical versions, see [`CHANGELOG.md`](./CHANGELOG.md) (v1.0.0 – v1.15.1).
 
+## 成本标签页视觉层次优化 + 自定义价格表重构 — 2026-05-05
+
+### 改进 / Improved
+
+- **费用分析面板层次化设计 / Cost Analysis Visual Hierarchy**:
+  费用分布和费用明细区域从平面行列升级为带圆角边框的独立子容器（`.cost-bar-section`、`.cost-detail-section`），配合子标题行（SVG 图标 + 大写标签）划分视觉区域。
+
+  - 柱状图价格值和明细总计改为 chip 样式（琥珀色半透明背景 + 边框）
+  - 明细行内费用项添加独立 chip 容器，奇数行交替底色
+  - 柱状行增加 hover 高亮效果
+  - 所有新样式均有浅色主题适配
+
+- **底部提示文本结构化 / Footer Notes → Structured Info Bars**:
+  `cost-note` 和 `prc-note` 裸 `<p>` 标签替换为 `.prc-info-bar` 组件 — 带左侧彩色边框 + SVG 信息图标 + 结构化要点列表。费用估算声明使用琥珀色变体（`.prc-info-warn`）突出警示。
+
+- **自定义价格表横向行式布局 / Pricing Table: Card Grid → Horizontal Rows**:
+  从 `prc-edit-grid`（2 列卡片网格）重构为 `prc-edit-list`（单列行式），每行左右分栏：
+  - **左栏**：模型名（CSS `subgrid` + `max-content` 自动对齐最宽名称）
+  - **右栏**：2x2 网格排列4个价格字段（标签 + 输入框同行）
+  - 移除来源标签（内置/自定义），简化视觉
+
+- **成本标签颜色更换 / Cost Tab Color: Purple → Blue**:
+  从紫色（`#a78bfa`）改为蓝色（`#60a5fa`），更专业、与金融/分析主题契合。
+
+### 修复 / Fixed
+
+- **未调用模型缺失问题 / Uncalled Models Missing from Pricing Table**:
+  `buildEditablePricingTable` 仅显示 `modelBreakdown` 中已调用的模型。现在合并 `DEFAULT_PRICING` 键值，未调用模型以半透明样式追加在列表末尾（hover/focus 时恢复全透明度），确保所有已知模型均可编辑价格。
+
+- **价格表模型重复问题 / Duplicate Model Entries**:
+  去重逻辑从精确匹配（`Set.has`）改为模糊匹配（前缀/子串），避免 `claude-opus-4-6`（DEFAULT_PRICING key）和 `claude-opus-4-6-20250625`（实际 responseModel）作为两个独立条目出现。
+
+### 统计 / Stats
+
+- **Files changed**: 2 (`src/pricing-panel.ts`, `src/webview-panel.ts`)
+- **TypeScript compile**: Zero errors
+- **New CSS classes**: `.cost-bar-section`, `.cost-detail-section`, `.cost-sub-header`, `.prc-info-bar`, `.prc-info-warn`, `.prc-edit-list`, `.prc-edit-row`, `.prc-edit-row-left`, `.prc-edit-row-right`, `.prc-edit-uncalled`
+
+---
+
+## 模型信息卡片横向行式布局重构 — 2026-05-05
+
+### 改进 / Improved
+
+- **模型卡片从网格布局改为横向行式布局 / Model Info Cards: Grid to Horizontal Row Layout**:
+  Models 标签页的「模型信息」卡片从 `act-cards-grid`（2 列自适应网格）重构为 `dna-row-list`（单列全宽行）。每个模型独占一行，内部分为左右两栏：
+
+  - **左栏**（`dna-row-stats`，150-200px）：紧凑的统计数据（调用、步骤、积分、重试、错误）
+  - **右栏**（`dna-row-details`，弹性填充）：可折叠的 MIME 类型和技术参数
+
+  解决了旧网格布局下展开 MIME 类型或技术参数后卡片高度失控、多卡片同行时布局不协调的问题。
+
+  Model Info cards redesigned from 2-column auto-fill grid to full-width horizontal rows. Each model takes one row with left stats column (150-200px) and right expandable details (flex fill). Fixes layout distortion when expanding MIME types or technical parameters.
+
+  - Provider 和 responseModel 信息整合到卡片头部行，不再占用独立的 meta bar
+  - 左侧彩色边框标识不同模型（6色循环）
+  - 窄屏（`<380px`）自动切换为上下堆叠布局
+  - 无额外信息时显示"暂无更多信息"占位文本
+
+### 统计 / Stats
+
+- **Files changed**: 1 (`src/pricing-panel.ts`)
+- **TypeScript compile**: Zero errors
+- **New CSS classes**: `.dna-row-list`, `.dna-row-card`, `.dna-row-header`, `.dna-row-body`, `.dna-row-stats`, `.dna-row-details`
+
+---
+
+## 上下文情报容器滚动穿透修复 + 间距优化 — 2026-05-05
+
+### 修复 / Fixed
+
+- **展开容器后滚动穿透到整个页面 / Scroll Leak Through to Page**:
+  展开「上下文情报」区块后，内部卡片列表滚动到底部时继续滚轮操作会导致整个 WebView 页面跟着滚动。
+
+  Root cause: `.cp-viewer`（`max-height: 400px; overflow-y: auto`）和 `.cp-card-body`（`max-height: 280px`）均缺少 `overscroll-behavior: contain`，滚动到达边界后事件自然冒泡到页面级。
+
+  **修复**: 对 `.cp-viewer` 和 `.cp-card-body` 均添加 `overscroll-behavior: contain`，滚动在容器边界处截止，不再穿透。
+
+  Fix: Added `overscroll-behavior: contain` to both `.cp-viewer` and `.cp-card-body` to prevent scroll chaining to the page.
+
+### 改进 / Improved
+
+- **隐藏滚动条保留滑动 / Hidden Scrollbar with Swipe Support**:
+  `.cp-viewer` 容器滚动条完全隐藏（`scrollbar-width: none` + `::-webkit-scrollbar { display: none }`），保留鼠标滚轮和触控板滑动功能，视觉更干净。`.cp-card-body` 保留 4px 细滚动条（单卡内容可能很长，需要位置指示）。
+
+  Hidden scrollbar on `.cp-viewer` (still scrollable via wheel/trackpad). `.cp-card-body` retains thin 4px scrollbar for position indication in long content.
+
+- **卡片两侧间距加宽 / Wider Card Side Padding**:
+  `.cp-viewer` 左右内边距从 `var(--space-3)`（12px）增大到 `var(--space-6)`（24px），在卡片两侧形成更宽的沟槽区域，方便鼠标放在边缘进行滚动操作。
+
+  Increased `.cp-viewer` horizontal padding from 12px to 24px, creating wider gutters on card sides for comfortable mouse scrolling.
+
+### 统计 / Stats
+
+- **Files changed**: 1 (`src/activity-panel.ts`)
+- **TypeScript compile**: Zero errors
+- **CSS properties added**: `overscroll-behavior: contain`, `scrollbar-width: none`
+
+---
+
+## 状态栏影子模型修复 + Checkpoint 模型透明化 — 2026-05-05
+
+### 修复 / Fixed
+
+- **影子模型污染状态栏显示 / Shadow Model Polluting Status Bar**:
+  状态栏 tooltip 的「模型」字段会显示 `MODEL_PLACEHOLDER_M50`（Flash Lite 影子模型），而非用户实际使用的主模型（如 Claude Opus 4.6）。
+
+  **根因**: `processSteps()` 的模型追踪逻辑中，CHECKPOINT 步骤的 `generatorModel` 和 `lastModelUsage.model` 会覆盖顶层 `model` 字段。当 M50 的 CHECKPOINT 出现在步骤序列末尾时（新对话或上下文压缩后），显示模型被污染为 M50。
+
+  **修复**: 结构性隔离 — CHECKPOINT 步骤一律不参与显示模型追踪（`stepType !== StepType.CHECKPOINT`）。同时移除 `lastModelUsage.model → model` 覆盖路径。`lastModelUsage` 仍正常用于 token 计算。此方案不依赖模型名称匹配，任何未来新增的影子模型都自动被排除。
+
+  Status bar tooltip showed `MODEL_PLACEHOLDER_M50` (shadow model) instead of the user's actual model. Root cause: CHECKPOINT steps' `generatorModel` and `modelUsage.model` overrode the display model. Fix: structural isolation — CHECKPOINT steps never participate in display model tracking. Future-proof without hardcoded model ID patterns.
+
+  模型优先级（修复后）:
+  1. `requestedModel`（用户选择）
+  2. `generatorModel`（仅非 CHECKPOINT 步骤）
+  3. `trajectory.requestedModel || trajectory.generatorModel`（对话级兜底）
+
+### 新增 / Added
+
+- **Checkpoint 影子模型透明化 / Checkpoint Shadow Model Transparency**:
+  状态栏 tooltip 的「最近 checkpoint」行旁显示影子模型标识（如 `(M50)`），方便观测影子模型变化。
+
+  Status bar tooltip now shows the shadow model identifier next to "Last Checkpoint" (e.g. `(M50)`), enabling visibility into shadow model changes.
+
+  | 数据链路 | 改动 |
+  |---|---|
+  | `TokenUsageResult.checkpointModel` | 新增字段，从 `lastModelUsage.model` 捕获 |
+  | `ContextUsage.checkpointModel` | 新增字段，透传到 UI 层 |
+  | `shortenShadowModelId()` | 新增工具函数，将原始 ID 转为人类可读名称 |
+
+  名称转换示例:
+
+  | 原始 ID | 显示名称 |
+  |---|---|
+  | `MODEL_PLACEHOLDER_M50` | M50 |
+  | `MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE` | Gemini 2.5 Flash Lite |
+  | `MODEL_PLACEHOLDER_M84` | M84 |
+
+### 统计 / Stats
+
+- **Files changed**: 2 (`src/tracker.ts`, `src/statusbar.ts`)
+- **TypeScript compile**: Zero errors
+- **Tests**: 50 passed
+- **New fields**: `TokenUsageResult.checkpointModel`, `ContextUsage.checkpointModel`
+- **New function**: `shortenShadowModelId()`
+
+---
+
+## 工具目录 UX 优化 + 清空功能 — 2026-05-05
+
+### 改进 / Improved
+
+- **工具目录可折叠 / Collapsible Tool Catalog**:
+  工具目录从静态列表改为 `<details>/<summary>` 可折叠结构，展开状态通过 `restoreDetailsState()` 跨刷新持久化。header 含旋转箭头动画（`▸`）、书本 SVG 图标、数量 badge。
+
+  Tool catalog converted to collapsible `<details>` element with state persistence via `restoreDetailsState()`.
+
+- **CSS Grid 布局 / Grid Layout for Chips**:
+  工具 chips 从 `flex-wrap` 改为 CSS Grid（`repeat(auto-fill, minmax(140px, 1fr))`），确保整齐对齐。
+
+  Chips layout changed from flex-wrap to CSS Grid for uniform alignment.
+
+- **智能 Tooltip / Intelligent Tooltips**:
+  `bindToolCatalogTooltips()` 在 `mouseenter` 时动态检测文本是否截断（`scrollWidth > clientWidth`）：截断时 tooltip 显示「全名 — 描述」，未截断时仅显示描述。chip HTML 重构为双层结构：外层 `.tool-cat-chip`（`overflow: visible`，tooltip 定位）+ 内层 `.tool-cat-chip-text`（`overflow: hidden; text-overflow: ellipsis`，文本截断）。tooltip 最大宽度 200px + `word-break: break-word` 防溢出。
+
+  Dynamic truncation detection on `mouseenter`: truncated chips show "Full Name — Description", non-truncated show description only. Chip HTML refactored to dual-layer structure for tooltip rendering.
+
+- **排行名称 Chip 化 / Ranking Name Chip Styling**:
+  `.tool-rank-name` 添加 chip 风格外观：mono 字体 + 半透明背景 `rgba(255,255,255,0.04)` + 圆角边框 + hover 加深反馈，增加视觉层级感。
+
+  `.tool-rank-name` styled as chips: mono font + semi-transparent bg + rounded border + hover darkening for visual depth.
+
+### 新增 / Added
+
+- **清空目录功能 / Clear Catalog Feature**:
+  工具目录底部新增右对齐「清空目录」按钮（默认低透明度，hover 变红色），仅清空持久化的工具目录数据，不影响工具调用排行。
+
+  New "Clear Catalog" button at catalog footer. Clears only persisted tool inventory; call ranking unaffected.
+
+  | 层级 | 改动 |
+  |---|---|
+  | `GMTracker.clearToolCatalog()` | 清空 `_persistedToolCatalogByAccount`，patch `_lastSummary.toolCatalog=[]`（避免 `serialize()` → `_buildSummary()` 重建撤销清空）|
+  | `extension.ts` | 注册 VS Code command，同步更新模块级 `lastGMSummary` 后持久化 |
+  | `webview-panel.ts` | 处理 `clearToolCatalog` webview 消息，委托 VS Code command + 刷新面板 |
+  | `webview-script.ts` | body click delegation 处理按钮点击 |
+
+### 修复 / Fixed
+
+- **`_buildSummary()` 工具目录写回副作用 / Tool Catalog Write-back Side Effect**:
+  `_buildSummary()` 行 647 无条件将重建的工具目录写回 `_persistedToolCatalogByAccount`。`getFullSummary()` 调用 `_buildSummary(true)` 绕过缓存，导致 `makePanelPayload()` 每次调用都撤销 `clearToolCatalog()` 的效果。
+
+  修正：写回逻辑加 `if (!skipAccountFilter)` 守卫，仅主路径（正常 poll 周期）写回，`getFullSummary()` / `getArchivalSummary()` 路径不写回。
+
+  Fix: `_buildSummary()` unconditionally wrote back rebuilt catalog, undoing `clearToolCatalog()` via `getFullSummary()` → `makePanelPayload()` chain. Added `!skipAccountFilter` guard so only the primary poll path persists catalog data.
+
+
+### 统计 / Stats
+
+- **Files changed**: 5 (`src/activity-panel.ts`, `src/extension.ts`, `src/gm/tracker.ts`, `src/webview-panel.ts`, `src/webview-script.ts`)
+- **Docs updated**: 2 (`docs/project_structure.md`, `CHANGELOG-v2.md`)
+- **TypeScript compile**: Zero errors
+- **New CSS classes**: `.tool-cat-footer`, `.tool-cat-clear-btn`, `.tool-cat-chip-text`
+- **New method**: `GMTracker.clearToolCatalog()`
+- **New command**: `antigravity-context-monitor.clearToolCatalog`
+
 ---
 
 ## [1.16.2] Settings 持久化存储统计精简 — 2026-04-29

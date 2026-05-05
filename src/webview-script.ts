@@ -659,8 +659,32 @@ export function getScript(): string {
 
             // ─── Restore & persist ALL <details> states ───
             restoreDetailsState(savedState);
+
+            // ─── Tool Catalog: smart tooltip (show full name when truncated) ───
+            function bindToolCatalogTooltips() {
+                var chips = document.querySelectorAll('.tool-cat-chip:not([data-tc-bound])');
+                for (var tci = 0; tci < chips.length; tci++) {
+                    chips[tci].setAttribute('data-tc-bound', 'true');
+                    chips[tci].addEventListener('mouseenter', function() {
+                        var name = this.getAttribute('data-tooltip-name') || '';
+                        var desc = this.getAttribute('data-tooltip-desc') || '';
+                        var textEl = this.querySelector('.tool-cat-chip-text');
+                        var isTruncated = textEl ? textEl.scrollWidth > textEl.clientWidth : false;
+                        if (isTruncated) {
+                            this.setAttribute('data-tooltip', desc ? name + ' \u2014 ' + desc : name);
+                        } else {
+                            if (desc) {
+                                this.setAttribute('data-tooltip', desc);
+                            } else {
+                                this.removeAttribute('data-tooltip');
+                            }
+                        }
+                    });
+                }
+            }
+
             // Run overflow check after layout settles
-            requestAnimationFrame(function() { initErrorOverflow(); });
+            requestAnimationFrame(function() { initErrorOverflow(); bindToolCatalogTooltips(); });
 
             // ─── Custom number spinner buttons ───
             var spinnerBtns = document.querySelectorAll('.num-spinner-btn');
@@ -860,6 +884,12 @@ export function getScript(): string {
                 }
                 if (target.closest('#clearQuotaHistory')) {
                     vscode.postMessage({ command: 'clearQuotaHistory' });
+                    return;
+                }
+
+                // ── Clear Tool Catalog ──
+                if (target.closest('#clearToolCatalogBtn')) {
+                    vscode.postMessage({ command: 'clearToolCatalog' });
                     return;
                 }
 
@@ -1083,6 +1113,7 @@ export function getScript(): string {
                     // forces layout → browser adjusts scroll position → details reopen
                     // too late → scroll stuck in wrong position ("Monitor tab jumps").
                     restoreDetailsState(vscode.getState() || {});
+                    bindToolCatalogTooltips();
 
 
 
