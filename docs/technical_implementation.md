@@ -1,8 +1,8 @@
 # 🛠️ Antigravity Context Window Monitor — Technical Implementation / 技术实现说明
 
-This document explains how the Antigravity Context Window Monitor plugin works. The plugin consists of the following core modules: `discovery.ts` (server discovery), `tracker.ts` (token calculation), `extension.ts` (polling scheduler), `statusbar.ts` (UI display), `webview-panel.ts` (WebView panel orchestrator), `activity-tracker.ts` (model activity tracking), `activity-panel.ts` (activity panel UI), `quota-tracker.ts` (quota tracking), `rpc-client.ts` (RPC communication layer), `models.ts` (model config & display names), `constants.ts` (constants), and `i18n.ts` (internationalization system). WebView panel split into: `webview-monitor-tab.ts`, `webview-profile-tab.ts`, `webview-settings-tab.ts`, `webview-history-tab.ts`, `webview-script.ts`, `webview-styles.ts`, `webview-helpers.ts`, `webview-icons.ts`.
+This document explains how the Antigravity Context Window Monitor plugin works. The plugin consists of the following core modules: `discovery.ts` (server discovery), `tracker.ts` (token calculation), `extension.ts` (polling scheduler), `statusbar.ts` (UI display), `webview-panel.ts` (WebView panel orchestrator), `activity-tracker.ts` (model activity tracking), `activity-panel.ts` (GM Data UI), `pricing-panel.ts` (Cost and Models UI), `quota-tracker.ts` (quota tracking), `rpc-client.ts` (RPC communication layer), `models.ts` (model config & display names), `constants.ts` (constants), and `i18n.ts` (internationalization system). WebView panel split into: `activity-panel.ts`, `pricing-panel.ts`, `webview-chat-history-tab.ts`, `webview-models-tab.ts`, `webview-profile-tab.ts`, `webview-settings-tab.ts`, `webview-history-tab.ts`, `webview-calendar-tab.ts`, `webview-about-tab.ts`, `webview-script.ts`, `webview-styles.ts`, `webview-helpers.ts`, `webview-icons.ts`.
 
-本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 面板调度）、`activity-tracker.ts`（模型活动追踪）、`activity-panel.ts`（活动面板 UI）、`quota-tracker.ts`（配额追踪）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。WebView 面板拆分为：`webview-monitor-tab.ts`、`webview-profile-tab.ts`、`webview-settings-tab.ts`、`webview-history-tab.ts`、`webview-script.ts`、`webview-styles.ts`、`webview-helpers.ts`、`webview-icons.ts`。
+本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 面板调度）、`activity-tracker.ts`（模型活动追踪）、`activity-panel.ts`（GM Data UI）、`pricing-panel.ts`（Cost 与 Models UI）、`quota-tracker.ts`（配额追踪）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。WebView 面板拆分为：`activity-panel.ts`、`pricing-panel.ts`、`webview-chat-history-tab.ts`、`webview-models-tab.ts`、`webview-profile-tab.ts`、`webview-settings-tab.ts`、`webview-history-tab.ts`、`webview-calendar-tab.ts`、`webview-about-tab.ts`、`webview-script.ts`、`webview-styles.ts`、`webview-helpers.ts`、`webview-icons.ts`。
 
 ---
 
@@ -46,8 +46,8 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
   2. Trajectory with stepCount change (increase = new message, decrease = undo) / `stepCount` 发生变化的对话
   3. Newly appeared trajectory / 新出现的对话
 
-* **Step Analysis / 逐步分析**: For the selected conversation, calls `GetCascadeTrajectorySteps` with all batches (50 steps each) fetched in groups of up to 5 concurrent batches via `Promise.allSettled`, then passes the collected steps array to the pure function `processSteps()` for computation. `endIndex` is capped at `stepCount` to prevent the LS API's wrap-around behavior. Failed batches are flagged as `hasGaps` without blocking others. `processSteps()` is a side-effect-free pure function extracted from `getTrajectoryTokenUsage`, directly unit-testable with constructed step data.
-  对选中的对话调用 `GetCascadeTrajectorySteps`，通过 `Promise.allSettled` 分组获取所有批次，然后将完整步骤数组传给纯函数 `processSteps()` 进行计算。
+* **Step Analysis / 逐步分析**: For the selected conversation, calls `GetCascadeTrajectorySteps` with all batches (50 steps each) fetched in groups of up to 5 concurrent batches via `Promise.allSettled`, then passes the collected steps array to the pure function `processSteps()` for computation. `endIndex` is capped at `stepCount` to prevent the LS API's wrap-around behavior. Failed batches are flagged as `hasGaps` without blocking others. `processSteps()` is a side-effect-free pure function extracted from `getTrajectoryTokenUsage`, directly unit-testable with constructed step data. Since v1.16.4, `CHECKPOINT` steps still provide token baselines but no longer overwrite the user-visible display model. Their internal generator/modelUsage model is carried separately as `checkpointModel` for tooltip transparency.
+  对选中的对话调用 `GetCascadeTrajectorySteps`，通过 `Promise.allSettled` 分组获取所有批次，然后将完整步骤数组传给纯函数 `processSteps()` 进行计算。自 v1.16.4 起，`CHECKPOINT` 步骤仍作为 token 基线来源，但不再覆盖用户可见的显示模型；其内部 generator/modelUsage 模型单独作为 `checkpointModel` 传给 tooltip。
 
 ## 🧮 3. Token Calculation / Token 计算逻辑
 
@@ -96,6 +96,9 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
 * **计划层级缓存清理 / Plan-Tier Cache Clearing (v1.15.1)**: 状态栏 hover 中的计划信息通过 `StatusBarManager.setPlanName()` 缓存。自 v1.15.1 起，最新轮询如果未返回 `userTierName`，缓存会被显式清空，而不是保留旧的二级层级后缀，避免历史标签残留在后续 hover 中。
   The plan row in the status bar hover is cached through `StatusBarManager.setPlanName()`. Since v1.15.1, when a later poll omits `userTierName`, the cached secondary tier is explicitly cleared instead of preserving the old suffix, preventing stale labels from lingering in later hovers.
 
+* **Checkpoint Shadow Model Row (v1.16.4) / Checkpoint 影子模型行**: `statusbar.ts` shortens internal checkpoint model IDs (for example `MODEL_PLACEHOLDER_M50` → `M50`) and shows them next to the latest checkpoint line. This is diagnostic context only; the main model row continues to reflect the user-selected model.
+  `statusbar.ts` 会把内部 checkpoint 模型 ID 短化（例如 `MODEL_PLACEHOLDER_M50` → `M50`）并显示在最近 checkpoint 行旁边。它只用于诊断透明度，主模型行仍显示用户选择的模型。
+
 ## 📊 5. WebView Monitor Panel / WebView 监控面板
 
 > Source: [`webview-panel.ts`](../src/webview-panel.ts)
@@ -136,6 +139,12 @@ Since v1.10.1, clicking the status bar opens a WebView side panel (replacing the
 
 * **浅色主题适配 / Light Theme Compatibility (v1.14.5, v1.14.6)**: GM 标签文字色默认使用深饱和色系（`#2563eb`、`#16a34a` 等），通过 `body.vscode-dark` 选择器覆盖回暗色调色板。替换 `rgba(255,255,255,0.xx)` 为 `var(--color-surface)` / `var(--color-border)`。VS Code 主题检测从 `@media (prefers-color-scheme)` 改为 `body.vscode-dark`。v1.14.6 扩展浅色主题覆盖到全部面板组件（~50 个），在 `webview-styles.ts`、`activity-panel.ts`、`webview-calendar-tab.ts` 中添加了全面的 `body.vscode-light` CSS 覆盖，涵盖操作按钮、统计卡片、进度条轨道、聊天历史卡片（含渐变替换）、监控迷你面板、X-ray 可视化等。
   GM tag text colors now default to dark-saturated variants, with `body.vscode-dark` overrides restoring the original pastel palette. Replaced `rgba(255,255,255,0.xx)` with `var(--color-surface)` / `var(--color-border)`. VS Code theme detection changed from `@media (prefers-color-scheme)` to `body.vscode-dark`. v1.14.6 extends light theme coverage to all panel components (~50), adding comprehensive `body.vscode-light` CSS overrides in `webview-styles.ts`, `activity-panel.ts`, and `webview-calendar-tab.ts`, covering action buttons, stat cards, progress bar tracks, chat history cards (with gradient replacements), monitor mini panel, X-ray visualization, and more.
+
+* **Cost Pricing Editor (v1.16.4) / Cost 价格编辑器**: `pricing-panel.ts` renders called models first and appends built-in default pricing models that are not already covered by a called `responseModel`. Empty placeholder `responseModel` values are ignored for coverage and are not rendered as editable `data-model=""` rows. `webview-script.ts` saves only rows that were already custom or whose values changed, so untouched built-in prices do not become custom overrides.
+  `pricing-panel.ts` 先渲染已调用模型，再追加未被 `responseModel` 覆盖的内置默认价格模型。空的 placeholder `responseModel` 不参与覆盖判断，也不会渲染成可编辑的 `data-model=""` 行。`webview-script.ts` 保存时只提交已有自定义项或用户实际改动的行，未编辑的内置价格不会被写成自定义覆盖。
+
+* **Tool Catalog Cleanup (v1.16.4) / 工具目录清理**: GM Data renders the tool catalog as a collapsible chip grid with truncation-aware tooltips. The WebView clear button sends an internal `clearToolCatalog` message to `extension.ts`; `GMTracker.clearToolCatalog()` clears only the catalog, not tool ranking counts. The extension persists the cleared summary to both `gmTrackerState` and the file-backed `gmDetailedSummary`, preventing stale catalog entries from returning after reload.
+  GM Data 将工具目录渲染为可折叠 chip grid，并按文本截断情况动态生成 tooltip。WebView 清空按钮发送内部 `clearToolCatalog` 消息到 `extension.ts`；`GMTracker.clearToolCatalog()` 只清空目录，不影响工具排行计数。扩展会把清空后的摘要同时写入 `gmTrackerState` 和文件持久化的 `gmDetailedSummary`，避免重载后旧目录回填。
 
 ## 🧠 6. Model Activity Monitor / 模型活动监控
 
@@ -208,5 +217,5 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
   Three migration triggers in `restore()` force nuclear reset + re-warm-up: missing subAgentTokens, empty checkpointHistory, or all-zero conversationBreakdown (bad data from old field path bug).
 
 ---
-基于 TypeScript 构建，适用于 Antigravity IDE。当前共有 179 个 vitest 单元测试覆盖纯逻辑函数（`npm test`）。其中 `statusbar.test.ts` 已包含计划层级缓存清理回归测试，`reset-time.test.ts` 采用基于运行时本地时区的动态断言，避免跨时区环境下的假失败。
-Built with TypeScript for the Antigravity IDE. The repository currently contains 179 vitest unit tests covering pure logic (`npm test`). `statusbar.test.ts` now includes a regression case for clearing stale plan-tier cache, and `reset-time.test.ts` derives local-time expectations from the active runtime timezone to avoid cross-timezone false failures.
+基于 TypeScript 构建，适用于 Antigravity IDE。当前共有 49 个 vitest 单元测试（`npm test`），覆盖 discovery 解析、价格表渲染/保存、工具目录清空持久化等纯逻辑路径。
+Built with TypeScript for the Antigravity IDE. The repository currently contains 49 vitest unit tests (`npm test`) covering discovery parsing, pricing table rendering/save behavior, and tool catalog clear persistence.

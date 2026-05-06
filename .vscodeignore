@@ -14,6 +14,7 @@ package-lock.json
 # Development-only files (not needed in the published extension)
 scripts/**
 tests/**
+__mocks__/**
 .agents/**
 .playwright-mcp/**
 llmdoc/**

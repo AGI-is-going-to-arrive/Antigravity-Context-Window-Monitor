@@ -73,9 +73,10 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     * **🎛️ Status Bar Display Toggles**: Independent toggle switches to hide/show 'Context Usage', 'Quota Indicator', and 'Reset Countdown' in the status bar.
     * **⏸️ Pause/Resume**: Pause auto-refresh to freeze the panel while investigating data.
 
-* **🧠 Model Activity Monitor** *(v1.11.2, enhanced in v1.11.3 & v1.12.2)*
+* **🧠 Model Activity Monitor** *(v1.11.2, enhanced through v1.16.4)*
     New Activity tab tracks real-time AI reasoning calls, tool usage, tokens, and timing per model across all conversations. Access via the main status bar item or the `Show Model Activity` command.
     * **🔧 Tool Name Display** *(v1.11.3)*: Timeline entries show the tool name (e.g., `view_file`, `gh/search_issues`) with step index badges.
+    * **📚 Tool Catalog Cleanup** *(v1.16.4)*: GM Data shows a collapsible tool catalog with smart chip tooltips and a clear button for removing stale catalog entries without touching tool ranking counts.
     * **⚡ Independent Activity Polling** *(v1.11.3)*: Activity tracking runs on a separate 3-second polling loop, decoupled from the global 5-second poll for faster updates.
     * **🎯 Three-Layer Quota Detection** *(v1.12.2)*: Instant detection via elapsed-in-cycle comparison, drift-based detection via resetTime observation, and fraction-based detection. No more hardcoded cycle lengths — adapts to any quota cycle automatically.
     * **🔀 Archive Debounce** *(v1.12.2)*: Cross-pool resets within 5 minutes are merged into a single archive entry, preventing fragmentation.
@@ -103,7 +104,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
    * **OpenVSX**: Install directly from [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
    * **Manual**: Install the `.vsix` file via Extensions → Install from VSIX.
 2. **Status Bar**: The bottom-right status bar shows current context usage (displays `0k/1000k, 0.0%` for empty chats).
-3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, etc.).
+3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, and the latest checkpoint shadow model when present).
 
    ![Hover Details](src/images/悬停详情new.png)
 
@@ -115,7 +116,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
    ![Monitor Tab - Session Details](src/images/monitor2.png)
 
-   **GM Data** — Detailed per-model token usage, call counts, cache hit rates, and retry statistics.
+   **GM Data** — Detailed per-model token usage, call counts, cache hit rates, retry statistics, tool ranking, and a collapsible tool catalog.
 
    ![GM Data Tab](src/images/gmdata1.png)
 
@@ -125,7 +126,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
    ![Sessions Tab](src/images/session.png)
 
-   **Cost** — Monthly cost breakdown with per-model pricing, cost overview visualization, and custom pricing editor.
+   **Cost** — Monthly cost breakdown with per-model pricing, cost overview visualization, and a custom pricing editor for called models plus built-in default pricing models.
 
    ![Cost Tab](src/images/cost.png)
 
@@ -205,4 +206,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.3
+**Version**: 1.16.4

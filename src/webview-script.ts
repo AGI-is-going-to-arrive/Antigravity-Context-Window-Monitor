@@ -1,15 +1,64 @@
 import { tBi } from './i18n';
+import type { ModelPricing } from './pricing-store';
 
 // ─── WebView Client-Side Script ──────────────────────────────────────────────
 // Frontend JavaScript injected into the WebView panel.
 // Handles tab switching, settings controls, privacy mask, scroll persistence,
 // and message passing with the extension host.
 
+interface PricingInputLike {
+    value: string;
+    getAttribute(name: string): string | null;
+}
+
+export function collectPricingInputOverrides(inputs: ArrayLike<PricingInputLike>): Record<string, ModelPricing> {
+    const values: Record<string, ModelPricing> = {};
+    const shouldPersist: Record<string, boolean> = {};
+    const validFields: Record<string, true> = {
+        input: true,
+        output: true,
+        cacheRead: true,
+        cacheWrite: true,
+        thinking: true,
+    };
+
+    for (let i = 0; i < inputs.length; i++) {
+        const input = inputs[i];
+        const model = (input.getAttribute('data-model') || '').trim();
+        const rawField = input.getAttribute('data-field') || '';
+        if (!model || !validFields[rawField]) { continue; }
+
+        const field = rawField as keyof ModelPricing;
+        const parsed = Number.parseFloat(input.value);
+        const value = Number.isFinite(parsed) ? parsed : 0;
+        if (!values[model]) {
+            values[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
+        }
+        values[model][field] = value;
+
+        const originalParsed = Number.parseFloat(input.getAttribute('data-original-value') || '');
+        const originalValue = Number.isFinite(originalParsed) ? originalParsed : 0;
+        const wasCustom = input.getAttribute('data-was-custom') === '1';
+        if (wasCustom || Math.abs(value - originalValue) > 1e-9) {
+            shouldPersist[model] = true;
+        }
+    }
+
+    const result: Record<string, ModelPricing> = {};
+    for (const [model, pricing] of Object.entries(values)) {
+        if (shouldPersist[model]) {
+            result[model] = pricing;
+        }
+    }
+    return result;
+}
+
 /** Returns the complete <script> block content (without <script> tags). */
 export function getScript(): string {
     return `
         (function() {
             var vscode = acquireVsCodeApi();
+            var collectPricingInputOverrides = (${collectPricingInputOverrides.toString()});
             var savedState = vscode.getState() || {};
             var copiedText = ${JSON.stringify(`✓ ${tBi('Copied', '已复制')}`)};
             var doneText = ${JSON.stringify(`✓ ${tBi('Done', '完成')}`)};
@@ -858,15 +907,7 @@ export function getScript(): string {
                 // ── Pricing Save ──
                 if (target.closest('#pricingSaveBtn')) {
                     var inputs = document.querySelectorAll('.pricing-input');
-                    var data = {};
-                    for (var pi = 0; pi < inputs.length; pi++) {
-                        var inp = inputs[pi];
-                        var model = inp.getAttribute('data-model');
-                        var field = inp.getAttribute('data-field');
-                        var val = parseFloat(inp.value) || 0;
-                        if (!data[model]) { data[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 }; }
-                        data[model][field] = val;
-                    }
+                    var data = collectPricingInputOverrides(inputs);
                     vscode.postMessage({ command: 'savePricing', value: data });
                     return;
                 }

@@ -33,11 +33,11 @@ antigravity-context-monitor/
 │   │   ├── types.ts              #   所有 GM 类型定义 + clone 工具 + 持久化 slim 函数（含 toolCallsByStep / toolCallCounts / toolCallCountsByConv / GMSystemContextItem / PendingArchiveEntry.estimatedCost）
 │   │   ├── parser.ts             #   解析器 + 提取器 + 匹配/合并/增强 + 检查点摘要提取 + 工具调用提取 + 系统上下文提取（classifySystemContext / extractSystemContextItems）+ API 重复消息清洗（deduplicateApiErrorText）
 │   │   ├── summary.ts            #   汇总构建 + 过滤 + 标准化（含 toolCallCounts 透传）
-│   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize + toolCallCounts 聚合 + persistedToolCounts 跨重启合并 + baseline 时预算 estimatedCost）
+│   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize + toolCallCounts 聚合 + toolCatalog 持久化/清空 + baseline 时预算 estimatedCost）
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算（respOut = output - thinking 避免 double-counting）+ findPricing display name fallback
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照）
-│   ├── webview-panel.ts          # WebView 面板框架（10 标签切换 + 消息通信 + 全局账号面板 dropdown + gmFullSummary 跨账号费用）
+│   ├── webview-panel.ts          # WebView 面板框架（9 标签切换 + 消息通信 + 全局账号面板 dropdown + gmFullSummary 跨账号费用）
 │   ├── webview-styles.ts         # WebView 面板 CSS 样式（Design Token 体系）
 │   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、开发按钮等）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
@@ -49,7 +49,7 @@ antigravity-context-monitor/
 │   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
 │   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（ses-* 命名空间 — 紧凑行式卡片 + shortcut 芯片 + 工具栏 + CSS tooltip）
 │   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据 + 检查点查看器 + 账号面板构建器 + 模型卡片/汇总行/待归档费用显示 + respOut 费用计算）
-│   ├── pricing-panel.ts          # Cost 标签页 HTML（cost-* 统一面板 — 芯片 summary bar + 分色柱状图 + 紧凑行式明细 + 月费用汇总 + 可编辑价格表 + 模型信息卡）
+│   ├── pricing-panel.ts          # Cost 标签页 HTML（cost-* 统一面板 — 蓝色系 cost tab + 紧凑行式明细 + 月费用汇总 + 可编辑价格表 + 模型信息卡）
 │   ├── webview-calendar-tab.ts   # Calendar 标签页 HTML
 │   ├── webview-about-tab.ts      # About 标签页 HTML（Hero + 功能导航卡片 + GitHub + 提示 + 兼容性验证 + 免责声明 + 语言，从 TopBar Chips 迁移）
 │   ├── i18n.ts                   # 国际化：语言模式、翻译表、偏好持久化
@@ -57,7 +57,10 @@ antigravity-context-monitor/
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
 ├── tests/                        # Vitest 测试目录（开发用，不参与插件运行时）
-│   └── discovery.test.ts         # discovery 单元测试（原作者 FlorianHuo 提供）
+│   ├── discovery.test.ts         # discovery 单元测试（原作者 FlorianHuo 提供）
+│   ├── pricing-panel.test.ts     # Cost 价格表回归测试
+│   ├── webview-script.test.ts    # WebView 价格保存逻辑回归测试
+│   └── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   └── project_structure.md          # 本文件
@@ -97,7 +100,7 @@ antigravity-context-monitor/
 
 ### tracker.ts -- Token 计算 + 数据获取
 
-对话列表获取、Token 计算、上下文用量组装。主要导出：`getAllTrajectories()`、`getContextUsage()`、`fetchFullUserStatus()`。
+对话列表获取、Token 计算、上下文用量组装。CHECKPOINT 步骤仍用于 token 基线，但不再覆盖用户可见的显示模型；最近 checkpoint 的内部模型通过 `checkpointModel` 透传给状态栏 tooltip。主要导出：`getAllTrajectories()`、`getContextUsage()`、`fetchFullUserStatus()`。
 
 ---
 
@@ -109,7 +112,7 @@ antigravity-context-monitor/
 
 ### statusbar.ts -- 状态栏 UI
 
-`StatusBarManager`：上下文用量显示、颜色编码、额度指示、重置倒计时。
+`StatusBarManager`：上下文用量显示、颜色编码、额度指示、重置倒计时。tooltip 中的最近 checkpoint 行会显示短化后的内部影子模型标识（如 `M50`），但主模型显示仍以用户选择模型为准。
 
 ---
 
@@ -145,12 +148,12 @@ antigravity-context-monitor/
 
 ### gm-tracker.ts -- Generator Metadata 数据层
 
-调用 GM API 获取 per-LLM-call 精确数据，聚合为 `GMSummary`。智能缓存（IDLE 复用）、额度周期基线化、按账号过滤、错误码聚合与持久化、工具调用统计与目录。
+调用 GM API 获取 per-LLM-call 精确数据，聚合为 `GMSummary`。智能缓存（IDLE 复用）、额度周期基线化、按账号过滤、错误码聚合与持久化、工具调用统计与目录。`clearToolCatalog()` 只清空工具目录，不影响工具调用排行；full-summary/archival-summary 路径不会把旧目录写回持久化桶。
 
 ---
 ### activity-panel.ts -- GM Data 统一面板渲染
 
-统一的 GM 数据标签页。主要区块：Dashboard Grid 概览、模型卡片（含账号分布）、Timeline（Turn 分段 + 事件行）、工具调用排行（含工具目录）、错误详情、上下文情报查看器（系统注入内容 + Model DNA 卡片）、对话分布卡片、待归档面板。导出 `buildAccountStatusPanel()` / `hasAccountReadyPool()` 供全局账号面板复用。
+统一的 GM 数据标签页。主要区块：Dashboard Grid 概览、模型卡片（含账号分布）、Timeline（Turn 分段 + 事件行）、工具调用排行（含可折叠工具目录和清空入口）、错误详情、上下文情报查看器（系统注入内容 + Model DNA 卡片）、对话分布卡片、待归档面板。导出 `buildAccountStatusPanel()` / `hasAccountReadyPool()` 供全局账号面板复用。
 
 ---
 
@@ -162,7 +165,7 @@ antigravity-context-monitor/
 
 ### pricing-store.ts -- 定价数据层
 
-管理模型定价：默认价格表、用户自定义持久化、模糊匹配、费用计算。
+管理模型定价：默认价格表、用户自定义持久化、模糊匹配、费用计算。费用估算用于本地观察，不代表 Antigravity 官方账单。
 
 ---
 
@@ -174,7 +177,7 @@ antigravity-context-monitor/
 
 ### pricing-panel.ts -- Cost 标签页渲染
 
-生成 Cost 标签页 HTML，导出 `buildModelDNACards()` 供 Models 标签页复用。
+生成 Cost 标签页 HTML，导出 `buildModelDNACards()` 供 Models 标签页复用。价格编辑区展示已调用模型和内置默认价格模型；保存时只持久化已有自定义项或用户实际改动的行，避免把未编辑的默认价格写成 custom override。
 
 ---
 
@@ -200,7 +203,7 @@ antigravity-context-monitor/
 
 面板总框架：9 标签切换、消息通信、全局账号面板 dropdown、增量刷新。各标签内容由独立模块生成。
 
-子模块：`webview-models-tab.ts`（Models）、`webview-settings-tab.ts`（Settings）、`webview-profile-tab.ts`（Profile）、`webview-history-tab.ts`（Quota Tracking）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（CSS Design Token）、`webview-icons.ts`（SVG 图标）、`webview-helpers.ts`（共享工具函数）。
+子模块：`webview-models-tab.ts`（Models）、`webview-settings-tab.ts`（Settings）、`webview-profile-tab.ts`（Profile）、`webview-history-tab.ts`（Quota Tracking）、`webview-chat-history-tab.ts`（Sessions）、`webview-calendar-tab.ts`（Calendar）、`webview-about-tab.ts`（About）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（CSS Design Token）、`webview-icons.ts`（SVG 图标）、`webview-helpers.ts`（共享工具函数）。
 
 ---
 
@@ -274,7 +277,6 @@ extension.ts (入口 + 调度)
     ├── pricing-store.ts
     ├── model-dna-store.ts (types)
     ├── daily-store.ts
-    ├── webview-monitor-tab.ts
     ├── webview-models-tab.ts
     ├── webview-profile-tab.ts
     ├── webview-settings-tab.ts
@@ -347,4 +349,3 @@ npx vsce package --no-dependencies
 安装：VS Code 中 `Ctrl+Shift+P` → `Extensions: Install from VSIX...` → 选择 `.vsix` 文件 → 重载窗口。
 
 测试文件位于 `tests/`，仅供 Vitest 使用，不会被打包到 VSIX 中。
-

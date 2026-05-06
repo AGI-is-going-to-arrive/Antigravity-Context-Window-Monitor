@@ -1179,6 +1179,17 @@ const FIELD_LABELS: Record<string, [string, string]> = {
     thinking: ['Thinking', '思考'],
 };
 
+function isDefaultPricingCovered(responseModel: string, defaultKey: string): boolean {
+    const model = responseModel.trim();
+    if (!model) { return false; }
+    const modelFamily = model.split('-').slice(0, 3).join('-');
+    return model === defaultKey
+        || model.startsWith(defaultKey)
+        || defaultKey.startsWith(model)
+        || model.includes(defaultKey)
+        || (!!modelFamily && defaultKey.includes(modelFamily));
+}
+
 function buildEditablePricingTable(
     summary: GMSummary,
     merged: Record<string, ModelPricing>,
@@ -1190,12 +1201,10 @@ function buildEditablePricingTable(
     // Build a set of DEFAULT_PRICING keys already covered by called models (fuzzy match)
     const coveredDefaultKeys = new Set<string>();
     for (const [, ms] of calledEntries) {
+        const responseModel = ms.responseModel.trim();
+        if (!responseModel) { continue; }
         for (const defaultKey of Object.keys(merged)) {
-            if (ms.responseModel === defaultKey ||
-                ms.responseModel.startsWith(defaultKey) ||
-                defaultKey.startsWith(ms.responseModel) ||
-                ms.responseModel.includes(defaultKey) ||
-                defaultKey.includes(ms.responseModel.split('-').slice(0, 3).join('-'))) {
+            if (isDefaultPricingCovered(responseModel, defaultKey)) {
                 coveredDefaultKeys.add(defaultKey);
             }
         }
@@ -1205,7 +1214,9 @@ function buildEditablePricingTable(
     interface PricingEntry { name: string; responseModel: string; isCalled: boolean }
     const allEntries: PricingEntry[] = [];
     for (const [name, ms] of calledEntries) {
-        allEntries.push({ name, responseModel: ms.responseModel, isCalled: true });
+        const responseModel = ms.responseModel.trim();
+        if (!responseModel) { continue; }
+        allEntries.push({ name, responseModel, isCalled: true });
     }
     for (const [model] of Object.entries(merged)) {
         if (!coveredDefaultKeys.has(model)) {
@@ -1232,9 +1243,10 @@ function buildEditablePricingTable(
         html += `<div class="prc-edit-row-right">`;
         for (const f of fields) {
             const [en, zh] = FIELD_LABELS[f] || [f, f];
+            const value = String(p[f]);
             html += `<div class="prc-edit-field">
                 <span class="prc-edit-field-label">${tBi(en, zh)}</span>
-                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(entry.responseModel)}" data-field="${f}" value="${p[f]}" step="0.01" min="0">
+                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(entry.responseModel)}" data-field="${f}" data-original-value="${esc(value)}" data-was-custom="${isCustom ? '1' : '0'}" value="${esc(value)}" step="0.01" min="0">
             </div>`;
         }
         html += `</div></div>`;
@@ -1278,9 +1290,10 @@ function buildDefaultPricingTable(
         html += `<div class="prc-edit-row-right">`;
         for (const f of fields) {
             const [en, zh] = FIELD_LABELS[f] || [f, f];
+            const value = String(p[f]);
             html += `<div class="prc-edit-field">
                 <span class="prc-edit-field-label">${tBi(en, zh)}</span>
-                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(model)}" data-field="${f}" value="${p[f]}" step="0.01" min="0">
+                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(model)}" data-field="${f}" data-original-value="${esc(value)}" data-was-custom="${isCustom ? '1' : '0'}" value="${esc(value)}" step="0.01" min="0">
             </div>`;
         }
         html += `</div></div>`;

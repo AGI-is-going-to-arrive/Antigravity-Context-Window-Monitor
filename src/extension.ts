@@ -218,6 +218,22 @@ function persistGMSummaryToFile(summary: GMSummary | null | undefined): void {
     durableFileGlobalState.update('gmDetailedSummary', summary ? slimSummaryForPersistence(summary) : null);
 }
 
+interface StateWriter {
+    update(key: string, value: unknown): unknown;
+}
+
+export function persistClearedToolCatalog(
+    tracker: GMTracker,
+    globalState: StateWriter,
+    fileState: StateWriter,
+): GMSummary | null {
+    tracker.clearToolCatalog();
+    const summary = tracker.getCachedSummary();
+    globalState.update('gmTrackerState', tracker.serialize());
+    fileState.update('gmDetailedSummary', summary ? slimSummaryForPersistence(summary) : null);
+    return summary;
+}
+
 function captureDevResetSnapshot(): void {
     devResetSnapshot = {
         activityState: clonePlain(activityTracker.serialize()),
@@ -742,11 +758,9 @@ export function activate(context: vscode.ExtensionContext): void {
             }
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.clearToolCatalog', () => {
-            gmTracker.clearToolCatalog();
             // Update the module-level lastGMSummary with the patched summary (empty catalog)
             // so makePanelPayload() doesn't serve stale data with the old catalog.
-            lastGMSummary = gmTracker.getCachedSummary();
-            durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+            lastGMSummary = persistClearedToolCatalog(gmTracker, durableGlobalState, durableFileGlobalState);
             log('[UI] Tool catalog cleared');
             if (isMonitorPanelVisible()) {
                 updateMonitorPanel(makePanelPayload());
