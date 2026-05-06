@@ -66,13 +66,13 @@ antigravity-context-monitor/
 │   └── project_structure.md          # 本文件
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── package.json                  # 扩展清单、命令、配置项
-├── package-lock.json             # 依赖锁定文件
+├── package-lock.json             # 本地 npm 锁文件（Git/VSIX 忽略）
 ├── tsconfig.json                 # TypeScript 编译配置
 ├── vitest.config.ts              # 测试框架配置
 ├── README.md                     # 英文文档
 ├── readme_CN.md                  # 中文文档
-├── CHANGELOG.md                  # 变更日志（v1.0.0 – v1.15.1 历史版本）
-├── CHANGELOG-v2.md               # 变更日志 v2（v1.15.2+ 增量更新）
+├── CHANGELOG.md                  # 唯一主变更日志（含 v1.15.2+ 详细维护记录）
+├── CHANGELOG-v2.md               # 旧链接兼容指针，后续不再维护新条目
 └── LICENSE                       # 许可证
 ```
 
