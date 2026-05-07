@@ -37,7 +37,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     Users can choose between Chinese-only, English-only, or bilingual display mode. Accessible from the details panel: click status bar → Settings → Switch Language. Preference is persisted via `globalState` across sessions.
 
 * **🔒 Multi-Window Isolation**
-    Each Antigravity window only shows conversations belonging to its workspace, filtered by workspace URI. Windows without a workspace folder show all conversations.
+    Each Antigravity window prefers conversations from its own workspace, filtered by workspace URI. If Antigravity keeps reporting a stale workspace after you switch projects, the monitor can follow the currently RUNNING conversation from the shared language server instead of going blank. Windows without a workspace folder show all conversations.
 
 * **🗜️ Context Compression Detection**
     When the model auto-compresses conversation history, the plugin detects it via two-layer detection: primary layer compares consecutive checkpoint `inputTokens` (drop > 5000 tokens, immune to Undo false positives), fallback layer compares cross-poll `contextUsed` (with Undo exclusion guard). Shows `~100% 🗜` in the status bar.
@@ -206,4 +206,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.4
+**Version**: 1.16.5

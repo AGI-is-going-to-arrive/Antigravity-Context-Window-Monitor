@@ -4,19 +4,25 @@
 
 ### 🐛 Fixed / 修复
 
-- **Cross-Workspace Conversation Tracking — Plugin Goes Dead on Workspace Switch / 跨工作区对话追踪 -- 切换工作区后插件无反应**: Fixed a critical bug where switching to a different workspace caused the plugin to appear completely unresponsive. Root cause: the IDE's extension host does not update its workspace context on workspace switches — `getWorkspaceUri()` continues returning the old workspace URI, so the workspace isolation filter (`qualifiedTrajectories`) excluded all conversations from the new workspace. Additionally, `onDidChangeWorkspaceFolders` does not fire in this scenario. Fix: expanded Priority 1b cascade selection to track **any RUNNING conversation from any workspace** (not just those without `workspaceUris`), bypassing the stale workspace filter entirely. Current-workspace RUNNING conversations still take precedence via Priority 1. Added two supplementary defense layers: `onDidChangeWorkspaceFolders` event listener and `lastPolledWorkspaceUri` polling comparison for scenarios where the IDE does properly notify workspace changes.
-  修复切换工作区后插件完全无反应的严重 Bug。根因：IDE 的 extension host 在工作区切换时不更新状态，`getWorkspaceUri()` 始终返回旧工作区 URI，导致工作区隔离过滤把新工作区的所有对话排除。同时 `onDidChangeWorkspaceFolders` 事件也不会触发。修复：扩展 Priority 1b 级联选择，允许追踪**任意工作区中 RUNNING 的对话**（不再限制为无 workspaceUris 的对话），绕过失效的工作区过滤。当前工作区的 RUNNING 对话仍通过 Priority 1 优先选择。附加两层补充防御：`onDidChangeWorkspaceFolders` 事件监听和 `lastPolledWorkspaceUri` 轮询比对，覆盖 IDE 正常通知工作区变化的场景。
+- **Workspace switch no longer leaves the monitor blank / 切换工作区后监控不再空掉**: When Antigravity keeps reporting a stale workspace URI after a project switch, the monitor now keeps current-workspace RUNNING conversations first, then falls back to a RUNNING conversation from the shared language server. This covers the real “new workspace is active but filtered out” failure without changing the normal priority order. The selected cross-workspace trajectory is also included in the recent usage scope so the WebView and persisted monitor snapshot stay consistent.
+  当 Antigravity 切换项目后仍上报旧 workspace URI 时，监控现在会先保留当前工作区 RUNNING 对话优先级，再降级跟随共享语言服务器里正在 RUNNING 的对话。这样可以覆盖“新工作区已经活跃但被旧 workspace 过滤掉”的真实问题，同时不改变正常优先级。被选中的跨工作区 trajectory 也会进入 recent usage scope，避免 WebView 和持久化快照缺少当前会话。
 
-### 🗑 Removed / 移除
+### 🧪 Tests / 测试
 
-- **`CHANGELOG-v2.md` removed / 删除 `CHANGELOG-v2.md`**: The old compatibility redirect file has been removed. All release notes are maintained in `CHANGELOG.md` only.
-  删除旧的兼容重定向文件 `CHANGELOG-v2.md`。所有发布记录统一维护在 `CHANGELOG.md` 中。
+- Added unit coverage for RUNNING trajectory selection: current-workspace RUNNING still wins, cross-workspace RUNNING fallback is explicit, the old no-workspace RUNNING path still works, and cross-workspace active usage is included in the recent usage list.
+  新增 RUNNING trajectory 选择逻辑单测：当前工作区 RUNNING 仍然优先、跨工作区 RUNNING 降级路径显式覆盖、旧的无 workspace RUNNING 路径继续有效，并确保跨工作区当前会话会进入 recent usage 列表。
+
+### 📝 Docs / 文档
+
+- Updated README, Chinese README, technical implementation notes, and project structure notes for the v1.16.5 behavior. `CHANGELOG-v2.md` remains as an old-link compatibility pointer; new release notes still belong in `CHANGELOG.md` only. Thanks to @NightMin2002 for the original [PR 52](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/52).
+  根据 v1.16.5 的真实行为更新英文 README、中文 README、技术实现说明和项目结构文档。`CHANGELOG-v2.md` 继续保留为旧链接兼容指针；新的发布记录仍只写入 `CHANGELOG.md`。感谢 @NightMin2002 提交原始 [PR 52](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/52)。
 
 ### ✅ Validation / 验证
 
-- `npm test`: 56 tests passed.
+- `npm test`: 56 tests passed across 5 test files.
 - `npm run compile`: passed.
-- Manual verification: workspace switching now correctly tracks active conversations across workspaces.
+- `npm run package`: produced `antigravity-context-monitor-1.16.5.vsix`.
+- Antigravity CLI isolated install probe listed `agi-is-going-to-arrive.antigravity-context-monitor@1.16.5`.
 
 ---
 

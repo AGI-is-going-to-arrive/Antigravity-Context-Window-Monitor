@@ -37,12 +37,12 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
 * **Fetching Sessions / 获取会话列表**: Calls the `GetAllCascadeTrajectories` RPC endpoint to get all conversations (called Trajectories), including cascadeId, stepCount, status, and model used.
   调用 `GetAllCascadeTrajectories` RPC 接口获取所有对话（称为 Trajectory），包括 cascadeId、stepCount、状态、使用的模型。
 
-* **Workspace Isolation / 工作区隔离**: When a workspace folder is open, filters trajectories by comparing their `workspaceUris` against the current window's workspace URI (normalized via `normalizeUri`), showing only conversations belonging to this workspace. Since v1.14.4, when no folder is open (no workspace), all trajectories are shown without filtering — Antigravity assigns workspace URIs to all conversations regardless of whether a folder is open, so the previous `workspaceUris.length === 0` check filtered out everything.
-  有工作区文件夹打开时，通过比较 trajectory 上的 `workspaceUris` 与当前窗口的 workspace URI（经过 `normalizeUri` 标准化处理），只显示属于当前工作区的对话。自 v1.14.4 起，未打开文件夹（无工作区）时显示所有 trajectory 不做过滤——Antigravity 会给所有对话分配 workspace URI，之前的 `workspaceUris.length === 0` 检查会把所有对话都过滤掉。
+* **Workspace Isolation / 工作区隔离**: When a workspace folder is open, filters trajectories by comparing their `workspaceUris` against the current window's workspace URI (normalized via `normalizeUri`), so current-workspace conversations stay first. Since v1.14.4, when no folder is open (no workspace), all trajectories are shown without filtering. Since v1.16.5, if Antigravity keeps reporting a stale workspace URI after a project switch and no current-workspace trajectory is RUNNING, the selector can follow a RUNNING trajectory from the shared LS as a fallback. That fallback is covered by `selectRunningTrajectoryCandidate()` tests, and the selected cross-workspace trajectory is included in the recent usage scope so the panel and persisted monitor snapshot stay consistent.
+  有工作区文件夹打开时，通过比较 trajectory 上的 `workspaceUris` 与当前窗口的 workspace URI（经过 `normalizeUri` 标准化处理），优先显示当前工作区对话。自 v1.14.4 起，未打开文件夹（无工作区）时显示所有 trajectory 不做过滤。自 v1.16.5 起，如果 Antigravity 在切换项目后仍上报旧 workspace URI，且当前工作区没有 RUNNING 对话，选择器会降级跟随共享 LS 里正在 RUNNING 的对话。这个 fallback 由 `selectRunningTrajectoryCandidate()` 单测覆盖，并且被选中的跨工作区 trajectory 会进入 recent usage scope，避免面板和持久化快照缺少当前会话数据。
 
 * **Active Session Selection / 活跃会话选择**: Selects which session to display, by priority:
   按优先级选择要显示的会话：
-  1. Trajectory with RUNNING status / 状态为 RUNNING 的对话
+  1. Current-workspace trajectory with RUNNING status, then RUNNING fallback from shared LS / 当前工作区 RUNNING 对话优先，其次共享 LS 的 RUNNING 降级路径
   2. Trajectory with stepCount change (increase = new message, decrease = undo) / `stepCount` 发生变化的对话
   3. Newly appeared trajectory / 新出现的对话
 

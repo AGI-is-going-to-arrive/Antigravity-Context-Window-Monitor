@@ -237,6 +237,77 @@ export function persistClearedToolCatalog(
     return summary;
 }
 
+export interface RunningTrajectorySelection {
+    candidateId: string | null;
+    selectionReason: string;
+    qualifiedRunning: TrajectorySummary[];
+    selectedOutsideWorkspace: boolean;
+}
+
+export function selectRunningTrajectoryCandidate(
+    trajectories: TrajectorySummary[],
+    qualifiedTrajectories: TrajectorySummary[],
+    trackedCascadeId: string | null,
+): RunningTrajectorySelection {
+    const qualifiedRunning = qualifiedTrajectories.filter(t => t.status === CascadeStatus.RUNNING);
+
+    if (qualifiedRunning.length > 0) {
+        const currentStillRunning = qualifiedRunning.find(t => t.cascadeId === trackedCascadeId);
+        if (currentStillRunning) {
+            return {
+                candidateId: currentStillRunning.cascadeId,
+                selectionReason: 'tracked cascade is RUNNING',
+                qualifiedRunning,
+                selectedOutsideWorkspace: false,
+            };
+        }
+        return {
+            candidateId: qualifiedRunning[0].cascadeId,
+            selectionReason: 'new RUNNING cascade in ws',
+            qualifiedRunning,
+            selectedOutsideWorkspace: false,
+        };
+    }
+
+    // Shared LS instances can expose active cascades from another workspace even
+    // when the IDE window keeps reporting a stale workspace URI after a switch.
+    const crossWorkspaceRunning = trajectories
+        .filter(t => t.status === CascadeStatus.RUNNING)
+        .filter(t => !qualifiedTrajectories.some(q => q.cascadeId === t.cascadeId));
+
+    if (crossWorkspaceRunning.length === 0) {
+        return {
+            candidateId: null,
+            selectionReason: '',
+            qualifiedRunning,
+            selectedOutsideWorkspace: false,
+        };
+    }
+
+    const selected = crossWorkspaceRunning[0];
+    const hasWorkspaceUri = selected.workspaceUris.length > 0;
+    return {
+        candidateId: selected.cascadeId,
+        selectionReason: hasWorkspaceUri
+            ? 'RUNNING cascade from another workspace (cross-workspace tracking)'
+            : 'RUNNING cascade without workspace (new conversation)',
+        qualifiedRunning,
+        selectedOutsideWorkspace: true,
+    };
+}
+
+export function buildUsageScopeTrajectories(
+    qualifiedTrajectories: TrajectorySummary[],
+    trajectories: TrajectorySummary[],
+    activeTrajectory: TrajectorySummary | null,
+): TrajectorySummary[] {
+    const scope = qualifiedTrajectories.length > 0 ? qualifiedTrajectories : trajectories;
+    if (!activeTrajectory || scope.some(t => t.cascadeId === activeTrajectory.cascadeId)) {
+        return scope;
+    }
+    return [activeTrajectory, ...scope];
+}
+
 function captureDevResetSnapshot(): void {
     devResetSnapshot = {
         activityState: clonePlain(activityTracker.serialize()),
@@ -1098,9 +1169,14 @@ async function pollContextUsage(): Promise<void> {
             ? trajectories.filter(t => t.workspaceUris.some(u => normalizeUri(u) === normalizedWs))
             : trajectories;
 
-        const qualifiedRunning = qualifiedTrajectories.filter(t => t.status === CascadeStatus.RUNNING);
-        let newCandidateId: string | null = null;
-        let selectionReason = '';
+        const runningSelection = selectRunningTrajectoryCandidate(
+            trajectories,
+            qualifiedTrajectories,
+            trackedCascadeId,
+        );
+        const qualifiedRunning = runningSelection.qualifiedRunning;
+        let newCandidateId = runningSelection.candidateId;
+        let selectionReason = runningSelection.selectionReason;
 
         log(`Trajectories: ${trajectories.length} total, ${qualifiedTrajectories.length} qualified in ws, ${qualifiedRunning.length} running in ws`);
 
@@ -1136,38 +1212,10 @@ async function pollContextUsage(): Promise<void> {
             stalenessConfirmedIdle = false;
         }
 
-        // --- Priority 1: RUNNING status detection ---
-        if (qualifiedRunning.length > 0) {
-            const currentStillRunning = qualifiedRunning.find(t => t.cascadeId === trackedCascadeId);
-            if (currentStillRunning) {
-                newCandidateId = currentStillRunning.cascadeId;
-                selectionReason = 'tracked cascade is RUNNING';
-            } else {
-                newCandidateId = qualifiedRunning[0].cascadeId;
-                selectionReason = 'new RUNNING cascade in ws';
-            }
-        }
-        // --- Priority 1b: RUNNING in other workspace or without workspace URI ---
-        // With shared LS (Antigravity 1.22.2+), conversations from ALL workspaces
-        // are visible. If the user is actively chatting in another workspace's
-        // conversation, we should still track it — otherwise the plugin appears
-        // completely dead even though the AI is actively responding.
-        if (!newCandidateId) {
-            const allRunning = trajectories.filter(t =>
-                t.status === CascadeStatus.RUNNING
-            );
-            // Exclude conversations already covered by Priority 1 (same workspace)
-            const crossWsRunning = allRunning.filter(t =>
-                !qualifiedTrajectories.some(q => q.cascadeId === t.cascadeId)
-            );
-            if (crossWsRunning.length > 0) {
-                newCandidateId = crossWsRunning[0].cascadeId;
-                const hasWs = crossWsRunning[0].workspaceUris.length > 0;
-                selectionReason = hasWs
-                    ? 'RUNNING cascade from another workspace (cross-workspace tracking)'
-                    : 'RUNNING cascade without workspace (new conversation)';
-                log(`Priority 1b: found RUNNING trajectory ${newCandidateId!.substring(0, 8)} ${hasWs ? 'in other workspace' : 'without workspace URI'}`);
-            }
+        if (runningSelection.selectedOutsideWorkspace && newCandidateId) {
+            const selected = trajectories.find(t => t.cascadeId === newCandidateId);
+            const hasWs = !!selected && selected.workspaceUris.length > 0;
+            log(`Priority 1b: found RUNNING trajectory ${newCandidateId.substring(0, 8)} ${hasWs ? 'in other workspace' : 'without workspace URI'}`);
         }
         // --- Priority 2: stepCount CHANGE detection ---
         if (!newCandidateId && firstPollDone) {
@@ -1337,7 +1385,7 @@ async function pollContextUsage(): Promise<void> {
         log(`Context: ${currentUsage.contextUsed} tokens (${sourceLabel}) | ${currentUsage.usagePercent.toFixed(1)}% | modelOut=${currentUsage.totalOutputTokens} | toolOut=${currentUsage.totalToolCallOutputTokens} | delta=${currentUsage.estimatedDeltaSinceCheckpoint} | imageGen=${currentUsage.imageGenStepCount}`);
 
         // 6. Background: compute usage for other recent trajectories
-        const scopeTrajectories = qualifiedTrajectories.length > 0 ? qualifiedTrajectories : trajectories;
+        const scopeTrajectories = buildUsageScopeTrajectories(qualifiedTrajectories, trajectories, activeTrajectory);
         const recentTrajectories = scopeTrajectories.slice(0, 5);
         const usagePromises = recentTrajectories.map(async (t) => {
             if (t.cascadeId === activeTrajectory!.cascadeId) {
