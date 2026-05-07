@@ -1,5 +1,31 @@
 # 变更日志 / Changelog
 
+## [1.16.5] - 2026-05-07
+
+### 🐛 Fixed / 修复
+
+- **Workspace switch no longer leaves the monitor blank / 切换工作区后监控不再空掉**: When Antigravity keeps reporting a stale workspace URI after a project switch, the monitor now keeps current-workspace RUNNING conversations first, then falls back to a RUNNING conversation from the shared language server. This covers the real “new workspace is active but filtered out” failure without changing the normal priority order. The selected cross-workspace trajectory is also included in the recent usage scope so the WebView and persisted monitor snapshot stay consistent.
+  当 Antigravity 切换项目后仍上报旧 workspace URI 时，监控现在会先保留当前工作区 RUNNING 对话优先级，再降级跟随共享语言服务器里正在 RUNNING 的对话。这样可以覆盖“新工作区已经活跃但被旧 workspace 过滤掉”的真实问题，同时不改变正常优先级。被选中的跨工作区 trajectory 也会进入 recent usage scope，避免 WebView 和持久化快照缺少当前会话。
+
+### 🧪 Tests / 测试
+
+- Added unit coverage for RUNNING trajectory selection: current-workspace RUNNING still wins, cross-workspace RUNNING fallback is explicit, the old no-workspace RUNNING path still works, and cross-workspace active usage is included in the recent usage list.
+  新增 RUNNING trajectory 选择逻辑单测：当前工作区 RUNNING 仍然优先、跨工作区 RUNNING 降级路径显式覆盖、旧的无 workspace RUNNING 路径继续有效，并确保跨工作区当前会话会进入 recent usage 列表。
+
+### 📝 Docs / 文档
+
+- Updated README, Chinese README, technical implementation notes, and project structure notes for the v1.16.5 behavior. `CHANGELOG-v2.md` remains as an old-link compatibility pointer; new release notes still belong in `CHANGELOG.md` only. Thanks to @NightMin2002 for the original [PR 52](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/52).
+  根据 v1.16.5 的真实行为更新英文 README、中文 README、技术实现说明和项目结构文档。`CHANGELOG-v2.md` 继续保留为旧链接兼容指针；新的发布记录仍只写入 `CHANGELOG.md`。感谢 @NightMin2002 提交原始 [PR 52](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/52)。
+
+### ✅ Validation / 验证
+
+- `npm test`: 56 tests passed across 5 test files.
+- `npm run compile`: passed.
+- `npm run package`: produced `antigravity-context-monitor-1.16.5.vsix`.
+- Antigravity CLI isolated install probe listed `agi-is-going-to-arrive.antigravity-context-monitor@1.16.5`.
+
+---
+
 ## [1.16.4] - 2026-05-06
 
 ### ✨ Improved / 改进
