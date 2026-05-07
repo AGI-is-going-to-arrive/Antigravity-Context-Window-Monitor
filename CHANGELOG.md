@@ -1,5 +1,25 @@
 # 变更日志 / Changelog
 
+## [1.16.5] - 2026-05-07
+
+### 🐛 Fixed / 修复
+
+- **Cross-Workspace Conversation Tracking — Plugin Goes Dead on Workspace Switch / 跨工作区对话追踪 -- 切换工作区后插件无反应**: Fixed a critical bug where switching to a different workspace caused the plugin to appear completely unresponsive. Root cause: the IDE's extension host does not update its workspace context on workspace switches — `getWorkspaceUri()` continues returning the old workspace URI, so the workspace isolation filter (`qualifiedTrajectories`) excluded all conversations from the new workspace. Additionally, `onDidChangeWorkspaceFolders` does not fire in this scenario. Fix: expanded Priority 1b cascade selection to track **any RUNNING conversation from any workspace** (not just those without `workspaceUris`), bypassing the stale workspace filter entirely. Current-workspace RUNNING conversations still take precedence via Priority 1. Added two supplementary defense layers: `onDidChangeWorkspaceFolders` event listener and `lastPolledWorkspaceUri` polling comparison for scenarios where the IDE does properly notify workspace changes.
+  修复切换工作区后插件完全无反应的严重 Bug。根因：IDE 的 extension host 在工作区切换时不更新状态，`getWorkspaceUri()` 始终返回旧工作区 URI，导致工作区隔离过滤把新工作区的所有对话排除。同时 `onDidChangeWorkspaceFolders` 事件也不会触发。修复：扩展 Priority 1b 级联选择，允许追踪**任意工作区中 RUNNING 的对话**（不再限制为无 workspaceUris 的对话），绕过失效的工作区过滤。当前工作区的 RUNNING 对话仍通过 Priority 1 优先选择。附加两层补充防御：`onDidChangeWorkspaceFolders` 事件监听和 `lastPolledWorkspaceUri` 轮询比对，覆盖 IDE 正常通知工作区变化的场景。
+
+### 🗑 Removed / 移除
+
+- **`CHANGELOG-v2.md` removed / 删除 `CHANGELOG-v2.md`**: The old compatibility redirect file has been removed. All release notes are maintained in `CHANGELOG.md` only.
+  删除旧的兼容重定向文件 `CHANGELOG-v2.md`。所有发布记录统一维护在 `CHANGELOG.md` 中。
+
+### ✅ Validation / 验证
+
+- `npm test`: 56 tests passed.
+- `npm run compile`: passed.
+- Manual verification: workspace switching now correctly tracks active conversations across workspaces.
+
+---
+
 ## [1.16.4] - 2026-05-06
 
 ### ✨ Improved / 改进
