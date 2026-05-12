@@ -46,6 +46,8 @@ export interface AccountSnapshot {
     isActive: boolean;
     /** Last time this snapshot was updated (ISO timestamp) */
     lastSeen: string;
+    /** Available credit balances (e.g. Google One AI credits) */
+    credits?: { creditType: string; creditAmount: number }[];
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -149,9 +151,9 @@ export function getGMDataTabStyles(): string {
     }
     .acct-card {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         gap: var(--space-2);
-        padding: 6px var(--space-3);
+        padding: 8px var(--space-3);
         border-bottom: 1px solid var(--color-border-subtle);
         font-size: 0.85em;
         transition: background 0.15s cubic-bezier(.4,0,.2,1);
@@ -165,6 +167,7 @@ export function getGMDataTabStyles(): string {
         height: 8px;
         border-radius: 50%;
         flex-shrink: 0;
+        margin-top: 5px;
     }
     .acct-indicator-active {
         background: var(--color-ok);
@@ -201,13 +204,15 @@ export function getGMDataTabStyles(): string {
         white-space: nowrap;
     }
     .acct-plan {
-        flex-shrink: 0;
+        display: inline-block;
         padding: 1px 6px;
         border-radius: var(--radius-sm);
-        font-size: 0.75em;
+        font-size: 0.72em;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.5px;
+        align-self: flex-start;
+        width: fit-content;
     }
     .acct-plan-pro {
         background: var(--color-info-border-dim);
@@ -358,6 +363,35 @@ export function getGMDataTabStyles(): string {
     .acct-delete-link:hover {
         opacity: 1;
         text-decoration: underline;
+    }
+    .acct-credits {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 3px;
+        margin-top: 1px;
+    }
+    .acct-credit-chip {
+        display: inline-block;
+        padding: 0 5px;
+        border-radius: var(--radius-sm);
+        font-size: 0.68em;
+        line-height: 1.6;
+        white-space: nowrap;
+        background: rgba(250,204,21,0.08);
+        color: var(--color-text-dim);
+        border: 1px solid rgba(250,204,21,0.2);
+        letter-spacing: 0.3px;
+    }
+    .acct-credit-chip b {
+        color: var(--color-amber);
+        font-weight: 600;
+    }
+    body.vscode-light .acct-credit-chip {
+        background: rgba(202,138,4,0.06);
+        border-color: rgba(202,138,4,0.15);
+    }
+    body.vscode-light .acct-credit-chip b {
+        color: #b45309;
     }
 
     /* ─── Pending Archive Panel ─── */
@@ -3603,9 +3637,9 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
                 const countdown = formatResetCountdown(pool.resetTime, nowMs);
                 const warnClass = diffMs < 30 * 60 * 1000 ? ' acct-reset-countdown-warn' : '';
                 return `<div class="acct-pool-row">
-                    ${buildQuotaBar(pool.remainingPercent)}
                     <div class="acct-pool-models">${modelChips}${extraChip}</div>
                     <span class="acct-reset-countdown${warnClass}">${countdown}</span>
+                    ${buildQuotaBar(pool.remainingPercent)}
                 </div>`;
             }).filter(Boolean).join('');
 
@@ -3627,13 +3661,25 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
             ? `<button class="acct-delete-link acct-delete-btn" data-email="${esc(snap.email)}" title="${tBi('Remove cached account', '移除缓存账号')}">${tBi('Remove', '移除')}</button>`
             : '';
 
+        // Build credits chips (e.g. "GOOGLE AI 18,590")
+        const creditsChips = (snap.credits && snap.credits.length > 0)
+            ? snap.credits.map(c => {
+                const label = c.creditType.replace('CREDIT_TYPE_', '').replace(/_/g, ' ');
+                return `<span class="acct-credit-chip">${esc(label)} <b>${c.creditAmount.toLocaleString()}</b></span>`;
+            }).join('')
+            : '';
+        const creditsRow = creditsChips
+            ? `<div class="acct-credits">${creditsChips}</div>`
+            : '';
+
         return `<div class="acct-card">
             <div class="acct-indicator ${indicatorClass}"></div>
             <div class="acct-identity">
                 <span class="acct-name">${esc(snap.name || '—')} ${statusTag}${deleteLink ? ` ${deleteLink}` : ''}</span>
                 <span class="acct-email">${esc(snap.email)}</span>
+                <span class="acct-plan ${planClass}">${esc(planLabel)}</span>
+                ${creditsRow}
             </div>
-            <span class="acct-plan ${planClass}">${esc(planLabel)}</span>
             ${resetHtml}
         </div>`;
     }).join('');

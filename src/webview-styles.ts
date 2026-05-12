@@ -3777,7 +3777,6 @@ export function getStyles(): string {
             margin-bottom: 0;
         }
         .acct-popover-body .acct-card {
-            flex-wrap: wrap;
             gap: var(--space-2);
         }
         .acct-popover-body .acct-identity {
@@ -3785,7 +3784,7 @@ export function getStyles(): string {
             min-width: 140px;
         }
         .acct-popover-body .acct-pools {
-            flex: 1 1 100%;
+            flex: 0 1 auto;
             min-width: 0;
         }
         .acct-popover-body .acct-pool-model {

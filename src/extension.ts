@@ -446,6 +446,10 @@ function updateAccountSnapshot(
     }
 
     // Upsert current account
+    const validCredits = (userInfo.availableCredits || [])
+        .filter(c => c.creditAmount > 0)
+        .map(c => ({ creditType: c.creditType, creditAmount: c.creditAmount }));
+
     accountSnapshots.set(email, {
         email,
         name: userInfo.name || '',
@@ -456,6 +460,7 @@ function updateAccountSnapshot(
         resetPools,
         isActive: true,
         lastSeen: new Date().toISOString(),
+        credits: validCredits.length > 0 ? validCredits : undefined,
     });
 
     // Persist to durable state

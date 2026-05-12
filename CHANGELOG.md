@@ -22,9 +22,15 @@
 - **Legacy model name fallback / 退役模型名兜底**: Added `LEGACY_MODEL_NAMES` static map in `models.ts` for retired model IDs (M37 -> "Gemini 3.1 Pro (High)", M47 -> "Gemini 3 Flash"). Historical calendar and cost data that references these retired IDs now displays proper model names instead of raw placeholder strings.
   在 `models.ts` 中新增 `LEGACY_MODEL_NAMES` 静态映射表，为已退役模型 ID（M37 -> "Gemini 3.1 Pro (High)"，M47 -> "Gemini 3 Flash"）提供兜底显示名。引用这些退役 ID 的历史日历和成本数据现在能正确显示模型名而非裸占位符。
 
+- **Account panel shows credits per account / 账号面板显示积分**: `AccountSnapshot` now stores `credits` (from `availableCredits`). Each account card in the popover displays credit chips (e.g. "GOOGLE ONE AI **18,350**") below the email line, making it easy to compare balances across multi-account setups.
+  `AccountSnapshot` 现在存储 `credits`（来自 `availableCredits`）。弹窗中每个账号卡片在邮箱下方显示积分标签（如 "GOOGLE ONE AI **18,350**"），方便多账号场景下对比余额。
+
+- **Account card layout overhaul / 账号卡片布局重排**: Identity section now shows 4 distinct rows: name + status, email, plan badge, and credits. Quota pool rows moved progress bar to far-right for consistent alignment. Removed popover-specific `flex-wrap: wrap` override that forced pools onto a separate line, eliminating the empty space at top-right.
+  身份区域拆为四行：名字+状态、邮箱、会员计划、积分。配额池行将进度条移至最右侧对齐。移除 popover 的 `flex-wrap: wrap` 覆盖，池子不再独占一行，消除右上角空白。
+
 ### 📊 Stats / 统计
 
-- **Files changed**: 7 (`src/models.ts`, `src/tracker.ts`, `src/extension.ts`, `src/pricing-store.ts`, `src/pricing-panel.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/statusbar.ts`, `package.json`)
+- **Files changed**: 10 (`src/models.ts`, `src/tracker.ts`, `src/extension.ts`, `src/pricing-store.ts`, `src/pricing-panel.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/statusbar.ts`, `src/activity-panel.ts`, `src/webview-styles.ts`, `src/webview-panel.ts`, `package.json`)
 - **TypeScript compile**: Zero errors
 
 ---
