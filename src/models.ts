@@ -14,11 +14,13 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     // ── Platform truncation thresholds (from GM plannerConfig.truncationThresholdTokens) ──
     // These are the ACTUAL context window limits enforced by the platform,
     // NOT the model's native context window size.
-    // Verified via diag-scripts/overview/model-compare.ts (2026-04-24).
-    'MODEL_PLACEHOLDER_M37': 120_000,   // Gemini 3.1 Pro (High) — platform says 160K but compression triggers at ~125K
+    // Verified via diag-scripts/overview/model-compare.ts (2026-05-12).
+    'MODEL_PLACEHOLDER_M16': 120_000,   // Gemini 3.1 Pro (High) — new ID (gemini-pro-default), compression triggers ~120K
+    'MODEL_PLACEHOLDER_M37': 120_000,   // [Legacy] Gemini 3.1 Pro (High) — now demoted to planModel/dispatcher
     'MODEL_PLACEHOLDER_M36': 120_000,   // Gemini 3.1 Pro (Low)  — same pool as High
-    'MODEL_PLACEHOLDER_M47': 160_000,   // Gemini 3 Flash
-    'MODEL_PLACEHOLDER_M18': 160_000,   // [Legacy] Gemini 3 Flash (old ID)
+    'MODEL_PLACEHOLDER_M84': 160_000,   // Gemini 3 Flash — new ID
+    'MODEL_PLACEHOLDER_M47': 160_000,   // [Legacy] Gemini 3 Flash (old ID)
+    'MODEL_PLACEHOLDER_M18': 160_000,   // [Legacy] Gemini 3 Flash (older ID)
     'MODEL_PLACEHOLDER_M35': 160_000,   // Claude Sonnet 4.6 (Thinking) — truncationThresholdTokens=160000
     'MODEL_PLACEHOLDER_M26': 160_000,   // Claude Opus 4.6 (Thinking)  — truncationThresholdTokens=160000
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 128_000,  // GPT-OSS 120B (Medium)
@@ -31,10 +33,16 @@ export const DEFAULT_CONTEXT_LIMIT = 160_000;
 // the LS GetUserStatus API. No hardcoded model names.
 
 let modelDisplayNames: Record<string, string> = {};
+/** responseModel -> placeholder ID reverse map (populated from GM data). */
+let responseModelAliases: Record<string, string> = {};
+/** Whether to append diagnostic short ID suffix (e.g. "(M16)") to display names. */
+let showModelShortId = false;
 
 const KNOWN_QUOTA_POOLS: Record<string, string> = {
+    'MODEL_PLACEHOLDER_M16': 'gemini-pro',
     'MODEL_PLACEHOLDER_M37': 'gemini-pro',
     'MODEL_PLACEHOLDER_M36': 'gemini-pro',
+    'MODEL_PLACEHOLDER_M84': 'gemini-flash',
     'MODEL_PLACEHOLDER_M47': 'gemini-flash',
     'MODEL_PLACEHOLDER_M18': 'gemini-flash',
     'MODEL_PLACEHOLDER_M35': 'claude-premium',
@@ -53,6 +61,16 @@ const LEGACY_ZH_MODEL_NAMES: Record<string, string> = {
     'Claude Sonnet 4.6 (思考)': 'MODEL_PLACEHOLDER_M35',
     'Claude Opus 4.6 (思考)': 'MODEL_PLACEHOLDER_M26',
     'GPT-OSS 120B (中)': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
+};
+
+// ─── Retired Model Display Names ─────────────────────────────────────────────
+// Models that have been retired from clientModelConfigs (e.g. replaced by newer
+// placeholder IDs) but may still appear in persisted/archived daily data.
+// Provides getModelDisplayName() fallback so they don't render as raw IDs.
+
+const LEGACY_MODEL_NAMES: Record<string, string> = {
+    'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
+    'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',         // Replaced by M84
 };
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -76,7 +94,18 @@ export function getContextLimit(
  * Returns the API-provided label, or the raw model ID if not yet loaded.
  */
 export function getModelDisplayName(model: string): string {
-    return modelDisplayNames[model] || model || 'Unknown Model';
+    return modelDisplayNames[model] || LEGACY_MODEL_NAMES[model] || model || 'Unknown Model';
+}
+
+/**
+ * Extract a short diagnostic ID from a model placeholder.
+ * e.g. MODEL_PLACEHOLDER_M16 → "M16", MODEL_OPENAI_GPT_OSS_120B_MEDIUM → "OSS-120B"
+ */
+export function getModelShortId(modelId: string): string {
+    const m = modelId.match(/MODEL_PLACEHOLDER_(M\d+)/);
+    if (m) { return m[1]; }
+    if (modelId === 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM') { return 'OSS-120B'; }
+    return '';
 }
 
 /**
@@ -85,17 +114,26 @@ export function getModelDisplayName(model: string): string {
 export function resolveModelId(modelOrDisplay: string): string | undefined {
     const clean = modelOrDisplay.trim();
     if (!clean) { return undefined; }
-    // Direct model ID match
-    if (modelDisplayNames[clean] !== undefined) { return clean; }
+    // Direct model ID match (API-registered or retired)
+    if (modelDisplayNames[clean] !== undefined || LEGACY_MODEL_NAMES[clean] !== undefined) { return clean; }
     // Reverse lookup: display label → model ID
     for (const [modelId, label] of Object.entries(modelDisplayNames)) {
         if (label === clean) {
             return modelId;
         }
     }
+    // responseModel alias lookup (e.g. "gemini-pro-default" → "MODEL_PLACEHOLDER_M16")
+    const fromResponseModel = responseModelAliases[clean];
+    if (fromResponseModel) { return fromResponseModel; }
     // Legacy Chinese name fallback (pre-v1.16 persisted data migration)
     const legacyId = LEGACY_ZH_MODEL_NAMES[clean];
     if (legacyId) { return legacyId; }
+    // Strip trailing diagnostic suffix "(Mxx)" and retry — handles persisted keys
+    // that include the short ID appended by normalizeModelDisplayName()
+    const suffixStripped = clean.replace(/\s*\(M\d+\)$/, '').replace(/\s*\(OSS-120B\)$/, '');
+    if (suffixStripped !== clean && suffixStripped) {
+        return resolveModelId(suffixStripped);
+    }
     return undefined;
 }
 
@@ -107,7 +145,28 @@ export function normalizeModelDisplayName(modelOrDisplay: string): string {
     const clean = modelOrDisplay.trim();
     if (!clean) { return ''; }
     const modelId = resolveModelId(clean);
-    return modelId ? getModelDisplayName(modelId) : clean;
+    if (!modelId) { return clean; }
+    const displayName = getModelDisplayName(modelId);
+    const shortId = getModelShortId(modelId);
+    // Append diagnostic short ID when enabled and display name is resolved
+    if (showModelShortId && shortId && displayName !== modelId && !displayName.includes(`(${shortId})`)) {
+        return `${displayName} (${shortId})`;
+    }
+    return displayName;
+}
+
+/**
+ * Get the base display name WITHOUT the diagnostic (Mxx) suffix.
+ * Used as a stable aggregation key for cost/pricing merging, so that the
+ * same model under different internal IDs (e.g. M37 and M16 both being
+ * "Gemini 3.1 Pro (High)") can be merged into a single cost row.
+ */
+export function getModelBaseName(modelOrDisplay: string): string {
+    const clean = modelOrDisplay.trim();
+    if (!clean) { return ''; }
+    const modelId = resolveModelId(clean);
+    if (!modelId) { return clean; }
+    return getModelDisplayName(modelId);
 }
 
 /**
@@ -218,4 +277,29 @@ export function updateModelDisplayNames(configs: ModelConfig[]): void {
             modelDisplayNames[c.model] = c.label;
         }
     }
+}
+
+/**
+ * Register a responseModel → placeholder ID alias.
+ * Called from GM data processing when we discover the mapping.
+ * e.g. registerResponseModelAlias('gemini-pro-default', 'MODEL_PLACEHOLDER_M16')
+ * Allows resolveModelId('gemini-pro-default') → 'MODEL_PLACEHOLDER_M16' → "Gemini 3.1 Pro (High)"
+ */
+export function registerResponseModelAlias(responseModel: string, placeholderId: string): void {
+    if (responseModel && placeholderId && responseModel !== placeholderId) {
+        responseModelAliases[responseModel] = placeholderId;
+    }
+}
+
+/**
+ * Enable/disable the diagnostic short ID suffix on normalizeModelDisplayName().
+ * When enabled, model names display as "Gemini 3.1 Pro (High) (M16)" etc.
+ */
+export function setShowModelShortId(enabled: boolean): void {
+    showModelShortId = enabled;
+}
+
+/** Check whether the diagnostic short ID suffix is currently enabled. */
+export function isShowModelShortId(): boolean {
+    return showModelShortId;
 }

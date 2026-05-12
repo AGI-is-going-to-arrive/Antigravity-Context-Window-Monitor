@@ -5,7 +5,7 @@
 // Extracted from gm-panel.ts to enable the dedicated Pricing tab.
 
 import type { GMSummary, GMModelStats } from './gm-tracker';
-import { normalizeModelDisplayName } from './models';
+import { normalizeModelDisplayName, getModelBaseName } from './models';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -50,6 +50,7 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     'gpt-oss-120b': { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0, thinking: 0.36 },
     // ── Gemini 3.x (cloud.google.com/vertex-ai/generative-ai/pricing) ─
     'gemini-3.1-pro': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },
+    'gemini-pro-default': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },  // M16 responseModel alias
     'gemini-3-flash': { input: 0.50, output: 3, cacheRead: 0.05, cacheWrite: 0.625, thinking: 3 },
 };
 
@@ -97,45 +98,49 @@ export function calculateCosts(
 ): { rows: ModelCostRow[]; grandTotal: number } {
     const mergedTable = { ...DEFAULT_PRICING, ...customPricing };
     const entries = Object.entries(summary.modelBreakdown);
-    const rows: ModelCostRow[] = [];
+    // Merge rows by base model name (e.g. M37 + M16 both → "Gemini 3.1 Pro (High)")
+    const mergedRows = new Map<string, ModelCostRow>();
     let grandTotal = 0;
 
     const calcCost = (tokens: number, pricePerM: number) => (tokens / 1_000_000) * pricePerM;
 
     for (const [name, ms] of entries) {
         const displayName = normalizeModelDisplayName(name);
+        const baseName = getModelBaseName(name) || displayName;
         const pricing = findPricing(ms.responseModel, mergedTable);
-        // responseOutputTokens = totalOutputTokens - totalThinkingTokens
-        // This avoids double-counting: outputTokens includes thinking already.
         const responseOutputTokens = Math.max(0, ms.totalOutputTokens - ms.totalThinkingTokens);
-        if (!pricing) {
-            rows.push({
-                name: displayName, responseModel: ms.responseModel,
-                inputCost: 0, outputCost: 0, cacheCost: 0, thinkingCost: 0, totalCost: 0,
-                inputTokens: ms.totalInputTokens, outputTokens: responseOutputTokens,
-                cacheTokens: ms.totalCacheRead,
-                thinkingTokens: ms.totalThinkingTokens, pricing: null,
-            });
-            continue;
-        }
 
-        const inputCost = calcCost(ms.totalInputTokens, pricing.input);
-        const outputCost = calcCost(responseOutputTokens, pricing.output);
-        const cacheCost = calcCost(ms.totalCacheRead, pricing.cacheRead);
-        const thinkingCost = calcCost(ms.totalThinkingTokens, pricing.thinking);
+        const inputCost = pricing ? calcCost(ms.totalInputTokens, pricing.input) : 0;
+        const outputCost = pricing ? calcCost(responseOutputTokens, pricing.output) : 0;
+        const cacheCost = pricing ? calcCost(ms.totalCacheRead, pricing.cacheRead) : 0;
+        const thinkingCost = pricing ? calcCost(ms.totalThinkingTokens, pricing.thinking) : 0;
         const totalCost = inputCost + outputCost + cacheCost + thinkingCost;
         grandTotal += totalCost;
 
-        rows.push({
-            name: displayName, responseModel: ms.responseModel,
-            inputCost, outputCost, cacheCost, thinkingCost, totalCost,
-            inputTokens: ms.totalInputTokens, outputTokens: responseOutputTokens,
-            cacheTokens: ms.totalCacheRead,
-            thinkingTokens: ms.totalThinkingTokens, pricing,
-        });
+        const existing = mergedRows.get(baseName);
+        if (existing) {
+            existing.inputCost += inputCost;
+            existing.outputCost += outputCost;
+            existing.cacheCost += cacheCost;
+            existing.thinkingCost += thinkingCost;
+            existing.totalCost += totalCost;
+            existing.inputTokens += ms.totalInputTokens;
+            existing.outputTokens += responseOutputTokens;
+            existing.cacheTokens += ms.totalCacheRead;
+            existing.thinkingTokens += ms.totalThinkingTokens;
+            if (!existing.pricing && pricing) { existing.pricing = pricing; }
+        } else {
+            mergedRows.set(baseName, {
+                name: displayName, responseModel: ms.responseModel,
+                inputCost, outputCost, cacheCost, thinkingCost, totalCost,
+                inputTokens: ms.totalInputTokens, outputTokens: responseOutputTokens,
+                cacheTokens: ms.totalCacheRead,
+                thinkingTokens: ms.totalThinkingTokens, pricing: pricing || null,
+            });
+        }
     }
 
-    rows.sort((a, b) => b.totalCost - a.totalCost);
+    const rows = [...mergedRows.values()].sort((a, b) => b.totalCost - a.totalCost);
     return { rows, grandTotal };
 }
 

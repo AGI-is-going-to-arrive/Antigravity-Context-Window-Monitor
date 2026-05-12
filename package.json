@@ -105,6 +105,11 @@
           "minimum": 1,
           "maximum": 100,
           "description": "Maximum number of activity archives to keep / 活动归档最多保留份数"
+        },
+        "antigravityContextMonitor.showModelInternalId": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show internal model ID suffix (e.g. M16, M26) next to model display names. Useful for diagnosing platform-level model changes. / 在模型名后显示内部 ID 后缀（如 M16、M26），用于诊断平台级模型变更。"
         }
       }
     }

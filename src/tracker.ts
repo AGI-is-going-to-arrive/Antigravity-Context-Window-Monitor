@@ -3,6 +3,7 @@ import { rpcCall } from './rpc-client';
 import {
     getContextLimit,
     getModelDisplayName,
+    normalizeModelDisplayName,
     updateModelDisplayNames,
     ModelConfig,
     FullUserStatus,
@@ -26,6 +27,7 @@ import {
 export {
     getContextLimit,
     getModelDisplayName,
+    normalizeModelDisplayName,
     updateModelDisplayNames,
     ModelConfig,
     FullUserStatus,
@@ -723,7 +725,7 @@ export async function getContextUsage(
         cascadeId: trajectory.cascadeId,
         title: trajectory.summary,
         model: effectiveModel,
-        modelDisplayName: getModelDisplayName(effectiveModel),
+        modelDisplayName: normalizeModelDisplayName(effectiveModel),
         contextUsed: result.contextUsed,
         totalOutputTokens: result.totalOutputTokens,
         totalToolCallOutputTokens: result.totalToolCallOutputTokens,

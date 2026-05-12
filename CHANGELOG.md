@@ -1,5 +1,41 @@
 # 变更日志 / Changelog
 
+## [1.16.6] - 2026-05-12
+
+### ✨ Improved / 改进
+
+- **Gemini M16/M84 model ecosystem adaptation / Gemini M16/M84 模型生态适配**: Adapted to Gemini platform-level model remapping where M16 replaced M37 as Gemini 3.1 Pro (High) and M84 replaced M47 as Gemini 3 Flash. Added static context limits (M16: 120K, M84: 160K) and quota pool mappings to `models.ts`. Added `gemini-pro-default` pricing entry to `pricing-store.ts` to fix cost calculation for M16's responseModel.
+  适配 Gemini 平台模型重映射：M16 取代 M37 成为 Gemini 3.1 Pro (High)，M84 取代 M47 成为 Gemini 3 Flash。在 `models.ts` 中添加静态上下文限额（M16: 120K，M84: 160K）和额度池映射。在 `pricing-store.ts` 中添加 `gemini-pro-default` 定价条目，修复 M16 的费用计算。
+
+- **responseModel reverse alias resolution / responseModel 反向别名解析**: Added `responseModelAliases` registry and `registerResponseModelAlias()` in `models.ts`. When GM data reveals that `gemini-pro-default` maps to `MODEL_PLACEHOLDER_M16`, the alias is automatically registered so `normalizeModelDisplayName('gemini-pro-default')` correctly resolves to "Gemini 3.1 Pro (High)" instead of displaying the raw engine name. `resolveModelId()` now checks this alias map as an additional lookup layer. `gm/parser.ts` calls `registerResponseModelAlias()` during GM entry parsing to auto-learn mappings.
+  在 `models.ts` 中新增 `responseModelAliases` 注册表和 `registerResponseModelAlias()` 函数。当 GM 数据揭示 `gemini-pro-default` 映射到 `MODEL_PLACEHOLDER_M16` 时，别名会自动注册，使 `normalizeModelDisplayName('gemini-pro-default')` 能正确解析为 "Gemini 3.1 Pro (High)"，而不是显示裸引擎名。`resolveModelId()` 现在会将此别名表作为额外查找层。`gm/parser.ts` 在解析 GM 条目时自动调用 `registerResponseModelAlias()` 学习映射关系。
+
+- **Diagnostic short ID suffix on model display names / 模型显示名追加诊断短标识**: `normalizeModelDisplayName()` now appends the model's internal short ID as a suffix, e.g. "Gemini 3.1 Pro (High) (M16)", "Claude Opus 4.6 (Thinking) (M26)". This makes platform-level model ID changes (such as M37->M16 remapping) immediately visible in the Cost tab, GM Data, Model cards, and Monitor dashboard, serving as an early-warning canary for model ecosystem shifts. `resolveModelId()` automatically strips the suffix for backward compatibility with persisted data. **Disabled by default** — controlled via the new `showModelInternalId` setting (see below).
+  `normalizeModelDisplayName()` 现在会在模型显示名后追加内部短标识后缀，如 "Gemini 3.1 Pro (High) (M16)"、"Claude Opus 4.6 (Thinking) (M26)"。平台级模型 ID 变更（如 M37->M16 重映射）能直接暴露在 UI 中作为早期预警。`resolveModelId()` 会自动剥离后缀以兼容历史数据。**默认关闭**——通过下方新增的 `showModelInternalId` 设置控制。
+
+- **Show Model Internal ID setting / 显示模型内部 ID 设置项**: Added `antigravityContextMonitor.showModelInternalId` setting (default: `false`) with a toggle in the Settings tab under "Advanced Display". When enabled, all model display names append their internal short ID (e.g. `(M16)`, `(M26)`) and the status bar tooltip shows the shadow/checkpoint model identifier. Changes take effect immediately without reload.
+  新增 `antigravityContextMonitor.showModelInternalId` 设置项（默认 `false`），在设置标签页「高级显示」区域提供开关。开启后所有模型名追加内部短标识（如 `(M16)`、`(M26)`），状态栏 tooltip 也会显示影子/检查点模型标识。修改即时生效，无需重新加载。
+
+- **Cost aggregation merges same-model rows / 成本汇总合并同模型行**: `calculateCosts()` in `pricing-store.ts` and `buildMonthlyCostSummary()` in `pricing-panel.ts` now merge cost rows by base model name (via new `getModelBaseName()`). Models sharing the same display name but different internal IDs (e.g. M37 and M16 both being "Gemini 3.1 Pro (High)") are combined into a single cost row with summed totals, instead of appearing as separate entries.
+  `pricing-store.ts` 的 `calculateCosts()` 和 `pricing-panel.ts` 的 `buildMonthlyCostSummary()` 现在按 base 模型名（通过新增的 `getModelBaseName()`）合并费用行。同一模型不同内部 ID（如 M37 和 M16 都是 "Gemini 3.1 Pro (High)"）会合并为一行统一显示总额，不再分开显示。
+
+- **Legacy model name fallback / 退役模型名兜底**: Added `LEGACY_MODEL_NAMES` static map in `models.ts` for retired model IDs (M37 -> "Gemini 3.1 Pro (High)", M47 -> "Gemini 3 Flash"). Historical calendar and cost data that references these retired IDs now displays proper model names instead of raw placeholder strings.
+  在 `models.ts` 中新增 `LEGACY_MODEL_NAMES` 静态映射表，为已退役模型 ID（M37 -> "Gemini 3.1 Pro (High)"，M47 -> "Gemini 3 Flash"）提供兜底显示名。引用这些退役 ID 的历史日历和成本数据现在能正确显示模型名而非裸占位符。
+
+- **Account panel shows credits per account / 账号面板显示积分**: `AccountSnapshot` now stores `credits` (from `availableCredits`). Each account card in the popover displays credit chips (e.g. "GOOGLE ONE AI **18,350**") below the email line, making it easy to compare balances across multi-account setups.
+  `AccountSnapshot` 现在存储 `credits`（来自 `availableCredits`）。弹窗中每个账号卡片在邮箱下方显示积分标签（如 "GOOGLE ONE AI **18,350**"），方便多账号场景下对比余额。
+
+- **Account card layout overhaul / 账号卡片布局重排**: Identity section now shows 4 distinct rows: name + status, email, plan badge, and credits. Quota pool rows moved progress bar to far-right for consistent alignment. Removed popover-specific `flex-wrap: wrap` override that forced pools onto a separate line, eliminating the empty space at top-right.
+  身份区域拆为四行：名字+状态、邮箱、会员计划、积分。配额池行将进度条移至最右侧对齐。移除 popover 的 `flex-wrap: wrap` 覆盖，池子不再独占一行，消除右上角空白。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 10 (`src/models.ts`, `src/tracker.ts`, `src/extension.ts`, `src/pricing-store.ts`, `src/pricing-panel.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/statusbar.ts`, `src/activity-panel.ts`, `src/webview-styles.ts`, `src/webview-panel.ts`, `package.json`)
+- **TypeScript compile**: Zero errors
+
+---
+
+
 ## [1.16.5] - 2026-05-07
 
 ### 🐛 Fixed / 修复

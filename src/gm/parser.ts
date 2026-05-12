@@ -1,7 +1,7 @@
 // ─── GM Parser ───────────────────────────────────────────────────────────────
 // Parsing helpers, prompt extraction, and entry builder for GM data.
 
-import { normalizeModelDisplayName } from '../models';
+import { normalizeModelDisplayName, registerResponseModelAlias } from '../models';
 import type {
     GMCallEntry,
     GMCheckpointSummary,
@@ -653,6 +653,12 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
     const modelId = (cm.model as string) || '';
     const responseModel = (cm.responseModel as string) || '';
     const modelAccuracy: GMModelAccuracy = responseModel ? 'exact' : 'placeholder';
+
+    // Register responseModel -> placeholder alias for display name resolution
+    // e.g. 'gemini-pro-default' -> 'MODEL_PLACEHOLDER_M16' -> "Gemini 3.1 Pro (High)"
+    if (responseModel && modelId) {
+        registerResponseModelAlias(responseModel, modelId);
+    }
 
     // Model DNA fields
     const completionConfig = parseCompletionConfig(cm.completionConfig as Record<string, unknown>);

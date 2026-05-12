@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ContextUsage } from './tracker';
 import { ModelConfig } from './models';
+import { isShowModelShortId } from './models';
 import { t, tBi, getLanguage } from './i18n';
 import { formatResetAbsolute, formatResetContext, formatResetCountdownFromMs } from './reset-time';
 
@@ -371,7 +372,7 @@ export class StatusBarManager {
         lines.push(`——————————`);
 
         if (usage.lastModelUsage) {
-            const cpLabel = usage.checkpointModel
+            const cpLabel = (usage.checkpointModel && isShowModelShortId())
                 ? ` (${escapeMarkdown(shortenShadowModelId(usage.checkpointModel))})`
                 : '';
             lines.push(`📎 ${t('tooltip.lastCheckpoint')}:${cpLabel}`);
