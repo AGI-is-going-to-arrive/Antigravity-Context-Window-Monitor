@@ -100,6 +100,7 @@ function sanitizeConfigValue(key: string, value: unknown): unknown {
         case 'statusBar.showContext':
         case 'statusBar.showQuota':
         case 'statusBar.showResetCountdown':
+        case 'showModelInternalId':
             return !!value;
         case 'quotaNotificationThreshold':
             return clamp(Number(value) || 0, 0, 99);
@@ -364,6 +365,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                 'statusBar.showContext',
                 'statusBar.showQuota',
                 'statusBar.showResetCountdown',
+                'showModelInternalId',
                 'contextLimits',
                 'quotaNotificationThreshold',
                 'activity.maxRecentSteps',

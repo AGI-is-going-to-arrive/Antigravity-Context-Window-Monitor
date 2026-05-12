@@ -8,7 +8,7 @@ import { PricingStore, DEFAULT_PRICING, PRICING_LAST_UPDATED, findPricing, Model
 import { esc } from './webview-helpers';
 import type { MonthCostBreakdown } from './daily-store';
 import { getModelDNAKey, type PersistedModelDNA } from './model-dna-store';
-import { ModelConfig, normalizeModelDisplayName } from './models';
+import { ModelConfig, normalizeModelDisplayName, getModelBaseName } from './models';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -1334,21 +1334,30 @@ function buildMonthlyCostSummary(
 
     // 1. Archived cycles from DailyStore
     for (const m of breakdown.models) {
-        const cleanName = normalizeModelDisplayName(m.name) || m.name;
-        mergedModels.set(cleanName, {
-            name: cleanName,
-            totalCost: m.totalCost,
-            calls: m.calls,
-            inputTokens: m.inputTokens,
-            outputTokens: m.outputTokens,
-            thinkingTokens: m.thinkingTokens,
-        });
+        const cleanName = getModelBaseName(m.name) || m.name;
+        const existing = mergedModels.get(cleanName);
+        if (existing) {
+            existing.totalCost += m.totalCost;
+            existing.calls += m.calls;
+            existing.inputTokens += m.inputTokens;
+            existing.outputTokens += m.outputTokens;
+            existing.thinkingTokens += m.thinkingTokens;
+        } else {
+            mergedModels.set(cleanName, {
+                name: cleanName,
+                totalCost: m.totalCost,
+                calls: m.calls,
+                inputTokens: m.inputTokens,
+                outputTokens: m.outputTokens,
+                thinkingTokens: m.thinkingTokens,
+            });
+        }
     }
 
     // 2. Current live cycle (not yet archived)
     if (isCurrentMonth && currentCycleRows.length > 0) {
         for (const row of currentCycleRows) {
-            const key = normalizeModelDisplayName(row.name) || row.name;
+            const key = getModelBaseName(row.name) || row.name;
             const existing = mergedModels.get(key);
             if (existing) {
                 existing.totalCost += row.totalCost;

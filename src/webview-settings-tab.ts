@@ -44,6 +44,7 @@ export function buildSettingsContent(
     const showContext = cfg.get<boolean>('statusBar.showContext', true);
     const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
     const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
+    const showModelInternalId = cfg.get<boolean>('showModelInternalId', false);
     const quotaNotifyThreshold = cfg.get<number>('quotaNotificationThreshold', 20);
     const tabScrollHintEnabled = panelPrefs?.showTabScrollHint ?? true;
     const showScrollbar = panelPrefs?.showScrollbar ?? false;
@@ -221,7 +222,25 @@ export function buildSettingsContent(
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleCountdown" class="toggle-cb" ${showResetCountdown ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBi('Reset countdown', '重置倒计时')} <code>⏳4h32m</code></span>
+                    <span>${tBi('Reset countdown', '重置倒计时')} <code>&#x23F3;4h32m</code></span>
+                </label>
+            </div>
+        </section>
+
+        <section class="stg-card" data-accent="display">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.chart}</span>
+                <h2>${tBi('Advanced Display', '高级显示')}</h2>
+            </div>
+            <p class="raw-desc">${tBi(
+        'Show extra diagnostic information useful for tracking platform-level model changes.',
+        '显示用于追踪平台级模型变更的诊断信息。',
+    )}</p>
+            <div class="toggle-group">
+                <label class="toggle-row">
+                    <input type="checkbox" id="toggleModelInternalId" class="toggle-cb" ${showModelInternalId ? 'checked' : ''} />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>${tBi('Show model internal ID', '显示模型内部 ID')} <code>(M16)</code></span>
                 </label>
             </div>
         </section>

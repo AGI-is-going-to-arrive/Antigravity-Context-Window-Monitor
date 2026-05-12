@@ -517,8 +517,8 @@ export function getScript(): string {
             if (zoomValEl) { zoomValEl.textContent = zoomLevel + '%'; }
 
             // ─── Settings: Status Bar Toggles ───
-            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown'];
-            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown'];
+            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'toggleModelInternalId'];
+            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'showModelInternalId'];
             for (var tgi = 0; tgi < toggleIds.length; tgi++) {
                 (function(idx) {
                     var cb = document.getElementById(toggleIds[idx]);

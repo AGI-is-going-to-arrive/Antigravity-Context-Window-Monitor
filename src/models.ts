@@ -35,6 +35,8 @@ export const DEFAULT_CONTEXT_LIMIT = 160_000;
 let modelDisplayNames: Record<string, string> = {};
 /** responseModel -> placeholder ID reverse map (populated from GM data). */
 let responseModelAliases: Record<string, string> = {};
+/** Whether to append diagnostic short ID suffix (e.g. "(M16)") to display names. */
+let showModelShortId = false;
 
 const KNOWN_QUOTA_POOLS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M16': 'gemini-pro',
@@ -61,6 +63,16 @@ const LEGACY_ZH_MODEL_NAMES: Record<string, string> = {
     'GPT-OSS 120B (中)': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
 };
 
+// ─── Retired Model Display Names ─────────────────────────────────────────────
+// Models that have been retired from clientModelConfigs (e.g. replaced by newer
+// placeholder IDs) but may still appear in persisted/archived daily data.
+// Provides getModelDisplayName() fallback so they don't render as raw IDs.
+
+const LEGACY_MODEL_NAMES: Record<string, string> = {
+    'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
+    'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',         // Replaced by M84
+};
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -82,7 +94,7 @@ export function getContextLimit(
  * Returns the API-provided label, or the raw model ID if not yet loaded.
  */
 export function getModelDisplayName(model: string): string {
-    return modelDisplayNames[model] || model || 'Unknown Model';
+    return modelDisplayNames[model] || LEGACY_MODEL_NAMES[model] || model || 'Unknown Model';
 }
 
 /**
@@ -102,8 +114,8 @@ export function getModelShortId(modelId: string): string {
 export function resolveModelId(modelOrDisplay: string): string | undefined {
     const clean = modelOrDisplay.trim();
     if (!clean) { return undefined; }
-    // Direct model ID match
-    if (modelDisplayNames[clean] !== undefined) { return clean; }
+    // Direct model ID match (API-registered or retired)
+    if (modelDisplayNames[clean] !== undefined || LEGACY_MODEL_NAMES[clean] !== undefined) { return clean; }
     // Reverse lookup: display label → model ID
     for (const [modelId, label] of Object.entries(modelDisplayNames)) {
         if (label === clean) {
@@ -136,12 +148,25 @@ export function normalizeModelDisplayName(modelOrDisplay: string): string {
     if (!modelId) { return clean; }
     const displayName = getModelDisplayName(modelId);
     const shortId = getModelShortId(modelId);
-    // Append diagnostic short ID when display name is resolved (not raw placeholder)
-    // e.g. "Gemini 3.1 Pro (High)" + "M16" → "Gemini 3.1 Pro (High) (M16)"
-    if (shortId && displayName !== modelId && !displayName.includes(`(${shortId})`)) {
+    // Append diagnostic short ID when enabled and display name is resolved
+    if (showModelShortId && shortId && displayName !== modelId && !displayName.includes(`(${shortId})`)) {
         return `${displayName} (${shortId})`;
     }
     return displayName;
+}
+
+/**
+ * Get the base display name WITHOUT the diagnostic (Mxx) suffix.
+ * Used as a stable aggregation key for cost/pricing merging, so that the
+ * same model under different internal IDs (e.g. M37 and M16 both being
+ * "Gemini 3.1 Pro (High)") can be merged into a single cost row.
+ */
+export function getModelBaseName(modelOrDisplay: string): string {
+    const clean = modelOrDisplay.trim();
+    if (!clean) { return ''; }
+    const modelId = resolveModelId(clean);
+    if (!modelId) { return clean; }
+    return getModelDisplayName(modelId);
 }
 
 /**
@@ -264,4 +289,17 @@ export function registerResponseModelAlias(responseModel: string, placeholderId:
     if (responseModel && placeholderId && responseModel !== placeholderId) {
         responseModelAliases[responseModel] = placeholderId;
     }
+}
+
+/**
+ * Enable/disable the diagnostic short ID suffix on normalizeModelDisplayName().
+ * When enabled, model names display as "Gemini 3.1 Pro (High) (M16)" etc.
+ */
+export function setShowModelShortId(enabled: boolean): void {
+    showModelShortId = enabled;
+}
+
+/** Check whether the diagnostic short ID suffix is currently enabled. */
+export function isShowModelShortId(): boolean {
+    return showModelShortId;
 }

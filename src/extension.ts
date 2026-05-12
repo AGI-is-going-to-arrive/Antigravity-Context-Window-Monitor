@@ -6,6 +6,7 @@ import {
     getContextUsage,
     getContextLimit,
     getModelDisplayName,
+    normalizeModelDisplayName,
     normalizeUri,
     fetchFullUserStatus,
     updateModelDisplayNames,
@@ -13,6 +14,7 @@ import {
     TrajectorySummary,
     UserStatusInfo,
 } from './tracker';
+import { setShowModelShortId } from './models';
 import { StatusBarManager, formatContextLimit } from './statusbar';
 import { initI18n, initI18nFromState, showLanguagePicker, tBi } from './i18n';
 import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
@@ -172,7 +174,7 @@ function rehydrateUsageForDisplay(
     customLimits?: Record<string, number>,
 ): ContextUsage {
     const model = usage.model || usage.lastModelUsage?.model || '';
-    const modelDisplayName = getModelDisplayName(model);
+    const modelDisplayName = normalizeModelDisplayName(model);
     const contextLimit = getContextLimit(model, customLimits);
     const usagePercent = contextLimit > 0 ? (usage.contextUsed / contextLimit) * 100 : 0;
     if (
@@ -857,6 +859,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // Apply status bar display preferences
     applyDisplayPrefs();
 
+    // Apply model internal ID display setting
+    setShowModelShortId(config.get<boolean>('showModelInternalId', false));
+
     schedulePoll();
 
     // Ensure timer and abort controller are cleaned up when extension is disposed
@@ -894,6 +899,11 @@ export function activate(context: vscode.ExtensionContext): void {
             if (e.affectsConfiguration('antigravityContextMonitor.statusBar')) {
                 applyDisplayPrefs();
                 log('Status bar display preferences updated');
+            }
+            if (e.affectsConfiguration('antigravityContextMonitor.showModelInternalId')) {
+                const newConfig = vscode.workspace.getConfiguration('antigravityContextMonitor');
+                setShowModelShortId(newConfig.get<boolean>('showModelInternalId', false));
+                log('Model internal ID display setting updated');
             }
         }),
         // ─── Workspace Switch Detection ─────────────────────────────────────
