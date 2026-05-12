@@ -89,9 +89,9 @@
 
 | 模型 | Internal ID / 内部 ID | 上下文上限 |
 | --- | --- | --- |
-| Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M37 | 1,000,000 |
+| Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 1,000,000 |
 | Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 1,000,000 |
-| Gemini 3 Flash | MODEL_PLACEHOLDER_M47 | 1,000,000 |
+| Gemini 3 Flash | MODEL_PLACEHOLDER_M84 | 1,000,000 |
 | Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 1,000,000 |
 | Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 1,000,000 |
 | GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 128,000 |
@@ -206,4 +206,4 @@
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.16.5
+**版本 / Version**: 1.16.6
