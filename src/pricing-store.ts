@@ -50,6 +50,7 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     'gpt-oss-120b': { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0, thinking: 0.36 },
     // ── Gemini 3.x (cloud.google.com/vertex-ai/generative-ai/pricing) ─
     'gemini-3.1-pro': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },
+    'gemini-pro-default': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },  // M16 responseModel alias
     'gemini-3-flash': { input: 0.50, output: 3, cacheRead: 0.05, cacheWrite: 0.625, thinking: 3 },
 };
 

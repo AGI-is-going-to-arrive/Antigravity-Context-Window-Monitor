@@ -1,5 +1,26 @@
 # 变更日志 / Changelog
 
+## [1.16.6] - 2026-05-12
+
+### ✨ Improved / 改进
+
+- **Gemini M16/M84 model ecosystem adaptation / Gemini M16/M84 模型生态适配**: Adapted to Gemini platform-level model remapping where M16 replaced M37 as Gemini 3.1 Pro (High) and M84 replaced M47 as Gemini 3 Flash. Added static context limits (M16: 120K, M84: 160K) and quota pool mappings to `models.ts`. Added `gemini-pro-default` pricing entry to `pricing-store.ts` to fix cost calculation for M16's responseModel.
+  适配 Gemini 平台模型重映射：M16 取代 M37 成为 Gemini 3.1 Pro (High)，M84 取代 M47 成为 Gemini 3 Flash。在 `models.ts` 中添加静态上下文限额（M16: 120K，M84: 160K）和额度池映射。在 `pricing-store.ts` 中添加 `gemini-pro-default` 定价条目，修复 M16 的费用计算。
+
+- **responseModel reverse alias resolution / responseModel 反向别名解析**: Added `responseModelAliases` registry and `registerResponseModelAlias()` in `models.ts`. When GM data reveals that `gemini-pro-default` maps to `MODEL_PLACEHOLDER_M16`, the alias is automatically registered so `normalizeModelDisplayName('gemini-pro-default')` correctly resolves to "Gemini 3.1 Pro (High)" instead of displaying the raw engine name. `resolveModelId()` now checks this alias map as an additional lookup layer. `gm/parser.ts` calls `registerResponseModelAlias()` during GM entry parsing to auto-learn mappings.
+  在 `models.ts` 中新增 `responseModelAliases` 注册表和 `registerResponseModelAlias()` 函数。当 GM 数据揭示 `gemini-pro-default` 映射到 `MODEL_PLACEHOLDER_M16` 时，别名会自动注册，使 `normalizeModelDisplayName('gemini-pro-default')` 能正确解析为 "Gemini 3.1 Pro (High)"，而不是显示裸引擎名。`resolveModelId()` 现在会将此别名表作为额外查找层。`gm/parser.ts` 在解析 GM 条目时自动调用 `registerResponseModelAlias()` 学习映射关系。
+
+- **Diagnostic short ID suffix on model display names / 模型显示名追加诊断短标识**: `normalizeModelDisplayName()` now appends the model's internal short ID as a suffix, e.g. "Gemini 3.1 Pro (High) (M16)", "Claude Opus 4.6 (Thinking) (M26)". This makes platform-level model ID changes (such as M37->M16 remapping) immediately visible in the Cost tab, GM Data, Model cards, and Monitor dashboard, serving as an early-warning canary for model ecosystem shifts. `resolveModelId()` automatically strips the suffix for backward compatibility with persisted data.
+  `normalizeModelDisplayName()` 现在会在模型显示名后追加内部短标识后缀，如 "Gemini 3.1 Pro (High) (M16)"、"Claude Opus 4.6 (Thinking) (M26)"。这样平台级模型 ID 变更（如 M37->M16 重映射）能直接在成本、GM 数据、模型卡片和监控面板中暴露，作为模型生态变动的早期预警信号。`resolveModelId()` 会自动剥离后缀以兼容历史持久化数据。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 3 (`src/models.ts`, `src/pricing-store.ts`, `src/gm/parser.ts`)
+- **TypeScript compile**: Zero errors
+
+---
+
+
 ## [1.16.5] - 2026-05-07
 
 ### 🐛 Fixed / 修复
