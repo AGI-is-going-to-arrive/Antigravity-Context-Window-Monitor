@@ -36,6 +36,9 @@
 - **Instant billing day refresh on account switch / 切换账号立即刷新到期日**: When the active account changes, the status bar billing day countdown updates immediately without waiting for the next polling cycle.
   切换账号后立即刷新状态栏到期日倒计时，不再需要等待轮询或新对话。
 
+- **Raw display for Context Intelligence / 上下文情报原生排版显示**: Removed the rudimentary Markdown rendering for all Context Intelligence items (MCP servers, checkpoints, system preambles, etc.) in favor of high-fidelity raw text blocks. Added a distinct dashed divider and "ORIGINAL USER PROMPT" label specifically to the "User Rules" section.
+  取消了“上下文情报”中所有卡片（包括 MCP Server、Checkpoint、系统前导等）的简陋 Markdown 渲染逻辑，统一改为原样文本排版（保留原始换行和缩紧），以最贴近底层真实输入的形式展示。同时为“用户规则”增加了带有明显虚线与 `ORIGINAL USER PROMPT / 原始用户提示词` 的视觉前缀，避免与其他数据混淆。
+
 ### 📊 Stats / 统计
 
 - **Files changed**: 8 (`src/statusbar.ts`, `src/extension.ts`, `src/activity-panel.ts`, `src/webview-panel.ts`, `src/webview-profile-tab.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-styles.ts`)

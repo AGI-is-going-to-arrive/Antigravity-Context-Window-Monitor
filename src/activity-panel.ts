@@ -3280,12 +3280,16 @@ function buildContextIntelViewer(s: GMSummary): string {
     // ── Build context item cards (existing) ──
     const contextCards = items.map((item, idx) => {
         const conf = typeConfig[item.type] || typeConfig.system_preamble;
-        const bodyHtml = esc(item.fullText)
-            .replace(/\{\{\s*CHECKPOINT\s+(\d+)\s*\}\}/gi, '<h2>CHECKPOINT $1</h2>')
-            .replace(/^#\s+(.+)$/gm, '<h2>$1</h2>')
-            .replace(/^##\s+(.+)$/gm, '<h3>$1</h3>')
-            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-            .replace(/`([^`]+)`/g, '<code>$1</code>');
+        let bodyHtml = esc(item.fullText);
+
+        const rawContentStyle = `white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family); font-size: 0.9em; opacity: 0.9; line-height: 1.5;`;
+
+        if (item.type === 'user_rules') {
+            const rawHeader = tBi('ORIGINAL USER PROMPT', '原始用户提示词');
+            bodyHtml = `<div style="margin-bottom: 10px; border-bottom: 1px dashed var(--ci-color); padding-bottom: 6px; font-weight: 600; opacity: 0.8; font-size: 0.85em; letter-spacing: 0.5px;">${rawHeader}</div><div style="${rawContentStyle}">${bodyHtml}</div>`;
+        } else {
+            bodyHtml = `<div style="${rawContentStyle}">${bodyHtml}</div>`;
+        }
 
         const cpBadge = item.checkpointNumber !== undefined
             ? `<span class="cp-card-num" style="color:var(--ci-color)">#${item.checkpointNumber}</span>`
