@@ -11,6 +11,7 @@ import type { GMSummary, GMModelStats, GMConversationData, GMSystemContextItem, 
 import { normalizeModelDisplayName } from './models';
 import { findPricing } from './pricing-store';
 import { formatResetCountdown, formatResetAbsolute, parseResetDate } from './reset-time';
+import { getDaysUntilBillingDay } from './billing-day';
 
 // ─── Account Snapshot Type ───────────────────────────────────────────────────
 
@@ -3280,12 +3281,16 @@ function buildContextIntelViewer(s: GMSummary): string {
     // ── Build context item cards (existing) ──
     const contextCards = items.map((item, idx) => {
         const conf = typeConfig[item.type] || typeConfig.system_preamble;
-        const bodyHtml = esc(item.fullText)
-            .replace(/\{\{\s*CHECKPOINT\s+(\d+)\s*\}\}/gi, '<h2>CHECKPOINT $1</h2>')
-            .replace(/^#\s+(.+)$/gm, '<h2>$1</h2>')
-            .replace(/^##\s+(.+)$/gm, '<h3>$1</h3>')
-            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-            .replace(/`([^`]+)`/g, '<code>$1</code>');
+        let bodyHtml = esc(item.fullText);
+
+        const rawContentStyle = `white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family); font-size: 0.9em; opacity: 0.9; line-height: 1.5;`;
+
+        if (item.type === 'user_rules') {
+            const rawHeader = tBi('ORIGINAL USER PROMPT', '原始用户提示词');
+            bodyHtml = `<div style="margin-bottom: 10px; border-bottom: 1px dashed var(--ci-color); padding-bottom: 6px; font-weight: 600; opacity: 0.8; font-size: 0.85em; letter-spacing: 0.5px;">${rawHeader}</div><div style="${rawContentStyle}">${bodyHtml}</div>`;
+        } else {
+            bodyHtml = `<div style="${rawContentStyle}">${bodyHtml}</div>`;
+        }
 
         const cpBadge = item.checkpointNumber !== undefined
             ? `<span class="cp-card-num" style="color:var(--ci-color)">#${item.checkpointNumber}</span>`
@@ -3578,7 +3583,7 @@ export function hasAccountReadyPool(snapshots: AccountSnapshot[]): boolean {
  * Build the account status panel HTML for the global floating popover.
  * This is the same visual content that was previously embedded in the GM Data tab.
  */
-export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
+export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDays: Record<string, number> = {}): string {
     const nowMs = Date.now();
     // Sort: active first, then by lastSeen desc
     const sorted = [...snapshots].sort((a, b) => {
@@ -3671,6 +3676,18 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
         const creditsRow = creditsChips
             ? `<div class="acct-credits">${creditsChips}</div>`
             : '';
+        // Expiry countdown chip (only if this account has billingDay configured)
+        const billingDay = billingDays[snap.email] ?? 0;
+        let expiryChip = '';
+        if (billingDay >= 1 && billingDay <= 31) {
+            const daysLeft = getDaysUntilBillingDay(billingDay) ?? 0;
+            if (daysLeft === 0) {
+                expiryChip = `<span class="acct-credit-chip acct-expiry-chip" style="background:rgba(239,68,68,0.15);color:#f87171">${tBi('Expires today', '今日到期')}</span>`;
+            } else {
+                expiryChip = `<span class="acct-credit-chip acct-expiry-chip">${daysLeft}${tBi('d until expiry', '天后到期')}</span>`;
+            }
+        }
+        const expiryRow = expiryChip ? `<div class="acct-credits">${expiryChip}</div>` : '';
 
         return `<div class="acct-card">
             <div class="acct-indicator ${indicatorClass}"></div>
@@ -3679,6 +3696,7 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
                 <span class="acct-email">${esc(snap.email)}</span>
                 <span class="acct-plan ${planClass}">${esc(planLabel)}</span>
                 ${creditsRow}
+                ${expiryRow}
             </div>
             ${resetHtml}
         </div>`;
@@ -3696,4 +3714,3 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
         ${cards}
     </div>`;
 }
-

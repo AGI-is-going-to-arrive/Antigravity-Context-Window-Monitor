@@ -176,8 +176,8 @@ export class DurableState {
                 await fs.promises.mkdir(path.dirname(this._filePath), { recursive: true });
                 await fs.promises.writeFile(this._filePath, serialized, 'utf8');
                 this._lastSerialized = serialized;
-            } catch {
-                // Ignore persistence failures; VS Code state remains as fallback.
+            } catch (err) {
+                console.warn('[Antigravity Context Monitor] Durable state persistence failed:', err);
             } finally {
                 this._writtenVersion = Math.max(this._writtenVersion, targetVersion);
                 this._resolveWaitersUpTo(this._writtenVersion);

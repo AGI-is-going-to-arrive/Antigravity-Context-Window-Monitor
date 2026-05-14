@@ -1509,6 +1509,111 @@ export function getStyles(): string {
             color: var(--color-text);
         }
 
+        .gai-credit-refresh {
+            margin-left: auto;
+        }
+
+        .gai-refresh-badge {
+            font-size: 0.75em;
+            padding: 2px 8px;
+            border-radius: var(--radius-sm);
+            font-weight: 600;
+            background: rgba(74,222,128,0.12);
+            color: var(--color-ok);
+            border: 1px solid rgba(74,222,128,0.25);
+        }
+
+        .gai-refresh-badge.gai-refresh-today {
+            background: rgba(250,204,21,0.15);
+            color: var(--color-warn);
+            border-color: rgba(250,204,21,0.3);
+            animation: refreshPulse 2s ease-in-out infinite;
+        }
+
+        .gai-refresh-badge.gai-refresh-unset {
+            background: rgba(156,163,175,0.1);
+            color: var(--color-text-dim);
+            border-color: rgba(156,163,175,0.2);
+            font-style: italic;
+            font-weight: 400;
+        }
+
+        @keyframes refreshPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .gai-refresh-badge.gai-refresh-today {
+                animation: none;
+            }
+        }
+
+        .gai-action-link {
+            font-size: 0.75em;
+            color: var(--color-info);
+            cursor: pointer;
+            text-decoration: none;
+            padding: 1px 6px;
+            border-radius: var(--radius-sm);
+            border: 1px solid rgba(96,165,250,0.2);
+            background: rgba(96,165,250,0.06);
+            transition: background 0.15s, border-color 0.15s;
+        }
+
+        @media (hover: hover) {
+            .gai-action-link:hover {
+                background: rgba(96,165,250,0.15);
+                border-color: rgba(96,165,250,0.4);
+            }
+        }
+
+        .billing-day-inline {
+            margin-top: var(--space-3);
+            padding: var(--space-3);
+            background: rgba(255,255,255,0.02);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-md);
+        }
+
+        .billing-day-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--space-2);
+            flex-wrap: wrap;
+        }
+
+        .billing-day-label {
+            font-size: 0.82em;
+            font-weight: 600;
+            color: var(--color-text);
+        }
+
+        .billing-day-input-group {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+        }
+
+        .billing-day-input-group .num-spinner {
+            transform: scale(0.9);
+            transform-origin: center;
+        }
+
+        .billing-day-input-group .threshold-input {
+            width: 50px;
+            text-align: center;
+        }
+
+        .billing-day-desc {
+            font-size: 0.74em;
+            color: var(--color-text-dim);
+            margin-top: var(--space-2);
+            line-height: 1.6;
+            opacity: 0.8;
+        }
+
         /* ─── Profile: Model Grid ───────── */
         .model-grid {
             display: grid;
@@ -3656,6 +3761,10 @@ export function getStyles(): string {
         body.vscode-light .collapsible { background: rgba(0,0,0,0.02); }
         body.vscode-light .model-card { background: rgba(0,0,0,0.02); }
         body.vscode-light .profile-metric-card { background: rgba(0,0,0,0.03); }
+        body.vscode-light .billing-day-inline { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.08); }
+        body.vscode-light .gai-refresh-badge { color: var(--lt-green-deep); background: rgba(var(--lt-green),0.08); border-color: rgba(var(--lt-green),0.2); }
+        body.vscode-light .gai-refresh-badge.gai-refresh-today { color: var(--lt-amber-deep); background: rgba(var(--lt-amber),0.12); border-color: rgba(var(--lt-amber),0.28); }
+        body.vscode-light .gai-refresh-badge.gai-refresh-unset { color: rgba(0,0,0,0.55); background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.1); }
         body.vscode-light .feature-tag { background: rgba(0,0,0,0.04); }
         body.vscode-light .mime-tag { background: rgba(0,0,0,0.04); }
         body.vscode-light .mime-chip { background: rgba(0,0,0,0.04); }

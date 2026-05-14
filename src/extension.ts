@@ -33,6 +33,7 @@ import { DurableState, StateBucket } from './durable-state';
 import { mergeModelDNAState, PersistedModelDNA, restoreModelDNAState, serializeModelDNAState, type ModelDNAStoreState } from './model-dna-store';
 import type { StorageDiagnostics } from './webview-settings-tab';
 import type { AccountSnapshot } from './activity-panel';
+import { isBillingDay, isBillingDaySetting } from './billing-day';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -80,6 +81,8 @@ let accountSnapshots = new Map<string, AccountSnapshot>();
 const notifiedAccountResets = new Set<string>();
 /** Currently active account email for switch detection. */
 let currentAccountEmail = '';
+/** Per-account billing day map (email → day 1-31), persisted in durable state. */
+let billingDaysMap: Record<string, number> = {};
 
 /** Last archived local date key ('YYYY-MM-DD'), used to detect date rollover. */
 let lastArchivalDateKey: string = '';
@@ -504,11 +507,67 @@ function getAccountSnapshotArray(): AccountSnapshot[] {
     return [...accountSnapshots.values()];
 }
 
+// ─── Per-Account Billing Days (durable) ──────────────────────────────────────
+
+function persistBillingDays(): void {
+    void durableFileGlobalState.update('accountBillingDays', billingDaysMap).then(undefined, err => {
+        log(`Failed to persist account billing days: ${err}`);
+    });
+}
+
+function restoreBillingDays(): void {
+    const saved = durableFileGlobalState.get<unknown>('accountBillingDays', null);
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+        billingDaysMap = {};
+        return;
+    }
+
+    const restored: Record<string, number> = {};
+    for (const [rawEmail, day] of Object.entries(saved)) {
+        const email = rawEmail.trim();
+        if (email && isBillingDay(day)) {
+            restored[email] = day;
+        }
+    }
+    billingDaysMap = restored;
+}
+
+/** Get the full billing days map. */
+export function getBillingDaysMap(): Record<string, number> {
+    return billingDaysMap;
+}
+
+function isKnownAccountEmail(email: string): boolean {
+    return accountSnapshots.has(email) || email === currentAccountEmail || email === cachedUserInfo?.email;
+}
+
+/** Set billing day for a specific account email. day=0 removes it. */
+export function setAccountBillingDay(email: string, day: number): boolean {
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail || !isBillingDaySetting(day) || !isKnownAccountEmail(normalizedEmail)) {
+        return false;
+    }
+
+    if (day > 0) {
+        billingDaysMap[normalizedEmail] = day;
+    } else {
+        delete billingDaysMap[normalizedEmail];
+    }
+    persistBillingDays();
+    if (normalizedEmail === currentAccountEmail && typeof statusBar !== 'undefined') {
+        applyDisplayPrefs();
+        if (currentUsage) {
+            statusBar.update(currentUsage);
+        }
+    }
+    return true;
+}
+
 /**
  * Detect account switch for GM call attribution.
  * Also checks expired quota pools for BOTH the outgoing and incoming accounts,
  * since checkCachedAccountResets() only covers inactive accounts and would miss
- * the incoming account once it becomes active.
+    * the incoming account once it becomes active.
  */
 function handleAccountSwitchIfNeeded(newEmail: string): boolean {
     if (!newEmail) { return false; }
@@ -525,11 +584,13 @@ function handleAccountSwitchIfNeeded(newEmail: string): boolean {
 
         currentAccountEmail = newEmail;
         gmTracker.setCurrentAccount(newEmail);
+        applyDisplayPrefs(); // refresh billing day for new account
         return true;
     }
     if (!currentAccountEmail) {
         currentAccountEmail = newEmail;
         gmTracker.setCurrentAccount(newEmail);
+        applyDisplayPrefs(); // set billing day for initial account
         // On first connection after extension restart, the account may already
         // have expired pools from a previous session. Baseline them now before
         // updateAccountSnapshot() refreshes the snapshot with a new resetTime.
@@ -740,6 +801,7 @@ export function activate(context: vscode.ExtensionContext): void {
     pricingStore.init(durableGlobalState);
     // Restore multi-account snapshots from file-backed state
     restoreAccountSnapshots();
+    restoreBillingDays();
     // Restore current account email from GMTracker persisted state
     currentAccountEmail = gmTracker.getCurrentAccount();
     dailyStore = new DailyStore();
@@ -903,6 +965,7 @@ export function activate(context: vscode.ExtensionContext): void {
             }
             if (e.affectsConfiguration('antigravityContextMonitor.statusBar')) {
                 applyDisplayPrefs();
+                if (currentUsage) { statusBar.update(currentUsage); }
                 log('Status bar display preferences updated');
             }
             if (e.affectsConfiguration('antigravityContextMonitor.showModelInternalId')) {
@@ -965,7 +1028,19 @@ function applyDisplayPrefs(): void {
         showContext: cfg.get<boolean>('statusBar.showContext', true),
         showQuota: cfg.get<boolean>('statusBar.showQuota', true),
         showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
+        showAiCredits: cfg.get<boolean>('statusBar.showAiCredits', true),
     });
+    statusBar.setBillingDay(billingDaysMap[currentAccountEmail] ?? 0);
+}
+
+/**
+ * Push current account's total AI credits to the status bar.
+ */
+function updateStatusBarCredits(userInfo: UserStatusInfo | null): void {
+    if (!userInfo) { statusBar.setCredits(0); return; }
+    const total = (userInfo.availableCredits || [])
+        .reduce((sum, c) => sum + (c.creditAmount > 0 ? c.creditAmount : 0), 0);
+    statusBar.setCredits(total);
 }
 
 /**
@@ -1055,6 +1130,7 @@ async function pollContextUsage(): Promise<void> {
                 }
                 if (fullStatus.userInfo) {
                     cachedUserInfo = fullStatus.userInfo;
+                    updateStatusBarCredits(fullStatus.userInfo);
                     statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
                     // Persist for instant display on next activation
                     durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
@@ -1094,6 +1170,7 @@ async function pollContextUsage(): Promise<void> {
                             }
                             if (fullStatus.userInfo) {
                                 cachedUserInfo = fullStatus.userInfo;
+                                updateStatusBarCredits(fullStatus.userInfo);
                                 statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
                                 durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
                                 durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
@@ -1129,6 +1206,7 @@ async function pollContextUsage(): Promise<void> {
                     }
                     if (fullStatus.userInfo) {
                         cachedUserInfo = fullStatus.userInfo;
+                        updateStatusBarCredits(fullStatus.userInfo);
                         statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
                         durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
                         durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);

@@ -8,7 +8,7 @@ import { ModelConfig, UserStatusInfo } from './models';
 import { QuotaTracker } from './quota-tracker';
 import { ActivityTracker, ActivitySummary, ActivityArchive } from './activity-tracker';
 import { buildGMDataTabContent, getGMDataTabStyles, buildAccountStatusPanel, hasAccountReadyPool, type AccountSnapshot } from './activity-panel';
-import { removeAccountSnapshot } from './extension';
+import { removeAccountSnapshot, getBillingDaysMap, setAccountBillingDay } from './extension';
 import type { PendingArchiveEntry } from './gm-tracker';
 import { buildPricingTabContent, getPricingTabStyles } from './pricing-panel';
 import { PricingStore, ModelPricing } from './pricing-store';
@@ -95,11 +95,13 @@ function clamp(value: number, min: number, max: number): number {
     return Math.min(Math.max(value, min), max);
 }
 
+
 function sanitizeConfigValue(key: string, value: unknown): unknown {
     switch (key) {
         case 'statusBar.showContext':
         case 'statusBar.showQuota':
         case 'statusBar.showResetCountdown':
+        case 'statusBar.showAiCredits':
         case 'showModelInternalId':
             return !!value;
         case 'quotaNotificationThreshold':
@@ -330,7 +332,7 @@ export function showMonitorPanel(p: PanelPayload): void {
     panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused, lastQuotaTracker);
     if (p.initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: p.initialTab }), 100); }
 
-    panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string; action?: string; cascadeId?: string; uri?: string }) => {
+    panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string; action?: string; cascadeId?: string; uri?: string; email?: string; day?: number }) => {
         if (msg.command === 'switchLanguage' && msg.lang && extensionCtx) {
             await setLanguage(msg.lang as Language, extensionCtx);
             if (panel) {
@@ -365,6 +367,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                 'statusBar.showContext',
                 'statusBar.showQuota',
                 'statusBar.showResetCountdown',
+                'statusBar.showAiCredits',
                 'showModelInternalId',
                 'contextLimits',
                 'quotaNotificationThreshold',
@@ -379,6 +382,11 @@ export function showMonitorPanel(p: PanelPayload): void {
                 if (panel) {
                     safePostMessage({ command: 'configSaved', key: msg.key });
                 }
+            }
+        } else if (msg.command === 'setAccountBillingDay' && msg.email && typeof msg.day === 'number') {
+            const saved = setAccountBillingDay(msg.email, msg.day);
+            if (saved && panel) {
+                safePostMessage({ command: 'configSaved', key: 'accountBillingDay' });
             }
         } else if (msg.command === 'copyStatePath' && lastStorageDiagnostics?.stateFilePath) {
             await vscode.env.clipboard.writeText(lastStorageDiagnostics.stateFilePath);
@@ -637,10 +645,10 @@ function buildTabContents(
         models: buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA) + eoc,
         history: buildHistoryHtml(tracker, lastUserInfo?.email) + eoc,
         calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth) + eoc,
-        profile: buildProfileContent(userInfo, configs) + eoc,
+        profile: buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0) + eoc,
         about: buildAboutTabContent() + eoc,
         // Account popover: content-only update, does NOT affect open/close state
-        accountPopover: lastAccountSnapshots.length > 0 ? buildAccountStatusPanel(lastAccountSnapshots) : '',
+        accountPopover: lastAccountSnapshots.length > 0 ? buildAccountStatusPanel(lastAccountSnapshots, getBillingDaysMap()) : '',
         accountPopoverHasReady: lastAccountSnapshots.length > 0 ? hasAccountReadyPool(lastAccountSnapshots) : false,
         // Settings tab excluded from incremental updates: its content is mostly static
         // and replacing innerHTML destroys event listeners on toggles, buttons, inputs.
@@ -677,7 +685,7 @@ function buildHtml(
     const modelsHtml = buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA);
     const historyHtml = buildHistoryHtml(tracker, lastUserInfo?.email);
     const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth);
-    const profileHtml = buildProfileContent(userInfo, configs);
+    const profileHtml = buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0);
     const settingsHtml = buildSettingsContent(configs, tracker, lastStorageDiagnostics, getPanelHintPreferences());
     const panelHintPrefs = getPanelHintPreferences();
 
@@ -760,7 +768,7 @@ ${getAboutTabStyles()}
     </div>
     <div class="acct-popover-dropdown" id="acctPopoverPanel" hidden>
         <div class="acct-popover-body" id="acctPopoverBody">
-            ${lastAccountSnapshots.length > 0 ? buildAccountStatusPanel(lastAccountSnapshots) : `<p class="empty-msg">${tBi('No account data yet.', '暂无账号数据。')}</p>`}
+            ${lastAccountSnapshots.length > 0 ? buildAccountStatusPanel(lastAccountSnapshots, getBillingDaysMap()) : `<p class="empty-msg">${tBi('No account data yet.', '暂无账号数据。')}</p>`}
         </div>
     </div>
     </div>
