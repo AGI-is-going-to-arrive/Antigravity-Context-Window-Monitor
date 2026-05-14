@@ -70,6 +70,7 @@ export function getScript(): string {
             var revealedText = ${JSON.stringify(`✓ ${tBi('Revealed', '已定位')}`)};
             var openFailedText = ${JSON.stringify(tBi('Open failed', '打开失败'))};
             var revealFailedText = ${JSON.stringify(tBi('Reveal failed', '定位失败'))};
+            var invalidBillingDayText = ${JSON.stringify(tBi('Invalid', '无效'))};
 
             function setFeedback(id, text) {
                 var el = document.getElementById(id);
@@ -82,6 +83,14 @@ export function getScript(): string {
                 setFeedback(id, text);
                 if (!delay || delay <= 0) { return; }
                 setTimeout(function() { setFeedback(id, ''); }, delay);
+            }
+
+            function flashProfileBillingFeedback(text, isError) {
+                var el = document.getElementById('profileBillingDayFeedback');
+                if (el) {
+                    el.style.color = isError ? 'var(--color-danger)' : 'var(--color-ok)';
+                }
+                flashFeedback('profileBillingDayFeedback', text, 2000);
             }
 
             // ─── Tab System ───
@@ -650,8 +659,7 @@ export function getScript(): string {
                     };
                     // accountBillingDay feedback (Profile tab)
                     if (msg.key === 'accountBillingDay') {
-                        var bfb = document.getElementById('profileBillingDayFeedback');
-                        if (bfb) { bfb.textContent = '\u2713'; bfb.style.opacity = '1'; setTimeout(function() { bfb.style.opacity = '0'; }, 2000); }
+                        flashProfileBillingFeedback('\u2713', false);
                     }
                     var fbId = feedbackMap[msg.key];
                     if (fbId) {
@@ -880,6 +888,7 @@ export function getScript(): string {
                 // ── data-scroll-to: smooth scroll to element by ID ──
                 var scrollLink = target.closest('[data-scroll-to]');
                 if (scrollLink) {
+                    e.preventDefault();
                     var scrollTarget = document.getElementById(scrollLink.dataset.scrollTo);
                     if (scrollTarget) {
                         scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -959,11 +968,16 @@ export function getScript(): string {
                 if (target.closest('#profileBillingDaySaveBtn')) {
                     var bdInput = document.getElementById('profileBillingDayInput');
                     if (bdInput) {
-                        var bdVal = parseInt(bdInput.value, 10);
-                        var bdEmail = bdInput.getAttribute('data-email') || '';
-                        if (bdVal >= 0 && bdVal <= 31 && bdEmail) {
+                        var bdRaw = (bdInput.value || '').trim();
+                        var bdVal = bdRaw ? Number(bdRaw) : NaN;
+                        var bdEmail = (bdInput.getAttribute('data-email') || '').trim();
+                        if (Number.isInteger(bdVal) && bdVal >= 0 && bdVal <= 31 && bdEmail) {
                             vscode.postMessage({ command: 'setAccountBillingDay', email: bdEmail, day: bdVal });
+                        } else {
+                            flashProfileBillingFeedback(invalidBillingDayText, true);
                         }
+                    } else {
+                        flashProfileBillingFeedback(invalidBillingDayText, true);
                     }
                     return;
                 }

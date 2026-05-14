@@ -384,8 +384,8 @@ export function showMonitorPanel(p: PanelPayload): void {
                 }
             }
         } else if (msg.command === 'setAccountBillingDay' && msg.email && typeof msg.day === 'number') {
-            setAccountBillingDay(msg.email, msg.day);
-            if (panel) {
+            const saved = setAccountBillingDay(msg.email, msg.day);
+            if (saved && panel) {
                 safePostMessage({ command: 'configSaved', key: 'accountBillingDay' });
             }
         } else if (msg.command === 'copyStatePath' && lastStorageDiagnostics?.stateFilePath) {

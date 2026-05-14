@@ -33,6 +33,7 @@ import { DurableState, StateBucket } from './durable-state';
 import { mergeModelDNAState, PersistedModelDNA, restoreModelDNAState, serializeModelDNAState, type ModelDNAStoreState } from './model-dna-store';
 import type { StorageDiagnostics } from './webview-settings-tab';
 import type { AccountSnapshot } from './activity-panel';
+import { isBillingDay, isBillingDaySetting } from './billing-day';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -509,14 +510,26 @@ function getAccountSnapshotArray(): AccountSnapshot[] {
 // ─── Per-Account Billing Days (durable) ──────────────────────────────────────
 
 function persistBillingDays(): void {
-    durableFileGlobalState.update('accountBillingDays', billingDaysMap);
+    void durableFileGlobalState.update('accountBillingDays', billingDaysMap).then(undefined, err => {
+        log(`Failed to persist account billing days: ${err}`);
+    });
 }
 
 function restoreBillingDays(): void {
-    const saved = durableFileGlobalState.get<Record<string, number> | null>('accountBillingDays', null);
-    if (saved && typeof saved === 'object') {
-        billingDaysMap = saved;
+    const saved = durableFileGlobalState.get<unknown>('accountBillingDays', null);
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+        billingDaysMap = {};
+        return;
     }
+
+    const restored: Record<string, number> = {};
+    for (const [rawEmail, day] of Object.entries(saved)) {
+        const email = rawEmail.trim();
+        if (email && isBillingDay(day)) {
+            restored[email] = day;
+        }
+    }
+    billingDaysMap = restored;
 }
 
 /** Get the full billing days map. */
@@ -524,14 +537,30 @@ export function getBillingDaysMap(): Record<string, number> {
     return billingDaysMap;
 }
 
+function isKnownAccountEmail(email: string): boolean {
+    return accountSnapshots.has(email) || email === currentAccountEmail || email === cachedUserInfo?.email;
+}
+
 /** Set billing day for a specific account email. day=0 removes it. */
-export function setAccountBillingDay(email: string, day: number): void {
-    if (day >= 1 && day <= 31) {
-        billingDaysMap[email] = day;
+export function setAccountBillingDay(email: string, day: number): boolean {
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail || !isBillingDaySetting(day) || !isKnownAccountEmail(normalizedEmail)) {
+        return false;
+    }
+
+    if (day > 0) {
+        billingDaysMap[normalizedEmail] = day;
     } else {
-        delete billingDaysMap[email];
+        delete billingDaysMap[normalizedEmail];
     }
     persistBillingDays();
+    if (normalizedEmail === currentAccountEmail && typeof statusBar !== 'undefined') {
+        applyDisplayPrefs();
+        if (currentUsage) {
+            statusBar.update(currentUsage);
+        }
+    }
+    return true;
 }
 
 /**

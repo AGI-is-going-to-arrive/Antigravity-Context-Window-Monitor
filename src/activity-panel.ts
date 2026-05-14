@@ -11,6 +11,7 @@ import type { GMSummary, GMModelStats, GMConversationData, GMSystemContextItem, 
 import { normalizeModelDisplayName } from './models';
 import { findPricing } from './pricing-store';
 import { formatResetCountdown, formatResetAbsolute, parseResetDate } from './reset-time';
+import { getDaysUntilBillingDay } from './billing-day';
 
 // ─── Account Snapshot Type ───────────────────────────────────────────────────
 
@@ -3679,22 +3680,7 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
         const billingDay = billingDays[snap.email] ?? 0;
         let expiryChip = '';
         if (billingDay >= 1 && billingDay <= 31) {
-            const today = new Date();
-            const y = today.getFullYear();
-            const m = today.getMonth();
-            const d = today.getDate();
-            const effectiveDay = Math.min(billingDay, new Date(y, m + 1, 0).getDate());
-            let daysLeft: number;
-            if (d < effectiveDay) {
-                daysLeft = effectiveDay - d;
-            } else if (d === effectiveDay) {
-                daysLeft = 0;
-            } else {
-                const nextMonth = new Date(y, m + 1, 1);
-                const nextEffective = Math.min(billingDay, new Date(nextMonth.getFullYear(), nextMonth.getMonth() + 1, 0).getDate());
-                const nextDate = new Date(nextMonth.getFullYear(), nextMonth.getMonth(), nextEffective);
-                daysLeft = Math.ceil((nextDate.getTime() - today.getTime()) / 86400000);
-            }
+            const daysLeft = getDaysUntilBillingDay(billingDay) ?? 0;
             if (daysLeft === 0) {
                 expiryChip = `<span class="acct-credit-chip acct-expiry-chip" style="background:rgba(239,68,68,0.15);color:#f87171">${tBi('Expires today', '今日到期')}</span>`;
             } else {
@@ -3728,4 +3714,3 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
         ${cards}
     </div>`;
 }
-

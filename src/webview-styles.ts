@@ -1543,6 +1543,12 @@ export function getStyles(): string {
             50% { opacity: 0.6; }
         }
 
+        @media (prefers-reduced-motion: reduce) {
+            .gai-refresh-badge.gai-refresh-today {
+                animation: none;
+            }
+        }
+
         .gai-action-link {
             font-size: 0.75em;
             color: var(--color-info);
@@ -3755,6 +3761,10 @@ export function getStyles(): string {
         body.vscode-light .collapsible { background: rgba(0,0,0,0.02); }
         body.vscode-light .model-card { background: rgba(0,0,0,0.02); }
         body.vscode-light .profile-metric-card { background: rgba(0,0,0,0.03); }
+        body.vscode-light .billing-day-inline { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.08); }
+        body.vscode-light .gai-refresh-badge { color: var(--lt-green-deep); background: rgba(var(--lt-green),0.08); border-color: rgba(var(--lt-green),0.2); }
+        body.vscode-light .gai-refresh-badge.gai-refresh-today { color: var(--lt-amber-deep); background: rgba(var(--lt-amber),0.12); border-color: rgba(var(--lt-amber),0.28); }
+        body.vscode-light .gai-refresh-badge.gai-refresh-unset { color: rgba(0,0,0,0.55); background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.1); }
         body.vscode-light .feature-tag { background: rgba(0,0,0,0.04); }
         body.vscode-light .mime-tag { background: rgba(0,0,0,0.04); }
         body.vscode-light .mime-chip { background: rgba(0,0,0,0.04); }

@@ -7,6 +7,7 @@ import { ModelConfig, UserStatusInfo } from './models';
 import { formatResetAbsolute, formatResetCountdown } from './reset-time';
 import { ICON } from './webview-icons';
 import { esc } from './webview-helpers';
+import { getDaysUntilBillingDay } from './billing-day';
 
 function formatCreditTypeLabel(creditType: string): string {
     const key = creditType.replace('CREDIT_TYPE_', '');
@@ -88,7 +89,7 @@ function buildAccountSection(userInfo: UserStatusInfo, billingDay?: number): str
     const day = billingDay || 0;
     let refreshBadge = '';
     if (day >= 1 && day <= 31) {
-        const daysLeft = getDaysUntilBillingDay(day);
+        const daysLeft = getDaysUntilBillingDay(day) ?? 0;
         const activityLink = ` <a class="gai-action-link" href="https://antigravity.google/g1-activity" target="_blank">${tBi('Activity Dashboard', '活动记录看板')}</a>`;
         if (daysLeft === 0) {
             refreshBadge = `<span class="gai-refresh-badge gai-refresh-today">${tBi('Expires today', '今日到期')}</span>` + activityLink;
@@ -181,34 +182,6 @@ function buildAccountSection(userInfo: UserStatusInfo, billingDay?: number): str
     )}</p>
             </div>
         </section>`;
-}
-
-/**
- * Calculate days remaining until next billing day (same logic as StatusBarManager).
- */
-function getDaysUntilBillingDay(billingDay: number): number {
-    const now = new Date();
-    const today = now.getDate();
-    const currentMonth = now.getMonth();
-    const currentYear = now.getFullYear();
-
-    let target = new Date(currentYear, currentMonth, billingDay);
-    if (target.getMonth() !== currentMonth) {
-        target = new Date(currentYear, currentMonth + 1, 0);
-    }
-
-    if (today < target.getDate()) {
-        return target.getDate() - today;
-    } else if (today === target.getDate()) {
-        return 0;
-    } else {
-        let nextTarget = new Date(currentYear, currentMonth + 1, billingDay);
-        if (nextTarget.getMonth() !== (currentMonth + 1) % 12) {
-            nextTarget = new Date(currentYear, currentMonth + 2, 0);
-        }
-        const diffMs = nextTarget.getTime() - now.getTime();
-        return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-    }
 }
 
 export function buildModelQuotaGrid(configs: ModelConfig[]): string {

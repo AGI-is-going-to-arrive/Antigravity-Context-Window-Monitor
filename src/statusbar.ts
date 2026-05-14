@@ -4,6 +4,7 @@ import { ModelConfig } from './models';
 import { isShowModelShortId } from './models';
 import { t, tBi, getLanguage } from './i18n';
 import { formatResetAbsolute, formatResetContext, formatResetCountdownFromMs } from './reset-time';
+import { getDaysUntilBillingDay } from './billing-day';
 
 // ─── Token Formatting ─────────────────────────────────────────────────────────
 
@@ -216,34 +217,7 @@ export class StatusBarManager {
      * Returns null if billing day is not configured (0).
      */
     getDaysUntilRefresh(): number | null {
-        if (this.cachedBillingDay <= 0) { return null; }
-        const now = new Date();
-        const today = now.getDate();
-        const currentMonth = now.getMonth();
-        const currentYear = now.getFullYear();
-        const billingDay = this.cachedBillingDay;
-
-        // Target date in current month
-        let target = new Date(currentYear, currentMonth, billingDay);
-        // If billing day is beyond month's days, use last day of month
-        if (target.getMonth() !== currentMonth) {
-            target = new Date(currentYear, currentMonth + 1, 0); // last day of current month
-        }
-
-        if (today < target.getDate()) {
-            // Still within current month, target is this month's billing day
-            return target.getDate() - today;
-        } else if (today === target.getDate()) {
-            return 0; // Today is billing day
-        } else {
-            // Past billing day — target next month
-            let nextTarget = new Date(currentYear, currentMonth + 1, billingDay);
-            if (nextTarget.getMonth() !== (currentMonth + 1) % 12) {
-                nextTarget = new Date(currentYear, currentMonth + 2, 0);
-            }
-            const diffMs = nextTarget.getTime() - now.getTime();
-            return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-        }
+        return getDaysUntilBillingDay(this.cachedBillingDay);
     }
 
     /**
@@ -304,23 +278,31 @@ export class StatusBarManager {
     }
 
     showNoConversation(limitStr: string = '1M'): void {
-        this.statusBarItem.text = `$(comment-discussion) 0k/${limitStr}, 0.0%`;
-        const md = new vscode.MarkdownString(
-            `Antigravity Context Monitor: ${t('statusBar.noConversationTooltip')}  \n——————————  \n$(link-external) **${t('statusBar.clickToView')}**`,
-            false
-        );
+        const contextPart = this.displayPrefs.showContext ? `0k/${limitStr}, 0.0%` : '';
+        const creditsSuffix = this.displayPrefs.showAiCredits ? this.formatCreditsIndicator() : '';
+        this.statusBarItem.text = this.buildStatusText('$(comment-discussion)', [contextPart, creditsSuffix]);
+        const lines = [
+            `Antigravity Context Monitor: ${t('statusBar.noConversationTooltip')}`,
+            ...this.buildCreditsLines(),
+            `——————————`,
+            `$(link-external) **${t('statusBar.clickToView')}**`,
+        ];
+        const md = new vscode.MarkdownString(lines.join('  \n'), false);
         md.supportThemeIcons = true;
         this.statusBarItem.tooltip = md;
         this.statusBarItem.backgroundColor = undefined;
     }
 
     showIdle(limitStr: string = '1M'): void {
-        this.statusBarItem.text = `$(clock) 0k/${limitStr}, 0.0%`;
+        const contextPart = this.displayPrefs.showContext ? `0k/${limitStr}, 0.0%` : '';
+        const creditsSuffix = this.displayPrefs.showAiCredits ? this.formatCreditsIndicator() : '';
+        this.statusBarItem.text = this.buildStatusText('$(clock)', [contextPart, creditsSuffix]);
         const lines: string[] = [
             `Antigravity Context Monitor: ${t('statusBar.idle')}`,
             t('statusBar.idleDescription'),
         ];
         lines.push(...this.buildQuotaLines());
+        lines.push(...this.buildCreditsLines());
         lines.push(`——————————`);
         lines.push(`$(link-external) **${t('statusBar.clickToView')}**`);
         const md = new vscode.MarkdownString(lines.join('  \n'), false);
@@ -374,11 +356,7 @@ export class StatusBarManager {
             creditsSuffix.trim(),
         ].filter(Boolean);
 
-        if (segments.length > 0) {
-            this.statusBarItem.text = `|| ${icon} ${segments.join(' || ')} ||`;
-        } else {
-            this.statusBarItem.text = `${icon}`;
-        }
+        this.statusBarItem.text = this.buildStatusText(icon, segments);
         this.statusBarItem.backgroundColor = getSeverityColor(severity);
 
         // Build detailed tooltip
@@ -673,6 +651,12 @@ export class StatusBarManager {
         return `⚡${this.cachedCreditsTotal.toLocaleString()}`;
     }
 
+    private buildStatusText(icon: string, segments: string[]): string {
+        const visibleSegments = segments.map(s => s.trim()).filter(Boolean);
+        if (visibleSegments.length === 0) { return icon; }
+        return `|| ${icon} ${visibleSegments.join(' || ')} ||`;
+    }
+
     /**
      * Build credit info lines for tooltip.
      */
@@ -737,4 +721,3 @@ export class StatusBarManager {
         this.statusBarItem.dispose();
     }
 }
-
