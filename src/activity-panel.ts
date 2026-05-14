@@ -3578,7 +3578,7 @@ export function hasAccountReadyPool(snapshots: AccountSnapshot[]): boolean {
  * Build the account status panel HTML for the global floating popover.
  * This is the same visual content that was previously embedded in the GM Data tab.
  */
-export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
+export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDays: Record<string, number> = {}): string {
     const nowMs = Date.now();
     // Sort: active first, then by lastSeen desc
     const sorted = [...snapshots].sort((a, b) => {
@@ -3671,6 +3671,33 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
         const creditsRow = creditsChips
             ? `<div class="acct-credits">${creditsChips}</div>`
             : '';
+        // Expiry countdown chip (only if this account has billingDay configured)
+        const billingDay = billingDays[snap.email] ?? 0;
+        let expiryChip = '';
+        if (billingDay >= 1 && billingDay <= 31) {
+            const today = new Date();
+            const y = today.getFullYear();
+            const m = today.getMonth();
+            const d = today.getDate();
+            const effectiveDay = Math.min(billingDay, new Date(y, m + 1, 0).getDate());
+            let daysLeft: number;
+            if (d < effectiveDay) {
+                daysLeft = effectiveDay - d;
+            } else if (d === effectiveDay) {
+                daysLeft = 0;
+            } else {
+                const nextMonth = new Date(y, m + 1, 1);
+                const nextEffective = Math.min(billingDay, new Date(nextMonth.getFullYear(), nextMonth.getMonth() + 1, 0).getDate());
+                const nextDate = new Date(nextMonth.getFullYear(), nextMonth.getMonth(), nextEffective);
+                daysLeft = Math.ceil((nextDate.getTime() - today.getTime()) / 86400000);
+            }
+            if (daysLeft === 0) {
+                expiryChip = `<span class="acct-credit-chip acct-expiry-chip" style="background:rgba(239,68,68,0.15);color:#f87171">${tBi('Expires today', '今日到期')}</span>`;
+            } else {
+                expiryChip = `<span class="acct-credit-chip acct-expiry-chip">${daysLeft}${tBi('d until expiry', '天后到期')}</span>`;
+            }
+        }
+        const expiryRow = expiryChip ? `<div class="acct-credits">${expiryChip}</div>` : '';
 
         return `<div class="acct-card">
             <div class="acct-indicator ${indicatorClass}"></div>
@@ -3679,6 +3706,7 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[]): string {
                 <span class="acct-email">${esc(snap.email)}</span>
                 <span class="acct-plan ${planClass}">${esc(planLabel)}</span>
                 ${creditsRow}
+                ${expiryRow}
             </div>
             ${resetHtml}
         </div>`;

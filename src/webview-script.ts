@@ -960,8 +960,9 @@ export function getScript(): string {
                     var bdInput = document.getElementById('profileBillingDayInput');
                     if (bdInput) {
                         var bdVal = parseInt(bdInput.value, 10);
-                        if (bdVal >= 0 && bdVal <= 31) {
-                            vscode.postMessage({ command: 'setConfig', key: 'accountBillingDay', value: bdVal });
+                        var bdEmail = bdInput.getAttribute('data-email') || '';
+                        if (bdVal >= 0 && bdVal <= 31 && bdEmail) {
+                            vscode.postMessage({ command: 'setAccountBillingDay', email: bdEmail, day: bdVal });
                         }
                     }
                     return;

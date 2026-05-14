@@ -27,9 +27,18 @@
 - **Profile billing day save via delegation / 个人页保存按钮事件委托**: The billing day save button uses body-level click delegation (same pattern as other panel buttons), ensuring it survives innerHTML replacements from polling updates.
   个人页到期日保存按钮使用 body 级事件委托，轮询刷新不影响功能。
 
+- **Per-account billing day / 按账号独立到期日**: Each account now has its own billing day setting, stored as an `email → day` map. The account panel shows expiry countdown per-account (only if that account's billing day is configured).
+  每个账号独立设置到期日（邮箱→日期映射），不再共用全局值。账号面板按账号显示到期倒计时（仅在该账号已设置时显示）。
+
+- **Durable billing day storage / 到期日持久化存储**: Billing days are now stored in `durableFileGlobalState` (JSON file) instead of VS Code settings. Data survives extension uninstall/reinstall, consistent with how account snapshots are persisted.
+  到期日存储从 VS Code settings 迁移到 durable state JSON 文件，卸载重装不丢失，与账号快照的持久化方式一致。
+
+- **Instant billing day refresh on account switch / 切换账号立即刷新到期日**: When the active account changes, the status bar billing day countdown updates immediately without waiting for the next polling cycle.
+  切换账号后立即刷新状态栏到期日倒计时，不再需要等待轮询或新对话。
+
 ### 📊 Stats / 统计
 
-- **Files changed**: 5 (`src/statusbar.ts`, `src/webview-profile-tab.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-styles.ts`)
+- **Files changed**: 8 (`src/statusbar.ts`, `src/extension.ts`, `src/activity-panel.ts`, `src/webview-panel.ts`, `src/webview-profile-tab.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-styles.ts`)
 - **TypeScript compile**: Zero errors
 
 ---

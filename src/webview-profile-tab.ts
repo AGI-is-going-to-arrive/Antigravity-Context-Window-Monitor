@@ -167,6 +167,7 @@ function buildAccountSection(userInfo: UserStatusInfo, billingDay?: number): str
                         <div class="num-spinner">
                             <button type="button" class="num-spinner-btn decrement">\u2212</button>
                             <input type="number" id="profileBillingDayInput" class="threshold-input"
+                                   data-email="${esc(userInfo.email || '')}"
                                    value="${day}" min="0" max="31" step="1" />
                             <button type="button" class="num-spinner-btn increment">+</button>
                         </div>

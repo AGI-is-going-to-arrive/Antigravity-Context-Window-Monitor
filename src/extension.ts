@@ -80,6 +80,8 @@ let accountSnapshots = new Map<string, AccountSnapshot>();
 const notifiedAccountResets = new Set<string>();
 /** Currently active account email for switch detection. */
 let currentAccountEmail = '';
+/** Per-account billing day map (email → day 1-31), persisted in durable state. */
+let billingDaysMap: Record<string, number> = {};
 
 /** Last archived local date key ('YYYY-MM-DD'), used to detect date rollover. */
 let lastArchivalDateKey: string = '';
@@ -504,11 +506,39 @@ function getAccountSnapshotArray(): AccountSnapshot[] {
     return [...accountSnapshots.values()];
 }
 
+// ─── Per-Account Billing Days (durable) ──────────────────────────────────────
+
+function persistBillingDays(): void {
+    durableFileGlobalState.update('accountBillingDays', billingDaysMap);
+}
+
+function restoreBillingDays(): void {
+    const saved = durableFileGlobalState.get<Record<string, number> | null>('accountBillingDays', null);
+    if (saved && typeof saved === 'object') {
+        billingDaysMap = saved;
+    }
+}
+
+/** Get the full billing days map. */
+export function getBillingDaysMap(): Record<string, number> {
+    return billingDaysMap;
+}
+
+/** Set billing day for a specific account email. day=0 removes it. */
+export function setAccountBillingDay(email: string, day: number): void {
+    if (day >= 1 && day <= 31) {
+        billingDaysMap[email] = day;
+    } else {
+        delete billingDaysMap[email];
+    }
+    persistBillingDays();
+}
+
 /**
  * Detect account switch for GM call attribution.
  * Also checks expired quota pools for BOTH the outgoing and incoming accounts,
  * since checkCachedAccountResets() only covers inactive accounts and would miss
- * the incoming account once it becomes active.
+    * the incoming account once it becomes active.
  */
 function handleAccountSwitchIfNeeded(newEmail: string): boolean {
     if (!newEmail) { return false; }
@@ -525,11 +555,13 @@ function handleAccountSwitchIfNeeded(newEmail: string): boolean {
 
         currentAccountEmail = newEmail;
         gmTracker.setCurrentAccount(newEmail);
+        applyDisplayPrefs(); // refresh billing day for new account
         return true;
     }
     if (!currentAccountEmail) {
         currentAccountEmail = newEmail;
         gmTracker.setCurrentAccount(newEmail);
+        applyDisplayPrefs(); // set billing day for initial account
         // On first connection after extension restart, the account may already
         // have expired pools from a previous session. Baseline them now before
         // updateAccountSnapshot() refreshes the snapshot with a new resetTime.
@@ -740,6 +772,7 @@ export function activate(context: vscode.ExtensionContext): void {
     pricingStore.init(durableGlobalState);
     // Restore multi-account snapshots from file-backed state
     restoreAccountSnapshots();
+    restoreBillingDays();
     // Restore current account email from GMTracker persisted state
     currentAccountEmail = gmTracker.getCurrentAccount();
     dailyStore = new DailyStore();
@@ -906,11 +939,6 @@ export function activate(context: vscode.ExtensionContext): void {
                 if (currentUsage) { statusBar.update(currentUsage); }
                 log('Status bar display preferences updated');
             }
-            if (e.affectsConfiguration('antigravityContextMonitor.accountBillingDay')) {
-                applyDisplayPrefs();
-                if (currentUsage) { statusBar.update(currentUsage); }
-                log('Account billing day updated');
-            }
             if (e.affectsConfiguration('antigravityContextMonitor.showModelInternalId')) {
                 const newConfig = vscode.workspace.getConfiguration('antigravityContextMonitor');
                 setShowModelShortId(newConfig.get<boolean>('showModelInternalId', false));
@@ -973,7 +1001,7 @@ function applyDisplayPrefs(): void {
         showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
         showAiCredits: cfg.get<boolean>('statusBar.showAiCredits', true),
     });
-    statusBar.setBillingDay(cfg.get<number>('accountBillingDay', 0));
+    statusBar.setBillingDay(billingDaysMap[currentAccountEmail] ?? 0);
 }
 
 /**
