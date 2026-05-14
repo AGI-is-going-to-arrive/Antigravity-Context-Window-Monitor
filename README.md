@@ -65,12 +65,14 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     * **🛡️ Privacy Mask**: A shield button in the panel header masks your name and email. The toggle state persists across panel refreshes.
     * **📂 Collapsible Sections**: Secondary info (Plan Limits, Feature Flags, Team Config, Google AI Credits) is collapsed by default. Expand/collapse state persists.
 
-* **⚙️ Interactive Settings Dashboard** *(v1.11.0)*
+* **⚙️ Interactive Settings Dashboard** *(v1.11.0, enhanced through v1.16.7)*
     The WebView panel now features a dual-tab layout ('Monitor' and 'Settings'). The Settings tab lets you configure extension behaviors directly from a GUI — no more manual `settings.json` editing.
     * **🎯 Compression Warning Threshold**: Set a custom "tripwire" (e.g., 150K, 200K, 500K, 900K) for early warning before Antigravity's backend compression triggers (~200K). Status bar color changes are based on this threshold instead of the full model limit.
     * **🟢 Status Bar Quota Indicator**: Current model's quota percentage is now shown directly in the status bar with color-coded dot icons (`🟢`, `🟡`, `🔴`).
     * **⏳ Current-Model Reset Countdown**: The status bar countdown now tracks the reset time of the model you are currently using, not the earliest reset across all models.
-    * **🎛️ Status Bar Display Toggles**: Independent toggle switches to hide/show 'Context Usage', 'Quota Indicator', and 'Reset Countdown' in the status bar.
+    * **🎛️ Status Bar Display Toggles**: Independent toggle switches to hide/show 'Context Usage', 'Quota Indicator', 'Reset Countdown' and 'AI Credits Balance' in the status bar.
+    * **⚡ AI Credits in Status Bar** *(v1.16.7)*: Status bar shows real-time AI Credits balance (e.g. `⚡14,701`) wrapped in `||` separators (e.g. `|| ⚠ 121.2k/160k || 🟡40% || ⏳4h6m || ⚡14,701 ||`). Auto-hides when credits are zero. Controlled by `statusBar.showAiCredits` toggle.
+    * **📆 Per-Account Billing Day** *(v1.16.7)*: Set monthly credits-expiry day per account (1-31) inline on the Profile tab. Profile, account panel and status bar tooltip all show a countdown badge ("Expires today / Xd until expiry / Expiry date not set"). Stored in durable JSON state — survives uninstall/reinstall. Uses UTC calendar-day delta so the countdown is correct across DST transitions.
     * **⏸️ Pause/Resume**: Pause auto-refresh to freeze the panel while investigating data.
 
 * **🧠 Model Activity Monitor** *(v1.11.2, enhanced through v1.16.4)*
@@ -206,4 +208,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.6
+**Version**: 1.16.7

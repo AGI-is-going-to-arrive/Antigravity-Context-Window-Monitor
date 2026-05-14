@@ -39,10 +39,31 @@
 - **Raw display for Context Intelligence / 上下文情报原生排版显示**: Removed the rudimentary Markdown rendering for all Context Intelligence items (MCP servers, checkpoints, system preambles, etc.) in favor of high-fidelity raw text blocks. Added a distinct dashed divider and "ORIGINAL USER PROMPT" label specifically to the "User Rules" section.
   取消了“上下文情报”中所有卡片（包括 MCP Server、Checkpoint、系统前导等）的简陋 Markdown 渲染逻辑，统一改为原样文本排版（保留原始换行和缩紧），以最贴近底层真实输入的形式展示。同时为“用户规则”增加了带有明显虚线与 `ORIGINAL USER PROMPT / 原始用户提示词` 的视觉前缀，避免与其他数据混淆。
 
+### 🔧 Hardening (post-PR multi-model review) / 合并加固（多模型审查后）
+
+- **DST-safe billing-day countdown / DST 安全的到期倒计时**: Extracted a shared helper `src/billing-day.ts` that computes the calendar-day delta using `Date.UTC(y,m,d)` instead of `Math.ceil(ms/86400000)`. Replaces three duplicated implementations in `statusbar.ts`, `webview-profile-tab.ts`, and `activity-panel.ts`. The previous logic added 1 extra day when the interval crossed a daylight-saving boundary (e.g. `TZ=Australia/Melbourne, 2026-03-31 → billingDay=30` returned 31 instead of 30).
+  抽取共享 helper `src/billing-day.ts`，使用 `Date.UTC` 做纯日历日差，替换 3 处重复实现，修复跨夏令时多算 1 天的 bug。
+- **Instant status bar refresh on save / 保存后状态栏即时刷新**: `setAccountBillingDay()` now calls `applyDisplayPrefs() + statusBar.update(currentUsage)` when the saved email is the current account, so users no longer have to wait for the next polling cycle.
+  保存当前账号到期日后状态栏立即刷新，无需等下次轮询。
+- **Input validation hardening / 输入验证加固**: `setAccountBillingDay()` now rejects non-integer days, untrimmed emails, and unknown accounts; `restoreBillingDays()` validates every entry from durable state and drops malformed records to prevent webview HTML injection via corrupted JSON.
+  后端拒绝小数 / 未知账号；持久化恢复时逐项校验，防止数据损坏污染 webview。
+- **A11y `prefers-reduced-motion` / 动画无障碍**: The `refreshPulse` animation on `gai-refresh-today` now respects `prefers-reduced-motion: reduce`, matching the other animations in this codebase (`starTwinkle`, `heartbeat`, `pauseBlink`).
+  到期徽章脉冲动画尊重 `prefers-reduced-motion`，与其他动画行为一致。
+- **Light theme overrides / 浅色主题适配**: Added `body.vscode-light` overrides for `.billing-day-inline` and `.gai-refresh-badge*` so the new UI remains visible on light themes (the original `rgba(255,255,255,0.02)` background blended into white).
+  浅色主题下到期徽章与输入容器有专门覆盖样式，不再融入白色背景。
+- **a-tag scroll-jacking fix / 滚动劫持修复**: `data-scroll-to` delegation now calls `e.preventDefault()` to stop the browser from running the `<a>` default action before smooth-scroll.
+  阻止浏览器对 `<a data-scroll-to>` 执行默认跳转，避免页面闪烁。
+- **Save feedback for invalid email / 异常邮箱保存反馈**: Profile billing-day save now shows a `!` feedback when the input lacks a `data-email`, instead of silently bailing out.
+  空邮箱场景给出明确 UI 反馈，不再静默失败。
+- **Durable persistence visibility / 持久化失败可见性**: `durableFileGlobalState.update()` now logs caught write errors instead of silently swallowing them; the in-memory mirror behavior is preserved.
+  持久化写失败时输出 log，便于诊断；mirror 行为不变。
+
 ### 📊 Stats / 统计
 
-- **Files changed**: 8 (`src/statusbar.ts`, `src/extension.ts`, `src/activity-panel.ts`, `src/webview-panel.ts`, `src/webview-profile-tab.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-styles.ts`)
+- **Files changed**: 11 (`src/billing-day.ts` *(new)*, `src/statusbar.ts`, `src/extension.ts`, `src/activity-panel.ts`, `src/webview-panel.ts`, `src/webview-profile-tab.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-styles.ts`, `src/durable-state.ts`, `package.json`)
 - **TypeScript compile**: Zero errors
+- **Tests**: 6 files / 57 tests passing (1 new `tests/billing-day.test.ts` covering 31-on-short-month, leap year, year boundary, today-is-billing-day, and DST transitions)
+- **Review pipeline**: codex (backend) + gemini (frontend) + claude (orchestration) + codex adversarial-review (fix)
 
 ---
 
