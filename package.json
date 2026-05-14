@@ -106,6 +106,18 @@
           "maximum": 100,
           "description": "Maximum number of activity archives to keep / 活动归档最多保留份数"
         },
+        "antigravityContextMonitor.statusBar.showAiCredits": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show AI Credits balance (e.g. ⚡14701) in status bar and tooltip / 状态栏和 tooltip 显示 AI 专属积分余额"
+        },
+        "antigravityContextMonitor.accountBillingDay": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 31,
+          "description": "Monthly billing day for credit refresh (1-31). Set to 0 to disable countdown. / 积分月度刷新日期（1-31），设为 0 不显示倒计时。"
+        },
         "antigravityContextMonitor.showModelInternalId": {
           "type": "boolean",
           "default": false,

@@ -100,10 +100,13 @@ function sanitizeConfigValue(key: string, value: unknown): unknown {
         case 'statusBar.showContext':
         case 'statusBar.showQuota':
         case 'statusBar.showResetCountdown':
+        case 'statusBar.showAiCredits':
         case 'showModelInternalId':
             return !!value;
         case 'quotaNotificationThreshold':
             return clamp(Number(value) || 0, 0, 99);
+        case 'accountBillingDay':
+            return clamp(Number(value) || 0, 0, 31);
         case 'activity.maxRecentSteps':
             return clamp(Number(value) || 100, 10, 500);
         case 'activity.maxArchives':
@@ -365,9 +368,11 @@ export function showMonitorPanel(p: PanelPayload): void {
                 'statusBar.showContext',
                 'statusBar.showQuota',
                 'statusBar.showResetCountdown',
+                'statusBar.showAiCredits',
                 'showModelInternalId',
                 'contextLimits',
                 'quotaNotificationThreshold',
+                'accountBillingDay',
                 'activity.maxRecentSteps',
                 'activity.maxArchives',
 
@@ -637,7 +642,7 @@ function buildTabContents(
         models: buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA) + eoc,
         history: buildHistoryHtml(tracker, lastUserInfo?.email) + eoc,
         calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth) + eoc,
-        profile: buildProfileContent(userInfo, configs) + eoc,
+        profile: buildProfileContent(userInfo, configs, vscode.workspace.getConfiguration('antigravityContextMonitor').get<number>('accountBillingDay', 0)) + eoc,
         about: buildAboutTabContent() + eoc,
         // Account popover: content-only update, does NOT affect open/close state
         accountPopover: lastAccountSnapshots.length > 0 ? buildAccountStatusPanel(lastAccountSnapshots) : '',
@@ -677,7 +682,7 @@ function buildHtml(
     const modelsHtml = buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA);
     const historyHtml = buildHistoryHtml(tracker, lastUserInfo?.email);
     const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth);
-    const profileHtml = buildProfileContent(userInfo, configs);
+    const profileHtml = buildProfileContent(userInfo, configs, vscode.workspace.getConfiguration('antigravityContextMonitor').get<number>('accountBillingDay', 0));
     const settingsHtml = buildSettingsContent(configs, tracker, lastStorageDiagnostics, getPanelHintPreferences());
     const panelHintPrefs = getPanelHintPreferences();
 

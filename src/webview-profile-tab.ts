@@ -27,20 +27,21 @@ function formatCreditTypeLabel(creditType: string): string {
 export function buildProfileContent(
     userInfo: UserStatusInfo | null,
     configs: ModelConfig[],
+    billingDay?: number,
 ): string {
     if (!userInfo) {
         return `
             <section class="card empty">
                 <h2>${ICON.user} ${tBi('Profile', '个人')}</h2>
                 <p class="empty-desc">${tBi(
-                    'Waiting for user data from LS...',
-                    '等待 LS 用户数据...',
-                )}</p>
+            'Waiting for user data from LS...',
+            '等待 LS 用户数据...',
+        )}</p>
             </section>`;
     }
 
     return [
-        buildAccountSection(userInfo),
+        buildAccountSection(userInfo, billingDay),
         buildLimitsSection(userInfo),
         buildFeatureAndTeamGrid(userInfo),
     ].join('');
@@ -60,7 +61,7 @@ export function sortModels(configs: ModelConfig[], sortOrder: string[]): ModelCo
 
 // ─── Section Builders ────────────────────────────────────────────────────────
 
-function buildAccountSection(userInfo: UserStatusInfo): string {
+function buildAccountSection(userInfo: UserStatusInfo, billingDay?: number): string {
     const tierMap: Record<string, { bg: string; color: string }> = {
         'TEAMS_TIER_FREE': { bg: 'rgba(156,163,175,0.15)', color: '#9ca3af' },
         'TEAMS_TIER_PRO': { bg: 'rgba(74,222,128,0.15)', color: 'var(--color-ok)' },
@@ -82,16 +83,43 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
     const subHint = userInfo.upgradeSubscriptionText
         ? `<div class="subscription-hint">${esc(userInfo.upgradeSubscriptionText)}</div>` : '';
 
-    // Google AI Credits inline
+    // Google AI Credits inline with refresh countdown
     const validCredits = userInfo.availableCredits.filter(c => c.creditAmount > 0);
-    const creditsHtml = validCredits.length > 0
-        ? `<div class="gai-credits">${validCredits.map(c => {
+    const day = billingDay || 0;
+    let refreshBadge = '';
+    if (day >= 1 && day <= 31) {
+        const daysLeft = getDaysUntilBillingDay(day);
+        const activityLink = ` <a class="gai-action-link" href="https://antigravity.google/g1-activity" target="_blank">${tBi('Activity Dashboard', '活动记录看板')}</a>`;
+        if (daysLeft === 0) {
+            refreshBadge = `<span class="gai-refresh-badge gai-refresh-today">${tBi('Expires today', '今日到期')}</span>` + activityLink;
+        } else {
+            refreshBadge = `<span class="gai-refresh-badge">${daysLeft}${tBi('d until expiry', '天后到期')}</span>` + activityLink;
+        }
+    } else {
+        refreshBadge = `<span class="gai-refresh-badge gai-refresh-unset">${tBi('Expiry date not set', '到期日未设置')}</span>`
+            + ` <a class="gai-action-link" data-scroll-to="profileBillingDayInput">${tBi('Set below', '在下方设置')}</a>`
+            + ` <a class="gai-action-link" href="https://antigravity.google/g1-activity" target="_blank">${tBi('Activity Dashboard', '活动记录看板')}</a>`;
+    }
+
+    let creditsHtml = '';
+    if (validCredits.length > 0) {
+        creditsHtml = `<div class="gai-credits">${validCredits.map(c => {
             const typeName = formatCreditTypeLabel(c.creditType);
             return `<div class="gai-credit-item">
                         <span class="gai-label">${esc(typeName)}</span>
                         <span class="gai-value">${c.creditAmount.toLocaleString()}</span>
                     </div>`;
-        }).join('')}</div>` : '';
+        }).join('')}<div class="gai-credit-item gai-credit-refresh">${refreshBadge}</div></div>`;
+    } else if (refreshBadge) {
+        // No credits but billing day or "not set" info still relevant
+        creditsHtml = `<div class="gai-credits gai-credits-empty">
+            <div class="gai-credit-item">
+                <span class="gai-label">${tBi('AI Credits', 'AI 积分')}</span>
+                <span class="gai-value" style="color:var(--color-text-dim)">0</span>
+            </div>
+            <div class="gai-credit-item gai-credit-refresh">${refreshBadge}</div>
+        </div>`;
+    }
 
     return `
         <section class="card">
@@ -107,9 +135,9 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
                 <span class="account-email" data-real="${esc(userInfo.email)}" data-masked="${esc(maskedEmail)}">${esc(userInfo.email)}</span>
             </div>
             <p class="privacy-hint">${tBi(
-                'Privacy mask is ON by default. Click the shield button above to reveal sensitive data.',
-                '隐私遮罩默认开启。点击上方 🛡️ 按钮可显示/隐藏真实信息。',
-            )}</p>
+        'Privacy mask is ON by default. Click the shield button above to reveal sensitive data.',
+        '隐私遮罩默认开启。点击上方 \ud83d\udee1\ufe0f 按钮可显示/隐藏真实信息。',
+    )}</p>
             ${subHint}
             <div class="credits-section">
                 <div class="credit-row">
@@ -132,7 +160,54 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
                 </div>
             </div>
             ${creditsHtml}
+            <div class="billing-day-inline">
+                <div class="billing-day-header">
+                    <span class="billing-day-label">${tBi('Monthly credits expiry day', '每月积分到期日')}</span>
+                    <div class="billing-day-input-group">
+                        <div class="num-spinner">
+                            <button type="button" class="num-spinner-btn decrement">\u2212</button>
+                            <input type="number" id="profileBillingDayInput" class="threshold-input"
+                                   value="${day}" min="0" max="31" step="1" />
+                            <button type="button" class="num-spinner-btn increment">+</button>
+                        </div>
+                        <button class="action-btn" id="profileBillingDaySaveBtn">${tBi('Save', '\u4fdd\u5b58')}</button>
+                        <span id="profileBillingDayFeedback" class="threshold-feedback"></span>
+                    </div>
+                </div>
+                <p class="billing-day-desc">${tBi(
+        'Your credits expire on a fixed day each month (e.g. the 15th). Set it here so the countdown shows how many days remaining. Check your billing email or payment history to find the exact date. Set to 0 to disable.',
+        '你的积分每月固定日期到期（如 15 号）。设置后会显示剩余天数倒计时。可查看订阅确认邮件或付款记录找到确切日期。设为 0 关闭倒计时。',
+    )}</p>
+            </div>
         </section>`;
+}
+
+/**
+ * Calculate days remaining until next billing day (same logic as StatusBarManager).
+ */
+function getDaysUntilBillingDay(billingDay: number): number {
+    const now = new Date();
+    const today = now.getDate();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    let target = new Date(currentYear, currentMonth, billingDay);
+    if (target.getMonth() !== currentMonth) {
+        target = new Date(currentYear, currentMonth + 1, 0);
+    }
+
+    if (today < target.getDate()) {
+        return target.getDate() - today;
+    } else if (today === target.getDate()) {
+        return 0;
+    } else {
+        let nextTarget = new Date(currentYear, currentMonth + 1, billingDay);
+        if (nextTarget.getMonth() !== (currentMonth + 1) % 12) {
+            nextTarget = new Date(currentYear, currentMonth + 2, 0);
+        }
+        const diffMs = nextTarget.getTime() - now.getTime();
+        return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    }
 }
 
 export function buildModelQuotaGrid(configs: ModelConfig[]): string {
@@ -186,8 +261,8 @@ export function buildDefaultModelCard(userInfo: UserStatusInfo | null): string {
             <h2>${ICON.bolt} ${tBi('Default Model', '默认模型')}</h2>
             <div class="default-model">${tBi('Current default', '当前默认')}: <strong>${esc(userInfo.defaultModelLabel)}</strong></div>
             ${userInfo.userTierDescription
-                ? `<p class="raw-desc">${esc(userInfo.userTierDescription)}</p>`
-                : ''}
+            ? `<p class="raw-desc">${esc(userInfo.userTierDescription)}</p>`
+            : ''}
         </section>`;
 }
 

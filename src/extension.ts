@@ -903,7 +903,13 @@ export function activate(context: vscode.ExtensionContext): void {
             }
             if (e.affectsConfiguration('antigravityContextMonitor.statusBar')) {
                 applyDisplayPrefs();
+                if (currentUsage) { statusBar.update(currentUsage); }
                 log('Status bar display preferences updated');
+            }
+            if (e.affectsConfiguration('antigravityContextMonitor.accountBillingDay')) {
+                applyDisplayPrefs();
+                if (currentUsage) { statusBar.update(currentUsage); }
+                log('Account billing day updated');
             }
             if (e.affectsConfiguration('antigravityContextMonitor.showModelInternalId')) {
                 const newConfig = vscode.workspace.getConfiguration('antigravityContextMonitor');
@@ -965,7 +971,19 @@ function applyDisplayPrefs(): void {
         showContext: cfg.get<boolean>('statusBar.showContext', true),
         showQuota: cfg.get<boolean>('statusBar.showQuota', true),
         showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
+        showAiCredits: cfg.get<boolean>('statusBar.showAiCredits', true),
     });
+    statusBar.setBillingDay(cfg.get<number>('accountBillingDay', 0));
+}
+
+/**
+ * Push current account's total AI credits to the status bar.
+ */
+function updateStatusBarCredits(userInfo: UserStatusInfo | null): void {
+    if (!userInfo) { statusBar.setCredits(0); return; }
+    const total = (userInfo.availableCredits || [])
+        .reduce((sum, c) => sum + (c.creditAmount > 0 ? c.creditAmount : 0), 0);
+    statusBar.setCredits(total);
 }
 
 /**
@@ -1055,6 +1073,7 @@ async function pollContextUsage(): Promise<void> {
                 }
                 if (fullStatus.userInfo) {
                     cachedUserInfo = fullStatus.userInfo;
+                    updateStatusBarCredits(fullStatus.userInfo);
                     statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
                     // Persist for instant display on next activation
                     durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
@@ -1094,6 +1113,7 @@ async function pollContextUsage(): Promise<void> {
                             }
                             if (fullStatus.userInfo) {
                                 cachedUserInfo = fullStatus.userInfo;
+                                updateStatusBarCredits(fullStatus.userInfo);
                                 statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
                                 durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
                                 durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
@@ -1129,6 +1149,7 @@ async function pollContextUsage(): Promise<void> {
                     }
                     if (fullStatus.userInfo) {
                         cachedUserInfo = fullStatus.userInfo;
+                        updateStatusBarCredits(fullStatus.userInfo);
                         statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
                         durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
                         durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);

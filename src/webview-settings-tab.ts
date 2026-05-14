@@ -44,6 +44,7 @@ export function buildSettingsContent(
     const showContext = cfg.get<boolean>('statusBar.showContext', true);
     const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
     const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
+    const showAiCredits = cfg.get<boolean>('statusBar.showAiCredits', true);
     const showModelInternalId = cfg.get<boolean>('showModelInternalId', false);
     const quotaNotifyThreshold = cfg.get<number>('quotaNotificationThreshold', 20);
     const tabScrollHintEnabled = panelPrefs?.showTabScrollHint ?? true;
@@ -223,6 +224,11 @@ export function buildSettingsContent(
                     <input type="checkbox" id="toggleCountdown" class="toggle-cb" ${showResetCountdown ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
                     <span>${tBi('Reset countdown', '重置倒计时')} <code>&#x23F3;4h32m</code></span>
+                </label>
+                <label class="toggle-row">
+                    <input type="checkbox" id="toggleAiCredits" class="toggle-cb" ${showAiCredits ? 'checked' : ''} />
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span>${tBi('AI Credits balance', 'AI 积分余额')} <code>⚡14,701</code></span>
                 </label>
             </div>
         </section>

@@ -153,9 +153,13 @@ export class StatusBarManager {
     /** Timer ID for reset countdown. */
     private resetCountdownTimer: NodeJS.Timeout | undefined;
     /** Status bar display preferences. */
-    private displayPrefs = { showContext: true, showQuota: true, showResetCountdown: true };
+    private displayPrefs = { showContext: true, showQuota: true, showResetCountdown: true, showAiCredits: true };
     /** Last active model ID for tracking reset countdown. */
     private lastActiveModel: string = '';
+    /** Cached AI Credits total (sum of all credit types). */
+    private cachedCreditsTotal: number = 0;
+    /** Cached billing day (1-31, 0 = disabled). */
+    private cachedBillingDay: number = 0;
 
     constructor() {
         this.statusBarItem = vscode.window.createStatusBarItem(
@@ -186,10 +190,60 @@ export class StatusBarManager {
     /**
      * Set status bar display preferences.
      */
-    setDisplayPrefs(prefs: { showContext?: boolean; showQuota?: boolean; showResetCountdown?: boolean }): void {
+    setDisplayPrefs(prefs: { showContext?: boolean; showQuota?: boolean; showResetCountdown?: boolean; showAiCredits?: boolean }): void {
         if (prefs.showContext !== undefined) { this.displayPrefs.showContext = prefs.showContext; }
         if (prefs.showQuota !== undefined) { this.displayPrefs.showQuota = prefs.showQuota; }
         if (prefs.showResetCountdown !== undefined) { this.displayPrefs.showResetCountdown = prefs.showResetCountdown; }
+        if (prefs.showAiCredits !== undefined) { this.displayPrefs.showAiCredits = prefs.showAiCredits; }
+    }
+
+    /**
+     * Update cached AI Credits total for status bar display.
+     */
+    setCredits(total: number): void {
+        this.cachedCreditsTotal = Math.max(0, total);
+    }
+
+    /**
+     * Set the account billing day for refresh countdown.
+     */
+    setBillingDay(day: number): void {
+        this.cachedBillingDay = (day >= 1 && day <= 31) ? day : 0;
+    }
+
+    /**
+     * Calculate days remaining until next billing day.
+     * Returns null if billing day is not configured (0).
+     */
+    getDaysUntilRefresh(): number | null {
+        if (this.cachedBillingDay <= 0) { return null; }
+        const now = new Date();
+        const today = now.getDate();
+        const currentMonth = now.getMonth();
+        const currentYear = now.getFullYear();
+        const billingDay = this.cachedBillingDay;
+
+        // Target date in current month
+        let target = new Date(currentYear, currentMonth, billingDay);
+        // If billing day is beyond month's days, use last day of month
+        if (target.getMonth() !== currentMonth) {
+            target = new Date(currentYear, currentMonth + 1, 0); // last day of current month
+        }
+
+        if (today < target.getDate()) {
+            // Still within current month, target is this month's billing day
+            return target.getDate() - today;
+        } else if (today === target.getDate()) {
+            return 0; // Today is billing day
+        } else {
+            // Past billing day — target next month
+            let nextTarget = new Date(currentYear, currentMonth + 1, billingDay);
+            if (nextTarget.getMonth() !== (currentMonth + 1) % 12) {
+                nextTarget = new Date(currentYear, currentMonth + 2, 0);
+            }
+            const diffMs = nextTarget.getTime() - now.getTime();
+            return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+        }
     }
 
     /**
@@ -302,14 +356,29 @@ export class StatusBarManager {
         // Add reset countdown to status bar text (tracks current model)
         const resetSuffix = this.displayPrefs.showResetCountdown ? this.formatResetCountdown(usage.model) : '';
 
-        // Build status bar text based on display preferences
-        const contextPart = this.displayPrefs.showContext
-            ? `${usedStr}/${limitStr}, ${displayPercent}%${compressIcon}${gapsIndicator}`
+        // AI Credits indicator
+        const creditsSuffix = (this.displayPrefs.showAiCredits && this.cachedCreditsTotal > 0)
+            ? this.formatCreditsIndicator()
             : '';
 
-        // If nothing is shown, show at least the icon
-        const parts = [contextPart, quotaSuffix.trim(), resetSuffix.trim()].filter(Boolean);
-        this.statusBarItem.text = `${icon} ${parts.join(' ')}`;
+        // Build status bar text based on display preferences
+        const contextPart = this.displayPrefs.showContext
+            ? `${usedStr}/${limitStr}${compressIcon}${gapsIndicator}`
+            : '';
+
+        // Collect all segments and join with || separators
+        const segments = [
+            contextPart,
+            quotaSuffix.trim(),
+            resetSuffix.trim(),
+            creditsSuffix.trim(),
+        ].filter(Boolean);
+
+        if (segments.length > 0) {
+            this.statusBarItem.text = `|| ${icon} ${segments.join(' || ')} ||`;
+        } else {
+            this.statusBarItem.text = `${icon}`;
+        }
         this.statusBarItem.backgroundColor = getSeverityColor(severity);
 
         // Build detailed tooltip
@@ -386,6 +455,9 @@ export class StatusBarManager {
         lines.push(`——————————`);
 
         lines.push(...this.buildQuotaLines());
+
+        // AI Credits section in tooltip
+        lines.push(...this.buildCreditsLines());
 
         lines.push(`——————————`);
         lines.push(`$(link-external) **${t('statusBar.clickToView')}**`);
@@ -582,14 +654,53 @@ export class StatusBarManager {
 
     /**
      * Format a compact quota indicator for the current model.
-     * Returns e.g. " 🟢85%" or "" if no quota info available.
+     * Returns e.g. "🟢85%" or "" if no quota info available.
      */
     private formatQuotaIndicator(modelId: string): string {
         const config = this.cachedConfigs.find(c => c.model === modelId);
         if (!config?.quotaInfo) { return ''; }
         const pct = Math.round(config.quotaInfo.remainingFraction * 100);
         const dot = pct >= 80 ? '🟢' : pct > 20 ? '🟡' : '🔴';
-        return ` ${dot}${pct}%`;
+        return `${dot}${pct}%`;
+    }
+
+    /**
+     * Format AI Credits indicator for status bar.
+     * Returns e.g. "⚡14,701" or "" if credits = 0.
+     */
+    private formatCreditsIndicator(): string {
+        if (this.cachedCreditsTotal <= 0) { return ''; }
+        return `⚡${this.cachedCreditsTotal.toLocaleString()}`;
+    }
+
+    /**
+     * Build credit info lines for tooltip.
+     */
+    private buildCreditsLines(): string[] {
+        const result: string[] = [];
+        if (this.cachedCreditsTotal <= 0 && this.cachedBillingDay <= 0) { return result; }
+
+        result.push(`——————————`);
+        if (this.cachedCreditsTotal > 0) {
+            const daysLeft = this.getDaysUntilRefresh();
+            let refreshStr = '';
+            if (daysLeft !== null) {
+                if (daysLeft === 0) {
+                    refreshStr = ` (${tBi('expires today', '今日到期')})`;
+                } else {
+                    refreshStr = ` (${daysLeft}${tBi('d until expiry', '天后到期')})`;
+                }
+            } else {
+                refreshStr = ` (${tBi('expiry date not set', '到期日未设置')})`;
+            }
+            result.push(`⚡ ${tBi('AI Credits', 'AI 积分')}: **${this.cachedCreditsTotal.toLocaleString()}**${refreshStr}`);
+        } else if (this.cachedBillingDay > 0) {
+            const daysLeft = this.getDaysUntilRefresh();
+            if (daysLeft !== null && daysLeft > 0) {
+                result.push(`⚡ ${tBi('Credits expire in', '积分到期还有')} **${daysLeft}** ${tBi('days', '天')}`);
+            }
+        }
+        return result;
     }
 
     /**
@@ -616,7 +727,7 @@ export class StatusBarManager {
         if (!resetDate) { return ''; }
         const diffMs = resetDate.getTime() - Date.now();
         if (diffMs <= 0) { return ''; }
-        return ` ⏳${formatResetCountdownFromMs(diffMs)}`;
+        return `⏳${formatResetCountdownFromMs(diffMs)}`;
     }
 
     dispose(): void {

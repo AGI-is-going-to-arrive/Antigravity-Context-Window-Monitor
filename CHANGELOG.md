@@ -1,5 +1,39 @@
 # 变更日志 / Changelog
 
+## [1.16.7] - 2026-05-14
+
+### ✨ Added / 新增
+
+- **AI Credits status bar integration / 状态栏 AI 积分集成**: Status bar now shows real-time AI Credits balance (e.g. `⚡14,701`) as a new segment. Credits are fetched via `LanguageServerService/GetUserStatus` and displayed in full numeric format (no abbreviation). The segment is automatically hidden when credits are zero. Controlled by new `statusBar.showAiCredits` toggle in Settings (default: enabled).
+  状态栏新增 AI 积分余额段（如 `⚡14,701`），通过 `GetUserStatus` 实时获取，使用完整数字格式。积分为零时自动隐藏。可在设置页通过 `statusBar.showAiCredits` 开关控制（默认开启）。
+
+- **Status bar `||` separator format / 状态栏 `||` 分隔符格式**: All status bar segments are now wrapped with `||` on both sides, e.g. `|| ⚠ 121.2k/160k || 🟡40% || ⏳4h6m || ⚡14,701 ||`. The icon is inside the first `||` pair for visual consistency.
+  状态栏段间分隔符改为 `||` 包裹格式，图标在第一个 `||` 内部。
+
+- **Profile tab billing day setting / 个人页积分到期日设置**: Moved the monthly billing day configuration from Settings to the Profile tab as an inline input with spinner buttons, save button, and descriptive explanation text. Users can set their subscription renewal date (1-31) directly in the Profile page. Setting to 0 disables the countdown. The "Expiry date not set" badge links to the input below via smooth scroll.
+  积分到期日设置从设置页迁移到个人页，提供内联输入框、加减按钮、保存按钮和说明文案。设为 0 关闭倒计时。"到期日未设置"徽章可平滑滚动到下方输入框。
+
+- **Credits expiry countdown / 积分到期倒计时**: Profile tab shows a dynamic badge next to credits: "Expires today / 今日到期", "Xd until expiry / X天后到期", or "Expiry date not set / 到期日未设置". Status bar tooltip also displays the countdown. External "Activity Dashboard / 活动记录看板" link opens `antigravity.google/g1-activity`.
+  个人页积分旁显示动态到期倒计时徽章（今日到期 / X天后到期 / 到期日未设置）。状态栏 tooltip 同步显示。外链"活动记录看板"可直达官方活动面板。
+
+- **Zero-credits UI state / 无积分 UI 状态**: When credits are zero, status bar and tooltip hide the credits segment (no wasted space). Profile tab still shows "AI Credits: 0" with the expiry badge if billing day is configured, so users can track their cycle even without active credits.
+  积分为零时状态栏和 tooltip 隐藏积分段。个人页仍显示 "AI 积分: 0" 和到期徽章（如已设日期），方便用户跟踪周期。
+
+### ✨ Improved / 改进
+
+- **Num-spinner body delegation / 数字 spinner 事件委托**: Migrated all `.num-spinner-btn` click handlers from direct `addEventListener` binding to `document.body` click delegation. This ensures spinner buttons work reliably across all tabs (including Profile) regardless of DOM rebuilds during polling refreshes.
+  所有数字 spinner 按钮从直接绑定改为 body 级事件委托，确保轮询刷新重建 DOM 后仍然可用。
+
+- **Profile billing day save via delegation / 个人页保存按钮事件委托**: The billing day save button uses body-level click delegation (same pattern as other panel buttons), ensuring it survives innerHTML replacements from polling updates.
+  个人页到期日保存按钮使用 body 级事件委托，轮询刷新不影响功能。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 5 (`src/statusbar.ts`, `src/webview-profile-tab.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-styles.ts`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## [1.16.6] - 2026-05-12
 
 ### ✨ Improved / 改进

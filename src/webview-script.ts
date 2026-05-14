@@ -517,8 +517,8 @@ export function getScript(): string {
             if (zoomValEl) { zoomValEl.textContent = zoomLevel + '%'; }
 
             // ─── Settings: Status Bar Toggles ───
-            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'toggleModelInternalId'];
-            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'showModelInternalId'];
+            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'toggleAiCredits', 'toggleModelInternalId'];
+            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'statusBar.showAiCredits', 'showModelInternalId'];
             for (var tgi = 0; tgi < toggleIds.length; tgi++) {
                 (function(idx) {
                     var cb = document.getElementById(toggleIds[idx]);
@@ -648,6 +648,11 @@ export function getScript(): string {
                         'statePath': 'statePathFeedback',
                         'panelShowTabScrollHint': 'panelHintFeedback'
                     };
+                    // accountBillingDay feedback (Profile tab)
+                    if (msg.key === 'accountBillingDay') {
+                        var bfb = document.getElementById('profileBillingDayFeedback');
+                        if (bfb) { bfb.textContent = '\u2713'; bfb.style.opacity = '1'; setTimeout(function() { bfb.style.opacity = '0'; }, 2000); }
+                    }
                     var fbId = feedbackMap[msg.key];
                     if (fbId) {
                         var cfb = document.getElementById(fbId);
@@ -735,27 +740,7 @@ export function getScript(): string {
             // Run overflow check after layout settles
             requestAnimationFrame(function() { initErrorOverflow(); bindToolCatalogTooltips(); });
 
-            // ─── Custom number spinner buttons ───
-            var spinnerBtns = document.querySelectorAll('.num-spinner-btn');
-            for (var sb = 0; sb < spinnerBtns.length; sb++) {
-                spinnerBtns[sb].addEventListener('click', function() {
-                    var spinner = this.closest('.num-spinner');
-                    if (!spinner) return;
-                    var input = spinner.querySelector('input[type="number"]');
-                    if (!input) return;
-                    var step = parseFloat(input.step) || 1;
-                    var min = input.min !== '' ? parseFloat(input.min) : -Infinity;
-                    var max = input.max !== '' ? parseFloat(input.max) : Infinity;
-                    var val = parseFloat(input.value) || 0;
-                    if (this.classList.contains('increment')) {
-                        val = Math.min(val + step, max);
-                    } else {
-                        val = Math.max(val - step, min);
-                    }
-                    input.value = val;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                });
-            }
+            // num-spinner-btn: handled by body delegation below
 
             // ─── Quota Timeline Tracking Toggle (Settings tab) ───
             var quotaTrackingCb = document.getElementById('toggleQuotaTracking');
@@ -781,6 +766,8 @@ export function getScript(): string {
                     }
                 });
             }
+
+            // profileBillingDaySaveBtn: handled by body delegation below
 
             // ─── Dev: Simulate Quota Reset ───
             var devSimBtn = document.getElementById('devSimulateReset');
@@ -852,6 +839,29 @@ export function getScript(): string {
                     : (e.target && e.target.parentElement ? e.target.parentElement : null);
                 if (!target || !target.closest) { return; }
 
+                // ── Num-spinner buttons (universal, all tabs) ──
+                var spinnerBtn = target.closest('.num-spinner-btn');
+                if (spinnerBtn) {
+                    var spinner = spinnerBtn.closest('.num-spinner');
+                    if (spinner) {
+                        var spinInput = spinner.querySelector('input[type="number"]');
+                        if (spinInput) {
+                            var step = parseFloat(spinInput.step) || 1;
+                            var min = spinInput.min !== '' ? parseFloat(spinInput.min) : -Infinity;
+                            var max = spinInput.max !== '' ? parseFloat(spinInput.max) : Infinity;
+                            var val = parseFloat(spinInput.value) || 0;
+                            if (spinnerBtn.classList.contains('increment')) {
+                                val = Math.min(val + step, max);
+                            } else {
+                                val = Math.max(val - step, min);
+                            }
+                            spinInput.value = val;
+                            spinInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
+                    }
+                    return;
+                }
+
                 // ── Error message full-text click → collapse ──
                 var errFull = target.closest('.gm-err-msg-full');
                 if (errFull) {
@@ -864,6 +874,17 @@ export function getScript(): string {
                 var switchLink = target.closest('[data-switch-tab]');
                 if (switchLink) {
                     switchTab(switchLink.dataset.switchTab);
+                    return;
+                }
+
+                // ── data-scroll-to: smooth scroll to element by ID ──
+                var scrollLink = target.closest('[data-scroll-to]');
+                if (scrollLink) {
+                    var scrollTarget = document.getElementById(scrollLink.dataset.scrollTo);
+                    if (scrollTarget) {
+                        scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        scrollTarget.focus();
+                    }
                     return;
                 }
 
@@ -931,6 +952,18 @@ export function getScript(): string {
                 // ── Clear Tool Catalog ──
                 if (target.closest('#clearToolCatalogBtn')) {
                     vscode.postMessage({ command: 'clearToolCatalog' });
+                    return;
+                }
+
+                // ── Profile: Billing Day Save ──
+                if (target.closest('#profileBillingDaySaveBtn')) {
+                    var bdInput = document.getElementById('profileBillingDayInput');
+                    if (bdInput) {
+                        var bdVal = parseInt(bdInput.value, 10);
+                        if (bdVal >= 0 && bdVal <= 31) {
+                            vscode.postMessage({ command: 'setConfig', key: 'accountBillingDay', value: bdVal });
+                        }
+                    }
                     return;
                 }
 
