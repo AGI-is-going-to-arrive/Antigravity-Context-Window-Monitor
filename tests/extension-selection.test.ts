@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildUsageScopeTrajectories,
+    groupModelConfigsByQuotaPool,
+    removeStaleContextLimitOverrides,
     selectRunningTrajectoryCandidate,
 } from '../src/extension';
 import { CascadeStatus } from '../src/constants';
 import type { TrajectorySummary } from '../src/tracker';
+import type { ModelConfig } from '../src/models';
 
 function trajectory(
     cascadeId: string,
@@ -29,6 +32,19 @@ function trajectory(
         gitOriginUrl: '',
         branchName: '',
         gitRootUri: '',
+    };
+}
+
+function modelConfig(model: string, label: string, resetTime: string, remainingFraction: number): ModelConfig {
+    return {
+        model,
+        label,
+        supportsImages: false,
+        quotaInfo: { resetTime, remainingFraction },
+        allowedTiers: [],
+        mimeTypeCount: 0,
+        isRecommended: false,
+        supportedMimeTypes: [],
     };
 }
 
@@ -133,5 +149,50 @@ describe('buildUsageScopeTrajectories', () => {
         );
 
         expect(scope.map(t => t.cascadeId)).toEqual(['current']);
+    });
+});
+
+describe('groupModelConfigsByQuotaPool', () => {
+    it('keeps known quota pools separate even when resetTime strings match', () => {
+        const groups = groupModelConfigsByQuotaPool([
+            modelConfig('MODEL_PLACEHOLDER_M133', 'Gemini 3 Flash', '2026-05-21T00:00:00Z', 0.8),
+            modelConfig('MODEL_OPENAI_GPT_OSS_120B_MEDIUM', 'GPT-OSS 120B (Medium)', '2026-05-21T00:00:00Z', 0.4),
+        ]);
+
+        expect(groups.map(g => g.key).sort()).toEqual(['claude-premium', 'gemini-flash']);
+        expect(groups.find(g => g.key === 'gemini-flash')?.labels).toEqual(['Gemini 3 Flash']);
+        expect(groups.find(g => g.key === 'claude-premium')?.labels).toEqual(['GPT-OSS 120B (Medium)']);
+    });
+
+    it('still groups unknown future models by resetTime fallback', () => {
+        const groups = groupModelConfigsByQuotaPool([
+            modelConfig('MODEL_FUTURE_A', 'Future A', '2026-05-21T00:00:00Z', 0.7),
+            modelConfig('MODEL_FUTURE_B', 'Future B', '2026-05-21T00:00:00Z', 0.5),
+        ]);
+
+        expect(groups).toHaveLength(1);
+        expect(groups[0].modelIds).toEqual(['MODEL_FUTURE_A', 'MODEL_FUTURE_B']);
+        expect(groups[0].minFraction).toBe(0.5);
+    });
+});
+
+describe('removeStaleContextLimitOverrides', () => {
+    it('drops only PR 56 stale default overrides', () => {
+        expect(removeStaleContextLimitOverrides({
+            MODEL_PLACEHOLDER_M133: 160000,
+            MODEL_OPENAI_GPT_OSS_120B_MEDIUM: 128000,
+            MODEL_PLACEHOLDER_M35: 120000,
+            CUSTOM_MODEL: 123456,
+        })).toEqual({
+            MODEL_PLACEHOLDER_M35: 120000,
+            CUSTOM_MODEL: 123456,
+        });
+    });
+
+    it('returns undefined when all explicit overrides are stale defaults', () => {
+        expect(removeStaleContextLimitOverrides({
+            MODEL_PLACEHOLDER_M84: 160000,
+            MODEL_PLACEHOLDER_M16: 120000,
+        })).toBeUndefined();
     });
 });

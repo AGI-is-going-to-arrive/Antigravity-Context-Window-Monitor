@@ -111,8 +111,8 @@ export function buildSettingsContent(
         '警告阈值（token 数）',
     )}</label>
                 <p class="raw-desc">${tBi(
-        'Status bar turns yellow/red based on this value. Default 200K matches Antigravity\'s internal compression point.',
-        '状态栏颜色基于此值判断。默认 200K 匹配 Antigravity 内建压缩线。',
+        'Status bar turns yellow/red based on this value. Default 150K gives early warning before the current 128K–160K platform truncation range.',
+        '状态栏颜色基于此值判断。默认 150K 会在当前 128K–160K 平台截断区间前后提前预警。',
     )}</p>
                 <div class="threshold-input-row">
                     <div class="num-spinner">

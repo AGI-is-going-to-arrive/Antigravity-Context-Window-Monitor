@@ -67,15 +67,22 @@ const LEGACY_ZH_MODEL_NAMES: Record<string, string> = {
     'GPT-OSS 120B (中)': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
 };
 
-// ─── Retired Model Display Names ─────────────────────────────────────────────
-// Models that have been retired from clientModelConfigs (e.g. replaced by newer
-// placeholder IDs) but may still appear in persisted/archived daily data.
-// Provides getModelDisplayName() fallback so they don't render as raw IDs.
+// ─── Static Model Display Name Fallbacks ─────────────────────────────────────
+// Used before GetUserStatus has populated API labels, and for retired IDs that
+// may still appear in persisted/archived daily data.
 
-const LEGACY_MODEL_NAMES: Record<string, string> = {
+const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
+    'MODEL_PLACEHOLDER_M16': 'Gemini 3.1 Pro (High)',
     'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
+    'MODEL_PLACEHOLDER_M36': 'Gemini 3.1 Pro (Low)',
+    'MODEL_PLACEHOLDER_M133': 'Gemini 3 Flash',
+    'MODEL_PLACEHOLDER_M132': 'Gemini 3 Flash',
     'MODEL_PLACEHOLDER_M84': 'Gemini 3 Flash',         // Replaced by M133
     'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',         // Replaced by M84 → M133
+    'MODEL_PLACEHOLDER_M18': 'Gemini 3 Flash',
+    'MODEL_PLACEHOLDER_M35': 'Claude Sonnet 4.6 (Thinking)',
+    'MODEL_PLACEHOLDER_M26': 'Claude Opus 4.6 (Thinking)',
+    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'GPT-OSS 120B (Medium)',
 };
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -99,7 +106,7 @@ export function getContextLimit(
  * Returns the API-provided label, or the raw model ID if not yet loaded.
  */
 export function getModelDisplayName(model: string): string {
-    return modelDisplayNames[model] || LEGACY_MODEL_NAMES[model] || model || 'Unknown Model';
+    return modelDisplayNames[model] || STATIC_MODEL_NAME_FALLBACKS[model] || model || 'Unknown Model';
 }
 
 /**
@@ -120,7 +127,7 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     const clean = modelOrDisplay.trim();
     if (!clean) { return undefined; }
     // Direct model ID match (API-registered or retired)
-    if (modelDisplayNames[clean] !== undefined || LEGACY_MODEL_NAMES[clean] !== undefined) { return clean; }
+    if (modelDisplayNames[clean] !== undefined || STATIC_MODEL_NAME_FALLBACKS[clean] !== undefined) { return clean; }
     // Reverse lookup: display label → model ID
     for (const [modelId, label] of Object.entries(modelDisplayNames)) {
         if (label === clean) {
