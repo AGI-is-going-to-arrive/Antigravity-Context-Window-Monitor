@@ -4,7 +4,7 @@
 
 import * as vscode from 'vscode';
 import { tBi } from './i18n';
-import { ModelConfig } from './models';
+import { ModelConfig, getContextLimit } from './models';
 import { QuotaTracker } from './quota-tracker';
 import { ICON } from './webview-icons';
 import { esc, formatFileSize } from './webview-helpers';
@@ -54,14 +54,15 @@ export function buildSettingsContent(
 
     const modelLimitRows = configs.map(c => {
         const customLimit = contextLimits[c.model];
-        const limit = customLimit ?? 1_000_000;
+        const defaultLimit = getContextLimit(c.model);
+        const limit = customLimit ?? defaultLimit;
         return `
             <div class="setting-model-row">
                 <span class="setting-model-label">${esc(c.label)}</span>
                 <div class="num-spinner">
                     <button type="button" class="num-spinner-btn decrement">−</button>
                     <input type="number" class="threshold-input model-limit-input"
-                           data-model="${esc(c.model)}" value="${limit}"
+                           data-model="${esc(c.model)}" data-default="${defaultLimit}" value="${limit}"
                            min="1000" step="100000" />
                     <button type="button" class="num-spinner-btn increment">+</button>
                 </div>
@@ -110,8 +111,8 @@ export function buildSettingsContent(
         '警告阈值（token 数）',
     )}</label>
                 <p class="raw-desc">${tBi(
-        'Status bar turns yellow/red based on this value. Default 200K matches Antigravity\'s internal compression point.',
-        '状态栏颜色基于此值判断。默认 200K 匹配 Antigravity 内建压缩线。',
+        'Status bar turns yellow/red based on this value. Default 150K gives early warning before the current 128K–160K platform truncation range.',
+        '状态栏颜色基于此值判断。默认 150K 会在当前 128K–160K 平台截断区间前后提前预警。',
     )}</p>
                 <div class="threshold-input-row">
                     <div class="num-spinner">
@@ -333,6 +334,7 @@ export function buildSettingsContent(
             </div>
             <div class="threshold-input-row" style="margin-top: var(--space-2);">
                 <button class="action-btn" id="modelLimitsSaveBtn">${tBi('Save All', '全部保存')}</button>
+                <button class="action-btn" id="modelLimitsResetBtn">${ICON.refresh} ${tBi('Restore Defaults', '恢复默认值')}</button>
                 <span id="modelLimitsFeedback" class="threshold-feedback"></span>
             </div>
         </section>` : ''}

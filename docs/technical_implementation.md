@@ -216,6 +216,12 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
 
   Three migration triggers in `restore()` force nuclear reset + re-warm-up: missing subAgentTokens, empty checkpointHistory, or all-zero conversationBreakdown (bad data from old field path bug).
 
+* **模型平台阈值 / Model Platform Thresholds**: `models.ts` 中的 `DEFAULT_CONTEXT_LIMITS` 记录 Antigravity 平台截断阈值，而不是模型原生窗口。v1.16.8 将 Gemini 3.1 Pro 调整为 128K，Gemini 3 Flash M133/M132/M84/M47 调整为 128K，GPT-OSS 120B 调整为 80K，Claude Thinking 保持 160K。启动迁移会清除旧版保存下来的 1M、120K/160K/128K 过期默认 override，让新的内置默认值生效。
+  `DEFAULT_CONTEXT_LIMITS` stores Antigravity platform truncation thresholds, not model-native windows. v1.16.8 sets Gemini 3.1 Pro to 128K, Gemini 3 Flash M133/M132/M84/M47 to 128K, GPT-OSS 120B to 80K, while Claude Thinking remains 160K. Startup migration clears stale explicit default overrides from older releases so the corrected built-in defaults can take effect.
+
+* **设置页恢复默认值 / Settings Restore Defaults**: 模型上下文上限区域的 Restore Defaults 按钮将输入框回填为 `getContextLimit()` 默认值，同时向扩展端发送空 `contextLimits` 对象以清除显式覆盖；Save All 只保存不同于默认值的项目。这样后续版本再次调整默认阈值时，用户不会因为一次保存或“恢复默认值”而被旧显式值锁住。
+  The model-limit Restore Defaults button fills inputs from `getContextLimit()` defaults and sends an empty `contextLimits` object to clear explicit overrides; Save All stores only values that differ from defaults. Future default changes are therefore not masked by stale values created by a previous save or restore action.
+
 ---
-基于 TypeScript 构建，适用于 Antigravity IDE。当前共有 49 个 vitest 单元测试（`npm test`），覆盖 discovery 解析、价格表渲染/保存、工具目录清空持久化等纯逻辑路径。
-Built with TypeScript for the Antigravity IDE. The repository currently contains 49 vitest unit tests (`npm test`) covering discovery parsing, pricing table rendering/save behavior, and tool catalog clear persistence.
+基于 TypeScript 构建，适用于 Antigravity IDE。当前共有 63 个 vitest 单元测试（`npm test`），覆盖 discovery 解析、价格表渲染/保存、工具目录清空持久化、模型默认值恢复、quota pool 分组和 contextLimits 迁移等纯逻辑路径。
+Built with TypeScript for the Antigravity IDE. The repository currently contains 63 vitest unit tests (`npm test`) covering discovery parsing, pricing table rendering/save behavior, tool catalog clear persistence, model default restoration, quota pool grouping, and contextLimits migration.

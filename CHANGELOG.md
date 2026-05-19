@@ -1,5 +1,39 @@
 # 变更日志 / Changelog
 
+## [1.16.8] - 2026-05-19
+
+### ✨ Improved / 改进
+
+- **Context limit corrections from API diagnostic data / 基于 API 诊断数据修正上下文限制**: Updated `DEFAULT_CONTEXT_LIMITS` in `models.ts` and `contextLimits` defaults in `package.json` based on real Checkpointer `max_token_limit` / `token_threshold` values extracted from `GetAvailableModels` RPC. Gemini 3.1 Pro: 120K -> 128K. Gemini 3 Flash (M133/M132/M84/M47): 160K -> 128K (matches observed compression trigger at ~128K). GPT-OSS 120B: 128K -> 80K (cp_limit=80000). Claude limits unchanged at 160K.
+  根据从 `GetAvailableModels` RPC 提取的真实 Checkpointer 参数（`max_token_limit` / `token_threshold`），修正 `models.ts` 和 `package.json` 中的上下文限制默认值。Gemini 3.1 Pro: 120K -> 128K。Gemini 3 Flash (M133/M132/M84/M47): 160K -> 128K（实测约 128K 触发压缩）。GPT-OSS 120B: 128K -> 80K（cp_limit=80000）。Claude 保持 160K。
+
+- **Gemini 3 Flash M132/M133 model transition / Gemini 3 Flash M132/M133 模型换代适配**: Gemini 3 Flash physical model IDs now include M133 (`gemini-3-flash-b`) and M132 (`gemini-3-flash-agent`). Added both to `DEFAULT_CONTEXT_LIMITS` (128K), `KNOWN_QUOTA_POOLS` (`gemini-flash`), and `package.json` defaults. Added static display fallbacks for current and legacy model IDs so startup/archive views do not expose raw internal IDs.
+  Gemini 3 Flash 物理模型 ID 现在包含 M133（`gemini-3-flash-b`）和 M132（`gemini-3-flash-agent`）。两者已加入上下文限制（128K）、额度池映射（`gemini-flash`）和 `package.json` 默认值。当前与历史模型 ID 均提供静态显示名兜底，避免启动或归档视图裸显内部 ID。
+
+- **Settings model limits "Restore Defaults" button / 设置页模型限制"恢复默认值"按钮**: Added a "Restore Defaults" button next to "Save All" in the Settings model limits section. Clicking it resets all model limit inputs to their `getContextLimit()` defaults and clears the explicit `contextLimits` override, so future built-in default changes are not masked by stale saved values. "Save All" now persists only values that differ from defaults. Input elements now carry `data-default` attributes for client-side default tracking.
+  设置页模型限制区域新增"恢复默认值"按钮。点击后将所有输入框重置为 `getContextLimit()` 默认值，并清空显式 `contextLimits` 覆盖，避免后续内置默认值调整被旧保存值遮蔽。"全部保存"现在只持久化不同于默认值的项目。输入元素增加了 `data-default` 属性用于客户端默认值追踪。
+
+### 🔧 Hardening / 加固
+
+- **Quota pool grouping / 额度池分组**: Account snapshots and low-quota notifications now use the same stable `getQuotaPoolKey()` grouping as `QuotaTracker`, preventing unrelated known pools with identical `resetTime` strings from being merged.
+  账号快照和低额度通知现在与 `QuotaTracker` 一样使用稳定的 `getQuotaPoolKey()` 分组，避免不同已知额度池仅因 `resetTime` 相同而被误合并。
+
+- **Context limits migration v2 / 上下文限制迁移 v2**: Startup migration clears stale explicit defaults saved by older versions (`120K` Gemini Pro, `160K` Flash, `128K` GPT-OSS) so corrected v1.16.8 defaults can take effect while preserving unrelated custom limits.
+  启动迁移会清除旧版本保存下来的过期显式默认值（Gemini Pro `120K`、Flash `160K`、GPT-OSS `128K`），让 v1.16.8 修正后的默认值生效，同时保留无关自定义上限。
+
+### 📚 Documentation / 文档
+
+- Updated `README.md`, `readme_CN.md`, `docs/technical_implementation.md`, and `docs/project_structure.md` to describe the v1.16.8 platform thresholds, restore-defaults behavior, and current test coverage.
+  同步更新 `README.md`、`readme_CN.md`、`docs/technical_implementation.md` 和 `docs/project_structure.md`，说明 v1.16.8 平台阈值、恢复默认值行为与当前测试覆盖。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 13 (`src/models.ts`, `src/extension.ts`, `src/webview-script.ts`, `src/webview-settings-tab.ts`, `src/webview-about-tab.ts`, `tests/extension-selection.test.ts`, `tests/webview-script.test.ts`, `package.json`, `README.md`, `readme_CN.md`, `docs/technical_implementation.md`, `docs/project_structure.md`, `CHANGELOG.md`)
+- **TypeScript compile**: Zero errors
+- **Tests**: 5 files / 63 tests passing (`npm test`)
+
+---
+
 ## [1.16.7] - 2026-05-14
 
 ### ✨ Added / 新增

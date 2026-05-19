@@ -65,14 +65,15 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     * **🛡️ Privacy Mask**: A shield button in the panel header masks your name and email. The toggle state persists across panel refreshes.
     * **📂 Collapsible Sections**: Secondary info (Plan Limits, Feature Flags, Team Config, Google AI Credits) is collapsed by default. Expand/collapse state persists.
 
-* **⚙️ Interactive Settings Dashboard** *(v1.11.0, enhanced through v1.16.7)*
+* **⚙️ Interactive Settings Dashboard** *(v1.11.0, enhanced through v1.16.8)*
     The WebView panel now features a dual-tab layout ('Monitor' and 'Settings'). The Settings tab lets you configure extension behaviors directly from a GUI — no more manual `settings.json` editing.
-    * **🎯 Compression Warning Threshold**: Set a custom "tripwire" (e.g., 150K, 200K, 500K, 900K) for early warning before Antigravity's backend compression triggers (~200K). Status bar color changes are based on this threshold instead of the full model limit.
+    * **🎯 Compression Warning Threshold**: Set a custom "tripwire" (e.g., 150K, 200K, 500K, 900K) for early warning around Antigravity's current platform truncation range (~128K-160K). Status bar color changes are based on this threshold instead of the model's native window.
     * **🟢 Status Bar Quota Indicator**: Current model's quota percentage is now shown directly in the status bar with color-coded dot icons (`🟢`, `🟡`, `🔴`).
     * **⏳ Current-Model Reset Countdown**: The status bar countdown now tracks the reset time of the model you are currently using, not the earliest reset across all models.
     * **🎛️ Status Bar Display Toggles**: Independent toggle switches to hide/show 'Context Usage', 'Quota Indicator', 'Reset Countdown' and 'AI Credits Balance' in the status bar.
     * **⚡ AI Credits in Status Bar** *(v1.16.7)*: Status bar shows real-time AI Credits balance (e.g. `⚡14,701`) wrapped in `||` separators (e.g. `|| ⚠ 121.2k/160k || 🟡40% || ⏳4h6m || ⚡14,701 ||`). Auto-hides when credits are zero. Controlled by `statusBar.showAiCredits` toggle.
     * **📆 Per-Account Billing Day** *(v1.16.7)*: Set monthly credits-expiry day per account (1-31) inline on the Profile tab. Profile, account panel and status bar tooltip all show a countdown badge ("Expires today / Xd until expiry / Expiry date not set"). Stored in durable JSON state — survives uninstall/reinstall. Uses UTC calendar-day delta so the countdown is correct across DST transitions.
+    * **↩ Restore Model Defaults** *(v1.16.8)*: Settings → Model Context Limits includes a restore button that clears stale custom overrides and returns to the built-in platform thresholds.
     * **⏸️ Pause/Resume**: Pause auto-refresh to freeze the panel while investigating data.
 
 * **🧠 Model Activity Monitor** *(v1.11.2, enhanced through v1.16.4)*
@@ -91,21 +92,22 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 | Model | Internal ID | Context Limit |
 | --- | --- | --- |
-| Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 1,000,000 |
-| Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 1,000,000 |
-| Gemini 3 Flash | MODEL_PLACEHOLDER_M84 | 1,000,000 |
-| Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 1,000,000 |
-| Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 1,000,000 |
-| GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 128,000 |
+| Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 128,000 |
+| Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 128,000 |
+| Gemini 3 Flash | MODEL_PLACEHOLDER_M133 / M132 | 128,000 |
+| Gemini 3 Flash (legacy) | MODEL_PLACEHOLDER_M84 / M47 / M18 | 128,000-160,000 |
+| Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
+| Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
+| GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 80,000 |
 
-*Model IDs are fetched from the local Antigravity language server's `GetUserStatus` API. If new models are added, you can override context limits in IDE settings.*
+*These are Antigravity platform truncation thresholds, not model-native context windows. Model IDs are fetched from the local Antigravity language server's `GetUserStatus` API. If new models are added, you can override context limits in IDE settings.*
 
 ## 🚀 Usage
 
 1. **Install**:
    * **OpenVSX**: Install directly from [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
    * **Manual**: Install the `.vsix` file via Extensions → Install from VSIX.
-2. **Status Bar**: The bottom-right status bar shows current context usage (displays `0k/1000k, 0.0%` for empty chats).
+2. **Status Bar**: The bottom-right status bar shows current context usage (empty chats use the current/default model threshold).
 3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, and the latest checkpoint shadow model when present).
 
    ![Hover Details](src/images/悬停详情new.png)
@@ -208,4 +210,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.7
+**Version**: 1.16.8

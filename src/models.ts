@@ -14,16 +14,18 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     // ── Platform truncation thresholds (from GM plannerConfig.truncationThresholdTokens) ──
     // These are the ACTUAL context window limits enforced by the platform,
     // NOT the model's native context window size.
-    // Verified via diag-scripts/overview/model-compare.ts (2026-05-12).
-    'MODEL_PLACEHOLDER_M16': 120_000,   // Gemini 3.1 Pro (High) — new ID (gemini-pro-default), compression triggers ~120K
-    'MODEL_PLACEHOLDER_M37': 120_000,   // [Legacy] Gemini 3.1 Pro (High) — now demoted to planModel/dispatcher
-    'MODEL_PLACEHOLDER_M36': 120_000,   // Gemini 3.1 Pro (Low)  — same pool as High
-    'MODEL_PLACEHOLDER_M84': 160_000,   // Gemini 3 Flash — new ID
-    'MODEL_PLACEHOLDER_M47': 160_000,   // [Legacy] Gemini 3 Flash (old ID)
+    // Verified via diag-scripts/my-tools/extra/all-models-deep-miner.ts (2026-05-19).
+    'MODEL_PLACEHOLDER_M16': 128_000,   // Gemini 3.1 Pro (High) — new ID (gemini-pro-default), cp_limit=128000
+    'MODEL_PLACEHOLDER_M37': 128_000,   // [Legacy] Gemini 3.1 Pro (High) — now demoted to planModel/dispatcher
+    'MODEL_PLACEHOLDER_M36': 128_000,   // Gemini 3.1 Pro (Low)  — same pool as High
+    'MODEL_PLACEHOLDER_M133': 128_000,  // Gemini 3 Flash
+    'MODEL_PLACEHOLDER_M132': 128_000,  // Gemini 3 Flash — current ID (gemini-3-flash-agent), cp_threshold=128000
+    'MODEL_PLACEHOLDER_M84': 128_000,   // [Legacy] Gemini 3 Flash — old ID
+    'MODEL_PLACEHOLDER_M47': 128_000,   // [Legacy] Gemini 3 Flash (older ID)
     'MODEL_PLACEHOLDER_M18': 160_000,   // [Legacy] Gemini 3 Flash (older ID)
     'MODEL_PLACEHOLDER_M35': 160_000,   // Claude Sonnet 4.6 (Thinking) — truncationThresholdTokens=160000
     'MODEL_PLACEHOLDER_M26': 160_000,   // Claude Opus 4.6 (Thinking)  — truncationThresholdTokens=160000
-    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 128_000,  // GPT-OSS 120B (Medium)
+    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 80_000,   // GPT-OSS 120B (Medium) — cp_limit=80000
 };
 
 export const DEFAULT_CONTEXT_LIMIT = 160_000;
@@ -42,6 +44,8 @@ const KNOWN_QUOTA_POOLS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M16': 'gemini-pro',
     'MODEL_PLACEHOLDER_M37': 'gemini-pro',
     'MODEL_PLACEHOLDER_M36': 'gemini-pro',
+    'MODEL_PLACEHOLDER_M133': 'gemini-flash',
+    'MODEL_PLACEHOLDER_M132': 'gemini-flash',
     'MODEL_PLACEHOLDER_M84': 'gemini-flash',
     'MODEL_PLACEHOLDER_M47': 'gemini-flash',
     'MODEL_PLACEHOLDER_M18': 'gemini-flash',
@@ -63,14 +67,22 @@ const LEGACY_ZH_MODEL_NAMES: Record<string, string> = {
     'GPT-OSS 120B (中)': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
 };
 
-// ─── Retired Model Display Names ─────────────────────────────────────────────
-// Models that have been retired from clientModelConfigs (e.g. replaced by newer
-// placeholder IDs) but may still appear in persisted/archived daily data.
-// Provides getModelDisplayName() fallback so they don't render as raw IDs.
+// ─── Static Model Display Name Fallbacks ─────────────────────────────────────
+// Used before GetUserStatus has populated API labels, and for retired IDs that
+// may still appear in persisted/archived daily data.
 
-const LEGACY_MODEL_NAMES: Record<string, string> = {
+const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
+    'MODEL_PLACEHOLDER_M16': 'Gemini 3.1 Pro (High)',
     'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
-    'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',         // Replaced by M84
+    'MODEL_PLACEHOLDER_M36': 'Gemini 3.1 Pro (Low)',
+    'MODEL_PLACEHOLDER_M133': 'Gemini 3 Flash',
+    'MODEL_PLACEHOLDER_M132': 'Gemini 3 Flash',
+    'MODEL_PLACEHOLDER_M84': 'Gemini 3 Flash',         // Replaced by M133
+    'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',         // Replaced by M84 → M133
+    'MODEL_PLACEHOLDER_M18': 'Gemini 3 Flash',
+    'MODEL_PLACEHOLDER_M35': 'Claude Sonnet 4.6 (Thinking)',
+    'MODEL_PLACEHOLDER_M26': 'Claude Opus 4.6 (Thinking)',
+    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'GPT-OSS 120B (Medium)',
 };
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -94,7 +106,7 @@ export function getContextLimit(
  * Returns the API-provided label, or the raw model ID if not yet loaded.
  */
 export function getModelDisplayName(model: string): string {
-    return modelDisplayNames[model] || LEGACY_MODEL_NAMES[model] || model || 'Unknown Model';
+    return modelDisplayNames[model] || STATIC_MODEL_NAME_FALLBACKS[model] || model || 'Unknown Model';
 }
 
 /**
@@ -115,7 +127,7 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     const clean = modelOrDisplay.trim();
     if (!clean) { return undefined; }
     // Direct model ID match (API-registered or retired)
-    if (modelDisplayNames[clean] !== undefined || LEGACY_MODEL_NAMES[clean] !== undefined) { return clean; }
+    if (modelDisplayNames[clean] !== undefined || STATIC_MODEL_NAME_FALLBACKS[clean] !== undefined) { return clean; }
     // Reverse lookup: display label → model ID
     for (const [modelId, label] of Object.entries(modelDisplayNames)) {
         if (label === clean) {
