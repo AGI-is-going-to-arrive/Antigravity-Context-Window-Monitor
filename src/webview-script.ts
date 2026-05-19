@@ -594,6 +594,27 @@ export function getScript(): string {
                 });
             }
 
+            // ─── Settings: Model Limits Restore Defaults ───
+            var modelLimitsResetBtn = document.getElementById('modelLimitsResetBtn');
+            if (modelLimitsResetBtn) {
+                modelLimitsResetBtn.addEventListener('click', function() {
+                    var inputs = document.querySelectorAll('.model-limit-input');
+                    var limits = {};
+                    for (var ri = 0; ri < inputs.length; ri++) {
+                        var defVal = inputs[ri].getAttribute('data-default');
+                        if (defVal) {
+                            inputs[ri].value = defVal;
+                        }
+                        var model = inputs[ri].dataset.model;
+                        var val = parseInt(inputs[ri].value, 10);
+                        if (model && val >= 1000) { limits[model] = val; }
+                    }
+                    vscode.postMessage({ command: 'setConfig', key: 'contextLimits', value: limits });
+                    var fb = document.getElementById('modelLimitsFeedback');
+                    if (fb) { fb.textContent = '\u2713'; fb.style.opacity = '1'; setTimeout(function(){ fb.style.opacity = '0'; }, 2000); }
+                });
+            }
+
             // ─── Language Switcher ───
             var switcher = document.querySelector('.lang-switcher');
             if (switcher) {

@@ -54,13 +54,13 @@
         "antigravityContextMonitor.contextLimits": {
           "type": "object",
           "default": {
-            "MODEL_PLACEHOLDER_M37": 120000,
-            "MODEL_PLACEHOLDER_M36": 120000,
-            "MODEL_PLACEHOLDER_M47": 160000,
-            "MODEL_PLACEHOLDER_M18": 160000,
+            "MODEL_PLACEHOLDER_M16": 128000,
+            "MODEL_PLACEHOLDER_M37": 128000,
+            "MODEL_PLACEHOLDER_M36": 128000,
+            "MODEL_PLACEHOLDER_M133": 128000,
             "MODEL_PLACEHOLDER_M35": 160000,
             "MODEL_PLACEHOLDER_M26": 160000,
-            "MODEL_OPENAI_GPT_OSS_120B_MEDIUM": 128000
+            "MODEL_OPENAI_GPT_OSS_120B_MEDIUM": 80000
           },
           "description": "Model context window limits (in tokens). These are platform-level truncation thresholds (from GM plannerConfig), NOT model native limits. Key is the model's internal ID. Override if needed. / 各模型上下文窗口大小（token 数），基于 GM 平台截断阈值（非模型原生限制）。如需可自行覆盖。"
         },

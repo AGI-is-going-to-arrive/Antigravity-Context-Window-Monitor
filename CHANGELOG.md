@@ -1,5 +1,25 @@
 # 变更日志 / Changelog
 
+## [1.16.8] - 2026-05-19
+
+### ✨ Improved / 改进
+
+- **Context limit corrections from API diagnostic data / 基于 API 诊断数据修正上下文限制**: Updated `DEFAULT_CONTEXT_LIMITS` in `models.ts` and `contextLimits` defaults in `package.json` based on real Checkpointer `max_token_limit` / `token_threshold` values extracted from `GetAvailableModels` RPC. Gemini 3 Flash (M133/M84/M47): 160K -> 128K (matches observed compression trigger at ~128K). GPT-OSS 120B: 128K -> 80K (cp_limit=80000). Claude and Gemini Pro limits unchanged.
+  根据从 `GetAvailableModels` RPC 提取的真实 Checkpointer 参数（`max_token_limit` / `token_threshold`），修正 `models.ts` 和 `package.json` 中的上下文限制默认值。Gemini 3 Flash (M133/M84/M47): 160K -> 128K（实测约 128K 触发压缩）。GPT-OSS 120B: 128K -> 80K（cp_limit=80000）。Claude 和 Gemini Pro 限制不变。
+
+- **Gemini 3 Flash M133 model transition / Gemini 3 Flash M133 模型换代适配**: Gemini 3 Flash physical model ID changed from M84 to M133 (`gemini-3-flash-b`). Added M133 to `DEFAULT_CONTEXT_LIMITS` (128K), `KNOWN_QUOTA_POOLS` (`gemini-flash`), and `package.json` defaults. Promoted M84 to `LEGACY_MODEL_NAMES` ("Replaced by M133"), updated M47 comment chain.
+  Gemini 3 Flash 物理模型 ID 从 M84 换代为 M133（`gemini-3-flash-b`）。M133 已加入上下文限制（128K）、额度池映射（`gemini-flash`）和 `package.json` 默认值。M84 加入退役模型名映射，M47 注释链更新。
+
+- **Settings model limits "Restore Defaults" button / 设置页模型限制"恢复默认值"按钮**: Added a "Restore Defaults" button next to "Save All" in the Settings model limits section. Clicking it resets all model limit inputs to their `getContextLimit()` defaults (matching `DEFAULT_CONTEXT_LIMITS` in `models.ts`) and saves immediately. Input elements now carry `data-default` attributes for client-side default tracking.
+  设置页模型限制区域新增"恢复默认值"按钮。点击后将所有输入框重置为 `getContextLimit()` 的默认值并立即保存。输入元素增加了 `data-default` 属性用于客户端默认值追踪。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 4 (`src/models.ts`, `src/webview-script.ts`, `src/webview-settings-tab.ts`, `package.json`)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## [1.16.7] - 2026-05-14
 
 ### ✨ Added / 新增
