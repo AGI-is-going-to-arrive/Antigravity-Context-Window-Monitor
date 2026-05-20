@@ -65,14 +65,15 @@
     * **🛡️ 隐私遮罩**：面板顶部盾牌按钮可遮罩姓名和邮箱，开关状态跨刷新持久化。
     * **📂 可折叠区域**：次要信息（计划限制、功能开关、团队配置、Google AI 额度）默认折叠，展开/收起状态持久化。
 
-* **⚙️ 交互式设置仪表盘** *(v1.11.0 新增，持续增强至 v1.16.7)*
+* **⚙️ 交互式设置仪表盘** *(v1.11.0 新增，持续增强至 v1.16.8)*
     WebView 面板重构为「监控」和「设置」双标签页。设置页提供直观的图形化界面，一站式配置扩展行为——无需手动编辑 `settings.json`。
-    * **🎯 自定义压缩警告阈值**：设定自定义「警戒线」（支持 150K、200K、500K、900K 快捷预设），在 Antigravity 后端压缩触发（~200K）之前提前预警。状态栏颜色基于该阈值而非模型完整上限变化。
+    * **🎯 自定义压缩警告阈值**：设定自定义「警戒线」（支持 150K、200K、500K、900K 快捷预设），围绕 Antigravity 当前平台截断区间（约 128K-160K）提前预警。状态栏颜色基于该阈值而非模型原生窗口变化。
     * **🟢 状态栏额度指示灯**：当前模型的配额百分比带彩色状态灯（`🟢`、`🟡`、`🔴`）直接显示在状态栏上。
     * **⏳ 当前模型重置倒计时**：状态栏倒计时现在跟随你当前正在使用的模型的重置时间，而不再是所有模型中最早的那个。
     * **🎛️ 状态栏显示开关**：独立开关控制「上下文用量」、「额度指示灯」、「重置倒计时」与「AI 积分余额」的显示/隐藏。
     * **⚡ 状态栏 AI 积分** *(v1.16.7)*：状态栏新增 AI 积分余额段（如 `⚡14,701`），使用 `||` 包裹格式（如 `|| ⚠ 121.2k/160k || 🟡40% || ⏳4h6m || ⚡14,701 ||`）。积分为零时自动隐藏。可在设置页通过 `statusBar.showAiCredits` 开关控制。
     * **📆 按账号独立到期日** *(v1.16.7)*：在个人页内联设置每个账号的月度积分到期日（1-31）。个人页、账号面板和状态栏 tooltip 都会显示「今日到期 / X 天后到期 / 到期日未设置」倒计时徽章。使用 durable JSON 持久化，卸载重装不丢失。采用 UTC 日历日差计算，跨夏令时也不会多算 1 天。
+    * **↩ 恢复模型默认值** *(v1.16.8)*：设置页的模型上下文上限区域新增恢复按钮，可清除过期自定义覆盖并回到内置平台阈值。
     * **⏸️ 暂停/恢复**：暂停自动刷新以冻结面板数据，方便排查问题。
 
 * **🧠 模型活动监控** *(v1.11.2 新增，持续增强至 v1.16.4)*
@@ -91,21 +92,22 @@
 
 | 模型 | Internal ID / 内部 ID | 上下文上限 |
 | --- | --- | --- |
-| Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 1,000,000 |
-| Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 1,000,000 |
-| Gemini 3 Flash | MODEL_PLACEHOLDER_M84 | 1,000,000 |
-| Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 1,000,000 |
-| Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 1,000,000 |
-| GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 128,000 |
+| Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 128,000 |
+| Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 128,000 |
+| Gemini 3 Flash | MODEL_PLACEHOLDER_M133 / M132 | 128,000 |
+| Gemini 3 Flash（历史 ID） | MODEL_PLACEHOLDER_M84 / M47 / M18 | 128,000-160,000 |
+| Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
+| Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
+| GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 80,000 |
 
-*模型 ID 来自 Antigravity 本地语言服务器的 `GetUserStatus` API。如果新增了模型，可以在 IDE 设置中手动覆盖上下文上限。*
+*这些数值是 Antigravity 平台截断阈值，不是模型原生上下文窗口。模型 ID 来自 Antigravity 本地语言服务器的 `GetUserStatus` API。如果新增了模型，可以在 IDE 设置中手动覆盖上下文上限。*
 
 ## 🚀 使用方法
 
 1. **安装**:
    * **OpenVSX**: 直接从 [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装。
    * **手动安装**: 通过"扩展 → 从 VSIX 安装"将 `.vsix` 文件安装到 Antigravity IDE。
-2. **查看状态**: 右下角状态栏显示当前上下文使用情况（空白聊天时显示 `0k/1000k, 0.0%`）。
+2. **查看状态**: 右下角状态栏显示当前上下文使用情况（空白聊天使用当前/默认模型阈值）。
 3. **悬停详情**: 将鼠标悬停在状态栏项上，查看详细信息（模型、输入/输出 Token、剩余容量、压缩状态、图片生成步骤、每模型配额摘要，以及最近 checkpoint 的影子模型标识等）。
 
    ![悬停详情](src/images/悬停详情new.png)
@@ -208,4 +210,4 @@
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.16.7
+**版本 / Version**: 1.16.8

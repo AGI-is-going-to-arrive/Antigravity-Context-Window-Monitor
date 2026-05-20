@@ -44,7 +44,7 @@ antigravity-context-monitor/
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标
 
 │   ├── webview-models-tab.ts     # Models 标签页 HTML（默认模型 + 模型配额 + 模型信息）
-│   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含持久化存储概览 + 界面提示偏好）
+│   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含模型阈值/恢复默认值 + 持久化存储概览 + 界面提示偏好）
 │   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队 / AI 积分到期日设置）
 │   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
 │   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（ses-* 命名空间 — 紧凑行式卡片 + shortcut 芯片 + 工具栏 + CSS tooltip）
