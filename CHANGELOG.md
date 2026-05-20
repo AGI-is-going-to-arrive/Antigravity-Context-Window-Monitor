@@ -10,6 +10,9 @@
 - **Gemini 3.5 Flash pricing / Gemini 3.5 Flash 定价**: Added `gemini-3.5-flash` and `gemini-3-flash-a` pricing entries ($1.50/$9.00 per 1M input/output, AI Studio standard tier). `PRICING_LAST_UPDATED` updated to 2026-05-20.
   新增 `gemini-3.5-flash` 和 `gemini-3-flash-a` 定价条目（$1.50/$9.00，AI Studio 标准价）。定价更新日期更新为 2026-05-20。
 
+- **About tab platform scope notice / 关于页平台适用说明**: Added Antigravity product line chips (IDE / SDK / CLI) to the About tab hero section. The IDE chip is highlighted as the active target, with a note clarifying that this plugin is designed for the Antigravity IDE platform; SDK and CLI are separate product lines and are not supported.
+  About 标签页 Hero 区域新增 Antigravity 产品线标识（IDE / SDK / CLI）。IDE 高亮标识为本插件的服务平台，附文字说明本插件面向 Antigravity IDE 平台开发，SDK 和 CLI 为独立产品线，不在支持范围内。
+
 ### 🐛 Fixed / 修复
 
 - **M133 display name fallback / M133 显示名兜底**: M133 (checkpoint ghost, `gemini-3-flash-b`) was not in `clientModelConfigs`, so its display name relied on M132's API label. After M132 was renamed from "Gemini 3 Flash" to "Gemini 3.5 Flash (High)", M133 fell back to raw placeholder ID `MODEL_PLACEHOLDER_M133` in the Cost tab and Models tab. Fix: added M133 to `LEGACY_MODEL_NAMES` as "Gemini 3.5 Flash".
@@ -23,7 +26,7 @@
 
 ### 📊 Stats / 统计
 
-- **Files changed**: 4 (`src/models.ts`, `src/pricing-store.ts`, `src/model-dna-store.ts`, `package.json`)
+- **Files changed**: 5 (`src/models.ts`, `src/pricing-store.ts`, `src/model-dna-store.ts`, `src/webview-about-tab.ts`, `package.json`)
 - **TypeScript compile**: Zero errors
 
 ---
