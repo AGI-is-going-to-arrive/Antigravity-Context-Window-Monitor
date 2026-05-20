@@ -35,12 +35,12 @@ export interface ModelCostRow {
 // ─── Default Pricing Table (per 1M tokens, USD) ─────────────────────────────
 // Source: https://platform.claude.com/docs/en/about-claude/pricing
 //         https://cloud.google.com/vertex-ai/generative-ai/pricing
-// Updated: 2026-03-22
+// Updated: 2026-05-20
 // Cache: Claude cacheWrite = 1.25× input (5-min), cacheRead = 0.1× input
 //        Gemini cacheRead = from official table; no separate cacheWrite pricing
 // Thinking: = output price (Claude extended thinking / Gemini reasoning output)
 
-export const PRICING_LAST_UPDATED = '2026-03-22';
+export const PRICING_LAST_UPDATED = '2026-05-20';
 
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     // ── Claude (platform.claude.com/docs/en/about-claude/pricing) ─────
@@ -51,7 +51,10 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     // ── Gemini 3.x (cloud.google.com/vertex-ai/generative-ai/pricing) ─
     'gemini-3.1-pro': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },
     'gemini-pro-default': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },  // M16 responseModel alias
-    'gemini-3-flash': { input: 0.50, output: 3, cacheRead: 0.05, cacheWrite: 0.625, thinking: 3 },
+    'gemini-3-flash': { input: 0.50, output: 3, cacheRead: 0.05, cacheWrite: 0.625, thinking: 3 },     // Gemini 3 Flash (M133=gemini-3-flash-b)
+    // ── Gemini 3.5 Flash (ai.google.dev/gemini-api/docs/pricing) ────────
+    'gemini-3.5-flash': { input: 1.50, output: 9, cacheRead: 0.15, cacheWrite: 1.875, thinking: 9 },
+    'gemini-3-flash-a': { input: 1.50, output: 9, cacheRead: 0.15, cacheWrite: 1.875, thinking: 9 },   // M132/M20 responseModel
 };
 
 // ─── Pricing Lookup ──────────────────────────────────────────────────────────

@@ -1,5 +1,35 @@
 # 变更日志 / Changelog
 
+## [1.16.9] - 2026-05-20
+
+### ✨ Improved / 改进
+
+- **Gemini 3.5 Flash model adaptation / Gemini 3.5 Flash 模型适配**: Added M20 (Gemini 3.5 Flash Medium) to `DEFAULT_CONTEXT_LIMITS` (128K), `KNOWN_QUOTA_POOLS` (`gemini-flash`), and `package.json` defaults. Updated M132 comments to reflect its new identity as "Gemini 3.5 Flash (High)".
+  新增 M20（Gemini 3.5 Flash Medium）的上下文限制（128K）、额度池（`gemini-flash`）和 `package.json` 默认值。更新 M132 注释为 "Gemini 3.5 Flash (High)"。
+
+- **Gemini 3.5 Flash pricing / Gemini 3.5 Flash 定价**: Added `gemini-3.5-flash` and `gemini-3-flash-a` pricing entries ($1.50/$9.00 per 1M input/output, AI Studio standard tier). `PRICING_LAST_UPDATED` updated to 2026-05-20.
+  新增 `gemini-3.5-flash` 和 `gemini-3-flash-a` 定价条目（$1.50/$9.00，AI Studio 标准价）。定价更新日期更新为 2026-05-20。
+
+### 🐛 Fixed / 修复
+
+- **M133 display name fallback / M133 显示名兜底**: M133 (checkpoint ghost, `gemini-3-flash-b`) was not in `clientModelConfigs`, so its display name relied on M132's API label. After M132 was renamed from "Gemini 3 Flash" to "Gemini 3.5 Flash (High)", M133 fell back to raw placeholder ID `MODEL_PLACEHOLDER_M133` in the Cost tab and Models tab. Fix: added M133 to `LEGACY_MODEL_NAMES` as "Gemini 3.5 Flash".
+  M133 不在 clientModelConfigs 中，显示名依赖 M132 的 API label。M132 改名为 "Gemini 3.5 Flash (High)" 后，M133 在成本和模型页回退到原始 ID。修复：将 M133 加入 `LEGACY_MODEL_NAMES`。
+
+- **Model DNA key resolution priority / 模型 DNA key 解析优先级**: `getModelDNAKey()` now resolves `responseModel` alias first (e.g. `gemini-3-flash-b` → `MODEL_PLACEHOLDER_M133`) before falling back to display name resolution. This prevents stale persisted entries (keyed by old display name "Gemini 3 Flash") from creating ghost "cached" cards in the Models tab that could not be merged with the current M133 entry.
+  `getModelDNAKey()` 现在优先通过 responseModel 别名解析 key，防止旧持久化数据（以旧显示名 "Gemini 3 Flash" 为 key）在模型页产生无法合并的幽灵缓存卡片。
+
+- **Legacy model name reverse lookup / 退役模型名反向查找**: `resolveModelId()` now includes reverse lookup for `LEGACY_MODEL_NAMES` values, allowing old display names persisted in model DNA and daily store to resolve back to their canonical model IDs.
+  `resolveModelId()` 新增 `LEGACY_MODEL_NAMES` 值的反向查找，使持久化数据中的旧显示名能正确解析回模型 ID。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 4 (`src/models.ts`, `src/pricing-store.ts`, `src/model-dna-store.ts`, `package.json`)
+- **TypeScript compile**: Zero errors
+
+---
+
+
+
 ## [1.16.8] - 2026-05-19
 
 ### ✨ Improved / 改进
