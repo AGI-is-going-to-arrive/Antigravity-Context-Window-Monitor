@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeModelDisplayName } from '../src/models';
+import { normalizeModelDisplayName, resolveModelId } from '../src/models';
 import { collectModelLimitOverrides, collectPricingInputOverrides, resetModelLimitInputsToDefaults } from '../src/webview-script';
 
 type Attrs = Record<string, string>;
@@ -94,8 +94,10 @@ describe('collectModelLimitOverrides', () => {
 describe('static model display fallbacks', () => {
     it('does not expose known model IDs before GetUserStatus labels are loaded', () => {
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M133')).toBe('Gemini 3 Flash');
-        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M132')).toBe('Gemini 3 Flash');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M132')).toBe('Gemini 3.5 Flash');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M20')).toBe('Gemini 3.5 Flash (Medium)');
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M18')).toBe('Gemini 3 Flash');
         expect(normalizeModelDisplayName('MODEL_OPENAI_GPT_OSS_120B_MEDIUM')).toBe('GPT-OSS 120B (Medium)');
+        expect(resolveModelId('Gemini 3.5 Flash')).toBe('MODEL_PLACEHOLDER_M132');
     });
 });
