@@ -145,6 +145,28 @@ export function buildAboutTabContent(): string {
         'An open-source community plugin for real-time monitoring and analytics of AI model usage in Antigravity.',
         '一款开源社区插件，用于实时监控和分析 Antigravity 中 AI 模型的使用情况。',
     )}</p>
+        <div class="about-platform-chips" role="group" aria-label="Supported platforms">
+            <span class="about-platform-chip about-platform-active" role="status" aria-label="IDE: actively supported">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                IDE
+            </span>
+            <span class="about-platform-chip about-platform-related" aria-label="Desktop: separate companion project">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="3"/></svg>
+                ${tBi('Desktop', '桌面版')}
+            </span>
+            <span class="about-platform-chip" aria-label="SDK: not supported">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                SDK
+            </span>
+            <span class="about-platform-chip" aria-label="CLI: not supported">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                CLI
+            </span>
+        </div>
+        <p class="about-platform-note">${tBi(
+        'This plugin is designed for the <strong>Antigravity IDE</strong> platform. A standalone <strong>Desktop Monitor</strong> is available for the Antigravity Desktop App. SDK and CLI are separate product lines and are not supported.',
+        '本插件面向 <strong>Antigravity IDE</strong> 平台开发。<strong>桌面版监控工具</strong>可独立监控 Antigravity 桌面客户端。SDK 和 CLI 为独立产品线，不在支持范围内。',
+    )}</p>
     </div>`;
 
     // ── Feature navigation grid ──
@@ -293,6 +315,57 @@ export function getAboutTabStyles(): string {
     max-width: 420px;
     margin-inline: auto;
     line-height: 1.55;
+}
+
+/* Platform chips */
+.about-platform-chips {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: var(--space-3);
+}
+.about-platform-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.75em;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--border-color);
+    color: var(--color-muted);
+    background: transparent;
+    opacity: 0.55;
+    transition: all 0.18s ease;
+}
+.about-platform-chip svg {
+    flex-shrink: 0;
+}
+.about-platform-active {
+    border-color: var(--color-orange);
+    color: var(--color-orange);
+    background: rgba(255,160,40,0.08);
+    opacity: 1;
+}
+.about-platform-related {
+    border-style: dashed;
+    border-color: var(--color-orange);
+    color: var(--color-orange);
+    background: rgba(255,160,40,0.04);
+    opacity: 0.85;
+}
+.about-platform-note {
+    font-size: 0.73em;
+    color: var(--color-muted);
+    margin: var(--space-2) 0 0;
+    text-align: center;
+    line-height: 1.5;
+}
+.about-platform-note strong {
+    color: var(--color-orange);
 }
 
 /* Section */
@@ -468,6 +541,24 @@ export function getAboutTabStyles(): string {
 /* ═══ Light theme overrides ═══════════════════════════════════════════════════ */
 [data-vscode-theme-kind="vscode-light"] .about-hero-icon {
     background: linear-gradient(135deg, rgba(255,140,20,0.12), rgba(255,100,0,0.06));
+}
+[data-vscode-theme-kind="vscode-light"] .about-platform-chips,
+[data-vscode-theme-kind="vscode-light"] .about-platform-note {
+    --color-orange: #ea580c;
+    --color-muted: #64748b;
+}
+[data-vscode-theme-kind="vscode-light"] .about-platform-active {
+    border-color: #ea580c;
+    color: #ea580c;
+    background: rgba(234,88,12,0.08);
+}
+[data-vscode-theme-kind="vscode-light"] .about-platform-related {
+    border-color: #ea580c;
+    color: #ea580c;
+    background: rgba(234,88,12,0.04);
+}
+[data-vscode-theme-kind="vscode-light"] .about-platform-note strong {
+    color: #ea580c;
 }
 [data-vscode-theme-kind="vscode-light"] .about-card:hover {
     background: rgba(255,140,20,0.06);

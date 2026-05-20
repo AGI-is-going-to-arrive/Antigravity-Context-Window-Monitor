@@ -20,6 +20,11 @@ export function getModelDNAKey(
     displayName: string,
     responseModel?: string,
 ): string {
+    // Try responseModel alias first — most precise identifier
+    if (responseModel) {
+        const fromResponseModel = resolveModelId(responseModel);
+        if (fromResponseModel) { return fromResponseModel; }
+    }
     const normalizedName = normalizeModelDisplayName(displayName) || displayName;
     const resolvedId = resolveModelId(normalizedName);
     return resolvedId || responseModel || normalizedName;

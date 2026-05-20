@@ -18,8 +18,9 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     'MODEL_PLACEHOLDER_M16': 128_000,   // Gemini 3.1 Pro (High) — new ID (gemini-pro-default), cp_limit=128000
     'MODEL_PLACEHOLDER_M37': 128_000,   // [Legacy] Gemini 3.1 Pro (High) — now demoted to planModel/dispatcher
     'MODEL_PLACEHOLDER_M36': 128_000,   // Gemini 3.1 Pro (Low)  — same pool as High
-    'MODEL_PLACEHOLDER_M133': 128_000,  // Gemini 3 Flash
-    'MODEL_PLACEHOLDER_M132': 128_000,  // Gemini 3 Flash — current ID (gemini-3-flash-agent), cp_threshold=128000
+    'MODEL_PLACEHOLDER_M133': 128_000,  // Gemini 3 Flash (checkpoint ghost, gemini-3-flash-b)
+    'MODEL_PLACEHOLDER_M132': 128_000,  // Gemini 3.5 Flash (High) — current ID (gemini-3-flash-agent), cp_threshold=128000
+    'MODEL_PLACEHOLDER_M20': 128_000,   // Gemini 3.5 Flash (Medium) — (gemini-3.5-flash-low), same checkpointer as M132
     'MODEL_PLACEHOLDER_M84': 128_000,   // [Legacy] Gemini 3 Flash — old ID
     'MODEL_PLACEHOLDER_M47': 128_000,   // [Legacy] Gemini 3 Flash (older ID)
     'MODEL_PLACEHOLDER_M18': 160_000,   // [Legacy] Gemini 3 Flash (older ID)
@@ -46,6 +47,7 @@ const KNOWN_QUOTA_POOLS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M36': 'gemini-pro',
     'MODEL_PLACEHOLDER_M133': 'gemini-flash',
     'MODEL_PLACEHOLDER_M132': 'gemini-flash',
+    'MODEL_PLACEHOLDER_M20': 'gemini-flash',
     'MODEL_PLACEHOLDER_M84': 'gemini-flash',
     'MODEL_PLACEHOLDER_M47': 'gemini-flash',
     'MODEL_PLACEHOLDER_M18': 'gemini-flash',
@@ -75,8 +77,9 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M16': 'Gemini 3.1 Pro (High)',
     'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
     'MODEL_PLACEHOLDER_M36': 'Gemini 3.1 Pro (Low)',
-    'MODEL_PLACEHOLDER_M133': 'Gemini 3 Flash',
-    'MODEL_PLACEHOLDER_M132': 'Gemini 3 Flash',
+    'MODEL_PLACEHOLDER_M133': 'Gemini 3 Flash',         // checkpoint ghost / legacy model (gemini-3-flash-b)
+    'MODEL_PLACEHOLDER_M132': 'Gemini 3.5 Flash',       // current active
+    'MODEL_PLACEHOLDER_M20': 'Gemini 3.5 Flash (Medium)',  // gemini-3.5-flash-low / same family as M132
     'MODEL_PLACEHOLDER_M84': 'Gemini 3 Flash',         // Replaced by M133
     'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',         // Replaced by M84 → M133
     'MODEL_PLACEHOLDER_M18': 'Gemini 3 Flash',
@@ -130,6 +133,12 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     if (modelDisplayNames[clean] !== undefined || STATIC_MODEL_NAME_FALLBACKS[clean] !== undefined) { return clean; }
     // Reverse lookup: display label → model ID
     for (const [modelId, label] of Object.entries(modelDisplayNames)) {
+        if (label === clean) {
+            return modelId;
+        }
+    }
+    // Reverse lookup: legacy display label → model ID (persisted data migration)
+    for (const [modelId, label] of Object.entries(STATIC_MODEL_NAME_FALLBACKS)) {
         if (label === clean) {
             return modelId;
         }
