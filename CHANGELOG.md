@@ -10,16 +10,16 @@
 - **Gemini 3.5 Flash pricing / Gemini 3.5 Flash 定价**: Added `gemini-3.5-flash` and `gemini-3-flash-a` pricing entries ($1.50/$9.00 per 1M input/output, AI Studio standard tier). `PRICING_LAST_UPDATED` updated to 2026-05-20.
   新增 `gemini-3.5-flash` 和 `gemini-3-flash-a` 定价条目（$1.50/$9.00，AI Studio 标准价）。定价更新日期更新为 2026-05-20。
 
-- **About tab platform scope notice / 关于页平台适用说明**: Added Antigravity product line chips (IDE / SDK / CLI) to the About tab hero section. The IDE chip is highlighted as the active target, with a note clarifying that this plugin is designed for the Antigravity IDE platform; SDK and CLI are separate product lines and are not supported.
-  About 标签页 Hero 区域新增 Antigravity 产品线标识（IDE / SDK / CLI）。IDE 高亮标识为本插件的服务平台，附文字说明本插件面向 Antigravity IDE 平台开发，SDK 和 CLI 为独立产品线，不在支持范围内。
+- **About tab platform scope notice / 关于页平台适用说明**: Added Antigravity product line chips (IDE / Desktop / SDK / CLI) to the About tab hero section. IDE is highlighted as the active target; Desktop is marked as a separate companion project; SDK and CLI are not supported. All chips include ARIA accessibility attributes and flex-wrap for narrow viewports.
+  About 标签页 Hero 区域新增 Antigravity 产品线标识（IDE / 桌面版 / SDK / CLI）。IDE 高亮标识为本插件的服务平台；桌面版标记为独立关联项目；SDK 和 CLI 不在支持范围。所有 chip 包含 ARIA 无障碍属性，窄屏下自动换行。
 
 - **Error dedup normalization enhancement / 错误去重规则增强**: Expanded `normalizeErrorMessage()` with ~15 new rules to merge semantically identical errors that only differ in file paths, TCP endpoints, model names, token limits, or URL subdomains. Real-world 61-kind error catalog reduced to ~29 kinds.
   扩展 `normalizeErrorMessage()` 新增约 15 条规则，合并仅路径、TCP 端点、模型名、token 限制值或 URL 子域不同的语义相同错误。实测 61 种错误压缩至约 29 种。
 
 ### 🐛 Fixed / 修复
 
-- **M133 display name fallback / M133 显示名兜底**: M133 (checkpoint ghost, `gemini-3-flash-b`) was not in `clientModelConfigs`, so its display name relied on M132's API label. After M132 was renamed from "Gemini 3 Flash" to "Gemini 3.5 Flash (High)", M133 fell back to raw placeholder ID `MODEL_PLACEHOLDER_M133` in the Cost tab and Models tab. Fix: added M133 to `LEGACY_MODEL_NAMES` as "Gemini 3.5 Flash".
-  M133 不在 clientModelConfigs 中，显示名依赖 M132 的 API label。M132 改名为 "Gemini 3.5 Flash (High)" 后，M133 在成本和模型页回退到原始 ID。修复：将 M133 加入 `LEGACY_MODEL_NAMES`。
+- **M133 display name fallback / M133 显示名兜底**: M133 (checkpoint ghost, `gemini-3-flash-b`) was not in `clientModelConfigs`, so its display name relied on M132's API label. After M132 was renamed to "Gemini 3.5 Flash (High)", M133 fell back to raw placeholder ID. Fix: M133 retains "Gemini 3 Flash" in `STATIC_MODEL_NAME_FALLBACKS` (its correct legacy identity), while M132 is "Gemini 3.5 Flash" and new M20 is "Gemini 3.5 Flash (Medium)" — all three have unique names to prevent reverse-lookup ambiguity.
+  M133 不在 clientModelConfigs 中，显示名依赖 M132 的 API label。M132 改名后 M133 回退到原始 ID。修复：M133 保留 "Gemini 3 Flash"（其正确的历史名称），M132 为 "Gemini 3.5 Flash"，新增 M20 为 "Gemini 3.5 Flash (Medium)"——三者名称唯一，避免反向查找歧义。
 
 - **Model DNA key resolution priority / 模型 DNA key 解析优先级**: `getModelDNAKey()` now resolves `responseModel` alias first (e.g. `gemini-3-flash-b` → `MODEL_PLACEHOLDER_M133`) before falling back to display name resolution. This prevents stale persisted entries (keyed by old display name "Gemini 3 Flash") from creating ghost "cached" cards in the Models tab that could not be merged with the current M133 entry.
   `getModelDNAKey()` 现在优先通过 responseModel 别名解析 key，防止旧持久化数据（以旧显示名 "Gemini 3 Flash" 为 key）在模型页产生无法合并的幽灵缓存卡片。
@@ -27,10 +27,16 @@
 - **Legacy model name reverse lookup / 退役模型名反向查找**: `resolveModelId()` now includes reverse lookup for `LEGACY_MODEL_NAMES` values, allowing old display names persisted in model DNA and daily store to resolve back to their canonical model IDs.
   `resolveModelId()` 新增 `LEGACY_MODEL_NAMES` 值的反向查找，使持久化数据中的旧显示名能正确解析回模型 ID。
 
+### 🛡️ Hardened / 加固
+
+- **ReDoS protection in error normalization / 错误归一化 ReDoS 防护**: Added input length guard (2000 char cap) to `normalizeErrorMessage()` to prevent catastrophic regex backtracking on pathological input. 100K-char stress test: 16.6s → 9ms.
+  `normalizeErrorMessage()` 新增输入长度守卫（2000 字符上限），防止病态输入导致正则灾难性回溯。100K 字符压力测试：16.6s → 9ms。
+
 ### 📊 Stats / 统计
 
 - **Files changed**: 6 (`src/models.ts`, `src/pricing-store.ts`, `src/model-dna-store.ts`, `src/webview-about-tab.ts`, `src/gm/summary.ts`, `package.json`)
 - **TypeScript compile**: Zero errors
+- **Contributors**: Thanks to [@NightMin2002](https://github.com/NightMin2002) for the initial PR with Gemini 3.5 Flash adaptation, pricing updates, and error dedup enhancements.
 
 ---
 

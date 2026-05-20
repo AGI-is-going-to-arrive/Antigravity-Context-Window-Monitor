@@ -77,8 +77,9 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M16': 'Gemini 3.1 Pro (High)',
     'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
     'MODEL_PLACEHOLDER_M36': 'Gemini 3.1 Pro (Low)',
-    'MODEL_PLACEHOLDER_M133': 'Gemini 3.5 Flash',      // checkpoint ghost (gemini-3-flash-b), same family as M132
-    'MODEL_PLACEHOLDER_M132': 'Gemini 3.5 Flash',
+    'MODEL_PLACEHOLDER_M133': 'Gemini 3 Flash',         // checkpoint ghost / legacy model (gemini-3-flash-b)
+    'MODEL_PLACEHOLDER_M132': 'Gemini 3.5 Flash',       // current active
+    'MODEL_PLACEHOLDER_M20': 'Gemini 3.5 Flash (Medium)',  // gemini-3.5-flash-low / same family as M132
     'MODEL_PLACEHOLDER_M84': 'Gemini 3 Flash',         // Replaced by M133
     'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',         // Replaced by M84 → M133
     'MODEL_PLACEHOLDER_M18': 'Gemini 3 Flash',

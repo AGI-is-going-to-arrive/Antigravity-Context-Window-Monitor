@@ -54,7 +54,9 @@ export function parseErrorCode(errorMsg: string): string {
  *   'write tcp 198.18.0.1:14266->...:443'          → same kind as '198.18.0.1:5167->...:443'
  */
 export function normalizeErrorMessage(msg: string): string {
-    let result = msg
+    // Bound input before regex normalization to avoid pathological backtracking.
+    let result = msg.length > 2000 ? msg.substring(0, 2000) : msg;
+    result = result
         // ── Strip "model output error: " and "invalid tool call error (xxx) " prefixes ──
         // The same underlying error can appear with or without these prefixes.
         // Stripping them before other rules prevents near-duplicate entries.
@@ -134,14 +136,14 @@ export function normalizeErrorMessage(msg: string): string {
         .replace(/(Could not process image)[\s\S]*/gi, '$1')
         // ── Normalize ReplacementChunks JSON format errors ──
         // Long unmarshal error messages — keep only the signature prefix
-        .replace(/(ReplacementChunks should be a JSON array, not a string-escaped JSON array)[^]*/i,
+        .replace(/(ReplacementChunks should be a JSON array, not a string-escaped JSON array)[\s\S]*/i,
             '$1')
         // ── Normalize Malformed function call errors ──
         // "encountered an improper format stop reason: Malformed function call: thought\nCRITICAL..."
         // "encountered an improper format stop reason: Malformed function call: .\nPlease retry..."
         .replace(/(Malformed function call):\s*[\s\S]*/i, '$1')
         // ── Normalize looping content detection ──
-        .replace(/(flagged for looping content)[^]*/i, '$1')
+        .replace(/(flagged for looping content)[\s\S]*/i, '$1')
         // ── Normalize unknown tool name ──
         // "unknown tool name: `mcp_mcp-my-memory_mem_profile`"
         // "unknown tool name: `find_by_name`"
