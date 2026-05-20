@@ -151,6 +151,10 @@ export function buildAboutTabContent(): string {
                 IDE
             </span>
             <span class="about-platform-chip">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="3"/></svg>
+                ${tBi('Desktop', '桌面版')}
+            </span>
+            <span class="about-platform-chip">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                 SDK
             </span>
@@ -160,8 +164,8 @@ export function buildAboutTabContent(): string {
             </span>
         </div>
         <p class="about-platform-note">${tBi(
-        'This plugin is designed for the <strong>Antigravity IDE</strong> platform. SDK and CLI are separate product lines and are not supported.',
-        '本插件面向 <strong>Antigravity IDE</strong> 平台开发，SDK 和 CLI 为独立产品线，不在支持范围内。',
+        'This plugin is designed for the <strong>Antigravity IDE</strong> platform. A standalone <strong>Desktop Monitor</strong> is available for the Antigravity Desktop App. SDK and CLI are separate product lines and are not supported.',
+        '本插件面向 <strong>Antigravity IDE</strong> 平台开发。<strong>桌面版监控工具</strong>可独立监控 Antigravity 桌面客户端。SDK 和 CLI 为独立产品线，不在支持范围内。',
     )}</p>
     </div>`;
 

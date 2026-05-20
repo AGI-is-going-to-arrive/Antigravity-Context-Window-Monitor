@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Antigravity Desktop Monitor</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="titlebar">
+        <div class="titlebar-drag" id="titlebar-drag">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="vertical-align: -2px; margin-right: 6px;">
+                <rect x="1" y="1" width="14" height="14" rx="3" fill="#4ade80" stroke="#1e293b" stroke-width="1"/>
+                <text x="8" y="12" text-anchor="middle" font-family="Arial" font-size="10" font-weight="bold" fill="white">A</text>
+            </svg>
+            Antigravity Desktop Monitor
+        </div>
+        <div class="titlebar-buttons">
+            <button class="titlebar-btn" id="btn-refresh" title="Refresh">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M1 4v6h6M23 20v-6h-6"/>
+                    <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+                </svg>
+            </button>
+            <button class="titlebar-btn" id="btn-close" title="Hide">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M18 6L6 18M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <div class="status-bar" id="status-bar">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Connecting...</span>
+    </div>
+
+    <div class="section" id="user-section" style="display:none;">
+        <div class="section-header">Account</div>
+        <div class="info-grid" id="user-info"></div>
+    </div>
+
+    <div class="section" id="active-section" style="display:none;">
+        <div class="section-header">Active Conversation</div>
+        <div id="active-conv"></div>
+    </div>
+
+    <div class="section" id="conv-section" style="display:none;">
+        <div class="section-header">
+            Conversations
+            <span class="badge" id="conv-count">0</span>
+        </div>
+        <div class="conv-list" id="conv-list"></div>
+    </div>
+
+    <div class="empty-state" id="empty-state">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 6v6l4 2"/>
+        </svg>
+        <p>Waiting for Desktop Antigravity...</p>
+        <p class="empty-hint">Start the Antigravity desktop app to begin monitoring</p>
+    </div>
+
+    <script src="js/neutralino.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
