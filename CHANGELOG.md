@@ -13,6 +13,9 @@
 - **About tab platform scope notice / 关于页平台适用说明**: Added Antigravity product line chips (IDE / SDK / CLI) to the About tab hero section. The IDE chip is highlighted as the active target, with a note clarifying that this plugin is designed for the Antigravity IDE platform; SDK and CLI are separate product lines and are not supported.
   About 标签页 Hero 区域新增 Antigravity 产品线标识（IDE / SDK / CLI）。IDE 高亮标识为本插件的服务平台，附文字说明本插件面向 Antigravity IDE 平台开发，SDK 和 CLI 为独立产品线，不在支持范围内。
 
+- **Error dedup normalization enhancement / 错误去重规则增强**: Expanded `normalizeErrorMessage()` with ~15 new rules to merge semantically identical errors that only differ in file paths, TCP endpoints, model names, token limits, or URL subdomains. Real-world 61-kind error catalog reduced to ~29 kinds.
+  扩展 `normalizeErrorMessage()` 新增约 15 条规则，合并仅路径、TCP 端点、模型名、token 限制值或 URL 子域不同的语义相同错误。实测 61 种错误压缩至约 29 种。
+
 ### 🐛 Fixed / 修复
 
 - **M133 display name fallback / M133 显示名兜底**: M133 (checkpoint ghost, `gemini-3-flash-b`) was not in `clientModelConfigs`, so its display name relied on M132's API label. After M132 was renamed from "Gemini 3 Flash" to "Gemini 3.5 Flash (High)", M133 fell back to raw placeholder ID `MODEL_PLACEHOLDER_M133` in the Cost tab and Models tab. Fix: added M133 to `LEGACY_MODEL_NAMES` as "Gemini 3.5 Flash".
@@ -26,7 +29,7 @@
 
 ### 📊 Stats / 统计
 
-- **Files changed**: 5 (`src/models.ts`, `src/pricing-store.ts`, `src/model-dna-store.ts`, `src/webview-about-tab.ts`, `package.json`)
+- **Files changed**: 6 (`src/models.ts`, `src/pricing-store.ts`, `src/model-dna-store.ts`, `src/webview-about-tab.ts`, `src/gm/summary.ts`, `package.json`)
 - **TypeScript compile**: Zero errors
 
 ---

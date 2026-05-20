@@ -52,25 +52,110 @@ export function parseErrorCode(errorMsg: string): string {
  *   'RESOURCE_EXHAUSTED ... reset after 0s.'      → same kind as 'reset after 19h22m14s.'
  *   'RESOURCE_EXHAUSTED ... reset after 3h12m38s.' → same kind as 'reset after 1s.'
  *   'write tcp 198.18.0.1:14266->...:443'          → same kind as '198.18.0.1:5167->...:443'
- *   'failed to read file: open e:/path/file1.txt'  → different from 'file2.txt'
  */
 export function normalizeErrorMessage(msg: string): string {
     let result = msg
-        // Normalize "Your quota will reset after Xh Ym Zs." — compound duration is volatile
-        // Matches: "1s", "22m14s", "19h22m14s", "3h12m38s" etc.
+        // ── Strip "model output error: " and "invalid tool call error (xxx) " prefixes ──
+        // The same underlying error can appear with or without these prefixes.
+        // Stripping them before other rules prevents near-duplicate entries.
+        .replace(/^model output error:\s*/i, '')
+        .replace(/^invalid tool call error\s*\([^)]*\)\s*/i, '')
+        // Strip "invalid_request_error: " prefix (Anthropic-style, may follow gRPC code)
+        .replace(/invalid_request_error:\s*/gi, '')
+        // ── Normalize quota reset wait times ──
+        // "Your quota will reset after 19h22m14s." → "reset after <time>"
         .replace(/reset after \d+[hms][\dhms]*/g, 'reset after <time>')
-        // Normalize TCP source port: "198.18.0.1:14266->" → "198.18.0.1:PORT->"
-        .replace(/(\d+\.\d+\.\d+\.\d+):\d+(->)/g, '$1:PORT$2')
-        // Normalize TCP destination IP:port: "->198.18.0.57:443" → "->HOST:443"
-        // Backend server IPs vary per request but the error kind is the same.
-        .replace(/->\d+\.\d+\.\d+\.\d+:\d+/g, '->HOST:443')
-        // Trim trailing whitespace for consistency
+        // ── Normalize RESOURCE_EXHAUSTED suffix variations ──
+        // "You have exhausted your capacity on this model. Your quota will reset after <time>."
+        // "You have exhausted your capacity on this model."
+        // "Resource has been exhausted (e.g. check quota)."
+        // → all collapse to a single canonical form
+        .replace(/You have exhausted your capacity on this model\..*/i, 'quota exhausted.')
+        .replace(/Resource has been exhausted[\s\S]*/i, 'quota exhausted.')
+        // ── Normalize request failed URLs ──
+        // "request failed: Post \"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\": <error>"
+        // → "request failed: Post \"<cloudcode-url>\": <error>"
+        // Different subdomains (daily-cloudcode-pa vs cloudcode-pa) are the same kind.
+        .replace(/Post\s+"https?:\/\/[^"]+"/g, 'Post "<cloudcode-url>"')
+        // ── Normalize TCP connection errors ──
+        // Source port: "198.18.0.1:14266->" → "198.18.0.1:PORT->"
+        .replace(/(\d+\.\d+\.\d+\.\d+):\d+(-\>)/g, '$1:PORT$2')
+        // Destination IP:port: "->198.18.0.57:443" → "->HOST:443"
+        .replace(/-\>\d+\.\d+\.\d+\.\d+:\d+/g, '->HOST:443')
+        // Collapse TCP-level error descriptions after the connection tuple:
+        // "write tcp ...: wsasend: An existing connection was forcibly closed..."
+        // "read tcp ...: wsarecv: A connection attempt failed because..."
+        // "read tcp ...: wsarecv: An existing connection was forcibly closed..."
+        // → all become "<tcp-error>"
+        .replace(/(?:read|write) tcp [^:]+:PORT->HOST:443:\s*wsa(?:send|recv):\s*.*/i, '<tcp-error>')
+        // ── Normalize "context canceled" variants ──
+        // "context canceled" vs "context canceled by user" → same kind
+        .replace(/context canceled(?:\s+by\s+\w+)?/gi, 'context canceled')
+        // ── Collapse all "request failed: Post <url>: <detail>" into one kind ──
+        // EOF, context canceled, TCP errors are all network interruptions.
+        .replace(/(request failed: Post "<cloudcode-url>"):\s*.+/i, '$1: <network-error>')
+        // ── Normalize stream reading errors ──
+        // "stream reading error: context canceled"
+        // "stream reading error: read tcp ...wsarecv..."
+        // "stream reading error: unexpected EOF"
+        // → collapse the detail after "stream reading error:"
+        .replace(/(stream reading error):\s*.+/i, '$1: <detail>')
+        // ── Normalize file paths ──
+        // "path does not exist: e:\Code\GodotDesktopPet\ui\game_manager.gd" → "path does not exist: <path>"
+        .replace(/(path does not exist):\s*\S+/gi, '$1: <path>')
+        // "does not exist in the current location. Make sure..." → normalize the path before it
+        .replace(/\S+\s+(does not exist in the current location)/gi, '<path> $1')
+        // "failed to read file: open e:/path/file.txt: The system cannot find..."
+        // "failed to read file: open e:/path/: The system cannot find the path..."
+        .replace(/(failed to read file: open )\S+/i, '$1<path>')
+        // "failed to read file: read e:/path/shared: Incorrect function."
+        .replace(/(failed to read file: read )\S+/i, '$1<path>')
+        // ── Normalize artifact path errors ──
+        // "e:\AI\1\Claude\1\X.md is not a valid artifact path; artifacts must be in C:\Users\...\brain\UUID/"
+        // → "<path> is not a valid artifact path"
+        .replace(/\S+\s+(is not a valid artifact path)[^"]*/gi, '<path> $1')
+        // "project_abstract_translation.md must be an absolute path: path is not absolute"
+        // → "<file> must be an absolute path"
+        .replace(/\S+\s+(must be an absolute path)/gi, '<file> $1')
+        // ── Normalize max tokens limit ──
+        // "generation exceeded max tokens limit. Please generate a message within the token limit (16384)"
+        // "generation exceeded max tokens limit. Please generate a message within the token limit (64000)"
+        // → "generation exceeded max tokens limit (<N>)"
+        .replace(/(generation exceeded max tokens limit)[^(]*\((\d+)\)/gi, '$1 (<N>)')
+        // ── Normalize model capacity errors ──
+        // "No capacity available for model claude-opus-4-6-thinking on the server"
+        // "No capacity available for model gemini-pro-agent on the server"
+        // → "No capacity available for model <model> on the server"
+        .replace(/(No capacity available for model )\S+/gi, '$1<model>')
+        // ── Normalize image processing errors ──
+        // "Could not process image" and "Unable to process input image..."
+        // → unified form, strip trailing details
+        .replace(/Unable to process input image[\s\S]*/gi, 'Could not process image')
+        .replace(/(Could not process image)[\s\S]*/gi, '$1')
+        // ── Normalize ReplacementChunks JSON format errors ──
+        // Long unmarshal error messages — keep only the signature prefix
+        .replace(/(ReplacementChunks should be a JSON array, not a string-escaped JSON array)[^]*/i,
+            '$1')
+        // ── Normalize Malformed function call errors ──
+        // "encountered an improper format stop reason: Malformed function call: thought\nCRITICAL..."
+        // "encountered an improper format stop reason: Malformed function call: .\nPlease retry..."
+        .replace(/(Malformed function call):\s*[\s\S]*/i, '$1')
+        // ── Normalize looping content detection ──
+        .replace(/(flagged for looping content)[^]*/i, '$1')
+        // ── Normalize unknown tool name ──
+        // "unknown tool name: `mcp_mcp-my-memory_mem_profile`"
+        // "unknown tool name: `find_by_name`"
+        .replace(/(unknown tool name):\s*\S+/gi, '$1: <tool>')
+        // ── Normalize unsupported mime type ──
+        .replace(/(unsupported mime type)\s+.+/gi, '$1 <type>')
+        // ── Normalize INTERNAL errors ──
+        // "INTERNAL (code 500): Internal error encountered." — already unique, no-op
+        // ── Normalize "The service is currently unavailable" ──
+        // Already covered by 503 code bucketing, but keep text consistent
+        // Trim trailing whitespace
         .trim();
-    // Collapse API-duplicated messages: "MSG.: MSG." → "MSG." or "MSG: MSG" → "MSG"
-    // The API server sometimes returns the same error text doubled with ": " separator.
-    // parser.ts already handles this with ".: " detection, but we add a fallback here
-    // for messages that slip through (e.g. different separator patterns).
-    // Scan ALL ": " positions (not just the first) because the message itself may contain ": ".
+
+    // ── Collapse API-duplicated messages: "MSG.: MSG." → "MSG." ──
     let searchFrom = 0;
     while (searchFrom < result.length) {
         const colonIdx = result.indexOf(': ', searchFrom);
@@ -80,14 +165,9 @@ export function normalizeErrorMessage(msg: string): string {
         if (first === second) { result = first; break; }
         searchFrom = colonIdx + 2;
     }
-    // Truncate unmarshal / JSON-body errors: the message embeds entire file contents
-    // after "to {TargetFile:... CodeContent:..." — only the prefix matters for dedup.
+    // ── Truncate unmarshal / JSON-body errors ──
     result = result.replace(/(trying to unmarshal args to )\{[\s\S]*/m, '$1{…}');
-    // Normalize file paths: "open e:/path/to/file.txt: ..." → "open <path>: ..."
-    // Different files produce different messages but the error kind (file not found) is the same.
-    result = result.replace(/(failed to read file: open )\S+/i, '$1<path>');
-    // General max-length truncation: any message still over 300 chars is truncated.
-    // Error "kind" identity doesn't need the full payload — just the semantic prefix.
+    // General max-length truncation
     if (result.length > 300) {
         result = result.substring(0, 297) + '...';
     }
