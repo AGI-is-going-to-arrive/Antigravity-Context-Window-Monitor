@@ -65,7 +65,7 @@
     * **🛡️ 隐私遮罩**：面板顶部盾牌按钮可遮罩姓名和邮箱，开关状态跨刷新持久化。
     * **📂 可折叠区域**：次要信息（计划限制、功能开关、团队配置、Google AI 额度）默认折叠，展开/收起状态持久化。
 
-* **⚙️ 交互式设置仪表盘** *(v1.11.0 新增，持续增强至 v1.16.8)*
+* **⚙️ 交互式设置仪表盘** *(v1.11.0 新增，持续增强至 v1.16.9)*
     WebView 面板重构为「监控」和「设置」双标签页。设置页提供直观的图形化界面，一站式配置扩展行为——无需手动编辑 `settings.json`。
     * **🎯 自定义压缩警告阈值**：设定自定义「警戒线」（支持 150K、200K、500K、900K 快捷预设），围绕 Antigravity 当前平台截断区间（约 128K-160K）提前预警。状态栏颜色基于该阈值而非模型原生窗口变化。
     * **🟢 状态栏额度指示灯**：当前模型的配额百分比带彩色状态灯（`🟢`、`🟡`、`🔴`）直接显示在状态栏上。
@@ -94,7 +94,9 @@
 | --- | --- | --- |
 | Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 128,000 |
 | Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 128,000 |
-| Gemini 3 Flash | MODEL_PLACEHOLDER_M133 / M132 | 128,000 |
+| Gemini 3.5 Flash (High) | MODEL_PLACEHOLDER_M132 | 128,000 |
+| Gemini 3.5 Flash (Medium) | MODEL_PLACEHOLDER_M20 | 128,000 |
+| Gemini 3 Flash | MODEL_PLACEHOLDER_M133 | 128,000 |
 | Gemini 3 Flash（历史 ID） | MODEL_PLACEHOLDER_M84 / M47 / M18 | 128,000-160,000 |
 | Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
 | Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
@@ -210,4 +212,4 @@
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.16.8
+**版本 / Version**: 1.16.9

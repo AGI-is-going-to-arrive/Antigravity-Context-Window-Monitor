@@ -65,7 +65,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
     * **🛡️ Privacy Mask**: A shield button in the panel header masks your name and email. The toggle state persists across panel refreshes.
     * **📂 Collapsible Sections**: Secondary info (Plan Limits, Feature Flags, Team Config, Google AI Credits) is collapsed by default. Expand/collapse state persists.
 
-* **⚙️ Interactive Settings Dashboard** *(v1.11.0, enhanced through v1.16.8)*
+* **⚙️ Interactive Settings Dashboard** *(v1.11.0, enhanced through v1.16.9)*
     The WebView panel now features a dual-tab layout ('Monitor' and 'Settings'). The Settings tab lets you configure extension behaviors directly from a GUI — no more manual `settings.json` editing.
     * **🎯 Compression Warning Threshold**: Set a custom "tripwire" (e.g., 150K, 200K, 500K, 900K) for early warning around Antigravity's current platform truncation range (~128K-160K). Status bar color changes are based on this threshold instead of the model's native window.
     * **🟢 Status Bar Quota Indicator**: Current model's quota percentage is now shown directly in the status bar with color-coded dot icons (`🟢`, `🟡`, `🔴`).
@@ -94,7 +94,9 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | --- | --- | --- |
 | Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 128,000 |
 | Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 128,000 |
-| Gemini 3 Flash | MODEL_PLACEHOLDER_M133 / M132 | 128,000 |
+| Gemini 3.5 Flash (High) | MODEL_PLACEHOLDER_M132 | 128,000 |
+| Gemini 3.5 Flash (Medium) | MODEL_PLACEHOLDER_M20 | 128,000 |
+| Gemini 3 Flash | MODEL_PLACEHOLDER_M133 | 128,000 |
 | Gemini 3 Flash (legacy) | MODEL_PLACEHOLDER_M84 / M47 / M18 | 128,000-160,000 |
 | Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
 | Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
@@ -210,4 +212,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.8
+**Version**: 1.16.9
