@@ -42,15 +42,17 @@ let responseModelAliases: Record<string, string> = {};
 let showModelShortId = false;
 
 const KNOWN_QUOTA_POOLS: Record<string, string> = {
-    'MODEL_PLACEHOLDER_M16': 'gemini-pro',
-    'MODEL_PLACEHOLDER_M37': 'gemini-pro',
-    'MODEL_PLACEHOLDER_M36': 'gemini-pro',
-    'MODEL_PLACEHOLDER_M133': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M132': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M20': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M84': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M47': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M18': 'gemini-flash',
+    // Gemini pool — Flash and Pro share the same quota since mid-2026
+    'MODEL_PLACEHOLDER_M16': 'gemini',
+    'MODEL_PLACEHOLDER_M37': 'gemini',
+    'MODEL_PLACEHOLDER_M36': 'gemini',
+    'MODEL_PLACEHOLDER_M133': 'gemini',
+    'MODEL_PLACEHOLDER_M132': 'gemini',
+    'MODEL_PLACEHOLDER_M20': 'gemini',
+    'MODEL_PLACEHOLDER_M84': 'gemini',
+    'MODEL_PLACEHOLDER_M47': 'gemini',
+    'MODEL_PLACEHOLDER_M18': 'gemini',
+    // Claude/GPT premium pool
     'MODEL_PLACEHOLDER_M35': 'claude-premium',
     'MODEL_PLACEHOLDER_M26': 'claude-premium',
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'claude-premium',

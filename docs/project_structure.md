@@ -53,6 +53,7 @@ antigravity-context-monitor/
 │   ├── webview-calendar-tab.ts   # Calendar 标签页 HTML
 │   ├── webview-about-tab.ts      # About 标签页 HTML（Hero + 功能导航卡片 + GitHub + 提示 + 兼容性验证 + 免责声明 + 语言，从 TopBar Chips 迁移）
 │   ├── i18n.ts                   # 国际化：语言模式、翻译表、偏好持久化
+│   ├── legacy-migration.ts       # 旧版 Antigravity 数据自动迁移（检测旧 state.vscdb + child_process 提取）
 │   └── images/                   # README 截图资源
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
@@ -106,7 +107,7 @@ antigravity-context-monitor/
 
 ### models.ts -- 模型配置与归一化
 
-模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。
+模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将 Gemini Flash + Pro 合并为统一的 `gemini` 池（mid-2026 API 变更）。
 
 ---
 
@@ -189,7 +190,7 @@ antigravity-context-monitor/
 
 ### daily-store.ts -- 日历数据层
 
-按天聚合 Activity + GM + Cost 快照数据，默认 replace 模式（一天一条）。
+按天聚合 Activity + GM + Cost 快照数据，默认 replace 模式（一天一条）。提供 `mergeRecords()` 用于跨版本数据迁移合并（只添加不存在的日期，不覆盖已有记录）。
 
 ---
 
@@ -210,6 +211,12 @@ antigravity-context-monitor/
 ### i18n.ts -- 国际化
 
 三种语言模式（中文/英文/双语），启动时从 `durable-state.ts` 读取偏好。
+
+---
+
+### legacy-migration.ts -- 旧版数据自动迁移
+
+自动检测旧 Antigravity（pre-2.0）的 `state.vscdb`（SQLite 数据库），通过 `child_process` + `node --experimental-sqlite` 提取日历数据和语言偏好，首次激活时自动合并到当前存储。跨平台路径检测（Windows/macOS/Linux）。迁移完成后设 `legacyMigrationDone` 标志，后续启动跳过。
 
 ---
 

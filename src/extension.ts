@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { discoverLanguageServer, LSInfo } from './discovery';
 import {
@@ -16,7 +17,7 @@ import {
 } from './tracker';
 import { getQuotaPoolKey, setShowModelShortId, type ModelConfig } from './models';
 import { StatusBarManager, formatContextLimit } from './statusbar';
-import { initI18n, initI18nFromState, showLanguagePicker, tBi } from './i18n';
+import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
 import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPRESSION_PERSIST_POLLS } from './constants';
@@ -879,6 +880,62 @@ export function activate(context: vscode.ExtensionContext): void {
     currentAccountEmail = gmTracker.getCurrentAccount();
     dailyStore = new DailyStore();
     dailyStore.init(durableGlobalState);
+
+    // ── One-time migration: auto-recover data from legacy Antigravity (pre-2.0) ──
+    // Detects old "Antigravity" globalState DB and imports calendar + language.
+    // Also supports manual migration-import.json as a fallback.
+    try {
+        const migrationDir = path.dirname(durableState.getFilePath());
+        const migrationDone = durableFileGlobalState.get<boolean>('legacyMigrationDone', false);
+
+        // --- Auto-detect old Antigravity DB ---
+        if (!migrationDone) {
+            const { extractLegacyData } = require('./legacy-migration') as typeof import('./legacy-migration');
+            const legacyData = extractLegacyData(log);
+            if (legacyData) {
+                if (legacyData.dailyStoreState) {
+                    const added = dailyStore.mergeRecords(legacyData.dailyStoreState);
+                    log(`Legacy migration: merged ${added} calendar records`);
+                }
+                if (legacyData.displayLanguage && ['zh', 'en', 'both'].includes(legacyData.displayLanguage)) {
+                    setLanguageToState(legacyData.displayLanguage as any, durableGlobalState);
+                    context.globalState.update('displayLanguage', legacyData.displayLanguage);
+                    log(`Legacy migration: restored language to '${legacyData.displayLanguage}'`);
+                }
+            } else {
+                log('Legacy migration: no recoverable data found');
+            }
+            durableFileGlobalState.update('legacyMigrationDone', true);
+            log('Legacy migration: done');
+        } else {
+            log('Legacy migration: data OK, no migration needed');
+        }
+
+        // --- Manual migration file (fallback / advanced recovery) ---
+        const migrationFile = path.join(migrationDir, 'migration-import.json');
+        if (fs.existsSync(migrationFile)) {
+            log(`Migration: found manual migration file, importing...`);
+            const raw = fs.readFileSync(migrationFile, 'utf8');
+            const migration = JSON.parse(raw) as {
+                dailyStoreState?: DailyStoreState;
+                displayLanguage?: string;
+            };
+            if (migration.dailyStoreState) {
+                const added = dailyStore.mergeRecords(migration.dailyStoreState);
+                log(`Migration: merged ${added} calendar records from manual file`);
+            }
+            if (migration.displayLanguage && ['zh', 'en', 'both'].includes(migration.displayLanguage)) {
+                setLanguageToState(migration.displayLanguage as any, durableGlobalState);
+                context.globalState.update('displayLanguage', migration.displayLanguage);
+                log(`Migration: restored language preference to '${migration.displayLanguage}'`);
+            }
+            const donePath = migrationFile.replace('.json', '.done.json');
+            fs.renameSync(migrationFile, donePath);
+            log(`Migration: completed, file renamed to ${donePath}`);
+        }
+    } catch (migrationErr) {
+        log(`Migration: failed — ${migrationErr}`);
+    }
 
     // Restore daily archival date key
     lastArchivalDateKey = durableGlobalState.get<string>('lastArchivalDateKey', '');

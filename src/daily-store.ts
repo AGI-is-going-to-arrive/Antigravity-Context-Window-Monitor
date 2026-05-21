@@ -191,6 +191,27 @@ export class DailyStore {
     }
 
     /**
+     * Merge external records into this store (for data migration/recovery).
+     * Only adds records for dates not already present — existing data is never overwritten.
+     * Returns the number of records added.
+     */
+    mergeRecords(externalState: DailyStoreState): number {
+        if (!externalState || externalState.version !== 1 || !externalState.records) { return 0; }
+        let added = 0;
+        for (const [date, record] of Object.entries(externalState.records)) {
+            if (!this._records.has(date)) {
+                this._records.set(date, record);
+                added++;
+            }
+        }
+        if (added > 0) {
+            this._trimOld();
+            this._persist();
+        }
+        return added;
+    }
+
+    /**
      * Add a daily snapshot from Activity + GM summaries.
      * Called when the local date rolls over (performDailyArchival).
      * Each day gets exactly one entry; calling again for the same date replaces it.

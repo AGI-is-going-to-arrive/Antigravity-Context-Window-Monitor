@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { tBi, getLanguage, setLanguage, Language } from './i18n';
+import { tBi, getLanguage, setLanguage, setLanguageToState, Language } from './i18n';
 import { ContextUsage, TrajectorySummary } from './tracker';
 import { ModelConfig, UserStatusInfo } from './models';
 import { QuotaTracker } from './quota-tracker';
@@ -335,6 +335,10 @@ export function showMonitorPanel(p: PanelPayload): void {
     panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string; action?: string; cascadeId?: string; uri?: string; email?: string; day?: number }) => {
         if (msg.command === 'switchLanguage' && msg.lang && extensionCtx) {
             await setLanguage(msg.lang as Language, extensionCtx);
+            // Also persist to file-backed storage so the preference survives IDE restarts
+            if (panelDurableState) {
+                await setLanguageToState(msg.lang as Language, panelDurableState);
+            }
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }

@@ -101,7 +101,15 @@ export function performDailyArchival(
     // so it returns ALL calls from this cycle: calls already baselined by
     // intra-day quota resets (pending-archive) + still-active calls.
     // This gives DailyStore the complete picture of the day's usage.
-    const gmSummary = ctx.gmTracker.getArchivalSummary() || ctx.lastGMSummary;
+    // SAFETY: after an extension restart, _cache.calls may be empty (stripped
+    // during serialization) — getArchivalSummary() then returns totalCalls=0.
+    // Fall back to lastGMSummary (last persisted snapshot) if it has more data.
+    const liveSummary = ctx.gmTracker.getArchivalSummary();
+    const gmSummary = (liveSummary && liveSummary.totalCalls > 0)
+        ? liveSummary
+        : (ctx.lastGMSummary && ctx.lastGMSummary.totalCalls > (liveSummary?.totalCalls || 0))
+            ? ctx.lastGMSummary
+            : liveSummary || ctx.lastGMSummary;
     const hasGM = gmSummary && gmSummary.totalCalls > 0;
 
     // 3. Calculate cost

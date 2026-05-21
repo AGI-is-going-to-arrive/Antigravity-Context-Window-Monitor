@@ -1,5 +1,36 @@
 # 变更日志 / Changelog
 
+## [1.17.0] - 2026-05-21
+
+### 🐛 Fixed / 修复
+
+- **GM data loss on extension restart / 扩展重启后 GM 数据丢失**: `serialize()` strips `calls[]` from conversations to keep `state-v1.json` small, but `getArchivalSummary()` / `getFullSummary()` would rebuild from the empty cache and produce `totalCalls=0`. Fix: added `_hasFetchedCalls` flag — after `restore()` it's `false`, preventing `_buildSummary()` from running on empty data; `_lastSummary` (persisted snapshot with accurate aggregates) is returned instead. `fetchAll()` sets it to `true` once API data is available.
+  `serialize()` 清空 `calls[]` 以减小状态文件体积，但 `getArchivalSummary()` / `getFullSummary()` 会从空缓存重建导致 `totalCalls=0`。修复：新增 `_hasFetchedCalls` 标志——`restore()` 后为 `false`，阻止从空数据重建；改用 `_lastSummary`（持久化快照，聚合数据准确）。`fetchAll()` 拉取到 API 数据后设为 `true`。
+
+- **Daily archival fallback / 每日归档兜底**: `getArchivalSummary()` now compares `liveSummary.totalCalls` with `lastGMSummary.totalCalls` and uses whichever is higher, preventing zero-data archival after restarts.
+  归档时对比 `liveSummary` 和 `lastGMSummary` 的 `totalCalls`，取大的，防止重启后归档空数据。
+
+- **Language preference lost on restart / 语言选择重启后丢失**: `switchLanguage` handler in `webview-panel.ts` now writes to `durableGlobalState` (file storage) in addition to VS Code `globalState`, ensuring the preference survives restarts.
+  面板切语言时同时写入 `durableGlobalState`（文件存储），不再只写 VS Code `globalState`。
+
+- **Gemini Flash + Pro quota pool merge / Gemini Flash + Pro 额度池合并**: `KNOWN_QUOTA_POOLS` in `models.ts` now groups all Gemini models (Flash + Pro) into a single `gemini` pool, matching the mid-2026 API change where Flash and Pro share the same quota and resetTime.
+  `models.ts` 中 `KNOWN_QUOTA_POOLS` 将所有 Gemini 模型（Flash + Pro）合并为统一的 `gemini` 池，匹配 2026 年中 API 变更。
+
+### ✨ Added / 新增
+
+- **Automatic legacy data migration / 旧版数据自动迁移**: New `legacy-migration.ts` module auto-detects old Antigravity (pre-2.0) `state.vscdb` databases on startup and extracts calendar data + language preference via `child_process` + `node --experimental-sqlite`. Cross-platform path detection (Windows/macOS/Linux). Runs once (`legacyMigrationDone` flag), with manual `migration-import.json` fallback for advanced recovery. Migration status always logged in Output console.
+  新增 `legacy-migration.ts` 模块，启动时自动检测旧 Antigravity 的 `state.vscdb` 数据库，通过子进程 + `node:sqlite` 提取日历和语言数据。跨平台路径检测。只跑一次（`legacyMigrationDone` 标志），保留手动迁移文件兜底。迁移状态始终在 Output 输出。
+
+- **DailyStore.mergeRecords() / 日历数据合并方法**: New method for cross-version data migration — only adds dates that don't already exist, never overwrites existing records.
+  新增跨版本数据迁移方法——只添加不存在的日期，不覆盖已有记录。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 7 (`src/gm/tracker.ts`, `src/daily-archival.ts`, `src/daily-store.ts`, `src/webview-panel.ts`, `src/models.ts`, `src/extension.ts`, `src/legacy-migration.ts` *(new)*)
+- **TypeScript compile**: Zero errors
+
+---
+
 ## [1.16.9] - 2026-05-20
 
 ### ✨ Improved / 改进

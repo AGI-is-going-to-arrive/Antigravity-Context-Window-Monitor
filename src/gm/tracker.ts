@@ -106,6 +106,11 @@ export class GMTracker {
     private _persistedToolCatalogByAccount: Record<string, Record<string, { firstSeen: string; description?: string }>> = {};
     /** Tracks per-conversation RUNNING status to detect RUNNING→IDLE transition. */
     private _lastRunningStatus = new Map<string, boolean>();
+    /** Whether fetchAll() has successfully repopulated calls[] since restore.
+     *  When false, _cache.calls is empty (stripped during serialize) and
+     *  _buildSummary() would return totalCalls=0. In that state, getters
+     *  should use _lastSummary (persisted snapshot) instead of rebuilding. */
+    private _hasFetchedCalls = true;
 
     /**
      * Fetch GM data for the given trajectories.
@@ -238,6 +243,7 @@ export class GMTracker {
             this._needsBaselineInit = false;
         }
 
+        this._hasFetchedCalls = true;
         this._lastSummary = this._buildSummary();
         return this._lastSummary;
     }
@@ -1200,6 +1206,10 @@ export class GMTracker {
      * Unlike getDetailedSummary(), this always rebuilds from cache (not cached).
      */
     getFullSummary(): GMSummary | null {
+        // After restore (before first fetchAll), calls[] is empty — use persisted snapshot
+        if (!this._hasFetchedCalls && this._lastSummary) {
+            return normalizeGMSummary(this._lastSummary);
+        }
         const summary = normalizeGMSummary(this._buildSummary(true));
         if (!summary) { return null; }
         return {
@@ -1223,6 +1233,11 @@ export class GMTracker {
      * the true complete picture of the day's usage.
      */
     getArchivalSummary(): GMSummary | null {
+        // After restore (before first fetchAll), calls[] is empty — use persisted snapshot
+        // to avoid archiving totalCalls=0 which would lose the day's data.
+        if (!this._hasFetchedCalls && this._lastSummary) {
+            return normalizeGMSummary(this._lastSummary);
+        }
         const summary = normalizeGMSummary(this._buildSummary(true, true));
         if (!summary) { return null; }
         return {
@@ -1298,6 +1313,7 @@ export class GMTracker {
         if (!data || data.version !== 1) { return tracker; }
 
         tracker._needsBaselineInit = false; // restored = not a manual clear
+        tracker._hasFetchedCalls = false;    // calls[] stripped — don't rebuild from empty cache
         tracker._lastSummary = normalizeGMSummary(data.summary);
         tracker._lastFetchedAt = tracker._lastSummary.fetchedAt || '';
 
