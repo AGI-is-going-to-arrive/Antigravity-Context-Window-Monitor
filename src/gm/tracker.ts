@@ -244,8 +244,12 @@ export class GMTracker {
         }
 
         this._hasFetchedCalls = true;
-        this._lastSummary = this._buildSummary();
-        return this._lastSummary;
+        // _lastSummary stores the FULL cross-account summary so that
+        // serialize() → restore() → getArchivalSummary() can fall back to
+        // the complete picture even after calls[] are stripped.
+        this._lastSummary = this._buildSummary(true, true);
+        // Return account-filtered view for the UI.
+        return this._buildSummary();
     }
 
     /** Build aggregated summary from cached data */
@@ -1183,7 +1187,8 @@ export class GMTracker {
 
     /** Full current-cycle summary for UI persistence (retains per-call data). */
     getDetailedSummary(): GMSummary | null {
-        const summary = normalizeGMSummary(this._lastSummary || this._buildSummary());
+        // _lastSummary holds the full cross-account snapshot; rebuild if null.
+        const summary = normalizeGMSummary(this._lastSummary || this._buildSummary(true, true));
         if (!summary) { return null; }
         this._lastSummary = summary;
         return {
@@ -1280,7 +1285,9 @@ export class GMTracker {
         }
         // Strip calls[] from conversations to keep globalState small.
         // calls will be re-fetched from API on next fetchAll().
-        const raw = normalizeGMSummary(this._lastSummary || this._buildSummary());
+        // _lastSummary already holds the full cross-account summary (set by fetchAll).
+        // Fall back to a full rebuild only if it's somehow null.
+        const raw = normalizeGMSummary(this._lastSummary || this._buildSummary(true, true));
         this._lastSummary = raw;
         const slim: GMSummary = {
             ...raw,

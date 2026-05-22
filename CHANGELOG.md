@@ -16,6 +16,9 @@
 - **Gemini Flash + Pro quota pool merge / Gemini Flash + Pro 额度池合并**: `KNOWN_QUOTA_POOLS` in `models.ts` now groups all Gemini models (Flash + Pro) into a single `gemini` pool, matching the mid-2026 API change where Flash and Pro share the same quota and resetTime.
   `models.ts` 中 `KNOWN_QUOTA_POOLS` 将所有 Gemini 模型（Flash + Pro）合并为统一的 `gemini` 池，匹配 2026 年中 API 变更。
 
+- **Multi-account data loss on archival / 多账号归档数据丢失**: `_lastSummary` (used as fallback after IDE restart) was saved via `_buildSummary()` which filters by current account. After switching accounts, previous account's calls vanished from the persisted snapshot. On midnight archival, only the last active account's data was written to the calendar. Fix: `_lastSummary` now stores the full cross-account summary via `_buildSummary(true, true)`, ensuring `serialize()` → `restore()` → `getArchivalSummary()` preserves all accounts' data.
+  `_lastSummary`（IDE 重启后的兜底数据）之前通过 `_buildSummary()` 保存，默认按当前账号过滤。切换账号后，前一个账号的调用从快照中消失。凌晨归档时只写入了最后一个账号的数据。修复：`_lastSummary` 现在通过 `_buildSummary(true, true)` 保存全账号完整数据，确保 `serialize()` → `restore()` → `getArchivalSummary()` 保留所有账号的数据。
+
 ### ✨ Added / 新增
 
 - **Automatic legacy data migration / 旧版数据自动迁移**: New `legacy-migration.ts` module auto-detects old Antigravity (pre-2.0) `state.vscdb` databases on startup and extracts calendar data + language preference via `child_process` + `node --experimental-sqlite`. Cross-platform path detection (Windows/macOS/Linux). Runs once (`legacyMigrationDone` flag), with manual `migration-import.json` fallback for advanced recovery. Migration status always logged in Output console.
@@ -24,10 +27,16 @@
 - **DailyStore.mergeRecords() / 日历数据合并方法**: New method for cross-version data migration — only adds dates that don't already exist, never overwrites existing records.
   新增跨版本数据迁移方法——只添加不存在的日期，不覆盖已有记录。
 
+### 🧪 Tests / 测试
+
+- **Multi-account archival integrity / 多账号归档完整性测试**: 4 new tests covering the serialize → restore → getArchivalSummary cycle with 2 accounts (A: 200 calls, B: 150 calls). Verifies `getArchivalSummary()`, `getFullSummary()`, and `getDetailedSummary()` all return the complete 350-call total after restore. Updated `groupModelConfigsByQuotaPool` test for unified `gemini` pool key.
+  新增 4 个测试覆盖多账号 serialize → restore → getArchivalSummary 完整流程（账号 A: 200 次，账号 B: 150 次）。验证 restore 后三个 summary getter 都返回完整的 350 次调用。同步更新额度池分组测试。
+
 ### 📊 Stats / 统计
 
-- **Files changed**: 7 (`src/gm/tracker.ts`, `src/daily-archival.ts`, `src/daily-store.ts`, `src/webview-panel.ts`, `src/models.ts`, `src/extension.ts`, `src/legacy-migration.ts` *(new)*)
+- **Files changed**: 9 (`src/gm/tracker.ts`, `src/daily-archival.ts`, `src/daily-store.ts`, `src/webview-panel.ts`, `src/models.ts`, `src/extension.ts`, `src/legacy-migration.ts` *(new)*, `tests/multi-account-archival.test.ts` *(new)*, `tests/extension-selection.test.ts`)
 - **TypeScript compile**: Zero errors
+- **Tests**: 6 files / 74 tests passing (`npm test`)
 
 ---
 
