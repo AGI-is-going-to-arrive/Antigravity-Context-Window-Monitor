@@ -3304,7 +3304,7 @@ function buildContextIntelViewer(s: GMSummary): string {
                 ${iconHtml}
                 ${cpBadge}
                 <span style="font-weight:600;color:var(--ci-color)">${conf.label}</span>
-                ${item.stepIndex >= 0 ? `<span class="cp-card-chip cp-card-chip-step">step ${item.stepIndex.toLocaleString()}</span>` : ''}
+                ${(item.stepIndex >= 0 && item.stepIndex < 100000) ? `<span class="cp-card-chip cp-card-chip-step">step ${item.stepIndex.toLocaleString()}</span>` : ''}
                 ${item.tokens > 0 ? `<span class="cp-card-chip cp-card-chip-tok">${fmt(item.tokens)} tok</span>` : ''}
             </summary>
             <div class="cp-card-body">${bodyHtml}</div>

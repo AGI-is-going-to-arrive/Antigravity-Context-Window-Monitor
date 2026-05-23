@@ -28,6 +28,7 @@ import {
     shouldEnrichConversation,
     buildGMArchiveKey,
     deduplicateApiErrorText,
+    extractCheckpointsFromTrajectorySteps,
 } from './parser';
 import { buildSummaryFromConversations, normalizeGMSummary, parseErrorCode, normalizeErrorMessage, MAX_RECENT_ERRORS } from './summary';
 
@@ -150,11 +151,15 @@ export class GMTracker {
                 const rawGM = (resp.generatorMetadata || []) as Record<string, unknown>[];
 
                 let calls = rawGM.map(parseGMEntry);
+                let trajectorySteps: any[] = [];
                 if (shouldEnrichConversation(t.stepCount, calls)) {
                     try {
                         const fullResp = await rpcCall(ls, 'GetCascadeTrajectory',
                             { cascadeId: t.cascadeId, ...meta }, 60000, signal) as Record<string, unknown>;
                         const trajectory = (fullResp.trajectory || {}) as Record<string, unknown>;
+                        if (Array.isArray(trajectory.steps)) {
+                            trajectorySteps = trajectory.steps;
+                        }
                         const embeddedRawGM = (trajectory.generatorMetadata || []) as Record<string, unknown>[];
                         if (embeddedRawGM.length > 0) {
                             calls = maybeEnrichCallsFromTrajectory(
@@ -201,6 +206,33 @@ export class GMTracker {
                 let coveredSteps = 0;
                 for (const c of calls) { coveredSteps += c.stepIndices.length; }
 
+                const trajCheckpoints = extractCheckpointsFromTrajectorySteps(trajectorySteps);
+
+                const finalCPs = deduplicateCheckpoints(calls);
+                const existingCPNums = new Set(finalCPs.map(c => c.checkpointNumber));
+                for (const tcp of trajCheckpoints) {
+                    if (!existingCPNums.has(tcp.checkpointNumber)) {
+                        finalCPs.push(tcp);
+                    }
+                }
+                finalCPs.sort((a, b) => a.checkpointNumber - b.checkpointNumber);
+
+                const finalContextItems = deduplicateSystemContextItems(calls);
+                const existingCPStepsInContext = new Set(finalContextItems.filter(i => i.type === 'checkpoint').map(i => i.stepIndex));
+                for (const tcp of trajCheckpoints) {
+                    if (!existingCPStepsInContext.has(tcp.stepIndex)) {
+                        finalContextItems.push({
+                            type: 'checkpoint',
+                            stepIndex: tcp.stepIndex,
+                            tokens: tcp.tokens,
+                            label: `Checkpoint ${tcp.checkpointNumber}`,
+                            fullText: tcp.fullText,
+                            checkpointNumber: tcp.checkpointNumber
+                        });
+                    }
+                }
+                finalContextItems.sort((a, b) => a.stepIndex - b.stepIndex);
+
                 this._cache.set(t.cascadeId, {
                     cascadeId: t.cascadeId,
                     title: t.title,
@@ -209,8 +241,8 @@ export class GMTracker {
                     lifetimeCalls: Math.max(cached?.lifetimeCalls ?? cached?.calls.length ?? 0, calls.length),
                     coveredSteps,
                     coverageRate: t.stepCount > 0 ? coveredSteps / t.stepCount : 0,
-                    checkpointSummaries: deduplicateCheckpoints(calls),
-                    systemContextItems: deduplicateSystemContextItems(calls),
+                    checkpointSummaries: finalCPs,
+                    systemContextItems: finalContextItems,
                 });
             } catch {
                 // Keep stale cache on error

@@ -192,7 +192,8 @@ export function extractCheckpointSummaries(messagePrompts: unknown): GMCheckpoin
     const summaries: GMCheckpointSummary[] = [];
     if (!Array.isArray(messagePrompts)) { return summaries; }
 
-    for (const item of messagePrompts) {
+    for (let i = 0; i < messagePrompts.length; i++) {
+        const item = messagePrompts[i];
         if (!item || typeof item !== 'object') { continue; }
         const rec = item as Record<string, unknown>;
         const source = String(rec.source || '');
@@ -203,7 +204,9 @@ export function extractCheckpointSummaries(messagePrompts: unknown): GMCheckpoin
         if (!match) { continue; }
 
         const checkpointNumber = parseInt(match[1], 10);
-        const stepIndex = typeof rec.stepIdx === 'number' ? rec.stepIdx : -1;
+        const stepIndex = typeof rec.stepIdx === 'number' && rec.stepIdx >= 0 
+            ? rec.stepIdx 
+            : (100000 + i * 100 + checkpointNumber);
         const tokens = typeof rec.numTokens === 'number' ? rec.numTokens : 0;
 
         // Extract ONLY from {{ CHECKPOINT N }} onwards — skip system preamble
@@ -349,7 +352,8 @@ export function extractSystemContextItems(messagePrompts: unknown): GMSystemCont
     const items: GMSystemContextItem[] = [];
     if (!Array.isArray(messagePrompts)) { return items; }
 
-    for (const item of messagePrompts) {
+    for (let i = 0; i < messagePrompts.length; i++) {
+        const item = messagePrompts[i];
         if (!item || typeof item !== 'object') { continue; }
         const rec = item as Record<string, unknown>;
         const source = String(rec.source || '');
@@ -361,15 +365,17 @@ export function extractSystemContextItems(messagePrompts: unknown): GMSystemCont
         const classification = classifySystemContext(prompt);
         if (!classification) { continue; }
 
-        const stepIdx = typeof rec.stepIdx === 'number' ? rec.stepIdx : -1;
-        const tokens = typeof rec.numTokens === 'number' ? rec.numTokens : 0;
-
         // For checkpoints, extract the number
         let checkpointNumber: number | undefined;
         if (classification.type === 'checkpoint') {
             const cpMatch = prompt.match(/CHECKPOINT\s+(\d+)/);
             checkpointNumber = cpMatch ? parseInt(cpMatch[1], 10) : undefined;
         }
+
+        const stepIdx = typeof rec.stepIdx === 'number' && rec.stepIdx >= 0 
+            ? rec.stepIdx 
+            : (100000 + i * 100 + (checkpointNumber !== undefined ? checkpointNumber : 0));
+        const tokens = typeof rec.numTokens === 'number' ? rec.numTokens : 0;
 
         // Cap full text to avoid UI bloat
         const MAX_TEXT = 12000;
@@ -786,3 +792,84 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         contextWindowCapacity,
     };
 }
+
+/** Extract checkpoint summaries directly from CORTEX_STEP_TYPE_CHECKPOINT steps in trajectory */
+export function extractCheckpointsFromTrajectorySteps(steps: unknown): GMCheckpointSummary[] {
+    const summaries: GMCheckpointSummary[] = [];
+    if (!Array.isArray(steps)) { return summaries; }
+
+    let checkpointSeq = 1;
+    for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        if (!step || typeof step !== 'object') { continue; }
+        const stepType = String(step.type || '');
+        if (!stepType.includes('CHECKPOINT')) { continue; }
+
+        const cp = step.checkpoint as Record<string, unknown> | undefined;
+        if (!cp) { continue; }
+
+        const meta = (step.metadata || {}) as Record<string, unknown>;
+        const modelUsage = (meta.modelUsage || {}) as Record<string, unknown>;
+        const inTok = typeof modelUsage.inputTokens === 'number' ? modelUsage.inputTokens : parseInt(String(modelUsage.inputTokens || '0'), 10);
+
+        // 提取 checkpoint 编号，如果拿不到就按出现顺序自增
+        let checkpointNumber = typeof cp.checkpointIndex === 'number' ? cp.checkpointIndex : undefined;
+        if (checkpointNumber === undefined && cp.intentOnly === true) {
+            checkpointNumber = 0; // 第0次，生成意图
+        } else if (checkpointNumber === undefined) {
+            checkpointNumber = checkpointSeq++;
+        }
+
+        // 拼装比以前还要精美详细的 fullText！
+        const userIntent = cp.userIntent ? String(cp.userIntent) : '';
+        const sessionSummary = cp.sessionSummary ? String(cp.sessionSummary) : '';
+        const userRequests = cp.userRequests as unknown;
+        const fileDiffs = cp.trajectoryFileDiffs as Array<Record<string, unknown>> | undefined;
+
+        let formattedText = ``;
+        if (cp.intentOnly === true) {
+            formattedText += `### 意图与摘要生成 (Intent Only)\n`;
+        } else {
+            formattedText += `### 上下文压缩 (Full Checkpoint)\n`;
+        }
+
+        if (userIntent) {
+            formattedText += `**所含意图 (Intent)**:\n${userIntent}\n\n`;
+        }
+
+        if (sessionSummary) {
+            formattedText += `**会话总结 (Session Summary)**:\n${sessionSummary}\n\n`;
+        }
+
+        if (userRequests) {
+            const reqs = Array.isArray(userRequests) ? userRequests : [String(userRequests)];
+            if (reqs.length > 0) {
+                formattedText += `**所含请求 (Requests)**:\n${reqs.map(r => `- ${r}`).join('\n')}\n\n`;
+            }
+        }
+
+        if (fileDiffs && fileDiffs.length > 0) {
+            formattedText += `**代码文件变更 (File Diffs)**:\n`;
+            for (const fd of fileDiffs) {
+                const fPath = fd.filePath || fd.path || '';
+                if (fPath) {
+                    formattedText += `- ${fPath}\n`;
+                }
+            }
+        }
+
+        const stepIndex = typeof step.stepIndex === 'number' && step.stepIndex >= 0 
+            ? step.stepIndex 
+            : (100000 + i * 100 + checkpointNumber);
+
+        summaries.push({
+            checkpointNumber,
+            stepIndex,
+            tokens: inTok > 0 ? inTok : (typeof cp.tokens === 'number' ? cp.tokens : 0),
+            fullText: formattedText.trim()
+        });
+    }
+
+    return summaries.sort((a, b) => a.checkpointNumber - b.checkpointNumber);
+}
+
