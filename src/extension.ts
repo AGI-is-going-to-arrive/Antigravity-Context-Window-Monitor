@@ -15,7 +15,8 @@ import {
     TrajectorySummary,
     UserStatusInfo,
 } from './tracker';
-import { getQuotaPoolKey, setShowModelShortId, type ModelConfig } from './models';
+import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, type ModelConfig } from './models';
+import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit } from './statusbar';
 import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
 import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
@@ -116,6 +117,8 @@ let firstPollDone = false;
 
 /** Prevents concurrent pollContextUsage() reentrance. */
 let isPolling = false;
+let hasSyncedCheckpointer = false;
+let isSyncingCheckpointer = false;
 
 /** Prevents schedulePoll() from creating new timers after deactivate. */
 // disposed declared at top of module
@@ -418,6 +421,72 @@ export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuota
             minFraction: pool.minFraction,
         };
     });
+}
+
+async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> {
+    try {
+        log('[Checkpointer Sync] Fetching official checkpointer parameters via LS RPC GetAvailableModels...');
+        const resp = await rpcCall(ls, 'GetAvailableModels', {
+            metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
+        }, 10000);
+        const models = (resp as any)?.response?.models || {};
+        const overrides: Record<string, number> = {};
+        const allFetchedInfo: string[] = [];
+
+        for (const config of Object.values(models)) {
+            const c = config as any;
+            const modelVal = c.model || '';
+            const modelIdVal = c.modelId || c.model_id || '';
+            if (!modelVal && !modelIdVal) continue;
+
+            const exps = c.modelExperiments?.experiments || {};
+            const checkpointerStr = exps.CASCADE_USE_EXPERIMENT_CHECKPOINTER?.stringValue;
+
+            if (checkpointerStr) {
+                allFetchedInfo.push(`[${modelIdVal || modelVal}] Exp JSON: ${checkpointerStr}`);
+                try {
+                    const cp = JSON.parse(checkpointerStr);
+                    const cpLimit = cp.max_token_limit || cp.max_limit;
+                    let limitNum = 0;
+                    if (typeof cpLimit === 'number') {
+                        limitNum = cpLimit;
+                    } else if (typeof cpLimit === 'string') {
+                        limitNum = parseInt(cpLimit, 10);
+                    }
+                    if (limitNum && !isNaN(limitNum) && limitNum > 0) {
+                        const resolved = (modelVal ? resolveModelId(modelVal) : undefined)
+                            || (modelIdVal ? resolveModelId(modelIdVal) : undefined)
+                            || modelVal
+                            || modelIdVal;
+                        if (resolved) {
+                            overrides[resolved] = limitNum;
+                        }
+                        if (modelVal) overrides[modelVal] = limitNum;
+                        if (modelIdVal) overrides[modelIdVal] = limitNum;
+                    }
+                } catch { /* ignore JSON parse error */ }
+            } else {
+                allFetchedInfo.push(`[${modelIdVal || modelVal}] Exp JSON: undefined (No active checkpointer experiment)`);
+            }
+        }
+
+        if (allFetchedInfo.length > 0) {
+            log(`[Checkpointer Sync] Official Available Models Checkpointer parameters Container:\n${allFetchedInfo.map(info => `  -> ${info}`).join('\n')}`);
+        }
+
+
+
+        if (Object.keys(overrides).length > 0) {
+            overrideContextLimits(overrides);
+            log(`[Checkpointer Sync] Dynamically resolved and overridden ${Object.keys(overrides).length} model context limits from official Checkpointer!`);
+        } else {
+            log('[Checkpointer Sync] Sync completed successfully, but no active checkpointer overrides were found in models.');
+        }
+        return true;
+    } catch (e: any) {
+        log(`[Checkpointer Sync] Optional dynamic capture failed: ${e.message}. Using built-in static fallbacks.`);
+        return false;
+    }
 }
 
 function updateAccountSnapshot(
@@ -917,6 +986,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
             cachedLsInfo = null;
+            hasSyncedCheckpointer = false;
             consecutiveFailures = 0;
             currentIntervalMs = baseIntervalMs;
             restartPolling();
@@ -1215,6 +1285,7 @@ async function pollContextUsage(): Promise<void> {
                         log(`⚠ LS PID changed: ${lsInfo.pid} → ${freshLs.pid} (port: ${lsInfo.port} → ${freshLs.port}). Reconnecting to new LS.`);
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
+                        hasSyncedCheckpointer = false;
                         consecutiveIdlePolls = 0;
                         // Re-fetch user status from new LS
                         try {
@@ -1277,6 +1348,19 @@ async function pollContextUsage(): Promise<void> {
                     log('Refreshed user status (periodic)');
                 } catch { /* Silent — keep cached data */ }
             }
+        }
+
+        // Dynamically override context limits once per LS connection with retry on failure
+        if (lsInfo && !hasSyncedCheckpointer && !isSyncingCheckpointer) {
+            isSyncingCheckpointer = true;
+            fetchAndOverrideCheckpointerLimits(lsInfo).then((success) => {
+                isSyncingCheckpointer = false;
+                if (success) {
+                    hasSyncedCheckpointer = true;
+                }
+            }).catch(() => {
+                isSyncingCheckpointer = false;
+            });
         }
 
         // 3. Get all trajectories
@@ -1346,6 +1430,7 @@ async function pollContextUsage(): Promise<void> {
                         log(`⚠ Stale LS confirmed: PID ${lsInfo.pid} → ${freshLs.pid}. Reconnecting.`);
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
+                        hasSyncedCheckpointer = false;
                         lsRevalidationCounter = 0;
                         stalenessConfirmedIdle = false;
                         // Re-fetch trajectories from the new LS

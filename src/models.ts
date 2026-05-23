@@ -15,21 +15,23 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     // These are the ACTUAL context window limits enforced by the platform,
     // NOT the model's native context window size.
     // Verified via diag-scripts/my-tools/extra/all-models-deep-miner.ts (2026-05-19).
-    'MODEL_PLACEHOLDER_M16': 128_000,   // Gemini 3.1 Pro (High) — new ID (gemini-pro-default), cp_limit=128000
-    'MODEL_PLACEHOLDER_M37': 128_000,   // [Legacy] Gemini 3.1 Pro (High) — now demoted to planModel/dispatcher
-    'MODEL_PLACEHOLDER_M36': 128_000,   // Gemini 3.1 Pro (Low)  — same pool as High
-    'MODEL_PLACEHOLDER_M133': 256_000,  // Gemini 3.5 Flash (High) — current ID (gemini-3-flash-agent), cp_limit=256000
-    'MODEL_PLACEHOLDER_M132': 256_000,  // Gemini 3.5 Flash (High) — legacy alias
-    'MODEL_PLACEHOLDER_M20': 256_000,   // Gemini 3.5 Flash (Medium) — (gemini-3.5-flash-low), same checkpointer as M133
-    'MODEL_PLACEHOLDER_M84': 128_000,   // [Legacy] Gemini 3 Flash — old ID
-    'MODEL_PLACEHOLDER_M47': 128_000,   // [Legacy] Gemini 3 Flash (older ID)
-    'MODEL_PLACEHOLDER_M18': 160_000,   // [Legacy] Gemini 3 Flash (older ID)
-    'MODEL_PLACEHOLDER_M35': 160_000,   // Claude Sonnet 4.6 (Thinking) — truncationThresholdTokens=160000
-    'MODEL_PLACEHOLDER_M26': 160_000,   // Claude Opus 4.6 (Thinking)  — truncationThresholdTokens=160000
-    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 80_000,   // GPT-OSS 120B (Medium) — cp_limit=80000
+    // Note: All fallback limits are intentionally offset by -1,000 (1K) so that in daily use,
+    // you can instantly recognize if the extension has successfully overridden the fallback with live captures.
+    'MODEL_PLACEHOLDER_M16': 127_000,   // Gemini 3.1 Pro (High) — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M37': 127_000,   // [Legacy] Gemini 3.1 Pro (High) — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M36': 127_000,   // Gemini 3.1 Pro (Low)  — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M133': 255_000,  // Gemini 3.5 Flash (High) — fallback offset by -1K (live: 256,000)
+    'MODEL_PLACEHOLDER_M132': 255_000,  // Gemini 3.5 Flash (High) — fallback offset by -1K (live: 256,000)
+    'MODEL_PLACEHOLDER_M20': 255_000,   // Gemini 3.5 Flash (Medium) — fallback offset by -1K (live: 256,000)
+    'MODEL_PLACEHOLDER_M84': 127_000,   // [Legacy] Gemini 3 Flash — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M47': 127_000,   // [Legacy] Gemini 3 Flash (older ID) — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M18': 159_000,   // [Legacy] Gemini 3 Flash (older ID) — fallback offset by -1K (live: 160,000)
+    'MODEL_PLACEHOLDER_M35': 159_000,   // Claude Sonnet 4.6 (Thinking) — fallback offset by -1K (live: 160,000)
+    'MODEL_PLACEHOLDER_M26': 159_000,   // Claude Opus 4.6 (Thinking)  — fallback offset by -1K (live: 160,000)
+    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 79_000,   // GPT-OSS 120B (Medium) — fallback offset by -1K (live: 80,000)
 };
 
-export const DEFAULT_CONTEXT_LIMIT = 160_000;
+export const DEFAULT_CONTEXT_LIMIT = 159_000;
 
 // ─── Model Display Names ─────────────────────────────────────────────────────
 // Starts empty — populated dynamically by `updateModelDisplayNames()` from
@@ -119,6 +121,17 @@ export function getContextLimit(
     customLimits?: Record<string, number>
 ): number {
     return DEFAULT_CONTEXT_LIMITS[model] || DEFAULT_CONTEXT_LIMIT;
+}
+
+/**
+ * Dynamically override context limits based on official checkpointer parameters.
+ */
+export function overrideContextLimits(overrides: Record<string, number>): void {
+    for (const [model, limit] of Object.entries(overrides)) {
+        if (limit > 0) {
+            DEFAULT_CONTEXT_LIMITS[model] = limit;
+        }
+    }
 }
 
 /**
