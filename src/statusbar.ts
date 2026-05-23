@@ -118,8 +118,7 @@ export function calculateCompressionStats(usage: ContextUsage): CompressionStats
 type StatusBarSeverity = 'ok' | 'warning' | 'error' | 'critical';
 
 function getSeverity(usagePercent: number): StatusBarSeverity {
-    if (usagePercent >= 95) { return 'critical'; }
-    if (usagePercent >= 80) { return 'error'; }
+    if (usagePercent >= 80) { return 'critical'; }
     if (usagePercent >= 50) { return 'warning'; }
     return 'ok';
 }
@@ -149,8 +148,6 @@ export class StatusBarManager {
     private cachedConfigs: ModelConfig[] = [];
     private cachedPlanName: string = '';
     private cachedTierName: string = '';
-    /** User-configurable compression warning threshold (tokens). */
-    private warningThreshold: number = 150_000;
     /** Timer ID for reset countdown. */
     private resetCountdownTimer: NodeJS.Timeout | undefined;
     /** Status bar display preferences. */
@@ -181,12 +178,7 @@ export class StatusBarManager {
         this.scheduleResetRefresh();
     }
 
-    /**
-     * Set the compression warning threshold from user settings.
-     */
-    setWarningThreshold(threshold: number): void {
-        this.warningThreshold = Math.max(10_000, threshold);
-    }
+
 
     /**
      * Set status bar display preferences.
@@ -345,11 +337,7 @@ export class StatusBarManager {
             : usage.usagePercent.toFixed(1).replace(/\.0$/, '');
         const compressIcon = isCompressing ? ' 🗜' : '';
 
-        // Warning severity is based on the compression threshold, not the model limit
-        const warningPercent = this.warningThreshold > 0
-            ? (usage.contextUsed / this.warningThreshold) * 100
-            : usage.usagePercent;
-        const severity = getSeverity(warningPercent);
+        const severity = getSeverity(usage.usagePercent);
         const icon = getSeverityIcon(severity);
         const gapsIndicator = usage.hasGaps ? ' ⚠️' : '';
 
@@ -533,9 +521,7 @@ export class StatusBarManager {
             }
         }
 
-        // Show compression warning threshold
-        result.push(`——————————`);
-        result.push(`🎯 ${tBi('Compression warning', '压缩警告')}: **${formatTokenCount(this.warningThreshold)}**`);
+
 
         return result;
     }

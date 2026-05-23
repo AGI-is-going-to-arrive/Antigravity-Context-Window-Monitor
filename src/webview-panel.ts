@@ -344,13 +344,6 @@ export function showMonitorPanel(p: PanelPayload): void {
             } else if (panel) {
                 safePostMessage({ command: 'setPaused', paused: isPaused });
             }
-        } else if (msg.command === 'setThreshold' && typeof msg.value === 'number') {
-            const val = Math.max(10_000, msg.value);
-            await vscode.workspace.getConfiguration('antigravityContextMonitor')
-                .update('compressionWarningThreshold', val, vscode.ConfigurationTarget.Global);
-            if (panel) {
-                safePostMessage({ command: 'thresholdSaved' });
-            }
         } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
             const val = Math.max(1, Math.min(60, msg.value));
             await vscode.workspace.getConfiguration('antigravityContextMonitor')

@@ -38,7 +38,7 @@ export function buildSettingsContent(
     panelPrefs?: PanelHintPreferences,
 ): string {
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
-    const currentThreshold = cfg.get<number>('compressionWarningThreshold', 150_000);
+
     const pollingInterval = cfg.get<number>('pollingInterval', 5);
     const showContext = cfg.get<boolean>('statusBar.showContext', true);
     const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
@@ -82,38 +82,7 @@ export function buildSettingsContent(
     return `
         ${storageCard}
 
-        <section class="stg-card" data-accent="warn">
-            <div class="stg-header">
-                <span class="stg-header-icon">${ICON.shield}</span>
-                <h2>${tBi('Compression Warning', '压缩警告')}</h2>
-            </div>
-            <div class="setting-row">
-                <label for="thresholdInput">${tBi(
-        'Warning threshold (tokens)',
-        '警告阈值（token 数）',
-    )}</label>
-                <p class="raw-desc">${tBi(
-        'Status bar turns yellow/red based on this value. Default 150K gives early warning before the current 128K–160K platform truncation range.',
-        '状态栏颜色基于此值判断。默认 150K 会在当前 128K–160K 平台截断区间前后提前预警。',
-    )}</p>
-                <div class="threshold-input-row">
-                    <div class="num-spinner">
-                        <button type="button" class="num-spinner-btn decrement" data-target="thresholdInput">−</button>
-                        <input type="number" id="thresholdInput" class="threshold-input"
-                               value="${currentThreshold}" min="10000" step="10000" />
-                        <button type="button" class="num-spinner-btn increment" data-target="thresholdInput">+</button>
-                    </div>
-                    <button class="action-btn" id="thresholdSaveBtn">${tBi('Save', '保存')}</button>
-                    <span id="thresholdFeedback" class="threshold-feedback"></span>
-                </div>
-                <div class="threshold-presets">
-                    <button class="preset-btn" data-val="150000">150K</button>
-                    <button class="preset-btn" data-val="200000">200K</button>
-                    <button class="preset-btn" data-val="500000">500K</button>
-                    <button class="preset-btn" data-val="900000">900K</button>
-                </div>
-            </div>
-        </section>
+
 
         <section class="stg-card" data-accent="quota">
             <div class="stg-header">

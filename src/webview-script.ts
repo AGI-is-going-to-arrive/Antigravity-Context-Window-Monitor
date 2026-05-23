@@ -669,25 +669,7 @@ export function getScript(): string {
                 }
             });
 
-            // ─── Threshold Settings ───
-            var thresholdInput = document.getElementById('thresholdInput');
-            var thresholdSaveBtn = document.getElementById('thresholdSaveBtn');
-            if (thresholdSaveBtn && thresholdInput) {
-                thresholdSaveBtn.addEventListener('click', function() {
-                    var val = parseInt(thresholdInput.value, 10);
-                    if (val >= 10000) {
-                        vscode.postMessage({ command: 'setThreshold', value: val });
-                    }
-                });
-            }
-            var presets = document.querySelectorAll('.preset-btn');
-            for (var p = 0; p < presets.length; p++) {
-                presets[p].addEventListener('click', function() {
-                    var val = parseInt(this.dataset.val, 10);
-                    if (thresholdInput) { thresholdInput.value = val; }
-                    vscode.postMessage({ command: 'setThreshold', value: val });
-                });
-            }
+
 
             // ─── Error message overflow detection ───
             // Marks .gm-err-expand items whose summary text fits without

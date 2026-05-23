@@ -1050,9 +1050,7 @@ export function activate(context: vscode.ExtensionContext): void {
     baseIntervalMs = intervalSec * 1000;
     currentIntervalMs = baseIntervalMs;
 
-    // Apply compression warning threshold
-    const threshold = config.get<number>('compressionWarningThreshold', 150_000);
-    statusBar.setWarningThreshold(threshold);
+
 
     // Apply status bar display preferences
     applyDisplayPrefs();
@@ -1088,12 +1086,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 consecutiveFailures = 0;
                 restartPolling();
             }
-            if (e.affectsConfiguration('antigravityContextMonitor.compressionWarningThreshold')) {
-                const newConfig = vscode.workspace.getConfiguration('antigravityContextMonitor');
-                const newThreshold = newConfig.get<number>('compressionWarningThreshold', 150_000);
-                statusBar.setWarningThreshold(newThreshold);
-                log(`Compression warning threshold updated to ${newThreshold}`);
-            }
+
             if (e.affectsConfiguration('antigravityContextMonitor.statusBar')) {
                 applyDisplayPrefs();
                 if (currentUsage) { statusBar.update(currentUsage); }

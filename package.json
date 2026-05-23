@@ -51,12 +51,6 @@
           "default": 5,
           "description": "Polling interval in seconds / 轮询间隔（秒）"
         },
-        "antigravityContextMonitor.compressionWarningThreshold": {
-          "type": "number",
-          "default": 150000,
-          "minimum": 10000,
-          "description": "Estimated compression trigger threshold (in tokens). Status bar turns yellow/red based on this value instead of the model's full context limit. Default 150K matches typical platform truncation behavior. / 估算压缩触发阈值（token 数）。状态栏颜色基于此值。默认 150K 接近平台 160K 截断阈值。"
-        },
         "antigravityContextMonitor.statusBar.showContext": {
           "type": "boolean",
           "default": true,

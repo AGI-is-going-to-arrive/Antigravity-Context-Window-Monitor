@@ -18,12 +18,24 @@
 
 ### ⚙️ Refactored & Synchronized / 重构与同步
 
-- **Removed redundant limits settings & introduced dual-engine Checkpointer dynamic capture with offset indicator / 废除了冗余模型限制设置，并升级了带差额识别的双引擎物理限额动态捕捉**:
-  Official RPC diagnostics (`GetAvailableModels`) revealed that the Cascade checkpointer strictly enforces static truncation thresholds under the hood. Modifying the context limits in settings did not affect these hard physical constraints. To simplify configurations and remove misleading options, the `contextLimits` settings config, the `Model Context Limits` card inside the Settings WebView, and its entire frontend logic were completely deprecated. At the same time, introduced a robust **"Dynamic Capture + Static Fallback" dual-engine mechanism**: the extension now dynamically fetches official checkpointer parameters via LSP RPC (`GetAvailableModels`) upon connection/reconnection and overrides the memory limits automatically. In addition, **deliberately offset all static fallback limits in the codebase by -1,000 (1K) tokens** (e.g., Gemini 3.5 Flash family fallback is `255,000` instead of `256,000`). This serves as an elegant, zero-overhead **"invisible indicator"** in daily use: if you see clean integers (e.g. `256,000`) in the UI, dynamic capture is actively overriding the limits; if you see the offset limits (e.g. `255,000`), it has fallback safely, allowing instant dynamic state verification.
-  官方 RPC 诊断（`GetAvailableModels`）表明，底层完全由 Cascade 官方 Checkpointer 硬性强制执行静态截断阈值，用户在前台的自定义修改根本无法突破物理硬限制。为简化配置、消除误导性选项，本次重构彻底删除了 `contextLimits` 设置项、Webview 设置页面中的整个“模型上下文限制”卡片区域、以及关联的前端逻辑。同时，**升级了“动态捕捉 + 静态兜底”的双保险机制**：在插件启动或 LS 中途重连成功时，通过本地 LSP RPC 通道静默拉取官方可用模型列表并动态改写内存限额。更绝妙的是，**我们主动将代码中所有的静态兜底默认限额整体下调了 1K (1,000) 个 tokens**（例如将 Gemini 3.5 Flash 系列静态默认值设为 `255,000` 而非 `256,000`）。这在日常使用中起到了优雅、无感且零开销的**“隐形状态指示器”**作用：一旦前台 UI 呈现平整的整数（如 `256,000`），即说明真实动态捕获正完美生效覆盖；若呈现出少 1K 的奇数（如 `255,000`），则说明已安全降级至兜底状态，实现了秒级动态状态验证。
+- **Introduced dual-engine Checkpointer dynamic capture with offset indicator / 引入带差额自证的双引擎物理限额动态捕捉机制**:
+  To bridge the gap between hard physical limits enforced under the hood and internal logic, we introduced a robust **"Dynamic Capture + Static Fallback" dual-engine mechanism**:
+  1. The extension now dynamically queries the language server via LSP RPC (`GetAvailableModels`) upon connection/reconnection to retrieve genuine physical model context limits and overrides internal limits.
+  2. Support was enhanced to parse physical model IDs (e.g., `gemini-3-flash-agent`) alongside canonical placeholder IDs, robustly handling string-formatted values (e.g. `"256000"`) via `parseInt` extraction.
+  3. **Deliberately offset all static fallback limits in the codebase by -1,000 (1K) tokens** (e.g., Gemini 3.5 Flash fallback is `255,000` instead of `256,000`), serving as an elegant, zero-overhead **"invisible indicator"** in daily use: if you see clean integers (e.g., `256,000` in settings/quota cards), dynamic capture is actively overriding limits; if you see the offset limits (e.g., `255,000`), it has safely fallen back.
+  为了将底层官方 Checkpointer 的物理限制与扩展内部逻辑打通，引入了健壮的 **“动态捕捉 + 静态兜底”双保险机制**：
+  1. 插件启动或 LS 中途重连成功时，通过本地 LSP RPC 通道静默拉取官方可用模型列表，动态获取真实的物理模型上下文限额并实时改写内存限制。
+  2. 增强了模型 ID 的解析兼容性，使物理 ID（如 `gemini-3-flash-agent`）能与内部的 canonical 占位符 ID 完美对齐，并通过 `parseInt` 健壮地兼容并强转了 String 类型数据（如 `"256000"`）。
+  3. **主动将代码中所有的静态兜底默认限额整体下调了 1K (1,000) 个 tokens**（例如将 Gemini 3.5 Flash 默认值设为 `255,000` 而非 `256,000`）。这在日常使用中起到了优雅且无感的 **“隐形状态指示器”** 作用：一旦前台 UI/监控面板中呈现平整的整数（如 `256,000`），即说明真实动态捕获完美生效覆盖；若呈现出少 1K 的数值（如 `255,000`），则说明已安全降级至兜底状态，实现了秒级状态验证。
+
+- **Removed redundant limits & warning threshold settings and upgraded to pure percentage-based adaptive warnings / 废除了冗余模型限制与警告阈值设置，升级为纯百分比智能自适应预警体系**:
+  Official RPC diagnostics revealed that fixed absolute warning thresholds (e.g., 150K tokens) were highly inflexible when switching between models of vastly different sizes (80K, 128K, 160K, 256K), causing unnecessary configuration complexity and user warning anxiety:
+  1. The static `contextLimits` settings, the Settings WebView's `Model Context Limits` card, the `compressionWarningThreshold` configuration, its UI input presets/rows, and all associated IPC synchronization handlers were **completely deprecated and removed**.
+  2. Status bar and hover warnings are now **directly and dynamically determined by the real model context usage percentage (50% yellow warning, 80% red critical warning)**. This guarantees optimal, zero-configuration warning behaviors automatically scaled for all current and future model architectures.
+  官方诊断表明，在面对不同容量规格（80K、128K、160K、256K）的模型时，原先固定的绝对值“压缩警告阈值”（如 150K）显得非常死板笨重，并带来了冗余的配置负担。本次重构彻底精简删除了已无必要的 `contextLimits` 配置项、`compressionWarningThreshold` 配置项、Webview 面板里的整张“压缩警告设置”卡片及全部对应的 IPC 同步逻辑。状态栏及悬浮窗的警示变色**一律直接改为基于当前模型真实占比的百分比自适应预警（50% 黄色警告，80% 红色强预警）**，无需任何手动微调，即可在所有规格模型下实现极具质感的智能化自适应预警。
 
 ### 📊 Stats / 统计
 
-- **Files changed**: 11 (`package.json`, `src/models.ts`, `src/extension.ts`, `src/webview-panel.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/statusbar.ts`, `src/activity-panel.ts`, `src/quota-tracker.ts`, `src/daily-archival.ts`, `src/webview-profile-tab.ts`)
+- **Files changed**: 13 (`package.json`, `src/models.ts`, `src/extension.ts`, `src/statusbar.ts`, `src/webview-panel.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-profile-tab.ts`, `src/webview-icons.ts`, `src/activity-panel.ts`, `src/quota-tracker.ts`, `src/daily-archival.ts`, `CHANGELOG-v3.md`)
 - **TypeScript compile**: Zero errors
 - **Tests**: 70 tests passing (`npm test` / `npx vitest run`)
