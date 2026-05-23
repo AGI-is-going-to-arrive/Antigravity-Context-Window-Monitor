@@ -217,9 +217,6 @@ export function buildModelQuotaGrid(configs: ModelConfig[]): string {
                 </div>
                 <div class="model-card-meta" style="display: flex; align-items: center; justify-content: space-between;">
                     ${resetLabel ? `<span class="model-card-reset">${tBi('Reset', '重置')} ${resetLabel}</span>` : ''}
-                    <span class="model-card-limit" style="margin-left: auto; color: var(--color-text-dim); font-size: 0.75rem;">
-                        ${tBi('Checkpointer Limit', '物理限额')}: <strong style="color: var(--color-text);">${limit.toLocaleString()}</strong>
-                    </span>
                 </div>
             </div>`;
     }).join('');

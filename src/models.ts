@@ -354,3 +354,67 @@ export function setShowModelShortId(enabled: boolean): void {
 export function isShowModelShortId(): boolean {
     return showModelShortId;
 }
+
+export interface ModelSpec {
+    modelId: string;
+    placeholderId: string;
+    displayName: string;
+    apiProvider: string;
+    maxTokens: number;
+    maxOutputTokens: number;
+    thinkingBudget: number;
+    supportsThinking: boolean;
+    cpLimit: number;
+    cpThreshold: number;
+}
+
+let activeModelSpecs: Record<string, ModelSpec> = {};
+
+export function updateModelSpec(placeholderId: string, spec: Partial<ModelSpec>): void {
+    if (!activeModelSpecs[placeholderId]) {
+        activeModelSpecs[placeholderId] = {
+            modelId: spec.modelId || '',
+            placeholderId,
+            displayName: spec.displayName || getModelDisplayName(placeholderId),
+            apiProvider: spec.apiProvider || '',
+            maxTokens: spec.maxTokens || 0,
+            maxOutputTokens: spec.maxOutputTokens || 0,
+            thinkingBudget: spec.thinkingBudget || 0,
+            supportsThinking: spec.supportsThinking || false,
+            cpLimit: spec.cpLimit || 0,
+            cpThreshold: spec.cpThreshold || 0,
+        };
+    } else {
+        activeModelSpecs[placeholderId] = {
+            ...activeModelSpecs[placeholderId],
+            ...spec,
+        };
+    }
+}
+
+export function getModelSpecs(): ModelSpec[] {
+    const order = [
+        'MODEL_PLACEHOLDER_M133',
+        'MODEL_PLACEHOLDER_M20',
+        'MODEL_PLACEHOLDER_M16',
+        'MODEL_PLACEHOLDER_M36',
+        'MODEL_PLACEHOLDER_M35',
+        'MODEL_PLACEHOLDER_M26',
+        'MODEL_OPENAI_GPT_OSS_120B_MEDIUM'
+    ];
+    const ordered: ModelSpec[] = [];
+    for (const key of order) {
+        if (activeModelSpecs[key]) {
+            const spec = activeModelSpecs[key];
+            spec.displayName = getModelDisplayName(key);
+            ordered.push(spec);
+        }
+    }
+    for (const [key, spec] of Object.entries(activeModelSpecs)) {
+        if (!order.includes(key)) {
+            spec.displayName = getModelDisplayName(key);
+            ordered.push(spec);
+        }
+    }
+    return ordered;
+}

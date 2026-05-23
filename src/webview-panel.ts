@@ -630,7 +630,7 @@ function buildTabContents(
                 lastPendingArchives.reduce((s, e) => s + (e.estimatedCost || 0), 0),
             )
             : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`) + eoc,
-        models: buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA) + eoc,
+        models: buildModelsTabContent(userInfo, configs) + eoc,
         history: buildHistoryHtml(tracker, lastUserInfo?.email) + eoc,
         calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth) + eoc,
         profile: buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0) + eoc,
@@ -670,7 +670,7 @@ function buildHtml(
             lastPendingArchives.reduce((s, e) => s + (e.estimatedCost || 0), 0),
         )
         : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
-    const modelsHtml = buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA);
+    const modelsHtml = buildModelsTabContent(userInfo, configs);
     const historyHtml = buildHistoryHtml(tracker, lastUserInfo?.email);
     const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth);
     const profileHtml = buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0);

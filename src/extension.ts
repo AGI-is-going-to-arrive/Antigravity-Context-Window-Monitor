@@ -15,7 +15,7 @@ import {
     TrajectorySummary,
     UserStatusInfo,
 } from './tracker';
-import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, type ModelConfig } from './models';
+import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, type ModelConfig, updateModelSpec } from './models';
 import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit } from './statusbar';
 import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
@@ -439,27 +439,36 @@ async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> 
             const modelIdVal = c.modelId || c.model_id || '';
             if (!modelVal && !modelIdVal) continue;
 
+            const resolved = (modelVal ? resolveModelId(modelVal) : undefined)
+                || (modelIdVal ? resolveModelId(modelIdVal) : undefined);
+
             const exps = c.modelExperiments?.experiments || {};
             const checkpointerStr = exps.CASCADE_USE_EXPERIMENT_CHECKPOINTER?.stringValue;
+            let limitNum = 0;
+            let thresholdNum = 0;
 
             if (checkpointerStr) {
                 allFetchedInfo.push(`[${modelIdVal || modelVal}] Exp JSON: ${checkpointerStr}`);
                 try {
                     const cp = JSON.parse(checkpointerStr);
                     const cpLimit = cp.max_token_limit || cp.max_limit;
-                    let limitNum = 0;
                     if (typeof cpLimit === 'number') {
                         limitNum = cpLimit;
                     } else if (typeof cpLimit === 'string') {
                         limitNum = parseInt(cpLimit, 10);
                     }
+
+                    const cpThreshold = cp.token_threshold || cp.threshold;
+                    if (typeof cpThreshold === 'number') {
+                        thresholdNum = cpThreshold;
+                    } else if (typeof cpThreshold === 'string') {
+                        thresholdNum = parseInt(cpThreshold, 10);
+                    }
+
                     if (limitNum && !isNaN(limitNum) && limitNum > 0) {
-                        const resolved = (modelVal ? resolveModelId(modelVal) : undefined)
-                            || (modelIdVal ? resolveModelId(modelIdVal) : undefined)
-                            || modelVal
-                            || modelIdVal;
-                        if (resolved) {
-                            overrides[resolved] = limitNum;
+                        const resolvedKey = resolved || modelVal || modelIdVal;
+                        if (resolvedKey) {
+                            overrides[resolvedKey] = limitNum;
                         }
                         if (modelVal) overrides[modelVal] = limitNum;
                         if (modelIdVal) overrides[modelIdVal] = limitNum;
@@ -467,6 +476,20 @@ async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> 
                 } catch { /* ignore JSON parse error */ }
             } else {
                 allFetchedInfo.push(`[${modelIdVal || modelVal}] Exp JSON: undefined (No active checkpointer experiment)`);
+            }
+
+            // 同步更新 activeModelSpecs 数据库
+            if (resolved) {
+                updateModelSpec(resolved, {
+                    modelId: modelIdVal || modelVal,
+                    apiProvider: (c.apiProvider || '').replace('API_PROVIDER_', ''),
+                    maxTokens: typeof c.maxTokens === 'number' ? c.maxTokens : 0,
+                    maxOutputTokens: typeof c.maxOutputTokens === 'number' ? c.maxOutputTokens : 0,
+                    thinkingBudget: typeof c.thinkingBudget === 'number' ? c.thinkingBudget : 0,
+                    supportsThinking: !!c.supportsThinking,
+                    ...(limitNum > 0 ? { cpLimit: limitNum } : {}),
+                    ...(thresholdNum > 0 ? { cpThreshold: thresholdNum } : {}),
+                });
             }
         }
 

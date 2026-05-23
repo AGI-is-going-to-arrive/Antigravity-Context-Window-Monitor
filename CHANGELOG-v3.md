@@ -34,6 +34,20 @@
   2. Status bar and hover warnings are now **directly and dynamically determined by the real model context usage percentage (50% yellow warning, 80% red critical warning)**. This guarantees optimal, zero-configuration warning behaviors automatically scaled for all current and future model architectures.
   官方诊断表明，在面对不同容量规格（80K、128K、160K、256K）的模型时，原先固定的绝对值“压缩警告阈值”（如 150K）显得非常死板笨重，并带来了冗余的配置负担。本次重构彻底精简删除了已无必要的 `contextLimits` 配置项、`compressionWarningThreshold` 配置项、Webview 面板里的整张“压缩警告设置”卡片及全部对应的 IPC 同步逻辑。状态栏及悬浮窗的警示变色**一律直接改为基于当前模型真实占比的百分比自适应预警（50% 黄色警告，80% 红色强预警）**，无需任何手动微调，即可在所有规格模型下实现极具质感的智能化自适应预警。
 
+- **Rebuilt the Models Tab's Model Info grid with pure dynamic capture & exact parameters / 彻底重构了“模型”选项卡的“模型信息”展现为纯动态捕捉与精确参数无损展现**:
+  To prevent data contamination from unrelated session history, we completely rebuilt the Model Info section inside the Models tab:
+  1. All hardcoded parameters (such as `DEFAULT_MODEL_SPECS`) were completely wiped from the codebase, initializing `activeModelSpecs` as an empty object `{}`. All specifications are dynamically captured via LSP RPC (`GetAvailableModels`) and injected at runtime.
+  2. The display range is strictly mapped to active UI models (`configs`), completely filtering out backend command models (e.g. `Gemini 3 Flash` / `M18`) and hidden routing configurations.
+  3. Numerical displays are 100% precise and lossless: replaced all rough estimations (e.g., `128K`, `1.0M`) with exact, raw integers formatted with thousands separators (e.g., `128,000 Limit`, `1,048,576 max tokens`), establishing an elite and rigorous physical self-verification standard.
+  为了防止模型展示大区被不相关的会话历史（如 GM 记账统计）污染，本次重构彻底重组了“模型”面板底部的“模型信息”栏目：
+  1. 彻底移除了代码库中所有多余的硬编码参数常量（如 `DEFAULT_MODEL_SPECS`），将内存数据库 `activeModelSpecs` 设为初始干净的 `{}`，规格完全依靠 LS 在运行时通过 RPC 静默拉取并动态注入。
+  2. 展示范围严格与前台可见的 UI 模型选项列表（`configs`）进行精准对齐与映射，只展示界面表面的模型卡片，完美过滤了不需要出现在表面的后台命令模型（如 `Gemini 3 Flash` / `M18` 等）。
+  3. 数字规格实现 100% 绝对精准化展现：废除了原本粗略模糊的单位估算（如 `128K`、`1.0M`），全部升级为原汁原味、带千位分隔符的精准整数数字（如 `128,000 Limit`、`1,048,576 max tokens`），树立了极其严谨的自证标杆。
+
+- **Removed redundant checkpointer limit from Model Quota cards / 剥离了模型配额卡片中多余的物理限额展示**:
+  Removed the redundant checkpointer limit display from the individual quota cards to keep the UI clean, lightweight, and focused on a single source of truth.
+  剥离了“模型配额”卡片底部多余的物理限额文字节点渲染，避免信息重复展示，保持卡片界面的极简与轻量化。
+
 ### 📊 Stats / 统计
 
 - **Files changed**: 13 (`package.json`, `src/models.ts`, `src/extension.ts`, `src/statusbar.ts`, `src/webview-panel.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-profile-tab.ts`, `src/webview-icons.ts`, `src/activity-panel.ts`, `src/quota-tracker.ts`, `src/daily-archival.ts`, `CHANGELOG-v3.md`)
