@@ -111,11 +111,11 @@ export function performDailyArchival(
             ? ctx.lastGMSummary
             : liveSummary || ctx.lastGMSummary;
 
-    // ── 核心修复：合并 pendingArchives (白天因为额度重置转存到待归档区的汇总数据) ──
+    // 合并 pendingArchives (因额度重置转存到待归档区的汇总数据)
     const pendingArchives = ctx.gmTracker.getPendingArchives() || [];
     if (pendingArchives.length > 0) {
         if (!gmSummary) {
-            // 就地构建一个空的 gmSummary 容器以防 Null 丢数据
+            // 构建空 gmSummary 以防 null 导致数据丢失
             gmSummary = {
                 conversations: [],
                 modelBreakdown: {},
@@ -144,7 +144,7 @@ export function performDailyArchival(
         }
 
         if (gmSummary) {
-            // 把每一个 pending 条目里的统计值归并累加回 gmSummary
+            // 累加 pending 条目中的统计值到 gmSummary
             for (const pending of pendingArchives) {
                 gmSummary.totalCalls += pending.totalCalls;
                 gmSummary.totalInputTokens += pending.totalInputTokens;
@@ -197,7 +197,7 @@ export function performDailyArchival(
         }
     }
 
-    // 3b. 保底合并 pendingArchives 中的预估费用 (防止未配好价格表时费用丢失)
+    // 3b. 合并 pendingArchives 中的预估费用 (防止未配置价格表时费用丢失)
     if (pendingArchives.length > 0) {
         let pendingCostTotal = 0;
         const pendingCostPerModel: Record<string, number> = {};

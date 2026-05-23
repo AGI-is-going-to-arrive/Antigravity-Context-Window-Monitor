@@ -1,6 +1,6 @@
 // ─── Models Tab Content Builder ─────────────────────────────────────────────
 // Centralizes model-related information: default model, personal model quota,
-// and official, pure-physical model parameters without GM data contamination.
+// and official model configurations and limit parameters without GM data contamination.
 
 import { tBi } from './i18n';
 import { ModelConfig, UserStatusInfo, getModelSpecs, ModelSpec } from './models';
@@ -23,7 +23,7 @@ export function buildModelInfoGrid(specs: ModelSpec[]): string {
         const brainSvg = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="opacity:0.6;margin-right:4px;"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1 0-3.12 3 3 0 0 1 0-3.88 2.5 2.5 0 0 1 0-3.12A2.5 2.5 0 0 1 9.5 2zM14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 0-3.12 3 3 0 0 0 0-3.88 2.5 2.5 0 0 0 0-3.12A2.5 2.5 0 0 0 14.5 2z"/></svg>`;
         const providerSvg = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="opacity:0.6;margin-right:4px;"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>`;
 
-        // 绝对精准格式化的参数数值，禁用模糊的 K/M 估算展示
+        // 使用完整数字格式化，不采用 K/M 估算值
         const limitText = s.cpLimit > 0
             ? `${s.cpLimit.toLocaleString()} Limit`
             : tBi('Loading Limit...', '正在获取限额...');
@@ -104,7 +104,7 @@ export function buildModelsTabContent(
         parts.push(quotaHtml);
     }
 
-    // 3. Pure Official Physical Model Info Grid
+    // 3. Official Model Info Grid
     // 范围严格限定为 sortedConfigs 中展示在前台的界面模型
     const specs: ModelSpec[] = [];
     const allSpecs = getModelSpecs();
@@ -116,7 +116,7 @@ export function buildModelsTabContent(
     for (const config of sortedConfigs) {
         const spec = specMap.get(config.model);
         if (spec) {
-            // displayName 严格采用前端 config 里的 label，保证完美契合界面选项
+            // displayName 采用前端 config 里的 label，保持与界面选项一致
             const specCopy = { ...spec, displayName: config.label };
             specs.push(specCopy);
         }
