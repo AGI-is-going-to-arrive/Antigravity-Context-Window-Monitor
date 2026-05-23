@@ -277,12 +277,23 @@ export class StatusBarManager {
         this.statusBarItem.backgroundColor = undefined;
     }
 
-    showNoConversation(limitStr: string = '1M'): void {
+    showNoConversation(limitStr: string = '1M', modelId?: string): void {
         const contextPart = this.displayPrefs.showContext ? `0k/${limitStr}, 0.0%` : '';
+        const quotaSuffix = this.displayPrefs.showQuota && modelId ? this.formatQuotaIndicator(modelId) : '';
+        const resetSuffix = this.displayPrefs.showResetCountdown && modelId ? this.formatResetCountdown(modelId) : '';
         const creditsSuffix = this.displayPrefs.showAiCredits ? this.formatCreditsIndicator() : '';
-        this.statusBarItem.text = this.buildStatusText('$(comment-discussion)', [contextPart, creditsSuffix]);
+
+        const segments = [
+            contextPart,
+            quotaSuffix.trim(),
+            resetSuffix.trim(),
+            creditsSuffix.trim(),
+        ].filter(Boolean);
+
+        this.statusBarItem.text = this.buildStatusText('$(comment-discussion)', segments);
         const lines = [
             `Antigravity Context Monitor: ${t('statusBar.noConversationTooltip')}`,
+            ...this.buildQuotaLines(),
             ...this.buildCreditsLines(),
             `——————————`,
             `$(link-external) **${t('statusBar.clickToView')}**`,
@@ -293,10 +304,20 @@ export class StatusBarManager {
         this.statusBarItem.backgroundColor = undefined;
     }
 
-    showIdle(limitStr: string = '1M'): void {
+    showIdle(limitStr: string = '1M', modelId?: string): void {
         const contextPart = this.displayPrefs.showContext ? `0k/${limitStr}, 0.0%` : '';
+        const quotaSuffix = this.displayPrefs.showQuota && modelId ? this.formatQuotaIndicator(modelId) : '';
+        const resetSuffix = this.displayPrefs.showResetCountdown && modelId ? this.formatResetCountdown(modelId) : '';
         const creditsSuffix = this.displayPrefs.showAiCredits ? this.formatCreditsIndicator() : '';
-        this.statusBarItem.text = this.buildStatusText('$(clock)', [contextPart, creditsSuffix]);
+
+        const segments = [
+            contextPart,
+            quotaSuffix.trim(),
+            resetSuffix.trim(),
+            creditsSuffix.trim(),
+        ].filter(Boolean);
+
+        this.statusBarItem.text = this.buildStatusText('$(clock)', segments);
         const lines: string[] = [
             `Antigravity Context Monitor: ${t('statusBar.idle')}`,
             t('statusBar.idleDescription'),

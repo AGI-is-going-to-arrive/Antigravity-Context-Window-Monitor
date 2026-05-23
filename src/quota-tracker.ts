@@ -435,22 +435,27 @@ export class QuotaTracker {
      *  @param email — account email to match against session.accountEmail
      *  @param modelLabels — model labels in the expired pool (used to scope archival)
      *  @returns number of sessions archived */
-    archiveExpiredSessions(email: string, modelLabels: string[]): number {
+    archiveExpiredSessions(email: string, modelFilter: string[]): number {
         if (!email) { return 0; }
         const now = new Date();
         const nowIso = now.toISOString();
-        const labelSet = new Set(modelLabels.map(l => l.toLowerCase()));
+        const filterSet = new Set(modelFilter.map(l => l.toLowerCase()));
         let count = 0;
 
         for (const [stateKey, ms] of this.modelStates.entries()) {
             if (!ms.currentSession) { continue; }
             // Match by account email prefix in stateKey (format: "email:modelId")
             if (!stateKey.startsWith(`${email}:`)) { continue; }
-            // Match by model label (pool scope)
+            
+            // Extract canonical modelId from stateKey for precise matching
+            const modelId = stateKey.substring(email.length + 1).toLowerCase();
+            
+            // Match by model ID or display label (pool scope)
             const sessionLabel = ms.currentSession.modelLabel?.toLowerCase() || '';
-            const hasPoolMatch = labelSet.has(sessionLabel)
-                || (ms.currentSession.poolModels || []).some(p => labelSet.has(p.toLowerCase()));
-            if (!hasPoolMatch && labelSet.size > 0) { continue; }
+            const hasPoolMatch = filterSet.has(modelId)
+                || filterSet.has(sessionLabel)
+                || (ms.currentSession.poolModels || []).some(p => filterSet.has(p.toLowerCase()));
+            if (!hasPoolMatch && filterSet.size > 0) { continue; }
 
             // Archive the session with resetTime as end time
             const endTime = ms.currentSession.cycleResetTime || nowIso;

@@ -8,7 +8,7 @@ import { PricingStore, DEFAULT_PRICING, PRICING_LAST_UPDATED, findPricing, Model
 import { esc } from './webview-helpers';
 import type { MonthCostBreakdown } from './daily-store';
 import { getModelDNAKey, type PersistedModelDNA } from './model-dna-store';
-import { ModelConfig, normalizeModelDisplayName, getModelBaseName } from './models';
+import { ModelConfig, normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDisplayName } from './models';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -1086,9 +1086,16 @@ export function buildModelDNACards(
         const headerBadge = isPersistedOnly
             ? ` <span class="act-badge" style="opacity:0.7">${tBi('cached', '已缓存')}</span>`
             : '';
-        const normTitle = name.toLowerCase().replace(/[\s().\-]+/g, '');
-        const normResp = responseModel.toLowerCase().replace(/[\s().\-]+/g, '');
-        const showResponseModel = responseModel && normResp !== normTitle;
+
+        // Only show responseModel if it's truly unknown (not in alias map).
+        // Known aliases like 'gemini-pro-default' are noise — card title is enough.
+        const resolvedFromResponse = responseModel ? resolveModelId(responseModel) : undefined;
+        const showResponseModel = responseModel && !resolvedFromResponse && (() => {
+            const normTitle = name.toLowerCase().replace(/[\s().\-]+/g, '');
+            const normResp = responseModel.toLowerCase().replace(/[\s().\-]+/g, '');
+            return normResp !== normTitle;
+        })();
+
         let headerMeta = '';
         if (providerShort) {
             headerMeta += `<span class="prc-dna-provider" style="margin-left:var(--space-2)">${esc(providerShort)}</span>`;
@@ -1183,11 +1190,26 @@ function isDefaultPricingCovered(responseModel: string, defaultKey: string): boo
     const model = responseModel.trim();
     if (!model) { return false; }
     const modelFamily = model.split('-').slice(0, 3).join('-');
-    return model === defaultKey
+    if (model === defaultKey
         || model.startsWith(defaultKey)
         || defaultKey.startsWith(model)
         || model.includes(defaultKey)
-        || (!!modelFamily && defaultKey.includes(modelFamily));
+        || (!!modelFamily && defaultKey.includes(modelFamily))) {
+        return true;
+    }
+    // Alias resolution: e.g. 'gemini-3-flash-a' → M20 → "Gemini 3.5 Flash (Medium)"
+    // → kebab "gemini-3.5-flash-medium" → startsWith "gemini-3.5-flash" → covered
+    const modelId = resolveModelId(model);
+    if (modelId) {
+        const displayName = getModelDisplayName(modelId);
+        if (displayName && displayName !== modelId) {
+            const kebab = displayName.replace(/[()]/g, '').trim().toLowerCase().replace(/\s+/g, '-');
+            if (kebab.startsWith(defaultKey) || defaultKey.startsWith(kebab)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 function buildEditablePricingTable(

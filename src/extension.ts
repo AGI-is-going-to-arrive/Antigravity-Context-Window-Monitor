@@ -498,7 +498,7 @@ function updateAccountSnapshot(
     for (const [, pool] of [...poolMap.entries()].sort((a, b) => a[1].resetTime.localeCompare(b[1].resetTime))) {
         const resetTime = pool.resetTime;
         const remainingPct = pool.hasUsage ? Math.round(pool.minFraction * 100) : undefined;
-        resetPools.push({ resetTime, modelLabels: pool.labels, hasUsage: pool.hasUsage, remainingPercent: remainingPct });
+        resetPools.push({ resetTime, modelLabels: pool.labels, modelIds: pool.modelIds, hasUsage: pool.hasUsage, remainingPercent: remainingPct });
         if (resetTime && !allResetTimes.includes(resetTime)) {
             allResetTimes.push(resetTime);
         }
@@ -689,7 +689,7 @@ function baselineExpiredPoolsForAccount(email: string): void {
         if (notifiedAccountResets.has(key)) { continue; }
 
         // Skip if already archived in persisted state
-        if (gmTracker.isPoolArchived(email, pool.modelLabels)) {
+        if (gmTracker.isPoolArchived(email, pool.modelIds || pool.modelLabels)) {
             notifiedAccountResets.add(key);
             log(`Account switch baseline: ${email} pool [${pool.modelLabels.slice(0, 3).join(', ')}] already archived — skipped`);
             continue;
@@ -701,7 +701,7 @@ function baselineExpiredPoolsForAccount(email: string): void {
         // No DailyStore snapshot here — midnight archival will use
         // getArchivalSummary() which includes both pending-archive and
         // active calls, giving DailyStore the complete day's picture.
-        const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelLabels);
+        const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelIds || pool.modelLabels);
         if (baselinedCount > 0) {
             log(`Account switch baseline: ${email} — ${baselinedCount} GM calls baselined for pool [${pool.modelLabels.slice(0, 3).join(', ')}]`);
             lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
@@ -1372,7 +1372,7 @@ async function pollContextUsage(): Promise<void> {
             const customLimits0 = config0.get<Record<string, number>>('contextLimits');
             const noConvLimit = getContextLimit(lastKnownModel, customLimits0);
             const noConvLimitStr = formatContextLimit(noConvLimit);
-            statusBar.showNoConversation(noConvLimitStr);
+            statusBar.showNoConversation(noConvLimitStr, lastKnownModel);
             currentUsage = null;
             allTrajectoryUsages = monitorStore.getAll();
             updateBaselines(trajectories);
@@ -1526,7 +1526,7 @@ async function pollContextUsage(): Promise<void> {
             const idleLimit = getContextLimit(lastKnownModel, customLimits);
             const idleLimitStr = formatContextLimit(idleLimit);
             log(`No active trajectory — showing idle (model=${lastKnownModel || 'default'}, limit=${idleLimitStr})`);
-            statusBar.showIdle(idleLimitStr);
+            statusBar.showIdle(idleLimitStr, lastKnownModel);
             currentUsage = null;
             allTrajectoryUsages = monitorStore.getAll();
             if (isMonitorPanelVisible()) {
@@ -1874,7 +1874,7 @@ function checkCachedAccountResets(): void {
             if (notifiedAccountResets.has(key)) { continue; }
 
             // ── Guard: skip if this pool was already archived (persisted state) ──
-            if (gmTracker.isPoolArchived(snap.email, pool.modelLabels)) {
+            if (gmTracker.isPoolArchived(snap.email, pool.modelIds || pool.modelLabels)) {
                 notifiedAccountResets.add(key);
                 log(`[ResetCheck] ${snap.email} [${modelNames}]: already-archived — skipped`);
                 continue;
@@ -1892,11 +1892,11 @@ function checkCachedAccountResets(): void {
             // No DailyStore snapshot here — midnight archival will use
             // getArchivalSummary() which includes both pending-archive and
             // active calls, giving DailyStore the complete day's picture.
-            const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelLabels);
+            const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelIds || pool.modelLabels);
             // Also archive any active QuotaTracker sessions for this cached account's pool.
             // Without this, sessions stay in 'tracking' forever because processUpdate()
             // never receives API configs for non-active accounts.
-            const archivedSessions = quotaTracker.archiveExpiredSessions(snap.email, pool.modelLabels);
+            const archivedSessions = quotaTracker.archiveExpiredSessions(snap.email, pool.modelIds || pool.modelLabels);
             if (baselinedCount > 0 || archivedSessions > 0) {
                 log(`[ResetCheck]   ${baselinedCount} GM calls baselined, ${archivedSessions} quota sessions archived`);
                 lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();

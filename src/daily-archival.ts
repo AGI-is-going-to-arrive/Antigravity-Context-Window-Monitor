@@ -105,12 +105,85 @@ export function performDailyArchival(
     // during serialization) — getArchivalSummary() then returns totalCalls=0.
     // Fall back to lastGMSummary (last persisted snapshot) if it has more data.
     const liveSummary = ctx.gmTracker.getArchivalSummary();
-    const gmSummary = (liveSummary && liveSummary.totalCalls > 0)
+    let gmSummary = (liveSummary && liveSummary.totalCalls > 0)
         ? liveSummary
         : (ctx.lastGMSummary && ctx.lastGMSummary.totalCalls > (liveSummary?.totalCalls || 0))
             ? ctx.lastGMSummary
             : liveSummary || ctx.lastGMSummary;
-    const hasGM = gmSummary && gmSummary.totalCalls > 0;
+
+    // ── 核心修复：合并 pendingArchives (白天因为额度重置转存到待归档区的汇总数据) ──
+    const pendingArchives = ctx.gmTracker.getPendingArchives() || [];
+    if (pendingArchives.length > 0) {
+        if (!gmSummary) {
+            // 就地构建一个空的 gmSummary 容器以防 Null 丢数据
+            gmSummary = {
+                conversations: [],
+                modelBreakdown: {},
+                totalCalls: 0,
+                totalStepsCovered: 0,
+                totalCredits: 0,
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                totalCacheRead: 0,
+                totalCacheCreation: 0,
+                totalThinkingTokens: 0,
+                contextGrowth: [],
+                fetchedAt: new Date().toISOString(),
+                totalRetryTokens: 0,
+                totalRetryCredits: 0,
+                totalRetryCount: 0,
+                latestTokenBreakdown: [],
+                stopReasonCounts: {},
+                retryErrorCodes: {},
+                recentErrors: [],
+                toolCallCounts: {},
+                uniqueErrors: [],
+                recentErrorEntries: [],
+                toolCatalog: [],
+            };
+        }
+
+        if (gmSummary) {
+            // 把每一个 pending 条目里的统计值归并累加回 gmSummary
+            for (const pending of pendingArchives) {
+                gmSummary.totalCalls += pending.totalCalls;
+                gmSummary.totalInputTokens += pending.totalInputTokens;
+                gmSummary.totalOutputTokens += pending.totalOutputTokens;
+                gmSummary.totalCacheRead += pending.totalCacheRead;
+                gmSummary.totalCredits += pending.totalCredits;
+
+                // 合并每个模型的 Breakdown
+                for (const [modelKey, calls] of Object.entries(pending.modelCalls)) {
+                    let mStats = gmSummary.modelBreakdown[modelKey];
+                    if (!mStats) {
+                        mStats = {
+                            callCount: 0,
+                            stepsCovered: 0,
+                            totalInputTokens: 0,
+                            totalOutputTokens: 0,
+                            totalThinkingTokens: 0,
+                            totalCacheRead: 0,
+                            totalCacheCreation: 0,
+                            totalCredits: 0,
+                            avgTTFT: 0, minTTFT: 0, maxTTFT: 0, avgStreaming: 0, cacheHitRate: 0,
+                            responseModel: '', apiProvider: '', completionConfig: {} as any, hasSystemPrompt: false, toolCount: 0, promptSectionTitles: [], totalRetries: 0, errorCount: 0, creditCallCount: 0, exactCallCount: 0, placeholderOnlyCalls: 0, contextWindowCapacity: 0
+                        };
+                        gmSummary.modelBreakdown[modelKey] = mStats;
+                    }
+                    mStats.callCount += calls;
+                    // 分摊 pending 的 token 计数到各模型
+                    if (pending.totalCalls > 0) {
+                        const ratio = calls / pending.totalCalls;
+                        mStats.totalInputTokens += Math.round(pending.totalInputTokens * ratio);
+                        mStats.totalOutputTokens += Math.round(pending.totalOutputTokens * ratio);
+                        mStats.totalCacheRead += Math.round(pending.totalCacheRead * ratio);
+                        mStats.totalCredits += Math.round(pending.totalCredits * ratio);
+                    }
+                }
+            }
+        }
+    }
+    const hasGM = !!(gmSummary && gmSummary.totalCalls > 0);
 
     // 3. Calculate cost
     let costTotal: number | undefined;
@@ -121,6 +194,33 @@ export function performDailyArchival(
         costPerModel = {};
         for (const row of result.rows) {
             if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
+        }
+    }
+
+    // 3b. 保底合并 pendingArchives 中的预估费用 (防止未配好价格表时费用丢失)
+    if (pendingArchives.length > 0) {
+        let pendingCostTotal = 0;
+        const pendingCostPerModel: Record<string, number> = {};
+        for (const pending of pendingArchives) {
+            if (pending.estimatedCost && pending.estimatedCost > 0) {
+                pendingCostTotal += pending.estimatedCost;
+                
+                // 将费用按照 modelCalls 的比例分摊到各模型中
+                for (const [modelKey, calls] of Object.entries(pending.modelCalls)) {
+                    if (pending.totalCalls > 0) {
+                        const ratio = calls / pending.totalCalls;
+                        pendingCostPerModel[modelKey] = (pendingCostPerModel[modelKey] || 0) + (pending.estimatedCost * ratio);
+                    }
+                }
+            }
+        }
+        
+        if (pendingCostTotal > 0) {
+            costTotal = (costTotal || 0) + pendingCostTotal;
+            if (!costPerModel) { costPerModel = {}; }
+            for (const [modelKey, cost] of Object.entries(pendingCostPerModel)) {
+                costPerModel[modelKey] = (costPerModel[modelKey] || 0) + cost;
+            }
         }
     }
 

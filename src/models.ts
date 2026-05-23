@@ -36,8 +36,27 @@ export const DEFAULT_CONTEXT_LIMIT = 160_000;
 // the LS GetUserStatus API. No hardcoded model names.
 
 let modelDisplayNames: Record<string, string> = {};
-/** responseModel -> placeholder ID reverse map (populated from GM data). */
-let responseModelAliases: Record<string, string> = {};
+/** responseModel -> placeholder ID reverse map (populated from GM data).
+ *  Pre-seeded with known stable aliases so findPricing works before fetchAll.
+ *  Source: GetAvailableModels API (all_models_parameter_map.md 2026-05-22) */
+let responseModelAliases: Record<string, string> = {
+    // Gemini Pro aliases
+    'gemini-pro-default': 'MODEL_PLACEHOLDER_M16',       // legacy responseModel for M16
+    'gemini-pro-agent': 'MODEL_PLACEHOLDER_M16',          // current model_id for M16
+    'gemini-3.1-pro-high': 'MODEL_PLACEHOLDER_M37',       // model_id for M37
+    'gemini-3.1-pro-low': 'MODEL_PLACEHOLDER_M36',        // model_id for M36
+    // Gemini Flash aliases
+    'gemini-3-flash-a': 'MODEL_PLACEHOLDER_M20',          // legacy responseModel for 3.5 Flash
+    'gemini-3-flash-agent': 'MODEL_PLACEHOLDER_M133',     // model_id for M133 (3.5 Flash High)
+    'gemini-3-flash-b': 'MODEL_PLACEHOLDER_M133',          // responseModel alias for M133
+    'gemini-3.5-flash-low': 'MODEL_PLACEHOLDER_M20',      // model_id for M20 (3.5 Flash Medium)
+    'gemini-3-flash': 'MODEL_PLACEHOLDER_M18',             // backend command model
+    // Claude aliases
+    'claude-opus-4-6-thinking': 'MODEL_PLACEHOLDER_M26',  // model_id for Opus
+    'claude-sonnet-4-6': 'MODEL_PLACEHOLDER_M35',          // model_id for Sonnet
+    // GPT-OSS
+    'gpt-oss-120b-medium': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
+};
 /** Whether to append diagnostic short ID suffix (e.g. "(M16)") to display names. */
 let showModelShortId = false;
 
@@ -79,12 +98,12 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M16': 'Gemini 3.1 Pro (High)',
     'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
     'MODEL_PLACEHOLDER_M36': 'Gemini 3.1 Pro (Low)',
-    'MODEL_PLACEHOLDER_M133': 'Gemini 3 Flash',         // checkpoint ghost / legacy model (gemini-3-flash-b)
-    'MODEL_PLACEHOLDER_M132': 'Gemini 3.5 Flash',       // current active
-    'MODEL_PLACEHOLDER_M20': 'Gemini 3.5 Flash (Medium)',  // gemini-3.5-flash-low / same family as M132
-    'MODEL_PLACEHOLDER_M84': 'Gemini 3 Flash',         // Replaced by M133
-    'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',         // Replaced by M84 → M133
-    'MODEL_PLACEHOLDER_M18': 'Gemini 3 Flash',
+    'MODEL_PLACEHOLDER_M133': 'Gemini 3.5 Flash (High)',  // gemini-3-flash-agent (renamed from "Gemini 3 Flash")
+    'MODEL_PLACEHOLDER_M132': 'Gemini 3.5 Flash',         // retired predecessor of M133
+    'MODEL_PLACEHOLDER_M20': 'Gemini 3.5 Flash (Medium)', // gemini-3.5-flash-low
+    'MODEL_PLACEHOLDER_M84': 'Gemini 3 Flash',            // retired (replaced by M133)
+    'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',            // retired (replaced by M84)
+    'MODEL_PLACEHOLDER_M18': 'Gemini 3 Flash',            // backend command model
     'MODEL_PLACEHOLDER_M35': 'Claude Sonnet 4.6 (Thinking)',
     'MODEL_PLACEHOLDER_M26': 'Claude Opus 4.6 (Thinking)',
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'GPT-OSS 120B (Medium)',

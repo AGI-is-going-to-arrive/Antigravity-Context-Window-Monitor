@@ -21,6 +21,8 @@ export interface ResetPool {
     resetTime: string;
     /** Model labels in this pool (e.g. ["Claude 3.5 Sonnet", "GPT-4o"]) */
     modelLabels: string[];
+    /** Model IDs in this pool (for stable language-independent matching) */
+    modelIds: string[];
     /** Whether at least one model in this pool has consumed quota (remainingFraction < 1.0) */
     hasUsage?: boolean;
     /** Minimum remaining quota percentage across all models in this pool (0–100). undefined = unknown */
