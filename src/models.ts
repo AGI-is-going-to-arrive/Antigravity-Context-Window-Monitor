@@ -18,9 +18,9 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     'MODEL_PLACEHOLDER_M16': 128_000,   // Gemini 3.1 Pro (High) — new ID (gemini-pro-default), cp_limit=128000
     'MODEL_PLACEHOLDER_M37': 128_000,   // [Legacy] Gemini 3.1 Pro (High) — now demoted to planModel/dispatcher
     'MODEL_PLACEHOLDER_M36': 128_000,   // Gemini 3.1 Pro (Low)  — same pool as High
-    'MODEL_PLACEHOLDER_M133': 128_000,  // Gemini 3 Flash (checkpoint ghost, gemini-3-flash-b)
-    'MODEL_PLACEHOLDER_M132': 128_000,  // Gemini 3.5 Flash (High) — current ID (gemini-3-flash-agent), cp_threshold=128000
-    'MODEL_PLACEHOLDER_M20': 128_000,   // Gemini 3.5 Flash (Medium) — (gemini-3.5-flash-low), same checkpointer as M132
+    'MODEL_PLACEHOLDER_M133': 256_000,  // Gemini 3.5 Flash (High) — current ID (gemini-3-flash-agent), cp_limit=256000
+    'MODEL_PLACEHOLDER_M132': 256_000,  // Gemini 3.5 Flash (High) — legacy alias
+    'MODEL_PLACEHOLDER_M20': 256_000,   // Gemini 3.5 Flash (Medium) — (gemini-3.5-flash-low), same checkpointer as M133
     'MODEL_PLACEHOLDER_M84': 128_000,   // [Legacy] Gemini 3 Flash — old ID
     'MODEL_PLACEHOLDER_M47': 128_000,   // [Legacy] Gemini 3 Flash (older ID)
     'MODEL_PLACEHOLDER_M18': 160_000,   // [Legacy] Gemini 3 Flash (older ID)
@@ -118,10 +118,6 @@ export function getContextLimit(
     model: string,
     customLimits?: Record<string, number>
 ): number {
-    if (customLimits?.[model] !== undefined) {
-        // Clamp to minimum 1 to prevent negative or zero limits
-        return Math.max(1, customLimits[model]);
-    }
     return DEFAULT_CONTEXT_LIMITS[model] || DEFAULT_CONTEXT_LIMIT;
 }
 

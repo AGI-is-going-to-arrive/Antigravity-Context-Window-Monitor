@@ -110,14 +110,6 @@ function sanitizeConfigValue(key: string, value: unknown): unknown {
             return clamp(Number(value) || 100, 10, 500);
         case 'activity.maxArchives':
             return clamp(Number(value) || 20, 1, 100);
-        case 'contextLimits': {
-            const raw = (value && typeof value === 'object') ? value as Record<string, unknown> : {};
-            const normalized: Record<string, number> = {};
-            for (const [model, limit] of Object.entries(raw)) {
-                normalized[model] = Math.max(1000, Math.round(Number(limit) || 1000));
-            }
-            return normalized;
-        }
         default:
             return value;
     }
@@ -373,7 +365,6 @@ export function showMonitorPanel(p: PanelPayload): void {
                 'statusBar.showResetCountdown',
                 'statusBar.showAiCredits',
                 'showModelInternalId',
-                'contextLimits',
                 'quotaNotificationThreshold',
                 'activity.maxRecentSteps',
                 'activity.maxArchives',

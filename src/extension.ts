@@ -420,35 +420,6 @@ export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuota
     });
 }
 
-const PR_56_STALE_CONTEXT_LIMITS: Record<string, number[]> = {
-    MODEL_PLACEHOLDER_M16: [120_000],
-    MODEL_PLACEHOLDER_M37: [120_000],
-    MODEL_PLACEHOLDER_M36: [120_000],
-    MODEL_PLACEHOLDER_M133: [160_000],
-    MODEL_PLACEHOLDER_M132: [160_000],
-    MODEL_PLACEHOLDER_M84: [160_000],
-    MODEL_PLACEHOLDER_M47: [160_000],
-    MODEL_OPENAI_GPT_OSS_120B_MEDIUM: [128_000],
-};
-
-export function removeStaleContextLimitOverrides(
-    limits: Record<string, number> | undefined,
-): Record<string, number> | undefined {
-    if (!limits) { return limits; }
-    let changed = false;
-    const next: Record<string, number> = {};
-    for (const [model, limit] of Object.entries(limits)) {
-        const staleValues = PR_56_STALE_CONTEXT_LIMITS[model];
-        if (staleValues?.includes(Number(limit))) {
-            changed = true;
-            continue;
-        }
-        next[model] = limit;
-    }
-    if (!changed) { return limits; }
-    return Object.keys(next).length > 0 ? next : undefined;
-}
-
 function updateAccountSnapshot(
     userInfo: UserStatusInfo,
     configs: ModelConfig[],
@@ -801,46 +772,6 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize i18n from persisted state
     initI18n(context);
     initI18nFromState(durableGlobalState);
-
-    // ── One-time migration: contextLimits stale defaults → platform thresholds ──
-    // Old versions used 1M (model native limits), and v1.16.6/v1.16.7 could
-    // persist explicit defaults that now mask the corrected v1.16.8 defaults.
-    {
-        const migrationKey = 'contextLimitsMigrationV';
-        const migrationVersion = durableGlobalState.get<number>(migrationKey, 0);
-        const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
-        const inspection = cfg.inspect<Record<string, number>>('contextLimits');
-        if (migrationVersion < 1) {
-            // Check if user has explicit global/workspace settings with old 1M values
-            const hasOldGlobal = inspection?.globalValue && Object.values(inspection.globalValue).some(v => v >= 1_000_000);
-            const hasOldWorkspace = inspection?.workspaceValue && Object.values(inspection.workspaceValue).some(v => v >= 1_000_000);
-            if (hasOldGlobal) {
-                cfg.update('contextLimits', undefined, vscode.ConfigurationTarget.Global);
-                log('Migration v1: Reset global contextLimits from 1M to platform defaults');
-            }
-            if (hasOldWorkspace) {
-                cfg.update('contextLimits', undefined, vscode.ConfigurationTarget.Workspace);
-                log('Migration v1: Reset workspace contextLimits from 1M to platform defaults');
-            }
-            durableGlobalState.update(migrationKey, 1);
-            if (hasOldGlobal || hasOldWorkspace) {
-                log('Context limits migration complete — old 1M values cleared, package.json defaults will take effect');
-            }
-        }
-        if (migrationVersion < 2) {
-            const migratedGlobal = removeStaleContextLimitOverrides(inspection?.globalValue);
-            const migratedWorkspace = removeStaleContextLimitOverrides(inspection?.workspaceValue);
-            if (migratedGlobal !== inspection?.globalValue) {
-                cfg.update('contextLimits', migratedGlobal, vscode.ConfigurationTarget.Global);
-                log('Migration v2: Cleared stale global contextLimits values so v1.16.8 defaults take effect');
-            }
-            if (migratedWorkspace !== inspection?.workspaceValue) {
-                cfg.update('contextLimits', migratedWorkspace, vscode.ConfigurationTarget.Workspace);
-                log('Migration v2: Cleared stale workspace contextLimits values so v1.16.8 defaults take effect');
-            }
-            durableGlobalState.update(migrationKey, 2);
-        }
-    }
 
     // Restore persisted lastKnownModel from workspaceState
     lastKnownModel = durableWorkspaceState.get<string>('lastKnownModel', '');
@@ -1368,9 +1299,7 @@ async function pollContextUsage(): Promise<void> {
         lastTrajectories = trajectories;
 
         if (trajectories.length === 0) {
-            const config0 = vscode.workspace.getConfiguration('antigravityContextMonitor');
-            const customLimits0 = config0.get<Record<string, number>>('contextLimits');
-            const noConvLimit = getContextLimit(lastKnownModel, customLimits0);
+            const noConvLimit = getContextLimit(lastKnownModel);
             const noConvLimitStr = formatContextLimit(noConvLimit);
             statusBar.showNoConversation(noConvLimitStr, lastKnownModel);
             currentUsage = null;
@@ -1521,9 +1450,7 @@ async function pollContextUsage(): Promise<void> {
         }
 
         if (!activeTrajectory) {
-            const config = vscode.workspace.getConfiguration('antigravityContextMonitor');
-            const customLimits = config.get<Record<string, number>>('contextLimits');
-            const idleLimit = getContextLimit(lastKnownModel, customLimits);
+            const idleLimit = getContextLimit(lastKnownModel);
             const idleLimitStr = formatContextLimit(idleLimit);
             log(`No active trajectory — showing idle (model=${lastKnownModel || 'default'}, limit=${idleLimitStr})`);
             statusBar.showIdle(idleLimitStr, lastKnownModel);
@@ -1539,16 +1466,13 @@ async function pollContextUsage(): Promise<void> {
         log(`Selected: "${activeTrajectory.summary}" (${activeTrajectory.cascadeId.substring(0, 8)}) reason=${selectionReason} status=${activeTrajectory.status}`);
 
         // 5. Get context usage for selected trajectory
-        const config = vscode.workspace.getConfiguration('antigravityContextMonitor');
-        const customLimits = config.get<Record<string, number>>('contextLimits');
-
         const persistedUsage = monitorStore.getSnapshot(activeTrajectory.cascadeId);
         if (hasSameUsageInputs(currentUsage, activeTrajectory)) {
-            currentUsage = rehydrateUsageForDisplay(currentUsage, customLimits);
+            currentUsage = rehydrateUsageForDisplay(currentUsage);
         } else if (hasSameUsageInputs(persistedUsage, activeTrajectory)) {
-            currentUsage = rehydrateUsageForDisplay(persistedUsage, customLimits);
+            currentUsage = rehydrateUsageForDisplay(persistedUsage);
         } else {
-            currentUsage = await getContextUsage(lsInfo, activeTrajectory, customLimits, abortController.signal);
+            currentUsage = await getContextUsage(lsInfo, activeTrajectory, undefined, abortController.signal);
         }
         log(`  → contextUsed=${currentUsage.contextUsed} model=${currentUsage.model} steps=${currentUsage.stepCount} estimated=${currentUsage.isEstimated} ckpt_in=${currentUsage.lastModelUsage?.inputTokens ?? 'none'} ckpt_out=${currentUsage.lastModelUsage?.outputTokens ?? 'none'} estDelta=${currentUsage.estimatedDeltaSinceCheckpoint}`);
 
@@ -1616,10 +1540,10 @@ async function pollContextUsage(): Promise<void> {
             }
             const cachedUsage = monitorStore.getSnapshot(t.cascadeId);
             if (hasSameUsageInputs(cachedUsage, t)) {
-                return rehydrateUsageForDisplay(cachedUsage, customLimits);
+                return rehydrateUsageForDisplay(cachedUsage);
             }
             try {
-                return await getContextUsage(lsInfo!, t, customLimits, abortController.signal);
+                return await getContextUsage(lsInfo!, t, undefined, abortController.signal);
             } catch {
                 return null;
             }

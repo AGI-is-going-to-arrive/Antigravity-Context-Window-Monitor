@@ -13,8 +13,14 @@
 - **GM data loss during daily calendar archival / 每日归档漏写重置数据导致的记账漏洞**: Midnight archival (`performDailyArchival`) wrote only `gmTracker.getArchivalSummary()` (active cache) to the `DailyStore` calendar snapshot. However, intra-day baselined GM calls in `_pendingArchives` were completely ignored and cleared on `gmTracker.reset()`, causing all calls consumed prior to a quota reset to vanish from the calendar. If the IDE was reloaded or restarted, `_cache.calls` was slimmed to `[]` during serialization, producing zero-data calendar summaries. Fix: updated `performDailyArchival` to explicitly fetch and merge all entries from `gmTracker.getPendingArchives()` (including call counts, tokens, credits, and cost breakdown proportions) into the daily summary before saving to `DailyStore`, ensuring complete daily telemetry even after IDE restarts.
   凌晨日历归档（`performDailyArchival`）仅将活跃缓存 `gmTracker.getArchivalSummary()` 写入 `DailyStore` 日历快照。但白天因额度重置转移到待归档区（`_pendingArchives`）的历史数据被彻底漏掉，并在 `gmTracker.reset()` 时被清空，导致重置前被消耗的数据在日历中完全蒸发。并且，如果 IDE 中途重载或重启，缓存中的明细在序列化时会被剥离清空，导致归档出来的日历数据为 0。修复：更新 `performDailyArchival`，在写入 `DailyStore` 前，强制提取并归并 `gmTracker.getPendingArchives()` 中保存的重置汇总数据（包括调用数、Token、AI 积分和预估费用比例），确保即便 IDE 经历重启，日历数据也百分之百完整精确。
 
+### ⚙️ Refactored & Synchronized / 重构与同步
+
+- **Removed redundant model context limits configuration & aligned limits with official checkpointer / 废除了模型上下文限制自定义设置，并将 Flash 系列上限对准 Checkpointer 硬性指标**:
+  Official RPC diagnostics (`GetAvailableModels`) revealed that the Cascade checkpointer strictly enforces static truncation thresholds (e.g. 256K for Flash, 128K for Pro, 160K for Sonnet) under the hood. Modifying the context limits in settings did not affect these hard physical constraints. To simplify configurations and remove misleading options, the `contextLimits` settings config, the `Model Context Limits` card inside the Settings WebView, and its entire frontend buttons/inputs saving and restoring logic were completely deprecated and removed. At the same time, aligned static defaults in `DEFAULT_CONTEXT_LIMITS` for the Gemini 3.5 Flash family (`MODEL_PLACEHOLDER_M133`, `MODEL_PLACEHOLDER_M132`, `MODEL_PLACEHOLDER_M20`) from `128_000` to the actual platform truncation threshold of **`256,000`**.
+  官方 RPC 诊断（`GetAvailableModels`）表明，底层完全由 Cascade 官方 Checkpointer 硬性强制执行静态截断阈值（Flash 为 256K，Pro 为 128K，Sonnet 为 160K），用户在前台的自定义修改根本无法突破物理硬限制。为简化配置、消除误导性选项，本次重构彻底删除了 `contextLimits` 设置项、Webview 设置页面中的“模型上下文限制（Model Context Limits）”卡片区域、以及前端与之关联的事件监听、保存与恢复默认的全部控制逻辑；同时，将 Gemini 3.5 Flash 系列（M133、M132、M20）在 `DEFAULT_CONTEXT_LIMITS` 中的静态默认上限从偏低的 `128_000` 修正为了官方实际执行的 **`256,000`**。
+
 ### 📊 Stats / 统计
 
-- **Files changed**: 5 (`src/statusbar.ts`, `src/extension.ts`, `src/activity-panel.ts`, `src/quota-tracker.ts`, `src/daily-archival.ts`)
+- **Files changed**: 10 (`package.json`, `src/models.ts`, `src/extension.ts`, `src/webview-panel.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/statusbar.ts`, `src/activity-panel.ts`, `src/quota-tracker.ts`, `src/daily-archival.ts`)
 - **TypeScript compile**: Zero errors
-- **Tests**: 6 files / 74 tests passing (`npm test`)
+- **Tests**: 70 tests passing (`npm test` / `npx vitest run`)

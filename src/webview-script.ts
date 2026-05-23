@@ -58,39 +58,12 @@ export function collectPricingInputOverrides(inputs: ArrayLike<PricingInputLike>
     return result;
 }
 
-export function resetModelLimitInputsToDefaults(inputs: ArrayLike<ModelLimitInputLike>): void {
-    for (let i = 0; i < inputs.length; i++) {
-        const input = inputs[i];
-        const parsed = Number.parseInt(input.getAttribute('data-default') || '', 10);
-        if (Number.isFinite(parsed) && parsed >= 1000) {
-            input.value = String(parsed);
-        }
-    }
-}
-
-export function collectModelLimitOverrides(inputs: ArrayLike<ModelLimitInputLike>): Record<string, number> {
-    const limits: Record<string, number> = {};
-    for (let i = 0; i < inputs.length; i++) {
-        const input = inputs[i];
-        const model = (input.getAttribute('data-model') || '').trim();
-        const value = Number.parseInt(input.value, 10);
-        if (!model || !Number.isFinite(value) || value < 1000) { continue; }
-
-        const defaultValue = Number.parseInt(input.getAttribute('data-default') || '', 10);
-        if (Number.isFinite(defaultValue) && value === defaultValue) { continue; }
-        limits[model] = value;
-    }
-    return limits;
-}
-
 /** Returns the complete <script> block content (without <script> tags). */
 export function getScript(): string {
     return `
         (function() {
             var vscode = acquireVsCodeApi();
             var collectPricingInputOverrides = (${collectPricingInputOverrides.toString()});
-            var resetModelLimitInputsToDefaults = (${resetModelLimitInputsToDefaults.toString()});
-            var collectModelLimitOverrides = (${collectModelLimitOverrides.toString()});
             var savedState = vscode.getState() || {};
             var copiedText = ${JSON.stringify(`✓ ${tBi('Copied', '已复制')}`)};
             var doneText = ${JSON.stringify(`✓ ${tBi('Done', '完成')}`)};
@@ -609,29 +582,6 @@ export function getScript(): string {
                 });
             }
 
-            // ─── Settings: Model Limits Save ───
-            var modelLimitsSaveBtn = document.getElementById('modelLimitsSaveBtn');
-            if (modelLimitsSaveBtn) {
-                modelLimitsSaveBtn.addEventListener('click', function() {
-                    var inputs = document.querySelectorAll('.model-limit-input');
-                    vscode.postMessage({ command: 'setConfig', key: 'contextLimits', value: collectModelLimitOverrides(inputs) });
-                    var fb = document.getElementById('modelLimitsFeedback');
-                    if (fb) { fb.textContent = '✓'; fb.style.opacity = '1'; setTimeout(function(){ fb.style.opacity = '0'; }, 2000); }
-                });
-            }
-
-            // ─── Settings: Model Limits Restore Defaults ───
-            var modelLimitsResetBtn = document.getElementById('modelLimitsResetBtn');
-            if (modelLimitsResetBtn) {
-                modelLimitsResetBtn.addEventListener('click', function() {
-                    var inputs = document.querySelectorAll('.model-limit-input');
-                    resetModelLimitInputsToDefaults(inputs);
-                    vscode.postMessage({ command: 'setConfig', key: 'contextLimits', value: {} });
-                    var fb = document.getElementById('modelLimitsFeedback');
-                    if (fb) { fb.textContent = '\u2713'; fb.style.opacity = '1'; setTimeout(function(){ fb.style.opacity = '0'; }, 2000); }
-                });
-            }
-
             // ─── Language Switcher ───
             var switcher = document.querySelector('.lang-switcher');
             if (switcher) {
@@ -690,7 +640,6 @@ export function getScript(): string {
                 if (msg.command === 'configSaved') {
                     var feedbackMap = {
                         'pollingInterval': 'pollingFeedback',
-                        'contextLimits': 'modelLimitsFeedback',
                         'quotaNotificationThreshold': 'quotaNotifyFeedback',
                         'statePath': 'statePathFeedback',
                         'panelShowTabScrollHint': 'panelHintFeedback'

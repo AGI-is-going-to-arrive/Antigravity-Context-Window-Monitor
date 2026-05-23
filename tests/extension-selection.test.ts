@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
     buildUsageScopeTrajectories,
     groupModelConfigsByQuotaPool,
-    removeStaleContextLimitOverrides,
     selectRunningTrajectoryCandidate,
 } from '../src/extension';
 import { CascadeStatus } from '../src/constants';
@@ -173,26 +172,5 @@ describe('groupModelConfigsByQuotaPool', () => {
         expect(groups).toHaveLength(1);
         expect(groups[0].modelIds).toEqual(['MODEL_FUTURE_A', 'MODEL_FUTURE_B']);
         expect(groups[0].minFraction).toBe(0.5);
-    });
-});
-
-describe('removeStaleContextLimitOverrides', () => {
-    it('drops only PR 56 stale default overrides', () => {
-        expect(removeStaleContextLimitOverrides({
-            MODEL_PLACEHOLDER_M133: 160000,
-            MODEL_OPENAI_GPT_OSS_120B_MEDIUM: 128000,
-            MODEL_PLACEHOLDER_M35: 120000,
-            CUSTOM_MODEL: 123456,
-        })).toEqual({
-            MODEL_PLACEHOLDER_M35: 120000,
-            CUSTOM_MODEL: 123456,
-        });
-    });
-
-    it('returns undefined when all explicit overrides are stale defaults', () => {
-        expect(removeStaleContextLimitOverrides({
-            MODEL_PLACEHOLDER_M84: 160000,
-            MODEL_PLACEHOLDER_M16: 120000,
-        })).toBeUndefined();
     });
 });
