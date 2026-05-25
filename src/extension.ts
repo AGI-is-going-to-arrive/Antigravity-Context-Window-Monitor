@@ -36,6 +36,8 @@ import { mergeModelDNAState, PersistedModelDNA, restoreModelDNAState, serializeM
 import type { StorageDiagnostics } from './webview-settings-tab';
 import type { AccountSnapshot } from './activity-panel';
 import { isBillingDay, isBillingDaySetting } from './billing-day';
+import { expandModelIdsToPool } from './pool-utils';
+import { DailyLedger, type DailyLedgerState } from './daily-ledger';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -61,6 +63,7 @@ let gmTracker: GMTracker;
 let lastGMSummary: GMSummary | null = null;
 let pricingStore: PricingStore;
 let dailyStore: DailyStore;
+let dailyLedger: DailyLedger;
 let monitorStore: MonitorStore;
 let durableState: DurableState;
 let durableGlobalState: StateBucket;
@@ -350,7 +353,7 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         activitySummary: activityTracker?.getSummary() ?? null,
         archives: activityTracker?.getArchives(),
         activityTracker,
-        gmSummary: lastGMSummary,
+        gmSummary: gmTracker.getUiSummary(),
         gmFullSummary: gmTracker.getFullSummary(),
         gmConversations: monitorStore.getGMConversations(),
         pricingStore,
@@ -359,6 +362,8 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         modelDNA: persistedModelDNA,
         accountSnapshots: getAccountSnapshotArray(),
         pendingArchives: gmTracker.getPendingArchives(),
+        todayLedgerActive: dailyLedger.getTodayActive(),
+        ledgerSettled: dailyLedger.getSettledEntries(),
         ...extra,
     };
 }
@@ -805,6 +810,7 @@ function performDailyArchival(force = false): void {
         lastGMSummary,
         persistedModelDNA,
         lastArchivalDateKey,
+        dailyLedger,
         persist: (updates) => {
             lastArchivalDateKey = updates.lastArchivalDateKey;
             lastGMSummary = updates.lastGMSummary;
@@ -815,6 +821,7 @@ function performDailyArchival(force = false): void {
             durableGlobalState.update('lastArchivalDateKey', lastArchivalDateKey);
             durableGlobalState.update('activityTrackerState', activityTracker.serialize());
             durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+            durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
             persistGMSummaryToFile(lastGMSummary);
         },
         log,
@@ -844,11 +851,17 @@ export function activate(context: vscode.ExtensionContext): void {
     quotaTracker = new QuotaTracker(context, durableGlobalState);
     quotaTracker.onQuotaReset = (modelIds: string[]) => {
         // ── Baseline current account's GM calls for the reset pool ──
-        // No DailyStore snapshot here — midnight archival will use
-        // getArchivalSummary() which includes both pending-archive and
-        // active calls, giving DailyStore the complete day's picture.
-        const baselinedCount = gmTracker.baselineForQuotaReset(undefined, modelIds);
-        log(`Quota reset detected: [${modelIds.join(', ')}] — ${baselinedCount} GM calls baselined for new cycle`);
+        const expandedIds = expandModelIdsToPool(modelIds, cachedModelConfigs);
+        const baselinedCount = gmTracker.baselineForQuotaReset(undefined, expandedIds);
+        log(`Quota reset detected: [${modelIds.join(', ')}] (expanded to [${expandedIds.join(', ')}]) — ${baselinedCount} GM calls baselined for new cycle`);
+
+        // ── Settle this pool's data in DailyLedger ──
+        // Moves matching model data from "active" to "settled" (pending midnight flush)
+        const settled = dailyLedger.settleForQuotaReset(expandedIds, currentAccountEmail);
+        if (settled) {
+            log(`DailyLedger settled: ${settled.totalCalls} calls for pool [${settled.poolModelLabels.join(', ')}]`);
+            durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+        }
 
         // Update cached summary and persist
         lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
@@ -903,6 +916,9 @@ export function activate(context: vscode.ExtensionContext): void {
     currentAccountEmail = gmTracker.getCurrentAccount();
     dailyStore = new DailyStore();
     dailyStore.init(durableGlobalState);
+    // Initialize DailyLedger — restores from durable state (auto-discards stale dates)
+    const savedLedger = durableGlobalState.get<DailyLedgerState | undefined>('dailyLedgerState', undefined);
+    dailyLedger = DailyLedger.restore(savedLedger);
 
     // ── One-time migration: auto-recover data from legacy Antigravity (pre-2.0) ──
     // Detects old "Antigravity" globalState DB and imports calendar + language.
@@ -1692,6 +1708,29 @@ async function pollContextUsage(): Promise<void> {
                     }
                 } catch { /* GM fetch failure is non-critical */ }
 
+                // ── DailyLedger: record new GM calls incrementally ──
+                // This is the core "write-once" mechanism: once a call is recorded
+                // in the ledger, it survives even if the LS drops the conversation.
+                try {
+                    const { entries: newEntries, debug: ledgerDebug, revertedCascadeIds } = gmTracker.getNewCallsSinceLastRecord();
+                    // Clear stale dedup IDs for reverted conversations BEFORE recording
+                    for (const cid of revertedCascadeIds) {
+                        dailyLedger.clearRecordedIdsForConversation(cid);
+                        log(`[DailyLedger] cleared dedup IDs for reverted conversation ${cid.substring(0, 8)}`);
+                    }
+                    if (newEntries.length > 0) {
+                        const added = dailyLedger.recordCalls(newEntries);
+                        log(`[DailyLedger] extracted=${newEntries.length} added=${added} dedup_rejected=${newEntries.length - added}`);
+                        for (const d of ledgerDebug) { log(`[DailyLedger]   ${d}`); }
+                        if (added > 0) {
+                            durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+                        }
+                    }
+                    if (revertedCascadeIds.length > 0) {
+                        durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+                    }
+                } catch { /* Ledger recording failure is non-critical */ }
+
                 // Inject GM precision data into activity timeline events.
                 // GM is the SOLE source of truth for timeline — always inject when data exists.
                 let timelineChanged = false;
@@ -1914,18 +1953,21 @@ function checkCachedAccountResets(): void {
             const openMonitorLabel = tBi('Open Monitor', '打开监控');
 
             // ── Baseline this cached account's GM calls for the expired pool only ──
-            // No DailyStore snapshot here — midnight archival will use
-            // getArchivalSummary() which includes both pending-archive and
-            // active calls, giving DailyStore the complete day's picture.
             const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelIds || pool.modelLabels);
             // Also archive any active QuotaTracker sessions for this cached account's pool.
             // Without this, sessions stay in 'tracking' forever because processUpdate()
             // never receives API configs for non-active accounts.
             const archivedSessions = quotaTracker.archiveExpiredSessions(snap.email, pool.modelIds || pool.modelLabels);
+            // ── Settle this pool in DailyLedger ──
+            const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, snap.email);
             if (baselinedCount > 0 || archivedSessions > 0) {
                 log(`[ResetCheck]   ${baselinedCount} GM calls baselined, ${archivedSessions} quota sessions archived`);
+                if (settled) {
+                    log(`[ResetCheck]   DailyLedger settled: ${settled.totalCalls} calls for [${settled.poolModelLabels.join(', ')}]`);
+                }
                 lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
                 durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+                durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
                 persistGMSummaryToFile(lastGMSummary);
             } else {
                 log(`[ResetCheck]   baselineForQuotaReset returned 0 — no calls to archive`);

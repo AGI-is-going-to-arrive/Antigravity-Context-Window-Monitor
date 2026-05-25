@@ -1,5 +1,43 @@
 # 待定变更日志 / Changelog Draft (v3)
 
+## [1.17.2-Pending] - 2026-05-25
+
+### ⚙️ Refactored / 重构
+
+- **Independent DailyLedger for GM call accounting / 独立的 DailyLedger 实时增量账本**:
+  The previous archival system relied on the Language Server's conversation cache, which is volatile — restarting the IDE or the LS dropping old conversations led to zero-data calendar entries. The new `DailyLedger` module records GM calls incrementally after every poll via `GMTracker.getNewCallsSinceLastRecord()`, with position-based tracking and `dedupKey` (cascadeId:arrayIndex) deduplication. Data is bucketed by date + account email and persisted to `globalState`, surviving IDE restarts.
+  旧的归档系统依赖 LS 的对话缓存（易失性数据）——重启 IDE 或 LS 丢弃旧对话后日历数据为空。新增 `DailyLedger` 模块，每次轮询后从 GMTracker 提取增量调用记录，采用位置追踪 + `dedupKey`（cascadeId:数组索引）去重机制。数据按日期+账号分桶，持久化到 `globalState`，跨重启不丢失。
+
+- **Quota-reset settlement decoupled from LS lifecycle / 额度重置结算与 LS 生命周期解耦**:
+  When a model's quota resets, `DailyLedger.settleForQuotaReset()` freezes the matching pool's accumulated stats into a separate "settled" bucket. This ensures pre-reset usage is preserved even if the LS subsequently drops the conversation data. At midnight, `rollover()` merges all active + settled data into the final daily snapshot for `DailyStore`.
+  模型配额重置时，`settleForQuotaReset()` 将对应池子的累积数据冻结到"已结算"区。即便 LS 随后丢弃对话数据，重置前的用量也不会丢失。午夜时 `rollover()` 将活跃 + 已结算数据合并写入日历快照。
+
+- **daily-archival.ts dual-path data sourcing / daily-archival.ts 双路径数据源**:
+  `performDailyArchival()` now prioritizes `DailyLedger.rollover()` as the GM data source. Falls back to the legacy `getArchivalSummary()` + `pendingArchives` path when the ledger is empty (e.g., fresh install transition period).
+  `performDailyArchival()` 现在优先使用 `DailyLedger.rollover()` 作为 GM 数据源。ledger 为空时（如刚安装的过渡期）降级到旧的 `getArchivalSummary()` + `pendingArchives` 路径。
+
+### 🐛 Fixed / 修复
+
+- **Placeholder-data dedup collision causing undercounting / 占位数据去重碰撞导致调用次数不足**:
+  For RUNNING conversations, the lightweight GM metadata API returns calls with zero tokens and empty stepIndices. The original content-based callId generated identical keys for all calls in the same conversation, causing the ledger to reject valid new calls as duplicates. Fix: tracker now provides an externally-guaranteed unique `dedupKey` (cascadeId:arrayIndex) for each call.
+  RUNNING 状态的对话中，轻量级 GM 元数据 API 返回的 calls 全是占位数据（token 为 0、stepIndices 为空），基于内容生成的 callId 碰撞，导致 ledger 误拒有效的新调用。修复：tracker 为每个 call 提供外部保证唯一的 `dedupKey`（cascadeId:数组索引）。
+
+- **Conversation revert breaking ledger accumulation / 对话回退后 ledger 停止累计**:
+  When a user reverts to an earlier step, the calls array shrinks but `_ledgerPositions` retained the old (higher) value, preventing any subsequent calls from being captured. Additionally, new calls at reused array indices had colliding dedupKeys with previously recorded calls. Fix: (1) clamp position down when calls array shrinks, (2) clear stale dedup IDs for the reverted conversation via `clearRecordedIdsForConversation()`.
+  用户回退对话步骤时，calls 数组缩短但 `_ledgerPositions` 保持旧的高值，后续新增的 call 全部无法捕获。此外，新 call 在复用的数组索引位置上与旧 call 的 dedupKey 碰撞。修复：(1) 检测到 calls 缩短时将 position 降至当前长度；(2) 通过 `clearRecordedIdsForConversation()` 清除该对话的旧 dedup 索引。
+
+### 🎨 UI / 界面
+
+- **"Today's Ledger" and "Settled" panels in GM Data tab / GM 数据标签页新增"今日累计"和"已结算"面板**:
+  Two new UI containers in the GM Data tab display real-time ledger data: a teal/cyan "Today's Ledger" panel showing active call accumulation per model, and an indigo/purple "Settled" panel showing data frozen by quota resets. Both panels clear at midnight after rollover.
+  GM 数据标签页新增两个 UI 容器：teal/cyan 主题的"今日累计"面板显示当前活跃的模型调用累积，indigo/purple 主题的"已结算"面板显示配额重置后冻结的数据。午夜归档后两个面板均清零。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 7 (`src/daily-ledger.ts` [NEW], `src/daily-archival.ts`, `src/extension.ts`, `src/gm/tracker.ts`, `src/gm/types.ts`, `src/activity-panel.ts`, `src/webview-panel.ts`)
+- **TypeScript compile**: Zero errors
+- **Tests**: 70 tests passing
+
 ## [1.17.1-Pending] - 2026-05-23
 
 ### 🐛 Fixed / 修复

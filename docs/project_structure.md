@@ -10,6 +10,7 @@ antigravity-context-monitor/
 ├── src/                          # TypeScript 源码
 │   ├── extension.ts              # 扩展入口：激活/停用、轮询调度、命令注册、状态恢复
 │   ├── daily-archival.ts         # 每日归档核心逻辑（可测试纯函数，依赖注入）
+│   ├── daily-ledger.ts           # 实时增量账本（按日期+账号分桶，去重记录，额度重置结算，午夜归档数据源）
 │   ├── discovery.ts              # Language Server 进程发现（跨平台）
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
 │   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
@@ -184,7 +185,18 @@ antigravity-context-monitor/
 
 ### daily-archival.ts -- 每日归档核心逻辑
 
-可测试纯函数模块，依赖通过 `DailyArchivalContext` 注入。日期滚动时归档昨日数据并重置 Tracker。
+可测试纯函数模块，依赖通过 `DailyArchivalContext` 注入。日期滚动时归档昨日数据并重置 Tracker。数据源优先使用 `DailyLedger.rollover()`（实时增量账本），无数据时降级到旧的 `getArchivalSummary()` + `pendingArchives` 路径。
+
+---
+
+### daily-ledger.ts -- 实时增量账本
+
+不依赖 LS 对话缓存生命周期的独立调用记录模块。按日期+账号分桶，每次轮询后通过 `GMTracker.getNewCallsSinceLastRecord()` 提取增量写入，调用数据一旦记录就不会丢失。核心方法：
+- `recordCalls(entries)` — 增量录入 + `dedupKey` 去重
+- `settleForQuotaReset(email, poolModels)` — 额度重置时将活跃桶数据冻结到已结算区
+- `rollover(dateKey)` — 午夜日结，返回完整日数据并清零
+- `clearRecordedIdsForConversation(cascadeId)` — 对话回退时清除旧 dedup 索引
+- `serialize()` / `restore()` — 持久化到 `globalState`
 
 ---
 
@@ -233,9 +245,11 @@ antigravity-context-monitor/
 
 ```text
 extension.ts (入口 + 调度)
+├── daily-ledger.ts       ← 实时增量账本（轮询录入 + 额度结算 + 午夜归档数据源）
 ├── daily-archival.ts     ← 每日归档核心逻辑（纯函数）
 │   ├── activity-tracker.ts
 │   ├── gm-tracker.ts
+│   ├── daily-ledger.ts   ← rollover() 提供完整日数据
 │   ├── daily-store.ts
 │   ├── pricing-store.ts
 │   └── model-dna-store.ts

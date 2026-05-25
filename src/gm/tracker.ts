@@ -31,6 +31,7 @@ import {
     extractCheckpointsFromTrajectorySteps,
 } from './parser';
 import { buildSummaryFromConversations, normalizeGMSummary, parseErrorCode, normalizeErrorMessage, MAX_RECENT_ERRORS } from './summary';
+import type { LedgerCallEntry } from '../daily-ledger';
 
 /** Deduplicate checkpoint summaries from multiple GM calls, keyed by stepIndex */
 function deduplicateCheckpoints(calls: GMCallEntry[]): GMCheckpointSummary[] {
@@ -107,6 +108,10 @@ export class GMTracker {
     private _persistedToolCatalogByAccount: Record<string, Record<string, { firstSeen: string; description?: string }>> = {};
     /** Tracks per-conversation RUNNING status to detect RUNNING→IDLE transition. */
     private _lastRunningStatus = new Map<string, boolean>();
+    /** Per-conversation call position already submitted to DailyLedger.
+     *  Key = cascadeId, Value = number of calls already recorded.
+     *  Used by getNewCallsSinceLastRecord() to extract incremental diff. */
+    private _ledgerPositions = new Map<string, number>();
     /** Whether fetchAll() has successfully repopulated calls[] since restore.
      *  When false, _cache.calls is empty (stripped during serialize) and
      *  _buildSummary() would return totalCalls=0. In that state, getters
@@ -823,6 +828,45 @@ export class GMTracker {
     }
 
     /**
+     * Extract GM calls that have not yet been recorded by the DailyLedger.
+     * Compares each conversation's call count against the last recorded position.
+     * Only returns calls from the current cycle (after baseline).
+     * Call this after fetchAll() in the polling loop.
+     */
+    getNewCallsSinceLastRecord(): { entries: LedgerCallEntry[]; debug: string[]; revertedCascadeIds: string[] } {
+        const entries: LedgerCallEntry[] = [];
+        const debug: string[] = [];
+        const revertedCascadeIds: string[] = [];
+        for (const [id, conv] of this._cache) {
+            if (conv.calls.length === 0) { continue; }
+            const baseline = this._callBaselines.get(id) || 0;
+            let lastRecorded = this._ledgerPositions.get(id) || 0;
+            // Conversation revert: user went back to an earlier step, shrinking
+            // the calls array.  Clamp position down so new calls from the
+            // reverted point onwards get captured.  Signal caller to clear
+            // stale dedup IDs for this conversation.
+            if (lastRecorded > conv.calls.length) {
+                debug.push(`${id.substring(0, 8)}: REVERT pos=${lastRecorded} → ${conv.calls.length}`);
+                lastRecorded = conv.calls.length;
+                revertedCascadeIds.push(id);
+            }
+            // Start from whichever is higher: baseline or last recorded position
+            const start = Math.max(baseline, lastRecorded);
+            const delta = conv.calls.length - start;
+            if (delta > 0) {
+                debug.push(`${id.substring(0, 8)}: bl=${baseline} pos=${lastRecorded} len=${conv.calls.length} → +${delta}`);
+            }
+            for (let i = start; i < conv.calls.length; i++) {
+                // dedupKey = cascadeId:arrayIndex — guaranteed unique within the cache
+                entries.push({ call: conv.calls[i], dedupKey: `${id}:${i}` });
+            }
+            // Update position to current call count
+            this._ledgerPositions.set(id, conv.calls.length);
+        }
+        return { entries, debug, revertedCascadeIds };
+    }
+
+    /**
      * Quota-cycle baseline: mark calls from the target account's reset pool as archived
      * so _buildSummary() excludes them. The new cycle starts with zero counts.
      * Calls remain in cache — midnight's performDailyArchival() will sweep them.
@@ -1109,6 +1153,7 @@ export class GMTracker {
         this._archivedAccountModelCutoffs.clear();
         this._callAccountMap.clear();
         this._pendingArchives = [];
+        this._ledgerPositions.clear();
         this._persistedToolCounts = {};
         this._persistedToolCountsByConv = {};
         this._persistedRecentErrors = [];
@@ -1136,6 +1181,7 @@ export class GMTracker {
         this._archivedAccountModelCutoffs.clear();
         this._callAccountMap.clear();
         this._pendingArchives = [];
+        this._ledgerPositions.clear();
         this._persistedToolCounts = {};
         this._persistedToolCountsByConv = {};
         this._persistedRecentErrors = [];
@@ -1385,6 +1431,7 @@ export class GMTracker {
             persistedRecentErrorsByAccount: Object.keys(this._persistedRecentErrorsByAccount).length > 0 ? this._persistedRecentErrorsByAccount : undefined,
             persistedUniqueErrorsByAccount: Object.keys(this._persistedUniqueErrorsByAccount).length > 0 ? this._persistedUniqueErrorsByAccount : undefined,
             persistedToolCatalogByAccount: Object.keys(this._persistedToolCatalogByAccount).length > 0 ? this._persistedToolCatalogByAccount : undefined,
+            ledgerPositions: this._ledgerPositions.size > 0 ? Object.fromEntries(this._ledgerPositions) : undefined,
         };
     }
 
@@ -1400,16 +1447,17 @@ export class GMTracker {
 
         // Seed baseline stubs so fetchAll() skips unchanged IDLE conversations
         for (const [id, stepCount] of Object.entries(data.baselines)) {
+            const savedConv = tracker._lastSummary?.conversations.find(c => c.cascadeId === id);
             tracker._cache.set(id, {
                 cascadeId: id,
-                title: '',  // will be filled on next fetchAll
+                title: savedConv?.title || '',
                 totalSteps: stepCount,
-                calls: [],
-                lifetimeCalls: tracker._lastSummary.conversations.find(c => c.cascadeId === id)?.lifetimeCalls ?? 0,
-                coveredSteps: 0,
-                coverageRate: 0,
-                checkpointSummaries: [],
-                systemContextItems: [],
+                calls: savedConv?.calls ? [...savedConv.calls] : [],
+                lifetimeCalls: savedConv?.lifetimeCalls ?? 0,
+                coveredSteps: savedConv?.coveredSteps ?? 0,
+                coverageRate: savedConv?.coverageRate ?? 0,
+                checkpointSummaries: savedConv?.checkpointSummaries || [],
+                systemContextItems: savedConv?.systemContextItems || [],
             });
         }
 
@@ -1512,6 +1560,14 @@ export class GMTracker {
         if (data.persistedToolCatalogByAccount && typeof data.persistedToolCatalogByAccount === 'object') {
             tracker._persistedToolCatalogByAccount = JSON.parse(JSON.stringify(data.persistedToolCatalogByAccount));
         }
+        // Restore DailyLedger positions (added v1.18.0)
+        if (data.ledgerPositions && typeof data.ledgerPositions === 'object') {
+            for (const [id, pos] of Object.entries(data.ledgerPositions)) {
+                if (typeof pos === 'number') {
+                    tracker._ledgerPositions.set(id, pos);
+                }
+            }
+        }
 
         return tracker;
     }
@@ -1524,5 +1580,27 @@ export class GMTracker {
     /** Get the current account email. */
     getCurrentAccount(): string {
         return this._currentAccountEmail;
+    }
+
+    /** Account-filtered and archive-filtered summary for active UI display. */
+    getUiSummary(): GMSummary | null {
+        // After restore (before first fetchAll), calls[] is empty — use persisted snapshot
+        if (!this._hasFetchedCalls && this._lastSummary) {
+            return normalizeGMSummary(this._lastSummary);
+        }
+        const summary = normalizeGMSummary(this._buildSummary(false, false));
+        if (!summary) { return null; }
+        return {
+            ...summary,
+            conversations: summary.conversations.map(cloneConversationData),
+            contextGrowth: summary.contextGrowth.map(point => ({ ...point })),
+            latestTokenBreakdown: cloneTokenBreakdownGroups(summary.latestTokenBreakdown),
+            modelBreakdown: Object.fromEntries(
+                Object.entries(summary.modelBreakdown).map(([name, stats]) => [name, { ...stats }]),
+            ),
+            stopReasonCounts: { ...summary.stopReasonCounts },
+            retryErrorCodes: { ...(summary.retryErrorCodes || {}) },
+            recentErrors: [...(summary.recentErrors || [])],
+        };
     }
 }

@@ -349,6 +349,8 @@ export interface GMTrackerState {
     persistedUniqueErrorsByAccount?: Record<string, Record<string, { message: string; firstSeen: string }>>;
     /** Per-account tool catalog: email → { toolName → { firstSeen, description? } } (added v1.17.x) */
     persistedToolCatalogByAccount?: Record<string, Record<string, { firstSeen: string; description?: string }>>;
+    /** Per-conversation call position already submitted to DailyLedger (added v1.18.0) */
+    ledgerPositions?: Record<string, number>;
 }
 
 // ─── Clone Utilities ─────────────────────────────────────────────────────────

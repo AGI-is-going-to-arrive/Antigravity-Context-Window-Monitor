@@ -10,6 +10,7 @@ import type { ContextUsage } from './tracker';
 import type { GMSummary, GMModelStats, GMConversationData, GMSystemContextItem, TokenBreakdownGroup, PendingArchiveEntry, UniqueErrorEntry, RecentErrorEntry } from './gm-tracker';
 import { normalizeModelDisplayName } from './models';
 import { findPricing } from './pricing-store';
+import type { LedgerAccountBucket, LedgerSettledEntry } from './daily-ledger';
 import { formatResetCountdown, formatResetAbsolute, parseResetDate } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
 
@@ -66,6 +67,8 @@ export function buildGMDataTabContent(
     currentUsage?: ContextUsage | null,
     accountSnapshots?: AccountSnapshot[],
     pendingArchives?: PendingArchiveEntry[],
+    todayLedgerActive?: LedgerAccountBucket[],
+    ledgerSettled?: LedgerSettledEntry[],
 ): string {
     if (!summary && (!gmSummary || gmSummary.totalCalls === 0)) {
         return `<p class="empty-msg">${tBi(
@@ -86,9 +89,17 @@ export function buildGMDataTabContent(
     const activeEmail = accountSnapshots?.find(s => s.isActive)?.email || '';
     parts.push(buildModelCards(summary, gmSummary, activeEmail));
 
-    // ── Pending Archive Panel (moved below model stats total row)
+    // ── Today's Ledger Panel (real-time incremental accumulation)
+    if (todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) {
+        parts.push(buildTodayLedgerPanel(todayLedgerActive));
+    }
+
+    // ── Pending Archive Panel (settled by quota resets, waiting for midnight)
     if (pendingArchives && pendingArchives.length > 0) {
         parts.push(buildPendingArchivePanel(pendingArchives));
+    }
+    if (ledgerSettled && ledgerSettled.length > 0) {
+        parts.push(buildLedgerSettledPanel(ledgerSettled));
     }
 
     // ── Tool Call Ranking (from GM messagePrompts SYSTEM toolCalls)
@@ -466,6 +477,38 @@ export function getGMDataTabStyles(): string {
         color: var(--color-text-dim);
         opacity: 0.7;
         font-style: italic;
+    }
+
+    /* ── Today Ledger Panel (teal/cyan theme) ── */
+    .today-ledger-panel {
+        border-color: rgba(20,184,166,0.25);
+        background: linear-gradient(135deg, rgba(20,184,166,0.04) 0%, rgba(6,182,212,0.02) 100%);
+    }
+    .today-ledger-header {
+        color: rgb(45,212,191) !important;
+    }
+    .ledger-model-chip {
+        background: rgba(20,184,166,0.08) !important;
+        border-color: rgba(20,184,166,0.2) !important;
+    }
+    .ledger-model-chip b {
+        color: rgb(45,212,191) !important;
+    }
+
+    /* ── Settled Panel (indigo/purple theme) ── */
+    .settled-panel {
+        border-color: rgba(129,140,248,0.25);
+        background: linear-gradient(135deg, rgba(129,140,248,0.04) 0%, rgba(167,139,250,0.02) 100%);
+    }
+    .settled-header {
+        color: rgb(165,180,252) !important;
+    }
+    .settled-model-chip {
+        background: rgba(129,140,248,0.08) !important;
+        border-color: rgba(129,140,248,0.2) !important;
+    }
+    .settled-model-chip b {
+        color: rgb(165,180,252) !important;
     }
 
     /* ─── Activity Tab: Summary Bar (chip strip layout) ─── */
@@ -3561,6 +3604,101 @@ function buildPendingArchivePanel(entries: PendingArchiveEntry[]): string {
         <div class="pending-archive-note">${tBi(
         'These calls have been baselined after quota reset. They will be archived to the calendar at midnight.',
         '这些调用已在额度重置后基线化，将于午夜归档到日历。',
+    )}</div>
+    </div>`;
+}
+
+function buildTodayLedgerPanel(buckets: LedgerAccountBucket[]): string {
+    let totalCalls = 0, totalIn = 0, totalOut = 0, totalCache = 0, totalCredits = 0, totalCost = 0;
+    const allModels = new Map<string, number>();
+
+    for (const b of buckets) {
+        totalCalls += b.totalCalls;
+        totalIn += b.totalInputTokens;
+        totalOut += b.totalOutputTokens;
+        totalCache += b.totalCacheRead;
+        totalCredits += b.totalCredits;
+        totalCost += b.totalEstimatedCost;
+        for (const [model, ms] of Object.entries(b.modelStats)) {
+            allModels.set(model, (allModels.get(model) || 0) + ms.calls);
+        }
+    }
+
+    if (totalCalls === 0) { return ''; }
+
+    const modelChips = [...allModels.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([model, count]) => `<span class="pending-model-chip ledger-model-chip">${esc(normalizeModelDisplayName(model))} <b>${count}</b></span>`)
+        .join('');
+
+    const formatK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+
+    const ledgerIcon = `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1 2.828c.885-.37 2.154-.769 3.388-.893 1.33-.134 2.458.063 3.112.752v9.746c-.935-.53-2.12-.603-3.213-.493-1.18.12-2.37.461-3.287.811V2.828zm7.5-.141c.654-.689 1.782-.886 3.112-.752 1.234.124 2.503.523 3.388.893v9.923c-.918-.35-2.107-.692-3.287-.81-1.094-.111-2.278-.039-3.213.492zM8 1.783C7.015.936 5.587.81 4.287.94c-1.514.153-3.042.672-3.994 1.105A.5.5 0 0 0 0 2.5v11a.5.5 0 0 0 .707.455c.882-.4 2.303-.881 3.68-1.02 1.409-.142 2.59.087 3.223.877a.5.5 0 0 0 .78 0c.633-.79 1.814-1.019 3.222-.877 1.378.139 2.8.62 3.681 1.02A.5.5 0 0 0 16 13.5v-11a.5.5 0 0 0-.293-.455c-.952-.433-2.48-.952-3.994-1.105C10.413.809 8.985.936 8 1.783"/></svg>`;
+
+    return `<div class="pending-archive-panel today-ledger-panel">
+        <div class="pending-archive-header today-ledger-header">
+            ${ledgerIcon}
+            ${tBi("Today's Ledger", '今日累计')}
+            <span class="pending-archive-count">${buckets.length} ${tBi('account(s)', '个账号')}</span>
+        </div>
+        <div class="pending-archive-stats">
+            <span class="pending-stat">${tBi('Calls', '调用')} <b>${totalCalls}</b></span>
+            <span class="pending-stat">${tBi('Input', '输入')} <b>${formatK(totalIn)}</b></span>
+            <span class="pending-stat">${tBi('Output', '输出')} <b>${formatK(totalOut)}</b></span>
+            ${totalCache > 0 ? `<span class="pending-stat">${tBi('Cache', '缓存')} <b>${formatK(totalCache)}</b></span>` : ''}
+            ${totalCredits > 0 ? `<span class="pending-stat">${tBi('Credits', '积分')} <b>${totalCredits}</b></span>` : ''}
+            ${totalCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBi('Cost', '费用')} <b>$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost < 1 ? totalCost.toFixed(3) : totalCost.toFixed(2)}</b></span>` : ''}
+        </div>
+        <div class="pending-archive-models">${modelChips}</div>
+        <div class="pending-archive-note">${tBi(
+        'Real-time incremental recording. Data is preserved even if the IDE clears conversation history.',
+        '实时增量记录。即使 IDE 清除对话历史，数据也不会丢失。',
+    )}</div>
+    </div>`;
+}
+
+function buildLedgerSettledPanel(entries: LedgerSettledEntry[]): string {
+    const totalCalls = entries.reduce((s, e) => s + e.totalCalls, 0);
+    const totalIn = entries.reduce((s, e) => s + e.totalInputTokens, 0);
+    const totalOut = entries.reduce((s, e) => s + e.totalOutputTokens, 0);
+    const totalCache = entries.reduce((s, e) => s + (e.totalCacheRead || 0), 0);
+    const totalCredits = entries.reduce((s, e) => s + e.totalCredits, 0);
+    const totalCost = entries.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0);
+
+    const allModels = new Map<string, number>();
+    for (const e of entries) {
+        for (const [m, c] of Object.entries(e.modelCalls)) {
+            allModels.set(m, (allModels.get(m) || 0) + c);
+        }
+    }
+
+    const modelChips = [...allModels.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([model, count]) => `<span class="pending-model-chip settled-model-chip">${esc(normalizeModelDisplayName(model))} <b>${count}</b></span>`)
+        .join('');
+
+    const formatK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+
+    const settledIcon = `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M10.97 4.97a.75.75 0 0 1 1.07 1.05l-3.99 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425z"/><path d="M0 2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1v7.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 1 12.5V5a1 1 0 0 1-1-1zm2 3v7.5A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5zm13-3H1v2h14z"/></svg>`;
+
+    return `<div class="pending-archive-panel settled-panel">
+        <div class="pending-archive-header settled-header">
+            ${settledIcon}
+            ${tBi('Settled (Quota Reset)', '已结算 (额度重置)')}
+            <span class="pending-archive-count">${entries.length} ${tBi('cycle(s)', '个周期')}</span>
+        </div>
+        <div class="pending-archive-stats">
+            <span class="pending-stat">${tBi('Calls', '调用')} <b>${totalCalls}</b></span>
+            <span class="pending-stat">${tBi('Input', '输入')} <b>${formatK(totalIn)}</b></span>
+            <span class="pending-stat">${tBi('Output', '输出')} <b>${formatK(totalOut)}</b></span>
+            ${totalCache > 0 ? `<span class="pending-stat">${tBi('Cache', '缓存')} <b>${formatK(totalCache)}</b></span>` : ''}
+            ${totalCredits > 0 ? `<span class="pending-stat">${tBi('Credits', '积分')} <b>${totalCredits}</b></span>` : ''}
+            ${totalCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBi('Cost', '费用')} <b>$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost < 1 ? totalCost.toFixed(3) : totalCost.toFixed(2)}</b></span>` : ''}
+        </div>
+        <div class="pending-archive-models">${modelChips}</div>
+        <div class="pending-archive-note">${tBi(
+        'Settled by quota reset. Will be archived to the calendar at midnight.',
+        '已在额度重置后结算，将于午夜归档到日历。',
     )}</div>
     </div>`;
 }
