@@ -16,6 +16,8 @@ scripts/**
 tests/**
 __mocks__/**
 .agents/**
+.ccg/**
+.claude/**
 .playwright-mcp/**
 llmdoc/**
 docs/**
