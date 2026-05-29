@@ -119,9 +119,12 @@ export function getLanguage(): Language {
 /**
  * Set and persist the display language.
  */
-export async function setLanguage(lang: Language, context: vscode.ExtensionContext): Promise<void> {
+export async function setLanguage(lang: Language, context: vscode.ExtensionContext, state?: StateBucket): Promise<void> {
     currentLanguage = lang;
     await context.globalState.update('displayLanguage', lang);
+    if (state) {
+        await state.update('displayLanguage', lang);
+    }
 }
 
 export async function setLanguageToState(lang: Language, state: StateBucket): Promise<void> {

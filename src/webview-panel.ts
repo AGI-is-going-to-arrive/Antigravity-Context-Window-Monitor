@@ -334,7 +334,7 @@ export function showMonitorPanel(p: PanelPayload): void {
 
     panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string; action?: string; cascadeId?: string; uri?: string; email?: string; day?: number }) => {
         if (msg.command === 'switchLanguage' && msg.lang && extensionCtx) {
-            await setLanguage(msg.lang as Language, extensionCtx);
+            await setLanguage(msg.lang as Language, extensionCtx, panelDurableState);
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }
