@@ -5,6 +5,10 @@ import type { StateBucket } from './durable-state';
 
 export type Language = 'zh' | 'en' | 'both';
 
+export function isLanguage(value: unknown): value is Language {
+    return value === 'zh' || value === 'en' || value === 'both';
+}
+
 // ─── Translation Keys ────────────────────────────────────────────────────────
 
 interface TranslationEntry {

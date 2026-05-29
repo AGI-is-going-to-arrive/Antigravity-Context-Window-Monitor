@@ -6,11 +6,11 @@ out/
 # Dev-only files
 .agents/
 .gemini/
+.ccg/
+.claude/
 llmdoc/
 scripts/
-tests/
 package-lock.json
-vitest.config.ts
 
 # Docker test files
 Dockerfile*

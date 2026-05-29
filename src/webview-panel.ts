@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { tBi, getLanguage, setLanguage, Language } from './i18n';
+import { tBi, getLanguage, setLanguage, isLanguage } from './i18n';
 import { ContextUsage, TrajectorySummary } from './tracker';
 import { ModelConfig, UserStatusInfo } from './models';
 import { QuotaTracker } from './quota-tracker';
@@ -333,8 +333,12 @@ export function showMonitorPanel(p: PanelPayload): void {
     if (p.initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: p.initialTab }), 100); }
 
     panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string; action?: string; cascadeId?: string; uri?: string; email?: string; day?: number }) => {
-        if (msg.command === 'switchLanguage' && msg.lang && extensionCtx) {
-            await setLanguage(msg.lang as Language, extensionCtx, panelDurableState);
+        if (msg.command === 'switchLanguage' && extensionCtx) {
+            if (!isLanguage(msg.lang)) {
+                console.warn('[Antigravity Context Monitor] Ignoring invalid language switch request:', msg.lang);
+                return;
+            }
+            await setLanguage(msg.lang, extensionCtx, panelDurableState);
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }

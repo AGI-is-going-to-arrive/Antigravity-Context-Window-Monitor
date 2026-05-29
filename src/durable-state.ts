@@ -13,12 +13,6 @@ interface DurableStateFile {
     workspaces: Record<string, Record<string, unknown>>;
 }
 
-const DEFAULT_STATE: DurableStateFile = {
-    version: 1,
-    global: {},
-    workspaces: {},
-};
-
 function getDefaultStateFilePath(): string {
     if (process.platform === 'win32' && process.env.APPDATA) {
         return path.join(process.env.APPDATA, 'Antigravity Context Monitor', 'state-v1.json');
@@ -105,12 +99,12 @@ export class DurableState {
     private _load(): DurableStateFile {
         try {
             if (!fs.existsSync(this._filePath)) {
-                return { ...DEFAULT_STATE };
+                return { version: 1, global: {}, workspaces: {} };
             }
             const raw = fs.readFileSync(this._filePath, 'utf8');
             const parsed = JSON.parse(raw) as Partial<DurableStateFile>;
             if (parsed.version !== 1) {
-                return { ...DEFAULT_STATE };
+                return { version: 1, global: {}, workspaces: {} };
             }
             return {
                 version: 1,
@@ -118,7 +112,7 @@ export class DurableState {
                 workspaces: parsed.workspaces || {},
             };
         } catch {
-            return { ...DEFAULT_STATE };
+            return { version: 1, global: {}, workspaces: {} };
         }
     }
 
