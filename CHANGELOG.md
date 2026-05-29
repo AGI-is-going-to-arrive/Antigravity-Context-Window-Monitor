@@ -1,5 +1,21 @@
 # 变更日志 / Changelog
 
+## [1.16.10] - 2026-05-30
+
+### 🐛 Fixed / 修复
+
+- **Language selection now persists across sessions / 语言选择跨会话持久化** (thanks @Yeoman-Hamilton, #59): The webview language toggle (中文 / English / Bilingual) only wrote VS Code `globalState`, but the extension reads its custom `DurableState` JSON file as the source of truth on startup — so a webview language change was silently reset to "Bilingual" on every restart (the command-palette path was unaffected). `setLanguage()` now also writes the durable state bucket when invoked from the webview, so the choice survives restarts.
+  webview 语言切换（中文 / English / 双语）此前仅写入 VS Code `globalState`，而扩展启动时以自定义的 `DurableState` JSON 文件为准，导致 webview 的语言更改在每次重启后被静默重置为"双语"（命令面板路径不受影响）。现在 `setLanguage()` 在 webview 调用时同步写入持久化状态桶，选择得以在重启后保留。
+
+### ✨ Improved / 改进
+
+- **Hardened webview language input validation / 强化 webview 语言输入校验**: Added an `isLanguage()` type guard; the webview `switchLanguage` handler now rejects invalid values instead of an unchecked `as Language` cast.
+  新增 `isLanguage()` 类型守卫；webview `switchLanguage` 处理器现在拒绝非法值，移除了不安全的 `as Language` 强转。
+- **Fixed latent DurableState cross-instance aliasing / 修复 DurableState 潜在跨实例别名**: `DurableState._load()` now returns fresh nested objects instead of shallow-spreading the shared `DEFAULT_STATE` singleton, preventing state bleed between instances (no impact in single-instance production, but required for reliable persistence tests).
+  `DurableState._load()` 现在返回全新的嵌套对象，不再浅拷贝共享的 `DEFAULT_STATE` 单例，防止多实例间状态串话（生产单实例无影响，但为可靠的持久化测试所必需）。
+- **Added persistence regression tests / 新增持久化回归测试**: New `tests/i18n-persistence.test.ts` (9 cases: round-trip, fallback double-write, webview path, corner cases, multi-instance isolation) using zero-mock real-file IO. Also fixed `.gitignore` erroneously ignoring the entire `tests/` directory, so test sources are now version-controlled.
+  新增 `tests/i18n-persistence.test.ts`（9 个用例：持久化往返、fallback 双写、webview 路径、corner case、多实例隔离），采用零 mock 真实文件 IO。同时修复 `.gitignore` 误忽略整个 `tests/` 目录的问题，测试源码现已纳入版本控制。
+
 ## [1.16.9] - 2026-05-20
 
 ### ✨ Improved / 改进
