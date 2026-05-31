@@ -1,44 +1,100 @@
 # 变更日志 / Changelog
 
-## [1.17.0] - 2026-05-21
+## [1.16.11-Pending] - 2026-05-31
+
+### ⚙️ Refactored & Optimized / 重构与优化
+
+- **Independent DailyLedger for GM call accounting / 独立的 DailyLedger 实时增量账本**:
+  The previous archival system relied on the Language Server's conversation cache, which is volatile — restarting the IDE or the LS dropping old conversations led to zero-data calendar entries. The new `DailyLedger` module records GM calls incrementally after every poll via `GMTracker.getNewCallsSinceLastRecord()`, with position-based tracking and `dedupKey` (cascadeId:arrayIndex) deduplication. Data is bucketed by date + account email and persisted to `globalState`, surviving IDE restarts.
+  旧的归档系统依赖 LS 的对话缓存（易失性数据）——重启 IDE 或 LS 丢弃旧对话后日历数据为空。新增 `DailyLedger` 模块，每次轮询后从 GMTracker 提取增量调用记录，采用位置追踪 + `dedupKey`（cascadeId:数组索引）去重机制。数据按日期+账号分桶，持久化到 `globalState`，跨重启不丢失。
+
+- **Quota-reset settlement decoupled from LS lifecycle / 额度重置结算与 LS 生命周期解耦**:
+  When a model's quota resets, `DailyLedger.settleForQuotaReset()` freezes the matching pool's accumulated stats into a separate "settled" bucket. This ensures pre-reset usage is preserved even if the LS subsequently drops the conversation data. At midnight, `rollover()` merges all active + settled data into the final daily snapshot for `DailyStore`.
+  模型配额重置时，`settleForQuotaReset()` 将对应池子的累积数据冻结到"已结算"区。即便 LS 随后丢弃对话数据，重置前的用量也不会丢失。午夜时 `rollover()` 将活跃 + 已结算数据合并写入日历快照。
+
+- **daily-archival.ts dual-path data sourcing / daily-archival.ts 双路径数据源**:
+  `performDailyArchival()` now prioritizes `DailyLedger.rollover()` as the GM data source. Falls back to the legacy `getArchivalSummary()` + `pendingArchives` path when the ledger is empty (e.g., fresh install transition period).
+  `performDailyArchival()` 现在优先使用 `DailyLedger.rollover()` 作为 GM 数据源。ledger 为空时（如刚安装的过渡期）降级到旧的 `getArchivalSummary()` + `pendingArchives` 路径。
+
+- **Dynamic Checkpointer limit capture with offset indicator / 物理限额动态捕捉机制与兜底指示**:
+  The extension dynamically queries the language server via LSP RPC (`GetAvailableModels`) upon connection or reconnection to retrieve genuine physical model context limits and overrides internal limits. Active parsing resolves and maps both canonical Placeholder IDs and physical IDs simultaneously, robustly handling string-formatted values via `parseInt` extraction. Static fallback limits in the codebase are offset by -1,000 (1K) tokens (e.g., Gemini 3.5 Flash fallback is `255,000` instead of `256,000`), serving as a simple status indicator: if you see clean integers (e.g., `256,000`), dynamic capture is active; if you see offset limits (e.g., `255,000`), it has fallen back to static values.
+  插件启动或 LS 中途重连成功时，通过本地 LSP RPC 通道拉取官方可用模型列表，动态获取实际的模型上下文限额并改写内存限制。同时支持占位符 ID 与实际模型 ID 解析，并用 `parseInt` 兼容了 String 类型数据。主动将代码中所有静态兜底限制整体下调了 1K (1,000) tokens（例如 Gemini 3.5 Flash 设为 `255,000` 而非 `256,000`）。若 UI 呈现平整整数说明真实动态捕获生效；若呈现少 1K 限制说明处于兜底状态，便于前台验证。
+
+- **Removed redundant limits & warning threshold settings and upgraded to percentage-based adaptive warnings / 废除了冗余模型限制与警告阈值设置，升级为百分比自适应预警体系**:
+  Deprecated and removed the static `contextLimits` settings, the Settings WebView's `Model Context Limits` card, the `compressionWarningThreshold` configuration, and all associated IPC synchronization handlers. Status bar and hover warnings are now directly determined by the model context usage percentage (50% yellow warning, 80% red critical warning). This guarantees optimal warning behaviors automatically scaled for all current and future model architectures.
+  精简删除了已无必要的 `contextLimits` 配置项、`compressionWarningThreshold` 配置项、Webview 面板里的整张“压缩警告设置”卡片及全部对应的同步逻辑。状态栏及悬浮窗的警示变色一律直接改为基于当前模型真实占比的百分比自适应预警（50% 黄色警告，80% 红色强预警），无需任何手动微调即可在所有规格模型下自适应。
+
+- **Rebuilt the Models Tab's Model Info grid with dynamic capture & exact parameters / 重构“模型”选项卡的“模型信息”为动态获取与精确参数展现**:
+  Removed all hardcoded parameters from the codebase, initializing `activeModelSpecs` as an empty object `{}`. All specifications are dynamically captured via LSP RPC (`GetAvailableModels`) and injected at runtime. Display range is strictly mapped to active UI models (`configs`), filtering out backend command models. Precise numerical displays format lossless exact integers with thousands separators (e.g., `1,048,576 max tokens`) instead of fuzzy estimations (e.g. `1.0M`).
+  移除了代码库中硬编码参数常量（如 `DEFAULT_MODEL_SPECS`），初始参数设为 `{}`，规格完全依靠 LS 在运行时通过 RPC 拉取并动态注入。展示范围严格与前台可见 of UI 模型选项列表映射，完美过滤了后台命令行模型。数字规格全部升级为带千位分隔符的精准整数数字（如 `1,048,576 max tokens`），废除了原先模糊的单位估算。
+
+- **Removed redundant checkpointer limit from Model Quota cards / 剥离模型配额卡片中多余的限制展示**:
+  Removed the redundant checkpointer limit display from the individual quota cards to keep the UI clean, lightweight, and focused on a single source of truth.
+  剥离了“模型配额”卡片底部多余的物理限额文字节点渲染，避免信息重复展示，保持卡片界面的极简。
 
 ### 🐛 Fixed / 修复
 
-- **GM data loss on extension restart / 扩展重启后 GM 数据丢失**: `serialize()` strips `calls[]` from conversations to keep `state-v1.json` small, but `getArchivalSummary()` / `getFullSummary()` would rebuild from the empty cache and produce `totalCalls=0`. Fix: added `_hasFetchedCalls` flag — after `restore()` it's `false`, preventing `_buildSummary()` from running on empty data; `_lastSummary` (persisted snapshot with accurate aggregates) is returned instead. `fetchAll()` sets it to `true` once API data is available.
-  `serialize()` 清空 `calls[]` 以减小状态文件体积，但 `getArchivalSummary()` / `getFullSummary()` 会从空缓存重建导致 `totalCalls=0`。修复：新增 `_hasFetchedCalls` 标志——`restore()` 后为 `false`，阻止从空数据重建；改用 `_lastSummary`（持久化快照，聚合数据准确）。`fetchAll()` 拉取到 API 数据后设为 `true`。
+- **Language selection persistence / 语言切换跨会话持久化 (thanks @Yeoman-Hamilton, #59)**:
+  Originally planned to resolve the display language resetting to Bilingual across IDE sessions. However, developer @Yeoman-Hamilton addressed this in `v1.16.10` with a superior, highly-cohesive `setLanguage` double-write signature and a comprehensive suite of 9 real-file IO persistence tests. Recognizing their implementation is structurally cleaner and better tested than our draft adaptation, we have fully merged and adopted their version into this branch.
+  本计划在此版本中修复重启 IDE 后语言偏好丢失的缺陷。但合并 v1.16.10 时，注意到 @Yeoman-Hamilton 已在先前的 PR #59 中彻底修复了此问题。其通过重构 `setLanguage` 实现了内聚度更高的全局/局部状态双写机制，并配有极具说服力的 9 个真实文件 IO 持久化单元测试。客观来看，其方案在系统内聚性、边界防护与测试完整性上均显著优于我们原定的过渡实现，因此我们决定直接废弃本地的冗余改动，全面合入并拥抱这一更优的官方版本。
 
-- **Daily archival fallback / 每日归档兜底**: `getArchivalSummary()` now compares `liveSummary.totalCalls` with `lastGMSummary.totalCalls` and uses whichever is higher, preventing zero-data archival after restarts.
-  归档时对比 `liveSummary` 和 `lastGMSummary` 的 `totalCalls`，取大的，防止重启后归档空数据。
+- **Placeholder-data dedup collision causing undercounting / 占位数据去重碰撞导致调用次数不足**:
+  For RUNNING conversations, the lightweight GM metadata API returns calls with zero tokens and empty stepIndices. The original content-based callId generated identical keys for all calls in the same conversation, causing the ledger to reject valid new calls as duplicates. Fix: tracker now provides an externally-guaranteed unique `dedupKey` (cascadeId:arrayIndex) for each call.
+  RUNNING 状态的对话中，轻量级 GM 元数据 API 返回的 calls 全是占位数据（token 为 0、stepIndices 为空），基于内容生成的 callId 碰撞，导致 ledger 误拒有效的新调用。修复：tracker 为每个 call 提供外部保证唯一的 `dedupKey`（cascadeId:数组索引）。
 
-- **Language preference lost on restart / 语言选择重启后丢失**: `switchLanguage` handler in `webview-panel.ts` now writes to `durableGlobalState` (file storage) in addition to VS Code `globalState`, ensuring the preference survives restarts.
-  面板切语言时同时写入 `durableGlobalState`（文件存储），不再只写 VS Code `globalState`。
+- **Conversation revert breaking ledger accumulation / 对话回退后 ledger 停止累计**:
+  When a user reverts to an earlier step, the calls array shrinks but `_ledgerPositions` retained the old (higher) value, preventing any subsequent calls from being captured. Additionally, new calls at reused array indices had colliding dedupKeys with previously recorded calls. Fix: (1) clamp position down when calls array shrinks, (2) clear stale dedup IDs for the reverted conversation via `clearRecordedIdsForConversation()`.
+  用户回退对话步骤时，calls 数组缩短但 `_ledgerPositions` 保持旧的高值，后续新增 of call 全部无法捕获。此外，新 call 在复用的数组索引位置上与旧 call 的 dedupKey 碰撞。修复：(1) 检测到 calls 缩短时将 position 降至当前长度；(2) 通过 `clearRecordedIdsForConversation()` 清除该对话的旧 dedup 索引。
 
-- **Gemini Flash + Pro quota pool merge / Gemini Flash + Pro 额度池合并**: `KNOWN_QUOTA_POOLS` in `models.ts` now groups all Gemini models (Flash + Pro) into a single `gemini` pool, matching the mid-2026 API change where Flash and Pro share the same quota and resetTime.
-  `models.ts` 中 `KNOWN_QUOTA_POOLS` 将所有 Gemini 模型（Flash + Pro）合并为统一的 `gemini` 池，匹配 2026 年中 API 变更。
+- **Restore missing Checkpoint cards and resolve virtual step duplication / 恢复影子 Checkpoint 卡片并解决虚拟步骤冲突**:
+  Newer IDE versions deprecated the USER message injection inside `messagePrompts`, rendering the previous regex parser blank. When shadow steps lacked native `stepIdx` values, the key fell back to a shared key (`-1`), causing extractions to override each other. Fix: implemented `extractCheckpointsFromTrajectorySteps(steps)` to parse checkpoints directly from `trajectory.steps` returned by the LSP RPC. Resolved key duplication by allocating high-range virtual step indices (`100000 + i * 100 + checkpointNumber`), and filtered out the raw virtual step IDs (`>= 100000`) in WebView chips.
+  新版 IDE 消息列表废弃了 USER 消息的 Checkpoint 注入导致提取失效。此外，影子步骤的 `stepIdx` 缺失时 Map 去重 Key 会退化为 `-1` 发生冲突覆盖。修复：实现 `extractCheckpointsFromTrajectorySteps(steps)` 直接从 `trajectory.steps` 提取 checkpoints；采用虚拟高数值区间 `100000 + i * 100 + checkpointNumber` 区分无 ID 步骤解决冲突，并在面板渲染时屏蔽展示，优化 UI。
 
-- **Multi-account data loss on archival / 多账号归档数据丢失**: `_lastSummary` (used as fallback after IDE restart) was saved via `_buildSummary()` which filters by current account. After switching accounts, previous account's calls vanished from the persisted snapshot. On midnight archival, only the last active account's data was written to the calendar. Fix: `_lastSummary` now stores the full cross-account summary via `_buildSummary(true, true)`, ensuring `serialize()` → `restore()` → `getArchivalSummary()` preserves all accounts' data.
-  `_lastSummary`（IDE 重启后的兜底数据）之前通过 `_buildSummary()` 保存，默认按当前账号过滤。切换账号后，前一个账号的调用从快照中消失。凌晨归档时只写入了最后一个账号的数据。修复：`_lastSummary` 现在通过 `_buildSummary(true, true)` 保存全账号完整数据，确保 `serialize()` → `restore()` → `getArchivalSummary()` 保留所有账号的数据。
+- **Fix Checkpointer synchronization lock, type parsing, and UI display / 修复 Checkpointer 动态限制同步锁逻辑、字符串类型解析与面板展示失效**:
+  The initial implementation set `hasSyncedCheckpointer = true` before the asynchronous LSP RPC request completed. If the RPC failed or timed out during the early discovery phase, subsequent polling cycles lacked a retry mechanism, silencing the feature. physical model IDs from the official RPC response (e.g., `gemini-3-flash-agent`) were mismatching canonical Placeholder IDs, and the `max_token_limit` value was returned as a String, which was silently filtered out by strict `typeof` constraints. Fix: introduced `isSyncingCheckpointer` status lock to prevent concurrent reentrance, updated the handler to only mark `hasSyncedCheckpointer = true` upon a successful RPC response (enabling robust retries on failure), enhanced parsing to resolve physical IDs, introduced `parseInt` parsing to support string-formatted metrics, and exposed the resolved Checkpointer limit directly in the Monitor Panel's model cards.
+  同步锁在异步 RPC 完成前被置为 true，若初期 RPC 失败则轮询没有重试机制；此外解析物理 ID 未能与内部 canonical ID 对齐，且 `max_token_limit` 为 String 类型在严格 constraints 下被忽略。修复：引入 `isSyncingCheckpointer` 状态锁防止并发重入，当且仅当 RPC 交互成功时标记同步完成（支持失败在后续轮询中重试），增强解析对齐物理 ID，引入 `parseInt` 兼容了 String，并在卡片直显限制数值。
 
-### ✨ Added / 新增
+- **Blank model quota on status bar and hover tooltip when idle / 空闲或无会话时状态栏模型配额及浮窗显示空白**:
+  Status bar rendering (`showNoConversation()` and `showIdle()`) filtered out model quota indicators (`quotaSuffix`) and reset countdowns (`resetSuffix`) when there was no active trajectory. In addition, the no-conversation tooltip skipped the `buildQuotaLines()` call table. Fix: updated both methods to accept an optional `modelId` (passing `lastKnownModel`), enabling proper quota rendering under idle/no-conversation states, and restored the full quota table in the no-conversation tooltip.
+  空闲或无会话状态下，状态栏过滤掉了模型配额比例和重置倒计时。此外，无会话悬浮提示也漏掉了配额表。修复：上述两个方法均支持接收可选的 `modelId` 参数，从而在空闲/无会话状态下正常显示额度百分比及倒计时，并在悬浮窗中补全了完整的配额详细表格。
 
-- **Automatic legacy data migration / 旧版数据自动迁移**: New `legacy-migration.ts` module auto-detects old Antigravity (pre-2.0) `state.vscdb` databases on startup and extracts calendar data + language preference via `child_process` + `node --experimental-sqlite`. Cross-platform path detection (Windows/macOS/Linux). Runs once (`legacyMigrationDone` flag), with manual `migration-import.json` fallback for advanced recovery. Migration status always logged in Output console.
-  新增 `legacy-migration.ts` 模块，启动时自动检测旧 Antigravity 的 `state.vscdb` 数据库，通过子进程 + `node:sqlite` 提取日历和语言数据。跨平台路径检测。只跑一次（`legacyMigrationDone` 标志），保留手动迁移文件兜底。迁移状态始终在 Output 输出。
+- **Model quota reset baseline matching mismatch / 模型额度重置基线化匹配失效**:
+  On quota reset, display labels (e.g. `["Gemini 3.1 Pro (High)"]`) were passed to `gmTracker.baselineForQuotaReset()`. If the reverse lookup `resolveModelId` failed, it fell back to matching the display label with the raw model ID (e.g., `"MODEL_PLACEHOLDER_M16"`), resulting in 0 matched calls. Fix: introduced `modelIds` in `AccountSnapshot` and `ResetPool`, and updated all `isPoolArchived()`, `baselineForQuotaReset()`, and `archiveExpiredSessions()` handlers to match using stable, canonical Model IDs, while retaining display label fuzzy matching as a fallback for 100% matching coverage.
+  模型额度重置时，如果反向查表失败，代码会回退到拿显示标签与调用记录里的原生 Model ID 直配导致匹配数为 0，数据直接丢失。修复：在 `AccountSnapshot` 和 `ResetPool` 中新增 `modelIds` 字段，并在重置和归档判定逻辑中一律优先改用最精确的原生 Model ID 进行比对匹配，保留 Label 的模糊包含匹配作为保底。
 
-- **DailyStore.mergeRecords() / 日历数据合并方法**: New method for cross-version data migration — only adds dates that don't already exist, never overwrites existing records.
-  新增跨版本数据迁移方法——只添加不存在的日期，不覆盖已有记录。
+- **GM data loss during daily calendar archival / 每日归档漏写重置数据导致的数据丢失问题**:
+  Midnight archival wrote only `gmTracker.getArchivalSummary()` (active cache) to the `DailyStore` calendar snapshot. However, intra-day baselined GM calls in `_pendingArchives` were completely ignored and cleared on `gmTracker.reset()`, causing all calls consumed prior to a quota reset to vanish from the calendar. If the IDE was reloaded or restarted, `_cache.calls` was cleared during serialization, producing zero-data calendar summaries. Fix: updated `performDailyArchival` to explicitly fetch and merge all entries from `gmTracker.getPendingArchives()` (including call counts, tokens, credits, and cost breakdown proportions) into the daily summary before saving to `DailyStore`, ensuring complete daily telemetry even after IDE restarts.
+  凌晨归档仅将活跃缓存写入 `DailyStore`。但白天因额度重置转移到待归档区（`_pendingArchives`）的历史数据被遗漏并在 `reset()` 时清空导致蒸发。并且，如果 IDE 中途重载或重启，缓存中的明细序列化时被剥离清空，导致归档为 0。修复：归档前强制提取并归并 `gmTracker.getPendingArchives()` 中保存的重置汇总数据，确保即便 IDE 经历重启，日历数据也完整精确。
 
-### 🧪 Tests / 测试
+### 🎨 UI / 界面
 
-- **Multi-account archival integrity / 多账号归档完整性测试**: 4 new tests covering the serialize → restore → getArchivalSummary cycle with 2 accounts (A: 200 calls, B: 150 calls). Verifies `getArchivalSummary()`, `getFullSummary()`, and `getDetailedSummary()` all return the complete 350-call total after restore. Updated `groupModelConfigsByQuotaPool` test for unified `gemini` pool key.
-  新增 4 个测试覆盖多账号 serialize → restore → getArchivalSummary 完整流程（账号 A: 200 次，账号 B: 150 次）。验证 restore 后三个 summary getter 都返回完整的 350 次调用。同步更新额度池分组测试。
+- **"Today's Ledger" and "Settled" panels in GM Data tab / GM 数据标签页新增"今日累计"和"已结算"面板**:
+  Two new UI containers in the GM Data tab display real-time ledger data: a teal/cyan "Today's Ledger" panel showing active call accumulation per model, and an indigo/purple "Settled" panel showing data frozen by quota resets. Both panels clear at midnight after rollover.
+  GM 数据标签页新增两个 UI 容器：teal/cyan 主题的"今日累计"面板显示当前活跃的模型调用累积，indigo/purple 主题的"已结算"面板显示配额重置后冻结的数据。午夜归档后两个面板均清零。
 
 ### 📊 Stats / 统计
 
-- **Files changed**: 9 (`src/gm/tracker.ts`, `src/daily-archival.ts`, `src/daily-store.ts`, `src/webview-panel.ts`, `src/models.ts`, `src/extension.ts`, `src/legacy-migration.ts` *(new)*, `tests/multi-account-archival.test.ts` *(new)*, `tests/extension-selection.test.ts`)
+- **Files changed**: 16 (`package.json`, `src/models.ts`, `src/extension.ts`, `src/statusbar.ts`, `src/webview-panel.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-profile-tab.ts`, `src/webview-icons.ts`, `src/activity-panel.ts`, `src/quota-tracker.ts`, `src/daily-archival.ts`, `src/gm/parser.ts`, `src/gm/tracker.ts`, `src/daily-ledger.ts` *(new)*, `src/gm/types.ts`)
 - **TypeScript compile**: Zero errors
-- **Tests**: 6 files / 74 tests passing (`npm test`)
+- **Tests**: 8 files / 80 tests passing (`npm test` / `npx vitest run`)
 
 ---
+
+## [1.16.10] - 2026-05-30
+
+### 🐛 Fixed / 修复
+
+- **Language selection now persists across sessions / 语言选择跨会话持久化** (thanks @Yeoman-Hamilton, #59): The webview language toggle (中文 / English / Bilingual) only wrote VS Code `globalState`, but the extension reads its custom `DurableState` JSON file as the source of truth on startup — so a webview language change was silently reset to "Bilingual" on every restart (the command-palette path was unaffected). `setLanguage()` now also writes the durable state bucket when invoked from the webview, so the choice survives restarts.
+  webview 语言切换（中文 / English / 双语）此前仅写入 VS Code `globalState`，而扩展启动时以自定义的 `DurableState` JSON 文件为准，导致 webview 的语言更改在每次重启后被静默重置为"双语"（命令面板路径不受影响）。现在 `setLanguage()` 在 webview 调用时同步写入持久化状态桶，选择得以在重启后保留。
+
+### ✨ Improved / 改进
+
+- **Hardened webview language input validation / 强化 webview 语言输入校验**: Added an `isLanguage()` type guard; the webview `switchLanguage` handler now rejects invalid values instead of an unchecked `as Language` cast.
+  新增 `isLanguage()` 类型守卫；webview `switchLanguage` 处理器现在拒绝非法值，移除了不安全的 `as Language` 强转。
+- **Fixed latent DurableState cross-instance aliasing / 修复 DurableState 潜在跨实例别名**: `DurableState._load()` now returns fresh nested objects instead of shallow-spreading the shared `DEFAULT_STATE` singleton, preventing state bleed between instances (no impact in single-instance production, but required for reliable persistence tests).
+  `DurableState._load()` 现在返回全新的嵌套对象，不再浅拷贝共享的 `DEFAULT_STATE` 单例，防止多实例间状态串话（生产单实例无影响，但为可靠的持久化测试所必需）。
+- **Added persistence regression tests / 新增持久化回归测试**: New `tests/i18n-persistence.test.ts` (9 cases: round-trip, fallback double-write, webview path, corner cases, multi-instance isolation) using zero-mock real-file IO. Also fixed `.gitignore` erroneously ignoring the entire `tests/` directory, so test sources are now version-controlled.
+  新增 `tests/i18n-persistence.test.ts`（9 个用例：持久化往返、fallback 双写、webview 路径、corner case、多实例隔离），采用零 mock 真实文件 IO。同时修复 `.gitignore` 误忽略整个 `tests/` 目录的问题，测试源码现已纳入版本控制。
 
 ## [1.16.9] - 2026-05-20
 
