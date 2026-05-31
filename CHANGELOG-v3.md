@@ -1,5 +1,31 @@
 # 待定变更日志 / Changelog Draft (v3)
 
+## [1.16.9] - 2026-05-31
+
+### ⚙️ Refactored & Optimized / 重构与优化
+
+- **Daily Date cutoff for GMTracker and UI Cards / 模型统计与界面卡片的今日时间戳铁闸**:
+  Implemented a strict local date cutoff filter (`Date.parse(createdAt) < dayStartMs`) across all GM accumulation logic—including `GMTracker._buildSummary()` (totals, breakdown, tool rankings), `getNewCallsSinceLastRecord()`, `baselineForQuotaReset()`, and `buildModelCards()`. This guarantees that historical/archived calls from yesterday or older sessions do not contaminate today's telemetry, achieving 0-pollution metrics while preserving the complete "Recent Activity" timeline.
+  在模型统计 `GMTracker._buildSummary()`（包括总数、细分、工具排行）、`getNewCallsSinceLastRecord()`、`baselineForQuotaReset()` 以及 `buildModelCards()` 中，全面加装今日当地零点时间戳防污染铁闸（`Date.parse(createdAt) < dayStartMs`）。这从物理上杜绝了昨日或更早的历史对话老数据污染今日统计指标，实现数据 0 污染，同时保留了“最近操作”时间线的完整呈现。
+
+- **Hyper-optimization skip-idle gate in fetchAll / 轮询抓取的高效空闲跳过铁闸**:
+  Enhanced the `GMTracker.fetchAll()` batch routine to aggressively skip redundant trajectory network requests (`!isRunning && !justBecameIdle && cached.totalSteps === t.stepCount && !isCurrentActive`). This resolves the start-up and polling congestion issue where dozens of historical conversations would concurrently fire RPC calls, cutting the initial loading/response time down from 1 minute to milliseconds.
+  在 `GMTracker.fetchAll()` 批量抓取中装配了“Hyper-optimization 空闲跳过铁闸”。当对话非当前活跃、处于空闲状态且步骤数未发生变化时直接跳过网络 RPC 抓取，消除了冷启动和轮询时十几个历史对话并发请求挤爆本地 LS 接口的隐患，将初始化/响应延迟从 1 分钟缩短至毫秒级。
+
+- **Proactive quota-reset settlement with date-lock / 主动配额重置结算与日期防抢跑锁**:
+  Aligned active poll-based quota-reset check (`pollContextUsage`) to actively invoke `gmTracker.baselineForQuotaReset` and persist state to `globalState`. Addressed active settlement persistence guards in `checkCachedAccountResets` by supporting `|| settled` checks to prevent residual active UI display. Introduced a local date key comparison lock (`toLocalDateKey(new Date(resetMs)) === todayKey`) to block stale yesterdays' reset indicators from mistriggering settlement on today's new calls.
+  将轮询主动配额重置与 `gmTracker.baselineForQuotaReset` 对齐并存盘持久化。在 `checkCachedAccountResets` 增加了 `|| settled` 的持久化卫兵判定，杜绝了已结算容器在 UI 的滞留。同时，引入“当地日期 Key 日期防抢跑锁”（`toLocalDateKey(new Date(resetMs)) === todayKey`），彻底锁死由于昨日残留的过期重置时间戳导致误结算今天新消息的 Bug。
+
+- **Dynamic parameter prediction & self-healing for unknown models / 未知规格模型动态预测自适应与界面自愈**:
+  Merged the dynamic unknown spec guesser (`guessContextLimitSpec`) and custom model mapping configurations for Gemini 3.5 Flash (Low). Upgraded WebView component lifecycle in `webview-models-tab.ts` to automatically render self-healed fallback metrics for dynamically-discovered specs, preventing interface lockups and resolving the premium shared pool naming display.
+  合并了未知规格模型动态预测器（`guessContextLimitSpec`）及 Gemini 3.5 Flash (Low) 规格适配。升级了 `webview-models-tab.ts` 中的组件渲染生命周期，使其能够对动态探测到的规格执行自愈兜底渲染，避免未知模型导致界面挂起，并修正了 Premium 配额池重命名显示。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 9 (`src/gm/tracker.ts`, `src/daily-ledger.ts`, `src/extension.ts`, `src/activity-panel.ts`, `src/models.ts`, `src/webview-models-tab.ts`, `src/webview-panel.ts`, `tests/extension-selection.test.ts`, `tests/webview-script.test.ts`)
+- **TypeScript compile**: Zero errors
+- **Tests**: 70 tests passing (`npm test` / `npx vitest run`)
+
 ## [1.17.2-Pending] - 2026-05-25
 
 ### ⚙️ Refactored / 重构

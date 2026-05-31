@@ -3,7 +3,7 @@
 // and official model configurations and limit parameters without GM data contamination.
 
 import { tBi } from './i18n';
-import { ModelConfig, UserStatusInfo, getModelSpecs, ModelSpec } from './models';
+import { ModelConfig, UserStatusInfo, getModelSpecs, ModelSpec, updateModelSpec, guessContextLimitSpec } from './models';
 import { ICON } from './webview-icons';
 import { buildDefaultModelCard, buildModelQuotaGrid, sortModels } from './webview-profile-tab';
 
@@ -13,7 +13,7 @@ export function buildModelInfoGrid(specs: ModelSpec[]): string {
         const thinkingText = s.supportsThinking
             ? `${tBi('Enabled', '已启用')} (${tBi('Budget', '预算')}: ${s.thinkingBudget.toLocaleString()})`
             : tBi('Not Supported', '不支持');
-        
+
         let limitColor = '#10b981'; // 256K Green
         if (s.cpLimit <= 80000) limitColor = '#a855f7'; // 80K Purple
         else if (s.cpLimit <= 128000) limitColor = '#3b82f6'; // 128K Blue
@@ -25,8 +25,8 @@ export function buildModelInfoGrid(specs: ModelSpec[]): string {
 
         // 使用完整数字格式化，不采用 K/M 估算值
         const limitText = s.cpLimit > 0
-            ? `${s.cpLimit.toLocaleString()} Limit`
-            : tBi('Loading Limit...', '正在获取限额...');
+            ? `${s.cpLimit.toLocaleString()} ${tBi('Limit', '压缩阈值')}`
+            : tBi('Loading Limit...', '正在计算阈值...');
 
         const maxTokensText = s.maxTokens > 0
             ? s.maxTokens.toLocaleString()
@@ -34,7 +34,6 @@ export function buildModelInfoGrid(specs: ModelSpec[]): string {
 
         return `
             <div class="model-card spec-card" style="border-left: 3px solid ${limitColor}; padding: var(--space-3); margin-bottom: var(--space-2); position: relative; overflow: hidden;">
-                <div style="position: absolute; right: -20px; top: -20px; width: 80px; height: 80px; border-radius: 9999px; background: color-mix(in srgb, ${limitColor} 6%, transparent); filter: blur(20px); pointer-events: none;"></div>
                 
                 <div class="model-card-header" style="margin-bottom: var(--space-2); display: flex; align-items: flex-start; justify-content: space-between;">
                     <div>
@@ -45,7 +44,7 @@ export function buildModelInfoGrid(specs: ModelSpec[]): string {
                             ${s.modelId} <span style="font-size: 0.7rem; opacity: 0.5;">(${s.placeholderId.replace('MODEL_PLACEHOLDER_', '')})</span>
                         </span>
                     </div>
-                    <span class="model-tag-badge" style="background: color-mix(in srgb, ${limitColor} 12%, transparent); color: ${limitColor}; border: 1px solid color-mix(in srgb, ${limitColor} 25%, transparent); padding: 2px 6px; font-size: 0.72rem; border-radius: var(--radius-sm); font-weight: 600; white-space: nowrap; margin-left: var(--space-2);">
+                    <span class="model-tag-badge" style="background: color-mix(in srgb, ${limitColor} 8%, rgba(22, 26, 38, 0.45)); color: ${limitColor}; border: 1px solid color-mix(in srgb, ${limitColor} 50%, transparent); box-shadow: 0 0 12px color-mix(in srgb, ${limitColor} 30%, transparent); padding: 3px 8px; font-size: 0.72rem; border-radius: var(--radius-sm); font-weight: 600; white-space: nowrap; margin-left: var(--space-2); text-shadow: 0 0 8px color-mix(in srgb, ${limitColor} 30%, transparent); transition: all 0.3s ease;">
                         ${limitText}
                     </span>
                 </div>
@@ -62,7 +61,7 @@ export function buildModelInfoGrid(specs: ModelSpec[]): string {
                         <span style="font-weight: 500; color: var(--color-text);">
                             ${maxTokensText}
                         </span>
-                        <span style="font-size: 0.72rem; opacity: 0.5; margin-left: 4px;">max tokens</span>
+                        <span style="font-size: 0.72rem; opacity: 0.5; margin-left: 4px;">${tBi('max tokens', '最大上下文')}</span>
                     </div>
                     <div style="display: flex; align-items: center; color: var(--color-text-dim); grid-column: span 2; border-top: 1px solid rgba(255,255,255,0.03); padding-top: 2px;">
                         ${brainSvg}
@@ -114,7 +113,22 @@ export function buildModelsTabContent(
     }
 
     for (const config of sortedConfigs) {
-        const spec = specMap.get(config.model);
+        let spec = specMap.get(config.model);
+        if (!spec) {
+            // 动态利用 guess 机制为此新未知模型注册一个合理的 Spec，杜绝界面挂起，保障新模型智能自适应
+            const guess = guessContextLimitSpec(config.model);
+            updateModelSpec(config.model, {
+                modelId: config.model,
+                displayName: config.label,
+                apiProvider: 'AUTO_DETECT',
+                maxTokens: guess.maxTokens,
+                cpLimit: guess.cpLimit,
+                cpThreshold: guess.cpThreshold,
+                supportsThinking: guess.supportsThinking,
+            });
+            // 重新在已完成动态注册的 Spec 列表中获取实例
+            spec = getModelSpecs().find(x => x.placeholderId === config.model);
+        }
         if (spec) {
             // displayName 采用前端 config 里的 label，保持与界面选项一致
             const specCopy = { ...spec, displayName: config.label };
@@ -132,9 +146,9 @@ export function buildModelsTabContent(
                 <p class="empty-desc" style="display: flex; align-items: center; justify-content: center; gap: 8px;">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="animation: spin 1.5s linear infinite;"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
                     ${tBi(
-                        'Dynamically capturing genuine model parameters from LS...',
-                        '正在从 LS 动态捕获最真实的核心模型信息...',
-                    )}
+            'Dynamically capturing genuine model parameters from LS...',
+            '正在从 LS 动态捕获最真实的核心模型信息...',
+        )}
                 </p>
                 <style>
                     @keyframes spin {
@@ -150,9 +164,9 @@ export function buildModelsTabContent(
             <section class="card empty">
                 <h2>${ICON.bolt} ${tBi('Models', '模型')}</h2>
                 <p class="empty-desc">${tBi(
-                    'Waiting for model-related data from LS...',
-                    '等待 LS 返回模型相关数据...',
-                )}</p>
+            'Waiting for model-related data from LS...',
+            '等待 LS 返回模型相关数据...',
+        )}</p>
             </section>`;
     }
 

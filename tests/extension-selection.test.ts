@@ -158,9 +158,9 @@ describe('groupModelConfigsByQuotaPool', () => {
             modelConfig('MODEL_OPENAI_GPT_OSS_120B_MEDIUM', 'GPT-OSS 120B (Medium)', '2026-05-21T00:00:00Z', 0.4),
         ]);
 
-        expect(groups.map(g => g.key).sort()).toEqual(['claude-premium', 'gemini']);
+        expect(groups.map(g => g.key).sort()).toEqual(['gemini', 'premium']);
         expect(groups.find(g => g.key === 'gemini')?.labels).toEqual(['Gemini 3 Flash']);
-        expect(groups.find(g => g.key === 'claude-premium')?.labels).toEqual(['GPT-OSS 120B (Medium)']);
+        expect(groups.find(g => g.key === 'premium')?.labels).toEqual(['GPT-OSS 120B (Medium)']);
     });
 
     it('still groups unknown future models by resetTime fallback', () => {

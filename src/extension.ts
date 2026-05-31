@@ -37,7 +37,7 @@ import type { StorageDiagnostics } from './webview-settings-tab';
 import type { AccountSnapshot } from './activity-panel';
 import { isBillingDay, isBillingDaySetting } from './billing-day';
 import { expandModelIdsToPool } from './pool-utils';
-import { DailyLedger, type DailyLedgerState } from './daily-ledger';
+import { DailyLedger, toLocalDateKey, type DailyLedgerState } from './daily-ledger';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -183,7 +183,7 @@ function rehydrateUsageForDisplay(
     usage: ContextUsage,
     customLimits?: Record<string, number>,
 ): ContextUsage {
-    const model = usage.model || usage.lastModelUsage?.model || '';
+    const model = usage.model || usage.lastModelUsage?.model || lastKnownModel || '';
     const modelDisplayName = normalizeModelDisplayName(model);
     const contextLimit = getContextLimit(model, customLimits);
     const usagePercent = contextLimit > 0 ? (usage.contextUsed / contextLimit) * 100 : 0;
@@ -361,7 +361,6 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         storageDiagnostics: getStorageDiagnostics(),
         modelDNA: persistedModelDNA,
         accountSnapshots: getAccountSnapshotArray(),
-        pendingArchives: gmTracker.getPendingArchives(),
         todayLedgerActive: dailyLedger.getTodayActive(),
         ledgerSettled: dailyLedger.getSettledEntries(),
         ...extra,
@@ -499,7 +498,7 @@ async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> 
         }
 
         if (allFetchedInfo.length > 0) {
-            log(`[Checkpointer Sync] Official Available Models Checkpointer parameters Container:\n${allFetchedInfo.map(info => `  -> ${info}`).join('\n')}`);
+            log(`[Checkpointer Sync] Official checkpointer parameters fetched for ${allFetchedInfo.length} models.`);
         }
 
 
@@ -524,11 +523,9 @@ function updateAccountSnapshot(
     const email = userInfo.email;
     if (!email) { return; }
 
-    // Group models by their stable quota pool, tracking usage.
-    // Also build a modelId → resetTime mapping for GMTracker cross-reference
+    // Group models by their stable quota pool first — we need the NEW resetTimes.
     const poolMap = new Map<string, { resetTime: string; labels: string[]; modelIds: string[]; hasUsage: boolean; minFraction: number }>();
     for (const group of groupModelConfigsByQuotaPool(configs)) {
-        // remainingFraction < 1.0 means quota has been consumed (crossed 20% threshold)
         poolMap.set(group.key, {
             resetTime: group.resetTime,
             labels: group.labels,
@@ -536,6 +533,41 @@ function updateAccountSnapshot(
             hasUsage: group.minFraction < 1.0,
             minFraction: group.minFraction,
         });
+    }
+
+    // ── Cycle-change settlement: detect resetTime changes ──
+    // When the API returns a DIFFERENT resetTime for a pool compared to
+    // what we had before, a quota cycle has turned over. Settle the old
+    // cycle's calls immediately — this is 100% reliable and timing-independent.
+    const oldSnap = accountSnapshots.get(email);
+    if (oldSnap) {
+        // Build old resetTime lookup: modelId → resetTime
+        const oldResetByModel = new Map<string, string>();
+        for (const pool of (oldSnap.resetPools || [])) {
+            if (!pool.resetTime) { continue; }
+            for (const mid of (pool.modelIds || [])) {
+                oldResetByModel.set(mid, pool.resetTime);
+            }
+        }
+
+        // Check each new pool: if resetTime changed, settle the old pool
+        for (const [, newPool] of poolMap) {
+            if (!newPool.resetTime || !newPool.modelIds?.length) { continue; }
+            // Find old resetTime for any model in this pool
+            let oldResetTime: string | undefined;
+            for (const mid of newPool.modelIds) {
+                oldResetTime = oldResetByModel.get(mid);
+                if (oldResetTime) { break; }
+            }
+            if (!oldResetTime || oldResetTime === newPool.resetTime) { continue; }
+            // resetTime changed → cycle turned over. Settle the old one.
+            if (dailyLedger.isPoolSettled(newPool.modelIds, email)) { continue; }
+            const settled = dailyLedger.settleForQuotaReset(newPool.modelIds, email);
+            if (settled) {
+                log(`[DailyLedger] cycle-change settlement: ${settled.totalCalls} calls for [${settled.poolModelLabels.join(', ')}] (${email}) — resetTime changed ${oldResetTime} → ${newPool.resetTime}`);
+                durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+            }
+        }
     }
 
     // ── Enhanced usage detection: GMTracker cross-reference ──────────────
@@ -750,7 +782,9 @@ function baselineExpiredPoolsForAccount(email: string): void {
         if (diffMs > 0) { continue; } // Not yet expired
 
         // Skip pools with no confirmed usage — matches UI "Ready" logic
-        if (pool.hasUsage === false) { continue; }
+        // Also check ledger for actual data (snapshot hasUsage may be stale)
+        if (pool.hasUsage === false
+            && !dailyLedger.hasActiveCallsForPool(pool.modelIds || pool.modelLabels, email)) { continue; }
 
         // Skip if already notified/archived
         const key = `${email}:${pool.resetTime}:${pool.modelLabels.join('|')}`;
@@ -766,14 +800,17 @@ function baselineExpiredPoolsForAccount(email: string): void {
         notifiedAccountResets.add(key);
 
         // ── Baseline GM calls for the expired pool ──
-        // No DailyStore snapshot here — midnight archival will use
-        // getArchivalSummary() which includes both pending-archive and
-        // active calls, giving DailyStore the complete day's picture.
         const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelIds || pool.modelLabels);
-        if (baselinedCount > 0) {
+        // ── Settle in DailyLedger too ──
+        const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, email);
+        if (baselinedCount > 0 || settled) {
             log(`Account switch baseline: ${email} — ${baselinedCount} GM calls baselined for pool [${pool.modelLabels.slice(0, 3).join(', ')}]`);
+            if (settled) {
+                log(`  DailyLedger settled: ${settled.totalCalls} calls`);
+            }
             lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
             durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+            durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
             persistGMSummaryToFile(lastGMSummary);
         }
 
@@ -916,9 +953,21 @@ export function activate(context: vscode.ExtensionContext): void {
     currentAccountEmail = gmTracker.getCurrentAccount();
     dailyStore = new DailyStore();
     dailyStore.init(durableGlobalState);
-    // Initialize DailyLedger — restores from durable state (auto-discards stale dates)
+    // Initialize DailyLedger — restores from durable state
     const savedLedger = durableGlobalState.get<DailyLedgerState | undefined>('dailyLedgerState', undefined);
     dailyLedger = DailyLedger.restore(savedLedger);
+
+    // ── Immediate cross-day archival on startup ──
+    // If the ledger has data from a previous day (IDE was off overnight),
+    // archive it NOW — don't wait for the polling loop or conversation load.
+    if (dailyLedger.hasData && dailyLedger.dateKey !== toLocalDateKey()) {
+        log(`[Startup] Ledger has stale data from ${dailyLedger.dateKey}, archiving immediately`);
+        // Override lastArchivalDateKey to the stale date so performDailyArchival's
+        // "sameDay" guard doesn't reject it (it may already be today's date if a
+        // previous instance or polling cycle set it without rolling over the ledger).
+        lastArchivalDateKey = dailyLedger.dateKey;
+        performDailyArchival();
+    }
 
     // ── One-time migration: auto-recover data from legacy Antigravity (pre-2.0) ──
     // Detects old "Antigravity" globalState DB and imports calendar + language.
@@ -1692,6 +1741,7 @@ async function pollContextUsage(): Promise<void> {
                     const gmSummary = await gmTracker.fetchAll(
                         lsInfo,
                         trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
+                        currentUsage?.cascadeId,
                         abortController.signal,
                     );
                     gmChanged = hasGMSummaryChanged(prevSummary, gmSummary);
@@ -1730,6 +1780,47 @@ async function pollContextUsage(): Promise<void> {
                         durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
                     }
                 } catch { /* Ledger recording failure is non-critical */ }
+
+                // ── DailyLedger: proactive settlement by resetTime ──
+                // Unlike QuotaTracker's heuristic detection, this directly checks
+                // whether each pool's resetTime has passed and settles unsettled pools.
+                try {
+                    const nowMs = Date.now();
+                    for (const snap of accountSnapshots.values()) {
+                        for (const pool of (snap.resetPools || [])) {
+                            if (!pool.resetTime || !pool.modelIds?.length) { continue; }
+                            const resetMs = new Date(pool.resetTime).getTime();
+                            if (isNaN(resetMs) || resetMs > nowMs) { continue; }
+
+                            // Prevent using stale resetTime from previous days (yesterday or older)
+                            const todayKey = toLocalDateKey();
+                            if (toLocalDateKey(new Date(resetMs)) !== todayKey) { continue; }
+                            // Skip if no usage or already settled
+                            // hasUsage from snapshot may be stale for inactive accounts,
+                            // so also check if ledger has actual recorded calls for this pool
+                            if (pool.hasUsage === false
+                                && !dailyLedger.hasActiveCallsForPool(pool.modelIds, snap.email)) { continue; }
+                            if (dailyLedger.isPoolSettled(pool.modelIds, snap.email)) { continue; }
+                            // Settle!
+                            const settled = dailyLedger.settleForQuotaReset(pool.modelIds, snap.email);
+                            if (settled) {
+                                log(`[DailyLedger] proactive settlement: ${settled.totalCalls} calls for [${settled.poolModelLabels.join(', ')}] (${snap.email})`);
+                                durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+                                
+                                // 同步对 GMTracker 进行 quota-reset 归档
+                                try {
+                                    const blCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelIds);
+                                    log(`[GMTracker] proactive baseline: ${blCount} calls for [${pool.modelIds.join(', ')}] (${snap.email})`);
+                                    lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
+                                    durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+                                    persistGMSummaryToFile(lastGMSummary);
+                                } catch (e) {
+                                    log(`[GMTracker] proactive baseline failed: ${e}`);
+                                }
+                            }
+                        }
+                    }
+                } catch { /* Proactive settlement failure is non-critical */ }
 
                 // Inject GM precision data into activity timeline events.
                 // GM is the SOLE source of truth for timeline — always inject when data exists.
@@ -1930,8 +2021,15 @@ function checkCachedAccountResets(): void {
             const diffMs = resetDate.getTime() - nowMs;
             if (diffMs > 0) { continue; }
 
+            // Prevent using stale resetTime from previous days (yesterday or older)
+            const todayKey = toLocalDateKey();
+            if (toLocalDateKey(resetDate) !== todayKey) { continue; }
+
             // Skip pools with no confirmed usage — matches UI "Ready" logic
-            if (pool.hasUsage === false) { continue; }
+            // Also check ledger for actual data (snapshot hasUsage may be stale
+            // for accounts that haven't been active since the last API refresh)
+            if (pool.hasUsage === false
+                && !dailyLedger.hasActiveCallsForPool(pool.modelIds || pool.modelLabels, snap.email)) { continue; }
 
             const modelNames = pool.modelLabels.slice(0, 3).join(', ');
             const key = `${snap.email}:${pool.resetTime}:${pool.modelLabels.join('|')}`;
@@ -1960,7 +2058,7 @@ function checkCachedAccountResets(): void {
             const archivedSessions = quotaTracker.archiveExpiredSessions(snap.email, pool.modelIds || pool.modelLabels);
             // ── Settle this pool in DailyLedger ──
             const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, snap.email);
-            if (baselinedCount > 0 || archivedSessions > 0) {
+            if (baselinedCount > 0 || archivedSessions > 0 || settled) {
                 log(`[ResetCheck]   ${baselinedCount} GM calls baselined, ${archivedSessions} quota sessions archived`);
                 if (settled) {
                     log(`[ResetCheck]   DailyLedger settled: ${settled.totalCalls} calls for [${settled.poolModelLabels.join(', ')}]`);

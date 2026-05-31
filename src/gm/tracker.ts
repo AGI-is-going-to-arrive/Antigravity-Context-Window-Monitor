@@ -31,7 +31,18 @@ import {
     extractCheckpointsFromTrajectorySteps,
 } from './parser';
 import { buildSummaryFromConversations, normalizeGMSummary, parseErrorCode, normalizeErrorMessage, MAX_RECENT_ERRORS } from './summary';
-import type { LedgerCallEntry } from '../daily-ledger';
+import { toLocalDateKey, type LedgerCallEntry } from '../daily-ledger';
+
+function dateKeyToStartOfDayMs(dateKey: string): number {
+    const parts = dateKey.split('-');
+    if (parts.length !== 3) { return 0; }
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    if (isNaN(y) || isNaN(m) || isNaN(d)) { return 0; }
+    return new Date(y, m, d, 0, 0, 0, 0).getTime();
+}
+
 
 /** Deduplicate checkpoint summaries from multiple GM calls, keyed by stepIndex */
 function deduplicateCheckpoints(calls: GMCallEntry[]): GMCheckpointSummary[] {
@@ -79,7 +90,7 @@ export class GMTracker {
     private _archivedModelCutoffs = new Map<string, string>();
     /** Current active account email — stamped onto newly fetched GM calls */
     private _currentAccountEmail = '';
-    /** Persistent map: executionId → accountEmail. Survives cache overwrites from re-fetches. */
+    /** Persistent map: executionId -> accountEmail. Survives cache overwrites from re-fetches. */
     private _callAccountMap = new Map<string, string>();
     /** Per-account+model ISO cutoffs: key="email|normalizedModel" — calls before cutoff are excluded */
     private _archivedAccountModelCutoffs = new Map<string, string>();
@@ -125,6 +136,7 @@ export class GMTracker {
     async fetchAll(
         ls: LSInfo,
         trajectories: { cascadeId: string; title: string; stepCount: number; status: string }[],
+        activeCascadeId?: string,
         signal?: AbortSignal,
     ): Promise<GMSummary> {
         const meta = { metadata: { ideName: 'antigravity', extensionName: 'antigravity' } };
@@ -143,10 +155,22 @@ export class GMTracker {
             const isRunning = t.status === 'CASCADE_RUN_STATUS_RUNNING';
             this._lastRunningStatus.set(t.cascadeId, isRunning);
             const justBecameIdle = wasRunning && !isRunning;
-            if (cached && cached.calls.length > 0
+
+            // Hyper-optimization: Skip IDLE conversations that haven't changed, 
+            // even if cached.calls is empty (e.g. after midnight reset / cold startup),
+            // provided they are NOT the current active conversation.
+            // This prevents batch RPC congestion for all historical idle conversations.
+            const isCurrentActive = activeCascadeId && t.cascadeId === activeCascadeId;
+            const canSkipIdle = cached 
+                && !isRunning 
+                && !justBecameIdle 
+                && cached.totalSteps === t.stepCount 
+                && !isCurrentActive;
+
+            if (canSkipIdle || (cached && cached.calls.length > 0
                 && !isRunning
                 && !justBecameIdle
-                && cached.totalSteps === t.stepCount) {
+                && cached.totalSteps === t.stepCount)) {
                 continue;
             }
 
@@ -202,7 +226,7 @@ export class GMTracker {
                             this._callAccountMap.set(key, known);
                         }
                     } else if (this._currentAccountEmail) {
-                        // New call — tag with current account and remember
+                        // New call — tag with current active account
                         c.accountEmail = this._currentAccountEmail;
                         this._callAccountMap.set(key, this._currentAccountEmail);
                     }
@@ -332,11 +356,14 @@ export class GMTracker {
         const retryErrorCodesByConv: Record<string, Record<string, number>> = {};
         const toolCatalogMap = new Map<string, ToolCatalogEntry>();
         const contextGrowth: { step: number; tokens: number; model: string }[] = [];
+        const todayKey = toLocalDateKey();
+        const dayStartMs = dateKeyToStartOfDayMs(todayKey);
 
         for (const [, conv] of this._cache) {
             // Only aggregate calls from the current cycle (after baseline)
             const baseline = this._callBaselines.get(conv.cascadeId) || 0;
             const sliced = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
+
             // Filter out calls already archived by per-pool resets
             // skipArchivalFilter: used by getArchivalSummary() for midnight archival
             // — includes both pending-archive and active calls for DailyStore.
@@ -366,6 +393,15 @@ export class GMTracker {
                 })
                 : sliced;
 
+            // Prevent history data pollution: only count calls from today in active metrics (global totals & breakdown)
+            const todayFilteredCalls = dayStartMs > 0
+                ? activeCalls.filter(c => {
+                    if (!c.createdAt) { return true; }
+                    const callMs = Date.parse(c.createdAt);
+                    return isNaN(callMs) || callMs >= dayStartMs;
+                })
+                : activeCalls;
+
             // ── Account-level filtering for model statistics ──
             // The conversations[] array keeps ALL calls (all accounts) so the UI
             // can still show per-account breakdown tags. But modelBreakdown and
@@ -373,10 +409,11 @@ export class GMTracker {
             // Calls with empty accountEmail (legacy / pre-tagging data) are included
             // as a migration courtesy — they'll be tagged on next re-fetch.
             const accountFilteredCalls = (this._currentAccountEmail && !skipAccountFilter)
-                ? activeCalls.filter(c =>
+                ? todayFilteredCalls.filter(c =>
                     !c.accountEmail || c.accountEmail === this._currentAccountEmail)
-                : activeCalls;
+                : todayFilteredCalls;
 
+            // conversations array keeps activeCalls (NO dayStartMs filtering) so timeline shows full history!
             const activeStepsCovered = activeCalls.reduce((sum, c) => sum + c.stepIndices.length, 0);
             const accountCredits = accountFilteredCalls.reduce((sum, c) => sum + c.credits, 0);
             conversations.push({
@@ -391,12 +428,17 @@ export class GMTracker {
             });
 
             // ── Tool call counting (ALL accounts, immune to quota-reset archival) ──
-            // Uses `sliced` (post-baseline, pre-archival) so quota resets during
-            // the day don't cause tool counts to drop. Only midnight reset()
-            // (which advances baselines) clears the counts for a new day.
+            // Uses `todayFilteredSliced` (post-baseline, pre-archival, today-only) so tool counts represent today's rank.
             const countedToolSteps = new Set<number>();
             const convToolCounts: Record<string, number> = {};
-            for (const c of sliced) {
+            const todayFilteredSliced = dayStartMs > 0
+                ? sliced.filter(c => {
+                    if (!c.createdAt) { return true; }
+                    const callMs = Date.parse(c.createdAt);
+                    return isNaN(callMs) || callMs >= dayStartMs;
+                })
+                : sliced;
+            for (const c of todayFilteredSliced) {
                 const callTime = c.createdAt || '';
                 for (const stepIdx of c.stepIndices) {
                     if (countedToolSteps.has(stepIdx)) { continue; }
@@ -856,9 +898,20 @@ export class GMTracker {
             if (delta > 0) {
                 debug.push(`${id.substring(0, 8)}: bl=${baseline} pos=${lastRecorded} len=${conv.calls.length} → +${delta}`);
             }
+            const todayKey = toLocalDateKey();
+            const dayStartMs = dateKeyToStartOfDayMs(todayKey);
+
             for (let i = start; i < conv.calls.length; i++) {
+                const call = conv.calls[i];
+                // Prevent history data pollution
+                if (dayStartMs > 0 && call.createdAt) {
+                    const callMs = Date.parse(call.createdAt);
+                    if (!isNaN(callMs) && callMs < dayStartMs) {
+                        continue;
+                    }
+                }
                 // dedupKey = cascadeId:arrayIndex — guaranteed unique within the cache
-                entries.push({ call: conv.calls[i], dedupKey: `${id}:${i}` });
+                entries.push({ call, dedupKey: `${id}:${i}` });
             }
             // Update position to current call count
             this._ledgerPositions.set(id, conv.calls.length);
@@ -982,12 +1035,24 @@ export class GMTracker {
         let cacheCost = 0;
         const cacheModelCalls = new Map<string, number>();
 
+        const todayKey = toLocalDateKey();
+        const dayStartMs = dateKeyToStartOfDayMs(todayKey);
+
         for (const [, conv] of this._cache) {
             const baseline = this._callBaselines.get(conv.cascadeId) || 0;
             const activeCalls = baseline > 0 ? conv.calls.slice(baseline) : conv.calls;
             for (const call of activeCalls) {
                 if (email && call.accountEmail && call.accountEmail !== email) { continue; }
                 if (!callMatchesPool(call)) { continue; }
+                
+                // Prevent history data pollution
+                if (dayStartMs > 0 && call.createdAt) {
+                    const callMs = Date.parse(call.createdAt);
+                    if (!isNaN(callMs) && callMs < dayStartMs) {
+                        continue;
+                    }
+                }
+
                 const archKey = buildGMArchiveKey(call);
                 if (this._archivedCallIds.has(call.executionId) || this._archivedCallIds.has(archKey)) { continue; }
                 if (call.executionId) { this._archivedCallIds.add(call.executionId); }

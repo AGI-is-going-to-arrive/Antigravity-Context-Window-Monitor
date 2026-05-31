@@ -9,7 +9,7 @@ import { QuotaTracker } from './quota-tracker';
 import { ActivityTracker, ActivitySummary, ActivityArchive } from './activity-tracker';
 import { buildGMDataTabContent, getGMDataTabStyles, buildAccountStatusPanel, hasAccountReadyPool, type AccountSnapshot } from './activity-panel';
 import { removeAccountSnapshot, getBillingDaysMap, setAccountBillingDay } from './extension';
-import type { PendingArchiveEntry } from './gm-tracker';
+
 import type { LedgerAccountBucket, LedgerSettledEntry } from './daily-ledger';
 import { buildPricingTabContent, getPricingTabStyles } from './pricing-panel';
 import { PricingStore, ModelPricing } from './pricing-store';
@@ -55,7 +55,6 @@ export interface PanelPayload {
     storageDiagnostics?: StorageDiagnostics;
     modelDNA?: Record<string, PersistedModelDNA>;
     accountSnapshots?: AccountSnapshot[];
-    pendingArchives?: PendingArchiveEntry[];
     /** DailyLedger: today's active (unsettled) account buckets */
     todayLedgerActive?: LedgerAccountBucket[];
     /** DailyLedger: settled entries from quota resets */
@@ -88,7 +87,6 @@ let lastStorageDiagnostics: StorageDiagnostics | undefined;
 let panelDurableState: StateBucket | undefined;
 let lastModelDNA: Record<string, PersistedModelDNA> = {};
 let lastAccountSnapshots: AccountSnapshot[] = [];
-let lastPendingArchives: PendingArchiveEntry[] = [];
 let lastTodayLedgerActive: LedgerAccountBucket[] = [];
 let lastLedgerSettled: LedgerSettledEntry[] = [];
 export const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
@@ -607,7 +605,6 @@ export function updateMonitorPanel(p: PanelPayload): void {
     if (p.storageDiagnostics) { lastStorageDiagnostics = p.storageDiagnostics; }
     if (p.modelDNA) { lastModelDNA = p.modelDNA; }
     if (p.accountSnapshots) { lastAccountSnapshots = p.accountSnapshots; }
-    if (p.pendingArchives !== undefined) { lastPendingArchives = p.pendingArchives; }
     if (p.todayLedgerActive) { lastTodayLedgerActive = p.todayLedgerActive; }
     if (p.ledgerSettled) { lastLedgerSettled = p.ledgerSettled; }
     if (panel && !isPaused) {
@@ -631,14 +628,14 @@ function buildTabContents(
     const eoc = `<div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>`;
     return {
 
-        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastPendingArchives, lastTodayLedgerActive, lastLedgerSettled) + eoc,
+        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled) + eoc,
         chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
         pricing: (lastPricingStore
             ? buildPricingTabContent(
                 lastGMFullSummary || lastGMSummary,
                 lastPricingStore,
                 lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
-                lastPendingArchives.reduce((s, e) => s + (e.estimatedCost || 0), 0),
+                lastLedgerSettled.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0),
             )
             : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`) + eoc,
         models: buildModelsTabContent(userInfo, configs) + eoc,
@@ -671,14 +668,14 @@ function buildHtml(
     tracker?: QuotaTracker,
 ): string {
 
-    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastPendingArchives, lastTodayLedgerActive, lastLedgerSettled);
+    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled);
     const chatsHtml = buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(
             lastGMFullSummary || lastGMSummary,
             lastPricingStore,
             lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
-            lastPendingArchives.reduce((s, e) => s + (e.estimatedCost || 0), 0),
+            lastLedgerSettled.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0),
         )
         : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
     const modelsHtml = buildModelsTabContent(userInfo, configs);

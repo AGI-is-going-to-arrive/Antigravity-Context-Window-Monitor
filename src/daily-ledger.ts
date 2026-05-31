@@ -85,11 +85,26 @@ export interface DailyLedgerState {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function toLocalDateKey(date: Date = new Date()): string {
+export function toLocalDateKey(date: Date = new Date()): string {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
     const d = String(date.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
+}
+
+/**
+ * Convert a dateKey like "2026-05-29" to the Unix timestamp (ms) of
+ * midnight local time on that date.
+ * Returns 0 on parse failure (caller treats 0 as "no filter").
+ */
+function dateKeyToStartOfDayMs(dateKey: string): number {
+    const parts = dateKey.split('-');
+    if (parts.length !== 3) { return 0; }
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    if (isNaN(y) || isNaN(m) || isNaN(d)) { return 0; }
+    return new Date(y, m, d, 0, 0, 0, 0).getTime();
 }
 
 /** A call entry with an externally-provided dedup key.
@@ -176,6 +191,51 @@ export class DailyLedger {
     }
 
     /**
+     * Check if a specific pool (by modelIds + email) has already been settled.
+     * Used by proactive settlement to avoid duplicate settlements.
+     */
+    isPoolSettled(modelIds: string[], email?: string): boolean {
+        const querySet = new Set(modelIds.map(id => id.toLowerCase()));
+        for (const entry of this._settled) {
+            const matchEmail = !email || entry.accountEmail === email;
+            if (!matchEmail) { continue; }
+            // Compare by poolModelIds (raw model IDs), not modelCalls (display names)
+            const overlap = (entry.poolModelIds || []).some(
+                pid => querySet.has(pid.toLowerCase()),
+            );
+            if (overlap) { return true; }
+        }
+        return false;
+    }
+
+    /**
+     * Check if the active bucket for a given email has any recorded calls
+     * for models in the specified pool. Used to detect real usage even when
+     * the account snapshot's `hasUsage` flag is stale.
+     */
+    hasActiveCallsForPool(poolModelIds: string[], email?: string): boolean {
+        const acctEmail = email || '';
+        const bucket = this._accounts.get(acctEmail);
+        if (!bucket || bucket.totalCalls === 0) { return false; }
+
+        const poolIdSet = new Set(poolModelIds.map(id => id.toLowerCase()));
+        for (const modelKey of Object.keys(bucket.modelStats)) {
+            const resolvedId = resolveModelId(modelKey);
+            if (resolvedId && poolIdSet.has(resolvedId.toLowerCase())) {
+                return true;
+            }
+            // Fallback: display name match
+            for (const pid of poolModelIds) {
+                const pidDisplay = normalizeModelDisplayName(pid);
+                if (pidDisplay && pidDisplay.toLowerCase() === modelKey.toLowerCase()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * Record a batch of new GM calls into the ledger.
      * Each entry carries a `dedupKey` (provided by the tracker) for reliable dedup.
      * @returns number of newly recorded calls
@@ -184,15 +244,31 @@ export class DailyLedger {
         let added = 0;
         const todayKey = toLocalDateKey();
 
-        // If the date has rolled over, auto-rollover first
+        // If the date has rolled over, do NOT auto-reset here.
+        // performDailyArchival() must call rollover() first to archive yesterday's
+        // data before we start recording for the new day. Silently skip until then.
         if (todayKey !== this._dateKey) {
-            // Caller should have called rollover() before midnight.
-            // Safety: if they didn't, just reset for the new day.
-            this._resetForNewDay(todayKey);
+            return 0;
         }
+
+        // Timestamp gate: compute midnight of dateKey's local day.
+        // Calls with createdAt before this threshold are old history
+        // (e.g. from loading a previous conversation) and must be rejected.
+        const dayStartMs = dateKeyToStartOfDayMs(this._dateKey);
 
         for (const entry of entries) {
             const call = entry.call;
+
+            // Reject calls whose createdAt is before today's midnight.
+            // This prevents old conversation history from polluting today's ledger
+            // when the user switches to or loads a past conversation.
+            if (dayStartMs > 0 && call.createdAt) {
+                const callMs = Date.parse(call.createdAt);
+                if (!isNaN(callMs) && callMs < dayStartMs) {
+                    continue;
+                }
+            }
+
             const id = entry.dedupKey || fallbackCallId(call);
             if (this._allRecordedIds.has(id)) { continue; }
 
@@ -417,13 +493,10 @@ export class DailyLedger {
         const ledger = new DailyLedger();
         if (!data || data.version !== 1) { return ledger; }
 
-        const todayKey = toLocalDateKey();
-        if (data.dateKey !== todayKey) {
-            // Stale data from a previous day — don't restore, start fresh.
-            // The old data should have been rolled over already.
-            return ledger;
-        }
-
+        // Always restore the data — even if it's from a previous day.
+        // If the IDE was off overnight, the data hasn't been rolled over yet.
+        // performDailyArchival() will call rollover() to flush it before
+        // starting the new day.
         ledger._dateKey = data.dateKey;
         ledger._settled = Array.isArray(data.settled) ? [...data.settled] : [];
 
