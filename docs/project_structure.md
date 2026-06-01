@@ -22,6 +22,7 @@ antigravity-context-monitor/
 │   ├── pool-utils.ts             # 配额池工具：按稳定 pool key 分组 / 扩池 / 查找最近 quota session
 │   ├── quota-tracker.ts          # 模型额度消费时间线追踪（per-account 隔离 + GMTracker 辅助检测 + 稳定池代表）
 │   ├── reset-time.ts             # 重置时间格式化工具（倒计时 + 绝对日期时间）
+│   ├── billing-day.ts            # 到期日计算（DST 安全的日历日差计算 helper）
 │   ├── activity-tracker.ts       # 活动追踪 re-export shim（向后兼容，实际代码在 activity/）
 │   ├── activity/                 # Activity 模块（从 activity-tracker.ts 拆分）
 │   │   ├── index.ts              #   barrel re-export
@@ -62,7 +63,11 @@ antigravity-context-monitor/
 │   ├── discovery.test.ts         # discovery 单元测试（原作者 FlorianHuo 提供）
 │   ├── pricing-panel.test.ts     # Cost 价格表回归测试
 │   ├── webview-script.test.ts    # WebView 价格保存逻辑回归测试
-│   └── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
+│   ├── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
+│   ├── billing-day.test.ts       # 积分到期日 DST 安全日历日差测试
+│   ├── extension-selection.test.ts # 模型选择与版本恢复回归测试
+│   ├── i18n-persistence.test.ts  # 语言偏好跨会话持久化回归测试（真实文件 IO 测试）
+│   └── multi-account-archival.test.ts # 多账号归档与跨重启完整性集成测试
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   └── project_structure.md          # 本文件
@@ -229,6 +234,12 @@ antigravity-context-monitor/
 ### legacy-migration.ts -- 旧版数据自动迁移
 
 自动检测旧 Antigravity（pre-2.0）的 `state.vscdb`（SQLite 数据库），通过 `child_process` + `node --experimental-sqlite` 提取日历数据和语言偏好，首次激活时自动合并到当前存储。跨平台路径检测（Windows/macOS/Linux）。迁移完成后设 `legacyMigrationDone` 标志，后续启动跳过。
+
+---
+
+### billing-day.ts -- 积分到期日计算
+
+提供夏令时（DST）安全的纯日历日时间差计算，接收到期日（1-31）并动态推导距今剩余天数，服务于状态栏及个人页积分倒计时显示，包含高覆盖的边界与跨时区单元测试支持。
 
 ---
 
