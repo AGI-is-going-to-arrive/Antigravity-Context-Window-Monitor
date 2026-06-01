@@ -16,8 +16,6 @@ const ABOUT_ICON = {
     cost: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
     /** CPU — Models */
     models: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>',
-    /** Clock/gauge — Quota Tracking */
-    quota: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
     /** Calendar — Calendar */
     calendar: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
     /** Person — Profile */
@@ -84,16 +82,6 @@ function getFeatureCards(): FeatureCard[] {
             description: tBi(
                 'All available AI models and their configurations: quota pools, reset times, context limits, and thinking capabilities.',
                 '所有可用 AI 模型及其配置：额度池、重置时间、有效上下文限制、以及思考能力参数。',
-            ),
-        },
-        {
-            tabId: 'history',
-            icon: ABOUT_ICON.quota,
-            color: 'var(--color-amber-light)',
-            title: tBi('Quota Tracking', '额度追踪'),
-            description: tBi(
-                'Track quota consumption across reset cycles. View historical usage sessions with per-model call counts and credential costs.',
-                '跨重置周期追踪额度消耗。查看历史使用会话，含每模型调用次数和积分费用。',
             ),
         },
         {
@@ -223,8 +211,8 @@ export function buildAboutTabContent(): string {
         </h3>
         <div class="about-info-box about-info-tips">
             <p>${tBi(
-        'Recommended: use a single IDE window. Multi-window setups may cause data desync between instances (e.g. activity timeline, quota tracking).',
-        '建议使用单窗口运行。多窗口可能导致实例间数据不同步（如活动时间线、额度追踪等）。',
+        'Recommended: use a single IDE window. Multi-window setups may cause data desync between instances (e.g. activity timeline and GM data refresh).',
+        '建议使用单窗口运行。多窗口可能导致实例间数据不同步（如活动时间线和 GM 数据刷新）。',
     )}</p>
         </div>
     </div>`;

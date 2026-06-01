@@ -71,13 +71,6 @@ let durableWorkspaceState: StateBucket;
 let durableFileGlobalState: StateBucket;
 let durableFileWorkspaceState: StateBucket;
 let persistedModelDNA: Record<string, PersistedModelDNA> = {};
-type DevResetSnapshot = {
-    activityState: ActivityTrackerState;
-    gmTrackerState: GMTrackerState;
-    gmDetailedSummary: GMSummary | null;
-    dailyState: DailyStoreState;
-};
-let devResetSnapshot: DevResetSnapshot | null = null;
 
 // ─── Multi-Account Snapshot State ─────────────────────────────────────────────
 /** Map of email → AccountSnapshot, persisted across sessions. */
@@ -453,27 +446,6 @@ export function buildUsageScopeTrajectories(
     return [activeTrajectory, ...scope];
 }
 
-function captureDevResetSnapshot(): void {
-    devResetSnapshot = {
-        activityState: clonePlain(activityTracker.serialize()),
-        gmTrackerState: clonePlain(gmTracker.serialize()),
-        gmDetailedSummary: lastGMSummary ? clonePlain(lastGMSummary) : null,
-        dailyState: clonePlain(dailyStore.serialize()),
-    };
-}
-
-function restoreDevResetSnapshot(): boolean {
-    if (!devResetSnapshot) { return false; }
-    activityTracker = ActivityTracker.restore(clonePlain(devResetSnapshot.activityState));
-    gmTracker = GMTracker.restore(clonePlain(devResetSnapshot.gmTrackerState));
-    gmTracker.setDetailedSummary(devResetSnapshot.gmDetailedSummary ? clonePlain(devResetSnapshot.gmDetailedSummary) : null);
-    lastGMSummary = devResetSnapshot.gmDetailedSummary ? clonePlain(devResetSnapshot.gmDetailedSummary) : null;
-    dailyStore.restoreSnapshot(clonePlain(devResetSnapshot.dailyState));
-    devResetSnapshot = null;
-    persistResetSensitiveState();
-    return true;
-}
-
 function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
     return {
         currentUsage,
@@ -482,7 +454,6 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         modelConfigs: cachedModelConfigs,
         userInfo: cachedUserInfo,
         workspaceUri: getWorkspaceUri(),
-        tracker: quotaTracker,
         activitySummary: activityTracker?.getSummary() ?? null,
         archives: activityTracker?.getArchives(),
         activityTracker,
@@ -1024,6 +995,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Initialize quota tracker
     quotaTracker = new QuotaTracker(context, durableGlobalState);
+    // The UI toggle is gone, but quota cycle detection still feeds GM repair and daily settlement.
+    quotaTracker.setEnabled(true);
     quotaTracker.onQuotaReset = (modelIds: string[]) => {
         // ── Baseline current account's GM calls for the reset pool ──
         const expandedIds = expandModelIdsToPool(modelIds, cachedModelConfigs);
@@ -1236,31 +1209,6 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
             showMonitorPanel(makePanelPayload({ context, initialTab: 'gmdata' }));
-        }),
-        vscode.commands.registerCommand('antigravity-context-monitor.devSimulateReset', () => {
-            if (!activityTracker) { return; }
-            captureDevResetSnapshot();
-            log('[Dev] Simulating daily archival...');
-            performDailyArchival(true);
-            if (isMonitorPanelVisible()) {
-                updateMonitorPanel(makePanelPayload());
-            }
-            log('[Dev] Daily archival simulated — snapshot captured, data archived & reset');
-        }),
-        vscode.commands.registerCommand('antigravity-context-monitor.devRestoreReset', () => {
-            const restored = restoreDevResetSnapshot();
-            if (restored && isMonitorPanelVisible()) {
-                updateMonitorPanel(makePanelPayload());
-            }
-            log(restored
-                ? '[Dev] Restored simulated quota reset snapshot'
-                : '[Dev] No simulated quota reset snapshot to restore');
-        }),
-        vscode.commands.registerCommand('antigravity-context-monitor.devPersistActivity', () => {
-            if (activityTracker) {
-                durableGlobalState.update('activityTrackerState', activityTracker.serialize());
-                log('[Dev] Activity tracker state persisted to globalState');
-            }
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.clearToolCatalog', () => {
             // Update the module-level lastGMSummary with the patched summary (empty catalog)
@@ -2246,7 +2194,6 @@ function getStorageDiagnostics(): StorageDiagnostics {
         stateFileSizeBytes,
         stateFileOpenWarnBytes: LARGE_STATE_FILE_WARN_BYTES,
         calendarDayCount: dailyStore?.totalDays || 0,
-        hasDevResetSnapshot: !!devResetSnapshot,
     };
 }
 

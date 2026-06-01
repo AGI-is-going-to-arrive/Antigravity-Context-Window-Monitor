@@ -66,7 +66,6 @@ export function getScript(): string {
             var collectPricingInputOverrides = (${collectPricingInputOverrides.toString()});
             var savedState = vscode.getState() || {};
             var copiedText = ${JSON.stringify(`✓ ${tBi('Copied', '已复制')}`)};
-            var doneText = ${JSON.stringify(`✓ ${tBi('Done', '完成')}`)};
             var savedText = ${JSON.stringify(`✓ ${tBi('Saved', '已保存')}`)};
             var resetText = ${JSON.stringify(`✓ ${tBi('Reset', '已重置')}`)};
             var openingText = ${JSON.stringify(tBi('Opening...', '正在打开...'))};
@@ -719,17 +718,6 @@ export function getScript(): string {
 
             // num-spinner-btn: handled by body delegation below
 
-            // ─── Quota Timeline Tracking Toggle (Settings tab) ───
-            var quotaTrackingCb = document.getElementById('toggleQuotaTracking');
-            if (quotaTrackingCb) {
-                quotaTrackingCb.addEventListener('change', function() {
-                    vscode.postMessage({ command: 'toggleQuotaTracking' });
-                });
-            }
-
-
-            // clearActiveTracking: handled by body delegation below
-
             // copyRawJson: handled by body delegation below
 
             // ─── Quota Notification Threshold ───
@@ -745,25 +733,6 @@ export function getScript(): string {
             }
 
             // profileBillingDaySaveBtn: handled by body delegation below
-
-            // ─── Dev: Simulate Quota Reset ───
-            var devSimBtn = document.getElementById('devSimulateReset');
-            if (devSimBtn) {
-                devSimBtn.addEventListener('click', function() {
-                    vscode.postMessage({ command: 'devSimulateReset' });
-                    var fb = document.getElementById('devSimulateFeedback');
-                    if (fb) { fb.textContent = doneText; setTimeout(function() { fb.textContent = ''; }, 2000); }
-                });
-            }
-            var devRestoreBtn = document.getElementById('devRestoreReset');
-            if (devRestoreBtn) {
-                devRestoreBtn.addEventListener('click', function() {
-                    if (devRestoreBtn.disabled) return;
-                    vscode.postMessage({ command: 'devRestoreReset' });
-                    var fb = document.getElementById('devSimulateFeedback');
-                    if (fb) { fb.textContent = resetText; setTimeout(function() { fb.textContent = ''; }, 2000); }
-                });
-            }
 
             // copyStatePath / openStateFile / revealStateFile / restoreTabScrollHint:
             // handled by body delegation below
@@ -917,16 +886,6 @@ export function getScript(): string {
                     return;
                 }
 
-                // ── Clear Active Tracking ──
-                if (target.closest('#clearActiveTracking')) {
-                    vscode.postMessage({ command: 'clearActiveTracking' });
-                    return;
-                }
-                if (target.closest('#clearQuotaHistory')) {
-                    vscode.postMessage({ command: 'clearQuotaHistory' });
-                    return;
-                }
-
                 // ── Clear Tool Catalog ──
                 if (target.closest('#clearToolCatalogBtn')) {
                     vscode.postMessage({ command: 'clearToolCatalog' });
@@ -1057,12 +1016,6 @@ export function getScript(): string {
                 // ── Clear History Button ──
                 if (target.closest('#clearCalendarBtn')) {
                     vscode.postMessage({ command: 'clearCalendarHistory' });
-                    return;
-                }
-
-                // ── Go to Settings from Quota Tracking disabled state ──
-                if (target.closest('#goToSettingsFromQuota')) {
-                    switchTab('settings');
                     return;
                 }
 

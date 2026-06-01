@@ -28,6 +28,14 @@
   `DailyLedger.recordCalls()` now rejects calls that fall outside the bucket's local-day window on both sides, blocking not only historical backfill pollution but also future-day calls from being written into the current day's ledger during cross-midnight reload scenarios.
   `DailyLedger.recordCalls()` 现在会同时拒绝落在当前日期桶之外两侧的调用时间，既阻断历史回灌污染，也阻断跨午夜重载场景下“已属于下一天”的调用误写入当天账本。
 
+- **Quota Tracking UI removed while retaining backend settlement logic / 移除额度追踪 UI，保留后端结算链路**:
+  Removed the dedicated `Quota Tracking` tab, the related Settings toggle, the About navigation card, and the obsolete `webview-history-tab.ts` renderer. `QuotaTracker` remains in place as a backend-only component for quota-reset settlement, cached-account archival, and GM summary repair, but the panel no longer passes its instance through the webview payload.
+  移除了独立的 `Quota Tracking` 标签页、对应的设置开关、About 导航卡片，以及已经无用的 `webview-history-tab.ts` 渲染器。`QuotaTracker` 仍作为纯后端组件保留，用于额度重置结算、缓存账号归档和 GM 摘要修复，但面板不再通过 webview payload 传递它的实例。
+
+- **Removed Settings debug/testing controls / 移除设置页调试入口**:
+  Deleted the Settings tab's debug/testing card and its private simulate/restore/clear command chain, along with the temporary dev snapshot state. This leaves the production panel focused on user-facing configuration only.
+  删除了设置页中的调试/测试卡片，以及对应的模拟归档、恢复快照、清空调试命令链和临时快照状态，使正式面板只保留面向用户的配置项。
+
 ### ✅ Tests / 测试
 
 - **Added regression coverage for GM restore and detail-refresh paths / 新增 GM 恢复与细节刷新回归测试**:

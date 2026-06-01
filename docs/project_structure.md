@@ -20,7 +20,7 @@ antigravity-context-monitor/
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
 │   ├── monitor-store.ts          # 监控页持久化：按对话保存 ContextUsage + GM 会话快照
 │   ├── pool-utils.ts             # 配额池工具：按稳定 pool key 分组 / 扩池 / 查找最近 quota session
-│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（per-account 隔离 + GMTracker 辅助检测 + 稳定池代表）
+│   ├── quota-tracker.ts          # 模型额度消费时间线追踪后端（per-account 隔离 + GMTracker 辅助检测 + 稳定池代表；独立 UI 已移除）
 │   ├── reset-time.ts             # 重置时间格式化工具（倒计时 + 绝对日期时间）
 │   ├── billing-day.ts            # 到期日计算（DST 安全的日历日差计算 helper）
 │   ├── activity-tracker.ts       # 活动追踪 re-export shim（向后兼容，实际代码在 activity/）
@@ -39,16 +39,15 @@ antigravity-context-monitor/
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算（respOut = output - thinking 避免 double-counting）+ findPricing display name fallback
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照）
-│   ├── webview-panel.ts          # WebView 面板框架（9 标签切换 + 消息通信 + 全局账号面板 dropdown + gmFullSummary 跨账号费用）
+│   ├── webview-panel.ts          # WebView 面板框架（8 标签切换 + 消息通信 + 全局账号面板 dropdown + gmFullSummary 跨账号费用）
 │   ├── webview-styles.ts         # WebView 面板 CSS 样式（Design Token 体系）
-│   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、开发按钮等）
+│   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、面板消息处理）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标
 
 │   ├── webview-models-tab.ts     # Models 标签页 HTML（默认模型 + 模型配额 + 模型信息）
 │   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含模型阈值/恢复默认值 + 持久化存储概览 + 界面提示偏好）
 │   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队 / AI 积分到期日设置）
-│   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
 │   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（ses-* 命名空间 — 紧凑行式卡片 + shortcut 芯片 + 工具栏 + CSS tooltip）
 │   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据 + 检查点查看器 + 账号面板构建器 + 模型卡片/汇总行/待归档费用显示 + respOut 费用计算）
 │   ├── pricing-panel.ts          # Cost 标签页 HTML（cost-* 统一面板 — 蓝色系 cost tab + 紧凑行式明细 + 月费用汇总 + 可编辑价格表 + 模型信息卡）
@@ -149,7 +148,7 @@ antigravity-context-monitor/
 
 ### quota-tracker.ts -- 额度消费追踪
 
-状态机追踪 per-model 额度消费（`idle->tracking->(archive)->idle`），per-account 隔离，GMTracker 辅助使用检测。
+状态机追踪 per-model 额度消费（`idle->tracking->(archive)->idle`），per-account 隔离，GMTracker 辅助使用检测。虽然前端不再暴露独立的 `Quota Tracking` 标签页，但这个后端模块仍参与额度重置结算、缓存账号过期归档，以及启动阶段的 GM 摘要修复。
 
 ---
 
@@ -227,9 +226,9 @@ antigravity-context-monitor/
 
 ### webview-panel.ts -- WebView 面板框架
 
-面板总框架：9 标签切换、消息通信、全局账号面板 dropdown、增量刷新。各标签内容由独立模块生成。
+面板总框架：8 标签切换、消息通信、全局账号面板 dropdown、增量刷新。各标签内容由独立模块生成；`Quota Tracking` 独立页签与相关调试入口已移除。
 
-子模块：`webview-models-tab.ts`（Models）、`webview-settings-tab.ts`（Settings）、`webview-profile-tab.ts`（Profile）、`webview-history-tab.ts`（Quota Tracking）、`webview-chat-history-tab.ts`（Sessions）、`webview-calendar-tab.ts`（Calendar）、`webview-about-tab.ts`（About）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（CSS Design Token）、`webview-icons.ts`（SVG 图标）、`webview-helpers.ts`（共享工具函数）。
+子模块：`webview-models-tab.ts`（Models）、`webview-settings-tab.ts`（Settings）、`webview-profile-tab.ts`（Profile）、`webview-chat-history-tab.ts`（Sessions）、`webview-calendar-tab.ts`（Calendar）、`webview-about-tab.ts`（About）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（CSS Design Token）、`webview-icons.ts`（SVG 图标）、`webview-helpers.ts`（共享工具函数）。
 
 ---
 
@@ -288,7 +287,7 @@ extension.ts (入口 + 调度)
 │   ├── models.ts
 │   └── i18n.ts
 ├── i18n.ts               ← 语言偏好 / 翻译
-├── quota-tracker.ts      ← 额度追踪
+├── quota-tracker.ts      ← 额度追踪后端
 ├── activity-tracker.ts   ← 活动追踪
 │   ├── gm-tracker.ts (types)
 │   ├── rpc-client.ts
@@ -311,7 +310,6 @@ extension.ts (入口 + 调度)
     ├── i18n.ts
     ├── tracker.ts (types)
     ├── models.ts
-    ├── quota-tracker.ts
     ├── activity-tracker.ts
     ├── gm-tracker.ts
     ├── pricing-store.ts
@@ -324,7 +322,6 @@ extension.ts (入口 + 调度)
     ├── activity-panel.ts
     ├── pricing-panel.ts
     ├── webview-calendar-tab.ts
-    ├── webview-history-tab.ts
     ├── webview-script.ts
     ├── webview-styles.ts
     ├── webview-icons.ts

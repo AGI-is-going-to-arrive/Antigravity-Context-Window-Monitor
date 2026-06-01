@@ -1430,92 +1430,6 @@ export function getGMDataTabStyles(): string {
         background: var(--color-surface-dim);
         border-color: var(--color-border);
     }
-    /* ── Model Stats Summary Row ── */
-    .model-stats-total {
-        display: flex;
-        align-items: center;
-        gap: 0;
-        padding: 6px 12px;
-        margin-top: var(--space-3);
-        font-size: 0.8em;
-        color: var(--color-text-dim);
-        background: rgba(96,165,250,0.04);
-        border: 1px solid var(--color-info-border-dim);
-        border-radius: var(--radius-md);
-    }
-    .model-stats-total .mst-icon {
-        width: 14px; height: 14px;
-        flex-shrink: 0;
-        margin-right: 6px;
-        opacity: 0.5;
-    }
-    .model-stats-total .mst-label {
-        font-weight: 600;
-        color: var(--color-info-strong);
-        margin-right: 8px;
-        letter-spacing: 0.3px;
-    }
-    .model-stats-total .mst-items {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        flex-wrap: wrap;
-        margin-left: auto;
-    }
-    .model-stats-total .mst-item {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        white-space: nowrap;
-        padding: 2px 8px;
-        background: var(--color-surface-dim);
-        border: 1px solid var(--color-neutral-border);
-        border-radius: var(--radius-sm);
-        transition: border-color 0.15s ease;
-    }
-    @media (hover: hover) {
-        .model-stats-total .mst-item:hover {
-            border-color: rgba(96,165,250,0.3);
-            background: rgba(96,165,250,0.06);
-        }
-    }
-    .model-stats-total .mst-val {
-        font-weight: 600;
-        color: var(--color-text);
-        font-variant-numeric: tabular-nums;
-    }
-    body.vscode-light .model-stats-total {
-        background: rgba(37,99,235,0.04);
-        border-color: rgba(37,99,235,0.12);
-    }
-    body.vscode-light .model-stats-total .mst-label {
-        color: rgba(37,99,235,0.7);
-    }
-    body.vscode-light .model-stats-total .mst-item {
-        background: rgba(0,0,0,0.02);
-        border-color: rgba(0,0,0,0.08);
-    }
-    @media (hover: hover) {
-        body.vscode-light .model-stats-total .mst-item:hover {
-            border-color: rgba(37,99,235,0.3);
-            background: rgba(37,99,235,0.06);
-        }
-    }
-    .model-stats-total .mst-item-cost {
-        border-color: rgba(74,222,128,0.25);
-        background: rgba(74,222,128,0.06);
-    }
-    .model-stats-total .mst-item-cost .mst-val {
-        color: rgba(74,222,128,0.9);
-    }
-    body.vscode-light .model-stats-total .mst-item-cost {
-        border-color: rgba(22,163,74,0.2);
-        background: rgba(22,163,74,0.04);
-    }
-    body.vscode-light .model-stats-total .mst-item-cost .mst-val {
-        color: rgba(22,163,74,0.85);
-    }
-
     /* ─── Retry Overhead ─── */
     .act-stat-warn { border-color: var(--color-danger-border-strong); }
     @media (hover: hover) {
@@ -2394,11 +2308,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
     const accountCallsByModel = new Map<string, Map<string, number>>();
     // Map<modelDisplayName, Map<accountEmail, errorCount>>
     const accountErrorsByModel = new Map<string, Map<string, number>>();
-    let allAccountTotalCalls = 0;
-    let allAccountTotalIn = 0;
-    let allAccountTotalOut = 0;
-    let allAccountTotalCache = 0;
-    let allAccountTotalCost = 0;
     let hasAnyAccountErrors = false;
     if (gm) {
         const todayKey = toLocalDateKey();
@@ -2411,25 +2320,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                     const callMs = Date.parse(call.createdAt);
                     if (!isNaN(callMs) && callMs < dayStartMs) {
                         continue;
-                    }
-                }
-
-                // Accumulate cross-account totals from raw calls
-                allAccountTotalCalls++;
-                allAccountTotalIn += call.inputTokens || 0;
-                allAccountTotalOut += call.outputTokens || 0;
-                allAccountTotalCache += call.cacheReadTokens || 0;
-                // Per-call cost for cross-account active total
-                {
-                    const pr = findPricing(call.responseModel) || findPricing(call.modelDisplay || call.model);
-                    if (pr) {
-                        const respOut = Math.max(0, (call.outputTokens || 0) - (call.thinkingTokens || 0));
-                        allAccountTotalCost += (
-                            (call.inputTokens || 0) * pr.input +
-                            respOut * pr.output +
-                            (call.cacheReadTokens || 0) * pr.cacheRead +
-                            (call.thinkingTokens || 0) * pr.thinking
-                        ) / 1_000_000;
                     }
                 }
 
@@ -2564,25 +2454,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
         </div>`;
     }
     html += `</div>`;
-
-    // ── Totals summary row below cards grid (uses cross-account totals) ──
-    if (allAccountTotalCalls > 0) {
-        const totalModels = accountCallsByModel.size;
-        const sigmaSvg = `<svg class="mst-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 4 8 4 14 12 8 20 18 20"/></svg>`;
-        const items: string[] = [];
-        items.push(`<span class="mst-item"><span class="mst-val">${allAccountTotalCalls}</span> ${tBi('calls', '调用')}</span>`);
-        items.push(`<span class="mst-item"><span class="mst-val">${totalModels}</span> ${tBi('models', '模型')}</span>`);
-        items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalIn)}</span> ${tBi('in', '输入')}</span>`);
-        items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalOut)}</span> ${tBi('out', '输出')}</span>`);
-        if (allAccountTotalCache > 0) {
-            items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalCache)}</span> ${tBi('cache', '缓存')}</span>`);
-        }
-        if (allAccountTotalCost > 0) {
-            const costStr = allAccountTotalCost < 0.01 ? allAccountTotalCost.toFixed(4) : allAccountTotalCost < 1 ? allAccountTotalCost.toFixed(3) : allAccountTotalCost.toFixed(2);
-            items.push(`<span class="mst-item mst-item-cost"><span class="mst-val">$${costStr}</span> ${tBi('cost', '费用')}</span>`);
-        }
-        html += `<div class="model-stats-total">${sigmaSvg}<span class="mst-label">${tBi('Total', '合计')}</span><span class="mst-items">${items.join('')}</span></div>`;
-    }
 
     return html;
 }
