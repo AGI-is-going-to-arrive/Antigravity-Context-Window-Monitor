@@ -562,10 +562,15 @@ function updateAccountSnapshot(
             if (!oldResetTime || oldResetTime === newPool.resetTime) { continue; }
             // resetTime changed → cycle turned over. Settle the old one.
             if (dailyLedger.isPoolSettled(newPool.modelIds, email)) { continue; }
+            // Settle both DailyLedger and GMTracker using oldResetTime as cutoff
+            const baselinedCount = gmTracker.baselineForQuotaReset(email, newPool.modelIds, oldResetTime);
             const settled = dailyLedger.settleForQuotaReset(newPool.modelIds, email);
-            if (settled) {
-                log(`[DailyLedger] cycle-change settlement: ${settled.totalCalls} calls for [${settled.poolModelLabels.join(', ')}] (${email}) — resetTime changed ${oldResetTime} → ${newPool.resetTime}`);
+            if (baselinedCount > 0 || settled) {
+                log(`[DailyLedger] cycle-change settlement: ${baselinedCount} GM calls baselined, ${settled ? settled.totalCalls : 0} ledger calls settled for [${newPool.labels.slice(0, 3).join(', ')}] (${email}) — resetTime changed ${oldResetTime} → ${newPool.resetTime}`);
+                lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
+                durableGlobalState.update('gmTrackerState', gmTracker.serialize());
                 durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+                persistGMSummaryToFile(lastGMSummary);
             }
         }
     }
@@ -800,7 +805,7 @@ function baselineExpiredPoolsForAccount(email: string): void {
         notifiedAccountResets.add(key);
 
         // ── Baseline GM calls for the expired pool ──
-        const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelIds || pool.modelLabels);
+        const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelIds || pool.modelLabels, pool.resetTime);
         // ── Settle in DailyLedger too ──
         const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, email);
         if (baselinedCount > 0 || settled) {
@@ -1792,9 +1797,7 @@ async function pollContextUsage(): Promise<void> {
                             const resetMs = new Date(pool.resetTime).getTime();
                             if (isNaN(resetMs) || resetMs > nowMs) { continue; }
 
-                            // Prevent using stale resetTime from previous days (yesterday or older)
-                            const todayKey = toLocalDateKey();
-                            if (toLocalDateKey(new Date(resetMs)) !== todayKey) { continue; }
+
                             // Skip if no usage or already settled
                             // hasUsage from snapshot may be stale for inactive accounts,
                             // so also check if ledger has actual recorded calls for this pool
@@ -1809,7 +1812,7 @@ async function pollContextUsage(): Promise<void> {
                                 
                                 // 同步对 GMTracker 进行 quota-reset 归档
                                 try {
-                                    const blCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelIds);
+                                    const blCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelIds, pool.resetTime);
                                     log(`[GMTracker] proactive baseline: ${blCount} calls for [${pool.modelIds.join(', ')}] (${snap.email})`);
                                     lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
                                     durableGlobalState.update('gmTrackerState', gmTracker.serialize());
@@ -2021,9 +2024,7 @@ function checkCachedAccountResets(): void {
             const diffMs = resetDate.getTime() - nowMs;
             if (diffMs > 0) { continue; }
 
-            // Prevent using stale resetTime from previous days (yesterday or older)
-            const todayKey = toLocalDateKey();
-            if (toLocalDateKey(resetDate) !== todayKey) { continue; }
+
 
             // Skip pools with no confirmed usage — matches UI "Ready" logic
             // Also check ledger for actual data (snapshot hasUsage may be stale
@@ -2051,7 +2052,7 @@ function checkCachedAccountResets(): void {
             const openMonitorLabel = tBi('Open Monitor', '打开监控');
 
             // ── Baseline this cached account's GM calls for the expired pool only ──
-            const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelIds || pool.modelLabels);
+            const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelIds || pool.modelLabels, pool.resetTime);
             // Also archive any active QuotaTracker sessions for this cached account's pool.
             // Without this, sessions stay in 'tracking' forever because processUpdate()
             // never receives API configs for non-active accounts.

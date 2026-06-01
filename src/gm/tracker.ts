@@ -170,7 +170,8 @@ export class GMTracker {
             if (canSkipIdle || (cached && cached.calls.length > 0
                 && !isRunning
                 && !justBecameIdle
-                && cached.totalSteps === t.stepCount)) {
+                && cached.totalSteps === t.stepCount
+                && !isCurrentActive)) {
                 continue;
             }
 
@@ -931,9 +932,9 @@ export class GMTracker {
      *                         If omitted, ALL models for the account are archived.
      * @returns number of calls baselined
      */
-    baselineForQuotaReset(targetEmail?: string, poolModelFilter?: string[]): number {
+    baselineForQuotaReset(targetEmail?: string, poolModelFilter?: string[], cutoffTime?: string): number {
         const email = targetEmail || this._currentAccountEmail;
-        const now = new Date().toISOString();
+        const cutoff = cutoffTime || new Date().toISOString();
 
         // Build a set of model IDs for pool matching.
         // poolModelFilter can contain model IDs ("MODEL_PLACEHOLDER_M26")
@@ -1010,18 +1011,18 @@ export class GMTracker {
             }
         }
 
-        // ── Step 2: Set per-account+model cutoffs to NOW ──
+        // ── Step 2: Set per-account+model cutoffs to Cutoff ──
         // Key = "email|MODEL_ID" (language-independent, stable)
         for (const modelId of archivedModelIds) {
             const amKey = `${email}|${modelId}`;
-            this._archivedAccountModelCutoffs.set(amKey, now);
+            this._archivedAccountModelCutoffs.set(amKey, cutoff);
         }
         // Also set cutoffs for all pool model IDs (belt and suspenders)
         if (poolModelIds && email) {
             for (const mid of poolModelIds) {
                 const amKey = `${email}|${mid}`;
                 if (!this._archivedAccountModelCutoffs.has(amKey)) {
-                    this._archivedAccountModelCutoffs.set(amKey, now);
+                    this._archivedAccountModelCutoffs.set(amKey, cutoff);
                 }
             }
         }
@@ -1098,7 +1099,7 @@ export class GMTracker {
             const modelCalls: Record<string, number> = {};
             for (const [model, c] of finalModelCalls) { modelCalls[model] = c; }
             this._pendingArchives.push({
-                timestamp: now,
+                timestamp: cutoff,
                 accountEmail: email,
                 totalCalls: finalCount,
                 totalInputTokens: finalInputTokens,
