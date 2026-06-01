@@ -66,7 +66,10 @@ antigravity-context-monitor/
 │   ├── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
 │   ├── billing-day.test.ts       # 积分到期日 DST 安全日历日差测试
 │   ├── extension-selection.test.ts # 模型选择与版本恢复回归测试
+│   ├── gm-summary-change.test.ts  # GM 细节字段变更判定回归测试
+│   ├── gm-tracker-restore-fetch.test.ts # GM 恢复态 idle stub 自动补拉回归测试
 │   ├── i18n-persistence.test.ts  # 语言偏好跨会话持久化回归测试（真实文件 IO 测试）
+│   ├── monitor-store-gm.test.ts  # Sessions 页 GM 快照刷新判定回归测试
 │   └── multi-account-archival.test.ts # 多账号归档与跨重启完整性集成测试
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
@@ -89,7 +92,7 @@ antigravity-context-monitor/
 
 ### extension.ts -- 入口 + 轮询调度
 
-扩展生命周期管理中心：初始化子系统、注册命令、轮询调度（默认 5s）、会话选择（RUNNING 优先 + 跨工作区 RUNNING 追踪）、工作区切换检测（事件监听 + URI 轮询比对 + 跨工作区穿透）、每日归档委托、多账号快照管理、额度重置归档、持久化协调。
+扩展生命周期管理中心：初始化子系统、注册命令、轮询调度（默认 5s）、会话选择（RUNNING 优先 + 跨工作区 RUNNING 追踪）、工作区切换检测（事件监听 + URI 轮询比对 + 跨工作区穿透）、每日归档委托、多账号快照管理、额度重置归档、持久化协调。启动时会将文件态 `gmDetailedSummary` 回灌到 `GMTracker`，轮询阶段对 GM 摘要采用细粒度签名判定，避免总量不变但上下文情报 / 错误 / 工具 / 对话细节已变化时漏刷新。
 
 ---
 
@@ -131,7 +134,7 @@ antigravity-context-monitor/
 
 ### monitor-store.ts -- Monitor 快照存储
 
-按对话保存 `ContextUsage` 与 `GMConversationData`，最多 200 个快照，独立于额度归档。
+按对话保存 `ContextUsage` 与 `GMConversationData`，最多 200 个快照，独立于额度归档。GM 会话快照比较不仅看 `calls.length`，还包含 latest call 标识、最新模型、积分与时间，避免 Sessions 标签页在调用数不变时停留旧值。
 
 ---
 
@@ -155,7 +158,7 @@ antigravity-context-monitor/
 
 ### gm-tracker.ts -- Generator Metadata 数据层
 
-调用 GM API 获取 per-LLM-call 精确数据，聚合为 `GMSummary`。智能缓存（IDLE 复用）、额度周期基线化、按账号过滤、错误码聚合与持久化、工具调用统计与目录。`clearToolCatalog()` 只清空工具目录，不影响工具调用排行；full-summary/archival-summary 路径不会把旧目录写回持久化桶。
+调用 GM API 获取 per-LLM-call 精确数据，聚合为 `GMSummary`。智能缓存（仅在 `calls` 已 hydrate 后复用 IDLE 会话，恢复态空 stub 会自动补拉）、额度周期基线化、按账号过滤、错误码聚合与持久化、工具调用统计与目录。`clearToolCatalog()` 只清空工具目录，不影响工具调用排行；full-summary/archival-summary 路径不会把旧目录写回持久化桶。
 
 ---
 ### activity-panel.ts -- GM Data 统一面板渲染
@@ -166,7 +169,7 @@ antigravity-context-monitor/
 
 ### webview-chat-history-tab.ts -- Sessions / 会话目录
 
-按工作区/仓库分组展示全量对话列表，提供搜索、筛选、逐会话操作（打开工作区/Brain 目录/原始 .pb 文件）。
+按工作区/仓库分组展示全量对话列表，提供搜索、筛选、逐会话操作（打开工作区/Brain 目录/原始 .pb 文件）。GM 调用数 / 积分 / 最新模型优先读取当前 `gmSummary`，无实时数据时回退到 `monitor-store` 的对话快照。
 
 ---
 

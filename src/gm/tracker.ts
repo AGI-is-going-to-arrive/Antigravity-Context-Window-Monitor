@@ -153,22 +153,20 @@ export class GMTracker {
             this._lastRunningStatus.set(t.cascadeId, isRunning);
             const justBecameIdle = wasRunning && !isRunning;
 
-            // Hyper-optimization: Skip IDLE conversations that haven't changed, 
-            // even if cached.calls is empty (e.g. after midnight reset / cold startup),
-            // provided they are NOT the current active conversation.
-            // This prevents batch RPC congestion for all historical idle conversations.
+            // Skip unchanged IDLE conversations only after we already have call data.
+            // When restored from persistent state, cached.calls is intentionally empty;
+            // skipping those stubs would leave the UI stuck on partial GM summaries
+            // (missing conversations/context growth/error details) until each
+            // conversation becomes active again.
             const isCurrentActive = activeCascadeId && t.cascadeId === activeCascadeId;
             const canSkipIdle = cached 
+                && cached.calls.length > 0
                 && !isRunning 
                 && !justBecameIdle 
                 && cached.totalSteps === t.stepCount 
                 && !isCurrentActive;
 
-            if (canSkipIdle || (cached && cached.calls.length > 0
-                && !isRunning
-                && !justBecameIdle
-                && cached.totalSteps === t.stepCount
-                && !isCurrentActive)) {
+            if (canSkipIdle) {
                 continue;
             }
 

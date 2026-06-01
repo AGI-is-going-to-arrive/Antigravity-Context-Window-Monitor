@@ -63,13 +63,29 @@ function sameUsageSnapshot(prev: ContextUsage, next: ContextUsage): boolean {
 }
 
 function sameGMConversationSnapshot(prev: GMConversationData, next: GMConversationData): boolean {
-    return prev.cascadeId === next.cascadeId
-        && prev.title === next.title
-        && prev.totalSteps === next.totalSteps
-        && prev.coveredSteps === next.coveredSteps
-        && prev.coverageRate === next.coverageRate
-        && (prev.lifetimeCalls || 0) === (next.lifetimeCalls || 0)
-        && prev.calls.length === next.calls.length;
+    const buildSignature = (conversation: GMConversationData): string => {
+        const latestCall = conversation.calls[conversation.calls.length - 1];
+        const totalCredits = conversation.calls.reduce((sum, call) => sum + call.credits, 0);
+        const callIds = conversation.calls
+            .map(call => call.executionId || `${call.model}:${call.createdAt}:${call.stepIndices.join(',')}`)
+            .join(',');
+        const latestModel = latestCall?.responseModel || latestCall?.modelDisplay || latestCall?.model || '';
+        return [
+            conversation.cascadeId,
+            conversation.title,
+            conversation.totalSteps,
+            conversation.coveredSteps,
+            conversation.coverageRate,
+            conversation.lifetimeCalls || 0,
+            conversation.accountCredits || 0,
+            conversation.calls.length,
+            totalCredits,
+            latestCall?.createdAt || '',
+            latestModel,
+            callIds,
+        ].join('|');
+    };
+    return buildSignature(prev) === buildSignature(next);
 }
 
 export class MonitorStore {

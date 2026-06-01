@@ -122,6 +122,12 @@ Since v1.10.1, clicking the status bar opens a WebView side panel (replacing the
 * **实时刷新 / Live Refresh**: 轮询循环中通过 `updateMonitorPanel()` 推送最新数据到已打开的面板，保持数据实时同步。自 v1.14.5 起，轮询复用未变化会话的缓存 `ContextUsage`（通过 `hasSameUsageInputs()` 比较 `cascadeId`/`stepCount`/`lastModifiedTime`），减少冗余 RPC 调用。GM 持久化也仅在聚合结果变化时写入。
   The polling loop pushes latest data to the open panel via `updateMonitorPanel()`, keeping data in real-time sync. Since v1.14.5, polling reuses cached `ContextUsage` for unchanged conversations (compared via `hasSameUsageInputs()` on `cascadeId`/`stepCount`/`lastModifiedTime`), reducing redundant RPC calls. GM persistence also only writes when aggregated results change.
 
+* **GM 恢复摘要回灌 / GM Restored Summary Hydration**: 启动时若文件持久化中存在 `gmDetailedSummary`，扩展会先修复 quota-history 污染，再通过 `gmTracker.setDetailedSummary()` 回灌到内存态 GMTracker，保证面板、时间线和后续 `serialize()` 读到同一份摘要。`GMTracker.fetchAll()` 仅在 `cached.calls.length > 0` 时才允许跳过未变化的 idle 会话；恢复态只剩空 `calls` 的 stub 会主动补拉一次，避免重启后 `上下文情报`、`对话分布`、`上下文增长`、`错误详情` 等区块因为空缓存而消失。
+  When a file-backed `gmDetailedSummary` exists at startup, the extension first repairs quota-history contamination and then injects the repaired summary back into `GMTracker` via `gmTracker.setDetailedSummary()`, so the panel, timeline, and later `serialize()` calls all observe the same snapshot. `GMTracker.fetchAll()` now skips unchanged idle conversations only after `cached.calls.length > 0`; restored stubs with empty `calls` are force-refetched once, preventing Context Intelligence / Conversations / Context Growth / Error Details from disappearing after restart due to empty in-memory cache.
+
+* **GM 细粒度变更判定 / Detailed GM Change Detection**: `hasGMSummaryChanged()` 不再只比较总调用数和总 token，而是构建轻量签名覆盖 `modelBreakdown`、`contextGrowth`、`toolCallCounts`、`retryErrorCodes`、`toolCatalog`、`recentErrorEntries`、每个 conversation 的 latest call / checkpoint / systemContext 等细节字段。这样即便总量不变，只要 GM 明细发生变化，轮询仍会刷新面板并写回持久化。
+  `hasGMSummaryChanged()` no longer compares only total calls/tokens. It now builds a lightweight signature spanning `modelBreakdown`, `contextGrowth`, `toolCallCounts`, `retryErrorCodes`, `toolCatalog`, `recentErrorEntries`, and each conversation's latest call / checkpoint / systemContext details. This means detail-only GM updates still trigger panel refresh and persistence even when the topline counters remain unchanged.
+
 * **滚动条隐藏 / Scrollbar Hiding (v1.14.5)**: 三层纵深防御隐藏 VS Code WebView 滚动条：① 静态 CSS `html[data-hide-scrollbar="true"]` + `!important`；② `<html>` 和 `<body>` 双重 `data-hide-scrollbar` 属性；③ 运行时 JS 动态注入 `<style id="ag-scrollbar-override">` 到 `<head>` 末尾。默认隐藏，可在设置中恢复。
   Three-layer defense-in-depth scrollbar hiding for VS Code WebView: ① Static CSS `html[data-hide-scrollbar="true"]` with `!important`; ② dual `data-hide-scrollbar` attribute on both `<html>` and `<body>`; ③ Runtime JS injection of `<style id="ag-scrollbar-override">` appended to `<head>` tail. Hidden by default, toggleable in Settings.
 
@@ -130,6 +136,9 @@ Since v1.10.1, clicking the status bar opens a WebView side panel (replacing the
 
 * **增量刷新 / Incremental Tab Refresh (v1.14.7)**: `updateTabs` 消息通过 `postMessage` 推送各标签页内容，前端对比缓存 HTML 跳过未变化的 pane，避免不必要的 `innerHTML` 替换。Settings 标签页显式排除在增量更新之外，防止 DOM 替换销毁事件监听。
   The `updateTabs` message pushes tab content via `postMessage`; the frontend compares cached HTML and skips unchanged panes, avoiding unnecessary `innerHTML` replacements. The Settings tab is explicitly excluded from incremental updates to prevent DOM replacement from destroying event listeners.
+
+* **Sessions GM 快照刷新 / Sessions GM Snapshot Refresh**: `monitor-store.ts` 持久化的 `GMConversationData` 快照现在比较 latest call 标识、最新模型、积分和时间，而不是只看 `calls.length`。这让 Sessions 标签页在“调用数没变，但最新 GM 模型/积分/执行记录已经变化”的情况下也能及时刷新。
+  Persisted `GMConversationData` snapshots in `monitor-store.ts` now compare latest call identity, latest model, credits, and timestamp instead of only `calls.length`. This keeps the Sessions tab current even when the number of calls is unchanged but the newest GM model/credits/execution record has changed.
 
 * **Tab 栏箭头导航 / Tab Arrow Navigation (v1.14.7)**: Tab 栏两端新增左右箭头滚动按钮，根据溢出状态智能显隐。使用 `opacity` + `pointer-events` 渐隐过渡保留占位空间，防止箭头消失时误触旁边的 Tab。
   Left/right scroll arrow buttons flank the tab bar, intelligently showing/hiding based on overflow state. Uses `opacity` + `pointer-events` fade transition to preserve layout space and prevent accidental tab clicks.

@@ -2,6 +2,26 @@
 
 ## [1.16.11-Pending] - 2026-06-01
 
+### 🐛 Fixed / 修复
+
+- **GM Data containers disappearing after restart or idle restore / 重启或恢复态下 GM 容器消失**:
+  Prevented `GMTracker.fetchAll()` from skipping restored idle conversation stubs whose `calls` array is still empty, and rehydrated file-backed `gmDetailedSummary` into `GMTracker` during startup. This fixes cases where `Context Intelligence`, `Conversations`, `Context Growth`, and `Error Details` vanished until the user re-activated the conversation manually.
+  修复 `GMTracker.fetchAll()` 在恢复态下误跳过空 `calls` 的 idle 对话 stub，并在启动时将文件持久化的 `gmDetailedSummary` 回灌进 `GMTracker`。这解决了 `上下文情报`、`对话分布`、`上下文增长`、`错误详情` 等 GM 容器在重启后消失、必须重新操作当前对话才恢复的问题。
+
+- **Missed refresh when only GM details changed / 仅 GM 细节变化时漏刷新的问题**:
+  Replaced the old coarse `hasGMSummaryChanged()` counters-only check with a lightweight signature over model DNA, context growth, tool/error distributions, tool catalog, recent error entries, and per-conversation latest call / checkpoint / system-context content. Panel refresh and persistence now trigger even when totals stay the same but GM detail fields have changed.
+  将原来只比较总调用数和总 token 的粗粒度 `hasGMSummaryChanged()` 判定，改为覆盖模型 DNA、上下文增长、工具/错误分布、工具目录、最近错误条目，以及每个对话 latest call / checkpoint / system-context 内容的轻量签名。现在即便总量不变，只要 GM 明细变化，面板刷新和持久化也会正常触发。
+
+- **Stale Sessions GM snapshot when call count stayed flat / 调用数不变时 Sessions 页 GM 快照卡旧值**:
+  `monitor-store.ts` now compares latest GM call identity, latest model, credits, and timestamp instead of only `calls.length`, so the Sessions tab keeps up with GM detail changes that do not increase the number of calls.
+  `monitor-store.ts` 现在比较 latest GM call 标识、最新模型、积分和时间，而不再只看 `calls.length`，因此 Sessions 标签页在“调用数没增加但 GM 细节已变化”的情况下也能及时更新。
+
+### ✅ Tests / 测试
+
+- **Added regression coverage for GM restore and detail-refresh paths / 新增 GM 恢复与细节刷新回归测试**:
+  Added `tests/gm-tracker-restore-fetch.test.ts`, `tests/gm-summary-change.test.ts`, and `tests/monitor-store-gm.test.ts` to cover restored idle stub re-fetching, detailed GM summary diffing, and Sessions GM snapshot refresh behavior.
+  新增 `tests/gm-tracker-restore-fetch.test.ts`、`tests/gm-summary-change.test.ts`、`tests/monitor-store-gm.test.ts`，覆盖恢复态 idle stub 补拉、GM 细节摘要比对，以及 Sessions 页 GM 快照刷新行为。
+
 ### ✨ Added & Refactored / 新增与重构
 
 - **Double-ledger multi-path cost breakdown merging / 双轨多路账本费用并轨归并**:

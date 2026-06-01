@@ -204,22 +204,155 @@ function rehydrateUsageForDisplay(
     };
 }
 
-function hasGMSummaryChanged(prev: GMSummary | null | undefined, next: GMSummary | null | undefined): boolean {
+function hashText(text: string): string {
+    let hash = 5381;
+    for (let i = 0; i < text.length; i++) {
+        hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
+    }
+    return (hash >>> 0).toString(36);
+}
+
+function stableValueSignature(value: unknown): string {
+    if (Array.isArray(value)) {
+        return `[${value.map(stableValueSignature).join(',')}]`;
+    }
+    if (value && typeof value === 'object') {
+        return `{${stableRecordSignature(value as Record<string, unknown>)}}`;
+    }
+    if (typeof value === 'string') {
+        return hashText(value);
+    }
+    return String(value);
+}
+
+function stableRecordSignature(record: Record<string, unknown> | null | undefined): string {
+    if (!record) { return ''; }
+    return Object.entries(record)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, value]) => `${key}:${stableValueSignature(value)}`)
+        .join('|');
+}
+
+function buildGMModelStatsSignature(summary: GMSummary): string {
+    return Object.entries(summary.modelBreakdown)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([modelName, stats]) => {
+            const cfg = stats.completionConfig;
+            const cfgSig = cfg
+                ? `${cfg.maxTokens},${cfg.temperature},${cfg.firstTemperature},${cfg.topK},${cfg.topP},${cfg.numCompletions},${cfg.stopPatternCount}`
+                : '';
+            return [
+                modelName,
+                stats.callCount,
+                stats.stepsCovered,
+                stats.totalInputTokens,
+                stats.totalOutputTokens,
+                stats.totalThinkingTokens,
+                stats.totalCacheRead,
+                stats.totalCacheCreation,
+                stats.totalCredits,
+                stats.avgTTFT,
+                stats.minTTFT,
+                stats.maxTTFT,
+                stats.avgStreaming,
+                stats.cacheHitRate,
+                stats.responseModel,
+                stats.apiProvider,
+                stats.hasSystemPrompt ? 1 : 0,
+                stats.toolCount,
+                stats.promptSectionTitles.join(','),
+                stats.totalRetries,
+                stats.errorCount,
+                stats.creditCallCount,
+                stats.exactCallCount,
+                stats.placeholderOnlyCalls,
+                stats.contextWindowCapacity,
+                cfgSig,
+            ].join('~');
+        })
+        .join('||');
+}
+
+function buildGMConversationSignature(summary: GMSummary): string {
+    return [...summary.conversations]
+        .sort((a, b) => a.cascadeId.localeCompare(b.cascadeId))
+        .map(conversation => {
+            const latestCall = conversation.calls[conversation.calls.length - 1];
+            const totalConvCredits = conversation.calls.reduce((sum, call) => sum + call.credits, 0);
+            const callIds = conversation.calls
+                .map(call => call.executionId || `${call.model}:${call.createdAt}:${call.stepIndices.join(',')}`)
+                .join(',');
+            const checkpointSig = (conversation.checkpointSummaries || [])
+                .map(cp => `${cp.checkpointNumber}:${cp.stepIndex}:${cp.tokens}:${hashText(cp.fullText || '')}`)
+                .join(';');
+            const contextSig = (conversation.systemContextItems || [])
+                .map(item => `${item.type}:${item.stepIndex}:${item.tokens}:${item.label}:${hashText(item.fullText || '')}`)
+                .join(';');
+            return [
+                conversation.cascadeId,
+                conversation.title,
+                conversation.totalSteps,
+                conversation.coveredSteps,
+                conversation.coverageRate,
+                conversation.lifetimeCalls || 0,
+                conversation.accountCredits || 0,
+                conversation.calls.length,
+                totalConvCredits,
+                latestCall?.createdAt || '',
+                latestCall?.responseModel || latestCall?.modelDisplay || latestCall?.model || '',
+                callIds,
+                checkpointSig,
+                contextSig,
+            ].join('~');
+        })
+        .join('||');
+}
+
+function buildGMSummarySignature(summary: GMSummary): string {
+    const recentErrorEntriesSig = (summary.recentErrorEntries || [])
+        .map(entry => `${entry.code}:${entry.createdAt}:${hashText(entry.message || '')}`)
+        .join('|');
+    const uniqueErrorsSig = (summary.uniqueErrors || [])
+        .map(entry => `${entry.code}:${entry.firstSeen}:${hashText(entry.message || '')}`)
+        .join('|');
+    const toolCatalogSig = (summary.toolCatalog || [])
+        .map(entry => `${entry.name}:${entry.firstSeen}:${hashText(entry.description || '')}`)
+        .join('|');
+    const contextGrowthSig = summary.contextGrowth
+        .map(point => `${point.step}:${point.tokens}:${point.model}`)
+        .join('|');
+
+    return [
+        summary.totalCalls,
+        summary.totalStepsCovered,
+        summary.totalCredits,
+        summary.totalInputTokens,
+        summary.totalOutputTokens,
+        summary.totalCacheRead,
+        summary.totalCacheCreation,
+        summary.totalThinkingTokens,
+        summary.totalRetryCount,
+        summary.totalRetryTokens,
+        summary.totalRetryCredits,
+        stableRecordSignature(summary.stopReasonCounts),
+        stableRecordSignature(summary.retryErrorCodes),
+        stableRecordSignature(summary.toolCallCounts),
+        stableRecordSignature(summary.toolCallCountsByConv as Record<string, unknown> | undefined),
+        stableRecordSignature(summary.retryErrorCodesByConv as Record<string, unknown> | undefined),
+        summary.recentErrors.map(item => hashText(item)).join('|'),
+        recentErrorEntriesSig,
+        uniqueErrorsSig,
+        toolCatalogSig,
+        contextGrowthSig,
+        buildGMModelStatsSignature(summary),
+        buildGMConversationSignature(summary),
+    ].join('@@');
+}
+
+export function hasGMSummaryChanged(prev: GMSummary | null | undefined, next: GMSummary | null | undefined): boolean {
     if (!!prev !== !!next) { return true; }
     if (!prev || !next) { return false; }
-    return prev.totalCalls !== next.totalCalls
-        || prev.totalStepsCovered !== next.totalStepsCovered
-        || prev.totalCredits !== next.totalCredits
-        || prev.totalInputTokens !== next.totalInputTokens
-        || prev.totalOutputTokens !== next.totalOutputTokens
-        || prev.totalCacheRead !== next.totalCacheRead
-        || prev.totalCacheCreation !== next.totalCacheCreation
-        || prev.totalThinkingTokens !== next.totalThinkingTokens
-        || prev.totalRetryCount !== next.totalRetryCount
-        || prev.totalRetryTokens !== next.totalRetryTokens
-        || prev.totalRetryCredits !== next.totalRetryCredits
-        || prev.conversations.length !== next.conversations.length
-        || Object.keys(prev.modelBreakdown).length !== Object.keys(next.modelBreakdown).length;
+    return buildGMSummarySignature(prev) !== buildGMSummarySignature(next);
 }
 
 function persistResetSensitiveState(): void {
@@ -1053,10 +1186,15 @@ export function activate(context: vscode.ExtensionContext): void {
         );
         if (repairedGMSummary !== lastGMSummary) {
             lastGMSummary = repairedGMSummary;
+            gmTracker.setDetailedSummary(lastGMSummary);
             durableGlobalState.update('gmTrackerState', gmTracker.serialize());
             persistGMSummaryToFile(lastGMSummary);
             log('GM summary repaired from quota history during startup');
         }
+    }
+
+    if (lastGMSummary) {
+        gmTracker.setDetailedSummary(lastGMSummary);
     }
 
     // Bootstrap timeline from file-backed GM summary after reinstall.
@@ -1749,17 +1887,17 @@ async function pollContextUsage(): Promise<void> {
                         currentUsage?.cascadeId,
                         abortController.signal,
                     );
-                    gmChanged = hasGMSummaryChanged(prevSummary, gmSummary);
-                    if (gmChanged || !lastGMSummary) {
-                        const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
-                        monitorStore.recordGMConversations(gmTracker.getAllConversationData());
+                    const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
+                    gmChanged = hasGMSummaryChanged(prevSummary, detailedSummary);
+                    lastGMSummary = detailedSummary;
+                    monitorStore.recordGMConversations(gmTracker.getAllConversationData());
+                    if (gmChanged || !prevSummary) {
                         persistGMSummaryToFile(detailedSummary);
                         const mergedDNA = mergeModelDNAState(persistedModelDNA, detailedSummary);
                         if (mergedDNA.changed) {
                             persistedModelDNA = mergedDNA.entries;
                             durableGlobalState.update('modelDNAState', serializeModelDNAState(persistedModelDNA));
                         }
-                        lastGMSummary = detailedSummary;
                     }
                 } catch { /* GM fetch failure is non-critical */ }
 
