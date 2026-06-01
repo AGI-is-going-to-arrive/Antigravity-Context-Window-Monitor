@@ -14,7 +14,11 @@
 
 - **Comprehensive multi-account archival integration tests / 完善的多账号归档集成测试**:
   Added `tests/multi-account-archival.test.ts` to ensure data isolation, serialization consistency, and robust multi-account baseline rollover.
-  新增 `tests/multi-account-archival.test.ts` 集成测试，全面覆盖多账号场景下的序列化、反序列化、额度重置归档流程，确保在多账号频繁切换和重置时日历统计的 100% 完整与隔离。
+  新增 `tests/multi-account-archival.test.ts` 集成测试，全面覆盖多账号场景下的序列化、反序列化、额度重置归档流程，确保在多账号频繁切换和重置时日历统计的完整与强隔离。
+
+- **Unified Gemini Quota Pool mapping / 统一的 Gemini 额度池映射**:
+  Merged `gemini-pro` and `gemini-flash` quota pools into a single unified `gemini` pool in `KNOWN_QUOTA_POOLS` (defined in `src/models.ts`), aligning with the mid-2026 platform-level shared quota policy for the Gemini 3.5 model family.
+  将已知额度池中的 `gemini-pro` 和 `gemini-flash` 统一合并为单一的 `gemini` 额度池（在 `src/models.ts` 的 `KNOWN_QUOTA_POOLS` 中定义），以适配 2026 年中旬官方平台针对 Gemini 3.5 系列模型实行的共享配额新政策，保证跨模型的额度计数正确归属。
 
 ### ⚙️ Refactored & Optimized / 重构与优化
 
@@ -24,11 +28,11 @@
 
 - **Skip redundant RPC requests for idle sessions / 自动跳过空闲对话的批量轮询**:
   Optimized the `GMTracker.fetchAll()` loop by skipping RPC trajectory requests when a conversation is idle, not currently active, and its step count matches the cached state. This resolves the polling lag where concurrently checking dozen of dormant sessions could block initial loading for up to one minute.
-  优化 `GMTracker.fetchAll()` 批量轮询逻辑，当对话非当前活跃、处于空闲状态且总步骤数与本地缓存一致时，直接跳过 RPC 轨迹拉取请求。这解决了冷启动或轮询时因多条闲置对话并发发起 RPC 请求挤爆 Language Server 接口导致加载延迟近一分钟的问题。
+  优化 `GMTracker.fetchAll()` 批量轮询逻辑，当对话非当前活跃、处于空闲状态且总步骤数与本地缓存一致时，直接跳过 RPC 轨迹拉取请求。这解决了冷启动或轮询时因多条闲置对话并发发起 RPC 请求导致 Language Server 接口过载而延迟近一分钟的问题。
 
-- **Quota reset baseline with cutoff time tracking / 引入配额重置到期时间戳隔离与双重结算**:
-  Integrated quota reset tracking across both the background polling thread (`pollContextUsage`) and active account stat updates (`processAccountStats`). The tracking now passes the exact quota `resetTime` as a baseline cutoff parameter to `gmTracker.baselineForQuotaReset()`, cleanly separating the old cycle's calls from today's new calls. The legacy day-key check was removed to ensure that pending quota resets from prior days (e.g. after booting up from suspension) are fully settled without UI persistence issues or data leaks.
-  打通了后台轮询（`pollContextUsage`）与配额状态更新（`processAccountStats`）处的重置结算机制，支持将准确的额度重置时间 `resetTime` 传递给 `gmTracker.baselineForQuotaReset()` 作为截止时间戳。这保证了旧周期的数据在结算时不会与今天产生的新调用混淆。移除了旧的日期锁，确保前天或昨天等久未开机积累的过期重置能够被正常补算归档，解决 UI 容器在界面残留及数据泄露问题。
+- **Quota reset baseline with cutoff time tracking / 引入配额重置到期时间戳隔离与协同结算**:
+  Integrated quota reset tracking across both the background polling thread (`pollContextUsage`) and active account stat updates (`processAccountStats`). The tracking now passes the exact quota `resetTime` as a baseline cutoff parameter to `gmTracker.baselineForQuotaReset()`, cleanly separating the old cycle's calls from today's new calls. The legacy day-key check was removed to ensure that pending quota resets from prior days (e.g. after booting up from suspension) are fully settled without UI persistence issues or data confusion.
+  打通了后台轮询（`pollContextUsage`）与配额状态更新（`processAccountStats`）处的重置结算机制，支持将准确的额度重置时间 `resetTime` 传递给 `gmTracker.baselineForQuotaReset()` 作为截止时间戳。这保证了旧周期的数据在结算时不会与今天产生的新调用混淆。移除了旧的日期锁，确保前天或昨天等久未开机积累的过期重置能够被正常补算归档，解决 UI 容器在界面残留及数据统计混淆问题。
 
 - **Independent DailyLedger for GM call accounting / 独立的 DailyLedger 实时增量账本**:
   The previous archival system relied on the Language Server's conversation cache, which is volatile — restarting the IDE or the LS dropping old conversations led to zero-data calendar entries. The new `DailyLedger` module records GM calls incrementally after every poll via `GMTracker.getNewCallsSinceLastRecord()`, with position-based tracking and `dedupKey` (cascadeId:arrayIndex) deduplication. Data is bucketed by date + account email and persisted to `globalState`, surviving IDE restarts.
@@ -42,8 +46,8 @@
   `performDailyArchival()` now prioritizes `DailyLedger.rollover()` as the GM data source. Falls back to the legacy `getArchivalSummary()` + `pendingArchives` path when the ledger is empty (e.g., fresh install transition period).
   `performDailyArchival()` 现在优先使用 `DailyLedger.rollover()` 作为 GM 数据源。ledger 为空时（如刚安装的过渡期）降级到旧的 `getArchivalSummary()` + `pendingArchives` 路径。
 
-- **Dynamic Checkpointer limit capture with offset indicator / 物理限额动态捕捉机制与兜底指示**:
-  The extension dynamically queries the language server via LSP RPC (`GetAvailableModels`) upon connection or reconnection to retrieve genuine physical model context limits and overrides internal limits. Active parsing resolves and maps both canonical Placeholder IDs and physical IDs simultaneously, robustly handling string-formatted values via `parseInt` extraction. Static fallback limits in the codebase are offset by -1,000 (1K) tokens (e.g., Gemini 3.5 Flash fallback is `127,000` instead of `128,000`), serving as a simple status indicator: if you see clean integers (e.g., `128,000`), dynamic capture is active; if you see offset limits (e.g., `127,000`), it has fallen back to static values.
+- **Dynamic Checkpointer limit capture with offset indicator / 实际限额动态捕捉机制与兜底指示**:
+  The extension dynamically queries the language server via LSP RPC (`GetAvailableModels`) upon connection or reconnection to retrieve genuine model context limits and overrides internal limits. Active parsing resolves and maps both canonical Placeholder IDs and model IDs simultaneously, robustly handling string-formatted values via `parseInt` extraction. Static fallback limits in the codebase are offset by -1,000 (1K) tokens (e.g., Gemini 3.5 Flash fallback is `127,000` instead of `128,000`), serving as a simple status indicator: if you see clean integers (e.g., `128,000`), dynamic capture is active; if you see offset limits (e.g., `127,000`), it has fallen back to static values.
   插件启动或 LS 中途重连成功时，通过本地 LSP RPC 通道拉取官方可用模型列表，动态获取实际的模型上下文限额并改写内存限制。同时支持占位符 ID 与实际模型 ID 解析，并用 `parseInt` 兼容了 String 类型数据。主动将代码中所有静态兜底限制整体下调了 1K (1,000) tokens（例如 Gemini 3.5 Flash 设为 `127,000` 而非 `128,000`）。若 UI 呈现平整整数说明真实动态捕获生效；若呈现少 1K 限制说明处于兜底状态，便于前台验证。
 
 - **Removed redundant limits & warning threshold settings and upgraded to percentage-based adaptive warnings / 废除了冗余模型限制与警告阈值设置，升级为百分比自适应预警体系**:
@@ -56,7 +60,7 @@
 
 - **Removed redundant checkpointer limit from Model Quota cards / 剥离模型配额卡片中多余的限制展示**:
   Removed the redundant checkpointer limit display from the individual quota cards to keep the UI clean, lightweight, and focused on a single source of truth.
-  剥离了“模型配额”卡片底部多余的物理限额文字节点渲染，避免信息重复展示，保持卡片界面的极简。
+  剥离了“模型配额”卡片底部多余的模型限额文字节点渲染，避免信息重复展示，保持卡片界面的极简。
 
 ### 🐛 Fixed / 修复
 
@@ -66,7 +70,7 @@
 
 - **Language selection persistence / 语言切换跨会话持久化 (thanks @Yeoman-Hamilton, #59)**:
   Originally planned to resolve the display language resetting to Bilingual across IDE sessions. However, developer @Yeoman-Hamilton addressed this in `v1.16.10` with a cohesive `setLanguage` double-write signature and a comprehensive suite of 9 real-file IO persistence tests. Recognizing their implementation is structurally cleaner and better tested, we have adopted their version into this branch and deprecated our draft adaptation.
-  本计划在此版本中修复重启 IDE 后语言偏好丢失的缺陷。合并 v1.16.10 时，注意到 @Yeoman-Hamilton 已在先前的 PR #59 中彻底修复了此问题。其通过重构 `setLanguage` 实现了内聚度更高的全局与局部状态双写机制，并配备了 9 个基于真实文件 IO 的持久化单元测试。鉴于其方案在系统内聚性与测试完整性上更为完善，我们废弃了本地的过渡实现，全面合入了这一官方优化版本。
+  本计划在此版本中修复重启 IDE 后语言偏好丢失的缺陷。合并 v1.16.10 时，注意到 @Yeoman-Hamilton 已在先前的 PR #59 中有效修复了此问题。其通过重构 `setLanguage` 实现了内聚度更高的全局与局部状态双写机制，并配备了 9 个基于真实文件 IO 的持久化单元测试。鉴于其方案在系统内聚性与测试完整性上更为完善，我们废弃了本地的过渡实现，全面合入了这一官方优化版本。
 
 - **Placeholder-data dedup collision causing undercounting / 占位数据去重碰撞导致调用次数不足**:
   For RUNNING conversations, the lightweight GM metadata API returns calls with zero tokens and empty stepIndices. The original content-based callId generated identical keys for all calls in the same conversation, causing the ledger to reject valid new calls as duplicates. Fix: tracker now provides an externally-guaranteed unique `dedupKey` (cascadeId:arrayIndex) for each call.
@@ -82,7 +86,7 @@
 
 - **Fix Checkpointer synchronization lock, type parsing, and UI display / 修复 Checkpointer 动态限制同步锁逻辑、字符串类型解析与面板展示失效**:
   The initial implementation set `hasSyncedCheckpointer = true` before the asynchronous LSP RPC request completed. If the RPC failed or timed out during the early discovery phase, subsequent polling cycles lacked a retry mechanism, silencing the feature. Physical model IDs from the official RPC response (e.g., `gemini-3-flash-agent`) were mismatching canonical Placeholder IDs, and the `max_token_limit` value was returned as a String, which was silently filtered out by strict `typeof` constraints. Fix: introduced `isSyncingCheckpointer` status lock to prevent concurrent reentrance, updated the handler to only mark `hasSyncedCheckpointer = true` upon a successful RPC response (enabling retries on failure), enhanced parsing to resolve physical IDs, introduced `parseInt` to support string-formatted metrics under strict type constraints, and exposed the resolved Checkpointer limit directly in the Monitor Panel's model cards.
-  同步锁在异步 RPC 完成前被置为 true，若初期 RPC 失败则轮询没有重试机制；此外解析物理 ID 未能与内部 canonical ID 对齐，且 `max_token_limit` 为 String 类型在严格的类型约束下被忽略。修复：引入 `isSyncingCheckpointer` 状态锁防止并发重入，当且仅当 RPC 交互成功时标记同步完成（支持失败在后续轮询中重试），增强解析对齐物理 ID，引入 `parseInt` 兼容了 String，并在卡片中直接展示物理限制数值。
+  同步锁在异步 RPC 完成前被置为 true，若初期 RPC 失败则轮询没有重试机制；此外解析物理 ID 未能与内部 canonical ID 对齐，且 `max_token_limit` 为 String 类型在严格的类型约束下被忽略。修复：引入 `isSyncingCheckpointer` 状态锁防止并发重入，当且仅当 RPC 交互成功时标记同步完成（支持失败在后续轮询中重试），增强解析对齐实际模型 ID，引入 `parseInt` 兼容了 String，并在卡片中直接展示有效限制数值。
 
 - **Blank model quota on status bar and hover tooltip when idle / 空闲或无会话时状态栏模型配额及浮窗显示空白**:
   Status bar rendering (`showNoConversation()` and `showIdle()`) filtered out model quota indicators (`quotaSuffix`) and reset countdowns (`resetSuffix`) when there was no active trajectory. In addition, the no-conversation tooltip skipped the `buildQuotaLines()` call table. Fix: updated both methods to accept an optional `modelId` (passing `lastKnownModel`), enabling proper quota rendering under idle/no-conversation states, and restored the full quota table in the no-conversation tooltip.
@@ -95,6 +99,14 @@
 - **GM data loss during daily calendar archival / 每日归档漏写重置数据导致的数据丢失问题**:
   Midnight archival wrote only `gmTracker.getArchivalSummary()` (active cache) to the `DailyStore` calendar snapshot. However, intra-day baselined GM calls in `_pendingArchives` were completely ignored and cleared on `gmTracker.reset()`, causing all calls consumed prior to a quota reset to vanish from the calendar. If the IDE was reloaded or restarted, `_cache.calls` was cleared during serialization, producing zero-data calendar summaries. Fix: updated `performDailyArchival` to explicitly fetch and merge all entries from `gmTracker.getPendingArchives()` (including call counts, tokens, credits, and cost breakdown proportions) into the daily summary before saving to `DailyStore`, ensuring complete daily telemetry even after IDE restarts.
   凌晨归档仅将活跃缓存写入 `DailyStore`。但白天因额度重置转移到待归档区（`_pendingArchives`）的历史数据被遗漏并在 `reset()` 时清空导致丢失。并且，如果 IDE 中途重载或重启，缓存中的明细在序列化时被清空，导致归档为 0。修复：归档前强制提取并归并 `gmTracker.getPendingArchives()` 中保存的重置汇总数据，确保即便 IDE 经历重启，日历数据也完整精确。
+
+- **Stale quota-reset jump misjudgment in QuotaTracker / 修复 QuotaTracker 额度重置判定漏洞与首帧防误触**:
+  Removed the `Math.abs` absolute value check in `QuotaTracker.isCycleEnded` when evaluating resetTime drifts. Originally, any large drift (including timezone offsets or backward adjustments when switching conversations and initializing the language server) was mistakenly treated as a quota reset. Restricting the detection to positive forward jumps (`curMs - cycleMs > 30min`) prevents the "Today's Ledger" active counts from being prematurely settled into the "Settled" list, while still fully capturing genuine server-side resets even across IDE offline periods.
+  移除了 `QuotaTracker.isCycleEnded` 在检测重置时间突变时对 `Math.abs` 绝对值的错误使用。原逻辑会将切换对话或 LS 首帧初始化时由于时区偏差、网络校正引起的“时间戳往前修正”误判定为额度重置。现在限制为仅捕获正向的大跨度跳跃（`curMs - cycleMs > 30分钟`），彻底解决了多轮对话或切对话时“今日累计”数据被提前冻结并误归档至“已结算”卡片的缺陷，同时完整保留了对真实服务端重置的精确捕获能力。
+
+- **Startup archival fallback with maximum call telemetry / 启动归档时 active cache 为空的取大值兜底**:
+  Implemented a robust fallback during startup archival in `performDailyArchival`. If the active cache was cleared due to an IDE reload, it compares the call counts between `liveSummary` and `lastGMSummary` and selects the maximum value, preventing stats from zeroing out after IDE restarts.
+  在 `performDailyArchival` 中引入了启动归档的取大值兜底机制。若 IDE 重载或重启导致活跃缓存归零，系统会对比 `liveSummary` 和 `lastGMSummary` 的调用次数并取其较大值进行补算，避免重启造成历史日历数据的丢失。
 
 ### 🎨 UI / 界面
 

@@ -517,7 +517,7 @@ export class QuotaTracker {
         if (cycleMs > 0 && cycleMs <= nowMs) { return true; }
 
         // (b) API resetTime jumped forward significantly → new cycle
-        if (cycleMs > 0 && curMs > 0 && Math.abs(curMs - cycleMs) > CYCLE_END_JUMP_MS) {
+        if (cycleMs > 0 && curMs > 0 && (curMs - cycleMs) > CYCLE_END_JUMP_MS) {
             return true;
         }
         return false;
