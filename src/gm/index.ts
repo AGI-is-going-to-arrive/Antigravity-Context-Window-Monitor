@@ -17,7 +17,6 @@ export type {
     GMConversationData,
     GMSummary,
     GMTrackerState,
-    PendingArchiveEntry,
     UniqueErrorEntry,
     RecentErrorEntry,
     ToolCatalogEntry,

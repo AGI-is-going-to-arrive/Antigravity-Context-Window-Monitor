@@ -288,27 +288,7 @@ export interface ToolCatalogEntry {
     description?: string;
 }
 
-/** Lightweight snapshot of a baselined quota cycle ("pending archive"). */
-export interface PendingArchiveEntry {
-    /** ISO timestamp when the baseline was created */
-    timestamp: string;
-    /** Account email that was baselined */
-    accountEmail: string;
-    /** Number of calls baselined */
-    totalCalls: number;
-    /** Total input tokens */
-    totalInputTokens: number;
-    /** Total output tokens */
-    totalOutputTokens: number;
-    /** Total cache read tokens */
-    totalCacheRead: number;
-    /** Total credits consumed */
-    totalCredits: number;
-    /** Per-model call counts */
-    modelCalls: Record<string, number>;
-    /** Pre-computed estimated USD cost (calculated at baseline time from responseModel pricing) */
-    estimatedCost?: number;
-}
+
 
 /** Serialized form for globalState persistence */
 export interface GMTrackerState {
@@ -326,8 +306,6 @@ export interface GMTrackerState {
     currentAccountEmail?: string;
     /** Persistent executionId → accountEmail mapping (added v1.15.10) */
     callAccountMap?: Record<string, string>;
-    /** Pending archive entries waiting for midnight sweep (added v1.16.0) */
-    pendingArchives?: PendingArchiveEntry[];
     /** Per-account+model ISO cutoff: key="email|normalizedModel" (added v1.16.0) */
     archivedAccountModelCutoffs?: Record<string, string>;
     /** Persisted tool call frequency across restarts (added v1.17.0) */

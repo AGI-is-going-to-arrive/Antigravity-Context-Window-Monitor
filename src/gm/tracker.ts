@@ -15,7 +15,6 @@ import type {
     GMSummary,
     GMSystemContextItem,
     GMTrackerState,
-    PendingArchiveEntry,
     TokenBreakdownGroup,
     UniqueErrorEntry,
     RecentErrorEntry,
@@ -94,8 +93,6 @@ export class GMTracker {
     private _callAccountMap = new Map<string, string>();
     /** Per-account+model ISO cutoffs: key="email|normalizedModel" — calls before cutoff are excluded */
     private _archivedAccountModelCutoffs = new Map<string, string>();
-    /** Baselined cycle snapshots waiting for midnight archival */
-    private _pendingArchives: PendingArchiveEntry[] = [];
     /** Persisted tool call counts — survives restarts via serialize/restore.
      *  Merged with freshly computed counts (max-wins) since API re-fetch
      *  may not return messagePrompts for all conversations. */
@@ -970,12 +967,6 @@ export class GMTracker {
         // ── Step 1: Compute accurate stats from _lastSummary (full picture) ──
         const summary = this._lastSummary;
         let summaryCount = 0;
-        let summaryInputTokens = 0;
-        let summaryOutputTokens = 0;
-        let summaryCacheRead = 0;
-        let summaryCredits = 0;
-        let summaryCost = 0;
-        const summaryModelCalls = new Map<string, number>();
         const archivedModelIds = new Set<string>();
 
         if (summary) {
@@ -985,27 +976,6 @@ export class GMTracker {
                     if (!call.accountEmail && email) { continue; }
                     if (!callMatchesPool(call)) { continue; }
                     summaryCount++;
-                    summaryInputTokens += call.inputTokens;
-                    summaryOutputTokens += call.outputTokens;
-                    summaryCacheRead += call.cacheReadTokens;
-                    summaryCredits += call.credits;
-                    // Per-call cost using responseModel pricing
-                    if (call.responseModel) {
-                        const pr = findPricing(call.responseModel);
-                        if (pr) {
-                            const respOut = Math.max(0, (call.outputTokens || 0) - (call.thinkingTokens || 0));
-                            summaryCost += (
-                                (call.inputTokens || 0) * pr.input +
-                                respOut * pr.output +
-                                (call.cacheReadTokens || 0) * pr.cacheRead +
-                                (call.thinkingTokens || 0) * pr.thinking
-                            ) / 1_000_000;
-                        }
-                    }
-                    const modelKey = normalizeModelDisplayName(
-                        call.modelDisplay || call.model,
-                    ) || call.responseModel || call.model;
-                    summaryModelCalls.set(modelKey, (summaryModelCalls.get(modelKey) || 0) + 1);
                     archivedModelIds.add(call.model); // model ID, not display name
                 }
             }
@@ -1029,12 +999,6 @@ export class GMTracker {
 
         // ── Step 3: Also mark individual calls in _archivedCallIds (from _cache) ──
         let cacheCount = 0;
-        let cacheInputTokens = 0;
-        let cacheOutputTokens = 0;
-        let cacheCacheRead = 0;
-        let cacheCredits = 0;
-        let cacheCost = 0;
-        const cacheModelCalls = new Map<string, number>();
 
         const todayKey = toLocalDateKey();
         const dayStartMs = dateKeyToStartOfDayMs(todayKey);
@@ -1059,27 +1023,6 @@ export class GMTracker {
                 if (call.executionId) { this._archivedCallIds.add(call.executionId); }
                 this._archivedCallIds.add(archKey);
                 cacheCount++;
-                cacheInputTokens += call.inputTokens;
-                cacheOutputTokens += call.outputTokens;
-                cacheCacheRead += call.cacheReadTokens;
-                cacheCredits += call.credits;
-                // Per-call cost using responseModel pricing
-                if (call.responseModel) {
-                    const pr = findPricing(call.responseModel);
-                    if (pr) {
-                        const respOut = Math.max(0, (call.outputTokens || 0) - (call.thinkingTokens || 0));
-                        cacheCost += (
-                            (call.inputTokens || 0) * pr.input +
-                            respOut * pr.output +
-                            (call.cacheReadTokens || 0) * pr.cacheRead +
-                            (call.thinkingTokens || 0) * pr.thinking
-                        ) / 1_000_000;
-                    }
-                }
-                const modelKey = normalizeModelDisplayName(
-                    call.modelDisplay || call.model,
-                ) || call.responseModel || call.model;
-                cacheModelCalls.set(modelKey, (cacheModelCalls.get(modelKey) || 0) + 1);
                 archivedModelIds.add(call.model); // also capture from cache path
             }
         }
@@ -1087,29 +1030,6 @@ export class GMTracker {
         // ── Step 4: Use the more accurate of summary vs cache stats ──
         const useSummary = summaryCount >= cacheCount;
         const finalCount = useSummary ? summaryCount : cacheCount;
-        const finalInputTokens = useSummary ? summaryInputTokens : cacheInputTokens;
-        const finalOutputTokens = useSummary ? summaryOutputTokens : cacheOutputTokens;
-        const finalCacheRead = useSummary ? summaryCacheRead : cacheCacheRead;
-        const finalCredits = useSummary ? summaryCredits : cacheCredits;
-        const finalModelCalls = useSummary ? summaryModelCalls : cacheModelCalls;
-        const finalCost = useSummary ? summaryCost : cacheCost;
-
-        // Record pending archive entry
-        if (finalCount > 0) {
-            const modelCalls: Record<string, number> = {};
-            for (const [model, c] of finalModelCalls) { modelCalls[model] = c; }
-            this._pendingArchives.push({
-                timestamp: cutoff,
-                accountEmail: email,
-                totalCalls: finalCount,
-                totalInputTokens: finalInputTokens,
-                totalOutputTokens: finalOutputTokens,
-                totalCacheRead: finalCacheRead,
-                totalCredits: finalCredits,
-                modelCalls,
-                estimatedCost: finalCost,
-            });
-        }
 
         // ── Step 5: Clear persisted error data for the archived account ──
         // Clear ALL persisted error baselines — after archiving calls, the max-wins
@@ -1127,11 +1047,6 @@ export class GMTracker {
         // fall back to empty cache → DailyStore gets totalCalls=0 (data loss).
         this._lastSummary = this._buildSummary(true, true);
         return finalCount;
-    }
-
-    /** Get all pending archive entries (waiting for midnight sweep). */
-    getPendingArchives(): PendingArchiveEntry[] {
-        return this._pendingArchives;
     }
 
     /**
@@ -1218,7 +1133,6 @@ export class GMTracker {
         this._archivedModelCutoffs.clear();
         this._archivedAccountModelCutoffs.clear();
         this._callAccountMap.clear();
-        this._pendingArchives = [];
         this._ledgerPositions.clear();
         this._persistedToolCounts = {};
         this._persistedToolCountsByConv = {};
@@ -1246,7 +1160,6 @@ export class GMTracker {
         this._archivedModelCutoffs.clear();
         this._archivedAccountModelCutoffs.clear();
         this._callAccountMap.clear();
-        this._pendingArchives = [];
         this._ledgerPositions.clear();
         this._persistedToolCounts = {};
         this._persistedToolCountsByConv = {};
@@ -1487,7 +1400,6 @@ export class GMTracker {
             archivedModelCutoffs: this._archivedModelCutoffs.size > 0 ? Object.fromEntries(this._archivedModelCutoffs) : undefined,
             currentAccountEmail: this._currentAccountEmail || undefined,
             callAccountMap: this._callAccountMap.size > 0 ? Object.fromEntries(this._callAccountMap) : undefined,
-            pendingArchives: this._pendingArchives.length > 0 ? this._pendingArchives : undefined,
             archivedAccountModelCutoffs: this._archivedAccountModelCutoffs.size > 0 ? Object.fromEntries(this._archivedAccountModelCutoffs) : undefined,
             persistedToolCallCounts: Object.keys(this._persistedToolCounts).length > 0 ? this._persistedToolCounts : undefined,
             persistedToolCallCountsByConv: Object.keys(this._persistedToolCountsByConv).length > 0 ? this._persistedToolCountsByConv : undefined,
@@ -1570,11 +1482,6 @@ export class GMTracker {
                     tracker._callAccountMap.set(execId, email);
                 }
             }
-        }
-
-        // Restore pending archives (added v1.16.0)
-        if (Array.isArray(data.pendingArchives)) {
-            tracker._pendingArchives = data.pendingArchives;
         }
 
         // Restore per-account+model cutoffs (added v1.16.0)

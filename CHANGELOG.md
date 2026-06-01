@@ -1,8 +1,22 @@
 # 变更日志 / Changelog
 
-## [1.16.11-Pending] - 2026-05-31
+## [1.16.11-Pending] - 2026-06-01
 
-### ✨ Added / 新增
+### ✨ Added & Refactored / 新增与重构
+
+- **Double-ledger multi-path cost breakdown merging / 双轨多路账本费用并轨归并**:
+  Redesigned the "Pricing" tab rendering logic to pass both the settled ledger (`lastLedgerSettled`) and the daily active ledger (`lastTodayLedgerActive`) directly to `buildPricingTabContent()`. Merges active ledger's per-model token metrics (input, output, cache, and thinking) with settled ledger's proportional metrics under a unified dual-ledger merging routine. This resolves the empty pricing card warning ("Cost analysis will appear...") and retains the day's total telemetry (e.g. merging today's $11.64 active cost with $0.818 settled cost for a $12.458 grand total) even when switching to idle/no-conversation sessions.
+  重构“费用（Pricing）”选项卡的渲染链路，支持将已结算账本 `lastLedgerSettled` 与今日活跃账本 `lastTodayLedgerActive` 共同传入 `buildPricingTabContent()`。通过双轨并轨归并算法，将今日活跃账本中分模型分项 Token 与费用，同已结算账本的历史分摊数据进行归并汇总。这解决了切换到空闲/无对话会话时出现的“费用分析将在 GM 数据可用后显示”显示空白卡片问题，并整合全天发生的总计费用（例如将今日活跃的 $11.64 与已结算的 $0.818 合并为 $12.458 汇总展示）。
+
+- **Called custom pricing model highlighting / 高亮今天已使用自定义价格模型**:
+  Extracted all active responseModel IDs directly from the dual-ledger merged rows to compile a dedicated `calledModelKeys` set, passing it directly to `buildEditablePricingTable()`. Features lookups via `calledModelKeys.has(entry.responseModel)`. This decouples the custom pricing card from the current conversation's volatile memory, ensuring that all models called today remain highlighted across any chat session restarts.
+  直接从双轨归并汇总后得到的 `rows` 模型明细中动态提取今天实际有消耗和 Token 产生的 `responseModel` ID 集合 `calledModelKeys`，并将其作为高亮基准传入 `buildEditablePricingTable()`。这使得自定义价格表格的高亮状态与当前对话的易失性 Summary 解耦，无论切换到哪个对话，今天使用过的模型都能够在自定义价格列表中高亮显示。
+
+- **Dead code removal for pendingArchives container / 移除与清理 pendingArchives 过时死代码**:
+  Removed the deprecated baselined cycles `pendingArchives` and `_pendingArchives` storage, serialize/restore, and reset lifetime routines across `gm/tracker.ts`, `daily-archival.ts`, and `gm/types.ts`, since the new `DailyLedger` now manages both active and settled telemetry as a single source of truth.
+  从 `gm/tracker.ts`、`daily-archival.ts`、`gm/types.ts`、`gm/index.ts` 及 `gm-tracker.ts` 中清空并删除了已废弃的模型重置待归档区 `pendingArchives` 容器及其对应的成员变量、写入、清空、序列化与再导出逻辑，由新增的 `DailyLedger` 增量记账提供统一的唯一真实数据源。
+
+### ⚙️ Refactored & Optimized / 重构与优化
 
 - **Automatic legacy data migration for seamless upgrades / 旧版数据自动迁移与平滑升级**:
   Introduced a self-contained `legacy-migration.ts` module to auto-detect pre-2.0 Antigravity settings and SQLite databases (`state.vscdb`) upon extension activation. Extracts historical calendar records and language preferences via a child process invoking `node --experimental-sqlite`. Automatically merges retrieved history into `DailyStore` without overwriting active data.

@@ -305,85 +305,14 @@ function mergeModelIntoBreakdown(
 }
 
 /**
- * Legacy path: build GM summary from getArchivalSummary + pendingArchives.
+ * Legacy path: build GM summary from getArchivalSummary.
  * Kept for backward compatibility when DailyLedger is empty.
  */
 function buildGMSummaryLegacy(ctx: DailyArchivalContext): GMSummary | null {
     const liveSummary = ctx.gmTracker.getArchivalSummary();
     const liveCalls = liveSummary?.totalCalls || 0;
     const lastCalls = ctx.lastGMSummary?.totalCalls || 0;
-    let gmSummary = (ctx.lastGMSummary && lastCalls > liveCalls)
+    return (ctx.lastGMSummary && lastCalls > liveCalls)
         ? ctx.lastGMSummary
         : liveSummary || ctx.lastGMSummary;
-
-    // 合并 pendingArchives (因额度重置转存到待归档区的汇总数据)
-    const pendingArchives = ctx.gmTracker.getPendingArchives() || [];
-    if (pendingArchives.length > 0) {
-        if (!gmSummary) {
-            gmSummary = {
-                conversations: [],
-                modelBreakdown: {},
-                totalCalls: 0,
-                totalStepsCovered: 0,
-                totalCredits: 0,
-                totalInputTokens: 0,
-                totalOutputTokens: 0,
-                totalCacheRead: 0,
-                totalCacheCreation: 0,
-                totalThinkingTokens: 0,
-                contextGrowth: [],
-                fetchedAt: new Date().toISOString(),
-                totalRetryTokens: 0,
-                totalRetryCredits: 0,
-                totalRetryCount: 0,
-                latestTokenBreakdown: [],
-                stopReasonCounts: {},
-                retryErrorCodes: {},
-                recentErrors: [],
-                toolCallCounts: {},
-                uniqueErrors: [],
-                recentErrorEntries: [],
-                toolCatalog: [],
-            };
-        }
-
-        if (gmSummary) {
-            for (const pending of pendingArchives) {
-                gmSummary.totalCalls += pending.totalCalls;
-                gmSummary.totalInputTokens += pending.totalInputTokens;
-                gmSummary.totalOutputTokens += pending.totalOutputTokens;
-                gmSummary.totalCacheRead += pending.totalCacheRead;
-                gmSummary.totalCredits += pending.totalCredits;
-
-                for (const [modelKey, calls] of Object.entries(pending.modelCalls)) {
-                    let mStats = gmSummary.modelBreakdown[modelKey];
-                    if (!mStats) {
-                        mStats = {
-                            callCount: 0, stepsCovered: 0,
-                            totalInputTokens: 0, totalOutputTokens: 0, totalThinkingTokens: 0,
-                            totalCacheRead: 0, totalCacheCreation: 0, totalCredits: 0,
-                            avgTTFT: 0, minTTFT: 0, maxTTFT: 0, avgStreaming: 0, cacheHitRate: 0,
-                            responseModel: '', apiProvider: '',
-                            completionConfig: {} as any, hasSystemPrompt: false,
-                            toolCount: 0, promptSectionTitles: [],
-                            totalRetries: 0, errorCount: 0,
-                            creditCallCount: 0, exactCallCount: 0,
-                            placeholderOnlyCalls: 0, contextWindowCapacity: 0,
-                        };
-                        gmSummary.modelBreakdown[modelKey] = mStats;
-                    }
-                    mStats.callCount += calls;
-                    if (pending.totalCalls > 0) {
-                        const ratio = calls / pending.totalCalls;
-                        mStats.totalInputTokens += Math.round(pending.totalInputTokens * ratio);
-                        mStats.totalOutputTokens += Math.round(pending.totalOutputTokens * ratio);
-                        mStats.totalCacheRead += Math.round(pending.totalCacheRead * ratio);
-                        mStats.totalCredits += Math.round(pending.totalCredits * ratio);
-                    }
-                }
-            }
-        }
-    }
-
-    return gmSummary;
 }

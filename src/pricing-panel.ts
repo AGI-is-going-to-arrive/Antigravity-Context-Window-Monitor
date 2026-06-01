@@ -9,34 +9,142 @@ import { esc } from './webview-helpers';
 import type { MonthCostBreakdown } from './daily-store';
 import { getModelDNAKey, type PersistedModelDNA } from './model-dna-store';
 import { ModelConfig, normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDisplayName } from './models';
+import type { LedgerSettledEntry, LedgerAccountBucket } from './daily-ledger';
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export function buildPricingTabContent(
-    summary: GMSummary | null,
+    summary: GMSummary | null | undefined,
     store: PricingStore,
     monthBreakdown?: MonthCostBreakdown,
-    pendingArchiveCost?: number,
+    ledgerSettled?: LedgerSettledEntry[],
+    todayLedgerActive?: LedgerAccountBucket[],
 ): string {
-    const hasGM = summary && summary.totalCalls > 0;
+    const pendingArchiveCost = ledgerSettled ? ledgerSettled.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0) : 0;
+    const hasActive = !!((todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) || (summary && summary.totalCalls > 0));
+    const hasSettled = !!(ledgerSettled && ledgerSettled.length > 0);
+    const hasGM = hasActive || hasSettled;
     const parts: string[] = [];
 
-    // Pre-calculate costs once (used by both monthly summary and current cycle view)
-    const costResult = hasGM ? store.calculateCosts(summary) : null;
+    const mergedRowsMap = new Map<string, ModelCostRow>();
+    const mergedTable = store.getMerged();
+    let activeGrandTotal = 0;
+
+    // 优先从 100% 精确的今日活跃账本中提取模型明细与计算
+    if (todayLedgerActive && todayLedgerActive.length > 0) {
+        for (const bucket of todayLedgerActive) {
+            for (const [modelKey, ms] of Object.entries(bucket.modelStats)) {
+                if (ms.calls <= 0) { continue; }
+                const displayName = normalizeModelDisplayName(modelKey);
+                const baseName = getModelBaseName(modelKey) || displayName;
+                const pricing = findPricing(modelKey, mergedTable);
+
+                // 结合定价算出输入、输出、缓存、思考费用以适配用户对价格的修改
+                const inputCost = pricing ? (ms.inputTokens / 1_000_000) * pricing.input : ms.estimatedCost;
+                const outputCost = pricing ? ((ms.outputTokens - ms.thinkingTokens) / 1_000_000) * pricing.output : 0;
+                const cacheCost = pricing ? (ms.cacheReadTokens / 1_000_000) * pricing.cacheRead : 0;
+                const thinkingCost = pricing ? (ms.thinkingTokens / 1_000_000) * pricing.thinking : 0;
+                const totalCost = inputCost + outputCost + cacheCost + thinkingCost;
+                activeGrandTotal += totalCost;
+
+                const existing = mergedRowsMap.get(baseName);
+                if (existing) {
+                    existing.inputCost += inputCost;
+                    existing.outputCost += outputCost;
+                    existing.cacheCost += cacheCost;
+                    existing.thinkingCost += thinkingCost;
+                    existing.totalCost += totalCost;
+                    existing.inputTokens += ms.inputTokens;
+                    existing.outputTokens += (ms.outputTokens - ms.thinkingTokens);
+                    existing.cacheTokens += ms.cacheReadTokens;
+                    existing.thinkingTokens += ms.thinkingTokens;
+                    if (!existing.pricing && pricing) { existing.pricing = pricing; }
+                } else {
+                    mergedRowsMap.set(baseName, {
+                        name: displayName, responseModel: modelKey,
+                        inputCost, outputCost, cacheCost, thinkingCost, totalCost,
+                        inputTokens: ms.inputTokens,
+                        outputTokens: (ms.outputTokens - ms.thinkingTokens),
+                        cacheTokens: ms.cacheReadTokens,
+                        thinkingTokens: ms.thinkingTokens,
+                        pricing: pricing || null,
+                    });
+                }
+            }
+        }
+    } else {
+        // 没有任何今日活跃账本（极罕见），降级使用活跃 Summary 的统计
+        const costResult = summary ? store.calculateCosts(summary) : { rows: [] as ModelCostRow[], grandTotal: 0 };
+        activeGrandTotal = costResult.grandTotal;
+        for (const r of costResult.rows) {
+            mergedRowsMap.set(r.name, { ...r });
+        }
+    }
+
+    // 归并已结算账本中的模型明细数据
+    if (ledgerSettled && ledgerSettled.length > 0) {
+        for (const entry of ledgerSettled) {
+            if (entry.totalCalls <= 0) { continue; }
+            for (const [modelKey, calls] of Object.entries(entry.modelCalls)) {
+                const ratio = calls / entry.totalCalls;
+                const inputTokens = Math.round(entry.totalInputTokens * ratio);
+                const outputTokens = Math.round(entry.totalOutputTokens * ratio);
+                const cacheTokens = Math.round(entry.totalCacheRead * ratio);
+                const totalCost = (entry.totalEstimatedCost || 0) * ratio;
+
+                const displayName = normalizeModelDisplayName(modelKey);
+                const baseName = getModelBaseName(modelKey) || displayName;
+                const pricing = findPricing(modelKey, mergedTable);
+
+                // 根据 token 数与单价粗略算下输入/输出/缓存的占比，支持 SVG 色条中漂亮的四色渲染
+                const inputCost = pricing ? (inputTokens / 1_000_000) * pricing.input : totalCost;
+                const outputCost = pricing ? (outputTokens / 1_000_000) * pricing.output : 0;
+                const cacheCost = pricing ? (cacheTokens / 1_000_000) * pricing.cacheRead : 0;
+                const thinkingCost = 0;
+
+                const existing = mergedRowsMap.get(baseName);
+                if (existing) {
+                    existing.inputCost += inputCost;
+                    existing.outputCost += outputCost;
+                    existing.cacheCost += cacheCost;
+                    existing.totalCost += totalCost;
+                    existing.inputTokens += inputTokens;
+                    existing.outputTokens += outputTokens;
+                    existing.cacheTokens += cacheTokens;
+                    if (!existing.pricing && pricing) { existing.pricing = pricing; }
+                } else {
+                    mergedRowsMap.set(baseName, {
+                        name: displayName, responseModel: modelKey,
+                        inputCost, outputCost, cacheCost, thinkingCost, totalCost,
+                        inputTokens, outputTokens, cacheTokens,
+                        thinkingTokens: 0, pricing: pricing || null,
+                    });
+                }
+            }
+        }
+    }
+
+    const rows = [...mergedRowsMap.values()].sort((a, b) => b.totalCost - a.totalCost);
 
     // Monthly total cost summary (always shown if breakdown data exists)
     if (monthBreakdown) {
-        parts.push(buildMonthlyCostSummary(monthBreakdown, costResult?.grandTotal ?? 0, costResult?.rows ?? [], pendingArchiveCost ?? 0));
+        parts.push(buildMonthlyCostSummary(monthBreakdown, activeGrandTotal, rows, pendingArchiveCost));
     }
 
-    if (hasGM && costResult) {
-        const { rows, grandTotal } = costResult;
-        // Include pending archive costs in the displayed totals
-        const fullTotal = grandTotal + (pendingArchiveCost ?? 0);
+    // 收集所有被调用的 responseModel，用于高亮自定义价格表格
+    const calledModelKeys = new Set<string>();
+    for (const r of rows) {
+        if (r.totalCost > 0 || r.inputTokens > 0) {
+            calledModelKeys.add(r.responseModel);
+        }
+    }
+
+    if (hasGM && rows.length > 0) {
+        const fullTotal = activeGrandTotal + pendingArchiveCost;
         const merged = store.getMerged();
         parts.push(
-            buildCostPanel(rows, fullTotal, summary),
-            buildEditablePricingTable(summary, merged, store.getCustom()),
+            buildCostPanel(rows, fullTotal, summary, ledgerSettled, todayLedgerActive),
+            buildEditablePricingTable(calledModelKeys, merged, store.getCustom()),
         );
     } else {
         // No GM data yet — still show the editable pricing table with defaults
@@ -878,14 +986,18 @@ function fmtTok(n: number): string {
 function buildCostPanel(
     rows: import('./pricing-store').ModelCostRow[],
     grandTotal: number,
-    summary: GMSummary,
+    summary: GMSummary | null | undefined,
+    ledgerSettled?: LedgerSettledEntry[],
+    todayLedgerActive?: LedgerAccountBucket[],
 ): string {
     const priced = rows.filter(r => r.pricing && r.totalCost > 0);
     const unpriced = rows.filter(r => !r.pricing);
     if (priced.length === 0 && grandTotal <= 0) { return ''; }
 
     const topModel = priced.length > 0 ? priced[0] : null;
-    const avgPerCall = summary.totalCalls > 0 ? grandTotal / summary.totalCalls : 0;
+    const totalCalls = (todayLedgerActive ? todayLedgerActive.reduce((s, e) => s + (e.totalCalls || 0), 0) : (summary?.totalCalls || 0))
+        + (ledgerSettled ? ledgerSettled.reduce((s, e) => s + (e.totalCalls || 0), 0) : 0);
+    const avgPerCall = totalCalls > 0 ? grandTotal / totalCalls : 0;
 
     let html = `<h2 class="act-section-title">${tBi('Cost Analysis', '费用分析')}</h2>`;
     html += '<div class="cost-panel">';
@@ -898,8 +1010,8 @@ function buildCostPanel(
     }
     html += `<span class="cost-chip" data-tooltip="${tBi('Avg per Call', '平均每次')}">${fmtUsd(avgPerCall)}/${tBi('call', '次')}</span>`;
     html += `<span class="cost-chip" data-tooltip="${tBi('Models with pricing', '有定价的模型')}">${priced.length} ${tBi('models', '模型')}</span>`;
-    if (summary.totalCalls > 0) {
-        html += `<span class="cost-chip">${summary.totalCalls} ${tBi('calls', '调用')}</span>`;
+    if (totalCalls > 0) {
+        html += `<span class="cost-chip">${totalCalls} ${tBi('calls', '调用')}</span>`;
     }
     html += '</div>';
 
@@ -1213,18 +1325,13 @@ function isDefaultPricingCovered(responseModel: string, defaultKey: string): boo
 }
 
 function buildEditablePricingTable(
-    summary: GMSummary,
+    calledModelKeys: Set<string>,
     merged: Record<string, ModelPricing>,
     custom: Record<string, ModelPricing>,
 ): string {
-    // Merge called models + default pricing models
-    const calledEntries = Object.entries(summary.modelBreakdown);
-
     // Build a set of DEFAULT_PRICING keys already covered by called models (fuzzy match)
     const coveredDefaultKeys = new Set<string>();
-    for (const [, ms] of calledEntries) {
-        const responseModel = ms.responseModel.trim();
-        if (!responseModel) { continue; }
+    for (const responseModel of calledModelKeys) {
         for (const defaultKey of Object.keys(merged)) {
             if (isDefaultPricingCovered(responseModel, defaultKey)) {
                 coveredDefaultKeys.add(defaultKey);
@@ -1235,10 +1342,9 @@ function buildEditablePricingTable(
     // Build unified list: called models first, then uncalled defaults
     interface PricingEntry { name: string; responseModel: string; isCalled: boolean }
     const allEntries: PricingEntry[] = [];
-    for (const [name, ms] of calledEntries) {
-        const responseModel = ms.responseModel.trim();
-        if (!responseModel) { continue; }
-        allEntries.push({ name, responseModel, isCalled: true });
+    for (const responseModel of calledModelKeys) {
+        const displayName = normalizeModelDisplayName(responseModel);
+        allEntries.push({ name: displayName, responseModel, isCalled: true });
     }
     for (const [model] of Object.entries(merged)) {
         if (!coveredDefaultKeys.has(model)) {

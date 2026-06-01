@@ -635,7 +635,8 @@ function buildTabContents(
                 lastGMFullSummary || lastGMSummary,
                 lastPricingStore,
                 lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
-                lastLedgerSettled.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0),
+                lastLedgerSettled,
+                lastTodayLedgerActive,
             )
             : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`) + eoc,
         models: buildModelsTabContent(userInfo, configs) + eoc,
@@ -675,7 +676,8 @@ function buildHtml(
             lastGMFullSummary || lastGMSummary,
             lastPricingStore,
             lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
-            lastLedgerSettled.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0),
+            lastLedgerSettled,
+            lastTodayLedgerActive,
         )
         : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
     const modelsHtml = buildModelsTabContent(userInfo, configs);
