@@ -66,6 +66,9 @@ antigravity-context-monitor/
 │   ├── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
 │   ├── billing-day.test.ts       # 积分到期日 DST 安全日历日差测试
 │   ├── extension-selection.test.ts # 模型选择与版本恢复回归测试
+│   ├── activity-recent-steps.test.ts # 最近操作 warm-up 全量恢复与持久化安全上限测试
+│   ├── daily-archival-time.test.ts # 假时钟跨午夜归档 / stale ledger 启动补归档回归测试
+│   ├── daily-ledger-date-filter.test.ts # DailyLedger 跨天日期边界过滤测试
 │   ├── gm-summary-change.test.ts  # GM 细节字段变更判定回归测试
 │   ├── gm-tracker-restore-fetch.test.ts # GM 恢复态 idle stub 自动补拉回归测试
 │   ├── i18n-persistence.test.ts  # 语言偏好跨会话持久化回归测试（真实文件 IO 测试）
@@ -92,7 +95,7 @@ antigravity-context-monitor/
 
 ### extension.ts -- 入口 + 轮询调度
 
-扩展生命周期管理中心：初始化子系统、注册命令、轮询调度（默认 5s）、会话选择（RUNNING 优先 + 跨工作区 RUNNING 追踪）、工作区切换检测（事件监听 + URI 轮询比对 + 跨工作区穿透）、每日归档委托、多账号快照管理、额度重置归档、持久化协调。启动时会将文件态 `gmDetailedSummary` 回灌到 `GMTracker`，轮询阶段对 GM 摘要采用细粒度签名判定，避免总量不变但上下文情报 / 错误 / 工具 / 对话细节已变化时漏刷新。
+扩展生命周期管理中心：初始化子系统、注册命令、轮询调度（默认 5s）、会话选择（RUNNING 优先 + 跨工作区 RUNNING 追踪）、工作区切换检测（事件监听 + URI 轮询比对 + 跨工作区穿透）、每日归档委托、多账号快照管理、额度重置归档、持久化协调。启动时会将文件态 `gmDetailedSummary` 回灌到 `GMTracker`，轮询阶段对 GM 摘要采用细粒度签名判定，避免总量不变但上下文情报 / 错误 / 工具 / 对话细节已变化时漏刷新。每日归档检查现在前置到轮询前半段，避免被“无会话 / 无当前对话”的提前 return 跳过。
 
 ---
 
@@ -152,7 +155,7 @@ antigravity-context-monitor/
 
 ### activity-tracker.ts -- 模型活动追踪
 
-追踪模型活动：GM-only Timeline（`injectGMData()` 为唯一数据源）、步骤分类、用户锚点提取、子智能体归属、全局归档重置、序列化瘦身。
+追踪模型活动：GM-only Timeline（`injectGMData()` 为唯一数据源）、步骤分类、用户锚点提取、子智能体归属、全局归档重置、序列化瘦身。运行时 `recentSteps` 不再按固定条数裁剪；启动 warm-up 会注入完整可恢复步骤，而持久化快照仍按 `activity.maxRecentSteps` 保留安全上限，避免状态文件失控增长。
 
 ---
 
@@ -193,7 +196,7 @@ antigravity-context-monitor/
 
 ### daily-archival.ts -- 每日归档核心逻辑
 
-可测试纯函数模块，依赖通过 `DailyArchivalContext` 注入。日期滚动时归档昨日数据并重置 Tracker。数据源优先使用 `DailyLedger.rollover()`（实时增量账本），无数据时降级到旧的 `getArchivalSummary()` + `pendingArchives` 路径。
+可测试纯函数模块，依赖通过 `DailyArchivalContext` 注入。日期滚动时归档昨日数据并重置 Tracker。数据源优先使用 `DailyLedger.rollover()`（实时增量账本），无数据时降级到旧的 `getArchivalSummary()` + `pendingArchives` 路径。支持注入模拟时间，配合假时钟测试验证跨午夜、stale ledger 启动补归档等时间边界。
 
 ---
 
@@ -205,6 +208,8 @@ antigravity-context-monitor/
 - `rollover(dateKey)` — 午夜日结，返回完整日数据并清零
 - `clearRecordedIdsForConversation(cascadeId)` — 对话回退时清除旧 dedup 索引
 - `serialize()` / `restore()` — 持久化到 `globalState`
+
+账本会同时过滤“早于当天零点”和“已属于下一天”的调用时间戳，避免跨午夜加载历史或未来日调用时污染当前日期桶。
 
 ---
 

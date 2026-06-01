@@ -107,6 +107,16 @@ function dateKeyToStartOfDayMs(dateKey: string): number {
     return new Date(y, m, d, 0, 0, 0, 0).getTime();
 }
 
+function dateKeyToNextDayStartMs(dateKey: string): number {
+    const parts = dateKey.split('-');
+    if (parts.length !== 3) { return 0; }
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    if (isNaN(y) || isNaN(m) || isNaN(d)) { return 0; }
+    return new Date(y, m, d + 1, 0, 0, 0, 0).getTime();
+}
+
 /** A call entry with an externally-provided dedup key.
  *  The tracker supplies `dedupKey = cascadeId:arrayIndex` which is
  *  guaranteed unique, solving the placeholder-data collision problem. */
@@ -255,16 +265,17 @@ export class DailyLedger {
         // Calls with createdAt before this threshold are old history
         // (e.g. from loading a previous conversation) and must be rejected.
         const dayStartMs = dateKeyToStartOfDayMs(this._dateKey);
+        const nextDayStartMs = dateKeyToNextDayStartMs(this._dateKey);
 
         for (const entry of entries) {
             const call = entry.call;
 
-            // Reject calls whose createdAt is before today's midnight.
-            // This prevents old conversation history from polluting today's ledger
-            // when the user switches to or loads a past conversation.
+            // Reject calls outside the ledger day's local bounds.
+            // This prevents both old history and future-day calls from polluting
+            // the current bucket when conversations are reloaded across midnight.
             if (dayStartMs > 0 && call.createdAt) {
                 const callMs = Date.parse(call.createdAt);
-                if (!isNaN(callMs) && callMs < dayStartMs) {
+                if (!isNaN(callMs) && (callMs < dayStartMs || (nextDayStartMs > 0 && callMs >= nextDayStartMs))) {
                     continue;
                 }
             }

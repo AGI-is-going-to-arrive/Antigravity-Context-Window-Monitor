@@ -16,11 +16,27 @@
   `monitor-store.ts` now compares latest GM call identity, latest model, credits, and timestamp instead of only `calls.length`, so the Sessions tab keeps up with GM detail changes that do not increase the number of calls.
   `monitor-store.ts` 现在比较 latest GM call 标识、最新模型、积分和时间，而不再只看 `calls.length`，因此 Sessions 标签页在“调用数没增加但 GM 细节已变化”的情况下也能及时更新。
 
+- **Recent Activity warm-up no longer hard-capped at 30 and runtime timeline no longer truncates / 最近操作不再受 30 条硬编码和运行时截断限制**:
+  Removed the old warm-up tail cap that only injected the last 30 steps per conversation, and stopped trimming the live `recentSteps` runtime buffer. The timeline now keeps the full in-memory recent activity stream for the current session, while persistence still applies a safety cap to avoid uncontrolled state-file growth after restart.
+  移除了启动 warm-up 阶段“每个对话只注入最后 30 步”的硬编码，并取消了运行时 `recentSteps` 缓冲区的实时裁剪。现在当前会话中的最近操作时间线会保留完整内存流，持久化阶段仍保留安全上限，避免重启恢复时状态文件无限膨胀。
+
+- **Midnight archival no longer skipped by early-return poll branches / 午夜归档不再被轮询提前返回分支跳过**:
+  Moved the daily archival check to the front half of the polling cycle and refreshed the panel even when there is no current conversation. This fixes cases where crossing midnight with no active chat could leave the previous day unarchived until a later interaction.
+  将每日归档检查前置到轮询前半段，并补上“当前无对话”分支的面板刷新。这样跨过午夜但当时没有活跃聊天时，也不会再因为提前 return 而把前一天归档拖到后面某次交互才执行。
+
+- **DailyLedger day-bucket boundary hardening / DailyLedger 日期桶边界加固**:
+  `DailyLedger.recordCalls()` now rejects calls that fall outside the bucket's local-day window on both sides, blocking not only historical backfill pollution but also future-day calls from being written into the current day's ledger during cross-midnight reload scenarios.
+  `DailyLedger.recordCalls()` 现在会同时拒绝落在当前日期桶之外两侧的调用时间，既阻断历史回灌污染，也阻断跨午夜重载场景下“已属于下一天”的调用误写入当天账本。
+
 ### ✅ Tests / 测试
 
 - **Added regression coverage for GM restore and detail-refresh paths / 新增 GM 恢复与细节刷新回归测试**:
   Added `tests/gm-tracker-restore-fetch.test.ts`, `tests/gm-summary-change.test.ts`, and `tests/monitor-store-gm.test.ts` to cover restored idle stub re-fetching, detailed GM summary diffing, and Sessions GM snapshot refresh behavior.
   新增 `tests/gm-tracker-restore-fetch.test.ts`、`tests/gm-summary-change.test.ts`、`tests/monitor-store-gm.test.ts`，覆盖恢复态 idle stub 补拉、GM 细节摘要比对，以及 Sessions 页 GM 快照刷新行为。
+
+- **Added time-simulation coverage for rollover and recent-activity behavior / 新增跨午夜与最近操作时间模拟测试**:
+  Added `tests/activity-recent-steps.test.ts`, `tests/daily-ledger-date-filter.test.ts`, and `tests/daily-archival-time.test.ts` to cover full warm-up activity injection, local-day ledger boundary filtering, cross-midnight archival rollover, and stale-ledger startup recovery.
+  新增 `tests/activity-recent-steps.test.ts`、`tests/daily-ledger-date-filter.test.ts`、`tests/daily-archival-time.test.ts`，覆盖最近操作 warm-up 全量注入、本地日期边界过滤、跨午夜归档 rollover，以及 stale ledger 启动补归档。
 
 ### ✨ Added & Refactored / 新增与重构
 

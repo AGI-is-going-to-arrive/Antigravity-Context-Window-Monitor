@@ -1452,6 +1452,11 @@ async function pollContextUsage(): Promise<void> {
         }
         lastPolledWorkspaceUri = normalizedWs;
 
+        // 午夜归档必须在本轮轮询前半段执行：
+        // 1. 不能被“无会话 / 无活跃对话”的提前 return 跳过
+        // 2. 新一天的 GM / DailyLedger 记录必须建立在已 rollover 的干净状态上
+        performDailyArchival();
+
         // 2. Discover LS (with caching + periodic PID revalidation)
         if (!lsInfo) {
             log('Discovering language server...');
@@ -1612,6 +1617,9 @@ async function pollContextUsage(): Promise<void> {
             statusBar.showNoConversation(noConvLimitStr, lastKnownModel);
             currentUsage = null;
             allTrajectoryUsages = monitorStore.getAll();
+            if (isMonitorPanelVisible()) {
+                updateMonitorPanel(makePanelPayload({ currentUsage: null }));
+            }
             updateBaselines(trajectories);
             return;
         }
@@ -1997,10 +2005,7 @@ async function pollContextUsage(): Promise<void> {
             }
         }
 
-        // 6d. Daily archival — archive & reset when local date rolls over
-        performDailyArchival();
-
-        // 6e. Update WebView panel if visible (single unified refresh point)
+        // 6d. Update WebView panel if visible (single unified refresh point)
         if (isMonitorPanelVisible()) {
             updateMonitorPanel(makePanelPayload());
         }
