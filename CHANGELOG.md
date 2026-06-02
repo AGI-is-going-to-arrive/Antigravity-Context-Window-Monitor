@@ -4,6 +4,18 @@
 
 ### 🐛 Fixed / 修复
 
+- **Quota-reset settlement no longer triggered by resetTime drift / 额度重置结算不再被 resetTime 漂移误触发**:
+  Added a stricter reset-time turnover gate: settlement now requires the previous reset time to have passed and the new reset time to jump forward by a meaningful cycle window. Small future drift or first-use resetTime correction no longer moves today's active ledger into the settled bucket. GM archival filtering now prefers exact archived call IDs when hydrated calls are available, and stale future account-model cutoffs are purged on restore/build/serialize so they cannot keep hiding later same-model calls.
+  新增更严格的 resetTime 周期切换判定：只有旧 resetTime 已经过期，并且新 resetTime 向未来发生明确周期跳转时才触发结算。小幅未来漂移或首次使用后的 resetTime 校正，不会再把“今日累计”提前搬到“已结算”。GM 归档过滤在有明细调用时优先使用精确 call ID，恢复态遗留的未来 account-model cutoff 会在 restore/build/serialize 路径清理，避免继续隐藏后续同模型调用。
+
+- **Live GM panels no longer replay stale persisted snapshots / GM 实时面板不再回放旧持久化快照**:
+  `getUiSummary()` and the UI full-summary path now wait for live GM hydration instead of returning restored `_lastSummary` as if it were current data. The GM Data model cards also require a live `gm.modelBreakdown` and no longer fall back to stale Activity summary fragments. This prevents Context Intelligence, Context Growth, Conversation Distribution, Error Details, and Model Stats from displaying old data as live state after startup or account/model switches.
+  `getUiSummary()` 和 UI full-summary 路径现在会等待 GM 实时补拉完成，不再把恢复态 `_lastSummary` 当作当前数据返回。GM Data 的模型卡片也只读取实时 `gm.modelBreakdown`，不再回退到旧 Activity 摘要片段。这样可以避免启动或切换账号/模型后，把旧的上下文情报、上下文增长、对话分布、错误详情和模型统计冒充为实时数据。
+
+- **Hardened GM model identity capture for M132/M133-style drift / 加固 GM 模型身份捕捉，避免 M132/M133 误归并**:
+  `chatModel.model` is now treated as the authoritative model identity. If GM metadata is missing the model or only resolved through a low-trust `responseModel` alias, the enriched trajectory path can fill it from `steps[].metadata.requestedModel`, `metadata.generatorModel`, or the user planner requested model. `responseModel` alias registration now rejects conflicting remaps and unspecified targets, and each GM call records an optional `modelSource` for diagnostics.
+  现在以 `chatModel.model` 作为最高可信模型身份。若 GM 元数据缺少模型，或只能通过低可信 `responseModel` 别名推断，则完整 trajectory 增强路径会从 `steps[].metadata.requestedModel`、`metadata.generatorModel` 或用户 planner requested model 中补齐。`responseModel` 别名注册现在会拒绝冲突重映射和 unspecified 目标，每条 GM 调用也会记录可选的 `modelSource` 方便后续诊断。
+
 - **GM Data containers disappearing after restart or idle restore / 重启或恢复态下 GM 容器消失**:
   Prevented `GMTracker.fetchAll()` from skipping restored idle conversation stubs whose `calls` array is still empty, and rehydrated file-backed `gmDetailedSummary` into `GMTracker` during startup. This fixes cases where `Context Intelligence`, `Conversations`, `Context Growth`, and `Error Details` vanished until the user re-activated the conversation manually.
   修复 `GMTracker.fetchAll()` 在恢复态下误跳过空 `calls` 的 idle 对话 stub，并在启动时将文件持久化的 `gmDetailedSummary` 回灌进 `GMTracker`。这解决了 `上下文情报`、`对话分布`、`上下文增长`、`错误详情` 等 GM 容器在重启后消失、必须重新操作当前对话才恢复的问题。
@@ -37,6 +49,10 @@
   删除了设置页中的调试/测试卡片，以及对应的模拟归档、恢复快照、清空调试命令链和临时快照状态，使正式面板只保留面向用户的配置项。
 
 ### ✅ Tests / 测试
+
+- **Added regression coverage for quota reset filtering and model capture / 新增额度重置过滤与模型捕捉回归测试**:
+  Added `tests/reset-time-turnover.test.ts`, `tests/gm-quota-reset-filter.test.ts`, and `tests/gm-model-capture.test.ts` to cover resetTime drift suppression, exact-call quota archival, stale future cutoff cleanup, trajectory model fallback, responseModel alias conflict protection, and authoritative `chatModel.model` preservation.
+  新增 `tests/reset-time-turnover.test.ts`、`tests/gm-quota-reset-filter.test.ts`、`tests/gm-model-capture.test.ts`，覆盖 resetTime 漂移抑制、精确调用归档、陈旧未来 cutoff 清理、trajectory 模型兜底、responseModel 别名冲突保护，以及明确 `chatModel.model` 不被覆盖。
 
 - **Added regression coverage for GM restore and detail-refresh paths / 新增 GM 恢复与细节刷新回归测试**:
   Added `tests/gm-tracker-restore-fetch.test.ts`, `tests/gm-summary-change.test.ts`, and `tests/monitor-store-gm.test.ts` to cover restored idle stub re-fetching, detailed GM summary diffing, and Sessions GM snapshot refresh behavior.

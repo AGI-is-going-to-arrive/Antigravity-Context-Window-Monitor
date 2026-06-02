@@ -21,6 +21,7 @@ export interface TokenBreakdownGroup {
 }
 
 export type GMModelAccuracy = 'exact' | 'placeholder';
+export type GMModelSource = 'chatModel' | 'trajectory' | 'responseAlias' | 'unknown';
 export type GMPromptSource = 'none' | 'messagePrompts' | 'messageMetadata';
 
 export interface GMUserMessageAnchor {
@@ -76,6 +77,8 @@ export interface GMCallEntry {
     modelDisplay: string;    // e.g. Claude Opus 4
     responseModel: string;   // e.g. claude-opus-4-6-thinking
     modelAccuracy: GMModelAccuracy;
+    /** Field that supplied the canonical model ID. chatModel is authoritative. */
+    modelSource?: GMModelSource;
     inputTokens: number;
     outputTokens: number;
     thinkingTokens: number;
@@ -308,6 +311,8 @@ export interface GMTrackerState {
     callAccountMap?: Record<string, string>;
     /** Per-account+model ISO cutoff: key="email|normalizedModel" (added v1.16.0) */
     archivedAccountModelCutoffs?: Record<string, string>;
+    /** Per-account+model exact archival coverage: key="email|MODEL_ID" (added v1.16.10) */
+    exactArchivedAccountModels?: string[];
     /** Persisted tool call frequency across restarts (added v1.17.0) */
     persistedToolCallCounts?: Record<string, number>;
     /** Persisted per-conversation tool call counts across restarts (added v1.17.0) */
@@ -389,6 +394,7 @@ export function slimCallForPersistence(call: GMCallEntry): GMCallEntry {
         modelDisplay: call.modelDisplay,
         responseModel: call.responseModel,
         modelAccuracy: call.modelAccuracy,
+        modelSource: call.modelSource,
         inputTokens: call.inputTokens,
         outputTokens: call.outputTokens,
         thinkingTokens: call.thinkingTokens,

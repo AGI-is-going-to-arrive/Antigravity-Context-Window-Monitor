@@ -135,6 +135,15 @@ describe('GMTracker restore fetch behavior', () => {
         );
     });
 
+    it('hides persisted UI summaries until live GM calls are hydrated again', () => {
+        const tracker = GMTracker.restore(makeRestoredState());
+
+        expect(tracker.getUiSummary()).toBeNull();
+        expect(tracker.getUiFullSummary()).toBeNull();
+        expect(tracker.getFullSummary()).not.toBeNull();
+        expect(tracker.getArchivalSummary()).not.toBeNull();
+    });
+
     it('still skips unchanged idle conversations after calls are already hydrated', async () => {
         const tracker = GMTracker.restore(makeRestoredState());
         const cache = (tracker as any)._cache as Map<string, any>;

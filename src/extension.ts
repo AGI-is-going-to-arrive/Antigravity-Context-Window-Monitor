@@ -458,7 +458,7 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         archives: activityTracker?.getArchives(),
         activityTracker,
         gmSummary: gmTracker.getUiSummary(),
-        gmFullSummary: gmTracker.getFullSummary(),
+        gmFullSummary: gmTracker.getUiFullSummary(),
         gmConversations: monitorStore.getGMConversations(),
         pricingStore,
         dailyStore,
@@ -529,6 +529,32 @@ export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuota
             minFraction: pool.minFraction,
         };
     });
+}
+
+const RESET_TIME_TURNOVER_MIN_JUMP_MS = 10 * 60 * 1000;
+
+/**
+ * resetTime 会在同一周期内轻微漂移，不能把“任何变化”都当成真正的额度重置。
+ * 只有旧 resetTime 已经过期，且新的 resetTime 重新跳回未来并明显大于旧值时，
+ * 才认为发生了新周期切换。
+ */
+export function shouldSettleOnResetTimeChange(
+    oldResetTime: string,
+    newResetTime: string,
+    nowMs: number = Date.now(),
+): boolean {
+    if (!oldResetTime || !newResetTime || oldResetTime === newResetTime) {
+        return false;
+    }
+    const oldMs = Date.parse(oldResetTime);
+    const newMs = Date.parse(newResetTime);
+    if (Number.isNaN(oldMs) || Number.isNaN(newMs)) {
+        return false;
+    }
+    if (oldMs > nowMs || newMs <= nowMs) {
+        return false;
+    }
+    return (newMs - oldMs) >= RESET_TIME_TURNOVER_MIN_JUMP_MS;
 }
 
 async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> {
@@ -626,6 +652,7 @@ function updateAccountSnapshot(
 ): void {
     const email = userInfo.email;
     if (!email) { return; }
+    const nowMs = Date.now();
 
     // Group models by their stable quota pool first — we need the NEW resetTimes.
     const poolMap = new Map<string, { resetTime: string; labels: string[]; modelIds: string[]; hasUsage: boolean; minFraction: number }>();
@@ -639,10 +666,10 @@ function updateAccountSnapshot(
         });
     }
 
-    // ── Cycle-change settlement: detect resetTime changes ──
-    // When the API returns a DIFFERENT resetTime for a pool compared to
-    // what we had before, a quota cycle has turned over. Settle the old
-    // cycle's calls immediately — this is 100% reliable and timing-independent.
+    // ── Cycle-change settlement: detect real turnover only ──
+    // resetTime often drifts by a few minutes inside the SAME cycle.
+    // Do not settle unless the old reset time has actually expired and the
+    // new reset time jumps back into the future by more than normal drift.
     const oldSnap = accountSnapshots.get(email);
     if (oldSnap) {
         // Build old resetTime lookup: modelId → resetTime
@@ -663,8 +690,8 @@ function updateAccountSnapshot(
                 oldResetTime = oldResetByModel.get(mid);
                 if (oldResetTime) { break; }
             }
-            if (!oldResetTime || oldResetTime === newPool.resetTime) { continue; }
-            // resetTime changed → cycle turned over. Settle the old one.
+            if (!oldResetTime) { continue; }
+            if (!shouldSettleOnResetTimeChange(oldResetTime, newPool.resetTime, nowMs)) { continue; }
             if (dailyLedger.isPoolSettled(newPool.modelIds, email)) { continue; }
             // Settle both DailyLedger and GMTracker using oldResetTime as cutoff
             const baselinedCount = gmTracker.baselineForQuotaReset(email, newPool.modelIds, oldResetTime);

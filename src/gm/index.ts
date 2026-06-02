@@ -7,6 +7,7 @@ export type {
     GMCompletionConfig,
     TokenBreakdownGroup,
     GMModelAccuracy,
+    GMModelSource,
     GMPromptSource,
     GMUserMessageAnchor,
     GMCheckpointSummary,
@@ -37,6 +38,8 @@ export {
     buildGMArchiveKey,
     mergeGMCallEntries,
     maybeEnrichCallsFromTrajectory,
+    extractTrajectoryModelHints,
+    applyTrajectoryModelHints,
     shouldEnrichConversation,
     parseGMEntry,
 } from './parser';

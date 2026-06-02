@@ -24,6 +24,7 @@ import { cloneConversationData, cloneTokenBreakdownGroups } from './types';
 import {
     parseGMEntry,
     maybeEnrichCallsFromTrajectory,
+    applyTrajectoryModelHints,
     shouldEnrichConversation,
     buildGMArchiveKey,
     deduplicateApiErrorText,
@@ -40,6 +41,14 @@ function dateKeyToStartOfDayMs(dateKey: string): number {
     const d = parseInt(parts[2], 10);
     if (isNaN(y) || isNaN(m) || isNaN(d)) { return 0; }
     return new Date(y, m, d, 0, 0, 0, 0).getTime();
+}
+
+const ARCHIVE_CUTOFF_FUTURE_TOLERANCE_MS = 60 * 1000;
+
+function isUsableArchiveCutoff(cutoff: string, nowMs = Date.now()): boolean {
+    const cutoffMs = Date.parse(cutoff);
+    return !Number.isNaN(cutoffMs)
+        && cutoffMs <= nowMs + ARCHIVE_CUTOFF_FUTURE_TOLERANCE_MS;
 }
 
 
@@ -93,6 +102,9 @@ export class GMTracker {
     private _callAccountMap = new Map<string, string>();
     /** Per-account+model ISO cutoffs: key="email|normalizedModel" — calls before cutoff are excluded */
     private _archivedAccountModelCutoffs = new Map<string, string>();
+    /** Per-account+model exact archival coverage: when present, prefer archivedCallIds
+     *  over cutoff-time filtering so later same-model calls are not hidden by stale timestamps. */
+    private _exactArchivedAccountModels = new Set<string>();
     /** Persisted tool call counts — survives restarts via serialize/restore.
      *  Merged with freshly computed counts (max-wins) since API re-fetch
      *  may not return messagePrompts for all conversations. */
@@ -125,6 +137,14 @@ export class GMTracker {
      *  _buildSummary() would return totalCalls=0. In that state, getters
      *  should use _lastSummary (persisted snapshot) instead of rebuilding. */
     private _hasFetchedCalls = true;
+
+    private _purgeUnusableArchiveCutoffs(nowMs = Date.now()): void {
+        for (const [key, cutoff] of this._archivedAccountModelCutoffs) {
+            if (isUsableArchiveCutoff(cutoff, nowMs)) { continue; }
+            this._archivedAccountModelCutoffs.delete(key);
+            this._exactArchivedAccountModels.delete(key);
+        }
+    }
 
     /**
      * Fetch GM data for the given trajectories.
@@ -192,6 +212,7 @@ export class GMTracker {
                                 embeddedRawGM.map(parseGMEntry),
                             );
                         }
+                        calls = applyTrajectoryModelHints(calls, trajectorySteps);
                     } catch {
                         // Enrichment is best-effort only; keep lightweight GM payload.
                     }
@@ -311,6 +332,10 @@ export class GMTracker {
 
     /** Build aggregated summary from cached data */
     private _buildSummary(skipAccountFilter = false, skipArchivalFilter = false): GMSummary {
+        if (!skipArchivalFilter) {
+            this._purgeUnusableArchiveCutoffs();
+        }
+
         const conversations: GMConversationData[] = [];
         const modelAgg = new Map<string, {
             callCount: number; stepsCovered: number;
@@ -367,23 +392,28 @@ export class GMTracker {
             const hasAccountModelFilter = !skipArchivalFilter && this._archivedAccountModelCutoffs.size > 0;
             const activeCalls = (hasCallFilter || hasAccountModelFilter)
                 ? sliced.filter(c => {
-                    // Per-account+model cutoff (pool-scoped archival)
-                    // Key uses model ID (e.g. MODEL_PLACEHOLDER_M26) — language-independent
+                    const archiveKey = buildGMArchiveKey(c);
+                    const exactArchived = hasCallFilter
+                        && (this._archivedCallIds.has(c.executionId)
+                            || this._archivedCallIds.has(archiveKey));
+                    if (exactArchived) {
+                        return false;
+                    }
+                    // Per-account+model cutoff is only a fallback for restore-time cases
+                    // where we had no hydrated calls to archive individually.
                     if (hasAccountModelFilter && c.accountEmail) {
                         const amKey = `${c.accountEmail}|${c.model}`;
                         const amCutoff = this._archivedAccountModelCutoffs.get(amKey);
-                        if (amCutoff) {
+                        if (amCutoff && !this._exactArchivedAccountModels.has(amKey)) {
+                            if (!isUsableArchiveCutoff(amCutoff)) {
+                                return true;
+                            }
                             const callMs = Date.parse(c.createdAt || '');
                             const cutoffMs = Date.parse(amCutoff);
-                            if (isNaN(callMs) || callMs <= cutoffMs) {
+                            if (!isNaN(callMs) && !isNaN(cutoffMs) && callMs <= cutoffMs) {
                                 return false;
                             }
                         }
-                    }
-                    if (hasCallFilter
-                        && (this._archivedCallIds.has(c.executionId)
-                            || this._archivedCallIds.has(buildGMArchiveKey(c)))) {
-                        return false;
                     }
                     return true;
                 })
@@ -930,6 +960,7 @@ export class GMTracker {
     baselineForQuotaReset(targetEmail?: string, poolModelFilter?: string[], cutoffTime?: string): number {
         const email = targetEmail || this._currentAccountEmail;
         const cutoff = cutoffTime || new Date().toISOString();
+        const cutoffMs = Date.parse(cutoff);
 
         // Build a set of model IDs for pool matching.
         // poolModelFilter can contain model IDs ("MODEL_PLACEHOLDER_M26")
@@ -962,6 +993,13 @@ export class GMTracker {
             return false;
         };
 
+        const shouldArchiveByCutoff = (call: GMCallEntry): boolean => {
+            if (isNaN(cutoffMs)) { return true; }
+            const callMs = Date.parse(call.createdAt || '');
+            if (isNaN(callMs)) { return false; }
+            return callMs <= cutoffMs;
+        };
+
         // ── Step 1: Compute accurate stats from _lastSummary (full picture) ──
         const summary = this._lastSummary;
         let summaryCount = 0;
@@ -973,6 +1011,7 @@ export class GMTracker {
                     if (email && call.accountEmail && call.accountEmail !== email) { continue; }
                     if (!call.accountEmail && email) { continue; }
                     if (!callMatchesPool(call)) { continue; }
+                    if (!shouldArchiveByCutoff(call)) { continue; }
                     summaryCount++;
                     archivedModelIds.add(call.model); // model ID, not display name
                 }
@@ -1007,6 +1046,7 @@ export class GMTracker {
             for (const call of activeCalls) {
                 if (email && call.accountEmail && call.accountEmail !== email) { continue; }
                 if (!callMatchesPool(call)) { continue; }
+                if (!shouldArchiveByCutoff(call)) { continue; }
                 
                 // Prevent history data pollution
                 if (dayStartMs > 0 && call.createdAt) {
@@ -1020,6 +1060,9 @@ export class GMTracker {
                 if (this._archivedCallIds.has(call.executionId) || this._archivedCallIds.has(archKey)) { continue; }
                 if (call.executionId) { this._archivedCallIds.add(call.executionId); }
                 this._archivedCallIds.add(archKey);
+                if (email && call.model) {
+                    this._exactArchivedAccountModels.add(`${email}|${call.model}`);
+                }
                 cacheCount++;
                 archivedModelIds.add(call.model); // also capture from cache path
             }
@@ -1054,6 +1097,7 @@ export class GMTracker {
      * previous quota cycle from blocking new archival.
      */
     isPoolArchived(email: string, modelLabels: string[]): boolean {
+        this._purgeUnusableArchiveCutoffs();
         if (this._archivedAccountModelCutoffs.size === 0) { return false; }
 
         // Supports both model ID and model label matching
@@ -1061,6 +1105,8 @@ export class GMTracker {
         
         const hasCutoff = [...this._archivedAccountModelCutoffs.keys()].some(key => {
             if (!key.startsWith(`${email}|`)) { return false; }
+            const cutoff = this._archivedAccountModelCutoffs.get(key);
+            if (!cutoff || !isUsableArchiveCutoff(cutoff)) { return false; }
             const archivedModel = key.substring(email.length + 1).toLowerCase();
             
             // Direct model ID match
@@ -1130,6 +1176,7 @@ export class GMTracker {
         this._archivedCallIds.clear();
         this._archivedModelCutoffs.clear();
         this._archivedAccountModelCutoffs.clear();
+        this._exactArchivedAccountModels.clear();
         this._callAccountMap.clear();
         this._ledgerPositions.clear();
         this._persistedToolCounts = {};
@@ -1157,6 +1204,7 @@ export class GMTracker {
         this._archivedCallIds.clear();
         this._archivedModelCutoffs.clear();
         this._archivedAccountModelCutoffs.clear();
+        this._exactArchivedAccountModels.clear();
         this._callAccountMap.clear();
         this._ledgerPositions.clear();
         this._persistedToolCounts = {};
@@ -1328,6 +1376,12 @@ export class GMTracker {
         };
     }
 
+    /** Full cross-account summary for UI tabs only. Never replays persisted snapshots as live data. */
+    getUiFullSummary(): GMSummary | null {
+        if (!this._hasFetchedCalls) { return null; }
+        return this.getFullSummary();
+    }
+
     /**
      * Full summary for midnight archival — includes ALL calls from this cycle:
      * both "pending archive" (already baselined by quota resets) and still-active calls.
@@ -1371,6 +1425,7 @@ export class GMTracker {
 
     /** Export state for globalState persistence */
     serialize(): GMTrackerState {
+        this._purgeUnusableArchiveCutoffs();
         const baselines: Record<string, number> = {};
         for (const [id, conv] of this._cache) {
             baselines[id] = conv.totalSteps;
@@ -1399,6 +1454,7 @@ export class GMTracker {
             currentAccountEmail: this._currentAccountEmail || undefined,
             callAccountMap: this._callAccountMap.size > 0 ? Object.fromEntries(this._callAccountMap) : undefined,
             archivedAccountModelCutoffs: this._archivedAccountModelCutoffs.size > 0 ? Object.fromEntries(this._archivedAccountModelCutoffs) : undefined,
+            exactArchivedAccountModels: this._exactArchivedAccountModels.size > 0 ? [...this._exactArchivedAccountModels] : undefined,
             persistedToolCallCounts: Object.keys(this._persistedToolCounts).length > 0 ? this._persistedToolCounts : undefined,
             persistedToolCallCountsByConv: Object.keys(this._persistedToolCountsByConv).length > 0 ? this._persistedToolCountsByConv : undefined,
             persistedRecentErrors: this._persistedRecentErrors.length > 0 ? this._persistedRecentErrors : undefined,
@@ -1485,8 +1541,15 @@ export class GMTracker {
         // Restore per-account+model cutoffs (added v1.16.0)
         if (data.archivedAccountModelCutoffs && typeof data.archivedAccountModelCutoffs === 'object') {
             for (const [key, cutoff] of Object.entries(data.archivedAccountModelCutoffs)) {
-                if (typeof cutoff === 'string') {
+                if (typeof cutoff === 'string' && isUsableArchiveCutoff(cutoff)) {
                     tracker._archivedAccountModelCutoffs.set(key, cutoff);
+                }
+            }
+        }
+        if (Array.isArray(data.exactArchivedAccountModels)) {
+            for (const key of data.exactArchivedAccountModels) {
+                if (typeof key === 'string' && key.length > 0) {
+                    tracker._exactArchivedAccountModels.add(key);
                 }
             }
         }
@@ -1555,10 +1618,8 @@ export class GMTracker {
 
     /** Account-filtered and archive-filtered summary for active UI display. */
     getUiSummary(): GMSummary | null {
-        // After restore (before first fetchAll), calls[] is empty — use persisted snapshot
-        if (!this._hasFetchedCalls && this._lastSummary) {
-            return normalizeGMSummary(this._lastSummary);
-        }
+        // UI must wait for live GM hydration instead of replaying persisted snapshots.
+        if (!this._hasFetchedCalls) { return null; }
         const summary = normalizeGMSummary(this._buildSummary(false, false));
         if (!summary) { return null; }
         return {

@@ -369,6 +369,11 @@ export function updateModelDisplayNames(configs: ModelConfig[]): void {
     }
 }
 
+function isConcreteAliasTarget(modelId: string): boolean {
+    const clean = modelId.trim();
+    return /^MODEL_[A-Z0-9_]+$/.test(clean) && !clean.includes('UNSPECIFIED');
+}
+
 /**
  * Register a responseModel → placeholder ID alias.
  * Called from GM data processing when we discover the mapping.
@@ -376,9 +381,18 @@ export function updateModelDisplayNames(configs: ModelConfig[]): void {
  * Allows resolveModelId('gemini-pro-default') → 'MODEL_PLACEHOLDER_M16' → "Gemini 3.1 Pro (High)"
  */
 export function registerResponseModelAlias(responseModel: string, placeholderId: string): void {
-    if (responseModel && placeholderId && responseModel !== placeholderId) {
-        responseModelAliases[responseModel] = placeholderId;
+    const responseKey = responseModel.trim();
+    const target = placeholderId.trim();
+    if (!responseKey || !target || responseKey === target || !isConcreteAliasTarget(target)) {
+        return;
     }
+    const existing = responseModelAliases[responseKey];
+    if (existing && existing !== target) {
+        // responseModel can be less stable than chatModel.model; do not let one
+        // conflicting sample remap all future response-only records.
+        return;
+    }
+    responseModelAliases[responseKey] = target;
 }
 
 /**

@@ -2267,6 +2267,8 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
 
 function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, activeEmail = ''): string {
     const actEntries = s ? Object.entries(s.modelStats).sort((a, b) => b[1].totalSteps - a[1].totalSteps) : [];
+    const gmBreakEarly: Record<string, GMModelStats> | null = gm?.modelBreakdown ?? null;
+    if (!gmBreakEarly || Object.keys(gmBreakEarly).length === 0) { return ''; }
     // Collect model names that exist only in GM data (not in Activity)
     const actNames = new Set(actEntries.map(([n]) => n));
     const gmOnlyEntries: [string, GMModelStats][] = [];
@@ -2278,9 +2280,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
         }
         gmOnlyEntries.sort((a, b) => b[1].stepsCovered - a[1].stepsCovered);
     }
-    // Prefer full GMSummary.modelBreakdown (has responseModel/provider/streaming)
-    // Fall back to ActivitySummary.gmModelBreakdown (simpler subset)
-    const gmBreakEarly: Record<string, GMModelStats> | null = gm?.modelBreakdown ?? s?.gmModelBreakdown ?? null;
     // Filter: only show models that have GM data — Step API step counts are outdated/unreliable
     const entries = gmBreakEarly
         ? actEntries.filter(([name]) => {
