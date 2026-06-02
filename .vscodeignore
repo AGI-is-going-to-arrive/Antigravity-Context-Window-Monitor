@@ -8,6 +8,7 @@ out/**/*.test.js
 out/**/*.test.d.ts
 tsconfig.json
 *.map
+**/*.map
 package-lock.json
 *.vsix
 
@@ -19,6 +20,7 @@ __mocks__/**
 .ccg/**
 .claude/**
 .playwright-mcp/**
+cache/**
 llmdoc/**
 docs/**
 vitest.config.ts

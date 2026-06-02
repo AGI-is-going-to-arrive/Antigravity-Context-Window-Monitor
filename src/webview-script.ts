@@ -628,14 +628,6 @@ export function getScript(): string {
                 if (msg.command === 'panelPrefUpdated' && msg.key === 'panelShowEndOfContent') {
                     document.body.setAttribute('data-hide-eoc', msg.value ? 'false' : 'true');
                 }
-                if (msg.command === 'thresholdSaved') {
-                    var fb = document.getElementById('thresholdFeedback');
-                    if (fb) {
-                        fb.textContent = '✓';
-                        fb.style.opacity = '1';
-                        setTimeout(function() { fb.style.opacity = '0'; }, 2000);
-                    }
-                }
                 if (msg.command === 'configSaved') {
                     var feedbackMap = {
                         'pollingInterval': 'pollingFeedback',

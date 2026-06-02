@@ -179,7 +179,7 @@ export function performDailyArchival(
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Build a GMSummary-compatible object from DailyLedger rollover data. */
-function buildGMSummaryFromLedger(dayData: LedgerDayData): {
+export function buildGMSummaryFromLedger(dayData: LedgerDayData): {
     summary: GMSummary;
     totalCost: number;
     costPerModel: Record<string, number>;
@@ -217,20 +217,26 @@ function buildGMSummaryFromLedger(dayData: LedgerDayData): {
         totalCalls += entry.totalCalls;
         totalIn += entry.totalInputTokens;
         totalOut += entry.totalOutputTokens;
+        totalThinking += entry.totalThinkingTokens || 0;
         totalCacheRead += entry.totalCacheRead;
+        totalCacheCreation += entry.totalCacheCreation || 0;
         totalCredits += entry.totalCredits;
         totalCost += entry.totalEstimatedCost;
+
+        const allocated = allocateSettledEntryByModel(entry);
 
         for (const [modelKey, calls] of Object.entries(entry.modelCalls)) {
             // Settled entries only have per-model call counts; distribute
             // totals proportionally.
             if (entry.totalCalls > 0) {
-                const ratio = calls / entry.totalCalls;
+                const modelTokens = allocated[modelKey];
                 mergeModelIntoBreakdown(modelBreakdown, modelKey, calls,
-                    Math.round(entry.totalInputTokens * ratio),
-                    Math.round(entry.totalOutputTokens * ratio),
-                    0, Math.round(entry.totalCacheRead * ratio), 0,
-                    Math.round(entry.totalCredits * ratio));
+                    modelTokens?.inputTokens || 0,
+                    modelTokens?.outputTokens || 0,
+                    modelTokens?.thinkingTokens || 0,
+                    modelTokens?.cacheReadTokens || 0,
+                    modelTokens?.cacheCreationTokens || 0,
+                    modelTokens?.credits || 0);
             }
             if (entry.totalEstimatedCost > 0 && entry.totalCalls > 0) {
                 const ratio = calls / entry.totalCalls;
@@ -266,6 +272,60 @@ function buildGMSummaryFromLedger(dayData: LedgerDayData): {
     };
 
     return { summary, totalCost, costPerModel };
+}
+
+function allocateSettledEntryByModel(entry: LedgerDayData['settled'][number]): Record<string, {
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    credits: number;
+}> {
+    const modelEntries = Object.entries(entry.modelCalls);
+    const result: Record<string, {
+        inputTokens: number;
+        outputTokens: number;
+        thinkingTokens: number;
+        cacheReadTokens: number;
+        cacheCreationTokens: number;
+        credits: number;
+    }> = {};
+    if (entry.totalCalls <= 0 || modelEntries.length === 0) { return result; }
+
+    const largestModel = modelEntries.reduce((largest, current) =>
+        current[1] > largest[1] ? current : largest, modelEntries[0])[0];
+
+    const allocate = (total: number): Record<string, number> => {
+        const values: Record<string, number> = {};
+        let sum = 0;
+        for (const [modelKey, calls] of modelEntries) {
+            const value = Math.round(total * (calls / entry.totalCalls));
+            values[modelKey] = value;
+            sum += value;
+        }
+        values[largestModel] = (values[largestModel] || 0) + (total - sum);
+        return values;
+    };
+
+    const input = allocate(entry.totalInputTokens);
+    const output = allocate(entry.totalOutputTokens);
+    const thinking = allocate(entry.totalThinkingTokens || 0);
+    const cacheRead = allocate(entry.totalCacheRead);
+    const cacheCreation = allocate(entry.totalCacheCreation || 0);
+    const credits = allocate(entry.totalCredits);
+
+    for (const [modelKey] of modelEntries) {
+        result[modelKey] = {
+            inputTokens: input[modelKey] || 0,
+            outputTokens: output[modelKey] || 0,
+            thinkingTokens: thinking[modelKey] || 0,
+            cacheReadTokens: cacheRead[modelKey] || 0,
+            cacheCreationTokens: cacheCreation[modelKey] || 0,
+            credits: credits[modelKey] || 0,
+        };
+    }
+    return result;
 }
 
 function mergeModelIntoBreakdown(

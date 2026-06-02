@@ -23,6 +23,43 @@ export interface LegacyMigrationData {
     displayLanguage?: string;
 }
 
+export type LegacyMigrationStatus = 'not_found' | 'imported' | 'empty' | 'failed';
+
+export interface LegacyMigrationResult {
+    status: LegacyMigrationStatus;
+    data?: LegacyMigrationData;
+    error?: string;
+}
+
+export interface LegacyMigrationRunnerOptions {
+    migrationDone: boolean;
+    extractLegacyData: () => LegacyMigrationResult;
+    importLegacyData: (data: LegacyMigrationData) => void;
+    markDone: () => void;
+    log: (msg: string) => void;
+}
+
+export function runLegacyMigrationOnce(options: LegacyMigrationRunnerOptions): LegacyMigrationResult | null {
+    if (options.migrationDone) {
+        options.log('Legacy migration: data OK, no migration needed');
+        return null;
+    }
+
+    const result = options.extractLegacyData();
+    if (result.status === 'imported' && result.data) {
+        options.importLegacyData(result.data);
+    } else if (result.status === 'failed') {
+        options.log('Legacy migration: failed, will retry next launch');
+        return result;
+    } else {
+        options.log('Legacy migration: no recoverable data found');
+    }
+
+    options.markDone();
+    options.log('Legacy migration: done');
+    return result;
+}
+
 /**
  * Get the path to the old Antigravity globalState database.
  * Returns null if the file doesn't exist.
@@ -69,13 +106,13 @@ try {
 /**
  * Attempt to extract calendar data and language from the old Antigravity DB.
  * Uses a child process with node:sqlite to avoid adding native dependencies.
- * Returns null if the old DB doesn't exist or extraction fails.
+ * Distinguishes transient extraction failures from definitive empty/not-found results.
  */
-export function extractLegacyData(log: (msg: string) => void): LegacyMigrationData | null {
+export function extractLegacyData(log: (msg: string) => void): LegacyMigrationResult {
     const dbPath = getOldAntigravityDbPath();
     if (!dbPath) {
         log('Legacy migration: no old Antigravity DB found');
-        return null;
+        return { status: 'not_found' };
     }
     log(`Legacy migration: found old DB at ${dbPath}`);
 
@@ -108,19 +145,19 @@ export function extractLegacyData(log: (msg: string) => void): LegacyMigrationDa
                         ? Object.keys(data.dailyStoreState.records).length
                         : 0;
                     log(`Legacy migration: extracted ${recordCount} calendar records, language=${data.displayLanguage || 'none'}`);
-                    return data;
+                    return { status: 'imported', data };
                 }
                 log('Legacy migration: old DB exists but no extension data found');
-                return null;
+                return { status: 'empty' };
             } catch (err) {
                 lastError = err instanceof Error ? err.message : String(err);
                 continue; // try next node path
             }
         }
         log(`Legacy migration: failed to read old DB — ${lastError}`);
-        return null;
+        return { status: 'failed', error: lastError };
     } catch (err) {
         log(`Legacy migration: unexpected error — ${err}`);
-        return null;
+        return { status: 'failed', error: err instanceof Error ? err.message : String(err) };
     }
 }

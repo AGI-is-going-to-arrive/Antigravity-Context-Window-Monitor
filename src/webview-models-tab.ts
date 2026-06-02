@@ -6,10 +6,11 @@ import { tBi } from './i18n';
 import { ModelConfig, UserStatusInfo, getModelSpecs, ModelSpec, updateModelSpec, guessContextLimitSpec } from './models';
 import { ICON } from './webview-icons';
 import { buildDefaultModelCard, buildModelQuotaGrid, sortModels } from './webview-profile-tab';
+import { esc } from './webview-helpers';
 
 export function buildModelInfoGrid(specs: ModelSpec[]): string {
     const cards = specs.map((s) => {
-        const providerText = s.apiProvider.replace(/_/g, ' ');
+        const providerText = esc(s.apiProvider.replace(/_/g, ' '));
         const thinkingText = s.supportsThinking
             ? `${tBi('Enabled', '已启用')} (${tBi('Budget', '预算')}: ${s.thinkingBudget.toLocaleString()})`
             : tBi('Not Supported', '不支持');
@@ -38,10 +39,10 @@ export function buildModelInfoGrid(specs: ModelSpec[]): string {
                 <div class="model-card-header" style="margin-bottom: var(--space-2); display: flex; align-items: flex-start; justify-content: space-between;">
                     <div>
                         <strong class="model-card-name" style="font-size: 0.95rem; color: var(--color-text); display: block; line-height: 1.2;">
-                            ${s.displayName}
+                            ${esc(s.displayName)}
                         </strong>
                         <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--color-text-dim); opacity: 0.8; display: block; margin-top: 2px;">
-                            ${s.modelId} <span style="font-size: 0.7rem; opacity: 0.5;">(${s.placeholderId.replace('MODEL_PLACEHOLDER_', '')})</span>
+                            ${esc(s.modelId)} <span style="font-size: 0.7rem; opacity: 0.5;">(${esc(s.placeholderId.replace('MODEL_PLACEHOLDER_', ''))})</span>
                         </span>
                     </div>
                     <span class="model-tag-badge" style="background: color-mix(in srgb, ${limitColor} 8%, rgba(22, 26, 38, 0.45)); color: ${limitColor}; border: 1px solid color-mix(in srgb, ${limitColor} 50%, transparent); box-shadow: 0 0 12px color-mix(in srgb, ${limitColor} 30%, transparent); padding: 3px 8px; font-size: 0.72rem; border-radius: var(--radius-sm); font-weight: 600; white-space: nowrap; margin-left: var(--space-2); text-shadow: 0 0 8px color-mix(in srgb, ${limitColor} 30%, transparent); transition: all 0.3s ease;">

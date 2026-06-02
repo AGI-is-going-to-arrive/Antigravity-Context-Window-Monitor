@@ -140,10 +140,6 @@
 
    ![模型标签页](src/images/model.png)
 
-   **额度追踪 (Quota Tracking)** — 实时额度追踪，含历史归档周期和重置时间监控。
-
-   ![额度追踪标签页](src/images/额度追踪.png)
-
    **日历 (Calendar)** — 按日期组织的历史使用数据，包含每周期成本和 Token 分解。
 
    ![日历标签页](src/images/日历_全部.png)

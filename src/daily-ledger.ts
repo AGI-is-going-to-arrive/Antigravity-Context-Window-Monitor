@@ -28,6 +28,22 @@ export interface LedgerModelStats {
     estimatedCost: number;
 }
 
+/** Per-call data retained so quota-reset settlement can split by reset cutoff. */
+export interface LedgerRecordedCall {
+    callId: string;
+    createdAt: string;
+    createdAtMs: number;
+    modelId: string;
+    modelKey: string;
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    credits: number;
+    estimatedCost: number;
+}
+
 /** A single account bucket within a day */
 export interface LedgerAccountBucket {
     accountEmail: string;
@@ -43,6 +59,8 @@ export interface LedgerAccountBucket {
     modelStats: Record<string, LedgerModelStats>;
     /** Call IDs already recorded — prevents double-counting */
     recordedCallIds: string[];
+    /** Accepted calls retained for cutoff-aware quota settlement */
+    recordedCalls: LedgerRecordedCall[];
 }
 
 /** A settled (quota-reset) entry — frozen snapshot of a pool's data at reset time */
@@ -59,9 +77,13 @@ export interface LedgerSettledEntry {
     totalCalls: number;
     totalInputTokens: number;
     totalOutputTokens: number;
+    totalThinkingTokens: number;
     totalCacheRead: number;
+    totalCacheCreation: number;
     totalCredits: number;
     totalEstimatedCost: number;
+    /** Optional reset boundary used for this settlement */
+    settledCutoffTime?: number;
     /** Per-model call counts (key = display name) */
     modelCalls: Record<string, number>;
 }
@@ -147,6 +169,128 @@ function estimateCallCost(call: GMCallEntry): number {
     ) / 1_000_000;
 }
 
+function emptyModelStats(): LedgerModelStats {
+    return {
+        calls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        credits: 0,
+        estimatedCost: 0,
+    };
+}
+
+function resolveCallModelId(call: GMCallEntry, modelKey: string): string {
+    return resolveModelId(call.model)
+        || resolveModelId(call.responseModel || '')
+        || resolveModelId(modelKey)
+        || call.model
+        || call.responseModel
+        || modelKey;
+}
+
+function callMatchesPool(modelKey: string, modelId: string | undefined, poolModelIds: string[]): boolean {
+    const poolModelIdSet = new Set(poolModelIds.map(id => id.toLowerCase()));
+    if (modelId && poolModelIdSet.has(modelId.toLowerCase())) {
+        return true;
+    }
+    const resolvedId = resolveModelId(modelKey);
+    if (resolvedId && poolModelIdSet.has(resolvedId.toLowerCase())) {
+        return true;
+    }
+    for (const pid of poolModelIds) {
+        const pidDisplay = normalizeModelDisplayName(pid);
+        if (pidDisplay && pidDisplay.toLowerCase() === modelKey.toLowerCase()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function addRecordedCallStats(target: LedgerModelStats, call: LedgerRecordedCall): void {
+    target.calls++;
+    target.inputTokens += call.inputTokens;
+    target.outputTokens += call.outputTokens;
+    target.thinkingTokens += call.thinkingTokens;
+    target.cacheReadTokens += call.cacheReadTokens;
+    target.cacheCreationTokens += call.cacheCreationTokens;
+    target.credits += call.credits;
+    target.estimatedCost += call.estimatedCost;
+}
+
+function addModelStats(target: LedgerModelStats, source: LedgerModelStats): void {
+    target.calls += source.calls;
+    target.inputTokens += source.inputTokens;
+    target.outputTokens += source.outputTokens;
+    target.thinkingTokens += source.thinkingTokens;
+    target.cacheReadTokens += source.cacheReadTokens;
+    target.cacheCreationTokens += source.cacheCreationTokens;
+    target.credits += source.credits;
+    target.estimatedCost += source.estimatedCost;
+}
+
+function subtractModelStatsSnapshot(total: LedgerModelStats, represented?: LedgerModelStats): LedgerModelStats {
+    const rep = represented || emptyModelStats();
+    return {
+        calls: Math.max(0, total.calls - rep.calls),
+        inputTokens: Math.max(0, total.inputTokens - rep.inputTokens),
+        outputTokens: Math.max(0, total.outputTokens - rep.outputTokens),
+        thinkingTokens: Math.max(0, total.thinkingTokens - rep.thinkingTokens),
+        cacheReadTokens: Math.max(0, total.cacheReadTokens - rep.cacheReadTokens),
+        cacheCreationTokens: Math.max(0, total.cacheCreationTokens - rep.cacheCreationTokens),
+        credits: Math.max(0, total.credits - rep.credits),
+        estimatedCost: Math.max(0, total.estimatedCost - rep.estimatedCost),
+    };
+}
+
+function hasModelStatsData(stats: LedgerModelStats): boolean {
+    return stats.calls > 0
+        || stats.inputTokens > 0
+        || stats.outputTokens > 0
+        || stats.thinkingTokens > 0
+        || stats.cacheReadTokens > 0
+        || stats.cacheCreationTokens > 0
+        || stats.credits > 0
+        || stats.estimatedCost > 0;
+}
+
+function parseCallCreatedAtMs(createdAt: string | undefined): number {
+    const parsed = Date.parse(createdAt || '');
+    return Number.isNaN(parsed) ? Date.now() : parsed;
+}
+
+function isRecordedCallBeforeCutoff(call: LedgerRecordedCall, cutoffMs: number | undefined): boolean {
+    if (cutoffMs === undefined) { return true; }
+    return Number.isFinite(call.createdAtMs) ? call.createdAtMs <= cutoffMs : true;
+}
+
+function subtractStatsFromBucket(bucket: LedgerAccountBucket, key: string, stats: LedgerModelStats): void {
+    bucket.totalCalls = Math.max(0, bucket.totalCalls - stats.calls);
+    bucket.totalInputTokens = Math.max(0, bucket.totalInputTokens - stats.inputTokens);
+    bucket.totalOutputTokens = Math.max(0, bucket.totalOutputTokens - stats.outputTokens);
+    bucket.totalThinkingTokens = Math.max(0, bucket.totalThinkingTokens - stats.thinkingTokens);
+    bucket.totalCacheRead = Math.max(0, bucket.totalCacheRead - stats.cacheReadTokens);
+    bucket.totalCacheCreation = Math.max(0, bucket.totalCacheCreation - stats.cacheCreationTokens);
+    bucket.totalCredits = Math.max(0, bucket.totalCredits - stats.credits);
+    bucket.totalEstimatedCost = Math.max(0, bucket.totalEstimatedCost - stats.estimatedCost);
+
+    const activeStats = bucket.modelStats[key];
+    if (!activeStats) { return; }
+    activeStats.calls = Math.max(0, activeStats.calls - stats.calls);
+    activeStats.inputTokens = Math.max(0, activeStats.inputTokens - stats.inputTokens);
+    activeStats.outputTokens = Math.max(0, activeStats.outputTokens - stats.outputTokens);
+    activeStats.thinkingTokens = Math.max(0, activeStats.thinkingTokens - stats.thinkingTokens);
+    activeStats.cacheReadTokens = Math.max(0, activeStats.cacheReadTokens - stats.cacheReadTokens);
+    activeStats.cacheCreationTokens = Math.max(0, activeStats.cacheCreationTokens - stats.cacheCreationTokens);
+    activeStats.credits = Math.max(0, activeStats.credits - stats.credits);
+    activeStats.estimatedCost = Math.max(0, activeStats.estimatedCost - stats.estimatedCost);
+    if (activeStats.calls === 0) {
+        delete bucket.modelStats[key];
+    }
+}
+
 function emptyBucket(email: string): LedgerAccountBucket {
     return {
         accountEmail: email,
@@ -160,6 +304,7 @@ function emptyBucket(email: string): LedgerAccountBucket {
         totalEstimatedCost: 0,
         modelStats: {},
         recordedCallIds: [],
+        recordedCalls: [],
     };
 }
 
@@ -189,14 +334,18 @@ export class DailyLedger {
      */
     clearRecordedIdsForConversation(cascadeId: string): void {
         const prefix = cascadeId + ':';
+        const isLegacyIndexOnlyId = (id: string): boolean => {
+            if (!id.startsWith(prefix)) { return false; }
+            return /^\d+$/.test(id.slice(prefix.length));
+        };
         const toRemove: string[] = [];
         for (const id of this._allRecordedIds) {
-            if (id.startsWith(prefix)) { toRemove.push(id); }
+            if (isLegacyIndexOnlyId(id)) { toRemove.push(id); }
         }
         for (const id of toRemove) { this._allRecordedIds.delete(id); }
-        // Also clean from per-account bucket recordedCallIds
+        // Also clean legacy per-account bucket recordedCallIds
         for (const bucket of this._accounts.values()) {
-            bucket.recordedCallIds = bucket.recordedCallIds.filter(id => !id.startsWith(prefix));
+            bucket.recordedCallIds = bucket.recordedCallIds.filter(id => !isLegacyIndexOnlyId(id));
         }
     }
 
@@ -204,8 +353,11 @@ export class DailyLedger {
      * Check if a specific pool (by modelIds + email) has already been settled.
      * Used by proactive settlement to avoid duplicate settlements.
      */
-    isPoolSettled(modelIds: string[], email?: string): boolean {
+    isPoolSettled(modelIds: string[], email?: string, cutoffTime?: number): boolean {
         const querySet = new Set(modelIds.map(id => id.toLowerCase()));
+        const cutoffMs = typeof cutoffTime === 'number' && !Number.isNaN(cutoffTime)
+            ? cutoffTime
+            : undefined;
         for (const entry of this._settled) {
             const matchEmail = !email || entry.accountEmail === email;
             if (!matchEmail) { continue; }
@@ -213,7 +365,12 @@ export class DailyLedger {
             const overlap = (entry.poolModelIds || []).some(
                 pid => querySet.has(pid.toLowerCase()),
             );
-            if (overlap) { return true; }
+            if (!overlap) { continue; }
+            if (cutoffMs === undefined) { return true; }
+            if (typeof entry.settledCutoffTime === 'number'
+                && entry.settledCutoffTime >= cutoffMs) {
+                return true;
+            }
         }
         return false;
     }
@@ -309,16 +466,7 @@ export class DailyLedger {
 
             let ms = bucket.modelStats[modelKey];
             if (!ms) {
-                ms = {
-                    calls: 0,
-                    inputTokens: 0,
-                    outputTokens: 0,
-                    thinkingTokens: 0,
-                    cacheReadTokens: 0,
-                    cacheCreationTokens: 0,
-                    credits: 0,
-                    estimatedCost: 0,
-                };
+                ms = emptyModelStats();
                 bucket.modelStats[modelKey] = ms;
             }
             ms.calls++;
@@ -332,6 +480,21 @@ export class DailyLedger {
 
             // Mark as recorded
             bucket.recordedCallIds.push(id);
+            const createdAtMs = parseCallCreatedAtMs(call.createdAt);
+            bucket.recordedCalls.push({
+                callId: id,
+                createdAt: call.createdAt || '',
+                createdAtMs,
+                modelId: resolveCallModelId(call, modelKey),
+                modelKey,
+                inputTokens: call.inputTokens,
+                outputTokens: call.outputTokens,
+                thinkingTokens: call.thinkingTokens,
+                cacheReadTokens: call.cacheReadTokens,
+                cacheCreationTokens: call.cacheCreationTokens,
+                credits: call.credits,
+                estimatedCost: cost,
+            });
             this._allRecordedIds.add(id);
             added++;
         }
@@ -346,64 +509,70 @@ export class DailyLedger {
      *
      * @param poolModelIds Model IDs in the reset pool (e.g. ['MODEL_PLACEHOLDER_M16', ...])
      * @param accountEmail Account email to settle
+     * @param cutoffTime Optional reset boundary. Only calls created at or before
+     *                   this time are settled; later calls remain active.
      * @returns the settled entry, or null if no matching data
      */
-    settleForQuotaReset(poolModelIds: string[], accountEmail?: string): LedgerSettledEntry | null {
+    settleForQuotaReset(poolModelIds: string[], accountEmail?: string, cutoffTime?: number): LedgerSettledEntry | null {
         const email = accountEmail || '';
         const bucket = this._accounts.get(email);
         if (!bucket || bucket.totalCalls === 0) { return null; }
+        const cutoffMs = typeof cutoffTime === 'number' && !Number.isNaN(cutoffTime)
+            ? cutoffTime
+            : undefined;
+        const settledStatsByModel: Record<string, LedgerModelStats> = {};
+        const representedStatsByModel: Record<string, LedgerModelStats> = {};
+        const recordedCalls = Array.isArray(bucket.recordedCalls) ? bucket.recordedCalls : [];
+        const remainingCalls: LedgerRecordedCall[] = [];
 
-        // Build a set of display names that belong to this pool
-        const poolModelIdSet = new Set(poolModelIds.map(id => id.toLowerCase()));
-        const matchingModelKeys: string[] = [];
-
-        for (const modelKey of Object.keys(bucket.modelStats)) {
-            // Check if this model key belongs to the pool
-            const resolvedId = resolveModelId(modelKey);
-            if (resolvedId && poolModelIdSet.has(resolvedId.toLowerCase())) {
-                matchingModelKeys.push(modelKey);
+        for (const call of recordedCalls) {
+            const matches = callMatchesPool(call.modelKey, call.modelId, poolModelIds);
+            if (matches) {
+                const represented = representedStatsByModel[call.modelKey] || emptyModelStats();
+                addRecordedCallStats(represented, call);
+                representedStatsByModel[call.modelKey] = represented;
+            }
+            if (!matches || !isRecordedCallBeforeCutoff(call, cutoffMs)) {
+                remainingCalls.push(call);
                 continue;
             }
-            // Fallback: check if any pool model ID's display name matches
-            for (const pid of poolModelIds) {
-                const pidDisplay = normalizeModelDisplayName(pid);
-                if (pidDisplay && pidDisplay.toLowerCase() === modelKey.toLowerCase()) {
-                    matchingModelKeys.push(modelKey);
-                    break;
-                }
+            const stats = settledStatsByModel[call.modelKey] || emptyModelStats();
+            addRecordedCallStats(stats, call);
+            settledStatsByModel[call.modelKey] = stats;
+        }
+        bucket.recordedCalls = remainingCalls;
+
+        for (const [modelKey, ms] of Object.entries(bucket.modelStats)) {
+            if (!callMatchesPool(modelKey, resolveModelId(modelKey), poolModelIds)) { continue; }
+            const unrepresented = subtractModelStatsSnapshot(ms, representedStatsByModel[modelKey]);
+            if (hasModelStatsData(unrepresented)) {
+                const stats = settledStatsByModel[modelKey] || emptyModelStats();
+                addModelStats(stats, unrepresented);
+                settledStatsByModel[modelKey] = stats;
             }
         }
 
+        const matchingModelKeys = Object.keys(settledStatsByModel);
         if (matchingModelKeys.length === 0) { return null; }
 
-        // Extract matching stats
         let totalCalls = 0;
-        let totalIn = 0, totalOut = 0, totalCache = 0, totalCredits = 0, totalCost = 0;
+        let totalIn = 0, totalOut = 0, totalThinking = 0, totalCache = 0, totalCacheCreation = 0;
+        let totalCredits = 0, totalCost = 0;
         const modelCalls: Record<string, number> = {};
 
         for (const key of matchingModelKeys) {
-            const ms = bucket.modelStats[key];
+            const ms = settledStatsByModel[key];
             if (!ms) { continue; }
             totalCalls += ms.calls;
             totalIn += ms.inputTokens;
             totalOut += ms.outputTokens;
+            totalThinking += ms.thinkingTokens;
             totalCache += ms.cacheReadTokens;
+            totalCacheCreation += ms.cacheCreationTokens;
             totalCredits += ms.credits;
             totalCost += ms.estimatedCost;
             modelCalls[key] = ms.calls;
-
-            // Subtract from active bucket
-            bucket.totalCalls -= ms.calls;
-            bucket.totalInputTokens -= ms.inputTokens;
-            bucket.totalOutputTokens -= ms.outputTokens;
-            bucket.totalThinkingTokens -= ms.thinkingTokens;
-            bucket.totalCacheRead -= ms.cacheReadTokens;
-            bucket.totalCacheCreation -= ms.cacheCreationTokens;
-            bucket.totalCredits -= ms.credits;
-            bucket.totalEstimatedCost -= ms.estimatedCost;
-
-            // Remove from model breakdown
-            delete bucket.modelStats[key];
+            subtractStatsFromBucket(bucket, key, ms);
         }
 
         const entry: LedgerSettledEntry = {
@@ -414,9 +583,12 @@ export class DailyLedger {
             totalCalls,
             totalInputTokens: totalIn,
             totalOutputTokens: totalOut,
+            totalThinkingTokens: totalThinking,
             totalCacheRead: totalCache,
+            totalCacheCreation,
             totalCredits,
             totalEstimatedCost: totalCost,
+            settledCutoffTime: cutoffMs,
             modelCalls,
         };
 
@@ -432,7 +604,11 @@ export class DailyLedger {
         const dateKey = archiveDateKey || this._dateKey;
         const accounts: Record<string, LedgerAccountBucket> = {};
         for (const [email, bucket] of this._accounts) {
-            accounts[email] = { ...bucket };
+            accounts[email] = {
+                ...bucket,
+                recordedCallIds: [...bucket.recordedCallIds],
+                recordedCalls: [...bucket.recordedCalls],
+            };
         }
 
         const result: LedgerDayData = {
@@ -490,7 +666,11 @@ export class DailyLedger {
     serialize(): DailyLedgerState {
         const accounts: Record<string, LedgerAccountBucket> = {};
         for (const [email, bucket] of this._accounts) {
-            accounts[email] = { ...bucket };
+            accounts[email] = {
+                ...bucket,
+                recordedCallIds: [...bucket.recordedCallIds],
+                recordedCalls: [...bucket.recordedCalls],
+            };
         }
         return {
             version: 1,
@@ -517,6 +697,9 @@ export class DailyLedger {
                     ...bucket,
                     recordedCallIds: Array.isArray(bucket.recordedCallIds)
                         ? [...bucket.recordedCallIds]
+                        : [],
+                    recordedCalls: Array.isArray(bucket.recordedCalls)
+                        ? [...bucket.recordedCalls]
                         : [],
                 };
                 ledger._accounts.set(email, restored);

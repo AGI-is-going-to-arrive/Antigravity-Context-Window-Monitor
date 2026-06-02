@@ -1858,7 +1858,6 @@ export function getStyles(): string {
         .stg-card[data-accent="model"]    { --stg-accent: #f472b6; }
         .stg-card[data-accent="activity"] { --stg-accent: #fb923c; }
         .stg-card[data-accent="history"]  { --stg-accent: #2dd4bf; }
-        .stg-card[data-accent="debug"]    { --stg-accent: var(--color-danger); }
         .stg-card[data-accent="zoom"]     { --stg-accent: #a78bfa; }
 
         .stg-header {
@@ -3286,13 +3285,8 @@ export function getStyles(): string {
             gap: var(--space-3);
             margin-bottom: var(--space-3);
         }
-        .card-header-row h2 { margin: 0; }
-        .card-header-row .qt-clear-active,
-        .card-header-row .qt-clear-history {
-            flex-shrink: 0;
-            font-size: 0.75em;
-            padding: var(--space-1) var(--space-3);
         }
+        .card-header-row h2 { margin: 0; }
 
         /* ─── Timeline Card ───────────── */
         .timeline-card {
@@ -3303,24 +3297,6 @@ export function getStyles(): string {
             padding: var(--space-3);
             margin-bottom: var(--space-2);
             transition: border-color 0.2s cubic-bezier(.4,0,.2,1), background 0.2s cubic-bezier(.4,0,.2,1);
-        }
-        .timeline-card.qt-card-active {
-            border-left-color: var(--color-info, #60a5fa);
-            background: rgba(96,165,250,0.04);
-        }
-        .timeline-card.qt-card-current {
-            border-left-color: var(--color-ok, #34d399);
-            background: rgba(74,222,128,0.06);
-            border-color: rgba(74,222,128,0.18);
-        }
-        .timeline-card.qt-card-current .timeline-model {
-            color: var(--color-ok, #34d399);
-        }
-        .timeline-card.qt-card-complete {
-            border-left-color: var(--color-ok, #34d399);
-        }
-        .timeline-card.qt-card-reset {
-            border-left-color: var(--color-warn, #fbbf24);
         }
 
         @media (hover: hover) {
@@ -3341,99 +3317,6 @@ export function getStyles(): string {
         .timeline-model {
             font-weight: 600;
             font-size: 0.95em;
-        }
-
-        /* ─── Quota Progress Bar ──────── */
-        .qt-progress-wrap {
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-            margin-bottom: var(--space-2);
-        }
-        .qt-progress-track {
-            flex: 1;
-            height: 6px;
-            border-radius: 3px;
-            background: rgba(255,255,255,0.06);
-            overflow: hidden;
-        }
-        .qt-progress-fill {
-            height: 100%;
-            border-radius: 3px;
-            transition: width 0.4s cubic-bezier(.4,0,.2,1);
-        }
-        .qt-progress-active {
-            animation: qtProgressPulse 2s ease-in-out infinite;
-        }
-        @keyframes qtProgressPulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-        .qt-progress-label {
-            font-weight: 700;
-            font-size: 0.92em;
-            min-width: 40px;
-            text-align: right;
-        }
-
-        /* ─── Meta Chips Row ──────────── */
-        .qt-meta-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: var(--space-1);
-            margin-bottom: var(--space-2);
-        }
-        .qt-meta-chip {
-            display: inline-flex;
-            align-items: center;
-            gap: 3px;
-            font-size: 0.82em;
-            padding: 2px var(--space-2);
-            border-radius: var(--radius-sm);
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.06);
-            color: var(--color-text-dim);
-        }
-        .qt-meta-duration {
-            font-weight: 600;
-            color: var(--color-text);
-        }
-
-        /* ─── History Summary Grid ────── */
-        .qt-summary-grid {
-            display: flex;
-            flex-wrap: wrap;
-            gap: var(--space-2);
-            margin-bottom: var(--space-3);
-            padding: var(--space-2);
-            border-radius: var(--radius-md);
-            background: rgba(255,255,255,0.02);
-            border: 1px solid rgba(255,255,255,0.06);
-        }
-        .qt-summary-item {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            flex: 1;
-            min-width: 70px;
-            padding: var(--space-1) var(--space-2);
-        }
-        .qt-summary-val {
-            font-weight: 700;
-            font-size: 1em;
-        }
-        .qt-summary-dim {
-            font-weight: 400;
-            color: var(--color-text-dim);
-            font-size: 0.85em;
-        }
-        .qt-summary-warn { color: var(--color-warn, #fbbf24); }
-        .qt-summary-label {
-            font-size: 0.78em;
-            color: var(--color-text-dim);
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-            margin-top: 2px;
         }
 
         /* ─── Timeline Track ──────────── */
@@ -3522,7 +3405,7 @@ export function getStyles(): string {
         }
 
         @media (prefers-reduced-motion: reduce) {
-            .tl-pulse, .qt-progress-active { animation: none; }
+            .tl-pulse { animation: none; }
         }
 
 
@@ -3770,7 +3653,6 @@ export function getStyles(): string {
         body.vscode-light .mime-chip { background: rgba(0,0,0,0.04); }
         body.vscode-light .inline-details { background: rgba(0,0,0,0.01); }
         body.vscode-light .timeline-card { background: rgba(0,0,0,0.02); }
-        body.vscode-light .timeline-card.qt-card-current { background: rgba(74,222,128,0.08); border-color: rgba(74,222,128,0.25); }
 
         /* ─── Light Theme: Progress Bars ──── */
         body.vscode-light .progress-bar-wrap { background: rgba(0,0,0,0.06); }
@@ -3778,9 +3660,6 @@ export function getStyles(): string {
         body.vscode-light .session-bar-wrap { background: rgba(0,0,0,0.06); }
         body.vscode-light .quota-bar-wrap { background: rgba(0,0,0,0.06); }
         body.vscode-light .credit-bar-wrap { background: rgba(0,0,0,0.06); }
-        body.vscode-light .qt-progress-track { background: rgba(0,0,0,0.06); }
-        body.vscode-light .qt-meta-chip { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.08); }
-        body.vscode-light .qt-summary-grid { background: rgba(0,0,0,0.02); border-color: rgba(0,0,0,0.06); }
 
 
         /* ─── Account Popover ──────────── */

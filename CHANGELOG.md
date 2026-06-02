@@ -1,6 +1,40 @@
 # 变更日志 / Changelog
 
-## [1.16.11-Pending] - 2026-06-01
+## [1.16.11] - 2026-06-03
+
+### 🛠️ Maintainer Review & Hardening / 维护者审查与加固
+
+> Post-merge follow-up after a multi-model review (codex backend + Antigravity frontend + Claude cross-verification) and zero-mock probe testing of PR #60. Huge thanks to **@NightMin2002** for the DailyLedger refactor that solves real archival data-loss pain.
+> PR #60 合并后的多模型审查（codex 后端 + Antigravity 前端 + Claude 交叉验证）与零-mock 实测跟进。特别感谢 **@NightMin2002** 贡献的 DailyLedger 重构，真正解决了归档丢数的痛点。
+
+- **Timezone-independent daily-archival tests / 每日归档测试去时区依赖**: `tests/daily-archival-time.test.ts` hard-coded `+08:00` timestamps and only passed under UTC+8 (2 failures elsewhere). Rebuilt them on the local-time `Date` constructor to match `toLocalDateKey()`; the suite now passes under UTC, America/New_York, Australia/Melbourne and Asia/Shanghai (19 files / 118 tests).
+  `tests/daily-archival-time.test.ts` 硬编码 `+08:00`，仅在 UTC+8 通过（其他时区 2 个失败）。改用本地时区 `Date` 构造以匹配 `toLocalDateKey()`；现已在 UTC / 纽约 / 墨尔本 / 上海 全部通过（19 文件 / 118 用例）。
+
+- **Quota-reset settlement is now cutoff-aware / 额度重置结算引入时间切分**: `settleForQuotaReset()` gained a `cutoffTime` parameter and per-call retention, so a new-cycle call recorded before the proactive settle stays in the active bucket instead of being swept into the old cycle's settled entry.
+  `settleForQuotaReset()` 新增 `cutoffTime` 参数并保留 per-call 明细：额度重置后、主动结算前记录的新周期调用会保留在“今日累计”，不再被错误并入上一周期的“已结算”。
+
+- **Settled entries preserve thinking & cache-creation tokens / 已结算条目保留思考与缓存创建 Token**: `LedgerSettledEntry` now carries `totalThinkingTokens` and `totalCacheCreation`, propagated into midnight archival (no longer hard-coded to 0); per-model rounding remainder is allocated so per-model sums reconcile with the total.
+  `LedgerSettledEntry` 现保存 `totalThinkingTokens` 与 `totalCacheCreation` 并在凌晨归档中传播（不再写死为 0）；逐模型舍入余数被分配，确保逐模型合计与总额一致。
+
+- **No daily-ledger data loss when archival is skipped / 归档跳过时不再丢失当日账本**: GMTracker now commits ledger read-positions only after the ledger accepts the calls, so calls rejected during a date-change window are retried instead of being permanently dropped if `performDailyArchival` is skipped or throws.
+  GMTracker 改为账本接受调用后才提交读取位置；当 `performDailyArchival` 被跳过或抛错时，跨日窗口中被拒绝的调用会重试而非永久丢失。
+
+- **Defensive clamps + safer legacy migration / 防御性下限与更安全的旧版迁移**: all active-bucket subtractions are clamped with `Math.max(0, …)`; legacy migration now distinguishes `not_found / imported / empty / failed` and only marks itself done on a definitive outcome, so a transient DB-read failure no longer permanently skips recovery.
+  所有“今日累计”扣减加 `Math.max(0, …)` 下限保护；旧版迁移区分 `not_found / imported / empty / failed`，仅在确定性结果时标记完成，避免一次瞬时读取失败永久跳过恢复。
+
+- **Ledger revert / restart resilience + settlement completeness / 账本回退·重启鲁棒性与结算完整性**: dedup keys now embed the call identity (`conv:index|exec:…`), so calls made after a conversation is reverted are recorded while unchanged calls that return are still de-duplicated; a conversation reverted below its recorded position lowers the tracker read-position and is reported so its stale ledger ids get cleared; submitted call identities and positions now persist through `serialize()/restore()`, so this protection survives an IDE restart (with legacy-position backfill for older snapshots). Quota-reset settlement additionally clears any restored legacy aggregate not backed by per-call records, and calls with missing/invalid `createdAt` are stamped at observed-time so they settle instead of getting stuck in "today".
+  账本去重键现在内嵌调用身份（`conv:index|exec:…`）：对话回退后新产生的调用会被记录，而原样返回的调用仍被正确去重；当回退使对话调用数低于已记录位置时，会下调 tracker 读取位置并上报该对话以清理其陈旧账本 id；已提交的调用身份与读取位置通过 `serialize()/restore()` 持久化，IDE 重启后保护依然有效（并为旧版快照回填位置身份）。额度重置结算还会清算恢复态中无 per-call 明细支撑的旧版聚合用量；对缺失/非法 `createdAt` 的调用按观察时间打戳，使其能正常结算而不再卡在“今日累计”。
+
+- **Frontend hardening / 前端加固**: escaped the model display name / id / placeholder / provider in the Models tab to remove an HTML-injection vector; added VS Code light-theme overrides for the Today's Ledger cards (previously white-on-light, invisible); removed dead code (`thresholdSaved` listener, orphaned `.qt-*` and `data-accent="debug"` CSS, an unused variable).
+  前端加固：Models 标签页转义模型显示名 / ID / 占位符 / 提供方，消除 HTML 注入面；为“今日账本”卡片补齐 VS Code 浅色主题样式（此前浅色下白字不可见）；清理死代码（`thresholdSaved` 监听、孤立 `.qt-*` 与 `data-accent="debug"` 样式、未使用变量）。
+
+- **Docs sync / 文档同步**: removed the deleted Quota Tracking tab (and its screenshot) from README/readme_CN and dropped `webview-history-tab.ts` from the module list in `docs/technical_implementation.md`.
+  文档同步：从 README / readme_CN 移除已删除的额度追踪标签页（及其截图），并在 `docs/technical_implementation.md` 模块列表中移除 `webview-history-tab.ts`。
+
+### ⚠️ Known Issues / 已知问题
+
+- **Multi-window ledger writes are last-writer-wins / 多窗口账本写入为后写覆盖**: when multiple IDE windows poll concurrently they each serialize the full `dailyLedgerState`, so one window can overwrite another's just-written ledger. Low probability in practice (writes only on new-call detection); a proper cross-window merge/lock is deferred to a follow-up.
+  多个 IDE 窗口并发轮询时各自整份序列化 `dailyLedgerState`，存在后写覆盖先写的风险。实际触发概率低（仅在检测到新调用时写入）；跨窗口合并/锁留待后续迭代。
 
 ### 🐛 Fixed / 修复
 

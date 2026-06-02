@@ -51,6 +51,37 @@ function isUsableArchiveCutoff(cutoff: string, nowMs = Date.now()): boolean {
         && cutoffMs <= nowMs + ARCHIVE_CUTOFF_FUTURE_TOLERANCE_MS;
 }
 
+function ledgerCallIdentity(call: GMCallEntry): string {
+    if (call.executionId) {
+        return `exec:${call.executionId}`;
+    }
+    return [
+        'archive',
+        buildGMArchiveKey(call),
+        `in:${call.inputTokens}`,
+        `out:${call.outputTokens}`,
+        `think:${call.thinkingTokens}`,
+        `cache:${call.cacheReadTokens}`,
+        `start:${call.startStepIndex}`,
+    ].join('|');
+}
+
+function ledgerDedupKey(cascadeId: string, index: number, call: GMCallEntry): string {
+    return `${cascadeId}:${index}|${encodeURIComponent(ledgerCallIdentity(call))}`;
+}
+
+function parseLedgerDedupPosition(dedupKey: string): { conversationId: string; index: number } | null {
+    const splitAt = dedupKey.lastIndexOf(':');
+    if (splitAt <= 0) { return null; }
+    const indexPart = dedupKey.slice(splitAt + 1).split('|', 1)[0];
+    const index = Number.parseInt(indexPart, 10);
+    if (Number.isNaN(index)) { return null; }
+    return {
+        conversationId: dedupKey.slice(0, splitAt),
+        index,
+    };
+}
+
 
 /** Deduplicate checkpoint summaries from multiple GM calls, keyed by stepIndex */
 function deduplicateCheckpoints(calls: GMCallEntry[]): GMCheckpointSummary[] {
@@ -132,6 +163,9 @@ export class GMTracker {
      *  Key = cascadeId, Value = number of calls already recorded.
      *  Used by getNewCallsSinceLastRecord() to extract incremental diff. */
     private _ledgerPositions = new Map<string, number>();
+    /** Per-conversation submitted call identities by calls[] index.
+     *  Lets reverted conversations skip unchanged calls that later return. */
+    private _ledgerCallIdentities = new Map<string, string[]>();
     /** Whether fetchAll() has successfully repopulated calls[] since restore.
      *  When false, _cache.calls is empty (stripped during serialize) and
      *  _buildSummary() would return totalCalls=0. In that state, getters
@@ -906,9 +940,11 @@ export class GMTracker {
         const debug: string[] = [];
         const revertedCascadeIds: string[] = [];
         for (const [id, conv] of this._cache) {
-            if (conv.calls.length === 0) { continue; }
             const baseline = this._callBaselines.get(id) || 0;
             let lastRecorded = this._ledgerPositions.get(id) || 0;
+            if (lastRecorded > 0 && lastRecorded <= conv.calls.length) {
+                this._rememberLedgerCallIdentities(id, conv.calls, lastRecorded);
+            }
             // Conversation revert: user went back to an earlier step, shrinking
             // the calls array.  Clamp position down so new calls from the
             // reverted point onwards get captured.  Signal caller to clear
@@ -916,10 +952,26 @@ export class GMTracker {
             if (lastRecorded > conv.calls.length) {
                 debug.push(`${id.substring(0, 8)}: REVERT pos=${lastRecorded} → ${conv.calls.length}`);
                 lastRecorded = conv.calls.length;
+                this._ledgerPositions.set(id, lastRecorded);
                 revertedCascadeIds.push(id);
             }
+            if (conv.calls.length === 0) { continue; }
             // Start from whichever is higher: baseline or last recorded position
-            const start = Math.max(baseline, lastRecorded);
+            let start = Math.max(baseline, lastRecorded);
+            const knownIdentities = this._ledgerCallIdentities.get(id) || [];
+            const originalStart = start;
+            while (start < conv.calls.length
+                && knownIdentities[start]
+                && knownIdentities[start] === ledgerCallIdentity(conv.calls[start])) {
+                start++;
+            }
+            if (start > originalStart) {
+                debug.push(`${id.substring(0, 8)}: skipped ${start - originalStart} unchanged returned calls`);
+                const existingPosition = this._ledgerPositions.get(id) || 0;
+                if (start > existingPosition) {
+                    this._ledgerPositions.set(id, start);
+                }
+            }
             const delta = conv.calls.length - start;
             if (delta > 0) {
                 debug.push(`${id.substring(0, 8)}: bl=${baseline} pos=${lastRecorded} len=${conv.calls.length} → +${delta}`);
@@ -936,13 +988,53 @@ export class GMTracker {
                         continue;
                     }
                 }
-                // dedupKey = cascadeId:arrayIndex — guaranteed unique within the cache
-                entries.push({ call, dedupKey: `${id}:${i}` });
+                entries.push({ call, dedupKey: ledgerDedupKey(id, i, call) });
             }
-            // Update position to current call count
-            this._ledgerPositions.set(id, conv.calls.length);
         }
         return { entries, debug, revertedCascadeIds };
+    }
+
+    private _rememberLedgerCallIdentities(conversationId: string, calls: GMCallEntry[], submittedCount: number): void {
+        const limit = Math.min(submittedCount, calls.length);
+        if (limit <= 0) { return; }
+        const identities = this._ledgerCallIdentities.get(conversationId) || [];
+        let changed = false;
+        for (let i = 0; i < limit; i++) {
+            if (identities[i]) { continue; }
+            identities[i] = ledgerCallIdentity(calls[i]);
+            changed = true;
+        }
+        if (changed) {
+            this._ledgerCallIdentities.set(conversationId, identities);
+        }
+    }
+
+    /**
+     * Commit DailyLedger positions after recordCalls accepted a batch.
+     * Keeping extraction and commit separate prevents data loss when a stale
+     * ledger rejects new-day calls before archival has rolled over.
+     */
+    markLedgerEntriesRecorded(entries: LedgerCallEntry[]): void {
+        const maxPositionByConversation = new Map<string, number>();
+        for (const entry of entries) {
+            const parsed = parseLedgerDedupPosition(entry.dedupKey);
+            if (!parsed) { continue; }
+            const { conversationId, index } = parsed;
+            const identities = this._ledgerCallIdentities.get(conversationId) || [];
+            identities[index] = ledgerCallIdentity(entry.call);
+            this._ledgerCallIdentities.set(conversationId, identities);
+            const nextPosition = index + 1;
+            const existing = maxPositionByConversation.get(conversationId) || 0;
+            if (nextPosition > existing) {
+                maxPositionByConversation.set(conversationId, nextPosition);
+            }
+        }
+        for (const [conversationId, nextPosition] of maxPositionByConversation) {
+            const existing = this._ledgerPositions.get(conversationId) || 0;
+            if (nextPosition > existing) {
+                this._ledgerPositions.set(conversationId, nextPosition);
+            }
+        }
     }
 
     /**
@@ -1179,6 +1271,7 @@ export class GMTracker {
         this._exactArchivedAccountModels.clear();
         this._callAccountMap.clear();
         this._ledgerPositions.clear();
+        this._ledgerCallIdentities.clear();
         this._persistedToolCounts = {};
         this._persistedToolCountsByConv = {};
         this._persistedRecentErrors = [];
@@ -1207,6 +1300,7 @@ export class GMTracker {
         this._exactArchivedAccountModels.clear();
         this._callAccountMap.clear();
         this._ledgerPositions.clear();
+        this._ledgerCallIdentities.clear();
         this._persistedToolCounts = {};
         this._persistedToolCountsByConv = {};
         this._persistedRecentErrors = [];
@@ -1464,6 +1558,7 @@ export class GMTracker {
             persistedUniqueErrorsByAccount: Object.keys(this._persistedUniqueErrorsByAccount).length > 0 ? this._persistedUniqueErrorsByAccount : undefined,
             persistedToolCatalogByAccount: Object.keys(this._persistedToolCatalogByAccount).length > 0 ? this._persistedToolCatalogByAccount : undefined,
             ledgerPositions: this._ledgerPositions.size > 0 ? Object.fromEntries(this._ledgerPositions) : undefined,
+            ledgerCallIdentities: this._ledgerCallIdentities.size > 0 ? Object.fromEntries(this._ledgerCallIdentities) : undefined,
         };
     }
 
@@ -1599,6 +1694,13 @@ export class GMTracker {
             for (const [id, pos] of Object.entries(data.ledgerPositions)) {
                 if (typeof pos === 'number') {
                     tracker._ledgerPositions.set(id, pos);
+                }
+            }
+        }
+        if (data.ledgerCallIdentities && typeof data.ledgerCallIdentities === 'object') {
+            for (const [id, identities] of Object.entries(data.ledgerCallIdentities)) {
+                if (Array.isArray(identities)) {
+                    tracker._ledgerCallIdentities.set(id, identities.filter((item): item is string => typeof item === 'string'));
                 }
             }
         }

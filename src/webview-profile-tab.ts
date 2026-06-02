@@ -200,8 +200,6 @@ export function buildModelQuotaGrid(configs: ModelConfig[]): string {
             resetLabel = countdown ? `${countdown} · ${absolute}` : absolute;
         }
 
-        const limit = getContextLimit(c.model);
-
         // Tag badge (e.g. "New")
         const tagBadge = c.tagTitle
             ? `<span class="model-tag-badge">${esc(c.tagTitle)}</span>` : '';

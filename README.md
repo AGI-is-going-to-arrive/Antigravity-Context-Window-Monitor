@@ -140,10 +140,6 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
    ![Models Tab](src/images/model.png)
 
-   **Quota Tracking** — Real-time quota tracking with archived cycle history and reset time monitoring.
-
-   ![Quota Tracking Tab](src/images/额度追踪.png)
-
    **Calendar** — Historical usage data organized by date, with per-cycle cost and token breakdowns.
 
    ![Calendar Tab](src/images/日历_全部.png)

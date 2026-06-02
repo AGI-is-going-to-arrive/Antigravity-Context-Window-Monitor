@@ -26,6 +26,14 @@ function makeActivitySummary(): ActivitySummary {
     };
 }
 
+function localTime(y: number, month: number, d: number, h = 0, m = 0, s = 0, ms = 0): Date {
+    return new Date(y, month - 1, d, h, m, s, ms);
+}
+
+function localIso(y: number, month: number, d: number, h = 0, m = 0, s = 0, ms = 0): string {
+    return localTime(y, month, d, h, m, s, ms).toISOString();
+}
+
 function makeCall(createdAt: string, executionId: string, model = 'MODEL_PLACEHOLDER_M26'): GMCallEntry {
     const modelDisplay = model === 'MODEL_PLACEHOLDER_M16'
         ? 'Gemini 3.1 Pro (High)'
@@ -171,12 +179,12 @@ describe('daily archival time simulation', () => {
     });
 
     it('does not archive again before the local date changes', () => {
-        vi.setSystemTime(new Date('2026-06-01T23:55:00+08:00'));
+        vi.setSystemTime(localTime(2026, 6, 1, 23, 55));
         const { ctx, dailyStore, persisted, resetFlags } = buildContext({
             lastArchivalDateKey: '2026-06-01',
         });
 
-        const result = performDailyArchival(ctx, false, new Date('2026-06-01T23:55:00+08:00'));
+        const result = performDailyArchival(ctx, false, localTime(2026, 6, 1, 23, 55));
 
         expect(result.archived).toBe(false);
         expect(result.sameDay).toBe(true);
@@ -187,14 +195,14 @@ describe('daily archival time simulation', () => {
     });
 
     it('archives both active and settled ledger data when the clock crosses midnight', () => {
-        vi.setSystemTime(new Date('2026-06-01T23:58:00+08:00'));
+        vi.setSystemTime(localTime(2026, 6, 1, 23, 58));
         const ledger = new DailyLedger('2026-06-01');
 
         const activeAdded = ledger.recordCalls([
-            { call: makeCall('2026-06-01T10:00:00.000+08:00', 'active-1'), dedupKey: 'conv-a:0' },
+            { call: makeCall(localIso(2026, 6, 1, 10), 'active-1'), dedupKey: 'conv-a:0' },
         ]);
         const settledSourceAdded = ledger.recordCalls([
-            { call: makeCall('2026-06-01T11:00:00.000+08:00', 'settled-1', 'MODEL_PLACEHOLDER_M16'), dedupKey: 'conv-b:0' },
+            { call: makeCall(localIso(2026, 6, 1, 11), 'settled-1', 'MODEL_PLACEHOLDER_M16'), dedupKey: 'conv-b:0' },
         ]);
         const settled = ledger.settleForQuotaReset(['MODEL_PLACEHOLDER_M16'], 'user@example.com');
 
@@ -202,13 +210,13 @@ describe('daily archival time simulation', () => {
         expect(settledSourceAdded).toBe(1);
         expect(settled?.totalCalls).toBe(1);
 
-        vi.setSystemTime(new Date('2026-06-02T00:05:00+08:00'));
+        vi.setSystemTime(localTime(2026, 6, 2, 0, 5));
         const { ctx, dailyStore, persisted, resetFlags } = buildContext({
             lastArchivalDateKey: '2026-06-01',
             dailyLedger: ledger,
         });
 
-        const result = performDailyArchival(ctx, false, new Date('2026-06-02T00:05:00+08:00'));
+        const result = performDailyArchival(ctx, false, localTime(2026, 6, 2, 0, 5));
 
         expect(result.archived).toBe(true);
         expect(result.archiveDateKey).toBe('2026-06-01');
@@ -231,21 +239,21 @@ describe('daily archival time simulation', () => {
     });
 
     it('treats a stale startup ledger as the previous day and rolls it into the calendar immediately', () => {
-        vi.setSystemTime(new Date('2026-06-01T21:35:00+08:00'));
+        vi.setSystemTime(localTime(2026, 6, 1, 21, 35));
         const ledger = new DailyLedger('2026-06-01');
         const added = ledger.recordCalls([
-            { call: makeCall('2026-06-01T21:30:00.000+08:00', 'startup-stale-1'), dedupKey: 'conv-startup:0' },
+            { call: makeCall(localIso(2026, 6, 1, 21, 30), 'startup-stale-1'), dedupKey: 'conv-startup:0' },
         ]);
         expect(added).toBe(1);
 
-        vi.setSystemTime(new Date('2026-06-02T08:00:00+08:00'));
+        vi.setSystemTime(localTime(2026, 6, 2, 8));
 
         const { ctx, dailyStore, persisted } = buildContext({
             lastArchivalDateKey: '2026-06-01',
             dailyLedger: ledger,
         });
 
-        const result = performDailyArchival(ctx, false, new Date('2026-06-02T08:00:00+08:00'));
+        const result = performDailyArchival(ctx, false, localTime(2026, 6, 2, 8));
 
         expect(result.archived).toBe(true);
         expect(result.archiveDateKey).toBe('2026-06-01');
@@ -255,7 +263,7 @@ describe('daily archival time simulation', () => {
     });
 
     it('still supports the legacy GM-only fallback when the daily ledger is empty', () => {
-        vi.setSystemTime(new Date('2026-06-02T00:10:00+08:00'));
+        vi.setSystemTime(localTime(2026, 6, 2, 0, 10));
         const lastGMSummary = {
             ...makeEmptySummary(),
             totalCalls: 3,
@@ -304,7 +312,7 @@ describe('daily archival time simulation', () => {
             } as any,
         });
 
-        const result = performDailyArchival(ctx, false, new Date('2026-06-02T00:10:00+08:00'));
+        const result = performDailyArchival(ctx, false, localTime(2026, 6, 2, 0, 10));
 
         expect(result.archived).toBe(true);
         expect(dailyStore.getRecord('2026-06-01')?.cycles[0].gmTotalCalls).toBe(3);

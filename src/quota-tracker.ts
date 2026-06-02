@@ -102,7 +102,7 @@ export class QuotaTracker {
     private enabled: boolean = true;
     private context: vscode.ExtensionContext;
     private state: StateBucket;
-    private _onQuotaReset?: (modelIds: string[]) => void;
+    private _onQuotaReset?: (modelIds: string[], cutoffTime?: string) => void;
 
     constructor(context: vscode.ExtensionContext, state?: StateBucket) {
         this.context = context;
@@ -111,7 +111,7 @@ export class QuotaTracker {
     }
 
     /** Register a callback that fires when model quota resets. Called once per processUpdate batch with all reset modelIds. */
-    set onQuotaReset(fn: (modelIds: string[]) => void) { this._onQuotaReset = fn; }
+    set onQuotaReset(fn: (modelIds: string[], cutoffTime?: string) => void) { this._onQuotaReset = fn; }
 
     /** Process a batch of model configs (called on each status refresh).
      *  @param usedModelIds — model IDs with confirmed LLM calls in this cycle (from GMTracker).
@@ -123,6 +123,7 @@ export class QuotaTracker {
         const now = nowDate.toISOString();
         const nowMs = nowDate.getTime();
         const resetModels: string[] = [];
+        const resetCutoffTimes: string[] = [];
 
         // Only sanitize states belonging to the current account
         for (const [stateKey, ms] of this.modelStates.entries()) {
@@ -338,6 +339,9 @@ export class QuotaTracker {
                             ms.knownWindowMs = nextWindowMs;
                         }
                         resetModels.push(modelId);
+                        if (endTimeStr) {
+                            resetCutoffTimes.push(endTimeStr);
+                        }
                         break;
                     }
 
@@ -371,7 +375,8 @@ export class QuotaTracker {
 
         // Fire callback once with all models that reset in this batch
         if (resetModels.length > 0 && this._onQuotaReset) {
-            this._onQuotaReset(resetModels);
+            resetCutoffTimes.sort();
+            this._onQuotaReset(resetModels, resetCutoffTimes[0]);
         }
         this.persist();
     }

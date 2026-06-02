@@ -571,6 +571,37 @@ export function getGMDataTabStyles(): string {
         color: rgb(165,180,252) !important;
     }
 
+    /* ── Light theme overrides for Ledger & Settled panels ── */
+    body.vscode-light .today-ledger-header {
+        color: rgb(13,148,136) !important;
+    }
+    body.vscode-light .ledger-model-chip b {
+        color: rgb(13,148,136) !important;
+    }
+    body.vscode-light .ledger-reset-time {
+        border-left: 1px solid var(--color-border);
+        color: var(--color-text-dim);
+    }
+    body.vscode-light .ledger-acct-card {
+        background: rgba(0,0,0,0.02);
+        border: 1px solid var(--color-border);
+    }
+    body.vscode-light .ledger-acct-cached {
+        background: var(--color-text-dim);
+    }
+    body.vscode-light .ledger-acct-name {
+        color: var(--color-text);
+    }
+    body.vscode-light .ledger-acct-email {
+        color: var(--color-text-dim);
+    }
+    body.vscode-light .settled-header {
+        color: rgb(79,70,229) !important;
+    }
+    body.vscode-light .settled-model-chip b {
+        color: rgb(79,70,229) !important;
+    }
+
     /* ─── Activity Tab: Summary Bar (chip strip layout) ─── */
     .act-summary-bar {
         display: flex;

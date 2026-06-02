@@ -334,6 +334,8 @@ export interface GMTrackerState {
     persistedToolCatalogByAccount?: Record<string, Record<string, { firstSeen: string; description?: string }>>;
     /** Per-conversation call position already submitted to DailyLedger (added v1.18.0) */
     ledgerPositions?: Record<string, number>;
+    /** Per-conversation submitted call identities by calls[] index (added v1.18.1) */
+    ledgerCallIdentities?: Record<string, string[]>;
 }
 
 // ─── Clone Utilities ─────────────────────────────────────────────────────────

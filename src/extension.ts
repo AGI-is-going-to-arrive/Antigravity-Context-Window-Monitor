@@ -692,10 +692,12 @@ function updateAccountSnapshot(
             }
             if (!oldResetTime) { continue; }
             if (!shouldSettleOnResetTimeChange(oldResetTime, newPool.resetTime, nowMs)) { continue; }
-            if (dailyLedger.isPoolSettled(newPool.modelIds, email)) { continue; }
+            const oldResetMs = Date.parse(oldResetTime);
+            const cutoffTime = Number.isNaN(oldResetMs) ? undefined : oldResetMs;
+            if (dailyLedger.isPoolSettled(newPool.modelIds, email, cutoffTime)) { continue; }
             // Settle both DailyLedger and GMTracker using oldResetTime as cutoff
             const baselinedCount = gmTracker.baselineForQuotaReset(email, newPool.modelIds, oldResetTime);
-            const settled = dailyLedger.settleForQuotaReset(newPool.modelIds, email);
+            const settled = dailyLedger.settleForQuotaReset(newPool.modelIds, email, cutoffTime);
             if (baselinedCount > 0 || settled) {
                 log(`[DailyLedger] cycle-change settlement: ${baselinedCount} GM calls baselined, ${settled ? settled.totalCalls : 0} ledger calls settled for [${newPool.labels.slice(0, 3).join(', ')}] (${email}) — resetTime changed ${oldResetTime} → ${newPool.resetTime}`);
                 lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
@@ -938,7 +940,8 @@ function baselineExpiredPoolsForAccount(email: string): void {
         // ── Baseline GM calls for the expired pool ──
         const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelIds || pool.modelLabels, pool.resetTime);
         // ── Settle in DailyLedger too ──
-        const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, email);
+        const cutoffTime = Number.isNaN(resetDate.getTime()) ? undefined : resetDate.getTime();
+        const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, email, cutoffTime);
         if (baselinedCount > 0 || settled) {
             log(`Account switch baseline: ${email} — ${baselinedCount} GM calls baselined for pool [${pool.modelLabels.slice(0, 3).join(', ')}]`);
             if (settled) {
@@ -1024,15 +1027,17 @@ export function activate(context: vscode.ExtensionContext): void {
     quotaTracker = new QuotaTracker(context, durableGlobalState);
     // The UI toggle is gone, but quota cycle detection still feeds GM repair and daily settlement.
     quotaTracker.setEnabled(true);
-    quotaTracker.onQuotaReset = (modelIds: string[]) => {
+    quotaTracker.onQuotaReset = (modelIds: string[], cutoffTime?: string) => {
         // ── Baseline current account's GM calls for the reset pool ──
         const expandedIds = expandModelIdsToPool(modelIds, cachedModelConfigs);
-        const baselinedCount = gmTracker.baselineForQuotaReset(undefined, expandedIds);
+        const cutoffMs = cutoffTime ? Date.parse(cutoffTime) : NaN;
+        const ledgerCutoff = Number.isNaN(cutoffMs) ? undefined : cutoffMs;
+        const baselinedCount = gmTracker.baselineForQuotaReset(undefined, expandedIds, cutoffTime);
         log(`Quota reset detected: [${modelIds.join(', ')}] (expanded to [${expandedIds.join(', ')}]) — ${baselinedCount} GM calls baselined for new cycle`);
 
         // ── Settle this pool's data in DailyLedger ──
         // Moves matching model data from "active" to "settled" (pending midnight flush)
-        const settled = dailyLedger.settleForQuotaReset(expandedIds, currentAccountEmail);
+        const settled = dailyLedger.settleForQuotaReset(expandedIds, currentAccountEmail, ledgerCutoff);
         if (settled) {
             log(`DailyLedger settled: ${settled.totalCalls} calls for pool [${settled.poolModelLabels.join(', ')}]`);
             durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
@@ -1116,23 +1121,26 @@ export function activate(context: vscode.ExtensionContext): void {
 
         // --- Auto-detect old Antigravity DB ---
         if (!migrationDone) {
-            const { extractLegacyData } = require('./legacy-migration') as typeof import('./legacy-migration');
-            const legacyData = extractLegacyData(log);
-            if (legacyData) {
-                if (legacyData.dailyStoreState) {
-                    const added = dailyStore.mergeRecords(legacyData.dailyStoreState);
-                    log(`Legacy migration: merged ${added} calendar records`);
-                }
-                if (legacyData.displayLanguage && ['zh', 'en', 'both'].includes(legacyData.displayLanguage)) {
-                    setLanguageToState(legacyData.displayLanguage as any, durableGlobalState);
-                    context.globalState.update('displayLanguage', legacyData.displayLanguage);
-                    log(`Legacy migration: restored language to '${legacyData.displayLanguage}'`);
-                }
-            } else {
-                log('Legacy migration: no recoverable data found');
-            }
-            durableFileGlobalState.update('legacyMigrationDone', true);
-            log('Legacy migration: done');
+            const { extractLegacyData, runLegacyMigrationOnce } = require('./legacy-migration') as typeof import('./legacy-migration');
+            runLegacyMigrationOnce({
+                migrationDone,
+                extractLegacyData: () => extractLegacyData(log),
+                importLegacyData: (legacyData) => {
+                    if (legacyData.dailyStoreState) {
+                        const added = dailyStore.mergeRecords(legacyData.dailyStoreState);
+                        log(`Legacy migration: merged ${added} calendar records`);
+                    }
+                    if (legacyData.displayLanguage && ['zh', 'en', 'both'].includes(legacyData.displayLanguage)) {
+                        setLanguageToState(legacyData.displayLanguage as any, durableGlobalState);
+                        context.globalState.update('displayLanguage', legacyData.displayLanguage);
+                        log(`Legacy migration: restored language to '${legacyData.displayLanguage}'`);
+                    }
+                },
+                markDone: () => {
+                    durableFileGlobalState.update('legacyMigrationDone', true);
+                },
+                log,
+            });
         } else {
             log('Legacy migration: data OK, no migration needed');
         }
@@ -1898,6 +1906,11 @@ async function pollContextUsage(): Promise<void> {
                         const added = dailyLedger.recordCalls(newEntries);
                         log(`[DailyLedger] extracted=${newEntries.length} added=${added} dedup_rejected=${newEntries.length - added}`);
                         for (const d of ledgerDebug) { log(`[DailyLedger]   ${d}`); }
+                        if (added === newEntries.length) {
+                            gmTracker.markLedgerEntriesRecorded(newEntries);
+                        } else {
+                            log('[DailyLedger] ledger positions retained for retry because not all entries were accepted');
+                        }
                         if (added > 0) {
                             durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
                         }
@@ -1924,9 +1937,9 @@ async function pollContextUsage(): Promise<void> {
                             // so also check if ledger has actual recorded calls for this pool
                             if (pool.hasUsage === false
                                 && !dailyLedger.hasActiveCallsForPool(pool.modelIds, snap.email)) { continue; }
-                            if (dailyLedger.isPoolSettled(pool.modelIds, snap.email)) { continue; }
+                            if (dailyLedger.isPoolSettled(pool.modelIds, snap.email, resetMs)) { continue; }
                             // Settle!
-                            const settled = dailyLedger.settleForQuotaReset(pool.modelIds, snap.email);
+                            const settled = dailyLedger.settleForQuotaReset(pool.modelIds, snap.email, resetMs);
                             if (settled) {
                                 log(`[DailyLedger] proactive settlement: ${settled.totalCalls} calls for [${settled.poolModelLabels.join(', ')}] (${snap.email})`);
                                 durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
@@ -2176,7 +2189,8 @@ function checkCachedAccountResets(): void {
             // never receives API configs for non-active accounts.
             const archivedSessions = quotaTracker.archiveExpiredSessions(snap.email, pool.modelIds || pool.modelLabels);
             // ── Settle this pool in DailyLedger ──
-            const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, snap.email);
+            const cutoffTime = Number.isNaN(resetDate.getTime()) ? undefined : resetDate.getTime();
+            const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, snap.email, cutoffTime);
             if (baselinedCount > 0 || archivedSessions > 0 || settled) {
                 log(`[ResetCheck]   ${baselinedCount} GM calls baselined, ${archivedSessions} quota sessions archived`);
                 if (settled) {
