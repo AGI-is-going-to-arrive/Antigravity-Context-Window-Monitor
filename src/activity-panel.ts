@@ -7,11 +7,22 @@ import { tBi } from './i18n';
 import { ActivitySummary, ActivityArchive, ModelActivityStats, CheckpointSnapshot, ConversationBreakdown } from './activity-tracker';
 import { esc, formatShortTime as formatTime } from './webview-helpers';
 import type { ContextUsage } from './tracker';
-import type { GMSummary, GMModelStats, GMConversationData, GMSystemContextItem, TokenBreakdownGroup, PendingArchiveEntry, UniqueErrorEntry, RecentErrorEntry } from './gm-tracker';
+import type { GMSummary, GMModelStats, GMConversationData, GMSystemContextItem, TokenBreakdownGroup, UniqueErrorEntry, RecentErrorEntry } from './gm-tracker';
 import { normalizeModelDisplayName } from './models';
 import { findPricing } from './pricing-store';
+import { toLocalDateKey, type LedgerAccountBucket, type LedgerSettledEntry } from './daily-ledger';
 import { formatResetCountdown, formatResetAbsolute, parseResetDate } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
+
+function dateKeyToStartOfDayMs(dateKey: string): number {
+    const parts = dateKey.split('-');
+    if (parts.length !== 3) { return 0; }
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    if (isNaN(y) || isNaN(m) || isNaN(d)) { return 0; }
+    return new Date(y, m, d, 0, 0, 0, 0).getTime();
+}
 
 // ─── Account Snapshot Type ───────────────────────────────────────────────────
 
@@ -21,6 +32,8 @@ export interface ResetPool {
     resetTime: string;
     /** Model labels in this pool (e.g. ["Claude 3.5 Sonnet", "GPT-4o"]) */
     modelLabels: string[];
+    /** Model IDs in this pool (for stable language-independent matching) */
+    modelIds: string[];
     /** Whether at least one model in this pool has consumed quota (remainingFraction < 1.0) */
     hasUsage?: boolean;
     /** Minimum remaining quota percentage across all models in this pool (0–100). undefined = unknown */
@@ -63,7 +76,8 @@ export function buildGMDataTabContent(
     gmSummary: GMSummary | null,
     currentUsage?: ContextUsage | null,
     accountSnapshots?: AccountSnapshot[],
-    pendingArchives?: PendingArchiveEntry[],
+    todayLedgerActive?: LedgerAccountBucket[],
+    ledgerSettled?: LedgerSettledEntry[],
 ): string {
     if (!summary && (!gmSummary || gmSummary.totalCalls === 0)) {
         return `<p class="empty-msg">${tBi(
@@ -84,9 +98,12 @@ export function buildGMDataTabContent(
     const activeEmail = accountSnapshots?.find(s => s.isActive)?.email || '';
     parts.push(buildModelCards(summary, gmSummary, activeEmail));
 
-    // ── Pending Archive Panel (moved below model stats total row)
-    if (pendingArchives && pendingArchives.length > 0) {
-        parts.push(buildPendingArchivePanel(pendingArchives));
+    // ── Today's Ledger Panel (real-time incremental accumulation)
+    if (todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) {
+        parts.push(buildTodayLedgerPanel(todayLedgerActive, accountSnapshots || []));
+    }
+    if (ledgerSettled && ledgerSettled.length > 0) {
+        parts.push(buildLedgerSettledPanel(ledgerSettled));
     }
 
     // ── Tool Call Ranking (from GM messagePrompts SYSTEM toolCalls)
@@ -464,6 +481,94 @@ export function getGMDataTabStyles(): string {
         color: var(--color-text-dim);
         opacity: 0.7;
         font-style: italic;
+    }
+
+    /* ── Today Ledger Panel (teal/cyan theme) ── */
+    .today-ledger-panel {
+        border-color: rgba(20,184,166,0.25);
+        background: linear-gradient(135deg, rgba(20,184,166,0.04) 0%, rgba(6,182,212,0.02) 100%);
+    }
+    .today-ledger-header {
+        color: rgb(45,212,191) !important;
+    }
+    .ledger-model-chip {
+        background: rgba(20,184,166,0.08) !important;
+        border-color: rgba(20,184,166,0.2) !important;
+    }
+    .ledger-model-chip b {
+        color: rgb(45,212,191) !important;
+    }
+    .ledger-reset-time {
+        font-size: 0.78em;
+        opacity: 0.7;
+        margin-left: 4px;
+        padding-left: 5px;
+        border-left: 1px solid rgba(255,255,255,0.15);
+        color: rgba(255,255,255,0.55);
+    }
+
+    /* ── Per-account cards in Today's Ledger ── */
+    .ledger-acct-cards {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 0 12px 8px;
+    }
+    .ledger-acct-card {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 6px;
+        padding: 8px 10px;
+    }
+    .ledger-acct-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 6px;
+        font-size: 0.88em;
+    }
+    .ledger-acct-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+    .ledger-acct-active {
+        background: rgb(34,197,94);
+        box-shadow: 0 0 4px rgba(34,197,94,0.5);
+    }
+    .ledger-acct-cached {
+        background: rgba(255,255,255,0.25);
+    }
+    .ledger-acct-name {
+        font-weight: 600;
+        color: rgba(255,255,255,0.9);
+    }
+    .ledger-acct-email {
+        color: rgba(255,255,255,0.35);
+        font-size: 0.85em;
+    }
+    .ledger-acct-stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        margin-bottom: 6px;
+    }
+
+    /* ── Settled Panel (indigo/purple theme) ── */
+    .settled-panel {
+        border-color: rgba(129,140,248,0.25);
+        background: linear-gradient(135deg, rgba(129,140,248,0.04) 0%, rgba(167,139,250,0.02) 100%);
+    }
+    .settled-header {
+        color: rgb(165,180,252) !important;
+    }
+    .settled-model-chip {
+        background: rgba(129,140,248,0.08) !important;
+        border-color: rgba(129,140,248,0.2) !important;
+    }
+    .settled-model-chip b {
+        color: rgb(165,180,252) !important;
     }
 
     /* ─── Activity Tab: Summary Bar (chip strip layout) ─── */
@@ -1325,92 +1430,6 @@ export function getGMDataTabStyles(): string {
         background: var(--color-surface-dim);
         border-color: var(--color-border);
     }
-    /* ── Model Stats Summary Row ── */
-    .model-stats-total {
-        display: flex;
-        align-items: center;
-        gap: 0;
-        padding: 6px 12px;
-        margin-top: var(--space-3);
-        font-size: 0.8em;
-        color: var(--color-text-dim);
-        background: rgba(96,165,250,0.04);
-        border: 1px solid var(--color-info-border-dim);
-        border-radius: var(--radius-md);
-    }
-    .model-stats-total .mst-icon {
-        width: 14px; height: 14px;
-        flex-shrink: 0;
-        margin-right: 6px;
-        opacity: 0.5;
-    }
-    .model-stats-total .mst-label {
-        font-weight: 600;
-        color: var(--color-info-strong);
-        margin-right: 8px;
-        letter-spacing: 0.3px;
-    }
-    .model-stats-total .mst-items {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        flex-wrap: wrap;
-        margin-left: auto;
-    }
-    .model-stats-total .mst-item {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        white-space: nowrap;
-        padding: 2px 8px;
-        background: var(--color-surface-dim);
-        border: 1px solid var(--color-neutral-border);
-        border-radius: var(--radius-sm);
-        transition: border-color 0.15s ease;
-    }
-    @media (hover: hover) {
-        .model-stats-total .mst-item:hover {
-            border-color: rgba(96,165,250,0.3);
-            background: rgba(96,165,250,0.06);
-        }
-    }
-    .model-stats-total .mst-val {
-        font-weight: 600;
-        color: var(--color-text);
-        font-variant-numeric: tabular-nums;
-    }
-    body.vscode-light .model-stats-total {
-        background: rgba(37,99,235,0.04);
-        border-color: rgba(37,99,235,0.12);
-    }
-    body.vscode-light .model-stats-total .mst-label {
-        color: rgba(37,99,235,0.7);
-    }
-    body.vscode-light .model-stats-total .mst-item {
-        background: rgba(0,0,0,0.02);
-        border-color: rgba(0,0,0,0.08);
-    }
-    @media (hover: hover) {
-        body.vscode-light .model-stats-total .mst-item:hover {
-            border-color: rgba(37,99,235,0.3);
-            background: rgba(37,99,235,0.06);
-        }
-    }
-    .model-stats-total .mst-item-cost {
-        border-color: rgba(74,222,128,0.25);
-        background: rgba(74,222,128,0.06);
-    }
-    .model-stats-total .mst-item-cost .mst-val {
-        color: rgba(74,222,128,0.9);
-    }
-    body.vscode-light .model-stats-total .mst-item-cost {
-        border-color: rgba(22,163,74,0.2);
-        background: rgba(22,163,74,0.04);
-    }
-    body.vscode-light .model-stats-total .mst-item-cost .mst-val {
-        color: rgba(22,163,74,0.85);
-    }
-
     /* ─── Retry Overhead ─── */
     .act-stat-warn { border-color: var(--color-danger-border-strong); }
     @media (hover: hover) {
@@ -2248,6 +2267,8 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
 
 function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, activeEmail = ''): string {
     const actEntries = s ? Object.entries(s.modelStats).sort((a, b) => b[1].totalSteps - a[1].totalSteps) : [];
+    const gmBreakEarly: Record<string, GMModelStats> | null = gm?.modelBreakdown ?? null;
+    if (!gmBreakEarly || Object.keys(gmBreakEarly).length === 0) { return ''; }
     // Collect model names that exist only in GM data (not in Activity)
     const actNames = new Set(actEntries.map(([n]) => n));
     const gmOnlyEntries: [string, GMModelStats][] = [];
@@ -2259,9 +2280,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
         }
         gmOnlyEntries.sort((a, b) => b[1].stepsCovered - a[1].stepsCovered);
     }
-    // Prefer full GMSummary.modelBreakdown (has responseModel/provider/streaming)
-    // Fall back to ActivitySummary.gmModelBreakdown (simpler subset)
-    const gmBreakEarly: Record<string, GMModelStats> | null = gm?.modelBreakdown ?? s?.gmModelBreakdown ?? null;
     // Filter: only show models that have GM data — Step API step counts are outdated/unreliable
     const entries = gmBreakEarly
         ? actEntries.filter(([name]) => {
@@ -2289,31 +2307,18 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
     const accountCallsByModel = new Map<string, Map<string, number>>();
     // Map<modelDisplayName, Map<accountEmail, errorCount>>
     const accountErrorsByModel = new Map<string, Map<string, number>>();
-    let allAccountTotalCalls = 0;
-    let allAccountTotalIn = 0;
-    let allAccountTotalOut = 0;
-    let allAccountTotalCache = 0;
-    let allAccountTotalCost = 0;
     let hasAnyAccountErrors = false;
     if (gm) {
+        const todayKey = toLocalDateKey();
+        const dayStartMs = dateKeyToStartOfDayMs(todayKey);
+
         for (const conv of gm.conversations) {
             for (const call of conv.calls) {
-                // Accumulate cross-account totals from raw calls
-                allAccountTotalCalls++;
-                allAccountTotalIn += call.inputTokens || 0;
-                allAccountTotalOut += call.outputTokens || 0;
-                allAccountTotalCache += call.cacheReadTokens || 0;
-                // Per-call cost for cross-account active total
-                {
-                    const pr = findPricing(call.responseModel) || findPricing(call.modelDisplay || call.model);
-                    if (pr) {
-                        const respOut = Math.max(0, (call.outputTokens || 0) - (call.thinkingTokens || 0));
-                        allAccountTotalCost += (
-                            (call.inputTokens || 0) * pr.input +
-                            respOut * pr.output +
-                            (call.cacheReadTokens || 0) * pr.cacheRead +
-                            (call.thinkingTokens || 0) * pr.thinking
-                        ) / 1_000_000;
+                // Prevent history data pollution in model stats card
+                if (dayStartMs > 0 && call.createdAt) {
+                    const callMs = Date.parse(call.createdAt);
+                    if (!isNaN(callMs) && callMs < dayStartMs) {
+                        continue;
                     }
                 }
 
@@ -2448,25 +2453,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
         </div>`;
     }
     html += `</div>`;
-
-    // ── Totals summary row below cards grid (uses cross-account totals) ──
-    if (allAccountTotalCalls > 0) {
-        const totalModels = accountCallsByModel.size;
-        const sigmaSvg = `<svg class="mst-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 4 8 4 14 12 8 20 18 20"/></svg>`;
-        const items: string[] = [];
-        items.push(`<span class="mst-item"><span class="mst-val">${allAccountTotalCalls}</span> ${tBi('calls', '调用')}</span>`);
-        items.push(`<span class="mst-item"><span class="mst-val">${totalModels}</span> ${tBi('models', '模型')}</span>`);
-        items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalIn)}</span> ${tBi('in', '输入')}</span>`);
-        items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalOut)}</span> ${tBi('out', '输出')}</span>`);
-        if (allAccountTotalCache > 0) {
-            items.push(`<span class="mst-item"><span class="mst-val">${fmt(allAccountTotalCache)}</span> ${tBi('cache', '缓存')}</span>`);
-        }
-        if (allAccountTotalCost > 0) {
-            const costStr = allAccountTotalCost < 0.01 ? allAccountTotalCost.toFixed(4) : allAccountTotalCost < 1 ? allAccountTotalCost.toFixed(3) : allAccountTotalCost.toFixed(2);
-            items.push(`<span class="mst-item mst-item-cost"><span class="mst-val">$${costStr}</span> ${tBi('cost', '费用')}</span>`);
-        }
-        html += `<div class="model-stats-total">${sigmaSvg}<span class="mst-label">${tBi('Total', '合计')}</span><span class="mst-items">${items.join('')}</span></div>`;
-    }
 
     return html;
 }
@@ -3302,7 +3288,7 @@ function buildContextIntelViewer(s: GMSummary): string {
                 ${iconHtml}
                 ${cpBadge}
                 <span style="font-weight:600;color:var(--ci-color)">${conf.label}</span>
-                ${item.stepIndex >= 0 ? `<span class="cp-card-chip cp-card-chip-step">step ${item.stepIndex.toLocaleString()}</span>` : ''}
+                ${(item.stepIndex >= 0 && item.stepIndex < 100000) ? `<span class="cp-card-chip cp-card-chip-step">step ${item.stepIndex.toLocaleString()}</span>` : ''}
                 ${item.tokens > 0 ? `<span class="cp-card-chip cp-card-chip-tok">${fmt(item.tokens)} tok</span>` : ''}
             </summary>
             <div class="cp-card-body">${bodyHtml}</div>
@@ -3515,36 +3501,138 @@ function getPlanClass(planName: string): string {
     return 'acct-plan-free';
 }
 
-function buildPendingArchivePanel(entries: PendingArchiveEntry[]): string {
+
+function buildTodayLedgerPanel(buckets: LedgerAccountBucket[], snapshots: AccountSnapshot[] = []): string {
+    const activeBuckets = buckets.filter(b => b.totalCalls > 0);
+    if (activeBuckets.length === 0) { return ''; }
+
+    let totalCalls = 0, totalIn = 0, totalOut = 0, totalCache = 0, totalCredits = 0, totalCost = 0;
+    for (const b of activeBuckets) {
+        totalCalls += b.totalCalls;
+        totalIn += b.totalInputTokens;
+        totalOut += b.totalOutputTokens;
+        totalCache += b.totalCacheRead;
+        totalCredits += b.totalCredits;
+        totalCost += b.totalEstimatedCost;
+    }
+
+    const formatK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+    const fmtReset = (iso: string): string => {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) { return ''; }
+        const diffMs = d.getTime() - Date.now();
+        if (diffMs <= 0) { return tBi('expired', '\u5df2\u8fc7\u671f'); }
+        const h = Math.floor(diffMs / 3600000);
+        const m = Math.floor((diffMs % 3600000) / 60000);
+        return h > 0 ? `${h}h${m}m` : `${m}m`;
+    };
+
+    const snapshotMap = new Map<string, AccountSnapshot>();
+    for (const s of snapshots) { snapshotMap.set(s.email, s); }
+
+    const accountCards = activeBuckets.map(bucket => {
+        const snap = snapshotMap.get(bucket.accountEmail);
+        const displayName = snap?.name || bucket.accountEmail || tBi('Unknown', '\u672a\u77e5');
+        const emailShort = bucket.accountEmail ? bucket.accountEmail.split('@')[0] : '';
+        const isActive = snap?.isActive ?? false;
+        const statusDot = isActive
+            ? '<span class="ledger-acct-dot ledger-acct-active"></span>'
+            : '<span class="ledger-acct-dot ledger-acct-cached"></span>';
+
+        // Build model-reset lookup for THIS account
+        const resetPools = snap?.resetPools || [];
+        const modelResetMap = new Map<string, string>();
+        for (const pool of resetPools) {
+            if (!pool.resetTime) { continue; }
+            for (const mid of (pool.modelIds || [])) {
+                modelResetMap.set(normalizeModelDisplayName(mid), pool.resetTime);
+            }
+            for (const label of (pool.modelLabels || [])) {
+                modelResetMap.set(normalizeModelDisplayName(label), pool.resetTime);
+            }
+        }
+
+        const modelChips = Object.entries(bucket.modelStats)
+            .sort((a, b) => b[1].calls - a[1].calls)
+            .map(([model, ms]) => {
+                const resetIso = modelResetMap.get(model);
+                const resetTag = resetIso
+                    ? ` <span class="ledger-reset-time" title="${esc(resetIso)}">${fmtReset(resetIso)}</span>`
+                    : '';
+                return `<span class="pending-model-chip ledger-model-chip">${esc(normalizeModelDisplayName(model))} <b>${ms.calls}</b>${resetTag}</span>`;
+            }).join('');
+
+        return `<div class="ledger-acct-card">
+            <div class="ledger-acct-header">
+                ${statusDot}
+                <span class="ledger-acct-name">${esc(displayName)}</span>
+                ${emailShort ? `<span class="ledger-acct-email">${esc(emailShort)}</span>` : ''}
+            </div>
+            <div class="ledger-acct-stats">
+                <span class="pending-stat">${tBi('Calls', '\u8c03\u7528')} <b>${bucket.totalCalls}</b></span>
+                <span class="pending-stat">${tBi('Input', '\u8f93\u5165')} <b>${formatK(bucket.totalInputTokens)}</b></span>
+                <span class="pending-stat">${tBi('Output', '\u8f93\u51fa')} <b>${formatK(bucket.totalOutputTokens)}</b></span>
+                ${bucket.totalCacheRead > 0 ? `<span class="pending-stat">${tBi('Cache', '\u7f13\u5b58')} <b>${formatK(bucket.totalCacheRead)}</b></span>` : ''}
+                ${bucket.totalCredits > 0 ? `<span class="pending-stat">${tBi('Credits', '\u79ef\u5206')} <b>${bucket.totalCredits}</b></span>` : ''}
+                ${bucket.totalEstimatedCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBi('Cost', '\u8d39\u7528')} <b>$${bucket.totalEstimatedCost < 0.01 ? bucket.totalEstimatedCost.toFixed(4) : bucket.totalEstimatedCost < 1 ? bucket.totalEstimatedCost.toFixed(3) : bucket.totalEstimatedCost.toFixed(2)}</b></span>` : ''}
+            </div>
+            <div class="pending-archive-models">${modelChips}</div>
+        </div>`;
+    }).join('');
+
+    const ledgerIcon = `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1 2.828c.885-.37 2.154-.769 3.388-.893 1.33-.134 2.458.063 3.112.752v9.746c-.935-.53-2.12-.603-3.213-.493-1.18.12-2.37.461-3.287.811V2.828zm7.5-.141c.654-.689 1.782-.886 3.112-.752 1.234.124 2.503.523 3.388.893v9.923c-.918-.35-2.107-.692-3.287-.81-1.094-.111-2.278-.039-3.213.492zM8 1.783C7.015.936 5.587.81 4.287.94c-1.514.153-3.042.672-3.994 1.105A.5.5 0 0 0 0 2.5v11a.5.5 0 0 0 .707.455c.882-.4 2.303-.881 3.68-1.02 1.409-.142 2.59.087 3.223.877a.5.5 0 0 0 .78 0c.633-.79 1.814-1.019 3.222-.877 1.378.139 2.8.62 3.681 1.02A.5.5 0 0 0 16 13.5v-11a.5.5 0 0 0-.293-.455c-.952-.433-2.48-.952-3.994-1.105C10.413.809 8.985.936 8 1.783"/></svg>`;
+
+    const summaryStats = activeBuckets.length > 1 ? `<div class="pending-archive-stats">
+        <span class="pending-stat">${tBi('Total', '\u5408\u8ba1')} <b>${totalCalls}</b></span>
+        <span class="pending-stat">${tBi('Input', '\u8f93\u5165')} <b>${formatK(totalIn)}</b></span>
+        <span class="pending-stat">${tBi('Output', '\u8f93\u51fa')} <b>${formatK(totalOut)}</b></span>
+        ${totalCache > 0 ? `<span class="pending-stat">${tBi('Cache', '\u7f13\u5b58')} <b>${formatK(totalCache)}</b></span>` : ''}
+        ${totalCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBi('Cost', '\u8d39\u7528')} <b>$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost < 1 ? totalCost.toFixed(3) : totalCost.toFixed(2)}</b></span>` : ''}
+    </div>` : '';
+
+    return `<div class="pending-archive-panel today-ledger-panel">
+        <div class="pending-archive-header today-ledger-header">
+            ${ledgerIcon}
+            ${tBi("Today's Ledger", '\u4eca\u65e5\u7d2f\u8ba1')}
+            <span class="pending-archive-count">${activeBuckets.length} ${tBi('account(s)', '\u4e2a\u8d26\u53f7')}</span>
+        </div>
+        ${summaryStats}
+        <div class="ledger-acct-cards">${accountCards}</div>
+        <div class="pending-archive-note">${tBi(
+        'Real-time incremental recording. Data is preserved even if the IDE clears conversation history.',
+        '\u5b9e\u65f6\u589e\u91cf\u8bb0\u5f55\u3002\u5373\u4f7f IDE \u6e05\u9664\u5bf9\u8bdd\u5386\u53f2\uff0c\u6570\u636e\u4e5f\u4e0d\u4f1a\u4e22\u5931\u3002',
+    )}</div>
+    </div>`;
+}
+
+function buildLedgerSettledPanel(entries: LedgerSettledEntry[]): string {
     const totalCalls = entries.reduce((s, e) => s + e.totalCalls, 0);
     const totalIn = entries.reduce((s, e) => s + e.totalInputTokens, 0);
     const totalOut = entries.reduce((s, e) => s + e.totalOutputTokens, 0);
     const totalCache = entries.reduce((s, e) => s + (e.totalCacheRead || 0), 0);
     const totalCredits = entries.reduce((s, e) => s + e.totalCredits, 0);
+    const totalCost = entries.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0);
 
-    // Cost: pre-computed at baseline time using responseModel pricing
-    const totalCost = entries.reduce((s, e) => s + (e.estimatedCost || 0), 0);
-
-    // Aggregate per-model across all entries
     const allModels = new Map<string, number>();
     for (const e of entries) {
         for (const [m, c] of Object.entries(e.modelCalls)) {
             allModels.set(m, (allModels.get(m) || 0) + c);
         }
     }
+
     const modelChips = [...allModels.entries()]
         .sort((a, b) => b[1] - a[1])
-        .map(([model, count]) => `<span class="pending-model-chip">${esc(normalizeModelDisplayName(model))} <b>${count}</b></span>`)
+        .map(([model, count]) => `<span class="pending-model-chip settled-model-chip">${esc(normalizeModelDisplayName(model))} <b>${count}</b></span>`)
         .join('');
 
     const formatK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
 
-    const archiveIcon = `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M0 2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1v7.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 1 12.5V5a1 1 0 0 1-1-1zm2 3v7.5A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5zm13-3H1v2h14zM5 7.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5"/></svg>`;
+    const settledIcon = `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M10.97 4.97a.75.75 0 0 1 1.07 1.05l-3.99 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425z"/><path d="M0 2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1v7.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 1 12.5V5a1 1 0 0 1-1-1zm2 3v7.5A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5zm13-3H1v2h14z"/></svg>`;
 
-    return `<div class="pending-archive-panel">
-        <div class="pending-archive-header">
-            ${archiveIcon}
-            ${tBi('Pending Archive', '待归档')}
+    return `<div class="pending-archive-panel settled-panel">
+        <div class="pending-archive-header settled-header">
+            ${settledIcon}
+            ${tBi('Settled (Quota Reset)', '已结算 (额度重置)')}
             <span class="pending-archive-count">${entries.length} ${tBi('cycle(s)', '个周期')}</span>
         </div>
         <div class="pending-archive-stats">
@@ -3557,8 +3645,8 @@ function buildPendingArchivePanel(entries: PendingArchiveEntry[]): string {
         </div>
         <div class="pending-archive-models">${modelChips}</div>
         <div class="pending-archive-note">${tBi(
-        'These calls have been baselined after quota reset. They will be archived to the calendar at midnight.',
-        '这些调用已在额度重置后基线化，将于午夜归档到日历。',
+        'Settled by quota reset. Will be archived to the calendar at midnight.',
+        '已在额度重置后结算，将于午夜归档到日历。',
     )}</div>
     </div>`;
 }

@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { discoverLanguageServer, LSInfo } from './discovery';
 import {
@@ -14,9 +15,10 @@ import {
     TrajectorySummary,
     UserStatusInfo,
 } from './tracker';
-import { getQuotaPoolKey, setShowModelShortId, type ModelConfig } from './models';
+import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, type ModelConfig, updateModelSpec } from './models';
+import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit } from './statusbar';
-import { initI18n, initI18nFromState, showLanguagePicker, tBi } from './i18n';
+import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
 import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPRESSION_PERSIST_POLLS } from './constants';
@@ -34,6 +36,8 @@ import { mergeModelDNAState, PersistedModelDNA, restoreModelDNAState, serializeM
 import type { StorageDiagnostics } from './webview-settings-tab';
 import type { AccountSnapshot } from './activity-panel';
 import { isBillingDay, isBillingDaySetting } from './billing-day';
+import { expandModelIdsToPool } from './pool-utils';
+import { DailyLedger, toLocalDateKey, type DailyLedgerState } from './daily-ledger';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -59,6 +63,7 @@ let gmTracker: GMTracker;
 let lastGMSummary: GMSummary | null = null;
 let pricingStore: PricingStore;
 let dailyStore: DailyStore;
+let dailyLedger: DailyLedger;
 let monitorStore: MonitorStore;
 let durableState: DurableState;
 let durableGlobalState: StateBucket;
@@ -66,13 +71,6 @@ let durableWorkspaceState: StateBucket;
 let durableFileGlobalState: StateBucket;
 let durableFileWorkspaceState: StateBucket;
 let persistedModelDNA: Record<string, PersistedModelDNA> = {};
-type DevResetSnapshot = {
-    activityState: ActivityTrackerState;
-    gmTrackerState: GMTrackerState;
-    gmDetailedSummary: GMSummary | null;
-    dailyState: DailyStoreState;
-};
-let devResetSnapshot: DevResetSnapshot | null = null;
 
 // ─── Multi-Account Snapshot State ─────────────────────────────────────────────
 /** Map of email → AccountSnapshot, persisted across sessions. */
@@ -115,6 +113,8 @@ let firstPollDone = false;
 
 /** Prevents concurrent pollContextUsage() reentrance. */
 let isPolling = false;
+let hasSyncedCheckpointer = false;
+let isSyncingCheckpointer = false;
 
 /** Prevents schedulePoll() from creating new timers after deactivate. */
 // disposed declared at top of module
@@ -176,7 +176,7 @@ function rehydrateUsageForDisplay(
     usage: ContextUsage,
     customLimits?: Record<string, number>,
 ): ContextUsage {
-    const model = usage.model || usage.lastModelUsage?.model || '';
+    const model = usage.model || usage.lastModelUsage?.model || lastKnownModel || '';
     const modelDisplayName = normalizeModelDisplayName(model);
     const contextLimit = getContextLimit(model, customLimits);
     const usagePercent = contextLimit > 0 ? (usage.contextUsed / contextLimit) * 100 : 0;
@@ -197,22 +197,155 @@ function rehydrateUsageForDisplay(
     };
 }
 
-function hasGMSummaryChanged(prev: GMSummary | null | undefined, next: GMSummary | null | undefined): boolean {
+function hashText(text: string): string {
+    let hash = 5381;
+    for (let i = 0; i < text.length; i++) {
+        hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
+    }
+    return (hash >>> 0).toString(36);
+}
+
+function stableValueSignature(value: unknown): string {
+    if (Array.isArray(value)) {
+        return `[${value.map(stableValueSignature).join(',')}]`;
+    }
+    if (value && typeof value === 'object') {
+        return `{${stableRecordSignature(value as Record<string, unknown>)}}`;
+    }
+    if (typeof value === 'string') {
+        return hashText(value);
+    }
+    return String(value);
+}
+
+function stableRecordSignature(record: Record<string, unknown> | null | undefined): string {
+    if (!record) { return ''; }
+    return Object.entries(record)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, value]) => `${key}:${stableValueSignature(value)}`)
+        .join('|');
+}
+
+function buildGMModelStatsSignature(summary: GMSummary): string {
+    return Object.entries(summary.modelBreakdown)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([modelName, stats]) => {
+            const cfg = stats.completionConfig;
+            const cfgSig = cfg
+                ? `${cfg.maxTokens},${cfg.temperature},${cfg.firstTemperature},${cfg.topK},${cfg.topP},${cfg.numCompletions},${cfg.stopPatternCount}`
+                : '';
+            return [
+                modelName,
+                stats.callCount,
+                stats.stepsCovered,
+                stats.totalInputTokens,
+                stats.totalOutputTokens,
+                stats.totalThinkingTokens,
+                stats.totalCacheRead,
+                stats.totalCacheCreation,
+                stats.totalCredits,
+                stats.avgTTFT,
+                stats.minTTFT,
+                stats.maxTTFT,
+                stats.avgStreaming,
+                stats.cacheHitRate,
+                stats.responseModel,
+                stats.apiProvider,
+                stats.hasSystemPrompt ? 1 : 0,
+                stats.toolCount,
+                stats.promptSectionTitles.join(','),
+                stats.totalRetries,
+                stats.errorCount,
+                stats.creditCallCount,
+                stats.exactCallCount,
+                stats.placeholderOnlyCalls,
+                stats.contextWindowCapacity,
+                cfgSig,
+            ].join('~');
+        })
+        .join('||');
+}
+
+function buildGMConversationSignature(summary: GMSummary): string {
+    return [...summary.conversations]
+        .sort((a, b) => a.cascadeId.localeCompare(b.cascadeId))
+        .map(conversation => {
+            const latestCall = conversation.calls[conversation.calls.length - 1];
+            const totalConvCredits = conversation.calls.reduce((sum, call) => sum + call.credits, 0);
+            const callIds = conversation.calls
+                .map(call => call.executionId || `${call.model}:${call.createdAt}:${call.stepIndices.join(',')}`)
+                .join(',');
+            const checkpointSig = (conversation.checkpointSummaries || [])
+                .map(cp => `${cp.checkpointNumber}:${cp.stepIndex}:${cp.tokens}:${hashText(cp.fullText || '')}`)
+                .join(';');
+            const contextSig = (conversation.systemContextItems || [])
+                .map(item => `${item.type}:${item.stepIndex}:${item.tokens}:${item.label}:${hashText(item.fullText || '')}`)
+                .join(';');
+            return [
+                conversation.cascadeId,
+                conversation.title,
+                conversation.totalSteps,
+                conversation.coveredSteps,
+                conversation.coverageRate,
+                conversation.lifetimeCalls || 0,
+                conversation.accountCredits || 0,
+                conversation.calls.length,
+                totalConvCredits,
+                latestCall?.createdAt || '',
+                latestCall?.responseModel || latestCall?.modelDisplay || latestCall?.model || '',
+                callIds,
+                checkpointSig,
+                contextSig,
+            ].join('~');
+        })
+        .join('||');
+}
+
+function buildGMSummarySignature(summary: GMSummary): string {
+    const recentErrorEntriesSig = (summary.recentErrorEntries || [])
+        .map(entry => `${entry.code}:${entry.createdAt}:${hashText(entry.message || '')}`)
+        .join('|');
+    const uniqueErrorsSig = (summary.uniqueErrors || [])
+        .map(entry => `${entry.code}:${entry.firstSeen}:${hashText(entry.message || '')}`)
+        .join('|');
+    const toolCatalogSig = (summary.toolCatalog || [])
+        .map(entry => `${entry.name}:${entry.firstSeen}:${hashText(entry.description || '')}`)
+        .join('|');
+    const contextGrowthSig = summary.contextGrowth
+        .map(point => `${point.step}:${point.tokens}:${point.model}`)
+        .join('|');
+
+    return [
+        summary.totalCalls,
+        summary.totalStepsCovered,
+        summary.totalCredits,
+        summary.totalInputTokens,
+        summary.totalOutputTokens,
+        summary.totalCacheRead,
+        summary.totalCacheCreation,
+        summary.totalThinkingTokens,
+        summary.totalRetryCount,
+        summary.totalRetryTokens,
+        summary.totalRetryCredits,
+        stableRecordSignature(summary.stopReasonCounts),
+        stableRecordSignature(summary.retryErrorCodes),
+        stableRecordSignature(summary.toolCallCounts),
+        stableRecordSignature(summary.toolCallCountsByConv as Record<string, unknown> | undefined),
+        stableRecordSignature(summary.retryErrorCodesByConv as Record<string, unknown> | undefined),
+        summary.recentErrors.map(item => hashText(item)).join('|'),
+        recentErrorEntriesSig,
+        uniqueErrorsSig,
+        toolCatalogSig,
+        contextGrowthSig,
+        buildGMModelStatsSignature(summary),
+        buildGMConversationSignature(summary),
+    ].join('@@');
+}
+
+export function hasGMSummaryChanged(prev: GMSummary | null | undefined, next: GMSummary | null | undefined): boolean {
     if (!!prev !== !!next) { return true; }
     if (!prev || !next) { return false; }
-    return prev.totalCalls !== next.totalCalls
-        || prev.totalStepsCovered !== next.totalStepsCovered
-        || prev.totalCredits !== next.totalCredits
-        || prev.totalInputTokens !== next.totalInputTokens
-        || prev.totalOutputTokens !== next.totalOutputTokens
-        || prev.totalCacheRead !== next.totalCacheRead
-        || prev.totalCacheCreation !== next.totalCacheCreation
-        || prev.totalThinkingTokens !== next.totalThinkingTokens
-        || prev.totalRetryCount !== next.totalRetryCount
-        || prev.totalRetryTokens !== next.totalRetryTokens
-        || prev.totalRetryCredits !== next.totalRetryCredits
-        || prev.conversations.length !== next.conversations.length
-        || Object.keys(prev.modelBreakdown).length !== Object.keys(next.modelBreakdown).length;
+    return buildGMSummarySignature(prev) !== buildGMSummarySignature(next);
 }
 
 function persistResetSensitiveState(): void {
@@ -313,27 +446,6 @@ export function buildUsageScopeTrajectories(
     return [activeTrajectory, ...scope];
 }
 
-function captureDevResetSnapshot(): void {
-    devResetSnapshot = {
-        activityState: clonePlain(activityTracker.serialize()),
-        gmTrackerState: clonePlain(gmTracker.serialize()),
-        gmDetailedSummary: lastGMSummary ? clonePlain(lastGMSummary) : null,
-        dailyState: clonePlain(dailyStore.serialize()),
-    };
-}
-
-function restoreDevResetSnapshot(): boolean {
-    if (!devResetSnapshot) { return false; }
-    activityTracker = ActivityTracker.restore(clonePlain(devResetSnapshot.activityState));
-    gmTracker = GMTracker.restore(clonePlain(devResetSnapshot.gmTrackerState));
-    gmTracker.setDetailedSummary(devResetSnapshot.gmDetailedSummary ? clonePlain(devResetSnapshot.gmDetailedSummary) : null);
-    lastGMSummary = devResetSnapshot.gmDetailedSummary ? clonePlain(devResetSnapshot.gmDetailedSummary) : null;
-    dailyStore.restoreSnapshot(clonePlain(devResetSnapshot.dailyState));
-    devResetSnapshot = null;
-    persistResetSensitiveState();
-    return true;
-}
-
 function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
     return {
         currentUsage,
@@ -342,19 +454,19 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         modelConfigs: cachedModelConfigs,
         userInfo: cachedUserInfo,
         workspaceUri: getWorkspaceUri(),
-        tracker: quotaTracker,
         activitySummary: activityTracker?.getSummary() ?? null,
         archives: activityTracker?.getArchives(),
         activityTracker,
-        gmSummary: lastGMSummary,
-        gmFullSummary: gmTracker.getFullSummary(),
+        gmSummary: gmTracker.getUiSummary(),
+        gmFullSummary: gmTracker.getUiFullSummary(),
         gmConversations: monitorStore.getGMConversations(),
         pricingStore,
         dailyStore,
         storageDiagnostics: getStorageDiagnostics(),
         modelDNA: persistedModelDNA,
         accountSnapshots: getAccountSnapshotArray(),
-        pendingArchives: gmTracker.getPendingArchives(),
+        todayLedgerActive: dailyLedger.getTodayActive(),
+        ledgerSettled: dailyLedger.getSettledEntries(),
         ...extra,
     };
 }
@@ -419,33 +531,119 @@ export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuota
     });
 }
 
-const PR_56_STALE_CONTEXT_LIMITS: Record<string, number[]> = {
-    MODEL_PLACEHOLDER_M16: [120_000],
-    MODEL_PLACEHOLDER_M37: [120_000],
-    MODEL_PLACEHOLDER_M36: [120_000],
-    MODEL_PLACEHOLDER_M133: [160_000],
-    MODEL_PLACEHOLDER_M132: [160_000],
-    MODEL_PLACEHOLDER_M84: [160_000],
-    MODEL_PLACEHOLDER_M47: [160_000],
-    MODEL_OPENAI_GPT_OSS_120B_MEDIUM: [128_000],
-};
+const RESET_TIME_TURNOVER_MIN_JUMP_MS = 10 * 60 * 1000;
 
-export function removeStaleContextLimitOverrides(
-    limits: Record<string, number> | undefined,
-): Record<string, number> | undefined {
-    if (!limits) { return limits; }
-    let changed = false;
-    const next: Record<string, number> = {};
-    for (const [model, limit] of Object.entries(limits)) {
-        const staleValues = PR_56_STALE_CONTEXT_LIMITS[model];
-        if (staleValues?.includes(Number(limit))) {
-            changed = true;
-            continue;
-        }
-        next[model] = limit;
+/**
+ * resetTime 会在同一周期内轻微漂移，不能把“任何变化”都当成真正的额度重置。
+ * 只有旧 resetTime 已经过期，且新的 resetTime 重新跳回未来并明显大于旧值时，
+ * 才认为发生了新周期切换。
+ */
+export function shouldSettleOnResetTimeChange(
+    oldResetTime: string,
+    newResetTime: string,
+    nowMs: number = Date.now(),
+): boolean {
+    if (!oldResetTime || !newResetTime || oldResetTime === newResetTime) {
+        return false;
     }
-    if (!changed) { return limits; }
-    return Object.keys(next).length > 0 ? next : undefined;
+    const oldMs = Date.parse(oldResetTime);
+    const newMs = Date.parse(newResetTime);
+    if (Number.isNaN(oldMs) || Number.isNaN(newMs)) {
+        return false;
+    }
+    if (oldMs > nowMs || newMs <= nowMs) {
+        return false;
+    }
+    return (newMs - oldMs) >= RESET_TIME_TURNOVER_MIN_JUMP_MS;
+}
+
+async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> {
+    try {
+        log('[Checkpointer Sync] Fetching official checkpointer parameters via LS RPC GetAvailableModels...');
+        const resp = await rpcCall(ls, 'GetAvailableModels', {
+            metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
+        }, 10000);
+        const models = (resp as any)?.response?.models || {};
+        const overrides: Record<string, number> = {};
+        const allFetchedInfo: string[] = [];
+
+        for (const config of Object.values(models)) {
+            const c = config as any;
+            const modelVal = c.model || '';
+            const modelIdVal = c.modelId || c.model_id || '';
+            if (!modelVal && !modelIdVal) continue;
+
+            const resolved = (modelVal ? resolveModelId(modelVal) : undefined)
+                || (modelIdVal ? resolveModelId(modelIdVal) : undefined);
+
+            const exps = c.modelExperiments?.experiments || {};
+            const checkpointerStr = exps.CASCADE_USE_EXPERIMENT_CHECKPOINTER?.stringValue;
+            let limitNum = 0;
+            let thresholdNum = 0;
+
+            if (checkpointerStr) {
+                allFetchedInfo.push(`[${modelIdVal || modelVal}] Exp JSON: ${checkpointerStr}`);
+                try {
+                    const cp = JSON.parse(checkpointerStr);
+                    const cpLimit = cp.max_token_limit || cp.max_limit;
+                    if (typeof cpLimit === 'number') {
+                        limitNum = cpLimit;
+                    } else if (typeof cpLimit === 'string') {
+                        limitNum = parseInt(cpLimit, 10);
+                    }
+
+                    const cpThreshold = cp.token_threshold || cp.threshold;
+                    if (typeof cpThreshold === 'number') {
+                        thresholdNum = cpThreshold;
+                    } else if (typeof cpThreshold === 'string') {
+                        thresholdNum = parseInt(cpThreshold, 10);
+                    }
+
+                    if (limitNum && !isNaN(limitNum) && limitNum > 0) {
+                        const resolvedKey = resolved || modelVal || modelIdVal;
+                        if (resolvedKey) {
+                            overrides[resolvedKey] = limitNum;
+                        }
+                        if (modelVal) overrides[modelVal] = limitNum;
+                        if (modelIdVal) overrides[modelIdVal] = limitNum;
+                    }
+                } catch { /* ignore JSON parse error */ }
+            } else {
+                allFetchedInfo.push(`[${modelIdVal || modelVal}] Exp JSON: undefined (No active checkpointer experiment)`);
+            }
+
+            // 同步更新 activeModelSpecs 数据库
+            if (resolved) {
+                updateModelSpec(resolved, {
+                    modelId: modelIdVal || modelVal,
+                    apiProvider: (c.apiProvider || '').replace('API_PROVIDER_', ''),
+                    maxTokens: typeof c.maxTokens === 'number' ? c.maxTokens : 0,
+                    maxOutputTokens: typeof c.maxOutputTokens === 'number' ? c.maxOutputTokens : 0,
+                    thinkingBudget: typeof c.thinkingBudget === 'number' ? c.thinkingBudget : 0,
+                    supportsThinking: !!c.supportsThinking,
+                    ...(limitNum > 0 ? { cpLimit: limitNum } : {}),
+                    ...(thresholdNum > 0 ? { cpThreshold: thresholdNum } : {}),
+                });
+            }
+        }
+
+        if (allFetchedInfo.length > 0) {
+            log(`[Checkpointer Sync] Official checkpointer parameters fetched for ${allFetchedInfo.length} models.`);
+        }
+
+
+
+        if (Object.keys(overrides).length > 0) {
+            overrideContextLimits(overrides);
+            log(`[Checkpointer Sync] Dynamically resolved and overridden ${Object.keys(overrides).length} model context limits from official Checkpointer!`);
+        } else {
+            log('[Checkpointer Sync] Sync completed successfully, but no active checkpointer overrides were found in models.');
+        }
+        return true;
+    } catch (e: any) {
+        log(`[Checkpointer Sync] Optional dynamic capture failed: ${e.message}. Using built-in static fallbacks.`);
+        return false;
+    }
 }
 
 function updateAccountSnapshot(
@@ -454,12 +652,11 @@ function updateAccountSnapshot(
 ): void {
     const email = userInfo.email;
     if (!email) { return; }
+    const nowMs = Date.now();
 
-    // Group models by their stable quota pool, tracking usage.
-    // Also build a modelId → resetTime mapping for GMTracker cross-reference
+    // Group models by their stable quota pool first — we need the NEW resetTimes.
     const poolMap = new Map<string, { resetTime: string; labels: string[]; modelIds: string[]; hasUsage: boolean; minFraction: number }>();
     for (const group of groupModelConfigsByQuotaPool(configs)) {
-        // remainingFraction < 1.0 means quota has been consumed (crossed 20% threshold)
         poolMap.set(group.key, {
             resetTime: group.resetTime,
             labels: group.labels,
@@ -467,6 +664,46 @@ function updateAccountSnapshot(
             hasUsage: group.minFraction < 1.0,
             minFraction: group.minFraction,
         });
+    }
+
+    // ── Cycle-change settlement: detect real turnover only ──
+    // resetTime often drifts by a few minutes inside the SAME cycle.
+    // Do not settle unless the old reset time has actually expired and the
+    // new reset time jumps back into the future by more than normal drift.
+    const oldSnap = accountSnapshots.get(email);
+    if (oldSnap) {
+        // Build old resetTime lookup: modelId → resetTime
+        const oldResetByModel = new Map<string, string>();
+        for (const pool of (oldSnap.resetPools || [])) {
+            if (!pool.resetTime) { continue; }
+            for (const mid of (pool.modelIds || [])) {
+                oldResetByModel.set(mid, pool.resetTime);
+            }
+        }
+
+        // Check each new pool: if resetTime changed, settle the old pool
+        for (const [, newPool] of poolMap) {
+            if (!newPool.resetTime || !newPool.modelIds?.length) { continue; }
+            // Find old resetTime for any model in this pool
+            let oldResetTime: string | undefined;
+            for (const mid of newPool.modelIds) {
+                oldResetTime = oldResetByModel.get(mid);
+                if (oldResetTime) { break; }
+            }
+            if (!oldResetTime) { continue; }
+            if (!shouldSettleOnResetTimeChange(oldResetTime, newPool.resetTime, nowMs)) { continue; }
+            if (dailyLedger.isPoolSettled(newPool.modelIds, email)) { continue; }
+            // Settle both DailyLedger and GMTracker using oldResetTime as cutoff
+            const baselinedCount = gmTracker.baselineForQuotaReset(email, newPool.modelIds, oldResetTime);
+            const settled = dailyLedger.settleForQuotaReset(newPool.modelIds, email);
+            if (baselinedCount > 0 || settled) {
+                log(`[DailyLedger] cycle-change settlement: ${baselinedCount} GM calls baselined, ${settled ? settled.totalCalls : 0} ledger calls settled for [${newPool.labels.slice(0, 3).join(', ')}] (${email}) — resetTime changed ${oldResetTime} → ${newPool.resetTime}`);
+                lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
+                durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+                durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+                persistGMSummaryToFile(lastGMSummary);
+            }
+        }
     }
 
     // ── Enhanced usage detection: GMTracker cross-reference ──────────────
@@ -497,7 +734,7 @@ function updateAccountSnapshot(
     for (const [, pool] of [...poolMap.entries()].sort((a, b) => a[1].resetTime.localeCompare(b[1].resetTime))) {
         const resetTime = pool.resetTime;
         const remainingPct = pool.hasUsage ? Math.round(pool.minFraction * 100) : undefined;
-        resetPools.push({ resetTime, modelLabels: pool.labels, hasUsage: pool.hasUsage, remainingPercent: remainingPct });
+        resetPools.push({ resetTime, modelLabels: pool.labels, modelIds: pool.modelIds, hasUsage: pool.hasUsage, remainingPercent: remainingPct });
         if (resetTime && !allResetTimes.includes(resetTime)) {
             allResetTimes.push(resetTime);
         }
@@ -681,14 +918,16 @@ function baselineExpiredPoolsForAccount(email: string): void {
         if (diffMs > 0) { continue; } // Not yet expired
 
         // Skip pools with no confirmed usage — matches UI "Ready" logic
-        if (pool.hasUsage === false) { continue; }
+        // Also check ledger for actual data (snapshot hasUsage may be stale)
+        if (pool.hasUsage === false
+            && !dailyLedger.hasActiveCallsForPool(pool.modelIds || pool.modelLabels, email)) { continue; }
 
         // Skip if already notified/archived
         const key = `${email}:${pool.resetTime}:${pool.modelLabels.join('|')}`;
         if (notifiedAccountResets.has(key)) { continue; }
 
         // Skip if already archived in persisted state
-        if (gmTracker.isPoolArchived(email, pool.modelLabels)) {
+        if (gmTracker.isPoolArchived(email, pool.modelIds || pool.modelLabels)) {
             notifiedAccountResets.add(key);
             log(`Account switch baseline: ${email} pool [${pool.modelLabels.slice(0, 3).join(', ')}] already archived — skipped`);
             continue;
@@ -697,14 +936,17 @@ function baselineExpiredPoolsForAccount(email: string): void {
         notifiedAccountResets.add(key);
 
         // ── Baseline GM calls for the expired pool ──
-        // No DailyStore snapshot here — midnight archival will use
-        // getArchivalSummary() which includes both pending-archive and
-        // active calls, giving DailyStore the complete day's picture.
-        const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelLabels);
-        if (baselinedCount > 0) {
+        const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelIds || pool.modelLabels, pool.resetTime);
+        // ── Settle in DailyLedger too ──
+        const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, email);
+        if (baselinedCount > 0 || settled) {
             log(`Account switch baseline: ${email} — ${baselinedCount} GM calls baselined for pool [${pool.modelLabels.slice(0, 3).join(', ')}]`);
+            if (settled) {
+                log(`  DailyLedger settled: ${settled.totalCalls} calls`);
+            }
             lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
             durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+            durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
             persistGMSummaryToFile(lastGMSummary);
         }
 
@@ -741,6 +983,7 @@ function performDailyArchival(force = false): void {
         lastGMSummary,
         persistedModelDNA,
         lastArchivalDateKey,
+        dailyLedger,
         persist: (updates) => {
             lastArchivalDateKey = updates.lastArchivalDateKey;
             lastGMSummary = updates.lastGMSummary;
@@ -751,6 +994,7 @@ function performDailyArchival(force = false): void {
             durableGlobalState.update('lastArchivalDateKey', lastArchivalDateKey);
             durableGlobalState.update('activityTrackerState', activityTracker.serialize());
             durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+            durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
             persistGMSummaryToFile(lastGMSummary);
         },
         log,
@@ -778,13 +1022,21 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Initialize quota tracker
     quotaTracker = new QuotaTracker(context, durableGlobalState);
+    // The UI toggle is gone, but quota cycle detection still feeds GM repair and daily settlement.
+    quotaTracker.setEnabled(true);
     quotaTracker.onQuotaReset = (modelIds: string[]) => {
         // ── Baseline current account's GM calls for the reset pool ──
-        // No DailyStore snapshot here — midnight archival will use
-        // getArchivalSummary() which includes both pending-archive and
-        // active calls, giving DailyStore the complete day's picture.
-        const baselinedCount = gmTracker.baselineForQuotaReset(undefined, modelIds);
-        log(`Quota reset detected: [${modelIds.join(', ')}] — ${baselinedCount} GM calls baselined for new cycle`);
+        const expandedIds = expandModelIdsToPool(modelIds, cachedModelConfigs);
+        const baselinedCount = gmTracker.baselineForQuotaReset(undefined, expandedIds);
+        log(`Quota reset detected: [${modelIds.join(', ')}] (expanded to [${expandedIds.join(', ')}]) — ${baselinedCount} GM calls baselined for new cycle`);
+
+        // ── Settle this pool's data in DailyLedger ──
+        // Moves matching model data from "active" to "settled" (pending midnight flush)
+        const settled = dailyLedger.settleForQuotaReset(expandedIds, currentAccountEmail);
+        if (settled) {
+            log(`DailyLedger settled: ${settled.totalCalls} calls for pool [${settled.poolModelLabels.join(', ')}]`);
+            durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+        }
 
         // Update cached summary and persist
         lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
@@ -800,46 +1052,6 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize i18n from persisted state
     initI18n(context);
     initI18nFromState(durableGlobalState);
-
-    // ── One-time migration: contextLimits stale defaults → platform thresholds ──
-    // Old versions used 1M (model native limits), and v1.16.6/v1.16.7 could
-    // persist explicit defaults that now mask the corrected v1.16.8 defaults.
-    {
-        const migrationKey = 'contextLimitsMigrationV';
-        const migrationVersion = durableGlobalState.get<number>(migrationKey, 0);
-        const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
-        const inspection = cfg.inspect<Record<string, number>>('contextLimits');
-        if (migrationVersion < 1) {
-            // Check if user has explicit global/workspace settings with old 1M values
-            const hasOldGlobal = inspection?.globalValue && Object.values(inspection.globalValue).some(v => v >= 1_000_000);
-            const hasOldWorkspace = inspection?.workspaceValue && Object.values(inspection.workspaceValue).some(v => v >= 1_000_000);
-            if (hasOldGlobal) {
-                cfg.update('contextLimits', undefined, vscode.ConfigurationTarget.Global);
-                log('Migration v1: Reset global contextLimits from 1M to platform defaults');
-            }
-            if (hasOldWorkspace) {
-                cfg.update('contextLimits', undefined, vscode.ConfigurationTarget.Workspace);
-                log('Migration v1: Reset workspace contextLimits from 1M to platform defaults');
-            }
-            durableGlobalState.update(migrationKey, 1);
-            if (hasOldGlobal || hasOldWorkspace) {
-                log('Context limits migration complete — old 1M values cleared, package.json defaults will take effect');
-            }
-        }
-        if (migrationVersion < 2) {
-            const migratedGlobal = removeStaleContextLimitOverrides(inspection?.globalValue);
-            const migratedWorkspace = removeStaleContextLimitOverrides(inspection?.workspaceValue);
-            if (migratedGlobal !== inspection?.globalValue) {
-                cfg.update('contextLimits', migratedGlobal, vscode.ConfigurationTarget.Global);
-                log('Migration v2: Cleared stale global contextLimits values so v1.16.8 defaults take effect');
-            }
-            if (migratedWorkspace !== inspection?.workspaceValue) {
-                cfg.update('contextLimits', migratedWorkspace, vscode.ConfigurationTarget.Workspace);
-                log('Migration v2: Cleared stale workspace contextLimits values so v1.16.8 defaults take effect');
-            }
-            durableGlobalState.update(migrationKey, 2);
-        }
-    }
 
     // Restore persisted lastKnownModel from workspaceState
     lastKnownModel = durableWorkspaceState.get<string>('lastKnownModel', '');
@@ -879,6 +1091,77 @@ export function activate(context: vscode.ExtensionContext): void {
     currentAccountEmail = gmTracker.getCurrentAccount();
     dailyStore = new DailyStore();
     dailyStore.init(durableGlobalState);
+    // Initialize DailyLedger — restores from durable state
+    const savedLedger = durableGlobalState.get<DailyLedgerState | undefined>('dailyLedgerState', undefined);
+    dailyLedger = DailyLedger.restore(savedLedger);
+
+    // ── Immediate cross-day archival on startup ──
+    // If the ledger has data from a previous day (IDE was off overnight),
+    // archive it NOW — don't wait for the polling loop or conversation load.
+    if (dailyLedger.hasData && dailyLedger.dateKey !== toLocalDateKey()) {
+        log(`[Startup] Ledger has stale data from ${dailyLedger.dateKey}, archiving immediately`);
+        // Override lastArchivalDateKey to the stale date so performDailyArchival's
+        // "sameDay" guard doesn't reject it (it may already be today's date if a
+        // previous instance or polling cycle set it without rolling over the ledger).
+        lastArchivalDateKey = dailyLedger.dateKey;
+        performDailyArchival();
+    }
+
+    // ── One-time migration: auto-recover data from legacy Antigravity (pre-2.0) ──
+    // Detects old "Antigravity" globalState DB and imports calendar + language.
+    // Also supports manual migration-import.json as a fallback.
+    try {
+        const migrationDir = path.dirname(durableState.getFilePath());
+        const migrationDone = durableFileGlobalState.get<boolean>('legacyMigrationDone', false);
+
+        // --- Auto-detect old Antigravity DB ---
+        if (!migrationDone) {
+            const { extractLegacyData } = require('./legacy-migration') as typeof import('./legacy-migration');
+            const legacyData = extractLegacyData(log);
+            if (legacyData) {
+                if (legacyData.dailyStoreState) {
+                    const added = dailyStore.mergeRecords(legacyData.dailyStoreState);
+                    log(`Legacy migration: merged ${added} calendar records`);
+                }
+                if (legacyData.displayLanguage && ['zh', 'en', 'both'].includes(legacyData.displayLanguage)) {
+                    setLanguageToState(legacyData.displayLanguage as any, durableGlobalState);
+                    context.globalState.update('displayLanguage', legacyData.displayLanguage);
+                    log(`Legacy migration: restored language to '${legacyData.displayLanguage}'`);
+                }
+            } else {
+                log('Legacy migration: no recoverable data found');
+            }
+            durableFileGlobalState.update('legacyMigrationDone', true);
+            log('Legacy migration: done');
+        } else {
+            log('Legacy migration: data OK, no migration needed');
+        }
+
+        // --- Manual migration file (fallback / advanced recovery) ---
+        const migrationFile = path.join(migrationDir, 'migration-import.json');
+        if (fs.existsSync(migrationFile)) {
+            log(`Migration: found manual migration file, importing...`);
+            const raw = fs.readFileSync(migrationFile, 'utf8');
+            const migration = JSON.parse(raw) as {
+                dailyStoreState?: DailyStoreState;
+                displayLanguage?: string;
+            };
+            if (migration.dailyStoreState) {
+                const added = dailyStore.mergeRecords(migration.dailyStoreState);
+                log(`Migration: merged ${added} calendar records from manual file`);
+            }
+            if (migration.displayLanguage && ['zh', 'en', 'both'].includes(migration.displayLanguage)) {
+                setLanguageToState(migration.displayLanguage as any, durableGlobalState);
+                context.globalState.update('displayLanguage', migration.displayLanguage);
+                log(`Migration: restored language preference to '${migration.displayLanguage}'`);
+            }
+            const donePath = migrationFile.replace('.json', '.done.json');
+            fs.renameSync(migrationFile, donePath);
+            log(`Migration: completed, file renamed to ${donePath}`);
+        }
+    } catch (migrationErr) {
+        log(`Migration: failed — ${migrationErr}`);
+    }
 
     // Restore daily archival date key
     lastArchivalDateKey = durableGlobalState.get<string>('lastArchivalDateKey', '');
@@ -903,10 +1186,15 @@ export function activate(context: vscode.ExtensionContext): void {
         );
         if (repairedGMSummary !== lastGMSummary) {
             lastGMSummary = repairedGMSummary;
+            gmTracker.setDetailedSummary(lastGMSummary);
             durableGlobalState.update('gmTrackerState', gmTracker.serialize());
             persistGMSummaryToFile(lastGMSummary);
             log('GM summary repaired from quota history during startup');
         }
+    }
+
+    if (lastGMSummary) {
+        gmTracker.setDetailedSummary(lastGMSummary);
     }
 
     // Bootstrap timeline from file-backed GM summary after reinstall.
@@ -929,6 +1217,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
             cachedLsInfo = null;
+            hasSyncedCheckpointer = false;
             consecutiveFailures = 0;
             currentIntervalMs = baseIntervalMs;
             restartPolling();
@@ -947,31 +1236,6 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
             showMonitorPanel(makePanelPayload({ context, initialTab: 'gmdata' }));
-        }),
-        vscode.commands.registerCommand('antigravity-context-monitor.devSimulateReset', () => {
-            if (!activityTracker) { return; }
-            captureDevResetSnapshot();
-            log('[Dev] Simulating daily archival...');
-            performDailyArchival(true);
-            if (isMonitorPanelVisible()) {
-                updateMonitorPanel(makePanelPayload());
-            }
-            log('[Dev] Daily archival simulated — snapshot captured, data archived & reset');
-        }),
-        vscode.commands.registerCommand('antigravity-context-monitor.devRestoreReset', () => {
-            const restored = restoreDevResetSnapshot();
-            if (restored && isMonitorPanelVisible()) {
-                updateMonitorPanel(makePanelPayload());
-            }
-            log(restored
-                ? '[Dev] Restored simulated quota reset snapshot'
-                : '[Dev] No simulated quota reset snapshot to restore');
-        }),
-        vscode.commands.registerCommand('antigravity-context-monitor.devPersistActivity', () => {
-            if (activityTracker) {
-                durableGlobalState.update('activityTrackerState', activityTracker.serialize());
-                log('[Dev] Activity tracker state persisted to globalState');
-            }
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.clearToolCatalog', () => {
             // Update the module-level lastGMSummary with the patched summary (empty catalog)
@@ -992,9 +1256,7 @@ export function activate(context: vscode.ExtensionContext): void {
     baseIntervalMs = intervalSec * 1000;
     currentIntervalMs = baseIntervalMs;
 
-    // Apply compression warning threshold
-    const threshold = config.get<number>('compressionWarningThreshold', 150_000);
-    statusBar.setWarningThreshold(threshold);
+
 
     // Apply status bar display preferences
     applyDisplayPrefs();
@@ -1030,12 +1292,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 consecutiveFailures = 0;
                 restartPolling();
             }
-            if (e.affectsConfiguration('antigravityContextMonitor.compressionWarningThreshold')) {
-                const newConfig = vscode.workspace.getConfiguration('antigravityContextMonitor');
-                const newThreshold = newConfig.get<number>('compressionWarningThreshold', 150_000);
-                statusBar.setWarningThreshold(newThreshold);
-                log(`Compression warning threshold updated to ${newThreshold}`);
-            }
+
             if (e.affectsConfiguration('antigravityContextMonitor.statusBar')) {
                 applyDisplayPrefs();
                 if (currentUsage) { statusBar.update(currentUsage); }
@@ -1170,6 +1427,11 @@ async function pollContextUsage(): Promise<void> {
         }
         lastPolledWorkspaceUri = normalizedWs;
 
+        // 午夜归档必须在本轮轮询前半段执行：
+        // 1. 不能被“无会话 / 无活跃对话”的提前 return 跳过
+        // 2. 新一天的 GM / DailyLedger 记录必须建立在已 rollover 的干净状态上
+        performDailyArchival();
+
         // 2. Discover LS (with caching + periodic PID revalidation)
         if (!lsInfo) {
             log('Discovering language server...');
@@ -1227,6 +1489,7 @@ async function pollContextUsage(): Promise<void> {
                         log(`⚠ LS PID changed: ${lsInfo.pid} → ${freshLs.pid} (port: ${lsInfo.port} → ${freshLs.port}). Reconnecting to new LS.`);
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
+                        hasSyncedCheckpointer = false;
                         consecutiveIdlePolls = 0;
                         // Re-fetch user status from new LS
                         try {
@@ -1291,6 +1554,19 @@ async function pollContextUsage(): Promise<void> {
             }
         }
 
+        // Dynamically override context limits once per LS connection with retry on failure
+        if (lsInfo && !hasSyncedCheckpointer && !isSyncingCheckpointer) {
+            isSyncingCheckpointer = true;
+            fetchAndOverrideCheckpointerLimits(lsInfo).then((success) => {
+                isSyncingCheckpointer = false;
+                if (success) {
+                    hasSyncedCheckpointer = true;
+                }
+            }).catch(() => {
+                isSyncingCheckpointer = false;
+            });
+        }
+
         // 3. Get all trajectories
         let trajectories: TrajectorySummary[];
         try {
@@ -1311,13 +1587,14 @@ async function pollContextUsage(): Promise<void> {
         lastTrajectories = trajectories;
 
         if (trajectories.length === 0) {
-            const config0 = vscode.workspace.getConfiguration('antigravityContextMonitor');
-            const customLimits0 = config0.get<Record<string, number>>('contextLimits');
-            const noConvLimit = getContextLimit(lastKnownModel, customLimits0);
+            const noConvLimit = getContextLimit(lastKnownModel);
             const noConvLimitStr = formatContextLimit(noConvLimit);
-            statusBar.showNoConversation(noConvLimitStr);
+            statusBar.showNoConversation(noConvLimitStr, lastKnownModel);
             currentUsage = null;
             allTrajectoryUsages = monitorStore.getAll();
+            if (isMonitorPanelVisible()) {
+                updateMonitorPanel(makePanelPayload({ currentUsage: null }));
+            }
             updateBaselines(trajectories);
             return;
         }
@@ -1360,6 +1637,7 @@ async function pollContextUsage(): Promise<void> {
                         log(`⚠ Stale LS confirmed: PID ${lsInfo.pid} → ${freshLs.pid}. Reconnecting.`);
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
+                        hasSyncedCheckpointer = false;
                         lsRevalidationCounter = 0;
                         stalenessConfirmedIdle = false;
                         // Re-fetch trajectories from the new LS
@@ -1464,12 +1742,10 @@ async function pollContextUsage(): Promise<void> {
         }
 
         if (!activeTrajectory) {
-            const config = vscode.workspace.getConfiguration('antigravityContextMonitor');
-            const customLimits = config.get<Record<string, number>>('contextLimits');
-            const idleLimit = getContextLimit(lastKnownModel, customLimits);
+            const idleLimit = getContextLimit(lastKnownModel);
             const idleLimitStr = formatContextLimit(idleLimit);
             log(`No active trajectory — showing idle (model=${lastKnownModel || 'default'}, limit=${idleLimitStr})`);
-            statusBar.showIdle(idleLimitStr);
+            statusBar.showIdle(idleLimitStr, lastKnownModel);
             currentUsage = null;
             allTrajectoryUsages = monitorStore.getAll();
             if (isMonitorPanelVisible()) {
@@ -1482,16 +1758,13 @@ async function pollContextUsage(): Promise<void> {
         log(`Selected: "${activeTrajectory.summary}" (${activeTrajectory.cascadeId.substring(0, 8)}) reason=${selectionReason} status=${activeTrajectory.status}`);
 
         // 5. Get context usage for selected trajectory
-        const config = vscode.workspace.getConfiguration('antigravityContextMonitor');
-        const customLimits = config.get<Record<string, number>>('contextLimits');
-
         const persistedUsage = monitorStore.getSnapshot(activeTrajectory.cascadeId);
         if (hasSameUsageInputs(currentUsage, activeTrajectory)) {
-            currentUsage = rehydrateUsageForDisplay(currentUsage, customLimits);
+            currentUsage = rehydrateUsageForDisplay(currentUsage);
         } else if (hasSameUsageInputs(persistedUsage, activeTrajectory)) {
-            currentUsage = rehydrateUsageForDisplay(persistedUsage, customLimits);
+            currentUsage = rehydrateUsageForDisplay(persistedUsage);
         } else {
-            currentUsage = await getContextUsage(lsInfo, activeTrajectory, customLimits, abortController.signal);
+            currentUsage = await getContextUsage(lsInfo, activeTrajectory, undefined, abortController.signal);
         }
         log(`  → contextUsed=${currentUsage.contextUsed} model=${currentUsage.model} steps=${currentUsage.stepCount} estimated=${currentUsage.isEstimated} ckpt_in=${currentUsage.lastModelUsage?.inputTokens ?? 'none'} ckpt_out=${currentUsage.lastModelUsage?.outputTokens ?? 'none'} estDelta=${currentUsage.estimatedDeltaSinceCheckpoint}`);
 
@@ -1559,10 +1832,10 @@ async function pollContextUsage(): Promise<void> {
             }
             const cachedUsage = monitorStore.getSnapshot(t.cascadeId);
             if (hasSameUsageInputs(cachedUsage, t)) {
-                return rehydrateUsageForDisplay(cachedUsage, customLimits);
+                return rehydrateUsageForDisplay(cachedUsage);
             }
             try {
-                return await getContextUsage(lsInfo!, t, customLimits, abortController.signal);
+                return await getContextUsage(lsInfo!, t, undefined, abortController.signal);
             } catch {
                 return null;
             }
@@ -1594,21 +1867,84 @@ async function pollContextUsage(): Promise<void> {
                     const gmSummary = await gmTracker.fetchAll(
                         lsInfo,
                         trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
+                        currentUsage?.cascadeId,
                         abortController.signal,
                     );
-                    gmChanged = hasGMSummaryChanged(prevSummary, gmSummary);
-                    if (gmChanged || !lastGMSummary) {
-                        const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
-                        monitorStore.recordGMConversations(gmTracker.getAllConversationData());
+                    const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
+                    gmChanged = hasGMSummaryChanged(prevSummary, detailedSummary);
+                    lastGMSummary = detailedSummary;
+                    monitorStore.recordGMConversations(gmTracker.getAllConversationData());
+                    if (gmChanged || !prevSummary) {
                         persistGMSummaryToFile(detailedSummary);
                         const mergedDNA = mergeModelDNAState(persistedModelDNA, detailedSummary);
                         if (mergedDNA.changed) {
                             persistedModelDNA = mergedDNA.entries;
                             durableGlobalState.update('modelDNAState', serializeModelDNAState(persistedModelDNA));
                         }
-                        lastGMSummary = detailedSummary;
                     }
                 } catch { /* GM fetch failure is non-critical */ }
+
+                // ── DailyLedger: record new GM calls incrementally ──
+                // This is the core "write-once" mechanism: once a call is recorded
+                // in the ledger, it survives even if the LS drops the conversation.
+                try {
+                    const { entries: newEntries, debug: ledgerDebug, revertedCascadeIds } = gmTracker.getNewCallsSinceLastRecord();
+                    // Clear stale dedup IDs for reverted conversations BEFORE recording
+                    for (const cid of revertedCascadeIds) {
+                        dailyLedger.clearRecordedIdsForConversation(cid);
+                        log(`[DailyLedger] cleared dedup IDs for reverted conversation ${cid.substring(0, 8)}`);
+                    }
+                    if (newEntries.length > 0) {
+                        const added = dailyLedger.recordCalls(newEntries);
+                        log(`[DailyLedger] extracted=${newEntries.length} added=${added} dedup_rejected=${newEntries.length - added}`);
+                        for (const d of ledgerDebug) { log(`[DailyLedger]   ${d}`); }
+                        if (added > 0) {
+                            durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+                        }
+                    }
+                    if (revertedCascadeIds.length > 0) {
+                        durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+                    }
+                } catch { /* Ledger recording failure is non-critical */ }
+
+                // ── DailyLedger: proactive settlement by resetTime ──
+                // Unlike QuotaTracker's heuristic detection, this directly checks
+                // whether each pool's resetTime has passed and settles unsettled pools.
+                try {
+                    const nowMs = Date.now();
+                    for (const snap of accountSnapshots.values()) {
+                        for (const pool of (snap.resetPools || [])) {
+                            if (!pool.resetTime || !pool.modelIds?.length) { continue; }
+                            const resetMs = new Date(pool.resetTime).getTime();
+                            if (isNaN(resetMs) || resetMs > nowMs) { continue; }
+
+
+                            // Skip if no usage or already settled
+                            // hasUsage from snapshot may be stale for inactive accounts,
+                            // so also check if ledger has actual recorded calls for this pool
+                            if (pool.hasUsage === false
+                                && !dailyLedger.hasActiveCallsForPool(pool.modelIds, snap.email)) { continue; }
+                            if (dailyLedger.isPoolSettled(pool.modelIds, snap.email)) { continue; }
+                            // Settle!
+                            const settled = dailyLedger.settleForQuotaReset(pool.modelIds, snap.email);
+                            if (settled) {
+                                log(`[DailyLedger] proactive settlement: ${settled.totalCalls} calls for [${settled.poolModelLabels.join(', ')}] (${snap.email})`);
+                                durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+                                
+                                // 同步对 GMTracker 进行 quota-reset 归档
+                                try {
+                                    const blCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelIds, pool.resetTime);
+                                    log(`[GMTracker] proactive baseline: ${blCount} calls for [${pool.modelIds.join(', ')}] (${snap.email})`);
+                                    lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
+                                    durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+                                    persistGMSummaryToFile(lastGMSummary);
+                                } catch (e) {
+                                    log(`[GMTracker] proactive baseline failed: ${e}`);
+                                }
+                            }
+                        }
+                    }
+                } catch { /* Proactive settlement failure is non-critical */ }
 
                 // Inject GM precision data into activity timeline events.
                 // GM is the SOLE source of truth for timeline — always inject when data exists.
@@ -1644,10 +1980,7 @@ async function pollContextUsage(): Promise<void> {
             }
         }
 
-        // 6d. Daily archival — archive & reset when local date rolls over
-        performDailyArchival();
-
-        // 6e. Update WebView panel if visible (single unified refresh point)
+        // 6d. Update WebView panel if visible (single unified refresh point)
         if (isMonitorPanelVisible()) {
             updateMonitorPanel(makePanelPayload());
         }
@@ -1809,15 +2142,20 @@ function checkCachedAccountResets(): void {
             const diffMs = resetDate.getTime() - nowMs;
             if (diffMs > 0) { continue; }
 
+
+
             // Skip pools with no confirmed usage — matches UI "Ready" logic
-            if (pool.hasUsage === false) { continue; }
+            // Also check ledger for actual data (snapshot hasUsage may be stale
+            // for accounts that haven't been active since the last API refresh)
+            if (pool.hasUsage === false
+                && !dailyLedger.hasActiveCallsForPool(pool.modelIds || pool.modelLabels, snap.email)) { continue; }
 
             const modelNames = pool.modelLabels.slice(0, 3).join(', ');
             const key = `${snap.email}:${pool.resetTime}:${pool.modelLabels.join('|')}`;
             if (notifiedAccountResets.has(key)) { continue; }
 
             // ── Guard: skip if this pool was already archived (persisted state) ──
-            if (gmTracker.isPoolArchived(snap.email, pool.modelLabels)) {
+            if (gmTracker.isPoolArchived(snap.email, pool.modelIds || pool.modelLabels)) {
                 notifiedAccountResets.add(key);
                 log(`[ResetCheck] ${snap.email} [${modelNames}]: already-archived — skipped`);
                 continue;
@@ -1832,18 +2170,21 @@ function checkCachedAccountResets(): void {
             const openMonitorLabel = tBi('Open Monitor', '打开监控');
 
             // ── Baseline this cached account's GM calls for the expired pool only ──
-            // No DailyStore snapshot here — midnight archival will use
-            // getArchivalSummary() which includes both pending-archive and
-            // active calls, giving DailyStore the complete day's picture.
-            const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelLabels);
+            const baselinedCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelIds || pool.modelLabels, pool.resetTime);
             // Also archive any active QuotaTracker sessions for this cached account's pool.
             // Without this, sessions stay in 'tracking' forever because processUpdate()
             // never receives API configs for non-active accounts.
-            const archivedSessions = quotaTracker.archiveExpiredSessions(snap.email, pool.modelLabels);
-            if (baselinedCount > 0 || archivedSessions > 0) {
+            const archivedSessions = quotaTracker.archiveExpiredSessions(snap.email, pool.modelIds || pool.modelLabels);
+            // ── Settle this pool in DailyLedger ──
+            const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, snap.email);
+            if (baselinedCount > 0 || archivedSessions > 0 || settled) {
                 log(`[ResetCheck]   ${baselinedCount} GM calls baselined, ${archivedSessions} quota sessions archived`);
+                if (settled) {
+                    log(`[ResetCheck]   DailyLedger settled: ${settled.totalCalls} calls for [${settled.poolModelLabels.join(', ')}]`);
+                }
                 lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
                 durableGlobalState.update('gmTrackerState', gmTracker.serialize());
+                durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
                 persistGMSummaryToFile(lastGMSummary);
             } else {
                 log(`[ResetCheck]   baselineForQuotaReset returned 0 — no calls to archive`);
@@ -1880,7 +2221,6 @@ function getStorageDiagnostics(): StorageDiagnostics {
         stateFileSizeBytes,
         stateFileOpenWarnBytes: LARGE_STATE_FILE_WARN_BYTES,
         calendarDayCount: dailyStore?.totalDays || 0,
-        hasDevResetSnapshot: !!devResetSnapshot,
     };
 }
 

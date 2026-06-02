@@ -1,12 +1,13 @@
 // ─── GM Parser ───────────────────────────────────────────────────────────────
 // Parsing helpers, prompt extraction, and entry builder for GM data.
 
-import { normalizeModelDisplayName, registerResponseModelAlias } from '../models';
+import { normalizeModelDisplayName, registerResponseModelAlias, resolveModelId } from '../models';
 import type {
     GMCallEntry,
     GMCheckpointSummary,
     GMCompletionConfig,
     GMModelAccuracy,
+    GMModelSource,
     GMPromptSource,
     GMSystemContextItem,
     GMSystemContextType,
@@ -192,7 +193,8 @@ export function extractCheckpointSummaries(messagePrompts: unknown): GMCheckpoin
     const summaries: GMCheckpointSummary[] = [];
     if (!Array.isArray(messagePrompts)) { return summaries; }
 
-    for (const item of messagePrompts) {
+    for (let i = 0; i < messagePrompts.length; i++) {
+        const item = messagePrompts[i];
         if (!item || typeof item !== 'object') { continue; }
         const rec = item as Record<string, unknown>;
         const source = String(rec.source || '');
@@ -203,7 +205,9 @@ export function extractCheckpointSummaries(messagePrompts: unknown): GMCheckpoin
         if (!match) { continue; }
 
         const checkpointNumber = parseInt(match[1], 10);
-        const stepIndex = typeof rec.stepIdx === 'number' ? rec.stepIdx : -1;
+        const stepIndex = typeof rec.stepIdx === 'number' && rec.stepIdx >= 0 
+            ? rec.stepIdx 
+            : (100000 + i * 100 + checkpointNumber);
         const tokens = typeof rec.numTokens === 'number' ? rec.numTokens : 0;
 
         // Extract ONLY from {{ CHECKPOINT N }} onwards — skip system preamble
@@ -349,7 +353,8 @@ export function extractSystemContextItems(messagePrompts: unknown): GMSystemCont
     const items: GMSystemContextItem[] = [];
     if (!Array.isArray(messagePrompts)) { return items; }
 
-    for (const item of messagePrompts) {
+    for (let i = 0; i < messagePrompts.length; i++) {
+        const item = messagePrompts[i];
         if (!item || typeof item !== 'object') { continue; }
         const rec = item as Record<string, unknown>;
         const source = String(rec.source || '');
@@ -361,15 +366,17 @@ export function extractSystemContextItems(messagePrompts: unknown): GMSystemCont
         const classification = classifySystemContext(prompt);
         if (!classification) { continue; }
 
-        const stepIdx = typeof rec.stepIdx === 'number' ? rec.stepIdx : -1;
-        const tokens = typeof rec.numTokens === 'number' ? rec.numTokens : 0;
-
         // For checkpoints, extract the number
         let checkpointNumber: number | undefined;
         if (classification.type === 'checkpoint') {
             const cpMatch = prompt.match(/CHECKPOINT\s+(\d+)/);
             checkpointNumber = cpMatch ? parseInt(cpMatch[1], 10) : undefined;
         }
+
+        const stepIdx = typeof rec.stepIdx === 'number' && rec.stepIdx >= 0 
+            ? rec.stepIdx 
+            : (100000 + i * 100 + (checkpointNumber !== undefined ? checkpointNumber : 0));
+        const tokens = typeof rec.numTokens === 'number' ? rec.numTokens : 0;
 
         // Cap full text to avoid UI bloat
         const MAX_TEXT = 12000;
@@ -451,6 +458,156 @@ export function extractPromptData(cm: Record<string, unknown>): {
 
 // ─── Entry Parsing & Enrichment ──────────────────────────────────────────────
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+}
+
+function readPath(root: Record<string, unknown>, path: string[]): unknown {
+    let current: unknown = root;
+    for (const key of path) {
+        const rec = asRecord(current);
+        if (!rec) { return undefined; }
+        current = rec[key];
+    }
+    return current;
+}
+
+function cleanModelCandidate(value: unknown): string {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function isUnspecifiedModelId(modelId: string): boolean {
+    const upper = modelId.trim().toUpperCase();
+    return !upper || upper === 'MODEL_UNSPECIFIED' || upper === 'MODEL_PLACEHOLDER_UNSPECIFIED';
+}
+
+function resolveConcreteModelId(value: unknown): string {
+    const raw = cleanModelCandidate(value);
+    if (!raw) { return ''; }
+    const resolved = resolveModelId(raw) || raw;
+    if (isUnspecifiedModelId(resolved)) { return ''; }
+    return resolved.startsWith('MODEL_') ? resolved : '';
+}
+
+function isConcreteModelId(modelId: string | undefined): boolean {
+    return !!modelId && !!resolveConcreteModelId(modelId);
+}
+
+function readModelFromUnknown(value: unknown): string {
+    const direct = resolveConcreteModelId(value);
+    if (direct) { return direct; }
+    const rec = asRecord(value);
+    return rec ? resolveConcreteModelId(rec.model) : '';
+}
+
+function pickParsedModel(rawModelId: unknown, responseModel: string): { model: string; modelSource: GMModelSource } {
+    const directModelId = resolveConcreteModelId(rawModelId);
+    if (directModelId) {
+        if (responseModel) {
+            registerResponseModelAlias(responseModel, directModelId);
+        }
+        return { model: directModelId, modelSource: 'chatModel' };
+    }
+
+    const responseAliasModel = resolveConcreteModelId(responseModel);
+    if (responseAliasModel) {
+        return { model: responseAliasModel, modelSource: 'responseAlias' };
+    }
+
+    return { model: '', modelSource: 'unknown' };
+}
+
+function shouldUseFallbackModel(primary: GMCallEntry, fallback: GMCallEntry): boolean {
+    if (!isConcreteModelId(fallback.model)) { return false; }
+    if (!isConcreteModelId(primary.model)) { return true; }
+    const primaryLowTrust = primary.modelSource === 'responseAlias' || primary.modelSource === 'unknown';
+    const fallbackHighTrust = fallback.modelSource === 'chatModel' || fallback.modelSource === 'trajectory';
+    return primaryLowTrust && fallbackHighTrust;
+}
+
+export function extractTrajectoryModelHints(steps: unknown): Map<number, string> {
+    const hints = new Map<number, string>();
+    if (!Array.isArray(steps)) { return hints; }
+
+    for (let i = 0; i < steps.length; i++) {
+        const step = asRecord(steps[i]);
+        if (!step) { continue; }
+        const stepIndex = typeof step.stepIndex === 'number' && step.stepIndex >= 0
+            ? step.stepIndex
+            : i;
+        const candidates = [
+            readPath(step, ['metadata', 'requestedModel']),
+            readPath(step, ['metadata', 'requestedModel', 'model']),
+            readPath(step, ['metadata', 'generatorModel']),
+            readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'requestedModel']),
+            readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'requestedModel', 'model']),
+        ];
+        const model = candidates.map(readModelFromUnknown).find(Boolean);
+        if (model && !hints.has(stepIndex)) {
+            hints.set(stepIndex, model);
+        }
+    }
+
+    return hints;
+}
+
+function pickTrajectoryModelForCall(call: GMCallEntry, hints: Map<number, string>): string {
+    const counts = new Map<string, number>();
+    for (const stepIdx of call.stepIndices) {
+        const model = hints.get(stepIdx);
+        if (model) {
+            counts.set(model, (counts.get(model) || 0) + 1);
+        }
+    }
+    if (counts.size === 0 && call.startStepIndex >= 0) {
+        return hints.get(call.startStepIndex) || '';
+    }
+    let bestModel = '';
+    let bestCount = 0;
+    for (const [model, count] of counts) {
+        if (count > bestCount) {
+            bestModel = model;
+            bestCount = count;
+        }
+    }
+    return bestModel;
+}
+
+export function applyTrajectoryModelHints(calls: GMCallEntry[], steps: unknown): GMCallEntry[] {
+    if (calls.length === 0) { return calls; }
+    const hints = extractTrajectoryModelHints(steps);
+    if (hints.size === 0) { return calls; }
+
+    let changed = false;
+    const updated = calls.map(call => {
+        const hasAuthoritativeModel = isConcreteModelId(call.model)
+            && call.modelSource !== 'responseAlias'
+            && call.modelSource !== 'unknown';
+        if (hasAuthoritativeModel) {
+            return call;
+        }
+
+        const model = pickTrajectoryModelForCall(call, hints);
+        if (!model || model === call.model) {
+            return call;
+        }
+        if (call.responseModel) {
+            registerResponseModelAlias(call.responseModel, model);
+        }
+        changed = true;
+        return {
+            ...call,
+            model,
+            modelDisplay: normalizeModelDisplayName(model),
+            modelSource: 'trajectory' as GMModelSource,
+        };
+    });
+
+    return changed ? updated : calls;
+}
+
 export function buildGMMatchKey(call: Pick<GMCallEntry, 'executionId' | 'stepIndices' | 'model' | 'responseModel'>): string {
     if (call.executionId) {
         return `exec:${call.executionId}`;
@@ -464,10 +621,19 @@ export function buildGMArchiveKey(call: Pick<GMCallEntry, 'stepIndices' | 'model
 
 export function mergeGMCallEntries(primary: GMCallEntry, fallback: GMCallEntry): GMCallEntry {
     const useFallbackPrompt = !primary.promptSnippet && !!fallback.promptSnippet;
+    const useFallbackModel = shouldUseFallbackModel(primary, fallback);
+    const mergedResponseModel = primary.responseModel || fallback.responseModel;
+    const mergedModel = useFallbackModel ? fallback.model : primary.model;
+    if (mergedResponseModel && mergedModel) {
+        registerResponseModelAlias(mergedResponseModel, mergedModel);
+    }
     return {
         ...primary,
-        responseModel: primary.responseModel || fallback.responseModel,
-        modelAccuracy: primary.responseModel || fallback.responseModel ? 'exact' : primary.modelAccuracy,
+        model: mergedModel,
+        modelDisplay: useFallbackModel ? fallback.modelDisplay : primary.modelDisplay,
+        modelSource: useFallbackModel ? fallback.modelSource : primary.modelSource,
+        responseModel: mergedResponseModel,
+        modelAccuracy: mergedResponseModel ? 'exact' : primary.modelAccuracy,
         systemPromptSnippet: primary.systemPromptSnippet || fallback.systemPromptSnippet,
         toolCount: Math.max(primary.toolCount, fallback.toolCount),
         toolNames: uniqueStrings([...primary.toolNames, ...fallback.toolNames]),
@@ -604,6 +770,9 @@ export function shouldEnrichConversation(stepCount: number, calls: GMCallEntry[]
     if (calls.some(call => call.modelAccuracy === 'placeholder')) {
         return true;
     }
+    if (calls.some(call => !isConcreteModelId(call.model) || call.modelSource === 'responseAlias' || call.modelSource === 'unknown')) {
+        return true;
+    }
     // Conversations with checkpoints have been context-compressed;
     // enrichment is needed to extract checkpoint summaries from messagePrompts
     // (only available in GetCascadeTrajectory, not the lightweight GM metadata API).
@@ -650,15 +819,10 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         creditType = consumedCredits[0].creditType || '';
     }
 
-    const modelId = (cm.model as string) || '';
-    const responseModel = (cm.responseModel as string) || '';
+    const responseModel = cleanModelCandidate(cm.responseModel);
+    const parsedModel = pickParsedModel(cm.model, responseModel);
+    const modelId = parsedModel.model;
     const modelAccuracy: GMModelAccuracy = responseModel ? 'exact' : 'placeholder';
-
-    // Register responseModel -> placeholder alias for display name resolution
-    // e.g. 'gemini-pro-default' -> 'MODEL_PLACEHOLDER_M16' -> "Gemini 3.1 Pro (High)"
-    if (responseModel && modelId) {
-        registerResponseModelAlias(responseModel, modelId);
-    }
 
     // Model DNA fields
     const completionConfig = parseCompletionConfig(cm.completionConfig as Record<string, unknown>);
@@ -739,9 +903,10 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         stepIndices: (gm.stepIndices as number[]) || [],
         executionId: (gm.executionId as string) || '',
         model: modelId,
-        modelDisplay: normalizeModelDisplayName(modelId || ''),
+        modelDisplay: normalizeModelDisplayName(modelId || responseModel || cleanModelCandidate(cm.model)),
         responseModel,
         modelAccuracy,
+        modelSource: parsedModel.modelSource,
         inputTokens: parseInt0(usage.inputTokens as string),
         outputTokens: parseInt0(usage.outputTokens as string),
         thinkingTokens: parseInt0(usage.thinkingOutputTokens as string),
@@ -786,3 +951,84 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         contextWindowCapacity,
     };
 }
+
+/** Extract checkpoint summaries directly from CORTEX_STEP_TYPE_CHECKPOINT steps in trajectory */
+export function extractCheckpointsFromTrajectorySteps(steps: unknown): GMCheckpointSummary[] {
+    const summaries: GMCheckpointSummary[] = [];
+    if (!Array.isArray(steps)) { return summaries; }
+
+    let checkpointSeq = 1;
+    for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        if (!step || typeof step !== 'object') { continue; }
+        const stepType = String(step.type || '');
+        if (!stepType.includes('CHECKPOINT')) { continue; }
+
+        const cp = step.checkpoint as Record<string, unknown> | undefined;
+        if (!cp) { continue; }
+
+        const meta = (step.metadata || {}) as Record<string, unknown>;
+        const modelUsage = (meta.modelUsage || {}) as Record<string, unknown>;
+        const inTok = typeof modelUsage.inputTokens === 'number' ? modelUsage.inputTokens : parseInt(String(modelUsage.inputTokens || '0'), 10);
+
+        // 提取 checkpoint 编号，如果拿不到就按出现顺序自增
+        let checkpointNumber = typeof cp.checkpointIndex === 'number' ? cp.checkpointIndex : undefined;
+        if (checkpointNumber === undefined && cp.intentOnly === true) {
+            checkpointNumber = 0; // 第0次，生成意图
+        } else if (checkpointNumber === undefined) {
+            checkpointNumber = checkpointSeq++;
+        }
+
+        // 拼装比以前还要精美详细的 fullText！
+        const userIntent = cp.userIntent ? String(cp.userIntent) : '';
+        const sessionSummary = cp.sessionSummary ? String(cp.sessionSummary) : '';
+        const userRequests = cp.userRequests as unknown;
+        const fileDiffs = cp.trajectoryFileDiffs as Array<Record<string, unknown>> | undefined;
+
+        let formattedText = ``;
+        if (cp.intentOnly === true) {
+            formattedText += `### 意图与摘要生成 (Intent Only)\n`;
+        } else {
+            formattedText += `### 上下文压缩 (Full Checkpoint)\n`;
+        }
+
+        if (userIntent) {
+            formattedText += `**所含意图 (Intent)**:\n${userIntent}\n\n`;
+        }
+
+        if (sessionSummary) {
+            formattedText += `**会话总结 (Session Summary)**:\n${sessionSummary}\n\n`;
+        }
+
+        if (userRequests) {
+            const reqs = Array.isArray(userRequests) ? userRequests : [String(userRequests)];
+            if (reqs.length > 0) {
+                formattedText += `**所含请求 (Requests)**:\n${reqs.map(r => `- ${r}`).join('\n')}\n\n`;
+            }
+        }
+
+        if (fileDiffs && fileDiffs.length > 0) {
+            formattedText += `**代码文件变更 (File Diffs)**:\n`;
+            for (const fd of fileDiffs) {
+                const fPath = fd.filePath || fd.path || '';
+                if (fPath) {
+                    formattedText += `- ${fPath}\n`;
+                }
+            }
+        }
+
+        const stepIndex = typeof step.stepIndex === 'number' && step.stepIndex >= 0 
+            ? step.stepIndex 
+            : (100000 + i * 100 + checkpointNumber);
+
+        summaries.push({
+            checkpointNumber,
+            stepIndex,
+            tokens: inTok > 0 ? inTok : (typeof cp.tokens === 'number' ? cp.tokens : 0),
+            fullText: formattedText.trim()
+        });
+    }
+
+    return summaries.sort((a, b) => a.checkpointNumber - b.checkpointNumber);
+}
+

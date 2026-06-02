@@ -16,8 +16,6 @@ const ABOUT_ICON = {
     cost: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
     /** CPU — Models */
     models: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>',
-    /** Clock/gauge — Quota Tracking */
-    quota: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
     /** Calendar — Calendar */
     calendar: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
     /** Person — Profile */
@@ -82,18 +80,8 @@ function getFeatureCards(): FeatureCard[] {
             color: 'var(--color-ok)',
             title: tBi('Models', '模型'),
             description: tBi(
-                'All available AI models and their configurations: quota pools, reset times, rate limits, and supported MIME types.',
-                '所有可用 AI 模型及其配置：额度池、重置时间、速率限制、支持的 MIME 类型。',
-            ),
-        },
-        {
-            tabId: 'history',
-            icon: ABOUT_ICON.quota,
-            color: 'var(--color-amber-light)',
-            title: tBi('Quota Tracking', '额度追踪'),
-            description: tBi(
-                'Track quota consumption across reset cycles. View historical usage sessions with per-model call counts and credential costs.',
-                '跨重置周期追踪额度消耗。查看历史使用会话，含每模型调用次数和积分费用。',
+                'All available AI models and their configurations: quota pools, reset times, context limits, and thinking capabilities.',
+                '所有可用 AI 模型及其配置：额度池、重置时间、有效上下文限制、以及思考能力参数。',
             ),
         },
         {
@@ -122,8 +110,8 @@ function getFeatureCards(): FeatureCard[] {
             color: 'var(--color-muted)',
             title: tBi('Settings', '设置'),
             description: tBi(
-                'Plugin preferences: polling interval, status bar toggles, context limits, storage diagnostics, and data management.',
-                '插件偏好：轮询间隔、状态栏开关、上下文限制、存储诊断和数据管理。',
+                'Plugin preferences: polling interval, status bar toggles, quota warnings, storage diagnostics, and data management.',
+                '插件偏好：轮询间隔、状态栏开关、低额度警报、存储诊断和数据管理。',
             ),
         },
     ];
@@ -150,7 +138,7 @@ export function buildAboutTabContent(): string {
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                 IDE
             </span>
-            <span class="about-platform-chip about-platform-related" aria-label="Desktop: separate companion project">
+            <span class="about-platform-chip" aria-label="Desktop: not supported">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="3"/></svg>
                 ${tBi('Desktop', '桌面版')}
             </span>
@@ -164,8 +152,8 @@ export function buildAboutTabContent(): string {
             </span>
         </div>
         <p class="about-platform-note">${tBi(
-        'This plugin is designed for the <strong>Antigravity IDE</strong> platform. A standalone <strong>Desktop Monitor</strong> is available for the Antigravity Desktop App. SDK and CLI are separate product lines and are not supported.',
-        '本插件面向 <strong>Antigravity IDE</strong> 平台开发。<strong>桌面版监控工具</strong>可独立监控 Antigravity 桌面客户端。SDK 和 CLI 为独立产品线，不在支持范围内。',
+        'This plugin is designed for the <strong>Antigravity IDE</strong> platform. Desktop, SDK, and CLI are separate product lines and are not supported.',
+        '本插件面向 <strong>Antigravity IDE</strong> 平台开发。桌面版、SDK 和 CLI 均为独立产品线，不在支持范围内。',
     )}</p>
     </div>`;
 
@@ -223,8 +211,8 @@ export function buildAboutTabContent(): string {
         </h3>
         <div class="about-info-box about-info-tips">
             <p>${tBi(
-        'Recommended: use a single IDE window. Multi-window setups may cause data desync between instances (e.g. activity timeline, quota tracking).',
-        '建议使用单窗口运行。多窗口可能导致实例间数据不同步（如活动时间线、额度追踪等）。',
+        'Recommended: use a single IDE window. Multi-window setups may cause data desync between instances (e.g. activity timeline and GM data refresh).',
+        '建议使用单窗口运行。多窗口可能导致实例间数据不同步（如活动时间线和 GM 数据刷新）。',
     )}</p>
         </div>
     </div>`;
@@ -253,8 +241,8 @@ export function buildAboutTabContent(): string {
         </h3>
         <div class="about-info-box about-info-disclaimer">
             ${tBi(
-        '<p><strong>This is an unofficial community project and is not affiliated with, endorsed by, or associated with Google.</strong> It acts strictly in read-only mode to visualize usage data. Use at your own risk.</p><p>Data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Metrics are derived from Generator Metadata, checkpoint snapshots, or character-based heuristics. <strong>All numbers are best-effort approximations.</strong></p><p><strong>Context Window Limitation:</strong> Antigravity does not utilize the full context window advertised by the underlying model. Current platform thresholds are roughly <strong>80K–160K tokens</strong>, depending on model.</p>',
-        '<p><strong>本分支扩展为非官方社区开源项目，与 Google 没有任何关联或官方背书。</strong>本工具仅以只读模式监控本地内部 API 用于可视化个人日常数据，使用风险自负。</p><p>数据通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。指标来自 Generator Metadata、检查点快照或字符启发式计算。<strong>所有数值均为尽力计算的近似值。</strong></p><p><strong>上下文窗口限制：</strong>Antigravity 并未适配底层模型标称的完整上下文窗口，当前平台阈值依模型不同大致为 <strong>80K–160K Token</strong>。</p>',
+        '<p><strong>This is an unofficial community project and is not affiliated with, endorsed by, or associated with Google.</strong> It acts strictly in read-only mode to visualize usage data. Use at your own risk.</p><p>Data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Metrics are derived from Generator Metadata, checkpoint snapshots, or character-based heuristics. <strong>All numbers are best-effort approximations.</strong></p><p><strong>Context Window Limitation:</strong> Antigravity does not utilize the full context window advertised by the underlying model. The actual effective context window is dynamically determined based on the checkpoint parameters of each model, which roughly ranges from <strong>80K to 256K tokens</strong>.</p>',
+        '<p><strong>本分支扩展为非官方社区开源项目，与 Google 没有任何关联或官方背书。</strong>本工具仅以只读模式监控本地内部 API 用于可视化个人日常数据，使用风险自负。</p><p>数据通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。指标来自 Generator Metadata、检查点快照或字符启发式计算。<strong>所有数值均为尽力计算的近似值。</strong></p><p><strong>上下文窗口限制：</strong>Antigravity 并未适配底层模型标称的完整上下文窗口。实际有效上下文是根据每个模型对应的检查点（checkpoint）数据动态确定的，当前平台实际有效阈值大致为 <strong>80K–256K Token</strong>。</p>',
     )}
         </div>
     </div>`;

@@ -1,5 +1,200 @@
 # 变更日志 / Changelog
 
+## [1.16.11-Pending] - 2026-06-01
+
+### 🐛 Fixed / 修复
+
+- **Quota-reset settlement no longer triggered by resetTime drift / 额度重置结算不再被 resetTime 漂移误触发**:
+  Added a stricter reset-time turnover gate: settlement now requires the previous reset time to have passed and the new reset time to jump forward by a meaningful cycle window. Small future drift or first-use resetTime correction no longer moves today's active ledger into the settled bucket. GM archival filtering now prefers exact archived call IDs when hydrated calls are available, and stale future account-model cutoffs are purged on restore/build/serialize so they cannot keep hiding later same-model calls.
+  新增更严格的 resetTime 周期切换判定：只有旧 resetTime 已经过期，并且新 resetTime 向未来发生明确周期跳转时才触发结算。小幅未来漂移或首次使用后的 resetTime 校正，不会再把“今日累计”提前搬到“已结算”。GM 归档过滤在有明细调用时优先使用精确 call ID，恢复态遗留的未来 account-model cutoff 会在 restore/build/serialize 路径清理，避免继续隐藏后续同模型调用。
+
+- **Live GM panels no longer replay stale persisted snapshots / GM 实时面板不再回放旧持久化快照**:
+  `getUiSummary()` and the UI full-summary path now wait for live GM hydration instead of returning restored `_lastSummary` as if it were current data. The GM Data model cards also require a live `gm.modelBreakdown` and no longer fall back to stale Activity summary fragments. This prevents Context Intelligence, Context Growth, Conversation Distribution, Error Details, and Model Stats from displaying old data as live state after startup or account/model switches.
+  `getUiSummary()` 和 UI full-summary 路径现在会等待 GM 实时补拉完成，不再把恢复态 `_lastSummary` 当作当前数据返回。GM Data 的模型卡片也只读取实时 `gm.modelBreakdown`，不再回退到旧 Activity 摘要片段。这样可以避免启动或切换账号/模型后，把旧的上下文情报、上下文增长、对话分布、错误详情和模型统计冒充为实时数据。
+
+- **Hardened GM model identity capture for M132/M133-style drift / 加固 GM 模型身份捕捉，避免 M132/M133 误归并**:
+  `chatModel.model` is now treated as the authoritative model identity. If GM metadata is missing the model or only resolved through a low-trust `responseModel` alias, the enriched trajectory path can fill it from `steps[].metadata.requestedModel`, `metadata.generatorModel`, or the user planner requested model. `responseModel` alias registration now rejects conflicting remaps and unspecified targets, and each GM call records an optional `modelSource` for diagnostics.
+  现在以 `chatModel.model` 作为最高可信模型身份。若 GM 元数据缺少模型，或只能通过低可信 `responseModel` 别名推断，则完整 trajectory 增强路径会从 `steps[].metadata.requestedModel`、`metadata.generatorModel` 或用户 planner requested model 中补齐。`responseModel` 别名注册现在会拒绝冲突重映射和 unspecified 目标，每条 GM 调用也会记录可选的 `modelSource` 方便后续诊断。
+
+- **GM Data containers disappearing after restart or idle restore / 重启或恢复态下 GM 容器消失**:
+  Prevented `GMTracker.fetchAll()` from skipping restored idle conversation stubs whose `calls` array is still empty, and rehydrated file-backed `gmDetailedSummary` into `GMTracker` during startup. This fixes cases where `Context Intelligence`, `Conversations`, `Context Growth`, and `Error Details` vanished until the user re-activated the conversation manually.
+  修复 `GMTracker.fetchAll()` 在恢复态下误跳过空 `calls` 的 idle 对话 stub，并在启动时将文件持久化的 `gmDetailedSummary` 回灌进 `GMTracker`。这解决了 `上下文情报`、`对话分布`、`上下文增长`、`错误详情` 等 GM 容器在重启后消失、必须重新操作当前对话才恢复的问题。
+
+- **Missed refresh when only GM details changed / 仅 GM 细节变化时漏刷新的问题**:
+  Replaced the old coarse `hasGMSummaryChanged()` counters-only check with a lightweight signature over model DNA, context growth, tool/error distributions, tool catalog, recent error entries, and per-conversation latest call / checkpoint / system-context content. Panel refresh and persistence now trigger even when totals stay the same but GM detail fields have changed.
+  将原来只比较总调用数和总 token 的粗粒度 `hasGMSummaryChanged()` 判定，改为覆盖模型 DNA、上下文增长、工具/错误分布、工具目录、最近错误条目，以及每个对话 latest call / checkpoint / system-context 内容的轻量签名。现在即便总量不变，只要 GM 明细变化，面板刷新和持久化也会正常触发。
+
+- **Stale Sessions GM snapshot when call count stayed flat / 调用数不变时 Sessions 页 GM 快照卡旧值**:
+  `monitor-store.ts` now compares latest GM call identity, latest model, credits, and timestamp instead of only `calls.length`, so the Sessions tab keeps up with GM detail changes that do not increase the number of calls.
+  `monitor-store.ts` 现在比较 latest GM call 标识、最新模型、积分和时间，而不再只看 `calls.length`，因此 Sessions 标签页在“调用数没增加但 GM 细节已变化”的情况下也能及时更新。
+
+- **Recent Activity warm-up no longer hard-capped at 30 and runtime timeline no longer truncates / 最近操作不再受 30 条硬编码和运行时截断限制**:
+  Removed the old warm-up tail cap that only injected the last 30 steps per conversation, and stopped trimming the live `recentSteps` runtime buffer. The timeline now keeps the full in-memory recent activity stream for the current session, while persistence still applies a safety cap to avoid uncontrolled state-file growth after restart.
+  移除了启动 warm-up 阶段“每个对话只注入最后 30 步”的硬编码，并取消了运行时 `recentSteps` 缓冲区的实时裁剪。现在当前会话中的最近操作时间线会保留完整内存流，持久化阶段仍保留安全上限，避免重启恢复时状态文件无限膨胀。
+
+- **Midnight archival no longer skipped by early-return poll branches / 午夜归档不再被轮询提前返回分支跳过**:
+  Moved the daily archival check to the front half of the polling cycle and refreshed the panel even when there is no current conversation. This fixes cases where crossing midnight with no active chat could leave the previous day unarchived until a later interaction.
+  将每日归档检查前置到轮询前半段，并补上“当前无对话”分支的面板刷新。这样跨过午夜但当时没有活跃聊天时，也不会再因为提前 return 而把前一天归档拖到后面某次交互才执行。
+
+- **DailyLedger day-bucket boundary hardening / DailyLedger 日期桶边界加固**:
+  `DailyLedger.recordCalls()` now rejects calls that fall outside the bucket's local-day window on both sides, blocking not only historical backfill pollution but also future-day calls from being written into the current day's ledger during cross-midnight reload scenarios.
+  `DailyLedger.recordCalls()` 现在会同时拒绝落在当前日期桶之外两侧的调用时间，既阻断历史回灌污染，也阻断跨午夜重载场景下“已属于下一天”的调用误写入当天账本。
+
+- **Quota Tracking UI removed while retaining backend settlement logic / 移除额度追踪 UI，保留后端结算链路**:
+  Removed the dedicated `Quota Tracking` tab, the related Settings toggle, the About navigation card, and the obsolete `webview-history-tab.ts` renderer. `QuotaTracker` remains in place as a backend-only component for quota-reset settlement, cached-account archival, and GM summary repair, but the panel no longer passes its instance through the webview payload.
+  移除了独立的 `Quota Tracking` 标签页、对应的设置开关、About 导航卡片，以及已经无用的 `webview-history-tab.ts` 渲染器。`QuotaTracker` 仍作为纯后端组件保留，用于额度重置结算、缓存账号归档和 GM 摘要修复，但面板不再通过 webview payload 传递它的实例。
+
+- **Removed Settings debug/testing controls / 移除设置页调试入口**:
+  Deleted the Settings tab's debug/testing card and its private simulate/restore/clear command chain, along with the temporary dev snapshot state. This leaves the production panel focused on user-facing configuration only.
+  删除了设置页中的调试/测试卡片，以及对应的模拟归档、恢复快照、清空调试命令链和临时快照状态，使正式面板只保留面向用户的配置项。
+
+### ✅ Tests / 测试
+
+- **Added regression coverage for quota reset filtering and model capture / 新增额度重置过滤与模型捕捉回归测试**:
+  Added `tests/reset-time-turnover.test.ts`, `tests/gm-quota-reset-filter.test.ts`, and `tests/gm-model-capture.test.ts` to cover resetTime drift suppression, exact-call quota archival, stale future cutoff cleanup, trajectory model fallback, responseModel alias conflict protection, and authoritative `chatModel.model` preservation.
+  新增 `tests/reset-time-turnover.test.ts`、`tests/gm-quota-reset-filter.test.ts`、`tests/gm-model-capture.test.ts`，覆盖 resetTime 漂移抑制、精确调用归档、陈旧未来 cutoff 清理、trajectory 模型兜底、responseModel 别名冲突保护，以及明确 `chatModel.model` 不被覆盖。
+
+- **Added regression coverage for GM restore and detail-refresh paths / 新增 GM 恢复与细节刷新回归测试**:
+  Added `tests/gm-tracker-restore-fetch.test.ts`, `tests/gm-summary-change.test.ts`, and `tests/monitor-store-gm.test.ts` to cover restored idle stub re-fetching, detailed GM summary diffing, and Sessions GM snapshot refresh behavior.
+  新增 `tests/gm-tracker-restore-fetch.test.ts`、`tests/gm-summary-change.test.ts`、`tests/monitor-store-gm.test.ts`，覆盖恢复态 idle stub 补拉、GM 细节摘要比对，以及 Sessions 页 GM 快照刷新行为。
+
+- **Added time-simulation coverage for rollover and recent-activity behavior / 新增跨午夜与最近操作时间模拟测试**:
+  Added `tests/activity-recent-steps.test.ts`, `tests/daily-ledger-date-filter.test.ts`, and `tests/daily-archival-time.test.ts` to cover full warm-up activity injection, local-day ledger boundary filtering, cross-midnight archival rollover, and stale-ledger startup recovery.
+  新增 `tests/activity-recent-steps.test.ts`、`tests/daily-ledger-date-filter.test.ts`、`tests/daily-archival-time.test.ts`，覆盖最近操作 warm-up 全量注入、本地日期边界过滤、跨午夜归档 rollover，以及 stale ledger 启动补归档。
+
+### ✨ Added & Refactored / 新增与重构
+
+- **Double-ledger multi-path cost breakdown merging / 双轨多路账本费用并轨归并**:
+  Redesigned the "Pricing" tab rendering logic to pass both the settled ledger (`lastLedgerSettled`) and the daily active ledger (`lastTodayLedgerActive`) directly to `buildPricingTabContent()`. Merges active ledger's per-model token metrics (input, output, cache, and thinking) with settled ledger's proportional metrics under a unified dual-ledger merging routine. This resolves the empty pricing card warning ("Cost analysis will appear...") and retains the day's total telemetry (e.g. merging today's $11.64 active cost with $0.818 settled cost for a $12.458 grand total) even when switching to idle/no-conversation sessions.
+  重构“费用（Pricing）”选项卡的渲染链路，支持将已结算账本 `lastLedgerSettled` 与今日活跃账本 `lastTodayLedgerActive` 共同传入 `buildPricingTabContent()`。通过双轨并轨归并算法，将今日活跃账本中分模型分项 Token 与费用，同已结算账本的历史分摊数据进行归并汇总。这解决了切换到空闲/无对话会话时出现的“费用分析将在 GM 数据可用后显示”显示空白卡片问题，并整合全天发生的总计费用（例如将今日活跃的 $11.64 与已结算的 $0.818 合并为 $12.458 汇总展示）。
+
+- **Called custom pricing model highlighting / 高亮今天已使用自定义价格模型**:
+  Extracted all active responseModel IDs directly from the dual-ledger merged rows to compile a dedicated `calledModelKeys` set, passing it directly to `buildEditablePricingTable()`. Features lookups via `calledModelKeys.has(entry.responseModel)`. This decouples the custom pricing card from the current conversation's volatile memory, ensuring that all models called today remain highlighted across any chat session restarts.
+  直接从双轨归并汇总后得到的 `rows` 模型明细中动态提取今天实际有消耗和 Token 产生的 `responseModel` ID 集合 `calledModelKeys`，并将其作为高亮基准传入 `buildEditablePricingTable()`。这使得自定义价格表格的高亮状态与当前对话的易失性 Summary 解耦，无论切换到哪个对话，今天使用过的模型都能够在自定义价格列表中高亮显示。
+
+- **Dead code removal for pendingArchives container / 移除与清理 pendingArchives 过时死代码**:
+  Removed the deprecated baselined cycles `pendingArchives` and `_pendingArchives` storage, serialize/restore, and reset lifetime routines across `gm/tracker.ts`, `daily-archival.ts`, and `gm/types.ts`, since the new `DailyLedger` now manages both active and settled telemetry as a single source of truth.
+  从 `gm/tracker.ts`、`daily-archival.ts`、`gm/types.ts`、`gm/index.ts` 及 `gm-tracker.ts` 中清空并删除了已废弃的模型重置待归档区 `pendingArchives` 容器及其对应的成员变量、写入、清空、序列化与再导出逻辑，由新增的 `DailyLedger` 增量记账提供统一的唯一真实数据源。
+
+### ⚙️ Refactored & Optimized / 重构与优化
+
+- **Automatic legacy data migration for seamless upgrades / 旧版数据自动迁移与平滑升级**:
+  Introduced a self-contained `legacy-migration.ts` module to auto-detect pre-2.0 Antigravity settings and SQLite databases (`state.vscdb`) upon extension activation. Extracts historical calendar records and language preferences via a child process invoking `node --experimental-sqlite`. Automatically merges retrieved history into `DailyStore` without overwriting active data.
+  新增独立的 `legacy-migration.ts` 模块，在插件激活时自动检测 2.0 之前旧版本 Antigravity 的 SQLite 数据库（`state.vscdb`）路径。通过子进程安全调用 `node --experimental-sqlite` 提取历史日历记录与语言偏好，并自动归并写入当前 `DailyStore`（只增量合并，不覆盖已有数据），实现平滑无缝升级。
+
+- **DailyStore.mergeRecords() for incremental data merging / DailyStore.mergeRecords() 增量日历合并**:
+  Added a safe merge utility to prevent accidental database overwrites during cross-version data recovery and import tasks.
+  新增跨版本数据恢复及导入时的增量合并方法，确保只写入缺失日期的记录，绝不覆盖或损坏已有日历数据。
+
+- **Comprehensive multi-account archival integration tests / 完善的多账号归档集成测试**:
+  Added `tests/multi-account-archival.test.ts` to ensure data isolation, serialization consistency, and robust multi-account baseline rollover.
+  新增 `tests/multi-account-archival.test.ts` 集成测试，全面覆盖多账号场景下的序列化、反序列化、额度重置归档流程，确保在多账号频繁切换和重置时日历统计的完整与强隔离。
+
+- **Unified Gemini Quota Pool mapping / 统一的 Gemini 额度池映射**:
+  Merged `gemini-pro` and `gemini-flash` quota pools into a single unified `gemini` pool in `KNOWN_QUOTA_POOLS` (defined in `src/models.ts`), aligning with the mid-2026 platform-level shared quota policy for the Gemini 3.5 model family.
+  将已知额度池中的 `gemini-pro` 和 `gemini-flash` 统一合并为单一的 `gemini` 额度池（在 `src/models.ts` 的 `KNOWN_QUOTA_POOLS` 中定义），以适配 2026 年中旬官方平台针对 Gemini 3.5 系列模型实行的共享配额新政策，保证跨模型的额度计数正确归属。
+
+### ⚙️ Refactored & Optimized / 重构与优化
+
+- **Daily date filter for GMTracker and UI Cards / 限制今日模型统计与界面卡片的数据来源日期**:
+  In `GMTracker._buildSummary()`, `getNewCallsSinceLastRecord()`, `baselineForQuotaReset()`, and `buildModelCards()`, calls are filtered by checking `Date.parse(createdAt) < dayStartMs`. This prevents historical calls from older or archived conversations from being counted in today's active metrics, while still allowing the "Recent Activity" timeline to render the full history.
+  在 `GMTracker._buildSummary()`、`getNewCallsSinceLastRecord()`、`baselineForQuotaReset()` 以及 `buildModelCards()` 中，统一增加今日当地零点时间戳过滤（`Date.parse(createdAt) < dayStartMs`）。这能阻断历史旧对话的数据污染今日模型调用和费用统计指标，同时确保“最近操作”面板依旧能显示全量操作历史。
+
+- **Skip redundant RPC requests for idle sessions / 自动跳过空闲对话的批量轮询**:
+  Optimized the `GMTracker.fetchAll()` loop by skipping RPC trajectory requests when a conversation is idle, not currently active, and its step count matches the cached state. This resolves the polling lag where concurrently checking dozen of dormant sessions could block initial loading for up to one minute.
+  优化 `GMTracker.fetchAll()` 批量轮询逻辑，当对话非当前活跃、处于空闲状态且总步骤数与本地缓存一致时，直接跳过 RPC 轨迹拉取请求。这解决了冷启动或轮询时因多条闲置对话并发发起 RPC 请求导致 Language Server 接口过载而延迟近一分钟的问题。
+
+- **Quota reset baseline with cutoff time tracking / 引入配额重置到期时间戳隔离与协同结算**:
+  Integrated quota reset tracking across both the background polling thread (`pollContextUsage`) and active account stat updates (`processAccountStats`). The tracking now passes the exact quota `resetTime` as a baseline cutoff parameter to `gmTracker.baselineForQuotaReset()`, cleanly separating the old cycle's calls from today's new calls. The legacy day-key check was removed to ensure that pending quota resets from prior days (e.g. after booting up from suspension) are fully settled without UI persistence issues or data confusion.
+  打通了后台轮询（`pollContextUsage`）与配额状态更新（`processAccountStats`）处的重置结算机制，支持将准确的额度重置时间 `resetTime` 传递给 `gmTracker.baselineForQuotaReset()` 作为截止时间戳。这保证了旧周期的数据在结算时不会与今天产生的新调用混淆。移除了旧的日期锁，确保前天或昨天等久未开机积累的过期重置能够被正常补算归档，解决 UI 容器在界面残留及数据统计混淆问题。
+
+- **Independent DailyLedger for GM call accounting / 独立的 DailyLedger 实时增量账本**:
+  The previous archival system relied on the Language Server's conversation cache, which is volatile — restarting the IDE or the LS dropping old conversations led to zero-data calendar entries. The new `DailyLedger` module records GM calls incrementally after every poll via `GMTracker.getNewCallsSinceLastRecord()`, with position-based tracking and `dedupKey` (cascadeId:arrayIndex) deduplication. Data is bucketed by date + account email and persisted to `globalState`, surviving IDE restarts.
+  旧的归档系统依赖 LS 的对话缓存（易失性数据）——重启 IDE 或 LS 丢弃旧对话后日历数据为空。新增 `DailyLedger` 模块，每次轮询后从 GMTracker 提取增量调用记录，采用位置追踪 + `dedupKey`（cascadeId:数组索引）去重机制。数据按日期+账号分桶，持久化到 `globalState`，跨重启不丢失。
+
+- **Quota-reset settlement decoupled from LS lifecycle / 额度重置结算与 LS 生命周期解耦**:
+  When a model's quota resets, `DailyLedger.settleForQuotaReset()` freezes the matching pool's accumulated stats into a separate "settled" bucket. This ensures pre-reset usage is preserved even if the LS subsequently drops the conversation data. At midnight, `rollover()` merges all active + settled data into the final daily snapshot for `DailyStore`.
+  模型配额重置时，`settleForQuotaReset()` 将对应池子的累积数据冻结到"已结算"区。即便 LS 随后丢弃对话数据，重置前的用量也不会丢失。午夜时 `rollover()` 将活跃 + 已结算数据合并写入日历快照。
+
+- **daily-archival.ts dual-path data sourcing / daily-archival.ts 双路径数据源**:
+  `performDailyArchival()` now prioritizes `DailyLedger.rollover()` as the GM data source. Falls back to the legacy `getArchivalSummary()` + `pendingArchives` path when the ledger is empty (e.g., fresh install transition period).
+  `performDailyArchival()` 现在优先使用 `DailyLedger.rollover()` 作为 GM 数据源。ledger 为空时（如刚安装的过渡期）降级到旧的 `getArchivalSummary()` + `pendingArchives` 路径。
+
+- **Dynamic Checkpointer limit capture with offset indicator / 实际限额动态捕捉机制与兜底指示**:
+  The extension dynamically queries the language server via LSP RPC (`GetAvailableModels`) upon connection or reconnection to retrieve genuine model context limits and overrides internal limits. Active parsing resolves and maps both canonical Placeholder IDs and model IDs simultaneously, robustly handling string-formatted values via `parseInt` extraction. Static fallback limits in the codebase are offset by -1,000 (1K) tokens (e.g., Gemini 3.5 Flash fallback is `127,000` instead of `128,000`), serving as a simple status indicator: if you see clean integers (e.g., `128,000`), dynamic capture is active; if you see offset limits (e.g., `127,000`), it has fallen back to static values.
+  插件启动或 LS 中途重连成功时，通过本地 LSP RPC 通道拉取官方可用模型列表，动态获取实际的模型上下文限额并改写内存限制。同时支持占位符 ID 与实际模型 ID 解析，并用 `parseInt` 兼容了 String 类型数据。主动将代码中所有静态兜底限制整体下调了 1K (1,000) tokens（例如 Gemini 3.5 Flash 设为 `127,000` 而非 `128,000`）。若 UI 呈现平整整数说明真实动态捕获生效；若呈现少 1K 限制说明处于兜底状态，便于前台验证。
+
+- **Removed redundant limits & warning threshold settings and upgraded to percentage-based adaptive warnings / 废除了冗余模型限制与警告阈值设置，升级为百分比自适应预警体系**:
+  Deprecated and removed the static `contextLimits` settings, the Settings WebView's `Model Context Limits` card, the `compressionWarningThreshold` configuration, and all associated IPC synchronization handlers. Status bar and hover warnings are now directly determined by the model context usage percentage (50% yellow warning, 80% red critical warning). This guarantees optimal warning behaviors automatically scaled for all current and future model architectures.
+  精简删除了已无必要的 `contextLimits` 配置项、`compressionWarningThreshold` 配置项、Webview 面板里的整张“压缩警告设置”卡片及全部对应的同步逻辑。状态栏及悬浮窗的警示变色一律直接改为基于当前模型真实占比的百分比自适应预警（50% 黄色警告，80% 红色强预警），无需任何手动微调即可在所有规格模型下自适应。
+
+- **Rebuilt the Models Tab's Model Info grid with dynamic capture & exact parameters / 重构“模型”选项卡的“模型信息”为动态获取与精确参数展现**:
+  Removed all hardcoded parameters from the codebase, initializing `activeModelSpecs` as an empty object `{}`. All specifications are dynamically captured via LSP RPC (`GetAvailableModels`) and injected at runtime. Display range is strictly mapped to active UI models (`configs`), filtering out backend command models. Precise numerical displays format lossless exact integers with thousands separators (e.g., `1,048,576 max tokens`) instead of fuzzy estimations (e.g. `1.0M`).
+  移除了代码库中硬编码参数常量（如 `DEFAULT_MODEL_SPECS`），初始参数设为 `{}`，规格完全依靠 LS 在运行时通过 RPC 拉取并动态注入。展示范围严格与前台可见的 UI 模型选项列表映射，精确过滤了后台命令行模型。数字规格全部升级为带千位分隔符的精准整数数字（如 `1,048,576 max tokens`），废除了原先模糊的单位估算。
+
+- **Removed redundant checkpointer limit from Model Quota cards / 剥离模型配额卡片中多余的限制展示**:
+  Removed the redundant checkpointer limit display from the individual quota cards to keep the UI clean, lightweight, and focused on a single source of truth.
+  剥离了“模型配额”卡片底部多余的模型限额文字节点渲染，避免信息重复展示，保持卡片界面的极简。
+
+### 🐛 Fixed / 修复
+
+- **Active conversation poll skip delay in Recent Activity / 活跃会话空闲跳过导致“最近操作”刷新延迟**:
+  Exempted the current active conversation (`!isCurrentActive`) from the `fetchAll` idle skip condition. While the batch skip routine successfully blocks concurrent RPC congestion for dozens of background idle threads during startup, it was overly aggressive and caught the active thread as well. The active conversation now correctly fetches Generator Metadata on every poll, ensuring that async-delayed GM calls from the backend render in the timeline instantly instead of lagging until the next manual step.
+  在 `fetchAll` 的批量跳过判定中增加了当前活跃会话豁免（`!isCurrentActive`）。这解决了先前空闲跳过逻辑设计过紧，将当前活跃会话也一并拦截，导致在 AI 结束后因服务端接口异步写入时差，前台“最近操作”发生卡顿或必须等下一次操作才刷新的问题。活跃会话现在在每次轮询时都会正常获取最新的 GM 轨迹数据。
+
+- **Language selection persistence / 语言切换跨会话持久化 (thanks @Yeoman-Hamilton, #59)**:
+  Originally planned to resolve the display language resetting to Bilingual across IDE sessions. However, developer @Yeoman-Hamilton addressed this in `v1.16.10` with a cohesive `setLanguage` double-write signature and a comprehensive suite of 9 real-file IO persistence tests. Recognizing their implementation is structurally cleaner and better tested, we have adopted their version into this branch and deprecated our draft adaptation.
+  本计划在此版本中修复重启 IDE 后语言偏好丢失的缺陷。合并 v1.16.10 时，注意到 @Yeoman-Hamilton 已在先前的 PR #59 中有效修复了此问题。其通过重构 `setLanguage` 实现了内聚度更高的全局与局部状态双写机制，并配备了 9 个基于真实文件 IO 的持久化单元测试。鉴于其方案在系统内聚性与测试完整性上更为完善，我们废弃了本地的过渡实现，全面合入了这一官方优化版本。
+
+- **Placeholder-data dedup collision causing undercounting / 占位数据去重碰撞导致调用次数不足**:
+  For RUNNING conversations, the lightweight GM metadata API returns calls with zero tokens and empty stepIndices. The original content-based callId generated identical keys for all calls in the same conversation, causing the ledger to reject valid new calls as duplicates. Fix: tracker now provides an externally-guaranteed unique `dedupKey` (cascadeId:arrayIndex) for each call.
+  RUNNING 状态的对话中，轻量级 GM 元数据 API 返回的 calls 全是占位数据（token 为 0、stepIndices 为空），基于内容生成的 callId 碰撞，导致 ledger 误拒有效的新调用。修复：tracker 为每个 call 提供外部保证唯一的 `dedupKey`（cascadeId:数组索引）。
+
+- **Conversation revert breaking ledger accumulation / 对话回退后 ledger 停止累计**:
+  When a user reverts to an earlier step, the calls array shrinks but `_ledgerPositions` retained the old (higher) value, preventing any subsequent calls from being captured. Additionally, new calls at reused array indices had colliding dedupKeys with previously recorded calls. Fix: (1) clamp position down when calls array shrinks, (2) clear stale dedup IDs for the reverted conversation via `clearRecordedIdsForConversation()`.
+  用户回退对话步骤时，calls 数组缩短但 `_ledgerPositions` 保持旧的高值，后续新增的 call 全部无法捕获。此外，新 call 在复用的数组索引位置上与旧 call 的 dedupKey 碰撞。修复：(1) 检测到 calls 缩短时将 position 降至当前长度；(2) 通过 `clearRecordedIdsForConversation()` 清除该对话的旧 dedup 索引。
+
+- **Restore missing Checkpoint cards and resolve virtual step duplication / 恢复影子 Checkpoint 卡片并解决虚拟步骤冲突**:
+  Newer IDE versions deprecated the USER message injection inside `messagePrompts`, rendering the previous regex parser blank. When shadow steps lacked native `stepIdx` values, the key fell back to a shared key (`-1`), causing extractions to override each other. Fix: implemented `extractCheckpointsFromTrajectorySteps(steps)` to parse checkpoints directly from `trajectory.steps` returned by the LSP RPC. Resolved key duplication by allocating high-range virtual step indices (`100000 + i * 100 + checkpointNumber`), and filtered out the raw virtual step IDs (`>= 100000`) in WebView chips.
+  新版 IDE 消息列表废弃了 USER 消息的 Checkpoint 注入导致提取失效。此外，影子步骤的 `stepIdx` 缺失时 Map 去重 Key 会退化为 `-1` 发生冲突覆盖。修复：实现 `extractCheckpointsFromTrajectorySteps(steps)` 直接从 `trajectory.steps` 提取 checkpoints；采用虚拟高数值区间 `100000 + i * 100 + checkpointNumber` 区分无 ID 步骤解决冲突，并在面板渲染时屏蔽这些虚拟步骤，优化 UI。
+
+- **Fix Checkpointer synchronization lock, type parsing, and UI display / 修复 Checkpointer 动态限制同步锁逻辑、字符串类型解析与面板展示失效**:
+  The initial implementation set `hasSyncedCheckpointer = true` before the asynchronous LSP RPC request completed. If the RPC failed or timed out during the early discovery phase, subsequent polling cycles lacked a retry mechanism, silencing the feature. Physical model IDs from the official RPC response (e.g., `gemini-3-flash-agent`) were mismatching canonical Placeholder IDs, and the `max_token_limit` value was returned as a String, which was silently filtered out by strict `typeof` constraints. Fix: introduced `isSyncingCheckpointer` status lock to prevent concurrent reentrance, updated the handler to only mark `hasSyncedCheckpointer = true` upon a successful RPC response (enabling retries on failure), enhanced parsing to resolve physical IDs, introduced `parseInt` to support string-formatted metrics under strict type constraints, and exposed the resolved Checkpointer limit directly in the Monitor Panel's model cards.
+  同步锁在异步 RPC 完成前被置为 true，若初期 RPC 失败则轮询没有重试机制；此外解析物理 ID 未能与内部 canonical ID 对齐，且 `max_token_limit` 为 String 类型在严格的类型约束下被忽略。修复：引入 `isSyncingCheckpointer` 状态锁防止并发重入，当且仅当 RPC 交互成功时标记同步完成（支持失败在后续轮询中重试），增强解析对齐实际模型 ID，引入 `parseInt` 兼容了 String，并在卡片中直接展示有效限制数值。
+
+- **Blank model quota on status bar and hover tooltip when idle / 空闲或无会话时状态栏模型配额及浮窗显示空白**:
+  Status bar rendering (`showNoConversation()` and `showIdle()`) filtered out model quota indicators (`quotaSuffix`) and reset countdowns (`resetSuffix`) when there was no active trajectory. In addition, the no-conversation tooltip skipped the `buildQuotaLines()` call table. Fix: updated both methods to accept an optional `modelId` (passing `lastKnownModel`), enabling proper quota rendering under idle/no-conversation states, and restored the full quota table in the no-conversation tooltip.
+  空闲或无会话状态下，状态栏过滤掉了模型配额比例和重置倒计时。此外，无会话悬浮提示也漏掉了配额表。修复：上述两个方法均支持接收可选的 `modelId` 参数，从而在空闲/无会话状态下正常显示额度百分比及倒计时，并在悬浮窗中补全了完整的配额详细表格。
+
+- **Model quota reset baseline matching mismatch / 模型额度重置基线化匹配失效**:
+  On quota reset, display labels (e.g. `["Gemini 3.1 Pro (High)"]`) were passed to `gmTracker.baselineForQuotaReset()`. If the reverse lookup `resolveModelId` failed, it fell back to matching the display label with the raw model ID (e.g., `"MODEL_PLACEHOLDER_M16"`), resulting in 0 matched calls. Fix: introduced `modelIds` in `AccountSnapshot` and `ResetPool`, and updated all `isPoolArchived()`, `baselineForQuotaReset()`, and `archiveExpiredSessions()` handlers to match using stable, canonical Model IDs, while retaining display label fuzzy matching as a fallback for 100% matching coverage.
+  模型额度重置时，如果反向查表失败，代码会回退到使用显示标签与调用记录里的原生 Model ID 直配导致匹配数为 0，数据直接丢失。修复：在 `AccountSnapshot` 和 `ResetPool` 中新增 `modelIds` 字段，并在重置和归档判定逻辑中一律优先改用最精确的原生 Model ID 进行比对匹配，保留 Label 的模糊包含匹配作为保底。
+
+- **GM data loss during daily calendar archival / 每日归档漏写重置数据导致的数据丢失问题**:
+  Midnight archival wrote only `gmTracker.getArchivalSummary()` (active cache) to the `DailyStore` calendar snapshot. However, intra-day baselined GM calls in `_pendingArchives` were completely ignored and cleared on `gmTracker.reset()`, causing all calls consumed prior to a quota reset to vanish from the calendar. If the IDE was reloaded or restarted, `_cache.calls` was cleared during serialization, producing zero-data calendar summaries. Fix: updated `performDailyArchival` to explicitly fetch and merge all entries from `gmTracker.getPendingArchives()` (including call counts, tokens, credits, and cost breakdown proportions) into the daily summary before saving to `DailyStore`, ensuring complete daily telemetry even after IDE restarts.
+  凌晨归档仅将活跃缓存写入 `DailyStore`。但白天因额度重置转移到待归档区（`_pendingArchives`）的历史数据被遗漏并在 `reset()` 时清空导致丢失。并且，如果 IDE 中途重载或重启，缓存中的明细在序列化时被清空，导致归档为 0。修复：归档前强制提取并归并 `gmTracker.getPendingArchives()` 中保存的重置汇总数据，确保即便 IDE 经历重启，日历数据也完整精确。
+
+- **Stale quota-reset jump misjudgment in QuotaTracker / 修复 QuotaTracker 额度重置判定漏洞与首帧防误触**:
+  Removed the `Math.abs` absolute value check in `QuotaTracker.isCycleEnded` when evaluating resetTime drifts. Originally, any large drift (including timezone offsets or backward adjustments when switching conversations and initializing the language server) was mistakenly treated as a quota reset. Restricting the detection to positive forward jumps (`curMs - cycleMs > 30min`) prevents the "Today's Ledger" active counts from being prematurely settled into the "Settled" list, while still fully capturing genuine server-side resets even across IDE offline periods.
+  移除了 `QuotaTracker.isCycleEnded` 在检测重置时间突变时对 `Math.abs` 绝对值的错误使用。原逻辑会将切换对话或 LS 首帧初始化时由于时区偏差、网络校正引起的“时间戳往前修正”误判定为额度重置。现在限制为仅捕获正向的大跨度跳跃（`curMs - cycleMs > 30分钟`），彻底解决了多轮对话或切对话时“今日累计”数据被提前冻结并误归档至“已结算”卡片的缺陷，同时完整保留了对真实服务端重置的精确捕获能力。
+
+- **Startup archival fallback with maximum call telemetry / 启动归档时 active cache 为空的取大值兜底**:
+  Implemented a robust fallback during startup archival in `performDailyArchival`. If the active cache was cleared due to an IDE reload, it compares the call counts between `liveSummary` and `lastGMSummary` and selects the maximum value, preventing stats from zeroing out after IDE restarts.
+  在 `performDailyArchival` 中引入了启动归档的取大值兜底机制。若 IDE 重载或重启导致活跃缓存归零，系统会对比 `liveSummary` 和 `lastGMSummary` 的调用次数并取其较大值进行补算，避免重启造成历史日历数据的丢失。
+
+### 🎨 UI / 界面
+
+- **"Today's Ledger" and "Settled" panels in GM Data tab / GM 数据标签页新增"今日累计"和"已结算"面板**:
+  Two new UI containers in the GM Data tab display real-time ledger data: a teal/cyan "Today's Ledger" panel showing active call accumulation per model, and an indigo/purple "Settled" panel showing data frozen by quota resets. Both panels clear at midnight after rollover.
+  GM 数据标签页新增两个 UI 容器：teal/cyan 主题的"今日累计"面板显示当前活跃的模型调用累积，indigo/purple 主题的"已结算"面板显示配额重置后冻结的数据。午夜归档后两个面板均清零。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 19 (`package.json`, `src/models.ts`, `src/extension.ts`, `src/statusbar.ts`, `src/webview-panel.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-profile-tab.ts`, `src/webview-icons.ts`, `src/activity-panel.ts`, `src/quota-tracker.ts`, `src/daily-archival.ts`, `src/gm/parser.ts`, `src/gm/tracker.ts`, `src/daily-ledger.ts` *(new)*, `src/legacy-migration.ts` *(new)*, `src/daily-store.ts`, `src/gm/types.ts`, `tests/multi-account-archival.test.ts` *(new)*)
+- **TypeScript compile**: Zero errors
+- **Tests**: 8 files / 80 tests passing (`npm test` / `npx vitest run`)
+---
+
 ## [1.16.10] - 2026-05-30
 
 ### 🐛 Fixed / 修复

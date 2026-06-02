@@ -58,42 +58,14 @@ export function collectPricingInputOverrides(inputs: ArrayLike<PricingInputLike>
     return result;
 }
 
-export function resetModelLimitInputsToDefaults(inputs: ArrayLike<ModelLimitInputLike>): void {
-    for (let i = 0; i < inputs.length; i++) {
-        const input = inputs[i];
-        const parsed = Number.parseInt(input.getAttribute('data-default') || '', 10);
-        if (Number.isFinite(parsed) && parsed >= 1000) {
-            input.value = String(parsed);
-        }
-    }
-}
-
-export function collectModelLimitOverrides(inputs: ArrayLike<ModelLimitInputLike>): Record<string, number> {
-    const limits: Record<string, number> = {};
-    for (let i = 0; i < inputs.length; i++) {
-        const input = inputs[i];
-        const model = (input.getAttribute('data-model') || '').trim();
-        const value = Number.parseInt(input.value, 10);
-        if (!model || !Number.isFinite(value) || value < 1000) { continue; }
-
-        const defaultValue = Number.parseInt(input.getAttribute('data-default') || '', 10);
-        if (Number.isFinite(defaultValue) && value === defaultValue) { continue; }
-        limits[model] = value;
-    }
-    return limits;
-}
-
 /** Returns the complete <script> block content (without <script> tags). */
 export function getScript(): string {
     return `
         (function() {
             var vscode = acquireVsCodeApi();
             var collectPricingInputOverrides = (${collectPricingInputOverrides.toString()});
-            var resetModelLimitInputsToDefaults = (${resetModelLimitInputsToDefaults.toString()});
-            var collectModelLimitOverrides = (${collectModelLimitOverrides.toString()});
             var savedState = vscode.getState() || {};
             var copiedText = ${JSON.stringify(`✓ ${tBi('Copied', '已复制')}`)};
-            var doneText = ${JSON.stringify(`✓ ${tBi('Done', '完成')}`)};
             var savedText = ${JSON.stringify(`✓ ${tBi('Saved', '已保存')}`)};
             var resetText = ${JSON.stringify(`✓ ${tBi('Reset', '已重置')}`)};
             var openingText = ${JSON.stringify(tBi('Opening...', '正在打开...'))};
@@ -609,29 +581,6 @@ export function getScript(): string {
                 });
             }
 
-            // ─── Settings: Model Limits Save ───
-            var modelLimitsSaveBtn = document.getElementById('modelLimitsSaveBtn');
-            if (modelLimitsSaveBtn) {
-                modelLimitsSaveBtn.addEventListener('click', function() {
-                    var inputs = document.querySelectorAll('.model-limit-input');
-                    vscode.postMessage({ command: 'setConfig', key: 'contextLimits', value: collectModelLimitOverrides(inputs) });
-                    var fb = document.getElementById('modelLimitsFeedback');
-                    if (fb) { fb.textContent = '✓'; fb.style.opacity = '1'; setTimeout(function(){ fb.style.opacity = '0'; }, 2000); }
-                });
-            }
-
-            // ─── Settings: Model Limits Restore Defaults ───
-            var modelLimitsResetBtn = document.getElementById('modelLimitsResetBtn');
-            if (modelLimitsResetBtn) {
-                modelLimitsResetBtn.addEventListener('click', function() {
-                    var inputs = document.querySelectorAll('.model-limit-input');
-                    resetModelLimitInputsToDefaults(inputs);
-                    vscode.postMessage({ command: 'setConfig', key: 'contextLimits', value: {} });
-                    var fb = document.getElementById('modelLimitsFeedback');
-                    if (fb) { fb.textContent = '\u2713'; fb.style.opacity = '1'; setTimeout(function(){ fb.style.opacity = '0'; }, 2000); }
-                });
-            }
-
             // ─── Language Switcher ───
             var switcher = document.querySelector('.lang-switcher');
             if (switcher) {
@@ -690,7 +639,6 @@ export function getScript(): string {
                 if (msg.command === 'configSaved') {
                     var feedbackMap = {
                         'pollingInterval': 'pollingFeedback',
-                        'contextLimits': 'modelLimitsFeedback',
                         'quotaNotificationThreshold': 'quotaNotifyFeedback',
                         'statePath': 'statePathFeedback',
                         'panelShowTabScrollHint': 'panelHintFeedback'
@@ -720,25 +668,7 @@ export function getScript(): string {
                 }
             });
 
-            // ─── Threshold Settings ───
-            var thresholdInput = document.getElementById('thresholdInput');
-            var thresholdSaveBtn = document.getElementById('thresholdSaveBtn');
-            if (thresholdSaveBtn && thresholdInput) {
-                thresholdSaveBtn.addEventListener('click', function() {
-                    var val = parseInt(thresholdInput.value, 10);
-                    if (val >= 10000) {
-                        vscode.postMessage({ command: 'setThreshold', value: val });
-                    }
-                });
-            }
-            var presets = document.querySelectorAll('.preset-btn');
-            for (var p = 0; p < presets.length; p++) {
-                presets[p].addEventListener('click', function() {
-                    var val = parseInt(this.dataset.val, 10);
-                    if (thresholdInput) { thresholdInput.value = val; }
-                    vscode.postMessage({ command: 'setThreshold', value: val });
-                });
-            }
+
 
             // ─── Error message overflow detection ───
             // Marks .gm-err-expand items whose summary text fits without
@@ -788,17 +718,6 @@ export function getScript(): string {
 
             // num-spinner-btn: handled by body delegation below
 
-            // ─── Quota Timeline Tracking Toggle (Settings tab) ───
-            var quotaTrackingCb = document.getElementById('toggleQuotaTracking');
-            if (quotaTrackingCb) {
-                quotaTrackingCb.addEventListener('change', function() {
-                    vscode.postMessage({ command: 'toggleQuotaTracking' });
-                });
-            }
-
-
-            // clearActiveTracking: handled by body delegation below
-
             // copyRawJson: handled by body delegation below
 
             // ─── Quota Notification Threshold ───
@@ -814,25 +733,6 @@ export function getScript(): string {
             }
 
             // profileBillingDaySaveBtn: handled by body delegation below
-
-            // ─── Dev: Simulate Quota Reset ───
-            var devSimBtn = document.getElementById('devSimulateReset');
-            if (devSimBtn) {
-                devSimBtn.addEventListener('click', function() {
-                    vscode.postMessage({ command: 'devSimulateReset' });
-                    var fb = document.getElementById('devSimulateFeedback');
-                    if (fb) { fb.textContent = doneText; setTimeout(function() { fb.textContent = ''; }, 2000); }
-                });
-            }
-            var devRestoreBtn = document.getElementById('devRestoreReset');
-            if (devRestoreBtn) {
-                devRestoreBtn.addEventListener('click', function() {
-                    if (devRestoreBtn.disabled) return;
-                    vscode.postMessage({ command: 'devRestoreReset' });
-                    var fb = document.getElementById('devSimulateFeedback');
-                    if (fb) { fb.textContent = resetText; setTimeout(function() { fb.textContent = ''; }, 2000); }
-                });
-            }
 
             // copyStatePath / openStateFile / revealStateFile / restoreTabScrollHint:
             // handled by body delegation below
@@ -986,16 +886,6 @@ export function getScript(): string {
                     return;
                 }
 
-                // ── Clear Active Tracking ──
-                if (target.closest('#clearActiveTracking')) {
-                    vscode.postMessage({ command: 'clearActiveTracking' });
-                    return;
-                }
-                if (target.closest('#clearQuotaHistory')) {
-                    vscode.postMessage({ command: 'clearQuotaHistory' });
-                    return;
-                }
-
                 // ── Clear Tool Catalog ──
                 if (target.closest('#clearToolCatalogBtn')) {
                     vscode.postMessage({ command: 'clearToolCatalog' });
@@ -1126,12 +1016,6 @@ export function getScript(): string {
                 // ── Clear History Button ──
                 if (target.closest('#clearCalendarBtn')) {
                     vscode.postMessage({ command: 'clearCalendarHistory' });
-                    return;
-                }
-
-                // ── Go to Settings from Quota Tracking disabled state ──
-                if (target.closest('#goToSettingsFromQuota')) {
-                    switchTab('settings');
                     return;
                 }
 

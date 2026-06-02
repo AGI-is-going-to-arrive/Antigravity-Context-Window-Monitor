@@ -10,17 +10,19 @@ antigravity-context-monitor/
 ├── src/                          # TypeScript 源码
 │   ├── extension.ts              # 扩展入口：激活/停用、轮询调度、命令注册、状态恢复
 │   ├── daily-archival.ts         # 每日归档核心逻辑（可测试纯函数，依赖注入）
+│   ├── daily-ledger.ts           # 实时增量账本（按日期+账号分桶，去重记录，额度重置结算，午夜归档数据源）
 │   ├── discovery.ts              # Language Server 进程发现（跨平台）
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
 │   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
-│   ├── models.ts                 # 模型配置、平台截断阈值（非原生窗口）、显示名称、跨语言归一化
+│   ├── models.ts                 # 模型配置、平台截断阈值（非原生窗口）、显示名称、跨语言归一化、responseModel 别名保护
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
 │   ├── statusbar.ts              # 状态栏 UI（StatusBarManager，含计划层级 hover 缓存、AI 积分余额、|| 分隔符）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
 │   ├── monitor-store.ts          # 监控页持久化：按对话保存 ContextUsage + GM 会话快照
 │   ├── pool-utils.ts             # 配额池工具：按稳定 pool key 分组 / 扩池 / 查找最近 quota session
-│   ├── quota-tracker.ts          # 模型额度消费时间线追踪（per-account 隔离 + GMTracker 辅助检测 + 稳定池代表）
+│   ├── quota-tracker.ts          # 模型额度消费时间线追踪后端（per-account 隔离 + GMTracker 辅助检测 + 稳定池代表；独立 UI 已移除）
 │   ├── reset-time.ts             # 重置时间格式化工具（倒计时 + 绝对日期时间）
+│   ├── billing-day.ts            # 到期日计算（DST 安全的日历日差计算 helper）
 │   ├── activity-tracker.ts       # 活动追踪 re-export shim（向后兼容，实际代码在 activity/）
 │   ├── activity/                 # Activity 模块（从 activity-tracker.ts 拆分）
 │   │   ├── index.ts              #   barrel re-export
@@ -30,29 +32,29 @@ antigravity-context-monitor/
 │   ├── gm-tracker.ts             # GM 数据层 re-export shim（向后兼容，实际代码在 gm/）
 │   ├── gm/                       # GM 模块（从 gm-tracker.ts 拆分）
 │   │   ├── index.ts              #   barrel re-export
-│   │   ├── types.ts              #   所有 GM 类型定义 + clone 工具 + 持久化 slim 函数（含 toolCallsByStep / toolCallCounts / toolCallCountsByConv / GMSystemContextItem / PendingArchiveEntry.estimatedCost）
-│   │   ├── parser.ts             #   解析器 + 提取器 + 匹配/合并/增强 + 检查点摘要提取 + 工具调用提取 + 系统上下文提取（classifySystemContext / extractSystemContextItems）+ API 重复消息清洗（deduplicateApiErrorText）
+│   │   ├── types.ts              #   所有 GM 类型定义 + clone 工具 + 持久化 slim 函数（含 modelSource / toolCallsByStep / toolCallCounts / GMSystemContextItem）
+│   │   ├── parser.ts             #   解析器 + 提取器 + 匹配/合并/增强 + trajectory 模型提示回填 + 检查点摘要提取 + 工具调用提取 + 系统上下文提取 + API 重复消息清洗
 │   │   ├── summary.ts            #   汇总构建 + 过滤 + 标准化（含 toolCallCounts 透传）
-│   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize + toolCallCounts 聚合 + toolCatalog 持久化/清空 + baseline 时预算 estimatedCost）
+│   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize + live UI summary + 额度重置过滤 + toolCallCounts 聚合 + toolCatalog 持久化/清空）
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算（respOut = output - thinking 避免 double-counting）+ findPricing display name fallback
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照）
-│   ├── webview-panel.ts          # WebView 面板框架（9 标签切换 + 消息通信 + 全局账号面板 dropdown + gmFullSummary 跨账号费用）
+│   ├── webview-panel.ts          # WebView 面板框架（8 标签切换 + 消息通信 + 全局账号面板 dropdown + gmFullSummary 跨账号费用）
 │   ├── webview-styles.ts         # WebView 面板 CSS 样式（Design Token 体系）
-│   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、开发按钮等）
+│   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、面板消息处理）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标
 
 │   ├── webview-models-tab.ts     # Models 标签页 HTML（默认模型 + 模型配额 + 模型信息）
 │   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含模型阈值/恢复默认值 + 持久化存储概览 + 界面提示偏好）
 │   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队 / AI 积分到期日设置）
-│   ├── webview-history-tab.ts    # Quota Tracking 标签页 HTML
 │   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（ses-* 命名空间 — 紧凑行式卡片 + shortcut 芯片 + 工具栏 + CSS tooltip）
 │   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据 + 检查点查看器 + 账号面板构建器 + 模型卡片/汇总行/待归档费用显示 + respOut 费用计算）
 │   ├── pricing-panel.ts          # Cost 标签页 HTML（cost-* 统一面板 — 蓝色系 cost tab + 紧凑行式明细 + 月费用汇总 + 可编辑价格表 + 模型信息卡）
 │   ├── webview-calendar-tab.ts   # Calendar 标签页 HTML
 │   ├── webview-about-tab.ts      # About 标签页 HTML（Hero + 功能导航卡片 + GitHub + 提示 + 兼容性验证 + 免责声明 + 语言，从 TopBar Chips 迁移）
 │   ├── i18n.ts                   # 国际化：语言模式、翻译表、偏好持久化
+│   ├── legacy-migration.ts       # 旧版 Antigravity 数据自动迁移（检测旧 state.vscdb + child_process 提取）
 │   └── images/                   # README 截图资源
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
@@ -60,7 +62,20 @@ antigravity-context-monitor/
 │   ├── discovery.test.ts         # discovery 单元测试（原作者 FlorianHuo 提供）
 │   ├── pricing-panel.test.ts     # Cost 价格表回归测试
 │   ├── webview-script.test.ts    # WebView 价格保存逻辑回归测试
-│   └── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
+│   ├── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
+│   ├── billing-day.test.ts       # 积分到期日 DST 安全日历日差测试
+│   ├── extension-selection.test.ts # 模型选择与版本恢复回归测试
+│   ├── activity-recent-steps.test.ts # 最近操作 warm-up 全量恢复与持久化安全上限测试
+│   ├── daily-archival-time.test.ts # 假时钟跨午夜归档 / stale ledger 启动补归档回归测试
+│   ├── daily-ledger-date-filter.test.ts # DailyLedger 跨天日期边界过滤测试
+│   ├── reset-time-turnover.test.ts # resetTime 漂移与真实周期切换判定测试
+│   ├── gm-quota-reset-filter.test.ts # GM 额度重置精确归档与 cutoff 清理测试
+│   ├── gm-model-capture.test.ts # GM 模型身份捕捉、trajectory 回填与 responseModel 冲突测试
+│   ├── gm-summary-change.test.ts  # GM 细节字段变更判定回归测试
+│   ├── gm-tracker-restore-fetch.test.ts # GM 恢复态 idle stub 自动补拉回归测试
+│   ├── i18n-persistence.test.ts  # 语言偏好跨会话持久化回归测试（真实文件 IO 测试）
+│   ├── monitor-store-gm.test.ts  # Sessions 页 GM 快照刷新判定回归测试
+│   └── multi-account-archival.test.ts # 多账号归档与跨重启完整性集成测试
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   └── project_structure.md          # 本文件
@@ -82,7 +97,7 @@ antigravity-context-monitor/
 
 ### extension.ts -- 入口 + 轮询调度
 
-扩展生命周期管理中心：初始化子系统、注册命令、轮询调度（默认 5s）、会话选择（RUNNING 优先 + 跨工作区 RUNNING 追踪）、工作区切换检测（事件监听 + URI 轮询比对 + 跨工作区穿透）、每日归档委托、多账号快照管理、额度重置归档、持久化协调。
+扩展生命周期管理中心：初始化子系统、注册命令、轮询调度（默认 5s）、会话选择（RUNNING 优先 + 跨工作区 RUNNING 追踪）、工作区切换检测（事件监听 + URI 轮询比对 + 跨工作区穿透）、每日归档委托、多账号快照管理、额度重置归档、持久化协调。启动时会将文件态 `gmDetailedSummary` 回灌到 `GMTracker`，轮询阶段对 GM 摘要采用细粒度签名判定，避免总量不变但上下文情报 / 错误 / 工具 / 对话细节已变化时漏刷新。每日归档检查现在前置到轮询前半段，避免被“无会话 / 无当前对话”的提前 return 跳过。
 
 ---
 
@@ -106,7 +121,7 @@ antigravity-context-monitor/
 
 ### models.ts -- 模型配置与归一化
 
-模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。
+模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将 Gemini Flash + Pro 合并为统一的 `gemini` 池（mid-2026 API 变更）。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
 
 ---
 
@@ -124,7 +139,7 @@ antigravity-context-monitor/
 
 ### monitor-store.ts -- Monitor 快照存储
 
-按对话保存 `ContextUsage` 与 `GMConversationData`，最多 200 个快照，独立于额度归档。
+按对话保存 `ContextUsage` 与 `GMConversationData`，最多 200 个快照，独立于额度归档。GM 会话快照比较不仅看 `calls.length`，还包含 latest call 标识、最新模型、积分与时间，避免 Sessions 标签页在调用数不变时停留旧值。
 
 ---
 
@@ -136,19 +151,19 @@ antigravity-context-monitor/
 
 ### quota-tracker.ts -- 额度消费追踪
 
-状态机追踪 per-model 额度消费（`idle->tracking->(archive)->idle`），per-account 隔离，GMTracker 辅助使用检测。
+状态机追踪 per-model 额度消费（`idle->tracking->(archive)->idle`），per-account 隔离，GMTracker 辅助使用检测。虽然前端不再暴露独立的 `Quota Tracking` 标签页，但这个后端模块仍参与额度重置结算、缓存账号过期归档，以及启动阶段的 GM 摘要修复。
 
 ---
 
 ### activity-tracker.ts -- 模型活动追踪
 
-追踪模型活动：GM-only Timeline（`injectGMData()` 为唯一数据源）、步骤分类、用户锚点提取、子智能体归属、全局归档重置、序列化瘦身。
+追踪模型活动：GM-only Timeline（`injectGMData()` 为唯一数据源）、步骤分类、用户锚点提取、子智能体归属、全局归档重置、序列化瘦身。运行时 `recentSteps` 不再按固定条数裁剪；启动 warm-up 会注入完整可恢复步骤，而持久化快照仍按 `activity.maxRecentSteps` 保留安全上限，避免状态文件失控增长。
 
 ---
 
 ### gm-tracker.ts -- Generator Metadata 数据层
 
-调用 GM API 获取 per-LLM-call 精确数据，聚合为 `GMSummary`。智能缓存（IDLE 复用）、额度周期基线化、按账号过滤、错误码聚合与持久化、工具调用统计与目录。`clearToolCatalog()` 只清空工具目录，不影响工具调用排行；full-summary/archival-summary 路径不会把旧目录写回持久化桶。
+调用 GM API 获取 per-LLM-call 精确数据，聚合为 `GMSummary`。智能缓存（仅在 `calls` 已 hydrate 后复用 IDLE 会话，恢复态空 stub 会自动补拉）、额度周期基线化、按账号过滤、错误码聚合与持久化、工具调用统计与目录。模型身份以 `chatModel.model` 为最高可信来源；当轻量 GM 只有低可信 `responseModel` 或缺失模型时，完整 trajectory 增强路径会用 step metadata / planner requestedModel 回填。UI summary 路径等待实时 GM hydrate，不把恢复态旧摘要当实时数据；额度重置过滤优先使用精确 call ID，并清理遗留未来 cutoff。`clearToolCatalog()` 只清空工具目录，不影响工具调用排行；full-summary/archival-summary 路径不会把旧目录写回持久化桶。
 
 ---
 ### activity-panel.ts -- GM Data 统一面板渲染
@@ -159,7 +174,7 @@ antigravity-context-monitor/
 
 ### webview-chat-history-tab.ts -- Sessions / 会话目录
 
-按工作区/仓库分组展示全量对话列表，提供搜索、筛选、逐会话操作（打开工作区/Brain 目录/原始 .pb 文件）。
+按工作区/仓库分组展示全量对话列表，提供搜索、筛选、逐会话操作（打开工作区/Brain 目录/原始 .pb 文件）。GM 调用数 / 积分 / 最新模型优先读取当前 `gmSummary`，无实时数据时回退到 `monitor-store` 的对话快照。
 
 ---
 
@@ -183,13 +198,26 @@ antigravity-context-monitor/
 
 ### daily-archival.ts -- 每日归档核心逻辑
 
-可测试纯函数模块，依赖通过 `DailyArchivalContext` 注入。日期滚动时归档昨日数据并重置 Tracker。
+可测试纯函数模块，依赖通过 `DailyArchivalContext` 注入。日期滚动时归档昨日数据并重置 Tracker。数据源优先使用 `DailyLedger.rollover()`（实时增量账本），无数据时降级到旧的 `getArchivalSummary()` + `pendingArchives` 路径。支持注入模拟时间，配合假时钟测试验证跨午夜、stale ledger 启动补归档等时间边界。
+
+---
+
+### daily-ledger.ts -- 实时增量账本
+
+不依赖 LS 对话缓存生命周期的独立调用记录模块。按日期+账号分桶，每次轮询后通过 `GMTracker.getNewCallsSinceLastRecord()` 提取增量写入，调用数据一旦记录就不会丢失。额度重置结算由上游 resetTime 周期切换判定驱动，不因小幅 resetTime 漂移直接触发。核心方法：
+- `recordCalls(entries)` — 增量录入 + `dedupKey` 去重
+- `settleForQuotaReset(email, poolModels)` — 额度重置时将活跃桶数据冻结到已结算区
+- `rollover(dateKey)` — 午夜日结，返回完整日数据并清零
+- `clearRecordedIdsForConversation(cascadeId)` — 对话回退时清除旧 dedup 索引
+- `serialize()` / `restore()` — 持久化到 `globalState`
+
+账本会同时过滤“早于当天零点”和“已属于下一天”的调用时间戳，避免跨午夜加载历史或未来日调用时污染当前日期桶。
 
 ---
 
 ### daily-store.ts -- 日历数据层
 
-按天聚合 Activity + GM + Cost 快照数据，默认 replace 模式（一天一条）。
+按天聚合 Activity + GM + Cost 快照数据，默认 replace 模式（一天一条）。提供 `mergeRecords()` 用于跨版本数据迁移合并（只添加不存在的日期，不覆盖已有记录）。
 
 ---
 
@@ -201,15 +229,27 @@ antigravity-context-monitor/
 
 ### webview-panel.ts -- WebView 面板框架
 
-面板总框架：9 标签切换、消息通信、全局账号面板 dropdown、增量刷新。各标签内容由独立模块生成。
+面板总框架：8 标签切换、消息通信、全局账号面板 dropdown、增量刷新。各标签内容由独立模块生成；`Quota Tracking` 独立页签与相关调试入口已移除。
 
-子模块：`webview-models-tab.ts`（Models）、`webview-settings-tab.ts`（Settings）、`webview-profile-tab.ts`（Profile）、`webview-history-tab.ts`（Quota Tracking）、`webview-chat-history-tab.ts`（Sessions）、`webview-calendar-tab.ts`（Calendar）、`webview-about-tab.ts`（About）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（CSS Design Token）、`webview-icons.ts`（SVG 图标）、`webview-helpers.ts`（共享工具函数）。
+子模块：`webview-models-tab.ts`（Models）、`webview-settings-tab.ts`（Settings）、`webview-profile-tab.ts`（Profile）、`webview-chat-history-tab.ts`（Sessions）、`webview-calendar-tab.ts`（Calendar）、`webview-about-tab.ts`（About）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（CSS Design Token）、`webview-icons.ts`（SVG 图标）、`webview-helpers.ts`（共享工具函数）。
 
 ---
 
 ### i18n.ts -- 国际化
 
 三种语言模式（中文/英文/双语），启动时从 `durable-state.ts` 读取偏好。
+
+---
+
+### legacy-migration.ts -- 旧版数据自动迁移
+
+自动检测旧 Antigravity（pre-2.0）的 `state.vscdb`（SQLite 数据库），通过 `child_process` + `node --experimental-sqlite` 提取日历数据和语言偏好，首次激活时自动合并到当前存储。跨平台路径检测（Windows/macOS/Linux）。迁移完成后设 `legacyMigrationDone` 标志，后续启动跳过。
+
+---
+
+### billing-day.ts -- 积分到期日计算
+
+提供夏令时（DST）安全的纯日历日时间差计算，接收到期日（1-31）并动态推导距今剩余天数，服务于状态栏及个人页积分倒计时显示，包含高覆盖的边界与跨时区单元测试支持。
 
 ---
 
@@ -226,9 +266,11 @@ antigravity-context-monitor/
 
 ```text
 extension.ts (入口 + 调度)
+├── daily-ledger.ts       ← 实时增量账本（轮询录入 + 额度结算 + 午夜归档数据源）
 ├── daily-archival.ts     ← 每日归档核心逻辑（纯函数）
 │   ├── activity-tracker.ts
 │   ├── gm-tracker.ts
+│   ├── daily-ledger.ts   ← rollover() 提供完整日数据
 │   ├── daily-store.ts
 │   ├── pricing-store.ts
 │   └── model-dna-store.ts
@@ -248,7 +290,7 @@ extension.ts (入口 + 调度)
 │   ├── models.ts
 │   └── i18n.ts
 ├── i18n.ts               ← 语言偏好 / 翻译
-├── quota-tracker.ts      ← 额度追踪
+├── quota-tracker.ts      ← 额度追踪后端
 ├── activity-tracker.ts   ← 活动追踪
 │   ├── gm-tracker.ts (types)
 │   ├── rpc-client.ts
@@ -271,7 +313,6 @@ extension.ts (入口 + 调度)
     ├── i18n.ts
     ├── tracker.ts (types)
     ├── models.ts
-    ├── quota-tracker.ts
     ├── activity-tracker.ts
     ├── gm-tracker.ts
     ├── pricing-store.ts
@@ -284,7 +325,6 @@ extension.ts (入口 + 调度)
     ├── activity-panel.ts
     ├── pricing-panel.ts
     ├── webview-calendar-tab.ts
-    ├── webview-history-tab.ts
     ├── webview-script.ts
     ├── webview-styles.ts
     ├── webview-icons.ts

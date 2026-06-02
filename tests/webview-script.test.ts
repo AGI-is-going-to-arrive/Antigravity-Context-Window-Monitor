@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeModelDisplayName, resolveModelId } from '../src/models';
-import { collectModelLimitOverrides, collectPricingInputOverrides, resetModelLimitInputsToDefaults } from '../src/webview-script';
+import { collectPricingInputOverrides } from '../src/webview-script';
 
 type Attrs = Record<string, string>;
 
@@ -62,42 +62,14 @@ describe('collectPricingInputOverrides', () => {
     });
 });
 
-describe('resetModelLimitInputsToDefaults', () => {
-    it('updates valid default-backed inputs without persisting future stale overrides', () => {
-        const inputs = [
-            input({ 'data-default': '128000' }, 160000),
-            input({ 'data-default': '80000' }, 128000),
-            input({ 'data-default': '999' }, 5000),
-            input({ 'data-default': 'not-a-number' }, 6000),
-        ];
-
-        resetModelLimitInputsToDefaults(inputs);
-
-        expect(inputs.map(i => i.value)).toEqual(['128000', '80000', '5000', '6000']);
-    });
-});
-
-describe('collectModelLimitOverrides', () => {
-    it('persists only model limits that differ from their defaults', () => {
-        const overrides = collectModelLimitOverrides([
-            input({ 'data-model': 'MODEL_PLACEHOLDER_M133', 'data-default': '128000' }, 128000),
-            input({ 'data-model': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM', 'data-default': '80000' }, 90000),
-            input({ 'data-model': 'MODEL_PLACEHOLDER_M35', 'data-default': '160000' }, 999),
-        ]);
-
-        expect(overrides).toEqual({
-            MODEL_OPENAI_GPT_OSS_120B_MEDIUM: 90000,
-        });
-    });
-});
-
 describe('static model display fallbacks', () => {
     it('does not expose known model IDs before GetUserStatus labels are loaded', () => {
-        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M133')).toBe('Gemini 3 Flash');
-        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M132')).toBe('Gemini 3.5 Flash');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M133')).toBe('Gemini 3.5 Flash (High)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M132')).toBe('Gemini 3.5 Flash (High)');
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M20')).toBe('Gemini 3.5 Flash (Medium)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M187')).toBe('Gemini 3.5 Flash (Low)');
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M18')).toBe('Gemini 3 Flash');
         expect(normalizeModelDisplayName('MODEL_OPENAI_GPT_OSS_120B_MEDIUM')).toBe('GPT-OSS 120B (Medium)');
-        expect(resolveModelId('Gemini 3.5 Flash')).toBe('MODEL_PLACEHOLDER_M132');
+        expect(resolveModelId('Gemini 3.5 Flash (Low)')).toBe('MODEL_PLACEHOLDER_M187');
     });
 });

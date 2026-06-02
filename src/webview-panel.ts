@@ -5,11 +5,11 @@ import * as vscode from 'vscode';
 import { tBi, getLanguage, setLanguage, isLanguage } from './i18n';
 import { ContextUsage, TrajectorySummary } from './tracker';
 import { ModelConfig, UserStatusInfo } from './models';
-import { QuotaTracker } from './quota-tracker';
 import { ActivityTracker, ActivitySummary, ActivityArchive } from './activity-tracker';
 import { buildGMDataTabContent, getGMDataTabStyles, buildAccountStatusPanel, hasAccountReadyPool, type AccountSnapshot } from './activity-panel';
 import { removeAccountSnapshot, getBillingDaysMap, setAccountBillingDay } from './extension';
-import type { PendingArchiveEntry } from './gm-tracker';
+
+import type { LedgerAccountBucket, LedgerSettledEntry } from './daily-ledger';
 import { buildPricingTabContent, getPricingTabStyles } from './pricing-panel';
 import { PricingStore, ModelPricing } from './pricing-store';
 import { GMSummary, GMConversationData } from './gm-tracker';
@@ -19,7 +19,6 @@ import { formatFileSize } from './webview-helpers';
 import { buildModelsTabContent } from './webview-models-tab';
 import { buildProfileContent } from './webview-profile-tab';
 import { buildSettingsContent, StorageDiagnostics, PanelHintPreferences } from './webview-settings-tab';
-import { buildHistoryHtml } from './webview-history-tab';
 import { buildAboutTabContent, getAboutTabStyles } from './webview-about-tab';
 import { buildCalendarTabContent, getCalendarTabStyles } from './webview-calendar-tab';
 import { buildChatHistoryTabContent } from './webview-chat-history-tab';
@@ -40,7 +39,6 @@ export interface PanelPayload {
     userInfo: UserStatusInfo | null;
     workspaceUri?: string;
     context?: vscode.ExtensionContext;
-    tracker?: QuotaTracker;
     activitySummary?: ActivitySummary | null;
     initialTab?: string;
     archives?: ActivityArchive[];
@@ -54,7 +52,10 @@ export interface PanelPayload {
     storageDiagnostics?: StorageDiagnostics;
     modelDNA?: Record<string, PersistedModelDNA>;
     accountSnapshots?: AccountSnapshot[];
-    pendingArchives?: PendingArchiveEntry[];
+    /** DailyLedger: today's active (unsettled) account buckets */
+    todayLedgerActive?: LedgerAccountBucket[];
+    /** DailyLedger: settled entries from quota resets */
+    ledgerSettled?: LedgerSettledEntry[];
 }
 
 // ─── Panel State ──────────────────────────────────────────────────────────────
@@ -69,7 +70,6 @@ let lastTrajectories: TrajectorySummary[] = [];
 let lastConfigs: ModelConfig[] = [];
 let lastUserInfo: UserStatusInfo | null = null;
 let lastWorkspaceUri = '';
-let lastQuotaTracker: QuotaTracker | undefined;
 let lastActivitySummary: ActivitySummary | null = null;
 let lastActivityTracker: ActivityTracker | undefined;
 let lastArchives: ActivityArchive[] = [];
@@ -83,7 +83,8 @@ let lastStorageDiagnostics: StorageDiagnostics | undefined;
 let panelDurableState: StateBucket | undefined;
 let lastModelDNA: Record<string, PersistedModelDNA> = {};
 let lastAccountSnapshots: AccountSnapshot[] = [];
-let lastPendingArchives: PendingArchiveEntry[] = [];
+let lastTodayLedgerActive: LedgerAccountBucket[] = [];
+let lastLedgerSettled: LedgerSettledEntry[] = [];
 export const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
 
 /** Provide a durable state bucket for panel-level persistence (zoom, etc.). */
@@ -110,14 +111,6 @@ function sanitizeConfigValue(key: string, value: unknown): unknown {
             return clamp(Number(value) || 100, 10, 500);
         case 'activity.maxArchives':
             return clamp(Number(value) || 20, 1, 100);
-        case 'contextLimits': {
-            const raw = (value && typeof value === 'object') ? value as Record<string, unknown> : {};
-            const normalized: Record<string, number> = {};
-            for (const [model, limit] of Object.entries(raw)) {
-                normalized[model] = Math.max(1000, Math.round(Number(limit) || 1000));
-            }
-            return normalized;
-        }
         default:
             return value;
     }
@@ -302,7 +295,6 @@ export function showMonitorPanel(p: PanelPayload): void {
     lastUserInfo = p.userInfo;
     if (p.workspaceUri) { lastWorkspaceUri = p.workspaceUri; }
     if (p.context) { extensionCtx = p.context; }
-    if (p.tracker) { lastQuotaTracker = p.tracker; }
     if (p.activitySummary !== undefined) { lastActivitySummary = p.activitySummary; }
     if (p.archives) { lastArchives = p.archives; }
     if (p.activityTracker) { lastActivityTracker = p.activityTracker; }
@@ -314,9 +306,11 @@ export function showMonitorPanel(p: PanelPayload): void {
     if (p.storageDiagnostics) { lastStorageDiagnostics = p.storageDiagnostics; }
     if (p.modelDNA) { lastModelDNA = p.modelDNA; }
     if (p.accountSnapshots) { lastAccountSnapshots = p.accountSnapshots; }
+    if (p.todayLedgerActive) { lastTodayLedgerActive = p.todayLedgerActive; }
+    if (p.ledgerSettled) { lastLedgerSettled = p.ledgerSettled; }
 
     if (panel) {
-        panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused, lastQuotaTracker);
+        panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused);
         panel.reveal(vscode.ViewColumn.Two, true);
         if (p.initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: p.initialTab }), 100); }
         return;
@@ -329,7 +323,7 @@ export function showMonitorPanel(p: PanelPayload): void {
         { enableScripts: true },
     );
 
-    panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused, lastQuotaTracker);
+    panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused);
     if (p.initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: p.initialTab }), 100); }
 
     panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string; action?: string; cascadeId?: string; uri?: string; email?: string; day?: number }) => {
@@ -340,7 +334,7 @@ export function showMonitorPanel(p: PanelPayload): void {
             }
             await setLanguage(msg.lang, extensionCtx, panelDurableState);
             if (panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
             }
             vscode.commands.executeCommand('antigravity-context-monitor.refresh');
         } else if (msg.command === 'refresh') {
@@ -348,16 +342,9 @@ export function showMonitorPanel(p: PanelPayload): void {
         } else if (msg.command === 'togglePause') {
             isPaused = !isPaused;
             if (!isPaused && panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
             } else if (panel) {
                 safePostMessage({ command: 'setPaused', paused: isPaused });
-            }
-        } else if (msg.command === 'setThreshold' && typeof msg.value === 'number') {
-            const val = Math.max(10_000, msg.value);
-            await vscode.workspace.getConfiguration('antigravityContextMonitor')
-                .update('compressionWarningThreshold', val, vscode.ConfigurationTarget.Global);
-            if (panel) {
-                safePostMessage({ command: 'thresholdSaved' });
             }
         } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
             const val = Math.max(1, Math.min(60, msg.value));
@@ -373,7 +360,6 @@ export function showMonitorPanel(p: PanelPayload): void {
                 'statusBar.showResetCountdown',
                 'statusBar.showAiCredits',
                 'showModelInternalId',
-                'contextLimits',
                 'quotaNotificationThreshold',
                 'activity.maxRecentSteps',
                 'activity.maxArchives',
@@ -451,65 +437,10 @@ export function showMonitorPanel(p: PanelPayload): void {
             }
             safePostMessage({ command: 'panelPrefUpdated', key: msg.key, value: !!msg.value });
             safePostMessage({ command: 'configSaved', key: msg.key });
-        } else if (msg.command === 'clearActiveTracking') {
-            if (lastQuotaTracker) {
-                lastQuotaTracker.resetTrackingStates();
-                refreshLocalStorageDiagnostics();
-                if (panel) {
-                    panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
-                }
-            }
-        } else if (msg.command === 'clearQuotaHistory') {
-            if (lastQuotaTracker) {
-                lastQuotaTracker.clearHistory();
-                refreshLocalStorageDiagnostics();
-                if (panel) {
-                    panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
-                }
-            }
-        } else if (msg.command === 'setQuotaMaxHistory' && typeof msg.value === 'number') {
-            if (lastQuotaTracker) {
-                lastQuotaTracker.setMaxHistory(clamp(msg.value, 1, 100));
-                if (panel) {
-                    safePostMessage({ command: 'configSaved', key: 'quotaMaxHistory' });
-                }
-            }
-        } else if (msg.command === 'toggleQuotaTracking') {
-            if (lastQuotaTracker) {
-                lastQuotaTracker.setEnabled(!lastQuotaTracker.isEnabled());
-                if (panel) {
-                    panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
-                }
-            }
         } else if (msg.command === 'setZoomLevel' && typeof msg.value === 'number') {
             const zoom = clamp(Math.round(msg.value as number), 50, 200);
             if (panelDurableState) {
                 panelDurableState.update('panelZoomLevel', zoom);
-            }
-        } else if (msg.command === 'clearActivityData') {
-            if (lastActivityTracker) {
-                lastActivityTracker.reset();
-                lastActivitySummary = lastActivityTracker.getSummary();
-                lastArchives = lastActivityTracker.getArchives();
-            }
-            // Also clear quota tracking states + history (ghost sessions, etc.)
-            if (lastQuotaTracker) {
-                lastQuotaTracker.resetTrackingStates();
-                lastQuotaTracker.clearHistory();
-            }
-            // Clear calendar data — prevents stale highlights after reinstall
-            if (lastDailyStore) {
-                lastDailyStore.clear();
-            }
-            // Clear GM cached data so it matches the reset activity state
-            lastGMSummary = null;
-            lastGMConversations = {};
-            refreshLocalStorageDiagnostics();
-            await vscode.commands.executeCommand('antigravity-context-monitor.devClearGM');
-            // Persist cleared activity state to globalState
-            await vscode.commands.executeCommand('antigravity-context-monitor.devPersistActivity');
-            if (panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
             }
         } else if (msg.command === 'savePricing' && lastPricingStore) {
             const data = msg.value as Record<string, ModelPricing>;
@@ -517,7 +448,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                 lastPricingStore.setAll(data).then(() => {
                     refreshLocalStorageDiagnostics();
                     if (panel) {
-                        panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                        panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
                         safePostMessage({ command: 'pricingSaved' });
                     }
                 });
@@ -526,7 +457,7 @@ export function showMonitorPanel(p: PanelPayload): void {
             lastPricingStore.reset().then(() => {
                 refreshLocalStorageDiagnostics();
                 if (panel) {
-                    panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                    panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
                     safePostMessage({ command: 'pricingReset' });
                 }
             });
@@ -534,39 +465,25 @@ export function showMonitorPanel(p: PanelPayload): void {
             lastDailyStore.clear();
             refreshLocalStorageDiagnostics();
             if (panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
             }
         } else if (msg.command === 'switchCalendarMonth' && typeof (msg as Record<string, unknown>).year === 'number') {
             calendarYear = (msg as Record<string, unknown>).year as number;
             calendarMonth = (msg as Record<string, unknown>).month as number;
             if (panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
-            }
-        } else if (msg.command === 'devSimulateReset') {
-            await vscode.commands.executeCommand('antigravity-context-monitor.devSimulateReset');
-            refreshLocalStorageDiagnostics();
-            if (panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
-                safePostMessage({ command: 'switchToTab', tab: 'settings' });
-            }
-        } else if (msg.command === 'devRestoreReset') {
-            await vscode.commands.executeCommand('antigravity-context-monitor.devRestoreReset');
-            refreshLocalStorageDiagnostics();
-            if (panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
-                safePostMessage({ command: 'switchToTab', tab: 'settings' });
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
             }
         } else if (msg.command === 'removeAccount' && typeof (msg as Record<string, unknown>).email === 'string') {
             const email = (msg as Record<string, unknown>).email as string;
             const updated = removeAccountSnapshot(email);
             lastAccountSnapshots = updated;
             if (panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
             }
         } else if (msg.command === 'clearToolCatalog') {
             await vscode.commands.executeCommand('antigravity-context-monitor.clearToolCatalog');
             if (panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused, lastQuotaTracker);
+                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
             }
         }
     });
@@ -581,7 +498,7 @@ export function showMonitorPanel(p: PanelPayload): void {
             safePostMessage({
                 command: 'updateTabs',
                 tabs: buildTabContents(
-                    lastUsage, lastAllUsages, lastConfigs, lastUserInfo, lastQuotaTracker,
+                    lastUsage, lastAllUsages, lastConfigs, lastUserInfo,
                 ),
                 time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
             });
@@ -605,7 +522,6 @@ export function updateMonitorPanel(p: PanelPayload): void {
     lastConfigs = p.modelConfigs;
     lastUserInfo = p.userInfo;
     if (p.workspaceUri) { lastWorkspaceUri = p.workspaceUri; }
-    if (p.tracker) { lastQuotaTracker = p.tracker; }
     if (p.activitySummary !== undefined) { lastActivitySummary = p.activitySummary; }
     if (p.archives) { lastArchives = p.archives; }
     if (p.gmSummary !== undefined) { lastGMSummary = p.gmSummary; }
@@ -614,12 +530,13 @@ export function updateMonitorPanel(p: PanelPayload): void {
     if (p.storageDiagnostics) { lastStorageDiagnostics = p.storageDiagnostics; }
     if (p.modelDNA) { lastModelDNA = p.modelDNA; }
     if (p.accountSnapshots) { lastAccountSnapshots = p.accountSnapshots; }
-    if (p.pendingArchives !== undefined) { lastPendingArchives = p.pendingArchives; }
+    if (p.todayLedgerActive) { lastTodayLedgerActive = p.todayLedgerActive; }
+    if (p.ledgerSettled) { lastLedgerSettled = p.ledgerSettled; }
     if (panel && !isPaused) {
         // Incremental update: send tab contents via postMessage — no DOM teardown
         safePostMessage({
             command: 'updateTabs',
-            tabs: buildTabContents(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, lastQuotaTracker),
+            tabs: buildTabContents(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo),
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         });
     }
@@ -631,23 +548,22 @@ function buildTabContents(
     allUsages: ContextUsage[],
     configs: ModelConfig[],
     userInfo: UserStatusInfo | null,
-    tracker?: QuotaTracker,
 ): Record<string, string | boolean> {
     const eoc = `<div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>`;
     return {
 
-        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastPendingArchives) + eoc,
+        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled) + eoc,
         chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
         pricing: (lastPricingStore
             ? buildPricingTabContent(
                 lastGMFullSummary || lastGMSummary,
                 lastPricingStore,
                 lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
-                lastPendingArchives.reduce((s, e) => s + (e.estimatedCost || 0), 0),
+                lastLedgerSettled,
+                lastTodayLedgerActive,
             )
             : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`) + eoc,
-        models: buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA) + eoc,
-        history: buildHistoryHtml(tracker, lastUserInfo?.email) + eoc,
+        models: buildModelsTabContent(userInfo, configs) + eoc,
         calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth) + eoc,
         profile: buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0) + eoc,
         about: buildAboutTabContent() + eoc,
@@ -673,24 +589,23 @@ function buildHtml(
     configs: ModelConfig[],
     userInfo: UserStatusInfo | null,
     paused = false,
-    tracker?: QuotaTracker,
 ): string {
 
-    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastPendingArchives);
+    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled);
     const chatsHtml = buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(
             lastGMFullSummary || lastGMSummary,
             lastPricingStore,
             lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
-            lastPendingArchives.reduce((s, e) => s + (e.estimatedCost || 0), 0),
+            lastLedgerSettled,
+            lastTodayLedgerActive,
         )
         : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
-    const modelsHtml = buildModelsTabContent(userInfo, configs, lastGMSummary, lastModelDNA);
-    const historyHtml = buildHistoryHtml(tracker, lastUserInfo?.email);
+    const modelsHtml = buildModelsTabContent(userInfo, configs);
     const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth);
     const profileHtml = buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0);
-    const settingsHtml = buildSettingsContent(configs, tracker, lastStorageDiagnostics, getPanelHintPreferences());
+    const settingsHtml = buildSettingsContent(configs, lastStorageDiagnostics, getPanelHintPreferences());
     const panelHintPrefs = getPanelHintPreferences();
 
     const currentLang = getLanguage();
@@ -753,7 +668,6 @@ ${getAboutTabStyles()}
         <button class="tab-btn" data-tab="chats" data-color="cyan">${ICON.chat} ${tBi('Sessions', '会话')}</button>
         <button class="tab-btn" data-tab="pricing" data-color="blue"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.315 0-1.667-1.104-2.512-3.233-3.037l-.445-.107V3.63c1.213.183 1.968.91 2.141 1.88h1.762c-.112-1.796-1.519-2.965-3.455-3.124V1.036H8.59v1.383C6.408 2.583 5.008 3.9 5.003 5.54c0 1.592 1.063 2.457 3.146 2.963l.399.1v3.979c-1.29-.183-2.113-.879-2.275-1.8H4zm4.586-4.34C7.494 6.137 6.94 5.695 6.94 5.092c0-.66.52-1.183 1.575-1.37v2.72h.071zm.889 2.283c1.335.36 1.942.846 1.942 1.548 0 .781-.633 1.35-1.823 1.493V8.851l-.119-.127z"/></svg> ${tBi('Cost', '成本')}</button>
         <button class="tab-btn" data-tab="models" data-color="green">${ICON.bolt} ${tBi('Models', '模型')}</button>
-        <button class="tab-btn" data-tab="history" data-color="yellow">${ICON.timeline} ${tBi('Quota Tracking', '额度追踪')}</button>
         <button class="tab-btn" data-tab="calendar" data-color="cyan"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/></svg> ${tBi('Calendar', '日历')}</button>
         <button class="tab-btn" data-tab="profile" data-color="gray">${ICON.user} ${tBi('Profile', '个人')}</button>
         <button class="tab-btn" data-tab="settings" data-color="gray">${ICON.shield} ${tBi('Settings', '设置')}</button>
@@ -790,10 +704,6 @@ ${getAboutTabStyles()}
     </div>
     <div class="tab-pane" id="tab-models">
         ${modelsHtml}
-        <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
-    </div>
-    <div class="tab-pane" id="tab-history">
-        ${historyHtml}
         <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>
     <div class="tab-pane" id="tab-calendar">

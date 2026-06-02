@@ -21,6 +21,7 @@ export interface TokenBreakdownGroup {
 }
 
 export type GMModelAccuracy = 'exact' | 'placeholder';
+export type GMModelSource = 'chatModel' | 'trajectory' | 'responseAlias' | 'unknown';
 export type GMPromptSource = 'none' | 'messagePrompts' | 'messageMetadata';
 
 export interface GMUserMessageAnchor {
@@ -76,6 +77,8 @@ export interface GMCallEntry {
     modelDisplay: string;    // e.g. Claude Opus 4
     responseModel: string;   // e.g. claude-opus-4-6-thinking
     modelAccuracy: GMModelAccuracy;
+    /** Field that supplied the canonical model ID. chatModel is authoritative. */
+    modelSource?: GMModelSource;
     inputTokens: number;
     outputTokens: number;
     thinkingTokens: number;
@@ -288,27 +291,7 @@ export interface ToolCatalogEntry {
     description?: string;
 }
 
-/** Lightweight snapshot of a baselined quota cycle ("pending archive"). */
-export interface PendingArchiveEntry {
-    /** ISO timestamp when the baseline was created */
-    timestamp: string;
-    /** Account email that was baselined */
-    accountEmail: string;
-    /** Number of calls baselined */
-    totalCalls: number;
-    /** Total input tokens */
-    totalInputTokens: number;
-    /** Total output tokens */
-    totalOutputTokens: number;
-    /** Total cache read tokens */
-    totalCacheRead: number;
-    /** Total credits consumed */
-    totalCredits: number;
-    /** Per-model call counts */
-    modelCalls: Record<string, number>;
-    /** Pre-computed estimated USD cost (calculated at baseline time from responseModel pricing) */
-    estimatedCost?: number;
-}
+
 
 /** Serialized form for globalState persistence */
 export interface GMTrackerState {
@@ -326,10 +309,10 @@ export interface GMTrackerState {
     currentAccountEmail?: string;
     /** Persistent executionId → accountEmail mapping (added v1.15.10) */
     callAccountMap?: Record<string, string>;
-    /** Pending archive entries waiting for midnight sweep (added v1.16.0) */
-    pendingArchives?: PendingArchiveEntry[];
     /** Per-account+model ISO cutoff: key="email|normalizedModel" (added v1.16.0) */
     archivedAccountModelCutoffs?: Record<string, string>;
+    /** Per-account+model exact archival coverage: key="email|MODEL_ID" (added v1.16.10) */
+    exactArchivedAccountModels?: string[];
     /** Persisted tool call frequency across restarts (added v1.17.0) */
     persistedToolCallCounts?: Record<string, number>;
     /** Persisted per-conversation tool call counts across restarts (added v1.17.0) */
@@ -349,6 +332,8 @@ export interface GMTrackerState {
     persistedUniqueErrorsByAccount?: Record<string, Record<string, { message: string; firstSeen: string }>>;
     /** Per-account tool catalog: email → { toolName → { firstSeen, description? } } (added v1.17.x) */
     persistedToolCatalogByAccount?: Record<string, Record<string, { firstSeen: string; description?: string }>>;
+    /** Per-conversation call position already submitted to DailyLedger (added v1.18.0) */
+    ledgerPositions?: Record<string, number>;
 }
 
 // ─── Clone Utilities ─────────────────────────────────────────────────────────
@@ -409,6 +394,7 @@ export function slimCallForPersistence(call: GMCallEntry): GMCallEntry {
         modelDisplay: call.modelDisplay,
         responseModel: call.responseModel,
         modelAccuracy: call.modelAccuracy,
+        modelSource: call.modelSource,
         inputTokens: call.inputTokens,
         outputTokens: call.outputTokens,
         thinkingTokens: call.thinkingTokens,

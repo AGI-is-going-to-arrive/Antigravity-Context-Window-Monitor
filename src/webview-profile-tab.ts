@@ -3,7 +3,7 @@
 // and feature/team config. Model-specific content is rendered in Models tab.
 
 import { tBi } from './i18n';
-import { ModelConfig, UserStatusInfo } from './models';
+import { ModelConfig, UserStatusInfo, getContextLimit } from './models';
 import { formatResetAbsolute, formatResetCountdown } from './reset-time';
 import { ICON } from './webview-icons';
 import { esc } from './webview-helpers';
@@ -200,6 +200,8 @@ export function buildModelQuotaGrid(configs: ModelConfig[]): string {
             resetLabel = countdown ? `${countdown} · ${absolute}` : absolute;
         }
 
+        const limit = getContextLimit(c.model);
+
         // Tag badge (e.g. "New")
         const tagBadge = c.tagTitle
             ? `<span class="model-tag-badge">${esc(c.tagTitle)}</span>` : '';
@@ -213,7 +215,7 @@ export function buildModelQuotaGrid(configs: ModelConfig[]): string {
                 <div class="quota-bar-wrap">
                     <div class="quota-bar" style="width:${pct}%;background:${barColor}"></div>
                 </div>
-                <div class="model-card-meta">
+                <div class="model-card-meta" style="display: flex; align-items: center; justify-content: space-between;">
                     ${resetLabel ? `<span class="model-card-reset">${tBi('Reset', '重置')} ${resetLabel}</span>` : ''}
                 </div>
             </div>`;

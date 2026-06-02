@@ -1,11 +1,10 @@
 // ─── Settings Tab Content Builder ────────────────────────────────────────────
 // Builds HTML for the "Settings" tab: threshold, polling, status bar toggles,
-// per-model context limit overrides, notification, activity, and history settings.
+// per-model context limit overrides, notification, activity, and panel settings.
 
 import * as vscode from 'vscode';
 import { tBi } from './i18n';
 import { ModelConfig, getContextLimit } from './models';
-import { QuotaTracker } from './quota-tracker';
 import { ICON } from './webview-icons';
 import { esc, formatFileSize } from './webview-helpers';
 
@@ -17,7 +16,6 @@ export interface StorageDiagnostics {
     stateFileSizeBytes: number;
     stateFileOpenWarnBytes: number;
     calendarDayCount: number;
-    hasDevResetSnapshot: boolean;
 }
 
 export interface PanelHintPreferences {
@@ -33,14 +31,12 @@ export interface PanelHintPreferences {
 /** Build the Settings tab HTML from current VS Code configuration. */
 export function buildSettingsContent(
     configs: ModelConfig[],
-    tracker?: QuotaTracker,
     storage?: StorageDiagnostics,
     panelPrefs?: PanelHintPreferences,
 ): string {
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
-    const currentThreshold = cfg.get<number>('compressionWarningThreshold', 150_000);
+
     const pollingInterval = cfg.get<number>('pollingInterval', 5);
-    const contextLimits = cfg.get<Record<string, number>>('contextLimits', {});
     const showContext = cfg.get<boolean>('statusBar.showContext', true);
     const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
     const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
@@ -51,23 +47,6 @@ export function buildSettingsContent(
     const showScrollbar = panelPrefs?.showScrollbar ?? false;
     const showEndOfContent = panelPrefs?.showEndOfContent ?? true;
     const stateFileSizeLabel = storage ? formatFileSize(storage.stateFileSizeBytes) : '0 B';
-
-    const modelLimitRows = configs.map(c => {
-        const customLimit = contextLimits[c.model];
-        const defaultLimit = getContextLimit(c.model);
-        const limit = customLimit ?? defaultLimit;
-        return `
-            <div class="setting-model-row">
-                <span class="setting-model-label">${esc(c.label)}</span>
-                <div class="num-spinner">
-                    <button type="button" class="num-spinner-btn decrement">−</button>
-                    <input type="number" class="threshold-input model-limit-input"
-                           data-model="${esc(c.model)}" data-default="${defaultLimit}" value="${limit}"
-                           min="1000" step="100000" />
-                    <button type="button" class="num-spinner-btn increment">+</button>
-                </div>
-            </div>`;
-    }).join('');
 
     const storageCard = storage ? `
         <section class="stg-card" data-accent="storage">
@@ -100,38 +79,7 @@ export function buildSettingsContent(
     return `
         ${storageCard}
 
-        <section class="stg-card" data-accent="warn">
-            <div class="stg-header">
-                <span class="stg-header-icon">${ICON.shield}</span>
-                <h2>${tBi('Compression Warning', '压缩警告')}</h2>
-            </div>
-            <div class="setting-row">
-                <label for="thresholdInput">${tBi(
-        'Warning threshold (tokens)',
-        '警告阈值（token 数）',
-    )}</label>
-                <p class="raw-desc">${tBi(
-        'Status bar turns yellow/red based on this value. Default 150K gives early warning before the current 128K–160K platform truncation range.',
-        '状态栏颜色基于此值判断。默认 150K 会在当前 128K–160K 平台截断区间前后提前预警。',
-    )}</p>
-                <div class="threshold-input-row">
-                    <div class="num-spinner">
-                        <button type="button" class="num-spinner-btn decrement" data-target="thresholdInput">−</button>
-                        <input type="number" id="thresholdInput" class="threshold-input"
-                               value="${currentThreshold}" min="10000" step="10000" />
-                        <button type="button" class="num-spinner-btn increment" data-target="thresholdInput">+</button>
-                    </div>
-                    <button class="action-btn" id="thresholdSaveBtn">${tBi('Save', '保存')}</button>
-                    <span id="thresholdFeedback" class="threshold-feedback"></span>
-                </div>
-                <div class="threshold-presets">
-                    <button class="preset-btn" data-val="150000">150K</button>
-                    <button class="preset-btn" data-val="200000">200K</button>
-                    <button class="preset-btn" data-val="500000">500K</button>
-                    <button class="preset-btn" data-val="900000">900K</button>
-                </div>
-            </div>
-        </section>
+
 
         <section class="stg-card" data-accent="quota">
             <div class="stg-header">
@@ -157,24 +105,6 @@ export function buildSettingsContent(
                     <button class="action-btn" id="quotaNotifySaveBtn">${tBi('Save', '保存')}</button>
                     <span id="quotaNotifyFeedback" class="threshold-feedback"></span>
                 </div>
-            </div>
-        </section>
-
-        <section class="stg-card" data-accent="quota">
-            <div class="stg-header">
-                <span class="stg-header-icon">${ICON.timeline}</span>
-                <h2>${tBi('Quota Timeline Tracking', '额度时间线追踪')}</h2>
-            </div>
-            <p class="raw-desc">${tBi(
-        'Tracks quota consumption against the official resetTime. Lightweight and always-on by default. Disable only if you never use the Quota Tracking tab.',
-        '基于官方 resetTime 追踪额度消耗。默认始终开启，性能开销极小。仅在完全不使用「额度追踪」标签页时才需关闭。',
-    )}</p>
-            <div class="toggle-group">
-                <label class="toggle-row">
-                    <input type="checkbox" id="toggleQuotaTracking" class="toggle-cb" ${tracker?.isEnabled() ? 'checked' : ''} />
-                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBi('Enable quota timeline tracking', '启用额度时间线追踪')}</span>
-                </label>
             </div>
         </section>
 
@@ -319,61 +249,5 @@ export function buildSettingsContent(
             </div>
         </section>
 
-        ${modelLimitRows ? `
-        <section class="stg-card" data-accent="model">
-            <div class="stg-header">
-                <span class="stg-header-icon">${ICON.shield}</span>
-                <h2>${tBi('Model Context Limits', '模型上下文限制')}</h2>
-            </div>
-            <p class="raw-desc">${tBi(
-        'Override context window size (tokens) per model.',
-        '按模型覆盖上下文窗口大小（token 数）。',
-    )}</p>
-            <div class="setting-model-grid">
-                ${modelLimitRows}
-            </div>
-            <div class="threshold-input-row" style="margin-top: var(--space-2);">
-                <button class="action-btn" id="modelLimitsSaveBtn">${tBi('Save All', '全部保存')}</button>
-                <button class="action-btn" id="modelLimitsResetBtn">${ICON.refresh} ${tBi('Restore Defaults', '恢复默认值')}</button>
-                <span id="modelLimitsFeedback" class="threshold-feedback"></span>
-            </div>
-        </section>` : ''}
-
-        <section class="stg-card" data-accent="debug">
-            <div class="stg-header">
-                <span class="stg-header-icon">${ICON.bolt}</span>
-                <h2>${tBi('Debug / Testing', '调试 / 测试')}</h2>
-            </div>
-            <p class="raw-desc">${tBi(
-        'Developer tools for testing daily archival and clearing stale data.',
-        '用于测试每日归档以及清除过期数据的开发者工具。',
-    )}</p>
-            <div class="setting-row" style="margin-top: var(--space-2);">
-                <p class="raw-desc">${tBi(
-        'Simulate a full daily archival: archive current Activity + GM + Cost data to Calendar, then reset for the new day. A restorable snapshot is captured first so you can roll back after verifying the UI.',
-        '模拟完整的每日归档：先抓取一份可恢复快照，再将当前 Activity + GM + 费用数据归档到日历，并为新的一天重置。验证完 UI 后可一键恢复。',
-    )}</p>
-                <div class="storage-actions">
-                    <button class="action-btn" id="devSimulateReset">
-                        ${ICON.timeline} ${tBi('Simulate Daily Archival', '模拟每日归档')}
-                    </button>
-                    <button class="action-btn${storage?.hasDevResetSnapshot ? '' : ' danger-action'}" id="devRestoreReset"${storage?.hasDevResetSnapshot ? '' : ' disabled'}>
-                        ${ICON.refresh} ${tBi('Restore Snapshot', '恢复快照')}
-                    </button>
-                    <span id="devSimulateFeedback" class="threshold-feedback"></span>
-                </div>
-                <p class="raw-desc" style="margin-top: var(--space-2);">
-                    ${storage?.hasDevResetSnapshot
-            ? tBi(
-                'A daily archival snapshot is currently available for this extension session. Restoring will roll Activity / GM / Calendar back to the pre-test state.',
-                '当前这次扩展运行里已有一份可恢复的归档测试快照。恢复后会把 Activity / GM / Calendar 一并回滚到测试前状态。',
-            )
-            : tBi(
-                'No archival test snapshot is stored right now. Trigger one simulation first if you want an undo point in this extension session.',
-                '当前这次扩展运行里没有可恢复的归档测试快照。若要回滚，请先触发一次模拟每日归档。',
-            )}
-                </p>
-            </div>
-        </section>
     `;
 }

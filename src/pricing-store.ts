@@ -5,7 +5,7 @@
 // Extracted from gm-panel.ts to enable the dedicated Pricing tab.
 
 import type { GMSummary, GMModelStats } from './gm-tracker';
-import { normalizeModelDisplayName, getModelBaseName } from './models';
+import { normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDisplayName } from './models';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -50,11 +50,9 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     'gpt-oss-120b': { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0, thinking: 0.36 },
     // ── Gemini 3.x (cloud.google.com/vertex-ai/generative-ai/pricing) ─
     'gemini-3.1-pro': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },
-    'gemini-pro-default': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },  // M16 responseModel alias
     'gemini-3-flash': { input: 0.50, output: 3, cacheRead: 0.05, cacheWrite: 0.625, thinking: 3 },     // Gemini 3 Flash (M133=gemini-3-flash-b)
     // ── Gemini 3.5 Flash (ai.google.dev/gemini-api/docs/pricing) ────────
     'gemini-3.5-flash': { input: 1.50, output: 9, cacheRead: 0.15, cacheWrite: 1.875, thinking: 9 },
-    'gemini-3-flash-a': { input: 1.50, output: 9, cacheRead: 0.15, cacheWrite: 1.875, thinking: 9 },   // M132/M20 responseModel
 };
 
 // ─── Pricing Lookup ──────────────────────────────────────────────────────────
@@ -67,6 +65,29 @@ export function findPricing(
 ): ModelPricing | null {
     if (!responseModel) { return null; }
     if (table[responseModel]) { return table[responseModel]; }
+    // Alias resolution: responseModel may be an alias (e.g. 'gemini-pro-default')
+    // that maps to a known model ID. Resolve it and find the canonical responseModel.
+    const modelId = resolveModelId(responseModel);
+    if (modelId) {
+        // Try looking up by canonical display name converted to kebab
+        const displayName = getModelDisplayName(modelId);
+        if (displayName && displayName !== modelId) {
+            const kebab = displayName
+                .replace(/[()]/g, '')
+                .trim()
+                .toLowerCase()
+                .replace(/\s+/g, '-');
+            if (kebab) {
+                if (table[kebab]) { return table[kebab]; }
+                // Prefix match: 'gemini-3.1-pro-high' should match 'gemini-3.1-pro'
+                for (const [key, pricing] of Object.entries(table)) {
+                    if (kebab.startsWith(key) || key.startsWith(kebab)) {
+                        return pricing;
+                    }
+                }
+            }
+        }
+    }
     for (const [key, pricing] of Object.entries(table)) {
         if (responseModel.startsWith(key) || key.startsWith(responseModel)) {
             return pricing;

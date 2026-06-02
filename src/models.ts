@@ -15,45 +15,70 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     // These are the ACTUAL context window limits enforced by the platform,
     // NOT the model's native context window size.
     // Verified via diag-scripts/my-tools/extra/all-models-deep-miner.ts (2026-05-19).
-    'MODEL_PLACEHOLDER_M16': 128_000,   // Gemini 3.1 Pro (High) — new ID (gemini-pro-default), cp_limit=128000
-    'MODEL_PLACEHOLDER_M37': 128_000,   // [Legacy] Gemini 3.1 Pro (High) — now demoted to planModel/dispatcher
-    'MODEL_PLACEHOLDER_M36': 128_000,   // Gemini 3.1 Pro (Low)  — same pool as High
-    'MODEL_PLACEHOLDER_M133': 128_000,  // Gemini 3 Flash (checkpoint ghost, gemini-3-flash-b)
-    'MODEL_PLACEHOLDER_M132': 128_000,  // Gemini 3.5 Flash (High) — current ID (gemini-3-flash-agent), cp_threshold=128000
-    'MODEL_PLACEHOLDER_M20': 128_000,   // Gemini 3.5 Flash (Medium) — (gemini-3.5-flash-low), same checkpointer as M132
-    'MODEL_PLACEHOLDER_M84': 128_000,   // [Legacy] Gemini 3 Flash — old ID
-    'MODEL_PLACEHOLDER_M47': 128_000,   // [Legacy] Gemini 3 Flash (older ID)
-    'MODEL_PLACEHOLDER_M18': 160_000,   // [Legacy] Gemini 3 Flash (older ID)
-    'MODEL_PLACEHOLDER_M35': 160_000,   // Claude Sonnet 4.6 (Thinking) — truncationThresholdTokens=160000
-    'MODEL_PLACEHOLDER_M26': 160_000,   // Claude Opus 4.6 (Thinking)  — truncationThresholdTokens=160000
-    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 80_000,   // GPT-OSS 120B (Medium) — cp_limit=80000
+    // Note: All fallback limits are intentionally offset by -1,000 (1K) so that in daily use,
+    // you can instantly recognize if the extension has successfully overridden the fallback with live captures.
+    'MODEL_PLACEHOLDER_M16': 127_000,   // Gemini 3.1 Pro (High) — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M37': 127_000,   // [Legacy] Gemini 3.1 Pro (High) — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M36': 127_000,   // Gemini 3.1 Pro (Low)  — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M133': 127_000,  // Gemini 3.5 Flash (High) — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M132': 127_000,  // Gemini 3.5 Flash (High) — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M187': 127_000,  // Gemini 3.5 Flash (Low) — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M20': 127_000,   // Gemini 3.5 Flash (Medium) — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M84': 127_000,   // [Legacy] Gemini 3 Flash — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M47': 127_000,   // [Legacy] Gemini 3 Flash (older ID) — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M18': 159_000,   // [Legacy] Gemini 3 Flash (older ID) — fallback offset by -1K (live: 160,000)
+    'MODEL_PLACEHOLDER_M35': 159_000,   // Claude Sonnet 4.6 (Thinking) — fallback offset by -1K (live: 160,000)
+    'MODEL_PLACEHOLDER_M26': 159_000,   // Claude Opus 4.6 (Thinking)  — fallback offset by -1K (live: 160,000)
+    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 79_000,   // GPT-OSS 120B (Medium) — fallback offset by -1K (live: 80,000)
 };
 
-export const DEFAULT_CONTEXT_LIMIT = 160_000;
+export const DEFAULT_CONTEXT_LIMIT = 159_000;
 
 // ─── Model Display Names ─────────────────────────────────────────────────────
 // Starts empty — populated dynamically by `updateModelDisplayNames()` from
 // the LS GetUserStatus API. No hardcoded model names.
 
 let modelDisplayNames: Record<string, string> = {};
-/** responseModel -> placeholder ID reverse map (populated from GM data). */
-let responseModelAliases: Record<string, string> = {};
+/** responseModel -> placeholder ID reverse map (populated from GM data).
+ *  Pre-seeded with known stable aliases so findPricing works before fetchAll.
+ *  Source: GetAvailableModels API (all_models_parameter_map.md 2026-05-22) */
+let responseModelAliases: Record<string, string> = {
+    // Gemini Pro aliases
+    'gemini-pro-default': 'MODEL_PLACEHOLDER_M16',       // legacy responseModel for M16
+    'gemini-pro-agent': 'MODEL_PLACEHOLDER_M16',          // current model_id for M16
+    'gemini-3.1-pro-high': 'MODEL_PLACEHOLDER_M37',       // model_id for M37
+    'gemini-3.1-pro-low': 'MODEL_PLACEHOLDER_M36',        // model_id for M36
+    // Gemini Flash aliases
+    'gemini-3-flash-a': 'MODEL_PLACEHOLDER_M132',          // legacy responseModel for 3.5 Flash
+    'gemini-3-flash-agent': 'MODEL_PLACEHOLDER_M133',     // model_id for M133 (3.5 Flash High)
+    'gemini-3-flash-b': 'MODEL_PLACEHOLDER_M133',          // responseModel alias for M133
+    'gemini-3.5-flash-low': 'MODEL_PLACEHOLDER_M20',      // model_id for M20 (3.5 Flash Medium)
+    'gemini-3-flash': 'MODEL_PLACEHOLDER_M18',             // backend command model
+    // Claude aliases
+    'claude-opus-4-6-thinking': 'MODEL_PLACEHOLDER_M26',  // model_id for Opus
+    'claude-sonnet-4-6': 'MODEL_PLACEHOLDER_M35',          // model_id for Sonnet
+    // GPT-OSS
+    'gpt-oss-120b-medium': 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
+};
 /** Whether to append diagnostic short ID suffix (e.g. "(M16)") to display names. */
 let showModelShortId = false;
 
 const KNOWN_QUOTA_POOLS: Record<string, string> = {
-    'MODEL_PLACEHOLDER_M16': 'gemini-pro',
-    'MODEL_PLACEHOLDER_M37': 'gemini-pro',
-    'MODEL_PLACEHOLDER_M36': 'gemini-pro',
-    'MODEL_PLACEHOLDER_M133': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M132': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M20': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M84': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M47': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M18': 'gemini-flash',
-    'MODEL_PLACEHOLDER_M35': 'claude-premium',
-    'MODEL_PLACEHOLDER_M26': 'claude-premium',
-    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'claude-premium',
+    // Gemini pool — Flash and Pro share the same quota since mid-2026
+    'MODEL_PLACEHOLDER_M16': 'gemini',
+    'MODEL_PLACEHOLDER_M37': 'gemini',
+    'MODEL_PLACEHOLDER_M36': 'gemini',
+    'MODEL_PLACEHOLDER_M133': 'gemini',
+    'MODEL_PLACEHOLDER_M132': 'gemini',
+    'MODEL_PLACEHOLDER_M187': 'gemini',
+    'MODEL_PLACEHOLDER_M20': 'gemini',
+    'MODEL_PLACEHOLDER_M84': 'gemini',
+    'MODEL_PLACEHOLDER_M47': 'gemini',
+    'MODEL_PLACEHOLDER_M18': 'gemini',
+    // Claude/GPT premium pool
+    'MODEL_PLACEHOLDER_M35': 'premium',
+    'MODEL_PLACEHOLDER_M26': 'premium',
+    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'premium',
 };
 
 // ─── Legacy Chinese Name Migration ──────────────────────────────────────────
@@ -77,12 +102,13 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M16': 'Gemini 3.1 Pro (High)',
     'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
     'MODEL_PLACEHOLDER_M36': 'Gemini 3.1 Pro (Low)',
-    'MODEL_PLACEHOLDER_M133': 'Gemini 3 Flash',         // checkpoint ghost / legacy model (gemini-3-flash-b)
-    'MODEL_PLACEHOLDER_M132': 'Gemini 3.5 Flash',       // current active
-    'MODEL_PLACEHOLDER_M20': 'Gemini 3.5 Flash (Medium)',  // gemini-3.5-flash-low / same family as M132
-    'MODEL_PLACEHOLDER_M84': 'Gemini 3 Flash',         // Replaced by M133
-    'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',         // Replaced by M84 → M133
-    'MODEL_PLACEHOLDER_M18': 'Gemini 3 Flash',
+    'MODEL_PLACEHOLDER_M133': 'Gemini 3.5 Flash (High)',  // gemini-3-flash-agent (renamed from "Gemini 3 Flash")
+    'MODEL_PLACEHOLDER_M132': 'Gemini 3.5 Flash (High)',  // retired predecessor of M133
+    'MODEL_PLACEHOLDER_M187': 'Gemini 3.5 Flash (Low)',
+    'MODEL_PLACEHOLDER_M20': 'Gemini 3.5 Flash (Medium)', // gemini-3.5-flash-low
+    'MODEL_PLACEHOLDER_M84': 'Gemini 3 Flash',            // retired (replaced by M133)
+    'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',            // retired (replaced by M84)
+    'MODEL_PLACEHOLDER_M18': 'Gemini 3 Flash',            // backend command model
     'MODEL_PLACEHOLDER_M35': 'Claude Sonnet 4.6 (Thinking)',
     'MODEL_PLACEHOLDER_M26': 'Claude Opus 4.6 (Thinking)',
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'GPT-OSS 120B (Medium)',
@@ -91,17 +117,60 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
+ * 启发式智能未知大模型家族推导预测
+ * Predict cpLimit, cpThreshold, and maxTokens based on model keywords.
+ * Prevents unknown future models from blindly inheriting a generic 160K fallback.
+ */
+export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThreshold: number; maxTokens: number; supportsThinking: boolean } {
+    const idLower = modelId.toLowerCase();
+
+    // 1. Claude/Premium (Thinking) series -> 160K CP Limit
+    if (idLower.includes('claude') || idLower.includes('opus') || idLower.includes('sonnet') || idLower.includes('m35') || idLower.includes('m26')) {
+        return { cpLimit: 160000, cpThreshold: 100000, maxTokens: 250000, supportsThinking: true };
+    }
+
+    // 2. Gemini Pro / High reasoning series -> 128K CP Limit
+    if (idLower.includes('pro') || idLower.includes('m16') || idLower.includes('m37') || idLower.includes('m36')) {
+        return { cpLimit: 128000, cpThreshold: 60000, maxTokens: 1048576, supportsThinking: false };
+    }
+
+    // 3. Gemini Flash / Lite series -> 128K CP Limit
+    if (idLower.includes('flash') || idLower.includes('lite') || idLower.includes('m133') || idLower.includes('m20') || idLower.includes('m187') || idLower.includes('unspecified')) {
+        return { cpLimit: 128000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: false };
+    }
+
+    // 4. GPT-OSS lightweight series -> 80K CP Limit
+    if (idLower.includes('gpt') || idLower.includes('oss')) {
+        return { cpLimit: 80000, cpThreshold: 40000, maxTokens: 131072, supportsThinking: false };
+    }
+
+    // 5. 完全未知反传统新模型 -> 暂不强套死数据（为 0 触发“正在计算阈值...”流光），待会话遥测命中
+    return { cpLimit: 0, cpThreshold: 0, maxTokens: 0, supportsThinking: false };
+}
+
+/**
  * Get the context limit for a model.
  */
 export function getContextLimit(
     model: string,
     customLimits?: Record<string, number>
 ): number {
-    if (customLimits?.[model] !== undefined) {
-        // Clamp to minimum 1 to prevent negative or zero limits
-        return Math.max(1, customLimits[model]);
+    if (DEFAULT_CONTEXT_LIMITS[model] !== undefined) {
+        return DEFAULT_CONTEXT_LIMITS[model];
     }
-    return DEFAULT_CONTEXT_LIMITS[model] || DEFAULT_CONTEXT_LIMIT;
+    const guessed = guessContextLimitSpec(model);
+    return guessed.cpLimit > 0 ? (guessed.cpLimit - 1000) : DEFAULT_CONTEXT_LIMIT;
+}
+
+/**
+ * Dynamically override context limits based on official checkpointer parameters.
+ */
+export function overrideContextLimits(overrides: Record<string, number>): void {
+    for (const [model, limit] of Object.entries(overrides)) {
+        if (limit > 0) {
+            DEFAULT_CONTEXT_LIMITS[model] = limit;
+        }
+    }
 }
 
 /**
@@ -300,6 +369,11 @@ export function updateModelDisplayNames(configs: ModelConfig[]): void {
     }
 }
 
+function isConcreteAliasTarget(modelId: string): boolean {
+    const clean = modelId.trim();
+    return /^MODEL_[A-Z0-9_]+$/.test(clean) && !clean.includes('UNSPECIFIED');
+}
+
 /**
  * Register a responseModel → placeholder ID alias.
  * Called from GM data processing when we discover the mapping.
@@ -307,9 +381,18 @@ export function updateModelDisplayNames(configs: ModelConfig[]): void {
  * Allows resolveModelId('gemini-pro-default') → 'MODEL_PLACEHOLDER_M16' → "Gemini 3.1 Pro (High)"
  */
 export function registerResponseModelAlias(responseModel: string, placeholderId: string): void {
-    if (responseModel && placeholderId && responseModel !== placeholderId) {
-        responseModelAliases[responseModel] = placeholderId;
+    const responseKey = responseModel.trim();
+    const target = placeholderId.trim();
+    if (!responseKey || !target || responseKey === target || !isConcreteAliasTarget(target)) {
+        return;
     }
+    const existing = responseModelAliases[responseKey];
+    if (existing && existing !== target) {
+        // responseModel can be less stable than chatModel.model; do not let one
+        // conflicting sample remap all future response-only records.
+        return;
+    }
+    responseModelAliases[responseKey] = target;
 }
 
 /**
@@ -323,4 +406,179 @@ export function setShowModelShortId(enabled: boolean): void {
 /** Check whether the diagnostic short ID suffix is currently enabled. */
 export function isShowModelShortId(): boolean {
     return showModelShortId;
+}
+
+export interface ModelSpec {
+    modelId: string;
+    placeholderId: string;
+    displayName: string;
+    apiProvider: string;
+    maxTokens: number;
+    maxOutputTokens: number;
+    thinkingBudget: number;
+    supportsThinking: boolean;
+    cpLimit: number;
+    cpThreshold: number;
+}
+
+let activeModelSpecs: Record<string, ModelSpec> = {
+    'MODEL_PLACEHOLDER_M133': {
+        modelId: 'gemini-3-flash-agent',
+        placeholderId: 'MODEL_PLACEHOLDER_M133',
+        displayName: 'Gemini 3.5 Flash (High)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 128000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M20': {
+        modelId: 'gemini-3.5-flash-low',
+        placeholderId: 'MODEL_PLACEHOLDER_M20',
+        displayName: 'Gemini 3.5 Flash (Medium)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 128000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M187': {
+        modelId: 'gemini-3.5-flash-extra-low',
+        placeholderId: 'MODEL_PLACEHOLDER_M187',
+        displayName: 'Gemini 3.5 Flash (Low)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 128000,
+        cpThreshold: 50000,
+    },
+    'MODEL_UNSPECIFIED': {
+        modelId: 'gemini-3.5-flash-extra-low (UNSPECIFIED)',
+        placeholderId: 'MODEL_UNSPECIFIED',
+        displayName: 'Gemini 3.5 Flash (Low)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 128000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M16': {
+        modelId: 'gemini-pro-agent',
+        placeholderId: 'MODEL_PLACEHOLDER_M16',
+        displayName: 'Gemini 3.1 Pro (High)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65535,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 128000,
+        cpThreshold: 60000,
+    },
+    'MODEL_PLACEHOLDER_M36': {
+        modelId: 'gemini-3.1-pro-low',
+        placeholderId: 'MODEL_PLACEHOLDER_M36',
+        displayName: 'Gemini 3.1 Pro (Low)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65535,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 128000,
+        cpThreshold: 60000,
+    },
+    'MODEL_PLACEHOLDER_M35': {
+        modelId: 'claude-sonnet-4-6',
+        placeholderId: 'MODEL_PLACEHOLDER_M35',
+        displayName: 'Claude Sonnet 4.6 (Thinking)',
+        apiProvider: 'ANTHROPIC_VERTEX',
+        maxTokens: 250000,
+        maxOutputTokens: 64000,
+        thinkingBudget: 32000,
+        supportsThinking: true,
+        cpLimit: 160000,
+        cpThreshold: 100000,
+    },
+    'MODEL_PLACEHOLDER_M26': {
+        modelId: 'claude-opus-4-6-thinking',
+        placeholderId: 'MODEL_PLACEHOLDER_M26',
+        displayName: 'Claude Opus 4.6 (Thinking)',
+        apiProvider: 'ANTHROPIC_VERTEX',
+        maxTokens: 250000,
+        maxOutputTokens: 64000,
+        thinkingBudget: 32000,
+        supportsThinking: true,
+        cpLimit: 160000,
+        cpThreshold: 100000,
+    },
+    'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': {
+        modelId: 'gpt-oss-120b-medium',
+        placeholderId: 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
+        displayName: 'GPT-OSS 120B (Medium)',
+        apiProvider: 'OPENAI_VERTEX',
+        maxTokens: 131072,
+        maxOutputTokens: 32768,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 80000,
+        cpThreshold: 40000,
+    },
+};
+
+export function updateModelSpec(placeholderId: string, spec: Partial<ModelSpec>): void {
+    if (!activeModelSpecs[placeholderId]) {
+        activeModelSpecs[placeholderId] = {
+            modelId: spec.modelId || '',
+            placeholderId,
+            displayName: spec.displayName || getModelDisplayName(placeholderId),
+            apiProvider: spec.apiProvider || '',
+            maxTokens: spec.maxTokens || 0,
+            maxOutputTokens: spec.maxOutputTokens || 0,
+            thinkingBudget: spec.thinkingBudget || 0,
+            supportsThinking: spec.supportsThinking || false,
+            cpLimit: spec.cpLimit || 0,
+            cpThreshold: spec.cpThreshold || 0,
+        };
+    } else {
+        activeModelSpecs[placeholderId] = {
+            ...activeModelSpecs[placeholderId],
+            ...spec,
+        };
+    }
+}
+
+export function getModelSpecs(): ModelSpec[] {
+    const order = [
+        'MODEL_PLACEHOLDER_M133',
+        'MODEL_PLACEHOLDER_M20',
+        'MODEL_PLACEHOLDER_M187',
+        'MODEL_UNSPECIFIED',
+        'MODEL_PLACEHOLDER_M16',
+        'MODEL_PLACEHOLDER_M36',
+        'MODEL_PLACEHOLDER_M35',
+        'MODEL_PLACEHOLDER_M26',
+        'MODEL_OPENAI_GPT_OSS_120B_MEDIUM'
+    ];
+    const ordered: ModelSpec[] = [];
+    for (const key of order) {
+        if (activeModelSpecs[key]) {
+            const spec = activeModelSpecs[key];
+            spec.displayName = getModelDisplayName(key);
+            ordered.push(spec);
+        }
+    }
+    for (const [key, spec] of Object.entries(activeModelSpecs)) {
+        if (!order.includes(key)) {
+            spec.displayName = getModelDisplayName(key);
+            ordered.push(spec);
+        }
+    }
+    return ordered;
 }

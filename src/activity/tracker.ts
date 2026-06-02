@@ -42,8 +42,8 @@ import {
 
 // ─── ActivityTracker Class ───────────────────────────────────────────────────
 
-/** Maximum recent step events kept in memory (configurable via settings) */
-function getMaxRecentSteps(): number {
+/** Maximum recent step events kept in persisted snapshots (configurable via settings) */
+function getMaxPersistedRecentSteps(): number {
     try {
         const vscode = require('vscode');
         return vscode.workspace.getConfiguration('antigravityContextMonitor').get('activity.maxRecentSteps', 100) || 100;
@@ -225,29 +225,26 @@ export class ActivityTracker {
             // Post-warm-up: inject recent timeline events from ALL conversations
             // Stats already counted above — this only creates StepEvent objects.
             // stepIndex uses ABSOLUTE index (offset-based) to align with GM stepIndices.
-            // Collect all candidate events, then sort by timestamp and take the most recent.
-            const maxEvents = getMaxRecentSteps();
+            // Collect all candidate events, then sort chronologically.
             const candidateEvents: { step: Record<string, unknown>; absIdx: number; createdAt: string; cascadeId?: string }[] = [];
             for (const conv of allConvSteps) {
                 const id = conv.cascadeId;
                 const ts = conv.totalSteps;
                 const steps = conv.steps;
                 const offset = ts - steps.length; // absolute index offset
-                const tail = steps.slice(-30);
-                const startIdx = steps.length - tail.length;
-                for (let i = 0; i < tail.length; i++) {
-                    const step = tail[i];
+                for (let i = 0; i < steps.length; i++) {
+                    const step = steps[i];
                     const meta = (step.metadata || {}) as Record<string, unknown>;
                     const createdAt = (meta.createdAt as string) || '';
-                    candidateEvents.push({ step, absIdx: startIdx + i + offset, createdAt, cascadeId: id });
+                    candidateEvents.push({ step, absIdx: i + offset, createdAt, cascadeId: id });
                 }
             }
-            // Sort by timestamp descending, take the most recent maxEvents
+            // Sort by timestamp descending, then replay oldest-first for stable chronology.
             candidateEvents.sort((a, b) => {
                 if (!a.createdAt || !b.createdAt) { return 0; }
                 return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
             });
-            const toInject = candidateEvents.slice(0, maxEvents).reverse(); // oldest first for chronological order
+            const toInject = candidateEvents.reverse(); // oldest first for chronological order
             for (const { step, absIdx, cascadeId } of toInject) {
                 this._injectTimelineEvent(step, absIdx, cascadeId);
             }
@@ -899,10 +896,6 @@ export class ActivityTracker {
         }
         this._recentSteps = [...deduped.values()];
         this._sortRecentSteps();
-        const max = getMaxRecentSteps();
-        if (this._recentSteps.length > max) {
-            this._recentSteps = this._recentSteps.slice(-max);
-        }
     }
 
     private _upsertStepTimelineEvent(event: StepEvent): boolean {
@@ -1749,14 +1742,21 @@ export class ActivityTracker {
             };
         }
         const summary = this.getSummary();
-        summary.recentSteps = summary.recentSteps.map(slimStepEventForPersistence);
+        const maxPersistedRecentSteps = getMaxPersistedRecentSteps();
+        summary.recentSteps = summary.recentSteps
+            .map(slimStepEventForPersistence)
+            .slice(-maxPersistedRecentSteps);
         const slimArchives = this._archives.map(archive => ({
             ...archive,
             summary: {
                 ...archive.summary,
-                recentSteps: archive.summary.recentSteps.map(slimStepEventForPersistence),
+                recentSteps: archive.summary.recentSteps
+                    .map(slimStepEventForPersistence)
+                    .slice(-maxPersistedRecentSteps),
             },
-            recentSteps: archive.recentSteps?.map(slimStepEventForPersistence),
+            recentSteps: archive.recentSteps
+                ?.map(slimStepEventForPersistence)
+                .slice(-maxPersistedRecentSteps),
         }));
         return {
             version: 1,
