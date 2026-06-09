@@ -38,6 +38,10 @@
 
 ### 🐛 Fixed / 修复
 
+- **Today's Ledger recovers from stale empty state / 今日累计可从旧日期空状态恢复**:
+  DailyLedger restore now normalizes a previous-day empty ledger to today's date instead of preserving a stale `dateKey` with no data to archive. This prevents new calls from being extracted repeatedly but rejected with `added=0`, which kept the "Today's Ledger / 今日累计" panel hidden after a no-usage previous day.
+  DailyLedger 恢复时会将“旧日期且无数据”的空账本归一到今天，而不是保留没有归档价值的旧 `dateKey`。这避免前一天无用量后，次日新增调用被反复提取但全部 `added=0` 拒绝，导致“今日累计”面板不显示。
+
 - **Quota-reset settlement no longer triggered by resetTime drift / 额度重置结算不再被 resetTime 漂移误触发**:
   Added a stricter reset-time turnover gate: settlement now requires the previous reset time to have passed and the new reset time to jump forward by a meaningful cycle window. Small future drift or first-use resetTime correction no longer moves today's active ledger into the settled bucket. GM archival filtering now prefers exact archived call IDs when hydrated calls are available, and stale future account-model cutoffs are purged on restore/build/serialize so they cannot keep hiding later same-model calls.
   新增更严格的 resetTime 周期切换判定：只有旧 resetTime 已经过期，并且新 resetTime 向未来发生明确周期跳转时才触发结算。小幅未来漂移或首次使用后的 resetTime 校正，不会再把“今日累计”提前搬到“已结算”。GM 归档过滤在有明细调用时优先使用精确 call ID，恢复态遗留的未来 account-model cutoff 会在 restore/build/serialize 路径清理，避免继续隐藏后续同模型调用。
