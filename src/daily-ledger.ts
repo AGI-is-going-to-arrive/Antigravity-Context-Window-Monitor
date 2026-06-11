@@ -327,6 +327,16 @@ export class DailyLedger {
     get dateKey(): string { return this._dateKey; }
 
     /**
+     * Normalize an empty ledger whose date no longer matches the local day.
+     * Data-bearing ledgers must wait for performDailyArchival() to rollover.
+     */
+    normalizeIfStaleEmpty(todayKey = toLocalDateKey()): boolean {
+        if (this._dateKey === todayKey || this.hasData) { return false; }
+        this._resetForNewDay(todayKey);
+        return true;
+    }
+
+    /**
      * Clear recorded dedup IDs that belong to a specific conversation.
      * Called when a conversation is reverted — the old indices are invalidated
      * and new calls at the same indices must be accepted.
@@ -411,11 +421,11 @@ export class DailyLedger {
         let added = 0;
         const todayKey = toLocalDateKey();
 
-        // If the date has rolled over, do NOT auto-reset here.
-        // performDailyArchival() must call rollover() first to archive yesterday's
-        // data before we start recording for the new day. Silently skip until then.
+        // If the date has rolled over, data-bearing ledgers must wait for
+        // performDailyArchival() to rollover before recording for the new day.
+        // Empty stale ledgers have nothing to flush, so normalize and continue.
         if (todayKey !== this._dateKey) {
-            return 0;
+            if (!this.normalizeIfStaleEmpty(todayKey)) { return 0; }
         }
 
         // Timestamp gate: compute midnight of dateKey's local day.
@@ -687,7 +697,8 @@ export class DailyLedger {
         // Always restore the data — even if it's from a previous day.
         // If the IDE was off overnight, the data hasn't been rolled over yet.
         // performDailyArchival() will call rollover() to flush it before
-        // starting the new day.
+        // starting the new day. Empty stale ledgers are normalized instead;
+        // there is nothing to flush.
         ledger._dateKey = data.dateKey;
         ledger._settled = Array.isArray(data.settled) ? [...data.settled] : [];
 
@@ -710,11 +721,7 @@ export class DailyLedger {
             }
         }
 
-        // A stale empty ledger has nothing to archive, but keeping its old
-        // dateKey makes recordCalls() reject all new calls until restart repair.
-        if (!ledger.hasData && ledger._dateKey !== toLocalDateKey()) {
-            ledger._resetForNewDay(toLocalDateKey());
-        }
+        ledger.normalizeIfStaleEmpty();
 
         return ledger;
     }

@@ -396,9 +396,15 @@ describe('GMTracker ledger position commits', () => {
         vi.useRealTimers();
     });
 
-    it('re-offers calls when a stale daily ledger rejects them before archival catches up', () => {
+    it('re-offers calls when a data-bearing stale daily ledger rejects them before archival catches up', () => {
         const tracker = new GMTracker();
+        vi.setSystemTime(localTime(2026, 6, 1, 23, 55));
         const ledger = new DailyLedger('2026-06-01');
+        expect(ledger.recordCalls([
+            { call: makeCall({ executionId: 'previous-day-call', createdAt: localIso(2026, 6, 1, 23, 50) }), dedupKey: 'conv-previous:0' },
+        ])).toBe(1);
+
+        vi.setSystemTime(localTime(2026, 6, 2, 0, 5));
         const cache = (tracker as any)._cache as Map<string, GMConversationData>;
         cache.set('conv-midnight', {
             cascadeId: 'conv-midnight',
@@ -701,5 +707,127 @@ describe('GMTracker ledger position commits', () => {
 
         cache.get('conv-legacy-position')!.calls = originalCalls;
         expect(tracker.getNewCallsSinceLastRecord().entries).toHaveLength(0);
+    });
+});
+
+describe('DailyLedger stale empty date normalization', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(localTime(2026, 6, 11, 12));
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('records today calls after an empty in-memory ledger spans midnight', () => {
+        vi.setSystemTime(localTime(2026, 6, 10, 23, 55));
+        const ledger = new DailyLedger('2026-06-10');
+
+        vi.setSystemTime(localTime(2026, 6, 11, 12));
+        const added = ledger.recordCalls([
+            { call: makeCall({ executionId: 'runtime-midnight', createdAt: localIso(2026, 6, 11, 12) }), dedupKey: 'conv-runtime:0' },
+        ]);
+
+        expect(added).toBe(1);
+        expect(ledger.dateKey).toBe('2026-06-11');
+        expect(ledger.getTodayTotals().totalCalls).toBe(1);
+    });
+
+    it('self-heals an already persisted empty wedge before recording new calls', () => {
+        const ledger = new DailyLedger('2026-06-05');
+
+        const added = ledger.recordCalls([
+            { call: makeCall({ executionId: 'existing-wedge', createdAt: localIso(2026, 6, 11, 12) }), dedupKey: 'conv-wedge:0' },
+        ]);
+
+        expect(added).toBe(1);
+        expect(ledger.dateKey).toBe('2026-06-11');
+        expect(ledger.getTodayTotals().totalCalls).toBe(1);
+    });
+
+    it('keeps stale data-bearing ledgers blocked until archival runs', () => {
+        vi.setSystemTime(localTime(2026, 6, 10, 12));
+        const ledger = new DailyLedger('2026-06-10');
+        expect(ledger.recordCalls([
+            { call: makeCall({ executionId: 'yesterday-data', createdAt: localIso(2026, 6, 10, 12) }), dedupKey: 'conv-data:0' },
+        ])).toBe(1);
+
+        vi.setSystemTime(localTime(2026, 6, 11, 12));
+        const added = ledger.recordCalls([
+            { call: makeCall({ executionId: 'today-blocked', createdAt: localIso(2026, 6, 11, 12) }), dedupKey: 'conv-data:1' },
+        ]);
+
+        expect(added).toBe(0);
+        expect(ledger.dateKey).toBe('2026-06-10');
+        expect(ledger.getTodayTotals().totalCalls).toBe(1);
+    });
+
+    it('preserves settled-only stale ledgers on restore for startup archival', () => {
+        vi.setSystemTime(localTime(2026, 6, 10, 12));
+        const ledger = new DailyLedger('2026-06-10');
+        expect(ledger.recordCalls([
+            { call: makeCall({ executionId: 'settled-only', createdAt: localIso(2026, 6, 10, 12) }), dedupKey: 'conv-settled:0' },
+        ])).toBe(1);
+        const cutoff = localTime(2026, 6, 10, 13).getTime();
+        const settled = ledger.settleForQuotaReset(['MODEL_PLACEHOLDER_M16'], 'user@example.com', cutoff);
+        expect(settled?.totalCalls).toBe(1);
+        expect(ledger.getTodayActive()).toHaveLength(0);
+
+        vi.setSystemTime(localTime(2026, 6, 11, 12));
+        const restored = DailyLedger.restore(ledger.serialize());
+
+        expect(restored.dateKey).toBe('2026-06-10');
+        expect(restored.hasData).toBe(true);
+        expect(restored.getSettledEntries()).toHaveLength(1);
+        expect(restored.getSettledEntries()[0].settledCutoffTime).toBe(cutoff);
+        expect(restored.getSettledEntries()[0].totalCalls).toBe(1);
+    });
+
+    it('normalizes an empty future-dated ledger on restore', () => {
+        const state: DailyLedgerState = {
+            version: 1,
+            dateKey: '2026-06-12',
+            accounts: {},
+            settled: [],
+        };
+
+        const restored = DailyLedger.restore(state);
+
+        expect(restored.dateKey).toBe('2026-06-11');
+        expect(restored.hasData).toBe(false);
+    });
+
+    it('normalizes an empty future-dated ledger before recording', () => {
+        const ledger = new DailyLedger('2026-06-12');
+
+        const added = ledger.recordCalls([
+            { call: makeCall({ executionId: 'clock-rollback', createdAt: localIso(2026, 6, 11, 12) }), dedupKey: 'conv-future:0' },
+        ]);
+
+        expect(added).toBe(1);
+        expect(ledger.dateKey).toBe('2026-06-11');
+    });
+
+    it('keeps hasData aligned with non-trivial serialized ledger fields', () => {
+        const empty = new DailyLedger('2026-06-11');
+        // New serialized data fields must be added to hasData or explicitly exempted here.
+        expect(Object.keys(empty.serialize()).sort()).toEqual(['accounts', 'dateKey', 'settled', 'version']);
+        expect(empty.hasData).toBe(false);
+
+        const active = new DailyLedger('2026-06-11');
+        expect(active.recordCalls([
+            { call: makeCall({ executionId: 'active-contract', createdAt: localIso(2026, 6, 11, 12) }), dedupKey: 'conv-active-contract:0' },
+        ])).toBe(1);
+        expect(active.serialize().accounts['user@example.com'].totalCalls).toBeGreaterThan(0);
+        expect(active.hasData).toBe(true);
+
+        const settledOnly = new DailyLedger('2026-06-11');
+        expect(settledOnly.recordCalls([
+            { call: makeCall({ executionId: 'settled-contract', createdAt: localIso(2026, 6, 11, 12) }), dedupKey: 'conv-settled-contract:0' },
+        ])).toBe(1);
+        settledOnly.settleForQuotaReset(['MODEL_PLACEHOLDER_M16'], 'user@example.com');
+        expect(settledOnly.serialize().settled).toHaveLength(1);
+        expect(settledOnly.hasData).toBe(true);
     });
 });

@@ -1,5 +1,24 @@
 # 变更日志 / Changelog
 
+## [1.16.12] - 2026-06-11
+
+> Contributed fix by **@NightMin2002** (PR #61), verified with a three-way independent review (codex adversarial + gemini cross + Claude corner-case) and 7 zero-mock probes against real persisted state — which caught a live specimen of this very bug (an empty ledger stuck at `2026-06-05` for 6 days). Maintainer runtime follow-up included below. Huge thanks to **@NightMin2002**!
+> 本版核心修复由 **@NightMin2002** 贡献（PR #61），经三路独立审查（codex 对抗 + gemini 交叉 + Claude 角点）与 7 组针对真实持久化状态的零-mock 探测验证——实测期间在维护者本机抓到了该 bug 的活体（空账本的 `dateKey` 滞留 `2026-06-05` 达 6 天）。下方附维护者运行时跟进。特别感谢 **@NightMin2002**！
+
+### 🐛 Fixed / 修复
+
+- **Today's Ledger recovers from stale empty state / 今日累计可从旧日期空状态恢复** (PR #61 by **@NightMin2002**):
+  DailyLedger restore now normalizes a previous-day empty ledger to today's date instead of preserving a stale `dateKey` with no data to archive. This prevents new calls from being extracted repeatedly but rejected with `added=0`, which kept the "Today's Ledger / 今日累计" panel hidden after a no-usage previous day.
+  DailyLedger 恢复时会将“旧日期且无数据”的空账本归一到今天，而不是保留没有归档价值的旧 `dateKey`。这避免前一天无用量后，次日新增调用被反复提取但全部 `added=0` 拒绝，导致“今日累计”面板不显示。
+
+- **Runtime midnight-crossover self-heal (maintainer follow-up) / 运行时跨午夜自愈（维护者跟进）**:
+  The same wedge could still occur without a restart: when an empty ledger survived midnight in a running IDE, archival skipped it (`hasData=false`), its `dateKey` stayed on yesterday, every new call was rejected, and once `lastArchivalDateKey` advanced there was no trigger left to repair it. A new `DailyLedger.normalizeIfStaleEmpty()` single source of truth now normalizes stale/future **empty** ledgers at all three entry points — `restore()`, `performDailyArchival()` and `recordCalls()` — so recording self-heals even the already-persisted wedge form (verified against a live specimen: an empty ledger stuck at `2026-06-05` with `lastArchivalDateKey` already on today). Data-bearing stale ledgers keep the archival-first ordering (still rejected until archived). Also removed the `toLocalDateKey()` double-evaluation race in the restore guard, added one-line startup/polling logs whenever normalization fires, and locked the behavior with 8 new red-first regression tests (19 files / 127 tests green).
+  同样的卡死不重启也会发生：IDE 持续运行跨午夜时，空账本因 `hasData=false` 被归档跳过、`dateKey` 停留昨天、新调用全部被拒，且 `lastArchivalDateKey` 推进后再无任何修复触发点。新增 `DailyLedger.normalizeIfStaleEmpty()` 单一事实源，`restore()` / `performDailyArchival()` / `recordCalls()` 三入口统一将“旧日期/未来日期且空”的账本归一到今天，使既成 wedge 态（实测活体：空账本滞留 `2026-06-05` 且 `lastArchivalDateKey` 已为今天）也能在记录时自愈；有数据的旧账本保持“归档先于记录”原时序。同时消除 restore guard 中 `toLocalDateKey()` 双调用竞态，归一化发生时在启动/轮询日志各打一行，并以 8 条红测先行的回归用例锁定行为（19 文件 / 127 用例全绿）。
+
+- **Normalization never persists an empty snapshot / 归一化不落盘空快照**:
+  A normalization-only (still empty) ledger is no longer written back to durable state at startup or before recording — flushing an empty full snapshot could overwrite another window's just-written data via the known multi-window last-writer-wins issue. Normalization is idempotent at every entry point, and the first `added>0` persist writes the corrected `dateKey`. The startup log now also requires `version === 1` so unrecognized legacy states are not misreported as "normalized". (Caught by the second-round codex adversarial review.)
+  归一化后仍为空的账本不再在启动/记录前写回持久化状态——空快照整份落盘可能借助已知的多窗口后写覆盖问题，覆盖另一窗口刚写入的有数据账本。归一化在每个入口幂等执行，首次 `added>0` 持久化即把修正后的 `dateKey` 写入磁盘。启动日志同时加上 `version === 1` 条件，避免无法识别的旧版状态被误报为“已归一化”。（由第二轮 codex 对抗式审查发现。）
+
 ## [1.16.11] - 2026-06-03
 
 ### 🛠️ Maintainer Review & Hardening / 维护者审查与加固
@@ -37,10 +56,6 @@
   多个 IDE 窗口并发轮询时各自整份序列化 `dailyLedgerState`，存在后写覆盖先写的风险。实际触发概率低（仅在检测到新调用时写入）；跨窗口合并/锁留待后续迭代。
 
 ### 🐛 Fixed / 修复
-
-- **Today's Ledger recovers from stale empty state / 今日累计可从旧日期空状态恢复**:
-  DailyLedger restore now normalizes a previous-day empty ledger to today's date instead of preserving a stale `dateKey` with no data to archive. This prevents new calls from being extracted repeatedly but rejected with `added=0`, which kept the "Today's Ledger / 今日累计" panel hidden after a no-usage previous day.
-  DailyLedger 恢复时会将“旧日期且无数据”的空账本归一到今天，而不是保留没有归档价值的旧 `dateKey`。这避免前一天无用量后，次日新增调用被反复提取但全部 `added=0` 拒绝，导致“今日累计”面板不显示。
 
 - **Quota-reset settlement no longer triggered by resetTime drift / 额度重置结算不再被 resetTime 漂移误触发**:
   Added a stricter reset-time turnover gate: settlement now requires the previous reset time to have passed and the new reset time to jump forward by a meaningful cycle window. Small future drift or first-use resetTime correction no longer moves today's active ledger into the settled bucket. GM archival filtering now prefers exact archived call IDs when hydrated calls are available, and stale future account-model cutoffs are purged on restore/build/serialize so they cannot keep hiding later same-model calls.

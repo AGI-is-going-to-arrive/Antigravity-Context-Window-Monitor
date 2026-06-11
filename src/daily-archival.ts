@@ -109,6 +109,13 @@ export function performDailyArchival(
     let costTotal: number | undefined;
     let costPerModel: Record<string, number> | undefined;
 
+    if (ctx.dailyLedger && !ctx.dailyLedger.hasData) {
+        const previousLedgerDateKey = ctx.dailyLedger.dateKey;
+        if (ctx.dailyLedger.normalizeIfStaleEmpty(todayKey)) {
+            ctx.log(`DailyLedger normalized empty ledger date ${previousLedgerDateKey} → ${ctx.dailyLedger.dateKey}`);
+        }
+    }
+
     if (ctx.dailyLedger && ctx.dailyLedger.hasData) {
         // ── New path: DailyLedger is the source of truth ──
         const dayData = ctx.dailyLedger.rollover(archiveDateKey);

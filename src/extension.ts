@@ -1099,6 +1099,14 @@ export function activate(context: vscode.ExtensionContext): void {
     // Initialize DailyLedger — restores from durable state
     const savedLedger = durableGlobalState.get<DailyLedgerState | undefined>('dailyLedgerState', undefined);
     dailyLedger = DailyLedger.restore(savedLedger);
+    if (savedLedger?.version === 1 && savedLedger.dateKey && savedLedger.dateKey !== dailyLedger.dateKey) {
+        // Log only — never persist a normalization-only (still empty) ledger:
+        // flushing an empty full snapshot can overwrite another window's
+        // just-written data (last-writer-wins). restore() re-normalizes
+        // idempotently on every startup, and the first added>0 persist
+        // writes the corrected dateKey to disk.
+        log(`[DailyLedger] normalized empty ledger date ${savedLedger.dateKey} → ${dailyLedger.dateKey} during startup restore`);
+    }
 
     // ── Immediate cross-day archival on startup ──
     // If the ledger has data from a previous day (IDE was off overnight),
@@ -1903,6 +1911,11 @@ async function pollContextUsage(): Promise<void> {
                         log(`[DailyLedger] cleared dedup IDs for reverted conversation ${cid.substring(0, 8)}`);
                     }
                     if (newEntries.length > 0) {
+                        const ledgerDateBeforeRecord = dailyLedger.dateKey;
+                        const ledgerNormalizedBeforeRecord = dailyLedger.normalizeIfStaleEmpty();
+                        if (ledgerNormalizedBeforeRecord) {
+                            log(`[DailyLedger] normalized empty ledger date ${ledgerDateBeforeRecord} → ${dailyLedger.dateKey} before recording`);
+                        }
                         const added = dailyLedger.recordCalls(newEntries);
                         log(`[DailyLedger] extracted=${newEntries.length} added=${added} dedup_rejected=${newEntries.length - added}`);
                         for (const d of ledgerDebug) { log(`[DailyLedger]   ${d}`); }
@@ -1911,6 +1924,8 @@ async function pollContextUsage(): Promise<void> {
                         } else {
                             log('[DailyLedger] ledger positions retained for retry because not all entries were accepted');
                         }
+                        // Persist only when calls were actually added — a normalization-only
+                        // (still empty) flush could overwrite another window's fresh data (LWW).
                         if (added > 0) {
                             durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
                         }

@@ -318,4 +318,23 @@ describe('daily archival time simulation', () => {
         expect(dailyStore.getRecord('2026-06-01')?.cycles[0].gmTotalCalls).toBe(3);
         expect(dailyStore.getRecord('2026-06-01')?.cycles[0].gmTotalCredits).toBe(9);
     });
+
+    it('normalizes a stale empty daily ledger when archival runs without data', () => {
+        vi.setSystemTime(localTime(2026, 6, 2, 0, 10));
+        const ledger = new DailyLedger('2026-06-01');
+        const logs: string[] = [];
+        const { ctx, dailyStore, persisted } = buildContext({
+            lastArchivalDateKey: '2026-06-01',
+            dailyLedger: ledger,
+            log: (msg) => logs.push(msg),
+        });
+
+        const result = performDailyArchival(ctx, false, localTime(2026, 6, 2, 0, 10));
+
+        expect(result.archived).toBe(false);
+        expect(ledger.dateKey).toBe('2026-06-02');
+        expect(dailyStore.getDatesWithData()).toEqual([]);
+        expect(persisted[0].lastArchivalDateKey).toBe('2026-06-02');
+        expect(logs).toContain('DailyLedger normalized empty ledger date 2026-06-01 → 2026-06-02');
+    });
 });
