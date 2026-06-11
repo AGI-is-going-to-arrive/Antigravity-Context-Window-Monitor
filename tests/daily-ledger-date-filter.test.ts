@@ -73,4 +73,21 @@ describe('DailyLedger date filtering', () => {
         expect(added).toBe(0);
         expect(ledger.getTodayTotals().totalCalls).toBe(0);
     });
+
+    it('normalizes a restored stale empty ledger so new calls can be recorded today', () => {
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        const restored = DailyLedger.restore(new DailyLedger(toLocalDateKey(yesterday)).serialize());
+
+        const now = new Date();
+        now.setHours(12, 0, 0, 0);
+        const added = restored.recordCalls([{
+            call: makeCall(now.toISOString()),
+            dedupKey: 'conv-1:0',
+        }]);
+
+        expect(added).toBe(1);
+        expect(restored.dateKey).toBe(toLocalDateKey(now));
+        expect(restored.getTodayTotals().totalCalls).toBe(1);
+    });
 });

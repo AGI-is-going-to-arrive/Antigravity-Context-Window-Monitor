@@ -710,6 +710,12 @@ export class DailyLedger {
             }
         }
 
+        // A stale empty ledger has nothing to archive, but keeping its old
+        // dateKey makes recordCalls() reject all new calls until restart repair.
+        if (!ledger.hasData && ledger._dateKey !== toLocalDateKey()) {
+            ledger._resetForNewDay(toLocalDateKey());
+        }
+
         return ledger;
     }
 
