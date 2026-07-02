@@ -4,6 +4,9 @@
 
 > Fixes the Windows-only "LS not found" reported in **issue #62** (Windows 11 + Antigravity v2.1.1): the native discovery branch invoked `wmic` / `powershell.exe` / `netstat` by bare name, so a truncated Extension Host `PATH` silently broke language-server detection. Verified with a three-layer pass — Codex adversarial review (which caught and fixed a PID-range regression), an empty-`PATH` isolation probe, and a live IDE reload test (`PATH check: hasWbem=true` + `LS found pid=… port=…`, 0 errors). tsc clean, 19 files / 153 vitest tests green.
 > 修复 **issue #62** 报告的 Windows 专属 "LS not found"（Windows 11 + Antigravity v2.1.1）：原生发现分支以裸命令名调用 `wmic` / `powershell.exe` / `netstat`，Extension Host 的 `PATH` 一旦被裁剪就会静默中断语言服务器检测。经三层验证——Codex 对抗式审查（发现并修正一处 PID 范围回归）、空-`PATH` 隔离探测、运行中 IDE 的 reload 实测（`PATH check: hasWbem=true` + `LS found pid=… port=…`，0 报错）。tsc 无错误，19 文件 / 153 项 vitest 用例全绿。
+>
+> Reported by **@SecretLUL** with a clear, reproducible Windows 11 / Antigravity 2.1.1 write-up (including the Administrator `launch-failed` crash) that made the root cause easy to pin down — huge thanks!
+> 由 **@SecretLUL** 报告，附清晰可复现的 Windows 11 / Antigravity 2.1.1 说明（含以管理员运行的 `launch-failed` 崩溃），使根因得以迅速定位——特别感谢！
 
 ### 🐛 Fixed / 修复
 
