@@ -2,7 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as https from 'https';
 import * as http from 'http';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 
 const execFileAsync = promisify(execFile);
 
@@ -45,6 +45,62 @@ let wmicAvailable: boolean | null = null;
 /** Reset wmic availability cache (exported for testing). */
 export function resetWmicCache(): void {
     wmicAvailable = null;
+}
+
+// ─── Windows Executable Absolute Paths (CR-#62) ──────────────────────────────
+// The native Windows branch previously invoked wmic/powershell.exe/netstat by
+// BARE NAME, relying on the Extension Host's inherited PATH. A GUI-launched
+// Electron Extension Host is NOT guaranteed to inherit the PATH entries for
+// System32\wbem (wmic) or System32\WindowsPowerShell\v1.0 (powershell.exe), so
+// execFile could throw `spawn <name> ENOENT` and discovery silently returned
+// null ("LS not found"). Deriving absolute paths from %SystemRoot% removes this
+// PATH dependence — mirroring what the WSL branch already did with /mnt/c/...
+export type WindowsExeKind = 'wmic' | 'powershell' | 'netstat';
+
+/**
+ * Build the absolute path to a Windows system executable from %SystemRoot%.
+ * Pure function (systemRoot injected) so it is unit-testable on any OS.
+ * Falls back to the bare command name when systemRoot is empty/undefined —
+ * it NEVER produces a broken "undefined\System32\..." path.
+ */
+export function buildWindowsExePath(systemRoot: string | undefined, kind: WindowsExeKind): string {
+    const bare: Record<WindowsExeKind, string> = {
+        wmic: 'wmic',
+        powershell: 'powershell.exe',
+        netstat: 'netstat',
+    };
+    if (!systemRoot || !systemRoot.trim()) {
+        return bare[kind];
+    }
+    // Normalize: strip trailing slashes/backslashes, then use backslash separators.
+    const root = systemRoot.trim().replace(/[\\/]+$/, '');
+    const rel: Record<WindowsExeKind, string> = {
+        wmic: 'System32\\wbem\\WMIC.exe',
+        powershell: 'System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        netstat: 'System32\\NETSTAT.EXE',
+    };
+    return `${root}\\${rel[kind]}`;
+}
+
+// CR-#62: one-time PATH diagnostic. Printed on the first discovery attempt so a
+// truncated/sanitized Extension Host PATH (missing System32\wbem or
+// WindowsPowerShell\v1.0) is immediately visible in the output channel. This is
+// what turns the high-confidence PATH-ENOENT hypothesis into a closed loop.
+// Emits no secrets — only presence booleans and SystemRoot.
+let pathDiagLogged = false;
+
+/** Reset one-time PATH diagnostic flag (exported for testing). */
+export function resetPathDiagLog(): void {
+    pathDiagLogged = false;
+}
+
+function logDiscoveryPathOnce(log?: (msg: string) => void): void {
+    if (pathDiagLogged || !log) { return; }
+    pathDiagLogged = true;
+    if (process.platform !== 'win32') { return; }
+    const p = process.env.Path || process.env.PATH || '';
+    const low = p.toLowerCase();
+    log(`PATH check: hasWbem=${low.includes('wbem')} hasWindowsPowerShell=${low.includes('windowspowershell')} SystemRoot=${process.env.SystemRoot || process.env.windir || '(unset)'}`);
 }
 
 export interface LSInfo {
@@ -106,6 +162,39 @@ export function buildExpectedWorkspaceId(workspaceUri: string): string {
 export function extractPid(line: string): number | null {
     const pidMatch = line.trim().match(/^\s*(\d+)\s/);
     return pidMatch ? parseInt(pidMatch[1], 10) : null;
+}
+
+/**
+ * Extract the PID from a Windows process-discovery CSV line, supporting BOTH
+ * output formats we consume, with field-boundary anchoring so command-line
+ * "decoy" numbers (ports, hex tokens, pipe paths ending in digits) are ignored:
+ *   - wmic /format:csv        → "Node,CommandLine,ProcessId"   (PID is LAST column)
+ *   - PowerShell ConvertTo-Csv → "\"ProcessId\",\"CommandLine\"" (PID is FIRST, quoted)
+ * Header rows and malformed lines return null. Replaces the previous inline
+ * `/(\d+)\s*$/` + "any 2+ digit number" fallback which could grab a port.
+ */
+export function extractWindowsPid(line: string): number | null {
+    const trimmed = line.replace(/\r+$/, '').trim();
+    if (!trimmed) { return null; }
+    // Anchoring (CSV field boundaries) already excludes decoy numbers, so the
+    // only sanity bound is a positive 32-bit value: Windows PIDs are DWORDs and
+    // can legitimately exceed 1e6 on high-uptime systems. NO <1_000_000 cap
+    // (CR-#62 adversarial review: such a cap would reject large real PIDs).
+    const inRange = (n: number) => n > 0 && n <= 0xffffffff;
+    // PowerShell ConvertTo-Csv: PID is the first, quoted column → "12345","...".
+    // Anchored at start so a trailing digit inside CommandLine cannot win.
+    const psMatch = trimmed.match(/^\s*"?(\d+)"?\s*,/);
+    if (psMatch) {
+        const n = parseInt(psMatch[1], 10);
+        if (inRange(n)) { return n; }
+    }
+    // wmic /format:csv: PID is the last column → ...,12345
+    const wmicMatch = trimmed.match(/,(\d+)\s*$/);
+    if (wmicMatch) {
+        const n = parseInt(wmicMatch[1], 10);
+        if (inRange(n)) { return n; }
+    }
+    return null;
 }
 
 /**
@@ -179,9 +268,14 @@ export function filterLsProcessLines(psOutput: string): string[] {
         : process.platform === 'linux'
             ? 'language_server_linux'
             : 'language_server_macos';
-    return psOutput.split('\n').filter(l =>
-        l.includes(binaryName) && l.includes('antigravity')
-    );
+    return psOutput.split('\n').filter(l => {
+        // CR-#62: case-INSENSITIVE membership test (install paths / flags may vary
+        // in case), but return the ORIGINAL line unchanged — downstream
+        // extractCsrfToken and the request headers depend on the case-sensitive
+        // csrf_token value, so the line must never be lower-cased in place.
+        const low = l.toLowerCase();
+        return low.includes(binaryName) && low.includes('antigravity');
+    });
 }
 
 /**
@@ -208,6 +302,18 @@ export function extractPortFromSs(line: string): number | null {
 export function extractPortFromNetstat(line: string): number | null {
     const portMatch = line.match(/\s+127\.0\.0\.1:(\d+)\s/);
     return portMatch ? parseInt(portMatch[1], 10) : null;
+}
+
+/**
+ * Whether a Windows `netstat -ano` line is LISTENING and owned by EXACTLY `pid`.
+ * CR-#62: the previous `line.trim().endsWith(String(pid))` matched PID 123
+ * against a line owned by 1123 (substring suffix). Anchor on the final
+ * whitespace-delimited field (the PID column) for an exact match instead.
+ */
+export function netstatLineMatchesPid(line: string, pid: number): boolean {
+    if (!line.includes('LISTENING')) { return false; }
+    const m = line.trim().match(/\s(\d+)$/);
+    return m !== null && m[1] === String(pid);
 }
 
 /**
@@ -238,11 +344,18 @@ export function extractWslDistro(uri: string): string | null {
 async function discoverWslLanguageServer(
     distro: string,
     workspaceUri: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    log?: (msg: string) => void
 ): Promise<LSInfo | null> {
+    // CR-#62: invoke wsl.exe by absolute path when %SystemRoot% is known, so
+    // Remote-WSL discovery does not depend on the Extension Host PATH either.
+    const winRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+    const wslExe = winRoot && existsSync(`${winRoot}\\System32\\wsl.exe`)
+        ? `${winRoot}\\System32\\wsl.exe`
+        : 'wsl';
     try {
         // 1. Find LS process inside WSL
-        const psResult = await execFileAsync('wsl', [
+        const psResult = await execFileAsync(wslExe, [
             '-d', distro, '--', 'bash', '-c',
             'ps aux | grep language_server | grep -v grep'
         ], { encoding: 'utf-8', timeout: 10000, signal });
@@ -252,6 +365,7 @@ async function discoverWslLanguageServer(
         );
 
         if (psLines.length === 0) {
+            log?.(`WSL[${distro}]: no language_server process found inside distro`);
             return null;
         }
 
@@ -277,7 +391,7 @@ async function discoverWslLanguageServer(
         // 5. Find listening ports via ss inside WSL
         let ports: number[] = [];
         try {
-            const ssResult = await execFileAsync('wsl', [
+            const ssResult = await execFileAsync(wslExe, [
                 '-d', distro, '--', 'ss', '-tlnp'
             ], { encoding: 'utf-8', timeout: 5000, signal });
 
@@ -321,35 +435,63 @@ async function discoverWslLanguageServer(
  * When running inside WSL, uses full paths under /mnt/c/ for Windows executables
  * via WSL interop, falling back to bare exe names (which WSL also resolves).
  */
-async function discoverWindowsProcesses(signal?: AbortSignal): Promise<string> {
+async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string) => void): Promise<string> {
     const inWSL = isWSL();
+    const winRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
 
-    // Determine executable paths — WSL needs explicit /mnt/c paths or bare .exe names
-    const wmicExe = inWSL ? '/mnt/c/Windows/System32/wbem/WMIC.exe' : 'wmic';
-    const psExe = inWSL ? 'powershell.exe' : 'powershell.exe'; // WSL resolves via interop PATH
+    // Determine executable paths.
+    // - WSL: explicit /mnt/c paths (Windows host binaries via interop) — including
+    //   powershell.exe, which was previously a bare no-op ternary (CR-#62).
+    // - Native Windows: absolute %SystemRoot% paths so discovery does not depend
+    //   on the Extension Host's inherited PATH. buildWindowsExePath falls back to
+    //   bare names when %SystemRoot% is somehow unset.
+    const wmicExe = inWSL ? '/mnt/c/Windows/System32/wbem/WMIC.exe' : buildWindowsExePath(winRoot, 'wmic');
+    const psExe = inWSL ? '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe' : buildWindowsExePath(winRoot, 'powershell');
 
-    // Try wmic unless already known to be unavailable
-    if (wmicAvailable !== false) {
+    // Try wmic unless already known unavailable, or the executable is absent on
+    // disk. Win11 24H2+/25H2 removed WMIC by default (KB 5067470); pre-checking
+    // existence makes PowerShell the deliberate primary rather than an
+    // exception-driven afterthought.
+    const wmicOnDisk = inWSL || !winRoot || existsSync(wmicExe);
+    if (wmicAvailable !== false && wmicOnDisk) {
         try {
             const result = await execFileAsync(wmicExe, [
                 'process', 'where',
                 "name like 'language_server_windows%'",
                 'get', 'ProcessId,CommandLine', '/format:csv'
             ], { encoding: 'utf-8', timeout: 5000, signal });
-            wmicAvailable = true;
-            return result.stdout;
-        } catch {
+            // CR-#62: only trust/cache wmic when it actually returned LS rows.
+            // A transient empty stdout must NOT cache wmicAvailable=true, else the
+            // PowerShell fallback would be permanently skipped.
+            if (result.stdout && result.stdout.includes('language_server_windows')) {
+                wmicAvailable = true;
+                return result.stdout;
+            }
+            log?.('wmic returned no language_server rows; trying Get-CimInstance');
+        } catch (e) {
             wmicAvailable = false;
-            console.log('[ContextMonitor] wmic not available, falling back to Get-CimInstance');
+            const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
+            log?.(`wmic unavailable (${code}); falling back to Get-CimInstance`);
         }
+    } else if (!wmicOnDisk) {
+        log?.(`wmic not present at ${wmicExe} (Win11 24H2+ removes it); using Get-CimInstance`);
     }
 
-    // Fallback: PowerShell Get-CimInstance with server-side WMI filter
-    const result = await execFileAsync(psExe, [
-        '-NoProfile', '-NoLogo', '-Command',
-        'Get-CimInstance Win32_Process -Filter "Name like \'language_server_windows%\'" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation'
-    ], { encoding: 'utf-8', timeout: 10000, signal });
-    return result.stdout;
+    // Fallback: PowerShell Get-CimInstance with server-side WMI filter.
+    // CR-#62: wrapped in try/catch so a powershell.exe ENOENT is logged and
+    // downgraded to an empty result (→ caller returns a reasoned null) instead of
+    // an unhandled rejection that collapses into the silent outer catch.
+    try {
+        const result = await execFileAsync(psExe, [
+            '-NoProfile', '-NoLogo', '-Command',
+            'Get-CimInstance Win32_Process -Filter "Name like \'language_server_windows%\'" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation'
+        ], { encoding: 'utf-8', timeout: 10000, signal });
+        return result.stdout;
+    } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
+        log?.(`PowerShell discovery failed (${code}); exe=${psExe}`);
+        return '';
+    }
 }
 
 /**
@@ -357,19 +499,20 @@ async function discoverWindowsProcesses(signal?: AbortSignal): Promise<string> {
  * Uses lsof (macOS + most Linux), with fallback to ss (Linux default).
  * In WSL, uses Windows netstat.exe since the LS is a Windows host process.
  */
-async function findListeningPorts(pid: number, signal?: AbortSignal): Promise<number[]> {
+async function findListeningPorts(pid: number, signal?: AbortSignal, log?: (msg: string) => void): Promise<number[]> {
     // Windows (or WSL): use netstat -ano to find Windows host ports
     if (process.platform === 'win32' || isWSL()) {
-        const netstatExe = isWSL() ? '/mnt/c/Windows/System32/netstat.exe' : 'netstat';
+        const winRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+        const netstatExe = isWSL() ? '/mnt/c/Windows/System32/netstat.exe' : buildWindowsExePath(winRoot, 'netstat');
         try {
             const result = await execFileAsync(netstatExe, [
                 '-ano'
             ], { encoding: 'utf-8', timeout: 5000, signal });
             const ports: number[] = [];
-            const pidStr = String(pid);
             for (const line of result.stdout.split('\n')) {
                 // netstat -ano format: TCP    127.0.0.1:PORT    0.0.0.0:0    LISTENING    PID
-                if (line.includes('LISTENING') && line.trim().endsWith(pidStr)) {
+                // CR-#62: exact PID-column match (previous endsWith matched 123 vs 1123).
+                if (netstatLineMatchesPid(line, pid)) {
                     const port = extractPortFromNetstat(line);
                     if (port !== null) {
                         ports.push(port);
@@ -377,7 +520,10 @@ async function findListeningPorts(pid: number, signal?: AbortSignal): Promise<nu
                 }
             }
             return ports;
-        } catch { /* netstat failed */ }
+        } catch (e) {
+            const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
+            log?.(`netstat failed (${code}); exe=${netstatExe}`);
+        }
         return [];
     }
 
@@ -432,7 +578,10 @@ async function findListeningPorts(pid: number, signal?: AbortSignal): Promise<nu
  * S3 fix: Uses execFile (no shell) to prevent command injection risks.
  * CR-#3: Accepts AbortSignal for cancellation on extension deactivate.
  */
-export async function discoverLanguageServer(workspaceUri?: string, signal?: AbortSignal): Promise<LSInfo | null> {
+export async function discoverLanguageServer(workspaceUri?: string, signal?: AbortSignal, log?: (msg: string) => void): Promise<LSInfo | null> {
+    // CR-#62: one-time PATH visibility so a missing Wbem / WindowsPowerShell dir
+    // (the suspected root cause of "LS not found") is immediately diagnosable.
+    logDiscoveryPathOnce(log);
     try {
         // ─── Remote-WSL: discover LS running inside WSL distro ──────────
         // When workspace is vscode-remote://wsl+<distro>/..., the IDE
@@ -441,13 +590,13 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
         if (process.platform === 'win32' && workspaceUri) {
             const wslDistro = extractWslDistro(workspaceUri);
             if (wslDistro) {
-                console.log(`[ContextMonitor] Attempting WSL LS discovery in distro "${wslDistro}"`);
-                const wslResult = await discoverWslLanguageServer(wslDistro, workspaceUri, signal);
+                log?.(`Attempting WSL LS discovery in distro "${wslDistro}"`);
+                const wslResult = await discoverWslLanguageServer(wslDistro, workspaceUri, signal, log);
                 if (wslResult) {
-                    console.log(`[ContextMonitor] Found WSL LS: port=${wslResult.port}, pid=${wslResult.pid}`);
+                    log?.(`Found WSL LS: port=${wslResult.port}, pid=${wslResult.pid}`);
                     return wslResult;
                 }
-                console.log('[ContextMonitor] WSL LS not found, falling back to Windows LS');
+                log?.('WSL LS not found, falling back to Windows LS');
             }
         }
 
@@ -459,55 +608,46 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
             // Uses cached wmic availability to skip missing wmic on subsequent polls.
             let wmicOutput: string;
             try {
-                wmicOutput = await discoverWindowsProcesses(signal);
-            } catch {
+                wmicOutput = await discoverWindowsProcesses(signal, log);
+            } catch (e) {
+                const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
+                log?.(`Windows process discovery threw (${code})`);
                 return null;
             }
 
-            // Parse wmic CSV or PowerShell CSV output
-            // Both contain lines with CommandLine and ProcessId fields
-            const lines = wmicOutput.split('\n').filter(l =>
-                l.includes('language_server_windows') && l.includes('antigravity')
-            );
+            // Parse wmic CSV or PowerShell CSV output. Both contain lines with
+            // CommandLine and ProcessId fields.
+            // CR-#62: case-INSENSITIVE membership test (see filterLsProcessLines),
+            // returning the ORIGINAL line so the case-sensitive csrf_token survives.
+            const lines = wmicOutput.split('\n').filter(l => {
+                const low = l.toLowerCase();
+                return low.includes('language_server_windows') && low.includes('antigravity');
+            });
 
             if (lines.length === 0) {
+                log?.(`matched 0 language_server_windows lines (${wmicOutput.length}B from process discovery)`);
                 return null;
             }
 
             // Find the line matching our workspace
             const targetLine = selectMatchingProcessLine(lines, workspaceUri);
             if (!targetLine) {
+                log?.(`no matching LS process line among ${lines.length} candidate(s)`);
                 return null;
             }
 
             // Extract CSRF token from the command line string
             csrfToken = extractCsrfToken(targetLine);
             if (!csrfToken) {
+                log?.('LS process line has no --csrf_token');
                 return null;
             }
 
-            // Extract PID: in wmic CSV, ProcessId is the last field on the line
-            const pidMatch = targetLine.match(/(\d+)\s*$/);
-            if (pidMatch) {
-                pid = parseInt(pidMatch[1], 10);
-            }
-            // Also try the standard ps-style PID extraction (for PowerShell CSV)
+            // Extract PID — handles both wmic (PID last column) and PowerShell
+            // ConvertTo-Csv (PID first, quoted column) formats.
+            pid = extractWindowsPid(targetLine);
             if (!pid) {
-                // PowerShell CSV: "ProcessId","CommandLine" or similar column order
-                // Try extracting any standalone number that looks like a PID
-                const allNumbers = targetLine.match(/(?:^|,|")(\d{2,})(?:"|,|$)/g);
-                if (allNumbers) {
-                    for (const m of allNumbers) {
-                        const n = parseInt(m.replace(/[",]/g, ''), 10);
-                        // A reasonable PID range
-                        if (n > 0 && n < 1000000) {
-                            pid = n;
-                            break;
-                        }
-                    }
-                }
-            }
-            if (!pid) {
+                log?.('could not parse PID from LS process line');
                 return null;
             }
         } else {
@@ -522,18 +662,22 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
                     signal
                 });
                 psOutput = result.stdout;
-            } catch {
+            } catch (e) {
+                const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
+                log?.(`ps process discovery failed (${code})`);
                 return null;
             }
 
             const lines = filterLsProcessLines(psOutput);
 
             if (lines.length === 0) {
+                log?.('matched 0 language_server lines from ps');
                 return null;
             }
 
             const targetLine = selectMatchingProcessLine(lines, workspaceUri);
             if (!targetLine) {
+                log?.(`no matching LS process line among ${lines.length} candidate(s)`);
                 return null;
             }
 
@@ -542,21 +686,24 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
             // Extract PID (first number)
             pid = extractPid(firstLine);
             if (!pid) {
+                log?.('could not parse PID from ps line');
                 return null;
             }
 
             // Extract CSRF token
             csrfToken = extractCsrfToken(firstLine);
             if (!csrfToken) {
+                log?.('LS process line has no --csrf_token');
                 return null;
             }
         }
 
         // 2. Find listening ports
         // Cross-platform: netstat (Windows), lsof (macOS + Linux), ss fallback (Linux)
-        const ports = await findListeningPorts(pid, signal);
+        const ports = await findListeningPorts(pid, signal, log);
 
         if (ports.length === 0) {
+            log?.(`no listening ports found for pid ${pid}`);
             return null;
         }
 
@@ -575,8 +722,11 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
             }
         }
 
+        log?.(`probe failed on all ${ports.length} port(s) [${ports.join(', ')}] for pid ${pid}`);
         return null;
-    } catch {
+    } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
+        log?.(`discovery error: ${code}`);
         return null;
     }
 }

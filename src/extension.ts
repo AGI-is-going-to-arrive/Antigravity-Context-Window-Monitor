@@ -1452,7 +1452,7 @@ async function pollContextUsage(): Promise<void> {
         if (!lsInfo) {
             log('Discovering language server...');
             statusBar.showInitializing();
-            lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal);
+            lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal, log);
             cachedLsInfo = lsInfo;
             lsRevalidationCounter = 0;
             consecutiveIdlePolls = 0;
@@ -1500,7 +1500,7 @@ async function pollContextUsage(): Promise<void> {
             if (lsRevalidationCounter >= LS_REVALIDATION_INTERVAL) {
                 lsRevalidationCounter = 0;
                 try {
-                    const freshLs = await discoverLanguageServer(workspaceUri, abortController.signal);
+                    const freshLs = await discoverLanguageServer(workspaceUri, abortController.signal, log);
                     if (freshLs && freshLs.pid !== lsInfo.pid) {
                         log(`⚠ LS PID changed: ${lsInfo.pid} → ${freshLs.pid} (port: ${lsInfo.port} → ${freshLs.port}). Reconnecting to new LS.`);
                         lsInfo = freshLs;
@@ -1589,7 +1589,7 @@ async function pollContextUsage(): Promise<void> {
             trajectories = await getAllTrajectories(lsInfo, abortController.signal);
         } catch (err) {
             log(`RPC failed, retrying discovery: ${err}`);
-            lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal);
+            lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal, log);
             cachedLsInfo = lsInfo;
             if (!lsInfo) {
                 handleLsFailure('LS connection lost', true);
@@ -1648,7 +1648,7 @@ async function pollContextUsage(): Promise<void> {
                 log(`⚠ Staleness detected: tracked cascade ${trackedCascadeId.substring(0, 8)} has been IDLE for ${consecutiveIdlePolls} consecutive polls. Forcing LS re-discovery.`);
                 consecutiveIdlePolls = 0;
                 try {
-                    const freshLs = await discoverLanguageServer(workspaceUri, abortController.signal);
+                    const freshLs = await discoverLanguageServer(workspaceUri, abortController.signal, log);
                     if (freshLs && freshLs.pid !== lsInfo.pid) {
                         log(`⚠ Stale LS confirmed: PID ${lsInfo.pid} → ${freshLs.pid}. Reconnecting.`);
                         lsInfo = freshLs;

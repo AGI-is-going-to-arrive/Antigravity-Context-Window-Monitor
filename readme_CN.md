@@ -174,6 +174,11 @@
 > **子智能体动态切换**
 > 使用 Claude 模型时，Antigravity 可能会调用 Gemini 2.5 Flash Lite 作为子智能体处理轻量任务。自 v1.10.0 起，Claude 4.6 模型也拥有 1M 上下文限制（2026-03-13 GA），因此子智能体切换不再导致可见的上下文上限变化。
 
+> [!IMPORTANT]
+> **"LS not found" 与请勿以管理员身份运行 IDE（Windows）**
+> 若状态栏卡在 `LS not found`，请打开 **Output → "Antigravity Context Monitor"**，查看 `PATH check:` 那一行——扩展现在会记录究竟是哪一步发现失败。自 v1.16.13 起，扩展以 `%SystemRoot%` 绝对路径调用 `wmic`/`powershell.exe`/`netstat`，因此 Extension Host 的 `PATH` 被裁剪（例如 Win11 24H2+ 移除 WMIC 后缺少 `System32\wbem`）不再导致发现失败。
+> **请勿以管理员身份运行 Antigravity** —— 这对检测毫无帮助（LS 发现无需提权），还可能导致 IDE 启动崩溃并报 `The window terminated unexpectedly (reason: 'launch-failed', code: '18')`；该崩溃属于 Electron/Chromium 沙箱问题，与本扩展无关。
+
 ## ⚙️ 设置
 
 | 设置项 | 默认 | 说明 |

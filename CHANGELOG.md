@@ -1,5 +1,33 @@
 # 变更日志 / Changelog
 
+## [1.16.13] - 2026-07-02
+
+> Fixes the Windows-only "LS not found" reported in **issue #62** (Windows 11 + Antigravity v2.1.1): the native discovery branch invoked `wmic` / `powershell.exe` / `netstat` by bare name, so a truncated Extension Host `PATH` silently broke language-server detection. Verified with a three-layer pass — Codex adversarial review (which caught and fixed a PID-range regression), an empty-`PATH` isolation probe, and a live IDE reload test (`PATH check: hasWbem=true` + `LS found pid=… port=…`, 0 errors). tsc clean, 19 files / 153 vitest tests green.
+> 修复 **issue #62** 报告的 Windows 专属 "LS not found"（Windows 11 + Antigravity v2.1.1）：原生发现分支以裸命令名调用 `wmic` / `powershell.exe` / `netstat`，Extension Host 的 `PATH` 一旦被裁剪就会静默中断语言服务器检测。经三层验证——Codex 对抗式审查（发现并修正一处 PID 范围回归）、空-`PATH` 隔离探测、运行中 IDE 的 reload 实测（`PATH check: hasWbem=true` + `LS found pid=… port=…`，0 报错）。tsc 无错误，19 文件 / 153 项 vitest 用例全绿。
+
+### 🐛 Fixed / 修复
+
+- **Windows LS discovery no longer depends on the Extension Host `PATH` / Windows 语言服务器发现不再依赖 Extension Host 的 `PATH`** (issue #62):
+  The native Windows branch now invokes `wmic` / `powershell.exe` / `netstat` by absolute `%SystemRoot%` path (`System32\wbem\WMIC.exe`, `System32\WindowsPowerShell\v1.0\powershell.exe`, `System32\NETSTAT.EXE`) via a new exported `buildWindowsExePath()`, mirroring what the WSL branch already did. When Antigravity is launched from the GUI with a truncated `PATH` (e.g. Win11 24H2+/25H2 removed WMIC as a Feature-on-Demand, dropping `System32\wbem`; or a missing `System32\WindowsPowerShell\v1.0`), `execFile` no longer fails with `ENOENT` and silently returns "LS not found". It falls back to the bare name only when `%SystemRoot%`/`windir` is genuinely absent (WSL interop keeps its `/mnt/c/...` paths).
+  原生 Windows 分支现在通过新增导出的 `buildWindowsExePath()` 以 `%SystemRoot%` 绝对路径调用 `wmic` / `powershell.exe` / `netstat`（`System32\wbem\WMIC.exe`、`System32\WindowsPowerShell\v1.0\powershell.exe`、`System32\NETSTAT.EXE`），与 WSL 分支早已采用的做法一致。当 Antigravity 从 GUI 启动且 `PATH` 被裁剪（例如 Win11 24H2+/25H2 将 WMIC 作为可选功能移除、缺少 `System32\wbem`；或缺少 `System32\WindowsPowerShell\v1.0`）时，`execFile` 不再以 `ENOENT` 失败并静默返回 "LS not found"。仅当 `%SystemRoot%`/`windir` 确实缺失时才回退到裸命令名（WSL 互操作保留其 `/mnt/c/...` 路径）。
+
+- **Robust Windows PID / port parsing / Windows PID 与端口解析加固**:
+  A new exported `extractWindowsPid()` parses both the `wmic` CSV layout (PID in the last column) and the PowerShell `ConvertTo-Csv` layout (quoted PID in the first column), and accepts the full 32-bit Windows PID range — fixing an over-tight `< 1_000_000` cap (caught by the adversarial review) that could have rejected large process IDs the old `wmic`-only path accepted. `netstatLineMatchesPid()` now matches the trailing PID exactly on `LISTENING` lines, fixing a prior `endsWith` bug where PID `123` also matched `1123`. Process matching is case-insensitive but returns the original line unchanged, preserving the exact-case `csrf_token`.
+  新增导出的 `extractWindowsPid()` 同时解析 `wmic` CSV 布局（PID 在末列）与 PowerShell `ConvertTo-Csv` 布局（带引号 PID 在首列），并接受完整 32 位 Windows PID 范围——修正了一处过紧的 `< 1_000_000` 上限（对抗式审查发现），该上限可能拒绝旧 `wmic` 路径本可接受的大进程 ID。`netstatLineMatchesPid()` 现在只对 `LISTENING` 行精确匹配行尾 PID，修复此前 `endsWith` 把 PID `123` 误配 `1123` 的问题。进程匹配大小写不敏感，但返回原始行不变，保留 `csrf_token` 的精确大小写。
+
+- **Defensive PowerShell fallback / PowerShell 回退兜底加固**:
+  The PowerShell process-scan fallback is now wrapped in `try/catch` with an `existsSync` pre-probe, so an unexpected spawn failure degrades gracefully instead of throwing; `wmic` is only cached as "available" when its output actually contains a `language_server_windows` line.
+  PowerShell 进程扫描回退现在包裹在 `try/catch` 中并带 `existsSync` 预探测，意外的 spawn 失败会优雅降级而非抛出；仅当 `wmic` 输出确实包含 `language_server_windows` 行时才将其缓存为“可用”。
+
+- **Discovery diagnostics in the Output channel / Output 通道内的发现诊断**:
+  Discovery now logs a one-shot `PATH check: hasWbem=… hasWindowsPowerShell=… SystemRoot=…` line plus a distinct message at every "return null" exit, all threaded to **Output → "Antigravity Context Monitor"**, so a future "LS not found" report can be diagnosed to the exact failing step without a rebuild.
+  发现流程现在打印一次性 `PATH check: hasWbem=… hasWindowsPowerShell=… SystemRoot=…`，并在每个“返回 null”出口打印可区分的信息，全部汇入 **Output → “Antigravity Context Monitor”**，使日后的 "LS not found" 报告无需重新构建即可定位到失败的确切步骤。
+
+### 📝 Docs / 文档
+
+- **README / readme_CN**: added a Windows troubleshooting note — read the `PATH check:` line in the Output channel when the status bar is stuck on `LS not found`, and **do not run Antigravity as Administrator** (it does not help detection and can crash the IDE at launch with `The window terminated unexpectedly (reason: 'launch-failed', code: '18')`, an Electron/Chromium sandbox issue unrelated to this extension).
+  **README / readme_CN**：新增 Windows 排障说明——当状态栏卡在 `LS not found` 时查看 Output 通道的 `PATH check:` 行，并**请勿以管理员身份运行 Antigravity**（对检测无帮助，且可能导致 IDE 启动崩溃并报 `The window terminated unexpectedly (reason: 'launch-failed', code: '18')`，该崩溃属于 Electron/Chromium 沙箱问题，与本扩展无关）。
+
 ## [1.16.12] - 2026-06-11
 
 > Contributed fix by **@NightMin2002** (PR #61), verified with a three-way independent review (codex adversarial + gemini cross + Claude corner-case) and 7 zero-mock probes against real persisted state — which caught a live specimen of this very bug (an empty ledger stuck at `2026-06-05` for 6 days). Maintainer runtime follow-up included below. Huge thanks to **@NightMin2002**!

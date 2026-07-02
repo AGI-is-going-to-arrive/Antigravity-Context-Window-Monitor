@@ -174,6 +174,11 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 > **Dynamic Sub-Agent Switching**
 > When using Claude models, Antigravity may call Gemini 2.5 Flash Lite as a sub-agent for lightweight tasks. Since v1.10.0, Claude 4.6 models also have 1M context limits (GA 2026-03-13), so sub-agent switching no longer causes a visible context limit change.
 
+> [!IMPORTANT]
+> **"LS not found" & do NOT run the IDE as Administrator (Windows)**
+> If the status bar is stuck on `LS not found`, open **Output → "Antigravity Context Monitor"** and read the `PATH check:` line — the extension now logs exactly which discovery step failed. Since v1.16.13 it invokes `wmic`/`powershell.exe`/`netstat` by absolute `%SystemRoot%` path, so a truncated Extension Host `PATH` (e.g. missing `System32\wbem` on Win11 24H2+ where WMIC is removed) no longer breaks discovery.
+> **Do not run Antigravity as Administrator** — it does not help detection (LS discovery needs no elevation) and can crash the IDE at launch with `The window terminated unexpectedly (reason: 'launch-failed', code: '18')`, an Electron/Chromium sandbox issue unrelated to this extension.
+
 ## ⚙️ Settings
 
 | Setting | Default | Description |

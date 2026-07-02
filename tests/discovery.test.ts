@@ -10,6 +10,10 @@ import {
     extractPortFromSs,
     isWSL,
     selectMatchingProcessLine,
+    buildWindowsExePath,
+    extractWindowsPid,
+    netstatLineMatchesPid,
+    extractWslDistro,
 } from '../src/discovery';
 
 describe('discovery.ts', () => {
@@ -342,6 +346,133 @@ describe('discovery.ts', () => {
                 expect(isWSL()).toBe(false);
             });
         }
+    });
+});
+
+// ─── CR-#62: Windows LS discovery hardening ──────────────────────────────────
+
+describe('buildWindowsExePath (CR-#62)', () => {
+    it('derives absolute paths from SystemRoot', () => {
+        expect(buildWindowsExePath('C:\\WINDOWS', 'wmic')).toBe('C:\\WINDOWS\\System32\\wbem\\WMIC.exe');
+        expect(buildWindowsExePath('C:\\WINDOWS', 'powershell')).toBe('C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+        expect(buildWindowsExePath('C:\\WINDOWS', 'netstat')).toBe('C:\\WINDOWS\\System32\\NETSTAT.EXE');
+    });
+
+    it('falls back to bare names when SystemRoot is undefined/empty (never "undefined\\...")', () => {
+        for (const root of [undefined, '', '   ']) {
+            expect(buildWindowsExePath(root, 'wmic')).toBe('wmic');
+            expect(buildWindowsExePath(root, 'powershell')).toBe('powershell.exe');
+            expect(buildWindowsExePath(root, 'netstat')).toBe('netstat');
+        }
+        expect(buildWindowsExePath(undefined, 'wmic').startsWith('undefined')).toBe(false);
+    });
+
+    it('normalizes trailing separators (backslash or forward slash)', () => {
+        expect(buildWindowsExePath('C:\\WINDOWS\\', 'wmic')).toBe('C:\\WINDOWS\\System32\\wbem\\WMIC.exe');
+        expect(buildWindowsExePath('C:/WINDOWS/', 'netstat')).toBe('C:/WINDOWS\\System32\\NETSTAT.EXE');
+    });
+});
+
+describe('extractWindowsPid (CR-#62)', () => {
+    it('extracts PID from wmic CSV (PID is last column)', () => {
+        const line = 'DESKTOP-ABC,c:\\Code\\Antigravity\\bin\\language_server_windows_x64.exe --enable_lsp --csrf_token deadbeefCAFE --extension_server_port 12279 --app_data_dir antigravity,19472';
+        expect(extractWindowsPid(line)).toBe(19472);
+    });
+
+    it('extracts PID from PowerShell CSV (PID is first, quoted column)', () => {
+        const line = '"19472","c:\\Code\\Antigravity\\bin\\language_server_windows_x64.exe --enable_lsp --extension_server_port 12279 --app_data_dir antigravity"';
+        expect(extractWindowsPid(line)).toBe(19472);
+    });
+
+    it('returns the PID column, not a trailing CommandLine number (PowerShell pipe path lsp_123)', () => {
+        const line = '"19472","c:\\Code\\Antigravity\\bin\\language_server_windows_x64.exe --parent_pipe_path \\\\.\\pipe\\lsp_123"';
+        expect(extractWindowsPid(line)).toBe(19472);
+    });
+
+    it('ignores decoy port numbers in wmic CommandLine and returns the PID column', () => {
+        const line = 'HOST,c:\\Code\\Antigravity\\bin\\language_server_windows_x64.exe --extension_server_port 12279 --app_data_dir antigravity,1100';
+        expect(extractWindowsPid(line)).toBe(1100);
+    });
+
+    it('rejects header rows', () => {
+        expect(extractWindowsPid('Node,CommandLine,ProcessId')).toBe(null);
+        expect(extractWindowsPid('"ProcessId","CommandLine"')).toBe(null);
+    });
+
+    it('returns null for malformed / empty lines', () => {
+        expect(extractWindowsPid('')).toBe(null);
+        expect(extractWindowsPid('no digits here')).toBe(null);
+    });
+
+    it('accepts boundary and LARGE Windows PIDs (no artificial <1e6 cap — CR-#62 review)', () => {
+        const wmic = (pid: string) => `H,c:\\Code\\Antigravity\\bin\\language_server_windows_x64.exe --app_data_dir antigravity,${pid}`;
+        expect(extractWindowsPid(wmic('1'))).toBe(1);
+        expect(extractWindowsPid(wmic('999999'))).toBe(999999);
+        expect(extractWindowsPid(wmic('1000000'))).toBe(1000000);   // would have been rejected by the old <1e6 cap
+        expect(extractWindowsPid(wmic('1000004'))).toBe(1000004);   // realistic high-uptime PID (multiple of 4)
+        // PowerShell first-column large PID
+        expect(extractWindowsPid('"1000004","c:\\Code\\Antigravity\\bin\\language_server_windows_x64.exe --app_data_dir antigravity"')).toBe(1000004);
+    });
+
+    it('rejects PID 0 / non-positive', () => {
+        expect(extractWindowsPid('H,c:\\Code\\Antigravity\\bin\\language_server_windows_x64.exe --app_data_dir antigravity,0')).toBe(null);
+    });
+});
+
+describe('netstatLineMatchesPid (CR-#62)', () => {
+    it('matches the exact owning PID column', () => {
+        const line = '  TCP    127.0.0.1:8558    0.0.0.0:0    LISTENING    19472';
+        expect(netstatLineMatchesPid(line, 19472)).toBe(true);
+    });
+
+    it('does NOT match a PID that is only a suffix of the owning PID (123 vs 1123)', () => {
+        const line = '  TCP    127.0.0.1:8558    0.0.0.0:0    LISTENING    1123';
+        expect(netstatLineMatchesPid(line, 123)).toBe(false);
+    });
+
+    it('ignores non-LISTENING lines', () => {
+        const line = '  TCP    127.0.0.1:8558    127.0.0.1:5000    ESTABLISHED    19472';
+        expect(netstatLineMatchesPid(line, 19472)).toBe(false);
+    });
+});
+
+describe('filterLsProcessLines case-insensitivity (CR-#62)', () => {
+    it('matches mixed-case lines and returns the ORIGINAL line byte-for-byte', () => {
+        const binary = process.platform === 'win32' ? 'language_server_windows' : 'language_server_macos';
+        // Uppercased binary + Antigravity; mixed-case csrf token must be preserved.
+        const original = `100 ${binary.toUpperCase()} --csrf_token AbC123dEf --app_data_dir Antigravity`;
+        const filtered = filterLsProcessLines(original);
+        expect(filtered).toHaveLength(1);
+        expect(filtered[0]).toBe(original); // byte-identical — NOT lower-cased
+        // csrf token case survives so downstream probe auth still works
+        expect(extractCsrfToken(filtered[0])).toBe('AbC123dEf');
+    });
+
+    it('excludes lines missing either the binary or the antigravity marker', () => {
+        const binary = process.platform === 'win32' ? 'language_server_windows' : 'language_server_macos';
+        const out = [
+            `1 ${binary} --app_data_dir antigravity`,
+            `2 some_other_proc --antigravity`,
+            `3 ${binary} --other`,
+        ].join('\n');
+        expect(filterLsProcessLines(out)).toHaveLength(1);
+    });
+});
+
+describe('extractWslDistro', () => {
+    it('decodes wsl%2B and raw wsl+ authorities', () => {
+        expect(extractWslDistro('vscode-remote://wsl%2BUbuntu/home/user/p')).toBe('Ubuntu');
+        expect(extractWslDistro('vscode-remote://wsl+Ubuntu/home/user/p')).toBe('Ubuntu');
+        expect(extractWslDistro('vscode-remote://wsl%2BUbuntu-22.04/home')).toBe('Ubuntu-22.04');
+    });
+
+    it('is case-insensitive on the wsl scheme', () => {
+        expect(extractWslDistro('vscode-remote://WSL%2BUbuntu/home')).toBe('Ubuntu');
+    });
+
+    it('returns null for non-WSL URIs', () => {
+        expect(extractWslDistro('file:///c:/x')).toBe(null);
+        expect(extractWslDistro('vscode-remote://ssh-remote+host/x')).toBe(null);
     });
 });
 
