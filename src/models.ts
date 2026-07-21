@@ -14,17 +14,22 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     // ── Platform truncation thresholds (from GM plannerConfig.truncationThresholdTokens) ──
     // These are the ACTUAL context window limits enforced by the platform,
     // NOT the model's native context window size.
-    // Verified via diag-scripts/my-tools/extra/all-models-deep-miner.ts (2026-05-19).
+    // Verified via diag-scripts/my-tools/extra/all-models-deep-miner.ts (2026-05-19);
+    // Gemini 3.6 Flash tiers + 3.5 Flash checkpointer bump verified via live LS probe (2026-07-22).
     // Note: All fallback limits are intentionally offset by -1,000 (1K) so that in daily use,
     // you can instantly recognize if the extension has successfully overridden the fallback with live captures.
+    'MODEL_PLACEHOLDER_M264': 255_000,  // Gemini 3.6 Flash (High) — fallback offset by -1K (live: 256,000)
+    'MODEL_PLACEHOLDER_M265': 255_000,  // Gemini 3.6 Flash (Medium) — fallback offset by -1K (live: 256,000)
+    'MODEL_PLACEHOLDER_M266': 255_000,  // Gemini 3.6 Flash (Low) — fallback offset by -1K (live: 256,000)
+    'MODEL_PLACEHOLDER_M196': 255_000,  // Gemini 3.6 Flash (Tiered, catalog-only) — fallback offset by -1K (live: 256,000)
     'MODEL_PLACEHOLDER_M16': 127_000,   // Gemini 3.1 Pro (High) — fallback offset by -1K (live: 128,000)
     'MODEL_PLACEHOLDER_M37': 127_000,   // [Legacy] Gemini 3.1 Pro (High) — fallback offset by -1K (live: 128,000)
     'MODEL_PLACEHOLDER_M36': 127_000,   // Gemini 3.1 Pro (Low)  — fallback offset by -1K (live: 128,000)
-    'MODEL_PLACEHOLDER_M133': 127_000,  // Gemini 3.5 Flash (High) — fallback offset by -1K (live: 128,000)
-    'MODEL_PLACEHOLDER_M132': 127_000,  // Gemini 3.5 Flash (High) — fallback offset by -1K (live: 128,000)
-    'MODEL_PLACEHOLDER_M187': 127_000,  // Gemini 3.5 Flash (Low) — fallback offset by -1K (live: 128,000)
-    'MODEL_PLACEHOLDER_M20': 127_000,   // Gemini 3.5 Flash (Medium) — fallback offset by -1K (live: 128,000)
-    'MODEL_PLACEHOLDER_M84': 127_000,   // [Legacy] Gemini 3 Flash — fallback offset by -1K (live: 128,000)
+    'MODEL_PLACEHOLDER_M84': 255_000,   // Gemini 3.5 Flash (High) — 2026-07 live doubled to 256,000 (M84 took over 3.5F High identity)
+    'MODEL_PLACEHOLDER_M20': 255_000,   // Gemini 3.5 Flash (Medium) — 2026-07 live doubled to 256,000
+    'MODEL_PLACEHOLDER_M187': 255_000,  // Gemini 3.5 Flash (Low) — 2026-07 live doubled to 256,000
+    'MODEL_PLACEHOLDER_M133': 127_000,  // [Retired] Gemini 3.5 Flash (High) — predecessor of M84; retained for archived-data parsing
+    'MODEL_PLACEHOLDER_M132': 127_000,  // [Retired] Gemini 3.5 Flash (High) — predecessor of M84; retained for archived-data parsing
     'MODEL_PLACEHOLDER_M47': 127_000,   // [Legacy] Gemini 3 Flash (older ID) — fallback offset by -1K (live: 128,000)
     'MODEL_PLACEHOLDER_M18': 159_000,   // [Legacy] Gemini 3 Flash (older ID) — fallback offset by -1K (live: 160,000)
     'MODEL_PLACEHOLDER_M35': 159_000,   // Claude Sonnet 4.6 (Thinking) — fallback offset by -1K (live: 160,000)
@@ -49,11 +54,16 @@ let responseModelAliases: Record<string, string> = {
     'gemini-3.1-pro-high': 'MODEL_PLACEHOLDER_M37',       // model_id for M37
     'gemini-3.1-pro-low': 'MODEL_PLACEHOLDER_M36',        // model_id for M36
     // Gemini Flash aliases
-    'gemini-3-flash-a': 'MODEL_PLACEHOLDER_M132',          // legacy responseModel for 3.5 Flash
-    'gemini-3-flash-agent': 'MODEL_PLACEHOLDER_M133',     // model_id for M133 (3.5 Flash High)
-    'gemini-3-flash-b': 'MODEL_PLACEHOLDER_M133',          // responseModel alias for M133
+    'gemini-3-flash-a': 'MODEL_PLACEHOLDER_M132',          // [Retired] legacy responseModel — kept for persisted-data parsing
+    'gemini-3-flash-agent': 'MODEL_PLACEHOLDER_M84',      // model_id for M84 (3.5 Flash High) — took over this key from M133 (2026-07 live)
+    'gemini-3-flash-b': 'MODEL_PLACEHOLDER_M133',          // [Retired] responseModel alias for M133 — kept for persisted-data parsing
     'gemini-3.5-flash-low': 'MODEL_PLACEHOLDER_M20',      // model_id for M20 (3.5 Flash Medium)
     'gemini-3-flash': 'MODEL_PLACEHOLDER_M18',             // backend command model
+    // Gemini 3.6 Flash aliases (live LS probe 2026-07-22: M264/M265/M266 picker + M196 catalog-only tiered)
+    'gemini-3.6-flash-high': 'MODEL_PLACEHOLDER_M264',    // model_id for M264
+    'gemini-3.6-flash-medium': 'MODEL_PLACEHOLDER_M265',  // model_id for M265
+    'gemini-3.6-flash-low': 'MODEL_PLACEHOLDER_M266',     // model_id for M266
+    'gemini-3.6-flash-tiered': 'MODEL_PLACEHOLDER_M196',  // catalog-only tiered router
     // Claude aliases
     'claude-opus-4-6-thinking': 'MODEL_PLACEHOLDER_M26',  // model_id for Opus
     'claude-sonnet-4-6': 'MODEL_PLACEHOLDER_M35',          // model_id for Sonnet
@@ -66,6 +76,10 @@ let showModelShortId = false;
 const KNOWN_QUOTA_POOLS: Record<string, string> = {
     // Gemini pool — Flash and Pro share the same quota since mid-2026
     'MODEL_PLACEHOLDER_M16': 'gemini',
+    'MODEL_PLACEHOLDER_M264': 'gemini',   // Gemini 3.6 Flash (High)
+    'MODEL_PLACEHOLDER_M265': 'gemini',   // Gemini 3.6 Flash (Medium)
+    'MODEL_PLACEHOLDER_M266': 'gemini',   // Gemini 3.6 Flash (Low)
+    'MODEL_PLACEHOLDER_M196': 'gemini',   // Gemini 3.6 Flash (Tiered, catalog-only)
     'MODEL_PLACEHOLDER_M37': 'gemini',
     'MODEL_PLACEHOLDER_M36': 'gemini',
     'MODEL_PLACEHOLDER_M133': 'gemini',
@@ -102,17 +116,31 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M16': 'Gemini 3.1 Pro (High)',
     'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
     'MODEL_PLACEHOLDER_M36': 'Gemini 3.1 Pro (Low)',
-    'MODEL_PLACEHOLDER_M133': 'Gemini 3.5 Flash (High)',  // gemini-3-flash-agent (renamed from "Gemini 3 Flash")
-    'MODEL_PLACEHOLDER_M132': 'Gemini 3.5 Flash (High)',  // retired predecessor of M133
+    'MODEL_PLACEHOLDER_M264': 'Gemini 3.6 Flash (High)',
+    'MODEL_PLACEHOLDER_M265': 'Gemini 3.6 Flash (Medium)',
+    'MODEL_PLACEHOLDER_M266': 'Gemini 3.6 Flash (Low)',
+    'MODEL_PLACEHOLDER_M196': 'Gemini 3.6 Flash (Tiered)',  // catalog-only tiered router (not in picker)
+    'MODEL_PLACEHOLDER_M133': 'Gemini 3.5 Flash (High)',  // [Retired predecessor of M84]
+    'MODEL_PLACEHOLDER_M132': 'Gemini 3.5 Flash (High)',  // [Retired predecessor of M84]
     'MODEL_PLACEHOLDER_M187': 'Gemini 3.5 Flash (Low)',
     'MODEL_PLACEHOLDER_M20': 'Gemini 3.5 Flash (Medium)', // gemini-3.5-flash-low
-    'MODEL_PLACEHOLDER_M84': 'Gemini 3 Flash',            // retired (replaced by M133)
+    'MODEL_PLACEHOLDER_M84': 'Gemini 3.5 Flash (High)',   // gemini-3-flash-agent — M84 took over 3.5F High identity from M133 (2026-07 live)
     'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',            // retired (replaced by M84)
     'MODEL_PLACEHOLDER_M18': 'Gemini 3 Flash',            // backend command model
     'MODEL_PLACEHOLDER_M35': 'Claude Sonnet 4.6 (Thinking)',
     'MODEL_PLACEHOLDER_M26': 'Claude Opus 4.6 (Thinking)',
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'GPT-OSS 120B (Medium)',
 };
+
+// IDs superseded by an active model that shares the same display label.
+// Reverse label lookups must prefer the active ID so chained cpLimit/spec
+// lookups don't land on a stale (retired) spec.
+const RETIRED_PLACEHOLDER_IDS = new Set<string>([
+    'MODEL_PLACEHOLDER_M133',  // retired 3.5 Flash (High), replaced by M84
+    'MODEL_PLACEHOLDER_M132',  // retired 3.5 Flash (High), replaced by M84
+    'MODEL_PLACEHOLDER_M47',   // retired 3 Flash (older ID), superseded by M18
+    'MODEL_PLACEHOLDER_M37',   // retired 3.1 Pro (High), replaced by M16
+]);
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -124,19 +152,52 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
 export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThreshold: number; maxTokens: number; supportsThinking: boolean } {
     const idLower = modelId.toLowerCase();
 
+    // Placeholder IDs (MODEL_PLACEHOLDER_Mxxx) carry no family keyword, so match the M-number by
+    // EXACT equality — substring matching is unsafe here: e.g. 'model_placeholder_m264'.includes('m26')
+    // would wrongly hit the Claude branch and brand Gemini 3.6 Flash as 160K thinking. Extract the
+    // number and compare against known sets; keyword matching below is reserved for catalog names.
+    const placeholderMatch = idLower.match(/model_placeholder_(m\d+)/);
+    if (placeholderMatch) {
+        const num = placeholderMatch[1];
+        // Claude / Premium (Thinking) series
+        if (num === 'm35' || num === 'm26') {
+            return { cpLimit: 160000, cpThreshold: 100000, maxTokens: 250000, supportsThinking: true };
+        }
+        // Gemini Pro / High reasoning series
+        if (num === 'm16' || num === 'm37' || num === 'm36') {
+            return { cpLimit: 128000, cpThreshold: 60000, maxTokens: 1048576, supportsThinking: false };
+        }
+        // Gemini Flash series — 3.6 (M264/M265/M266/M196), 3.5 (M84/M20/M187), retired (M133/M132)
+        if (num === 'm264' || num === 'm265' || num === 'm266' || num === 'm196'
+            || num === 'm84' || num === 'm20' || num === 'm187'
+            || num === 'm133' || num === 'm132') {
+            return { cpLimit: 256000, cpThreshold: 140000, maxTokens: 1048576, supportsThinking: false };
+        }
+        // Unknown placeholder — do NOT fall through to substring keyword matching (would re-introduce
+        // the m26/m35 collision). Defer to live telemetry (0 → "calculating threshold" shimmer).
+        return { cpLimit: 0, cpThreshold: 0, maxTokens: 0, supportsThinking: false };
+    }
+
+    // Non-placeholder names (catalog model_id / responseModel) — keyword matching is safe.
     // 1. Claude/Premium (Thinking) series -> 160K CP Limit
-    if (idLower.includes('claude') || idLower.includes('opus') || idLower.includes('sonnet') || idLower.includes('m35') || idLower.includes('m26')) {
+    if (idLower.includes('claude') || idLower.includes('opus') || idLower.includes('sonnet')) {
         return { cpLimit: 160000, cpThreshold: 100000, maxTokens: 250000, supportsThinking: true };
     }
 
     // 2. Gemini Pro / High reasoning series -> 128K CP Limit
-    if (idLower.includes('pro') || idLower.includes('m16') || idLower.includes('m37') || idLower.includes('m36')) {
+    if (idLower.includes('pro')) {
         return { cpLimit: 128000, cpThreshold: 60000, maxTokens: 1048576, supportsThinking: false };
     }
 
-    // 3. Gemini Flash / Lite series -> 128K CP Limit
-    if (idLower.includes('flash') || idLower.includes('lite') || idLower.includes('m133') || idLower.includes('m20') || idLower.includes('m187') || idLower.includes('unspecified')) {
-        return { cpLimit: 128000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: false };
+    // 3. Gemini Flash / Lite series -> generation-aware. 3.5/3.6 Flash checkpointer
+    //    doubled to 256K (2026-07 live); pre-3.5 flash/lite stays on the 128K profile.
+    if (idLower.includes('flash') || idLower.includes('lite') || idLower.includes('unspecified')) {
+        const versionMatch = idLower.match(/(\d+\.\d+)/);
+        const version = versionMatch ? parseFloat(versionMatch[1]) : NaN;
+        if (!Number.isNaN(version) && version < 3.5) {
+            return { cpLimit: 128000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: false };
+        }
+        return { cpLimit: 256000, cpThreshold: 140000, maxTokens: 1048576, supportsThinking: false };
     }
 
     // 4. GPT-OSS lightweight series -> 80K CP Limit
@@ -157,6 +218,13 @@ export function getContextLimit(
 ): number {
     if (DEFAULT_CONTEXT_LIMITS[model] !== undefined) {
         return DEFAULT_CONTEXT_LIMITS[model];
+    }
+    // Resolve raw catalog/responseModel names (e.g. 'gemini-3-flash') to their
+    // registered placeholder so both name forms of one logical model return the
+    // same limit. resolveModelId never calls back into getContextLimit — no cycle.
+    const resolvedId = resolveModelId(model);
+    if (resolvedId && DEFAULT_CONTEXT_LIMITS[resolvedId] !== undefined) {
+        return DEFAULT_CONTEXT_LIMITS[resolvedId];
     }
     const guessed = guessContextLimitSpec(model);
     return guessed.cpLimit > 0 ? (guessed.cpLimit - 1000) : DEFAULT_CONTEXT_LIMIT;
@@ -200,18 +268,23 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     if (!clean) { return undefined; }
     // Direct model ID match (API-registered or retired)
     if (modelDisplayNames[clean] !== undefined || STATIC_MODEL_NAME_FALLBACKS[clean] !== undefined) { return clean; }
-    // Reverse lookup: display label → model ID
+    // Reverse lookup: display label → model ID (prefer active over retired IDs so
+    // chained cpLimit/spec lookups don't land on a stale spec — see RETIRED_PLACEHOLDER_IDS).
+    let retiredMatch: string | undefined;
     for (const [modelId, label] of Object.entries(modelDisplayNames)) {
         if (label === clean) {
-            return modelId;
+            if (!RETIRED_PLACEHOLDER_IDS.has(modelId)) { return modelId; }
+            retiredMatch = retiredMatch ?? modelId;
         }
     }
     // Reverse lookup: legacy display label → model ID (persisted data migration)
     for (const [modelId, label] of Object.entries(STATIC_MODEL_NAME_FALLBACKS)) {
         if (label === clean) {
-            return modelId;
+            if (!RETIRED_PLACEHOLDER_IDS.has(modelId)) { return modelId; }
+            retiredMatch = retiredMatch ?? modelId;
         }
     }
+    if (retiredMatch) { return retiredMatch; }
     // responseModel alias lookup (e.g. "gemini-pro-default" → "MODEL_PLACEHOLDER_M16")
     const fromResponseModel = responseModelAliases[clean];
     if (fromResponseModel) { return fromResponseModel; }
@@ -422,6 +495,56 @@ export interface ModelSpec {
 }
 
 let activeModelSpecs: Record<string, ModelSpec> = {
+    'MODEL_PLACEHOLDER_M264': {
+        modelId: 'gemini-3.6-flash-high',
+        placeholderId: 'MODEL_PLACEHOLDER_M264',
+        displayName: 'Gemini 3.6 Flash (High)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 256000,
+        cpThreshold: 140000,
+    },
+    'MODEL_PLACEHOLDER_M265': {
+        modelId: 'gemini-3.6-flash-medium',
+        placeholderId: 'MODEL_PLACEHOLDER_M265',
+        displayName: 'Gemini 3.6 Flash (Medium)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 256000,
+        cpThreshold: 140000,
+    },
+    'MODEL_PLACEHOLDER_M266': {
+        modelId: 'gemini-3.6-flash-low',
+        placeholderId: 'MODEL_PLACEHOLDER_M266',
+        displayName: 'Gemini 3.6 Flash (Low)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 256000,
+        cpThreshold: 140000,
+    },
+    // M84 took over the gemini-3-flash-agent key (3.5 Flash High) from M133 per 2026-07 live probe.
+    'MODEL_PLACEHOLDER_M84': {
+        modelId: 'gemini-3-flash-agent',
+        placeholderId: 'MODEL_PLACEHOLDER_M84',
+        displayName: 'Gemini 3.5 Flash (High)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 256000,
+        cpThreshold: 140000,
+    },
+    // [Legacy] retained for archived data; M84 now owns the 3.5 Flash High identity.
     'MODEL_PLACEHOLDER_M133': {
         modelId: 'gemini-3-flash-agent',
         placeholderId: 'MODEL_PLACEHOLDER_M133',
@@ -443,8 +566,8 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         maxOutputTokens: 65536,
         thinkingBudget: 0,
         supportsThinking: false,
-        cpLimit: 128000,
-        cpThreshold: 50000,
+        cpLimit: 256000,   // 2026-07 live checkpointer doubled from 128000
+        cpThreshold: 140000,
     },
     'MODEL_PLACEHOLDER_M187': {
         modelId: 'gemini-3.5-flash-extra-low',
@@ -455,8 +578,8 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         maxOutputTokens: 65536,
         thinkingBudget: 0,
         supportsThinking: false,
-        cpLimit: 128000,
-        cpThreshold: 50000,
+        cpLimit: 256000,   // 2026-07 live checkpointer doubled from 128000
+        cpThreshold: 140000,
     },
     'MODEL_UNSPECIFIED': {
         modelId: 'gemini-3.5-flash-extra-low (UNSPECIFIED)',
@@ -467,8 +590,8 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         maxOutputTokens: 65536,
         thinkingBudget: 0,
         supportsThinking: false,
-        cpLimit: 128000,
-        cpThreshold: 50000,
+        cpLimit: 256000,
+        cpThreshold: 140000,
     },
     'MODEL_PLACEHOLDER_M16': {
         modelId: 'gemini-pro-agent',
@@ -556,7 +679,10 @@ export function updateModelSpec(placeholderId: string, spec: Partial<ModelSpec>)
 
 export function getModelSpecs(): ModelSpec[] {
     const order = [
-        'MODEL_PLACEHOLDER_M133',
+        'MODEL_PLACEHOLDER_M264',
+        'MODEL_PLACEHOLDER_M265',
+        'MODEL_PLACEHOLDER_M266',
+        'MODEL_PLACEHOLDER_M84',
         'MODEL_PLACEHOLDER_M20',
         'MODEL_PLACEHOLDER_M187',
         'MODEL_UNSPECIFIED',
@@ -565,6 +691,7 @@ export function getModelSpecs(): ModelSpec[] {
         'MODEL_PLACEHOLDER_M35',
         'MODEL_PLACEHOLDER_M26',
         'MODEL_OPENAI_GPT_OSS_120B_MEDIUM'
+        // M133 (retired) intentionally omitted here — appended last via the leftover loop below.
     ];
     const ordered: ModelSpec[] = [];
     for (const key of order) {

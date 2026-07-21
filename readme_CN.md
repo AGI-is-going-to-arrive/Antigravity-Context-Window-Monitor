@@ -92,15 +92,19 @@
 
 | 模型 | Internal ID / 内部 ID | 上下文上限 |
 | --- | --- | --- |
+| Gemini 3.6 Flash (High) | MODEL_PLACEHOLDER_M264 | 256,000 |
+| Gemini 3.6 Flash (Medium) | MODEL_PLACEHOLDER_M265 | 256,000 |
+| Gemini 3.6 Flash (Low) | MODEL_PLACEHOLDER_M266 | 256,000 |
+| Gemini 3.6 Flash (Tiered, 内部档) | MODEL_PLACEHOLDER_M196 | 256,000 |
+| Gemini 3.5 Flash (High) | MODEL_PLACEHOLDER_M84 | 256,000 |
+| Gemini 3.5 Flash (Medium) | MODEL_PLACEHOLDER_M20 | 256,000 |
+| Gemini 3.5 Flash (Low) | MODEL_PLACEHOLDER_M187 | 256,000 |
 | Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 128,000 |
 | Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 128,000 |
-| Gemini 3.5 Flash (High) | MODEL_PLACEHOLDER_M132 | 128,000 |
-| Gemini 3.5 Flash (Medium) | MODEL_PLACEHOLDER_M20 | 128,000 |
-| Gemini 3 Flash | MODEL_PLACEHOLDER_M133 | 128,000 |
-| Gemini 3 Flash（历史 ID） | MODEL_PLACEHOLDER_M84 / M47 / M18 | 128,000-160,000 |
 | Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
 | Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
 | GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 80,000 |
+| 历史（已退役） | MODEL_PLACEHOLDER_M133 / M132 / M47 / M18 | 仅用于归档数据解析 |
 
 *这些数值是 Antigravity 平台截断阈值，不是模型原生上下文窗口。模型 ID 来自 Antigravity 本地语言服务器的 `GetUserStatus` API。如果新增了模型，可以在 IDE 设置中手动覆盖上下文上限。*
 

@@ -92,15 +92,19 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 | Model | Internal ID | Context Limit |
 | --- | --- | --- |
+| Gemini 3.6 Flash (High) | MODEL_PLACEHOLDER_M264 | 256,000 |
+| Gemini 3.6 Flash (Medium) | MODEL_PLACEHOLDER_M265 | 256,000 |
+| Gemini 3.6 Flash (Low) | MODEL_PLACEHOLDER_M266 | 256,000 |
+| Gemini 3.6 Flash (Tiered, internal) | MODEL_PLACEHOLDER_M196 | 256,000 |
+| Gemini 3.5 Flash (High) | MODEL_PLACEHOLDER_M84 | 256,000 |
+| Gemini 3.5 Flash (Medium) | MODEL_PLACEHOLDER_M20 | 256,000 |
+| Gemini 3.5 Flash (Low) | MODEL_PLACEHOLDER_M187 | 256,000 |
 | Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 128,000 |
 | Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 128,000 |
-| Gemini 3.5 Flash (High) | MODEL_PLACEHOLDER_M132 | 128,000 |
-| Gemini 3.5 Flash (Medium) | MODEL_PLACEHOLDER_M20 | 128,000 |
-| Gemini 3 Flash | MODEL_PLACEHOLDER_M133 | 128,000 |
-| Gemini 3 Flash (legacy) | MODEL_PLACEHOLDER_M84 / M47 / M18 | 128,000-160,000 |
 | Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
 | Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
 | GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 80,000 |
+| Legacy (retired) | MODEL_PLACEHOLDER_M133 / M132 / M47 / M18 | archived data only |
 
 *These are Antigravity platform truncation thresholds, not model-native context windows. Model IDs are fetched from the local Antigravity language server's `GetUserStatus` API. If new models are added, you can override context limits in IDE settings.*
 

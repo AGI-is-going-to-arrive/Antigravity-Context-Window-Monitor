@@ -5,6 +5,37 @@ import { isShowModelShortId } from './models';
 import { t, tBi, getLanguage } from './i18n';
 import { formatResetAbsolute, formatResetContext, formatResetCountdownFromMs } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
+import {
+    applyLineBudget,
+    ensureCtaLast,
+    getLineBudget,
+    getMaxQuotaRows,
+    LABEL_MAX_DISPLAY_WIDTH,
+    parseTooltipDensity,
+    resolveEffectiveMode,
+    selectQuotaRows,
+    SESSION_MAX_DISPLAY_WIDTH,
+    truncateByDisplayWidth,
+    type EffectiveMode,
+    type TooltipDensity,
+} from './tooltip-budget';
+
+// Re-export pure helpers for tests / external callers
+export {
+    resolveEffectiveMode,
+    selectQuotaRows,
+    getMaxQuotaRows,
+    getLineBudget,
+    applyLineBudget,
+    ensureCtaLast,
+    parseTooltipDensity,
+    truncateByDisplayWidth,
+    COMPACT_MAX_QUOTA_ROWS,
+    NORMAL_MAX_QUOTA_ROWS,
+    COMPACT_MAX_LINES,
+    NORMAL_MAX_LINES,
+} from './tooltip-budget';
+export type { TooltipDensity, EffectiveMode, QuotaSelectable } from './tooltip-budget';
 
 // ─── Token Formatting ─────────────────────────────────────────────────────────
 
@@ -43,7 +74,7 @@ function formatTokenValue(value: number): string {
  * Escape Markdown special characters in dynamic content to prevent
  * broken rendering in VS Code tooltip MarkdownStrings.
  */
-function escapeMarkdown(text: string): string {
+export function escapeMarkdown(text: string): string {
     return text.replace(/([|*_~`\[\]\\#<>])/g, '\\$1');
 }
 
@@ -141,7 +172,52 @@ function getSeverityIcon(severity: StatusBarSeverity): string {
     }
 }
 
+// ─── Tooltip density diagnostics (one-shot per signature, PATH-check style) ───
+
+let lastDensityDiagKey = '';
+
+/** Injected OutputChannel logger — console.log from the extension host never reaches
+ *  the on-disk logs, so field diagnostics must route through the extension's channel. */
+let densityDiagLogger: ((message: string) => void) | null = null;
+
+/** Inject the extension's OutputChannel logger (called once from activate()). */
+export function setTooltipDiagLogger(logger: (message: string) => void): void {
+    densityDiagLogger = logger;
+}
+
+function logDensityDiagOnce(
+    zoomLevel: number,
+    density: TooltipDensity,
+    effective: EffectiveMode,
+    quotaRows: number,
+    lang: string,
+): void {
+    const key = `${zoomLevel}|${density}|${effective}|${quotaRows}|${lang}`;
+    if (key === lastDensityDiagKey) {
+        return;
+    }
+    lastDensityDiagKey = key;
+    // Style aligned with v1.16.13 "PATH check" one-shot diagnostics.
+    const line = `Tooltip density: zoomLevel=${zoomLevel} density=${density} effective=${effective} quotaRows=${quotaRows} lang=${lang}`;
+    if (densityDiagLogger) {
+        densityDiagLogger(line);
+    } else {
+        console.log(`[Antigravity Context Monitor] ${line}`);
+    }
+}
+
+/** Reset density diagnostic gate (exported for tests). */
+export function resetTooltipDensityDiag(): void {
+    lastDensityDiagKey = '';
+}
+
 // ─── Status Bar Manager ───────────────────────────────────────────────────────
+
+type LastRender =
+    | { kind: 'update'; usage: ContextUsage }
+    | { kind: 'idle'; limitStr: string; modelId?: string }
+    | { kind: 'noConversation'; limitStr: string; modelId?: string }
+    | { kind: 'other' };
 
 export class StatusBarManager {
     private statusBarItem: vscode.StatusBarItem;
@@ -158,6 +234,8 @@ export class StatusBarManager {
     private cachedCreditsTotal: number = 0;
     /** Cached billing day (1-31, 0 = disabled). */
     private cachedBillingDay: number = 0;
+    /** Last render state for config-driven tooltip refresh. */
+    private lastRender: LastRender = { kind: 'other' };
 
     constructor() {
         this.statusBarItem = vscode.window.createStatusBarItem(
@@ -257,19 +335,43 @@ export class StatusBarManager {
         this.cachedTierName = tierName || '';
     }
 
+    /**
+     * Re-render tooltip/text from the last known display state.
+     * Called when window.zoomLevel or tooltipDensity changes.
+     */
+    refreshFromConfig(): void {
+        switch (this.lastRender.kind) {
+            case 'update':
+                this.update(this.lastRender.usage);
+                break;
+            case 'idle':
+                this.showIdle(this.lastRender.limitStr, this.lastRender.modelId);
+                break;
+            case 'noConversation':
+                this.showNoConversation(this.lastRender.limitStr, this.lastRender.modelId);
+                break;
+            default:
+                break;
+        }
+    }
+
     showInitializing(): void {
-        this.statusBarItem.text = '$(sync~spin) Context...';
-        this.statusBarItem.tooltip = `Antigravity Context Monitor: ${t('statusBar.initializing')}`;
+        this.lastRender = { kind: 'other' };
+        // Bilingual status text (was hard-coded English)
+        this.statusBarItem.text = `$(sync~spin) ${t('statusBar.initializing')}`;
+        this.statusBarItem.tooltip = t('statusBar.initializingTooltip');
         this.statusBarItem.backgroundColor = undefined;
     }
 
     showDisconnected(message: string): void {
+        this.lastRender = { kind: 'other' };
         this.statusBarItem.text = `$(debug-disconnect) ${t('statusBar.disconnectedLabel')}`;
         this.statusBarItem.tooltip = `Antigravity Context Monitor: ${message}`;
         this.statusBarItem.backgroundColor = undefined;
     }
 
     showNoConversation(limitStr: string = '1M', modelId?: string): void {
+        this.lastRender = { kind: 'noConversation', limitStr, modelId };
         const contextPart = this.displayPrefs.showContext ? `0k/${limitStr}, 0.0%` : '';
         const quotaSuffix = this.displayPrefs.showQuota && modelId ? this.formatQuotaIndicator(modelId) : '';
         const resetSuffix = this.displayPrefs.showResetCountdown && modelId ? this.formatResetCountdown(modelId) : '';
@@ -283,20 +385,21 @@ export class StatusBarManager {
         ].filter(Boolean);
 
         this.statusBarItem.text = this.buildStatusText('$(comment-discussion)', segments);
+
+        const currentId = modelId || this.lastActiveModel || '';
+        const budget = this.resolveBudget(currentId);
         const lines = [
             `Antigravity Context Monitor: ${t('statusBar.noConversationTooltip')}`,
-            ...this.buildQuotaLines(),
-            ...this.buildCreditsLines(),
-            `——————————`,
-            `$(link-external) **${t('statusBar.clickToView')}**`,
+            ...this.buildQuotaLines(budget),
+            ...this.buildCreditsLines(budget.isCompact),
+            this.ctaLine(),
         ];
-        const md = new vscode.MarkdownString(lines.join('  \n'), false);
-        md.supportThemeIcons = true;
-        this.statusBarItem.tooltip = md;
+        this.applyTooltip(lines, budget);
         this.statusBarItem.backgroundColor = undefined;
     }
 
     showIdle(limitStr: string = '1M', modelId?: string): void {
+        this.lastRender = { kind: 'idle', limitStr, modelId };
         const contextPart = this.displayPrefs.showContext ? `0k/${limitStr}, 0.0%` : '';
         const quotaSuffix = this.displayPrefs.showQuota && modelId ? this.formatQuotaIndicator(modelId) : '';
         const resetSuffix = this.displayPrefs.showResetCountdown && modelId ? this.formatResetCountdown(modelId) : '';
@@ -310,17 +413,17 @@ export class StatusBarManager {
         ].filter(Boolean);
 
         this.statusBarItem.text = this.buildStatusText('$(clock)', segments);
+
+        const currentId = modelId || this.lastActiveModel || '';
+        const budget = this.resolveBudget(currentId);
         const lines: string[] = [
             `Antigravity Context Monitor: ${t('statusBar.idle')}`,
             t('statusBar.idleDescription'),
+            ...this.buildQuotaLines(budget),
+            ...this.buildCreditsLines(budget.isCompact),
+            this.ctaLine(),
         ];
-        lines.push(...this.buildQuotaLines());
-        lines.push(...this.buildCreditsLines());
-        lines.push(`——————————`);
-        lines.push(`$(link-external) **${t('statusBar.clickToView')}**`);
-        const md = new vscode.MarkdownString(lines.join('  \n'), false);
-        md.supportThemeIcons = true;
-        this.statusBarItem.tooltip = md;
+        this.applyTooltip(lines, budget);
         this.statusBarItem.backgroundColor = undefined;
     }
 
@@ -328,6 +431,7 @@ export class StatusBarManager {
      * Update the status bar with current context usage data.
      */
     update(usage: ContextUsage): void {
+        this.lastRender = { kind: 'update', usage };
         const usedStr = formatTokenCount(usage.contextUsed);
         const limitStr = formatContextLimit(usage.contextLimit);
 
@@ -368,10 +472,127 @@ export class StatusBarManager {
         this.statusBarItem.text = this.buildStatusText(icon, segments);
         this.statusBarItem.backgroundColor = getSeverityColor(severity);
 
-        // Build detailed tooltip
+        const budget = this.resolveBudget(usage.model || this.lastActiveModel || '');
+        const lines = budget.isCompact
+            ? this.buildCompactActiveLines(usage, usedStr, limitStr, displayPercent, isCompressing, budget)
+            : this.buildNormalActiveLines(usage, isCompressing, budget);
+
+        this.applyTooltip(lines, budget);
+    }
+
+    // ─── Budget / density helpers ─────────────────────────────────────────────
+
+    private readDensity(): TooltipDensity {
+        const raw = vscode.workspace
+            .getConfiguration('antigravityContextMonitor')
+            .get<string>('statusBar.tooltipDensity', 'auto');
+        return parseTooltipDensity(raw);
+    }
+
+    private readZoomLevel(): number {
+        const z = vscode.workspace.getConfiguration('window').get<number>('zoomLevel', 0);
+        return typeof z === 'number' && Number.isFinite(z) ? z : 0;
+    }
+
+    private resolveBudget(currentId: string): {
+        density: TooltipDensity;
+        effective: EffectiveMode;
+        maxQuotaRows: number;
+        maxLines: number;
+        isCompact: boolean;
+        currentId: string;
+        zoomLevel: number;
+        quotaRowCount: number;
+        lang: string;
+    } {
+        const density = this.readDensity();
+        const zoomLevel = this.readZoomLevel();
+        const lang = getLanguage();
+        const quotaRowCount = this.cachedConfigs.filter(c => c.quotaInfo).length;
+        const effective = resolveEffectiveMode(density, zoomLevel, quotaRowCount, lang);
+        // full density keeps normal layout detail but no soft caps
+        const isCompact = density !== 'full' && effective === 'compact';
+        const maxQuotaRows = getMaxQuotaRows(density, effective);
+        const maxLines = getLineBudget(density, effective);
+        logDensityDiagOnce(zoomLevel, density, effective, quotaRowCount, lang);
+        return {
+            density,
+            effective,
+            maxQuotaRows,
+            maxLines,
+            isCompact,
+            currentId,
+            zoomLevel,
+            quotaRowCount,
+            lang,
+        };
+    }
+
+    private ctaLine(): string {
+        return `$(link-external) **${t('statusBar.clickToView')}**`;
+    }
+
+    private applyTooltip(
+        lines: string[],
+        budget: { maxLines: number },
+    ): void {
+        const withCta = ensureCtaLast(lines, this.ctaLine());
+        const capped = applyLineBudget(withCta, budget.maxLines);
+        const md = new vscode.MarkdownString(capped.join('  \n'), false);
+        md.supportThemeIcons = true;
+        this.statusBarItem.tooltip = md;
+    }
+
+    // ─── Active session layouts ───────────────────────────────────────────────
+
+    private buildCompactActiveLines(
+        usage: ContextUsage,
+        usedStr: string,
+        limitStr: string,
+        displayPercent: string,
+        isCompressing: boolean,
+        budget: { maxQuotaRows: number; isCompact: boolean; currentId: string; density: TooltipDensity },
+    ): string[] {
+        const safeModelName = escapeMarkdown(usage.modelDisplayName);
+        const rawTitle = usage.title || usage.cascadeId.substring(0, 8);
+        const safeTitle = escapeMarkdown(
+            truncateByDisplayWidth(rawTitle, SESSION_MAX_DISPLAY_WIDTH),
+        );
+        const compressFlag = isCompressing ? ' 🗜' : (usage.compressionDetected ? ' 🗜' : '');
+
+        const lines: string[] = [
+            `📊 ${t('tooltip.title')}`,
+            `——————————`,
+            `🤖 ${safeModelName} · 📝 ${safeTitle}`,
+            `📥 ${usedStr}/${limitStr} · ${displayPercent}%${compressFlag}`,
+        ];
+
+        if (usage.hasGaps) {
+            lines.push(`⚠️ ${t('tooltip.dataIncomplete')}`);
+        } else if (isCompressing) {
+            lines.push(`🗜 ${t('tooltip.compressing')}`);
+        } else if (usage.compressionDetected) {
+            lines.push(`🗜 ${t('tooltip.compressed')}`);
+        }
+
+        lines.push(`——————————`);
+        lines.push(...this.buildQuotaLines({ ...budget, currentId: usage.model || budget.currentId }));
+        lines.push(...this.buildCreditsLines(true));
+        lines.push(this.ctaLine());
+        return lines;
+    }
+
+    private buildNormalActiveLines(
+        usage: ContextUsage,
+        isCompressing: boolean,
+        budget: { maxQuotaRows: number; isCompact: boolean; currentId: string; density: TooltipDensity },
+    ): string[] {
         const remaining = Math.max(0, usage.contextLimit - usage.contextUsed);
         const compressionStats = calculateCompressionStats(usage);
-        const safeTitle = escapeMarkdown(usage.title || usage.cascadeId.substring(0, 8));
+        const rawTitle = usage.title || usage.cascadeId.substring(0, 8);
+        const safeTitle = escapeMarkdown(
+            truncateByDisplayWidth(rawTitle, SESSION_MAX_DISPLAY_WIDTH),
+        );
         const safeModelName = escapeMarkdown(usage.modelDisplayName);
         const tokenUnit = tBi('tokens', '令牌');
 
@@ -427,6 +648,7 @@ export class StatusBarManager {
 
         lines.push(`——————————`);
 
+        // Checkpoint block (P3 — kept in normal, folded in compact)
         if (usage.lastModelUsage) {
             const cpLabel = (usage.checkpointModel && isShowModelShortId())
                 ? ` (${escapeMarkdown(shortenShadowModelId(usage.checkpointModel))})`
@@ -440,88 +662,119 @@ export class StatusBarManager {
         }
 
         lines.push(`——————————`);
-
-        lines.push(...this.buildQuotaLines());
-
-        // AI Credits section in tooltip
-        lines.push(...this.buildCreditsLines());
-
-        lines.push(`——————————`);
-        lines.push(`$(link-external) **${t('statusBar.clickToView')}**`);
-        const md = new vscode.MarkdownString(lines.join('  \n'), false);
-        md.supportThemeIcons = true;
-        this.statusBarItem.tooltip = md;
+        lines.push(...this.buildQuotaLines({ ...budget, currentId: usage.model || budget.currentId }));
+        lines.push(...this.buildCreditsLines(false));
+        lines.push(this.ctaLine());
+        return lines;
     }
 
     /**
-     * Build plan info + model quota lines for tooltip (shared by update & showIdle).
+     * Build plan info + model quota lines for tooltip (shared by update / idle / noConversation).
+     * Applies selectQuotaRows + "N more" when truncated. Full density does not truncate.
      */
-    private buildQuotaLines(): string[] {
+    private buildQuotaLines(opts: {
+        maxQuotaRows: number;
+        isCompact: boolean;
+        currentId: string;
+        density: TooltipDensity;
+    }): string[] {
         const result: string[] = [];
 
-        if (this.cachedPlanName) {
+        if (this.cachedPlanName && !opts.isCompact) {
             result.push(`——————————`);
             const planStr = this.cachedTierName && this.cachedTierName !== this.cachedPlanName
                 ? `**${escapeMarkdown(this.cachedPlanName)}** · **${escapeMarkdown(this.cachedTierName)}**`
                 : `**${escapeMarkdown(this.cachedPlanName)}**`;
             result.push(`👤 ${tBi('Plan', '计划')}: ${planStr}`);
+        } else if (this.cachedPlanName && opts.isCompact) {
+            // compact: fold plan into a single short line only if present
+            const planStr = escapeMarkdown(this.cachedPlanName);
+            result.push(`👤 ${planStr}`);
         }
 
         const quotaModels = this.cachedConfigs.filter(c => c.quotaInfo);
-        if (quotaModels.length > 0) {
-            result.push(`——————————`);
+        if (quotaModels.length === 0) {
+            return result;
+        }
+
+        const { rows, hiddenCount, total } = selectQuotaRows(
+            quotaModels,
+            opts.currentId,
+            opts.maxQuotaRows,
+        );
+
+        result.push(`——————————`);
+        if (opts.isCompact && total > 0) {
+            const shown = rows.length;
+            const shownOf = tBi(
+                `Showing ${shown}/${total}`,
+                `显示 ${shown}/${total}`,
+            );
+            result.push(`⚡ ${tBi('Model Quota', '模型配额')}  (${shownOf})`);
+        } else {
             result.push(`⚡ ${tBi('Model Quota', '模型配额')}`);
-            result.push('');
-            const now = Date.now();
-            const header = `| ${tBi('Model', '模型')} | % | ${tBi('Reset', '重置')} |`;
-            const sep = '|:--|--:|--:|';
-            const rows: string[] = [];
-            for (const c of quotaModels) {
-                const qi = c.quotaInfo!;
-                const pct = Math.round(qi.remainingFraction * 100);
-                const bar = pct >= 80 ? '🟢' : pct > 20 ? '🟡' : '🔴';
-                let resetStr = '—';
-                if (qi.resetTime) {
-                    const resetDate = new Date(qi.resetTime);
-                    const diffMs = resetDate.getTime() - now;
-                    if (diffMs > 0) {
-                        resetStr = formatResetContext(qi.resetTime, { nowMs: now });
-                    }
+        }
+        result.push('');
+
+        const now = Date.now();
+        const header = `| ${tBi('Model', '模型')} | % | ${tBi('Reset', '重置')} |`;
+        const sep = '|:--|--:|--:|';
+        const tableRows: string[] = [];
+        for (const c of rows) {
+            const qi = c.quotaInfo!;
+            const pct = Math.round(qi.remainingFraction * 100);
+            const bar = pct >= 80 ? '🟢' : pct > 20 ? '🟡' : '🔴';
+            let resetStr = '—';
+            if (qi.resetTime) {
+                const resetDate = new Date(qi.resetTime);
+                const diffMs = resetDate.getTime() - now;
+                if (diffMs > 0) {
+                    resetStr = formatResetContext(qi.resetTime, { nowMs: now });
                 }
-                rows.push(`| ${bar} ${escapeMarkdown(c.label)} | ${pct}% | 🔄 ${resetStr} |`);
             }
-            result.push(header);
-            result.push(sep);
-            result.push(...rows);
-            result.push('');
+            const label = escapeMarkdown(
+                truncateByDisplayWidth(c.label, LABEL_MAX_DISPLAY_WIDTH),
+            );
+            tableRows.push(`| ${bar} ${label} | ${pct}% | 🔄 ${resetStr} |`);
+        }
+        result.push(header);
+        result.push(sep);
+        result.push(...tableRows);
+        result.push('');
 
-            // Show earliest reset as a standalone line for quick reading
-            const earliest = this.getEarliestResetTime();
-            if (earliest) {
-                const earliestIso = earliest.toISOString();
-                result.push(
-                    `🔔 ${tBi('Earliest reset at', '最近重置时间为')}: **${formatResetAbsolute(earliestIso, { includeSeconds: true })}** ` +
-                    `(${formatResetCountdownFromMs(earliest.getTime() - Date.now())})`
-                );
-            }
+        // "N more" only when truncated (never in full density / zero hidden)
+        if (hiddenCount > 0 && opts.density !== 'full') {
+            result.push(
+                tBi(
+                    `… and ${hiddenCount} more models — click to view all`,
+                    `… 还有 ${hiddenCount} 个模型，点击查看全部`,
+                ),
+            );
+        }
 
-            // Show current model's reset time if available
-            if (this.lastActiveModel) {
-                const currentConfig = this.cachedConfigs.find(c => c.model === this.lastActiveModel);
-                if (currentConfig?.quotaInfo?.resetTime) {
-                    const resetDate = new Date(currentConfig.quotaInfo.resetTime);
-                    if (resetDate.getTime() > Date.now()) {
-                        result.push(
-                            `⏳ ${tBi('Current model resets at', '当前模型重置于')}: ` +
-                            `**${formatResetAbsolute(currentConfig.quotaInfo.resetTime, { includeSeconds: true })}** ` +
-                            `(${formatResetCountdownFromMs(resetDate.getTime() - Date.now())}, ${escapeMarkdown(currentConfig.label)})`
-                        );
-                    }
+        // Earliest reset — compact keeps one line; normal may keep both earliest + current
+        const earliest = this.getEarliestResetTime();
+        if (earliest) {
+            const earliestIso = earliest.toISOString();
+            result.push(
+                `🔔 ${tBi('Earliest reset at', '最近重置时间为')}: **${formatResetAbsolute(earliestIso, { includeSeconds: true })}** ` +
+                `(${formatResetCountdownFromMs(earliest.getTime() - Date.now())})`
+            );
+        }
+
+        if (!opts.isCompact && this.lastActiveModel) {
+            const currentConfig = this.cachedConfigs.find(c => c.model === this.lastActiveModel);
+            if (currentConfig?.quotaInfo?.resetTime) {
+                const resetDate = new Date(currentConfig.quotaInfo.resetTime);
+                if (resetDate.getTime() > Date.now()) {
+                    result.push(
+                        `⏳ ${tBi('Current model resets at', '当前模型重置于')}: ` +
+                        `**${formatResetAbsolute(currentConfig.quotaInfo.resetTime, { includeSeconds: true })}** ` +
+                        `(${formatResetCountdownFromMs(resetDate.getTime() - Date.now())}, ${escapeMarkdown(currentConfig.label)})`
+                    );
                 }
             }
         }
-
-
 
         return result;
     }
@@ -666,8 +919,9 @@ export class StatusBarManager {
 
     /**
      * Build credit info lines for tooltip.
+     * @param compact when true, only a single credits line (no billing-only branch noise).
      */
-    private buildCreditsLines(): string[] {
+    private buildCreditsLines(compact: boolean = false): string[] {
         const result: string[] = [];
         if (this.cachedCreditsTotal <= 0 && this.cachedBillingDay <= 0) { return result; }
 
@@ -685,7 +939,7 @@ export class StatusBarManager {
                 refreshStr = ` (${tBi('expiry date not set', '到期日未设置')})`;
             }
             result.push(`⚡ ${tBi('AI Credits', 'AI 积分')}: **${this.cachedCreditsTotal.toLocaleString()}**${refreshStr}`);
-        } else if (this.cachedBillingDay > 0) {
+        } else if (!compact && this.cachedBillingDay > 0) {
             const daysLeft = this.getDaysUntilRefresh();
             if (daysLeft !== null && daysLeft > 0) {
                 result.push(`⚡ ${tBi('Credits expire in', '积分到期还有')} **${daysLeft}** ${tBi('days', '天')}`);

@@ -72,4 +72,14 @@ describe('static model display fallbacks', () => {
         expect(normalizeModelDisplayName('MODEL_OPENAI_GPT_OSS_120B_MEDIUM')).toBe('GPT-OSS 120B (Medium)');
         expect(resolveModelId('Gemini 3.5 Flash (Low)')).toBe('MODEL_PLACEHOLDER_M187');
     });
+
+    it('exposes Gemini 3.6 Flash tiers and the M84 takeover of 3.5 Flash (High)', () => {
+        // M84 took over the "Gemini 3.5 Flash (High)" identity from M133 (2026-07 live probe).
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M84')).toBe('Gemini 3.5 Flash (High)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M264')).toBe('Gemini 3.6 Flash (High)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M265')).toBe('Gemini 3.6 Flash (Medium)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M266')).toBe('Gemini 3.6 Flash (Low)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M196')).toBe('Gemini 3.6 Flash (Tiered)');
+        expect(resolveModelId('Gemini 3.6 Flash (High)')).toBe('MODEL_PLACEHOLDER_M264');
+    });
 });

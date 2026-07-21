@@ -146,4 +146,17 @@ describe('GM model capture', () => {
         expect(merged.model).toBe('MODEL_PLACEHOLDER_M187');
         expect(merged.modelSource).toBe('chatModel');
     });
+
+    it('captures Gemini 3.6 Flash identity from chatModel and its seeded response alias', () => {
+        expect(resolveModelId('gemini-3.6-flash-high')).toBe('MODEL_PLACEHOLDER_M264');
+
+        const call = parseGMEntry(makeGM({
+            model: 'MODEL_PLACEHOLDER_M264',
+            responseModel: 'gemini-3.6-flash-high',
+        }));
+
+        expect(call.model).toBe('MODEL_PLACEHOLDER_M264');
+        expect(call.modelSource).toBe('chatModel');
+        expect(call.modelDisplay).toContain('Gemini 3.6 Flash');
+    });
 });

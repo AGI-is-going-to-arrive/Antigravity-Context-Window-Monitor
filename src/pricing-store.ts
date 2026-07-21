@@ -53,6 +53,9 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     'gemini-3-flash': { input: 0.50, output: 3, cacheRead: 0.05, cacheWrite: 0.625, thinking: 3 },     // Gemini 3 Flash (M133=gemini-3-flash-b)
     // ── Gemini 3.5 Flash (ai.google.dev/gemini-api/docs/pricing) ────────
     'gemini-3.5-flash': { input: 1.50, output: 9, cacheRead: 0.15, cacheWrite: 1.875, thinking: 9 },
+    // ── Gemini 3.6 Flash (ai.google.dev/gemini-api/docs/pricing + artificialanalysis, verified 2026-07-22) ──
+    // Input unchanged at $1.50; output cut to $7.50 (vs 3.5 Flash's $9.00). Cache derived as 3.5 Flash (0.1× / 1.25× input).
+    'gemini-3.6-flash': { input: 1.50, output: 7.50, cacheRead: 0.15, cacheWrite: 1.875, thinking: 7.50 },
 };
 
 // ─── Pricing Lookup ──────────────────────────────────────────────────────────

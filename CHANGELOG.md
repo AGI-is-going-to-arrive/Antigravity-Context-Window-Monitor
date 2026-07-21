@@ -1,5 +1,53 @@
 # 变更日志 / Changelog
 
+## [1.16.14] - 2026-07-22
+
+> Adds full support for the new **Gemini 3.6 Flash** family (High / Medium / Low) with registry data live-probed from the running IDE, and fixes the **issue #63** status-bar tooltip clipping under `window.zoomLevel`. Ships registry corrections found during probing: M84's takeover of the "Gemini 3.5 Flash (High)" identity, doubled Flash context limits (128K → 256K), and an M-number substring-collision fix in the context-limit heuristic. Verified with a two-round codex adversarial review, cross-checked probes against two live language-server instances, and a live IDE install test. tsc clean, 21 files / 203 vitest tests green.
+> 新增对 **Gemini 3.6 Flash** 全家族（High / Medium / Low）的完整支持（注册数据来自对运行中 IDE 的活体探测），并修复 **issue #63** 在 `window.zoomLevel` 下状态栏 tooltip 被裁切的问题。同时随附探测中发现的注册表校正：M84 接管 "Gemini 3.5 Flash (High)" 身份、Flash 上下文上限翻倍（128K → 256K）、上下文上限启发式的 M 编号子串碰撞修复。经两轮 codex 对抗式审查、双语言服务器实例交叉活体探测与运行中 IDE 真机安装实测验证。tsc 无错误，21 文件 / 203 项 vitest 用例全绿。
+>
+> Thanks **@damifan3** for the clear issue #63 report with screenshots (`window.zoomLevel: 0.5` + a clipped, unscrollable quota table) — it pinned the root cause immediately!
+> 感谢 **@damifan3** 为 issue #63 提供带截图的清晰报告（`window.zoomLevel: 0.5` + 被裁切且无法滚动的配额表），使根因得以立即定位！
+
+### ✨ Added / 新增
+
+- **Gemini 3.6 Flash (High / Medium / Low) support / Gemini 3.6 Flash（High / Medium / Low）支持**:
+  Live-probed from the running IDE (two language-server instances cross-checked, picker + catalog): `MODEL_PLACEHOLDER_M264` / `M265` / `M266` (`gemini-3.6-flash-high` / `-medium` / `-low`), plus the catalog-only `M196` (`gemini-3.6-flash-tiered`). Registered across all six registry tables — `DEFAULT_CONTEXT_LIMITS` (255,000 fallback; live checkpointer 256,000 / threshold 140,000), `responseModelAliases`, `KNOWN_QUOTA_POOLS` (**gemini** pool, evidenced by provider + checkpointer profile + sort group; without this entry `getQuotaPoolKey()` would fall back to raw `resetTime` and split 3.6 into phantom pools), `STATIC_MODEL_NAME_FALLBACKS`, `activeModelSpecs` (native 1M context / 64K output), and the Models-tab order. 3.6 coexists with 3.5 — the platform now defaults to M264 (tagged "Fast" / "Limited time").
+  来自运行中 IDE 的活体探测（双语言服务器实例互证，picker + catalog 双面）：`MODEL_PLACEHOLDER_M264` / `M265` / `M266`（`gemini-3.6-flash-high` / `-medium` / `-low`），以及仅存在于目录的 `M196`（`gemini-3.6-flash-tiered`）。已注册进全部六张注册表——`DEFAULT_CONTEXT_LIMITS`（静态兜底 255,000；活体 checkpointer 上限 256,000 / 阈值 140,000）、`responseModelAliases`、`KNOWN_QUOTA_POOLS`（**gemini** 池，依据 provider + checkpointer 画像 + 排序同组三重证据；缺此条目 `getQuotaPoolKey()` 会回退裸 `resetTime`，把 3.6 分裂成幽灵独立池）、`STATIC_MODEL_NAME_FALLBACKS`、`activeModelSpecs`（原生 1M 上下文 / 64K 输出）与 Models 页排序。3.6 与 3.5 并存——平台默认模型现已切换为 M264（标签 "Fast" / "Limited time"）。
+
+- **Gemini 3.6 Flash pricing / Gemini 3.6 Flash 定价**:
+  New `gemini-3.6-flash` family key in `DEFAULT_PRICING`: **$1.50 input / $7.50 output per 1M tokens** (official Gemini API pricing, verified 2026-07-22 — output is cheaper than 3.5 Flash's $9.00). Without this key, 3.6 responseModels cannot fuzzy-match the 3.5 keys and every call would be silently costed at $0 — including costs written into daily archives, permanently under-reporting history.
+  `DEFAULT_PRICING` 新增 `gemini-3.6-flash` 家族键：**每 1M token 输入 $1.50 / 输出 $7.50**（Gemini API 官方定价，2026-07-22 核验——输出价低于 3.5 Flash 的 $9.00）。缺失此键时 3.6 的 responseModel 无法模糊匹配到 3.5 的键，所有调用会被静默计为 $0——包括写入每日归档的成本，造成历史成本永久低报。
+
+### 🐛 Fixed / 修复
+
+- **Status-bar tooltip clipped under `window.zoomLevel`, with no scrollbar / 状态栏 tooltip 在 `window.zoomLevel` 下被裁切且无滚动条** (issue #63, thanks **@damifan3**):
+  VS Code's status-bar hover has a fixed max height and cannot scroll, and the quota table grew one row per model — so under zoom the tooltip bottom (quota rows, credits, CTA) was simply cut off. New setting `antigravityContextMonitor.statusBar.tooltipDensity` (`auto` | `compact` | `full`, default `auto`) plus content-side budgeting in the new pure module `tooltip-budget.ts`: the quota table is capped (compact 3 / normal 5 rows; current model pinned first, scarcest quota next) with an "… and N more models — click to view all" line, low-priority sections fold first (checkpoint block, per-line details), and the "click to view details" CTA always stays last. All three tooltip entry points (active / idle / no-conversation) share the same budget. `auto` compacts when `window.zoomLevel ≥ 0.5`, when quota rows overflow, or under bilingual display pressure; configuration changes hot-reload the tooltip and a one-shot `Tooltip density: …` diagnostic line is logged for field debugging. The full model list remains available in the details panel (click the status bar), which scrolls properly.
+  VS Code 状态栏 hover 高度固定且不可滚动，而配额表每多一个模型就多一行——缩放后 tooltip 底部（配额行、积分、CTA）直接被切掉。新增设置 `antigravityContextMonitor.statusBar.tooltipDensity`（`auto` | `compact` | `full`，默认 `auto`），配合新纯函数模块 `tooltip-budget.ts` 的内容侧预算：配额表限行（compact 3 行 / normal 5 行；当前模型置顶、额度最紧张的优先），超出显示"… 还有 N 个模型，点击查看全部"；低优先级分区（checkpoint 块、分行明细）先折叠；"点击查看详情" CTA 恒置底。三个 tooltip 入口（活跃 / 空闲 / 无会话）统一走同一预算。`auto` 在 `window.zoomLevel ≥ 0.5`、配额行数超限或双语显示压力下自动进入紧凑模式；配置变更即时热更新 tooltip，并打印一次性 `Tooltip density: …` 诊断行便于现场排查。完整模型列表仍可在详情面板查看（点击状态栏），面板可正常滚动。
+
+- **Model registry drift: M84 identity takeover & doubled Flash limits / 模型注册表漂移：M84 身份接管与 Flash 上限翻倍**:
+  Live probing showed `gemini-3-flash-agent` now resolves to **M84**, which has taken over the "Gemini 3.5 Flash (High)" identity, while M133 / M132 / M47 have been fully retired platform-side (kept as archived-data fallbacks, marked `[Retired]`). The 3.5 Flash checkpointer limit doubled to 256,000 in 2026-07, so the stale 127,000 static fallbacks for M84 / M20 / M187 were corrected to 255,000 (the intentional −1K offset distinguishes a static fallback from a live capture).
+  活体探测显示 `gemini-3-flash-agent` 现解析到 **M84**——它已接管 "Gemini 3.5 Flash (High)" 身份，而 M133 / M132 / M47 已在平台侧彻底退役（保留为归档数据兜底，标注 `[Retired]`）。3.5 Flash 的 checkpointer 上限已于 2026-07 翻倍至 256,000，故将 M84 / M20 / M187 过期的 127,000 静态兜底校正为 255,000（刻意的 −1K 偏移用于区分静态兜底与活体捕获）。
+
+- **Context-limit heuristic M-number substring collision / 上下文上限启发式的 M 编号子串碰撞**:
+  `guessContextLimitSpec()` matched placeholder IDs by substring, so `M264` / `M265` / `M266` (all containing `m26`) would have been misclassified as Claude 160K thinking models. Placeholder IDs now match by exact M-number; unknown placeholders defer to live telemetry (returning the "calculating threshold…" shimmer) instead of falling back to keyword guessing. Hardened further after adversarial review: the Flash keyword branch is now generation-aware (pre-3.5 names such as `gemini-2.5-flash` / `gemini-3.1-flash-lite` keep the 128K profile; 3.5+ and unversioned names get 256,000 / 140,000), raw catalog names resolve through registered placeholders first (so `gemini-3-flash` matches M18's limit instead of a keyword guess), display labels resolve to the active ID rather than a retired one (`Gemini 3.5 Flash (High)` → M84), and the `MODEL_UNSPECIFIED` spec was aligned to the doubled Flash profile.
+  `guessContextLimitSpec()` 此前对 placeholder ID 用子串匹配——`M264` / `M265` / `M266` 均包含 `m26`，会被误判为 Claude 160K thinking 系。现改为按 M 编号精确匹配；未知 placeholder 不再回落关键词猜测，而是交给活体遥测（返回"正在计算阈值…"流光）。对抗审查后进一步加固：Flash 关键词分支具代际感知（3.5 之前的名称如 `gemini-2.5-flash` / `gemini-3.1-flash-lite` 保持 128K 画像；3.5 及以上或无版本号名称为 256,000 / 140,000）；原始目录名优先经已注册 placeholder 解析（`gemini-3-flash` 对齐 M18 的上限而非关键词猜测）；显示名反查优先解析到活跃 ID 而非退役 ID（`Gemini 3.5 Flash (High)` → M84）；`MODEL_UNSPECIFIED` 规格同步对齐翻倍后的 Flash 画像。
+
+- **Bilingual gaps / 双语补齐**:
+  The initializing status-bar text and the About-page platform-chip `aria-label`s are now bilingual (previously English-only).
+  状态栏初始化文案与 About 页平台徽章的 `aria-label` 现已双语（此前仅英文）。
+
+### ✅ Tests / 测试
+
+- **+50 vs v1.16.13 (153 → 203, 21 files) / 较 v1.16.13 新增 50 项（153 → 203，21 文件）**:
+  New `tests/statusbar-tooltip.test.ts` (42 cases: quota-row selection, density-mode matrix incl. the zoom 0.5 boundary, CTA-last invariant, compact line budget, "… and N more" interpolation, protected quota-table budget regressions incl. a 45-line full-load scenario, emoji display width) and `tests/models-registry.test.ts` (12 cases: collision guard M264-266 vs M26/M35 incl. a hypothetical M350, Models-tab order, `gemini-3-flash-agent` → M84, 3.6 pricing lookup, plus 4 adversarial-review regression pins — label → active-ID resolution, raw-name/placeholder split closure, UNSPECIFIED spec alignment, generation-aware Flash fallback), plus extended pool-grouping (`KNOWN_QUOTA_POOLS` beats `resetTime` fallback), GM alias-capture, and display-name regression cases.
+  新增 `tests/statusbar-tooltip.test.ts`（42 项：配额行选取、密度模式矩阵含 zoom 0.5 边界、CTA 恒置底不变量、紧凑行预算、"还有 N 个"插值、配额表受保护段预算回归含 45 行满负载场景、emoji 显示宽度）与 `tests/models-registry.test.ts`（12 项：碰撞守卫 M264-266 对 M26/M35 含假想 M350、Models 页排序、`gemini-3-flash-agent` → M84、3.6 定价查询，另含 4 条对抗审查回归钉——显示名解析到活跃 ID、原始名/placeholder 分裂闭合、UNSPECIFIED 规格对齐、Flash 代际感知兜底），并扩展归池（`KNOWN_QUOTA_POOLS` 优先于 `resetTime` 兜底）、GM 别名捕获与显示名回归用例。
+
+### 📊 Stats / 统计
+
+- **Files changed**: 13 code (10 modified + `src/tooltip-budget.ts`, `tests/statusbar-tooltip.test.ts`, `tests/models-registry.test.ts` new) + docs
+- **TypeScript compile**: Zero errors · **vitest**: 21 files / 203 tests green
+- **DailyLedger contract**: untouched (`serialize()` keys unchanged; `hasData` contract tests green) / DailyLedger 契约未触碰（`serialize()` 键集不变，`hasData` 契约用例全绿）
+
 ## [1.16.13] - 2026-07-02
 
 > Fixes the Windows-only "LS not found" reported in **issue #62** (Windows 11 + Antigravity v2.1.1): the native discovery branch invoked `wmic` / `powershell.exe` / `netstat` by bare name, so a truncated Extension Host `PATH` silently broke language-server detection. Verified with a three-layer pass — Codex adversarial review (which caught and fixed a PID-range regression), an empty-`PATH` isolation probe, and a live IDE reload test (`PATH check: hasWbem=true` + `LS found pid=… port=…`, 0 errors). tsc clean, 19 files / 153 vitest tests green.

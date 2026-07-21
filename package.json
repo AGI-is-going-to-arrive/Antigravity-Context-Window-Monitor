@@ -2,7 +2,7 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Window Monitor",
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
-  "version": "1.16.13",
+  "version": "1.16.14",
   "publisher": "AGI-is-going-to-arrive",
   "license": "MIT",
   "repository": {
@@ -91,6 +91,12 @@
           "type": "boolean",
           "default": true,
           "description": "Show AI Credits balance (e.g. ⚡14701) in status bar and tooltip / 状态栏和 tooltip 显示 AI 专属积分余额"
+        },
+        "antigravityContextMonitor.statusBar.tooltipDensity": {
+          "type": "string",
+          "enum": ["auto", "compact", "full"],
+          "default": "auto",
+          "description": "Status bar hover tooltip density. auto adapts to window.zoomLevel and quota row count; compact always trims; full shows all rows (may clip under high zoom). / 状态栏悬停提示密度。auto 随 window.zoomLevel 与配额行数自适应；compact 始终精简；full 显示全部行（高缩放可能裁切）。"
         },
         "antigravityContextMonitor.showModelInternalId": {
           "type": "boolean",

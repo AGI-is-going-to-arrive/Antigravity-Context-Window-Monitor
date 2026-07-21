@@ -56,7 +56,6 @@ const translations: Record<string, TranslationEntry> = {
     'tooltip.output': { en: 'Output', zh: '输出' },
     'tooltip.cache': { en: 'Cache', zh: '缓存' },
 
-
     // ─ QuickPick Panel
     'panel.title': { en: 'Antigravity Monitor', zh: 'Antigravity 监控面板' },
     'panel.placeholder': { en: 'View context details for all sessions', zh: '查看各会话的上下文使用详情' },

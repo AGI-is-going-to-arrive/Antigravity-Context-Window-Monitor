@@ -173,4 +173,20 @@ describe('groupModelConfigsByQuotaPool', () => {
         expect(groups[0].modelIds).toEqual(['MODEL_FUTURE_A', 'MODEL_FUTURE_B']);
         expect(groups[0].minFraction).toBe(0.5);
     });
+
+    it('groups Gemini 3.6 Flash into the shared gemini pool via KNOWN_QUOTA_POOLS, not resetTime', () => {
+        // M264 and M133 carry different resetTimes, yet both must land in the fixed 'gemini' pool.
+        // Before the fix, M264 fell back to its resetTime key and split into its own pool.
+        const groups = groupModelConfigsByQuotaPool([
+            modelConfig('MODEL_PLACEHOLDER_M264', 'Gemini 3.6 Flash (High)', '2026-07-21T21:41:45Z', 0.9),
+            modelConfig('MODEL_PLACEHOLDER_M133', 'Gemini 3.5 Flash (High)', '2026-07-22T09:00:00Z', 0.7),
+            modelConfig('MODEL_OPENAI_GPT_OSS_120B_MEDIUM', 'GPT-OSS 120B (Medium)', '2026-07-21T21:41:45Z', 0.3),
+        ]);
+
+        expect(groups.map(g => g.key).sort()).toEqual(['gemini', 'premium']);
+        const gemini = groups.find(g => g.key === 'gemini');
+        expect(gemini?.modelIds.slice().sort()).toEqual(['MODEL_PLACEHOLDER_M133', 'MODEL_PLACEHOLDER_M264']);
+        expect(gemini?.minFraction).toBe(0.7);
+        expect(groups.find(g => g.key === 'premium')?.modelIds).toEqual(['MODEL_OPENAI_GPT_OSS_120B_MEDIUM']);
+    });
 });

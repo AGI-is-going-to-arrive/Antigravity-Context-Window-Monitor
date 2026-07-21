@@ -133,20 +133,20 @@ export function buildAboutTabContent(): string {
         'An open-source community plugin for real-time monitoring and analytics of AI model usage in Antigravity.',
         '一款开源社区插件，用于实时监控和分析 Antigravity 中 AI 模型的使用情况。',
     )}</p>
-        <div class="about-platform-chips" role="group" aria-label="Supported platforms">
-            <span class="about-platform-chip about-platform-active" role="status" aria-label="IDE: actively supported">
+        <div class="about-platform-chips" role="group" aria-label="${tBi('Supported platforms', '支持的平台')}">
+            <span class="about-platform-chip about-platform-active" role="status" aria-label="${tBi('IDE: actively supported', 'IDE：已支持')}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                 IDE
             </span>
-            <span class="about-platform-chip" aria-label="Desktop: not supported">
+            <span class="about-platform-chip" aria-label="${tBi('Desktop: not supported', '桌面版：不支持')}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="3"/></svg>
                 ${tBi('Desktop', '桌面版')}
             </span>
-            <span class="about-platform-chip" aria-label="SDK: not supported">
+            <span class="about-platform-chip" aria-label="${tBi('SDK: not supported', 'SDK：不支持')}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                 SDK
             </span>
-            <span class="about-platform-chip" aria-label="CLI: not supported">
+            <span class="about-platform-chip" aria-label="${tBi('CLI: not supported', 'CLI：不支持')}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
                 CLI
             </span>

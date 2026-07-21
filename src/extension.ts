@@ -17,7 +17,7 @@ import {
 } from './tracker';
 import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, type ModelConfig, updateModelSpec } from './models';
 import { rpcCall } from './rpc-client';
-import { StatusBarManager, formatContextLimit } from './statusbar';
+import { StatusBarManager, formatContextLimit, setTooltipDiagLogger } from './statusbar';
 import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
 import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
@@ -1070,6 +1070,7 @@ export function activate(context: vscode.ExtensionContext): void {
     allTrajectoryUsages = restoredMonitor.allUsages;
 
     statusBar = new StatusBarManager();
+    setTooltipDiagLogger(log);
 
     // Initialize activity tracker
     const savedActivity = durableGlobalState.get<ActivityTrackerState | undefined>('activityTrackerState', undefined);
@@ -1313,6 +1314,14 @@ export function activate(context: vscode.ExtensionContext): void {
                 applyDisplayPrefs();
                 if (currentUsage) { statusBar.update(currentUsage); }
                 log('Status bar display preferences updated');
+            }
+            // issue #63: zoom / tooltip density → re-render tooltip (idle/no-conv/update)
+            if (
+                e.affectsConfiguration('window.zoomLevel')
+                || e.affectsConfiguration('antigravityContextMonitor.statusBar.tooltipDensity')
+            ) {
+                statusBar.refreshFromConfig();
+                log('Status bar tooltip density/zoom updated — tooltip re-rendered');
             }
             if (e.affectsConfiguration('antigravityContextMonitor.showModelInternalId')) {
                 const newConfig = vscode.workspace.getConfiguration('antigravityContextMonitor');
