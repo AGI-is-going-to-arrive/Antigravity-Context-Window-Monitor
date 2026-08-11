@@ -300,7 +300,7 @@ export function extractPortFromSs(line: string): number | null {
  * Matches patterns like `TCP    127.0.0.1:12345    0.0.0.0:0    LISTENING    1234`
  */
 export function extractPortFromNetstat(line: string): number | null {
-    const portMatch = line.match(/\s+127\.0\.0\.1:(\d+)\s/);
+    const portMatch = line.match(/\s+(?:127\.0\.0\.1|0\.0\.0\.0|\[::1\]|\[::\]):(\d+)\s/);
     return portMatch ? parseInt(portMatch[1], 10) : null;
 }
 
@@ -309,9 +309,12 @@ export function extractPortFromNetstat(line: string): number | null {
  * CR-#62: the previous `line.trim().endsWith(String(pid))` matched PID 123
  * against a line owned by 1123 (substring suffix). Anchor on the final
  * whitespace-delimited field (the PID column) for an exact match instead.
+ *
+ * Supports localized Windows netstat status strings (e.g. German "ABHÖREN" / "ABH?REN").
  */
 export function netstatLineMatchesPid(line: string, pid: number): boolean {
-    if (!line.includes('LISTENING')) { return false; }
+    const isListening = line.includes('LISTENING') || line.includes('ABH') || line.includes('0.0.0.0:0') || line.includes('[::]:0');
+    if (!isListening) { return false; }
     const m = line.trim().match(/\s(\d+)$/);
     return m !== null && m[1] === String(pid);
 }

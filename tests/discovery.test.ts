@@ -425,6 +425,13 @@ describe('netstatLineMatchesPid (CR-#62)', () => {
         expect(netstatLineMatchesPid(line, 19472)).toBe(true);
     });
 
+    it('matches localized German Windows netstat status (ABHÖREN / ABH?REN)', () => {
+        const lineGerman1 = '  TCP    127.0.0.1:61588    0.0.0.0:0              ABHÖREN         16632';
+        const lineGerman2 = '  TCP    127.0.0.1:61588    0.0.0.0:0              ABH?REN         16632';
+        expect(netstatLineMatchesPid(lineGerman1, 16632)).toBe(true);
+        expect(netstatLineMatchesPid(lineGerman2, 16632)).toBe(true);
+    });
+
     it('does NOT match a PID that is only a suffix of the owning PID (123 vs 1123)', () => {
         const line = '  TCP    127.0.0.1:8558    0.0.0.0:0    LISTENING    1123';
         expect(netstatLineMatchesPid(line, 123)).toBe(false);
@@ -432,7 +439,9 @@ describe('netstatLineMatchesPid (CR-#62)', () => {
 
     it('ignores non-LISTENING lines', () => {
         const line = '  TCP    127.0.0.1:8558    127.0.0.1:5000    ESTABLISHED    19472';
+        const lineGermanEst = '  TCP    10.106.155.19:56602    172.217.112.4:443      HERGESTELLT     16632';
         expect(netstatLineMatchesPid(line, 19472)).toBe(false);
+        expect(netstatLineMatchesPid(lineGermanEst, 16632)).toBe(false);
     });
 });
 
