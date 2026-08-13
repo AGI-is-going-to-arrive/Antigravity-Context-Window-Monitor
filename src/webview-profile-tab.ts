@@ -18,7 +18,19 @@ function formatCreditTypeLabel(creditType: string): string {
         GOOGLE_AI_STUDIO: ['Google AI Studio Credits', 'Google AI Studio 额度'],
     };
     const mapped = labelMap[key];
-    return mapped ? tBi(mapped[0], mapped[1]) : key.replace(/_/g, ' ');
+    return mapped ? tBi(mapped[0], mapped[1]) : tBi(key.replace(/_/g, ' '), key.replace(/_/g, ' '));
+}
+
+function formatModelTagTitle(title: string): string {
+    const known: Record<string, [string, string]> = {
+        Fast: ['Fast', '快速'],
+        New: ['New', '新'],
+        Preview: ['Preview', '预览'],
+        Beta: ['Beta', '测试'],
+        'Limited time': ['Limited time', '限时'],
+    };
+    const mapped = known[title];
+    return mapped ? tBi(mapped[0], mapped[1]) : title;
 }
 
 
@@ -200,14 +212,17 @@ export function buildModelQuotaGrid(configs: ModelConfig[]): string {
             resetLabel = countdown ? `${countdown} · ${absolute}` : absolute;
         }
 
-        // Tag badge (e.g. "New")
-        const tagBadge = c.tagTitle
-            ? `<span class="model-tag-badge">${esc(c.tagTitle)}</span>` : '';
+        // Tag badge (e.g. "Fast" / "New")
+        const tagLabel = c.tagTitle ? formatModelTagTitle(c.tagTitle) : '';
+        const tagBadge = tagLabel
+            ? `<span class="model-tag-badge" title="${esc(tagLabel)}">${esc(tagLabel)}</span>` : '';
 
         return `
             <div class="model-card">
                 <div class="model-card-header">
-                    <span class="model-card-name">${esc(c.label)}${tagBadge}</span>
+                    <span class="model-card-name">
+                        <span class="model-card-name-text" title="${esc(c.label)}">${esc(c.label)}</span>${tagBadge}
+                    </span>
                     <span class="model-card-pct" style="color:${barColor}">${pct}%</span>
                 </div>
                 <div class="quota-bar-wrap">
@@ -233,7 +248,7 @@ export function buildDefaultModelCard(userInfo: UserStatusInfo | null): string {
     return `
         <section class="card">
             <h2>${ICON.bolt} ${tBi('Default Model', '默认模型')}</h2>
-            <div class="default-model">${tBi('Current default', '当前默认')}: <strong>${esc(userInfo.defaultModelLabel)}</strong></div>
+            <div class="default-model">${tBi('Current default', '当前默认')}: <strong title="${esc(userInfo.defaultModelLabel)}">${esc(userInfo.defaultModelLabel)}</strong></div>
             ${userInfo.userTierDescription
             ? `<p class="raw-desc">${esc(userInfo.userTierDescription)}</p>`
             : ''}

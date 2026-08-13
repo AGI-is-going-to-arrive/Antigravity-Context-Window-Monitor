@@ -15,7 +15,7 @@ import {
     TrajectorySummary,
     UserStatusInfo,
 } from './tracker';
-import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, type ModelConfig, updateModelSpec } from './models';
+import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, type ModelConfig, updateModelSpec, getModelSpecs } from './models';
 import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit, setTooltipDiagLogger } from './statusbar';
 import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
@@ -115,6 +115,10 @@ let firstPollDone = false;
 let isPolling = false;
 let hasSyncedCheckpointer = false;
 let isSyncingCheckpointer = false;
+/** Consecutive checkpointer sync attempts since the last successful sync or reconnect. */
+let checkpointerSyncAttempts = 0;
+/** Upper bound on those attempts, so an account with no checkpointer experiments stops re-asking. */
+const MAX_CHECKPOINTER_SYNC_ATTEMPTS = 5;
 
 /** Prevents schedulePoll() from creating new timers after deactivate. */
 // disposed declared at top of module
@@ -466,6 +470,7 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         modelDNA: persistedModelDNA,
         accountSnapshots: getAccountSnapshotArray(),
         todayLedgerActive: dailyLedger.getTodayActive(),
+        customPricing: pricingStore.getCustom(),
         ledgerSettled: dailyLedger.getSettledEntries(),
         ...extra,
     };
@@ -557,6 +562,17 @@ export function shouldSettleOnResetTimeChange(
     return (newMs - oldMs) >= RESET_TIME_TURNOVER_MIN_JUMP_MS;
 }
 
+/**
+ * Whether a value has the shape of a canonical platform model identifier
+ * (MODEL_PLACEHOLDER_M298, MODEL_OPENAI_GPT_OSS_120B_MEDIUM, …).
+ * Used to accept models the platform ships before the local registry knows about them.
+ * MODEL_UNSPECIFIED is excluded — it is a sentinel, not an addressable model.
+ */
+function isPlatformModelId(value: string): boolean {
+    const clean = (value || '').trim();
+    return /^MODEL_[A-Z0-9_]+$/.test(clean) && !clean.includes('UNSPECIFIED');
+}
+
 async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> {
     try {
         log('[Checkpointer Sync] Fetching official checkpointer parameters via LS RPC GetAvailableModels...');
@@ -573,7 +589,14 @@ async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> 
             const modelIdVal = c.modelId || c.model_id || '';
             if (!modelVal && !modelIdVal) continue;
 
-            const resolved = (modelVal ? resolveModelId(modelVal) : undefined)
+            // The platform hands us the canonical placeholder in `model` (e.g. MODEL_PLACEHOLDER_M298).
+            // Trust that shape directly instead of requiring it to already be in the local registry:
+            // a model the platform ships BEFORE we register it would otherwise resolve to undefined,
+            // skip the updateModelSpec() call below, and be stuck with no spec at all — which is how a
+            // brand-new model ends up showing a permanent "calculating threshold…" shimmer even though
+            // its real parameters were sitting in the response we just parsed.
+            const resolved = (isPlatformModelId(modelVal) ? modelVal : undefined)
+                || (modelVal ? resolveModelId(modelVal) : undefined)
                 || (modelIdVal ? resolveModelId(modelIdVal) : undefined);
 
             const exps = c.modelExperiments?.experiments || {};
@@ -613,7 +636,19 @@ async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> 
             }
 
             // 同步更新 activeModelSpecs 数据库
-            if (resolved) {
+            // Update anything already registered, but only CREATE a spec for a model the platform
+            // actually describes. The catalog also carries internal entries (MODEL_CHAT_*, the tab
+            // completion models, image models) whose checkpointer and token fields are null — filing
+            // specs for those would pad the registry with rows that render as a bare ID and a zero
+            // context limit.
+            const alreadyRegistered = !!resolved && getModelSpecs().some(s => s.placeholderId === resolved);
+            // A model the user can actually pick must always get a spec, even before the platform
+            // enables a checkpointer experiment on it: without one, getQuotaPoolKey() has no provider
+            // to pool by and the new model splits into its own phantom quota pool — the exact failure
+            // the provider fallback in models.ts exists to prevent.
+            const inLivePicker = !!resolved && cachedModelConfigs.some(cfg => cfg.model === resolved);
+            const describesARealModel = limitNum > 0 && typeof c.maxTokens === 'number' && c.maxTokens > 0;
+            if (resolved && (alreadyRegistered || inLivePicker || describesARealModel)) {
                 updateModelSpec(resolved, {
                     modelId: modelIdVal || modelVal,
                     apiProvider: (c.apiProvider || '').replace('API_PROVIDER_', ''),
@@ -636,10 +671,18 @@ async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> 
         if (Object.keys(overrides).length > 0) {
             overrideContextLimits(overrides);
             log(`[Checkpointer Sync] Dynamically resolved and overridden ${Object.keys(overrides).length} model context limits from official Checkpointer!`);
-        } else {
-            log('[Checkpointer Sync] Sync completed successfully, but no active checkpointer overrides were found in models.');
+            return true;
         }
-        return true;
+
+        // Parsed fine but produced nothing. Report failure so the caller retries on the next poll
+        // instead of latching hasSyncedCheckpointer and never syncing again for the whole session:
+        // an empty result means either the platform moved the response envelope (this reader is the
+        // only nested `response.models` reader in the codebase — everything else reads a top-level
+        // field) or no model currently carries a checkpointer experiment. Both are transient states
+        // that a later poll can resolve, and both otherwise leave every model on its static fallback
+        // while the log cheerfully reports success.
+        log(`[Checkpointer Sync] Parsed the response but found no checkpointer overrides — will retry. Envelope keys: ${Object.keys(resp ?? {}).join(', ') || '(none)'}`);
+        return false;
     } catch (e: any) {
         log(`[Checkpointer Sync] Optional dynamic capture failed: ${e.message}. Using built-in static fallbacks.`);
         return false;
@@ -1180,6 +1223,17 @@ export function activate(context: vscode.ExtensionContext): void {
         log(`Migration: failed — ${migrationErr}`);
     }
 
+    // ── Self-healing cost backfill ──
+    // Days archived while their model had no price row carry no cost. Re-pricing them from
+    // their stored tokens only fills gaps and never overwrites, so it runs on every startup
+    // rather than behind a "migration done" flag: a row still unpriced today is filled by
+    // whichever future release adds that price. Placed after the startup archival and both
+    // migration merges so anything they just wrote is covered in this same session.
+    const backfilledCostRows = dailyStore.backfillMissingCosts(pricingStore.getCustom());
+    if (backfilledCostRows > 0) {
+        log(`Cost backfill: re-priced ${backfilledCostRows} archived per-model row(s) that had no cost`);
+    }
+
     // Restore daily archival date key
     lastArchivalDateKey = durableGlobalState.get<string>('lastArchivalDateKey', '');
 
@@ -1188,6 +1242,11 @@ export function activate(context: vscode.ExtensionContext): void {
     const savedPlan = durableGlobalState.get<string>('cachedPlanName', '');
     const savedTier = durableGlobalState.get<string>('cachedTierName', '');
     if (savedConfigs && savedConfigs.length > 0) {
+        // Seed the label table from the last known good configs so that everything running before the
+        // first successful LS fetch (ledger restore, GM summary repair, the status bar) resolves model
+        // names instead of writing raw placeholder strings into persisted keys. The live fetch below
+        // overwrites this as soon as it lands.
+        updateModelDisplayNames(savedConfigs);
         cachedModelConfigs = savedConfigs;
         statusBar.setModelConfigs(savedConfigs);
     }
@@ -1235,6 +1294,7 @@ export function activate(context: vscode.ExtensionContext): void {
             log('Manual refresh triggered');
             cachedLsInfo = null;
             hasSyncedCheckpointer = false;
+            checkpointerSyncAttempts = 0;
             consecutiveFailures = 0;
             currentIntervalMs = baseIntervalMs;
             restartPolling();
@@ -1477,7 +1537,7 @@ async function pollContextUsage(): Promise<void> {
             try {
                 const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
                 if (fullStatus.configs.length > 0) {
-                    updateModelDisplayNames(fullStatus.configs);
+                    updateModelDisplayNames(fullStatus.configs, { authoritative: true });
                     cachedModelConfigs = fullStatus.configs;
                     statusBar.setModelConfigs(fullStatus.configs);
                     // Detect account switch BEFORE quota processing
@@ -1515,12 +1575,13 @@ async function pollContextUsage(): Promise<void> {
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
                         hasSyncedCheckpointer = false;
+            checkpointerSyncAttempts = 0;
                         consecutiveIdlePolls = 0;
                         // Re-fetch user status from new LS
                         try {
                             const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
                             if (fullStatus.configs.length > 0) {
-                                updateModelDisplayNames(fullStatus.configs);
+                                updateModelDisplayNames(fullStatus.configs, { authoritative: true });
                                 cachedModelConfigs = fullStatus.configs;
                                 statusBar.setModelConfigs(fullStatus.configs);
                                 if (fullStatus.userInfo?.email) {
@@ -1557,6 +1618,14 @@ async function pollContextUsage(): Promise<void> {
                 try {
                     const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
                     if (fullStatus.configs.length > 0) {
+                        // The label table is the single source of truth for model names, and the
+                        // platform can add or RENUMBER models mid-session (3.6 Flash moved from
+                        // M264-M266 to M71-M73 in August 2026). Refreshing it only on first LS
+                        // discovery meant a session that started before such a change kept resolving
+                        // against stale names — and if that one startup fetch happened to fail, the
+                        // whole session fell back to static names and wrote raw placeholder strings
+                        // into the persisted ledger keys.
+                        updateModelDisplayNames(fullStatus.configs, { authoritative: true });
                         cachedModelConfigs = fullStatus.configs;
                         statusBar.setModelConfigs(fullStatus.configs);
                         if (fullStatus.userInfo?.email) {
@@ -1579,13 +1648,23 @@ async function pollContextUsage(): Promise<void> {
             }
         }
 
-        // Dynamically override context limits once per LS connection with retry on failure
-        if (lsInfo && !hasSyncedCheckpointer && !isSyncingCheckpointer) {
+        // Dynamically override context limits once per LS connection, with BOUNDED retry on failure.
+        // A failed sync must be retried — a transient empty response used to latch permanently and
+        // leave every model on its static fallback for the whole session. But it must not retry
+        // forever either: an account that genuinely has no checkpointer experiments would otherwise
+        // issue this RPC on every poll for as long as the window stays open. Give up after a handful
+        // of attempts and let a reconnect (which resets the counter below) be the way back in.
+        if (lsInfo && !hasSyncedCheckpointer && !isSyncingCheckpointer
+            && checkpointerSyncAttempts < MAX_CHECKPOINTER_SYNC_ATTEMPTS) {
             isSyncingCheckpointer = true;
+            checkpointerSyncAttempts++;
+            const attemptNo = checkpointerSyncAttempts;
             fetchAndOverrideCheckpointerLimits(lsInfo).then((success) => {
                 isSyncingCheckpointer = false;
                 if (success) {
                     hasSyncedCheckpointer = true;
+                } else if (attemptNo >= MAX_CHECKPOINTER_SYNC_ATTEMPTS) {
+                    log(`[Checkpointer Sync] Giving up after ${attemptNo} attempts — staying on the built-in static limits. A reconnect will retry.`);
                 }
             }).catch(() => {
                 isSyncingCheckpointer = false;
@@ -1663,6 +1742,7 @@ async function pollContextUsage(): Promise<void> {
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
                         hasSyncedCheckpointer = false;
+            checkpointerSyncAttempts = 0;
                         lsRevalidationCounter = 0;
                         stalenessConfirmedIdle = false;
                         // Re-fetch trajectories from the new LS
@@ -2139,7 +2219,14 @@ function checkQuotaNotification(configs: import('./models').ModelConfig[]): void
             if (!quotaNotifiedModels.has(groupKey)) {
                 quotaNotifiedModels.add(groupKey);
                 const pct = (group.minFraction * 100).toFixed(1);
-                const names = group.labels.join(', ');
+                // Cap the model list the same way the reset notification does (see the pool
+                // notification above). The shared gemini pool now spans three Flash generations
+                // plus Pro — joining all of them produces a warning so long that VS Code truncates
+                // it before the percentage, which is the only number that matters here.
+                const shownLabels = group.labels.slice(0, 3).join(', ');
+                const names = group.labels.length > 3
+                    ? `${shownLabels} +${group.labels.length - 3}`
+                    : shownLabels;
                 const openMonitorLabel = tBi('Open Monitor', '打开监控');
                 vscode.window.showWarningMessage(
                     tBi(

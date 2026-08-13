@@ -18,7 +18,9 @@ import {
     measureDisplayWidth,
     NORMAL_MAX_LINES,
     NORMAL_MAX_QUOTA_ROWS,
+    LABEL_MAX_DISPLAY_WIDTH,
     parseTooltipDensity,
+    poolSizeSuffix,
     resolveEffectiveMode,
     selectQuotaRows,
     truncateByDisplayWidth,
@@ -43,11 +45,13 @@ function makeModel(
     model: string,
     label: string,
     remainingFraction: number,
+    resetTime?: string,
 ): { model: string; label: string; quotaInfo: { remainingFraction: number; resetTime: string } } {
     return {
         model,
         label,
-        quotaInfo: { remainingFraction, resetTime: '2099-01-01T00:00:00.000Z' },
+        // Unique resetTime so unknown ids do not share getQuotaPoolKey's fallback pool.
+        quotaInfo: { remainingFraction, resetTime: resetTime ?? `${model}-reset` },
     };
 }
 
@@ -115,6 +119,44 @@ describe('selectQuotaRows', () => {
         ];
         const { total } = selectQuotaRows(mixed as typeof models, 'm-cur', 20);
         expect(total).toBe(6);
+    });
+
+    it('collapses models that share a quota pool into one row', () => {
+        const gemini = [
+            makeModel('MODEL_PLACEHOLDER_M298', 'Gemini 3.7 Flash (High)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M299', 'Gemini 3.7 Flash (Medium)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M300', 'Gemini 3.7 Flash (Low)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M71', 'Gemini 3.6 Flash (High)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M72', 'Gemini 3.6 Flash (Medium)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M73', 'Gemini 3.6 Flash (Low)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M84', 'Gemini 3.5 Flash (High)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M20', 'Gemini 3.5 Flash (Medium)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M187', 'Gemini 3.5 Flash (Low)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M16', 'Gemini 3.1 Pro (High)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M36', 'Gemini 3.1 Pro (Low)', 0.42),
+        ];
+        const payload = [
+            ...gemini,
+            makeModel('MODEL_PLACEHOLDER_M35', 'Claude Sonnet 4.6 (Thinking)', 0.80),
+            makeModel('MODEL_PLACEHOLDER_M26', 'Claude Opus 4.6 (Thinking)', 0.80),
+            makeModel('MODEL_OPENAI_GPT_OSS_120B_MEDIUM', 'GPT-OSS 120B (Medium)', 0.80),
+        ];
+
+        const compact = selectQuotaRows(payload, 'MODEL_PLACEHOLDER_M298', 3);
+        expect(compact.total).toBe(2);
+        expect(compact.rows).toHaveLength(2);
+        expect(compact.hiddenCount).toBe(0);
+        expect(compact.rows[0].model).toBe('MODEL_PLACEHOLDER_M298');
+        expect(compact.rows[0].label).toBe('Gemini 3.7 Flash (High) · 11');
+        expect(compact.rows[1].label).toMatch(/ · 3$/);
+
+        const noCurrent = selectQuotaRows(payload, '', 3);
+        expect(noCurrent.rows[0].model).toBe('MODEL_PLACEHOLDER_M298');
+        expect(noCurrent.rows[0].label).toBe('Gemini 3.7 Flash (High) · 11');
+
+        const currentIs31 = selectQuotaRows(payload, 'MODEL_PLACEHOLDER_M16', 3);
+        expect(currentIs31.rows[0].model).toBe('MODEL_PLACEHOLDER_M16');
+        expect(currentIs31.rows[0].label).toBe('Gemini 3.1 Pro (High) · 11');
     });
 });
 
@@ -522,5 +564,37 @@ describe('parseTooltipDensity / truncateByDisplayWidth', () => {
     it('I4: BMP misc symbol emoji-like glyphs count as 2', () => {
         expect(measureDisplayWidth('⚡')).toBe(2); // U+26A1
         expect(measureDisplayWidth('⚠')).toBe(2); // U+26A0
+    });
+});
+
+describe('collapsed pool row label rendering', () => {
+    // Reproduces the renderer's own composition (src/statusbar.ts): trim the model name to fit
+    // AROUND the pool-size suffix rather than truncating the combined string from the right.
+    const renderQuotaLabel = (label: string, poolSize: number): string => {
+        const suffix = poolSizeSuffix(poolSize);
+        const base = suffix && label.endsWith(suffix) ? label.slice(0, -suffix.length) : label;
+        return truncateByDisplayWidth(base, LABEL_MAX_DISPLAY_WIDTH - measureDisplayWidth(suffix)) + suffix;
+    };
+
+    it('keeps the pool size visible even when the model name has to be cut', () => {
+        // "Claude Opus 4.6 (Thinking) · 3" is 30 display units against a 28 budget. Truncating the
+        // combined string dropped the count, so a 3-model pool row read like a single model.
+        const label = 'Claude Opus 4.6 (Thinking) · 3';
+        expect(measureDisplayWidth(label)).toBeGreaterThan(LABEL_MAX_DISPLAY_WIDTH);
+
+        const rendered = renderQuotaLabel(label, 3);
+        expect(rendered.endsWith(' · 3')).toBe(true);
+        expect(measureDisplayWidth(rendered)).toBeLessThanOrEqual(LABEL_MAX_DISPLAY_WIDTH);
+    });
+
+    it('keeps a three-digit pool size visible too', () => {
+        const rendered = renderQuotaLabel('Gemini 3.7 Flash (High) · 128', 128);
+        expect(rendered.endsWith(' · 128')).toBe(true);
+        expect(measureDisplayWidth(rendered)).toBeLessThanOrEqual(LABEL_MAX_DISPLAY_WIDTH);
+    });
+
+    it('leaves a single-model row untouched', () => {
+        expect(poolSizeSuffix(1)).toBe('');
+        expect(renderQuotaLabel('Gemini 3.1 Pro (High)', 1)).toBe('Gemini 3.1 Pro (High)');
     });
 });

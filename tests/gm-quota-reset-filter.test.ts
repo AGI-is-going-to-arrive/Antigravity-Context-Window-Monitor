@@ -143,6 +143,49 @@ describe('GM quota reset filtering', () => {
         expect(summary?.modelBreakdown['Gemini 3.5 Flash (High)']?.callCount).toBe(1);
     });
 
+    it('counts a call carrying a pre-renumber placeholder into the pool expressed with live IDs', () => {
+        // Upgrade scenario: the ledger holds calls tagged MODEL_PLACEHOLDER_M264 (what v1.16.14
+        // captured for Gemini 3.6 Flash High), while the live quota pool is now expressed with
+        // M71/M298/… Exact ID comparison can never bridge those two, so the pool filter has to fall
+        // back to the shared display label. If it does not, the call is left out of the reset
+        // baseline and the GM ledger diverges from the daily ledger, which does bridge by label.
+        const retiredCall = makeCall({
+            executionId: 'renumbered-3-6',
+            stepIndices: [1],
+            createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+            model: 'MODEL_PLACEHOLDER_M264',
+            modelDisplay: 'Gemini 3.6 Flash (High)',
+            responseModel: 'gemini-3.6-flash-high',
+        });
+        const tracker = seedTracker([retiredCall]);
+        const livePool = [
+            'MODEL_PLACEHOLDER_M298', 'MODEL_PLACEHOLDER_M299', 'MODEL_PLACEHOLDER_M300',
+            'MODEL_PLACEHOLDER_M71', 'MODEL_PLACEHOLDER_M72', 'MODEL_PLACEHOLDER_M73',
+            'MODEL_PLACEHOLDER_M16',
+        ];
+        const cutoff = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+        expect(tracker.baselineForQuotaReset(ACCOUNT_EMAIL, livePool, cutoff)).toBe(1);
+    });
+
+    it('does not sweep an unrelated model into a pool via M-number prefix collision', () => {
+        // M-numbers are plain decimal, so raw-ID substring matching would put M187 in M18's pool and
+        // M298 in M29's. Only exact IDs and resolved display labels may match.
+        const claudeCall = makeCall({
+            executionId: 'claude-call',
+            stepIndices: [1],
+            createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+            model: 'MODEL_PLACEHOLDER_M35',
+            modelDisplay: 'Claude Sonnet 4.6 (Thinking)',
+            responseModel: 'claude-sonnet-4-6',
+        });
+        const tracker = seedTracker([claudeCall]);
+        const geminiPool = ['MODEL_PLACEHOLDER_M298', 'MODEL_PLACEHOLDER_M71', 'MODEL_PLACEHOLDER_M16'];
+        const cutoff = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+        expect(tracker.baselineForQuotaReset(ACCOUNT_EMAIL, geminiPool, cutoff)).toBe(0);
+    });
+
     it('ignores stale future cutoffs left by earlier resetTime drift bugs', () => {
         const currentCall = makeCall({
             executionId: 'current-m132',

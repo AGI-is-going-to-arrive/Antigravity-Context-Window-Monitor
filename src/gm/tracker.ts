@@ -33,6 +33,16 @@ import {
 import { buildSummaryFromConversations, normalizeGMSummary, parseErrorCode, normalizeErrorMessage, MAX_RECENT_ERRORS } from './summary';
 import { toLocalDateKey, type LedgerCallEntry } from '../daily-ledger';
 
+/**
+ * Whether a (lower-cased) string is a raw platform model identifier rather than a display label.
+ * Pool matching falls back to substring comparison for human-readable labels; raw IDs must be
+ * excluded from that fallback because M-numbers are plain decimal and therefore prefix-collide
+ * (m18 ⊂ m187, m29 ⊂ m298, m30 ⊂ m300). Exact-equality matching on IDs happens separately.
+ */
+export function isRawModelId(value: string): boolean {
+    return (value || '').trim().toLowerCase().startsWith('model_');
+}
+
 function dateKeyToStartOfDayMs(dateKey: string): number {
     const parts = dateKey.split('-');
     if (parts.length !== 3) { return 0; }
@@ -1077,8 +1087,21 @@ export class GMTracker {
             
             for (const item of poolModelFilter || []) {
                 const itemLower = item.toLowerCase();
-                if (callDisplayLower.includes(itemLower) || itemLower.includes(callDisplayLower) ||
-                    call.model.toLowerCase() === itemLower) {
+                if (call.model.toLowerCase() === itemLower) {
+                    return true;
+                }
+                // Compare DISPLAY LABELS, never raw IDs. Two reasons:
+                //  - it bridges a platform renumber: an archived call can carry the retired M264 while
+                //    the pool is expressed with the live M71, and only their shared label matches;
+                //  - M-numbers are plain decimal and therefore prefix-collide, so substring-matching
+                //    raw IDs would put 'model_placeholder_m187' in M18's pool and 'm298' in M29's.
+                // normalizeModelDisplayName() returns the input unchanged when it resolves nothing,
+                // so anything still ID-shaped after normalization is skipped rather than guessed at.
+                const itemLabel = (normalizeModelDisplayName(item) || item).toLowerCase();
+                if (isRawModelId(itemLabel) || isRawModelId(callDisplayLower)) {
+                    continue;
+                }
+                if (callDisplayLower.includes(itemLabel) || itemLabel.includes(callDisplayLower)) {
                     return true;
                 }
             }
@@ -1192,22 +1215,31 @@ export class GMTracker {
         this._purgeUnusableArchiveCutoffs();
         if (this._archivedAccountModelCutoffs.size === 0) { return false; }
 
-        // Supports both model ID and model label matching
+        // Supports both model ID and model label matching. Keep the ORIGINAL casing alongside the
+        // lower-cased set: resolveModelId — and therefore normalizeModelDisplayName — is
+        // case-sensitive, so normalizing an already-lower-cased identifier resolves nothing and the
+        // renumber bridge below would silently be dead code.
         const filterSet = new Set(modelLabels.map(l => l.toLowerCase()));
-        
+        const filterLabels = modelLabels.map(l => (normalizeModelDisplayName(l) || l).toLowerCase());
+
         const hasCutoff = [...this._archivedAccountModelCutoffs.keys()].some(key => {
             if (!key.startsWith(`${email}|`)) { return false; }
             const cutoff = this._archivedAccountModelCutoffs.get(key);
             if (!cutoff || !isUsableArchiveCutoff(cutoff)) { return false; }
-            const archivedModel = key.substring(email.length + 1).toLowerCase();
-            
+            const archivedModelRaw = key.substring(email.length + 1);
+            const archivedModel = archivedModelRaw.toLowerCase();
+
             // Direct model ID match
             if (filterSet.has(archivedModel)) { return true; }
-            
-            // Display label fuzzy match
-            const archivedDisplay = normalizeModelDisplayName(archivedModel).toLowerCase();
-            return [...filterSet].some(item => 
-                archivedDisplay.includes(item) || item.includes(archivedDisplay)
+
+            // Display label fuzzy match — labels only, never raw IDs (see isRawModelId), and both
+            // sides normalized BEFORE lower-casing so a retired placeholder still matches its
+            // renumbered replacement through their shared label.
+            const archivedDisplay = (normalizeModelDisplayName(archivedModelRaw) || archivedModelRaw).toLowerCase();
+            if (isRawModelId(archivedDisplay)) { return false; }
+            return filterLabels.some(itemLabel =>
+                !isRawModelId(itemLabel)
+                && (archivedDisplay.includes(itemLabel) || itemLabel.includes(archivedDisplay)),
             );
         });
         if (!hasCutoff) { return false; }
@@ -1228,8 +1260,16 @@ export class GMTracker {
                 if (!matchesPool) {
                     const callDisplay = normalizeModelDisplayName(call.modelDisplay || call.model) || call.responseModel || call.model;
                     const callDisplayLower = callDisplay.toLowerCase();
-                    matchesPool = [...filterSet].some(item => 
-                        callDisplayLower.includes(item) || item.includes(callDisplayLower)
+                    // Labels only, never raw IDs (see isRawModelId), both sides normalized so a
+                    // retired placeholder still matches its renumbered replacement. Treating an
+                    // unresolved raw ID as fuzzy-matchable would let one model be counted as archived
+                    // under another's pool, zeroing today's running total for a model still in use.
+                    // filterLabels is normalized from the ORIGINAL casing — normalizing an
+                    // already-lower-cased identifier resolves nothing (resolveModelId is
+                    // case-sensitive) and the bridge would be dead code.
+                    matchesPool = !isRawModelId(callDisplayLower) && filterLabels.some(itemLabel =>
+                        !isRawModelId(itemLabel)
+                        && (callDisplayLower.includes(itemLabel) || itemLabel.includes(callDisplayLower)),
                     );
                 }
                 if (!matchesPool) { continue; }

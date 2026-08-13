@@ -118,6 +118,8 @@ export function getStyles(): string {
             --z-overlay: 300;
             --z-modal: 400;
             --z-toast: 500;
+
+            --font-mono: var(--vscode-editor-font-family, ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, Consolas, monospace);
         }
 
         * {
@@ -1172,6 +1174,8 @@ export function getStyles(): string {
 
         .default-model strong {
             color: var(--color-text);
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
 
         /* ─── Collapsible Sections (card style) ── */
@@ -1617,12 +1621,8 @@ export function getStyles(): string {
         /* ─── Profile: Model Grid ───────── */
         .model-grid {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
             gap: var(--space-2);
-        }
-
-        @media (max-width: 480px) {
-            .model-grid { grid-template-columns: 1fr; }
         }
 
         .model-card {
@@ -1630,6 +1630,7 @@ export function getStyles(): string {
             border: 1px solid var(--color-border);
             border-radius: var(--radius-md);
             padding: var(--space-2) var(--space-3);
+            min-width: 0;
             transition: border-color 0.2s cubic-bezier(.4,0,.2,1), background 0.2s cubic-bezier(.4,0,.2,1);
         }
 
@@ -1643,8 +1644,10 @@ export function getStyles(): string {
         .model-card-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            align-items: flex-start;
+            gap: var(--space-2);
             margin-bottom: var(--space-1);
+            min-width: 0;
         }
 
         .model-card-name {
@@ -1652,12 +1655,22 @@ export function getStyles(): string {
             font-weight: 600;
             display: flex;
             align-items: center;
+            flex-wrap: wrap;
             gap: var(--space-1);
+            min-width: 0;
+            flex: 1;
+        }
+
+        .model-card-name-text {
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
 
         .model-card-pct {
             font-size: 0.82em;
             font-weight: 700;
+            flex-shrink: 0;
         }
 
         .model-tag-badge {
@@ -1669,7 +1682,11 @@ export function getStyles(): string {
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.3px;
-            margin-left: var(--space-1);
+            flex-shrink: 0;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .model-card-meta {
@@ -1871,6 +1888,7 @@ export function getStyles(): string {
             width: 28px;
             height: 28px;
             border-radius: var(--radius-md);
+            background: rgba(0, 127, 212, 0.15);
             background: color-mix(in srgb, var(--stg-accent, var(--color-border)) 15%, transparent);
             color: var(--stg-accent, var(--color-text));
             display: flex;
@@ -3596,6 +3614,7 @@ export function getStyles(): string {
         body.vscode-light .storage-path-state.is-ready { background: rgba(var(--lt-green),0.1); }
         body.vscode-light .storage-path-state.is-missing { background: rgba(var(--lt-red),0.1); }
         body.vscode-light .stg-header-icon {
+            background: rgba(0, 127, 212, 0.12);
             background: color-mix(in srgb, var(--stg-accent, var(--color-border)) 12%, transparent);
         }
         body.vscode-light .storage-stat-val { color: var(--lt-blue-deep); }
@@ -3776,6 +3795,9 @@ export function getStyles(): string {
             min-width: 0;
         }
         .acct-popover-body .acct-pool-model {
+            /* px, not em: max-width in em resolves against this element's OWN font-size, and the
+               chain here is 13px × 0.85 (.acct-card) × 0.72 ≈ 7.96px — so 14em would be ~111px,
+               NARROWER than the 180px it replaced. Same trap as .act-tl-model. */
             max-width: 180px;
         }
 

@@ -92,9 +92,12 @@
 
 | 模型 | Internal ID / 内部 ID | 上下文上限 |
 | --- | --- | --- |
-| Gemini 3.6 Flash (High) | MODEL_PLACEHOLDER_M264 | 256,000 |
-| Gemini 3.6 Flash (Medium) | MODEL_PLACEHOLDER_M265 | 256,000 |
-| Gemini 3.6 Flash (Low) | MODEL_PLACEHOLDER_M266 | 256,000 |
+| Gemini 3.7 Flash (High) *（平台默认）* | MODEL_PLACEHOLDER_M298 | 256,000 |
+| Gemini 3.7 Flash (Medium) | MODEL_PLACEHOLDER_M299 | 256,000 |
+| Gemini 3.7 Flash (Low) | MODEL_PLACEHOLDER_M300 | 256,000 |
+| Gemini 3.6 Flash (High) | MODEL_PLACEHOLDER_M71 | 256,000 |
+| Gemini 3.6 Flash (Medium) | MODEL_PLACEHOLDER_M72 | 256,000 |
+| Gemini 3.6 Flash (Low) | MODEL_PLACEHOLDER_M73 | 256,000 |
 | Gemini 3.6 Flash (Tiered, 内部档) | MODEL_PLACEHOLDER_M196 | 256,000 |
 | Gemini 3.5 Flash (High) | MODEL_PLACEHOLDER_M84 | 256,000 |
 | Gemini 3.5 Flash (Medium) | MODEL_PLACEHOLDER_M20 | 256,000 |
@@ -104,9 +107,14 @@
 | Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
 | Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
 | GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 80,000 |
-| 历史（已退役） | MODEL_PLACEHOLDER_M133 / M132 / M47 / M18 | 仅用于归档数据解析 |
+| Gemini 3 Flash（仅目录可见，不进 picker） | MODEL_PLACEHOLDER_M18 | 128,000 |
+| 历史（已退役 / 已改号） | MODEL_PLACEHOLDER_M264 / M265 / M266 / M133 / M132 / M47 | 仅用于归档数据解析 |
 
 *这些数值是 Antigravity 平台截断阈值，不是模型原生上下文窗口。模型 ID 来自 Antigravity 本地语言服务器的 `GetUserStatus` API。如果新增了模型，可以在 IDE 设置中手动覆盖上下文上限。*
+
+> [!NOTE]
+> 截至 2026-08-14，平台默认模型为 **Gemini 3.7 Flash (High)**（`MODEL_PLACEHOLDER_M298`）。
+> `MODEL_PLACEHOLDER_Mxxx` 编号由平台分配，**可能在无预警的情况下被改号**——Gemini 3.6 Flash 三档已于 2026 年 8 月从 `M264` / `M265` / `M266` 改为 `M71` / `M72` / `M73`。本扩展保留旧编号的注册，使历史用量数据仍能解析到正确模型，并把新旧编号合并为同一条成本行、同一个配额池。来自语言服务器的活体 checkpointer 参数始终优先于上表的静态值。
 
 ## 🚀 使用方法
 
@@ -118,9 +126,9 @@
 
    ![悬停详情](src/images/悬停详情new.png)
 
-4. **点击查看 — WebView 监控面板**: 点击状态栏项，打开综合性 **9 标签页监控仪表盘**：
+4. **点击查看 — WebView 监控面板**: 点击状态栏项，打开综合性 **8 标签页监控仪表盘**：
 
-   **监控 (Monitor)** — 额度概览、GM 快照、成本快照、活跃会话详情（含输出分解和 LLM 调用明细）。
+   **总览**（现位于 GM 数据标签页内）— 额度概览、GM 快照、成本快照、活跃会话详情（含输出分解和 LLM 调用明细）。
 
    ![监控标签页](src/images/montior1.png)
 
@@ -176,11 +184,12 @@
 
 > [!NOTE]
 > **子智能体动态切换**
-> 使用 Claude 模型时，Antigravity 可能会调用 Gemini 2.5 Flash Lite 作为子智能体处理轻量任务。自 v1.10.0 起，Claude 4.6 模型也拥有 1M 上下文限制（2026-03-13 GA），因此子智能体切换不再导致可见的上下文上限变化。
+> 使用 Claude 模型时，Antigravity 可能会调用轻量子智能体模型处理小任务——平台现在把该模型标注为 **Gemini 3.1 Flash Lite**（`MODEL_PLACEHOLDER_M50`；较早的 `gemini-2.5-flash*` 目录条目共用同一显示名）。子智能体切换不会改变显示的上下文上限，因为本扩展跟踪的是你所选模型的上限，而不是子智能体的。2026-08-14 活体探测：Claude 4.6 原生窗口 250,000 token、平台 checkpointer 上限 160,000 token，而子智能体模型使用 128,000 画像。
 
 > [!IMPORTANT]
 > **"LS not found" 与请勿以管理员身份运行 IDE（Windows）**
 > 若状态栏卡在 `LS not found`，请打开 **Output → "Antigravity Context Monitor"**，查看 `PATH check:` 那一行——扩展现在会记录究竟是哪一步发现失败。自 v1.16.13 起，扩展以 `%SystemRoot%` 绝对路径调用 `wmic`/`powershell.exe`/`netstat`，因此 Extension Host 的 `PATH` 被裁剪（例如 Win11 24H2+ 移除 WMIC 后缺少 `System32\wbem`）不再导致发现失败。
+> 自 v1.16.15 起另有两个成因被处理（issue #64，由 @SecretLUL 报告）：Windows 会本地化 `netstat` 的 State 列，德文安装上 `LISTENING` 显示为 `ABHÖREN`，此前所有候选行都会被拒绝；以及监听在全部网卡而非仅环回上的语言服务器，此前完全取不出端口。两者均已修复；若扩展宿主本身运行在 WSL 内部，现在会优先在该发行版中查找语言服务器。
 > **请勿以管理员身份运行 Antigravity** —— 这对检测毫无帮助（LS 发现无需提权），还可能导致 IDE 启动崩溃并报 `The window terminated unexpectedly (reason: 'launch-failed', code: '18')`；该崩溃属于 Electron/Chromium 沙箱问题，与本扩展无关。
 
 ## ⚙️ 设置
@@ -193,7 +202,6 @@
 | `statusBar.showContext` | true | 状态栏显示上下文用量（如 `45k/1M, 4.5%`） |
 | `statusBar.showQuota` | true | 状态栏显示当前模型额度指示灯（如 `🟢85%`） |
 | `statusBar.showResetCountdown` | true | 状态栏显示重置倒计时（如 `⏳4h32m`） |
-
 | `quotaNotificationThreshold` | 20 | 模型剩余额度低于此百分比时弹出警告（设为 0 可禁用） |
 | `activity.maxRecentSteps` | 100 | 活动时间线最多保留的操作条数 |
 | `activity.maxArchives` | 20 | 活动归档最多保留份数 |
@@ -217,4 +225,4 @@
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.16.10
+**版本 / Version**: 1.16.15

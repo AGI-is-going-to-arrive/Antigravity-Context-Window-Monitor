@@ -339,6 +339,10 @@ export function getCalendarTabStyles(): string {
             background: rgba(96, 165, 250, 0.1);
             color: var(--color-info);
             border: 1px solid rgba(96, 165, 250, 0.2);
+            max-width: 16em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .cal-cycle-stats {
@@ -489,8 +493,10 @@ export function getCalendarTabStyles(): string {
         .cal-model-name {
             font-weight: 600;
             color: var(--color-text);
-            min-width: 80px;
-            flex-shrink: 0;
+            flex: 0 1 16em;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
 
         .cal-model-chips {
@@ -902,7 +908,7 @@ function buildMergedGMRows(merged: Record<string, { calls: number; credits: numb
         if (ms.cost > 0) { chips.push(`<span class="cal-chip cal-chip-cost">${CAL_ICON.dollar} ${fmtCostShort(ms.cost)}</span>`); }
         const totalTok = ms.inputTokens + ms.outputTokens;
         if (totalTok > 0) { chips.push(`<span class="cal-chip cal-chip-tokens">${fmtTok(totalTok)} ${tBi('tok', '令牌')}</span>`); }
-        html += `<div class="cal-model-row"><span class="cal-model-name">${esc(name)}</span><span class="cal-model-chips">${chips.join('')}</span></div>`;
+        html += `<div class="cal-model-row"><span class="cal-model-name" title="${esc(name)}">${esc(name)}</span><span class="cal-model-chips">${chips.join('')}</span></div>`;
     }
     html += '</div>';
     return html;

@@ -92,9 +92,12 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 | Model | Internal ID | Context Limit |
 | --- | --- | --- |
-| Gemini 3.6 Flash (High) | MODEL_PLACEHOLDER_M264 | 256,000 |
-| Gemini 3.6 Flash (Medium) | MODEL_PLACEHOLDER_M265 | 256,000 |
-| Gemini 3.6 Flash (Low) | MODEL_PLACEHOLDER_M266 | 256,000 |
+| Gemini 3.7 Flash (High) *(platform default)* | MODEL_PLACEHOLDER_M298 | 256,000 |
+| Gemini 3.7 Flash (Medium) | MODEL_PLACEHOLDER_M299 | 256,000 |
+| Gemini 3.7 Flash (Low) | MODEL_PLACEHOLDER_M300 | 256,000 |
+| Gemini 3.6 Flash (High) | MODEL_PLACEHOLDER_M71 | 256,000 |
+| Gemini 3.6 Flash (Medium) | MODEL_PLACEHOLDER_M72 | 256,000 |
+| Gemini 3.6 Flash (Low) | MODEL_PLACEHOLDER_M73 | 256,000 |
 | Gemini 3.6 Flash (Tiered, internal) | MODEL_PLACEHOLDER_M196 | 256,000 |
 | Gemini 3.5 Flash (High) | MODEL_PLACEHOLDER_M84 | 256,000 |
 | Gemini 3.5 Flash (Medium) | MODEL_PLACEHOLDER_M20 | 256,000 |
@@ -104,9 +107,14 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
 | Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
 | GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 80,000 |
-| Legacy (retired) | MODEL_PLACEHOLDER_M133 / M132 / M47 / M18 | archived data only |
+| Gemini 3 Flash (catalog only, not in picker) | MODEL_PLACEHOLDER_M18 | 128,000 |
+| Legacy (retired / renumbered) | MODEL_PLACEHOLDER_M264 / M265 / M266 / M133 / M132 / M47 | archived data only |
 
 *These are Antigravity platform truncation thresholds, not model-native context windows. Model IDs are fetched from the local Antigravity language server's `GetUserStatus` API. If new models are added, you can override context limits in IDE settings.*
+
+> [!NOTE]
+> As of 2026-08-14 the platform default model is **Gemini 3.7 Flash (High)** (`MODEL_PLACEHOLDER_M298`).
+> `MODEL_PLACEHOLDER_Mxxx` numbers are assigned by the platform and **can be reassigned without notice** — the three Gemini 3.6 Flash tiers moved from `M264` / `M265` / `M266` to `M71` / `M72` / `M73` in August 2026. The extension keeps the previous numbers registered so archived usage history still resolves to the right model, and merges both numbers onto a single cost row and a single quota pool. Live checkpointer parameters fetched from the language server always take precedence over the static table above.
 
 ## 🚀 Usage
 
@@ -118,9 +126,9 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
    ![Hover Details](src/images/悬停详情new.png)
 
-4. **Click — WebView Monitor Panel**: Click the status bar item to open a comprehensive **9-tab monitoring dashboard**:
+4. **Click — WebView Monitor Panel**: Click the status bar item to open a comprehensive **8-tab monitoring dashboard**:
 
-   **Monitor** — Quota overview, GM snapshot, cost snapshot, active session details with output breakdown and LLM call details.
+   **Overview** (now inside the GM Data tab) — Quota overview, GM snapshot, cost snapshot, active session details with output breakdown and LLM call details.
 
    ![Monitor Tab](src/images/montior1.png)
 
@@ -176,11 +184,12 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 > [!NOTE]
 > **Dynamic Sub-Agent Switching**
-> When using Claude models, Antigravity may call Gemini 2.5 Flash Lite as a sub-agent for lightweight tasks. Since v1.10.0, Claude 4.6 models also have 1M context limits (GA 2026-03-13), so sub-agent switching no longer causes a visible context limit change.
+> When using Claude models, Antigravity may call its lightweight sub-agent model for small tasks — the platform now labels that model **Gemini 3.1 Flash Lite** (`MODEL_PLACEHOLDER_M50`; the older `gemini-2.5-flash*` catalog entries share the same label). Sub-agent switching does not change the displayed context limit, because the extension tracks the limit of the model you selected, not the sub-agent's. Live-probed 2026-08-14: Claude 4.6 has a 250,000-token native window with a 160,000-token platform checkpointer limit, while the sub-agent model sits on the 128,000 profile.
 
 > [!IMPORTANT]
 > **"LS not found" & do NOT run the IDE as Administrator (Windows)**
 > If the status bar is stuck on `LS not found`, open **Output → "Antigravity Context Monitor"** and read the `PATH check:` line — the extension now logs exactly which discovery step failed. Since v1.16.13 it invokes `wmic`/`powershell.exe`/`netstat` by absolute `%SystemRoot%` path, so a truncated Extension Host `PATH` (e.g. missing `System32\wbem` on Win11 24H2+ where WMIC is removed) no longer breaks discovery.
+> Since v1.16.15 two further causes are handled (issue #64, reported by @SecretLUL): Windows localizes the `netstat` State column, so on a German install `LISTENING` reads `ABHÖREN` and every candidate line used to be rejected; and a language server listening on all interfaces rather than on loopback used to yield no port at all. Both are fixed, and if the extension host itself runs inside WSL it now looks for the language server in that distro first.
 > **Do not run Antigravity as Administrator** — it does not help detection (LS discovery needs no elevation) and can crash the IDE at launch with `The window terminated unexpectedly (reason: 'launch-failed', code: '18')`, an Electron/Chromium sandbox issue unrelated to this extension.
 
 ## ⚙️ Settings
@@ -193,7 +202,6 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 | `statusBar.showContext` | true | Show context usage (e.g. `45k/1M, 4.5%`) in status bar |
 | `statusBar.showQuota` | true | Show current model quota indicator (e.g. `🟢85%`) in status bar |
 | `statusBar.showResetCountdown` | true | Show quota reset countdown (e.g. `⏳4h32m`) in status bar |
-
 | `quotaNotificationThreshold` | 20 | Show warning when model quota drops below this % (0 to disable) |
 | `activity.maxRecentSteps` | 100 | Max recent activity steps to keep in timeline |
 | `activity.maxArchives` | 20 | Max activity archives to keep |
@@ -217,4 +225,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.10
+**Version**: 1.16.15

@@ -9,7 +9,7 @@ import { esc, formatShortTime as formatTime } from './webview-helpers';
 import type { ContextUsage } from './tracker';
 import type { GMSummary, GMModelStats, GMConversationData, GMSystemContextItem, TokenBreakdownGroup, UniqueErrorEntry, RecentErrorEntry } from './gm-tracker';
 import { normalizeModelDisplayName } from './models';
-import { findPricing } from './pricing-store';
+import { findPricingWithCustom, costFromTokens, type ModelPricing } from './pricing-store';
 import { toLocalDateKey, type LedgerAccountBucket, type LedgerSettledEntry } from './daily-ledger';
 import { formatResetCountdown, formatResetAbsolute, parseResetDate } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
@@ -78,6 +78,7 @@ export function buildGMDataTabContent(
     accountSnapshots?: AccountSnapshot[],
     todayLedgerActive?: LedgerAccountBucket[],
     ledgerSettled?: LedgerSettledEntry[],
+    customPricing: Record<string, ModelPricing> = {},
 ): string {
     if (!summary && (!gmSummary || gmSummary.totalCalls === 0)) {
         return `<p class="empty-msg">${tBi(
@@ -92,15 +93,15 @@ export function buildGMDataTabContent(
     parts.push(buildSummaryBar(summary, gmSummary, currentUsage?.cascadeId));
 
     // ── Recent Timeline (activity)
-    if (summary) { parts.push(buildTimeline(summary, currentUsage, gmSummary)); }
+    if (summary) { parts.push(buildTimeline(summary, currentUsage, gmSummary, customPricing)); }
 
     // ── Model Cards (merged activity counts + GM precision)
     const activeEmail = accountSnapshots?.find(s => s.isActive)?.email || '';
-    parts.push(buildModelCards(summary, gmSummary, activeEmail));
+    parts.push(buildModelCards(summary, gmSummary, activeEmail, customPricing));
 
     // ── Today's Ledger Panel (real-time incremental accumulation)
     if (todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) {
-        parts.push(buildTodayLedgerPanel(todayLedgerActive, accountSnapshots || []));
+        parts.push(buildTodayLedgerPanel(todayLedgerActive, accountSnapshots || [], customPricing));
     }
     if (ledgerSettled && ledgerSettled.length > 0) {
         parts.push(buildLedgerSettledPanel(ledgerSettled));
@@ -311,9 +312,12 @@ export function getGMDataTabStyles(): string {
         background: var(--color-surface-hover);
         color: var(--color-text-dim);
         border: 1px solid var(--color-border);
-        max-width: 100px;
+        /* Target ~150px (was 100px). em is wrong here: own font-size is
+           13px × .acct-card 0.85em × 0.72em ≈ 7.96px, so 11em ≈ 87px. */
+        max-width: 150px;
         overflow: hidden;
         text-overflow: ellipsis;
+        vertical-align: bottom;
     }
     .acct-pool-more {
         display: inline-block;
@@ -723,7 +727,7 @@ export function getGMDataTabStyles(): string {
     /* ─── Activity Tab: Model Cards ─── */
     .act-cards-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
         gap: var(--space-3);
         margin-bottom: var(--space-4);
     }
@@ -751,12 +755,12 @@ export function getGMDataTabStyles(): string {
         border-left: 3px solid var(--color-accent);
     }
     /* Model card color accents */
-    .act-model-card:nth-child(1) .act-card-header { border-left-color: var(--color-info); }
-    .act-model-card:nth-child(2) .act-card-header { border-left-color: var(--color-ok); }
-    .act-model-card:nth-child(3) .act-card-header { border-left-color: var(--color-warn); }
-    .act-model-card:nth-child(4) .act-card-header { border-left-color: var(--color-danger); }
-    .act-model-card:nth-child(5) .act-card-header { border-left-color: var(--color-teal); }
-    .act-model-card:nth-child(6) .act-card-header { border-left-color: var(--color-orange); }
+    .act-model-card:nth-child(6n+1) .act-card-header { border-left-color: var(--color-info); }
+    .act-model-card:nth-child(6n+2) .act-card-header { border-left-color: var(--color-ok); }
+    .act-model-card:nth-child(6n+3) .act-card-header { border-left-color: var(--color-warn); }
+    .act-model-card:nth-child(6n+4) .act-card-header { border-left-color: var(--color-danger); }
+    .act-model-card:nth-child(6n+5) .act-card-header { border-left-color: var(--color-teal); }
+    .act-model-card:nth-child(6n+6) .act-card-header { border-left-color: var(--color-orange); }
     .act-card-body { padding: var(--space-2) var(--space-3); }
     .act-card-row {
         display: flex;
@@ -837,7 +841,10 @@ export function getGMDataTabStyles(): string {
     .act-tl-time { color: var(--color-text-dim); flex-shrink: 0; width: 42px; font-size: 0.78em; font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 3px; border-radius: var(--radius-sm); background: var(--color-surface, rgba(128,128,128,0.1)); border: 1px solid var(--color-border, rgba(128,128,128,0.15)); text-align: center; }
     .act-tl-icon { flex-shrink: 0; width: 18px; text-align: center; }
     .act-tl-content { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); overflow: hidden; }
-    .act-tl-model { color: var(--color-info); font-weight: 500; flex-shrink: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Target ~200px (was 140px). .act-tl-item is 0.82em of 13px ≈ 10.66px,
+       so 11em ≈ 117px; flex-grow:0 + max-width:40% also blocked widening.
+       flex-basis:auto so short names do not reserve the full cap. */
+    .act-tl-model { color: var(--color-info); font-weight: 500; flex: 0 0 auto; min-width: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .act-tl-detail { color: var(--color-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
     .act-tl-user { color: var(--color-ok); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
     .act-tl-ai-preview { color: var(--color-orange); opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; cursor: default; }
@@ -1325,7 +1332,7 @@ export function getGMDataTabStyles(): string {
     /* ─── GM Precision Sections ─── */
     .gm-perf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-2); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-3); margin-bottom: var(--space-4); }
     .gm-perf-item { display: flex; flex-direction: column; gap: 2px; padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); background: var(--color-surface-subtle); border: 1px solid var(--color-border-subtle); }
-    .gm-perf-label { font-size: 0.72em; color: var(--color-text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+    .gm-perf-label { font-size: 0.72em; color: var(--color-text-dim); text-transform: uppercase; letter-spacing: 0.5px; overflow-wrap: anywhere; word-break: break-word; }
     .gm-perf-val { font-weight: 700; font-size: 1.05em; }
     .gm-perf-sub { font-size: 0.75em; color: var(--color-text-dim); }
     .gm-cache-bar-bg { height: 20px; background: var(--color-surface-hover); border-radius: var(--radius-sm); overflow: hidden; margin-bottom: var(--space-1); }
@@ -2247,7 +2254,7 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
             <div class="act-stat"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(gm.totalInputTokens)}</span><span class="act-stat-label">${tBi('In', '输入')}</span></div>
             <div class="act-stat"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
             ${gm.totalCacheRead > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>` : ''}
-            ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${gm.totalCredits.toFixed(1)}</span><span class="act-stat-label">Credits</span></div>` : ''}
+            ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${gm.totalCredits.toFixed(1)}</span><span class="act-stat-label">${tBi('Credits', '积分')}</span></div>` : ''}
             ${buildErrorChip(gm)}
         </div>`;
     }
@@ -2296,7 +2303,7 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
 
 
 
-function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, activeEmail = ''): string {
+function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, activeEmail = '', custom: Record<string, ModelPricing> = {}): string {
     const actEntries = s ? Object.entries(s.modelStats).sort((a, b) => b[1].totalSteps - a[1].totalSteps) : [];
     const gmBreakEarly: Record<string, GMModelStats> | null = gm?.modelBreakdown ?? null;
     if (!gmBreakEarly || Object.keys(gmBreakEarly).length === 0) { return ''; }
@@ -2441,7 +2448,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 ${'totalThinkingTokens' in gmStats && gmStats.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val val-out">${fmt(gmStats.totalThinkingTokens)}</span></div>` : ''}
                 ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val val-cache">${fmt(gmStats.totalCacheRead)}</span></div>` : ''}
                 ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val val-credits">${gmStats.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gmStats.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
-                ${(() => { const pr = findPricing(gmStats.responseModel) || findPricing(name); if (!pr) { return ''; } const cost = (gmStats.totalInputTokens * pr.input + gmStats.totalOutputTokens * pr.output + gmStats.totalCacheRead * pr.cacheRead + gmStats.totalThinkingTokens * pr.thinking) / 1_000_000; if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${costStr}</span></div>`; })()}
+                ${(() => { const pr = findPricingWithCustom(gmStats.responseModel, custom) || findPricingWithCustom(name, custom); if (!pr) { return ''; } const cost = (gmStats.totalInputTokens * pr.input + gmStats.totalOutputTokens * pr.output + gmStats.totalCacheRead * pr.cacheRead + gmStats.totalThinkingTokens * pr.thinking) / 1_000_000; if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${costStr}</span></div>`; })()}
                 ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val val-hit">${(gmStats.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
                 `;
                 // responseModel footer removed — card header already shows normalized model name
@@ -2450,7 +2457,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
 
         html += `
         <div class="act-model-card${isCheckpointOnly ? ' act-checkpoint-model' : ''}">
-            <div class="act-card-header">${esc(normalizeModelDisplayName(name))}${isCheckpointOnly ? ` <span class="act-badge">${ICONS.save}</span>` : ''}</div>
+            <div class="act-card-header" title="${esc(normalizeModelDisplayName(name))}">${esc(normalizeModelDisplayName(name))}${isCheckpointOnly ? ` <span class="act-badge">${ICONS.save}</span>` : ''}</div>
             <div class="act-card-body">
                 ${gmSection}
                 ${buildAccountSection(name)}
@@ -2463,7 +2470,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
         const providerShort = gms.apiProvider ? gms.apiProvider.replace('API_PROVIDER_', '').replace(/_/g, ' ') : '';
         html += `
         <div class="act-model-card">
-            <div class="act-card-header">${esc(normalizeModelDisplayName(name))}</div>
+            <div class="act-card-header" title="${esc(normalizeModelDisplayName(name))}">${esc(normalizeModelDisplayName(name))}</div>
             <div class="act-card-body">
                 <div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Steps', '步骤')}</span></span><span class="val val-calls">${gms.stepsCovered}</span></div>
                 <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val val-time">${fmtSec(gms.avgTTFT)}</span></div>
@@ -2474,7 +2481,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 ${'totalThinkingTokens' in gms && gms.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val val-out">${fmt(gms.totalThinkingTokens)}</span></div>` : ''}
                 ${gms.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val val-cache">${fmt(gms.totalCacheRead)}</span></div>` : ''}
                 ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val val-credits">${gms.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gms.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
-                ${(() => { const pr = findPricing(gms.responseModel) || findPricing(name); if (!pr) { return ''; } const cost = (gms.totalInputTokens * pr.input + gms.totalOutputTokens * pr.output + gms.totalCacheRead * pr.cacheRead + gms.totalThinkingTokens * pr.thinking) / 1_000_000; if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${costStr}</span></div>`; })()}
+                ${(() => { const pr = findPricingWithCustom(gms.responseModel, custom) || findPricingWithCustom(name, custom); if (!pr) { return ''; } const cost = (gms.totalInputTokens * pr.input + gms.totalOutputTokens * pr.output + gms.totalCacheRead * pr.cacheRead + gms.totalThinkingTokens * pr.thinking) / 1_000_000; if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${costStr}</span></div>`; })()}
                 ${gms.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val val-hit">${(gms.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
                 ${buildAccountSection(name)}
             </div>
@@ -2488,7 +2495,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
     return html;
 }
 
-function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, gm?: GMSummary | null): string {
+function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, gm?: GMSummary | null, custom: Record<string, ModelPricing> = {}): string {
     const currentCascadeId = currentUsage?.cascadeId;
     const scopedEvents = currentCascadeId
         ? s.recentSteps.filter(event => event.cascadeId === currentCascadeId)
@@ -2601,7 +2608,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             const tokenParts: string[] = [];
             // 1. Per-call cost (leftmost in token section)
             if (e.gmModel) {
-                const pricing = findPricing(e.gmModel);
+                const pricing = findPricingWithCustom(e.gmModel, custom);
                 if (pricing) {
                     const respOut = Math.max(0, (e.gmOutputTokens || 0) - (e.gmThinkingTokens || 0));
                     const callCost = (
@@ -2666,7 +2673,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             ${stepIdx}
             <span class="act-tl-icon">${svgIcon}</span>
             <span class="act-tl-content">
-                ${e.model ? `<span class="act-tl-model">${esc(e.model)}</span>` : ''}
+                ${e.model ? `<span class="act-tl-model" title="${esc(e.model)}">${esc(e.model)}</span>` : ''}
                 ${detail}
             </span>
             <span class="act-tl-meta">
@@ -2712,7 +2719,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
                 if (a.gmCredits) { totalCredits += a.gmCredits; }
                 // Per-call cost accumulation
                 if (a.gmModel) {
-                    const pricing = findPricing(a.gmModel);
+                    const pricing = findPricingWithCustom(a.gmModel, custom);
                     if (pricing) {
                         const respOut = Math.max(0, (a.gmOutputTokens || 0) - (a.gmThinkingTokens || 0));
                         totalCost += (
@@ -2837,8 +2844,8 @@ function buildPerformanceChart(s: GMSummary): string {
     const fmtSec = (n: number) => n <= 0 ? '-' : `${n.toFixed(2)}s`;
     let html = `<h2 class="act-section-title">${tBi('Performance Baseline', '性能基线')}</h2><div class="gm-perf-grid">`;
     for (const [name, ms] of entries) {
-        html += `<div class="gm-perf-item"><span class="gm-perf-label">${esc(name)}</span><span class="gm-perf-val">${fmtSec(ms.avgTTFT)}</span><span class="gm-perf-sub">${tBi('TTFT avg', 'TTFT 均值')} (${fmtSec(ms.minTTFT)}–${fmtSec(ms.maxTTFT)})</span></div>`;
-        html += `<div class="gm-perf-item"><span class="gm-perf-label">${esc(name)} ${tBi('Stream', '流速')}</span><span class="gm-perf-val">${fmtSec(ms.avgStreaming)}</span><span class="gm-perf-sub">${ms.callCount} ${tBi('samples', '样本')}</span></div>`;
+        html += `<div class="gm-perf-item"><span class="gm-perf-label" title="${esc(name)}">${esc(name)}</span><span class="gm-perf-val">${fmtSec(ms.avgTTFT)}</span><span class="gm-perf-sub">${tBi('TTFT avg', 'TTFT 均值')} (${fmtSec(ms.minTTFT)}–${fmtSec(ms.maxTTFT)})</span></div>`;
+        html += `<div class="gm-perf-item"><span class="gm-perf-label" title="${esc(name)}">${esc(name)} ${tBi('Stream', '流速')}</span><span class="gm-perf-val">${fmtSec(ms.avgStreaming)}</span><span class="gm-perf-sub">${ms.callCount} ${tBi('samples', '样本')}</span></div>`;
     }
     html += `</div>`;
     return html;
@@ -2852,7 +2859,7 @@ function buildCacheEfficiency(s: GMSummary): string {
     for (const [name, ms] of entries) {
         const ratio = ms.totalInputTokens > 0 ? ms.totalCacheRead / ms.totalInputTokens : 0;
         const pct = Math.min(ratio * 10, 100);
-        html += `<div style="margin-bottom:var(--space-3)"><div style="display:flex;justify-content:space-between;font-size:0.85em;margin-bottom:var(--space-1)"><span>${esc(name)}</span><span style="color:var(--color-info);font-weight:600">${ratio.toFixed(1)}× ${tBi('cache ratio', '缓存倍率')}</span></div><div class="gm-cache-bar-bg"><div class="gm-cache-bar" style="width:${pct.toFixed(1)}%"></div></div><div style="display:flex;justify-content:space-between;font-size:0.75em;color:var(--color-text-dim)"><span>${tBi('Input', '输入')}: ${fmt(ms.totalInputTokens)}</span><span>${tBi('Cache Read', '缓存读取')}: ${fmt(ms.totalCacheRead)}</span></div></div>`;
+        html += `<div style="margin-bottom:var(--space-3)"><div style="display:flex;justify-content:space-between;gap:var(--space-2);font-size:0.85em;margin-bottom:var(--space-1)"><span style="min-width:0;overflow-wrap:anywhere;word-break:break-word" title="${esc(name)}">${esc(name)}</span><span style="color:var(--color-info);font-weight:600;flex-shrink:0">${ratio.toFixed(1)}× ${tBi('cache ratio', '缓存倍率')}</span></div><div class="gm-cache-bar-bg"><div class="gm-cache-bar" style="width:${pct.toFixed(1)}%"></div></div><div style="display:flex;justify-content:space-between;font-size:0.75em;color:var(--color-text-dim)"><span>${tBi('Input', '输入')}: ${fmt(ms.totalInputTokens)}</span><span>${tBi('Cache Read', '缓存读取')}: ${fmt(ms.totalCacheRead)}</span></div></div>`;
     }
     return html;
 }
@@ -3215,7 +3222,7 @@ function buildContextIntelViewer(s: GMSummary): string {
                 type: 'checkpoint',
                 stepIndex: cp.stepIndex,
                 tokens: cp.tokens,
-                label: `Checkpoint ${cp.checkpointNumber}`,
+                label: tBi(`Checkpoint ${cp.checkpointNumber}`, `检查点 ${cp.checkpointNumber}`),
                 fullText: cp.fullText,
                 checkpointNumber: cp.checkpointNumber,
             });
@@ -3251,7 +3258,7 @@ function buildContextIntelViewer(s: GMSummary): string {
         checkpoint: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2z"/><path d="M9 21V9h6v12"/></svg>',
             color: '#fbbf24',
-            label: 'Checkpoint',
+            label: tBi('Checkpoint', '检查点'),
         },
         context_injection: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
@@ -3271,7 +3278,7 @@ function buildContextIntelViewer(s: GMSummary): string {
         mcp_servers: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
             color: '#2dd4bf',
-            label: 'MCP Servers',
+            label: tBi('MCP Servers', 'MCP 服务'),
         },
         workflows: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
@@ -3281,12 +3288,12 @@ function buildContextIntelViewer(s: GMSummary): string {
         artifacts: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
             color: '#a78bfa',
-            label: 'Artifacts',
+            label: tBi('Artifacts', '产物'),
         },
         ephemeral: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>',
             color: '#94a3b8',
-            label: 'Ephemeral',
+            label: tBi('Ephemeral', '临时'),
         },
         system_preamble: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
@@ -3390,17 +3397,17 @@ function buildContextIntelViewer(s: GMSummary): string {
             // The context window threshold is not directly available, but we can show maxContextSeen
             // and a rough heuristic: typical thresholds are 128K, 160K, 200K
             const configRows: string[] = [];
-            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">temperature</span><span class="ci-cfg-val">${cc.temperature}</span></div>`);
+            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('temperature', '温度')}</span><span class="ci-cfg-val">${cc.temperature}</span></div>`);
             if (cc.firstTemperature !== cc.temperature) {
-                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">firstTemperature</span><span class="ci-cfg-val">${cc.firstTemperature}</span></div>`);
+                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('firstTemperature', '初始温度')}</span><span class="ci-cfg-val">${cc.firstTemperature}</span></div>`);
             }
-            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">topK</span><span class="ci-cfg-val">${cc.topK}</span></div>`);
+            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('topK', 'Top K')}</span><span class="ci-cfg-val">${cc.topK}</span></div>`);
             if (cc.topP !== 1) {
-                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">topP</span><span class="ci-cfg-val">${cc.topP}</span></div>`);
+                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('topP', 'Top P')}</span><span class="ci-cfg-val">${cc.topP}</span></div>`);
             }
-            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">maxOutputTokens</span><span class="ci-cfg-val">${fmt(cc.maxTokens)}</span></div>`);
+            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('maxOutputTokens', '最大输出 token')}</span><span class="ci-cfg-val">${fmt(cc.maxTokens)}</span></div>`);
             if (cc.stopPatternCount > 0) {
-                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">stopPatterns</span><span class="ci-cfg-val">${cc.stopPatternCount}</span></div>`);
+                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('stopPatterns', '停止词')}</span><span class="ci-cfg-val">${cc.stopPatternCount}</span></div>`);
             }
 
             // Context window capacity bar
@@ -3533,9 +3540,22 @@ function getPlanClass(planName: string): string {
 }
 
 
-function buildTodayLedgerPanel(buckets: LedgerAccountBucket[], snapshots: AccountSnapshot[] = []): string {
+function buildTodayLedgerPanel(
+    buckets: LedgerAccountBucket[],
+    snapshots: AccountSnapshot[] = [],
+    custom: Record<string, ModelPricing> = {},
+): string {
     const activeBuckets = buckets.filter(b => b.totalCalls > 0);
     if (activeBuckets.length === 0) { return ''; }
+
+    const costOfBucket = (b: LedgerAccountBucket): number => {
+        let sum = 0;
+        for (const [modelKey, ms] of Object.entries(b.modelStats)) {
+            const pricing = findPricingWithCustom(modelKey, custom);
+            sum += pricing ? costFromTokens(ms, pricing) : ms.estimatedCost;
+        }
+        return sum;
+    };
 
     let totalCalls = 0, totalIn = 0, totalOut = 0, totalCache = 0, totalCredits = 0, totalCost = 0;
     for (const b of activeBuckets) {
@@ -3544,7 +3564,7 @@ function buildTodayLedgerPanel(buckets: LedgerAccountBucket[], snapshots: Accoun
         totalOut += b.totalOutputTokens;
         totalCache += b.totalCacheRead;
         totalCredits += b.totalCredits;
-        totalCost += b.totalEstimatedCost;
+        totalCost += costOfBucket(b);
     }
 
     const formatK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
@@ -3593,6 +3613,8 @@ function buildTodayLedgerPanel(buckets: LedgerAccountBucket[], snapshots: Accoun
                 return `<span class="pending-model-chip ledger-model-chip">${esc(normalizeModelDisplayName(model))} <b>${ms.calls}</b>${resetTag}</span>`;
             }).join('');
 
+        const bucketCost = costOfBucket(bucket);
+
         return `<div class="ledger-acct-card">
             <div class="ledger-acct-header">
                 ${statusDot}
@@ -3605,7 +3627,7 @@ function buildTodayLedgerPanel(buckets: LedgerAccountBucket[], snapshots: Accoun
                 <span class="pending-stat">${tBi('Output', '\u8f93\u51fa')} <b>${formatK(bucket.totalOutputTokens)}</b></span>
                 ${bucket.totalCacheRead > 0 ? `<span class="pending-stat">${tBi('Cache', '\u7f13\u5b58')} <b>${formatK(bucket.totalCacheRead)}</b></span>` : ''}
                 ${bucket.totalCredits > 0 ? `<span class="pending-stat">${tBi('Credits', '\u79ef\u5206')} <b>${bucket.totalCredits}</b></span>` : ''}
-                ${bucket.totalEstimatedCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBi('Cost', '\u8d39\u7528')} <b>$${bucket.totalEstimatedCost < 0.01 ? bucket.totalEstimatedCost.toFixed(4) : bucket.totalEstimatedCost < 1 ? bucket.totalEstimatedCost.toFixed(3) : bucket.totalEstimatedCost.toFixed(2)}</b></span>` : ''}
+                ${bucketCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBi('Cost', '\u8d39\u7528')} <b>$${bucketCost < 0.01 ? bucketCost.toFixed(4) : bucketCost < 1 ? bucketCost.toFixed(3) : bucketCost.toFixed(2)}</b></span>` : ''}
             </div>
             <div class="pending-archive-models">${modelChips}</div>
         </div>`;
@@ -3713,7 +3735,7 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
     const cards = sorted.map(snap => {
         const indicatorClass = snap.isActive ? 'acct-indicator-active' : 'acct-indicator-cached';
         const planClass = getPlanClass(snap.planName || snap.tierName);
-        const planLabel = snap.tierName || snap.planName || 'Unknown';
+        const planLabel = snap.tierName || snap.planName || tBi('Unknown', '未知');
 
         // Build per-pool reset rows
         const pools = snap.resetPools || [];
@@ -3732,9 +3754,9 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
                 const shown = labels.slice(0, maxShow);
                 const extra = labels.length > maxShow ? labels.length - maxShow : 0;
                 const modelChips = shown.map(l =>
-                    `<span class="acct-pool-model">${esc(l)}</span>`
+                    `<span class="acct-pool-model" title="${esc(l)}">${esc(l)}</span>`
                 ).join('');
-                const extraChip = extra > 0 ? `<span class="acct-pool-more">+${extra}</span>` : '';
+                const extraChip = extra > 0 ? `<span class="acct-pool-more" title="${esc(labels.slice(maxShow).join(', '))}">+${extra}</span>` : '';
 
                 // Build compact quota bar — only shown for active pools
                 const buildQuotaBar = (pct: number | undefined): string => {

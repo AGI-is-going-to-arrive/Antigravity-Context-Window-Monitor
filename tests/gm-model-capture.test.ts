@@ -148,15 +148,39 @@ describe('GM model capture', () => {
     });
 
     it('captures Gemini 3.6 Flash identity from chatModel and its seeded response alias', () => {
-        expect(resolveModelId('gemini-3.6-flash-high')).toBe('MODEL_PLACEHOLDER_M264');
+        // The platform renumbered the 3.6 tiers from M264/M265/M266 to M71/M72/M73 (2026-08 live probe).
+        expect(resolveModelId('gemini-3.6-flash-high')).toBe('MODEL_PLACEHOLDER_M71');
 
+        const call = parseGMEntry(makeGM({
+            model: 'MODEL_PLACEHOLDER_M71',
+            responseModel: 'gemini-3.6-flash-high',
+        }));
+
+        expect(call.model).toBe('MODEL_PLACEHOLDER_M71');
+        expect(call.modelSource).toBe('chatModel');
+        expect(call.modelDisplay).toContain('Gemini 3.6 Flash');
+    });
+
+    it('captures Gemini 3.7 Flash identity from chatModel and its seeded response alias', () => {
+        expect(resolveModelId('gemini-3.7-flash-high')).toBe('MODEL_PLACEHOLDER_M298');
+
+        const call = parseGMEntry(makeGM({
+            model: 'MODEL_PLACEHOLDER_M298',
+            responseModel: 'gemini-3.7-flash-high',
+        }));
+
+        expect(call.model).toBe('MODEL_PLACEHOLDER_M298');
+        expect(call.modelSource).toBe('chatModel');
+        expect(call.modelDisplay).toContain('Gemini 3.7 Flash');
+    });
+
+    it('still resolves pre-renumber 3.6 records captured by v1.16.14', () => {
         const call = parseGMEntry(makeGM({
             model: 'MODEL_PLACEHOLDER_M264',
             responseModel: 'gemini-3.6-flash-high',
         }));
 
         expect(call.model).toBe('MODEL_PLACEHOLDER_M264');
-        expect(call.modelSource).toBe('chatModel');
         expect(call.modelDisplay).toContain('Gemini 3.6 Flash');
     });
 });

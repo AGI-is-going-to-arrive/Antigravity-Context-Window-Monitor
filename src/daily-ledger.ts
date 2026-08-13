@@ -12,7 +12,7 @@
 import type { GMCallEntry } from './gm-tracker';
 import { normalizeModelDisplayName, resolveModelId } from './models';
 import { buildGMArchiveKey } from './gm/parser';
-import { findPricing } from './pricing-store';
+import { findPricing, costFromTokens } from './pricing-store';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -155,18 +155,49 @@ function fallbackCallId(call: GMCallEntry): string {
     return `${base}|in:${call.inputTokens}|out:${call.outputTokens}|ssi:${call.startStepIndex}`;
 }
 
-/** Compute per-call estimated cost using responseModel pricing */
+/**
+ * Compute per-call estimated cost using responseModel pricing.
+ *
+ * Deliberately uses the built-in table only. This value is persisted, and two windows
+ * can hold different custom prices (the durable store is read once at construction and
+ * has no watcher), so pricing it per-window would make the same day serialize to
+ * different numbers and flip back and forth under last-writer-wins. Custom prices are
+ * applied where the number is read instead — see the Pricing tab and
+ * `buildGMSummaryFromLedger`, which re-price from the token counts kept alongside.
+ */
 function estimateCallCost(call: GMCallEntry): number {
     if (!call.responseModel) { return 0; }
     const pr = findPricing(call.responseModel);
-    if (!pr) { return 0; }
-    const respOut = Math.max(0, (call.outputTokens || 0) - (call.thinkingTokens || 0));
-    return (
-        (call.inputTokens || 0) * pr.input +
-        respOut * pr.output +
-        (call.cacheReadTokens || 0) * pr.cacheRead +
-        (call.thinkingTokens || 0) * pr.thinking
-    ) / 1_000_000;
+    return pr ? costFromTokens(call, pr) : 0;
+}
+
+/**
+ * Pick the per-model key a ledger bucket is filed under.
+ *
+ * The key has to survive being written before model labels are available, because the ledger is
+ * persisted and later reads merge by key. `normalizeModelDisplayName()` echoes an unresolvable input
+ * back unchanged, so using it directly would file a raw `MODEL_PLACEHOLDER_Mxxx` string — and once
+ * that string is on disk nothing ever merges it with the same model's named row. Fall through the
+ * identifiers a call carries and take the first one that is actually a name; only use a raw
+ * identifier when the call offers nothing else.
+ */
+export function resolveModelKeyForLedger(
+    call: Pick<GMCallEntry, 'modelDisplay' | 'model' | 'responseModel'>,
+): string {
+    const isRaw = (v: string): boolean => /^MODEL_[A-Z0-9_]+$/.test((v || '').trim());
+    for (const candidate of [call.modelDisplay, call.model, call.responseModel]) {
+        const clean = (candidate || '').trim();
+        if (!clean) { continue; }
+        const named = normalizeModelDisplayName(clean);
+        if (named && !isRaw(named)) { return named; }
+    }
+    // Nothing resolved to a name. Prefer the responseModel: a catalog id such as
+    // 'gemini-3.7-flash-high' at least identifies the model to a human, where a bare placeholder
+    // does not. Note this does NOT retroactively merge — rows already written under a catalog id
+    // stay under it once later rows start using the display name; it only narrows the window.
+    const response = (call.responseModel || '').trim();
+    if (response && !isRaw(response)) { return response; }
+    return (call.modelDisplay || call.model || call.responseModel || '').trim();
 }
 
 function emptyModelStats(): LedgerModelStats {
@@ -469,10 +500,15 @@ export class DailyLedger {
             const cost = estimateCallCost(call);
             bucket.totalEstimatedCost += cost;
 
-            // Per-model breakdown
-            const modelKey = normalizeModelDisplayName(
-                call.modelDisplay || call.model,
-            ) || call.responseModel || call.model;
+            // Per-model breakdown.
+            // normalizeModelDisplayName() returns its input UNCHANGED when it cannot resolve a name,
+            // and that return value is truthy — so the `||` chain below never fires and a raw
+            // "MODEL_PLACEHOLDER_M298" would become a persisted ledger key. That matters because the
+            // ledger is written before the language server is ever contacted (startup archival) and
+            // again on every poll before the LS block, so any model the registry does not yet know
+            // gets an orphan row that never merges with its named row once the labels arrive.
+            // Prefer any human-readable form we have before falling back to the raw identifier.
+            const modelKey = resolveModelKeyForLedger(call);
 
             let ms = bucket.modelStats[modelKey];
             if (!ms) {

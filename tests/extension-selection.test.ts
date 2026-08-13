@@ -175,18 +175,39 @@ describe('groupModelConfigsByQuotaPool', () => {
     });
 
     it('groups Gemini 3.6 Flash into the shared gemini pool via KNOWN_QUOTA_POOLS, not resetTime', () => {
-        // M264 and M133 carry different resetTimes, yet both must land in the fixed 'gemini' pool.
-        // Before the fix, M264 fell back to its resetTime key and split into its own pool.
+        // M71 and M133 carry different resetTimes, yet both must land in the fixed 'gemini' pool.
+        // Before the fix, the 3.6 tier fell back to its resetTime key and split into its own pool.
         const groups = groupModelConfigsByQuotaPool([
-            modelConfig('MODEL_PLACEHOLDER_M264', 'Gemini 3.6 Flash (High)', '2026-07-21T21:41:45Z', 0.9),
+            modelConfig('MODEL_PLACEHOLDER_M71', 'Gemini 3.6 Flash (High)', '2026-07-21T21:41:45Z', 0.9),
             modelConfig('MODEL_PLACEHOLDER_M133', 'Gemini 3.5 Flash (High)', '2026-07-22T09:00:00Z', 0.7),
             modelConfig('MODEL_OPENAI_GPT_OSS_120B_MEDIUM', 'GPT-OSS 120B (Medium)', '2026-07-21T21:41:45Z', 0.3),
         ]);
 
         expect(groups.map(g => g.key).sort()).toEqual(['gemini', 'premium']);
         const gemini = groups.find(g => g.key === 'gemini');
-        expect(gemini?.modelIds.slice().sort()).toEqual(['MODEL_PLACEHOLDER_M133', 'MODEL_PLACEHOLDER_M264']);
+        expect(gemini?.modelIds.slice().sort()).toEqual(['MODEL_PLACEHOLDER_M133', 'MODEL_PLACEHOLDER_M71']);
         expect(gemini?.minFraction).toBe(0.7);
         expect(groups.find(g => g.key === 'premium')?.modelIds).toEqual(['MODEL_OPENAI_GPT_OSS_120B_MEDIUM']);
+    });
+
+    it('groups the whole live 3.7 / 3.6 / 3.5 Flash lineup into a single gemini pool', () => {
+        // The picker now carries three generations of Flash at once. Each tier reports its own
+        // resetTime, so without KNOWN_QUOTA_POOLS the status bar would show up to nine separate
+        // "pools" for what is really one shared Gemini quota.
+        const groups = groupModelConfigsByQuotaPool([
+            modelConfig('MODEL_PLACEHOLDER_M298', 'Gemini 3.7 Flash (High)', '2026-08-13T23:31:25Z', 1.0),
+            modelConfig('MODEL_PLACEHOLDER_M299', 'Gemini 3.7 Flash (Medium)', '2026-08-13T23:31:25Z', 1.0),
+            modelConfig('MODEL_PLACEHOLDER_M300', 'Gemini 3.7 Flash (Low)', '2026-08-13T23:27:33Z', 1.0),
+            modelConfig('MODEL_PLACEHOLDER_M71', 'Gemini 3.6 Flash (High)', '2026-08-13T23:31:25Z', 0.8),
+            modelConfig('MODEL_PLACEHOLDER_M72', 'Gemini 3.6 Flash (Medium)', '2026-08-13T22:00:00Z', 0.8),
+            modelConfig('MODEL_PLACEHOLDER_M73', 'Gemini 3.6 Flash (Low)', '2026-08-13T22:00:00Z', 0.8),
+            modelConfig('MODEL_PLACEHOLDER_M84', 'Gemini 3.5 Flash (High)', '2026-08-13T21:00:00Z', 0.6),
+            modelConfig('MODEL_PLACEHOLDER_M35', 'Claude Sonnet 4.6 (Thinking)', '2026-08-13T21:00:00Z', 0.4),
+        ]);
+
+        expect(groups.map(g => g.key).sort()).toEqual(['gemini', 'premium']);
+        const gemini = groups.find(g => g.key === 'gemini');
+        expect(gemini?.modelIds).toHaveLength(7);
+        expect(gemini?.minFraction).toBe(0.6);
     });
 });

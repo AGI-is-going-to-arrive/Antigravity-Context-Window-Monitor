@@ -262,12 +262,12 @@ export function selectMatchingProcessLine(lines: readonly string[], workspaceUri
  * Filter ps output lines for LS processes.
  * In WSL, looks for the Windows binary name since the LS runs on the Windows host.
  */
-export function filterLsProcessLines(psOutput: string): string[] {
-    const binaryName = (process.platform === 'win32' || isWSL())
+export function filterLsProcessLines(psOutput: string, binaryOverride?: string): string[] {
+    const binaryName = binaryOverride || ((process.platform === 'win32' || isWSL())
         ? 'language_server_windows'
         : process.platform === 'linux'
             ? 'language_server_linux'
-            : 'language_server_macos';
+            : 'language_server_macos');
     return psOutput.split('\n').filter(l => {
         // CR-#62: case-INSENSITIVE membership test (install paths / flags may vary
         // in case), but return the ORIGINAL line unchanged — downstream
@@ -279,11 +279,42 @@ export function filterLsProcessLines(psOutput: string): string[] {
 }
 
 /**
+ * Whether a socket bound to `host` can be reached by connecting to 127.0.0.1.
+ * Loopback itself plus the wildcard forms every tool spells differently
+ * (`0.0.0.0`, `*`, `::`, `[::]`), which all include the loopback interface.
+ * `[::1]` is IPv6-only loopback: on a dual-stack Windows socket the same port is
+ * also open on IPv4, and when it isn't the probe just fails, so accepting it
+ * costs one failed connect and buys the dual-stack case.
+ */
+function isLoopbackReachableHost(host: string): boolean {
+    return host === '127.0.0.1' || host === '0.0.0.0' || host === '*'
+        || host === '::' || host === '[::]' || host === '[::1]';
+}
+
+/**
+ * Extract the port from an `address:port` token, but only when a client on
+ * 127.0.0.1 could actually reach it. Returns null for port 0, which is what a
+ * foreign-address column reads as on a listening row.
+ */
+function portFromAddressToken(token: string): number | null {
+    const m = token.match(/^(.*):(\d+)$/);
+    if (!m || !isLoopbackReachableHost(m[1])) { return null; }
+    const port = parseInt(m[2], 10);
+    return port > 0 ? port : null;
+}
+
+/**
  * Extract port from a lsof output line.
+ * `lsof -nP` prints the bind address as `*:PORT` when the server listened on all
+ * interfaces rather than on loopback specifically, so matching 127.0.0.1 alone
+ * would miss a reachable LS (issue #64, same root cause as the netstat case).
  */
 export function extractPort(line: string): number | null {
-    const portMatch = line.match(/127\.0\.0\.1:(\d+)\s/);
-    return portMatch ? parseInt(portMatch[1], 10) : null;
+    for (const token of line.trim().split(/\s+/)) {
+        const port = portFromAddressToken(token);
+        if (port !== null) { return port; }
+    }
+    return null;
 }
 
 /**
@@ -298,10 +329,17 @@ export function extractPortFromSs(line: string): number | null {
 /**
  * Extract port from a Windows `netstat -ano` output line.
  * Matches patterns like `TCP    127.0.0.1:12345    0.0.0.0:0    LISTENING    1234`
+ *
+ * Reads the local-address column positionally rather than scanning the whole line.
+ * A `netstat -ano` row is `<Proto> <Local> <Foreign> [<State>] <PID>`, so the local
+ * address is always column 1. Scanning instead would match the foreign column, which
+ * on a listening row reads `0.0.0.0:0` and yields port 0 for any row whose local
+ * address is a real interface IP rather than loopback.
  */
 export function extractPortFromNetstat(line: string): number | null {
-    const portMatch = line.match(/\s+127\.0\.0\.1:(\d+)\s/);
-    return portMatch ? parseInt(portMatch[1], 10) : null;
+    const cols = line.trim().split(/\s+/);
+    if (cols.length < 3) { return null; }
+    return portFromAddressToken(cols[1]);
 }
 
 /**
@@ -311,9 +349,20 @@ export function extractPortFromNetstat(line: string): number | null {
  * whitespace-delimited field (the PID column) for an exact match instead.
  */
 export function netstatLineMatchesPid(line: string, pid: number): boolean {
-    if (!line.includes('LISTENING')) { return false; }
-    const m = line.trim().match(/\s(\d+)$/);
-    return m !== null && m[1] === String(pid);
+    const trimmed = line.trim();
+    const m = trimmed.match(/\s(\d+)$/);
+    if (m === null || m[1] !== String(pid)) { return false; }
+    if (trimmed.includes('LISTENING')) { return true; }
+    // Some localized Windows builds translate the State column — German netstat prints "ABHÖREN"
+    // (the one translation with documented evidence; French and Spanish builds were checked and do
+    // print the English "LISTENING"). On those machines the English literal above rejected every
+    // candidate line and discovery reported "LS not found" forever.
+    // Fall back on structure, which is locale-independent: a listening TCP row is
+    // `TCP <local> <foreign> <STATE> <PID>` with a wildcard foreign address. Connected rows carry a
+    // real remote address and UDP rows have no State column at all, so both still fail here.
+    const cols = trimmed.split(/\s+/);
+    if (cols.length !== 5 || cols[0].toUpperCase() !== 'TCP') { return false; }
+    return cols[2] === '0.0.0.0:0' || cols[2] === '[::]:0' || cols[2] === '*:*';
 }
 
 /**
@@ -357,12 +406,21 @@ async function discoverWslLanguageServer(
         // 1. Find LS process inside WSL
         const psResult = await execFileAsync(wslExe, [
             '-d', distro, '--', 'bash', '-c',
-            'ps aux | grep language_server | grep -v grep'
+            // -i so an install path spelled with capitals still matches (the JS-side filter below
+            // cannot rescue a line this grep already dropped), and the [l] bracket trick excludes
+            // this grep's own process without `grep -v grep` — which would also drop a REAL language
+            // server whose command line merely contains "grep" (e.g. a workspace under /home/u/grep-tools).
+            'ps aux | grep -i "[l]anguage_server"'
         ], { encoding: 'utf-8', timeout: 10000, signal });
 
-        const psLines = psResult.stdout.split('\n').filter(l =>
-            l.includes('language_server') && l.includes('antigravity')
-        );
+        // Case-insensitive, matching filterLsProcessLines() and the native Windows branch. The
+        // install path can be spelled "Antigravity", so a case-sensitive test finds nothing and
+        // Remote-WSL discovery reports "no language_server process" on a perfectly healthy machine.
+        // Lower-case a COPY for the test only — the original line still carries the CSRF token.
+        const psLines = psResult.stdout.split('\n').filter(l => {
+            const lower = l.toLowerCase();
+            return lower.includes('language_server') && lower.includes('antigravity');
+        });
 
         if (psLines.length === 0) {
             log?.(`WSL[${distro}]: no language_server process found inside distro`);
@@ -498,10 +556,16 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
  * Find listening TCP ports for a given PID.
  * Uses lsof (macOS + most Linux), with fallback to ss (Linux default).
  * In WSL, uses Windows netstat.exe since the LS is a Windows host process.
+ *
+ * `forceNative` skips that WSL assumption: when the PID belongs to a Linux LS running
+ * inside this distro, its ports are in the distro's own network namespace and Windows
+ * netstat.exe cannot see them.
  */
-async function findListeningPorts(pid: number, signal?: AbortSignal, log?: (msg: string) => void): Promise<number[]> {
+async function findListeningPorts(
+    pid: number, signal?: AbortSignal, log?: (msg: string) => void, forceNative = false,
+): Promise<number[]> {
     // Windows (or WSL): use netstat -ano to find Windows host ports
-    if (process.platform === 'win32' || isWSL()) {
+    if (!forceNative && (process.platform === 'win32' || isWSL())) {
         const winRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
         const netstatExe = isWSL() ? '/mnt/c/Windows/System32/netstat.exe' : buildWindowsExePath(winRoot, 'netstat');
         try {
@@ -571,6 +635,52 @@ async function findListeningPorts(pid: number, signal?: AbortSignal, log?: (msg:
 }
 
 /**
+ * Discover an Antigravity LS running natively inside this WSL distro.
+ *
+ * Under Remote-WSL the IDE spawns `language_server_linux_x64` inside the distro, and when
+ * the extension host runs inside that same distro the server is directly reachable on
+ * 127.0.0.1. The main discovery path treated "we are under WSL" as "the server is on the
+ * Windows host" and went straight to /mnt/c interop, so this — the one case a WSL-hosted
+ * extension can actually connect to — was never attempted. Discovery would then find the
+ * Windows LS, report its pid and port, and fail every probe: a socket bound to the Windows
+ * loopback address is not routable from inside the WSL VM under the default NAT
+ * networking, so no host value the extension could pick would reach it.
+ */
+async function discoverLocalLinuxLanguageServer(
+    workspaceUri?: string, signal?: AbortSignal, log?: (msg: string) => void,
+): Promise<LSInfo | null> {
+    let psOutput: string;
+    try {
+        const result = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
+            encoding: 'utf-8', timeout: 5000, signal,
+        });
+        psOutput = result.stdout;
+    } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
+        log?.(`WSL: local ps discovery failed (${code})`);
+        return null;
+    }
+
+    const lines = filterLsProcessLines(psOutput, 'language_server_linux');
+    if (lines.length === 0) { return null; }
+
+    const targetLine = selectMatchingProcessLine(lines, workspaceUri);
+    if (!targetLine) { return null; }
+
+    const trimmed = targetLine.trim();
+    const pid = extractPid(trimmed);
+    const csrfToken = extractCsrfToken(trimmed);
+    if (!pid || !csrfToken) { return null; }
+
+    const ports = await findListeningPorts(pid, signal, log, true);
+    for (const port of ports) {
+        if (await probePort(port, csrfToken, true, signal)) { return { pid, csrfToken, port, useTls: true }; }
+        if (await probePort(port, csrfToken, false, signal)) { return { pid, csrfToken, port, useTls: false }; }
+    }
+    return null;
+}
+
+/**
  * Discover the Antigravity language server process that belongs to this workspace.
  * Extracts PID, CSRF token from process args, and finds the listening port.
  *
@@ -598,6 +708,18 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
                 }
                 log?.('WSL LS not found, falling back to Windows LS');
             }
+        }
+
+        // ─── Extension host inside WSL: prefer the LS in this distro ─────
+        // Reachable on 127.0.0.1; the Windows-host LS below is not (see
+        // discoverLocalLinuxLanguageServer). Try it first, fall through if absent.
+        if (isWSL()) {
+            const localResult = await discoverLocalLinuxLanguageServer(workspaceUri, signal, log);
+            if (localResult) {
+                log?.(`Found LS inside WSL distro: port=${localResult.port}, pid=${localResult.pid}`);
+                return localResult;
+            }
+            log?.('No LS inside this WSL distro, trying the Windows host LS');
         }
 
         let pid: number | null = null;
@@ -723,6 +845,16 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
         }
 
         log?.(`probe failed on all ${ports.length} port(s) [${ports.join(', ')}] for pid ${pid}`);
+        if (isWSL()) {
+            // Reaching here means the Windows-host LS was located but is unreachable, which
+            // is the expected outcome under WSL2's default NAT networking rather than a
+            // transient failure — worth saying so, because the generic message above reads
+            // like the server is down when it is running perfectly well.
+            log?.('This extension host runs inside WSL and the language server runs on the Windows host. '
+                + 'Its port is bound to the Windows loopback address, which WSL2 cannot route to under the '
+                + 'default NAT networking. Install this extension on the Windows side instead, or set '
+                + '[wsl2] networkingMode=mirrored in %UserProfile%\\.wslconfig and run `wsl --shutdown`.');
+        }
         return null;
     } catch (e) {
         const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';

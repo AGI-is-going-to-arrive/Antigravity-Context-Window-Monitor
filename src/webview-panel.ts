@@ -56,6 +56,8 @@ export interface PanelPayload {
     todayLedgerActive?: LedgerAccountBucket[];
     /** DailyLedger: settled entries from quota resets */
     ledgerSettled?: LedgerSettledEntry[];
+    /** User custom model prices — applied when re-pricing Today's Ledger from tokens */
+    customPricing?: Record<string, ModelPricing>;
 }
 
 // ─── Panel State ──────────────────────────────────────────────────────────────
@@ -85,6 +87,7 @@ let lastModelDNA: Record<string, PersistedModelDNA> = {};
 let lastAccountSnapshots: AccountSnapshot[] = [];
 let lastTodayLedgerActive: LedgerAccountBucket[] = [];
 let lastLedgerSettled: LedgerSettledEntry[] = [];
+let lastCustomPricing: Record<string, ModelPricing> = {};
 export const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
 
 /** Provide a durable state bucket for panel-level persistence (zoom, etc.). */
@@ -308,6 +311,7 @@ export function showMonitorPanel(p: PanelPayload): void {
     if (p.accountSnapshots) { lastAccountSnapshots = p.accountSnapshots; }
     if (p.todayLedgerActive) { lastTodayLedgerActive = p.todayLedgerActive; }
     if (p.ledgerSettled) { lastLedgerSettled = p.ledgerSettled; }
+    if (p.customPricing !== undefined) { lastCustomPricing = p.customPricing; }
 
     if (panel) {
         panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused);
@@ -532,6 +536,7 @@ export function updateMonitorPanel(p: PanelPayload): void {
     if (p.accountSnapshots) { lastAccountSnapshots = p.accountSnapshots; }
     if (p.todayLedgerActive) { lastTodayLedgerActive = p.todayLedgerActive; }
     if (p.ledgerSettled) { lastLedgerSettled = p.ledgerSettled; }
+    if (p.customPricing !== undefined) { lastCustomPricing = p.customPricing; }
     if (panel && !isPaused) {
         // Incremental update: send tab contents via postMessage — no DOM teardown
         safePostMessage({
@@ -552,7 +557,7 @@ function buildTabContents(
     const eoc = `<div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>`;
     return {
 
-        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled) + eoc,
+        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, lastPricingStore?.getCustom() ?? lastCustomPricing) + eoc,
         chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
         pricing: (lastPricingStore
             ? buildPricingTabContent(
@@ -591,7 +596,7 @@ function buildHtml(
     paused = false,
 ): string {
 
-    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled);
+    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, lastPricingStore?.getCustom() ?? lastCustomPricing);
     const chatsHtml = buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(

@@ -6,6 +6,8 @@
 import type { ActivityArchive, ActivitySummary } from './activity-tracker';
 import type { GMSummary, GMModelStats } from './gm-tracker';
 import { normalizeModelDisplayName } from './models';
+import type { ModelPricing } from './pricing-store';
+import { DEFAULT_PRICING, findPricingWithCustom, costFromTokens } from './pricing-store';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -29,6 +31,10 @@ export interface GMModelCycleStats {
     avgTTFT: number;
     cacheHitRate: number;
     estimatedCost?: number;     // USD per-model cost
+    /** Set when estimatedCost was re-priced from tokens after the fact — see
+     *  DailyStore.backfillMissingCosts. Such a figure excludes cache reads and
+     *  is therefore an underestimate, not an original record. */
+    costBackfilled?: true;
 }
 
 /** A single quota-cycle snapshot within a day */
@@ -166,6 +172,47 @@ function buildGMPerModelStats(
     return Object.keys(gmPerModel).length > 0 ? gmPerModel : undefined;
 }
 
+/**
+ * Gemini 3.7 Flash shipped on introductory pricing that Google's own footnote says expires
+ * 2026-12-31, with both rates doubling on 2027-01-01. The built-in table therefore has to be
+ * rewritten on that date, and from then on every 2026 day re-priced against it would be
+ * billed at twice what it actually cost. Backfilling re-prices days that are already over,
+ * so it has to charge each day the rate that was in force on that day.
+ *
+ * This is deliberately a single hard-coded special case rather than an effective-date pricing
+ * system: exactly one row is documented to change on exactly one known date.
+ */
+const GEMINI_37_FLASH_INTRO_LAST_DAY = '2026-12-31';
+const GEMINI_37_FLASH_INTRO_PRICING: ModelPricing = {
+    input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, thinking: 3.75,
+};
+
+/**
+ * The pricing that applied on `date`.
+ *
+ * `findPricing` hands back the table's own object, so a row that priced off the built-in
+ * 'gemini-3.7-flash' entry is recognizable by reference regardless of which of its spellings
+ * the archived key used — a display name, a localized display name, or a raw
+ * 'MODEL_PLACEHOLDER_M298'. A user's custom price is a different object and passes through
+ * untouched, because an explicit override outranks this rule.
+ */
+function pricingForDate(
+    pricing: ModelPricing,
+    base: Record<string, ModelPricing>,
+    date: string,
+): ModelPricing {
+    if (pricing === base['gemini-3.7-flash'] && date <= GEMINI_37_FLASH_INTRO_LAST_DAY) {
+        return GEMINI_37_FLASH_INTRO_PRICING;
+    }
+    return pricing;
+}
+
+/** Options for {@link DailyStore.backfillMissingCosts}. */
+export interface CostBackfillOptions {
+    /** Built-in pricing table to price against. Defaults to DEFAULT_PRICING. */
+    basePricing?: Record<string, ModelPricing>;
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const STORAGE_KEY = 'dailyStoreState';
@@ -209,6 +256,69 @@ export class DailyStore {
             this._persist();
         }
         return added;
+    }
+
+    /**
+     * Fill in per-model costs that were archived without one.
+     *
+     * A call is priced when it is recorded, so a model the platform ships mid-cycle — one
+     * with no row in the pricing table yet — is recorded at $0 and then frozen into the
+     * archive that way. Once the price row lands, the tokens are still there and the cost
+     * can be recovered.
+     *
+     * Fill-only, never overwrite: a row already holding a number was priced correctly when
+     * it was written and comes out identical. That is also what makes this safe to run on
+     * every activation instead of behind a one-shot flag — it is self-healing and
+     * idempotent, so a row whose model is still unknown today gets filled by whichever
+     * future release adds that price.
+     *
+     * What it writes is an UNDERESTIMATE, and is flagged `costBackfilled` to say so:
+     * GMModelCycleStats never kept cache tokens, so only input + output + thinking survive
+     * to be re-priced. A model that resolves to no pricing at all is left alone with its
+     * cost still absent — writing 0 there would be indistinguishable from a real $0 day.
+     *
+     * Returns the number of per-model rows filled.
+     */
+    backfillMissingCosts(
+        customPricing: Record<string, ModelPricing> = {},
+        opts?: CostBackfillOptions,
+    ): number {
+        const base = opts?.basePricing || DEFAULT_PRICING;
+        let filled = 0;
+
+        for (const [date, record] of this._records) {
+            for (const cycle of record.cycles) {
+                if (!cycle.gmModelStats) { continue; }
+                let cycleDelta = 0;
+
+                for (const [modelKey, gms] of Object.entries(cycle.gmModelStats)) {
+                    if (gms.estimatedCost !== undefined) { continue; }
+                    const pricing = findPricingWithCustom(modelKey, customPricing, base);
+                    if (!pricing) { continue; }
+                    const cost = costFromTokens({
+                        inputTokens: gms.inputTokens,
+                        outputTokens: gms.outputTokens,
+                        thinkingTokens: gms.thinkingTokens,
+                        cacheReadTokens: 0,     // dropped at rollover — never archived
+                    }, pricingForDate(pricing, base, date));
+                    if (cost <= 0) { continue; }
+
+                    gms.estimatedCost = cost;
+                    gms.costBackfilled = true;
+                    cycleDelta += cost;
+                    filled++;
+                }
+
+                // Keep the day total in step with its rows, or getMonthSummary and
+                // getMonthCostBreakdown would report different numbers for the same day.
+                if (cycleDelta > 0) {
+                    cycle.estimatedCost = (cycle.estimatedCost || 0) + cycleDelta;
+                }
+            }
+        }
+
+        if (filled > 0) { this._persist(); }
+        return filled;
     }
 
     /**

@@ -188,21 +188,28 @@ export function getPricingTabStyles(): string {
             border-color: var(--color-accent);
         }
     }
-    .dna-row-card:nth-child(1) { border-left: 3px solid var(--color-info); }
-    .dna-row-card:nth-child(2) { border-left: 3px solid var(--color-ok); }
-    .dna-row-card:nth-child(3) { border-left: 3px solid var(--color-warn); }
-    .dna-row-card:nth-child(4) { border-left: 3px solid var(--color-danger); }
-    .dna-row-card:nth-child(5) { border-left: 3px solid var(--color-teal); }
-    .dna-row-card:nth-child(6) { border-left: 3px solid var(--color-orange); }
+    .dna-row-card:nth-child(6n+1) { border-left: 3px solid var(--color-info); }
+    .dna-row-card:nth-child(6n+2) { border-left: 3px solid var(--color-ok); }
+    .dna-row-card:nth-child(6n+3) { border-left: 3px solid var(--color-warn); }
+    .dna-row-card:nth-child(6n+4) { border-left: 3px solid var(--color-danger); }
+    .dna-row-card:nth-child(6n+5) { border-left: 3px solid var(--color-teal); }
+    .dna-row-card:nth-child(6n+6) { border-left: 3px solid var(--color-orange); }
     .dna-row-header {
         display: flex;
         align-items: center;
+        flex-wrap: wrap;
         gap: var(--space-2);
         padding: var(--space-2) var(--space-3);
         background: var(--color-surface-dim);
         border-bottom: 1px solid var(--color-border);
         font-weight: 600;
         font-size: 0.9em;
+        min-width: 0;
+    }
+    .dna-row-title {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
     }
     .dna-row-header .act-badge { margin-left: auto; }
     .dna-row-body {
@@ -382,6 +389,12 @@ export function getPricingTabStyles(): string {
         font-size: 0.78em;
         font-weight: 500;
         white-space: nowrap;
+        max-width: 100%;
+        text-overflow: ellipsis;
+        /* No overflow:hidden here. These chips carry [data-tooltip], whose ::after bubble is drawn
+           above the element's border box with the element itself as its containing block — clipping
+           the box removes the only explanation these chips have. nowrap + max-width already keep
+           them in bounds. */
     }
     .cost-chip-total {
         color: var(--color-warn);
@@ -433,12 +446,13 @@ export function getPricingTabStyles(): string {
         }
     }
     .cost-bar-label {
-        min-width: 90px;
+        flex: 0 1 16em;
+        min-width: 0;
+        max-width: 18em;
         font-weight: 600;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        flex-shrink: 0;
     }
     .cost-bar-track {
         flex: 1;
@@ -522,12 +536,13 @@ export function getPricingTabStyles(): string {
         }
     }
     .cost-detail-name {
-        min-width: 90px;
+        flex: 0 1 16em;
+        min-width: 0;
+        max-width: 18em;
         font-weight: 600;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        flex-shrink: 0;
     }
     .cost-detail-items {
         display: flex;
@@ -643,20 +658,19 @@ export function getPricingTabStyles(): string {
         margin-bottom: var(--space-4);
     }
     .prc-edit-list {
-        display: grid;
-        grid-template-columns: max-content 1fr;
+        display: flex;
+        flex-direction: column;
         gap: var(--space-2);
         margin-bottom: var(--space-3);
     }
     .prc-edit-row {
         display: grid;
-        grid-template-columns: subgrid;
-        grid-column: 1 / -1;
+        grid-template-columns: minmax(8em, 16em) minmax(0, 1fr);
         align-items: stretch;
         background: var(--color-surface);
         border: 1px solid var(--color-border);
         border-radius: var(--radius-md);
-        overflow: hidden;
+        overflow: visible;
         transition: border-color 0.15s cubic-bezier(.4,0,.2,1);
     }
     @media (hover: hover) {
@@ -677,19 +691,28 @@ export function getPricingTabStyles(): string {
         padding: var(--space-2) var(--space-3);
         border-right: 1px solid var(--color-border);
         background: rgba(255,255,255,0.015);
+        min-width: 0;
     }
     .prc-edit-card-name {
+        display: flex;
+        align-items: center;
+        gap: var(--space-1);
         font-weight: 600;
         font-size: 0.88em;
-        white-space: nowrap;
+        min-width: 0;
+        max-width: 100%;
+    }
+    .prc-edit-card-name-text {
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
+        white-space: nowrap;
     }
     .prc-edit-row-right {
         flex: 1;
         min-width: 0;
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         gap: 1px var(--space-3);
         padding: var(--space-1) var(--space-3);
         align-items: center;
@@ -699,13 +722,29 @@ export function getPricingTabStyles(): string {
         align-items: center;
         gap: 6px;
         padding: 2px 0;
+        min-width: 0;
     }
     .prc-edit-field-label {
         font-size: 0.75em;
         color: var(--color-text-dim);
-        white-space: nowrap;
-        min-width: 42px;
-        flex-shrink: 0;
+        /* break-word, not anywhere: overflow-wrap:anywhere lets the min-content width collapse to a
+           single character, which stacks the longest bilingual label (Cache Write / 缓存写入)
+           vertically at panel widths around 490-560px. */
+        overflow-wrap: break-word;
+        word-break: break-word;
+        min-width: 3.5em;
+    }
+    @media (max-width: 480px) {
+        .prc-edit-row {
+            grid-template-columns: minmax(0, 1fr);
+        }
+        .prc-edit-row-left {
+            border-right: none;
+            border-bottom: 1px solid var(--color-border);
+        }
+        .prc-edit-row-right {
+            grid-template-columns: minmax(0, 1fr);
+        }
     }
     .prc-edit-input {
         appearance: none;
@@ -725,6 +764,7 @@ export function getPricingTabStyles(): string {
         outline: none;
         border-color: var(--color-accent);
         background: var(--color-surface-hover);
+        box-shadow: 0 0 0 2px rgba(0, 127, 212, 0.35);
         box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 35%, transparent);
     }
     @media (hover: hover) {
@@ -770,12 +810,15 @@ export function getPricingTabStyles(): string {
         box-shadow: 0 0 0 2px var(--color-accent);
     }
     .prc-btn-primary {
+        background: rgba(0, 127, 212, 0.18);
         background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+        border-color: rgba(0, 127, 212, 0.35);
         border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
         color: var(--color-accent);
     }
     @media (hover: hover) {
         .prc-btn-primary:hover {
+            background: rgba(0, 127, 212, 0.28);
             background: color-mix(in srgb, var(--color-accent) 28%, transparent);
         }
     }
@@ -794,7 +837,7 @@ export function getPricingTabStyles(): string {
         background: rgba(251,191,36,0.15);
         color: #fbbf24;
         font-weight: 600;
-        margin-left: var(--space-1);
+        flex-shrink: 0;
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -864,7 +907,11 @@ export function getPricingTabStyles(): string {
     .prc-monthly-model-name {
         font-weight: 600;
         font-size: 0.9em;
-        min-width: 100px;
+        flex: 0 1 16em;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
     .prc-monthly-bar-wrap {
         flex: 1;
@@ -981,6 +1028,13 @@ function fmtTok(n: number): string {
     return String(n);
 }
 
+function fmtTokPrice(tokens: number, price: number): string {
+    return tBi(
+        `${fmtTok(tokens)} tok × $${price}/M`,
+        `${fmtTok(tokens)} 令牌 × $${price}/百万`,
+    );
+}
+
 // ─── Unified Cost Panel ──────────────────────────────────────────────────────
 
 function buildCostPanel(
@@ -1006,7 +1060,7 @@ function buildCostPanel(
     html += '<div class="cost-chips">';
     html += `<span class="cost-chip cost-chip-total">${fmtUsd(grandTotal)}</span>`;
     if (topModel) {
-        html += `<span class="cost-chip" data-tooltip="${tBi('Top Spender', '最高消费')}">${esc(topModel.name)} ${fmtUsd(topModel.totalCost)}</span>`;
+        html += `<span class="cost-chip" title="${esc(topModel.name)}" data-tooltip="${tBi('Top Spender', '最高消费')}">${esc(topModel.name)} ${fmtUsd(topModel.totalCost)}</span>`;
     }
     html += `<span class="cost-chip" data-tooltip="${tBi('Avg per Call', '平均每次')}">${fmtUsd(avgPerCall)}/${tBi('call', '次')}</span>`;
     html += `<span class="cost-chip" data-tooltip="${tBi('Models with pricing', '有定价的模型')}">${priced.length} ${tBi('models', '模型')}</span>`;
@@ -1031,12 +1085,12 @@ function buildCostPanel(
             const thinkPct = (r.thinkingCost / total) * pct;
 
             html += `<div class="cost-bar-row">
-                <span class="cost-bar-label" data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</span>
+                <span class="cost-bar-label" title="${esc(r.name)}" data-tooltip="${esc(r.name)}${r.responseModel && r.responseModel !== r.name ? ' · ' + esc(r.responseModel) : ''}">${esc(r.name)}</span>
                 <div class="cost-bar-track">
-                    ${inputPct > 0 ? `<div class="cost-bar-seg cost-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="${tBi('Input', '输入')}: ${fmtUsd(r.inputCost)} (${fmtTok(r.inputTokens)} tok)"></div>` : ''}
-                    ${outputPct > 0 ? `<div class="cost-bar-seg cost-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="${tBi('Output', '输出')}: ${fmtUsd(r.outputCost)} (${fmtTok(r.outputTokens)} tok)"></div>` : ''}
-                    ${cachePct > 0 ? `<div class="cost-bar-seg cost-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="${tBi('Cache', '缓存')}: ${fmtUsd(r.cacheCost)} (${fmtTok(r.cacheTokens)} tok)"></div>` : ''}
-                    ${thinkPct > 0 ? `<div class="cost-bar-seg cost-seg-think" style="width:${thinkPct.toFixed(1)}%" data-tooltip="${tBi('Thinking', '思考')}: ${fmtUsd(r.thinkingCost)} (${fmtTok(r.thinkingTokens)} tok)"></div>` : ''}
+                    ${inputPct > 0 ? `<div class="cost-bar-seg cost-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Input: ${fmtUsd(r.inputCost)} (${fmtTok(r.inputTokens)} tok)`, `输入：${fmtUsd(r.inputCost)}（${fmtTok(r.inputTokens)} 令牌）`))}"></div>` : ''}
+                    ${outputPct > 0 ? `<div class="cost-bar-seg cost-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Output: ${fmtUsd(r.outputCost)} (${fmtTok(r.outputTokens)} tok)`, `输出：${fmtUsd(r.outputCost)}（${fmtTok(r.outputTokens)} 令牌）`))}"></div>` : ''}
+                    ${cachePct > 0 ? `<div class="cost-bar-seg cost-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="${esc(tBi(`Cache: ${fmtUsd(r.cacheCost)} (${fmtTok(r.cacheTokens)} tok)`, `缓存：${fmtUsd(r.cacheCost)}（${fmtTok(r.cacheTokens)} 令牌）`))}"></div>` : ''}
+                    ${thinkPct > 0 ? `<div class="cost-bar-seg cost-seg-think" style="width:${thinkPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Thinking: ${fmtUsd(r.thinkingCost)} (${fmtTok(r.thinkingTokens)} tok)`, `思考：${fmtUsd(r.thinkingCost)}（${fmtTok(r.thinkingTokens)} 令牌）`))}"></div>` : ''}
                 </div>
                 <span class="cost-bar-val">${fmtUsd(r.totalCost)}</span>
             </div>`;
@@ -1059,18 +1113,18 @@ function buildCostPanel(
         html += '<div class="cost-detail-rows">';
         for (const r of priced) {
             html += `<div class="cost-detail-row">
-                <span class="cost-detail-name" data-tooltip="${esc(r.responseModel)}">${esc(r.name)}</span>
+                <span class="cost-detail-name" title="${esc(r.name)}" data-tooltip="${esc(r.name)}${r.responseModel && r.responseModel !== r.name ? ' · ' + esc(r.responseModel) : ''}">${esc(r.name)}</span>
                 <div class="cost-detail-items">
-                    <span class="cost-detail-item" data-tooltip="${fmtTok(r.inputTokens)} tok × $${r.pricing!.input}/M">
+                    <span class="cost-detail-item" data-tooltip="${esc(fmtTokPrice(r.inputTokens, r.pricing!.input))}">
                         <span class="cost-legend-dot" style="background:#60a5fa"></span>${fmtUsd(r.inputCost)}
                     </span>
-                    <span class="cost-detail-item" data-tooltip="${fmtTok(r.outputTokens)} tok × $${r.pricing!.output}/M">
+                    <span class="cost-detail-item" data-tooltip="${esc(fmtTokPrice(r.outputTokens, r.pricing!.output))}">
                         <span class="cost-legend-dot" style="background:#2dd4bf"></span>${fmtUsd(r.outputCost)}
                     </span>
-                    <span class="cost-detail-item" data-tooltip="${fmtTok(r.cacheTokens)} tok × $${r.pricing!.cacheRead}/M">
+                    <span class="cost-detail-item" data-tooltip="${esc(fmtTokPrice(r.cacheTokens, r.pricing!.cacheRead))}">
                         <span class="cost-legend-dot" style="background:#22d3ee"></span>${fmtUsd(r.cacheCost)}
                     </span>
-                    ${r.thinkingTokens > 0 ? `<span class="cost-detail-item" data-tooltip="${fmtTok(r.thinkingTokens)} tok × $${r.pricing!.thinking}/M">
+                    ${r.thinkingTokens > 0 ? `<span class="cost-detail-item" data-tooltip="${esc(fmtTokPrice(r.thinkingTokens, r.pricing!.thinking))}">
                         <span class="cost-legend-dot" style="background:#fb923c"></span>${fmtUsd(r.thinkingCost)}
                     </span>` : ''}
                 </div>
@@ -1217,7 +1271,7 @@ export function buildModelDNACards(
         }
 
         html += `<div class="dna-row-card${isPersistedOnly ? ' act-checkpoint-model' : ''}">`;
-        html += `<div class="dna-row-header">${esc(name)}${headerMeta}${headerBadge}</div>`;
+        html += `<div class="dna-row-header"><span class="dna-row-title" title="${esc(name)}">${esc(name)}</span>${headerMeta}${headerBadge}</div>`;
         html += `<div class="dna-row-body">`;
 
         // ── Left: compact stats ──
@@ -1256,11 +1310,11 @@ export function buildModelDNACards(
                     <summary>${tBi('Technical Params', '技术参数')}</summary>
                     <div class="details-body">
                         <div class="prc-dna-grid-inner">
-                            ${buildDNAField('maxTokens', String(cc.maxTokens))}
+                            ${buildDNAField(tBi('maxTokens', '最大 token'), String(cc.maxTokens))}
                             ${buildDNAField(tBi('temp', '温度'), cc.temperature.toString())}
                             ${buildDNAField(tBi('firstTemp', '初始温度'), cc.firstTemperature.toString())}
-                            ${buildDNAField('topK', String(cc.topK))}
-                            ${buildDNAField('topP', cc.topP.toString())}
+                            ${buildDNAField(tBi('topK', 'Top K'), String(cc.topK))}
+                            ${buildDNAField(tBi('topP', 'Top P'), cc.topP.toString())}
                             ${buildDNAField(tBi('stops', '停止词'), String(cc.stopPatternCount))}
                         </div>
                     </div>
@@ -1367,7 +1421,7 @@ function buildEditablePricingTable(
         const uncalledClass = entry.isCalled ? '' : ' prc-edit-uncalled';
 
         html += `<div class="prc-edit-row${uncalledClass}">`;
-        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" data-tooltip="${esc(entry.responseModel)}">${esc(entry.name)}${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}</span></div>`;
+        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(entry.name)}" data-tooltip="${esc(entry.name)}${entry.responseModel && entry.responseModel !== entry.name ? ' · ' + esc(entry.responseModel) : ''}"><span class="prc-edit-card-name-text">${esc(entry.name)}</span>${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}</span></div>`;
         html += `<div class="prc-edit-row-right">`;
         for (const f of fields) {
             const [en, zh] = FIELD_LABELS[f] || [f, f];
@@ -1414,7 +1468,7 @@ function buildDefaultPricingTable(
         const displayName = model.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
         html += `<div class="prc-edit-row">`;
-        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" data-tooltip="${esc(model)}">${esc(displayName)}${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}</span></div>`;
+        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(displayName)}" data-tooltip="${esc(displayName)}${model !== displayName ? ' · ' + esc(model) : ''}"><span class="prc-edit-card-name-text">${esc(displayName)}</span>${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}</span></div>`;
         html += `<div class="prc-edit-row-right">`;
         for (const f of fields) {
             const [en, zh] = FIELD_LABELS[f] || [f, f];
@@ -1564,7 +1618,7 @@ function buildMonthlyCostSummary(
     for (const m of models) {
         const pct = maxCost > 0 ? Math.max(2, (m.totalCost / maxCost) * 100) : 0;
         html += `<div class="prc-monthly-card">
-            <span class="prc-monthly-model-name">${esc(m.name)}</span>
+            <span class="prc-monthly-model-name" title="${esc(m.name)}">${esc(m.name)}</span>
             <div class="prc-monthly-bar-wrap">
                 <div class="prc-monthly-bar-fill" style="width:${pct.toFixed(1)}%"></div>
             </div>

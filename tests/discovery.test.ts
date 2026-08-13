@@ -332,6 +332,38 @@ describe('discovery.ts', () => {
             const line = 'LISTEN  0  128  *:8080  *:*  users:(("node",pid=5678,fd=9))';
             expect(extractPortFromSs(line)).toBe(8080);
         });
+
+        // ── issue #64 / PR #65 (@SecretLUL): the LS is not guaranteed to bind loopback ──
+        // Matching only `127.0.0.1:` made a wildcard-bound LS undiscoverable: the row passed
+        // netstatLineMatchesPid but yielded no port, so findListeningPorts returned [].
+
+        it('extractPortFromNetstat should accept a wildcard-bound local address', () => {
+            expect(extractPortFromNetstat('  TCP    0.0.0.0:65432    0.0.0.0:0    LISTENING    1234')).toBe(65432);
+            expect(extractPortFromNetstat('  TCP    [::]:65432       [::]:0       LISTENING    1234')).toBe(65432);
+            expect(extractPortFromNetstat('  TCP    [::1]:65432      [::]:0       LISTENING    1234')).toBe(65432);
+        });
+
+        it('extractPortFromNetstat should not mistake the foreign column for the local one', () => {
+            // A LAN-bound listening row: scanning the whole line would match the foreign
+            // `0.0.0.0:0` and hand back port 0.
+            const line = '  TCP    192.168.1.5:139    0.0.0.0:0    LISTENING    4';
+            expect(extractPortFromNetstat(line)).toBeNull();
+        });
+
+        it('extractPortFromNetstat should reject a non-loopback-reachable local address', () => {
+            const line = '  TCP    192.168.1.5:59551    0.0.0.0:0    LISTENING    1234';
+            expect(extractPortFromNetstat(line)).toBeNull();
+        });
+
+        it('extractPort should accept the lsof wildcard bind form', () => {
+            expect(extractPort('procnm 123 user 4u IPv4 0x... 0t0 TCP *:54321 (LISTEN)')).toBe(54321);
+            expect(extractPort('procnm 123 user 4u IPv6 0x... 0t0 TCP [::1]:54321 (LISTEN)')).toBe(54321);
+        });
+
+        it('extractPort should ignore non-address lsof columns', () => {
+            // `0t0` and the device id carry no colon; a non-loopback bind must not match.
+            expect(extractPort('procnm 123 user 4u IPv4 0x... 0t0 TCP 10.0.0.4:54321 (LISTEN)')).toBeNull();
+        });
     });
 
     describe('isWSL', () => {
@@ -433,6 +465,58 @@ describe('netstatLineMatchesPid (CR-#62)', () => {
     it('ignores non-LISTENING lines', () => {
         const line = '  TCP    127.0.0.1:8558    127.0.0.1:5000    ESTABLISHED    19472';
         expect(netstatLineMatchesPid(line, 19472)).toBe(false);
+    });
+
+    it('matches a listening line on a Windows build that translates the State column', () => {
+        // German netstat prints ABHÖREN instead of LISTENING; gating solely on the English literal
+        // rejected every candidate line there, so discovery reported "LS not found" indefinitely.
+        // Both the UTF-8 form and the mojibake an OEM-codepage read produces must match, since the
+        // structural fallback never looks at the state word itself.
+        expect(netstatLineMatchesPid('  TCP    127.0.0.1:8558    0.0.0.0:0    ABHÖREN    19472', 19472)).toBe(true);
+        expect(netstatLineMatchesPid('  TCP    127.0.0.1:8558    0.0.0.0:0    ABH�REN    19472', 19472)).toBe(true);
+        // IPv6 wildcard foreign address
+        expect(netstatLineMatchesPid('  TCP    [::1]:8558    [::]:0    ABHÖREN    19472', 19472)).toBe(true);
+        // Any other untranslated state word works too — the check is structural, not a word list.
+        expect(netstatLineMatchesPid('  TCP    127.0.0.1:8558    0.0.0.0:0    ESCUCHANDO    19472', 19472)).toBe(true);
+    });
+
+    it('still rejects a connected socket on a localized Windows', () => {
+        const line = '  TCP    127.0.0.1:8558    127.0.0.1:5000    HERGESTELLT    19472';
+        expect(netstatLineMatchesPid(line, 19472)).toBe(false);
+    });
+
+    it('still rejects a UDP row, which has no State column', () => {
+        const line = '  UDP    127.0.0.1:8558    *:*    19472';
+        expect(netstatLineMatchesPid(line, 19472)).toBe(false);
+    });
+});
+
+describe('filterLsProcessLines binary override (WSL-hosted extension)', () => {
+    // Under Remote-WSL the IDE spawns language_server_linux_x64 inside the distro. The
+    // platform-derived binary name resolves to the Windows server whenever isWSL() is
+    // true, so without an override a WSL-hosted extension host could never enumerate the
+    // one server it is actually able to reach over 127.0.0.1.
+    it('selects the Linux server when explicitly asked for it', () => {
+        const out = [
+            '100 /opt/antigravity/language_server_linux_x64 --csrf_token AbC --app_data_dir antigravity',
+            '101 /mnt/c/Users/x/language_server_windows_x64.exe --csrf_token DeF --app_data_dir antigravity',
+            '102 unrelated_process',
+        ].join('\n');
+        const filtered = filterLsProcessLines(out, 'language_server_linux');
+        expect(filtered).toHaveLength(1);
+        expect(filtered[0]).toContain('language_server_linux_x64');
+        expect(extractCsrfToken(filtered[0])).toBe('AbC');
+    });
+
+    it('still requires the antigravity marker when overridden', () => {
+        const out = '100 /opt/other/language_server_linux_x64 --csrf_token AbC';
+        expect(filterLsProcessLines(out, 'language_server_linux')).toHaveLength(0);
+    });
+
+    it('falls back to the platform default when no override is given', () => {
+        const binary = process.platform === 'win32' ? 'language_server_windows' : 'language_server_macos';
+        const out = `100 ${binary} --app_data_dir antigravity`;
+        expect(filterLsProcessLines(out)).toHaveLength(1);
     });
 });
 

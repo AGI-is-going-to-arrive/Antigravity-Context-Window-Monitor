@@ -4,6 +4,7 @@
  */
 
 import type { Language } from './i18n';
+import { getQuotaPoolKey } from './models';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -14,7 +15,9 @@ export type EffectiveMode = 'compact' | 'normal';
 export interface QuotaSelectable {
     model: string;
     label: string;
-    quotaInfo?: { remainingFraction: number };
+    quotaInfo?: { remainingFraction: number; resetTime?: string };
+    /** Set on a collapsed row: how many models the row's quota pool contains. */
+    poolSize?: number;
 }
 
 export interface SelectQuotaRowsResult<T extends QuotaSelectable> {
@@ -98,13 +101,18 @@ export function getLineBudget(density: TooltipDensity, mode: EffectiveMode): num
 
 // ─── Quota row selection ──────────────────────────────────────────────────────
 
+/** Platform default picker model — used only as a same-pool representative tie-break. */
+const PLATFORM_DEFAULT_MODEL_ID = 'MODEL_PLACEHOLDER_M298';
+
 /**
  * Select quota rows for the tooltip table:
- * 1. Current model first (if present and has quota)
- * 2. Remaining by remainingFraction ascending (most strained first)
- * 3. Stable label localeCompare on ties
+ * 1. Collapse models that share a quota pool (getQuotaPoolKey) into one row
+ * 2. Representative: current model, then platform default, then newest generation, then label
+ * 3. Current model's pool first; remaining by remainingFraction ascending
+ * 4. Stable label localeCompare on leftover ties
  *
  * Returns truncated rows + hiddenCount (0 when maxRows is infinite / ≥ total).
+ * `total` is the number of pools after collapse, not the raw model count.
  */
 export function selectQuotaRows<T extends QuotaSelectable>(
     models: T[],
@@ -112,29 +120,50 @@ export function selectQuotaRows<T extends QuotaSelectable>(
     maxRows: number,
 ): SelectQuotaRowsResult<T> {
     const withQ = models.filter(m => !!m.quotaInfo);
-    const current = currentId
-        ? withQ.find(m => m.model === currentId)
-        : undefined;
-    const others = withQ
-        .filter(m => m.model !== currentId)
-        .sort((a, b) => {
-            const df = (a.quotaInfo!.remainingFraction) - (b.quotaInfo!.remainingFraction);
-            if (df !== 0) {
-                return df;
-            }
-            return a.label.localeCompare(b.label);
-        });
 
-    // Dedup by model id while preserving order
-    const seen = new Set<string>();
-    const ordered: T[] = [];
-    for (const m of (current ? [current, ...others] : others)) {
-        if (seen.has(m.model)) {
+    const seenModel = new Set<string>();
+    const unique: T[] = [];
+    for (const m of withQ) {
+        if (seenModel.has(m.model)) {
             continue;
         }
-        seen.add(m.model);
-        ordered.push(m);
+        seenModel.add(m.model);
+        unique.push(m);
     }
+
+    const groups = new Map<string, T[]>();
+    for (const m of unique) {
+        const key = getQuotaPoolKey(m.model, m.quotaInfo?.resetTime);
+        const list = groups.get(key);
+        if (list) {
+            list.push(m);
+        } else {
+            groups.set(key, [m]);
+        }
+    }
+
+    const ordered: T[] = [];
+    for (const members of groups.values()) {
+        const rep = pickPoolRepresentative(members, currentId);
+        ordered.push(annotatePoolLabel(rep, members.length));
+    }
+
+    ordered.sort((a, b) => {
+        const aCur = !!currentId && a.model === currentId;
+        const bCur = !!currentId && b.model === currentId;
+        if (aCur !== bCur) {
+            return aCur ? -1 : 1;
+        }
+        const df = (a.quotaInfo!.remainingFraction) - (b.quotaInfo!.remainingFraction);
+        if (df !== 0) {
+            return df;
+        }
+        const dGen = generationScore(b.label) - generationScore(a.label);
+        if (dGen !== 0) {
+            return dGen;
+        }
+        return a.label.localeCompare(b.label);
+    });
 
     const total = ordered.length;
     if (!Number.isFinite(maxRows) || maxRows < 0 || maxRows >= total) {
@@ -143,6 +172,52 @@ export function selectQuotaRows<T extends QuotaSelectable>(
     const limit = Math.max(0, Math.floor(maxRows));
     const rows = ordered.slice(0, limit);
     return { rows, hiddenCount: Math.max(0, total - rows.length), total };
+}
+
+function pickPoolRepresentative<T extends QuotaSelectable>(members: T[], currentId: string): T {
+    if (currentId) {
+        const current = members.find(m => m.model === currentId);
+        if (current) {
+            return current;
+        }
+    }
+    const platformDefault = members.find(m => m.model === PLATFORM_DEFAULT_MODEL_ID);
+    if (platformDefault) {
+        return platformDefault;
+    }
+    return [...members].sort((a, b) => {
+        const dg = generationScore(b.label) - generationScore(a.label);
+        if (dg !== 0) {
+            return dg;
+        }
+        return a.label.localeCompare(b.label);
+    })[0];
+}
+
+/** "Gemini 3.7 Flash" → 3007; labels with no x.y version sort last. */
+function generationScore(label: string): number {
+    const m = /(\d+)\.(\d+)/.exec(label);
+    if (!m) {
+        return 0;
+    }
+    return Number(m[1]) * 1000 + Number(m[2]);
+}
+
+/** Suffix marking how many models a collapsed pool row stands for, e.g. " · 11". */
+export function poolSizeSuffix(poolSize: number): string {
+    return poolSize > 1 ? ` · ${poolSize}` : '';
+}
+
+function annotatePoolLabel<T extends QuotaSelectable>(rep: T, poolSize: number): T {
+    const suffix = poolSizeSuffix(poolSize);
+    if (!suffix) {
+        return rep;
+    }
+    // Carry the size separately as well. The renderer truncates labels to a fixed display width,
+    // and "Claude Opus 4.6 (Thinking) · 3" is wider than that budget — appending first would let the
+    // count be the part that gets cut, turning a 3-model pool row into something that reads like a
+    // single model. The renderer trims the base label to fit AROUND the suffix instead.
+    return { ...rep, label: `${rep.label}${suffix}`, poolSize };
 }
 
 // ─── Display-width truncation ─────────────────────────────────────────────────
@@ -237,12 +312,17 @@ export function isQuotaSectionTitle(line: string): boolean {
         && (/Model Quota/i.test(line) || /模型配额/.test(line));
 }
 
-/** "… and N more models" / "… 还有 N 个模型" fold hint. */
+/**
+ * "… and N more quota pools" / "… 还有 N 个配额池" fold hint.
+ * The older "more models" / "个模型" wording is still accepted: this predicate is what protects the
+ * quota block from being folded away, and it must keep working if it ever sees a line rendered by a
+ * different version of the text.
+ */
 export function isQuotaMoreLine(line: string): boolean {
-    if (/more models/i.test(line)) {
+    if (/more (?:quota pools|models)/i.test(line)) {
         return true;
     }
-    return /还有/.test(line) && /模型/.test(line);
+    return /还有/.test(line) && /(配额池|模型)/.test(line);
 }
 
 function isMarkdownTableLine(line: string): boolean {

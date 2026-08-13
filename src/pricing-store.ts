@@ -40,7 +40,7 @@ export interface ModelCostRow {
 //        Gemini cacheRead = from official table; no separate cacheWrite pricing
 // Thinking: = output price (Claude extended thinking / Gemini reasoning output)
 
-export const PRICING_LAST_UPDATED = '2026-05-20';
+export const PRICING_LAST_UPDATED = '2026-08-14';
 
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     // ── Claude (platform.claude.com/docs/en/about-claude/pricing) ─────
@@ -56,6 +56,15 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     // ── Gemini 3.6 Flash (ai.google.dev/gemini-api/docs/pricing + artificialanalysis, verified 2026-07-22) ──
     // Input unchanged at $1.50; output cut to $7.50 (vs 3.5 Flash's $9.00). Cache derived as 3.5 Flash (0.1× / 1.25× input).
     'gemini-3.6-flash': { input: 1.50, output: 7.50, cacheRead: 0.15, cacheWrite: 1.875, thinking: 7.50 },
+    // ── Gemini 3.7 Flash (blog.google introduction post + VentureBeat + 9to5Google, verified 2026-08-14) ──
+    // INTRODUCTORY pricing, exactly half of 3.6 Flash: $0.75 input / $3.75 output per 1M tokens,
+    // context caching $0.075. Google's footnote: "Introductory pricing expires on December 31, 2026.
+    // Starting January 1, 2027, $1.50/1M input tokens and $7.50/1M output tokens will apply."
+    // ACTION REQUIRED ON 2027-01-01: change this row to the post-introductory rates —
+    //   { input: 1.50, output: 7.50, cacheRead: 0.15, cacheWrite: 1.875, thinking: 7.50 }
+    // which is parity with the 'gemini-3.6-flash' row above.
+    // cacheWrite derived at 1.25× input, consistent with how the 3.5/3.6 Flash rows were derived.
+    'gemini-3.7-flash': { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, thinking: 3.75 },
 };
 
 // ─── Pricing Lookup ──────────────────────────────────────────────────────────
@@ -102,19 +111,105 @@ export function findPricing(
         }
     }
     // Fallback: if responseModel looks like a display name (contains spaces/parens),
-    // normalize to kebab-case and retry (e.g. "Claude Opus 4.6 (Thinking)" → "claude-opus-4.6-thinking")
+    // normalize to kebab-case and retry (e.g. "Claude Opus 4.6 (Thinking)" → "claude-opus-4-6-thinking")
     if (/[A-Z\s(]/.test(responseModel)) {
-        const kebab = responseModel
-            .replace(/[()]/g, '')
-            .trim()
-            .toLowerCase()
-            .replace(/\s+/g, '-')
-            .replace(/(\d+)\.(\d+)/g, '$1-$2');  // "4.6" → "4-6"
-        if (kebab && kebab !== responseModel) {
-            return findPricing(kebab, table);
+        for (const candidate of kebabCandidates(responseModel)) {
+            if (candidate !== responseModel) {
+                const hit = findPricing(candidate, table);
+                if (hit) { return hit; }
+            }
         }
     }
     return null;
+}
+
+/**
+ * Spellings of a display name to try against the pricing table, best first.
+ *
+ * Two things make a single spelling insufficient:
+ *  - The built-in keys disagree about decimals. Claude rows dash them
+ *    ('claude-opus-4-6'), Gemini rows keep the dot ('gemini-3.1-pro'), so a fixed
+ *    "4.6 → 4-6" rewrite finds the Claude rows and misses every Gemini row.
+ *  - A tier suffix is only resolvable while it is in English. `resolveModelId`
+ *    above knows "Gemini 3.1 Pro (High)" but not its localized form, and the
+ *    localized suffix survives kebab-casing, so "Gemini 3.1 Pro (高)" reached the
+ *    end of this function with no match and the model's cost silently read $0 for
+ *    every user running a non-English UI. Dropping the trailing parenthetical
+ *    recovers the base name, which is locale-independent.
+ */
+function kebabCandidates(displayName: string): string[] {
+    const kebab = (s: string, dashDecimals: boolean): string => {
+        const base = s.replace(/[()]/g, '').trim().toLowerCase().replace(/\s+/g, '-');
+        return dashDecimals ? base.replace(/(\d+)\.(\d+)/g, '$1-$2') : base;
+    };
+    const withoutTier = displayName.replace(/\s*\([^)]*\)\s*$/, '').trim();
+    const out = [kebab(displayName, true), kebab(displayName, false)];
+    if (withoutTier && withoutTier !== displayName) {
+        out.push(kebab(withoutTier, false), kebab(withoutTier, true));
+    }
+    return out.filter((v, i) => v && out.indexOf(v) === i);
+}
+
+/**
+ * Resolve pricing for a model, letting the user's custom prices win.
+ *
+ * Merging the two tables into one and calling `findPricing` does NOT work, for two
+ * separate reasons that both had to be fixed here:
+ *  - Insertion order. The prefix and fuzzy passes in `findPricing` walk keys in order,
+ *    so the built-in 'gemini-3.7-flash' is reached before any custom row and wins for
+ *    every variant id that starts with it. A custom row could never take effect.
+ *  - Key namespace. The Pricing tab labels its editable rows with the ledger's model
+ *    key — a display name such as "Gemini 3.7 Flash (High)" — while the ledger and GM
+ *    data look pricing up by catalog id such as 'gemini-3.7-flash-high'. The two
+ *    spellings never meet by string matching alone, so the query is also tried under
+ *    the canonical display name of whatever model id it resolves to.
+ */
+export function findPricingWithCustom(
+    responseModel: string,
+    custom: Record<string, ModelPricing>,
+    base: Record<string, ModelPricing> = DEFAULT_PRICING,
+): ModelPricing | null {
+    if (responseModel && Object.keys(custom).length > 0) {
+        for (const alias of pricingLookupAliases(responseModel)) {
+            if (custom[alias]) { return custom[alias]; }
+        }
+        const viaCustom = findPricing(responseModel, custom);
+        if (viaCustom) { return viaCustom; }
+    }
+    return findPricing(responseModel, base);
+}
+
+/** The spellings a single model answers to: as given, its model id, its display name. */
+function pricingLookupAliases(responseModel: string): string[] {
+    const out = [responseModel];
+    const modelId = resolveModelId(responseModel);
+    if (modelId) {
+        out.push(modelId);
+        const displayName = getModelDisplayName(modelId);
+        if (displayName) { out.push(displayName); }
+    }
+    return out.filter((v, i) => v && out.indexOf(v) === i);
+}
+
+/**
+ * The one cost formula. Thinking tokens are billed at the thinking rate and are a
+ * subset of the reported output count, so they are subtracted before applying the
+ * output rate. Cache *creation* is deliberately not billed here — the platform's
+ * reported cacheCreationTokens are not consistently populated, and every existing
+ * cost path in this extension has always excluded them; including them in one path
+ * only would make two screens disagree about the same day.
+ */
+export function costFromTokens(
+    t: { inputTokens: number; outputTokens: number; thinkingTokens: number; cacheReadTokens: number },
+    pricing: ModelPricing,
+): number {
+    const responseOutput = Math.max(0, (t.outputTokens || 0) - (t.thinkingTokens || 0));
+    return (
+        (t.inputTokens || 0) * pricing.input +
+        responseOutput * pricing.output +
+        (t.cacheReadTokens || 0) * pricing.cacheRead +
+        (t.thinkingTokens || 0) * pricing.thinking
+    ) / 1_000_000;
 }
 
 // ─── Cost Calculation ────────────────────────────────────────────────────────
@@ -123,7 +218,6 @@ export function calculateCosts(
     summary: GMSummary,
     customPricing: Record<string, ModelPricing>,
 ): { rows: ModelCostRow[]; grandTotal: number } {
-    const mergedTable = { ...DEFAULT_PRICING, ...customPricing };
     const entries = Object.entries(summary.modelBreakdown);
     // Merge rows by base model name (e.g. M37 + M16 both → "Gemini 3.1 Pro (High)")
     const mergedRows = new Map<string, ModelCostRow>();
@@ -134,7 +228,8 @@ export function calculateCosts(
     for (const [name, ms] of entries) {
         const displayName = normalizeModelDisplayName(name);
         const baseName = getModelBaseName(name) || displayName;
-        const pricing = findPricing(ms.responseModel, mergedTable);
+        const pricing = findPricingWithCustom(ms.responseModel, customPricing)
+            || findPricingWithCustom(name, customPricing);
         const responseOutputTokens = Math.max(0, ms.totalOutputTokens - ms.totalThinkingTokens);
 
         const inputCost = pricing ? calcCost(ms.totalInputTokens, pricing.input) : 0;

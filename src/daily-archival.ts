@@ -5,7 +5,8 @@
 import type { ActivityTracker } from './activity-tracker';
 import type { GMTracker, GMSummary, GMModelStats } from './gm-tracker';
 import type { DailyStore } from './daily-store';
-import type { PricingStore } from './pricing-store';
+import type { PricingStore, ModelPricing } from './pricing-store';
+import { findPricingWithCustom, costFromTokens } from './pricing-store';
 import type { PersistedModelDNA } from './model-dna-store';
 import { mergeModelDNAState } from './model-dna-store';
 import type { DailyLedger, LedgerDayData } from './daily-ledger';
@@ -119,7 +120,7 @@ export function performDailyArchival(
     if (ctx.dailyLedger && ctx.dailyLedger.hasData) {
         // ── New path: DailyLedger is the source of truth ──
         const dayData = ctx.dailyLedger.rollover(archiveDateKey);
-        const result = buildGMSummaryFromLedger(dayData);
+        const result = buildGMSummaryFromLedger(dayData, ctx.pricingStore?.getCustom());
         gmSummary = result.summary;
         costTotal = result.totalCost > 0 ? result.totalCost : undefined;
         costPerModel = result.costPerModel;
@@ -185,8 +186,21 @@ export function performDailyArchival(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Build a GMSummary-compatible object from DailyLedger rollover data. */
-export function buildGMSummaryFromLedger(dayData: LedgerDayData): {
+/**
+ * Build a GMSummary-compatible object from DailyLedger rollover data.
+ *
+ * `customPricing` re-prices the day from its stored token counts instead of trusting the
+ * cost the ledger froze when each call was recorded. Archival is the moment a number
+ * becomes permanent, so it should use the best pricing available now, not whatever the
+ * table happened to contain that morning — a model the platform shipped mid-day is
+ * otherwise archived at $0 forever. It is also the only way a user's custom prices ever
+ * reach the calendar, since the ledger records against the built-in table.
+ *
+ * Only the active buckets are re-priced. Settled entries keep their frozen cost because
+ * `LedgerSettledEntry` retains pool-level totals and per-model call counts but no
+ * per-model token split, so there is nothing to re-price them from.
+ */
+export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?: Record<string, ModelPricing>): {
     summary: GMSummary;
     totalCost: number;
     costPerModel: Record<string, number>;
@@ -207,15 +221,19 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData): {
         totalCacheRead += bucket.totalCacheRead;
         totalCacheCreation += bucket.totalCacheCreation;
         totalCredits += bucket.totalCredits;
-        totalCost += bucket.totalEstimatedCost;
 
         for (const [modelKey, ms] of Object.entries(bucket.modelStats)) {
             mergeModelIntoBreakdown(modelBreakdown, modelKey, ms.calls,
                 ms.inputTokens, ms.outputTokens, ms.thinkingTokens,
                 ms.cacheReadTokens, ms.cacheCreationTokens, ms.credits);
-            if (ms.estimatedCost > 0) {
-                costPerModel[modelKey] = (costPerModel[modelKey] || 0) + ms.estimatedCost;
+            // The ledger files per-model rows under a display name, which is also the key
+            // the Pricing tab writes custom prices under, so look pricing up by that key.
+            const pricing = findPricingWithCustom(modelKey, customPricing || {});
+            const cost = pricing ? costFromTokens(ms, pricing) : ms.estimatedCost;
+            if (cost > 0) {
+                costPerModel[modelKey] = (costPerModel[modelKey] || 0) + cost;
             }
+            totalCost += cost;
         }
     }
 
@@ -353,7 +371,10 @@ function mergeModelIntoBreakdown(
             totalInputTokens: 0, totalOutputTokens: 0, totalThinkingTokens: 0,
             totalCacheRead: 0, totalCacheCreation: 0, totalCredits: 0,
             avgTTFT: 0, minTTFT: 0, maxTTFT: 0, avgStreaming: 0, cacheHitRate: 0,
-            responseModel: '', apiProvider: '',
+            // The ledger has no responseModel to carry over, but leaving this empty made
+            // `findPricing('')` return null and silently turned the cost fallback in
+            // performDailyArchival into dead code. The model key is a resolvable name.
+            responseModel: modelKey, apiProvider: '',
             completionConfig: {} as any, hasSystemPrompt: false,
             toolCount: 0, promptSectionTitles: [],
             totalRetries: 0, errorCount: 0,

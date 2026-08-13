@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { ContextUsage } from './tracker';
 import { ModelConfig } from './models';
-import { isShowModelShortId } from './models';
+import { isShowModelShortId, getQuotaPoolKey } from './models';
 import { t, tBi, getLanguage } from './i18n';
 import { formatResetAbsolute, formatResetContext, formatResetCountdownFromMs } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
@@ -11,7 +11,9 @@ import {
     getLineBudget,
     getMaxQuotaRows,
     LABEL_MAX_DISPLAY_WIDTH,
+    measureDisplayWidth,
     parseTooltipDensity,
+    poolSizeSuffix,
     resolveEffectiveMode,
     selectQuotaRows,
     SESSION_MAX_DISPLAY_WIDTH,
@@ -508,7 +510,14 @@ export class StatusBarManager {
         const density = this.readDensity();
         const zoomLevel = this.readZoomLevel();
         const lang = getLanguage();
-        const quotaRowCount = this.cachedConfigs.filter(c => c.quotaInfo).length;
+        // Count the rows the quota table will actually RENDER, not the number of models. The table
+        // collapses each quota pool into one row, and the live picker now carries 14 models across
+        // just two pools — counting models would force compact mode on a two-row table.
+        const quotaRowCount = new Set(
+            this.cachedConfigs
+                .filter(c => c.quotaInfo)
+                .map(c => getQuotaPoolKey(c.model, c.quotaInfo?.resetTime)),
+        ).size;
         const effective = resolveEffectiveMode(density, zoomLevel, quotaRowCount, lang);
         // full density keeps normal layout detail but no soft caps
         const isCompact = density !== 'full' && effective === 'compact';
@@ -553,7 +562,9 @@ export class StatusBarManager {
         isCompressing: boolean,
         budget: { maxQuotaRows: number; isCompact: boolean; currentId: string; density: TooltipDensity },
     ): string[] {
-        const safeModelName = escapeMarkdown(usage.modelDisplayName);
+        const safeModelName = escapeMarkdown(
+            truncateByDisplayWidth(usage.modelDisplayName, SESSION_MAX_DISPLAY_WIDTH),
+        );
         const rawTitle = usage.title || usage.cascadeId.substring(0, 8);
         const safeTitle = escapeMarkdown(
             truncateByDisplayWidth(rawTitle, SESSION_MAX_DISPLAY_WIDTH),
@@ -593,7 +604,9 @@ export class StatusBarManager {
         const safeTitle = escapeMarkdown(
             truncateByDisplayWidth(rawTitle, SESSION_MAX_DISPLAY_WIDTH),
         );
-        const safeModelName = escapeMarkdown(usage.modelDisplayName);
+        const safeModelName = escapeMarkdown(
+            truncateByDisplayWidth(usage.modelDisplayName, SESSION_MAX_DISPLAY_WIDTH),
+        );
         const tokenUnit = tBi('tokens', '令牌');
 
         const lines = [
@@ -732,8 +745,17 @@ export class StatusBarManager {
                     resetStr = formatResetContext(qi.resetTime, { nowMs: now });
                 }
             }
+            // A collapsed pool row carries a " · N" suffix saying how many models it stands for.
+            // That count is the whole point of the row, so trim the model name to fit around it
+            // rather than letting a plain truncate eat the suffix from the right.
+            // selectQuotaRows attaches poolSize to the rows it collapses; it is a display concern,
+            // so it is not part of the ModelConfig the language server hands us.
+            const suffix = poolSizeSuffix((c as { poolSize?: number }).poolSize ?? 0);
+            const baseLabel = suffix && c.label.endsWith(suffix)
+                ? c.label.slice(0, -suffix.length)
+                : c.label;
             const label = escapeMarkdown(
-                truncateByDisplayWidth(c.label, LABEL_MAX_DISPLAY_WIDTH),
+                truncateByDisplayWidth(baseLabel, LABEL_MAX_DISPLAY_WIDTH - measureDisplayWidth(suffix)) + suffix,
             );
             tableRows.push(`| ${bar} ${label} | ${pct}% | 🔄 ${resetStr} |`);
         }
@@ -745,9 +767,12 @@ export class StatusBarManager {
         // "N more" only when truncated (never in full density / zero hidden)
         if (hiddenCount > 0 && opts.density !== 'full') {
             result.push(
+                // "pools", not "models": rows are collapsed per quota pool, so hiddenCount counts
+                // pools. Saying "models" would understate what is hidden once more than one pool
+                // gets truncated — a hidden pool can stand for a dozen models.
                 tBi(
-                    `… and ${hiddenCount} more models — click to view all`,
-                    `… 还有 ${hiddenCount} 个模型，点击查看全部`,
+                    `… and ${hiddenCount} more quota pools — click to view all`,
+                    `… 还有 ${hiddenCount} 个配额池，点击查看全部`,
                 ),
             );
         }

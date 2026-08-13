@@ -76,10 +76,22 @@ describe('static model display fallbacks', () => {
     it('exposes Gemini 3.6 Flash tiers and the M84 takeover of 3.5 Flash (High)', () => {
         // M84 took over the "Gemini 3.5 Flash (High)" identity from M133 (2026-07 live probe).
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M84')).toBe('Gemini 3.5 Flash (High)');
+        // 3.6 Flash was renumbered M264/M265/M266 -> M71/M72/M73 (2026-08 live probe). Both the
+        // active and the retired IDs must still render a human-readable name.
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M71')).toBe('Gemini 3.6 Flash (High)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M72')).toBe('Gemini 3.6 Flash (Medium)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M73')).toBe('Gemini 3.6 Flash (Low)');
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M264')).toBe('Gemini 3.6 Flash (High)');
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M265')).toBe('Gemini 3.6 Flash (Medium)');
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M266')).toBe('Gemini 3.6 Flash (Low)');
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M196')).toBe('Gemini 3.6 Flash (Tiered)');
-        expect(resolveModelId('Gemini 3.6 Flash (High)')).toBe('MODEL_PLACEHOLDER_M264');
+        expect(resolveModelId('Gemini 3.6 Flash (High)')).toBe('MODEL_PLACEHOLDER_M71');
+    });
+
+    it('exposes the Gemini 3.7 Flash tiers', () => {
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M298')).toBe('Gemini 3.7 Flash (High)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M299')).toBe('Gemini 3.7 Flash (Medium)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M300')).toBe('Gemini 3.7 Flash (Low)');
+        expect(resolveModelId('Gemini 3.7 Flash (High)')).toBe('MODEL_PLACEHOLDER_M298');
     });
 });
