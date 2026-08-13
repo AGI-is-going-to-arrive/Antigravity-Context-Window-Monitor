@@ -1,5 +1,47 @@
 # 变更日志 / Changelog
 
+## [1.16.16] - 2026-08-14
+
+> A correctness patch on v1.16.15, from an adversarial review of the released tree. Fixes a cost-recovery defect that could **silently double an archived day's total** on the legacy archival path; brings the `ss` port parser in line with the `netstat` and `lsof` ones, which matters more than it looks because v1.16.15 made `ss` the primary port source for a WSL-hosted extension; and stops the Cost tab and the Calendar disagreeing about the same usage. tsc clean, 23 files / 282 vitest tests green.
+> 针对 v1.16.15 的正确性补丁，来自对已发布代码的对抗式审查。修复一处可能在 legacy 归档路径上**静默把某日总额翻倍**的成本恢复缺陷；让 `ss` 端口解析与 `netstat`、`lsof` 两侧对齐——这一点比看上去重要，因为 v1.16.15 使 `ss` 成为 WSL 内扩展宿主的主要端口来源；并终结 Cost 页与日历对同一笔用量给出两个数字的问题。tsc 无错误，23 文件 / 282 项 vitest 用例全绿。
+
+### 🐛 Fixed / 修复
+
+- **Cost recovery could double an archived day, permanently and without a trace / 成本恢复可能把某个归档日永久翻倍且不留痕迹**:
+  The legacy archival path wrote each model's cost under its normalized display name while the rows themselves are keyed by the raw model id. Whenever those two disagreed — a raw `MODEL_PLACEHOLDER_Mxxx` key, a retired placeholder alongside its replacement, or the short-id diagnostic naming — every per-model row was archived with no cost at all, even though the day total already held the full amount. v1.16.15's cost recovery then read those rows as unpriced and added the same money a second time. A re-run would find every row priced and report nothing left to fix, so the inflated figure was permanent. Archival now keys per-model costs by the raw key the rows are actually stored under, and the recovery pass refuses any cycle whose total exceeds what its priced rows account for, which also protects days already archived in that shape. Only the legacy path was affected — the ledger path, which is what a machine that has been running v1.18.0 or later uses, was correct.
+  legacy 归档路径按归一化后的显示名写入每个模型的成本，而行本身是以原始模型 id 为键的。只要两者不一致——裸 `MODEL_PLACEHOLDER_Mxxx` 键、退役 placeholder 与其替代者并存、或短 id 诊断命名——每一条每模型行都会以"无成本"归档，尽管当日总额已含完整金额。v1.16.15 的成本恢复随后把这些行读作未定价，把同一笔钱又加了一次。再跑一次会发现所有行都已定价、报告无事可做，于是膨胀后的数字永久固化。归档现按行实际使用的原始键写入每模型成本，恢复流程也会拒绝任何"总额超出其已定价行之和"的 cycle，从而同时保护已经以该形态归档的日期。仅 legacy 路径受影响——账本路径（v1.18.0 及以后的机器所使用的）本就正确。
+
+- **The `ss` port parser could not read the IPv6 forms it actually prints / `ss` 端口解析读不出它实际打印的 IPv6 形态**:
+  v1.16.15 widened the accepted bind addresses for `netstat` and `lsof` but left `ss` on its old pattern, which cannot match the bracketed forms iproute2 has printed since 4.13 — in `[::]:8082` the `::` is followed by `]` rather than by the port separator. A server bound to IPv6 therefore reproduced issue #64 exactly: the row passes the PID filter, no port comes out, and discovery reports the server missing. v1.16.15 made this worse rather than better: the new WSL-local discovery skips `netstat` outright, and a minimal WSL distro image often has no `lsof`, so `ss` became that path's primary port source rather than a rarely-used fallback. It now reads the Local Address column positionally through the same helper as the other two, so all three agree on every bind form, and it also handles the interface suffix `ss` appends to a device-bound socket.
+  v1.16.15 放宽了 `netstat` 与 `lsof` 接受的绑定地址，却把 `ss` 留在旧模式上——后者匹配不了 iproute2 自 4.13 起打印的方括号形态：在 `[::]:8082` 中 `::` 后面跟的是 `]` 而非端口分隔符。因此绑定在 IPv6 上的服务器会精确复现 issue #64：行通过了 PID 过滤，却取不出端口，发现流程报服务器不存在。v1.16.15 使情况变糟而非变好：新增的 WSL 本地发现会直接跳过 `netstat`，而精简的 WSL 发行版镜像往往没有 `lsof`，于是 `ss` 成了该路径的**主要**端口来源而非罕用兜底。现在它经由与另外两者相同的辅助函数按列位读取本地地址列，三者对每一种绑定形态给出一致结果，并且能处理 `ss` 为绑定到特定网卡的套接字附加的接口后缀。
+
+- **The Cost tab and the Calendar disagreed about the same usage / Cost 页与日历对同一笔用量给出两个数字**:
+  v1.16.15 routed every cost surface through the lookup that lets a user's custom price win — except the Cost tab itself, which was left on the merged-table lookup. A merged table cannot apply a custom price when the ledger key is a raw placeholder or a catalog id, both of which are legitimate ledger keys, so the Cost tab showed the built-in rate today while the Calendar showed the custom rate tomorrow.
+  v1.16.15 把每一个成本展示面都改走"自定义价优先"的查价路径——唯独漏了 Cost 页本身，它仍在用合并表查价。当账本键是裸 placeholder 或 catalog id 时（两者都是合法的账本键），合并表无法应用自定义价，于是 Cost 页今天显示内置价、日历明天显示自定义价。
+
+- **Activity model cards billed thinking tokens twice / Activity 模型卡把思考 token 计费两次**:
+  Thinking tokens are a subset of the reported output count and must be subtracted before the output rate applies. Two of the five cost sites in the Activity panel applied both rates to the same tokens, overcharging by exactly the thinking count times the output rate. Pre-existing; both now use the same shared formula as everything else.
+  思考 token 是所报输出数的子集，必须先扣除再套用输出单价。Activity 面板五处成本计算中有两处对同一批 token 同时套用了两种单价，多算的恰好是思考 token 数乘以输出单价。此问题此前即存在；两处现已改用与其余各处相同的共享公式。
+
+- **A port outside the valid range aborted the whole of discovery / 越界端口会中止整个发现流程**:
+  Node rejects a port above 65535 by throwing synchronously from inside the probe, and that throw is caught above the port loop — so a single out-of-range value abandoned every remaining port rather than skipping itself. Not reachable from kernel output, but it is the payload half of the parsing defect below.
+  Node 对大于 65535 的端口会在探测内部同步抛出，而该异常在端口循环之外被捕获——因此单个越界值会放弃其余所有端口，而不是跳过它自己。内核输出到不了这个值，但它是下一条解析缺陷的载荷部分。
+
+- **The lsof reader could take a port from the COMMAND column / lsof 读取可能从 COMMAND 列取到端口**:
+  It scanned columns left to right and returned the first that parsed as an address. COMMAND is the first column and holds a process name, which a program can set for itself — the one column whose contents can also look like an address. Since only the first match per line is used, a name shaped like `0.0.0.0:8080` would have replaced the real port outright rather than merely adding a wrong one. Not reachable in practice, because `lsof` is invoked with `-a -p <pid>` so the name is always the language server's own, but the test that claimed to cover this asserted something about the columns that is not true. It now reads right to left, where the address column always is.
+  它自左向右扫描各列并返回第一个能解析成地址的。COMMAND 是第一列，存放进程名，而进程名可由程序自行设置——它是唯一一个内容也可能形似地址的列。由于每行只取第一个匹配，形如 `0.0.0.0:8080` 的进程名会直接**顶替**真实端口，而不只是多加一个错的。实际不可达，因为 `lsof` 以 `-a -p <pid>` 调用、进程名恒为语言服务器自身，但那条声称覆盖此情形的测试对列的论断并不成立。现改为自右向左读取，地址列恒在该端。
+
+### 📝 Docs / 文档
+
+- Corrected an unverified claim in the v1.16.15 entry: German is the only Windows locale with real evidence of a translated `netstat` State column. French, Spanish, Portuguese, Russian, Korean, Chinese and Japanese captures all print the English `LISTENING`; the translation lists circulating elsewhere are contradicted by real output. The fix never depended on a word list, so only the wording changed.
+  修正 v1.16.15 条目中一处未经证实的说法：德语是唯一有真实证据表明 `netstat` State 列被翻译的 Windows 语言。法语、西班牙语、葡萄牙语、俄语、韩语、中文与日语的真实采样打印的都是英文 `LISTENING`；流传于别处的翻译词表被真实输出证伪。该修复从不依赖词表，因此只改了措辞。
+
+### ✅ Tests / 测试
+
+- **+9 (273 → 282, 23 files) / 新增 9 项（273 → 282，23 文件）**:
+  The doubling defect is pinned from both ends: one test asserts archival writes the cost under the raw breakdown key, another that the recovery pass refuses a cycle whose total already covers its unpriced rows, and a third that it still fills when the priced rows account for the whole total. Discovery gained the bracketed IPv6 forms for `ss`, its header and non-listening rows, a COMMAND column shaped like an address, an out-of-range port, and a cross-check that all three extractors agree on every bind form they share.
+  翻倍缺陷被从两端钉死：一条测试断言归档按原始 breakdown 键写入成本，另一条断言恢复流程会拒绝"总额已覆盖其未定价行"的 cycle，第三条断言当已定价行已解释全部总额时它仍会填充。发现模块新增 `ss` 的方括号 IPv6 形态、其表头与非监听行、形似地址的 COMMAND 列、越界端口，以及一条交叉校验确保三个提取器对共有的每种绑定形态结果一致。
+
 ## [1.16.15] - 2026-08-14
 
 > Adds full support for the new **Gemini 3.7 Flash** family (High / Medium / Low) with registry data live-probed from the running IDE, and repairs a silent break the platform introduced meanwhile: **Gemini 3.6 Flash was renumbered** from `M264` / `M265` / `M266` to `M71` / `M72` / `M73`, which left every 3.6 tier unrecognised on v1.16.14. Fixes **issue #64** (reported by @SecretLUL, who also sent PR #65): language-server discovery failed on non-English Windows, and separately missed a server bound to all interfaces. Overhauls how cost is priced — custom prices never actually reached the ledger, localized display names resolved to no price at all so every Gemini model read $0 on a non-English UI, and days archived before a model had a price row are now recovered from their stored token counts. Also corrects registry values that had drifted from what the language server reports and hardens the quota-pool matcher against M-number prefix collisions. Probes were cross-checked against two live language-server instances; pricing was verified against Google's own launch post. tsc clean, 23 files / 273 vitest tests green.
@@ -34,8 +76,8 @@
   checkpointer 同步此前仅在 `resolveModelId()` 已认识该模型时才调用 `updateModelSpec()`，因此平台**先于**扩展登记而上线的模型会被整个跳过——尽管其真实参数就在刚解析完的响应里。现直接信任平台下发的规范 `MODEL_*` 标识，未来未登记的新模型仍能取到活体上下文上限、阈值与思考画像，而不是永远显示流光。
 
 - **Model discovery failed on non-English Windows / 非英文 Windows 上模型发现失败**:
-  `netstatLineMatchesPid()` gated on the literal English string `LISTENING`. Windows localizes netstat's State column (German `ABHÖREN`, Spanish `ESCUCHANDO`, …), so on those machines every candidate line was rejected, no port was ever found, and the extension reported "LS not found" indefinitely. The English fast path is unchanged; a locale-independent structural check was added behind it (a listening TCP row is `TCP <local> <foreign> <STATE> <PID>` with a wildcard foreign address). Connected sockets and UDP rows are still rejected, now with tests covering both.
-  `netstatLineMatchesPid()` 以英文字面量 `LISTENING` 为唯一门槛。Windows 会本地化 netstat 的 State 列（德文 `ABHÖREN`、西班牙文 `ESCUCHANDO` 等），因此在这些机器上所有候选行都被拒绝，永远找不到端口，扩展持续报 "LS not found"。英文快路径保持不变，其后新增与语言无关的结构化判定（监听态 TCP 行形如 `TCP <本地> <远端> <状态> <PID>`，且远端为通配地址）。已连接的套接字与 UDP 行仍被拒绝，两者现均有测试覆盖。
+  `netstatLineMatchesPid()` gated on the literal English string `LISTENING`. Windows localizes netstat's State column on at least one locale — German prints `ABHÖREN` — so on those machines every candidate line was rejected, no port was ever found, and the extension reported "LS not found" indefinitely. The English fast path is unchanged; a locale-independent structural check was added behind it (a listening TCP row is `TCP <local> <foreign> <STATE> <PID>` with a wildcard foreign address). Connected sockets and UDP rows are still rejected, now with tests covering both.
+  `netstatLineMatchesPid()` 以英文字面量 `LISTENING` 为唯一门槛。Windows 至少在一种语言下会本地化 netstat 的 State 列——德文打印 `ABHÖREN`——因此在这些机器上所有候选行都被拒绝，永远找不到端口，扩展持续报 "LS not found"。英文快路径保持不变，其后新增与语言无关的结构化判定（监听态 TCP 行形如 `TCP <本地> <远端> <状态> <PID>`，且远端为通配地址）。已连接的套接字与 UDP 行仍被拒绝，两者现均有测试覆盖。
 
 - **Registry values that had drifted from live data / 已与活体数据漂移的注册表值**:
   Every Gemini Flash tier reports `supportsThinking: true` with a non-zero thinking budget, but the tables hardcoded `false` / `0`; Claude `M35` / `M26` report a checkpointer threshold of 50,000 and a 1,024 thinking budget, not the 100,000 / 32,000 on record; Gemini 3.1 Pro reports a 50,000 threshold and thinking support, not 60,000 without; and `gemini-3-flash` (`M18`) reports a 128,000 limit against a stale 159,000 fallback. `M18` is also not retired — it is a live catalog model that simply never appears in the picker, and both READMEs said otherwise. All corrected against the probe.

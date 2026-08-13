@@ -189,7 +189,7 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 > [!IMPORTANT]
 > **"LS not found" & do NOT run the IDE as Administrator (Windows)**
 > If the status bar is stuck on `LS not found`, open **Output → "Antigravity Context Monitor"** and read the `PATH check:` line — the extension now logs exactly which discovery step failed. Since v1.16.13 it invokes `wmic`/`powershell.exe`/`netstat` by absolute `%SystemRoot%` path, so a truncated Extension Host `PATH` (e.g. missing `System32\wbem` on Win11 24H2+ where WMIC is removed) no longer breaks discovery.
-> Since v1.16.15 two further causes are handled (issue #64, reported by @SecretLUL): Windows localizes the `netstat` State column, so on a German install `LISTENING` reads `ABHÖREN` and every candidate line used to be rejected; and a language server listening on all interfaces rather than on loopback used to yield no port at all. Both are fixed, and if the extension host itself runs inside WSL it now looks for the language server in that distro first.
+> Since v1.16.16 two further causes are handled (issue #64, reported by @SecretLUL): Windows localizes the `netstat` State column, so on a German install `LISTENING` reads `ABHÖREN` and every candidate line used to be rejected; and a language server listening on all interfaces rather than on loopback used to yield no port at all. Both are fixed, and if the extension host itself runs inside WSL it now looks for the language server in that distro first.
 > **Do not run Antigravity as Administrator** — it does not help detection (LS discovery needs no elevation) and can crash the IDE at launch with `The window terminated unexpectedly (reason: 'launch-failed', code: '18')`, an Electron/Chromium sandbox issue unrelated to this extension.
 
 ## ⚙️ Settings
@@ -225,4 +225,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.15
+**Version**: 1.16.16

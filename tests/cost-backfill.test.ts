@@ -9,7 +9,9 @@
 
 import { describe, expect, it } from 'vitest';
 import { DailyStore, type DailyStoreState, type GMModelCycleStats } from '../src/daily-store';
-import { DEFAULT_PRICING, type ModelPricing } from '../src/pricing-store';
+import { DEFAULT_PRICING, PricingStore, type ModelPricing } from '../src/pricing-store';
+import { performDailyArchival, type DailyArchivalContext } from '../src/daily-archival';
+import type { GMModelStats, GMSummary } from '../src/gm-tracker';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -215,9 +217,39 @@ describe('DailyStore.backfillMissingCosts', () => {
         expect(store.getRecord('2026-03-22')!.cycles[0].estimatedCost).toBeCloseTo(17.5, 10);
     });
 
+    it('refuses a cycle whose total already covers its unpriced rows', () => {
+        // The legacy archival path keyed per-model costs by the normalized display name while the
+        // rows are keyed by the raw model id, so when those disagreed every row landed without a
+        // cost even though the day total held the full amount. Adding to that total doubles the
+        // day permanently — a second run finds every row priced and reports nothing left to fix.
+        const { store } = makeStore(stateWith({
+            '2026-03-22': { cost: 100, models: { 'Claude Opus 4.6 (Thinking)': row() } },
+        }));
+
+        expect(store.backfillMissingCosts({})).toBe(0);
+        const cycle = store.getRecord('2026-03-22')!.cycles[0];
+        expect(cycle.estimatedCost).toBe(100);
+        expect(firstRow(store, '2026-03-22').estimatedCost).toBeUndefined();
+    });
+
+    it('still fills when the priced rows already account for the whole total', () => {
+        const { store } = makeStore(stateWith({
+            '2026-03-22': {
+                cost: 100,
+                models: {
+                    'Claude Sonnet 4.6': row({ estimatedCost: 100 }),
+                    'Claude Opus 4.6 (Thinking)': row(),
+                },
+            },
+        }));
+
+        expect(store.backfillMissingCosts({})).toBe(1);
+        expect(store.getRecord('2026-03-22')!.cycles[0].estimatedCost).toBeCloseTo(117.5, 10);
+    });
+
     it('is idempotent — running twice equals running once', () => {
         const state = stateWith({
-            '2026-03-22': { cost: 100, models: { 'Claude Opus 4.6 (Thinking)': row() } },
+            '2026-03-22': { models: { 'Claude Opus 4.6 (Thinking)': row() } },
             '2026-03-23': { models: { 'Gemini 3.7 Flash (High)': row({ outputTokens: 1_000_000 }) } },
             '2026-03-24': { models: { 'Nonexistent Vendor Zx9': row() } },
         });
@@ -271,5 +303,77 @@ describe('DailyStore.backfillMissingCosts', () => {
         });
 
         expect(store.backfillMissingCosts({})).toBe(0);
+    });
+});
+
+// ─── The archival side of the same invariant ─────────────────────────────────
+
+describe('legacy-path archival keys per-model costs so the backfill has nothing to double', () => {
+    function makeGMSummary(rawKey: string, responseModel: string): GMSummary {
+        const ms: GMModelStats = {
+            callCount: 10, stepsCovered: 0,
+            totalInputTokens: 1_000_000, totalOutputTokens: 500_000, totalThinkingTokens: 0,
+            totalCacheRead: 0, totalCacheCreation: 0, totalCredits: 0,
+            avgTTFT: 0, minTTFT: 0, maxTTFT: 0, avgStreaming: 0, cacheHitRate: 0,
+            responseModel, apiProvider: '',
+            completionConfig: {} as never, hasSystemPrompt: false,
+            toolCount: 0, promptSectionTitles: [],
+            totalRetries: 0, errorCount: 0,
+            creditCallCount: 0, exactCallCount: 0,
+            placeholderOnlyCalls: 0, contextWindowCapacity: 0,
+        };
+        return {
+            conversations: [], modelBreakdown: { [rawKey]: ms },
+            totalCalls: 10, totalStepsCovered: 0, totalCredits: 0,
+            totalInputTokens: 1_000_000, totalOutputTokens: 500_000,
+            totalCacheRead: 0, totalCacheCreation: 0, totalThinkingTokens: 0,
+            contextGrowth: [], fetchedAt: '2026-08-01T00:00:00.000Z',
+            totalRetryTokens: 0, totalRetryCredits: 0, totalRetryCount: 0,
+            latestTokenBreakdown: [], stopReasonCounts: {}, retryErrorCodes: {},
+            recentErrors: [], toolCallCounts: {}, uniqueErrors: [],
+            recentErrorEntries: [], toolCatalog: [],
+        } as GMSummary;
+    }
+
+    // The per-model cost used to be keyed by the normalized display name while the rows are keyed
+    // by the raw model id. Whenever those disagreed the rows were archived with no cost at all
+    // while the day total held the full amount — which the backfill then read as "unpriced" and
+    // added a second time, doubling the day permanently and leaving no trace to find it by.
+    it('writes the cost under the raw breakdown key, not the display name', () => {
+        const dailyStore = new DailyStore();
+        dailyStore.init(makeGlobalState());
+        const pricingStore = new PricingStore();
+        pricingStore.init(makeGlobalState());
+
+        const gmSummary = makeGMSummary('MODEL_PLACEHOLDER_M298', 'gemini-3.7-flash-high');
+        const ctx = {
+            activityTracker: {
+                getSummary: () => ({
+                    totalReasoning: 1, totalToolCalls: 1, totalErrors: 0,
+                    totalInputTokens: 0, totalOutputTokens: 0, estSteps: 0,
+                    modelNames: [], modelStats: {},
+                }),
+                archiveAndReset: () => null,
+            },
+            gmTracker: {
+                reset: () => {}, getDetailedSummary: () => null,
+                getCachedSummary: () => gmSummary, getArchivalSummary: () => gmSummary,
+            },
+            dailyStore, pricingStore,
+            lastGMSummary: gmSummary, persistedModelDNA: {},
+            lastArchivalDateKey: '2026-08-01', dailyLedger: null,
+            persist: () => {}, log: () => {},
+        } as unknown as DailyArchivalContext;
+
+        performDailyArchival(ctx, false, new Date(2026, 7, 2, 1, 0, 0));
+
+        const cycle = dailyStore.getRecord('2026-08-01')!.cycles[0];
+        const expected = (1_000_000 * 0.75 + 500_000 * 3.75) / 1e6;
+        expect(cycle.gmModelStats!['MODEL_PLACEHOLDER_M298'].estimatedCost).toBeCloseTo(expected, 10);
+        expect(cycle.estimatedCost).toBeCloseTo(expected, 10);
+
+        // Nothing left for the backfill, so the day total cannot move.
+        expect(dailyStore.backfillMissingCosts({})).toBe(0);
+        expect(dailyStore.getRecord('2026-08-01')!.cycles[0].estimatedCost).toBeCloseTo(expected, 10);
     });
 });

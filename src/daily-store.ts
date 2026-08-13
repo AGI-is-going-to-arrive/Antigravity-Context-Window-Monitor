@@ -207,6 +207,28 @@ function pricingForDate(
     return pricing;
 }
 
+/**
+ * Whether a cycle's day total is fully explained by the rows that already carry a cost.
+ *
+ * Filling a row also adds its cost to the day total, which is only correct if that money is not
+ * in the total already. It can be: the legacy archival path used to key per-model costs by the
+ * normalized display name while the rows are keyed by the raw model id, so when those disagreed
+ * every row was written without a cost even though the day total held the full amount. Adding to
+ * that total would double the day, permanently and with no trace — a second run would find every
+ * row priced and report nothing to fix. When the total exceeds what the priced rows account for,
+ * the excess belongs to the unpriced rows, so leave the cycle alone.
+ */
+function cycleTotalIsAccountedFor(cycle: DailyCycleEntry): boolean {
+    const total = cycle.estimatedCost || 0;
+    if (total <= 0) { return true; }
+    let priced = 0;
+    for (const gms of Object.values(cycle.gmModelStats || {})) {
+        priced += gms.estimatedCost || 0;
+    }
+    // Tolerance covers float drift from summing many per-call costs, not a real shortfall.
+    return total - priced <= Math.max(1e-9, total * 1e-9);
+}
+
 /** Options for {@link DailyStore.backfillMissingCosts}. */
 export interface CostBackfillOptions {
     /** Built-in pricing table to price against. Defaults to DEFAULT_PRICING. */
@@ -289,6 +311,7 @@ export class DailyStore {
         for (const [date, record] of this._records) {
             for (const cycle of record.cycles) {
                 if (!cycle.gmModelStats) { continue; }
+                if (!cycleTotalIsAccountedFor(cycle)) { continue; }
                 let cycleDelta = 0;
 
                 for (const [modelKey, gms] of Object.entries(cycle.gmModelStats)) {

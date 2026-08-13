@@ -287,8 +287,12 @@ export function filterLsProcessLines(psOutput: string, binaryOverride?: string):
  * costs one failed connect and buys the dual-stack case.
  */
 function isLoopbackReachableHost(host: string): boolean {
-    return host === '127.0.0.1' || host === '0.0.0.0' || host === '*'
-        || host === '::' || host === '[::]' || host === '[::1]';
+    // `ss` appends the bound interface to a SO_BINDTODEVICE socket (`127.0.0.1%lo`). Dropping it
+    // leaves an address that is still judged on its own merits — `[fe80::1%12]` becomes
+    // `[fe80::1]`, which is link-local and still rejected.
+    const bare = host.replace(/%[^\]]*(?=\]?$)/, '');
+    return bare === '127.0.0.1' || bare === '0.0.0.0' || bare === '*'
+        || bare === '::' || bare === '[::]' || bare === '[::1]';
 }
 
 /**
@@ -300,7 +304,11 @@ function portFromAddressToken(token: string): number | null {
     const m = token.match(/^(.*):(\d+)$/);
     if (!m || !isLoopbackReachableHost(m[1])) { return null; }
     const port = parseInt(m[2], 10);
-    return port > 0 ? port : null;
+    // Out of range is not just a port that cannot work: Node throws ERR_SOCKET_BAD_PORT
+    // synchronously from inside the probe's promise executor, and the resulting rejection is
+    // caught above the loop — so one bad value would abandon every remaining port rather than
+    // skipping itself.
+    return port > 0 && port <= 65535 ? port : null;
 }
 
 /**
@@ -310,8 +318,13 @@ function portFromAddressToken(token: string): number | null {
  * would miss a reachable LS (issue #64, same root cause as the netstat case).
  */
 export function extractPort(line: string): number | null {
-    for (const token of line.trim().split(/\s+/)) {
-        const port = portFromAddressToken(token);
+    // Right to left: NAME is the last column, and COMMAND — the first — is a process name that a
+    // program can set for itself, so it is the one column whose contents could also look like an
+    // address. Scanning forwards would let it shadow the real port, and since only the first match
+    // per line is taken the real one would never be seen at all.
+    const tokens = line.trim().split(/\s+/);
+    for (let i = tokens.length - 1; i >= 0; i--) {
+        const port = portFromAddressToken(tokens[i]);
         if (port !== null) { return port; }
     }
     return null;
@@ -319,11 +332,23 @@ export function extractPort(line: string): number | null {
 
 /**
  * Extract port from a Linux `ss -tlnp` output line.
- * Matches patterns like `127.0.0.1:12345`, `*:12345`, `0.0.0.0:12345`, `:::12345`
+ * Matches patterns like `127.0.0.1:12345`, `*:12345`, `0.0.0.0:12345`, `:::12345`, `[::]:12345`
+ *
+ * Reads the Local Address column positionally — with `-t` selecting a single protocol there is no
+ * Netid column, so the layout is `State Recv-Q Send-Q Local Peer Process`. Pattern matching missed
+ * every bracketed IPv6 form that iproute2 has printed since 4.13 (`[::]:8082`, `[::1]:8083`),
+ * because in those the `::` is followed by `]` rather than by the port separator. That left a
+ * v6-bound server reproducing issue #64 exactly — the row passes the PID filter, no port comes out,
+ * and discovery reports the server missing. It matters more than it looks: a WSL-hosted extension
+ * skips netstat and a minimal distro image often has no lsof, which makes `ss` the primary port
+ * source there rather than a rarely-used fallback.
  */
 export function extractPortFromSs(line: string): number | null {
-    const portMatch = line.match(/(?:127\.0\.0\.1|\*|0\.0\.0\.0|::):([\d]+)\s/);
-    return portMatch ? parseInt(portMatch[1], 10) : null;
+    const cols = line.trim().split(/\s+/);
+    // The header is not tokenizable the same way — it runs "Peer Address:PortProcess" together
+    // with no separating space — so anchor on the state column instead of on column count.
+    if (cols.length < 4 || cols[0].toUpperCase() !== 'LISTEN') { return null; }
+    return portFromAddressToken(cols[3]);
 }
 
 /**

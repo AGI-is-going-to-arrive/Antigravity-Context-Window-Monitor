@@ -133,13 +133,30 @@ export function performDailyArchival(
     const hasGM = !!(gmSummary && gmSummary.totalCalls > 0);
 
     // 3. Calculate cost (only if ledger didn't provide it)
+    //
+    // Keyed by the RAW breakdown key, because that is what buildGMPerModelStats looks the cost up
+    // under. `calculateCosts` cannot be used here: it labels its rows with the normalized display
+    // name and merges variants onto one base name, so whenever a raw key differs from its display
+    // name every per-model row was archived with no cost while the day total still held the full
+    // amount — an inconsistency the cost backfill later read as "unpriced" and added a second time.
     if (costTotal === undefined && gmSummary && ctx.pricingStore) {
-        const result = ctx.pricingStore.calculateCosts(gmSummary);
-        if (result.grandTotal > 0) { costTotal = result.grandTotal; }
-        costPerModel = {};
-        for (const row of result.rows) {
-            if (row.totalCost > 0) { costPerModel[row.name] = row.totalCost; }
+        const custom = ctx.pricingStore.getCustom();
+        const perModel: Record<string, number> = {};
+        let total = 0;
+        for (const [key, ms] of Object.entries(gmSummary.modelBreakdown)) {
+            const pricing = findPricingWithCustom(ms.responseModel, custom)
+                || findPricingWithCustom(key, custom);
+            if (!pricing) { continue; }
+            const cost = costFromTokens({
+                inputTokens: ms.totalInputTokens,
+                outputTokens: ms.totalOutputTokens,
+                thinkingTokens: ms.totalThinkingTokens,
+                cacheReadTokens: ms.totalCacheRead,
+            }, pricing);
+            if (cost > 0) { perModel[key] = cost; total += cost; }
         }
+        if (total > 0) { costTotal = total; }
+        costPerModel = perModel;
     }
 
     // 4. Write to DailyStore (only if there's actual data)

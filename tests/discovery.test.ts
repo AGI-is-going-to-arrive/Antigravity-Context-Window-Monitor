@@ -364,6 +364,57 @@ describe('discovery.ts', () => {
             // `0t0` and the device id carry no colon; a non-loopback bind must not match.
             expect(extractPort('procnm 123 user 4u IPv4 0x... 0t0 TCP 10.0.0.4:54321 (LISTEN)')).toBeNull();
         });
+
+        it('extractPort takes the NAME column, not a COMMAND that looks like an address', () => {
+            // COMMAND is column 0 and holds a process name, which a program can set for itself —
+            // the one column whose contents can also parse as an address. Scanning forwards let it
+            // shadow the real port, and since only the first match per line is used the real port
+            // would never be seen.
+            expect(extractPort('0.0.0.0:8080 3236 root 3u IPv4 84120 0t0 TCP *:9001 (LISTEN)')).toBe(9001);
+            expect(extractPort('127.0.0.1:53 3238 root 3u IPv4 83099 0t0 TCP *:9003 (LISTEN)')).toBe(9003);
+            expect(extractPort('[::1]:443 3239 root 3u IPv4 75344 0t0 TCP *:9004 (LISTEN)')).toBe(9004);
+        });
+
+        it('rejects a port outside the valid range rather than aborting discovery', () => {
+            // Node throws ERR_SOCKET_BAD_PORT synchronously from inside the probe's promise
+            // executor, and that rejection is caught above the port loop — so one bad value would
+            // abandon every remaining port instead of skipping itself.
+            expect(extractPortFromNetstat('  TCP    127.0.0.1:99999   0.0.0.0:0   LISTENING   1')).toBeNull();
+            expect(extractPort('p 1 u 4u IPv4 0x 0t0 TCP 127.0.0.1:70000 (LISTEN)')).toBeNull();
+            expect(extractPortFromNetstat('  TCP    127.0.0.1:65535   0.0.0.0:0   LISTENING   1')).toBe(65535);
+        });
+
+        // ── ss: bracketed IPv6, which iproute2 has printed since 4.13 ──
+        // Missing these left a v6-bound server reproducing issue #64 exactly. It matters more
+        // than it looks: a WSL-hosted extension skips netstat, and a minimal distro image often
+        // has no lsof, so `ss` is the primary port source there rather than a rare fallback.
+
+        it('extractPortFromSs should parse the bracketed IPv6 forms', () => {
+            expect(extractPortFromSs('LISTEN 0 5 [::]:8082  [::]:*  users:(("x",pid=3240,fd=5))')).toBe(8082);
+            expect(extractPortFromSs('LISTEN 0 5 [::1]:8083 [::]:*  users:(("x",pid=3240,fd=6))')).toBe(8083);
+            expect(extractPortFromSs('LISTEN 0 5 127.0.0.1%lo:8085 0.0.0.0:* users:(("x",pid=1,fd=7))')).toBe(8085);
+        });
+
+        it('extractPortFromSs should reject the header and non-listening rows', () => {
+            // The header is not tokenizable the same way — it runs "Peer Address:PortProcess"
+            // together with no separating space.
+            expect(extractPortFromSs('State Recv-Q Send-Q Local Address:Port Peer Address:PortProcess')).toBeNull();
+            expect(extractPortFromSs('ESTAB 0 0 127.0.0.1:8080 127.0.0.1:5000')).toBeNull();
+        });
+
+        it('extractPortFromSs should reject a non-loopback-reachable bind', () => {
+            expect(extractPortFromSs('LISTEN 0 128 192.168.1.5:8080 0.0.0.0:* users:(("x",pid=1,fd=5))')).toBeNull();
+            expect(extractPortFromSs('LISTEN 0 5 [fe80::1%12]:5357 [::]:* users:(("x",pid=1,fd=5))')).toBeNull();
+        });
+
+        it('the three extractors agree on every bind form they share', () => {
+            // They diverged before: netstat and lsof accepted bracketed IPv6 while ss did not.
+            for (const [host, port] of [['127.0.0.1', 8080], ['0.0.0.0', 8080], ['[::]', 8080], ['[::1]', 8080]] as const) {
+                expect(extractPortFromNetstat(`  TCP    ${host}:${port}   0.0.0.0:0   LISTENING   1`)).toBe(port);
+                expect(extractPort(`p 1 u 4u IPv4 0x 0t0 TCP ${host}:${port} (LISTEN)`)).toBe(port);
+                expect(extractPortFromSs(`LISTEN 0 128 ${host}:${port} 0.0.0.0:* users:(("x",pid=1,fd=5))`)).toBe(port);
+            }
+        });
     });
 
     describe('isWSL', () => {

@@ -4,7 +4,7 @@
 
 import { tBi } from './i18n';
 import { GMSummary, GMModelStats, GMCompletionConfig } from './gm-tracker';
-import { PricingStore, DEFAULT_PRICING, PRICING_LAST_UPDATED, findPricing, ModelPricing, ModelCostRow } from './pricing-store';
+import { PricingStore, DEFAULT_PRICING, PRICING_LAST_UPDATED, findPricingWithCustom, ModelPricing, ModelCostRow } from './pricing-store';
 import { esc } from './webview-helpers';
 import type { MonthCostBreakdown } from './daily-store';
 import { getModelDNAKey, type PersistedModelDNA } from './model-dna-store';
@@ -27,7 +27,6 @@ export function buildPricingTabContent(
     const parts: string[] = [];
 
     const mergedRowsMap = new Map<string, ModelCostRow>();
-    const mergedTable = store.getMerged();
     let activeGrandTotal = 0;
 
     // 优先从 100% 精确的今日活跃账本中提取模型明细与计算
@@ -37,7 +36,7 @@ export function buildPricingTabContent(
                 if (ms.calls <= 0) { continue; }
                 const displayName = normalizeModelDisplayName(modelKey);
                 const baseName = getModelBaseName(modelKey) || displayName;
-                const pricing = findPricing(modelKey, mergedTable);
+                const pricing = findPricingWithCustom(modelKey, store.getCustom());
 
                 // 结合定价算出输入、输出、缓存、思考费用以适配用户对价格的修改
                 const inputCost = pricing ? (ms.inputTokens / 1_000_000) * pricing.input : ms.estimatedCost;
@@ -94,7 +93,7 @@ export function buildPricingTabContent(
 
                 const displayName = normalizeModelDisplayName(modelKey);
                 const baseName = getModelBaseName(modelKey) || displayName;
-                const pricing = findPricing(modelKey, mergedTable);
+                const pricing = findPricingWithCustom(modelKey, store.getCustom());
 
                 // 根据 token 数与单价粗略算下输入/输出/缓存的占比，支持 SVG 色条中漂亮的四色渲染
                 const inputCost = pricing ? (inputTokens / 1_000_000) * pricing.input : totalCost;
@@ -1415,7 +1414,7 @@ function buildEditablePricingTable(
     html += `<div class="prc-edit-list">`;
 
     for (const entry of allEntries) {
-        const pricing = findPricing(entry.responseModel, merged);
+        const pricing = findPricingWithCustom(entry.responseModel, custom);
         const isCustom = !!custom[entry.responseModel];
         const p = pricing || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
         const uncalledClass = entry.isCalled ? '' : ' prc-edit-uncalled';
