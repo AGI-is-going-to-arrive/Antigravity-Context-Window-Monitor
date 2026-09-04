@@ -40,7 +40,7 @@ export interface ModelCostRow {
 //        Gemini cacheRead = from official table; no separate cacheWrite pricing
 // Thinking: = output price (Claude extended thinking / Gemini reasoning output)
 
-export const PRICING_LAST_UPDATED = '2026-08-14';
+export const PRICING_LAST_UPDATED = '2026-09-05';
 
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     // ── Claude (platform.claude.com/docs/en/about-claude/pricing) ─────
@@ -65,6 +65,10 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     // which is parity with the 'gemini-3.6-flash' row above.
     // cacheWrite derived at 1.25× input, consistent with how the 3.5/3.6 Flash rows were derived.
     'gemini-3.7-flash': { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, thinking: 3.75 },
+    // ── Gemini 3.8 Flash (Google Antigravity + Google launch posts, verified 2026-09-05) ──
+    // Same introductory rate and expiry as 3.7 Flash: $0.75 input / $3.75 output through 2026-12-31;
+    // from 2027-01-01 the rates become $1.50 / $7.50. Cache rates follow the existing Flash policy.
+    'gemini-3.8-flash': { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, thinking: 3.75 },
 };
 
 // ─── Pricing Lookup ──────────────────────────────────────────────────────────

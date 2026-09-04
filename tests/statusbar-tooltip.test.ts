@@ -123,15 +123,15 @@ describe('selectQuotaRows', () => {
 
     it('collapses models that share a quota pool into one row', () => {
         const gemini = [
+            makeModel('MODEL_PLACEHOLDER_M318', 'Gemini 3.8 Flash (High)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M319', 'Gemini 3.8 Flash (Medium)', 0.42),
+            makeModel('MODEL_PLACEHOLDER_M320', 'Gemini 3.8 Flash (Low)', 0.42),
             makeModel('MODEL_PLACEHOLDER_M298', 'Gemini 3.7 Flash (High)', 0.42),
             makeModel('MODEL_PLACEHOLDER_M299', 'Gemini 3.7 Flash (Medium)', 0.42),
             makeModel('MODEL_PLACEHOLDER_M300', 'Gemini 3.7 Flash (Low)', 0.42),
             makeModel('MODEL_PLACEHOLDER_M71', 'Gemini 3.6 Flash (High)', 0.42),
             makeModel('MODEL_PLACEHOLDER_M72', 'Gemini 3.6 Flash (Medium)', 0.42),
             makeModel('MODEL_PLACEHOLDER_M73', 'Gemini 3.6 Flash (Low)', 0.42),
-            makeModel('MODEL_PLACEHOLDER_M84', 'Gemini 3.5 Flash (High)', 0.42),
-            makeModel('MODEL_PLACEHOLDER_M20', 'Gemini 3.5 Flash (Medium)', 0.42),
-            makeModel('MODEL_PLACEHOLDER_M187', 'Gemini 3.5 Flash (Low)', 0.42),
             makeModel('MODEL_PLACEHOLDER_M16', 'Gemini 3.1 Pro (High)', 0.42),
             makeModel('MODEL_PLACEHOLDER_M36', 'Gemini 3.1 Pro (Low)', 0.42),
         ];
@@ -142,17 +142,17 @@ describe('selectQuotaRows', () => {
             makeModel('MODEL_OPENAI_GPT_OSS_120B_MEDIUM', 'GPT-OSS 120B (Medium)', 0.80),
         ];
 
-        const compact = selectQuotaRows(payload, 'MODEL_PLACEHOLDER_M298', 3);
+        const compact = selectQuotaRows(payload, 'MODEL_PLACEHOLDER_M318', 3);
         expect(compact.total).toBe(2);
         expect(compact.rows).toHaveLength(2);
         expect(compact.hiddenCount).toBe(0);
-        expect(compact.rows[0].model).toBe('MODEL_PLACEHOLDER_M298');
-        expect(compact.rows[0].label).toBe('Gemini 3.7 Flash (High) · 11');
+        expect(compact.rows[0].model).toBe('MODEL_PLACEHOLDER_M318');
+        expect(compact.rows[0].label).toBe('Gemini 3.8 Flash (High) · 11');
         expect(compact.rows[1].label).toMatch(/ · 3$/);
 
         const noCurrent = selectQuotaRows(payload, '', 3);
-        expect(noCurrent.rows[0].model).toBe('MODEL_PLACEHOLDER_M298');
-        expect(noCurrent.rows[0].label).toBe('Gemini 3.7 Flash (High) · 11');
+        expect(noCurrent.rows[0].model).toBe('MODEL_PLACEHOLDER_M318');
+        expect(noCurrent.rows[0].label).toBe('Gemini 3.8 Flash (High) · 11');
 
         const currentIs31 = selectQuotaRows(payload, 'MODEL_PLACEHOLDER_M16', 3);
         expect(currentIs31.rows[0].model).toBe('MODEL_PLACEHOLDER_M16');

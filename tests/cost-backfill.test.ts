@@ -72,11 +72,12 @@ function makeStore(state: DailyStoreState) {
     return { store, globalState };
 }
 
-/** DEFAULT_PRICING with the 3.7 Flash row already rewritten to its post-2027 rates. */
+/** DEFAULT_PRICING with the 3.7/3.8 Flash rows rewritten to their post-2027 rates. */
 function post2027Table(): Record<string, ModelPricing> {
     return {
         ...DEFAULT_PRICING,
         'gemini-3.7-flash': { input: 1.50, output: 7.50, cacheRead: 0.15, cacheWrite: 1.875, thinking: 7.50 },
+        'gemini-3.8-flash': { input: 1.50, output: 7.50, cacheRead: 0.15, cacheWrite: 1.875, thinking: 7.50 },
     };
 }
 
@@ -167,6 +168,24 @@ describe('DailyStore.backfillMissingCosts', () => {
     it('prices a 2027 Gemini 3.7 Flash day at the current table rate', () => {
         const { store } = makeStore(stateWith({
             '2027-01-01': { models: { 'Gemini 3.7 Flash (High)': row({ outputTokens: 1_000_000 }) } },
+        }));
+
+        expect(store.backfillMissingCosts({}, { basePricing: post2027Table() })).toBe(1);
+        expect(firstRow(store, '2027-01-01').estimatedCost).toBeCloseTo(9, 10);
+    });
+
+    it('prices a 2026 Gemini 3.8 Flash day at the introductory rate after the table rolls to 2027', () => {
+        const { store } = makeStore(stateWith({
+            '2026-09-05': { models: { 'MODEL_PLACEHOLDER_M318': row({ outputTokens: 1_000_000 }) } },
+        }));
+
+        expect(store.backfillMissingCosts({}, { basePricing: post2027Table() })).toBe(1);
+        expect(firstRow(store, '2026-09-05').estimatedCost).toBeCloseTo(4.5, 10);
+    });
+
+    it('prices a 2027 Gemini 3.8 Flash day at the current table rate', () => {
+        const { store } = makeStore(stateWith({
+            '2027-01-01': { models: { 'Gemini 3.8 Flash (高)': row({ outputTokens: 1_000_000 }) } },
         }));
 
         expect(store.backfillMissingCosts({}, { basePricing: post2027Table() })).toBe(1);

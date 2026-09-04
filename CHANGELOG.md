@@ -1,5 +1,33 @@
 # 变更日志 / Changelog
 
+## [1.16.17] - 2026-09-05
+
+### English
+
+Adds complete Gemini 3.8 Flash support using data cross-verified from both language-server instances of the locally running **Antigravity IDE**. This is not a display-label-only update: identity resolution, static fallbacks, live checkpointer overrides, model specs, quota pooling, default-model selection, cost estimation, historical backfill, localized aliases, GM capture, UI ordering, docs, tests, and the packaged manifest all move together.
+
+- **High / Medium / Low** are `MODEL_PLACEHOLDER_M318` / `M319` / `M320`, with catalog IDs `gemini-3.8-flash-high` / `-medium` / `-low`. The catalog-only tiered router is `M322`.
+- All four catalog entries report a 1,048,576 native context, 65,536 max output, 256,000 checkpointer limit, 140,000 threshold, Google Gemini provider, and thinking support. Picker thinking budgets are dynamic (`-1`) / 4,000 / 1,000.
+- `M318` replaces `M298` as the platform default and as the status-bar Gemini-pool representative. The live Google AI Pro picker remains 14 items: 3.8 / 3.7 / 3.6 Flash, 3.1 Pro, Claude 4.6, and GPT-OSS; 3.5 remains registered for catalog/history compatibility.
+- Adds the official introductory Gemini 3.8 Flash rate: $0.75 / 1M input and $3.75 / 1M output through 2026-12-31, then $1.50 / $7.50. Historical backfill preserves the 2026 rate after the 2027 table cutover, including raw placeholder and Chinese-localized keys.
+- Adds Chinese `高` / `中` / `低` identity aliases so pricing, quota pooling, archival, and display normalization agree before or without a live label fetch.
+- Verification: TypeScript clean; 23 test files / 297 tests green (+15); the two live IDE language servers returned identical picker/catalog model facts. The newly packaged VSIX was installed into Antigravity IDE and verified on a fresh extension host.
+
+Official pricing sources: [Google Antigravity](https://antigravity.google/blog/gemini-3-8-flash-in-google-antigravity) and [Google Blog](https://blog.google/innovation-and-ai/models-and-research/gemini-models/3-8-flash-and-3-8-flash-cyber/).
+
+### 中文
+
+基于本机正在运行的 **Antigravity IDE** 的两个 language server 实例互证数据，完整支持 Gemini 3.8 Flash。此次并非只更新显示名：身份解析、静态兜底、活体 checkpointer 覆盖、模型规格、配额归池、默认模型选择、成本估算、历史回填、本地化别名、GM 捕获、UI 排序、文档、测试与打包清单均同步更新。
+
+- **High / Medium / Low** 分别为 `MODEL_PLACEHOLDER_M318` / `M319` / `M320`，catalog ID 为 `gemini-3.8-flash-high` / `-medium` / `-low`；仅目录可见的 tiered 路由为 `M322`。
+- 四个 catalog 条目均为原生上下文 1,048,576、最大输出 65,536、checkpointer 上限 256,000、阈值 140,000、Google Gemini provider，并支持 thinking；picker 三档思考预算为动态（`-1`）/ 4,000 / 1,000。
+- `M318` 取代 `M298` 成为平台默认模型与状态栏 Gemini 池默认代表。本次 Google AI Pro 活体 picker 仍为 14 项：3.8 / 3.7 / 3.6 Flash、3.1 Pro、Claude 4.6 与 GPT-OSS；3.5 为 catalog / 历史兼容继续保留注册。
+- 新增官方 Gemini 3.8 Flash 引入期定价：截至 2026-12-31，每 1M 输入 $0.75、输出 $3.75；之后为 $1.50 / $7.50。即使 2027 年价格表切换，历史回填仍保留 2026 实际价格，覆盖裸 placeholder 与中文本地化键。
+- 新增中文 `高` / `中` / `低` 身份别名，确保在活体 label 尚未获取或不可用时，计价、归池、归档与显示归一化仍一致。
+- 验证：TypeScript 无错误；23 个测试文件 / 297 项测试全绿（+15）；两个 IDE language server 返回的 picker/catalog 模型事实完全一致。新打包 VSIX 已安装到 Antigravity IDE，并在全新扩展宿主中完成验证。
+
+官方定价来源：[Google Antigravity](https://antigravity.google/blog/gemini-3-8-flash-in-google-antigravity)与 [Google Blog](https://blog.google/innovation-and-ai/models-and-research/gemini-models/3-8-flash-and-3-8-flash-cyber/)。
+
 ## [1.16.16] - 2026-08-14
 
 > A correctness patch on v1.16.15, from an adversarial review of the released tree. Fixes a cost-recovery defect that could **silently double an archived day's total** on the legacy archival path; brings the `ss` port parser in line with the `netstat` and `lsof` ones, which matters more than it looks because v1.16.15 made `ss` the primary port source for a WSL-hosted extension; and stops the Cost tab and the Calendar disagreeing about the same usage. tsc clean, 23 files / 282 vitest tests green.

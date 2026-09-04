@@ -94,4 +94,12 @@ describe('static model display fallbacks', () => {
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M300')).toBe('Gemini 3.7 Flash (Low)');
         expect(resolveModelId('Gemini 3.7 Flash (High)')).toBe('MODEL_PLACEHOLDER_M298');
     });
+
+    it('exposes the Gemini 3.8 Flash tiers and localized aliases before GetUserStatus loads', () => {
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M318')).toBe('Gemini 3.8 Flash (High)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M319')).toBe('Gemini 3.8 Flash (Medium)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M320')).toBe('Gemini 3.8 Flash (Low)');
+        expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M322')).toBe('Gemini 3.8 Flash (Tiered)');
+        expect(normalizeModelDisplayName('Gemini 3.8 Flash (高)')).toBe('Gemini 3.8 Flash (High)');
+    });
 });

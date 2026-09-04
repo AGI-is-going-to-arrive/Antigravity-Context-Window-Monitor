@@ -173,17 +173,17 @@ function buildGMPerModelStats(
 }
 
 /**
- * Gemini 3.7 Flash shipped on introductory pricing that Google's own footnote says expires
+ * Gemini 3.7 and 3.8 Flash shipped on introductory pricing that Google's own footnote says expires
  * 2026-12-31, with both rates doubling on 2027-01-01. The built-in table therefore has to be
  * rewritten on that date, and from then on every 2026 day re-priced against it would be
  * billed at twice what it actually cost. Backfilling re-prices days that are already over,
  * so it has to charge each day the rate that was in force on that day.
  *
- * This is deliberately a single hard-coded special case rather than an effective-date pricing
- * system: exactly one row is documented to change on exactly one known date.
+ * This is deliberately a narrow hard-coded special case rather than an effective-date pricing
+ * system: exactly two family rows share one documented cutover date.
  */
-const GEMINI_37_FLASH_INTRO_LAST_DAY = '2026-12-31';
-const GEMINI_37_FLASH_INTRO_PRICING: ModelPricing = {
+const GEMINI_FLASH_INTRO_LAST_DAY = '2026-12-31';
+const GEMINI_FLASH_INTRO_PRICING: ModelPricing = {
     input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, thinking: 3.75,
 };
 
@@ -191,9 +191,9 @@ const GEMINI_37_FLASH_INTRO_PRICING: ModelPricing = {
  * The pricing that applied on `date`.
  *
  * `findPricing` hands back the table's own object, so a row that priced off the built-in
- * 'gemini-3.7-flash' entry is recognizable by reference regardless of which of its spellings
+ * 3.7/3.8 Flash entry is recognizable by reference regardless of which of its spellings
  * the archived key used — a display name, a localized display name, or a raw
- * 'MODEL_PLACEHOLDER_M298'. A user's custom price is a different object and passes through
+ * 'MODEL_PLACEHOLDER_M298' / 'MODEL_PLACEHOLDER_M318'. A user's custom price is a different object and passes through
  * untouched, because an explicit override outranks this rule.
  */
 function pricingForDate(
@@ -201,8 +201,9 @@ function pricingForDate(
     base: Record<string, ModelPricing>,
     date: string,
 ): ModelPricing {
-    if (pricing === base['gemini-3.7-flash'] && date <= GEMINI_37_FLASH_INTRO_LAST_DAY) {
-        return GEMINI_37_FLASH_INTRO_PRICING;
+    const isIntroFlash = pricing === base['gemini-3.7-flash'] || pricing === base['gemini-3.8-flash'];
+    if (isIntroFlash && date <= GEMINI_FLASH_INTRO_LAST_DAY) {
+        return GEMINI_FLASH_INTRO_PRICING;
     }
     return pricing;
 }

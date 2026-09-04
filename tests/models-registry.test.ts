@@ -30,6 +30,16 @@ describe('guessContextLimitSpec placeholder collision guard', () => {
         }
     });
 
+    it('maps Gemini 3.8 Flash placeholders (M318/M319/M320/M322) to the 256K flash profile', () => {
+        for (const id of ['MODEL_PLACEHOLDER_M318', 'MODEL_PLACEHOLDER_M319', 'MODEL_PLACEHOLDER_M320', 'MODEL_PLACEHOLDER_M322']) {
+            const spec = guessContextLimitSpec(id);
+            expect(spec.cpLimit).toBe(256000);
+            expect(spec.cpThreshold).toBe(140000);
+            expect(spec.maxTokens).toBe(1048576);
+            expect(spec.supportsThinking).toBe(true);
+        }
+    });
+
     it('keeps Claude placeholders on the premium thinking profile', () => {
         for (const id of ['MODEL_PLACEHOLDER_M26', 'MODEL_PLACEHOLDER_M35']) {
             const spec = guessContextLimitSpec(id);
@@ -48,7 +58,7 @@ describe('guessContextLimitSpec placeholder collision guard', () => {
     it('does not let an unknown placeholder substring-collide into the new Flash numbers', () => {
         // M298/M299/M300 and M71/M72/M73 are matched by EXACT M-number. A future unrelated model
         // whose number merely *contains* one of them (M2980, M710) must NOT inherit the Flash profile.
-        for (const id of ['MODEL_PLACEHOLDER_M2980', 'MODEL_PLACEHOLDER_M710', 'MODEL_PLACEHOLDER_M7']) {
+        for (const id of ['MODEL_PLACEHOLDER_M2980', 'MODEL_PLACEHOLDER_M3180', 'MODEL_PLACEHOLDER_M710', 'MODEL_PLACEHOLDER_M7']) {
             const spec = guessContextLimitSpec(id);
             expect(spec.cpLimit).toBe(0);
             expect(spec.supportsThinking).toBe(false);
@@ -62,7 +72,7 @@ describe('guessContextLimitSpec placeholder collision guard', () => {
     });
 
     it('still keyword-matches catalog model_id names to the flash branch', () => {
-        for (const name of ['gemini-3.6-flash-high', 'gemini-3.7-flash-high']) {
+        for (const name of ['gemini-3.6-flash-high', 'gemini-3.7-flash-high', 'gemini-3.8-flash-high']) {
             const spec = guessContextLimitSpec(name);
             expect(spec.cpLimit).toBe(256000);
             expect(spec.cpThreshold).toBe(140000);
@@ -118,9 +128,12 @@ describe('guessContextLimitSpec placeholder collision guard', () => {
 });
 
 describe('getModelSpecs ordering', () => {
-    it('renders Gemini 3.7 then 3.6 then 3.5 Flash tiers first, with retired M133 last', () => {
+    it('renders Gemini 3.8 then 3.7, 3.6, and 3.5 Flash tiers first, with retired M133 last', () => {
         const ids = getModelSpecs().map(s => s.placeholderId);
         expect(ids).toEqual([
+            'MODEL_PLACEHOLDER_M318',
+            'MODEL_PLACEHOLDER_M319',
+            'MODEL_PLACEHOLDER_M320',
             'MODEL_PLACEHOLDER_M298',
             'MODEL_PLACEHOLDER_M299',
             'MODEL_PLACEHOLDER_M300',
@@ -192,6 +205,7 @@ describe('adversarial round1 regression pins (W1/W2/I1)', () => {
         expect(guessContextLimitSpec('gemini-2.5-flash').cpLimit).toBe(128_000);
         expect(guessContextLimitSpec('gemini-3.6-flash-anything').cpLimit).toBe(256_000);
         expect(guessContextLimitSpec('gemini-3.7-flash-anything').cpLimit).toBe(256_000);
+        expect(guessContextLimitSpec('gemini-3.8-flash-anything').cpLimit).toBe(256_000);
     });
 
     it('reads the generation out of underscore-style platform IDs, not just dotted names', () => {
@@ -203,6 +217,81 @@ describe('adversarial round1 regression pins (W1/W2/I1)', () => {
         expect(lite.supportsThinking).toBe(false);
         expect(guessContextLimitSpec('MODEL_GOOGLE_GEMINI_2_5_FLASH').cpLimit).toBe(128_000);
         expect(guessContextLimitSpec('MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING').cpLimit).toBe(128_000);
+    });
+});
+
+describe('Gemini 3.8 Flash registration (two live Antigravity IDE LS probes, 2026-09-05)', () => {
+    const pickerIds = ['MODEL_PLACEHOLDER_M318', 'MODEL_PLACEHOLDER_M319', 'MODEL_PLACEHOLDER_M320'];
+
+    it('resolves all three picker model_ids plus the catalog-only tiered router', () => {
+        expect(resolveModelId('gemini-3.8-flash-high')).toBe('MODEL_PLACEHOLDER_M318');
+        expect(resolveModelId('gemini-3.8-flash-medium')).toBe('MODEL_PLACEHOLDER_M319');
+        expect(resolveModelId('gemini-3.8-flash-low')).toBe('MODEL_PLACEHOLDER_M320');
+        expect(resolveModelId('gemini-3.8-flash-tiered')).toBe('MODEL_PLACEHOLDER_M322');
+    });
+
+    it('names all picker tiers and the catalog-only tiered router before live labels load', () => {
+        expect(getModelDisplayName('MODEL_PLACEHOLDER_M318')).toBe('Gemini 3.8 Flash (High)');
+        expect(getModelDisplayName('MODEL_PLACEHOLDER_M319')).toBe('Gemini 3.8 Flash (Medium)');
+        expect(getModelDisplayName('MODEL_PLACEHOLDER_M320')).toBe('Gemini 3.8 Flash (Low)');
+        expect(getModelDisplayName('MODEL_PLACEHOLDER_M322')).toBe('Gemini 3.8 Flash (Tiered)');
+    });
+
+    it('normalizes localized Chinese tier labels to their canonical identities', () => {
+        expect(resolveModelId('Gemini 3.8 Flash (高)')).toBe('MODEL_PLACEHOLDER_M318');
+        expect(resolveModelId('Gemini 3.8 Flash (中)')).toBe('MODEL_PLACEHOLDER_M319');
+        expect(resolveModelId('Gemini 3.8 Flash (低)')).toBe('MODEL_PLACEHOLDER_M320');
+        expect(getModelBaseName('Gemini 3.8 Flash (高)')).toBe('Gemini 3.8 Flash (High)');
+    });
+
+    it('gives all four identifiers the deliberate 255K static fallback and exact 256K live profile', () => {
+        for (const id of [...pickerIds, 'MODEL_PLACEHOLDER_M322']) {
+            expect(getContextLimit(id)).toBe(255_000);
+            expect(guessContextLimitSpec(id)).toMatchObject({
+                cpLimit: 256_000,
+                cpThreshold: 140_000,
+                maxTokens: 1_048_576,
+                supportsThinking: true,
+            });
+        }
+        expect(getContextLimit('gemini-3.8-flash-high')).toBe(getContextLimit('MODEL_PLACEHOLDER_M318'));
+    });
+
+    it('pools placeholder, catalog, English-label, and Chinese-label forms into the shared Gemini pool', () => {
+        for (const value of [
+            ...pickerIds,
+            'MODEL_PLACEHOLDER_M322',
+            'gemini-3.8-flash-high',
+            'gemini-3.8-flash-tiered',
+            'Gemini 3.8 Flash (High)',
+            'Gemini 3.8 Flash (高)',
+        ]) {
+            expect(getQuotaPoolKey(value, 'different-reset-time')).toBe('gemini');
+        }
+    });
+
+    it('prices all tiers at the official 2026 introductory rate without fuzzy fallthrough', () => {
+        for (const value of ['gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low', 'MODEL_PLACEHOLDER_M318']) {
+            expect(findPricing(value)).toMatchObject({ input: 0.75, output: 3.75, cacheRead: 0.075, thinking: 3.75 });
+        }
+        expect(findPricing('gemini-3.7-flash-high')?.output).toBe(3.75);
+        expect(findPricing('gemini-3.6-flash-high')?.output).toBe(7.5);
+    });
+
+    it('carries the live thinking profile (High dynamic, Medium 4000, Low 1000)', () => {
+        const byId = new Map(getModelSpecs().map(s => [s.placeholderId, s]));
+        expect(byId.get('MODEL_PLACEHOLDER_M318')?.thinkingBudget).toBe(-1);
+        expect(byId.get('MODEL_PLACEHOLDER_M319')?.thinkingBudget).toBe(4000);
+        expect(byId.get('MODEL_PLACEHOLDER_M320')?.thinkingBudget).toBe(1000);
+        for (const id of pickerIds) {
+            expect(byId.get(id)).toMatchObject({
+                supportsThinking: true,
+                maxTokens: 1_048_576,
+                maxOutputTokens: 65_536,
+                cpLimit: 256_000,
+                cpThreshold: 140_000,
+            });
+        }
     });
 });
 

@@ -1,6 +1,6 @@
 # 🌌 Antigravity 实时上下文窗口监控
 
-一个专为 **Antigravity**（Google 基于 Windsurf 修改的 IDE）开发的插件，用于实时**监控所有聊天会话的上下文窗口使用情况**。
+一个专为 **Antigravity IDE** 开发的插件，用于实时**监控所有聊天会话的上下文窗口使用情况**。
 
 **[🇺🇸 English Documentation / 英文文档](README.md)**
 
@@ -92,7 +92,11 @@
 
 | 模型 | Internal ID / 内部 ID | 上下文上限 |
 | --- | --- | --- |
-| Gemini 3.7 Flash (High) *（平台默认）* | MODEL_PLACEHOLDER_M298 | 256,000 |
+| Gemini 3.8 Flash (High) *（平台默认）* | MODEL_PLACEHOLDER_M318 | 256,000 |
+| Gemini 3.8 Flash (Medium) | MODEL_PLACEHOLDER_M319 | 256,000 |
+| Gemini 3.8 Flash (Low) | MODEL_PLACEHOLDER_M320 | 256,000 |
+| Gemini 3.8 Flash (Tiered，内部路由) | MODEL_PLACEHOLDER_M322 | 256,000 |
+| Gemini 3.7 Flash (High) | MODEL_PLACEHOLDER_M298 | 256,000 |
 | Gemini 3.7 Flash (Medium) | MODEL_PLACEHOLDER_M299 | 256,000 |
 | Gemini 3.7 Flash (Low) | MODEL_PLACEHOLDER_M300 | 256,000 |
 | Gemini 3.6 Flash (High) | MODEL_PLACEHOLDER_M71 | 256,000 |
@@ -113,8 +117,10 @@
 *这些数值是 Antigravity 平台截断阈值，不是模型原生上下文窗口。模型 ID 来自 Antigravity 本地语言服务器的 `GetUserStatus` API。如果新增了模型，可以在 IDE 设置中手动覆盖上下文上限。*
 
 > [!NOTE]
-> 截至 2026-08-14，平台默认模型为 **Gemini 3.7 Flash (High)**（`MODEL_PLACEHOLDER_M298`）。
+> 2026-09-05 对两个 Antigravity IDE language server 实例的活体互证显示，平台默认模型已变为 **Gemini 3.8 Flash (High)**（`MODEL_PLACEHOLDER_M318`）。High / Medium / Low 分别使用 `M318` / `M319` / `M320`；仅目录可见的 tiered 路由使用 `M322`。Gemini 3.7 Flash 仍然可用。在本次探测的 Google AI Pro 账号上，3.8 在 14 项 picker 中替代了 3.5；3.5 仍为目录与历史数据兼容而保留注册。
 > `MODEL_PLACEHOLDER_Mxxx` 编号由平台分配，**可能在无预警的情况下被改号**——Gemini 3.6 Flash 三档已于 2026 年 8 月从 `M264` / `M265` / `M266` 改为 `M71` / `M72` / `M73`。本扩展保留旧编号的注册，使历史用量数据仍能解析到正确模型，并把新旧编号合并为同一条成本行、同一个配额池。来自语言服务器的活体 checkpointer 参数始终优先于上表的静态值。
+
+Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-31，**每 1M 输入 token $0.75**、**每 1M 输出 token $3.75**；从 2027-01-01 起变为 $1.50 / $7.50。来源：[Google Antigravity 发布文](https://antigravity.google/blog/gemini-3-8-flash-in-google-antigravity)与 [Google 模型公告](https://blog.google/innovation-and-ai/models-and-research/gemini-models/3-8-flash-and-3-8-flash-cyber/)。
 
 ## 🚀 使用方法
 
@@ -225,4 +231,4 @@
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.16.16
+**版本 / Version**: 1.16.17

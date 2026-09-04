@@ -13,6 +13,10 @@ const TENFOLD_37_FLASH: ModelPricing = {
     input: 7.5, output: 37.5, cacheRead: 0.75, cacheWrite: 9.375, thinking: 37.5,
 };
 
+const TENFOLD_38_FLASH: ModelPricing = {
+    input: 7.5, output: 37.5, cacheRead: 0.75, cacheWrite: 9.375, thinking: 37.5,
+};
+
 function makeDay(modelKey: string, overrides: Partial<{
     inputTokens: number; outputTokens: number; thinkingTokens: number;
     cacheReadTokens: number; estimatedCost: number;
@@ -60,6 +64,7 @@ describe('findPricing with localized display names', () => {
     it('resolves Chinese-locale Gemini display names', () => {
         expect(findPricing('Gemini 3.1 Pro (高)')?.input).toBe(DEFAULT_PRICING['gemini-3.1-pro'].input);
         expect(findPricing('Gemini 3.7 Flash (高)')?.input).toBe(DEFAULT_PRICING['gemini-3.7-flash'].input);
+        expect(findPricing('Gemini 3.8 Flash (中)')?.input).toBe(DEFAULT_PRICING['gemini-3.8-flash'].input);
         expect(findPricing('Gemini 3.5 Flash (中)')?.input).toBe(DEFAULT_PRICING['gemini-3.5-flash'].input);
         expect(findPricing('Gemini 3.6 Flash (低)')?.input).toBe(DEFAULT_PRICING['gemini-3.6-flash'].input);
     });
@@ -69,6 +74,7 @@ describe('findPricing with localized display names', () => {
         expect(findPricing('Claude Opus 4.6 (Thinking)')?.input).toBe(DEFAULT_PRICING['claude-opus-4-6'].input);
         expect(findPricing('Claude Opus 4.6 (思考)')?.input).toBe(DEFAULT_PRICING['claude-opus-4-6'].input);
         expect(findPricing('gemini-3.7-flash-high')?.input).toBe(DEFAULT_PRICING['gemini-3.7-flash'].input);
+        expect(findPricing('gemini-3.8-flash-low')?.input).toBe(DEFAULT_PRICING['gemini-3.8-flash'].input);
     });
 
     it('does not invent pricing for an unknown model', () => {
@@ -80,7 +86,10 @@ describe('findPricing with localized display names', () => {
 // ─── Custom pricing reaching the ledger ──────────────────────────────────────
 
 describe('findPricingWithCustom', () => {
-    const custom = { 'Gemini 3.7 Flash (High)': TENFOLD_37_FLASH };
+    const custom = {
+        'Gemini 3.7 Flash (High)': TENFOLD_37_FLASH,
+        'Gemini 3.8 Flash (High)': TENFOLD_38_FLASH,
+    };
 
     it('applies a custom price stored under a display name to a catalog-id query', () => {
         // The Pricing tab writes custom rows keyed by the ledger's display name while the
@@ -88,6 +97,9 @@ describe('findPricingWithCustom', () => {
         expect(findPricingWithCustom('gemini-3.7-flash-high', custom)?.input).toBe(7.5);
         expect(findPricingWithCustom('MODEL_PLACEHOLDER_M298', custom)?.input).toBe(7.5);
         expect(findPricingWithCustom('Gemini 3.7 Flash (High)', custom)?.input).toBe(7.5);
+        expect(findPricingWithCustom('gemini-3.8-flash-high', custom)?.input).toBe(7.5);
+        expect(findPricingWithCustom('MODEL_PLACEHOLDER_M318', custom)?.input).toBe(7.5);
+        expect(findPricingWithCustom('Gemini 3.8 Flash (High)', custom)?.input).toBe(7.5);
     });
 
     it('is not reachable through a merged table, which is why the helper exists', () => {
@@ -140,6 +152,13 @@ describe('buildGMSummaryFromLedger re-prices from stored tokens', () => {
         const expected = (500_000 * 0.75 + 150_000 * 3.75 + 1_500_000 * 0.075 + 50_000 * 3.75) / 1e6;
         expect(result.totalCost).toBeCloseTo(expected, 10);
         expect(result.costPerModel['Gemini 3.7 Flash (High)']).toBeCloseTo(expected, 10);
+    });
+
+    it('recovers Gemini 3.8 Flash cost by localized display name', () => {
+        const result = buildGMSummaryFromLedger(makeDay('Gemini 3.8 Flash (高)'));
+        const expected = (500_000 * 0.75 + 150_000 * 3.75 + 1_500_000 * 0.075 + 50_000 * 3.75) / 1e6;
+        expect(result.totalCost).toBeCloseTo(expected, 10);
+        expect(result.costPerModel['Gemini 3.8 Flash (高)']).toBeCloseTo(expected, 10);
     });
 
     it('lets custom pricing reach the archived day', () => {

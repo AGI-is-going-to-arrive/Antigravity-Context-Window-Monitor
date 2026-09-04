@@ -190,24 +190,28 @@ describe('groupModelConfigsByQuotaPool', () => {
         expect(groups.find(g => g.key === 'premium')?.modelIds).toEqual(['MODEL_OPENAI_GPT_OSS_120B_MEDIUM']);
     });
 
-    it('groups the whole live 3.7 / 3.6 / 3.5 Flash lineup into a single gemini pool', () => {
-        // The picker now carries three generations of Flash at once. Each tier reports its own
+    it('groups the whole live 3.8 / 3.7 / 3.6 Flash lineup into a single gemini pool', () => {
+        // The 2026-09 picker carries three Flash generations at once. Each tier can report its own
         // resetTime, so without KNOWN_QUOTA_POOLS the status bar would show up to nine separate
         // "pools" for what is really one shared Gemini quota.
         const groups = groupModelConfigsByQuotaPool([
+            modelConfig('MODEL_PLACEHOLDER_M318', 'Gemini 3.8 Flash (High)', '2026-09-05T08:18:40Z', 1.0),
+            modelConfig('MODEL_PLACEHOLDER_M319', 'Gemini 3.8 Flash (Medium)', '2026-09-05T08:18:40Z', 1.0),
+            modelConfig('MODEL_PLACEHOLDER_M320', 'Gemini 3.8 Flash (Low)', '2026-09-05T08:17:59Z', 1.0),
             modelConfig('MODEL_PLACEHOLDER_M298', 'Gemini 3.7 Flash (High)', '2026-08-13T23:31:25Z', 1.0),
             modelConfig('MODEL_PLACEHOLDER_M299', 'Gemini 3.7 Flash (Medium)', '2026-08-13T23:31:25Z', 1.0),
             modelConfig('MODEL_PLACEHOLDER_M300', 'Gemini 3.7 Flash (Low)', '2026-08-13T23:27:33Z', 1.0),
             modelConfig('MODEL_PLACEHOLDER_M71', 'Gemini 3.6 Flash (High)', '2026-08-13T23:31:25Z', 0.8),
             modelConfig('MODEL_PLACEHOLDER_M72', 'Gemini 3.6 Flash (Medium)', '2026-08-13T22:00:00Z', 0.8),
             modelConfig('MODEL_PLACEHOLDER_M73', 'Gemini 3.6 Flash (Low)', '2026-08-13T22:00:00Z', 0.8),
-            modelConfig('MODEL_PLACEHOLDER_M84', 'Gemini 3.5 Flash (High)', '2026-08-13T21:00:00Z', 0.6),
+            modelConfig('MODEL_PLACEHOLDER_M16', 'Gemini 3.1 Pro (High)', '2026-08-13T21:00:00Z', 0.6),
+            modelConfig('MODEL_PLACEHOLDER_M36', 'Gemini 3.1 Pro (Low)', '2026-08-13T21:00:00Z', 0.6),
             modelConfig('MODEL_PLACEHOLDER_M35', 'Claude Sonnet 4.6 (Thinking)', '2026-08-13T21:00:00Z', 0.4),
         ]);
 
         expect(groups.map(g => g.key).sort()).toEqual(['gemini', 'premium']);
         const gemini = groups.find(g => g.key === 'gemini');
-        expect(gemini?.modelIds).toHaveLength(7);
+        expect(gemini?.modelIds).toHaveLength(11);
         expect(gemini?.minFraction).toBe(0.6);
     });
 });

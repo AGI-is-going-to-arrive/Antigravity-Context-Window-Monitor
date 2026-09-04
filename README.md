@@ -1,6 +1,6 @@
 # 🌌 Antigravity Context Window Monitor
 
-A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides real-time monitoring of context window usage across all your chat sessions.
+A plugin built for **Antigravity IDE** that provides real-time monitoring of context window usage across all your chat sessions.
 
 **[🇨🇳 中文文档 / Chinese Documentation](readme_CN.md)**
 
@@ -92,7 +92,11 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 | Model | Internal ID | Context Limit |
 | --- | --- | --- |
-| Gemini 3.7 Flash (High) *(platform default)* | MODEL_PLACEHOLDER_M298 | 256,000 |
+| Gemini 3.8 Flash (High) *(platform default)* | MODEL_PLACEHOLDER_M318 | 256,000 |
+| Gemini 3.8 Flash (Medium) | MODEL_PLACEHOLDER_M319 | 256,000 |
+| Gemini 3.8 Flash (Low) | MODEL_PLACEHOLDER_M320 | 256,000 |
+| Gemini 3.8 Flash (Tiered, internal) | MODEL_PLACEHOLDER_M322 | 256,000 |
+| Gemini 3.7 Flash (High) | MODEL_PLACEHOLDER_M298 | 256,000 |
 | Gemini 3.7 Flash (Medium) | MODEL_PLACEHOLDER_M299 | 256,000 |
 | Gemini 3.7 Flash (Low) | MODEL_PLACEHOLDER_M300 | 256,000 |
 | Gemini 3.6 Flash (High) | MODEL_PLACEHOLDER_M71 | 256,000 |
@@ -113,8 +117,10 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 *These are Antigravity platform truncation thresholds, not model-native context windows. Model IDs are fetched from the local Antigravity language server's `GetUserStatus` API. If new models are added, you can override context limits in IDE settings.*
 
 > [!NOTE]
-> As of 2026-08-14 the platform default model is **Gemini 3.7 Flash (High)** (`MODEL_PLACEHOLDER_M298`).
+> As live-verified against two Antigravity IDE language-server instances on 2026-09-05, the platform default model is **Gemini 3.8 Flash (High)** (`MODEL_PLACEHOLDER_M318`). High / Medium / Low use `M318` / `M319` / `M320`; catalog-only tiered routing uses `M322`. Gemini 3.7 Flash remains available. On the probed Google AI Pro account, 3.8 replaced 3.5 in the 14-item picker; 3.5 stays registered for catalog and historical-data compatibility.
 > `MODEL_PLACEHOLDER_Mxxx` numbers are assigned by the platform and **can be reassigned without notice** — the three Gemini 3.6 Flash tiers moved from `M264` / `M265` / `M266` to `M71` / `M72` / `M73` in August 2026. The extension keeps the previous numbers registered so archived usage history still resolves to the right model, and merges both numbers onto a single cost row and a single quota pool. Live checkpointer parameters fetched from the language server always take precedence over the static table above.
+
+Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M input tokens** and **$3.75 / 1M output tokens** through 2026-12-31; from 2027-01-01 the rates become $1.50 / $7.50. Sources: [Google Antigravity launch post](https://antigravity.google/blog/gemini-3-8-flash-in-google-antigravity) and [Google model announcement](https://blog.google/innovation-and-ai/models-and-research/gemini-models/3-8-flash-and-3-8-flash-cyber/).
 
 ## 🚀 Usage
 
@@ -225,4 +231,4 @@ A plugin built for **Antigravity** (Google's Windsurf-based IDE) that provides r
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.16
+**Version**: 1.16.17

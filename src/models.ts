@@ -16,9 +16,14 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     // NOT the model's native context window size.
     // Verified via diag-scripts/my-tools/extra/all-models-deep-miner.ts (2026-05-19);
     // Gemini 3.6 Flash tiers + 3.5 Flash checkpointer bump verified via live LS probe (2026-07-22);
+    // Gemini 3.8 Flash tiers verified against two live Antigravity IDE LS instances (2026-09-05).
     // Gemini 3.7 Flash tiers + the 3.6 Flash renumber verified via live LS probe (2026-08-14).
     // Note: All fallback limits are intentionally offset by -1,000 (1K) so that in daily use,
     // you can instantly recognize if the extension has successfully overridden the fallback with live captures.
+    'MODEL_PLACEHOLDER_M318': 255_000,  // Gemini 3.8 Flash (High) — fallback offset by -1K (live: 256,000)
+    'MODEL_PLACEHOLDER_M319': 255_000,  // Gemini 3.8 Flash (Medium) — fallback offset by -1K (live: 256,000)
+    'MODEL_PLACEHOLDER_M320': 255_000,  // Gemini 3.8 Flash (Low) — fallback offset by -1K (live: 256,000)
+    'MODEL_PLACEHOLDER_M322': 255_000,  // Gemini 3.8 Flash (Tiered, catalog-only) — fallback offset by -1K (live: 256,000)
     'MODEL_PLACEHOLDER_M298': 255_000,  // Gemini 3.7 Flash (High) — fallback offset by -1K (live: 256,000)
     'MODEL_PLACEHOLDER_M299': 255_000,  // Gemini 3.7 Flash (Medium) — fallback offset by -1K (live: 256,000)
     'MODEL_PLACEHOLDER_M300': 255_000,  // Gemini 3.7 Flash (Low) — fallback offset by -1K (live: 256,000)
@@ -66,6 +71,11 @@ let responseModelAliases: Record<string, string> = {
     'gemini-3-flash-b': 'MODEL_PLACEHOLDER_M133',          // [Retired] responseModel alias for M133 — kept for persisted-data parsing
     'gemini-3.5-flash-low': 'MODEL_PLACEHOLDER_M20',      // model_id for M20 (3.5 Flash Medium)
     'gemini-3-flash': 'MODEL_PLACEHOLDER_M18',             // backend command model
+    // Gemini 3.8 Flash aliases (two live Antigravity IDE LS instances, 2026-09-05; M318 is the platform default)
+    'gemini-3.8-flash-high': 'MODEL_PLACEHOLDER_M318',    // model_id for M318
+    'gemini-3.8-flash-medium': 'MODEL_PLACEHOLDER_M319',  // model_id for M319
+    'gemini-3.8-flash-low': 'MODEL_PLACEHOLDER_M320',     // model_id for M320
+    'gemini-3.8-flash-tiered': 'MODEL_PLACEHOLDER_M322',  // catalog-only tiered router
     // Gemini 3.7 Flash aliases (live LS probe 2026-08-14: M298/M299/M300 picker, M298 is the platform default)
     'gemini-3.7-flash-high': 'MODEL_PLACEHOLDER_M298',    // model_id for M298
     'gemini-3.7-flash-medium': 'MODEL_PLACEHOLDER_M299',  // model_id for M299
@@ -90,6 +100,10 @@ let showModelShortId = false;
 const KNOWN_QUOTA_POOLS: Record<string, string> = {
     // Gemini pool — Flash and Pro share the same quota since mid-2026
     'MODEL_PLACEHOLDER_M16': 'gemini',
+    'MODEL_PLACEHOLDER_M318': 'gemini',   // Gemini 3.8 Flash (High)
+    'MODEL_PLACEHOLDER_M319': 'gemini',   // Gemini 3.8 Flash (Medium)
+    'MODEL_PLACEHOLDER_M320': 'gemini',   // Gemini 3.8 Flash (Low)
+    'MODEL_PLACEHOLDER_M322': 'gemini',   // Gemini 3.8 Flash (Tiered, catalog-only)
     'MODEL_PLACEHOLDER_M298': 'gemini',   // Gemini 3.7 Flash (High)
     'MODEL_PLACEHOLDER_M299': 'gemini',   // Gemini 3.7 Flash (Medium)
     'MODEL_PLACEHOLDER_M300': 'gemini',   // Gemini 3.7 Flash (Low)
@@ -115,12 +129,14 @@ const KNOWN_QUOTA_POOLS: Record<string, string> = {
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'premium',
 };
 
-// ─── Legacy Chinese Name Migration ──────────────────────────────────────────
-// Pre-v1.16 persisted data may contain localized Chinese display names.
-// This static mapping allows `resolveModelId()` to resolve them back to
-// canonical model IDs, enabling automatic cleanup of legacy persisted data.
+// ─── Chinese Model Name Aliases ──────────────────────────────────────────────
+// Persisted data and older UI surfaces may contain localized Chinese tier labels.
+// Resolve them back to canonical IDs so pricing, quota pooling, and archival agree.
 
-const LEGACY_ZH_MODEL_NAMES: Record<string, string> = {
+const ZH_MODEL_NAME_ALIASES: Record<string, string> = {
+    'Gemini 3.8 Flash (高)': 'MODEL_PLACEHOLDER_M318',
+    'Gemini 3.8 Flash (中)': 'MODEL_PLACEHOLDER_M319',
+    'Gemini 3.8 Flash (低)': 'MODEL_PLACEHOLDER_M320',
     'Gemini 3.1 Pro (强)': 'MODEL_PLACEHOLDER_M37',
     'Gemini 3.1 Pro (弱)': 'MODEL_PLACEHOLDER_M36',
     'Claude Sonnet 4.6 (思考)': 'MODEL_PLACEHOLDER_M35',
@@ -136,6 +152,10 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M16': 'Gemini 3.1 Pro (High)',
     'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
     'MODEL_PLACEHOLDER_M36': 'Gemini 3.1 Pro (Low)',
+    'MODEL_PLACEHOLDER_M318': 'Gemini 3.8 Flash (High)',
+    'MODEL_PLACEHOLDER_M319': 'Gemini 3.8 Flash (Medium)',
+    'MODEL_PLACEHOLDER_M320': 'Gemini 3.8 Flash (Low)',
+    'MODEL_PLACEHOLDER_M322': 'Gemini 3.8 Flash (Tiered)',
     'MODEL_PLACEHOLDER_M298': 'Gemini 3.7 Flash (High)',
     'MODEL_PLACEHOLDER_M299': 'Gemini 3.7 Flash (Medium)',
     'MODEL_PLACEHOLDER_M300': 'Gemini 3.7 Flash (Low)',
@@ -205,12 +225,14 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
         if (num === 'm16' || num === 'm37' || num === 'm36') {
             return { cpLimit: 128000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
         }
-        // Gemini Flash series — 3.7 (M298/M299/M300), 3.6 (M71/M72/M73/M196), 3.5 (M84/M20/M187),
+        // Gemini Flash series — 3.8 (M318/M319/M320/M322), 3.7 (M298/M299/M300),
+        // 3.6 (M71/M72/M73/M196), 3.5 (M84/M20/M187),
         // retired (M133/M132) and the pre-renumber 3.6 IDs (M264/M265/M266, kept for archived data).
         // NOTE: whenever the platform introduces or renumbers a Flash tier, its M-number MUST be added
         // here. An unlisted placeholder deliberately falls through to {0,0,0} below, which surfaces as a
         // "calculating threshold…" shimmer instead of a silently wrong limit.
-        if (num === 'm298' || num === 'm299' || num === 'm300'
+        if (num === 'm318' || num === 'm319' || num === 'm320' || num === 'm322'
+            || num === 'm298' || num === 'm299' || num === 'm300'
             || num === 'm71' || num === 'm72' || num === 'm73' || num === 'm196'
             || num === 'm84' || num === 'm20' || num === 'm187'
             || num === 'm264' || num === 'm265' || num === 'm266'
@@ -233,8 +255,8 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
         return { cpLimit: 128000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
     }
 
-    // 3. Gemini Flash / Lite series -> generation-aware. 3.5/3.6/3.7 Flash checkpointer
-    //    doubled to 256K (2026-07 live, still 256K on 2026-08); pre-3.5 flash/lite stays on the
+    // 3. Gemini Flash / Lite series -> generation-aware. 3.5/3.6/3.7/3.8 Flash checkpointer
+    //    uses 256K (3.8 re-verified 2026-09); pre-3.5 flash/lite stays on the
     //    128K profile and reports no thinking support (matches live gemini-2.5-flash* entries,
     //    which omit supportsThinking entirely, whereas every 3.5+ Flash tier reports true).
     if (idLower.includes('flash') || idLower.includes('lite') || idLower.includes('unspecified')) {
@@ -341,7 +363,7 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     const fromResponseModel = responseModelAliases[clean];
     if (fromResponseModel) { return fromResponseModel; }
     // Legacy Chinese name fallback (pre-v1.16 persisted data migration)
-    const legacyId = LEGACY_ZH_MODEL_NAMES[clean];
+    const legacyId = ZH_MODEL_NAME_ALIASES[clean];
     if (legacyId) { return legacyId; }
     // Strip trailing diagnostic suffix "(Mxx)" and retry — handles persisted keys
     // that include the short ID appended by normalizeModelDisplayName()
@@ -589,7 +611,44 @@ export interface ModelSpec {
 }
 
 let activeModelSpecs: Record<string, ModelSpec> = {
-    // ── Gemini 3.7 Flash (live LS probe 2026-08-14; M298 is the platform default model) ──
+    // ── Gemini 3.8 Flash (two live Antigravity IDE LS instances, 2026-09-05; M318 is default) ──
+    'MODEL_PLACEHOLDER_M318': {
+        modelId: 'gemini-3.8-flash-high',
+        placeholderId: 'MODEL_PLACEHOLDER_M318',
+        displayName: 'Gemini 3.8 Flash (High)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: -1,
+        supportsThinking: true,
+        cpLimit: 256000,
+        cpThreshold: 140000,
+    },
+    'MODEL_PLACEHOLDER_M319': {
+        modelId: 'gemini-3.8-flash-medium',
+        placeholderId: 'MODEL_PLACEHOLDER_M319',
+        displayName: 'Gemini 3.8 Flash (Medium)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 4000,
+        supportsThinking: true,
+        cpLimit: 256000,
+        cpThreshold: 140000,
+    },
+    'MODEL_PLACEHOLDER_M320': {
+        modelId: 'gemini-3.8-flash-low',
+        placeholderId: 'MODEL_PLACEHOLDER_M320',
+        displayName: 'Gemini 3.8 Flash (Low)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 1000,
+        supportsThinking: true,
+        cpLimit: 256000,
+        cpThreshold: 140000,
+    },
+    // ── Gemini 3.7 Flash (live LS probe 2026-08-14; M298 was default until 3.8 launched) ──
     // thinkingBudget -1 is the platform's "dynamic / model-decided" sentinel, not a real token count.
     'MODEL_PLACEHOLDER_M298': {
         modelId: 'gemini-3.7-flash-high',
@@ -812,8 +871,13 @@ export function updateModelSpec(placeholderId: string, spec: Partial<ModelSpec>)
 
 export function getModelSpecs(): ModelSpec[] {
     // Mirrors the platform's own "Recommended" sort group (GetUserStatus → clientModelSorts),
-    // newest generation first. Live-verified 2026-08-14.
+    // newest generation first. Live-verified 2026-09-05.
     const order = [
+        'MODEL_PLACEHOLDER_M318',
+        'MODEL_PLACEHOLDER_M319',
+        'MODEL_PLACEHOLDER_M320',
+        // Catalog-only M322 has no static spec; if live sync creates one, keep it beside its family.
+        'MODEL_PLACEHOLDER_M322',
         'MODEL_PLACEHOLDER_M298',
         'MODEL_PLACEHOLDER_M299',
         'MODEL_PLACEHOLDER_M300',

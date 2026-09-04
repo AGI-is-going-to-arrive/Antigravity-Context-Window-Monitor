@@ -102,7 +102,7 @@ export function getLineBudget(density: TooltipDensity, mode: EffectiveMode): num
 // ─── Quota row selection ──────────────────────────────────────────────────────
 
 /** Platform default picker model — used only as a same-pool representative tie-break. */
-const PLATFORM_DEFAULT_MODEL_ID = 'MODEL_PLACEHOLDER_M298';
+const PLATFORM_DEFAULT_MODEL_ID = 'MODEL_PLACEHOLDER_M318';
 
 /**
  * Select quota rows for the tooltip table:
@@ -194,7 +194,7 @@ function pickPoolRepresentative<T extends QuotaSelectable>(members: T[], current
     })[0];
 }
 
-/** "Gemini 3.7 Flash" → 3007; labels with no x.y version sort last. */
+/** "Gemini 3.8 Flash" → 3008; labels with no x.y version sort last. */
 function generationScore(label: string): number {
     const m = /(\d+)\.(\d+)/.exec(label);
     if (!m) {

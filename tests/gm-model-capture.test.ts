@@ -174,6 +174,23 @@ describe('GM model capture', () => {
         expect(call.modelDisplay).toContain('Gemini 3.7 Flash');
     });
 
+    it.each([
+        ['high', 'MODEL_PLACEHOLDER_M318'],
+        ['medium', 'MODEL_PLACEHOLDER_M319'],
+        ['low', 'MODEL_PLACEHOLDER_M320'],
+    ])('captures Gemini 3.8 Flash %s identity from chatModel and its seeded response alias', (tier, model) => {
+        expect(resolveModelId(`gemini-3.8-flash-${tier}`)).toBe(model);
+
+        const call = parseGMEntry(makeGM({
+            model,
+            responseModel: `gemini-3.8-flash-${tier}`,
+        }));
+
+        expect(call.model).toBe(model);
+        expect(call.modelSource).toBe('chatModel');
+        expect(call.modelDisplay).toContain('Gemini 3.8 Flash');
+    });
+
     it('still resolves pre-renumber 3.6 records captured by v1.16.14', () => {
         const call = parseGMEntry(makeGM({
             model: 'MODEL_PLACEHOLDER_M264',
