@@ -16,6 +16,8 @@ beforeEach(() => setLanguageToState('en', state));
 afterEach(() => setLanguageToState('both', state));
 
 describe('model information rendering', () => {
+    // The first locale render took 5.17s on a cold Windows CI runner. This checks
+    // correctness, not startup latency; keep its budget separate from other tests.
     it.each([
         ['en', 'Compression limit', 'Native context', 'Adaptive'],
         ['zh', '压缩阈值', '原生上下文', '自适应'],
@@ -27,7 +29,7 @@ describe('model information rendering', () => {
             expect(html).toContain(value);
         }
         expect(html).not.toContain('Budget: None');
-    });
+    }, 15_000);
 
     it.each([0, -1, NaN, Infinity, -Infinity])('does not claim an invalid %s token limit', (invalid) => {
         const html = buildModelInfoGrid([{ ...spec, cpLimit: invalid, maxTokens: invalid }]);

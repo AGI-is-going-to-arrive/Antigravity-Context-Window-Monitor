@@ -131,7 +131,8 @@ describe('discovery.ts', () => {
 
     describe('filterLsProcessLines', () => {
         it('should filter correct process lines based on platform', () => {
-            const binary = process.platform === 'win32' ? 'language_server_windows' : 'language_server_macos';
+            const binary = process.platform === 'win32' ? 'language_server_windows'
+            : process.platform === 'linux' ? 'language_server_linux' : 'language_server_macos';
             const lines = [
                 `100 ${binary} --antigravity --csrf_token x`,
                 `101 some_other_proc`,
@@ -565,7 +566,8 @@ describe('filterLsProcessLines binary override (WSL-hosted extension)', () => {
     });
 
     it('falls back to the platform default when no override is given', () => {
-        const binary = process.platform === 'win32' ? 'language_server_windows' : 'language_server_macos';
+        const binary = process.platform === 'win32' ? 'language_server_windows'
+            : process.platform === 'linux' ? 'language_server_linux' : 'language_server_macos';
         const out = `100 ${binary} --app_data_dir antigravity`;
         expect(filterLsProcessLines(out)).toHaveLength(1);
     });
@@ -573,7 +575,8 @@ describe('filterLsProcessLines binary override (WSL-hosted extension)', () => {
 
 describe('filterLsProcessLines case-insensitivity (CR-#62)', () => {
     it('matches mixed-case lines and returns the ORIGINAL line byte-for-byte', () => {
-        const binary = process.platform === 'win32' ? 'language_server_windows' : 'language_server_macos';
+        const binary = process.platform === 'win32' ? 'language_server_windows'
+            : process.platform === 'linux' ? 'language_server_linux' : 'language_server_macos';
         // Uppercased binary + Antigravity; mixed-case csrf token must be preserved.
         const original = `100 ${binary.toUpperCase()} --csrf_token AbC123dEf --app_data_dir Antigravity`;
         const filtered = filterLsProcessLines(original);
@@ -584,7 +587,8 @@ describe('filterLsProcessLines case-insensitivity (CR-#62)', () => {
     });
 
     it('excludes lines missing either the binary or the antigravity marker', () => {
-        const binary = process.platform === 'win32' ? 'language_server_windows' : 'language_server_macos';
+        const binary = process.platform === 'win32' ? 'language_server_windows'
+            : process.platform === 'linux' ? 'language_server_linux' : 'language_server_macos';
         const out = [
             `1 ${binary} --app_data_dir antigravity`,
             `2 some_other_proc --antigravity`,
