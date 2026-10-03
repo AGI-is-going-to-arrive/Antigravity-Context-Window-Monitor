@@ -11,7 +11,6 @@ cache/
 .claude/
 llmdoc/
 scripts/
-package-lock.json
 
 # Docker test files
 Dockerfile*

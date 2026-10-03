@@ -2,11 +2,14 @@
 
 本文档说明 Antigravity Context Window Monitor 的源码组织方式、模块职责以及依赖关系。
 
+当前版本：**1.16.18**。中英文发布说明见 [releases/1.16.18.md](releases/1.16.18.md)。
+
 ---
 
 ## 目录总览
 ```text
 antigravity-context-monitor/
+├── .github/workflows/verify.yml  # Node.js 22：Windows / macOS / Linux 编译与 Vitest 矩阵
 ├── src/                          # TypeScript 源码
 │   ├── extension.ts              # 扩展入口：激活/停用、轮询调度、命令注册、状态恢复
 │   ├── daily-archival.ts         # 每日归档核心逻辑（可测试纯函数，依赖注入）
@@ -14,7 +17,7 @@ antigravity-context-monitor/
 │   ├── discovery.ts              # Language Server 进程发现（跨平台）
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
 │   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
-│   ├── models.ts                 # 模型配置、平台截断阈值（非原生窗口）、显示名称、跨语言归一化、responseModel 别名保护
+│   ├── models.ts                 # 模型配置、平台截断阈值、Claude 5.5 六档 / 4.6 兼容、跨语言归一化、responseModel 别名保护
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
 │   ├── statusbar.ts              # 状态栏 UI（StatusBarManager，含计划层级 hover 缓存、AI 积分余额、|| 分隔符）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
@@ -45,8 +48,8 @@ antigravity-context-monitor/
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标
 
-│   ├── webview-models-tab.ts     # Models 标签页 HTML（默认模型 + 模型配额 + 模型信息）
-│   ├── webview-settings-tab.ts   # Settings 标签页 HTML（含模型阈值/恢复默认值 + 持久化存储概览 + 界面提示偏好）
+│   ├── webview-models-tab.ts     # Models 标签页 HTML（账号实时模型、额度、自适应思考、主题模型信息卡片）
+│   ├── webview-settings-tab.ts   # Settings 标签页 HTML（低额度警告、轮询、显示偏好、持久化存储概览）
 │   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队 / AI 积分到期日设置）
 │   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（ses-* 命名空间 — 紧凑行式卡片 + shortcut 芯片 + 工具栏 + CSS tooltip）
 │   ├── activity-panel.ts         # GM Data 统一标签页 HTML（Activity + GM 数据 + 检查点查看器 + 账号面板构建器 + 模型卡片/汇总行/待归档费用显示 + respOut 费用计算）
@@ -60,11 +63,18 @@ antigravity-context-monitor/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
 ├── tests/                        # Vitest 测试目录（开发用，不参与插件运行时）
 │   ├── discovery.test.ts         # discovery 单元测试（原作者 FlorianHuo 提供）
+│   ├── models-registry.test.ts   # 注册表、精确模型 ID、别名、平台阈值、账号模型与配额池兼容
+│   ├── claude-55.test.ts         # Claude 5.5 六档参数、别名、计价与历史模型兼容
+│   ├── model-live-sync.test.ts   # 实时模型同步、空 picker 清理与 catalog ID 保留
+│   ├── model-info.test.ts        # 模型信息卡片：i18n、自适应思考、转义、缺失数据与账号展示范围
+│   ├── pricing-resolution.test.ts # 家族计价、跨语言身份、自定义价格与未定价模型
+│   ├── cost-backfill.test.ts     # 历史成本回填与定价时期边界
 │   ├── pricing-panel.test.ts     # Cost 价格表回归测试
 │   ├── webview-script.test.ts    # WebView 价格保存逻辑回归测试
 │   ├── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
 │   ├── billing-day.test.ts       # 积分到期日 DST 安全日历日差测试
 │   ├── extension-selection.test.ts # 模型选择与版本恢复回归测试
+│   ├── statusbar-tooltip.test.ts # 状态栏模型代表、配额与 tooltip 密度
 │   ├── activity-recent-steps.test.ts # 最近操作 warm-up 全量恢复与持久化安全上限测试
 │   ├── daily-archival-time.test.ts # 假时钟跨午夜归档 / stale ledger 启动补归档回归测试
 │   ├── daily-ledger-date-filter.test.ts # DailyLedger 跨天日期边界过滤测试
@@ -78,10 +88,11 @@ antigravity-context-monitor/
 │   └── multi-account-archival.test.ts # 多账号归档与跨重启完整性集成测试
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
-│   └── project_structure.md          # 本文件
+│   ├── project_structure.md          # 本文件
+│   └── releases/1.16.18.md           # 1.16.18 发布说明（先英文，后对应中文）
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── package.json                  # 扩展清单、命令、配置项
-├── package-lock.json             # 本地 npm 锁文件（Git/VSIX 忽略）
+├── package-lock.json             # 提交的 npm 锁文件，供本地及 CI 使用 npm ci 复现依赖
 ├── tsconfig.json                 # TypeScript 编译配置
 ├── vitest.config.ts              # 测试框架配置
 ├── README.md                     # 英文文档
@@ -122,6 +133,8 @@ antigravity-context-monitor/
 ### models.ts -- 模型配置与归一化
 
 模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将 Gemini Flash + Pro 合并为统一的 `gemini` 池（mid-2026 API 变更）。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
+
+v1.16.18 注册 Claude Opus 5.5 Low/Medium/High（`M400`/`M401`/`M402`）及 Sonnet 5.5 Low/Medium/High（`M403`/`M404`/`M405`），共同使用 `premium` 配额池。原生上下文 1,000,000、最大输出 128,000、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；255,000 静态兜底沿用现有偏移约定。`ModelSpec` 保存自适应思考能力和力度，避免把缺省预算误读为不支持思考。Claude 4.6 的 `M26`/`M35` 保留兼容；家族级响应别名不覆盖确切档位身份。
 
 ---
 
@@ -182,6 +195,8 @@ antigravity-context-monitor/
 
 管理模型定价：默认价格表、用户自定义持久化、模糊匹配、费用计算。费用估算用于本地观察，不代表 Antigravity 官方账单。
 
+Claude Opus 5.5 与 Sonnet 5.5 均使用[官方 API 费率](https://platform.claude.com/docs/en/about-claude/pricing)（2026-10-03）。按每百万 token 计算，Opus 输入/输出为 $4/$20，Sonnet 为 $2/$10；两者缓存读取均为 $0.20。内置缓存写入参考费率为 5 分钟，Opus 为 $5、Sonnet 为 $2.50；官方 1 小时费率分别为 $8/$4。当前费用估算不计缓存创建费，因为遥测不能可靠区分创建 token 及 TTL，1 小时写入费用也不自动计入；已上报的缓存读取参与计价。计价入口统一处理 placeholder、catalog ID 与中英文名称，保留历史 token 并支持自定义价格。估算不代表 Antigravity 订阅账单。
+
 ---
 
 ### model-dna-store.ts -- 模型信息持久化
@@ -232,6 +247,8 @@ antigravity-context-monitor/
 面板总框架：8 标签切换、消息通信、全局账号面板 dropdown、增量刷新。各标签内容由独立模块生成；`Quota Tracking` 独立页签与相关调试入口已移除。
 
 子模块：`webview-models-tab.ts`（Models）、`webview-settings-tab.ts`（Settings）、`webview-profile-tab.ts`（Profile）、`webview-chat-history-tab.ts`（Sessions）、`webview-calendar-tab.ts`（Calendar）、`webview-about-tab.ts`（About）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（CSS Design Token）、`webview-icons.ts`（SVG 图标）、`webview-helpers.ts`（共享工具函数）。
+
+Models 页按当前账号的实时 picker 渲染，不按计划名或移除日期推断模型权限。模型信息卡片采用 IDE 中性主题色，压缩上限、原生上下文和思考状态使用结构化数据行；显示友好提供商名称、可换行的完整模型 ID。布局适配窄面板及亮色、暗色、高对比度主题，并支持中文、英文与双语。
 
 ---
 
@@ -375,6 +392,9 @@ Antigravity Language Server (localhost)
 ## 构建与安装
 
 ```bash
+# 按锁文件安装依赖
+npm ci
+
 # 编译
 npm run compile
 
@@ -386,6 +406,10 @@ npm run test:watch
 npx vsce package --no-dependencies
 ```
 
-安装：VS Code 中 `Ctrl+Shift+P` → `Extensions: Install from VSIX...` → 选择 `.vsix` 文件 → 重载窗口。
+安装：在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.16.18.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
 
 测试文件位于 `tests/`，仅供 Vitest 使用，不会被打包到 VSIX 中。
+
+v1.16.18 已通过本地编译、26 个文件的 362 项测试、安装后代码的 36 项浏览器渲染检查及 15 项交互断言。新 VSIX 已在原本运行中的 macOS Antigravity IDE 2.5.5 安装、重载并完成实机验收；45 个已安装 JavaScript 文件与包内文件和本地构建逐字节一致。详细范围见 [1.16.18 发布说明](releases/1.16.18.md)。
+
+`.github/workflows/verify.yml` 配置 Windows、macOS、Linux 的编译和测试矩阵。文档冻结时 Windows/Linux CI 尚未运行，不能用平台解析器的单元测试代替对应系统的实机验证。

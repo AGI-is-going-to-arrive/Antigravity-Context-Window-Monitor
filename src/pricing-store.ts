@@ -13,7 +13,7 @@ export interface ModelPricing {
     input: number;       // $ per 1M input tokens
     output: number;      // $ per 1M output tokens
     cacheRead: number;   // $ per 1M cache read tokens
-    cacheWrite: number;  // $ per 1M cache creation tokens
+    cacheWrite: number;  // Reference $ per 1M 5-minute cache writes; excluded from current estimates
     thinking: number;    // $ per 1M thinking tokens
 }
 
@@ -35,17 +35,21 @@ export interface ModelCostRow {
 // ─── Default Pricing Table (per 1M tokens, USD) ─────────────────────────────
 // Source: https://platform.claude.com/docs/en/about-claude/pricing
 //         https://cloud.google.com/vertex-ai/generative-ai/pricing
-// Updated: 2026-05-20
-// Cache: Claude cacheWrite = 1.25× input (5-min), cacheRead = 0.1× input
+// Claude 5.5 rates updated: 2026-10-03
+// Cache: Claude cacheWrite uses the official 5-minute TTL rate; reads are model-specific.
 //        Gemini cacheRead = from official table; no separate cacheWrite pricing
 // Thinking: = output price (Claude extended thinking / Gemini reasoning output)
 
-export const PRICING_LAST_UPDATED = '2026-09-05';
+export const PRICING_LAST_UPDATED = '2026-10-03';
 
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     // ── Claude (platform.claude.com/docs/en/about-claude/pricing) ─────
     'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25, thinking: 25 },
     'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
+    // https://www.anthropic.com/pricing (verified 2026-10-03), all effort tiers.
+    'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 5, thinking: 20 },
+    // Exact Sonnet 5.5 row confirmed in the user's official-pricing screenshot (2026-10-03).
+    'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.20, cacheWrite: 2.50, thinking: 10 },
     // ── GPT-OSS (cloud.google.com/vertex-ai/generative-ai/pricing) ───
     'gpt-oss-120b': { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0, thinking: 0.36 },
     // ── Gemini 3.x (cloud.google.com/vertex-ai/generative-ai/pricing) ─
@@ -73,54 +77,39 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
 
 // ─── Pricing Lookup ──────────────────────────────────────────────────────────
 
-/** Find pricing for a model by matching responseModel against a pricing table.
- *  Strategy: exact match → prefix match → fuzzy substring match → displayName fallback */
+/** Find pricing for a model by exact identity or a complete family-name prefix.
+ *  Partial/substring matching is unsafe: 'claude-opus-5-6' must never inherit a
+ *  5.5 price, and a custom Low-tier rate must never price the High tier. */
 export function findPricing(
     responseModel: string,
     table: Record<string, ModelPricing> = DEFAULT_PRICING,
 ): ModelPricing | null {
-    if (!responseModel) { return null; }
+    if (!responseModel.trim()) { return null; }
     if (table[responseModel]) { return table[responseModel]; }
-    // Alias resolution: responseModel may be an alias (e.g. 'gemini-pro-default')
-    // that maps to a known model ID. Resolve it and find the canonical responseModel.
+    const candidates: string[] = [];
+    // A catalog alias can differ completely from its current display identity
+    // (e.g. gemini-3-flash-agent). Resolve it before trying its literal spelling.
     const modelId = resolveModelId(responseModel);
     if (modelId) {
-        // Try looking up by canonical display name converted to kebab
         const displayName = getModelDisplayName(modelId);
         if (displayName && displayName !== modelId) {
-            const kebab = displayName
-                .replace(/[()]/g, '')
-                .trim()
-                .toLowerCase()
-                .replace(/\s+/g, '-');
-            if (kebab) {
-                if (table[kebab]) { return table[kebab]; }
-                // Prefix match: 'gemini-3.1-pro-high' should match 'gemini-3.1-pro'
-                for (const [key, pricing] of Object.entries(table)) {
-                    if (kebab.startsWith(key) || key.startsWith(kebab)) {
-                        return pricing;
-                    }
-                }
-            }
+            candidates.push(...kebabCandidates(displayName));
         }
     }
-    for (const [key, pricing] of Object.entries(table)) {
-        if (responseModel.startsWith(key) || key.startsWith(responseModel)) {
-            return pricing;
-        }
-    }
-    for (const [key, pricing] of Object.entries(table)) {
-        if (responseModel.includes(key) || key.includes(responseModel.split('-').slice(0, 3).join('-'))) {
-            return pricing;
-        }
-    }
-    // Fallback: if responseModel looks like a display name (contains spaces/parens),
-    // normalize to kebab-case and retry (e.g. "Claude Opus 4.6 (Thinking)" → "claude-opus-4-6-thinking")
-    if (/[A-Z\s(]/.test(responseModel)) {
-        for (const candidate of kebabCandidates(responseModel)) {
-            if (candidate !== responseModel) {
-                const hit = findPricing(candidate, table);
-                if (hit) { return hit; }
+    candidates.push(...kebabCandidates(responseModel));
+    for (const candidate of new Set(candidates)) {
+        if (table[candidate]) { return table[candidate]; }
+        for (const [key, pricing] of Object.entries(table)) {
+            // Normalize decimals on both sides, but keep the table row's tier.
+            // Removing a custom row's tier would turn its rate into a family rate.
+            const normalizedKey = kebabCandidates(key)[0];
+            const suffix = normalizedKey && candidate.startsWith(`${normalizedKey}-`)
+                ? candidate.slice(normalizedKey.length + 1) : '';
+            // Only model variants may extend a price key. A numeric continuation
+            // is another version: Sonnet 5.5 cannot use a Sonnet 5 row.
+            const isVariant = /^(?:(?:low|medium|high|thinking|tiered|preview|latest)(?:-|$)|\d{8}(?:-|$))/.test(suffix);
+            if (normalizedKey && (candidate === normalizedKey || isVariant)) {
+                return pricing;
             }
         }
     }
@@ -177,6 +166,14 @@ export function findPricingWithCustom(
         for (const alias of pricingLookupAliases(responseModel)) {
             if (custom[alias]) { return custom[alias]; }
         }
+        // Persisted custom prices can use a localized tier label or a diagnostic
+        // suffix from a previous session. Compare concrete identities as well.
+        const modelId = resolveModelId(responseModel);
+        if (modelId) {
+            for (const [key, pricing] of Object.entries(custom)) {
+                if (resolveModelId(key) === modelId) { return pricing; }
+            }
+        }
         const viaCustom = findPricing(responseModel, custom);
         if (viaCustom) { return viaCustom; }
     }
@@ -232,8 +229,8 @@ export function calculateCosts(
     for (const [name, ms] of entries) {
         const displayName = normalizeModelDisplayName(name);
         const baseName = getModelBaseName(name) || displayName;
-        const pricing = findPricingWithCustom(ms.responseModel, customPricing)
-            || findPricingWithCustom(name, customPricing);
+        const pricing = findPricingWithCustom(name, customPricing)
+            || findPricingWithCustom(ms.responseModel, customPricing);
         const responseOutputTokens = Math.max(0, ms.totalOutputTokens - ms.totalThinkingTokens);
 
         const inputCost = pricing ? calcCost(ms.totalInputTokens, pricing.input) : 0;

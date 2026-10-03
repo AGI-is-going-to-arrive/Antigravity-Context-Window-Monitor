@@ -9,15 +9,17 @@
 > [!WARNING]
 > **平台支持**
 >
-> 🍏 **macOS**: 完全支持。通过 `ps` 和 `lsof` 命令实现进程发现。
+> 🍏 **macOS**: 完全支持。通过 `ps` 和 `lsof` 命令实现进程发现。**1.16.18 VSIX 已安装到运行中的 Antigravity IDE 2.5.5，并完成包含窗口重载的实机验证。**
 >
-> 🐧 **Linux**: 完全支持（v1.6.0+）。通过 `ps` 和 `lsof`/`ss` 实现进程发现。已在 Ubuntu 22.04 (x64 & ARM64) 上测试通过。
+> 🐧 **Linux**: 自 v1.6.0 起支持。通过 `ps` 和 `lsof`/`ss` 实现进程发现。历史平台测试覆盖 Ubuntu 22.04 (x64 & ARM64)。
 >
 > 🪟 **Windows**: 完全支持（v1.8.0+）。通过 `wmic` 缓存和 PowerShell 回退机制优化了发现逻辑。
 >
 > 🐧🪟 **WSL**: 完全支持（v1.12.0+）。通过 `/proc/version` 检测 WSL 环境，利用 WSL 互操作调用 Windows 端工具进行 LS 发现。v1.12.1 新增 `extensionKind: ["ui", "workspace"]`，通过 Remote-WSL 或 Remote SSH 连接时扩展自动运行在本地 Windows 宿主机上。v1.13.0 新增 **Remote-WSL LS 发现** — 连接 WSL 工作区时，扩展通过 `wsl -d <distro>` 发现 WSL 内部运行的 `language_server_linux_x64` 进程，通过 WSL2 端口转发连接并显示正确的上下文数据。
 
 ---
+
+**1.16.18 验证：** 本地 TypeScript 编译和 **26 个文件的全部 362 项测试**通过。Windows、macOS 和 Linux 的编译/测试结果见 [GitHub Actions](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml)；本次原生 IDE 验证环境为 macOS。详见[发布验收说明](docs/releases/1.16.18.md#验证)。
 
 ## 📚 技术细节
 
@@ -66,14 +68,12 @@
     * **📂 可折叠区域**：次要信息（计划限制、功能开关、团队配置、Google AI 额度）默认折叠，展开/收起状态持久化。
 
 * **⚙️ 交互式设置仪表盘** *(v1.11.0 新增，持续增强至 v1.16.9)*
-    WebView 面板重构为「监控」和「设置」双标签页。设置页提供直观的图形化界面，一站式配置扩展行为——无需手动编辑 `settings.json`。
-    * **🎯 自定义压缩警告阈值**：设定自定义「警戒线」（支持 150K、200K、500K、900K 快捷预设），围绕 Antigravity 当前平台截断区间（约 128K-160K）提前预警。状态栏颜色基于该阈值而非模型原生窗口变化。
+    设置页提供图形化界面，可直接配置轮询、低额度警告、状态栏内容、界面缩放和面板显示偏好。
     * **🟢 状态栏额度指示灯**：当前模型的配额百分比带彩色状态灯（`🟢`、`🟡`、`🔴`）直接显示在状态栏上。
     * **⏳ 当前模型重置倒计时**：状态栏倒计时现在跟随你当前正在使用的模型的重置时间，而不再是所有模型中最早的那个。
     * **🎛️ 状态栏显示开关**：独立开关控制「上下文用量」、「额度指示灯」、「重置倒计时」与「AI 积分余额」的显示/隐藏。
     * **⚡ 状态栏 AI 积分** *(v1.16.7)*：状态栏新增 AI 积分余额段（如 `⚡14,701`），使用 `||` 包裹格式（如 `|| ⚠ 121.2k/160k || 🟡40% || ⏳4h6m || ⚡14,701 ||`）。积分为零时自动隐藏。可在设置页通过 `statusBar.showAiCredits` 开关控制。
     * **📆 按账号独立到期日** *(v1.16.7)*：在个人页内联设置每个账号的月度积分到期日（1-31）。个人页、账号面板和状态栏 tooltip 都会显示「今日到期 / X 天后到期 / 到期日未设置」倒计时徽章。使用 durable JSON 持久化，卸载重装不丢失。采用 UTC 日历日差计算，跨夏令时也不会多算 1 天。
-    * **↩ 恢复模型默认值** *(v1.16.8)*：设置页的模型上下文上限区域新增恢复按钮，可清除过期自定义覆盖并回到内置平台阈值。
     * **⏸️ 暂停/恢复**：暂停自动刷新以冻结面板数据，方便排查问题。
 
 * **🧠 模型活动监控** *(v1.11.2 新增，持续增强至 v1.16.4)*
@@ -90,7 +90,9 @@
 
 ## 🤖 支持的模型
 
-| 模型 | Internal ID / 内部 ID | 上下文上限 |
+注册表识别当前模型及历史记录中的旧模型身份。模型页始终以当前登录账号的实时 picker 为准；已注册不代表所有账号都能使用。
+
+| 模型 | Internal ID / 内部 ID | 平台压缩上限 |
 | --- | --- | --- |
 | Gemini 3.8 Flash (High) *（平台默认）* | MODEL_PLACEHOLDER_M318 | 256,000 |
 | Gemini 3.8 Flash (Medium) | MODEL_PLACEHOLDER_M319 | 256,000 |
@@ -108,17 +110,34 @@
 | Gemini 3.5 Flash (Low) | MODEL_PLACEHOLDER_M187 | 256,000 |
 | Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 128,000 |
 | Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 128,000 |
+| Claude Opus 5.5 (Low) | MODEL_PLACEHOLDER_M400 | 256,000 |
+| Claude Opus 5.5 (Medium) | MODEL_PLACEHOLDER_M401 | 256,000 |
+| Claude Opus 5.5 (High) | MODEL_PLACEHOLDER_M402 | 256,000 |
+| Claude Sonnet 5.5 (Low) | MODEL_PLACEHOLDER_M403 | 256,000 |
+| Claude Sonnet 5.5 (Medium) | MODEL_PLACEHOLDER_M404 | 256,000 |
+| Claude Sonnet 5.5 (High) | MODEL_PLACEHOLDER_M405 | 256,000 |
 | Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
 | Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
 | GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 80,000 |
 | Gemini 3 Flash（仅目录可见，不进 picker） | MODEL_PLACEHOLDER_M18 | 128,000 |
 | 历史（已退役 / 已改号） | MODEL_PLACEHOLDER_M264 / M265 / M266 / M133 / M132 / M47 | 仅用于归档数据解析 |
 
-*这些数值是 Antigravity 平台截断阈值，不是模型原生上下文窗口。模型 ID 来自 Antigravity 本地语言服务器的 `GetUserStatus` API。如果新增了模型，可以在 IDE 设置中手动覆盖上下文上限。*
+*这些数值是 Antigravity 平台压缩上限，不是模型原生上下文窗口。模型 ID 和实时参数来自 Antigravity 本地语言服务器，实时参数优先于静态兜底。在实时参数到达前，Claude 5.5 使用 255,000 token 静态兜底；已核实的实时上限为 256,000。*
 
 > [!NOTE]
-> 2026-09-05 对两个 Antigravity IDE language server 实例的活体互证显示，平台默认模型已变为 **Gemini 3.8 Flash (High)**（`MODEL_PLACEHOLDER_M318`）。High / Medium / Low 分别使用 `M318` / `M319` / `M320`；仅目录可见的 tiered 路由使用 `M322`。Gemini 3.7 Flash 仍然可用。在本次探测的 Google AI Pro 账号上，3.8 在 14 项 picker 中替代了 3.5；3.5 仍为目录与历史数据兼容而保留注册。
+> **v1.16.18 中的 Claude 5.5：** 2026-10-03 对运行中的 Antigravity IDE 进行元数据探测，核实了 Opus/Sonnet 的 Low / Medium / High 全部六个条目。它们均为 **1,000,000 token 原生上下文**、**128,000 token 最大输出**和 **256,000 token 平台压缩上限**。思考方式为自适应，API 提供 1 / 2 / 3 档位，而非固定 token 预算。内部 checkpointer 的独立参数 `tokenThreshold` 为 50,000，与卡片显示的压缩上限不同。
+> **账号可用性：** 付费 Pro/Ultra 账号已逐步提供 Claude 5.5，部分非付费账号仍提供 Claude 4.6。本扩展保留 4.6 支持与历史身份解析，也支持第三方模型移除后仅含 Gemini 的 picker。插件不会授予模型访问权限，也不会硬编码订阅名或移除日期；展示范围由当前账号的实时模型列表决定。
+> Gemini 3.8 Flash 的 High / Medium / Low 分别使用 `M318` / `M319` / `M320`；仅目录可见的 tiered 路由使用 `M322`。即使 Gemini 3.5 不在账号 picker 中，仍保留注册以兼容目录与历史数据。
 > `MODEL_PLACEHOLDER_Mxxx` 编号由平台分配，**可能在无预警的情况下被改号**——Gemini 3.6 Flash 三档已于 2026 年 8 月从 `M264` / `M265` / `M266` 改为 `M71` / `M72` / `M73`。本扩展保留旧编号的注册，使历史用量数据仍能解析到正确模型，并把新旧编号合并为同一条成本行、同一个配额池。来自语言服务器的活体 checkpointer 参数始终优先于上表的静态值。
+
+以下为 [Claude 5.5 官方 API 参考价格](https://platform.claude.com/docs/en/about-claude/pricing)，单位为美元/百万 token（2026-10-03）：
+
+| 模型 | 输入 | 输出 | 缓存读取 | 缓存写入，5 分钟 | 缓存写入，1 小时 |
+| --- | --- | --- | --- | --- | --- |
+| Claude Opus 5.5 | $4 | $20 | $0.20 | $5 | $8 |
+| Claude Sonnet 5.5 | $2 | $10 | $0.20 | $2.50 | $4 |
+
+内置缓存写入参考费率为 **5 分钟**。当前费用估算不计缓存创建费，因为遥测不能可靠区分创建 token 及其存活时间（TTL）；1 小时缓存写入费用也不自动计入。已上报的缓存读取 token 会参与计价。这些费用只是本地 API 等价估算，不代表 Antigravity 订阅账单。
 
 Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-31，**每 1M 输入 token $0.75**、**每 1M 输出 token $3.75**；从 2027-01-01 起变为 $1.50 / $7.50。来源：[Google Antigravity 发布文](https://antigravity.google/blog/gemini-3-8-flash-in-google-antigravity)与 [Google 模型公告](https://blog.google/innovation-and-ai/models-and-research/gemini-models/3-8-flash-and-3-8-flash-cyber/)。
 
@@ -154,9 +173,9 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
    ![成本标签页](src/images/cost.png)
 
-   **模型 (Models)** — 所有可用模型的额度状态、上下文上限和重置倒计时。
+   **模型 (Models)** — 当前账号可用模型的额度状态和重置倒计时。新版模型信息卡片采用协调的 IDE 中性色，用清晰的数据行呈现压缩上限和原生上下文，显示易读的提供商名称、完整模型 ID 及自适应思考状态；支持窄面板、亮色/暗色/高对比度主题和中文、英文、双语显示。
 
-   ![模型标签页](src/images/model.png)
+   ![v1.16.18 模型信息卡片](src/images/model.png)
 
    **日历 (Calendar)** — 按日期组织的历史使用数据，包含每周期成本和 Token 分解。
 
@@ -166,7 +185,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
    ![个人标签页](src/images/profile.png)
 
-   **设置 (Settings)** — 配置扩展行为：压缩阈值、状态栏开关、轮询间隔等。
+   **设置 (Settings)** — 配置扩展行为：低额度警告阈值、状态栏开关、轮询间隔等。
 
    ![设置标签页](src/images/settings1.png)
 
@@ -190,7 +209,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 > [!NOTE]
 > **子智能体动态切换**
-> 使用 Claude 模型时，Antigravity 可能会调用轻量子智能体模型处理小任务——平台现在把该模型标注为 **Gemini 3.1 Flash Lite**（`MODEL_PLACEHOLDER_M50`；较早的 `gemini-2.5-flash*` 目录条目共用同一显示名）。子智能体切换不会改变显示的上下文上限，因为本扩展跟踪的是你所选模型的上限，而不是子智能体的。2026-08-14 活体探测：Claude 4.6 原生窗口 250,000 token、平台 checkpointer 上限 160,000 token，而子智能体模型使用 128,000 画像。
+> 使用 Claude 模型时，Antigravity 可能会调用轻量子智能体模型处理小任务——平台把该模型标注为 **Gemini 3.1 Flash Lite**（`MODEL_PLACEHOLDER_M50`；较早的 `gemini-2.5-flash*` 目录条目共用同一显示名）。子智能体切换不会改变显示的上下文上限，因为本扩展跟踪的是你所选模型的上限。Claude 5.5 的原生上下文为 1,000,000 token、平台压缩上限为 256,000 token（2026-10-03 核实）；保留的 Claude 4.6 画像分别为 250,000 和 160,000，子智能体模型使用 128,000 画像。
 
 > [!IMPORTANT]
 > **"LS not found" 与请勿以管理员身份运行 IDE（Windows）**
@@ -203,8 +222,6 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 | 设置项 | 默认 | 说明 |
 | --- | --- | --- |
 | `pollingInterval` | 5 | 轮询频率（秒） |
-| `contextLimits` | (见默认值) | 手动覆盖模型的上下文上限 |
-| `compressionWarningThreshold` | 150000 | 压缩警告阈值（token 数）。状态栏颜色基于此值判断。 |
 | `statusBar.showContext` | true | 状态栏显示上下文用量（如 `45k/1M, 4.5%`） |
 | `statusBar.showQuota` | true | 状态栏显示当前模型额度指示灯（如 `🟢85%`） |
 | `statusBar.showResetCountdown` | true | 状态栏显示重置倒计时（如 `⏳4h32m`） |
@@ -231,4 +248,4 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.16.17
+**版本 / Version**: 1.16.18 — [发布说明](docs/releases/1.16.18.md)

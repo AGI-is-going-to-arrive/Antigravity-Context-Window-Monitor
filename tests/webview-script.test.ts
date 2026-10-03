@@ -4,7 +4,7 @@ import { collectPricingInputOverrides } from '../src/webview-script';
 
 type Attrs = Record<string, string>;
 
-function input(attrs: Attrs, value: number) {
+function input(attrs: Attrs, value: number | string) {
     return {
         value: String(value),
         getAttribute: (name: string) => attrs[name] ?? null,
@@ -58,6 +58,34 @@ describe('collectPricingInputOverrides', () => {
             cacheRead: 0,
             cacheWrite: 0,
             thinking: 0.36,
+        });
+    });
+
+    it('leaves a wholly blank unknown row unpriced and lets users clear an override', () => {
+        for (const wasCustom of ['0', '1']) {
+            const inputs = ['input', 'output', 'cacheRead', 'thinking'].map(field => input({
+                'data-model': 'future-unpriced-model', 'data-field': field,
+                'data-original-value': wasCustom === '1' ? '5' : '', 'data-was-custom': wasCustom,
+            }, ''));
+            expect(collectPricingInputOverrides(inputs)).toEqual({});
+        }
+    });
+
+    it.each(['', 'oops', '-1', 'Infinity', '1.5oops', '0x10'])(
+        'rejects a partial or invalid price %s without silently saving zero', value => {
+            const inputs = modelInputs('claude-sonnet-5-5', { input: 2, output: 10, cacheRead: 0.2, thinking: 10 });
+            inputs[0].value = value;
+            expect(() => collectPricingInputOverrides(inputs)).toThrow('INVALID_PRICING');
+        },
+    );
+
+    it('persists explicit zero values and preserves the undisplayed cache-write rate', () => {
+        const inputs = ['input', 'output', 'cacheRead', 'thinking'].map(field => input({
+            'data-model': 'claude-sonnet-5-5', 'data-field': field, 'data-original-value': '',
+            'data-was-custom': '0', 'data-cache-write': '2.5',
+        }, 0));
+        expect(collectPricingInputOverrides(inputs)).toEqual({
+            'claude-sonnet-5-5': { input: 0, output: 0, cacheRead: 0, cacheWrite: 2.5, thinking: 0 },
         });
     });
 });

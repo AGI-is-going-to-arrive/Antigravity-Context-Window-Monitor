@@ -226,8 +226,8 @@ export function buildAboutTabContent(): string {
         </h3>
         <div class="about-info-box about-info-compat">
             ${tBi(
-        '<p>The following Antigravity IDE versions have been <strong>tested by contributors</strong> and confirmed working with this plugin:</p><p><strong>Most stable:</strong> v1.18.4, v1.19.6</p><p><strong>Tested range:</strong> v1.19.6 → v1.20.6 → v1.23.2 — all versions in this range have been verified to work normally.</p><p>Future Antigravity updates may change internal APIs at any time, potentially breaking compatibility. See the Disclaimer below for details.</p>',
-        '<p>以下 Antigravity IDE 版本已经过<strong>贡献者实测验证</strong>，确认本插件可正常运行：</p><p><strong>最稳定版本：</strong>v1.18.4、v1.19.6</p><p><strong>验证范围：</strong>v1.19.6 → v1.20.6 → v1.23.2 —— 该区间内所有版本均已验证可正常使用。</p><p>未来 Antigravity 更新可能随时变更内部 API，导致插件失效。详见下方免责声明。</p>',
+        '<p><strong>Verified for extension 1.16.18:</strong> Antigravity IDE 2.5.5 on macOS, using the installed VSIX on 2026-10-03.</p><p><strong>Earlier contributor checks:</strong> v1.18.4, v1.19.6, v1.20.6, and v1.23.2.</p><p>Windows and Linux have automated compile and regression coverage; this release\'s native IDE verification was performed on macOS. Future IDE updates may change internal APIs. See the Disclaimer below for details.</p>',
+        '<p><strong>扩展 1.16.18 本次验证：</strong>2026-10-03 在 macOS 的 Antigravity IDE 2.5.5 中安装新 VSIX 并完成实测。</p><p><strong>此前贡献者验证版本：</strong>v1.18.4、v1.19.6、v1.20.6、v1.23.2。</p><p>Windows 和 Linux 有自动编译及回归测试覆盖；本次原生 IDE 验证环境为 macOS。未来 IDE 更新可能变更内部 API，详见下方免责声明。</p>',
     )}
         </div>
     </div>`;

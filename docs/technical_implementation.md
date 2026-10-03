@@ -4,6 +4,8 @@ This document explains how the Antigravity Context Window Monitor plugin works. 
 
 本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 面板调度）、`activity-tracker.ts`（模型活动追踪）、`activity-panel.ts`（GM Data UI）、`pricing-panel.ts`（Cost 与 Models UI）、`quota-tracker.ts`（配额追踪）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。WebView 面板拆分为：`activity-panel.ts`、`pricing-panel.ts`、`webview-chat-history-tab.ts`、`webview-models-tab.ts`、`webview-profile-tab.ts`、`webview-settings-tab.ts`、`webview-calendar-tab.ts`、`webview-about-tab.ts`、`webview-script.ts`、`webview-styles.ts`、`webview-helpers.ts`、`webview-icons.ts`。
 
+Current release / 当前版本: **1.16.18**. See [release notes / 发布说明](releases/1.16.18.md).
+
 ---
 
 ## 🧭 1. Language Server Discovery / 语言服务器发现
@@ -228,9 +230,56 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
 * **模型平台阈值 / Model Platform Thresholds**: `models.ts` 中的 `DEFAULT_CONTEXT_LIMITS` 记录 Antigravity 平台截断阈值，而不是模型原生窗口。v1.16.8 将 Gemini 3.1 Pro 调整为 128K，Gemini 3 Flash M133/M132/M84/M47 调整为 128K，GPT-OSS 120B 调整为 80K，Claude Thinking 保持 160K。启动迁移会清除旧版保存下来的 1M、120K/160K/128K 过期默认 override，让新的内置默认值生效。v1.16.14 依据活体探测新增 Gemini 3.6 Flash 三档 M264/M265/M266（另含仅目录可见的 M196）静态兜底 255K（活体 checkpointer 256K/140K，−1K 偏移用于识别活体覆盖是否生效），并把 3.5 Flash M84/M20/M187 过期的 127K 校正为 255K；M133/M132/M47 平台侧已退役，仅保留用于归档数据解析。placeholder ID 的家族推导（`guessContextLimitSpec`）改为按 M 编号精确匹配，杜绝 M264 含 `m26` 子串被误判为 Claude 系的碰撞。v1.16.15 依据活体探测新增 Gemini 3.7 Flash 三档 M298/M299/M300（静态兜底同为 255K，活体 checkpointer 256K/140K），并处理平台对 3.6 Flash 的**改号**：M264/M265/M266 已被平台迁移到 M71/M72/M73，别名与反查一律指向活跃编号，旧编号降级为已退役 ID 仅用于解析归档数据。v1.16.17 对两个运行中的 Antigravity IDE language server 实例互证后新增 Gemini 3.8 Flash M318/M319/M320 与目录内 M322；三档静态兜底 255K、活体 256K/140K，原生上下文 1,048,576、输出 65,536，思考预算为动态/4,000/1,000。M318 同步成为状态栏默认配额池代表；中英文别名、计价与 2027 年历史回填边界共享同一身份归一化链路。
   `DEFAULT_CONTEXT_LIMITS` stores Antigravity platform truncation thresholds, not model-native windows. v1.16.8 sets Gemini 3.1 Pro to 128K, Gemini 3 Flash M133/M132/M84/M47 to 128K, GPT-OSS 120B to 80K, while Claude Thinking remains 160K. Startup migration clears stale explicit default overrides from older releases so the corrected built-in defaults can take effect. v1.16.14 adds live-probed Gemini 3.6 Flash tiers M264/M265/M266 (plus catalog-only M196) with 255K static fallbacks (live checkpointer 256K/140K; the −1K offset marks fallback vs live capture), corrects the stale 127K fallbacks of 3.5 Flash M84/M20/M187 to 255K, and retires M133/M132/M47 platform-side (kept for archived-data resolution only). Placeholder-ID family inference (`guessContextLimitSpec`) now matches exact M-numbers, eliminating the substring collision where M264 (containing `m26`) was misjudged as a Claude-series model. v1.16.15 adds live-probed Gemini 3.7 Flash tiers M298/M299/M300 and absorbs the platform's 3.6 renumbering to M71/M72/M73. v1.16.17 cross-verifies two running Antigravity IDE language-server instances and adds Gemini 3.8 Flash M318/M319/M320 plus catalog-only M322: 255K static fallback, live 256K/140K checkpointer, 1,048,576 native context, 65,536 output, and dynamic/4,000/1,000 thinking budgets. M318 also becomes the status-bar default pool representative; English/Chinese aliases, pricing, and the 2027 historical backfill boundary share the same normalized identity path.
 
-* **设置页恢复默认值 / Settings Restore Defaults**: 模型上下文上限区域的 Restore Defaults 按钮将输入框回填为 `getContextLimit()` 默认值，同时向扩展端发送空 `contextLimits` 对象以清除显式覆盖；Save All 只保存不同于默认值的项目。这样后续版本再次调整默认阈值时，用户不会因为一次保存或“恢复默认值”而被旧显式值锁住。
-  The model-limit Restore Defaults button fills inputs from `getContextLimit()` defaults and sends an empty `contextLimits` object to clear explicit overrides; Save All stores only values that differ from defaults. Future default changes are therefore not masked by stale values created by a previous save or restore action.
+* **上下文上限来源 / Context Limit Source**: 上下文上限采用本地语言服务器同步的实时参数；实时数据到达前使用注册值或家族推导值兜底。当前设置页提供低额度警告、轮询和显示偏好；旧版本的手动上下文上限覆盖和恢复按钮不属于当前界面。
+  Context limits use live parameters synchronized from the local language server, with registered or inferred fallbacks before live data arrives. The current Settings tab configures quota warnings, polling, and display preferences; the former manual context-limit override and restore controls are no longer part of the interface.
 
 ---
-基于 TypeScript 构建，适用于 Antigravity IDE。当前共有 297 个 vitest 单元测试（`npm test`），覆盖 discovery 解析、价格表渲染/保存、工具目录清空持久化、模型默认值恢复、quota pool 分组、contextLimits 迁移、模型注册表守卫（含 Gemini 3.8 的精确 M 编号、排序、别名与 i18n）、状态栏 tooltip 默认代表与密度预算、定价解析（本地化显示名与自定义价覆盖）与跨定价时期归档成本回填不变量等纯逻辑路径。
-Built with TypeScript for the Antigravity IDE. The repository currently contains 297 vitest unit tests (`npm test`) covering discovery parsing, pricing table rendering/save behavior, tool catalog clear persistence, model default restoration, quota pool grouping, contextLimits migration, model-registry guards (including Gemini 3.8 exact IDs, ordering, aliases, and i18n), status-bar default representative and tooltip density budgets, pricing resolution (localized display names and custom-price overrides), and cross-price-era archived-cost backfill invariants.
+
+## 🤖 7. Claude 5.5 Registry and Model Cards / Claude 5.5 注册与模型信息卡片
+
+### English
+
+The v1.16.18 registry uses metadata read from the running Antigravity IDE on 2026-10-03. The probe reads local model configuration; it sends no model-generation requests.
+
+| Model and effort | Placeholder ID | Catalog ID |
+| --- | --- | --- |
+| Claude Opus 5.5 Low | `MODEL_PLACEHOLDER_M400` | `claude-opus-5-5-low` |
+| Claude Opus 5.5 Medium | `MODEL_PLACEHOLDER_M401` | `claude-opus-5-5-medium` |
+| Claude Opus 5.5 High | `MODEL_PLACEHOLDER_M402` | `claude-opus-5-5-high` |
+| Claude Sonnet 5.5 Low | `MODEL_PLACEHOLDER_M403` | `claude-sonnet-5-5-low` |
+| Claude Sonnet 5.5 Medium | `MODEL_PLACEHOLDER_M404` | `claude-sonnet-5-5-medium` |
+| Claude Sonnet 5.5 High | `MODEL_PLACEHOLDER_M405` | `claude-sonnet-5-5-high` |
+
+All six entries report `ANTHROPIC_VERTEX`, a 1,000,000-token native context, and 128,000 maximum output tokens. Their live checkpointer limit is **256,000**; the separate `tokenThreshold` parameter is **50,000**. `DEFAULT_CONTEXT_LIMITS` retains the registry convention of a 255,000 static fallback so live synchronization can be distinguished from fallback data. `supportsAdaptiveThinking` is true and `thinkingLevel` is 1 / 2 / 3 for Low / Medium / High. The API omits a fixed `thinkingBudget`; this must not render as disabled thinking or a zero-token allowance.
+
+Identity normalization links placeholders, catalog IDs, English labels, and Chinese effort labels. The six effort identities stay distinct even when a response reports only a family name such as `claude-opus-5-5`: a family name can identify pricing and the shared `premium` quota pool, but cannot establish which effort tier was requested. Claude 4.6 (`M26` / `M35`) remains registered for accounts that still expose it and for saved usage. Model cards and quota rows are scoped to the current account's live picker, with no plan-name or date-based access rules. This supports paid accounts exposing 5.5, unpaid accounts retaining 4.6, and Gemini-only accounts without adding unavailable models to the UI.
+
+`webview-models-tab.ts` renders model information separately from historical GM data. Cards use semantic headings and description lists for the compression limit, native context, and thinking state. Provider names are readable, complete model IDs wrap, and all API-provided labels are escaped. `webview-styles.ts` uses IDE theme colors and border contrast for the model cards; the compression limit is a data row rather than a colored glow badge. The grid adapts to narrow panels. English, Chinese, and bilingual labels use `tBi`, and numbers follow the selected UI language rather than the host OS locale. Missing numeric metadata is displayed as unavailable.
+
+Pricing resolves each family through the same identity normalization used by activity, quota, and archival paths. The official API rates per million tokens are: Claude Opus 5.5 — $4 input, $20 output, $0.20 cache read, $5 for 5-minute cache writes, and $8 for 1-hour cache writes; Claude Sonnet 5.5 — $2 input, $10 output, $0.20 cache read, $2.50 for 5-minute cache writes, and $4 for 1-hour cache writes. `ModelPricing.cacheWrite` stores the 5-minute reference rate. Current `costFromTokens()` and `calculateCosts()` estimates exclude cache creation fees because telemetry does not reliably identify creation tokens and their TTL; 1-hour write fees are not added automatically either. The existing formula includes input, response output, thinking output, and cache reads, without double-counting thinking tokens. Raw usage is retained, and custom rates remain available. API-equivalent estimates do not represent Antigravity subscription billing. Source: [official Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing), 2026-10-03.
+
+### 中文
+
+v1.16.18 注册表依据 2026-10-03 对运行中 Antigravity IDE 的元数据探测。探测只读取本地模型配置，不发送模型生成请求。上表列出 Opus/Sonnet 六档模型的精确 placeholder 与 catalog ID。
+
+六个条目均使用 `ANTHROPIC_VERTEX`，原生上下文为 1,000,000 token，最大输出为 128,000 token。实时 checkpointer 上限为 **256,000**，独立的 `tokenThreshold` 参数为 **50,000**。`DEFAULT_CONTEXT_LIMITS` 沿用 255,000 静态兜底的注册表约定，以区分实时同步与兜底数据。`supportsAdaptiveThinking` 为 true，Low / Medium / High 的 `thinkingLevel` 分别为 1 / 2 / 3。API 未提供固定 `thinkingBudget`，不能将其显示为不支持思考或预算为零。
+
+身份归一化连接 placeholder、catalog ID、英文名称与中文档位名称。即使响应只报告 `claude-opus-5-5` 这样的家族名，六个档位的身份仍保持独立：家族名可以确定计价家族及共享 `premium` 配额池，却不能证明请求采用了哪一档思考力度。Claude 4.6（`M26` / `M35`）继续注册，用于仍提供这些模型的账号和历史用量解析。模型卡片与额度行只展示当前账号的实时 picker，不按计划名或日期硬编码权限，兼容付费账号的 5.5、仍保留 4.6 的非付费账号及仅有 Gemini 的账号。
+
+`webview-models-tab.ts` 将模型信息与历史 GM 数据分开渲染。卡片使用语义化标题和描述列表呈现压缩上限、原生上下文及思考状态；提供商名称易读，完整模型 ID 可换行，API 标签经过转义。`webview-styles.ts` 使用 IDE 主题颜色和边框对比度；压缩上限改为数据行，移除彩色光晕徽标。网格可适应窄面板。中文、英文和双语标签使用 `tBi`，数字格式跟随所选界面语言，不依赖宿主操作系统地区设置。缺失数值信息显示为暂无数据。
+
+计价、活动、配额和归档路径共用身份归一化。官方 API 单价按每百万 token 计算：Claude Opus 5.5 输入 $4、输出 $20、缓存读取 $0.20、5 分钟缓存写入 $5、1 小时缓存写入 $8；Claude Sonnet 5.5 输入 $2、输出 $10、缓存读取 $0.20、5 分钟缓存写入 $2.50、1 小时缓存写入 $4。`ModelPricing.cacheWrite` 保存 5 分钟参考费率。当前 `costFromTokens()` 和 `calculateCosts()` 的费用估算不计缓存创建费，因为遥测不能可靠区分创建 token 及其存活时间（TTL）；1 小时写入费用也不自动计入。既有公式包含输入、正文输出、思考输出和缓存读取，并避免重复计算思考 token。原始用量继续保留，用户也可配置自定义价格。API 等价估算不代表 Antigravity 订阅账单。来源：[Claude 官方定价](https://platform.claude.com/docs/en/about-claude/pricing)，2026-10-03。
+
+## 🧪 8. Verification / 验证
+
+The extension is built with TypeScript. Run `npm ci`, `npm run compile`, and `npm test` using the committed lockfile. The `verify.yml` workflow defines Node.js 22 checks on Windows, macOS, and Linux. Vitest covers discovery parsers for each platform, model identities and aliases, live-parameter precedence, account-specific model lists, quota pools, localized labels, pricing resolution/custom overrides, historical cost backfill, and model-card escaping and missing-data states. Workflow configuration is not evidence that a particular CI run passed; release results belong in the [versioned release notes](releases/1.16.18.md).
+
+The v1.16.18 model-information component passed **36/36 browser rendering cases**, regenerated from the installed extension's `out/`: four themes (light, dark, high-contrast dark, high-contrast light) × three languages (English, Chinese, bilingual) × three viewport widths (320, 768, 1440 px). Every case rendered 18 model cards, including all six Claude 5.5 variants, with no horizontal overflow and zero axe violations within `.model-info-section`. Another **15/15 browser interaction assertions** passed for price validation, draft values/empty inputs/focus across model refreshes, and pause/resume. The README image is a rendering of the component, not a screenshot of the full IDE window.
+
+Local acceptance passed `npm run compile` and **362 tests in 26 files**. The new VSIX was installed into the already running **Antigravity IDE 2.5.5 on macOS** (VS Code 1.107.0); after reload, the manifest reported 1.16.18 and all **45 installed JavaScript files** matched the VSIX and local build byte for byte. Native checks covered the six model identities and limits, adaptive thinking, language switching/reload persistence, all four themes, both Claude price families, invalid-price rejection, draft retention, and pause/resume label/ARIA/indicator consistency. The original UI preferences were restored, drafts were discarded without saving custom prices, no generation requests were sent, and real usage history was not manually changed. Windows/macOS/Linux CI results are reported by the versioned commit in [GitHub Actions](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml).
+
+扩展使用 TypeScript 构建。按已提交的锁文件执行 `npm ci`、`npm run compile` 和 `npm test`。`verify.yml` 定义 Windows、macOS、Linux 上的 Node.js 22 检查。Vitest 覆盖各平台发现解析器、模型身份与别名、实时参数优先级、账号模型列表、配额池、本地化标签、定价解析与自定义覆盖、历史费用回填，以及模型卡片的转义和缺失数据状态。配置了工作流并不代表某次 CI 已通过；发布验收结果记录在[对应版本说明](releases/1.16.18.md)中。
+
+v1.16.18 模型信息组件已从安装后扩展的 `out/` 重新生成，并通过 **36/36 项浏览器渲染检查**：四种主题（亮色、暗色、暗色高对比度、亮色高对比度）× 三种语言（英文、中文、双语）× 三种视口宽度（320、768、1440 px）。每项均渲染 18 张模型卡片，包含全部六档 Claude 5.5，无横向溢出，且 `.model-info-section` 范围内 axe 违规为零。另有 **15/15 项浏览器交互断言**通过，覆盖价格校验、模型刷新时草稿值/空输入/焦点保留及暂停/恢复。README 的图片是该组件的渲染图，并非 IDE 全窗口截图。
+
+本地验收通过 `npm run compile` 及 **26 个文件的 362 项测试**。新 VSIX 已安装到原本运行中的 **macOS Antigravity IDE 2.5.5**（VS Code 1.107.0）；重载后清单显示 1.16.18，全部 **45 个已安装 JavaScript 文件**与 VSIX 和本地构建逐字节一致。原生检查覆盖六档模型身份和上限、自适应思考、语言切换及重载持久化、四种主题、两个 Claude 价格家族、非法价格拒绝保存、草稿保留，以及暂停/恢复文案、ARIA 和指示器一致性。已恢复原界面偏好，草稿已丢弃且未保存自定义价格；未发送生成请求，未手动修改真实用量历史。Windows/macOS/Linux CI 结果按对应提交记录于 [GitHub Actions](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml)。

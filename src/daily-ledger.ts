@@ -156,7 +156,8 @@ function fallbackCallId(call: GMCallEntry): string {
 }
 
 /**
- * Compute per-call estimated cost using responseModel pricing.
+ * Compute per-call estimated cost using the concrete model identity, with
+ * responseModel/display fallbacks for incomplete historical records.
  *
  * Deliberately uses the built-in table only. This value is persisted, and two windows
  * can hold different custom prices (the durable store is read once at construction and
@@ -166,8 +167,7 @@ function fallbackCallId(call: GMCallEntry): string {
  * `buildGMSummaryFromLedger`, which re-price from the token counts kept alongside.
  */
 function estimateCallCost(call: GMCallEntry): number {
-    if (!call.responseModel) { return 0; }
-    const pr = findPricing(call.responseModel);
+    const pr = findPricing(call.model) || findPricing(call.responseModel) || findPricing(call.modelDisplay);
     return pr ? costFromTokens(call, pr) : 0;
 }
 

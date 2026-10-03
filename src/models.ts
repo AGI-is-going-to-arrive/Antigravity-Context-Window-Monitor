@@ -2,8 +2,8 @@
 // Extracted from tracker.ts for single-responsibility.
 //
 // Model display names are populated dynamically from the LS GetUserStatus API
-// (`cascadeModelConfigData.clientModelConfigs[].label`). No hardcoded model
-// name mapping — the API is the single source of truth.
+// (`cascadeModelConfigData.clientModelConfigs[].label`). Static names provide
+// cold-start and archived-data fallbacks; live labels remain authoritative.
 //
 // DEFAULT_CONTEXT_LIMITS and KNOWN_QUOTA_POOLS are retained as static fallbacks
 // because the API does not expose context window sizes or pool groupings.
@@ -44,6 +44,12 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     'MODEL_PLACEHOLDER_M132': 127_000,  // [Retired] Gemini 3.5 Flash (High) — predecessor of M84; retained for archived-data parsing
     'MODEL_PLACEHOLDER_M47': 127_000,   // [Legacy] Gemini 3 Flash (older ID) — fallback offset by -1K (live: 128,000)
     'MODEL_PLACEHOLDER_M18': 127_000,   // Gemini 3 Flash (catalog-only, not in picker) — fallback offset by -1K (live 2026-08: 128,000)
+    'MODEL_PLACEHOLDER_M400': 255_000,  // Claude Opus 5.5 (Low) — live LS 2026-10-03: 256,000
+    'MODEL_PLACEHOLDER_M401': 255_000,  // Claude Opus 5.5 (Medium)
+    'MODEL_PLACEHOLDER_M402': 255_000,  // Claude Opus 5.5 (High)
+    'MODEL_PLACEHOLDER_M403': 255_000,  // Claude Sonnet 5.5 (Low)
+    'MODEL_PLACEHOLDER_M404': 255_000,  // Claude Sonnet 5.5 (Medium)
+    'MODEL_PLACEHOLDER_M405': 255_000,  // Claude Sonnet 5.5 (High)
     'MODEL_PLACEHOLDER_M35': 159_000,   // Claude Sonnet 4.6 (Thinking) — fallback offset by -1K (live: 160,000)
     'MODEL_PLACEHOLDER_M26': 159_000,   // Claude Opus 4.6 (Thinking)  — fallback offset by -1K (live: 160,000)
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 79_000,   // GPT-OSS 120B (Medium) — fallback offset by -1K (live: 80,000)
@@ -89,6 +95,12 @@ let responseModelAliases: Record<string, string> = {
     'gemini-3.6-flash-low': 'MODEL_PLACEHOLDER_M73',      // model_id for M73 (was M266 before the renumber)
     'gemini-3.6-flash-tiered': 'MODEL_PLACEHOLDER_M196',  // catalog-only tiered router
     // Claude aliases
+    'claude-opus-5-5-low': 'MODEL_PLACEHOLDER_M400',
+    'claude-opus-5-5-medium': 'MODEL_PLACEHOLDER_M401',
+    'claude-opus-5-5-high': 'MODEL_PLACEHOLDER_M402',
+    'claude-sonnet-5-5-low': 'MODEL_PLACEHOLDER_M403',
+    'claude-sonnet-5-5-medium': 'MODEL_PLACEHOLDER_M404',
+    'claude-sonnet-5-5-high': 'MODEL_PLACEHOLDER_M405',
     'claude-opus-4-6-thinking': 'MODEL_PLACEHOLDER_M26',  // model_id for Opus
     'claude-sonnet-4-6': 'MODEL_PLACEHOLDER_M35',          // model_id for Sonnet
     // GPT-OSS
@@ -124,6 +136,12 @@ const KNOWN_QUOTA_POOLS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M47': 'gemini',
     'MODEL_PLACEHOLDER_M18': 'gemini',
     // Claude/GPT premium pool
+    'MODEL_PLACEHOLDER_M400': 'premium',
+    'MODEL_PLACEHOLDER_M401': 'premium',
+    'MODEL_PLACEHOLDER_M402': 'premium',
+    'MODEL_PLACEHOLDER_M403': 'premium',
+    'MODEL_PLACEHOLDER_M404': 'premium',
+    'MODEL_PLACEHOLDER_M405': 'premium',
     'MODEL_PLACEHOLDER_M35': 'premium',
     'MODEL_PLACEHOLDER_M26': 'premium',
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'premium',
@@ -173,6 +191,12 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M84': 'Gemini 3.5 Flash (High)',   // gemini-3-flash-agent — M84 took over 3.5F High identity from M133 (2026-07 live)
     'MODEL_PLACEHOLDER_M47': 'Gemini 3 Flash',            // retired (replaced by M84)
     'MODEL_PLACEHOLDER_M18': 'Gemini 3 Flash',            // backend command model
+    'MODEL_PLACEHOLDER_M400': 'Claude Opus 5.5 (Low)',
+    'MODEL_PLACEHOLDER_M401': 'Claude Opus 5.5 (Medium)',
+    'MODEL_PLACEHOLDER_M402': 'Claude Opus 5.5 (High)',
+    'MODEL_PLACEHOLDER_M403': 'Claude Sonnet 5.5 (Low)',
+    'MODEL_PLACEHOLDER_M404': 'Claude Sonnet 5.5 (Medium)',
+    'MODEL_PLACEHOLDER_M405': 'Claude Sonnet 5.5 (High)',
     'MODEL_PLACEHOLDER_M35': 'Claude Sonnet 4.6 (Thinking)',
     'MODEL_PLACEHOLDER_M26': 'Claude Opus 4.6 (Thinking)',
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'GPT-OSS 120B (Medium)',
@@ -211,6 +235,11 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
     const placeholderMatch = idLower.match(/model_placeholder_(m\d+)/);
     if (placeholderMatch) {
         const num = placeholderMatch[1];
+        // Claude 5.5 uses adaptive thinking and a 1M native window, with a 256K
+        // platform truncation limit (live GetAvailableModels, 2026-10-03).
+        if (['m400', 'm401', 'm402', 'm403', 'm404', 'm405'].includes(num)) {
+            return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1000000, supportsThinking: true };
+        }
         // Claude / Premium (Thinking) series — live checkpointer threshold is 50,000 (2026-08 probe),
         // not the 100,000 this branch previously assumed.
         if (num === 'm35' || num === 'm26') {
@@ -247,6 +276,9 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
     // Non-placeholder names (catalog model_id / responseModel) — keyword matching is safe.
     // 1. Claude/Premium (Thinking) series -> 160K CP Limit (live threshold 50,000)
     if (idLower.includes('claude') || idLower.includes('opus') || idLower.includes('sonnet')) {
+        if (/(?:^|[-_\s])5[._-]5(?:$|[-_\s(])/.test(idLower)) {
+            return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1000000, supportsThinking: true };
+        }
         return { cpLimit: 160000, cpThreshold: 50000, maxTokens: 250000, supportsThinking: true };
     }
 
@@ -365,6 +397,18 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     // Legacy Chinese name fallback (pre-v1.16 persisted data migration)
     const legacyId = ZH_MODEL_NAME_ALIASES[clean];
     if (legacyId) { return legacyId; }
+    // Accept readable/localized tiers and both catalog decimal spellings. A bare
+    // human label defaults to Medium, as in the IDE picker. A bare responseModel
+    // such as "claude-opus-5-5" intentionally has no tier: the backend can share it
+    // across efforts, so it must never override a concrete chatModel/trajectory ID.
+    const claude55 = clean.replace(/[（]/g, '(').replace(/[）]/g, ')').match(
+        /^claude[\s_-]+(opus|sonnet)[\s_-]+5[._-]5(?:[\s_-]*\(?\s*(low|medium|high|低|中|高)\s*\)?)?$/i,
+    );
+    if (claude55 && (claude55[2] || /\s/.test(clean))) {
+        const tier = (claude55[2] || 'medium').toLowerCase();
+        const offset = tier === 'low' || tier === '低' ? 0 : tier === 'high' || tier === '高' ? 2 : 1;
+        return `MODEL_PLACEHOLDER_M${(claude55[1].toLowerCase() === 'opus' ? 400 : 403) + offset}`;
+    }
     // Strip trailing diagnostic suffix "(Mxx)" and retry — handles persisted keys
     // that include the short ID appended by normalizeModelDisplayName()
     const suffixStripped = clean.replace(/\s*\(M\d+\)$/, '').replace(/\s*\(OSS-120B\)$/, '');
@@ -415,6 +459,9 @@ export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
     if (fixedPool) {
         return fixedPool;
     }
+    // Bare Claude 5.5 response names identify the shared pool even though they do
+    // not identify an effort tier (see resolveModelId).
+    if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(modelId.trim())) { return 'premium'; }
     // KNOWN_QUOTA_POOLS is keyed by placeholder ID, but callers also hold catalog model_ids
     // ('gemini-3.7-flash-high') and display labels ('Gemini 3.7 Flash (High)'). Without this
     // normalization those forms silently fall through to the resetTime branch — and resetTime is a
@@ -548,7 +595,7 @@ export function updateModelDisplayNames(
     // renumber, and not yet known to be retired — outrank the live one for a whole session, and that
     // wrong ID then chains into getContextLimit() and getQuotaPoolKey(). Retired IDs stay resolvable
     // regardless: they live in STATIC_MODEL_NAME_FALLBACKS, which this never touches.
-    if (opts.authoritative && configs.some(c => c.model && c.label)) {
+    if (opts.authoritative) {
         modelDisplayNames = {};
     }
     for (const c of configs) {
@@ -575,6 +622,7 @@ export function registerResponseModelAlias(responseModel: string, placeholderId:
     if (!responseKey || !target || responseKey === target || !isConcreteAliasTarget(target)) {
         return;
     }
+    if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(responseKey)) { return; }
     const existing = responseModelAliases[responseKey];
     if (existing && existing !== target) {
         // responseModel can be less stable than chatModel.model; do not let one
@@ -606,6 +654,10 @@ export interface ModelSpec {
     maxOutputTokens: number;
     thinkingBudget: number;
     supportsThinking: boolean;
+    /** Adaptive thinking is independent of a fixed token budget. */
+    supportsAdaptiveThinking?: boolean;
+    /** Platform effort level: 1 = Low, 2 = Medium, 3 = High. */
+    thinkingLevel?: number;
     cpLimit: number;
     cpThreshold: number;
 }
@@ -809,6 +861,92 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         cpLimit: 128000,
         cpThreshold: 50000,
     },
+    // Claude 5.5 — verified from the installed IDE's LS on 2026-10-03.
+    // Budget is omitted by the API: effort is adaptive, not a fixed token count.
+    'MODEL_PLACEHOLDER_M400': {
+        modelId: 'claude-opus-5-5-low',
+        placeholderId: 'MODEL_PLACEHOLDER_M400',
+        displayName: 'Claude Opus 5.5 (Low)',
+        apiProvider: 'ANTHROPIC_VERTEX',
+        maxTokens: 1000000,
+        maxOutputTokens: 128000,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        supportsAdaptiveThinking: true,
+        thinkingLevel: 1,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M401': {
+        modelId: 'claude-opus-5-5-medium',
+        placeholderId: 'MODEL_PLACEHOLDER_M401',
+        displayName: 'Claude Opus 5.5 (Medium)',
+        apiProvider: 'ANTHROPIC_VERTEX',
+        maxTokens: 1000000,
+        maxOutputTokens: 128000,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        supportsAdaptiveThinking: true,
+        thinkingLevel: 2,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M402': {
+        modelId: 'claude-opus-5-5-high',
+        placeholderId: 'MODEL_PLACEHOLDER_M402',
+        displayName: 'Claude Opus 5.5 (High)',
+        apiProvider: 'ANTHROPIC_VERTEX',
+        maxTokens: 1000000,
+        maxOutputTokens: 128000,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        supportsAdaptiveThinking: true,
+        thinkingLevel: 3,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M403': {
+        modelId: 'claude-sonnet-5-5-low',
+        placeholderId: 'MODEL_PLACEHOLDER_M403',
+        displayName: 'Claude Sonnet 5.5 (Low)',
+        apiProvider: 'ANTHROPIC_VERTEX',
+        maxTokens: 1000000,
+        maxOutputTokens: 128000,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        supportsAdaptiveThinking: true,
+        thinkingLevel: 1,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M404': {
+        modelId: 'claude-sonnet-5-5-medium',
+        placeholderId: 'MODEL_PLACEHOLDER_M404',
+        displayName: 'Claude Sonnet 5.5 (Medium)',
+        apiProvider: 'ANTHROPIC_VERTEX',
+        maxTokens: 1000000,
+        maxOutputTokens: 128000,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        supportsAdaptiveThinking: true,
+        thinkingLevel: 2,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M405': {
+        modelId: 'claude-sonnet-5-5-high',
+        placeholderId: 'MODEL_PLACEHOLDER_M405',
+        displayName: 'Claude Sonnet 5.5 (High)',
+        apiProvider: 'ANTHROPIC_VERTEX',
+        maxTokens: 1000000,
+        maxOutputTokens: 128000,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        supportsAdaptiveThinking: true,
+        thinkingLevel: 3,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
     'MODEL_PLACEHOLDER_M35': {
         modelId: 'claude-sonnet-4-6',
         placeholderId: 'MODEL_PLACEHOLDER_M35',
@@ -858,6 +996,8 @@ export function updateModelSpec(placeholderId: string, spec: Partial<ModelSpec>)
             maxOutputTokens: spec.maxOutputTokens || 0,
             thinkingBudget: spec.thinkingBudget || 0,
             supportsThinking: spec.supportsThinking || false,
+            ...(spec.supportsAdaptiveThinking !== undefined ? { supportsAdaptiveThinking: spec.supportsAdaptiveThinking } : {}),
+            ...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}),
             cpLimit: spec.cpLimit || 0,
             cpThreshold: spec.cpThreshold || 0,
         };
@@ -890,6 +1030,12 @@ export function getModelSpecs(): ModelSpec[] {
         'MODEL_UNSPECIFIED',
         'MODEL_PLACEHOLDER_M16',
         'MODEL_PLACEHOLDER_M36',
+        'MODEL_PLACEHOLDER_M400',
+        'MODEL_PLACEHOLDER_M401',
+        'MODEL_PLACEHOLDER_M402',
+        'MODEL_PLACEHOLDER_M403',
+        'MODEL_PLACEHOLDER_M404',
+        'MODEL_PLACEHOLDER_M405',
         'MODEL_PLACEHOLDER_M35',
         'MODEL_PLACEHOLDER_M26',
         'MODEL_OPENAI_GPT_OSS_120B_MEDIUM'

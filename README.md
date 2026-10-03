@@ -9,15 +9,17 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 > [!WARNING]
 > **Platform Support**
 >
-> 🍏 **macOS**: Fully supported. Uses `ps` and `lsof` for process discovery.
+> 🍏 **macOS**: Fully supported. Uses `ps` and `lsof` for process discovery. The **1.16.18 VSIX was installed and verified in the running Antigravity IDE 2.5.5**, including a window reload.
 >
-> 🐧 **Linux**: Fully supported (v1.6.0+). Uses `ps` with `lsof`/`ss` fallback for process discovery. Tested on Ubuntu 22.04 (x64 & ARM64).
+> 🐧 **Linux**: Supported since v1.6.0. Uses `ps` with `lsof`/`ss` fallback for process discovery. Earlier platform testing covered Ubuntu 22.04 (x64 & ARM64).
 >
 > 🪟 **Windows**: Fully supported (v1.8.0+). Optimized discovery with `wmic` caching and PowerShell fallbacks.
 >
 > 🐧🪟 **WSL**: Fully supported (v1.12.0+). Detects WSL environment via `/proc/version` and uses Windows-side tools through WSL interop for LS discovery. v1.12.1 adds `extensionKind: ["ui", "workspace"]` so the extension runs on the local Windows host when connected via Remote-WSL or Remote SSH. v1.13.0 adds **Remote-WSL LS discovery** — when connected to a WSL workspace, the extension discovers the `language_server_linux_x64` process running inside the WSL distro via `wsl -d <distro>`, connects to it through WSL2 port forwarding, and displays the correct context data.
 
 ---
+
+**1.16.18 validation:** Local TypeScript compilation and all **362 tests in 26 files** passed. Windows, macOS, and Linux compile/test results are available in [GitHub Actions](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml); native IDE verification for this release was performed on macOS. See the [release validation details](docs/releases/1.16.18.md#validation).
 
 ## 📚 Technical Details
 
@@ -66,14 +68,12 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
     * **📂 Collapsible Sections**: Secondary info (Plan Limits, Feature Flags, Team Config, Google AI Credits) is collapsed by default. Expand/collapse state persists.
 
 * **⚙️ Interactive Settings Dashboard** *(v1.11.0, enhanced through v1.16.9)*
-    The WebView panel now features a dual-tab layout ('Monitor' and 'Settings'). The Settings tab lets you configure extension behaviors directly from a GUI — no more manual `settings.json` editing.
-    * **🎯 Compression Warning Threshold**: Set a custom "tripwire" (e.g., 150K, 200K, 500K, 900K) for early warning around Antigravity's current platform truncation range (~128K-160K). Status bar color changes are based on this threshold instead of the model's native window.
+    The Settings tab lets you configure polling, quota warnings, status bar content, interface zoom, and panel display preferences directly from a GUI.
     * **🟢 Status Bar Quota Indicator**: Current model's quota percentage is now shown directly in the status bar with color-coded dot icons (`🟢`, `🟡`, `🔴`).
     * **⏳ Current-Model Reset Countdown**: The status bar countdown now tracks the reset time of the model you are currently using, not the earliest reset across all models.
     * **🎛️ Status Bar Display Toggles**: Independent toggle switches to hide/show 'Context Usage', 'Quota Indicator', 'Reset Countdown' and 'AI Credits Balance' in the status bar.
     * **⚡ AI Credits in Status Bar** *(v1.16.7)*: Status bar shows real-time AI Credits balance (e.g. `⚡14,701`) wrapped in `||` separators (e.g. `|| ⚠ 121.2k/160k || 🟡40% || ⏳4h6m || ⚡14,701 ||`). Auto-hides when credits are zero. Controlled by `statusBar.showAiCredits` toggle.
     * **📆 Per-Account Billing Day** *(v1.16.7)*: Set monthly credits-expiry day per account (1-31) inline on the Profile tab. Profile, account panel and status bar tooltip all show a countdown badge ("Expires today / Xd until expiry / Expiry date not set"). Stored in durable JSON state — survives uninstall/reinstall. Uses UTC calendar-day delta so the countdown is correct across DST transitions.
-    * **↩ Restore Model Defaults** *(v1.16.8)*: Settings → Model Context Limits includes a restore button that clears stale custom overrides and returns to the built-in platform thresholds.
     * **⏸️ Pause/Resume**: Pause auto-refresh to freeze the panel while investigating data.
 
 * **🧠 Model Activity Monitor** *(v1.11.2, enhanced through v1.16.4)*
@@ -90,7 +90,9 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ## 🤖 Supported Models
 
-| Model | Internal ID | Context Limit |
+The registry recognizes current models and older identities used in saved history. The Models tab follows the signed-in account's live picker, so a registered model is not necessarily available to every account.
+
+| Model | Internal ID | Platform Compression Limit |
 | --- | --- | --- |
 | Gemini 3.8 Flash (High) *(platform default)* | MODEL_PLACEHOLDER_M318 | 256,000 |
 | Gemini 3.8 Flash (Medium) | MODEL_PLACEHOLDER_M319 | 256,000 |
@@ -108,17 +110,34 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 | Gemini 3.5 Flash (Low) | MODEL_PLACEHOLDER_M187 | 256,000 |
 | Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 128,000 |
 | Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 128,000 |
+| Claude Opus 5.5 (Low) | MODEL_PLACEHOLDER_M400 | 256,000 |
+| Claude Opus 5.5 (Medium) | MODEL_PLACEHOLDER_M401 | 256,000 |
+| Claude Opus 5.5 (High) | MODEL_PLACEHOLDER_M402 | 256,000 |
+| Claude Sonnet 5.5 (Low) | MODEL_PLACEHOLDER_M403 | 256,000 |
+| Claude Sonnet 5.5 (Medium) | MODEL_PLACEHOLDER_M404 | 256,000 |
+| Claude Sonnet 5.5 (High) | MODEL_PLACEHOLDER_M405 | 256,000 |
 | Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
 | Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
 | GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 80,000 |
 | Gemini 3 Flash (catalog only, not in picker) | MODEL_PLACEHOLDER_M18 | 128,000 |
 | Legacy (retired / renumbered) | MODEL_PLACEHOLDER_M264 / M265 / M266 / M133 / M132 / M47 | archived data only |
 
-*These are Antigravity platform truncation thresholds, not model-native context windows. Model IDs are fetched from the local Antigravity language server's `GetUserStatus` API. If new models are added, you can override context limits in IDE settings.*
+*These are Antigravity platform compression limits, not model-native context windows. Model IDs and live parameters come from the local Antigravity language server. Live parameters take precedence over static fallbacks. Before live parameters arrive, Claude 5.5 uses a 255,000-token fallback; its verified live limit is 256,000.*
 
 > [!NOTE]
-> As live-verified against two Antigravity IDE language-server instances on 2026-09-05, the platform default model is **Gemini 3.8 Flash (High)** (`MODEL_PLACEHOLDER_M318`). High / Medium / Low use `M318` / `M319` / `M320`; catalog-only tiered routing uses `M322`. Gemini 3.7 Flash remains available. On the probed Google AI Pro account, 3.8 replaced 3.5 in the 14-item picker; 3.5 stays registered for catalog and historical-data compatibility.
+> **Claude 5.5 in v1.16.18:** A metadata-only probe of the running Antigravity IDE on 2026-10-03 verified all six Opus/Sonnet Low / Medium / High entries. Each reports a **1,000,000-token native context**, **128,000-token maximum output**, and **256,000-token platform compression limit**. Thinking is adaptive; the API supplies effort levels 1 / 2 / 3 rather than a fixed token budget. The separate internal checkpointer `tokenThreshold` is 50,000 and is not the compression-limit value shown on the cards.
+> **Account availability:** Paid Pro/Ultra rollouts expose Claude 5.5, while some unpaid accounts still expose Claude 4.6. The extension preserves 4.6 support and historical identities, and also accepts Gemini-only pickers when third-party access is removed. It neither grants model access nor hardcodes a subscription name or removal date; the current account's live model list decides what appears.
+> Gemini 3.8 Flash High / Medium / Low use `M318` / `M319` / `M320`; catalog-only tiered routing uses `M322`. Gemini 3.5 remains registered for catalog and historical-data compatibility even when absent from the account's picker.
 > `MODEL_PLACEHOLDER_Mxxx` numbers are assigned by the platform and **can be reassigned without notice** — the three Gemini 3.6 Flash tiers moved from `M264` / `M265` / `M266` to `M71` / `M72` / `M73` in August 2026. The extension keeps the previous numbers registered so archived usage history still resolves to the right model, and merges both numbers onto a single cost row and a single quota pool. Live checkpointer parameters fetched from the language server always take precedence over the static table above.
+
+The [official Claude 5.5 API prices](https://platform.claude.com/docs/en/about-claude/pricing) are listed below as a reference, in USD per million tokens (2026-10-03):
+
+| Model | Input | Output | Cache read | Cache write, 5 min | Cache write, 1 hour |
+| --- | --- | --- | --- | --- | --- |
+| Claude Opus 5.5 | $4 | $20 | $0.20 | $5 | $8 |
+| Claude Sonnet 5.5 | $2 | $10 | $0.20 | $2.50 | $4 |
+
+The built-in cache-write reference rate is for **5 minutes**. Current cost estimates exclude cache creation fees because telemetry does not reliably identify creation tokens and their TTL; 1-hour cache-write fees are not added automatically either. Reported cache-read tokens are included. These are local API-equivalent estimates, not Antigravity subscription charges.
 
 Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M input tokens** and **$3.75 / 1M output tokens** through 2026-12-31; from 2027-01-01 the rates become $1.50 / $7.50. Sources: [Google Antigravity launch post](https://antigravity.google/blog/gemini-3-8-flash-in-google-antigravity) and [Google model announcement](https://blog.google/innovation-and-ai/models-and-research/gemini-models/3-8-flash-and-3-8-flash-cyber/).
 
@@ -154,9 +173,9 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
    ![Cost Tab](src/images/cost.png)
 
-   **Models** — All available models with quota status, context limits, and reset countdowns.
+   **Models** — The current account's available models with quota status and reset countdowns. The redesigned model cards use neutral IDE theme colors, clear compression-limit and native-context rows, readable provider names, complete model IDs, and adaptive-thinking labels. The layout supports narrow panels, light/dark/high-contrast themes, and English, Chinese, or bilingual display.
 
-   ![Models Tab](src/images/model.png)
+   ![Model information cards in v1.16.18](src/images/model.png)
 
    **Calendar** — Historical usage data organized by date, with per-cycle cost and token breakdowns.
 
@@ -166,7 +185,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
    ![Profile Tab](src/images/profile.png)
 
-   **Settings** — Configure extension behaviors: compression threshold, status bar toggles, polling interval, and more.
+   **Settings** — Configure extension behaviors: low-quota warning threshold, status bar toggles, polling interval, and more.
 
    ![Settings Tab](src/images/settings1.png)
 
@@ -190,7 +209,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 > [!NOTE]
 > **Dynamic Sub-Agent Switching**
-> When using Claude models, Antigravity may call its lightweight sub-agent model for small tasks — the platform now labels that model **Gemini 3.1 Flash Lite** (`MODEL_PLACEHOLDER_M50`; the older `gemini-2.5-flash*` catalog entries share the same label). Sub-agent switching does not change the displayed context limit, because the extension tracks the limit of the model you selected, not the sub-agent's. Live-probed 2026-08-14: Claude 4.6 has a 250,000-token native window with a 160,000-token platform checkpointer limit, while the sub-agent model sits on the 128,000 profile.
+> When using Claude models, Antigravity may call its lightweight sub-agent model for small tasks — the platform labels that model **Gemini 3.1 Flash Lite** (`MODEL_PLACEHOLDER_M50`; the older `gemini-2.5-flash*` catalog entries share the same label). Sub-agent switching does not change the displayed context limit, because the extension tracks the limit of the model you selected. Claude 5.5 uses a 1,000,000-token native context and 256,000-token platform compression limit (verified 2026-10-03); retained Claude 4.6 profiles use 250,000 and 160,000 respectively, while the sub-agent uses the 128,000 profile.
 
 > [!IMPORTANT]
 > **"LS not found" & do NOT run the IDE as Administrator (Windows)**
@@ -203,8 +222,6 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 | Setting | Default | Description |
 | --- | --- | --- |
 | `pollingInterval` | 5 | Polling interval in seconds |
-| `contextLimits` | (see defaults) | Override context limits per model |
-| `compressionWarningThreshold` | 150000 | Compression warning threshold (tokens). Status bar color is based on this value. |
 | `statusBar.showContext` | true | Show context usage (e.g. `45k/1M, 4.5%`) in status bar |
 | `statusBar.showQuota` | true | Show current model quota indicator (e.g. `🟢85%`) in status bar |
 | `statusBar.showResetCountdown` | true | Show quota reset countdown (e.g. `⏳4h32m`) in status bar |
@@ -231,4 +248,4 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.17
+**Version**: 1.16.18 — [Release notes](docs/releases/1.16.18.md)

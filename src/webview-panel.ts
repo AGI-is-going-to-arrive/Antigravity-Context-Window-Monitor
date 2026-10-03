@@ -345,11 +345,9 @@ export function showMonitorPanel(p: PanelPayload): void {
             vscode.commands.executeCommand('antigravity-context-monitor.refresh');
         } else if (msg.command === 'togglePause') {
             isPaused = !isPaused;
-            if (!isPaused && panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
-            } else if (panel) {
-                safePostMessage({ command: 'setPaused', paused: isPaused });
-            }
+            // Keep the current tab, scroll position, and in-progress form edits.
+            // Resuming lets the next normal poll update the panel in place.
+            safePostMessage({ command: 'setPaused', paused: isPaused });
         } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
             const val = Math.max(1, Math.min(60, msg.value));
             await vscode.workspace.getConfiguration('antigravityContextMonitor')
@@ -650,7 +648,12 @@ ${getAboutTabStyles()}
                     <button class="lang-btn${currentLang === 'en' ? ' active' : ''}" data-lang="en">EN</button>
                     <button class="lang-btn${currentLang === 'both' ? ' active' : ''}" data-lang="both">${tBi('Both', '双语')}</button>
                 </div>
-                <button class="action-btn${paused ? ' paused' : ''}" id="pauseBtn" data-tooltip="${tBi(paused ? 'Resume auto-refresh' : 'Pause auto-refresh', paused ? '恢复自动刷新' : '暂停自动刷新')}">
+                <button class="action-btn${paused ? ' paused' : ''}" id="pauseBtn"
+                    aria-pressed="${paused}" aria-label="${tBi(paused ? 'Resume auto-refresh' : 'Pause auto-refresh', paused ? '恢复自动刷新' : '暂停自动刷新')}"
+                    data-label-pause="${tBi('Pause auto-refresh', '暂停自动刷新')}"
+                    data-label-resume="${tBi('Resume auto-refresh', '恢复自动刷新')}"
+                    data-label-paused="${tBi('PAUSED', '已暂停')}"
+                    data-tooltip="${tBi(paused ? 'Resume auto-refresh' : 'Pause auto-refresh', paused ? '恢复自动刷新' : '暂停自动刷新')}">
                     <svg viewBox="0 0 16 16" width="14" height="14">${paused
             ? '<path fill="currentColor" d="M11.596 8.697l-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393"/>'
             : '<path fill="currentColor" d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5m5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5"/>'

@@ -19,6 +19,9 @@ interface ModelLimitInputLike {
 export function collectPricingInputOverrides(inputs: ArrayLike<PricingInputLike>): Record<string, ModelPricing> {
     const values: Record<string, ModelPricing> = {};
     const shouldPersist: Record<string, boolean> = {};
+    const fieldCounts: Record<string, number> = {};
+    const blankCounts: Record<string, number> = {};
+    const presentFields: Record<string, Set<string>> = {};
     const validFields: Record<string, true> = {
         input: true,
         output: true,
@@ -34,22 +37,41 @@ export function collectPricingInputOverrides(inputs: ArrayLike<PricingInputLike>
         if (!model || !validFields[rawField]) { continue; }
 
         const field = rawField as keyof ModelPricing;
-        const parsed = Number.parseFloat(input.value);
-        const value = Number.isFinite(parsed) ? parsed : 0;
+        fieldCounts[model] = (fieldCounts[model] || 0) + 1;
+        const rawValue = input.value.trim();
+        if (!rawValue) {
+            blankCounts[model] = (blankCounts[model] || 0) + 1;
+            continue;
+        }
+        const value = Number(rawValue);
+        if (!Number.isFinite(value) || value < 0 || !/^(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(rawValue)) {
+            throw new Error('INVALID_PRICING');
+        }
         if (!values[model]) {
-            values[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
+            const cacheWrite = Number(input.getAttribute('data-cache-write') || 0);
+            values[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: Number.isFinite(cacheWrite) && cacheWrite >= 0 ? cacheWrite : 0, thinking: 0 };
+            presentFields[model] = new Set();
         }
         values[model][field] = value;
+        presentFields[model].add(field);
 
-        const originalParsed = Number.parseFloat(input.getAttribute('data-original-value') || '');
-        const originalValue = Number.isFinite(originalParsed) ? originalParsed : 0;
+        const originalRaw = (input.getAttribute('data-original-value') || '').trim();
+        const originalValue = originalRaw ? Number(originalRaw) : NaN;
         const wasCustom = input.getAttribute('data-was-custom') === '1';
-        if (wasCustom || Math.abs(value - originalValue) > 1e-9) {
+        if (wasCustom || !Number.isFinite(originalValue) || Math.abs(value - originalValue) > 1e-9) {
             shouldPersist[model] = true;
         }
     }
 
     const result: Record<string, ModelPricing> = {};
+    for (const model of Object.keys(fieldCounts)) {
+        // A wholly blank row deliberately removes an override, or leaves an
+        // unpriced model unpriced. A partially filled row must never become $0.
+        if (blankCounts[model] === fieldCounts[model]) { continue; }
+        if (blankCounts[model] || !['input', 'output', 'cacheRead', 'thinking'].every(f => presentFields[model]?.has(f))) {
+            throw new Error('INVALID_PRICING');
+        }
+    }
     for (const [model, pricing] of Object.entries(values)) {
         if (shouldPersist[model]) {
             result[model] = pricing;
@@ -75,6 +97,7 @@ export function getScript(): string {
             var openFailedText = ${JSON.stringify(tBi('Open failed', '打开失败'))};
             var revealFailedText = ${JSON.stringify(tBi('Reveal failed', '定位失败'))};
             var invalidBillingDayText = ${JSON.stringify(tBi('Invalid', '无效'))};
+            var invalidPricingText = ${JSON.stringify(tBi('Enter a non-negative price in every field of each row, or clear the entire row.', '请为每行的所有字段填写非负价格，或清空整行。'))};
 
             function setFeedback(id, text) {
                 var el = document.getElementById(id);
@@ -613,7 +636,30 @@ export function getScript(): string {
             window.addEventListener('message', function(event) {
                 var msg = event.data;
                 if (msg.command === 'setPaused' && pauseBtn) {
-                    pauseBtn.classList.toggle('paused', msg.paused);
+                    var paused = !!msg.paused;
+                    pauseBtn.classList.toggle('paused', paused);
+                    var pauseLabel = pauseBtn.getAttribute(paused ? 'data-label-resume' : 'data-label-pause') || '';
+                    pauseBtn.setAttribute('data-tooltip', pauseLabel);
+                    pauseBtn.setAttribute('aria-label', pauseLabel);
+                    pauseBtn.setAttribute('aria-pressed', String(paused));
+                    var pauseIcon = pauseBtn.querySelector('svg');
+                    if (pauseIcon) {
+                        pauseIcon.innerHTML = paused
+                            ? '<path fill="currentColor" d="M11.596 8.697l-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393"/>'
+                            : '<path fill="currentColor" d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5m5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5"/>';
+                    }
+                    var updateTime = document.querySelector('.update-time');
+                    if (updateTime) {
+                        var pauseIndicator = updateTime.querySelector('.paused-indicator');
+                        if (paused && !pauseIndicator) {
+                            pauseIndicator = document.createElement('span');
+                            pauseIndicator.className = 'paused-indicator';
+                            pauseIndicator.textContent = pauseBtn.getAttribute('data-label-paused') || '';
+                            updateTime.insertBefore(pauseIndicator, updateTime.firstChild);
+                        } else if (!paused && pauseIndicator) {
+                            pauseIndicator.remove();
+                        }
+                    }
                 }
                 if (msg.command === 'panelPrefUpdated' && msg.key === 'panelShowTabScrollHint') {
                     setTabHintState(!!msg.value);
@@ -867,7 +913,17 @@ export function getScript(): string {
                 // ── Pricing Save ──
                 if (target.closest('#pricingSaveBtn')) {
                     var inputs = document.querySelectorAll('.pricing-input');
-                    var data = collectPricingInputOverrides(inputs);
+                    var data;
+                    try {
+                        data = collectPricingInputOverrides(inputs);
+                    } catch (_error) {
+                        var feedback = document.getElementById('pricingFeedback');
+                        if (feedback) {
+                            feedback.textContent = invalidPricingText;
+                            feedback.setAttribute('role', 'alert');
+                        }
+                        return;
+                    }
                     vscode.postMessage({ command: 'savePricing', value: data });
                     return;
                 }
@@ -1098,7 +1154,29 @@ export function getScript(): string {
                         if (lastTabHtmls[key] === tabs[key]) { continue; }
                         var pane = document.getElementById('tab-' + key);
                         if (pane) {
+                            // Polling can change totals while a user is editing rates.
+                            // Carry only unsaved values across the new server markup;
+                            // keep its updated defaults and validation attributes.
+                            var pricingDrafts = new Map();
+                            if (key === 'pricing') {
+                                pane.querySelectorAll('.pricing-input').forEach(function(input) {
+                                    if (input.value !== (input.getAttribute('data-original-value') || '')) {
+                                        var identity = JSON.stringify([input.getAttribute('data-model'), input.getAttribute('data-field')]);
+                                        pricingDrafts.set(identity, { value: input.value, focused: input === document.activeElement });
+                                    }
+                                });
+                            }
                             pane.innerHTML = tabs[key];
+                            if (pricingDrafts.size) {
+                                pane.querySelectorAll('.pricing-input').forEach(function(input) {
+                                    var identity = JSON.stringify([input.getAttribute('data-model'), input.getAttribute('data-field')]);
+                                    var draft = pricingDrafts.get(identity);
+                                    if (draft) {
+                                        input.value = draft.value;
+                                        if (draft.focused) { input.focus({ preventScroll: true }); }
+                                    }
+                                });
+                            }
                             lastTabHtmls[key] = tabs[key];
                             changedTabKeys.push(key);
                         }

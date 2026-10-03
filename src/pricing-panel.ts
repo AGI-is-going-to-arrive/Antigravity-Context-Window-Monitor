@@ -40,7 +40,7 @@ export function buildPricingTabContent(
 
                 // 结合定价算出输入、输出、缓存、思考费用以适配用户对价格的修改
                 const inputCost = pricing ? (ms.inputTokens / 1_000_000) * pricing.input : ms.estimatedCost;
-                const outputCost = pricing ? ((ms.outputTokens - ms.thinkingTokens) / 1_000_000) * pricing.output : 0;
+                const outputCost = pricing ? (Math.max(0, ms.outputTokens - ms.thinkingTokens) / 1_000_000) * pricing.output : 0;
                 const cacheCost = pricing ? (ms.cacheReadTokens / 1_000_000) * pricing.cacheRead : 0;
                 const thinkingCost = pricing ? (ms.thinkingTokens / 1_000_000) * pricing.thinking : 0;
                 const totalCost = inputCost + outputCost + cacheCost + thinkingCost;
@@ -54,7 +54,7 @@ export function buildPricingTabContent(
                     existing.thinkingCost += thinkingCost;
                     existing.totalCost += totalCost;
                     existing.inputTokens += ms.inputTokens;
-                    existing.outputTokens += (ms.outputTokens - ms.thinkingTokens);
+                    existing.outputTokens += Math.max(0, ms.outputTokens - ms.thinkingTokens);
                     existing.cacheTokens += ms.cacheReadTokens;
                     existing.thinkingTokens += ms.thinkingTokens;
                     if (!existing.pricing && pricing) { existing.pricing = pricing; }
@@ -63,7 +63,7 @@ export function buildPricingTabContent(
                         name: displayName, responseModel: modelKey,
                         inputCost, outputCost, cacheCost, thinkingCost, totalCost,
                         inputTokens: ms.inputTokens,
-                        outputTokens: (ms.outputTokens - ms.thinkingTokens),
+                        outputTokens: Math.max(0, ms.outputTokens - ms.thinkingTokens),
                         cacheTokens: ms.cacheReadTokens,
                         thinkingTokens: ms.thinkingTokens,
                         pricing: pricing || null,
@@ -127,13 +127,13 @@ export function buildPricingTabContent(
 
     // Monthly total cost summary (always shown if breakdown data exists)
     if (monthBreakdown) {
-        parts.push(buildMonthlyCostSummary(monthBreakdown, activeGrandTotal, rows, pendingArchiveCost));
+        parts.push(buildMonthlyCostSummary(monthBreakdown, activeGrandTotal, rows, pendingArchiveCost, store.getCustom()));
     }
 
     // 收集所有被调用的 responseModel，用于高亮自定义价格表格
     const calledModelKeys = new Set<string>();
     for (const r of rows) {
-        if (r.totalCost > 0 || r.inputTokens > 0) {
+        if (r.totalCost > 0 || r.inputTokens > 0 || r.outputTokens > 0 || r.thinkingTokens > 0 || r.cacheTokens > 0) {
             calledModelKeys.add(r.responseModel);
         }
     }
@@ -1043,9 +1043,9 @@ function buildCostPanel(
     ledgerSettled?: LedgerSettledEntry[],
     todayLedgerActive?: LedgerAccountBucket[],
 ): string {
-    const priced = rows.filter(r => r.pricing && r.totalCost > 0);
+    const priced = rows.filter(r => r.pricing);
     const unpriced = rows.filter(r => !r.pricing);
-    if (priced.length === 0 && grandTotal <= 0) { return ''; }
+    if (priced.length === 0 && unpriced.length === 0 && grandTotal <= 0) { return ''; }
 
     const topModel = priced.length > 0 ? priced[0] : null;
     const totalCalls = (todayLedgerActive ? todayLedgerActive.reduce((s, e) => s + (e.totalCalls || 0), 0) : (summary?.totalCalls || 0))
@@ -1057,11 +1057,16 @@ function buildCostPanel(
 
     // ── Summary chips (inline, compact) ──
     html += '<div class="cost-chips">';
-    html += `<span class="cost-chip cost-chip-total">${fmtUsd(grandTotal)}</span>`;
+    const totalLabel = unpriced.length > 0 && priced.length === 0 && grandTotal <= 0
+        ? tBi('Not available', '暂无法估算')
+        : `${fmtUsd(grandTotal)}${unpriced.length > 0 ? ` · ${tBi('Partial total', '已知小计')}` : ''}`;
+    html += `<span class="cost-chip cost-chip-total">${totalLabel}</span>`;
     if (topModel) {
         html += `<span class="cost-chip" title="${esc(topModel.name)}" data-tooltip="${tBi('Top Spender', '最高消费')}">${esc(topModel.name)} ${fmtUsd(topModel.totalCost)}</span>`;
     }
-    html += `<span class="cost-chip" data-tooltip="${tBi('Avg per Call', '平均每次')}">${fmtUsd(avgPerCall)}/${tBi('call', '次')}</span>`;
+    if (unpriced.length === 0) {
+        html += `<span class="cost-chip" data-tooltip="${tBi('Avg per Call', '平均每次')}">${fmtUsd(avgPerCall)}/${tBi('call', '次')}</span>`;
+    }
     html += `<span class="cost-chip" data-tooltip="${tBi('Models with pricing', '有定价的模型')}">${priced.length} ${tBi('models', '模型')}</span>`;
     if (totalCalls > 0) {
         html += `<span class="cost-chip">${totalCalls} ${tBi('calls', '调用')}</span>`;
@@ -1139,7 +1144,10 @@ function buildCostPanel(
         html += `<p class="cost-note">${unpriced.length} ${tBi(
             'model(s) have no pricing data',
             '个模型暂无价格数据',
-        )}: ${unpriced.map(r => esc(r.name)).join(', ')}</p>`;
+        )}: ${unpriced.map(r => esc(r.name)).join(', ')}. ${tBi(
+            'The total is incomplete. Set custom prices below to include this usage.',
+            '总费用尚不完整，请在下方设置自定义价格以计入这些用量。',
+        )}</p>`;
     }
 
     const infoSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
@@ -1351,30 +1359,10 @@ const FIELD_LABELS: Record<string, [string, string]> = {
     thinking: ['Thinking', '思考'],
 };
 
-function isDefaultPricingCovered(responseModel: string, defaultKey: string): boolean {
-    const model = responseModel.trim();
-    if (!model) { return false; }
-    const modelFamily = model.split('-').slice(0, 3).join('-');
-    if (model === defaultKey
-        || model.startsWith(defaultKey)
-        || defaultKey.startsWith(model)
-        || model.includes(defaultKey)
-        || (!!modelFamily && defaultKey.includes(modelFamily))) {
-        return true;
-    }
-    // Alias resolution: e.g. 'gemini-3-flash-a' → M20 → "Gemini 3.5 Flash (Medium)"
-    // → kebab "gemini-3.5-flash-medium" → startsWith "gemini-3.5-flash" → covered
-    const modelId = resolveModelId(model);
-    if (modelId) {
-        const displayName = getModelDisplayName(modelId);
-        if (displayName && displayName !== modelId) {
-            const kebab = displayName.replace(/[()]/g, '').trim().toLowerCase().replace(/\s+/g, '-');
-            if (kebab.startsWith(defaultKey) || defaultKey.startsWith(kebab)) {
-                return true;
-            }
-        }
-    }
-    return false;
+function pricingDisplayName(model: string): string {
+    const claude = model.match(/^claude-(opus|sonnet)-(\d+)-(\d+)$/);
+    if (claude) { return `Claude ${claude[1][0].toUpperCase()}${claude[1].slice(1)} ${claude[2]}.${claude[3]}`; }
+    return model.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
 function buildEditablePricingTable(
@@ -1382,15 +1370,9 @@ function buildEditablePricingTable(
     merged: Record<string, ModelPricing>,
     custom: Record<string, ModelPricing>,
 ): string {
-    // Build a set of DEFAULT_PRICING keys already covered by called models (fuzzy match)
-    const coveredDefaultKeys = new Set<string>();
-    for (const responseModel of calledModelKeys) {
-        for (const defaultKey of Object.keys(merged)) {
-            if (isDefaultPricingCovered(responseModel, defaultKey)) {
-                coveredDefaultKeys.add(defaultKey);
-            }
-        }
-    }
+    // Keep family-rate editors stable when a first call adds a concrete tier.
+    // Otherwise polling can remove a family row with an unsaved price draft.
+    const editableKeys = Object.keys(merged);
 
     // Build unified list: called models first, then uncalled defaults
     interface PricingEntry { name: string; responseModel: string; isCalled: boolean }
@@ -1399,9 +1381,9 @@ function buildEditablePricingTable(
         const displayName = normalizeModelDisplayName(responseModel);
         allEntries.push({ name: displayName, responseModel, isCalled: true });
     }
-    for (const [model] of Object.entries(merged)) {
-        if (!coveredDefaultKeys.has(model)) {
-            const displayName = model.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    for (const model of editableKeys) {
+        if (!calledModelKeys.has(model)) {
+            const displayName = pricingDisplayName(model);
             allEntries.push({ name: displayName, responseModel: model, isCalled: false });
         }
     }
@@ -1416,18 +1398,17 @@ function buildEditablePricingTable(
     for (const entry of allEntries) {
         const pricing = findPricingWithCustom(entry.responseModel, custom);
         const isCustom = !!custom[entry.responseModel];
-        const p = pricing || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
         const uncalledClass = entry.isCalled ? '' : ' prc-edit-uncalled';
 
         html += `<div class="prc-edit-row${uncalledClass}">`;
-        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(entry.name)}" data-tooltip="${esc(entry.name)}${entry.responseModel && entry.responseModel !== entry.name ? ' · ' + esc(entry.responseModel) : ''}"><span class="prc-edit-card-name-text">${esc(entry.name)}</span>${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}</span></div>`;
+        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(entry.name)}" data-tooltip="${esc(entry.name)}${entry.responseModel && entry.responseModel !== entry.name ? ' · ' + esc(entry.responseModel) : ''}"><span class="prc-edit-card-name-text">${esc(entry.name)}</span>${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}${!pricing ? `<span class="prc-custom-badge">${tBi('Price unavailable', '价格待确认')}</span>` : ''}</span></div>`;
         html += `<div class="prc-edit-row-right">`;
         for (const f of fields) {
             const [en, zh] = FIELD_LABELS[f] || [f, f];
-            const value = String(p[f]);
+            const value = pricing ? String(pricing[f]) : '';
             html += `<div class="prc-edit-field">
                 <span class="prc-edit-field-label">${tBi(en, zh)}</span>
-                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(entry.responseModel)}" data-field="${f}" data-original-value="${esc(value)}" data-was-custom="${isCustom ? '1' : '0'}" value="${esc(value)}" step="0.01" min="0">
+                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(entry.responseModel)}" data-field="${f}" data-original-value="${esc(value)}" data-was-custom="${isCustom ? '1' : '0'}" data-cache-write="${pricing?.cacheWrite ?? 0}" value="${esc(value)}" placeholder="${tBi('Not set', '未设置')}" step="any" min="0" aria-label="${esc(entry.name)} ${tBi(en, zh)}">
             </div>`;
         }
         html += `</div></div>`;
@@ -1442,7 +1423,8 @@ function buildEditablePricingTable(
     const infoSvg2 = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
     html += `<div class="prc-info-bar">${infoSvg2}<div class="prc-info-bar-body"><ul>
         <li>${tBi('Edit prices above and click <b>Save</b>. Changes persist across sessions.', '编辑上方价格后点击<b>保存</b>，修改跨会话持久化。')}</li>
-        <li>${tBi('<b>Reset</b> restores built-in default prices.', '<b>恢复默认</b>将还原内置价格。')}</li>
+        <li>${tBi('<b>Reset</b> restores built-in default prices. Clear all fields in a row to remove its override. Missing prices are not zero prices.', '<b>恢复默认</b>将还原内置价格。清空一行全部字段可移除该自定义价格；缺失价格不代表免费。')}</li>
+        <li>${tBi('Built-in cache-write rates use the 5-minute TTL. Cache creation is excluded from cost estimates because the available telemetry cannot reliably identify creation tokens or the 1-hour TTL.', '内置缓存写入价格采用 5 分钟有效期。遥测无法可靠区分缓存创建令牌及 1 小时有效期，因此费用估算暂不计入缓存创建。')}</li>
         <li>${tBi('Default prices last updated:', '默认价格最后更新：')} <span class="prc-info-date">${PRICING_LAST_UPDATED}</span></li>
     </ul></div></div>`;
     html += `</div>`;
@@ -1454,7 +1436,7 @@ function buildDefaultPricingTable(
     merged: Record<string, ModelPricing>,
     custom: Record<string, ModelPricing>,
 ): string {
-    const entries = Object.entries(merged);
+    const entries = Object.keys(merged);
     if (entries.length === 0) { return ''; }
 
     const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'thinking'];
@@ -1462,19 +1444,20 @@ function buildDefaultPricingTable(
     let html = `<h2 class="act-section-title">${tBi('Custom Pricing', '自定义价格')} <span style="font-size:0.82em;color:var(--color-text-dim)">(${tBi('USD / 1M tokens', 'USD / 100万令牌')})</span></h2>`;
     html += `<div class="prc-edit-section"><div class="prc-edit-list">`;
 
-    for (const [model, p] of entries) {
+    for (const model of entries) {
+        const p = findPricingWithCustom(model, custom);
         const isCustom = !!custom[model];
-        const displayName = model.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const displayName = pricingDisplayName(model);
 
         html += `<div class="prc-edit-row">`;
-        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(displayName)}" data-tooltip="${esc(displayName)}${model !== displayName ? ' · ' + esc(model) : ''}"><span class="prc-edit-card-name-text">${esc(displayName)}</span>${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}</span></div>`;
+        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(displayName)}" data-tooltip="${esc(displayName)}${model !== displayName ? ' · ' + esc(model) : ''}"><span class="prc-edit-card-name-text">${esc(displayName)}</span>${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}${!p ? `<span class="prc-custom-badge">${tBi('Price unavailable', '价格待确认')}</span>` : ''}</span></div>`;
         html += `<div class="prc-edit-row-right">`;
         for (const f of fields) {
             const [en, zh] = FIELD_LABELS[f] || [f, f];
-            const value = String(p[f]);
+            const value = p ? String(p[f]) : '';
             html += `<div class="prc-edit-field">
                 <span class="prc-edit-field-label">${tBi(en, zh)}</span>
-                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(model)}" data-field="${f}" data-original-value="${esc(value)}" data-was-custom="${isCustom ? '1' : '0'}" value="${esc(value)}" step="0.01" min="0">
+                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(model)}" data-field="${f}" data-original-value="${esc(value)}" data-was-custom="${isCustom ? '1' : '0'}" data-cache-write="${p?.cacheWrite ?? 0}" value="${esc(value)}" placeholder="${tBi('Not set', '未设置')}" step="any" min="0" aria-label="${esc(displayName)} ${tBi(en, zh)}">
             </div>`;
         }
         html += `</div></div>`;
@@ -1485,6 +1468,8 @@ function buildDefaultPricingTable(
     const infoSvg3 = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
     html += `<div class="prc-info-bar">${infoSvg3}<div class="prc-info-bar-body"><ul>
         <li>${tBi('Edit prices above and click <b>Save</b>. Changes persist across sessions.', '编辑上方价格后点击<b>保存</b>，修改跨会话持久化。')}</li>
+        <li>${tBi('Clear all fields in a row to remove its override. Missing prices are not zero prices.', '清空一行全部字段可移除该自定义价格；缺失价格不代表免费。')}</li>
+        <li>${tBi('Built-in cache-write rates use the 5-minute TTL. Cache creation is excluded from cost estimates because the available telemetry cannot reliably identify creation tokens or the 1-hour TTL.', '内置缓存写入价格采用 5 分钟有效期。遥测无法可靠区分缓存创建令牌及 1 小时有效期，因此费用估算暂不计入缓存创建。')}</li>
         <li>${tBi('Default prices last updated:', '默认价格最后更新：')} <span class="prc-info-date">${PRICING_LAST_UPDATED}</span></li>
     </ul></div></div></div>`;
     return html;
@@ -1504,6 +1489,7 @@ function buildMonthlyCostSummary(
     currentCycleCost: number,
     currentCycleRows: ModelCostRow[],
     pendingArchiveCost: number,
+    customPricing: Record<string, ModelPricing>,
 ): string {
     const monthEn = MONTH_NAMES_EN[breakdown.month - 1];
     const monthZh = MONTH_NAMES_ZH[breakdown.month - 1];
@@ -1562,6 +1548,9 @@ function buildMonthlyCostSummary(
     const grandTotal = breakdown.grandTotal + (isCurrentMonth ? currentCycleCost : 0) + (isCurrentMonth ? pendingArchiveCost : 0);
     const totalCycles = breakdown.cycleCount + (isCurrentMonth && currentCycleCost > 0 ? 1 : 0);
     const models = [...mergedModels.values()].sort((a, b) => b.totalCost - a.totalCost);
+    const unpricedNames = new Set(models
+        .filter(m => m.totalCost <= 0 && !findPricingWithCustom(m.name, customPricing))
+        .map(m => m.name));
     const maxCost = models.length > 0 ? models[0].totalCost : 1;
 
     // Determine if data is incomplete (started mid-month)
@@ -1607,8 +1596,8 @@ function buildMonthlyCostSummary(
         );
 
     html += `<div class="prc-monthly-grand">
-        <span class="prc-monthly-grand-val">${fmtUsd(grandTotal)}</span>
-        <span class="prc-monthly-grand-label">${tBi('Total', '总计')}</span>
+        <span class="prc-monthly-grand-val">${unpricedNames.size === models.length && grandTotal <= 0 ? tBi('Not available', '暂无法估算') : fmtUsd(grandTotal)}</span>
+        <span class="prc-monthly-grand-label">${unpricedNames.size > 0 ? tBi('Partial total', '已知小计') : tBi('Total', '总计')}</span>
         <span class="prc-monthly-grand-breakdown">${archivedLabel}</span>
     </div>`;
 
@@ -1621,10 +1610,16 @@ function buildMonthlyCostSummary(
             <div class="prc-monthly-bar-wrap">
                 <div class="prc-monthly-bar-fill" style="width:${pct.toFixed(1)}%"></div>
             </div>
-            <span class="prc-monthly-model-cost">${fmtUsd(m.totalCost)}</span>
+            <span class="prc-monthly-model-cost">${unpricedNames.has(m.name) ? tBi('Price unavailable', '价格待确认') : fmtUsd(m.totalCost)}</span>
         </div>`;
     }
     html += `</div>`;
+    if (unpricedNames.size > 0) {
+        html += `<p class="prc-monthly-note">${tBi(
+            'This total is incomplete because some usage has no verified price.',
+            '部分用量尚无已核实价格，因此此总费用尚不完整。',
+        )}</p>`;
+    }
 
     // Data coverage note
     if (dataCoverageNote) {

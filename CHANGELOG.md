@@ -1,5 +1,39 @@
 # 变更日志 / Changelog
 
+## [1.16.18] - 2026-10-03
+
+### English
+
+Adds all six **Claude Opus 5.5 / Claude Sonnet 5.5** effort variants and redesigns the Models tab's model-information cards. Model configuration is based on a metadata-only probe of the locally running Antigravity IDE.
+
+- **Exact model identities:** Opus Low / Medium / High use `MODEL_PLACEHOLDER_M400` / `M401` / `M402`; Sonnet uses `M403` / `M404` / `M405`. Catalog IDs are `claude-opus-5-5-{low,medium,high}` and `claude-sonnet-5-5-{low,medium,high}`. Placeholder IDs, catalog IDs, English/Chinese effort names, quota pooling, context limits, and pricing use consistent normalization. Family-only response names do not overwrite a requested effort tier.
+- **Verified parameters:** All six models have a 1,000,000-token native context, 128,000 maximum output, 256,000 platform compression limit, and a separate 50,000 checkpointer threshold. The static context fallback is 255,000. Adaptive thinking uses effort levels 1 / 2 / 3; an omitted token budget is no longer described as no thinking budget or disabled thinking.
+- **Account-specific compatibility:** Retains Claude 4.6 for accounts where it remains available and for historical usage. The live account picker determines which models appear, covering paid Pro/Ultra 5.5 rollouts, unpaid accounts that still expose 4.6, and Gemini-only pickers. No subscription-name or removal-date access rule is hardcoded.
+- **Model cards:** Replaces colored threshold badges and glow effects with neutral IDE theme surfaces and aligned metric rows. Cards distinguish compression limits from native context, show readable providers and complete wrapping model IDs, and support adaptive/dynamic/fixed-budget thinking states. English, Chinese, bilingual, narrow-panel, light, dark, and high-contrast variants share the layout.
+- **Pricing:** Adds official Claude Opus 5.5 rates of $4 input / $20 output / $0.20 cache read / $5 cache write (5 minutes), and Sonnet 5.5 rates of $2 / $10 / $0.20 / $2.50 respectively, per million tokens. Official 1-hour cache-write rates are $8 for Opus and $4 for Sonnet. The built-in cache-write reference rate is for 5 minutes. Cost estimates continue to exclude cache creation fees because telemetry does not reliably identify creation tokens and TTL; 1-hour write fees are not added automatically either. Reported cache reads remain included. Cost values are local API-equivalent estimates, not Antigravity subscription charges.
+- **Regression coverage and reproducibility:** Extends model identity, adaptive metadata, account model lists, pricing, quota, i18n, and model-card edge-case coverage. Adds a Node.js 22 compile/test workflow for Windows, macOS, and Linux and commits the existing dependency lockfile without upgrading dependencies.
+- **Model refresh and editing fixes:** A successful empty picker clears the previous account's visible model list; live catalog IDs remain intact; pricing does not cross model generations. Price drafts survive polling and a first call appearing for another effort tier in the same family. Invalid prices cannot be saved, and pause/resume keeps its label, ARIA state, and indicator synchronized.
+- **Verified locally:** TypeScript compilation and **362 tests across 26 files** passed. The new VSIX was installed in the running **Antigravity IDE 2.5.5 on macOS** and verified after reload; all 45 installed JavaScript files matched the package and local build byte for byte. The installed build also passed **36/36 browser rendering cases** and **15/15 interaction assertions**. The Windows/macOS/Linux compile/test matrix reports its results in [GitHub Actions](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml).
+- Updates the English/Chinese README, technical guide, project structure, package version, and [versioned release notes](docs/releases/1.16.18.md).
+
+Pricing source: [official Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing), 2026-10-03. Verification results and installation details are recorded in the [1.16.18 release notes](docs/releases/1.16.18.md).
+
+### 中文
+
+新增 **Claude Opus 5.5 / Claude Sonnet 5.5** 全部六档模型支持，并重做 Models 页的模型信息卡片。模型配置依据本机运行中 Antigravity IDE 的元数据探测。
+
+- **精确模型身份：** Opus Low / Medium / High 分别为 `MODEL_PLACEHOLDER_M400` / `M401` / `M402`；Sonnet 为 `M403` / `M404` / `M405`。catalog ID 为 `claude-opus-5-5-{low,medium,high}` 和 `claude-sonnet-5-5-{low,medium,high}`。placeholder、catalog ID、中英文档位名、配额归池、上下文上限和计价共用一致的归一化逻辑；仅含家族名的响应不会覆盖请求的确切档位。
+- **核实参数：** 六个模型均为原生上下文 1,000,000 token、最大输出 128,000、平台压缩上限 256,000，以及独立的 checkpointer 阈值 50,000。静态上下文兜底为 255,000。自适应思考采用 1 / 2 / 3 档位；缺省 token 预算不再被描述为无思考预算或不支持思考。
+- **账号兼容：** 保留仍提供 Claude 4.6 的账号与历史用量支持。展示范围由账号实时 picker 决定，兼容付费 Pro/Ultra 的 5.5、仍提供 4.6 的非付费账号以及仅含 Gemini 的 picker；不硬编码订阅名或移除日期来推断访问权限。
+- **模型卡片：** 移除彩色阈值徽标及光晕，改用协调的 IDE 中性主题背景和对齐的数据行。区分压缩上限与原生上下文，显示易读的提供商名称、可换行的完整模型 ID，并支持自适应、动态和固定预算思考状态；兼容中文、英文、双语、窄面板、亮色、暗色及高对比度主题。
+- **计价：** 新增官方 Claude Opus 5.5 费率：每百万 token 输入 $4 / 输出 $20 / 缓存读取 $0.20 / 5 分钟缓存写入 $5；Sonnet 5.5 对应为 $2 / $10 / $0.20 / $2.50。官方 1 小时缓存写入费率分别为 Opus $8、Sonnet $4。内置缓存写入参考费率为 5 分钟。费用估算继续不计缓存创建费，因为遥测不能可靠区分创建 token 及 TTL，1 小时写入费用也不自动计入；已上报的缓存读取继续参与计价。费用仍为本地 API 等价估算，不代表 Antigravity 订阅账单。
+- **回归覆盖与可复现性：** 扩展模型身份、自适应元数据、账号模型列表、定价、配额、i18n 和模型卡片边界状态的覆盖。新增 Windows、macOS、Linux 的 Node.js 22 编译/测试工作流，并提交现有依赖锁文件，不升级依赖。
+- **模型刷新与编辑修复：** 成功返回空 picker 时清除旧账号的可见模型列表；保留实时 catalog ID；计价不跨模型世代匹配。价格草稿在轮询及同一家族另一档模型首次出现调用后仍保留。非法价格不能保存，暂停/恢复的文案、ARIA 状态和指示器保持同步。
+- **本地验证：** TypeScript 编译及 **26 个文件的 362 项测试**通过。新 VSIX 已安装到运行中的 **macOS Antigravity IDE 2.5.5** 并在重载后验证；45 个已安装 JavaScript 文件与包内文件和本地构建逐字节一致。已安装构建还通过 **36/36 项浏览器渲染检查**及 **15/15 项交互断言**。Windows/macOS/Linux 编译与测试矩阵的结果见 [GitHub Actions](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml)。
+- 同步中英文 README、技术说明、项目结构、包版本及[对应版本发布说明](docs/releases/1.16.18.md)。
+
+定价来源：[Claude 官方定价](https://platform.claude.com/docs/en/about-claude/pricing)，2026-10-03。验收结果与安装说明记录于 [1.16.18 发布说明](docs/releases/1.16.18.md)。
+
 ## [1.16.17] - 2026-09-05
 
 ### English

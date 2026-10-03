@@ -1618,6 +1618,111 @@ export function getStyles(): string {
             opacity: 0.8;
         }
 
+        /* ─── Models: technical specifications ───────── */
+        .model-info-section h2 {
+            display: flex;
+            align-items: center;
+            color: var(--vscode-foreground, #ccc);
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .spec-description {
+            margin: var(--space-2) 0 var(--space-4);
+            color: var(--vscode-foreground, #ccc);
+            font-size: 0.8rem;
+            line-height: 1.6;
+            max-width: 75ch;
+        }
+        .model-info-section .empty-desc {
+            color: var(--vscode-foreground, #ccc);
+        }
+
+        .spec-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+            gap: var(--space-3);
+        }
+
+        .spec-card {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            padding: var(--space-4);
+            color: var(--vscode-foreground, #ccc);
+            background: var(--vscode-editor-background, #1e1e1e);
+            border: 1px solid var(--vscode-panel-border, var(--color-border-strong));
+            border-radius: var(--radius-lg);
+            overflow-wrap: anywhere;
+        }
+
+        .spec-header { margin-bottom: var(--space-4); }
+        .spec-name {
+            margin: 0;
+            font-size: 0.95rem;
+            font-weight: 600;
+            line-height: 1.4;
+        }
+        .spec-provider {
+            margin-top: var(--space-1);
+            font-size: 0.75rem;
+            line-height: 1.5;
+        }
+        .spec-metrics {
+            display: grid;
+            gap: var(--space-2);
+            margin-top: auto;
+            font-size: 0.8rem;
+            line-height: 1.5;
+        }
+        .spec-metric {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: var(--space-1) var(--space-3);
+            min-width: 0;
+        }
+        .spec-metric dt { flex: 1 1 110px; }
+        .spec-metric dd {
+            margin: 0;
+            min-width: 0;
+            max-width: 100%;
+            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+        }
+        .spec-limit {
+            padding-bottom: var(--space-2);
+            border-bottom: 1px solid var(--vscode-panel-border, var(--color-border));
+        }
+        .spec-limit dd { font-weight: 650; }
+        .spec-thinking dd { font-size: 0.75rem; }
+        .spec-identity {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: var(--space-1) var(--space-2);
+            margin-top: var(--space-4);
+            padding-top: var(--space-2);
+            border-top: 1px solid var(--vscode-panel-border, var(--color-border));
+            line-height: 1.5;
+        }
+        .spec-identity code {
+            min-width: 0;
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            color: inherit;
+        }
+        .spec-short-id { flex-shrink: 0; }
+        body.vscode-high-contrast .spec-card,
+        body.vscode-high-contrast-light .spec-card {
+            border-color: var(--vscode-contrastBorder, var(--vscode-foreground));
+        }
+        @media (max-width: 420px) {
+            .spec-card { padding: var(--space-3); }
+        }
+
         /* ─── Profile: Model Grid ───────── */
         .model-grid {
             display: grid;
@@ -3196,22 +3301,17 @@ export function getStyles(): string {
 
         /* ─── Pause Button ────────────── */
         .action-btn.paused {
-            color: var(--color-ok);
-            border-color: var(--color-ok);
+            color: var(--vscode-foreground, #ccc);
+            border-color: var(--vscode-focusBorder, var(--color-border-hover));
         }
 
         .paused-indicator {
             font-size: 0.7em;
             font-weight: 700;
-            color: var(--color-warn);
+            color: var(--vscode-foreground, #ccc);
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            animation: pauseBlink 1.5s ease-in-out infinite;
-        }
-
-        @keyframes pauseBlink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
+            margin-right: var(--space-2);
         }
 
         /* ─── Reduced Motion ─────────── */

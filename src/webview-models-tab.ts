@@ -2,124 +2,81 @@
 // Centralizes model-related information: default model, personal model quota,
 // and official model configurations and limit parameters without GM data contamination.
 
-import { tBi } from './i18n';
+import { getLanguage, tBi } from './i18n';
 import { ModelConfig, UserStatusInfo, getModelSpecs, ModelSpec, updateModelSpec, guessContextLimitSpec } from './models';
 import { ICON } from './webview-icons';
 import { buildDefaultModelCard, buildModelQuotaGrid, sortModels } from './webview-profile-tab';
 import { esc } from './webview-helpers';
 
-/** Render a thinking-budget value. -1 is the platform sentinel for dynamic / model-decided. */
-function formatThinkingBudget(budget: number | null | undefined): string {
-    if (typeof budget !== 'number' || !Number.isFinite(budget)) {
-        return tBi('Unspecified', '未指定');
-    }
-    if (budget === -1) {
-        return tBi('Dynamic', '动态');
-    }
-    if (budget === 0) {
-        return tBi('None', '无');
-    }
-    if (budget < 0) {
-        return tBi('Unspecified', '未指定');
-    }
-    return budget.toLocaleString();
+/** Use the selected UI locale, independent of the extension host's OS locale. */
+function formatTokens(value: number): string {
+    return Number.isFinite(value) && value > 0
+        ? value.toLocaleString(getLanguage() === 'zh' ? 'zh-CN' : 'en-US')
+        : tBi('Not available', '暂无数据');
 }
 
-/** Dual declaration so color-mix can override a pre-Chrome-111-safe rgba fallback. */
-function limitBadgeColorStyle(limitColor: string): string {
-    const m = /^#([0-9a-f]{6})$/i.exec(limitColor.trim());
-    const rgb = m
-        ? `${parseInt(m[1].slice(0, 2), 16)}, ${parseInt(m[1].slice(2, 4), 16)}, ${parseInt(m[1].slice(4, 6), 16)}`
-        : null;
-    const fallbackBg = rgb ? `rgba(${rgb}, 0.08)` : 'rgba(22, 26, 38, 0.45)';
-    const fallbackBorder = rgb ? `rgba(${rgb}, 0.5)` : limitColor;
-    const fallbackGlow = rgb ? `rgba(${rgb}, 0.3)` : 'transparent';
-    return [
-        `background: ${fallbackBg}`,
-        `background: color-mix(in srgb, ${limitColor} 8%, rgba(22, 26, 38, 0.45))`,
-        `color: ${limitColor}`,
-        `border: 1px solid ${fallbackBorder}`,
-        `border-color: color-mix(in srgb, ${limitColor} 50%, transparent)`,
-        `box-shadow: 0 0 12px ${fallbackGlow}`,
-        `box-shadow: 0 0 12px color-mix(in srgb, ${limitColor} 30%, transparent)`,
-        `text-shadow: 0 0 8px ${fallbackGlow}`,
-    ].join('; ');
+function thinkingDescription(spec: ModelSpec): string {
+    if (!spec.supportsThinking) { return tBi('Not supported', '不支持'); }
+    if (spec.supportsAdaptiveThinking) { return tBi('Adaptive', '自适应'); }
+    if (spec.thinkingBudget === -1) { return tBi('Dynamic', '动态'); }
+    if (Number.isFinite(spec.thinkingBudget) && spec.thinkingBudget > 0) {
+        return `${tBi('Budget', '预算')}: ${formatTokens(spec.thinkingBudget)}`;
+    }
+    // A zero/absent budget does not mean thinking is disabled. New adaptive
+    // Claude models expose supportsThinking=true without a fixed token budget.
+    return tBi('Supported · Budget unspecified', '支持 · 预算未指定');
+}
+
+function providerLabel(provider: string): string {
+    const key = provider.replace(/^API_PROVIDER_/, '');
+    const labels: Record<string, string> = {
+        GOOGLE_GEMINI: 'Google Gemini',
+        ANTHROPIC_VERTEX: 'Anthropic · Vertex',
+        ANTHROPIC: 'Anthropic',
+        OPENAI_VERTEX: 'OpenAI · Vertex',
+        OPENAI: 'OpenAI',
+    };
+    return labels[key] || key.replace(/_/g, ' ') || tBi('Provider not available', '暂无提供商信息');
 }
 
 export function buildModelInfoGrid(specs: ModelSpec[]): string {
     const cards = specs.map((s) => {
-        const providerText = esc(s.apiProvider.replace(/_/g, ' '));
-        const thinkingText = !s.supportsThinking
-            ? tBi('Not Supported', '不支持')
-            : s.thinkingBudget === -1
-                ? tBi('Dynamic', '动态')
-                : `${tBi('Enabled', '已启用')} (${tBi('Budget', '预算')}: ${formatThinkingBudget(s.thinkingBudget)})`;
-
-        let limitColor = '#10b981'; // 256K Green
-        if (s.cpLimit <= 80000) limitColor = '#a855f7'; // 80K Purple
-        else if (s.cpLimit <= 128000) limitColor = '#3b82f6'; // 128K Blue
-        else if (s.cpLimit <= 160000) limitColor = '#06b6d4'; // 160K Cyan
-
-        const cpuSvg = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="opacity:0.6;margin-right:4px;flex-shrink:0;"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3"/></svg>`;
-        const brainSvg = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="opacity:0.6;margin-right:4px;flex-shrink:0;"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1 0-3.12 3 3 0 0 1 0-3.88 2.5 2.5 0 0 1 0-3.12A2.5 2.5 0 0 1 9.5 2zM14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 0-3.12 3 3 0 0 0 0-3.88 2.5 2.5 0 0 0 0-3.12A2.5 2.5 0 0 0 14.5 2z"/></svg>`;
-        const providerSvg = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="opacity:0.6;margin-right:4px;flex-shrink:0;"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>`;
-
-        // 使用完整数字格式化，不采用 K/M 估算值
-        const limitText = s.cpLimit > 0
-            ? `${s.cpLimit.toLocaleString()} ${tBi('Limit', '压缩阈值')}`
-            : tBi('Loading Limit...', '正在计算阈值...');
-
-        const maxTokensText = s.maxTokens > 0
-            ? s.maxTokens.toLocaleString()
-            : '-';
-
+        const shortId = s.placeholderId.replace(/^MODEL_PLACEHOLDER_/, '');
+        const extraId = s.placeholderId && s.placeholderId !== s.modelId
+            ? `<code class="spec-short-id" title="${esc(s.placeholderId)}">${esc(shortId)}</code>` : '';
         return `
-            <div class="model-card spec-card" style="border-left: 3px solid ${limitColor}; padding: var(--space-3); margin-bottom: var(--space-2); position: relative; min-width: 0;">
-                
-                <div class="model-card-header" style="margin-bottom: var(--space-2); display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); min-width: 0;">
-                    <div style="min-width: 0; flex: 1; overflow: hidden;">
-                        <strong class="model-card-name" title="${esc(s.displayName)}" style="font-size: 0.95rem; color: var(--color-text); display: block; line-height: 1.3; overflow-wrap: anywhere; word-break: break-word;">
-                            ${esc(s.displayName)}
-                        </strong>
-                        <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--color-text-dim); opacity: 0.8; display: block; margin-top: 2px; overflow-wrap: anywhere; word-break: break-word;">
-                            ${esc(s.modelId)} <span style="font-size: 0.7rem; opacity: 0.5;">(${esc(s.placeholderId.replace('MODEL_PLACEHOLDER_', ''))})</span>
-                        </span>
+            <article class="spec-card" aria-label="${esc(s.displayName)}" data-model-id="${esc(s.placeholderId)}">
+                <header class="spec-header">
+                    <h3 class="spec-name">${esc(s.displayName)}</h3>
+                    <p class="spec-provider" title="${esc(s.apiProvider)}">${esc(providerLabel(s.apiProvider))}</p>
+                </header>
+                <dl class="spec-metrics">
+                    <div class="spec-metric spec-limit">
+                        <dt>${tBi('Compression limit', '压缩阈值')}</dt>
+                        <dd>${formatTokens(s.cpLimit)}</dd>
                     </div>
-                    <span class="model-tag-badge" title="${esc(limitText)}" style="${limitBadgeColorStyle(limitColor)}; padding: 3px 8px; font-size: 0.72rem; border-radius: var(--radius-sm); font-weight: 600; white-space: nowrap; flex-shrink: 0; max-width: none; overflow: visible; transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;">
-                        ${limitText}
-                    </span>
+                    <div class="spec-metric">
+                        <dt>${tBi('Native context', '原生上下文')}</dt>
+                        <dd>${formatTokens(s.maxTokens)}</dd>
+                    </div>
+                    <div class="spec-metric spec-thinking">
+                        <dt>${tBi('Thinking', '思考能力')}</dt>
+                        <dd>${thinkingDescription(s)}</dd>
+                    </div>
+                </dl>
+                <div class="spec-identity">
+                    <code class="spec-model-id" title="${esc(s.modelId)}">${esc(s.modelId)}</code>${extraId}
                 </div>
-
-                <div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-2); font-size: 0.8rem; margin-top: var(--space-3); border-top: 1px dashed var(--color-border); padding-top: var(--space-2);">
-                    <div style="display: flex; align-items: center; color: var(--color-text-dim); min-width: 0;">
-                        ${providerSvg}
-                        <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;" title="${providerText}">
-                            ${providerText}
-                        </span>
-                    </div>
-                    <div style="display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px 4px; color: var(--color-text-dim); min-width: 0;">
-                        ${cpuSvg}
-                        <span style="font-weight: 500; color: var(--color-text);">
-                            ${maxTokensText}
-                        </span>
-                        <span style="font-size: 0.72rem; opacity: 0.5;">${tBi('max tokens', '最大上下文')}</span>
-                    </div>
-                    <div style="display: flex; align-items: flex-start; color: var(--color-text-dim); grid-column: span 2; border-top: 1px solid rgba(255,255,255,0.03); padding-top: 2px; min-width: 0;">
-                        ${brainSvg}
-                        <span style="font-size: 0.75rem; min-width: 0; overflow-wrap: anywhere; word-break: break-word;" title="${esc(tBi('Thinking', '思考能力') + ': ' + thinkingText)}">
-                            ${tBi('Thinking', '思考能力')}: <strong style="color: var(--color-text); font-weight: 600;">${thinkingText}</strong>
-                        </span>
-                    </div>
-                </div>
-            </div>`;
+            </article>`;
     }).join('');
 
     const specIconSvg = `<svg class="act-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: text-bottom; margin-right: 6px;"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
 
     return `
-        <section class="card">
-            <h2 style="display: flex; align-items: center; margin-bottom: var(--space-3);">${specIconSvg} ${tBi('Model Info', '模型信息')}</h2>
-            <div class="model-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: var(--space-3); margin-top: var(--space-2);">
+        <section class="card model-info-section">
+            <h2>${specIconSvg} ${tBi('Model Info', '模型信息')}</h2>
+            <p class="spec-description">${tBi('Token limits for the models available in your IDE. Compression limits differ from native context windows.', 'IDE 中可用模型的 Token 上限。压缩阈值与模型原生上下文窗口不同。')}</p>
+            <div class="spec-grid">
                 ${cards}
             </div>
         </section>`;
@@ -186,21 +143,14 @@ export function buildModelsTabContent(
     } else {
         const specIconSvg = `<svg class="act-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: text-bottom; margin-right: 6px;"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
         parts.push(`
-            <section class="card empty">
+            <section class="card empty model-info-section">
                 <h2 style="display: flex; align-items: center; margin-bottom: var(--space-3);">${specIconSvg} ${tBi('Model Info', '模型信息')}</h2>
                 <p class="empty-desc" style="display: flex; align-items: center; justify-content: center; gap: 8px;">
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="animation: spin 1.5s linear infinite;"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
                     ${tBi(
-            'Dynamically capturing genuine model parameters from LS...',
-            '正在从 LS 动态捕获最真实的核心模型信息...',
+            'Model information is not available yet. Sign in to Antigravity, then refresh.',
+            '暂无模型信息。请登录 Antigravity 后刷新。',
         )}
                 </p>
-                <style>
-                    @keyframes spin {
-                        0% { transform: rotate(0deg); }
-                        100% { transform: rotate(360deg); }
-                    }
-                </style>
             </section>`);
     }
 

@@ -15,7 +15,7 @@ import {
     TrajectorySummary,
     UserStatusInfo,
 } from './tracker';
-import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, type ModelConfig, updateModelSpec, getModelSpecs } from './models';
+import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, registerResponseModelAlias, type ModelConfig, type FullUserStatus, updateModelSpec, getModelSpecs } from './models';
 import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit, setTooltipDiagLogger } from './statusbar';
 import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
@@ -476,6 +476,36 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
     };
 }
 
+interface LiveModelStatusHandlers {
+    replaceConfigs(configs: ModelConfig[]): void;
+    switchAccount(email: string): void;
+    updateQuota(configs: ModelConfig[], email?: string): void;
+}
+
+/** Apply an authenticated empty picker, while retaining cached state on RPC failure.
+ *  The same transition is used on discovery, LS replacement, and periodic refresh. */
+export function applyLiveModelStatus(
+    fullStatus: Pick<FullUserStatus, 'configs' | 'userInfo'>,
+    handlers: LiveModelStatusHandlers = {
+        replaceConfigs: configs => {
+            cachedModelConfigs = configs;
+            statusBar.setModelConfigs(configs);
+        },
+        switchAccount: handleAccountSwitchIfNeeded,
+        updateQuota: (configs, email) => {
+            quotaTracker.processUpdate(configs, buildUsedModelIds(email), email);
+            checkQuotaNotification(configs);
+        },
+    },
+): boolean {
+    if (fullStatus.configs.length === 0 && !fullStatus.userInfo) { return false; }
+    updateModelDisplayNames(fullStatus.configs, { authoritative: true });
+    handlers.replaceConfigs(fullStatus.configs);
+    if (fullStatus.userInfo?.email) { handlers.switchAccount(fullStatus.userInfo.email); }
+    handlers.updateQuota(fullStatus.configs, fullStatus.userInfo?.email);
+    return true;
+}
+
 // ─── Account Snapshot Helpers ─────────────────────────────────────────────────
 
 /**
@@ -573,20 +603,45 @@ function isPlatformModelId(value: string): boolean {
     return /^MODEL_[A-Z0-9_]+$/.test(clean) && !clean.includes('UNSPECIFIED');
 }
 
-async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> {
+interface AvailableModelMetadata {
+    model?: string;
+    modelId?: string;
+    model_id?: string;
+    apiProvider?: string;
+    maxTokens?: number;
+    maxOutputTokens?: number;
+    thinkingBudget?: number;
+    supportsThinking?: boolean;
+    supportsAdaptiveThinking?: boolean;
+    thinkingLevel?: number;
+    modelExperiments?: { experiments?: Record<string, { stringValue?: string }> };
+}
+
+function positiveTokenLimit(value: unknown): number {
+    if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) { return 0; }
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+export async function fetchAndOverrideCheckpointerLimits(ls: LSInfo, logMessage: (message: string) => void = log): Promise<boolean> {
     try {
-        log('[Checkpointer Sync] Fetching official checkpointer parameters via LS RPC GetAvailableModels...');
+        logMessage('[Checkpointer Sync] Fetching official checkpointer parameters via LS RPC GetAvailableModels...');
         const resp = await rpcCall(ls, 'GetAvailableModels', {
             metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
         }, 10000);
-        const models = (resp as any)?.response?.models || {};
+        const response = resp.response as { models?: Record<string, AvailableModelMetadata> } | undefined;
+        const models = response?.models || (resp.models as Record<string, AvailableModelMetadata> | undefined) || {};
         const overrides: Record<string, number> = {};
         const allFetchedInfo: string[] = [];
 
-        for (const config of Object.values(models)) {
-            const c = config as any;
-            const modelVal = c.model || '';
-            const modelIdVal = c.modelId || c.model_id || '';
+        for (const [catalogId, c] of Object.entries(models)) {
+            if (!c || typeof c !== 'object') { continue; }
+            const modelVal = typeof c.model === 'string' ? c.model : '';
+            // Current LS catalog entries carry their response/model ID in the map
+            // key, not a modelId field. Keeping it prevents live sync replacing a
+            // useful catalog alias with the opaque placeholder.
+            const modelIdVal = (typeof c.modelId === 'string' && c.modelId)
+                || (typeof c.model_id === 'string' && c.model_id) || catalogId;
             if (!modelVal && !modelIdVal) continue;
 
             // The platform hands us the canonical placeholder in `model` (e.g. MODEL_PLACEHOLDER_M298).
@@ -607,20 +662,9 @@ async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> 
             if (checkpointerStr) {
                 allFetchedInfo.push(`[${modelIdVal || modelVal}] Exp JSON: ${checkpointerStr}`);
                 try {
-                    const cp = JSON.parse(checkpointerStr);
-                    const cpLimit = cp.max_token_limit || cp.max_limit;
-                    if (typeof cpLimit === 'number') {
-                        limitNum = cpLimit;
-                    } else if (typeof cpLimit === 'string') {
-                        limitNum = parseInt(cpLimit, 10);
-                    }
-
-                    const cpThreshold = cp.token_threshold || cp.threshold;
-                    if (typeof cpThreshold === 'number') {
-                        thresholdNum = cpThreshold;
-                    } else if (typeof cpThreshold === 'string') {
-                        thresholdNum = parseInt(cpThreshold, 10);
-                    }
+                    const cp = JSON.parse(checkpointerStr) as Record<string, unknown>;
+                    limitNum = positiveTokenLimit(cp.max_token_limit ?? cp.max_limit);
+                    thresholdNum = positiveTokenLimit(cp.token_threshold ?? cp.threshold);
 
                     if (limitNum && !isNaN(limitNum) && limitNum > 0) {
                         const resolvedKey = resolved || modelVal || modelIdVal;
@@ -649,13 +693,17 @@ async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> 
             const inLivePicker = !!resolved && cachedModelConfigs.some(cfg => cfg.model === resolved);
             const describesARealModel = limitNum > 0 && typeof c.maxTokens === 'number' && c.maxTokens > 0;
             if (resolved && (alreadyRegistered || inLivePicker || describesARealModel)) {
+                registerResponseModelAlias(modelIdVal, resolved);
                 updateModelSpec(resolved, {
                     modelId: modelIdVal || modelVal,
-                    apiProvider: (c.apiProvider || '').replace('API_PROVIDER_', ''),
-                    maxTokens: typeof c.maxTokens === 'number' ? c.maxTokens : 0,
-                    maxOutputTokens: typeof c.maxOutputTokens === 'number' ? c.maxOutputTokens : 0,
-                    thinkingBudget: typeof c.thinkingBudget === 'number' ? c.thinkingBudget : 0,
-                    supportsThinking: !!c.supportsThinking,
+                    ...(typeof c.apiProvider === 'string' ? { apiProvider: c.apiProvider.replace('API_PROVIDER_', '') } : {}),
+                    ...(positiveTokenLimit(c.maxTokens) ? { maxTokens: c.maxTokens } : {}),
+                    ...(positiveTokenLimit(c.maxOutputTokens) ? { maxOutputTokens: c.maxOutputTokens } : {}),
+                    ...(typeof c.thinkingBudget === 'number' && Number.isFinite(c.thinkingBudget) ? { thinkingBudget: c.thinkingBudget } : {}),
+                    ...(typeof c.supportsThinking === 'boolean' ? { supportsThinking: c.supportsThinking } : {}),
+                    ...(typeof c.supportsAdaptiveThinking === 'boolean' ? { supportsAdaptiveThinking: c.supportsAdaptiveThinking } : {}),
+                    ...(typeof c.thinkingLevel === 'number' && Number.isSafeInteger(c.thinkingLevel) && c.thinkingLevel >= 0
+                        ? { thinkingLevel: c.thinkingLevel } : {}),
                     ...(limitNum > 0 ? { cpLimit: limitNum } : {}),
                     ...(thresholdNum > 0 ? { cpThreshold: thresholdNum } : {}),
                 });
@@ -663,14 +711,14 @@ async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> 
         }
 
         if (allFetchedInfo.length > 0) {
-            log(`[Checkpointer Sync] Official checkpointer parameters fetched for ${allFetchedInfo.length} models.`);
+            logMessage(`[Checkpointer Sync] Official checkpointer parameters fetched for ${allFetchedInfo.length} models.`);
         }
 
 
 
         if (Object.keys(overrides).length > 0) {
             overrideContextLimits(overrides);
-            log(`[Checkpointer Sync] Dynamically resolved and overridden ${Object.keys(overrides).length} model context limits from official Checkpointer!`);
+            logMessage(`[Checkpointer Sync] Dynamically resolved and overridden ${Object.keys(overrides).length} model context limits from official Checkpointer!`);
             return true;
         }
 
@@ -681,10 +729,10 @@ async function fetchAndOverrideCheckpointerLimits(ls: LSInfo): Promise<boolean> 
         // field) or no model currently carries a checkpointer experiment. Both are transient states
         // that a later poll can resolve, and both otherwise leave every model on its static fallback
         // while the log cheerfully reports success.
-        log(`[Checkpointer Sync] Parsed the response but found no checkpointer overrides — will retry. Envelope keys: ${Object.keys(resp ?? {}).join(', ') || '(none)'}`);
+        logMessage(`[Checkpointer Sync] Parsed the response but found no checkpointer overrides — will retry. Envelope keys: ${Object.keys(resp ?? {}).join(', ') || '(none)'}`);
         return false;
     } catch (e: any) {
-        log(`[Checkpointer Sync] Optional dynamic capture failed: ${e.message}. Using built-in static fallbacks.`);
+        logMessage(`[Checkpointer Sync] Optional dynamic capture failed: ${e.message}. Using built-in static fallbacks.`);
         return false;
     }
 }
@@ -1536,16 +1584,7 @@ async function pollContextUsage(): Promise<void> {
             // Dynamically update model display names from GetUserStatus
             try {
                 const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
-                if (fullStatus.configs.length > 0) {
-                    updateModelDisplayNames(fullStatus.configs, { authoritative: true });
-                    cachedModelConfigs = fullStatus.configs;
-                    statusBar.setModelConfigs(fullStatus.configs);
-                    // Detect account switch BEFORE quota processing
-                    if (fullStatus.userInfo?.email) {
-                        handleAccountSwitchIfNeeded(fullStatus.userInfo.email);
-                    }
-                    quotaTracker.processUpdate(fullStatus.configs, buildUsedModelIds(fullStatus.userInfo?.email), fullStatus.userInfo?.email);
-                    checkQuotaNotification(fullStatus.configs);
+                if (applyLiveModelStatus(fullStatus)) {
                     log(`Updated model display names: ${fullStatus.configs.map(c => c.label).join(', ')}`);
                 }
                 if (fullStatus.userInfo) {
@@ -1580,16 +1619,7 @@ async function pollContextUsage(): Promise<void> {
                         // Re-fetch user status from new LS
                         try {
                             const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
-                            if (fullStatus.configs.length > 0) {
-                                updateModelDisplayNames(fullStatus.configs, { authoritative: true });
-                                cachedModelConfigs = fullStatus.configs;
-                                statusBar.setModelConfigs(fullStatus.configs);
-                                if (fullStatus.userInfo?.email) {
-                                    handleAccountSwitchIfNeeded(fullStatus.userInfo.email);
-                                }
-                                quotaTracker.processUpdate(fullStatus.configs, buildUsedModelIds(fullStatus.userInfo?.email), fullStatus.userInfo?.email);
-                                checkQuotaNotification(fullStatus.configs);
-                            }
+                            applyLiveModelStatus(fullStatus);
                             if (fullStatus.userInfo) {
                                 cachedUserInfo = fullStatus.userInfo;
                                 updateStatusBarCredits(fullStatus.userInfo);
@@ -1617,23 +1647,7 @@ async function pollContextUsage(): Promise<void> {
                 statusPollCount = 0;
                 try {
                     const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
-                    if (fullStatus.configs.length > 0) {
-                        // The label table is the single source of truth for model names, and the
-                        // platform can add or RENUMBER models mid-session (3.6 Flash moved from
-                        // M264-M266 to M71-M73 in August 2026). Refreshing it only on first LS
-                        // discovery meant a session that started before such a change kept resolving
-                        // against stale names — and if that one startup fetch happened to fail, the
-                        // whole session fell back to static names and wrote raw placeholder strings
-                        // into the persisted ledger keys.
-                        updateModelDisplayNames(fullStatus.configs, { authoritative: true });
-                        cachedModelConfigs = fullStatus.configs;
-                        statusBar.setModelConfigs(fullStatus.configs);
-                        if (fullStatus.userInfo?.email) {
-                            handleAccountSwitchIfNeeded(fullStatus.userInfo.email);
-                        }
-                        quotaTracker.processUpdate(fullStatus.configs, buildUsedModelIds(fullStatus.userInfo?.email), fullStatus.userInfo?.email);
-                        checkQuotaNotification(fullStatus.configs);
-                    }
+                    applyLiveModelStatus(fullStatus);
                     if (fullStatus.userInfo) {
                         cachedUserInfo = fullStatus.userInfo;
                         updateStatusBarCredits(fullStatus.userInfo);
