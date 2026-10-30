@@ -256,6 +256,8 @@ Claude Opus 5.5 与 Sonnet 5.5 均使用[官方 API 费率](https://platform.cla
 
 ### daily-ledger.ts -- 实时增量账本
 
+`reconcileRecordedCalls()` 在正常新增游标之外校对已记录调用，严格匹配身份、账号、模型、Token 与可信日期后补充元数据和零费用缺口。已有正费用及调用/Token 数量不变，重复执行不会累计费用；对应回归位于 `tests/ledger-cost-reconciliation.test.ts`。
+
 不依赖 LS 对话缓存生命周期的独立调用记录模块。按日期+账号分桶，每次轮询后通过 `GMTracker.getNewCallsSinceLastRecord()` 提取增量写入，调用数据一旦记录就不会丢失。额度重置结算由上游 resetTime 周期切换判定驱动，不因小幅 resetTime 漂移直接触发。核心方法：
 - `recordCalls(entries)` — 增量录入 + `dedupKey` 去重
 - `settleForQuotaReset(email, poolModels)` — 额度重置时将活跃桶数据冻结到已结算区

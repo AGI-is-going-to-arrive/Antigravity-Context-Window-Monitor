@@ -11,14 +11,17 @@ Adds **Gemini 4 Argon Low / Medium / High** with dated official prices, audits a
 - **Precise context and live updates:** Reads provider `modelUsage` from current planner responses as well as legacy checkpoints, recognizes the selected tier before the first response, and keeps GM estimates separate from precise counts. Context includes fresh input, cache reads, cache creation, and output, so cache hits cannot silently shrink occupancy or trigger false compression. Invalidates old usage caches and re-fetches running steps; GM capacity falls back to `cwm.maxContextTokens`, and successful retry records do not duplicate retry counts.
 - **Current metadata and empty/narrow UI:** Refreshes Gemini 3.8 Flash thinking levels and the 50,000 checkpointer trigger, clearing obsolete defaults only from complete live metadata. Empty status now says **No active conversation**; narrow dashboard headers wrap to prevent overlapping controls.
 - **Hub discovery:** Recognizes `agy --hub` / `agy.exe` and equals-separated connection options, validates hub ports, and preserves legacy language-server and platform-specific discovery. A connected backend with no loaded conversations is an empty state, even when saved history exists.
+- **Recorded-call upgrade repair:** Reconciles late timestamps and formerly unpriced zero-cost records without adding calls or tokens; preserves existing positive costs and remains idempotent.
 - **Official Argon pricing:** [Google Standard API rates](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) are $2 input / $10 output including thinking / $0.10 implicit cache reads per million tokens through 2026-11-30, then $4 / $20 / $0.20 from 2026-12-01. Call UTC timestamps select the rate; existing archival totals and custom overrides are preserved. No explicit caching/write charge is added. Generic unknown-price safeguards remain.
 - **Complete current metadata and image catalog:** Audits 13 chat variants including GPT-OSS 80,000 compression / 50,000 trigger. `imageGenerationModelIds` exposes M21 (`gemini-3.1-flash-image`, Nano Banana 2) separately with IDE limits 65,536 / 65,536; compression settings are not applicable and independent image quota is unavailable. Cards say Model context and distinguish IDE values from public API limits. Older identities remain available for saved history.
 - **Image workflow and metering:** Follows bounded, deduplicated linked-subagent image steps while preserving the parent model/context. Actual M21 generation returned no separate image token/credit/GM usage; the Cost tab explicitly labels known subtotals excluding image fees. Missing image thinking metadata is shown as Not reported by IDE rather than unsupported.
 - **Connection state and instance isolation:** Reads the current IDE connection from already active built-in extension exports without activating another extension. Missing/lost-backend tooltips support English, Chinese, and bilingual modes and update immediately on language changes.
 - **Toolchain:** Includes Vitest 4.1.12, Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`, and CI Node.js 26.12.1 with the updated lockfile.
-- **Validation and documentation:** Local TypeScript compilation and 624 tests passed; [native CI](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/runs/41144811861) passed on Windows, macOS, and Linux. The installed macOS plugin verified all 13 real chat variants and one real image workflow. Updates English/Chinese documentation, installation instructions, and [1.16.19 release notes](docs/releases/1.16.19.md), with exact cache-inclusive token results and image-fee limitations.
+- **Validation and documentation:** Local TypeScript compilation and 635 tests passed; [native CI](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) passed on Windows, macOS, and Linux. The installed macOS plugin verified all 13 real chat variants and one real image workflow. Updates English/Chinese documentation, installation instructions, and [1.16.19 release notes](docs/releases/1.16.19.md), with exact cache-inclusive token results and image-fee limitations.
 
 ### 中文
+
+- **已记录调用的升级补全：** 补齐迟到时间戳及此前未定价的零费用记录，不增加调用或 Token，保留已有正费用且重复执行不累加。
 
 新增 **Gemini 4 Argon Low / Medium / High** 及按日期生效的官方价格，核对全部 13 个当前聊天档位和独立图片生成目录，并恢复 `agy` hub 后端的 IDE 监控。
 
@@ -32,7 +35,7 @@ Adds **Gemini 4 Argon Low / Medium / High** with dated official prices, audits a
 - **图片工作流与计量：** 有界、去重追踪关联子智能体的图片步骤，保留父模型及上下文。实际 M21 生图未返回独立图片 Token/积分/GM 用量，成本页明确标为排除图片费的已知小计；图片思考字段缺失时显示 IDE 未上报，而非不支持。
 - **连接状态与实例隔离：** 从已激活的内置扩展导出读取当前 IDE 连接，不主动激活其他扩展。未发现/失去后端连接的 tooltip 支持英文、中文、双语，并在语言切换时立即更新。
 - **工具链：** 包含 Vitest 4.1.12、Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`、CI Node.js 26.12.1 及更新的锁文件。
-- **验证与文档：** 本地 TypeScript 编译及 624 项测试通过；[原生 CI](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/runs/41144811861) 在 Windows、macOS、Linux 全部通过。macOS 已安装插件验证全部 13 个真实聊天档位和一次真实图片工作流。更新中英文文档、安装说明和 [1.16.19 发布说明](docs/releases/1.16.19.md)，列出包含缓存的精确 Token 结果及图片费限制。
+- **验证与文档：** 本地 TypeScript 编译及 635 项测试通过；[原生 CI](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) 在 Windows、macOS、Linux 全部通过。macOS 已安装插件验证全部 13 个真实聊天档位和一次真实图片工作流。更新中英文文档、安装说明和 [1.16.19 发布说明](docs/releases/1.16.19.md)，列出包含缓存的精确 Token 结果及图片费限制。
 
 
 ## [1.16.18] - 2026-10-03

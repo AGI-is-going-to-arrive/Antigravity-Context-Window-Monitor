@@ -363,3 +363,9 @@ Release acceptance must use the newly packaged **1.16.19** VSIX installed in the
 回归范围包含旧版/hub 发现、参数与端口解析、候选回退、取消、全部 13 个实时聊天档位、图片能力及元数据生命周期、实时模型优先级、账号目录、独立图片配额身份、GM 身份保持、Argon UTC 调价边界与归档/自定义优先级、通用未知价格、图片步骤、历史持久化，以及英文/中文/双语渲染。跨平台 mock 在本地覆盖分支，需要与各原生操作系统上的实际运行分别报告。
 
 发布验收必须将重新打包的 **1.16.19** VSIX 安装到已经运行的 IDE，重载后检查安装文件和版本。UI 检查覆盖实时模型卡片及元数据、空闲/空状态与断连的区别、语言切换和持久化、主题、窄布局、刷新/暂停及价格交互。结果、数量、生成测试范围和未测环境记录于 [1.16.19 发布说明](releases/1.16.19.md#验证)；此前 1.16.18 结果保留在[历史发布记录](releases/1.16.18.md#validation)中。
+
+### Recorded-call pricing reconciliation (1.16.19)
+
+The polling loop offers hydrated GM observations to `DailyLedger.reconcileRecordedCalls` even when the new-call cursor returns no entries. Exact identity, account, model, token and date checks permit missing timestamps and zero-cost gaps to be filled only when recorded calls reconcile with their model and account totals. Positive recorded costs, tokens and call counts remain unchanged; the pass is idempotent and persists only real repairs.
+
+即使新增调用游标为空，轮询仍向 `DailyLedger.reconcileRecordedCalls` 提供已补全的 GM 观察。严格匹配调用身份、账号、模型、Token 和日期，并确认逐调用记录与模型/账号汇总一致后，才补充缺失时间戳或零费用缺口。已有正费用、Token 和调用数保持不变；该过程幂等，只持久化实际修复。

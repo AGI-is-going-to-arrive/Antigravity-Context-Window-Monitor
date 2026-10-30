@@ -19,7 +19,7 @@
 
 ---
 
-**1.16.19：** 新增 Gemini 4 Argon 三档及按日期生效的官方价格，核对当前 13 个聊天档位，展示独立图片生成目录，并修复 Antigravity IDE 的 `agy` hub 发现问题。已通过本地编译及 624 项测试、Windows/macOS/Linux 原生 CI，并在 macOS IDE 实测全部 13 个聊天档位和一次图片工作流。详见[发布说明与验收范围](docs/releases/1.16.19.md#验证)，其中说明图片费用遥测限制。[CI 工作流](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) 覆盖 Windows、macOS、Linux 的编译和回归测试；原生 IDE 实机结果单独记录。
+**1.16.19：** 新增 Gemini 4 Argon 三档及按日期生效的官方价格，核对当前 13 个聊天档位，展示独立图片生成目录，并修复 Antigravity IDE 的 `agy` hub 发现问题。已通过本地编译及 635 项测试、Windows/macOS/Linux 原生 CI，并在 macOS IDE 实测全部 13 个聊天档位和一次图片工作流。详见[发布说明与验收范围](docs/releases/1.16.19.md#验证)，其中说明图片费用遥测限制。[CI 工作流](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) 覆盖 Windows、macOS、Linux 的编译和回归测试；原生 IDE 实机结果单独记录。
 
 ## 📚 技术细节
 
