@@ -19,7 +19,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ---
 
-**1.16.19:** Adds Gemini 4 Argon Low / Medium / High with dated official pricing, audits the current 13 chat variants, exposes the separate image-generation catalog, and fixes discovery of the Antigravity IDE `agy` hub. See the [release notes and validation scope](docs/releases/1.16.19.md#validation). The [CI workflow](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) covers compilation and regression tests on Windows, macOS, and Linux; native IDE checks are reported separately.
+**1.16.19:** Adds Gemini 4 Argon Low / Medium / High with dated official pricing, audits the current 13 chat variants, exposes the separate image-generation catalog, and fixes discovery of the Antigravity IDE `agy` hub. Validation passed local compilation and 624 tests, native Windows/macOS/Linux CI, all 13 real chat variants, and one real image workflow in macOS IDE. See the [release notes and validation scope](docs/releases/1.16.19.md#validation), including the image-fee telemetry limitation. The [CI workflow](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) covers compilation and regression tests on Windows, macOS, and Linux; native IDE checks are reported separately.
 
 ## 📚 Technical Details
 

@@ -16,7 +16,7 @@ Adds **Gemini 4 Argon Low / Medium / High** with dated official prices, audits a
 - **Image workflow and metering:** Follows bounded, deduplicated linked-subagent image steps while preserving the parent model/context. Actual M21 generation returned no separate image token/credit/GM usage; the Cost tab explicitly labels known subtotals excluding image fees. Missing image thinking metadata is shown as Not reported by IDE rather than unsupported.
 - **Connection state and instance isolation:** Reads the current IDE connection from already active built-in extension exports without activating another extension. Missing/lost-backend tooltips support English, Chinese, and bilingual modes and update immediately on language changes.
 - **Toolchain:** Includes Vitest 4.1.12, Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`, and CI Node.js 26.12.1 with the updated lockfile.
-- **Documentation and validation:** Updates current English/Chinese documentation, installation instructions, and [1.16.19 release notes](docs/releases/1.16.19.md). Final test counts, installed-package checks, actual IDE interactions, and native-platform results are recorded in the release validation section.
+- **Validation and documentation:** Local TypeScript compilation and 624 tests passed; [native CI](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/runs/41144811861) passed on Windows, macOS, and Linux. The installed macOS plugin verified all 13 real chat variants and one real image workflow. Updates English/Chinese documentation, installation instructions, and [1.16.19 release notes](docs/releases/1.16.19.md), with exact cache-inclusive token results and image-fee limitations.
 
 ### 中文
 
@@ -32,7 +32,7 @@ Adds **Gemini 4 Argon Low / Medium / High** with dated official prices, audits a
 - **图片工作流与计量：** 有界、去重追踪关联子智能体的图片步骤，保留父模型及上下文。实际 M21 生图未返回独立图片 Token/积分/GM 用量，成本页明确标为排除图片费的已知小计；图片思考字段缺失时显示 IDE 未上报，而非不支持。
 - **连接状态与实例隔离：** 从已激活的内置扩展导出读取当前 IDE 连接，不主动激活其他扩展。未发现/失去后端连接的 tooltip 支持英文、中文、双语，并在语言切换时立即更新。
 - **工具链：** 包含 Vitest 4.1.12、Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`、CI Node.js 26.12.1 及更新的锁文件。
-- **文档与验证：** 更新当前中英文文档、安装说明和 [1.16.19 发布说明](docs/releases/1.16.19.md)。最终测试数量、安装包检查、实际 IDE 交互及原生平台结果记录在发布验收章节。
+- **验证与文档：** 本地 TypeScript 编译及 624 项测试通过；[原生 CI](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/runs/41144811861) 在 Windows、macOS、Linux 全部通过。macOS 已安装插件验证全部 13 个真实聊天档位和一次真实图片工作流。更新中英文文档、安装说明和 [1.16.19 发布说明](docs/releases/1.16.19.md)，列出包含缓存的精确 Token 结果及图片费限制。
 
 
 ## [1.16.18] - 2026-10-03

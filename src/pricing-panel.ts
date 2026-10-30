@@ -582,6 +582,12 @@ export function getPricingTabStyles(): string {
         background: rgba(251,191,36,0.06);
         border: 1px solid rgba(251,191,36,0.15);
     }
+    @media (max-width: 480px) {
+        .cost-detail-rows { grid-template-columns: minmax(0, 1fr); }
+        .cost-detail-row { min-width: 0; flex-wrap: wrap; }
+        .cost-detail-name { flex: 1 1 100%; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+        .cost-detail-items { flex-basis: 120px; }
+    }
     body.vscode-light .cost-bar-section { background: rgba(0,0,0,0.015); }
     body.vscode-light .cost-bar-row:hover { background: rgba(0,0,0,0.03); }
     body.vscode-light .cost-bar-val { background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.15); }
