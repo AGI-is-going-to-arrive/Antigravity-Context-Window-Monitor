@@ -11,7 +11,7 @@
 
 import type { GMCallEntry } from './gm-tracker';
 import { normalizeModelDisplayName, resolveModelId } from './models';
-import { buildGMArchiveKey } from './gm/parser';
+import { buildGMArchiveKey, isValidCallTimestamp } from './gm/parser';
 import { findPricingForDate, costFromTokens } from './pricing-store';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -171,6 +171,38 @@ function estimateCallCost(call: GMCallEntry, dateKey: string): number {
     const pr = findPricingForDate(call.model, {}, at)
         || findPricingForDate(call.responseModel, {}, at) || findPricingForDate(call.modelDisplay, {}, at);
     return pr ? costFromTokens(call, pr) : 0;
+}
+
+/** A timestamp enrichment changes an archive key, but not the underlying call. */
+function recordedCallIdentityMatches(recordedId: string, entry: LedgerCallEntry): boolean {
+    const nextId = entry.dedupKey || fallbackCallId(entry.call);
+    if (recordedId === nextId) { return true; }
+    if (entry.call.executionId) {
+        return recordedId === entry.call.executionId
+            || recordedId.endsWith(`|${encodeURIComponent(`exec:${entry.call.executionId}`)}`);
+    }
+    const archiveIdentity = (id: string): { scope: string; key: string; date: string } | null => {
+        const split = id.indexOf('|');
+        if (split < 0) { return null; }
+        try {
+            const identity = decodeURIComponent(id.slice(split + 1));
+            if (!identity.startsWith('archive|')) { return null; }
+            const start = identity.lastIndexOf('|created:');
+            const end = identity.indexOf('|in:', start);
+            if (start < 0 || end < 0) { return null; }
+            return { scope: id.slice(0, split), key: identity.slice(0, start) + identity.slice(end),
+                date: identity.slice(start + '|created:'.length, end) };
+        } catch { return null; }
+    };
+    const before = archiveIdentity(recordedId);
+    const after = archiveIdentity(nextId);
+    return !!before && !!after && before.scope === after.scope && before.key === after.key
+        && !isValidCallTimestamp(before.date) && isValidCallTimestamp(after.date);
+}
+
+function sameAmount(left: number, right: number): boolean {
+    return Number.isFinite(left) && Number.isFinite(right)
+        && Math.abs(left - right) <= Math.max(1e-9, Math.abs(left) * 1e-9, Math.abs(right) * 1e-9);
 }
 
 /**
@@ -548,6 +580,78 @@ export class DailyLedger {
         }
 
         return added;
+    }
+
+    /**
+     * Upgrade metadata/cost gaps for already-recorded active calls, without adding
+     * tokens or call counts. GM dedup correctly suppresses these calls as "new",
+     * so a separate pass is required when a later version learns their timestamp
+     * or official price. Positive historical costs are never rewritten.
+     */
+    reconcileRecordedCalls(entries: readonly LedgerCallEntry[]): number {
+        let changed = 0;
+        const start = dateKeyToStartOfDayMs(this._dateKey);
+        const end = dateKeyToNextDayStartMs(this._dateKey);
+        const indexes = new Map<LedgerAccountBucket, Map<string, LedgerRecordedCall[]>>();
+        const tokenFields = ['inputTokens', 'outputTokens', 'thinkingTokens', 'cacheReadTokens', 'cacheCreationTokens'] as const;
+        for (const entry of entries) {
+            const call = entry.call;
+            if (!isValidCallTimestamp(call.createdAt)) { continue; }
+            const callTime = Date.parse(call.createdAt);
+            if ((start > 0 && callTime < start) || (end > 0 && callTime >= end)) { continue; }
+            const bucket = this._accounts.get(call.accountEmail || '');
+            if (!bucket) { continue; }
+            let index = indexes.get(bucket);
+            if (!index) {
+                index = new Map();
+                for (const recorded of bucket.recordedCalls || []) {
+                    const matches = index.get(recorded.callId) || [];
+                    matches.push(recorded); index.set(recorded.callId, matches);
+                }
+                indexes.set(bucket, index);
+            }
+            const id = entry.dedupKey || fallbackCallId(call);
+            const matches = index.get(id)
+                || bucket.recordedCalls.filter(recorded => recordedCallIdentityMatches(recorded.callId, entry));
+            // Never guess which of several historical records a refreshed call belongs to.
+            if (matches.length !== 1) { continue; }
+            const recorded = matches[0];
+            const modelId = resolveCallModelId(call, resolveModelKeyForLedger(call));
+            if ((resolveModelId(recorded.modelId) || recorded.modelId) !== modelId
+                || !tokenFields.every(field => recorded[field] === call[field])) { continue; }
+            if (isValidCallTimestamp(recorded.createdAt) && Date.parse(recorded.createdAt) !== callTime) { continue; }
+            let updated = false;
+            if (!isValidCallTimestamp(recorded.createdAt)) {
+                recorded.createdAt = call.createdAt;
+                recorded.createdAtMs = callTime;
+                updated = true;
+            }
+            if ((recorded.estimatedCost === 0 || recorded.estimatedCost === undefined)
+                && Object.prototype.hasOwnProperty.call(bucket.modelStats, recorded.modelKey)) {
+                const stats = bucket.modelStats[recorded.modelKey];
+                const modelCalls = bucket.recordedCalls.filter(item => item.modelKey === recorded.modelKey);
+                const representedCost = modelCalls.reduce((sum, item) => sum + (item.estimatedCost || 0), 0);
+                const bucketCost = Object.values(bucket.modelStats).reduce((sum, item) => sum + item.estimatedCost, 0);
+                // An unexplained positive aggregate might already include the
+                // missing per-call amount. Only add a gap when totals reconcile.
+                const fullyRepresented = modelCalls.length === stats.calls
+                    && tokenFields.every(field => modelCalls.reduce((sum, item) => sum + item[field], 0) === stats[field])
+                    && sameAmount(stats.estimatedCost, representedCost)
+                    && sameAmount(bucket.totalEstimatedCost, bucketCost);
+                if (fullyRepresented) {
+                    const price = findPricingForDate(recorded.modelId || recorded.modelKey, {}, recorded.createdAt);
+                    const cost = price ? costFromTokens(recorded, price) : 0;
+                    if (Number.isFinite(cost) && cost > 0) {
+                        recorded.estimatedCost = cost;
+                        stats.estimatedCost += cost;
+                        bucket.totalEstimatedCost += cost;
+                        updated = true;
+                    }
+                }
+            }
+            if (updated) { changed++; }
+        }
+        return changed;
     }
 
     /**

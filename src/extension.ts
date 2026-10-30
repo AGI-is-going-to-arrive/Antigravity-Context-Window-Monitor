@@ -2115,6 +2115,13 @@ async function pollContextUsage(): Promise<void> {
                     if (revertedCascadeIds.length > 0) {
                         durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
                     }
+                    const reconciled = dailyLedger.reconcileRecordedCalls(gmTracker.getLedgerReconciliationEntries());
+                    if (reconciled > 0) {
+                        // This may repair old unpriced calls even when the normal
+                        // write-once cursor produces no new entries this poll.
+                        durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+                        log(`[DailyLedger] reconciled metadata/pricing for ${reconciled} recorded calls without adding calls`);
+                    }
                 } catch { /* Ledger recording failure is non-critical */ }
 
                 // ── DailyLedger: proactive settlement by resetTime ──

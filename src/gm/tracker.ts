@@ -958,6 +958,17 @@ export class GMTracker {
         return result;
     }
 
+    /** Authoritative observations can fill metadata/price gaps in already-recorded calls. */
+    getLedgerReconciliationEntries(): LedgerCallEntry[] {
+        const entries: LedgerCallEntry[] = [];
+        for (const [id, conversation] of this._cache) {
+            conversation.calls.forEach((call, index) => {
+                entries.push({ call, dedupKey: ledgerDedupKey(id, index, call) });
+            });
+        }
+        return entries;
+    }
+
     /**
      * Extract GM calls that have not yet been recorded by the DailyLedger.
      * Compares each conversation's call count against the last recorded position.

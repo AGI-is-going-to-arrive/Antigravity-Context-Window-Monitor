@@ -165,4 +165,26 @@ describe('GMTracker restore fetch behavior', () => {
 
         expect(rpcCallMock).not.toHaveBeenCalled();
     });
+
+    it('exposes enriched observations for reconciliation after the write-once cursor is committed', async () => {
+        const tracker = new GMTracker();
+        tracker.setCurrentAccount('fixture@example.test');
+        rpcCallMock.mockImplementation(async (_ls: unknown, endpoint: string) => endpoint === 'GetCascadeTrajectoryGeneratorMetadata'
+            ? { generatorMetadata: [{ executionId: 'reconcile-exec', stepIndices: [1], chatModel: {
+                model: 'MODEL_PLACEHOLDER_M419', responseModel: 'gemini-4-argon',
+                usage: { inputTokens: 50, outputTokens: 2 },
+                chatStartMetadata: { createdAt: new Date().toISOString() },
+            } }] }
+            : { trajectory: { steps: [] } });
+        await tracker.fetchAll({ pid: 1, port: 1, csrfToken: 'fixture', useTls: false }, [{
+            cascadeId: 'reconcile-only', title: 'Fixture', stepCount: 2, status: 'CASCADE_RUN_STATUS_IDLE',
+        }]);
+        const observations = tracker.getLedgerReconciliationEntries();
+        expect(observations).toHaveLength(1);
+        tracker.markLedgerEntriesRecorded(observations);
+        expect(tracker.getNewCallsSinceLastRecord().entries).toEqual([]);
+        expect(tracker.getLedgerReconciliationEntries()).toEqual(observations);
+        expect(observations[0].call.createdAt).not.toBe('');
+        expect(observations[0].dedupKey).toContain('reconcile-only:0|');
+    });
 });
