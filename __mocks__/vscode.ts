@@ -90,6 +90,10 @@ export const env = {
     },
 };
 
+export const extensions = {
+    getExtension: (_id: string): unknown => undefined,
+};
+
 export default {
     ThemeColor,
     StatusBarAlignment,
@@ -101,4 +105,5 @@ export default {
     workspace,
     commands,
     env,
+    extensions,
 };

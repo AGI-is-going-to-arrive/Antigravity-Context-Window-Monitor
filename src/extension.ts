@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { discoverLanguageServer, LSInfo } from './discovery';
+import { LSInfo } from './discovery';
+import { discoverCurrentLanguageServer as discoverLanguageServer } from './backend-connection';
 import {
     getAllTrajectories,
     getContextUsage,
@@ -166,11 +167,14 @@ function clonePlain<T>(value: T): T {
     return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function hasSameUsageInputs(
+export function hasSameUsageInputs(
     cached: ContextUsage | null | undefined,
-    trajectory: Pick<TrajectorySummary, 'cascadeId' | 'stepCount' | 'lastModifiedTime'>,
+    trajectory: Pick<TrajectorySummary, 'cascadeId' | 'stepCount' | 'lastModifiedTime' | 'status'>,
 ): cached is ContextUsage {
     return !!cached
+        && cached.tokenUsageSource !== undefined
+        && trajectory.status !== CascadeStatus.RUNNING
+        && cached.status === trajectory.status
         && cached.cascadeId === trajectory.cascadeId
         && cached.stepCount === trajectory.stepCount
         && cached.lastModifiedTime === trajectory.lastModifiedTime;
@@ -691,19 +695,32 @@ export async function fetchAndOverrideCheckpointerLimits(ls: LSInfo, logMessage:
             // to pool by and the new model splits into its own phantom quota pool — the exact failure
             // the provider fallback in models.ts exists to prevent.
             const inLivePicker = !!resolved && cachedModelConfigs.some(cfg => cfg.model === resolved);
-            const describesARealModel = limitNum > 0 && typeof c.maxTokens === 'number' && c.maxTokens > 0;
+            const maxTokens = positiveTokenLimit(c.maxTokens);
+            const maxOutputTokens = positiveTokenLimit(c.maxOutputTokens);
+            const describesARealModel = limitNum > 0 && maxTokens > 0;
             if (resolved && (alreadyRegistered || inLivePicker || describesARealModel)) {
                 registerResponseModelAlias(modelIdVal, resolved);
+                // Full protobuf catalog records omit default-valued fields. When
+                // the provider and both token capacities are present, an absent
+                // thinking budget/flag means zero/false, not "keep last month's
+                // value". Partial or malformed records must preserve known data.
+                const completeMetadata = isPlatformModelId(modelVal)
+                    && typeof c.apiProvider === 'string' && !!c.apiProvider.trim()
+                    && maxTokens > 0 && maxOutputTokens > 0;
                 updateModelSpec(resolved, {
                     modelId: modelIdVal || modelVal,
                     ...(typeof c.apiProvider === 'string' ? { apiProvider: c.apiProvider.replace('API_PROVIDER_', '') } : {}),
-                    ...(positiveTokenLimit(c.maxTokens) ? { maxTokens: c.maxTokens } : {}),
-                    ...(positiveTokenLimit(c.maxOutputTokens) ? { maxOutputTokens: c.maxOutputTokens } : {}),
+                    ...(maxTokens ? { maxTokens } : {}),
+                    ...(maxOutputTokens ? { maxOutputTokens } : {}),
                     ...(typeof c.thinkingBudget === 'number' && Number.isFinite(c.thinkingBudget) ? { thinkingBudget: c.thinkingBudget } : {}),
+                    ...(completeMetadata && c.thinkingBudget === undefined ? { thinkingBudget: 0 } : {}),
                     ...(typeof c.supportsThinking === 'boolean' ? { supportsThinking: c.supportsThinking } : {}),
+                    ...(completeMetadata && c.supportsThinking === undefined ? { supportsThinking: false } : {}),
                     ...(typeof c.supportsAdaptiveThinking === 'boolean' ? { supportsAdaptiveThinking: c.supportsAdaptiveThinking } : {}),
+                    ...(completeMetadata && c.supportsAdaptiveThinking === undefined ? { supportsAdaptiveThinking: false } : {}),
                     ...(typeof c.thinkingLevel === 'number' && Number.isSafeInteger(c.thinkingLevel) && c.thinkingLevel >= 0
                         ? { thinkingLevel: c.thinkingLevel } : {}),
+                    ...(completeMetadata && c.thinkingLevel === undefined ? { thinkingLevel: 0 } : {}),
                     ...(limitNum > 0 ? { cpLimit: limitNum } : {}),
                     ...(thresholdNum > 0 ? { cpThreshold: thresholdNum } : {}),
                 });
@@ -1340,6 +1357,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
+            statusBar.refreshFromConfig();
             cachedLsInfo = null;
             hasSyncedCheckpointer = false;
             checkpointerSyncAttempts = 0;
@@ -1351,9 +1369,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('antigravity-context-monitor.switchLanguage', () => {
             showLanguagePicker(context, durableGlobalState).then(() => {
                 // Rebuild statusBar and WebView to reflect new language immediately
-                if (currentUsage) {
-                    statusBar.update(currentUsage);
-                }
+                statusBar.refreshFromConfig();
                 if (isMonitorPanelVisible()) {
                     updateMonitorPanel(makePanelPayload());
                 }
@@ -1420,7 +1436,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
             if (e.affectsConfiguration('antigravityContextMonitor.statusBar')) {
                 applyDisplayPrefs();
-                if (currentUsage) { statusBar.update(currentUsage); }
+                statusBar.refreshFromConfig();
                 log('Status bar display preferences updated');
             }
             // issue #63: zoom / tooltip density → re-render tooltip (idle/no-conv/update)
@@ -1524,11 +1540,13 @@ function getLatestGMContextUsed(summary: GMSummary, cascadeId: string): number {
     return latest;
 }
 
-/** Apply GM precision contextTokensUsed to a ContextUsage object. Returns true if value changed. */
-function applyGMContextToUsage(usage: ContextUsage, gmContextUsed: number): boolean {
-    if (gmContextUsed <= 0 || gmContextUsed === usage.contextUsed) { return false; }
+/** Fill missing provider usage with the GM pre-request context estimate. */
+export function applyGMContextToUsage(usage: ContextUsage, gmContextUsed: number): boolean {
+    if (usage.lastModelUsage || !Number.isSafeInteger(gmContextUsed)
+        || gmContextUsed <= 0 || gmContextUsed === usage.contextUsed) { return false; }
     usage.contextUsed = gmContextUsed;
-    usage.isEstimated = false;
+    // The source field is estimatedTokensUsed, not a measured provider token count.
+    usage.isEstimated = true;
     usage.usagePercent = usage.contextLimit > 0
         ? (gmContextUsed / usage.contextLimit) * 100 : 0;
     return true;

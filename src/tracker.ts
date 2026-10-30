@@ -77,9 +77,11 @@ export interface ModelUsageInfo {
 }
 
 export interface TokenUsageResult {
-    /** Actual input tokens from the last checkpoint (if available) */
+    /** Source of the latest token snapshot; absent only in pre-1.16.19 caches. */
+    tokenUsageSource?: 'checkpoint' | 'planner' | 'estimated';
+    /** Actual input tokens from the latest provider snapshot (if available) */
     inputTokens: number;
-    /** Actual MODEL output tokens (from checkpoint modelUsage.outputTokens only) */
+    /** Actual model output tokens from the latest modelUsage snapshot */
     totalOutputTokens: number;
     /** Cumulative toolCallOutputTokens (tool results — part of input context) */
     totalToolCallOutputTokens: number;
@@ -91,7 +93,7 @@ export interface TokenUsageResult {
     model: string;
     /** Per-step token details */
     stepDetails: StepTokenInfo[];
-    /** Last checkpoint's modelUsage (if available) */
+    /** Latest planner/checkpoint modelUsage (if available) */
     lastModelUsage: ModelUsageInfo | null;
     /** Estimated tokens added since the last checkpoint (for debugging/display) */
     estimatedDeltaSinceCheckpoint: number;
@@ -128,6 +130,8 @@ export function estimateTokensFromText(text: string): number {
 }
 
 export interface ContextUsage {
+    /** Source of the latest token snapshot; also invalidates legacy usage caches. */
+    tokenUsageSource?: 'checkpoint' | 'planner' | 'estimated';
     cascadeId: string;
     title: string;
     model: string;
@@ -145,7 +149,7 @@ export interface ContextUsage {
     status: string;
     /** Whether the values come from precise modelUsage or estimation */
     isEstimated: boolean;
-    /** Last checkpoint model usage details */
+    /** Latest planner/checkpoint model usage details */
     lastModelUsage: ModelUsageInfo | null;
     /** Estimated tokens added since the last checkpoint */
     estimatedDeltaSinceCheckpoint: number;
@@ -336,16 +340,23 @@ function isImageGenStep(stepType: string, stepModel: string): boolean {
     return false;
 }
 
-/** Extract modelUsage from a checkpoint step's metadata. */
-function extractCheckpointModelUsage(meta: Record<string, unknown>): ModelUsageInfo | null {
+/** Extract provider token counts from a checkpoint or completed planner response. */
+function extractModelUsage(meta: Record<string, unknown>): ModelUsageInfo | null {
     const mu = meta.modelUsage as Record<string, unknown> | undefined;
-    if (!mu) { return null; }
+    if (!mu || typeof mu !== 'object' || Array.isArray(mu)) { return null; }
 
-    const inputTokens = parseInt(String(mu.inputTokens || '0'), 10);
-    const outputTokens = parseInt(String(mu.outputTokens || '0'), 10);
-    const responseOutputTokens = parseInt(String(mu.responseOutputTokens || '0'), 10);
-    const cacheReadTokens = parseInt(String(mu.cacheReadTokens || '0'), 10);
-    const model = (mu.model as string) || '';
+    const count = (value: unknown): number | null => {
+        if (value === undefined) { return 0; }
+        if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) { return null; }
+        const parsed = Number(value);
+        return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+    };
+    const inputTokens = count(mu.inputTokens);
+    const outputTokens = count(mu.outputTokens);
+    const responseOutputTokens = count(mu.responseOutputTokens);
+    const cacheReadTokens = count(mu.cacheReadTokens);
+    if (inputTokens === null || outputTokens === null || responseOutputTokens === null || cacheReadTokens === null) { return null; }
+    const model = typeof mu.model === 'string' ? mu.model : '';
 
     if (inputTokens > 0 || outputTokens > 0) {
         return { model, inputTokens, outputTokens, responseOutputTokens, cacheReadTokens };
@@ -362,6 +373,8 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
     let model = '';
     const stepDetails: StepTokenInfo[] = [];
     let lastModelUsage: ModelUsageInfo | null = null;
+    let tokenUsageSource: 'checkpoint' | 'planner' | 'estimated' = 'estimated';
+    let checkpointModel = '';
     let imageGenStepCount = 0;
     const imageGenStepIndices = new Set<number>();
 
@@ -380,6 +393,13 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         // Count user input steps
         if (stepType === StepType.USER_INPUT) {
             estimationOverhead += processUserInputStep(step);
+            // The agy hub records the user's selection here, before any planner
+            // response exists; its trajectory summaries omit the old model hints.
+            const userInput = step.userInput as Record<string, unknown> | undefined;
+            const userConfig = userInput?.userConfig as Record<string, unknown> | undefined;
+            const plannerConfig = userConfig?.plannerConfig as Record<string, unknown> | undefined;
+            const selected = plannerConfig?.planModel || plannerConfig?.modelName;
+            if (typeof selected === 'string' && selected) { model = selected; }
         }
 
         // Count planner response steps
@@ -389,7 +409,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
 
         // Extract modelUsage from CHECKPOINT steps
         if (stepType === StepType.CHECKPOINT && meta) {
-            const usage = extractCheckpointModelUsage(meta);
+            const usage = extractModelUsage(meta);
             if (usage) {
                 // Detect compression by comparing consecutive checkpoint inputTokens
                 if (prevCheckpointInputTokens > 0 && usage.inputTokens < prevCheckpointInputTokens) {
@@ -402,6 +422,8 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
                 prevCheckpointInputTokens = usage.inputTokens;
 
                 lastModelUsage = usage;
+                tokenUsageSource = 'checkpoint';
+                checkpointModel = usage.model;
                 estimationOverhead = 0;
                 outputTokensSinceCheckpoint = 0;
             }
@@ -423,6 +445,20 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
                     `retryInputTokens=${retryInputTokens}, retryOutputTokens=${retryOutputTokens}, ` +
                     `mainInputTokens=${usage?.inputTokens ?? 0}, mainOutputTokens=${usage?.outputTokens ?? 0}`
                 );
+            }
+        }
+
+        // Current agy trajectories report usage directly on the planner step,
+        // often with no CHECKPOINT at all. This is a full context snapshot, not
+        // an amount to add to previous calls or to the response text estimate.
+        if (stepType === StepType.PLANNER_RESPONSE && meta) {
+            const usage = extractModelUsage(meta);
+            if (usage) {
+                lastModelUsage = usage;
+                tokenUsageSource = 'planner';
+                estimationOverhead = 0;
+                outputTokensSinceCheckpoint = 0;
+                if (usage.model) { model = usage.model; }
             }
         }
 
@@ -462,9 +498,10 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
 
     const estimatedDelta = outputTokensSinceCheckpoint + estimationOverhead;
 
-    // Priority 1: Use inputTokens + outputTokens from the last checkpoint + estimated delta
-    if (lastModelUsage && lastModelUsage.inputTokens > 0) {
+    // Priority 1: Use the latest measured input + output snapshot and subsequent estimated delta
+    if (lastModelUsage) {
         return {
+            tokenUsageSource,
             inputTokens: lastModelUsage.inputTokens,
             totalOutputTokens: lastModelUsage.outputTokens,
             totalToolCallOutputTokens: toolOutputTokens,
@@ -478,7 +515,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
             hasGaps: false,
             checkpointCompressionDetected,
             checkpointCompressionDrop,
-            checkpointModel: lastModelUsage.model,
+            checkpointModel,
         };
     }
 
@@ -486,6 +523,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
     const estimatedTotal = toolOutputTokens + SYSTEM_PROMPT_OVERHEAD + estimationOverhead;
 
     return {
+        tokenUsageSource: 'estimated',
         inputTokens: 0,
         totalOutputTokens: 0,
         totalToolCallOutputTokens: toolOutputTokens,
@@ -722,6 +760,7 @@ export async function getContextUsage(
     const usagePercent = contextLimit > 0 ? (result.contextUsed / contextLimit) * 100 : 0;
 
     return {
+        tokenUsageSource: result.tokenUsageSource,
         cascadeId: trajectory.cascadeId,
         title: trajectory.summary,
         model: effectiveModel,

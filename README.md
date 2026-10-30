@@ -9,7 +9,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 > [!WARNING]
 > **Platform Support**
 >
-> 🍏 **macOS**: Fully supported. Uses `ps` and `lsof` for process discovery. The **1.16.18 VSIX was installed and verified in the running Antigravity IDE 2.5.5**, including a window reload.
+> 🍏 **macOS**: Supported. Discovers both the current `agy` hub and legacy language servers using `ps`, declared hub ports, and `lsof`.
 >
 > 🐧 **Linux**: Supported since v1.6.0. Uses `ps` with `lsof`/`ss` fallback for process discovery. Earlier platform testing covered Ubuntu 22.04 (x64 & ARM64).
 >
@@ -19,7 +19,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ---
 
-**1.16.18 validation:** Local TypeScript compilation and all **362 tests in 26 files** passed. Windows, macOS, and Linux compile/test results are available in [GitHub Actions](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml); native IDE verification for this release was performed on macOS. See the [release validation details](docs/releases/1.16.18.md#validation).
+**1.16.19:** Adds Gemini 4 Argon Low / Medium / High and fixes discovery of the new Antigravity IDE `agy` hub. See the [release notes and validation scope](docs/releases/1.16.19.md#validation). The [CI workflow](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) covers compilation and regression tests on Windows, macOS, and Linux; native IDE checks are reported separately.
 
 ## 📚 Technical Details
 
@@ -30,7 +30,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 ## ✨ Features
 
 * **⚡ Real-Time Token Usage**
-    Shows current token consumption in the status bar (e.g. `125k/200k, 62.5%`). Token data comes from model checkpoint values when available, with content-based character estimation between checkpoints (replaces fixed constants since v1.4.0). Fixed constants are only used as fallback when step data structure is missing.
+    Shows current token consumption in the status bar (e.g. `125k/200k, 62.5%`). Uses provider-reported `inputTokens` + `outputTokens` from current planner responses or legacy checkpoints. Estimates fill gaps and remain labeled as estimates; GM pre-request estimates never overwrite precise provider counts. Running responses are re-fetched so streaming updates do not leave stale totals.
 
 * **🪪 Stable Plan Tier Hover**
     The status bar hover now clears stale secondary plan/tier suffixes when Antigravity stops returning the latest `userTierName`, preventing outdated labels from lingering across later polls.
@@ -94,7 +94,10 @@ The registry recognizes current models and older identities used in saved histor
 
 | Model | Internal ID | Platform Compression Limit |
 | --- | --- | --- |
-| Gemini 3.8 Flash (High) *(platform default)* | MODEL_PLACEHOLDER_M318 | 256,000 |
+| Gemini 4 Argon (High) | MODEL_PLACEHOLDER_M417 | 256,000 |
+| Gemini 4 Argon (Medium) | MODEL_PLACEHOLDER_M418 | 256,000 |
+| Gemini 4 Argon (Low) | MODEL_PLACEHOLDER_M419 | 256,000 |
+| Gemini 3.8 Flash (High) | MODEL_PLACEHOLDER_M318 | 256,000 |
 | Gemini 3.8 Flash (Medium) | MODEL_PLACEHOLDER_M319 | 256,000 |
 | Gemini 3.8 Flash (Low) | MODEL_PLACEHOLDER_M320 | 256,000 |
 | Gemini 3.8 Flash (Tiered, internal) | MODEL_PLACEHOLDER_M322 | 256,000 |
@@ -122,13 +125,16 @@ The registry recognizes current models and older identities used in saved histor
 | Gemini 3 Flash (catalog only, not in picker) | MODEL_PLACEHOLDER_M18 | 128,000 |
 | Legacy (retired / renumbered) | MODEL_PLACEHOLDER_M264 / M265 / M266 / M133 / M132 / M47 | archived data only |
 
-*These are Antigravity platform compression limits, not model-native context windows. Model IDs and live parameters come from the local Antigravity language server. Live parameters take precedence over static fallbacks. Before live parameters arrive, Claude 5.5 uses a 255,000-token fallback; its verified live limit is 256,000.*
+*These are Antigravity platform compression limits, not model-native context windows. Model IDs and live parameters come from the local Antigravity language server. Live parameters take precedence over static fallbacks. Before live parameters arrive, Gemini 4 Argon and Claude 5.5 use a 255,000-token fallback; their verified live limit is 256,000.*
 
 > [!NOTE]
+> **Gemini 4 Argon in v1.16.19:** High / Medium / Low use `M417` / `M418` / `M419`, with catalog IDs `gemini-4-argon-high`, `gemini-4-argon-medium`, and `gemini-4-argon-low`. The running IDE verified these identities on 2026-10-31, together with a **1,048,576-token native context**, **65,536-token maximum output**, and **256,000-token platform compression limit**. The separate checkpointer `tokenThreshold` is 50,000. Thinking levels are 3 / 2 / 1; the minimum supported thinking budget of 32 is not a fixed per-request budget. The three effort identities remain distinct across localized names, context tracking, and saved usage, while sharing the Gemini quota pool. Model availability and the default selection follow live account data.
 > **Claude 5.5 in v1.16.18:** A metadata-only probe of the running Antigravity IDE on 2026-10-03 verified all six Opus/Sonnet Low / Medium / High entries. Each reports a **1,000,000-token native context**, **128,000-token maximum output**, and **256,000-token platform compression limit**. Thinking is adaptive; the API supplies effort levels 1 / 2 / 3 rather than a fixed token budget. The separate internal checkpointer `tokenThreshold` is 50,000 and is not the compression-limit value shown on the cards.
 > **Account availability:** Paid Pro/Ultra rollouts expose Claude 5.5, while some unpaid accounts still expose Claude 4.6. The extension preserves 4.6 support and historical identities, and also accepts Gemini-only pickers when third-party access is removed. It neither grants model access nor hardcodes a subscription name or removal date; the current account's live model list decides what appears.
-> Gemini 3.8 Flash High / Medium / Low use `M318` / `M319` / `M320`; catalog-only tiered routing uses `M322`. Gemini 3.5 remains registered for catalog and historical-data compatibility even when absent from the account's picker.
+> Gemini 3.8 Flash High / Medium / Low use `M318` / `M319` / `M320`. Current IDE metadata reports a 50,000-token checkpointer trigger and thinking levels 3 / 2 / 1 with no fixed budget; earlier dynamic/4,000/1,000 budget values are no longer applied to these three tiers. Catalog-only tiered routing `M322` retains its historical profile. Gemini 3.5 remains registered for catalog and historical-data compatibility even when absent from the account's picker.
 > `MODEL_PLACEHOLDER_Mxxx` numbers are assigned by the platform and **can be reassigned without notice** — the three Gemini 3.6 Flash tiers moved from `M264` / `M265` / `M266` to `M71` / `M72` / `M73` in August 2026. The extension keeps the previous numbers registered so archived usage history still resolves to the right model, and merges both numbers onto a single cost row and a single quota pool. Live checkpointer parameters fetched from the language server always take precedence over the static table above.
+
+Gemini 4 Argon has no verified built-in price in this release. Its token usage remains visible, while cost is marked unavailable/incomplete until a custom price is provided; it does not inherit a Gemini Flash price.
 
 The [official Claude 5.5 API prices](https://platform.claude.com/docs/en/about-claude/pricing) are listed below as a reference, in USD per million tokens (2026-10-03):
 
@@ -146,7 +152,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 1. **Install**:
    * **OpenVSX**: Install directly from [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
    * **Manual**: Install the `.vsix` file via Extensions → Install from VSIX.
-2. **Status Bar**: The bottom-right status bar shows current context usage (empty chats use the current/default model threshold).
+2. **Status Bar**: The bottom-right status bar shows current context usage. With no active conversation it shows **No active conversation**, rather than a saved model's old limit. The selected effort tier is recognized from the user-input configuration before the first model response.
 3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, and the latest checkpoint shadow model when present).
 
    ![Hover Details](src/images/悬停详情new.png)
@@ -175,7 +181,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
    **Models** — The current account's available models with quota status and reset countdowns. The redesigned model cards use neutral IDE theme colors, clear compression-limit and native-context rows, readable provider names, complete model IDs, and adaptive-thinking labels. The layout supports narrow panels, light/dark/high-contrast themes, and English, Chinese, or bilingual display.
 
-   ![Model information cards in v1.16.18](src/images/model.png)
+   ![Model information cards in v1.16.19](src/images/model.png)
 
    **Calendar** — Historical usage data organized by date, with per-cycle cost and token breakdowns.
 
@@ -212,7 +218,10 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 > When using Claude models, Antigravity may call its lightweight sub-agent model for small tasks — the platform labels that model **Gemini 3.1 Flash Lite** (`MODEL_PLACEHOLDER_M50`; the older `gemini-2.5-flash*` catalog entries share the same label). Sub-agent switching does not change the displayed context limit, because the extension tracks the limit of the model you selected. Claude 5.5 uses a 1,000,000-token native context and 256,000-token platform compression limit (verified 2026-10-03); retained Claude 4.6 profiles use 250,000 and 160,000 respectively, while the sub-agent uses the 128,000 profile.
 
 > [!IMPORTANT]
-> **"LS not found" & do NOT run the IDE as Administrator (Windows)**
+> **"LS not found" in the current Antigravity IDE**
+> Newer IDE builds run an `agy --hub` backend instead of a process named `language_server_*`. Version 1.16.19 discovers both architectures, accepts `--csrf_token=value` and space-separated flags, and checks the declared hub port before using platform socket discovery. Install `antigravity-context-monitor-1.16.19.vsix` and reload the window. A connected backend with no loaded conversations displays **No active conversation**, not a discovery failure; saved history may still exist in the IDE. Opening the IDE without a folder does not by itself mean the backend is unavailable.
+>
+> **Windows discovery diagnostics**
 > If the status bar is stuck on `LS not found`, open **Output → "Antigravity Context Monitor"** and read the `PATH check:` line — the extension now logs exactly which discovery step failed. Since v1.16.13 it invokes `wmic`/`powershell.exe`/`netstat` by absolute `%SystemRoot%` path, so a truncated Extension Host `PATH` (e.g. missing `System32\wbem` on Win11 24H2+ where WMIC is removed) no longer breaks discovery.
 > Since v1.16.16 two further causes are handled (issue #64, reported by @SecretLUL): Windows localizes the `netstat` State column, so on a German install `LISTENING` reads `ABHÖREN` and every candidate line used to be rejected; and a language server listening on all interfaces rather than on loopback used to yield no port at all. Both are fixed, and if the extension host itself runs inside WSL it now looks for the language server in that distro first.
 > **Do not run Antigravity as Administrator** — it does not help detection (LS discovery needs no elevation) and can crash the IDE at launch with `The window terminated unexpectedly (reason: 'launch-failed', code: '18')`, an Electron/Chromium sandbox issue unrelated to this extension.
@@ -248,4 +257,4 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.18 — [Release notes](docs/releases/1.16.18.md)
+**Version**: 1.16.19 — [Release notes](docs/releases/1.16.19.md)

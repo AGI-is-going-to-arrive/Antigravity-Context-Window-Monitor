@@ -219,6 +219,8 @@ type LastRender =
     | { kind: 'update'; usage: ContextUsage }
     | { kind: 'idle'; limitStr: string; modelId?: string }
     | { kind: 'noConversation'; limitStr: string; modelId?: string }
+    | { kind: 'disconnected'; message: string }
+    | { kind: 'initializing' }
     | { kind: 'other' };
 
 export class StatusBarManager {
@@ -342,6 +344,7 @@ export class StatusBarManager {
      * Called when window.zoomLevel or tooltipDensity changes.
      */
     refreshFromConfig(): void {
+        this.statusBarItem.name = t('statusBar.name');
         switch (this.lastRender.kind) {
             case 'update':
                 this.update(this.lastRender.usage);
@@ -352,13 +355,19 @@ export class StatusBarManager {
             case 'noConversation':
                 this.showNoConversation(this.lastRender.limitStr, this.lastRender.modelId);
                 break;
+            case 'disconnected':
+                this.showDisconnected(this.lastRender.message);
+                break;
+            case 'initializing':
+                this.showInitializing();
+                break;
             default:
                 break;
         }
     }
 
     showInitializing(): void {
-        this.lastRender = { kind: 'other' };
+        this.lastRender = { kind: 'initializing' };
         // Bilingual status text (was hard-coded English)
         this.statusBarItem.text = `$(sync~spin) ${t('statusBar.initializing')}`;
         this.statusBarItem.tooltip = t('statusBar.initializingTooltip');
@@ -366,15 +375,21 @@ export class StatusBarManager {
     }
 
     showDisconnected(message: string): void {
-        this.lastRender = { kind: 'other' };
+        this.lastRender = { kind: 'disconnected', message };
         this.statusBarItem.text = `$(debug-disconnect) ${t('statusBar.disconnectedLabel')}`;
-        this.statusBarItem.tooltip = `Antigravity Context Monitor: ${message}`;
+        this.statusBarItem.tooltip = message === 'LS not found'
+            ? t('statusBar.backendNotFound')
+            : message === 'LS connection lost'
+                ? t('statusBar.backendConnectionLost')
+                : `Antigravity Context Monitor: ${message}`;
         this.statusBarItem.backgroundColor = undefined;
     }
 
     showNoConversation(limitStr: string = '1M', modelId?: string): void {
         this.lastRender = { kind: 'noConversation', limitStr, modelId };
-        const contextPart = this.displayPrefs.showContext ? `0k/${limitStr}, 0.0%` : '';
+        // No loaded trajectory means there is no measured context or selected
+        // conversation model. A persisted model's denominator would be misleading.
+        const contextPart = this.displayPrefs.showContext ? t('statusBar.noConversationTooltip') : '';
         const quotaSuffix = this.displayPrefs.showQuota && modelId ? this.formatQuotaIndicator(modelId) : '';
         const resetSuffix = this.displayPrefs.showResetCountdown && modelId ? this.formatResetCountdown(modelId) : '';
         const creditsSuffix = this.displayPrefs.showAiCredits ? this.formatCreditsIndicator() : '';
@@ -656,17 +671,18 @@ export class StatusBarManager {
         }
 
         if (usage.estimatedDeltaSinceCheckpoint > 0 && usage.lastModelUsage) {
-            lines.push(`📏 ${t('tooltip.estDelta')}: +${usage.estimatedDeltaSinceCheckpoint.toLocaleString()} ${tokenUnit} (${t('tooltip.sinceCheckpoint')})`);
+            const sinceKey = usage.tokenUsageSource === 'planner' ? 'tooltip.sinceModelCall' : 'tooltip.sinceCheckpoint';
+            lines.push(`📏 ${t('tooltip.estDelta')}: +${usage.estimatedDeltaSinceCheckpoint.toLocaleString()} ${tokenUnit} (${t(sinceKey)})`);
         }
 
         lines.push(`——————————`);
 
         // Checkpoint block (P3 — kept in normal, folded in compact)
         if (usage.lastModelUsage) {
-            const cpLabel = (usage.checkpointModel && isShowModelShortId())
+            const cpLabel = (usage.tokenUsageSource !== 'planner' && usage.checkpointModel && isShowModelShortId())
                 ? ` (${escapeMarkdown(shortenShadowModelId(usage.checkpointModel))})`
                 : '';
-            lines.push(`📎 ${t('tooltip.lastCheckpoint')}:${cpLabel}`);
+            lines.push(`📎 ${t(usage.tokenUsageSource === 'planner' ? 'tooltip.lastModelUsage' : 'tooltip.lastCheckpoint')}:${cpLabel}`);
             lines.push(`  ${t('tooltip.input')}: ${usage.lastModelUsage.inputTokens.toLocaleString()}`);
             lines.push(`  ${t('tooltip.output')}: ${usage.lastModelUsage.outputTokens.toLocaleString()}`);
             if (usage.lastModelUsage.cacheReadTokens > 0) {

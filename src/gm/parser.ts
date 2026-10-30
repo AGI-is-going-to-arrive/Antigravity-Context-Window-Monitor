@@ -50,6 +50,13 @@ export function parseInt0(s: unknown): number {
     return isNaN(n) ? 0 : n;
 }
 
+/** Capacity is a positive, exact token count; malformed telemetry is unknown. */
+function parseContextCapacity(value: unknown): number {
+    if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) { return 0; }
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
 export function uniqueStrings(values: string[]): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
@@ -868,7 +875,7 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
     // Fallback: if no retryInfos but cm.retries > 1, use cm.retries - 1 (subtract the successful attempt).
     const cmRetries = parseInt0(cm.retries as string);
     let retries = retryErrors.length;
-    if (retries === 0 && cmRetries > 1) {
+    if ((!Array.isArray(retryInfos) || retryInfos.length === 0) && retries === 0 && cmRetries > 1) {
         retries = cmRetries - 1;
     }
 
@@ -895,9 +902,11 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         });
     }
 
-    // ── contextWindowCapacity from plannerConfig ──────────────────────────
+    // Legacy planner thresholds take precedence. The current agent hub omits
+    // that field and reports the actual capacity in chat-start metadata.
     const pc = (gm.plannerConfig || {}) as Record<string, unknown>;
-    const contextWindowCapacity = parseInt0(pc.truncationThresholdTokens as string);
+    const contextWindowCapacity = parseContextCapacity(pc.truncationThresholdTokens)
+        || parseContextCapacity(cwm.maxContextTokens);
 
     return {
         stepIndices: (gm.stepIndices as number[]) || [],

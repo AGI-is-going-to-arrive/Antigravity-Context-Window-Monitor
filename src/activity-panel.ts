@@ -24,6 +24,13 @@ function dateKeyToStartOfDayMs(dateKey: string): number {
     return new Date(y, m, d, 0, 0, 0, 0).getTime();
 }
 
+function estimatedContextDescription(): string {
+    return tBi(
+        'Context estimated before the request; it may differ from the token counts reported after the response.',
+        '请求前估算的上下文用量，可能与回复后报告的 Token 数不同。',
+    );
+}
+
 // ─── Account Snapshot Type ───────────────────────────────────────────────────
 
 /** A quota reset pool — models sharing the same reset time. */
@@ -2559,7 +2566,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-cache" style="display:inline">176k ${tBi('cache', '缓存')}</span></div><div class="act-tl-help-desc">${tBi('Cache read', '缓存读取')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-in" style="display:inline">1.3k ${tBi('in', '输入')}</span></div><div class="act-tl-help-desc">${tBi('Input tokens', '输入 token')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-out" style="display:inline">117 ${tBi('out', '输出')}</span></div><div class="act-tl-help-desc">${tBi('Output tokens', '输出 token')}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ctx" style="display:inline">${tBi('Ctx 142k', '上下文 142k')}</span></div><div class="act-tl-help-desc">${tBi('Context window size', '上下文窗口大小')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ctx" style="display:inline">${tBi('Estimated context 142k', '估算上下文 142k')}</span></div><div class="act-tl-help-desc">${estimatedContextDescription()}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-credit" style="display:inline">9 ${tBi('credits', '积分')}</span></div><div class="act-tl-help-desc">${tBi('Credits', '积分')}</div></div>
             <div class="act-tl-help-divider"></div>
             <div class="act-tl-help-group-label">${tBi('Performance', '性能')}</div>
@@ -2630,7 +2637,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             // 4. Output tokens
             if (e.gmOutputTokens) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-out">${fmtTok(e.gmOutputTokens)} ${tBi('out', '输出')}</span>`); }
             // 5. Context window (rightmost anchor)
-            if (e.gmContextTokensUsed) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-ctx">${tBi('Ctx', '上下文')} ${fmtTok(e.gmContextTokensUsed)}</span>`); }
+            if (e.gmContextTokensUsed) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-ctx" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')} ${fmtTok(e.gmContextTokensUsed)}</span>`); }
 
             const statusParts: string[] = [];
             // Order from right→left: duration, TTFT, tools, credits, error
@@ -2796,7 +2803,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         }
         // 7. Context window size — rightmost anchor
         if (stats.lastContextTokens > 0) {
-            chips.push(`<span class="seg-chip seg-chip-ctx">${tBi('Ctx', '上下文')} ${fmtTok(stats.lastContextTokens)}</span>`);
+            chips.push(`<span class="seg-chip seg-chip-ctx" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')} ${fmtTok(stats.lastContextTokens)}</span>`);
         }
         const chipsHtml = chips.length > 0 ? `<span class="seg-chips">${chips.join('')}</span>` : '';
 
@@ -2875,7 +2882,7 @@ function buildContextGrowth(s: GMSummary): string {
     const yScale = (v: number) => H - PAD - ((v / maxTok) * (H - PAD * 2));
     const points = data.map((d, i) => `${PAD + i * xStep},${yScale(d.tokens)}`).join(' ');
     const areaPoints = `${PAD},${H - PAD} ${points} ${PAD + (data.length - 1) * xStep},${H - PAD}`;
-    return `<h2 class="act-section-title">${tBi('Context Growth', '上下文增长')} <span class="act-badge">${tBi('Per-Call', '每次调用')}</span></h2><div class="act-trend-container"><svg class="act-trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="gmTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f97316" stop-opacity="0.5"/><stop offset="100%" stop-color="#f97316" stop-opacity="0.1"/></linearGradient></defs><polygon points="${areaPoints}" fill="url(#gmTrendFill)"/><polyline points="${points}" fill="none" stroke="#fb923c" stroke-width="2" stroke-linejoin="round"/></svg><div class="act-trend-labels"><span>${fmt(data[0].tokens)}</span><span>${data.length} ${tBi('calls', '调用')}</span><span>${fmt(data[data.length - 1].tokens)}</span></div></div>`;
+    return `<h2 class="act-section-title">${tBi('Estimated context growth', '估算上下文增长')} <span class="act-badge">${tBi('Per-Call', '每次调用')}</span></h2><div class="act-trend-container" title="${esc(estimatedContextDescription())}"><svg class="act-trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="gmTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f97316" stop-opacity="0.5"/><stop offset="100%" stop-color="#f97316" stop-opacity="0.1"/></linearGradient></defs><polygon points="${areaPoints}" fill="url(#gmTrendFill)"/><polyline points="${points}" fill="none" stroke="#fb923c" stroke-width="2" stroke-linejoin="round"/></svg><div class="act-trend-labels"><span>${fmt(data[0].tokens)}</span><span>${data.length} ${tBi('calls', '调用')}</span><span>${fmt(data[data.length - 1].tokens)}</span></div></div>`;
 }
 
 function buildConversations(s: GMSummary): string {
@@ -3422,13 +3429,13 @@ function buildContextIntelViewer(s: GMSummary): string {
                 capacityHtml = `
                     <div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--color-divider)">
                         <div class="ci-cfg-row" style="margin-bottom:4px">
-                            <span class="ci-cfg-label">${tBi('Context Window', '上下文窗口')}</span>
+                            <span class="ci-cfg-label" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')}</span>
                             <span class="ci-cfg-val">${fmt(latestContextUsed)} / ${capLabel}</span>
                         </div>
                         <div style="height:6px;background:var(--color-surface-hover);border-radius:3px;overflow:hidden">
                             <div style="height:100%;width:${usagePct}%;background:${barColor};border-radius:3px;transition:width 0.3s"></div>
                         </div>
-                        <div style="font-size:0.78em;color:var(--color-text-dim);margin-top:3px">${usagePct}% ${tBi('used', '已使用')} · ${tBi('peak', '峰值')} ${fmt(maxContextSeen)}</div>
+                        <div style="font-size:0.78em;color:var(--color-text-dim);margin-top:3px">${usagePct}% ${tBi('estimated usage', '估算用量')} · ${tBi('estimated peak', '估算峰值')} ${fmt(maxContextSeen)}</div>
                     </div>`;
             }
 
@@ -3437,7 +3444,7 @@ function buildContextIntelViewer(s: GMSummary): string {
                     <span class="ci-icon" style="color:var(--ci-color);width:14px;height:14px;display:inline-flex;flex-shrink:0">${configIcon}</span>
                     <span style="font-weight:600;color:var(--ci-color)">${tBi('Generation Config', '生成配置')}</span>
                     <span class="cp-card-chip cp-card-chip-tok">T=${cc.temperature}</span>
-                    ${latestContextUsed > 0 ? `<span class="cp-card-chip cp-card-chip-step">${fmt(latestContextUsed)} ctx</span>` : ''}
+                    ${latestContextUsed > 0 ? `<span class="cp-card-chip cp-card-chip-step" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')} ${fmt(latestContextUsed)}</span>` : ''}
                 </summary>
                 <div class="cp-card-body" style="white-space:normal">
                     <div style="margin-bottom:8px;font-size:0.88em;color:var(--color-text-dim)">${esc(modelName)}</div>
@@ -3484,7 +3491,7 @@ function buildContextIntelViewer(s: GMSummary): string {
                 <span class="cp-card-chip cp-card-chip-tok">${fmt(total)} total</span>
             </summary>
             <div class="cp-card-body" style="white-space:normal">
-                <div style="font-size:0.82em;color:var(--color-text-dim);margin-bottom:8px">${tBi('Latest snapshot of context window token distribution', '上下文窗口 token 分布最新快照')}</div>
+                <div style="font-size:0.82em;color:var(--color-text-dim);margin-bottom:8px">${tBi('Latest estimated context token distribution', '最新估算上下文 Token 分布')}</div>
                 ${breakdownRows}
             </div>
         </details>`);

@@ -9,7 +9,7 @@
 > [!WARNING]
 > **平台支持**
 >
-> 🍏 **macOS**: 完全支持。通过 `ps` 和 `lsof` 命令实现进程发现。**1.16.18 VSIX 已安装到运行中的 Antigravity IDE 2.5.5，并完成包含窗口重载的实机验证。**
+> 🍏 **macOS**: 支持。通过 `ps`、声明的 hub 端口及 `lsof` 发现当前 `agy` hub 和旧版语言服务器。
 >
 > 🐧 **Linux**: 自 v1.6.0 起支持。通过 `ps` 和 `lsof`/`ss` 实现进程发现。历史平台测试覆盖 Ubuntu 22.04 (x64 & ARM64)。
 >
@@ -19,7 +19,7 @@
 
 ---
 
-**1.16.18 验证：** 本地 TypeScript 编译和 **26 个文件的全部 362 项测试**通过。Windows、macOS 和 Linux 的编译/测试结果见 [GitHub Actions](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml)；本次原生 IDE 验证环境为 macOS。详见[发布验收说明](docs/releases/1.16.18.md#验证)。
+**1.16.19：** 新增 Gemini 4 Argon Low / Medium / High 支持，并修复新版 Antigravity IDE 的 `agy` hub 发现问题。详见[发布说明与验收范围](docs/releases/1.16.19.md#验证)。[CI 工作流](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) 覆盖 Windows、macOS、Linux 的编译和回归测试；原生 IDE 实机结果单独记录。
 
 ## 📚 技术细节
 
@@ -30,7 +30,7 @@
 ## ✨ 主要功能
 
 * **⚡ 实时 Token 监控**
-    状态栏显示当前 Token 消耗，格式如 `125k/200k, 62.5%`。Token 数据优先取自模型 checkpoint 的精确值（`inputTokens` + `outputTokens`），两次 checkpoint 之间通过基于实际文本内容的字符估算实时计算增量（v1.4.0 起替代了固定常量）。仅在步骤数据结构缺失时 fallback 到固定常量。
+    状态栏显示当前 Token 消耗，格式如 `125k/200k, 62.5%`。精确值取自当前 planner response 或旧版 checkpoint 中提供商报告的 `inputTokens` + `outputTokens`。缺失部分采用估算并保留估算标记；GM 请求前估算不会覆盖提供商精确值。运行中的响应会重新拉取，避免流式更新时总量停留在旧值。
 
 * **🪪 状态栏计划层级显示稳定**
     当 Antigravity 后续轮询不再返回最新 `userTierName` 时，状态栏悬浮提示会主动清空旧的二级计划/层级后缀，避免过期标签在后续轮询中残留。
@@ -94,7 +94,10 @@
 
 | 模型 | Internal ID / 内部 ID | 平台压缩上限 |
 | --- | --- | --- |
-| Gemini 3.8 Flash (High) *（平台默认）* | MODEL_PLACEHOLDER_M318 | 256,000 |
+| Gemini 4 Argon (High) | MODEL_PLACEHOLDER_M417 | 256,000 |
+| Gemini 4 Argon (Medium) | MODEL_PLACEHOLDER_M418 | 256,000 |
+| Gemini 4 Argon (Low) | MODEL_PLACEHOLDER_M419 | 256,000 |
+| Gemini 3.8 Flash (High) | MODEL_PLACEHOLDER_M318 | 256,000 |
 | Gemini 3.8 Flash (Medium) | MODEL_PLACEHOLDER_M319 | 256,000 |
 | Gemini 3.8 Flash (Low) | MODEL_PLACEHOLDER_M320 | 256,000 |
 | Gemini 3.8 Flash (Tiered，内部路由) | MODEL_PLACEHOLDER_M322 | 256,000 |
@@ -122,13 +125,16 @@
 | Gemini 3 Flash（仅目录可见，不进 picker） | MODEL_PLACEHOLDER_M18 | 128,000 |
 | 历史（已退役 / 已改号） | MODEL_PLACEHOLDER_M264 / M265 / M266 / M133 / M132 / M47 | 仅用于归档数据解析 |
 
-*这些数值是 Antigravity 平台压缩上限，不是模型原生上下文窗口。模型 ID 和实时参数来自 Antigravity 本地语言服务器，实时参数优先于静态兜底。在实时参数到达前，Claude 5.5 使用 255,000 token 静态兜底；已核实的实时上限为 256,000。*
+*这些数值是 Antigravity 平台压缩上限，不是模型原生上下文窗口。模型 ID 和实时参数来自 Antigravity 本地语言服务器，实时参数优先于静态兜底。在实时参数到达前，Gemini 4 Argon 和 Claude 5.5 使用 255,000 token 静态兜底；已核实的实时上限为 256,000。*
 
 > [!NOTE]
+> **v1.16.19 中的 Gemini 4 Argon：** High / Medium / Low 分别使用 `M417` / `M418` / `M419`，catalog ID 为 `gemini-4-argon-high`、`gemini-4-argon-medium`、`gemini-4-argon-low`，已于 2026-10-31 与运行中的 IDE 核对；三档均为 **1,048,576 token 原生上下文**、**65,536 token 最大输出**、**256,000 token 平台压缩上限**。独立的 checkpointer `tokenThreshold` 为 50,000，思考力度为 3 / 2 / 1；最小支持思考预算 32 不等于每次请求的固定预算。三档身份在本地化名称、上下文追踪和历史用量中保持独立，同时共用 Gemini 配额池；可用模型及默认选择由账号实时数据决定。
 > **v1.16.18 中的 Claude 5.5：** 2026-10-03 对运行中的 Antigravity IDE 进行元数据探测，核实了 Opus/Sonnet 的 Low / Medium / High 全部六个条目。它们均为 **1,000,000 token 原生上下文**、**128,000 token 最大输出**和 **256,000 token 平台压缩上限**。思考方式为自适应，API 提供 1 / 2 / 3 档位，而非固定 token 预算。内部 checkpointer 的独立参数 `tokenThreshold` 为 50,000，与卡片显示的压缩上限不同。
 > **账号可用性：** 付费 Pro/Ultra 账号已逐步提供 Claude 5.5，部分非付费账号仍提供 Claude 4.6。本扩展保留 4.6 支持与历史身份解析，也支持第三方模型移除后仅含 Gemini 的 picker。插件不会授予模型访问权限，也不会硬编码订阅名或移除日期；展示范围由当前账号的实时模型列表决定。
-> Gemini 3.8 Flash 的 High / Medium / Low 分别使用 `M318` / `M319` / `M320`；仅目录可见的 tiered 路由使用 `M322`。即使 Gemini 3.5 不在账号 picker 中，仍保留注册以兼容目录与历史数据。
+> Gemini 3.8 Flash 的 High / Medium / Low 分别使用 `M318` / `M319` / `M320`。当前 IDE 元数据报告 50,000 token checkpointer 触发阈值、3 / 2 / 1 思考力度，未提供固定预算；三档不再沿用早期的动态/4,000/1,000 预算。仅目录可见的 tiered 路由 `M322` 保留历史画像。即使 Gemini 3.5 不在账号 picker 中，仍保留注册以兼容目录与历史数据。
 > `MODEL_PLACEHOLDER_Mxxx` 编号由平台分配，**可能在无预警的情况下被改号**——Gemini 3.6 Flash 三档已于 2026 年 8 月从 `M264` / `M265` / `M266` 改为 `M71` / `M72` / `M73`。本扩展保留旧编号的注册，使历史用量数据仍能解析到正确模型，并把新旧编号合并为同一条成本行、同一个配额池。来自语言服务器的活体 checkpointer 参数始终优先于上表的静态值。
+
+本版本没有经过核实的 Gemini 4 Argon 内置价格。Token 用量仍会保留；在用户提供自定义价格前，费用显示为暂无定价或估算不完整，不会套用 Gemini Flash 价格。
 
 以下为 [Claude 5.5 官方 API 参考价格](https://platform.claude.com/docs/en/about-claude/pricing)，单位为美元/百万 token（2026-10-03）：
 
@@ -146,7 +152,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 1. **安装**:
    * **OpenVSX**: 直接从 [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装。
    * **手动安装**: 通过"扩展 → 从 VSIX 安装"将 `.vsix` 文件安装到 Antigravity IDE。
-2. **查看状态**: 右下角状态栏显示当前上下文使用情况（空白聊天使用当前/默认模型阈值）。
+2. **查看状态**: 右下角状态栏显示当前上下文使用情况；没有活跃对话时显示**无活跃会话**，不再沿用历史模型的旧上限。首次模型回复前即可从用户输入配置识别已选择的思考档位。
 3. **悬停详情**: 将鼠标悬停在状态栏项上，查看详细信息（模型、输入/输出 Token、剩余容量、压缩状态、图片生成步骤、每模型配额摘要，以及最近 checkpoint 的影子模型标识等）。
 
    ![悬停详情](src/images/悬停详情new.png)
@@ -175,7 +181,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
    **模型 (Models)** — 当前账号可用模型的额度状态和重置倒计时。新版模型信息卡片采用协调的 IDE 中性色，用清晰的数据行呈现压缩上限和原生上下文，显示易读的提供商名称、完整模型 ID 及自适应思考状态；支持窄面板、亮色/暗色/高对比度主题和中文、英文、双语显示。
 
-   ![v1.16.18 模型信息卡片](src/images/model.png)
+   ![v1.16.19 模型信息卡片](src/images/model.png)
 
    **日历 (Calendar)** — 按日期组织的历史使用数据，包含每周期成本和 Token 分解。
 
@@ -212,7 +218,10 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 > 使用 Claude 模型时，Antigravity 可能会调用轻量子智能体模型处理小任务——平台把该模型标注为 **Gemini 3.1 Flash Lite**（`MODEL_PLACEHOLDER_M50`；较早的 `gemini-2.5-flash*` 目录条目共用同一显示名）。子智能体切换不会改变显示的上下文上限，因为本扩展跟踪的是你所选模型的上限。Claude 5.5 的原生上下文为 1,000,000 token、平台压缩上限为 256,000 token（2026-10-03 核实）；保留的 Claude 4.6 画像分别为 250,000 和 160,000，子智能体模型使用 128,000 画像。
 
 > [!IMPORTANT]
-> **"LS not found" 与请勿以管理员身份运行 IDE（Windows）**
+> **当前 Antigravity IDE 的 "LS not found"**
+> 新版 IDE 使用 `agy --hub` 后端，不再运行名为 `language_server_*` 的进程。1.16.19 兼容两种架构，支持 `--csrf_token=value` 和空格分隔参数，先检查声明的 hub 端口，再使用平台套接字发现。安装 `antigravity-context-monitor-1.16.19.vsix` 后重载窗口。后端已连接但没有已加载对话时显示**无活跃会话**，不是发现失败；IDE 中仍可能保存着历史对话。未打开文件夹也不代表后端不可用。
+>
+> **Windows 发现诊断**
 > 若状态栏卡在 `LS not found`，请打开 **Output → "Antigravity Context Monitor"**，查看 `PATH check:` 那一行——扩展现在会记录究竟是哪一步发现失败。自 v1.16.13 起，扩展以 `%SystemRoot%` 绝对路径调用 `wmic`/`powershell.exe`/`netstat`，因此 Extension Host 的 `PATH` 被裁剪（例如 Win11 24H2+ 移除 WMIC 后缺少 `System32\wbem`）不再导致发现失败。
 > 自 v1.16.16 起另有两个成因被处理（issue #64，由 @SecretLUL 报告）：Windows 会本地化 `netstat` 的 State 列，德文安装上 `LISTENING` 显示为 `ABHÖREN`，此前所有候选行都会被拒绝；以及监听在全部网卡而非仅环回上的语言服务器，此前完全取不出端口。两者均已修复；若扩展宿主本身运行在 WSL 内部，现在会优先在该发行版中查找语言服务器。
 > **请勿以管理员身份运行 Antigravity** —— 这对检测毫无帮助（LS 发现无需提权），还可能导致 IDE 启动崩溃并报 `The window terminated unexpectedly (reason: 'launch-failed', code: '18')`；该崩溃属于 Electron/Chromium 沙箱问题，与本扩展无关。
@@ -248,4 +257,4 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.16.18 — [发布说明](docs/releases/1.16.18.md)
+**版本 / Version**: 1.16.19 — [发布说明](docs/releases/1.16.19.md)

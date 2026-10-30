@@ -2,22 +2,23 @@
 
 本文档说明 Antigravity Context Window Monitor 的源码组织方式、模块职责以及依赖关系。
 
-当前版本：**1.16.18**。中英文发布说明见 [releases/1.16.18.md](releases/1.16.18.md)。
+当前版本：**1.16.19**。中英文发布说明见 [releases/1.16.19.md](releases/1.16.19.md)。
 
 ---
 
 ## 目录总览
 ```text
 antigravity-context-monitor/
-├── .github/workflows/verify.yml  # Node.js 22：Windows / macOS / Linux 编译与 Vitest 矩阵
+├── .github/workflows/verify.yml  # Windows / macOS / Linux 编译与 Vitest 矩阵；Node 版本由工作流指定
 ├── src/                          # TypeScript 源码
 │   ├── extension.ts              # 扩展入口：激活/停用、轮询调度、命令注册、状态恢复
 │   ├── daily-archival.ts         # 每日归档核心逻辑（可测试纯函数，依赖注入）
 │   ├── daily-ledger.ts           # 实时增量账本（按日期+账号分桶，去重记录，额度重置结算，午夜归档数据源）
-│   ├── discovery.ts              # Language Server 进程发现（跨平台）
+│   ├── discovery.ts              # agy hub 与旧版 Language Server 进程发现（跨平台）
+│   ├── backend-connection.ts     # 从当前 IDE 已激活的内置扩展读取连接提示，约束实例归属
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
-│   ├── tracker.ts                # Token 计算、会话数据获取、用户状态查询
-│   ├── models.ts                 # 模型配置、平台截断阈值、Claude 5.5 六档 / 4.6 兼容、跨语言归一化、responseModel 别名保护
+│   ├── tracker.ts                # Planner/checkpoint 精确 Token 快照、会话数据获取、用户状态查询
+│   ├── models.ts                 # 模型配置、平台截断阈值、Gemini 4 Argon 三档、Claude 5.5 / 4.6 兼容、跨语言归一化
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
 │   ├── statusbar.ts              # 状态栏 UI（StatusBarManager，含计划层级 hover 缓存、AI 积分余额、|| 分隔符）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
@@ -62,7 +63,13 @@ antigravity-context-monitor/
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
 ├── tests/                        # Vitest 测试目录（开发用，不参与插件运行时）
-│   ├── discovery.test.ts         # discovery 单元测试（原作者 FlorianHuo 提供）
+│   ├── discovery.test.ts         # 跨平台发现、agy/旧版进程及参数解析回归
+│   ├── backend-connection.test.ts # 当前 IDE 连接提示、非法导出值及重启期间 getter 异常
+│   ├── backend-status-i18n.test.ts # 连接状态中英双语、即时语言刷新与恢复
+│   ├── discovery-hub.test.ts     # Hub 编排、失效候选、实例隔离、取消及本地 HTTP 探测
+│   ├── trajectory-agent-hub.test.ts # 无 checkpoint 的 planner 用量、档位与估算优先级
+│   ├── gm-agent-hub.test.ts      # 当前 hub GM 容量、重试和遥测边界
+│   ├── gemini-4-argon.test.ts    # Argon 三档身份、参数、GM、配额、价格与 i18n 回归
 │   ├── models-registry.test.ts   # 注册表、精确模型 ID、别名、平台阈值、账号模型与配额池兼容
 │   ├── claude-55.test.ts         # Claude 5.5 六档参数、别名、计价与历史模型兼容
 │   ├── model-live-sync.test.ts   # 实时模型同步、空 picker 清理与 catalog ID 保留
@@ -89,7 +96,7 @@ antigravity-context-monitor/
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   ├── project_structure.md          # 本文件
-│   └── releases/1.16.18.md           # 1.16.18 发布说明（先英文，后对应中文）
+│   └── releases/1.16.19.md           # 当前发布说明（先英文，后对应中文；历史版本另保留）
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── package.json                  # 扩展清单、命令、配置项
 ├── package-lock.json             # 提交的 npm 锁文件，供本地及 CI 使用 npm ci 复现依赖
@@ -114,7 +121,13 @@ antigravity-context-monitor/
 
 ### discovery.ts -- 语言服务器发现
 
-跨平台定位 Language Server 进程（macOS/Linux/Windows/WSL/Remote-WSL），核心解析函数独立导出支持单元测试。
+跨平台定位当前 `agy --hub`（Windows 为 `agy.exe`）及旧版 `language_server_*` 进程，覆盖 macOS/Linux/Windows/WSL/Remote-WSL。解析空格或等号分隔的连接参数，校验声明端口，探测本地 Connect-RPC 服务，并保留平台套接字发现。核心解析函数独立导出支持单元测试。新版 IDE 即使不再运行名为 language_server 的进程，也能建立连接；空的已加载对话列表与连接失败分别处理。
+
+---
+
+### backend-connection.ts -- 当前 IDE 实例连接
+
+从当前窗口中已激活的 `google.google-antigravity` 内置扩展导出读取端口和 CSRF token，校验后作为 `discoverLanguageServer()` 的连接提示。不会主动激活其他扩展；导出缺失或 getter 在后端重启期间抛错时安全回退。有效提示约束发现范围，避免连接到同机另一个 IDE/账号。
 
 ---
 
@@ -126,21 +139,31 @@ antigravity-context-monitor/
 
 ### tracker.ts -- Token 计算 + 数据获取
 
-对话列表获取、Token 计算、上下文用量组装。CHECKPOINT 步骤仍用于 token 基线，但不再覆盖用户可见的显示模型；最近 checkpoint 的内部模型通过 `checkpointModel` 透传给状态栏 tooltip。主要导出：`getAllTrajectories()`、`getContextUsage()`、`fetchFullUserStatus()`。
+对话列表获取、Token 计算、上下文用量组装。当前 planner-response 与旧版 CHECKPOINT 的 `metadata.modelUsage` 都可提供精确快照；提供商输入+输出计数优先于 GM 请求前估算，估算保持估算标记。首次回复前从用户输入 planner 配置读取所选档位。`tokenUsageSource` 标记数据来源，使旧缓存重新获取；运行中步骤不会因摘要数量不变而沿用缓存。CHECKPOINT 不覆盖用户可见显示模型，其内部模型通过 `checkpointModel` 透传给状态栏 tooltip。主要导出：`getAllTrajectories()`、`getContextUsage()`、`fetchFullUserStatus()`。
 
 ---
 
 ### models.ts -- 模型配置与归一化
 
-模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将 Gemini Flash + Pro 合并为统一的 `gemini` 池（mid-2026 API 变更）。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
+模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将 Gemini Argon、Flash、Pro 合并为统一的 `gemini` 池。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
+
+v1.16.19 注册 Gemini 4 Argon High/Medium/Low（`M417`/`M418`/`M419`），对应 `gemini-4-argon-{high,medium,low}`。2026-10-31 活体目录核实原生上下文 1,048,576、最大输出 65,536、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；静态兜底 255,000，思考力度 3/2/1。价格未核实时保留未定价状态，支持用户自定义费率，不借用 Flash 单价。家族响应名不能覆盖确切档位，身份解析贯穿 GM、历史用量、配额和中英文显示。
+
+当前活体目录同时校正 Gemini 3.8 Flash `M318`/`M319`/`M320` 为 50,000 checkpointer 触发阈值和 3/2/1 思考力度，不保留早期固定预算。仅在完整实时目录记录中清除缺省 protobuf 思考字段，部分数据不覆盖已知值；`M322` 及更旧世代保留历史画像。
 
 v1.16.18 注册 Claude Opus 5.5 Low/Medium/High（`M400`/`M401`/`M402`）及 Sonnet 5.5 Low/Medium/High（`M403`/`M404`/`M405`），共同使用 `premium` 配额池。原生上下文 1,000,000、最大输出 128,000、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；255,000 静态兜底沿用现有偏移约定。`ModelSpec` 保存自适应思考能力和力度，避免把缺省预算误读为不支持思考。Claude 4.6 的 `M26`/`M35` 保留兼容；家族级响应别名不覆盖确切档位身份。
 
 ---
 
+### tooltip-budget.ts -- 状态栏配额代表
+
+配额池代表依次优先当前模型、账号实时推荐模型、最新可用世代；排序同时识别 Gemini 4 这样的整数版本和 3.8 这样的小数版本。取消固定旧版 Flash 作为所有账号默认代表的规则，并保留 tooltip 行数与缩放预算。
+
+---
+
 ### statusbar.ts -- 状态栏 UI
 
-`StatusBarManager`：上下文用量显示、颜色编码、额度指示、重置倒计时。tooltip 中的最近 checkpoint 行会显示短化后的内部影子模型标识（如 `M50`），但主模型显示仍以用户选择模型为准。
+`StatusBarManager`：上下文用量显示、颜色编码、额度指示、重置倒计时。连接失败与重连提示支持英文、中文和双语，切换语言后立即更新；恢复连接时清除旧断连状态。未加载对话时显示“无活跃会话”，不沿用历史模型的分母。tooltip 中的最近 checkpoint 行会显示短化后的内部影子模型标识（如 `M50`），但主模型显示仍以用户选择模型为准。
 
 ---
 
@@ -392,6 +415,7 @@ Antigravity Language Server (localhost)
 ## 构建与安装
 
 ```bash
+# Node.js：遵循 package.json engines；CI 使用 26.12.1
 # 按锁文件安装依赖
 npm ci
 
@@ -403,13 +427,13 @@ npm test
 npm run test:watch
 
 # 打包
-npx vsce package --no-dependencies
+npm run package
 ```
 
-安装：在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.16.18.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
+安装：在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.16.19.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
 
 测试文件位于 `tests/`，仅供 Vitest 使用，不会被打包到 VSIX 中。
 
-v1.16.18 已通过本地编译、26 个文件的 362 项测试、安装后代码的 36 项浏览器渲染检查及 15 项交互断言。新 VSIX 已在原本运行中的 macOS Antigravity IDE 2.5.5 安装、重载并完成实机验收；45 个已安装 JavaScript 文件与包内文件和本地构建逐字节一致。详细范围见 [1.16.18 发布说明](releases/1.16.18.md)。
+当前版本的编译、回归测试、安装包一致性、原生 IDE 交互及平台运行结果统一记录在 [1.16.19 发布说明](releases/1.16.19.md)。发布验收必须使用重新打包并安装后的 1.16.19，而非旧插件或仅源码渲染结果。
 
-`.github/workflows/verify.yml` 配置 Windows、macOS、Linux 的编译和测试矩阵。文档冻结时 Windows/Linux CI 尚未运行，不能用平台解析器的单元测试代替对应系统的实机验证。
+`.github/workflows/verify.yml` 配置 Windows、macOS、Linux 的编译和测试矩阵。平台解析器单元测试、原生 CI 和 IDE 实机验收分别报告；已配置工作流并不证明某次运行已通过。

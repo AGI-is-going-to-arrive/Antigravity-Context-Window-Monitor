@@ -5,8 +5,8 @@
 // (`cascadeModelConfigData.clientModelConfigs[].label`). Static names provide
 // cold-start and archived-data fallbacks; live labels remain authoritative.
 //
-// DEFAULT_CONTEXT_LIMITS and KNOWN_QUOTA_POOLS are retained as static fallbacks
-// because the API does not expose context window sizes or pool groupings.
+// Static limits cover startup before GetAvailableModels metadata arrives; known
+// quota pools supplement the catalog's provider metadata.
 
 // ─── Default Context Limits ──────────────────────────────────────────────────
 
@@ -20,6 +20,10 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     // Gemini 3.7 Flash tiers + the 3.6 Flash renumber verified via live LS probe (2026-08-14).
     // Note: All fallback limits are intentionally offset by -1,000 (1K) so that in daily use,
     // you can instantly recognize if the extension has successfully overridden the fallback with live captures.
+    // Gemini 4 Argon verified via the installed IDE agent hub, 2026-10-31.
+    'MODEL_PLACEHOLDER_M417': 255_000,  // High — live compression limit: 256,000
+    'MODEL_PLACEHOLDER_M418': 255_000,  // Medium
+    'MODEL_PLACEHOLDER_M419': 255_000,  // Low
     'MODEL_PLACEHOLDER_M318': 255_000,  // Gemini 3.8 Flash (High) — fallback offset by -1K (live: 256,000)
     'MODEL_PLACEHOLDER_M319': 255_000,  // Gemini 3.8 Flash (Medium) — fallback offset by -1K (live: 256,000)
     'MODEL_PLACEHOLDER_M320': 255_000,  // Gemini 3.8 Flash (Low) — fallback offset by -1K (live: 256,000)
@@ -59,13 +63,17 @@ export const DEFAULT_CONTEXT_LIMIT = 159_000;
 
 // ─── Model Display Names ─────────────────────────────────────────────────────
 // Starts empty — populated dynamically by `updateModelDisplayNames()` from
-// the LS GetUserStatus API. No hardcoded model names.
+// the LS GetUserStatus API. Static fallbacks below also resolve archived records.
 
 let modelDisplayNames: Record<string, string> = {};
 /** responseModel -> placeholder ID reverse map (populated from GM data).
  *  Pre-seeded with known stable aliases so findPricing works before fetchAll.
  *  Source: GetAvailableModels API (all_models_parameter_map.md 2026-05-22) */
 let responseModelAliases: Record<string, string> = {
+    // Gemini 4 Argon aliases (live GetUserStatus + GetAvailableModels, 2026-10-31).
+    'gemini-4-argon-high': 'MODEL_PLACEHOLDER_M417',
+    'gemini-4-argon-medium': 'MODEL_PLACEHOLDER_M418',
+    'gemini-4-argon-low': 'MODEL_PLACEHOLDER_M419',
     // Gemini Pro aliases
     'gemini-pro-default': 'MODEL_PLACEHOLDER_M16',       // legacy responseModel for M16
     'gemini-pro-agent': 'MODEL_PLACEHOLDER_M16',          // current model_id for M16
@@ -110,7 +118,10 @@ let responseModelAliases: Record<string, string> = {
 let showModelShortId = false;
 
 const KNOWN_QUOTA_POOLS: Record<string, string> = {
-    // Gemini pool — Flash and Pro share the same quota since mid-2026
+    // Gemini pool — Argon, Flash and Pro use the Google provider pool.
+    'MODEL_PLACEHOLDER_M417': 'gemini',
+    'MODEL_PLACEHOLDER_M418': 'gemini',
+    'MODEL_PLACEHOLDER_M419': 'gemini',
     'MODEL_PLACEHOLDER_M16': 'gemini',
     'MODEL_PLACEHOLDER_M318': 'gemini',   // Gemini 3.8 Flash (High)
     'MODEL_PLACEHOLDER_M319': 'gemini',   // Gemini 3.8 Flash (Medium)
@@ -167,6 +178,9 @@ const ZH_MODEL_NAME_ALIASES: Record<string, string> = {
 // may still appear in persisted/archived daily data.
 
 const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
+    'MODEL_PLACEHOLDER_M417': 'Gemini 4 Argon (High)',
+    'MODEL_PLACEHOLDER_M418': 'Gemini 4 Argon (Medium)',
+    'MODEL_PLACEHOLDER_M419': 'Gemini 4 Argon (Low)',
     'MODEL_PLACEHOLDER_M16': 'Gemini 3.1 Pro (High)',
     'MODEL_PLACEHOLDER_M37': 'Gemini 3.1 Pro (High)',  // Replaced by M16
     'MODEL_PLACEHOLDER_M36': 'Gemini 3.1 Pro (Low)',
@@ -232,9 +246,15 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
     // EXACT equality — substring matching is unsafe here: e.g. 'model_placeholder_m264'.includes('m26')
     // would wrongly hit the Claude branch and brand Gemini 3.6 Flash as 160K thinking. Extract the
     // number and compare against known sets; keyword matching below is reserved for catalog names.
-    const placeholderMatch = idLower.match(/model_placeholder_(m\d+)/);
+    const placeholderMatch = idLower.match(/^model_placeholder_(m\d+)$/);
     if (placeholderMatch) {
         const num = placeholderMatch[1];
+        // Argon and the current 3.8 Flash picker use a 256K compression limit
+        // and 50K trigger (live agent hub, 2026-10-31). Older Flash profiles
+        // and the archived M322 tiered router retain their verified 140K trigger.
+        if (['m417', 'm418', 'm419', 'm318', 'm319', 'm320'].includes(num)) {
+            return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
+        }
         // Claude 5.5 uses adaptive thinking and a 1M native window, with a 256K
         // platform truncation limit (live GetAvailableModels, 2026-10-03).
         if (['m400', 'm401', 'm402', 'm403', 'm404', 'm405'].includes(num)) {
@@ -254,13 +274,13 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
         if (num === 'm16' || num === 'm37' || num === 'm36') {
             return { cpLimit: 128000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
         }
-        // Gemini Flash series — 3.8 (M318/M319/M320/M322), 3.7 (M298/M299/M300),
+        // Historical Flash profiles — 3.8 tiered router (M322), 3.7 (M298/M299/M300),
         // 3.6 (M71/M72/M73/M196), 3.5 (M84/M20/M187),
         // retired (M133/M132) and the pre-renumber 3.6 IDs (M264/M265/M266, kept for archived data).
         // NOTE: whenever the platform introduces or renumbers a Flash tier, its M-number MUST be added
         // here. An unlisted placeholder deliberately falls through to {0,0,0} below, which surfaces as a
         // "calculating threshold…" shimmer instead of a silently wrong limit.
-        if (num === 'm318' || num === 'm319' || num === 'm320' || num === 'm322'
+        if (num === 'm322'
             || num === 'm298' || num === 'm299' || num === 'm300'
             || num === 'm71' || num === 'm72' || num === 'm73' || num === 'm196'
             || num === 'm84' || num === 'm20' || num === 'm187'
@@ -271,6 +291,13 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
         // Unknown placeholder — do NOT fall through to substring keyword matching (would re-introduce
         // the m26/m35 collision). Defer to live telemetry (0 → "calculating threshold" shimmer).
         return { cpLimit: 0, cpThreshold: 0, maxTokens: 0, supportsThinking: false };
+    }
+
+    // Only verified Argon and current Flash picker variants get this profile; versions
+    // must not fall into a Flash/Pro guess or match Gemini 40 by prefix.
+    if (/^gemini[\s_-]+4[\s_-]+argon(?:$|[\s_(-])/.test(idLower)
+        || /^gemini[\s_-]+3[._-]8[\s_-]+flash[\s_-]*\(?\s*(?:high|medium|low)\s*\)?$/.test(idLower)) {
+        return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
     }
 
     // Non-placeholder names (catalog model_id / responseModel) — keyword matching is safe.
@@ -409,6 +436,17 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
         const offset = tier === 'low' || tier === '低' ? 0 : tier === 'high' || tier === '高' ? 2 : 1;
         return `MODEL_PLACEHOLDER_M${(claude55[1].toLowerCase() === 'opus' ? 400 : 403) + offset}`;
     }
+    // Argon effort is part of its identity. A shared family responseModel must
+    // remain unassigned: guessing a tier would merge Low/Medium/High telemetry.
+    const argon = clean.replace(/[（]/g, '(').replace(/[）]/g, ')').match(
+        /^gemini[\s_-]+4[\s_-]+argon[\s_-]*\(?\s*(low|medium|high|低|中|高)\s*\)?$/i,
+    );
+    if (argon) {
+        const tier = argon[1].toLowerCase();
+        return tier === 'high' || tier === '高' ? 'MODEL_PLACEHOLDER_M417'
+            : tier === 'medium' || tier === '中' ? 'MODEL_PLACEHOLDER_M418'
+            : 'MODEL_PLACEHOLDER_M419';
+    }
     // Strip trailing diagnostic suffix "(Mxx)" and retry — handles persisted keys
     // that include the short ID appended by normalizeModelDisplayName()
     const suffixStripped = clean.replace(/\s*\(M\d+\)$/, '').replace(/\s*\(OSS-120B\)$/, '');
@@ -462,6 +500,7 @@ export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
     // Bare Claude 5.5 response names identify the shared pool even though they do
     // not identify an effort tier (see resolveModelId).
     if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(modelId.trim())) { return 'premium'; }
+    if (/^gemini[\s_-]+4[\s_-]+argon$/i.test(modelId.trim())) { return 'gemini'; }
     // KNOWN_QUOTA_POOLS is keyed by placeholder ID, but callers also hold catalog model_ids
     // ('gemini-3.7-flash-high') and display labels ('Gemini 3.7 Flash (High)'). Without this
     // normalization those forms silently fall through to the resetTime branch — and resetTime is a
@@ -622,7 +661,8 @@ export function registerResponseModelAlias(responseModel: string, placeholderId:
     if (!responseKey || !target || responseKey === target || !isConcreteAliasTarget(target)) {
         return;
     }
-    if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(responseKey)) { return; }
+    if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(responseKey)
+        || /^gemini[\s_-]+4[\s_-]+argon$/i.test(responseKey)) { return; }
     const existing = responseModelAliases[responseKey];
     if (existing && existing !== target) {
         // responseModel can be less stable than chatModel.model; do not let one
@@ -663,7 +703,48 @@ export interface ModelSpec {
 }
 
 let activeModelSpecs: Record<string, ModelSpec> = {
-    // ── Gemini 3.8 Flash (two live Antigravity IDE LS instances, 2026-09-05; M318 is default) ──
+    // Gemini 4 Argon: live agent hub GetAvailableModels, 2026-10-31.
+    // No fixed thinkingBudget or adaptive-thinking flag was returned.
+    'MODEL_PLACEHOLDER_M417': {
+        modelId: 'gemini-4-argon-high',
+        placeholderId: 'MODEL_PLACEHOLDER_M417',
+        displayName: 'Gemini 4 Argon (High)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        thinkingLevel: 3,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M418': {
+        modelId: 'gemini-4-argon-medium',
+        placeholderId: 'MODEL_PLACEHOLDER_M418',
+        displayName: 'Gemini 4 Argon (Medium)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        thinkingLevel: 2,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M419': {
+        modelId: 'gemini-4-argon-low',
+        placeholderId: 'MODEL_PLACEHOLDER_M419',
+        displayName: 'Gemini 4 Argon (Low)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        thinkingLevel: 1,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
+    // ── Gemini 3.8 Flash (current agent-hub metadata, 2026-10-31) ──
     'MODEL_PLACEHOLDER_M318': {
         modelId: 'gemini-3.8-flash-high',
         placeholderId: 'MODEL_PLACEHOLDER_M318',
@@ -671,10 +752,11 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         apiProvider: 'GOOGLE_GEMINI',
         maxTokens: 1048576,
         maxOutputTokens: 65536,
-        thinkingBudget: -1,
+        thinkingBudget: 0,
+        thinkingLevel: 3,
         supportsThinking: true,
         cpLimit: 256000,
-        cpThreshold: 140000,
+        cpThreshold: 50000,
     },
     'MODEL_PLACEHOLDER_M319': {
         modelId: 'gemini-3.8-flash-medium',
@@ -683,10 +765,11 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         apiProvider: 'GOOGLE_GEMINI',
         maxTokens: 1048576,
         maxOutputTokens: 65536,
-        thinkingBudget: 4000,
+        thinkingBudget: 0,
+        thinkingLevel: 2,
         supportsThinking: true,
         cpLimit: 256000,
-        cpThreshold: 140000,
+        cpThreshold: 50000,
     },
     'MODEL_PLACEHOLDER_M320': {
         modelId: 'gemini-3.8-flash-low',
@@ -695,10 +778,11 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         apiProvider: 'GOOGLE_GEMINI',
         maxTokens: 1048576,
         maxOutputTokens: 65536,
-        thinkingBudget: 1000,
+        thinkingBudget: 0,
+        thinkingLevel: 1,
         supportsThinking: true,
         cpLimit: 256000,
-        cpThreshold: 140000,
+        cpThreshold: 50000,
     },
     // ── Gemini 3.7 Flash (live LS probe 2026-08-14; M298 was default until 3.8 launched) ──
     // thinkingBudget -1 is the platform's "dynamic / model-decided" sentinel, not a real token count.
@@ -1011,8 +1095,11 @@ export function updateModelSpec(placeholderId: string, spec: Partial<ModelSpec>)
 
 export function getModelSpecs(): ModelSpec[] {
     // Mirrors the platform's own "Recommended" sort group (GetUserStatus → clientModelSorts),
-    // newest generation first. Live-verified 2026-09-05.
+    // newest generation first. Argon identities live-verified 2026-10-31.
     const order = [
+        'MODEL_PLACEHOLDER_M417',
+        'MODEL_PLACEHOLDER_M418',
+        'MODEL_PLACEHOLDER_M419',
         'MODEL_PLACEHOLDER_M318',
         'MODEL_PLACEHOLDER_M319',
         'MODEL_PLACEHOLDER_M320',

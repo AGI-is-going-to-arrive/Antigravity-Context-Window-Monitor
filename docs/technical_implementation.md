@@ -4,29 +4,40 @@ This document explains how the Antigravity Context Window Monitor plugin works. 
 
 本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 面板调度）、`activity-tracker.ts`（模型活动追踪）、`activity-panel.ts`（GM Data UI）、`pricing-panel.ts`（Cost 与 Models UI）、`quota-tracker.ts`（配额追踪）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。WebView 面板拆分为：`activity-panel.ts`、`pricing-panel.ts`、`webview-chat-history-tab.ts`、`webview-models-tab.ts`、`webview-profile-tab.ts`、`webview-settings-tab.ts`、`webview-calendar-tab.ts`、`webview-about-tab.ts`、`webview-script.ts`、`webview-styles.ts`、`webview-helpers.ts`、`webview-icons.ts`。
 
-Current release / 当前版本: **1.16.18**. See [release notes / 发布说明](releases/1.16.18.md).
+Current release / 当前版本: **1.16.19**. See [release notes / 发布说明](releases/1.16.19.md).
 
 ---
 
-## 🧭 1. Language Server Discovery / 语言服务器发现
+## 🧭 1. Backend Discovery / 后端发现
 
-> Source: [`discovery.ts`](../src/discovery.ts)
+> Source: [`discovery.ts`](../src/discovery.ts), [`backend-connection.ts`](../src/backend-connection.ts)
 
-Each Antigravity workspace has a background Language Server process handling AI conversation requests. The plugin needs to locate the correct one for the current workspace and connect to it.
+Antigravity IDE now uses an `agy --hub` backend on current builds; older builds use shared or workspace-specific `language_server_*` processes. Both expose the local Connect-RPC `exa.language_server_pb.LanguageServerService` interface consumed by the monitor. Version 1.16.19 adds hub discovery without replacing legacy compatibility.
 
-每个 Antigravity 工作区都有一个后台进程（Language Server）处理 AI 对话请求。插件需要找到当前工作区对应的语言服务器并建立连接。
+当前 Antigravity IDE 使用 `agy --hub` 后端；旧版采用共享或按工作区启动的 `language_server_*` 进程。两者均提供监控器使用的本地 Connect-RPC `exa.language_server_pb.LanguageServerService` 接口。1.16.19 新增 hub 发现，同时保留旧架构兼容。
 
-* **Process Scanning / 进程扫描**: Uses platform-specific commands (via async `execFile`, non-blocking to IDE UI thread) to find the Language Server process, matching the current workspace via the `--workspace_id` argument. macOS uses `ps`, Linux uses `ps` with `lsof`/`ss` fallback, Windows uses `wmic`/PowerShell, and WSL (v1.12.0+) uses Windows-side tools via interop (`WMIC.exe`, `powershell.exe`, `netstat.exe`). Uses `execFile` instead of shell string concatenation to prevent command injection. Accepts optional `AbortSignal` for cancellation on extension deactivate. Core parsing logic extracted into exported functions (`buildExpectedWorkspaceId`, `extractPid`, `extractCsrfToken`, `selectMatchingProcessLine`, etc.) that can be directly unit-tested. Since v1.15.0, `selectMatchingProcessLine()` uses a **prefer-new-style, fallback-to-match** priority: (1) processes WITHOUT `--workspace_id` (Antigravity 1.22.2+ shared LS architecture) are preferred; (2) if none exist, falls back to exact `workspace_id` match (legacy per-workspace LS); (3) last resort: first discovered process. This fixes a critical bug where Antigravity 1.22.2+ changed its LS from per-workspace to single shared process — old zombie LS processes (with workspace_id) remained alive and the previous prefer-match logic always connected to them instead of the new active LS. The polling loop also includes periodic PID revalidation (~30s) to detect silent LS restarts, and a staleness heuristic (4+ consecutive all-IDLE polls with `stalenessConfirmedIdle` guard) as a secondary defense against zombie LS connections. (Previously v1.14.4 used prefer-match-fallback-to-first, and v1.13.3 used fail-closed.) `buildExpectedWorkspaceId()` now includes `decodeURIComponent` defense for percent-encoded workspace URIs (e.g., `file:///c%3A/...`). WSL detection uses `isWSL()` which reads `/proc/version` for Microsoft/WSL signatures (cached). Since v1.12.1, `extensionKind: ["ui", "workspace"]` ensures the extension prefers running on the local (UI) side where the LS process lives. Since v1.13.0, when connected via Remote-WSL (`vscode-remote://wsl+<distro>/...`), the extension discovers the `language_server_linux_x64` process running inside the WSL distro via `wsl -d <distro> -- ps aux`, finds its ports via `ss -tlnp`, and probes them from Windows through WSL2 port forwarding. Since v1.16.13, the native Windows branch also invokes `wmic` / `powershell.exe` / `netstat` by absolute `%SystemRoot%` path (via exported `buildWindowsExePath()`, e.g. `System32\wbem\WMIC.exe`) instead of by bare name — mirroring the WSL branch — so a truncated Extension Host `PATH` (e.g. Win11 24H2+/25H2 removed WMIC as a Feature-on-Demand, dropping `System32\wbem`) no longer breaks discovery with a silent `ENOENT` "LS not found". `extractWindowsPid()` handles both the `wmic` (last-column) and PowerShell (first-column) CSV layouts, `netstatLineMatchesPid()` matches the trailing PID exactly, and a one-shot `PATH check: hasWbem=… hasWindowsPowerShell=… SystemRoot=…` line plus per-step null-return messages are logged to the "Antigravity Context Monitor" Output channel for field diagnosis.
-  使用平台特定命令（通过异步 `execFile` 调用，不阻塞 IDE UI 线程）查找语言服务器进程，并通过 `--workspace_id` 参数匹配当前工作区。macOS 使用 `ps`，Linux 使用 `ps` 和 `lsof`/`ss` 回退，Windows 使用 `wmic`/PowerShell，WSL（v1.12.0+）通过互操作调用 Windows 端工具。使用 `execFile` 而非 shell 命令拼接，避免命令注入风险。自 v1.15.0 起，`selectMatchingProcessLine()` 采用**优先新架构、回退到匹配**的优先级策略：(1) 无 `--workspace_id` 的进程（Antigravity 1.22.2+ 共享 LS 架构）优先；(2) 若无新架构进程，回退到精确 `workspace_id` 匹配（旧架构按工作区 LS）；(3) 最终兜底：第一个发现的进程。此修复解决了 Antigravity 1.22.2+ 将 LS 从按工作区改为单一共享进程后的严重 Bug——旧僵尸 LS 进程（带 workspace_id）仍然存活，之前的优先匹配逻辑始终连接到它们而非新的活跃 LS。轮询循环还包括定期 PID 重校验（约 30 秒）检测静默 LS 重启，以及僵尸检测启发式（连续 4+ 轮全 IDLE 配合 `stalenessConfirmedIdle` 守卫）作为二级防御。（之前 v1.14.4 采用优先匹配回退首个，v1.13.3 采用失败关闭。）`buildExpectedWorkspaceId()` 新增 `decodeURIComponent` 防御，处理百分号编码的工作区 URI。WSL 检测通过 `isWSL()` 读取 `/proc/version` 中的 Microsoft/WSL 签名（结果缓存）。自 v1.12.1 起，`extensionKind: ["ui", "workspace"]` 确保扩展优先在本地（UI 端）运行。自 v1.13.0 起，通过 Remote-WSL 连接时（`vscode-remote://wsl+<distro>/...`），扩展通过 `wsl -d <distro> -- ps aux` 发现 WSL 内部的 `language_server_linux_x64` 进程，通过 `ss -tlnp` 找到端口，并从 Windows 通过 WSL2 端口转发探测连接。自 v1.16.13 起，原生 Windows 分支同样以 `%SystemRoot%` 绝对路径（通过导出的 `buildWindowsExePath()`，如 `System32\wbem\WMIC.exe`）而非裸命令名调用 `wmic` / `powershell.exe` / `netstat`——与 WSL 分支一致——因此 Extension Host 的 `PATH` 被裁剪（例如 Win11 24H2+/25H2 将 WMIC 作为可选功能移除、缺少 `System32\wbem`）不再以静默 `ENOENT` 中断发现并误报 "LS not found"。`extractWindowsPid()` 兼容 `wmic`（末列）与 PowerShell（首列）两种 CSV 布局，`netstatLineMatchesPid()` 精确匹配行尾 PID，并向 “Antigravity Context Monitor” Output 通道打印一次性 `PATH check: hasWbem=… hasWindowsPowerShell=… SystemRoot=…` 及每步的 null 返回信息，供现场诊断。
+* **Process identity / 进程身份:** The hub is identified by its executable (`agy` or `agy.exe`) and hub/data-directory arguments, not merely by an arbitrary command line containing “agy”. Legacy processes are still selected using their platform binary names and workspace information. Process discovery uses async `execFile`, with no shell interpolation, and accepts an `AbortSignal` for cancellation.
+  Hub 通过可执行文件（`agy` 或 `agy.exe`）及 hub/数据目录参数识别，不会仅因任意命令行含有 “agy” 就被接受。旧版进程继续按平台二进制名称和工作区信息选择。发现通过异步 `execFile` 执行，不进行 shell 拼接，并支持 `AbortSignal` 取消。
 
-* **Extracting Connection Info / 提取连接参数**: Extracts PID and `csrf_token` from process arguments (used for RPC request authentication).
-  从进程命令行中提取 PID 和 `csrf_token`（用于 RPC 请求鉴权）。
+* **Connection arguments / 连接参数:** Current hubs use `--hub-port=<port>` and `--csrf_token=<token>`. Parsing supports equals-separated and space-separated values, including quoted paths/arguments and Windows CSV command lines. Tokens retain their original case and are used only for local RPC authentication; diagnostic logs must not contain them. Declared ports must be valid integers in 1–65535.
+  当前 hub 使用 `--hub-port=<port>`、`--csrf_token=<token>`。解析兼容等号及空格分隔值、带引号的路径/参数和 Windows CSV 命令行。Token 保留原始大小写，仅用于本地 RPC 鉴权，不写入诊断日志；声明端口必须为 1–65535 范围内的有效整数。
 
-* **Port Discovery / 端口发现**: Uses `lsof` (macOS/Linux), `ss` fallback (Linux), `netstat -ano` (Windows), or `netstat.exe` via interop (WSL) to find the local port the language server is listening on.
-  使用 `lsof`（macOS/Linux）、`ss` 回退（Linux）、`netstat -ano`（Windows）或通过互操作的 `netstat.exe`（WSL）查找语言服务器监听的本地端口。
+* **Platform discovery / 平台发现:** macOS and Linux use `ps`; socket lookup uses `lsof`, with Linux `ss` as a fallback. Windows uses WMIC when available and PowerShell `Get-CimInstance` otherwise, together with `netstat -ano`. System tools use absolute `%SystemRoot%` paths on Windows to avoid GUI-host PATH differences. PID parsing supports both WMIC and PowerShell CSV layouts; socket ownership uses exact PID matching and accepts reachable wildcard/loopback bindings, including localized Windows listening states.
+  macOS/Linux 使用 `ps`，套接字查询使用 `lsof`，Linux 可回退到 `ss`。Windows 在可用时使用 WMIC，否则回退到 PowerShell `Get-CimInstance`，并通过 `netstat -ano` 查端口；系统工具采用 `%SystemRoot%` 绝对路径，避免 GUI 宿主的 PATH 差异。PID 解析兼容 WMIC/PowerShell 两种 CSV 布局；套接字按精确 PID 归属匹配，兼容可达的通配/回环监听地址及本地化 Windows 监听状态。
 
-* **Connection Probing / 连接探测**: Sends a lightweight RPC request (`GetUnleashData`) to test connectivity, verifying HTTP status code is 2xx. Tries HTTPS first (the LS typically uses self-signed certs), falls back to HTTP. Response stream now has `res.on('error')` handler to prevent Promise hang on TCP RST or similar issues.
-  向发现的端口发送一个轻量 RPC 请求（`GetUnleashData`）测试连接，并验证 HTTP 状态码为 2xx。先尝试 HTTPS，失败则降级为 HTTP。响应流新增 `res.on('error')` 处理。
+* **Workspace and WSL compatibility / 工作区与 WSL 兼容:** Shared backends do not require an open workspace. Legacy workspace IDs are derived from the raw URI, preserving percent-encoding digits before replacing non-alphanumeric characters and collapsing underscores; decoding first would break paths containing spaces or CJK characters. Remote-WSL discovery uses `wsl -d <distro>`; an extension host running inside WSL first checks its own Linux backend before Windows-host interop. `extensionKind: ["ui", "workspace"]` prefers the local UI host.
+  共享后端不要求打开工作区。旧版 workspace ID 从原始 URI 生成，保留百分号编码中的数字，再替换非字母数字字符并合并下划线；先解码会破坏空格或中日韩字符路径的匹配。Remote-WSL 通过 `wsl -d <distro>` 发现；扩展宿主自身运行在 WSL 时，先检查同一 Linux 环境的后端，再尝试 Windows 互操作。`extensionKind: ["ui", "workspace"]` 优先选择本地 UI 宿主。
+
+* **Connection validation / 连接验证:** Hub discovery tries its declared loopback HTTP port before platform socket fallback. `GetUnleashData` probes validate an HTTP 2xx JSON response; legacy HTTPS and HTTP endpoints remain supported. Requests are bounded by timeouts, response limits, and cancellation. Stale candidates do not block later candidates. An IDE-supplied port/token hint confines discovery to that instance, preventing a fallback to another IDE/account. Polling revalidates the backend PID periodically so a restarted IDE can be rediscovered.
+  Hub 发现先检查声明的本地回环 HTTP 端口，再回退到平台套接字发现。`GetUnleashData` 探测校验 HTTP 2xx JSON 响应，同时保留旧版 HTTPS/HTTP 端点支持。请求具有超时、响应大小限制和取消处理。失效候选不会阻止后续候选；IDE 提供的端口/token 提示将发现范围限定为对应实例，防止回退到其他 IDE/账号。轮询定期复核后端 PID，以重新发现 IDE 重启后的实例。
+
+`backend-connection.ts` reads connection exports from the current window's already active `google.google-antigravity` extension without activating it. The port/token hint is validated on every discovery attempt, so backend restarts do not reuse stale exported values. Missing, malformed, or throwing exports safely fall back to process discovery.
+
+`backend-connection.ts` 从当前窗口已激活的 `google.google-antigravity` 内置扩展读取连接导出，不主动激活该扩展。每次发现都重新读取并校验端口/token 提示，避免后端重启后沿用旧导出值；导出缺失、非法或 getter 抛错时安全回退到进程发现。
+
+A successful connection can return an empty `GetAllCascadeTrajectories` response because no trajectories are currently loaded. Saved history may still exist in the IDE. This empty/idle state must not be reported as `LS not found`; connection failures remain a separate state. Missing/lost-backend tooltips are localized in English, Chinese, and bilingual mode, and refresh immediately when the language changes.
+
+连接成功后，`GetAllCascadeTrajectories` 也可能因尚未加载 trajectory 而返回空结果；IDE 中仍可能保留历史记录。该空闲/空状态不能被报告为 `LS not found`，连接失败需要单独显示。未发现/失去后端连接的 tooltip 支持英文、中文和双语，并在切换语言时立即刷新。
 
 ## ♾️ 2. Conversation Tracking / 对话数据跟踪
 
@@ -48,24 +59,27 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
   2. Trajectory with stepCount change (increase = new message, decrease = undo) / `stepCount` 发生变化的对话
   3. Newly appeared trajectory / 新出现的对话
 
-* **Step Analysis / 逐步分析**: For the selected conversation, calls `GetCascadeTrajectorySteps` with all batches (50 steps each) fetched in groups of up to 5 concurrent batches via `Promise.allSettled`, then passes the collected steps array to the pure function `processSteps()` for computation. `endIndex` is capped at `stepCount` to prevent the LS API's wrap-around behavior. Failed batches are flagged as `hasGaps` without blocking others. `processSteps()` is a side-effect-free pure function extracted from `getTrajectoryTokenUsage`, directly unit-testable with constructed step data. Since v1.16.4, `CHECKPOINT` steps still provide token baselines but no longer overwrite the user-visible display model. Their internal generator/modelUsage model is carried separately as `checkpointModel` for tooltip transparency.
-  对选中的对话调用 `GetCascadeTrajectorySteps`，通过 `Promise.allSettled` 分组获取所有批次，然后将完整步骤数组传给纯函数 `processSteps()` 进行计算。自 v1.16.4 起，`CHECKPOINT` 步骤仍作为 token 基线来源，但不再覆盖用户可见的显示模型；其内部 generator/modelUsage 模型单独作为 `checkpointModel` 传给 tooltip。
+* **Step Analysis / 逐步分析**: For the selected conversation, calls `GetCascadeTrajectorySteps` with all batches (50 steps each) fetched in groups of up to 5 concurrent batches via `Promise.allSettled`, then passes the collected steps array to the pure function `processSteps()` for computation. `endIndex` is capped at `stepCount` to prevent the LS API's wrap-around behavior. Failed batches are flagged as `hasGaps` without blocking others. `processSteps()` is a side-effect-free pure function extracted from `getTrajectoryTokenUsage`, directly unit-testable with constructed step data. Since v1.16.4, `CHECKPOINT` steps still provide token baselines but no longer overwrite the user-visible display model. Their internal generator/modelUsage model is carried separately as `checkpointModel` for tooltip transparency. Current hub planner-response `metadata.modelUsage` also supplies precise snapshots. Before a response exists, `userInput.userConfig.plannerConfig.planModel` (or `modelName`) identifies the selected model/effort tier.
+  对选中的对话调用 `GetCascadeTrajectorySteps`，通过 `Promise.allSettled` 分组获取所有批次，然后将完整步骤数组传给纯函数 `processSteps()` 进行计算。自 v1.16.4 起，`CHECKPOINT` 步骤仍作为 token 基线来源，但不再覆盖用户可见的显示模型；其内部 generator/modelUsage 模型单独作为 `checkpointModel` 传给 tooltip。当前 hub 的 planner-response `metadata.modelUsage` 也可提供精确快照；首次回复前从 `userInput.userConfig.plannerConfig.planModel`（或 `modelName`）识别所选模型/档位。
 
 ## 🧮 3. Token Calculation / Token 计算逻辑
 
 > Source: [`tracker.ts`](../src/tracker.ts) — `processSteps()` (pure computation), `getTrajectoryTokenUsage()` (RPC fetch + calls processSteps)
 
-* **精确值（Checkpoint）/ Precise Values**: 语言服务器会在 `CORTEX_STEP_TYPE_CHECKPOINT` 类型的步骤中提供 `modelUsage` 数据，包含模型实际计算的 `inputTokens` 和 `outputTokens`。插件始终使用最后一个 checkpoint 的值作为基准。
-  The language server provides `modelUsage` data in `CORTEX_STEP_TYPE_CHECKPOINT` steps, containing the model's actual `inputTokens` and `outputTokens`. The plugin always uses the last checkpoint as the baseline.
+* **Precise snapshots / 精确快照:** `modelUsage` on a completed planner response or legacy `CHECKPOINT` contains provider-reported input/output counts. The latest valid snapshot is the baseline; planner snapshots replace earlier counts rather than being added to them. Counts must be non-negative safe integers; malformed values are not treated as precise telemetry. `tokenUsageSource` records `planner`, `checkpoint`, or `estimated` provenance.
+  已完成的 planner response 或旧版 `CHECKPOINT` 上的 `modelUsage` 包含提供商报告的输入/输出数。最新有效快照作为基线；planner 快照替换前值而非逐次相加。Token 数必须为非负安全整数，非法值不能作为精确遥测；`tokenUsageSource` 记录 `planner`、`checkpoint` 或 `estimated` 来源。
 
-* **实时估算（v1.4.0 内容估算）/ Real-Time Estimation (v1.4.0 Content-Based)**: 在两个 checkpoint 之间，插件从步骤的实际文本内容估算 Token 增量：用户输入取自 `userInput.userResponse`，模型回复取自 `plannerResponse.response` + `plannerResponse.thinking` + `plannerResponse.toolCalls[].argumentsJson`。估算规则为 ASCII 字符 ÷ 4、非 ASCII 字符 ÷ 1.5。只有当步骤的父对象完全不存在（数据结构缺失）时，才 fallback 到固定常量（用户输入 500、模型回复 800），文本为空则正确估算为 ≈0 tokens。系统提示词开销约 10000 tokens（`SYSTEM_PROMPT_OVERHEAD`，基于实测），始终计入一次。
-   Between checkpoints, the plugin estimates token delta from actual step text content: user input from `userInput.userResponse`, model response from `plannerResponse.response` + `plannerResponse.thinking` + `plannerResponse.toolCalls[].argumentsJson`. Estimation: ASCII chars ÷ 4, non-ASCII ÷ 1.5. Fixed constants (500 per user input, 800 per response) are only used as fallback when the parent object is entirely missing (structural data absence); empty text correctly estimates to ≈0 tokens. System prompt overhead ~10,000 tokens (`SYSTEM_PROMPT_OVERHEAD`, measured from real sessions) is always counted once.
+* **Estimates between snapshots / 快照间估算:** When fresh provider counts are absent, text-based estimates use user input, response/thinking text, and tool arguments. ASCII characters are estimated at 4 per token and non-ASCII at 1.5 per token; missing parent structures use the existing fallback constants. Precise snapshots reset the accumulated estimate so a response is not counted twice.
+  缺少新的提供商计数时，根据用户输入、回复/思考文本和工具参数估算。ASCII 字符按每 token 4 个、非 ASCII 按每 token 1.5 个；父级数据结构缺失时使用既有兜底常量。精确快照到达后清零累计估算，避免重复计算回复。
 
-* **上下文窗口 = inputTokens + outputTokens + 增量 / Context = inputTokens + outputTokens + delta**: 总上下文占用是 checkpoint 的 input + output 加上 checkpoint 之后的估算增量。
-  Total context usage is checkpoint input + output plus estimated delta since the last checkpoint.
+* **Context = input + output + subsequent delta / 上下文 = 输入 + 输出 + 后续增量:** Provider counts remain authoritative. GM `estimatedTokensUsed` is a pre-request estimate and may only fill missing provider usage; it never replaces an available precise snapshot or changes an estimate to a precise value.
+  提供商计数优先。GM 的 `estimatedTokensUsed` 是请求前估算，仅可补充缺失的提供商用量，不能覆盖已有精确快照，也不能把估算标为精确值。
 
 * **图片生成 Token 追踪 / Image Gen Token Tracking**: 通过两种方式检测图片生成步骤：step type 中包含 `IMAGE` 或 `GENERATE`，或 generator model 名称中包含 `nano`、`banana`、`image`。使用 Set 对每个步骤去重，防止重复计数。
   Detects image generation steps two ways: step type containing `IMAGE` or `GENERATE`, or generator model name containing `nano`, `banana`, or `image`. Uses a Set to deduplicate per step index.
+
+* **GM capacity and retries / GM 容量与重试:** `contextWindowCapacity` first uses a valid legacy `plannerConfig.truncationThresholdTokens`, then falls back to `chatModel.chatStartMetadata.contextWindowMetadata.maxContextTokens` (`cwm.maxContextTokens`). Explicit retry records are authoritative: successful entries do not count as retries, and `cm.retries` is only a fallback when the retry list is absent/empty.
+  `contextWindowCapacity` 优先使用有效的旧版 `plannerConfig.truncationThresholdTokens`，否则回退到 `chatModel.chatStartMetadata.contextWindowMetadata.maxContextTokens`（`cwm.maxContextTokens`）。显式重试记录优先，成功条目不算重试；只有重试列表缺失/为空时才回退到 `cm.retries`。
 
 * **重试 Token 观测 / Retry Token Observation**: Checkpoint 的 `metadata.retryInfos[].usage` 包含重试请求产生的 token。当前以日志形式记录（观测模式），待验证与 `modelUsage` 是否重复后再决定是否计入总量。
   Checkpoint `metadata.retryInfos[].usage` contains retry token usage. Currently logged for analysis (observation mode), pending verification of overlap with `modelUsage` before counting.
@@ -101,6 +115,9 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
 * **Checkpoint Shadow Model Row (v1.16.4) / Checkpoint 影子模型行**: `statusbar.ts` shortens internal checkpoint model IDs (for example `MODEL_PLACEHOLDER_M50` → `M50`) and shows them next to the latest checkpoint line. This is diagnostic context only; the main model row continues to reflect the user-selected model.
   `statusbar.ts` 会把内部 checkpoint 模型 ID 短化（例如 `MODEL_PLACEHOLDER_M50` → `M50`）并显示在最近 checkpoint 行旁边。它只用于诊断透明度，主模型行仍显示用户选择的模型。
 
+* **Empty conversation / 空会话:** When no trajectory is loaded, the status says “No active conversation” / “无活跃会话”. It does not reuse a persisted model denominator or imply a measured zero-token conversation. Quota/account information can still be shown when available.
+  未加载 trajectory 时显示“无活跃会话”，不沿用持久化模型分母，也不暗示已测得零 token 的对话；可用的配额/账号信息仍可显示。
+
 ## 📊 5. WebView Monitor Panel / WebView 监控面板
 
 > Source: [`webview-panel.ts`](../src/webview-panel.ts)
@@ -121,8 +138,8 @@ Since v1.10.1, clicking the status bar opens a WebView side panel (replacing the
 * **可折叠区域 / Collapsible Sections**: 次要数据（Plan Limits、Feature Flags、Team Config、Google AI Credits）默认折叠在 `<details>` 标签中，展开/收起状态持久化。
   Secondary data (Plan Limits, Feature Flags, Team Config, Google AI Credits) hidden by default in `<details>` elements; open/close state persists.
 
-* **实时刷新 / Live Refresh**: 轮询循环中通过 `updateMonitorPanel()` 推送最新数据到已打开的面板，保持数据实时同步。自 v1.14.5 起，轮询复用未变化会话的缓存 `ContextUsage`（通过 `hasSameUsageInputs()` 比较 `cascadeId`/`stepCount`/`lastModifiedTime`），减少冗余 RPC 调用。GM 持久化也仅在聚合结果变化时写入。
-  The polling loop pushes latest data to the open panel via `updateMonitorPanel()`, keeping data in real-time sync. Since v1.14.5, polling reuses cached `ContextUsage` for unchanged conversations (compared via `hasSameUsageInputs()` on `cascadeId`/`stepCount`/`lastModifiedTime`), reducing redundant RPC calls. GM persistence also only writes when aggregated results change.
+* **实时刷新 / Live Refresh**: 轮询循环中通过 `updateMonitorPanel()` 推送最新数据到已打开的面板，保持数据实时同步。仅当非运行中会话具有已知 `tokenUsageSource`，且 cascade ID、步骤数、修改时间和状态均相同时，才复用 `ContextUsage` 缓存。缺少来源字段的 1.16.19 之前缓存会重新读取；运行中 trajectory 始终刷新，因为流式回复可以在步骤数不变时原位更新。GM 持久化也仅在聚合结果变化时写入。
+  The polling loop pushes latest data to the open panel via `updateMonitorPanel()`, keeping data in real-time sync. Polling reuses `ContextUsage` only for unchanged, non-running conversations with a known `tokenUsageSource` and matching cascade ID, step count, modification time, and status. Pre-1.16.19 caches without provenance are re-read; running trajectories are always refreshed because a streaming response can change in place without a step-count change. GM persistence also only writes when aggregated results change.
 
 * **GM 恢复摘要回灌 / GM Restored Summary Hydration**: 启动时若文件持久化中存在 `gmDetailedSummary`，扩展会先修复 quota-history 污染，再通过 `gmTracker.setDetailedSummary()` 回灌到内存态 GMTracker，保证面板、时间线和后续 `serialize()` 读到同一份摘要。`GMTracker.fetchAll()` 仅在 `cached.calls.length > 0` 时才允许跳过未变化的 idle 会话；恢复态只剩空 `calls` 的 stub 会主动补拉一次，避免重启后 `上下文情报`、`对话分布`、`上下文增长`、`错误详情` 等区块因为空缓存而消失。
   When a file-backed `gmDetailedSummary` exists at startup, the extension first repairs quota-history contamination and then injects the repaired summary back into `GMTracker` via `gmTracker.setDetailedSummary()`, so the panel, timeline, and later `serialize()` calls all observe the same snapshot. `GMTracker.fetchAll()` now skips unchanged idle conversations only after `cached.calls.length > 0`; restored stubs with empty `calls` are force-refetched once, preventing Context Intelligence / Conversations / Context Growth / Error Details from disappearing after restart due to empty in-memory cache.
@@ -156,6 +173,9 @@ Since v1.10.1, clicking the status bar opens a WebView side panel (replacing the
 
 * **Tool Catalog Cleanup (v1.16.4) / 工具目录清理**: GM Data renders the tool catalog as a collapsible chip grid with truncation-aware tooltips. The WebView clear button sends an internal `clearToolCatalog` message to `extension.ts`; `GMTracker.clearToolCatalog()` clears only the catalog, not tool ranking counts. The extension persists the cleared summary to both `gmTrackerState` and the file-backed `gmDetailedSummary`, preventing stale catalog entries from returning after reload.
   GM Data 将工具目录渲染为可折叠 chip grid，并按文本截断情况动态生成 tooltip。WebView 清空按钮发送内部 `clearToolCatalog` 消息到 `extension.ts`；`GMTracker.clearToolCatalog()` 只清空目录，不影响工具排行计数。扩展会把清空后的摘要同时写入 `gmTrackerState` 和文件持久化的 `gmDetailedSummary`，避免重载后旧目录回填。
+
+* **Narrow header layout (v1.16.19) / 窄宽度顶部布局:** The title/account area and action group wrap independently with bounded widths; language buttons and timestamps stay intact. This prevents the 320 px dashboard header controls from overlapping.
+  标题/账号区域和操作组在限制宽度内分别换行，语言按钮与时间戳保持完整，避免 320 px 面板顶部控件重叠。
 
 ## 🧠 6. Model Activity Monitor / 模型活动监控
 
@@ -227,17 +247,51 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
 
   Three migration triggers in `restore()` force nuclear reset + re-warm-up: missing subAgentTokens, empty checkpointHistory, or all-zero conversationBreakdown (bad data from old field path bug).
 
-* **模型平台阈值 / Model Platform Thresholds**: `models.ts` 中的 `DEFAULT_CONTEXT_LIMITS` 记录 Antigravity 平台截断阈值，而不是模型原生窗口。v1.16.8 将 Gemini 3.1 Pro 调整为 128K，Gemini 3 Flash M133/M132/M84/M47 调整为 128K，GPT-OSS 120B 调整为 80K，Claude Thinking 保持 160K。启动迁移会清除旧版保存下来的 1M、120K/160K/128K 过期默认 override，让新的内置默认值生效。v1.16.14 依据活体探测新增 Gemini 3.6 Flash 三档 M264/M265/M266（另含仅目录可见的 M196）静态兜底 255K（活体 checkpointer 256K/140K，−1K 偏移用于识别活体覆盖是否生效），并把 3.5 Flash M84/M20/M187 过期的 127K 校正为 255K；M133/M132/M47 平台侧已退役，仅保留用于归档数据解析。placeholder ID 的家族推导（`guessContextLimitSpec`）改为按 M 编号精确匹配，杜绝 M264 含 `m26` 子串被误判为 Claude 系的碰撞。v1.16.15 依据活体探测新增 Gemini 3.7 Flash 三档 M298/M299/M300（静态兜底同为 255K，活体 checkpointer 256K/140K），并处理平台对 3.6 Flash 的**改号**：M264/M265/M266 已被平台迁移到 M71/M72/M73，别名与反查一律指向活跃编号，旧编号降级为已退役 ID 仅用于解析归档数据。v1.16.17 对两个运行中的 Antigravity IDE language server 实例互证后新增 Gemini 3.8 Flash M318/M319/M320 与目录内 M322；三档静态兜底 255K、活体 256K/140K，原生上下文 1,048,576、输出 65,536，思考预算为动态/4,000/1,000。M318 同步成为状态栏默认配额池代表；中英文别名、计价与 2027 年历史回填边界共享同一身份归一化链路。
-  `DEFAULT_CONTEXT_LIMITS` stores Antigravity platform truncation thresholds, not model-native windows. v1.16.8 sets Gemini 3.1 Pro to 128K, Gemini 3 Flash M133/M132/M84/M47 to 128K, GPT-OSS 120B to 80K, while Claude Thinking remains 160K. Startup migration clears stale explicit default overrides from older releases so the corrected built-in defaults can take effect. v1.16.14 adds live-probed Gemini 3.6 Flash tiers M264/M265/M266 (plus catalog-only M196) with 255K static fallbacks (live checkpointer 256K/140K; the −1K offset marks fallback vs live capture), corrects the stale 127K fallbacks of 3.5 Flash M84/M20/M187 to 255K, and retires M133/M132/M47 platform-side (kept for archived-data resolution only). Placeholder-ID family inference (`guessContextLimitSpec`) now matches exact M-numbers, eliminating the substring collision where M264 (containing `m26`) was misjudged as a Claude-series model. v1.16.15 adds live-probed Gemini 3.7 Flash tiers M298/M299/M300 and absorbs the platform's 3.6 renumbering to M71/M72/M73. v1.16.17 cross-verifies two running Antigravity IDE language-server instances and adds Gemini 3.8 Flash M318/M319/M320 plus catalog-only M322: 255K static fallback, live 256K/140K checkpointer, 1,048,576 native context, 65,536 output, and dynamic/4,000/1,000 thinking budgets. M318 also becomes the status-bar default pool representative; English/Chinese aliases, pricing, and the 2027 historical backfill boundary share the same normalized identity path.
+* **模型平台阈值 / Model Platform Thresholds**: `models.ts` 中的 `DEFAULT_CONTEXT_LIMITS` 记录 Antigravity 平台截断阈值，而不是模型原生窗口。v1.16.8 将 Gemini 3.1 Pro 调整为 128K，Gemini 3 Flash M133/M132/M84/M47 调整为 128K，GPT-OSS 120B 调整为 80K，Claude Thinking 保持 160K。启动迁移会清除旧版保存下来的 1M、120K/160K/128K 过期默认 override，让新的内置默认值生效。v1.16.14 依据活体探测新增 Gemini 3.6 Flash 三档 M264/M265/M266（另含仅目录可见的 M196）静态兜底 255K（活体 checkpointer 256K/140K，−1K 偏移用于识别活体覆盖是否生效），并把 3.5 Flash M84/M20/M187 过期的 127K 校正为 255K；M133/M132/M47 平台侧已退役，仅保留用于归档数据解析。placeholder ID 的家族推导（`guessContextLimitSpec`）改为按 M 编号精确匹配，杜绝 M264 含 `m26` 子串被误判为 Claude 系的碰撞。v1.16.15 依据活体探测新增 Gemini 3.7 Flash 三档 M298/M299/M300（静态兜底同为 255K，活体 checkpointer 256K/140K），并处理平台对 3.6 Flash 的**改号**：M264/M265/M266 已被平台迁移到 M71/M72/M73，别名与反查一律指向活跃编号，旧编号降级为已退役 ID 仅用于解析归档数据。v1.16.17 对两个运行中的 Antigravity IDE language server 实例互证后新增 Gemini 3.8 Flash M318/M319/M320 与目录内 M322；三档静态兜底 255K、活体 256K/140K，原生上下文 1,048,576、输出 65,536，思考预算为动态/4,000/1,000。M318 在当时成为状态栏默认配额池代表；中英文别名、计价与 2027 年历史回填边界共享同一身份归一化链路。1.16.19 对当前 3.8 picker 的 50K 触发阈值、思考力度和动态代表选择的更新见下一节。
+  `DEFAULT_CONTEXT_LIMITS` stores Antigravity platform truncation thresholds, not model-native windows. v1.16.8 sets Gemini 3.1 Pro to 128K, Gemini 3 Flash M133/M132/M84/M47 to 128K, GPT-OSS 120B to 80K, while Claude Thinking remains 160K. Startup migration clears stale explicit default overrides from older releases so the corrected built-in defaults can take effect. v1.16.14 adds live-probed Gemini 3.6 Flash tiers M264/M265/M266 (plus catalog-only M196) with 255K static fallbacks (live checkpointer 256K/140K; the −1K offset marks fallback vs live capture), corrects the stale 127K fallbacks of 3.5 Flash M84/M20/M187 to 255K, and retires M133/M132/M47 platform-side (kept for archived-data resolution only). Placeholder-ID family inference (`guessContextLimitSpec`) now matches exact M-numbers, eliminating the substring collision where M264 (containing `m26`) was misjudged as a Claude-series model. v1.16.15 adds live-probed Gemini 3.7 Flash tiers M298/M299/M300 and absorbs the platform's 3.6 renumbering to M71/M72/M73. v1.16.17 cross-verifies two running Antigravity IDE language-server instances and adds Gemini 3.8 Flash M318/M319/M320 plus catalog-only M322: 255K static fallback, live 256K/140K checkpointer, 1,048,576 native context, 65,536 output, and dynamic/4,000/1,000 thinking budgets. M318 became the status-bar default pool representative at that time; English/Chinese aliases, pricing, and the 2027 historical backfill boundary share the same normalized identity path. The next section documents the 1.16.19 update to the current 3.8 picker's 50K trigger, thinking levels, and live representative selection.
 
 * **上下文上限来源 / Context Limit Source**: 上下文上限采用本地语言服务器同步的实时参数；实时数据到达前使用注册值或家族推导值兜底。当前设置页提供低额度警告、轮询和显示偏好；旧版本的手动上下文上限覆盖和恢复按钮不属于当前界面。
   Context limits use live parameters synchronized from the local language server, with registered or inferred fallbacks before live data arrives. The current Settings tab configures quota warnings, polling, and display preferences; the former manual context-limit override and restore controls are no longer part of the interface.
 
 ---
 
-## 🤖 7. Claude 5.5 Registry and Model Cards / Claude 5.5 注册与模型信息卡片
+## 🤖 7. Model Registry and Model Cards / 模型注册与模型信息卡片
 
-### English
+### Gemini 4 Argon (v1.16.19)
+
+#### English
+
+A read-only probe of the running IDE on 2026-10-31 verified `GetUserStatus` picker entries and `GetAvailableModels` catalog metadata:
+
+| Effort | Placeholder | Catalog ID | Thinking level |
+| --- | --- | --- | --- |
+| Low | `MODEL_PLACEHOLDER_M419` | `gemini-4-argon-low` | 1 |
+| Medium | `MODEL_PLACEHOLDER_M418` | `gemini-4-argon-medium` | 2 |
+| High | `MODEL_PLACEHOLDER_M417` | `gemini-4-argon-high` | 3 |
+
+All three use `GOOGLE_GEMINI`, with 1,048,576 native-context tokens, 65,536 maximum output tokens, and thinking enabled. The live checkpointer limit is 256,000, its independent trigger threshold is 50,000, and the static context fallback is 255,000. The API reports a minimum thinking budget of 32 but no fixed `thinkingBudget` or adaptive-thinking flag; do not infer a fixed budget or copy Claude's adaptive behavior.
+
+`models.ts` connects placeholders, catalog aliases, English/Chinese effort names, context profiles, and the shared `gemini` quota pool. A response containing only `gemini-4-argon` cannot replace a known requested effort tier. This identity contract is shared by tracking, GM parsing, persistence, custom pricing, and UI. `tooltip-budget.ts` prefers the current model, then a live recommended model, then the newest available generation; integer version 4 ranks above decimal 3.8 without a hardcoded Flash default.
+
+The same current catalog also updates Gemini 3.8 Flash `M318` / `M319` / `M320` to a 50,000 checkpointer trigger and thinking levels 3 / 2 / 1 with no fixed budget. A complete record (valid model ID/provider and both token capacities) treats omitted protobuf thinking fields as their defaults, clearing obsolete budgets/flags. Partial or malformed records preserve known metadata; historical `M322` and older generations retain their prior profiles.
+
+No verified Argon price is built in. Pricing stays unavailable/incomplete until a custom family or tier rate is configured, and cannot fall back to a Flash price. Models remain scoped to the current account's live picker; older Gemini and Claude model identities remain available for historical data.
+
+#### 中文
+
+2026-10-31 对运行中的 IDE 进行了只读探测，核实 `GetUserStatus` 的 picker 与 `GetAvailableModels` 的目录元数据。上表列出 Low / Medium / High 的 `M419` / `M418` / `M417`、catalog ID 及 1 / 2 / 3 思考力度。
+
+三档均使用 `GOOGLE_GEMINI`，原生上下文 1,048,576 token、最大输出 65,536，支持思考。实时 checkpointer 上限为 256,000，独立触发阈值为 50,000，静态上下文兜底为 255,000。API 提供最小思考预算 32，但未返回固定 `thinkingBudget` 或自适应思考标志，不能推断固定预算或复制 Claude 的自适应行为。
+
+`models.ts` 统一 placeholder、catalog 别名、中英文档位名、上下文画像和共享的 `gemini` 配额池。仅含 `gemini-4-argon` 的响应不能覆盖已知的请求档位；追踪、GM 解析、持久化、自定义价格和 UI 共用该身份约定。`tooltip-budget.ts` 依次优先当前模型、账号实时推荐模型、最新可用世代；整数版本 4 可正确排在小数版本 3.8 之前，不再硬编码 Flash 默认代表。
+
+同一当前目录也将 Gemini 3.8 Flash `M318` / `M319` / `M320` 更新为 50,000 checkpointer 触发阈值、3 / 2 / 1 思考力度且无固定预算。完整记录（有效模型 ID/提供商及输入、输出容量）将缺省 protobuf 思考字段按默认值处理，清除过时预算/标志；不完整或非法记录保留已知元数据，历史 `M322` 和较旧世代保留原画像。
+
+未内置未经核实的 Argon 价格；配置自定义家族或档位价格前保留暂无定价/估算不完整状态，不回退到 Flash 单价。模型列表仍以当前账号的实时 picker 为准，旧 Gemini、Claude 身份继续用于历史数据。
+
+### Claude 5.5 (v1.16.18)
+
+#### English
 
 The v1.16.18 registry uses metadata read from the running Antigravity IDE on 2026-10-03. The probe reads local model configuration; it sends no model-generation requests.
 
@@ -258,7 +312,7 @@ Identity normalization links placeholders, catalog IDs, English labels, and Chin
 
 Pricing resolves each family through the same identity normalization used by activity, quota, and archival paths. The official API rates per million tokens are: Claude Opus 5.5 — $4 input, $20 output, $0.20 cache read, $5 for 5-minute cache writes, and $8 for 1-hour cache writes; Claude Sonnet 5.5 — $2 input, $10 output, $0.20 cache read, $2.50 for 5-minute cache writes, and $4 for 1-hour cache writes. `ModelPricing.cacheWrite` stores the 5-minute reference rate. Current `costFromTokens()` and `calculateCosts()` estimates exclude cache creation fees because telemetry does not reliably identify creation tokens and their TTL; 1-hour write fees are not added automatically either. The existing formula includes input, response output, thinking output, and cache reads, without double-counting thinking tokens. Raw usage is retained, and custom rates remain available. API-equivalent estimates do not represent Antigravity subscription billing. Source: [official Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing), 2026-10-03.
 
-### 中文
+#### 中文
 
 v1.16.18 注册表依据 2026-10-03 对运行中 Antigravity IDE 的元数据探测。探测只读取本地模型配置，不发送模型生成请求。上表列出 Opus/Sonnet 六档模型的精确 placeholder 与 catalog ID。
 
@@ -272,14 +326,14 @@ v1.16.18 注册表依据 2026-10-03 对运行中 Antigravity IDE 的元数据探
 
 ## 🧪 8. Verification / 验证
 
-The extension is built with TypeScript. Run `npm ci`, `npm run compile`, and `npm test` using the committed lockfile. The `verify.yml` workflow defines Node.js 22 checks on Windows, macOS, and Linux. Vitest covers discovery parsers for each platform, model identities and aliases, live-parameter precedence, account-specific model lists, quota pools, localized labels, pricing resolution/custom overrides, historical cost backfill, and model-card escaping and missing-data states. Workflow configuration is not evidence that a particular CI run passed; release results belong in the [versioned release notes](releases/1.16.18.md).
+The release includes Vitest 4.1.12, Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`, and CI Node.js 26.12.1. Use these runtime constraints and the committed lockfile: `npm ci`, `npm run compile`, and `npm test`. `verify.yml` defines native Windows, macOS, and Linux compile/test jobs; its Node.js version is specified in that workflow. A configured matrix does not prove that a release commit passed it.
 
-The v1.16.18 model-information component passed **36/36 browser rendering cases**, regenerated from the installed extension's `out/`: four themes (light, dark, high-contrast dark, high-contrast light) × three languages (English, Chinese, bilingual) × three viewport widths (320, 768, 1440 px). Every case rendered 18 model cards, including all six Claude 5.5 variants, with no horizontal overflow and zero axe violations within `.model-info-section`. Another **15/15 browser interaction assertions** passed for price validation, draft values/empty inputs/focus across model refreshes, and pause/resume. The README image is a rendering of the component, not a screenshot of the full IDE window.
+The regression scope includes legacy and hub discovery, argument/port parsing, candidate fallback, cancellation, Argon tier aliases and metadata, live-model precedence, account-specific catalogs, shared quotas, GM identity preservation, unknown/custom pricing, persisted history, and English/Chinese/bilingual rendering. Cross-platform mocks exercise branches locally and must be distinguished from execution on each native operating system.
 
-Local acceptance passed `npm run compile` and **362 tests in 26 files**. The new VSIX was installed into the already running **Antigravity IDE 2.5.5 on macOS** (VS Code 1.107.0); after reload, the manifest reported 1.16.18 and all **45 installed JavaScript files** matched the VSIX and local build byte for byte. Native checks covered the six model identities and limits, adaptive thinking, language switching/reload persistence, all four themes, both Claude price families, invalid-price rejection, draft retention, and pause/resume label/ARIA/indicator consistency. The original UI preferences were restored, drafts were discarded without saving custom prices, no generation requests were sent, and real usage history was not manually changed. Windows/macOS/Linux CI results are reported by the versioned commit in [GitHub Actions](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml).
+Release acceptance must use the newly packaged **1.16.19** VSIX installed in the already running IDE, followed by reload and installed-file/version checks. UI checks cover live model cards and metadata, empty/idle versus disconnected state, language switching and persistence, themes, narrow layouts, refresh/pause controls, and pricing interactions. Results, counts, generation-test scope, and untested environments are recorded in [1.16.19 release notes](releases/1.16.19.md#validation). Earlier 1.16.18 results remain in their [historical release record](releases/1.16.18.md#validation).
 
-扩展使用 TypeScript 构建。按已提交的锁文件执行 `npm ci`、`npm run compile` 和 `npm test`。`verify.yml` 定义 Windows、macOS、Linux 上的 Node.js 22 检查。Vitest 覆盖各平台发现解析器、模型身份与别名、实时参数优先级、账号模型列表、配额池、本地化标签、定价解析与自定义覆盖、历史费用回填，以及模型卡片的转义和缺失数据状态。配置了工作流并不代表某次 CI 已通过；发布验收结果记录在[对应版本说明](releases/1.16.18.md)中。
+本版本包含 Vitest 4.1.12、Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`，CI 使用 Node.js 26.12.1。按上述运行时约束和已提交锁文件执行 `npm ci`、`npm run compile`、`npm test`。`verify.yml` 定义 Windows、macOS、Linux 原生编译/测试任务，Node.js 版本以该工作流为准。已配置矩阵并不证明某个发布提交已通过。
 
-v1.16.18 模型信息组件已从安装后扩展的 `out/` 重新生成，并通过 **36/36 项浏览器渲染检查**：四种主题（亮色、暗色、暗色高对比度、亮色高对比度）× 三种语言（英文、中文、双语）× 三种视口宽度（320、768、1440 px）。每项均渲染 18 张模型卡片，包含全部六档 Claude 5.5，无横向溢出，且 `.model-info-section` 范围内 axe 违规为零。另有 **15/15 项浏览器交互断言**通过，覆盖价格校验、模型刷新时草稿值/空输入/焦点保留及暂停/恢复。README 的图片是该组件的渲染图，并非 IDE 全窗口截图。
+回归范围包含旧版/hub 发现、参数与端口解析、候选回退、取消、Argon 档位别名与元数据、实时模型优先级、账号目录、共享配额、GM 身份保持、未知/自定义价格、历史持久化，以及英文/中文/双语渲染。跨平台 mock 在本地覆盖分支，需要与各原生操作系统上的实际运行分别报告。
 
-本地验收通过 `npm run compile` 及 **26 个文件的 362 项测试**。新 VSIX 已安装到原本运行中的 **macOS Antigravity IDE 2.5.5**（VS Code 1.107.0）；重载后清单显示 1.16.18，全部 **45 个已安装 JavaScript 文件**与 VSIX 和本地构建逐字节一致。原生检查覆盖六档模型身份和上限、自适应思考、语言切换及重载持久化、四种主题、两个 Claude 价格家族、非法价格拒绝保存、草稿保留，以及暂停/恢复文案、ARIA 和指示器一致性。已恢复原界面偏好，草稿已丢弃且未保存自定义价格；未发送生成请求，未手动修改真实用量历史。Windows/macOS/Linux CI 结果按对应提交记录于 [GitHub Actions](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml)。
+发布验收必须将重新打包的 **1.16.19** VSIX 安装到已经运行的 IDE，重载后检查安装文件和版本。UI 检查覆盖实时模型卡片及元数据、空闲/空状态与断连的区别、语言切换和持久化、主题、窄布局、刷新/暂停及价格交互。结果、数量、生成测试范围和未测环境记录于 [1.16.19 发布说明](releases/1.16.19.md#验证)；此前 1.16.18 结果保留在[历史发布记录](releases/1.16.18.md#validation)中。

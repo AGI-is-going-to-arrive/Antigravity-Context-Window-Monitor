@@ -14,6 +14,8 @@ import {
     extractWindowsPid,
     netstatLineMatchesPid,
     extractWslDistro,
+    isAgyHubProcess,
+    extractHubPort,
 } from '../src/discovery';
 
 describe('discovery.ts', () => {
@@ -430,6 +432,68 @@ describe('discovery.ts', () => {
                 expect(isWSL()).toBe(false);
             });
         }
+    });
+});
+
+describe('agy hub command lines', () => {
+    const args = '--hub --hub-port=60901 --app_data_dir=antigravity --csrf_token=AbC-DeF';
+
+    it.each([
+        `24824 /Users/test/.gemini/bin/agy ${args}`,
+        `24824 /Users/Test User/.gemini/bin/agy ${args}`,
+        `24824 /Users/O'Neill/.gemini/bin/agy ${args}`,
+        `24824 /home/测试/.gemini/bin/agy ${args}`,
+        `24824 "/home/test user/.gemini/bin/agy" ${args}`,
+        `"24824","""C:\\Users\\测试 User\\.gemini\\bin\\agy.exe"" ${args}"`,
+        `HOST,"""C:\\Program Files\\Antigravity\\agy.exe"" ${args}",24824`,
+    ])('recognizes the actual executable in %s', line => {
+        expect(isAgyHubProcess(line)).toBe(true);
+        expect(extractCsrfToken(line)).toBe('AbC-DeF');
+        expect(extractHubPort(line)).toBe(60901);
+        expect(filterLsProcessLines(line)).toEqual([line]);
+    });
+
+    it.each([
+        `123 node /tmp/agy ${args}`,
+        `123 /bin/node /tmp/agy ${args}`,
+        `123 /bin/node '/tmp/agy ${args}'`,
+        `123 /bin/sh -c 'agy ${args}'`,
+        `123 /tmp/not-agy ${args}`,
+        `123 /tmp/agy-helper ${args}`,
+        `123 /tmp/agy ${args.replace('--hub ', '--hub=false ')}`,
+        `123 /tmp/agy ${args.replace('--app_data_dir=antigravity', '--app_data_dir=other')}`,
+        `123 /tmp/agy ${args.replace('--hub ', '--hub-port=1234 ')}`,
+    ])('rejects unrelated commands: %s', line => {
+        expect(isAgyHubProcess(line)).toBe(false);
+        expect(filterLsProcessLines(line)).toEqual([]);
+    });
+
+    it.each(['0', '-1', '65536', '1.2', '3e4', '123abc', '', '99999999999999999'])('rejects hub port %s', port => {
+        expect(extractHubPort(`agy --hub-port=${port}`)).toBeNull();
+    });
+
+    it('supports quoted and space-separated flags without capturing CSV framing', () => {
+        const line = '"123","""C:\\Users\\Test, User\\agy.exe"" --hub --hub-port ""65535"" --app_data_dir antigravity --csrf_token ""Mixed-Case"" --workspace_id=""file_Test_20User"""';
+        expect(isAgyHubProcess(line)).toBe(true);
+        expect(extractCsrfToken(line)).toBe('Mixed-Case');
+        expect(extractWorkspaceId(line)).toBe('file_Test_20User');
+        expect(extractHubPort(line)).toBe(65535);
+    });
+
+    it('does not interpret another argument value as the CSRF flag', () => {
+        expect(extractCsrfToken('agy --description="--csrf_token=decoy"')).toBeNull();
+        expect(extractCsrfToken('agy --csrf_token --hub')).toBeNull();
+        expect(extractCsrfToken('agy --csrf_token="" --hub')).toBeNull();
+        expect(extractCsrfToken('agy --csrf_token="unterminated')).toBeNull();
+    });
+
+    it('prefers the hub over a legacy shared server', () => {
+        const hub = `2 /home/test/.gemini/bin/agy ${args}`;
+        expect(selectMatchingProcessLine(['1 language_server_linux --antigravity', hub])).toBe(hub);
+    });
+
+    it('tolerates malformed percent encoding when checking a remote workspace URI', () => {
+        expect(extractWslDistro('vscode-remote://wsl%2BUbuntu/work%ZZ')).toBeNull();
     });
 });
 

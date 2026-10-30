@@ -16,6 +16,8 @@ export interface QuotaSelectable {
     model: string;
     label: string;
     quotaInfo?: { remainingFraction: number; resetTime?: string };
+    /** Recommended by the current account's live model catalog. */
+    isRecommended?: boolean;
     /** Set on a collapsed row: how many models the row's quota pool contains. */
     poolSize?: number;
 }
@@ -101,13 +103,10 @@ export function getLineBudget(density: TooltipDensity, mode: EffectiveMode): num
 
 // ─── Quota row selection ──────────────────────────────────────────────────────
 
-/** Platform default picker model — used only as a same-pool representative tie-break. */
-const PLATFORM_DEFAULT_MODEL_ID = 'MODEL_PLACEHOLDER_M318';
-
 /**
  * Select quota rows for the tooltip table:
  * 1. Collapse models that share a quota pool (getQuotaPoolKey) into one row
- * 2. Representative: current model, then platform default, then newest generation, then label
+ * 2. Representative: current model, then live recommendation, then newest generation, then label
  * 3. Current model's pool first; remaining by remainingFraction ascending
  * 4. Stable label localeCompare on leftover ties
  *
@@ -181,11 +180,9 @@ function pickPoolRepresentative<T extends QuotaSelectable>(members: T[], current
             return current;
         }
     }
-    const platformDefault = members.find(m => m.model === PLATFORM_DEFAULT_MODEL_ID);
-    if (platformDefault) {
-        return platformDefault;
-    }
     return [...members].sort((a, b) => {
+        const recommended = Number(!!b.isRecommended) - Number(!!a.isRecommended);
+        if (recommended !== 0) { return recommended; }
         const dg = generationScore(b.label) - generationScore(a.label);
         if (dg !== 0) {
             return dg;
@@ -194,13 +191,13 @@ function pickPoolRepresentative<T extends QuotaSelectable>(members: T[], current
     })[0];
 }
 
-/** "Gemini 3.8 Flash" → 3008; labels with no x.y version sort last. */
+/** "Gemini 4 Argon" → 4000; "Gemini 3.8 Flash" → 3008. Parameter counts are not versions. */
 function generationScore(label: string): number {
-    const m = /(\d+)\.(\d+)/.exec(label);
+    const m = /(?:^|\s)(\d+)(?:\.(\d+))?(?=\s|$|\()/.exec(label);
     if (!m) {
         return 0;
     }
-    return Number(m[1]) * 1000 + Number(m[2]);
+    return Number(m[1]) * 1000 + Number(m[2] || 0);
 }
 
 /** Suffix marking how many models a collapsed pool row stands for, e.g. " · 11". */

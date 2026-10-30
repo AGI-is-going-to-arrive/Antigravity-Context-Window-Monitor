@@ -110,6 +110,12 @@ export interface LSInfo {
     useTls: boolean;
 }
 
+/** Optional connection identity exported by the current IDE's built-in extension. */
+export interface LSConnectionHint {
+    port: number;
+    csrfToken: string;
+}
+
 // ─── CR2-Fix4: Exported Parsing Functions ────────────────────────────────────
 // Extracted from discoverLanguageServer() so tests can validate production code
 // directly, instead of re-implementing the same regex logic in test files.
@@ -197,20 +203,107 @@ export function extractWindowsPid(line: string): number | null {
     return null;
 }
 
-/**
- * Extract CSRF token from a ps output line.
- */
-export function extractCsrfToken(line: string): string | null {
-    const csrfMatch = line.match(/--csrf_token\s+([^\s]+)/);
-    return csrfMatch ? csrfMatch[1] : null;
+/** Decode a CSV row without losing commas or doubled quotes in CommandLine. */
+function parseCsvRow(line: string): string[] {
+    const fields: string[] = [];
+    let field = '';
+    let quoted = false;
+    for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+            if (quoted && line[i + 1] === '"') { field += '"'; i++; }
+            else { quoted = !quoted; }
+        } else if (ch === ',' && !quoted) {
+            fields.push(field);
+            field = '';
+        } else { field += ch; }
+    }
+    fields.push(field);
+    return fields;
 }
 
-/**
- * Extract workspace_id from a ps output line.
- */
+/** Accept ps PID/command rows, bare commands, and both Windows CSV layouts. */
+function processCommandLine(line: string): string {
+    const trimmed = line.trim();
+    if (/^"?\d+"?\s*,/.test(trimmed)) {
+        const fields = parseCsvRow(trimmed);
+        if (fields.length === 2) { return fields[1]; }
+    }
+    if (/,[0-9]+$/.test(trimmed)) {
+        const fields = parseCsvRow(trimmed);
+        if (fields.length === 3) { return fields[1]; }
+    }
+    return trimmed.replace(/^\d+\s+/, '');
+}
+
+/** Tokenize arguments without interpreting shell escapes or Windows path slashes. */
+function commandArguments(line: string): string[] {
+    const args: string[] = [];
+    const command = processCommandLine(line);
+    let value = '';
+    let quote = '';
+    let started = false;
+    for (const ch of command) {
+        if (quote) {
+            if (ch === quote) { quote = ''; }
+            else { value += ch; }
+        } else if ((ch === '"' || ch === "'") && (!started || value.endsWith('='))) {
+            quote = ch;
+            started = true;
+        } else if (/\s/.test(ch)) {
+            if (started) { args.push(value); value = ''; started = false; }
+        } else { value += ch; started = true; }
+    }
+    // A truncated/unterminated quoted token is not safe to use as a credential.
+    if (quote) { return []; }
+    if (started) { args.push(value); }
+    return args;
+}
+
+function commandFlag(line: string, name: string): string | null {
+    const args = commandArguments(line);
+    for (let i = 1; i < args.length; i++) {
+        const arg = args[i];
+        if (arg.toLowerCase().startsWith(`${name}=`)) {
+            return arg.slice(name.length + 1) || null;
+        }
+        if (arg.toLowerCase() === name) {
+            const next = args[i + 1];
+            return next && !next.startsWith('--') ? next : null;
+        }
+    }
+    return null;
+}
+
+export function extractCsrfToken(line: string): string | null {
+    return commandFlag(line, '--csrf_token');
+}
+
 export function extractWorkspaceId(line: string): string | null {
-    const match = line.match(/--workspace_id\s+([^\s]+)/);
-    return match ? match[1] : null;
+    return commandFlag(line, '--workspace_id');
+}
+
+/** The new IDE hosts the same Connect RPC API in an agy --hub process. */
+export function isAgyHubProcess(line: string): boolean {
+    const command = processCommandLine(line);
+    const executable = command.match(/^(?:"([^"\r\n]+)"|'([^'\r\n]+)'|((?:[A-Za-z]:[\\/]|\/)[^"\r\n]*?[\\/]agy(?:\.exe)?|agy(?:\.exe)?))(?=\s|$)/i);
+    if (!executable) { return false; }
+    const path = executable[1] || executable[2] || executable[3];
+    if (!/(?:^|[\\/])agy(?:\.exe)?$/i.test(path)) { return false; }
+    // ps does not quote executable paths with spaces. Accept those, but never
+    // mistake a shell/node command mentioning another executable for the hub.
+    if (!executable[1] && !executable[2] && /\s+(?:[-/]|['"]?[A-Za-z]:[\\/]|['"]\/)/.test(path)) { return false; }
+    const args = commandArguments(line).map(arg => arg.toLowerCase());
+    const hub = args.includes('--hub') || args.includes('--hub=true');
+    const appDataDir = commandFlag(line, '--app_data_dir');
+    return hub && !!appDataDir && /(?:^|[\\/])antigravity(?:-ide)?[\\/]?$/i.test(appDataDir);
+}
+
+export function extractHubPort(line: string): number | null {
+    const raw = commandFlag(line, '--hub-port');
+    if (!raw || !/^\d+$/.test(raw)) { return null; }
+    const port = Number(raw);
+    return Number.isSafeInteger(port) && port > 0 && port <= 65535 ? port : null;
 }
 
 /**
@@ -234,6 +327,9 @@ export function selectMatchingProcessLine(lines: readonly string[], workspaceUri
     if (lines.length === 1) {
         return lines[0];
     }
+
+    const hub = lines.find(isAgyHubProcess);
+    if (hub) { return hub; }
 
     // Separate processes into new-style (no workspace_id) and old-style (has workspace_id)
     const newStyleLines = lines.filter(line => extractWorkspaceId(line) === null);
@@ -274,7 +370,7 @@ export function filterLsProcessLines(psOutput: string, binaryOverride?: string):
         // extractCsrfToken and the request headers depend on the case-sensitive
         // csrf_token value, so the line must never be lower-cased in place.
         const low = l.toLowerCase();
-        return low.includes(binaryName) && low.includes('antigravity');
+        return isAgyHubProcess(l) || (low.includes(binaryName.toLowerCase()) && low.includes('antigravity'));
     });
 }
 
@@ -398,9 +494,11 @@ export function netstatLineMatchesPid(line: string, pid: number): boolean {
  */
 export function extractWslDistro(uri: string): string | null {
     // Handle both URL-encoded (%2B → +) and raw + in WSL authority
-    const decoded = decodeURIComponent(uri);
-    const match = decoded.match(/^vscode-remote:\/\/wsl\+([^/]+)\//i);
-    return match ? match[1] : null;
+    try {
+        const decoded = decodeURIComponent(uri);
+        const match = decoded.match(/^vscode-remote:\/\/wsl\+([^/]+)\//i);
+        return match ? match[1] : null;
+    } catch { return null; }
 }
 
 /**
@@ -419,7 +517,8 @@ async function discoverWslLanguageServer(
     distro: string,
     workspaceUri: string,
     signal?: AbortSignal,
-    log?: (msg: string) => void
+    log?: (msg: string) => void,
+    hint?: LSConnectionHint,
 ): Promise<LSInfo | null> {
     // CR-#62: invoke wsl.exe by absolute path when %SystemRoot% is known, so
     // Remote-WSL discovery does not depend on the Extension Host PATH either.
@@ -428,80 +527,36 @@ async function discoverWslLanguageServer(
         ? `${winRoot}\\System32\\wsl.exe`
         : 'wsl';
     try {
-        // 1. Find LS process inside WSL
         const psResult = await execFileAsync(wslExe, [
-            '-d', distro, '--', 'bash', '-c',
-            // -i so an install path spelled with capitals still matches (the JS-side filter below
-            // cannot rescue a line this grep already dropped), and the [l] bracket trick excludes
-            // this grep's own process without `grep -v grep` — which would also drop a REAL language
-            // server whose command line merely contains "grep" (e.g. a workspace under /home/u/grep-tools).
-            'ps aux | grep -i "[l]anguage_server"'
+            '-d', distro, '--', 'ps', '-ax', '-o', 'pid=,command='
         ], { encoding: 'utf-8', timeout: 10000, signal });
-
-        // Case-insensitive, matching filterLsProcessLines() and the native Windows branch. The
-        // install path can be spelled "Antigravity", so a case-sensitive test finds nothing and
-        // Remote-WSL discovery reports "no language_server process" on a perfectly healthy machine.
-        // Lower-case a COPY for the test only — the original line still carries the CSRF token.
-        const psLines = psResult.stdout.split('\n').filter(l => {
-            const lower = l.toLowerCase();
-            return lower.includes('language_server') && lower.includes('antigravity');
-        });
-
-        if (psLines.length === 0) {
-            log?.(`WSL[${distro}]: no language_server process found inside distro`);
+        const lines = filterLsProcessLines(psResult.stdout, 'language_server_linux');
+        if (lines.length === 0) {
+            log?.(`WSL[${distro}]: no Antigravity server process found inside distro`);
             return null;
         }
 
-        // 2. Match workspace_id if possible
-        const targetLine = selectMatchingProcessLine(psLines, workspaceUri);
-        if (!targetLine) {
-            return null;
-        }
-
-        // 3. Extract CSRF token
-        const csrfToken = extractCsrfToken(targetLine);
-        if (!csrfToken) {
-            return null;
-        }
-
-        // 4. Extract PID from ps aux format (column 2)
-        const pidMatch = targetLine.trim().match(/^\S+\s+(\d+)/);
-        const pid = pidMatch ? parseInt(pidMatch[1], 10) : null;
-        if (!pid) {
-            return null;
-        }
-
-        // 5. Find listening ports via ss inside WSL
-        let ports: number[] = [];
-        try {
-            const ssResult = await execFileAsync(wslExe, [
-                '-d', distro, '--', 'ss', '-tlnp'
-            ], { encoding: 'utf-8', timeout: 5000, signal });
-
-            for (const line of ssResult.stdout.split('\n')) {
-                if (line.includes(`pid=${pid},`) || line.includes(`pid=${pid})`)) {
-                    const port = extractPortFromSs(line);
-                    if (port !== null) {
-                        ports.push(port);
+        for (const line of orderedProcessLines(lines, workspaceUri, hint)) {
+            if (signal?.aborted) { return null; }
+            const pid = extractPid(line);
+            const csrfToken = extractCsrfToken(line);
+            if (!pid || !csrfToken) { continue; }
+            const found = await probeProcess(line, pid, csrfToken, async () => {
+                try {
+                    const ssResult = await execFileAsync(wslExe, [
+                        '-d', distro, '--', 'ss', '-tlnp'
+                    ], { encoding: 'utf-8', timeout: 5000, signal });
+                    const ports: number[] = [];
+                    for (const socket of ssResult.stdout.split('\n')) {
+                        if (socket.includes(`pid=${pid},`) || socket.includes(`pid=${pid})`)) {
+                            const port = extractPortFromSs(socket);
+                            if (port !== null) { ports.push(port); }
+                        }
                     }
-                }
-            }
-        } catch { /* ss failed */ }
-
-        if (ports.length === 0) {
-            return null;
-        }
-
-        // 6. Probe ports from Windows (WSL2 auto-forwards localhost ports)
-        for (const port of ports) {
-            const httpsOk = await probePort(port, csrfToken, true, signal);
-            if (httpsOk) {
-                return { pid, csrfToken, port, useTls: true };
-            }
-            const httpOk = await probePort(port, csrfToken, false, signal);
-            if (httpOk) {
-                return { pid, csrfToken, port, useTls: false };
-            }
+                    return ports;
+                } catch { return []; }
+            }, signal);
+            if (found) { return found; }
         }
 
         return null;
@@ -540,13 +595,13 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
         try {
             const result = await execFileAsync(wmicExe, [
                 'process', 'where',
-                "name like 'language_server_windows%'",
+                "name like 'language_server_windows%' or name = 'agy.exe'",
                 'get', 'ProcessId,CommandLine', '/format:csv'
             ], { encoding: 'utf-8', timeout: 5000, signal });
             // CR-#62: only trust/cache wmic when it actually returned LS rows.
             // A transient empty stdout must NOT cache wmicAvailable=true, else the
             // PowerShell fallback would be permanently skipped.
-            if (result.stdout && result.stdout.includes('language_server_windows')) {
+            if (filterLsProcessLines(result.stdout, 'language_server_windows').length > 0) {
                 wmicAvailable = true;
                 return result.stdout;
             }
@@ -567,7 +622,7 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
     try {
         const result = await execFileAsync(psExe, [
             '-NoProfile', '-NoLogo', '-Command',
-            'Get-CimInstance Win32_Process -Filter "Name like \'language_server_windows%\'" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation'
+            'Get-CimInstance Win32_Process -Filter "Name like \'language_server_windows%\' or Name = \'agy.exe\'" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation'
         ], { encoding: 'utf-8', timeout: 10000, signal });
         return result.stdout;
     } catch (e) {
@@ -659,6 +714,59 @@ async function findListeningPorts(
     return [];
 }
 
+/** Keep workspace/shared-server preference, but do not let a stale PID hide a live one. */
+function orderedProcessLines(lines: readonly string[], workspaceUri?: string, hint?: LSConnectionHint): string[] {
+    // When the active IDE exports its connection, never silently attach to a
+    // different hub/account if that connection has not started or has gone away.
+    const remaining = hint
+        ? lines.filter(line => extractCsrfToken(line) === hint.csrfToken
+            && (!isAgyHubProcess(line) || extractHubPort(line) === hint.port))
+        : [...lines];
+    const ordered: string[] = [];
+    while (remaining.length > 0) {
+        const preferred = selectMatchingProcessLine(remaining, workspaceUri);
+        if (preferred === null) { break; }
+        ordered.push(preferred);
+        remaining.splice(remaining.indexOf(preferred), 1);
+    }
+    return ordered;
+}
+
+async function probeProcess(
+    line: string,
+    pid: number,
+    csrfToken: string,
+    getPorts: () => Promise<number[]>,
+    signal?: AbortSignal,
+): Promise<LSInfo | null> {
+    if (signal?.aborted) { return null; }
+    const hub = isAgyHubProcess(line);
+    const declaredPort = hub ? extractHubPort(line) : null;
+    const attempted = new Set<number>();
+    const tryPort = async (port: number): Promise<LSInfo | null> => {
+        if (attempted.has(port) || signal?.aborted) { return null; }
+        attempted.add(port);
+        // agy serves its hub over HTTP; legacy language_server usually uses TLS.
+        for (const useTls of hub ? [false, true] : [true, false]) {
+            if (signal?.aborted) { return null; }
+            if (await probePort(port, csrfToken, useTls, signal)) {
+                return { pid, csrfToken, port, useTls };
+            }
+        }
+        return null;
+    };
+    if (declaredPort !== null) {
+        const found = await tryPort(declaredPort);
+        if (found) { return found; }
+    }
+    if (signal?.aborted) { return null; }
+    for (const port of await getPorts()) {
+        const found = await tryPort(port);
+        if (found) { return found; }
+    }
+    return null;
+}
+
 /**
  * Discover an Antigravity LS running natively inside this WSL distro.
  *
@@ -673,6 +781,7 @@ async function findListeningPorts(
  */
 async function discoverLocalLinuxLanguageServer(
     workspaceUri?: string, signal?: AbortSignal, log?: (msg: string) => void,
+    hint?: LSConnectionHint,
 ): Promise<LSInfo | null> {
     let psOutput: string;
     try {
@@ -689,18 +798,14 @@ async function discoverLocalLinuxLanguageServer(
     const lines = filterLsProcessLines(psOutput, 'language_server_linux');
     if (lines.length === 0) { return null; }
 
-    const targetLine = selectMatchingProcessLine(lines, workspaceUri);
-    if (!targetLine) { return null; }
-
-    const trimmed = targetLine.trim();
-    const pid = extractPid(trimmed);
-    const csrfToken = extractCsrfToken(trimmed);
-    if (!pid || !csrfToken) { return null; }
-
-    const ports = await findListeningPorts(pid, signal, log, true);
-    for (const port of ports) {
-        if (await probePort(port, csrfToken, true, signal)) { return { pid, csrfToken, port, useTls: true }; }
-        if (await probePort(port, csrfToken, false, signal)) { return { pid, csrfToken, port, useTls: false }; }
+    for (const line of orderedProcessLines(lines, workspaceUri, hint)) {
+        if (signal?.aborted) { return null; }
+        const pid = extractPid(line);
+        const csrfToken = extractCsrfToken(line);
+        if (!pid || !csrfToken) { continue; }
+        const found = await probeProcess(line, pid, csrfToken,
+            () => findListeningPorts(pid, signal, log, true), signal);
+        if (found) { return found; }
     }
     return null;
 }
@@ -713,9 +818,17 @@ async function discoverLocalLinuxLanguageServer(
  * S3 fix: Uses execFile (no shell) to prevent command injection risks.
  * CR-#3: Accepts AbortSignal for cancellation on extension deactivate.
  */
-export async function discoverLanguageServer(workspaceUri?: string, signal?: AbortSignal, log?: (msg: string) => void): Promise<LSInfo | null> {
+export async function discoverLanguageServer(
+    workspaceUri?: string, signal?: AbortSignal, log?: (msg: string) => void, hint?: LSConnectionHint,
+): Promise<LSInfo | null> {
     // CR-#62: one-time PATH visibility so a missing Wbem / WindowsPowerShell dir
     // (the suspected root cause of "LS not found") is immediately diagnosable.
+    if (signal?.aborted) { return null; }
+    if (hint && (!Number.isInteger(hint.port) || hint.port < 1 || hint.port > 65535
+        || !hint.csrfToken || /\s/.test(hint.csrfToken))) {
+        log?.('Ignoring invalid IDE connection hint; no alternate account will be selected');
+        return null;
+    }
     logDiscoveryPathOnce(log);
     try {
         // ─── Remote-WSL: discover LS running inside WSL distro ──────────
@@ -726,7 +839,7 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
             const wslDistro = extractWslDistro(workspaceUri);
             if (wslDistro) {
                 log?.(`Attempting WSL LS discovery in distro "${wslDistro}"`);
-                const wslResult = await discoverWslLanguageServer(wslDistro, workspaceUri, signal, log);
+                const wslResult = await discoverWslLanguageServer(wslDistro, workspaceUri, signal, log, hint);
                 if (wslResult) {
                     log?.(`Found WSL LS: port=${wslResult.port}, pid=${wslResult.pid}`);
                     return wslResult;
@@ -739,7 +852,7 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
         // Reachable on 127.0.0.1; the Windows-host LS below is not (see
         // discoverLocalLinuxLanguageServer). Try it first, fall through if absent.
         if (isWSL()) {
-            const localResult = await discoverLocalLinuxLanguageServer(workspaceUri, signal, log);
+            const localResult = await discoverLocalLinuxLanguageServer(workspaceUri, signal, log, hint);
             if (localResult) {
                 log?.(`Found LS inside WSL distro: port=${localResult.port}, pid=${localResult.pid}`);
                 return localResult;
@@ -747,138 +860,38 @@ export async function discoverLanguageServer(workspaceUri?: string, signal?: Abo
             log?.('No LS inside this WSL distro, trying the Windows host LS');
         }
 
-        let pid: number | null = null;
-        let csrfToken: string | null = null;
-
-        if (process.platform === 'win32' || isWSL()) {
-            // ─── Windows: wmic.exe (preferred) or Get-CimInstance (fallback) ───
-            // Uses cached wmic availability to skip missing wmic on subsequent polls.
-            let wmicOutput: string;
-            try {
-                wmicOutput = await discoverWindowsProcesses(signal, log);
-            } catch (e) {
-                const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
-                log?.(`Windows process discovery threw (${code})`);
-                return null;
-            }
-
-            // Parse wmic CSV or PowerShell CSV output. Both contain lines with
-            // CommandLine and ProcessId fields.
-            // CR-#62: case-INSENSITIVE membership test (see filterLsProcessLines),
-            // returning the ORIGINAL line so the case-sensitive csrf_token survives.
-            const lines = wmicOutput.split('\n').filter(l => {
-                const low = l.toLowerCase();
-                return low.includes('language_server_windows') && low.includes('antigravity');
-            });
-
-            if (lines.length === 0) {
-                log?.(`matched 0 language_server_windows lines (${wmicOutput.length}B from process discovery)`);
-                return null;
-            }
-
-            // Find the line matching our workspace
-            const targetLine = selectMatchingProcessLine(lines, workspaceUri);
-            if (!targetLine) {
-                log?.(`no matching LS process line among ${lines.length} candidate(s)`);
-                return null;
-            }
-
-            // Extract CSRF token from the command line string
-            csrfToken = extractCsrfToken(targetLine);
-            if (!csrfToken) {
-                log?.('LS process line has no --csrf_token');
-                return null;
-            }
-
-            // Extract PID — handles both wmic (PID last column) and PowerShell
-            // ConvertTo-Csv (PID first, quoted column) formats.
-            pid = extractWindowsPid(targetLine);
-            if (!pid) {
-                log?.('could not parse PID from LS process line');
-                return null;
-            }
+        let lines: string[];
+        const windowsProcesses = process.platform === 'win32' || isWSL();
+        if (windowsProcesses) {
+            const output = await discoverWindowsProcesses(signal, log);
+            lines = filterLsProcessLines(output, 'language_server_windows');
         } else {
-            // ─── macOS / Linux: ps for process discovery ──────────────────
-            // S2/S3: async execFile — does not block the Extension Host event loop,
-            // and does not spawn a shell (no command injection risk).
-            let psOutput: string;
-            try {
-                const result = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
-                    encoding: 'utf-8',
-                    timeout: 5000,
-                    signal
-                });
-                psOutput = result.stdout;
-            } catch (e) {
-                const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
-                log?.(`ps process discovery failed (${code})`);
-                return null;
-            }
-
-            const lines = filterLsProcessLines(psOutput);
-
-            if (lines.length === 0) {
-                log?.('matched 0 language_server lines from ps');
-                return null;
-            }
-
-            const targetLine = selectMatchingProcessLine(lines, workspaceUri);
-            if (!targetLine) {
-                log?.(`no matching LS process line among ${lines.length} candidate(s)`);
-                return null;
-            }
-
-            const firstLine = targetLine.trim();
-
-            // Extract PID (first number)
-            pid = extractPid(firstLine);
-            if (!pid) {
-                log?.('could not parse PID from ps line');
-                return null;
-            }
-
-            // Extract CSRF token
-            csrfToken = extractCsrfToken(firstLine);
-            if (!csrfToken) {
-                log?.('LS process line has no --csrf_token');
-                return null;
-            }
+            const result = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
+                encoding: 'utf-8', timeout: 5000, signal,
+            });
+            lines = filterLsProcessLines(result.stdout);
         }
 
-        // 2. Find listening ports
-        // Cross-platform: netstat (Windows), lsof (macOS + Linux), ss fallback (Linux)
-        const ports = await findListeningPorts(pid, signal, log);
-
-        if (ports.length === 0) {
-            log?.(`no listening ports found for pid ${pid}`);
+        if (lines.length === 0) {
+            log?.('matched 0 Antigravity language_server or agy hub processes');
             return null;
         }
 
-        // 3. Probe each port to find the Connect-RPC endpoint
-        for (const port of ports) {
-            // Try HTTPS first (LS typically uses self-signed cert)
-            const httpsResult = await probePort(port, csrfToken, true, signal);
-            if (httpsResult) {
-                return { pid, csrfToken, port, useTls: true };
-            }
-
-            // Fallback to HTTP
-            const httpResult = await probePort(port, csrfToken, false, signal);
-            if (httpResult) {
-                return { pid, csrfToken, port, useTls: false };
-            }
+        for (const line of orderedProcessLines(lines, workspaceUri, hint)) {
+            if (signal?.aborted) { return null; }
+            const pid = windowsProcesses ? extractWindowsPid(line) : extractPid(line);
+            const csrfToken = extractCsrfToken(line);
+            if (!pid || !csrfToken) { continue; }
+            const result = await probeProcess(line, pid, csrfToken,
+                () => findListeningPorts(pid, signal, log), signal);
+            if (result) { return result; }
+            log?.(`RPC probe failed for candidate pid ${pid}; trying remaining processes`);
         }
 
-        log?.(`probe failed on all ${ports.length} port(s) [${ports.join(', ')}] for pid ${pid}`);
         if (isWSL()) {
-            // Reaching here means the Windows-host LS was located but is unreachable, which
-            // is the expected outcome under WSL2's default NAT networking rather than a
-            // transient failure — worth saying so, because the generic message above reads
-            // like the server is down when it is running perfectly well.
-            log?.('This extension host runs inside WSL and the language server runs on the Windows host. '
-                + 'Its port is bound to the Windows loopback address, which WSL2 cannot route to under the '
-                + 'default NAT networking. Install this extension on the Windows side instead, or set '
-                + '[wsl2] networkingMode=mirrored in %UserProfile%\\.wslconfig and run `wsl --shutdown`.');
+            log?.('This extension host runs inside WSL and no reachable local server was found. '
+                + 'A Windows-host server bound to loopback is unreachable under default WSL2 NAT; '
+                + 'install this extension on the Windows side or use WSL mirrored networking.');
         }
         return null;
     } catch (e) {
@@ -968,9 +981,10 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
                     return;
                 }
                 try {
-                    JSON.parse(body);
-                    // Any valid JSON response with 2xx status indicates a working RPC endpoint
-                    settle(true);
+                    const parsed: unknown = JSON.parse(body);
+                    // Connect JSON messages are objects, including the empty
+                    // GetUnleashData response from current agy hubs.
+                    settle(parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed));
                 } catch {
                     settle(false);
                 }
@@ -983,6 +997,7 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
         if (signal) {
             onAbort = () => { req.destroy(); settle(false); };
             signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) { onAbort(); return; }
         }
 
         req.write(postData);

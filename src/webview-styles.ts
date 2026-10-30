@@ -281,8 +281,10 @@ export function getStyles(): string {
         /* ─── TopBar Title (Layer 1) ──── */
         .topbar-title {
             display: flex;
+            flex-wrap: wrap;
             align-items: center;
             justify-content: space-between;
+            gap: var(--space-2) var(--space-3);
             margin-bottom: var(--space-2);
         }
 
@@ -346,18 +348,22 @@ export function getStyles(): string {
 
         .header-actions {
             display: flex;
+            flex-wrap: wrap;
             align-items: center;
             gap: var(--space-2);
+            max-width: 100%;
         }
 
         .update-time {
             color: var(--color-text-dim);
             font-size: 0.85em;
+            white-space: nowrap;
         }
 
         /* ─── Language Switcher ──────── */
         .lang-switcher {
             display: flex;
+            flex-shrink: 0;
             border: 1px solid var(--color-border);
             border-radius: var(--radius-md);
             overflow: hidden;
@@ -371,6 +377,7 @@ export function getStyles(): string {
             padding: var(--space-1) var(--space-2);
             font-size: 0.75em;
             font-family: inherit;
+            white-space: nowrap;
             cursor: pointer;
             transition: background 0.15s cubic-bezier(.4,0,.2,1), color 0.15s cubic-bezier(.4,0,.2,1);
             border-right: 1px solid var(--color-border);
@@ -3784,6 +3791,8 @@ export function getStyles(): string {
         /* ─── Account Popover ──────────── */
         .topbar-title-left {
             display: flex;
+            flex: 1 1 20rem;
+            flex-wrap: wrap;
             align-items: center;
             gap: var(--space-2);
             min-width: 0;

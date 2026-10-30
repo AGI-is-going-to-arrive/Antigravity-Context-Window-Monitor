@@ -30,11 +30,11 @@ describe('guessContextLimitSpec placeholder collision guard', () => {
         }
     });
 
-    it('maps Gemini 3.8 Flash placeholders (M318/M319/M320/M322) to the 256K flash profile', () => {
-        for (const id of ['MODEL_PLACEHOLDER_M318', 'MODEL_PLACEHOLDER_M319', 'MODEL_PLACEHOLDER_M320', 'MODEL_PLACEHOLDER_M322']) {
+    it('maps current Gemini 3.8 Flash picker tiers to the October 256K/50K profile', () => {
+        for (const id of ['MODEL_PLACEHOLDER_M318', 'MODEL_PLACEHOLDER_M319', 'MODEL_PLACEHOLDER_M320']) {
             const spec = guessContextLimitSpec(id);
             expect(spec.cpLimit).toBe(256000);
-            expect(spec.cpThreshold).toBe(140000);
+            expect(spec.cpThreshold).toBe(50000);
             expect(spec.maxTokens).toBe(1048576);
             expect(spec.supportsThinking).toBe(true);
         }
@@ -71,11 +71,11 @@ describe('guessContextLimitSpec placeholder collision guard', () => {
         }
     });
 
-    it('still keyword-matches catalog model_id names to the flash branch', () => {
+    it('uses generation-specific compression triggers for catalog model IDs', () => {
         for (const name of ['gemini-3.6-flash-high', 'gemini-3.7-flash-high', 'gemini-3.8-flash-high']) {
             const spec = guessContextLimitSpec(name);
             expect(spec.cpLimit).toBe(256000);
-            expect(spec.cpThreshold).toBe(140000);
+            expect(spec.cpThreshold).toBe(name === 'gemini-3.8-flash-high' ? 50000 : 140000);
             expect(spec.supportsThinking).toBe(true);
         }
     });
@@ -128,9 +128,12 @@ describe('guessContextLimitSpec placeholder collision guard', () => {
 });
 
 describe('getModelSpecs ordering', () => {
-    it('renders Gemini 3.8 then 3.7, 3.6, and 3.5 Flash tiers first, with retired M133 last', () => {
+    it('renders Argon then Gemini Flash generations, with retired M133 last', () => {
         const ids = getModelSpecs().map(s => s.placeholderId);
         expect(ids).toEqual([
+            'MODEL_PLACEHOLDER_M417',
+            'MODEL_PLACEHOLDER_M418',
+            'MODEL_PLACEHOLDER_M419',
             'MODEL_PLACEHOLDER_M318',
             'MODEL_PLACEHOLDER_M319',
             'MODEL_PLACEHOLDER_M320',
@@ -255,7 +258,7 @@ describe('Gemini 3.8 Flash registration (two live Antigravity IDE LS probes, 202
             expect(getContextLimit(id)).toBe(255_000);
             expect(guessContextLimitSpec(id)).toMatchObject({
                 cpLimit: 256_000,
-                cpThreshold: 140_000,
+                cpThreshold: id === 'MODEL_PLACEHOLDER_M322' ? 140_000 : 50_000,
                 maxTokens: 1_048_576,
                 supportsThinking: true,
             });
@@ -284,18 +287,19 @@ describe('Gemini 3.8 Flash registration (two live Antigravity IDE LS probes, 202
         expect(findPricing('gemini-3.6-flash-high')?.output).toBe(7.5);
     });
 
-    it('carries the live thinking profile (High dynamic, Medium 4000, Low 1000)', () => {
+    it('carries the current effort levels without inventing a fixed thinking budget', () => {
         const byId = new Map(getModelSpecs().map(s => [s.placeholderId, s]));
-        expect(byId.get('MODEL_PLACEHOLDER_M318')?.thinkingBudget).toBe(-1);
-        expect(byId.get('MODEL_PLACEHOLDER_M319')?.thinkingBudget).toBe(4000);
-        expect(byId.get('MODEL_PLACEHOLDER_M320')?.thinkingBudget).toBe(1000);
+        expect(byId.get('MODEL_PLACEHOLDER_M318')?.thinkingBudget).toBe(0);
+        expect(byId.get('MODEL_PLACEHOLDER_M319')?.thinkingBudget).toBe(0);
+        expect(byId.get('MODEL_PLACEHOLDER_M320')?.thinkingBudget).toBe(0);
+        expect(pickerIds.map(id => byId.get(id)?.thinkingLevel)).toEqual([3, 2, 1]);
         for (const id of pickerIds) {
             expect(byId.get(id)).toMatchObject({
                 supportsThinking: true,
                 maxTokens: 1_048_576,
                 maxOutputTokens: 65_536,
                 cpLimit: 256_000,
-                cpThreshold: 140_000,
+                cpThreshold: 50_000,
             });
         }
     });

@@ -22,6 +22,8 @@ __mocks__/**
 .claude/**
 .playwright-mcp/**
 cache/**
+diag-output/**
+diag-scripts/**
 llmdoc/**
 docs/**
 vitest.config.ts
