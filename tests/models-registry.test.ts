@@ -6,6 +6,16 @@ import {
 import { findPricing } from '../src/pricing-store';
 
 describe('guessContextLimitSpec placeholder collision guard', () => {
+    it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf'])(
+        'treats prototype member %s as an unknown external model identifier', identifier => {
+            expect(resolveModelId(identifier)).toBeUndefined();
+            expect(getModelDisplayName(identifier)).toBe(identifier);
+            expect(getModelBaseName(identifier)).toBe(identifier);
+            expect(getQuotaPoolKey(identifier, 'fixture-reset')).toBe('fixture-reset');
+            expect(getContextLimit(identifier)).toBe(159000);
+            expect(findPricing(identifier)).toBeNull();
+        },
+    );
     it('maps Gemini 3.6 Flash placeholders to the 256K flash profile, not the m26 Claude branch', () => {
         // Both the current IDs (M71/M72/M73) and the pre-renumber IDs (M264/M265/M266, still present
         // in archived data) must land on the same Flash profile.
@@ -86,6 +96,7 @@ describe('guessContextLimitSpec placeholder collision guard', () => {
     // permanent "calculating threshold…" shimmer. Every registered spec must be recognised.
     it('every registered model spec is recognised by guessContextLimitSpec (no {0,0,0} fallthrough)', () => {
         for (const spec of getModelSpecs()) {
+            if (spec.isImageGeneration) { continue; } // Image tools do not have a chat compression limit.
             const guessed = guessContextLimitSpec(spec.placeholderId);
             expect(
                 guessed.cpLimit,
@@ -101,6 +112,10 @@ describe('guessContextLimitSpec placeholder collision guard', () => {
     // — which makes it a checkable invariant across every registered model.
     it('every registered spec has a static fallback exactly 1,000 below its cpLimit', () => {
         for (const spec of getModelSpecs()) {
+            if (spec.isImageGeneration) {
+                expect(getContextLimit(spec.placeholderId)).toBe(spec.maxTokens);
+                continue;
+            }
             const fallback = getContextLimit(spec.placeholderId);
             expect(
                 fallback,
@@ -158,6 +173,7 @@ describe('getModelSpecs ordering', () => {
             'MODEL_PLACEHOLDER_M35',
             'MODEL_PLACEHOLDER_M26',
             'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
+            'MODEL_PLACEHOLDER_M21',
             'MODEL_PLACEHOLDER_M133',
         ]);
     });

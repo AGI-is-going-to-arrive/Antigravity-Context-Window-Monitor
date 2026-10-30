@@ -25,6 +25,7 @@ import {
     parseGMEntry,
     maybeEnrichCallsFromTrajectory,
     applyTrajectoryModelHints,
+    isValidCallTimestamp,
     shouldEnrichConversation,
     buildGMArchiveKey,
     deduplicateApiErrorText,
@@ -74,6 +75,23 @@ function ledgerCallIdentity(call: GMCallEntry): string {
         `cache:${call.cacheReadTokens}`,
         `start:${call.startStepIndex}`,
     ].join('|');
+}
+
+/** Enriching a missing timestamp must not turn an already recorded call into a new one. */
+function sameLedgerCallIdentity(previous: string, current: string): boolean {
+    if (previous === current) { return true; }
+    const withoutDate = (identity: string): { key: string; date: string } | null => {
+        if (!identity.startsWith('archive|')) { return null; }
+        const start = identity.lastIndexOf('|created:');
+        const end = identity.indexOf('|in:', start);
+        if (start < 0 || end < 0) { return null; }
+        return { key: identity.slice(0, start) + identity.slice(end), date: identity.slice(start + '|created:'.length, end) };
+    };
+    const old = withoutDate(previous);
+    const next = withoutDate(current);
+    if (!old || !next || old.key !== next.key) { return false; }
+    return !isValidCallTimestamp(old.date) || !isValidCallTimestamp(next.date)
+        || Date.parse(old.date) === Date.parse(next.date);
 }
 
 function ledgerDedupKey(cascadeId: string, index: number, call: GMCallEntry): string {
@@ -225,6 +243,7 @@ export class GMTracker {
             const isCurrentActive = activeCascadeId && t.cascadeId === activeCascadeId;
             const canSkipIdle = cached 
                 && cached.calls.length > 0
+                && cached.calls.every(call => isValidCallTimestamp(call.createdAt))
                 && !isRunning 
                 && !justBecameIdle 
                 && cached.totalSteps === t.stepCount 
@@ -972,7 +991,7 @@ export class GMTracker {
             const originalStart = start;
             while (start < conv.calls.length
                 && knownIdentities[start]
-                && knownIdentities[start] === ledgerCallIdentity(conv.calls[start])) {
+                && sameLedgerCallIdentity(knownIdentities[start], ledgerCallIdentity(conv.calls[start]))) {
                 start++;
             }
             if (start > originalStart) {

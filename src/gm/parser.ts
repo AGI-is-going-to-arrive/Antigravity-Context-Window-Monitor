@@ -582,30 +582,87 @@ function pickTrajectoryModelForCall(call: GMCallEntry, hints: Map<number, string
     return bestModel;
 }
 
+/** A call date must come from telemetry, never the time an old conversation reloads. */
+export function isValidCallTimestamp(value: unknown): value is string {
+    // Match dated pricing semantics, but call telemetry must include a time
+    // and zone. Date.parse alone normalizes impossible days such as Nov 31.
+    if (typeof value !== 'string'
+        || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) { return false; }
+    const day = value.slice(0, 10);
+    const dayTime = Date.parse(`${day}T00:00:00Z`);
+    return Number.isFinite(dayTime) && new Date(dayTime).toISOString().slice(0, 10) === day
+        && Number.isFinite(Date.parse(value));
+}
+
+interface TrajectoryCallTime {
+    stepIndex: number;
+    executionId: string;
+    timestamp: string;
+}
+
+function extractTrajectoryCallTimes(steps: unknown): TrajectoryCallTime[] {
+    if (!Array.isArray(steps)) { return []; }
+    return steps.flatMap((value, index) => {
+        const step = asRecord(value);
+        if (!step || step.type !== 'CORTEX_STEP_TYPE_PLANNER_RESPONSE') { return []; }
+        const metadata = asRecord(step.metadata);
+        if (!metadata) { return []; }
+        // The agent hub can publish startedAt at completion time. createdAt is
+        // the request's creation time and must retain its original billing day.
+        const timestamp = isValidCallTimestamp(metadata.createdAt) ? metadata.createdAt
+            : isValidCallTimestamp(metadata.startedAt) ? metadata.startedAt : '';
+        if (!timestamp) { return []; }
+        const stepIndex = typeof step.stepIndex === 'number' && Number.isSafeInteger(step.stepIndex) && step.stepIndex >= 0
+            ? step.stepIndex : index;
+        const executionId = typeof metadata.executionId === 'string' ? metadata.executionId
+            : typeof step.executionId === 'string' ? step.executionId : '';
+        return [{ stepIndex, executionId, timestamp }];
+    });
+}
+
+function pickTrajectoryTimeForCall(call: GMCallEntry, times: TrajectoryCallTime[]): string {
+    const executionMatches = call.executionId ? times.filter(time => time.executionId === call.executionId) : [];
+    const matches = executionMatches.length > 0 ? executionMatches : times.filter(time =>
+        call.stepIndices.includes(time.stepIndex)
+        && (!call.executionId || !time.executionId || call.executionId === time.executionId));
+    // Multiple distinct planner timestamps are ambiguous. Do not assign a call
+    // to a day merely because a nearby step happens to be the first in an array.
+    const timestamps = new Set(matches.map(time => time.timestamp));
+    return timestamps.size === 1 ? [...timestamps][0] : '';
+}
+
 export function applyTrajectoryModelHints(calls: GMCallEntry[], steps: unknown): GMCallEntry[] {
     if (calls.length === 0) { return calls; }
     const hints = extractTrajectoryModelHints(steps);
-    if (hints.size === 0) { return calls; }
+    const times = calls.some(call => !isValidCallTimestamp(call.createdAt)) ? extractTrajectoryCallTimes(steps) : [];
 
     let changed = false;
     const updated = calls.map(call => {
+        let enriched = call;
+        if (!isValidCallTimestamp(call.createdAt)) {
+            const timestamp = pickTrajectoryTimeForCall(call, times);
+            if (timestamp) {
+                enriched = { ...call, createdAt: timestamp };
+                changed = true;
+            }
+        }
         const hasAuthoritativeModel = isConcreteModelId(call.model)
             && call.modelSource !== 'responseAlias'
             && call.modelSource !== 'unknown';
         if (hasAuthoritativeModel) {
-            return call;
+            return enriched;
         }
 
         const model = pickTrajectoryModelForCall(call, hints);
         if (!model || model === call.model) {
-            return call;
+            return enriched;
         }
         if (call.responseModel) {
             registerResponseModelAlias(call.responseModel, model);
         }
         changed = true;
         return {
-            ...call,
+            ...enriched,
             model,
             modelDisplay: normalizeModelDisplayName(model),
             modelSource: 'trajectory' as GMModelSource,
@@ -672,7 +729,8 @@ export function mergeGMCallEntries(primary: GMCallEntry, fallback: GMCallEntry):
             ? primary.toolCallsByStep
             : fallback.toolCallsByStep,
         stopReason: primary.stopReason || fallback.stopReason,
-        createdAt: primary.createdAt || fallback.createdAt,
+        createdAt: isValidCallTimestamp(primary.createdAt) ? primary.createdAt
+            : isValidCallTimestamp(fallback.createdAt) ? fallback.createdAt : primary.createdAt || fallback.createdAt,
         latestStableMessageIndex: primary.latestStableMessageIndex || fallback.latestStableMessageIndex,
         startStepIndex: primary.startStepIndex || fallback.startStepIndex,
         checkpointIndex: primary.checkpointIndex || fallback.checkpointIndex,
@@ -774,6 +832,7 @@ export function maybeEnrichCallsFromTrajectory(calls: GMCallEntry[], embeddedCal
 }
 
 export function shouldEnrichConversation(stepCount: number, calls: GMCallEntry[]): boolean {
+    if (calls.some(call => !isValidCallTimestamp(call.createdAt))) { return true; }
     if (calls.some(call => call.modelAccuracy === 'placeholder')) {
         return true;
     }

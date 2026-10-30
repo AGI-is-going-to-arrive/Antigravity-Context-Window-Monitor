@@ -6,7 +6,7 @@ import type { ActivityTracker } from './activity-tracker';
 import type { GMTracker, GMSummary, GMModelStats } from './gm-tracker';
 import type { DailyStore } from './daily-store';
 import type { PricingStore, ModelPricing } from './pricing-store';
-import { findPricingWithCustom, costFromTokens } from './pricing-store';
+import { calculateLedgerModelCosts, calculateUsageCosts, samePricingModel, findPricingWithCustom } from './pricing-store';
 import type { PersistedModelDNA } from './model-dna-store';
 import { mergeModelDNAState } from './model-dna-store';
 import type { DailyLedger, LedgerDayData } from './daily-ledger';
@@ -144,15 +144,15 @@ export function performDailyArchival(
         const perModel: Record<string, number> = {};
         let total = 0;
         for (const [key, ms] of Object.entries(gmSummary.modelBreakdown)) {
-            const pricing = findPricingWithCustom(ms.responseModel, custom)
-                || findPricingWithCustom(key, custom);
-            if (!pricing) { continue; }
-            const cost = costFromTokens({
+            const model = findPricingWithCustom(key, custom) ? key : ms.responseModel;
+            const calls = (gmSummary.conversations || []).flatMap(conversation => conversation.calls)
+                .filter(call => samePricingModel(call.modelDisplay || call.model || call.responseModel, model));
+            const cost = calculateUsageCosts(model, {
                 inputTokens: ms.totalInputTokens,
                 outputTokens: ms.totalOutputTokens,
                 thinkingTokens: ms.totalThinkingTokens,
                 cacheReadTokens: ms.totalCacheRead,
-            }, pricing);
+            }, custom, { at: archiveDateKey, calls, callCount: ms.callCount }).totalCost;
             if (cost > 0) { perModel[key] = cost; total += cost; }
         }
         if (total > 0) { costTotal = total; }
@@ -245,8 +245,7 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
                 ms.cacheReadTokens, ms.cacheCreationTokens, ms.credits);
             // The ledger files per-model rows under a display name, which is also the key
             // the Pricing tab writes custom prices under, so look pricing up by that key.
-            const pricing = findPricingWithCustom(modelKey, customPricing || {});
-            const cost = pricing ? costFromTokens(ms, pricing) : ms.estimatedCost;
+            const cost = calculateLedgerModelCosts(modelKey, ms, bucket, customPricing || {}, dayData.dateKey).totalCost;
             if (cost > 0) {
                 costPerModel[modelKey] = (costPerModel[modelKey] || 0) + cost;
             }

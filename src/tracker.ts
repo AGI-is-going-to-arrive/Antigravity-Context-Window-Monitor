@@ -10,11 +10,11 @@ import {
     UserStatusInfo,
     DEFAULT_CONTEXT_LIMITS,
     DEFAULT_CONTEXT_LIMIT,
+    isImageGenerationModel,
+    resolveModelId,
 } from './models';
 import {
     StepType,
-    IMAGE_GEN_STEP_KEYWORDS,
-    IMAGE_GEN_MODEL_KEYWORDS,
     SYSTEM_PROMPT_OVERHEAD,
     USER_INPUT_OVERHEAD,
     PLANNER_RESPONSE_ESTIMATE,
@@ -74,6 +74,7 @@ export interface ModelUsageInfo {
     outputTokens: number;
     responseOutputTokens: number;
     cacheReadTokens: number;
+    cacheCreationTokens?: number;
 }
 
 export interface TokenUsageResult {
@@ -99,6 +100,10 @@ export interface TokenUsageResult {
     estimatedDeltaSinceCheckpoint: number;
     /** Number of image generation steps detected */
     imageGenStepCount: number;
+    /** Canonical image-tool identities, separate from their text coordinators. */
+    imageGenerationModels?: string[];
+    /** Explicit child references emitted by invokeSubagent.results. */
+    linkedSubagentCascadeIds?: string[];
     /** True when step batch fetching had gaps (some batches failed) */
     hasGaps: boolean;
     /** True when consecutive checkpoint inputTokens show a significant drop */
@@ -136,7 +141,7 @@ export interface ContextUsage {
     title: string;
     model: string;
     modelDisplayName: string;
-    /** Effective context window usage (inputTokens + outputTokens + estimatedDelta) */
+    /** Context occupancy includes fresh input, cached input, output and subsequent estimated delta. */
     contextUsed: number;
     /** Actual model output tokens (from checkpoint modelUsage.outputTokens) */
     totalOutputTokens: number;
@@ -155,6 +160,11 @@ export interface ContextUsage {
     estimatedDeltaSinceCheckpoint: number;
     /** Number of image generation steps detected */
     imageGenStepCount: number;
+    imageGenerationModels?: string[];
+    /** True when a linked child was unavailable or traversal reached a safety bound. */
+    imageGenerationIncomplete?: boolean;
+    /** Direct observations retained so refreshing children never accumulates counts twice. */
+    imageWorkflow?: ImageWorkflowInfo;
     /** True when context compression was detected. */
     compressionDetected: boolean;
     /** Input token drop between consecutive checkpoints */
@@ -180,6 +190,12 @@ export interface ContextUsage {
     branchName: string;
     /** Git root absolute URI */
     gitRootUri: string;
+}
+
+export interface ImageWorkflowInfo {
+    directStepCount: number;
+    directModels: string[];
+    linkedCascadeIds: string[];
 }
 
 // ─── Trajectory Queries ───────────────────────────────────────────────────────
@@ -328,16 +344,39 @@ function processPlannerResponseStep(step: Record<string, unknown>): number {
     return pr ? estimateTokensFromText(totalText) : PLANNER_RESPONSE_ESTIMATE;
 }
 
-/** Check if a step is an image generation step by type or model. */
-function isImageGenStep(stepType: string, stepModel: string): boolean {
-    if (IMAGE_GEN_STEP_KEYWORDS.some(kw => stepType.includes(kw))) {
-        return true;
+/** Detect image generation, not an image input, image viewer, or code generator. */
+export function isImageGenStep(step: Record<string, unknown>, stepModel: string): boolean {
+    const type = step.type;
+    if (type === 'CORTEX_STEP_TYPE_GENERATE_IMAGE' || type === 'CORTEX_STEP_TYPE_IMAGE_GENERATION') { return true; }
+    if (step.generateImage && typeof step.generateImage === 'object' && !Array.isArray(step.generateImage)) { return true; }
+    return type !== StepType.USER_INPUT && type !== StepType.CHECKPOINT && isImageGenerationModel(stepModel);
+}
+
+/** Follow only the typed invocation result, never arbitrary IDs in prompts or tool arguments. */
+export function extractLinkedSubagentIds(steps: Array<Record<string, unknown>>): string[] {
+    const ids = new Set<string>();
+    for (const step of steps) {
+        if (step.type !== 'CORTEX_STEP_TYPE_INVOKE_SUBAGENT') { continue; }
+        const invocation = step.invokeSubagent;
+        if (!invocation || typeof invocation !== 'object' || Array.isArray(invocation)) { continue; }
+        const results = (invocation as Record<string, unknown>).results;
+        if (!Array.isArray(results)) { continue; }
+        for (const result of results) {
+            if (!result || typeof result !== 'object' || Array.isArray(result)) { continue; }
+            const id = (result as Record<string, unknown>).conversationId;
+            if (typeof id === 'string' && id.trim() && id.length <= 256) { ids.add(id.trim()); }
+        }
     }
-    if (stepModel) {
-        const lower = stepModel.toLowerCase();
-        return IMAGE_GEN_MODEL_KEYWORDS.some(kw => lower.includes(kw));
+    return [...ids];
+}
+
+function imageModelForStep(step: Record<string, unknown>, coordinatorModel: string): string {
+    const payload = step.generateImage;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        const name = (payload as Record<string, unknown>).modelName;
+        if (typeof name === 'string' && name.trim()) { return resolveModelId(name) || name.trim(); }
     }
-    return false;
+    return isImageGenerationModel(coordinatorModel) ? resolveModelId(coordinatorModel) || coordinatorModel : '';
 }
 
 /** Extract provider token counts from a checkpoint or completed planner response. */
@@ -355,11 +394,13 @@ function extractModelUsage(meta: Record<string, unknown>): ModelUsageInfo | null
     const outputTokens = count(mu.outputTokens);
     const responseOutputTokens = count(mu.responseOutputTokens);
     const cacheReadTokens = count(mu.cacheReadTokens);
-    if (inputTokens === null || outputTokens === null || responseOutputTokens === null || cacheReadTokens === null) { return null; }
+    const cacheCreationTokens = count(mu.cacheCreationTokens);
+    if (inputTokens === null || outputTokens === null || responseOutputTokens === null
+        || cacheReadTokens === null || cacheCreationTokens === null) { return null; }
     const model = typeof mu.model === 'string' ? mu.model : '';
 
-    if (inputTokens > 0 || outputTokens > 0) {
-        return { model, inputTokens, outputTokens, responseOutputTokens, cacheReadTokens };
+    if (inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0) {
+        return { model, inputTokens, outputTokens, responseOutputTokens, cacheReadTokens, cacheCreationTokens };
     }
     return null;
 }
@@ -377,6 +418,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
     let checkpointModel = '';
     let imageGenStepCount = 0;
     const imageGenStepIndices = new Set<number>();
+    const imageGenerationModels = new Set<string>();
 
     let estimationOverhead = 0;
     let outputTokensSinceCheckpoint = 0;
@@ -389,6 +431,8 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         const step = steps[globalStepIdx];
         const meta = step.metadata as Record<string, unknown> | undefined;
         const stepType = (step.type as string) || '';
+        const stepModel = typeof meta?.generatorModel === 'string' ? meta.generatorModel : '';
+        const imageStep = isImageGenStep(step, stepModel);
 
         // Count user input steps
         if (stepType === StepType.USER_INPUT) {
@@ -403,7 +447,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         }
 
         // Count planner response steps
-        if (stepType === StepType.PLANNER_RESPONSE) {
+        if (stepType === StepType.PLANNER_RESPONSE && !imageStep) {
             estimationOverhead += processPlannerResponseStep(step);
         }
 
@@ -412,14 +456,15 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
             const usage = extractModelUsage(meta);
             if (usage) {
                 // Detect compression by comparing consecutive checkpoint inputTokens
-                if (prevCheckpointInputTokens > 0 && usage.inputTokens < prevCheckpointInputTokens) {
-                    const drop = prevCheckpointInputTokens - usage.inputTokens;
+                const checkpointInput = usage.inputTokens + usage.cacheReadTokens + (usage.cacheCreationTokens || 0);
+                if (prevCheckpointInputTokens > 0 && checkpointInput < prevCheckpointInputTokens) {
+                    const drop = prevCheckpointInputTokens - checkpointInput;
                     if (drop > COMPRESSION_MIN_DROP) {
                         checkpointCompressionDetected = true;
                         checkpointCompressionDrop = drop;
                     }
                 }
-                prevCheckpointInputTokens = usage.inputTokens;
+                prevCheckpointInputTokens = checkpointInput;
 
                 lastModelUsage = usage;
                 tokenUsageSource = 'checkpoint';
@@ -451,7 +496,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         // Current agy trajectories report usage directly on the planner step,
         // often with no CHECKPOINT at all. This is a full context snapshot, not
         // an amount to add to previous calls or to the response text estimate.
-        if (stepType === StepType.PLANNER_RESPONSE && meta) {
+        if (stepType === StepType.PLANNER_RESPONSE && meta && !imageStep) {
             const usage = extractModelUsage(meta);
             if (usage) {
                 lastModelUsage = usage;
@@ -463,10 +508,11 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         }
 
         // Detect image generation steps
-        const stepModel = meta ? ((meta.generatorModel as string) || '') : '';
-        if (isImageGenStep(stepType, stepModel) && !imageGenStepIndices.has(globalStepIdx)) {
+        if (imageStep && !imageGenStepIndices.has(globalStepIdx)) {
             imageGenStepIndices.add(globalStepIdx);
             imageGenStepCount++;
+            const imageModel = imageModelForStep(step, stepModel);
+            if (imageModel) { imageGenerationModels.add(imageModel); }
         }
 
         if (!meta) { continue; }
@@ -487,13 +533,13 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         // Skip CHECKPOINT steps — their generatorModel belongs to internal
         // shadow models (e.g. M50 Flash Lite for title/intent/compression).
         // Display model should only reflect user-facing model selections.
-        if (stepModel && stepType !== StepType.CHECKPOINT) {
+        if (stepModel && stepType !== StepType.CHECKPOINT && !imageStep) {
             model = stepModel;
         }
 
         // requestedModel is highest priority (user's explicit selection)
         const rm = meta.requestedModel as Record<string, unknown> | undefined;
-        if (rm?.model) { model = rm.model as string; }
+        if (!imageStep && typeof rm?.model === 'string') { model = rm.model; }
     }
 
     const estimatedDelta = outputTokensSinceCheckpoint + estimationOverhead;
@@ -505,13 +551,16 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
             inputTokens: lastModelUsage.inputTokens,
             totalOutputTokens: lastModelUsage.outputTokens,
             totalToolCallOutputTokens: toolOutputTokens,
-            contextUsed: lastModelUsage.inputTokens + lastModelUsage.outputTokens + estimatedDelta,
+            contextUsed: lastModelUsage.inputTokens + lastModelUsage.cacheReadTokens
+                + (lastModelUsage.cacheCreationTokens || 0) + lastModelUsage.outputTokens + estimatedDelta,
             isEstimated: estimatedDelta > 0,
             model,
             stepDetails,
             lastModelUsage,
             estimatedDeltaSinceCheckpoint: estimatedDelta,
             imageGenStepCount,
+            imageGenerationModels: [...imageGenerationModels],
+            linkedSubagentCascadeIds: extractLinkedSubagentIds(steps),
             hasGaps: false,
             checkpointCompressionDetected,
             checkpointCompressionDrop,
@@ -534,6 +583,8 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         lastModelUsage: null,
         estimatedDeltaSinceCheckpoint: estimatedTotal,
         imageGenStepCount,
+        imageGenerationModels: [...imageGenerationModels],
+        linkedSubagentCascadeIds: extractLinkedSubagentIds(steps),
         hasGaps: false,
         checkpointCompressionDetected: false,
         checkpointCompressionDrop: 0,
@@ -595,6 +646,125 @@ export async function getTrajectoryTokenUsage(
     const result = processSteps(allSteps);
     result.hasGaps = hasGaps;
     return result;
+}
+
+const MAX_IMAGE_WORKFLOW_CHILDREN = 16;
+const MAX_IMAGE_WORKFLOW_DEPTH = 4;
+const MAX_IMAGE_CHILD_STEPS = 2000;
+const IMAGE_IDLE_CACHE_MS = 30_000;
+
+interface CachedImageWorkflow {
+    info: ImageWorkflowInfo;
+    status: string;
+    incomplete: boolean;
+    fetchedAt: number;
+}
+
+let imageWorkflowGeneration = 0;
+const imageWorkflowCache = new Map<string, CachedImageWorkflow>();
+const imageWorkflowPending = new Map<string, Promise<CachedImageWorkflow>>();
+
+/** Child observations belong to one account/backend lifetime and are never persisted as global data. */
+export function resetImageWorkflowCache(): void {
+    imageWorkflowGeneration++;
+    imageWorkflowCache.clear();
+    imageWorkflowPending.clear();
+}
+
+async function readChildImageWorkflow(ls: LSInfo, cascadeId: string, signal?: AbortSignal): Promise<CachedImageWorkflow> {
+    const generation = imageWorkflowGeneration;
+    const key = `${generation}:${ls.pid}:${ls.port}:${ls.useTls}:${ls.csrfToken}:${cascadeId}`;
+    const cached = imageWorkflowCache.get(key);
+    // Running/unknown children are re-read every poll even when their parent is idle.
+    if (cached && !cached.incomplete && cached.status === 'CASCADE_RUN_STATUS_IDLE'
+        && Date.now() - cached.fetchedAt < IMAGE_IDLE_CACHE_MS) { return cached; }
+    const pending = imageWorkflowPending.get(key);
+    if (pending) { return pending; }
+    const request = (async (): Promise<CachedImageWorkflow> => {
+        try {
+            const response = await rpcCall(ls, 'GetCascadeTrajectory', { cascadeId }, 10_000, signal);
+            const trajectory = response.trajectory as Record<string, unknown> | undefined;
+            if (!trajectory || !Array.isArray(trajectory.steps)) { throw new Error('Missing linked trajectory steps'); }
+            const allSteps = trajectory.steps;
+            const steps = allSteps.slice(0, MAX_IMAGE_CHILD_STEPS)
+                .filter((step): step is Record<string, unknown> => !!step && typeof step === 'object' && !Array.isArray(step));
+            const models = new Set<string>();
+            let directStepCount = 0;
+            for (const step of steps) {
+                const metadata = step.metadata as Record<string, unknown> | undefined;
+                const coordinator = typeof metadata?.generatorModel === 'string' ? metadata.generatorModel : '';
+                if (!isImageGenStep(step, coordinator)) { continue; }
+                directStepCount++;
+                const model = imageModelForStep(step, coordinator);
+                if (model) { models.add(model); }
+            }
+            const totalSteps = Number(response.numTotalSteps);
+            const result: CachedImageWorkflow = {
+                info: { directStepCount, directModels: [...models], linkedCascadeIds: extractLinkedSubagentIds(steps) },
+                status: typeof response.status === 'string' ? response.status : '',
+                incomplete: allSteps.length > MAX_IMAGE_CHILD_STEPS || steps.length !== allSteps.length
+                    || (Number.isSafeInteger(totalSteps) && totalSteps > allSteps.length),
+                fetchedAt: Date.now(),
+            };
+            if (generation === imageWorkflowGeneration) {
+                imageWorkflowCache.set(key, result);
+                while (imageWorkflowCache.size > 128) { imageWorkflowCache.delete(imageWorkflowCache.keys().next().value!); }
+            }
+            return result;
+        } catch (error) {
+            if (signal?.aborted) { throw error; }
+            // Retain any previously observed images, but disclose that this read
+            // is incomplete. A missing child must never erase a known image.
+            return cached ? { ...cached, incomplete: true } : {
+                info: { directStepCount: 0, directModels: [], linkedCascadeIds: [] },
+                status: '', incomplete: true, fetchedAt: Date.now(),
+            };
+        }
+    })();
+    imageWorkflowPending.set(key, request);
+    try { return await request; }
+    finally { if (imageWorkflowPending.get(key) === request) { imageWorkflowPending.delete(key); } }
+}
+
+/** Count image-tool steps in this workflow only; child text tokens never alter parent context. */
+export async function refreshWorkflowImageUsage(ls: LSInfo, usage: ContextUsage, signal?: AbortSignal): Promise<ContextUsage> {
+    const direct = usage.imageWorkflow;
+    if (!direct) { return usage; }
+    const generation = imageWorkflowGeneration;
+    let imageGenStepCount = direct.directStepCount;
+    const models = new Set(direct.directModels);
+    let incomplete = usage.hasGaps;
+    const visited = new Set([usage.cascadeId]);
+    const queue: Array<{ id: string; depth: number }> = [];
+    const enqueue = (id: string, depth: number): void => {
+        if (visited.has(id)) { return; }
+        if (depth > MAX_IMAGE_WORKFLOW_DEPTH || visited.size - 1 >= MAX_IMAGE_WORKFLOW_CHILDREN) {
+            incomplete = true;
+            return;
+        }
+        visited.add(id);
+        queue.push({ id, depth });
+    };
+    for (const id of direct.linkedCascadeIds) { enqueue(id, 1); }
+    while (queue.length > 0) {
+        if (generation !== imageWorkflowGeneration) { break; }
+        if (signal?.aborted) { throw new Error('Image workflow read aborted'); }
+        const batch = queue.splice(0, 4);
+        const children = await Promise.all(batch.map(child => readChildImageWorkflow(ls, child.id, signal)));
+        if (generation !== imageWorkflowGeneration) { break; }
+        for (let i = 0; i < children.length; i++) {
+            const child = children[i];
+            imageGenStepCount += child.info.directStepCount;
+            child.info.directModels.forEach(model => models.add(model));
+            incomplete ||= child.incomplete;
+            child.info.linkedCascadeIds.forEach(id => enqueue(id, batch[i].depth + 1));
+        }
+    }
+    if (generation !== imageWorkflowGeneration) {
+        return { ...usage, imageGenStepCount: direct.directStepCount,
+            imageGenerationModels: [...direct.directModels], imageGenerationIncomplete: true };
+    }
+    return { ...usage, imageGenStepCount, imageGenerationModels: [...models], imageGenerationIncomplete: incomplete };
 }
 
 // ─── Full User Status from GetUserStatus ─────────────────────────────────────
@@ -759,7 +929,7 @@ export async function getContextUsage(
     const contextLimit = getContextLimit(effectiveModel, customLimits);
     const usagePercent = contextLimit > 0 ? (result.contextUsed / contextLimit) * 100 : 0;
 
-    return {
+    const usage: ContextUsage = {
         tokenUsageSource: result.tokenUsageSource,
         cascadeId: trajectory.cascadeId,
         title: trajectory.summary,
@@ -777,6 +947,10 @@ export async function getContextUsage(
         lastModelUsage: result.lastModelUsage,
         estimatedDeltaSinceCheckpoint: result.estimatedDeltaSinceCheckpoint,
         imageGenStepCount: result.imageGenStepCount,
+        imageGenerationModels: result.imageGenerationModels || [],
+        imageGenerationIncomplete: false,
+        imageWorkflow: { directStepCount: result.imageGenStepCount, directModels: result.imageGenerationModels || [],
+            linkedCascadeIds: result.linkedSubagentCascadeIds || [] },
         compressionDetected: result.checkpointCompressionDetected,
         checkpointCompressionDrop: result.checkpointCompressionDrop,
         hasGaps: result.hasGaps,
@@ -790,4 +964,5 @@ export async function getContextUsage(
         branchName: trajectory.branchName,
         gitRootUri: trajectory.gitRootUri,
     };
+    return refreshWorkflowImageUsage(ls, usage, signal);
 }

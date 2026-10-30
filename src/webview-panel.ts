@@ -564,6 +564,7 @@ function buildTabContents(
                 lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
                 lastLedgerSettled,
                 lastTodayLedgerActive,
+                [usage, ...allUsages].some(item => (item?.imageGenStepCount || 0) > 0),
             )
             : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`) + eoc,
         models: buildModelsTabContent(userInfo, configs) + eoc,
@@ -603,6 +604,7 @@ function buildHtml(
             lastDailyStore?.getMonthCostBreakdown(new Date().getFullYear(), new Date().getMonth() + 1),
             lastLedgerSettled,
             lastTodayLedgerActive,
+            [usage, ...allUsages].some(item => (item?.imageGenStepCount || 0) > 0),
         )
         : `<p class="empty-msg">${tBi('Initializing...', '初始化中...')}</p>`;
     const modelsHtml = buildModelsTabContent(userInfo, configs);

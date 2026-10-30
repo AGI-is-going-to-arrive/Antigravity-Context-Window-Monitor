@@ -6,6 +6,8 @@ import { discoverCurrentLanguageServer as discoverLanguageServer } from './backe
 import {
     getAllTrajectories,
     getContextUsage,
+    refreshWorkflowImageUsage,
+    resetImageWorkflowCache,
     getContextLimit,
     getModelDisplayName,
     normalizeModelDisplayName,
@@ -16,7 +18,7 @@ import {
     TrajectorySummary,
     UserStatusInfo,
 } from './tracker';
-import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, registerResponseModelAlias, type ModelConfig, type FullUserStatus, updateModelSpec, getModelSpecs } from './models';
+import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, registerResponseModelAlias, setAvailableImageModelIds, type ModelConfig, type FullUserStatus, updateModelSpec, getModelSpecs } from './models';
 import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit, setTooltipDiagLogger } from './statusbar';
 import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
@@ -104,8 +106,9 @@ const quotaNotifiedModels = new Set<string>();
 /** Previous poll's known trajectory IDs — used to detect new conversations. */
 const previousTrajectoryIds = new Set<string>();
 
-/** Previous poll's contextUsed per cascade — used to detect context compression. */
-const previousContextUsedMap = new Map<string, number>();
+type ContextObservation = Pick<ContextUsage, 'contextUsed' | 'isEstimated' | 'model' | 'tokenUsageSource'>;
+/** Compare like-for-like measurements, never an estimate against a provider count. */
+const previousContextObservations = new Map<string, ContextObservation>();
 
 
 
@@ -120,6 +123,17 @@ let isSyncingCheckpointer = false;
 let checkpointerSyncAttempts = 0;
 /** Upper bound on those attempts, so an account with no checkpointer experiments stops re-asking. */
 const MAX_CHECKPOINTER_SYNC_ATTEMPTS = 5;
+let modelMetadataGeneration = 0;
+
+/** Do not carry tool-model availability across accounts or backend lifetimes. */
+export function invalidateLiveModelMetadata(): void {
+    modelMetadataGeneration++;
+    resetImageWorkflowCache();
+    setAvailableImageModelIds([]);
+    hasSyncedCheckpointer = false;
+    isSyncingCheckpointer = false;
+    checkpointerSyncAttempts = 0;
+}
 
 /** Prevents schedulePoll() from creating new timers after deactivate. */
 // disposed declared at top of module
@@ -173,11 +187,28 @@ export function hasSameUsageInputs(
 ): cached is ContextUsage {
     return !!cached
         && cached.tokenUsageSource !== undefined
+        && cached.imageWorkflow !== undefined
+        && (!cached.compressionDetected || cached.checkpointCompressionDrop > 0)
         && trajectory.status !== CascadeStatus.RUNNING
         && cached.status === trajectory.status
         && cached.cascadeId === trajectory.cascadeId
         && cached.stepCount === trajectory.stepCount
         && cached.lastModifiedTime === trajectory.lastModifiedTime;
+}
+
+export function measuredContextDrop(
+    previous: ContextObservation | undefined,
+    current: ContextObservation & Pick<ContextUsage, 'contextLimit'>,
+    isUndo: boolean,
+): number {
+    if (!previous || isUndo || previous.isEstimated || current.isEstimated
+        || !previous.model || !current.model || !previous.tokenUsageSource
+        || previous.tokenUsageSource !== current.tokenUsageSource
+        || (resolveModelId(previous.model) || previous.model) !== (resolveModelId(current.model) || current.model)
+        || !Number.isFinite(previous.contextUsed) || !Number.isFinite(current.contextUsed)
+        || !Number.isFinite(current.contextLimit) || current.contextLimit <= 0) { return 0; }
+    const drop = previous.contextUsed - current.contextUsed;
+    return drop > current.contextLimit * 0.01 ? drop : 0;
 }
 
 function rehydrateUsageForDisplay(
@@ -609,6 +640,7 @@ function isPlatformModelId(value: string): boolean {
 
 interface AvailableModelMetadata {
     model?: string;
+    displayName?: string;
     modelId?: string;
     model_id?: string;
     apiProvider?: string;
@@ -627,16 +659,23 @@ function positiveTokenLimit(value: unknown): number {
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
 }
 
-export async function fetchAndOverrideCheckpointerLimits(ls: LSInfo, logMessage: (message: string) => void = log): Promise<boolean> {
+export async function fetchAndOverrideCheckpointerLimits(
+    ls: LSInfo, logMessage: (message: string) => void = log, isCurrent: () => boolean = () => true,
+): Promise<boolean> {
     try {
         logMessage('[Checkpointer Sync] Fetching official checkpointer parameters via LS RPC GetAvailableModels...');
         const resp = await rpcCall(ls, 'GetAvailableModels', {
             metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
         }, 10000);
-        const response = resp.response as { models?: Record<string, AvailableModelMetadata> } | undefined;
+        if (!isCurrent()) { return false; }
+        const response = resp.response as { models?: Record<string, AvailableModelMetadata>; imageGenerationModelIds?: unknown } | undefined;
         const models = response?.models || (resp.models as Record<string, AvailableModelMetadata> | undefined) || {};
+        const rawImageIds = response?.imageGenerationModelIds ?? resp.imageGenerationModelIds;
+        const hasImageList = Array.isArray(rawImageIds) && rawImageIds.every(id => typeof id === 'string');
+        const imageIds = new Set<string>(hasImageList ? (rawImageIds as string[]).map(id => id.trim()).filter(Boolean) : []);
         const overrides: Record<string, number> = {};
         const allFetchedInfo: string[] = [];
+        let imageMetadataSynced = false;
 
         for (const [catalogId, c] of Object.entries(models)) {
             if (!c || typeof c !== 'object') { continue; }
@@ -686,10 +725,13 @@ export async function fetchAndOverrideCheckpointerLimits(ls: LSInfo, logMessage:
             // 同步更新 activeModelSpecs 数据库
             // Update anything already registered, but only CREATE a spec for a model the platform
             // actually describes. The catalog also carries internal entries (MODEL_CHAT_*, the tab
-            // completion models, image models) whose checkpointer and token fields are null — filing
+            // completion models) whose checkpointer and token fields are null — filing
             // specs for those would pad the registry with rows that render as a bare ID and a zero
             // context limit.
-            const alreadyRegistered = !!resolved && getModelSpecs().some(s => s.placeholderId === resolved);
+            const previousSpec = resolved ? getModelSpecs().find(s => s.placeholderId === resolved) : undefined;
+            const alreadyRegistered = !!previousSpec;
+            const imageModel = imageIds.has(catalogId) || imageIds.has(modelIdVal)
+                || !!previousSpec?.isImageGeneration;
             // A model the user can actually pick must always get a spec, even before the platform
             // enables a checkpointer experiment on it: without one, getQuotaPoolKey() has no provider
             // to pool by and the new model splits into its own phantom quota pool — the exact failure
@@ -697,7 +739,9 @@ export async function fetchAndOverrideCheckpointerLimits(ls: LSInfo, logMessage:
             const inLivePicker = !!resolved && cachedModelConfigs.some(cfg => cfg.model === resolved);
             const maxTokens = positiveTokenLimit(c.maxTokens);
             const maxOutputTokens = positiveTokenLimit(c.maxOutputTokens);
-            const describesARealModel = limitNum > 0 && maxTokens > 0;
+            // Image tools are real catalog models even though they have no chat
+            // checkpointer and are intentionally absent from the chat picker.
+            const describesARealModel = (limitNum > 0 || imageModel) && maxTokens > 0;
             if (resolved && (alreadyRegistered || inLivePicker || describesARealModel)) {
                 registerResponseModelAlias(modelIdVal, resolved);
                 // Full protobuf catalog records omit default-valued fields. When
@@ -709,6 +753,8 @@ export async function fetchAndOverrideCheckpointerLimits(ls: LSInfo, logMessage:
                     && maxTokens > 0 && maxOutputTokens > 0;
                 updateModelSpec(resolved, {
                     modelId: modelIdVal || modelVal,
+                    ...(typeof c.displayName === 'string' && c.displayName.trim() ? { displayName: c.displayName.trim() } : {}),
+                    ...(imageModel ? { isImageGeneration: true, thinkingCapabilityReported: typeof c.supportsThinking === 'boolean' } : {}),
                     ...(typeof c.apiProvider === 'string' ? { apiProvider: c.apiProvider.replace('API_PROVIDER_', '') } : {}),
                     ...(maxTokens ? { maxTokens } : {}),
                     ...(maxOutputTokens ? { maxOutputTokens } : {}),
@@ -723,9 +769,12 @@ export async function fetchAndOverrideCheckpointerLimits(ls: LSInfo, logMessage:
                     ...(completeMetadata && c.thinkingLevel === undefined ? { thinkingLevel: 0 } : {}),
                     ...(limitNum > 0 ? { cpLimit: limitNum } : {}),
                     ...(thresholdNum > 0 ? { cpThreshold: thresholdNum } : {}),
+                    ...(imageModel && completeMetadata && !checkpointerStr ? { cpLimit: 0, cpThreshold: 0 } : {}),
                 });
+                if (imageModel && completeMetadata) { imageMetadataSynced = true; }
             }
         }
+        if (hasImageList) { setAvailableImageModelIds([...imageIds]); }
 
         if (allFetchedInfo.length > 0) {
             logMessage(`[Checkpointer Sync] Official checkpointer parameters fetched for ${allFetchedInfo.length} models.`);
@@ -736,6 +785,10 @@ export async function fetchAndOverrideCheckpointerLimits(ls: LSInfo, logMessage:
         if (Object.keys(overrides).length > 0) {
             overrideContextLimits(overrides);
             logMessage(`[Checkpointer Sync] Dynamically resolved and overridden ${Object.keys(overrides).length} model context limits from official Checkpointer!`);
+            return true;
+        }
+        if (imageMetadataSynced) {
+            logMessage('[Checkpointer Sync] Image model metadata synchronized; no chat compression limit was reported.');
             return true;
         }
 
@@ -980,6 +1033,7 @@ export function setAccountBillingDay(email: string, day: number): boolean {
 function handleAccountSwitchIfNeeded(newEmail: string): boolean {
     if (!newEmail) { return false; }
     if (currentAccountEmail && currentAccountEmail !== newEmail) {
+        invalidateLiveModelMetadata();
         log(`Account switch detected: ${currentAccountEmail} → ${newEmail}`);
 
         // Before switching, check both accounts for expired pools that need archival.
@@ -996,6 +1050,7 @@ function handleAccountSwitchIfNeeded(newEmail: string): boolean {
         return true;
     }
     if (!currentAccountEmail) {
+        invalidateLiveModelMetadata();
         currentAccountEmail = newEmail;
         gmTracker.setCurrentAccount(newEmail);
         applyDisplayPrefs(); // set billing day for initial account
@@ -1359,8 +1414,7 @@ export function activate(context: vscode.ExtensionContext): void {
             log('Manual refresh triggered');
             statusBar.refreshFromConfig();
             cachedLsInfo = null;
-            hasSyncedCheckpointer = false;
-            checkpointerSyncAttempts = 0;
+            invalidateLiveModelMetadata();
             consecutiveFailures = 0;
             currentIntervalMs = baseIntervalMs;
             restartPolling();
@@ -1460,6 +1514,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.workspace.onDidChangeWorkspaceFolders(() => {
             log('Workspace folders changed — forcing LS re-discovery');
             cachedLsInfo = null;
+            invalidateLiveModelMetadata();
             trackedCascadeId = null;
             lastPolledWorkspaceUri = undefined;
             consecutiveFailures = 0;
@@ -1483,6 +1538,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
     disposed = true;
+    resetImageWorkflowCache();
     if (pollingTimer) {
         clearTimeout(pollingTimer);
         pollingTimer = undefined;
@@ -1571,6 +1627,7 @@ async function pollContextUsage(): Promise<void> {
         if (lastPolledWorkspaceUri !== undefined && lastPolledWorkspaceUri !== normalizedWs) {
             log(`Workspace URI changed: ${lastPolledWorkspaceUri} → ${normalizedWs} — resetting LS cache`);
             cachedLsInfo = null;
+            invalidateLiveModelMetadata();
             lsInfo = null;
             trackedCascadeId = null;
             consecutiveIdlePolls = 0;
@@ -1631,8 +1688,7 @@ async function pollContextUsage(): Promise<void> {
                         log(`⚠ LS PID changed: ${lsInfo.pid} → ${freshLs.pid} (port: ${lsInfo.port} → ${freshLs.port}). Reconnecting to new LS.`);
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
-                        hasSyncedCheckpointer = false;
-            checkpointerSyncAttempts = 0;
+                        invalidateLiveModelMetadata();
                         consecutiveIdlePolls = 0;
                         // Re-fetch user status from new LS
                         try {
@@ -1691,7 +1747,9 @@ async function pollContextUsage(): Promise<void> {
             isSyncingCheckpointer = true;
             checkpointerSyncAttempts++;
             const attemptNo = checkpointerSyncAttempts;
-            fetchAndOverrideCheckpointerLimits(lsInfo).then((success) => {
+            const generation = modelMetadataGeneration;
+            fetchAndOverrideCheckpointerLimits(lsInfo, log, () => generation === modelMetadataGeneration && !disposed).then((success) => {
+                if (generation !== modelMetadataGeneration) { return; }
                 isSyncingCheckpointer = false;
                 if (success) {
                     hasSyncedCheckpointer = true;
@@ -1699,7 +1757,7 @@ async function pollContextUsage(): Promise<void> {
                     log(`[Checkpointer Sync] Giving up after ${attemptNo} attempts — staying on the built-in static limits. A reconnect will retry.`);
                 }
             }).catch(() => {
-                isSyncingCheckpointer = false;
+                if (generation === modelMetadataGeneration) { isSyncingCheckpointer = false; }
             });
         }
 
@@ -1709,6 +1767,7 @@ async function pollContextUsage(): Promise<void> {
             trajectories = await getAllTrajectories(lsInfo, abortController.signal);
         } catch (err) {
             log(`RPC failed, retrying discovery: ${err}`);
+            invalidateLiveModelMetadata();
             lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal, log);
             cachedLsInfo = lsInfo;
             if (!lsInfo) {
@@ -1773,8 +1832,7 @@ async function pollContextUsage(): Promise<void> {
                         log(`⚠ Stale LS confirmed: PID ${lsInfo.pid} → ${freshLs.pid}. Reconnecting.`);
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
-                        hasSyncedCheckpointer = false;
-            checkpointerSyncAttempts = 0;
+                        invalidateLiveModelMetadata();
                         lsRevalidationCounter = 0;
                         stalenessConfirmedIdle = false;
                         // Re-fetch trajectories from the new LS
@@ -1897,9 +1955,9 @@ async function pollContextUsage(): Promise<void> {
         // 5. Get context usage for selected trajectory
         const persistedUsage = monitorStore.getSnapshot(activeTrajectory.cascadeId);
         if (hasSameUsageInputs(currentUsage, activeTrajectory)) {
-            currentUsage = rehydrateUsageForDisplay(currentUsage);
+            currentUsage = await refreshWorkflowImageUsage(lsInfo, rehydrateUsageForDisplay(currentUsage), abortController.signal);
         } else if (hasSameUsageInputs(persistedUsage, activeTrajectory)) {
-            currentUsage = rehydrateUsageForDisplay(persistedUsage);
+            currentUsage = await refreshWorkflowImageUsage(lsInfo, rehydrateUsageForDisplay(persistedUsage), abortController.signal);
         } else {
             currentUsage = await getContextUsage(lsInfo, activeTrajectory, undefined, abortController.signal);
         }
@@ -1918,14 +1976,14 @@ async function pollContextUsage(): Promise<void> {
         }
 
         // ─── Compression Detection ─────────────────────────────────────────
-        const prevUsed = previousContextUsedMap.get(currentUsage.cascadeId);
+        const previousObservation = previousContextObservations.get(currentUsage.cascadeId);
+        const prevUsed = previousObservation?.contextUsed;
         const prevSteps = previousStepCounts.get(activeTrajectory.cascadeId);
         const isUndo = prevSteps !== undefined && activeTrajectory.stepCount < prevSteps;
 
-        if (!currentUsage.compressionDetected && !isUndo
-            && prevUsed !== undefined && currentUsage.contextUsed < prevUsed) {
-            const drop = prevUsed - currentUsage.contextUsed;
-            if (drop > currentUsage.contextLimit * 0.01) {
+        if (!currentUsage.compressionDetected) {
+            const drop = measuredContextDrop(previousObservation, currentUsage, isUndo);
+            if (drop > 0) {
                 currentUsage.compressionDetected = true;
                 currentUsage.previousContextUsed = prevUsed;
                 compressionPersistCounters.set(currentUsage.cascadeId, COMPRESSION_PERSIST_POLLS);
@@ -1955,7 +2013,10 @@ async function pollContextUsage(): Promise<void> {
                 compressionPersistCounters.set(currentUsage.cascadeId, remaining - 1);
             }
         }
-        previousContextUsedMap.set(currentUsage.cascadeId, currentUsage.contextUsed);
+        previousContextObservations.set(currentUsage.cascadeId, {
+            contextUsed: currentUsage.contextUsed, isEstimated: currentUsage.isEstimated,
+            model: currentUsage.model, tokenUsageSource: currentUsage.tokenUsageSource,
+        });
 
         const sourceLabel = currentUsage.isEstimated ? 'estimated' : 'precise';
         log(`Context: ${currentUsage.contextUsed} tokens (${sourceLabel}) | ${currentUsage.usagePercent.toFixed(1)}% | modelOut=${currentUsage.totalOutputTokens} | toolOut=${currentUsage.totalToolCallOutputTokens} | delta=${currentUsage.estimatedDeltaSinceCheckpoint} | imageGen=${currentUsage.imageGenStepCount}`);
@@ -1969,7 +2030,7 @@ async function pollContextUsage(): Promise<void> {
             }
             const cachedUsage = monitorStore.getSnapshot(t.cascadeId);
             if (hasSameUsageInputs(cachedUsage, t)) {
-                return rehydrateUsageForDisplay(cachedUsage);
+                return refreshWorkflowImageUsage(lsInfo!, rehydrateUsageForDisplay(cachedUsage), abortController.signal);
             }
             try {
                 return await getContextUsage(lsInfo!, t, undefined, abortController.signal);
@@ -2142,6 +2203,7 @@ async function pollContextUsage(): Promise<void> {
         handleLsFailure(`Error: ${err}`);
         lsInfo = null;
         cachedLsInfo = null;
+        invalidateLiveModelMetadata();
     } finally {
         // Always run cached-account reset check — independent of polling success/failure.
         // Wrapped in its own try/catch so errors are logged, never silently swallowed.
@@ -2193,9 +2255,9 @@ function updateBaselines(trajectories: TrajectorySummary[]): void {
         previousTrajectoryIds.add(t.cascadeId);
         activeIds.add(t.cascadeId);
     }
-    for (const id of previousContextUsedMap.keys()) {
+    for (const id of previousContextObservations.keys()) {
         if (!activeIds.has(id)) {
-            previousContextUsedMap.delete(id);
+            previousContextObservations.delete(id);
         }
     }
     for (const id of compressionPersistCounters.keys()) {

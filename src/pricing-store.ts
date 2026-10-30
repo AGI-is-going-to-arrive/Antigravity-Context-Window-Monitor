@@ -5,7 +5,8 @@
 // Extracted from gm-panel.ts to enable the dedicated Pricing tab.
 
 import type { GMSummary, GMModelStats } from './gm-tracker';
-import { normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDisplayName } from './models';
+import type { LedgerAccountBucket, LedgerModelStats } from './daily-ledger';
+import { normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDisplayName, isImageGenerationModel } from './models';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,10 @@ export interface ModelCostRow {
     cacheTokens: number;
     thinkingTokens: number;
     pricing: ModelPricing | null;
+    /** A frozen total survives, but its historical per-token price split does not. */
+    costBreakdownUnavailable?: boolean;
+    /** Components use dated rates, so a single current-price multiplication is misleading. */
+    usesHistoricalRates?: boolean;
 }
 
 // ─── Default Pricing Table (per 1M tokens, USD) ─────────────────────────────
@@ -40,9 +45,33 @@ export interface ModelCostRow {
 //        Gemini cacheRead = from official table; no separate cacheWrite pricing
 // Thinking: = output price (Claude extended thinking / Gemini reasoning output)
 
-export const PRICING_LAST_UPDATED = '2026-10-03';
+export const PRICING_LAST_UPDATED = '2026-10-31';
+
+export type PricingDate = string | number | Date;
+const ARGON_RATE_CHANGE = Date.parse('2026-12-01T00:00:00Z');
+const ARGON_INTRO_PRICING: ModelPricing = { input: 2, output: 10, cacheRead: 0.10, cacheWrite: 0, thinking: 10 };
+const ARGON_STANDARD_PRICING: ModelPricing = { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 0, thinking: 20 };
+const FLASH_RATE_CHANGE = Date.parse('2027-01-01T00:00:00Z');
+const FLASH_INTRO_PRICING: ModelPricing = { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, thinking: 3.75 };
+const FLASH_STANDARD_PRICING: ModelPricing = { input: 1.50, output: 7.50, cacheRead: 0.15, cacheWrite: 1.875, thinking: 7.50 };
+
+/** Calendar-only archive keys keep their stored day; full timestamps use UTC. */
+function pricingTimestamp(at: PricingDate): number | null {
+    if (at instanceof Date) { return Number.isFinite(at.getTime()) ? at.getTime() : null; }
+    if (typeof at === 'number') { return Number.isFinite(at) && Number.isFinite(new Date(at).getTime()) ? at : null; }
+    if (!/^\d{4}-\d{2}-\d{2}(?:$|T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$)/i.test(at)) { return null; }
+    const day = at.slice(0, 10);
+    const dayTime = Date.parse(`${day}T00:00:00Z`);
+    if (!Number.isFinite(dayTime) || new Date(dayTime).toISOString().slice(0, 10) !== day) { return null; }
+    const timestamp = Date.parse(at);
+    return Number.isFinite(timestamp) ? timestamp : null;
+}
 
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
+    // Google standard API reference, not Batch/Flex/Priority or subscription credits.
+    // https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon (2026-10-31).
+    // Implicit cache reads only; explicit caching/cache-write fees are unsupported.
+    get 'gemini-4-argon'() { return Date.now() < ARGON_RATE_CHANGE ? ARGON_INTRO_PRICING : ARGON_STANDARD_PRICING; },
     // ── Claude (platform.claude.com/docs/en/about-claude/pricing) ─────
     'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25, thinking: 25 },
     'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
@@ -64,15 +93,14 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     // INTRODUCTORY pricing, exactly half of 3.6 Flash: $0.75 input / $3.75 output per 1M tokens,
     // context caching $0.075. Google's footnote: "Introductory pricing expires on December 31, 2026.
     // Starting January 1, 2027, $1.50/1M input tokens and $7.50/1M output tokens will apply."
-    // ACTION REQUIRED ON 2027-01-01: change this row to the post-introductory rates —
-    //   { input: 1.50, output: 7.50, cacheRead: 0.15, cacheWrite: 1.875, thinking: 7.50 }
-    // which is parity with the 'gemini-3.6-flash' row above.
+    // The getter rolls to the published post-introductory rate automatically;
+    // dated calls retain their introductory rate during historical calculations.
     // cacheWrite derived at 1.25× input, consistent with how the 3.5/3.6 Flash rows were derived.
-    'gemini-3.7-flash': { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, thinking: 3.75 },
+    get 'gemini-3.7-flash'() { return Date.now() < FLASH_RATE_CHANGE ? FLASH_INTRO_PRICING : FLASH_STANDARD_PRICING; },
     // ── Gemini 3.8 Flash (Google Antigravity + Google launch posts, verified 2026-09-05) ──
     // Same introductory rate and expiry as 3.7 Flash: $0.75 input / $3.75 output through 2026-12-31;
     // from 2027-01-01 the rates become $1.50 / $7.50. Cache rates follow the existing Flash policy.
-    'gemini-3.8-flash': { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, thinking: 3.75 },
+    get 'gemini-3.8-flash'() { return Date.now() < FLASH_RATE_CHANGE ? FLASH_INTRO_PRICING : FLASH_STANDARD_PRICING; },
 };
 
 // ─── Pricing Lookup ──────────────────────────────────────────────────────────
@@ -85,21 +113,24 @@ export function findPricing(
     table: Record<string, ModelPricing> = DEFAULT_PRICING,
 ): ModelPricing | null {
     if (!responseModel.trim()) { return null; }
-    if (table[responseModel]) { return table[responseModel]; }
+    if (Object.prototype.hasOwnProperty.call(table, responseModel) && table[responseModel]) { return table[responseModel]; }
+    const imageModel = isImageGenerationModel(responseModel);
     const candidates: string[] = [];
     // A catalog alias can differ completely from its current display identity
     // (e.g. gemini-3-flash-agent). Resolve it before trying its literal spelling.
     const modelId = resolveModelId(responseModel);
-    if (modelId) {
+    if (typeof modelId === 'string') {
         const displayName = getModelDisplayName(modelId);
-        if (displayName && displayName !== modelId) {
+        if (typeof displayName === 'string' && displayName && displayName !== modelId) {
             candidates.push(...kebabCandidates(displayName));
         }
     }
     candidates.push(...kebabCandidates(responseModel));
     for (const candidate of new Set(candidates)) {
-        if (table[candidate]) { return table[candidate]; }
+        if (Object.prototype.hasOwnProperty.call(table, candidate) && table[candidate]
+            && (!imageModel || isImageGenerationModel(candidate))) { return table[candidate]; }
         for (const [key, pricing] of Object.entries(table)) {
+            if (imageModel && !isImageGenerationModel(key)) { continue; }
             // Normalize decimals on both sides, but keep the table row's tier.
             // Removing a custom row's tier would turn its rate into a family rate.
             const normalizedKey = kebabCandidates(key)[0];
@@ -164,12 +195,12 @@ export function findPricingWithCustom(
 ): ModelPricing | null {
     if (responseModel && Object.keys(custom).length > 0) {
         for (const alias of pricingLookupAliases(responseModel)) {
-            if (custom[alias]) { return custom[alias]; }
+            if (Object.prototype.hasOwnProperty.call(custom, alias) && custom[alias]) { return custom[alias]; }
         }
         // Persisted custom prices can use a localized tier label or a diagnostic
         // suffix from a previous session. Compare concrete identities as well.
         const modelId = resolveModelId(responseModel);
-        if (modelId) {
+        if (typeof modelId === 'string') {
             for (const [key, pricing] of Object.entries(custom)) {
                 if (resolveModelId(key) === modelId) { return pricing; }
             }
@@ -180,14 +211,40 @@ export function findPricingWithCustom(
     return findPricing(responseModel, base);
 }
 
+/** Resolve the standard rate at usage time, while every explicit custom rate wins. */
+export function findPricingForDate(
+    model: string,
+    custom: Record<string, ModelPricing> = {},
+    at: PricingDate = new Date(),
+    base: Record<string, ModelPricing> = DEFAULT_PRICING,
+): ModelPricing | null {
+    const override = findPricingWithCustom(model, custom, {});
+    if (override) { return override; }
+    const pricing = findPricing(model, base);
+    if (!pricing) { return null; }
+    // Check both immutable rate eras before reading dynamic default getters;
+    // crossing midnight between two reads must not lose the family identity.
+    const isArgon = pricing === ARGON_INTRO_PRICING || pricing === ARGON_STANDARD_PRICING
+        || pricing === base['gemini-4-argon'];
+    const isFlash = pricing === FLASH_INTRO_PRICING || pricing === FLASH_STANDARD_PRICING
+        || pricing === base['gemini-3.7-flash'] || pricing === base['gemini-3.8-flash'];
+    if (!isArgon && !isFlash) { return pricing; }
+    const time = pricingTimestamp(at);
+    // An invalid historic timestamp is not evidence that today's rate applied.
+    if (time === null) { return null; }
+    return isArgon
+        ? time < ARGON_RATE_CHANGE ? ARGON_INTRO_PRICING : ARGON_STANDARD_PRICING
+        : time < FLASH_RATE_CHANGE ? FLASH_INTRO_PRICING : FLASH_STANDARD_PRICING;
+}
+
 /** The spellings a single model answers to: as given, its model id, its display name. */
 function pricingLookupAliases(responseModel: string): string[] {
     const out = [responseModel];
     const modelId = resolveModelId(responseModel);
-    if (modelId) {
+    if (typeof modelId === 'string') {
         out.push(modelId);
         const displayName = getModelDisplayName(modelId);
-        if (displayName) { out.push(displayName); }
+        if (typeof displayName === 'string' && displayName) { out.push(displayName); }
     }
     return out.filter((v, i) => v && out.indexOf(v) === i);
 }
@@ -213,6 +270,111 @@ export function costFromTokens(
     ) / 1_000_000;
 }
 
+interface PricingTokenUsage {
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+    cacheReadTokens: number;
+}
+
+interface DatedPricingUsage extends PricingTokenUsage {
+    model: string;
+    createdAt: PricingDate;
+}
+
+type CostBreakdown = Pick<ModelCostRow,
+    'inputCost' | 'outputCost' | 'cacheCost' | 'thinkingCost' | 'totalCost' | 'pricing' | 'costBreakdownUnavailable' | 'usesHistoricalRates'>;
+
+/** Match concrete tiers without letting a shared response family merge them. */
+export function samePricingModel(left: string, right: string): boolean {
+    if (left === right) { return true; }
+    const leftId = resolveModelId(left);
+    const rightId = resolveModelId(right);
+    if (typeof leftId === 'string' && typeof rightId === 'string') { return leftId === rightId; }
+    const leftName = getModelBaseName(left);
+    const rightName = getModelBaseName(right);
+    return typeof leftName === 'string' && typeof rightName === 'string'
+        && leftName.toLowerCase() === rightName.toLowerCase();
+}
+
+function tokenCostBreakdown(tokens: PricingTokenUsage, pricing: ModelPricing | null): CostBreakdown {
+    const responseOutput = Math.max(0, tokens.outputTokens - tokens.thinkingTokens);
+    const inputCost = pricing ? tokens.inputTokens * pricing.input / 1_000_000 : 0;
+    const outputCost = pricing ? responseOutput * pricing.output / 1_000_000 : 0;
+    const cacheCost = pricing ? tokens.cacheReadTokens * pricing.cacheRead / 1_000_000 : 0;
+    const thinkingCost = pricing ? tokens.thinkingTokens * pricing.thinking / 1_000_000 : 0;
+    return { inputCost, outputCost, cacheCost, thinkingCost,
+        totalCost: inputCost + outputCost + cacheCost + thinkingCost, pricing };
+}
+
+/** Price complete per-call evidence, otherwise use the archived day or a frozen total. */
+export function calculateUsageCosts(
+    model: string,
+    tokens: PricingTokenUsage,
+    custom: Record<string, ModelPricing>,
+    options: { at?: PricingDate; calls?: readonly DatedPricingUsage[]; callCount?: number; frozenCost?: number } = {},
+): CostBreakdown {
+    const calls = options.calls || [];
+    const fields = ['inputTokens', 'outputTokens', 'thinkingTokens', 'cacheReadTokens'] as const;
+    // A retrieval/snapshot time is never a usage date. Only a caller supplying
+    // an actual archived calendar day may price the otherwise undated remainder.
+    const pricing = findPricingForDate(model, custom, options.at ?? '');
+    const usableCalls = (options.callCount === undefined || calls.length <= options.callCount)
+        && fields.every(field => calls.every(call => Number.isFinite(call[field]) && call[field] >= 0)
+            && calls.reduce((sum, call) => sum + call[field], 0) <= tokens[field]);
+    const remainder = { ...tokens };
+    const parts: CostBreakdown[] = [];
+    if (usableCalls) {
+        for (const call of calls) {
+            const callPricing = findPricingForDate(call.model || model, custom, call.createdAt);
+            if (!callPricing) { continue; }
+            parts.push(tokenCostBreakdown(call, callPricing));
+            for (const field of fields) { remainder[field] -= call[field]; }
+        }
+    }
+    const hasRemainder = fields.some(field => remainder[field] > 0);
+    const override = findPricingWithCustom(model, custom, {});
+    const builtIn = findPricing(model);
+    const scheduled = builtIn === ARGON_INTRO_PRICING || builtIn === ARGON_STANDARD_PRICING
+        || builtIn === FLASH_INTRO_PRICING || builtIn === FLASH_STANDARD_PRICING;
+    if (hasRemainder && !override && (scheduled || !pricing)
+        && Number.isFinite(options.frozenCost) && (options.frozenCost || 0) > 0) {
+        // A pool/day aggregate may cross a UTC price boundary. Preserve its
+        // already-recorded total instead of inventing a split between rate eras.
+        return { inputCost: 0, outputCost: 0, cacheCost: 0, thinkingCost: 0,
+            totalCost: options.frozenCost!, pricing: pricing || builtIn, costBreakdownUnavailable: true };
+    }
+    if (hasRemainder && pricing) { parts.push(tokenCostBreakdown(remainder, pricing)); }
+    const incomplete = hasRemainder && !pricing;
+    const displayedPricing = incomplete ? null : pricing || parts[0]?.pricing || findPricingWithCustom(model, custom);
+    const usesHistoricalRates = parts.some(part => part.pricing !== displayedPricing);
+    return parts.reduce<CostBreakdown>((total, part) => ({
+        inputCost: total.inputCost + part.inputCost, outputCost: total.outputCost + part.outputCost,
+        cacheCost: total.cacheCost + part.cacheCost, thinkingCost: total.thinkingCost + part.thinkingCost,
+        totalCost: total.totalCost + part.totalCost, pricing: displayedPricing, usesHistoricalRates,
+    }), { inputCost: 0, outputCost: 0, cacheCost: 0, thinkingCost: 0, totalCost: 0,
+        pricing: displayedPricing, usesHistoricalRates });
+}
+
+/** Shared ledger/archival/UI pricing path, with per-call timestamps when retained. */
+export function calculateLedgerModelCosts(
+    modelKey: string,
+    stats: LedgerModelStats,
+    bucket: LedgerAccountBucket,
+    custom: Record<string, ModelPricing>,
+    date?: PricingDate,
+): CostBreakdown {
+    const calls = (bucket.recordedCalls || []).filter(call => samePricingModel(call.modelKey, modelKey));
+    return calculateUsageCosts(modelKey, stats, custom, {
+        at: date,
+        callCount: stats.calls,
+        frozenCost: stats.estimatedCost,
+        // createdAtMs can be the ledger's ingestion-time fallback, so it is not
+        // evidence of when a historical provider call was actually made.
+        calls: calls.map(call => ({ ...call, model: call.modelId || modelKey, createdAt: call.createdAt || '' })),
+    });
+}
+
 // ─── Cost Calculation ────────────────────────────────────────────────────────
 
 export function calculateCosts(
@@ -224,20 +386,18 @@ export function calculateCosts(
     const mergedRows = new Map<string, ModelCostRow>();
     let grandTotal = 0;
 
-    const calcCost = (tokens: number, pricePerM: number) => (tokens / 1_000_000) * pricePerM;
-
     for (const [name, ms] of entries) {
         const displayName = normalizeModelDisplayName(name);
         const baseName = getModelBaseName(name) || displayName;
-        const pricing = findPricingWithCustom(name, customPricing)
-            || findPricingWithCustom(ms.responseModel, customPricing);
+        const model = findPricingWithCustom(name, customPricing) ? name : ms.responseModel;
+        const calls = (summary.conversations || []).flatMap(conversation => conversation.calls)
+            .filter(call => samePricingModel(call.modelDisplay || call.model || call.responseModel, model));
+        const costs = calculateUsageCosts(model, {
+            inputTokens: ms.totalInputTokens, outputTokens: ms.totalOutputTokens,
+            thinkingTokens: ms.totalThinkingTokens, cacheReadTokens: ms.totalCacheRead,
+        }, customPricing, { calls, callCount: ms.callCount });
+        const { pricing, inputCost, outputCost, cacheCost, thinkingCost, totalCost } = costs;
         const responseOutputTokens = Math.max(0, ms.totalOutputTokens - ms.totalThinkingTokens);
-
-        const inputCost = pricing ? calcCost(ms.totalInputTokens, pricing.input) : 0;
-        const outputCost = pricing ? calcCost(responseOutputTokens, pricing.output) : 0;
-        const cacheCost = pricing ? calcCost(ms.totalCacheRead, pricing.cacheRead) : 0;
-        const thinkingCost = pricing ? calcCost(ms.totalThinkingTokens, pricing.thinking) : 0;
-        const totalCost = inputCost + outputCost + cacheCost + thinkingCost;
         grandTotal += totalCost;
 
         const existing = mergedRows.get(baseName);
@@ -251,7 +411,8 @@ export function calculateCosts(
             existing.outputTokens += responseOutputTokens;
             existing.cacheTokens += ms.totalCacheRead;
             existing.thinkingTokens += ms.totalThinkingTokens;
-            if (!existing.pricing && pricing) { existing.pricing = pricing; }
+            existing.usesHistoricalRates ||= costs.usesHistoricalRates;
+            if (!pricing) { existing.pricing = null; }
         } else {
             mergedRows.set(baseName, {
                 name: displayName, responseModel: ms.responseModel,
@@ -259,6 +420,7 @@ export function calculateCosts(
                 inputTokens: ms.totalInputTokens, outputTokens: responseOutputTokens,
                 cacheTokens: ms.totalCacheRead,
                 thinkingTokens: ms.totalThinkingTokens, pricing: pricing || null,
+                usesHistoricalRates: costs.usesHistoricalRates,
             });
         }
     }

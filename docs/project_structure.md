@@ -18,7 +18,7 @@ antigravity-context-monitor/
 │   ├── backend-connection.ts     # 从当前 IDE 已激活的内置扩展读取连接提示，约束实例归属
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
 │   ├── tracker.ts                # Planner/checkpoint 精确 Token 快照、会话数据获取、用户状态查询
-│   ├── models.ts                 # 模型配置、平台截断阈值、Gemini 4 Argon 三档、Claude 5.5 / 4.6 兼容、跨语言归一化
+│   ├── models.ts                 # 模型配置、平台阈值、13 个当前聊天档位、图片能力目录、历史身份及跨语言归一化
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
 │   ├── statusbar.ts              # 状态栏 UI（StatusBarManager，含计划层级 hover 缓存、AI 积分余额、|| 分隔符）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
@@ -49,7 +49,7 @@ antigravity-context-monitor/
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标
 
-│   ├── webview-models-tab.ts     # Models 标签页 HTML（账号实时模型、额度、自适应思考、主题模型信息卡片）
+│   ├── webview-models-tab.ts     # Models 标签页：账号聊天/图片分区、IDE 来源限额与不适用状态
 │   ├── webview-settings-tab.ts   # Settings 标签页 HTML（低额度警告、轮询、显示偏好、持久化存储概览）
 │   ├── webview-profile-tab.ts    # Profile 标签页 HTML（账户 / 计划限制 / 功能与团队 / AI 积分到期日设置）
 │   ├── webview-chat-history-tab.ts # Sessions 标签页 HTML（ses-* 命名空间 — 紧凑行式卡片 + shortcut 芯片 + 工具栏 + CSS tooltip）
@@ -69,6 +69,14 @@ antigravity-context-monitor/
 │   ├── discovery-hub.test.ts     # Hub 编排、失效候选、实例隔离、取消及本地 HTTP 探测
 │   ├── trajectory-agent-hub.test.ts # 无 checkpoint 的 planner 用量、档位与估算优先级
 │   ├── gm-agent-hub.test.ts      # 当前 hub GM 容量、重试和遥测边界
+│   ├── argon-pricing.test.ts     # Argon 官方价格、UTC 调价边界、逐调用成本及历史/自定义优先级
+│   ├── image-model-registry.test.ts # 图片身份、独立可用列表、无聊天阈值及配额隔离
+│   ├── image-steps.test.ts       # generateImage 步骤与外围聊天身份保持
+│   ├── image-workflow.test.ts    # 关联子智能体图片步骤，有界遍历、去重及父上下文隔离
+│   ├── image-cost-warning.test.ts # 无独立图片计量时已知小计/费用排除提示
+│   ├── context-compression.test.ts # 含缓存占用、来源一致性及压缩误报保护
+│   ├── model-metadata-lifecycle.test.ts # 账号/后端代际隔离，防止旧异步目录回填
+│   ├── fixtures/model-catalog-2026-10-31.ts # 脱敏实时目录字段 fixture
 │   ├── gemini-4-argon.test.ts    # Argon 三档身份、参数、GM、配额、价格与 i18n 回归
 │   ├── models-registry.test.ts   # 注册表、精确模型 ID、别名、平台阈值、账号模型与配额池兼容
 │   ├── claude-55.test.ts         # Claude 5.5 六档参数、别名、计价与历史模型兼容
@@ -139,7 +147,7 @@ antigravity-context-monitor/
 
 ### tracker.ts -- Token 计算 + 数据获取
 
-对话列表获取、Token 计算、上下文用量组装。当前 planner-response 与旧版 CHECKPOINT 的 `metadata.modelUsage` 都可提供精确快照；提供商输入+输出计数优先于 GM 请求前估算，估算保持估算标记。首次回复前从用户输入 planner 配置读取所选档位。`tokenUsageSource` 标记数据来源，使旧缓存重新获取；运行中步骤不会因摘要数量不变而沿用缓存。CHECKPOINT 不覆盖用户可见显示模型，其内部模型通过 `checkpointModel` 透传给状态栏 tooltip。主要导出：`getAllTrajectories()`、`getContextUsage()`、`fetchFullUserStatus()`。
+对话列表获取、Token 计算、上下文用量组装。当前 planner-response 与旧版 CHECKPOINT 的 `metadata.modelUsage` 都可提供精确快照；提供商新输入+缓存读取+缓存创建+输出计数优先于 GM 请求前估算，估算保持估算标记。首次回复前从用户输入 planner 配置读取所选档位。`tokenUsageSource` 标记数据来源，使旧缓存重新获取；运行中步骤不会因摘要数量不变而沿用缓存。CHECKPOINT 不覆盖用户可见显示模型，其内部模型通过 `checkpointModel` 透传给状态栏 tooltip。主要导出：`getAllTrajectories()`、`getContextUsage()`、`fetchFullUserStatus()`、`refreshWorkflowImageUsage()`。后者只沿明确子智能体链接汇总图片步骤与模型，限制节点数/深度并去重循环；失败/截断显示不完整，不将子文本 Token 并入父上下文。
 
 ---
 
@@ -147,11 +155,15 @@ antigravity-context-monitor/
 
 模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将 Gemini Argon、Flash、Pro 合并为统一的 `gemini` 池。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
 
-v1.16.19 注册 Gemini 4 Argon High/Medium/Low（`M417`/`M418`/`M419`），对应 `gemini-4-argon-{high,medium,low}`。2026-10-31 活体目录核实原生上下文 1,048,576、最大输出 65,536、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；静态兜底 255,000，思考力度 3/2/1。价格未核实时保留未定价状态，支持用户自定义费率，不借用 Flash 单价。家族响应名不能覆盖确切档位，身份解析贯穿 GM、历史用量、配额和中英文显示。
+v1.16.19 注册 Gemini 4 Argon High/Medium/Low（`M417`/`M418`/`M419`），对应 `gemini-4-argon-{high,medium,low}`。2026-10-31 活体目录核实IDE 报告的模型上下文 1,048,576、最大输出 65,536、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；静态兜底 255,000，思考力度 3/2/1。计价采用已核实的 Argon 官方 Standard API 日期费率，支持自定义覆盖，不借用 Flash 单价。家族响应名不能覆盖确切档位，身份解析贯穿 GM、历史用量、配额和中英文显示。
+
+2026-10-31 活体元数据核对覆盖全部 13 个聊天档位（Argon/Flash 3.8/Opus 5.5/Sonnet 5.5 各三档、GPT-OSS Medium）；GPT-OSS 的模型上下文/输出为 131,072 / 32,768，压缩上限 80,000、触发阈值 50,000。精简对照表见 [1.16.19 发布说明](releases/1.16.19.md#当前聊天目录与图片生成)。
+
+图片能力以 `imageGenerationModelIds` 为准，而非 `supportsImages`。M21 / `gemini-3.1-flash-image`（Nano Banana 2）的 IDE 上下文/输出为 65,536 / 65,536，无聊天 checkpointer；图片目录独立显示，压缩指标不适用，配额独立于聊天池。`setAvailableImageModelIds()` 与 `getAvailableImageModelSpecs()` 管理实时可用子集，空列表和连接/账号代际失效会清除旧展示，旧异步响应不能回填新账号。图片思考字段缺失保留为 **IDE 未上报**，不解释为不支持。
 
 当前活体目录同时校正 Gemini 3.8 Flash `M318`/`M319`/`M320` 为 50,000 checkpointer 触发阈值和 3/2/1 思考力度，不保留早期固定预算。仅在完整实时目录记录中清除缺省 protobuf 思考字段，部分数据不覆盖已知值；`M322` 及更旧世代保留历史画像。
 
-v1.16.18 注册 Claude Opus 5.5 Low/Medium/High（`M400`/`M401`/`M402`）及 Sonnet 5.5 Low/Medium/High（`M403`/`M404`/`M405`），共同使用 `premium` 配额池。原生上下文 1,000,000、最大输出 128,000、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；255,000 静态兜底沿用现有偏移约定。`ModelSpec` 保存自适应思考能力和力度，避免把缺省预算误读为不支持思考。Claude 4.6 的 `M26`/`M35` 保留兼容；家族级响应别名不覆盖确切档位身份。
+v1.16.18 注册 Claude Opus 5.5 Low/Medium/High（`M400`/`M401`/`M402`）及 Sonnet 5.5 Low/Medium/High（`M403`/`M404`/`M405`），共同使用 `premium` 配额池。IDE 报告的模型上下文 1,000,000、最大输出 128,000、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；255,000 静态兜底沿用现有偏移约定。`ModelSpec` 保存自适应思考能力和力度，避免把缺省预算误读为不支持思考。Claude 4.6 的 `M26`/`M35` 保留兼容；家族级响应别名不覆盖确切档位身份。
 
 ---
 
@@ -216,7 +228,9 @@ v1.16.18 注册 Claude Opus 5.5 Low/Medium/High（`M400`/`M401`/`M402`）及 Son
 
 ### pricing-store.ts -- 定价数据层
 
-管理模型定价：默认价格表、用户自定义持久化、模糊匹配、费用计算。费用估算用于本地观察，不代表 Antigravity 官方账单。
+管理模型定价：默认价格表、用户自定义持久化、身份匹配、按调用 UTC 时间戳的日期费率和费用计算。费用估算用于本地观察，不代表 Antigravity 官方账单。
+
+[Argon 官方 Standard API 费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) 截至 2026-11-30 为每百万 token 输入 $2 / 含思考输出 $10 / 隐式缓存读取 $0.10；自 2026-12-01 起为 $4 / $20 / $0.20。逐调用聚合、每日归档、账本结算与历史回填共用日期查价，保留已有归档总额及自定义覆盖。Argon 仅支持隐式缓存，不添加显式缓存写入费。
 
 Claude Opus 5.5 与 Sonnet 5.5 均使用[官方 API 费率](https://platform.claude.com/docs/en/about-claude/pricing)（2026-10-03）。按每百万 token 计算，Opus 输入/输出为 $4/$20，Sonnet 为 $2/$10；两者缓存读取均为 $0.20。内置缓存写入参考费率为 5 分钟，Opus 为 $5、Sonnet 为 $2.50；官方 1 小时费率分别为 $8/$4。当前费用估算不计缓存创建费，因为遥测不能可靠区分创建 token 及 TTL，1 小时写入费用也不自动计入；已上报的缓存读取参与计价。计价入口统一处理 placeholder、catalog ID 与中英文名称，保留历史 token 并支持自定义价格。估算不代表 Antigravity 订阅账单。
 
@@ -230,7 +244,7 @@ Claude Opus 5.5 与 Sonnet 5.5 均使用[官方 API 费率](https://platform.cla
 
 ### pricing-panel.ts -- Cost 标签页渲染
 
-生成 Cost 标签页 HTML，导出 `buildModelDNACards()` 供 Models 标签页复用。价格编辑区展示已调用模型和内置默认价格模型；保存时只持久化已有自定义项或用户实际改动的行，避免把未编辑的默认价格写成 custom override。
+生成 Cost 标签页 HTML，导出 `buildModelDNACards()` 供 Models 标签页复用。检测到生图但缺少独立图片 Token/积分/GM 计量时，显示“已知小计，未计入图片生成费用”及官方参考链接，不把图片费补成零。价格编辑区展示已调用模型和内置默认价格模型；保存时只持久化已有自定义项或用户实际改动的行，避免把未编辑的默认价格写成 custom override。
 
 ---
 
@@ -271,7 +285,7 @@ Claude Opus 5.5 与 Sonnet 5.5 均使用[官方 API 费率](https://platform.cla
 
 子模块：`webview-models-tab.ts`（Models）、`webview-settings-tab.ts`（Settings）、`webview-profile-tab.ts`（Profile）、`webview-chat-history-tab.ts`（Sessions）、`webview-calendar-tab.ts`（Calendar）、`webview-about-tab.ts`（About）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（CSS Design Token）、`webview-icons.ts`（SVG 图标）、`webview-helpers.ts`（共享工具函数）。
 
-Models 页按当前账号的实时 picker 渲染，不按计划名或移除日期推断模型权限。模型信息卡片采用 IDE 中性主题色，压缩上限、原生上下文和思考状态使用结构化数据行；显示友好提供商名称、可换行的完整模型 ID。布局适配窄面板及亮色、暗色、高对比度主题，并支持中文、英文与双语。
+Models 页按当前账号的实时聊天 picker 渲染，并单独展示由 imageGenerationModelIds 返回的图片模型；不按计划名或移除日期推断模型权限。模型信息卡片采用 IDE 中性主题色，压缩上限、IDE 报告的模型上下文和思考状态使用结构化数据行；显示友好提供商名称、可换行的完整模型 ID。布局适配窄面板及亮色、暗色、高对比度主题，并支持中文、英文与双语。
 
 ---
 

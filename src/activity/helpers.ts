@@ -23,6 +23,7 @@ const STEP_CATEGORIES: Record<string, StepClassification> = {
     'CORTEX_STEP_TYPE_SEARCH_WEB': { icon: '🌐', label: 'search_web', category: 'tool' },
     'CORTEX_STEP_TYPE_READ_URL_CONTENT': { icon: '🌐', label: 'read_url', category: 'tool' },
     'CORTEX_STEP_TYPE_BROWSER_SUBAGENT': { icon: '🤖', label: 'browser', category: 'tool' },
+    'CORTEX_STEP_TYPE_GENERATE_IMAGE': { icon: '🎨', label: 'generate_image', category: 'tool' },
     'CORTEX_STEP_TYPE_ERROR_MESSAGE': { icon: '❌', label: 'error', category: 'system' },
     'CORTEX_STEP_TYPE_USER_INPUT': { icon: '💬', label: 'user_input', category: 'user' },
     'CORTEX_STEP_TYPE_CHECKPOINT': { icon: '💾', label: 'checkpoint', category: 'system' },

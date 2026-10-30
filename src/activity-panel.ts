@@ -699,7 +699,7 @@ export function getGMDataTabStyles(): string {
     /* ─── Activity Tab: Layout Grids ─── */
     .act-two-col {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
         gap: var(--space-4);
         margin-bottom: var(--space-4);
         align-items: stretch;
@@ -1913,6 +1913,24 @@ export function getGMDataTabStyles(): string {
         background: var(--color-amber-bg);
         color: var(--color-amber-light);
         border: 1px solid var(--color-amber-border);
+    }
+    @media (max-width: 640px) {
+        .act-summary-bar { position: relative; }
+        .act-summary-bar .act-stat { position: static; }
+        .act-summary-bar > .act-stat[data-tooltip]::after {
+            left: 50%; right: auto; max-width: calc(100% - 20px);
+            transform: translateX(-50%) scale(0.92);
+        }
+        .act-summary-bar > .act-stat[data-tooltip]:hover::after,
+        .act-summary-bar > .act-stat[data-tooltip]:focus-visible::after {
+            transform: translateX(-50%) scale(1);
+        }
+        .act-tl-item, .act-tl-turn-header, .cp-card-header { flex-wrap: wrap; }
+        .act-tl-content, .act-tl-turn-text { flex-basis: 120px; }
+        .act-tl-meta { max-width: 100%; flex-wrap: wrap; white-space: normal; }
+        .act-tl-gm { max-width: 100%; min-width: 0; flex-wrap: wrap; flex-shrink: 1; }
+        .seg-chips { flex-basis: 100%; max-width: 100%; min-width: 0; }
+        .act-tl-gm-tag, .seg-chip, .cp-card-chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
     }
     .cp-card-body {
         border-top: 1px solid var(--color-amber-bg);

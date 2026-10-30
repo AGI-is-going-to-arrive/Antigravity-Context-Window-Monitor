@@ -4,7 +4,7 @@ import {
     guessContextLimitSpec, normalizeModelDisplayName, registerResponseModelAlias, resolveModelId,
     setShowModelShortId, updateModelDisplayNames, type ModelConfig,
 } from '../src/models';
-import { calculateCosts, findPricing, findPricingWithCustom, type ModelPricing } from '../src/pricing-store';
+import { DEFAULT_PRICING, calculateCosts, costFromTokens, findPricing, findPricingWithCustom, type ModelPricing } from '../src/pricing-store';
 import { DailyLedger } from '../src/daily-ledger';
 import { buildGMSummaryFromLedger } from '../src/daily-archival';
 import { expandModelIdsToPool, groupModelIdsByResetPool } from '../src/pool-utils';
@@ -99,12 +99,12 @@ describe('Gemini 4 Argon identity and verified metadata', () => {
 });
 
 describe('Argon accounting and pricing boundaries', () => {
-    it.each(ARGON)('$id remains unpriced unless the user supplies a matching price', model => {
+    it.each(ARGON)('$id uses the official family rate unless the user supplies a matching price', model => {
         const id = `MODEL_PLACEHOLDER_${model.id}`;
         const catalog = `gemini-4-argon-${model.tier.toLowerCase()}`;
         const localized = `Gemini 4 Argon (${model.zh}) (${model.id})`;
         for (const key of [id, catalog, localized, 'gemini-4-argon']) {
-            expect(findPricing(key), key).toBeNull();
+            expect(findPricing(key), key).toBe(DEFAULT_PRICING['gemini-4-argon']);
         }
         expect(findPricingWithCustom(id, { [localized]: customPrice })).toBe(customPrice);
         expect(findPricingWithCustom(catalog, { 'gemini-4-argon': customPrice })).toBe(customPrice);
@@ -112,12 +112,12 @@ describe('Argon accounting and pricing boundaries', () => {
         expect(findPricing(catalog, { 'gemini-4': customPrice })).toBeNull();
     });
 
-    it('isolates per-effort custom prices and leaves other efforts unpriced', () => {
+    it('isolates per-effort custom prices and leaves other efforts on the official family rate', () => {
         const custom = { 'Gemini 4 Argon (低) (M419)': customPrice };
         expect(findPricingWithCustom('gemini-4-argon-low', custom)).toBe(customPrice);
-        expect(findPricingWithCustom('gemini-4-argon-medium', custom)).toBeNull();
-        expect(findPricingWithCustom('gemini-4-argon-high', custom)).toBeNull();
-        expect(findPricingWithCustom('gemini-4-argon', custom)).toBeNull();
+        expect(findPricingWithCustom('gemini-4-argon-medium', custom)).toBe(DEFAULT_PRICING['gemini-4-argon']);
+        expect(findPricingWithCustom('gemini-4-argon-high', custom)).toBe(DEFAULT_PRICING['gemini-4-argon']);
+        expect(findPricingWithCustom('gemini-4-argon', custom)).toBe(DEFAULT_PRICING['gemini-4-argon']);
     });
 
     it('keeps GM and persisted DNA efforts separate with a shared responseModel', () => {
@@ -154,7 +154,7 @@ describe('Argon accounting and pricing boundaries', () => {
         expect(bucket.totalInputTokens).toBe(600_000);
         expect(bucket.totalOutputTokens).toBe(3000);
         expect(bucket.totalThinkingTokens).toBe(300);
-        expect(bucket.totalEstimatedCost).toBe(0); // unpriced, not a free built-in rate
+        expect(bucket.totalEstimatedCost).toBeCloseTo(costFromTokens({ inputTokens: 600_000, outputTokens: 3000, thinkingTokens: 300, cacheReadTokens: 150 }, DEFAULT_PRICING['gemini-4-argon']), 10);
         const custom = Object.fromEntries(ARGON.map((model, index) => [
             `Gemini 4 Argon (${model.zh}) (${model.id})`,
             { input: index + 1, output: 10, thinking: 20, cacheRead: 0.5, cacheWrite: 0 },

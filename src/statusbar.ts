@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { ContextUsage } from './tracker';
 import { ModelConfig } from './models';
-import { isShowModelShortId, getQuotaPoolKey } from './models';
+import { isShowModelShortId, getQuotaPoolKey, normalizeModelDisplayName } from './models';
 import { t, tBi, getLanguage } from './i18n';
 import { formatResetAbsolute, formatResetContext, formatResetCountdownFromMs } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
@@ -133,7 +133,9 @@ export function calculateCompressionStats(usage: ContextUsage): CompressionStats
     }
 
     if (usage.checkpointCompressionDrop > 0) {
-        const currentInput = usage.lastModelUsage?.inputTokens;
+        const currentInput = usage.lastModelUsage
+            ? usage.lastModelUsage.inputTokens + usage.lastModelUsage.cacheReadTokens + (usage.lastModelUsage.cacheCreationTokens || 0)
+            : undefined;
         const previousInput = currentInput !== undefined
             ? currentInput + usage.checkpointCompressionDrop
             : 0;
@@ -598,7 +600,7 @@ export class StatusBarManager {
         } else if (isCompressing) {
             lines.push(`🗜 ${t('tooltip.compressing')}`);
         } else if (usage.compressionDetected) {
-            lines.push(`🗜 ${t('tooltip.compressed')}`);
+            lines.push(`🗜 ${t(usage.checkpointCompressionDrop > 0 ? 'tooltip.compressed' : 'tooltip.contextDecreased')}`);
         }
 
         lines.push(`——————————`);
@@ -642,7 +644,7 @@ export class StatusBarManager {
             lines.push(`🗜 ${t('tooltip.compressing')}`);
             lines.push(`💡 ${t('tooltip.compressingHint')}`);
         } else if (usage.compressionDetected) {
-            lines.push(`🗜 ${t('tooltip.compressed')}`);
+            lines.push(`🗜 ${t(usage.checkpointCompressionDrop > 0 ? 'tooltip.compressed' : 'tooltip.contextDecreased')}`);
             if (usage.previousContextUsed !== undefined) {
                 lines.push(`   ${t('tooltip.before')}: ${usage.previousContextUsed.toLocaleString()} ${tokenUnit}`);
                 lines.push(`   ${t('tooltip.after')}: ${usage.contextUsed.toLocaleString()} ${tokenUnit}`);
@@ -668,6 +670,13 @@ export class StatusBarManager {
 
         if (usage.imageGenStepCount > 0) {
             lines.push(`📷 ${t('tooltip.imageGen')}: ${usage.imageGenStepCount} ${t('tooltip.imageGenSteps')}`);
+            if (usage.imageGenerationModels?.length) {
+                lines.push(`   ${tBi('Image model', '图片模型')}: ${usage.imageGenerationModels
+                    .map(model => escapeMarkdown(normalizeModelDisplayName(model))).join(' · ')}`);
+            }
+        }
+        if (usage.imageGenerationIncomplete) {
+            lines.push(`⚠️ ${tBi('Image workflow data is incomplete', '图片工作流数据不完整')}`);
         }
 
         if (usage.estimatedDeltaSinceCheckpoint > 0 && usage.lastModelUsage) {
@@ -687,6 +696,9 @@ export class StatusBarManager {
             lines.push(`  ${t('tooltip.output')}: ${usage.lastModelUsage.outputTokens.toLocaleString()}`);
             if (usage.lastModelUsage.cacheReadTokens > 0) {
                 lines.push(`  ${t('tooltip.cache')}: ${usage.lastModelUsage.cacheReadTokens.toLocaleString()}`);
+            }
+            if ((usage.lastModelUsage.cacheCreationTokens || 0) > 0) {
+                lines.push(`  ${tBi('Cache creation', '缓存创建')}: ${usage.lastModelUsage.cacheCreationTokens!.toLocaleString()}`);
             }
         }
 
@@ -848,7 +860,7 @@ export class StatusBarManager {
                 ? `[${t('panel.estimated')}]`
                 : `[${t('panel.preciseShort')}]`;
             const compressTag = currentUsage.compressionDetected
-                ? ` [${t('panel.compressed')}]`
+                ? ` [${t(currentUsage.checkpointCompressionDrop > 0 ? 'panel.compressed' : 'panel.contextDecreased')}]`
                 : (currentUsage.usagePercent > 100 ? ` [${t('panel.compressing')}]` : '');
             const imageTag = currentUsage.imageGenStepCount > 0 ? ` [📷×${currentUsage.imageGenStepCount}]` : '';
             const gapsTag = currentUsage.hasGaps ? ` [⚠️${t('panel.gaps')}]` : '';

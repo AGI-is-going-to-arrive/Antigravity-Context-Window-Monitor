@@ -12,7 +12,7 @@
 import type { GMCallEntry } from './gm-tracker';
 import { normalizeModelDisplayName, resolveModelId } from './models';
 import { buildGMArchiveKey } from './gm/parser';
-import { findPricing, costFromTokens } from './pricing-store';
+import { findPricingForDate, costFromTokens } from './pricing-store';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -166,8 +166,10 @@ function fallbackCallId(call: GMCallEntry): string {
  * applied where the number is read instead — see the Pricing tab and
  * `buildGMSummaryFromLedger`, which re-price from the token counts kept alongside.
  */
-function estimateCallCost(call: GMCallEntry): number {
-    const pr = findPricing(call.model) || findPricing(call.responseModel) || findPricing(call.modelDisplay);
+function estimateCallCost(call: GMCallEntry, dateKey: string): number {
+    const at = call.createdAt || dateKey;
+    const pr = findPricingForDate(call.model, {}, at)
+        || findPricingForDate(call.responseModel, {}, at) || findPricingForDate(call.modelDisplay, {}, at);
     return pr ? costFromTokens(call, pr) : 0;
 }
 
@@ -497,7 +499,7 @@ export class DailyLedger {
             bucket.totalCacheCreation += call.cacheCreationTokens;
             bucket.totalCredits += call.credits;
 
-            const cost = estimateCallCost(call);
+            const cost = estimateCallCost(call, this._dateKey);
             bucket.totalEstimatedCost += cost;
 
             // Per-model breakdown.

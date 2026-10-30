@@ -19,7 +19,7 @@
 
 ---
 
-**1.16.19：** 新增 Gemini 4 Argon Low / Medium / High 支持，并修复新版 Antigravity IDE 的 `agy` hub 发现问题。详见[发布说明与验收范围](docs/releases/1.16.19.md#验证)。[CI 工作流](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) 覆盖 Windows、macOS、Linux 的编译和回归测试；原生 IDE 实机结果单独记录。
+**1.16.19：** 新增 Gemini 4 Argon 三档及按日期生效的官方价格，核对当前 13 个聊天档位，展示独立图片生成目录，并修复 Antigravity IDE 的 `agy` hub 发现问题。详见[发布说明与验收范围](docs/releases/1.16.19.md#验证)。[CI 工作流](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) 覆盖 Windows、macOS、Linux 的编译和回归测试；原生 IDE 实机结果单独记录。
 
 ## 📚 技术细节
 
@@ -30,7 +30,7 @@
 ## ✨ 主要功能
 
 * **⚡ 实时 Token 监控**
-    状态栏显示当前 Token 消耗，格式如 `125k/200k, 62.5%`。精确值取自当前 planner response 或旧版 checkpoint 中提供商报告的 `inputTokens` + `outputTokens`。缺失部分采用估算并保留估算标记；GM 请求前估算不会覆盖提供商精确值。运行中的响应会重新拉取，避免流式更新时总量停留在旧值。
+    状态栏显示当前 Token 消耗，格式如 `125k/200k, 62.5%`。精确值取自当前 planner response 或旧版 checkpoint 中提供商报告的新输入 + 缓存读取 + 缓存创建 + 输出 token。缓存输入仍占用上下文，缓存命中不等于压缩。缺失部分采用估算并保留估算标记；GM 请求前估算不会覆盖提供商精确值。运行中的响应会重新拉取，避免流式更新时总量停留在旧值。
 
 * **🪪 状态栏计划层级显示稳定**
     当 Antigravity 后续轮询不再返回最新 `userTierName` 时，状态栏悬浮提示会主动清空旧的二级计划/层级后缀，避免过期标签在后续轮询中残留。
@@ -42,7 +42,7 @@
     每个 Antigravity 窗口优先显示本工作区的对话数据，通过 workspace URI 过滤。遇到 Antigravity 切换项目后仍上报旧 workspace 的情况，监控会跟随共享语言服务器里当前 RUNNING 的对话，避免状态栏直接空掉。未打开文件夹的窗口显示所有对话。
 
 * **🗜️ 上下文压缩检测**
-    当模型自动压缩对话历史时，插件通过双层检测机制识别：主层比较连续 checkpoint 的 `inputTokens`（下降超过 5000 tokens 即判定，天然免疫 Undo 误报），降级层比较跨轮询 `contextUsed` 变化（带 Undo 排除守卫）。状态栏显示 `~100% 🗜` 压缩标识。
+    当模型自动压缩对话历史时，插件通过双层检测机制识别：主层比较连续 checkpoint 的含缓存输入（下降超过 5000 tokens 即判定，天然免疫 Undo 误报），降级层比较跨轮询 `contextUsed` 变化（带 Undo 排除守卫）。状态栏显示 `~100% 🗜` 压缩标识。
 
 * **⏪ Undo/Rewind 支持**
     撤销对话步骤后，插件检测到 `stepCount` 减少，会重新计算 Token 用量，显示回滚后的准确值。
@@ -90,51 +90,54 @@
 
 ## 🤖 支持的模型
 
-注册表识别当前模型及历史记录中的旧模型身份。模型页始终以当前登录账号的实时 picker 为准；已注册不代表所有账号都能使用。
+模型页依据当前登录账号的实时聊天 picker 和独立图片生成目录。注册表保留历史身份，但不会授予访问权限，也不会假定所有账号的模型列表相同。
 
-| 模型 | Internal ID / 内部 ID | 平台压缩上限 |
-| --- | --- | --- |
-| Gemini 4 Argon (High) | MODEL_PLACEHOLDER_M417 | 256,000 |
-| Gemini 4 Argon (Medium) | MODEL_PLACEHOLDER_M418 | 256,000 |
-| Gemini 4 Argon (Low) | MODEL_PLACEHOLDER_M419 | 256,000 |
-| Gemini 3.8 Flash (High) | MODEL_PLACEHOLDER_M318 | 256,000 |
-| Gemini 3.8 Flash (Medium) | MODEL_PLACEHOLDER_M319 | 256,000 |
-| Gemini 3.8 Flash (Low) | MODEL_PLACEHOLDER_M320 | 256,000 |
-| Gemini 3.8 Flash (Tiered，内部路由) | MODEL_PLACEHOLDER_M322 | 256,000 |
-| Gemini 3.7 Flash (High) | MODEL_PLACEHOLDER_M298 | 256,000 |
-| Gemini 3.7 Flash (Medium) | MODEL_PLACEHOLDER_M299 | 256,000 |
-| Gemini 3.7 Flash (Low) | MODEL_PLACEHOLDER_M300 | 256,000 |
-| Gemini 3.6 Flash (High) | MODEL_PLACEHOLDER_M71 | 256,000 |
-| Gemini 3.6 Flash (Medium) | MODEL_PLACEHOLDER_M72 | 256,000 |
-| Gemini 3.6 Flash (Low) | MODEL_PLACEHOLDER_M73 | 256,000 |
-| Gemini 3.6 Flash (Tiered, 内部档) | MODEL_PLACEHOLDER_M196 | 256,000 |
-| Gemini 3.5 Flash (High) | MODEL_PLACEHOLDER_M84 | 256,000 |
-| Gemini 3.5 Flash (Medium) | MODEL_PLACEHOLDER_M20 | 256,000 |
-| Gemini 3.5 Flash (Low) | MODEL_PLACEHOLDER_M187 | 256,000 |
-| Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 128,000 |
-| Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 128,000 |
-| Claude Opus 5.5 (Low) | MODEL_PLACEHOLDER_M400 | 256,000 |
-| Claude Opus 5.5 (Medium) | MODEL_PLACEHOLDER_M401 | 256,000 |
-| Claude Opus 5.5 (High) | MODEL_PLACEHOLDER_M402 | 256,000 |
-| Claude Sonnet 5.5 (Low) | MODEL_PLACEHOLDER_M403 | 256,000 |
-| Claude Sonnet 5.5 (Medium) | MODEL_PLACEHOLDER_M404 | 256,000 |
-| Claude Sonnet 5.5 (High) | MODEL_PLACEHOLDER_M405 | 256,000 |
-| Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
-| Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
-| GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 80,000 |
-| Gemini 3 Flash（仅目录可见，不进 picker） | MODEL_PLACEHOLDER_M18 | 128,000 |
-| 历史（已退役 / 已改号） | MODEL_PLACEHOLDER_M264 / M265 / M266 / M133 / M132 / M47 | 仅用于归档数据解析 |
+### 当前 IDE 模型元数据
 
-*这些数值是 Antigravity 平台压缩上限，不是模型原生上下文窗口。模型 ID 和实时参数来自 Antigravity 本地语言服务器，实时参数优先于静态兜底。在实时参数到达前，Gemini 4 Argon 和 Claude 5.5 使用 255,000 token 静态兜底；已核实的实时上限为 256,000。*
+2026-10-31 本地 `GetUserStatus` 与 `GetAvailableModels` 响应包含 **13 个聊天档位**。下表数值**由 IDE 报告**，不代表公开 API 的限额；“压缩上限”和“检查点阈值”是不同设置。
 
-> [!NOTE]
-> **v1.16.19 中的 Gemini 4 Argon：** High / Medium / Low 分别使用 `M417` / `M418` / `M419`，catalog ID 为 `gemini-4-argon-high`、`gemini-4-argon-medium`、`gemini-4-argon-low`，已于 2026-10-31 与运行中的 IDE 核对；三档均为 **1,048,576 token 原生上下文**、**65,536 token 最大输出**、**256,000 token 平台压缩上限**。独立的 checkpointer `tokenThreshold` 为 50,000，思考力度为 3 / 2 / 1；最小支持思考预算 32 不等于每次请求的固定预算。三档身份在本地化名称、上下文追踪和历史用量中保持独立，同时共用 Gemini 配额池；可用模型及默认选择由账号实时数据决定。
-> **v1.16.18 中的 Claude 5.5：** 2026-10-03 对运行中的 Antigravity IDE 进行元数据探测，核实了 Opus/Sonnet 的 Low / Medium / High 全部六个条目。它们均为 **1,000,000 token 原生上下文**、**128,000 token 最大输出**和 **256,000 token 平台压缩上限**。思考方式为自适应，API 提供 1 / 2 / 3 档位，而非固定 token 预算。内部 checkpointer 的独立参数 `tokenThreshold` 为 50,000，与卡片显示的压缩上限不同。
-> **账号可用性：** 付费 Pro/Ultra 账号已逐步提供 Claude 5.5，部分非付费账号仍提供 Claude 4.6。本扩展保留 4.6 支持与历史身份解析，也支持第三方模型移除后仅含 Gemini 的 picker。插件不会授予模型访问权限，也不会硬编码订阅名或移除日期；展示范围由当前账号的实时模型列表决定。
-> Gemini 3.8 Flash 的 High / Medium / Low 分别使用 `M318` / `M319` / `M320`。当前 IDE 元数据报告 50,000 token checkpointer 触发阈值、3 / 2 / 1 思考力度，未提供固定预算；三档不再沿用早期的动态/4,000/1,000 预算。仅目录可见的 tiered 路由 `M322` 保留历史画像。即使 Gemini 3.5 不在账号 picker 中，仍保留注册以兼容目录与历史数据。
-> `MODEL_PLACEHOLDER_Mxxx` 编号由平台分配，**可能在无预警的情况下被改号**——Gemini 3.6 Flash 三档已于 2026 年 8 月从 `M264` / `M265` / `M266` 改为 `M71` / `M72` / `M73`。本扩展保留旧编号的注册，使历史用量数据仍能解析到正确模型，并把新旧编号合并为同一条成本行、同一个配额池。来自语言服务器的活体 checkpointer 参数始终优先于上表的静态值。
+| 聊天模型 | 档位与内部 ID | 模型上下文 | 最大输出 | 压缩上限 | 检查点阈值 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Gemini 4 Argon | Low / Medium / High：`M419` / `M418` / `M417` | 1,048,576 | 65,536 | 256,000 | 50,000 |
+| Gemini 3.8 Flash | Low / Medium / High：`M320` / `M319` / `M318` | 1,048,576 | 65,536 | 256,000 | 50,000 |
+| Claude Opus 5.5 | Low / Medium / High：`M400` / `M401` / `M402` | 1,000,000 | 128,000 | 256,000 | 50,000 |
+| Claude Sonnet 5.5 | Low / Medium / High：`M403` / `M404` / `M405` | 1,000,000 | 128,000 | 256,000 | 50,000 |
+| GPT-OSS 120B | Medium：`MODEL_OPENAI_GPT_OSS_120B_MEDIUM` | 131,072 | 32,768 | 80,000 | 50,000 |
 
-本版本没有经过核实的 Gemini 4 Argon 内置价格。Token 用量仍会保留；在用户提供自定义价格前，费用显示为暂无定价或估算不完整，不会套用 Gemini Flash 价格。
+`Mxxx` 是 `MODEL_PLACEHOLDER_Mxxx` 的简写；Argon catalog ID 为 `gemini-4-argon-{low,medium,high}`。Gemini 使用 1 / 2 / 3 思考力度，不提供固定预算；Claude 为相应力度的自适应思考；GPT-OSS 报告 8,192 token 思考预算。Gemini 最小支持预算 32 不等于每次请求的固定预算。当前 Flash 3.8 三档不再沿用早期的动态/4,000/1,000 预算。实时参数优先于静态兜底；Argon、Flash 3.8、Claude 5.5 在 256,000 实时压缩上限到达前使用 255,000。
+
+档位身份在中英文标签、上下文追踪、GM 数据和历史用量中保持独立。Argon 与 Flash 共用聊天 Gemini 配额池；显示代表依次优先当前模型、实时推荐模型和可用世代顺序。
+
+### 图片生成模型
+
+IDE 的 `imageGenerationModelIds` 列表独立于聊天 picker，明确提供 **Gemini 3.1 Flash Image（Nano Banana 2）**。
+
+| 模型 | 内部 ID | Catalog ID | IDE 模型上下文 | IDE 最大输出 | 聊天压缩上限/阈值 |
+| --- | --- | --- | ---: | ---: | --- |
+| Gemini 3.1 Flash Image | `MODEL_PLACEHOLDER_M21` | `gemini-3.1-flash-image` | 65,536 | 65,536 | 不适用 |
+
+模型页单独展示**图片生成模型**区域。生成图片的能力以明确的目录列表为准，不能由支持图片输入推断。IDE 没有为该条目报告聊天 checkpointer 或独立图片配额，因此不编造聊天压缩上限，也不套用共享聊天额度。目录未提供思考能力时显示 **IDE 未上报**，不把缺失信息认定为不支持。
+
+[公开 Gemini API 模型文档](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-image) 的图片 API 输入/输出上限为 131,072 / 32,768，与已安装 IDE 的 65,536 / 65,536 不同。因此卡片使用**模型上下文**文案，并明确数据来源为 IDE。
+
+监控器追踪当前工作流及关联子智能体中的图片生成步骤，设置遍历上限并处理重复/循环链接，同时保留父聊天模型与上下文；子智能体文本调用不会被当作图片模型 Token，缺失图片计费数据也不会被补成实测值。
+
+### 历史兼容
+
+旧 Gemini Flash/Pro、Claude 4.6，以及改号/退役的 placeholder 继续为仍提供这些模型的账号和历史记录保留注册。例如 Gemini 3.6 的 `M264` / `M265` / `M266` 仍可与当前 `M71` / `M72` / `M73` 一起解析；仅目录可见的 `M322` 和较旧 Flash 世代保留历史画像。可用模型由账号实时数据决定，不按订阅名或日期强制隐藏。
+
+### API 等价计价
+
+内置 [Google Standard API 的 Gemini 4 Argon 官方费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) 适用于三个思考档位，单位为美元/百万 token：
+
+| 调用日期（UTC） | 输入 | 输出，含思考 | 隐式缓存读取 |
+| --- | ---: | ---: | ---: |
+| 截至 2026-11-30 | $2.00 | $10.00 | $0.10 |
+| 自 2026-12-01 起 | $4.00 | $20.00 | $0.20 |
+
+计价使用每次调用的 UTC 时间戳，因此跨过 12 月调价边界后，历史调用仍保留当时费率。已归档费用与自定义覆盖保持不变。Argon 仅支持隐式缓存，不添加显式缓存写入费。这些是 Standard API 参考估算，与 Antigravity 订阅收费和积分分开；不使用 Batch、Flex 或 Priority 价格。
+
+图片生成的 [Google Standard API 参考费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-image) 为输入 $0.50/百万 token、文本/思考输出 $3/百万 token、图片输出 $60/百万 token。官方列出的图片输出等价费用为 512 px / 1K / 2K / 4K 各 $0.045 / $0.067 / $0.101 / $0.151。实际 IDE 生图测试未返回 M21 独立的 Token、积分或 GM 用量。因此成本页将已观测金额标为**未计入图片生成费的已知小计**，并提供官方参考链接，不把生图视为免费。详见[发布验收](docs/releases/1.16.19.md#验证)。
 
 以下为 [Claude 5.5 官方 API 参考价格](https://platform.claude.com/docs/en/about-claude/pricing)，单位为美元/百万 token（2026-10-03）：
 
@@ -179,7 +182,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
    ![成本标签页](src/images/cost.png)
 
-   **模型 (Models)** — 当前账号可用模型的额度状态和重置倒计时。新版模型信息卡片采用协调的 IDE 中性色，用清晰的数据行呈现压缩上限和原生上下文，显示易读的提供商名称、完整模型 ID 及自适应思考状态；支持窄面板、亮色/暗色/高对比度主题和中文、英文、双语显示。
+   **模型 (Models)** — 实时聊天模型的额度/重置状态，以及独立的图片生成目录。卡片区分 IDE 报告的模型上下文、最大输出、压缩上限、检查点阈值和思考状态；图片压缩设置显示不适用。支持窄面板、亮色/暗色/高对比度主题和中文、英文、双语显示。
 
    ![v1.16.19 模型信息卡片](src/images/model.png)
 
@@ -215,7 +218,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 > [!NOTE]
 > **子智能体动态切换**
-> 使用 Claude 模型时，Antigravity 可能会调用轻量子智能体模型处理小任务——平台把该模型标注为 **Gemini 3.1 Flash Lite**（`MODEL_PLACEHOLDER_M50`；较早的 `gemini-2.5-flash*` 目录条目共用同一显示名）。子智能体切换不会改变显示的上下文上限，因为本扩展跟踪的是你所选模型的上限。Claude 5.5 的原生上下文为 1,000,000 token、平台压缩上限为 256,000 token（2026-10-03 核实）；保留的 Claude 4.6 画像分别为 250,000 和 160,000，子智能体模型使用 128,000 画像。
+> 使用 Claude 模型时，Antigravity 可能会调用轻量子智能体模型处理小任务——平台把该模型标注为 **Gemini Flash Lite**（`MODEL_PLACEHOLDER_M50`；显示名称以 IDE 目录为准）。子智能体切换不会改变显示的上下文上限，因为本扩展跟踪的是你所选模型的上限。Claude 5.5 的IDE 报告的模型上下文为 1,000,000 token、平台压缩上限为 256,000 token（2026-10-03 核实）；保留的 Claude 4.6 画像分别为 250,000 和 160,000，子智能体模型使用 128,000 画像。
 
 > [!IMPORTANT]
 > **当前 Antigravity IDE 的 "LS not found"**

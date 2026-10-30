@@ -25,7 +25,7 @@ describe('agent-hub GM telemetry', () => {
             contextWindowCapacity: 256000, contextTokensUsed: 18324,
             retries: 0, retryTokensIn: 0, retryTokensOut: 0, retryCredits: 0, retryErrors: [], hasError: false });
         expect(resolveModelId('gemini-4-argon')).toBeUndefined();
-        expect(findPricing(call.model)).toBeNull();
+        expect(findPricing(call.model)).toMatchObject({ input: 2, output: 10, cacheRead: 0.1 });
         // With a synthetic user price, only the primary usage is billed once.
         expect(costFromTokens(call, { input: 1, output: 1, thinking: 1, cacheRead: 0, cacheWrite: 0 })).toBe(0.01291);
     });

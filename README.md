@@ -19,7 +19,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ---
 
-**1.16.19:** Adds Gemini 4 Argon Low / Medium / High and fixes discovery of the new Antigravity IDE `agy` hub. See the [release notes and validation scope](docs/releases/1.16.19.md#validation). The [CI workflow](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) covers compilation and regression tests on Windows, macOS, and Linux; native IDE checks are reported separately.
+**1.16.19:** Adds Gemini 4 Argon Low / Medium / High with dated official pricing, audits the current 13 chat variants, exposes the separate image-generation catalog, and fixes discovery of the Antigravity IDE `agy` hub. See the [release notes and validation scope](docs/releases/1.16.19.md#validation). The [CI workflow](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) covers compilation and regression tests on Windows, macOS, and Linux; native IDE checks are reported separately.
 
 ## 📚 Technical Details
 
@@ -30,7 +30,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 ## ✨ Features
 
 * **⚡ Real-Time Token Usage**
-    Shows current token consumption in the status bar (e.g. `125k/200k, 62.5%`). Uses provider-reported `inputTokens` + `outputTokens` from current planner responses or legacy checkpoints. Estimates fill gaps and remain labeled as estimates; GM pre-request estimates never overwrite precise provider counts. Running responses are re-fetched so streaming updates do not leave stale totals.
+    Shows current token consumption in the status bar (e.g. `125k/200k, 62.5%`). Uses provider-reported fresh input + cache-read + cache-creation + output tokens from current planner responses or legacy checkpoints. Cached input still occupies context; cache hits do not imply compression. Estimates fill gaps and remain labeled as estimates; GM pre-request estimates never overwrite precise provider counts. Running responses are re-fetched so streaming updates do not leave stale totals.
 
 * **🪪 Stable Plan Tier Hover**
     The status bar hover now clears stale secondary plan/tier suffixes when Antigravity stops returning the latest `userTierName`, preventing outdated labels from lingering across later polls.
@@ -42,7 +42,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
     Each Antigravity window prefers conversations from its own workspace, filtered by workspace URI. If Antigravity keeps reporting a stale workspace after you switch projects, the monitor can follow the currently RUNNING conversation from the shared language server instead of going blank. Windows without a workspace folder show all conversations.
 
 * **🗜️ Context Compression Detection**
-    When the model auto-compresses conversation history, the plugin detects it via two-layer detection: primary layer compares consecutive checkpoint `inputTokens` (drop > 5000 tokens, immune to Undo false positives), fallback layer compares cross-poll `contextUsed` (with Undo exclusion guard). Shows `~100% 🗜` in the status bar.
+    When the model auto-compresses conversation history, the plugin detects it via two-layer detection: primary layer compares cache-inclusive input in consecutive checkpoints (drop > 5000 tokens, immune to Undo false positives), fallback layer compares cross-poll `contextUsed` (with Undo exclusion guard). Shows `~100% 🗜` in the status bar.
 
 * **⏪ Undo/Rewind Support**
     When you undo a conversation step, the plugin detects the `stepCount` decrease and recalculates token usage to reflect the rollback.
@@ -90,51 +90,54 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ## 🤖 Supported Models
 
-The registry recognizes current models and older identities used in saved history. The Models tab follows the signed-in account's live picker, so a registered model is not necessarily available to every account.
+The Models tab follows the signed-in account's live chat picker and its separate image-generation catalog. Registration preserves historical identities; it does not grant access or assume every account has the same models.
 
-| Model | Internal ID | Platform Compression Limit |
-| --- | --- | --- |
-| Gemini 4 Argon (High) | MODEL_PLACEHOLDER_M417 | 256,000 |
-| Gemini 4 Argon (Medium) | MODEL_PLACEHOLDER_M418 | 256,000 |
-| Gemini 4 Argon (Low) | MODEL_PLACEHOLDER_M419 | 256,000 |
-| Gemini 3.8 Flash (High) | MODEL_PLACEHOLDER_M318 | 256,000 |
-| Gemini 3.8 Flash (Medium) | MODEL_PLACEHOLDER_M319 | 256,000 |
-| Gemini 3.8 Flash (Low) | MODEL_PLACEHOLDER_M320 | 256,000 |
-| Gemini 3.8 Flash (Tiered, internal) | MODEL_PLACEHOLDER_M322 | 256,000 |
-| Gemini 3.7 Flash (High) | MODEL_PLACEHOLDER_M298 | 256,000 |
-| Gemini 3.7 Flash (Medium) | MODEL_PLACEHOLDER_M299 | 256,000 |
-| Gemini 3.7 Flash (Low) | MODEL_PLACEHOLDER_M300 | 256,000 |
-| Gemini 3.6 Flash (High) | MODEL_PLACEHOLDER_M71 | 256,000 |
-| Gemini 3.6 Flash (Medium) | MODEL_PLACEHOLDER_M72 | 256,000 |
-| Gemini 3.6 Flash (Low) | MODEL_PLACEHOLDER_M73 | 256,000 |
-| Gemini 3.6 Flash (Tiered, internal) | MODEL_PLACEHOLDER_M196 | 256,000 |
-| Gemini 3.5 Flash (High) | MODEL_PLACEHOLDER_M84 | 256,000 |
-| Gemini 3.5 Flash (Medium) | MODEL_PLACEHOLDER_M20 | 256,000 |
-| Gemini 3.5 Flash (Low) | MODEL_PLACEHOLDER_M187 | 256,000 |
-| Gemini 3.1 Pro (High) | MODEL_PLACEHOLDER_M16 | 128,000 |
-| Gemini 3.1 Pro (Low) | MODEL_PLACEHOLDER_M36 | 128,000 |
-| Claude Opus 5.5 (Low) | MODEL_PLACEHOLDER_M400 | 256,000 |
-| Claude Opus 5.5 (Medium) | MODEL_PLACEHOLDER_M401 | 256,000 |
-| Claude Opus 5.5 (High) | MODEL_PLACEHOLDER_M402 | 256,000 |
-| Claude Sonnet 5.5 (Low) | MODEL_PLACEHOLDER_M403 | 256,000 |
-| Claude Sonnet 5.5 (Medium) | MODEL_PLACEHOLDER_M404 | 256,000 |
-| Claude Sonnet 5.5 (High) | MODEL_PLACEHOLDER_M405 | 256,000 |
-| Claude Sonnet 4.6 (Thinking) | MODEL_PLACEHOLDER_M35 | 160,000 |
-| Claude Opus 4.6 (Thinking) | MODEL_PLACEHOLDER_M26 | 160,000 |
-| GPT-OSS 120B (Medium) | MODEL_OPENAI_GPT_OSS_120B_MEDIUM | 80,000 |
-| Gemini 3 Flash (catalog only, not in picker) | MODEL_PLACEHOLDER_M18 | 128,000 |
-| Legacy (retired / renumbered) | MODEL_PLACEHOLDER_M264 / M265 / M266 / M133 / M132 / M47 | archived data only |
+### Current IDE model metadata
 
-*These are Antigravity platform compression limits, not model-native context windows. Model IDs and live parameters come from the local Antigravity language server. Live parameters take precedence over static fallbacks. Before live parameters arrive, Gemini 4 Argon and Claude 5.5 use a 255,000-token fallback; their verified live limit is 256,000.*
+The local `GetUserStatus` and `GetAvailableModels` responses on 2026-10-31 contained **13 chat variants**. Values below are **reported by the IDE**, not promises about public API limits. “Compression limit” and “checkpoint threshold” are separate settings.
 
-> [!NOTE]
-> **Gemini 4 Argon in v1.16.19:** High / Medium / Low use `M417` / `M418` / `M419`, with catalog IDs `gemini-4-argon-high`, `gemini-4-argon-medium`, and `gemini-4-argon-low`. The running IDE verified these identities on 2026-10-31, together with a **1,048,576-token native context**, **65,536-token maximum output**, and **256,000-token platform compression limit**. The separate checkpointer `tokenThreshold` is 50,000. Thinking levels are 3 / 2 / 1; the minimum supported thinking budget of 32 is not a fixed per-request budget. The three effort identities remain distinct across localized names, context tracking, and saved usage, while sharing the Gemini quota pool. Model availability and the default selection follow live account data.
-> **Claude 5.5 in v1.16.18:** A metadata-only probe of the running Antigravity IDE on 2026-10-03 verified all six Opus/Sonnet Low / Medium / High entries. Each reports a **1,000,000-token native context**, **128,000-token maximum output**, and **256,000-token platform compression limit**. Thinking is adaptive; the API supplies effort levels 1 / 2 / 3 rather than a fixed token budget. The separate internal checkpointer `tokenThreshold` is 50,000 and is not the compression-limit value shown on the cards.
-> **Account availability:** Paid Pro/Ultra rollouts expose Claude 5.5, while some unpaid accounts still expose Claude 4.6. The extension preserves 4.6 support and historical identities, and also accepts Gemini-only pickers when third-party access is removed. It neither grants model access nor hardcodes a subscription name or removal date; the current account's live model list decides what appears.
-> Gemini 3.8 Flash High / Medium / Low use `M318` / `M319` / `M320`. Current IDE metadata reports a 50,000-token checkpointer trigger and thinking levels 3 / 2 / 1 with no fixed budget; earlier dynamic/4,000/1,000 budget values are no longer applied to these three tiers. Catalog-only tiered routing `M322` retains its historical profile. Gemini 3.5 remains registered for catalog and historical-data compatibility even when absent from the account's picker.
-> `MODEL_PLACEHOLDER_Mxxx` numbers are assigned by the platform and **can be reassigned without notice** — the three Gemini 3.6 Flash tiers moved from `M264` / `M265` / `M266` to `M71` / `M72` / `M73` in August 2026. The extension keeps the previous numbers registered so archived usage history still resolves to the right model, and merges both numbers onto a single cost row and a single quota pool. Live checkpointer parameters fetched from the language server always take precedence over the static table above.
+| Chat model | Tiers and internal IDs | Model context | Max output | Compression limit | Checkpoint threshold |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Gemini 4 Argon | Low / Medium / High: `M419` / `M418` / `M417` | 1,048,576 | 65,536 | 256,000 | 50,000 |
+| Gemini 3.8 Flash | Low / Medium / High: `M320` / `M319` / `M318` | 1,048,576 | 65,536 | 256,000 | 50,000 |
+| Claude Opus 5.5 | Low / Medium / High: `M400` / `M401` / `M402` | 1,000,000 | 128,000 | 256,000 | 50,000 |
+| Claude Sonnet 5.5 | Low / Medium / High: `M403` / `M404` / `M405` | 1,000,000 | 128,000 | 256,000 | 50,000 |
+| GPT-OSS 120B | Medium: `MODEL_OPENAI_GPT_OSS_120B_MEDIUM` | 131,072 | 32,768 | 80,000 | 50,000 |
 
-Gemini 4 Argon has no verified built-in price in this release. Its token usage remains visible, while cost is marked unavailable/incomplete until a custom price is provided; it does not inherit a Gemini Flash price.
+`Mxxx` abbreviates `MODEL_PLACEHOLDER_Mxxx`. Argon catalog IDs are `gemini-4-argon-{low,medium,high}`. Gemini uses thinking levels 1 / 2 / 3 without a fixed budget; Claude uses adaptive thinking at those levels; GPT-OSS reports an 8,192-token thinking budget. The Gemini minimum supported budget of 32 is not a fixed per-request budget. The current Flash 3.8 tiers no longer use their earlier dynamic/4,000/1,000 budget values. Live parameters override static fallbacks; Argon, Flash 3.8, and Claude 5.5 use 255,000 before their 256,000 live compression limits arrive.
+
+Tier identities stay distinct across English/Chinese labels, context tracking, GM data, and saved usage. Argon and Flash share the chat Gemini quota pool; the displayed representative follows the current model, live recommendation, and available generation order.
+
+### Image-generation model
+
+The IDE's `imageGenerationModelIds` list identifies **Gemini 3.1 Flash Image (Nano Banana 2)** separately from the chat picker.
+
+| Model | Internal ID | Catalog ID | IDE model context | IDE max output | Chat compression/threshold |
+| --- | --- | --- | ---: | ---: | --- |
+| Gemini 3.1 Flash Image | `MODEL_PLACEHOLDER_M21` | `gemini-3.1-flash-image` | 65,536 | 65,536 | Not applicable |
+
+The Models tab shows a separate **Image generation models** section. Image capability comes from the explicit catalog list, not a model merely accepting image input. The IDE reports no chat checkpointer or independent image quota for this entry, so no chat compression limit or shared chat allowance is invented. Thinking is labeled **Not reported by IDE** when the local catalog omits that capability, rather than being declared unsupported.
+
+The [public Gemini API model page](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-image) lists 131,072 input and 32,768 output tokens for the public image API. These differ from the installed IDE's 65,536 / 65,536, so cards use **Model context** and identify the IDE as the source.
+
+The monitor follows image-generation steps in the current workflow and its linked subagents, with traversal limits and duplicate/cycle protection. It preserves the parent chat model and context; child text calls and missing image billing data are not presented as image-model token usage.
+
+### Historical compatibility
+
+Older Gemini Flash/Pro, Claude 4.6, and renamed/retired placeholders remain registered for accounts that expose them and for saved history. For example, Gemini 3.6 `M264` / `M265` / `M266` still resolve alongside current `M71` / `M72` / `M73`. Catalog-only `M322` and older Flash generations retain their historical profiles. Model availability follows live account data, without subscription-name or date-based hiding rules.
+
+### API-equivalent pricing
+
+The built-in [Google Standard API rates for Gemini 4 Argon](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) apply to all three effort tiers, in USD per million tokens:
+
+| Call date (UTC) | Input | Output, including thinking | Implicit cache reads |
+| --- | ---: | ---: | ---: |
+| Through 2026-11-30 | $2.00 | $10.00 | $0.10 |
+| From 2026-12-01 | $4.00 | $20.00 | $0.20 |
+
+Pricing uses each call's UTC timestamp, so historical calls retain their applicable rate across the December cutover. Saved archival costs and custom overrides are preserved. Argon supports implicit caching only; no explicit cache-write fee is added. These are Standard API reference estimates, separate from Antigravity subscription charges and credits; Batch, Flex, and Priority prices are not used.
+
+For image generation, [Google's Standard API reference](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-image) is $0.50/1M input tokens, $3/1M text/thinking output tokens, and $60/1M image-output tokens. The published image-output equivalents are $0.045 / $0.067 / $0.101 / $0.151 for 512 px / 1K / 2K / 4K images. The real IDE image test returned no separate M21 token, credit, or GM usage. The Cost tab therefore labels observed amounts as **known subtotals that exclude image-generation fees**, with a link to the official reference; image generation is not treated as free. See the [release validation](docs/releases/1.16.19.md#validation).
 
 The [official Claude 5.5 API prices](https://platform.claude.com/docs/en/about-claude/pricing) are listed below as a reference, in USD per million tokens (2026-10-03):
 
@@ -179,7 +182,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
    ![Cost Tab](src/images/cost.png)
 
-   **Models** — The current account's available models with quota status and reset countdowns. The redesigned model cards use neutral IDE theme colors, clear compression-limit and native-context rows, readable provider names, complete model IDs, and adaptive-thinking labels. The layout supports narrow panels, light/dark/high-contrast themes, and English, Chinese, or bilingual display.
+   **Models** — Live chat models with quota/reset information, plus a separate image-generation catalog. Cards distinguish IDE-reported model context, maximum output, compression limits, checkpoint thresholds, and thinking state. Image compression settings display Not applicable. The layout supports narrow panels, light/dark/high-contrast themes, and English, Chinese, or bilingual display.
 
    ![Model information cards in v1.16.19](src/images/model.png)
 
@@ -215,7 +218,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 > [!NOTE]
 > **Dynamic Sub-Agent Switching**
-> When using Claude models, Antigravity may call its lightweight sub-agent model for small tasks — the platform labels that model **Gemini 3.1 Flash Lite** (`MODEL_PLACEHOLDER_M50`; the older `gemini-2.5-flash*` catalog entries share the same label). Sub-agent switching does not change the displayed context limit, because the extension tracks the limit of the model you selected. Claude 5.5 uses a 1,000,000-token native context and 256,000-token platform compression limit (verified 2026-10-03); retained Claude 4.6 profiles use 250,000 and 160,000 respectively, while the sub-agent uses the 128,000 profile.
+> When using Claude models, Antigravity may call its lightweight sub-agent model for small tasks — the platform labels that model **Gemini Flash Lite** (`MODEL_PLACEHOLDER_M50`; the display name follows the IDE catalog). Sub-agent switching does not change the displayed context limit, because the extension tracks the limit of the model you selected. Claude 5.5 uses a 1,000,000-token IDE-reported model context and 256,000-token platform compression limit (verified 2026-10-03); retained Claude 4.6 profiles use 250,000 and 160,000 respectively, while the sub-agent uses the 128,000 profile.
 
 > [!IMPORTANT]
 > **"LS not found" in the current Antigravity IDE**

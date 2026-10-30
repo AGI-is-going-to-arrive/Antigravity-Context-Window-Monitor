@@ -49,6 +49,9 @@ function sameUsageSnapshot(prev: ContextUsage, next: ContextUsage): boolean {
         && sameModelUsage(prev.lastModelUsage, next.lastModelUsage)
         && prev.estimatedDeltaSinceCheckpoint === next.estimatedDeltaSinceCheckpoint
         && prev.imageGenStepCount === next.imageGenStepCount
+        && JSON.stringify(prev.imageGenerationModels || []) === JSON.stringify(next.imageGenerationModels || [])
+        && prev.imageGenerationIncomplete === next.imageGenerationIncomplete
+        && JSON.stringify(prev.imageWorkflow) === JSON.stringify(next.imageWorkflow)
         && prev.compressionDetected === next.compressionDetected
         && prev.checkpointCompressionDrop === next.checkpointCompressionDrop
         && prev.previousContextUsed === next.previousContextUsed

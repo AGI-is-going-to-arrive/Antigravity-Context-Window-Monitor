@@ -4,28 +4,32 @@
 
 ### English
 
-Adds **Gemini 4 Argon Low / Medium / High** and restores monitoring in newer Antigravity IDE builds using the `agy` hub backend.
+Adds **Gemini 4 Argon Low / Medium / High** with dated official prices, audits all 13 current chat variants and the separate image-generation catalog, and restores monitoring in Antigravity IDE builds using the `agy` hub backend.
 
 - **Verified model identities:** Low / Medium / High use `MODEL_PLACEHOLDER_M419` / `M418` / `M417` and `gemini-4-argon-{low,medium,high}`. Catalog IDs, localized labels, quota grouping, context tracking, GM capture, and saved history share consistent identities; family-only responses preserve known effort tiers.
-- **Live metadata:** The running IDE reports 1,048,576 native-context tokens, 65,536 maximum output tokens, a 256,000 platform compression limit, and a separate 50,000 checkpointer threshold. Thinking levels are 1 / 2 / 3, with a minimum supported budget of 32 rather than a fixed per-request budget.
-- **Precise context and live updates:** Reads provider `modelUsage` from current planner responses as well as legacy checkpoints, recognizes the selected tier before the first response, and keeps GM estimates separate from precise counts. Invalidates old usage caches and re-fetches running steps; GM capacity falls back to `cwm.maxContextTokens`, and successful retry records do not duplicate retry counts.
+- **Live metadata:** The running IDE reports 1,048,576 IDE-reported model-context tokens, 65,536 maximum output tokens, a 256,000 platform compression limit, and a separate 50,000 checkpointer threshold. Thinking levels are 1 / 2 / 3, with a minimum supported budget of 32 rather than a fixed per-request budget.
+- **Precise context and live updates:** Reads provider `modelUsage` from current planner responses as well as legacy checkpoints, recognizes the selected tier before the first response, and keeps GM estimates separate from precise counts. Context includes fresh input, cache reads, cache creation, and output, so cache hits cannot silently shrink occupancy or trigger false compression. Invalidates old usage caches and re-fetches running steps; GM capacity falls back to `cwm.maxContextTokens`, and successful retry records do not duplicate retry counts.
 - **Current metadata and empty/narrow UI:** Refreshes Gemini 3.8 Flash thinking levels and the 50,000 checkpointer trigger, clearing obsolete defaults only from complete live metadata. Empty status now says **No active conversation**; narrow dashboard headers wrap to prevent overlapping controls.
 - **Hub discovery:** Recognizes `agy --hub` / `agy.exe` and equals-separated connection options, validates hub ports, and preserves legacy language-server and platform-specific discovery. A connected backend with no loaded conversations is an empty state, even when saved history exists.
-- **Pricing and compatibility:** Unverified Argon prices remain unavailable/incomplete until custom rates are supplied; Gemini Flash prices are not reused. Retains older Gemini, Claude, and GPT-OSS history and follows the account's live model picker.
+- **Official Argon pricing:** [Google Standard API rates](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) are $2 input / $10 output including thinking / $0.10 implicit cache reads per million tokens through 2026-11-30, then $4 / $20 / $0.20 from 2026-12-01. Call UTC timestamps select the rate; existing archival totals and custom overrides are preserved. No explicit caching/write charge is added. Generic unknown-price safeguards remain.
+- **Complete current metadata and image catalog:** Audits 13 chat variants including GPT-OSS 80,000 compression / 50,000 trigger. `imageGenerationModelIds` exposes M21 (`gemini-3.1-flash-image`, Nano Banana 2) separately with IDE limits 65,536 / 65,536; compression settings are not applicable and independent image quota is unavailable. Cards say Model context and distinguish IDE values from public API limits. Older identities remain available for saved history.
+- **Image workflow and metering:** Follows bounded, deduplicated linked-subagent image steps while preserving the parent model/context. Actual M21 generation returned no separate image token/credit/GM usage; the Cost tab explicitly labels known subtotals excluding image fees. Missing image thinking metadata is shown as Not reported by IDE rather than unsupported.
 - **Connection state and instance isolation:** Reads the current IDE connection from already active built-in extension exports without activating another extension. Missing/lost-backend tooltips support English, Chinese, and bilingual modes and update immediately on language changes.
 - **Toolchain:** Includes Vitest 4.1.12, Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`, and CI Node.js 26.12.1 with the updated lockfile.
 - **Documentation and validation:** Updates current English/Chinese documentation, installation instructions, and [1.16.19 release notes](docs/releases/1.16.19.md). Final test counts, installed-package checks, actual IDE interactions, and native-platform results are recorded in the release validation section.
 
 ### 中文
 
-新增 **Gemini 4 Argon Low / Medium / High**，并恢复新版 Antigravity IDE 使用 `agy` hub 后端时的监控功能。
+新增 **Gemini 4 Argon Low / Medium / High** 及按日期生效的官方价格，核对全部 13 个当前聊天档位和独立图片生成目录，并恢复 `agy` hub 后端的 IDE 监控。
 
 - **核实模型身份：** Low / Medium / High 分别使用 `MODEL_PLACEHOLDER_M419` / `M418` / `M417`，catalog ID 为 `gemini-4-argon-{low,medium,high}`。目录 ID、本地化标签、配额归组、上下文追踪、GM 捕获和历史用量共用一致身份；仅返回家族名时保留已知思考档位。
-- **实时元数据：** 运行中 IDE 报告原生上下文 1,048,576 token、最大输出 65,536、平台压缩上限 256,000，以及独立的 checkpointer 阈值 50,000。思考力度为 1 / 2 / 3，最小支持预算 32 不等于每次请求的固定预算。
-- **精确上下文与实时更新：** 同时读取当前 planner response 和旧版 checkpoint 的提供商 `modelUsage`，首次回复前识别所选档位，GM 估算与精确值分开处理。使旧用量缓存失效并重新拉取运行中步骤；GM 容量回退到 `cwm.maxContextTokens`，成功重试记录不再重复计数。
+- **实时元数据：** 运行中 IDE 报告IDE 模型上下文 1,048,576 token、最大输出 65,536、平台压缩上限 256,000，以及独立的 checkpointer 阈值 50,000。思考力度为 1 / 2 / 3，最小支持预算 32 不等于每次请求的固定预算。
+- **精确上下文与实时更新：** 同时读取当前 planner response 和旧版 checkpoint 的提供商 `modelUsage`，首次回复前识别所选档位，GM 估算与精确值分开处理。上下文包含新输入、缓存读取、缓存创建和输出，缓存命中不会悄然缩小占用或误报压缩。使旧用量缓存失效并重新拉取运行中步骤；GM 容量回退到 `cwm.maxContextTokens`，成功重试记录不再重复计数。
 - **当前元数据与空态/窄布局：** 更新 Gemini 3.8 Flash 思考力度及 50,000 checkpointer 触发阈值，仅依据完整实时元数据清除过时默认值。空状态改为**无活跃会话**；窄宽度面板顶部自动换行，避免控件重叠。
 - **Hub 发现：** 识别 `agy --hub` / `agy.exe` 及等号分隔的连接参数，校验 hub 端口，保留旧版语言服务器和各平台发现路径。后端已连接但未加载对话时显示空状态，即使 IDE 中仍存在历史记录。
-- **计价与兼容：** 未经核实的 Argon 价格在用户填写自定义费率前保持暂无定价或估算不完整，不套用 Gemini Flash 价格。保留旧版 Gemini、Claude、GPT-OSS 历史身份，模型展示依据账号实时 picker。
+- **Argon 官方计价：** [Google Standard API 费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) 截至 2026-11-30 为每百万 token 输入 $2 / 含思考输出 $10 / 隐式缓存读取 $0.10，自 2026-12-01 起为 $4 / $20 / $0.20。按调用 UTC 时间戳选费率，保留已有归档总额和自定义覆盖，不添加显式缓存/写入费；继续保留通用未知价格保护。
+- **完整当前元数据与图片目录：** 核对 13 个聊天档位，包含 GPT-OSS 80,000 压缩上限 / 50,000 阈值。`imageGenerationModelIds` 单独提供 M21（`gemini-3.1-flash-image`、Nano Banana 2），IDE 限额为 65,536 / 65,536；聊天压缩设置不适用，独立图片配额未知。卡片改称模型上下文，区分 IDE 与公开 API 数值；旧身份继续支持历史记录。
+- **图片工作流与计量：** 有界、去重追踪关联子智能体的图片步骤，保留父模型及上下文。实际 M21 生图未返回独立图片 Token/积分/GM 用量，成本页明确标为排除图片费的已知小计；图片思考字段缺失时显示 IDE 未上报，而非不支持。
 - **连接状态与实例隔离：** 从已激活的内置扩展导出读取当前 IDE 连接，不主动激活其他扩展。未发现/失去后端连接的 tooltip 支持英文、中文、双语，并在语言切换时立即更新。
 - **工具链：** 包含 Vitest 4.1.12、Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`、CI Node.js 26.12.1 及更新的锁文件。
 - **文档与验证：** 更新当前中英文文档、安装说明和 [1.16.19 发布说明](docs/releases/1.16.19.md)。最终测试数量、安装包检查、实际 IDE 交互及原生平台结果记录在发布验收章节。

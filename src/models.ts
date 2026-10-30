@@ -8,6 +8,11 @@
 // Static limits cover startup before GetAvailableModels metadata arrives; known
 // quota pools supplement the catalog's provider metadata.
 
+/** External model identifiers must never read inherited Object prototype members. */
+function ownValue<T>(table: Record<string, T>, key: string): T | undefined {
+    return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 // ─── Default Context Limits ──────────────────────────────────────────────────
 
 export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
@@ -70,6 +75,8 @@ let modelDisplayNames: Record<string, string> = {};
  *  Pre-seeded with known stable aliases so findPricing works before fetchAll.
  *  Source: GetAvailableModels API (all_models_parameter_map.md 2026-05-22) */
 let responseModelAliases: Record<string, string> = {
+    // Dedicated image model, verified from imageGenerationModelIds (2026-10-31).
+    'gemini-3.1-flash-image': 'MODEL_PLACEHOLDER_M21',
     // Gemini 4 Argon aliases (live GetUserStatus + GetAvailableModels, 2026-10-31).
     'gemini-4-argon-high': 'MODEL_PLACEHOLDER_M417',
     'gemini-4-argon-medium': 'MODEL_PLACEHOLDER_M418',
@@ -178,6 +185,7 @@ const ZH_MODEL_NAME_ALIASES: Record<string, string> = {
 // may still appear in persisted/archived daily data.
 
 const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
+    'MODEL_PLACEHOLDER_M21': 'Gemini 3.1 Flash Image',
     'MODEL_PLACEHOLDER_M417': 'Gemini 4 Argon (High)',
     'MODEL_PLACEHOLDER_M418': 'Gemini 4 Argon (Medium)',
     'MODEL_PLACEHOLDER_M419': 'Gemini 4 Argon (Low)',
@@ -240,6 +248,14 @@ const RETIRED_PLACEHOLDER_IDS = new Set<string>([
  * Prevents unknown future models from blindly inheriting a generic 160K fallback.
  */
 export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThreshold: number; maxTokens: number; supportsThinking: boolean } {
+    if (Object.hasOwn(Object.prototype, modelId.trim())) {
+        return { cpLimit: 0, cpThreshold: 0, maxTokens: 0, supportsThinking: false };
+    }
+    const imageSpec = getImageGenerationSpec(modelId);
+    if (imageSpec) {
+        return { cpLimit: imageSpec.cpLimit, cpThreshold: imageSpec.cpThreshold,
+            maxTokens: imageSpec.maxTokens, supportsThinking: imageSpec.supportsThinking };
+    }
     const idLower = modelId.toLowerCase();
 
     // Placeholder IDs (MODEL_PLACEHOLDER_Mxxx) carry no family keyword, so match the M-number by
@@ -349,16 +365,18 @@ export function getContextLimit(
     model: string,
     customLimits?: Record<string, number>
 ): number {
-    if (DEFAULT_CONTEXT_LIMITS[model] !== undefined) {
-        return DEFAULT_CONTEXT_LIMITS[model];
-    }
+    // Image generation has a native capacity, but no inferred chat compression
+    // limit. Never apply the text-model fallback or its -1K diagnostic offset.
+    const imageSpec = getImageGenerationSpec(model);
+    if (imageSpec) { return imageSpec.cpLimit > 0 ? imageSpec.cpLimit : imageSpec.maxTokens; }
+    const directLimit = ownValue(DEFAULT_CONTEXT_LIMITS, model);
+    if (directLimit !== undefined) { return directLimit; }
     // Resolve raw catalog/responseModel names (e.g. 'gemini-3-flash') to their
     // registered placeholder so both name forms of one logical model return the
     // same limit. resolveModelId never calls back into getContextLimit — no cycle.
     const resolvedId = resolveModelId(model);
-    if (resolvedId && DEFAULT_CONTEXT_LIMITS[resolvedId] !== undefined) {
-        return DEFAULT_CONTEXT_LIMITS[resolvedId];
-    }
+    const resolvedLimit = resolvedId ? ownValue(DEFAULT_CONTEXT_LIMITS, resolvedId) : undefined;
+    if (resolvedLimit !== undefined) { return resolvedLimit; }
     const guessed = guessContextLimitSpec(model);
     return guessed.cpLimit > 0 ? (guessed.cpLimit - 1000) : DEFAULT_CONTEXT_LIMIT;
 }
@@ -379,7 +397,8 @@ export function overrideContextLimits(overrides: Record<string, number>): void {
  * Returns the API-provided label, or the raw model ID if not yet loaded.
  */
 export function getModelDisplayName(model: string): string {
-    return modelDisplayNames[model] || STATIC_MODEL_NAME_FALLBACKS[model] || model || 'Unknown Model';
+    return ownValue(modelDisplayNames, model) || ownValue(STATIC_MODEL_NAME_FALLBACKS, model)
+        || (isConcreteAliasTarget(model) ? ownValue(activeModelSpecs, model)?.displayName : '') || model || 'Unknown Model';
 }
 
 /**
@@ -400,7 +419,8 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     const clean = modelOrDisplay.trim();
     if (!clean) { return undefined; }
     // Direct model ID match (API-registered or retired)
-    if (modelDisplayNames[clean] !== undefined || STATIC_MODEL_NAME_FALLBACKS[clean] !== undefined) { return clean; }
+    if (ownValue(modelDisplayNames, clean) !== undefined || ownValue(STATIC_MODEL_NAME_FALLBACKS, clean) !== undefined
+        || (isConcreteAliasTarget(clean) && ownValue(activeModelSpecs, clean) !== undefined)) { return clean; }
     // Reverse lookup: display label → model ID (prefer active over retired IDs so
     // chained cpLimit/spec lookups don't land on a stale spec — see RETIRED_PLACEHOLDER_IDS).
     let retiredMatch: string | undefined;
@@ -419,10 +439,10 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     }
     if (retiredMatch) { return retiredMatch; }
     // responseModel alias lookup (e.g. "gemini-pro-default" → "MODEL_PLACEHOLDER_M16")
-    const fromResponseModel = responseModelAliases[clean];
+    const fromResponseModel = ownValue(responseModelAliases, clean);
     if (fromResponseModel) { return fromResponseModel; }
     // Legacy Chinese name fallback (pre-v1.16 persisted data migration)
-    const legacyId = ZH_MODEL_NAME_ALIASES[clean];
+    const legacyId = ownValue(ZH_MODEL_NAME_ALIASES, clean);
     if (legacyId) { return legacyId; }
     // Accept readable/localized tiers and both catalog decimal spellings. A bare
     // human label defaults to Medium, as in the IDE picker. A bare responseModel
@@ -493,7 +513,9 @@ export function getModelBaseName(modelOrDisplay: string): string {
  * Falls back to resetTime/modelId for unknown future models.
  */
 export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
-    const fixedPool = KNOWN_QUOTA_POOLS[modelId];
+    const imageSpec = getImageGenerationSpec(modelId);
+    if (imageSpec) { return `image:${imageSpec.placeholderId}`; }
+    const fixedPool = ownValue(KNOWN_QUOTA_POOLS, modelId);
     if (fixedPool) {
         return fixedPool;
     }
@@ -510,7 +532,7 @@ export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
     // as several phantom pools.
     const resolvedId = resolveModelId(modelId);
     if (resolvedId) {
-        const resolvedPool = KNOWN_QUOTA_POOLS[resolvedId];
+        const resolvedPool = ownValue(KNOWN_QUOTA_POOLS, resolvedId);
         if (resolvedPool) {
             return resolvedPool;
         }
@@ -526,7 +548,7 @@ export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
     // Its spec mirrors a Flash tier for limit purposes only, so pooling on that would file genuinely
     // unknown usage under Gemini.
     const specKey = resolvedId || modelId;
-    const provider = specKey.includes('UNSPECIFIED') ? '' : (activeModelSpecs[specKey]?.apiProvider || '');
+    const provider = specKey.includes('UNSPECIFIED') ? '' : (ownValue(activeModelSpecs, specKey)?.apiProvider || '');
     if (provider) {
         if (provider.includes('GOOGLE') || provider.includes('GEMINI')) { return 'gemini'; }
         if (provider.includes('ANTHROPIC') || provider.includes('OPENAI')) { return 'premium'; }
@@ -663,7 +685,7 @@ export function registerResponseModelAlias(responseModel: string, placeholderId:
     }
     if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(responseKey)
         || /^gemini[\s_-]+4[\s_-]+argon$/i.test(responseKey)) { return; }
-    const existing = responseModelAliases[responseKey];
+    const existing = ownValue(responseModelAliases, responseKey);
     if (existing && existing !== target) {
         // responseModel can be less stable than chatModel.model; do not let one
         // conflicting sample remap all future response-only records.
@@ -690,6 +712,10 @@ export interface ModelSpec {
     placeholderId: string;
     displayName: string;
     apiProvider: string;
+    /** Explicit catalog capability; accepting image inputs does not imply generation. */
+    isImageGeneration?: boolean;
+    /** Image-tool catalogs may omit thinking capabilities even when the public API supports them. */
+    thinkingCapabilityReported?: boolean;
     maxTokens: number;
     maxOutputTokens: number;
     thinkingBudget: number;
@@ -703,6 +729,21 @@ export interface ModelSpec {
 }
 
 let activeModelSpecs: Record<string, ModelSpec> = {
+    // Tool-only model: no checkpointer parameters were returned by the live catalog.
+    'MODEL_PLACEHOLDER_M21': {
+        modelId: 'gemini-3.1-flash-image',
+        placeholderId: 'MODEL_PLACEHOLDER_M21',
+        displayName: 'Gemini 3.1 Flash Image',
+        apiProvider: 'GOOGLE_GEMINI',
+        isImageGeneration: true,
+        thinkingCapabilityReported: false,
+        maxTokens: 65536,
+        maxOutputTokens: 65536,
+        thinkingBudget: 0,
+        supportsThinking: false,
+        cpLimit: 0,
+        cpThreshold: 0,
+    },
     // Gemini 4 Argon: live agent hub GetAvailableModels, 2026-10-31.
     // No fixed thinkingBudget or adaptive-thinking flag was returned.
     'MODEL_PLACEHOLDER_M417': {
@@ -1070,12 +1111,15 @@ let activeModelSpecs: Record<string, ModelSpec> = {
 };
 
 export function updateModelSpec(placeholderId: string, spec: Partial<ModelSpec>): void {
-    if (!activeModelSpecs[placeholderId]) {
+    if (!isConcreteAliasTarget(placeholderId) && placeholderId !== 'MODEL_UNSPECIFIED') { return; }
+    if (!ownValue(activeModelSpecs, placeholderId)) {
         activeModelSpecs[placeholderId] = {
             modelId: spec.modelId || '',
             placeholderId,
             displayName: spec.displayName || getModelDisplayName(placeholderId),
             apiProvider: spec.apiProvider || '',
+            ...(spec.isImageGeneration !== undefined ? { isImageGeneration: spec.isImageGeneration } : {}),
+            ...(spec.thinkingCapabilityReported !== undefined ? { thinkingCapabilityReported: spec.thinkingCapabilityReported } : {}),
             maxTokens: spec.maxTokens || 0,
             maxOutputTokens: spec.maxOutputTokens || 0,
             thinkingBudget: spec.thinkingBudget || 0,
@@ -1125,7 +1169,8 @@ export function getModelSpecs(): ModelSpec[] {
         'MODEL_PLACEHOLDER_M405',
         'MODEL_PLACEHOLDER_M35',
         'MODEL_PLACEHOLDER_M26',
-        'MODEL_OPENAI_GPT_OSS_120B_MEDIUM'
+        'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
+        'MODEL_PLACEHOLDER_M21'
         // Retired M133 is intentionally omitted here — it is appended last via the leftover loop below.
         // The pre-renumber 3.6 IDs (M264/M265/M266) deliberately have NO spec entry at all: they only
         // need name/limit/pool registration to parse archived data, and giving them specs would append
@@ -1160,4 +1205,32 @@ export function getModelSpecs(): ModelSpec[] {
         }
     }
     return ordered;
+}
+
+/** Available image tools are account/catalog state, separate from historical identities. */
+let availableImageModelIds = new Set<string>();
+
+function getImageGenerationSpec(identity: string): ModelSpec | undefined {
+    const clean = identity.trim();
+    const id = resolveModelId(clean) || clean;
+    const spec = ownValue(activeModelSpecs, id);
+    if (spec?.isImageGeneration) { return spec; }
+    return Object.values(activeModelSpecs).find(item => item.isImageGeneration
+        && (item.modelId === clean || item.displayName === clean));
+}
+
+export function isImageGenerationModel(identity: string): boolean {
+    return !!getImageGenerationSpec(identity);
+}
+
+/** Call with [] when the authenticated account/backend changes. */
+export function setAvailableImageModelIds(ids: readonly string[]): void {
+    availableImageModelIds = new Set(ids.flatMap(id => {
+        const spec = getImageGenerationSpec(id);
+        return spec ? [spec.placeholderId] : [];
+    }));
+}
+
+export function getAvailableImageModelSpecs(): ModelSpec[] {
+    return getModelSpecs().filter(spec => spec.isImageGeneration && availableImageModelIds.has(spec.placeholderId));
 }

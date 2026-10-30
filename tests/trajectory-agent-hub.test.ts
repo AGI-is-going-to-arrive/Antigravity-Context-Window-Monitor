@@ -24,7 +24,8 @@ function contextUsage(overrides: Partial<ContextUsage> = {}): ContextUsage {
         stepCount: 2, lastModifiedTime: '2026-10-31T00:00:00Z', status: 'CASCADE_RUN_STATUS_IDLE',
         isEstimated: false, lastModelUsage: { ...lowUsage, inputTokens: 12905, outputTokens: 5,
             responseOutputTokens: 5, cacheReadTokens: 0 }, estimatedDeltaSinceCheckpoint: 0,
-        imageGenStepCount: 0, compressionDetected: false, checkpointCompressionDrop: 0,
+        imageGenStepCount: 0, imageWorkflow: { directStepCount: 0, directModels: [], linkedCascadeIds: [] },
+        compressionDetected: false, checkpointCompressionDrop: 0,
         hasGaps: false, checkpointModel: '', createdTime: '', lastUserInputTime: '',
         lastUserInputStepIndex: 0, repositoryName: '', gitOriginUrl: '', branchName: '', gitRootUri: '',
         tokenUsageSource: 'planner', ...overrides };
@@ -35,6 +36,32 @@ describe('agy planner token snapshots', () => {
         expect(processSteps([userInput(), response()])).toMatchObject({ model: 'MODEL_PLACEHOLDER_M419',
             inputTokens: 12905, totalOutputTokens: 5, contextUsed: 12910, isEstimated: false,
             tokenUsageSource: 'planner', estimatedDeltaSinceCheckpoint: 0, checkpointModel: '' });
+    });
+
+    it('includes cached input in context occupancy using the real image-workflow parent snapshot', () => {
+        const usage = processSteps([response({ ...lowUsage, inputTokens: '2285', outputTokens: '248',
+            responseOutputTokens: '248', cacheReadTokens: '11219' })]);
+        expect(usage.contextUsed).toBe(13752);
+        expect(usage.isEstimated).toBe(false);
+        expect(usage.inputTokens).toBe(2285); // Fresh tokens remain distinct for billing.
+        expect(usage.lastModelUsage?.cacheReadTokens).toBe(11219);
+    });
+
+    it('counts cache creation once and does not mistake cache hits for checkpoint compression', () => {
+        const first = { type: StepType.CHECKPOINT, metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M50',
+            inputTokens: '15000', outputTokens: '10' } } };
+        const cached = { type: StepType.CHECKPOINT, metadata: { modelUsage: { model: 'MODEL_PLACEHOLDER_M50',
+            inputTokens: '1000', cacheReadTokens: '13000', cacheCreationTokens: '1000', outputTokens: '10' } } };
+        const usage = processSteps([first, cached]);
+        expect(usage.contextUsed).toBe(15010);
+        expect(usage.checkpointCompressionDetected).toBe(false);
+        expect(usage.checkpointCompressionDrop).toBe(0);
+    });
+
+    it('accepts cache-only protobuf input instead of replacing it with a text heuristic', () => {
+        const usage = processSteps([response({ model: 'MODEL_PLACEHOLDER_M419', cacheReadTokens: '1000' })]);
+        expect(usage.contextUsed).toBe(1000);
+        expect(usage.isEstimated).toBe(false);
     });
 
     it.each(['MODEL_PLACEHOLDER_M417', 'MODEL_PLACEHOLDER_M418', 'MODEL_PLACEHOLDER_M419'])(
