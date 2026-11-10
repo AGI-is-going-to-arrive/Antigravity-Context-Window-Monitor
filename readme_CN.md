@@ -19,7 +19,7 @@
 
 ---
 
-**1.16.20：** 新增 Gemini 4 Carbon Low / Medium / High，采用 IDE 实测身份与元数据，包括 262,144 token 最大输出，并加入按日期生效的官方 API 价格。模型配额展示 **Gemini** 和 **Claude / GPT** 两个共享池，模型信息、用量统计及价格仍保留每档身份。当前实时目录包含 16 个聊天档位，继续兼容既有模型和历史记录。macOS IDE 已验证 Carbon 三档独立回复及 Low → Medium → High 连续切换。最终包/UI 验收与 Windows/macOS/Linux 原生 CI **待完成**，详见[发布说明与验收范围](docs/releases/1.16.20.md#验证)。浏览器 fixture、[CI](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml)和原生 IDE 实机结果分别记录。
+**1.16.20：** 新增 Gemini 4 Carbon Low / Medium / High，采用 IDE 实测身份、262,144 token 最大输出及按日期生效的官方 API 价格。模型配额展示 **Gemini** 和 **Claude / GPT** 共享池，模型信息、用量统计及价格仍保留每档身份。本地编译及 **46 个文件中的 753 项测试**通过；已安装的 macOS 插件通过实时元数据、六次 Carbon 请求、语言/主题和共享池 UI 检查。托管运行器账号锁定导致三个[原生 CI 任务](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/runs/42900949800)均未启动。浏览器 fixture 结果与 Windows/Linux 原生测试限制详见[发布验收](docs/releases/1.16.20.md#验证)。
 
 ## 📚 技术细节
 
@@ -111,7 +111,7 @@
 
 `Gemini 4 CarbonHigh`、未配对括号及不支持的档位名称不会误套 Carbon 身份或家族价格。冲突的学习别名不能通过大写形式或中文标签覆盖已注册档位。
 
-**模型配额**将当前 16 个聊天档位合并为两张共享池卡片：**Gemini** 包含 Carbon、Argon、Flash，共九档；**Claude / GPT** 包含 Opus、Sonnet、GPT-OSS，共七档。每张卡片列出实际可用的模型家族和思考档位。配额不求和、不取平均：数据不一致时展示范围及逐模型明细，缺失数据明确标注。未知模型和图片生成身份与两个已知聊天池分开。**模型信息**、调用统计及计价仍独立保留每档身份。最终共享池展示的安装后验收待完成。
+**模型配额**将当前 16 个聊天档位合并为两张共享池卡片：**Gemini** 包含 Carbon、Argon、Flash，共九档；**Claude / GPT** 包含 Opus、Sonnet、GPT-OSS，共七档。每张卡片列出实际可用的模型家族和思考档位。配额不求和、不取平均：数据不一致时展示范围及逐模型明细，缺失数据明确标注。未知模型和图片生成身份与两个已知聊天池分开。**模型信息**、调用统计及计价仍独立保留每档身份。安装后的 IDE 已在英文、中文、双语模式核实两池、六行家族及三张 Carbon 信息卡片。
 
 ### 图片生成模型
 
@@ -189,7 +189,9 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
    **模型 (Models)** — Gemini 和 Claude / GPT 共享池卡片汇总额度/重置状态，列出实际可用的家族与档位；模型信息保留独立聊天档位与图片生成目录。信息卡片区分 IDE 报告的模型上下文、最大输出、压缩上限、检查点阈值和思考状态；图片压缩设置显示不适用。支持窄面板、亮色/暗色/高对比度主题和中文、英文、双语显示。
 
-   ![v1.16.19 模型信息卡片](src/images/model.png)
+   ![v1.16.20 共享配额池与 Carbon 模型信息](src/images/model.png)
+
+   截图中的 80% 配额为示例数据。
 
    **日历 (Calendar)** — 按日期组织的历史使用数据，包含每周期成本和 Token 分解。
 

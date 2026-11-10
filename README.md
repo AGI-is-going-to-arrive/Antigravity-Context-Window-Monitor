@@ -19,7 +19,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ---
 
-**1.16.20:** Adds Gemini 4 Carbon Low / Medium / High using verified IDE identities and metadata, including its 262,144-token maximum output and official dated API pricing. Model Quota shows two shared pools, **Gemini** and **Claude / GPT**, while model information, usage statistics, and pricing retain each tier's identity. The live catalog contains 16 chat variants; existing models and saved history remain supported. Carbon's three independent replies and a Low → Medium → High sequence were verified in the macOS IDE. Final package/UI acceptance and native Windows/macOS/Linux CI are **pending**; see the [release notes and validation scope](docs/releases/1.16.20.md#validation). Browser fixture, [CI](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml), and native IDE results are reported separately.
+**1.16.20:** Adds Gemini 4 Carbon Low / Medium / High using verified IDE identities, its 262,144-token maximum output, and official dated API pricing. Model Quota shows **Gemini** and **Claude / GPT** shared pools while model information, usage statistics, and prices retain each tier's identity. Local compilation and **753 tests in 46 files** passed; the installed macOS plugin passed live metadata, six Carbon requests, language/theme, and shared-pool UI checks. A hosted-runner account lock prevented all three [native CI jobs](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/runs/42900949800) from starting. See the [release validation](docs/releases/1.16.20.md#validation) for browser fixture results and the Windows/Linux native-test limitation.
 
 ## 📚 Technical Details
 
@@ -111,7 +111,7 @@ Tier identities stay distinct across English/Chinese labels, context tracking, G
 
 Malformed names such as `Gemini 4 CarbonHigh`, unmatched parentheses, and unsupported effort names do not acquire Carbon's identity or family price. Conflicting learned aliases cannot overwrite a registered tier through uppercase or Chinese label variants.
 
-**Model Quota** groups the current 16 chat tiers into two shared-pool cards: **Gemini** contains Carbon, Argon, and Flash (nine tiers); **Claude / GPT** contains Opus, Sonnet, and GPT-OSS (seven tiers). Each card lists its available model families and effort tiers. Percentages are not summed or averaged: inconsistent values use ranges and per-model details, and missing data remains explicit. Unknown and image-generation identities stay separate from the two known chat pools. **Model Info**, call statistics, and pricing keep individual effort identities. Installed-plugin acceptance of the final shared-pool presentation is pending.
+**Model Quota** groups the current 16 chat tiers into two shared-pool cards: **Gemini** contains Carbon, Argon, and Flash (nine tiers); **Claude / GPT** contains Opus, Sonnet, and GPT-OSS (seven tiers). Each card lists its available model families and effort tiers. Percentages are not summed or averaged: inconsistent values use ranges and per-model details, and missing data remains explicit. Unknown and image-generation identities stay separate from the two known chat pools. **Model Info**, call statistics, and pricing keep individual effort identities. The two pools, six family rows, and three Carbon information cards were verified in the installed IDE in English, Chinese, and bilingual modes.
 
 ### Image-generation model
 
@@ -189,7 +189,9 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
    **Models** — Gemini and Claude / GPT shared-pool cards summarize quota/reset information and list their available families/efforts; Model Info keeps individual chat effort tiers and a separate image-generation catalog. Information cards distinguish IDE-reported model context, maximum output, compression limits, checkpoint thresholds, and thinking state. Image compression settings display Not applicable. The layout supports narrow panels, light/dark/high-contrast themes, and English, Chinese, or bilingual display.
 
-   ![Model information cards in v1.16.19](src/images/model.png)
+   ![Shared quota pools and Carbon model information in v1.16.20](src/images/model.png)
+
+   The 80% quota shown in this screenshot is example data.
 
    **Calendar** — Historical usage data organized by date, with per-cycle cost and token breakdowns.
 
