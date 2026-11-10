@@ -19,7 +19,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ---
 
-**1.16.19:** Adds Gemini 4 Argon Low / Medium / High with dated official pricing, audits the current 13 chat variants, exposes the separate image-generation catalog, and fixes discovery of the Antigravity IDE `agy` hub. Validation passed local compilation and 635 tests, native Windows/macOS/Linux CI, all 13 real chat variants, and one real image workflow in macOS IDE. See the [release notes and validation scope](docs/releases/1.16.19.md#validation), including the image-fee telemetry limitation. The [CI workflow](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) covers compilation and regression tests on Windows, macOS, and Linux; native IDE checks are reported separately.
+**1.16.20:** Adds Gemini 4 Carbon Low / Medium / High using verified IDE identities and metadata, including its 262,144-token maximum output and official dated API pricing. Model Quota shows two shared pools, **Gemini** and **Claude / GPT**, while model information, usage statistics, and pricing retain each tier's identity. The live catalog contains 16 chat variants; existing models and saved history remain supported. Carbon's three independent replies and a Low → Medium → High sequence were verified in the macOS IDE. Final package/UI acceptance and native Windows/macOS/Linux CI are **pending**; see the [release notes and validation scope](docs/releases/1.16.20.md#validation). Browser fixture, [CI](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml), and native IDE results are reported separately.
 
 ## 📚 Technical Details
 
@@ -63,7 +63,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
     When the language server is unreachable, polling interval increases as `baseInterval × 2^n` with dual caps: discovery failures cap at 15s (5s → 10s → 15s) for fast LS detection, RPC failures cap at 60s. Resets immediately on reconnection.
 
 * **📊 WebView Monitor Panel** *(v1.10.1)*
-    Click the status bar to open a side panel with a full-featured dashboard. Displays your account plan and tier, Prompt/Flow credit balance, per-model quota usage with color-coded progress bars, feature flags, team config (MCP Servers, Auto-Run, etc.), and Google AI credits. All data comes from the existing `GetUserStatus` API — zero additional network requests.
+    Click the status bar to open a side panel with a full-featured dashboard. Displays your account plan and tier, Prompt/Flow credit balance, shared model-quota pools with color-coded progress bars, feature flags, team config (MCP Servers, Auto-Run, etc.), and Google AI credits. All data comes from the existing `GetUserStatus` API — zero additional network requests.
     * **🛡️ Privacy Mask**: A shield button in the panel header masks your name and email. The toggle state persists across panel refreshes.
     * **📂 Collapsible Sections**: Secondary info (Plan Limits, Feature Flags, Team Config, Google AI Credits) is collapsed by default. Expand/collapse state persists.
 
@@ -94,19 +94,24 @@ The Models tab follows the signed-in account's live chat picker and its separate
 
 ### Current IDE model metadata
 
-The local `GetUserStatus` and `GetAvailableModels` responses on 2026-10-31 contained **13 chat variants**. Values below are **reported by the IDE**, not promises about public API limits. “Compression limit” and “checkpoint threshold” are separate settings.
+The local `GetUserStatus` and `GetAvailableModels` responses on 2026-11-11 contained **16 chat variants**. Values below are **reported by the IDE**, not promises about public API limits. “Compression limit” and “checkpoint threshold” are separate settings.
 
 | Chat model | Tiers and internal IDs | Model context | Max output | Compression limit | Checkpoint threshold |
 | --- | --- | ---: | ---: | ---: | ---: |
+| Gemini 4 Carbon | Low / Medium / High: `M438` / `M437` / `M427` | 1,048,576 | 262,144 | 256,000 | 50,000 |
 | Gemini 4 Argon | Low / Medium / High: `M419` / `M418` / `M417` | 1,048,576 | 65,536 | 256,000 | 50,000 |
 | Gemini 3.8 Flash | Low / Medium / High: `M320` / `M319` / `M318` | 1,048,576 | 65,536 | 256,000 | 50,000 |
 | Claude Opus 5.5 | Low / Medium / High: `M400` / `M401` / `M402` | 1,000,000 | 128,000 | 256,000 | 50,000 |
 | Claude Sonnet 5.5 | Low / Medium / High: `M403` / `M404` / `M405` | 1,000,000 | 128,000 | 256,000 | 50,000 |
 | GPT-OSS 120B | Medium: `MODEL_OPENAI_GPT_OSS_120B_MEDIUM` | 131,072 | 32,768 | 80,000 | 50,000 |
 
-`Mxxx` abbreviates `MODEL_PLACEHOLDER_Mxxx`. Argon catalog IDs are `gemini-4-argon-{low,medium,high}`. Gemini uses thinking levels 1 / 2 / 3 without a fixed budget; Claude uses adaptive thinking at those levels; GPT-OSS reports an 8,192-token thinking budget. The Gemini minimum supported budget of 32 is not a fixed per-request budget. The current Flash 3.8 tiers no longer use their earlier dynamic/4,000/1,000 budget values. Live parameters override static fallbacks; Argon, Flash 3.8, and Claude 5.5 use 255,000 before their 256,000 live compression limits arrive.
+`Mxxx` abbreviates `MODEL_PLACEHOLDER_Mxxx`. Carbon and Argon catalog IDs are `gemini-4-carbon-{low,medium,high}` and `gemini-4-argon-{low,medium,high}`. Gemini uses thinking levels 1 / 2 / 3 without a fixed budget; Claude uses adaptive thinking at those levels; GPT-OSS reports an 8,192-token thinking budget. A reported minimum thinking budget is a capability boundary, not a fixed per-request budget. The current Flash 3.8 tiers no longer use their earlier dynamic/4,000/1,000 budget values. Live parameters override static fallbacks; Carbon, Argon, Flash 3.8, and Claude 5.5 use 255,000 before their 256,000 live compression limits arrive.
 
-Tier identities stay distinct across English/Chinese labels, context tracking, GM data, and saved usage. Argon and Flash share the chat Gemini quota pool; the displayed representative follows the current model, live recommendation, and available generation order.
+Tier identities stay distinct across English/Chinese labels, context tracking, GM data, and saved usage. Family-only response names do not erase a known effort tier. Carbon, Argon, and Flash share the chat Gemini quota pool; the displayed representative follows the current model, live recommendation, and available generation order, with Carbon ahead of Argon when neither is current or recommended.
+
+Malformed names such as `Gemini 4 CarbonHigh`, unmatched parentheses, and unsupported effort names do not acquire Carbon's identity or family price. Conflicting learned aliases cannot overwrite a registered tier through uppercase or Chinese label variants.
+
+**Model Quota** groups the current 16 chat tiers into two shared-pool cards: **Gemini** contains Carbon, Argon, and Flash (nine tiers); **Claude / GPT** contains Opus, Sonnet, and GPT-OSS (seven tiers). Each card lists its available model families and effort tiers. Percentages are not summed or averaged: inconsistent values use ranges and per-model details, and missing data remains explicit. Unknown and image-generation identities stay separate from the two known chat pools. **Model Info**, call statistics, and pricing keep individual effort identities. Installed-plugin acceptance of the final shared-pool presentation is pending.
 
 ### Image-generation model
 
@@ -128,14 +133,14 @@ Older Gemini Flash/Pro, Claude 4.6, and renamed/retired placeholders remain regi
 
 ### API-equivalent pricing
 
-The built-in [Google Standard API rates for Gemini 4 Argon](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) apply to all three effort tiers, in USD per million tokens:
+The built-in Google Standard API rates for [Gemini 4 Carbon](https://aistudio.google.com/docs/pricing#gemini-4-carbon) (verified 2026-11-11) and [Gemini 4 Argon](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) apply to all three effort tiers, in USD per million tokens:
 
 | Call date (UTC) | Input | Output, including thinking | Implicit cache reads |
 | --- | ---: | ---: | ---: |
 | Through 2026-11-30 | $2.00 | $10.00 | $0.10 |
 | From 2026-12-01 | $4.00 | $20.00 | $0.20 |
 
-Pricing uses each call's UTC timestamp, so historical calls retain their applicable rate across the December cutover. Saved archival costs and custom overrides are preserved. Argon supports implicit caching only; no explicit cache-write fee is added. These are Standard API reference estimates, separate from Antigravity subscription charges and credits; Batch, Flex, and Priority prices are not used.
+Pricing uses each call's UTC timestamp, so historical calls retain their applicable rate across the December cutover. Saved archival costs and custom overrides are preserved. Carbon and Argon have separate pricing identities and family/tier overrides even though their published rates match. Both support implicit caching only; no explicit cache-write fee is added. Unknown models retain **Price unavailable** instead of being treated as free. These are Standard API reference estimates, separate from Antigravity subscription charges and credits; Batch, Flex, and Priority prices are not used.
 
 For image generation, [Google's Standard API reference](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-image) is $0.50/1M input tokens, $3/1M text/thinking output tokens, and $60/1M image-output tokens. The published image-output equivalents are $0.045 / $0.067 / $0.101 / $0.151 for 512 px / 1K / 2K / 4K images. The real IDE image test returned no separate M21 token, credit, or GM usage. The Cost tab therefore labels observed amounts as **known subtotals that exclude image-generation fees**, with a link to the official reference; image generation is not treated as free. See the [release validation](docs/releases/1.16.19.md#validation).
 
@@ -154,7 +159,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 1. **Install**:
    * **OpenVSX**: Install directly from [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
-   * **Manual**: Install the `.vsix` file via Extensions → Install from VSIX.
+   * **Manual**: Install `antigravity-context-monitor-1.16.20.vsix` via Extensions → Install from VSIX, then reload the window and confirm version **1.16.20** in extension details.
 2. **Status Bar**: The bottom-right status bar shows current context usage. With no active conversation it shows **No active conversation**, rather than a saved model's old limit. The selected effort tier is recognized from the user-input configuration before the first model response.
 3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, and the latest checkpoint shadow model when present).
 
@@ -182,7 +187,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
    ![Cost Tab](src/images/cost.png)
 
-   **Models** — Live chat models with quota/reset information, plus a separate image-generation catalog. Cards distinguish IDE-reported model context, maximum output, compression limits, checkpoint thresholds, and thinking state. Image compression settings display Not applicable. The layout supports narrow panels, light/dark/high-contrast themes, and English, Chinese, or bilingual display.
+   **Models** — Gemini and Claude / GPT shared-pool cards summarize quota/reset information and list their available families/efforts; Model Info keeps individual chat effort tiers and a separate image-generation catalog. Information cards distinguish IDE-reported model context, maximum output, compression limits, checkpoint thresholds, and thinking state. Image compression settings display Not applicable. The layout supports narrow panels, light/dark/high-contrast themes, and English, Chinese, or bilingual display.
 
    ![Model information cards in v1.16.19](src/images/model.png)
 
@@ -222,7 +227,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 > [!IMPORTANT]
 > **"LS not found" in the current Antigravity IDE**
-> Newer IDE builds run an `agy --hub` backend instead of a process named `language_server_*`. Version 1.16.19 discovers both architectures, accepts `--csrf_token=value` and space-separated flags, and checks the declared hub port before using platform socket discovery. Install `antigravity-context-monitor-1.16.19.vsix` and reload the window. A connected backend with no loaded conversations displays **No active conversation**, not a discovery failure; saved history may still exist in the IDE. Opening the IDE without a folder does not by itself mean the backend is unavailable.
+> Newer IDE builds run an `agy --hub` backend instead of a process named `language_server_*`. Since version 1.16.19, the monitor discovers both architectures, accepts `--csrf_token=value` and space-separated flags, and checks the declared hub port before using platform socket discovery. Install `antigravity-context-monitor-1.16.20.vsix` and reload the window. A connected backend with no loaded conversations displays **No active conversation**, not a discovery failure; saved history may still exist in the IDE. Opening the IDE without a folder does not by itself mean the backend is unavailable.
 >
 > **Windows discovery diagnostics**
 > If the status bar is stuck on `LS not found`, open **Output → "Antigravity Context Monitor"** and read the `PATH check:` line — the extension now logs exactly which discovery step failed. Since v1.16.13 it invokes `wmic`/`powershell.exe`/`netstat` by absolute `%SystemRoot%` path, so a truncated Extension Host `PATH` (e.g. missing `System32\wbem` on Win11 24H2+ where WMIC is removed) no longer breaks discovery.
@@ -260,4 +265,4 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.19 — [Release notes](docs/releases/1.16.19.md)
+**Version**: 1.16.20 — [Release notes](docs/releases/1.16.20.md)

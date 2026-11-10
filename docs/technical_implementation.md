@@ -4,7 +4,7 @@ This document explains how the Antigravity Context Window Monitor plugin works. 
 
 本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 面板调度）、`activity-tracker.ts`（模型活动追踪）、`activity-panel.ts`（GM Data UI）、`pricing-panel.ts`（Cost 与 Models UI）、`quota-tracker.ts`（配额追踪）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。WebView 面板拆分为：`activity-panel.ts`、`pricing-panel.ts`、`webview-chat-history-tab.ts`、`webview-models-tab.ts`、`webview-profile-tab.ts`、`webview-settings-tab.ts`、`webview-calendar-tab.ts`、`webview-about-tab.ts`、`webview-script.ts`、`webview-styles.ts`、`webview-helpers.ts`、`webview-icons.ts`。
 
-Current release / 当前版本: **1.16.19**. See [release notes / 发布说明](releases/1.16.19.md).
+Current release / 当前版本: **1.16.20**. See [release notes / 发布说明](releases/1.16.20.md).
 
 ---
 
@@ -129,8 +129,8 @@ Since v1.10.1, clicking the status bar opens a WebView side panel (replacing the
 * **数据来源 / Data Source**: 所有数据来自已有的 `GetUserStatus` RPC 调用，通过 `fetchFullUserStatus()` 函数获取完整用户状态（`FullUserStatus`）。零额外网络请求。
   All data comes from the existing `GetUserStatus` RPC call via `fetchFullUserStatus()` which returns the full `FullUserStatus` object. Zero additional network requests.
 
-* **面板内容 / Panel Content**: 展示账户信息（planName、userTier）、Credits 余额（Prompt Credits、Flow Credits）、每模型配额百分比（带颜色指示）、Feature Flags、团队配置（MCP Servers、Auto-Run 等）、Google AI 额度。
-  Displays account info (planName, userTier), credit balance (Prompt & Flow Credits), per-model quota percentages (color-coded), feature flags, team config (MCP Servers, Auto-Run, etc.), and Google AI credits.
+* **Panel Content / 面板内容**: Displays account info (planName, userTier), credit balance (Prompt & Flow Credits), shared quota-pool cards (color-coded), feature flags, team config (MCP Servers, Auto-Run, etc.), and Google AI credits. Pool cards list their available families/efforts; effort-specific model information, usage statistics, and pricing remain separate.
+  展示账户信息（planName、userTier）、Credits 余额（Prompt Credits、Flow Credits）、共享配额池卡片（带颜色指示）、Feature Flags、团队配置（MCP Servers、Auto-Run 等）、Google AI 额度。池卡片列出可用家族/档位；档位级模型信息、用量统计与价格仍独立。
 
 * **隐私遮罩 / Privacy Mask**: 盾牌按钮遮罩姓名和邮箱，状态通过 `vscode.getState()` 跨面板刷新持久化。
   Shield button masks name and email; state persists across panel refreshes via `vscode.getState()`.
@@ -257,6 +257,48 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
 
 ## 🤖 7. Model Registry and Model Cards / 模型注册与模型信息卡片
 
+### Gemini 4 Carbon (v1.16.20)
+
+#### English
+
+The running IDE's `GetUserStatus` and `GetAvailableModels` responses were checked on 2026-11-11:
+
+| Effort | Placeholder | Catalog ID | Thinking level |
+| --- | --- | --- | --- |
+| Low | `MODEL_PLACEHOLDER_M438` | `gemini-4-carbon-low` | 1 |
+| Medium | `MODEL_PLACEHOLDER_M437` | `gemini-4-carbon-medium` | 2 |
+| High | `MODEL_PLACEHOLDER_M427` | `gemini-4-carbon-high` | 3 |
+
+All three report the Google Gemini provider, 1,048,576 model-context tokens, **262,144 maximum output tokens**, a 256,000 checkpointer compression limit, and a separate 50,000 checkpoint threshold. The static context fallback remains 255,000 until live synchronization. Thinking is enabled with the reported level; an omitted fixed budget must not be substituted with Argon's output limit or a made-up thinking budget.
+
+`models.ts` registers exact placeholders, catalog aliases, English and Chinese effort names, static specs, context profiles, and Gemini quota membership. Bare `gemini-4-carbon` is a family, not an effort identity: GM alias learning must not bind it to whichever tier is observed first. Known requested tiers survive family-only responses and remain separate in persisted statistics. Carbon and Argon cannot alias one another. Concatenated `CarbonHigh`, unmatched parentheses, and invalid effort suffixes do not resolve as known variants or inherit a family price. Alias learning resolves uppercase/catalog and Chinese-label variants before accepting a new binding, so a conflicting sample cannot overwrite the registered tier. Live account catalogs continue to determine which cards are shown; an empty catalog must not resurrect registered models as available.
+
+`tooltip-budget.ts` keeps current-model and live-recommendation precedence. Its same-generation family ordering puts Carbon before Argon without treating similarly prefixed unknown model names as verified Carbon models. [Carbon Standard API prices](https://aistudio.google.com/docs/pricing#gemini-4-carbon), verified 2026-11-11, are $2 input / $10 output including thinking / $0.10 implicit cache reads per million tokens through 2026-11-30, then $4 / $20 / $0.20 from 2026-12-01. `pricing-store.ts` uses each call's UTC date while preserving custom family/tier overrides and archival totals. Carbon and Argon use separate pricing identities despite equal published rates. Explicit caching is unsupported and no cache-write charge is added. Unknown-model prices remain unavailable rather than free. The [Google announcement](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-4-carbon-now-available/) corroborates the input/output rates and cutover date.
+
+#### 中文
+
+2026-11-11 核对了运行中 IDE 的 `GetUserStatus` 和 `GetAvailableModels`：Low / Medium / High 分别对应上表的 `M438` / `M437` / `M427`、catalog ID 和 1 / 2 / 3 思考力度。
+
+三档均报告 Google Gemini 提供商、1,048,576 token 模型上下文、**262,144 token 最大输出**、256,000 checkpointer 压缩上限及独立的 50,000 检查点阈值。实时同步前使用 255,000 静态上下文兜底。支持思考并采用返回的力度；缺失固定预算不能用 Argon 的输出上限或臆造的思考预算代替。
+
+`models.ts` 注册精确 placeholder、catalog 别名、中英文档位名、静态 spec、上下文画像及 Gemini 配额池归属。裸 `gemini-4-carbon` 表示家族，不能证明档位：GM 别名学习不得将其绑定到最先观测到的一档。仅含家族名的响应保留已知请求档位，持久化统计也保持各档独立；Carbon 与 Argon 不互相映射。连写的 `CarbonHigh`、未配对括号及无效档位后缀不能解析为已知档位或继承家族价格。学习新绑定前先解析大写 catalog 和中文标签变体，避免冲突样本覆盖已注册档位。卡片继续以当前账号实时目录为准，空目录不能将静态注册模型恢复为可用。
+
+`tooltip-budget.ts` 保留当前模型、实时推荐的优先级。同世代内 Carbon 排在 Argon 前，同时避免将相似前缀的未知模型误判为 Carbon。2026-11-11 核实的 [Carbon Standard API 价格](https://aistudio.google.com/docs/pricing#gemini-4-carbon) 截至 2026-11-30 为每百万 token 输入 $2 / 含思考输出 $10 / 隐式缓存读取 $0.10，自 2026-12-01 起为 $4 / $20 / $0.20。`pricing-store.ts` 按调用 UTC 日期计价，保留自定义家族/档位覆盖和归档总额。虽然公布费率相同，Carbon 与 Argon 计价身份仍独立。不支持显式缓存，不添加缓存写入费；未知模型价格继续显示暂无定价，而非免费。[Google 公告](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-4-carbon-now-available/) 交叉证实输入/输出费率及调价日期。
+
+### Shared quota-pool presentation (v1.16.20) / 共享配额池展示
+
+#### English
+
+Model Quota groups the current 16 chat tiers into two known shared pools: Gemini contains Carbon, Argon, and Flash (nine tiers); Claude / GPT contains Opus, Sonnet, and GPT-OSS (seven tiers). The live status reports matching fraction/reset values within each pool. Each card retains a readable list of its available families and effort tiers. Unknown and image-generation identities remain separate instead of being inferred into either chat pool. Model Info specs, GM calls, persisted model statistics, token accounting, and pricing remain tier-specific.
+
+Quota fractions are not summed or averaged across members. Inconsistent values use ranges with per-model details; missing quota/reset data stays explicitly unknown rather than becoming an invented combined allowance. Account-specific and empty catalogs must keep their availability semantics. The shared-pool UI and About note (plugin 1.16.20 / IDE 2.6.0 / 2026-11-11) still require final installed-package acceptance.
+
+#### 中文
+
+模型配额将当前 16 个聊天档位合并为两个已知共享池：Gemini 包含 Carbon、Argon、Flash，共九档；Claude / GPT 包含 Opus、Sonnet、GPT-OSS，共七档。实时状态显示每个池内的 fraction/reset 值一致；每张卡片仍列出实际可用的家族与思考档位。未知模型和图片生成身份独立，不推断归入任何聊天池。模型信息 spec、GM 调用、历史模型统计、Token 记账和价格继续按档位保留。
+
+成员配额比例不求和、不取平均。不一致值展示范围并提供逐模型明细；缺失配额/重置数据明确显示未知，不制造综合额度。不同账号和空目录仍按实际可用列表处理。共享池 UI 及 About 说明（插件 1.16.20 / IDE 2.6.0 / 2026-11-11）的最终安装包验收仍待完成。
+
 ### Gemini 4 Argon (v1.16.19)
 
 #### English
@@ -289,11 +331,11 @@ Argon uses the [official Google Standard API pricing](https://ai.google.dev/gemi
 
 Argon 采用 2026-10-31 核实的 [Google Standard API 官方费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon)：每百万 token 输入 / 含思考输出 / 隐式缓存读取，截至 2026-11-30 为 $2 / $10 / $0.10，自 2026-12-01 起为 $4 / $20 / $0.20。`pricing-store.ts` 按调用 UTC 时间戳选费率，逐调用聚合、每日归档、账本结算和历史回填共用按日期查价；已有归档总额与显式自定义家族/档位覆盖保留优先级。Argon 不支持显式缓存，不添加缓存写入费。通用未知模型仍显示暂无定价，不借用其他模型价格。
 
-### Current catalog and image capability (v1.16.19) / 当前目录与图片能力
+### Current catalog and image capability (v1.16.20) / 当前目录与图片能力
 
 #### English
 
-The 2026-10-31 metadata audit covers all 13 live chat variants: three Argon, three Flash 3.8, three Opus 5.5, three Sonnet 5.5, and GPT-OSS 120B Medium. The complete compact field table is in the [release notes](releases/1.16.19.md#current-chat-catalog-and-image-generation). Gemini reports 1,048,576 model-context / 65,536 output; Claude reports 1,000,000 / 128,000; GPT-OSS reports 131,072 / 32,768, an 80,000 compression limit, 50,000 checkpoint threshold, and 8,192 thinking budget. These are IDE catalog values, not universal public API limits.
+The 2026-11-11 metadata audit covers all 16 live chat variants: three Carbon, three Argon, three Flash 3.8, three Opus 5.5, three Sonnet 5.5, and GPT-OSS 120B Medium. The complete compact field table is in the [release notes](releases/1.16.20.md#current-catalog). Carbon reports 1,048,576 model-context / 262,144 output; Argon and Flash report 1,048,576 / 65,536; Claude reports 1,000,000 / 128,000; GPT-OSS reports 131,072 / 32,768, an 80,000 compression limit, 50,000 checkpoint threshold, and 8,192 thinking budget. These are IDE catalog values, not universal public API limits.
 
 `imageGenerationModelIds` is the authority for image-generation capability. `supportsImages` only denotes image input and must not promote every multimodal chat model into an image generator. The current image entry is `MODEL_PLACEHOLDER_M21` / `gemini-3.1-flash-image`, Gemini 3.1 Flash Image (Nano Banana 2), with IDE model-context and output limits both 65,536. It has no chat checkpointer. `ModelSpec.isImageGeneration` distinguishes it, `setAvailableImageModelIds()` stores the live available subset, and `getAvailableImageModelSpecs()` feeds a separate image section. Empty live lists clear that section; a model's registered history does not imply current availability. Image quota uses a separate identity, not the shared chat Gemini pool, because no independent image allowance was returned.
 
@@ -305,7 +347,7 @@ Image steps use `CORTEX_STEP_TYPE_GENERATE_IMAGE` and the `generateImage` payloa
 
 #### 中文
 
-2026-10-31 元数据核对覆盖实时聊天列表全部 13 档：Argon、Flash 3.8、Opus 5.5、Sonnet 5.5 各三档，以及 GPT-OSS 120B Medium。完整精简字段表见[发布说明](releases/1.16.19.md#当前聊天目录与图片生成)。Gemini 报告模型上下文/输出 1,048,576 / 65,536，Claude 为 1,000,000 / 128,000；GPT-OSS 为 131,072 / 32,768，压缩上限 80,000、检查点阈值 50,000、思考预算 8,192。这些是 IDE 目录值，不是所有公开 API 的统一上限。
+2026-11-11 元数据核对覆盖实时聊天列表全部 16 档：Carbon、Argon、Flash 3.8、Opus 5.5、Sonnet 5.5 各三档，以及 GPT-OSS 120B Medium。完整精简字段表见[发布说明](releases/1.16.20.md#当前目录)。Carbon 模型上下文/输出为 1,048,576 / 262,144，Argon 与 Flash 为 1,048,576 / 65,536，Claude 为 1,000,000 / 128,000；GPT-OSS 为 131,072 / 32,768，压缩上限 80,000、检查点阈值 50,000、思考预算 8,192。这些是 IDE 目录值，不是所有公开 API 的统一上限。
 
 `imageGenerationModelIds` 是图片生成能力依据，`supportsImages` 只表示图片输入，不能据此将所有多模态聊天模型归为图片生成模型。当前图片条目为 `MODEL_PLACEHOLDER_M21` / `gemini-3.1-flash-image`，即 Gemini 3.1 Flash Image（Nano Banana 2），IDE 模型上下文/输出均为 65,536，无聊天 checkpointer。`ModelSpec.isImageGeneration` 区分能力，`setAvailableImageModelIds()` 保存当前可用子集，`getAvailableImageModelSpecs()` 提供独立图片区域；实时空列表会清除该区域，历史注册不代表当前可用。图片配额使用独立身份，不归入共享聊天 Gemini 池，因为后端未返回独立图片额度。
 
@@ -354,15 +396,15 @@ v1.16.18 注册表依据 2026-10-03 对运行中 Antigravity IDE 的元数据探
 
 The release includes Vitest 4.1.12, Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`, and CI Node.js 26.12.1. Use these runtime constraints and the committed lockfile: `npm ci`, `npm run compile`, and `npm test`. `verify.yml` defines native Windows, macOS, and Linux compile/test jobs; its Node.js version is specified in that workflow. A configured matrix does not prove that a release commit passed it.
 
-The regression scope includes legacy and hub discovery, argument/port parsing, candidate fallback, cancellation, all 13 live chat variants, image capability and metadata lifecycle, live-model precedence, account-specific catalogs, separate image quota identity, GM identity preservation, Argon UTC price cutovers and archival/custom precedence, generic unknown prices, image steps, persisted history, and English/Chinese/bilingual rendering. Cross-platform mocks exercise branches locally and must be distinguished from execution on each native operating system.
+The regression scope includes legacy and hub discovery, argument/port parsing, candidate fallback, cancellation, all 16 live chat variants, image capability and metadata lifecycle, live-model precedence, account-specific catalogs, separate image quota identity, Carbon/Argon family and tier isolation, GM identity preservation, Argon UTC price cutovers and archival/custom precedence, Carbon and generic unknown prices, image steps, persisted history, and English/Chinese/bilingual rendering. Cross-platform mocks exercise branches locally and must be distinguished from execution on each native operating system.
 
-Release acceptance must use the newly packaged **1.16.19** VSIX installed in the already running IDE, followed by reload and installed-file/version checks. UI checks cover live model cards and metadata, empty/idle versus disconnected state, language switching and persistence, themes, narrow layouts, refresh/pause controls, and pricing interactions. Results, counts, generation-test scope, and untested environments are recorded in [1.16.19 release notes](releases/1.16.19.md#validation). Earlier 1.16.18 results remain in their [historical release record](releases/1.16.18.md#validation).
+Release acceptance uses the newly packaged **1.16.20** VSIX installed in the already running IDE, followed by reload and installed-file/version checks. Live metadata checks cover **16 chat entries and one image entry**. Completed native macOS checks include three independent Carbon replies, a Low → Medium → High sequence, English/Chinese/bilingual switching, and dark-theme rendering; Chinese and Light Modern were restored afterward. **Final compilation/regression totals, installed-file hashes, shared-pool/About UI acceptance, package checksum, and native Windows/macOS/Linux CI remain pending.** Browser fixtures must cover language/theme/width combinations, empty and malformed data, inconsistent/missing pool values, control interactions, and layout boundaries, with results separated from native IDE interaction evidence. Exact results are in [1.16.20 release notes](releases/1.16.20.md#validation); older evidence remains in the [1.16.19](releases/1.16.19.md#validation) and [1.16.18](releases/1.16.18.md#validation) records.
 
 本版本包含 Vitest 4.1.12、Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`，CI 使用 Node.js 26.12.1。按上述运行时约束和已提交锁文件执行 `npm ci`、`npm run compile`、`npm test`。`verify.yml` 定义 Windows、macOS、Linux 原生编译/测试任务，Node.js 版本以该工作流为准。已配置矩阵并不证明某个发布提交已通过。
 
-回归范围包含旧版/hub 发现、参数与端口解析、候选回退、取消、全部 13 个实时聊天档位、图片能力及元数据生命周期、实时模型优先级、账号目录、独立图片配额身份、GM 身份保持、Argon UTC 调价边界与归档/自定义优先级、通用未知价格、图片步骤、历史持久化，以及英文/中文/双语渲染。跨平台 mock 在本地覆盖分支，需要与各原生操作系统上的实际运行分别报告。
+回归范围包含旧版/hub 发现、参数与端口解析、候选回退、取消、全部 16 个实时聊天档位、图片能力及元数据生命周期、实时模型优先级、账号目录、独立图片配额身份、Carbon/Argon 家族与档位隔离、GM 身份保持、Argon UTC 调价边界与归档/自定义优先级、Carbon 及通用未知价格、图片步骤、历史持久化，以及英文/中文/双语渲染。跨平台 mock 在本地覆盖分支，需要与各原生操作系统上的实际运行分别报告。
 
-发布验收必须将重新打包的 **1.16.19** VSIX 安装到已经运行的 IDE，重载后检查安装文件和版本。UI 检查覆盖实时模型卡片及元数据、空闲/空状态与断连的区别、语言切换和持久化、主题、窄布局、刷新/暂停及价格交互。结果、数量、生成测试范围和未测环境记录于 [1.16.19 发布说明](releases/1.16.19.md#验证)；此前 1.16.18 结果保留在[历史发布记录](releases/1.16.18.md#validation)中。
+发布验收使用重新打包并安装到现有 IDE 的 **1.16.20** VSIX，随后重载并核实安装文件与版本。实时元数据检查覆盖 **16 个聊天条目及一个图片条目**。已完成的 macOS 原生检查包括 Carbon 三档独立回复、Low → Medium → High 序列、英文/中文/双语切换及深色主题展示；随后恢复中文和 Light Modern。**最终编译/回归数量、安装文件哈希、共享池/About UI 验收、包校验和及 Windows/macOS/Linux 原生 CI 仍待完成。** 浏览器 fixtures 应覆盖语言/主题/宽度组合、空态与异常数据、池内差异/缺失数据、控件交互和布局边界，与原生 IDE 交互证据分别记录。具体结果见 [1.16.20 发布说明](releases/1.16.20.md#验证)；旧证据保留在 [1.16.19](releases/1.16.19.md#验证) 和 [1.16.18](releases/1.16.18.md#validation) 历史记录中。
 
 ### Recorded-call pricing reconciliation (1.16.19)
 

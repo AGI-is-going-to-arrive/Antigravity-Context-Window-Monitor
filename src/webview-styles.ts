@@ -1814,6 +1814,56 @@ export function getStyles(): string {
             opacity: 0.7;
         }
 
+        .model-quota-section .model-card-header { flex-wrap: wrap; }
+        .model-quota-section .model-card-pct {
+            color: var(--color-text);
+            flex-shrink: 1;
+            max-width: 100%;
+            overflow-wrap: anywhere;
+            font-variant-numeric: tabular-nums;
+        }
+        .model-quota-section .model-tag-badge {
+            color: var(--color-text);
+            background: var(--color-surface-active);
+        }
+        .model-quota-section .model-card-reset { opacity: 1; overflow-wrap: anywhere; }
+        .model-card-efforts {
+            margin-bottom: var(--space-2);
+            color: var(--color-text-dim);
+            font-size: 0.75em;
+            overflow-wrap: anywhere;
+        }
+        .model-quota-members { list-style: none; padding: 0; margin: 0 0 var(--space-2); }
+        .model-quota-members li {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            gap: var(--space-1) var(--space-2);
+            padding: var(--space-1) 0;
+            font-size: 0.8em;
+            overflow-wrap: anywhere;
+        }
+        .model-quota-members .model-card-efforts { font-size: 1em; margin: 0; }
+        .model-quota-notice {
+            margin: var(--space-2) 0 var(--space-1);
+            font-size: 0.75em;
+            color: var(--color-text-dim);
+        }
+        .model-quota-details { font-size: 0.75em; }
+        .model-quota-details summary { cursor: pointer; color: var(--color-text); }
+        .model-quota-details summary:focus-visible { outline: 2px solid var(--color-info); outline-offset: 2px; }
+        .model-quota-details ul { list-style: none; margin: var(--space-2) 0 0; padding: 0; }
+        .model-quota-details li {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: var(--space-1) var(--space-2);
+            padding: var(--space-1) 0;
+            font-variant-numeric: tabular-nums;
+            overflow-wrap: anywhere;
+        }
+        .model-quota-details li > span:nth-child(2) { text-align: right; }
+        .model-quota-reading-reset { grid-column: 1 / -1; color: var(--color-text-dim); }
+
         /* ─── Profile: MIME Chips ────────── */
         .mime-chips {
             display: flex;

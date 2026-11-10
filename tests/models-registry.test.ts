@@ -143,9 +143,12 @@ describe('guessContextLimitSpec placeholder collision guard', () => {
 });
 
 describe('getModelSpecs ordering', () => {
-    it('renders Argon then Gemini Flash generations, with retired M133 last', () => {
+    it('renders Carbon then Argon then Gemini Flash generations, with retired M133 last', () => {
         const ids = getModelSpecs().map(s => s.placeholderId);
         expect(ids).toEqual([
+            'MODEL_PLACEHOLDER_M427',
+            'MODEL_PLACEHOLDER_M437',
+            'MODEL_PLACEHOLDER_M438',
             'MODEL_PLACEHOLDER_M417',
             'MODEL_PLACEHOLDER_M418',
             'MODEL_PLACEHOLDER_M419',

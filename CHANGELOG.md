@@ -1,5 +1,29 @@
 # 变更日志 / Changelog
 
+## [1.16.20] - 2026-11-11
+
+### English
+
+Adds **Gemini 4 Carbon Low / Medium / High**, preserving existing model identities and saved history.
+
+- **Verified IDE metadata:** Low / Medium / High map to `M438` / `M437` / `M427` and `gemini-4-carbon-{low,medium,high}`. Each tier reports 1,048,576 model-context tokens, 262,144 maximum output tokens, a 256,000 compression limit, and a separate 50,000 checkpoint threshold. Thinking levels are 1 / 2 / 3; no fixed thinking budget is inferred.
+- **Identity and quota:** Placeholder IDs, catalog aliases, English/Chinese tier labels, context tracking, GM data, and persisted usage share one identity path. Family-only responses cannot overwrite a known tier. Carbon joins the Gemini quota pool and precedes Argon when no current model or live recommendation takes priority.
+- **Alias and price boundaries:** Rejects concatenated names such as `Gemini 4 CarbonHigh`, unmatched parentheses, and unsupported effort labels instead of inferring a known identity or family price. Conflicting uppercase/catalog or Chinese-label aliases cannot overwrite registered effort tiers.
+- **Shared quota pools:** Model Quota shows two cards: Gemini (Carbon, Argon, and Flash; nine current tiers) and Claude / GPT (Opus, Sonnet, and GPT-OSS; seven current tiers). Each pool lists available families and efforts. Percentages are not summed or averaged; inconsistent data uses ranges and per-model details, and missing data remains explicit. Unknown and image identities stay separate. Model Info, GM statistics, and pricing retain each effort tier. Final installed-plugin acceptance is pending.
+- **Official dated pricing:** [Carbon Standard API rates](https://aistudio.google.com/docs/pricing#gemini-4-carbon), verified 2026-11-11, are $2 input / $10 output including thinking / $0.10 implicit cache reads per million tokens through 2026-11-30, then $4 / $20 / $0.20 from 2026-12-01. Call UTC dates select rates; custom family/tier prices and archived totals keep precedence. Carbon and Argon retain separate pricing identities. No explicit cache-write fee is added; unknown-model prices remain explicitly unavailable.
+- **Validation and documentation:** The installed macOS plugin verified 16 chat metadata entries, the image entry, three independent Carbon `OK` replies, a same-conversation Low → Medium → High sequence, native language switching, and dark-theme rendering. The original Chinese language and Light Modern theme were restored. The About compatibility note targets 1.16.20 / IDE 2.6.0. Updates English-then-Chinese [release notes](docs/releases/1.16.20.md). **Final regression totals, installed-package/shared-pool UI checks, package checksum, and native Windows/macOS/Linux CI remain pending**; browser fixtures and native IDE results are reported separately.
+
+### 中文
+
+新增 **Gemini 4 Carbon Low / Medium / High**，保留既有模型身份与历史记录。
+
+- **IDE 实测元数据：** Low / Medium / High 对应 `M438` / `M437` / `M427` 和 `gemini-4-carbon-{low,medium,high}`。每档模型上下文为 1,048,576 token、最大输出 262,144、压缩上限 256,000，独立检查点阈值 50,000。思考力度为 1 / 2 / 3，不推断固定思考预算。
+- **身份与配额：** Placeholder ID、catalog 别名、中英文档位名、上下文追踪、GM 数据和历史用量共用身份归一化链路。仅返回家族名不能覆盖已知档位。Carbon 归入 Gemini 配额池；没有当前模型或实时推荐优先时，排在 Argon 前。
+- **别名与价格边界：** 拒绝 `Gemini 4 CarbonHigh` 这样的连写名称、未配对括号及不支持的档位标签，不误套已知身份或家族价格。冲突的大写 catalog 别名、中文标签不能覆盖已注册的思考档位。
+- **共享配额池：** 模型配额展示两张卡片：Gemini（Carbon、Argon、Flash，当前九档）及 Claude / GPT（Opus、Sonnet、GPT-OSS，当前七档）。每池列出可用家族与思考档位；配额不求和、不取平均，不一致数据展示范围与逐模型明细，缺失数据明确标注。未知模型和图片身份独立。模型信息、GM 统计及价格仍按档位保留。最终安装后验收待完成。
+- **官方按日期计价：** 2026-11-11 核实的 [Carbon Standard API 费率](https://aistudio.google.com/docs/pricing#gemini-4-carbon) 截至 2026-11-30 为每百万 token 输入 $2 / 含思考输出 $10 / 隐式缓存读取 $0.10，自 2026-12-01 起为 $4 / $20 / $0.20。按调用 UTC 日期选费率，保留自定义家族/档位价格和归档总额的优先级；Carbon 与 Argon 计价身份独立。不添加显式缓存写入费，未知模型继续明确显示暂无定价。
+- **验证与文档：** 已安装的 macOS 插件核实 16 个聊天元数据条目、图片条目、Carbon 三档独立 `OK` 回复、同会话 Low → Medium → High 序列、原生语言切换及深色主题展示；之后恢复原来的中文和 Light Modern 主题。About 兼容说明更新至 1.16.20 / IDE 2.6.0，并更新英文在前的[发布说明](docs/releases/1.16.20.md)。**最终回归数量、安装包/共享池 UI 检查、包校验和及 Windows/macOS/Linux 原生 CI 仍待完成**；浏览器 fixture 与原生 IDE 结果分别记录。
+
 ## [1.16.19] - 2026-10-31
 
 ### English

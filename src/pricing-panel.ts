@@ -1387,6 +1387,13 @@ function pricingDisplayName(model: string): string {
     return model.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+function carbonPricingNote(): string {
+    return `<li>${tBi(
+        'Gemini 4 Carbon standard API reference (USD / 1M): input $2, output including thinking $10, implicit cache reads $0.10 through 2026-11-30; $4 / $20 / $0.20 from 2026-12-01. Automatic changes use UTC dates; day-only archives use their saved calendar day. Explicit caching is not supported. These are not Batch/Flex rates or Antigravity subscription charges.',
+        'Gemini 4 Carbon 标准 API 参考价（美元 / 百万 Token）：截至 2026-11-30，输入 $2、输出（含思考）$10、隐式缓存读取 $0.10；自 2026-12-01 起为 $4 / $20 / $0.20。自动切价按 UTC 日期，只有日期的归档按保存的日历日期计价。不支持显式缓存。这不是 Batch/Flex 费率，也不是 Antigravity 订阅收费。',
+    )} <a href="https://aistudio.google.com/docs/pricing#gemini-4-carbon">${tBi('Official pricing', '官方价格')}</a></li>`;
+}
+
 function argonPricingNote(): string {
     return `<li>${tBi(
         'Gemini 4 Argon standard API reference (USD / 1M): input $2, output including thinking $10, implicit cache reads $0.10 through 2026-11-30; $4 / $20 / $0.20 from 2026-12-01. Automatic changes use UTC dates; day-only archives use their saved calendar day. Explicit caching is not supported. These are not Batch/Flex rates or Antigravity subscription charges.',
@@ -1453,6 +1460,7 @@ function buildEditablePricingTable(
     html += `<div class="prc-info-bar">${infoSvg2}<div class="prc-info-bar-body"><ul>
         <li>${tBi('Edit prices above and click <b>Save</b>. Changes persist across sessions.', '编辑上方价格后点击<b>保存</b>，修改跨会话持久化。')}</li>
         <li>${tBi('<b>Reset</b> restores built-in default prices. Clear all fields in a row to remove its override. Missing prices are not zero prices.', '<b>恢复默认</b>将还原内置价格。清空一行全部字段可移除该自定义价格；缺失价格不代表免费。')}</li>
+        ${carbonPricingNote()}
         ${argonPricingNote()}
         <li>${tBi('Built-in cache-write rates use the 5-minute TTL. Cache creation is excluded from cost estimates because the available telemetry cannot reliably identify creation tokens or the 1-hour TTL.', '内置缓存写入价格采用 5 分钟有效期。遥测无法可靠区分缓存创建令牌及 1 小时有效期，因此费用估算暂不计入缓存创建。')}</li>
         <li>${tBi('Default prices last updated:', '默认价格最后更新：')} <span class="prc-info-date">${PRICING_LAST_UPDATED}</span></li>
@@ -1499,6 +1507,7 @@ function buildDefaultPricingTable(
     html += `<div class="prc-info-bar">${infoSvg3}<div class="prc-info-bar-body"><ul>
         <li>${tBi('Edit prices above and click <b>Save</b>. Changes persist across sessions.', '编辑上方价格后点击<b>保存</b>，修改跨会话持久化。')}</li>
         <li>${tBi('Clear all fields in a row to remove its override. Missing prices are not zero prices.', '清空一行全部字段可移除该自定义价格；缺失价格不代表免费。')}</li>
+        ${carbonPricingNote()}
         ${argonPricingNote()}
         <li>${tBi('Built-in cache-write rates use the 5-minute TTL. Cache creation is excluded from cost estimates because the available telemetry cannot reliably identify creation tokens or the 1-hour TTL.', '内置缓存写入价格采用 5 分钟有效期。遥测无法可靠区分缓存创建令牌及 1 小时有效期，因此费用估算暂不计入缓存创建。')}</li>
         <li>${tBi('Default prices last updated:', '默认价格最后更新：')} <span class="prc-info-date">${PRICING_LAST_UPDATED}</span></li>

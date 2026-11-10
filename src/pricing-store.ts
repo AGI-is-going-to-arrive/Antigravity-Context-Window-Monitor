@@ -45,9 +45,12 @@ export interface ModelCostRow {
 //        Gemini cacheRead = from official table; no separate cacheWrite pricing
 // Thinking: = output price (Claude extended thinking / Gemini reasoning output)
 
-export const PRICING_LAST_UPDATED = '2026-10-31';
+export const PRICING_LAST_UPDATED = '2026-11-11';
 
 export type PricingDate = string | number | Date;
+const CARBON_RATE_CHANGE = Date.parse('2026-12-01T00:00:00Z');
+const CARBON_INTRO_PRICING: ModelPricing = { input: 2, output: 10, cacheRead: 0.10, cacheWrite: 0, thinking: 10 };
+const CARBON_STANDARD_PRICING: ModelPricing = { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 0, thinking: 20 };
 const ARGON_RATE_CHANGE = Date.parse('2026-12-01T00:00:00Z');
 const ARGON_INTRO_PRICING: ModelPricing = { input: 2, output: 10, cacheRead: 0.10, cacheWrite: 0, thinking: 10 };
 const ARGON_STANDARD_PRICING: ModelPricing = { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 0, thinking: 20 };
@@ -68,6 +71,10 @@ function pricingTimestamp(at: PricingDate): number | null {
 }
 
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
+    // Carbon has its own verified schedule, independent of Argon's equal rates.
+    // https://aistudio.google.com/docs/pricing#gemini-4-carbon (2026-11-11).
+    // Standard API reference; implicit cache reads only, no explicit cache writes.
+    get 'gemini-4-carbon'() { return Date.now() < CARBON_RATE_CHANGE ? CARBON_INTRO_PRICING : CARBON_STANDARD_PRICING; },
     // Google standard API reference, not Batch/Flex/Priority or subscription credits.
     // https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon (2026-10-31).
     // Implicit cache reads only; explicit caching/cache-write fees are unsupported.
@@ -114,11 +121,19 @@ export function findPricing(
 ): ModelPricing | null {
     if (!responseModel.trim()) { return null; }
     if (Object.prototype.hasOwnProperty.call(table, responseModel) && table[responseModel]) { return table[responseModel]; }
+    const modelId = resolveModelId(responseModel);
+    // Gemini 4 has verified concrete efforts and a shared bare response family.
+    // Do not erase malformed parentheses or unknown effort suffixes into that
+    // family's price. Exact-key prices above remain intentional user overrides;
+    // older families retain their existing preview/latest/dated alias support.
+    const clean = responseModel.trim();
+    if (/^gemini[\s_-]+4[\s_-]+(?:carbon|argon)/i.test(clean)
+        && !/^gemini[\s_-]+4[\s_-]+(?:carbon|argon)$/i.test(clean)
+        && !modelId) { return null; }
     const imageModel = isImageGenerationModel(responseModel);
     const candidates: string[] = [];
     // A catalog alias can differ completely from its current display identity
     // (e.g. gemini-3-flash-agent). Resolve it before trying its literal spelling.
-    const modelId = resolveModelId(responseModel);
     if (typeof modelId === 'string') {
         const displayName = getModelDisplayName(modelId);
         if (typeof displayName === 'string' && displayName && displayName !== modelId) {
@@ -163,7 +178,9 @@ export function findPricing(
  */
 function kebabCandidates(displayName: string): string[] {
     const kebab = (s: string, dashDecimals: boolean): string => {
-        const base = s.replace(/[()]/g, '').trim().toLowerCase().replace(/\s+/g, '-');
+        // Family-only response identifiers can use constant-style underscores,
+        // even though they intentionally cannot resolve to a concrete effort.
+        const base = s.replace(/[()]/g, '').trim().toLowerCase().replace(/[\s_]+/g, '-');
         return dashDecimals ? base.replace(/(\d+)\.(\d+)/g, '$1-$2') : base;
     };
     const withoutTier = displayName.replace(/\s*\([^)]*\)\s*$/, '').trim();
@@ -224,14 +241,17 @@ export function findPricingForDate(
     if (!pricing) { return null; }
     // Check both immutable rate eras before reading dynamic default getters;
     // crossing midnight between two reads must not lose the family identity.
+    const isCarbon = pricing === CARBON_INTRO_PRICING || pricing === CARBON_STANDARD_PRICING
+        || pricing === base['gemini-4-carbon'];
     const isArgon = pricing === ARGON_INTRO_PRICING || pricing === ARGON_STANDARD_PRICING
         || pricing === base['gemini-4-argon'];
     const isFlash = pricing === FLASH_INTRO_PRICING || pricing === FLASH_STANDARD_PRICING
         || pricing === base['gemini-3.7-flash'] || pricing === base['gemini-3.8-flash'];
-    if (!isArgon && !isFlash) { return pricing; }
+    if (!isCarbon && !isArgon && !isFlash) { return pricing; }
     const time = pricingTimestamp(at);
     // An invalid historic timestamp is not evidence that today's rate applied.
     if (time === null) { return null; }
+    if (isCarbon) { return time < CARBON_RATE_CHANGE ? CARBON_INTRO_PRICING : CARBON_STANDARD_PRICING; }
     return isArgon
         ? time < ARGON_RATE_CHANGE ? ARGON_INTRO_PRICING : ARGON_STANDARD_PRICING
         : time < FLASH_RATE_CHANGE ? FLASH_INTRO_PRICING : FLASH_STANDARD_PRICING;
@@ -335,7 +355,8 @@ export function calculateUsageCosts(
     const hasRemainder = fields.some(field => remainder[field] > 0);
     const override = findPricingWithCustom(model, custom, {});
     const builtIn = findPricing(model);
-    const scheduled = builtIn === ARGON_INTRO_PRICING || builtIn === ARGON_STANDARD_PRICING
+    const scheduled = builtIn === CARBON_INTRO_PRICING || builtIn === CARBON_STANDARD_PRICING
+        || builtIn === ARGON_INTRO_PRICING || builtIn === ARGON_STANDARD_PRICING
         || builtIn === FLASH_INTRO_PRICING || builtIn === FLASH_STANDARD_PRICING;
     if (hasRemainder && !override && (scheduled || !pricing)
         && Number.isFinite(options.frozenCost) && (options.frozenCost || 0) > 0) {
