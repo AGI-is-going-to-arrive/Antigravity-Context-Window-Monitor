@@ -13,6 +13,9 @@ function ownValue<T>(table: Record<string, T>, key: string): T | undefined {
     return Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
+// Optional effort must be separated or enclosed in a complete pair of parentheses.
+const GEMINI_4_NAME_PATTERN = /^gemini[\s_-]+4[\s_-]+(carbon|argon)(?:[\s_-]+(low|medium|high|低|中|高)|[\s_-]*\(\s*(low|medium|high|低|中|高)\s*\))?$/i;
+
 // ─── Default Context Limits ──────────────────────────────────────────────────
 
 export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
@@ -25,6 +28,10 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     // Gemini 3.7 Flash tiers + the 3.6 Flash renumber verified via live LS probe (2026-08-14).
     // Note: All fallback limits are intentionally offset by -1,000 (1K) so that in daily use,
     // you can instantly recognize if the extension has successfully overridden the fallback with live captures.
+    // Gemini 4 Carbon verified via the installed IDE agent hub, 2026-11-11.
+    'MODEL_PLACEHOLDER_M427': 255_000,  // High — live compression limit: 256,000
+    'MODEL_PLACEHOLDER_M437': 255_000,  // Medium
+    'MODEL_PLACEHOLDER_M438': 255_000,  // Low
     // Gemini 4 Argon verified via the installed IDE agent hub, 2026-10-31.
     'MODEL_PLACEHOLDER_M417': 255_000,  // High — live compression limit: 256,000
     'MODEL_PLACEHOLDER_M418': 255_000,  // Medium
@@ -77,6 +84,10 @@ let modelDisplayNames: Record<string, string> = {};
 let responseModelAliases: Record<string, string> = {
     // Dedicated image model, verified from imageGenerationModelIds (2026-10-31).
     'gemini-3.1-flash-image': 'MODEL_PLACEHOLDER_M21',
+    // Gemini 4 Carbon aliases (live GetUserStatus + GetAvailableModels, 2026-11-11).
+    'gemini-4-carbon-high': 'MODEL_PLACEHOLDER_M427',
+    'gemini-4-carbon-medium': 'MODEL_PLACEHOLDER_M437',
+    'gemini-4-carbon-low': 'MODEL_PLACEHOLDER_M438',
     // Gemini 4 Argon aliases (live GetUserStatus + GetAvailableModels, 2026-10-31).
     'gemini-4-argon-high': 'MODEL_PLACEHOLDER_M417',
     'gemini-4-argon-medium': 'MODEL_PLACEHOLDER_M418',
@@ -125,7 +136,10 @@ let responseModelAliases: Record<string, string> = {
 let showModelShortId = false;
 
 const KNOWN_QUOTA_POOLS: Record<string, string> = {
-    // Gemini pool — Argon, Flash and Pro use the Google provider pool.
+    // Gemini pool — Carbon, Argon, Flash and Pro use the Google provider pool.
+    'MODEL_PLACEHOLDER_M427': 'gemini',
+    'MODEL_PLACEHOLDER_M437': 'gemini',
+    'MODEL_PLACEHOLDER_M438': 'gemini',
     'MODEL_PLACEHOLDER_M417': 'gemini',
     'MODEL_PLACEHOLDER_M418': 'gemini',
     'MODEL_PLACEHOLDER_M419': 'gemini',
@@ -186,6 +200,9 @@ const ZH_MODEL_NAME_ALIASES: Record<string, string> = {
 
 const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M21': 'Gemini 3.1 Flash Image',
+    'MODEL_PLACEHOLDER_M427': 'Gemini 4 Carbon (High)',
+    'MODEL_PLACEHOLDER_M437': 'Gemini 4 Carbon (Medium)',
+    'MODEL_PLACEHOLDER_M438': 'Gemini 4 Carbon (Low)',
     'MODEL_PLACEHOLDER_M417': 'Gemini 4 Argon (High)',
     'MODEL_PLACEHOLDER_M418': 'Gemini 4 Argon (Medium)',
     'MODEL_PLACEHOLDER_M419': 'Gemini 4 Argon (Low)',
@@ -265,10 +282,10 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
     const placeholderMatch = idLower.match(/^model_placeholder_(m\d+)$/);
     if (placeholderMatch) {
         const num = placeholderMatch[1];
-        // Argon and the current 3.8 Flash picker use a 256K compression limit
+        // Carbon, Argon and the current 3.8 Flash picker use a 256K compression limit
         // and 50K trigger (live agent hub, 2026-10-31). Older Flash profiles
         // and the archived M322 tiered router retain their verified 140K trigger.
-        if (['m417', 'm418', 'm419', 'm318', 'm319', 'm320'].includes(num)) {
+        if (['m427', 'm437', 'm438', 'm417', 'm418', 'm419', 'm318', 'm319', 'm320'].includes(num)) {
             return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
         }
         // Claude 5.5 uses adaptive thinking and a 1M native window, with a 256K
@@ -309,9 +326,9 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
         return { cpLimit: 0, cpThreshold: 0, maxTokens: 0, supportsThinking: false };
     }
 
-    // Only verified Argon and current Flash picker variants get this profile; versions
+    // Only verified Carbon/Argon and current Flash picker variants get this profile; versions
     // must not fall into a Flash/Pro guess or match Gemini 40 by prefix.
-    if (/^gemini[\s_-]+4[\s_-]+argon(?:$|[\s_(-])/.test(idLower)
+    if (GEMINI_4_NAME_PATTERN.test(idLower.trim().replace(/（/g, '(').replace(/）/g, ')'))
         || /^gemini[\s_-]+3[._-]8[\s_-]+flash[\s_-]*\(?\s*(?:high|medium|low)\s*\)?$/.test(idLower)) {
         return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
     }
@@ -456,13 +473,16 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
         const offset = tier === 'low' || tier === '低' ? 0 : tier === 'high' || tier === '高' ? 2 : 1;
         return `MODEL_PLACEHOLDER_M${(claude55[1].toLowerCase() === 'opus' ? 400 : 403) + offset}`;
     }
-    // Argon effort is part of its identity. A shared family responseModel must
+    // Gemini 4 effort is part of its identity. A shared family responseModel must
     // remain unassigned: guessing a tier would merge Low/Medium/High telemetry.
-    const argon = clean.replace(/[（]/g, '(').replace(/[）]/g, ')').match(
-        /^gemini[\s_-]+4[\s_-]+argon[\s_-]*\(?\s*(low|medium|high|低|中|高)\s*\)?$/i,
-    );
-    if (argon) {
-        const tier = argon[1].toLowerCase();
+    const gemini4 = clean.replace(/[（]/g, '(').replace(/[）]/g, ')').match(GEMINI_4_NAME_PATTERN);
+    if (gemini4 && (gemini4[2] || gemini4[3])) {
+        const tier = (gemini4[2] || gemini4[3]).toLowerCase();
+        if (gemini4[1].toLowerCase() === 'carbon') {
+            return tier === 'high' || tier === '高' ? 'MODEL_PLACEHOLDER_M427'
+                : tier === 'medium' || tier === '中' ? 'MODEL_PLACEHOLDER_M437'
+                : 'MODEL_PLACEHOLDER_M438';
+        }
         return tier === 'high' || tier === '高' ? 'MODEL_PLACEHOLDER_M417'
             : tier === 'medium' || tier === '中' ? 'MODEL_PLACEHOLDER_M418'
             : 'MODEL_PLACEHOLDER_M419';
@@ -522,7 +542,7 @@ export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
     // Bare Claude 5.5 response names identify the shared pool even though they do
     // not identify an effort tier (see resolveModelId).
     if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(modelId.trim())) { return 'premium'; }
-    if (/^gemini[\s_-]+4[\s_-]+argon$/i.test(modelId.trim())) { return 'gemini'; }
+    if (/^gemini[\s_-]+4[\s_-]+(?:carbon|argon)$/i.test(modelId.trim())) { return 'gemini'; }
     // KNOWN_QUOTA_POOLS is keyed by placeholder ID, but callers also hold catalog model_ids
     // ('gemini-3.7-flash-high') and display labels ('Gemini 3.7 Flash (High)'). Without this
     // normalization those forms silently fall through to the resetTime branch — and resetTime is a
@@ -684,8 +704,11 @@ export function registerResponseModelAlias(responseModel: string, placeholderId:
         return;
     }
     if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(responseKey)
-        || /^gemini[\s_-]+4[\s_-]+argon$/i.test(responseKey)) { return; }
-    const existing = ownValue(responseModelAliases, responseKey);
+        || /^gemini[\s_-]+4[\s_-]+(?:carbon|argon)$/i.test(responseKey)) { return; }
+    // Resolve all known spellings before learning a telemetry alias. Checking
+    // only the raw key lets case/localization variants override a known effort.
+    // Live labels retain the resolver's precedence during a platform renumber.
+    const existing = resolveModelId(responseKey);
     if (existing && existing !== target) {
         // responseModel can be less stable than chatModel.model; do not let one
         // conflicting sample remap all future response-only records.
@@ -743,6 +766,48 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         supportsThinking: false,
         cpLimit: 0,
         cpThreshold: 0,
+    },
+    // Gemini 4 Carbon: live agent hub GetAvailableModels, 2026-11-11.
+    // Effort IDs are not contiguous; output capacity is 262,144 for every tier.
+    // No fixed thinkingBudget or adaptive-thinking flag was returned.
+    'MODEL_PLACEHOLDER_M427': {
+        modelId: 'gemini-4-carbon-high',
+        placeholderId: 'MODEL_PLACEHOLDER_M427',
+        displayName: 'Gemini 4 Carbon (High)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 262144,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        thinkingLevel: 3,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M437': {
+        modelId: 'gemini-4-carbon-medium',
+        placeholderId: 'MODEL_PLACEHOLDER_M437',
+        displayName: 'Gemini 4 Carbon (Medium)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 262144,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        thinkingLevel: 2,
+        cpLimit: 256000,
+        cpThreshold: 50000,
+    },
+    'MODEL_PLACEHOLDER_M438': {
+        modelId: 'gemini-4-carbon-low',
+        placeholderId: 'MODEL_PLACEHOLDER_M438',
+        displayName: 'Gemini 4 Carbon (Low)',
+        apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576,
+        maxOutputTokens: 262144,
+        thinkingBudget: 0,
+        supportsThinking: true,
+        thinkingLevel: 1,
+        cpLimit: 256000,
+        cpThreshold: 50000,
     },
     // Gemini 4 Argon: live agent hub GetAvailableModels, 2026-10-31.
     // No fixed thinkingBudget or adaptive-thinking flag was returned.
@@ -1139,8 +1204,11 @@ export function updateModelSpec(placeholderId: string, spec: Partial<ModelSpec>)
 
 export function getModelSpecs(): ModelSpec[] {
     // Mirrors the platform's own "Recommended" sort group (GetUserStatus → clientModelSorts),
-    // newest generation first. Argon identities live-verified 2026-10-31.
+    // newest generation first. Carbon identities live-verified 2026-11-11.
     const order = [
+        'MODEL_PLACEHOLDER_M427',
+        'MODEL_PLACEHOLDER_M437',
+        'MODEL_PLACEHOLDER_M438',
         'MODEL_PLACEHOLDER_M417',
         'MODEL_PLACEHOLDER_M418',
         'MODEL_PLACEHOLDER_M419',

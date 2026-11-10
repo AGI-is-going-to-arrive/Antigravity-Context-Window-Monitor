@@ -19,7 +19,7 @@
 
 ---
 
-**1.16.19：** 新增 Gemini 4 Argon 三档及按日期生效的官方价格，核对当前 13 个聊天档位，展示独立图片生成目录，并修复 Antigravity IDE 的 `agy` hub 发现问题。已通过本地编译及 635 项测试、Windows/macOS/Linux 原生 CI，并在 macOS IDE 实测全部 13 个聊天档位和一次图片工作流。详见[发布说明与验收范围](docs/releases/1.16.19.md#验证)，其中说明图片费用遥测限制。[CI 工作流](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/workflows/verify.yml) 覆盖 Windows、macOS、Linux 的编译和回归测试；原生 IDE 实机结果单独记录。
+**1.16.20：** 新增 Gemini 4 Carbon Low / Medium / High，采用 IDE 实测身份、262,144 token 最大输出及按日期生效的官方 API 价格。模型配额展示 **Gemini** 和 **Claude / GPT** 共享池，模型信息、用量统计及价格仍保留每档身份。本地编译及 **46 个文件中的 753 项测试**通过；已安装的 macOS 插件通过实时元数据、六次 Carbon 请求、语言/主题和共享池 UI 检查。托管运行器账号锁定导致三个[原生 CI 任务](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/actions/runs/42900949800)均未启动。浏览器 fixture 结果与 Windows/Linux 原生测试限制详见[发布验收](docs/releases/1.16.20.md#验证)。
 
 ## 📚 技术细节
 
@@ -63,7 +63,7 @@
     语言服务器不可用时，轮询间隔按 `baseInterval × 2^n` 递增，采用双上限策略：发现失败上限 15 秒（5s → 10s → 15s，快速检测 LS），RPC 失败上限 60 秒。重连后立即恢复正常间隔。
 
 * **📊 WebView 监控面板** *(v1.10.1 新增)*
-    点击状态栏打开侧边面板全景仪表盘。展示账户计划与等级、Prompt / Flow Credits（额度）余额、每模型配额使用量（带颜色进度条）、功能开关、团队配置（MCP Servers、Auto-Run 等）、Google AI 额度。所有数据来自已有的 `GetUserStatus` API——零额外网络请求。
+    点击状态栏打开侧边面板全景仪表盘。展示账户计划与等级、Prompt / Flow Credits（额度）余额、模型共享配额池（带颜色进度条）、功能开关、团队配置（MCP Servers、Auto-Run 等）、Google AI 额度。所有数据来自已有的 `GetUserStatus` API——零额外网络请求。
     * **🛡️ 隐私遮罩**：面板顶部盾牌按钮可遮罩姓名和邮箱，开关状态跨刷新持久化。
     * **📂 可折叠区域**：次要信息（计划限制、功能开关、团队配置、Google AI 额度）默认折叠，展开/收起状态持久化。
 
@@ -94,19 +94,24 @@
 
 ### 当前 IDE 模型元数据
 
-2026-10-31 本地 `GetUserStatus` 与 `GetAvailableModels` 响应包含 **13 个聊天档位**。下表数值**由 IDE 报告**，不代表公开 API 的限额；“压缩上限”和“检查点阈值”是不同设置。
+2026-11-11 本地 `GetUserStatus` 与 `GetAvailableModels` 响应包含 **16 个聊天档位**。下表数值**由 IDE 报告**，不代表公开 API 的限额；“压缩上限”和“检查点阈值”是不同设置。
 
 | 聊天模型 | 档位与内部 ID | 模型上下文 | 最大输出 | 压缩上限 | 检查点阈值 |
 | --- | --- | ---: | ---: | ---: | ---: |
+| Gemini 4 Carbon | Low / Medium / High：`M438` / `M437` / `M427` | 1,048,576 | 262,144 | 256,000 | 50,000 |
 | Gemini 4 Argon | Low / Medium / High：`M419` / `M418` / `M417` | 1,048,576 | 65,536 | 256,000 | 50,000 |
 | Gemini 3.8 Flash | Low / Medium / High：`M320` / `M319` / `M318` | 1,048,576 | 65,536 | 256,000 | 50,000 |
 | Claude Opus 5.5 | Low / Medium / High：`M400` / `M401` / `M402` | 1,000,000 | 128,000 | 256,000 | 50,000 |
 | Claude Sonnet 5.5 | Low / Medium / High：`M403` / `M404` / `M405` | 1,000,000 | 128,000 | 256,000 | 50,000 |
 | GPT-OSS 120B | Medium：`MODEL_OPENAI_GPT_OSS_120B_MEDIUM` | 131,072 | 32,768 | 80,000 | 50,000 |
 
-`Mxxx` 是 `MODEL_PLACEHOLDER_Mxxx` 的简写；Argon catalog ID 为 `gemini-4-argon-{low,medium,high}`。Gemini 使用 1 / 2 / 3 思考力度，不提供固定预算；Claude 为相应力度的自适应思考；GPT-OSS 报告 8,192 token 思考预算。Gemini 最小支持预算 32 不等于每次请求的固定预算。当前 Flash 3.8 三档不再沿用早期的动态/4,000/1,000 预算。实时参数优先于静态兜底；Argon、Flash 3.8、Claude 5.5 在 256,000 实时压缩上限到达前使用 255,000。
+`Mxxx` 是 `MODEL_PLACEHOLDER_Mxxx` 的简写；Carbon 与 Argon catalog ID 分别为 `gemini-4-carbon-{low,medium,high}` 和 `gemini-4-argon-{low,medium,high}`。Gemini 使用 1 / 2 / 3 思考力度，不提供固定预算；Claude 为相应力度的自适应思考；GPT-OSS 报告 8,192 token 思考预算。返回的最小思考预算属于能力边界，不等于每次请求的固定预算。当前 Flash 3.8 三档不再沿用早期的动态/4,000/1,000 预算。实时参数优先于静态兜底；Carbon、Argon、Flash 3.8、Claude 5.5 在 256,000 实时压缩上限到达前使用 255,000。
 
-档位身份在中英文标签、上下文追踪、GM 数据和历史用量中保持独立。Argon 与 Flash 共用聊天 Gemini 配额池；显示代表依次优先当前模型、实时推荐模型和可用世代顺序。
+档位身份在中英文标签、上下文追踪、GM 数据和历史用量中保持独立；仅返回家族名不会抹掉已知档位。Carbon、Argon 与 Flash 共用聊天 Gemini 配额池；显示代表依次优先当前模型、实时推荐模型和可用世代顺序，无当前或推荐模型时 Carbon 排在 Argon 前。
+
+`Gemini 4 CarbonHigh`、未配对括号及不支持的档位名称不会误套 Carbon 身份或家族价格。冲突的学习别名不能通过大写形式或中文标签覆盖已注册档位。
+
+**模型配额**将当前 16 个聊天档位合并为两张共享池卡片：**Gemini** 包含 Carbon、Argon、Flash，共九档；**Claude / GPT** 包含 Opus、Sonnet、GPT-OSS，共七档。每张卡片列出实际可用的模型家族和思考档位。配额不求和、不取平均：数据不一致时展示范围及逐模型明细，缺失数据明确标注。未知模型和图片生成身份与两个已知聊天池分开。**模型信息**、调用统计及计价仍独立保留每档身份。安装后的 IDE 已在英文、中文、双语模式核实两池、六行家族及三张 Carbon 信息卡片。
 
 ### 图片生成模型
 
@@ -128,14 +133,14 @@ IDE 的 `imageGenerationModelIds` 列表独立于聊天 picker，明确提供 **
 
 ### API 等价计价
 
-内置 [Google Standard API 的 Gemini 4 Argon 官方费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) 适用于三个思考档位，单位为美元/百万 token：
+内置 Google Standard API 的 [Gemini 4 Carbon 官方费率](https://aistudio.google.com/docs/pricing#gemini-4-carbon)（2026-11-11 核实）及 [Gemini 4 Argon 官方费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) 适用于三个思考档位，单位为美元/百万 token：
 
 | 调用日期（UTC） | 输入 | 输出，含思考 | 隐式缓存读取 |
 | --- | ---: | ---: | ---: |
 | 截至 2026-11-30 | $2.00 | $10.00 | $0.10 |
 | 自 2026-12-01 起 | $4.00 | $20.00 | $0.20 |
 
-计价使用每次调用的 UTC 时间戳，因此跨过 12 月调价边界后，历史调用仍保留当时费率。已归档费用与自定义覆盖保持不变。Argon 仅支持隐式缓存，不添加显式缓存写入费。这些是 Standard API 参考估算，与 Antigravity 订阅收费和积分分开；不使用 Batch、Flex 或 Priority 价格。
+计价使用每次调用的 UTC 时间戳，因此跨过 12 月调价边界后，历史调用仍保留当时费率。已归档费用与自定义覆盖保持不变。Carbon 与 Argon 虽然公布费率相同，仍保留独立计价身份及家族/档位覆盖。两者仅支持隐式缓存，不添加显式缓存写入费。未知模型继续显示**价格待确认**，不视为免费。这些是 Standard API 参考估算，与 Antigravity 订阅收费和积分分开；不使用 Batch、Flex 或 Priority 价格。
 
 图片生成的 [Google Standard API 参考费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-image) 为输入 $0.50/百万 token、文本/思考输出 $3/百万 token、图片输出 $60/百万 token。官方列出的图片输出等价费用为 512 px / 1K / 2K / 4K 各 $0.045 / $0.067 / $0.101 / $0.151。实际 IDE 生图测试未返回 M21 独立的 Token、积分或 GM 用量。因此成本页将已观测金额标为**未计入图片生成费的已知小计**，并提供官方参考链接，不把生图视为免费。详见[发布验收](docs/releases/1.16.19.md#验证)。
 
@@ -154,7 +159,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 1. **安装**:
    * **OpenVSX**: 直接从 [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装。
-   * **手动安装**: 通过"扩展 → 从 VSIX 安装"将 `.vsix` 文件安装到 Antigravity IDE。
+   * **手动安装**: 通过“扩展 → 从 VSIX 安装”安装 `antigravity-context-monitor-1.16.20.vsix`，随后重载窗口，并在扩展详情中确认版本 **1.16.20**。
 2. **查看状态**: 右下角状态栏显示当前上下文使用情况；没有活跃对话时显示**无活跃会话**，不再沿用历史模型的旧上限。首次模型回复前即可从用户输入配置识别已选择的思考档位。
 3. **悬停详情**: 将鼠标悬停在状态栏项上，查看详细信息（模型、输入/输出 Token、剩余容量、压缩状态、图片生成步骤、每模型配额摘要，以及最近 checkpoint 的影子模型标识等）。
 
@@ -182,9 +187,11 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
    ![成本标签页](src/images/cost.png)
 
-   **模型 (Models)** — 实时聊天模型的额度/重置状态，以及独立的图片生成目录。卡片区分 IDE 报告的模型上下文、最大输出、压缩上限、检查点阈值和思考状态；图片压缩设置显示不适用。支持窄面板、亮色/暗色/高对比度主题和中文、英文、双语显示。
+   **模型 (Models)** — Gemini 和 Claude / GPT 共享池卡片汇总额度/重置状态，列出实际可用的家族与档位；模型信息保留独立聊天档位与图片生成目录。信息卡片区分 IDE 报告的模型上下文、最大输出、压缩上限、检查点阈值和思考状态；图片压缩设置显示不适用。支持窄面板、亮色/暗色/高对比度主题和中文、英文、双语显示。
 
-   ![v1.16.19 模型信息卡片](src/images/model.png)
+   ![v1.16.20 共享配额池与 Carbon 模型信息](src/images/model.png)
+
+   截图中的 80% 配额为示例数据。
 
    **日历 (Calendar)** — 按日期组织的历史使用数据，包含每周期成本和 Token 分解。
 
@@ -222,7 +229,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 > [!IMPORTANT]
 > **当前 Antigravity IDE 的 "LS not found"**
-> 新版 IDE 使用 `agy --hub` 后端，不再运行名为 `language_server_*` 的进程。1.16.19 兼容两种架构，支持 `--csrf_token=value` 和空格分隔参数，先检查声明的 hub 端口，再使用平台套接字发现。安装 `antigravity-context-monitor-1.16.19.vsix` 后重载窗口。后端已连接但没有已加载对话时显示**无活跃会话**，不是发现失败；IDE 中仍可能保存着历史对话。未打开文件夹也不代表后端不可用。
+> 新版 IDE 使用 `agy --hub` 后端，不再运行名为 `language_server_*` 的进程。监控器自 1.16.19 起兼容两种架构，支持 `--csrf_token=value` 和空格分隔参数，先检查声明的 hub 端口，再使用平台套接字发现。安装 `antigravity-context-monitor-1.16.20.vsix` 后重载窗口。后端已连接但没有已加载对话时显示**无活跃会话**，不是发现失败；IDE 中仍可能保存着历史对话。未打开文件夹也不代表后端不可用。
 >
 > **Windows 发现诊断**
 > 若状态栏卡在 `LS not found`，请打开 **Output → "Antigravity Context Monitor"**，查看 `PATH check:` 那一行——扩展现在会记录究竟是哪一步发现失败。自 v1.16.13 起，扩展以 `%SystemRoot%` 绝对路径调用 `wmic`/`powershell.exe`/`netstat`，因此 Extension Host 的 `PATH` 被裁剪（例如 Win11 24H2+ 移除 WMIC 后缺少 `System32\wbem`）不再导致发现失败。
@@ -260,4 +267,4 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.16.19 — [发布说明](docs/releases/1.16.19.md)
+**版本 / Version**: 1.16.20 — [发布说明](docs/releases/1.16.20.md)

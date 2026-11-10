@@ -2,12 +2,13 @@
 // Builds HTML for the "Profile" tab: Account info, plan limits,
 // and feature/team config. Model-specific content is rendered in Models tab.
 
-import { tBi } from './i18n';
+import { getLanguage, tBi } from './i18n';
 import { ModelConfig, UserStatusInfo, getContextLimit } from './models';
 import { formatResetAbsolute, formatResetCountdown } from './reset-time';
 import { ICON } from './webview-icons';
 import { esc } from './webview-helpers';
 import { getDaysUntilBillingDay } from './billing-day';
+import { groupModelQuotas, type QuotaEffort } from './model-quota';
 
 function formatCreditTypeLabel(creditType: string): string {
     const key = creditType.replace('CREDIT_TYPE_', '');
@@ -196,50 +197,93 @@ function buildAccountSection(userInfo: UserStatusInfo, billingDay?: number): str
         </section>`;
 }
 
+function quotaEffortLabel(effort: QuotaEffort): string {
+    return { low: tBi('Low', '低'), medium: tBi('Medium', '中'), high: tBi('High', '高') }[effort];
+}
+
+function quotaEffortsLabel(efforts: QuotaEffort[]): string {
+    return tBi(
+        efforts.map(e => ({ low: 'Low', medium: 'Medium', high: 'High' })[e]).join(' · '),
+        efforts.map(e => ({ low: '低', medium: '中', high: '高' })[e]).join(' · '),
+    );
+}
+
+function quotaResetLabel(resetTime: string, precise = false): string {
+    const countdown = formatResetCountdown(resetTime);
+    const absolute = formatResetAbsolute(resetTime, { includeSeconds: precise });
+    return countdown ? `${countdown} · ${absolute}` : absolute;
+}
+
+function quotaPercentage(fraction: number): string {
+    return new Intl.NumberFormat(getLanguage() === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 8 }).format(fraction * 100);
+}
+
 export function buildModelQuotaGrid(configs: ModelConfig[]): string {
-    const quotaModels = configs.filter(c => c.quotaInfo);
-    if (quotaModels.length === 0) { return ''; }
+    const groups = groupModelQuotas(configs);
+    if (groups.length === 0) { return ''; }
 
-    const cards = quotaModels.map((c) => {
-        const qi = c.quotaInfo!;
-        const pct = Math.round(qi.remainingFraction * 100);
-        const barColor = pct <= 20 ? 'var(--color-danger)' : pct < 80 ? 'var(--color-warn)' : 'var(--color-ok)';
-
-        let resetLabel = '';
-        if (qi.resetTime) {
-            const countdown = formatResetCountdown(qi.resetTime);
-            const absolute = formatResetAbsolute(qi.resetTime);
-            resetLabel = countdown ? `${countdown} · ${absolute}` : absolute;
+    const cards = groups.map(group => {
+        const minimum = group.minimum;
+        const pct = minimum === null ? null : Number((minimum * 100).toFixed(8));
+        const barColor = pct === null ? 'var(--color-text-dim)' : pct <= 20 ? 'var(--color-danger)'
+            : pct < 80 ? 'var(--color-warn)' : 'var(--color-ok)';
+        const lowLabel = minimum === null ? '' : quotaPercentage(minimum);
+        const highLabel = group.maximum === null ? '' : quotaPercentage(group.maximum);
+        const percentage = pct === null ? tBi('Unknown', '未知') : group.quotaDiffers && lowLabel !== highLabel
+            ? `${lowLabel}–${highLabel}%` : `${lowLabel}%`;
+        // Compare raw readings in the helper; retain a notice when a genuine
+        // difference is smaller than the precision useful in a quota card.
+        const precisionNotice = group.quotaDiffers && lowLabel === highLabel
+            ? `<p class="model-quota-notice">${tBi('Differences are below displayed precision.', '差异小于显示精度。')}</p>` : '';
+        const resetLabel = group.resetDiffers ? tBi('Reset times differ', '重置时间不一致')
+            : group.resetTime ? `${tBi('Reset', '重置')} ${quotaResetLabel(group.resetTime)}`
+                : tBi('Reset time unavailable', '重置时间未知');
+        const members = group.pool ? `<ul class="model-quota-members">${group.members.map(member => `
+            <li><span>${esc(member.label)}</span>${member.efforts.length
+            ? `<span class="model-card-efforts">${esc(quotaEffortsLabel(member.efforts))}</span>` : ''}</li>`).join('')}</ul>`
+            : group.efforts.length ? `<div class="model-card-efforts">${esc(quotaEffortsLabel(group.efforts))}</div>` : '';
+        const notices: string[] = [];
+        if (group.quotaDiffers || group.resetDiffers) { notices.push(tBi('Reported values differ', '上报数值不一致')); }
+        if (group.missingQuota || group.missingReset) {
+            notices.push(tBi('Some quota or reset data is unavailable', '部分配额或重置数据缺失'));
         }
-
-        // Tag badge (e.g. "Fast" / "New")
-        const tagLabel = c.tagTitle ? formatModelTagTitle(c.tagTitle) : '';
-        const tagBadge = tagLabel
-            ? `<span class="model-tag-badge" title="${esc(tagLabel)}">${esc(tagLabel)}</span>` : '';
-
+        const details = notices.length ? `
+                <p class="model-quota-notice">${notices.map(esc).join(' · ')}</p>
+                <details class="model-quota-details">
+                    <summary>${tBi('Readings by effort', '各档位读数')}</summary>
+                    <ul>${group.readings.map(reading => `
+                        <li><span>${esc(reading.effort ? `${reading.familyLabel} (${quotaEffortLabel(reading.effort)})` : reading.label)}</span>
+                            <span>${reading.remaining === null ? tBi('Unknown', '未知') : `${quotaPercentage(reading.remaining)}%`}</span>
+                            <span class="model-quota-reading-reset">${reading.resetTime
+            ? `${tBi('Reset', '重置')} ${esc(quotaResetLabel(reading.resetTime, true))}`
+            : tBi('Reset time unavailable', '重置时间未知')}</span></li>`).join('')}
+                    </ul>${precisionNotice}
+                </details>` : '';
+        const tagLabel = group.tagTitle ? formatModelTagTitle(group.tagTitle) : '';
+        const tagBadge = tagLabel ? `<span class="model-tag-badge" title="${esc(tagLabel)}">${esc(tagLabel)}</span>` : '';
+        const names = [...new Set(group.readings.map(reading => reading.label))].join(' · ');
         return `
-            <div class="model-card">
+            <div class="model-card" data-quota-family="${esc(group.key)}">
                 <div class="model-card-header">
                     <span class="model-card-name">
-                        <span class="model-card-name-text" title="${esc(c.label)}">${esc(c.label)}</span>${tagBadge}
+                        <span class="model-card-name-text" title="${esc(names)}">${esc(group.label)}</span>${tagBadge}
                     </span>
-                    <span class="model-card-pct" style="color:${barColor}">${pct}%</span>
+                    <span class="model-card-pct">${esc(percentage)}</span>
                 </div>
-                <div class="quota-bar-wrap">
-                    <div class="quota-bar" style="width:${pct}%;background:${barColor}"></div>
+                ${members}
+                <div class="quota-bar-wrap" role="progressbar" aria-label="${esc(`${group.label} ${tBi('quota remaining', '剩余配额')}`)}"
+                    aria-valuemin="0" aria-valuemax="100"${pct === null ? '' : ` aria-valuenow="${pct}"`} aria-valuetext="${esc(percentage)}">
+                    ${pct === null ? '' : `<div class="quota-bar" style="width:${pct}%;background:${barColor}"></div>`}
                 </div>
-                <div class="model-card-meta" style="display: flex; align-items: center; justify-content: space-between;">
-                    ${resetLabel ? `<span class="model-card-reset">${tBi('Reset', '重置')} ${resetLabel}</span>` : ''}
-                </div>
+                <div class="model-card-meta"><span class="model-card-reset">${esc(resetLabel)}</span></div>
+                ${details}
             </div>`;
     }).join('');
 
     return `
-        <section class="card">
+        <section class="card model-quota-section">
             <h2>${ICON.bolt} ${tBi('Model Quota', '模型配额')}</h2>
-            <div class="model-grid">
-                ${cards}
-            </div>
+            <div class="model-grid">${cards}</div>
         </section>`;
 }
 

@@ -191,13 +191,17 @@ function pickPoolRepresentative<T extends QuotaSelectable>(members: T[], current
     })[0];
 }
 
-/** "Gemini 4 Argon" → 4000; "Gemini 3.8 Flash" → 3008. Parameter counts are not versions. */
+/** Numeric generation first; verified Carbon succeeds Argon within Gemini 4. */
 function generationScore(label: string): number {
     const m = /(?:^|\s)(\d+)(?:\.(\d+))?(?=\s|$|\()/.exec(label);
     if (!m) {
         return 0;
     }
-    return Number(m[1]) * 1000 + Number(m[2] || 0);
+    // A fractional tie-break keeps a future 4.1 ahead of Carbon. Match complete
+    // names and known effort labels so Carbonated/Highest cannot inherit it.
+    const clean = label.trim().replace(/（/g, '(').replace(/）/g, ')');
+    const carbon = /^gemini\s+4\s+carbon(?:\s+(?:low|medium|high|低|中|高)|\s*\(\s*(?:low|medium|high|低|中|高)\s*\))?(?:\s+\(M\d+\))?$/i.test(clean);
+    return Number(m[1]) * 1000 + Number(m[2] || 0) + (carbon ? 0.5 : 0);
 }
 
 /** Suffix marking how many models a collapsed pool row stands for, e.g. " · 11". */
