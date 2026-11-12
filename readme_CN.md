@@ -21,6 +21,8 @@
 
 **1.16.21：** 支持 Gemini 4 Hydrogen 四档及 Orchestrator 协调/执行模型，包含独立身份、上下文、配额、计价和三语言 UI；本次补充真实委派、重复 executionId、上下文切换与历史保留测试。完整结果及平台范围见[发布验收](docs/releases/1.16.21.md#验证)。
 
+**验证方式：** GitHub 自动编译/测试 CI 已于 2026-11-13 按维护者要求停用并移除；保留本地 `npm run compile`、`npm test` 和 IDE 安装验收。历史 CI 失败/取消记录不代表当前构建通过托管检查。
+
 ## 📚 技术细节
 
 👉 **[阅读技术实现说明](docs/technical_implementation.md)**

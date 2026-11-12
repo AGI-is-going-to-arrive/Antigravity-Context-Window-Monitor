@@ -21,6 +21,8 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 **1.16.21:** Supports all four Gemini 4 Hydrogen efforts and Orchestrator coordinator/execution models, including separate identities, context, quota, pricing and three-language UI. This amendment adds real delegation, reused execution-ID, context-transition and history-retention verification. See [release validation](docs/releases/1.16.21.md#validation) for results and platform scope.
 
+**Validation:** GitHub build/test CI was disabled and removed at the maintainer's request on 2026-11-13. Local `npm run compile`, `npm test`, and installed-IDE validation remain available. Historical failed/cancelled CI runs are not passing checks for the current build.
+
 ## 📚 Technical Details
 
 👉 **[Read the Technical Implementation Guide](docs/technical_implementation.md)**
