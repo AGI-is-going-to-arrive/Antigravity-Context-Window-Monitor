@@ -4,23 +4,27 @@
 
 ### English
 
+- **Orchestrator amendment:** Registers M667 coordinator and hidden M669 worker, exposes localized delegation metadata, keeps unverified prices independently editable, and fixes shared execution-ID timestamp/enrichment ambiguity and false compression across underlying model changes. Three additional real IDE requests produced nine distinct calls, including actual 4+3 coordinator/worker delegation; synthetic code passed five tests. Adds 24 route/pricing browser checks, for 174 total. Reinstall this amended 1.16.21 VSIX; the same version number now identifies a revised artifact.
+
 Adds **Gemini 4 Hydrogen Low / Medium / High / Extra**, retaining existing models and history.
 
 - **Verified identity and metadata:** Low / Medium / High / Extra map to `M527` / `M526` / `M525` / `M528`. The fourth tier is `gemini-4-hydrogen-xhigh`, labeled XHigh by the backend and Extra in the IDE menu; its thinking level is **100**. All four report 1,048,576 context, 262,144 maximum output, 256,000 compression, and 50,000 checkpoint-threshold tokens.
-- **Tier and quota boundaries:** Extra/XHigh and localized aliases retain one fourth-tier identity. Family-only responses preserve the requested effort; malformed names and conflicting learned aliases cannot acquire a known tier or price. Hydrogen joins the Gemini shared pool, while Orchestrator stays independent. Current account catalogs, empty states, per-tier history, and custom prices remain distinct.
+- **Tier and quota boundaries:** Extra/XHigh and localized aliases retain one fourth-tier identity. Family-only responses preserve the requested effort; malformed names and conflicting learned aliases cannot acquire a known tier or price. Hydrogen and Orchestrator share the Gemini allowance; coordinator and worker accounting remains distinct. Current account catalogs, empty states, per-tier history, and custom prices remain distinct.
 - **Live rename and quota guards:** Account-specific display names retain verified built-in prices without overriding custom display-name rates. Dynamic shared-pool inference requires both an effort-specific branded catalog ID and matching provider; `gemini-pro-orchestrator` remains separate without excluding valid future or renumbered tiers.
 - **Reference pricing and i18n:** [Official Hydrogen Standard API prices](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen), checked 2026-11-13, are $1.50 input / $7.50 output including thinking / $0.075 implicit cache reads per million tokens. No Carbon/Argon date schedule or explicit cache-write fee applies. Quota efforts support English, Chinese, and bilingual labels, including Extra / 超高.
-- **Release validation:** The rebuilt 1.16.21 package, installed IDE tests, automated regressions, browser fixtures, and platform limitations are tracked in the English-then-Chinese [release notes](docs/releases/1.16.21.md#validation). Compilation and 859 tests in 49 files passed; 47 installed JavaScript files matched the build, and live checks covered 21 chat entries, one image entry, and eight real Hydrogen replies, including Low → Extra → High → Medium in one conversation. Installed-code browser fixtures passed 36 display, 9 ordinary corner, 60 interaction, 21 header, and 24 quota-edge checks. Native three-language and light/dark UI checks passed. Native Windows/Linux IDE and hosted CI were not run for this local build; platform-mocked regression coverage and the configured matrix are reported separately.
+- **Release validation:** The rebuilt 1.16.21 package, installed IDE tests, automated regressions, browser fixtures, and platform limitations are tracked in the English-then-Chinese [release notes](docs/releases/1.16.21.md#validation). Compilation and 899 tests in 50 files passed; 47 installed JavaScript files matched the build, and live checks covered 21 chat entries, one image entry, and eight real Hydrogen replies, including Low → Extra → High → Medium in one conversation. Installed-code browser fixtures passed 36 display, 9 ordinary corner, 60 interaction, 21 header, and 24 quota-edge checks. Native three-language and light/dark UI checks passed. Native Windows/Linux IDE and hosted CI were not run for this local build; platform-mocked regression coverage and the configured matrix are reported separately.
 
 ### 中文
+
+- **Orchestrator 补充：** 注册 M667 协调及隐藏 M669 执行模型，显示本地化委派关系，未知费率分别自定义；修复共享 execution ID 的时间/关联歧义及底层模型切换误报压缩。新增三个真实 IDE 请求共九次调用，包含实际 4+3 协调/执行委派，合成代码通过五项测试；增加 24 项委派/价格浏览器检查，共 174 项。请重新安装修正版 1.16.21；版本号相同，安装包已更新。
 
 新增 **Gemini 4 Hydrogen Low / Medium / High / Extra**，保留既有模型与历史。
 
 - **实测身份与元数据：** Low / Medium / High / Extra 对应 `M527` / `M526` / `M525` / `M528`。第四档 catalog 为 `gemini-4-hydrogen-xhigh`，后端称 XHigh、IDE 菜单称 Extra，思考力度为 **100**。四档上下文 1,048,576、最大输出 262,144、压缩上限 256,000、检查点阈值 50,000 token。
-- **档位与配额边界：** Extra/XHigh 与本地化别名保持同一第四档身份；家族响应保留请求力度，异常名称与冲突学习别名不能误套已知档位或价格。Hydrogen 加入 Gemini 共享池，Orchestrator 保持独立。保留账号实际目录、空态、逐档历史与自定义价格的独立性。
+- **档位与配额边界：** Extra/XHigh 与本地化别名保持同一第四档身份；家族响应保留请求力度，异常名称与冲突学习别名不能误套已知档位或价格。Hydrogen 与 Orchestrator 均归入 Gemini 共享池，协调/执行调用仍独立记账。保留账号实际目录、空态、逐档历史与自定义价格的独立性。
 - **实时改名与配额保护：** 账号独立显示名仍使用已验证内置价格，同时保留自定义显示名费率优先级。动态共享池推断须同时满足家族明确档位 catalog ID 和匹配提供商；`gemini-pro-orchestrator` 保持独立，正规未来档位或重新编号身份继续兼容。
 - **参考计价与国际化：** 2026-11-13 核实的 [Hydrogen 官方 Standard API 价格](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen) 为每百万 token 输入 $1.50 / 含思考输出 $7.50 / 隐式缓存读取 $0.075，不套用 Carbon/Argon 日期费率或显式缓存写入费。额度档位支持英文、中文和双语，包含 Extra / 超高。
-- **发布验收：** 重新打包的 1.16.21、安装后 IDE 测试、自动回归、浏览器 fixtures 与平台限制统一记录在先英文后中文的[发布说明](docs/releases/1.16.21.md#验证)。编译与 49 个文件的 859 项测试通过，47 个安装 JavaScript 文件与构建一致；实时核实 21 个聊天条目、一个图片条目及八次真实 Hydrogen 回复（含同会话 Low → Extra → High → Medium）。安装代码浏览器 fixtures 通过 36 项展示、9 项普通边界、60 项交互、21 项顶部和 24 项配额边界检查；原生三语言及浅/深色 UI 检查通过。本次本地构建未运行 Windows/Linux 原生 IDE 或托管 CI，平台 mock 回归覆盖与已配置矩阵分别说明。
+- **发布验收：** 重新打包的 1.16.21、安装后 IDE 测试、自动回归、浏览器 fixtures 与平台限制统一记录在先英文后中文的[发布说明](docs/releases/1.16.21.md#验证)。编译与 50 个文件的 899 项测试通过，47 个安装 JavaScript 文件与构建一致；实时核实 21 个聊天条目、一个图片条目及八次真实 Hydrogen 回复（含同会话 Low → Extra → High → Medium）。安装代码浏览器 fixtures 通过 36 项展示、9 项普通边界、60 项交互、21 项顶部和 24 项配额边界检查；原生三语言及浅/深色 UI 检查通过。本次本地构建未运行 Windows/Linux 原生 IDE 或托管 CI，平台 mock 回归覆盖与已配置矩阵分别说明。
 
 ## [1.16.20] - 2026-11-11
 

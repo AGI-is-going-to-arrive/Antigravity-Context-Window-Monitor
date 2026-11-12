@@ -622,9 +622,13 @@ function extractTrajectoryCallTimes(steps: unknown): TrajectoryCallTime[] {
 
 function pickTrajectoryTimeForCall(call: GMCallEntry, times: TrajectoryCallTime[]): string {
     const executionMatches = call.executionId ? times.filter(time => time.executionId === call.executionId) : [];
-    const matches = executionMatches.length > 0 ? executionMatches : times.filter(time =>
-        call.stepIndices.includes(time.stepIndex)
-        && (!call.executionId || !time.executionId || call.executionId === time.executionId));
+    // Orchestrator reuses one executionId across several planner calls. Intersect
+    // that workflow identity with step identity before considering a unique-ID fallback.
+    const executionSteps = executionMatches.filter(time => call.stepIndices.includes(time.stepIndex));
+    const matches = executionMatches.length > 0
+        ? (executionSteps.length > 0 ? executionSteps : call.stepIndices.length === 0 ? executionMatches : [])
+        : times.filter(time => call.stepIndices.includes(time.stepIndex)
+            && (!call.executionId || !time.executionId || call.executionId === time.executionId));
     // Multiple distinct planner timestamps are ambiguous. Do not assign a call
     // to a day merely because a nearby step happens to be the first in an array.
     const timestamps = new Set(matches.map(time => time.timestamp));
@@ -674,7 +678,7 @@ export function applyTrajectoryModelHints(calls: GMCallEntry[], steps: unknown):
 
 export function buildGMMatchKey(call: Pick<GMCallEntry, 'executionId' | 'stepIndices' | 'model' | 'responseModel'>): string {
     if (call.executionId) {
-        return `exec:${call.executionId}`;
+        return `exec:${call.executionId}|steps:${[...new Set(call.stepIndices)].sort((a, b) => a - b).join(',')}`;
     }
     return `steps:${call.stepIndices.join(',')}|model:${call.responseModel || call.model}`;
 }
@@ -739,12 +743,25 @@ export function mergeGMCallEntries(primary: GMCallEntry, fallback: GMCallEntry):
 
 export function maybeEnrichCallsFromTrajectory(calls: GMCallEntry[], embeddedCalls: GMCallEntry[]): GMCallEntry[] {
     if (calls.length === 0 || embeddedCalls.length === 0) { return calls; }
-    const embeddedByKey = new Map<string, GMCallEntry>();
+    const embeddedByKey = new Map<string, GMCallEntry[]>();
     for (const call of embeddedCalls) {
-        embeddedByKey.set(buildGMMatchKey(call), call);
+        const key = buildGMMatchKey(call);
+        embeddedByKey.set(key, [...(embeddedByKey.get(key) || []), call]);
     }
     const merged = calls.map(call => {
-        const embedded = embeddedByKey.get(buildGMMatchKey(call));
+        const exact = embeddedByKey.get(buildGMMatchKey(call)) || [];
+        const hasCallIdentity = call.stepIndices.length > 0 || (call.executionId
+            && calls.filter(candidate => candidate.executionId === call.executionId).length === 1);
+        let embedded = exact.length === 1 && hasCallIdentity ? exact[0] : undefined;
+        if (!embedded && exact.length === 0 && call.executionId) {
+            const candidates = embeddedCalls.filter(candidate => candidate.executionId === call.executionId);
+            const overlapping = candidates.filter(candidate => candidate.stepIndices.some(index => call.stepIndices.includes(index)));
+            if (overlapping.length === 1) { embedded = overlapping[0]; }
+            // Older payloads may omit steps. An execution ID is sufficient only
+            // when it identifies one call on both sides, never an entire workflow.
+            else if (candidates.length === 1 && calls.filter(candidate => candidate.executionId === call.executionId).length === 1
+                && (call.stepIndices.length === 0 || candidates[0].stepIndices.length === 0)) { embedded = candidates[0]; }
+        }
         return embedded ? mergeGMCallEntries(call, embedded) : call;
     });
 

@@ -42,6 +42,20 @@ function providerLabel(provider: string): string {
     return labels[key] || key.replace(/_/g, ' ') || tBi('Provider not available', '暂无提供商信息');
 }
 
+/** A configured route is a capability, not proof of per-request delegation. */
+function orchestrationDescription(spec: ModelSpec): string {
+    const target = spec.executionModelId;
+    if (!target || !/^MODEL_[A-Z0-9_]+$/.test(target) || target.includes('UNSPECIFIED')
+        || target === spec.placeholderId) { return ''; }
+    const worker = getModelSpecs().find(candidate => candidate.placeholderId === target);
+    return `<div class="spec-orchestration">
+        <p><strong>${tBi('Configured execution model', '配置的执行模型')}:</strong> ${esc(worker?.displayName || target)}</p>
+        <p><code>${esc(worker?.modelId || target)}</code></p>
+        ${worker ? `<p>${tBi('Execution context / max output', '执行模型上下文 / 最大输出')}: ${formatTokens(worker.maxTokens)} / ${formatTokens(worker.maxOutputTokens)}</p>` : ''}
+        <p>${tBi('The coordinator may delegate work. Usage and costs follow the model reported for each call; this route alone does not imply an execution call.', '协调模型可能委派任务。用量和费用按每次调用实际报告的模型计算；配置此关系不代表已经发生执行调用。')}</p>
+    </div>`;
+}
+
 export function buildModelInfoGrid(specs: ModelSpec[], kind: 'chat' | 'image' = 'chat'): string {
     const cards = specs.map((s) => {
         const shortId = s.placeholderId.replace(/^MODEL_PLACEHOLDER_/, '');
@@ -75,6 +89,7 @@ export function buildModelInfoGrid(specs: ModelSpec[], kind: 'chat' | 'image' = 
                         <dd>${thinkingDescription(s)}</dd>
                     </div>
                 </dl>
+                ${orchestrationDescription(s)}
                 <div class="spec-identity">
                     <code class="spec-model-id" title="${esc(s.modelId)}">${esc(s.modelId)}</code>${extraId}
                 </div>

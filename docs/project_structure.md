@@ -157,7 +157,7 @@ antigravity-context-monitor/
 
 v1.16.21 新增 Hydrogen Low/Medium/High/Extra（`M527`/`M526`/`M525`/`M528`），catalog 后缀为 `low`/`medium`/`high`/`xhigh`，后端第四档标签为 XHigh，思考力度为 1/2/3/**100**。2026-11-13 活体目录核实四档模型上下文 1,048,576、最大输出 262,144、压缩上限 256,000、检查点阈值 50,000；最小思考预算 32 不作为固定预算。英文/中文别名、GM 与历史记录保持档位独立；Extra/XHigh 不扩展到 Carbon、Argon。`model-quota.ts` 支持第四档 `xhigh`，UI 显示 Extra / 超高。
 
-当前账号目录包含 21 个聊天条目：20 个已知档位及独立 Orchestrator `M667`。Gemini 池包含 Hydrogen 四档及 Carbon/Argon/Flash 各三档，共 13 档；Claude / GPT 池七档；Orchestrator 不推断共享归属。Hydrogen Standard API 固定参考费率为每百万 token 输入 $1.50、含思考输出 $7.50、隐式缓存读取 $0.075，不继承 Carbon/Argon 日期调价。详细身份、价格来源与验证记录见 [1.16.21 发布说明](releases/1.16.21.md)。
+当前账号目录包含 21 个聊天条目：20 个已知档位及 Orchestrator `M667`。Gemini 池包含 Hydrogen 四档及 Carbon/Argon/Flash 各三档，再加 Orchestrator，共 14 个可选条目；Claude / GPT 池七档；M667/M669 明确归入 Gemini，共享额度而不合并调用或费用身份。Hydrogen Standard API 固定参考费率为每百万 token 输入 $1.50、含思考输出 $7.50、隐式缓存读取 $0.075，不继承 Carbon/Argon 日期调价。详细身份、价格来源与验证记录见 [1.16.21 发布说明](releases/1.16.21.md)。
 
 v1.16.19 注册 Gemini 4 Argon High/Medium/Low（`M417`/`M418`/`M419`），对应 `gemini-4-argon-{high,medium,low}`。2026-10-31 活体目录核实IDE 报告的模型上下文 1,048,576、最大输出 65,536、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；静态兜底 255,000，思考力度 3/2/1。计价采用已核实的 Argon 官方 Standard API 日期费率，支持自定义覆盖，不借用 Flash 单价。家族响应名不能覆盖确切档位，身份解析贯穿 GM、历史用量、配额和中英文显示。
 
@@ -457,3 +457,7 @@ npm run package
 当前版本的编译、回归测试、安装包一致性、原生 IDE 交互及平台运行结果统一记录在 [1.16.21 发布说明](releases/1.16.21.md)。发布验收必须使用重新打包并安装后的 1.16.21，而非旧插件或仅源码渲染结果。
 
 `.github/workflows/verify.yml` 配置 Windows、macOS、Linux 的编译和测试矩阵。平台解析器单元测试、原生 CI 和 IDE 实机验收分别报告；已配置工作流并不证明某次运行已通过。
+
+### 1.16.21 Orchestrator 补充
+
+`models.ts` 注册 M667 协调模型与 M669 隐藏执行模型；`extension.ts` 同步 executionModelId 并隔离跨实测模型的压缩判断；`gm/parser.ts` 使用 execution + 步骤恢复时间和关联嵌入调用；`webview-models-tab.ts` 展示委派关系，`pricing-panel.ts` 提供独立未知费率编辑。`tests/orchestrator.test.ts` 覆盖冷启动、目录变化、异常数据、多调用、持久化、计价和三语言界面。完整新验收及同版本重发校验值见 [1.16.21](releases/1.16.21.md)。

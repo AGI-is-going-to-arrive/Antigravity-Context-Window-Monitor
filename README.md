@@ -19,7 +19,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ---
 
-**1.16.21:** Adds Gemini 4 Hydrogen Low / Medium / High / Extra (catalog `XHigh`), using verified IDE identities and effort levels 1 / 2 / 3 / 100. All four retain separate context, usage, and pricing identities while sharing the Gemini quota pool. Includes official Hydrogen Standard API reference prices and English/Chinese/bilingual effort labels. Compilation and 859 tests passed; the installed macOS plugin verified eight real Hydrogen requests, same-conversation tier switching, native three-language UI, and the 21-entry chat catalog. Installed-code browser fixtures covered three languages, four themes, narrow layouts, interactions, and quota boundaries. See the [release validation](docs/releases/1.16.21.md#validation) for the current installation and test results.
+**1.16.21:** Supports all four Gemini 4 Hydrogen efforts and Orchestrator coordinator/execution models, including separate identities, context, quota, pricing and three-language UI. This amendment adds real delegation, reused execution-ID, context-transition and history-retention verification. See [release validation](docs/releases/1.16.21.md#validation) for results and platform scope.
 
 ## 📚 Technical Details
 
@@ -92,12 +92,17 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 The Models tab follows the signed-in account's live chat picker and its separate image-generation catalog. Registration preserves historical identities; it does not grant access or assume every account has the same models.
 
+### Orchestrator
+
+Orchestrator (`M667` / `gemini-pro-orchestrator`) now has registered cold-start and historical identities and context fallbacks. The IDE configures `M669` / `gemini-flash-worker-agy` as its execution model; this hidden worker is not an additional selectable chat tier. Model Info shows the localized delegation relationship. Coordinator and worker calls are counted separately, reused workflow execution IDs are matched with steps for accurate timestamps/enrichment, and underlying-model transitions are not reported as compression. Standalone API prices remain unverified and explicitly unknown, with independent custom editors; Carbon/Hydrogen rates are not inferred.
+
 ### Current IDE model metadata
 
-The local `GetUserStatus` and `GetAvailableModels` responses on 2026-11-13 contained **21 chat entries: 20 known effort variants plus Orchestrator**. Orchestrator (`M667`) remains an independent entry; matching quota readings alone do not prove pool membership. Values below are **reported by the IDE**, not promises about public API limits. “Compression limit” and “checkpoint threshold” are separate settings.
+The local `GetUserStatus` and `GetAvailableModels` responses on 2026-11-13 contained **21 chat entries: 20 known effort variants plus Orchestrator**. Orchestrator (`M667`) and its delegated worker (`M669`) belong to the Gemini shared quota pool; their call and pricing identities remain separate. Values below are **reported by the IDE**, not promises about public API limits. “Compression limit” and “checkpoint threshold” are separate settings.
 
 | Chat model | Tiers and internal IDs | Model context | Max output | Compression limit | Checkpoint threshold |
 | --- | --- | ---: | ---: | ---: | ---: |
+| Orchestrator | `M667` | 1,048,576 | 262,144 | 256,000 | 50,000 |
 | Gemini 4 Hydrogen | Low / Medium / High / Extra: `M527` / `M526` / `M525` / `M528` | 1,048,576 | 262,144 | 256,000 | 50,000 |
 | Gemini 4 Carbon | Low / Medium / High: `M438` / `M437` / `M427` | 1,048,576 | 262,144 | 256,000 | 50,000 |
 | Gemini 4 Argon | Low / Medium / High: `M419` / `M418` / `M417` | 1,048,576 | 65,536 | 256,000 | 50,000 |
@@ -112,7 +117,7 @@ Tier identities stay distinct across English/Chinese labels, context tracking, G
 
 Malformed names such as `Gemini 4 CarbonHigh`, unmatched parentheses, and unsupported effort names do not acquire Carbon's identity or family price. Conflicting learned aliases cannot overwrite a registered tier through uppercase or Chinese label variants.
 
-**Model Quota** groups the 20 known effort variants into two shared-pool cards: **Gemini** contains Hydrogen (four tiers), Carbon, Argon, and Flash (three each), totaling 13 tiers; **Claude / GPT** contains Opus, Sonnet, and GPT-OSS (seven tiers). Orchestrator remains a separate card. Each card lists its available model families and effort tiers. Percentages are not summed or averaged: inconsistent values use ranges and per-model details, and missing data remains explicit. Unknown and image-generation identities stay separate from the two known chat pools. **Model Info**, call statistics, and pricing keep individual effort identities.
+**Model Quota** groups the 21 selectable chat entries into two shared-pool cards: **Gemini** contains Hydrogen (four tiers), Carbon, Argon, and Flash (three each), plus Orchestrator, totaling 14 selectable entries; **Claude / GPT** contains Opus, Sonnet, and GPT-OSS (seven tiers). Orchestrator is listed inside Gemini without an invented effort label; the hidden worker adds no picker row. Each card lists its available model families and effort tiers. Percentages are not summed or averaged: inconsistent values use ranges and per-model details, and missing data remains explicit. Unknown and image-generation identities stay separate from the two known chat pools. **Model Info**, call statistics, and pricing keep individual effort identities.
 
 ### Image-generation model
 
