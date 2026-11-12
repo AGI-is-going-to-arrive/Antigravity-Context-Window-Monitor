@@ -106,7 +106,8 @@ const quotaNotifiedModels = new Set<string>();
 /** Previous poll's known trajectory IDs — used to detect new conversations. */
 const previousTrajectoryIds = new Set<string>();
 
-type ContextObservation = Pick<ContextUsage, 'contextUsed' | 'isEstimated' | 'model' | 'tokenUsageSource'>;
+type ContextObservation = Pick<ContextUsage, 'contextUsed' | 'isEstimated' | 'model' | 'tokenUsageSource'>
+    & Partial<Pick<ContextUsage, 'lastModelUsage'>>;
 /** Compare like-for-like measurements, never an estimate against a provider count. */
 const previousContextObservations = new Map<string, ContextObservation>();
 
@@ -207,6 +208,12 @@ export function measuredContextDrop(
         || (resolveModelId(previous.model) || previous.model) !== (resolveModelId(current.model) || current.model)
         || !Number.isFinite(previous.contextUsed) || !Number.isFinite(current.contextUsed)
         || !Number.isFinite(current.contextLimit) || current.contextLimit <= 0) { return 0; }
+    // A coordinator may keep its selected identity while an execution worker
+    // reports a different context snapshot. That transition is not compression.
+    const previousMeasuredModel = previous.lastModelUsage?.model || previous.model;
+    const currentMeasuredModel = current.lastModelUsage?.model || current.model;
+    if ((resolveModelId(previousMeasuredModel) || previousMeasuredModel)
+        !== (resolveModelId(currentMeasuredModel) || currentMeasuredModel)) { return 0; }
     const drop = previous.contextUsed - current.contextUsed;
     return drop > current.contextLimit * 0.01 ? drop : 0;
 }
@@ -751,7 +758,26 @@ export async function fetchAndOverrideCheckpointerLimits(
                 const completeMetadata = isPlatformModelId(modelVal)
                     && typeof c.apiProvider === 'string' && !!c.apiProvider.trim()
                     && maxTokens > 0 && maxOutputTokens > 0;
+                // Missing data in a partial response must not erase a known route.
+                // A full record with no plan/execute experiment clears an old route.
+                const executionLink: Partial<import('./models').ModelSpec> = {};
+                const planExecute = exps['plan-execute-config'];
+                if (typeof planExecute?.stringValue === 'string') {
+                    try {
+                        const parsed: unknown = JSON.parse(planExecute.stringValue);
+                        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                            const candidate = (parsed as Record<string, unknown>).executionModel;
+                            if (typeof candidate === 'string' && isPlatformModelId(candidate)
+                                && candidate === candidate.trim() && candidate !== resolved) {
+                                executionLink.executionModelId = candidate;
+                            }
+                        }
+                    } catch { /* Preserve last known route for malformed metadata. */ }
+                } else if (completeMetadata && planExecute === undefined) {
+                    executionLink.executionModelId = undefined;
+                }
                 updateModelSpec(resolved, {
+                    ...executionLink,
                     modelId: modelIdVal || modelVal,
                     ...(typeof c.displayName === 'string' && c.displayName.trim() ? { displayName: c.displayName.trim() } : {}),
                     ...(imageModel ? { isImageGeneration: true, thinkingCapabilityReported: typeof c.supportsThinking === 'boolean' } : {}),
@@ -2014,6 +2040,7 @@ async function pollContextUsage(): Promise<void> {
             }
         }
         previousContextObservations.set(currentUsage.cascadeId, {
+            lastModelUsage: currentUsage.lastModelUsage,
             contextUsed: currentUsage.contextUsed, isEstimated: currentUsage.isEstimated,
             model: currentUsage.model, tokenUsageSource: currentUsage.tokenUsageSource,
         });

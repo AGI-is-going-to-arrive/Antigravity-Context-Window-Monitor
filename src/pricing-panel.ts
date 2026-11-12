@@ -1387,6 +1387,13 @@ function pricingDisplayName(model: string): string {
     return model.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+function orchestratorPricingNote(): string {
+    return `<li>${tBi(
+        'Orchestrator and its execution worker keep separate call identities. No standalone API rate has been verified for these internal IDs; do not assume a Carbon or Hydrogen rate from the picker description. Enter custom rates if known. Missing prices are not zero, and a configured worker is not an additional billable call.',
+        'Orchestrator 与执行模型保留独立调用身份。目前未核实这些内部 ID 的独立 API 费率，不根据选择器说明直接套用 Carbon 或 Hydrogen 价格；已知费率时可自定义。价格缺失不代表免费，配置了执行模型也不额外产生一笔调用费用。',
+    )}</li>`;
+}
+
 function hydrogenPricingNote(): string {
     return `<li>${tBi(
         'Gemini 4 Hydrogen standard API reference (USD / 1M), verified 2026-11-13: input $1.50, output including thinking $7.50, implicit cache reads $0.075. The same rates apply to Low, Medium, High and Extra (XHigh). No scheduled price change is published. Explicit caching is not supported. These are not Batch/Flex rates or Antigravity subscription charges.',
@@ -1415,7 +1422,7 @@ function buildEditablePricingTable(
 ): string {
     // Keep family-rate editors stable when a first call adds a concrete tier.
     // Otherwise polling can remove a family row with an unsaved price draft.
-    const editableKeys = Object.keys(merged);
+    const editableKeys = [...new Set([...Object.keys(merged), 'gemini-pro-orchestrator', 'gemini-flash-worker-agy'])];
 
     // Build unified list: called models first, then uncalled defaults
     interface PricingEntry { name: string; responseModel: string; isCalled: boolean }
@@ -1426,7 +1433,8 @@ function buildEditablePricingTable(
     }
     for (const model of editableKeys) {
         if (!calledModelKeys.has(model)) {
-            const displayName = pricingDisplayName(model);
+            const resolved = resolveModelId(model);
+            const displayName = resolved ? getModelDisplayName(resolved) : pricingDisplayName(model);
             allEntries.push({ name: displayName, responseModel: model, isCalled: false });
         }
     }
@@ -1467,6 +1475,7 @@ function buildEditablePricingTable(
     html += `<div class="prc-info-bar">${infoSvg2}<div class="prc-info-bar-body"><ul>
         <li>${tBi('Edit prices above and click <b>Save</b>. Changes persist across sessions.', '编辑上方价格后点击<b>保存</b>，修改跨会话持久化。')}</li>
         <li>${tBi('<b>Reset</b> restores built-in default prices. Clear all fields in a row to remove its override. Missing prices are not zero prices.', '<b>恢复默认</b>将还原内置价格。清空一行全部字段可移除该自定义价格；缺失价格不代表免费。')}</li>
+        ${orchestratorPricingNote()}
         ${hydrogenPricingNote()}
         ${carbonPricingNote()}
         ${argonPricingNote()}
@@ -1515,6 +1524,7 @@ function buildDefaultPricingTable(
     html += `<div class="prc-info-bar">${infoSvg3}<div class="prc-info-bar-body"><ul>
         <li>${tBi('Edit prices above and click <b>Save</b>. Changes persist across sessions.', '编辑上方价格后点击<b>保存</b>，修改跨会话持久化。')}</li>
         <li>${tBi('Clear all fields in a row to remove its override. Missing prices are not zero prices.', '清空一行全部字段可移除该自定义价格；缺失价格不代表免费。')}</li>
+        ${orchestratorPricingNote()}
         ${hydrogenPricingNote()}
         ${carbonPricingNote()}
         ${argonPricingNote()}

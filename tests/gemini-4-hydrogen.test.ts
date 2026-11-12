@@ -126,34 +126,34 @@ describe('Hydrogen shared quota without merged accounting', () => {
             config('MODEL_PLACEHOLDER_M402', 'Claude Opus 5.5 (High)'),
             config('MODEL_PLACEHOLDER_M667', 'Orchestrator')];
         const groups = groupModelQuotas(all);
-        expect(groups).toHaveLength(3);
+        expect(groups).toHaveLength(2);
         const gemini = groups.find(g => g.pool === 'gemini')!;
         expect(gemini.minimum).toBe(0.8);
         expect(gemini.maximum).toBe(0.8);
         expect(gemini.members[0].label).toBe('Gemini 4 Hydrogen');
         expect(gemini.members[0].efforts).toEqual(['low', 'medium', 'high', 'xhigh']);
         expect(gemini.members[0].readings.map(r => r.model)).toEqual(HYDROGEN.map(m => `MODEL_PLACEHOLDER_${m.id}`));
-        expect(expandModelIdsToPool(['MODEL_PLACEHOLDER_M528'], all)).toEqual(['MODEL_PLACEHOLDER_M528', ...HYDROGEN.slice(0, 3).map(m => `MODEL_PLACEHOLDER_${m.id}`), 'MODEL_PLACEHOLDER_M438']);
-        expect(groups.find(g => g.label === 'Orchestrator')?.pool).toBeUndefined();
+        expect(expandModelIdsToPool(['MODEL_PLACEHOLDER_M528'], all)).toEqual(['MODEL_PLACEHOLDER_M528', ...HYDROGEN.slice(0, 3).map(m => `MODEL_PLACEHOLDER_${m.id}`), 'MODEL_PLACEHOLDER_M438', 'MODEL_PLACEHOLDER_M667']);
+        expect(gemini.members.find(m => m.label === 'Orchestrator')?.efforts).toEqual([]);
     });
 
     it.each(['API_PROVIDER_GOOGLE_GEMINI', 'ANTHROPIC_VERTEX', 'OPENAI_VERTEX'])(
         'does not infer an unverified model quota pool from provider %s', apiProvider => {
-            // The current IDE includes a new Orchestrator; equal reset readings
+            // An unregistered future coordinator is not the known Orchestrator; equal reset readings
             // and a Google provider do not prove membership in the Gemini pool.
-            const id = 'MODEL_PLACEHOLDER_M667';
-            updateModelSpec(id, { modelId: 'gemini-pro-orchestrator', displayName: 'Orchestrator', apiProvider });
-            registerResponseModelAlias('gemini-pro-orchestrator', id);
+            const id = 'MODEL_PLACEHOLDER_M9667';
+            updateModelSpec(id, { modelId: 'gemini-pro-unverified-orchestrator', displayName: 'Unknown Orchestrator', apiProvider });
+            registerResponseModelAlias('gemini-pro-unverified-orchestrator', id);
             try {
                 expect(getQuotaPoolKey(id)).toBe(id);
-                expect(getQuotaPoolKey('gemini-pro-orchestrator')).toBe('gemini-pro-orchestrator');
+                expect(getQuotaPoolKey('gemini-pro-unverified-orchestrator')).toBe('gemini-pro-unverified-orchestrator');
                 expect(getQuotaPoolKey(id, RESET)).toBe(RESET);
-                const all = [...configs(), config(id, 'Orchestrator')];
+                const all = [...configs(), config(id, 'Unknown Orchestrator')];
                 expect(groupModelQuotas(all)).toHaveLength(2);
-                expect(groupModelQuotas(all).find(g => g.label === 'Orchestrator')?.pool).toBeUndefined();
+                expect(groupModelQuotas(all).find(g => g.label === 'Unknown Orchestrator')?.pool).toBeUndefined();
                 expect(expandModelIdsToPool(['MODEL_PLACEHOLDER_M528'], all)).not.toContain(id);
             } finally {
-                updateModelSpec(id, { apiProvider: '' });
+                updateModelSpec(id, { apiProvider: 'GOOGLE_GEMINI' });
             }
         },
     );
@@ -264,7 +264,7 @@ describe('Hydrogen available catalog and multilingual presentation', () => {
     });
 
     it('sorts the new family first while retaining recommendation and current-model precedence', () => {
-        const ids = getModelSpecs().map(s => s.placeholderId);
+        const ids = getModelSpecs().filter(s => s.modelId.startsWith('gemini-4-')).map(s => s.placeholderId);
         expect(ids.slice(0, 4)).toEqual(['MODEL_PLACEHOLDER_M528', 'MODEL_PLACEHOLDER_M525', 'MODEL_PLACEHOLDER_M526', 'MODEL_PLACEHOLDER_M527']);
         const all = [config('MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)'),
             config('MODEL_PLACEHOLDER_M417', 'Gemini 4 Argon (High)'), ...configs()];

@@ -20,6 +20,9 @@ const GEMINI_4_NAME_PATTERN = /^gemini[\s_-]+4[\s_-]+(carbon|argon)(?:[\s_-]+(lo
 // ─── Default Context Limits ──────────────────────────────────────────────────
 
 export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
+    // Orchestrator coordinator and delegated worker, live IDE 2026-11-13.
+    MODEL_PLACEHOLDER_M667: 255_000,
+    MODEL_PLACEHOLDER_M669: 255_000,
     // ── Platform truncation thresholds (from GM plannerConfig.truncationThresholdTokens) ──
     // These are the ACTUAL context window limits enforced by the platform,
     // NOT the model's native context window size.
@@ -88,6 +91,8 @@ let modelDisplayNames: Record<string, string> = {};
  *  Pre-seeded with known stable aliases so findPricing works before fetchAll.
  *  Source: GetAvailableModels API (all_models_parameter_map.md 2026-05-22) */
 let responseModelAliases: Record<string, string> = {
+    'gemini-pro-orchestrator': 'MODEL_PLACEHOLDER_M667',
+    'gemini-flash-worker-agy': 'MODEL_PLACEHOLDER_M669',
     // Dedicated image model, verified from imageGenerationModelIds (2026-10-31).
     'gemini-3.1-flash-image': 'MODEL_PLACEHOLDER_M21',
     // Gemini 4 Hydrogen aliases (live GetUserStatus + GetAvailableModels, 2026-11-13).
@@ -147,6 +152,9 @@ let responseModelAliases: Record<string, string> = {
 let showModelShortId = false;
 
 const KNOWN_QUOTA_POOLS: Record<string, string> = {
+    // Orchestrator and its delegated worker consume the Gemini family allowance.
+    MODEL_PLACEHOLDER_M667: 'gemini',
+    MODEL_PLACEHOLDER_M669: 'gemini',
     // Gemini pool — Hydrogen, Carbon, Argon, Flash and Pro use the Google provider pool.
     'MODEL_PLACEHOLDER_M525': 'gemini',
     'MODEL_PLACEHOLDER_M526': 'gemini',
@@ -214,6 +222,8 @@ const ZH_MODEL_NAME_ALIASES: Record<string, string> = {
 // may still appear in persisted/archived daily data.
 
 const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
+    MODEL_PLACEHOLDER_M667: 'Orchestrator',
+    MODEL_PLACEHOLDER_M669: 'Gemini Flash (Orchestrator Worker)',
     'MODEL_PLACEHOLDER_M21': 'Gemini 3.1 Flash Image',
     'MODEL_PLACEHOLDER_M525': 'Gemini 4 Hydrogen (High)',
     'MODEL_PLACEHOLDER_M526': 'Gemini 4 Hydrogen (Medium)',
@@ -304,7 +314,7 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
         // Hydrogen, Carbon, Argon and the current 3.8 Flash picker use a 256K compression limit
         // and 50K trigger (live agent hub, 2026-10-31). Older Flash profiles
         // and the archived M322 tiered router retain their verified 140K trigger.
-        if (['m525', 'm526', 'm527', 'm528', 'm427', 'm437', 'm438', 'm417', 'm418', 'm419', 'm318', 'm319', 'm320'].includes(num)) {
+        if (['m667', 'm669', 'm525', 'm526', 'm527', 'm528', 'm427', 'm437', 'm438', 'm417', 'm418', 'm419', 'm318', 'm319', 'm320'].includes(num)) {
             return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
         }
         // Claude 5.5 uses adaptive thinking and a 1M native window, with a 256K
@@ -348,7 +358,8 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
     // Only verified Hydrogen/Carbon/Argon and current Flash picker variants get this profile; versions
     // must not fall into a Flash/Pro guess or match Gemini 40 by prefix.
     const normalizedGeminiName = idLower.trim().replace(/（/g, '(').replace(/）/g, ')');
-    if (HYDROGEN_NAME_PATTERN.test(normalizedGeminiName) || GEMINI_4_NAME_PATTERN.test(normalizedGeminiName)
+    if (/^(?:orchestrator|gemini[-_ ]pro[-_ ]orchestrator|gemini[-_ ]flash[-_ ]worker[-_ ]agy|gemini flash \(orchestrator worker\)|编排器|协调器)$/.test(normalizedGeminiName)
+        || HYDROGEN_NAME_PATTERN.test(normalizedGeminiName) || GEMINI_4_NAME_PATTERN.test(normalizedGeminiName)
         || /^gemini[\s_-]+3[._-]8[\s_-]+flash[\s_-]*\(?\s*(?:high|medium|low)\s*\)?$/.test(idLower)) {
         return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
     }
@@ -478,6 +489,9 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     // responseModel alias lookup (e.g. "gemini-pro-default" → "MODEL_PLACEHOLDER_M16")
     const fromResponseModel = ownValue(responseModelAliases, clean);
     if (fromResponseModel) { return fromResponseModel; }
+    // These are single identities, not effort tiers; do not accept suffix variants.
+    if (/^(?:orchestrator|gemini[-_ ]pro[-_ ]orchestrator|编排器|协调器)$/i.test(clean)) { return 'MODEL_PLACEHOLDER_M667'; }
+    if (/^(?:gemini[-_ ]flash[-_ ]worker[-_ ]agy|gemini flash \(orchestrator worker\))$/i.test(clean)) { return 'MODEL_PLACEHOLDER_M669'; }
     // Legacy Chinese name fallback (pre-v1.16 persisted data migration)
     const legacyId = ownValue(ZH_MODEL_NAME_ALIASES, clean);
     if (legacyId) { return legacyId; }
@@ -773,6 +787,8 @@ export interface ModelSpec {
     supportsAdaptiveThinking?: boolean;
     /** Platform effort level: 1 = Low, 2 = Medium, 3 = High, 100 = XHigh (Extra). */
     thinkingLevel?: number;
+    /** Configured delegation target, not evidence that a particular call used it. */
+    executionModelId?: string;
     cpLimit: number;
     cpThreshold: number;
 }
@@ -792,6 +808,21 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         supportsThinking: false,
         cpLimit: 0,
         cpThreshold: 0,
+    },
+    // Orchestrator is selectable; its worker is catalog-only. Neither is an alias
+    // for a Carbon/Hydrogen effort: real calls retain their own backend identity.
+    MODEL_PLACEHOLDER_M667: {
+        modelId: 'gemini-pro-orchestrator', placeholderId: 'MODEL_PLACEHOLDER_M667',
+        displayName: 'Orchestrator', apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576, maxOutputTokens: 262144, thinkingBudget: 0,
+        supportsThinking: true, thinkingLevel: 3, executionModelId: 'MODEL_PLACEHOLDER_M669',
+        cpLimit: 256000, cpThreshold: 50000,
+    },
+    MODEL_PLACEHOLDER_M669: {
+        modelId: 'gemini-flash-worker-agy', placeholderId: 'MODEL_PLACEHOLDER_M669',
+        displayName: 'Gemini Flash (Orchestrator Worker)', apiProvider: 'GOOGLE_GEMINI',
+        maxTokens: 1048576, maxOutputTokens: 262144, thinkingBudget: 0,
+        supportsThinking: true, thinkingLevel: 3, cpLimit: 256000, cpThreshold: 50000,
     },
     // Gemini 4 Hydrogen: live agent hub GetAvailableModels, 2026-11-13.
     // The picker calls XHigh "Extra"; the backend reports thinkingLevel 100, not 4.
@@ -1271,6 +1302,7 @@ export function updateModelSpec(placeholderId: string, spec: Partial<ModelSpec>)
             supportsThinking: spec.supportsThinking || false,
             ...(spec.supportsAdaptiveThinking !== undefined ? { supportsAdaptiveThinking: spec.supportsAdaptiveThinking } : {}),
             ...(spec.thinkingLevel !== undefined ? { thinkingLevel: spec.thinkingLevel } : {}),
+            ...(spec.executionModelId !== undefined ? { executionModelId: spec.executionModelId } : {}),
             cpLimit: spec.cpLimit || 0,
             cpThreshold: spec.cpThreshold || 0,
         };
@@ -1286,6 +1318,8 @@ export function getModelSpecs(): ModelSpec[] {
     // Mirrors the platform's own "Recommended" sort group (GetUserStatus → clientModelSorts),
     // newest generation first. Hydrogen identities live-verified 2026-11-13.
     const order = [
+        'MODEL_PLACEHOLDER_M667',
+        'MODEL_PLACEHOLDER_M669',
         'MODEL_PLACEHOLDER_M528',
         'MODEL_PLACEHOLDER_M525',
         'MODEL_PLACEHOLDER_M526',
