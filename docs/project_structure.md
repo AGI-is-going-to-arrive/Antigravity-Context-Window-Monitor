@@ -2,7 +2,7 @@
 
 本文档说明 Antigravity Context Window Monitor 的源码组织方式、模块职责以及依赖关系。
 
-当前版本：**1.16.21**。中英文发布说明见 [releases/1.16.21.md](releases/1.16.21.md)。
+当前版本：**1.17.0**。中英文发布说明见 [releases/1.17.0.md](releases/1.17.0.md)。
 
 ---
 
@@ -103,7 +103,7 @@ antigravity-context-monitor/
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   ├── project_structure.md          # 本文件
-│   └── releases/1.16.21.md           # 当前发布说明（先英文，后对应中文；历史版本另保留）
+│   └── releases/1.17.0.md           # 当前发布说明（先英文，后对应中文；历史版本另保留）
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── package.json                  # 扩展清单、命令、配置项
 ├── package-lock.json             # 提交的 npm 锁文件，供本地使用 npm ci 复现依赖
@@ -154,9 +154,9 @@ antigravity-context-monitor/
 
 模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将已知 Orchestrator/执行模型及 Gemini Hydrogen、Carbon、Argon、Flash、Pro 身份合并为统一的 `gemini` 池。未知模型与图片身份保持独立，不能仅因配额读数相同推断池归属。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
 
-v1.16.21 新增 Hydrogen Low/Medium/High/Extra（`M527`/`M526`/`M525`/`M528`），catalog 后缀为 `low`/`medium`/`high`/`xhigh`，后端第四档标签为 XHigh，思考力度为 1/2/3/**100**。2026-11-13 活体目录核实四档模型上下文 1,048,576、最大输出 262,144、压缩上限 256,000、检查点阈值 50,000；最小思考预算 32 不作为固定预算。英文/中文别名、GM 与历史记录保持档位独立；Extra/XHigh 不扩展到 Carbon、Argon。`model-quota.ts` 支持第四档 `xhigh`，UI 显示 Extra / 超高。
+v1.17.0 新增 Hydrogen Low/Medium/High/Extra（`M527`/`M526`/`M525`/`M528`），catalog 后缀为 `low`/`medium`/`high`/`xhigh`，后端第四档标签为 XHigh，思考力度为 1/2/3/**100**。2026-11-13 活体目录核实四档模型上下文 1,048,576、最大输出 262,144、压缩上限 256,000、检查点阈值 50,000；最小思考预算 32 不作为固定预算。英文/中文别名、GM 与历史记录保持档位独立；Extra/XHigh 不扩展到 Carbon、Argon。`model-quota.ts` 支持第四档 `xhigh`，UI 显示 Extra / 超高。
 
-当前账号目录包含 21 个聊天条目：20 个已知档位及 Orchestrator `M667`。Gemini 池包含 Hydrogen 四档及 Carbon/Argon/Flash 各三档，再加 Orchestrator，共 14 个可选条目；Claude / GPT 池七档；M667/M669 明确归入 Gemini，共享额度而不合并调用或费用身份。Hydrogen Standard API 固定参考费率为每百万 token 输入 $1.50、含思考输出 $7.50、隐式缓存读取 $0.075，不继承 Carbon/Argon 日期调价。详细身份、价格来源与验证记录见 [1.16.21 发布说明](releases/1.16.21.md)。
+当前账号目录包含 21 个聊天条目：20 个已知档位及 Orchestrator `M667`。Gemini 池包含 Hydrogen 四档及 Carbon/Argon/Flash 各三档，再加 Orchestrator，共 14 个可选条目；Claude / GPT 池七档；M667/M669 明确归入 Gemini，共享额度而不合并调用或费用身份。Hydrogen Standard API 固定参考费率为每百万 token 输入 $1.50、含思考输出 $7.50、隐式缓存读取 $0.075，不继承 Carbon/Argon 日期调价。详细身份、价格来源与验证记录见 [1.17.0 发布说明](releases/1.17.0.md)。
 
 v1.16.19 注册 Gemini 4 Argon High/Medium/Low（`M417`/`M418`/`M419`），对应 `gemini-4-argon-{high,medium,low}`。2026-10-31 活体目录核实IDE 报告的模型上下文 1,048,576、最大输出 65,536、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；静态兜底 255,000，思考力度 3/2/1。计价采用已核实的 Argon 官方 Standard API 日期费率，支持自定义覆盖，不借用 Flash 单价。家族响应名不能覆盖确切档位，身份解析贯穿 GM、历史用量、配额和中英文显示。
 
@@ -449,14 +449,14 @@ npm run test:watch
 npm run package
 ```
 
-安装：在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.16.21.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
+安装：在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.0.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
 
 测试文件位于 `tests/`，仅供 Vitest 使用，不会被打包到 VSIX 中。
 
-当前版本的编译、回归测试、安装包一致性、原生 IDE 交互及平台运行结果统一记录在 [1.16.21 发布说明](releases/1.16.21.md)。发布验收必须使用重新打包并安装后的 1.16.21，而非旧插件或仅源码渲染结果。
+当前版本的编译、回归测试、安装包一致性、原生 IDE 交互及平台运行结果统一记录在 [1.17.0 发布说明](releases/1.17.0.md)。发布验收必须使用重新打包并安装后的 1.17.0，而非旧插件或仅源码渲染结果。
 
 2026-11-13 按维护者要求停用 GitHub 自动编译/测试 CI，并移除 `.github/workflows/verify.yml`。本地编译、Vitest 和 IDE 安装验收继续保留；平台 mock 结果与 Windows/Linux 原生测试仍须区分。
 
-### 1.16.21 Orchestrator 补充
+### 1.17.0 Orchestrator 补充
 
-`models.ts` 注册 M667 协调模型与 M669 隐藏执行模型；`extension.ts` 同步 executionModelId 并隔离跨实测模型的压缩判断；`gm/parser.ts` 使用 execution + 步骤恢复时间和关联嵌入调用；`webview-models-tab.ts` 展示委派关系，`pricing-panel.ts` 提供独立未知费率编辑。`tests/orchestrator.test.ts` 覆盖冷启动、目录变化、异常数据、多调用、持久化、计价和三语言界面。完整新验收及同版本重发校验值见 [1.16.21](releases/1.16.21.md)。
+`models.ts` 注册 M667 协调模型与 M669 隐藏执行模型；`extension.ts` 同步 executionModelId 并隔离跨实测模型的压缩判断；`gm/parser.ts` 使用 execution + 步骤恢复时间和关联嵌入调用；`webview-models-tab.ts` 展示委派关系，`pricing-panel.ts` 提供独立未知费率编辑。`tests/orchestrator.test.ts` 覆盖冷启动、目录变化、异常数据、多调用、持久化、计价和三语言界面。完整新验收及新版本发布校验值见 [1.17.0](releases/1.17.0.md)。

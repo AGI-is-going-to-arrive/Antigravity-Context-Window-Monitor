@@ -1,5 +1,21 @@
 # 变更日志 / Changelog
 
+## [1.17.0] - 2026-11-13
+
+### English
+
+- Publishes the complete Hydrogen and Orchestrator update under a new, increasing version because Open VSX extension versions are immutable, including removed versions. Use `antigravity-context-monitor-1.17.0.vsix`; do not attempt to republish 1.16.21.
+- Includes all four Hydrogen efforts, Orchestrator M667/M669 delegation with shared Gemini quota and separate accounting, corrected workflow call timestamps/enrichment, and protection against false compression on model switches.
+- Updates the manifest, lockfile, About page, installation instructions and bilingual release documentation. Model/accounting runtime is unchanged from the validated functional build; unknown standalone Orchestrator prices remain explicit.
+- GitHub build/test CI remains removed. Local checks and installed-package validation are documented in [1.17.0 release notes](docs/releases/1.17.0.md#validation).
+
+### 中文
+
+- 将完整 Hydrogen 与 Orchestrator 更新发布为递增的新版本，解决 Open VSX 的版本不可变限制（已移除版本也不能复用）。请使用 `antigravity-context-monitor-1.17.0.vsix`，不再尝试重新发布 1.16.21。
+- 包含 Hydrogen 四档、Orchestrator M667/M669 委派、Gemini 共享额度及独立记账、工作流调用时间/关联修复，以及模型切换误报压缩防护。
+- 同步清单、锁文件、About 页、安装说明及中英文发布文档。模型/记账运行逻辑与已验收功能版一致，独立 Orchestrator 未核实价格仍明确显示未知。
+- GitHub 编译测试 CI 继续移除，本地检查与安装包验证见 [1.17.0 发布说明](docs/releases/1.17.0.md#验证)。
+
 ## [1.16.21] - 2026-11-13
 
 ### English
