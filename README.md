@@ -19,7 +19,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ---
 
-**1.16.21:** Supports all four Gemini 4 Hydrogen efforts and Orchestrator coordinator/execution models, including separate identities, context, quota, pricing and three-language UI. This amendment adds real delegation, reused execution-ID, context-transition and history-retention verification. See [release validation](docs/releases/1.16.21.md#validation) for results and platform scope.
+**1.17.0:** Supports all four Gemini 4 Hydrogen efforts and Orchestrator coordinator/execution models, including separate identities, context, quota, pricing and three-language UI. This amendment adds real delegation, reused execution-ID, context-transition and history-retention verification. See [release validation](docs/releases/1.17.0.md#validation) for results and platform scope.
 
 **Validation:** GitHub build/test CI was disabled and removed at the maintainer's request on 2026-11-13. Local `npm run compile`, `npm test`, and installed-IDE validation remain available. Historical failed/cancelled CI runs are not passing checks for the current build.
 
@@ -169,7 +169,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 1. **Install**:
    * **OpenVSX**: Install directly from [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
-   * **Manual**: Install `antigravity-context-monitor-1.16.21.vsix` via Extensions → Install from VSIX, then reload the window and confirm version **1.16.21** in extension details.
+   * **Manual**: Install `antigravity-context-monitor-1.17.0.vsix` via Extensions → Install from VSIX, then reload the window and confirm version **1.17.0** in extension details.
 2. **Status Bar**: The bottom-right status bar shows current context usage. With no active conversation it shows **No active conversation**, rather than a saved model's old limit. The selected effort tier is recognized from the user-input configuration before the first model response.
 3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, and the latest checkpoint shadow model when present).
 
@@ -239,7 +239,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 > [!IMPORTANT]
 > **"LS not found" in the current Antigravity IDE**
-> Newer IDE builds run an `agy --hub` backend instead of a process named `language_server_*`. Since version 1.16.19, the monitor discovers both architectures, accepts `--csrf_token=value` and space-separated flags, and checks the declared hub port before using platform socket discovery. Install `antigravity-context-monitor-1.16.21.vsix` and reload the window. A connected backend with no loaded conversations displays **No active conversation**, not a discovery failure; saved history may still exist in the IDE. Opening the IDE without a folder does not by itself mean the backend is unavailable.
+> Newer IDE builds run an `agy --hub` backend instead of a process named `language_server_*`. Since version 1.16.19, the monitor discovers both architectures, accepts `--csrf_token=value` and space-separated flags, and checks the declared hub port before using platform socket discovery. Install `antigravity-context-monitor-1.17.0.vsix` and reload the window. A connected backend with no loaded conversations displays **No active conversation**, not a discovery failure; saved history may still exist in the IDE. Opening the IDE without a folder does not by itself mean the backend is unavailable.
 >
 > **Windows discovery diagnostics**
 > If the status bar is stuck on `LS not found`, open **Output → "Antigravity Context Monitor"** and read the `PATH check:` line — the extension now logs exactly which discovery step failed. Since v1.16.13 it invokes `wmic`/`powershell.exe`/`netstat` by absolute `%SystemRoot%` path, so a truncated Extension Host `PATH` (e.g. missing `System32\wbem` on Win11 24H2+ where WMIC is removed) no longer breaks discovery.
@@ -277,4 +277,4 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.16.21 — [Release notes](docs/releases/1.16.21.md)
+**Version**: 1.17.0 — [Release notes](docs/releases/1.17.0.md)
