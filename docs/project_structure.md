@@ -9,7 +9,6 @@
 ## 目录总览
 ```text
 antigravity-context-monitor/
-├── .github/workflows/verify.yml  # Windows / macOS / Linux 编译与 Vitest 矩阵；Node 版本由工作流指定
 ├── src/                          # TypeScript 源码
 │   ├── extension.ts              # 扩展入口：激活/停用、轮询调度、命令注册、状态恢复
 │   ├── daily-archival.ts         # 每日归档核心逻辑（可测试纯函数，依赖注入）
@@ -107,7 +106,7 @@ antigravity-context-monitor/
 │   └── releases/1.16.21.md           # 当前发布说明（先英文，后对应中文；历史版本另保留）
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── package.json                  # 扩展清单、命令、配置项
-├── package-lock.json             # 提交的 npm 锁文件，供本地及 CI 使用 npm ci 复现依赖
+├── package-lock.json             # 提交的 npm 锁文件，供本地使用 npm ci 复现依赖
 ├── tsconfig.json                 # TypeScript 编译配置
 ├── vitest.config.ts              # 测试框架配置
 ├── README.md                     # 英文文档
@@ -153,7 +152,7 @@ antigravity-context-monitor/
 
 ### models.ts -- 模型配置与归一化
 
-模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将已知 Gemini Hydrogen、Carbon、Argon、Flash、Pro 身份合并为统一的 `gemini` 池。未知模型与图片身份保持独立，不能仅因配额读数相同推断池归属。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
+模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将已知 Orchestrator/执行模型及 Gemini Hydrogen、Carbon、Argon、Flash、Pro 身份合并为统一的 `gemini` 池。未知模型与图片身份保持独立，不能仅因配额读数相同推断池归属。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
 
 v1.16.21 新增 Hydrogen Low/Medium/High/Extra（`M527`/`M526`/`M525`/`M528`），catalog 后缀为 `low`/`medium`/`high`/`xhigh`，后端第四档标签为 XHigh，思考力度为 1/2/3/**100**。2026-11-13 活体目录核实四档模型上下文 1,048,576、最大输出 262,144、压缩上限 256,000、检查点阈值 50,000；最小思考预算 32 不作为固定预算。英文/中文别名、GM 与历史记录保持档位独立；Extra/XHigh 不扩展到 Carbon、Argon。`model-quota.ts` 支持第四档 `xhigh`，UI 显示 Extra / 超高。
 
@@ -435,7 +434,7 @@ Antigravity Language Server (localhost)
 ## 构建与安装
 
 ```bash
-# Node.js：遵循 package.json engines；CI 使用 26.12.1
+# Node.js：遵循 package.json engines
 # 按锁文件安装依赖
 npm ci
 
@@ -456,7 +455,7 @@ npm run package
 
 当前版本的编译、回归测试、安装包一致性、原生 IDE 交互及平台运行结果统一记录在 [1.16.21 发布说明](releases/1.16.21.md)。发布验收必须使用重新打包并安装后的 1.16.21，而非旧插件或仅源码渲染结果。
 
-`.github/workflows/verify.yml` 配置 Windows、macOS、Linux 的编译和测试矩阵。平台解析器单元测试、原生 CI 和 IDE 实机验收分别报告；已配置工作流并不证明某次运行已通过。
+2026-11-13 按维护者要求停用 GitHub 自动编译/测试 CI，并移除 `.github/workflows/verify.yml`。本地编译、Vitest 和 IDE 安装验收继续保留；平台 mock 结果与 Windows/Linux 原生测试仍须区分。
 
 ### 1.16.21 Orchestrator 补充
 
