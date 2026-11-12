@@ -60,7 +60,7 @@ describe('independent Carbon standard API pricing', () => {
         expect(findPricingForDate('gemini-4-argon', {}, '2026-11-30')).toEqual(intro);
         expect(findPricingForDate('gemini-3.8-flash', {}, '2026-12-31')?.input).toBe(0.75);
         expect(findPricingForDate('gemini-3.8-flash', {}, '2027-01-01')?.input).toBe(1.5);
-        expect(PRICING_LAST_UPDATED).toBe('2026-11-11');
+        expect(PRICING_LAST_UPDATED).toBe('2026-11-13');
     });
 
     it.each(['gemini-4-carbon', 'Gemini 4 Carbon', 'GEMINI_4_CARBON'])(

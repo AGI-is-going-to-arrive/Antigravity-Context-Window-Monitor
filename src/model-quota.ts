@@ -1,6 +1,6 @@
 import { getModelSpecs, getQuotaPoolKey, resolveModelId, type ModelConfig, type ModelSpec } from './models';
 
-export type QuotaEffort = 'low' | 'medium' | 'high';
+export type QuotaEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
 export interface ModelQuotaReading {
     model: string;
@@ -32,7 +32,7 @@ export interface ModelQuotaGroup extends ModelQuotaMember {
     resetTime: string | null;
 }
 
-const EFFORTS: QuotaEffort[] = ['low', 'medium', 'high'];
+const EFFORTS: QuotaEffort[] = ['low', 'medium', 'high', 'xhigh'];
 const LEGACY_QUOTA_FAMILIES: Record<string, { name: string; effort: QuotaEffort }> = {
     MODEL_PLACEHOLDER_M84: { name: 'Gemini 3.5 Flash', effort: 'high' },
     MODEL_PLACEHOLDER_M133: { name: 'Gemini 3.5 Flash', effort: 'high' },
@@ -49,7 +49,7 @@ function quotaFamily(spec: ModelSpec): { name: string; effort: QuotaEffort } | u
     // M20's catalog says "low" but its actual effort is Medium. Live display
     // labels may be renamed/localized and never define the grouping identity.
     if (Object.hasOwn(LEGACY_QUOTA_FAMILIES, spec.placeholderId)) { return LEGACY_QUOTA_FAMILIES[spec.placeholderId]; }
-    const gemini = spec.modelId.match(/^gemini-(\d+(?:\.\d+)?)-(carbon|argon|flash|pro)-(low|medium|high)$/i);
+    const gemini = spec.modelId.match(/^gemini-(\d+(?:\.\d+)?)-(hydrogen|carbon|argon|flash|pro)-(low|medium|high|xhigh)$/i);
     if (gemini) {
         const family = gemini[2].toLowerCase();
         return { name: `Gemini ${gemini[1]} ${family[0].toUpperCase()}${family.slice(1)}`, effort: gemini[3].toLowerCase() as QuotaEffort };
@@ -65,9 +65,10 @@ function quotaFamily(spec: ModelSpec): { name: string; effort: QuotaEffort } | u
 
 /** Remove only the known effort and diagnostic suffix from the live label. */
 function familyLabel(label: string, effort: QuotaEffort): string {
-    const zh = { low: '低', medium: '中', high: '高' }[effort];
+    const labels = { low: 'low|低', medium: 'medium|中', high: 'high|高',
+        xhigh: 'xhigh|extra(?:[\\s_-]+high)?|超高|极高' }[effort];
     const clean = label.trim().replace(/（/g, '(').replace(/）/g, ')').replace(/\s*\((?:M\d+|OSS-120B)\)$/, '');
-    return clean.replace(new RegExp(`(?:\\s*\\(\\s*(?:${effort}|${zh})\\s*\\)|[\\s_-]+(?:${effort}|${zh}))$`, 'i'), '').trim() || label;
+    return clean.replace(new RegExp(`(?:\\s*\\(\\s*(?:${labels})\\s*\\)|[\\s_-]+(?:${labels}))$`, 'i'), '').trim() || label;
 }
 
 function readQuota(config: ModelConfig, model: string, effort?: QuotaEffort): ModelQuotaReading {

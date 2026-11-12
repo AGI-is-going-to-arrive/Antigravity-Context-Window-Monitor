@@ -191,17 +191,18 @@ function pickPoolRepresentative<T extends QuotaSelectable>(members: T[], current
     })[0];
 }
 
-/** Numeric generation first; verified Carbon succeeds Argon within Gemini 4. */
+/** Numeric generation first; Hydrogen succeeds Carbon then Argon within Gemini 4. */
 function generationScore(label: string): number {
     const m = /(?:^|\s)(\d+)(?:\.(\d+))?(?=\s|$|\()/.exec(label);
     if (!m) {
         return 0;
     }
-    // A fractional tie-break keeps a future 4.1 ahead of Carbon. Match complete
+    // Fractional tie-breaks keep a future 4.1 ahead of Hydrogen. Match complete
     // names and known effort labels so Carbonated/Highest cannot inherit it.
     const clean = label.trim().replace(/（/g, '(').replace(/）/g, ')');
     const carbon = /^gemini\s+4\s+carbon(?:\s+(?:low|medium|high|低|中|高)|\s*\(\s*(?:low|medium|high|低|中|高)\s*\))?(?:\s+\(M\d+\))?$/i.test(clean);
-    return Number(m[1]) * 1000 + Number(m[2] || 0) + (carbon ? 0.5 : 0);
+    const hydrogen = /^gemini\s+4\s+hydrogen(?:\s+(?:low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)|\s*\(\s*(?:low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)\s*\))?(?:\s+\(M\d+\))?$/i.test(clean);
+    return Number(m[1]) * 1000 + Number(m[2] || 0) + (hydrogen ? 0.75 : carbon ? 0.5 : 0);
 }
 
 /** Suffix marking how many models a collapsed pool row stands for, e.g. " · 11". */
