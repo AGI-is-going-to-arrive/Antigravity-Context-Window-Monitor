@@ -6,7 +6,7 @@
 
 import type { GMSummary, GMModelStats } from './gm-tracker';
 import type { LedgerAccountBucket, LedgerModelStats } from './daily-ledger';
-import { normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDisplayName, isImageGenerationModel } from './models';
+import { normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDisplayName, getModelSpecs, isImageGenerationModel } from './models';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -45,7 +45,7 @@ export interface ModelCostRow {
 //        Gemini cacheRead = from official table; no separate cacheWrite pricing
 // Thinking: = output price (Claude extended thinking / Gemini reasoning output)
 
-export const PRICING_LAST_UPDATED = '2026-11-11';
+export const PRICING_LAST_UPDATED = '2026-11-13';
 
 export type PricingDate = string | number | Date;
 const CARBON_RATE_CHANGE = Date.parse('2026-12-01T00:00:00Z');
@@ -71,6 +71,10 @@ function pricingTimestamp(at: PricingDate): number | null {
 }
 
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
+    // https://aistudio.google.com/docs/pricing#gemini-4-hydrogen (2026-11-13).
+    // Standard API reference, all four efforts. No published scheduled cutover;
+    // implicit cache reads only, no explicit caching or cache-write charge.
+    'gemini-4-hydrogen': { input: 1.50, output: 7.50, cacheRead: 0.075, cacheWrite: 0, thinking: 7.50 },
     // Carbon has its own verified schedule, independent of Argon's equal rates.
     // https://aistudio.google.com/docs/pricing#gemini-4-carbon (2026-11-11).
     // Standard API reference; implicit cache reads only, no explicit cache writes.
@@ -127,8 +131,8 @@ export function findPricing(
     // family's price. Exact-key prices above remain intentional user overrides;
     // older families retain their existing preview/latest/dated alias support.
     const clean = responseModel.trim();
-    if (/^gemini[\s_-]+4[\s_-]+(?:carbon|argon)/i.test(clean)
-        && !/^gemini[\s_-]+4[\s_-]+(?:carbon|argon)$/i.test(clean)
+    if (/^gemini[\s_-]+4[\s_-]+(?:hydrogen|carbon|argon)/i.test(clean)
+        && !/^gemini[\s_-]+4[\s_-]+(?:hydrogen|carbon|argon)$/i.test(clean)
         && !modelId) { return null; }
     const imageModel = isImageGenerationModel(responseModel);
     const candidates: string[] = [];
@@ -153,10 +157,21 @@ export function findPricing(
                 ? candidate.slice(normalizedKey.length + 1) : '';
             // Only model variants may extend a price key. A numeric continuation
             // is another version: Sonnet 5.5 cannot use a Sonnet 5 row.
-            const isVariant = /^(?:(?:low|medium|high|thinking|tiered|preview|latest)(?:-|$)|\d{8}(?:-|$))/.test(suffix);
+            const isVariant = /^(?:(?:low|medium|high|thinking|tiered|preview|latest)(?:-|$)|\d{8}(?:-|$))/.test(suffix)
+                || (normalizedKey === 'gemini-4-hydrogen' && /^(?:xhigh|extra(?:-high)?)$/.test(suffix));
             if (normalizedKey && (candidate === normalizedKey || isVariant)) {
                 return pricing;
             }
+        }
+    }
+    // Account labels are authoritative for display, but they are not pricing
+    // identities. Recover the catalog key when a renamed known placeholder did
+    // not match; retain exact/custom display-name prices above. The identity
+    // check also prevents stale catalog metadata from pricing a renumbered ID.
+    if (typeof modelId === 'string') {
+        const catalogId = getModelSpecs().find(spec => spec.placeholderId === modelId)?.modelId;
+        if (catalogId && catalogId !== responseModel && resolveModelId(catalogId) === modelId) {
+            return findPricing(catalogId, table);
         }
     }
     return null;

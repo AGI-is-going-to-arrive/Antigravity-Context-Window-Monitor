@@ -226,8 +226,8 @@ export function buildAboutTabContent(): string {
         </h3>
         <div class="about-info-box about-info-compat">
             ${tBi(
-        '<p><strong>Verified for extension 1.16.20:</strong> Antigravity IDE 2.6.0 on macOS, using the installed VSIX on 2026-11-11.</p><p><strong>Earlier contributor checks:</strong> v1.18.4, v1.19.6, v1.20.6, and v1.23.2.</p><p>Windows and Linux have automated compile and regression coverage; this release\'s native IDE verification was performed on macOS. Future IDE updates may change internal APIs. See the Disclaimer below for details.</p>',
-        '<p><strong>扩展 1.16.20 本次验证：</strong>2026-11-11 在 macOS 的 Antigravity IDE 2.6.0 中安装新 VSIX 并完成实测。</p><p><strong>此前贡献者验证版本：</strong>v1.18.4、v1.19.6、v1.20.6、v1.23.2。</p><p>Windows 和 Linux 有自动编译及回归测试覆盖；本次原生 IDE 验证环境为 macOS。未来 IDE 更新可能变更内部 API，详见下方免责声明。</p>',
+        '<p><strong>Verified for extension 1.16.21:</strong> Antigravity IDE 2.6.0 on macOS, using the installed VSIX on 2026-11-13. Eight live Hydrogen requests and three display languages were checked.</p><p><strong>Earlier contributor checks:</strong> v1.18.4, v1.19.6, v1.20.6, and v1.23.2.</p><p>Windows and Linux compatibility is covered by platform regression tests; native IDE validation is performed on macOS. Future IDE updates may change internal APIs. See the Disclaimer below for details.</p>',
+        '<p><strong>扩展 1.16.21 本次验证：</strong>2026-11-13 在 macOS 的 Antigravity IDE 2.6.0 中安装新 VSIX，完成八次 Hydrogen 真实请求及三种显示语言检查。</p><p><strong>此前贡献者验证版本：</strong>v1.18.4、v1.19.6、v1.20.6、v1.23.2。</p><p>Windows 和 Linux 兼容性由平台回归测试覆盖；原生 IDE 验证环境为 macOS。未来 IDE 更新可能变更内部 API，详见下方免责声明。</p>',
     )}
         </div>
     </div>`;

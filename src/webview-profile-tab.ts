@@ -198,13 +198,13 @@ function buildAccountSection(userInfo: UserStatusInfo, billingDay?: number): str
 }
 
 function quotaEffortLabel(effort: QuotaEffort): string {
-    return { low: tBi('Low', '低'), medium: tBi('Medium', '中'), high: tBi('High', '高') }[effort];
+    return { low: tBi('Low', '低'), medium: tBi('Medium', '中'), high: tBi('High', '高'), xhigh: tBi('Extra', '超高') }[effort];
 }
 
 function quotaEffortsLabel(efforts: QuotaEffort[]): string {
     return tBi(
-        efforts.map(e => ({ low: 'Low', medium: 'Medium', high: 'High' })[e]).join(' · '),
-        efforts.map(e => ({ low: '低', medium: '中', high: '高' })[e]).join(' · '),
+        efforts.map(e => ({ low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra' })[e]).join(' · '),
+        efforts.map(e => ({ low: '低', medium: '中', high: '高', xhigh: '超高' })[e]).join(' · '),
     );
 }
 
