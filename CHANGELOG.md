@@ -1,5 +1,19 @@
 # 变更日志 / Changelog
 
+## [1.17.1] - 2026-11-13
+
+### English
+
+- Support Orchestrator (Carbon) M667 and Orchestrator (Argon) M681 with verified distinct output limits and their shared hidden M669 execution model. Preserve the old Orchestrator alias and history.
+- Group both coordinators into Gemini shared quota while retaining independent usage and custom prices. Prevent the legacy Orchestrator custom rate from leaking into Argon; expose all three price editors even before usage exists.
+- Add split-model, alias, malformed-input, live-metadata, account-catalog, pricing, persistence and three-language regressions. Repackage and install 1.17.1 for actual IDE testing; see [validation and limitations](docs/releases/1.17.1.md#validation).
+
+### 中文
+
+- 支持 Orchestrator (Carbon) M667 与 Orchestrator (Argon) M681，核实不同输出上限及共享隐藏执行模型 M669，保留旧 Orchestrator 别名和历史。
+- 两种协调模型均归入 Gemini 共享额度，独立保留用量和自定义价格；防止旧 Orchestrator 自定义费率串入 Argon，无调用时也提供三个独立价格编辑器。
+- 增加模型拆分、别名、异常输入、实时元数据、账号目录、计价、持久化和三语言回归。重新打包安装 1.17.1 做真实 IDE 测试；详见[验证与限制](docs/releases/1.17.1.md#验证)。
+
 ## [1.17.0] - 2026-11-13
 
 ### English

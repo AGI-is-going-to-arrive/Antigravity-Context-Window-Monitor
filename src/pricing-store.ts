@@ -131,6 +131,9 @@ export function findPricing(
     // family's price. Exact-key prices above remain intentional user overrides;
     // older families retain their existing preview/latest/dated alias support.
     const clean = responseModel.trim();
+    if (/^(?:orchestrator|编排器|协调器|gemini[-_ ]pro[-_ ]orchestrator)/i.test(clean) && !modelId) {
+        return null;
+    }
     if (/^gemini[\s_-]+4[\s_-]+(?:hydrogen|carbon|argon)/i.test(clean)
         && !/^gemini[\s_-]+4[\s_-]+(?:hydrogen|carbon|argon)$/i.test(clean)
         && !modelId) { return null; }
@@ -198,7 +201,10 @@ function kebabCandidates(displayName: string): string[] {
         const base = s.replace(/[()]/g, '').trim().toLowerCase().replace(/[\s_]+/g, '-');
         return dashDecimals ? base.replace(/(\d+)\.(\d+)/g, '$1-$2') : base;
     };
-    const withoutTier = displayName.replace(/\s*\([^)]*\)\s*$/, '').trim();
+    // Carbon/Argon in coordinator names are identities, not removable efforts.
+    // Removing either would make an old custom "Orchestrator" rate price Argon.
+    const withoutTier = /^(?:orchestrator|编排器|协调器)\s*[（(]/i.test(displayName.trim())
+        ? displayName : displayName.replace(/\s*\([^)]*\)\s*$/, '').trim();
     const out = [kebab(displayName, true), kebab(displayName, false)];
     if (withoutTier && withoutTier !== displayName) {
         out.push(kebab(withoutTier, false), kebab(withoutTier, true));

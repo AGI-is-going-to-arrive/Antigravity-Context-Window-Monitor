@@ -19,7 +19,7 @@
 
 ---
 
-**1.17.0：** 支持 Gemini 4 Hydrogen 四档及 Orchestrator 协调/执行模型，包含独立身份、上下文、配额、计价和三语言 UI；本次补充真实委派、重复 executionId、上下文切换与历史保留测试。完整结果及平台范围见[发布验收](docs/releases/1.17.0.md#验证)。
+**1.17.1：** 支持 Orchestrator (Carbon) 与 Orchestrator (Argon)，核实独立身份与输出上限、共享隐藏执行模型、独立自定义计价、历史兼容及英文/中文/双语 UI。结果及平台范围见[发布验收](docs/releases/1.17.1.md#验证)。
 
 **验证方式：** GitHub 自动编译/测试 CI 已于 2026-11-13 按维护者要求停用并移除；保留本地 `npm run compile`、`npm test` 和 IDE 安装验收。历史 CI 失败/取消记录不代表当前构建通过托管检查。
 
@@ -96,15 +96,16 @@
 
 ### Orchestrator
 
-Orchestrator（`M667` / `gemini-pro-orchestrator`）现已完整注册，包含冷启动/历史身份和上下文兜底。IDE 将 `M669` / `gemini-flash-worker-agy` 配置为执行模型；它是隐藏执行模型，不新增为可选聊天档位。模型信息展示中英文委派关系；协调和执行调用分别统计，工作流复用 executionId 时仍按步骤正确恢复时间、匹配调用，底层模型切换不误报压缩。两者的独立 API 价格尚未核实，价格保持未知并支持独立自定义，不直接套用 Carbon/Hydrogen 费率。
+Orchestrator (Carbon) 沿用 `M667` / `gemini-pro-orchestrator`；Orchestrator (Argon) 新增 `M681` / `gemini-pro-orchestrator-argon`。旧名 Orchestrator 仍指向 Carbon，保留历史与自定义费率。两者均配置隐藏执行模型 `M669` / `gemini-flash-worker-agy`，模型信息展示两条委派关系，不增加可选执行模型。真实调用独立记账，模型切换不视为压缩。独立 API 价格仍明确未知且可分别编辑，不套用普通 Carbon/Argon/Hydrogen 费率。
 
 ### 当前 IDE 模型元数据
 
-2026-11-13 本地 `GetUserStatus` 与 `GetAvailableModels` 响应包含 **21 个聊天条目：20 个已知思考档位，以及 Orchestrator**。Orchestrator（`M667`）及其执行模型（`M669`）归入 Gemini 共享额度池，调用和计价身份仍独立保留。下表数值**由 IDE 报告**，不代表公开 API 的限额；“压缩上限”和“检查点阈值”是不同设置。
+2026-11-13 本地 `GetUserStatus` 与 `GetAvailableModels` 响应包含 **22 个聊天条目：20 个思考档位，以及 Orchestrator (Carbon) 和 Orchestrator (Argon)**。两种协调模型及其执行模型均归入 Gemini 共享额度池，调用和计价身份保持独立。下表数值**由 IDE 报告**，不代表公开 API 限额；“压缩上限”和“检查点阈值”是不同设置。
 
 | 聊天模型 | 档位与内部 ID | 模型上下文 | 最大输出 | 压缩上限 | 检查点阈值 |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Orchestrator | `M667` | 1,048,576 | 262,144 | 256,000 | 50,000 |
+| Orchestrator (Carbon) | `M667` | 1,048,576 | 262,144 | 256,000 | 50,000 |
+| Orchestrator (Argon) | `M681` | 1,048,576 | 65,536 | 256,000 | 50,000 |
 | Gemini 4 Hydrogen | Low / Medium / High / Extra：`M527` / `M526` / `M525` / `M528` | 1,048,576 | 262,144 | 256,000 | 50,000 |
 | Gemini 4 Carbon | Low / Medium / High：`M438` / `M437` / `M427` | 1,048,576 | 262,144 | 256,000 | 50,000 |
 | Gemini 4 Argon | Low / Medium / High：`M419` / `M418` / `M417` | 1,048,576 | 65,536 | 256,000 | 50,000 |
@@ -119,7 +120,7 @@ Orchestrator（`M667` / `gemini-pro-orchestrator`）现已完整注册，包含�
 
 `Gemini 4 CarbonHigh`、未配对括号及不支持的档位名称不会误套 Carbon 身份或家族价格。冲突的学习别名不能通过大写形式或中文标签覆盖已注册档位。
 
-**模型配额**将 21 个可选聊天条目合并为两张共享池卡片：**Gemini** 包含 Hydrogen 四档、Carbon/Argon/Flash 各三档，再加 Orchestrator，共 14 个可选条目；**Claude / GPT** 包含 Opus、Sonnet、GPT-OSS，共七档。Orchestrator 列在 Gemini 池内，不伪造思考档位；隐藏执行模型不额外增加选择器行。每张卡片列出实际可用的模型家族和思考档位。配额不求和、不取平均：数据不一致时展示范围及逐模型明细，缺失数据明确标注。未知模型和图片生成身份与两个已知聊天池分开。**模型信息**、调用统计及计价仍独立保留每档身份。
+**模型配额**将 22 个可选聊天条目合并为两张共享池卡片：**Gemini** 包含 Hydrogen 四档、Carbon/Argon/Flash 各三档，再加两种 Orchestrator，共 15 个可选条目；**Claude / GPT** 包含 Opus、Sonnet、GPT-OSS，共七档。两种 Orchestrator 列在 Gemini 池内，不伪造思考档位；隐藏执行模型不额外增加选择器行。每张卡片列出实际可用的模型家族和思考档位。配额不求和、不取平均：数据不一致时展示范围及逐模型明细，缺失数据明确标注。未知模型和图片生成身份与两个已知聊天池分开。**模型信息**、调用统计及计价仍独立保留每档身份。
 
 ### 图片生成模型
 
@@ -169,7 +170,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 1. **安装**:
    * **OpenVSX**: 直接从 [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装。
-   * **手动安装**: 通过“扩展 → 从 VSIX 安装”安装 `antigravity-context-monitor-1.17.0.vsix`，随后重载窗口，并在扩展详情中确认版本 **1.17.0**。
+   * **手动安装**: 通过“扩展 → 从 VSIX 安装”安装 `antigravity-context-monitor-1.17.1.vsix`，随后重载窗口，并在扩展详情中确认版本 **1.17.1**。
 2. **查看状态**: 右下角状态栏显示当前上下文使用情况；没有活跃对话时显示**无活跃会话**，不再沿用历史模型的旧上限。首次模型回复前即可从用户输入配置识别已选择的思考档位。
 3. **悬停详情**: 将鼠标悬停在状态栏项上，查看详细信息（模型、输入/输出 Token、剩余容量、压缩状态、图片生成步骤、每模型配额摘要，以及最近 checkpoint 的影子模型标识等）。
 
@@ -239,7 +240,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 > [!IMPORTANT]
 > **当前 Antigravity IDE 的 "LS not found"**
-> 新版 IDE 使用 `agy --hub` 后端，不再运行名为 `language_server_*` 的进程。监控器自 1.16.19 起兼容两种架构，支持 `--csrf_token=value` 和空格分隔参数，先检查声明的 hub 端口，再使用平台套接字发现。安装 `antigravity-context-monitor-1.17.0.vsix` 后重载窗口。后端已连接但没有已加载对话时显示**无活跃会话**，不是发现失败；IDE 中仍可能保存着历史对话。未打开文件夹也不代表后端不可用。
+> 新版 IDE 使用 `agy --hub` 后端，不再运行名为 `language_server_*` 的进程。监控器自 1.16.19 起兼容两种架构，支持 `--csrf_token=value` 和空格分隔参数，先检查声明的 hub 端口，再使用平台套接字发现。安装 `antigravity-context-monitor-1.17.1.vsix` 后重载窗口。后端已连接但没有已加载对话时显示**无活跃会话**，不是发现失败；IDE 中仍可能保存着历史对话。未打开文件夹也不代表后端不可用。
 >
 > **Windows 发现诊断**
 > 若状态栏卡在 `LS not found`，请打开 **Output → "Antigravity Context Monitor"**，查看 `PATH check:` 那一行——扩展现在会记录究竟是哪一步发现失败。自 v1.16.13 起，扩展以 `%SystemRoot%` 绝对路径调用 `wmic`/`powershell.exe`/`netstat`，因此 Extension Host 的 `PATH` 被裁剪（例如 Win11 24H2+ 移除 WMIC 后缺少 `System32\wbem`）不再导致发现失败。
@@ -277,4 +278,4 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.17.0 — [发布说明](docs/releases/1.17.0.md)
+**版本 / Version**: 1.17.1 — [发布说明](docs/releases/1.17.1.md)

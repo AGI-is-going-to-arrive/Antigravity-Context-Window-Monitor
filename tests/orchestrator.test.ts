@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 
 const identities = [
-    { id: coordinator, catalog: 'gemini-pro-orchestrator', label: 'Orchestrator' },
+    { id: coordinator, catalog: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' },
     { id: worker, catalog: 'gemini-flash-worker-agy', label: 'Gemini Flash (Orchestrator Worker)' },
 ];
 describe('Orchestrator and catalog-only worker', () => {
@@ -52,7 +52,7 @@ describe('Orchestrator and catalog-only worker', () => {
         'gemini-flash-worker-agy-high', 'Gemini Flash', 'gemini-pro-orchestrator<script>'])(
         'does not invent an effort/alias for %s', name => expect(resolveModelId(name)).toBeUndefined());
     it.each(['编排器', '协调器', 'ORCHESTRATOR', ' Orchestrator (M667) '])('normalizes %s', name => {
-        expect(normalizeModelDisplayName(name)).toBe('Orchestrator');
+        expect(normalizeModelDisplayName(name)).toBe('Orchestrator (Carbon)');
     });
     it('does not let routing or conflicting response samples rewrite either actual model', () => {
         registerResponseModelAlias('gemini-pro-orchestrator', worker);
@@ -74,7 +74,7 @@ describe('Orchestrator and catalog-only worker', () => {
         expect(groups).toHaveLength(1);
         expect(groups.find(g => g.pool === 'gemini')!.readings).toHaveLength(3);
         expect(groups[0].minimum).toBe(0.8);
-        expect(groups[0].members.find(m => m.label === 'Orchestrator')?.efforts).toEqual([]);
+        expect(groups[0].members.find(m => m.label === 'Orchestrator (Carbon)')?.efforts).toEqual([]);
     });
 });
 
@@ -252,5 +252,5 @@ it('keeps Orchestrator in Gemini when readings differ or are missing without add
     delete orchestrator.quotaInfo;
     const groups = groupModelQuotas([hydrogen, orchestrator]);
     expect(groups).toHaveLength(1); expect(groups[0].missingQuota).toBe(true);
-    expect(groups[0].members.find(m => m.label === 'Orchestrator')?.efforts).toEqual([]);
+    expect(groups[0].members.find(m => m.label === 'Orchestrator (Carbon)')?.efforts).toEqual([]);
 });
