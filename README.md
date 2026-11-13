@@ -19,7 +19,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ---
 
-**1.17.0:** Supports all four Gemini 4 Hydrogen efforts and Orchestrator coordinator/execution models, including separate identities, context, quota, pricing and three-language UI. This amendment adds real delegation, reused execution-ID, context-transition and history-retention verification. See [release validation](docs/releases/1.17.0.md#validation) for results and platform scope.
+**1.17.1:** Supports Orchestrator (Carbon) and Orchestrator (Argon), with verified separate identities and output limits, a shared hidden execution model, independent custom prices, historical compatibility, and English/Chinese/bilingual UI. See [release validation](docs/releases/1.17.1.md#validation) for results and platform scope.
 
 **Validation:** GitHub build/test CI was disabled and removed at the maintainer's request on 2026-11-13. Local `npm run compile`, `npm test`, and installed-IDE validation remain available. Historical failed/cancelled CI runs are not passing checks for the current build.
 
@@ -96,15 +96,16 @@ The Models tab follows the signed-in account's live chat picker and its separate
 
 ### Orchestrator
 
-Orchestrator (`M667` / `gemini-pro-orchestrator`) now has registered cold-start and historical identities and context fallbacks. The IDE configures `M669` / `gemini-flash-worker-agy` as its execution model; this hidden worker is not an additional selectable chat tier. Model Info shows the localized delegation relationship. Coordinator and worker calls are counted separately, reused workflow execution IDs are matched with steps for accurate timestamps/enrichment, and underlying-model transitions are not reported as compression. Standalone API prices remain unverified and explicitly unknown, with independent custom editors; Carbon/Hydrogen rates are not inferred.
+Orchestrator (Carbon) retains `M667` / `gemini-pro-orchestrator`; Orchestrator (Argon) adds `M681` / `gemini-pro-orchestrator-argon`. The old bare Orchestrator name remains an alias for Carbon, preserving history and custom prices. Both configure the hidden `M669` / `gemini-flash-worker-agy` worker. Model Info shows both delegation relationships without adding a selectable worker. Actual calls retain separate identities; model transitions do not imply compression. Standalone API prices remain explicitly unknown and independently editable; ordinary Carbon/Argon/Hydrogen rates are not inferred.
 
 ### Current IDE model metadata
 
-The local `GetUserStatus` and `GetAvailableModels` responses on 2026-11-13 contained **21 chat entries: 20 known effort variants plus Orchestrator**. Orchestrator (`M667`) and its delegated worker (`M669`) belong to the Gemini shared quota pool; their call and pricing identities remain separate. Values below are **reported by the IDE**, not promises about public API limits. “Compression limit” and “checkpoint threshold” are separate settings.
+The local `GetUserStatus` and `GetAvailableModels` responses on 2026-11-13 contained **22 chat entries: 20 effort variants plus Orchestrator (Carbon) and Orchestrator (Argon)**. Both coordinators and their delegated worker belong to the Gemini shared quota pool; call and pricing identities remain separate. Values below are **reported by the IDE**, not public API guarantees. “Compression limit” and “checkpoint threshold” are separate settings.
 
 | Chat model | Tiers and internal IDs | Model context | Max output | Compression limit | Checkpoint threshold |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Orchestrator | `M667` | 1,048,576 | 262,144 | 256,000 | 50,000 |
+| Orchestrator (Carbon) | `M667` | 1,048,576 | 262,144 | 256,000 | 50,000 |
+| Orchestrator (Argon) | `M681` | 1,048,576 | 65,536 | 256,000 | 50,000 |
 | Gemini 4 Hydrogen | Low / Medium / High / Extra: `M527` / `M526` / `M525` / `M528` | 1,048,576 | 262,144 | 256,000 | 50,000 |
 | Gemini 4 Carbon | Low / Medium / High: `M438` / `M437` / `M427` | 1,048,576 | 262,144 | 256,000 | 50,000 |
 | Gemini 4 Argon | Low / Medium / High: `M419` / `M418` / `M417` | 1,048,576 | 65,536 | 256,000 | 50,000 |
@@ -119,7 +120,7 @@ Tier identities stay distinct across English/Chinese labels, context tracking, G
 
 Malformed names such as `Gemini 4 CarbonHigh`, unmatched parentheses, and unsupported effort names do not acquire Carbon's identity or family price. Conflicting learned aliases cannot overwrite a registered tier through uppercase or Chinese label variants.
 
-**Model Quota** groups the 21 selectable chat entries into two shared-pool cards: **Gemini** contains Hydrogen (four tiers), Carbon, Argon, and Flash (three each), plus Orchestrator, totaling 14 selectable entries; **Claude / GPT** contains Opus, Sonnet, and GPT-OSS (seven tiers). Orchestrator is listed inside Gemini without an invented effort label; the hidden worker adds no picker row. Each card lists its available model families and effort tiers. Percentages are not summed or averaged: inconsistent values use ranges and per-model details, and missing data remains explicit. Unknown and image-generation identities stay separate from the two known chat pools. **Model Info**, call statistics, and pricing keep individual effort identities.
+**Model Quota** groups the 22 selectable chat entries into two shared-pool cards: **Gemini** contains Hydrogen (four tiers), Carbon, Argon, and Flash (three each), plus both Orchestrators, totaling 15 selectable entries; **Claude / GPT** contains Opus, Sonnet, and GPT-OSS (seven tiers). Both Orchestrators are listed inside Gemini without an invented effort label; the hidden worker adds no picker row. Each card lists its available model families and effort tiers. Percentages are not summed or averaged: inconsistent values use ranges and per-model details, and missing data remains explicit. Unknown and image-generation identities stay separate from the two known chat pools. **Model Info**, call statistics, and pricing keep individual effort identities.
 
 ### Image-generation model
 
@@ -169,7 +170,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 1. **Install**:
    * **OpenVSX**: Install directly from [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
-   * **Manual**: Install `antigravity-context-monitor-1.17.0.vsix` via Extensions → Install from VSIX, then reload the window and confirm version **1.17.0** in extension details.
+   * **Manual**: Install `antigravity-context-monitor-1.17.1.vsix` via Extensions → Install from VSIX, then reload the window and confirm version **1.17.1** in extension details.
 2. **Status Bar**: The bottom-right status bar shows current context usage. With no active conversation it shows **No active conversation**, rather than a saved model's old limit. The selected effort tier is recognized from the user-input configuration before the first model response.
 3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, and the latest checkpoint shadow model when present).
 
@@ -239,7 +240,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 > [!IMPORTANT]
 > **"LS not found" in the current Antigravity IDE**
-> Newer IDE builds run an `agy --hub` backend instead of a process named `language_server_*`. Since version 1.16.19, the monitor discovers both architectures, accepts `--csrf_token=value` and space-separated flags, and checks the declared hub port before using platform socket discovery. Install `antigravity-context-monitor-1.17.0.vsix` and reload the window. A connected backend with no loaded conversations displays **No active conversation**, not a discovery failure; saved history may still exist in the IDE. Opening the IDE without a folder does not by itself mean the backend is unavailable.
+> Newer IDE builds run an `agy --hub` backend instead of a process named `language_server_*`. Since version 1.16.19, the monitor discovers both architectures, accepts `--csrf_token=value` and space-separated flags, and checks the declared hub port before using platform socket discovery. Install `antigravity-context-monitor-1.17.1.vsix` and reload the window. A connected backend with no loaded conversations displays **No active conversation**, not a discovery failure; saved history may still exist in the IDE. Opening the IDE without a folder does not by itself mean the backend is unavailable.
 >
 > **Windows discovery diagnostics**
 > If the status bar is stuck on `LS not found`, open **Output → "Antigravity Context Monitor"** and read the `PATH check:` line — the extension now logs exactly which discovery step failed. Since v1.16.13 it invokes `wmic`/`powershell.exe`/`netstat` by absolute `%SystemRoot%` path, so a truncated Extension Host `PATH` (e.g. missing `System32\wbem` on Win11 24H2+ where WMIC is removed) no longer breaks discovery.
@@ -277,4 +278,4 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.17.0 — [Release notes](docs/releases/1.17.0.md)
+**Version**: 1.17.1 — [Release notes](docs/releases/1.17.1.md)

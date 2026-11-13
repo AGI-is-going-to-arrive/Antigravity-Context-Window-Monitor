@@ -4,7 +4,7 @@ This document explains how the Antigravity Context Window Monitor plugin works. 
 
 本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 面板调度）、`activity-tracker.ts`（模型活动追踪）、`activity-panel.ts`（GM Data UI）、`pricing-panel.ts`（Cost 与 Models UI）、`quota-tracker.ts`（配额追踪）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。WebView 面板拆分为：`activity-panel.ts`、`pricing-panel.ts`、`webview-chat-history-tab.ts`、`webview-models-tab.ts`、`webview-profile-tab.ts`、`webview-settings-tab.ts`、`webview-calendar-tab.ts`、`webview-about-tab.ts`、`webview-script.ts`、`webview-styles.ts`、`webview-helpers.ts`、`webview-icons.ts`。
 
-Current release / 当前版本: **1.17.0**. See [release notes / 发布说明](releases/1.17.0.md).
+Current release / 当前版本: **1.17.1**. See [release notes / 发布说明](releases/1.17.1.md).
 
 ---
 
@@ -257,19 +257,19 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
 
 ## 🤖 7. Model Registry and Model Cards / 模型注册与模型信息卡片
 
-### Orchestrator amendment (v1.17.0)
+### Orchestrator Carbon / Argon (v1.17.1)
 
 #### English
 
-The live IDE registers `MODEL_PLACEHOLDER_M667` / `gemini-pro-orchestrator` as the selectable coordinator and `MODEL_PLACEHOLDER_M669` / `gemini-flash-worker-agy` as its catalog-only execution worker. Both report 1,048,576 context, 262,144 output, thinking level 3, and 256,000 / 50,000 compression parameters; startup uses 255,000. Minimum thinking budgets 128 / 32 are not fixed request budgets. `ModelSpec.executionModelId` captures the validated `plan-execute-config.executionModel` relationship. Complete metadata with no route clears it; partial/malformed metadata preserves the last verified route. UI describes the relationship without manufacturing an extra picker item or call.
+The live IDE registers Orchestrator (Carbon) `MODEL_PLACEHOLDER_M667` / `gemini-pro-orchestrator` and Orchestrator (Argon) `MODEL_PLACEHOLDER_M681` / `gemini-pro-orchestrator-argon` as selectable coordinators and `MODEL_PLACEHOLDER_M669` / `gemini-flash-worker-agy` as its catalog-only execution worker. All three report 1,048,576 context, thinking level 3, and 256,000 / 50,000 compression parameters. Carbon/worker output is 262,144; Argon output is 65,536; startup uses 255,000. Minimum thinking budgets 128 / 32 are not fixed request budgets. `ModelSpec.executionModelId` captures the validated `plan-execute-config.executionModel` relationship. Complete metadata with no route clears it; partial/malformed metadata preserves the last verified route. UI describes the relationship without manufacturing an extra picker item or call.
 
-The actual Orchestrator workflow reuses one execution ID for several planner calls. Timestamp matching intersects execution and step identity; embedded-call enrichment uses steps, preserving unique legacy fallbacks and rejecting ambiguous matches. The context reduction heuristic compares the measured model (`lastModelUsage.model`) as well as the displayed model so delegation is not mistaken for compression. Explicit Gemini quota keys group M667/M669 with the Gemini allowance while preserving independent call identities. Actual calls, not configured routes, drive counts and costs. Standalone rates remain unverified and customizable separately.
+The actual Orchestrator workflow reuses one execution ID for several planner calls. Timestamp matching intersects execution and step identity; embedded-call enrichment uses steps, preserving unique legacy fallbacks and rejecting ambiguous matches. The context reduction heuristic compares the measured model (`lastModelUsage.model`) as well as the displayed model so delegation is not mistaken for compression. Explicit Gemini quota keys group M667/M681/M669 with the Gemini allowance while preserving independent call identities. Actual calls, not configured routes, drive counts and costs. Standalone rates remain unverified and customizable separately, including empty history. Legacy `Orchestrator` rates resolve only to Carbon; `(Carbon)` and `(Argon)` are identity suffixes and must never be stripped as effort labels during pricing lookup.
 
 #### 中文
 
-实时 IDE 的可选协调模型为 `MODEL_PLACEHOLDER_M667` / `gemini-pro-orchestrator`，目录中的隐藏执行模型为 `MODEL_PLACEHOLDER_M669` / `gemini-flash-worker-agy`。两者均报告上下文 1,048,576、最大输出 262,144、思考力度 3，以及 256,000 / 50,000 压缩参数；启动兜底为 255,000。最小思考预算 128 / 32 不是固定请求预算。`ModelSpec.executionModelId` 保存经验证的 `plan-execute-config.executionModel` 关系；完整元数据不再含关系时清除，部分/异常数据保留已验证关系。界面说明关系，不额外制造选择器档位或调用。
+实时 IDE 的可选协调模型为 Orchestrator (Carbon) `MODEL_PLACEHOLDER_M667` / `gemini-pro-orchestrator` 和 Orchestrator (Argon) `MODEL_PLACEHOLDER_M681` / `gemini-pro-orchestrator-argon`，目录中的隐藏执行模型为 `MODEL_PLACEHOLDER_M669` / `gemini-flash-worker-agy`。三者均报告上下文 1,048,576、思考力度 3，以及 256,000 / 50,000 压缩参数；Carbon/执行模型最大输出 262,144，Argon 为 65,536；启动兜底为 255,000。最小思考预算 128 / 32 不是固定请求预算。`ModelSpec.executionModelId` 保存经验证的 `plan-execute-config.executionModel` 关系；完整元数据不再含关系时清除，部分/异常数据保留已验证关系。界面说明关系，不额外制造选择器档位或调用。
 
-实测 Orchestrator 在多个 planner 调用中复用 execution ID，因此时间恢复同时匹配 execution 与步骤，嵌入调用补全按步骤关联，仅保留唯一旧数据兜底并拒绝歧义。上下文下降判断同时比较实测模型 `lastModelUsage.model` 与显示模型，避免委派误报压缩。M667/M669 使用明确的 Gemini 额度键，与 Gemini 共享额度，同时保留独立调用身份。计数和费用由实际调用决定，不由配置关系决定；独立费率尚未核实，支持分别自定义。
+实测 Orchestrator 在多个 planner 调用中复用 execution ID，因此时间恢复同时匹配 execution 与步骤，嵌入调用补全按步骤关联，仅保留唯一旧数据兜底并拒绝歧义。上下文下降判断同时比较实测模型 `lastModelUsage.model` 与显示模型，避免委派误报压缩。M667/M681/M669 使用明确的 Gemini 额度键，与 Gemini 共享额度，同时保留独立调用身份。计数和费用由实际调用决定，不由配置关系决定；独立费率尚未核实，支持分别自定义（包括无历史调用时）。旧 `Orchestrator` 费率仅归 Carbon；计价匹配不能把 `(Carbon)` / `(Argon)` 身份后缀当作思考力度删除。
 
 ### Gemini 4 Hydrogen (v1.17.0)
 
@@ -281,7 +281,7 @@ The running IDE's `GetUserStatus` and `GetAvailableModels` metadata, checked 202
 
 [Hydrogen Standard API pricing](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen), checked 2026-11-13, is $1.50 input / $7.50 output including thinking / $0.075 implicit cache reads per million tokens for all four tiers. Hydrogen has an independent fixed reference rate and does not inherit Carbon/Argon's December cutover. If an account changes a known model's display label, `findPricing()` recovers its catalog identity after exact/custom display-name matching; the placeholder/catalog identity must agree, preventing stale or renumbered metadata from assigning an unrelated price. Explicit caching is unsupported. Custom family/tier overrides and saved archived costs retain precedence. These reference estimates are separate from Antigravity subscription charges.
 
-The live account exposes 21 chat entries: 20 known effort variants plus Orchestrator `M667`. Hydrogen adds four efforts and Orchestrator adds one selectable entry to Gemini. M667 and M669 have explicit Gemini quota membership. Dynamic inference for other unregistered models still requires an effort-specific branded catalog ID and matching provider. Availability remains account-driven, including empty and partial catalogs. Final validation and platform scope are recorded in [1.17.0 release notes](releases/1.17.0.md#validation).
+The live account exposes 22 chat entries: 20 effort variants plus Orchestrator (Carbon) `M667` and Orchestrator (Argon) `M681`. Gemini contains 15 selectable entries. M667, M681 and M669 have explicit Gemini quota membership. Dynamic inference for other unregistered models still requires an effort-specific branded catalog ID and matching provider. Availability remains account-driven, including empty and partial catalogs. Final validation and platform scope are recorded in [1.17.1 release notes](releases/1.17.1.md#validation).
 
 #### 中文
 
@@ -291,7 +291,7 @@ The live account exposes 21 chat entries: 20 known effort variants plus Orchestr
 
 2026-11-13 核实的 [Hydrogen Standard API 价格](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen) 对四档均为每百万 token 输入 $1.50 / 含思考输出 $7.50 / 隐式缓存读取 $0.075。Hydrogen 使用独立固定参考费率，不继承 Carbon/Argon 的 12 月调价。账号更改已知模型显示名时，`findPricing()` 在精确/自定义显示名匹配后恢复 catalog 身份；placeholder 与 catalog 身份须一致，避免陈旧或重新编号元数据错误套价；不支持显式缓存。自定义家族/档位覆盖及已有归档费用优先，参考估算与 Antigravity 订阅收费分开。
 
-当前账号提供 21 个聊天条目：20 个已知力度档位及 Orchestrator `M667`。Hydrogen 为 Gemini 池新增四档，Orchestrator 新增一个可选条目；M667/M669 明确属于 Gemini 额度。其他未注册模型的动态推断仍须同时满足明确档位的家族 catalog ID 与匹配提供商。可用列表由账号实时目录决定，包括空目录和部分档位。最终验证结果及平台范围记录于 [1.17.0 发布说明](releases/1.17.0.md#验证)。
+当前账号提供 22 个聊天条目：20 个力度档位及两种 Orchestrator `M667` / `M681`。Gemini 池共 15 个可选条目；M667/M681/M669 明确属于 Gemini 额度。其他未注册模型的动态推断仍须同时满足明确档位的家族 catalog ID 与匹配提供商。可用列表由账号实时目录决定，包括空目录和部分档位。最终验证结果及平台范围记录于 [1.17.1 发布说明](releases/1.17.1.md#验证)。
 
 ### Gemini 4 Carbon (v1.16.20)
 
@@ -430,13 +430,17 @@ v1.16.18 注册表依据 2026-10-03 对运行中 Antigravity IDE 的元数据探
 
 ## 🧪 8. Verification / 验证
 
-**Current 1.17.0:** compilation and 899 tests in 50 files passed. The model/accounting runtime is unchanged from the prior validated 1.16.21 functional build; the live generation evidence below belongs to that build. The IDE CLI installed 1.17.0; 47 installed JavaScript files matched the build. Live checks covered 21 chat entries, one image entry, and eight real `OK` responses across four independent Hydrogen requests and a same-conversation Low → Extra → High → Medium sequence. Installed-code browser fixtures passed 36 display, 9 ordinary corner, 60 interaction, 21 header-boundary, and 24 quota-edge checks. Native three-language and light/dark UI checks passed on macOS. Native Windows/Linux IDE tests were not performed. Hosted build/test CI is now disabled at the maintainer's request; local checks remain available. Orchestrator adds nine real model calls and 24 route/pricing browser assertions (174 total); see [1.17.0 validation](releases/1.17.0.md#validation) for the complete current record. The 1.16.20 results below are historical evidence only.
+**Current 1.17.1:** split-model implementation, 940 local tests, installed-package validation and native IDE evidence are recorded in [1.17.1 validation](releases/1.17.1.md#validation). Windows/Linux branches are tested locally; native validation is on macOS. CI remains removed.
 
-**当前 1.17.0：** 编译及 50 个文件中的 899 项测试通过。模型/记账运行逻辑与已验证的 1.16.21 功能版相同，下述真实生成证据来自该功能版。IDE CLI 已安装 1.17.0，47 个安装 JavaScript 文件与构建一致。实时核实 21 个聊天条目、一个图片条目及 Hydrogen 八次真实 `OK` 回复（四档独立请求及同会话 Low → Extra → High → Medium）。安装代码浏览器 fixtures 通过 36 项展示、9 项普通边界、60 项交互、21 项顶部边界及 24 项配额异常检查。macOS 原生三语言及浅/深色 UI 检查通过，未执行 Windows/Linux 原生 IDE 测试；托管编译/测试 CI 现按维护者要求停用，本地检查保留。Orchestrator 另有九次真实模型调用及 24 项委派/价格浏览器断言（总计 174 项）；完整本次记录见 [1.17.0 验证](releases/1.17.0.md#验证)。下文 1.16.20 结果仅作为历史证据保留。
+**当前 1.17.1：** 模型拆分实现、940 项本地测试、安装包核验及原生 IDE 证据见 [1.17.1 验证](releases/1.17.1.md#验证)。Windows/Linux 分支做本地回归，原生验证在 macOS，CI 继续保持移除。
+
+**Historical 1.17.0:** compilation and 899 tests in 50 files passed. The model/accounting runtime is unchanged from the prior validated 1.16.21 functional build; the live generation evidence below belongs to that build. The IDE CLI installed 1.17.0; 47 installed JavaScript files matched the build. Live checks covered 21 chat entries, one image entry, and eight real `OK` responses across four independent Hydrogen requests and a same-conversation Low → Extra → High → Medium sequence. Installed-code browser fixtures passed 36 display, 9 ordinary corner, 60 interaction, 21 header-boundary, and 24 quota-edge checks. Native three-language and light/dark UI checks passed on macOS. Native Windows/Linux IDE tests were not performed. Hosted build/test CI is now disabled at the maintainer's request; local checks remain available. Orchestrator adds nine real model calls and 24 route/pricing browser assertions (174 total); see [1.17.0 validation](releases/1.17.0.md#validation) for the complete historical record. The 1.16.20 results below are historical evidence only.
+
+**历史 1.17.0：** 编译及 50 个文件中的 899 项测试通过。模型/记账运行逻辑与已验证的 1.16.21 功能版相同，下述真实生成证据来自该功能版。IDE CLI 已安装 1.17.0，47 个安装 JavaScript 文件与构建一致。实时核实 21 个聊天条目、一个图片条目及 Hydrogen 八次真实 `OK` 回复（四档独立请求及同会话 Low → Extra → High → Medium）。安装代码浏览器 fixtures 通过 36 项展示、9 项普通边界、60 项交互、21 项顶部边界及 24 项配额异常检查。macOS 原生三语言及浅/深色 UI 检查通过，未执行 Windows/Linux 原生 IDE 测试；托管编译/测试 CI 现按维护者要求停用，本地检查保留。Orchestrator 另有九次真实模型调用及 24 项委派/价格浏览器断言（总计 174 项）；完整历史记录见 [1.17.0 验证](releases/1.17.0.md#验证)。下文 1.16.20 结果仅作为历史证据保留。
 
 The release includes Vitest 4.1.12 and Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`. Use these runtime constraints and the committed lockfile for local verification: `npm ci`, `npm run compile`, and `npm test`. On 2026-11-13 the maintainer requested cancellation of hosted CI: the GitHub build/test workflow is disabled and `verify.yml` is removed. Historical runs remain historical evidence, not passing checks for the current commit.
 
-The current regression scope includes legacy and hub discovery, argument/port parsing, candidate fallback, cancellation, the 21-entry live chat catalog, Hydrogen four-tier/Extra-XHigh identity, renamed-account pricing, Orchestrator Gemini pool membership, image capability and metadata lifecycle, live-model precedence, account-specific catalogs, separate image quota identity, Carbon/Argon family and tier isolation, GM identity preservation, Argon UTC price cutovers and archival/custom precedence, Carbon and generic unknown prices, image steps, persisted history, and English/Chinese/bilingual rendering. Cross-platform mocks exercise branches locally and must be distinguished from execution on each native operating system.
+The current regression scope includes legacy and hub discovery, argument/port parsing, candidate fallback, cancellation, the 22-entry live chat catalog, Hydrogen four-tier/Extra-XHigh identity, renamed-account pricing, Orchestrator Gemini pool membership, image capability and metadata lifecycle, live-model precedence, account-specific catalogs, separate image quota identity, Carbon/Argon family and tier isolation, GM identity preservation, Argon UTC price cutovers and archival/custom precedence, Carbon and generic unknown prices, image steps, persisted history, and English/Chinese/bilingual rendering. Cross-platform mocks exercise branches locally and must be distinguished from execution on each native operating system.
 
 **Historical 1.16.20 acceptance:** the newly packaged **1.16.20** VSIX was installed and reloaded in the already running IDE. Local compilation and **753 tests in 46 files** passed; all **47 installed JavaScript files** matched the compiled output. Live checks verified **16 chat entries and one image entry**. Installed-code browser fixtures passed **36/36** display, **9/9** ordinary corner, **54/54** interaction, **21/21** header-boundary, and **18/18** quota-edge cases, with no accessibility violations. Quota-edge checks exercise differing, partial, and invalid data and expanded per-model details. Native macOS checks verified six Carbon requests including a Low → Medium → High sequence, two shared pools/six family rows/three Carbon cards in all three languages, About metadata, and light/dark rendering. Chinese, Light Modern, and Carbon Medium were restored afterward.
 
@@ -444,7 +448,7 @@ All three jobs in [CI run 42900949800](https://github.com/AGI-is-going-to-arrive
 
 本版本包含 Vitest 4.1.12、Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`。按运行时约束和已提交锁文件在本地执行 `npm ci`、`npm run compile`、`npm test`。2026-11-13 按维护者要求停用 GitHub 自动编译/测试工作流并移除 `verify.yml`。历史运行记录不等于当前提交通过托管检查。
 
-当前回归范围包含旧版/hub 发现、参数与端口解析、候选回退、取消、21 条目实时聊天目录、Hydrogen 四档及 Extra-XHigh 身份、账号改名计价、Orchestrator Gemini 池归属、图片能力及元数据生命周期、实时模型优先级、账号目录、独立图片配额身份、Carbon/Argon 家族与档位隔离、GM 身份保持、Argon UTC 调价边界与归档/自定义优先级、Carbon 及通用未知价格、图片步骤、历史持久化，以及英文/中文/双语渲染。跨平台 mock 在本地覆盖分支，需要与各原生操作系统上的实际运行分别报告。
+当前回归范围包含旧版/hub 发现、参数与端口解析、候选回退、取消、22 条目实时聊天目录、Hydrogen 四档及 Extra-XHigh 身份、账号改名计价、Orchestrator Gemini 池归属、图片能力及元数据生命周期、实时模型优先级、账号目录、独立图片配额身份、Carbon/Argon 家族与档位隔离、GM 身份保持、Argon UTC 调价边界与归档/自定义优先级、Carbon 及通用未知价格、图片步骤、历史持久化，以及英文/中文/双语渲染。跨平台 mock 在本地覆盖分支，需要与各原生操作系统上的实际运行分别报告。
 
 **1.16.20 历史验收：** 使用重新打包并安装重载于现有 IDE 的 **1.16.20** VSIX。本地编译及 **46 个文件中的 753 项测试**通过，**47 个已安装 JavaScript 文件**均与编译输出一致。实时检查核实 **16 个聊天条目及一个图片条目**。安装代码的浏览器 fixtures 通过 **36/36** 展示、**9/9** 普通边界、**54/54** 交互、**21/21** 顶部边界和 **18/18** 配额异常用例，无无障碍违规；配额异常检查覆盖差异、部分缺失、无效数据及展开逐模型明细。macOS 原生检查核实六次 Carbon 请求（含 Low → Medium → High 序列）、三语言下两池/六行家族/三张 Carbon 卡片、About 信息及浅/深色展示；随后恢复中文、Light Modern 和 Carbon Medium。
 

@@ -147,6 +147,7 @@ describe('getModelSpecs ordering', () => {
         const ids = getModelSpecs().map(s => s.placeholderId);
         expect(ids).toEqual([
             'MODEL_PLACEHOLDER_M667',
+            'MODEL_PLACEHOLDER_M681',
             'MODEL_PLACEHOLDER_M669',
             'MODEL_PLACEHOLDER_M528',
             'MODEL_PLACEHOLDER_M525',

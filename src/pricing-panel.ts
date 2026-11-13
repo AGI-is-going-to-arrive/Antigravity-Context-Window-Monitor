@@ -1387,10 +1387,12 @@ function pricingDisplayName(model: string): string {
     return model.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+const ORCHESTRATOR_PRICE_KEYS = ['gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon', 'gemini-flash-worker-agy'];
+
 function orchestratorPricingNote(): string {
     return `<li>${tBi(
-        'Orchestrator and its execution worker keep separate call identities. No standalone API rate has been verified for these internal IDs; do not assume a Carbon or Hydrogen rate from the picker description. Enter custom rates if known. Missing prices are not zero, and a configured worker is not an additional billable call.',
-        'Orchestrator 与执行模型保留独立调用身份。目前未核实这些内部 ID 的独立 API 费率，不根据选择器说明直接套用 Carbon 或 Hydrogen 价格；已知费率时可自定义。价格缺失不代表免费，配置了执行模型也不额外产生一笔调用费用。',
+        'Orchestrator (Carbon), Orchestrator (Argon), and their execution worker keep separate call identities. No standalone API rate has been verified for these internal IDs; do not assume a Carbon, Argon, or Hydrogen rate from the picker description. Enter custom rates if known. Missing prices are not zero, and a configured worker is not an additional billable call.',
+        'Orchestrator (Carbon)、Orchestrator (Argon) 与执行模型保留独立调用身份。目前未核实这些内部 ID 的独立 API 费率，不根据选择器说明直接套用 Carbon、Argon 或 Hydrogen 价格；已知费率时可自定义。价格缺失不代表免费，配置了执行模型也不额外产生一笔调用费用。',
     )}</li>`;
 }
 
@@ -1422,7 +1424,7 @@ function buildEditablePricingTable(
 ): string {
     // Keep family-rate editors stable when a first call adds a concrete tier.
     // Otherwise polling can remove a family row with an unsaved price draft.
-    const editableKeys = [...new Set([...Object.keys(merged), 'gemini-pro-orchestrator', 'gemini-flash-worker-agy'])];
+    const editableKeys = [...new Set([...Object.keys(merged), ...ORCHESTRATOR_PRICE_KEYS])];
 
     // Build unified list: called models first, then uncalled defaults
     interface PricingEntry { name: string; responseModel: string; isCalled: boolean }
@@ -1491,7 +1493,7 @@ function buildDefaultPricingTable(
     merged: Record<string, ModelPricing>,
     custom: Record<string, ModelPricing>,
 ): string {
-    const entries = Object.keys(merged);
+    const entries = [...new Set([...Object.keys(merged), ...ORCHESTRATOR_PRICE_KEYS])];
     if (entries.length === 0) { return ''; }
 
     const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'thinking'];
