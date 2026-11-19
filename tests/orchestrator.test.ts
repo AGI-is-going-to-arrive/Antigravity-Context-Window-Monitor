@@ -26,6 +26,7 @@ const cfg = (model = coordinator, label = getModelDisplayName(model)): ModelConf
     quotaInfo: { remainingFraction: 0.8, resetTime: '2026-11-14T00:00:00Z' } });
 const spec = (id = coordinator) => getModelSpecs().find(s => s.placeholderId === id)!;
 afterEach(async () => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     original.forEach(s => updateModelSpec(s.placeholderId, { ...s, executionModelId: s.executionModelId }));
     overrideContextLimits(limits);
@@ -137,8 +138,10 @@ describe('Orchestrator accounting and presentation', () => {
     });
     it('persists both actual calls without adding a call for the configured route', () => {
         const s = summary();
-        const ledger = new DailyLedger();
         const entries = s.conversations[0].calls.map((call, i) => ({ dedupKey: `orchestrator-${i}`, call }));
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(entries[0].call.createdAt));
+        const ledger = new DailyLedger();
         expect(ledger.recordCalls(entries)).toBe(2);
         const restored = DailyLedger.restore(ledger.serialize());
         expect(restored.recordCalls(entries)).toBe(0);

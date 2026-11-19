@@ -5,6 +5,7 @@
 import * as vscode from 'vscode';
 import { tBi } from './i18n';
 import { ModelConfig, getContextLimit } from './models';
+import { parseTooltipDensity } from './tooltip-budget';
 import { ICON } from './webview-icons';
 import { esc, formatFileSize } from './webview-helpers';
 
@@ -41,6 +42,7 @@ export function buildSettingsContent(
     const showQuota = cfg.get<boolean>('statusBar.showQuota', true);
     const showResetCountdown = cfg.get<boolean>('statusBar.showResetCountdown', true);
     const showAiCredits = cfg.get<boolean>('statusBar.showAiCredits', true);
+    const tooltipDensity = parseTooltipDensity(cfg.get('statusBar.tooltipDensity', 'auto'));
     const showModelInternalId = cfg.get<boolean>('showModelInternalId', false);
     const quotaNotifyThreshold = cfg.get<number>('quotaNotificationThreshold', 20);
     const tabScrollHintEnabled = panelPrefs?.showTabScrollHint ?? true;
@@ -144,24 +146,31 @@ export function buildSettingsContent(
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleContext" class="toggle-cb" ${showContext ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBi('Context usage', '上下文用量')} <code>45k/1M, 4.5%</code></span>
+                    <span>${tBi('Context usage', '上下文用量')} <code>45k/1M</code></span>
                 </label>
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleQuota" class="toggle-cb" ${showQuota ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBi('Quota indicator', '额度指示灯')} <code>🟢85%</code></span>
+                    <span>${tBi('Quota remaining', '剩余配额')} <code>85%</code></span>
                 </label>
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleCountdown" class="toggle-cb" ${showResetCountdown ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBi('Reset countdown', '重置倒计时')} <code>&#x23F3;4h32m</code></span>
+                    <span>${tBi('Reset countdown', '重置倒计时')} <code>4h32m</code></span>
                 </label>
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleAiCredits" class="toggle-cb" ${showAiCredits ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBi('AI Credits balance', 'AI 积分余额')} <code>⚡14,701</code></span>
+                    <span>${tBi('AI Credits balance', 'AI 积分余额')} <code>14,701</code></span>
                 </label>
             </div>
+            <label class="stg-select-row" for="statusTooltipDensity">${tBi('Hover density', '悬浮摘要密度')}
+                <select id="statusTooltipDensity">
+                    <option value="auto"${tooltipDensity === 'auto' ? ' selected' : ''}>${tBi('Automatic', '自动')}</option>
+                    <option value="compact"${tooltipDensity === 'compact' ? ' selected' : ''}>${tBi('Compact', '紧凑')}</option>
+                    <option value="full"${tooltipDensity === 'full' ? ' selected' : ''}>${tBi('Full', '完整')}</option>
+                </select>
+            </label>
         </section>
 
         <section class="stg-card" data-accent="display">

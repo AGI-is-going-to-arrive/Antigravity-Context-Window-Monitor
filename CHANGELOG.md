@@ -1,5 +1,19 @@
 # 变更日志 / Changelog
 
+## [1.17.2] - 2026-11-19
+
+### English
+
+- Rebuild the status bar hover as a compact summary with shortcuts to Overview, Models, and Settings. Clicking the status bar opens the new Overview for context, quota, reset times, and AI credits.
+- Register Gemini 4 Neon Low, Medium, High, and Extra alongside the single Orchestrator (Neon) entry. The new entries share Gemini quota while retaining exact identities for usage, context, and pricing.
+- Display the Orchestrator (Neon) route to the existing M669 worker and update compression metadata from the live IDE. See the bilingual [release notes and validation](docs/releases/1.17.2.md).
+
+### 中文
+
+- 重做状态栏悬停摘要，可直达总览、模型和设置。点击状态栏打开新的总览，集中查看上下文、配额、重置时间和 AI 积分。
+- 注册 Gemini 4 Neon 的 Low、Medium、High、Extra 四档及单独的 Orchestrator (Neon) 条目。新增条目共用 Gemini 配额，用量、上下文和计价保留各自身份。
+- 展示 Orchestrator (Neon) 到现有 M669 执行模型的配置关系，并按实时 IDE 更新压缩参数。详见[双语发布说明与验证](docs/releases/1.17.2.md#中文)。
+
 ## [1.17.1] - 2026-11-13
 
 ### English

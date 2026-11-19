@@ -22,7 +22,8 @@ import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveMod
 import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit, setTooltipDiagLogger } from './statusbar';
 import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
-import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
+import { MONITOR_COMMAND } from './monitor-overview';
+import { showMonitorPanel, refreshMonitorPanelLanguage, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
@@ -495,6 +496,7 @@ export function buildUsageScopeTrajectories(
 function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
     return {
         currentUsage,
+        monitorStatus: statusBar?.monitorStatus,
         allTrajectoryUsages,
         allTrajectories: lastTrajectories,
         modelConfigs: cachedModelConfigs,
@@ -1433,8 +1435,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Register commands
     context.subscriptions.push(
-        vscode.commands.registerCommand('antigravity-context-monitor.showDetails', () => {
-            showMonitorPanel(makePanelPayload({ context }));
+        vscode.commands.registerCommand(MONITOR_COMMAND, (destination: unknown) => {
+            const initialTab = destination === 'models' || destination === 'settings' ? destination : 'overview';
+            showMonitorPanel(makePanelPayload({ context, initialTab }));
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
@@ -1450,9 +1453,7 @@ export function activate(context: vscode.ExtensionContext): void {
             showLanguagePicker(context, durableGlobalState).then(() => {
                 // Rebuild statusBar and WebView to reflect new language immediately
                 statusBar.refreshFromConfig();
-                if (isMonitorPanelVisible()) {
-                    updateMonitorPanel(makePanelPayload());
-                }
+                refreshMonitorPanelLanguage();
             });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
@@ -1519,13 +1520,9 @@ export function activate(context: vscode.ExtensionContext): void {
                 statusBar.refreshFromConfig();
                 log('Status bar display preferences updated');
             }
-            // issue #63: zoom / tooltip density → re-render tooltip (idle/no-conv/update)
-            if (
-                e.affectsConfiguration('window.zoomLevel')
-                || e.affectsConfiguration('antigravityContextMonitor.statusBar.tooltipDensity')
-            ) {
+            if (e.affectsConfiguration('window.zoomLevel')) {
                 statusBar.refreshFromConfig();
-                log('Status bar tooltip density/zoom updated — tooltip re-rendered');
+                log('Window zoom updated — status bar tooltip re-rendered');
             }
             if (e.affectsConfiguration('antigravityContextMonitor.showModelInternalId')) {
                 const newConfig = vscode.workspace.getConfiguration('antigravityContextMonitor');

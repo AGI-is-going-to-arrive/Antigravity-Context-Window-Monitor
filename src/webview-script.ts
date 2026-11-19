@@ -121,8 +121,10 @@ export function getScript(): string {
             }
 
             // ─── Tab System ───
-            var activeTab = savedState.activeTab || 'gmdata';
             var tabBtns = document.querySelectorAll('.tab-btn');
+            var defaultTab = document.querySelector('.tab-btn.active');
+            var activeTab = defaultTab ? defaultTab.dataset.tab : 'gmdata';
+            var requestedTab = savedState.activeTab || document.body.getAttribute('data-initial-tab');
             var tabPanes = document.querySelectorAll('.tab-pane');
             var lastTabHtmls = {};
             var eocVisibleTabs = {};
@@ -214,16 +216,24 @@ export function getScript(): string {
                 var needsHint = overflowX > 8;
                 hint.hidden = !needsHint;
             }
-            function switchTab(tabName) {
-                // Save outgoing tab scroll position
+            function switchTab(tabName, focusTab, restoring) {
+                var selected = Array.from(tabBtns).find(function(button) { return button.dataset.tab === tabName; });
+                if (!selected) { return; }
+                if (!restoring && activeTab === tabName) {
+                    if (focusTab) { selected.focus({ preventScroll: true }); }
+                    selected.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+                    return;
+                }
                 var s = vscode.getState() || {};
                 var ts = s.tabScrolls || {};
-                ts[activeTab] = window.scrollY;
+                if (!restoring) { ts[activeTab] = window.scrollY; }
                 s.tabScrolls = ts;
 
                 activeTab = tabName;
                 for (var i = 0; i < tabBtns.length; i++) {
-                    tabBtns[i].classList.toggle('active', tabBtns[i].dataset.tab === tabName);
+                    tabBtns[i].classList.toggle('active', tabBtns[i] === selected);
+                    if (tabBtns[i] === selected) { tabBtns[i].setAttribute('aria-current', 'page'); }
+                    else { tabBtns[i].removeAttribute('aria-current'); }
                 }
                 for (var j = 0; j < tabPanes.length; j++) {
                     tabPanes[j].classList.toggle('active', tabPanes[j].id === 'tab-' + tabName);
@@ -239,10 +249,14 @@ export function getScript(): string {
                 // Restore incoming tab scroll position
                 tabScrolls = ts; // Update local ref
                 var targetY = ts[tabName] || 0;
-                requestAnimationFrame(function() { window.scrollTo(0, targetY); });
+                requestAnimationFrame(function() {
+                    if (activeTab !== tabName) { return; }
+                    if (focusTab) { selected.focus({ preventScroll: true }); }
+                    selected.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+                    window.scrollTo(0, targetY);
+                });
             }
-            // Restore active tab from state
-            if (activeTab !== 'gmdata') { switchTab(activeTab); }
+            if (requestedTab) { switchTab(requestedTab, false, true); }
             // Init slider position (must wait for layout)
             requestAnimationFrame(function() { updateTabSlider(); updateTabOverflowHint(); });
             var tabBarEl = document.querySelector('.tab-bar');
@@ -323,7 +337,19 @@ export function getScript(): string {
                     switchTab(this.dataset.tab);
                 });
             }
-            // data-switch-tab links: handled by body delegation below
+            if (tabBarEl) {
+                tabBarEl.addEventListener('keydown', function(event) {
+                    var index = Array.from(tabBtns).indexOf(event.target);
+                    if (index < 0) { return; }
+                    if (event.key === 'ArrowLeft') { index = (index - 1 + tabBtns.length) % tabBtns.length; }
+                    else if (event.key === 'ArrowRight') { index = (index + 1) % tabBtns.length; }
+                    else if (event.key === 'Home') { index = 0; }
+                    else if (event.key === 'End') { index = tabBtns.length - 1; }
+                    else { return; }
+                    event.preventDefault();
+                    tabBtns[index].focus();
+                });
+            }
 
 
             // ─── Account Popover Toggle ───
@@ -373,14 +399,15 @@ export function getScript(): string {
                 var dd = document.querySelectorAll('details[id]');
                 for (var di = 0; di < dd.length; di++) {
                     var det = dd[di];
-                    if (Object.prototype.hasOwnProperty.call(ds, det.id)) {
-                        det.open = !!ds[det.id];
+                    var stateKey = det.dataset.stateKey || det.id;
+                    if (Object.prototype.hasOwnProperty.call(ds, stateKey)) {
+                        det.open = !!ds[stateKey];
                     }
                     if (det.getAttribute('data-details-bound') !== 'true') {
                         det.addEventListener('toggle', function() {
                             var s = vscode.getState() || {};
                             var dso = s.detailsOpen || {};
-                            dso[this.id] = this.open;
+                            dso[this.dataset.stateKey || this.id] = this.open;
                             s.detailsOpen = dso;
                             vscode.setState(s);
                         });
@@ -553,6 +580,13 @@ export function getScript(): string {
             if (zoomValEl) { zoomValEl.textContent = zoomLevel + '%'; }
 
             // ─── Settings: Status Bar Toggles ───
+            var tooltipDensitySelect = document.getElementById('statusTooltipDensity');
+            if (tooltipDensitySelect) {
+                tooltipDensitySelect.addEventListener('change', function() {
+                    vscode.postMessage({ command: 'setConfig', key: 'statusBar.tooltipDensity', value: this.value });
+                });
+            }
+
             var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'toggleAiCredits', 'toggleModelInternalId'];
             var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'statusBar.showAiCredits', 'showModelInternalId'];
             for (var tgi = 0; tgi < toggleIds.length; tgi++) {
@@ -854,6 +888,12 @@ export function getScript(): string {
                     return;
                 }
 
+                var overviewAction = target.closest('[data-overview-target]');
+                if (overviewAction) {
+                    switchTab(overviewAction.dataset.overviewTarget, true);
+                    return;
+                }
+
                 // ── data-switch-tab links (e.g. Monitor → Profile "Details →") ──
                 var switchLink = target.closest('[data-switch-tab]');
                 if (switchLink) {
@@ -1122,6 +1162,9 @@ export function getScript(): string {
                 var msg = event.data;
                 if (msg && msg.command === 'switchToTab' && msg.tab) {
                     switchTab(msg.tab);
+                    if (typeof msg.requestId === 'number') {
+                        vscode.postMessage({ command: 'tabShown', requestId: msg.requestId });
+                    }
                 } else if (msg && (msg.command === 'pricingSaved' || msg.command === 'pricingReset')) {
                     var fb = document.getElementById('pricingFeedback');
                     if (fb) {
@@ -1166,7 +1209,28 @@ export function getScript(): string {
                                     }
                                 });
                             }
+                            var overviewFocus = key === 'overview' && pane.contains(document.activeElement)
+                                ? document.activeElement.dataset.overviewFocus : undefined;
+                            var diagnostics = key === 'overview' ? pane.querySelector('#overview-session-diagnostics') : null;
+                            if (diagnostics) {
+                                var overviewState = vscode.getState() || {};
+                                var openDetails = overviewState.detailsOpen || {};
+                                // At a polling boundary a queued toggle may have yet to save the state.
+                                openDetails[diagnostics.dataset.stateKey] = diagnostics.open;
+                                overviewState.detailsOpen = openDetails;
+                                vscode.setState(overviewState);
+                            }
                             pane.innerHTML = tabs[key];
+                            if (overviewFocus) {
+                                var focusTarget = Array.from(pane.querySelectorAll('[data-overview-focus]')).find(function(el) {
+                                    return el.dataset.overviewFocus === overviewFocus;
+                                });
+                                if (focusTarget) { focusTarget.focus({ preventScroll: true }); }
+                                else {
+                                    var overviewHeading = pane.querySelector('#overview-heading');
+                                    if (overviewHeading) { overviewHeading.focus({ preventScroll: true }); }
+                                }
+                            }
                             if (pricingDrafts.size) {
                                 pane.querySelectorAll('.pricing-input').forEach(function(input) {
                                     var identity = JSON.stringify([input.getAttribute('data-model'), input.getAttribute('data-field')]);
@@ -1312,6 +1376,7 @@ export function getScript(): string {
                 }
             }
             bindEocObserver();
+            vscode.postMessage({ command: 'panelReady' });
         })();
     `;
 }

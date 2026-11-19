@@ -19,7 +19,7 @@
 
 ---
 
-**1.17.1：** 支持 Orchestrator (Carbon) 与 Orchestrator (Argon)，核实独立身份与输出上限、共享隐藏执行模型、独立自定义计价、历史兼容及英文/中文/双语 UI。结果及平台范围见[发布验收](docs/releases/1.17.1.md#验证)。
+**1.17.2** 重做状态栏悬停摘要，新增集中查看上下文、模型配额、重置时间和 AI 积分的总览，并支持 **Orchestrator (Neon)** 及 **Gemini 4 Neon** 四档思考力度。[发布说明与验证](docs/releases/1.17.2.md#中文)
 
 **验证方式：** GitHub 自动编译/测试 CI 已于 2026-11-13 按维护者要求停用并移除；保留本地 `npm run compile`、`npm test` 和 IDE 安装验收。历史 CI 失败/取消记录不代表当前构建通过托管检查。
 
@@ -32,10 +32,10 @@
 ## ✨ 主要功能
 
 * **⚡ 实时 Token 监控**
-    状态栏显示当前 Token 消耗，格式如 `125k/200k, 62.5%`。精确值取自当前 planner response 或旧版 checkpoint 中提供商报告的新输入 + 缓存读取 + 缓存创建 + 输出 token。缓存输入仍占用上下文，缓存命中不等于压缩。缺失部分采用估算并保留估算标记；GM 请求前估算不会覆盖提供商精确值。运行中的响应会重新拉取，避免流式更新时总量停留在旧值。
+    状态栏显示 `125k/200k` 等精简读数。总览补充占用比例、可用余量和计量来源。监控器优先采用 planner response 或旧版 checkpoint 中提供商上报的新输入、缓存读取、缓存创建和输出 Token，并标注估算值。运行中的响应会随流式输出刷新。
 
-* **🪪 状态栏计划层级显示稳定**
-    当 Antigravity 后续轮询不再返回最新 `userTierName` 时，状态栏悬浮提示会主动清空旧的二级计划/层级后缀，避免过期标签在后续轮询中残留。
+* **状态栏摘要**
+    悬停可查看连接与会话状态、上下文用量、账号计划和共享配额，并直接打开总览、模型或设置。计划摘要随当前账号数据更新。
 
 * **🌐 语言切换**
     用户可选择仅中文、仅英文或双语显示模式。点击状态栏 → 设置 → 切换显示语言即可访问。偏好通过 `globalState` 跨会话持久化。
@@ -44,7 +44,7 @@
     每个 Antigravity 窗口优先显示本工作区的对话数据，通过 workspace URI 过滤。遇到 Antigravity 切换项目后仍上报旧 workspace 的情况，监控会跟随共享语言服务器里当前 RUNNING 的对话，避免状态栏直接空掉。未打开文件夹的窗口显示所有对话。
 
 * **🗜️ 上下文压缩检测**
-    当模型自动压缩对话历史时，插件通过双层检测机制识别：主层比较连续 checkpoint 的含缓存输入（下降超过 5000 tokens 即判定，天然免疫 Undo 误报），降级层比较跨轮询 `contextUsed` 变化（带 Undo 排除守卫）。状态栏显示 `~100% 🗜` 压缩标识。
+    监控器比较连续 checkpoint 的含缓存输入及可比的实测上下文用量，识别明显下降。在总览打开**会话诊断**，可查看下降幅度及可用的前后读数。
 
 * **⏪ Undo/Rewind 支持**
     撤销对话步骤后，插件检测到 `stepCount` 减少，会重新计算 Token 用量，显示回滚后的准确值。
@@ -57,24 +57,20 @@
     对话中切换模型时，上下文窗口上限自动更新为当前模型的限制值。v1.4.0 起通过 `GetUserStatus` API 动态获取模型显示名称。
 
 * **🎨 图片生成追踪**
-    使用 Gemini Pro 对话中调用 Nano Banana Pro 生成图片时，相关 Token 消耗会被计入，tooltip 中以 `📷` 标记。检测逻辑基于 step type 和 generator model 名称匹配。
-
-    ![图片生成追踪](src/images/生成图片.png)
+    监控器追踪图片生成步骤，并在 IDE 上报图片模型时识别其身份。打开**会话诊断**可查看生图活动，模型页可查看独立图片目录。
 
 * **🛌 自动退避轮询**
     语言服务器不可用时，轮询间隔按 `baseInterval × 2^n` 递增，采用双上限策略：发现失败上限 15 秒（5s → 10s → 15s，快速检测 LS），RPC 失败上限 60 秒。重连后立即恢复正常间隔。
 
-* **📊 WebView 监控面板** *(v1.10.1 新增)*
-    点击状态栏打开侧边面板全景仪表盘。展示账户计划与等级、Prompt / Flow Credits（额度）余额、模型共享配额池（带颜色进度条）、功能开关、团队配置（MCP Servers、Auto-Run 等）、Google AI 额度。所有数据来自已有的 `GetUserStatus` API——零额外网络请求。
+* **📊 WebView 监控面板**
+    点击状态栏打开总览。面板还提供会话与调用详情、成本、完整模型信息、个人资料和设置。个人资料使用现有 `GetUserStatus` 数据展示账号计划与等级、Prompt / Flow 积分、模型配额、功能开关、团队配置和 Google AI 积分。
     * **🛡️ 隐私遮罩**：面板顶部盾牌按钮可遮罩姓名和邮箱，开关状态跨刷新持久化。
     * **📂 可折叠区域**：次要信息（计划限制、功能开关、团队配置、Google AI 额度）默认折叠，展开/收起状态持久化。
 
-* **⚙️ 交互式设置仪表盘** *(v1.11.0 新增，持续增强至 v1.16.9)*
+* **⚙️ 交互式设置仪表盘**
     设置页提供图形化界面，可直接配置轮询、低额度警告、状态栏内容、界面缩放和面板显示偏好。
-    * **🟢 状态栏额度指示灯**：当前模型的配额百分比带彩色状态灯（`🟢`、`🟡`、`🔴`）直接显示在状态栏上。
-    * **⏳ 当前模型重置倒计时**：状态栏倒计时现在跟随你当前正在使用的模型的重置时间，而不再是所有模型中最早的那个。
-    * **🎛️ 状态栏显示开关**：独立开关控制「上下文用量」、「额度指示灯」、「重置倒计时」与「AI 积分余额」的显示/隐藏。
-    * **⚡ 状态栏 AI 积分** *(v1.16.7)*：状态栏新增 AI 积分余额段（如 `⚡14,701`），使用 `||` 包裹格式（如 `|| ⚠ 121.2k/160k || 🟡40% || ⏳4h6m || ⚡14,701 ||`）。积分为零时自动隐藏。可在设置页通过 `statusBar.showAiCredits` 开关控制。
+    * **状态栏显示**。上下文用量、当前模型配额、重置倒计时和 AI 积分可独立设置。读数使用 IDE 图标和点分隔。
+    * **悬浮摘要密度**。在监控器设置页选择自动、紧凑或完整。自动模式根据 IDE 缩放、配额池数量和显示语言选择摘要密度。
     * **📆 按账号独立到期日** *(v1.16.7)*：在个人页内联设置每个账号的月度积分到期日（1-31）。个人页、账号面板和状态栏 tooltip 都会显示「今日到期 / X 天后到期 / 到期日未设置」倒计时徽章。使用 durable JSON 持久化，卸载重装不丢失。采用 UTC 日历日差计算，跨夏令时也不会多算 1 天。
     * **⏸️ 暂停/恢复**：暂停自动刷新以冻结面板数据，方便排查问题。
 
@@ -96,31 +92,33 @@
 
 ### Orchestrator
 
-Orchestrator (Carbon) 沿用 `M667` / `gemini-pro-orchestrator`；Orchestrator (Argon) 新增 `M681` / `gemini-pro-orchestrator-argon`。旧名 Orchestrator 仍指向 Carbon，保留历史与自定义费率。两者均配置隐藏执行模型 `M669` / `gemini-flash-worker-agy`，模型信息展示两条委派关系，不增加可选执行模型。真实调用独立记账，模型切换不视为压缩。独立 API 价格仍明确未知且可分别编辑，不套用普通 Carbon/Argon/Hydrogen 费率。
+IDE 提供 **Orchestrator (Neon)** `M537`、**Orchestrator (Carbon)** `M667` 和 **Orchestrator (Argon)** `M681` 三个协调模型。它们各占一个选择器条目，均配置隐藏执行模型 `M669` / `gemini-flash-worker-agy`。模型信息显示配置的委派关系，协调和执行调用各自记账。历史记录与自定义价格中的旧名 **Orchestrator** 仍归入 Carbon。
 
 ### 当前 IDE 模型元数据
 
-2026-11-13 本地 `GetUserStatus` 与 `GetAvailableModels` 响应包含 **22 个聊天条目：20 个思考档位，以及 Orchestrator (Carbon) 和 Orchestrator (Argon)**。两种协调模型及其执行模型均归入 Gemini 共享额度池，调用和计价身份保持独立。下表数值**由 IDE 报告**，不代表公开 API 限额；“压缩上限”和“检查点阈值”是不同设置。
+2026-11-19 核对的登录账号在 IDE 中提供 **27 个聊天条目**，包括 24 个思考档位和三个 Orchestrator 条目。下表数值由 IDE 报告。“压缩上限”和“检查点阈值”是不同设置。
 
 | 聊天模型 | 档位与内部 ID | 模型上下文 | 最大输出 | 压缩上限 | 检查点阈值 |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Orchestrator (Carbon) | `M667` | 1,048,576 | 262,144 | 256,000 | 50,000 |
-| Orchestrator (Argon) | `M681` | 1,048,576 | 65,536 | 256,000 | 50,000 |
-| Gemini 4 Hydrogen | Low / Medium / High / Extra：`M527` / `M526` / `M525` / `M528` | 1,048,576 | 262,144 | 256,000 | 50,000 |
-| Gemini 4 Carbon | Low / Medium / High：`M438` / `M437` / `M427` | 1,048,576 | 262,144 | 256,000 | 50,000 |
-| Gemini 4 Argon | Low / Medium / High：`M419` / `M418` / `M417` | 1,048,576 | 65,536 | 256,000 | 50,000 |
+| Orchestrator (Neon) | `M537` | 1,048,576 | 262,144 | 512,000 | 50,000 |
+| Orchestrator (Carbon) | `M667` | 1,048,576 | 262,144 | 512,000 | 50,000 |
+| Orchestrator (Argon) | `M681` | 1,048,576 | 65,536 | 512,000 | 50,000 |
+| Gemini 4 Neon | Low / Medium / High / Extra（`M534` / `M533` / `M532` / `M535`） | 1,048,576 | 262,144 | 512,000 | 50,000 |
+| Gemini 4 Hydrogen | Low / Medium / High / Extra：`M527` / `M526` / `M525` / `M528` | 1,048,576 | 262,144 | 512,000 | 50,000 |
+| Gemini 4 Carbon | Low / Medium / High：`M438` / `M437` / `M427` | 1,048,576 | 262,144 | 512,000 | 50,000 |
+| Gemini 4 Argon | Low / Medium / High：`M419` / `M418` / `M417` | 1,048,576 | 65,536 | 512,000 | 50,000 |
 | Gemini 3.8 Flash | Low / Medium / High：`M320` / `M319` / `M318` | 1,048,576 | 65,536 | 256,000 | 50,000 |
 | Claude Opus 5.5 | Low / Medium / High：`M400` / `M401` / `M402` | 1,000,000 | 128,000 | 256,000 | 50,000 |
 | Claude Sonnet 5.5 | Low / Medium / High：`M403` / `M404` / `M405` | 1,000,000 | 128,000 | 256,000 | 50,000 |
 | GPT-OSS 120B | Medium：`MODEL_OPENAI_GPT_OSS_120B_MEDIUM` | 131,072 | 32,768 | 80,000 | 50,000 |
 
-`Mxxx` 是 `MODEL_PLACEHOLDER_Mxxx` 的简写；Hydrogen catalog ID 为 `gemini-4-hydrogen-{low,medium,high,xhigh}`；IDE 菜单中的 **Extra** 对应后端 **XHigh**，思考力度为 1 / 2 / 3 / **100**。报告的最小预算 32 不等于固定思考预算。Carbon 与 Argon catalog ID 分别为 `gemini-4-carbon-{low,medium,high}` 和 `gemini-4-argon-{low,medium,high}`。其余列出的 Gemini 档位使用 1 / 2 / 3 思考力度，不提供固定预算；Claude 为相应力度的自适应思考；GPT-OSS 报告 8,192 token 思考预算。返回的最小思考预算属于能力边界，不等于每次请求的固定预算。当前 Flash 3.8 三档不再沿用早期的动态/4,000/1,000 预算。实时参数优先于静态兜底；Hydrogen、Carbon、Argon、Flash 3.8、Claude 5.5 在 256,000 实时压缩上限到达前使用 255,000。
+`Mxxx` 是 `MODEL_PLACEHOLDER_Mxxx` 的简写。Neon 和 Hydrogen 使用 `gemini-4-neon-{low,medium,high,xhigh}` 和 `gemini-4-hydrogen-{low,medium,high,xhigh}`。IDE 选择器中的 **Extra** 对应后端 **XHigh**，两系列的思考力度均为 1 / 2 / 3 / **100**。单一的 `gemini-pro-orchestrator-neon` 条目报告力度 **100**。上报的最小预算表示模型能力边界，只有 IDE 明确提供每次请求的固定预算时才会显示该值。实时上限优先于静态默认值。
 
-档位身份在中英文标签、上下文追踪、GM 数据和历史用量中保持独立；仅返回家族名不会抹掉已知档位。Hydrogen、Carbon、Argon 与 Flash 共用聊天 Gemini 配额池；显示代表依次优先当前模型、实时推荐模型和可用世代顺序，无当前或推荐模型时 Hydrogen 排在 Carbon、Argon 前。
+档位身份在中英文标签、上下文追踪、GM 数据和历史用量中保持独立。响应仅包含系列名时，已知档位仍会保留。配额代表依次优先当前模型、实时推荐模型和可用模型的世代及系列顺序。
 
 `Gemini 4 CarbonHigh`、未配对括号及不支持的档位名称不会误套 Carbon 身份或家族价格。冲突的学习别名不能通过大写形式或中文标签覆盖已注册档位。
 
-**模型配额**将 22 个可选聊天条目合并为两张共享池卡片：**Gemini** 包含 Hydrogen 四档、Carbon/Argon/Flash 各三档，再加两种 Orchestrator，共 15 个可选条目；**Claude / GPT** 包含 Opus、Sonnet、GPT-OSS，共七档。两种 Orchestrator 列在 Gemini 池内，不伪造思考档位；隐藏执行模型不额外增加选择器行。每张卡片列出实际可用的模型家族和思考档位。配额不求和、不取平均：数据不一致时展示范围及逐模型明细，缺失数据明确标注。未知模型和图片生成身份与两个已知聊天池分开。**模型信息**、调用统计及计价仍独立保留每档身份。
+**模型配额**将此目录归入 **Gemini**（20 个条目）及 **Claude / GPT**（七个条目）。Gemini 包含 Neon、Hydrogen、Carbon、Argon、Flash 和三个 Orchestrator。仅见于目录的执行模型也共用 Gemini 配额。池内的额度读数不一致时，界面显示范围和逐模型明细。未知模型和图片模型的额度单独显示。**模型信息**、调用统计和计价保留各自的模型身份。
 
 ### 图片生成模型
 
@@ -141,6 +139,8 @@ IDE 的 `imageGenerationModelIds` 列表独立于聊天 picker，明确提供 **
 旧 Gemini Flash/Pro、Claude 4.6，以及改号/退役的 placeholder 继续为仍提供这些模型的账号和历史记录保留注册。例如 Gemini 3.6 的 `M264` / `M265` / `M266` 仍可与当前 `M71` / `M72` / `M73` 一起解析；仅目录可见的 `M322` 和较旧 Flash 世代保留历史画像。可用模型由账号实时数据决定，不按订阅名或日期强制隐藏。
 
 ### API 等价计价
+
+Gemini 4 Neon 与 Orchestrator 模型在缺少已核实的独立费率和自定义价格时显示**价格待确认**。
 
 2026-11-13 核实的 [Gemini 4 Hydrogen Standard API 价格](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen) 对四档均为**每百万 token 输入 $1.50 / 输出（含思考）$7.50 / 隐式缓存读取 $0.075**，不支持显式缓存。Hydrogen 使用独立固定参考费率，不沿用 Carbon/Argon 的优惠价或 12 月调价规则；自定义家族/档位覆盖保持优先。账号更改已知模型显示名仍保留已验证内置费率，显式自定义显示名价格继续优先。
 
@@ -170,19 +170,15 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 1. **安装**:
    * **OpenVSX**: 直接从 [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装。
-   * **手动安装**: 通过“扩展 → 从 VSIX 安装”安装 `antigravity-context-monitor-1.17.1.vsix`，随后重载窗口，并在扩展详情中确认版本 **1.17.1**。
+   * **手动安装**: 通过“扩展 → 从 VSIX 安装”安装 `antigravity-context-monitor-1.17.2.vsix`，随后重载窗口，并在扩展详情中确认版本 **1.17.2**。
 2. **查看状态**: 右下角状态栏显示当前上下文使用情况；没有活跃对话时显示**无活跃会话**，不再沿用历史模型的旧上限。首次模型回复前即可从用户输入配置识别已选择的思考档位。
-3. **悬停详情**: 将鼠标悬停在状态栏项上，查看详细信息（模型、输入/输出 Token、剩余容量、压缩状态、图片生成步骤、每模型配额摘要，以及最近 checkpoint 的影子模型标识等）。
+3. **悬停查看摘要**。查看当前会话、上下文用量、共享配额和重置时间，也可以直接打开总览、模型和设置。
 
-   ![悬停详情](src/images/悬停详情new.png)
+4. **点击打开总览**。集中查看上下文、配额、重置时间和 AI 积分，再进入对应的详情页。
 
-4. **点击查看 — WebView 监控面板**: 点击状态栏项，打开综合性 **8 标签页监控仪表盘**：
+   **总览** — 会话和连接状态、实测或估算的上下文用量、会话诊断、共享配额、重置时间和 AI 积分。
 
-   **总览**（现位于 GM 数据标签页内）— 额度概览、GM 快照、成本快照、活跃会话详情（含输出分解和 LLM 调用明细）。
-
-   ![监控标签页](src/images/montior1.png)
-
-   ![监控标签页 - 会话详情](src/images/monitor2.png)
+   ![深色主题下的双语总览，图中为示例上下文和配额数据](src/images/monitor-overview.png)
 
    **GM 数据 (GM Data)** — 每模型 Token 用量明细、调用次数、缓存命中率、重试统计、工具排行和可折叠工具目录。
 
@@ -240,7 +236,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 > [!IMPORTANT]
 > **当前 Antigravity IDE 的 "LS not found"**
-> 新版 IDE 使用 `agy --hub` 后端，不再运行名为 `language_server_*` 的进程。监控器自 1.16.19 起兼容两种架构，支持 `--csrf_token=value` 和空格分隔参数，先检查声明的 hub 端口，再使用平台套接字发现。安装 `antigravity-context-monitor-1.17.1.vsix` 后重载窗口。后端已连接但没有已加载对话时显示**无活跃会话**，不是发现失败；IDE 中仍可能保存着历史对话。未打开文件夹也不代表后端不可用。
+> 新版 IDE 使用 `agy --hub` 后端。监控器自 1.16.19 起兼容新旧两种架构，支持 `--csrf_token=value` 和空格分隔参数，先检查声明的 hub 端口，再使用平台套接字发现。安装 `antigravity-context-monitor-1.17.2.vsix` 后重载窗口。后端已连接且没有已加载对话时，监控器显示**无活跃会话**。IDE 中仍可能保存着历史对话，未打开文件夹时也可以连接后端。
 >
 > **Windows 发现诊断**
 > 若状态栏卡在 `LS not found`，请打开 **Output → "Antigravity Context Monitor"**，查看 `PATH check:` 那一行——扩展现在会记录究竟是哪一步发现失败。自 v1.16.13 起，扩展以 `%SystemRoot%` 绝对路径调用 `wmic`/`powershell.exe`/`netstat`，因此 Extension Host 的 `PATH` 被裁剪（例如 Win11 24H2+ 移除 WMIC 后缺少 `System32\wbem`）不再导致发现失败。
@@ -252,9 +248,10 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 | 设置项 | 默认 | 说明 |
 | --- | --- | --- |
 | `pollingInterval` | 5 | 轮询频率（秒） |
-| `statusBar.showContext` | true | 状态栏显示上下文用量（如 `45k/1M, 4.5%`） |
-| `statusBar.showQuota` | true | 状态栏显示当前模型额度指示灯（如 `🟢85%`） |
-| `statusBar.showResetCountdown` | true | 状态栏显示重置倒计时（如 `⏳4h32m`） |
+| `statusBar.showContext` | true | 显示上下文用量，例如 `45k/1M` |
+| `statusBar.showQuota` | true | 显示当前模型的配额百分比 |
+| `statusBar.showResetCountdown` | true | 显示当前模型的重置倒计时 |
+| `statusBar.tooltipDensity` | auto | 用 `auto`、`compact` 或 `full` 调节悬停密度 |
 | `quotaNotificationThreshold` | 20 | 模型剩余额度低于此百分比时弹出警告（设为 0 可禁用） |
 | `activity.maxRecentSteps` | 100 | 活动时间线最多保留的操作条数 |
 | `activity.maxArchives` | 20 | 活动归档最多保留份数 |
@@ -263,7 +260,7 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 | 命令 | 说明 |
 | --- | --- |
-| `Show Context Window Details` | 打开 QuickPick 面板显示所有被追踪的会话 |
+| `Show Context Window Details` | 打开监控器总览 |
 | `Refresh Context Window Monitor` | 重新发现语言服务器并重启轮询 |
 | `Switch Display Language` | 选择仅中文、仅英文或双语显示模式 |
 | `Show Model Activity` | 打开监控面板的 GM 数据标签页 |
@@ -278,4 +275,4 @@ Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-3
 
 ---
 **作者**: AGI-is-going-to-arrive
-**版本 / Version**: 1.17.1 — [发布说明](docs/releases/1.17.1.md)
+**版本** 1.17.2 — [发布说明](docs/releases/1.17.2.md)

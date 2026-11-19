@@ -6,7 +6,7 @@ import type { ActivityTracker } from './activity-tracker';
 import type { GMTracker, GMSummary, GMModelStats } from './gm-tracker';
 import type { DailyStore } from './daily-store';
 import type { PricingStore, ModelPricing } from './pricing-store';
-import { calculateLedgerModelCosts, calculateUsageCosts, samePricingModel, findPricingWithCustom } from './pricing-store';
+import { calculateLedgerModelCosts, calculateUsageCosts, samePricingModel, selectPricingModel } from './pricing-store';
 import type { PersistedModelDNA } from './model-dna-store';
 import { mergeModelDNAState } from './model-dna-store';
 import type { DailyLedger, LedgerDayData } from './daily-ledger';
@@ -144,7 +144,7 @@ export function performDailyArchival(
         const perModel: Record<string, number> = {};
         let total = 0;
         for (const [key, ms] of Object.entries(gmSummary.modelBreakdown)) {
-            const model = findPricingWithCustom(key, custom) ? key : ms.responseModel;
+            const model = selectPricingModel(key, ms.responseModel, custom);
             const calls = (gmSummary.conversations || []).flatMap(conversation => conversation.calls)
                 .filter(call => samePricingModel(call.modelDisplay || call.model || call.responseModel, model));
             const cost = calculateUsageCosts(model, {

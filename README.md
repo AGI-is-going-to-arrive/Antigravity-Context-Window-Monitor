@@ -19,7 +19,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 
 ---
 
-**1.17.1:** Supports Orchestrator (Carbon) and Orchestrator (Argon), with verified separate identities and output limits, a shared hidden execution model, independent custom prices, historical compatibility, and English/Chinese/bilingual UI. See [release validation](docs/releases/1.17.1.md#validation) for results and platform scope.
+**1.17.2** redesigns the status bar hover and adds an Overview for context, model quota, resets, and AI credits. It also adds **Orchestrator (Neon)** and all four **Gemini 4 Neon** effort levels. [Release notes and validation](docs/releases/1.17.2.md)
 
 **Validation:** GitHub build/test CI was disabled and removed at the maintainer's request on 2026-11-13. Local `npm run compile`, `npm test`, and installed-IDE validation remain available. Historical failed/cancelled CI runs are not passing checks for the current build.
 
@@ -32,10 +32,10 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
 ## ✨ Features
 
 * **⚡ Real-Time Token Usage**
-    Shows current token consumption in the status bar (e.g. `125k/200k, 62.5%`). Uses provider-reported fresh input + cache-read + cache-creation + output tokens from current planner responses or legacy checkpoints. Cached input still occupies context; cache hits do not imply compression. Estimates fill gaps and remain labeled as estimates; GM pre-request estimates never overwrite precise provider counts. Running responses are re-fetched so streaming updates do not leave stale totals.
+    The status bar shows a compact reading such as `125k/200k`. Overview adds the percentage, remaining capacity, and measurement source. The monitor prioritizes provider-reported fresh input, cache reads, cache creation, and output tokens from planner responses or legacy checkpoints. It labels estimates and refreshes running responses while they stream.
 
-* **🪪 Stable Plan Tier Hover**
-    The status bar hover now clears stale secondary plan/tier suffixes when Antigravity stops returning the latest `userTierName`, preventing outdated labels from lingering across later polls.
+* **Status Bar Summary**
+    Hover to see connection and conversation state, context use, the account plan, and shared model quotas. Open Overview, Models, or Settings from the hover. The plan summary refreshes with the current account data.
 
 * **🌐 Language Switching**
     Users can choose between Chinese-only, English-only, or bilingual display mode. Accessible from the details panel: click status bar → Settings → Switch Language. Preference is persisted via `globalState` across sessions.
@@ -44,7 +44,7 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
     Each Antigravity window prefers conversations from its own workspace, filtered by workspace URI. If Antigravity keeps reporting a stale workspace after you switch projects, the monitor can follow the currently RUNNING conversation from the shared language server instead of going blank. Windows without a workspace folder show all conversations.
 
 * **🗜️ Context Compression Detection**
-    When the model auto-compresses conversation history, the plugin detects it via two-layer detection: primary layer compares cache-inclusive input in consecutive checkpoints (drop > 5000 tokens, immune to Undo false positives), fallback layer compares cross-poll `contextUsed` (with Undo exclusion guard). Shows `~100% 🗜` in the status bar.
+    The monitor detects large drops in cache-inclusive checkpoint input or comparable measured context. Open **Session diagnostics** in Overview to see the drop and available before/after readings.
 
 * **⏪ Undo/Rewind Support**
     When you undo a conversation step, the plugin detects the `stepCount` decrease and recalculates token usage to reflect the rollback.
@@ -57,24 +57,20 @@ A plugin built for **Antigravity IDE** that provides real-time monitoring of con
     When switching models mid-conversation, the context window limit automatically updates to match the new model. Since v1.4.0, model display names are dynamically fetched via the `GetUserStatus` API.
 
 * **🎨 Image Generation Tracking**
-    When Nano Banana Pro is invoked for image generation during Gemini Pro conversations, the associated token consumption is tracked and marked with `📷` in the tooltip. Detection is based on step type and generator model name matching.
-
-    ![Image Generation Tracking](src/images/生成图片.png)
+    The monitor follows image-generation steps and identifies the image model when the IDE reports it. Open **Session diagnostics** for image activity and the Models tab for the image catalog.
 
 * **🛌 Exponential Backoff Polling**
     When the language server is unreachable, polling interval increases as `baseInterval × 2^n` with dual caps: discovery failures cap at 15s (5s → 10s → 15s) for fast LS detection, RPC failures cap at 60s. Resets immediately on reconnection.
 
-* **📊 WebView Monitor Panel** *(v1.10.1)*
-    Click the status bar to open a side panel with a full-featured dashboard. Displays your account plan and tier, Prompt/Flow credit balance, shared model-quota pools with color-coded progress bars, feature flags, team config (MCP Servers, Auto-Run, etc.), and Google AI credits. All data comes from the existing `GetUserStatus` API — zero additional network requests.
+* **📊 WebView Monitor Panel**
+    Click the status bar to open Overview. The panel also provides session and call details, cost, full model information, account profile, and settings. The profile displays the account plan and tier, Prompt/Flow credits, model quotas, feature flags, team configuration, and Google AI credits using the existing `GetUserStatus` data.
     * **🛡️ Privacy Mask**: A shield button in the panel header masks your name and email. The toggle state persists across panel refreshes.
     * **📂 Collapsible Sections**: Secondary info (Plan Limits, Feature Flags, Team Config, Google AI Credits) is collapsed by default. Expand/collapse state persists.
 
-* **⚙️ Interactive Settings Dashboard** *(v1.11.0, enhanced through v1.16.9)*
+* **⚙️ Interactive Settings Dashboard**
     The Settings tab lets you configure polling, quota warnings, status bar content, interface zoom, and panel display preferences directly from a GUI.
-    * **🟢 Status Bar Quota Indicator**: Current model's quota percentage is now shown directly in the status bar with color-coded dot icons (`🟢`, `🟡`, `🔴`).
-    * **⏳ Current-Model Reset Countdown**: The status bar countdown now tracks the reset time of the model you are currently using, not the earliest reset across all models.
-    * **🎛️ Status Bar Display Toggles**: Independent toggle switches to hide/show 'Context Usage', 'Quota Indicator', 'Reset Countdown' and 'AI Credits Balance' in the status bar.
-    * **⚡ AI Credits in Status Bar** *(v1.16.7)*: Status bar shows real-time AI Credits balance (e.g. `⚡14,701`) wrapped in `||` separators (e.g. `|| ⚠ 121.2k/160k || 🟡40% || ⏳4h6m || ⚡14,701 ||`). Auto-hides when credits are zero. Controlled by `statusBar.showAiCredits` toggle.
+    * **Status bar display**. Set context usage, current-model quota, reset countdown, and AI credits independently. The readouts use IDE icons and dot separators.
+    * **Hover density**. In the monitor's Settings tab choose Automatic, Compact, or Full. Automatic uses the IDE zoom, quota pool count, and display language to select a summary size.
     * **📆 Per-Account Billing Day** *(v1.16.7)*: Set monthly credits-expiry day per account (1-31) inline on the Profile tab. Profile, account panel and status bar tooltip all show a countdown badge ("Expires today / Xd until expiry / Expiry date not set"). Stored in durable JSON state — survives uninstall/reinstall. Uses UTC calendar-day delta so the countdown is correct across DST transitions.
     * **⏸️ Pause/Resume**: Pause auto-refresh to freeze the panel while investigating data.
 
@@ -96,31 +92,33 @@ The Models tab follows the signed-in account's live chat picker and its separate
 
 ### Orchestrator
 
-Orchestrator (Carbon) retains `M667` / `gemini-pro-orchestrator`; Orchestrator (Argon) adds `M681` / `gemini-pro-orchestrator-argon`. The old bare Orchestrator name remains an alias for Carbon, preserving history and custom prices. Both configure the hidden `M669` / `gemini-flash-worker-agy` worker. Model Info shows both delegation relationships without adding a selectable worker. Actual calls retain separate identities; model transitions do not imply compression. Standalone API prices remain explicitly unknown and independently editable; ordinary Carbon/Argon/Hydrogen rates are not inferred.
+The IDE exposes **Orchestrator (Neon)** `M537`, **Orchestrator (Carbon)** `M667`, and **Orchestrator (Argon)** `M681`. Each has one picker entry and a configured route to the hidden `M669` / `gemini-flash-worker-agy` worker. Model Info shows that route. Actual coordinator and worker calls retain separate accounting identities. The legacy bare **Orchestrator** name remains a Carbon alias for history and custom pricing.
 
 ### Current IDE model metadata
 
-The local `GetUserStatus` and `GetAvailableModels` responses on 2026-11-13 contained **22 chat entries: 20 effort variants plus Orchestrator (Carbon) and Orchestrator (Argon)**. Both coordinators and their delegated worker belong to the Gemini shared quota pool; call and pricing identities remain separate. Values below are **reported by the IDE**, not public API guarantees. “Compression limit” and “checkpoint threshold” are separate settings.
+The signed-in IDE catalog on 2026-11-19 exposed **27 chat entries**, including 24 effort variants and three Orchestrator entries. Values below describe the IDE. “Compression limit” and “checkpoint threshold” are separate settings.
 
 | Chat model | Tiers and internal IDs | Model context | Max output | Compression limit | Checkpoint threshold |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Orchestrator (Carbon) | `M667` | 1,048,576 | 262,144 | 256,000 | 50,000 |
-| Orchestrator (Argon) | `M681` | 1,048,576 | 65,536 | 256,000 | 50,000 |
-| Gemini 4 Hydrogen | Low / Medium / High / Extra: `M527` / `M526` / `M525` / `M528` | 1,048,576 | 262,144 | 256,000 | 50,000 |
-| Gemini 4 Carbon | Low / Medium / High: `M438` / `M437` / `M427` | 1,048,576 | 262,144 | 256,000 | 50,000 |
-| Gemini 4 Argon | Low / Medium / High: `M419` / `M418` / `M417` | 1,048,576 | 65,536 | 256,000 | 50,000 |
+| Orchestrator (Neon) | `M537` | 1,048,576 | 262,144 | 512,000 | 50,000 |
+| Orchestrator (Carbon) | `M667` | 1,048,576 | 262,144 | 512,000 | 50,000 |
+| Orchestrator (Argon) | `M681` | 1,048,576 | 65,536 | 512,000 | 50,000 |
+| Gemini 4 Neon | Low / Medium / High / Extra (`M534` / `M533` / `M532` / `M535`) | 1,048,576 | 262,144 | 512,000 | 50,000 |
+| Gemini 4 Hydrogen | Low / Medium / High / Extra: `M527` / `M526` / `M525` / `M528` | 1,048,576 | 262,144 | 512,000 | 50,000 |
+| Gemini 4 Carbon | Low / Medium / High: `M438` / `M437` / `M427` | 1,048,576 | 262,144 | 512,000 | 50,000 |
+| Gemini 4 Argon | Low / Medium / High: `M419` / `M418` / `M417` | 1,048,576 | 65,536 | 512,000 | 50,000 |
 | Gemini 3.8 Flash | Low / Medium / High: `M320` / `M319` / `M318` | 1,048,576 | 65,536 | 256,000 | 50,000 |
 | Claude Opus 5.5 | Low / Medium / High: `M400` / `M401` / `M402` | 1,000,000 | 128,000 | 256,000 | 50,000 |
 | Claude Sonnet 5.5 | Low / Medium / High: `M403` / `M404` / `M405` | 1,000,000 | 128,000 | 256,000 | 50,000 |
 | GPT-OSS 120B | Medium: `MODEL_OPENAI_GPT_OSS_120B_MEDIUM` | 131,072 | 32,768 | 80,000 | 50,000 |
 
-`Mxxx` abbreviates `MODEL_PLACEHOLDER_Mxxx`. Hydrogen catalog IDs are `gemini-4-hydrogen-{low,medium,high,xhigh}`; the IDE menu calls `xhigh` **Extra**, while backend labels use **XHigh**. Its thinking levels are 1 / 2 / 3 / **100**, with no fixed budget inferred from the reported minimum of 32. Carbon and Argon catalog IDs are `gemini-4-carbon-{low,medium,high}` and `gemini-4-argon-{low,medium,high}`. Other listed Gemini tiers use thinking levels 1 / 2 / 3 without a fixed budget; Claude uses adaptive thinking at those levels; GPT-OSS reports an 8,192-token thinking budget. A reported minimum thinking budget is a capability boundary, not a fixed per-request budget. The current Flash 3.8 tiers no longer use their earlier dynamic/4,000/1,000 budget values. Live parameters override static fallbacks; Hydrogen, Carbon, Argon, Flash 3.8, and Claude 5.5 use 255,000 before their 256,000 live compression limits arrive.
+`Mxxx` abbreviates `MODEL_PLACEHOLDER_Mxxx`. Neon and Hydrogen use `gemini-4-neon-{low,medium,high,xhigh}` and `gemini-4-hydrogen-{low,medium,high,xhigh}`. In the picker, **Extra** corresponds to backend **XHigh**. Both families report thinking levels 1 / 2 / 3 / **100**. The single `gemini-pro-orchestrator-neon` entry reports thinking level **100**. A reported minimum budget describes a model capability. The monitor displays a fixed per-request budget only when the IDE reports one. Live limits take precedence over static defaults.
 
-Tier identities stay distinct across English/Chinese labels, context tracking, GM data, and saved usage. Family-only response names do not erase a known effort tier. Hydrogen, Carbon, Argon, and Flash share the chat Gemini quota pool; the displayed representative follows the current model, live recommendation, and available generation order, with Hydrogen ahead of Carbon and Argon when none is current or recommended.
+Tier identities stay distinct across English and Chinese labels, context tracking, GM data, and saved usage. A known effort survives a family-only response label. The quota representative follows the current model, the live recommendation, then the available generation and family order.
 
 Malformed names such as `Gemini 4 CarbonHigh`, unmatched parentheses, and unsupported effort names do not acquire Carbon's identity or family price. Conflicting learned aliases cannot overwrite a registered tier through uppercase or Chinese label variants.
 
-**Model Quota** groups the 22 selectable chat entries into two shared-pool cards: **Gemini** contains Hydrogen (four tiers), Carbon, Argon, and Flash (three each), plus both Orchestrators, totaling 15 selectable entries; **Claude / GPT** contains Opus, Sonnet, and GPT-OSS (seven tiers). Both Orchestrators are listed inside Gemini without an invented effort label; the hidden worker adds no picker row. Each card lists its available model families and effort tiers. Percentages are not summed or averaged: inconsistent values use ranges and per-model details, and missing data remains explicit. Unknown and image-generation identities stay separate from the two known chat pools. **Model Info**, call statistics, and pricing keep individual effort identities.
+**Model Quota** groups this catalog into **Gemini** (20 entries) and **Claude / GPT** (seven entries). Gemini includes the Neon and Hydrogen families, Carbon, Argon, Flash, and all three Orchestrators. The catalog-only worker also shares the Gemini allowance. A pool with differing readings displays a range and per-model details. Unknown and image-generation identities have separate quota entries. **Model Info**, call statistics, and pricing retain individual model identities.
 
 ### Image-generation model
 
@@ -141,6 +139,8 @@ The monitor follows image-generation steps in the current workflow and its linke
 Older Gemini Flash/Pro, Claude 4.6, and renamed/retired placeholders remain registered for accounts that expose them and for saved history. For example, Gemini 3.6 `M264` / `M265` / `M266` still resolve alongside current `M71` / `M72` / `M73`. Catalog-only `M322` and older Flash generations retain their historical profiles. Model availability follows live account data, without subscription-name or date-based hiding rules.
 
 ### API-equivalent pricing
+
+Gemini 4 Neon and the Orchestrator models show **Price unavailable** until a verified standalone rate or a custom price is available.
 
 [Gemini 4 Hydrogen Standard API prices](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen), verified 2026-11-13, are **$1.50 input / $7.50 output including thinking / $0.075 implicit cache reads per million tokens** for all four efforts. Explicit caching is unsupported. Hydrogen has an independent fixed reference rate; Carbon/Argon introductory rates and their December cutover do not apply. Custom family/tier overrides keep precedence. Account-specific display-name changes retain a known model's verified built-in rate while explicit custom display-name prices still win.
 
@@ -170,19 +170,15 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 1. **Install**:
    * **OpenVSX**: Install directly from [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
-   * **Manual**: Install `antigravity-context-monitor-1.17.1.vsix` via Extensions → Install from VSIX, then reload the window and confirm version **1.17.1** in extension details.
+   * **Manual**: Install `antigravity-context-monitor-1.17.2.vsix` via Extensions → Install from VSIX, then reload the window and confirm version **1.17.2** in extension details.
 2. **Status Bar**: The bottom-right status bar shows current context usage. With no active conversation it shows **No active conversation**, rather than a saved model's old limit. The selected effort tier is recognized from the user-input configuration before the first model response.
-3. **Hover**: Hover over the status bar item for detailed info (model, input/output tokens, remaining capacity, compression status, image gen steps, per-model quota summary, and the latest checkpoint shadow model when present).
+3. **Hover for a summary**. Check the current session, context usage, shared quota and reset times. The hover links take you directly to Overview, Models, and Settings.
 
-   ![Hover Details](src/images/悬停详情new.png)
+4. **Click to open Overview**. Check context, quota, reset times, and AI credits together, then open the relevant detailed view.
 
-4. **Click — WebView Monitor Panel**: Click the status bar item to open a comprehensive **8-tab monitoring dashboard**:
+   **Overview** — Session and connection status, measured or estimated context usage, session diagnostics, shared quotas, reset times, and AI credits.
 
-   **Overview** (now inside the GM Data tab) — Quota overview, GM snapshot, cost snapshot, active session details with output breakdown and LLM call details.
-
-   ![Monitor Tab](src/images/montior1.png)
-
-   ![Monitor Tab - Session Details](src/images/monitor2.png)
+   ![Bilingual Overview in a dark theme with example context and quota readings](src/images/monitor-overview.png)
 
    **GM Data** — Detailed per-model token usage, call counts, cache hit rates, retry statistics, tool ranking, and a collapsible tool catalog.
 
@@ -240,7 +236,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 > [!IMPORTANT]
 > **"LS not found" in the current Antigravity IDE**
-> Newer IDE builds run an `agy --hub` backend instead of a process named `language_server_*`. Since version 1.16.19, the monitor discovers both architectures, accepts `--csrf_token=value` and space-separated flags, and checks the declared hub port before using platform socket discovery. Install `antigravity-context-monitor-1.17.1.vsix` and reload the window. A connected backend with no loaded conversations displays **No active conversation**, not a discovery failure; saved history may still exist in the IDE. Opening the IDE without a folder does not by itself mean the backend is unavailable.
+> Newer IDE builds run an `agy --hub` backend instead of a process named `language_server_*`. Since version 1.16.19, the monitor discovers both architectures, accepts `--csrf_token=value` and space-separated flags, and checks the declared hub port before using platform socket discovery. Install `antigravity-context-monitor-1.17.2.vsix` and reload the window. If the connected backend has no loaded conversations, the monitor displays **No active conversation**. Saved history may still exist in the IDE, and the backend can be available with no folder open.
 >
 > **Windows discovery diagnostics**
 > If the status bar is stuck on `LS not found`, open **Output → "Antigravity Context Monitor"** and read the `PATH check:` line — the extension now logs exactly which discovery step failed. Since v1.16.13 it invokes `wmic`/`powershell.exe`/`netstat` by absolute `%SystemRoot%` path, so a truncated Extension Host `PATH` (e.g. missing `System32\wbem` on Win11 24H2+ where WMIC is removed) no longer breaks discovery.
@@ -252,9 +248,10 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 | Setting | Default | Description |
 | --- | --- | --- |
 | `pollingInterval` | 5 | Polling interval in seconds |
-| `statusBar.showContext` | true | Show context usage (e.g. `45k/1M, 4.5%`) in status bar |
-| `statusBar.showQuota` | true | Show current model quota indicator (e.g. `🟢85%`) in status bar |
-| `statusBar.showResetCountdown` | true | Show quota reset countdown (e.g. `⏳4h32m`) in status bar |
+| `statusBar.showContext` | true | Show context usage such as `45k/1M` |
+| `statusBar.showQuota` | true | Show the current model's quota percentage |
+| `statusBar.showResetCountdown` | true | Show the current model's reset countdown |
+| `statusBar.tooltipDensity` | auto | Adjust hover density with `auto`, `compact`, or `full` |
 | `quotaNotificationThreshold` | 20 | Show warning when model quota drops below this % (0 to disable) |
 | `activity.maxRecentSteps` | 100 | Max recent activity steps to keep in timeline |
 | `activity.maxArchives` | 20 | Max activity archives to keep |
@@ -263,7 +260,7 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 | Command | Description |
 | --- | --- |
-| `Show Context Window Details` | Open a QuickPick panel listing all tracked sessions |
+| `Show Context Window Details` | Open the monitor Overview |
 | `Refresh Context Window Monitor` | Re-discover the language server and restart polling |
 | `Switch Display Language` | Choose between Chinese-only, English-only, or bilingual display |
 | `Show Model Activity` | Open the GM Data tab in the monitor panel |
@@ -278,4 +275,4 @@ Gemini 3.8 Flash uses the same introductory price as 3.7 Flash: **$0.75 / 1M inp
 
 ---
 **Author**: AGI-is-going-to-arrive
-**Version**: 1.17.1 — [Release notes](docs/releases/1.17.1.md)
+**Version** 1.17.2 — [Release notes](docs/releases/1.17.2.md)

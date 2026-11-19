@@ -4,7 +4,7 @@
 
 import { tBi } from './i18n';
 import { GMSummary, GMModelStats, GMCompletionConfig } from './gm-tracker';
-import { PricingStore, DEFAULT_PRICING, PRICING_LAST_UPDATED, findPricingWithCustom, findPricingForDate, calculateLedgerModelCosts, ModelPricing, ModelCostRow } from './pricing-store';
+import { PricingStore, DEFAULT_PRICING, PRICING_LAST_UPDATED, findPricingWithCustom, findPricingForDate, calculateLedgerModelCosts, selectPricingModel, samePricingModel, ModelPricing, ModelCostRow } from './pricing-store';
 import { esc } from './webview-helpers';
 import type { MonthCostBreakdown } from './daily-store';
 import { getModelDNAKey, type PersistedModelDNA } from './model-dna-store';
@@ -140,11 +140,14 @@ export function buildPricingTabContent(
         parts.push(buildMonthlyCostSummary(monthBreakdown, activeGrandTotal, rows, pendingArchiveCost, store.getCustom(), hasUnmeteredImageUsage));
     }
 
-    // 收集所有被调用的 responseModel，用于高亮自定义价格表格
+    // Highlight the actual called model's editor even if the response uses a
+    // shared family or names a different model.
     const calledModelKeys = new Set<string>();
+    const custom = store.getCustom();
     for (const r of rows) {
         if (r.totalCost > 0 || r.inputTokens > 0 || r.outputTokens > 0 || r.thinkingTokens > 0 || r.cacheTokens > 0) {
-            calledModelKeys.add(r.responseModel);
+            const model = selectPricingModel(r.name, r.responseModel, custom);
+            calledModelKeys.add(samePricingModel(model, r.responseModel) ? r.responseModel : model);
         }
     }
 
@@ -153,7 +156,7 @@ export function buildPricingTabContent(
         const merged = store.getMerged();
         parts.push(
             buildCostPanel(rows, fullTotal, summary, ledgerSettled, todayLedgerActive, hasUnmeteredImageUsage),
-            buildEditablePricingTable(calledModelKeys, merged, store.getCustom()),
+            buildEditablePricingTable(calledModelKeys, merged, custom),
         );
     } else {
         // No GM data yet — still show the editable pricing table with defaults
@@ -162,7 +165,7 @@ export function buildPricingTabContent(
                 'Cost analysis will appear after GM data is available. You can configure custom prices below.',
                 '费用分析将在 GM 数据可用后显示。您可以在下方配置自定义价格。',
             )}</p>`,
-            buildDefaultPricingTable(store.getMerged(), store.getCustom()),
+            buildDefaultPricingTable(store.getMerged(), custom),
         );
     }
 
@@ -1387,12 +1390,24 @@ function pricingDisplayName(model: string): string {
     return model.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-const ORCHESTRATOR_PRICE_KEYS = ['gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon', 'gemini-flash-worker-agy'];
+const UNVERIFIED_PRICE_KEYS = [
+    'gemini-4-neon-low', 'gemini-4-neon-medium', 'gemini-4-neon-high', 'gemini-4-neon-xhigh',
+    'gemini-pro-orchestrator-neon', 'gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon',
+    'gemini-flash-worker-agy',
+];
+
+function editablePriceKeys(merged: Record<string, ModelPricing>): string[] {
+    const keys = Object.keys(merged);
+    const configuredIds = new Set(keys.map(resolveModelId));
+    // Respect existing custom keys, including saved localized labels, instead of
+    // adding a second blank or conflicting editor for the same identity.
+    return [...keys, ...UNVERIFIED_PRICE_KEYS.filter(key => !configuredIds.has(resolveModelId(key)))];
+}
 
 function orchestratorPricingNote(): string {
     return `<li>${tBi(
-        'Orchestrator (Carbon), Orchestrator (Argon), and their execution worker keep separate call identities. No standalone API rate has been verified for these internal IDs; do not assume a Carbon, Argon, or Hydrogen rate from the picker description. Enter custom rates if known. Missing prices are not zero, and a configured worker is not an additional billable call.',
-        'Orchestrator (Carbon)、Orchestrator (Argon) 与执行模型保留独立调用身份。目前未核实这些内部 ID 的独立 API 费率，不根据选择器说明直接套用 Carbon、Argon 或 Hydrogen 价格；已知费率时可自定义。价格缺失不代表免费，配置了执行模型也不额外产生一笔调用费用。',
+        'Prices for Gemini 4 Neon, the three Orchestrator variants and their execution model are unverified. Enter a custom rate for each identity when available. Costs follow the model recorded on each call.',
+        'Gemini 4 Neon、三个 Orchestrator 变体及其执行模型的费率待确认。掌握费率后可按模型分别设置自定义价格。费用按每次调用实际记录的模型计算。',
     )}</li>`;
 }
 
@@ -1424,17 +1439,22 @@ function buildEditablePricingTable(
 ): string {
     // Keep family-rate editors stable when a first call adds a concrete tier.
     // Otherwise polling can remove a family row with an unsaved price draft.
-    const editableKeys = [...new Set([...Object.keys(merged), ...ORCHESTRATOR_PRICE_KEYS])];
+    const editableKeys = editablePriceKeys(merged);
+    const editorKeyById = new Map(editableKeys.map(key => [resolveModelId(key), key]));
+    const calledEditorKeys = new Set(Array.from(calledModelKeys, key => {
+        const id = resolveModelId(key);
+        return id && !editableKeys.includes(key) ? editorKeyById.get(id) || key : key;
+    }));
 
     // Build unified list: called models first, then uncalled defaults
     interface PricingEntry { name: string; responseModel: string; isCalled: boolean }
     const allEntries: PricingEntry[] = [];
-    for (const responseModel of calledModelKeys) {
+    for (const responseModel of calledEditorKeys) {
         const displayName = normalizeModelDisplayName(responseModel);
         allEntries.push({ name: displayName, responseModel, isCalled: true });
     }
     for (const model of editableKeys) {
-        if (!calledModelKeys.has(model)) {
+        if (!calledEditorKeys.has(model)) {
             const resolved = resolveModelId(model);
             const displayName = resolved ? getModelDisplayName(resolved) : pricingDisplayName(model);
             allEntries.push({ name: displayName, responseModel: model, isCalled: false });
@@ -1493,7 +1513,7 @@ function buildDefaultPricingTable(
     merged: Record<string, ModelPricing>,
     custom: Record<string, ModelPricing>,
 ): string {
-    const entries = [...new Set([...Object.keys(merged), ...ORCHESTRATOR_PRICE_KEYS])];
+    const entries = editablePriceKeys(merged);
     if (entries.length === 0) { return ''; }
 
     const fields: (keyof ModelPricing)[] = ['input', 'output', 'cacheRead', 'thinking'];
@@ -1504,7 +1524,8 @@ function buildDefaultPricingTable(
     for (const model of entries) {
         const p = findPricingWithCustom(model, custom);
         const isCustom = !!custom[model];
-        const displayName = pricingDisplayName(model);
+        const resolved = resolveModelId(model);
+        const displayName = resolved ? getModelDisplayName(resolved) : pricingDisplayName(model);
 
         html += `<div class="prc-edit-row">`;
         html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(displayName)}" data-tooltip="${esc(displayName)}${model !== displayName ? ' · ' + esc(model) : ''}"><span class="prc-edit-card-name-text">${esc(displayName)}</span>${isCustom ? `<span class="prc-custom-badge">${tBi('CUSTOM', '自定义')}</span>` : ''}${!p ? `<span class="prc-custom-badge">${tBi('Price unavailable', '价格待确认')}</span>` : ''}</span></div>`;

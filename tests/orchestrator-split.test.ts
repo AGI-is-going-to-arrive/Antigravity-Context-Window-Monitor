@@ -28,6 +28,7 @@ const cfg = (model: string, label = getModelDisplayName(model)): ModelConfig => 
     quotaInfo: { remainingFraction: 0.8, resetTime: '2026-11-14T00:00:00Z' } });
 const rate = { input: 2, output: 10, thinking: 10, cacheRead: 0.1, cacheWrite: 0 };
 afterEach(async () => {
+    vi.useRealTimers();
     saved.forEach(s => updateModelSpec(s.placeholderId, { ...s }));
     overrideContextLimits(limits); updateModelDisplayNames([], { authoritative: true });
     vi.clearAllMocks(); await setLanguageToState('both', state);
@@ -125,7 +126,10 @@ describe('Orchestrator Carbon/Argon split', () => {
         const priced = calculateCosts(summary, { 'gemini-pro-orchestrator-argon': rate });
         expect(priced.rows).toHaveLength(3); expect(priced.rows.filter(r => r.pricing)).toHaveLength(1);
         expect(priced.grandTotal).toBeCloseTo(0.00305, 10);
-        const ledger = new DailyLedger(), entries = calls.map((c, i) => ({ dedupKey: `split-${i}`, call: { ...c, accountEmail: 'test@example.test' } }));
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(calls[0].createdAt));
+        const ledger = new DailyLedger();
+        const entries = calls.map((c, i) => ({ dedupKey: `split-${i}`, call: { ...c, accountEmail: 'test@example.test' } }));
         expect(ledger.recordCalls(entries)).toBe(3);
         const restored = DailyLedger.restore(ledger.serialize()); expect(restored.recordCalls(entries)).toBe(0);
         expect(Object.keys(restored.getAccountActive('test@example.test')!.modelStats)).toHaveLength(3);

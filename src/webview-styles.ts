@@ -2081,6 +2081,27 @@ export function getStyles(): string {
             margin-bottom: var(--space-1);
         }
 
+        .stg-select-row {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: wrap;
+            gap: 8px 12px;
+            margin-top: 12px;
+        }
+        .stg-select-row select {
+            color: var(--vscode-dropdown-foreground, var(--color-text));
+            background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+            border: 1px solid var(--vscode-dropdown-border, var(--color-border-strong));
+            border-radius: 4px;
+            padding: 4px 8px;
+            max-width: 100%;
+            font: inherit;
+        }
+        .stg-select-row select:focus-visible {
+            outline: 2px solid var(--vscode-focusBorder, var(--color-accent));
+            outline-offset: 2px;
+        }
+
         .threshold-input-row {
             display: flex;
             align-items: center;

@@ -9,7 +9,7 @@ import { esc, formatShortTime as formatTime } from './webview-helpers';
 import type { ContextUsage } from './tracker';
 import type { GMSummary, GMModelStats, GMConversationData, GMSystemContextItem, TokenBreakdownGroup, UniqueErrorEntry, RecentErrorEntry } from './gm-tracker';
 import { normalizeModelDisplayName } from './models';
-import { findPricingWithCustom, costFromTokens, type ModelPricing } from './pricing-store';
+import { findPricingWithCustom, costFromTokens, selectPricingModel, type ModelPricing } from './pricing-store';
 import { toLocalDateKey, type LedgerAccountBucket, type LedgerSettledEntry } from './daily-ledger';
 import { formatResetCountdown, formatResetAbsolute, parseResetDate } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
@@ -2362,6 +2362,20 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
     };
     if (entries.length === 0 && gmOnlyEntries.length === 0) { return ''; }
 
+    const modelCostRow = (name: string, stats: GMModelStats): string => {
+        const model = selectPricingModel(name, stats.responseModel, custom);
+        const price = findPricingWithCustom(model, custom);
+        if (!price) { return ''; }
+        const cost = costFromTokens({
+            inputTokens: stats.totalInputTokens,
+            outputTokens: stats.totalOutputTokens,
+            thinkingTokens: stats.totalThinkingTokens,
+            cacheReadTokens: stats.totalCacheRead,
+        }, price);
+        if (cost <= 0) { return ''; }
+        const amount = cost.toFixed(cost < 0.01 ? 4 : cost < 1 ? 3 : 2);
+        return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${amount}</span></div>`;
+    };
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
     const fmtMs = (ms: number) => ms <= 0 ? '-' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 
@@ -2473,7 +2487,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 ${'totalThinkingTokens' in gmStats && gmStats.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val val-out">${fmt(gmStats.totalThinkingTokens)}</span></div>` : ''}
                 ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val val-cache">${fmt(gmStats.totalCacheRead)}</span></div>` : ''}
                 ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val val-credits">${gmStats.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gmStats.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
-                ${(() => { const pr = findPricingWithCustom(gmStats.responseModel, custom) || findPricingWithCustom(name, custom); if (!pr) { return ''; } const cost = costFromTokens({inputTokens: gmStats.totalInputTokens, outputTokens: gmStats.totalOutputTokens, thinkingTokens: gmStats.totalThinkingTokens, cacheReadTokens: gmStats.totalCacheRead}, pr); if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${costStr}</span></div>`; })()}
+                ${modelCostRow(name, gmStats)}
                 ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val val-hit">${(gmStats.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
                 `;
                 // responseModel footer removed — card header already shows normalized model name
@@ -2506,7 +2520,7 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 ${'totalThinkingTokens' in gms && gms.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val val-out">${fmt(gms.totalThinkingTokens)}</span></div>` : ''}
                 ${gms.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val val-cache">${fmt(gms.totalCacheRead)}</span></div>` : ''}
                 ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val val-credits">${gms.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gms.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
-                ${(() => { const pr = findPricingWithCustom(gms.responseModel, custom) || findPricingWithCustom(name, custom); if (!pr) { return ''; } const cost = costFromTokens({inputTokens: gms.totalInputTokens, outputTokens: gms.totalOutputTokens, thinkingTokens: gms.totalThinkingTokens, cacheReadTokens: gms.totalCacheRead}, pr); if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${costStr}</span></div>`; })()}
+                ${modelCostRow(name, gms)}
                 ${gms.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val val-hit">${(gms.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
                 ${buildAccountSection(name)}
             </div>

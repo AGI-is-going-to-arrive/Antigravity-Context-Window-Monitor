@@ -3,7 +3,7 @@
 // and official model configurations and limit parameters without GM data contamination.
 
 import { getLanguage, tBi } from './i18n';
-import { ModelConfig, UserStatusInfo, getModelSpecs, ModelSpec, updateModelSpec, guessContextLimitSpec, getAvailableImageModelSpecs } from './models';
+import { ModelConfig, UserStatusInfo, getModelSpecs, ModelSpec, updateModelSpec, guessContextLimitSpec, getAvailableImageModelSpecs, localizeNeonPickerLabel } from './models';
 import { ICON } from './webview-icons';
 import { buildDefaultModelCard, buildModelQuotaGrid, sortModels } from './webview-profile-tab';
 import { esc } from './webview-helpers';
@@ -57,14 +57,16 @@ function orchestrationDescription(spec: ModelSpec): string {
 }
 
 export function buildModelInfoGrid(specs: ModelSpec[], kind: 'chat' | 'image' = 'chat'): string {
+    const language = getLanguage();
     const cards = specs.map((s) => {
+        const name = localizeNeonPickerLabel(s.placeholderId, s.displayName, language);
         const shortId = s.placeholderId.replace(/^MODEL_PLACEHOLDER_/, '');
         const extraId = s.placeholderId && s.placeholderId !== s.modelId
             ? `<code class="spec-short-id" title="${esc(s.placeholderId)}">${esc(shortId)}</code>` : '';
         return `
-            <article class="spec-card" aria-label="${esc(s.displayName)}" data-model-id="${esc(s.placeholderId)}">
+            <article class="spec-card" aria-label="${esc(name)}" data-model-id="${esc(s.placeholderId)}">
                 <header class="spec-header">
-                    <h3 class="spec-name">${esc(s.displayName)}</h3>
+                    <h3 class="spec-name">${esc(name)}</h3>
                     <p class="spec-provider" title="${esc(s.apiProvider)}">${esc(providerLabel(s.apiProvider))}</p>
                 </header>
                 <dl class="spec-metrics">

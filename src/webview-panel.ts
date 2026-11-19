@@ -25,6 +25,9 @@ import { buildChatHistoryTabContent } from './webview-chat-history-tab';
 import { DailyStore } from './daily-store';
 import { getScript } from './webview-script';
 import { getStyles } from './webview-styles';
+import { buildOverviewTabContent, getOverviewStyles } from './webview-overview-tab';
+import { parseTooltipDensity } from './tooltip-budget';
+import type { MonitorStatus, OverviewDestination } from './monitor-overview';
 import type { StateBucket } from './durable-state';
 import type { PersistedModelDNA } from './model-dna-store';
 
@@ -33,6 +36,7 @@ import type { PersistedModelDNA } from './model-dna-store';
 /** Unified data payload for showMonitorPanel / updateMonitorPanel. */
 export interface PanelPayload {
     currentUsage: ContextUsage | null;
+    monitorStatus?: MonitorStatus;
     allTrajectoryUsages: ContextUsage[];
     allTrajectories?: TrajectorySummary[];
     modelConfigs: ModelConfig[];
@@ -40,7 +44,7 @@ export interface PanelPayload {
     workspaceUri?: string;
     context?: vscode.ExtensionContext;
     activitySummary?: ActivitySummary | null;
-    initialTab?: string;
+    initialTab?: OverviewDestination | 'gmdata';
     archives?: ActivityArchive[];
     activityTracker?: ActivityTracker;
     gmSummary?: GMSummary | null;
@@ -64,9 +68,12 @@ export interface PanelPayload {
 
 let panel: vscode.WebviewPanel | undefined;
 let extensionCtx: vscode.ExtensionContext | undefined;
+let nextTabRequest = 0;
+let pendingTab: { tab: string; requestId: number } | undefined;
 
 /** Cached data for re-rendering after language switch. */
 let lastUsage: ContextUsage | null = null;
+let lastMonitorStatus: MonitorStatus | undefined;
 let lastAllUsages: ContextUsage[] = [];
 let lastTrajectories: TrajectorySummary[] = [];
 let lastConfigs: ModelConfig[] = [];
@@ -102,6 +109,8 @@ function clamp(value: number, min: number, max: number): number {
 
 function sanitizeConfigValue(key: string, value: unknown): unknown {
     switch (key) {
+        case 'statusBar.tooltipDensity':
+            return parseTooltipDensity(value);
         case 'statusBar.showContext':
         case 'statusBar.showQuota':
         case 'statusBar.showResetCountdown':
@@ -137,6 +146,7 @@ function refreshLocalStorageDiagnostics(): void {
 
 function clearDisposedPanel(): void {
     panel = undefined;
+    pendingTab = undefined;
     isPaused = false;
 }
 
@@ -292,6 +302,7 @@ let calendarMonth = new Date().getMonth() + 1;
  */
 export function showMonitorPanel(p: PanelPayload): void {
     lastUsage = p.currentUsage;
+    lastMonitorStatus = p.monitorStatus;
     lastAllUsages = p.allTrajectoryUsages;
     if (p.allTrajectories) { lastTrajectories = p.allTrajectories; }
     lastConfigs = p.modelConfigs;
@@ -314,32 +325,34 @@ export function showMonitorPanel(p: PanelPayload): void {
     if (p.customPricing !== undefined) { lastCustomPricing = p.customPricing; }
 
     if (panel) {
-        panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused);
-        panel.reveal(vscode.ViewColumn.Two, true);
-        if (p.initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: p.initialTab }), 100); }
+        const wasVisible = panel.visible;
+        if (p.initialTab) { pendingTab = { tab: p.initialTab, requestId: ++nextTabRequest }; }
+        panel.reveal(undefined, false);
+        if (wasVisible) { sendPendingTab(); }
+        if (!isPaused) { postCurrentTabs(); }
         return;
     }
 
     panel = vscode.window.createWebviewPanel(
         'antigravityMonitor',
         `${tBi('Antigravity Monitor', 'Antigravity 监控面板')}`,
-        { viewColumn: vscode.ViewColumn.Two, preserveFocus: true },
+        { viewColumn: vscode.ViewColumn.Two, preserveFocus: false },
         { enableScripts: true },
     );
 
-    panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused);
-    if (p.initialTab) { setTimeout(() => safePostMessage({ command: 'switchToTab', tab: p.initialTab }), 100); }
-
-    panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string; action?: string; cascadeId?: string; uri?: string; email?: string; day?: number }) => {
-        if (msg.command === 'switchLanguage' && extensionCtx) {
+    panel.webview.onDidReceiveMessage(async (msg: { command: string; lang?: string; value?: unknown; key?: string; action?: string; cascadeId?: string; uri?: string; email?: string; day?: number; requestId?: number }) => {
+        if (msg.command === 'panelReady') {
+            sendPendingTab();
+            if (!isPaused) { postCurrentTabs(); }
+        } else if (msg.command === 'tabShown') {
+            if (msg.requestId === pendingTab?.requestId) { pendingTab = undefined; }
+        } else if (msg.command === 'switchLanguage' && extensionCtx) {
             if (!isLanguage(msg.lang)) {
                 console.warn('[Antigravity Context Monitor] Ignoring invalid language switch request:', msg.lang);
                 return;
             }
             await setLanguage(msg.lang, extensionCtx, panelDurableState);
-            if (panel) {
-                panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
-            }
+            refreshMonitorPanelLanguage();
             vscode.commands.executeCommand('antigravity-context-monitor.refresh');
         } else if (msg.command === 'refresh') {
             vscode.commands.executeCommand('antigravity-context-monitor.refresh');
@@ -348,6 +361,7 @@ export function showMonitorPanel(p: PanelPayload): void {
             // Keep the current tab, scroll position, and in-progress form edits.
             // Resuming lets the next normal poll update the panel in place.
             safePostMessage({ command: 'setPaused', paused: isPaused });
+            if (!isPaused) { postCurrentTabs(); }
         } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
             const val = Math.max(1, Math.min(60, msg.value));
             await vscode.workspace.getConfiguration('antigravityContextMonitor')
@@ -357,6 +371,7 @@ export function showMonitorPanel(p: PanelPayload): void {
             }
         } else if (msg.command === 'setConfig' && msg.key) {
             const allowedKeys = [
+                'statusBar.tooltipDensity',
                 'statusBar.showContext',
                 'statusBar.showQuota',
                 'statusBar.showResetCountdown',
@@ -496,20 +511,27 @@ export function showMonitorPanel(p: PanelPayload): void {
     // the panel is updated with the latest cached data as soon as it reappears,
     // instead of waiting for the next polling cycle.
     panel.onDidChangeViewState((e) => {
-        if (e.webviewPanel.visible && !isPaused) {
-            safePostMessage({
-                command: 'updateTabs',
-                tabs: buildTabContents(
-                    lastUsage, lastAllUsages, lastConfigs, lastUserInfo,
-                ),
-                time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            });
+        if (e.webviewPanel.visible) {
+            sendPendingTab();
+            if (!isPaused) { postCurrentTabs(); }
         }
     });
 
     panel.onDidDispose(() => {
         clearDisposedPanel();
     });
+
+    panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused, p.initialTab);
+}
+
+function sendPendingTab(): void {
+    if (pendingTab) { safePostMessage({ command: 'switchToTab', ...pendingTab }); }
+}
+
+export function refreshMonitorPanelLanguage(): void {
+    if (!panel) { return; }
+    panel.title = tBi('Antigravity Monitor', 'Antigravity 监控面板');
+    panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
 }
 
 /**
@@ -519,6 +541,7 @@ export function showMonitorPanel(p: PanelPayload): void {
  */
 export function updateMonitorPanel(p: PanelPayload): void {
     lastUsage = p.currentUsage;
+    lastMonitorStatus = p.monitorStatus;
     lastAllUsages = p.allTrajectoryUsages;
     if (p.allTrajectories) { lastTrajectories = p.allTrajectories; }
     lastConfigs = p.modelConfigs;
@@ -535,14 +558,20 @@ export function updateMonitorPanel(p: PanelPayload): void {
     if (p.todayLedgerActive) { lastTodayLedgerActive = p.todayLedgerActive; }
     if (p.ledgerSettled) { lastLedgerSettled = p.ledgerSettled; }
     if (p.customPricing !== undefined) { lastCustomPricing = p.customPricing; }
-    if (panel && !isPaused) {
-        // Incremental update: send tab contents via postMessage — no DOM teardown
-        safePostMessage({
-            command: 'updateTabs',
-            tabs: buildTabContents(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo),
-            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        });
-    }
+    if (panel?.visible && !isPaused) { postCurrentTabs(); }
+}
+
+function postCurrentTabs(): void {
+    if (!panel) { return; }
+    safePostMessage({
+        command: 'updateTabs',
+        tabs: buildTabContents(lastUsage, lastAllUsages, lastConfigs, lastUserInfo),
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    });
+}
+
+function buildOverview(usage: ContextUsage | null, configs: ModelConfig[], userInfo: UserStatusInfo | null): string {
+    return buildOverviewTabContent(usage, configs, userInfo, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0, lastMonitorStatus);
 }
 
 /** Build HTML for each tab pane (shared between full rebuild and incremental refresh). */
@@ -554,7 +583,7 @@ function buildTabContents(
 ): Record<string, string | boolean> {
     const eoc = `<div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>`;
     return {
-
+        overview: buildOverview(usage, configs, userInfo),
         gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, lastPricingStore?.getCustom() ?? lastCustomPricing) + eoc,
         chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
         pricing: (lastPricingStore
@@ -593,8 +622,9 @@ function buildHtml(
     configs: ModelConfig[],
     userInfo: UserStatusInfo | null,
     paused = false,
+    initialTab?: PanelPayload['initialTab'],
 ): string {
-
+    const overviewHtml = buildOverview(usage, configs, userInfo);
     const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, lastPricingStore?.getCustom() ?? lastCustomPricing);
     const chatsHtml = buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri);
     const pricingHtml = lastPricingStore
@@ -622,13 +652,14 @@ function buildHtml(
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 ${getStyles()}
+${getOverviewStyles()}
 ${getGMDataTabStyles()}
 ${getPricingTabStyles()}
 ${getCalendarTabStyles()}
 ${getAboutTabStyles()}
 </style>
 </head>
-<body data-privacy-default="true" data-zoom="${panelDurableState?.get<number>('panelZoomLevel', 100) ?? 100}" data-tab-hint-enabled="${panelHintPrefs.showTabScrollHint ? 'true' : 'false'}" data-hide-scrollbar="${panelHintPrefs.showScrollbar ? 'false' : 'true'}" data-hide-eoc="${panelHintPrefs.showEndOfContent ? 'false' : 'true'}">
+<body${initialTab ? ` data-initial-tab="${initialTab}"` : ''} data-privacy-default="true" data-zoom="${panelDurableState?.get<number>('panelZoomLevel', 100) ?? 100}" data-tab-hint-enabled="${panelHintPrefs.showTabScrollHint ? 'true' : 'false'}" data-hide-scrollbar="${panelHintPrefs.showScrollbar ? 'false' : 'true'}" data-hide-eoc="${panelHintPrefs.showEndOfContent ? 'false' : 'true'}">
     <div class="panel-topbar">
         <header class="topbar-title">
             <div class="topbar-title-left">
@@ -661,7 +692,7 @@ ${getAboutTabStyles()}
             : '<path fill="currentColor" d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5m5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5"/>'
         }</svg>
                 </button>
-                <button class="action-btn" id="refreshBtn" data-tooltip="${tBi('Refresh', '刷新')}">
+                <button class="action-btn" id="refreshBtn" aria-label="${tBi('Refresh', '刷新')}" data-tooltip="${tBi('Refresh', '刷新')}">
                     ${ICON.refresh}
                 </button>
                 <span class="update-time">${paused ? `<span class="paused-indicator">${tBi('PAUSED', '已暂停')}</span>` : ''} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
@@ -672,9 +703,10 @@ ${getAboutTabStyles()}
         <button class="tab-arrow tab-arrow-left is-faded" id="tabArrowLeft" aria-label="${tBi('Scroll tabs left', '向左滚动标签')}">
             <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0"/></svg>
         </button>
-        <nav class="tab-bar" id="tabBar">
+        <nav class="tab-bar" id="tabBar" aria-label="${tBi('Monitor sections', '监控面板分区')}">
         <div class="tab-slider"></div>
-        <button class="tab-btn active" data-tab="gmdata" data-color="orange">${ICON.bolt} ${tBi('GM Data', 'GM 数据')}</button>
+        <button class="tab-btn active" data-tab="overview" data-color="blue" aria-current="page">${ICON.chart} ${tBi('Overview', '总览')}</button>
+        <button class="tab-btn" data-tab="gmdata" data-color="orange">${ICON.bolt} ${tBi('GM Data', 'GM 数据')}</button>
         <button class="tab-btn" data-tab="chats" data-color="cyan">${ICON.chat} ${tBi('Sessions', '会话')}</button>
         <button class="tab-btn" data-tab="pricing" data-color="blue"><svg class="icon" viewBox="0 0 16 16"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.315 0-1.667-1.104-2.512-3.233-3.037l-.445-.107V3.63c1.213.183 1.968.91 2.141 1.88h1.762c-.112-1.796-1.519-2.965-3.455-3.124V1.036H8.59v1.383C6.408 2.583 5.008 3.9 5.003 5.54c0 1.592 1.063 2.457 3.146 2.963l.399.1v3.979c-1.29-.183-2.113-.879-2.275-1.8H4zm4.586-4.34C7.494 6.137 6.94 5.695 6.94 5.092c0-.66.52-1.183 1.575-1.37v2.72h.071zm.889 2.283c1.335.36 1.942.846 1.942 1.548 0 .781-.633 1.35-1.823 1.493V8.851l-.119-.127z"/></svg> ${tBi('Cost', '成本')}</button>
         <button class="tab-btn" data-tab="models" data-color="green">${ICON.bolt} ${tBi('Models', '模型')}</button>
@@ -700,7 +732,8 @@ ${getAboutTabStyles()}
         </div>
     </div>
     </div>
-    <div class="tab-pane active" id="tab-gmdata">
+    <div class="tab-pane active" id="tab-overview">${overviewHtml}</div>
+    <div class="tab-pane" id="tab-gmdata">
         ${gmDataHtml}
         <div class="eoc-sentinel"><span class="eoc-sentinel-text">${tBi('— End of content —', '— 已到底 —')}</span></div>
     </div>

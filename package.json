@@ -2,7 +2,7 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Window Monitor",
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
-  "version": "1.17.1",
+  "version": "1.17.2",
   "publisher": "AGI-is-going-to-arrive",
   "license": "MIT",
   "repository": {
@@ -54,17 +54,17 @@
         "antigravityContextMonitor.statusBar.showContext": {
           "type": "boolean",
           "default": true,
-          "description": "Show context usage (e.g. 45k/1M, 4.5%) in status bar / 状态栏显示上下文用量"
+          "description": "Show used and total context tokens in the status bar / 在状态栏显示上下文用量与上限"
         },
         "antigravityContextMonitor.statusBar.showQuota": {
           "type": "boolean",
           "default": true,
-          "description": "Show current model quota indicator (e.g. 🟢85%) in status bar / 状态栏显示当前模型额度"
+          "description": "Show the current model's remaining quota percentage in the status bar / 在状态栏显示当前模型的剩余配额百分比"
         },
         "antigravityContextMonitor.statusBar.showResetCountdown": {
           "type": "boolean",
           "default": true,
-          "description": "Show quota reset countdown (e.g. ⏳4h32m) in status bar / 状态栏显示重置倒计时"
+          "description": "Show the current model's quota reset countdown in the status bar / 在状态栏显示当前模型的配额重置倒计时"
         },
         "antigravityContextMonitor.quotaNotificationThreshold": {
           "type": "number",
@@ -90,7 +90,7 @@
         "antigravityContextMonitor.statusBar.showAiCredits": {
           "type": "boolean",
           "default": true,
-          "description": "Show AI Credits balance (e.g. ⚡14701) in status bar and tooltip / 状态栏和 tooltip 显示 AI 专属积分余额"
+          "description": "Show the AI credits balance in the status bar / 在状态栏显示 AI 积分余额"
         },
         "antigravityContextMonitor.statusBar.tooltipDensity": {
           "type": "string",
@@ -100,7 +100,7 @@
             "full"
           ],
           "default": "auto",
-          "description": "Status bar hover tooltip density. auto adapts to window.zoomLevel and quota row count; compact always trims; full shows all rows (may clip under high zoom). / 状态栏悬停提示密度。auto 随 window.zoomLevel 与配额行数自适应；compact 始终精简；full 显示全部行（高缩放可能裁切）。"
+          "description": "Set the amount of detail in the status bar hover. Auto adapts to zoom, quota pool count, and language. Compact condenses the summary. Full shows all quota pools and available reset timestamps. / 设置状态栏悬停摘要的详细程度。自动根据缩放、配额池数量和语言调整，精简缩短摘要，完整显示所有配额池和可用的重置时间。"
         },
         "antigravityContextMonitor.showModelInternalId": {
           "type": "boolean",

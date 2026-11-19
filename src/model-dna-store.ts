@@ -20,14 +20,16 @@ export function getModelDNAKey(
     displayName: string,
     responseModel?: string,
 ): string {
-    // Try responseModel alias first — most precise identifier
+    // The model breakdown's name comes from the resolved call identity. A
+    // delegated response can still name its coordinator or a shared family.
+    const normalizedName = normalizeModelDisplayName(displayName) || displayName;
+    const resolvedId = resolveModelId(normalizedName);
+    if (resolvedId) { return resolvedId; }
     if (responseModel) {
         const fromResponseModel = resolveModelId(responseModel);
         if (fromResponseModel) { return fromResponseModel; }
     }
-    const normalizedName = normalizeModelDisplayName(displayName) || displayName;
-    const resolvedId = resolveModelId(normalizedName);
-    return resolvedId || responseModel || normalizedName;
+    return responseModel || normalizedName;
 }
 
 function cloneCompletionConfig(config: GMCompletionConfig | null): GMCompletionConfig | null {

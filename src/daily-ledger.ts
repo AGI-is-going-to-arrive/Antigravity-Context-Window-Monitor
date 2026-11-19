@@ -12,7 +12,7 @@
 import type { GMCallEntry } from './gm-tracker';
 import { normalizeModelDisplayName, resolveModelId } from './models';
 import { buildGMArchiveKey, isValidCallTimestamp } from './gm/parser';
-import { findPricingForDate, costFromTokens } from './pricing-store';
+import { findPricingForDate, costFromTokens, selectPricingModel } from './pricing-store';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -168,8 +168,8 @@ function fallbackCallId(call: GMCallEntry): string {
  */
 function estimateCallCost(call: GMCallEntry, dateKey: string): number {
     const at = call.createdAt || dateKey;
-    const pr = findPricingForDate(call.model, {}, at)
-        || findPricingForDate(call.responseModel, {}, at) || findPricingForDate(call.modelDisplay, {}, at);
+    const fallback = selectPricingModel(call.modelDisplay, call.responseModel);
+    const pr = findPricingForDate(selectPricingModel(call.model, fallback), {}, at);
     return pr ? costFromTokens(call, pr) : 0;
 }
 

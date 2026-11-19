@@ -45,6 +45,13 @@ interface FeatureCard {
 function getFeatureCards(): FeatureCard[] {
     return [
         {
+            tabId: 'overview',
+            icon: ICON.chart,
+            color: 'var(--color-accent)',
+            title: tBi('Overview', '总览'),
+            description: tBi('Current context, shared quota pools, reset times, and session diagnostics.', '查看当前上下文、共享配额池、重置时间和会话诊断。'),
+        },
+        {
             tabId: 'gmdata',
             icon: ABOUT_ICON.gmdata,
             color: 'var(--color-orange)',
@@ -226,8 +233,8 @@ export function buildAboutTabContent(): string {
         </h3>
         <div class="about-info-box about-info-compat">
             ${tBi(
-        '<p><strong>Verified for extension 1.17.1:</strong> Antigravity IDE 2.6.0 on macOS, using the installed VSIX on 2026-11-13. This release distinguishes Orchestrator (Carbon) and Orchestrator (Argon), their output limits, shared execution model, and independent pricing identities.</p><p><strong>Earlier contributor checks:</strong> v1.18.4, v1.19.6, v1.20.6, and v1.23.2.</p><p>Windows and Linux compatibility is covered by platform regression tests; native IDE validation is performed on macOS. Future IDE updates may change internal APIs. See the Disclaimer below for details.</p>',
-        '<p><strong>扩展 1.17.1 本次验证：</strong>2026-11-13 在 macOS 的 Antigravity IDE 2.6.0 中安装新 VSIX，本版区分 Orchestrator (Carbon) 与 Orchestrator (Argon)、各自输出上限、共享执行模型和独立计价身份。</p><p><strong>此前贡献者验证版本：</strong>v1.18.4、v1.19.6、v1.20.6、v1.23.2。</p><p>Windows 和 Linux 兼容性由平台回归测试覆盖；原生 IDE 验证环境为 macOS。未来 IDE 更新可能变更内部 API，详见下方免责声明。</p>',
+        '<p><strong>Verified for extension 1.17.2:</strong> Installed VSIX in Antigravity IDE 2.7.0 on macOS. This release adds Gemini 4 Neon (Low, Medium, High, Extra), Orchestrator (Neon), and the status bar Overview.</p><p><strong>Earlier contributor checks:</strong> v1.18.4, v1.19.6, v1.20.6, and v1.23.2.</p><p>Windows and Linux compatibility is covered by platform regression tests; native IDE validation is performed on macOS. Future IDE updates may change internal APIs. See the Disclaimer below for details.</p>',
+        '<p><strong>扩展 1.17.2 本次验证：</strong>在 macOS 的 Antigravity IDE 2.7.0 中安装 VSIX。本版新增 Gemini 4 Neon（低、中、高、超高）、Orchestrator (Neon) 和状态栏总览。</p><p><strong>此前贡献者验证版本：</strong>v1.18.4、v1.19.6、v1.20.6、v1.23.2。</p><p>Windows 和 Linux 兼容性由平台回归测试覆盖；原生 IDE 验证环境为 macOS。未来 IDE 更新可能变更内部 API，详见下方免责声明。</p>',
     )}
         </div>
     </div>`;

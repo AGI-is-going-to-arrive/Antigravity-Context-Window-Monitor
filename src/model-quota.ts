@@ -49,7 +49,7 @@ function quotaFamily(spec: ModelSpec): { name: string; effort: QuotaEffort } | u
     // M20's catalog says "low" but its actual effort is Medium. Live display
     // labels may be renamed/localized and never define the grouping identity.
     if (Object.hasOwn(LEGACY_QUOTA_FAMILIES, spec.placeholderId)) { return LEGACY_QUOTA_FAMILIES[spec.placeholderId]; }
-    const gemini = spec.modelId.match(/^gemini-(\d+(?:\.\d+)?)-(hydrogen|carbon|argon|flash|pro)-(low|medium|high|xhigh)$/i);
+    const gemini = spec.modelId.match(/^gemini-(\d+(?:\.\d+)?)-(neon|hydrogen|carbon|argon|flash|pro)-(low|medium|high|xhigh)$/i);
     if (gemini) {
         const family = gemini[2].toLowerCase();
         return { name: `Gemini ${gemini[1]} ${family[0].toUpperCase()}${family.slice(1)}`, effort: gemini[3].toLowerCase() as QuotaEffort };

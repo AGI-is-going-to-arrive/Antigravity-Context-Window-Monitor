@@ -2,7 +2,7 @@
 
 本文档说明 Antigravity Context Window Monitor 的源码组织方式、模块职责以及依赖关系。
 
-当前版本：**1.17.1**。中英文发布说明见 [releases/1.17.1.md](releases/1.17.1.md)。
+当前版本为 **1.17.2**。发布说明先列英文，再列中文。[1.17.2 发布说明](releases/1.17.2.md)
 
 ---
 
@@ -17,9 +17,10 @@ antigravity-context-monitor/
 │   ├── backend-connection.ts     # 从当前 IDE 已激活的内置扩展读取连接提示，约束实例归属
 │   ├── rpc-client.ts             # Connect-RPC 通用调用器
 │   ├── tracker.ts                # Planner/checkpoint 精确 Token 快照、会话数据获取、用户状态查询
-│   ├── models.ts                 # 模型配置、平台阈值、20 个已知当前聊天档位及独立未知条目、图片能力目录、历史身份及跨语言归一化
+│   ├── models.ts                 # 模型配置、平台阈值、聊天和图片目录、历史身份及跨语言归一化
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
-│   ├── statusbar.ts              # 状态栏 UI（StatusBarManager，含计划层级 hover 缓存、AI 积分余额、|| 分隔符）
+│   ├── statusbar.ts              # 状态栏读数与原生 Markdown 悬停摘要
+│   ├── monitor-overview.ts       # 状态栏与总览共用的连接状态、上下文读数、配额和到期格式化
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
 │   ├── monitor-store.ts          # 监控页持久化：按对话保存 ContextUsage + GM 会话快照
 │   ├── pool-utils.ts             # 配额池工具：按稳定 pool key 分组 / 扩池 / 查找最近 quota session
@@ -42,7 +43,8 @@ antigravity-context-monitor/
 │   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算（respOut = output - thinking 避免 double-counting）+ findPricing display name fallback
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照）
-│   ├── webview-panel.ts          # WebView 面板框架（8 标签切换 + 消息通信 + 全局账号面板 dropdown + gmFullSummary 跨账号费用）
+│   ├── webview-panel.ts          # WebView 面板框架、标签切换、增量刷新及消息通信
+│   ├── webview-overview-tab.ts   # 总览内容、会话诊断、共享配额和导航
 │   ├── webview-styles.ts         # WebView 面板 CSS 样式（Design Token 体系）
 │   ├── webview-script.ts         # WebView 客户端 JS（标签切换、设置交互、面板消息处理）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（转义、格式化等）
@@ -88,7 +90,8 @@ antigravity-context-monitor/
 │   ├── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
 │   ├── billing-day.test.ts       # 积分到期日 DST 安全日历日差测试
 │   ├── extension-selection.test.ts # 模型选择与版本恢复回归测试
-│   ├── statusbar-tooltip.test.ts # 状态栏模型代表、配额与 tooltip 密度
+│   ├── statusbar-tooltip.test.ts # 状态栏读数、悬停摘要、配额与密度
+│   ├── installed-ide-ui.cjs     # 已安装扩展的 IDE 自动化检查
 │   ├── activity-recent-steps.test.ts # 最近操作 warm-up 全量恢复与持久化安全上限测试
 │   ├── daily-archival-time.test.ts # 假时钟跨午夜归档 / stale ledger 启动补归档回归测试
 │   ├── daily-ledger-date-filter.test.ts # DailyLedger 跨天日期边界过滤测试
@@ -103,7 +106,7 @@ antigravity-context-monitor/
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   ├── project_structure.md          # 本文件
-│   └── releases/1.17.1.md           # 当前发布说明（先英文，后对应中文；历史版本另保留）
+│   └── releases/1.17.2.md           # 当前发布说明（英文、中文）
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── package.json                  # 扩展清单、命令、配置项
 ├── package-lock.json             # 提交的 npm 锁文件，供本地使用 npm ci 复现依赖
@@ -152,11 +155,13 @@ antigravity-context-monitor/
 
 ### models.ts -- 模型配置与归一化
 
-模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将已知 Orchestrator/执行模型及 Gemini Hydrogen、Carbon、Argon、Flash、Pro 身份合并为统一的 `gemini` 池。未知模型与图片身份保持独立，不能仅因配额读数相同推断池归属。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
+模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将已知 Orchestrator、执行模型及 Gemini Neon、Hydrogen、Carbon、Argon、Flash、Pro 归入 `gemini` 池。未知模型与图片身份保留独立额度。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
+
+1.17.2 注册 Gemini 4 Neon Low / Medium / High / Extra（`M534` / `M533` / `M532` / `M535`）及单一的 Orchestrator (Neon) `M537`。Gemini 4 Neon 第四档的目录后缀为 `xhigh`，界面显示 Extra / 超高。Orchestrator (Neon) 配置 `M669` 为隐藏执行模型。五个新增条目的启动压缩兜底为 511,000，实时上限为 512,000，检查点阈值为 50,000。2026-11-19 的账号目录共 27 个可选条目，其中 Gemini 池 20 个，Claude / GPT 池七个。已知身份用于独立记录用量和定价。目录详情和验收范围见 [1.17.2 发布说明](releases/1.17.2.md#neon-模型目录)。
 
 v1.17.0 新增 Hydrogen Low/Medium/High/Extra（`M527`/`M526`/`M525`/`M528`），catalog 后缀为 `low`/`medium`/`high`/`xhigh`，后端第四档标签为 XHigh，思考力度为 1/2/3/**100**。2026-11-13 活体目录核实四档模型上下文 1,048,576、最大输出 262,144、压缩上限 256,000、检查点阈值 50,000；最小思考预算 32 不作为固定预算。英文/中文别名、GM 与历史记录保持档位独立；Extra/XHigh 不扩展到 Carbon、Argon。`model-quota.ts` 支持第四档 `xhigh`，UI 显示 Extra / 超高。
 
-当前账号目录包含 22 个聊天条目：20 个已知档位及 Orchestrator (Carbon) `M667`、Orchestrator (Argon) `M681`。Gemini 池包含 Hydrogen 四档及 Carbon/Argon/Flash 各三档，再加两种 Orchestrator，共 15 个可选条目；Claude / GPT 池七档。M667/M681/M669 明确共享 Gemini 额度，调用与费用身份独立。Carbon 协调最大输出 262,144，Argon 协调 65,536，共用隐藏执行模型 M669。旧 Orchestrator 别名和自定义价格只归 Carbon；空态也提供三个独立价格编辑器。Hydrogen Standard API 固定参考费率仍为输入 $1.50、含思考输出 $7.50、隐式缓存读取 $0.075 / 百万 token，不继承 Carbon/Argon 日期调价。详细身份与验证记录见 [1.17.1 发布说明](releases/1.17.1.md)。
+1.17.1 首次区分 Orchestrator (Carbon) `M667` 和 Orchestrator (Argon) `M681`。Carbon 协调模型最大输出 262,144，Argon 为 65,536，均配置隐藏执行模型 `M669` 并共享 Gemini 额度。旧 Orchestrator 别名和自定义价格归 Carbon。Hydrogen Standard API 固定参考费率为每百万 token 输入 $1.50、含思考输出 $7.50、隐式缓存读取 $0.075。[1.17.1 发布说明](releases/1.17.1.md)
 
 v1.16.19 注册 Gemini 4 Argon High/Medium/Low（`M417`/`M418`/`M419`），对应 `gemini-4-argon-{high,medium,low}`。2026-10-31 活体目录核实IDE 报告的模型上下文 1,048,576、最大输出 65,536、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；静态兜底 255,000，思考力度 3/2/1。计价采用已核实的 Argon 官方 Standard API 日期费率，支持自定义覆盖，不借用 Flash 单价。家族响应名不能覆盖确切档位，身份解析贯穿 GM、历史用量、配额和中英文显示。
 
@@ -172,13 +177,13 @@ v1.16.18 注册 Claude Opus 5.5 Low/Medium/High（`M400`/`M401`/`M402`）及 Son
 
 ### tooltip-budget.ts -- 状态栏配额代表
 
-配额池代表依次优先当前模型、账号实时推荐模型、最新可用世代；排序同时识别 Gemini 4 这样的整数版本和 3.8 这样的小数版本。取消固定旧版 Flash 作为所有账号默认代表的规则，并保留 tooltip 行数与缩放预算。
+配额池代表依次优先当前模型、账号实时推荐模型、可用世代与系列。排序同时识别 Gemini 4 和 3.8 等版本号。根据用户选择、IDE 缩放、语言和配额池数量计算悬停摘要的行数预算。
 
 ---
 
 ### statusbar.ts -- 状态栏 UI
 
-`StatusBarManager`：上下文用量显示、颜色编码、额度指示、重置倒计时。连接失败与重连提示支持英文、中文和双语，切换语言后立即更新；恢复连接时清除旧断连状态。未加载对话时显示“无活跃会话”，不沿用历史模型的分母。tooltip 中的最近 checkpoint 行会显示短化后的内部影子模型标识（如 `M50`），但主模型显示仍以用户选择模型为准。
+`StatusBarManager` 展示上下文用量、额度、重置倒计时及连接状态。加载对话后显示当前模型的用量。空态显示“无活跃会话”。悬停摘要使用 IDE 原生 Markdown，提供总览、模型和设置链接。点击状态栏可打开 WebView 总览。连接、冷启动和重连状态均支持英文、中文及双语。
 
 ---
 
@@ -286,9 +291,9 @@ Claude Opus 5.5 与 Sonnet 5.5 均使用[官方 API 费率](https://platform.cla
 
 ### webview-panel.ts -- WebView 面板框架
 
-面板总框架：8 标签切换、消息通信、全局账号面板 dropdown、增量刷新。各标签内容由独立模块生成；`Quota Tracking` 独立页签与相关调试入口已移除。
+面板框架处理标签切换、消息通信、账号下拉面板和增量刷新。`webview-overview-tab.ts` 渲染连接与会话状态、上下文用量和原始诊断、共享配额及 AI 积分。悬停摘要与总览通过 `monitor-overview.ts` 共用状态和数值格式化。
 
-子模块：`webview-models-tab.ts`（Models）、`webview-settings-tab.ts`（Settings）、`webview-profile-tab.ts`（Profile）、`webview-chat-history-tab.ts`（Sessions）、`webview-calendar-tab.ts`（Calendar）、`webview-about-tab.ts`（About）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（CSS Design Token）、`webview-icons.ts`（SVG 图标）、`webview-helpers.ts`（共享工具函数）。
+其他子模块包括 `webview-models-tab.ts`（Models）、`webview-settings-tab.ts`（Settings）、`webview-profile-tab.ts`（Profile）、`webview-chat-history-tab.ts`（Sessions）、`webview-calendar-tab.ts`（Calendar）、`webview-about-tab.ts`（About）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（CSS 主题变量）、`webview-icons.ts`（SVG 图标）和 `webview-helpers.ts`（共享工具函数）。
 
 Models 页按当前账号的实时聊天 picker 渲染，并单独展示由 imageGenerationModelIds 返回的图片模型；不按计划名或移除日期推断模型权限。模型信息卡片采用 IDE 中性主题色，压缩上限、IDE 报告的模型上下文和思考状态使用结构化数据行；显示友好提供商名称、可换行的完整模型 ID。布局适配窄面板及亮色、暗色、高对比度主题，并支持中文、英文与双语。
 
@@ -449,14 +454,16 @@ npm run test:watch
 npm run package
 ```
 
-安装：在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.1.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
+在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.2.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
 
 测试文件位于 `tests/`，仅供 Vitest 使用，不会被打包到 VSIX 中。
 
-当前版本的编译、回归测试、安装包一致性、原生 IDE 交互及平台运行结果统一记录在 [1.17.1 发布说明](releases/1.17.1.md)。发布验收必须使用重新打包并安装后的 1.17.1，而非旧插件或仅源码渲染结果。
+发布验收使用重新打包并安装的 1.17.2。编译、回归测试、安装包一致性、原生 IDE 交互和各平台的测试结果集中记录在发布说明。[1.17.2 验证](releases/1.17.2.md#验证)
+
+安装后可用 `node tests/installed-ide-ui.cjs --native` 检查 IDE 本机界面。运行 `node tests/installed-ide-ui.cjs` 会使用已安装的 JavaScript 渲染合成数据，检查三种显示语言、四种主题和不同面板宽度。使用 `--installed <扩展目录>` 指定自定义安装位置。
 
 2026-11-13 按维护者要求停用 GitHub 自动编译/测试 CI，并移除 `.github/workflows/verify.yml`。本地编译、Vitest 和 IDE 安装验收继续保留；平台 mock 结果与 Windows/Linux 原生测试仍须区分。
 
 ### 1.17.1 Orchestrator 补充
 
-`models.ts` 注册 M667 协调模型与 M669 隐藏执行模型；`extension.ts` 同步 executionModelId 并隔离跨实测模型的压缩判断；`gm/parser.ts` 使用 execution + 步骤恢复时间和关联嵌入调用；`webview-models-tab.ts` 展示委派关系，`pricing-panel.ts` 提供独立未知费率编辑。`tests/orchestrator.test.ts` 覆盖冷启动、目录变化、异常数据、多调用、持久化、计价和三语言界面。完整新验收及新版本发布校验值见 [1.17.1](releases/1.17.1.md)。
+`models.ts` 注册协调模型与 M669 隐藏执行模型。`extension.ts` 同步 `executionModelId` 并隔离跨实测模型的压缩判断。`gm/parser.ts` 使用 execution ID 和步骤恢复时间并关联嵌入调用。`webview-models-tab.ts` 展示委派关系，`pricing-panel.ts` 提供独立的自定义计价。`tests/orchestrator.test.ts` 覆盖冷启动、目录变化、异常数据、多调用、持久化、计价及三种显示语言。[1.17.1 历史验证](releases/1.17.1.md#验证)

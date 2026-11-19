@@ -4,7 +4,7 @@ This document explains how the Antigravity Context Window Monitor plugin works. 
 
 本文档说明 Antigravity Context Window Monitor 插件的工作原理。插件由以下核心模块组成：`discovery.ts`（服务器发现）、`tracker.ts`（Token 计算）、`extension.ts`（轮询调度）、`statusbar.ts`（界面展示）、`webview-panel.ts`（WebView 面板调度）、`activity-tracker.ts`（模型活动追踪）、`activity-panel.ts`（GM Data UI）、`pricing-panel.ts`（Cost 与 Models UI）、`quota-tracker.ts`（配额追踪）、`rpc-client.ts`（RPC 通信层）、`models.ts`（模型配置与显示名称）、`constants.ts`（常量定义）、`i18n.ts`（国际化系统）。WebView 面板拆分为：`activity-panel.ts`、`pricing-panel.ts`、`webview-chat-history-tab.ts`、`webview-models-tab.ts`、`webview-profile-tab.ts`、`webview-settings-tab.ts`、`webview-calendar-tab.ts`、`webview-about-tab.ts`、`webview-script.ts`、`webview-styles.ts`、`webview-helpers.ts`、`webview-icons.ts`。
 
-Current release / 当前版本: **1.17.1**. See [release notes / 发布说明](releases/1.17.1.md).
+Current release / 当前版本 **1.17.2**. [Release notes / 发布说明](releases/1.17.2.md)
 
 ---
 
@@ -106,14 +106,16 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
 * **压缩检测（v1.5.1 双层检测）/ Compression Detection (v1.5.1 Two-Layer)**: 主检测层：`processSteps()` 比较连续 checkpoint 的含缓存输入（新输入 + 缓存读取 + 缓存创建），下降超过 5000 tokens 即判定为压缩。此方式天然免疫 Undo 误报（已有 checkpoint 数据不可变）。降级层仅在模型及 token 来源一致、没有 Undo 时比较实测 `contextUsed` 快照，估算转精确和缓存命中变化不会被误判为压缩。压缩标记 `🗜` 持续 3 个轮询周期（默认约 15 秒）。
     Primary layer: `processSteps()` compares cache-inclusive checkpoint input (fresh input + cache reads + cache creation) — a drop exceeding 5000 tokens is flagged as compression. This is inherently immune to Undo false positives (existing checkpoint data is immutable). Fallback layer compares measured `contextUsed` snapshots only when model and token source are unchanged and no undo occurred. Estimate-to-measured transitions and cache-hit shifts do not become compression events. The compression indicator `🗜` persists for 3 poll cycles (~15 seconds by default).
 
-* **状态栏颜色 / Status Bar Colors**: 根据使用率变色——＜50% 正常、50-80% 黄色警告（`warningBackground`）、≥80% 红色（`errorBackground`）。≥95% 时图标切换为 `$(zap)`。
-    Color-coded by usage: <50% normal, 50-80% warning (`warningBackground`), ≥80% error (`errorBackground`). At ≥95% the icon switches to `$(zap)`.
+* Context use of 50% or more applies the IDE warning color. At 80% or more, the status item uses the IDE error color and `$(zap)` icon. Session diagnostics shows compression details.
+
+  上下文使用率达到 50% 时采用 IDE 警告色，达到 80% 时采用 IDE 错误色及 `$(zap)` 图标。压缩详情位于会话诊断中。
 
 * **计划层级缓存清理 / Plan-Tier Cache Clearing (v1.15.1)**: 状态栏 hover 中的计划信息通过 `StatusBarManager.setPlanName()` 缓存。自 v1.15.1 起，最新轮询如果未返回 `userTierName`，缓存会被显式清空，而不是保留旧的二级层级后缀，避免历史标签残留在后续 hover 中。
   The plan row in the status bar hover is cached through `StatusBarManager.setPlanName()`. Since v1.15.1, when a later poll omits `userTierName`, the cached secondary tier is explicitly cleared instead of preserving the old suffix, preventing stale labels from lingering in later hovers.
 
-* **Checkpoint Shadow Model Row (v1.16.4) / Checkpoint 影子模型行**: `statusbar.ts` shortens internal checkpoint model IDs (for example `MODEL_PLACEHOLDER_M50` → `M50`) and shows them next to the latest checkpoint line. This is diagnostic context only; the main model row continues to reflect the user-selected model.
-  `statusbar.ts` 会把内部 checkpoint 模型 ID 短化（例如 `MODEL_PLACEHOLDER_M50` → `M50`）并显示在最近 checkpoint 行旁边。它只用于诊断透明度，主模型行仍显示用户选择的模型。
+* The 1.17.2 hover uses native Markdown and theme icons for the status and quota summary. The `antigravity-context-monitor.showDetails` command opens Overview, Models, or Settings in the same monitor panel. `MarkdownString.isTrusted` allows only that command. Runtime account and model labels are escaped before formatting.
+
+  1.17.2 使用原生 Markdown 和主题图标呈现状态和配额摘要。`antigravity-context-monitor.showDetails` 可在同一面板打开总览、模型或设置。`MarkdownString.isTrusted` 只允许此命令，实时数据中的账号和模型标签在格式化前转义。
 
 * **Empty conversation / 空会话:** When no trajectory is loaded, the status says “No active conversation” / “无活跃会话”. It does not reuse a persisted model denominator or imply a measured zero-token conversation. Quota/account information can still be shown when available.
   未加载 trajectory 时显示“无活跃会话”，不沿用持久化模型分母，也不暗示已测得零 token 的对话；可用的配额/账号信息仍可显示。
@@ -122,12 +124,13 @@ Once connected, the plugin periodically fetches conversation data and tracks cha
 
 > Source: [`webview-panel.ts`](../src/webview-panel.ts)
 
-自 v1.10.1 起，点击状态栏打开 WebView 侧边面板（替代之前的 QuickPick 弹窗），展示完整的用户状态仪表盘。
+The WebView opens on Overview when launched from the status bar. `monitor-overview.ts` supplies shared connection, context and quota presentation logic. `webview-overview-tab.ts` renders the Overview, including collapsible diagnostics for reported token counts, compression and image steps. Navigation buttons open the relevant detailed tabs, and the layout stacks at narrow widths.
 
-Since v1.10.1, clicking the status bar opens a WebView side panel (replacing the previous QuickPick popup) showing a full user status dashboard.
+从状态栏打开 WebView 时进入总览。`monitor-overview.ts` 提供共享的连接、上下文和配额展示逻辑。`webview-overview-tab.ts` 渲染总览，折叠的诊断区域包含上报的令牌计数、压缩及生图步骤。导航按钮可直达对应详情；较窄时区域纵向排列。
 
-* **数据来源 / Data Source**: 所有数据来自已有的 `GetUserStatus` RPC 调用，通过 `fetchFullUserStatus()` 函数获取完整用户状态（`FullUserStatus`）。零额外网络请求。
-  All data comes from the existing `GetUserStatus` RPC call via `fetchFullUserStatus()` which returns the full `FullUserStatus` object. Zero additional network requests.
+* Account, credit, and quota data come from the existing `GetUserStatus` poll via `fetchFullUserStatus()`. The context reading uses the current `ContextUsage` prepared by the poller. Opening or switching the Overview reads the current panel payload.
+
+  账号、积分和配额来自 `fetchFullUserStatus()` 对现有 `GetUserStatus` 的轮询。上下文读数使用轮询生成的 `ContextUsage`。打开或切换总览时，界面读取当前面板数据。
 
 * **Panel Content / 面板内容**: Displays account info (planName, userTier), credit balance (Prompt & Flow Credits), shared quota-pool cards (color-coded), feature flags, team config (MCP Servers, Auto-Run, etc.), and Google AI credits. Pool cards list their available families/efforts; effort-specific model information, usage statistics, and pricing remain separate.
   展示账户信息（planName、userTier）、Credits 余额（Prompt Credits、Flow Credits）、共享配额池卡片（带颜色指示）、Feature Flags、团队配置（MCP Servers、Auto-Run 等）、Google AI 额度。池卡片列出可用家族/档位；档位级模型信息、用量统计与价格仍独立。
@@ -257,6 +260,16 @@ Since v1.11.2, the plugin tracks real-time activity data per model (reasoning ca
 
 ## 🤖 7. Model Registry and Model Cards / 模型注册与模型信息卡片
 
+### Neon (v1.17.2)
+
+Gemini 4 Neon has four stable identities, `M534`, `M533`, `M532`, and `M535` in Low, Medium, High, Extra order. Their catalog IDs use `gemini-4-neon-{low,medium,high,xhigh}`. Orchestrator (Neon) has one identity, `M537` / `gemini-pro-orchestrator-neon`, with configured worker `M669`. Exact identities govern catalog, context, history, and pricing. Each Neon entry belongs to the Gemini pool. The coordinator's configured route is model metadata, and actual calls determine usage and cost.
+
+The five Neon entries report a model context of 1,048,576 and a maximum output of 262,144. They use a 511,000 startup compression fallback and a 50,000 checkpoint threshold. The live 512,000-token compression limit also applies to the checked Carbon and Argon coordinators, their worker, and the Gemini 4 Carbon, Argon and Hydrogen tiers. Existing models retain their prior cold-start defaults pending live metadata. Gemini 3.8 Flash and Claude 5.5 report 256,000, and GPT-OSS reports 80,000. [1.17.2 live model metadata](releases/1.17.2.md#neon-model-catalog)
+
+Gemini 4 Neon 的 Low、Medium、High、Extra 对应 `M534`、`M533`、`M532`、`M535`，目录 ID 为 `gemini-4-neon-{low,medium,high,xhigh}`。Orchestrator (Neon) 使用单一身份 `M537` / `gemini-pro-orchestrator-neon`，配置执行模型 `M669`。目录、上下文、历史记录和计价使用确切的身份。Neon 条目归入 Gemini 池。委派关系属于模型元数据，费用与用量由实测调用决定。
+
+五个 Neon 条目均报告模型上下文 1,048,576、最大输出 262,144，采用 511,000 的启动压缩兜底与 50,000 的检查点阈值。实时压缩上限 512,000 也适用于本次核对的 Carbon、Argon 协调模型、执行模型，以及 Gemini 4 Carbon、Argon、Hydrogen 各档。较早登记的模型在实时数据到达前沿用原启动默认值。Gemini 3.8 Flash 与 Claude 5.5 报告的实时上限为 256,000，GPT-OSS 为 80,000。[1.17.2 实时模型元数据](releases/1.17.2.md#neon-模型目录)
+
 ### Orchestrator Carbon / Argon (v1.17.1)
 
 #### English
@@ -281,7 +294,7 @@ The running IDE's `GetUserStatus` and `GetAvailableModels` metadata, checked 202
 
 [Hydrogen Standard API pricing](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen), checked 2026-11-13, is $1.50 input / $7.50 output including thinking / $0.075 implicit cache reads per million tokens for all four tiers. Hydrogen has an independent fixed reference rate and does not inherit Carbon/Argon's December cutover. If an account changes a known model's display label, `findPricing()` recovers its catalog identity after exact/custom display-name matching; the placeholder/catalog identity must agree, preventing stale or renumbered metadata from assigning an unrelated price. Explicit caching is unsupported. Custom family/tier overrides and saved archived costs retain precedence. These reference estimates are separate from Antigravity subscription charges.
 
-The live account exposes 22 chat entries: 20 effort variants plus Orchestrator (Carbon) `M667` and Orchestrator (Argon) `M681`. Gemini contains 15 selectable entries. M667, M681 and M669 have explicit Gemini quota membership. Dynamic inference for other unregistered models still requires an effort-specific branded catalog ID and matching provider. Availability remains account-driven, including empty and partial catalogs. Final validation and platform scope are recorded in [1.17.1 release notes](releases/1.17.1.md#validation).
+The account checked for 1.17.1 exposed 22 chat entries, including 15 in the Gemini pool. M667, M681 and M669 have explicit Gemini quota membership. Dynamic inference for unregistered models requires an effort-specific branded catalog ID and matching provider. Availability remains account-driven, including empty and partial catalogs. [1.17.1 validation](releases/1.17.1.md#validation)
 
 #### 中文
 
@@ -291,7 +304,7 @@ The live account exposes 22 chat entries: 20 effort variants plus Orchestrator (
 
 2026-11-13 核实的 [Hydrogen Standard API 价格](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen) 对四档均为每百万 token 输入 $1.50 / 含思考输出 $7.50 / 隐式缓存读取 $0.075。Hydrogen 使用独立固定参考费率，不继承 Carbon/Argon 的 12 月调价。账号更改已知模型显示名时，`findPricing()` 在精确/自定义显示名匹配后恢复 catalog 身份；placeholder 与 catalog 身份须一致，避免陈旧或重新编号元数据错误套价；不支持显式缓存。自定义家族/档位覆盖及已有归档费用优先，参考估算与 Antigravity 订阅收费分开。
 
-当前账号提供 22 个聊天条目：20 个力度档位及两种 Orchestrator `M667` / `M681`。Gemini 池共 15 个可选条目；M667/M681/M669 明确属于 Gemini 额度。其他未注册模型的动态推断仍须同时满足明确档位的家族 catalog ID 与匹配提供商。可用列表由账号实时目录决定，包括空目录和部分档位。最终验证结果及平台范围记录于 [1.17.1 发布说明](releases/1.17.1.md#验证)。
+1.17.1 核对的账号提供 22 个聊天条目，其中 15 个属于 Gemini 池。M667、M681、M669 明确属于 Gemini 额度。其他未注册模型的动态推断仍须同时满足明确档位的家族 catalog ID 与匹配提供商。可用列表由账号实时目录决定，包括空目录和部分档位。[1.17.1 验证](releases/1.17.1.md#验证)
 
 ### Gemini 4 Carbon (v1.16.20)
 
@@ -430,9 +443,13 @@ v1.16.18 注册表依据 2026-10-03 对运行中 Antigravity IDE 的元数据探
 
 ## 🧪 8. Verification / 验证
 
-**Current 1.17.1:** split-model implementation, 940 local tests, installed-package validation and native IDE evidence are recorded in [1.17.1 validation](releases/1.17.1.md#validation). Windows/Linux branches are tested locally; native validation is on macOS. CI remains removed.
+Current build and installed-IDE results are recorded in the [1.17.2 validation notes](releases/1.17.2.md#validation).
 
-**当前 1.17.1：** 模型拆分实现、940 项本地测试、安装包核验及原生 IDE 证据见 [1.17.1 验证](releases/1.17.1.md#验证)。Windows/Linux 分支做本地回归，原生验证在 macOS，CI 继续保持移除。
+当前版本的构建与安装验收结果见 [1.17.2 验证](releases/1.17.2.md#验证)。
+
+**Historical 1.17.1** — See the split-model implementation, 940 local tests, package checks, and macOS IDE evidence in the [1.17.1 validation notes](releases/1.17.1.md#validation).
+
+**历史版本 1.17.1** 的模型拆分实现、940 项本地测试、安装包核验和 macOS IDE 证据见 [1.17.1 验证](releases/1.17.1.md#验证)。
 
 **Historical 1.17.0:** compilation and 899 tests in 50 files passed. The model/accounting runtime is unchanged from the prior validated 1.16.21 functional build; the live generation evidence below belongs to that build. The IDE CLI installed 1.17.0; 47 installed JavaScript files matched the build. Live checks covered 21 chat entries, one image entry, and eight real `OK` responses across four independent Hydrogen requests and a same-conversation Low → Extra → High → Medium sequence. Installed-code browser fixtures passed 36 display, 9 ordinary corner, 60 interaction, 21 header-boundary, and 24 quota-edge checks. Native three-language and light/dark UI checks passed on macOS. Native Windows/Linux IDE tests were not performed. Hosted build/test CI is now disabled at the maintainer's request; local checks remain available. Orchestrator adds nine real model calls and 24 route/pricing browser assertions (174 total); see [1.17.0 validation](releases/1.17.0.md#validation) for the complete historical record. The 1.16.20 results below are historical evidence only.
 
@@ -440,7 +457,7 @@ v1.16.18 注册表依据 2026-10-03 对运行中 Antigravity IDE 的元数据探
 
 The release includes Vitest 4.1.12 and Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`. Use these runtime constraints and the committed lockfile for local verification: `npm ci`, `npm run compile`, and `npm test`. On 2026-11-13 the maintainer requested cancellation of hosted CI: the GitHub build/test workflow is disabled and `verify.yml` is removed. Historical runs remain historical evidence, not passing checks for the current commit.
 
-The current regression scope includes legacy and hub discovery, argument/port parsing, candidate fallback, cancellation, the 22-entry live chat catalog, Hydrogen four-tier/Extra-XHigh identity, renamed-account pricing, Orchestrator Gemini pool membership, image capability and metadata lifecycle, live-model precedence, account-specific catalogs, separate image quota identity, Carbon/Argon family and tier isolation, GM identity preservation, Argon UTC price cutovers and archival/custom precedence, Carbon and generic unknown prices, image steps, persisted history, and English/Chinese/bilingual rendering. Cross-platform mocks exercise branches locally and must be distinguished from execution on each native operating system.
+Regression tests cover legacy and hub discovery, argument and port parsing, cancellation, model and effort identity, account-specific catalogs and pricing, quota pool membership, attribution in GM and saved history, image models, and English, Chinese, and bilingual rendering. The 1.17.2 validation notes report native IDE runs and platform simulations separately. [1.17.2 validation](releases/1.17.2.md#validation)
 
 **Historical 1.16.20 acceptance:** the newly packaged **1.16.20** VSIX was installed and reloaded in the already running IDE. Local compilation and **753 tests in 46 files** passed; all **47 installed JavaScript files** matched the compiled output. Live checks verified **16 chat entries and one image entry**. Installed-code browser fixtures passed **36/36** display, **9/9** ordinary corner, **54/54** interaction, **21/21** header-boundary, and **18/18** quota-edge cases, with no accessibility violations. Quota-edge checks exercise differing, partial, and invalid data and expanded per-model details. Native macOS checks verified six Carbon requests including a Low → Medium → High sequence, two shared pools/six family rows/three Carbon cards in all three languages, About metadata, and light/dark rendering. Chinese, Light Modern, and Carbon Medium were restored afterward.
 
@@ -448,7 +465,7 @@ All three jobs in [CI run 42900949800](https://github.com/AGI-is-going-to-arrive
 
 本版本包含 Vitest 4.1.12、Node.js engines `^22.23.4 || ^24.22.1 || >=26.12.1`。按运行时约束和已提交锁文件在本地执行 `npm ci`、`npm run compile`、`npm test`。2026-11-13 按维护者要求停用 GitHub 自动编译/测试工作流并移除 `verify.yml`。历史运行记录不等于当前提交通过托管检查。
 
-当前回归范围包含旧版/hub 发现、参数与端口解析、候选回退、取消、22 条目实时聊天目录、Hydrogen 四档及 Extra-XHigh 身份、账号改名计价、Orchestrator Gemini 池归属、图片能力及元数据生命周期、实时模型优先级、账号目录、独立图片配额身份、Carbon/Argon 家族与档位隔离、GM 身份保持、Argon UTC 调价边界与归档/自定义优先级、Carbon 及通用未知价格、图片步骤、历史持久化，以及英文/中文/双语渲染。跨平台 mock 在本地覆盖分支，需要与各原生操作系统上的实际运行分别报告。
+回归测试覆盖旧版和 hub 发现、参数与端口解析、取消、模型与档位身份、账号目录与计价、共享配额归属、GM 及持久化历史的调用归属、图片模型，以及英文、中文和双语渲染。1.17.2 验证记录分别列出原生 IDE 运行和平台模拟结果。[1.17.2 验证](releases/1.17.2.md#验证)
 
 **1.16.20 历史验收：** 使用重新打包并安装重载于现有 IDE 的 **1.16.20** VSIX。本地编译及 **46 个文件中的 753 项测试**通过，**47 个已安装 JavaScript 文件**均与编译输出一致。实时检查核实 **16 个聊天条目及一个图片条目**。安装代码的浏览器 fixtures 通过 **36/36** 展示、**9/9** 普通边界、**54/54** 交互、**21/21** 顶部边界和 **18/18** 配额异常用例，无无障碍违规；配额异常检查覆盖差异、部分缺失、无效数据及展开逐模型明细。macOS 原生检查核实六次 Carbon 请求（含 Low → Medium → High 序列）、三语言下两池/六行家族/三张 Carbon 卡片、About 信息及浅/深色展示；随后恢复中文、Light Modern 和 Carbon Medium。
 
