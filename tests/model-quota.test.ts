@@ -3,7 +3,7 @@ import { groupModelQuotas } from '../src/model-quota';
 import { buildModelQuotaGrid } from '../src/webview-profile-tab';
 import { buildModelsTabContent } from '../src/webview-models-tab';
 import { getModelDisplayName, getModelSpecs, updateModelDisplayNames, updateModelSpec, type ModelConfig } from '../src/models';
-import { setLanguageToState, type Language } from '../src/i18n';
+import { setLanguageToState, tBiHtml, type Language } from '../src/i18n';
 import type { StateBucket } from '../src/durable-state';
 
 const state: StateBucket = { get: <T>(_key: string, fallback: T) => fallback, update: async () => {} };
@@ -106,6 +106,30 @@ describe('model quota pool grouping', () => {
         ]);
         expect(groups).toHaveLength(3);
         expect(groups.slice(0, 2).every(g => g.efforts.length === 0)).toBe(true);
+    });
+
+    it('recognizes new model families when provider, catalog ID and thinking level agree', () => {
+        const models = [
+            ['M98701', 'future-studio-7-low', 'ProviderA', 1, 'Studio 7 (Low)'],
+            ['M98702', 'future-studio-7-medium', 'ProviderA', 2, 'Studio 7（中）'],
+            ['M98703', 'future-studio-7-high', 'ProviderA', 3, 'Studio 7 (High)'],
+            ['M98704', 'future-studio-7-extra', 'ProviderA', 100, 'Studio 7 (Extra)'],
+            ['M98705', 'future-studio-7-high', 'ProviderB', 3, 'Studio 7 (High)'],
+            ['M98706', 'future-studio-7-low', 'ProviderA', 3, 'Studio 7 (Low)'],
+        ] as const;
+        for (const [id, modelId, apiProvider, thinkingLevel, displayName] of models) {
+            updateModelSpec(`MODEL_PLACEHOLDER_${id}`, { modelId, apiProvider, thinkingLevel, displayName, supportsThinking: true });
+        }
+        const groups = groupModelQuotas(models.map(([id, , , , label], i) => config(id, 0.5 + i / 100, RESET, label)));
+        expect(groups).toHaveLength(3);
+        expect(groups[0]).toMatchObject({
+            label: 'Studio 7', efforts: ['low', 'medium', 'high', 'xhigh'],
+            minimum: 0.5, maximum: 0.53, quotaDiffers: true,
+        });
+        expect(groups[0].members).toHaveLength(1);
+        expect(groups[1].efforts).toEqual(['high']);
+        expect(groups[2].efforts).toEqual([]);
+        expect(groups.every(group => group.pool === undefined)).toBe(true);
     });
 
     it('uses the registry quota contract instead of creating a second provider mapping', () => {
@@ -226,7 +250,7 @@ describe('quota differences and incomplete readings', () => {
         expect(buildModelQuotaGrid(different)).toContain('Reset times differ');
     });
 
-    it.each(['', 'not-a-date', '0', '2026-11-12T01:00:00', '2026-02-30T01:00:00Z'])('does not claim missing or invalid reset %j', reset => {
+    it.each(['', 'not-a-date', '0', '1970-01-01T00:00:00Z', '2026-11-12T01:00:00', '2026-02-30T01:00:00Z'])('does not claim missing, epoch or invalid reset %j', reset => {
         const groups = groupModelQuotas([config('M438', 0.8, reset)]);
         expect(groups[0]).toMatchObject({ resetTime: null, missingReset: true });
         expect(buildModelQuotaGrid([config('M438', 0.8, reset)])).toContain('Reset time unavailable');
@@ -261,10 +285,11 @@ describe('quota card rendering', () => {
         expect(normal.match(/class="model-card-pct"/g)).toHaveLength(1);
         expect(normal.match(/class="model-card-reset"/g)).toHaveLength(1);
         expect(normal).not.toContain('<details');
-        expect(normal).toContain(lang === 'en' ? 'Low · Medium · High' : lang === 'zh' ? '低 · 中 · 高' : 'Low · Medium · High / 低 · 中 · 高');
+        expect(normal).toContain(tBiHtml('Low · Medium · High', '低 · 中 · 高'));
+        expect(normal.replace(/<[^>]+>/g, '')).toContain(lang === 'en' ? 'Low · Medium · High' : lang === 'zh' ? '低 · 中 · 高' : 'Low · Medium · High / 低 · 中 · 高');
         const incomplete = buildModelQuotaGrid([config('M438', 0.8), { ...config('M427'), quotaInfo: undefined }]);
-        expect(incomplete).toContain(lang === 'zh' ? '部分配额或重置数据缺失' : 'Some quota or reset data is unavailable');
-        expect(incomplete).toContain(lang === 'zh' ? '各档位读数' : 'Readings by effort');
+        expect(incomplete).toContain(tBiHtml('Some quota or reset data is unavailable', '部分配额或重置数据缺失'));
+        expect(incomplete).toContain(tBiHtml('Readings by effort', '各档位读数'));
     });
 
     it('escapes live labels, tags, unknown IDs and malicious reset values', () => {
@@ -275,5 +300,60 @@ describe('quota card rendering', () => {
         expect(html).toContain('&lt;img');
         expect(html).not.toContain('aria-label=""><');
         expect(html).toContain('Reset time unavailable');
+    });
+
+    it('universally merges efforts across Neon, Hydrogen, Carbon, Argon, Claude 5.5, GPT-OSS while keeping all 3 Orchestrators distinct', () => {
+        const configs: ModelConfig[] = [
+            // Gemini 4 Neon (4 efforts -> 1 model)
+            config('M534', 0.70, RESET, 'Gemini 4 Neon (Low)'),
+            config('M533', 0.70, RESET, 'Gemini 4 Neon (Medium)'),
+            config('M532', 0.45, RESET, 'Gemini 4 Neon (High)'),
+            { ...config('M535', 0.70, RESET, 'Gemini 4 Neon (Extra / 超高)'), tagTitle: 'New' },
+            // 3 distinct Orchestrator variants -> 3 models
+            config('M537', 0.70, RESET, 'Orchestrator (Neon)'),
+            config('M667', 0.70, RESET, 'Orchestrator (Carbon)'),
+            config('M681', 0.70, RESET, 'Orchestrator (Argon)'),
+            // Gemini 4 Hydrogen (4 efforts -> 1 model)
+            config('M527', 0.70), config('M526', 0.70), config('M525', 0.70), config('M528', 0.70),
+            // Gemini 4 Carbon (3 efforts -> 1 model) & Argon (3 efforts -> 1 model)
+            config('M438', 0.70), config('M437', 0.70), config('M427', 0.70),
+            config('M419', 0.70), config('M418', 0.70), config('M417', 0.70),
+            // Claude Opus 5.5 (3 -> 1), Sonnet 5.5 (3 -> 1), GPT-OSS 120B (1 -> 1)
+            config('M400', 0.90), config('M401', 0.80), config('M402', 0.90),
+            config('M403', 0.90), config('M404', 0.90), config('M405', 0.90),
+            config('MODEL_OPENAI_GPT_OSS_120B_MEDIUM', 0.90),
+        ];
+        const groups = groupModelQuotas(configs);
+        expect(groups.map(g => g.label)).toEqual(['Gemini', 'Claude / GPT']);
+        const [gemini, premium] = groups;
+        expect(gemini.members.map(m => m.label)).toEqual([
+            'Gemini 4 Neon', 'Orchestrator (Neon)', 'Orchestrator (Carbon)', 'Orchestrator (Argon)',
+            'Gemini 4 Hydrogen', 'Gemini 4 Carbon', 'Gemini 4 Argon',
+        ]);
+        expect(gemini.members[0].efforts).toEqual(['low', 'medium', 'high', 'xhigh']);
+        expect(gemini.members[0].tagTitle).toBe('New');
+        expect(gemini).toMatchObject({ minimum: 0.45, maximum: 0.70, quotaDiffers: true });
+        expect(premium.members.map(m => m.label)).toEqual(['Claude Opus 5.5', 'Claude Sonnet 5.5', 'GPT-OSS 120B']);
+        expect(premium).toMatchObject({ minimum: 0.80, maximum: 0.90, quotaDiffers: true });
+    });
+
+    it('merges retired placeholder IDs (M37/M36 and M264/M265/M266) even without active specs and strips legacy Chinese 强/弱 labels', () => {
+        const proGroups = groupModelQuotas([
+            config('M37', 0.8, RESET, 'Gemini 3.1 Pro (强)'),
+            config('M36', 0.6, RESET, 'Gemini 3.1 Pro (弱)'),
+        ]);
+        expect(proGroups).toHaveLength(1);
+        expect(proGroups[0].members).toHaveLength(1);
+        expect(proGroups[0].members[0]).toMatchObject({ label: 'Gemini 3.1 Pro', efforts: ['low', 'high'] });
+        expect(proGroups[0]).toMatchObject({ minimum: 0.6, maximum: 0.8, quotaDiffers: true });
+
+        const flash36Groups = groupModelQuotas([
+            config('M264', 0.5, RESET, 'Gemini 3.6 Flash (High)'),
+            config('M265', 0.5, RESET, 'Gemini 3.6 Flash (Medium)'),
+            config('M266', 0.5, RESET, 'Gemini 3.6 Flash (Low)'),
+        ]);
+        expect(flash36Groups).toHaveLength(1);
+        expect(flash36Groups[0].members).toHaveLength(1);
+        expect(flash36Groups[0].members[0]).toMatchObject({ label: 'Gemini 3.6 Flash', efforts: ['low', 'medium', 'high'] });
     });
 });

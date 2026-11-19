@@ -1,278 +1,161 @@
-# 🌌 Antigravity 实时上下文窗口监控
+# Antigravity 上下文窗口监控
 
-一个专为 **Antigravity IDE** 开发的插件，用于实时**监控所有聊天会话的上下文窗口使用情况**。
+在 Antigravity IDE 中实时监控会话上下文、模型生成速度（`tok/s`）、首字延迟与提示词缓存效率、模型共享配额、重置时间和 AI 积分。
 
-**[🇺🇸 English Documentation / 英文文档](README.md)**
+**1.17.2** 为监控器全部九个页面带来 **Modern Editorial Telemetry（"Studio Telemetry Ledger"）** 全新视觉重做，新增全链路**模型生成速度（`tok/s`）、首字延迟（缓存 vs 非缓存）与首字/提示词缓存遥测**，升级右下角状态栏与悬停摘要，实现跨全部模型家族的基础模型思考档位合并，重构**个人**页，并新增 **Gemini 4 Neon**（低 / 中 / 高 / 超高四档）及 **Orchestrator (Neon)** 支持。
 
----
+[English](README.md) · [1.17.2 发布说明与验证](docs/releases/1.17.2.md#中文) · [技术实现](docs/technical_implementation.md) · [项目结构](docs/project_structure.md) · [变更日志](CHANGELOG.md)
 
-> [!WARNING]
-> **平台支持**
->
-> 🍏 **macOS**: 支持。通过 `ps`、声明的 hub 端口及 `lsof` 发现当前 `agy` hub 和旧版语言服务器。
->
-> 🐧 **Linux**: 自 v1.6.0 起支持。通过 `ps` 和 `lsof`/`ss` 实现进程发现。历史平台测试覆盖 Ubuntu 22.04 (x64 & ARM64)。
->
-> 🪟 **Windows**: 完全支持（v1.8.0+）。通过 `wmic` 缓存和 PowerShell 回退机制优化了发现逻辑。
->
-> 🐧🪟 **WSL**: 完全支持（v1.12.0+）。通过 `/proc/version` 检测 WSL 环境，利用 WSL 互操作调用 Windows 端工具进行 LS 发现。v1.12.1 新增 `extensionKind: ["ui", "workspace"]`，通过 Remote-WSL 或 Remote SSH 连接时扩展自动运行在本地 Windows 宿主机上。v1.13.0 新增 **Remote-WSL LS 发现** — 连接 WSL 工作区时，扩展通过 `wsl -d <distro>` 发现 WSL 内部运行的 `language_server_linux_x64` 进程，通过 WSL2 端口转发连接并显示正确的上下文数据。
+## 1.17.2 核心更新
 
----
+- **模型生成速度（`tok/s`）、首字延迟与首字/提示词缓存遥测：** 由纯计算引擎 `src/telemetry-metrics.ts` 驱动，严格遵循已核实的 Antigravity protobuf 语义（仅解码流式时长、相加式 `input + cacheRead + cacheCreation` 提示词总分母、含显式与隐式思考的可见输出拆分、总和比值时间加权速度、双层噪声过滤与未定价节省保护）。完整贯穿**总览**（4 格 L2 遥测条）、**GM 数据**（按账号过滤的 KPI 条、独立双列**生成速度与首字缓存账本**——含**缓存 vs 非缓存 TTFT** 加速对比条与 3 段式提示词缓存进度条、统一逐模型速度与 token 加权缓存命中率卡片，以及逐步骤/逐轮次时间线标签）、**日历**（归档速度、自适应 TTFT 与 token 加权缓存命中率）及**状态栏与悬停摘要**（默认关闭的 `showSpeed` / `showCacheHit` 可选开关与 `compact`/`auto`/`full` 三密度遥测）。
+- **Studio Telemetry Ledger 界面重做（全部 9 页）：** 全新工作室中性配色体系——**Obsidian Slate 深色**（`#0D1014` / `#14181F`）、**Alabaster Studio 浅色**（`#FAFBFC` / `#FFFFFF`）及原生**高对比度**主题；配备吸顶细线页首、2px Studio Cobalt 滑动标签指示条、语义健康进度条（翠绿 / 琥珀 / 绯红）、统一 `32px` 触感控件，在 `320px` 至 `1440px` 宽度下零横向溢出。
+- **零宋体中英文排版与主次双语布局：** 英文展示标题采用光学衬线并直连无衬线系统/CJK 字体栈（杜绝回退到宋体 / SimSun），全量指标启用等宽数字（`tabular-nums`）保证每 5 秒刷新不抖动；双语模式下中文副文自动退居次级层级，同时保持完整无障碍语义文本。
+- **重做状态栏与悬停摘要：** 支持**自动（`auto`）**、**精简（`compact`）**、**完整（`full`）**三种摘要密度，清晰呈现已用与剩余 tokens、可选开启的状态栏速度与缓存命中读数（`statusBar.showSpeed` / `statusBar.showCacheHit`，默认关闭且冷启动自动隐藏）、实时速度 / TTFT / 提示词缓存悬停遥测、共享配额池、精确重置时刻与倒计时（消除跨池重置时间串扰）及未知安全的 AI 积分读数，并可直达**总览**、**模型**与**设置**。
+- **跨家族通用思考档位合并：** 自动将 Gemini 4 Neon、Hydrogen、Carbon、Argon、Flash、Pro、Claude Opus/Sonnet/Haiku、GPT-OSS 及受约束的新家族思考档位按基础模型合并计数，同时保持各 Orchestrator 独立展示，并在**模型**规格、**GM 数据**与**成本**账本中完整保留独立档位 ID。
+- **Gemini 4 Neon 与 Orchestrator (Neon)：** 完整支持 `Gemini 4 Neon` 低 / 中 / 高 / 超高四档（`M534`/`M533`/`M532`/`M535`）与 `Orchestrator (Neon)`（`M537`，配置执行模型 `M669`），实时压缩上限 512,000 tokens。
+- **重构「个人」页：** 移除过时的 Prompt / Flow 旧配额计数，聚焦共享模型配额池、未知安全的 Google AI 积分（缺失时显示**未上报**而非伪造 `0`）、按账号配置的每月积分到期日、默认开启的隐私遮罩，以及可折叠的计划限制与功能配置。
 
-**1.17.2** 重做状态栏悬停摘要，新增集中查看上下文、模型配额、重置时间和 AI 积分的总览，并支持 **Orchestrator (Neon)** 及 **Gemini 4 Neon** 四档思考力度。[发布说明与验证](docs/releases/1.17.2.md#中文)
+## 安装
 
-**验证方式：** GitHub 自动编译/测试 CI 已于 2026-11-13 按维护者要求停用并移除；保留本地 `npm run compile`、`npm test` 和 IDE 安装验收。历史 CI 失败/取消记录不代表当前构建通过托管检查。
+1. 从发布附件获取 `antigravity-context-monitor-1.17.2.vsix`，或使用 `npm run package` 在本地打包。[GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases)
+2. 在 Antigravity IDE 中打开命令面板：macOS 使用 `Cmd+Shift+P`，Windows 与 Linux 使用 `Ctrl+Shift+P`。执行 **Extensions: Install from VSIX...**，选择下载的文件。
+3. 重载窗口，在扩展详情或监控器的**关于**页确认版本为 **1.17.2**。
 
-## 📚 技术细节
+也可以通过 [Open VSX](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装注册表中的已发布版本。
 
-👉 **[阅读技术实现说明](docs/technical_implementation.md)**
+扩展支持 macOS、Windows、Linux 和 WSL。本版原生 IDE 验收在 macOS 上完成，Windows 与 Linux 分支的模拟测试范围见发布说明。[验证](docs/releases/1.17.2.md#验证)
 
----
+## 使用监控器
 
-## ✨ 主要功能
+- **悬停右下角状态栏监控项：** 查看当前会话与模型、上下文已用与剩余 tokens、实时**生成速度（`tok/s`）、TTFT（含缓存 vs 非缓存加速对比）与按 token 加权的提示词缓存**遥测、账号计划、共享配额池、精确重置时间与倒计时，以及 AI 积分。各思考档位按基础模型家族计一次。在设置中选择**自动**、**精简**或**完整**：精简模式将各配额池与遥测收敛为单行摘要，完整模式展开中位数（`p50`）速度/TTFT、缓存写入量、家族明细与当前会话诊断。可在设置中按需开启状态栏**生成速度（`tok/s`）**与**提示词缓存命中率（`%`）**常驻显示（冷启动无数据时自动隐藏）。
+- **点击状态栏监控项：** 打开**总览**。悬停摘要也提供**总览**、**模型**和**设置**直达链接。页首控件支持打开多账号快照（**账号面板**）、即时切换中文 / 英文 / 双语、暂停自动轮询或手动刷新。
+- **展开会话诊断：** 查看提供商上报的 Token 计数、自动压缩事件与图片生成活动。监控器明确区分实测值与估算值，在流式响应时原地更新读数，并在回退或切换模型后重新计算上下文。
 
-* **⚡ 实时 Token 监控**
-    状态栏显示 `125k/200k` 等精简读数。总览补充占用比例、可用余量和计量来源。监控器优先采用 planner response 或旧版 checkpoint 中提供商上报的新输入、缓存读取、缓存创建和输出 Token，并标注估算值。运行中的响应会随流式输出刷新。
+## 监控页面
 
-* **状态栏摘要**
-    悬停可查看连接与会话状态、上下文用量、账号计划和共享配额，并直接打开总览、模型或设置。计划摘要随当前账号数据更新。
+面板在 `320px` 窄分屏至 `1440px` 宽编辑区之间自适应排版，自动跟随 IDE 的浅色、深色与高对比度主题，并满足 WCAG 2.1 AA 对比度标准。下方截图使用示例数据，在双语模式下同时展示 **Obsidian Slate 深色**与 **Alabaster Studio 浅色**主题。
 
-* **🌐 语言切换**
-    用户可选择仅中文、仅英文或双语显示模式。点击状态栏 → 设置 → 切换显示语言即可访问。偏好通过 `globalState` 跨会话持久化。
+### 总览
 
-* **🔒 多窗口隔离**
-    每个 Antigravity 窗口优先显示本工作区的对话数据，通过 workspace URI 过滤。遇到 Antigravity 切换项目后仍上报旧 workspace 的情况，监控会跟随共享语言服务器里当前 RUNNING 的对话，避免状态栏直接空掉。未打开文件夹的窗口显示所有对话。
+查看当前会话、上下文已用与可用余量、内嵌 4 格 L2 遥测条（生成速度 `tok/s`、自适应 TTFT、按 token 加权的缓存命中率及缓存节省与预热状态）、可折叠会话诊断、带语义健康进度条与重置倒计时的共享配额池，以及底部 AI 积分摘要。
 
-* **🗜️ 上下文压缩检测**
-    监控器比较连续 checkpoint 的含缓存输入及可比的实测上下文用量，识别明显下降。在总览打开**会话诊断**，可查看下降幅度及可用的前后读数。
+![Obsidian Slate 深色主题下的双语总览页，展示活跃上下文、L2 速度/TTFT/缓存遥测条、共享配额池与 AI 积分](src/images/monitor-overview.png)
 
-* **⏪ Undo/Rewind 支持**
-    撤销对话步骤后，插件检测到 `stepCount` 减少，会重新计算 Token 用量，显示回滚后的准确值。
+<details>
+<summary>GM 数据 — 速度、TTFT、提示词缓存账本、模型调用与时间线</summary>
 
-    | 回退前 | 回退后 |
-    | :---: | :---: |
-    | ![回退前](src/images/回退前.png) | ![回退后](src/images/回退后.png) |
+按模型和会话实时分析 Generator Metadata，包含按账号过滤的顶部 KPI 概览（含生成速度、平均首字延迟与 token 加权缓存命中率）、双列**生成速度与首字缓存账本**（加权/最新/中位/可见 `tok/s`、**缓存 vs 非缓存 TTFT** 对比条与加速幅度、3 段式提示词缓存分布条、预热状态与节省估算）、统一逐模型统计卡片、逐步骤与逐轮次时间线遥测标签、当日账本、工具调用排行、上下文增长趋势及错误详情。
 
-* **🔄 动态模型切换**
-    对话中切换模型时，上下文窗口上限自动更新为当前模型的限制值。v1.4.0 起通过 `GetUserStatus` API 动态获取模型显示名称。
+![Alabaster Studio 浅色主题下的双语 GM 数据页，展示 KPI 概览、生成速度与首字缓存账本、时间线遥测标签与模型统计](src/images/monitor-gm-data.png)
 
-* **🎨 图片生成追踪**
-    监控器追踪图片生成步骤，并在 IDE 上报图片模型时识别其身份。打开**会话诊断**可查看生图活动，模型页可查看独立图片目录。
+</details>
 
-* **🛌 自动退避轮询**
-    语言服务器不可用时，轮询间隔按 `baseInterval × 2^n` 递增，采用双上限策略：发现失败上限 15 秒（5s → 10s → 15s，快速检测 LS），RPC 失败上限 60 秒。重连后立即恢复正常间隔。
+<details>
+<summary>会话 — 可搜索的对话记录</summary>
 
-* **📊 WebView 监控面板**
-    点击状态栏打开总览。面板还提供会话与调用详情、成本、完整模型信息、个人资料和设置。个人资料使用现有 `GetUserStatus` 数据展示账号计划与等级、Prompt / Flow 积分、模型配额、功能开关、团队配置和 Google AI 积分。
-    * **🛡️ 隐私遮罩**：面板顶部盾牌按钮可遮罩姓名和邮箱，开关状态跨刷新持久化。
-    * **📂 可折叠区域**：次要信息（计划限制、功能开关、团队配置、Google AI 额度）默认折叠，展开/收起状态持久化。
+按工作区分组浏览会话上下文与历史记录，支持按当前工作区、仓库、运行状态或可备份状态筛选，并一键定位本地工作区、Brain 记录目录或 `.pb` 原始文件。
 
-* **⚙️ 交互式设置仪表盘**
-    设置页提供图形化界面，可直接配置轮询、低额度警告、状态栏内容、界面缩放和面板显示偏好。
-    * **状态栏显示**。上下文用量、当前模型配额、重置倒计时和 AI 积分可独立设置。读数使用 IDE 图标和点分隔。
-    * **悬浮摘要密度**。在监控器设置页选择自动、紧凑或完整。自动模式根据 IDE 缩放、配额池数量和显示语言选择摘要密度。
-    * **📆 按账号独立到期日** *(v1.16.7)*：在个人页内联设置每个账号的月度积分到期日（1-31）。个人页、账号面板和状态栏 tooltip 都会显示「今日到期 / X 天后到期 / 到期日未设置」倒计时徽章。使用 durable JSON 持久化，卸载重装不丢失。采用 UTC 日历日差计算，跨夏令时也不会多算 1 天。
-    * **⏸️ 暂停/恢复**：暂停自动刷新以冻结面板数据，方便排查问题。
+![Obsidian Slate 深色主题下的双语会话页，展示工作区分组、搜索与本地化状态标签](src/images/monitor-sessions.png)
 
-* **🧠 模型活动监控** *(v1.11.2 新增，持续增强至 v1.16.4)*
-    新增活动标签页，实时追踪 AI 推理调用、工具使用、Token 消耗和每模型耗时。通过主状态栏或 `Show Model Activity` 命令访问。
-    * **🔧 工具名称显示** *(v1.11.3)*：时间线条目显示工具名称（如 `view_file`、`gh/search_issues`）和步骤序号标签。
-    * **📚 工具目录清理** *(v1.16.4)*：GM 数据页提供可折叠工具目录、智能 chip tooltip，以及只清空目录、不影响工具排行计数的清理按钮。
-    * **⚡ 独立 Activity 轮询** *(v1.11.3)*：Activity 追踪运行在独立的 3 秒轮询循环中，与全局 5 秒轮询解耦，更新更快。
-    * **🎯 三层额度检测** *(v1.12.2)*：即时检测（周期内已用时间比较）、漂移检测（resetTime 观察）、额度检测（fraction 变化）。不再使用硬编码周期——自动适配任何额度周期。
-    * **🔀 归档防抖合并** *(v1.12.2)*：不同配额池在 5 分钟内先后重置时自动合并为单条归档，避免碎片化。
-    * **💾 数据持久化**：活动统计通过 `globalState` 跨 VS Code 重启保存，写入频率限制为每 30 秒一次。
-    * **📋 自动归档**：模型额度重置时，当前活动自动归档到历史记录，带来源追踪（`triggeredBy`），生成每周期使用报告。
-    * **📊 推算步数**：当对话超过 LS API 约 500 步获取窗口时，额外步数以推算方式记录，UI 上以 `📊` 标记明确区分。
-    * **⚠️ 低额度通知**：当任意模型剩余额度低于可配置阈值（默认 20%）时弹出警告通知。
+</details>
 
-## 🤖 支持的模型
+<details>
+<summary>成本 — 费用估算与自定义 API 费率</summary>
 
-模型页依据当前登录账号的实时聊天 picker 和独立图片生成目录。注册表保留历史身份，但不会授予访问权限，也不会假定所有账号的模型列表相同。
+按月及模型查看 USD 费用估算、四分项成本分布堆叠条（输入 / 输出 / 缓存 / 思考）与逐模型明细，支持按每百万 tokens 自定义家族或单模型费率；尚未核实价格的用量明确标为**费用暂不可用**并注明已知小计。
 
-### Orchestrator
+![Alabaster Studio 浅色主题下的双语成本页，展示月度汇总、四分项分布图与自定义定价控件](src/images/monitor-cost.png)
 
-IDE 提供 **Orchestrator (Neon)** `M537`、**Orchestrator (Carbon)** `M667` 和 **Orchestrator (Argon)** `M681` 三个协调模型。它们各占一个选择器条目，均配置隐藏执行模型 `M669` / `gemini-flash-worker-agy`。模型信息显示配置的委派关系，协调和执行调用各自记账。历史记录与自定义价格中的旧名 **Orchestrator** 仍归入 Carbon。
+</details>
 
-### 当前 IDE 模型元数据
+<details>
+<summary>模型 — 共享配额与模型参数</summary>
 
-2026-11-19 核对的登录账号在 IDE 中提供 **27 个聊天条目**，包括 24 个思考档位和三个 Orchestrator 条目。下表数值由 IDE 报告。“压缩上限”和“检查点阈值”是不同设置。
+查看当前默认模型、合并后的 Gemini 与 Claude / GPT 共享配额池、重置计划、可用模型家族与思考档位，以及 IDE 上报的详细模型参数。聊天目录与图片生成目录独立展示。
 
-| 聊天模型 | 档位与内部 ID | 模型上下文 | 最大输出 | 压缩上限 | 检查点阈值 |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Orchestrator (Neon) | `M537` | 1,048,576 | 262,144 | 512,000 | 50,000 |
-| Orchestrator (Carbon) | `M667` | 1,048,576 | 262,144 | 512,000 | 50,000 |
-| Orchestrator (Argon) | `M681` | 1,048,576 | 65,536 | 512,000 | 50,000 |
-| Gemini 4 Neon | Low / Medium / High / Extra（`M534` / `M533` / `M532` / `M535`） | 1,048,576 | 262,144 | 512,000 | 50,000 |
-| Gemini 4 Hydrogen | Low / Medium / High / Extra：`M527` / `M526` / `M525` / `M528` | 1,048,576 | 262,144 | 512,000 | 50,000 |
-| Gemini 4 Carbon | Low / Medium / High：`M438` / `M437` / `M427` | 1,048,576 | 262,144 | 512,000 | 50,000 |
-| Gemini 4 Argon | Low / Medium / High：`M419` / `M418` / `M417` | 1,048,576 | 65,536 | 512,000 | 50,000 |
-| Gemini 3.8 Flash | Low / Medium / High：`M320` / `M319` / `M318` | 1,048,576 | 65,536 | 256,000 | 50,000 |
-| Claude Opus 5.5 | Low / Medium / High：`M400` / `M401` / `M402` | 1,000,000 | 128,000 | 256,000 | 50,000 |
-| Claude Sonnet 5.5 | Low / Medium / High：`M403` / `M404` / `M405` | 1,000,000 | 128,000 | 256,000 | 50,000 |
-| GPT-OSS 120B | Medium：`MODEL_OPENAI_GPT_OSS_120B_MEDIUM` | 131,072 | 32,768 | 80,000 | 50,000 |
+![Obsidian Slate 深色主题下的双语模型页，展示默认模型、共享配额池与 Neon 参数规格](src/images/monitor-models.png)
 
-`Mxxx` 是 `MODEL_PLACEHOLDER_Mxxx` 的简写。Neon 和 Hydrogen 使用 `gemini-4-neon-{low,medium,high,xhigh}` 和 `gemini-4-hydrogen-{low,medium,high,xhigh}`。IDE 选择器中的 **Extra** 对应后端 **XHigh**，两系列的思考力度均为 1 / 2 / 3 / **100**。单一的 `gemini-pro-orchestrator-neon` 条目报告力度 **100**。上报的最小预算表示模型能力边界，只有 IDE 明确提供每次请求的固定预算时才会显示该值。实时上限优先于静态默认值。
+</details>
 
-档位身份在中英文标签、上下文追踪、GM 数据和历史用量中保持独立。响应仅包含系列名时，已知档位仍会保留。配额代表依次优先当前模型、实时推荐模型和可用模型的世代及系列顺序。
+<details>
+<summary>日历 — 每日用量、归档速度/TTFT/缓存与周期归档</summary>
 
-`Gemini 4 CarbonHigh`、未配对括号及不支持的档位名称不会误套 Carbon 身份或家族价格。冲突的学习别名不能通过大写形式或中文标签覆盖已注册档位。
+在**月度**与**全部**统计间一键切换，通过 7 列交互月历浏览每日活跃标记，展开任意日期即可查看逐模型统计、归档生成速度（`tok/s`）、自适应 TTFT、按 token 加权的提示词缓存命中率与归档周期。
 
-**模型配额**将此目录归入 **Gemini**（20 个条目）及 **Claude / GPT**（七个条目）。Gemini 包含 Neon、Hydrogen、Carbon、Argon、Flash 和三个 Orchestrator。仅见于目录的执行模型也共用 Gemini 配额。池内的额度读数不一致时，界面显示范围和逐模型明细。未知模型和图片模型的额度单独显示。**模型信息**、调用统计和计价保留各自的模型身份。
+![Obsidian Slate 深色主题下的双语日历页，展示月度汇总与每日活跃网格](src/images/monitor-calendar.png)
 
-### 图片生成模型
+</details>
 
-IDE 的 `imageGenerationModelIds` 列表独立于聊天 picker，明确提供 **Gemini 3.1 Flash Image（Nano Banana 2）**。
+<details>
+<summary>个人 — 计划、共享配额、AI 积分与账号设置</summary>
 
-| 模型 | 内部 ID | Catalog ID | IDE 模型上下文 | IDE 最大输出 | 聊天压缩上限/阈值 |
-| --- | --- | --- | ---: | ---: | --- |
-| Gemini 3.1 Flash Image | `MODEL_PLACEHOLDER_M21` | `gemini-3.1-flash-image` | 65,536 | 65,536 | 不适用 |
+查看账号身份（默认开启隐私遮罩，可一键切换）、当前订阅计划、模型共享配额池、Google AI 积分（缺失时标注**未上报**）、按账号配置的每月积分到期日，以及可折叠的计划限制、功能开关与团队配置。已移除过时的 Prompt / Flow 旧计数。
 
-模型页单独展示**图片生成模型**区域。生成图片的能力以明确的目录列表为准，不能由支持图片输入推断。IDE 没有为该条目报告聊天 checkpointer 或独立图片配额，因此不编造聊天压缩上限，也不套用共享聊天额度。目录未提供思考能力时显示 **IDE 未上报**，不把缺失信息认定为不支持。
+![Alabaster Studio 浅色主题下的双语个人页，展示隐私遮罩账号、共享配额与 AI 积分](src/images/monitor-profile.png)
 
-[公开 Gemini API 模型文档](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-image) 的图片 API 输入/输出上限为 131,072 / 32,768，与已安装 IDE 的 65,536 / 65,536 不同。因此卡片使用**模型上下文**文案，并明确数据来源为 IDE。
+</details>
 
-监控器追踪当前工作流及关联子智能体中的图片生成步骤，设置遍历上限并处理重复/循环链接，同时保留父聊天模型与上下文；子智能体文本调用不会被当作图片模型 Token，缺失图片计费数据也不会被补成实测值。
+<details>
+<summary>设置 — 持久化存储、轮询、布局与状态栏</summary>
 
-### 历史兼容
+查看外部持久化存储状态与路径，配置低配额提醒阈值、轮询间隔、六项状态栏开关（含可选开启的生成速度 `tok/s` 与提示词缓存命中率 `%`）、悬停摘要密度（`auto` / `compact` / `full`）、内部模型 ID 显示、界面缩放比例，以及滚动条和页底提示偏好。
 
-旧 Gemini Flash/Pro、Claude 4.6，以及改号/退役的 placeholder 继续为仍提供这些模型的账号和历史记录保留注册。例如 Gemini 3.6 的 `M264` / `M265` / `M266` 仍可与当前 `M71` / `M72` / `M73` 一起解析；仅目录可见的 `M322` 和较旧 Flash 世代保留历史画像。可用模型由账号实时数据决定，不按订阅名或日期强制隐藏。
+![Alabaster Studio 浅色主题下的双语设置页，展示持久化存储、步进器与状态栏开关](src/images/monitor-settings.png)
 
-### API 等价计价
+</details>
 
-Gemini 4 Neon 与 Orchestrator 模型在缺少已核实的独立费率和自定义价格时显示**价格待确认**。
+<details>
+<summary>关于 — 版本、兼容性与功能导航</summary>
 
-2026-11-13 核实的 [Gemini 4 Hydrogen Standard API 价格](https://aistudio.google.com/docs/pricing#gemini-4-hydrogen) 对四档均为**每百万 token 输入 $1.50 / 输出（含思考）$7.50 / 隐式缓存读取 $0.075**，不支持显式缓存。Hydrogen 使用独立固定参考费率，不沿用 Carbon/Argon 的优惠价或 12 月调价规则；自定义家族/档位覆盖保持优先。账号更改已知模型显示名仍保留已验证内置费率，显式自定义显示名价格继续优先。
+确认已安装的扩展版本（`v1.17.2`）与支持平台范围，通过双列功能导航卡片直达各个监控页面，并查阅开源仓库与兼容性说明。
 
-内置 Google Standard API 的 [Gemini 4 Carbon 官方费率](https://aistudio.google.com/docs/pricing#gemini-4-carbon)（2026-11-11 核实）及 [Gemini 4 Argon 官方费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) 适用于三个思考档位，单位为美元/百万 token：
+![Obsidian Slate 深色主题下的双语关于页，展示 1.17.2 版本与功能导航卡片](src/images/monitor-about.png)
 
-| 调用日期（UTC） | 输入 | 输出，含思考 | 隐式缓存读取 |
-| --- | ---: | ---: | ---: |
-| 截至 2026-11-30 | $2.00 | $10.00 | $0.10 |
-| 自 2026-12-01 起 | $4.00 | $20.00 | $0.20 |
+</details>
 
-计价使用每次调用的 UTC 时间戳，因此跨过 12 月调价边界后，历史调用仍保留当时费率。已归档费用与自定义覆盖保持不变。Carbon 与 Argon 虽然公布费率相同，仍保留独立计价身份及家族/档位覆盖。两者仅支持隐式缓存，不添加显式缓存写入费。未知模型继续显示**价格待确认**，不视为免费。这些是 Standard API 参考估算，与 Antigravity 订阅收费和积分分开；不使用 Batch、Flex 或 Priority 价格。
+## 模型、上下文与计价
 
-图片生成的 [Google Standard API 参考费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-image) 为输入 $0.50/百万 token、文本/思考输出 $3/百万 token、图片输出 $60/百万 token。官方列出的图片输出等价费用为 512 px / 1K / 2K / 4K 各 $0.045 / $0.067 / $0.101 / $0.151。实际 IDE 生图测试未返回 M21 独立的 Token、积分或 GM 用量。因此成本页将已观测金额标为**未计入图片生成费的已知小计**，并提供官方参考链接，不把生图视为免费。详见[发布验收](docs/releases/1.16.19.md#验证)。
+- 可用模型以当前登录账号的实时目录为准。2026 年 11 月 19 日核对的目录共有 **27 个可选条目**，其中 Gemini 池 20 个，Claude / GPT 池 7 个。状态栏悬停摘要与**总览**按基础模型家族合并统计已核实的思考档位；**模型**信息卡片与调用账本保留独立档位 ID。池内读数不一致时展示范围并提供可展开的逐档位明细。
+- **Gemini 4 Neon** 提供低 / 中 / 高 / 超高四个思考档位；**Orchestrator (Neon)** 提供单一选择器条目，并配置隐藏执行模型 `M669`。五个新增条目均报告 1,048,576 tokens 的模型上下文、262,144 tokens 的最大输出、512,000 tokens 的实时压缩上限及独立的 50,000 tokens 检查点阈值。确切 ID、思考力度与实测结果见发布说明。[Neon 模型目录](docs/releases/1.17.2.md#neon-模型目录)
+- 上下文读数优先采用当前 planner 响应或 checkpoint 中模型提供商报告的新输入、缓存读取、缓存创建与输出。历史用量可兼容账号自定义显示名与旧模型 ID。图片生成步骤及上报的图片模型独立展示。
+- 费用按本地 API 等价费率与调用时间估算。Neon 等费率尚未核实的模型可在**成本**页设置自定义价格。订阅 AI 积分独立展示（缺失时显示**未上报**而非 `0`）；图片生成费用需依赖 IDE 提供独立模型用量。[模型与计价说明](docs/technical_implementation.md)
 
-以下为 [Claude 5.5 官方 API 参考价格](https://platform.claude.com/docs/en/about-claude/pricing)，单位为美元/百万 token（2026-10-03）：
+## 命令与设置
 
-| 模型 | 输入 | 输出 | 缓存读取 | 缓存写入，5 分钟 | 缓存写入，1 小时 |
-| --- | --- | --- | --- | --- | --- |
-| Claude Opus 5.5 | $4 | $20 | $0.20 | $5 | $8 |
-| Claude Sonnet 5.5 | $2 | $10 | $0.20 | $2.50 | $4 |
-
-内置缓存写入参考费率为 **5 分钟**。当前费用估算不计缓存创建费，因为遥测不能可靠区分创建 token 及其存活时间（TTL）；1 小时缓存写入费用也不自动计入。已上报的缓存读取 token 会参与计价。这些费用只是本地 API 等价估算，不代表 Antigravity 订阅账单。
-
-Gemini 3.8 Flash 与 3.7 Flash 使用相同的引入期定价：截至 2026-12-31，**每 1M 输入 token $0.75**、**每 1M 输出 token $3.75**；从 2027-01-01 起变为 $1.50 / $7.50。来源：[Google Antigravity 发布文](https://antigravity.google/blog/gemini-3-8-flash-in-google-antigravity)与 [Google 模型公告](https://blog.google/innovation-and-ai/models-and-research/gemini-models/3-8-flash-and-3-8-flash-cyber/)。
-
-## 🚀 使用方法
-
-1. **安装**:
-   * **OpenVSX**: 直接从 [Open VSX Registry](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装。
-   * **手动安装**: 通过“扩展 → 从 VSIX 安装”安装 `antigravity-context-monitor-1.17.2.vsix`，随后重载窗口，并在扩展详情中确认版本 **1.17.2**。
-2. **查看状态**: 右下角状态栏显示当前上下文使用情况；没有活跃对话时显示**无活跃会话**，不再沿用历史模型的旧上限。首次模型回复前即可从用户输入配置识别已选择的思考档位。
-3. **悬停查看摘要**。查看当前会话、上下文用量、共享配额和重置时间，也可以直接打开总览、模型和设置。
-
-4. **点击打开总览**。集中查看上下文、配额、重置时间和 AI 积分，再进入对应的详情页。
-
-   **总览** — 会话和连接状态、实测或估算的上下文用量、会话诊断、共享配额、重置时间和 AI 积分。
-
-   ![深色主题下的双语总览，图中为示例上下文和配额数据](src/images/monitor-overview.png)
-
-   **GM 数据 (GM Data)** — 每模型 Token 用量明细、调用次数、缓存命中率、重试统计、工具排行和可折叠工具目录。
-
-   ![GM 数据标签页](src/images/gmdata1.png)
-
-   ![GM 数据标签页 - 详情](src/images/gmdata2.png)
-
-   **会话 (Sessions)** — 浏览所有对话会话，查看上下文用量、步骤数和模型信息。
-
-   ![会话标签页](src/images/session.png)
-
-   **成本 (Cost)** — 月度成本分拆，按模型定价、成本概览可视化，以及覆盖已调用模型和内置默认价格模型的自定义价格编辑器。
-
-   ![成本标签页](src/images/cost.png)
-
-   **模型 (Models)** — Gemini 和 Claude / GPT 共享池卡片汇总额度/重置状态，列出实际可用的家族与档位；模型信息保留独立聊天档位与图片生成目录。信息卡片区分 IDE 报告的模型上下文、最大输出、压缩上限、检查点阈值和思考状态；图片压缩设置显示不适用。支持窄面板、亮色/暗色/高对比度主题和中文、英文、双语显示。
-
-   ![此前 v1.16.20 示例：共享配额池与 Carbon 模型信息](src/images/model.png)
-
-   截图中的 80% 配额为示例数据。
-
-   **日历 (Calendar)** — 按日期组织的历史使用数据，包含每周期成本和 Token 分解。
-
-   ![日历标签页](src/images/日历_全部.png)
-
-   **个人 (Profile)** — 账户信息、计划详情和额度余额。
-
-   ![个人标签页](src/images/profile.png)
-
-   **设置 (Settings)** — 配置扩展行为：低额度警告阈值、状态栏开关、轮询间隔等。
-
-   ![设置标签页](src/images/settings1.png)
-
-   ![设置标签页 - 高级](src/images/settings2.png)
-
-## ⚠️ 已知限制
-
-> [!IMPORTANT]
-> **同一工作区多窗口**
-> 如果在**同一个文件夹**上打开多个 Antigravity 窗口，它们共享相同的 workspace URI，会话数据可能会混合。
->
-> **解决方法**: 不同窗口打开不同的文件夹。
-
-> [!NOTE]
-> **上下文压缩提示**
-> 压缩完成通知（🗜 图标）持续约 15 秒（3 个轮询周期）后恢复正常显示。
-
-> [!IMPORTANT]
-> **Antigravity 内部总结机制**
-> Antigravity IDE 对检查点总结有一个硬编码的 7500 token "总结阈值" (Summarization Threshold)。这意味着当对话非常长且跨过该阈值后，Token 计数可能会出现轻微偏差。更多细节请参考 [Reddit 社区讨论](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)。
-
-> [!NOTE]
-> **子智能体动态切换**
-> 使用 Claude 模型时，Antigravity 可能会调用轻量子智能体模型处理小任务——平台把该模型标注为 **Gemini Flash Lite**（`MODEL_PLACEHOLDER_M50`；显示名称以 IDE 目录为准）。子智能体切换不会改变显示的上下文上限，因为本扩展跟踪的是你所选模型的上限。Claude 5.5 的IDE 报告的模型上下文为 1,000,000 token、平台压缩上限为 256,000 token（2026-10-03 核实）；保留的 Claude 4.6 画像分别为 250,000 和 160,000，子智能体模型使用 128,000 画像。
-
-> [!IMPORTANT]
-> **当前 Antigravity IDE 的 "LS not found"**
-> 新版 IDE 使用 `agy --hub` 后端。监控器自 1.16.19 起兼容新旧两种架构，支持 `--csrf_token=value` 和空格分隔参数，先检查声明的 hub 端口，再使用平台套接字发现。安装 `antigravity-context-monitor-1.17.2.vsix` 后重载窗口。后端已连接且没有已加载对话时，监控器显示**无活跃会话**。IDE 中仍可能保存着历史对话，未打开文件夹时也可以连接后端。
->
-> **Windows 发现诊断**
-> 若状态栏卡在 `LS not found`，请打开 **Output → "Antigravity Context Monitor"**，查看 `PATH check:` 那一行——扩展现在会记录究竟是哪一步发现失败。自 v1.16.13 起，扩展以 `%SystemRoot%` 绝对路径调用 `wmic`/`powershell.exe`/`netstat`，因此 Extension Host 的 `PATH` 被裁剪（例如 Win11 24H2+ 移除 WMIC 后缺少 `System32\wbem`）不再导致发现失败。
-> 自 v1.16.16 起另有两个成因被处理（issue #64，由 @SecretLUL 报告）：Windows 会本地化 `netstat` 的 State 列，德文安装上 `LISTENING` 显示为 `ABHÖREN`，此前所有候选行都会被拒绝；以及监听在全部网卡而非仅环回上的语言服务器，此前完全取不出端口。两者均已修复；若扩展宿主本身运行在 WSL 内部，现在会优先在该发行版中查找语言服务器。
-> **请勿以管理员身份运行 Antigravity** —— 这对检测毫无帮助（LS 发现无需提权），还可能导致 IDE 启动崩溃并报 `The window terminated unexpectedly (reason: 'launch-failed', code: '18')`；该崩溃属于 Electron/Chromium 沙箱问题，与本扩展无关。
-
-## ⚙️ 设置
-
-| 设置项 | 默认 | 说明 |
-| --- | --- | --- |
-| `pollingInterval` | 5 | 轮询频率（秒） |
-| `statusBar.showContext` | true | 显示上下文用量，例如 `45k/1M` |
-| `statusBar.showQuota` | true | 显示当前模型的配额百分比 |
-| `statusBar.showResetCountdown` | true | 显示当前模型的重置倒计时 |
-| `statusBar.tooltipDensity` | auto | 用 `auto`、`compact` 或 `full` 调节悬停密度 |
-| `quotaNotificationThreshold` | 20 | 模型剩余额度低于此百分比时弹出警告（设为 0 可禁用） |
-| `activity.maxRecentSteps` | 100 | 活动时间线最多保留的操作条数 |
-| `activity.maxArchives` | 20 | 活动归档最多保留份数 |
-
-## 🔤 命令
-
-| 命令 | 说明 |
+| 命令 | 用途 |
 | --- | --- |
-| `Show Context Window Details` | 打开监控器总览 |
-| `Refresh Context Window Monitor` | 重新发现语言服务器并重启轮询 |
-| `Switch Display Language` | 选择仅中文、仅英文或双语显示模式 |
-| `Show Model Activity` | 打开监控面板的 GM 数据标签页 |
+| **Show Context Window Details** | 打开总览 |
+| **Refresh Context Window Monitor** | 重新连接后端并重启轮询 |
+| **Switch Display Language** | 选择英文、中文或双语显示 |
+| **Show Model Activity** | 打开 GM 数据 |
 
-## ⭐ Star History / Star 趋势
+IDE 设置项使用 `antigravityContextMonitor.` 前缀。
 
-[![Star History Chart](https://api.star-history.com/svg?repos=AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)
+| 设置项 | 默认值 | 用途 |
+| --- | --- | --- |
+| `pollingInterval` | `5` | 设置轮询间隔，单位为秒 |
+| `statusBar.showContext` | `true` | 在状态栏显示上下文用量 |
+| `statusBar.showQuota` | `true` | 显示当前模型的剩余配额百分比 |
+| `statusBar.showResetCountdown` | `true` | 显示当前模型的配额重置倒计时 |
+| `statusBar.showAiCredits` | `true` | 在状态栏显示 AI 积分余额（未上报时隐藏） |
+| `statusBar.showSpeed` | `false` | 在状态栏显示最新或加权平均模型生成速度（`tok/s`，无有效耗时样本时自动隐藏） |
+| `statusBar.showCacheHit` | `false` | 在状态栏显示按 token 加权的提示词缓存命中率（`%`，无提示词数据时自动隐藏） |
+| `statusBar.tooltipDensity` | `auto` | 选择 `auto`（自动）、`compact`（精简）或 `full`（完整）悬停摘要密度 |
+| `quotaNotificationThreshold` | `20` | 低于该配额百分比时提醒，设为 `0` 可禁用 |
+| `showModelInternalId` | `false` | 在模型名旁显示内部 ID |
+| `activity.maxRecentSteps` | `100` | 限制持久化保留的近期活动时间线条数 |
+| `activity.maxArchives` | `20` | 限制保留的活动归档数量 |
 
-## 🔗 友情链接
+## 排障与限制
 
-- [LINUX DO](https://linux.do/)
+- **无活跃会话**表示后端已连接，当前视图尚无已加载对话。打开任意对话即可读取上下文。同一工作区的窗口可能共享会话数据，需要独立观察时请打开不同文件夹。
+- **后端连接已断开**或 **LS not found** 指向本地发现或连接异常。安装后请重载窗口，再打开**输出 → Antigravity Context Monitor** 检查 `PATH check:`。扩展同时支持 `agy --hub` 与旧版语言服务器。Windows 使用 PowerShell、netstat 等系统工具，请以普通用户身份运行 Antigravity。[后端发现](docs/technical_implementation.md)
+- WSL 环境支持检测当前发行版并经 WSL interop 连接。使用 Remote-WSL 或 Remote SSH 时，Antigravity 可在本地界面宿主中运行扩展。[项目结构](docs/project_structure.md)
+- 超长或经过 IDE 摘要处理的会话可能存在部分遥测缺失，监控器会明确标注估算值与缺失步骤。Antigravity 可为子任务调用轻量执行模型，会话仍以所选模型作为上下文参考。[上下文与 Token 计算](docs/technical_implementation.md) · [Checkpoint 摘要社区讨论](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)
 
----
-**作者**: AGI-is-going-to-arrive
-**版本** 1.17.2 — [发布说明](docs/releases/1.17.2.md)
+## 致谢
+
+由 **AGI-is-going-to-arrive** 维护。感谢 **SecretLUL** 报告 Windows 后端发现问题。[Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)
+
+[MIT 许可证](LICENSE) · [LINUX DO](https://linux.do/) · [Star 趋势](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)

@@ -5,7 +5,6 @@ import { LSInfo } from '../discovery';
 import { rpcCall } from '../rpc-client';
 import { normalizeModelDisplayName, getQuotaPoolKey, resolveModelId, type ModelConfig } from '../models';
 import type { QuotaSession } from '../quota-tracker';
-import { findPricing } from '../pricing-store';
 import type {
     GMCallEntry,
     GMCheckpointSummary,
@@ -32,6 +31,7 @@ import {
     extractCheckpointsFromTrajectorySteps,
 } from './parser';
 import { buildSummaryFromConversations, normalizeGMSummary, parseErrorCode, normalizeErrorMessage, MAX_RECENT_ERRORS } from './summary';
+import { MIN_OUTPUT_TOKENS_FOR_SPEED, MIN_STREAM_SECONDS } from '../telemetry-metrics';
 import { toLocalDateKey, type LedgerCallEntry } from '../daily-ledger';
 
 /**
@@ -405,6 +405,7 @@ export class GMTracker {
             totalInput: number; totalOutput: number; totalThinking: number;
             totalCache: number; totalCacheCreation: number; totalCredits: number;
             ttfts: number[]; streams: number[];
+            timedOutputTokens: number; timedStreamingSeconds: number;
             cacheHits: number;
             responseModel: string; apiProvider: string;
             completionConfig: GMCompletionConfig | null;
@@ -600,6 +601,7 @@ export class GMTracker {
                         totalInput: 0, totalOutput: 0, totalThinking: 0,
                         totalCache: 0, totalCacheCreation: 0, totalCredits: 0,
                         ttfts: [], streams: [],
+                        timedOutputTokens: 0, timedStreamingSeconds: 0,
                         cacheHits: 0,
                         responseModel: c.responseModel,
                         apiProvider: c.apiProvider,
@@ -627,6 +629,10 @@ export class GMTracker {
                 if (c.credits > 0) { agg.creditCallCount++; }
                 if (c.ttftSeconds > 0) { agg.ttfts.push(c.ttftSeconds); }
                 if (c.streamingSeconds > 0) { agg.streams.push(c.streamingSeconds); }
+                if (c.streamingSeconds >= MIN_STREAM_SECONDS && c.outputTokens >= MIN_OUTPUT_TOKENS_FOR_SPEED) {
+                    agg.timedOutputTokens += c.outputTokens;
+                    agg.timedStreamingSeconds += c.streamingSeconds;
+                }
                 if (c.cacheReadTokens > 0) { agg.cacheHits++; }
                 if (c.responseModel) { agg.responseModel = c.responseModel; }
                 if (c.apiProvider) { agg.apiProvider = c.apiProvider; }
@@ -700,6 +706,11 @@ export class GMTracker {
                 maxTTFT: max(agg.ttfts),
                 avgStreaming: avg(agg.streams),
                 cacheHitRate: agg.callCount > 0 ? agg.cacheHits / agg.callCount : 0,
+                ttftSampleCount: agg.ttfts.length,
+                streamingSampleCount: agg.streams.length,
+                timedOutputTokens: agg.timedOutputTokens,
+                timedStreamingSeconds: agg.timedStreamingSeconds,
+                cacheHitCalls: agg.cacheHits,
                 responseModel: agg.responseModel,
                 apiProvider: agg.apiProvider,
                 completionConfig: agg.completionConfig,

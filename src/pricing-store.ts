@@ -4,7 +4,7 @@
 //
 // Extracted from gm-panel.ts to enable the dedicated Pricing tab.
 
-import type { GMSummary, GMModelStats } from './gm-tracker';
+import type { GMSummary } from './gm-tracker';
 import type { LedgerAccountBucket, LedgerModelStats } from './daily-ledger';
 import { normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDisplayName, getModelSpecs, isImageGenerationModel } from './models';
 

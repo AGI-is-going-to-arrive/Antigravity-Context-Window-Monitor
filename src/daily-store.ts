@@ -8,6 +8,7 @@ import type { GMSummary, GMModelStats } from './gm-tracker';
 import { normalizeModelDisplayName } from './models';
 import type { ModelPricing } from './pricing-store';
 import { DEFAULT_PRICING, findPricingForDate, costFromTokens } from './pricing-store';
+import { MIN_OUTPUT_TOKENS_FOR_SPEED, MIN_STREAM_SECONDS } from './telemetry-metrics';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -32,9 +33,19 @@ export interface GMModelCycleStats {
     cacheHitRate: number;
     estimatedCost?: number;     // USD per-model cost
     /** Set when estimatedCost was re-priced from tokens after the fact — see
-     *  DailyStore.backfillMissingCosts. Such a figure excludes cache reads and
-     *  is therefore an underestimate, not an original record. */
+     *  DailyStore.backfillMissingCosts. On legacy records without cacheReadTokens
+     *  such a figure excludes cache reads and is an underestimate. */
     costBackfilled?: true;
+    /** Preserved cache read tokens across archival/rollover (optional for v1 compat) */
+    cacheReadTokens?: number;
+    /** Preserved cache creation/write tokens across archival/rollover (optional for v1 compat) */
+    cacheCreationTokens?: number;
+    /** Average streaming/decode duration in seconds across timed calls (optional for v1 compat) */
+    avgStreaming?: number;
+    /** Weighted output generation speed (tok/s) across speed-valid calls (optional for v1 compat) */
+    avgGenTokPerSec?: number;
+    /** Token-weighted prompt cache hit rate: cacheRead / (input + cacheRead + cacheCreation) */
+    tokenCacheHitRate?: number;
 }
 
 /** A single quota-cycle snapshot within a day */
@@ -158,7 +169,29 @@ function buildGMPerModelStats(
     if (!breakdown) { return undefined; }
     const gmPerModel: Record<string, GMModelCycleStats> = {};
     for (const [name, ms] of Object.entries(breakdown)) {
-        gmPerModel[name] = {
+        const totalPromptTokens = (ms.totalInputTokens || 0)
+            + (ms.totalCacheRead || 0)
+            + (ms.totalCacheCreation || 0);
+        const tokenCacheHitRate = totalPromptTokens > 0
+            ? Math.min(1, Math.max(0, (ms.totalCacheRead || 0) / totalPromptTokens))
+            : undefined;
+
+        let avgGenTokPerSec: number | undefined;
+        if (ms.timedOutputTokens && ms.timedOutputTokens >= MIN_OUTPUT_TOKENS_FOR_SPEED
+            && ms.timedStreamingSeconds && ms.timedStreamingSeconds >= MIN_STREAM_SECONDS) {
+            avgGenTokPerSec = ms.timedOutputTokens / ms.timedStreamingSeconds;
+        } else if (ms.timedOutputTokens === undefined && ms.timedStreamingSeconds === undefined
+            && ms.avgStreaming >= MIN_STREAM_SECONDS
+            && ms.totalOutputTokens >= MIN_OUTPUT_TOKENS_FOR_SPEED
+            && ms.callCount > 0) {
+            const streamCount = ms.streamingSampleCount !== undefined ? ms.streamingSampleCount : ms.callCount;
+            const totalStream = ms.avgStreaming * streamCount;
+            if (streamCount > 0 && totalStream >= MIN_STREAM_SECONDS) {
+                avgGenTokPerSec = ms.totalOutputTokens / totalStream;
+            }
+        }
+
+        const entry: GMModelCycleStats = {
             calls: ms.callCount,
             credits: ms.totalCredits,
             inputTokens: ms.totalInputTokens,
@@ -167,7 +200,19 @@ function buildGMPerModelStats(
             avgTTFT: ms.avgTTFT,
             cacheHitRate: ms.cacheHitRate,
             estimatedCost: costPerModel?.[name],
+            cacheReadTokens: ms.totalCacheRead,
+            cacheCreationTokens: ms.totalCacheCreation,
         };
+        if (ms.avgStreaming > 0) {
+            entry.avgStreaming = ms.avgStreaming;
+        }
+        if (avgGenTokPerSec !== undefined && Number.isFinite(avgGenTokPerSec) && avgGenTokPerSec > 0) {
+            entry.avgGenTokPerSec = avgGenTokPerSec;
+        }
+        if (tokenCacheHitRate !== undefined) {
+            entry.tokenCacheHitRate = tokenCacheHitRate;
+        }
+        gmPerModel[name] = entry;
     }
     return Object.keys(gmPerModel).length > 0 ? gmPerModel : undefined;
 }
@@ -287,7 +332,7 @@ export class DailyStore {
                         inputTokens: gms.inputTokens,
                         outputTokens: gms.outputTokens,
                         thinkingTokens: gms.thinkingTokens,
-                        cacheReadTokens: 0,     // dropped at rollover — never archived
+                        cacheReadTokens: gms.cacheReadTokens || 0,
                     }, pricing);
                     if (cost <= 0) { continue; }
 

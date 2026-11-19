@@ -683,7 +683,7 @@ export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
     const spec = specKey.includes('UNSPECIFIED') ? undefined : ownValue(activeModelSpecs, specKey);
     const provider = (spec?.apiProvider || '').replace(/^API_PROVIDER_/i, '').toUpperCase();
     const catalog = spec?.modelId.trim() || '';
-    const hasChatEffort = /[-_\s](?:low|medium|high|xhigh)$/i.test(catalog);
+    const hasChatEffort = /[-_\s](?:low|medium|high|xhigh|extra(?:[-_\s]high)?)$/i.test(catalog);
     if (hasChatEffort && /^gemini[-_\s]/i.test(catalog) && /^(?:GOOGLE(?:_GEMINI)?|GEMINI)$/.test(provider)) { return 'gemini'; }
     if (hasChatEffort && /^claude[-_\s]/i.test(catalog) && /^ANTHROPIC(?:_VERTEX)?$/.test(provider)) { return 'premium'; }
     if (hasChatEffort && /^gpt[-_\s]oss[-_\s]/i.test(catalog) && /^OPENAI(?:_VERTEX)?$/.test(provider)) { return 'premium'; }
@@ -728,7 +728,7 @@ export interface TeamConfig {
 
 export interface CreditInfo {
     creditType: string;
-    creditAmount: number;
+    creditAmount: number | null;
     minimumCreditAmountForUsage: number;
 }
 
@@ -737,10 +737,6 @@ export interface UserStatusInfo {
     email: string;
     planName: string;
     teamsTier: string;
-    monthlyPromptCredits: number;
-    monthlyFlowCredits: number;
-    availablePromptCredits: number;
-    availableFlowCredits: number;
     userTierName: string;
     userTierId: string;
     defaultModelLabel: string;

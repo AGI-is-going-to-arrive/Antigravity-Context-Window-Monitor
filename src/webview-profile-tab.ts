@@ -1,37 +1,55 @@
 // ─── Profile Tab Content Builder ─────────────────────────────────────────────
-// Builds HTML for the "Profile" tab: Account info, plan limits,
-// and feature/team config. Model-specific content is rendered in Models tab.
+// Builds HTML for the "Profile" tab: Account info, shared model quota pools,
+// AI credits & expiry day, and collapsible plan limits / feature / team config.
 
-import { getLanguage, tBi } from './i18n';
-import { ModelConfig, UserStatusInfo, getContextLimit } from './models';
+import { currentAICredits } from './account-credits';
+import { formatNumber, getLanguage, tBi } from './i18n';
+import { ModelConfig, UserStatusInfo } from './models';
 import { formatResetAbsolute, formatResetCountdown } from './reset-time';
 import { ICON } from './webview-icons';
-import { esc } from './webview-helpers';
+import { esc, tBiHtml } from './webview-helpers';
 import { getDaysUntilBillingDay } from './billing-day';
 import { groupModelQuotas, type QuotaEffort } from './model-quota';
 
-function formatCreditTypeLabel(creditType: string): string {
-    const key = creditType.replace('CREDIT_TYPE_', '');
-    const labelMap: Record<string, [string, string]> = {
-        PROMPT: ['Prompt Credits', 'Prompt 额度'],
-        FLOW: ['Flow Credits', 'Flow 额度'],
-        GOOGLE_AI: ['Google AI Credits', 'Google AI 额度'],
-        GOOGLE_AI_STUDIO: ['Google AI Studio Credits', 'Google AI Studio 额度'],
-    };
-    const mapped = labelMap[key];
-    return mapped ? tBi(mapped[0], mapped[1]) : tBi(key.replace(/_/g, ' '), key.replace(/_/g, ' '));
+export interface ModelQuotaGridOptions {
+    embedded?: boolean;
+    hideHeading?: boolean;
 }
 
-function formatModelTagTitle(title: string): string {
-    const known: Record<string, [string, string]> = {
+function formatCreditTypeLabelHtml(creditType: string): string {
+    const key = creditType.trim().toUpperCase().replace(/^CREDIT_TYPE_/, '');
+    const labelMap: Record<string, readonly [string, string]> = {
+        GOOGLE_ONE_AI: ['Google AI credits', 'Google AI 积分'],
+        GOOGLE_AI: ['Google AI credits', 'Google AI 积分'],
+        GOOGLE_AI_STUDIO: ['Google AI Studio credits', 'Google AI Studio 积分'],
+    };
+    const mapped = Object.hasOwn(labelMap, key) ? labelMap[key] : undefined;
+    if (mapped) { return tBiHtml(mapped[0], mapped[1]); }
+    return key ? esc(key.replace(/_/g, ' ')) : tBiHtml('Balance', '余额');
+}
+
+function formatModelTagTitle(title: string): { plain: string; html: string } {
+    const known: Record<string, readonly [string, string]> = {
         Fast: ['Fast', '快速'],
         New: ['New', '新'],
         Preview: ['Preview', '预览'],
         Beta: ['Beta', '测试'],
         'Limited time': ['Limited time', '限时'],
     };
-    const mapped = known[title];
-    return mapped ? tBi(mapped[0], mapped[1]) : title;
+    const mapped = Object.hasOwn(known, title) ? known[title] : undefined;
+    return mapped
+        ? { plain: tBi(mapped[0], mapped[1]), html: tBiHtml(mapped[0], mapped[1]) }
+        : { plain: title, html: esc(title) };
+}
+
+function creditExpiryHtml(days: number | null): string {
+    if (days === null || !Number.isFinite(days) || days < 0) {
+        return tBiHtml('Expiry date not set', '未设置到期日');
+    }
+    if (days === 0) {
+        return tBiHtml('Expires today', '今日到期');
+    }
+    return tBiHtml(days === 1 ? 'Expires in 1 day' : `Expires in ${days} days`, `${days} 天后到期`);
 }
 
 
@@ -46,19 +64,34 @@ export function buildProfileContent(
     if (!userInfo) {
         return `
             <section class="card empty">
-                <h2>${ICON.user} ${tBi('Profile', '个人')}</h2>
-                <p class="empty-desc">${tBi(
+                <h2>${ICON.user} <span>${tBiHtml('Profile', '个人')}</span></h2>
+                <p class="empty-desc">${tBiHtml(
             'Waiting for user data from LS...',
             '等待 LS 用户数据...',
         )}</p>
             </section>`;
     }
 
-    return [
-        buildAccountSection(userInfo, billingDay),
-        buildLimitsSection(userInfo),
-        buildFeatureAndTeamGrid(userInfo),
-    ].join('');
+    const sortedConfigs = sortModels(configs, userInfo.modelSortOrder);
+    const quota = buildModelQuotaGrid(sortedConfigs, { embedded: true });
+    return `
+        <div class="profile-page">
+            ${buildAccountSection(userInfo)}
+            <div class="profile-body-grid">
+                <section class="profile-quota" aria-labelledby="profile-quota-heading">
+                    <header class="profile-section-header">
+                        <h2 id="profile-quota-heading">${tBiHtml('Model quota', '模型配额')}</h2>
+                        <button type="button" class="overview-action" data-overview-target="models"><span>${tBiHtml('View models', '查看模型')}</span> ${ICON.externalLink}</button>
+                    </header>
+                    ${quota || `<p class="empty-msg">${tBiHtml('Waiting for model quota data.', '等待模型配额数据。')}</p>`}
+                </section>
+                ${buildCreditSection(userInfo, billingDay)}
+            </div>
+            <details id="profile-plan-details" class="profile-technical">
+                <summary><span>${tBiHtml('Plan limits and capabilities', '计划限制与功能配置')}</span></summary>
+                <div class="profile-technical-body">${buildLimitsSection(userInfo)}${buildFeatureAndTeamGrid(userInfo)}</div>
+            </details>
+        </div>`;
 }
 
 // ─── Model Sort ──────────────────────────────────────────────────────────────
@@ -75,125 +108,55 @@ export function sortModels(configs: ModelConfig[], sortOrder: string[]): ModelCo
 
 // ─── Section Builders ────────────────────────────────────────────────────────
 
-function buildAccountSection(userInfo: UserStatusInfo, billingDay?: number): string {
-    const tierMap: Record<string, { bg: string; color: string }> = {
-        'TEAMS_TIER_FREE': { bg: 'rgba(156,163,175,0.15)', color: '#9ca3af' },
-        'TEAMS_TIER_PRO': { bg: 'rgba(74,222,128,0.15)', color: 'var(--color-ok)' },
-        'TEAMS_TIER_TEAMS': { bg: 'rgba(96,165,250,0.15)', color: 'var(--color-info)' },
-        'TEAMS_TIER_ENTERPRISE_SAAS': { bg: 'rgba(156,163,175,0.15)', color: '#9ca3af' },
-        'TEAMS_TIER_PRO_ULTIMATE': { bg: 'rgba(250,204,21,0.15)', color: 'var(--color-warn)' },
-    };
-    const tier = tierMap[userInfo.teamsTier] || tierMap['TEAMS_TIER_PRO'];
+function buildAccountSection(userInfo: UserStatusInfo): string {
+    const maskedName = userInfo.name ? `${userInfo.name.charAt(0)}***` : '***';
     const maskedEmail = userInfo.email.replace(/^(.{2}).*(@.*)$/, '$1****$2');
-
-    const promptPct = userInfo.monthlyPromptCredits > 0
-        ? Math.round((userInfo.availablePromptCredits / userInfo.monthlyPromptCredits) * 100) : 0;
-    const flowPct = userInfo.monthlyFlowCredits > 0
-        ? Math.round((userInfo.availableFlowCredits / userInfo.monthlyFlowCredits) * 100) : 0;
-    const promptBarColor = promptPct <= 10 ? 'var(--color-danger)' : promptPct <= 30 ? 'var(--color-warn)' : 'var(--color-ok)';
-    const flowBarColor = flowPct <= 10 ? 'var(--color-danger)' : flowPct <= 30 ? 'var(--color-warn)' : 'var(--color-info)';
-
-    // Subscription hint
-    const subHint = userInfo.upgradeSubscriptionText
-        ? `<div class="subscription-hint">${esc(userInfo.upgradeSubscriptionText)}</div>` : '';
-
-    // Google AI Credits inline with refresh countdown
-    const validCredits = userInfo.availableCredits.filter(c => c.creditAmount > 0);
-    const day = billingDay || 0;
-    let refreshBadge = '';
-    if (day >= 1 && day <= 31) {
-        const daysLeft = getDaysUntilBillingDay(day) ?? 0;
-        const activityLink = ` <a class="gai-action-link" href="https://antigravity.google/g1-activity" target="_blank">${tBi('Activity Dashboard', '活动记录看板')}</a>`;
-        if (daysLeft === 0) {
-            refreshBadge = `<span class="gai-refresh-badge gai-refresh-today">${tBi('Expires today', '今日到期')}</span>` + activityLink;
-        } else {
-            refreshBadge = `<span class="gai-refresh-badge">${daysLeft}${tBi('d until expiry', '天后到期')}</span>` + activityLink;
-        }
-    } else {
-        refreshBadge = `<span class="gai-refresh-badge gai-refresh-unset">${tBi('Expiry date not set', '到期日未设置')}</span>`
-            + ` <a class="gai-action-link" data-scroll-to="profileBillingDayInput">${tBi('Set below', '在下方设置')}</a>`
-            + ` <a class="gai-action-link" href="https://antigravity.google/g1-activity" target="_blank">${tBi('Activity Dashboard', '活动记录看板')}</a>`;
-    }
-
-    let creditsHtml = '';
-    if (validCredits.length > 0) {
-        creditsHtml = `<div class="gai-credits">${validCredits.map(c => {
-            const typeName = formatCreditTypeLabel(c.creditType);
-            return `<div class="gai-credit-item">
-                        <span class="gai-label">${esc(typeName)}</span>
-                        <span class="gai-value">${c.creditAmount.toLocaleString()}</span>
-                    </div>`;
-        }).join('')}<div class="gai-credit-item gai-credit-refresh">${refreshBadge}</div></div>`;
-    } else if (refreshBadge) {
-        // No credits but billing day or "not set" info still relevant
-        creditsHtml = `<div class="gai-credits gai-credits-empty">
-            <div class="gai-credit-item">
-                <span class="gai-label">${tBi('AI Credits', 'AI 积分')}</span>
-                <span class="gai-value" style="color:var(--color-text-dim)">0</span>
-            </div>
-            <div class="gai-credit-item gai-credit-refresh">${refreshBadge}</div>
-        </div>`;
-    }
-
+    const plan = [...new Set([userInfo.planName, userInfo.userTierName].filter(Boolean))].join(' · ');
     return `
-        <section class="card">
-            <h2>
-                ${ICON.user}
-                ${tBi('Account', '账户')}
-                <span class="tier-badge" style="background:${tier.bg};color:${tier.color}">${esc(userInfo.planName)}</span>
-                ${userInfo.userTierName ? `<span class="tier-badge tier-sub" style="background:rgba(255,255,255,0.06);color:var(--color-text-dim)">${esc(userInfo.userTierName)}</span>` : ''}
-                <button class="privacy-btn" id="privacyToggle" aria-label="${tBi('Toggle privacy mask', '切换隐私遮罩')}">${ICON.shield}</button>
-            </h2>
-            <div class="account-info">
-                <span class="account-name" data-real="${esc(userInfo.name)}" data-masked="${esc(userInfo.name.charAt(0))}***">${esc(userInfo.name)}</span>
-                <span class="account-email" data-real="${esc(userInfo.email)}" data-masked="${esc(maskedEmail)}">${esc(userInfo.email)}</span>
-            </div>
-            <p class="privacy-hint">${tBi(
-        'Privacy mask is ON by default. Click the shield button above to reveal sensitive data.',
-        '隐私遮罩默认开启。点击上方 \ud83d\udee1\ufe0f 按钮可显示/隐藏真实信息。',
-    )}</p>
-            ${subHint}
-            <div class="credits-section">
-                <div class="credit-row">
-                    <div class="credit-header">
-                        <span>${tBi('Prompt Credits', 'Prompt 额度')}</span>
-                        <span>${userInfo.availablePromptCredits.toLocaleString()} / ${userInfo.monthlyPromptCredits.toLocaleString()}</span>
-                    </div>
-                    <div class="credit-bar-wrap">
-                        <div class="credit-bar" style="width:${promptPct}%;background:${promptBarColor}"></div>
-                    </div>
+        <header class="profile-identity">
+            <div>
+                <h2>${tBiHtml('Account', '账户')}</h2>
+                <div class="account-info">
+                    <span class="account-name" data-real="${esc(userInfo.name)}" data-masked="${esc(maskedName)}">${esc(maskedName)}</span>
+                    <span class="account-email" data-real="${esc(userInfo.email)}" data-masked="${esc(maskedEmail)}">${esc(maskedEmail)}</span>
                 </div>
-                <div class="credit-row">
-                    <div class="credit-header">
-                        <span>${tBi('Flow Credits', 'Flow 额度')}</span>
-                        <span>${userInfo.availableFlowCredits.toLocaleString()} / ${userInfo.monthlyFlowCredits.toLocaleString()}</span>
-                    </div>
-                    <div class="credit-bar-wrap">
-                        <div class="credit-bar" style="width:${flowPct}%;background:${flowBarColor}"></div>
-                    </div>
-                </div>
+                ${plan ? `<p class="profile-plan-name">${esc(plan)}</p>` : ''}
             </div>
-            ${creditsHtml}
-            <div class="billing-day-inline">
-                <div class="billing-day-header">
-                    <span class="billing-day-label">${tBi('Monthly credits expiry day', '每月积分到期日')}</span>
-                    <div class="billing-day-input-group">
-                        <div class="num-spinner">
-                            <button type="button" class="num-spinner-btn decrement">\u2212</button>
-                            <input type="number" id="profileBillingDayInput" class="threshold-input"
-                                   data-email="${esc(userInfo.email || '')}"
-                                   value="${day}" min="0" max="31" step="1" />
-                            <button type="button" class="num-spinner-btn increment">+</button>
-                        </div>
-                        <button class="action-btn" id="profileBillingDaySaveBtn">${tBi('Save', '\u4fdd\u5b58')}</button>
-                        <span id="profileBillingDayFeedback" class="threshold-feedback"></span>
-                    </div>
+            <button type="button" class="privacy-btn active" id="privacyToggle" aria-label="${esc(tBi('Toggle privacy mask', '切换隐私遮罩'))}" aria-pressed="true">
+                ${ICON.shield}<span>${tBiHtml('Privacy mask', '隐私遮罩')}</span>
+            </button>
+        </header>`;
+}
+
+function buildCreditSection(userInfo: UserStatusInfo, billingDay?: number): string {
+    const day = billingDay || 0;
+    const credits = currentAICredits(userInfo.availableCredits || []);
+    const readings = credits.length ? credits : [{ creditType: '', creditAmount: null }];
+    const expiryHtml = creditExpiryHtml(getDaysUntilBillingDay(day));
+    return `
+        <section class="profile-ai" aria-labelledby="profile-ai-heading">
+            <header class="profile-section-header">
+                <h2 id="profile-ai-heading">${tBiHtml('AI credits', 'AI 积分')}</h2>
+                <a class="profile-activity" href="https://antigravity.google/g1-activity" target="_blank" rel="noopener noreferrer"><span>${tBiHtml('Credit activity', '积分记录')}</span> ${ICON.externalLink}</a>
+            </header>
+            <dl class="profile-credit-balances">
+                ${readings.map(c => `<div class="profile-credit-balance">
+                    <dt>${c.creditType ? formatCreditTypeLabelHtml(c.creditType) : tBiHtml('Balance', '余额')}</dt>
+                    <dd class="gai-value${c.creditAmount === null ? ' is-unreported' : ''}">${c.creditAmount === null ? tBiHtml('Not reported', '未上报') : esc(formatNumber(c.creditAmount))}</dd>
+                </div>`).join('')}
+            </dl>
+            <label class="billing-day-label" for="profileBillingDayInput">${tBiHtml('Monthly credits expiry day', '每月积分到期日')}</label>
+            <div class="billing-day-input-group">
+                <div class="num-spinner">
+                    <button type="button" class="num-spinner-btn decrement" aria-label="${esc(tBi('Decrease day', '减小日期'))}">−</button>
+                    <input type="number" id="profileBillingDayInput" class="threshold-input"
+                        data-email="${esc(userInfo.email || '')}" value="${day}" min="0" max="31" step="1" />
+                    <button type="button" class="num-spinner-btn increment" aria-label="${esc(tBi('Increase day', '增大日期'))}">+</button>
                 </div>
-                <p class="billing-day-desc">${tBi(
-        'Your credits expire on a fixed day each month (e.g. the 15th). Set it here so the countdown shows how many days remaining. Check your billing email or payment history to find the exact date. Set to 0 to disable.',
-        '你的积分每月固定日期到期（如 15 号）。设置后会显示剩余天数倒计时。可查看订阅确认邮件或付款记录找到确切日期。设为 0 关闭倒计时。',
-    )}</p>
+                <button type="button" class="action-btn" id="profileBillingDaySaveBtn"><span>${tBiHtml('Save', '保存')}</span></button>
             </div>
+            <p class="profile-expiry">${expiryHtml} · ${tBiHtml('Use 0 to turn off the countdown.', '填 0 可关闭倒计时。')}</p>
+            <span id="profileBillingDayFeedback" class="threshold-feedback" role="status"></span>
         </section>`;
 }
 
@@ -201,8 +164,8 @@ function quotaEffortLabel(effort: QuotaEffort): string {
     return { low: tBi('Low', '低'), medium: tBi('Medium', '中'), high: tBi('High', '高'), xhigh: tBi('Extra', '超高') }[effort];
 }
 
-function quotaEffortsLabel(efforts: QuotaEffort[]): string {
-    return tBi(
+function quotaEffortsHtml(efforts: QuotaEffort[]): string {
+    return tBiHtml(
         efforts.map(e => ({ low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra' })[e]).join(' · '),
         efforts.map(e => ({ low: '低', medium: '中', high: '高', xhigh: '超高' })[e]).join(' · '),
     );
@@ -218,49 +181,54 @@ function quotaPercentage(fraction: number): string {
     return new Intl.NumberFormat(getLanguage() === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 8 }).format(fraction * 100);
 }
 
-export function buildModelQuotaGrid(configs: ModelConfig[]): string {
+export function buildModelQuotaGrid(
+    configs: ModelConfig[],
+    options: ModelQuotaGridOptions = {},
+): string {
     const groups = groupModelQuotas(configs);
     if (groups.length === 0) { return ''; }
 
     const cards = groups.map(group => {
         const minimum = group.minimum;
         const pct = minimum === null ? null : Number((minimum * 100).toFixed(8));
-        const barColor = pct === null ? 'var(--color-text-dim)' : pct <= 20 ? 'var(--color-danger)'
-            : pct < 80 ? 'var(--color-warn)' : 'var(--color-ok)';
+        const barTone = pct === null ? '' : pct <= 20 ? 'is-attention' : pct < 50 ? 'is-warn' : 'is-healthy';
+        const barColor = pct === null ? '' : pct <= 20 ? 'var(--ed-danger-fill)'
+            : pct < 50 ? 'var(--ed-warn-fill)' : 'var(--ed-good-fill)';
         const lowLabel = minimum === null ? '' : quotaPercentage(minimum);
         const highLabel = group.maximum === null ? '' : quotaPercentage(group.maximum);
-        const percentage = pct === null ? tBi('Unknown', '未知') : group.quotaDiffers && lowLabel !== highLabel
+        const percentagePlain = pct === null ? tBi('Unknown', '未知') : group.quotaDiffers && lowLabel !== highLabel
             ? `${lowLabel}–${highLabel}%` : `${lowLabel}%`;
+        const percentageHtml = pct === null ? tBiHtml('Unknown', '未知') : esc(percentagePlain);
         // Compare raw readings in the helper; retain a notice when a genuine
         // difference is smaller than the precision useful in a quota card.
         const precisionNotice = group.quotaDiffers && lowLabel === highLabel
-            ? `<p class="model-quota-notice">${tBi('Differences are below displayed precision.', '差异小于显示精度。')}</p>` : '';
-        const resetLabel = group.resetDiffers ? tBi('Reset times differ', '重置时间不一致')
-            : group.resetTime ? `${tBi('Reset', '重置')} ${quotaResetLabel(group.resetTime)}`
-                : tBi('Reset time unavailable', '重置时间未知');
+            ? `<p class="model-quota-notice">${tBiHtml('Differences are below displayed precision.', '差异小于显示精度。')}</p>` : '';
+        const resetLabelHtml = group.resetDiffers ? tBiHtml('Reset times differ', '重置时间不同')
+            : group.resetTime ? `${tBiHtml('Reset', '重置')} ${esc(quotaResetLabel(group.resetTime))}`
+                : tBiHtml('Reset time unavailable', '暂无重置时间');
         const members = group.pool ? `<ul class="model-quota-members">${group.members.map(member => `
             <li><span>${esc(member.label)}</span>${member.efforts.length
-            ? `<span class="model-card-efforts">${esc(quotaEffortsLabel(member.efforts))}</span>` : ''}</li>`).join('')}</ul>`
-            : group.efforts.length ? `<div class="model-card-efforts">${esc(quotaEffortsLabel(group.efforts))}</div>` : '';
+            ? `<span class="model-card-efforts">${quotaEffortsHtml(member.efforts)}</span>` : ''}</li>`).join('')}</ul>`
+            : group.efforts.length ? `<div class="model-card-efforts">${quotaEffortsHtml(group.efforts)}</div>` : '';
         const notices: string[] = [];
-        if (group.quotaDiffers || group.resetDiffers) { notices.push(tBi('Reported values differ', '上报数值不一致')); }
+        if (group.quotaDiffers || group.resetDiffers) { notices.push(tBiHtml('Reported values differ', '上报数值不一致')); }
         if (group.missingQuota || group.missingReset) {
-            notices.push(tBi('Some quota or reset data is unavailable', '部分配额或重置数据缺失'));
+            notices.push(tBiHtml('Some quota or reset data is unavailable', '部分配额或重置数据缺失'));
         }
         const details = notices.length ? `
-                <p class="model-quota-notice">${notices.map(esc).join(' · ')}</p>
+                <p class="model-quota-notice">${notices.join(' · ')}</p>
                 <details class="model-quota-details">
-                    <summary>${tBi('Readings by effort', '各档位读数')}</summary>
+                    <summary><span>${tBiHtml('Readings by effort', '各档位读数')}</span></summary>
                     <ul>${group.readings.map(reading => `
                         <li><span>${esc(reading.effort ? `${reading.familyLabel} (${quotaEffortLabel(reading.effort)})` : reading.label)}</span>
-                            <span>${reading.remaining === null ? tBi('Unknown', '未知') : `${quotaPercentage(reading.remaining)}%`}</span>
+                            <span>${reading.remaining === null ? tBiHtml('Unknown', '未知') : `${esc(quotaPercentage(reading.remaining))}%`}</span>
                             <span class="model-quota-reading-reset">${reading.resetTime
-            ? `${tBi('Reset', '重置')} ${esc(quotaResetLabel(reading.resetTime, true))}`
-            : tBi('Reset time unavailable', '重置时间未知')}</span></li>`).join('')}
+            ? `${tBiHtml('Reset', '重置')} ${esc(quotaResetLabel(reading.resetTime, true))}`
+            : tBiHtml('Reset time unavailable', '暂无重置时间')}</span></li>`).join('')}
                     </ul>${precisionNotice}
                 </details>` : '';
-        const tagLabel = group.tagTitle ? formatModelTagTitle(group.tagTitle) : '';
-        const tagBadge = tagLabel ? `<span class="model-tag-badge" title="${esc(tagLabel)}">${esc(tagLabel)}</span>` : '';
+        const tag = group.tagTitle ? formatModelTagTitle(group.tagTitle) : null;
+        const tagBadge = tag ? `<span class="model-tag-badge" title="${esc(tag.plain)}">${tag.html}</span>` : '';
         const names = [...new Set(group.readings.map(reading => reading.label))].join(' · ');
         return `
             <div class="model-card" data-quota-family="${esc(group.key)}">
@@ -268,21 +236,25 @@ export function buildModelQuotaGrid(configs: ModelConfig[]): string {
                     <span class="model-card-name">
                         <span class="model-card-name-text" title="${esc(names)}">${esc(group.label)}</span>${tagBadge}
                     </span>
-                    <span class="model-card-pct">${esc(percentage)}</span>
+                    <span class="model-card-pct${pct === null ? ' is-unknown' : ''}">${percentageHtml}</span>
                 </div>
                 ${members}
-                <div class="quota-bar-wrap" role="progressbar" aria-label="${esc(`${group.label} ${tBi('quota remaining', '剩余配额')}`)}"
-                    aria-valuemin="0" aria-valuemax="100"${pct === null ? '' : ` aria-valuenow="${pct}"`} aria-valuetext="${esc(percentage)}">
-                    ${pct === null ? '' : `<div class="quota-bar" style="width:${pct}%;background:${barColor}"></div>`}
+                <div class="quota-bar-wrap${pct === null ? ' is-unknown' : ''}" role="progressbar" aria-label="${esc(`${group.label} ${tBi('quota remaining', '剩余配额')}`)}"
+                    aria-valuemin="0" aria-valuemax="100"${pct === null ? '' : ` aria-valuenow="${pct}"`} aria-valuetext="${esc(percentagePlain)}">
+                    ${pct === null ? '' : `<div class="quota-bar ${barTone}" style="width:${pct}%;background:${barColor}"></div>`}
                 </div>
-                <div class="model-card-meta"><span class="model-card-reset">${esc(resetLabel)}</span></div>
+                <div class="model-card-meta"><span class="model-card-reset">${resetLabelHtml}</span></div>
                 ${details}
             </div>`;
     }).join('');
 
+    if (options.embedded) {
+        return `<div class="model-grid">${cards}</div>`;
+    }
+
     return `
         <section class="card model-quota-section">
-            <h2>${ICON.bolt} ${tBi('Model Quota', '模型配额')}</h2>
+            ${options.hideHeading ? '' : `<h2>${ICON.bolt} <span>${tBiHtml('Model Quota', '模型配额')}</span></h2>`}
             <div class="model-grid">${cards}</div>
         </section>`;
 }
@@ -290,9 +262,9 @@ export function buildModelQuotaGrid(configs: ModelConfig[]): string {
 export function buildDefaultModelCard(userInfo: UserStatusInfo | null): string {
     if (!userInfo?.defaultModelLabel) { return ''; }
     return `
-        <section class="card">
-            <h2>${ICON.bolt} ${tBi('Default Model', '默认模型')}</h2>
-            <div class="default-model">${tBi('Current default', '当前默认')}: <strong title="${esc(userInfo.defaultModelLabel)}">${esc(userInfo.defaultModelLabel)}</strong></div>
+        <section class="card default-model-card">
+            <h2>${ICON.bolt} <span>${tBiHtml('Default Model', '默认模型')}</span></h2>
+            <div class="default-model"><span>${tBiHtml('Current default', '当前默认')}:</span> <strong title="${esc(userInfo.defaultModelLabel)}">${esc(userInfo.defaultModelLabel)}</strong></div>
             ${userInfo.userTierDescription
             ? `<p class="raw-desc">${esc(userInfo.userTierDescription)}</p>`
             : ''}
@@ -300,70 +272,65 @@ export function buildDefaultModelCard(userInfo: UserStatusInfo | null): string {
 }
 
 function buildLimitsSection(userInfo: UserStatusInfo): string {
-    const fmtLimit = (v: number): string => v === -1 ? '∞' : v.toLocaleString();
+    const fmtLimit = (v: number): string => v === -1 ? '∞' : formatNumber(v);
     const pl = userInfo.planLimits;
-    const limitCards = [
-        [tBi('Max Input Tokens', '最大输入'), fmtLimit(pl.maxNumChatInputTokens)],
-        [tBi('Premium Messages', '高级消息数'), fmtLimit(pl.maxNumPremiumChatMessages)],
-        [tBi('Custom Instructions', '自定义指令'), tBi(
-            `${fmtLimit(pl.maxCustomChatInstructionCharacters)} chars`,
-            `${fmtLimit(pl.maxCustomChatInstructionCharacters)} 字符`,
-        )],
-        [tBi('Pinned Context', '固定上下文'), fmtLimit(pl.maxNumPinnedContextItems)],
-        [tBi('Local Index', '本地索引'), fmtLimit(pl.maxLocalIndexSize)],
-        [tBi('Flex Credits', 'Flex 额度'), tBi(
-            `${pl.monthlyFlexCreditPurchaseAmount.toLocaleString()} / mo`,
-            `${pl.monthlyFlexCreditPurchaseAmount.toLocaleString()} /月`,
-        )],
-    ].map(([k, v]) => `
+    const limitCards: Array<[string, string]> = [
+        [tBiHtml('Max Input Tokens', '最大输入'), esc(fmtLimit(pl.maxNumChatInputTokens))],
+        [tBiHtml('Premium Messages', '高级消息数'), esc(fmtLimit(pl.maxNumPremiumChatMessages))],
+        [tBiHtml('Custom Instructions', '自定义指令'), `${esc(fmtLimit(pl.maxCustomChatInstructionCharacters))} ${tBiHtml('chars', '字符')}`],
+        [tBiHtml('Pinned Context', '固定上下文'), esc(fmtLimit(pl.maxNumPinnedContextItems))],
+        [tBiHtml('Local Index', '本地索引'), esc(fmtLimit(pl.maxLocalIndexSize))],
+        [tBiHtml('Flex Credits', 'Flex 积分'), `${esc(formatNumber(pl.monthlyFlexCreditPurchaseAmount))} ${tBiHtml('per month', '每月')}`],
+    ];
+    const limitCardsHtml = limitCards.map(([k, v]) => `
         <div class="profile-metric-card">
             <span class="profile-metric-label">${k}</span>
             <span class="profile-metric-value">${v}</span>
         </div>`).join('');
 
     return `
-        <section class="card">
-            <h2>${ICON.shield} ${tBi('Plan Limits', '计划限制')}</h2>
-            <div class="profile-metric-grid">${limitCards}</div>
+        <section class="profile-tech-section">
+            <h3 class="profile-sub-heading">${ICON.shield} <span>${tBiHtml('Plan Limits', '计划限制')}</span></h3>
+            <div class="profile-metric-grid">${limitCardsHtml}</div>
         </section>`;
 }
 
 function buildFeatureAndTeamGrid(userInfo: UserStatusInfo): string {
     // Feature flags
     const allFeatures: { label: string; enabled: boolean }[] = [
-        { label: tBi('Web Search', '网页搜索'), enabled: userInfo.cascadeWebSearchEnabled },
-        { label: tBi('Browser', '浏览器'), enabled: userInfo.browserEnabled },
-        { label: tBi('Knowledge Base', '知识库'), enabled: userInfo.knowledgeBaseEnabled },
-        { label: tBi('Commit Msg', '提交信息'), enabled: userInfo.canGenerateCommitMessages },
-        { label: tBi('Auto Run', '自动执行'), enabled: userInfo.cascadeCanAutoRunCommands },
-        { label: tBi('Background', '后台'), enabled: userInfo.canAllowCascadeInBackground },
-        { label: tBi('Buy Credits', '购买额度'), enabled: userInfo.canBuyMoreCredits },
-        { label: tBi('Fast Autocomplete', '快速补全'), enabled: userInfo.hasAutocompleteFastMode },
-        { label: tBi('Sticky Premium', '锁定高级'), enabled: userInfo.allowStickyPremiumModels },
-        { label: tBi('Command Models', '命令模型'), enabled: userInfo.allowPremiumCommandModels },
-        { label: tBi('Tab Jump', 'Tab 跳转'), enabled: userInfo.hasTabToJump },
-        { label: tBi('Custom Icon', '自定义图标'), enabled: userInfo.canCustomizeAppIcon },
+        { label: tBiHtml('Web Search', '网页搜索'), enabled: userInfo.cascadeWebSearchEnabled },
+        { label: tBiHtml('Browser', '浏览器'), enabled: userInfo.browserEnabled },
+        { label: tBiHtml('Knowledge Base', '知识库'), enabled: userInfo.knowledgeBaseEnabled },
+        { label: tBiHtml('Commit Msg', '提交信息'), enabled: userInfo.canGenerateCommitMessages },
+        { label: tBiHtml('Auto Run', '自动执行'), enabled: userInfo.cascadeCanAutoRunCommands },
+        { label: tBiHtml('Background', '后台'), enabled: userInfo.canAllowCascadeInBackground },
+        { label: tBiHtml('Buy Credits', '购买积分'), enabled: userInfo.canBuyMoreCredits },
+        { label: tBiHtml('Fast Autocomplete', '快速补全'), enabled: userInfo.hasAutocompleteFastMode },
+        { label: tBiHtml('Sticky Premium', '锁定高级'), enabled: userInfo.allowStickyPremiumModels },
+        { label: tBiHtml('Command Models', '命令模型'), enabled: userInfo.allowPremiumCommandModels },
+        { label: tBiHtml('Tab Jump', 'Tab 跳转'), enabled: userInfo.hasTabToJump },
+        { label: tBiHtml('Custom Icon', '自定义图标'), enabled: userInfo.canCustomizeAppIcon },
     ];
     const featureTags = allFeatures.map(f =>
-        `<span class="feature-tag${f.enabled ? ' enabled' : ''}">${f.label}</span>`
+        `<span class="feature-tag${f.enabled ? ' enabled' : ''}"><span>${f.label}</span></span>`
     ).join('');
 
     // Team config
     const tc = userInfo.teamConfig;
     const teamTags = [
-        { label: tBi('MCP Servers', 'MCP 服务'), enabled: tc.allowMcpServers },
-        { label: tBi('Auto Run Cmd', '自动执行命令'), enabled: tc.allowAutoRunCommands },
-        { label: tBi('Browser Experimental', '浏览器实验'), enabled: tc.allowBrowserExperimentalFeatures },
-    ].map(f => `<span class="feature-tag${f.enabled ? ' enabled' : ''}">${f.label}</span>`).join('');
+        { label: tBiHtml('MCP Servers', 'MCP 服务'), enabled: tc.allowMcpServers },
+        { label: tBiHtml('Auto Run Cmd', '自动执行命令'), enabled: tc.allowAutoRunCommands },
+        { label: tBiHtml('Browser Experimental', '浏览器实验'), enabled: tc.allowBrowserExperimentalFeatures },
+    ].map(f => `<span class="feature-tag${f.enabled ? ' enabled' : ''}"><span>${f.label}</span></span>`).join('');
 
     return `
         <div class="profile-two-col">
-            <section class="card profile-panel-card">
-                <h2>${ICON.bolt} ${tBi('Feature Flags', '功能开关')}</h2>
+            <section class="profile-tech-section profile-panel-card">
+                <h3 class="profile-sub-heading">${ICON.bolt} <span>${tBiHtml('Feature Flags', '功能开关')}</span></h3>
                 <div class="profile-chip-grid">${featureTags}</div>
             </section>
-            <section class="card profile-panel-card">
-                <h2>${ICON.shield} ${tBi('Team Config', '团队配置')}</h2>
+            <section class="profile-tech-section profile-panel-card">
+                <h3 class="profile-sub-heading">${ICON.shield} <span>${tBiHtml('Team Config', '团队配置')}</span></h3>
                 <div class="profile-chip-grid">${teamTags}</div>
             </section>
         </div>`;

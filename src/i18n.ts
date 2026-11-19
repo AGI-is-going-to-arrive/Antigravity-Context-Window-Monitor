@@ -34,7 +34,7 @@ const translations: Record<string, TranslationEntry> = {
     'tooltip.title': { en: 'Context Window Usage', zh: '上下文窗口使用情况' },
     'tooltip.model': { en: 'Model', zh: '模型' },
     'tooltip.session': { en: 'Session', zh: '会话' },
-    'tooltip.totalContextUsed': { en: 'Total Context Used (input+output)', zh: '总上下文占用 (输入+输出)' },
+    'tooltip.totalContextUsed': { en: 'Total Context Used (input+output)', zh: '总上下文占用（输入 + 输出）' },
     'tooltip.modelOutput': { en: 'Model Output', zh: '模型输出' },
     'tooltip.toolResults': { en: 'Tool Results', zh: '工具结果' },
     'tooltip.limit': { en: 'Limit', zh: '窗口上限' },
@@ -54,12 +54,45 @@ const translations: Record<string, TranslationEntry> = {
     'tooltip.imageGenSteps': { en: 'step(s) detected', zh: '个图片生成步骤' },
     'tooltip.estDelta': { en: 'Est. delta', zh: '估算增量' },
     'tooltip.sinceCheckpoint': { en: 'since last checkpoint', zh: '自上次检查点' },
-    'tooltip.lastCheckpoint': { en: 'Last Checkpoint', zh: '最近 checkpoint' },
+    'tooltip.lastCheckpoint': { en: 'Last Checkpoint', zh: '最近检查点' },
     'tooltip.lastModelUsage': { en: 'Latest Model Usage', zh: '最近模型用量' },
     'tooltip.sinceModelCall': { en: 'since last model call', zh: '自上次模型调用' },
     'tooltip.input': { en: 'Input', zh: '输入' },
     'tooltip.output': { en: 'Output', zh: '输出' },
     'tooltip.cache': { en: 'Cache', zh: '缓存' },
+
+    // ─ Units
+    'unit.tokens': { en: 'tokens', zh: 'tokens' },
+    'unit.token': { en: 'Token', zh: 'Token' },
+
+    // ─ Telemetry (Speed / TTFT / Prompt Cache)
+    'telemetry.speed': { en: 'Speed', zh: '生成速度' },
+    'telemetry.genSpeed': { en: 'Gen Speed', zh: '生成速度' },
+    'telemetry.visibleSpeed': { en: 'Visible Speed', zh: '可见速度' },
+    'telemetry.endToEndSpeed': { en: 'End-to-End Speed', zh: '端到端速度' },
+    'telemetry.ttft': { en: 'TTFT', zh: '首字延迟' },
+    'telemetry.avgTtft': { en: 'Avg TTFT', zh: '平均首字延迟' },
+    'telemetry.cachedTtft': { en: 'Cached TTFT', zh: '缓存命中首字' },
+    'telemetry.uncachedTtft': { en: 'Uncached TTFT', zh: '未命中首字' },
+    'telemetry.streaming': { en: 'Stream', zh: '流式耗时' },
+    'telemetry.promptCache': { en: 'Prompt Cache', zh: '提示词缓存' },
+    'telemetry.cacheHit': { en: 'Cache Hit', zh: '缓存命中' },
+    'telemetry.cacheRead': { en: 'Cache Read', zh: '缓存读取' },
+    'telemetry.cacheWrite': { en: 'Cache Write', zh: '缓存写入' },
+    'telemetry.freshInput': { en: 'Fresh Input', zh: '新输入' },
+    'telemetry.cacheSaved': { en: 'Cache Saved', zh: '缓存节省' },
+    'telemetry.cacheReuse': { en: 'Cache Reuse', zh: '缓存复用' },
+    'telemetry.callHitRatio': { en: 'Call Hit Ratio', zh: '调用命中率' },
+    'telemetry.cacheState.warm': { en: 'Warm', zh: '热缓存' },
+    'telemetry.cacheState.warming': { en: 'Warming', zh: '预热中' },
+    'telemetry.cacheState.cold': { en: 'Cold', zh: '未命中' },
+    'telemetry.cacheState.unknown': { en: 'No data', zh: '无数据' },
+    'telemetry.sectionTitle': { en: 'Speed & First-Token Cache', zh: '生成速度与首字缓存' },
+    'telemetry.latest': { en: 'Latest', zh: '最近' },
+    'telemetry.weightedAvg': { en: 'Weighted Avg', zh: '加权平均' },
+    'telemetry.median': { en: 'Median', zh: '中位数' },
+    'telemetry.range': { en: 'Range', zh: '范围' },
+    'telemetry.notReported': { en: 'Not reported', zh: '未上报' },
 
     // ─ QuickPick Panel
     'panel.title': { en: 'Antigravity Monitor', zh: 'Antigravity 监控面板' },
@@ -159,7 +192,9 @@ export function t(key: string): string {
             return entry.en;
         case 'both':
         default:
-            // If both are identical (e.g. proper names), don't duplicate
+            if (!entry.en) { return entry.zh; }
+            if (!entry.zh) { return entry.en; }
+            // If both are identical (e.g. proper names or developer units), don't duplicate
             if (entry.en === entry.zh) { return entry.en; }
             return `${entry.en} / ${entry.zh}`;
     }
@@ -180,9 +215,46 @@ export function tBi(en: string, zh: string, separator: string = ' / '): string {
         case 'en': return en;
         case 'both':
         default:
+            if (!en) { return zh; }
+            if (!zh) { return en; }
             if (en === zh) { return en; }
             return `${en}${separator}${zh}`;
     }
+}
+
+function escapeHtml(text: string): string {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
+ * Structured bilingual HTML helper for visible webview headings, tabs, buttons, and labels.
+ * Preserves plain-text `textContent` / accessibility names (`"English / 中文"`) while
+ * allowing CSS to subordinate `.bi-sep` and `.bi-zh` in bilingual mode.
+ */
+export function tBiHtml(en: string, zh: string, separator: string = ' / '): string {
+    switch (currentLanguage) {
+        case 'zh': return escapeHtml(zh);
+        case 'en': return escapeHtml(en);
+        case 'both':
+        default:
+            if (!en) { return escapeHtml(zh); }
+            if (!zh) { return escapeHtml(en); }
+            if (en === zh) { return escapeHtml(en); }
+            return `<span class="bi-en">${escapeHtml(en)}</span><span class="bi-sep">${escapeHtml(separator)}</span><span class="bi-zh">${escapeHtml(zh)}</span>`;
+    }
+}
+
+/**
+ * Format a finite number using the extension's UI locale (`zh-CN` / `en-US`)
+ * rather than the host OS locale so separators stay consistent across platforms.
+ */
+export function formatNumber(value: number, options?: Intl.NumberFormatOptions): string {
+    return value.toLocaleString(currentLanguage === 'zh' ? 'zh-CN' : 'en-US', options);
 }
 
 /**

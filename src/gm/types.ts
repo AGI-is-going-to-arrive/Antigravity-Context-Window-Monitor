@@ -171,6 +171,16 @@ export interface GMModelStats {
     maxTTFT: number;
     avgStreaming: number;    // seconds
     cacheHitRate: number;   // fraction of calls with cache > 0
+    /** Number of calls with valid ttftSeconds > 0 (prevents 0-TTFT dilution on merge) */
+    ttftSampleCount?: number;
+    /** Number of calls with valid streamingSeconds > 0 (prevents 0-streaming dilution on merge) */
+    streamingSampleCount?: number;
+    /** Sum of outputTokens across speed-valid calls (streamingSeconds >= 0.05 && outputTokens >= 2) */
+    timedOutputTokens?: number;
+    /** Sum of streamingSeconds across speed-valid calls */
+    timedStreamingSeconds?: number;
+    /** Number of calls with cacheReadTokens > 0 */
+    cacheHitCalls?: number;
     responseModel: string;
     apiProvider: string;
     /** Model DNA: completionConfig (latest seen) */

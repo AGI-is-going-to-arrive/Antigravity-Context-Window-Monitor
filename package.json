@@ -92,6 +92,16 @@
           "default": true,
           "description": "Show the AI credits balance in the status bar / 在状态栏显示 AI 积分余额"
         },
+        "antigravityContextMonitor.statusBar.showSpeed": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show latest or average model generation speed (tok/s) in the status bar / 在状态栏显示模型生成速度（tok/s）"
+        },
+        "antigravityContextMonitor.statusBar.showCacheHit": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show token-weighted prompt cache hit rate (%) in the status bar / 在状态栏显示按 token 加权的提示词缓存命中率（%）"
+        },
         "antigravityContextMonitor.statusBar.tooltipDensity": {
           "type": "string",
           "enum": [

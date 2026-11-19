@@ -4,15 +4,25 @@
 
 ### English
 
-- Rebuild the status bar hover as a compact summary with shortcuts to Overview, Models, and Settings. Clicking the status bar opens the new Overview for context, quota, reset times, and AI credits.
-- Register Gemini 4 Neon Low, Medium, High, and Extra alongside the single Orchestrator (Neon) entry. The new entries share Gemini quota while retaining exact identities for usage, context, and pricing.
-- Display the Orchestrator (Neon) route to the existing M669 worker and update compression metadata from the live IDE. See the bilingual [release notes and validation](docs/releases/1.17.2.md).
+- **Model generation speed (`tok/s`), TTFT (Cached vs Uncached) & First-Token / Prompt Cache telemetry:** Added pure telemetry engine `src/telemetry-metrics.ts` built on verified Antigravity protobuf semantics — decode-only `streamingSeconds` (excluding TTFT), additive `totalPromptTokens = inputTokens + cacheReadTokens + cacheCreationTokens`, inclusive `outputTokens` separating explicit and Gemini implicit thinking into visible response speed, time-weighted ratio-of-sums throughput, two-gate noise filters (`≥ 0.05s & ≥ 2 tokens` hard validity; `≥ 0.25s & ≥ 10 tokens` representative spread), Cached vs Uncached TTFT speedup comparison, internal compaction exclusion, and unpriced USD savings guards (never fabricating `$0.00`). Surfaced across **Overview** (4-cell L2 `.overview-telemetry-strip`), **GM Data** (account-filtered KPI strip, 2-column **Speed & First-Token Cache Ledger** `#telemetryLedgerSection` with proportional Cached vs Uncached TTFT bars and a 3-segment Prompt Cache bar, unified `Calls`-first per-model speed & token-weighted cache cards, and per-step/per-turn timeline telemetry pills), **Calendar** (archived speed `.cal-chip-speed`, adaptive TTFT, and token-weighted cache hit rate), and **Status Bar / Hover** (opt-in `statusBar.showSpeed` & `statusBar.showCacheHit` toggles, default `false` and hidden on cold start, plus `compact`/`auto`/`full` hover telemetry).
+- **GM, Activity & v1-compatible persistence telemetry fixes:** Fixed zero-TTFT and zero-streaming dilution in `GMModelStats` merges (`src/gm/summary.ts`, `src/activity/helpers.ts`), replaced misleading call-ratio-only `100%` cache readouts with token-weighted prompt cache hit rates (`cacheRead / totalPromptTokens`) paired with call-hit ratios, aligned GM Data KPI totals with account-filtered summaries, preserved `gmResponseTokens` and `gmCacheCreationTokens` on `StepEvent`, and extended `DailyLedger` → `DailyArchival` → `DailyStore` with backward-compatible optional v1 timing and cache-token persistence so Calendar retains accurate archived speed, TTFT, and token-weighted cache hit rates across rollovers.
+- **Studio Telemetry Ledger UI redesign (all 9 views):** Rebuilt the monitor panel with studio-neutral **Obsidian Slate Dark**, **Alabaster Studio Light**, and native **High-Contrast** themes (`src/webview-editorial-styles.ts`), sticky hairline masthead with a 2px sliding Studio Cobalt tab indicator, Zero-Songti CJK/Latin typography, structured bilingual subordination (`tBiHtml`), semantic health meters, 4-series Cost chart palette, unified `32px` tactile controls, WCAG 2.1 AA contrast, and zero horizontal overflow across `320px–1440px`.
+- **Status bar, hover summary & Overview:** Upgraded the bottom-right status bar and native Markdown hover tooltip with `auto` / `compact` / `full` densities, opt-in speed & cache hit toggles (`statusBar.showSpeed` / `statusBar.showCacheHit`), live Speed / TTFT / Prompt Cache hover telemetry, used + remaining context tokens, exact reset clock time + countdown across all densities (eliminating cross-pool reset leaks and proto3 epoch artifacts), unknown-safe AI credits, and allowlisted quick links to **Overview**, **Models**, and **Settings**.
+- **Universal base-model effort merging:** Collapsed verified thinking-effort variants into single base-model families across Gemini 4 Neon/Hydrogen/Carbon/Argon, Flash, Pro, Claude Opus/Sonnet/Haiku, GPT-OSS, legacy placeholders, and guarded future catalog families — keeping Orchestrators distinct and preserving exact per-effort IDs in Model Info, GM Data, and Cost.
+- **Gemini 4 Neon & Orchestrator (Neon):** Registered `Gemini 4 Neon` Low / Medium / High / Extra (`M534`/`M533`/`M532`/`M535`) and `Orchestrator (Neon)` (`M537`, configured `M669` execution route) with 512,000 live compression limits, shared Gemini quota, and independent usage/custom pricing.
+- **Modernized Profile & unknown-safe AI credits:** Retired legacy Prompt and Flow quota counters across Profile, Account Popover, and restored snapshots; added `src/account-credits.ts` to deduplicate and localize Google AI credits, labeling unreported/ambiguous readings **Not reported** (never fabricated `0`) alongside shared model quota pools, default-on privacy masking, per-account monthly expiry day, and collapsible plan limits/capabilities.
+- **Cross-platform & i18n fixes:** Hardened Windows/Linux URI normalization, locale-stable number formatting, CRLF-safe hover truncation, unknown-safe quota fractions, natural Chinese developer terminology (`tokens`/`Token`, `个人`, `精简`), localized Sessions badges, and bilingual Calendar/GM Data/About layouts. Unit suite passes **57/57 test files (1,076/1,076 tests)**. See the English-then-Chinese [1.17.2 release notes and validation](docs/releases/1.17.2.md).
 
 ### 中文
 
-- 重做状态栏悬停摘要，可直达总览、模型和设置。点击状态栏打开新的总览，集中查看上下文、配额、重置时间和 AI 积分。
-- 注册 Gemini 4 Neon 的 Low、Medium、High、Extra 四档及单独的 Orchestrator (Neon) 条目。新增条目共用 Gemini 配额，用量、上下文和计价保留各自身份。
-- 展示 Orchestrator (Neon) 到现有 M669 执行模型的配置关系，并按实时 IDE 更新压缩参数。详见[双语发布说明与验证](docs/releases/1.17.2.md#中文)。
+- **模型生成速度（`tok/s`）、首字延迟（缓存 vs 非缓存）与首字/提示词缓存遥测：** 新增纯计算引擎 `src/telemetry-metrics.ts`，严格遵循已核实的 Antigravity protobuf 语义——仅解码 `streamingSeconds`（不含 TTFT）、相加式 `totalPromptTokens = inputTokens + cacheReadTokens + cacheCreationTokens`、含显式与 Gemini 隐式思考的可见输出速度拆分、总和比值时间加权吞吐、双层噪声过滤（硬有效性 `≥ 0.05s 且 ≥ 2 tokens`；代表性分布 `≥ 0.25s 且 ≥ 10 tokens`）、缓存 vs 非缓存 TTFT 加速对比、保守内部压缩调用剔除，以及未定价 USD 节省保护（绝不伪造 `$0.00`）。全面集成至**总览**（4 格 L2 `.overview-telemetry-strip`）、**GM 数据**（按账号过滤 KPI 条、双列**生成速度与首字缓存账本** `#telemetryLedgerSection` 含缓存 vs 非缓存 TTFT 比例条与 3 段式提示词缓存进度条、统一 `调用` 优先的逐模型速度与 token 加权缓存卡片，以及逐步骤/逐轮次时间线遥测标签）、**日历**（归档速度 `.cal-chip-speed`、自适应 TTFT 与 token 加权缓存命中率）和**状态栏/悬停摘要**（默认关闭且冷启动自动隐藏的 `statusBar.showSpeed` / `statusBar.showCacheHit` 可选开关，以及 `compact`/`auto`/`full` 悬停遥测）。
+- **GM、活动层与 v1 兼容持久化遥测修复：** 修复 `GMModelStats` 合并中零 TTFT / 零流耗时稀释均值的问题（`src/gm/summary.ts`、`src/activity/helpers.ts`）；将易误导的纯调用级 `100%` 缓存命中率替换为按 token 加权的提示词缓存命中率（`cacheRead / totalPromptTokens`）并辅以调用命中比；对齐 GM 数据 KPI 与按账号过滤摘要；在 `StepEvent` 中保留 `gmResponseTokens` 与 `gmCacheCreationTokens`；并在保持 v1 架构完全向后兼容的前提下扩展 `DailyLedger` → `DailyArchival` → `DailyStore` 的可选耗时与缓存 token 字段，使日历跨日结归档后仍保留准确的速度、TTFT 与 token 加权缓存命中率。
+- **Studio Telemetry Ledger 界面重做（全部 9 页）：** 全新构建 **Obsidian Slate 深色**、**Alabaster Studio 浅色**与原生**高对比度**主题（`src/webview-editorial-styles.ts`），配备吸顶细线页首与 2px Studio Cobalt 滑动标签指示条、零宋体中英文排版、主次双语布局（`tBiHtml`）、语义健康进度条、成本四色图表色板、统一 `32px` 触感控件、WCAG 2.1 AA 对比度及 `320px–1440px` 零横向溢出。
+- **状态栏、悬停摘要与总览：** 升级右下角状态栏与原生 Markdown 悬停摘要，支持**自动（`auto`）** / **精简（`compact`）** / **完整（`full`）**三种密度、可选开启的速度与缓存命中开关（`statusBar.showSpeed` / `statusBar.showCacheHit`）、实时速度/TTFT/提示词缓存悬停遥测、上下文已用与可用余量、全密度精确重置时刻与倒计时（消除跨池重置时间串扰与 proto3 纪元异常）、未知安全 AI 积分，以及直达**总览**、**模型**和**设置**的白名单链接。
+- **跨家族通用思考档位合并：** 自动将 Gemini 4 Neon/Hydrogen/Carbon/Argon、Flash、Pro、Claude Opus/Sonnet/Haiku、GPT-OSS、历史占位 ID 及受约束新家族的思考档位按基础模型家族合并；保持各 Orchestrator 独立展示，并在模型信息、GM 数据与成本页保留独立档位 ID。
+- **Gemini 4 Neon 与 Orchestrator (Neon)：** 注册 `Gemini 4 Neon` 低 / 中 / 高 / 超高四档（`M534`/`M533`/`M532`/`M535`）及 `Orchestrator (Neon)`（`M537`，配置 `M669` 执行路由），同步 512,000 实时压缩上限、共享 Gemini 配额并保留独立用量与自定义定价。
+- **重构「个人」页与未知安全 AI 积分：** 在个人页、顶部账号面板及历史快照恢复中彻底移除旧 Prompt / Flow 计数；新增 `src/account-credits.ts` 归一化并本地化 Google AI 积分，缺失/冲突读数标为**未上报**（绝不伪造 `0`），并呈现共享模型配额池、默认开启的隐私遮罩、按账号配置的每月积分到期日及可折叠计划限制与功能配置。
+- **跨平台与国际化修复：** 强化 Windows/Linux 路径归一化、跨区域稳定数字格式化、CRLF 安全悬停截断与异常配额比例防护；统一中文开发者术语（`tokens`/`Token`、`个人`、`精简`），本地化会话页状态/存储徽章并修复双语模式下的日历、GM 数据与关于页排版。单元测试通过 **57/57 个文件（1,076/1,076 项测试）**。详见先英文后中文的 [1.17.2 发布说明与验证](docs/releases/1.17.2.md#中文)。
 
 ## [1.17.1] - 2026-11-13
 
@@ -1467,8 +1477,8 @@ Official pricing sources: [Google Antigravity](https://antigravity.google/blog/g
 - **Model Tab + Persistent Model DNA / 模型标签页与持久化模型 DNA**: Added a dedicated `Models / 模型` tab to centralize model-related information. Personal model quota, default model, and GM-derived model DNA are now grouped together instead of being scattered across `Profile` and `Pricing`. Model DNA is now persisted independently from quota-cycle archives: static fields such as `responseModel`, provider, completion config, tool count, prompt sections, and system-prompt availability remain visible after archive, while current-cycle counters like calls, steps, credits, retries, and errors still reset normally with the quota cycle.
   新增独立的 `模型` 标签页，把模型相关信息集中起来展示。个人模型配额、默认模型和 GM 推导出的模型 DNA 不再分散在 `个人` 和 `价格` 页面里。模型 DNA 现在也会独立持久化：`responseModel`、提供商、completion config、工具数、prompt 分段、是否有 system prompt 这类静态信息在归档后仍然保留；而调用数、步骤数、积分、重试、错误等当前周期动态值仍然会随着额度归档正常清零。
 
-- **Archive / GM Troubleshooting Map / 归档与 GM 排障地图文档**: Added a new document [docs/archive_gm_troubleshooting.md](docs/archive_gm_troubleshooting.md) to explain archive triggers, GM cycle boundaries, per-page data scope differences, related persisted state keys, and a symptom-to-module troubleshooting map for faster diagnosis of quota and GM issues.
-  新增排障文档 [docs/archive_gm_troubleshooting.md](docs/archive_gm_troubleshooting.md)，专门说明归档触发链路、GM 当前周期边界、各页面口径差异、相关持久化键以及“出现什么现象该优先查哪个模块”的排障地图，方便后续快速定位额度和 GM 相关问题。
+- **Archive / GM Troubleshooting Map / 归档与 GM 排障地图文档**: Added a new document `docs/archive_gm_troubleshooting.md` to explain archive triggers, GM cycle boundaries, per-page data scope differences, related persisted state keys, and a symptom-to-module troubleshooting map for faster diagnosis of quota and GM issues.
+  新增排障文档 `docs/archive_gm_troubleshooting.md`，专门说明归档触发链路、GM 当前周期边界、各页面口径差异、相关持久化键以及“出现什么现象该优先查哪个模块”的排障地图，方便后续快速定位额度和 GM 相关问题。
 
 ### Changed / 变更
 
@@ -2075,7 +2085,7 @@ Official pricing sources: [Google Antigravity](https://antigravity.google/blog/g
   新增 `importArchives()` 方法，启动时回溯导入已有活动归档到日历。按 `startTime` 去重，重启幂等。同时快照当前活跃会话到今天。
 
 - **Calendar: Per-Model Cycle Detail / 日历: 逐模型周期详情**: Each cycle card now shows per-model breakdown rows with color-coded SVG stat chips: reasoning (purple), tools (blue), errors (red), est-steps (yellow), tokens (green). Data stored via new `ModelCycleStats` interface in `DailyCycleEntry.modelStats`.
-  日历周期卡片增加逐模型细分行，含彩色 SVG 图标 stat chips（推理/工具/错误/步数估算/令牌）。
+  日历周期卡片增加逐模型细分行，含彩色 SVG 图标 stat chips（推理/工具/错误/步数估算/Token）。
 
 - **Pricing: Cost Overview Visualization / 价格: 费用概览可视化**: New visual section above the cost table: 4 highlight cards (Total Cost, Top Spender, Avg/Call, Models) + stacked bar chart per model showing Input/Output/Cache/Thinking cost breakdown with color-coded segments and legend.
   价格标签新增费用概览可视化区域：4 个亮点卡片 + 逐模型堆叠条形图（Input/Output/Cache/Thinking 分色段 + 图例）。
@@ -2509,7 +2519,7 @@ Official pricing sources: [Google Antigravity](https://antigravity.google/blog/g
 - **WebView Monitor Panel / WebView 监控面板**: Click the status bar to open a full dashboard showing account info, Credits balance, model quotas, feature flags, team config, and Google AI credits — all from the existing `GetUserStatus` API (zero additional network calls).
   点击状态栏打开全景仪表盘，展示账户信息、Credits 余额、模型配额、功能开关、团队配置和 Google AI 额度——全部来自已有的 `GetUserStatus` API 调用（零额外网络请求）。
 
-  ![WebView Monitor Panel](src/images/webview_panel_en.png)
+  [Screenshot from the original WebView release / 原版 WebView 截图](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/blob/72bb8f959c60e3d073d7716980885f8426594cbf/src/images/webview_panel_en.png)
 
 - **Privacy Mask / 隐私遮罩**: Shield button in the panel header masks name and email. State persists across refreshes.
   面板顶部盾牌按钮可遮罩姓名和邮箱，状态跨刷新持久化。

@@ -2,6 +2,7 @@
 // Summary aggregation, filtering, normalization, and merge utilities.
 
 import { normalizeModelDisplayName } from '../models';
+import { MIN_OUTPUT_TOKENS_FOR_SPEED, MIN_STREAM_SECONDS } from '../telemetry-metrics';
 import type {
     GMCallEntry,
     GMConversationData,
@@ -199,6 +200,49 @@ function aggregateRetryErrors(
     }
 }
 
+/** Build a single-call GMModelStats entry with accurate timing sample counts and timed speed sums. */
+function buildSingleCallModelStats(call: GMCallEntry): GMModelStats {
+    const hasTtft = Number.isFinite(call.ttftSeconds) && call.ttftSeconds > 0;
+    const hasStream = Number.isFinite(call.streamingSeconds) && call.streamingSeconds > 0;
+    const isSpeedValid = hasStream
+        && call.streamingSeconds >= MIN_STREAM_SECONDS
+        && call.outputTokens >= MIN_OUTPUT_TOKENS_FOR_SPEED;
+    const hasCacheHit = call.cacheReadTokens > 0;
+
+    return {
+        callCount: 1,
+        stepsCovered: call.stepIndices.length,
+        totalInputTokens: call.inputTokens,
+        totalOutputTokens: call.outputTokens,
+        totalThinkingTokens: call.thinkingTokens,
+        totalCacheRead: call.cacheReadTokens,
+        totalCacheCreation: call.cacheCreationTokens,
+        totalCredits: call.credits,
+        avgTTFT: hasTtft ? call.ttftSeconds : 0,
+        minTTFT: hasTtft ? call.ttftSeconds : 0,
+        maxTTFT: hasTtft ? call.ttftSeconds : 0,
+        avgStreaming: hasStream ? call.streamingSeconds : 0,
+        cacheHitRate: hasCacheHit ? 1 : 0,
+        ttftSampleCount: hasTtft ? 1 : 0,
+        streamingSampleCount: hasStream ? 1 : 0,
+        timedOutputTokens: isSpeedValid ? call.outputTokens : 0,
+        timedStreamingSeconds: isSpeedValid ? call.streamingSeconds : 0,
+        cacheHitCalls: hasCacheHit ? 1 : 0,
+        responseModel: call.responseModel,
+        apiProvider: call.apiProvider,
+        completionConfig: call.completionConfig,
+        hasSystemPrompt: !!call.systemPromptSnippet,
+        toolCount: call.toolCount,
+        promptSectionTitles: [...call.promptSectionTitles],
+        totalRetries: call.retries,
+        errorCount: call.hasError ? 1 : 0,
+        creditCallCount: call.credits > 0 ? 1 : 0,
+        exactCallCount: call.modelAccuracy === 'exact' ? 1 : 0,
+        placeholderOnlyCalls: call.modelAccuracy === 'placeholder' ? 1 : 0,
+        contextWindowCapacity: call.contextWindowCapacity || 0,
+    };
+}
+
 export function filterGMSummaryByModels(
     summary: GMSummary | null | undefined,
     modelIds: string[],
@@ -288,84 +332,13 @@ export function filterGMSummaryByModels(
             }
 
             const key = normalizedDisplay || call.modelDisplay || call.model;
+            const single = buildSingleCallModelStats(call);
             const existing = modelBreakdown[key];
             if (existing) {
-                const ttftSamples = existing.callCount;
-                existing.callCount += 1;
-                existing.stepsCovered += call.stepIndices.length;
-                existing.totalInputTokens += call.inputTokens;
-                existing.totalOutputTokens += call.outputTokens;
-                existing.totalThinkingTokens += call.thinkingTokens;
-                existing.totalCacheRead += call.cacheReadTokens;
-                existing.totalCacheCreation += call.cacheCreationTokens;
-                existing.totalCredits += call.credits;
-                if (call.credits > 0) { existing.creditCallCount = (existing.creditCallCount || 0) + 1; }
-                existing.avgTTFT = call.ttftSeconds > 0
-                    ? ((existing.avgTTFT * ttftSamples) + call.ttftSeconds) / (ttftSamples + 1)
-                    : existing.avgTTFT;
-                existing.minTTFT = existing.minTTFT > 0
-                    ? Math.min(existing.minTTFT, call.ttftSeconds || existing.minTTFT)
-                    : call.ttftSeconds;
-                existing.maxTTFT = Math.max(existing.maxTTFT, call.ttftSeconds);
-                existing.avgStreaming = call.streamingSeconds > 0
-                    ? ((existing.avgStreaming * ttftSamples) + call.streamingSeconds) / (ttftSamples + 1)
-                    : existing.avgStreaming;
-                const cacheHitCalls = Math.round(existing.cacheHitRate * ttftSamples) + (call.cacheReadTokens > 0 ? 1 : 0);
-                existing.cacheHitRate = existing.callCount > 0 ? cacheHitCalls / existing.callCount : 0;
-                if (call.responseModel) {
-                    existing.responseModel = call.responseModel;
-                }
-                if (call.apiProvider) {
-                    existing.apiProvider = call.apiProvider;
-                }
-                if (call.completionConfig) {
-                    existing.completionConfig = call.completionConfig;
-                }
-                existing.hasSystemPrompt = existing.hasSystemPrompt || !!call.systemPromptSnippet;
-                existing.toolCount = Math.max(existing.toolCount, call.toolCount);
-                if (call.promptSectionTitles.length > existing.promptSectionTitles.length) {
-                    existing.promptSectionTitles = call.promptSectionTitles;
-                }
-                existing.totalRetries += call.retries;
-                if (call.hasError) {
-                    existing.errorCount += 1;
-                }
-                if (call.modelAccuracy === 'exact') {
-                    existing.exactCallCount += 1;
-                } else {
-                    existing.placeholderOnlyCalls += 1;
-                }
-                if (call.contextWindowCapacity > 0) { existing.contextWindowCapacity = call.contextWindowCapacity; }
-                continue;
+                mergeGMModelStats(existing, single);
+            } else {
+                modelBreakdown[key] = single;
             }
-
-            modelBreakdown[key] = {
-                callCount: 1,
-                stepsCovered: call.stepIndices.length,
-                totalInputTokens: call.inputTokens,
-                totalOutputTokens: call.outputTokens,
-                totalThinkingTokens: call.thinkingTokens,
-                totalCacheRead: call.cacheReadTokens,
-                totalCacheCreation: call.cacheCreationTokens,
-                totalCredits: call.credits,
-                avgTTFT: call.ttftSeconds,
-                minTTFT: call.ttftSeconds,
-                maxTTFT: call.ttftSeconds,
-                avgStreaming: call.streamingSeconds,
-                cacheHitRate: call.cacheReadTokens > 0 ? 1 : 0,
-                responseModel: call.responseModel,
-                apiProvider: call.apiProvider,
-                completionConfig: call.completionConfig,
-                hasSystemPrompt: !!call.systemPromptSnippet,
-                toolCount: call.toolCount,
-                promptSectionTitles: call.promptSectionTitles,
-                totalRetries: call.retries,
-                errorCount: call.hasError ? 1 : 0,
-                creditCallCount: call.credits > 0 ? 1 : 0,
-                exactCallCount: call.modelAccuracy === 'exact' ? 1 : 0,
-                placeholderOnlyCalls: call.modelAccuracy === 'placeholder' ? 1 : 0,
-                contextWindowCapacity: call.contextWindowCapacity || 0,
-            };
         }
     }
 
@@ -419,15 +392,50 @@ export function mergeGMModelStats(target: GMModelStats, source: GMModelStats): v
         ? Math.min(target.minTTFT, source.minTTFT)
         : Math.max(target.minTTFT, source.minTTFT);
     target.maxTTFT = Math.max(target.maxTTFT, source.maxTTFT);
-    target.avgTTFT = totalCalls > 0
-        ? ((target.avgTTFT * targetCallsBefore) + (source.avgTTFT * sourceCalls)) / totalCalls
+
+    // Weight TTFT & streaming averages strictly by valid (> 0) sample counts,
+    // never by total callCount — prevents 0/missing timing calls from diluting averages.
+    const targetTtftSamples = target.ttftSampleCount !== undefined
+        ? target.ttftSampleCount
+        : (target.avgTTFT > 0 ? targetCallsBefore : 0);
+    const sourceTtftSamples = source.ttftSampleCount !== undefined
+        ? source.ttftSampleCount
+        : (source.avgTTFT > 0 ? sourceCalls : 0);
+    const totalTtftSamples = targetTtftSamples + sourceTtftSamples;
+    target.avgTTFT = totalTtftSamples > 0
+        ? ((target.avgTTFT * targetTtftSamples) + (source.avgTTFT * sourceTtftSamples)) / totalTtftSamples
         : 0;
-    target.avgStreaming = totalCalls > 0
-        ? ((target.avgStreaming * targetCallsBefore) + (source.avgStreaming * sourceCalls)) / totalCalls
+    target.ttftSampleCount = totalTtftSamples;
+
+    const targetStreamSamples = target.streamingSampleCount !== undefined
+        ? target.streamingSampleCount
+        : (target.avgStreaming > 0 ? targetCallsBefore : 0);
+    const sourceStreamSamples = source.streamingSampleCount !== undefined
+        ? source.streamingSampleCount
+        : (source.avgStreaming > 0 ? sourceCalls : 0);
+    const totalStreamSamples = targetStreamSamples + sourceStreamSamples;
+    target.avgStreaming = totalStreamSamples > 0
+        ? ((target.avgStreaming * targetStreamSamples) + (source.avgStreaming * sourceStreamSamples)) / totalStreamSamples
         : 0;
-    const targetCacheHits = Math.round(target.cacheHitRate * targetCallsBefore);
-    const sourceCacheHits = Math.round(source.cacheHitRate * sourceCalls);
-    target.cacheHitRate = totalCalls > 0 ? (targetCacheHits + sourceCacheHits) / totalCalls : 0;
+    target.streamingSampleCount = totalStreamSamples;
+
+    if (target.timedOutputTokens !== undefined || source.timedOutputTokens !== undefined) {
+        target.timedOutputTokens = (target.timedOutputTokens || 0) + (source.timedOutputTokens || 0);
+    }
+    if (target.timedStreamingSeconds !== undefined || source.timedStreamingSeconds !== undefined) {
+        target.timedStreamingSeconds = (target.timedStreamingSeconds || 0) + (source.timedStreamingSeconds || 0);
+    }
+
+    const targetCacheHits = target.cacheHitCalls !== undefined
+        ? target.cacheHitCalls
+        : Math.round(target.cacheHitRate * targetCallsBefore);
+    const sourceCacheHits = source.cacheHitCalls !== undefined
+        ? source.cacheHitCalls
+        : Math.round(source.cacheHitRate * sourceCalls);
+    const totalCacheHits = targetCacheHits + sourceCacheHits;
+    target.cacheHitCalls = totalCacheHits;
+    target.cacheHitRate = totalCalls > 0 ? totalCacheHits / totalCalls : 0;
+
     if (source.responseModel) { target.responseModel = source.responseModel; }
     if (source.apiProvider) { target.apiProvider = source.apiProvider; }
     if (source.completionConfig) { target.completionConfig = source.completionConfig; }
@@ -556,63 +564,12 @@ export function buildSummaryFromConversations(
             }
 
             const key = normalizedDisplay || call.modelDisplay || call.model;
+            const single = buildSingleCallModelStats(call);
             const existing = modelBreakdown[key];
             if (existing) {
-                mergeGMModelStats(existing, {
-                    callCount: 1,
-                    stepsCovered: call.stepIndices.length,
-                    totalInputTokens: call.inputTokens,
-                    totalOutputTokens: call.outputTokens,
-                    totalThinkingTokens: call.thinkingTokens,
-                    totalCacheRead: call.cacheReadTokens,
-                    totalCacheCreation: call.cacheCreationTokens,
-                    totalCredits: call.credits,
-                    avgTTFT: call.ttftSeconds,
-                    minTTFT: call.ttftSeconds,
-                    maxTTFT: call.ttftSeconds,
-                    avgStreaming: call.streamingSeconds,
-                    cacheHitRate: call.cacheReadTokens > 0 ? 1 : 0,
-                    responseModel: call.responseModel,
-                    apiProvider: call.apiProvider,
-                    completionConfig: call.completionConfig,
-                    hasSystemPrompt: !!call.systemPromptSnippet,
-                    toolCount: call.toolCount,
-                    promptSectionTitles: call.promptSectionTitles,
-                    totalRetries: call.retries,
-                    errorCount: call.hasError ? 1 : 0,
-                    creditCallCount: call.credits > 0 ? 1 : 0,
-                    exactCallCount: call.modelAccuracy === 'exact' ? 1 : 0,
-                    placeholderOnlyCalls: call.modelAccuracy === 'placeholder' ? 1 : 0,
-                    contextWindowCapacity: call.contextWindowCapacity || 0,
-                });
+                mergeGMModelStats(existing, single);
             } else {
-                modelBreakdown[key] = {
-                    callCount: 1,
-                    stepsCovered: call.stepIndices.length,
-                    totalInputTokens: call.inputTokens,
-                    totalOutputTokens: call.outputTokens,
-                    totalThinkingTokens: call.thinkingTokens,
-                    totalCacheRead: call.cacheReadTokens,
-                    totalCacheCreation: call.cacheCreationTokens,
-                    totalCredits: call.credits,
-                    avgTTFT: call.ttftSeconds,
-                    minTTFT: call.ttftSeconds,
-                    maxTTFT: call.ttftSeconds,
-                    avgStreaming: call.streamingSeconds,
-                    cacheHitRate: call.cacheReadTokens > 0 ? 1 : 0,
-                    responseModel: call.responseModel,
-                    apiProvider: call.apiProvider,
-                    completionConfig: call.completionConfig,
-                    hasSystemPrompt: !!call.systemPromptSnippet,
-                    toolCount: call.toolCount,
-                    promptSectionTitles: call.promptSectionTitles,
-                    totalRetries: call.retries,
-                    errorCount: call.hasError ? 1 : 0,
-                    creditCallCount: call.credits > 0 ? 1 : 0,
-                    exactCallCount: call.modelAccuracy === 'exact' ? 1 : 0,
-                    placeholderOnlyCalls: call.modelAccuracy === 'placeholder' ? 1 : 0,
-                    contextWindowCapacity: call.contextWindowCapacity || 0,
-                };
+                modelBreakdown[key] = single;
             }
         }
     }
