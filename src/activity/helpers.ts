@@ -4,7 +4,8 @@
 import { normalizeModelDisplayName } from '../models';
 import { tBi } from '../i18n';
 import type { GMCallEntry, GMModelStats } from '../gm-tracker';
-import type { StepCategory, StepClassification, StepEvent, ModelActivityStats } from './types';
+import { mergeGMModelStats } from '../gm/summary';
+import type { StepClassification, StepEvent, ModelActivityStats } from './types';
 
 // ─── Step Type Classification ────────────────────────────────────────────────
 
@@ -286,43 +287,7 @@ export function mergeActivityStats(target: ModelActivityStats, source: ModelActi
 }
 
 export function mergeGMStats(target: GMModelStats, source: GMModelStats): void {
-    const targetCallsBefore = target.callCount;
-    const sourceCalls = source.callCount;
-    const totalCalls = targetCallsBefore + sourceCalls;
-
-    target.callCount = totalCalls;
-    target.stepsCovered += source.stepsCovered;
-    target.totalInputTokens += source.totalInputTokens;
-    target.totalOutputTokens += source.totalOutputTokens;
-    target.totalThinkingTokens += source.totalThinkingTokens;
-    target.totalCacheRead += source.totalCacheRead;
-    target.totalCacheCreation += source.totalCacheCreation;
-    target.totalCredits += source.totalCredits;
-    target.minTTFT = target.minTTFT > 0 && source.minTTFT > 0
-        ? Math.min(target.minTTFT, source.minTTFT)
-        : Math.max(target.minTTFT, source.minTTFT);
-    target.maxTTFT = Math.max(target.maxTTFT, source.maxTTFT);
-    target.avgTTFT = totalCalls > 0
-        ? ((target.avgTTFT * targetCallsBefore) + (source.avgTTFT * sourceCalls)) / totalCalls
-        : 0;
-    target.avgStreaming = totalCalls > 0
-        ? ((target.avgStreaming * targetCallsBefore) + (source.avgStreaming * sourceCalls)) / totalCalls
-        : 0;
-    const targetCacheHits = Math.round(target.cacheHitRate * targetCallsBefore);
-    const sourceCacheHits = Math.round(source.cacheHitRate * sourceCalls);
-    target.cacheHitRate = totalCalls > 0 ? (targetCacheHits + sourceCacheHits) / totalCalls : 0;
-    if (source.responseModel) { target.responseModel = source.responseModel; }
-    if (source.apiProvider) { target.apiProvider = source.apiProvider; }
-    if (source.completionConfig) { target.completionConfig = source.completionConfig; }
-    target.hasSystemPrompt = target.hasSystemPrompt || source.hasSystemPrompt;
-    target.toolCount = Math.max(target.toolCount, source.toolCount);
-    if (source.promptSectionTitles.length > target.promptSectionTitles.length) {
-        target.promptSectionTitles = [...source.promptSectionTitles];
-    }
-    target.totalRetries += source.totalRetries;
-    target.errorCount += source.errorCount;
-    target.exactCallCount += source.exactCallCount;
-    target.placeholderOnlyCalls += source.placeholderOnlyCalls;
+    mergeGMModelStats(target, source);
 }
 
 export function normalizeStepsByModelRecord(stepsByModel: Record<string, number>): Record<string, number> {

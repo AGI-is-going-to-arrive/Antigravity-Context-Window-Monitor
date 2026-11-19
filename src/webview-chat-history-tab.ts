@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { tBi } from './i18n';
 import { ContextUsage, TrajectorySummary, getModelDisplayName, normalizeUri } from './tracker';
-import { esc, formatTime } from './webview-helpers';
+import { esc, tBiHtml } from './webview-helpers';
 import type { GMSummary, GMConversationData } from './gm-tracker';
 import { ICON } from './webview-icons';
 
@@ -16,7 +16,10 @@ interface HistoryGMStats {
 interface HistoryEntry {
     cascadeId: string;
     title: string;
+    titleHtml: string;
     workspaceLabel: string;
+    workspaceLabelHtml: string;
+    workspaceSubtitleHtml: string;
     workspacePath: string;
     workspaceUri: string;
     repositoryName: string;
@@ -40,8 +43,8 @@ interface HistoryEntry {
 
 interface HistoryGroup {
     key: string;
-    label: string;
-    subtitle: string;
+    labelHtml: string;
+    subtitleHtml: string;
     entries: HistoryEntry[];
     isCurrentWorkspace: boolean;
 }
@@ -70,15 +73,20 @@ function fileUriToPath(uri: string): string {
     return uri;
 }
 
-function getWorkspaceLabel(workspaceUri: string, repositoryName: string): { label: string; subtitle: string; localPath: string } {
+function getWorkspaceLabel(
+    workspaceUri: string,
+    repositoryName: string,
+): { label: string; labelHtml: string; subtitleHtml: string; localPath: string } {
     const localPath = fileUriToPath(workspaceUri);
     const cleanPath = localPath.replace(/[\\/]+$/, '');
     const base = cleanPath ? path.basename(cleanPath) : '';
-    const label = base || repositoryName || tBi('Unscoped', '未分组');
-    const subtitle = repositoryName && repositoryName !== label
-        ? repositoryName
-        : (cleanPath || tBi('No workspace path', '无工作区路径'));
-    return { label, subtitle, localPath: cleanPath };
+    const resolvedName = base || repositoryName;
+    const label = resolvedName || tBi('Unscoped', '未分组');
+    const labelHtml = resolvedName ? esc(resolvedName) : tBiHtml('Unscoped', '未分组');
+    const subtitleHtml = repositoryName && repositoryName !== label
+        ? esc(repositoryName)
+        : (cleanPath ? esc(cleanPath) : tBiHtml('No workspace path', '无工作区路径'));
+    return { label, labelHtml, subtitleHtml, localPath: cleanPath };
 }
 
 function getGMStats(
@@ -126,10 +134,16 @@ function buildEntries(
         const recordingDir = path.join(antigravityRoot, 'browser_recordings', trajectory.cascadeId);
         const modelId = trajectory.requestedModel || trajectory.generatorModel || '';
 
+        const shortId = trajectory.cascadeId.substring(0, 8);
         return {
             cascadeId: trajectory.cascadeId,
-            title: trajectory.summary || `${tBi('Conversation', '对话')} ${trajectory.cascadeId.substring(0, 8)}`,
+            title: trajectory.summary || `${tBi('Conversation', '对话')} ${shortId}`,
+            titleHtml: trajectory.summary
+                ? esc(trajectory.summary)
+                : `${tBiHtml('Conversation', '对话')} ${esc(shortId)}`,
             workspaceLabel: workspaceMeta.label,
+            workspaceLabelHtml: workspaceMeta.labelHtml,
+            workspaceSubtitleHtml: workspaceMeta.subtitleHtml,
             workspacePath: workspaceMeta.localPath,
             workspaceUri,
             repositoryName: trajectory.repositoryName,
@@ -167,8 +181,10 @@ function buildGroups(entries: HistoryEntry[]): HistoryGroup[] {
         }
         grouped.set(key, {
             key,
-            label: entry.workspaceLabel,
-            subtitle: entry.workspacePath || entry.repositoryName || tBi('No workspace path', '无工作区路径'),
+            labelHtml: entry.workspaceLabelHtml,
+            subtitleHtml: entry.workspacePath
+                ? esc(entry.workspacePath)
+                : (entry.repositoryName ? esc(entry.repositoryName) : entry.workspaceSubtitleHtml),
             entries: [entry],
             isCurrentWorkspace: entry.isCurrentWorkspace,
         });
@@ -187,14 +203,25 @@ function buildGroups(entries: HistoryEntry[]): HistoryGroup[] {
 
 // ── Inline SVG Icons ──
 const IC = {
-    calls: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
-    clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
-    credits: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>',
-    model: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
-    pulse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
-    workspace: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
-    brain: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"/><line x1="9" y1="21" x2="15" y2="21"/></svg>',
+    clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
 };
+
+// ── Localized status badge helper ──
+function renderStatusBadgeLabel(status: string): string {
+    switch ((status || 'UNKNOWN').toUpperCase()) {
+        case 'RUNNING': return tBiHtml('Running', '运行中');
+        case 'FINISHED': return tBiHtml('Finished', '已完成');
+        case 'IDLE': return tBiHtml('Idle', '空闲');
+        case 'CANCELLED':
+        case 'CANCELED': return tBiHtml('Cancelled', '已取消');
+        case 'FAILED':
+        case 'ERROR': return tBiHtml('Failed', '失败');
+        case 'PENDING':
+        case 'QUEUED': return tBiHtml('Pending', '等待中');
+        case 'UNKNOWN': return tBiHtml('Unknown', '未知');
+        default: return esc(status);
+    }
+}
 
 // ── Compact date formatting ──
 function fmtCompactDate(iso: string): string {
@@ -218,21 +245,21 @@ function renderShortcuts(entries: HistoryEntry[], currentUsage: ContextUsage | n
         {
             filter: 'current',
             icon: ICON.folder,
-            title: tBi('Current Workspace', '当前工作区'),
+            titleHtml: tBiHtml('Current Workspace', '当前工作区'),
             count: currentWorkspaceCount,
             active: currentWorkspaceCount > 0,
         },
         {
             filter: 'currentrepo',
             icon: ICON.git,
-            title: currentRepoName || tBi('Current Repo', '当前仓库'),
+            titleHtml: currentRepoName ? esc(currentRepoName) : tBiHtml('Current Repo', '当前仓库'),
             count: currentRepoCount,
             active: currentRepoCount > 0,
         },
         {
             filter: 'recordable',
             icon: ICON.database,
-            title: tBi('Backup Ready', '可备份'),
+            titleHtml: tBiHtml('Backup Ready', '可备份'),
             count: recordableCount,
             active: recordableCount > 0,
         },
@@ -242,12 +269,13 @@ function renderShortcuts(entries: HistoryEntry[], currentUsage: ContextUsage | n
         <div class="ses-shortcuts">
             ${cards.map(card => `
                 <button
+                    type="button"
                     class="ses-shortcut${card.active ? '' : ' is-disabled'}"
                     data-history-shortcut="${card.filter}"
                     ${card.active ? '' : 'disabled'}
                 >
                     <span class="ses-shortcut-icon">${card.icon}</span>
-                    <span class="ses-shortcut-title">${esc(card.title)}</span>
+                    <span class="ses-shortcut-title">${card.titleHtml}</span>
                     <span class="ses-shortcut-count">${card.count}</span>
                 </button>
             `).join('')}
@@ -259,22 +287,22 @@ function renderToolbar(): string {
     return `
         <div class="ses-toolbar">
             <div class="ses-search-wrap">
-                ${ICON.chat}
+                ${ICON.search}
                 <input
-                    id="historySearchInput"
+                    id="historySearchInput" aria-label="${esc(tBi('Search sessions', '搜索会话'))}"
                     class="ses-search-input"
                     type="text"
-                    placeholder="${esc(tBi('Search title / folder / repo / model...', '搜索标题 / 文件夹 / 仓库 / 模型...'))}"
+                    placeholder="${esc(tBi('Search title, folder, repo, model...', '搜索标题、文件夹、仓库、模型...'))}"
                     autocomplete="off"
                     spellcheck="false"
                 />
             </div>
-            <div class="ses-filters" role="tablist" aria-label="${esc(tBi('Session catalog filters', '会话目录筛选'))}">
-                <button class="ses-filter-btn is-active" data-history-filter="all">${tBi('All', '全部')}</button>
-                <button class="ses-filter-btn" data-history-filter="current">${tBi('Workspace', '工作区')}</button>
-                <button class="ses-filter-btn" data-history-filter="currentrepo">${tBi('Repo', '仓库')}</button>
-                <button class="ses-filter-btn" data-history-filter="running">${tBi('Running', '运行中')}</button>
-                <button class="ses-filter-btn" data-history-filter="recordable">${tBi('Recordable', '可备份')}</button>
+            <div class="ses-filters" role="group" aria-label="${esc(tBi('Session catalog filters', '会话目录筛选'))}">
+                <button type="button" class="ses-filter-btn is-active" aria-pressed="true" data-history-filter="all"><span>${tBiHtml('All', '全部')}</span></button>
+                <button type="button" class="ses-filter-btn" aria-pressed="false" data-history-filter="current"><span>${tBiHtml('Workspace', '工作区')}</span></button>
+                <button type="button" class="ses-filter-btn" aria-pressed="false" data-history-filter="currentrepo"><span>${tBiHtml('Repo', '仓库')}</span></button>
+                <button type="button" class="ses-filter-btn" aria-pressed="false" data-history-filter="running"><span>${tBiHtml('Running', '运行中')}</span></button>
+                <button type="button" class="ses-filter-btn" aria-pressed="false" data-history-filter="recordable"><span>${tBiHtml('Recordable', '可备份')}</span></button>
             </div>
         </div>`;
 }
@@ -304,31 +332,40 @@ function renderRow(entry: HistoryEntry): string {
         const timeStr = created && modified && created !== modified
             ? `${created} → ${modified}`
             : (modified || created);
-        chips.push(`<span class="ses-chip ses-chip-time">${IC.clock} ${timeStr}</span>`);
+        chips.push(`<span class="ses-chip ses-chip-time">${IC.clock} ${esc(timeStr)}</span>`);
     }
 
-    // ── Storage badges (inline, minimal) ──
-    const storageParts: string[] = [];
-    if (entry.hasBrain) { storageParts.push('Brain'); }
-    if (entry.hasRecording) { storageParts.push(tBi('Rec', '录屏')); }
-    if (entry.hasPb) { storageParts.push('PB'); }
+    // ── Storage badges (consistent localized labeling) ──
+    const storageTags: string[] = [];
+    if (entry.hasBrain) {
+        storageTags.push(`<span class="ses-storage-tag" title="${esc(tBi('Brain folder', 'Brain 记录目录'))}"><span>${tBiHtml('Brain', '记录')}</span></span>`);
+    }
+    if (entry.hasRecording) {
+        storageTags.push(`<span class="ses-storage-tag" title="${esc(tBi('Browser recording', '浏览器录屏'))}"><span>${tBiHtml('Rec', '录屏')}</span></span>`);
+    }
+    if (entry.hasPb) {
+        storageTags.push(`<span class="ses-storage-tag" title="${esc(tBi('Conversation .pb file', '对话 .pb 存档文件'))}"><span>${tBiHtml('PB', '存档')}</span></span>`);
+    }
 
     // ── Action buttons (icon-only, compact, CSS tooltip) ──
     const actions = `
         <div class="ses-row-actions">
             <button
-                class="ses-act-btn" data-tooltip="${esc(tBi('Open Workspace', '打开工作区'))}"
+                type="button"
+                class="ses-act-btn" data-tooltip="${esc(tBi('Open Workspace', '打开工作区'))}" aria-label="${esc(tBi('Open Workspace', '打开工作区'))}"
                 data-history-action="workspace"
                 data-history-uri="${esc(entry.workspaceUri)}"
                 ${entry.workspaceUri ? '' : 'disabled'}
             >${ICON.folder}</button>
             <button
-                class="ses-act-btn ses-act-accent" data-tooltip="${esc(tBi('Record Folder', '记录目录'))}"
+                type="button"
+                class="ses-act-btn ses-act-accent" data-tooltip="${esc(tBi('Record Folder', '记录目录'))}" aria-label="${esc(tBi('Record Folder', '记录目录'))}"
                 data-history-action="record"
                 data-cascade-id="${esc(entry.cascadeId)}"
             >${ICON.chat}</button>
             <button
-                class="ses-act-btn" data-tooltip="${esc(tBi('PB File', 'PB 文件'))}"
+                type="button"
+                class="ses-act-btn" data-tooltip="${esc(tBi('PB File', 'PB 文件'))}" aria-label="${esc(tBi('PB File', 'PB 文件'))}"
                 data-history-action="pb"
                 data-cascade-id="${esc(entry.cascadeId)}"
                 ${entry.hasPb ? '' : 'disabled'}
@@ -346,17 +383,17 @@ function renderRow(entry: HistoryEntry): string {
             data-recordable="${entry.hasPb || entry.hasBrain || entry.hasRecording ? 'true' : 'false'}"
         >
             <div class="ses-row-head">
-                <h3 class="ses-row-title" title="${esc(entry.cascadeId)}">${esc(entry.title)}</h3>
+                <h3 class="ses-row-title" title="${esc(entry.cascadeId)}">${entry.titleHtml}</h3>
                 <div class="ses-row-badges">
-                    ${entry.isCurrentSession ? `<span class="ses-badge is-current">${tBi('Current', '当前')}</span>` : ''}
-                    ${entry.isCurrentWorkspace ? `<span class="ses-badge is-workspace">${tBi('WS', '本区')}</span>` : ''}
-                    <span class="ses-badge ${statusClass}">${esc(entry.status || 'UNKNOWN')}</span>
+                    ${entry.isCurrentSession ? `<span class="ses-badge is-current"><span>${tBiHtml('Current', '当前')}</span></span>` : ''}
+                    ${entry.isCurrentWorkspace ? `<span class="ses-badge is-workspace"><span>${tBiHtml('WS', '本区')}</span></span>` : ''}
+                    <span class="ses-badge ${statusClass}"><span>${renderStatusBadgeLabel(entry.status)}</span></span>
                 </div>
             </div>
             ${contextParts.length > 0 ? `<div class="ses-row-ctx">${contextParts.join(' <span class="ses-ctx-sep">·</span> ')}</div>` : ''}
             <div class="ses-row-metrics">
                 <div class="ses-chips">${chips.join('')}</div>
-                ${storageParts.length > 0 ? `<div class="ses-storage">${storageParts.map(s => `<span class="ses-storage-tag">${s}</span>`).join('')}</div>` : ''}
+                ${storageTags.length > 0 ? `<div class="ses-storage">${storageTags.join('')}</div>` : ''}
             </div>
             ${actions}
         </article>`;
@@ -372,13 +409,13 @@ function renderGroup(group: HistoryGroup, index: number): string {
             <summary>
                 <div class="ses-group-head">
                     <div class="ses-group-labels">
-                        <span class="ses-group-title">${esc(group.label)}</span>
-                        <span class="ses-group-path">${esc(group.subtitle)}</span>
+                        <span class="ses-group-title">${group.labelHtml}</span>
+                        <span class="ses-group-path">${group.subtitleHtml}</span>
                     </div>
                     <div class="ses-group-chips">
-                        ${group.isCurrentWorkspace ? `<span class="ses-group-chip is-ws">${tBi('Current', '当前')}</span>` : ''}
+                        ${group.isCurrentWorkspace ? `<span class="ses-group-chip is-ws"><span>${tBiHtml('Current', '当前')}</span></span>` : ''}
                         <span class="ses-group-chip">${group.entries.length}</span>
-                        ${runningCount > 0 ? `<span class="ses-group-chip is-run">${runningCount} ${tBi('run', '运行')}</span>` : ''}
+                        ${runningCount > 0 ? `<span class="ses-group-chip is-run"><span>${runningCount} ${tBiHtml('run', '运行')}</span></span>` : ''}
                     </div>
                 </div>
             </summary>
@@ -395,8 +432,9 @@ export function buildChatHistoryTabContent(
     gmConversations?: Record<string, GMConversationData>,
     currentWorkspaceUri?: string,
 ): string {
+    const header = `<header class="ed-pane-header"><h2 class="ed-pane-title">${tBiHtml('Sessions', '会话')}</h2></header>`;
     if (!trajectories || trajectories.length === 0) {
-        return `<p class="empty-msg">${tBi(
+        return `${header}<p class="empty-msg">${tBiHtml(
             'Waiting for trajectory data... the session catalog will appear after the first LS sync.',
             '正在等待轨迹数据... 首次和 LS 同步后会自动显示会话目录。',
         )}</p>`;
@@ -406,6 +444,7 @@ export function buildChatHistoryTabContent(
     const groups = buildGroups(entries);
 
     return `
+        ${header}
         ${renderShortcuts(entries, currentUsage)}
         ${renderToolbar()}
         <section class="ses-groups" id="historyGroups">

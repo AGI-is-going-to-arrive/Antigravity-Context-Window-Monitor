@@ -1,3 +1,4 @@
+import { parseCreditBalance } from './account-credits';
 import { LSInfo } from './discovery';
 import { rpcCall } from './rpc-client';
 import {
@@ -8,8 +9,6 @@ import {
     ModelConfig,
     FullUserStatus,
     UserStatusInfo,
-    DEFAULT_CONTEXT_LIMITS,
-    DEFAULT_CONTEXT_LIMIT,
     isImageGenerationModel,
     resolveModelId,
 } from './models';
@@ -292,8 +291,8 @@ export async function getAllTrajectories(ls: LSInfo, signal?: AbortSignal): Prom
  * - Remove trailing slash
  * - Lowercase for macOS/Windows case-insensitive FS
  */
-export function normalizeUri(uri: string): string {
-    let normalized = uri;
+export function normalizeUri(uri: string, platform: NodeJS.Platform = process.platform): string {
+    let normalized = uri.trim();
     // Handle vscode-remote:// URIs — extract just the path portion
     // e.g., vscode-remote://wsl+Ubuntu/home/user/project → /home/user/project
     // e.g., vscode-remote://ssh-remote+host/home/user/project → /home/user/project
@@ -308,12 +307,16 @@ export function normalizeUri(uri: string): string {
     } catch {
         // If decoding fails, keep as-is
     }
+    // Normalize Windows backslashes so raw paths and file:/// URIs compare equal.
+    if (platform === 'win32' || /^[a-zA-Z]:\\/.test(normalized)) {
+        normalized = normalized.replace(/\\/g, '/');
+    }
     // Windows: strip leading / before drive letter (e.g., /c:/ → c:/)
-    if (process.platform === 'win32') {
+    if (platform === 'win32') {
         normalized = normalized.replace(/^\/([a-zA-Z]:)/, '$1');
     }
-    normalized = normalized.replace(/\/$/, '');
-    if (process.platform === 'darwin' || process.platform === 'win32') {
+    normalized = normalized.replace(/\/+$/, '');
+    if (platform === 'darwin' || platform === 'win32') {
         normalized = normalized.toLowerCase();
     }
     return normalized;
@@ -788,13 +791,19 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
             const mimeTypes = c.supportedMimeTypes as Record<string, boolean> | undefined;
             // Proto3 omits float fields when value is 0.0 (the default).
             // Two reasons remainingFraction can be missing:
-            //   1. Quota untouched (resetTime is epoch 1970) → treat as 1.0 (full)
-            //   2. Quota exhausted (resetTime is real future date) → treat as 0.0
+            //   1. Quota untouched (resetTime is empty or epoch 1970) → treat as 1.0 (full)
+            //   2. Quota exhausted (resetTime is a valid non-epoch date) → treat as 0.0
+            // Malformed values stay NaN so downstream marks quota unknown instead of 0%.
             const resolveRemainingFraction = (q: Record<string, unknown>): number => {
-                if (q.remainingFraction != null) { return q.remainingFraction as number; }
-                const rt = (q.resetTime as string) || '';
+                if (q.remainingFraction != null) {
+                    const raw = typeof q.remainingFraction === 'string' && q.remainingFraction.trim() !== ''
+                        ? Number(q.remainingFraction) : q.remainingFraction;
+                    return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : Number.NaN;
+                }
+                const rt = typeof q.resetTime === 'string' ? q.resetTime.trim() : '';
                 if (!rt || rt === '1970-01-01T00:00:00Z') { return 1; }
-                return 0;
+                const parsed = Date.parse(rt);
+                return Number.isFinite(parsed) && parsed > 0 ? 0 : Number.NaN;
             };
             return {
                 model: ((c.modelOrAlias as Record<string, unknown>)?.model as string) || '',
@@ -820,7 +829,7 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
         const defaultOverride = configData?.defaultOverrideModelConfig as Record<string, unknown> | undefined;
         const defaultModelId = (defaultOverride?.modelOrAlias as Record<string, unknown>)?.model as string || '';
         const defaultModelCfg = configs.find(c => c.model === defaultModelId);
-        const rawCredits = (userTier?.availableCredits as Array<Record<string, unknown>>) || [];
+        const rawCredits = Array.isArray(userTier?.availableCredits) ? userTier.availableCredits : [];
 
         // Deep-mined fields
         const tierDescription = (userTier?.description as string) || '';
@@ -835,54 +844,56 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
         }
 
         const parseNum = (v: unknown): number => {
-            if (typeof v === 'number') { return v; }
-            if (typeof v === 'string') { const n = parseInt(v, 10); return isNaN(n) ? 0 : n; }
+            if (typeof v === 'number') { return Number.isFinite(v) ? v : 0; }
+            if (typeof v === 'string') { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0; }
             return 0;
         };
 
-        const userInfo: UserStatusInfo | null = planInfo ? {
+        const hasAccountData = !!(planInfo || userTier || userStatus.email || userStatus.name);
+        const userInfo: UserStatusInfo | null = hasAccountData ? {
             name: (userStatus.name as string) || '',
             email: (userStatus.email as string) || '',
-            planName: (planInfo.planName as string) || '',
-            teamsTier: (planInfo.teamsTier as string) || '',
-            monthlyPromptCredits: (planInfo.monthlyPromptCredits as number) || 0,
-            monthlyFlowCredits: (planInfo.monthlyFlowCredits as number) || 0,
-            availablePromptCredits: (planStatus?.availablePromptCredits as number) ?? 0,
-            availableFlowCredits: (planStatus?.availableFlowCredits as number) ?? 0,
+            planName: (planInfo?.planName as string) || '',
+            teamsTier: (planInfo?.teamsTier as string) || '',
             userTierName: (userTier?.name as string) || '',
             userTierId: (userTier?.id as string) || '',
             defaultModelLabel: defaultModelCfg?.label || defaultModelId || '',
             planLimits: {
-                maxNumChatInputTokens: parseNum(planInfo.maxNumChatInputTokens),
-                maxNumPremiumChatMessages: parseNum(planInfo.maxNumPremiumChatMessages),
-                maxCustomChatInstructionCharacters: parseNum(planInfo.maxCustomChatInstructionCharacters),
-                maxNumPinnedContextItems: parseNum(planInfo.maxNumPinnedContextItems),
-                maxLocalIndexSize: parseNum(planInfo.maxLocalIndexSize),
-                monthlyFlexCreditPurchaseAmount: (planInfo.monthlyFlexCreditPurchaseAmount as number) || 0,
+                maxNumChatInputTokens: parseNum(planInfo?.maxNumChatInputTokens),
+                maxNumPremiumChatMessages: parseNum(planInfo?.maxNumPremiumChatMessages),
+                maxCustomChatInstructionCharacters: parseNum(planInfo?.maxCustomChatInstructionCharacters),
+                maxNumPinnedContextItems: parseNum(planInfo?.maxNumPinnedContextItems),
+                maxLocalIndexSize: parseNum(planInfo?.maxLocalIndexSize),
+                monthlyFlexCreditPurchaseAmount: parseNum(planInfo?.monthlyFlexCreditPurchaseAmount),
             },
             teamConfig: {
-                allowMcpServers: teamCfg?.allowMcpServers || false,
-                allowAutoRunCommands: teamCfg?.allowAutoRunCommands || false,
-                allowBrowserExperimentalFeatures: teamCfg?.allowBrowserExperimentalFeatures || false,
+                allowMcpServers: Boolean(teamCfg?.allowMcpServers),
+                allowAutoRunCommands: Boolean(teamCfg?.allowAutoRunCommands),
+                allowBrowserExperimentalFeatures: Boolean(teamCfg?.allowBrowserExperimentalFeatures),
             },
-            availableCredits: rawCredits.map(c => ({
-                creditType: (c.creditType as string) || '',
-                creditAmount: parseNum(c.creditAmount),
-                minimumCreditAmountForUsage: parseNum(c.minimumCreditAmountForUsage),
-            })),
+            availableCredits: rawCredits.flatMap((entry: unknown) => {
+                if (!entry || typeof entry !== 'object') { return []; }
+                const credit = entry as Record<string, unknown>;
+                if (typeof credit.creditType !== 'string') { return []; }
+                return [{
+                    creditType: credit.creditType,
+                    creditAmount: parseCreditBalance(credit.creditAmount),
+                    minimumCreditAmountForUsage: parseNum(credit.minimumCreditAmountForUsage),
+                }];
+            }),
             // Feature flags
-            canBuyMoreCredits: (planInfo.canBuyMoreCredits as boolean) || false,
-            browserEnabled: (planInfo.browserEnabled as boolean) || false,
-            cascadeWebSearchEnabled: (planInfo.cascadeWebSearchEnabled as boolean) || false,
-            knowledgeBaseEnabled: (planInfo.knowledgeBaseEnabled as boolean) || false,
-            canGenerateCommitMessages: (planInfo.canGenerateCommitMessages as boolean) || false,
-            cascadeCanAutoRunCommands: (planInfo.cascadeCanAutoRunCommands as boolean) || false,
-            canAllowCascadeInBackground: (planInfo.canAllowCascadeInBackground as boolean) || false,
-            hasAutocompleteFastMode: (planInfo.hasAutocompleteFastMode as boolean) || false,
-            allowStickyPremiumModels: (planInfo.allowStickyPremiumModels as boolean) || false,
-            allowPremiumCommandModels: (planInfo.allowPremiumCommandModels as boolean) || false,
-            hasTabToJump: (planInfo.hasTabToJump as boolean) || false,
-            canCustomizeAppIcon: (planInfo.canCustomizeAppIcon as boolean) || false,
+            canBuyMoreCredits: Boolean(planInfo?.canBuyMoreCredits),
+            browserEnabled: Boolean(planInfo?.browserEnabled),
+            cascadeWebSearchEnabled: Boolean(planInfo?.cascadeWebSearchEnabled),
+            knowledgeBaseEnabled: Boolean(planInfo?.knowledgeBaseEnabled),
+            canGenerateCommitMessages: Boolean(planInfo?.canGenerateCommitMessages),
+            cascadeCanAutoRunCommands: Boolean(planInfo?.cascadeCanAutoRunCommands),
+            canAllowCascadeInBackground: Boolean(planInfo?.canAllowCascadeInBackground),
+            hasAutocompleteFastMode: Boolean(planInfo?.hasAutocompleteFastMode),
+            allowStickyPremiumModels: Boolean(planInfo?.allowStickyPremiumModels),
+            allowPremiumCommandModels: Boolean(planInfo?.allowPremiumCommandModels),
+            hasTabToJump: Boolean(planInfo?.hasTabToJump),
+            canCustomizeAppIcon: Boolean(planInfo?.canCustomizeAppIcon),
             // Deep-mined fields
             userTierDescription: tierDescription,
             upgradeSubscriptionText: upgradeText,

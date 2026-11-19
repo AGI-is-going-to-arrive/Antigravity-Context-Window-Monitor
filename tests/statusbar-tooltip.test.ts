@@ -2,9 +2,13 @@
  * Unit tests for issue #63 tooltip density / quota row budget.
  * Pure functions — no VS Code UI required (vscode mocked via vitest alias).
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as vscode from 'vscode';
 import type { Language } from '../src/i18n';
 import { getLanguage, setLanguage, tBi } from '../src/i18n';
+import type { GMCallEntry, GMConversationData, GMSummary } from '../src/gm/types';
+import type { ContextUsage } from '../src/tracker';
+import { StatusBarManager } from '../src/statusbar';
 import {
     applyLineBudget,
     COMPACT_MAX_LINES,
@@ -358,21 +362,21 @@ function buildFullLoadNormalLines(opts?: {
         `——————————`,
         // Usage breakdown (P0 / P4 details)
         `📥 Total Context Used (input+output) / 总上下文占用 (输入+输出):`,
-        `     120,000 tokens / 令牌`,
-        `📤 Model Output / 模型输出: 12,000 tokens / 令牌`,
-        `🔧 Tool Results / 工具结果: 8,000 tokens / 令牌`,
-        `📦 Limit / 窗口上限: 256,000 tokens / 令牌`,
+        `     120,000 tokens`,
+        `📤 Model Output / 模型输出: 12,000 tokens`,
+        `🔧 Tool Results / 工具结果: 8,000 tokens`,
+        `📦 Limit / 窗口上限: 256,000 tokens`,
         `📊 Usage / 使用率: 46.9%`,
         // Compression multi-line (P4 details under P0 status)
         `🗜 Context was auto-compressed / 上下文已被模型自动压缩`,
-        `   Before / 压缩前: 200,000 tokens / 令牌`,
-        `   After / 压缩后: 120,000 tokens / 令牌`,
-        `   Context Drop / 上下文压缩量: 80,000 tokens / 令牌 (40.0%)`,
+        `   Before / 压缩前: 200,000 tokens`,
+        `   After / 压缩后: 120,000 tokens`,
+        `   Context Drop / 上下文压缩量: 80,000 tokens (40.0%)`,
         `⚠️ Data may be incomplete / 数据可能不完整`,
         `🔢 Steps / 步骤数: 42`,
         // P3 long lines
         `📷 Image Gen / 图片生成: 3 step(s) detected / 个图片生成步骤`,
-        `📏 Est. delta / 估算增量: +1,500 tokens / 令牌 (since last checkpoint / 自上次检查点)`,
+        `📏 Est. delta / 估算增量: +1,500 tokens (since last checkpoint / 自上次检查点)`,
         `——————————`,
         // Checkpoint block (P3)
         `📎 Last Checkpoint / 最近 checkpoint:`,
@@ -596,5 +600,476 @@ describe('collapsed pool row label rendering', () => {
     it('leaves a single-model row untouched', () => {
         expect(poolSizeSuffix(1)).toBe('');
         expect(renderQuotaLabel('Gemini 3.1 Pro (High)', 1)).toBe('Gemini 3.1 Pro (High)');
+    });
+});
+
+// ─── Status Bar & Hover Telemetry Tests (Wave 2B) ─────────────────────────────
+
+function makeContextUsage(overrides: Partial<ContextUsage> = {}): ContextUsage {
+    return {
+        cascadeId: 'conv-1',
+        title: 'Telemetry session',
+        model: 'MODEL_PLACEHOLDER_M26',
+        modelDisplayName: 'Claude Opus 4.6 (Thinking)',
+        contextLimit: 200_000,
+        contextUsed: 45_000,
+        usagePercent: 22.5,
+        status: 'IDLE',
+        stepCount: 4,
+        lastModifiedTime: '',
+        isEstimated: false,
+        lastModelUsage: null,
+        totalOutputTokens: 1_200,
+        totalToolCallOutputTokens: 400,
+        estimatedDeltaSinceCheckpoint: 0,
+        imageGenStepCount: 0,
+        compressionDetected: false,
+        checkpointCompressionDrop: 0,
+        hasGaps: false,
+        checkpointModel: '',
+        createdTime: '',
+        lastUserInputTime: '',
+        lastUserInputStepIndex: 0,
+        repositoryName: '',
+        gitOriginUrl: '',
+        branchName: '',
+        gitRootUri: '',
+        ...overrides,
+    };
+}
+
+function makeGMCall(overrides: Partial<GMCallEntry> = {}): GMCallEntry {
+    return {
+        stepIndices: [1],
+        executionId: 'exec-1',
+        model: 'MODEL_PLACEHOLDER_M26',
+        modelDisplay: 'Claude Opus 4.6 (Thinking)',
+        responseModel: 'claude-opus-4-6-thinking',
+        modelAccuracy: 'exact',
+        inputTokens: 10_000,
+        outputTokens: 642,
+        thinkingTokens: 0,
+        responseTokens: 642,
+        cacheReadTokens: 80_000,
+        cacheCreationTokens: 0,
+        apiProvider: 'API_PROVIDER_ANTHROPIC_VERTEX',
+        ttftSeconds: 0.78,
+        streamingSeconds: 10.0,
+        credits: 0,
+        creditType: '',
+        hasError: false,
+        errorMessage: '',
+        contextTokensUsed: 90_642,
+        completionConfig: null,
+        systemPromptSnippet: '',
+        toolCount: 2,
+        toolNames: ['read_file'],
+        promptSectionTitles: ['system'],
+        promptSnippet: '',
+        promptSource: 'none',
+        messagePromptCount: 0,
+        messageMetadataKeys: [],
+        responseHeaderKeys: [],
+        userMessageAnchors: [],
+        aiSnippetsByStep: {},
+        retries: 0,
+        stopReason: 'STOP_REASON_END_TURN',
+        retryTokensIn: 0,
+        retryTokensOut: 0,
+        retryCredits: 0,
+        retryErrors: [],
+        timeSinceLastInvocation: 0,
+        tokenBreakdownGroups: [],
+        createdAt: '2026-11-19T02:00:00.000Z',
+        latestStableMessageIndex: 0,
+        startStepIndex: 0,
+        checkpointIndex: 0,
+        checkpointSummaries: [],
+        systemContextItems: [],
+        toolCallsByStep: {},
+        contextWindowCapacity: 200_000,
+        ...overrides,
+    };
+}
+
+function makeGMSummary(conversations: GMConversationData[]): GMSummary {
+    return {
+        conversations,
+        modelBreakdown: {},
+        totalCalls: conversations.reduce((sum, c) => sum + c.calls.length, 0),
+        totalStepsCovered: 0,
+        totalCredits: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCacheRead: 0,
+        totalCacheCreation: 0,
+        totalThinkingTokens: 0,
+        contextGrowth: [],
+        fetchedAt: '2026-11-19T02:05:00.000Z',
+        totalRetryTokens: 0,
+        totalRetryCredits: 0,
+        totalRetryCount: 0,
+        latestTokenBreakdown: [],
+        stopReasonCounts: {},
+        retryErrorCodes: {},
+        recentErrors: [],
+        toolCallCounts: {},
+    };
+}
+
+function makeConv(cascadeId: string, calls: GMCallEntry[]): GMConversationData {
+    return {
+        cascadeId,
+        title: `Conv ${cascadeId}`,
+        totalSteps: calls.length,
+        coveredSteps: calls.length,
+        coverageRate: 1,
+        calls,
+    };
+}
+
+function mockDensity(density: TooltipDensity, zoomLevel = 0) {
+    return vi.spyOn(vscode.workspace, 'getConfiguration').mockImplementation((section?: string) => ({
+        get: <T>(key: string, fallback?: T) => {
+            if (section === 'antigravityContextMonitor' && key === 'statusBar.tooltipDensity') { return density as T; }
+            if (section === 'window' && key === 'zoomLevel') { return zoomLevel as T; }
+            return fallback as T;
+        },
+    }) as unknown as vscode.WorkspaceConfiguration);
+}
+
+describe('StatusBarManager telemetry segments and hover tooltip', () => {
+    let prevLang: Language;
+
+    beforeEach(async () => {
+        prevLang = getLanguage();
+        await setLanguage('en', makeCtx());
+    });
+
+    afterEach(async () => {
+        vi.restoreAllMocks();
+        await setLanguage(prevLang, makeCtx());
+    });
+
+    it('keeps speed and cache hit opt-in (hidden by default) and hides cleanly on cold start when opted in', () => {
+        const create = vi.spyOn(vscode.window, 'createStatusBarItem');
+        const manager = new StatusBarManager();
+        const item = create.mock.results[0].value as vscode.StatusBarItem;
+
+        const summary = makeGMSummary([makeConv('conv-1', [
+            makeGMCall({ outputTokens: 642, streamingSeconds: 10.0, inputTokens: 15_800, cacheReadTokens: 84_200 }),
+        ])]);
+
+        // Default prefs: showSpeed=false, showCacheHit=false -> text has neither, hover HAS telemetry
+        manager.setTelemetry(summary, 'conv-1');
+        manager.update(makeContextUsage());
+        expect(item.text).not.toContain('tok/s');
+        expect(item.text).not.toContain('Cache');
+        expect((item.tooltip as vscode.MarkdownString).value).toContain('Speed & Prompt Cache');
+
+        // Opt-in enabled, cold start (null or empty summary) -> NEVER flashes 0 tok/s or 0%
+        manager.setDisplayPrefs({ showSpeed: true, showCacheHit: true });
+        manager.setTelemetry(null);
+        manager.refreshFromConfig();
+        expect(item.text).not.toContain('tok/s');
+        expect(item.text).not.toContain('Cache');
+        expect(item.text).not.toContain('0%');
+        expect((item.tooltip as vscode.MarkdownString).value).not.toContain('Speed & Prompt Cache');
+
+        // Empty GM call (0 tokens, 0 timing) -> also hides cleanly
+        manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
+            makeGMCall({ inputTokens: 0, outputTokens: 0, responseTokens: 0, cacheReadTokens: 0, ttftSeconds: 0, streamingSeconds: 0 }),
+        ])]), 'conv-1');
+        manager.refreshFromConfig();
+        expect(item.text).not.toContain('tok/s');
+        expect(item.text).not.toContain('Cache');
+        expect((item.tooltip as vscode.MarkdownString).value).not.toContain('Speed & Prompt Cache');
+
+        // Opt-in with real data -> shows crisp tok/s and localized Cache %
+        manager.setTelemetry(summary, 'conv-1');
+        manager.refreshFromConfig();
+        expect(item.text).toContain('$(pulse) 64.2 tok/s');
+        expect(item.text).toContain('Cache 84.2%');
+        expect(item.accessibilityInformation?.label).toContain('Speed 64.2 tok/s');
+
+        // Clearing on account switch removes status bar segments and hover telemetry immediately
+        manager.setTelemetry(null);
+        manager.refreshFromConfig();
+        expect(item.text).not.toContain('tok/s');
+        expect(item.text).not.toContain('Cache');
+        expect((item.tooltip as vscode.MarkdownString).value).not.toContain('Speed & Prompt Cache');
+
+        manager.dispose();
+    });
+
+    it('renders compact vs auto vs full hover telemetry densities and omits null pieces', () => {
+        const create = vi.spyOn(vscode.window, 'createStatusBarItem');
+        const manager = new StatusBarManager();
+        const item = create.mock.results[0].value as vscode.StatusBarItem;
+
+        const summary = makeGMSummary([makeConv('conv-1', [
+            makeGMCall({
+                executionId: 'c1',
+                createdAt: '2026-11-19T02:00:00.000Z',
+                inputTokens: 20_000,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 10_000,
+                outputTokens: 500,
+                responseTokens: 500,
+                ttftSeconds: 2.15,
+                streamingSeconds: 10.0, // 50.0 tok/s
+            }),
+            makeGMCall({
+                executionId: 'c2',
+                createdAt: '2026-11-19T02:01:00.000Z',
+                inputTokens: 5_000,
+                cacheReadTokens: 142_000,
+                cacheCreationTokens: 0,
+                outputTokens: 642,
+                responseTokens: 642,
+                ttftSeconds: 0.78,
+                streamingSeconds: 10.0, // 64.2 tok/s
+            }),
+        ])]);
+
+        manager.setTelemetry(summary, 'conv-1');
+
+        // Compact density: single tight line separated by ---
+        mockDensity('compact');
+        manager.update(makeContextUsage());
+        const compactHover = (item.tooltip as vscode.MarkdownString).value;
+        const compactTelemetrySection = compactHover.split('\n\n---\n\n').find(s => s.includes('Speed & Prompt Cache'));
+        expect(compactTelemetrySection).toBeDefined();
+        expect(compactTelemetrySection).not.toContain('\n');
+        expect(compactTelemetrySection).toContain('**64.2 tok/s**');
+        expect(compactTelemetrySection).toContain('TTFT 1.46s');
+        expect(compactTelemetrySection).toContain('Cache 80.2%');
+
+        // Compact density with speed-only call (no TTFT, no prompt tokens) omits null pieces
+        manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
+            makeGMCall({ inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, ttftSeconds: 0, outputTokens: 200, streamingSeconds: 4.0 }),
+        ])]), 'conv-1');
+        manager.refreshFromConfig();
+        const speedOnlySection = (item.tooltip as vscode.MarkdownString).value
+            .split('\n\n---\n\n')
+            .find(s => s.includes('Speed & Prompt Cache'));
+        expect(speedOnlySection).toContain('**50.0 tok/s**');
+        expect(speedOnlySection).not.toContain('TTFT');
+        expect(speedOnlySection).not.toContain('Cache ');
+
+        // Auto density: full 3-line breakdown with latest+avg speed, Cached vs Uncached TTFT, and Prompt Cache
+        manager.setTelemetry(summary, 'conv-1');
+        mockDensity('auto', 0);
+        manager.refreshFromConfig();
+        const autoHover = (item.tooltip as vscode.MarkdownString).value;
+        expect(autoHover).toContain('**64.2 tok/s** latest · 57.1 tok/s avg');
+        expect(autoHover).toContain('**1.46s** avg (780ms cached vs 2.15s uncached · -64%)');
+        expect(autoHover).toContain('Prompt Cache · **80.2%** (142k / 177k tokens · 1/2 calls');
+        expect(autoHover).not.toContain('p50 ');
+        expect(autoHover).not.toContain('write ');
+
+        // Full density: adds p50 medians and cache write volume
+        mockDensity('full', 0);
+        manager.refreshFromConfig();
+        const fullHover = (item.tooltip as vscode.MarkdownString).value;
+        expect(fullHover).toContain('p50 57.1 tok/s');
+        expect(fullHover).toContain('p50 1.46s');
+        expect(fullHover).toContain('write 10k');
+
+        // Disconnected state omits telemetry (no stale readings)
+        manager.showDisconnected('LS connection lost');
+        expect((item.tooltip as vscode.MarkdownString).value).not.toContain('Speed & Prompt Cache');
+
+        manager.dispose();
+    });
+
+    it('shows visible resp tok/s for thinking models and omits it when no thinking tokens exist', () => {
+        const create = vi.spyOn(vscode.window, 'createStatusBarItem');
+        const manager = new StatusBarManager();
+        const item = create.mock.results[0].value as vscode.StatusBarItem;
+        mockDensity('auto', 0);
+
+        // With thinking: outputTokens=600 (thinking=400, response=200) over 10s -> 60.0 tok/s total, 20.0 tok/s visible
+        manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
+            makeGMCall({
+                outputTokens: 600,
+                thinkingTokens: 400,
+                responseTokens: 200,
+                streamingSeconds: 10.0,
+            }),
+        ])]), 'conv-1');
+        manager.update(makeContextUsage());
+        const thinkingHover = (item.tooltip as vscode.MarkdownString).value;
+        expect(thinkingHover).toContain('**60.0 tok/s**');
+        expect(thinkingHover).toContain('resp 20.0 tok/s');
+
+        // Without thinking: omits resp
+        manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
+            makeGMCall({
+                outputTokens: 600,
+                thinkingTokens: 0,
+                responseTokens: 600,
+                streamingSeconds: 10.0,
+            }),
+        ])]), 'conv-1');
+        manager.refreshFromConfig();
+        expect((item.tooltip as vscode.MarkdownString).value).not.toContain('resp ');
+
+        manager.dispose();
+    });
+
+    it('only renders Cached vs Uncached TTFT comparison when both buckets have at least 1 sample', () => {
+        const create = vi.spyOn(vscode.window, 'createStatusBarItem');
+        const manager = new StatusBarManager();
+        const item = create.mock.results[0].value as vscode.StatusBarItem;
+        mockDensity('auto', 0);
+
+        // All calls cached (0 uncached) -> no fabricated vs comparison
+        manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
+            makeGMCall({ executionId: 'a', cacheReadTokens: 50_000, ttftSeconds: 0.72 }),
+            makeGMCall({ executionId: 'b', cacheReadTokens: 60_000, ttftSeconds: 0.84 }),
+        ])]), 'conv-1');
+        manager.update(makeContextUsage());
+        const cachedOnlyHover = (item.tooltip as vscode.MarkdownString).value;
+        expect(cachedOnlyHover).toContain('TTFT · **780ms** avg');
+        expect(cachedOnlyHover).not.toContain(' vs ');
+
+        // Both buckets present, cached slower than uncached -> shows signed positive +20%
+        manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
+            makeGMCall({ executionId: 'u', cacheReadTokens: 0, ttftSeconds: 1.0 }),
+            makeGMCall({ executionId: 'c', cacheReadTokens: 50_000, ttftSeconds: 1.2 }),
+        ])]), 'conv-1');
+        manager.refreshFromConfig();
+        const slowerHover = (item.tooltip as vscode.MarkdownString).value;
+        expect(slowerHover).toContain('1.20s cached vs 1.00s uncached · +20%');
+
+        manager.dispose();
+    });
+
+    it('omits USD savings for unpriced or zero-diff models (never $0.00) and displays priced savings accurately', () => {
+        const create = vi.spyOn(vscode.window, 'createStatusBarItem');
+        const manager = new StatusBarManager();
+        const item = create.mock.results[0].value as vscode.StatusBarItem;
+        mockDensity('auto', 0);
+
+        // Unpriced unknown model -> estCacheSavingsUsd is null -> no $ sign at all
+        manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
+            makeGMCall({
+                model: 'MODEL_UNKNOWN_UNPRICED_X',
+                modelDisplay: 'Unknown Unpriced Model',
+                responseModel: 'unknown-unpriced-x',
+                inputTokens: 10_000,
+                cacheReadTokens: 90_000,
+            }),
+        ])]), 'conv-1');
+        manager.update(makeContextUsage());
+        const unpricedHover = (item.tooltip as vscode.MarkdownString).value;
+        expect(unpricedHover).toContain('Prompt Cache · **90.0%** (90k / 100k tokens · 1/1 call)');
+        expect(unpricedHover).not.toMatch(/\$\d|est\./);
+
+        // Custom pricing with input === cacheRead -> $0 diff -> omits $ (never $0.00!)
+        manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
+            makeGMCall({
+                model: 'MODEL_UNKNOWN_UNPRICED_X',
+                modelDisplay: 'Unknown Unpriced Model',
+                responseModel: 'unknown-unpriced-x',
+                inputTokens: 10_000,
+                cacheReadTokens: 90_000,
+            }),
+        ])]), 'conv-1', {
+            'unknown-unpriced-x': { input: 2.0, output: 10.0, cacheRead: 2.0, cacheWrite: 2.0, thinking: 10.0 },
+        });
+        manager.refreshFromConfig();
+        const zeroDiffHover = (item.tooltip as vscode.MarkdownString).value;
+        expect(zeroDiffHover).not.toContain('$0.00');
+        expect(zeroDiffHover).not.toMatch(/\$\d|est\./);
+
+        // Priced model: 100,000 cacheRead * ($5.0 - $0.5) / 1e6 = $0.45 saved
+        manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
+            makeGMCall({
+                model: 'MODEL_UNKNOWN_UNPRICED_X',
+                modelDisplay: 'Unknown Unpriced Model',
+                responseModel: 'unknown-unpriced-x',
+                inputTokens: 10_000,
+                cacheReadTokens: 100_000,
+            }),
+        ])]), 'conv-1', {
+            'unknown-unpriced-x': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25, thinking: 25.0 },
+        });
+        manager.refreshFromConfig();
+        const pricedHover = (item.tooltip as vscode.MarkdownString).value;
+        expect(pricedHover).toContain('est. -$0.45');
+        expect(pricedHover).not.toContain('$0.00');
+
+        manager.dispose();
+    });
+
+    it('renders cleanly across en, zh, and both with zero 令牌 anywhere', async () => {
+        const create = vi.spyOn(vscode.window, 'createStatusBarItem');
+        const manager = new StatusBarManager();
+        const item = create.mock.results[0].value as vscode.StatusBarItem;
+        mockDensity('auto', 0);
+        manager.setDisplayPrefs({ showSpeed: true, showCacheHit: true });
+
+        const summary = makeGMSummary([makeConv('conv-1', [
+            makeGMCall({
+                executionId: 'c1',
+                createdAt: '2026-11-19T02:00:00.000Z',
+                inputTokens: 20_000,
+                cacheReadTokens: 0,
+                outputTokens: 400,
+                thinkingTokens: 150,
+                responseTokens: 250,
+                ttftSeconds: 2.0,
+                streamingSeconds: 8.0,
+            }),
+            makeGMCall({
+                executionId: 'c2',
+                createdAt: '2026-11-19T02:01:00.000Z',
+                inputTokens: 10_000,
+                cacheReadTokens: 100_000,
+                outputTokens: 600,
+                thinkingTokens: 200,
+                responseTokens: 400,
+                ttftSeconds: 0.8,
+                streamingSeconds: 10.0,
+            }),
+        ])]);
+        const pricing = {
+            'claude-opus-4-6-thinking': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25, thinking: 25.0 },
+        };
+
+        for (const lang of ['en', 'zh', 'both'] as const) {
+            await setLanguage(lang, makeCtx());
+            manager.setTelemetry(summary, 'conv-1', pricing);
+            manager.update(makeContextUsage());
+            const hover = (item.tooltip as vscode.MarkdownString).value;
+
+            expect(item.text).not.toContain('令牌');
+            expect(hover).not.toContain('令牌');
+            expect(hover).toContain('tokens');
+            expect(item.text).toContain('60.0 tok/s');
+
+            if (lang === 'zh') {
+                expect(item.text).toContain('缓存 76.9%');
+                expect(hover).toContain('速度与提示词缓存');
+                expect(hover).toContain('可见 ');
+                expect(hover).toContain('命中 vs ');
+                expect(hover).toContain('约省 $0.45');
+            } else if (lang === 'en') {
+                expect(item.text).toContain('Cache 76.9%');
+                expect(hover).toContain('Speed & Prompt Cache');
+                expect(hover).toContain('resp ');
+                expect(hover).toContain('cached vs ');
+                expect(hover).toContain('est. -$0.45');
+            } else {
+                expect(item.text).toContain('Cache 76.9%');
+                expect(hover).toContain('Speed & Prompt Cache / 速度与提示词缓存');
+                expect(hover).toContain('resp / 可见');
+                expect(hover).toContain('est. -$0.45 / 约省 $0.45');
+            }
+        }
+
+        manager.dispose();
     });
 });

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildGMSummaryFromLedger } from '../src/daily-archival';
 import { DailyLedger, type DailyLedgerState, type LedgerAccountBucket, type LedgerDayData } from '../src/daily-ledger';
+import { DailyStore, type DailyStoreState } from '../src/daily-store';
 import { GMTracker, type GMCallEntry, type GMConversationData } from '../src/gm-tracker';
 
 function localTime(y: number, month: number, d: number, h = 0, m = 0, s = 0, ms = 0): Date {
@@ -829,5 +830,280 @@ describe('DailyLedger stale empty date normalization', () => {
         settledOnly.settleForQuotaReset(['MODEL_PLACEHOLDER_M16'], 'user@example.com');
         expect(settledOnly.serialize().settled).toHaveLength(1);
         expect(settledOnly.hasData).toBe(true);
+    });
+});
+
+describe('DailyLedger -> DailyArchival -> DailyStore telemetry persistence and v1 backward compatibility (#66 #4)', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(localTime(2026, 6, 1, 14));
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('preserves TTFT, streaming, speed, and cache tokens across active + settled ledger rollover into DailyStore', () => {
+        const ledger = new DailyLedger('2026-06-01');
+        const cutoffMs = localTime(2026, 6, 1, 12).getTime();
+
+        // Call 1 (pre-reset, will be settled): TTFT=1.0s, stream=2.0s, out=100, cacheRead=900, input=100
+        // Call 2 (post-reset, remains active): TTFT=3.0s, stream=4.0s, out=200, cacheRead=0, cacheCreation=500, input=500
+        // Call 3 (post-reset, zero timing): TTFT=0, stream=0, out=50, cacheRead=400, input=100
+        const c1: GMCallEntry = {
+            ...makeCall({
+                executionId: 't-settled',
+                createdAt: localIso(2026, 6, 1, 11),
+                inputTokens: 100,
+                outputTokens: 100,
+                cacheReadTokens: 900,
+                cacheCreationTokens: 0,
+            }),
+            ttftSeconds: 1.0,
+            streamingSeconds: 2.0,
+        };
+        const c2: GMCallEntry = {
+            ...makeCall({
+                executionId: 't-active-timed',
+                createdAt: localIso(2026, 6, 1, 13),
+                inputTokens: 500,
+                outputTokens: 200,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 500,
+            }),
+            ttftSeconds: 3.0,
+            streamingSeconds: 4.0,
+        };
+        const c3: GMCallEntry = {
+            ...makeCall({
+                executionId: 't-active-untimed',
+                createdAt: localIso(2026, 6, 1, 13, 30),
+                inputTokens: 100,
+                outputTokens: 50,
+                cacheReadTokens: 400,
+                cacheCreationTokens: 0,
+            }),
+            ttftSeconds: 0,
+            streamingSeconds: 0,
+        };
+
+        expect(ledger.recordCalls([
+            { call: c1, dedupKey: 'conv:0' },
+            { call: c2, dedupKey: 'conv:1' },
+            { call: c3, dedupKey: 'conv:2' },
+        ])).toBe(3);
+
+        // Settle c1 at noon cutoff; c2 & c3 stay active with exact remaining telemetry
+        const settled = ledger.settleForQuotaReset(['MODEL_PLACEHOLDER_M16'], 'user@example.com', cutoffMs);
+        expect(settled?.totalCalls).toBe(1);
+        expect(settled?.modelTelemetry?.['Gemini 3.1 Pro (High)']).toMatchObject({
+            ttftSum: 1.0,
+            ttftCount: 1,
+            streamingSum: 2.0,
+            streamingCount: 1,
+            timedOutputTokens: 100,
+            timedStreamingSeconds: 2.0,
+            cacheHitCalls: 1,
+        });
+
+        const activeMs = ledger.getAccountActive('user@example.com')!.modelStats['Gemini 3.1 Pro (High)'];
+        expect(activeMs.ttftSum).toBeCloseTo(3.0, 10);
+        expect(activeMs.ttftCount).toBe(1);
+        expect(activeMs.minTTFT).toBeCloseTo(3.0, 10);
+        expect(activeMs.maxTTFT).toBeCloseTo(3.0, 10);
+        expect(activeMs.streamingSum).toBeCloseTo(4.0, 10);
+        expect(activeMs.streamingCount).toBe(1);
+        expect(activeMs.timedOutputTokens).toBe(200);
+        expect(activeMs.timedStreamingSeconds).toBeCloseTo(4.0, 10);
+        expect(activeMs.cacheHitCalls).toBe(1);
+
+        // Midnight rollover -> buildGMSummaryFromLedger -> DailyStore
+        const dayData = ledger.rollover('2026-06-01');
+        const { summary, totalCost, costPerModel } = buildGMSummaryFromLedger(dayData);
+        const gms = summary.modelBreakdown['Gemini 3.1 Pro (High)'];
+
+        // Combined across active + settled (c3 untimed does NOT dilute avgTTFT or avgStreaming!)
+        expect(gms.callCount).toBe(3);
+        expect(gms.avgTTFT).toBeCloseTo((1.0 + 3.0) / 2, 10);
+        expect(gms.minTTFT).toBeCloseTo(1.0, 10);
+        expect(gms.maxTTFT).toBeCloseTo(3.0, 10);
+        expect(gms.ttftSampleCount).toBe(2);
+        expect(gms.avgStreaming).toBeCloseTo((2.0 + 4.0) / 2, 10);
+        expect(gms.streamingSampleCount).toBe(2);
+        expect(gms.timedOutputTokens).toBe(300);
+        expect(gms.timedStreamingSeconds).toBeCloseTo(6.0, 10);
+        expect(gms.cacheHitCalls).toBe(2);
+        expect(gms.cacheHitRate).toBeCloseTo(2 / 3, 10);
+
+        const store = new DailyStore();
+        store.addDailySnapshot('2026-06-01', {
+            totalUserInputs: 0, totalReasoning: 3, totalToolCalls: 0, totalErrors: 0, totalCheckpoints: 0,
+            totalInputTokens: 0, totalOutputTokens: 0, totalToolReturnTokens: 0, estSteps: 0,
+            modelStats: {}, globalToolStats: {}, recentSteps: [], sessionStartTime: '2026-06-01T00:00:00Z',
+            subAgentTokens: [], checkpointHistory: [], conversationBreakdown: [],
+        }, summary, totalCost, costPerModel);
+
+        const storedModel = store.getRecord('2026-06-01')!.cycles[0].gmModelStats!['Gemini 3.1 Pro (High)'];
+        expect(storedModel.avgTTFT).toBeCloseTo(2.0, 10);
+        expect(storedModel.avgStreaming).toBeCloseTo(3.0, 10);
+        expect(storedModel.avgGenTokPerSec).toBeCloseTo(300 / 6.0, 10);
+        expect(storedModel.cacheReadTokens).toBe(1300);
+        expect(storedModel.cacheCreationTokens).toBe(500);
+        // Token-weighted cache hit: 1300 / (700 input + 1300 cacheRead + 500 cacheCreation) = 1300 / 2500 = 0.52
+        expect(storedModel.tokenCacheHitRate).toBeCloseTo(1300 / 2500, 10);
+        expect(storedModel.cacheHitRate).toBeCloseTo(2 / 3, 10);
+    });
+
+    it('restores legacy v1 DailyLedgerState and DailyStoreState JSON without optional telemetry fields cleanly', () => {
+        const legacyLedgerJson: DailyLedgerState = {
+            version: 1,
+            dateKey: '2026-06-01',
+            accounts: {
+                'legacy@example.com': {
+                    accountEmail: 'legacy@example.com',
+                    totalCalls: 2,
+                    totalInputTokens: 2000,
+                    totalOutputTokens: 500,
+                    totalThinkingTokens: 100,
+                    totalCacheRead: 4000,
+                    totalCacheCreation: 0,
+                    totalCredits: 2,
+                    totalEstimatedCost: 0.01,
+                    modelStats: {
+                        'Claude Opus 4.6 (Thinking)': {
+                            calls: 2,
+                            inputTokens: 2000,
+                            outputTokens: 500,
+                            thinkingTokens: 100,
+                            cacheReadTokens: 4000,
+                            cacheCreationTokens: 0,
+                            credits: 2,
+                            estimatedCost: 0.01,
+                        },
+                    },
+                    recordedCallIds: ['legacy:0', 'legacy:1'],
+                    recordedCalls: [{
+                        callId: 'legacy:0',
+                        createdAt: localIso(2026, 6, 1, 9),
+                        createdAtMs: localTime(2026, 6, 1, 9).getTime(),
+                        modelId: 'MODEL_PLACEHOLDER_M26',
+                        modelKey: 'Claude Opus 4.6 (Thinking)',
+                        inputTokens: 1000,
+                        outputTokens: 250,
+                        thinkingTokens: 50,
+                        cacheReadTokens: 2000,
+                        cacheCreationTokens: 0,
+                        credits: 1,
+                        estimatedCost: 0.005,
+                    }],
+                },
+            },
+            settled: [{
+                settledAt: localIso(2026, 6, 1, 8),
+                accountEmail: 'legacy@example.com',
+                poolModelIds: ['MODEL_PLACEHOLDER_M16'],
+                poolModelLabels: ['Gemini 3.1 Pro (High)'],
+                totalCalls: 1,
+                totalInputTokens: 500,
+                totalOutputTokens: 100,
+                totalThinkingTokens: 0,
+                totalCacheRead: 0,
+                totalCacheCreation: 0,
+                totalCredits: 1,
+                totalEstimatedCost: 0.002,
+                modelCalls: { 'Gemini 3.1 Pro (High)': 1 },
+            }],
+        };
+
+        const restoredLedger = DailyLedger.restore(legacyLedgerJson);
+        expect(restoredLedger.serialize().version).toBe(1);
+        const dayData = restoredLedger.rollover('2026-06-01');
+        const { summary } = buildGMSummaryFromLedger(dayData);
+        const claude = summary.modelBreakdown['Claude Opus 4.6 (Thinking)'];
+        expect(claude.callCount).toBe(2);
+        expect(claude.avgTTFT).toBe(0);
+        expect(claude.avgStreaming).toBe(0);
+        expect(claude.ttftSampleCount).toBe(0);
+        expect(claude.streamingSampleCount).toBe(0);
+        expect(claude.cacheHitRate).toBe(0);
+        expect(claude.totalCacheRead).toBe(4000);
+
+        // Legacy v1 DailyStoreState without new optional fields restores cleanly
+        const legacyStoreState: DailyStoreState = {
+            version: 1,
+            records: {
+                '2026-05-30': {
+                    date: '2026-05-30',
+                    cycles: [{
+                        startTime: '2026-05-30T00:00:00',
+                        endTime: '2026-05-30T23:59:59',
+                        totalReasoning: 2,
+                        totalToolCalls: 1,
+                        totalErrors: 0,
+                        totalInputTokens: 1000,
+                        totalOutputTokens: 200,
+                        estSteps: 0,
+                        modelNames: ['Claude Opus 4.6 (Thinking)'],
+                        gmModelStats: {
+                            'Claude Opus 4.6 (Thinking)': {
+                                calls: 2,
+                                credits: 2,
+                                inputTokens: 1000,
+                                outputTokens: 200,
+                                thinkingTokens: 0,
+                                avgTTFT: 1.5,
+                                cacheHitRate: 0.5,
+                            },
+                        },
+                    }],
+                },
+            },
+        };
+        const store = new DailyStore();
+        store.restoreSnapshot(legacyStoreState);
+        const restoredRow = store.getRecord('2026-05-30')!.cycles[0].gmModelStats!['Claude Opus 4.6 (Thinking)'];
+        expect(restoredRow.avgTTFT).toBe(1.5);
+        expect(restoredRow.cacheReadTokens).toBeUndefined();
+        expect(restoredRow.avgGenTokPerSec).toBeUndefined();
+        expect(store.serialize().version).toBe(1);
+    });
+
+    it('uses preserved cacheReadTokens when DailyStore.backfillMissingCosts prices a newly archived row', () => {
+        const state: DailyStoreState = {
+            version: 1,
+            records: {
+                '2026-06-01': {
+                    date: '2026-06-01',
+                    cycles: [{
+                        startTime: '2026-06-01T00:00:00',
+                        endTime: '2026-06-01T23:59:59',
+                        totalReasoning: 1,
+                        totalToolCalls: 0,
+                        totalErrors: 0,
+                        totalInputTokens: 0,
+                        totalOutputTokens: 0,
+                        estSteps: 0,
+                        modelNames: ['Claude Opus 4.6 (Thinking)'],
+                        gmModelStats: {
+                            'Claude Opus 4.6 (Thinking)': {
+                                calls: 1,
+                                credits: 0,
+                                inputTokens: 1_000_000,    // $5.00
+                                outputTokens: 0,
+                                thinkingTokens: 0,
+                                cacheReadTokens: 2_000_000, // $1.00 ($0.50/1M)
+                                avgTTFT: 1.0,
+                                cacheHitRate: 1,
+                            },
+                        },
+                    }],
+                },
+            },
+        };
+        const store = new DailyStore();
+        store.restoreSnapshot(state);
+        expect(store.backfillMissingCosts({})).toBe(1);
+        const filled = store.getRecord('2026-06-01')!.cycles[0].gmModelStats!['Claude Opus 4.6 (Thinking)'];
+        expect(filled.estimatedCost).toBeCloseTo(6.0, 10);
     });
 });

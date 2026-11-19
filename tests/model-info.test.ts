@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { setLanguageToState, type Language } from '../src/i18n';
+import { setLanguageToState, tBiHtml, type Language } from '../src/i18n';
 import { buildModelInfoGrid, buildModelsTabContent } from '../src/webview-models-tab';
 import { getModelSpecs, setAvailableImageModelIds, type ModelConfig, type ModelSpec } from '../src/models';
 import type { StateBucket } from '../src/durable-state';
@@ -39,15 +39,21 @@ describe('model information rendering', () => {
     ] as const)('renders complete parameters in %s', async (language, limit, threshold, native, output, thinking) => {
         await setLanguageToState(language, state);
         const html = buildModelInfoGrid([{ ...spec, supportsAdaptiveThinking: true }]);
+        const text = html.replace(/<[^>]+>/g, '');
         for (const value of [limit, threshold, native, output, thinking, '256,000', '50,000', '1,000,000', '128,000', 'Anthropic · Vertex', spec.modelId, 'M401']) {
-            expect(html).toContain(value);
+            expect(text).toContain(value);
         }
-        for (const [metric, label, value] of [
-            ['compression-limit', limit, '256,000'], ['checkpoint-threshold', threshold, '50,000'],
-            ['native-context', native, '1,000,000'], ['max-output', output, '128,000'],
-        ]) {
-            expect(html).toMatch(new RegExp(`data-metric="${metric}">\\s*<dt>${label}</dt>\\s*<dd>${value}</dd>`));
+        const expectedLabels: Array<[string, string, string]> = [
+            ['compression-limit', tBiHtml('Compression limit', '压缩上限'), '256,000'],
+            ['checkpoint-threshold', tBiHtml('Checkpoint threshold', '检查点阈值'), '50,000'],
+            ['native-context', tBiHtml('Model context', '模型上下文'), '1,000,000'],
+            ['max-output', tBiHtml('Max output', '最大输出'), '128,000'],
+        ];
+        for (const [metric, labelHtml, value] of expectedLabels) {
+            const escaped = labelHtml.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            expect(html).toMatch(new RegExp(`data-metric="${metric}">\\s*<dt>${escaped}</dt>\\s*<dd>${value}</dd>`));
         }
+        expect(html).toContain(tBiHtml('Adaptive', '自适应'));
         expect(html).not.toContain('压缩阈值');
         expect(html).not.toContain('Native context');
         expect(html).toContain(language === 'zh' ? '可能与公开 API 限额不同' : 'may differ from public API limits');
@@ -67,15 +73,17 @@ describe('model information rendering', () => {
             displayName: 'Gemini 3.1 Flash Image', apiProvider: 'GOOGLE_GEMINI', isImageGeneration: true,
             maxTokens: 65_536, maxOutputTokens: 65_536, cpLimit: 0, cpThreshold: 0 };
         const html = buildModelInfoGrid([imageSpec], 'image');
-        const notApplicable = language === 'en' ? 'Not applicable' : language === 'zh' ? '不适用' : 'Not applicable / 不适用';
-        expect(html.split(`<dd>${notApplicable}</dd>`)).toHaveLength(3);
+        const notApplicableHtml = tBiHtml('Not applicable', '不适用');
+        const notApplicableText = language === 'en' ? 'Not applicable' : language === 'zh' ? '不适用' : 'Not applicable / 不适用';
+        expect(html.split(`<dd>${notApplicableHtml}</dd>`)).toHaveLength(3);
+        expect(html.replace(/<[^>]+>/g, '')).toContain(notApplicableText);
         expect(html.match(/<dd>65,536<\/dd>/g)).toHaveLength(2);
         expect(html).toContain('data-model-kind="image"');
         expect(html).toContain(language === 'zh' ? '图片生成模型' : 'Image generation models');
         expect(html).toContain(language === 'zh' ? '可能与公开 API 不同' : 'may differ from public API limits');
         const textHtml = buildModelInfoGrid([{ ...spec, cpLimit: 0, cpThreshold: 0 }]);
-        expect(textHtml).not.toContain(notApplicable);
-        expect(textHtml).toContain(language === 'zh' ? '暂无数据' : 'Not available');
+        expect(textHtml).not.toContain(notApplicableHtml);
+        expect(textHtml).toContain(tBiHtml('Not available', '暂无数据'));
     });
 
     it.each([

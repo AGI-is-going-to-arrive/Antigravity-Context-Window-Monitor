@@ -6,10 +6,10 @@ import type { ActivityTracker } from './activity-tracker';
 import type { GMTracker, GMSummary, GMModelStats } from './gm-tracker';
 import type { DailyStore } from './daily-store';
 import type { PricingStore, ModelPricing } from './pricing-store';
-import { calculateLedgerModelCosts, calculateUsageCosts, samePricingModel, findPricingWithCustom } from './pricing-store';
+import { calculateLedgerModelCosts, calculateUsageCosts, samePricingModel, selectPricingModel } from './pricing-store';
 import type { PersistedModelDNA } from './model-dna-store';
 import { mergeModelDNAState } from './model-dna-store';
-import type { DailyLedger, LedgerDayData } from './daily-ledger';
+import type { DailyLedger, LedgerDayData, LedgerModelTelemetry } from './daily-ledger';
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
@@ -144,7 +144,7 @@ export function performDailyArchival(
         const perModel: Record<string, number> = {};
         let total = 0;
         for (const [key, ms] of Object.entries(gmSummary.modelBreakdown)) {
-            const model = findPricingWithCustom(key, custom) ? key : ms.responseModel;
+            const model = selectPricingModel(key, ms.responseModel, custom);
             const calls = (gmSummary.conversations || []).flatMap(conversation => conversation.calls)
                 .filter(call => samePricingModel(call.modelDisplay || call.model || call.responseModel, model));
             const cost = calculateUsageCosts(model, {
@@ -227,6 +227,7 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
     let totalCacheRead = 0, totalCacheCreation = 0, totalCredits = 0;
     let totalCost = 0;
     const modelBreakdown: Record<string, GMModelStats> = {};
+    const telemetryByModel: Record<string, LedgerModelTelemetry> = {};
     const costPerModel: Record<string, number> = {};
 
     // Merge active buckets
@@ -240,9 +241,20 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
         totalCredits += bucket.totalCredits;
 
         for (const [modelKey, ms] of Object.entries(bucket.modelStats)) {
-            mergeModelIntoBreakdown(modelBreakdown, modelKey, ms.calls,
+            mergeModelIntoBreakdown(modelBreakdown, telemetryByModel, modelKey, ms.calls,
                 ms.inputTokens, ms.outputTokens, ms.thinkingTokens,
-                ms.cacheReadTokens, ms.cacheCreationTokens, ms.credits);
+                ms.cacheReadTokens, ms.cacheCreationTokens, ms.credits,
+                {
+                    ttftSum: ms.ttftSum || 0,
+                    ttftCount: ms.ttftCount || 0,
+                    minTTFT: ms.minTTFT || 0,
+                    maxTTFT: ms.maxTTFT || 0,
+                    streamingSum: ms.streamingSum || 0,
+                    streamingCount: ms.streamingCount || 0,
+                    timedOutputTokens: ms.timedOutputTokens || 0,
+                    timedStreamingSeconds: ms.timedStreamingSeconds || 0,
+                    cacheHitCalls: ms.cacheHitCalls || 0,
+                });
             // The ledger files per-model rows under a display name, which is also the key
             // the Pricing tab writes custom prices under, so look pricing up by that key.
             const cost = calculateLedgerModelCosts(modelKey, ms, bucket, customPricing || {}, dayData.dateKey).totalCost;
@@ -271,19 +283,36 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
             // totals proportionally.
             if (entry.totalCalls > 0) {
                 const modelTokens = allocated[modelKey];
-                mergeModelIntoBreakdown(modelBreakdown, modelKey, calls,
+                mergeModelIntoBreakdown(modelBreakdown, telemetryByModel, modelKey, calls,
                     modelTokens?.inputTokens || 0,
                     modelTokens?.outputTokens || 0,
                     modelTokens?.thinkingTokens || 0,
                     modelTokens?.cacheReadTokens || 0,
                     modelTokens?.cacheCreationTokens || 0,
-                    modelTokens?.credits || 0);
+                    modelTokens?.credits || 0,
+                    entry.modelTelemetry?.[modelKey]);
             }
             if (entry.totalEstimatedCost > 0 && entry.totalCalls > 0) {
                 const ratio = calls / entry.totalCalls;
                 costPerModel[modelKey] = (costPerModel[modelKey] || 0) + entry.totalEstimatedCost * ratio;
             }
         }
+    }
+
+    // Finalize weighted averages & telemetry sample counts on each model row
+    for (const [modelKey, ms] of Object.entries(modelBreakdown)) {
+        const acc = telemetryByModel[modelKey];
+        if (!acc) { continue; }
+        ms.avgTTFT = acc.ttftCount > 0 ? acc.ttftSum / acc.ttftCount : 0;
+        ms.minTTFT = acc.minTTFT || 0;
+        ms.maxTTFT = acc.maxTTFT || 0;
+        ms.avgStreaming = acc.streamingCount > 0 ? acc.streamingSum / acc.streamingCount : 0;
+        ms.cacheHitRate = ms.callCount > 0 ? Math.min(1, acc.cacheHitCalls / ms.callCount) : 0;
+        ms.ttftSampleCount = acc.ttftCount;
+        ms.streamingSampleCount = acc.streamingCount;
+        ms.timedOutputTokens = acc.timedOutputTokens;
+        ms.timedStreamingSeconds = acc.timedStreamingSeconds;
+        ms.cacheHitCalls = acc.cacheHitCalls;
     }
 
     const summary: GMSummary = {
@@ -371,6 +400,7 @@ function allocateSettledEntryByModel(entry: LedgerDayData['settled'][number]): R
 
 function mergeModelIntoBreakdown(
     breakdown: Record<string, GMModelStats>,
+    telemetryByModel: Record<string, LedgerModelTelemetry>,
     modelKey: string,
     calls: number,
     inputTokens: number,
@@ -379,6 +409,7 @@ function mergeModelIntoBreakdown(
     cacheRead: number,
     cacheCreation: number,
     credits: number,
+    telemetry?: LedgerModelTelemetry,
 ): void {
     let ms = breakdown[modelKey];
     if (!ms) {
@@ -387,6 +418,8 @@ function mergeModelIntoBreakdown(
             totalInputTokens: 0, totalOutputTokens: 0, totalThinkingTokens: 0,
             totalCacheRead: 0, totalCacheCreation: 0, totalCredits: 0,
             avgTTFT: 0, minTTFT: 0, maxTTFT: 0, avgStreaming: 0, cacheHitRate: 0,
+            ttftSampleCount: 0, streamingSampleCount: 0,
+            timedOutputTokens: 0, timedStreamingSeconds: 0, cacheHitCalls: 0,
             // The ledger has no responseModel to carry over, but leaving this empty made
             // `findPricing('')` return null and silently turned the cost fallback in
             // performDailyArchival into dead code. The model key is a resolvable name.
@@ -406,6 +439,33 @@ function mergeModelIntoBreakdown(
     ms.totalCacheRead += cacheRead;
     ms.totalCacheCreation += cacheCreation;
     ms.totalCredits += credits;
+
+    let acc = telemetryByModel[modelKey];
+    if (!acc) {
+        acc = {
+            ttftSum: 0, ttftCount: 0, minTTFT: 0, maxTTFT: 0,
+            streamingSum: 0, streamingCount: 0,
+            timedOutputTokens: 0, timedStreamingSeconds: 0, cacheHitCalls: 0,
+        };
+        telemetryByModel[modelKey] = acc;
+    }
+    if (telemetry) {
+        acc.ttftSum += telemetry.ttftSum || 0;
+        acc.ttftCount += telemetry.ttftCount || 0;
+        const tMin = telemetry.minTTFT || 0;
+        if (tMin > 0) {
+            acc.minTTFT = acc.minTTFT && acc.minTTFT > 0 ? Math.min(acc.minTTFT, tMin) : tMin;
+        }
+        const tMax = telemetry.maxTTFT || 0;
+        if (tMax > (acc.maxTTFT || 0)) {
+            acc.maxTTFT = tMax;
+        }
+        acc.streamingSum += telemetry.streamingSum || 0;
+        acc.streamingCount += telemetry.streamingCount || 0;
+        acc.timedOutputTokens += telemetry.timedOutputTokens || 0;
+        acc.timedStreamingSeconds += telemetry.timedStreamingSeconds || 0;
+        acc.cacheHitCalls += telemetry.cacheHitCalls || 0;
+    }
 }
 
 /**

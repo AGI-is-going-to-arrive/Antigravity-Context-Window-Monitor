@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import * as vscode from 'vscode';
 import {
     extractLinkedSubagentIds, getContextUsage, refreshWorkflowImageUsage, resetImageWorkflowCache,
     type ContextUsage, type TrajectorySummary,
 } from '../src/tracker';
 import { rpcCall } from '../src/rpc-client';
-import { StatusBarManager } from '../src/statusbar';
+import { buildOverviewTabContent } from '../src/webview-overview-tab';
 import { setLanguageToState, type Language } from '../src/i18n';
 import { MonitorStore } from '../src/monitor-store';
 import { hasSameUsageInputs, invalidateLiveModelMetadata } from '../src/extension';
@@ -183,15 +182,12 @@ describe('linked image workflows', () => {
 
     it.each(['en', 'zh', 'both'] as Language[])('shows the image count, true image model and partial-data warning in %s', async language => {
         await setLanguageToState(language, state);
-        const create = vi.spyOn(vscode.window, 'createStatusBarItem');
-        const manager = new StatusBarManager();
-        manager.update({ ...usage(), imageGenStepCount: 1, imageGenerationModels: ['MODEL_PLACEHOLDER_M21'], imageGenerationIncomplete: true });
-        const item = create.mock.results[0].value as vscode.StatusBarItem;
-        const tooltip = (item.tooltip as vscode.MarkdownString).value;
-        expect(tooltip).toContain('Gemini 3.1 Flash Image');
-        expect(tooltip).toContain(language === 'zh' ? '图片模型' : 'Image model');
-        expect(tooltip).toContain(language === 'zh' ? '图片工作流数据不完整' : 'Image workflow data is incomplete');
-        expect(tooltip).not.toContain('M322');
-        manager.dispose();
+        const overview = buildOverviewTabContent({
+            ...usage(), imageGenStepCount: 1, imageGenerationModels: ['MODEL_PLACEHOLDER_M21'], imageGenerationIncomplete: true,
+        }, [], null);
+        expect(overview).toContain('Gemini 3.1 Flash Image');
+        expect(overview).toContain(language === 'zh' ? '图片模型' : 'Image model');
+        expect(overview).toContain(language === 'zh' ? '图片工作流数据不完整' : 'Image workflow data is incomplete');
+        expect(overview).not.toContain('M322');
     });
 });

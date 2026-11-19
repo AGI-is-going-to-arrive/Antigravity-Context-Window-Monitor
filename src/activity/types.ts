@@ -57,7 +57,9 @@ export interface StepEvent {
     gmInputTokens?: number;
     gmOutputTokens?: number;
     gmThinkingTokens?: number;
+    gmResponseTokens?: number;
     gmCacheReadTokens?: number;
+    gmCacheCreationTokens?: number;
     gmCredits?: number;
     gmTTFT?: number;              // seconds
     gmStreamingDuration?: number; // seconds

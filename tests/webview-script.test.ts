@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as vscode from 'vscode';
+import { getLanguage, setLanguageToState } from '../src/i18n';
 import { normalizeModelDisplayName, resolveModelId } from '../src/models';
-import { collectPricingInputOverrides } from '../src/webview-script';
+import { buildSettingsContent } from '../src/webview-settings-tab';
+import { collectPricingInputOverrides, getScript } from '../src/webview-script';
 
 type Attrs = Record<string, string>;
 
@@ -129,5 +132,56 @@ describe('static model display fallbacks', () => {
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M320')).toBe('Gemini 3.8 Flash (Low)');
         expect(normalizeModelDisplayName('MODEL_PLACEHOLDER_M322')).toBe('Gemini 3.8 Flash (Tiered)');
         expect(normalizeModelDisplayName('Gemini 3.8 Flash (高)')).toBe('Gemini 3.8 Flash (High)');
+    });
+});
+
+describe('status bar speed and prompt cache settings UI & script wiring', () => {
+    const initialLanguage = getLanguage();
+    const state = { get: <T>(_key: string, fallback: T) => fallback, update: async () => {} };
+
+    beforeEach(async () => {
+        await setLanguageToState('both', state);
+    });
+
+    afterEach(async () => {
+        vi.restoreAllMocks();
+        await setLanguageToState(initialLanguage, state);
+    });
+
+    it('renders #toggleSpeed and #toggleCacheHit unchecked by default with example chips and zero 令牌', async () => {
+        for (const lang of ['en', 'zh', 'both'] as const) {
+            await setLanguageToState(lang, state);
+            const html = buildSettingsContent([]);
+            expect(html).not.toContain('令牌');
+            expect(html).toContain('id="toggleSpeed"');
+            expect(html).toContain('<code>64 tok/s</code>');
+            expect(html).toContain('id="toggleCacheHit"');
+            expect(html).toContain('<code>Cache 84%</code>');
+            expect(html).not.toMatch(/id="toggleSpeed"[^>]*checked/);
+            expect(html).not.toMatch(/id="toggleCacheHit"[^>]*checked/);
+        }
+    });
+
+    it('reflects enabled statusBar.showSpeed and statusBar.showCacheHit configuration', () => {
+        vi.spyOn(vscode.workspace, 'getConfiguration').mockImplementation(() => ({
+            get: <T>(key: string, fallback?: T) => {
+                if (key === 'statusBar.showSpeed' || key === 'statusBar.showCacheHit') {
+                    return true as T;
+                }
+                return fallback as T;
+            },
+        }) as unknown as vscode.WorkspaceConfiguration);
+
+        const html = buildSettingsContent([]);
+        expect(html).toMatch(/id="toggleSpeed"[^>]*checked/);
+        expect(html).toMatch(/id="toggleCacheHit"[^>]*checked/);
+    });
+
+    it('wires #toggleSpeed and #toggleCacheHit in webview script to statusBar config keys', () => {
+        const script = getScript();
+        expect(script).toContain("'toggleSpeed'");
+        expect(script).toContain("'toggleCacheHit'");
+        expect(script).toContain("'statusBar.showSpeed'");
+        expect(script).toContain("'statusBar.showCacheHit'");
     });
 });

@@ -4,32 +4,35 @@
 
 import { tBi } from './i18n';
 import { ICON } from './webview-icons';
+import { esc, tBiHtml } from './webview-helpers';
 
-// ─── SVG Icons (About-specific) ──────────────────────────────────────────────
+// ─── SVG Icons (About-specific, 16px / stroke-width 1.65) ───────────────────
 
 const ABOUT_ICON = {
     /** Lightning bolt — GM Data */
-    gmdata: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
+    gmdata: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
     /** Chat bubbles — Sessions */
-    chats: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    chats: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
     /** Dollar — Cost */
-    cost: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
+    cost: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
     /** CPU — Models */
-    models: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>',
+    models: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>',
     /** Calendar — Calendar */
-    calendar: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+    calendar: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
     /** Person — Profile */
-    profile: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    profile: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
     /** Gear — Settings */
-    settings: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    settings: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    /** Grid — Navigation */
+    grid: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>',
     /** Info circle */
-    info: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+    info: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
     /** Alert triangle */
-    alert: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    alert: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
     /** Shield with check — Compatibility */
-    shieldCheck: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11.5 14.5 15.5 10"/></svg>',
+    shieldCheck: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11.5 14.5 15.5 10"/></svg>',
     /** Globe */
-    globe: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
+    globe: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
 } as const;
 
 // ─── Feature Card Definitions ────────────────────────────────────────────────
@@ -37,81 +40,82 @@ const ABOUT_ICON = {
 interface FeatureCard {
     tabId: string;
     icon: string;
-    color: string;        // CSS color for the accent
-    title: string;
-    description: string;
+    titleHtml: string;
+    descriptionHtml: string;
 }
 
 function getFeatureCards(): FeatureCard[] {
     return [
         {
+            tabId: 'overview',
+            icon: ICON.chart,
+            titleHtml: tBiHtml('Overview', '总览'),
+            descriptionHtml: tBiHtml(
+                'Current context, shared quota pools, reset times, and session diagnostics.',
+                '查看当前上下文、共享配额池、重置时间和会话诊断。',
+            ),
+        },
+        {
             tabId: 'gmdata',
             icon: ABOUT_ICON.gmdata,
-            color: 'var(--color-orange)',
-            title: tBi('GM Data', 'GM 数据'),
-            description: tBi(
-                'Real-time model call analytics: per-call tokens, credits, cost, latency, error tracking, tool usage ranking, and context intelligence — all from Generator Metadata.',
-                '实时模型调用分析：逐次调用的 Token、积分、费用、延迟、错误追踪、工具使用排行、上下文情报 —— 全部来自 Generator Metadata。',
+            titleHtml: tBiHtml('GM Data', 'GM 数据'),
+            descriptionHtml: tBiHtml(
+                'Real-time model call analytics: per-call tokens, credits, cost, latency, error tracking, tool usage ranking, and context intelligence from Generator Metadata.',
+                '实时模型调用分析：逐次调用的 Token、积分、费用、延迟、错误追踪、工具使用排行和上下文情报，全部来自 Generator Metadata。',
             ),
         },
         {
             tabId: 'chats',
             icon: ABOUT_ICON.chats,
-            color: 'var(--color-teal-light)',
-            title: tBi('Sessions', '会话'),
-            description: tBi(
-                'Browse all conversations with the AI. Quick access to brain records, protobuf data, and workspace folders for each session.',
-                '浏览与 AI 的全部对话。快速访问每个会话的 Brain 记录、Protobuf 数据和工作区文件夹。',
+            titleHtml: tBiHtml('Sessions', '会话'),
+            descriptionHtml: tBiHtml(
+                'Browse all AI conversations with quick access to Brain records, protobuf archives, and workspace folders.',
+                '浏览与 AI 的全部对话，快速访问每个会话的 Brain 记录、Protobuf 存档和工作区文件夹。',
             ),
         },
         {
             tabId: 'pricing',
             icon: ABOUT_ICON.cost,
-            color: 'var(--color-ok-light)',
-            title: tBi('Cost', '成本'),
-            description: tBi(
-                'Estimated USD cost analysis per model, with monthly breakdown charts. Customize pricing per token type (input/output/cache/thinking).',
-                '按模型估算 USD 费用，含月度分项柱状图。可自定义每种 Token 类型（输入/输出/缓存/思考）的单价。',
+            titleHtml: tBiHtml('Cost', '成本'),
+            descriptionHtml: tBiHtml(
+                'Estimated USD cost analysis per model with monthly breakdown charts and custom rates per token type (input, output, cache, thinking).',
+                '按模型估算 USD 费用，含月度分项图表，支持按 Token 类型（输入、输出、缓存、思考）自定义单价。',
             ),
         },
         {
             tabId: 'models',
             icon: ABOUT_ICON.models,
-            color: 'var(--color-ok)',
-            title: tBi('Models', '模型'),
-            description: tBi(
-                'All available AI models and their configurations: quota pools, reset times, context limits, and thinking capabilities.',
-                '所有可用 AI 模型及其配置：额度池、重置时间、有效上下文限制、以及思考能力参数。',
+            titleHtml: tBiHtml('Models', '模型'),
+            descriptionHtml: tBiHtml(
+                'All available AI models and specifications: shared quota pools, reset schedules, compression and context limits, and thinking capabilities.',
+                '所有可用 AI 模型及其规格：共享配额池、重置时间、压缩与上下文限制，以及思考能力参数。',
             ),
         },
         {
             tabId: 'calendar',
             icon: ABOUT_ICON.calendar,
-            color: 'var(--color-teal-light)',
-            title: tBi('Calendar', '日历'),
-            description: tBi(
-                'Daily usage archive with heat-map calendar view. Each day records total calls, tokens, credits, and archived cycles.',
-                '每日用量归档，热力图日历视图。每天记录总调用、Token、积分和归档周期。',
+            titleHtml: tBiHtml('Calendar', '日历'),
+            descriptionHtml: tBiHtml(
+                'Daily usage archive with interactive monthly calendar view recording total calls, tokens, credits, and archived cycles.',
+                '每日用量归档与交互式月历视图，记录每日总调用、Token、积分和归档周期。',
             ),
         },
         {
             tabId: 'profile',
             icon: ABOUT_ICON.profile,
-            color: 'var(--color-muted)',
-            title: tBi('Profile', '个人'),
-            description: tBi(
-                'Current account information, login status, and model API configuration details.',
-                '当前账户信息、登录状态和模型 API 配置详情。',
+            titleHtml: tBiHtml('Profile', '个人'),
+            descriptionHtml: tBiHtml(
+                'Account identity with privacy mask, shared model quota pools, AI credits and expiry countdown, plus plan limits and capabilities.',
+                '当前账户身份与隐私遮罩、共享模型配额池、AI 积分与到期倒计时，以及计划限制与功能配置。',
             ),
         },
         {
             tabId: 'settings',
             icon: ABOUT_ICON.settings,
-            color: 'var(--color-muted)',
-            title: tBi('Settings', '设置'),
-            description: tBi(
-                'Plugin preferences: polling interval, status bar toggles, quota warnings, storage diagnostics, and data management.',
-                '插件偏好：轮询间隔、状态栏开关、低额度警报、存储诊断和数据管理。',
+            titleHtml: tBiHtml('Settings', '设置'),
+            descriptionHtml: tBiHtml(
+                'Extension preferences: persistent storage diagnostics, low-quota alerts, polling interval, status bar toggles, and interface zoom.',
+                '扩展偏好设置：持久化存储诊断、低配额警报、轮询间隔、状态栏开关和界面缩放。',
             ),
         },
     ];
@@ -124,473 +128,493 @@ export function buildAboutTabContent(): string {
 
     // ── Hero section ──
     const hero = `
-    <div class="about-hero">
-        <div class="about-hero-icon">
-            ${ICON.chart}
+    <header class="about-hero">
+        <div class="about-hero-heading">
+            <h2 class="about-hero-title">${tBiHtml('Antigravity Context Window Monitor', 'Antigravity 上下文窗口监控')}</h2>
+            <span class="about-version-pill">v1.17.2</span>
         </div>
-        <h2 class="about-hero-title">Antigravity Context Window Monitor</h2>
-        <p class="about-hero-subtitle">${tBi(
-        'An open-source community plugin for real-time monitoring and analytics of AI model usage in Antigravity.',
-        '一款开源社区插件，用于实时监控和分析 Antigravity 中 AI 模型的使用情况。',
+        <p class="about-hero-subtitle">${tBiHtml(
+        'An open-source community extension for real-time monitoring and analytics of AI model usage in Antigravity IDE.',
+        '一款开源社区扩展，用于实时监控和分析 Antigravity IDE 中 AI 模型的使用情况。',
     )}</p>
-        <div class="about-platform-chips" role="group" aria-label="${tBi('Supported platforms', '支持的平台')}">
-            <span class="about-platform-chip about-platform-active" role="status" aria-label="${tBi('IDE: actively supported', 'IDE：已支持')}">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                IDE
+        <div class="about-platform-chips" role="group" aria-label="${esc(tBi('Supported platforms', '支持的平台'))}">
+            <span class="about-platform-chip about-platform-active" role="status" aria-label="${esc(tBi('IDE: actively supported', 'IDE：已支持'))}">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                <span>${tBiHtml('IDE', 'IDE')}</span>
             </span>
-            <span class="about-platform-chip" aria-label="${tBi('Desktop: not supported', '桌面版：不支持')}">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="3"/></svg>
-                ${tBi('Desktop', '桌面版')}
+            <span class="about-platform-chip" aria-label="${esc(tBi('Desktop: not supported', '桌面版：不支持'))}">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="3"/></svg>
+                <span>${tBiHtml('Desktop', '桌面版')}</span>
             </span>
-            <span class="about-platform-chip" aria-label="${tBi('SDK: not supported', 'SDK：不支持')}">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                SDK
+            <span class="about-platform-chip" aria-label="${esc(tBi('SDK: not supported', 'SDK：不支持'))}">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                <span>${tBiHtml('SDK', 'SDK')}</span>
             </span>
-            <span class="about-platform-chip" aria-label="${tBi('CLI: not supported', 'CLI：不支持')}">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-                CLI
+            <span class="about-platform-chip" aria-label="${esc(tBi('CLI: not supported', 'CLI：不支持'))}">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                <span>${tBiHtml('CLI', 'CLI')}</span>
             </span>
         </div>
-        <p class="about-platform-note">${tBi(
-        'This plugin is designed for the <strong>Antigravity IDE</strong> platform. Desktop, SDK, and CLI are separate product lines and are not supported.',
-        '本插件面向 <strong>Antigravity IDE</strong> 平台开发。桌面版、SDK 和 CLI 均为独立产品线，不在支持范围内。',
+        <p class="about-platform-note">${tBiHtml(
+        'Designed for the Antigravity IDE platform. Desktop, SDK, and CLI are separate product lines and are not supported.',
+        '本插件面向 Antigravity IDE 平台开发。桌面版、SDK 和 CLI 均为独立产品线，不在支持范围内。',
     )}</p>
-    </div>`;
+    </header>`;
 
     // ── Feature navigation grid ──
     const cardItems = cards.map(c => `
-        <button class="about-card" data-navigate-tab="${c.tabId}">
-            <div class="about-card-icon" style="color:${c.color}">${c.icon}</div>
-            <div class="about-card-body">
-                <span class="about-card-title">${c.title}</span>
-                <span class="about-card-desc">${c.description}</span>
-            </div>
-            <svg class="about-card-arrow" viewBox="0 0 16 16" width="14" height="14">
+        <button type="button" class="about-card" data-navigate-tab="${c.tabId}">
+            <span class="about-card-icon">${c.icon}</span>
+            <span class="about-card-body">
+                <span class="about-card-title">${c.titleHtml}</span>
+                <span class="about-card-desc">${c.descriptionHtml}</span>
+            </span>
+            <svg class="about-card-arrow" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
                 <path fill="currentColor" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708"/>
             </svg>
         </button>`).join('');
 
     const nav = `
-    <div class="about-section">
+    <section class="about-section">
         <h3 class="about-section-title">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-            ${tBi('Feature Navigation', '功能导航')}
+            ${ABOUT_ICON.grid}
+            <span>${tBiHtml('Feature Navigation', '功能导航')}</span>
         </h3>
         <div class="about-cards">${cardItems}</div>
-    </div>`;
+    </section>`;
 
     // ── GitHub section ──
     const github = `
-    <div class="about-section about-github">
+    <section class="about-section about-github">
         <h3 class="about-section-title">
             ${ICON.git}
-            ${tBi('Open Source', '开源项目')}
+            <span>${tBiHtml('Open Source', '开源项目')}</span>
         </h3>
         <div class="about-info-box about-info-github">
-            <p>
-                ${tBi(
-        'By <strong>AGI-is-going-to-arrive</strong> — open-source on GitHub. If you find it helpful, a',
-        '作者 <strong>AGI-is-going-to-arrive</strong> — 项目已在 GitHub 开源。如果觉得有帮助，点个',
-    )}
-                <span class="star-inline">${ICON.star}</span>
-                ${tBi('would be appreciated.', '就是最大的支持。')}
-                <span class="heart-inline">${ICON.heart}</span>
-            </p>
+            <p><strong>AGI-is-going-to-arrive</strong> · ${tBiHtml(
+        'Open-source on GitHub under the MIT License. Stars, bug reports, and contributions are welcome.',
+        '项目已在 GitHub 以 MIT 协议开源，欢迎 Star、反馈问题或参与贡献。',
+    )}</p>
             <a class="about-github-link" href="https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor" target="_blank" rel="noopener noreferrer">
-                ${ICON.externalLink} GitHub Repository
+                ${ICON.externalLink} <span>${tBiHtml('GitHub Repository', 'GitHub 仓库')}</span>
             </a>
         </div>
-    </div>`;
+    </section>`;
 
     // ── Tips section ──
     const tips = `
-    <div class="about-section">
+    <section class="about-section">
         <h3 class="about-section-title">
             ${ABOUT_ICON.info}
-            ${tBi('Tips', '使用提示')}
+            <span>${tBiHtml('Tips', '使用提示')}</span>
         </h3>
         <div class="about-info-box about-info-tips">
-            <p>${tBi(
+            <p>${tBiHtml(
         'Recommended: use a single IDE window. Multi-window setups may cause data desync between instances (e.g. activity timeline and GM data refresh).',
         '建议使用单窗口运行。多窗口可能导致实例间数据不同步（如活动时间线和 GM 数据刷新）。',
     )}</p>
         </div>
-    </div>`;
+    </section>`;
 
     // ── Compatibility section ──
     const compatibility = `
-    <div class="about-section">
+    <section class="about-section">
         <h3 class="about-section-title">
             ${ABOUT_ICON.shieldCheck}
-            ${tBi('Compatibility', '兼容性验证')}
+            <span>${tBiHtml('Compatibility', '兼容性验证')}</span>
         </h3>
         <div class="about-info-box about-info-compat">
-            ${tBi(
-        '<p><strong>Verified for extension 1.17.1:</strong> Antigravity IDE 2.6.0 on macOS, using the installed VSIX on 2026-11-13. This release distinguishes Orchestrator (Carbon) and Orchestrator (Argon), their output limits, shared execution model, and independent pricing identities.</p><p><strong>Earlier contributor checks:</strong> v1.18.4, v1.19.6, v1.20.6, and v1.23.2.</p><p>Windows and Linux compatibility is covered by platform regression tests; native IDE validation is performed on macOS. Future IDE updates may change internal APIs. See the Disclaimer below for details.</p>',
-        '<p><strong>扩展 1.17.1 本次验证：</strong>2026-11-13 在 macOS 的 Antigravity IDE 2.6.0 中安装新 VSIX，本版区分 Orchestrator (Carbon) 与 Orchestrator (Argon)、各自输出上限、共享执行模型和独立计价身份。</p><p><strong>此前贡献者验证版本：</strong>v1.18.4、v1.19.6、v1.20.6、v1.23.2。</p><p>Windows 和 Linux 兼容性由平台回归测试覆盖；原生 IDE 验证环境为 macOS。未来 IDE 更新可能变更内部 API，详见下方免责声明。</p>',
-    )}
+            <p><strong class="about-compat-lead">${tBiHtml('Verified for extension v1.17.2:', '扩展 v1.17.2 本次验证：')}</strong> ${tBiHtml(
+        'Installed VSIX in Antigravity IDE 2.7.0 on macOS. This release adds Gemini 4 Neon (Low, Medium, High, Extra), Orchestrator (Neon), and the status bar Overview.',
+        '在 macOS 的 Antigravity IDE 2.7.0 中安装 VSIX。本版新增 Gemini 4 Neon（低、中、高、超高）、Orchestrator (Neon) 和状态栏总览。',
+    )}</p>
+            <p><strong>${tBiHtml('Earlier contributor checks:', '此前贡献者验证版本：')}</strong> v1.18.4, v1.19.6, v1.20.6, v1.23.2.</p>
+            <p>${tBiHtml(
+        'Windows and Linux compatibility is covered by platform regression tests; native IDE validation is performed on macOS. Future IDE updates may change internal APIs. See the Disclaimer below for details.',
+        'Windows 和 Linux 兼容性由平台回归测试覆盖；原生 IDE 验证环境为 macOS。未来 IDE 更新可能变更内部 API，详见下方免责声明。',
+    )}</p>
         </div>
-    </div>`;
+    </section>`;
 
     // ── Disclaimer section ──
     const disclaimer = `
-    <div class="about-section">
+    <section class="about-section about-section-disclaimer">
         <h3 class="about-section-title">
             ${ABOUT_ICON.alert}
-            ${tBi('Disclaimer', '免责声明')}
+            <span>${tBiHtml('Disclaimer', '免责声明')}</span>
         </h3>
         <div class="about-info-box about-info-disclaimer">
-            ${tBi(
-        '<p><strong>This is an unofficial community project and is not affiliated with, endorsed by, or associated with Google.</strong> It acts strictly in read-only mode to visualize usage data. Use at your own risk.</p><p>Data is derived from <strong>internal interfaces that are undocumented and may change without notice</strong>. Metrics are derived from Generator Metadata, checkpoint snapshots, or character-based heuristics. <strong>All numbers are best-effort approximations.</strong></p><p><strong>Context Window Limitation:</strong> Antigravity does not utilize the full context window advertised by the underlying model. The actual effective context window is dynamically determined based on the checkpoint parameters of each model, which roughly ranges from <strong>80K to 256K tokens</strong>.</p>',
-        '<p><strong>本分支扩展为非官方社区开源项目，与 Google 没有任何关联或官方背书。</strong>本工具仅以只读模式监控本地内部 API 用于可视化个人日常数据，使用风险自负。</p><p>数据通过<strong>内部接口</strong>获取，这些接口<strong>未公开文档且可能随时变更</strong>。指标来自 Generator Metadata、检查点快照或字符启发式计算。<strong>所有数值均为尽力计算的近似值。</strong></p><p><strong>上下文窗口限制：</strong>Antigravity 并未适配底层模型标称的完整上下文窗口。实际有效上下文是根据每个模型对应的检查点（checkpoint）数据动态确定的，当前平台实际有效阈值大致为 <strong>80K–256K Token</strong>。</p>',
-    )}
+            <p><strong class="about-disclaimer-lead">${tBiHtml(
+        'This is an unofficial community project and is not affiliated with, endorsed by, or associated with Google.',
+        '本扩展为非官方社区开源项目，与 Google 没有任何关联或官方背书。',
+    )}</strong> ${tBiHtml(
+        'It acts strictly in read-only mode to visualize usage data. Use at your own risk.',
+        '本工具仅以只读模式监控本地内部接口用于可视化个人日常数据，使用风险自负。',
+    )}</p>
+            <p>${tBiHtml(
+        'Data is derived from undocumented internal interfaces that may change without notice. Metrics come from Generator Metadata, checkpoint snapshots, or character-based heuristics, and all numbers are best-effort approximations.',
+        '数据通过未公开文档且可能随时变更的内部接口获取。指标来自 Generator Metadata、检查点快照或字符启发式计算，所有数值均为尽力计算的近似值。',
+    )}</p>
+            <p><strong>${tBiHtml('Context Window Limitation:', '上下文窗口限制：')}</strong> ${tBiHtml(
+        'Antigravity does not always expose the full advertised context window of every underlying model. Effective compression limits are determined dynamically by each model\'s checkpoint parameters, currently ranging from 80K up to 512K tokens (with 512K on Gemini 4 Neon and Orchestrator (Neon) models).',
+        'Antigravity 并非总是使用底层模型标称的完整上下文窗口。实际有效压缩上限由各模型的检查点（checkpoint）参数动态决定，当前范围从 80K 至最高 512K tokens（Gemini 4 Neon 与 Orchestrator (Neon) 为 512K）。',
+    )}</p>
         </div>
-    </div>`;
+    </section>`;
 
     // ── Language hint ──
     const langHint = `
-    <div class="about-section">
+    <section class="about-section">
         <h3 class="about-section-title">
             ${ABOUT_ICON.globe}
-            ${tBi('Language', '语言')}
+            <span>${tBiHtml('Language', '语言')}</span>
         </h3>
         <div class="about-info-box about-info-lang">
-            <p>${tBi(
-        'This extension supports <strong>Chinese / English / Bilingual</strong> display. Use the <strong>中文 | EN | 双语</strong> buttons in the top-right corner of this panel to switch.',
-        '本插件支持 <strong>中文 / English / 双语</strong> 显示。请使用面板右上角的 <strong>中文 | EN | 双语</strong> 按钮切换。',
+            <p>${tBiHtml(
+        'This extension supports Chinese, English, and Bilingual display. Use the 中文 | EN | Both controls in the top-right corner of this panel to switch.',
+        '本插件支持中文、English 与双语显示。请使用面板右上角的 中文 | EN | 双语 按钮切换。',
     )}</p>
         </div>
-    </div>`;
+    </section>`;
 
-    return hero + nav + github + tips + compatibility + disclaimer + langHint;
+    return `<div class="about-page">${hero}${nav}${github}${tips}${compatibility}${disclaimer}${langHint}</div>`;
 }
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
 export function getAboutTabStyles(): string {
     return `
-/* ═══ About Tab ═══════════════════════════════════════════════════════════════ */
+/* ═══ About Tab (Studio Telemetry Ledger) ════════════════════════════════════ */
+
+.about-page {
+    max-width: 820px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding-top: 6px;
+    min-width: 0;
+}
 
 /* Hero */
 .about-hero {
-    text-align: center;
-    padding: var(--space-6) var(--space-4) var(--space-4);
+    text-align: start;
+    padding: 4px 0 8px;
+    min-width: 0;
 }
-.about-hero-icon {
+
+.about-hero-heading {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    margin-bottom: 8px;
+}
+
+.about-hero-title {
+    margin: 0;
+    color: var(--ed-ink);
+    font-size: 1.5rem;
+    font-weight: 550;
+    line-height: 1.24;
+    letter-spacing: -0.02em;
+    min-width: 0;
+}
+
+.about-version-pill {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    width: 56px; height: 56px;
-    border-radius: 16px;
-    background: linear-gradient(135deg, rgba(255,160,40,0.15), rgba(255,120,20,0.08));
-    border: 1px solid rgba(255,160,40,0.25);
-    margin-bottom: var(--space-3);
+    padding: 2px 8px;
+    border-radius: var(--ed-radius-pill);
+    font-family: var(--ed-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.4;
+    background: var(--ed-surface-well);
+    color: var(--ed-ink-secondary);
+    border: 1px solid var(--ed-border);
+    font-variant-numeric: tabular-nums lining-nums;
 }
-.about-hero-icon .icon {
-    width: 28px; height: 28px;
-    color: var(--color-orange);
-}
-.about-hero-title {
-    font-size: 1.15em;
-    font-weight: 700;
-    margin: 0 0 var(--space-2);
-    letter-spacing: -0.01em;
-}
+
 .about-hero-subtitle {
-    font-size: 0.82em;
-    color: var(--color-muted);
+    font-size: 0.875rem;
+    color: var(--ed-ink-secondary);
     margin: 0;
-    max-width: 420px;
-    margin-inline: auto;
-    line-height: 1.55;
+    max-width: 65ch;
+    line-height: 1.54;
 }
 
 /* Platform chips */
 .about-platform-chips {
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     flex-wrap: wrap;
     gap: 8px;
-    margin-top: var(--space-3);
+    margin-top: 14px;
 }
+
 .about-platform-chip {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 0.75em;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    border: 1px solid var(--border-color);
-    color: var(--color-muted);
-    background: transparent;
-    opacity: 0.55;
-    transition: all 0.18s ease;
+    padding: 3px 10px;
+    border-radius: var(--ed-radius-pill);
+    font-size: 12px;
+    font-weight: 550;
+    border: 1px solid var(--ed-border);
+    color: var(--ed-ink-muted);
+    background: var(--ed-surface-well);
+    opacity: 1;
 }
+
 .about-platform-chip svg {
     flex-shrink: 0;
 }
+
 .about-platform-active {
-    border-color: var(--color-orange);
-    color: var(--color-orange);
-    background: rgba(255,160,40,0.08);
-    opacity: 1;
+    border-color: var(--ed-accent-border);
+    color: var(--ed-accent);
+    background: var(--ed-accent-tint);
+    font-weight: 600;
 }
-.about-platform-related {
-    border-style: dashed;
-    border-color: var(--color-orange);
-    color: var(--color-orange);
-    background: rgba(255,160,40,0.04);
-    opacity: 0.85;
-}
+
 .about-platform-note {
-    font-size: 0.73em;
-    color: var(--color-muted);
-    margin: var(--space-2) 0 0;
-    text-align: center;
+    font-size: 12px;
+    color: var(--ed-ink-muted);
+    margin: 10px 0 0;
+    text-align: start;
+    max-width: 65ch;
     line-height: 1.5;
-}
-.about-platform-note strong {
-    color: var(--color-orange);
 }
 
 /* Section */
 .about-section {
-    padding: 0 var(--space-4) var(--space-4);
+    padding: 0;
+    min-width: 0;
 }
+
 .about-section-title {
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 0.82em;
+    gap: 8px;
+    font-size: 0.9375rem;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--color-muted);
-    margin: 0 0 var(--space-3);
-    padding-bottom: var(--space-2);
-    border-bottom: 1px solid var(--border-color);
+    letter-spacing: -0.012em;
+    line-height: 1.35;
+    color: var(--ed-ink);
+    margin: 0 0 10px;
+    text-transform: none;
 }
+
 .about-section-title svg {
-    opacity: 0.65;
+    width: 16px;
+    height: 16px;
+    color: var(--ed-accent);
     flex-shrink: 0;
 }
 
-/* Feature Navigation Cards */
-.about-cards {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+.about-section-disclaimer .about-section-title svg {
+    color: var(--ed-danger);
 }
+
+/* Feature Navigation Cards (2-column responsive L1 grid) */
+.about-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+    gap: 10px;
+}
+
 .about-card {
     display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: 10px 12px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border-color);
-    background: var(--card-bg);
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: var(--ed-radius-md);
+    border: 1px solid var(--ed-border);
+    background: var(--ed-surface);
     cursor: pointer;
-    transition: all 0.18s ease;
     text-align: left;
     font: inherit;
-    color: inherit;
+    color: var(--ed-ink);
+    min-width: 0;
+    transition: background var(--ed-dur-fast) var(--ed-ease),
+        border-color var(--ed-dur-fast) var(--ed-ease),
+        transform 100ms var(--ed-ease);
 }
-.about-card:hover {
-    border-color: var(--color-orange);
-    background: rgba(255,160,40,0.04);
-    transform: translateX(2px);
+
+@media (hover: hover) {
+    .about-card:hover {
+        border-color: var(--ed-accent-border);
+        background: var(--ed-surface-hover);
+    }
 }
+
 .about-card:active {
-    transform: translateX(2px) scale(0.995);
+    transform: scale(0.99);
 }
+
+.about-card:focus-visible {
+    outline: 2px solid var(--ed-accent);
+    outline-offset: 2px;
+}
+
 .about-card-icon {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 36px; height: 36px;
+    width: 30px;
+    height: 30px;
     flex-shrink: 0;
-    border-radius: 10px;
-    background: rgba(128,128,128,0.08);
-    transition: background 0.18s;
+    border-radius: var(--ed-radius-sm);
+    background: var(--ed-surface-well);
+    color: var(--ed-accent);
+    border: 1px solid var(--ed-border);
 }
-.about-card:hover .about-card-icon {
-    background: rgba(255,160,40,0.1);
+
+.about-card-icon svg,
+.about-card-icon .icon {
+    width: 16px;
+    height: 16px;
 }
+
 .about-card-body {
     flex: 1;
     min-width: 0;
 }
+
 .about-card-title {
     display: block;
-    font-size: 0.85em;
+    font-size: 0.875rem;
     font-weight: 600;
-    margin-bottom: 2px;
-}
-.about-card-desc {
-    display: block;
-    font-size: 0.73em;
-    color: var(--color-muted);
-    line-height: 1.45;
-}
-.about-card-arrow {
-    flex-shrink: 0;
-    color: var(--color-muted);
-    opacity: 0;
-    transform: translateX(-4px);
-    transition: all 0.18s ease;
-}
-.about-card:hover .about-card-arrow {
-    opacity: 0.6;
-    transform: translateX(0);
+    line-height: 1.38;
+    color: var(--ed-ink);
+    margin-bottom: 3px;
 }
 
-/* Info boxes (shared) */
+.about-card-desc {
+    display: block;
+    font-size: 12px;
+    color: var(--ed-ink-secondary);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+body[data-lang="both"] .about-card-desc {
+    display: block;
+    -webkit-line-clamp: unset;
+    overflow: visible;
+}
+
+body[data-lang="both"] .about-card-desc .bi-en {
+    display: block;
+}
+
+body[data-lang="both"] .about-card-desc .bi-sep {
+    display: none;
+}
+
+body[data-lang="both"] .about-card-desc .bi-zh {
+    display: block;
+    margin-top: 4px;
+    font-size: 11.5px;
+    line-height: 1.48;
+    color: var(--ed-ink-muted);
+}
+
+.about-card-arrow {
+    flex-shrink: 0;
+    margin-top: 2px;
+    color: var(--ed-ink-muted);
+    transition: transform var(--ed-dur-fast) var(--ed-ease), color var(--ed-dur-fast) var(--ed-ease);
+}
+
+@media (hover: hover) {
+    .about-card:hover .about-card-arrow {
+        color: var(--ed-accent);
+        transform: translateX(2px);
+    }
+}
+
+/* Info panels (clean L1 cards, zero 3px colored left borders) */
 .about-info-box {
-    padding: 12px 14px;
-    border-radius: var(--radius-md);
-    font-size: 0.8em;
-    line-height: 1.6;
-    border: 1px solid var(--border-color);
-    background: var(--card-bg);
+    padding: 14px 16px;
+    border-radius: var(--ed-radius-md);
+    font-size: 0.8125rem;
+    line-height: 1.56;
+    color: var(--ed-ink-secondary);
+    border: 1px solid var(--ed-border);
+    background: var(--ed-surface);
+    min-width: 0;
 }
+
 .about-info-box p {
-    margin: 0 0 var(--space-2);
+    margin: 0 0 10px;
+    max-width: 72ch;
 }
+
 .about-info-box p:last-child {
     margin-bottom: 0;
 }
 
-/* GitHub */
-.about-info-github {
-    border-left: 3px solid var(--color-ok);
+.about-info-box strong {
+    color: var(--ed-ink);
+    font-weight: 600;
 }
-.about-info-github .star-inline .icon {
-    color: #f59e0b;
-    width: 13px; height: 13px;
-    vertical-align: -1px;
+
+.about-compat-lead {
+    color: var(--ed-good);
 }
-.about-info-github .heart-inline .icon {
-    color: #ef4444;
-    width: 12px; height: 12px;
-    vertical-align: -1px;
+
+.about-disclaimer-lead {
+    color: var(--ed-danger);
 }
+
+/* Secondary GitHub Repository action button */
 .about-github-link {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    margin-top: var(--space-2);
-    padding: 5px 12px;
-    border-radius: var(--radius-sm);
-    background: rgba(74,222,128,0.1);
-    border: 1px solid rgba(74,222,128,0.2);
-    color: var(--color-ok-light);
-    font-size: 0.9em;
-    font-weight: 500;
+    gap: 6px;
+    margin-top: 10px;
+    height: 32px;
+    padding: 0 12px;
+    border-radius: var(--ed-radius-sm);
+    background: var(--ed-surface);
+    border: 1px solid var(--ed-control-border);
+    color: var(--ed-ink);
+    font-size: 12.5px;
+    font-weight: 550;
     text-decoration: none;
-    transition: all 0.15s;
+    transition: background var(--ed-dur-fast) var(--ed-ease),
+        border-color var(--ed-dur-fast) var(--ed-ease),
+        color var(--ed-dur-fast) var(--ed-ease);
 }
-.about-github-link:hover {
-    background: rgba(74,222,128,0.18);
-    border-color: rgba(74,222,128,0.35);
+
+@media (hover: hover) {
+    .about-github-link:hover {
+        background: var(--ed-surface-hover);
+        border-color: var(--ed-ink-muted);
+        color: var(--ed-ink);
+    }
 }
+
+.about-github-link:focus-visible {
+    outline: 2px solid var(--ed-accent);
+    outline-offset: 2px;
+}
+
 .about-github-link .icon {
-    width: 12px; height: 12px;
+    width: 13px;
+    height: 13px;
+    color: var(--ed-accent);
+    flex-shrink: 0;
 }
 
-/* Tips */
-.about-info-tips {
-    border-left: 3px solid var(--color-amber-light);
-}
-
-/* Compatibility */
-.about-info-compat {
-    border-left: 3px solid var(--color-ok);
-}
-.about-info-compat strong {
-    color: var(--color-ok);
-}
-
-/* Disclaimer */
-.about-info-disclaimer {
-    border-left: 3px solid var(--vscode-editorError-foreground, #f14c4c);
-}
-.about-info-disclaimer strong:first-child {
-    color: var(--vscode-editorError-foreground, #f14c4c);
-}
-
-/* Language */
-.about-info-lang {
-    border-left: 3px solid var(--color-info-light);
-}
-
-/* ═══ Light theme overrides ═══════════════════════════════════════════════════ */
-[data-vscode-theme-kind="vscode-light"] .about-hero-icon {
-    background: linear-gradient(135deg, rgba(255,140,20,0.12), rgba(255,100,0,0.06));
-}
-[data-vscode-theme-kind="vscode-light"] .about-platform-chips,
-[data-vscode-theme-kind="vscode-light"] .about-platform-note {
-    --color-orange: #ea580c;
-    --color-muted: #64748b;
-}
-[data-vscode-theme-kind="vscode-light"] .about-platform-active {
-    border-color: #ea580c;
-    color: #ea580c;
-    background: rgba(234,88,12,0.08);
-}
-[data-vscode-theme-kind="vscode-light"] .about-platform-related {
-    border-color: #ea580c;
-    color: #ea580c;
-    background: rgba(234,88,12,0.04);
-}
-[data-vscode-theme-kind="vscode-light"] .about-platform-note strong {
-    color: #ea580c;
-}
-[data-vscode-theme-kind="vscode-light"] .about-card:hover {
-    background: rgba(255,140,20,0.06);
-}
-[data-vscode-theme-kind="vscode-light"] .about-card-icon {
-    background: rgba(0,0,0,0.04);
-    --color-ok-light: #16a34a;
-    --color-ok: #15803d;
-    --color-teal-light: #0d9488;
-    --color-amber-light: #d97706;
-    --color-orange: #ea580c;
-    --color-muted: #64748b;
-    --color-info-light: #2563eb;
-}
-[data-vscode-theme-kind="vscode-light"] .about-card:hover .about-card-icon {
-    background: rgba(255,140,20,0.08);
-}
-[data-vscode-theme-kind="vscode-light"] .about-info-github {
-    border-left-color: #16a34a;
-    background: rgba(22,163,74,0.04);
-}
-[data-vscode-theme-kind="vscode-light"] .about-github-link {
-    color: #15803d;
-    background: rgba(22,163,74,0.08);
-    border-color: rgba(22,163,74,0.3);
-}
-[data-vscode-theme-kind="vscode-light"] .about-github-link:hover {
-    background: rgba(22,163,74,0.14);
-    border-color: rgba(22,163,74,0.45);
-}
-[data-vscode-theme-kind="vscode-light"] .about-info-tips {
-    border-left-color: #d97706;
-}
-[data-vscode-theme-kind="vscode-light"] .about-info-compat {
-    border-left-color: #16a34a;
-}
-[data-vscode-theme-kind="vscode-light"] .about-info-compat strong {
-    color: #15803d;
-}
-[data-vscode-theme-kind="vscode-light"] .about-info-disclaimer {
-    border-left-color: #dc2626;
-}
-[data-vscode-theme-kind="vscode-light"] .about-info-lang {
-    border-left-color: #2563eb;
+@media (prefers-reduced-motion: reduce) {
+    .about-card,
+    .about-card-arrow,
+    .about-github-link {
+        transition: none;
+    }
 }
 `;
 }

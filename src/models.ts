@@ -8,16 +8,19 @@
 // Static limits cover startup before GetAvailableModels metadata arrives; known
 // quota pools supplement the catalog's provider metadata.
 
+import type { Language } from './i18n';
+
 /** External model identifiers must never read inherited Object prototype members. */
 function ownValue<T>(table: Record<string, T>, key: string): T | undefined {
     return Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
 // Optional effort must be separated or enclosed in a complete pair of parentheses.
-const HYDROGEN_NAME_PATTERN = /^gemini[\s_-]+4[\s_-]+(hydrogen)(?:[\s_-]+(low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)|[\s_-]*\(\s*(low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)\s*\))?$/i;
+const FOUR_EFFORT_GEMINI_4_NAME_PATTERN = /^gemini[\s_-]+4[\s_-]+(hydrogen|neon)(?:[\s_-]+(low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)|[\s_-]*\(\s*(low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)\s*\))?$/i;
 const GEMINI_4_NAME_PATTERN = /^gemini[\s_-]+4[\s_-]+(carbon|argon)(?:[\s_-]+(low|medium|high|低|中|高)|[\s_-]*\(\s*(low|medium|high|低|中|高)\s*\))?$/i;
+const GEMINI_4_FAMILY_PATTERN = /^gemini[\s_-]+4[\s_-]+(?:neon|hydrogen|carbon|argon)$/i;
 
-/** Named coordinators are separate identities, not Carbon/Argon effort tiers. */
+/** Named coordinators have their own identities, separate from Gemini effort tiers. */
 function resolveOrchestratorAlias(value: string): string | undefined {
     const name = value.trim().replace(/（/g, '(').replace(/）/g, ')');
     if (/^(?:orchestrator|编排器|协调器)(?:[\s_-]+carbon|\s*\(\s*carbon\s*\))?$|^gemini[-_ ]pro[-_ ]orchestrator$/i.test(name)) {
@@ -26,12 +29,21 @@ function resolveOrchestratorAlias(value: string): string | undefined {
     if (/^(?:orchestrator|编排器|协调器)(?:[\s_-]+argon|\s*\(\s*argon\s*\))$|^gemini[-_ ]pro[-_ ]orchestrator[-_ ]argon$/i.test(name)) {
         return 'MODEL_PLACEHOLDER_M681';
     }
+    if (/^(?:orchestrator|编排器|协调器)(?:[\s_-]+neon|\s*\(\s*neon\s*\))$|^gemini[-_ ]pro[-_ ]orchestrator[-_ ]neon$/i.test(name)) {
+        return 'MODEL_PLACEHOLDER_M537';
+    }
     return undefined;
 }
 
 // ─── Default Context Limits ──────────────────────────────────────────────────
 
 export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
+    // Neon, from the running IDE catalog on 2026-11-19. Live compression: 512,000.
+    MODEL_PLACEHOLDER_M532: 511_000, // High
+    MODEL_PLACEHOLDER_M533: 511_000, // Medium
+    MODEL_PLACEHOLDER_M534: 511_000, // Low
+    MODEL_PLACEHOLDER_M535: 511_000, // Extra (XHigh in the catalog)
+    MODEL_PLACEHOLDER_M537: 511_000, // Orchestrator (Neon)
     // Orchestrator coordinator and delegated worker, live IDE 2026-11-13.
     MODEL_PLACEHOLDER_M667: 255_000,
     MODEL_PLACEHOLDER_M681: 255_000,
@@ -106,9 +118,14 @@ let modelDisplayNames: Record<string, string> = {};
 let responseModelAliases: Record<string, string> = {
     'gemini-pro-orchestrator': 'MODEL_PLACEHOLDER_M667',
     'gemini-pro-orchestrator-argon': 'MODEL_PLACEHOLDER_M681',
+    'gemini-pro-orchestrator-neon': 'MODEL_PLACEHOLDER_M537',
     'gemini-flash-worker-agy': 'MODEL_PLACEHOLDER_M669',
     // Dedicated image model, verified from imageGenerationModelIds (2026-10-31).
     'gemini-3.1-flash-image': 'MODEL_PLACEHOLDER_M21',
+    'gemini-4-neon-high': 'MODEL_PLACEHOLDER_M532',
+    'gemini-4-neon-medium': 'MODEL_PLACEHOLDER_M533',
+    'gemini-4-neon-low': 'MODEL_PLACEHOLDER_M534',
+    'gemini-4-neon-xhigh': 'MODEL_PLACEHOLDER_M535',
     // Gemini 4 Hydrogen aliases (live GetUserStatus + GetAvailableModels, 2026-11-13).
     'gemini-4-hydrogen-high': 'MODEL_PLACEHOLDER_M525',
     'gemini-4-hydrogen-medium': 'MODEL_PLACEHOLDER_M526',
@@ -169,8 +186,13 @@ const KNOWN_QUOTA_POOLS: Record<string, string> = {
     // Orchestrator and its delegated worker consume the Gemini family allowance.
     MODEL_PLACEHOLDER_M667: 'gemini',
     MODEL_PLACEHOLDER_M681: 'gemini',
+    MODEL_PLACEHOLDER_M537: 'gemini',
     MODEL_PLACEHOLDER_M669: 'gemini',
-    // Gemini pool — Hydrogen, Carbon, Argon, Flash and Pro use the Google provider pool.
+    // Gemini pool — Neon, Hydrogen, Carbon, Argon, Flash and Pro.
+    MODEL_PLACEHOLDER_M532: 'gemini',
+    MODEL_PLACEHOLDER_M533: 'gemini',
+    MODEL_PLACEHOLDER_M534: 'gemini',
+    MODEL_PLACEHOLDER_M535: 'gemini',
     'MODEL_PLACEHOLDER_M525': 'gemini',
     'MODEL_PLACEHOLDER_M526': 'gemini',
     'MODEL_PLACEHOLDER_M527': 'gemini',
@@ -239,8 +261,13 @@ const ZH_MODEL_NAME_ALIASES: Record<string, string> = {
 const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     MODEL_PLACEHOLDER_M667: 'Orchestrator (Carbon)',
     MODEL_PLACEHOLDER_M681: 'Orchestrator (Argon)',
+    MODEL_PLACEHOLDER_M537: 'Orchestrator (Neon)',
     MODEL_PLACEHOLDER_M669: 'Gemini Flash (Orchestrator Worker)',
     'MODEL_PLACEHOLDER_M21': 'Gemini 3.1 Flash Image',
+    MODEL_PLACEHOLDER_M532: 'Gemini 4 Neon (High)',
+    MODEL_PLACEHOLDER_M533: 'Gemini 4 Neon (Medium)',
+    MODEL_PLACEHOLDER_M534: 'Gemini 4 Neon (Low)',
+    MODEL_PLACEHOLDER_M535: 'Gemini 4 Neon (XHigh)',
     'MODEL_PLACEHOLDER_M525': 'Gemini 4 Hydrogen (High)',
     'MODEL_PLACEHOLDER_M526': 'Gemini 4 Hydrogen (Medium)',
     'MODEL_PLACEHOLDER_M527': 'Gemini 4 Hydrogen (Low)',
@@ -327,6 +354,9 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
     const placeholderMatch = idLower.match(/^model_placeholder_(m\d+)$/);
     if (placeholderMatch) {
         const num = placeholderMatch[1];
+        if (['m532', 'm533', 'm534', 'm535', 'm537'].includes(num)) {
+            return { cpLimit: 512000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
+        }
         // Hydrogen, Carbon, Argon and the current 3.8 Flash picker use a 256K compression limit
         // and 50K trigger (live agent hub, 2026-10-31). Older Flash profiles
         // and the archived M322 tiered router retain their verified 140K trigger.
@@ -371,12 +401,16 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
         return { cpLimit: 0, cpThreshold: 0, maxTokens: 0, supportsThinking: false };
     }
 
-    // Only verified Hydrogen/Carbon/Argon and current Flash picker variants get this profile; versions
-    // must not fall into a Flash/Pro guess or match Gemini 40 by prefix.
+    // Match verified catalog/display names before the general provider heuristics.
     const normalizedGeminiName = idLower.trim().replace(/（/g, '(').replace(/）/g, ')');
-    if (resolveOrchestratorAlias(normalizedGeminiName)
+    const coordinator = resolveOrchestratorAlias(normalizedGeminiName);
+    const fourEffortGemini = normalizedGeminiName.match(FOUR_EFFORT_GEMINI_4_NAME_PATTERN);
+    if (coordinator === 'MODEL_PLACEHOLDER_M537' || fourEffortGemini?.[1] === 'neon') {
+        return { cpLimit: 512000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
+    }
+    if (coordinator
         || /^(?:gemini[-_ ]flash[-_ ]worker[-_ ]agy|gemini flash \(orchestrator worker\))$/.test(normalizedGeminiName)
-        || HYDROGEN_NAME_PATTERN.test(normalizedGeminiName) || GEMINI_4_NAME_PATTERN.test(normalizedGeminiName)
+        || fourEffortGemini || GEMINI_4_NAME_PATTERN.test(normalizedGeminiName)
         || /^gemini[\s_-]+3[._-]8[\s_-]+flash[\s_-]*\(?\s*(?:high|medium|low)\s*\)?$/.test(idLower)) {
         return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
     }
@@ -466,6 +500,24 @@ export function getModelDisplayName(model: string): string {
         || (isConcreteAliasTarget(model) ? ownValue(activeModelSpecs, model)?.displayName : '') || model || 'Unknown Model';
 }
 
+const NEON_PICKER_EFFORTS: Record<string, readonly [string, string]> = {
+    Low: ['Low', '低'],
+    Medium: ['Medium', '中'],
+    High: ['High', '高'],
+    XHigh: ['Extra', '超高'],
+    Extra: ['Extra', '超高'],
+};
+
+/** Format the standard Neon names for display while retaining API labels for storage. */
+export function localizeNeonPickerLabel(modelId: string, label: string, language: Language): string {
+    if (!/^MODEL_PLACEHOLDER_M53[2-5]$/.test(modelId)) { return label; }
+    const match = label.match(/^Gemini 4 Neon \((Low|Medium|High|XHigh|Extra)\)(\s+\(M\d+\))?$/);
+    if (!match) { return label; }
+    const [en, zh] = NEON_PICKER_EFFORTS[match[1]];
+    const effort = language === 'en' ? en : language === 'zh' ? zh : `${en} / ${zh}`;
+    return `Gemini 4 Neon (${effort})${match[2] || ''}`;
+}
+
 /**
  * Extract a short diagnostic ID from a model placeholder.
  * e.g. MODEL_PLACEHOLDER_M16 → "M16", MODEL_OPENAI_GPT_OSS_120B_MEDIUM → "OSS-120B"
@@ -528,9 +580,15 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     // Gemini 4 effort is part of its identity. A shared family responseModel must
     // remain unassigned: guessing a tier would merge distinct effort telemetry.
     const geminiName = clean.replace(/（/g, '(').replace(/）/g, ')');
-    const gemini4 = geminiName.match(HYDROGEN_NAME_PATTERN) || geminiName.match(GEMINI_4_NAME_PATTERN);
+    const gemini4 = geminiName.match(FOUR_EFFORT_GEMINI_4_NAME_PATTERN) || geminiName.match(GEMINI_4_NAME_PATTERN);
     if (gemini4 && (gemini4[2] || gemini4[3])) {
         const tier = (gemini4[2] || gemini4[3]).toLowerCase();
+        if (gemini4[1].toLowerCase() === 'neon') {
+            if (tier === 'low' || tier === '低') { return 'MODEL_PLACEHOLDER_M534'; }
+            if (tier === 'medium' || tier === '中') { return 'MODEL_PLACEHOLDER_M533'; }
+            if (tier === 'high' || tier === '高') { return 'MODEL_PLACEHOLDER_M532'; }
+            return 'MODEL_PLACEHOLDER_M535';
+        }
         if (gemini4[1].toLowerCase() === 'hydrogen') {
             if (tier === 'low' || tier === '低') { return 'MODEL_PLACEHOLDER_M527'; }
             if (tier === 'medium' || tier === '中') { return 'MODEL_PLACEHOLDER_M526'; }
@@ -601,7 +659,7 @@ export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
     // Bare Claude 5.5 response names identify the shared pool even though they do
     // not identify an effort tier (see resolveModelId).
     if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(modelId.trim())) { return 'premium'; }
-    if (/^gemini[\s_-]+4[\s_-]+(?:hydrogen|carbon|argon)$/i.test(modelId.trim())) { return 'gemini'; }
+    if (GEMINI_4_FAMILY_PATTERN.test(modelId.trim())) { return 'gemini'; }
     // KNOWN_QUOTA_POOLS is keyed by placeholder ID, but callers also hold catalog model_ids
     // ('gemini-3.7-flash-high') and display labels ('Gemini 3.7 Flash (High)'). Without this
     // normalization those forms silently fall through to the resetTime branch — and resetTime is a
@@ -625,7 +683,7 @@ export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
     const spec = specKey.includes('UNSPECIFIED') ? undefined : ownValue(activeModelSpecs, specKey);
     const provider = (spec?.apiProvider || '').replace(/^API_PROVIDER_/i, '').toUpperCase();
     const catalog = spec?.modelId.trim() || '';
-    const hasChatEffort = /[-_\s](?:low|medium|high|xhigh)$/i.test(catalog);
+    const hasChatEffort = /[-_\s](?:low|medium|high|xhigh|extra(?:[-_\s]high)?)$/i.test(catalog);
     if (hasChatEffort && /^gemini[-_\s]/i.test(catalog) && /^(?:GOOGLE(?:_GEMINI)?|GEMINI)$/.test(provider)) { return 'gemini'; }
     if (hasChatEffort && /^claude[-_\s]/i.test(catalog) && /^ANTHROPIC(?:_VERTEX)?$/.test(provider)) { return 'premium'; }
     if (hasChatEffort && /^gpt[-_\s]oss[-_\s]/i.test(catalog) && /^OPENAI(?:_VERTEX)?$/.test(provider)) { return 'premium'; }
@@ -670,7 +728,7 @@ export interface TeamConfig {
 
 export interface CreditInfo {
     creditType: string;
-    creditAmount: number;
+    creditAmount: number | null;
     minimumCreditAmountForUsage: number;
 }
 
@@ -679,10 +737,6 @@ export interface UserStatusInfo {
     email: string;
     planName: string;
     teamsTier: string;
-    monthlyPromptCredits: number;
-    monthlyFlowCredits: number;
-    availablePromptCredits: number;
-    availableFlowCredits: number;
     userTierName: string;
     userTierId: string;
     defaultModelLabel: string;
@@ -762,7 +816,7 @@ export function registerResponseModelAlias(responseModel: string, placeholderId:
         return;
     }
     if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(responseKey)
-        || /^gemini[\s_-]+4[\s_-]+(?:hydrogen|carbon|argon)$/i.test(responseKey)) { return; }
+        || GEMINI_4_FAMILY_PATTERN.test(responseKey)) { return; }
     // Resolve all known spellings before learning a telemetry alias. Checking
     // only the raw key lets case/localization variants override a known effort.
     // Live labels retain the resolver's precedence during a platform renumber.
@@ -811,6 +865,18 @@ export interface ModelSpec {
     cpThreshold: number;
 }
 
+// All five Neon entries report these limits. The minimum thinking budget is a
+// capability bound, so it must not fill in a fixed budget for a request.
+const neonModelCapabilities = {
+    apiProvider: 'GOOGLE_GEMINI',
+    maxTokens: 1048576,
+    maxOutputTokens: 262144,
+    thinkingBudget: 0,
+    supportsThinking: true,
+    cpLimit: 512000,
+    cpThreshold: 50000,
+} as const;
+
 let activeModelSpecs: Record<string, ModelSpec> = {
     // Tool-only model: no checkpointer parameters were returned by the live catalog.
     'MODEL_PLACEHOLDER_M21': {
@@ -827,8 +893,13 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         cpLimit: 0,
         cpThreshold: 0,
     },
-    // Orchestrator is selectable; its worker is catalog-only. Neither is an alias
-    // for a Carbon/Hydrogen effort: real calls retain their own backend identity.
+    // Coordinators are selectable. The configured worker is catalog-only and
+    // real calls retain their own backend identity.
+    MODEL_PLACEHOLDER_M537: {
+        ...neonModelCapabilities,
+        modelId: 'gemini-pro-orchestrator-neon', placeholderId: 'MODEL_PLACEHOLDER_M537',
+        displayName: 'Orchestrator (Neon)', thinkingLevel: 100, executionModelId: 'MODEL_PLACEHOLDER_M669',
+    },
     MODEL_PLACEHOLDER_M667: {
         modelId: 'gemini-pro-orchestrator', placeholderId: 'MODEL_PLACEHOLDER_M667',
         displayName: 'Orchestrator (Carbon)', apiProvider: 'GOOGLE_GEMINI',
@@ -848,6 +919,27 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         displayName: 'Gemini Flash (Orchestrator Worker)', apiProvider: 'GOOGLE_GEMINI',
         maxTokens: 1048576, maxOutputTokens: 262144, thinkingBudget: 0,
         supportsThinking: true, thinkingLevel: 3, cpLimit: 256000, cpThreshold: 50000,
+    },
+    // Gemini 4 Neon: GetAvailableModels and GetUserStatus, 2026-11-19.
+    MODEL_PLACEHOLDER_M532: {
+        ...neonModelCapabilities,
+        modelId: 'gemini-4-neon-high', placeholderId: 'MODEL_PLACEHOLDER_M532',
+        displayName: 'Gemini 4 Neon (High)', thinkingLevel: 3,
+    },
+    MODEL_PLACEHOLDER_M533: {
+        ...neonModelCapabilities,
+        modelId: 'gemini-4-neon-medium', placeholderId: 'MODEL_PLACEHOLDER_M533',
+        displayName: 'Gemini 4 Neon (Medium)', thinkingLevel: 2,
+    },
+    MODEL_PLACEHOLDER_M534: {
+        ...neonModelCapabilities,
+        modelId: 'gemini-4-neon-low', placeholderId: 'MODEL_PLACEHOLDER_M534',
+        displayName: 'Gemini 4 Neon (Low)', thinkingLevel: 1,
+    },
+    MODEL_PLACEHOLDER_M535: {
+        ...neonModelCapabilities,
+        modelId: 'gemini-4-neon-xhigh', placeholderId: 'MODEL_PLACEHOLDER_M535',
+        displayName: 'Gemini 4 Neon (XHigh)', thinkingLevel: 100,
     },
     // Gemini 4 Hydrogen: live agent hub GetAvailableModels, 2026-11-13.
     // The picker calls XHigh "Extra"; the backend reports thinkingLevel 100, not 4.
@@ -1341,11 +1433,16 @@ export function updateModelSpec(placeholderId: string, spec: Partial<ModelSpec>)
 
 export function getModelSpecs(): ModelSpec[] {
     // Mirrors the platform's own "Recommended" sort group (GetUserStatus → clientModelSorts),
-    // newest generation first. Hydrogen identities live-verified 2026-11-13.
+    // newest generation first.
     const order = [
+        'MODEL_PLACEHOLDER_M537',
         'MODEL_PLACEHOLDER_M667',
         'MODEL_PLACEHOLDER_M681',
         'MODEL_PLACEHOLDER_M669',
+        'MODEL_PLACEHOLDER_M535',
+        'MODEL_PLACEHOLDER_M532',
+        'MODEL_PLACEHOLDER_M533',
+        'MODEL_PLACEHOLDER_M534',
         'MODEL_PLACEHOLDER_M528',
         'MODEL_PLACEHOLDER_M525',
         'MODEL_PLACEHOLDER_M526',

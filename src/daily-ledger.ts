@@ -12,9 +12,23 @@
 import type { GMCallEntry } from './gm-tracker';
 import { normalizeModelDisplayName, resolveModelId } from './models';
 import { buildGMArchiveKey, isValidCallTimestamp } from './gm/parser';
-import { findPricingForDate, costFromTokens } from './pricing-store';
+import { findPricingForDate, costFromTokens, selectPricingModel } from './pricing-store';
+import { MIN_OUTPUT_TOKENS_FOR_SPEED, MIN_STREAM_SECONDS } from './telemetry-metrics';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+/** Additive timing and cache-hit telemetry carried per model in ledger & settled entries */
+export interface LedgerModelTelemetry {
+    ttftSum: number;
+    ttftCount: number;
+    minTTFT?: number;
+    maxTTFT?: number;
+    streamingSum: number;
+    streamingCount: number;
+    timedOutputTokens: number;
+    timedStreamingSeconds: number;
+    cacheHitCalls: number;
+}
 
 /** Per-model statistics within a ledger bucket */
 export interface LedgerModelStats {
@@ -26,6 +40,24 @@ export interface LedgerModelStats {
     cacheCreationTokens: number;
     credits: number;
     estimatedCost: number;
+    /** Sum of valid ttftSeconds (> 0) across calls (optional for v1 compat) */
+    ttftSum?: number;
+    /** Count of calls with valid ttftSeconds > 0 (optional for v1 compat) */
+    ttftCount?: number;
+    /** Minimum valid ttftSeconds (> 0) observed (optional for v1 compat) */
+    minTTFT?: number;
+    /** Maximum valid ttftSeconds (> 0) observed (optional for v1 compat) */
+    maxTTFT?: number;
+    /** Sum of valid streamingSeconds (> 0) across calls (optional for v1 compat) */
+    streamingSum?: number;
+    /** Count of calls with valid streamingSeconds > 0 (optional for v1 compat) */
+    streamingCount?: number;
+    /** Sum of outputTokens across speed-valid calls (optional for v1 compat) */
+    timedOutputTokens?: number;
+    /** Sum of streamingSeconds across speed-valid calls (optional for v1 compat) */
+    timedStreamingSeconds?: number;
+    /** Count of calls with cacheReadTokens > 0 (optional for v1 compat) */
+    cacheHitCalls?: number;
 }
 
 /** Per-call data retained so quota-reset settlement can split by reset cutoff. */
@@ -42,6 +74,10 @@ export interface LedgerRecordedCall {
     cacheCreationTokens: number;
     credits: number;
     estimatedCost: number;
+    /** Valid ttftSeconds (> 0) for timing preservation across settlement (optional for v1 compat) */
+    ttftSeconds?: number;
+    /** Valid streamingSeconds (> 0) for timing preservation across settlement (optional for v1 compat) */
+    streamingSeconds?: number;
 }
 
 /** A single account bucket within a day */
@@ -86,6 +122,8 @@ export interface LedgerSettledEntry {
     settledCutoffTime?: number;
     /** Per-model call counts (key = display name) */
     modelCalls: Record<string, number>;
+    /** Per-model additive timing & cache-hit telemetry preserved across quota settlement (optional for v1 compat) */
+    modelTelemetry?: Record<string, LedgerModelTelemetry>;
 }
 
 /** Full day entry containing active buckets + settled entries */
@@ -168,8 +206,8 @@ function fallbackCallId(call: GMCallEntry): string {
  */
 function estimateCallCost(call: GMCallEntry, dateKey: string): number {
     const at = call.createdAt || dateKey;
-    const pr = findPricingForDate(call.model, {}, at)
-        || findPricingForDate(call.responseModel, {}, at) || findPricingForDate(call.modelDisplay, {}, at);
+    const fallback = selectPricingModel(call.modelDisplay, call.responseModel);
+    const pr = findPricingForDate(selectPricingModel(call.model, fallback), {}, at);
     return pr ? costFromTokens(call, pr) : 0;
 }
 
@@ -244,7 +282,44 @@ function emptyModelStats(): LedgerModelStats {
         cacheCreationTokens: 0,
         credits: 0,
         estimatedCost: 0,
+        ttftSum: 0,
+        ttftCount: 0,
+        minTTFT: 0,
+        maxTTFT: 0,
+        streamingSum: 0,
+        streamingCount: 0,
+        timedOutputTokens: 0,
+        timedStreamingSeconds: 0,
+        cacheHitCalls: 0,
     };
+}
+
+function addCallTelemetryToModelStats(
+    target: LedgerModelStats,
+    ttftSeconds: number | undefined,
+    streamingSeconds: number | undefined,
+    outputTokens: number,
+    cacheReadTokens: number,
+): void {
+    if (typeof ttftSeconds === 'number' && Number.isFinite(ttftSeconds) && ttftSeconds > 0) {
+        target.ttftSum = (target.ttftSum || 0) + ttftSeconds;
+        target.ttftCount = (target.ttftCount || 0) + 1;
+        target.minTTFT = target.minTTFT && target.minTTFT > 0
+            ? Math.min(target.minTTFT, ttftSeconds)
+            : ttftSeconds;
+        target.maxTTFT = Math.max(target.maxTTFT || 0, ttftSeconds);
+    }
+    if (typeof streamingSeconds === 'number' && Number.isFinite(streamingSeconds) && streamingSeconds > 0) {
+        target.streamingSum = (target.streamingSum || 0) + streamingSeconds;
+        target.streamingCount = (target.streamingCount || 0) + 1;
+        if (streamingSeconds >= MIN_STREAM_SECONDS && outputTokens >= MIN_OUTPUT_TOKENS_FOR_SPEED) {
+            target.timedOutputTokens = (target.timedOutputTokens || 0) + outputTokens;
+            target.timedStreamingSeconds = (target.timedStreamingSeconds || 0) + streamingSeconds;
+        }
+    }
+    if (cacheReadTokens > 0) {
+        target.cacheHitCalls = (target.cacheHitCalls || 0) + 1;
+    }
 }
 
 function resolveCallModelId(call: GMCallEntry, modelKey: string): string {
@@ -283,6 +358,7 @@ function addRecordedCallStats(target: LedgerModelStats, call: LedgerRecordedCall
     target.cacheCreationTokens += call.cacheCreationTokens;
     target.credits += call.credits;
     target.estimatedCost += call.estimatedCost;
+    addCallTelemetryToModelStats(target, call.ttftSeconds, call.streamingSeconds, call.outputTokens, call.cacheReadTokens);
 }
 
 function addModelStats(target: LedgerModelStats, source: LedgerModelStats): void {
@@ -294,10 +370,22 @@ function addModelStats(target: LedgerModelStats, source: LedgerModelStats): void
     target.cacheCreationTokens += source.cacheCreationTokens;
     target.credits += source.credits;
     target.estimatedCost += source.estimatedCost;
+    target.ttftSum = (target.ttftSum || 0) + (source.ttftSum || 0);
+    target.ttftCount = (target.ttftCount || 0) + (source.ttftCount || 0);
+    const sMin = source.minTTFT || 0;
+    const tMin = target.minTTFT || 0;
+    target.minTTFT = tMin > 0 && sMin > 0 ? Math.min(tMin, sMin) : Math.max(tMin, sMin);
+    target.maxTTFT = Math.max(target.maxTTFT || 0, source.maxTTFT || 0);
+    target.streamingSum = (target.streamingSum || 0) + (source.streamingSum || 0);
+    target.streamingCount = (target.streamingCount || 0) + (source.streamingCount || 0);
+    target.timedOutputTokens = (target.timedOutputTokens || 0) + (source.timedOutputTokens || 0);
+    target.timedStreamingSeconds = (target.timedStreamingSeconds || 0) + (source.timedStreamingSeconds || 0);
+    target.cacheHitCalls = (target.cacheHitCalls || 0) + (source.cacheHitCalls || 0);
 }
 
 function subtractModelStatsSnapshot(total: LedgerModelStats, represented?: LedgerModelStats): LedgerModelStats {
     const rep = represented || emptyModelStats();
+    const ttftCount = Math.max(0, (total.ttftCount || 0) - (rep.ttftCount || 0));
     return {
         calls: Math.max(0, total.calls - rep.calls),
         inputTokens: Math.max(0, total.inputTokens - rep.inputTokens),
@@ -307,6 +395,15 @@ function subtractModelStatsSnapshot(total: LedgerModelStats, represented?: Ledge
         cacheCreationTokens: Math.max(0, total.cacheCreationTokens - rep.cacheCreationTokens),
         credits: Math.max(0, total.credits - rep.credits),
         estimatedCost: Math.max(0, total.estimatedCost - rep.estimatedCost),
+        ttftSum: Math.max(0, (total.ttftSum || 0) - (rep.ttftSum || 0)),
+        ttftCount,
+        minTTFT: ttftCount > 0 ? (total.minTTFT || 0) : 0,
+        maxTTFT: ttftCount > 0 ? (total.maxTTFT || 0) : 0,
+        streamingSum: Math.max(0, (total.streamingSum || 0) - (rep.streamingSum || 0)),
+        streamingCount: Math.max(0, (total.streamingCount || 0) - (rep.streamingCount || 0)),
+        timedOutputTokens: Math.max(0, (total.timedOutputTokens || 0) - (rep.timedOutputTokens || 0)),
+        timedStreamingSeconds: Math.max(0, (total.timedStreamingSeconds || 0) - (rep.timedStreamingSeconds || 0)),
+        cacheHitCalls: Math.max(0, (total.cacheHitCalls || 0) - (rep.cacheHitCalls || 0)),
     };
 }
 
@@ -351,8 +448,40 @@ function subtractStatsFromBucket(bucket: LedgerAccountBucket, key: string, stats
     activeStats.cacheCreationTokens = Math.max(0, activeStats.cacheCreationTokens - stats.cacheCreationTokens);
     activeStats.credits = Math.max(0, activeStats.credits - stats.credits);
     activeStats.estimatedCost = Math.max(0, activeStats.estimatedCost - stats.estimatedCost);
+    if (activeStats.ttftSum !== undefined || stats.ttftSum) {
+        activeStats.ttftSum = Math.max(0, (activeStats.ttftSum || 0) - (stats.ttftSum || 0));
+    }
+    if (activeStats.ttftCount !== undefined || stats.ttftCount) {
+        activeStats.ttftCount = Math.max(0, (activeStats.ttftCount || 0) - (stats.ttftCount || 0));
+    }
+    if (activeStats.streamingSum !== undefined || stats.streamingSum) {
+        activeStats.streamingSum = Math.max(0, (activeStats.streamingSum || 0) - (stats.streamingSum || 0));
+    }
+    if (activeStats.streamingCount !== undefined || stats.streamingCount) {
+        activeStats.streamingCount = Math.max(0, (activeStats.streamingCount || 0) - (stats.streamingCount || 0));
+    }
+    if (activeStats.timedOutputTokens !== undefined || stats.timedOutputTokens) {
+        activeStats.timedOutputTokens = Math.max(0, (activeStats.timedOutputTokens || 0) - (stats.timedOutputTokens || 0));
+    }
+    if (activeStats.timedStreamingSeconds !== undefined || stats.timedStreamingSeconds) {
+        activeStats.timedStreamingSeconds = Math.max(0, (activeStats.timedStreamingSeconds || 0) - (stats.timedStreamingSeconds || 0));
+    }
+    if (activeStats.cacheHitCalls !== undefined || stats.cacheHitCalls) {
+        activeStats.cacheHitCalls = Math.max(0, (activeStats.cacheHitCalls || 0) - (stats.cacheHitCalls || 0));
+    }
     if (activeStats.calls === 0) {
         delete bucket.modelStats[key];
+    } else if ((activeStats.ttftCount || 0) === 0) {
+        activeStats.minTTFT = 0;
+        activeStats.maxTTFT = 0;
+    } else if (Array.isArray(bucket.recordedCalls)) {
+        const remainingTtfts = bucket.recordedCalls
+            .filter(c => c.modelKey === key && typeof c.ttftSeconds === 'number' && c.ttftSeconds > 0)
+            .map(c => c.ttftSeconds!);
+        if (remainingTtfts.length > 0) {
+            activeStats.minTTFT = Math.min(...remainingTtfts);
+            activeStats.maxTTFT = Math.max(...remainingTtfts);
+        }
     }
 }
 
@@ -557,11 +686,18 @@ export class DailyLedger {
             ms.cacheCreationTokens += call.cacheCreationTokens;
             ms.credits += call.credits;
             ms.estimatedCost += cost;
+            addCallTelemetryToModelStats(
+                ms,
+                call.ttftSeconds,
+                call.streamingSeconds,
+                call.outputTokens,
+                call.cacheReadTokens,
+            );
 
             // Mark as recorded
             bucket.recordedCallIds.push(id);
             const createdAtMs = parseCallCreatedAtMs(call.createdAt);
-            bucket.recordedCalls.push({
+            const recordedCall: LedgerRecordedCall = {
                 callId: id,
                 createdAt: call.createdAt || '',
                 createdAtMs,
@@ -574,7 +710,14 @@ export class DailyLedger {
                 cacheCreationTokens: call.cacheCreationTokens,
                 credits: call.credits,
                 estimatedCost: cost,
-            });
+            };
+            if (typeof call.ttftSeconds === 'number' && Number.isFinite(call.ttftSeconds) && call.ttftSeconds > 0) {
+                recordedCall.ttftSeconds = call.ttftSeconds;
+            }
+            if (typeof call.streamingSeconds === 'number' && Number.isFinite(call.streamingSeconds) && call.streamingSeconds > 0) {
+                recordedCall.streamingSeconds = call.streamingSeconds;
+            }
+            bucket.recordedCalls.push(recordedCall);
             this._allRecordedIds.add(id);
             added++;
         }
@@ -711,6 +854,7 @@ export class DailyLedger {
         let totalIn = 0, totalOut = 0, totalThinking = 0, totalCache = 0, totalCacheCreation = 0;
         let totalCredits = 0, totalCost = 0;
         const modelCalls: Record<string, number> = {};
+        const modelTelemetry: Record<string, LedgerModelTelemetry> = {};
 
         for (const key of matchingModelKeys) {
             const ms = settledStatsByModel[key];
@@ -724,6 +868,20 @@ export class DailyLedger {
             totalCredits += ms.credits;
             totalCost += ms.estimatedCost;
             modelCalls[key] = ms.calls;
+            if ((ms.ttftCount || 0) > 0 || (ms.streamingCount || 0) > 0
+                || (ms.timedStreamingSeconds || 0) > 0 || (ms.cacheHitCalls || 0) > 0) {
+                modelTelemetry[key] = {
+                    ttftSum: ms.ttftSum || 0,
+                    ttftCount: ms.ttftCount || 0,
+                    ...(ms.minTTFT && ms.minTTFT > 0 ? { minTTFT: ms.minTTFT } : {}),
+                    ...(ms.maxTTFT && ms.maxTTFT > 0 ? { maxTTFT: ms.maxTTFT } : {}),
+                    streamingSum: ms.streamingSum || 0,
+                    streamingCount: ms.streamingCount || 0,
+                    timedOutputTokens: ms.timedOutputTokens || 0,
+                    timedStreamingSeconds: ms.timedStreamingSeconds || 0,
+                    cacheHitCalls: ms.cacheHitCalls || 0,
+                };
+            }
             subtractStatsFromBucket(bucket, key, ms);
         }
 
@@ -742,6 +900,7 @@ export class DailyLedger {
             totalEstimatedCost: totalCost,
             settledCutoffTime: cutoffMs,
             modelCalls,
+            ...(Object.keys(modelTelemetry).length > 0 ? { modelTelemetry } : {}),
         };
 
         this._settled.push(entry);
@@ -758,8 +917,11 @@ export class DailyLedger {
         for (const [email, bucket] of this._accounts) {
             accounts[email] = {
                 ...bucket,
+                modelStats: Object.fromEntries(
+                    Object.entries(bucket.modelStats || {}).map(([k, v]) => [k, { ...v }]),
+                ),
                 recordedCallIds: [...bucket.recordedCallIds],
-                recordedCalls: [...bucket.recordedCalls],
+                recordedCalls: bucket.recordedCalls.map(c => ({ ...c })),
             };
         }
 
@@ -820,8 +982,11 @@ export class DailyLedger {
         for (const [email, bucket] of this._accounts) {
             accounts[email] = {
                 ...bucket,
+                modelStats: Object.fromEntries(
+                    Object.entries(bucket.modelStats || {}).map(([k, v]) => [k, { ...v }]),
+                ),
                 recordedCallIds: [...bucket.recordedCallIds],
-                recordedCalls: [...bucket.recordedCalls],
+                recordedCalls: bucket.recordedCalls.map(c => ({ ...c })),
             };
         }
         return {
@@ -846,13 +1011,20 @@ export class DailyLedger {
 
         if (data.accounts && typeof data.accounts === 'object') {
             for (const [email, bucket] of Object.entries(data.accounts)) {
+                const restoredModelStats: Record<string, LedgerModelStats> = {};
+                if (bucket.modelStats && typeof bucket.modelStats === 'object') {
+                    for (const [k, v] of Object.entries(bucket.modelStats)) {
+                        restoredModelStats[k] = { ...v };
+                    }
+                }
                 const restored: LedgerAccountBucket = {
                     ...bucket,
+                    modelStats: restoredModelStats,
                     recordedCallIds: Array.isArray(bucket.recordedCallIds)
                         ? [...bucket.recordedCallIds]
                         : [],
                     recordedCalls: Array.isArray(bucket.recordedCalls)
-                        ? [...bucket.recordedCalls]
+                        ? bucket.recordedCalls.map(c => ({ ...c }))
                         : [],
                 };
                 ledger._accounts.set(email, restored);

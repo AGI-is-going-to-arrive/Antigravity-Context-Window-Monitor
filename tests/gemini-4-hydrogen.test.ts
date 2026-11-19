@@ -263,8 +263,8 @@ describe('Hydrogen available catalog and multilingual presentation', () => {
         expect(buildModelsTabContent(null, [])).not.toContain('Gemini 4 Hydrogen');
     });
 
-    it('sorts the new family first while retaining recommendation and current-model precedence', () => {
-        const ids = getModelSpecs().filter(s => s.modelId.startsWith('gemini-4-')).map(s => s.placeholderId);
+    it('orders Hydrogen ahead of Carbon and Argon while retaining recommendation and current-model precedence', () => {
+        const ids = getModelSpecs().filter(s => /^gemini-4-(?:hydrogen|carbon|argon)-/.test(s.modelId)).map(s => s.placeholderId);
         expect(ids.slice(0, 4)).toEqual(['MODEL_PLACEHOLDER_M528', 'MODEL_PLACEHOLDER_M525', 'MODEL_PLACEHOLDER_M526', 'MODEL_PLACEHOLDER_M527']);
         const all = [config('MODEL_PLACEHOLDER_M427', 'Gemini 4 Carbon (High)'),
             config('MODEL_PLACEHOLDER_M417', 'Gemini 4 Argon (High)'), ...configs()];

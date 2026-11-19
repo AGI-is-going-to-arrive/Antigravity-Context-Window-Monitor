@@ -4,7 +4,7 @@
 //
 // Extracted from gm-panel.ts to enable the dedicated Pricing tab.
 
-import type { GMSummary, GMModelStats } from './gm-tracker';
+import type { GMSummary } from './gm-tracker';
 import type { LedgerAccountBucket, LedgerModelStats } from './daily-ledger';
 import { normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDisplayName, getModelSpecs, isImageGenerationModel } from './models';
 
@@ -134,8 +134,8 @@ export function findPricing(
     if (/^(?:orchestrator|编排器|协调器|gemini[-_ ]pro[-_ ]orchestrator)/i.test(clean) && !modelId) {
         return null;
     }
-    if (/^gemini[\s_-]+4[\s_-]+(?:hydrogen|carbon|argon)/i.test(clean)
-        && !/^gemini[\s_-]+4[\s_-]+(?:hydrogen|carbon|argon)$/i.test(clean)
+    if (/^gemini[\s_-]+4[\s_-]+(?:neon|hydrogen|carbon|argon)/i.test(clean)
+        && !/^gemini[\s_-]+4[\s_-]+(?:neon|hydrogen|carbon|argon)$/i.test(clean)
         && !modelId) { return null; }
     const imageModel = isImageGenerationModel(responseModel);
     const candidates: string[] = [];
@@ -161,7 +161,7 @@ export function findPricing(
             // Only model variants may extend a price key. A numeric continuation
             // is another version: Sonnet 5.5 cannot use a Sonnet 5 row.
             const isVariant = /^(?:(?:low|medium|high|thinking|tiered|preview|latest)(?:-|$)|\d{8}(?:-|$))/.test(suffix)
-                || (normalizedKey === 'gemini-4-hydrogen' && /^(?:xhigh|extra(?:-high)?)$/.test(suffix));
+                || (/^gemini-4-(?:neon|hydrogen)$/.test(normalizedKey) && /^(?:xhigh|extra(?:-high)?)$/.test(suffix));
             if (normalizedKey && (candidate === normalizedKey || isVariant)) {
                 return pricing;
             }
@@ -201,8 +201,8 @@ function kebabCandidates(displayName: string): string[] {
         const base = s.replace(/[()]/g, '').trim().toLowerCase().replace(/[\s_]+/g, '-');
         return dashDecimals ? base.replace(/(\d+)\.(\d+)/g, '$1-$2') : base;
     };
-    // Carbon/Argon in coordinator names are identities, not removable efforts.
-    // Removing either would make an old custom "Orchestrator" rate price Argon.
+    // Coordinator variants are separate identities. Stripping the variant would
+    // apply a legacy custom "Orchestrator" rate to Argon or Neon.
     const withoutTier = /^(?:orchestrator|编排器|协调器)\s*[（(]/i.test(displayName.trim())
         ? displayName : displayName.replace(/\s*\([^)]*\)\s*$/, '').trim();
     const out = [kebab(displayName, true), kebab(displayName, false)];
@@ -338,6 +338,11 @@ export function samePricingModel(left: string, right: string): boolean {
         && leftName.toLowerCase() === rightName.toLowerCase();
 }
 
+/** A response label can recover a missing identity, but cannot replace a known model. */
+export function selectPricingModel(model: string, responseModel: string, custom: Record<string, ModelPricing> = {}): string {
+    return resolveModelId(model) || findPricingWithCustom(model, custom) ? model : responseModel || model;
+}
+
 function tokenCostBreakdown(tokens: PricingTokenUsage, pricing: ModelPricing | null): CostBreakdown {
     const responseOutput = Math.max(0, tokens.outputTokens - tokens.thinkingTokens);
     const inputCost = pricing ? tokens.inputTokens * pricing.input / 1_000_000 : 0;
@@ -431,7 +436,7 @@ export function calculateCosts(
     for (const [name, ms] of entries) {
         const displayName = normalizeModelDisplayName(name);
         const baseName = getModelBaseName(name) || displayName;
-        const model = findPricingWithCustom(name, customPricing) ? name : ms.responseModel;
+        const model = selectPricingModel(name, ms.responseModel, customPricing);
         const calls = (summary.conversations || []).flatMap(conversation => conversation.calls)
             .filter(call => samePricingModel(call.modelDisplay || call.model || call.responseModel, model));
         const costs = calculateUsageCosts(model, {

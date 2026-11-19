@@ -3,16 +3,47 @@
 // Merges Activity tracking data with GM precision data into a single view.
 // This module is a content-only builder — the panel itself is managed by webview-panel.ts.
 
-import { tBi } from './i18n';
-import { ActivitySummary, ActivityArchive, ModelActivityStats, CheckpointSnapshot, ConversationBreakdown } from './activity-tracker';
-import { esc, formatShortTime as formatTime } from './webview-helpers';
+import { tBi, formatNumber } from './i18n';
+import { ActivitySummary } from './activity-tracker';
+import { esc, formatShortTime as formatTime, tBiHtml } from './webview-helpers';
 import type { ContextUsage } from './tracker';
-import type { GMSummary, GMModelStats, GMConversationData, GMSystemContextItem, TokenBreakdownGroup, UniqueErrorEntry, RecentErrorEntry } from './gm-tracker';
+import type { GMSummary, GMModelStats, GMSystemContextItem } from './gm-tracker';
+import { currentAICredits, formatCreditTypeLabel } from './account-credits';
 import { normalizeModelDisplayName } from './models';
-import { findPricingWithCustom, costFromTokens, type ModelPricing } from './pricing-store';
+import { findPricingWithCustom, costFromTokens, selectPricingModel, type ModelPricing } from './pricing-store';
 import { toLocalDateKey, type LedgerAccountBucket, type LedgerSettledEntry } from './daily-ledger';
-import { formatResetCountdown, formatResetAbsolute, parseResetDate } from './reset-time';
+import { formatResetCountdown, parseResetDate } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
+import {
+    computeTelemetrySummary,
+    computeTelemetryAggregateFromModelStats,
+    computeStepSpeed,
+    computeStepCacheHitRate,
+    formatSpeed,
+    formatLatency,
+    formatCachePercent,
+    type SessionTelemetrySummary,
+    type TelemetryAggregate,
+    type CacheState,
+} from './telemetry-metrics';
+
+function fmtCompactTokens(n: number): string {
+    if (n >= 1_000_000) { return `${(n / 1_000_000).toFixed(2)}M`; }
+    if (n >= 1_000) { return `${(n / 1_000).toFixed(1)}k`; }
+    return String(Math.round(n));
+}
+
+function formatSavingsUsd(amount: number): string {
+    if (amount < 0.0001) { return '<$0.0001'; }
+    if (amount < 0.01) { return `$${amount.toFixed(4)}`; }
+    return `$${amount.toFixed(2)}`;
+}
+
+function formatSpeedRange(minTokPerSec: number, maxTokPerSec: number): string {
+    const minStr = formatSpeed(minTokPerSec).replace(/\s*tok\/s$/, '');
+    const maxStr = formatSpeed(maxTokPerSec);
+    return `${minStr}–${maxStr}`;
+}
 
 function dateKeyToStartOfDayMs(dateKey: string): number {
     const parts = dateKey.split('-');
@@ -68,7 +99,7 @@ export interface AccountSnapshot {
     /** Last time this snapshot was updated (ISO timestamp) */
     lastSeen: string;
     /** Available credit balances (e.g. Google One AI credits) */
-    credits?: { creditType: string; creditAmount: number }[];
+    credits?: { creditType: string; creditAmount: number | null }[];
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -88,23 +119,32 @@ export function buildGMDataTabContent(
     customPricing: Record<string, ModelPricing> = {},
 ): string {
     if (!summary && (!gmSummary || gmSummary.totalCalls === 0)) {
-        return `<p class="empty-msg">${tBi(
+        return `<p class="empty-msg">${tBiHtml(
             'Waiting for data... GM and Activity information will appear automatically.',
             '正在等待数据... GM 和活动信息将自动显示。',
         )}</p>`;
     }
 
     const parts: string[] = [];
+    const telemetry = computeTelemetrySummary(gmSummary, {
+        activeCascadeId: currentUsage?.cascadeId,
+        customPricing,
+    });
 
-    // ── Summary Bar (merged activity + GM)
-    parts.push(buildSummaryBar(summary, gmSummary, currentUsage?.cascadeId));
+    // ── Summary Bar (merged activity + account-filtered GM telemetry)
+    parts.push(buildSummaryBar(summary, gmSummary, currentUsage?.cascadeId, telemetry));
+
+    // ── Dedicated Editorial Telemetry Ledger (Speed, Cached vs Uncached TTFT, Prompt Cache)
+    if (gmSummary && telemetry.overall.totalCalls > 0) {
+        parts.push(buildTelemetryLedgerSection(telemetry));
+    }
 
     // ── Recent Timeline (activity)
     if (summary) { parts.push(buildTimeline(summary, currentUsage, gmSummary, customPricing)); }
 
-    // ── Model Cards (merged activity counts + GM precision)
+    // ── Model Cards (merged activity counts + GM precision + telemetry)
     const activeEmail = accountSnapshots?.find(s => s.isActive)?.email || '';
-    parts.push(buildModelCards(summary, gmSummary, activeEmail, customPricing));
+    parts.push(buildModelCards(summary, gmSummary, activeEmail, customPricing, telemetry));
 
     // ── Today's Ledger Panel (real-time incremental accumulation)
     if (todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) {
@@ -151,176 +191,171 @@ export function buildGMDataTabContent(
  */
 export function getGMDataTabStyles(): string {
     return `
-    /* ─── Account Status Panel ─── */
+    /* ─── Account Status Panel / Popover ─── */
     .acct-panel {
-        margin-bottom: var(--space-4);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
+        margin-bottom: 16px;
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
         overflow: hidden;
     }
     .acct-panel-header {
         display: flex;
         align-items: center;
-        gap: var(--space-2);
-        padding: var(--space-2) var(--space-3);
-        background: var(--color-surface-dim);
-        border-bottom: 1px solid var(--color-border);
-        font-size: 0.88em;
+        gap: 8px;
+        padding: 9px 14px;
+        background: var(--ed-surface-well);
+        border-bottom: 1px solid var(--ed-border);
+        font-size: 0.8125rem;
         font-weight: 600;
-        color: var(--color-text);
+        color: var(--ed-ink);
     }
-    .acct-panel-header svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .acct-panel-header svg {
+        width: 14px;
+        height: 14px;
+        color: var(--ed-accent);
+        flex-shrink: 0;
+    }
     .acct-panel-count {
-        font-weight: 400;
-        font-size: 0.82em;
-        opacity: 0.6;
+        font-weight: 500;
+        font-size: 0.75rem;
+        color: var(--ed-ink-muted);
+        font-variant-numeric: tabular-nums lining-nums;
     }
     .acct-card {
         display: flex;
         align-items: flex-start;
-        gap: var(--space-2);
-        padding: 8px var(--space-3);
-        border-bottom: 1px solid var(--color-border-subtle);
-        font-size: 0.85em;
-        transition: background 0.15s cubic-bezier(.4,0,.2,1);
+        gap: 10px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--ed-border);
+        font-size: 0.8125rem;
+        transition: background var(--ed-dur-fast) var(--ed-ease);
+        min-width: 0;
     }
     .acct-card:last-child { border-bottom: none; }
     @media (hover: hover) {
-        .acct-card:hover { background: var(--color-surface-dim); }
+        .acct-card:hover { background: var(--ed-surface-hover); }
     }
     .acct-indicator {
         width: 8px;
         height: 8px;
-        border-radius: 50%;
+        border-radius: var(--ed-radius-pill);
         flex-shrink: 0;
         margin-top: 5px;
     }
     .acct-indicator-active {
-        background: var(--color-ok);
-        box-shadow: 0 0 6px rgba(74,222,128,0.5);
-        animation: acctPulse 2s ease-in-out infinite;
+        background: var(--ed-good-fill);
     }
     .acct-indicator-cached {
-        background: var(--color-text-dim);
-        opacity: 0.4;
-    }
-    @keyframes acctPulse {
-        0%, 100% { opacity: 1; transform: scale(1); }
-        50% { opacity: 0.6; transform: scale(0.85); }
+        background: var(--ed-ink-muted);
+        opacity: 0.5;
     }
     .acct-identity {
         display: flex;
         flex-direction: column;
-        gap: 1px;
+        gap: 3px;
         min-width: 0;
         flex: 1;
     }
     .acct-name {
         font-weight: 600;
-        color: var(--color-text);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        color: var(--ed-ink);
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        min-width: 0;
     }
     .acct-email {
-        font-size: 0.82em;
-        color: var(--color-text-dim);
+        font-family: var(--ed-mono);
+        font-size: 0.75rem;
+        color: var(--ed-ink-muted);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
     .acct-plan {
-        display: inline-block;
-        padding: 1px 6px;
-        border-radius: var(--radius-sm);
-        font-size: 0.72em;
+        display: inline-flex;
+        align-items: center;
+        padding: 1px 8px;
+        border-radius: var(--ed-radius-pill);
+        font-size: 0.6875rem;
         font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
+        line-height: 1.45;
         align-self: flex-start;
         width: fit-content;
+        border: 1px solid var(--ed-border);
     }
-    .acct-plan-pro {
-        background: var(--color-info-border-dim);
-        color: var(--color-info-light);
-        border: 1px solid rgba(96,165,250,0.25);
+    .acct-plan-pro,
+    .acct-plan-ultra {
+        background: var(--ed-accent-tint);
+        color: var(--ed-accent);
+        border-color: var(--ed-accent-border);
     }
     .acct-plan-free {
-        background: var(--color-muted-border);
-        color: var(--color-muted);
-        border: 1px solid rgba(148,163,184,0.2);
-    }
-    .acct-plan-ultra {
-        background: rgba(6,182,212,0.08);
-        color: var(--color-cyan);
-        border: 1px solid rgba(6,182,212,0.25);
+        background: var(--ed-surface-well);
+        color: var(--ed-ink-muted);
+        border-color: var(--ed-border);
     }
     .acct-plan-team {
-        background: var(--color-ok-bg);
-        color: var(--color-ok-light);
-        border: 1px solid var(--color-ok-border);
+        background: var(--ed-good-tint);
+        color: var(--ed-good);
+        border-color: var(--ed-good-border);
     }
     .acct-reset {
         flex-shrink: 0;
         display: flex;
         flex-direction: column;
         align-items: flex-end;
-        gap: 1px;
-        min-width: 100px;
+        gap: 2px;
+        min-width: 88px;
     }
     .acct-reset-countdown {
         font-weight: 600;
-        font-size: 0.85em;
-        font-variant-numeric: tabular-nums;
-        color: var(--color-text);
-        min-width: 5em;
+        font-size: 0.78125rem;
+        font-variant-numeric: tabular-nums lining-nums;
+        color: var(--ed-ink);
+        min-width: 4.5em;
         text-align: right;
         flex-shrink: 0;
     }
-    .acct-reset-countdown-warn {
-        color: var(--color-amber);
-    }
-    .acct-reset-countdown-expired {
-        color: var(--color-danger);
-        font-weight: 700;
-    }
+    .acct-reset-countdown-warn { color: var(--ed-warn); }
+    .acct-reset-countdown-expired { color: var(--ed-good); font-weight: 650; }
     .acct-reset-abs {
-        font-size: 0.78em;
-        color: var(--color-text-dim);
-        font-variant-numeric: tabular-nums;
+        font-size: 0.75rem;
+        color: var(--ed-ink-muted);
+        font-variant-numeric: tabular-nums lining-nums;
     }
     .acct-pools {
         flex-shrink: 0;
         display: flex;
         flex-direction: column;
-        gap: 3px;
+        gap: 5px;
         min-width: 0;
     }
     .acct-pool-row {
         display: flex;
         align-items: center;
-        gap: var(--space-2);
+        gap: 8px;
         justify-content: flex-end;
     }
     .acct-pool-models {
         display: flex;
         flex-wrap: wrap;
-        gap: 2px;
+        gap: 4px;
         align-items: center;
         justify-content: flex-end;
     }
     .acct-pool-model {
         display: inline-block;
-        padding: 0 4px;
-        border-radius: var(--radius-sm);
-        font-size: 0.72em;
-        line-height: 1.6;
+        padding: 1px 6px;
+        border-radius: var(--ed-radius-xs);
+        font-size: 0.6875rem;
+        line-height: 1.5;
         white-space: nowrap;
-        background: var(--color-surface-hover);
-        color: var(--color-text-dim);
-        border: 1px solid var(--color-border);
-        /* Target ~150px (was 100px). em is wrong here: own font-size is
-           13px × .acct-card 0.85em × 0.72em ≈ 7.96px, so 11em ≈ 87px. */
+        background: var(--ed-surface-well);
+        color: var(--ed-ink-secondary);
+        border: 1px solid var(--ed-border);
         max-width: 150px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -328,40 +363,34 @@ export function getGMDataTabStyles(): string {
     }
     .acct-pool-more {
         display: inline-block;
-        padding: 0 3px;
-        font-size: 0.68em;
-        color: var(--color-text-dim);
-        opacity: 0.6;
+        padding: 0 4px;
+        font-size: 0.6875rem;
+        color: var(--ed-ink-muted);
     }
     .acct-tag-active {
-        font-size: 0.72em;
-        color: var(--color-ok);
-        font-weight: 500;
+        font-size: 0.6875rem;
+        color: var(--ed-good);
+        font-weight: 600;
     }
     .acct-tag-cached {
-        font-size: 0.72em;
-        color: var(--color-text-dim);
-        opacity: 0.6;
+        font-size: 0.6875rem;
+        color: var(--ed-ink-muted);
+        font-weight: 500;
     }
-    .acct-pool-idle {
-        opacity: 0.45;
-    }
+    .acct-pool-idle { opacity: 0.65; }
     .acct-reset-idle {
-        font-size: 0.85em;
-        font-weight: 400;
-        color: var(--color-text-dim);
-        opacity: 0.7;
-        font-style: italic;
-        min-width: 5em;
+        font-size: 0.75rem;
+        font-weight: 450;
+        color: var(--ed-ink-muted);
+        min-width: 4.5em;
         text-align: right;
         flex-shrink: 0;
     }
-    /* ─── Quota Progress Bar (Account Panel) ─── */
     .acct-quota-bar {
-        width: 50px;
-        height: 4px;
-        border-radius: 2px;
-        background: rgba(255,255,255,0.08);
+        width: 54px;
+        height: 6px;
+        border-radius: var(--ed-radius-pill);
+        background: var(--ed-track);
         flex-shrink: 0;
         overflow: hidden;
         position: relative;
@@ -371,772 +400,1243 @@ export function getGMDataTabStyles(): string {
         top: 0;
         left: 0;
         height: 100%;
-        border-radius: 2px;
-        transition: width 0.3s cubic-bezier(.4,0,.2,1);
+        border-radius: var(--ed-radius-pill);
+        transition: width 260ms var(--ed-ease);
     }
-    .acct-quota-ok { background: var(--color-ok); opacity: 0.7; }
-    .acct-quota-warn { background: var(--color-amber); opacity: 0.85; }
-    .acct-quota-danger { background: var(--color-danger); opacity: 0.9; }
+    .acct-quota-ok { background: var(--ed-good-fill); }
+    .acct-quota-warn { background: var(--ed-warn-fill); }
+    .acct-quota-danger { background: var(--ed-danger-fill); }
     .acct-delete-link {
-        font-size: 0.72em;
-        font-weight: 500;
-        color: var(--color-danger);
+        font-size: 0.6875rem;
+        font-weight: 550;
+        color: var(--ed-danger);
         cursor: pointer;
         border: none;
         background: none;
-        padding: 0 2px;
-        opacity: 0.7;
-        transition: opacity 0.15s;
+        padding: 0 4px;
+        border-radius: var(--ed-radius-xs);
         white-space: nowrap;
+        transition: background var(--ed-dur-fast) var(--ed-ease);
     }
-    .acct-delete-link:hover {
-        opacity: 1;
-        text-decoration: underline;
+    @media (hover: hover) {
+        .acct-delete-link:hover {
+            background: var(--ed-danger-tint);
+            text-decoration: underline;
+        }
     }
     .acct-credits {
         display: flex;
         flex-wrap: wrap;
-        gap: 3px;
-        margin-top: 1px;
+        gap: 5px;
+        margin-top: 2px;
     }
     .acct-credit-chip {
-        display: inline-block;
-        padding: 0 5px;
-        border-radius: var(--radius-sm);
-        font-size: 0.68em;
-        line-height: 1.6;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 2px 8px;
+        border-radius: var(--ed-radius-xs);
+        font-size: 0.6875rem;
+        line-height: 1.45;
         white-space: nowrap;
-        background: rgba(250,204,21,0.08);
-        color: var(--color-text-dim);
-        border: 1px solid rgba(250,204,21,0.2);
-        letter-spacing: 0.3px;
+        background: var(--ed-surface-well);
+        color: var(--ed-ink-secondary);
+        border: 1px solid var(--ed-border);
     }
     .acct-credit-chip b {
-        color: var(--color-amber);
+        color: var(--ed-ink);
+        font-weight: 650;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .acct-credit-unknown {
+        color: var(--ed-ink-muted);
+        font-weight: 500;
+    }
+    .acct-expiry-chip.is-today {
+        background: var(--ed-danger-tint);
+        color: var(--ed-danger);
+        border-color: var(--ed-danger-border);
         font-weight: 600;
     }
-    body.vscode-light .acct-credit-chip {
-        background: rgba(202,138,4,0.06);
-        border-color: rgba(202,138,4,0.15);
-    }
-    body.vscode-light .acct-credit-chip b {
-        color: #b45309;
-    }
 
-    /* ─── Pending Archive Panel ─── */
+    /* ─── Today & Settled Ledger Panels (L1 cards + L2 inset wells) ─── */
     .pending-archive-panel {
-        margin: var(--space-3) 0;
-        padding: var(--space-3);
-        border: 1px solid var(--color-amber-border);
-        border-left: 3px solid rgba(234,179,8,0.6);
-        border-radius: var(--radius);
-        background: rgba(234,179,8,0.04);
+        margin: 0 0 20px;
+        padding: 16px 18px;
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
     }
     .pending-archive-header {
         display: flex;
         align-items: center;
-        gap: 6px;
+        flex-wrap: wrap;
+        gap: 8px;
         font-weight: 600;
-        font-size: 0.9em;
-        color: var(--color-amber-dim);
-        margin-bottom: var(--space-2);
+        font-size: 0.9375rem;
+        color: var(--ed-ink);
+        margin-bottom: 12px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--ed-border);
+    }
+    .pending-archive-header svg {
+        width: 15px;
+        height: 15px;
+        color: var(--ed-accent);
+        flex-shrink: 0;
+    }
+    .settled-header svg {
+        color: var(--ed-good);
     }
     .pending-archive-count {
-        font-weight: 400;
-        font-size: 0.85em;
-        color: var(--color-text-dim);
+        font-weight: 550;
+        font-size: 0.72rem;
+        color: var(--ed-ink-muted);
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-pill);
+        padding: 1px 8px;
         margin-left: auto;
+        font-variant-numeric: tabular-nums lining-nums;
     }
     .pending-archive-stats {
         display: flex;
         flex-wrap: wrap;
-        gap: var(--space-2) var(--space-3);
-        margin-bottom: var(--space-2);
+        gap: 6px 16px;
+        margin-bottom: 10px;
     }
     .pending-stat {
-        font-size: 0.82em;
-        color: var(--color-text-dim);
+        font-size: 0.78125rem;
+        color: var(--ed-ink-muted);
+        font-variant-numeric: tabular-nums lining-nums;
     }
     .pending-stat b {
-        color: var(--color-text);
-        margin-left: 3px;
+        color: var(--ed-ink);
+        font-weight: 600;
+        margin-left: 4px;
     }
     .pending-stat-cost b {
-        color: rgba(74,222,128,0.9);
-    }
-    body.vscode-light .pending-stat-cost b {
-        color: rgba(22,163,74,0.85);
+        color: var(--ed-good);
     }
     .pending-archive-models {
         display: flex;
         flex-wrap: wrap;
-        gap: 4px;
-        margin-bottom: var(--space-2);
+        gap: 6px;
+        margin-bottom: 8px;
     }
     .pending-model-chip {
         display: inline-flex;
         align-items: center;
-        gap: 4px;
+        gap: 5px;
         padding: 2px 8px;
-        border-radius: var(--radius-sm);
-        background: var(--color-amber-bg);
-        border: 1px solid rgba(234,179,8,0.2);
-        font-size: 0.78em;
-        color: var(--color-text-dim);
+        border-radius: var(--ed-radius-xs);
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        font-size: 0.75rem;
+        color: var(--ed-ink-secondary);
+        font-variant-numeric: tabular-nums lining-nums;
     }
     .pending-model-chip b {
-        color: var(--color-amber-dim);
-    }
-    .pending-archive-note {
-        font-size: 0.78em;
-        color: var(--color-text-dim);
-        opacity: 0.7;
-        font-style: italic;
-    }
-
-    /* ── Today Ledger Panel (teal/cyan theme) ── */
-    .today-ledger-panel {
-        border-color: rgba(20,184,166,0.25);
-        background: linear-gradient(135deg, rgba(20,184,166,0.04) 0%, rgba(6,182,212,0.02) 100%);
-    }
-    .today-ledger-header {
-        color: rgb(45,212,191) !important;
-    }
-    .ledger-model-chip {
-        background: rgba(20,184,166,0.08) !important;
-        border-color: rgba(20,184,166,0.2) !important;
-    }
-    .ledger-model-chip b {
-        color: rgb(45,212,191) !important;
+        color: var(--ed-ink);
+        font-weight: 650;
     }
     .ledger-reset-time {
-        font-size: 0.78em;
-        opacity: 0.7;
-        margin-left: 4px;
-        padding-left: 5px;
-        border-left: 1px solid rgba(255,255,255,0.15);
-        color: rgba(255,255,255,0.55);
+        font-size: 0.72rem;
+        margin-left: 2px;
+        padding-left: 6px;
+        border-left: 1px solid var(--ed-border);
+        color: var(--ed-ink-muted);
+        font-variant-numeric: tabular-nums lining-nums;
     }
-
-    /* ── Per-account cards in Today's Ledger ── */
+    .pending-archive-note {
+        font-size: 0.75rem;
+        color: var(--ed-ink-muted);
+        margin-top: 8px;
+        line-height: 1.5;
+    }
     .ledger-acct-cards {
         display: flex;
         flex-direction: column;
-        gap: 8px;
-        padding: 0 12px 8px;
+        gap: 10px;
+        margin-bottom: 6px;
     }
     .ledger-acct-card {
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.06);
-        border-radius: 6px;
-        padding: 8px 10px;
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-sm);
+        padding: 10px 12px;
     }
     .ledger-acct-header {
         display: flex;
         align-items: center;
-        gap: 6px;
-        margin-bottom: 6px;
-        font-size: 0.88em;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-bottom: 8px;
+        font-size: 0.8125rem;
     }
     .ledger-acct-dot {
         width: 7px;
         height: 7px;
-        border-radius: 50%;
+        border-radius: var(--ed-radius-pill);
         flex-shrink: 0;
     }
-    .ledger-acct-active {
-        background: rgb(34,197,94);
-        box-shadow: 0 0 4px rgba(34,197,94,0.5);
-    }
-    .ledger-acct-cached {
-        background: rgba(255,255,255,0.25);
-    }
+    .ledger-acct-active { background: var(--ed-good-fill); }
+    .ledger-acct-cached { background: var(--ed-ink-muted); opacity: 0.5; }
     .ledger-acct-name {
         font-weight: 600;
-        color: rgba(255,255,255,0.9);
+        color: var(--ed-ink);
     }
     .ledger-acct-email {
-        color: rgba(255,255,255,0.35);
-        font-size: 0.85em;
+        font-family: var(--ed-mono);
+        color: var(--ed-ink-muted);
+        font-size: 0.75rem;
     }
     .ledger-acct-stats {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px 10px;
-        margin-bottom: 6px;
+        gap: 6px 14px;
+        margin-bottom: 8px;
     }
 
-    /* ── Settled Panel (indigo/purple theme) ── */
-    .settled-panel {
-        border-color: rgba(129,140,248,0.25);
-        background: linear-gradient(135deg, rgba(129,140,248,0.04) 0%, rgba(167,139,250,0.02) 100%);
-    }
-    .settled-header {
-        color: rgb(165,180,252) !important;
-    }
-    .settled-model-chip {
-        background: rgba(129,140,248,0.08) !important;
-        border-color: rgba(129,140,248,0.2) !important;
-    }
-    .settled-model-chip b {
-        color: rgb(165,180,252) !important;
-    }
-
-    /* ── Light theme overrides for Ledger & Settled panels ── */
-    body.vscode-light .today-ledger-header {
-        color: rgb(13,148,136) !important;
-    }
-    body.vscode-light .ledger-model-chip b {
-        color: rgb(13,148,136) !important;
-    }
-    body.vscode-light .ledger-reset-time {
-        border-left: 1px solid var(--color-border);
-        color: var(--color-text-dim);
-    }
-    body.vscode-light .ledger-acct-card {
-        background: rgba(0,0,0,0.02);
-        border: 1px solid var(--color-border);
-    }
-    body.vscode-light .ledger-acct-cached {
-        background: var(--color-text-dim);
-    }
-    body.vscode-light .ledger-acct-name {
-        color: var(--color-text);
-    }
-    body.vscode-light .ledger-acct-email {
-        color: var(--color-text-dim);
-    }
-    body.vscode-light .settled-header {
-        color: rgb(79,70,229) !important;
-    }
-    body.vscode-light .settled-model-chip b {
-        color: rgb(79,70,229) !important;
-    }
-
-    /* ─── Activity Tab: Summary Bar (chip strip layout) ─── */
+    /* ─── Top KPI Strip (L1 Card with Hairline Dividers) ─── */
     .act-summary-bar {
         display: flex;
         flex-wrap: wrap;
-        justify-content: center;
-        gap: 6px;
-        margin-bottom: var(--space-4);
-        padding: var(--space-2) 0;
+        align-items: center;
+        gap: 6px 0;
+        margin-bottom: 20px;
+        padding: 12px 16px;
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
     }
     .act-stat {
         display: inline-flex;
         align-items: center;
-        gap: 5px;
-        padding: 5px 10px;
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
-        transition: background 0.15s cubic-bezier(.4,0,.2,1), border-color 0.15s cubic-bezier(.4,0,.2,1);
+        gap: 6px;
+        padding: 4px 14px;
+        border-right: 1px solid var(--ed-border);
         position: relative;
         cursor: default;
         white-space: nowrap;
+        transition: background var(--ed-dur-fast) var(--ed-ease);
     }
+    .act-stat:first-child { padding-left: 2px; }
+    .act-stat:last-child { border-right: none; }
     .act-stat-warn {
-        background: var(--color-danger-bg-dim);
-        border-color: var(--color-danger-border);
+        margin-left: 8px;
+        padding: 4px 10px;
+        border-right: none;
+        border-radius: var(--ed-radius-sm);
+        background: var(--ed-danger-tint);
+        border: 1px solid var(--ed-danger-border);
+        color: var(--ed-danger);
     }
-    /* Override global tooltip direction: act-stat tooltips pop downward (top),
-       not upward (bottom). Must override in base state (not just :hover) so
-       the fade-out transition doesn't cause the tooltip to jump from bottom
-       to top when the mouse leaves. */
+    .act-stat-warn .act-stat-icon,
+    .act-stat-warn .act-stat-val,
+    .act-stat-warn .act-stat-label {
+        color: var(--ed-danger);
+    }
     .act-stat[data-tooltip]::after {
         bottom: auto;
         top: calc(100% + 6px);
-        transform: translateX(-50%) scale(0.92);
-        padding: var(--space-1) var(--space-2);
-        background: var(--color-bg);
-        color: var(--color-text);
-        border: 1px solid var(--color-border);
-        font-size: 0.75em;
+        transform: translateX(-50%) scale(0.94);
+        padding: 5px 9px;
+        background: var(--ed-surface-overlay);
+        color: var(--ed-ink);
+        border: 1px solid var(--ed-border-strong);
+        border-radius: var(--ed-radius-sm);
+        font-size: 0.75rem;
         font-weight: 400;
         text-transform: none;
         letter-spacing: 0;
         white-space: normal;
-        max-width: 220px;
+        max-width: 240px;
         width: max-content;
         text-align: center;
         z-index: var(--z-tooltip, 500);
-        box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+        box-shadow: var(--ed-shadow-tooltip);
     }
     .act-stat[data-tooltip]:hover::after,
     .act-stat[data-tooltip]:focus-visible::after {
         transform: translateX(-50%) scale(1);
     }
-    /* Edge tooltip anchoring */
     .act-summary-bar > .act-stat:first-child[data-tooltip]::after {
-        left: 0; right: auto; transform: translateX(0) scale(0.92); text-align: left;
+        left: 0; right: auto; transform: translateX(0) scale(0.94); text-align: left;
     }
     .act-summary-bar > .act-stat:first-child[data-tooltip]:hover::after {
         transform: translateX(0) scale(1);
     }
     .act-summary-bar > .act-stat:last-child[data-tooltip]::after {
-        left: auto; right: 0; transform: translateX(0) scale(0.92); text-align: left;
+        left: auto; right: 0; transform: translateX(0) scale(0.94); text-align: left;
     }
     .act-summary-bar > .act-stat:last-child[data-tooltip]:hover::after {
         transform: translateX(0) scale(1);
     }
-    @media (hover: hover) {
-        .act-stat:hover {
-            background: rgba(96,165,250,0.08);
-            border-color: rgba(96,165,250,0.25);
-        }
-        .act-stat-warn:hover {
-            background: var(--color-danger-border-dim);
-            border-color: var(--color-danger-border-strong);
-        }
+    .act-stat-icon {
+        display: inline-flex;
+        align-items: center;
+        color: var(--ed-ink-muted);
     }
-    .act-stat-icon { display: flex; align-items: center; color: var(--color-text-dim); }
     .act-stat-icon svg { display: block; }
-    .act-icon { width: 1.1em; height: 1.1em; display: inline-block; vertical-align: -0.2em; margin-right: 0.3em; color: var(--color-text-dim); }
-    .act-stat-val { font-weight: 700; font-size: 0.88em; line-height: 1; }
-    .act-est { font-weight: 400; font-size: 0.85em; opacity: 0.6; font-style: italic; }
-    .act-stat-label { color: var(--color-text-dim); font-size: 0.72em; letter-spacing: 0.3px; }
+    .act-icon {
+        width: 14px;
+        height: 14px;
+        display: inline-block;
+        vertical-align: -2px;
+        margin-right: 4px;
+        color: var(--ed-ink-muted);
+        flex-shrink: 0;
+    }
+    .act-icon-accent { color: var(--ed-accent); }
+    .act-icon-good { color: var(--ed-good); }
+    .act-icon-warn { color: var(--ed-warn); }
+    .act-icon-danger { color: var(--ed-danger); }
+    .act-stat-val {
+        font-weight: 650;
+        font-size: 0.9375rem;
+        line-height: 1.1;
+        color: var(--ed-ink);
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .act-stat-sub {
+        font-size: 0.72rem;
+        font-weight: 500;
+        color: var(--ed-ink-muted);
+        margin-left: 4px;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .act-stat-label {
+        color: var(--ed-ink-muted);
+        font-size: 0.75rem;
+        font-weight: 500;
+    }
 
-    /* ─── Activity Tab: Layout Grids ─── */
+    /* ─── Speed & First-Token Cache Telemetry Ledger (L1 2-Column Editorial Section) ─── */
+    .telemetry-ledger-section {
+        margin-bottom: 24px;
+        min-width: 0;
+    }
+    .telemetry-ledger-section > .act-section-title {
+        margin-top: 0;
+    }
+    .telemetry-ledger-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        align-items: stretch;
+    }
+    .telemetry-ledger-card {
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
+        padding: 16px 18px;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .telemetry-card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        margin-bottom: 12px;
+        min-width: 0;
+    }
+    .telemetry-card-title-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+    }
+    .telemetry-card-title-wrap svg {
+        width: 14px;
+        height: 14px;
+        color: var(--ed-accent);
+        flex-shrink: 0;
+    }
+    .telemetry-card-title {
+        margin: 0;
+        font-size: 0.875rem;
+        font-weight: 600;
+        line-height: 1.35;
+        letter-spacing: -0.008em;
+        color: var(--ed-ink);
+        overflow-wrap: anywhere;
+    }
+    .telemetry-pill,
+    .telemetry-warmth-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 2px 8px;
+        border-radius: var(--ed-radius-pill);
+        font-size: 0.6875rem;
+        font-weight: 600;
+        line-height: 1.45;
+        background: var(--ed-surface);
+        color: var(--ed-ink-secondary);
+        border: 1px solid var(--ed-border);
+        white-space: nowrap;
+        max-width: 100%;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .telemetry-warmth-badge::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: var(--ed-radius-pill);
+        background: currentColor;
+        flex-shrink: 0;
+    }
+    .telemetry-warmth-badge.is-warm {
+        background: var(--ed-surface);
+        color: var(--ed-good);
+        border-color: var(--ed-good-border);
+    }
+    .telemetry-warmth-badge.is-warming {
+        background: var(--ed-surface);
+        color: var(--ed-warn);
+        border-color: var(--ed-warn-border);
+    }
+    .telemetry-warmth-badge.is-cold {
+        background: var(--ed-surface);
+        color: var(--ed-ink-secondary);
+        border-color: var(--ed-border-strong);
+    }
+    .telemetry-warmth-badge.is-unknown {
+        background: var(--ed-surface);
+        color: var(--ed-ink-muted);
+        border-color: var(--ed-border);
+    }
+    .telemetry-hero-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 6px 12px;
+        margin-bottom: 10px;
+        min-width: 0;
+    }
+    .telemetry-hero-val {
+        font-family: var(--ed-sans);
+        font-size: 1.625rem;
+        font-weight: 650;
+        line-height: 1.15;
+        letter-spacing: -0.025em;
+        color: var(--ed-ink);
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .telemetry-hero-val.is-cache {
+        color: var(--ed-chart-cache);
+    }
+    .telemetry-hero-val.is-empty {
+        color: var(--ed-ink-muted);
+        font-weight: 550;
+    }
+    .telemetry-hero-meta {
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: var(--ed-ink-muted);
+        font-variant-numeric: tabular-nums lining-nums;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    .telemetry-subgrid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 14px;
+        padding: 8px 10px;
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-sm);
+        min-width: 0;
+    }
+    .telemetry-subitem {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 5px;
+        font-size: 0.75rem;
+        min-width: 0;
+        max-width: 100%;
+    }
+    .telemetry-sub-label {
+        color: var(--ed-ink-muted);
+        font-weight: 500;
+    }
+    .telemetry-sub-val {
+        color: var(--ed-ink);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .telemetry-ttft-block {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid var(--ed-border);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+    }
+    .telemetry-subhead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 6px 8px;
+        min-width: 0;
+    }
+    .telemetry-subhead-title {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--ed-ink-secondary);
+    }
+    .telemetry-delta-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 1px 7px;
+        border-radius: var(--ed-radius-pill);
+        font-size: 0.6875rem;
+        font-weight: 650;
+        line-height: 1.45;
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border-strong);
+        color: var(--ed-ink-secondary);
+        font-variant-numeric: tabular-nums lining-nums;
+        white-space: nowrap;
+    }
+    .telemetry-delta-pill.is-faster {
+        background: var(--ed-surface);
+        color: var(--ed-good);
+        border-color: var(--ed-good-border);
+    }
+    .telemetry-delta-pill.is-neutral {
+        background: var(--ed-surface);
+        color: var(--ed-ink-secondary);
+        border-color: var(--ed-border-strong);
+    }
+    .telemetry-ttft-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+    }
+    .telemetry-ttft-row {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }
+    .telemetry-ttft-row-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+        font-size: 0.75rem;
+        min-width: 0;
+    }
+    .telemetry-ttft-label {
+        color: var(--ed-ink-secondary);
+        font-weight: 500;
+        min-width: 0;
+    }
+    .telemetry-ttft-val {
+        color: var(--ed-ink);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums lining-nums;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    .telemetry-sample-n {
+        color: var(--ed-ink-muted);
+        font-weight: 450;
+        font-size: 0.72rem;
+        margin-left: 3px;
+    }
+    .telemetry-bar-track {
+        height: 6px;
+        border-radius: var(--ed-radius-pill);
+        background: var(--ed-track);
+        overflow: hidden;
+        width: 100%;
+    }
+    .telemetry-bar-fill {
+        display: block;
+        height: 100%;
+        border-radius: var(--ed-radius-pill);
+        transition: width 260ms var(--ed-ease);
+        min-width: 4px;
+    }
+    .telemetry-bar-fill-cache { background: var(--ed-chart-cache); }
+    .telemetry-bar-fill-uncached { background: var(--ed-chart-input); }
+    .telemetry-bar-fill-avg { background: var(--ed-accent); }
+    .telemetry-single-note,
+    .telemetry-empty-note,
+    .telemetry-ttft-foot {
+        font-size: 0.75rem;
+        color: var(--ed-ink-muted);
+        margin: 0;
+        line-height: 1.45;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .telemetry-cache-bar-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        margin: 2px 0 12px;
+        min-width: 0;
+    }
+    .telemetry-cache-bar-track {
+        height: 8px;
+        border-radius: var(--ed-radius-pill);
+        background: var(--ed-track);
+        overflow: hidden;
+        display: flex;
+        width: 100%;
+    }
+    .telemetry-cache-seg {
+        display: block;
+        height: 100%;
+        transition: width 260ms var(--ed-ease);
+    }
+    .telemetry-cache-seg-read { background: var(--ed-chart-cache); }
+    .telemetry-cache-seg-fresh { background: var(--ed-chart-input); }
+    .telemetry-cache-seg-write { background: var(--ed-warn-fill); }
+    .telemetry-cache-legend {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px 12px;
+        font-size: 0.72rem;
+        color: var(--ed-ink-secondary);
+    }
+    .telemetry-legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
+    }
+    .telemetry-legend-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: var(--ed-radius-pill);
+        flex-shrink: 0;
+    }
+    .telemetry-legend-dot-read { background: var(--ed-chart-cache); }
+    .telemetry-legend-dot-fresh { background: var(--ed-chart-input); }
+    .telemetry-legend-dot-write { background: var(--ed-warn-fill); }
+    .telemetry-ledger-rows {
+        display: flex;
+        flex-direction: column;
+        margin-top: auto;
+        border-top: 1px solid var(--ed-border);
+    }
+    .telemetry-ledger-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 6px 12px;
+        padding: 7px 0;
+        border-bottom: 1px solid var(--ed-border);
+        font-size: 0.78125rem;
+        min-width: 0;
+    }
+    .telemetry-ledger-row:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+    }
+    .telemetry-ledger-key {
+        color: var(--ed-ink-secondary);
+        font-weight: 500;
+        flex-shrink: 0;
+    }
+    .telemetry-ledger-val-group {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        align-items: baseline;
+        gap: 2px 6px;
+        text-align: right;
+        color: var(--ed-ink);
+        font-variant-numeric: tabular-nums lining-nums;
+        min-width: 0;
+        flex: 1 1 auto;
+    }
+    .telemetry-ledger-val-group b {
+        font-weight: 650;
+        color: var(--ed-ink);
+    }
+    .telemetry-ledger-sub {
+        color: var(--ed-ink-muted);
+        font-size: 0.72rem;
+        font-weight: 450;
+    }
+    .telemetry-ledger-muted {
+        color: var(--ed-ink-muted);
+        font-weight: 500;
+    }
+    .telemetry-savings-usd {
+        color: var(--ed-good);
+        font-weight: 650;
+    }
+    body:is(.vscode-high-contrast, .vscode-high-contrast-light,
+        [data-vscode-theme-kind="vscode-high-contrast"], [data-vscode-theme-kind="vscode-high-contrast-light"])
+        :is(.telemetry-bar-track, .telemetry-cache-bar-track) {
+        outline: 1px solid var(--ed-border);
+    }
+
+    /* ─── Layout Grids & Section Titles ─── */
     .act-two-col {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
-        gap: var(--space-4);
-        margin-bottom: var(--space-4);
+        gap: 16px;
+        margin-bottom: 24px;
         align-items: stretch;
     }
     .act-col {
         display: flex;
         flex-direction: column;
+        min-width: 0;
         height: 100%;
     }
-    .act-col > .act-section-title {
-        margin-top: 0;
-    }
-    .act-col > div, .act-col > ul {
+    .act-col > .act-section-title { margin-top: 0; }
+    .act-col > div,
+    .act-col > ul {
         margin-bottom: 0;
         flex: 1;
     }
-
-    /* ─── Activity Tab: Section Title ─── */
     .act-section-title {
-        font-size: 0.95em;
+        font-size: 0.9375rem;
         font-weight: 600;
-        margin: var(--space-4) 0 var(--space-2) 0;
-        color: var(--color-text);
+        line-height: 1.35;
+        letter-spacing: -0.012em;
+        margin: 24px 0 10px;
+        color: var(--ed-ink);
         display: flex;
         align-items: center;
-        gap: var(--space-2);
+        flex-wrap: wrap;
+        gap: 8px;
     }
-    .act-section-title .act-badge {
-        font-weight: 400;
+    .act-section-title > .act-icon {
+        width: 15px;
+        height: 15px;
+        margin-right: 0;
+    }
+    .act-badge {
+        display: inline-flex;
+        align-items: center;
+        font-size: 0.72rem;
+        font-weight: 550;
+        color: var(--ed-ink-secondary);
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+        padding: 1px 8px;
+        border-radius: var(--ed-radius-pill);
+        font-variant-numeric: tabular-nums lining-nums;
     }
 
-    /* ─── Activity Tab: Model Cards ─── */
+    /* ─── Model Stats Grid (L1 Cards + L2 Recessed Header) ─── */
     .act-cards-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
-        gap: var(--space-3);
-        margin-bottom: var(--space-4);
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr));
+        gap: 14px;
+        margin-bottom: 24px;
     }
     .act-model-card {
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
         overflow: hidden;
-        transition: border-color 0.2s cubic-bezier(.4,0,.2,1), transform 0.15s cubic-bezier(.4,0,.2,1);
+        transition: border-color var(--ed-dur-fast) var(--ed-ease);
+        min-width: 0;
     }
     @media (hover: hover) {
         .act-model-card:hover {
-            border-color: var(--color-accent);
-            transform: translateY(-1px);
+            border-color: var(--ed-border-strong);
         }
     }
     .act-card-header {
-        padding: var(--space-2) var(--space-3);
+        padding: 10px 14px;
         font-weight: 600;
-        font-size: 0.9em;
-        background: var(--color-surface-dim);
-        border-bottom: 1px solid var(--color-border);
+        font-size: 0.875rem;
+        line-height: 1.35;
+        color: var(--ed-ink);
+        background: var(--ed-surface-well);
+        border-bottom: 1px solid var(--ed-border);
         word-break: break-word;
         overflow-wrap: anywhere;
-        border-left: 3px solid var(--color-accent);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
     }
-    /* Model card color accents */
-    .act-model-card:nth-child(6n+1) .act-card-header { border-left-color: var(--color-info); }
-    .act-model-card:nth-child(6n+2) .act-card-header { border-left-color: var(--color-ok); }
-    .act-model-card:nth-child(6n+3) .act-card-header { border-left-color: var(--color-warn); }
-    .act-model-card:nth-child(6n+4) .act-card-header { border-left-color: var(--color-danger); }
-    .act-model-card:nth-child(6n+5) .act-card-header { border-left-color: var(--color-teal); }
-    .act-model-card:nth-child(6n+6) .act-card-header { border-left-color: var(--color-orange); }
-    .act-card-body { padding: var(--space-2) var(--space-3); }
+    .act-card-body {
+        padding: 6px 14px 10px;
+    }
     .act-card-row {
         display: flex;
         justify-content: space-between;
-        padding: 2px var(--space-1);
-        font-size: 0.85em;
-        border-radius: var(--radius-sm);
-        transition: background 0.1s ease;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 4px;
+        font-size: 0.8125rem;
+        color: var(--ed-ink-secondary);
+        border-bottom: 1px solid var(--ed-border);
+        transition: background var(--ed-dur-fast) var(--ed-ease);
     }
-    .act-card-row:nth-child(even) {
-        background: rgba(255, 255, 255, 0.02);
+    .act-card-row:last-child { border-bottom: none; }
+    @media (hover: hover) {
+        .act-card-row:hover {
+            background: var(--ed-surface-hover);
+            border-radius: var(--ed-radius-xs);
+        }
     }
-    .act-card-row:hover {
-        background: rgba(255, 255, 255, 0.06);
+    .act-card-row > span:first-child {
+        display: inline-flex;
+        align-items: center;
+        min-width: 0;
     }
-    .act-card-row .val { font-weight: 600; padding: 0 4px; border-radius: var(--radius-sm); border: 1px solid transparent; }
-    /* -- Value color coding (aligned with timeline tag colors) -- */
-    .act-card-row .val-calls { color: var(--color-info-light); background: rgba(96,165,250,0.08); border-color: rgba(96,165,250,0.2); }
-    .act-card-row .val-time { color: var(--color-amber-light); background: rgba(252,211,77,0.08); border-color: rgba(252,211,77,0.2); }
-    .act-card-row .val-in { color: var(--color-info-light); background: rgba(96,165,250,0.08); border-color: rgba(96,165,250,0.2); }
-    .act-card-row .val-out { color: var(--color-ok-light); background: rgba(74,222,128,0.08); border-color: rgba(74,222,128,0.2); }
-    .act-card-row .val-cache { color: var(--color-teal-light); background: rgba(45,212,191,0.08); border-color: rgba(45,212,191,0.2); }
-    .act-card-row .val-cost { color: var(--color-ok-light); background: rgba(34,197,94,0.08); border-color: rgba(34,197,94,0.25); }
-    .act-card-row .val-hit { color: var(--color-amber); background: rgba(251,191,36,0.08); border-color: rgba(251,191,36,0.2); }
-    .act-card-row .val-credits { color: var(--color-danger-light); background: rgba(248,113,113,0.08); border-color: rgba(248,113,113,0.2); }
-    .act-card-row-cost .val { color: var(--color-ok-light); }
-    body.vscode-light .act-card-row:nth-child(even) { background: rgba(0, 0, 0, 0.02); }
-    body.vscode-light .act-card-row:hover { background: rgba(0, 0, 0, 0.05); }
-    body.vscode-light .act-card-row .val-calls { color: #2563eb; background: rgba(37,99,235,0.06); border-color: rgba(37,99,235,0.15); }
-    body.vscode-light .act-card-row .val-time { color: #ca8a04; background: rgba(202,138,4,0.06); border-color: rgba(202,138,4,0.15); }
-    body.vscode-light .act-card-row .val-in { color: #2563eb; background: rgba(37,99,235,0.06); border-color: rgba(37,99,235,0.15); }
-    body.vscode-light .act-card-row .val-out { color: #16a34a; background: rgba(22,163,74,0.06); border-color: rgba(22,163,74,0.15); }
-    body.vscode-light .act-card-row .val-cache { color: #0d9488; background: rgba(13,148,136,0.06); border-color: rgba(13,148,136,0.15); }
-    body.vscode-light .act-card-row .val-cost { color: #16a34a; background: rgba(22,163,74,0.06); border-color: rgba(22,163,74,0.15); }
-    body.vscode-light .act-card-row .val-hit { color: #d97706; background: rgba(217,119,6,0.06); border-color: rgba(217,119,6,0.15); }
-    body.vscode-light .act-card-row .val-credits { color: #dc2626; background: rgba(220,38,38,0.06); border-color: rgba(220,38,38,0.15); }
-    body.vscode-light .act-card-row-cost .val { color: rgba(22,163,74,0.85); }
-    .act-card-divider { border-top: 1px solid var(--color-border); margin: var(--space-1) 0; }
-    .act-card-footer {
-        padding: var(--space-1) var(--space-3) var(--space-2);
+    .act-card-row .val {
+        font-weight: 600;
+        color: var(--ed-ink);
+        font-variant-numeric: tabular-nums lining-nums;
+        flex-shrink: 0;
+    }
+    .act-card-val-stack {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 1px;
+        text-align: right;
+    }
+    .act-card-sub {
+        font-size: 0.6875rem;
+        font-weight: 450;
+        color: var(--ed-ink-muted);
+        line-height: 1.3;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .act-card-row .val-cost,
+    .act-card-row-cost .val { color: var(--ed-good); }
+    .act-card-row .val-hit { color: var(--ed-accent); }
+    .act-card-row .val-credits { color: var(--ed-warn); }
+    .act-card-divider {
+        border-top: 1px solid var(--ed-border);
+        margin: 6px 0;
+    }
+    .act-credit-calls {
+        font-size: 0.75rem;
+        font-weight: 450;
+        color: var(--ed-ink-muted);
+        margin-left: 3px;
+    }
+    .gm-account-section {
+        padding-top: 4px;
         display: flex;
-        flex-wrap: wrap;
-        gap: var(--space-1);
+        flex-direction: column;
+        gap: 3px;
     }
-    .act-tool-tag {
-        display: inline-block;
-        padding: 1px var(--space-1);
-        font-size: 0.75em;
-        background: var(--color-surface-hover);
-        color: var(--color-text-dim);
-        border-radius: var(--radius-sm);
+    .gm-account-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 4px 6px;
+        border-radius: var(--ed-radius-xs);
+        font-size: 0.75rem;
+    }
+    .gm-account-row .gm-account-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        color: var(--ed-ink-muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+    }
+    .gm-account-row .gm-account-label svg {
+        width: 12px;
+        height: 12px;
+        flex-shrink: 0;
+    }
+    .gm-account-row .gm-account-count {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums lining-nums;
+        color: var(--ed-ink);
+        flex-shrink: 0;
+    }
+    .gm-account-row.gm-account-active {
+        background: var(--ed-good-tint);
+    }
+    .gm-account-row.gm-account-active .gm-account-label {
+        color: var(--ed-ink);
+        font-weight: 550;
+    }
+    .gm-account-row.gm-account-active .gm-account-label svg,
+    .gm-account-row.gm-account-active .gm-account-count {
+        color: var(--ed-good);
+    }
+    .gm-account-err {
+        color: var(--ed-danger);
+        font-weight: 600;
+        font-size: 0.72rem;
+        font-variant-numeric: tabular-nums lining-nums;
+        margin-left: 5px;
+        white-space: nowrap;
+        padding: 1px 5px;
+        border-radius: var(--ed-radius-xs);
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-danger-border);
+        display: none;
+    }
+    .model-stats-show-errors .gm-account-err { display: inline; }
+    .model-stats-err-toggle {
+        appearance: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        height: 24px;
+        padding: 0 9px;
+        border-radius: var(--ed-radius-pill);
+        border: 1px solid var(--ed-danger-border);
+        background: var(--ed-surface);
+        color: var(--ed-danger);
+        font-family: inherit;
+        font-size: 0.72rem;
+        font-weight: 600;
+        cursor: pointer;
+        user-select: none;
+        transition: background var(--ed-dur-fast) var(--ed-ease), border-color var(--ed-dur-fast) var(--ed-ease), color var(--ed-dur-fast) var(--ed-ease);
+        flex-shrink: 0;
+    }
+    .model-stats-err-toggle svg {
+        width: 11px;
+        height: 11px;
+        flex-shrink: 0;
+    }
+    .model-stats-err-toggle:focus-visible {
+        outline: 2px solid var(--ed-accent);
+        outline-offset: 2px;
+    }
+    .model-stats-err-toggle.is-off {
+        background: var(--ed-surface-well);
+        border-color: var(--ed-border);
+        color: var(--ed-ink-muted);
+    }
+    @media (hover: hover) {
+        .model-stats-err-toggle:hover {
+            border-color: var(--ed-danger);
+        }
+        .model-stats-err-toggle.is-off:hover {
+            background: var(--ed-surface-hover);
+            border-color: var(--ed-border-strong);
+            color: var(--ed-ink);
+        }
     }
 
-    /* ─── Activity Tab: Timeline ─── */
+    /* ─── Recent Activity Timeline ─── */
     .act-timeline {
         max-height: 480px;
         overflow-y: auto;
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
-        padding: var(--space-2);
-        margin-bottom: var(--space-4);
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
+        padding: 10px;
+        margin-bottom: 24px;
     }
     .act-tl-item {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
-        gap: 3px;
-        padding: 2px var(--space-2);
-        min-height: 24px;
-        font-size: 0.82em;
-        border-bottom: 1px solid var(--color-divider-subtle);
-        transition: background-color 0.15s cubic-bezier(.4,0,.2,1);
+        gap: 5px 6px;
+        padding: 6px 8px;
+        min-height: 28px;
+        font-size: 0.78125rem;
+        border-bottom: 1px solid var(--ed-border);
+        transition: background var(--ed-dur-fast) var(--ed-ease);
     }
     @media (hover: hover) {
-        .act-tl-item:hover { background: var(--color-surface); }
+        .act-tl-item:hover { background: var(--ed-surface-hover); }
     }
     .act-tl-item:last-child { border-bottom: none; }
-    .act-tl-time { color: var(--color-text-dim); flex-shrink: 0; width: 42px; font-size: 0.78em; font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 3px; border-radius: var(--radius-sm); background: var(--color-surface, rgba(128,128,128,0.1)); border: 1px solid var(--color-border, rgba(128,128,128,0.15)); text-align: center; }
-    .act-tl-icon { flex-shrink: 0; width: 18px; text-align: center; }
-    .act-tl-content { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1); overflow: hidden; }
-    /* Target ~200px (was 140px). .act-tl-item is 0.82em of 13px ≈ 10.66px,
-       so 11em ≈ 117px; flex-grow:0 + max-width:40% also blocked widening.
-       flex-basis:auto so short names do not reserve the full cap. */
-    .act-tl-model { color: var(--color-info); font-weight: 500; flex: 0 0 auto; min-width: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .act-tl-detail { color: var(--color-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-    .act-tl-user { color: var(--color-ok); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
-    .act-tl-ai-preview { color: var(--color-orange); opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; cursor: default; }
-    .act-tl-meta { margin-left: auto; display: flex; align-items: center; gap: 3px; flex-shrink: 0; white-space: nowrap; }
-    .act-tl-dur { color: var(--color-text-dim); flex-shrink: 0; padding: 0 3px; border-radius: var(--radius-sm); background: var(--color-surface, rgba(128,128,128,0.1)); border: 1px solid var(--color-border, rgba(128,128,128,0.15)); font-size: 0.78em; font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .act-tl-reasoning .act-tl-icon { color: var(--color-ok); }
-    .act-tl-system { background: var(--color-orange-bg); border-left: 2px solid rgba(251,146,60,0.4); padding-left: 6px; }
-    .act-tl-system .act-tl-icon { color: var(--color-orange); }
-    .act-tl-system .act-tl-detail { color: var(--color-orange); font-weight: 500; }
-    .act-tl-tool .act-tl-icon { color: var(--color-warn); }
+    .act-tl-time {
+        color: var(--ed-ink-muted);
+        flex-shrink: 0;
+        width: auto;
+        font-family: var(--ed-mono);
+        font-size: 0.72rem;
+        font-variant-numeric: tabular-nums lining-nums;
+        white-space: nowrap;
+        padding: 1px 6px;
+        border-radius: var(--ed-radius-xs);
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+        text-align: center;
+    }
+    .act-tl-icon {
+        flex-shrink: 0;
+        width: 16px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .act-tl-icon .act-icon { margin-right: 0; }
+    .act-tl-content {
+        flex: 1 1 180px;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        overflow: hidden;
+    }
+    .act-tl-model {
+        color: var(--ed-accent);
+        font-weight: 550;
+        flex: 0 1 auto;
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .act-tl-detail {
+        color: var(--ed-ink-secondary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+    }
+    .act-tl-user {
+        color: var(--ed-good);
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        cursor: default;
+    }
+    .act-tl-ai-preview {
+        color: var(--ed-ink-secondary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+        cursor: default;
+    }
+    .act-tl-meta {
+        margin-left: auto;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 1;
+        max-width: 100%;
+    }
+    .act-tl-meta.act-tl-meta-gm {
+        flex: 1 0 100%;
+        margin-left: 0;
+        justify-content: flex-start;
+    }
+    .act-tl-dur {
+        color: var(--ed-ink-muted);
+        flex-shrink: 0;
+        padding: 1px 5px;
+        border-radius: var(--ed-radius-xs);
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+        font-family: var(--ed-mono);
+        font-size: 0.72rem;
+        font-variant-numeric: tabular-nums lining-nums;
+        white-space: nowrap;
+    }
+    .act-tl-reasoning .act-tl-icon .act-icon { color: var(--ed-accent); }
+    .act-tl-system {
+        background: var(--ed-warn-tint);
+    }
+    .act-tl-system .act-tl-icon .act-icon,
+    .act-tl-system .act-tl-detail {
+        color: var(--ed-warn);
+        font-weight: 550;
+    }
+    .act-tl-tool .act-tl-icon .act-icon { color: var(--ed-ink-muted); }
     .act-tl-tool-name {
-        color: var(--color-text-dim);
+        font-family: var(--ed-mono);
+        color: var(--ed-ink);
         font-weight: 500;
         flex-shrink: 0;
-        background: var(--color-surface, rgba(128,128,128,0.1));
-        padding: 0 var(--space-1);
-        border-radius: var(--radius-sm);
-        font-size: 0.9em;
-        margin-right: var(--space-1);
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+        padding: 1px 6px;
+        border-radius: var(--ed-radius-xs);
+        font-size: 0.75rem;
     }
     .act-tl-step-idx {
-        color: var(--color-text-dim);
-        opacity: 0.85;
-        font-size: 0.75em;
+        color: var(--ed-ink-muted);
+        font-family: var(--ed-mono);
+        font-size: 0.72rem;
         flex-shrink: 0;
         min-width: 30px;
         text-align: center;
-        padding: 1px 3px;
-        background: var(--color-surface, rgba(128,128,128,0.1));
-        border-radius: var(--radius-sm);
-        font-variant-numeric: tabular-nums;
+        padding: 1px 4px;
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-xs);
+        font-variant-numeric: tabular-nums lining-nums;
         font-weight: 500;
     }
     .act-tl-gm {
         display: inline-flex;
-        gap: 2px;
-        margin-left: auto;
-        flex-shrink: 0;
-        font-size: 0.78em;
-        font-variant-numeric: tabular-nums;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        margin-left: 0;
+        flex-shrink: 1;
+        max-width: 100%;
+        font-size: 0.72rem;
+        font-variant-numeric: tabular-nums lining-nums;
     }
     .act-tl-gm-status {
         display: inline-flex;
-        gap: 2px;
-        flex-shrink: 0;
-        font-size: 0.78em;
-        min-width: 7em;
-        justify-content: flex-end;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 1;
+        max-width: 100%;
+        font-size: 0.72rem;
+        justify-content: flex-start;
     }
     .act-tl-gm-tag {
-        padding: 0 3px;
-        border-radius: var(--radius-sm);
+        display: inline-flex;
+        align-items: center;
+        padding: 1px 6px;
+        border-radius: var(--ed-radius-xs);
         white-space: nowrap;
-        border: 1px solid transparent;
+        border: 1px solid var(--ed-border);
+        background: var(--ed-surface-well);
+        color: var(--ed-ink-secondary);
+        font-variant-numeric: tabular-nums lining-nums;
     }
-    .act-tl-gm-in  { background: rgba(37,99,235,0.12); color: #2563eb; border-color: rgba(37,99,235,0.25); }
-    .act-tl-gm-out { background: rgba(22,163,74,0.12);  color: #16a34a; border-color: rgba(22,163,74,0.25); }
-    .act-tl-gm-ttft { background: rgba(202,138,4,0.12);  color: #ca8a04; border-color: rgba(202,138,4,0.25); }
-    .act-tl-gm-cache { background: rgba(13,148,136,0.12); color: #0d9488; border-color: rgba(13,148,136,0.25); }
-    .act-tl-gm-cost  { background: rgba(34,197,94,0.12);  color: #16a34a; border-color: rgba(34,197,94,0.25); }
-    .act-tl-gm-cost svg { width: 10px; height: 10px; vertical-align: -1px; margin-right: 1px; }
-    .act-tl-gm-credit { background: rgba(220,38,38,0.14); color: #dc2626; border-color: rgba(220,38,38,0.25); }
-    .act-tl-gm-retry { background: rgba(220,38,38,0.12);  color: #dc2626; border-color: rgba(220,38,38,0.25); }
-    .act-tl-gm-tool { background: rgba(100,116,139,0.12); color: #64748b; font-size: 0.88em; border-color: rgba(100,116,139,0.2); }
-    .act-tl-gm-ctx { background: rgba(251,146,60,0.10); color: #fb923c; border-color: rgba(251,146,60,0.25); }
-    body.vscode-dark .act-tl-gm-in  { background: var(--color-info-border-dim);  color: var(--color-info-light); }
-    body.vscode-dark .act-tl-gm-out { background: var(--color-ok-bg);  color: var(--color-ok-light); }
-    body.vscode-dark .act-tl-gm-ttft { background: var(--color-amber-border-dim); color: var(--color-amber-light); }
-    body.vscode-dark .act-tl-gm-cache { background: var(--color-teal-bg); color: var(--color-teal-light); }
-    body.vscode-dark .act-tl-gm-cost  { background: rgba(34,197,94,0.10); color: var(--color-ok-light); }
-    body.vscode-dark .act-tl-gm-credit { background: rgba(248,113,113,0.16); color: var(--color-danger-light); }
-    body.vscode-dark .act-tl-gm-retry { background: var(--color-danger-bg-hover); color: var(--color-danger-light); }
-    body.vscode-dark .act-tl-gm-tool { background: var(--color-muted-border); color: var(--color-muted); }
-    body.vscode-dark .act-tl-gm-ctx { background: var(--color-orange-bg, rgba(251,146,60,0.10)); color: var(--color-orange); }
-    body.vscode-light .act-tl-gm-tool { background: rgba(51,65,85,0.08); color: #334155; border-color: rgba(51,65,85,0.2); }
-    /* ─── Turn Groups (collapsible segments) ─── */
+    .act-tl-gm-tag svg { margin-right: 3px; }
+    .act-tl-gm-in { background: var(--ed-surface); color: var(--ed-accent); border-color: var(--ed-accent-border); }
+    .act-tl-gm-out { background: var(--ed-surface); color: var(--ed-good); border-color: var(--ed-good-border); }
+    .act-tl-gm-speed { background: var(--ed-surface); color: var(--ed-accent); border-color: var(--ed-accent-border); font-weight: 600; }
+    .act-tl-gm-ttft { background: var(--ed-surface); color: var(--ed-warn); border-color: var(--ed-warn-border); }
+    .act-tl-gm-stream { background: var(--ed-surface); color: var(--ed-ink-secondary); border-color: var(--ed-border); }
+    .act-tl-gm-cache { background: var(--ed-surface); color: var(--ed-chart-cache); border-color: var(--ed-border-strong); }
+    .act-tl-gm-cache-hit { background: var(--ed-surface); color: var(--ed-chart-cache); border-color: var(--ed-border-strong); font-weight: 550; }
+    .act-tl-gm-cost { background: var(--ed-surface); color: var(--ed-good); border-color: var(--ed-good-border); font-weight: 600; }
+    .act-tl-gm-cost svg { width: 10px; height: 10px; flex-shrink: 0; }
+    .act-tl-gm-credit { background: var(--ed-surface); color: var(--ed-warn); border-color: var(--ed-warn-border); }
+    .act-tl-gm-retry { background: var(--ed-surface); color: var(--ed-danger); border-color: var(--ed-danger-border); font-weight: 600; }
+    .act-tl-gm-tool { background: var(--ed-surface-well); color: var(--ed-ink-secondary); border-color: var(--ed-border); }
+    .act-tl-gm-tool .act-icon { width: 11px; height: 11px; margin-right: 1px; }
+    .act-tl-gm-ctx { background: var(--ed-surface); color: var(--ed-warn); border-color: var(--ed-warn-border); }
+
+    /* ─── Turn Groups (Collapsible Disclosures) ─── */
     .act-tl-turn {
-        border: 1px solid var(--color-border, rgba(128,128,128,0.12));
-        border-radius: var(--radius-md);
-        background: var(--color-surface, rgba(128,128,128,0.04));
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-sm);
+        background: var(--ed-surface);
         overflow: hidden;
-        margin-bottom: var(--space-2);
-        transition: border-color 0.2s cubic-bezier(.4,0,.2,1);
+        margin-bottom: 8px;
+        transition: border-color var(--ed-dur-fast) var(--ed-ease);
     }
-    .act-tl-turn:last-child {
-        margin-bottom: 0;
-    }
-    .act-tl-turn[open] {
-        border-color: var(--color-ok-border);
-    }
+    .act-tl-turn:last-child { margin-bottom: 0; }
+    .act-tl-turn[open] { border-color: var(--ed-border-strong); }
     .act-tl-turn-header {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
-        gap: var(--space-1);
-        padding: var(--space-2);
+        gap: 6px 8px;
+        padding: 8px 12px;
         cursor: pointer;
         user-select: none;
-        font-size: 0.85em;
-        color: var(--color-text);
+        font-size: 0.8125rem;
+        font-weight: 550;
+        color: var(--ed-ink);
+        background: var(--ed-surface-well);
         list-style: none;
-        transition: background 0.15s cubic-bezier(.4,0,.2,1);
+        transition: background var(--ed-dur-fast) var(--ed-ease);
     }
     .act-tl-turn-header::-webkit-details-marker { display: none; }
     .act-tl-turn-header::before {
         content: '';
-        width: 0; height: 0;
-        border-left: 5px solid currentColor;
+        width: 0;
+        height: 0;
+        border-left: 5px solid var(--ed-ink-muted);
         border-top: 4px solid transparent;
         border-bottom: 4px solid transparent;
-        transition: transform 0.2s cubic-bezier(.4,0,.2,1);
+        transition: transform 160ms var(--ed-ease);
         flex-shrink: 0;
-        opacity: 0.5;
     }
     .act-tl-turn[open] > .act-tl-turn-header::before {
         transform: rotate(90deg);
+        border-left-color: var(--ed-ink);
     }
     @media (hover: hover) {
-        .act-tl-turn-header:hover { background: var(--color-surface); }
+        .act-tl-turn-header:hover { background: var(--ed-surface-hover); }
     }
     .act-tl-turn-icon {
         flex-shrink: 0;
-        color: var(--color-ok);
-        display: flex;
+        color: var(--ed-accent);
+        display: inline-flex;
         align-items: center;
     }
-    .act-tl-turn-icon .act-icon { width: 14px; height: 14px; }
+    .act-tl-turn-icon .act-icon { width: 14px; height: 14px; margin-right: 0; color: inherit; }
     .act-tl-turn-text {
-        flex: 1;
+        flex: 1 1 110px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        font-weight: 500;
         min-width: 0;
     }
     .seg-chips {
         display: flex;
         flex-wrap: wrap;
-        gap: 3px;
+        gap: 4px;
         align-items: center;
-        flex-shrink: 0;
+        flex-shrink: 1;
+        max-width: 100%;
     }
     .seg-chip {
         display: inline-flex;
         align-items: center;
-        padding: 1px 5px;
-        border-radius: var(--radius-sm);
-        font-size: 0.72em;
+        padding: 1px 7px;
+        border-radius: var(--ed-radius-xs);
+        font-size: 0.6875rem;
         line-height: 1.5;
         white-space: nowrap;
-        border: 1px solid transparent;
-        background: var(--color-surface-hover);
-        color: var(--color-text-dim);
+        border: 1px solid var(--ed-border);
+        background: var(--ed-surface);
+        color: var(--ed-ink-secondary);
+        font-variant-numeric: tabular-nums lining-nums;
     }
-    .seg-chip-model {
-        color: var(--color-info);
-        border-color: var(--color-info-border);
-        background: rgba(96,165,250,0.08);
-        font-weight: 500;
-    }
-    .seg-chip-calls {
-        border-color: rgba(74,222,128,0.2);
-        background: rgba(74,222,128,0.08);
-        color: var(--color-ok-light);
-    }
-    .seg-chip-tools {
-        border-color: rgba(250,204,21,0.2);
-        background: rgba(250,204,21,0.08);
-        color: #fde68a;
-    }
-    .seg-chip-tok {
-        border-color: var(--color-danger-border);
-        background: var(--color-danger-bg);
-        color: var(--color-danger-light);
-    }
-    .seg-chip-cache {
-        border-color: var(--color-teal-border);
-        background: rgba(45,212,191,0.08);
-        color: var(--color-teal-light);
-    }
-    .seg-chip-credits {
-        border-color: var(--color-orange-border);
-        background: rgba(249,115,22,0.08);
-        color: var(--color-orange-light);
-    }
-    .seg-chip-cost {
-        border-color: rgba(34,197,94,0.25);
-        background: rgba(34,197,94,0.08);
-        color: #22c55e;
-        font-weight: 600;
-    }
-    .seg-chip-ctx {
-        border-color: var(--color-orange-border);
-        background: rgba(251,146,60,0.08);
-        color: var(--color-orange-light);
-    }
-    .seg-chip-retry {
-        border-color: var(--color-danger-border);
-        background: var(--color-danger-bg);
-        color: var(--color-danger-light);
-    }
-    body.vscode-light .seg-chip-tools { color: #b45309; border-color: rgba(180,83,9,0.2); background: rgba(180,83,9,0.06); }
+    .seg-chip .act-icon { width: 11px; height: 11px; margin-right: 3px; color: inherit; }
+    .seg-chip-calls { border-color: var(--ed-accent-border); background: var(--ed-surface); color: var(--ed-accent); }
+    .seg-chip-speed { border-color: var(--ed-accent-border); background: var(--ed-surface); color: var(--ed-accent); font-weight: 600; }
+    .seg-chip-ttft { border-color: var(--ed-warn-border); background: var(--ed-surface); color: var(--ed-warn); }
+    .seg-chip-tools { border-color: var(--ed-border); background: var(--ed-surface); color: var(--ed-ink-secondary); }
+    .seg-chip-tok { border-color: var(--ed-border); background: var(--ed-surface); color: var(--ed-ink); }
+    .seg-chip-cache { border-color: var(--ed-border-strong); background: var(--ed-surface); color: var(--ed-chart-cache); }
+    .seg-chip-cache-hit { border-color: var(--ed-border-strong); background: var(--ed-surface); color: var(--ed-chart-cache); font-weight: 550; }
+    .seg-chip-credits { border-color: var(--ed-warn-border); background: var(--ed-surface); color: var(--ed-warn); }
+    .seg-chip-cost { border-color: var(--ed-good-border); background: var(--ed-surface); color: var(--ed-good); font-weight: 600; }
+    .seg-chip-ctx { border-color: var(--ed-warn-border); background: var(--ed-surface); color: var(--ed-warn); }
+    .seg-chip-retry { border-color: var(--ed-danger-border); background: var(--ed-surface); color: var(--ed-danger); font-weight: 600; }
     .act-tl-segment-user {
-        background: var(--color-ok-bg-dim);
-        padding-left: var(--space-2);
-    }
-    .act-tl-segment-user::before {
-        content: '';
-        width: 4px;
-        height: 4px;
-        border-radius: 50%;
-        background: var(--color-ok);
-        flex-shrink: 0;
-        margin-right: var(--space-1);
+        background: var(--ed-good-tint);
     }
     .act-tl-segment-body {
         display: flex;
         flex-direction: column;
-        border-top: 1px solid var(--color-border-subtle);
+        border-top: 1px solid var(--ed-border);
     }
-    .act-tl-segment-body .act-tl-item {
-        padding-left: var(--space-2);
-    }
-    .act-tl-segment-body .act-tl-item::before {
-        content: '';
-        width: 4px;
-        height: 4px;
-        border-radius: 50%;
-        background: var(--color-border-hover);
-        flex-shrink: 0;
-        margin-right: var(--space-1);
-    }
-    .act-tl-tags {
-        display: inline-flex;
-        flex-wrap: nowrap;
-        gap: 3px;
-        align-items: center;
-    }
-    .act-tl-tag {
-        display: inline-flex;
-        align-items: center;
-        padding: 0 4px;
-        border-radius: var(--radius-sm);
-        font-size: 0.72em;
-        line-height: 1.6;
-        white-space: nowrap;
-        border: 1px solid transparent;
-    }
-    /* .act-tl-tag-exact removed — "Exact" label deemed too absolute */
-    .act-tl-tag-alias {
-        background: var(--color-amber-border-dim);
-        color: var(--color-amber-light);
-        border-color: rgba(251,191,36,0.2);
-    }
-    .act-tl-tag-struct {
-        background: var(--color-info-border-dim);
-        color: var(--color-info-light);
-        border-color: var(--color-info-border);
-    }
-    .act-tl-tag-est {
-        background: rgba(248,113,113,0.14);
-        color: var(--color-danger-light);
-        border-color: var(--color-danger-border);
-    }
-    .act-tl-tag-basis {
-        background: var(--color-teal-bg);
-        color: var(--color-teal-light);
-        border-color: var(--color-teal-border);
-    }
-    .act-tl-tag-model {
-        background: var(--color-surface, rgba(128,128,128,0.08));
-        color: var(--color-text-dim);
-        border-color: var(--color-border, rgba(128,128,128,0.12));
-        max-width: 200px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    .act-tl-tag-marker {
-        background: var(--color-surface, rgba(128,128,128,0.08));
-        color: var(--color-text-dim);
-        border-color: var(--color-border, rgba(128,128,128,0.12));
-    }
-    .act-badge { font-size: 0.75em; opacity: 0.7; padding: 1px 6px; border-radius: var(--radius-sm); }
-    .act-checkpoint-model { border-color: var(--color-border, rgba(128,128,128,0.1)); opacity: 0.85; }
+    .act-checkpoint-model { opacity: 0.9; }
 
-    /* ─── Activity Tab: Timeline Legend Tooltip ─── */
+    /* ─── Timeline Legend Help Popover (L3 Overlay, zero backdrop-filter) ─── */
     .act-tl-help-wrap {
         position: relative;
         display: inline-flex;
@@ -1146,23 +1646,24 @@ export function getGMDataTabStyles(): string {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 18px; height: 18px;
-        border-radius: var(--radius-full);
-        border: 1px solid var(--color-muted-border-strong);
-        background: var(--color-muted-bg);
-        color: var(--color-text-dim);
-        font-size: 0.7em;
-        font-weight: 700;
+        width: 20px;
+        height: 20px;
+        border-radius: var(--ed-radius-pill);
+        border: 1px solid var(--ed-control-border);
+        background: var(--ed-surface);
+        color: var(--ed-ink-muted);
+        font-size: 0.72rem;
+        font-weight: 650;
         cursor: help;
         user-select: none;
         flex-shrink: 0;
-        transition: background 0.15s ease, border-color 0.15s ease;
+        transition: background var(--ed-dur-fast) var(--ed-ease), border-color var(--ed-dur-fast) var(--ed-ease), color var(--ed-dur-fast) var(--ed-ease);
     }
     @media (hover: hover) {
         .act-tl-help-btn:hover {
-            background: rgba(96,165,250,0.15);
-            border-color: rgba(96,165,250,0.4);
-            color: var(--color-text);
+            background: var(--ed-accent-tint);
+            border-color: var(--ed-accent-border);
+            color: var(--ed-accent);
         }
         .act-tl-help-btn:hover + .act-tl-help-popup {
             opacity: 1;
@@ -1175,35 +1676,32 @@ export function getGMDataTabStyles(): string {
         top: calc(100% + 6px);
         right: 0;
         z-index: 100;
-        width: 280px;
-        max-height: 260px;
+        width: 290px;
+        max-height: 280px;
         overflow-y: auto;
-        padding: var(--space-2) var(--space-3);
-        background: var(--color-bg);
-        border: 1px solid var(--color-border-strong);
-        border-radius: var(--radius-lg);
-        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-        backdrop-filter: blur(12px);
-        font-size: 0.75em;
+        padding: 10px 12px;
+        background: var(--ed-surface-overlay);
+        border: 1px solid var(--ed-border-strong);
+        border-radius: var(--ed-radius-lg);
+        box-shadow: var(--ed-shadow-popover);
+        font-size: 0.75rem;
         line-height: 1.5;
-        color: var(--color-text-dim);
+        color: var(--ed-ink-secondary);
         opacity: 0;
         visibility: hidden;
         transform: translateY(-4px);
-        transition: opacity 0.15s ease, visibility 0.15s ease, transform 0.15s ease;
+        transition: opacity var(--ed-dur-fast) var(--ed-ease), visibility var(--ed-dur-fast) var(--ed-ease), transform var(--ed-dur-fast) var(--ed-ease);
         pointer-events: none;
     }
-    .act-tl-help-popup::-webkit-scrollbar { width: 3px; }
-    .act-tl-help-popup::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: var(--radius-full); }
     .act-tl-help-row {
         display: flex;
-        align-items: flex-start;
-        gap: var(--space-2);
+        align-items: center;
+        gap: 8px;
         padding: 2px 0;
     }
     .act-tl-help-sample {
         flex-shrink: 0;
-        min-width: 80px;
+        min-width: 86px;
         display: flex;
         align-items: center;
     }
@@ -1211,101 +1709,77 @@ export function getGMDataTabStyles(): string {
         flex: 1;
         min-width: 0;
     }
-    .act-tl-help-desc b { color: var(--color-text); }
     .act-tl-help-divider {
         height: 1px;
-        background: var(--color-divider);
-        margin: var(--space-1) 0;
+        background: var(--ed-border);
+        margin: 6px 0;
     }
     .act-tl-help-group-label {
-        font-size: 0.82em;
+        font-size: 0.72rem;
         font-weight: 600;
-        color: var(--color-text);
-        margin-bottom: 2px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
+        color: var(--ed-ink);
+        margin-bottom: 4px;
     }
-    body.vscode-light .act-tl-help-popup {
-        background: var(--color-bg);
-        border-color: var(--color-border-strong);
-        box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-    }
-    body.vscode-light .act-tl-help-divider { background: var(--color-divider); }
-    body.vscode-light .act-tl-help-btn { background: var(--color-muted-bg); border-color: var(--color-border-strong); }
 
-
-
-    /* ─── Activity Tab: Context Trend Chart ─── */
+    /* ─── Context Trend Chart (Studio Cobalt Line + Soft Fill) ─── */
     .act-trend-container {
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
-        padding: var(--space-3);
-        margin-bottom: var(--space-4);
-        height: 240px;
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
+        padding: 14px 16px;
+        margin-bottom: 24px;
+        height: 230px;
         display: flex;
         flex-direction: column;
     }
     .act-trend-svg { width: 100%; flex: 1; display: block; }
+    .act-trend-grid { stroke: var(--ed-border); stroke-width: 1; }
+    .act-trend-area { fill: var(--ed-accent-tint); }
+    .act-trend-line { stroke: var(--ed-accent); stroke-width: 2; }
     .act-trend-labels {
         display: flex;
         justify-content: space-between;
-        font-size: 0.75em;
-        color: var(--color-text-dim);
-        margin-top: var(--space-2);
+        font-size: 0.75rem;
+        color: var(--ed-ink-muted);
+        margin-top: 8px;
+        padding-top: 6px;
+        border-top: 1px solid var(--ed-border);
+        font-variant-numeric: tabular-nums lining-nums;
     }
-    .act-compress-note { color: var(--color-danger); margin-left: var(--space-2); font-size: 0.85em; }
-    .err-delta { color: var(--color-danger); font-weight: 600; }
+    .err-delta { color: var(--ed-danger); font-weight: 600; font-size: 0.78rem; }
 
-
-    /* ─── Activity Tab: Conversation Breakdown ─── */
+    /* ─── Conversation Breakdown (L1 Card with Hairline Rows) ─── */
     .act-conv-list {
         display: flex;
         flex-direction: column;
-        gap: var(--space-2);
-        margin-bottom: var(--space-4);
-        max-height: 300px;
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
+        margin-bottom: 24px;
+        max-height: 280px;
         overflow-y: auto;
-        padding-right: 2px;
     }
-    .act-conv-list::-webkit-scrollbar { width: 4px; }
-    .act-conv-list::-webkit-scrollbar-track { background: transparent; }
-    .act-conv-list::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: var(--radius-full); }
     .act-conv-item {
         display: flex;
         align-items: center;
-        gap: var(--space-2);
-        padding: var(--space-2) var(--space-3);
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
-        border-left: 3px solid var(--color-accent);
-        transition: border-color 0.15s cubic-bezier(.4,0,.2,1), transform 0.1s cubic-bezier(.4,0,.2,1);
+        gap: 10px;
+        padding: 9px 14px;
+        border-bottom: 1px solid var(--ed-border);
+        transition: background var(--ed-dur-fast) var(--ed-ease);
+        min-width: 0;
     }
+    .act-conv-item:last-child { border-bottom: none; }
     @media (hover: hover) {
         .act-conv-item:hover {
-            border-color: var(--color-accent);
-            transform: translateX(2px);
+            background: var(--ed-surface-hover);
         }
     }
-    /* Color cycling for conversation cards */
-    .act-conv-item:nth-child(6n+1) { border-left-color: var(--color-info); }
-    .act-conv-item:nth-child(6n+2) { border-left-color: var(--color-ok); }
-    .act-conv-item:nth-child(6n+3) { border-left-color: var(--color-warn); }
-    .act-conv-item:nth-child(6n+4) { border-left-color: var(--color-danger); }
-    .act-conv-item:nth-child(6n+5) { border-left-color: var(--color-teal); }
-    .act-conv-item:nth-child(6n+6) { border-left-color: var(--color-orange); }
     .act-conv-title-chip {
         flex: 1;
         min-width: 0;
-        display: inline-block;
-        padding: 1px 8px;
-        border-radius: var(--radius-full);
-        background: var(--color-info-bg);
-        border: 1px solid var(--color-info-border);
-        color: var(--color-text);
-        font-weight: 600;
-        font-size: 0.85em;
+        color: var(--ed-ink);
+        font-weight: 550;
+        font-size: 0.8125rem;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -1313,235 +1787,80 @@ export function getGMDataTabStyles(): string {
     .act-conv-meta {
         display: flex;
         align-items: center;
-        gap: var(--space-2);
+        gap: 6px;
         flex-shrink: 0;
-        font-size: 0.78em;
-        color: var(--color-text-dim);
+        font-size: 0.75rem;
+        color: var(--ed-ink-muted);
     }
     .act-conv-meta-chip {
         display: inline-flex;
         align-items: center;
-        gap: 3px;
-        padding: 1px 6px;
-        border-radius: var(--radius-sm);
-        background: var(--color-surface);
-        border: 1px solid var(--color-border-dim);
-        white-space: nowrap;
-    }
-    .act-conv-meta-chip b { color: var(--color-text); font-weight: 600; }
-    .act-conv-meta-chip svg { width: 10px; height: 10px; flex-shrink: 0; opacity: 0.6; }
-    .act-conv-credits { color: var(--color-amber-light); }
-    .act-conv-date { color: var(--color-text-dim); font-variant-numeric: tabular-nums; }
-    body.vscode-light .act-conv-item { border-color: var(--color-border); background: var(--color-surface-raised); }
-    body.vscode-light .act-conv-title-chip { background: var(--color-info-bg); border-color: var(--color-info-border); }
-    body.vscode-light .act-conv-meta-chip { background: var(--color-surface-dim); border-color: var(--color-border-dim); }
-
-    /* ─── GM Precision Sections ─── */
-    .gm-perf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-2); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-3); margin-bottom: var(--space-4); }
-    .gm-perf-item { display: flex; flex-direction: column; gap: 2px; padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); background: var(--color-surface-subtle); border: 1px solid var(--color-border-subtle); }
-    .gm-perf-label { font-size: 0.72em; color: var(--color-text-dim); text-transform: uppercase; letter-spacing: 0.5px; overflow-wrap: anywhere; word-break: break-word; }
-    .gm-perf-val { font-weight: 700; font-size: 1.05em; }
-    .gm-perf-sub { font-size: 0.75em; color: var(--color-text-dim); }
-    .gm-cache-bar-bg { height: 20px; background: var(--color-surface-hover); border-radius: var(--radius-sm); overflow: hidden; margin-bottom: var(--space-1); }
-    .gm-cache-bar { height: 100%; border-radius: var(--radius-sm); background: linear-gradient(90deg, #3b82f6, #60a5fa); transition: width 0.3s cubic-bezier(.4,0,.2,1); }
-    .gm-badge-real { display: inline-block; font-size: 0.65em; padding: 1px var(--space-1); border-radius: var(--radius-sm); background: rgba(52,211,153,0.15); color: var(--color-ok-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; vertical-align: middle; margin-left: var(--space-1); }
-    .gm-provider-tag { display: inline-block; font-size: 0.72em; padding: 1px var(--space-1); border-radius: var(--radius-sm); background: var(--color-info-bg); color: var(--color-info); margin-top: var(--space-1); }
-    .gm-account-section {
-        padding: var(--space-1) 0 0;
-    }
-    .gm-account-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 2px var(--space-1);
-        font-size: 0.82em;
-    }
-    .gm-account-row .gm-account-label {
-        display: inline-flex;
-        align-items: center;
         gap: 4px;
-        color: var(--color-text-dim);
-        overflow: hidden;
-        text-overflow: ellipsis;
+        padding: 1px 7px;
+        border-radius: var(--ed-radius-xs);
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
         white-space: nowrap;
-        min-width: 0;
+        font-variant-numeric: tabular-nums lining-nums;
     }
-    .gm-account-row .gm-account-label svg {
-        width: 12px; height: 12px;
-        flex-shrink: 0;
-        opacity: 0.6;
-    }
-    .gm-account-row .gm-account-count {
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
-        color: var(--color-info);
-        flex-shrink: 0;
-        padding: 0 4px;
-        border-radius: var(--radius-sm);
-        background: rgba(96,165,250,0.08);
-        border: 1px solid rgba(96,165,250,0.2);
-    }
-    /* Active account highlight */
-    .gm-account-row.gm-account-active {
-        background: var(--color-ok-bg-dim);
-        border-radius: var(--radius-sm);
-    }
-    .gm-account-row.gm-account-active .gm-account-label {
-        color: var(--color-text);
-    }
-    .gm-account-row.gm-account-active .gm-account-label svg {
-        stroke: var(--color-ok-dim);
-        opacity: 1;
-    }
-    .gm-account-row.gm-account-active .gm-account-count {
-        color: var(--color-ok-dim);
-        background: rgba(52,211,153,0.08);
-        border-color: rgba(52,211,153,0.2);
-    }
-    /* ── Credit call count annotation ── */
-    .act-credit-calls {
-        font-size: 0.82em;
-        font-weight: 400;
-        color: var(--color-orange-light);
-        opacity: 0.7;
-        margin-left: 2px;
-    }
-    /* ── Error count in account rows ── */
-    .gm-account-err {
-        color: var(--color-danger);
-        font-weight: 600;
-        font-size: 0.82em;
-        font-variant-numeric: tabular-nums;
-        margin-left: 3px;
-        white-space: nowrap;
-        padding: 0 4px;
-        border-radius: var(--radius-sm);
-        background: var(--color-danger-border-dim);
-        border: 1px solid rgba(248,113,113,0.18);
-        display: none; /* hidden by default */
-    }
-    .gm-account-row.gm-account-active .gm-account-err {
-        color: var(--color-danger);
-    }
-    /* Shown when toggle is ON */
-    .model-stats-show-errors .gm-account-err {
-        display: inline;
-    }
-    /* ── Error Toggle Button ── */
-    .model-stats-err-toggle {
-        display: inline-flex;
-        align-items: center;
-        gap: 3px;
-        padding: 1px 8px;
-        border-radius: var(--radius-full);
-        border: 1px solid rgba(248,113,113,0.25);
-        background: var(--color-danger-bg);
-        color: var(--color-danger);
-        font-size: 0.72em;
-        font-weight: 600;
-        cursor: pointer;
-        user-select: none;
-        transition: all 0.15s cubic-bezier(.4,0,.2,1);
-        flex-shrink: 0;
-        line-height: 1.6;
-    }
-    .model-stats-err-toggle svg {
-        width: 10px; height: 10px;
-        flex-shrink: 0;
-    }
-    @media (hover: hover) {
-        .model-stats-err-toggle:hover {
-            background: var(--color-danger-bg-hover);
-            border-color: rgba(248,113,113,0.4);
-        }
-    }
-    .model-stats-err-toggle.is-off {
-        background: var(--color-surface-dim);
-        border-color: var(--color-border);
-        color: var(--color-text-dim);
-        opacity: 0.6;
-    }
-    @media (hover: hover) {
-        .model-stats-err-toggle.is-off:hover {
-            opacity: 0.9;
-            background: var(--color-surface-hover);
-        }
-    }
-    body.vscode-light .model-stats-err-toggle {
-        background: var(--color-danger-bg-dim);
-        border-color: var(--color-danger-border);
-    }
-    body.vscode-light .model-stats-err-toggle.is-off {
-        background: var(--color-surface-dim);
-        border-color: var(--color-border);
-    }
-    /* ─── Retry Overhead ─── */
-    .act-stat-warn { border-color: var(--color-danger-border-strong); }
-    @media (hover: hover) {
-        .act-stat-warn:hover { border-color: rgba(248,113,113,0.6); box-shadow: 0 0 8px rgba(248,113,113,0.15); }
-    }
-    /* ── Error Details Section ── */
+    .act-conv-meta-chip b { color: var(--ed-ink); font-weight: 600; }
+    .act-conv-meta-chip svg { width: 11px; height: 11px; flex-shrink: 0; color: var(--ed-ink-muted); }
+    .act-conv-credits { color: var(--ed-warn); border-color: var(--ed-warn-border); background: var(--ed-warn-tint); }
+    .act-conv-credits b { color: var(--ed-warn); }
+    .act-conv-date { color: var(--ed-ink-muted); }
+
+    /* ─── Error Details Section ─── */
     .gm-err-card {
-        background: var(--color-surface);
-        border: 1px solid var(--color-danger-border);
-        border-radius: var(--radius-md);
-        padding: var(--space-3);
-        margin-bottom: var(--space-4);
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-danger-border);
+        border-radius: var(--ed-radius-md);
+        padding: 14px 16px;
+        margin-bottom: 24px;
     }
     .gm-err-codes {
         display: flex;
         flex-wrap: wrap;
-        gap: var(--space-1);
-        margin-bottom: var(--space-2);
+        gap: 6px;
+        margin-bottom: 10px;
     }
     .gm-err-tag {
-        display: inline-block;
-        font-size: 0.75em;
+        display: inline-flex;
+        align-items: center;
+        font-size: 0.72rem;
         font-weight: 600;
-        padding: 2px var(--space-2);
-        border-radius: var(--radius-sm);
-        letter-spacing: 0.3px;
+        padding: 2px 8px;
+        border-radius: var(--ed-radius-xs);
+        border: 1px solid var(--ed-border);
+        font-variant-numeric: tabular-nums lining-nums;
     }
-    .gm-err-tag-ratelimit { background: rgba(234,88,12,0.15); color: var(--color-orange-strong); }
-    .gm-err-tag-server    { background: var(--color-danger-border-dim); color: var(--color-danger); }
-    .gm-err-tag-other     { background: var(--color-muted-border); color: var(--color-muted); }
+    .gm-err-tag-ratelimit { background: var(--ed-warn-tint); color: var(--ed-warn); border-color: var(--ed-warn-border); }
+    .gm-err-tag-server { background: var(--ed-danger-tint); color: var(--ed-danger); border-color: var(--ed-danger-border); }
+    .gm-err-tag-other { background: var(--ed-surface-well); color: var(--ed-ink-secondary); border-color: var(--ed-border); }
+    .gm-err-expand .gm-err-tag { background: var(--ed-surface); }
     .gm-err-overhead {
-        font-size: 0.75em;
-        color: var(--color-text-dim);
-        padding: var(--space-1) 0;
-        border-top: 1px solid var(--color-divider);
-        margin-top: var(--space-1);
-    }
-    .gm-err-list {
-        display: flex;
-        flex-direction: column;
-        gap: 3px;
-        margin-top: var(--space-2);
-        padding-top: var(--space-2);
-        border-top: 1px solid var(--color-divider);
+        font-size: 0.75rem;
+        color: var(--ed-ink-secondary);
+        padding: 8px 0;
+        border-top: 1px solid var(--ed-border);
+        margin-top: 6px;
     }
     .gm-err-msg {
-        font-size: 0.72em;
-        font-family: var(--font-mono, monospace);
-        color: var(--color-danger-light);
-        padding: 4px var(--space-2);
-        border-radius: var(--radius-sm);
-        background: var(--color-danger-bg-dim);
-        line-height: 1.5;
+        font-size: 0.75rem;
+        font-family: var(--ed-mono);
+        color: var(--ed-danger);
+        padding: 6px 10px;
+        border-radius: var(--ed-radius-xs);
+        background: var(--ed-danger-tint);
+        line-height: 1.55;
     }
-    .gm-err-idx {
-        display: inline-block;
-        min-width: 1.8em;
-        color: rgba(252,165,165,0.5);
-        font-weight: 600;
-        font-size: 0.9em;
-        user-select: none;
-    }
-    /* ── Expandable error (details/summary) ── */
     .gm-err-expand {
-        border-radius: var(--radius-sm);
-        background: var(--color-danger-bg-dim);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-xs);
+        background: var(--ed-surface-well);
+        overflow: hidden;
+        transition: border-color var(--ed-dur-fast) var(--ed-ease);
     }
+    .gm-err-expand[open] { border-color: var(--ed-danger-border); }
     .gm-err-msg-summary {
         display: block;
         min-width: 0;
@@ -1553,27 +1872,7 @@ export function getGMDataTabStyles(): string {
         user-select: none;
     }
     .gm-err-msg-summary::-webkit-details-marker { display: none; }
-    .gm-err-msg-summary::before {
-        content: '\u25b6';
-        display: inline-block;
-        font-size: 0.65em;
-        margin-right: 4px;
-        transition: transform 0.15s ease;
-        color: rgba(252,165,165,0.45);
-        vertical-align: middle;
-    }
-    /* Non-overflowing: hide expand arrow + disable pointer */
-    .gm-err-expand.no-overflow > .gm-err-msg-summary {
-        cursor: default;
-        pointer-events: none;
-    }
-    .gm-err-expand.no-overflow > .gm-err-msg-summary::before {
-        display: none;
-    }
-    .gm-err-expand[open] > .gm-err-msg-summary::before {
-        display: none;
-    }
-    /* When expanded: fully hide summary — collapse is via .gm-err-msg-full click */
+    .gm-err-expand.no-overflow > .gm-err-msg-summary { cursor: default; pointer-events: none; }
     .gm-err-expand[open] > .gm-err-msg-summary {
         height: 0;
         padding: 0;
@@ -1583,181 +1882,154 @@ export function getGMDataTabStyles(): string {
         pointer-events: none;
     }
     .gm-err-msg-full {
-        font-size: 0.72em;
-        font-family: var(--font-mono, monospace);
-        color: var(--color-danger-light);
+        font-size: 0.75rem;
+        font-family: var(--ed-mono);
+        color: var(--ed-ink);
+        background: var(--ed-surface);
         white-space: pre-wrap;
-        word-break: break-all;
-        line-height: 1.6;
-        padding: 5px var(--space-2);
+        word-break: break-word;
+        line-height: 1.55;
+        padding: 8px 12px;
+        border-top: 1px solid var(--ed-border);
         cursor: pointer;
     }
-    .gm-err-msg-full::before {
-        content: '\u25bc';
-        display: inline-block;
-        font-size: 0.65em;
-        margin-right: 4px;
-        color: rgba(252,165,165,0.45);
-        vertical-align: middle;
-    }
-
-    /* ── Unique Error Types Catalog ── */
     .gm-ue-section {
-        margin-top: var(--space-2);
-        padding-top: var(--space-2);
-        border-top: 1px solid var(--color-divider);
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid var(--ed-border);
     }
     .gm-ue-header {
         display: flex;
         align-items: center;
-        gap: var(--space-2);
-        font-size: 0.8em;
+        gap: 6px;
+        font-size: 0.8125rem;
         font-weight: 600;
-        color: var(--color-danger);
+        color: var(--ed-ink);
         cursor: pointer;
         list-style: none;
         user-select: none;
-        padding: 2px 0;
+        padding: 4px 2px;
     }
     .gm-ue-header::-webkit-details-marker { display: none; }
     .gm-ue-header::before {
-        content: '\u25b6';
-        display: inline-block;
-        font-size: 0.6em;
-        transition: transform 0.15s ease;
-        color: var(--color-danger);
+        content: '';
+        width: 0;
+        height: 0;
+        border-left: 5px solid var(--ed-ink-muted);
+        border-top: 4px solid transparent;
+        border-bottom: 4px solid transparent;
+        transition: transform 160ms var(--ed-ease);
         flex-shrink: 0;
     }
     .gm-ue-section[open] > .gm-ue-header::before {
         transform: rotate(90deg);
+        border-left-color: var(--ed-danger);
     }
     .gm-ue-header .act-icon {
         width: 14px;
         height: 14px;
-        flex-shrink: 0;
-        color: var(--color-danger);
+        margin-right: 0;
+        color: var(--ed-danger);
     }
-    .gm-ue-header .act-badge {
-        font-size: 0.85em;
-        font-weight: 500;
-    }
-    /* Copy button */
     .gm-ue-copy-btn {
         margin-left: auto;
+        position: relative;
         display: inline-flex;
         align-items: center;
-        gap: 3px;
-        background: transparent;
-        border: 1px solid var(--color-danger-border);
-        border-radius: var(--radius-sm);
-        color: var(--color-danger-light);
+        justify-content: center;
+        gap: 4px;
+        height: 28px;
+        padding: 0 9px;
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-control-border);
+        border-radius: var(--ed-radius-sm);
+        color: var(--ed-ink-secondary);
         cursor: pointer;
-        padding: 2px 6px;
-        font-size: 0.85em;
-        opacity: 0.6;
-        transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+        font-size: 0.75rem;
+        transition: background var(--ed-dur-fast) var(--ed-ease), border-color var(--ed-dur-fast) var(--ed-ease), color var(--ed-dur-fast) var(--ed-ease);
     }
-    .gm-ue-copy-btn:hover {
-        opacity: 1;
-        background: var(--color-danger-bg-dim);
-        border-color: var(--color-danger);
+    @media (hover: hover) {
+        .gm-ue-copy-btn:hover {
+            background: var(--ed-surface-hover);
+            border-color: var(--ed-ink-muted);
+            color: var(--ed-ink);
+        }
+        .gm-ue-copy-btn:hover .gm-ue-tooltip { opacity: 1; }
+    }
+    .gm-ue-copy-btn:focus-visible {
+        outline: 2px solid var(--ed-accent);
+        outline-offset: 2px;
     }
     .gm-ue-copy-btn.copied {
-        opacity: 1;
-        border-color: var(--color-ok);
-        color: var(--color-ok);
+        border-color: var(--ed-good-border);
+        background: var(--ed-good-tint);
+        color: var(--ed-good);
     }
-    /* Custom tooltip for copy button */
-    .gm-ue-copy-btn {
-        position: relative;
-    }
+    .gm-ue-copy-btn.copied .gm-ue-tooltip { opacity: 0; }
     .gm-ue-tooltip {
         position: absolute;
         bottom: calc(100% + 6px);
-        left: 50%;
-        transform: translateX(-50%);
-        background: var(--color-surface-raised, #2a2a2a);
-        color: var(--color-text, #e0e0e0);
-        font-size: 0.75em;
+        right: 0;
+        background: var(--ed-surface-overlay);
+        color: var(--ed-ink);
+        font-size: 0.72rem;
         font-weight: 500;
-        padding: 3px 8px;
-        border-radius: var(--radius-sm);
+        padding: 4px 8px;
+        border-radius: var(--ed-radius-sm);
         white-space: nowrap;
         pointer-events: none;
         opacity: 0;
-        transition: opacity 0.15s ease;
-        border: 1px solid var(--color-border);
+        transition: opacity var(--ed-dur-fast) var(--ed-ease);
+        border: 1px solid var(--ed-border-strong);
+        box-shadow: var(--ed-shadow-tooltip);
         z-index: 10;
-    }
-    .gm-ue-tooltip::after {
-        content: '';
-        position: absolute;
-        top: 100%;
-        left: 50%;
-        transform: translateX(-50%);
-        border: 4px solid transparent;
-        border-top-color: var(--color-border);
-    }
-    .gm-ue-copy-btn:hover .gm-ue-tooltip {
-        opacity: 1;
-    }
-    .gm-ue-copy-btn.copied .gm-ue-tooltip {
-        opacity: 0;
     }
     .gm-ue-list {
         display: flex;
         flex-direction: column;
-        gap: 3px;
-        margin-top: var(--space-2);
-    }
-    .gm-ue-row {
-        border-left: 3px solid var(--color-danger-border);
-        transition: border-color 0.15s ease;
-    }
-    .gm-ue-row[open] {
-        border-left-color: var(--color-danger);
+        gap: 6px;
+        margin-top: 8px;
     }
     .gm-ue-summary {
         display: flex;
         align-items: center;
-        gap: var(--space-1);
+        gap: 6px;
         min-width: 0;
         cursor: pointer;
-        padding: 4px var(--space-2);
-        font-size: 0.75em;
+        padding: 6px 10px;
+        font-size: 0.75rem;
         list-style: none;
         user-select: none;
         overflow: hidden;
     }
     .gm-ue-summary::-webkit-details-marker { display: none; }
     .gm-ue-summary::before {
-        content: '\u25b6';
-        display: inline-block;
-        font-size: 0.6em;
-        margin-right: 2px;
-        transition: transform 0.15s ease;
-        color: rgba(252,165,165,0.45);
+        content: '';
+        width: 0;
+        height: 0;
+        border-left: 4px solid var(--ed-ink-muted);
+        border-top: 3.5px solid transparent;
+        border-bottom: 3.5px solid transparent;
+        transition: transform 160ms var(--ed-ease);
         flex-shrink: 0;
     }
-    .gm-ue-row[open] > .gm-ue-summary::before {
-        transform: rotate(90deg);
-    }
+    .gm-ue-row[open] > .gm-ue-summary::before { transform: rotate(90deg); }
     .gm-ue-idx {
-        color: rgba(252,165,165,0.5);
+        color: var(--ed-ink-muted);
         font-weight: 600;
-        font-size: 0.9em;
+        font-family: var(--ed-mono);
+        font-size: 0.72rem;
         min-width: 1.6em;
         flex-shrink: 0;
     }
-    .gm-ue-code {
-        flex-shrink: 0;
-    }
+    .gm-ue-code { flex-shrink: 0; }
     .gm-ue-time {
-        font-size: 0.85em;
-        color: var(--color-text-dim);
+        font-size: 0.72rem;
+        color: var(--ed-ink-muted);
         white-space: nowrap;
         flex-shrink: 0;
-        font-family: var(--font-mono, monospace);
+        font-family: var(--ed-mono);
+        font-variant-numeric: tabular-nums lining-nums;
     }
     .gm-ue-msg-preview {
         flex: 1;
@@ -1765,212 +2037,295 @@ export function getGMDataTabStyles(): string {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        font-family: var(--font-mono, monospace);
-        color: var(--color-danger-light);
-    }
-    .gm-ue-full {
-        margin: 0 0 2px var(--space-4);
-        border-left: 2px solid var(--color-danger-border-dim);
-        padding-left: var(--space-2);
+        font-family: var(--ed-mono);
+        color: var(--ed-danger);
     }
 
-
-
-    /* ─── Light Theme: Activity Panel ──── */
-    body.vscode-light .act-card-header { background: var(--color-surface-dim); }
-    body.vscode-light .act-tool-tag { background: var(--color-surface-hover); }
-    body.vscode-light .act-tl-segment-body .act-tl-item::before { background: var(--color-border-hover); }
-    body.vscode-light .act-tl-item { border-bottom-color: var(--color-border-subtle); }
-    @media (hover: hover) {
-        body.vscode-light .act-tl-item:hover { background: var(--color-surface-dim); }
-    }
-    body.vscode-light .gm-perf-item { background: var(--color-surface-subtle); border-color: var(--color-border-dim); }
-    body.vscode-light .gm-cache-bar-bg { background: var(--color-surface-hover); }
-    body.vscode-light .gm-retry-stops { border-top-color: var(--color-divider); }
-    body.vscode-light .act-rank-bar-bg { background: var(--color-surface-hover); }
-
-
-    /* ─── Context Intelligence Section ─── */
+    /* ─── Context Intelligence Section (Unified Disclosure Grammar) ─── */
     .ci-section {
-        margin-bottom: var(--space-3);
-        border: 1px solid var(--color-amber-border-dim);
-        border-radius: var(--radius-lg);
-        background: rgba(251,191,36,0.02);
+        margin-bottom: 14px;
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
+        background: var(--ed-surface);
         overflow: hidden;
     }
     .ci-section-header {
         display: flex;
         align-items: center;
-        gap: var(--space-2);
-        padding: var(--space-2) var(--space-3);
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 14px;
         cursor: pointer;
         user-select: none;
         list-style: none;
-        font-size: 1em;
+        font-size: 0.875rem;
         font-weight: 600;
-        color: var(--color-text);
-        transition: background 0.15s cubic-bezier(.4,0,.2,1);
+        color: var(--ed-ink);
+        background: var(--ed-surface-well);
+        transition: background var(--ed-dur-fast) var(--ed-ease);
     }
     .ci-section-header::-webkit-details-marker { display: none; }
     .ci-section-header::before {
-        content: '▸';
-        display: inline-block;
-        font-size: 0.8em;
-        transition: transform 0.2s cubic-bezier(.4,0,.2,1);
-        opacity: 0.5;
+        content: '';
+        width: 0;
+        height: 0;
+        border-left: 5px solid var(--ed-ink-muted);
+        border-top: 4px solid transparent;
+        border-bottom: 4px solid transparent;
+        transition: transform 160ms var(--ed-ease);
         flex-shrink: 0;
     }
-    .ci-section[open] > .ci-section-header::before { transform: rotate(90deg); opacity: 0.8; }
+    .ci-section[open] > .ci-section-header::before {
+        transform: rotate(90deg);
+        border-left-color: var(--ed-ink);
+    }
     @media (hover: hover) {
-        .ci-section-header:hover { background: rgba(251,191,36,0.06); }
+        .ci-section-header:hover { background: var(--ed-surface-hover); }
     }
     .ci-badges {
         display: inline-flex;
         flex-wrap: wrap;
-        gap: 4px;
+        gap: 5px;
         margin-left: auto;
     }
     .ci-section[open] > .cp-viewer {
-        border-top: 1px solid var(--color-amber-border-dim);
+        border-top: 1px solid var(--ed-border);
     }
-    body.vscode-light .ci-section {
-        border-color: rgba(202,138,4,0.15);
-        background: rgba(202,138,4,0.02);
-    }
-    body.vscode-light .ci-section-header:hover { background: rgba(202,138,4,0.06); }
     .cp-viewer {
-        margin-bottom: var(--space-4);
-        max-height: 400px;
+        max-height: 420px;
         overflow-y: auto;
         overscroll-behavior: contain;
-        border: 1px solid var(--color-amber-border-dim);
-        border-radius: var(--radius-lg);
-        background: rgba(251,191,36,0.015);
-        padding: var(--space-3) var(--space-6);
-        scrollbar-width: none;
+        padding: 12px 14px;
+        background: var(--ed-surface);
     }
-    .cp-viewer::-webkit-scrollbar { display: none; }
+    .ci-empty {
+        text-align: center;
+        padding: 20px 16px;
+        color: var(--ed-ink-muted);
+        font-size: 0.8125rem;
+    }
+    .ci-empty svg {
+        width: 24px;
+        height: 24px;
+        margin: 0 auto 8px;
+        display: block;
+        color: var(--ed-ink-muted);
+    }
     .cp-card {
-        border: 1px solid var(--color-amber-border);
-        border-radius: var(--radius-md);
-        background: rgba(251,191,36,0.03);
-        margin-bottom: var(--space-2);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-sm);
+        background: var(--ed-surface-well);
+        margin-bottom: 8px;
         overflow: hidden;
-        transition: border-color 0.2s cubic-bezier(.4,0,.2,1);
+        transition: border-color var(--ed-dur-fast) var(--ed-ease);
     }
     .cp-card:last-child { margin-bottom: 0; }
-    .cp-card[open] {
-        border-color: rgba(251,191,36,0.35);
-    }
+    .cp-card[open] { border-color: var(--ed-border-strong); }
     .cp-card-header {
         display: flex;
         align-items: center;
-        gap: var(--space-2);
-        padding: var(--space-2) var(--space-3);
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 8px 12px;
         cursor: pointer;
         user-select: none;
         list-style: none;
-        font-size: 0.85em;
-        color: var(--color-text);
-        transition: background 0.15s cubic-bezier(.4,0,.2,1);
+        font-size: 0.8125rem;
+        color: var(--ed-ink);
+        transition: background var(--ed-dur-fast) var(--ed-ease);
     }
     .cp-card-header::-webkit-details-marker { display: none; }
     .cp-card-header::before {
         content: '';
-        width: 0; height: 0;
-        border-left: 5px solid currentColor;
-        border-top: 4px solid transparent;
-        border-bottom: 4px solid transparent;
-        transition: transform 0.2s cubic-bezier(.4,0,.2,1);
+        width: 0;
+        height: 0;
+        border-left: 4.5px solid var(--ed-ink-muted);
+        border-top: 3.5px solid transparent;
+        border-bottom: 3.5px solid transparent;
+        transition: transform 160ms var(--ed-ease);
         flex-shrink: 0;
-        opacity: 0.5;
     }
-    .cp-card[open] > .cp-card-header::before {
-        transform: rotate(90deg);
-    }
+    .cp-card[open] > .cp-card-header::before { transform: rotate(90deg); }
     @media (hover: hover) {
-        .cp-card-header:hover { background: var(--color-amber-bg-dim); }
+        .cp-card-header:hover { background: var(--ed-surface-hover); }
     }
+    .ci-icon {
+        width: 14px;
+        height: 14px;
+        display: inline-flex;
+        align-items: center;
+        flex-shrink: 0;
+    }
+    .ci-title-label { font-weight: 600; color: var(--ed-ink); }
     .cp-card-num {
-        font-weight: 700;
-        color: var(--color-amber);
+        font-weight: 650;
+        font-family: var(--ed-mono);
+        font-size: 0.75rem;
+        color: var(--ed-accent);
         flex-shrink: 0;
     }
     .cp-card-chip {
         display: inline-flex;
         align-items: center;
-        padding: 1px 6px;
-        border-radius: var(--radius-sm);
-        font-size: 0.78em;
+        padding: 1px 7px;
+        border-radius: var(--ed-radius-xs);
+        font-size: 0.72rem;
+        font-weight: 550;
         white-space: nowrap;
+        font-variant-numeric: tabular-nums lining-nums;
     }
     .cp-card-chip-step {
-        background: var(--color-neutral-border);
-        color: var(--color-text-dim);
-        border: 1px solid var(--color-muted-border);
+        background: var(--ed-surface);
+        color: var(--ed-ink-secondary);
+        border: 1px solid var(--ed-border);
     }
     .cp-card-chip-tok {
-        background: var(--color-amber-bg);
-        color: var(--color-amber-light);
-        border: 1px solid var(--color-amber-border);
-    }
-    @media (max-width: 640px) {
-        .act-summary-bar { position: relative; }
-        .act-summary-bar .act-stat { position: static; }
-        .act-summary-bar > .act-stat[data-tooltip]::after {
-            left: 50%; right: auto; max-width: calc(100% - 20px);
-            transform: translateX(-50%) scale(0.92);
-        }
-        .act-summary-bar > .act-stat[data-tooltip]:hover::after,
-        .act-summary-bar > .act-stat[data-tooltip]:focus-visible::after {
-            transform: translateX(-50%) scale(1);
-        }
-        .act-tl-item, .act-tl-turn-header, .cp-card-header { flex-wrap: wrap; }
-        .act-tl-content, .act-tl-turn-text { flex-basis: 120px; }
-        .act-tl-meta { max-width: 100%; flex-wrap: wrap; white-space: normal; }
-        .act-tl-gm { max-width: 100%; min-width: 0; flex-wrap: wrap; flex-shrink: 1; }
-        .seg-chips { flex-basis: 100%; max-width: 100%; min-width: 0; }
-        .act-tl-gm-tag, .seg-chip, .cp-card-chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+        background: var(--ed-surface);
+        color: var(--ed-accent);
+        border: 1px solid var(--ed-accent-border);
     }
     .cp-card-body {
-        border-top: 1px solid var(--color-amber-bg);
-        padding: var(--space-3);
-        font-size: 0.82em;
-        line-height: 1.7;
-        color: var(--color-text);
+        border-top: 1px solid var(--ed-border);
+        padding: 12px 14px;
+        font-size: 0.78125rem;
+        line-height: 1.6;
+        color: var(--ed-ink);
+        background: var(--ed-surface);
         max-height: 280px;
         overflow-y: auto;
         overscroll-behavior: contain;
         white-space: pre-wrap;
         word-break: break-word;
     }
-    .cp-card-body::-webkit-scrollbar { width: 4px; }
-    .cp-card-body::-webkit-scrollbar-track { background: transparent; }
-    .cp-card-body::-webkit-scrollbar-thumb { background: rgba(251,191,36,0.3); border-radius: var(--radius-full); }
-    .cp-card-body h1, .cp-card-body h2, .cp-card-body h3 {
-        font-size: 1em;
-        font-weight: 700;
-        margin: var(--space-2) 0 var(--space-1) 0;
-        color: var(--color-amber);
+    .cp-card-body.is-structured { white-space: normal; }
+    .ci-raw-header {
+        margin-bottom: 8px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid var(--ed-border);
+        font-weight: 600;
+        font-size: 0.75rem;
+        color: var(--ed-ink-secondary);
     }
-    .cp-card-body h1:first-child, .cp-card-body h2:first-child { margin-top: 0; }
-    .cp-card-body strong { color: var(--color-text); }
-    .cp-card-body code {
-        background: var(--color-surface-hover);
-        padding: 1px 4px;
-        border-radius: 3px;
-        font-size: 0.9em;
+    .ci-raw-content {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: var(--ed-mono);
+        font-size: 0.75rem;
+        color: var(--ed-ink-secondary);
+        line-height: 1.55;
     }
-    body.vscode-light .cp-card {
-        border-color: rgba(202,138,4,0.2);
-        background: rgba(202,138,4,0.03);
+    .ci-model-sub {
+        margin-bottom: 8px;
+        font-size: 0.75rem;
+        color: var(--ed-ink-muted);
     }
-    body.vscode-light .cp-card[open] { border-color: rgba(202,138,4,0.4); }
-    body.vscode-light .cp-card-num { color: var(--color-amber); }
-    body.vscode-light .cp-card-chip-tok { background: rgba(202,138,4,0.1); color: #92400e; border-color: rgba(202,138,4,0.2); }
-    body.vscode-light .cp-card-body h1, body.vscode-light .cp-card-body h2, body.vscode-light .cp-card-body h3 { color: var(--color-amber); }
+    .ci-cap-box {
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid var(--ed-border);
+    }
+    .ci-cap-track {
+        height: 6px;
+        background: var(--ed-track);
+        border-radius: var(--ed-radius-pill);
+        overflow: hidden;
+        margin-top: 4px;
+    }
+    .ci-cap-fill {
+        height: 100%;
+        border-radius: var(--ed-radius-pill);
+        transition: width 260ms var(--ed-ease);
+    }
+    .ci-cap-meta {
+        font-size: 0.72rem;
+        color: var(--ed-ink-muted);
+        margin-top: 4px;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .ci-bd-item { margin-bottom: 8px; }
+    .ci-bd-item:last-child { margin-bottom: 0; }
+    .ci-bd-label-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+    }
+    .ci-bd-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: var(--ed-radius-pill);
+        flex-shrink: 0;
+    }
+    .ci-bd-track {
+        height: 6px;
+        background: var(--ed-track);
+        border-radius: var(--ed-radius-pill);
+        overflow: hidden;
+        margin-top: 3px;
+    }
+    .ci-bd-fill {
+        height: 100%;
+        border-radius: var(--ed-radius-pill);
+    }
+    .ci-bd-children {
+        margin-top: 5px;
+        padding-left: 14px;
+    }
 
-    /* ─── Model DNA Cards (Context Intelligence) ─── */
+    /* Semantic Tone Tokens for Context Intelligence badges & icons */
+    .ci-tone-accent { color: var(--ed-accent); }
+    .ci-tone-good { color: var(--ed-good); }
+    .ci-tone-warn { color: var(--ed-warn); }
+    .ci-tone-danger { color: var(--ed-danger); }
+    .ci-tone-cache { color: var(--ed-chart-cache); }
+    .ci-tone-thinking { color: var(--ed-chart-thinking); }
+    .ci-tone-neutral { color: var(--ed-ink-secondary); }
+
+    .ci-badge.ci-tone-accent { background: var(--ed-surface); border-color: var(--ed-accent-border); color: var(--ed-accent); }
+    .ci-badge.ci-tone-good { background: var(--ed-surface); border-color: var(--ed-good-border); color: var(--ed-good); }
+    .ci-badge.ci-tone-warn { background: var(--ed-surface); border-color: var(--ed-warn-border); color: var(--ed-warn); }
+    .ci-badge.ci-tone-danger { background: var(--ed-surface); border-color: var(--ed-danger-border); color: var(--ed-danger); }
+    .ci-badge.ci-tone-cache { background: var(--ed-surface); border-color: var(--ed-border-strong); color: var(--ed-chart-cache); }
+    .ci-badge.ci-tone-thinking { background: var(--ed-surface); border-color: var(--ed-border-strong); color: var(--ed-chart-thinking); }
+    .ci-badge.ci-tone-neutral { background: var(--ed-surface); border-color: var(--ed-border); color: var(--ed-ink-secondary); }
+    body .tab-pane :is(
+        .model-stats-err-toggle:not(.is-off),
+        .act-tl-gm-in,
+        .act-tl-gm-out,
+        .act-tl-gm-speed,
+        .act-tl-gm-ttft,
+        .act-tl-gm-stream,
+        .act-tl-gm-cache,
+        .act-tl-gm-cache-hit,
+        .act-tl-gm-cost,
+        .act-tl-gm-credit,
+        .act-tl-gm-retry,
+        .act-tl-gm-ctx,
+        .seg-chip-calls,
+        .seg-chip-speed,
+        .seg-chip-ttft,
+        .seg-chip-cache,
+        .seg-chip-cache-hit,
+        .seg-chip-credits,
+        .seg-chip-cost,
+        .seg-chip-ctx,
+        .seg-chip-retry,
+        .telemetry-warmth-badge.is-warm,
+        .telemetry-warmth-badge.is-warming,
+        .telemetry-delta-pill.is-faster,
+        .act-conv-credits,
+        .cp-card-chip-tok,
+        .ci-badge.ci-tone-accent,
+        .ci-badge.ci-tone-good,
+        .ci-badge.ci-tone-warn,
+        .ci-badge.ci-tone-danger,
+        .ci-badge.ci-tone-cache,
+        .ci-badge.ci-tone-thinking,
+        .err-delta
+    ) :is(.bi-sep, .bi-zh) {
+        color: inherit;
+    }
+
     .ci-dna-chips {
         display: flex;
         flex-wrap: wrap;
@@ -1979,203 +2334,194 @@ export function getGMDataTabStyles(): string {
     .ci-dna-chip {
         display: inline-flex;
         align-items: center;
-        gap: 3px;
-        padding: 3px 10px;
-        border-radius: 12px;
-        font-size: 0.8em;
-        font-family: var(--font-mono, monospace);
-        background: var(--color-surface);
-        border: 1px solid;
+        gap: 4px;
+        padding: 2px 9px;
+        border-radius: var(--ed-radius-xs);
+        font-size: 0.72rem;
+        font-family: var(--ed-mono);
+        background: var(--ed-surface-well);
+        color: var(--ed-ink-secondary);
+        border: 1px solid var(--ed-border);
         white-space: nowrap;
-        transition: background 0.12s ease, border-color 0.12s ease;
+        transition: background var(--ed-dur-fast) var(--ed-ease), border-color var(--ed-dur-fast) var(--ed-ease);
     }
+    .ci-dna-chip b { color: var(--ed-ink); font-weight: 600; }
     @media (hover: hover) {
         .ci-dna-chip:hover {
-            background: var(--color-surface-hover);
+            background: var(--ed-surface-hover);
+            border-color: var(--ed-border-strong);
         }
     }
     .ci-cfg-grid {
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 5px;
     }
     .ci-cfg-row {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        gap: var(--space-2);
-        font-size: 0.88em;
+        gap: 10px;
+        font-size: 0.78125rem;
     }
     .ci-cfg-label {
-        font-family: var(--font-mono, monospace);
-        color: var(--color-text-dim);
-        font-size: 0.92em;
+        font-family: var(--ed-mono);
+        color: var(--ed-ink-muted);
+        font-size: 0.75rem;
     }
     .ci-cfg-val {
-        font-family: var(--font-mono, monospace);
+        font-family: var(--ed-mono);
         font-weight: 600;
-        color: var(--color-text);
-        font-variant-numeric: tabular-nums;
-    }
-    body.vscode-light .ci-dna-chip {
-        background: var(--color-surface-dim);
+        color: var(--ed-ink);
+        font-variant-numeric: tabular-nums lining-nums;
     }
 
-    /* ─── Tool Call Ranking ─── */
-    .tool-rank-section {
-        margin-bottom: var(--space-4);
-    }
+    /* ─── Tool Call Ranking (L1 Card + 8px Studio Cobalt Capsule Bars) ─── */
+    .tool-rank-section { margin-bottom: 24px; }
     .tool-rank-list {
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
-        padding: var(--space-2) var(--space-3);
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
+        padding: 12px 16px;
         list-style: none;
         margin: 0;
     }
     .tool-rank-row {
         display: flex;
         align-items: center;
-        gap: var(--space-2);
-        padding: 3px 0;
-        font-size: 0.82em;
-        border-bottom: 1px solid var(--color-divider-subtle);
+        gap: 10px;
+        padding: 6px 0;
+        font-size: 0.8125rem;
+        border-bottom: 1px solid var(--ed-border);
+        min-width: 0;
     }
     .tool-rank-row:last-child { border-bottom: none; }
     .tool-rank-idx {
-        width: 18px;
+        width: 20px;
         text-align: right;
-        color: var(--color-text-dim);
-        font-size: 0.78em;
-        font-variant-numeric: tabular-nums;
+        color: var(--ed-ink-muted);
+        font-size: 0.75rem;
+        font-variant-numeric: tabular-nums lining-nums;
         flex-shrink: 0;
-        opacity: 0.6;
     }
     .tool-rank-name {
-        width: 180px;
+        width: min(190px, 38%);
         flex-shrink: 0;
-        font-family: var(--font-mono);
+        font-family: var(--ed-mono);
         font-weight: 500;
-        font-size: 0.92em;
-        color: var(--color-text);
+        font-size: 0.78125rem;
+        color: var(--ed-ink);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        background: rgba(255, 255, 255, 0.04);
-        padding: 1px 7px;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        transition: background 0.12s ease, border-color 0.12s ease;
-    }
-    .tool-rank-name:hover {
-        background: rgba(255, 255, 255, 0.08);
-        border-color: rgba(255, 255, 255, 0.12);
+        min-width: 0;
     }
     .tool-rank-bar-wrap {
         flex: 1;
         min-width: 40px;
-        height: 14px;
-        background: var(--color-surface);
-        border-radius: var(--radius-sm);
+        height: 8px;
+        background: var(--ed-track);
+        border-radius: var(--ed-radius-pill);
         overflow: hidden;
     }
     .tool-rank-bar {
         display: block;
         height: 100%;
-        border-radius: var(--radius-sm);
-        background: linear-gradient(90deg, rgba(96,165,250,0.6), rgba(96,165,250,0.3));
-        transition: width 0.3s cubic-bezier(.4,0,.2,1);
-        min-width: 2px;
+        border-radius: var(--ed-radius-pill);
+        background: var(--ed-accent);
+        transition: width 260ms var(--ed-ease);
+        min-width: 4px;
     }
-    /* Color cycling for bar rows */
-    .tool-rank-row:nth-child(6n+1) .tool-rank-bar { background: linear-gradient(90deg, rgba(96,165,250,0.7), rgba(96,165,250,0.3)); }
-    .tool-rank-row:nth-child(6n+2) .tool-rank-bar { background: linear-gradient(90deg, rgba(74,222,128,0.7), rgba(74,222,128,0.3)); }
-    .tool-rank-row:nth-child(6n+3) .tool-rank-bar { background: linear-gradient(90deg, rgba(250,204,21,0.65), rgba(250,204,21,0.25)); }
-    .tool-rank-row:nth-child(6n+4) .tool-rank-bar { background: linear-gradient(90deg, rgba(248,113,113,0.65), rgba(248,113,113,0.25)); }
-    .tool-rank-row:nth-child(6n+5) .tool-rank-bar { background: linear-gradient(90deg, rgba(45,212,191,0.65), rgba(45,212,191,0.25)); }
-    .tool-rank-row:nth-child(6n+6) .tool-rank-bar { background: linear-gradient(90deg, rgba(167,139,250,0.65), rgba(167,139,250,0.25)); }
     .tool-rank-count {
-        width: 36px;
+        min-width: 40px;
         text-align: right;
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
-        color: var(--color-text);
+        font-weight: 650;
+        font-variant-numeric: tabular-nums lining-nums;
+        color: var(--ed-ink);
         flex-shrink: 0;
     }
     .tool-rank-summary {
         display: flex;
-        gap: var(--space-3);
-        font-size: 0.78em;
-        color: var(--color-text-dim);
-        margin-top: var(--space-1);
-        padding-top: var(--space-1);
-        border-top: 1px solid var(--color-divider);
+        flex-wrap: wrap;
+        gap: 6px 16px;
+        font-size: 0.75rem;
+        color: var(--ed-ink-muted);
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid var(--ed-border);
     }
-    .tool-rank-summary b { color: var(--color-text); }
+    .tool-rank-summary b { color: var(--ed-ink); font-variant-numeric: tabular-nums lining-nums; }
     .tool-rank-delta {
-        color: var(--color-ok);
-        font-size: 0.82em;
-        font-weight: 500;
-        margin-left: 2px;
+        color: var(--ed-good);
+        font-size: 0.75rem;
+        font-weight: 600;
+        margin-left: 3px;
         white-space: nowrap;
     }
-    /* ── Tool Catalog Chips ── */
+
+    /* ── Tool Catalog Disclosure ── */
     .tool-cat-section {
-        margin-top: var(--space-3);
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-md);
+        margin-top: 12px;
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
+        overflow: hidden;
     }
     .tool-cat-header {
         display: flex;
         align-items: center;
-        gap: 6px;
-        font-size: 0.82em;
-        color: var(--color-text-dim);
-        padding: var(--space-2) var(--space-3);
+        gap: 8px;
+        font-size: 0.8125rem;
+        font-weight: 550;
+        color: var(--ed-ink);
+        padding: 10px 14px;
         cursor: pointer;
         user-select: none;
         list-style: none;
-        transition: background 0.15s ease;
+        transition: background var(--ed-dur-fast) var(--ed-ease);
     }
     .tool-cat-header::-webkit-details-marker { display: none; }
     .tool-cat-header::before {
-        content: '▸';
-        display: inline-block;
-        font-size: 0.7em;
-        transition: transform 0.2s ease;
-        opacity: 0.5;
+        content: '';
+        width: 0;
+        height: 0;
+        border-left: 5px solid var(--ed-ink-muted);
+        border-top: 4px solid transparent;
+        border-bottom: 4px solid transparent;
+        transition: transform 160ms var(--ed-ease);
         flex-shrink: 0;
     }
     .tool-cat-section[open] > .tool-cat-header::before {
         transform: rotate(90deg);
-        opacity: 0.8;
+        border-left-color: var(--ed-ink);
     }
     @media (hover: hover) {
-        .tool-cat-header:hover { background: var(--color-surface-hover); }
+        .tool-cat-header:hover { background: var(--ed-surface-hover); }
     }
     .tool-cat-header svg {
-        width: 13px;
-        height: 13px;
-        opacity: 0.6;
+        width: 14px;
+        height: 14px;
+        margin-right: 0;
+        color: var(--ed-accent);
     }
     .tool-cat-chips {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-        gap: 5px;
-        padding: var(--space-2) var(--space-3);
+        gap: 6px;
+        padding: 12px 14px;
+        border-top: 1px solid var(--ed-border);
     }
     .tool-cat-chip {
         position: relative;
-        font-family: var(--font-mono);
-        font-size: 0.75em;
-        padding: 3px 8px;
-        border-radius: 10px;
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid var(--color-border);
-        color: var(--color-text);
+        font-family: var(--ed-mono);
+        font-size: 0.72rem;
+        padding: 4px 8px;
+        border-radius: var(--ed-radius-xs);
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+        color: var(--ed-ink-secondary);
         text-align: center;
-        transition: background 0.12s ease, border-color 0.12s ease;
+        transition: background var(--ed-dur-fast) var(--ed-ease), border-color var(--ed-dur-fast) var(--ed-ease), color var(--ed-dur-fast) var(--ed-ease);
     }
     .tool-cat-chip-text {
         display: block;
@@ -2183,34 +2529,37 @@ export function getGMDataTabStyles(): string {
         text-overflow: ellipsis;
         white-space: nowrap;
     }
-    .tool-cat-chip:hover {
-        background: rgba(255, 255, 255, 0.1);
-        border-color: var(--color-text-dim);
+    @media (hover: hover) {
+        .tool-cat-chip:hover {
+            background: var(--ed-surface-hover);
+            border-color: var(--ed-border-strong);
+            color: var(--ed-ink);
+        }
     }
-    /* Tooltip for tool catalog chips */
     .tool-cat-chip[data-tooltip]::after {
         content: attr(data-tooltip);
         position: absolute;
         left: 50%;
         bottom: calc(100% + 6px);
-        transform: translateX(-50%) scale(0.92);
-        padding: var(--space-1) var(--space-2);
-        background: var(--color-bg);
-        color: var(--color-text);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius-sm);
-        font-size: 12px;
+        transform: translateX(-50%) scale(0.94);
+        padding: 4px 8px;
+        background: var(--ed-surface-overlay);
+        color: var(--ed-ink);
+        border: 1px solid var(--ed-border-strong);
+        border-radius: var(--ed-radius-sm);
+        font-family: var(--ed-sans);
+        font-size: 0.75rem;
         font-weight: 400;
         white-space: normal;
         word-break: break-word;
-        max-width: 200px;
+        max-width: 210px;
         width: max-content;
         text-align: center;
         z-index: var(--z-tooltip, 500);
-        box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+        box-shadow: var(--ed-shadow-tooltip);
         pointer-events: none;
         opacity: 0;
-        transition: opacity 0.15s ease, transform 0.15s ease;
+        transition: opacity var(--ed-dur-fast) var(--ed-ease), transform var(--ed-dur-fast) var(--ed-ease);
     }
     .tool-cat-chip[data-tooltip]:hover::after {
         opacity: 1;
@@ -2219,43 +2568,217 @@ export function getGMDataTabStyles(): string {
     .tool-cat-footer {
         display: flex;
         justify-content: flex-end;
-        padding: var(--space-1) var(--space-3) var(--space-2);
+        padding: 6px 14px 12px;
     }
     .tool-cat-clear-btn {
+        appearance: none;
         display: inline-flex;
         align-items: center;
-        gap: 4px;
-        font-size: 0.72em;
-        color: var(--color-text-dim);
-        background: none;
-        border: 1px solid transparent;
-        border-radius: var(--radius-sm);
-        padding: 2px 8px;
+        gap: 5px;
+        height: 28px;
+        font-family: inherit;
+        font-size: 0.72rem;
+        font-weight: 550;
+        color: var(--ed-danger);
+        background: transparent;
+        border: 1px solid var(--ed-danger-border);
+        border-radius: var(--ed-radius-sm);
+        padding: 0 10px;
         cursor: pointer;
-        opacity: 0.5;
-        transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+        transition: background var(--ed-dur-fast) var(--ed-ease), border-color var(--ed-dur-fast) var(--ed-ease);
     }
-    .tool-cat-clear-btn:hover {
-        opacity: 1;
-        color: #f87171;
-        border-color: rgba(248, 113, 113, 0.3);
+    @media (hover: hover) {
+        .tool-cat-clear-btn:hover {
+            background: var(--ed-danger-tint);
+            border-color: var(--ed-danger);
+        }
+    }
+    .tool-cat-clear-btn:focus-visible {
+        outline: 2px solid var(--ed-accent);
+        outline-offset: 2px;
     }
 
+    /* ─── Responsive Breakpoints (Zero Overflow down to 320px) ─── */
+    @media (max-width: 680px) {
+        .telemetry-ledger-grid {
+            grid-template-columns: minmax(0, 1fr);
+        }
+    }
+
+    @media (max-width: 640px) {
+        .telemetry-ledger-card {
+            padding: 14px 14px;
+        }
+        .telemetry-hero-val {
+            font-size: 1.45rem;
+        }
+        .telemetry-ledger-row {
+            flex-wrap: wrap;
+        }
+        .telemetry-pill,
+        .telemetry-warmth-badge {
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+        .act-summary-bar {
+            position: relative;
+            padding: 10px 12px;
+            gap: 6px 10px;
+        }
+        .act-summary-bar .act-stat {
+            position: static;
+            border-right: none;
+            padding: 3px 6px;
+        }
+        .act-stat-warn { margin-left: 0; }
+        .act-summary-bar > .act-stat[data-tooltip]::after {
+            left: 50%;
+            right: auto;
+            max-width: calc(100% - 20px);
+            transform: translateX(-50%) scale(0.94);
+        }
+        .act-summary-bar > .act-stat[data-tooltip]:hover::after,
+        .act-summary-bar > .act-stat[data-tooltip]:focus-visible::after {
+            transform: translateX(-50%) scale(1);
+        }
+        .act-tl-item,
+        .act-tl-turn-header,
+        .cp-card-header,
+        .act-conv-item,
+        .acct-card {
+            flex-wrap: wrap;
+        }
+        .acct-pools {
+            flex-basis: 100%;
+            align-items: flex-start;
+        }
+        .acct-pool-row { justify-content: flex-start; flex-wrap: wrap; }
+        .acct-pool-models { justify-content: flex-start; }
+        .act-tl-content,
+        .act-tl-turn-text { flex-basis: 120px; }
+        .act-tl-meta { max-width: 100%; flex-wrap: wrap; white-space: normal; }
+        .act-conv-meta { flex-wrap: wrap; max-width: 100%; flex-shrink: 1; }
+        .act-conv-meta-chip { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }
+        .act-tl-gm { max-width: 100%; min-width: 0; flex-wrap: wrap; flex-shrink: 1; }
+        .seg-chips { flex-basis: 100%; max-width: 100%; min-width: 0; }
+        .act-tl-gm-tag,
+        .seg-chip,
+        .cp-card-chip {
+            max-width: 100%;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+        .act-tl-help-popup { width: min(260px, calc(100vw - 36px)); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .acct-card,
+        .acct-quota-fill,
+        .acct-delete-link,
+        .act-stat,
+        .telemetry-bar-fill,
+        .telemetry-cache-seg,
+        .act-model-card,
+        .act-card-row,
+        .model-stats-err-toggle,
+        .act-tl-item,
+        .act-tl-turn,
+        .act-tl-turn-header,
+        .act-tl-turn-header::before,
+        .act-tl-help-btn,
+        .act-tl-help-popup,
+        .act-conv-item,
+        .gm-err-expand,
+        .gm-ue-header::before,
+        .gm-ue-copy-btn,
+        .gm-ue-tooltip,
+        .gm-ue-summary::before,
+        .ci-section-header,
+        .ci-section-header::before,
+        .cp-card,
+        .cp-card-header,
+        .cp-card-header::before,
+        .ci-cap-fill,
+        .ci-dna-chip,
+        .tool-rank-bar,
+        .tool-cat-header,
+        .tool-cat-header::before,
+        .tool-cat-chip,
+        .tool-cat-chip[data-tooltip]::after,
+        .tool-cat-clear-btn {
+            transition: none;
+        }
+    }
     `;
 }
 
 // ─── Section Builders ────────────────────────────────────────────────────────
 
-function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, currentCascadeId?: string): string {
-    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+function buildSummaryBar(
+    s: ActivitySummary | null,
+    gm: GMSummary | null,
+    currentCascadeId?: string,
+    telemetry?: SessionTelemetrySummary,
+): string {
+    const fmt = fmtCompactTokens;
+    const overall = telemetry?.overall ?? computeTelemetrySummary(gm, { activeCascadeId: currentCascadeId }).overall;
 
     // ── SVG icons (shared) ──
     const iconCalls = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`;
     const iconIn = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M5 10l7 7 7-7"/></svg>`;
     const iconOut = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9M5 14l7-7 7 7"/></svg>`;
     const iconCache = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>`;
+    const iconSpeed = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`;
+    const iconTtft = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
+    const iconCacheHit = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`;
     const iconCredits = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`;
     const iconErr = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
+
+    // ── Helper: build Speed / Avg TTFT / Cache Hit KPI cells from account-filtered GM telemetry ──
+    const buildTelemetryKpiCells = (tel: TelemetryAggregate): string => {
+        if (!gm || tel.totalCalls <= 0) { return ''; }
+
+        const speedTipParts: string[] = [];
+        if (tel.weightedGenTokPerSec !== null) {
+            speedTipParts.push(`${tBi('Weighted generation speed', '加权生成速度')} (n=${tel.speedSampleCount})`);
+            if (tel.hasThinking && tel.weightedVisibleTokPerSec !== null) {
+                speedTipParts.push(`${tBi('Visible resp', '可见输出')} ${formatSpeed(tel.weightedVisibleTokPerSec)}`);
+            }
+            if (tel.medianGenTokPerSec !== null) {
+                speedTipParts.push(`${tBi('p50 median', 'p50 中位数')} ${formatSpeed(tel.medianGenTokPerSec)}`);
+            }
+            if (tel.weightedEndToEndTokPerSec !== null) {
+                speedTipParts.push(`${tBi('End-to-End', '端到端')} ${formatSpeed(tel.weightedEndToEndTokPerSec)}`);
+            }
+        } else {
+            speedTipParts.push(tBi('No timed streaming samples yet', '暂无有效流式耗时样本'));
+        }
+        const speedTip = speedTipParts.join(' · ');
+
+        const ttftTipParts: string[] = [];
+        if (tel.avgTtftSeconds !== null) {
+            ttftTipParts.push(`${tBi('Average TTFT (valid timed samples)', '平均首字延迟（仅有效计时样本）')} (n=${tel.ttftSampleCount})`);
+            if (tel.cachedAvgTtftSeconds !== null && tel.uncachedAvgTtftSeconds !== null) {
+                ttftTipParts.push(`${tBi('Cached', '命中缓存')} ${formatLatency(tel.cachedAvgTtftSeconds)} vs ${tBi('Uncached', '未命中')} ${formatLatency(tel.uncachedAvgTtftSeconds)}`);
+            } else if (tel.medianTtftSeconds !== null) {
+                ttftTipParts.push(`p50 ${formatLatency(tel.medianTtftSeconds)}`);
+            }
+        } else {
+            ttftTipParts.push(tBi('No valid TTFT samples yet', '暂无有效首字延迟样本'));
+        }
+        const ttftTip = ttftTipParts.join(' · ');
+
+        const cacheHitTip = tel.tokenCacheHitRate !== null
+            ? `${tBi('Token-weighted prompt cache hit rate', '按 Token 加权的提示词缓存命中率')} · ${fmt(tel.totalCacheReadTokens)} / ${fmt(tel.totalPromptTokens)} tokens · ${tel.cachedCallCount}/${tel.totalCalls} ${tBi('calls', '调用')}`
+            : tBi('No prompt token data yet', '暂无提示词 Token 数据');
+        const callRatioHtml = tel.tokenCacheHitRate !== null && tel.totalCalls > 0
+            ? `<span class="act-stat-sub">${tel.cachedCallCount}/${tel.totalCalls}</span>`
+            : '';
+
+        return `<div class="act-stat act-stat-speed" data-tooltip="${esc(speedTip)}"><span class="act-stat-icon">${iconSpeed}</span><span class="act-stat-val val-speed">${esc(formatSpeed(tel.weightedGenTokPerSec))}</span><span class="act-stat-label">${tBiHtml('Speed', '生成速度')}</span></div>
+            <div class="act-stat act-stat-ttft" data-tooltip="${esc(ttftTip)}"><span class="act-stat-icon">${iconTtft}</span><span class="act-stat-val val-ttft">${esc(formatLatency(tel.avgTtftSeconds))}</span><span class="act-stat-label">${tBiHtml('Avg TTFT', '平均首字')}</span></div>
+            <div class="act-stat act-stat-cache-hit" data-tooltip="${esc(cacheHitTip)}"><span class="act-stat-icon">${iconCacheHit}</span><span class="act-stat-val val-cache-hit"><span>${esc(formatCachePercent(tel.tokenCacheHitRate))}</span>${callRatioHtml}</span><span class="act-stat-label">${tBiHtml('Cache Hit', '缓存命中')}</span></div>`;
+    };
 
     // ── Helper: build error chip from GM data ──
     const buildErrorChip = (gm2: GMSummary): string => {
@@ -2266,20 +2789,21 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
         const currentConvErrs: Record<string, number> = (currentCascadeId && convCount > 1) ? (byConv[currentCascadeId] || {}) : {};
         const convDelta = Object.values(currentConvErrs).reduce((a, b) => a + b, 0);
         const errCodes = Object.entries(gm2.retryErrorCodes || {}).sort((a, b) => b[1] - a[1]).map(([c, n]) => { const d = currentConvErrs[c] || 0; return d > 0 ? `${c} ×${n} (+${d})` : `${c} ×${n}`; }).join(', ');
-        const wasteInfo = gm2.totalRetryTokens > 0 ? ` | ${fmt(gm2.totalRetryTokens)} ${tBi('tokens wasted', 'token 浪费')}` : '';
+        const wasteInfo = gm2.totalRetryTokens > 0 ? ` · ${fmt(gm2.totalRetryTokens)} ${tBi('tokens wasted', '浪费 tokens')}` : '';
         const tipText = errCodes ? `${errCodes}${wasteInfo}` : `${gm2.totalRetryCount} ${tBi('retries', '重试')}${wasteInfo}`;
-        const deltaHtml = convDelta > 0 ? ` <span class="err-delta" style="font-size:0.75em">+${convDelta}</span>` : '';
-        return `<div class="act-stat act-stat-warn" data-tooltip="${esc(tipText)}"><span class="act-stat-icon">${iconErr}</span><span class="act-stat-val">${errTotal > 0 ? errTotal : gm2.totalRetryCount}${deltaHtml}</span><span class="act-stat-label">${tBi('Errors', '报错')}</span></div>`;
+        const deltaHtml = convDelta > 0 ? ` <span class="err-delta">+${convDelta}</span>` : '';
+        return `<div class="act-stat act-stat-warn" data-tooltip="${esc(tipText)}"><span class="act-stat-icon">${iconErr}</span><span class="act-stat-val">${errTotal > 0 ? errTotal : gm2.totalRetryCount}${deltaHtml}</span><span class="act-stat-label">${tBiHtml('Errors', '报错')}</span></div>`;
     };
 
     // When no activity data, show GM-only summary
     if (!s && gm) {
         return `<div class="act-summary-bar">
-            <div class="act-stat"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val val-calls">${gm.totalCalls}</span><span class="act-stat-label">${tBi('Calls', '调用')}</span></div>
-            <div class="act-stat"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(gm.totalInputTokens)}</span><span class="act-stat-label">${tBi('In', '输入')}</span></div>
-            <div class="act-stat"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
-            ${gm.totalCacheRead > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>` : ''}
-            ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${gm.totalCredits.toFixed(1)}</span><span class="act-stat-label">${tBi('Credits', '积分')}</span></div>` : ''}
+            <div class="act-stat"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val val-calls">${gm.totalCalls}</span><span class="act-stat-label">${tBiHtml('Calls', '调用')}</span></div>
+            <div class="act-stat"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(gm.totalInputTokens)}</span><span class="act-stat-label">${tBiHtml('In', '输入')}</span></div>
+            <div class="act-stat"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBiHtml('Out', '输出')}</span></div>
+            ${gm.totalCacheRead > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBiHtml('Cache', '缓存')}</span></div>` : ''}
+            ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${gm.totalCredits.toFixed(1)}</span><span class="act-stat-label">${tBiHtml('Credits', '积分')}</span></div>` : ''}
+            ${buildTelemetryKpiCells(overall)}
             ${buildErrorChip(gm)}
         </div>`;
     }
@@ -2289,46 +2813,296 @@ function buildSummaryBar(s: ActivitySummary | null, gm: GMSummary | null, curren
     // GM-specific: calls chip
     let gmCallsChip = '';
     if (gm && gm.totalCalls > 0) {
-        gmCallsChip = `<div class="act-stat" data-tooltip="${tBi('Total LLM API calls', 'LLM API 调用总次数')}"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val val-calls">${gm.totalCalls}</span><span class="act-stat-label">${tBi('Calls', '调用')}</span></div>`;
+        gmCallsChip = `<div class="act-stat" data-tooltip="${esc(tBi('Total LLM API calls', 'LLM API 调用总次数'))}"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val val-calls">${gm.totalCalls}</span><span class="act-stat-label">${tBiHtml('Calls', '调用')}</span></div>`;
     }
 
-    // GM vs CHECKPOINT token selection
-    const hasGM = (s.gmTotalInputTokens || 0) > 0;
-    const inTokens = hasGM ? s.gmTotalInputTokens! : s.totalInputTokens;
-    const outTokens = hasGM ? s.gmTotalOutputTokens! : s.totalOutputTokens;
+    // Prefer account-filtered gm summary over cross-account ActivityTracker cached totals (#66 bug #7)
+    const useFilteredGm = Boolean(gm && gm.totalCalls > 0);
+    const hasGM = useFilteredGm || (s.gmTotalInputTokens || 0) > 0;
+    const inTokens = useFilteredGm ? gm!.totalInputTokens : (hasGM ? s.gmTotalInputTokens! : s.totalInputTokens);
+    const outTokens = useFilteredGm ? gm!.totalOutputTokens : (hasGM ? s.gmTotalOutputTokens! : s.totalOutputTokens);
     const inTooltip = hasGM
-        ? tBi('Input tokens (all conversations)', '输入 token（全部对话）')
-        : tBi('Cumulative input tokens consumed', '累计消耗的输入 token 数');
+        ? tBi('Input tokens (all conversations)', '输入 tokens（全部对话）')
+        : tBi('Cumulative input tokens consumed', '累计消耗的输入 tokens');
     const outTooltip = hasGM
-        ? tBi('Output tokens (all conversations)', '输出 token（全部对话）')
-        : tBi('Cumulative output tokens generated', '累计生成的输出 token 数');
+        ? tBi('Output tokens (all conversations)', '输出 tokens（全部对话）')
+        : tBi('Cumulative output tokens generated', '累计生成的输出 tokens');
 
     // Cache chip
-    const cacheTokens = s.gmTotalCacheRead || 0;
-    const cacheChip = cacheTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('Cache read tokens', '缓存读取 token')}"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(cacheTokens)}</span><span class="act-stat-label">${tBi('Cache', '缓存')}</span></div>` : '';
+    const cacheTokens = useFilteredGm ? gm!.totalCacheRead : (s.gmTotalCacheRead || 0);
+    const cacheChip = cacheTokens > 0 ? `<div class="act-stat" data-tooltip="${esc(tBi('Cache read tokens', '缓存读取 tokens'))}"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(cacheTokens)}</span><span class="act-stat-label">${tBiHtml('Cache', '缓存')}</span></div>` : '';
 
     // Credits chip
-    const credits = s.gmTotalCredits || 0;
-    const creditsChip = credits > 0 ? `<div class="act-stat" data-tooltip="${tBi('Credits consumed', '消耗的积分')}"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${credits.toFixed(1)}</span><span class="act-stat-label">${tBi('Credits', '积分')}</span></div>` : '';
+    const credits = useFilteredGm ? gm!.totalCredits : (s.gmTotalCredits || 0);
+    const creditsChip = credits > 0 ? `<div class="act-stat" data-tooltip="${esc(tBi('Credits consumed', '消耗的积分'))}"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${credits.toFixed(1)}</span><span class="act-stat-label">${tBiHtml('Credits', '积分')}</span></div>` : '';
 
     // Tool output chip
-    const toolOutChip = s.totalToolReturnTokens > 0 ? `<div class="act-stat" data-tooltip="${tBi('Tokens returned by tool calls', '工具调用返回的 token 数')}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg></span><span class="act-stat-val">${fmt(s.totalToolReturnTokens)}</span><span class="act-stat-label">${tBi('Tool Out', '工具输出')}</span></div>` : '';
+    const toolOutChip = s.totalToolReturnTokens > 0 ? `<div class="act-stat" data-tooltip="${esc(tBi('Tokens returned by tool calls', '工具调用返回的 tokens'))}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg></span><span class="act-stat-val">${fmt(s.totalToolReturnTokens)}</span><span class="act-stat-label">${tBiHtml('Tool Out', '工具输出')}</span></div>` : '';
 
     return `
     <div class="act-summary-bar">
         ${gmCallsChip}
-        <div class="act-stat" data-tooltip="${inTooltip}"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(inTokens)}</span><span class="act-stat-label">${tBi('In', '输入')}</span></div>
-        <div class="act-stat" data-tooltip="${outTooltip}"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(outTokens)}</span><span class="act-stat-label">${tBi('Out', '输出')}</span></div>
+        <div class="act-stat" data-tooltip="${esc(inTooltip)}"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(inTokens)}</span><span class="act-stat-label">${tBiHtml('In', '输入')}</span></div>
+        <div class="act-stat" data-tooltip="${esc(outTooltip)}"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(outTokens)}</span><span class="act-stat-label">${tBiHtml('Out', '输出')}</span></div>
         ${toolOutChip}
         ${cacheChip}
         ${creditsChip}
+        ${buildTelemetryKpiCells(overall)}
         ${gm ? buildErrorChip(gm) : ''}
     </div>`;
 }
 
+function buildTelemetryLedgerSection(telemetry: SessionTelemetrySummary): string {
+    const o = telemetry.overall;
+    if (o.totalCalls <= 0) { return ''; }
 
+    const fmt = fmtCompactTokens;
 
-function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, activeEmail = '', custom: Record<string, ModelPricing> = {}): string {
+    const sectionIcon = `<svg class="act-icon act-icon-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`;
+    const speedIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>`;
+    const cacheIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`;
+
+    // ── Left L1 Card: Generation Speed & TTFT ──
+    const speedScopePill = o.speedSampleCount > 0
+        ? `<span class="telemetry-pill"><span>${tBiHtml(`Weighted · ${o.speedSampleCount} timed`, `加权 · ${o.speedSampleCount} 次计时`)}</span></span>`
+        : `<span class="telemetry-pill"><span>${tBiHtml('Weighted Avg', '加权平均')}</span></span>`;
+
+    const speedHeroTipParts: string[] = [];
+    if (o.weightedGenTokPerSec !== null) {
+        speedHeroTipParts.push(`${tBi('Weighted Avg', '加权平均')}: ${formatSpeed(o.weightedGenTokPerSec)}`);
+    }
+    if (o.weightedEndToEndTokPerSec !== null) {
+        speedHeroTipParts.push(`${tBi('End-to-End (incl. TTFT)', '端到端（含首字延迟）')}: ${formatSpeed(o.weightedEndToEndTokPerSec)}`);
+    }
+    if (o.hasThinking && o.weightedVisibleTokPerSec !== null) {
+        speedHeroTipParts.push(`${tBi('Visible resp', '可见输出')}: ${formatSpeed(o.weightedVisibleTokPerSec)}`);
+    }
+    const speedHeroTitle = speedHeroTipParts.length > 0 ? ` title="${esc(speedHeroTipParts.join(' · '))}"` : '';
+
+    const e2eHeroMeta = o.weightedEndToEndTokPerSec !== null
+        ? `<span class="telemetry-hero-meta" title="${esc(tBi('End-to-end throughput including TTFT', '包含首字延迟的端到端速度'))}"><span>${tBiHtml('End-to-End', '端到端')} ${esc(formatSpeed(o.weightedEndToEndTokPerSec))}</span></span>`
+        : '';
+
+    const speedSubItems: string[] = [];
+    if (o.latestGenTokPerSec !== null) {
+        speedSubItems.push(`<div class="telemetry-subitem"><span class="telemetry-sub-label">${tBiHtml('Latest', '最近')}</span><span class="telemetry-sub-val">${esc(formatSpeed(o.latestGenTokPerSec))}</span></div>`);
+    }
+    if (o.medianGenTokPerSec !== null) {
+        speedSubItems.push(`<div class="telemetry-subitem"><span class="telemetry-sub-label">${tBiHtml('Median p50', '中位数 p50')}</span><span class="telemetry-sub-val">${esc(formatSpeed(o.medianGenTokPerSec))}</span></div>`);
+    }
+    if (o.minGenTokPerSec !== null && o.maxGenTokPerSec !== null && o.speedSampleCount >= 2) {
+        speedSubItems.push(`<div class="telemetry-subitem"><span class="telemetry-sub-label">${tBiHtml('Range', '范围')}</span><span class="telemetry-sub-val">${esc(formatSpeedRange(o.minGenTokPerSec, o.maxGenTokPerSec))}</span></div>`);
+    }
+    if (o.hasThinking && o.weightedVisibleTokPerSec !== null) {
+        speedSubItems.push(`<div class="telemetry-subitem" title="${esc(tBi('Visible response tok/s excluding thinking tokens', '不含思考 Token 的可见回复速度'))}"><span class="telemetry-sub-label">${tBiHtml('Visible resp', '可见输出')}</span><span class="telemetry-sub-val">${esc(formatSpeed(o.weightedVisibleTokPerSec))}</span></div>`);
+    }
+    const speedSubHtml = speedSubItems.length > 0
+        ? `<div class="telemetry-subgrid">${speedSubItems.join('')}</div>`
+        : `<p class="telemetry-empty-note">${tBiHtml('No timed streaming samples yet.', '暂无有效流式耗时样本。')}</p>`;
+
+    // Cached vs Uncached TTFT Comparison
+    let ttftDeltaHtml = '';
+    if (o.cachedAvgTtftSeconds !== null && o.uncachedAvgTtftSeconds !== null && o.ttftCacheDeltaPct !== null) {
+        const roundedDelta = Math.round(o.ttftCacheDeltaPct);
+        const sign = roundedDelta > 0 ? '+' : '';
+        const deltaCls = roundedDelta < 0 ? 'is-faster' : 'is-neutral';
+        const deltaTip = roundedDelta < 0
+            ? tBi(`Cached TTFT is ${Math.abs(roundedDelta)}% faster than uncached`, `命中缓存首字延迟比未命中快 ${Math.abs(roundedDelta)}%`)
+            : roundedDelta > 0
+                ? tBi(`Cached TTFT is ${roundedDelta}% slower than uncached`, `命中缓存首字延迟比未命中慢 ${roundedDelta}%`)
+                : tBi('Cached and uncached TTFT are equal', '命中与未命中缓存首字延迟相同');
+        ttftDeltaHtml = `<span class="telemetry-delta-pill ${deltaCls}" title="${esc(deltaTip)}">${sign}${roundedDelta}%</span>`;
+    }
+
+    let ttftTracksHtml = '';
+    if (o.cachedAvgTtftSeconds !== null && o.uncachedAvgTtftSeconds !== null) {
+        const maxTtft = Math.max(o.cachedAvgTtftSeconds, o.uncachedAvgTtftSeconds);
+        const cachedPct = maxTtft > 0 ? Math.max(4, Math.round((o.cachedAvgTtftSeconds / maxTtft) * 100)) : 0;
+        const uncachedPct = maxTtft > 0 ? Math.max(4, Math.round((o.uncachedAvgTtftSeconds / maxTtft) * 100)) : 0;
+        ttftTracksHtml = `<div class="telemetry-ttft-rows">
+            <div class="telemetry-ttft-row">
+                <div class="telemetry-ttft-row-head">
+                    <span class="telemetry-ttft-label">${tBiHtml('Cached TTFT', '命中缓存')}</span>
+                    <span class="telemetry-ttft-val">${esc(formatLatency(o.cachedAvgTtftSeconds))}<span class="telemetry-sample-n">(n=${o.cachedTtftCount})</span></span>
+                </div>
+                <div class="telemetry-bar-track"><span class="telemetry-bar-fill telemetry-bar-fill-cache" style="width:${cachedPct}%"></span></div>
+            </div>
+            <div class="telemetry-ttft-row">
+                <div class="telemetry-ttft-row-head">
+                    <span class="telemetry-ttft-label">${tBiHtml('Uncached TTFT', '未命中缓存')}</span>
+                    <span class="telemetry-ttft-val">${esc(formatLatency(o.uncachedAvgTtftSeconds))}<span class="telemetry-sample-n">(n=${o.uncachedTtftCount})</span></span>
+                </div>
+                <div class="telemetry-bar-track"><span class="telemetry-bar-fill telemetry-bar-fill-uncached" style="width:${uncachedPct}%"></span></div>
+            </div>
+        </div>`;
+    } else if (o.cachedAvgTtftSeconds !== null) {
+        ttftTracksHtml = `<div class="telemetry-ttft-rows">
+            <div class="telemetry-ttft-row">
+                <div class="telemetry-ttft-row-head">
+                    <span class="telemetry-ttft-label">${tBiHtml('Cached TTFT', '命中缓存')}</span>
+                    <span class="telemetry-ttft-val">${esc(formatLatency(o.cachedAvgTtftSeconds))}<span class="telemetry-sample-n">(n=${o.cachedTtftCount})</span></span>
+                </div>
+                <div class="telemetry-bar-track"><span class="telemetry-bar-fill telemetry-bar-fill-cache" style="width:100%"></span></div>
+            </div>
+            <p class="telemetry-single-note">${tBiHtml('All timed calls cached', '全部计时调用均已命中缓存')}</p>
+        </div>`;
+    } else if (o.uncachedAvgTtftSeconds !== null) {
+        ttftTracksHtml = `<div class="telemetry-ttft-rows">
+            <div class="telemetry-ttft-row">
+                <div class="telemetry-ttft-row-head">
+                    <span class="telemetry-ttft-label">${tBiHtml('Uncached TTFT', '未命中缓存')}</span>
+                    <span class="telemetry-ttft-val">${esc(formatLatency(o.uncachedAvgTtftSeconds))}<span class="telemetry-sample-n">(n=${o.uncachedTtftCount})</span></span>
+                </div>
+                <div class="telemetry-bar-track"><span class="telemetry-bar-fill telemetry-bar-fill-uncached" style="width:100%"></span></div>
+            </div>
+            <p class="telemetry-single-note">${tBiHtml('No cached TTFT samples yet', '暂无命中缓存的首字延迟样本')}</p>
+        </div>`;
+    } else if (o.avgTtftSeconds !== null) {
+        const rangeNote = o.minTtftSeconds !== null && o.maxTtftSeconds !== null && o.ttftSampleCount >= 2
+            ? `<p class="telemetry-single-note"><span>${tBiHtml('Range', '范围')} ${esc(formatLatency(o.minTtftSeconds))}–${esc(formatLatency(o.maxTtftSeconds))}</span></p>`
+            : '';
+        ttftTracksHtml = `<div class="telemetry-ttft-rows">
+            <div class="telemetry-ttft-row">
+                <div class="telemetry-ttft-row-head">
+                    <span class="telemetry-ttft-label">${tBiHtml('Avg TTFT', '平均首字')}</span>
+                    <span class="telemetry-ttft-val">${esc(formatLatency(o.avgTtftSeconds))}<span class="telemetry-sample-n">(n=${o.ttftSampleCount})</span></span>
+                </div>
+                <div class="telemetry-bar-track"><span class="telemetry-bar-fill telemetry-bar-fill-avg" style="width:100%"></span></div>
+            </div>
+            ${rangeNote}
+        </div>`;
+    } else {
+        ttftTracksHtml = `<p class="telemetry-single-note">${tBiHtml('No valid TTFT samples yet', '暂无有效首字延迟样本')}</p>`;
+    }
+
+    const ttftFootParts: string[] = [];
+    if (o.medianTtftSeconds !== null) {
+        ttftFootParts.push(`p50 ${esc(formatLatency(o.medianTtftSeconds))}`);
+    }
+    if (o.p95TtftSeconds !== null && o.ttftSampleCount >= 2) {
+        ttftFootParts.push(`p95 ${esc(formatLatency(o.p95TtftSeconds))}`);
+    }
+    if (o.avgStreamingSeconds !== null) {
+        ttftFootParts.push(`<span>${tBiHtml('Avg Stream', '平均流耗时')} ${esc(formatLatency(o.avgStreamingSeconds))}</span>`);
+    }
+    const ttftFootHtml = ttftFootParts.length > 0
+        ? `<p class="telemetry-ttft-foot">${ttftFootParts.join(' · ')}</p>`
+        : '';
+
+    const leftCard = `<div class="telemetry-ledger-card telemetry-card-speed">
+        <div class="telemetry-card-head">
+            <span class="telemetry-card-title-wrap">${speedIcon}<h3 class="telemetry-card-title">${tBiHtml('Generation Speed & TTFT', '生成速度与首字延迟')}</h3></span>
+            ${speedScopePill}
+        </div>
+        <div class="telemetry-hero-row"${speedHeroTitle}>
+            <span class="telemetry-hero-val${o.weightedGenTokPerSec === null ? ' is-empty' : ''}">${esc(formatSpeed(o.weightedGenTokPerSec))}</span>
+            ${e2eHeroMeta}
+        </div>
+        ${speedSubHtml}
+        <div class="telemetry-ttft-block">
+            <div class="telemetry-subhead">
+                <span class="telemetry-subhead-title">${tBiHtml('Cached vs Uncached TTFT', '首字缓存延迟对比')}</span>
+                ${ttftDeltaHtml}
+            </div>
+            ${ttftTracksHtml}
+            ${ttftFootHtml}
+        </div>
+    </div>`;
+
+    // ── Right L1 Card: Prompt Cache Efficiency & Savings ──
+    const warmthLabels: Record<CacheState, string> = {
+        warm: tBiHtml('Warm', '已命中'),
+        warming: tBiHtml('Warming', '预热中'),
+        cold: tBiHtml('Cold', '未命中'),
+        unknown: tBiHtml('No data', '无数据'),
+    };
+    const warmthBadge = `<span class="telemetry-warmth-badge is-${o.latestCacheState}"><span>${warmthLabels[o.latestCacheState]}</span></span>`;
+
+    const totalPrompt = o.totalPromptTokens;
+    const readPct = totalPrompt > 0 ? (o.totalCacheReadTokens / totalPrompt) * 100 : 0;
+    const freshPct = totalPrompt > 0 ? (o.totalFreshInputTokens / totalPrompt) * 100 : 0;
+    const writePct = totalPrompt > 0 ? (o.totalCacheCreationTokens / totalPrompt) * 100 : 0;
+
+    const segRead = readPct > 0
+        ? `<span class="telemetry-cache-seg telemetry-cache-seg-read" style="width:${readPct.toFixed(2)}%" title="${esc(`${tBi('Cache Read', '缓存读取')}: ${fmt(o.totalCacheReadTokens)} tokens (${readPct.toFixed(1)}%)`)}"></span>`
+        : '';
+    const segFresh = freshPct > 0
+        ? `<span class="telemetry-cache-seg telemetry-cache-seg-fresh" style="width:${freshPct.toFixed(2)}%" title="${esc(`${tBi('Fresh Input', '新增输入')}: ${fmt(o.totalFreshInputTokens)} tokens (${freshPct.toFixed(1)}%)`)}"></span>`
+        : '';
+    const segWrite = writePct > 0
+        ? `<span class="telemetry-cache-seg telemetry-cache-seg-write" style="width:${writePct.toFixed(2)}%" title="${esc(`${tBi('Cache Write', '缓存写入')}: ${fmt(o.totalCacheCreationTokens)} tokens (${writePct.toFixed(1)}%)`)}"></span>`
+        : '';
+
+    const cacheWriteLegend = o.totalCacheCreationTokens > 0
+        ? `<span class="telemetry-legend-item"><span class="telemetry-legend-dot telemetry-legend-dot-write"></span><span>${tBiHtml('Cache Write', '缓存写入')}</span></span>`
+        : '';
+
+    const cacheWriteSub = o.totalCacheCreationTokens > 0
+        ? ` · <span>${tBiHtml('Cache Write', '缓存写入')} ${fmt(o.totalCacheCreationTokens)}</span>`
+        : '';
+
+    const reuseSub = o.totalCacheCreationTokens > 0 && o.cacheReuseRate !== null
+        ? `<span class="telemetry-ledger-sub"><span>· ${tBiHtml('Reuse', '复用')} ${esc(formatCachePercent(o.cacheReuseRate))}</span></span>`
+        : '';
+
+    const savingsHtml = o.estCacheSavedTokens > 0
+        ? `<span><b>${fmt(o.estCacheSavedTokens)}</b> tokens</span>${o.estCacheSavingsUsd !== null && o.estCacheSavingsUsd > 0 ? `<span class="telemetry-savings-usd">· ${esc(formatSavingsUsd(o.estCacheSavingsUsd))}</span>` : ''}`
+        : `<span class="telemetry-ledger-muted">—</span>`;
+
+    const cacheHeroCls = o.tokenCacheHitRate === null ? ' is-empty' : o.tokenCacheHitRate > 0 ? ' is-cache' : '';
+    const cacheHeroMeta = totalPrompt > 0
+        ? `<span class="telemetry-hero-meta"><span>${fmt(totalPrompt)} ${tBiHtml('prompt tokens', '提示词 tokens')}</span></span>`
+        : `<span class="telemetry-hero-meta"><span>${tBiHtml('Token-weighted hit rate', '按 Token 加权命中率')}</span></span>`;
+
+    const rightCard = `<div class="telemetry-ledger-card telemetry-card-cache">
+        <div class="telemetry-card-head">
+            <span class="telemetry-card-title-wrap">${cacheIcon}<h3 class="telemetry-card-title">${tBiHtml('Prompt Cache Efficiency & Savings', '首字与提示词缓存')}</h3></span>
+            ${warmthBadge}
+        </div>
+        <div class="telemetry-hero-row">
+            <span class="telemetry-hero-val${cacheHeroCls}">${esc(formatCachePercent(o.tokenCacheHitRate))}</span>
+            ${cacheHeroMeta}
+        </div>
+        <div class="telemetry-cache-bar-wrap">
+            <div class="telemetry-cache-bar-track">${segRead}${segFresh}${segWrite}</div>
+            <div class="telemetry-cache-legend">
+                <span class="telemetry-legend-item"><span class="telemetry-legend-dot telemetry-legend-dot-read"></span><span>${tBiHtml('Cache Read', '缓存读取')}</span></span>
+                <span class="telemetry-legend-item"><span class="telemetry-legend-dot telemetry-legend-dot-fresh"></span><span>${tBiHtml('Fresh Input', '新增输入')}</span></span>
+                ${cacheWriteLegend}
+            </div>
+        </div>
+        <div class="telemetry-ledger-rows">
+            <div class="telemetry-ledger-row">
+                <span class="telemetry-ledger-key">${tBiHtml('Cache Read', '缓存读取')}</span>
+                <span class="telemetry-ledger-val-group"><b>${fmt(o.totalCacheReadTokens)}</b><span class="telemetry-ledger-sub"><span>${tBiHtml('Fresh Input', '新增输入')} ${fmt(o.totalFreshInputTokens)}</span>${cacheWriteSub}</span></span>
+            </div>
+            <div class="telemetry-ledger-row">
+                <span class="telemetry-ledger-key">${tBiHtml('Call Hit Ratio', '命中调用')}</span>
+                <span class="telemetry-ledger-val-group"><span><b>${o.cachedCallCount} / ${o.totalCalls}</b> ${tBiHtml(o.totalCalls === 1 ? 'call' : 'calls', '调用')}</span>${reuseSub}</span>
+            </div>
+            <div class="telemetry-ledger-row">
+                <span class="telemetry-ledger-key">${tBiHtml('Est. Cache Savings', '缓存节省')}</span>
+                <span class="telemetry-ledger-val-group">${savingsHtml}</span>
+            </div>
+        </div>
+    </div>`;
+
+    return `<section class="telemetry-ledger-section" id="telemetryLedgerSection">
+        <h2 class="act-section-title">${sectionIcon}<span>${tBiHtml('Speed & First-Token Cache', '生成速度与首字缓存')}</span></h2>
+        <div class="telemetry-ledger-grid">
+            ${leftCard}
+            ${rightCard}
+        </div>
+    </section>`;
+}
+
+function buildModelCards(
+    s: ActivitySummary | null,
+    gm: GMSummary | null,
+    activeEmail = '',
+    custom: Record<string, ModelPricing> = {},
+    telemetry?: SessionTelemetrySummary,
+): string {
     const actEntries = s ? Object.entries(s.modelStats).sort((a, b) => b[1].totalSteps - a[1].totalSteps) : [];
     const gmBreakEarly: Record<string, GMModelStats> | null = gm?.modelBreakdown ?? null;
     if (!gmBreakEarly || Object.keys(gmBreakEarly).length === 0) { return ''; }
@@ -2351,24 +3125,34 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
         })
         : actEntries;
     const ICONS = {
-        think: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.2 6H8.2C6.3 13.7 5 11.5 5 9a7 7 0 0 1 7-7z"/><path d="M9 17h6M10 21h4"/></svg>`,
-        tool: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
-        save: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>`,
-        error: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`,
-        bar: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,
-        clock: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
-        sum: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
-        coin: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`
+        tool: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+        speed: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 14l4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>`,
+        save: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>`,
+        bar: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,
+        clock: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
+        sum: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
+        coin: `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
     };
     if (entries.length === 0 && gmOnlyEntries.length === 0) { return ''; }
 
+    const modelCostRow = (name: string, stats: GMModelStats): string => {
+        const model = selectPricingModel(name, stats.responseModel, custom);
+        const price = findPricingWithCustom(model, custom);
+        if (!price) { return ''; }
+        const cost = costFromTokens({
+            inputTokens: stats.totalInputTokens,
+            outputTokens: stats.totalOutputTokens,
+            thinkingTokens: stats.totalThinkingTokens,
+            cacheReadTokens: stats.totalCacheRead,
+        }, price);
+        if (cost <= 0) { return ''; }
+        const amount = cost.toFixed(cost < 0.01 ? 4 : cost < 1 ? 3 : 2);
+        return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBiHtml('Cost', '费用')}</span></span><span class="val val-cost">$${amount}</span></div>`;
+    };
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    const fmtMs = (ms: number) => ms <= 0 ? '-' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 
     // ── Build per-account call counts + error counts for each model + cross-account totals ──
-    // Map<modelDisplayName, Map<accountEmail, callCount>>
     const accountCallsByModel = new Map<string, Map<string, number>>();
-    // Map<modelDisplayName, Map<accountEmail, errorCount>>
     const accountErrorsByModel = new Map<string, Map<string, number>>();
     let hasAnyAccountErrors = false;
     if (gm) {
@@ -2377,7 +3161,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
 
         for (const conv of gm.conversations) {
             for (const call of conv.calls) {
-                // Prevent history data pollution in model stats card
                 if (dayStartMs > 0 && call.createdAt) {
                     const callMs = Date.parse(call.createdAt);
                     if (!isNaN(callMs) && callMs < dayStartMs) {
@@ -2390,7 +3173,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 const modelName = normalizeModelDisplayName(call.modelDisplay || call.model) || call.modelDisplay || call.model;
                 if (!modelName) { continue; }
 
-                // Call counts
                 let byAccount = accountCallsByModel.get(modelName);
                 if (!byAccount) {
                     byAccount = new Map<string, number>();
@@ -2398,7 +3180,6 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 }
                 byAccount.set(email, (byAccount.get(email) || 0) + 1);
 
-                // Error counts (per-model per-account)
                 const callErrors = call.retryErrors.length
                     + ((call.hasError && call.errorMessage && call.retryErrors.length === 0) ? 1 : 0);
                 if (callErrors > 0) {
@@ -2413,14 +3194,12 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
             }
         }
     }
-    const userSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
-    /** Build account breakdown section inside card body (divider + per-account rows, active highlighted, with optional error counts) */
+    const userSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
     const buildAccountSection = (modelName: string): string => {
         const byAccount = accountCallsByModel.get(modelName);
         if (!byAccount || byAccount.size < 1) { return ''; }
         const errByAccount = accountErrorsByModel.get(modelName);
         const sorted = [...byAccount.entries()].sort((a, b) => {
-            // Active account always first
             if (activeEmail) {
                 if (a[0] === activeEmail) { return -1; }
                 if (b[0] === activeEmail) { return 1; }
@@ -2442,41 +3221,65 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
         return `<div class="act-card-divider"></div><div class="gm-account-section">${rows}</div>`;
     };
 
+    const renderModelGmRows = (name: string, gmStats: GMModelStats): string => {
+        const normalizedKey = (normalizeModelDisplayName(name) || name).trim();
+        const modelTel: TelemetryAggregate = telemetry?.byModel[normalizedKey]
+            ?? telemetry?.byModel[name]
+            ?? computeTelemetryAggregateFromModelStats({ [normalizedKey || name]: gmStats }, custom);
+        const creditCalls = gmStats.creditCallCount || 0;
+        const speedSub = modelTel.hasThinking && modelTel.weightedVisibleTokPerSec !== null && modelTel.weightedGenTokPerSec !== null
+            ? `<span class="act-card-sub"><span>${tBiHtml('resp', '可见')} ${esc(formatSpeed(modelTel.weightedVisibleTokPerSec))}</span></span>`
+            : '';
+        const speedValHtml = speedSub
+            ? `<span class="val val-speed act-card-val-stack"><span>${esc(formatSpeed(modelTel.weightedGenTokPerSec))}</span>${speedSub}</span>`
+            : `<span class="val val-speed">${esc(formatSpeed(modelTel.weightedGenTokPerSec))}</span>`;
+
+        const ttftSub = modelTel.cachedAvgTtftSeconds !== null && modelTel.uncachedAvgTtftSeconds !== null
+            ? `<span class="act-card-sub"><span>${tBiHtml('cached', '命中缓存')} ${esc(formatLatency(modelTel.cachedAvgTtftSeconds))}</span></span>`
+            : '';
+        const ttftValHtml = ttftSub
+            ? `<span class="val val-time act-card-val-stack"><span>${esc(formatLatency(modelTel.avgTtftSeconds))}</span>${ttftSub}</span>`
+            : `<span class="val val-time">${esc(formatLatency(modelTel.avgTtftSeconds))}</span>`;
+
+        const avgStream = modelTel.avgStreamingSeconds ?? (('avgStreaming' in gmStats && gmStats.avgStreaming > 0) ? gmStats.avgStreaming : null);
+        const cacheCreation = gmStats.totalCacheCreation || modelTel.totalCacheCreationTokens || 0;
+        const showCacheHitRow = modelTel.tokenCacheHitRate !== null
+            && (modelTel.totalCacheReadTokens > 0 || cacheCreation > 0 || modelTel.cachedCallCount > 0 || gmStats.cacheHitRate > 0);
+        const cacheHitCallsTotal = modelTel.totalCalls > 0 ? modelTel.totalCalls : gmStats.callCount;
+
+        return `
+        <div class="act-card-row"><span>${ICONS.tool} <span>${tBiHtml('Calls', '调用')}</span></span><span class="val val-calls">${gmStats.callCount}</span></div>
+        <div class="act-card-row"><span>${ICONS.speed} <span>${tBiHtml('Speed', '生成速度')}</span></span>${speedValHtml}</div>
+        <div class="act-card-row"><span>${ICONS.clock} <span>${tBiHtml('Avg TTFT', '平均 TTFT')}</span></span>${ttftValHtml}</div>
+        ${avgStream !== null ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBiHtml('Avg Stream', '平均流耗时')}</span></span><span class="val val-time">${esc(formatLatency(avgStream))}</span></div>` : ''}
+        <div class="act-card-row"><span>${ICONS.coin} <span>${tBiHtml('In', '输入')}</span></span><span class="val val-in">${fmt(gmStats.totalInputTokens)}</span></div>
+        <div class="act-card-row"><span>${ICONS.coin} <span>${tBiHtml('Out', '输出')}</span></span><span class="val val-out">${fmt(gmStats.totalOutputTokens)}</span></div>
+        ${'totalThinkingTokens' in gmStats && gmStats.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBiHtml('Think', '思考')}</span></span><span class="val val-out">${fmt(gmStats.totalThinkingTokens)}</span></div>` : ''}
+        ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBiHtml('Cache', '缓存')}</span></span><span class="val val-cache">${fmt(gmStats.totalCacheRead)}</span></div>` : ''}
+        ${cacheCreation > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBiHtml('Cache Write', '缓存写入')}</span></span><span class="val val-cache-write">${fmt(cacheCreation)}</span></div>` : ''}
+        ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBiHtml('Credits', '积分')}</span></span><span class="val val-credits">${gmStats.totalCredits.toFixed(1)} <span class="act-credit-calls"><span>(${tBiHtml(`${creditCalls}×`, `${creditCalls} 次`)})</span></span></span></div>` : ''}
+        ${modelCostRow(name, gmStats)}
+        ${showCacheHitRow ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBiHtml('Cache Hit', '缓存命中')}</span></span><span class="val val-hit"><span>${esc(formatCachePercent(modelTel.tokenCacheHitRate))}</span><span class="act-credit-calls">· ${modelTel.cachedCallCount}/${cacheHitCallsTotal}</span></span></div>` : ''}
+        `;
+    };
+
     // Error toggle button (only shown when any account has errors)
-    const errToggleSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
+    const errToggleSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
     const errToggleBtn = hasAnyAccountErrors
-        ? `<span class="model-stats-err-toggle is-off" id="modelStatsErrToggle" title="${tBi('Toggle error count visibility', '切换报错次数显示')}">${errToggleSvg} ${tBi('Errors', '报错')}</span>`
+        ? `<button type="button" class="model-stats-err-toggle is-off" id="modelStatsErrToggle" title="${esc(tBi('Toggle error count visibility', '切换报错次数显示'))}">${errToggleSvg} <span>${tBiHtml('Errors', '报错')}</span></button>`
         : '';
-    let html = `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>${tBi('Model Stats', '模型统计')}${errToggleBtn}</h2>`;
-
-
+    let html = `<h2 class="act-section-title"><svg class="act-icon act-icon-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg><span>${tBiHtml('Model Stats', '模型统计')}</span>${errToggleBtn}</h2>`;
 
     html += `<div class="act-cards-grid">`;
     const gmBreak = gmBreakEarly;
-    const fmtSec = (n: number) => n <= 0 ? '-' : n < 1 ? `${(n * 1000).toFixed(0)}ms` : `${n.toFixed(2)}s`;
     for (const [name, ms] of entries) {
         const isCheckpointOnly = ms.reasoning === 0 && ms.toolCalls === 0 && ms.checkpoints > 0 && ms.estSteps === 0;
 
-        // GM per-model precision data (prefer full GMModelStats when available)
         let gmSection = '';
-        let gmFooterTags = '';
         if (gmBreak) {
             const gmStats = gmBreak[name];
             if (gmStats && gmStats.callCount > 0) {
-                gmSection = `
-                <div class="act-card-divider"></div>
-                <div class="act-card-row"><span>${ICONS.tool} <span>${tBi('Calls', '调用')}</span></span><span class="val val-calls">${gmStats.callCount}</span></div>
-                <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val val-time">${fmtSec(gmStats.avgTTFT)}</span></div>
-                ${'avgStreaming' in gmStats && gmStats.avgStreaming > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Avg Stream', '平均流速')}</span></span><span class="val val-time">${fmtSec(gmStats.avgStreaming)}</span></div>` : ''}
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val val-in">${fmt(gmStats.totalInputTokens)}</span></div>
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val val-out">${fmt(gmStats.totalOutputTokens)}</span></div>
-                ${'totalThinkingTokens' in gmStats && gmStats.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val val-out">${fmt(gmStats.totalThinkingTokens)}</span></div>` : ''}
-                ${gmStats.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val val-cache">${fmt(gmStats.totalCacheRead)}</span></div>` : ''}
-                ${gmStats.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val val-credits">${gmStats.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gmStats.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
-                ${(() => { const pr = findPricingWithCustom(gmStats.responseModel, custom) || findPricingWithCustom(name, custom); if (!pr) { return ''; } const cost = costFromTokens({inputTokens: gmStats.totalInputTokens, outputTokens: gmStats.totalOutputTokens, thinkingTokens: gmStats.totalThinkingTokens, cacheReadTokens: gmStats.totalCacheRead}, pr); if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${costStr}</span></div>`; })()}
-                ${gmStats.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val val-hit">${(gmStats.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
-                `;
-                // responseModel footer removed — card header already shows normalized model name
+                gmSection = renderModelGmRows(name, gmStats);
             }
         }
 
@@ -2487,31 +3290,16 @@ function buildModelCards(s: ActivitySummary | null, gm: GMSummary | null, active
                 ${gmSection}
                 ${buildAccountSection(name)}
             </div>
-            ${gmFooterTags ? `<div class="act-card-footer">${gmFooterTags}</div>` : ''}
         </div>`;
     }
-    // GM-only models: models in GM data but not in Activity modelStats
+    // GM-only models: models in GM data but not in Activity modelStats (unified Calls-first layout, #66 bug #5)
     for (const [name, gms] of gmOnlyEntries) {
-        const providerShort = gms.apiProvider ? gms.apiProvider.replace('API_PROVIDER_', '').replace(/_/g, ' ') : '';
         html += `
         <div class="act-model-card">
             <div class="act-card-header" title="${esc(normalizeModelDisplayName(name))}">${esc(normalizeModelDisplayName(name))}</div>
             <div class="act-card-body">
-                <div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Steps', '步骤')}</span></span><span class="val val-calls">${gms.stepsCovered}</span></div>
-                <div class="act-card-row"><span>${ICONS.clock} <span>${tBi('Avg TTFT', '平均 TTFT')}</span></span><span class="val val-time">${fmtSec(gms.avgTTFT)}</span></div>
-                ${'avgStreaming' in gms && gms.avgStreaming > 0 ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBi('Avg Stream', '平均流速')}</span></span><span class="val val-time">${fmtSec(gms.avgStreaming)}</span></div>` : ''}
-                <div class="act-card-divider"></div>
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('In', '输入')}</span></span><span class="val val-in">${fmt(gms.totalInputTokens)}</span></div>
-                <div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Out', '输出')}</span></span><span class="val val-out">${fmt(gms.totalOutputTokens)}</span></div>
-                ${'totalThinkingTokens' in gms && gms.totalThinkingTokens > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Think', '思考')}</span></span><span class="val val-out">${fmt(gms.totalThinkingTokens)}</span></div>` : ''}
-                ${gms.totalCacheRead > 0 ? `<div class="act-card-row"><span>${ICONS.save} <span>${tBi('Cache', '缓存')}</span></span><span class="val val-cache">${fmt(gms.totalCacheRead)}</span></div>` : ''}
-                ${gms.totalCredits > 0 ? `<div class="act-card-row"><span>${ICONS.coin} <span>${tBi('Credits', '积分')}</span></span><span class="val val-credits">${gms.totalCredits.toFixed(1)} <span class="act-credit-calls">(${gms.creditCallCount || 0}${tBi('x', '次')})</span></span></div>` : ''}
-                ${(() => { const pr = findPricingWithCustom(gms.responseModel, custom) || findPricingWithCustom(name, custom); if (!pr) { return ''; } const cost = costFromTokens({inputTokens: gms.totalInputTokens, outputTokens: gms.totalOutputTokens, thinkingTokens: gms.totalThinkingTokens, cacheReadTokens: gms.totalCacheRead}, pr); if (cost <= 0) { return ''; } const costStr = cost < 0.01 ? cost.toFixed(4) : cost < 1 ? cost.toFixed(3) : cost.toFixed(2); return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBi('Cost', '费用')}</span></span><span class="val val-cost">$${costStr}</span></div>`; })()}
-                ${gms.cacheHitRate > 0 ? `<div class="act-card-row"><span>${ICONS.bar} <span>${tBi('Cache Hit', '缓存命中')}</span></span><span class="val val-hit">${(gms.cacheHitRate * 100).toFixed(0)}%</span></div>` : ''}
+                ${renderModelGmRows(name, gms)}
                 ${buildAccountSection(name)}
-            </div>
-            <div class="act-card-footer">
-                <span class="act-tool-tag">${tBi('Cache', '缓存')} ${(gms.cacheHitRate * 100).toFixed(0)}%</span>
             </div>
         </div>`;
     }
@@ -2528,36 +3316,27 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
     const orderedEvents = [...scopedEvents];
     if (orderedEvents.length === 0) {
         if (!currentCascadeId) { return ''; }
-        return `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>${tBi('Recent Activity', '最近操作')}</h2><p class="empty-msg">${tBi('No recent activity for the current conversation yet.', '当前对话暂时还没有可显示的最近操作。')}</p>`;
+        return `<h2 class="act-section-title"><svg class="act-icon act-icon-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>${tBiHtml('Recent Activity', '最近操作')}</span></h2><p class="empty-msg">${tBiHtml('No recent activity for the current conversation yet.', '当前对话暂时还没有可显示的最近操作。')}</p>`;
     }
 
     const fmtTok = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 
     const getTimelineIcon = (e: any) => {
-        // SVG Mapping for categories/emojis
-        if (e.icon === '❌') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`;
-        if (e.icon === '💾') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>`;
-        if (e.icon === '📊') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>`;
-        if (e.category === 'reasoning') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.2 6H8.2C6.3 13.7 5 11.5 5 9a7 7 0 0 1 7-7z"/><path d="M9 17h6M10 21h4"/></svg>`;
-        if (e.category === 'user') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+        if (e.icon === '❌') return `<svg class="act-icon act-icon-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`;
+        if (e.icon === '💾') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>`;
+        if (e.icon === '📊') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>`;
+        if (e.category === 'reasoning') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.2 6H8.2C6.3 13.7 5 11.5 5 9a7 7 0 0 1 7-7z"/><path d="M9 17h6M10 21h4"/></svg>`;
+        if (e.category === 'user') return `<svg class="act-icon act-icon-good" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
         if (e.category === 'tool') {
-            if (e.icon === '🌐') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`;
-            if (e.icon === '🔍' || e.icon === '🔎') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
-            if (e.icon === '📂') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
-            if (e.icon === '📄') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`;
-            if (e.icon === '✏️') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
-            return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`;
+            if (e.icon === '🌐') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`;
+            if (e.icon === '🔍' || e.icon === '🔎') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
+            if (e.icon === '📂') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
+            if (e.icon === '📄') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`;
+            if (e.icon === '✏️') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+            return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`;
         }
-        // system events (checkpoint, context injection)
-        if (e.category === 'system') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>`;
-        // fallback system icons
-        return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
-    };
-
-    const buildMetaTags = (_e: any) => {
-        // Model name already displayed in event row via act-tl-model (line ~2186).
-        // No additional meta tags needed.
-        return '';
+        if (e.category === 'system') return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>`;
+        return `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
     };
 
     // Resolve current conversation title from GM data
@@ -2572,24 +3351,27 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         ? ` <span class="act-badge" title="${esc(currentCascadeId)}">${esc(titleText)}</span>`
         : '';
 
-    // Build compact help tooltip (replaces old collapsible legend)
+    // Build compact help tooltip
     const helpPopup = `<div class="act-tl-help-wrap">
-        <span class="act-tl-help-btn">?</span>
+        <span class="act-tl-help-btn" aria-label="${esc(tBi('Timeline legend', '时间线图例'))}">?</span>
         <div class="act-tl-help-popup">
-            <div class="act-tl-help-group-label">${tBi('Step Basics', '步骤基础')}</div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-time" style="display:inline">08:20</span></div><div class="act-tl-help-desc">${tBi('Timestamp', '步骤时间')}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-step-idx" style="display:inline">#115</span></div><div class="act-tl-help-desc">${tBi('Step index', '步骤索引')}</div></div>
+            <div class="act-tl-help-group-label">${tBiHtml('Step Basics', '步骤基础')}</div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-time">08:20</span></div><div class="act-tl-help-desc">${tBiHtml('Timestamp', '步骤时间')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-step-idx">#115</span></div><div class="act-tl-help-desc">${tBiHtml('Step index', '步骤索引')}</div></div>
             <div class="act-tl-help-divider"></div>
-            <div class="act-tl-help-group-label">${tBi('Token Metrics', 'Token 指标')}</div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-cache" style="display:inline">176k ${tBi('cache', '缓存')}</span></div><div class="act-tl-help-desc">${tBi('Cache read', '缓存读取')}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-in" style="display:inline">1.3k ${tBi('in', '输入')}</span></div><div class="act-tl-help-desc">${tBi('Input tokens', '输入 token')}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-out" style="display:inline">117 ${tBi('out', '输出')}</span></div><div class="act-tl-help-desc">${tBi('Output tokens', '输出 token')}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ctx" style="display:inline">${tBi('Estimated context 142k', '估算上下文 142k')}</span></div><div class="act-tl-help-desc">${estimatedContextDescription()}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-credit" style="display:inline">9 ${tBi('credits', '积分')}</span></div><div class="act-tl-help-desc">${tBi('Credits', '积分')}</div></div>
+            <div class="act-tl-help-group-label">${tBiHtml('Token Metrics', 'Token 指标')}</div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-cache"><span>176k ${tBiHtml('cache', '缓存')}</span></span></div><div class="act-tl-help-desc">${tBiHtml('Cache read', '缓存读取')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-in"><span>1.3k ${tBiHtml('in', '输入')}</span></span></div><div class="act-tl-help-desc">${tBiHtml('Input tokens', '输入 tokens')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-out"><span>117 ${tBiHtml('out', '输出')}</span></span></div><div class="act-tl-help-desc">${tBiHtml('Output tokens', '输出 tokens')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ctx"><span>${tBiHtml('Estimated context 142k', '估算上下文 142k')}</span></span></div><div class="act-tl-help-desc">${esc(estimatedContextDescription())}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-credit"><span>9 ${tBiHtml('credits', '积分')}</span></span></div><div class="act-tl-help-desc">${tBiHtml('Credits', '积分')}</div></div>
             <div class="act-tl-help-divider"></div>
-            <div class="act-tl-help-group-label">${tBi('Performance', '性能')}</div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ttft" style="display:inline">TTFT 2.1s</span></div><div class="act-tl-help-desc">${tBi('Time to first token', '首 token 延迟')}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-dur" style="display:inline">538ms</span></div><div class="act-tl-help-desc">${tBi('Duration', '耗时')}</div></div>
+            <div class="act-tl-help-group-label">${tBiHtml('Performance', '性能')}</div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-speed">64.2 tok/s</span></div><div class="act-tl-help-desc">${tBiHtml('Generation speed', '生成速度')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ttft">TTFT 1.20s</span></div><div class="act-tl-help-desc">${tBiHtml('Time to first token', '首字延迟')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-stream"><span>${tBiHtml('Stream', '流式')} 2.50s</span></span></div><div class="act-tl-help-desc">${tBiHtml('Streaming decode time', '流式生成耗时')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-cache-hit"><span>${tBiHtml('Cache', '缓存')} 82.0%</span></span></div><div class="act-tl-help-desc">${tBiHtml('Prompt cache hit rate', '提示词缓存命中率')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-dur">538ms</span></div><div class="act-tl-help-desc">${tBiHtml('Duration', '耗时')}</div></div>
         </div>
     </div>`;
 
@@ -2599,7 +3381,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         checkpointHtml = buildContextIntelViewer(gm);
     }
 
-    let html = `<h2 class="act-section-title" style="display:flex;align-items:center;gap:var(--space-2)"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>${tBi('Recent Activity', '最近操作')}${scopeBadge}${helpPopup}</h2>
+    let html = `<h2 class="act-section-title"><svg class="act-icon act-icon-good" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>${tBiHtml('Recent Activity', '最近操作')}</span>${scopeBadge}${helpPopup}</h2>
     ${checkpointHtml}
     <div class="act-timeline">`;
 
@@ -2607,7 +3389,6 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         const time = formatTime(e.timestamp);
         const dur = e.durationMs > 0 ? `<span class="act-tl-dur">${e.durationMs < 1000 ? e.durationMs + 'ms' : (e.durationMs / 1000).toFixed(1) + 's'}</span>` : '';
         let detail = '';
-        // For detail text, strip "→ tool_names" suffix — tools are shown as right-aligned chips
         const detailText = e.detail ? e.detail.replace(/\s*→\s*.+$/, '').trim() : '';
         if (e.userInput) { detail = `<span class="act-tl-user">"${esc(e.userInput.replace(/\s*\n\s*/g, ' '))}"</span>`; }
         else if (e.toolName && detailText) {
@@ -2623,15 +3404,12 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
 
         const stepIdx = e.stepIndex !== undefined ? `<span class="act-tl-step-idx">#${e.stepIndex}</span>` : '';
         const svgIcon = getTimelineIcon(e);
-        const metaTags = buildMetaTags(e);
 
         // GM precision data tags — only show on reasoning steps (tools share the same GM call)
         let gmTags = '';
         if (e.category === 'reasoning' && e.gmInputTokens !== undefined) {
-            // Fixed token metrics (always present when GM data exists)
-            const costSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>`;
+            const costSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>`;
             const tokenParts: string[] = [];
-            // 1. Per-call cost (leftmost in token section)
             if (e.gmModel) {
                 const pricing = findPricingWithCustom(e.gmModel, custom);
                 if (pricing) {
@@ -2648,38 +3426,43 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
                     }
                 }
             }
-            // 2. Cache read tokens
-            if (e.gmCacheReadTokens && e.gmCacheReadTokens > 0) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-cache">${fmtTok(e.gmCacheReadTokens)} ${tBi('cache', '缓存')}</span>`); }
-            // 3. Input tokens
-            tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-in">${fmtTok(e.gmInputTokens)} ${tBi('in', '输入')}</span>`);
-            // 4. Output tokens
-            if (e.gmOutputTokens) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-out">${fmtTok(e.gmOutputTokens)} ${tBi('out', '输出')}</span>`); }
-            // 5. Context window (rightmost anchor)
+            if (e.gmCacheReadTokens && e.gmCacheReadTokens > 0) {
+                tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-cache"><span>${fmtTok(e.gmCacheReadTokens)} ${tBiHtml('cache', '缓存')}</span></span>`);
+                const stepCacheRate = computeStepCacheHitRate(e.gmInputTokens, e.gmCacheReadTokens, e.gmCacheCreationTokens);
+                if (stepCacheRate !== null) {
+                    tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-cache-hit"><span>${tBiHtml('Cache', '缓存')} ${esc(formatCachePercent(stepCacheRate))}</span></span>`);
+                }
+            }
+            tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-in"><span>${fmtTok(e.gmInputTokens)} ${tBiHtml('in', '输入')}</span></span>`);
+            if (e.gmOutputTokens) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-out"><span>${fmtTok(e.gmOutputTokens)} ${tBiHtml('out', '输出')}</span></span>`); }
             if (e.gmContextTokensUsed) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-ctx" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')} ${fmtTok(e.gmContextTokensUsed)}</span>`); }
 
             const statusParts: string[] = [];
-            // Order from right→left: duration, TTFT, tools, credits, error
-            // 1. Error indicator (leftmost)
             if (e.gmRetries && e.gmRetries > 0) {
-                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-retry">error(${e.gmRetries})</span>`);
+                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-retry"><span>${tBiHtml(`${e.gmRetries} ${e.gmRetries === 1 ? 'error' : 'errors'}`, `${e.gmRetries} 次报错`)}</span></span>`);
             }
-            // 2. Credits
             if (e.gmCredits && e.gmCredits > 0) {
-                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-credit">${e.gmCredits} ${tBi('credits', '积分')}</span>`);
+                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-credit"><span>${e.gmCredits} ${tBiHtml(e.gmCredits === 1 ? 'credit' : 'credits', '积分')}</span></span>`);
             }
-            // 3. Tools
             if (e.detail) {
                 const toolMatch = e.detail.match(/\u2192\s*(\d+)\s*/);
                 if (toolMatch) {
                     const count = parseInt(toolMatch[1], 10);
                     if (count > 0) {
-                        statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-tool"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>${count} ${tBi(count === 1 ? 'tool' : 'tools', '工具')}</span>`);
+                        statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-tool"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg><span>${count} ${tBiHtml(count === 1 ? 'tool' : 'tools', '工具')}</span></span>`);
                     }
                 }
             }
-            // 4. TTFT
-            if (e.gmTTFT && e.gmTTFT > 0) { statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-ttft">TTFT ${e.gmTTFT.toFixed(1)}s</span>`); }
-            // 5. Duration (rightmost, closest to tokenParts)
+            const stepSpeed = computeStepSpeed(e.gmOutputTokens, e.gmStreamingDuration);
+            if (stepSpeed !== null) {
+                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-speed">${esc(formatSpeed(stepSpeed))}</span>`);
+            }
+            if (e.gmTTFT && e.gmTTFT > 0) {
+                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-ttft">TTFT ${esc(formatLatency(e.gmTTFT))}</span>`);
+            }
+            if (e.gmStreamingDuration && e.gmStreamingDuration > 0) {
+                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-stream"><span>${tBiHtml('Stream', '流式')} ${esc(formatLatency(e.gmStreamingDuration))}</span></span>`);
+            }
             if (e.durationMs > 0) {
                 statusParts.push(`<span class="act-tl-dur">${e.durationMs < 1000 ? e.durationMs + 'ms' : (e.durationMs / 1000).toFixed(1) + 's'}</span>`);
             }
@@ -2690,8 +3473,6 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             gmTags = `${statusHtml}<span class="act-tl-gm">${tokenParts.join('')}</span>`;
         }
 
-
-
         return `
         <div class="act-tl-item act-tl-${e.category}${extraClass ? ` ${extraClass}` : ''}">
             <span class="act-tl-time">${time}</span>
@@ -2701,8 +3482,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
                 ${e.model ? `<span class="act-tl-model" title="${esc(e.model)}">${esc(e.model)}</span>` : ''}
                 ${detail}
             </span>
-            <span class="act-tl-meta">
-                ${metaTags}
+            <span class="act-tl-meta${gmTags ? ' act-tl-meta-gm' : ''}">
                 ${gmTags}
                 ${!gmTags ? dur : ''}
             </span>
@@ -2724,15 +3504,18 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         currentSegment.actions.push(event);
     }
 
-    // Helper: aggregate GM stats from a segment's actions
     const buildSegmentStats = (actions: any[]) => {
-        let totalIn = 0, totalOut = 0, totalThinking = 0, totalCache = 0, totalCredits = 0, totalCost = 0;
+        let totalIn = 0, totalOut = 0, totalThinking = 0, totalCache = 0, totalCacheCreation = 0, totalCredits = 0, totalCost = 0;
         let toolCount = 0, reasoningCount = 0;
         let model = '';
         const models = new Set<string>();
         let gmToolTotal = 0;
         let retryTotal = 0;
         let lastContextTokens = 0;
+        let timedOutputSum = 0;
+        let timedStreamSum = 0;
+        let ttftSum = 0;
+        let ttftCount = 0;
         for (const a of actions) {
             if (a.category === 'tool') { toolCount++; }
             if (a.category === 'reasoning') {
@@ -2741,8 +3524,16 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
                 if (a.gmOutputTokens) { totalOut += a.gmOutputTokens; }
                 if (a.gmThinkingTokens) { totalThinking += a.gmThinkingTokens; }
                 if (a.gmCacheReadTokens) { totalCache += a.gmCacheReadTokens; }
+                if (a.gmCacheCreationTokens && a.gmCacheCreationTokens > 0) { totalCacheCreation += a.gmCacheCreationTokens; }
                 if (a.gmCredits) { totalCredits += a.gmCredits; }
-                // Per-call cost accumulation
+                if (typeof a.gmTTFT === 'number' && Number.isFinite(a.gmTTFT) && a.gmTTFT > 0) {
+                    ttftSum += a.gmTTFT;
+                    ttftCount++;
+                }
+                if (computeStepSpeed(a.gmOutputTokens, a.gmStreamingDuration) !== null) {
+                    timedOutputSum += a.gmOutputTokens;
+                    timedStreamSum += a.gmStreamingDuration;
+                }
                 if (a.gmModel) {
                     const pricing = findPricingWithCustom(a.gmModel, custom);
                     if (pricing) {
@@ -2758,12 +3549,10 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
                 if (a.gmRetries && a.gmRetries > 0) {
                     retryTotal += a.gmRetries;
                 }
-                // Track the latest context window size (last reasoning event wins)
                 if (a.gmContextTokensUsed && a.gmContextTokensUsed > 0) {
                     lastContextTokens = a.gmContextTokensUsed;
                 }
             }
-            // Collect tool counts from detail's → suffix (e.g. "→ 1 tool")
             if (a.detail) {
                 const m = a.detail.match(/\u2192\s*(\d+)\s*/);
                 if (m) {
@@ -2773,11 +3562,19 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             if (a.model) { models.add(a.model); }
             if (a.gmModel) { models.add(a.gmModel); }
         }
-        // Pick the most specific model name
         if (models.size === 1) { model = [...models][0]; }
         else if (models.size > 1) { model = [...models].filter(m => !m.startsWith('MODEL_PLACEHOLDER')).pop() || [...models][0]; }
         const toolNames = gmToolTotal;
-        return { totalIn, totalOut, totalThinking, totalCache, totalCredits, totalCost, toolCount, reasoningCount, model, toolNames, retryTotal, lastContextTokens };
+        const turnSpeed = timedStreamSum > 0 ? timedOutputSum / timedStreamSum : null;
+        const turnAvgTtft = ttftCount > 0 ? ttftSum / ttftCount : null;
+        const turnCacheHitRate = totalCache > 0
+            ? computeStepCacheHitRate(totalIn, totalCache, totalCacheCreation)
+            : null;
+        return {
+            totalIn, totalOut, totalThinking, totalCache, totalCacheCreation, totalCredits, totalCost,
+            toolCount, reasoningCount, model, toolNames, retryTotal, lastContextTokens,
+            turnSpeed, turnAvgTtft, turnCacheHitRate,
+        };
     };
 
     const reversedSegments = [...segments].reverse();
@@ -2786,63 +3583,59 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         const isLatest = si === 0;
         const stats = buildSegmentStats(segment.actions);
 
-        // Build summary chips for the segment header
-        // Right-aligned: rightmost = most stable, leftmost = rare
-        // Visual order (left → right): error | tools | credits | calls | in/out | ctx | cache
         const chips: string[] = [];
-        // 1. Errors — rare (leftmost)
         if (stats.retryTotal > 0) {
-            chips.push(`<span class="seg-chip seg-chip-retry">error(${stats.retryTotal})</span>`);
+            chips.push(`<span class="seg-chip seg-chip-retry"><span>${tBiHtml(`${stats.retryTotal} ${stats.retryTotal === 1 ? 'error' : 'errors'}`, `${stats.retryTotal} 次报错`)}</span></span>`);
         }
-        // 2. Credits — occasional
         if (stats.totalCredits > 0) {
-            chips.push(`<span class="seg-chip seg-chip-credits">${stats.totalCredits.toFixed(1)} ${tBi('credits', '积分')}</span>`);
+            chips.push(`<span class="seg-chip seg-chip-credits"><span>${stats.totalCredits.toFixed(1)} ${tBiHtml('credits', '积分')}</span></span>`);
         }
-        // 3. Tool calls — occasional
         if (stats.toolNames > 0) {
-            chips.push(`<span class="seg-chip seg-chip-tools"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>${stats.toolNames} ${tBi('tools', '工具')}</span>`);
+            chips.push(`<span class="seg-chip seg-chip-tools"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg><span>${stats.toolNames} ${tBiHtml(stats.toolNames === 1 ? 'tool' : 'tools', '工具')}</span></span>`);
         } else if (stats.toolCount > 0) {
-            chips.push(`<span class="seg-chip seg-chip-tools"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>${stats.toolCount}</span>`);
+            chips.push(`<span class="seg-chip seg-chip-tools"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg><span>${stats.toolCount}</span></span>`);
         }
-        // 4. Call count — almost always
-        if (stats.reasoningCount > 0) { chips.push(`<span class="seg-chip seg-chip-calls">${stats.reasoningCount} ${tBi('calls', '调用')}</span>`); }
-        // 5. Cost — almost always (when pricing data exists)
+        if (stats.reasoningCount > 0) { chips.push(`<span class="seg-chip seg-chip-calls"><span>${stats.reasoningCount} ${tBiHtml(stats.reasoningCount === 1 ? 'call' : 'calls', '调用')}</span></span>`); }
+        if (stats.turnSpeed !== null) {
+            chips.push(`<span class="seg-chip seg-chip-speed">${esc(formatSpeed(stats.turnSpeed))}</span>`);
+        }
+        if (stats.turnAvgTtft !== null) {
+            chips.push(`<span class="seg-chip seg-chip-ttft">TTFT ${esc(formatLatency(stats.turnAvgTtft))}</span>`);
+        }
         if (stats.totalCost > 0) {
             const costStr = stats.totalCost < 0.01 ? stats.totalCost.toFixed(3) : stats.totalCost.toFixed(2);
             chips.push(`<span class="seg-chip seg-chip-cost">$${costStr}</span>`);
         }
-        // 6. Cache read tokens — almost always
+        if (stats.turnCacheHitRate !== null) {
+            chips.push(`<span class="seg-chip seg-chip-cache-hit"><span>${tBiHtml('Cache', '缓存')} ${esc(formatCachePercent(stats.turnCacheHitRate))}</span></span>`);
+        }
         if (stats.totalCache > 0) {
-            chips.push(`<span class="seg-chip seg-chip-cache">${fmtTok(stats.totalCache)} ${tBi('cache', '缓存')}</span>`);
+            chips.push(`<span class="seg-chip seg-chip-cache"><span>${fmtTok(stats.totalCache)} ${tBiHtml('cache', '缓存')}</span></span>`);
         }
-        // 6. Input / Output tokens — almost always
         if (stats.totalIn > 0 || stats.totalOut > 0) {
-            chips.push(`<span class="seg-chip seg-chip-tok">${fmtTok(stats.totalIn)} ${tBi('in', '输入')} / ${fmtTok(stats.totalOut)} ${tBi('out', '输出')}</span>`);
+            chips.push(`<span class="seg-chip seg-chip-tok"><span>${fmtTok(stats.totalIn)} ${tBiHtml('in', '输入')} · ${fmtTok(stats.totalOut)} ${tBiHtml('out', '输出')}</span></span>`);
         }
-        // 7. Context window size — rightmost anchor
         if (stats.lastContextTokens > 0) {
             chips.push(`<span class="seg-chip seg-chip-ctx" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')} ${fmtTok(stats.lastContextTokens)}</span>`);
         }
         const chipsHtml = chips.length > 0 ? `<span class="seg-chips">${chips.join('')}</span>` : '';
 
-        // Turn number label for the segment header (1-indexed, chronological order)
         const turnNumber = segments.length - si;
         const turnLabel = segment.user
-            ? `${tBi('Turn', '第')} ${turnNumber}${tBi('', ' 轮')}`
-            : tBi('AI actions (no user anchor)', 'AI 动作（缺少用户锚点）');
+            ? tBiHtml(`Turn ${turnNumber}`, `第 ${turnNumber} 轮`)
+            : tBiHtml('AI actions (no user anchor)', 'AI 动作（缺少用户锚点）');
 
         html += `<details class="act-tl-turn" id="turn-${si}"${isLatest ? ' open' : ''}>`;
         html += `<summary class="act-tl-turn-header">`;
         if (segment.user) {
-            html += `<span class="act-tl-turn-icon"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>`;
+            html += `<span class="act-tl-turn-icon"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>`;
         } else {
-            html += `<span class="act-tl-turn-icon"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.2 6H8.2C6.3 13.7 5 11.5 5 9a7 7 0 0 1 7-7z"/><path d="M9 17h6M10 21h4"/></svg></span>`;
+            html += `<span class="act-tl-turn-icon"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.2 6H8.2C6.3 13.7 5 11.5 5 9a7 7 0 0 1 7-7z"/><path d="M9 17h6M10 21h4"/></svg></span>`;
         }
         html += `<span class="act-tl-turn-text">${turnLabel}</span>`;
         html += chipsHtml;
         html += `</summary>`;
 
-        // Segment body: actions first (newest at top), user anchor at bottom
         html += `<div class="act-tl-segment-body">`;
         for (const action of [...segment.actions].reverse()) {
             html += renderEventRow(action);
@@ -2857,57 +3650,28 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
     return html;
 }
 
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-// esc() and formatTime() are now imported from webview-helpers.ts
-
-// ─── GM Precision Section Builders (migrated from gm-panel.ts) ──────────────
-
-function buildPerformanceChart(s: GMSummary): string {
-    const entries = Object.entries(s.modelBreakdown).filter(([, ms]) => ms.avgTTFT > 0);
-    if (entries.length === 0) { return ''; }
-    const fmtSec = (n: number) => n <= 0 ? '-' : `${n.toFixed(2)}s`;
-    let html = `<h2 class="act-section-title">${tBi('Performance Baseline', '性能基线')}</h2><div class="gm-perf-grid">`;
-    for (const [name, ms] of entries) {
-        html += `<div class="gm-perf-item"><span class="gm-perf-label" title="${esc(name)}">${esc(name)}</span><span class="gm-perf-val">${fmtSec(ms.avgTTFT)}</span><span class="gm-perf-sub">${tBi('TTFT avg', 'TTFT 均值')} (${fmtSec(ms.minTTFT)}–${fmtSec(ms.maxTTFT)})</span></div>`;
-        html += `<div class="gm-perf-item"><span class="gm-perf-label" title="${esc(name)}">${esc(name)} ${tBi('Stream', '流速')}</span><span class="gm-perf-val">${fmtSec(ms.avgStreaming)}</span><span class="gm-perf-sub">${ms.callCount} ${tBi('samples', '样本')}</span></div>`;
-    }
-    html += `</div>`;
-    return html;
-}
-
-function buildCacheEfficiency(s: GMSummary): string {
-    const entries = Object.entries(s.modelBreakdown).filter(([, ms]) => ms.totalInputTokens > 0);
-    if (entries.length === 0) { return ''; }
-    const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    let html = `<h2 class="act-section-title">${tBi('Cache Efficiency', '缓存效率')}</h2>`;
-    for (const [name, ms] of entries) {
-        const ratio = ms.totalInputTokens > 0 ? ms.totalCacheRead / ms.totalInputTokens : 0;
-        const pct = Math.min(ratio * 10, 100);
-        html += `<div style="margin-bottom:var(--space-3)"><div style="display:flex;justify-content:space-between;gap:var(--space-2);font-size:0.85em;margin-bottom:var(--space-1)"><span style="min-width:0;overflow-wrap:anywhere;word-break:break-word" title="${esc(name)}">${esc(name)}</span><span style="color:var(--color-info);font-weight:600;flex-shrink:0">${ratio.toFixed(1)}× ${tBi('cache ratio', '缓存倍率')}</span></div><div class="gm-cache-bar-bg"><div class="gm-cache-bar" style="width:${pct.toFixed(1)}%"></div></div><div style="display:flex;justify-content:space-between;font-size:0.75em;color:var(--color-text-dim)"><span>${tBi('Input', '输入')}: ${fmt(ms.totalInputTokens)}</span><span>${tBi('Cache Read', '缓存读取')}: ${fmt(ms.totalCacheRead)}</span></div></div>`;
-    }
-    return html;
-}
+// ─── GM Precision Section Builders ──────────────────────────────────────────
 
 function buildContextGrowth(s: GMSummary): string {
     const data = s.contextGrowth;
     if (!data || data.length < 2) { return ''; }
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-    const W = 380, H = 160, PAD = 6;
+    const W = 380, H = 160, PAD = 8;
     const maxTok = Math.max(...data.map(d => d.tokens));
     if (maxTok <= 0) { return ''; }
     const xStep = (W - PAD * 2) / (data.length - 1);
     const yScale = (v: number) => H - PAD - ((v / maxTok) * (H - PAD * 2));
     const points = data.map((d, i) => `${PAD + i * xStep},${yScale(d.tokens)}`).join(' ');
     const areaPoints = `${PAD},${H - PAD} ${points} ${PAD + (data.length - 1) * xStep},${H - PAD}`;
-    return `<h2 class="act-section-title">${tBi('Estimated context growth', '估算上下文增长')} <span class="act-badge">${tBi('Per-Call', '每次调用')}</span></h2><div class="act-trend-container" title="${esc(estimatedContextDescription())}"><svg class="act-trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="gmTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#f97316" stop-opacity="0.5"/><stop offset="100%" stop-color="#f97316" stop-opacity="0.1"/></linearGradient></defs><polygon points="${areaPoints}" fill="url(#gmTrendFill)"/><polyline points="${points}" fill="none" stroke="#fb923c" stroke-width="2" stroke-linejoin="round"/></svg><div class="act-trend-labels"><span>${fmt(data[0].tokens)}</span><span>${data.length} ${tBi('calls', '调用')}</span><span>${fmt(data[data.length - 1].tokens)}</span></div></div>`;
+    const gridYs = [0.25, 0.5, 0.75].map(r => (PAD + (H - PAD * 2) * r).toFixed(1));
+    const gridLines = gridYs.map(y => `<line class="act-trend-grid" x1="${PAD}" y1="${y}" x2="${W - PAD}" y2="${y}" />`).join('');
+    return `<h2 class="act-section-title">${tBi('Estimated context growth', '估算上下文增长')} <span class="act-badge">${tBiHtml('Per-Call', '每次调用')}</span></h2><div class="act-trend-container" title="${esc(estimatedContextDescription())}"><svg class="act-trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${gridLines}<polygon class="act-trend-area" points="${areaPoints}"/><polyline class="act-trend-line" points="${points}" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg><div class="act-trend-labels"><span>${fmt(data[0].tokens)}</span><span>${data.length} ${tBiHtml('calls', '调用')}</span><span>${fmt(data[data.length - 1].tokens)}</span></div></div>`;
 }
 
 function buildConversations(s: GMSummary): string {
     const convs = s.conversations.filter(c => c.calls.length > 0);
     if (convs.length === 0) { return ''; }
 
-    // Date formatting helper: compact date/time
     const fmtDate = (iso: string): string => {
         if (!iso) { return ''; }
         try {
@@ -2918,10 +3682,10 @@ function buildConversations(s: GMSummary): string {
         } catch { return ''; }
     };
 
-    const iconClock = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
-    const iconCalls = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`;
+    const iconClock = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
+    const iconCalls = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`;
 
-    let html = `<h2 class="act-section-title">${tBi('Conversations', '对话分布')}</h2><div class="act-conv-list">`;
+    let html = `<h2 class="act-section-title"><span>${tBiHtml('Conversations', '对话分布')}</span></h2><div class="act-conv-list">`;
     for (const c of convs) {
         let totalCredits = 0;
         let earliest = '';
@@ -2939,7 +3703,7 @@ function buildConversations(s: GMSummary): string {
             : '';
         const acctCredits = c.accountCredits ?? 0;
         const creditsChip = totalCredits > 0
-            ? `<span class="act-conv-meta-chip act-conv-credits"><b>${totalCredits}</b> ${tBi('credits', '积分')}${acctCredits > 0 && acctCredits < totalCredits ? ` <span class="act-credit-calls">+${acctCredits}</span>` : ''}</span>`
+            ? `<span class="act-conv-meta-chip act-conv-credits"><b>${totalCredits}</b> <span>${tBiHtml('credits', '积分')}</span>${acctCredits > 0 && acctCredits < totalCredits ? ` <span class="act-credit-calls">+${acctCredits}</span>` : ''}</span>`
             : '';
 
         html += `<div class="act-conv-item" title="${esc(c.cascadeId)}">
@@ -2965,14 +3729,13 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
     const totalInvocations = entries.reduce((sum, [, c]) => sum + c, 0);
     const maxCount = entries[0][1];
 
-    // ── Current conversation's tool call contribution (from pre-computed, archival-immune data) ──
     const byConv = gm.toolCallCountsByConv || {};
     const convCount = Object.keys(byConv).length;
     const currentConvCounts: Record<string, number> = (currentCascadeId && convCount > 1)
         ? (byConv[currentCascadeId] || {})
         : {};
 
-    const wrenchIcon = `<svg class="act-icon" viewBox="0 0 16 16"><path fill="currentColor" d="M12.7 3.3a1 1 0 0 1 0 1.4l-1.2 1.2 1.5 1.5a1 1 0 0 1-.7 1.7H10a1 1 0 0 1-1-1V5.8a1 1 0 0 1 1.7-.7l1.5 1.5 1.2-1.2a1 1 0 0 1 1.3-.1zM4.5 2A2.5 2.5 0 0 0 2 4.5v7A2.5 2.5 0 0 0 4.5 14h7a2.5 2.5 0 0 0 2.5-2.5V10h-1v1.5a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 11.5v-7A1.5 1.5 0 0 1 4.5 3H6V2H4.5z"/></svg>`;
+    const wrenchIcon = `<svg class="act-icon act-icon-accent" viewBox="0 0 16 16"><path fill="currentColor" d="M12.7 3.3a1 1 0 0 1 0 1.4l-1.2 1.2 1.5 1.5a1 1 0 0 1-.7 1.7H10a1 1 0 0 1-1-1V5.8a1 1 0 0 1 1.7-.7l1.5 1.5 1.2-1.2a1 1 0 0 1 1.3-.1zM4.5 2A2.5 2.5 0 0 0 2 4.5v7A2.5 2.5 0 0 0 4.5 14h7a2.5 2.5 0 0 0 2.5-2.5V10h-1v1.5a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 11.5v-7A1.5 1.5 0 0 1 4.5 3H6V2H4.5z"/></svg>`;
 
     const rows = entries.map(([name, count], i) => {
         const pct = maxCount > 0 ? (count / maxCount * 100).toFixed(1) : '0';
@@ -2989,10 +3752,9 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
     }).join('');
 
     const convNote = convCount > 1
-        ? `<span>${tBi(`${convCount} conversations`, `${convCount} 个对话`)}</span>`
+        ? `<span>${tBiHtml(`${convCount} conversations`, `${convCount} 个对话`)}</span>`
         : '';
 
-    // ── Tool Catalog: persistent inventory of all unique tools used ──
     const catalog = gm.toolCatalog || [];
     let catalogHtml = '';
     if (catalog.length > 0) {
@@ -3017,8 +3779,6 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
             browser_subagent: '\u6d4f\u89c8\u5668\u81ea\u52a8\u5316',
             view_content_chunk: '\u67e5\u770b\u6587\u6863\u5206\u7247',
         };
-        // Sort catalog chips by call count (descending), matching the ranking order.
-        // Tools not in the ranking sink to the bottom, ordered by firstSeen.
         const sortedCatalog = [...catalog].sort((a, b) => {
             const ca = counts[a.name] || 0;
             const cb = counts[b.name] || 0;
@@ -3032,18 +3792,18 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
             const tooltipAttr = desc ? ` data-tooltip="${esc(desc)}"` : '';
             return `<span class="tool-cat-chip"${nameAttr}${descAttr}${tooltipAttr}><span class="tool-cat-chip-text">${esc(entry.name)}</span></span>`;
         }).join('');
-        const catalogIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`;
+        const catalogIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`;
         catalogHtml = `<details class="tool-cat-section" id="toolCatSection">
             <summary class="tool-cat-header">
                 ${catalogIcon}
-                ${tBi('Tool Catalog', '\u5de5\u5177\u76ee\u5f55')}
+                <span>${tBiHtml('Tool Catalog', '\u5de5\u5177\u76ee\u5f55')}</span>
                 <span class="act-badge">${catalog.length}</span>
             </summary>
             <div class="tool-cat-chips">${chips}</div>
             <div class="tool-cat-footer">
                 <button class="tool-cat-clear-btn" id="clearToolCatalogBtn">
                     <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/><path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/></svg>
-                    ${tBi('Clear Catalog', '\u6e05\u7a7a\u76ee\u5f55')}
+                    <span>${tBiHtml('Clear Catalog', '\u6e05\u7a7a\u76ee\u5f55')}</span>
                 </button>
             </div>
         </details>`;
@@ -3052,23 +3812,20 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
     return `<div class="tool-rank-section">
         <h3 class="act-section-title">
             ${wrenchIcon}
-            ${tBi('Tool Call Ranking', '\u5de5\u5177\u8c03\u7528\u6392\u884c')}
-            <span class="act-badge">${tBi(`${totalInvocations} invocations`, `${totalInvocations} \u6b21\u8c03\u7528`)}</span>
+            <span>${tBiHtml('Tool Call Ranking', '\u5de5\u5177\u8c03\u7528\u6392\u884c')}</span>
+            <span class="act-badge"><span>${tBiHtml(`${totalInvocations} ${totalInvocations === 1 ? 'invocation' : 'invocations'}`, `${totalInvocations} \u6b21\u8c03\u7528`)}</span></span>
         </h3>
         <ul class="tool-rank-list">
             ${rows}
             <li class="tool-rank-summary">
-                <span>${tBi('Unique Tools', '\u5de5\u5177\u79cd\u7c7b')}: <b>${entries.length}</b></span>
-                <span>${tBi('Total', '\u5408\u8ba1')}: <b>${totalInvocations}</b></span>
+                <span>${tBiHtml('Unique Tools', '\u5de5\u5177\u79cd\u7c7b')}: <b>${entries.length}</b></span>
+                <span>${tBiHtml('Total', '\u5408\u8ba1')}: <b>${totalInvocations}</b></span>
                 ${convNote}
             </li>
         </ul>
         ${catalogHtml}
     </div>`;
 }
-
-// Retry overhead section has been removed.
-// Error details and token waste are now displayed in buildErrorDetailsSection() and Summary Bar tooltips.
 
 /** Build a collapsible error details section showing recent errors and error code breakdown */
 function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): string {
@@ -3080,7 +3837,6 @@ function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): stri
 
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(2) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 
-    // Per-conversation error delta (for +x display, like tool ranking)
     const byConv = s.retryErrorCodesByConv || {};
     const convCount = Object.keys(byConv).length;
     const currentConvErrors: Record<string, number> = (currentCascadeId && convCount > 1)
@@ -3088,7 +3844,6 @@ function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): stri
         : {};
     const currentConvTotal = Object.values(currentConvErrors).reduce((a, b) => a + b, 0);
 
-    // Error code distribution tags — with per-conversation +x delta
     const codeTags = Object.entries(errorCodes)
         .sort((a, b) => b[1] - a[1])
         .map(([code, count]) => {
@@ -3097,17 +3852,15 @@ function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): stri
             const tagClass = isRateLimit ? 'gm-err-tag-ratelimit' : isServer ? 'gm-err-tag-server' : 'gm-err-tag-other';
             const delta = currentConvErrors[code] || 0;
             const deltaHtml = delta > 0
-                ? `<span class="err-delta" style="font-size:0.85em;margin-left:2px">+${delta}</span>`
+                ? `<span class="err-delta"> +${delta}</span>`
                 : '';
             return `<span class="gm-err-tag ${tagClass}">${esc(code)} \u00d7${count}${deltaHtml}</span>`;
         }).join('');
 
-    // Section title with conversation delta badge
     const convDeltaBadge = currentConvTotal > 0
-        ? ` <span class="err-delta" style="font-size:0.8em">+${currentConvTotal} ${tBi('this session', '\u672c\u5bf9\u8bdd')}</span>`
+        ? ` <span class="err-delta">+${currentConvTotal} ${tBiHtml('this session', '\u672c\u5bf9\u8bdd')}</span>`
         : '';
 
-    // -- Shared time formatter --
     const fmtTime = (iso: string): string => {
         if (!iso) { return ''; }
         try {
@@ -3118,7 +3871,6 @@ function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): stri
         } catch { return ''; }
     };
 
-    // -- Shared row builder for both unique errors and recent errors --
     const buildErrorRow = (entry: { code: string; message: string; createdAt?: string; firstSeen?: string }, i: number, idPrefix: string): string => {
         const isRateLimit = entry.code === '429';
         const isServer = entry.code === '503' || entry.code === '500' || entry.code === '504';
@@ -3137,51 +3889,57 @@ function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): stri
         </details>`;
     };
 
-    // -- Unique Error Types catalog (deduplicated by normalized message content, cross-account) --
     let uniqueErrorCatalog = '';
     if (uniqueErrors.length > 0) {
-        const catalogIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
+        const catalogIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
         const rows = uniqueErrors.map((entry, i) => buildErrorRow(entry, i, 'd-ue')).join('');
         uniqueErrorCatalog = `<details class="gm-ue-section" id="ue-catalog">
             <summary class="gm-ue-header">
-                ${catalogIcon} ${tBi('Error Types', '\u9519\u8bef\u79cd\u7c7b')}
-                <span class="act-badge">${uniqueErrors.length} ${tBi('types', '\u79cd')}</span>
+                ${catalogIcon} <span>${tBiHtml('Error Types', '\u9519\u8bef\u79cd\u7c7b')}</span>
+                <span class="act-badge"><span>${uniqueErrors.length} ${tBiHtml(uniqueErrors.length === 1 ? 'type' : 'types', '\u79cd')}</span></span>
             </summary>
             <div class="gm-ue-list">${rows}</div>
         </details>`;
     }
 
-    // -- Recent error log (structured entries with code + timestamp) --
     const recentEntries = s.recentErrorEntries || [];
     let errorListHtml = '';
     if (recentEntries.length > 0) {
         const rows = recentEntries.map((entry, i) => buildErrorRow(entry, i, 'd-err')).join('');
-        const logIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`;
+        const logIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`;
         errorListHtml = `<details class="gm-ue-section" id="err-log" open>
             <summary class="gm-ue-header">
-                ${logIcon} ${tBi('Error Log', '\u62a5\u9519\u65e5\u5fd7')}
-                <span class="act-badge">${recentEntries.length} ${tBi('entries', '\u6761')}</span>
+                ${logIcon} <span>${tBiHtml('Error Log', '\u62a5\u9519\u65e5\u5fd7')}</span>
+                <span class="act-badge"><span>${recentEntries.length} ${tBiHtml(recentEntries.length === 1 ? 'entry' : 'entries', '\u6761')}</span></span>
             </summary>
             <div class="gm-ue-list">${rows}</div>
         </details>`;
     } else if (recentErrors.length > 0) {
-        // Fallback: legacy string[] without metadata
         const rows = recentErrors.slice(0, 20).map((msg, i) =>
             buildErrorRow({ code: 'unknown', message: msg }, i, 'd-err'),
         ).join('');
         errorListHtml = `<div class="gm-ue-section"><div class="gm-ue-list">${rows}</div></div>`;
     }
 
-    // Overhead stats (token waste + credits) — shown as a compact info line
-    const overheadParts: string[] = [];
-    if (s.totalRetryTokens > 0) { overheadParts.push(`${fmt(s.totalRetryTokens)} ${tBi('tokens wasted', 'token \u6d6a\u8d39')}`); }
-    if (s.totalRetryCredits > 0) { overheadParts.push(`${s.totalRetryCredits.toFixed(1)} ${tBi('credits lost', 'credits \u635f\u8017')}`); }
-    if (s.totalRetryCount > 0) { overheadParts.push(`${s.totalRetryCount} ${tBi('calls with retries', '\u542b\u91cd\u8bd5\u8c03\u7528')}`); }
-    const overheadLine = overheadParts.length > 0
-        ? `<div class="gm-err-overhead">${overheadParts.join(' \u00b7 ')}</div>`
+    // Overhead stats (HTML for display, plain text for clipboard)
+    const overheadPartsHtml: string[] = [];
+    const overheadPartsText: string[] = [];
+    if (s.totalRetryTokens > 0) {
+        overheadPartsHtml.push(`${fmt(s.totalRetryTokens)} ${tBiHtml('tokens wasted', '浪费 tokens')}`);
+        overheadPartsText.push(`${fmt(s.totalRetryTokens)} ${tBi('tokens wasted', '浪费 tokens')}`);
+    }
+    if (s.totalRetryCredits > 0) {
+        overheadPartsHtml.push(`${s.totalRetryCredits.toFixed(1)} ${tBiHtml('credits used', '积分消耗')}`);
+        overheadPartsText.push(`${s.totalRetryCredits.toFixed(1)} ${tBi('credits used', '积分消耗')}`);
+    }
+    if (s.totalRetryCount > 0) {
+        overheadPartsHtml.push(`${s.totalRetryCount} ${tBiHtml('calls with retries', '含重试调用')}`);
+        overheadPartsText.push(`${s.totalRetryCount} ${tBi('calls with retries', '含重试调用')}`);
+    }
+    const overheadLine = overheadPartsHtml.length > 0
+        ? `<div class="gm-err-overhead">${overheadPartsHtml.join(' \u00b7 ')}</div>`
         : '';
 
-    // -- Build clipboard text (all errors: unique types + recent log) --
     const clipboardParts: string[] = [];
     if (uniqueErrors.length > 0) {
         clipboardParts.push(`--- ${tBi('Error Types', '\u9519\u8bef\u79cd\u7c7b')} (${uniqueErrors.length} ${tBi('types', '\u79cd')}) ---`);
@@ -3198,17 +3956,17 @@ function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): stri
             clipboardParts.push(`#${i + 1} [${e.code}] ${t ? t + ' ' : ''}${e.message}`);
         });
     }
-    if (overheadParts.length > 0) {
+    if (overheadPartsText.length > 0) {
         clipboardParts.push('');
-        clipboardParts.push(overheadParts.join(' | '));
+        clipboardParts.push(overheadPartsText.join(' | '));
     }
 
-    const copyIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+    const copyIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="14" height="14"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
     const copyBtnHtml = clipboardParts.length > 0
-        ? `<button class="gm-ue-copy-btn" id="copyAllErrors"><span class="gm-ue-tooltip">${tBi('Copy all errors', '\u590d\u5236\u5168\u90e8\u9519\u8bef')}</span>${copyIcon}</button>`
+        ? `<button type="button" class="gm-ue-copy-btn" id="copyAllErrors" aria-label="${esc(tBi('Copy all errors', '\u590d\u5236\u5168\u90e8\u9519\u8bef'))}"><span class="gm-ue-tooltip">${tBiHtml('Copy all errors', '\u590d\u5236\u5168\u90e8\u9519\u8bef')}</span>${copyIcon}</button>`
         : '';
 
-    return `<h2 class="act-section-title"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>${tBi('Error Details', '\u9519\u8bef\u8be6\u60c5')}${convDeltaBadge}${copyBtnHtml}</h2>
+    return `<h2 class="act-section-title"><svg class="act-icon act-icon-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span>${tBiHtml('Error Details', '\u9519\u8bef\u8be6\u60c5')}</span>${convDeltaBadge}${copyBtnHtml}</h2>
     <div class="gm-err-card">
         ${codeTags ? `<div class="gm-err-codes">${codeTags}</div>` : ''}
         ${uniqueErrorCatalog}
@@ -3254,7 +4012,6 @@ function buildContextIntelViewer(s: GMSummary): string {
         }
     }
 
-    // Even if rawItems is empty, we may still have model DNA data to show
     const hasModelDNA = Object.keys(s.modelBreakdown).some(k => {
         const ms = s.modelBreakdown[k];
         return (ms.promptSectionTitles && ms.promptSectionTitles.length > 0)
@@ -3265,7 +4022,6 @@ function buildContextIntelViewer(s: GMSummary): string {
 
     if (rawItems.length === 0 && !hasModelDNA && !hasTokenBreakdown) { return ''; }
 
-    // Deduplicate by type+stepIndex, keep richest
     const byKey = new Map<string, GMSystemContextItem>();
     for (const item of rawItems) {
         const key = `${item.type}:${item.stepIndex}`;
@@ -3278,93 +4034,87 @@ function buildContextIntelViewer(s: GMSummary): string {
 
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 
-    // Type → icon SVG + color
-    const typeConfig: Record<string, { icon: string; color: string; label: string }> = {
+    // Type → icon SVG + semantic tone class + localized label
+    const typeConfig: Record<string, { icon: string; tone: string; label: string }> = {
         checkpoint: {
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2z"/><path d="M9 21V9h6v12"/></svg>',
-            color: '#fbbf24',
-            label: tBi('Checkpoint', '检查点'),
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2z"/><path d="M9 21V9h6v12"/></svg>',
+            tone: 'ci-tone-warn',
+            label: tBiHtml('Checkpoint', '检查点'),
         },
         context_injection: {
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
-            color: '#60a5fa',
-            label: tBi('Context Injection', '上下文注入'),
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+            tone: 'ci-tone-accent',
+            label: tBiHtml('Context Injection', '上下文注入'),
         },
         user_info: {
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
-            color: '#4ade80',
-            label: tBi('User Information', '用户信息'),
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+            tone: 'ci-tone-good',
+            label: tBiHtml('User Information', '用户信息'),
         },
         user_rules: {
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
-            color: '#06b6d4',
-            label: tBi('User Rules', '用户规则'),
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+            tone: 'ci-tone-accent',
+            label: tBiHtml('User Rules', '用户规则'),
         },
         mcp_servers: {
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
-            color: '#2dd4bf',
-            label: tBi('MCP Servers', 'MCP 服务'),
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
+            tone: 'ci-tone-cache',
+            label: tBiHtml('MCP Servers', 'MCP 服务'),
         },
         workflows: {
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
-            color: '#f472b6',
-            label: tBi('Workflows', '工作流'),
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+            tone: 'ci-tone-thinking',
+            label: tBiHtml('Workflows', '工作流'),
         },
         artifacts: {
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
-            color: '#a78bfa',
-            label: tBi('Artifacts', '产物'),
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+            tone: 'ci-tone-thinking',
+            label: tBiHtml('Artifacts', '产物'),
         },
         ephemeral: {
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>',
-            color: '#94a3b8',
-            label: tBi('Ephemeral', '临时'),
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>',
+            tone: 'ci-tone-neutral',
+            label: tBiHtml('Ephemeral', '临时'),
         },
         system_preamble: {
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
-            color: '#94a3b8',
-            label: tBi('System Preamble', '系统前导'),
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+            tone: 'ci-tone-neutral',
+            label: tBiHtml('System Preamble', '系统前导'),
         },
     };
 
-    // ── Build context item cards (existing) ──
     const contextCards = items.map((item, idx) => {
         const conf = typeConfig[item.type] || typeConfig.system_preamble;
         let bodyHtml = esc(item.fullText);
 
-        const rawContentStyle = `white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family); font-size: 0.9em; opacity: 0.9; line-height: 1.5;`;
-
         if (item.type === 'user_rules') {
-            const rawHeader = tBi('ORIGINAL USER PROMPT', '原始用户提示词');
-            bodyHtml = `<div style="margin-bottom: 10px; border-bottom: 1px dashed var(--ci-color); padding-bottom: 6px; font-weight: 600; opacity: 0.8; font-size: 0.85em; letter-spacing: 0.5px;">${rawHeader}</div><div style="${rawContentStyle}">${bodyHtml}</div>`;
+            const rawHeader = tBiHtml('Original User Prompt', '原始用户提示词');
+            bodyHtml = `<div class="ci-raw-header">${rawHeader}</div><div class="ci-raw-content">${bodyHtml}</div>`;
         } else {
-            bodyHtml = `<div style="${rawContentStyle}">${bodyHtml}</div>`;
+            bodyHtml = `<div class="ci-raw-content">${bodyHtml}</div>`;
         }
 
         const cpBadge = item.checkpointNumber !== undefined
-            ? `<span class="cp-card-num" style="color:var(--ci-color)">#${item.checkpointNumber}</span>`
+            ? `<span class="cp-card-num ${conf.tone}">#${item.checkpointNumber}</span>`
             : '';
-        const iconHtml = `<span class="ci-icon" style="color:var(--ci-color);width:14px;height:14px;display:inline-flex;flex-shrink:0">${conf.icon}</span>`;
+        const iconHtml = `<span class="ci-icon ${conf.tone}">${conf.icon}</span>`;
 
-        return `<details class="cp-card" id="ciCard${idx}" data-ci-type="${item.type}" style="--ci-color:${conf.color}">
+        return `<details class="cp-card" id="ciCard${idx}" data-ci-type="${item.type}">
             <summary class="cp-card-header">
                 ${iconHtml}
                 ${cpBadge}
-                <span style="font-weight:600;color:var(--ci-color)">${conf.label}</span>
-                ${(item.stepIndex >= 0 && item.stepIndex < 100000) ? `<span class="cp-card-chip cp-card-chip-step">step ${item.stepIndex.toLocaleString()}</span>` : ''}
-                ${item.tokens > 0 ? `<span class="cp-card-chip cp-card-chip-tok">${fmt(item.tokens)} tok</span>` : ''}
+                <span class="ci-title-label">${conf.label}</span>
+                ${(item.stepIndex >= 0 && item.stepIndex < 100000) ? `<span class="cp-card-chip cp-card-chip-step">${tBiHtml(`Step ${formatNumber(item.stepIndex)}`, `步骤 ${formatNumber(item.stepIndex)}`)}</span>` : ''}
+                ${item.tokens > 0 ? `<span class="cp-card-chip cp-card-chip-tok">${fmt(item.tokens)} tokens</span>` : ''}
             </summary>
             <div class="cp-card-body">${bodyHtml}</div>
         </details>`;
     }).join('');
 
-    // ── Build Model DNA cards (new) ──
     const dnaCards: string[] = [];
-    const dnaIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20M7 4l10 16M17 4L7 20"/></svg>';
-    const promptIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
-    const configIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>';
+    const promptIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
+    const configIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>';
 
-    // Per-model iteration for DNA cards — only show models from the current conversation (primary)
     const primaryModels = new Set<string>();
     for (const call of primary.calls) {
         const mn = normalizeModelDisplayName(call.modelDisplay || call.model);
@@ -3373,25 +4123,20 @@ function buildContextIntelViewer(s: GMSummary): string {
 
     for (const [modelName, ms] of Object.entries(s.modelBreakdown)) {
         if (ms.callCount <= 0) { continue; }
-        // Skip models not used in the current conversation
         if (!primaryModels.has(modelName)) { continue; }
 
         // 1. System Prompt Structure card
         if (ms.promptSectionTitles && ms.promptSectionTitles.length > 0) {
-            const sectionChips = ms.promptSectionTitles.map((title, i) => {
-                const sectionColors = ['#60a5fa', '#4ade80', '#fbbf24', '#f472b6', '#2dd4bf', '#a78bfa', '#06b6d4', '#f59e0b', '#ef4444', '#94a3b8', '#8b5cf6', '#14b8a6', '#e879f9'];
-                const col = sectionColors[i % sectionColors.length];
-                return `<span class="ci-dna-chip" style="border-color:${col}44;color:${col}">${esc(title)}</span>`;
-            }).join('');
-            dnaCards.push(`<details class="cp-card" id="ciDna-sp-${esc(modelName)}" data-ci-type="dna_prompt" style="--ci-color:#60a5fa">
+            const sectionChips = ms.promptSectionTitles.map(title => `<span class="ci-dna-chip">${esc(title)}</span>`).join('');
+            dnaCards.push(`<details class="cp-card" id="ciDna-sp-${esc(modelName)}" data-ci-type="dna_prompt">
                 <summary class="cp-card-header">
-                    <span class="ci-icon" style="color:var(--ci-color);width:14px;height:14px;display:inline-flex;flex-shrink:0">${promptIcon}</span>
-                    <span style="font-weight:600;color:var(--ci-color)">${tBi('System Prompt Structure', '系统提示词结构')}</span>
-                    <span class="cp-card-chip cp-card-chip-tok">${ms.promptSectionTitles.length} ${tBi('sections', '区段')}</span>
-                    ${ms.toolCount > 0 ? `<span class="cp-card-chip cp-card-chip-step">${ms.toolCount} ${tBi('tools', '工具')}</span>` : ''}
+                    <span class="ci-icon ci-tone-accent">${promptIcon}</span>
+                    <span class="ci-title-label">${tBiHtml('System Prompt Structure', '系统提示词结构')}</span>
+                    <span class="cp-card-chip cp-card-chip-tok"><span>${ms.promptSectionTitles.length} ${tBiHtml(ms.promptSectionTitles.length === 1 ? 'section' : 'sections', '区段')}</span></span>
+                    ${ms.toolCount > 0 ? `<span class="cp-card-chip cp-card-chip-step"><span>${ms.toolCount} ${tBiHtml(ms.toolCount === 1 ? 'tool' : 'tools', '工具')}</span></span>` : ''}
                 </summary>
-                <div class="cp-card-body" style="white-space:normal">
-                    <div style="margin-bottom:8px;font-size:0.88em;color:var(--color-text-dim)">${esc(modelName)}</div>
+                <div class="cp-card-body is-structured">
+                    <div class="ci-model-sub">${esc(modelName)}</div>
                     <div class="ci-dna-chips">${sectionChips}</div>
                 </div>
             </details>`);
@@ -3400,7 +4145,6 @@ function buildContextIntelViewer(s: GMSummary): string {
         // 2. Completion Config card (with context window capacity)
         if (ms.completionConfig) {
             const cc = ms.completionConfig;
-            // Find context data from current conversation only (not cross-session)
             let latestContextUsed = 0;
             let latestCallTime = '';
             let maxContextSeen = 0;
@@ -3417,55 +4161,49 @@ function buildContextIntelViewer(s: GMSummary): string {
                 }
             }
 
-            // Context capacity estimation:
-            // maxTokens from completionConfig is the OUTPUT limit (e.g. 16384)
-            // The context window threshold is not directly available, but we can show maxContextSeen
-            // and a rough heuristic: typical thresholds are 128K, 160K, 200K
             const configRows: string[] = [];
-            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('temperature', '温度')}</span><span class="ci-cfg-val">${cc.temperature}</span></div>`);
+            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('temperature', '温度')}</span><span class="ci-cfg-val">${cc.temperature}</span></div>`);
             if (cc.firstTemperature !== cc.temperature) {
-                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('firstTemperature', '初始温度')}</span><span class="ci-cfg-val">${cc.firstTemperature}</span></div>`);
+                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('firstTemperature', '初始温度')}</span><span class="ci-cfg-val">${cc.firstTemperature}</span></div>`);
             }
-            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('topK', 'Top K')}</span><span class="ci-cfg-val">${cc.topK}</span></div>`);
+            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('topK', 'Top K')}</span><span class="ci-cfg-val">${cc.topK}</span></div>`);
             if (cc.topP !== 1) {
-                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('topP', 'Top P')}</span><span class="ci-cfg-val">${cc.topP}</span></div>`);
+                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('topP', 'Top P')}</span><span class="ci-cfg-val">${cc.topP}</span></div>`);
             }
-            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('maxOutputTokens', '最大输出 token')}</span><span class="ci-cfg-val">${fmt(cc.maxTokens)}</span></div>`);
+            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('maxOutputTokens', '最大输出 tokens')}</span><span class="ci-cfg-val">${fmt(cc.maxTokens)}</span></div>`);
             if (cc.stopPatternCount > 0) {
-                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBi('stopPatterns', '停止词')}</span><span class="ci-cfg-val">${cc.stopPatternCount}</span></div>`);
+                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('stopPatterns', '停止词')}</span><span class="ci-cfg-val">${cc.stopPatternCount}</span></div>`);
             }
 
-            // Context window capacity bar
             let capacityHtml = '';
-            // Use the actual truncation threshold from plannerConfig (extracted from GM data)
             const contextCap = ms.contextWindowCapacity || 0;
             if (contextCap > 0 || maxContextSeen > 0) {
                 const cap = contextCap > 0 ? contextCap : maxContextSeen;
                 const usagePct = cap > 0 ? Math.min(100, Math.round(latestContextUsed / cap * 100)) : 0;
-                const barColor = usagePct > 85 ? '#ef4444' : usagePct > 65 ? '#f59e0b' : '#4ade80';
+                const barColor = usagePct >= 80 ? 'var(--ed-danger-fill)' : usagePct >= 65 ? 'var(--ed-warn-fill)' : 'var(--ed-accent)';
                 const capLabel = contextCap > 0 ? fmt(contextCap) : `~${fmt(cap)}`;
                 capacityHtml = `
-                    <div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--color-divider)">
-                        <div class="ci-cfg-row" style="margin-bottom:4px">
-                            <span class="ci-cfg-label" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')}</span>
+                    <div class="ci-cap-box">
+                        <div class="ci-cfg-row">
+                            <span class="ci-cfg-label" title="${esc(estimatedContextDescription())}">${tBiHtml('Estimated context', '估算上下文')}</span>
                             <span class="ci-cfg-val">${fmt(latestContextUsed)} / ${capLabel}</span>
                         </div>
-                        <div style="height:6px;background:var(--color-surface-hover);border-radius:3px;overflow:hidden">
-                            <div style="height:100%;width:${usagePct}%;background:${barColor};border-radius:3px;transition:width 0.3s"></div>
+                        <div class="ci-cap-track">
+                            <div class="ci-cap-fill" style="width:${usagePct}%;background:${barColor}"></div>
                         </div>
-                        <div style="font-size:0.78em;color:var(--color-text-dim);margin-top:3px">${usagePct}% ${tBi('estimated usage', '估算用量')} · ${tBi('estimated peak', '估算峰值')} ${fmt(maxContextSeen)}</div>
+                        <div class="ci-cap-meta">${usagePct}% ${tBiHtml('estimated usage', '估算用量')} · ${tBiHtml('estimated peak', '估算峰值')} ${fmt(maxContextSeen)}</div>
                     </div>`;
             }
 
-            dnaCards.push(`<details class="cp-card" id="ciDna-cc-${esc(modelName)}" data-ci-type="dna_config" style="--ci-color:#f59e0b">
+            dnaCards.push(`<details class="cp-card" id="ciDna-cc-${esc(modelName)}" data-ci-type="dna_config">
                 <summary class="cp-card-header">
-                    <span class="ci-icon" style="color:var(--ci-color);width:14px;height:14px;display:inline-flex;flex-shrink:0">${configIcon}</span>
-                    <span style="font-weight:600;color:var(--ci-color)">${tBi('Generation Config', '生成配置')}</span>
+                    <span class="ci-icon ci-tone-warn">${configIcon}</span>
+                    <span class="ci-title-label">${tBiHtml('Generation Config', '生成配置')}</span>
                     <span class="cp-card-chip cp-card-chip-tok">T=${cc.temperature}</span>
                     ${latestContextUsed > 0 ? `<span class="cp-card-chip cp-card-chip-step" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')} ${fmt(latestContextUsed)}</span>` : ''}
                 </summary>
-                <div class="cp-card-body" style="white-space:normal">
-                    <div style="margin-bottom:8px;font-size:0.88em;color:var(--color-text-dim)">${esc(modelName)}</div>
+                <div class="cp-card-body is-structured">
+                    <div class="ci-model-sub">${esc(modelName)}</div>
                     <div class="ci-cfg-grid">${configRows.join('')}</div>
                     ${capacityHtml}
                 </div>
@@ -3477,60 +4215,64 @@ function buildContextIntelViewer(s: GMSummary): string {
     if (hasTokenBreakdown) {
         const groups = s.latestTokenBreakdown;
         const total = groups.reduce((sum, g) => sum + g.tokens, 0);
-        const breakdownColors = ['#60a5fa', '#4ade80', '#fbbf24', '#f472b6', '#2dd4bf', '#a78bfa'];
+        const breakdownVars = [
+            'var(--ed-chart-output)',
+            'var(--ed-chart-cache)',
+            'var(--ed-chart-thinking)',
+            'var(--ed-chart-input)',
+            'var(--ed-warn-fill)',
+            'var(--ed-good-fill)',
+        ];
         const breakdownRows = groups.map((g, i) => {
             const pct = total > 0 ? Math.max(1, Math.round(g.tokens / total * 100)) : 0;
-            const col = breakdownColors[i % breakdownColors.length];
+            const col = breakdownVars[i % breakdownVars.length];
             const gName = g.name || g.type.replace('TOKEN_TYPE_', '').replace(/_/g, ' ');
             let childHtml = '';
             if (g.children.length > 0) {
-                const chips = g.children.map(ch => {
-                    return `<span class="ci-dna-chip" style="border-color:${col}44;color:${col};font-size:0.82em">${esc(ch.name)} <b>${fmt(ch.tokens)}</b></span>`;
-                }).join('');
-                childHtml = `<div class="ci-dna-chips" style="margin-top:3px;padding-left:16px">${chips}</div>`;
+                const chips = g.children.map(ch =>
+                    `<span class="ci-dna-chip">${esc(ch.name)} <b>${fmt(ch.tokens)}</b></span>`,
+                ).join('');
+                childHtml = `<div class="ci-dna-chips ci-bd-children">${chips}</div>`;
             }
-            return `<div style="margin-bottom:6px">
+            return `<div class="ci-bd-item">
                 <div class="ci-cfg-row">
-                    <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:${col};flex-shrink:0"></span><span class="ci-cfg-label" style="min-width:0">${esc(gName)}</span></span>
+                    <span class="ci-bd-label-wrap"><span class="ci-bd-dot" style="background:${col}"></span><span class="ci-cfg-label">${esc(gName)}</span></span>
                     <span class="ci-cfg-val">${fmt(g.tokens)} (${pct}%)</span>
                 </div>
-                <div style="height:4px;background:var(--color-surface-hover);border-radius:2px;overflow:hidden;margin-top:2px">
-                    <div style="height:100%;width:${pct}%;background:${col};border-radius:2px"></div>
+                <div class="ci-bd-track">
+                    <div class="ci-bd-fill" style="width:${pct}%;background:${col}"></div>
                 </div>
                 ${childHtml}
             </div>`;
         }).join('');
-        const breakdownIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 12V2"/><path d="M12 12h10"/></svg>';
+        const breakdownIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 12V2"/><path d="M12 12h10"/></svg>';
 
-        dnaCards.push(`<details class="cp-card" id="ciDna-tb" data-ci-type="dna_tokens" style="--ci-color:#f97316">
+        dnaCards.push(`<details class="cp-card" id="ciDna-tb" data-ci-type="dna_tokens">
             <summary class="cp-card-header">
-                <span class="ci-icon" style="color:var(--ci-color);width:14px;height:14px;display:inline-flex;flex-shrink:0">${breakdownIcon}</span>
-                <span style="font-weight:600;color:var(--ci-color)">${tBi('Token Composition', 'Token 组成')}</span>
-                <span class="cp-card-chip cp-card-chip-tok">${fmt(total)} total</span>
+                <span class="ci-icon ci-tone-accent">${breakdownIcon}</span>
+                <span class="ci-title-label">${tBiHtml('Token Composition', 'Token 组成')}</span>
+                <span class="cp-card-chip cp-card-chip-tok"><span>${fmt(total)} ${tBiHtml('total', '总计')}</span></span>
             </summary>
-            <div class="cp-card-body" style="white-space:normal">
-                <div style="font-size:0.82em;color:var(--color-text-dim);margin-bottom:8px">${tBi('Latest estimated context token distribution', '最新估算上下文 Token 分布')}</div>
+            <div class="cp-card-body is-structured">
+                <div class="ci-model-sub">${tBiHtml('Latest estimated context token distribution', '最新估算上下文 Token 分布')}</div>
                 ${breakdownRows}
             </div>
         </details>`);
     }
 
-    // Combine all cards
     const allCards = contextCards + dnaCards.join('');
 
-    // Empty state: show hint when no cards are available (e.g. after reinstall before first AI response)
     if (!allCards) {
-        const emptyIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>`;
+        const emptyIcon = `<svg class="act-icon act-icon-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>`;
         return `<details class="ci-section" id="ciSection">
-        <summary class="ci-section-header">${emptyIcon}${tBi('Context Intelligence', '上下文情报')}</summary>
-        <div class="cp-viewer"><div style="text-align:center;padding:var(--space-4);color:var(--color-text-dim);font-size:0.85em">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:28px;height:28px;margin:0 auto 8px;display:block;opacity:0.4"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
-            ${tBi('Waiting for AI response — context data will populate automatically after the first model call in this session.', '等待 AI 回复中 — 上下文数据将在本次会话的首次模型调用后自动填充。')}
+        <summary class="ci-section-header">${emptyIcon}<span>${tBiHtml('Context Intelligence', '上下文情报')}</span></summary>
+        <div class="cp-viewer"><div class="ci-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            ${tBiHtml('Waiting for AI response — context data will populate automatically after the first model call in this session.', '等待 AI 回复中 — 上下文数据将在本次会话的首次模型调用后自动填充。')}
         </div></div>
         </details>`;
     }
 
-    // Count by type for badge
     const typeCounts = new Map<string, number>();
     for (const item of items) {
         typeCounts.set(item.type, (typeCounts.get(item.type) || 0) + 1);
@@ -3538,18 +4280,16 @@ function buildContextIntelViewer(s: GMSummary): string {
     const badgeParts: string[] = [];
     for (const [type, count] of typeCounts) {
         const conf = typeConfig[type] || typeConfig.system_preamble;
-        badgeParts.push(`<span class="act-badge ci-badge" data-ci-type="${type}" style="background:${conf.color}22;color:${conf.color};border:1px solid ${conf.color}44">${conf.label}${count > 1 ? ' ' + count : ''}</span>`);
+        badgeParts.push(`<span class="act-badge ci-badge ${conf.tone}" data-ci-type="${type}"><span>${conf.label}${count > 1 ? ` · ${count}` : ''}</span></span>`);
     }
-    // Add DNA badges
     if (dnaCards.length > 0) {
-        const dnaColor = '#f59e0b';
-        badgeParts.push(`<span class="act-badge" style="background:${dnaColor}22;color:${dnaColor};border:1px solid ${dnaColor}44">${tBi('Model DNA', '模型 DNA')}${dnaCards.length > 1 ? ' ' + dnaCards.length : ''}</span>`);
+        badgeParts.push(`<span class="act-badge ci-badge ci-tone-accent"><span>${tBiHtml('Model DNA', '模型 DNA')}${dnaCards.length > 1 ? ` · ${dnaCards.length}` : ''}</span></span>`);
     }
 
-    const titleIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>`;
+    const titleIcon = `<svg class="act-icon act-icon-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>`;
 
     return `<details class="ci-section" id="ciSection">
-    <summary class="ci-section-header">${titleIcon}${tBi('Context Intelligence', '上下文情报')} <span class="ci-badges">${badgeParts.join(' ')}</span></summary>
+    <summary class="ci-section-header">${titleIcon}<span>${tBiHtml('Context Intelligence', '上下文情报')}</span> <span class="ci-badges">${badgeParts.join(' ')}</span></summary>
     <div class="cp-viewer">${allCards}</div>
     </details>`;
 }
@@ -3564,6 +4304,18 @@ function getPlanClass(planName: string): string {
     return 'acct-plan-free';
 }
 
+const CREDIT_LABEL_PAIRS: Record<string, readonly [string, string]> = {
+    GOOGLE_ONE_AI: ['Google AI credits', 'Google AI 积分'],
+    GOOGLE_AI: ['Google AI credits', 'Google AI 积分'],
+    GOOGLE_AI_STUDIO: ['Google AI Studio credits', 'Google AI Studio 积分'],
+};
+
+function formatCreditLabelHtml(creditType: string): string {
+    const key = creditType.trim().toUpperCase().replace(/^CREDIT_TYPE_/, '');
+    const mapped = Object.hasOwn(CREDIT_LABEL_PAIRS, key) ? CREDIT_LABEL_PAIRS[key] : undefined;
+    if (mapped) { return tBiHtml(mapped[0], mapped[1]); }
+    return esc(formatCreditTypeLabel(creditType));
+}
 
 function buildTodayLedgerPanel(
     buckets: LedgerAccountBucket[],
@@ -3597,7 +4349,7 @@ function buildTodayLedgerPanel(
         const d = new Date(iso);
         if (isNaN(d.getTime())) { return ''; }
         const diffMs = d.getTime() - Date.now();
-        if (diffMs <= 0) { return tBi('expired', '\u5df2\u8fc7\u671f'); }
+        if (diffMs <= 0) { return tBiHtml('expired', '\u5df2\u8fc7\u671f'); }
         const h = Math.floor(diffMs / 3600000);
         const m = Math.floor((diffMs % 3600000) / 60000);
         return h > 0 ? `${h}h${m}m` : `${m}m`;
@@ -3615,7 +4367,6 @@ function buildTodayLedgerPanel(
             ? '<span class="ledger-acct-dot ledger-acct-active"></span>'
             : '<span class="ledger-acct-dot ledger-acct-cached"></span>';
 
-        // Build model-reset lookup for THIS account
         const resetPools = snap?.resetPools || [];
         const modelResetMap = new Map<string, string>();
         for (const pool of resetPools) {
@@ -3647,12 +4398,12 @@ function buildTodayLedgerPanel(
                 ${emailShort ? `<span class="ledger-acct-email">${esc(emailShort)}</span>` : ''}
             </div>
             <div class="ledger-acct-stats">
-                <span class="pending-stat">${tBi('Calls', '\u8c03\u7528')} <b>${bucket.totalCalls}</b></span>
-                <span class="pending-stat">${tBi('Input', '\u8f93\u5165')} <b>${formatK(bucket.totalInputTokens)}</b></span>
-                <span class="pending-stat">${tBi('Output', '\u8f93\u51fa')} <b>${formatK(bucket.totalOutputTokens)}</b></span>
-                ${bucket.totalCacheRead > 0 ? `<span class="pending-stat">${tBi('Cache', '\u7f13\u5b58')} <b>${formatK(bucket.totalCacheRead)}</b></span>` : ''}
-                ${bucket.totalCredits > 0 ? `<span class="pending-stat">${tBi('Credits', '\u79ef\u5206')} <b>${bucket.totalCredits}</b></span>` : ''}
-                ${bucketCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBi('Cost', '\u8d39\u7528')} <b>$${bucketCost < 0.01 ? bucketCost.toFixed(4) : bucketCost < 1 ? bucketCost.toFixed(3) : bucketCost.toFixed(2)}</b></span>` : ''}
+                <span class="pending-stat">${tBiHtml('Calls', '\u8c03\u7528')} <b>${bucket.totalCalls}</b></span>
+                <span class="pending-stat">${tBiHtml('Input', '\u8f93\u5165')} <b>${formatK(bucket.totalInputTokens)}</b></span>
+                <span class="pending-stat">${tBiHtml('Output', '\u8f93\u51fa')} <b>${formatK(bucket.totalOutputTokens)}</b></span>
+                ${bucket.totalCacheRead > 0 ? `<span class="pending-stat">${tBiHtml('Cache', '\u7f13\u5b58')} <b>${formatK(bucket.totalCacheRead)}</b></span>` : ''}
+                ${bucket.totalCredits > 0 ? `<span class="pending-stat">${tBiHtml('Credits', '\u79ef\u5206')} <b>${bucket.totalCredits}</b></span>` : ''}
+                ${bucketCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBiHtml('Cost', '\u8d39\u7528')} <b>$${bucketCost < 0.01 ? bucketCost.toFixed(4) : bucketCost < 1 ? bucketCost.toFixed(3) : bucketCost.toFixed(2)}</b></span>` : ''}
             </div>
             <div class="pending-archive-models">${modelChips}</div>
         </div>`;
@@ -3661,22 +4412,22 @@ function buildTodayLedgerPanel(
     const ledgerIcon = `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1 2.828c.885-.37 2.154-.769 3.388-.893 1.33-.134 2.458.063 3.112.752v9.746c-.935-.53-2.12-.603-3.213-.493-1.18.12-2.37.461-3.287.811V2.828zm7.5-.141c.654-.689 1.782-.886 3.112-.752 1.234.124 2.503.523 3.388.893v9.923c-.918-.35-2.107-.692-3.287-.81-1.094-.111-2.278-.039-3.213.492zM8 1.783C7.015.936 5.587.81 4.287.94c-1.514.153-3.042.672-3.994 1.105A.5.5 0 0 0 0 2.5v11a.5.5 0 0 0 .707.455c.882-.4 2.303-.881 3.68-1.02 1.409-.142 2.59.087 3.223.877a.5.5 0 0 0 .78 0c.633-.79 1.814-1.019 3.222-.877 1.378.139 2.8.62 3.681 1.02A.5.5 0 0 0 16 13.5v-11a.5.5 0 0 0-.293-.455c-.952-.433-2.48-.952-3.994-1.105C10.413.809 8.985.936 8 1.783"/></svg>`;
 
     const summaryStats = activeBuckets.length > 1 ? `<div class="pending-archive-stats">
-        <span class="pending-stat">${tBi('Total', '\u5408\u8ba1')} <b>${totalCalls}</b></span>
-        <span class="pending-stat">${tBi('Input', '\u8f93\u5165')} <b>${formatK(totalIn)}</b></span>
-        <span class="pending-stat">${tBi('Output', '\u8f93\u51fa')} <b>${formatK(totalOut)}</b></span>
-        ${totalCache > 0 ? `<span class="pending-stat">${tBi('Cache', '\u7f13\u5b58')} <b>${formatK(totalCache)}</b></span>` : ''}
-        ${totalCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBi('Cost', '\u8d39\u7528')} <b>$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost < 1 ? totalCost.toFixed(3) : totalCost.toFixed(2)}</b></span>` : ''}
+        <span class="pending-stat">${tBiHtml('Total', '\u5408\u8ba1')} <b>${totalCalls}</b></span>
+        <span class="pending-stat">${tBiHtml('Input', '\u8f93\u5165')} <b>${formatK(totalIn)}</b></span>
+        <span class="pending-stat">${tBiHtml('Output', '\u8f93\u51fa')} <b>${formatK(totalOut)}</b></span>
+        ${totalCache > 0 ? `<span class="pending-stat">${tBiHtml('Cache', '\u7f13\u5b58')} <b>${formatK(totalCache)}</b></span>` : ''}
+        ${totalCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBiHtml('Cost', '\u8d39\u7528')} <b>$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost < 1 ? totalCost.toFixed(3) : totalCost.toFixed(2)}</b></span>` : ''}
     </div>` : '';
 
     return `<div class="pending-archive-panel today-ledger-panel">
         <div class="pending-archive-header today-ledger-header">
             ${ledgerIcon}
-            ${tBi("Today's Ledger", '\u4eca\u65e5\u7d2f\u8ba1')}
-            <span class="pending-archive-count">${activeBuckets.length} ${tBi('account(s)', '\u4e2a\u8d26\u53f7')}</span>
+            <span>${tBiHtml("Today's Ledger", '\u4eca\u65e5\u7d2f\u8ba1')}</span>
+            <span class="pending-archive-count">${activeBuckets.length} ${tBiHtml(activeBuckets.length === 1 ? 'account' : 'accounts', '\u4e2a\u8d26\u53f7')}</span>
         </div>
         ${summaryStats}
         <div class="ledger-acct-cards">${accountCards}</div>
-        <div class="pending-archive-note">${tBi(
+        <div class="pending-archive-note">${tBiHtml(
         'Real-time incremental recording. Data is preserved even if the IDE clears conversation history.',
         '\u5b9e\u65f6\u589e\u91cf\u8bb0\u5f55\u3002\u5373\u4f7f IDE \u6e05\u9664\u5bf9\u8bdd\u5386\u53f2\uff0c\u6570\u636e\u4e5f\u4e0d\u4f1a\u4e22\u5931\u3002',
     )}</div>
@@ -3710,28 +4461,28 @@ function buildLedgerSettledPanel(entries: LedgerSettledEntry[]): string {
     return `<div class="pending-archive-panel settled-panel">
         <div class="pending-archive-header settled-header">
             ${settledIcon}
-            ${tBi('Settled (Quota Reset)', '已结算 (额度重置)')}
-            <span class="pending-archive-count">${entries.length} ${tBi('cycle(s)', '个周期')}</span>
+            <span>${tBiHtml('Settled (Quota Reset)', '已结算（配额重置）')}</span>
+            <span class="pending-archive-count">${entries.length} ${tBiHtml(entries.length === 1 ? 'cycle' : 'cycles', '个周期')}</span>
         </div>
         <div class="pending-archive-stats">
-            <span class="pending-stat">${tBi('Calls', '调用')} <b>${totalCalls}</b></span>
-            <span class="pending-stat">${tBi('Input', '输入')} <b>${formatK(totalIn)}</b></span>
-            <span class="pending-stat">${tBi('Output', '输出')} <b>${formatK(totalOut)}</b></span>
-            ${totalCache > 0 ? `<span class="pending-stat">${tBi('Cache', '缓存')} <b>${formatK(totalCache)}</b></span>` : ''}
-            ${totalCredits > 0 ? `<span class="pending-stat">${tBi('Credits', '积分')} <b>${totalCredits}</b></span>` : ''}
-            ${totalCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBi('Cost', '费用')} <b>$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost < 1 ? totalCost.toFixed(3) : totalCost.toFixed(2)}</b></span>` : ''}
+            <span class="pending-stat">${tBiHtml('Calls', '调用')} <b>${totalCalls}</b></span>
+            <span class="pending-stat">${tBiHtml('Input', '输入')} <b>${formatK(totalIn)}</b></span>
+            <span class="pending-stat">${tBiHtml('Output', '输出')} <b>${formatK(totalOut)}</b></span>
+            ${totalCache > 0 ? `<span class="pending-stat">${tBiHtml('Cache', '缓存')} <b>${formatK(totalCache)}</b></span>` : ''}
+            ${totalCredits > 0 ? `<span class="pending-stat">${tBiHtml('Credits', '积分')} <b>${totalCredits}</b></span>` : ''}
+            ${totalCost > 0 ? `<span class="pending-stat pending-stat-cost">${tBiHtml('Cost', '费用')} <b>$${totalCost < 0.01 ? totalCost.toFixed(4) : totalCost < 1 ? totalCost.toFixed(3) : totalCost.toFixed(2)}</b></span>` : ''}
         </div>
         <div class="pending-archive-models">${modelChips}</div>
-        <div class="pending-archive-note">${tBi(
+        <div class="pending-archive-note">${tBiHtml(
         'Settled by quota reset. Will be archived to the calendar at midnight.',
-        '已在额度重置后结算，将于午夜归档到日历。',
+        '已在配额重置后结算，将于午夜归档到日历。',
     )}</div>
     </div>`;
 }
 
 /**
  * Detect whether any account has a quota pool that is "Ready" (expired reset time with usage).
- * Used to show a red-dot indicator on the account popover trigger button.
+ * Used to show a ready indicator on the account popover trigger button.
  */
 export function hasAccountReadyPool(snapshots: AccountSnapshot[]): boolean {
     const nowMs = Date.now();
@@ -3747,11 +4498,9 @@ export function hasAccountReadyPool(snapshots: AccountSnapshot[]): boolean {
 
 /**
  * Build the account status panel HTML for the global floating popover.
- * This is the same visual content that was previously embedded in the GM Data tab.
  */
 export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDays: Record<string, number> = {}): string {
     const nowMs = Date.now();
-    // Sort: active first, then by lastSeen desc
     const sorted = [...snapshots].sort((a, b) => {
         if (a.isActive !== b.isActive) { return a.isActive ? -1 : 1; }
         return b.lastSeen.localeCompare(a.lastSeen);
@@ -3760,20 +4509,19 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
     const cards = sorted.map(snap => {
         const indicatorClass = snap.isActive ? 'acct-indicator-active' : 'acct-indicator-cached';
         const planClass = getPlanClass(snap.planName || snap.tierName);
-        const planLabel = snap.tierName || snap.planName || tBi('Unknown', '未知');
+        const planLabelHtml = snap.tierName || snap.planName
+            ? esc(snap.tierName || snap.planName)
+            : tBiHtml('Unknown', '未知');
 
-        // Build per-pool reset rows
         const pools = snap.resetPools || [];
         let resetHtml = '';
 
         if (pools.length > 0) {
-            // Deduplicate pools that have the same countdown (within 1 minute)
             const poolRows = pools.map(pool => {
                 const resetDate = parseResetDate(pool.resetTime);
                 if (!resetDate) { return ''; }
                 const diffMs = resetDate.getTime() - nowMs;
 
-                // Condense model labels: show up to 3, then "+N"
                 const maxShow = 3;
                 const labels = pool.modelLabels;
                 const shown = labels.slice(0, maxShow);
@@ -3783,25 +4531,27 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
                 ).join('');
                 const extraChip = extra > 0 ? `<span class="acct-pool-more" title="${esc(labels.slice(maxShow).join(', '))}">+${extra}</span>` : '';
 
-                // Build compact quota bar — only shown for active pools
+                // Compact quota meter — semantic thresholds (≥50% healthy, 21–49% warn, ≤20% critical); unknown stays empty
                 const buildQuotaBar = (pct: number | undefined): string => {
-                    const p = pct ?? 100;
-                    const colorClass = p > 40 ? 'acct-quota-ok' : p > 20 ? 'acct-quota-warn' : 'acct-quota-danger';
-                    return `<div class="acct-quota-bar" title="${p}% ${tBi('remaining', '剩余')}"><div class="acct-quota-fill ${colorClass}" style="width:${p}%"></div></div>`;
+                    if (pct === undefined || !Number.isFinite(pct)) {
+                        return `<div class="acct-quota-bar" title="${esc(tBi('Quota unknown', '配额未知'))}"></div>`;
+                    }
+                    const p = Math.max(0, Math.min(100, pct));
+                    const colorClass = p >= 50 ? 'acct-quota-ok' : p > 20 ? 'acct-quota-warn' : 'acct-quota-danger';
+                    return `<div class="acct-quota-bar" title="${esc(`${p}% ${tBi('remaining', '剩余')}`)}"><div class="acct-quota-fill ${colorClass}" style="width:${p}%"></div></div>`;
                 };
 
-                // Pool has no usage — show "未使用" instead of fake countdown
                 if (pool.hasUsage === false) {
                     return `<div class="acct-pool-row acct-pool-idle">
                         <div class="acct-pool-models">${modelChips}${extraChip}</div>
-                        <span class="acct-reset-countdown acct-reset-idle">${tBi('Idle', '未使用')}</span>
+                        <span class="acct-reset-countdown acct-reset-idle">${tBiHtml('Idle', '未使用')}</span>
                     </div>`;
                 }
 
                 if (diffMs <= 0) {
                     return `<div class="acct-pool-row">
                         <div class="acct-pool-models">${modelChips}${extraChip}</div>
-                        <span class="acct-reset-countdown acct-reset-countdown-expired">${tBi('Ready', '已就绪')}</span>
+                        <span class="acct-reset-countdown acct-reset-countdown-expired">${tBiHtml('Ready', '已就绪')}</span>
                     </div>`;
                 }
 
@@ -3814,43 +4564,49 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
                 </div>`;
             }).filter(Boolean).join('');
 
-
-
             resetHtml = `<div class="acct-pools">${poolRows}</div>`;
         } else if (!snap.isActive) {
             resetHtml = `<div class="acct-reset">
-                <span class="acct-tag-cached">${tBi('cached', '已缓存')}</span>
+                <span class="acct-tag-cached">${tBiHtml('Cached', '已缓存')}</span>
             </div>`;
         }
 
         const statusTag = snap.isActive
-            ? `<span class="acct-tag-active">${tBi('active', '在线')}</span>`
-            : `<span class="acct-tag-cached">${tBi('cached', '已缓存')}</span>`;
+            ? `<span class="acct-tag-active">${tBiHtml('Active', '在线')}</span>`
+            : `<span class="acct-tag-cached">${tBiHtml('Cached', '已缓存')}</span>`;
 
-        // Delete link for cached accounts — inline red text after status tag
         const deleteLink = !snap.isActive
-            ? `<button class="acct-delete-link acct-delete-btn" data-email="${esc(snap.email)}" title="${tBi('Remove cached account', '移除缓存账号')}">${tBi('Remove', '移除')}</button>`
+            ? `<button type="button" class="acct-delete-link acct-delete-btn" data-email="${esc(snap.email)}" title="${esc(tBi('Remove cached account', '移除缓存账号'))}">${tBiHtml('Remove', '移除')}</button>`
             : '';
 
-        // Build credits chips (e.g. "GOOGLE AI 18,590")
-        const creditsChips = (snap.credits && snap.credits.length > 0)
-            ? snap.credits.map(c => {
-                const label = c.creditType.replace('CREDIT_TYPE_', '').replace(/_/g, ' ');
-                return `<span class="acct-credit-chip">${esc(label)} <b>${c.creditAmount.toLocaleString()}</b></span>`;
-            }).join('')
-            : '';
+        // Deduplicate & localize AI credits via currentAICredits(); never fabricate 0 for unknown balances
+        const dedupedCredits = (snap.credits && snap.credits.length > 0)
+            ? currentAICredits(snap.credits.map(c => ({
+                creditType: c.creditType,
+                creditAmount: c.creditAmount,
+                minimumCreditAmountForUsage: 0,
+            })))
+            : [];
+        const creditsChips = dedupedCredits.map(c => {
+            const labelHtml = formatCreditLabelHtml(c.creditType);
+            const valueHtml = c.creditAmount !== null
+                ? `<b>${formatNumber(c.creditAmount)}</b>`
+                : `<span class="acct-credit-unknown">${tBiHtml('Not reported', '未上报')}</span>`;
+            return `<span class="acct-credit-chip"><span>${labelHtml}</span> ${valueHtml}</span>`;
+        }).join('');
         const creditsRow = creditsChips
             ? `<div class="acct-credits">${creditsChips}</div>`
             : '';
+
         // Expiry countdown chip (only if this account has billingDay configured)
         const billingDay = billingDays[snap.email] ?? 0;
         let expiryChip = '';
         if (billingDay >= 1 && billingDay <= 31) {
-            const daysLeft = getDaysUntilBillingDay(billingDay) ?? 0;
+            const daysLeft = getDaysUntilBillingDay(billingDay);
             if (daysLeft === 0) {
-                expiryChip = `<span class="acct-credit-chip acct-expiry-chip" style="background:rgba(239,68,68,0.15);color:#f87171">${tBi('Expires today', '今日到期')}</span>`;
-            } else {
-                expiryChip = `<span class="acct-credit-chip acct-expiry-chip">${daysLeft}${tBi('d until expiry', '天后到期')}</span>`;
+                expiryChip = `<span class="acct-credit-chip acct-expiry-chip is-today"><span>${tBiHtml('Expires today', '今日到期')}</span></span>`;
+            } else if (daysLeft !== null) {
+                expiryChip = `<span class="acct-credit-chip acct-expiry-chip"><span>${tBiHtml(`${daysLeft}d until expiry`, `${daysLeft} 天后到期`)}</span></span>`;
             }
         }
         const expiryRow = expiryChip ? `<div class="acct-credits">${expiryChip}</div>` : '';
@@ -3860,7 +4616,7 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
             <div class="acct-identity">
                 <span class="acct-name">${esc(snap.name || '—')} ${statusTag}${deleteLink ? ` ${deleteLink}` : ''}</span>
                 <span class="acct-email">${esc(snap.email)}</span>
-                <span class="acct-plan ${planClass}">${esc(planLabel)}</span>
+                <span class="acct-plan ${planClass}">${planLabelHtml}</span>
                 ${creditsRow}
                 ${expiryRow}
             </div>
@@ -3868,13 +4624,12 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
         </div>`;
     }).join('');
 
-    // Header icon: person SVG
     const userIcon = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6m2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0m4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4m-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10s-3.516.68-4.168 1.332c-.678.678-.83 1.418-.832 1.664z"/></svg>`;
 
     return `<div class="acct-panel">
         <div class="acct-panel-header">
             ${userIcon}
-            ${tBi('Account Status', '账号状态')}
+            <span>${tBiHtml('Account Status', '账号状态')}</span>
             <span class="acct-panel-count">(${sorted.length})</span>
         </div>
         ${cards}

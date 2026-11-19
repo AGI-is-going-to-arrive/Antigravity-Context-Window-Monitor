@@ -6,9 +6,8 @@ import { LSInfo } from '../discovery';
 import { rpcCall } from '../rpc-client';
 import { normalizeModelDisplayName } from '../models';
 import { tBi } from '../i18n';
-import type { GMSummary, GMCallEntry, GMModelStats } from '../gm-tracker';
+import type { GMSummary, GMModelStats } from '../gm-tracker';
 import type {
-    StepCategory,
     ModelActivityStats,
     StepEvent,
     ActivityArchive,
@@ -29,11 +28,9 @@ import {
     buildGMEventKey,
     buildRawStepFingerprint,
     buildLegacyStepEventIdentity,
-    isLowSignalPromptSnippet,
     extractNotifyMessage,
     buildGMVirtualPreview,
     sameStepDistribution,
-    mergeCountRecord,
     mergeActivityStats,
     mergeGMStats,
     normalizeStepsByModelRecord,
@@ -846,7 +843,9 @@ export class ActivityTracker {
             'gmInputTokens',
             'gmOutputTokens',
             'gmThinkingTokens',
+            'gmResponseTokens',
             'gmCacheReadTokens',
+            'gmCacheCreationTokens',
             'gmCredits',
             'gmTTFT',
             'gmStreamingDuration',
@@ -1282,7 +1281,9 @@ export class ActivityTracker {
                     gmInputTokens: call.inputTokens,
                     gmOutputTokens: call.outputTokens,
                     gmThinkingTokens: call.thinkingTokens,
+                    gmResponseTokens: call.responseTokens,
                     gmCacheReadTokens: call.cacheReadTokens,
+                    gmCacheCreationTokens: call.cacheCreationTokens,
                     gmCredits: call.credits,
                     gmTTFT: call.ttftSeconds,
                     gmStreamingDuration: call.streamingSeconds,

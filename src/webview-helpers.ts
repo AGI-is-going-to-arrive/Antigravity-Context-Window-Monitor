@@ -2,6 +2,8 @@
 // Shared utility functions used across webview tab builders.
 // Eliminates duplication between webview-panel.ts and activity-panel.ts.
 
+export { tBiHtml } from './i18n';
+
 /** Escape HTML special characters. */
 export function esc(text: string): string {
     return text

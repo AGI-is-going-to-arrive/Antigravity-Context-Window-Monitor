@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { setLanguageToState, type Language } from '../src/i18n';
+import { setLanguageToState, tBiHtml, type Language } from '../src/i18n';
 import { getModelDisplayName, setAvailableImageModelIds, updateModelDisplayNames, type ModelConfig } from '../src/models';
 import { buildModelQuotaGrid } from '../src/webview-profile-tab';
 import { buildModelsTabContent } from '../src/webview-models-tab';
@@ -25,10 +25,11 @@ describe('Hydrogen four-effort UI', () => {
         await setLanguageToState(language, state);
         const configs = hydrogenIds.map((id, i) => config(id, i === 3 ? 0.2 : 0.8));
         const html = buildModelQuotaGrid(configs);
-        const effortList = language === 'en' ? 'Low · Medium · High · Extra'
+        const effortListText = language === 'en' ? 'Low · Medium · High · Extra'
             : language === 'zh' ? '低 · 中 · 高 · 超高' : 'Low · Medium · High · Extra / 低 · 中 · 高 · 超高';
         const extra = language === 'en' ? 'Extra' : language === 'zh' ? '超高' : 'Extra / 超高';
-        expect(html).toContain(effortList);
+        expect(html).toContain(tBiHtml('Low · Medium · High · Extra', '低 · 中 · 高 · 超高'));
+        expect(html.replace(/<[^>]+>/g, '')).toContain(effortListText);
         expect(html).toContain(`Gemini 4 Hydrogen (${extra})`);
         expect(html).toContain('20–80%');
         expect(html).toContain('aria-valuenow="20"');
@@ -60,8 +61,9 @@ describe('Hydrogen four-effort UI', () => {
         const extra = config('M528', NaN);
         extra.quotaInfo!.resetTime = '2026-02-30T00:00:00Z';
         const html = buildModelQuotaGrid([extra]);
-        expect(html).toContain(language === 'zh' ? '未知' : 'Unknown');
-        expect(html).toContain(language === 'zh' ? '重置时间未知' : 'Reset time unavailable');
+        expect(html).toContain(tBiHtml('Unknown', '未知'));
+        expect(html).toContain(tBiHtml('Reset time unavailable', '暂无重置时间'));
+        expect(html.replace(/<[^>]+>/g, '')).toContain(language === 'zh' ? '暂无重置时间' : 'Reset time unavailable');
         expect(html).not.toContain('aria-valuenow=');
         expect(html).not.toMatch(/NaN|Infinity|undefined/);
     });

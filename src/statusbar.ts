@@ -1,26 +1,29 @@
 import * as vscode from 'vscode';
-import { ContextUsage } from './tracker';
-import { ModelConfig } from './models';
-import { isShowModelShortId, getQuotaPoolKey, normalizeModelDisplayName } from './models';
-import { t, tBi, getLanguage } from './i18n';
-import { formatResetAbsolute, formatResetContext, formatResetCountdownFromMs } from './reset-time';
+import type { ContextUsage } from './tracker';
+import type { GMSummary } from './gm/types';
+import type { ModelPricing } from './pricing-store';
+import { getQuotaPoolKey, localizeNeonPickerLabel, resolveModelId, type ModelConfig } from './models';
+import { t, tBi, getLanguage, formatNumber } from './i18n';
+import { summarizeQuotaReadings, type ModelQuotaGroup } from './model-quota';
+import { formatResetAbsolute, formatResetCountdownFromMs } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
 import {
-    applyLineBudget,
-    ensureCtaLast,
-    getLineBudget,
-    getMaxQuotaRows,
-    LABEL_MAX_DISPLAY_WIDTH,
-    measureDisplayWidth,
-    parseTooltipDensity,
-    poolSizeSuffix,
-    resolveEffectiveMode,
-    selectQuotaRows,
-    SESSION_MAX_DISPLAY_WIDTH,
-    truncateByDisplayWidth,
-    type EffectiveMode,
-    type TooltipDensity,
+    computeTelemetrySummary,
+    formatCachePercent,
+    formatLatency,
+    formatSpeed,
+    type SessionTelemetrySummary,
+    type TelemetryAggregate,
+} from './telemetry-metrics';
+import {
+    getMaxQuotaRows, measureDisplayWidth, parseTooltipDensity, resolveEffectiveMode, truncateByDisplayWidth,
+    type EffectiveMode, type TooltipDensity,
 } from './tooltip-budget';
+import {
+    formatCreditExpiry, getContextReading, getContextRemaining, modelFamilyCountLabel, monitorBackendMessage,
+    monitorStatusLabel, MONITOR_COMMAND, quotaPercentage, quotaResetLabel, resetCountdown,
+    selectMonitorQuotaGroups, usableCount, type MonitorState, type MonitorStatus, type OverviewDestination,
+} from './monitor-overview';
 
 // Re-export pure helpers for tests / external callers
 export {
@@ -77,39 +80,60 @@ function formatTokenValue(value: number): string {
  * broken rendering in VS Code tooltip MarkdownStrings.
  */
 export function escapeMarkdown(text: string): string {
-    return text.replace(/([|*_~`\[\]\\#<>])/g, '\\$1');
+    return text.replace(/[\x00-\x1F\x7F\u2028\u2029\u202A-\u202E\u2066-\u2069]+/g, ' ').replace(/[&|*_~`\[\]\\#<>!$()]/g, '\\$&');
 }
 
-/**
- * Shorten a raw shadow model ID to a human-readable label.
- * e.g. MODEL_PLACEHOLDER_M50 → "M50"
- *      MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE → "Gemini 2.5 Flash Lite"
- *      Already short IDs are returned as-is.
- */
-function shortenShadowModelId(raw: string): string {
-    if (!raw) { return ''; }
-    // MODEL_PLACEHOLDER_Mxx → Mxx
-    const placeholderMatch = raw.match(/^MODEL_PLACEHOLDER_(M\d+)$/);
-    if (placeholderMatch) { return placeholderMatch[1]; }
-    // MODEL_GOOGLE_GEMINI_x_y_z → Gemini x.y z (capitalize words)
-    if (raw.startsWith('MODEL_GOOGLE_GEMINI_')) {
-        const tail = raw.replace('MODEL_GOOGLE_GEMINI_', '');
-        // Convert underscored segments: 2_5_FLASH_LITE → 2.5 Flash Lite
-        const parts = tail.split('_');
-        const result: string[] = [];
-        for (let i = 0; i < parts.length; i++) {
-            const p = parts[i];
-            // Merge consecutive digits with dot: "2","5" → "2.5"
-            if (i > 0 && /^\d+$/.test(p) && /^\d+$/.test(parts[i - 1])) {
-                result[result.length - 1] += `.${p}`;
-            } else {
-                result.push(p.charAt(0).toUpperCase() + p.slice(1).toLowerCase());
-            }
-        }
-        return `Gemini ${result.join(' ')}`;
+function normalizeHoverLine(text: string): string {
+    return text.replace(/[\x00-\x1F\x7F\u2028\u2029\u202A-\u202E\u2066-\u2069]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function formatHoverText(text: string, maxWidth: number): string {
+    return escapeMarkdown(truncateByDisplayWidth(normalizeHoverLine(text), maxWidth));
+}
+
+function resolveConfiguredDensity(value: unknown): TooltipDensity {
+    if (value === 'detailed') { return 'full'; }
+    return parseTooltipDensity(value);
+}
+
+function monitorStateIcon(state: MonitorState): string {
+    switch (state) {
+        case 'connecting': return '$(sync~spin)';
+        case 'disconnected': return '$(debug-disconnect)';
+        case 'empty': return '$(comment-discussion)';
+        case 'idle': return '$(clock)';
+        case 'active': return '$(pulse)';
     }
-    // Fallback: strip MODEL_ prefix if present
-    return raw.replace(/^MODEL_/, '');
+}
+
+function hasTelemetryReading(agg: TelemetryAggregate): boolean {
+    return agg.totalCalls > 0 && (
+        (agg.latestGenTokPerSec ?? agg.weightedGenTokPerSec) !== null
+        || (agg.avgTtftSeconds ?? agg.latestTtftSeconds) !== null
+        || agg.tokenCacheHitRate !== null
+    );
+}
+
+function formatSavingsUsd(usd: number | null | undefined): string | null {
+    if (usd === null || usd === undefined || !Number.isFinite(usd) || usd < 0.0001) {
+        return null;
+    }
+    if (usd >= 0.01) {
+        return `$${usd.toFixed(2)}`;
+    }
+    if (usd >= 0.001) {
+        return `$${usd.toFixed(3)}`;
+    }
+    return `$${usd.toFixed(4)}`;
+}
+
+function formatSignedPercentDelta(deltaPct: number | null | undefined): string {
+    if (deltaPct === null || deltaPct === undefined || !Number.isFinite(deltaPct)) {
+        return '';
+    }
+    const rounded = Math.round(deltaPct);
+    const normalized = Object.is(rounded, -0) ? 0 : rounded;
+    return `${normalized > 0 ? '+' : ''}${normalized}%`;
 }
 
 export interface CompressionStats {
@@ -222,8 +246,7 @@ type LastRender =
     | { kind: 'idle'; limitStr: string; modelId?: string }
     | { kind: 'noConversation'; limitStr: string; modelId?: string }
     | { kind: 'disconnected'; message: string }
-    | { kind: 'initializing' }
-    | { kind: 'other' };
+    | { kind: 'initializing' };
 
 export class StatusBarManager {
     private statusBarItem: vscode.StatusBarItem;
@@ -233,22 +256,29 @@ export class StatusBarManager {
     /** Timer ID for reset countdown. */
     private resetCountdownTimer: NodeJS.Timeout | undefined;
     /** Status bar display preferences. */
-    private displayPrefs = { showContext: true, showQuota: true, showResetCountdown: true, showAiCredits: true };
-    /** Last active model ID for tracking reset countdown. */
-    private lastActiveModel: string = '';
-    /** Cached AI Credits total (sum of all credit types). */
-    private cachedCreditsTotal: number = 0;
+    private displayPrefs = {
+        showContext: true,
+        showQuota: true,
+        showResetCountdown: true,
+        showAiCredits: true,
+        showSpeed: false,
+        showCacheHit: false,
+    };
+    /** Cached AI Credits total (sum of current credit types; null = unknown / unreported). */
+    private cachedCreditsTotal: number | null = null;
     /** Cached billing day (1-31, 0 = disabled). */
     private cachedBillingDay: number = 0;
+    /** Cached GM telemetry summary (speed, TTFT, prompt cache). */
+    private cachedTelemetry: SessionTelemetrySummary | null = null;
     /** Last render state for config-driven tooltip refresh. */
-    private lastRender: LastRender = { kind: 'other' };
+    private lastRender: LastRender = { kind: 'initializing' };
 
     constructor() {
         this.statusBarItem = vscode.window.createStatusBarItem(
             vscode.StatusBarAlignment.Right,
             100
         );
-        this.statusBarItem.command = 'antigravity-context-monitor.showDetails';
+        this.statusBarItem.command = MONITOR_COMMAND;
         this.statusBarItem.name = t('statusBar.name');
         this.showInitializing();
         this.statusBarItem.show();
@@ -262,23 +292,48 @@ export class StatusBarManager {
         this.scheduleResetRefresh();
     }
 
-
+    /**
+     * Compute and cache session/active telemetry summary for status bar and hover display.
+     * Pass `null` to clear cleanly (e.g., on account switch or cold start).
+     */
+    setTelemetry(
+        gmSummary: GMSummary | null,
+        activeCascadeId?: string,
+        customPricing?: Record<string, ModelPricing>,
+    ): void {
+        if (!gmSummary) {
+            this.cachedTelemetry = null;
+            return;
+        }
+        const summary = computeTelemetrySummary(gmSummary, { activeCascadeId, customPricing });
+        this.cachedTelemetry = hasTelemetryReading(summary.primary) ? summary : null;
+    }
 
     /**
      * Set status bar display preferences.
      */
-    setDisplayPrefs(prefs: { showContext?: boolean; showQuota?: boolean; showResetCountdown?: boolean; showAiCredits?: boolean }): void {
+    setDisplayPrefs(prefs: {
+        showContext?: boolean;
+        showQuota?: boolean;
+        showResetCountdown?: boolean;
+        showAiCredits?: boolean;
+        showSpeed?: boolean;
+        showCacheHit?: boolean;
+    }): void {
         if (prefs.showContext !== undefined) { this.displayPrefs.showContext = prefs.showContext; }
         if (prefs.showQuota !== undefined) { this.displayPrefs.showQuota = prefs.showQuota; }
         if (prefs.showResetCountdown !== undefined) { this.displayPrefs.showResetCountdown = prefs.showResetCountdown; }
         if (prefs.showAiCredits !== undefined) { this.displayPrefs.showAiCredits = prefs.showAiCredits; }
+        if (prefs.showSpeed !== undefined) { this.displayPrefs.showSpeed = prefs.showSpeed; }
+        if (prefs.showCacheHit !== undefined) { this.displayPrefs.showCacheHit = prefs.showCacheHit; }
     }
 
     /**
      * Update cached AI Credits total for status bar display.
+     * Pass `null` when credits are unknown/unreported so `0` is only shown when explicitly reported.
      */
-    setCredits(total: number): void {
-        this.cachedCreditsTotal = Math.max(0, total);
+    setCredits(total: number | null): void {
+        this.cachedCreditsTotal = total !== null && usableCount(total) ? total : null;
     }
 
     /**
@@ -368,664 +423,441 @@ export class StatusBarManager {
         }
     }
 
+    get monitorStatus(): MonitorStatus {
+        switch (this.lastRender.kind) {
+            case 'initializing': return { state: 'connecting' };
+            case 'disconnected': return {
+                state: 'disconnected',
+                backendIssue: this.lastRender.message === 'LS not found' ? 'notFound'
+                    : this.lastRender.message === 'LS connection lost' ? 'lost' : 'other',
+            };
+            case 'noConversation': return { state: 'empty' };
+            case 'idle': return { state: 'idle' };
+            case 'update': return { state: 'active' };
+        }
+    }
+
     showInitializing(): void {
         this.lastRender = { kind: 'initializing' };
-        // Bilingual status text (was hard-coded English)
-        this.statusBarItem.text = `$(sync~spin) ${t('statusBar.initializing')}`;
-        this.statusBarItem.tooltip = t('statusBar.initializingTooltip');
         this.statusBarItem.backgroundColor = undefined;
+        this.renderStatus('$(sync~spin)', [t('statusBar.initializing')]);
     }
 
     showDisconnected(message: string): void {
         this.lastRender = { kind: 'disconnected', message };
-        this.statusBarItem.text = `$(debug-disconnect) ${t('statusBar.disconnectedLabel')}`;
-        this.statusBarItem.tooltip = message === 'LS not found'
-            ? t('statusBar.backendNotFound')
-            : message === 'LS connection lost'
-                ? t('statusBar.backendConnectionLost')
-                : `Antigravity Context Monitor: ${message}`;
         this.statusBarItem.backgroundColor = undefined;
+        this.renderStatus('$(debug-disconnect)', [t('statusBar.disconnectedLabel')]);
     }
 
     showNoConversation(limitStr: string = '1M', modelId?: string): void {
         this.lastRender = { kind: 'noConversation', limitStr, modelId };
-        // No loaded trajectory means there is no measured context or selected
-        // conversation model. A persisted model's denominator would be misleading.
-        const contextPart = this.displayPrefs.showContext ? t('statusBar.noConversationTooltip') : '';
-        const quotaSuffix = this.displayPrefs.showQuota && modelId ? this.formatQuotaIndicator(modelId) : '';
-        const resetSuffix = this.displayPrefs.showResetCountdown && modelId ? this.formatResetCountdown(modelId) : '';
-        const creditsSuffix = this.displayPrefs.showAiCredits ? this.formatCreditsIndicator() : '';
-
-        const segments = [
-            contextPart,
-            quotaSuffix.trim(),
-            resetSuffix.trim(),
-            creditsSuffix.trim(),
-        ].filter(Boolean);
-
-        this.statusBarItem.text = this.buildStatusText('$(comment-discussion)', segments);
-
-        const currentId = modelId || this.lastActiveModel || '';
-        const budget = this.resolveBudget(currentId);
-        const lines = [
-            `Antigravity Context Monitor: ${t('statusBar.noConversationTooltip')}`,
-            ...this.buildQuotaLines(budget),
-            ...this.buildCreditsLines(budget.isCompact),
-            this.ctaLine(),
-        ];
-        this.applyTooltip(lines, budget);
         this.statusBarItem.backgroundColor = undefined;
+        this.renderStatus('$(comment-discussion)', [
+            this.displayPrefs.showContext ? t('statusBar.noConversationTooltip') : '',
+            ...this.indicators(modelId),
+        ]);
     }
 
     showIdle(limitStr: string = '1M', modelId?: string): void {
         this.lastRender = { kind: 'idle', limitStr, modelId };
-        const contextPart = this.displayPrefs.showContext ? `0k/${limitStr}, 0.0%` : '';
-        const quotaSuffix = this.displayPrefs.showQuota && modelId ? this.formatQuotaIndicator(modelId) : '';
-        const resetSuffix = this.displayPrefs.showResetCountdown && modelId ? this.formatResetCountdown(modelId) : '';
-        const creditsSuffix = this.displayPrefs.showAiCredits ? this.formatCreditsIndicator() : '';
-
-        const segments = [
-            contextPart,
-            quotaSuffix.trim(),
-            resetSuffix.trim(),
-            creditsSuffix.trim(),
-        ].filter(Boolean);
-
-        this.statusBarItem.text = this.buildStatusText('$(clock)', segments);
-
-        const currentId = modelId || this.lastActiveModel || '';
-        const budget = this.resolveBudget(currentId);
-        const lines: string[] = [
-            `Antigravity Context Monitor: ${t('statusBar.idle')}`,
-            t('statusBar.idleDescription'),
-            ...this.buildQuotaLines(budget),
-            ...this.buildCreditsLines(budget.isCompact),
-            this.ctaLine(),
-        ];
-        this.applyTooltip(lines, budget);
         this.statusBarItem.backgroundColor = undefined;
+        this.renderStatus('$(clock)', [
+            this.displayPrefs.showContext ? t('statusBar.idle') : '',
+            ...this.indicators(modelId),
+        ]);
     }
 
-    /**
-     * Update the status bar with current context usage data.
-     */
     update(usage: ContextUsage): void {
         this.lastRender = { kind: 'update', usage };
-        const usedStr = formatTokenCount(usage.contextUsed);
-        const limitStr = formatContextLimit(usage.contextLimit);
-
-        const isCompressing = usage.usagePercent > 100;
-        const displayPercent = isCompressing
-            ? '~100'
-            : usage.usagePercent.toFixed(1).replace(/\.0$/, '');
-        const compressIcon = isCompressing ? ' 🗜' : '';
-
-        const severity = getSeverity(usage.usagePercent);
-        const icon = getSeverityIcon(severity);
-        const gapsIndicator = usage.hasGaps ? ' ⚠️' : '';
-
-        // Current model quota indicator (🟢85%)
-        const quotaSuffix = this.displayPrefs.showQuota ? this.formatQuotaIndicator(usage.model) : '';
-
-        // Add reset countdown to status bar text (tracks current model)
-        const resetSuffix = this.displayPrefs.showResetCountdown ? this.formatResetCountdown(usage.model) : '';
-
-        // AI Credits indicator
-        const creditsSuffix = (this.displayPrefs.showAiCredits && this.cachedCreditsTotal > 0)
-            ? this.formatCreditsIndicator()
-            : '';
-
-        // Build status bar text based on display preferences
-        const contextPart = this.displayPrefs.showContext
-            ? `${usedStr}/${limitStr}${compressIcon}${gapsIndicator}`
-            : '';
-
-        // Collect all segments and join with || separators
-        const segments = [
-            contextPart,
-            quotaSuffix.trim(),
-            resetSuffix.trim(),
-            creditsSuffix.trim(),
-        ].filter(Boolean);
-
-        this.statusBarItem.text = this.buildStatusText(icon, segments);
-        this.statusBarItem.backgroundColor = getSeverityColor(severity);
-
-        const budget = this.resolveBudget(usage.model || this.lastActiveModel || '');
-        const lines = budget.isCompact
-            ? this.buildCompactActiveLines(usage, usedStr, limitStr, displayPercent, isCompressing, budget)
-            : this.buildNormalActiveLines(usage, isCompressing, budget);
-
-        this.applyTooltip(lines, budget);
+        const { used, limit, percent } = getContextReading(usage);
+        const severity = getSeverity(percent ?? 0);
+        this.statusBarItem.backgroundColor = this.displayPrefs.showContext ? getSeverityColor(severity) : undefined;
+        const context = used !== null && limit !== null ? `${formatTokenCount(used)}/${formatContextLimit(limit)}` : '—';
+        const flags = usage.hasGaps ? ' $(warning)' : percent !== null && percent > 100 ? ' $(fold)' : '';
+        this.renderStatus(this.displayPrefs.showContext ? getSeverityIcon(severity) : '$(pulse)', [
+            this.displayPrefs.showContext ? `${context}${flags}` : '',
+            ...this.indicators(usage.model),
+        ]);
     }
 
-    // ─── Budget / density helpers ─────────────────────────────────────────────
-
-    private readDensity(): TooltipDensity {
-        const raw = vscode.workspace
-            .getConfiguration('antigravityContextMonitor')
-            .get<string>('statusBar.tooltipDensity', 'auto');
-        return parseTooltipDensity(raw);
+    private indicators(modelId?: string): string[] {
+        const id = modelId ? resolveModelId(modelId) || modelId : undefined;
+        const config = id ? this.cachedConfigs.find(c => (resolveModelId(c.model) || c.model) === id) : undefined;
+        let quota = '';
+        let reset = '';
+        if (config) {
+            const fraction = config.quotaInfo?.remainingFraction;
+            if (this.displayPrefs.showQuota && usableCount(fraction) && fraction <= 1) {
+                quota = `$(layers) ${Math.round(fraction * 100)}%`;
+            }
+            if (this.displayPrefs.showResetCountdown) {
+                reset = this.formatResetCountdown(config.quotaInfo?.resetTime);
+            }
+        } else if (id) {
+            // Bare family IDs (e.g. "gemini-4-neon") may map to a canonical pool without
+            // resolving to a single effort config. Only fall back within that exact pool.
+            const canonicalPool = getQuotaPoolKey(id);
+            const poolKey = canonicalPool !== id && (canonicalPool === 'gemini' || canonicalPool === 'premium')
+                ? canonicalPool : undefined;
+            const group = poolKey
+                ? selectMonitorQuotaGroups(this.cachedConfigs, id).find(g => g.pool === poolKey)
+                : undefined;
+            if (group) {
+                if (this.displayPrefs.showQuota && group.minimum !== null) {
+                    quota = `$(layers) ${quotaPercentage(group)}`;
+                }
+                if (this.displayPrefs.showResetCountdown && !group.resetDiffers && group.resetTime) {
+                    reset = this.formatResetCountdown(group.resetTime);
+                }
+            }
+        }
+        const credits = this.displayPrefs.showAiCredits && this.cachedCreditsTotal !== null
+            ? `$(zap) ${formatNumber(this.cachedCreditsTotal)}` : '';
+        const primary = this.cachedTelemetry?.primary;
+        const speed = primary ? (primary.latestGenTokPerSec ?? primary.weightedGenTokPerSec) : null;
+        const speedSegment = this.displayPrefs.showSpeed && speed !== null && speed > 0
+            ? `$(pulse) ${formatSpeed(speed)}` : '';
+        const cacheLabel = getLanguage() === 'zh' ? '缓存' : 'Cache';
+        const cacheSegment = this.displayPrefs.showCacheHit
+            && primary
+            && primary.totalPromptTokens > 0
+            && primary.tokenCacheHitRate !== null
+            ? `${cacheLabel} ${formatCachePercent(primary.tokenCacheHitRate)}` : '';
+        return [quota, reset, credits, speedSegment, cacheSegment];
     }
 
-    private readZoomLevel(): number {
-        const z = vscode.workspace.getConfiguration('window').get<number>('zoomLevel', 0);
-        return typeof z === 'number' && Number.isFinite(z) ? z : 0;
-    }
-
-    private resolveBudget(currentId: string): {
-        density: TooltipDensity;
-        effective: EffectiveMode;
-        maxQuotaRows: number;
-        maxLines: number;
-        isCompact: boolean;
-        currentId: string;
-        zoomLevel: number;
-        quotaRowCount: number;
-        lang: string;
-    } {
-        const density = this.readDensity();
-        const zoomLevel = this.readZoomLevel();
-        const lang = getLanguage();
-        // Count the rows the quota table will actually RENDER, not the number of models. The table
-        // collapses each quota pool into one row, and the live picker now carries 14 models across
-        // just two pools — counting models would force compact mode on a two-row table.
-        const quotaRowCount = new Set(
-            this.cachedConfigs
-                .filter(c => c.quotaInfo)
-                .map(c => getQuotaPoolKey(c.model, c.quotaInfo?.resetTime)),
-        ).size;
-        const effective = resolveEffectiveMode(density, zoomLevel, quotaRowCount, lang);
-        // full density keeps normal layout detail but no soft caps
-        const isCompact = density !== 'full' && effective === 'compact';
-        const maxQuotaRows = getMaxQuotaRows(density, effective);
-        const maxLines = getLineBudget(density, effective);
-        logDensityDiagOnce(zoomLevel, density, effective, quotaRowCount, lang);
-        return {
-            density,
-            effective,
-            maxQuotaRows,
-            maxLines,
-            isCompact,
-            currentId,
-            zoomLevel,
-            quotaRowCount,
-            lang,
+    private renderStatus(icon: string, segments: string[]): void {
+        const text = segments.filter(Boolean);
+        this.statusBarItem.text = text.length ? `${icon} ${text.join('  ·  ')}` : icon;
+        const state = monitorStatusLabel(this.monitorStatus.state);
+        const spoken = text.filter(part => part !== state)
+            .map(part => part
+                .replace('$(layers)', tBi('Quota remaining', '剩余配额'))
+                .replace('$(clock)', tBi('Reset in', '距离重置还有'))
+                .replace('$(zap)', tBi('AI credits', 'AI 积分'))
+                .replace('$(pulse)', tBi('Speed', '生成速度'))
+                .replace(/\$\([^)]*\)\s*/g, '').trim());
+        this.statusBarItem.accessibilityInformation = {
+            label: [t('statusBar.name'), state, ...spoken].join(' · '),
+            role: 'button',
         };
+        this.statusBarItem.tooltip = this.buildHover();
     }
 
-    private ctaLine(): string {
-        return `$(link-external) **${t('statusBar.clickToView')}**`;
-    }
+    private buildHover(): vscode.MarkdownString {
+        const status = this.monitorStatus;
+        const usage = this.lastRender.kind === 'update' ? this.lastRender.usage : null;
+        const connected = status.state !== 'connecting' && status.state !== 'disconnected';
+        const groups = connected
+            ? selectMonitorQuotaGroups(this.cachedConfigs, usage?.model).filter(g => g.minimum !== null || g.resetTime || g.resetDiffers)
+            : [];
+        const density = resolveConfiguredDensity(vscode.workspace.getConfiguration('antigravityContextMonitor')
+            .get<string>('statusBar.tooltipDensity', 'auto'));
+        const rawZoom = vscode.workspace.getConfiguration('window').get<number>('zoomLevel', 0);
+        const zoom = Number.isFinite(rawZoom) ? rawZoom : 0;
+        const lang = getLanguage();
+        const mode = resolveEffectiveMode(density, zoom, groups.length, lang);
+        const full = density === 'full';
+        logDensityDiagOnce(zoom, density, mode, groups.length, lang);
 
-    private applyTooltip(
-        lines: string[],
-        budget: { maxLines: number },
-    ): void {
-        const withCta = ensureCtaLast(lines, this.ctaLine());
-        const capped = applyLineBudget(withCta, budget.maxLines);
-        const md = new vscode.MarkdownString(capped.join('  \n'), false);
-        md.supportThemeIcons = true;
-        this.statusBarItem.tooltip = md;
-    }
+        const stateIcon = monitorStateIcon(status.state);
+        const header = mode === 'compact'
+            ? `**${t('statusBar.name')}** · ${stateIcon} ${monitorStatusLabel(status.state)}`
+            : `**${t('statusBar.name')}**  \n${stateIcon} ${monitorStatusLabel(status.state)}`;
+        const sections = [header];
 
-    // ─── Active session layouts ───────────────────────────────────────────────
-
-    private buildCompactActiveLines(
-        usage: ContextUsage,
-        usedStr: string,
-        limitStr: string,
-        displayPercent: string,
-        isCompressing: boolean,
-        budget: { maxQuotaRows: number; isCompact: boolean; currentId: string; density: TooltipDensity },
-    ): string[] {
-        const safeModelName = escapeMarkdown(
-            truncateByDisplayWidth(usage.modelDisplayName, SESSION_MAX_DISPLAY_WIDTH),
-        );
-        const rawTitle = usage.title || usage.cascadeId.substring(0, 8);
-        const safeTitle = escapeMarkdown(
-            truncateByDisplayWidth(rawTitle, SESSION_MAX_DISPLAY_WIDTH),
-        );
-        const compressFlag = isCompressing ? ' 🗜' : (usage.compressionDetected ? ' 🗜' : '');
-
-        const lines: string[] = [
-            `📊 ${t('tooltip.title')}`,
-            `——————————`,
-            `🤖 ${safeModelName} · 📝 ${safeTitle}`,
-            `📥 ${usedStr}/${limitStr} · ${displayPercent}%${compressFlag}`,
-        ];
-
-        if (usage.hasGaps) {
-            lines.push(`⚠️ ${t('tooltip.dataIncomplete')}`);
-        } else if (isCompressing) {
-            lines.push(`🗜 ${t('tooltip.compressing')}`);
-        } else if (usage.compressionDetected) {
-            lines.push(`🗜 ${t(usage.checkpointCompressionDrop > 0 ? 'tooltip.compressed' : 'tooltip.contextDecreased')}`);
+        if (status.state === 'disconnected') {
+            sections.push(monitorBackendMessage(status.backendIssue));
+        } else if (usage) {
+            sections.push(this.buildHoverSession(usage, mode, full));
         }
 
-        lines.push(`——————————`);
-        lines.push(...this.buildQuotaLines({ ...budget, currentId: usage.model || budget.currentId }));
-        lines.push(...this.buildCreditsLines(true));
-        lines.push(this.ctaLine());
-        return lines;
+        if (connected) {
+            const telemetrySection = this.buildHoverTelemetry(mode, full);
+            if (telemetrySection) {
+                sections.push(telemetrySection);
+            }
+
+            sections.push(this.buildHoverQuotas(groups, usage?.model, mode, full));
+
+            const planWidth = mode === 'compact' ? 24 : 30;
+            const plan = [this.cachedPlanName, this.cachedTierName]
+                .map(label => normalizeHoverLine(label))
+                .filter((label, index, all) => label && all.indexOf(label) === index)
+                .map(label => escapeMarkdown(truncateByDisplayWidth(label, planWidth))).join(' · ');
+            const account = plan ? [`$(account) ${plan}`] : [];
+            if (this.cachedCreditsTotal !== null) {
+                const expiry = mode === 'compact' ? '' : ` · ${formatCreditExpiry(this.getDaysUntilRefresh())}`;
+                account.push(`$(zap) ${tBi('AI credits', 'AI 积分')} · **${formatNumber(this.cachedCreditsTotal)}**${expiry}`);
+            } else if (this.cachedBillingDay > 0 && mode !== 'compact') {
+                account.push(`$(zap) ${tBi('AI credits', 'AI 积分')} · ${tBi('Not reported', '未上报')} · ${formatCreditExpiry(this.getDaysUntilRefresh())}`);
+            }
+            if (account.length) { sections.push(account.join('  \n')); }
+        }
+
+        const link = (destination: OverviewDestination, label: string) => {
+            const query = encodeURIComponent(JSON.stringify([destination]));
+            return `[${label}](command:${MONITOR_COMMAND}?${query})`;
+        };
+        sections.push([
+            link('overview', tBi('Open overview', '打开总览')),
+            link('models', tBi('Models', '模型')),
+            link('settings', tBi('Settings', '设置')),
+        ].join(' · '));
+        const tooltip = new vscode.MarkdownString(sections.join('\n\n---\n\n'));
+        tooltip.supportThemeIcons = true;
+        tooltip.isTrusted = { enabledCommands: [MONITOR_COMMAND] };
+        return tooltip;
     }
 
-    private buildNormalActiveLines(
-        usage: ContextUsage,
-        isCompressing: boolean,
-        budget: { maxQuotaRows: number; isCompact: boolean; currentId: string; density: TooltipDensity },
-    ): string[] {
-        const remaining = Math.max(0, usage.contextLimit - usage.contextUsed);
-        const compressionStats = calculateCompressionStats(usage);
-        const rawTitle = usage.title || usage.cascadeId.substring(0, 8);
-        const safeTitle = escapeMarkdown(
-            truncateByDisplayWidth(rawTitle, SESSION_MAX_DISPLAY_WIDTH),
-        );
-        const safeModelName = escapeMarkdown(
-            truncateByDisplayWidth(usage.modelDisplayName, SESSION_MAX_DISPLAY_WIDTH),
-        );
-        const tokenUnit = tBi('tokens', '令牌');
-
-        const lines = [
-            `📊 ${t('tooltip.title')}`,
-            `——————————`,
-            `🤖 ${t('tooltip.model')}: ${safeModelName}`,
-            `📝 ${t('tooltip.session')}: ${safeTitle}`,
-            `——————————`,
-            `📥 ${t('tooltip.totalContextUsed')}:`,
-            `     ${usage.contextUsed.toLocaleString()} ${tokenUnit}`,
-            `📤 ${t('tooltip.modelOutput')}: ${usage.totalOutputTokens.toLocaleString()} ${tokenUnit}`,
-            `🔧 ${t('tooltip.toolResults')}: ${usage.totalToolCallOutputTokens.toLocaleString()} ${tokenUnit}`,
-            `📦 ${t('tooltip.limit')}: ${usage.contextLimit.toLocaleString()} ${tokenUnit}`,
-            `📊 ${t('tooltip.usage')}: ${usage.usagePercent.toFixed(1)}%`,
-        ];
-
-        if (isCompressing) {
-            lines.push(`🗜 ${t('tooltip.compressing')}`);
-            lines.push(`💡 ${t('tooltip.compressingHint')}`);
-        } else if (usage.compressionDetected) {
-            lines.push(`🗜 ${t(usage.checkpointCompressionDrop > 0 ? 'tooltip.compressed' : 'tooltip.contextDecreased')}`);
-            if (usage.previousContextUsed !== undefined) {
-                lines.push(`   ${t('tooltip.before')}: ${usage.previousContextUsed.toLocaleString()} ${tokenUnit}`);
-                lines.push(`   ${t('tooltip.after')}: ${usage.contextUsed.toLocaleString()} ${tokenUnit}`);
-            }
-            if (compressionStats) {
-                const sourceLabel = compressionStats.source === 'context'
-                    ? t('tooltip.contextDrop')
-                    : t('tooltip.checkpointDrop');
-                lines.push(
-                    `   ${sourceLabel}: ${compressionStats.dropTokens.toLocaleString()} ${tokenUnit} ` +
-                    `(${compressionStats.dropPercent.toFixed(1)}%)`
-                );
+    private buildHoverSession(usage: ContextUsage, mode: EffectiveMode, full: boolean): string {
+        const { used, limit, percent } = getContextReading(usage);
+        const remaining = getContextRemaining(used, limit);
+        const id = resolveModelId(usage.model) || usage.model;
+        const name = localizeNeonPickerLabel(id, usage.modelDisplayName, getLanguage());
+        const rawTitle = normalizeHoverLine(usage.title || '') || t('panel.currentSessionLabel');
+        const title = escapeMarkdown(truncateByDisplayWidth(rawTitle, mode === 'compact' ? 36 : 50));
+        const model = formatHoverText(name, mode === 'compact' ? 36 : 48);
+        const accuracy = usage.isEstimated ? tBi('Estimated', '估算') : tBi('Measured', '实测');
+        const lines = [`**${title}**`, [model, accuracy].filter(Boolean).join(' · ')];
+        if (used !== null && limit !== null && percent !== null) {
+            const number = full ? (n: number) => formatNumber(n) : formatTokenCount;
+            if (mode === 'compact') {
+                const remText = remaining
+                    ? ` · ${tBi(`${remaining.percent.toFixed(1)}% left`, `剩余 ${remaining.percent.toFixed(1)}%`)}`
+                    : '';
+                lines.push(`$(pulse) ${tBi('Context', '上下文')} · **${number(used)} / ${number(limit)}** · ${percent.toFixed(1)}%${remText}`);
+            } else {
+                lines.push(`$(pulse) ${tBi('Context', '上下文')} · **${number(used)} / ${number(limit)}** · ${percent.toFixed(1)}%`);
+                if (remaining) {
+                    lines.push(`${tBi('Remaining', '可用余量')} · ${number(remaining.tokens)} (${remaining.percent.toFixed(1)}%)`);
+                }
             }
         } else {
-            lines.push(`📐 ${t('tooltip.remaining')}: ${remaining.toLocaleString()} ${tokenUnit}`);
+            lines.push(tBi('Context measurement unavailable', '暂无上下文计量'));
         }
-
+        if (usage.compressionDetected) {
+            const compression = calculateCompressionStats(usage);
+            const label = t(usage.checkpointCompressionDrop > 0 ? 'tooltip.compressed' : 'tooltip.contextDecreased');
+            const detail = compression
+                ? ` · −${formatTokenCount(compression.dropTokens)}${mode !== 'compact' ? ` (${compression.dropPercent.toFixed(0)}%)` : ''}`
+                : '';
+            lines.push(`$(fold) ${label}${detail}`);
+        }
         if (usage.hasGaps) {
-            lines.push(`⚠️ ${t('tooltip.dataIncomplete')}`);
+            lines.push(`$(warning) ${tBi('Some steps are missing', '部分步骤缺失')}`);
         }
-
-        lines.push(`🔢 ${t('tooltip.steps')}: ${usage.stepCount}`);
-
-        if (usage.imageGenStepCount > 0) {
-            lines.push(`📷 ${t('tooltip.imageGen')}: ${usage.imageGenStepCount} ${t('tooltip.imageGenSteps')}`);
-            if (usage.imageGenerationModels?.length) {
-                lines.push(`   ${tBi('Image model', '图片模型')}: ${usage.imageGenerationModels
-                    .map(model => escapeMarkdown(normalizeModelDisplayName(model))).join(' · ')}`);
-            }
+        if (percent !== null && percent > 100) {
+            lines.push(`$(fold) ${tBi('Above the context limit', '已超过上下文上限')}`);
         }
         if (usage.imageGenerationIncomplete) {
-            lines.push(`⚠️ ${tBi('Image workflow data is incomplete', '图片工作流数据不完整')}`);
+            lines.push(`$(warning) ${tBi('Image workflow data is incomplete', '图片工作流数据不完整')}`);
         }
-
-        if (usage.estimatedDeltaSinceCheckpoint > 0 && usage.lastModelUsage) {
-            const sinceKey = usage.tokenUsageSource === 'planner' ? 'tooltip.sinceModelCall' : 'tooltip.sinceCheckpoint';
-            lines.push(`📏 ${t('tooltip.estDelta')}: +${usage.estimatedDeltaSinceCheckpoint.toLocaleString()} ${tokenUnit} (${t(sinceKey)})`);
-        }
-
-        lines.push(`——————————`);
-
-        // Checkpoint block (P3 — kept in normal, folded in compact)
-        if (usage.lastModelUsage) {
-            const cpLabel = (usage.tokenUsageSource !== 'planner' && usage.checkpointModel && isShowModelShortId())
-                ? ` (${escapeMarkdown(shortenShadowModelId(usage.checkpointModel))})`
-                : '';
-            lines.push(`📎 ${t(usage.tokenUsageSource === 'planner' ? 'tooltip.lastModelUsage' : 'tooltip.lastCheckpoint')}:${cpLabel}`);
-            lines.push(`  ${t('tooltip.input')}: ${usage.lastModelUsage.inputTokens.toLocaleString()}`);
-            lines.push(`  ${t('tooltip.output')}: ${usage.lastModelUsage.outputTokens.toLocaleString()}`);
-            if (usage.lastModelUsage.cacheReadTokens > 0) {
-                lines.push(`  ${t('tooltip.cache')}: ${usage.lastModelUsage.cacheReadTokens.toLocaleString()}`);
+        if (full) {
+            const metrics: Array<readonly [string, number]> = [
+                [t('tooltip.modelOutput'), usage.totalOutputTokens],
+                [t('tooltip.toolResults'), usage.totalToolCallOutputTokens],
+                [t('tooltip.steps'), usage.stepCount],
+                ...(usableCount(usage.imageGenStepCount) && usage.imageGenStepCount > 0
+                    ? [[t('tooltip.imageGen'), usage.imageGenStepCount] as const] : []),
+            ];
+            const summary = metrics
+                .filter(([, value]) => usableCount(value))
+                .map(([label, value]) => `${label} ${formatNumber(value)}`)
+                .join(' · ');
+            if (summary) { lines.push(summary); }
+            if (usage.lastModelUsage) {
+                const last = usage.lastModelUsage;
+                const source = t(usage.tokenUsageSource === 'planner' ? 'tooltip.lastModelUsage' : 'tooltip.lastCheckpoint');
+                const snapshot: Array<readonly [string, number | undefined]> = [
+                    [t('tooltip.input'), last.inputTokens],
+                    [t('tooltip.output'), last.outputTokens],
+                    [t('tooltip.cache'), last.cacheReadTokens],
+                    ...(usableCount(last.cacheCreationTokens) && last.cacheCreationTokens > 0
+                        ? [[tBi('Cache creation', '缓存创建'), last.cacheCreationTokens] as const] : []),
+                ];
+                const values = snapshot.flatMap(([label, value]) => usableCount(value) ? [`${label} ${formatNumber(value)}`] : []);
+                if (values.length) { lines.push(`${source}  \n${values.join(' · ')}`); }
             }
-            if ((usage.lastModelUsage.cacheCreationTokens || 0) > 0) {
-                lines.push(`  ${tBi('Cache creation', '缓存创建')}: ${usage.lastModelUsage.cacheCreationTokens!.toLocaleString()}`);
+        }
+        return lines.filter(Boolean).join('  \n');
+    }
+
+    private buildHoverTelemetry(mode: EffectiveMode, full: boolean): string {
+        const telemetry = this.cachedTelemetry;
+        if (!telemetry) { return ''; }
+        const primary = telemetry.primary;
+        if (!hasTelemetryReading(primary)) { return ''; }
+
+        const speed = primary.latestGenTokPerSec ?? primary.weightedGenTokPerSec;
+        const ttft = primary.avgTtftSeconds ?? primary.latestTtftSeconds;
+        const cacheRate = primary.tokenCacheHitRate;
+
+        if (mode === 'compact') {
+            const parts: string[] = [];
+            if (speed !== null) {
+                parts.push(`**${formatSpeed(speed)}**`);
             }
+            if (ttft !== null) {
+                parts.push(`${tBi('TTFT', '首字')} ${formatLatency(ttft)}`);
+            }
+            if (cacheRate !== null) {
+                parts.push(`${tBi('Cache', '缓存')} ${formatCachePercent(cacheRate)}`);
+            }
+            if (parts.length === 0) { return ''; }
+            return `$(pulse) **${tBi('Speed & Prompt Cache', '速度与提示词缓存')}** · ${parts.join(' · ')}`;
         }
 
-        lines.push(`——————————`);
-        lines.push(...this.buildQuotaLines({ ...budget, currentId: usage.model || budget.currentId }));
-        lines.push(...this.buildCreditsLines(false));
-        lines.push(this.ctaLine());
+        const scopeTag = telemetry.primaryScope === 'session'
+            ? ` · ${tBi('Session', '会话汇总')}`
+            : '';
+        const lines: string[] = [`**${tBi('Speed & Prompt Cache', '速度与提示词缓存')}**${scopeTag}`];
+
+        if (primary.latestGenTokPerSec !== null || primary.weightedGenTokPerSec !== null) {
+            const speedParts: string[] = [];
+            if (primary.latestGenTokPerSec !== null && primary.weightedGenTokPerSec !== null && primary.speedSampleCount > 1) {
+                speedParts.push(`**${formatSpeed(primary.latestGenTokPerSec)}** ${tBi('latest', '最近')}`);
+                speedParts.push(`${formatSpeed(primary.weightedGenTokPerSec)} ${tBi('avg', '均值')}`);
+            } else if (primary.latestGenTokPerSec !== null) {
+                speedParts.push(`**${formatSpeed(primary.latestGenTokPerSec)}**`);
+            } else if (primary.weightedGenTokPerSec !== null) {
+                speedParts.push(`**${formatSpeed(primary.weightedGenTokPerSec)}** ${tBi('avg', '均值')}`);
+            }
+            if (full && primary.medianGenTokPerSec !== null && primary.speedSampleCount >= 2) {
+                speedParts.push(`p50 ${formatSpeed(primary.medianGenTokPerSec)}`);
+            }
+            if (primary.hasThinking && primary.weightedVisibleTokPerSec !== null) {
+                speedParts.push(`${tBi('resp', '可见')} ${formatSpeed(primary.weightedVisibleTokPerSec)}`);
+            }
+            lines.push(`$(pulse) ${t('telemetry.speed')} · ${speedParts.join(' · ')}`);
+        }
+
+        if (ttft !== null) {
+            const ttftParts: string[] = [];
+            if (primary.avgTtftSeconds !== null && primary.ttftSampleCount > 1) {
+                ttftParts.push(`**${formatLatency(primary.avgTtftSeconds)}** ${tBi('avg', '均值')}`);
+            } else {
+                ttftParts.push(`**${formatLatency(ttft)}**`);
+            }
+            if (full && primary.medianTtftSeconds !== null && primary.ttftSampleCount >= 2) {
+                ttftParts.push(`p50 ${formatLatency(primary.medianTtftSeconds)}`);
+            }
+            let ttftLine = `$(clock) ${t('telemetry.ttft')} · ${ttftParts.join(' · ')}`;
+            if (
+                primary.cachedTtftCount >= 1
+                && primary.uncachedTtftCount >= 1
+                && primary.cachedAvgTtftSeconds !== null
+                && primary.uncachedAvgTtftSeconds !== null
+            ) {
+                const delta = formatSignedPercentDelta(primary.ttftCacheDeltaPct);
+                const deltaSuffix = delta ? ` · ${delta}` : '';
+                ttftLine += ` (${formatLatency(primary.cachedAvgTtftSeconds)} ${tBi('cached', '命中')} vs ${formatLatency(primary.uncachedAvgTtftSeconds)} ${tBi('uncached', '未命中')}${deltaSuffix})`;
+            }
+            lines.push(ttftLine);
+        }
+
+        if (cacheRate !== null) {
+            const savings = formatSavingsUsd(primary.estCacheSavingsUsd);
+            const cacheMeta: string[] = [
+                `${formatTokenCount(primary.totalCacheReadTokens)} / ${formatTokenCount(primary.totalPromptTokens)} tokens`,
+                `${primary.cachedCallCount}/${primary.totalCalls} ${tBi(primary.totalCalls === 1 ? 'call' : 'calls', '次调用')}`,
+            ];
+            if (full && primary.totalCacheCreationTokens > 0) {
+                cacheMeta.push(`${tBi('write', '写入')} ${formatTokenCount(primary.totalCacheCreationTokens)}`);
+            }
+            if (savings) {
+                cacheMeta.push(tBi(`est. -${savings}`, `约省 ${savings}`));
+            }
+            lines.push(`$(database) ${t('telemetry.promptCache')} · **${formatCachePercent(cacheRate)}** (${cacheMeta.join(' · ')})`);
+        }
+
+        return lines.length > 1 ? lines.join('  \n') : '';
+    }
+
+    private buildHoverQuotas(
+        groups: readonly ModelQuotaGroup[], currentModel: string | undefined, mode: EffectiveMode, full: boolean,
+    ): string {
+        const maxPools = getMaxQuotaRows(full ? 'full' : 'auto', mode);
+        const shown = groups.slice(0, maxPools);
+        const now = Date.now();
+        const blocks: string[] = [`**${tBi('Quota remaining', '剩余配额')}**`];
+        const activeId = currentModel ? resolveModelId(currentModel) || currentModel : undefined;
+        const poolBlocks: string[] = [];
+        for (const group of shown) {
+            const label = formatHoverText(group.label, mode === 'compact' ? 24 : 32);
+            const percent = quotaPercentage(group);
+            const reset = quotaResetLabel(group, now, true);
+            const count = group.pool ? ` · ${modelFamilyCountLabel(group.members.length)}` : '';
+            const partial = (group.missingQuota && group.minimum !== null) || (group.missingReset && group.resetTime !== null)
+                ? ` · ${tBi('Partial data', '数据不完整')}` : '';
+            const poolLines = [`$(layers) **${label}** · **${percent}** · ${reset}${count}${partial}`];
+            if (group.pool && mode !== 'compact') {
+                poolLines.push(...this.buildHoverQuotaFamilies(group, activeId, now, full));
+            }
+            poolBlocks.push(poolLines.join('  \n'));
+        }
+        if (groups.length === 0) {
+            blocks.push(tBi('Waiting for quota data', '等待配额数据'));
+        } else if (mode === 'compact') {
+            blocks.push(...poolBlocks);
+        } else {
+            blocks.push(poolBlocks.join('\n\n'));
+        }
+        const footer: string[] = [];
+        if (groups.length > shown.length) {
+            const hidden = groups.length - shown.length;
+            footer.push(tBi(`+${hidden} quota ${hidden === 1 ? 'pool' : 'pools'} in Models`, `模型页另有 ${hidden} 个配额池`));
+        }
+        const resets = new Set(groups.flatMap(group => group.readings.flatMap(reading =>
+            reading.resetAt !== null && reading.resetAt > now ? [reading.resetAt] : [])));
+        if (mode !== 'compact' && resets.size > 1) {
+            const first = Math.min(...resets);
+            const date = formatResetAbsolute(new Date(first).toISOString());
+            footer.push(`$(clock) ${tBi('Next reset', '最近重置')} · ${resetCountdown(first, now)} · ${date}`);
+        }
+        if (footer.length) { blocks.push(footer.join('  \n')); }
+        return mode === 'compact' ? blocks.join('  \n') : blocks.join('\n\n');
+    }
+
+    private buildHoverQuotaFamilies(group: ModelQuotaGroup, activeId: string | undefined, now: number, full: boolean): string[] {
+        // A pool owns the allowance. Each base-model family appears once, regardless of effort.
+        const isActive = (member: ModelQuotaGroup['members'][number]) => activeId !== undefined
+            && member.readings.some(reading => reading.model === activeId);
+        const members = [...group.members].sort((a, b) => Number(isActive(b)) - Number(isActive(a)));
+        const visible = members.slice(0, full ? Infinity : 8);
+        const lines: string[] = [];
+        let line = '';
+        let widthText = '';
+        for (const member of visible) {
+            const name = truncateByDisplayWidth(normalizeHoverLine(member.label), 36);
+            const summary = summarizeQuotaReadings(member.readings);
+            const band = quotaPercentage(summary);
+            const extra = `${group.quotaDiffers || band === '—' ? ` ${band}` : ''}${group.resetDiffers
+                ? ` (${quotaResetLabel(summary, now, full)})` : ''}`;
+            const text = isActive(member) ? `**${escapeMarkdown(name)}**${escapeMarkdown(extra)}`
+                : escapeMarkdown(name + extra);
+            const combined = widthText ? `${widthText} · ${name}${extra}` : name + extra;
+            if (line && measureDisplayWidth(combined) > 58) {
+                lines.push(`› ${line}`);
+                line = text;
+                widthText = name + extra;
+            } else {
+                line = line ? `${line} · ${text}` : text;
+                widthText = combined;
+            }
+        }
+        if (line) { lines.push(`› ${line}`); }
+        const hidden = members.length - visible.length;
+        if (hidden) { lines.push(`› ${tBi(`+${hidden} more ${hidden === 1 ? 'model' : 'models'}`, `另有 ${hidden} 个模型`)}`); }
         return lines;
     }
 
-    /**
-     * Build plan info + model quota lines for tooltip (shared by update / idle / noConversation).
-     * Applies selectQuotaRows + "N more" when truncated. Full density does not truncate.
-     */
-    private buildQuotaLines(opts: {
-        maxQuotaRows: number;
-        isCompact: boolean;
-        currentId: string;
-        density: TooltipDensity;
-    }): string[] {
-        const result: string[] = [];
-
-        if (this.cachedPlanName && !opts.isCompact) {
-            result.push(`——————————`);
-            const planStr = this.cachedTierName && this.cachedTierName !== this.cachedPlanName
-                ? `**${escapeMarkdown(this.cachedPlanName)}** · **${escapeMarkdown(this.cachedTierName)}**`
-                : `**${escapeMarkdown(this.cachedPlanName)}**`;
-            result.push(`👤 ${tBi('Plan', '计划')}: ${planStr}`);
-        } else if (this.cachedPlanName && opts.isCompact) {
-            // compact: fold plan into a single short line only if present
-            const planStr = escapeMarkdown(this.cachedPlanName);
-            result.push(`👤 ${planStr}`);
-        }
-
-        const quotaModels = this.cachedConfigs.filter(c => c.quotaInfo);
-        if (quotaModels.length === 0) {
-            return result;
-        }
-
-        const { rows, hiddenCount, total } = selectQuotaRows(
-            quotaModels,
-            opts.currentId,
-            opts.maxQuotaRows,
-        );
-
-        result.push(`——————————`);
-        if (opts.isCompact && total > 0) {
-            const shown = rows.length;
-            const shownOf = tBi(
-                `Showing ${shown}/${total}`,
-                `显示 ${shown}/${total}`,
-            );
-            result.push(`⚡ ${tBi('Model Quota', '模型配额')}  (${shownOf})`);
-        } else {
-            result.push(`⚡ ${tBi('Model Quota', '模型配额')}`);
-        }
-        result.push('');
-
+    private formatResetCountdown(resetTime: string | undefined): string {
+        if (!resetTime) { return ''; }
+        const reset = Date.parse(resetTime);
         const now = Date.now();
-        const header = `| ${tBi('Model', '模型')} | % | ${tBi('Reset', '重置')} |`;
-        const sep = '|:--|--:|--:|';
-        const tableRows: string[] = [];
-        for (const c of rows) {
-            const qi = c.quotaInfo!;
-            const pct = Math.round(qi.remainingFraction * 100);
-            const bar = pct >= 80 ? '🟢' : pct > 20 ? '🟡' : '🔴';
-            let resetStr = '—';
-            if (qi.resetTime) {
-                const resetDate = new Date(qi.resetTime);
-                const diffMs = resetDate.getTime() - now;
-                if (diffMs > 0) {
-                    resetStr = formatResetContext(qi.resetTime, { nowMs: now });
-                }
-            }
-            // A collapsed pool row carries a " · N" suffix saying how many models it stands for.
-            // That count is the whole point of the row, so trim the model name to fit around it
-            // rather than letting a plain truncate eat the suffix from the right.
-            // selectQuotaRows attaches poolSize to the rows it collapses; it is a display concern,
-            // so it is not part of the ModelConfig the language server hands us.
-            const suffix = poolSizeSuffix((c as { poolSize?: number }).poolSize ?? 0);
-            const baseLabel = suffix && c.label.endsWith(suffix)
-                ? c.label.slice(0, -suffix.length)
-                : c.label;
-            const label = escapeMarkdown(
-                truncateByDisplayWidth(baseLabel, LABEL_MAX_DISPLAY_WIDTH - measureDisplayWidth(suffix)) + suffix,
-            );
-            tableRows.push(`| ${bar} ${label} | ${pct}% | 🔄 ${resetStr} |`);
-        }
-        result.push(header);
-        result.push(sep);
-        result.push(...tableRows);
-        result.push('');
-
-        // "N more" only when truncated (never in full density / zero hidden)
-        if (hiddenCount > 0 && opts.density !== 'full') {
-            result.push(
-                // "pools", not "models": rows are collapsed per quota pool, so hiddenCount counts
-                // pools. Saying "models" would understate what is hidden once more than one pool
-                // gets truncated — a hidden pool can stand for a dozen models.
-                tBi(
-                    `… and ${hiddenCount} more quota pools — click to view all`,
-                    `… 还有 ${hiddenCount} 个配额池，点击查看全部`,
-                ),
-            );
-        }
-
-        // Earliest reset — compact keeps one line; normal may keep both earliest + current
-        const earliest = this.getEarliestResetTime();
-        if (earliest) {
-            const earliestIso = earliest.toISOString();
-            result.push(
-                `🔔 ${tBi('Earliest reset at', '最近重置时间为')}: **${formatResetAbsolute(earliestIso, { includeSeconds: true })}** ` +
-                `(${formatResetCountdownFromMs(earliest.getTime() - Date.now())})`
-            );
-        }
-
-        if (!opts.isCompact && this.lastActiveModel) {
-            const currentConfig = this.cachedConfigs.find(c => c.model === this.lastActiveModel);
-            if (currentConfig?.quotaInfo?.resetTime) {
-                const resetDate = new Date(currentConfig.quotaInfo.resetTime);
-                if (resetDate.getTime() > Date.now()) {
-                    result.push(
-                        `⏳ ${tBi('Current model resets at', '当前模型重置于')}: ` +
-                        `**${formatResetAbsolute(currentConfig.quotaInfo.resetTime, { includeSeconds: true })}** ` +
-                        `(${formatResetCountdownFromMs(resetDate.getTime() - Date.now())}, ${escapeMarkdown(currentConfig.label)})`
-                    );
-                }
-            }
-        }
-
-        return result;
-    }
-
-    /**
-     * Show detailed info in a QuickPick panel.
-     */
-    async showDetailsPanel(
-        currentUsage: ContextUsage | null,
-        allTrajectoryUsages: ContextUsage[]
-    ): Promise<void> {
-        const items: vscode.QuickPickItem[] = [];
-
-        if (!currentUsage && allTrajectoryUsages.length === 0) {
-            items.push({
-                label: `$(info) ${t('panel.noData')}`,
-                description: '',
-            });
-        }
-
-        if (currentUsage) {
-            items.push({
-                label: `$(star) ${t('panel.currentSession')}`,
-                kind: vscode.QuickPickItemKind.Separator
-            });
-
-            const remaining = Math.max(0, currentUsage.contextLimit - currentUsage.contextUsed);
-            const compressionStats = calculateCompressionStats(currentUsage);
-            const sourceTag = currentUsage.isEstimated
-                ? `[${t('panel.estimated')}]`
-                : `[${t('panel.preciseShort')}]`;
-            const compressTag = currentUsage.compressionDetected
-                ? ` [${t(currentUsage.checkpointCompressionDrop > 0 ? 'panel.compressed' : 'panel.contextDecreased')}]`
-                : (currentUsage.usagePercent > 100 ? ` [${t('panel.compressing')}]` : '');
-            const imageTag = currentUsage.imageGenStepCount > 0 ? ` [📷×${currentUsage.imageGenStepCount}]` : '';
-            const gapsTag = currentUsage.hasGaps ? ` [⚠️${t('panel.gaps')}]` : '';
-            const tokenUnit = tBi('tokens', '令牌');
-            const compressionSource = compressionStats
-                ? (compressionStats.source === 'context' ? t('tooltip.contextDrop') : t('tooltip.checkpointDrop'))
-                : '';
-            const compDetail = compressionStats
-                ? `${t('panel.compression')}: ${compressionStats.dropTokens.toLocaleString()} ${tokenUnit} ` +
-                `(${compressionStats.dropPercent.toFixed(1)}%, ${compressionSource})`
-                : null;
-
-            items.push({
-                label: `$(pulse) ${currentUsage.title || t('panel.currentSessionLabel')}`,
-                description: `${currentUsage.modelDisplayName}`,
-                detail: [
-                    `${sourceTag}${compressTag}${imageTag}${gapsTag}`,
-                    `${t('panel.used')}: ${currentUsage.contextUsed.toLocaleString()} ${tokenUnit} | ${t('panel.limitLabel')}: ${currentUsage.contextLimit.toLocaleString()} ${tokenUnit}`,
-                    `${t('panel.modelOut')}: ${currentUsage.totalOutputTokens.toLocaleString()} | ${t('panel.toolOut')}: ${currentUsage.totalToolCallOutputTokens.toLocaleString()}`,
-                    `${t('panel.remaining')}: ${remaining.toLocaleString()} ${tokenUnit} | ${t('panel.usageLabel')}: ${currentUsage.usagePercent.toFixed(1)}% | ${t('panel.stepsLabel')}: ${currentUsage.stepCount}`,
-                    ...(compDetail ? [compDetail] : [])
-                ].join('\n')
-            });
-        }
-
-        const others = allTrajectoryUsages.filter(u => u.cascadeId !== currentUsage?.cascadeId);
-        if (others.length > 0) {
-            items.push({
-                label: `$(list-tree) ${t('panel.otherSessions')}`,
-                kind: vscode.QuickPickItemKind.Separator
-            });
-
-            for (const usage of others.slice(0, 10)) {
-                const remaining = Math.max(0, usage.contextLimit - usage.contextUsed);
-                const compressionStats = calculateCompressionStats(usage);
-                const sourceTag = usage.isEstimated ? t('panel.estimated') : t('panel.preciseShort');
-                const imageTag = usage.imageGenStepCount > 0 ? ` 📷×${usage.imageGenStepCount}` : '';
-                const compTag = usage.compressionDetected ? ' 🗜' : '';
-                const compDetail = compressionStats
-                    ? `${t('panel.comp')}: -${formatTokenCount(compressionStats.dropTokens)} (${compressionStats.dropPercent.toFixed(1)}%)`
-                    : null;
-                items.push({
-                    label: `$(comment) ${usage.title || usage.cascadeId.substring(0, 8)}`,
-                    description: `${usage.modelDisplayName} | ${usage.usagePercent.toFixed(1)}%${imageTag}${compTag}`,
-                    detail: [
-                        `[${sourceTag}] ${t('panel.used')}: ${formatTokenCount(usage.contextUsed)} / ${formatContextLimit(usage.contextLimit)}`,
-                        `${t('panel.modelOut')}: ${formatTokenCount(usage.totalOutputTokens)} | ${t('panel.toolOut')}: ${formatTokenCount(usage.totalToolCallOutputTokens)}`,
-                        `${t('panel.remaining')}: ${formatTokenCount(remaining)} | ${usage.stepCount} ${t('panel.stepsLabel')}`,
-                        ...(compDetail ? [compDetail] : [])
-                    ].join('\n')
-                });
-            }
-        }
-
-        // ─── Language Switch Entry ────────────────────────────────────────
-        const langLabels: Record<string, string> = {
-            zh: '中文',
-            en: 'English',
-            both: tBi('Bilingual', '双语'),
-        };
-        items.push({
-            label: `$(gear) ${tBi('Settings', '设置')}`,
-            kind: vscode.QuickPickItemKind.Separator
-        });
-        items.push({
-            label: `$(globe) ${t('command.switchLanguage')}`,
-            description: `[${langLabels[getLanguage()] || ''}]`,
-        });
-
-        const picked = await vscode.window.showQuickPick(items, {
-            title: `📊 ${t('panel.title')}`,
-            placeHolder: t('panel.placeholder'),
-            canPickMany: false
-        });
-
-        // If user picked the language switch item, open the language picker
-        const switchLabel = `$(globe) ${t('command.switchLanguage')}`;
-        if (picked && picked.label === switchLabel) {
-            vscode.commands.executeCommand('antigravity-context-monitor.switchLanguage');
-        }
-    }
-
-    /**
-     * Format a compact quota indicator for the current model.
-     * Returns e.g. "🟢85%" or "" if no quota info available.
-     */
-    private formatQuotaIndicator(modelId: string): string {
-        const config = this.cachedConfigs.find(c => c.model === modelId);
-        if (!config?.quotaInfo) { return ''; }
-        const pct = Math.round(config.quotaInfo.remainingFraction * 100);
-        const dot = pct >= 80 ? '🟢' : pct > 20 ? '🟡' : '🔴';
-        return `${dot}${pct}%`;
-    }
-
-    /**
-     * Format AI Credits indicator for status bar.
-     * Returns e.g. "⚡14,701" or "" if credits = 0.
-     */
-    private formatCreditsIndicator(): string {
-        if (this.cachedCreditsTotal <= 0) { return ''; }
-        return `⚡${this.cachedCreditsTotal.toLocaleString()}`;
-    }
-
-    private buildStatusText(icon: string, segments: string[]): string {
-        const visibleSegments = segments.map(s => s.trim()).filter(Boolean);
-        if (visibleSegments.length === 0) { return icon; }
-        return `|| ${icon} ${visibleSegments.join(' || ')} ||`;
-    }
-
-    /**
-     * Build credit info lines for tooltip.
-     * @param compact when true, only a single credits line (no billing-only branch noise).
-     */
-    private buildCreditsLines(compact: boolean = false): string[] {
-        const result: string[] = [];
-        if (this.cachedCreditsTotal <= 0 && this.cachedBillingDay <= 0) { return result; }
-
-        result.push(`——————————`);
-        if (this.cachedCreditsTotal > 0) {
-            const daysLeft = this.getDaysUntilRefresh();
-            let refreshStr = '';
-            if (daysLeft !== null) {
-                if (daysLeft === 0) {
-                    refreshStr = ` (${tBi('expires today', '今日到期')})`;
-                } else {
-                    refreshStr = ` (${daysLeft}${tBi('d until expiry', '天后到期')})`;
-                }
-            } else {
-                refreshStr = ` (${tBi('expiry date not set', '到期日未设置')})`;
-            }
-            result.push(`⚡ ${tBi('AI Credits', 'AI 积分')}: **${this.cachedCreditsTotal.toLocaleString()}**${refreshStr}`);
-        } else if (!compact && this.cachedBillingDay > 0) {
-            const daysLeft = this.getDaysUntilRefresh();
-            if (daysLeft !== null && daysLeft > 0) {
-                result.push(`⚡ ${tBi('Credits expire in', '积分到期还有')} **${daysLeft}** ${tBi('days', '天')}`);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Format a compact reset countdown string for StatusBar text.
-     * Tracks the specified model's reset time (current active model).
-     */
-    private formatResetCountdown(modelId?: string): string {
-        let resetDate: Date | null = null;
-
-        // Try to find the specific model's reset time
-        if (modelId) {
-            this.lastActiveModel = modelId;
-            const config = this.cachedConfigs.find(c => c.model === modelId);
-            if (config?.quotaInfo?.resetTime) {
-                resetDate = new Date(config.quotaInfo.resetTime);
-            }
-        }
-
-        // Fallback to earliest if current model has no reset info
-        if (!resetDate) {
-            resetDate = this.getEarliestResetTime();
-        }
-
-        if (!resetDate) { return ''; }
-        const diffMs = resetDate.getTime() - Date.now();
-        if (diffMs <= 0) { return ''; }
-        return `⏳${formatResetCountdownFromMs(diffMs)}`;
+        if (!Number.isFinite(reset) || reset <= now) { return ''; }
+        return `$(clock) ${formatResetCountdownFromMs(reset - now)}`;
     }
 
     dispose(): void {

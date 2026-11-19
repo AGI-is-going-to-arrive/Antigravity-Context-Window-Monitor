@@ -9,7 +9,6 @@ import {
     refreshWorkflowImageUsage,
     resetImageWorkflowCache,
     getContextLimit,
-    getModelDisplayName,
     normalizeModelDisplayName,
     normalizeUri,
     fetchFullUserStatus,
@@ -22,7 +21,10 @@ import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveMod
 import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit, setTooltipDiagLogger } from './statusbar';
 import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
-import { showMonitorPanel, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
+import { aiCreditTotal, currentAICredits } from './account-credits';
+import { groupModelQuotas } from './model-quota';
+import { MONITOR_COMMAND } from './monitor-overview';
+import { showMonitorPanel, refreshMonitorPanelLanguage, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
@@ -142,10 +144,6 @@ export function invalidateLiveModelMetadata(): void {
 /** Generation counter — prevents orphan timer chains. */
 // pollGeneration declared at top of module
 
-// isExplicitlyIdle: Reserved for future UI improvement — differentiate between
-// "cascade deleted → actively idle" vs "window just opened → no cascade yet".
-let isExplicitlyIdle = false;
-
 /** The last known model identifier — used to show correct context limit in idle state. */
 let lastKnownModel = '';
 
@@ -177,10 +175,6 @@ let lastPolledWorkspaceUri: string | undefined;
 
 /** Map of cascadeId → remaining polls to show compression indicator. */
 const compressionPersistCounters = new Map<string, number>();
-
-function clonePlain<T>(value: T): T {
-    return JSON.parse(JSON.stringify(value)) as T;
-}
 
 export function hasSameUsageInputs(
     cached: ContextUsage | null | undefined,
@@ -394,12 +388,6 @@ export function hasGMSummaryChanged(prev: GMSummary | null | undefined, next: GM
     return buildGMSummarySignature(prev) !== buildGMSummarySignature(next);
 }
 
-function persistResetSensitiveState(): void {
-    durableGlobalState.update('activityTrackerState', activityTracker.serialize());
-    durableGlobalState.update('gmTrackerState', gmTracker.serialize());
-    persistGMSummaryToFile(lastGMSummary);
-}
-
 /** Write GM summary to external file, stripping heavy text/metadata fields. */
 function persistGMSummaryToFile(summary: GMSummary | null | undefined): void {
     durableFileGlobalState.update('gmDetailedSummary', summary ? slimSummaryForPersistence(summary) : null);
@@ -495,6 +483,7 @@ export function buildUsageScopeTrajectories(
 function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
     return {
         currentUsage,
+        monitorStatus: statusBar?.monitorStatus,
         allTrajectoryUsages,
         allTrajectories: lastTrajectories,
         modelConfigs: cachedModelConfigs,
@@ -580,7 +569,9 @@ export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuota
     const poolMap = new Map<string, { labels: string[]; modelIds: string[]; resetTimes: string[]; minFraction: number }>();
     for (const c of configs) {
         if (!c.quotaInfo) { continue; }
-        const key = getQuotaPoolKey(c.model, c.quotaInfo.resetTime);
+        const rawReset = typeof c.quotaInfo.resetTime === 'string' ? c.quotaInfo.resetTime.trim() : '';
+        const resetTime = rawReset && rawReset !== '1970-01-01T00:00:00Z' ? rawReset : '';
+        const key = getQuotaPoolKey(c.model, resetTime || undefined);
         const pool = poolMap.get(key) || { labels: [], modelIds: [], resetTimes: [], minFraction: 1 };
         const label = c.label || c.model;
         if (label && !pool.labels.includes(label)) {
@@ -589,10 +580,13 @@ export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuota
         if (c.model && !pool.modelIds.includes(c.model)) {
             pool.modelIds.push(c.model);
         }
-        if (c.quotaInfo.resetTime && !pool.resetTimes.includes(c.quotaInfo.resetTime)) {
-            pool.resetTimes.push(c.quotaInfo.resetTime);
+        if (resetTime && !pool.resetTimes.includes(resetTime)) {
+            pool.resetTimes.push(resetTime);
         }
-        pool.minFraction = Math.min(pool.minFraction, c.quotaInfo.remainingFraction ?? 1);
+        const fraction = c.quotaInfo.remainingFraction;
+        if (typeof fraction === 'number' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1) {
+            pool.minFraction = Math.min(pool.minFraction, fraction);
+        }
         poolMap.set(key, pool);
     }
 
@@ -891,6 +885,7 @@ function updateAccountSnapshot(
                 durableGlobalState.update('gmTrackerState', gmTracker.serialize());
                 durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
                 persistGMSummaryToFile(lastGMSummary);
+                syncStatusBarTelemetry(true);
             }
         }
     }
@@ -936,9 +931,8 @@ function updateAccountSnapshot(
     }
 
     // Upsert current account
-    const validCredits = (userInfo.availableCredits || [])
-        .filter(c => c.creditAmount > 0)
-        .map(c => ({ creditType: c.creditType, creditAmount: c.creditAmount }));
+    const validCredits = currentAICredits(userInfo.availableCredits || []).flatMap(c =>
+        c.creditAmount === null ? [] : [{ creditType: c.creditType, creditAmount: c.creditAmount }]);
 
     accountSnapshots.set(email, {
         email,
@@ -971,8 +965,19 @@ function restoreAccountSnapshots(): void {
         accountSnapshots = new Map();
         for (const snap of saved) {
             if (snap.email) {
+                const sanitizedCredits = Array.isArray(snap.credits)
+                    ? currentAICredits(snap.credits.map(c => ({
+                        creditType: c.creditType,
+                        creditAmount: c.creditAmount,
+                        minimumCreditAmountForUsage: 0,
+                    }))).flatMap(c => c.creditAmount === null ? [] : [{ creditType: c.creditType, creditAmount: c.creditAmount }])
+                    : undefined;
                 // All restored snapshots start as inactive until a live fetch confirms
-                accountSnapshots.set(snap.email, { ...snap, isActive: false });
+                accountSnapshots.set(snap.email, {
+                    ...snap,
+                    credits: sanitizedCredits && sanitizedCredits.length > 0 ? sanitizedCredits : undefined,
+                    isActive: false,
+                });
             }
         }
     }
@@ -1043,9 +1048,7 @@ export function setAccountBillingDay(email: string, day: number): boolean {
     persistBillingDays();
     if (normalizedEmail === currentAccountEmail && typeof statusBar !== 'undefined') {
         applyDisplayPrefs();
-        if (currentUsage) {
-            statusBar.update(currentUsage);
-        }
+        statusBar.refreshFromConfig();
     }
     return true;
 }
@@ -1072,6 +1075,11 @@ function handleAccountSwitchIfNeeded(newEmail: string): boolean {
 
         currentAccountEmail = newEmail;
         gmTracker.setCurrentAccount(newEmail);
+        if (typeof statusBar !== 'undefined') {
+            statusBar.setCredits(null);
+            statusBar.setPlanName('', '');
+            statusBar.setTelemetry(null);
+        }
         applyDisplayPrefs(); // refresh billing day for new account
         return true;
     }
@@ -1140,6 +1148,7 @@ function baselineExpiredPoolsForAccount(email: string): void {
             durableGlobalState.update('gmTrackerState', gmTracker.serialize());
             durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
             persistGMSummaryToFile(lastGMSummary);
+            syncStatusBarTelemetry(true);
         }
 
         // ── Step 3: Show notification ──
@@ -1188,6 +1197,7 @@ function performDailyArchival(force = false): void {
             durableGlobalState.update('gmTrackerState', gmTracker.serialize());
             durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
             persistGMSummaryToFile(lastGMSummary);
+            syncStatusBarTelemetry(true);
         },
         log,
     };
@@ -1236,6 +1246,7 @@ export function activate(context: vscode.ExtensionContext): void {
         lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
         durableGlobalState.update('gmTrackerState', gmTracker.serialize());
         persistGMSummaryToFile(lastGMSummary);
+        syncStatusBarTelemetry(true);
 
         // Refresh panel immediately so user sees fresh counts
         if (isMonitorPanelVisible()) {
@@ -1433,8 +1444,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Register commands
     context.subscriptions.push(
-        vscode.commands.registerCommand('antigravity-context-monitor.showDetails', () => {
-            showMonitorPanel(makePanelPayload({ context }));
+        vscode.commands.registerCommand(MONITOR_COMMAND, (destination: unknown) => {
+            const initialTab = destination === 'models' || destination === 'settings' ? destination : 'overview';
+            showMonitorPanel(makePanelPayload({ context, initialTab }));
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
@@ -1450,9 +1462,7 @@ export function activate(context: vscode.ExtensionContext): void {
             showLanguagePicker(context, durableGlobalState).then(() => {
                 // Rebuild statusBar and WebView to reflect new language immediately
                 statusBar.refreshFromConfig();
-                if (isMonitorPanelVisible()) {
-                    updateMonitorPanel(makePanelPayload());
-                }
+                refreshMonitorPanelLanguage();
             });
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.showActivityPanel', () => {
@@ -1519,13 +1529,9 @@ export function activate(context: vscode.ExtensionContext): void {
                 statusBar.refreshFromConfig();
                 log('Status bar display preferences updated');
             }
-            // issue #63: zoom / tooltip density → re-render tooltip (idle/no-conv/update)
-            if (
-                e.affectsConfiguration('window.zoomLevel')
-                || e.affectsConfiguration('antigravityContextMonitor.statusBar.tooltipDensity')
-            ) {
+            if (e.affectsConfiguration('window.zoomLevel')) {
                 statusBar.refreshFromConfig();
-                log('Status bar tooltip density/zoom updated — tooltip re-rendered');
+                log('Window zoom updated — status bar tooltip re-rendered');
             }
             if (e.affectsConfiguration('antigravityContextMonitor.showModelInternalId')) {
                 const newConfig = vscode.workspace.getConfiguration('antigravityContextMonitor');
@@ -1590,18 +1596,40 @@ function applyDisplayPrefs(): void {
         showQuota: cfg.get<boolean>('statusBar.showQuota', true),
         showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
         showAiCredits: cfg.get<boolean>('statusBar.showAiCredits', true),
+        showSpeed: cfg.get<boolean>('statusBar.showSpeed', false),
+        showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', false),
     });
     statusBar.setBillingDay(billingDaysMap[currentAccountEmail] ?? 0);
 }
 
 /**
+ * Push live account-filtered GM telemetry into StatusBarManager.
+ * Pass `activeCascadeOverride = null` when idle/no-conversation to fall back to session scope.
+ */
+function syncStatusBarTelemetry(refresh = false, activeCascadeOverride?: string | null): void {
+    if (typeof statusBar === 'undefined' || typeof gmTracker === 'undefined') { return; }
+    const summary = gmTracker.getUiSummary();
+    const activeCascadeId = activeCascadeOverride === null
+        ? undefined
+        : (activeCascadeOverride ?? currentUsage?.cascadeId ?? trackedCascadeId ?? undefined);
+    const customPricing = pricingStore?.getCustom();
+    statusBar.setTelemetry(summary, activeCascadeId, customPricing);
+    if (refresh) {
+        statusBar.refreshFromConfig();
+    }
+}
+
+/** Recompute and re-render status bar telemetry (e.g. after custom pricing edits). */
+export function refreshStatusBarTelemetry(): void {
+    syncStatusBarTelemetry(true);
+}
+
+/**
  * Push current account's total AI credits to the status bar.
+ * Passes `null` when credits are unknown/unreported so the UI never fabricates `0`.
  */
 function updateStatusBarCredits(userInfo: UserStatusInfo | null): void {
-    if (!userInfo) { statusBar.setCredits(0); return; }
-    const total = (userInfo.availableCredits || [])
-        .reduce((sum, c) => sum + (c.creditAmount > 0 ? c.creditAmount : 0), 0);
-    statusBar.setCredits(total);
+    statusBar.setCredits(aiCreditTotal(userInfo?.availableCredits || []));
 }
 
 /**
@@ -1696,7 +1724,7 @@ async function pollContextUsage(): Promise<void> {
                     durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
                     durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
                     durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
-                    log(`User: ${fullStatus.userInfo.name} (${fullStatus.userInfo.planName}) credits: prompt=${fullStatus.userInfo.availablePromptCredits} flow=${fullStatus.userInfo.availableFlowCredits}`);
+                    log(`User plan: ${fullStatus.userInfo.planName}`);
                     updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                 }
             } catch { /* Silent degradation */ }
@@ -1810,6 +1838,7 @@ async function pollContextUsage(): Promise<void> {
         if (trajectories.length === 0) {
             const noConvLimit = getContextLimit(lastKnownModel);
             const noConvLimitStr = formatContextLimit(noConvLimit);
+            syncStatusBarTelemetry(false, null);
             statusBar.showNoConversation(noConvLimitStr, lastKnownModel);
             currentUsage = null;
             allTrajectoryUsages = monitorStore.getAll();
@@ -1934,7 +1963,6 @@ async function pollContextUsage(): Promise<void> {
             if (trackedCascadeId !== newCandidateId) {
                 log(`Switched cascade: ${trackedCascadeId?.substring(0, 8) || 'none'} → ${newCandidateId.substring(0, 8)} (${selectionReason})`);
                 trackedCascadeId = newCandidateId;
-                isExplicitlyIdle = false;
                 consecutiveIdlePolls = 0;
                 stalenessConfirmedIdle = false;
             } else if (selectionReason) {
@@ -1946,7 +1974,6 @@ async function pollContextUsage(): Promise<void> {
             if (!currentTracked) {
                 log(`Tracked cascade ${trackedCascadeId.substring(0, 8)} no longer in any list, clearing`);
                 trackedCascadeId = null;
-                isExplicitlyIdle = true;
             }
         }
 
@@ -1966,6 +1993,7 @@ async function pollContextUsage(): Promise<void> {
             const idleLimit = getContextLimit(lastKnownModel);
             const idleLimitStr = formatContextLimit(idleLimit);
             log(`No active trajectory — showing idle (model=${lastKnownModel || 'default'}, limit=${idleLimitStr})`);
+            syncStatusBarTelemetry(false, null);
             statusBar.showIdle(idleLimitStr, lastKnownModel);
             currentUsage = null;
             allTrajectoryUsages = monitorStore.getAll();
@@ -1993,6 +2021,7 @@ async function pollContextUsage(): Promise<void> {
         if (lastGMSummary && trackedCascadeId) {
             applyGMContextToUsage(currentUsage, getLatestGMContextUsed(lastGMSummary, trackedCascadeId));
         }
+        syncStatusBarTelemetry(false, currentUsage.cascadeId);
         statusBar.update(currentUsage);
 
         // Track the model for idle-state display
@@ -2087,6 +2116,7 @@ async function pollContextUsage(): Promise<void> {
 
                 // Fetch GM data (piggyback on same poll cycle)
                 let gmChanged = false;
+                const hadUiSummary = gmTracker.getUiSummary() !== null;
                 try {
                     const prevSummary = lastGMSummary;
                     const gmSummary = await gmTracker.fetchAll(
@@ -2193,6 +2223,7 @@ async function pollContextUsage(): Promise<void> {
                 // Inject GM precision data into activity timeline events.
                 // GM is the SOLE source of truth for timeline — always inject when data exists.
                 let timelineChanged = false;
+                let gmEnhancedStatusBar = false;
                 if (lastGMSummary) {
                     timelineChanged = activityTracker.injectGMData(lastGMSummary);
 
@@ -2201,10 +2232,16 @@ async function pollContextUsage(): Promise<void> {
                         const gmCtx = getLatestGMContextUsed(lastGMSummary, trackedCascadeId);
                         const oldUsed = currentUsage.contextUsed;
                         if (applyGMContextToUsage(currentUsage, gmCtx)) {
-                            statusBar.update(currentUsage);
+                            gmEnhancedStatusBar = true;
                             log(`Status bar enhanced with GM precision: contextUsed ${oldUsed} → ${gmCtx}`);
                         }
                     }
+                }
+                syncStatusBarTelemetry(false, currentUsage?.cascadeId || trackedCascadeId || undefined);
+                if (gmEnhancedStatusBar && currentUsage) {
+                    statusBar.update(currentUsage);
+                } else if (gmChanged || timelineChanged || !hadUiSummary) {
+                    statusBar.refreshFromConfig();
                 }
 
                 // Throttled activity persistence (max once per 30s)
@@ -2334,11 +2371,20 @@ function checkQuotaNotification(configs: import('./models').ModelConfig[]): void
 
     const thresholdFrac = thresholdPct / 100;
 
-    // Group models by stable quota pool. Known pools must not be merged just
-    // because their resetTime strings happen to match.
+    // Group models by stable quota pool and merge effort levels into base-model names.
+    const mergedLabelsByPool = new Map<string, string[]>();
+    for (const quotaGroup of groupModelQuotas(configs)) {
+        const key = quotaGroup.pool || quotaGroup.key;
+        const labels = quotaGroup.members.map(m => m.label).filter(Boolean);
+        if (labels.length > 0) {
+            mergedLabelsByPool.set(key, labels);
+        }
+    }
+
     const groups = new Map<string, { labels: string[]; minFraction: number }>();
     for (const group of groupModelConfigsByQuotaPool(configs)) {
-        groups.set(group.key, { labels: group.labels, minFraction: group.minFraction });
+        const displayLabels = mergedLabelsByPool.get(group.key) || group.labels;
+        groups.set(group.key, { labels: displayLabels, minFraction: group.minFraction });
     }
 
     for (const [groupKey, group] of groups) {
@@ -2439,6 +2485,7 @@ function checkCachedAccountResets(): void {
                 durableGlobalState.update('gmTrackerState', gmTracker.serialize());
                 durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
                 persistGMSummaryToFile(lastGMSummary);
+                syncStatusBarTelemetry(true);
             } else {
                 log(`[ResetCheck]   baselineForQuotaReset returned 0 — no calls to archive`);
             }

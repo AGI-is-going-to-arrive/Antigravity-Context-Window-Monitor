@@ -11,11 +11,6 @@ interface PricingInputLike {
     getAttribute(name: string): string | null;
 }
 
-interface ModelLimitInputLike {
-    value: string;
-    getAttribute(name: string): string | null;
-}
-
 export function collectPricingInputOverrides(inputs: ArrayLike<PricingInputLike>): Record<string, ModelPricing> {
     const values: Record<string, ModelPricing> = {};
     const shouldPersist: Record<string, boolean> = {};
@@ -115,14 +110,16 @@ export function getScript(): string {
             function flashProfileBillingFeedback(text, isError) {
                 var el = document.getElementById('profileBillingDayFeedback');
                 if (el) {
-                    el.style.color = isError ? 'var(--color-danger)' : 'var(--color-ok)';
+                    el.style.color = isError ? 'var(--ed-danger)' : 'var(--ed-good)';
                 }
                 flashFeedback('profileBillingDayFeedback', text, 2000);
             }
 
             // ─── Tab System ───
-            var activeTab = savedState.activeTab || 'gmdata';
             var tabBtns = document.querySelectorAll('.tab-btn');
+            var defaultTab = document.querySelector('.tab-btn.active');
+            var activeTab = defaultTab ? defaultTab.dataset.tab : 'gmdata';
+            var requestedTab = savedState.activeTab || document.body.getAttribute('data-initial-tab');
             var tabPanes = document.querySelectorAll('.tab-pane');
             var lastTabHtmls = {};
             var eocVisibleTabs = {};
@@ -167,12 +164,7 @@ export function getScript(): string {
                 }
             }
 
-            // ─── Tab Slider: position & color ───
-            var colorMap = {
-                blue: '96,165,250', green: '74,222,128', orange: '251,146,60',
-                purple: '167,139,250', cyan: '34,211,238', yellow: '250,204,21',
-                gray: '148,163,184'
-            };
+            // ─── Tab Slider: position ───
             function isTabHintEnabled() {
                 return document.body.getAttribute('data-tab-hint-enabled') !== 'false';
             }
@@ -192,10 +184,6 @@ export function getScript(): string {
                 if (!bar || !slider || !active) return;
                 slider.style.left = active.offsetLeft + 'px';
                 slider.style.width = active.offsetWidth + 'px';
-                var c = active.dataset.color;
-                if (c && colorMap[c]) {
-                    slider.style.setProperty('--slider-c', colorMap[c]);
-                }
             }
             function updateTabOverflowHint() {
                 var bar = document.querySelector('.tab-bar');
@@ -214,16 +202,24 @@ export function getScript(): string {
                 var needsHint = overflowX > 8;
                 hint.hidden = !needsHint;
             }
-            function switchTab(tabName) {
-                // Save outgoing tab scroll position
+            function switchTab(tabName, focusTab, restoring) {
+                var selected = Array.from(tabBtns).find(function(button) { return button.dataset.tab === tabName; });
+                if (!selected) { return; }
+                if (!restoring && activeTab === tabName) {
+                    if (focusTab) { selected.focus({ preventScroll: true }); }
+                    selected.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+                    return;
+                }
                 var s = vscode.getState() || {};
                 var ts = s.tabScrolls || {};
-                ts[activeTab] = window.scrollY;
+                if (!restoring) { ts[activeTab] = window.scrollY; }
                 s.tabScrolls = ts;
 
                 activeTab = tabName;
                 for (var i = 0; i < tabBtns.length; i++) {
-                    tabBtns[i].classList.toggle('active', tabBtns[i].dataset.tab === tabName);
+                    tabBtns[i].classList.toggle('active', tabBtns[i] === selected);
+                    if (tabBtns[i] === selected) { tabBtns[i].setAttribute('aria-current', 'page'); }
+                    else { tabBtns[i].removeAttribute('aria-current'); }
                 }
                 for (var j = 0; j < tabPanes.length; j++) {
                     tabPanes[j].classList.toggle('active', tabPanes[j].id === 'tab-' + tabName);
@@ -231,26 +227,46 @@ export function getScript(): string {
                 s.activeTab = tabName;
                 vscode.setState(s);
 
+                // Focus synchronously on the visible tab button to avoid async rAF focus steals
+                if (focusTab) { selected.focus({ preventScroll: true }); }
+
                 updateTabSlider();
                 updateTabOverflowHint();
                 updateTabArrows();
 
-
-                // Restore incoming tab scroll position
+                // Restore incoming tab scroll position after layout
                 tabScrolls = ts; // Update local ref
                 var targetY = ts[tabName] || 0;
-                requestAnimationFrame(function() { window.scrollTo(0, targetY); });
+                requestAnimationFrame(function() {
+                    if (activeTab !== tabName) { return; }
+                    selected.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+                    window.scrollTo(0, targetY);
+                    updateTabSlider();
+                });
             }
-            // Restore active tab from state
-            if (activeTab !== 'gmdata') { switchTab(activeTab); }
-            // Init slider position (must wait for layout)
-            requestAnimationFrame(function() { updateTabSlider(); updateTabOverflowHint(); });
+            if (requestedTab) { switchTab(requestedTab, false, true); }
+            // Init slider position (must wait for layout and font settlement)
+            requestAnimationFrame(function() { updateTabSlider(); updateTabOverflowHint(); updateTabArrows(); });
+            if (document.fonts && document.fonts.ready) {
+                document.fonts.ready.then(function() {
+                    updateTabSlider();
+                    updateTabOverflowHint();
+                    updateTabArrows();
+                });
+            }
             var tabBarEl = document.querySelector('.tab-bar');
             if (tabBarEl) {
                 tabBarEl.addEventListener('scroll', function() {
                     updateTabOverflowHint();
                     updateTabArrows();
                 }, { passive: true });
+                if (typeof ResizeObserver !== 'undefined') {
+                    new ResizeObserver(function() {
+                        updateTabSlider();
+                        updateTabOverflowHint();
+                        updateTabArrows();
+                    }).observe(tabBarEl);
+                }
             }
             window.addEventListener('resize', function() {
                 updateTabSlider();
@@ -323,7 +339,20 @@ export function getScript(): string {
                     switchTab(this.dataset.tab);
                 });
             }
-            // data-switch-tab links: handled by body delegation below
+            if (tabBarEl) {
+                tabBarEl.addEventListener('keydown', function(event) {
+                    var targetBtn = event.target && event.target.closest ? event.target.closest('.tab-btn') : event.target;
+                    var index = Array.from(tabBtns).indexOf(targetBtn);
+                    if (index < 0) { return; }
+                    if (event.key === 'ArrowLeft') { index = (index - 1 + tabBtns.length) % tabBtns.length; }
+                    else if (event.key === 'ArrowRight') { index = (index + 1) % tabBtns.length; }
+                    else if (event.key === 'Home') { index = 0; }
+                    else if (event.key === 'End') { index = tabBtns.length - 1; }
+                    else { return; }
+                    event.preventDefault();
+                    tabBtns[index].focus();
+                });
+            }
 
 
             // ─── Account Popover Toggle ───
@@ -338,6 +367,7 @@ export function getScript(): string {
                     acctPopoverOpen = !acctPopoverOpen;
                 }
                 trigger.classList.toggle('is-open', acctPopoverOpen);
+                trigger.setAttribute('aria-expanded', String(acctPopoverOpen));
                 if (acctPopoverOpen) {
                     dropdown.hidden = false;
                     requestAnimationFrame(function() {
@@ -367,20 +397,28 @@ export function getScript(): string {
                 if (ddPanel && ddPanel.contains(e.target)) return;
                 toggleAccountPopover(true);
             });
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape' && acctPopoverOpen) {
+                    toggleAccountPopover(true);
+                    if (acctTriggerBtn) { acctTriggerBtn.focus(); }
+                    e.stopPropagation();
+                }
+            });
 
             function restoreDetailsState(rootState) {
                 var ds = (rootState && rootState.detailsOpen) || {};
                 var dd = document.querySelectorAll('details[id]');
                 for (var di = 0; di < dd.length; di++) {
                     var det = dd[di];
-                    if (Object.prototype.hasOwnProperty.call(ds, det.id)) {
-                        det.open = !!ds[det.id];
+                    var stateKey = det.dataset.stateKey || det.id;
+                    if (Object.prototype.hasOwnProperty.call(ds, stateKey)) {
+                        det.open = !!ds[stateKey];
                     }
                     if (det.getAttribute('data-details-bound') !== 'true') {
                         det.addEventListener('toggle', function() {
                             var s = vscode.getState() || {};
                             var dso = s.detailsOpen || {};
-                            dso[this.id] = this.open;
+                            dso[this.dataset.stateKey || this.id] = this.open;
                             s.detailsOpen = dso;
                             vscode.setState(s);
                         });
@@ -401,6 +439,11 @@ export function getScript(): string {
                 }
 
                 function applyHistoryFilters() {
+                    for (var fi = 0; fi < filterBtns.length; fi++) {
+                        var selected = filterBtns[fi].dataset.historyFilter === activeFilter;
+                        filterBtns[fi].classList.toggle('is-active', selected);
+                        filterBtns[fi].setAttribute('aria-pressed', String(selected));
+                    }
                     var query = searchInput ? (searchInput.value || '').toLowerCase().trim() : '';
                     var rows = document.querySelectorAll('[data-history-row="true"]');
                     for (var ri = 0; ri < rows.length; ri++) {
@@ -444,14 +487,10 @@ export function getScript(): string {
                             var s = vscode.getState() || {};
                             s.historyFilter = activeFilter;
                             vscode.setState(s);
-                            for (var bi = 0; bi < filterBtns.length; bi++) {
-                                filterBtns[bi].classList.toggle('is-active', filterBtns[bi] === this);
-                            }
                             applyHistoryFilters();
                         });
                         filterBtns[fi].setAttribute('data-history-bound', 'true');
                     }
-                    filterBtns[fi].classList.toggle('is-active', filterBtns[fi].dataset.historyFilter === activeFilter);
                 }
 
                 var shortcutBtns = document.querySelectorAll('[data-history-shortcut]');
@@ -462,9 +501,6 @@ export function getScript(): string {
                             var s = vscode.getState() || {};
                             s.historyFilter = activeFilter;
                             vscode.setState(s);
-                            for (var bi = 0; bi < filterBtns.length; bi++) {
-                                filterBtns[bi].classList.toggle('is-active', filterBtns[bi].dataset.historyFilter === activeFilter);
-                            }
                             applyHistoryFilters();
                         });
                         shortcutBtns[si].setAttribute('data-history-bound', 'true');
@@ -526,6 +562,11 @@ export function getScript(): string {
                 s.zoomLevel = level;
                 vscode.setState(s);
                 vscode.postMessage({ command: 'setZoomLevel', value: level });
+                requestAnimationFrame(function() {
+                    updateTabSlider();
+                    updateTabOverflowHint();
+                    updateTabArrows();
+                });
             }
             // Apply on load
             if (zoomLevel !== 100) { applyZoom(zoomLevel); }
@@ -553,8 +594,15 @@ export function getScript(): string {
             if (zoomValEl) { zoomValEl.textContent = zoomLevel + '%'; }
 
             // ─── Settings: Status Bar Toggles ───
-            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'toggleAiCredits', 'toggleModelInternalId'];
-            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'statusBar.showAiCredits', 'showModelInternalId'];
+            var tooltipDensitySelect = document.getElementById('statusTooltipDensity');
+            if (tooltipDensitySelect) {
+                tooltipDensitySelect.addEventListener('change', function() {
+                    vscode.postMessage({ command: 'setConfig', key: 'statusBar.tooltipDensity', value: this.value });
+                });
+            }
+
+            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'toggleAiCredits', 'toggleSpeed', 'toggleCacheHit', 'toggleModelInternalId'];
+            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'statusBar.showAiCredits', 'statusBar.showSpeed', 'statusBar.showCacheHit', 'showModelInternalId'];
             for (var tgi = 0; tgi < toggleIds.length; tgi++) {
                 (function(idx) {
                     var cb = document.getElementById(toggleIds[idx]);
@@ -608,8 +656,11 @@ export function getScript(): string {
             var switcher = document.querySelector('.lang-switcher');
             if (switcher) {
                 switcher.addEventListener('click', function(e) {
-                    var btn = e.target;
-                    if (btn.classList && btn.classList.contains('lang-btn')) {
+                    var target = e.target instanceof Element
+                        ? e.target
+                        : (e.target && e.target.parentElement ? e.target.parentElement : null);
+                    var btn = target && target.closest ? target.closest('.lang-btn') : null;
+                    if (btn && btn.dataset && btn.dataset.lang) {
                         vscode.postMessage({ command: 'switchLanguage', lang: btn.dataset.lang });
                     }
                 });
@@ -625,9 +676,15 @@ export function getScript(): string {
 
             // ─── Refresh Button ───
             var refreshBtn = document.getElementById('refreshBtn');
+            var _refreshSpinTimer = null;
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', function() {
-                    this.classList.add('spinning');
+                    var btn = this;
+                    btn.classList.remove('spinning');
+                    void btn.offsetWidth;
+                    btn.classList.add('spinning');
+                    if (_refreshSpinTimer) { clearTimeout(_refreshSpinTimer); }
+                    _refreshSpinTimer = setTimeout(function() { btn.classList.remove('spinning'); }, 650);
                     vscode.postMessage({ command: 'refresh' });
                 });
             }
@@ -777,18 +834,24 @@ export function getScript(): string {
 
             // pricing Save/Reset: handled by body delegation below
 
-            // privacy mask: handled by body delegation below
-            // Apply initial mask state (read-only, no binding)
+            // Fail closed in the HTML, then restore the current webview preference.
             var privacyDefault = document.body.getAttribute('data-privacy-default') === 'true';
-            var initialMasked = savedState.privacyMasked !== undefined ? !!savedState.privacyMasked : privacyDefault;
-            if (initialMasked) {
-                var initTargets = document.querySelectorAll('[data-real][data-masked]');
-                for (var imj = 0; imj < initTargets.length; imj++) {
-                    initTargets[imj].textContent = initTargets[imj].getAttribute('data-masked');
-                }
-                var initBtn = document.getElementById('privacyToggle');
-                if (initBtn) { initBtn.classList.add('active'); }
+            function isAccountMasked() {
+                var state = vscode.getState() || {};
+                return state.privacyMasked !== undefined ? !!state.privacyMasked : privacyDefault;
             }
+            function applyPrivacyMask() {
+                var masked = isAccountMasked();
+                document.querySelectorAll('[data-real][data-masked]').forEach(function(node) {
+                    node.textContent = node.getAttribute(masked ? 'data-masked' : 'data-real');
+                });
+                var button = document.getElementById('privacyToggle');
+                if (button) {
+                    button.classList.toggle('active', masked);
+                    button.setAttribute('aria-pressed', String(masked));
+                }
+            }
+            applyPrivacyMask();
 
             // ─── Restore scroll position (per-tab, debounced) ───
             var tabScrolls = savedState.tabScrolls || {};
@@ -851,6 +914,12 @@ export function getScript(): string {
                 if (errFull) {
                     var det = errFull.closest('details.gm-err-expand');
                     if (det) { det.removeAttribute('open'); }
+                    return;
+                }
+
+                var overviewAction = target.closest('[data-overview-target]');
+                if (overviewAction) {
+                    switchTab(overviewAction.dataset.overviewTarget, true);
                     return;
                 }
 
@@ -960,16 +1029,10 @@ export function getScript(): string {
 
                 // ── Privacy Mask Toggle ──
                 if (target.closest('#privacyToggle')) {
-                    var pBtn = target.closest('#privacyToggle');
                     var st = vscode.getState() || {};
-                    var m = !st.privacyMasked;
-                    st.privacyMasked = m;
+                    st.privacyMasked = !isAccountMasked();
                     vscode.setState(st);
-                    var tgts = document.querySelectorAll('[data-real][data-masked]');
-                    for (var k = 0; k < tgts.length; k++) {
-                        tgts[k].textContent = m ? tgts[k].getAttribute('data-masked') : tgts[k].getAttribute('data-real');
-                    }
-                    pBtn.classList.toggle('active', m);
+                    applyPrivacyMask();
                     return;
                 }
 
@@ -1122,6 +1185,9 @@ export function getScript(): string {
                 var msg = event.data;
                 if (msg && msg.command === 'switchToTab' && msg.tab) {
                     switchTab(msg.tab);
+                    if (typeof msg.requestId === 'number') {
+                        vscode.postMessage({ command: 'tabShown', requestId: msg.requestId });
+                    }
                 } else if (msg && (msg.command === 'pricingSaved' || msg.command === 'pricingReset')) {
                     var fb = document.getElementById('pricingFeedback');
                     if (fb) {
@@ -1166,7 +1232,41 @@ export function getScript(): string {
                                     }
                                 });
                             }
+                            var overviewFocus = key === 'overview' && pane.contains(document.activeElement)
+                                ? document.activeElement.dataset.overviewFocus : undefined;
+                            var diagnostics = key === 'overview' ? pane.querySelector('#overview-session-diagnostics') : null;
+                            if (diagnostics) {
+                                var overviewState = vscode.getState() || {};
+                                var openDetails = overviewState.detailsOpen || {};
+                                // At a polling boundary a queued toggle may have yet to save the state.
+                                openDetails[diagnostics.dataset.stateKey] = diagnostics.open;
+                                overviewState.detailsOpen = openDetails;
+                                vscode.setState(overviewState);
+                            }
+                            var billingInput = key === 'profile' ? pane.querySelector('#profileBillingDayInput') : null;
+                            var billingDraft = billingInput && billingInput.value !== billingInput.defaultValue ? billingInput.value : null;
+                            var billingFocused = billingInput && billingInput === document.activeElement;
+                            var billingAccount = billingInput && billingInput.dataset.email;
+                            var privacyFocused = key === 'profile' && document.activeElement?.id === 'privacyToggle';
                             pane.innerHTML = tabs[key];
+                            if (billingInput) {
+                                var nextBilling = pane.querySelector('#profileBillingDayInput');
+                                if (nextBilling && nextBilling.dataset.email === billingAccount) {
+                                    if (billingDraft !== null) { nextBilling.value = billingDraft; }
+                                    if (billingFocused) { nextBilling.focus({ preventScroll: true }); }
+                                }
+                            }
+                            if (privacyFocused) { pane.querySelector('#privacyToggle')?.focus({ preventScroll: true }); }
+                            if (overviewFocus) {
+                                var focusTarget = Array.from(pane.querySelectorAll('[data-overview-focus]')).find(function(el) {
+                                    return el.dataset.overviewFocus === overviewFocus;
+                                });
+                                if (focusTarget) { focusTarget.focus({ preventScroll: true }); }
+                                else {
+                                    var overviewHeading = pane.querySelector('#overview-heading');
+                                    if (overviewHeading) { overviewHeading.focus({ preventScroll: true }); }
+                                }
+                            }
                             if (pricingDrafts.size) {
                                 pane.querySelectorAll('.pricing-input').forEach(function(input) {
                                     var identity = JSON.stringify([input.getAttribute('data-model'), input.getAttribute('data-field')]);
@@ -1234,17 +1334,7 @@ export function getScript(): string {
                         if (calCell) { calCell.classList.add('selected'); }
                     }
 
-                    // Re-apply privacy mask if active (delegation handles clicks, just restore visual state)
-                    var privState = vscode.getState() || {};
-                    var isMasked = privState.privacyMasked !== undefined ? !!privState.privacyMasked : (document.body.getAttribute('data-privacy-default') === 'true');
-                    if (isMasked) {
-                        var targets = document.querySelectorAll('[data-real][data-masked]');
-                        for (var pj = 0; pj < targets.length; pj++) {
-                            targets[pj].textContent = targets[pj].getAttribute('data-masked');
-                        }
-                        var privBtnEl = document.getElementById('privacyToggle');
-                        if (privBtnEl) { privBtnEl.classList.add('active'); }
-                    }
+                    applyPrivacyMask();
 
                     // ── Account Popover: content-only refresh, preserve open/close state ──
                     if (typeof tabs.accountPopover === 'string') {
@@ -1272,6 +1362,8 @@ export function getScript(): string {
                     // (tab button widths may change due to language or data updates)
                     updateTabSlider();
                     updateTabOverflowHint();
+                    updateTabArrows();
+                    if (refreshBtn) { refreshBtn.classList.remove('spinning'); }
                     bindHistoryCatalog();
                     bindEocObserver();
                     requestAnimationFrame(function() { initErrorOverflow(); });
@@ -1312,6 +1404,7 @@ export function getScript(): string {
                 }
             }
             bindEocObserver();
+            vscode.postMessage({ command: 'panelReady' });
         })();
     `;
 }
