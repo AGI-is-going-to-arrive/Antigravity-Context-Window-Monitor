@@ -2,27 +2,26 @@
 
 在 Antigravity IDE 中实时监控会话上下文、Orchestrator 编排与执行路由、双窗口模型配额（`5h` + `周`）、模型生成速度（`tok/s`）、首字延迟与提示词缓存效率、API 等价费用（美元 USD）、重置时间和 AI 积分。
 
-**1.17.3** 修复了 `agy` v1.5.14+ 后端发现异常（彻底解决因 `GetUnleashData` 接口下线导致的「上下文: 不可用」），全面支持**自定义编排模式与 Orchestrator 设置**（含 **Orchestrator Claude Opus 5.5**、跨池 `规划 → 执行` 追踪、Neon 与 Hydrogen 统一的 `超高 / Extra High` 思考档位，以及 512K 实时检查点上限），新增**双窗口配额（`5 小时` + `每周`）**，全面更新**官方模型计费表**（新增 **Gemini 4 Neon** `$3/$15/$0.15` 官方价、修正 **Claude Sonnet 5.5** 缓存读取费率 `$0.20 → $0.10`、补充 **Gemini 3.6 Flash** 有界优惠区间，并以美元展示官方定时调价倒计时），同时全面重构**状态栏悬停摘要**并在 **GM 数据**页新增可折叠的**最近调用明细**。
+**1.17.4** 彻底修复了**状态栏悬停摘要闪烁**问题（三层治理：全属性差异门控提交并完整保留 `isTrusted` 命令白名单、消除 10 秒辅助元数据 / 空 GM / 断连重试的冗余刷新、单调稳定的分钟边界倒计时），加固了 Windows/macOS/Linux/IPv6 的**次要端口 TLS 优先探测**与 `GetUserStatus` 响应结构校验，并统一实施**严格 RFC 3339 / ISO-8601 纪元零值与按时间顺序排序的配额池重置处理**（吸收并加固了 `@AxelDZP` 的 PR #74 修复）。
 
-[English](README.md) · [1.17.3 发布说明与验证](docs/releases/1.17.3.md#中文) · [技术实现](docs/technical_implementation.md) · [项目结构](docs/project_structure.md) · [变更日志](CHANGELOG.md)
+[English](README.md) · [1.17.4 发布说明与验证](docs/releases/1.17.4.md#中文) · [技术实现](docs/technical_implementation.md) · [项目结构](docs/project_structure.md) · [变更日志](CHANGELOG.md)
 
-## 1.17.3 核心更新
+## 1.17.4 核心更新
 
-- **修复后端发现（适配 `agy` v1.5.14+，解决「上下文: 不可用」）：** 将单一 `GetUnleashData` 探活升级为多端点 CSRF 探测链（`GetStatus → GetUnleashData → GetUserStatus`），新增 `daemon/hub_<port>.json` 与直连提示回退（不再因 `GetUnleashData` 返回 404 中断连接），加固 macOS、Windows、Linux、WSL 与 IPv6（`[::1]` / `127.0.0.1`）本地环回适配，并在后端重启后即时自动重连。
-- **全面支持 Orchestrator 与编排设置（含 `Orchestrator Claude Opus 5.5` 与跨池路由）：** 通过 Connect 协议 `JetboxSubscribeToState` 与 Mendel `orchestrator-model-roles` 实时读取全局 **Orchestrator 设置**（`编排模型` + `执行模型`），完整支持各编排/执行模型的可选思考档位（Gemini 4 Neon 与 Gemini 4 Hydrogen 统一对齐 **`Extra High / 超高`**），在**总览**、**模型**与悬停摘要中追踪跨池 `规划 → 执行` 组合（如 `Claude Opus 5.5 + Gemini 4 Hydrogen` 或 `Gemini 4 Neon + Claude Sonnet 5.5`），将全部 Gemini 4 与 Orchestrator 模型统一同步至 **512K（`512,000`）** 实时检查点上限，新增 `M669`（`Gemini 4 Hydrogen (Orchestrator)`）及 `M530`/`M531`/`M578` 支持，并展示 **GPT-OSS 120B** 的 `Notice` 下线提示标签。
-- **官方模型计费更新（USD）：** 新增经核实的 **Gemini 4 Neon** 官方价（输入 `$3.00` / 输出与思考 `$15.00` / 缓存读取 `$0.15` 每百万 tokens，全 1M 上下文统一费率，并自动对历史零费用账目执行补算对齐），修正 **Claude Sonnet 5.5** 缓存读取费率（`$0.20 → $0.10`），补充 **Gemini 3.6 Flash** 有界优惠排期（`[2026-08-13, 2027-01-01)`），提供**官方定时调价提醒**横幅（Carbon/Argon `2026-12-01`、Flash `2027-01-01`），严格守护未定价模型（`M537`/`M667`/`M681`/`M669`/`M578`/`M21` 绝不伪造 `$0.00`），并在**模型**规格卡片展示美元 API 参考价格。
-- **双窗口配额（`5 小时` + `每周`）：** 通过 `RetrieveUserQuotaSummary` 实时获取 5 小时与每周双窗口配额（在旧版后端上平滑降级为单窗口 5h 显示），统一贯穿**总览**、**模型**、**个人**与**悬停摘要**，高比例读数采用向下截断精度（`99.3%`–`99.9%` 不再误四舍五入为 `100%`）。
-- **重构状态栏悬停摘要与最近调用明细：** 采用按优先级分层、缩放感知的预算引擎（`compact` / `auto` / `full`），在任何缩放级别下均保护**剩余配额**与底部快捷栏不被裁剪；新增**最近一次调用**微表（新鲜输入 / 输出与思考 / 缓存命中率 / 费用 / 首字与总耗时 / 去噪解码速度 / 状态）、**会话与今日费用**（含缓存节省与等效混合输入单价）、**编排拆分**（规划 vs 执行调用次数与费用）、事件驱动告警（14 天调价倒计时、GPT-OSS `Notice` 下线提示、重试损耗、AI 积分）、一键受信任底部导航（`总览 · 活动 · 费用 · 模型 · 设置 · 刷新`）、可选状态栏会话费用胶囊（`statusBar.showSessionCost`），以及 **GM 数据**页中的可折叠**最近调用明细**（展示最新 20 次调用）。
+- **零闪烁状态栏悬停摘要：** 对 `StatusBarItem` 全部可变属性（`name`、按 `ThemeColor.id` 比对的 `backgroundColor`、`text`、`accessibilityInformation`、`tooltip`）实施差异门控，5 秒轮询内容未变时执行 **0** 次写入，彻底避免触发 VS Code `markdownStringEqual()` 对 `isTrusted: { enabledCommands }` 对象引用判等失败导致的悬停框销毁重建；对 10 秒辅助元数据刷新增加结构化变更比对，修复空 GM 双渲染与断连 `Initializing` ↔ `Disconnected` 来回闪烁（保留手动刷新即时反馈），将压缩检测前移至单次渲染，并以 ±45 秒迟滞稳定多配额池分钟倒计时边界。
+- **次要端口 TLS 优先探测与 `GetUserStatus` 结构校验（PR #74，`@AxelDZP`）：** `agy --hub` 在声明的 `--hub-port` / 主提示端口保持 HTTP 优先，主端口失败后经 `lsof`/`ss`/`netstat` 发现的次要端口改为 **HTTPS/TLS 优先探测**（消除 Windows、macOS、Linux 与 IPv6 `[::1]` 配对 TLS 端口上的 `HTTP 400` / Go `http: TLS handshake error` 报错），并在 `probeEndpoint()` 与 `fetchFullUserStatus()` 中严格拒绝非对象/数组 `userStatus`（`{}`、`null`、`[]`）。
+- **严格 ISO-8601 纪元零值与按时间顺序排序的重置处理（PR #74，`@AxelDZP`）：** 统一通过 `parseStrictResetTimestamp()` / `parsePositivePoolResetMs()` / `comparePoolResetTimes()` 识别所有等价 proto3 纪元零值（`1970-01-01T00:00:00.000Z`、`+00:00`），拒绝异常/非法日历日期（`'0'`、`'1970'`、`'2026-02-30T00:00:00Z'`），跨时区按 UTC 毫秒排序配额池重置时间，并全面防护各重置结算路径免受纪元零值误触发。
+- **完整保留 v1.17.3 核心能力：** 适配 `agy` v1.5.14+ 多端点后端发现（`GetStatus → GetUnleashData → GetUserStatus`）、实时自定义 **Orchestrator 设置**（`编排模型` + `执行模型`）、双窗口配额（`5 小时` + `每周`）、经核实的官方美元模型计费表（Gemini 4 Neon `$3/$15/$0.15`、Claude Sonnet 5.5 缓存读 `$0.10`、官方定时调价横幅）、`P0`–`P5` 分层悬停摘要及 **GM 数据**可折叠**最近调用明细**。
 
 ## 安装
 
-1. 从发布附件获取 `antigravity-context-monitor-1.17.3.vsix`，或使用 `npm run package` 在本地打包。[GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases)
+1. 从发布附件获取 `antigravity-context-monitor-1.17.4.vsix`，或使用 `npm run package` 在本地打包。[GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases)
 2. 在 Antigravity IDE 中打开命令面板：macOS 使用 `Cmd+Shift+P`，Windows 与 Linux 使用 `Ctrl+Shift+P`。执行 **Extensions: Install from VSIX...**，选择下载的文件。
-3. 重载窗口，在扩展详情或监控器的**关于**页确认版本为 **1.17.3**。
+3. 重载窗口，在扩展详情或监控器的**关于**页确认版本为 **1.17.4**。
 
 也可以通过 [Open VSX](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装注册表中的已发布版本。
 
-扩展支持 macOS、Windows、Linux 和 WSL。本版原生 IDE 验收在 macOS 上完成，Windows 与 Linux 分支的模拟测试范围见发布说明。[验证](docs/releases/1.17.3.md#验证)
+扩展支持 macOS、Windows、Linux 和 WSL。本版原生 IDE 验收在 macOS 上完成，Windows 与 Linux 分支的模拟测试范围见发布说明。[验证](docs/releases/1.17.4.md#验证)
 
 ## 使用监控器
 
@@ -106,9 +105,9 @@
 <details>
 <summary>关于 — 版本、兼容性与功能导航</summary>
 
-确认已安装的扩展版本（`v1.17.3`，从扩展清单动态读取）与 512K 上下文兼容性范围，通过双列功能导航卡片直达各个监控页面，并查阅开源仓库与兼容性说明。
+确认已安装的扩展版本（`v1.17.4`，从扩展清单动态读取）与 512K 上下文兼容性范围，通过双列功能导航卡片直达各个监控页面，并查阅开源仓库与兼容性说明。
 
-![Obsidian Slate 深色主题下的双语关于页，展示 1.17.3 版本与功能导航卡片](src/images/monitor-about.png)
+![Obsidian Slate 深色主题下的双语关于页，展示 1.17.4 版本与功能导航卡片](src/images/monitor-about.png)
 
 </details>
 
@@ -167,6 +166,6 @@ IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 13 项）：
 
 ## 致谢
 
-由 **AGI-is-going-to-arrive** 维护。感谢 **SecretLUL** 报告 Windows 后端发现问题。[Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)
+由 **AGI-is-going-to-arrive** 维护。感谢 **SecretLUL** 报告 Windows 后端发现问题（[Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)），并感谢 **@AxelDZP** 提出次要端口 TLS 优先探测、`GetUserStatus` 结构校验与等价 proto3 纪元零值 `resetTime` 修复（[PR #74](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/74)）。
 
 [MIT 许可证](LICENSE) · [LINUX DO](https://linux.do/) · [Star 趋势](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)

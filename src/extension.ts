@@ -19,6 +19,7 @@ import {
     fetchFullUserStatus,
     fetchOrchestratorSettings,
     fetchUserQuotaSummary,
+    parseStrictResetTimestamp,
     updateModelDisplayNames,
     ContextUsage,
     TrajectorySummary,
@@ -155,6 +156,7 @@ export function invalidateLiveModelMetadata(): void {
     if (typeof statusBar !== 'undefined') {
         statusBar.setOrchestratorSettings(null);
         statusBar.setQuotaSummary(null);
+        statusBar.clearStabilizedResetTimes();
     }
 }
 
@@ -591,6 +593,17 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
     };
 }
 
+/** Compare auxiliary live metadata payloads structurally to skip redundant status bar & panel refreshes. */
+export function hasAuxiliaryMetadataChanged(prev: unknown, next: unknown): boolean {
+    if (prev === next) { return false; }
+    if (!prev || !next) { return true; }
+    try {
+        return JSON.stringify(prev) !== JSON.stringify(next);
+    } catch {
+        return true;
+    }
+}
+
 /**
  * Refresh auxiliary live metadata (global Orchestrator Settings + dual-window
  * RetrieveUserQuotaSummary) non-blockingly in the background.
@@ -618,18 +631,20 @@ function triggerLiveAuxiliaryMetadataRefresh(
             const gotOrch = orchRes.status === 'fulfilled' && !!orchRes.value;
             const gotQuota = quotaRes.status === 'fulfilled' && !!quotaRes.value;
             if (gotOrch) {
+                const orchChanged = hasAuxiliaryMetadataChanged(cachedOrchestratorSettings, orchRes.value);
                 cachedOrchestratorSettings = orchRes.value;
                 if (typeof statusBar !== 'undefined') {
                     statusBar.setOrchestratorSettings(orchRes.value);
                 }
-                updated = true;
+                if (orchChanged) { updated = true; }
             }
             if (gotQuota) {
+                const quotaChanged = hasAuxiliaryMetadataChanged(cachedQuotaSummary, quotaRes.value);
                 cachedQuotaSummary = quotaRes.value;
                 if (typeof statusBar !== 'undefined') {
                     statusBar.setQuotaSummary(quotaRes.value);
                 }
-                updated = true;
+                if (quotaChanged) { updated = true; }
             }
             if (gotOrch || gotQuota) {
                 auxMetadataConsecutiveFailures = 0;
@@ -710,14 +725,37 @@ export interface ModelQuotaPoolGroup {
     minFraction: number;
 }
 
+/**
+ * Parse a quota pool resetTime strictly as an ISO-8601 timestamp with timezone
+ * and valid calendar date, rejecting proto3 epoch-0 (`1970-01-01T00:00:00Z`,
+ * `.000Z`, `+00:00`), negative epochs, and malformed date strings.
+ */
+export function parsePositivePoolResetMs(raw: unknown): number | null {
+    const ms = parseStrictResetTimestamp(raw);
+    return ms !== null && ms > 0 ? ms : null;
+}
+
+/** Sort pool resetTime strings chronologically by UTC epoch ms (valid positive timestamps first). */
+export function comparePoolResetTimes(a: string, b: string): number {
+    const aMs = parsePositivePoolResetMs(a);
+    const bMs = parsePositivePoolResetMs(b);
+    if (aMs !== null && bMs !== null) {
+        return aMs - bMs || a.localeCompare(b);
+    }
+    if (aMs !== null) { return -1; }
+    if (bMs !== null) { return 1; }
+    return a.localeCompare(b);
+}
+
 export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuotaPoolGroup[] {
-    const poolMap = new Map<string, { labels: string[]; modelIds: string[]; resetTimes: string[]; minFraction: number }>();
+    const poolMap = new Map<string, { labels: string[]; modelIds: string[]; resetEntries: Map<string, number>; minFraction: number }>();
     for (const c of configs) {
         if (!c.quotaInfo) { continue; }
         const rawReset = typeof c.quotaInfo.resetTime === 'string' ? c.quotaInfo.resetTime.trim() : '';
-        const resetTime = rawReset && rawReset !== '1970-01-01T00:00:00Z' ? rawReset : '';
+        const resetMs = parsePositivePoolResetMs(rawReset);
+        const resetTime = resetMs !== null ? rawReset : '';
         const key = getQuotaPoolKey(c.model, resetTime || undefined);
-        const pool = poolMap.get(key) || { labels: [], modelIds: [], resetTimes: [], minFraction: 1 };
+        const pool = poolMap.get(key) || { labels: [], modelIds: [], resetEntries: new Map<string, number>(), minFraction: 1 };
         const label = c.label || c.model;
         if (label && !pool.labels.includes(label)) {
             pool.labels.push(label);
@@ -725,8 +763,8 @@ export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuota
         if (c.model && !pool.modelIds.includes(c.model)) {
             pool.modelIds.push(c.model);
         }
-        if (resetTime && !pool.resetTimes.includes(resetTime)) {
-            pool.resetTimes.push(resetTime);
+        if (resetTime && resetMs !== null && !pool.resetEntries.has(resetTime)) {
+            pool.resetEntries.set(resetTime, resetMs);
         }
         const fraction = c.quotaInfo.remainingFraction;
         if (typeof fraction === 'number' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1) {
@@ -736,10 +774,11 @@ export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuota
     }
 
     return [...poolMap.entries()].map(([key, pool]) => {
-        const resetTimes = [...pool.resetTimes].sort((a, b) => a.localeCompare(b));
+        const sortedResets = [...pool.resetEntries.entries()]
+            .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
         return {
             key,
-            resetTime: resetTimes[0] || '',
+            resetTime: sortedResets[0]?.[0] || '',
             labels: pool.labels,
             modelIds: pool.modelIds,
             minFraction: pool.minFraction,
@@ -762,9 +801,9 @@ export function shouldSettleOnResetTimeChange(
     if (!oldResetTime || !newResetTime || oldResetTime === newResetTime) {
         return false;
     }
-    const oldMs = Date.parse(oldResetTime);
-    const newMs = Date.parse(newResetTime);
-    if (Number.isNaN(oldMs) || Number.isNaN(newMs)) {
+    const oldMs = parsePositivePoolResetMs(oldResetTime);
+    const newMs = parsePositivePoolResetMs(newResetTime);
+    if (oldMs === null || newMs === null) {
         return false;
     }
     if (oldMs > nowMs || newMs <= nowMs) {
@@ -1018,8 +1057,8 @@ function updateAccountSnapshot(
             }
             if (!oldResetTime) { continue; }
             if (!shouldSettleOnResetTimeChange(oldResetTime, newPool.resetTime, nowMs)) { continue; }
-            const oldResetMs = Date.parse(oldResetTime);
-            const cutoffTime = Number.isNaN(oldResetMs) ? undefined : oldResetMs;
+            const oldResetMs = parsePositivePoolResetMs(oldResetTime);
+            const cutoffTime = oldResetMs ?? undefined;
             if (dailyLedger.isPoolSettled(newPool.modelIds, email, cutoffTime)) { continue; }
             // Settle both DailyLedger and GMTracker using oldResetTime as cutoff
             const baselinedCount = gmTracker.baselineForQuotaReset(email, newPool.modelIds, oldResetTime);
@@ -1057,10 +1096,10 @@ function updateAccountSnapshot(
         }
     }
 
-    // Build resetPools sorted by resetTime (earliest first)
+    // Build resetPools sorted by resetTime (earliest first, chronologically by epoch ms)
     const resetPools: import('./activity-panel').ResetPool[] = [];
     const allResetTimes: string[] = [];
-    for (const [, pool] of [...poolMap.entries()].sort((a, b) => a[1].resetTime.localeCompare(b[1].resetTime))) {
+    for (const [, pool] of [...poolMap.entries()].sort((a, b) => comparePoolResetTimes(a[1].resetTime, b[1].resetTime))) {
         const resetTime = pool.resetTime;
         const remainingPct = pool.hasUsage ? Math.round(pool.minFraction * 100) : undefined;
         resetPools.push({ resetTime, modelLabels: pool.labels, modelIds: pool.modelIds, hasUsage: pool.hasUsage, remainingPercent: remainingPct });
@@ -1255,10 +1294,10 @@ function baselineExpiredPoolsForAccount(email: string): void {
     const pools = snap.resetPools || [];
     for (const pool of pools) {
         if (!pool.resetTime) { continue; }
-        const resetDate = new Date(pool.resetTime);
-        if (isNaN(resetDate.getTime())) { continue; }
+        const resetMs = parsePositivePoolResetMs(pool.resetTime);
+        if (resetMs === null) { continue; }
 
-        const diffMs = resetDate.getTime() - nowMs;
+        const diffMs = resetMs - nowMs;
         if (diffMs > 0) { continue; } // Not yet expired
 
         // Skip pools with no confirmed usage — matches UI "Ready" logic
@@ -1282,7 +1321,7 @@ function baselineExpiredPoolsForAccount(email: string): void {
         // ── Baseline GM calls for the expired pool ──
         const baselinedCount = gmTracker.baselineForQuotaReset(email, pool.modelIds || pool.modelLabels, pool.resetTime);
         // ── Settle in DailyLedger too ──
-        const cutoffTime = Number.isNaN(resetDate.getTime()) ? undefined : resetDate.getTime();
+        const cutoffTime = resetMs;
         const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, email, cutoffTime);
         if (baselinedCount > 0 || settled) {
             log(`Account switch baseline: ${email} — ${baselinedCount} GM calls baselined for pool [${pool.modelLabels.slice(0, 3).join(', ')}]`);
@@ -1603,7 +1642,7 @@ export function activate(context: vscode.ExtensionContext): void {
             consecutiveFailures = 0;
             currentIntervalMs = baseIntervalMs;
             restartPolling();
-            pollContextUsage();
+            pollContextUsage(true);
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.switchLanguage', () => {
             showLanguagePicker(context, durableGlobalState).then(() => {
@@ -1823,8 +1862,13 @@ export function applyGMContextToUsage(usage: ContextUsage, gmContextUsed: number
 
 // ─── Polling Logic ────────────────────────────────────────────────────────────
 
-async function pollContextUsage(): Promise<void> {
-    if (isPolling) { return; }
+async function pollContextUsage(isManualRefresh = false): Promise<void> {
+    if (isPolling) {
+        if (isManualRefresh && typeof statusBar !== 'undefined') {
+            statusBar.showInitializing();
+        }
+        return;
+    }
     isPolling = true;
     let lsInfo = cachedLsInfo;
     try {
@@ -1868,7 +1912,9 @@ async function pollContextUsage(): Promise<void> {
         }
         if (!lsInfo) {
             log('Discovering language server...');
-            statusBar.showInitializing();
+            if (isManualRefresh || statusBar.monitorStatus.state !== 'disconnected') {
+                statusBar.showInitializing();
+            }
             lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal, log);
             cachedLsInfo = lsInfo;
             lsRevalidationCounter = 0;
@@ -2195,8 +2241,6 @@ async function pollContextUsage(): Promise<void> {
         if (lastGMSummary && trackedCascadeId) {
             applyGMContextToUsage(currentUsage, getLatestGMContextUsed(lastGMSummary, trackedCascadeId));
         }
-        syncStatusBarTelemetry(false, currentUsage.cascadeId);
-        statusBar.update(currentUsage);
 
         // Track the model for idle-state display
         if (currentUsage.model) {
@@ -2205,6 +2249,7 @@ async function pollContextUsage(): Promise<void> {
         }
 
         // ─── Compression Detection ─────────────────────────────────────────
+        // Run before statusBar.update() so compression flags land in a single render pass.
         const previousObservation = previousContextObservations.get(currentUsage.cascadeId);
         const prevUsed = previousObservation?.contextUsed;
         const prevSteps = previousStepCounts.get(activeTrajectory.cascadeId);
@@ -2247,6 +2292,9 @@ async function pollContextUsage(): Promise<void> {
             contextUsed: currentUsage.contextUsed, isEstimated: currentUsage.isEstimated,
             model: currentUsage.model, tokenUsageSource: currentUsage.tokenUsageSource,
         });
+
+        syncStatusBarTelemetry(false, currentUsage.cascadeId);
+        statusBar.update(currentUsage);
 
         const sourceLabel = currentUsage.isEstimated ? 'estimated' : 'precise';
         log(`Context: ${currentUsage.contextUsed} tokens (${sourceLabel}) | ${currentUsage.usagePercent.toFixed(1)}% | modelOut=${currentUsage.totalOutputTokens} | toolOut=${currentUsage.totalToolCallOutputTokens} | delta=${currentUsage.estimatedDeltaSinceCheckpoint} | imageGen=${currentUsage.imageGenStepCount}`);
@@ -2363,8 +2411,8 @@ async function pollContextUsage(): Promise<void> {
                     for (const snap of accountSnapshots.values()) {
                         for (const pool of (snap.resetPools || [])) {
                             if (!pool.resetTime || !pool.modelIds?.length) { continue; }
-                            const resetMs = new Date(pool.resetTime).getTime();
-                            if (isNaN(resetMs) || resetMs > nowMs) { continue; }
+                            const resetMs = parsePositivePoolResetMs(pool.resetTime);
+                            if (resetMs === null || resetMs > nowMs) { continue; }
 
 
                             // Skip if no usage or already settled
@@ -2414,7 +2462,7 @@ async function pollContextUsage(): Promise<void> {
                 syncStatusBarTelemetry(false, currentUsage?.cascadeId || trackedCascadeId || undefined);
                 if (gmEnhancedStatusBar && currentUsage) {
                     statusBar.update(currentUsage);
-                } else if (gmChanged || timelineChanged || !hadUiSummary) {
+                } else if (gmChanged || timelineChanged || (!hadUiSummary && gmTracker.getUiSummary() !== null)) {
                     statusBar.refreshFromConfig();
                 }
 
@@ -2608,10 +2656,10 @@ function checkCachedAccountResets(): void {
         const pools = snap.resetPools || [];
         for (const pool of pools) {
             if (!pool.resetTime) { continue; }
-            const resetDate = new Date(pool.resetTime);
-            if (isNaN(resetDate.getTime())) { continue; }
+            const resetMs = parsePositivePoolResetMs(pool.resetTime);
+            if (resetMs === null) { continue; }
 
-            const diffMs = resetDate.getTime() - nowMs;
+            const diffMs = resetMs - nowMs;
             if (diffMs > 0) { continue; }
 
 
@@ -2648,7 +2696,7 @@ function checkCachedAccountResets(): void {
             // never receives API configs for non-active accounts.
             const archivedSessions = quotaTracker.archiveExpiredSessions(snap.email, pool.modelIds || pool.modelLabels);
             // ── Settle this pool in DailyLedger ──
-            const cutoffTime = Number.isNaN(resetDate.getTime()) ? undefined : resetDate.getTime();
+            const cutoffTime = resetMs;
             const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, snap.email, cutoffTime);
             if (baselinedCount > 0 || archivedSessions > 0 || settled) {
                 log(`[ResetCheck]   ${baselinedCount} GM calls baselined, ${archivedSessions} quota sessions archived`);

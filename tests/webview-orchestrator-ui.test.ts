@@ -415,7 +415,7 @@ describe('Overview tab: active Orchestrator route, Session/Today cost & Dual-win
     });
 });
 
-describe('Calendar tab USD costs & About tab v1.17.3 + 512K disclaimer & shared CSS', () => {
+describe('Calendar tab USD costs & About tab v1.17.4 + 512K disclaimer & shared CSS', () => {
     it('formats daily, monthly, and per-model Calendar costs strictly in USD and guards Infinity', async () => {
         await setLanguageToState('en', memState);
         const store = makeCalendarStore({
@@ -486,13 +486,13 @@ describe('Calendar tab USD costs & About tab v1.17.3 + 512K disclaimer & shared 
         expect(extremeHtml).not.toContain('NaN');
     });
 
-    it.each(['en', 'zh', 'both'] as Language[])('renders About tab v1.17.3, Extra High, and full Gemini 4 512K disclaimer in %s', async lang => {
+    it.each(['en', 'zh', 'both'] as Language[])('renders About tab v1.17.4, Extra High, and full Gemini 4 512K disclaimer in %s', async lang => {
         await setLanguageToState(lang, memState);
         const html = buildAboutTabContent();
-        expect(html).toContain('<span class="about-version-pill">v1.17.3</span>');
+        expect(html).toContain('<span class="about-version-pill">v1.17.4</span>');
         expect(html).toContain('USD');
         expect(html).not.toMatch(/USD\s*\/\s*[A-Z]{3}|[\u00a5\uffe5]/);
-        expect(html).toContain('v1.17.3');
+        expect(html).toContain('v1.17.4');
         expect(html).toContain('Extra High');
         expect(html).toContain('512K');
         expect(html).toContain('Gemini 4 Neon');
@@ -506,8 +506,8 @@ describe('Calendar tab USD costs & About tab v1.17.3 + 512K disclaimer & shared 
             expect(html).toContain(tBiHtml('Context Window Limitation:', '上下文窗口限制：'));
         }
         // Blank or whitespace version must fall back cleanly (never render bare 'v')
-        expect(buildAboutTabContent('')).toContain('<span class="about-version-pill">v1.17.3</span>');
-        expect(buildAboutTabContent('   ')).toContain('<span class="about-version-pill">v1.17.3</span>');
+        expect(buildAboutTabContent('')).toContain('<span class="about-version-pill">v1.17.4</span>');
+        expect(buildAboutTabContent('   ')).toContain('<span class="about-version-pill">v1.17.4</span>');
         expect(buildAboutTabContent('1.18.0')).toContain('<span class="about-version-pill">v1.18.0</span>');
     });
 

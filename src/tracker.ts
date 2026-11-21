@@ -859,8 +859,11 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
         const resp = await rpcCall(ls, 'GetUserStatus', {
             metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
         }, 10000, signal);
-        const userStatus = resp.userStatus as Record<string, unknown> | undefined;
-        if (!userStatus) { return { configs: [], userInfo: null }; }
+        const rawUserStatus = resp?.userStatus;
+        if (!rawUserStatus || typeof rawUserStatus !== 'object' || Array.isArray(rawUserStatus)) {
+            return { configs: [], userInfo: null };
+        }
+        const userStatus = rawUserStatus as Record<string, unknown>;
 
         // ─── Model Configs ───
         const configData = userStatus.cascadeModelConfigData as Record<string, unknown> | undefined;
@@ -879,10 +882,13 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
                         ? Number(q.remainingFraction) : q.remainingFraction;
                     return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : Number.NaN;
                 }
-                const rt = typeof q.resetTime === 'string' ? q.resetTime.trim() : '';
-                if (!rt || rt === '1970-01-01T00:00:00Z' || Date.parse(rt) === 0) { return 1; }
-                const parsed = Date.parse(rt);
-                return Number.isFinite(parsed) && parsed > 0 ? 0 : Number.NaN;
+                if (q.resetTime == null) { return 1; }
+                if (typeof q.resetTime !== 'string') { return Number.NaN; }
+                const rt = q.resetTime.trim();
+                if (!rt) { return 1; }
+                const parsed = parseStrictResetTimestamp(rt);
+                if (parsed === null || parsed < 0) { return Number.NaN; }
+                return parsed === 0 ? 1 : 0;
             };
             return {
                 model: ((c.modelOrAlias as Record<string, unknown>)?.model as string) || '',
@@ -1127,21 +1133,39 @@ export async function fetchOrchestratorSettings(
 
 // ─── Dual-Window Quota Summary (RetrieveUserQuotaSummary) ────────────────────
 
-function parseStrictResetTimestamp(raw: unknown): { resetTime: string | null; resetAt: number | null } {
+const STRICT_ISO_RESET_TIMESTAMP_RE =
+    /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/i;
+
+/**
+ * Parse a strict ISO-8601 / RFC 3339 reset timestamp with explicit timezone (`Z` or `±HH:MM`)
+ * and real calendar-date round-trip validation.
+ * Returns epoch milliseconds (including `0` for equivalent proto3 epoch-0 spellings such as
+ * `1970-01-01T00:00:00Z`, `1970-01-01T00:00:00.000Z`, or `1970-01-01T00:00:00+00:00`),
+ * or `null` when missing, malformed, missing timezone, or an impossible calendar date.
+ */
+export function parseStrictResetTimestamp(raw: unknown): number | null {
     const reset = typeof raw === 'string' ? raw.trim() : '';
-    if (!reset) { return { resetTime: null, resetAt: null }; }
-    const isTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(reset);
-    if (!isTimestamp) { return { resetTime: null, resetAt: null }; }
-    const parsed = Date.parse(reset);
-    const calendarDate = new Date(`${reset.slice(0, 10)}T00:00:00Z`);
-    const validDate = Number.isFinite(calendarDate.getTime()) && calendarDate.toISOString().slice(0, 10) === reset.slice(0, 10);
-    if (!validDate || !Number.isFinite(parsed) || parsed <= 0) {
-        return { resetTime: null, resetAt: null };
+    if (!reset || !STRICT_ISO_RESET_TIMESTAMP_RE.test(reset)) { return null; }
+    const day = reset.slice(0, 10);
+    const calendarDate = new Date(`${day}T00:00:00Z`);
+    if (!Number.isFinite(calendarDate.getTime()) || calendarDate.toISOString().slice(0, 10) !== day) {
+        return null;
     }
-    return { resetTime: reset, resetAt: parsed };
+    const parsed = Date.parse(reset);
+    return Number.isFinite(parsed) ? parsed : null;
 }
 
-function parseQuotaWindowRemaining(bucket: Record<string, unknown>, resetAt: number | null): number | null {
+function parseWindowResetTimestamp(raw: unknown): { resetTime: string | null; resetAt: number | null; parsedMs: number | null } {
+    if (typeof raw !== 'string') { return { resetTime: null, resetAt: null, parsedMs: null }; }
+    const reset = raw.trim();
+    const parsedMs = parseStrictResetTimestamp(reset);
+    if (parsedMs === null || parsedMs <= 0) {
+        return { resetTime: null, resetAt: null, parsedMs };
+    }
+    return { resetTime: reset, resetAt: parsedMs, parsedMs };
+}
+
+function parseQuotaWindowRemaining(bucket: Record<string, unknown>, parsedResetMs: number | null): number | null {
     if (bucket.remainingFraction != null) {
         const raw = typeof bucket.remainingFraction === 'string' && bucket.remainingFraction.trim() !== ''
             ? Number(bucket.remainingFraction) : bucket.remainingFraction;
@@ -1149,9 +1173,11 @@ function parseQuotaWindowRemaining(bucket: Record<string, unknown>, resetAt: num
     }
     // Proto3 omits float 0.0: untouched quota has no/epoch resetTime → 1.0,
     // exhausted quota has a valid future/non-epoch resetTime → 0.0.
-    const rawReset = typeof bucket.resetTime === 'string' ? bucket.resetTime.trim() : '';
-    if (!rawReset || rawReset === '1970-01-01T00:00:00Z' || Date.parse(rawReset) === 0) { return 1; }
-    return resetAt !== null ? 0 : null;
+    if (bucket.resetTime == null) { return 1; }
+    if (typeof bucket.resetTime !== 'string') { return null; }
+    if (!bucket.resetTime.trim()) { return 1; }
+    if (parsedResetMs === null || parsedResetMs < 0) { return null; }
+    return parsedResetMs === 0 ? 1 : 0;
 }
 
 function inferQuotaSummaryPool(displayName: string, buckets: readonly QuotaWindowSummary[]): 'gemini' | 'premium' | undefined {
@@ -1193,8 +1219,8 @@ export function parseUserQuotaSummary(raw: unknown): UserQuotaSummary | null {
                 || (bucketId.toLowerCase().endsWith('-weekly') ? 'weekly'
                     : bucketId.toLowerCase().endsWith('-5h') ? '5h' : '');
             if (!bucketId && !window) { continue; }
-            const { resetTime, resetAt } = parseStrictResetTimestamp(b.resetTime);
-            const remainingFraction = parseQuotaWindowRemaining(b, resetAt);
+            const { resetTime, resetAt, parsedMs } = parseWindowResetTimestamp(b.resetTime);
+            const remainingFraction = parseQuotaWindowRemaining(b, parsedMs);
             const bucketDisplayName = typeof b.displayName === 'string' ? b.displayName.trim() : '';
             const bucketDescription = typeof b.description === 'string' && b.description.trim()
                 ? b.description.trim() : undefined;

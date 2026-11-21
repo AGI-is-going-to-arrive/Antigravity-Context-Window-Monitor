@@ -2,7 +2,7 @@
 
 本文档说明 Antigravity Context Window Monitor 的源码组织方式、模块职责以及依赖关系。
 
-当前版本为 **1.17.3**。发布说明先列英文，再列中文。[1.17.3 发布说明](releases/1.17.3.md)
+当前版本为 **1.17.4**。发布说明先列英文，再列中文。[1.17.4 发布说明](releases/1.17.4.md)
 
 ---
 
@@ -133,7 +133,7 @@ antigravity-context-monitor/
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   ├── project_structure.md          # 本文件
-│   └── releases/1.17.3.md            # 当前发布说明（先英文，再中文）
+│   └── releases/1.17.4.md            # 当前发布说明（先英文，再中文）
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── PRODUCT.md                    # 产品定位、9 页能力清单、术语约束与无障碍承诺
 ├── DESIGN.md                     # Studio Telemetry Ledger 设计系统规范（色板、排版、组件与 9 页契约）
@@ -154,13 +154,13 @@ antigravity-context-monitor/
 
 ### extension.ts -- 入口 + 轮询调度
 
-扩展生命周期管理中心：初始化子系统、注册命令（`MONITOR_COMMAND` 支持直达 `overview` / `gmdata` / `pricing` / `models` / `settings`）、轮询调度（默认 5s）、非阻塞辅助元数据刷新（`triggerLiveAuxiliaryMetadataRefresh` 带并发防重入、代际守卫与失败退避，拉取 `OrchestratorSettings` 与 `UserQuotaSummary`）、实时费用快照（`computeLiveCostSnapshot`）、会话选择（RUNNING 优先 + 跨工作区 RUNNING 追踪）、连接变更快速重连（`doesConnectionMatchActiveHint` + `isSameBackendConnection`）、工作区切换检测、每日归档委托、多账号快照管理、额度重置归档与持久化协调。启动时将文件态 `gmDetailedSummary` 回灌到 `GMTracker`，并对零费用历史调用触发幂等补账；每日归档检查前置到轮询前半段，避免被提前 return 跳过。
+扩展生命周期管理中心：初始化子系统、注册命令（`MONITOR_COMMAND` 支持直达 `overview` / `gmdata` / `pricing` / `models` / `settings`）、轮询调度（默认 5s）、非阻塞辅助元数据刷新（`triggerLiveAuxiliaryMetadataRefresh` 带并发防重入、代际守卫、结构化变更去重 `hasAuxiliaryMetadataChanged()` 与失败退避，拉取 `OrchestratorSettings` 与 `UserQuotaSummary`）、单阶段压缩检测（先检测再刷新状态栏）、断连退避防闪烁（保留手动刷新 `Initializing` 反馈）、实时费用快照（`computeLiveCostSnapshot`）、会话选择（RUNNING 优先 + 跨工作区 RUNNING 追踪）、连接变更快速重连（`doesConnectionMatchActiveHint` + `isSameBackendConnection`）、工作区切换检测、每日归档委托、多账号快照管理（按 UTC 毫秒 `comparePoolResetTimes()` 排序与 `parsePositivePoolResetMs()` 纪元零值防护）、额度重置归档与持久化协调。启动时将文件态 `gmDetailedSummary` 回灌到 `GMTracker`，并对零费用历史调用触发幂等补账；每日归档检查前置到轮询前半段，避免被提前 return 跳过。
 
 ---
 
 ### discovery.ts -- 语言服务器发现
 
-跨平台定位当前 `agy --hub`（Windows 为 `agy.exe`）及旧版 `language_server_*` 进程，覆盖 macOS/Linux/Windows/WSL/Remote-WSL。1.17.3 引入多端点 CSRF 探测链路 `PROBE_ENDPOINTS = ['GetStatus', 'GetUnleashData', 'GetUserStatus']`（遇 404/501 自动切换下一端点，彻底修复 `agy` v1.5.14 移除 `GetUnleashData` 导致的 `上下文: 不可用`）、`~/.gemini/antigravity/daemon/hub_<port>.json` 磁盘发现与直连提示兜底，以及全平台系统命令与网络加固（Windows PowerShell 强制 `UTF8` 输出编码避免非 ASCII 路径乱码、macOS 兼容 `/usr/sbin/lsof`、Linux 使用 `ps -axww` 与 `/usr/sbin/ss`、IPv6 `[::1]` 回环探测与安全主机名透传）。核心解析函数独立导出支持单元测试。
+跨平台定位当前 `agy --hub`（Windows 为 `agy.exe`）及旧版 `language_server_*` 进程，覆盖 macOS/Linux/Windows/WSL/Remote-WSL。1.17.3–1.17.4 引入多端点 CSRF 探测链路 `PROBE_ENDPOINTS = ['GetStatus', 'GetUnleashData', 'GetUserStatus']`（遇 404/501 自动切换下一端点，`GetUserStatus` 强制校验非 null 非数组 `userStatus` 对象）、次要端口 TLS 优先探测（`probeProcess()` 对主端口维持 HTTP 优先，主端口失败后的次要端口改为 HTTPS/TLS 优先，消除配对 TLS 端口 `HTTP 400` / TLS 握手错误）、`~/.gemini/antigravity/daemon/hub_<port>.json` 磁盘发现与直连提示兜底，以及全平台系统命令与网络加固（Windows PowerShell 强制 `UTF8` 输出编码避免非 ASCII 路径乱码、macOS 兼容 `/usr/sbin/lsof`、Linux 使用 `ps -axww` 与 `/usr/sbin/ss`、IPv6 `[::1]` 回环探测与安全主机名透传）。核心解析函数独立导出支持单元测试。
 
 ---
 
@@ -225,7 +225,7 @@ antigravity-context-monitor/
 
 ### statusbar.ts -- 状态栏 UI 与重构后的悬停摘要
 
-`StatusBarManager` 展示上下文用量、剩余配额、重置倒计时、AI 积分及三项默认关闭的可选状态栏读数：`statusBar.showSpeed`（`$(pulse)`）、`statusBar.showCacheHit` 与 `statusBar.showSessionCost`（`$(credit-card)`，美元格式）；冷启动无有效数据时自动隐藏，未知积分绝不伪造 `0`。
+`StatusBarManager` 展示上下文用量、剩余配额、重置倒计时、AI 积分及三项默认关闭的可选状态栏读数：`statusBar.showSpeed`（`$(pulse)`）、`statusBar.showCacheHit` 与 `statusBar.showSessionCost`（`$(credit-card)`，美元格式）；冷启动无有效数据时自动隐藏，未知积分绝不伪造 `0`。1.17.4 对 `StatusBarItem` 全部可变属性（`name`、`backgroundColor` 按 `ThemeColor.id`、`text`、`accessibilityInformation`、`tooltip` Markdown 文本）实施差异门控提交，内容未变化时执行 0 次写入（彻底消除 VS Code 跨 IPC `markdownStringEqual()` 对象引用判等失败引发的 5 秒悬停闪烁），并采用统一 `nowMs` 快照、分钟边界对齐与每池 ±45 秒迟滞（`stabilizeResetMinute` + 逐帧清理 + 账号切换清空）确保倒计时单调稳定、无 `0m` 跳档且到期即显 `就绪`。
 
 1.17.3 全面重构原生 Markdown 悬停摘要，采用 `tooltip-budget.ts` 优先级分层区块与 GFM 微表布局：
 - **P0 Hero 区块**：账号计划、会话标题/步数、编排器跨池路由（`Planner → Executor (Cross-pool)`）、Unicode 胶囊上下文条与压缩/缺口警报。
@@ -530,11 +530,11 @@ npm run test:watch
 npm run package
 ```
 
-在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.3.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
+在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.4.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
 
 测试文件位于 `tests/`，仅供 Vitest 与本地浏览器/原生验收使用，不会被打包到 VSIX 中。
 
-发布验收使用编译输出与重新打包安装的 1.17.3。编译、回归测试、安装包一致性、无障碍/响应式矩阵、原生 IDE 交互和平台测试范围集中记录在发布说明。[1.17.3 验证](releases/1.17.3.md#验证)
+发布验收使用编译输出与重新打包安装的 1.17.4。编译、回归测试、安装包一致性、无障碍/响应式矩阵、原生 IDE 交互和平台测试范围集中记录在发布说明。[1.17.4 验证](releases/1.17.4.md#验证)
 
 自动化 UI 与视觉验收统一由 `tests/installed-ide-ui.cjs` 驱动：
 - `node tests/installed-ide-ui.cjs --installed <目录>`（加 `--smoke` 运行快速冒烟）：基于 Chromium 与已编译/已安装 JS 渲染合成数据，覆盖全部 9 个标签页、浅色 / 深色 / 高对比度主题、三种语言（`en` / `zh` / `both`）与 `320px–1440px` 宽度，校验 axe-core WCAG 2.1 AA 对比度、WCAG 1.4.11 非文本对比度、零横向溢出、交互状态及零旧版 Prompt/Flow 残留，并内置 CDP 断连/超时自动回收会话机制。

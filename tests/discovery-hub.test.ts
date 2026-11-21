@@ -1,6 +1,46 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { generateKeyPairSync, sign } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
+import { createServer as createHttpsServer, type Server as HttpsServer } from 'https';
 import type { AddressInfo } from 'net';
+
+function derLen(n: number): Buffer {
+    if (n < 0x80) { return Buffer.from([n]); }
+    const bytes: number[] = [];
+    let v = n;
+    while (v > 0) { bytes.unshift(v & 0xff); v >>= 8; }
+    return Buffer.from([0x80 | bytes.length, ...bytes]);
+}
+function derTag(tag: number, content: Buffer): Buffer {
+    return Buffer.concat([Buffer.from([tag]), derLen(content.length), content]);
+}
+function derSeq(...items: Buffer[]): Buffer { return derTag(0x30, Buffer.concat(items)); }
+function derSet(...items: Buffer[]): Buffer { return derTag(0x31, Buffer.concat(items)); }
+function derOid(bytes: number[]): Buffer { return derTag(0x06, Buffer.from(bytes)); }
+function derInt(buf: Buffer): Buffer {
+    return derTag(0x02, buf[0] & 0x80 ? Buffer.concat([Buffer.from([0]), buf]) : buf);
+}
+function derBitString(buf: Buffer): Buffer { return derTag(0x03, Buffer.concat([Buffer.from([0]), buf])); }
+
+/** Generate an ephemeral self-signed P-256 cert in pure Node crypto (no openssl binary, no static key in repo). */
+function createEphemeralTestTlsCreds(): { key: string; cert: string } {
+    const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const spki = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+    const ecdsaSha256 = derSeq(derOid([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]));
+    const cn = derSeq(derSet(derSeq(derOid([0x55, 0x04, 0x03]), derTag(0x0c, Buffer.from('127.0.0.1', 'utf8')))));
+    const validity = derSeq(
+        derTag(0x17, Buffer.from('200101000000Z', 'ascii')),
+        derTag(0x17, Buffer.from('491231235959Z', 'ascii')),
+    );
+    const tbs = derSeq(derInt(Buffer.from([0x01])), ecdsaSha256, cn, validity, cn, spki);
+    const signature = sign('sha256', tbs, privateKey);
+    const certDer = derSeq(tbs, ecdsaSha256, derBitString(signature));
+    const cert = `-----BEGIN CERTIFICATE-----\n${certDer.toString('base64').match(/.{1,64}/g)!.join('\n')}\n-----END CERTIFICATE-----\n`;
+    const key = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+    return { key, cert };
+}
+
+const TEST_TLS_CREDS = createEphemeralTestTlsCreds();
 
 interface MockDaemonFile {
     content: string;
@@ -66,7 +106,7 @@ import { rpcCall } from '../src/rpc-client';
 
 describe('hub discovery through real loopback HTTP and mocked OS process listings', () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
-    const servers: Server[] = [];
+    const servers: Array<Server | HttpsServer> = [];
     const received: Array<{ port: number; token: string | string[] | undefined; path: string | undefined }> = [];
 
     async function server(status = 200, body = '{}'): Promise<number> {
@@ -91,6 +131,27 @@ describe('hub discovery through real loopback HTTP and mocked OS process listing
             httpServer.listen(0, host, resolve);
         });
         return (httpServer.address() as AddressInfo).port;
+    }
+
+    async function customTlsServer(
+        handler: (req: IncomingMessage, res: ServerResponse) => void,
+        host = '127.0.0.1',
+    ): Promise<{ port: number; tlsErrors: string[] }> {
+        const tlsErrors: string[] = [];
+        const httpsServer = createHttpsServer(TEST_TLS_CREDS, (req, res) => {
+            received.push({ port: (httpsServer.address() as AddressInfo).port, token: req.headers['x-codeium-csrf-token'], path: req.url });
+            req.resume();
+            handler(req, res);
+        });
+        httpsServer.on('tlsClientError', err => {
+            tlsErrors.push((err as NodeJS.ErrnoException).code || err.message || 'tlsClientError');
+        });
+        servers.push(httpsServer);
+        await new Promise<void>((resolve, reject) => {
+            httpsServer.once('error', reject);
+            httpsServer.listen(0, host, resolve);
+        });
+        return { port: (httpsServer.address() as AddressInfo).port, tlsErrors };
     }
 
     function platform(name: NodeJS.Platform): void {
@@ -489,5 +550,199 @@ describe('hub discovery through real loopback HTTP and mocked OS process listing
         const port = await server(status, body);
         commands.run.mockImplementation(async file => ({ stdout: file === 'ps' ? row(port) : '', stderr: '' }));
         expect(await discoverLanguageServer()).toBeNull();
+    });
+
+    it.each([
+        '{}',
+        JSON.stringify({ userStatus: null }),
+        JSON.stringify({ userStatus: [] }),
+        JSON.stringify({ userStatus: 'not-an-object' }),
+        JSON.stringify({ error: 'soft-200-error' }),
+    ])('rejects invalid GetUserStatus fallback body %s after GetStatus/GetUnleashData return 404/501', async body => {
+        platform('darwin');
+        const secret = 'Validate-UserStatus-Token-74';
+        const logs: string[] = [];
+        const port = await customServer((req, res) => {
+            if (req.url === '/exa.language_server_pb.LanguageServerService/GetStatus') {
+                res.writeHead(404, { 'Content-Type': 'text/plain' });
+                res.end('404 page not found');
+                return;
+            }
+            if (req.url === '/exa.language_server_pb.LanguageServerService/GetUnleashData') {
+                res.writeHead(501, { 'Content-Type': 'application/json' });
+                res.end('{"code":"unimplemented"}');
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(body);
+        });
+        commands.run.mockImplementation(async file => ({ stdout: file === 'ps' ? row(port, 123, secret) : '', stderr: '' }));
+
+        expect(await discoverLanguageServer(undefined, undefined, msg => logs.push(msg))).toBeNull();
+        expect(received.map(r => r.path)).toEqual([
+            '/exa.language_server_pb.LanguageServerService/GetStatus',
+            '/exa.language_server_pb.LanguageServerService/GetUnleashData',
+            '/exa.language_server_pb.LanguageServerService/GetUserStatus',
+        ]);
+        expect(logs.some(m => m.includes('invalid GetUserStatus body'))).toBe(true);
+        expect(logs.join('\n')).not.toContain(secret);
+    });
+
+    it.each(['win32', 'darwin', 'linux'] as const)(
+        'probes secondary TLS port before HTTP on %s after declared --hub-port fails (zero TLS handshake errors)',
+        async os => {
+            platform(os);
+            const hubPort = await server(404, '404 page not found');
+            const { port: tlsPort, tlsErrors } = await customTlsServer((req, res) => {
+                if (req.url === '/exa.language_server_pb.LanguageServerService/GetStatus') {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end('{}');
+                    return;
+                }
+                res.writeHead(404, { 'Content-Type': 'text/plain' });
+                res.end('404 page not found');
+            });
+
+            commands.run.mockImplementation(async file => {
+                if (os === 'win32') {
+                    if (/WMIC\.exe$/i.test(file)) { throw Object.assign(new Error('not found'), { code: 'ENOENT' }); }
+                    if (/powershell\.exe$/i.test(file)) { return { stdout: row(hubPort, 6108), stderr: '' }; }
+                    return {
+                        stdout: [
+                            `  TCP    127.0.0.1:${hubPort}        0.0.0.0:0              LISTENING       6108`,
+                            `  TCP    127.0.0.1:${tlsPort}        0.0.0.0:0              LISTENING       6108`,
+                        ].join('\n'),
+                        stderr: '',
+                    };
+                }
+                if (file === 'ps') { return { stdout: row(hubPort, 6108), stderr: '' }; }
+                if (os === 'darwin' && file === 'lsof') {
+                    return {
+                        stdout: [
+                            `agy 6108 user 10u IPv4 TCP 127.0.0.1:${tlsPort} (LISTEN)`,
+                            `agy 6108 user 11u IPv4 TCP 127.0.0.1:${hubPort} (LISTEN)`,
+                        ].join('\n'),
+                        stderr: '',
+                    };
+                }
+                if (os === 'linux' && file === 'lsof') {
+                    throw Object.assign(new Error('not found'), { code: 'ENOENT' });
+                }
+                if (os === 'linux' && file === 'ss') {
+                    return {
+                        stdout: [
+                            `LISTEN 0 4096 127.0.0.1:${tlsPort} 0.0.0.0:* users:(("agy",pid=6108,fd=10))`,
+                            `LISTEN 0 4096 127.0.0.1:${hubPort} 0.0.0.0:* users:(("agy",pid=6108,fd=11))`,
+                        ].join('\n'),
+                        stderr: '',
+                    };
+                }
+                return { stdout: '', stderr: '' };
+            });
+
+            const found = await discoverLanguageServer();
+            expect(found).toEqual({ pid: 6108, port: tlsPort, csrfToken: 'Mixed-Case-Token', useTls: true });
+            // Critical assertion: TLS was attempted FIRST, so zero plain HTTP traffic ever hit the HTTPS port.
+            expect(tlsErrors).toEqual([]);
+            expect(received.filter(r => r.port === tlsPort).map(r => r.path)).toEqual([
+                '/exa.language_server_pb.LanguageServerService/GetStatus',
+            ]);
+        },
+    );
+
+    it('probes secondary TLS port before HTTP after ephemeral --hub-port=0 hint port fails', async () => {
+        platform('darwin');
+        const failedHintPort = await server(404, '404 page not found');
+        const { port: tlsPort, tlsErrors } = await customTlsServer((req, res) => {
+            if (req.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ userStatus: { name: 'TLS User' } }));
+                return;
+            }
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('404 page not found');
+        });
+        commands.run.mockImplementation(async file => {
+            if (file === 'ps') {
+                return {
+                    stdout: '321 /Users/test/.gemini/bin/agy --hub --hub-port=0 --app_data_dir=antigravity --csrf_token=EphemeralTok',
+                    stderr: '',
+                };
+            }
+            return {
+                stdout: `agy 321 user 10u IPv4 TCP 127.0.0.1:${tlsPort} (LISTEN)\nagy 321 user 11u IPv4 TCP 127.0.0.1:${failedHintPort} (LISTEN)`,
+                stderr: '',
+            };
+        });
+
+        const found = await discoverLanguageServer(undefined, undefined, undefined, { port: failedHintPort, csrfToken: 'EphemeralTok' });
+        expect(found).toEqual({ pid: 321, port: tlsPort, csrfToken: 'EphemeralTok', useTls: true });
+        expect(tlsErrors).toEqual([]);
+        expect(received.filter(r => r.port === tlsPort).map(r => r.path)).toEqual([
+            '/exa.language_server_pb.LanguageServerService/GetStatus',
+            '/exa.language_server_pb.LanguageServerService/GetUnleashData',
+            '/exa.language_server_pb.LanguageServerService/GetUserStatus',
+        ]);
+    });
+
+    it('still falls back from TLS to plain HTTP on a secondary HTTP port after declared --hub-port fails', async () => {
+        platform('win32');
+        const hubPort = await server(404, '404 page not found');
+        const secondaryHttpPort = await customServer((req, res) => {
+            if (req.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ userStatus: { name: 'HTTP Secondary' } }));
+                return;
+            }
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('404 page not found');
+        });
+        commands.run.mockImplementation(async file => {
+            if (/WMIC\.exe$/i.test(file)) { throw Object.assign(new Error('not found'), { code: 'ENOENT' }); }
+            if (/powershell\.exe$/i.test(file)) { return { stdout: row(hubPort, 6108), stderr: '' }; }
+            return {
+                stdout: [
+                    `  TCP    127.0.0.1:${hubPort}        0.0.0.0:0              LISTENING       6108`,
+                    `  TCP    127.0.0.1:${secondaryHttpPort}        0.0.0.0:0              LISTENING       6108`,
+                ].join('\n'),
+                stderr: '',
+            };
+        });
+
+        const found = await discoverLanguageServer();
+        expect(found).toEqual({ pid: 6108, port: secondaryHttpPort, csrfToken: 'Mixed-Case-Token', useTls: false });
+    });
+
+    it('probes IPv6-only [::1] secondary TLS port before HTTP after declared --hub-port fails', async () => {
+        platform('linux');
+        const hubPort = await server(404, '404 page not found');
+        let tlsPort: number;
+        let tlsErrors: string[];
+        try {
+            ({ port: tlsPort, tlsErrors } = await customTlsServer((req, res) => {
+                if (req.url === '/exa.language_server_pb.LanguageServerService/GetStatus') {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end('{}');
+                    return;
+                }
+                res.writeHead(404, { 'Content-Type': 'text/plain' });
+                res.end('404 page not found');
+            }, '::1'));
+        } catch {
+            // Skip cleanly on environments without IPv6 loopback enabled.
+            return;
+        }
+        commands.run.mockImplementation(async file => {
+            if (file === 'ps') { return { stdout: row(hubPort, 6109, 'V6TlsToken'), stderr: '' }; }
+            if (file === 'lsof') { throw Object.assign(new Error('not found'), { code: 'ENOENT' }); }
+            return {
+                stdout: `LISTEN 0 128 [::1]:${tlsPort} [::]:* users:(("agy",pid=6109,fd=10))`,
+                stderr: '',
+            };
+        });
+
+        const found = await discoverLanguageServer();
+        expect(found).toEqual({ pid: 6109, port: tlsPort, csrfToken: 'V6TlsToken', useTls: true, hostname: '::1' });
+        expect(tlsErrors).toEqual([]);
     });
 });

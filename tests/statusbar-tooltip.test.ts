@@ -1568,4 +1568,419 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
             vi.useRealTimers();
         }
     });
+
+    it('performs zero StatusBarItem setter writes on unchanged renders across all states and commits real changes immediately (v1.17.4 hover flicker fix)', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-11-22T00:00:00Z'));
+        try {
+            const writes = {
+                text: 0,
+                tooltip: 0,
+                backgroundColor: 0,
+                color: 0,
+                name: 0,
+                accessibilityInformation: 0,
+                command: 0,
+                show: 0,
+                hide: 0,
+            };
+            const state: Record<string, unknown> = {
+                text: '',
+                tooltip: undefined,
+                backgroundColor: undefined,
+                color: undefined,
+                name: '',
+                accessibilityInformation: undefined,
+                command: '',
+            };
+            const trackedItem = {
+                show: () => { writes.show++; },
+                hide: () => { writes.hide++; },
+                dispose: () => {},
+            } as unknown as vscode.StatusBarItem;
+            for (const key of ['text', 'tooltip', 'backgroundColor', 'color', 'name', 'accessibilityInformation', 'command'] as const) {
+                Object.defineProperty(trackedItem, key, {
+                    enumerable: true,
+                    configurable: true,
+                    get: () => state[key],
+                    set: (v: unknown) => {
+                        writes[key]++;
+                        state[key] = v;
+                    },
+                });
+            }
+            const resetCounts = () => {
+                writes.text = 0;
+                writes.tooltip = 0;
+                writes.backgroundColor = 0;
+                writes.color = 0;
+                writes.name = 0;
+                writes.accessibilityInformation = 0;
+                writes.command = 0;
+                writes.show = 0;
+                writes.hide = 0;
+            };
+            const totalSetterWrites = () =>
+                writes.text + writes.tooltip + writes.backgroundColor + writes.color
+                + writes.name + writes.accessibilityInformation + writes.command;
+
+            vi.spyOn(vscode.window, 'createStatusBarItem').mockReturnValue(trackedItem);
+            mockDensity('auto', 0);
+
+            const manager = new StatusBarManager();
+            // Constructor initializes and calls show() exactly once
+            expect(writes.show).toBe(1);
+            expect(writes.hide).toBe(0);
+            expect(writes.text).toBe(1);
+            expect(writes.tooltip).toBe(1);
+            expect(writes.name).toBe(1);
+            expect(writes.command).toBe(1);
+
+            // Repeated showInitializing + refreshFromConfig -> 0 setter writes
+            resetCounts();
+            manager.showInitializing();
+            manager.refreshFromConfig();
+            expect(totalSetterWrites()).toBe(0);
+            expect(writes.show).toBe(0);
+
+            // Transition to disconnected commits once; repeated polls commit 0
+            manager.showDisconnected('LS not found');
+            expect(writes.text).toBe(1);
+            expect(writes.tooltip).toBe(1);
+            expect(writes.accessibilityInformation).toBe(1);
+            expect(writes.backgroundColor).toBe(0); // already undefined
+            resetCounts();
+            manager.showDisconnected('LS not found');
+            manager.refreshFromConfig();
+            expect(totalSetterWrites()).toBe(0);
+
+            // Transition to noConversation with configs + quotaSummary commits once; repeated polls commit 0
+            manager.setPlanName('Pro', 'Google AI Ultra');
+            manager.setModelConfigs([
+                {
+                    model: 'MODEL_PLACEHOLDER_M535',
+                    label: 'Gemini 4 Neon (XHigh)',
+                    supportsImages: true,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: true,
+                    quotaInfo: { remainingFraction: 0.87, resetTime: '2026-11-22T01:00:00Z' },
+                },
+            ]);
+            manager.setQuotaSummary({
+                groups: [{
+                    pool: 'gemini',
+                    displayName: 'Gemini Models',
+                    fiveHour: {
+                        bucketId: 'g-5h',
+                        window: '5h',
+                        displayName: '5h',
+                        remainingFraction: 0.87,
+                        resetTime: '2026-11-22T01:00:00Z',
+                        resetAt: Date.parse('2026-11-22T01:00:00Z'),
+                    },
+                    weekly: {
+                        bucketId: 'g-wk',
+                        window: 'weekly',
+                        displayName: 'Weekly',
+                        remainingFraction: 0.97,
+                        resetTime: '2026-11-27T00:00:00Z',
+                        resetAt: Date.parse('2026-11-27T00:00:00Z'),
+                    },
+                    buckets: [],
+                }],
+            });
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(writes.text).toBe(1);
+            expect(writes.tooltip).toBe(1);
+            // Security contract: isTrusted allowlist preserved intact
+            expect((trackedItem.tooltip as vscode.MarkdownString).isTrusted).toEqual({
+                enabledCommands: ['antigravity-context-monitor.showDetails', 'antigravity-context-monitor.refresh'],
+            });
+            resetCounts();
+            for (let i = 0; i < 5; i++) {
+                manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+                manager.refreshFromConfig();
+            }
+            expect(totalSetterWrites()).toBe(0);
+
+            // Transition to idle commits once; repeated polls commit 0
+            manager.showIdle('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(writes.text).toBe(1);
+            expect(writes.tooltip).toBe(1);
+            resetCounts();
+            manager.showIdle('512k', 'MODEL_PLACEHOLDER_M535');
+            manager.refreshFromConfig();
+            expect(totalSetterWrites()).toBe(0);
+
+            // Transition to active warning (>=50%) commits backgroundColor once; repeated polls commit 0
+            const warningUsage = makeContextUsage({
+                model: 'MODEL_PLACEHOLDER_M535',
+                modelDisplayName: 'Gemini 4 Neon (XHigh)',
+                contextUsed: 120_000,
+                contextLimit: 200_000,
+                usagePercent: 60,
+            });
+            manager.update(warningUsage);
+            expect(writes.backgroundColor).toBe(1);
+            expect((trackedItem.backgroundColor as vscode.ThemeColor).id).toBe('statusBarItem.warningBackground');
+            resetCounts();
+            manager.update({ ...warningUsage });
+            manager.refreshFromConfig();
+            expect(totalSetterWrites()).toBe(0);
+
+            // Transition warning -> critical (>=80%) -> ok (<50%, undefined) updates backgroundColor immediately
+            manager.update(makeContextUsage({
+                ...warningUsage,
+                contextUsed: 170_000,
+                usagePercent: 85,
+            }));
+            expect(writes.backgroundColor).toBe(1);
+            expect((trackedItem.backgroundColor as vscode.ThemeColor).id).toBe('statusBarItem.errorBackground');
+            resetCounts();
+            manager.update(makeContextUsage({
+                ...warningUsage,
+                contextUsed: 40_000,
+                usagePercent: 20,
+            }));
+            expect(writes.backgroundColor).toBe(1);
+            expect(trackedItem.backgroundColor).toBeUndefined();
+
+            // Language change updates name, text, aria, and tooltip immediately
+            resetCounts();
+            await setLanguage('zh', makeCtx());
+            manager.refreshFromConfig();
+            expect(writes.name).toBe(1);
+            expect(writes.tooltip).toBe(1);
+            expect(writes.accessibilityInformation).toBe(1);
+            expect(trackedItem.name).toBe('上下文窗口监控');
+            resetCounts();
+            manager.refreshFromConfig();
+            expect(totalSetterWrites()).toBe(0);
+
+            manager.dispose();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('aligns multi-pool countdown minute boundaries, absorbs sub-45s server resetTime jitter, and preserves <1m/expiry accuracy', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-11-22T00:00:05Z'));
+        try {
+            let textWrites = 0;
+            let tooltipWrites = 0;
+            const state: Record<string, unknown> = {
+                text: '',
+                tooltip: undefined,
+                backgroundColor: undefined,
+                name: '',
+                accessibilityInformation: undefined,
+                command: '',
+            };
+            const trackedItem = {
+                show: () => {},
+                hide: () => {},
+                dispose: () => {},
+            } as unknown as vscode.StatusBarItem;
+            for (const key of ['text', 'tooltip', 'backgroundColor', 'name', 'accessibilityInformation', 'command'] as const) {
+                Object.defineProperty(trackedItem, key, {
+                    enumerable: true,
+                    configurable: true,
+                    get: () => state[key],
+                    set: (v: unknown) => {
+                        if (key === 'text') { textWrites++; }
+                        if (key === 'tooltip') { tooltipWrites++; }
+                        state[key] = v;
+                    },
+                });
+            }
+            vi.spyOn(vscode.window, 'createStatusBarItem').mockReturnValue(trackedItem);
+            mockDensity('full', 0);
+
+            const manager = new StatusBarManager();
+            const setPools = (geminiReset: string, claudeReset: string) => {
+                manager.setModelConfigs([
+                    {
+                        model: 'MODEL_PLACEHOLDER_M535',
+                        label: 'Gemini 4 Neon (XHigh)',
+                        supportsImages: true,
+                        allowedTiers: [],
+                        mimeTypeCount: 0,
+                        supportedMimeTypes: [],
+                        isRecommended: true,
+                        quotaInfo: { remainingFraction: 0.85, resetTime: geminiReset },
+                    },
+                    {
+                        model: 'MODEL_PLACEHOLDER_M401',
+                        label: 'Claude Opus 5.5 (Medium)',
+                        supportsImages: true,
+                        allowedTiers: [],
+                        mimeTypeCount: 0,
+                        supportedMimeTypes: [],
+                        isRecommended: false,
+                        quotaInfo: { remainingFraction: 0.9, resetTime: claudeReset },
+                    },
+                ]);
+                manager.setQuotaSummary({
+                    groups: [
+                        {
+                            pool: 'gemini',
+                            displayName: 'Gemini Models',
+                            fiveHour: {
+                                bucketId: 'g-5h',
+                                window: '5h',
+                                displayName: '5h',
+                                remainingFraction: 0.85,
+                                resetTime: geminiReset,
+                                resetAt: Date.parse(geminiReset),
+                            },
+                            buckets: [],
+                        },
+                        {
+                            pool: 'premium',
+                            displayName: 'Claude and GPT models',
+                            fiveHour: {
+                                bucketId: 'c-5h',
+                                window: '5h',
+                                displayName: '5h',
+                                remainingFraction: 0.9,
+                                resetTime: claudeReset,
+                                resetAt: Date.parse(claudeReset),
+                            },
+                            buckets: [],
+                        },
+                    ],
+                });
+            };
+
+            // Two pools with staggered seconds (:12 and :47)
+            setPools('2026-11-22T02:00:12Z', '2026-11-22T03:00:47Z');
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(trackedItem.text).toContain('$(clock) 2h0m');
+            expect((trackedItem.tooltip as vscode.MarkdownString).value).toContain('2h');
+            expect((trackedItem.tooltip as vscode.MarkdownString).value).toContain('3h 1m');
+
+            textWrites = 0;
+            tooltipWrites = 0;
+
+            // Advance across the same minute past both staggered second marks (:15, :35, :55)
+            // AND introduce ±15s server resetTime jitter -> 0 writes!
+            vi.setSystemTime(new Date('2026-11-22T00:00:15Z'));
+            setPools('2026-11-22T02:00:25Z', '2026-11-22T03:00:35Z');
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+
+            vi.setSystemTime(new Date('2026-11-22T00:00:35Z'));
+            setPools('2026-11-22T01:59:55Z', '2026-11-22T03:00:58Z');
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+
+            vi.setSystemTime(new Date('2026-11-22T00:00:55Z'));
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(textWrites).toBe(0);
+            expect(tooltipWrites).toBe(0);
+
+            // Crossing the wall-clock minute boundary rolls both pools + status bar together once
+            vi.setSystemTime(new Date('2026-11-22T00:01:00Z'));
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(textWrites).toBe(1);
+            expect(tooltipWrites).toBe(1);
+            expect(trackedItem.text).toContain('$(clock) 1h59m');
+            expect((trackedItem.tooltip as vscode.MarkdownString).value).toContain('1h 59m');
+            expect((trackedItem.tooltip as vscode.MarkdownString).value).toContain('3h');
+
+            // Explicit >=60s resetTime jump updates immediately
+            textWrites = 0;
+            tooltipWrites = 0;
+            setPools('2026-11-22T02:05:00Z', '2026-11-22T03:00:47Z');
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(textWrites).toBe(1);
+            expect(tooltipWrites).toBe(1);
+            expect(trackedItem.text).toContain('$(clock) 2h4m');
+
+            // Final minute (<60s remaining) stays at 1m (never 0m), then immediately flips to Ready on expiry
+            vi.setSystemTime(new Date('2026-11-22T02:04:20Z')); // 40s remaining
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(trackedItem.text).toContain('$(clock) 1m');
+            expect(trackedItem.text).not.toContain('$(clock) 0m');
+            expect((trackedItem.tooltip as vscode.MarkdownString).value).toContain('| 1m |');
+            textWrites = 0;
+            tooltipWrites = 0;
+            vi.setSystemTime(new Date('2026-11-22T02:04:55Z')); // 5s remaining
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(textWrites).toBe(0);
+            expect(tooltipWrites).toBe(0);
+
+            vi.setSystemTime(new Date('2026-11-22T02:05:01Z')); // expired
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(textWrites).toBe(1);
+            expect(tooltipWrites).toBe(1);
+            expect(trackedItem.text).not.toContain('$(clock)');
+            expect((trackedItem.tooltip as vscode.MarkdownString).value).toContain('Ready');
+
+            // Regression for :45 resetTime crossing the 60s boundary + ±10s server jitter:
+            // Must stay strictly monotonic (2m -> 1m -> Ready) with zero backward jumps or 0m display.
+            vi.setSystemTime(new Date('2026-11-22T03:59:44Z')); // 61s before 04:00:45Z (stabilized to 04:01:00Z)
+            setPools('2026-11-22T04:00:45Z', '2026-11-22T05:00:00Z');
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(trackedItem.text).toContain('$(clock) 2m');
+            expect((trackedItem.tooltip as vscode.MarkdownString).value).toContain('| 2m |');
+
+            textWrites = 0;
+            tooltipWrites = 0;
+            // Cross 60s remaining (03:59:46Z, 59s left) AND jitter +10s (04:00:55Z, 69s left) within same minute:
+            // ZERO writes, ZERO jump to 0m or back to 2m!
+            vi.setSystemTime(new Date('2026-11-22T03:59:46Z'));
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            setPools('2026-11-22T04:00:55Z', '2026-11-22T05:00:00Z');
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(textWrites).toBe(0);
+            expect(tooltipWrites).toBe(0);
+            expect(trackedItem.text).toContain('$(clock) 2m');
+
+            // Wall-clock minute tick 04:00:00Z steps cleanly 2m -> 1m
+            vi.setSystemTime(new Date('2026-11-22T04:00:00Z'));
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(textWrites).toBe(1);
+            expect(tooltipWrites).toBe(1);
+            expect(trackedItem.text).toContain('$(clock) 1m');
+            expect((trackedItem.tooltip as vscode.MarkdownString).value).toContain('| 1m |');
+
+            // Exact expiry at 04:00:56Z flips immediately to Ready
+            vi.setSystemTime(new Date('2026-11-22T04:00:56Z'));
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(trackedItem.text).not.toContain('$(clock)');
+            expect((trackedItem.tooltip as vscode.MarkdownString).value).toContain('Ready');
+
+            // Account switch / clearStabilizedResetTimes clears stale hysteresis immediately
+            vi.setSystemTime(new Date('2026-11-22T05:00:00Z'));
+            setPools('2026-11-22T06:00:25Z', '2026-11-22T07:00:00Z'); // snapped to 06:00:00Z -> 1h
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(trackedItem.text).toContain('$(clock) 1h0m');
+            manager.clearStabilizedResetTimes();
+            // After clearing, 06:00:35Z snaps freshly to 06:01:00Z -> 1h1m (no stale 06:00:00Z lock from prior account)
+            setPools('2026-11-22T06:00:35Z', '2026-11-22T07:00:00Z');
+            manager.showNoConversation('512k', 'MODEL_PLACEHOLDER_M535');
+            expect(trackedItem.text).toContain('$(clock) 1h1m');
+
+            // Strict ISO validation rejects loose V8 Date.parse inputs like '0' or '2026-02-30T00:00:00Z'
+            manager.setModelConfigs([
+                {
+                    model: 'MODEL_PLACEHOLDER_M535',
+                    label: 'Gemini 4 Neon (XHigh)',
+                    supportsImages: true,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: true,
+                    quotaInfo: { remainingFraction: 0.85, resetTime: '2026-02-30T00:00:00Z' },
+                },
+            ]);
+            expect(manager.getEarliestResetTime()).toBeNull();
+
+            manager.dispose();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
 });

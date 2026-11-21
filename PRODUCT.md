@@ -58,7 +58,7 @@ Unlike generic token estimators or third-party cloud dashboards, Antigravity Con
   9. `About` — Dynamic manifest version & platform scope confirmation, clickable 8-tab feature navigation directory, open-source repository link, multi-window tip, Gemini 4 512K context window note, compatibility record, unofficial/read-only disclaimer, and language hint.
 - **4 Registered Commands:** `Show Context Window Details`, `Refresh Context Window Monitor`, `Switch Display Language`, `Show Model Activity`.
 - **13 IDE Settings (`antigravityContextMonitor.*`):** `pollingInterval`, `statusBar.showContext`, `statusBar.showQuota`, `statusBar.showResetCountdown`, `statusBar.showAiCredits`, `statusBar.showSpeed`, `statusBar.showCacheHit`, `statusBar.showSessionCost`, `statusBar.tooltipDensity`, `quotaNotificationThreshold`, `showModelInternalId`, `activity.maxRecentSteps`, `activity.maxArchives`.
-- **Live Catalog & Pricing Support (v1.17.3):** Synced with Antigravity IDE v1.5.14 (`LS 2.34.0`): full custom Orchestrator support (Gemini 4 Neon/Carbon/Argon + Claude Opus 5.5 planners; Gemini 4 Hydrogen incl. `Extra High` + Claude Sonnet 5.5 executors), `512,000` compression limit (`511,000` fallback) across all Gemini 4 & Orchestrator models, `M669` (`Gemini 4 Hydrogen (Orchestrator)`), catalog entries `M530`/`M531`/`M578`, official `Gemini 4 Neon` pricing (`$3/$15/$0.15` per 1M), corrected `Claude Sonnet 5.5` cache read (`$0.10/1M`), bounded `Gemini 3.6 Flash` promo (`[2026-08-13, 2027-01-01)`), and GPT-OSS 120B `Notice` tag.
+- **Live Catalog & Pricing Support (v1.17.4):** Synced with Antigravity IDE v1.5.14 (`LS 2.34.0`): full custom Orchestrator support (Gemini 4 Neon/Carbon/Argon + Claude Opus 5.5 planners; Gemini 4 Hydrogen incl. `Extra High` + Claude Sonnet 5.5 executors), `512,000` compression limit (`511,000` fallback) across all Gemini 4 & Orchestrator models, `M669` (`Gemini 4 Hydrogen (Orchestrator)`), catalog entries `M530`/`M531`/`M578`, official `Gemini 4 Neon` pricing (`$3/$15/$0.15` per 1M), corrected `Claude Sonnet 5.5` cache read (`$0.10/1M`), bounded `Gemini 3.6 Flash` promo (`[2026-08-13, 2027-01-01)`), GPT-OSS 120B `Notice` tag, strict RFC 3339 epoch-0 & secondary-port TLS-first discovery hardening, and zero-flicker diff-guarded Status Bar hover updates.
 
 ### Technical & Terminology Constraints
 - **Read-only local telemetry:** Never mutates Antigravity user data, accounts, or backend configuration.
@@ -67,7 +67,7 @@ Unlike generic token estimators or third-party cloud dashboards, Antigravity Con
 - **Viewport range:** Zero horizontal overflow from `320px` narrow split-panes through `1440px` full editor windows across all 9 tabs and all 3 language modes.
 
 ### Provenance Note
-- Product facts above are derived directly from repository truth (`package.json`, `src/`, `tests/`, `README.md`, `docs/`) and the confirmed Studio Telemetry Ledger / v1.17.3 specifications. *(Autonomous swarm pass; undecided future roadmap items beyond v1.17.3 are intentionally left open.)*
+- Product facts above are derived directly from repository truth (`package.json`, `src/`, `tests/`, `README.md`, `docs/`) and the confirmed Studio Telemetry Ledger / v1.17.4 specifications. *(Autonomous swarm pass; undecided future roadmap items beyond v1.17.4 are intentionally left open.)*
 
 ## Brand Commitments
 
@@ -83,7 +83,7 @@ Unlike generic token estimators or third-party cloud dashboards, Antigravity Con
 
 - **Source implementation:** `src/webview-panel.ts`, `src/webview-styles.ts`, `src/webview-editorial-styles.ts`, `src/webview-script.ts`, `src/webview-icons.ts`, `src/webview-overview-tab.ts`, `src/activity-panel.ts`, `src/webview-chat-history-tab.ts`, `src/pricing-panel.ts`, `src/webview-models-tab.ts`, `src/webview-calendar-tab.ts`, `src/webview-profile-tab.ts`, `src/webview-settings-tab.ts`, `src/webview-about-tab.ts`, `src/statusbar.ts`, `src/tooltip-budget.ts`, `src/monitor-overview.ts`, `src/pricing-store.ts`, `src/account-credits.ts`, `src/telemetry-metrics.ts`, `src/i18n.ts`.
 - **Automated verification:** 60 Vitest unit test suites in `tests/*.test.ts` plus deterministic multi-theme/multi-viewport browser & native macOS IDE verification harness in `tests/installed-ide-ui.cjs`.
-- **Documentation & release validation:** `README.md`, `readme_CN.md`, `CHANGELOG.md`, `docs/releases/1.17.3.md`, `docs/technical_implementation.md`, `docs/project_structure.md`.
+- **Documentation & release validation:** `README.md`, `readme_CN.md`, `CHANGELOG.md`, `docs/releases/1.17.4.md`, `docs/technical_implementation.md`, `docs/project_structure.md`.
 - **Published screenshots:** `src/images/monitor-{overview,models,cost,gm-data,sessions,calendar,profile,settings,about}.png` (Studio Telemetry Ledger Light & Dark assets refreshed per release).
 - **Absences not to fabricate:** No invented user testimonials, adoption claims, official Google/Antigravity endorsements, or unverified public API pricing rates.
 

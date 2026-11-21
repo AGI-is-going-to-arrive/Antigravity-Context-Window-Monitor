@@ -130,7 +130,7 @@ function readQuota(config: ModelConfig, model: string, effort?: QuotaEffort): Mo
         ? fraction : null;
     const rawReset = config.quotaInfo?.resetTime;
     const reset = typeof rawReset === 'string' ? rawReset.trim() : '';
-    const isTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(reset);
+    const isTimestamp = /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/i.test(reset);
     const parsed = isTimestamp ? Date.parse(reset) : NaN;
     const calendarDate = isTimestamp ? new Date(`${reset.slice(0, 10)}T00:00:00Z`) : null;
     const validDate = calendarDate && Number.isFinite(calendarDate.getTime()) && calendarDate.toISOString().slice(0, 10) === reset.slice(0, 10);

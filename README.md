@@ -2,27 +2,26 @@
 
 Monitor conversation context, Orchestrator & Executor routing, dual-window model quotas (`5h` + `Weekly`), generation speed (`tok/s`), TTFT & prompt cache efficiency, API-equivalent costs (USD), reset times, and AI credits in Antigravity IDE.
 
-**1.17.3** fixes backend discovery against `agy` v1.5.14+ (resolving `上下文: 不可用` / `GetUnleashData` removal), adds full **Custom Orchestrator Mode & Orchestrator Settings** support (including **Orchestrator Claude Opus 5.5**, cross-pool `Planner → Executor` tracking, selectable thinking levels with `Extra High` aligned across Neon & Hydrogen, and 512K checkpointer limits), introduces **Dual-Window Quota (`5-Hour` + `Weekly`)**, updates **official model pricing** (adding **Gemini 4 Neon** `$3/$15/$0.15`, fixing **Claude Sonnet 5.5** cache read `$0.20 → $0.10`, adding bounded **Gemini 3.6 Flash** promo dates, and surfacing scheduled rate-change countdowns in USD), and overhauls the **Status Bar Hover Tooltip** plus the collapsible **Recent Calls Ledger** in **GM Data**.
+**1.17.4** eliminates the **Status Bar Hover Tooltip flicker** (3-layer fix: diff-guarded `StatusBarItem` commits preserving the strict `isTrusted` command allowlist, caller-side deduplication of auxiliary metadata / empty-GM / disconnected retries, and stabilized monotonic minute countdowns), hardens **secondary-port TLS-first discovery** and `GetUserStatus` object-shape validation across Windows/macOS/Linux/IPv6, and enforces **strict RFC 3339 / ISO-8601 epoch-0 and chronological pool reset handling** (incorporating hardened fixes from PR #74 by `@AxelDZP`).
 
-[中文文档](readme_CN.md) · [1.17.3 release notes and validation](docs/releases/1.17.3.md) · [Technical guide](docs/technical_implementation.md) · [Project structure](docs/project_structure.md) · [Changelog](CHANGELOG.md)
+[中文文档](readme_CN.md) · [1.17.4 release notes and validation](docs/releases/1.17.4.md) · [Technical guide](docs/technical_implementation.md) · [Project structure](docs/project_structure.md) · [Changelog](CHANGELOG.md)
 
-## Highlights in 1.17.3
+## Highlights in 1.17.4
 
-- **Backend discovery fix (`agy` v1.5.14+ / `上下文: 不可用`):** Replaces the single-endpoint `GetUnleashData` health check with a multi-endpoint CSRF probe (`GetStatus → GetUnleashData → GetUserStatus`), adds `daemon/hub_<port>.json` & direct-hint fallback without aborting on `GetUnleashData` 404s, hardens cross-platform loopback handling across macOS, Windows, Linux, WSL, and IPv6 (`[::1]` / `127.0.0.1`), and reconnects immediately when the backend restarts.
-- **Orchestrator & Orchestrator Settings (`Orchestrator Claude Opus 5.5` & cross-pool routing):** Reads live global **Orchestrator Settings** (`Orchestrator Model` + `Executor Model` via Connect-protocol `JetboxSubscribeToState` and Mendel `orchestrator-model-roles` flags), supports selectable thinking levels across all Orchestrator & Executor models (aligning **`Extra High`** across both Gemini 4 Neon and Gemini 4 Hydrogen), tracks cross-pool `Planner → Executor` pairings (e.g. `Claude Opus 5.5 + Gemini 4 Hydrogen` or `Gemini 4 Neon + Claude Sonnet 5.5`) across **Overview**, **Models**, and the hover tooltip, unifies **512K (`512,000`)** live checkpointer limits across all Gemini 4 & Orchestrator models, adds `M669` (`Gemini 4 Hydrogen (Orchestrator)`) + `M530`/`M531`/`M578` support, and surfaces the **GPT-OSS 120B** `Notice` sunset tag.
-- **Official model pricing (USD):** Adds verified official **Gemini 4 Neon** pricing (`$3.00` input / `$15.00` output & thinking / `$0.15` cache read per 1M tokens, flat across the full 1M context, with automatic zero-cost reconciliation/backfill), fixes **Claude Sonnet 5.5** cache read (`$0.20 → $0.10`), adds the bounded **Gemini 3.6 Flash** promotional schedule (`[2026-08-13, 2027-01-01)`), displays **Upcoming Scheduled Rate Changes** banners (Carbon/Argon `2026-12-01`, Flash `2027-01-01`), preserves strict unpriced guards (`M537`/`M667`/`M681`/`M669`/`M578`/`M21` never fabricate `$0.00`), and shows API reference prices in USD on **Models** spec cards.
-- **Dual-Window Quota (`5-Hour` + `Weekly`):** Fetches live 5-hour and weekly quota buckets via `RetrieveUserQuotaSummary` (with graceful 5h-only fallback on older backends) and renders both windows consistently across **Overview**, **Models**, **Profile**, and the **Hover Tooltip** (with floored high-percentage precision so `99.3%`–`99.9%` never falsely rounds to `100%`).
-- **Overhauled hover tooltip & collapsible Recent Calls Ledger:** Introduces priority-tiered, zoom-aware section budgeting (`compact` / `auto` / `full`) that protects **Quota remaining** and the pinned footer at every zoom level; adds a **Latest Call** micro-table (Fresh In / Out / Think / Cache Hit % / Cost / TTFT & Total Latency / noise-gated Speed / Status), Session & Today Cost + Cache Savings + Effective Blended Input Rate, **Orchestrator Split** (Planner vs Executor calls & cost), event-driven alerts (14-day rate-cutover countdown, GPT-OSS `Notice` sunset, Retry Waste, AI credits), 1-click trusted footer links (`Overview · Activity · Cost · Models · Settings · Refresh`), an opt-in status bar session cost pill (`statusBar.showSessionCost`), and a collapsible **Recent Calls Ledger** (latest 20 calls) in **GM Data**.
+- **Zero-flicker Status Bar Hover Tooltip:** Diff-guards every mutable `StatusBarItem` property (`name`, `backgroundColor` by `ThemeColor.id`, `text`, `accessibilityInformation`, `tooltip`) so unchanged 5-second polls perform **zero** setter writes and never trigger VS Code's `markdownStringEqual()` object-identity failure on `isTrusted: { enabledCommands }`; adds structural diffing for 10-second auxiliary metadata refreshes, fixes empty-GM double renders and disconnected `Initializing` ↔ `Disconnected` ping-pong (while keeping immediate `Initializing` feedback on manual Refresh), runs compression detection in a single pass before rendering, and stabilizes multi-pool countdown minute boundaries with ±45s server `resetTime` jitter hysteresis.
+- **Secondary-port TLS-first discovery & `GetUserStatus` shape validation (PR #74, `@AxelDZP`):** Keeps HTTP-first probing on declared `--hub-port` / primary hint ports for `agy --hub`, while switching secondary ports discovered via `lsof`/`ss`/`netstat` to **HTTPS/TLS first** (eliminating `HTTP 400` / Go `http: TLS handshake error` noise on paired TLS ports across Windows, macOS, Linux, and IPv6 `[::1]`). Rejects non-object/array `userStatus` payloads (`{}`, `null`, `[]`) in both `probeEndpoint()` and `fetchFullUserStatus()`.
+- **Strict ISO-8601 epoch-0 & chronological reset sorting (PR #74, `@AxelDZP`):** Centralizes `parseStrictResetTimestamp()` / `parsePositivePoolResetMs()` / `comparePoolResetTimes()` to recognize all equivalent proto3 epoch-0 forms (`1970-01-01T00:00:00.000Z`, `+00:00`), reject malformed/impossible calendar dates (`'0'`, `'1970'`, `'2026-02-30T00:00:00Z'`), sort pool reset times chronologically across timezone offsets, and guard all quota-reset settlement paths against epoch-0 false expiry.
+- **Full v1.17.3 feature set retained:** Multi-endpoint `agy` v1.5.14+ backend discovery (`GetStatus → GetUnleashData → GetUserStatus`), live Custom **Orchestrator Settings** (`Orchestrator Model` + `Executor Model`), Dual-Window Quota (`5-Hour` + `Weekly`), verified official USD model pricing (Gemini 4 Neon `$3/$15/$0.15`, Claude Sonnet 5.5 `$0.10` cache read, scheduled rate-change banners), priority-tiered `P0`–`P5` Hover Tooltip, and GM Data collapsible **Recent Calls Ledger**.
 
 ## Install
 
-1. Get `antigravity-context-monitor-1.17.3.vsix` from the release assets or build it locally with `npm run package`. [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases)
+1. Get `antigravity-context-monitor-1.17.4.vsix` from the release assets or build it locally with `npm run package`. [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases)
 2. In Antigravity IDE, open the Command Palette with `Cmd+Shift+P` on macOS or `Ctrl+Shift+P` on Windows and Linux. Run **Extensions: Install from VSIX...** and select the file.
-3. Reload the window. Confirm **1.17.3** in extension details or the monitor's **About** page.
+3. Reload the window. Confirm **1.17.4** in extension details or the monitor's **About** page.
 
 You can also install the published registry version from [Open VSX](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
 
-The extension supports macOS, Windows, Linux, and WSL. Native IDE checks for 1.17.3 ran on macOS; the release notes separate native checks from mocked Windows and Linux branch tests. [Validation](docs/releases/1.17.3.md#validation)
+The extension supports macOS, Windows, Linux, and WSL. Native IDE checks for 1.17.4 ran on macOS; the release notes separate native checks from mocked Windows and Linux branch tests. [Validation](docs/releases/1.17.4.md#validation)
 
 ## Use the monitor
 
@@ -106,9 +105,9 @@ Inspect external persistent storage, configure the low-quota warning threshold, 
 <details>
 <summary>About — version, compatibility, and navigation</summary>
 
-Confirm the installed extension version (`v1.17.3`, dynamically read from the extension manifest) and 512K context compatibility scope, jump directly to any monitor view via the feature navigation directory, and access repository and compatibility notes.
+Confirm the installed extension version (`v1.17.4`, dynamically read from the extension manifest) and 512K context compatibility scope, jump directly to any monitor view via the feature navigation directory, and access repository and compatibility notes.
 
-![About in Obsidian Slate Dark mode showing version 1.17.3 and feature navigation cards](src/images/monitor-about.png)
+![About in Obsidian Slate Dark mode showing version 1.17.4 and feature navigation cards](src/images/monitor-about.png)
 
 </details>
 
@@ -167,6 +166,6 @@ IDE settings use the `antigravityContextMonitor.` prefix (13 settings total):
 
 ## Credits
 
-Maintained by **AGI-is-going-to-arrive**. Thanks to **SecretLUL** for the Windows discovery report. [Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)
+Maintained by **AGI-is-going-to-arrive**. Thanks to **SecretLUL** for the Windows discovery report ([Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)) and **@AxelDZP** for secondary-port TLS-first discovery, `GetUserStatus` shape validation, and equivalent proto3 epoch-0 `resetTime` fixes ([PR #74](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/74)).
 
 [MIT License](LICENSE) · [LINUX DO](https://linux.do/) · [Star history](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)

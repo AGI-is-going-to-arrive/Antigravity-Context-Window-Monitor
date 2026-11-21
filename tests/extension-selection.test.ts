@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildUsageScopeTrajectories,
+    comparePoolResetTimes,
     groupModelConfigsByQuotaPool,
+    hasAuxiliaryMetadataChanged,
+    parsePositivePoolResetMs,
     selectRunningTrajectoryCandidate,
+    shouldSettleOnResetTimeChange,
 } from '../src/extension';
 import { CascadeStatus } from '../src/constants';
 import type { TrajectorySummary } from '../src/tracker';
@@ -213,5 +217,86 @@ describe('groupModelConfigsByQuotaPool', () => {
         const gemini = groups.find(g => g.key === 'gemini');
         expect(gemini?.modelIds).toHaveLength(11);
         expect(gemini?.minFraction).toBe(0.6);
+    });
+
+    it('strips all proto3 epoch-0 variants, negative epochs, and malformed dates while sorting valid resetTimes chronologically', () => {
+        const groups = groupModelConfigsByQuotaPool([
+            modelConfig('MODEL_PLACEHOLDER_M535', 'Gemini 4 Neon (XHigh)', '1970-01-01T00:00:00.000Z', 1.0),
+            modelConfig('MODEL_PLACEHOLDER_M534', 'Gemini 4 Neon (Low)', '1970-01-01T00:00:00+00:00', 1.0),
+            modelConfig('MODEL_PLACEHOLDER_M533', 'Gemini 4 Neon (Medium)', '1969-12-31T23:59:59Z', 1.0),
+            modelConfig('MODEL_PLACEHOLDER_M532', 'Gemini 4 Neon (High)', '0bad', 1.0),
+            modelConfig('MODEL_PLACEHOLDER_M528', 'Gemini 4 Hydrogen (XHigh)', '2026-02-30T00:00:00Z', 1.0),
+            // Chronologically earlier (2026-11-22T00:00:00Z) despite lexicographically sorting after 01:00:00Z
+            modelConfig('MODEL_PLACEHOLDER_M525', 'Gemini 4 Hydrogen (High)', '2026-11-22T02:00:00+02:00', 0.8),
+            modelConfig('MODEL_PLACEHOLDER_M526', 'Gemini 4 Hydrogen (Medium)', '2026-11-22T01:00:00Z', 0.8),
+            // Pool whose models only carry epoch-0 / malformed timestamps -> empty resetTime
+            modelConfig('MODEL_PLACEHOLDER_M401', 'Claude Opus 5.5 (Medium)', '1970-01-01T00:00:00.000Z', 1.0),
+            modelConfig('MODEL_PLACEHOLDER_M404', 'Claude Sonnet 5.5 (Medium)', '0', 1.0),
+        ]);
+
+        const gemini = groups.find(g => g.key === 'gemini');
+        const premium = groups.find(g => g.key === 'premium');
+        expect(gemini?.resetTime).toBe('2026-11-22T02:00:00+02:00');
+        expect(premium?.resetTime).toBe('');
+    });
+});
+
+describe('parsePositivePoolResetMs & shouldSettleOnResetTimeChange epoch-0 guards', () => {
+    it('rejects proto3 epoch-0 variants, negative timestamps, and malformed/non-ISO strings', () => {
+        for (const bad of [
+            '',
+            '   ',
+            '1970-01-01T00:00:00Z',
+            '1970-01-01T00:00:00.000Z',
+            '1970-01-01T00:00:00+00:00',
+            '1969-12-31T23:59:59Z',
+            '0',
+            '1970',
+            '0bad',
+            '2026-02-30T00:00:00Z',
+            '2026-11-22',
+            null,
+            undefined,
+        ]) {
+            expect(parsePositivePoolResetMs(bad), String(bad)).toBeNull();
+        }
+        expect(parsePositivePoolResetMs('2026-11-22T02:00:00.000Z')).toBe(Date.parse('2026-11-22T02:00:00.000Z'));
+        expect(parsePositivePoolResetMs('2026-11-22T02:00:00+02:00')).toBe(Date.parse('2026-11-22T00:00:00Z'));
+    });
+
+    it('never triggers cycle-turnover settlement from an epoch-0 or malformed old resetTime', () => {
+        const nowMs = Date.parse('2026-11-22T00:00:00Z');
+        expect(shouldSettleOnResetTimeChange('1970-01-01T00:00:00.000Z', '2026-11-22T05:00:00Z', nowMs)).toBe(false);
+        expect(shouldSettleOnResetTimeChange('1970-01-01T00:00:00Z', '2026-11-22T05:00:00Z', nowMs)).toBe(false);
+        expect(shouldSettleOnResetTimeChange('0', '2026-11-22T05:00:00Z', nowMs)).toBe(false);
+        expect(shouldSettleOnResetTimeChange('2026-02-30T00:00:00Z', '2026-11-22T05:00:00Z', nowMs)).toBe(false);
+    });
+
+    it('sorts pool resetTimes chronologically across timezone offsets and puts empty/invalid last', () => {
+        const unsorted = [
+            '',
+            '2026-11-22T01:00:00Z',
+            '2026-11-22T02:00:00+02:00', // 00:00Z (earliest)
+            '1970-01-01T00:00:00.000Z',
+            '2026-11-22T00:30:00Z',
+        ];
+        expect([...unsorted].sort(comparePoolResetTimes)).toEqual([
+            '2026-11-22T02:00:00+02:00',
+            '2026-11-22T00:30:00Z',
+            '2026-11-22T01:00:00Z',
+            '',
+            '1970-01-01T00:00:00.000Z',
+        ]);
+    });
+});
+
+describe('hasAuxiliaryMetadataChanged', () => {
+    it('detects structural equality vs genuine changes cleanly', () => {
+        const snap = { groups: [{ pool: 'gemini', fiveHour: { remainingFraction: 0.87, resetTime: '2026-11-22T02:00:00Z' } }] };
+        expect(hasAuxiliaryMetadataChanged(null, snap)).toBe(true);
+        expect(hasAuxiliaryMetadataChanged(snap, JSON.parse(JSON.stringify(snap)))).toBe(false);
+        expect(hasAuxiliaryMetadataChanged(snap, {
+            groups: [{ pool: 'gemini', fiveHour: { remainingFraction: 0.86, resetTime: '2026-11-22T02:00:00Z' } }],
+        })).toBe(true);
     });
 });

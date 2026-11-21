@@ -971,13 +971,14 @@ async function probeProcess(
     const declaredPort = hub ? extractHubPort(line) : null;
     const attempted = new Set<number>();
     const diagnostics: string[] = [];
-    const tryPort = async (candidate: PortCandidate): Promise<LSInfo | null> => {
+    const tryPort = async (candidate: PortCandidate, preferHttp: boolean): Promise<LSInfo | null> => {
         const { port, ipv6Only } = candidate;
         if (attempted.has(port) || signal?.aborted) { return null; }
         attempted.add(port);
         attemptedKeys?.add(`${port}:${csrfToken}`);
-        // agy serves its hub over HTTP; legacy language_server usually uses TLS.
-        for (const useTls of hub ? [false, true] : [true, false]) {
+        // agy serves its primary/declared hub port over HTTP, while secondary listening ports
+        // (e.g. agy >=1.5.14 paired httpsPort) and legacy language_server processes typically use TLS.
+        for (const useTls of preferHttp ? [false, true] : [true, false]) {
             const found = await probeSchemeWithLoopbackFallback(
                 port, csrfToken, useTls, pid, !!ipv6Only, signal, diagnostics,
             );
@@ -985,17 +986,19 @@ async function probeProcess(
         }
         return null;
     };
-    if (declaredPort !== null) {
-        const found = await tryPort({ port: declaredPort });
-        if (found) { return found; }
-    } else if (hintPort !== undefined) {
-        // Ephemeral --hub-port=0 or omitted port flag: try the IDE's hinted port before socket tooling.
-        const found = await tryPort({ port: hintPort });
+    const primaryPort = declaredPort !== null ? declaredPort : hintPort;
+    if (primaryPort !== undefined) {
+        // Declared --hub-port (or IDE-hinted port for ephemeral --hub-port=0 / omitted port):
+        // try before socket tooling; prefer HTTP for agy hubs and TLS for legacy servers.
+        const found = await tryPort({ port: primaryPort }, hub);
         if (found) { return found; }
     }
     if (signal?.aborted) { return null; }
     for (const candidate of await getPorts()) {
-        const found = await tryPort(candidate);
+        // When a hub's declared/hinted primary port already failed, secondary ports
+        // (e.g. agy >=1.5.14 paired httpsPort) typically use TLS; trying TLS first avoids
+        // spurious HTTP-to-HTTPS handshake errors in hub stderr.
+        const found = await tryPort(candidate, hub && primaryPort === undefined);
         if (found) { return found; }
     }
     if (diagnostics.length > 0) {
@@ -1392,6 +1395,16 @@ async function probeEndpoint(
                     const parsed: unknown = JSON.parse(body);
                     // Connect JSON messages are objects (including `{}` from GetStatus / GetUnleashData).
                     if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        // On the GetUserStatus fallback, verify a non-null, non-array userStatus object
+                        // so soft-200 JSON error responses (`{}`, `{ userStatus: [] }`, `{ userStatus: null }`)
+                        // cannot falsely match a non-LS server.
+                        if (endpoint === 'GetUserStatus') {
+                            const userStatus = (parsed as Record<string, unknown>).userStatus;
+                            if (typeof userStatus !== 'object' || userStatus === null || Array.isArray(userStatus)) {
+                                settle({ kind: 'fail', reason: 'invalid GetUserStatus body' });
+                                return;
+                            }
+                        }
                         settle({ kind: 'ok' });
                     } else {
                         settle({ kind: 'fail', reason: 'non-object JSON' });

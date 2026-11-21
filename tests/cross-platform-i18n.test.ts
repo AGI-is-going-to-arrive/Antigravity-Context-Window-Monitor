@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { formatNumber, getLanguage, setLanguageToState, t, tBi, tBiHtml } from '../src/i18n';
-import { fetchFullUserStatus, normalizeUri } from '../src/tracker';
+import { fetchFullUserStatus, normalizeUri, parseStrictResetTimestamp, parseUserQuotaSummary } from '../src/tracker';
 import { groupModelConfigsByQuotaPool } from '../src/extension';
 import { rpcCall } from '../src/rpc-client';
 import type { LSInfo } from '../src/discovery';
@@ -146,5 +146,119 @@ describe('modern account status and quota parsing', () => {
         expect(pools[0].key).toBe('gemini');
         expect(pools[0].minFraction).toBe(0);
         expect(pools[0].resetTime).toBe('2026-11-19T06:00:00Z');
+    });
+
+    it('parseStrictResetTimestamp accepts equivalent ISO epoch-0 forms and rejects loose V8 Date.parse quirks', () => {
+        // Equivalent proto3 epoch-0 spellings -> 0
+        for (const epoch of [
+            '1970-01-01T00:00:00Z',
+            '1970-01-01T00:00:00.000Z',
+            '1970-01-01T00:00:00.000000000Z',
+            '1970-01-01T00:00:00+00:00',
+            '1970-01-01T01:00:00+01:00',
+            '  1970-01-01T00:00:00.000Z  ',
+        ]) {
+            expect(parseStrictResetTimestamp(epoch), epoch).toBe(0);
+        }
+
+        // Valid positive ISO timestamps (including leap day and non-UTC day-boundary offsets)
+        expect(parseStrictResetTimestamp('2026-11-19T06:00:00Z')).toBe(Date.parse('2026-11-19T06:00:00Z'));
+        expect(parseStrictResetTimestamp('2026-11-19T17:00:00+11:00')).toBe(Date.parse('2026-11-19T06:00:00Z'));
+        expect(parseStrictResetTimestamp('2024-02-29T12:00:00Z')).toBe(Date.parse('2024-02-29T12:00:00Z'));
+        expect(parseStrictResetTimestamp('2026-03-01T00:30:00+02:00')).toBe(Date.parse('2026-02-28T22:30:00Z'));
+        expect(parseStrictResetTimestamp('2026-02-28T23:30:00-02:00')).toBe(Date.parse('2026-03-01T01:30:00Z'));
+
+        // Valid negative ISO timestamp (callers distinguish < 0 from epoch-0 and positive)
+        expect(parseStrictResetTimestamp('1969-12-31T23:59:59Z')).toBe(-1000);
+
+        // Loose/malformed/impossible dates and invalid timezone offsets
+        for (const bad of [
+            '',
+            '   ',
+            null,
+            undefined,
+            0,
+            '0',
+            '1970',
+            '1970-01-01',
+            '0bad',
+            'bad-date',
+            '2026-11-12T01:00:00',
+            '2026-02-29T12:00:00Z',
+            '1900-02-29T12:00:00Z',
+            '2026-02-30T00:00:00Z',
+            '2026-11-31T00:00:00Z',
+            '2026-11-21T24:00:00Z',
+            '2026-11-21T12:00:00+24:00',
+            '2026-11-21T12:00:00+25:00',
+            '2026-11-21T12:00:00+00:60',
+            '2026-11-21T12:00:00-24:00',
+        ]) {
+            expect(parseStrictResetTimestamp(bad), String(bad)).toBeNull();
+        }
+    });
+
+    it.each([
+        { userStatus: [] },
+        { userStatus: null },
+        { userStatus: 'invalid' },
+    ])('fetchFullUserStatus rejects non-object or array userStatus %j without attaching rawResponse', async payload => {
+        vi.mocked(rpcCall).mockResolvedValueOnce(payload);
+        const status = await fetchFullUserStatus(dummyLs);
+        expect(status).toEqual({ configs: [], userInfo: null });
+        expect('rawResponse' in status).toBe(false);
+    });
+
+    it('treats equivalent epoch-0 resetTime as full quota and malformed/negative resetTime as unknown in fetchFullUserStatus & parseUserQuotaSummary', async () => {
+        vi.mocked(rpcCall).mockResolvedValueOnce({
+            userStatus: {
+                name: 'Ada',
+                email: 'ada@example.test',
+                cascadeModelConfigData: {
+                    clientModelConfigs: [
+                        { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M534' }, label: 'Epoch Z', quotaInfo: { resetTime: '1970-01-01T00:00:00Z' } },
+                        { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M533' }, label: 'Epoch ms', quotaInfo: { resetTime: '1970-01-01T00:00:00.000Z' } },
+                        { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M532' }, label: 'Epoch offset', quotaInfo: { resetTime: '1970-01-01T00:00:00+00:00' } },
+                        { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M535' }, label: 'Exhausted', quotaInfo: { resetTime: '2026-11-19T06:00:00Z' } },
+                        { modelOrAlias: { model: 'MODEL_BAD_ZERO' }, label: 'Bad Zero', quotaInfo: { resetTime: '0' } },
+                        { modelOrAlias: { model: 'MODEL_BAD_YEAR' }, label: 'Bad 1970', quotaInfo: { resetTime: '1970' } },
+                        { modelOrAlias: { model: 'MODEL_BAD_CAL' }, label: 'Bad Feb 30', quotaInfo: { resetTime: '2026-02-30T00:00:00Z' } },
+                        { modelOrAlias: { model: 'MODEL_BAD_NEG' }, label: 'Negative 1969', quotaInfo: { resetTime: '1969-12-31T23:59:59Z' } },
+                    ],
+                },
+            },
+        });
+
+        const status = await fetchFullUserStatus(dummyLs);
+        expect(status.configs[0].quotaInfo?.remainingFraction).toBe(1);
+        expect(status.configs[1].quotaInfo?.remainingFraction).toBe(1);
+        expect(status.configs[2].quotaInfo?.remainingFraction).toBe(1);
+        expect(status.configs[3].quotaInfo?.remainingFraction).toBe(0);
+        expect(Number.isNaN(status.configs[4].quotaInfo?.remainingFraction)).toBe(true);
+        expect(Number.isNaN(status.configs[5].quotaInfo?.remainingFraction)).toBe(true);
+        expect(Number.isNaN(status.configs[6].quotaInfo?.remainingFraction)).toBe(true);
+        expect(Number.isNaN(status.configs[7].quotaInfo?.remainingFraction)).toBe(true);
+
+        const summary = parseUserQuotaSummary({
+            groups: [{
+                displayName: 'Gemini Models',
+                buckets: [
+                    { bucketId: 'gemini-5h', window: '5h', resetTime: '1970-01-01T00:00:00+00:00' },
+                    { bucketId: 'gemini-weekly', window: 'weekly', resetTime: '2026-11-28T00:00:00Z' },
+                    { bucketId: 'gemini-bad-zero', window: 'other', resetTime: '0' },
+                    { bucketId: 'gemini-bad-1970', window: 'other', resetTime: '1970' },
+                    { bucketId: 'gemini-bad-neg', window: 'other', resetTime: '1969-12-31T23:59:59Z' },
+                    { bucketId: 'gemini-bad-cal', window: 'other', resetTime: '2026-02-30T00:00:00Z' },
+                ],
+            }],
+        });
+        expect(summary).not.toBeNull();
+        const buckets = summary!.groups[0].buckets;
+        expect(buckets[0]).toMatchObject({ remainingFraction: 1, resetTime: null, resetAt: null });
+        expect(buckets[1]).toMatchObject({ remainingFraction: 0, resetTime: '2026-11-28T00:00:00Z' });
+        expect(buckets[2]).toMatchObject({ remainingFraction: null, resetTime: null, resetAt: null });
+        expect(buckets[3]).toMatchObject({ remainingFraction: null, resetTime: null, resetAt: null });
+        expect(buckets[4]).toMatchObject({ remainingFraction: null, resetTime: null, resetAt: null });
+        expect(buckets[5]).toMatchObject({ remainingFraction: null, resetTime: null, resetAt: null });
     });
 });

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ContextUsage, ConversationOrchestratorConfig } from './tracker';
+import { parseStrictResetTimestamp, type ContextUsage, type ConversationOrchestratorConfig } from './tracker';
 import type { GMCallEntry, GMSummary } from './gm/types';
 import {
     costFromTokens,
@@ -235,9 +235,8 @@ function validQuotaFraction(value: number | null | undefined): number | null {
 }
 
 function validResetTimestamp(iso: string | null | undefined): number | null {
-    if (!iso || typeof iso !== 'string') { return null; }
-    const parsed = Date.parse(iso.trim());
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    const parsed = parseStrictResetTimestamp(iso);
+    return parsed !== null && parsed > 0 ? parsed : null;
 }
 
 function formatSignedPercentDelta(deltaPct: number | null | undefined): string {
@@ -554,6 +553,7 @@ type LastRender =
     | { kind: 'initializing' };
 
 export class StatusBarManager {
+    private static readonly RESET_JITTER_HYSTERESIS_MS = 45_000;
     private statusBarItem: vscode.StatusBarItem;
     private cachedConfigs: ModelConfig[] = [];
     private cachedOrchestratorSettings: OrchestratorSettings | null = null;
@@ -578,19 +578,86 @@ export class StatusBarManager {
     private cachedCostSnapshot: HoverCostSnapshot = {};
     private lastRender: LastRender = { kind: 'initializing' };
 
+    // Last committed StatusBarItem property values — prevents redundant setter
+    // writes that trigger VS Code IPC $setEntry -> markdownStringEqual object
+    // identity failure on isTrusted -> ManagedHoverWidget dispose/recreate flicker.
+    private committedName: string | undefined;
+    private hasCommittedBackgroundColor = false;
+    private committedBackgroundColorId: string | undefined;
+    private committedText: string | undefined;
+    private committedAriaLabel: string | undefined;
+    private committedAriaRole: string | undefined;
+    private committedTooltipValue: string | undefined;
+    private stabilizedResetMinutes = new Map<string, number>();
+
     constructor() {
         this.statusBarItem = vscode.window.createStatusBarItem(
             vscode.StatusBarAlignment.Right,
             100
         );
         this.statusBarItem.command = MONITOR_COMMAND;
-        this.statusBarItem.name = t('statusBar.name');
+        this.commitName(t('statusBar.name'));
         this.showInitializing();
         this.statusBarItem.show();
     }
 
+    private commitName(name: string): void {
+        if (this.committedName === name) { return; }
+        this.committedName = name;
+        this.statusBarItem.name = name;
+    }
+
+    private clearStabilizedResetKeys(prefix?: string): void {
+        if (!prefix) {
+            this.stabilizedResetMinutes.clear();
+            return;
+        }
+        for (const key of this.stabilizedResetMinutes.keys()) {
+            if (key.startsWith(prefix)) {
+                this.stabilizedResetMinutes.delete(key);
+            }
+        }
+    }
+
+    private pruneStabilizedResetKeys(prefix: string, activeKeys: ReadonlySet<string>): void {
+        for (const key of this.stabilizedResetMinutes.keys()) {
+            if (key.startsWith(prefix) && !activeKeys.has(key)) {
+                this.stabilizedResetMinutes.delete(key);
+            }
+        }
+    }
+
+    /** Clear all cached reset-minute stabilization entries (e.g., on account switch or reconnect). */
+    clearStabilizedResetTimes(): void {
+        this.stabilizedResetMinutes.clear();
+    }
+
+    private stabilizeResetMinute(key: string, rawResetMs: number): number {
+        const prevMinuteMs = this.stabilizedResetMinutes.get(key);
+        if (
+            prevMinuteMs !== undefined
+            && Math.abs(rawResetMs - prevMinuteMs) < StatusBarManager.RESET_JITTER_HYSTERESIS_MS
+        ) {
+            return prevMinuteMs;
+        }
+        const snapped = Math.round(rawResetMs / 60_000) * 60_000;
+        this.stabilizedResetMinutes.set(key, snapped);
+        return snapped;
+    }
+
+    private formatStabilizedQuotaCountdown(key: string, rawResetMs: number, nowMs: number): string {
+        const alignedNow = Math.floor(nowMs / 60_000) * 60_000;
+        const stabilizedReset = this.stabilizeResetMinute(key, rawResetMs);
+        const effectiveReset = stabilizedReset > alignedNow ? stabilizedReset : alignedNow + 60_000;
+        return resetCountdown(effectiveReset, alignedNow);
+    }
+
     setModelConfigs(configs: ModelConfig[]): void {
         this.cachedConfigs = configs;
+        if (configs.length === 0) {
+            this.clearStabilizedResetKeys('bar:');
+            this.clearStabilizedResetKeys('fb:');
+        }
         this.scheduleResetRefresh();
     }
 
@@ -604,6 +671,10 @@ export class StatusBarManager {
 
     setQuotaSummary(summary: UserQuotaSummary | null): void {
         this.cachedQuotaSummary = summary;
+        if (!summary) {
+            this.clearStabilizedResetKeys('5h:');
+            this.clearStabilizedResetKeys('wk:');
+        }
     }
 
     getQuotaSummary(): UserQuotaSummary | null {
@@ -664,20 +735,19 @@ export class StatusBarManager {
         this.cachedBillingDay = (day >= 1 && day <= 31) ? day : 0;
     }
 
-    getDaysUntilRefresh(): number | null {
-        return getDaysUntilBillingDay(this.cachedBillingDay);
+    getDaysUntilRefresh(nowMs?: number): number | null {
+        return getDaysUntilBillingDay(this.cachedBillingDay, nowMs !== undefined ? new Date(nowMs) : undefined);
     }
 
     getEarliestResetTime(): Date | null {
         let earliest: Date | null = null;
         const now = Date.now();
         for (const c of this.cachedConfigs) {
-            if (c.quotaInfo?.resetTime) {
-                const resetDate = new Date(c.quotaInfo.resetTime);
-                if (resetDate.getTime() > now) {
-                    if (!earliest || resetDate < earliest) {
-                        earliest = resetDate;
-                    }
+            const resetMs = validResetTimestamp(c.quotaInfo?.resetTime);
+            if (resetMs !== null && resetMs > now) {
+                const resetDate = new Date(resetMs);
+                if (!earliest || resetDate < earliest) {
+                    earliest = resetDate;
                 }
             }
         }
@@ -705,7 +775,6 @@ export class StatusBarManager {
     }
 
     refreshFromConfig(): void {
-        this.statusBarItem.name = t('statusBar.name');
         switch (this.lastRender.kind) {
             case 'update':
                 this.update(this.lastRender.usage);
@@ -743,45 +812,46 @@ export class StatusBarManager {
 
     showInitializing(): void {
         this.lastRender = { kind: 'initializing' };
-        this.statusBarItem.backgroundColor = undefined;
-        this.renderStatus('$(sync~spin)', [t('statusBar.initializing')]);
+        this.clearStabilizedResetKeys('bar:');
+        this.renderStatus('$(sync~spin)', [t('statusBar.initializing')], undefined, Date.now());
     }
 
     showDisconnected(message: string): void {
         this.lastRender = { kind: 'disconnected', message };
-        this.statusBarItem.backgroundColor = undefined;
-        this.renderStatus('$(debug-disconnect)', [t('statusBar.disconnectedLabel')]);
+        this.clearStabilizedResetKeys('bar:');
+        this.renderStatus('$(debug-disconnect)', [t('statusBar.disconnectedLabel')], undefined, Date.now());
     }
 
     showNoConversation(limitStr: string = '1M', modelId?: string): void {
         this.lastRender = { kind: 'noConversation', limitStr, modelId };
-        this.statusBarItem.backgroundColor = undefined;
+        const nowMs = Date.now();
         this.renderStatus('$(comment-discussion)', [
             this.displayPrefs.showContext ? t('statusBar.noConversationTooltip') : '',
-            ...this.indicators(modelId),
-        ]);
+            ...this.indicators(modelId, nowMs),
+        ], undefined, nowMs);
     }
 
     showIdle(limitStr: string = '1M', modelId?: string): void {
         this.lastRender = { kind: 'idle', limitStr, modelId };
-        this.statusBarItem.backgroundColor = undefined;
+        const nowMs = Date.now();
         this.renderStatus('$(clock)', [
             this.displayPrefs.showContext ? t('statusBar.idle') : '',
-            ...this.indicators(modelId),
-        ]);
+            ...this.indicators(modelId, nowMs),
+        ], undefined, nowMs);
     }
 
     update(usage: ContextUsage): void {
         this.lastRender = { kind: 'update', usage };
+        const nowMs = Date.now();
         const { used, limit, percent } = getContextReading(usage);
         const severity = getSeverity(percent ?? 0);
-        this.statusBarItem.backgroundColor = this.displayPrefs.showContext ? getSeverityColor(severity) : undefined;
+        const backgroundColor = this.displayPrefs.showContext ? getSeverityColor(severity) : undefined;
         const context = used !== null && limit !== null ? `${formatTokenCount(used)}/${formatContextLimit(limit)}` : '—';
         const flags = usage.hasGaps ? ' $(warning)' : percent !== null && percent > 100 ? ' $(fold)' : '';
         this.renderStatus(this.displayPrefs.showContext ? getSeverityIcon(severity) : '$(pulse)', [
             this.displayPrefs.showContext ? `${context}${flags}` : '',
-            ...this.indicators(usage.model),
-        ]);
+            ...this.indicators(usage.model, nowMs),
+        ], backgroundColor, nowMs);
     }
 
     private effectiveSessionCost(): number | null {
@@ -793,18 +863,22 @@ export class StatusBarManager {
         return computed !== null && Number.isFinite(computed) && computed > 0 ? computed : null;
     }
 
-    private indicators(modelId?: string): string[] {
+    private indicators(modelId: string | undefined, nowMs: number): string[] {
         const id = modelId ? resolveModelId(modelId) || modelId : undefined;
         const config = id ? this.cachedConfigs.find(c => (resolveModelId(c.model) || c.model) === id) : undefined;
         let quota = '';
         let reset = '';
+        const activeBarKeys = new Set<string>();
         if (config) {
             const fraction = config.quotaInfo?.remainingFraction;
             if (this.displayPrefs.showQuota && usableCount(fraction) && fraction <= 1) {
                 quota = `$(layers) ${Math.round(fraction * 100)}%`;
             }
             if (this.displayPrefs.showResetCountdown) {
-                reset = this.formatResetCountdown(config.quotaInfo?.resetTime);
+                const poolKey = getQuotaPoolKey(config.model) || config.model;
+                const barKey = `bar:${poolKey}`;
+                reset = this.formatResetCountdown(config.quotaInfo?.resetTime, nowMs, barKey);
+                if (reset) { activeBarKeys.add(barKey); }
             }
         } else if (id) {
             const canonicalPool = getQuotaPoolKey(id);
@@ -818,10 +892,13 @@ export class StatusBarManager {
                     quota = `$(layers) ${quotaPercentage(group)}`;
                 }
                 if (this.displayPrefs.showResetCountdown && !group.resetDiffers && group.resetTime) {
-                    reset = this.formatResetCountdown(group.resetTime);
+                    const barKey = `bar:${group.pool || group.key}`;
+                    reset = this.formatResetCountdown(group.resetTime, nowMs, barKey);
+                    if (reset) { activeBarKeys.add(barKey); }
                 }
             }
         }
+        this.pruneStabilizedResetKeys('bar:', activeBarKeys);
         const credits = this.displayPrefs.showAiCredits && this.cachedCreditsTotal !== null
             ? `$(zap) ${formatNumber(this.cachedCreditsTotal)}` : '';
         const primary = this.cachedTelemetry?.primary;
@@ -841,9 +918,28 @@ export class StatusBarManager {
         return [quota, reset, credits, speedSegment, cacheSegment, costSegment];
     }
 
-    private renderStatus(icon: string, segments: string[]): void {
+    private renderStatus(
+        icon: string,
+        segments: string[],
+        backgroundColor?: vscode.ThemeColor,
+        nowMs: number = Date.now(),
+    ): void {
+        this.commitName(t('statusBar.name'));
+
+        const nextBgId = backgroundColor?.id;
+        if (!this.hasCommittedBackgroundColor || this.committedBackgroundColorId !== nextBgId) {
+            this.hasCommittedBackgroundColor = true;
+            this.committedBackgroundColorId = nextBgId;
+            this.statusBarItem.backgroundColor = backgroundColor;
+        }
+
         const text = segments.filter(Boolean);
-        this.statusBarItem.text = text.length ? `${icon} ${text.join('  ·  ')}` : icon;
+        const nextText = text.length ? `${icon} ${text.join('  ·  ')}` : icon;
+        if (this.committedText !== nextText) {
+            this.committedText = nextText;
+            this.statusBarItem.text = nextText;
+        }
+
         const state = monitorStatusLabel(this.monitorStatus.state);
         const spoken = text.filter(part => part !== state)
             .map(part => part
@@ -853,11 +949,25 @@ export class StatusBarManager {
                 .replace('$(pulse)', tBi('Speed', '生成速度'))
                 .replace('$(credit-card)', t('telemetry.cost'))
                 .replace(/\$\([^)]*\)\s*/g, '').trim());
-        this.statusBarItem.accessibilityInformation = {
-            label: [t('statusBar.name'), state, ...spoken].join(' · '),
-            role: 'button',
-        };
-        this.statusBarItem.tooltip = this.buildHover();
+        const nextAriaLabel = [t('statusBar.name'), state, ...spoken].join(' · ');
+        const nextAriaRole = 'button';
+        if (this.committedAriaLabel !== nextAriaLabel || this.committedAriaRole !== nextAriaRole) {
+            this.committedAriaLabel = nextAriaLabel;
+            this.committedAriaRole = nextAriaRole;
+            this.statusBarItem.accessibilityInformation = {
+                label: nextAriaLabel,
+                role: nextAriaRole,
+            };
+        }
+
+        const nextTooltipValue = this.buildHoverMarkdown(nowMs);
+        if (this.committedTooltipValue !== nextTooltipValue) {
+            this.committedTooltipValue = nextTooltipValue;
+            const tooltip = new vscode.MarkdownString(nextTooltipValue);
+            tooltip.supportThemeIcons = true;
+            tooltip.isTrusted = { enabledCommands: [MONITOR_COMMAND, REFRESH_COMMAND] };
+            this.statusBarItem.tooltip = tooltip;
+        }
     }
 
     private selectQuotaGroupsWithWindows(currentModel: string | undefined): ModelQuotaGroup[] {
@@ -872,7 +982,7 @@ export class StatusBarManager {
             });
     }
 
-    private buildHover(): vscode.MarkdownString {
+    private buildHoverMarkdown(nowMs: number): string {
         const status = this.monitorStatus;
         const usage = this.lastRender.kind === 'update' ? this.lastRender.usage : null;
         const connected = status.state !== 'connecting' && status.state !== 'disconnected';
@@ -931,13 +1041,17 @@ export class StatusBarManager {
             }
 
             // P0 (Protected): Dual-Window Quota Table (5h + Weekly, graceful 5h-only fallback)
-            sections.push(this.buildQuotaSection(groups, usage, mode, full));
+            sections.push(this.buildQuotaSection(groups, usage, mode, full, nowMs));
 
             // P4: Smart Event-Driven Alerts + AI Credits
-            const alertsSection = this.buildAlertsSection(usage, mode, full);
+            const alertsSection = this.buildAlertsSection(usage, mode, full, nowMs);
             if (alertsSection) {
                 sections.push(alertsSection);
             }
+        } else {
+            this.clearStabilizedResetKeys('5h:');
+            this.clearStabilizedResetKeys('fb:');
+            this.clearStabilizedResetKeys('wk:');
         }
 
         // P0: Pinned 1-Click Footer Action Bar
@@ -945,10 +1059,7 @@ export class StatusBarManager {
 
         const budget = getSectionLineBudget(density, mode, zoom);
         const budgeted = applySectionBudget(sections, budget);
-        const tooltip = new vscode.MarkdownString(renderHoverSections(budgeted.sections));
-        tooltip.supportThemeIcons = true;
-        tooltip.isTrusted = { enabledCommands: [MONITOR_COMMAND, REFRESH_COMMAND] };
-        return tooltip;
+        return renderHoverSections(budgeted.sections);
     }
 
     private buildHeaderSection(
@@ -1319,13 +1430,16 @@ export class StatusBarManager {
         usage: ContextUsage | null,
         mode: EffectiveMode,
         full: boolean,
+        nowMs: number,
     ): HoverSection {
         const maxPools = getMaxQuotaRows(full ? 'full' : 'auto', mode);
         const shown = groups.slice(0, maxPools);
-        const now = Date.now();
         const title = `$(shield) **${tBi('Quota remaining', '剩余配额')}**`;
 
         if (groups.length === 0) {
+            this.clearStabilizedResetKeys('5h:');
+            this.clearStabilizedResetKeys('fb:');
+            this.clearStabilizedResetKeys('wk:');
             return {
                 id: 'quota',
                 priority: 0,
@@ -1356,6 +1470,7 @@ export class StatusBarManager {
         const compactListLines: string[] = [title];
         const singleLineItems: string[] = [];
         const tableRows: string[] = [];
+        const activeQuotaKeys = new Set<string>();
 
         for (const group of shown) {
             const label = formatHoverText(group.label, mode === 'compact' ? 20 : 24);
@@ -1373,11 +1488,27 @@ export class StatusBarManager {
                 : '';
 
             const fiveHourResetTs = validResetTimestamp(group.fiveHourQuota?.resetTime);
-            const reset5h = fiveHourResetTs !== null
-                ? (fiveHourResetTs > now
-                    ? resetCountdown(fiveHourResetTs, now)
-                    : tBi('Ready', '就绪'))
-                : quotaResetLabel(group, now, false);
+            let reset5h: string;
+            if (fiveHourResetTs !== null) {
+                if (fiveHourResetTs > nowMs) {
+                    const key5h = `5h:${group.key}`;
+                    activeQuotaKeys.add(key5h);
+                    reset5h = this.formatStabilizedQuotaCountdown(key5h, fiveHourResetTs, nowMs);
+                } else {
+                    reset5h = tBi('Ready', '就绪');
+                }
+            } else if (!group.resetDiffers && group.resetTime) {
+                const fallbackResetTs = validResetTimestamp(group.resetTime);
+                if (fallbackResetTs !== null && fallbackResetTs > nowMs) {
+                    const keyFb = `fb:${group.key}`;
+                    activeQuotaKeys.add(keyFb);
+                    reset5h = this.formatStabilizedQuotaCountdown(keyFb, fallbackResetTs, nowMs);
+                } else {
+                    reset5h = quotaResetLabel(group, nowMs, false);
+                }
+            } else {
+                reset5h = quotaResetLabel(group, nowMs, false);
+            }
 
             const weeklyValid = validQuotaFraction(group.weeklyQuota?.remainingFraction);
             const shortLabel = formatHoverText(group.label, 14);
@@ -1390,9 +1521,12 @@ export class StatusBarManager {
                     ? `**${Math.round(weeklyValid * 100)}%**`
                     : '—';
                 const weeklyResetTs = validResetTimestamp(group.weeklyQuota?.resetTime);
-                const weeklyReset = weeklyResetTs !== null && weeklyResetTs > now
-                    ? resetCountdown(weeklyResetTs, now)
-                    : '';
+                let weeklyReset = '';
+                if (weeklyResetTs !== null && weeklyResetTs > nowMs) {
+                    const keyWk = `wk:${group.key}`;
+                    activeQuotaKeys.add(keyWk);
+                    weeklyReset = this.formatStabilizedQuotaCountdown(keyWk, weeklyResetTs, nowMs);
+                }
                 const resetCell = weeklyReset
                     ? `${t('quota.fiveHour')}: ${reset5h} · ${t('quota.weekly')}: ${weeklyReset}`
                     : reset5h;
@@ -1403,6 +1537,10 @@ export class StatusBarManager {
                 compactListLines.push(`$(layers) ${poolCell} · **${fiveHourPct}** · ${reset5h}`);
             }
         }
+
+        this.pruneStabilizedResetKeys('5h:', activeQuotaKeys);
+        this.pruneStabilizedResetKeys('fb:', activeQuotaKeys);
+        this.pruneStabilizedResetKeys('wk:', activeQuotaKeys);
 
         const extraNote = groups.length > shown.length
             ? tBi(`+${groups.length - shown.length} more in Models`, `模型页另有 ${groups.length - shown.length} 个配额池`)
@@ -1446,9 +1584,9 @@ export class StatusBarManager {
         usage: ContextUsage | null,
         mode: EffectiveMode,
         full: boolean,
+        nowMs: number,
     ): HoverSection | null {
         const lines: string[] = [];
-        const now = Date.now();
 
         // 1. Scheduled Rate-Cutover Countdown (within 14 days for active / orchestrator models)
         const candidateModels = new Set<string>();
@@ -1457,7 +1595,7 @@ export class StatusBarManager {
         if (usage?.orchestratorConfig?.executionModel) { candidateModels.add(usage.orchestratorConfig.executionModel); }
         const seenCutoverKeys = new Set<string>();
         for (const candidate of candidateModels) {
-            const change = getUpcomingRateChangeForModel(candidate, this.cachedCustomPricing, now, 14);
+            const change = getUpcomingRateChangeForModel(candidate, this.cachedCustomPricing, nowMs, 14);
             if (change && !seenCutoverKeys.has(change.modelKey)) {
                 seenCutoverKeys.add(change.modelKey);
                 lines.push(`$(clock) **${t('telemetry.rateChange')}** · ${escapeMarkdown(change.familyLabel)} ${tBi(
@@ -1494,10 +1632,10 @@ export class StatusBarManager {
 
         // 4. AI Credits balance & billing cycle countdown
         if (this.cachedCreditsTotal !== null) {
-            const expiry = mode === 'compact' ? '' : ` · ${formatCreditExpiry(this.getDaysUntilRefresh())}`;
+            const expiry = mode === 'compact' ? '' : ` · ${formatCreditExpiry(this.getDaysUntilRefresh(nowMs))}`;
             lines.push(`$(sparkle) **${tBi('AI credits', 'AI 积分')}** · **${formatNumber(this.cachedCreditsTotal)}**${expiry}`);
         } else if (this.cachedBillingDay > 0 && (mode !== 'compact' || full)) {
-            lines.push(`$(sparkle) **${tBi('AI credits', 'AI 积分')}** · ${tBi('Not reported', '未上报')} · ${formatCreditExpiry(this.getDaysUntilRefresh())}`);
+            lines.push(`$(sparkle) **${tBi('AI credits', 'AI 积分')}** · ${tBi('Not reported', '未上报')} · ${formatCreditExpiry(this.getDaysUntilRefresh(nowMs))}`);
         }
 
         if (lines.length === 0) { return null; }
@@ -1538,18 +1676,23 @@ export class StatusBarManager {
         };
     }
 
-    private formatResetCountdown(resetTime: string | undefined): string {
-        if (!resetTime) { return ''; }
-        const reset = Date.parse(resetTime);
-        const now = Date.now();
-        if (!Number.isFinite(reset) || reset <= now) { return ''; }
-        return `$(clock) ${formatResetCountdownFromMs(reset - now)}`;
+    private formatResetCountdown(resetTime: string | undefined, nowMs: number, key: string): string {
+        const reset = validResetTimestamp(resetTime);
+        if (reset === null || reset <= nowMs) {
+            this.stabilizedResetMinutes.delete(key);
+            return '';
+        }
+        const alignedNow = Math.floor(nowMs / 60_000) * 60_000;
+        const stabilizedReset = this.stabilizeResetMinute(key, reset);
+        const effectiveReset = stabilizedReset > alignedNow ? stabilizedReset : alignedNow + 60_000;
+        return `$(clock) ${formatResetCountdownFromMs(effectiveReset - alignedNow)}`;
     }
 
     dispose(): void {
         if (this.resetCountdownTimer) {
             clearTimeout(this.resetCountdownTimer);
         }
+        this.stabilizedResetMinutes.clear();
         this.statusBarItem.dispose();
     }
 }

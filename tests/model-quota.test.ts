@@ -250,7 +250,19 @@ describe('quota differences and incomplete readings', () => {
         expect(buildModelQuotaGrid(different)).toContain('Reset times differ');
     });
 
-    it.each(['', 'not-a-date', '0', '1970-01-01T00:00:00Z', '2026-11-12T01:00:00', '2026-02-30T01:00:00Z'])('does not claim missing, epoch or invalid reset %j', reset => {
+    it.each([
+        '',
+        'not-a-date',
+        '0',
+        '1970',
+        '1969-12-31T23:59:59Z',
+        '1970-01-01T00:00:00Z',
+        '1970-01-01T00:00:00.000Z',
+        '1970-01-01T00:00:00+00:00',
+        '2026-11-12T01:00:00',
+        '2026-02-30T01:00:00Z',
+        '2026-11-21T24:00:00Z',
+    ])('does not claim missing, epoch or invalid reset %j', reset => {
         const groups = groupModelQuotas([config('M438', 0.8, reset)]);
         expect(groups[0]).toMatchObject({ resetTime: null, missingReset: true });
         expect(buildModelQuotaGrid([config('M438', 0.8, reset)])).toContain('Reset time unavailable');
