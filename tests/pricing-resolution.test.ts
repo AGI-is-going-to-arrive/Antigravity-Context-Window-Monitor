@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     DEFAULT_PRICING,
     findPricing,
+    findPricingForDate,
     findPricingWithCustom,
     costFromTokens,
     type ModelPricing,
@@ -182,5 +183,27 @@ describe('buildGMSummaryFromLedger re-prices from stored tokens', () => {
         const stats = result.summary.modelBreakdown['Gemini 3.7 Flash (High)'];
         expect(stats.responseModel).toBe('Gemini 3.7 Flash (High)');
         expect(findPricing(stats.responseModel)).not.toBeNull();
+    });
+});
+
+describe('Gemini 3.6 Flash bounded promotional pricing window', () => {
+    it.each([
+        ['2026-07-22', 1.50, 7.50, 0.15],
+        ['2026-08-12T23:59:59Z', 1.50, 7.50, 0.15],
+        ['2026-08-13', 0.75, 3.75, 0.075],
+        ['2026-08-13T00:00:00Z', 0.75, 3.75, 0.075],
+        ['2026-11-22', 0.75, 3.75, 0.075],
+        ['2026-12-31T23:59:59Z', 0.75, 3.75, 0.075],
+        ['2027-01-01', 1.50, 7.50, 0.15],
+        ['2027-01-01T00:00:00Z', 1.50, 7.50, 0.15],
+    ] as const)('resolves exact rate at %s', (date, input, output, cacheRead) => {
+        const pricing = findPricingForDate('gemini-3.6-flash-high', {}, date);
+        expect(pricing).toMatchObject({ input, output, cacheRead, thinking: output });
+    });
+
+    it('returns null for invalid dates unless overridden by custom pricing', () => {
+        expect(findPricingForDate('gemini-3.6-flash', {}, 'invalid')).toBeNull();
+        expect(findPricingForDate('gemini-3.6-flash', { 'gemini-3.6-flash': TENFOLD_37_FLASH }, 'invalid'))
+            .toBe(TENFOLD_37_FLASH);
     });
 });

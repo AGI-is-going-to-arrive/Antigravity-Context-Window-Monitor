@@ -96,7 +96,7 @@ describe('live checkpointer/model metadata sync', () => {
             expect(await fetchAndOverrideCheckpointerLimits(ls, () => {})).toBe(false);
             expect(getModelSpecs().find(s => s.placeholderId === 'MODEL_PLACEHOLDER_M418')).toMatchObject({
                 thinkingBudget: 4096, thinkingLevel: 2, supportsThinking: true, supportsAdaptiveThinking: true,
-                cpLimit: 256_000, maxTokens: 1_048_576,
+                cpLimit: 512_000, maxTokens: 1_048_576,
             });
         }
     });

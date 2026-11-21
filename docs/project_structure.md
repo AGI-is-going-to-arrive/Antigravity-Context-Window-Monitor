@@ -2,7 +2,7 @@
 
 本文档说明 Antigravity Context Window Monitor 的源码组织方式、模块职责以及依赖关系。
 
-当前版本为 **1.17.2**。发布说明先列英文，再列中文。[1.17.2 发布说明](releases/1.17.2.md)
+当前版本为 **1.17.3**。发布说明先列英文，再列中文。[1.17.3 发布说明](releases/1.17.3.md)
 
 ---
 
@@ -10,19 +10,20 @@
 ```text
 antigravity-context-monitor/
 ├── src/                          # TypeScript 源码
-│   ├── extension.ts              # 扩展入口：激活/停用、轮询调度、命令注册、状态恢复
+│   ├── extension.ts              # 扩展入口：激活/停用、轮询调度、非阻塞辅助元数据刷新、命令注册、实时费用快照与状态恢复
 │   ├── daily-archival.ts         # 每日归档核心逻辑（可测试纯函数，依赖注入）
-│   ├── daily-ledger.ts           # 实时增量账本（按日期+账号分桶，去重记录，额度重置结算，午夜归档数据源）
-│   ├── discovery.ts              # agy hub 与旧版 Language Server 进程发现（跨平台）
-│   ├── backend-connection.ts     # 从当前 IDE 已激活的内置扩展读取连接提示，约束实例归属
-│   ├── rpc-client.ts             # Connect-RPC 通用调用器
-│   ├── tracker.ts                # Planner/checkpoint 精确 Token 快照、会话数据获取、跨平台 normalizeUri、用户状态查询
-│   ├── models.ts                 # 模型配置、平台阈值、聊天和图片目录、历史身份及跨语言归一化
-│   ├── model-quota.ts            # 跨家族通用基础模型思考档位合并、共享配额池汇总与重置时间聚合
-│   ├── tooltip-budget.ts         # 状态栏悬停摘要行数预算与配额池代表选择
+│   ├── daily-ledger.ts           # 实时增量账本（按日期+账号分桶，去重记录，额度重置结算，零费用补账，午夜归档数据源）
+│   ├── discovery.ts              # agy hub 与旧版 Language Server 进程发现（多端点 CSRF 探测、daemon/hub_<port>.json 兜底、跨平台/IPv6 加固）
+│   ├── backend-connection.ts     # 从当前 IDE 已激活的内置扩展读取连接提示，完整连接标识比对（isSameBackendConnection）与实例隔离
+│   ├── rpc-client.ts             # Connect-RPC 通用调用器（含 rpcStreamFirstFrame / decodeConnectFirstFrame 服务端流首帧解析）
+│   ├── tracker.ts                # Planner/checkpoint 精确 Token 快照、跨池 Orchestrator 匹配、Orchestrator Settings（JetboxSubscribeToState + GetMendelFlags）与双窗口配额（RetrieveUserQuotaSummary）
+│   ├── models.ts                 # 模型配置、512K Gemini 4/Orchestrator 阈值、OrchestratorSettings/UserQuotaSummary、M669/M530/M531/M578 与跨语言归一化
+│   ├── model-quota.ts            # 跨家族通用基础模型思考档位合并、共享配额池与 5h/Weekly 双窗口配额汇总
+│   ├── currency.ts               # 纯离线本地币种与汇率格式化引擎（USD / CNY / both、安全汇率限幅与每百万费率格式化，零外部网络请求）
+│   ├── tooltip-budget.ts         # 优先级分层悬停区块预算（HoverSection[] P0–P5、缩放感知行数约束、GFM 表格拼接与配额池代表选择）
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
-│   ├── statusbar.ts              # 状态栏读数（含可选 showSpeed/showCacheHit）与原生 Markdown 悬停摘要（auto / compact / full）
-│   ├── monitor-overview.ts       # 状态栏与总览共用的连接状态、上下文读数、余量、配额、到期及 L2 遥测条格式化
+│   ├── statusbar.ts              # 状态栏读数（含可选 showSpeed/showCacheHit/showSessionCost）与分层结构化悬停摘要（Hero、Latest Call 微表、KPI/费用/缓存/速度表、双窗口配额表、事件警报与一键页脚）
+│   ├── monitor-overview.ts       # 状态栏与总览共用的连接状态、活跃编排路由、上下文读数、双窗口百分比、双币种费用/节省及 L2 遥测条格式化
 │   ├── account-credits.ts        # 当前 Google AI 积分归一化、去重、本地化标签及未知安全汇总（过滤旧 Prompt/Flow）
 │   ├── telemetry-metrics.ts      # 纯遥测指标计算引擎（tok/s 生成速度、TTFT 缓存/非缓存对比、提示词缓存命中率与节省估算，零 VS Code/DOM 依赖）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
@@ -40,54 +41,60 @@ antigravity-context-monitor/
 │   ├── gm-tracker.ts             # GM 数据层 re-export shim（向后兼容，实际代码在 gm/）
 │   ├── gm/                       # GM 模块（从 gm-tracker.ts 拆分）
 │   │   ├── index.ts              #   barrel re-export
-│   │   ├── types.ts              #   所有 GM 类型定义 + clone 工具 + 持久化 slim 函数（含 GMModelStats 有效耗时样本计数与 timedOutput/timedStreaming）
-│   │   ├── parser.ts             #   解析器 + 提取器 + 匹配/合并/增强 + trajectory 模型提示回填 + 检查点摘要提取 + 工具调用提取 + 系统上下文提取 + API 重复消息清洗
+│   │   ├── types.ts              #   所有 GM 类型定义 + clone 工具 + 持久化 slim 函数（含 GMModelStats 有效耗时样本计数与动态编排器元字段）
+│   │   ├── parser.ts             #   解析器 + 提取器 + 匹配/合并/增强 + trajectory 模型提示回填 + 动态编排器计划/执行模型识别 + 检查点摘要/工具调用/系统上下文提取
 │   │   ├── summary.ts            #   汇总构建 + 过滤 + 标准化（按有效样本加权合并 TTFT/流耗时，含 toolCallCounts 透传）
 │   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize + live UI summary + 额度重置过滤 + toolCallCounts 聚合 + toolCatalog 持久化/清空）
-│   ├── pricing-store.ts          # 定价数据层：默认价格表 + 用户自定义持久化 + 费用计算（respOut = output - thinking 避免 double-counting）+ findPricing display name fallback
+│   ├── pricing-store.ts          # 定价数据层：内置官方费率（含 Gemini 4 Neon 官方价、Sonnet 5.5 $0.10 缓存读校正、Flash 3.6 有界优惠期、定时调价提醒 helper）+ 用户自定义持久化 + 费用计算
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照，含 v1 兼容耗时/速度/缓存 token 归档字段）
-│   ├── webview-panel.ts          # WebView 面板框架、body[data-lang]、吸顶页首、标签切换、增量刷新及消息通信（含 statusBar.showSpeed/showCacheHit 白名单）
-│   ├── webview-overview-tab.ts   # 总览页：活跃会话上下文、L2 速度/TTFT/缓存遥测条、可折叠诊断、共享配额池与 AI 积分页脚
+│   ├── webview-panel.ts          # WebView 面板框架、body[data-lang]、吸顶页首、标签切换、增量刷新、动态清单版本透传及消息通信（含 showSessionCost / displayCurrency / cnyExchangeRate 白名单与跨标签控件同步）
+│   ├── webview-overview-tab.ts   # 总览页：活跃会话上下文、跨池编排路由胶囊、L2 速度/TTFT/缓存/费用遥测条、可折叠诊断、5h+Weekly 双窗口配额与 AI 积分页脚
 │   ├── webview-styles.ts         # WebView 基础布局与组件样式
-│   ├── webview-editorial-styles.ts # Studio Telemetry Ledger 设计系统样式（深/浅/高对比度主题、零宋体排版、双语层级与控件规范）
-│   ├── webview-script.ts         # WebView 客户端 JS（标签滑动条、设置/隐私交互、增量 DOM 刷新与焦点保持）
+│   ├── webview-editorial-styles.ts # Studio Telemetry Ledger 设计系统样式（深/浅/高对比度主题、零宋体排版、双语层级、编排设置/双窗口配额/双币种/最近调用/调价横幅样式规范）
+│   ├── webview-script.ts         # WebView 客户端 JS（标签滑动条、币种/汇率与设置同步、草稿保护、隐私交互、增量 DOM 刷新与焦点保持）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（esc、时间/大小格式化，并复导 i18n 的 tBiHtml）
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标（含 ICON.search 等单线条图标）
-│   ├── webview-models-tab.ts     # 模型页：默认模型、共享配额池、聊天/图片分区、IDE 来源限额与不适用状态
-│   ├── webview-settings-tab.ts   # 设置页：持久化存储诊断、悬停密度（auto/compact/full）、6 项状态栏开关（含速度/缓存命中）、轮询与缩放
-│   ├── webview-profile-tab.ts    # 个人页：隐私遮罩账号、共享模型配额、AI 积分与到期日、可折叠计划限制与功能配置
+│   ├── webview-models-tab.ts     # 模型页：实时 Orchestrator Settings 卡片、默认模型、双窗口共享配额池、聊天/图片分区、API 参考价行与不适用/未定价状态
+│   ├── webview-settings-tab.ts   # 设置页：持久化存储诊断、悬停密度（auto/compact/full）、7 项状态栏开关（含会话费用）、币种与本地参考汇率卡片、轮询与缩放
+│   ├── webview-profile-tab.ts    # 个人页：隐私遮罩账号、5h+Weekly 共享模型配额、AI 积分与到期日、可折叠计划限制与功能配置
 │   ├── webview-chat-history-tab.ts # 会话目录：工作区分组、搜索、筛选、本地化状态/存储标签及会话操作
-│   ├── activity-panel.ts         # GM 数据：KPI、双列速度与首字缓存账本、模型统计、时间线遥测标签、上下文情报、工具、错误和全局账号面板浮层
-│   ├── pricing-panel.ts          # 成本：月度模型用量、四分项成本分布图、费率与自定义价格编辑
-│   ├── webview-calendar-tab.ts   # 日历：月度/全部汇总、7 列交互月历、每日明细（含归档速度/TTFT/缓存命中）及周期归档
-│   ├── webview-about-tab.ts      # 关于页：版本、平台范围、8 页功能导航卡片、兼容性与文档
-│   ├── i18n.ts                   # 国际化：三语言模式、翻译表、tBi / tBiHtml、formatNumber 与偏好持久化
+│   ├── activity-panel.ts         # GM 数据：KPI、双列速度与首字缓存账本、可折叠最近调用明细表（Recent Calls Ledger）、模型统计、时间线遥测标签、上下文情报、工具、错误和全局账号面板浮层
+│   ├── pricing-panel.ts          # 成本：顶部双币种与汇率工具栏、官方定时调价倒计时横幅、月度/实时多币种成本分析（含缓存节省与思考占比）、四分项分布图及自定义价格编辑
+│   ├── webview-calendar-tab.ts   # 日历：多币种月度/全部汇总、7 列交互月历、每日明细（含归档速度/TTFT/缓存命中）及周期归档
+│   ├── webview-about-tab.ts      # 关于页：清单动态版本、平台范围、8 页功能导航卡片、Gemini 4 全系 512K 窗口说明、兼容性与文档
+│   ├── i18n.ts                   # 国际化：三语言模式、翻译表（含编排器、双窗口配额、双币种与悬停微表键）、tBi / tBiHtml、formatNumber 与偏好持久化
 │   ├── legacy-migration.ts       # 旧版 Antigravity 数据自动迁移（检测旧 state.vscdb + child_process 提取）
 │   └── images/                   # README 定稿截图资源（全部 9 页 monitor-*.png，含浅/深双主题）
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
-├── tests/                        # Vitest 单元测试与 Chromium 验证工具（开发用，不参与插件运行时）
+├── tests/                        # Vitest 单元测试（61 个测试文件）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
+│   ├── currency.test.ts          # 离线多币种与汇率格式化、边界限幅及零值省略回归
+│   ├── neon-pricing.test.ts      # Gemini 4 Neon 官方定价、Sonnet 5.5 $0.10 缓存读、Flash 3.6 优惠期与定时调价倒计时回归
+│   ├── orchestrator-settings.test.ts # JetboxSubscribeToState 流首帧、GetMendelFlags 编排角色、RetrieveUserQuotaSummary 双窗口与跨池上下文回归
+│   ├── webview-orchestrator-ui.test.ts # 编排设置卡、跨池路由、双窗口配额、双币种、Notice 徽章、About 动态版本与样式系统回归
+│   ├── tooltip-budget.test.ts    # 优先级分层悬停预算（P0–P5 压缩/降级、Quota 永不丢弃、缩放收紧与 GFM 表格渲染）回归
 │   ├── telemetry-metrics.test.ts # 纯遥测引擎（相加式缓存、显式/隐式思考、总和比值加权、双层噪声门限、缓存/非缓存 TTFT、未定价节省）
-│   ├── activity-telemetry-panel.test.ts # GM 数据 KPI、速度与首字缓存账本、模型卡片统一与时间线遥测标签回归
+│   ├── activity-telemetry-panel.test.ts # GM 数据 KPI、速度与首字缓存账本、最近调用明细表、模型卡片与时间线遥测标签回归
 │   ├── account-credits.test.ts   # 当前 AI 积分归一化、Prompt/Flow 过滤、去重、本地化标签与未知总额回归
 │   ├── cross-platform-i18n.test.ts # Windows/Linux 路径归一化、跨区域数字格式、tBi/tBiHtml 与中文 Token 术语回归
-│   ├── model-quota.test.ts       # 跨家族通用思考档位合并、历史占位映射、proto3 纪元过滤与差异展示回归
-│   ├── monitor-overview.test.ts  # 总览/悬停共享状态、上下文余量、配额标签与双语渲染回归
+│   ├── model-quota.test.ts       # 跨家族通用思考档位合并、5h/Weekly 双窗口汇总、历史占位映射、proto3 纪元过滤与差异展示回归
+│   ├── monitor-overview.test.ts  # 总览/悬停共享状态、双窗口格式化、上下文余量、配额标签与双语渲染回归
 │   ├── neon-models.test.ts       # Gemini 4 Neon 四档与 Orchestrator (Neon) 身份、上限、配额与计价回归
 │   ├── orchestrator.test.ts      # Orchestrator 协调/执行委派、共享 execution ID 与防压缩误报回归
 │   ├── orchestrator-split.test.ts # Carbon/Argon/Neon 协调模型拆分、别名隔离与独立定价回归
-│   ├── gemini-4-hydrogen.test.ts # Hydrogen 四档（含 Extra/XHigh）身份、配额与元数据回归
+│   ├── gemini-4-hydrogen.test.ts # Hydrogen 四档（含 Extra High/XHigh）及 M530/M531/M578 身份、配额与元数据回归
 │   ├── gemini-4-carbon.test.ts   # Carbon 三档身份、别名边界与实时同步回归
 │   ├── hydrogen-pricing.test.ts  # Hydrogen 固定费率与账号改名回查回归
-│   ├── hydrogen-ui.test.ts       # 第四档 Extra/超高在配额卡片与多语言下的渲染回归
+│   ├── hydrogen-ui.test.ts       # 第四档 Extra High/超高在配额卡片与多语言下的渲染回归
 │   ├── carbon-pricing.test.ts    # Carbon 按 UTC 日期计价边界与自定义覆盖回归
-│   ├── discovery.test.ts         # 跨平台发现、agy/旧版进程及参数解析回归
-│   ├── backend-connection.test.ts # 当前 IDE 连接提示、非法导出值及重启期间 getter 异常
+│   ├── discovery.test.ts         # 跨平台发现、agy/旧版进程、daemon hub JSON 兜底、多端点探测及 IPv6/Windows/macOS/Linux 回归
+│   ├── backend-connection.test.ts # 当前 IDE 连接提示、isSameBackendConnection/hint 变更重连及重启期间 getter 异常
 │   ├── backend-status-i18n.test.ts # 连接状态中英双语、即时语言刷新与恢复
-│   ├── discovery-hub.test.ts     # Hub 编排、失效候选、实例隔离、取消及本地 HTTP 探测
+│   ├── discovery-hub.test.ts     # Hub 编排、失效候选、实例隔离、取消及本地 HTTP/IPv6 探测
 │   ├── trajectory-agent-hub.test.ts # 无 checkpoint 的 planner 用量、档位与估算优先级
 │   ├── gm-agent-hub.test.ts      # 当前 hub GM 容量、重试和遥测边界
+│   ├── gm-timestamps.test.ts     # GM 时间戳缺失/边界日期与历史计价一致性回归
 │   ├── argon-pricing.test.ts     # Argon 官方价格、UTC 调价边界、逐调用成本及历史/自定义优先级
 │   ├── image-model-registry.test.ts # 图片身份、独立可用列表、无聊天阈值及配额隔离
 │   ├── image-steps.test.ts       # generateImage 步骤与外围聊天身份保持
@@ -103,17 +110,20 @@ antigravity-context-monitor/
 │   ├── model-info.test.ts        # 模型信息卡片：i18n、自适应思考、转义、缺失数据与账号展示范围
 │   ├── pricing-resolution.test.ts # 家族计价、跨语言身份、自定义价格与未定价模型
 │   ├── cost-backfill.test.ts     # 历史成本回填与定价时期边界
-│   ├── pricing-panel.test.ts     # Cost 价格表回归测试
-│   ├── webview-script.test.ts    # WebView 价格保存与客户端交互回归测试
+│   ├── ledger-cost-reconciliation.test.ts # 账本已记录调用零费用补账与幂等校验回归
+│   ├── pricing-panel.test.ts     # Cost 价格表、双币种、调价横幅与缓存节省回归测试
+│   ├── webview-script.test.ts    # WebView 价格保存、汇率校验与客户端交互回归测试
 │   ├── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
 │   ├── billing-day.test.ts       # 积分到期日 DST 安全日历日差测试
 │   ├── extension-selection.test.ts # 模型选择与版本恢复回归测试
-│   ├── statusbar-tooltip.test.ts # 状态栏读数、悬停摘要、未知安全积分与密度回归
-│   ├── installed-ide-ui.cjs      # Chromium 浅/深/高对比度 + axe WCAG 2.1 AA 无障碍 + 9 页响应式与截图验收脚本（另支持 --native）
+│   ├── statusbar-tooltip.test.ts # 状态栏读数、分层悬停摘要、双窗口配额、双币种与密度预算回归
+│   ├── installed-ide-ui.cjs      # Chromium 浅/深/高对比度 + axe WCAG 2.1 AA 无障碍 + 9 页响应式、v1.17.3 深度检查与截图验收脚本（另支持 --native）
+│   ├── activity-estimated-context.test.ts # 活动估算上下文与精确快照边界测试
 │   ├── activity-recent-steps.test.ts # 最近操作 warm-up 全量恢复与持久化安全上限测试
 │   ├── daily-archival-time.test.ts # 假时钟跨午夜归档 / stale ledger 启动补归档回归测试
 │   ├── daily-ledger-date-filter.test.ts # DailyLedger 跨天日期边界过滤测试
 │   ├── daily-ledger-regressions.test.ts # DailyLedger/DailyArchival/DailyStore 耗时与缓存持久化 v1 兼容回归测试
+│   ├── legacy-migration.test.ts  # 旧版 Antigravity state.vscdb 迁移路径回归测试
 │   ├── reset-time-turnover.test.ts # resetTime 漂移与真实周期切换判定测试
 │   ├── gm-quota-reset-filter.test.ts # GM 额度重置精确归档与 cutoff 清理测试
 │   ├── gm-model-capture.test.ts  # GM 模型身份捕捉、trajectory 回填与 responseModel 冲突测试
@@ -125,7 +135,7 @@ antigravity-context-monitor/
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   ├── project_structure.md          # 本文件
-│   └── releases/1.17.2.md            # 当前发布说明（先英文，再中文）
+│   └── releases/1.17.3.md            # 当前发布说明（先英文，再中文）
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── PRODUCT.md                    # 产品定位、9 页能力清单、术语约束与无障碍承诺
 ├── DESIGN.md                     # Studio Telemetry Ledger 设计系统规范（色板、排版、组件与 9 页契约）
@@ -146,59 +156,56 @@ antigravity-context-monitor/
 
 ### extension.ts -- 入口 + 轮询调度
 
-扩展生命周期管理中心：初始化子系统、注册命令、轮询调度（默认 5s）、会话选择（RUNNING 优先 + 跨工作区 RUNNING 追踪）、工作区切换检测（事件监听 + URI 轮询比对 + 跨工作区穿透）、每日归档委托、多账号快照管理、额度重置归档、持久化协调。启动时会将文件态 `gmDetailedSummary` 回灌到 `GMTracker`，轮询阶段对 GM 摘要采用细粒度签名判定，避免总量不变但上下文情报 / 错误 / 工具 / 对话细节已变化时漏刷新。每日归档检查现在前置到轮询前半段，避免被“无会话 / 无当前对话”的提前 return 跳过。
+扩展生命周期管理中心：初始化子系统、注册命令（`MONITOR_COMMAND` 支持直达 `overview` / `gmdata` / `pricing` / `models` / `settings`）、轮询调度（默认 5s）、非阻塞辅助元数据刷新（`triggerLiveAuxiliaryMetadataRefresh` 带并发防重入、代际守卫与失败退避，拉取 `OrchestratorSettings` 与 `UserQuotaSummary`）、实时费用快照（`computeLiveCostSnapshot`）、会话选择（RUNNING 优先 + 跨工作区 RUNNING 追踪）、连接变更快速重连（`doesConnectionMatchActiveHint` + `isSameBackendConnection`）、工作区切换检测、每日归档委托、多账号快照管理、额度重置归档与持久化协调。启动时将文件态 `gmDetailedSummary` 回灌到 `GMTracker`，并对零费用历史调用触发幂等补账；每日归档检查前置到轮询前半段，避免被提前 return 跳过。
 
 ---
 
 ### discovery.ts -- 语言服务器发现
 
-跨平台定位当前 `agy --hub`（Windows 为 `agy.exe`）及旧版 `language_server_*` 进程，覆盖 macOS/Linux/Windows/WSL/Remote-WSL。解析空格或等号分隔的连接参数，校验声明端口，探测本地 Connect-RPC 服务，并保留平台套接字发现。核心解析函数独立导出支持单元测试。新版 IDE 即使不再运行名为 language_server 的进程，也能建立连接；空的已加载对话列表与连接失败分别处理。
+跨平台定位当前 `agy --hub`（Windows 为 `agy.exe`）及旧版 `language_server_*` 进程，覆盖 macOS/Linux/Windows/WSL/Remote-WSL。1.17.3 引入多端点 CSRF 探测链路 `PROBE_ENDPOINTS = ['GetStatus', 'GetUnleashData', 'GetUserStatus']`（遇 404/501 自动切换下一端点，彻底修复 `agy` v1.5.14 移除 `GetUnleashData` 导致的 `上下文: 不可用`）、`~/.gemini/antigravity/daemon/hub_<port>.json` 磁盘发现与直连提示兜底，以及全平台系统命令与网络加固（Windows PowerShell 强制 `UTF8` 输出编码避免非 ASCII 路径乱码、macOS 兼容 `/usr/sbin/lsof`、Linux 使用 `ps -axww` 与 `/usr/sbin/ss`、IPv6 `[::1]` 回环探测与安全主机名透传）。核心解析函数独立导出支持单元测试。
 
 ---
 
 ### backend-connection.ts -- 当前 IDE 实例连接
 
-从当前窗口中已激活的 `google.google-antigravity` 内置扩展导出读取端口和 CSRF token，校验后作为 `discoverLanguageServer()` 的连接提示。不会主动激活其他扩展；导出缺失或 getter 在后端重启期间抛错时安全回退。有效提示约束发现范围，避免连接到同机另一个 IDE/账号。
+从当前窗口中已激活的 `google.google-antigravity` 内置扩展导出读取端口和 CSRF token，校验后作为 `discoverLanguageServer()` 的连接提示。新增 `isSameBackendConnection()` 与 `doesConnectionMatchActiveHint()` 比较完整连接标识（PID、端口、TLS、主机名与提示一致性），后端重启或切换实例时（即便直连提示 `pid=0`）即可即时重连，同时保持安全回退与实例隔离。
 
 ---
 
 ### rpc-client.ts -- RPC 通信
 
-通用 Connect-RPC 调用器，处理 HTTPS/HTTP 传输、CSRF 鉴权、AbortSignal 取消。
+通用 Connect-RPC 调用器，处理 HTTPS/HTTP 传输、IPv6 主机名、CSRF 鉴权与 `AbortSignal` 取消。1.17.3 新增 `rpcStreamFirstFrame()` 与 `decodeConnectFirstFrame()`，支持解析 Connect 服务端流（`application/connect+json`）的 5 字节帧头与首帧 JSON 载荷，供 `JetboxSubscribeToState` 读取全局编排设置并在收到首帧后立即关闭流连接。
 
 ---
 
 ### tracker.ts -- Token 计算 + 数据获取
 
-对话列表获取、Token 计算、上下文用量组装。当前 planner-response 与旧版 CHECKPOINT 的 `metadata.modelUsage` 都可提供精确快照；提供商新输入+缓存读取+缓存创建+输出计数优先于 GM 请求前估算，估算保持估算标记。首次回复前从用户输入 planner 配置读取所选档位。`tokenUsageSource` 标记数据来源，使旧缓存重新获取；运行中步骤不会因摘要数量不变而沿用缓存。CHECKPOINT 不覆盖用户可见显示模型，其内部模型通过 `checkpointModel` 透传给状态栏 tooltip。主要导出：`getAllTrajectories()`、`getContextUsage()`、`fetchFullUserStatus()`、`refreshWorkflowImageUsage()`。后者只沿明确子智能体链接汇总图片步骤与模型，限制节点数/深度并去重循环；失败/截断显示不完整，不将子文本 Token 并入父上下文。
+对话列表获取、Token 计算、上下文用量组装、编排设置与双窗口配额查询。当前 planner-response 与旧版 CHECKPOINT 的 `metadata.modelUsage` 都可提供精确快照；提供商新输入+缓存读取+缓存创建+输出计数优先于 GM 请求前估算。针对新版自定义编排模式（跨池 `planModel` → `executionModel`，如 Claude Opus 5.5 + Gemini 4 Hydrogen），`processSteps()` 与 `getContextUsage()` 提取 `orchestratorConfig` 并在计算上下文上限时按实测模型精确匹配，避免跨池上下文比例错算。主要导出：`getAllTrajectories()`、`getContextUsage()`、`fetchFullUserStatus()`、`fetchOrchestratorSettings()`（`JetboxSubscribeToState` + `GetMendelFlags` `orchestrator-model-roles`）、`fetchUserQuotaSummary()`（`RetrieveUserQuotaSummary` 5h/weekly 双窗口）与 `refreshWorkflowImageUsage()`。
 
 ---
 
 ### models.ts -- 模型配置与归一化
 
-模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 将已知 Orchestrator、执行模型及 Gemini Neon、Hydrogen、Carbon、Argon、Flash、Pro 归入 `gemini` 池。未知模型与图片身份保留独立额度。`responseModel` 别名注册带冲突保护，避免同一响应别名把 M132/M133 等内部占位模型误重映射。
+模型上下文限额、显示名称（i18n 感知）、核心接口定义（`ModelConfig`、`UserStatusInfo`、`OrchestratorSettings`、`UserQuotaSummary`、`QuotaWindowSummary`）。提供 `normalizeModelDisplayName()` / `resolveModelId()` / `getQuotaPoolKey()` / `localizePickerEffortLabel()` 跨模块归一化锚点。`KNOWN_QUOTA_POOLS` 明确划分 `gemini` 与 `premium`（Claude / GPT）两大共享配额池；未知模型与图片身份保留独立额度。
 
-1.17.2 注册 Gemini 4 Neon Low / Medium / High / Extra（`M534` / `M533` / `M532` / `M535`）及单一的 Orchestrator (Neon) `M537`。Gemini 4 Neon 第四档的目录后缀为 `xhigh`，界面显示 Extra / 超高。Orchestrator (Neon) 配置 `M669` 为隐藏执行模型。五个新增条目的启动压缩兜底为 511,000，实时上限为 512,000，检查点阈值为 50,000。2026-11-19 的账号目录共 27 个可选条目，其中 Gemini 池 20 个，Claude / GPT 池七个。已知身份用于独立记录用量和定价。目录详情和验收范围见 [1.17.2 发布说明](releases/1.17.2.md#neon-模型目录)。
+1.17.3 同步 Antigravity IDE v1.5.14（LS 2.34.0）最新模型目录与编排架构：
+- **512K Gemini 4 / 编排模型统一校准**：全部 Gemini 4（Neon、Hydrogen、Carbon、Argon）及服务端编排器/执行模型（`M537`/`M667`/`M681`/`M669`/`M530`/`M531`）的静态兜底更新为 `511,000`（实时压缩上限 `512,000`，检查点阈值 `50,000`）。
+- **自定义编排器与执行模型**：完整支持 Orchestrator 下拉菜单中的 Gemini 4 Neon（4 档）、Carbon（3 档）、Argon（3 档）与 Claude Opus 5.5（3 档），以及 Executor 下拉菜单中的 Gemini 4 Hydrogen（含 `Extra High` / `超高`，统一 Neon 与 Hydrogen 第四档标签）与 Claude Sonnet 5.5。
+- **新增与更名条目**：将 `M669`（`gemini-flash-worker-agy`）更新为 `Gemini 4 Hydrogen (Orchestrator)`，并注册目录内条目 `M530`（`gemini-4-hydrogen-tiered-high`）、`M531`（`gemini-4-hydrogen-tiered-xhigh`）与 `M578`（`gemini-4-hydrogen-sonar`）；保留 GPT-OSS 120B `Notice` 下线提示标签透传。
 
-v1.17.0 新增 Hydrogen Low/Medium/High/Extra（`M527`/`M526`/`M525`/`M528`），catalog 后缀为 `low`/`medium`/`high`/`xhigh`，后端第四档标签为 XHigh，思考力度为 1/2/3/**100**。2026-11-13 活体目录核实四档模型上下文 1,048,576、最大输出 262,144、压缩上限 256,000、检查点阈值 50,000；最小思考预算 32 不作为固定预算。英文/中文别名、GM 与历史记录保持档位独立；Extra/XHigh 不扩展到 Carbon、Argon。`model-quota.ts` 支持第四档 `xhigh`，UI 显示 Extra / 超高。
-
-1.17.1 首次区分 Orchestrator (Carbon) `M667` 和 Orchestrator (Argon) `M681`。Carbon 协调模型最大输出 262,144，Argon 为 65,536，均配置隐藏执行模型 `M669` 并共享 Gemini 额度。旧 Orchestrator 别名和自定义价格归 Carbon。Hydrogen Standard API 固定参考费率为每百万 token 输入 $1.50、含思考输出 $7.50、隐式缓存读取 $0.075。[1.17.1 发布说明](releases/1.17.1.md)
-
-v1.16.19 注册 Gemini 4 Argon High/Medium/Low（`M417`/`M418`/`M419`），对应 `gemini-4-argon-{high,medium,low}`。2026-10-31 活体目录核实IDE 报告的模型上下文 1,048,576、最大输出 65,536、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；静态兜底 255,000，思考力度 3/2/1。计价采用已核实的 Argon 官方 Standard API 日期费率，支持自定义覆盖，不借用 Flash 单价。家族响应名不能覆盖确切档位，身份解析贯穿 GM、历史用量、配额和中英文显示。
-
-2026-10-31 活体元数据核对覆盖全部 13 个聊天档位（Argon/Flash 3.8/Opus 5.5/Sonnet 5.5 各三档、GPT-OSS Medium）；GPT-OSS 的模型上下文/输出为 131,072 / 32,768，压缩上限 80,000、触发阈值 50,000。精简对照表见 [1.16.19 发布说明](releases/1.16.19.md#当前聊天目录与图片生成)。
-
-图片能力以 `imageGenerationModelIds` 为准，而非 `supportsImages`。M21 / `gemini-3.1-flash-image`（Nano Banana 2）的 IDE 上下文/输出为 65,536 / 65,536，无聊天 checkpointer；图片目录独立显示，压缩指标不适用，配额独立于聊天池。`setAvailableImageModelIds()` 与 `getAvailableImageModelSpecs()` 管理实时可用子集，空列表和连接/账号代际失效会清除旧展示，旧异步响应不能回填新账号。图片思考字段缺失保留为 **IDE 未上报**，不解释为不支持。
-
-当前活体目录同时校正 Gemini 3.8 Flash `M318`/`M319`/`M320` 为 50,000 checkpointer 触发阈值和 3/2/1 思考力度，不保留早期固定预算。仅在完整实时目录记录中清除缺省 protobuf 思考字段，部分数据不覆盖已知值；`M322` 及更旧世代保留历史画像。
-
-v1.16.18 注册 Claude Opus 5.5 Low/Medium/High（`M400`/`M401`/`M402`）及 Sonnet 5.5 Low/Medium/High（`M403`/`M404`/`M405`），共同使用 `premium` 配额池。IDE 报告的模型上下文 1,000,000、最大输出 128,000、平台压缩上限 256,000、内部 `tokenThreshold` 50,000；255,000 静态兜底沿用现有偏移约定。`ModelSpec` 保存自适应思考能力和力度，避免把缺省预算误读为不支持思考。Claude 4.6 的 `M26`/`M35` 保留兼容；家族级响应别名不覆盖确切档位身份。
+1.17.2 注册 Gemini 4 Neon Low / Medium / High / Extra High（`M534` / `M533` / `M532` / `M535`）及 Orchestrator (Neon) `M537`。v1.17.0–v1.17.1 注册 Hydrogen（`M527`–`M528`）、Orchestrator (Carbon/Argon)（`M667`/`M681`）；v1.16.18–v1.16.20 注册 Carbon（`M438`/`M437`/`M427`）、Argon（`M419`/`M418`/`M417`）、Claude Opus/Sonnet 5.5（`M400`–`M405`）、Gemini 3.8 Flash（`M318`–`M320`）与图片模型 `M21`（`gemini-3.1-flash-image`，以 `imageGenerationModelIds` 为准）。历史详情见对应版本发布说明。
 
 ---
 
-### model-quota.ts -- 跨家族基础模型配额合并
+### model-quota.ts -- 跨家族基础模型配额合并与双窗口汇总
 
-`groupModelQuotas()` 与 `summarizeQuotaReadings()` 将模型目录按共享配额池与基础模型家族整理。覆盖 Gemini 4 Neon（4→1）、Hydrogen（4→1）、Carbon（3→1）、Argon（3→1）、Flash 3.5–3.8、Pro 3.1、Claude Opus/Sonnet/Haiku（含 5.5）、GPT-OSS、历史退役占位 ID（`LEGACY_QUOTA_FAMILIES`，含 `M37`/`M36`、`M132`、`M264`–`M266`），以及目录主体、提供商和思考力度一致的未来模型家族；三个 Orchestrator（`Neon`、`Carbon`、`Argon`）保持独立条目。自动过滤 proto3 纪元时间戳（`<= 0` / `1970-01-01`），避免未触碰配额误报重置已过期。
+`groupModelQuotas(configs, quotaSummary?)` 与 `summarizeQuotaReadings()` 将模型目录按共享配额池与基础模型家族整理，并可选并入来自 `RetrieveUserQuotaSummary` 的 `fiveHourQuota` 与 `weeklyQuota` 双窗口精确读数（无汇总时平滑降级为 5h 单窗口）。覆盖 Gemini 4 Neon（4→1）、Hydrogen（4→1）、Carbon（3→1）、Argon（3→1）、Flash 3.5–3.8、Pro 3.1、Claude Opus/Sonnet/Haiku（含 5.5）、GPT-OSS（透传 `tagTitle: 'Notice'`）、历史退役占位 ID（`LEGACY_QUOTA_FAMILIES`）以及符合条件的未来家族；服务端编排器条目保持独立。自动过滤 proto3 纪元时间戳（`<= 0` / `1970-01-01`），避免未触碰配额误报重置已过期。
+
+---
+
+### currency.ts -- 本地离线多币种与汇率格式化
+
+零 VS Code 依赖、零外部网络请求的纯格式化模块：支持 `USD`、`CNY`、`both` 三种显示模式（`parseDisplayCurrency()`）及安全限幅汇率 `0.01–1000`（默认 `7.2`，`sanitizeCnyExchangeRate()`）。提供 `formatCurrencyCost()`（`standard` / `call` / `rate` 三种精度与 `paren` / `slash` 双币连接）、`formatCurrencySavings()`（带零舍入保护，绝不输出 `-0.00`）与 `formatPerMillionRate()`，统一服务于状态栏、悬停摘要、总览、GM 数据、成本、模型与日历全部页面。
 
 ---
 
@@ -218,15 +225,23 @@ v1.16.18 注册 Claude Opus 5.5 Low/Medium/High（`M400`/`M401`/`M402`）及 Son
 
 ---
 
-### tooltip-budget.ts -- 状态栏配额代表
+### tooltip-budget.ts -- 悬停区块预算与状态栏配额代表
 
-配额池代表依次优先当前模型、账号实时推荐模型、可用世代与系列。排序同时识别 Gemini 4 和 3.8 等版本号。根据用户选择、IDE 缩放、语言和配额池数量计算悬停摘要的行数预算。
+1.17.3 新增优先级分层区块预算引擎（`HoverSection[]`、`getSectionLineBudget()`、`applySectionBudget()`、`renderHoverSections()`），按 `P0`（受保护永不丢弃，极端紧张时允许内部压缩至 `compactLines`）至 `P5`（优先折叠/丢弃）管理悬停行数，结合用户密度设置（`auto` / `compact` / `full`）与 `window.zoomLevel` 动态收紧预算，并在拼装 Markdown 时自动保护 GFM 表格空行语义。同时保留配额池代表选择（优先当前模型、账号实时推荐模型、可用世代与系列）。
 
 ---
 
-### statusbar.ts -- 状态栏 UI
+### statusbar.ts -- 状态栏 UI 与重构后的悬停摘要
 
-`StatusBarManager` 展示上下文用量、剩余配额、重置倒计时、AI 积分、可选开启的生成速度（`statusBar.showSpeed`，默认 `false`，`$(pulse)`）与提示词缓存命中率（`statusBar.showCacheHit`，默认 `false`），以及连接状态（未知积分自动隐藏 `$(zap)`，显式 `0` 准确展示；无有效耗时/提示词样本时速度与缓存自动隐藏，绝不在冷启动闪烁 `0 tok/s` 或 `0%`；重置倒计时仅读取当前模型或其所属池，不再跨池回退）。通过 `setTelemetry(gmSummary, activeCascadeId?, customPricing?)` 接入 `telemetry-metrics.ts`，在悬停摘要的 `compact` / `auto` / `full` 三种密度下渲染 `---` 分隔的实时速度、TTFT（含缓存 vs 非缓存对比）与提示词缓存区块。加载对话后，原生 Markdown 悬停摘要同时展示会话、模型、已用与剩余 tokens、账号计划、共享配额池、全密度精确重置时刻与倒计时，以及 AI 积分与到期提醒。`model-quota.ts` 按基础模型家族合并思考档位；摘要提供经 `MarkdownString.isTrusted` 白名单校验的总览、模型及设置直达链接，并对实时标签转义与 CRLF 截断加固。连接、冷启动和重连状态均支持英文、中文及双语。
+`StatusBarManager` 展示上下文用量、剩余配额、重置倒计时、AI 积分及三项默认关闭的可选状态栏读数：`statusBar.showSpeed`（`$(pulse)`）、`statusBar.showCacheHit` 与 `statusBar.showSessionCost`（`$(credit-card)`，支持 `USD`/`CNY`/`both` 多币种）；冷启动无有效数据时自动隐藏，未知积分绝不伪造 `0`。
+
+1.17.3 全面重构原生 Markdown 悬停摘要，采用 `tooltip-budget.ts` 优先级分层区块与 GFM 微表布局：
+- **P0 Hero 区块**：账号计划、会话标题/步数、编排器跨池路由（`Planner → Executor (Cross-pool)`）、Unicode 胶囊上下文条与压缩/缺口警报。
+- **P0 配额区块（永不丢弃）**：`5h | Weekly` 双窗口配额表（无周窗口时自动回退 5h 单列），带 `Planner`/`Executor`/`Active` 池角色标注与精确重置倒计时，窄预算下压缩为单行紧凑摘要。
+- **P1 会话与今日 KPI 账本表**：`Cost`（会话/今日/缓存节省，空会话不误报未定价）、`Prompt Cache`（命中率、有效综合输入费率 `Eff. In` 与缓存写入量）、`Speed / TTFT`（含缓存 vs 非缓存 TTFT 对比）及可选 1 行 `Orchestrator Split` 拆分行。
+- **P3 最近调用微表（Latest Call）**：最新一次调用的模型、状态徽章（含 0-token 失败/重试调用）、`In / Out (Think)`、缓存命中率、多币种费用及 `TTFT / Total · Speed`。
+- **P4 智能事件警报**：14 天内官方定时调价倒计时、模型下线 `Notice` 提醒、重试开销（`Retry Waste`）及 AI 积分到期提醒。
+- **P0 置底一键操作栏**：`MarkdownString.isTrusted` 仅白名单放行 `antigravity-context-monitor.showDetails`（直达 `Overview · Activity · Cost · Models · Settings`）与 `antigravity-context-monitor.refresh`。
 
 ---
 
@@ -267,7 +282,7 @@ v1.16.18 注册 Claude Opus 5.5 Low/Medium/High（`M400`/`M401`/`M402`）及 Son
 ---
 ### activity-panel.ts -- GM Data 统一面板渲染与全局账号面板
 
-GM 数据页接入 `telemetry-metrics.ts`，在按账号过滤的 KPI 条展示生成速度、平均首字延迟与按 token 加权的缓存命中率；在 KPI 下方新增双列 **Speed & First-Token Cache Ledger（`#telemetryLedgerSection`）**，提供加权/最新/中位/极值/可见 `tok/s`、缓存 vs 非缓存 TTFT 比例条与加速幅度、3 段式提示词缓存进度条、预热状态与估算节省；统一模型统计卡片为 `调用` 优先并加入速度、有效样本 TTFT、token 加权缓存命中与缓存写入行；时间线逐步骤与逐轮次新增速度/流耗时/缓存标签；同时继续提供上下文情报、工具排行（8px Studio Cobalt 胶囊条）、错误详情、检查点、系统上下文及待归档费用。工具目录可展开或清空。`buildAccountStatusPanel()` 与 `hasAccountReadyPool()` 供顶部全局账号面板复用，并接入 `account-credits.ts` 的 `currentAICredits()` / `formatCreditTypeLabel()` 实现去重、本地化与未知安全积分展示。
+GM 数据页接入 `telemetry-metrics.ts` 与 `currency.ts`，在按账号过滤的 KPI 条展示生成速度、平均首字延迟与按 token 加权的缓存命中率；在 KPI 下方渲染双列 **Speed & First-Token Cache Ledger（`#telemetryLedgerSection`）**（含多币种缓存节省估算），并在其下方新增可折叠 **Recent Calls Ledger（`#recentCallsLedger`）**（按账号过滤最近 20 次调用：时间、实际模型、新输入、输出及思考占比、缓存命中率、多币种费用或诚实 `Unpriced` 徽章、TTFT、总耗时、噪声门限过滤速度和成功/重试/失败状态，支持 320px 安全横向滚动）；同时保留统一模型统计卡片、时间线遥测标签、上下文情报、工具排行、错误详情、检查点、系统上下文及待归档费用。`buildAccountStatusPanel()` 与 `hasAccountReadyPool()` 供顶部全局账号面板复用。
 
 ---
 
@@ -279,11 +294,13 @@ GM 数据页接入 `telemetry-metrics.ts`，在按账号过滤的 KPI 条展示�
 
 ### pricing-store.ts -- 定价数据层
 
-管理模型定价：默认价格表、用户自定义持久化、身份匹配、按调用 UTC 时间戳的日期费率和费用计算。费用估算用于本地观察，不代表 Antigravity 官方账单。
+管理模型定价：默认官方价格表、用户自定义持久化、身份匹配、按调用 UTC 时间戳的日期费率、定时调价倒计时（`getUpcomingRateChanges()` / `getUpcomingRateChangeForModel()`）和费用计算。费用估算用于本地观察，不代表 Antigravity 官方账单。
 
-[Argon 官方 Standard API 费率](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon) 截至 2026-11-30 为每百万 token 输入 $2 / 含思考输出 $10 / 隐式缓存读取 $0.10；自 2026-12-01 起为 $4 / $20 / $0.20。逐调用聚合、每日归档、账本结算与历史回填共用日期查价，保留已有归档总额及自定义覆盖。Argon 仅支持隐式缓存，不添加显式缓存写入费。
-
-Claude Opus 5.5 与 Sonnet 5.5 均使用[官方 API 费率](https://platform.claude.com/docs/en/about-claude/pricing)（2026-10-03）。按每百万 token 计算，Opus 输入/输出为 $4/$20，Sonnet 为 $2/$10；两者缓存读取均为 $0.20。内置缓存写入参考费率为 5 分钟，Opus 为 $5、Sonnet 为 $2.50；官方 1 小时费率分别为 $8/$4。当前费用估算不计缓存创建费，因为遥测不能可靠区分创建 token 及 TTL，1 小时写入费用也不自动计入；已上报的缓存读取参与计价。计价入口统一处理 placeholder、catalog ID 与中英文名称，保留历史 token 并支持自定义价格。估算不代表 Antigravity 订阅账单。
+1.17.3 经多源官方文档核实更新：
+- **Gemini 4 Neon**：新增官方标准 API 费率（全 1M 窗口统一，Low/Medium/High/Extra High 四档同价）：输入 `$3.00`、输出含思考 `$15.00`、隐式缓存读取 `$0.15`（95% 折扣），无显式缓存写入费、无已公布定时调价；历史零费用 Neon 记录可通过 `reconcileRecordedCalls()` / `backfillMissingCosts()` 自动补账。
+- **Claude Sonnet 5.5 缓存读取校正**：按 2026-11-22 核实的 Anthropic / Vertex AI 官方价表将缓存读取费率由 `$0.20` 修正为 `$0.10`（输入的 0.05×），输入 `$2` / 输出 `$10` / 5 分钟写入 `$2.50` 保持不变；Claude Opus 5.5 保持 `$4` / `$20` / `$0.20` / `$5`。
+- **Gemini 3.6 Flash 有界优惠期**：将 `gemini-3.6-flash` 优惠价（`$0.75` / `$3.75` / `$0.075`）精确限定于 `[2026-08-13, 2027-01-01)` UTC，前后按标准价（`$1.50` / `$7.50` / `$0.15`）计价；与 3.7/3.8 Flash（2027-01-01）及 Carbon/Argon（2026-12-01）共用 `SCHEDULED_RATE_CHANGES`。
+- **未定价守卫**：旧服务端托管编排器（`M537`/`M667`/`M681`）、`M669`、`M578`（Sonar）与图片模型 `M21` 保持无默认费率（缺失价格绝不等于免费），仍支持用户按模型独立自定义单价；缺少有效调用日期的定时调价模型调用如实返回 `null`（绝不套用当前时间伪造费用）。
 
 ---
 
@@ -295,7 +312,7 @@ Claude Opus 5.5 与 Sonnet 5.5 均使用[官方 API 费率](https://platform.cla
 
 ### pricing-panel.ts -- Cost 标签页渲染
 
-生成 Cost 标签页 HTML，导出 `buildModelDNACards()` 供 Models 标签页复用。检测到生图但缺少独立图片 Token/积分/GM 计量时，显示“已知小计，未计入图片生成费用”及官方参考链接，不把图片费补成零。价格编辑区展示已调用模型和内置默认价格模型；保存时只持久化已有自定义项或用户实际改动的行，避免把未编辑的默认价格写成 custom override。
+生成 Cost 标签页 HTML，导出 `buildModelDNACards()` 供 Models 标签页复用。1.17.3 顶部新增内联**显示币种切换条 + 本地参考汇率输入（`.prc-currency-bar`）**与 **45 天内官方定时调价倒计时横幅（`.rate-change-banner`）**；月度汇总、费用分布条与逐模型明细全面接入 `currency.ts` 并补充提示词缓存节省徽章与思考费用占比。检测到生图但缺少独立图片 Token/积分/GM 计量时仍显示“已知小计，未计入图片生成费用”。价格编辑区展示官方 `gemini-4-neon` 与未定价编排器行，保存时仅持久化自定义或实际改动行。
 
 ---
 
@@ -334,13 +351,11 @@ Claude Opus 5.5 与 Sonnet 5.5 均使用[官方 API 费率](https://platform.cla
 
 ### webview-panel.ts -- WebView 面板框架与 Studio Telemetry Ledger 样式架构
 
-面板框架在 `<body>` 注入 `data-lang="${currentLang}"` 属性，管理吸顶两行页首、2px 滑动标签指示条、全局账号下拉面板、消息通信（白名单含 `statusBar.showSpeed` / `statusBar.showCacheHit`）及增量刷新。`webview-overview-tab.ts` 渲染连接与会话状态、上下文已用与可用余量、内嵌 4 格 L2 速度/TTFT/缓存遥测条（`.overview-telemetry-strip`）、可折叠诊断、共享配额池及 AI 积分页脚；悬停摘要与总览通过 `monitor-overview.ts` 共用状态、遥测提取与数值格式化逻辑。
+面板框架在 `<body>` 注入 `data-lang="${currentLang}"` 属性，管理吸顶两行页首、2px 滑动标签指示条、全局账号下拉面板、消息通信（白名单含 `statusBar.showSpeed` / `statusBar.showCacheHit` / `statusBar.showSessionCost` / `pricing.displayCurrency` / `pricing.cnyExchangeRate`，显式币种与汇率变更即使在暂停态也立即刷新并向设置页同步控件状态）、动态透传扩展清单版本给关于页，以及增量刷新（通过 `'todayCostUsd' in p` / `'sessionCostUsd' in p` 避免切换会话或账号时残留旧费用）。`webview-overview-tab.ts` 渲染连接与会话状态、跨池编排器路由胶囊（`.orch-route-pill`）、上下文已用与可用余量、内嵌 4–5 格 L2 速度/TTFT/缓存/会话与今日费用遥测条（`.overview-telemetry-strip`）、可折叠诊断、5h+Weekly 双窗口共享配额池及 AI 积分页脚。
 
-`webview-editorial-styles.ts`（`getEditorialStyles()`）实现 `DESIGN.md` 定义的 **Studio Telemetry Ledger** 设计系统：Obsidian Slate 深色（`#0D1014`/`#14181F`）、Alabaster Studio 浅色（`#FAFBFC`/`#FFFFFF`）与原生 VS Code 高对比度主题变量透传、L0–L3 表面层级、零宋体 CJK/Latin 排版栈、双语次级排版（`.bi-en`/`.bi-sep`/`.bi-zh`）、语义健康进度条（翠绿/琥珀/绯红）、统一 `32px` 控件、`--color-*` 旧变量桥接以及 `320px–1440px` 零横向溢出规则。
+`webview-editorial-styles.ts`（`getEditorialStyles()`）实现 `DESIGN.md` 定义的 **Studio Telemetry Ledger** 设计系统，并在 1.17.3 补充 `.orch-settings-card`、`.orch-route-pill`、`.quota-dual-row`、`.spec-price-row`、`.tag-notice`、`.recent-calls-card`、`.rate-change-banner` 与币种/汇率控件样式，继续保持 Obsidian Slate 深色、Alabaster Studio 浅色、高对比度透传、零宋体排版及 `320px–1440px` 零横向溢出规则。
 
-其他子模块包括 `webview-models-tab.ts`（模型）、`webview-settings-tab.ts`（设置）、`webview-profile-tab.ts`（个人）、`webview-chat-history-tab.ts`（会话）、`webview-calendar-tab.ts`（日历）、`webview-about-tab.ts`（关于）、`webview-script.ts`（客户端 JS）、`webview-styles.ts`（基础样式）、`webview-icons.ts`（内联 SVG 图标）和 `webview-helpers.ts`（共享工具函数，复导 `tBiHtml`）。
-
-模型页按当前账号实时聊天目录渲染，独立展示 `imageGenerationModelIds` 提供的生图目录。个人页（`webview-profile-tab.ts`）已移除旧版 Prompt/Flow 计数，通过 `buildModelQuotaGrid(configs, { embedded: true })` 展示扁平化共享模型配额卡片，并配以默认开启隐私遮罩的账号卡片、未知安全的 Google AI 积分与账号级每月到期日设置，以及默认折叠的计划限制与功能配置（`#profile-plan-details`）。
+其他子模块包括 `webview-models-tab.ts`（模型页：实时 **Orchestrator Settings** 卡片展示 Orchestrator Model + Executor Model 与 Default/Custom 徽章、双窗口共享配额池、聊天/图片目录与每模型 API 参考价/诚实 `Unpriced` 行）、`webview-settings-tab.ts`（设置页：7 项状态栏开关含 `#toggleSessionCost` + 独立 **Currency Display / 币种与汇率** 卡片）、`webview-profile-tab.ts`（个人页：隐私遮罩账号、5h+Weekly 双窗口配额与琥珀 `Notice` 标签、AI 积分及可折叠计划详情）、`webview-chat-history-tab.ts`（会话）、`webview-calendar-tab.ts`（多币种日历）、`webview-about-tab.ts`（动态清单版本、USD/CNY 费用简介与全系 Gemini 4 512K 窗口说明）、`webview-script.ts`、`webview-styles.ts`、`webview-icons.ts` 与 `webview-helpers.ts`。
 
 ---
 
@@ -389,23 +404,27 @@ extension.ts (入口 + 调度)
 │   ├── tracker.ts (types)
 │   └── gm-tracker.ts (types)
 ├── pool-utils.ts         ← 配额池辅助
-├── model-quota.ts        ← 跨家族基础模型思考档位合并与配额汇总
+├── model-quota.ts        ← 跨家族基础模型思考档位合并与 5h/Weekly 双窗口配额汇总
+├── currency.ts           ← 离线本地 USD/CNY/both 币种与汇率格式化
 ├── account-credits.ts    ← 当前 AI 积分归一化、去重与未知安全汇总
 ├── telemetry-metrics.ts  ← 纯遥测引擎（tok/s、Cached/Uncached TTFT、提示词缓存与节省估算）
 │   ├── gm/types.ts (types)
 │   ├── models.ts
 │   └── pricing-store.ts
-├── monitor-overview.ts   ← 状态栏与总览共享的状态/上下文/配额/遥测格式化
+├── monitor-overview.ts   ← 状态栏与总览共享的状态/编排路由/上下文/双窗口配额/多币种与遥测格式化
+│   ├── currency.ts
 │   └── telemetry-metrics.ts
-├── tooltip-budget.ts     ← 悬停摘要预算与配额池代表选择
-├── backend-connection.ts ← 当前 IDE 实例连接提示
-├── discovery.ts          ← LS / agy hub 进程发现
-├── tracker.ts            ← Token 计算 + 数据获取
-│   ├── rpc-client.ts     ← RPC 通信
+├── tooltip-budget.ts     ← 优先级分层悬停区块预算（HoverSection[]）与配额池代表选择
+├── backend-connection.ts ← 当前 IDE 实例连接提示与完整连接标识比对
+├── discovery.ts          ← LS / agy hub 进程与 daemon hub JSON 发现（多端点探测 + IPv6）
+├── tracker.ts            ← Token 计算 + 编排设置 + 双窗口配额 + 数据获取
+│   ├── rpc-client.ts     ← RPC 通信（含 Connect 流首帧解析）
 │   ├── models.ts         ← 模型配置
 │   │   └── i18n.ts       ← 国际化
 │   └── constants.ts      ← 常量
-├── statusbar.ts          ← 状态栏（含可选速度/缓存开关）与悬停摘要 UI
+├── statusbar.ts          ← 状态栏（含可选速度/缓存/会话费用）与分层结构化悬停摘要 UI
+│   ├── currency.ts
+│   ├── pricing-store.ts
 │   ├── tracker.ts
 │   ├── models.ts
 │   ├── model-quota.ts
@@ -521,11 +540,11 @@ npm run test:watch
 npm run package
 ```
 
-在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.2.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
+在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.3.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
 
 测试文件位于 `tests/`，仅供 Vitest 与本地浏览器/原生验收使用，不会被打包到 VSIX 中。
 
-发布验收使用编译输出与重新打包安装的 1.17.2。编译、回归测试、安装包一致性、无障碍/响应式矩阵、原生 IDE 交互和平台测试范围集中记录在发布说明。[1.17.2 验证](releases/1.17.2.md#验证)
+发布验收使用编译输出与重新打包安装的 1.17.3。编译、回归测试、安装包一致性、无障碍/响应式矩阵、原生 IDE 交互和平台测试范围集中记录在发布说明。[1.17.3 验证](releases/1.17.3.md#验证)
 
 自动化 UI 与视觉验收统一由 `tests/installed-ide-ui.cjs` 驱动：
 - `node tests/installed-ide-ui.cjs --installed <目录>`（加 `--smoke` 运行快速冒烟）：基于 Chromium 与已编译/已安装 JS 渲染合成数据，覆盖全部 9 个标签页、浅色 / 深色 / 高对比度主题、三种语言（`en` / `zh` / `both`）与 `320px–1440px` 宽度，校验 axe-core WCAG 2.1 AA 对比度、WCAG 1.4.11 非文本对比度、零横向溢出、交互状态及零旧版 Prompt/Flow 残留，并内置 CDP 断连/超时自动回收会话机制。

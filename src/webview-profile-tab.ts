@@ -4,7 +4,8 @@
 
 import { currentAICredits } from './account-credits';
 import { formatNumber, getLanguage, tBi } from './i18n';
-import { ModelConfig, UserStatusInfo } from './models';
+import { formatQuotaWindowPercent } from './monitor-overview';
+import { ModelConfig, UserStatusInfo, type QuotaWindowSummary, type UserQuotaSummary } from './models';
 import { formatResetAbsolute, formatResetCountdown } from './reset-time';
 import { ICON } from './webview-icons';
 import { esc, tBiHtml } from './webview-helpers';
@@ -14,6 +15,7 @@ import { groupModelQuotas, type QuotaEffort } from './model-quota';
 export interface ModelQuotaGridOptions {
     embedded?: boolean;
     hideHeading?: boolean;
+    quotaSummary?: UserQuotaSummary | null;
 }
 
 function formatCreditTypeLabelHtml(creditType: string): string {
@@ -35,6 +37,7 @@ function formatModelTagTitle(title: string): { plain: string; html: string } {
         Preview: ['Preview', '预览'],
         Beta: ['Beta', '测试'],
         'Limited time': ['Limited time', '限时'],
+        Notice: ['Notice', '提示'],
     };
     const mapped = Object.hasOwn(known, title) ? known[title] : undefined;
     return mapped
@@ -60,6 +63,7 @@ export function buildProfileContent(
     userInfo: UserStatusInfo | null,
     configs: ModelConfig[],
     billingDay?: number,
+    quotaSummary?: UserQuotaSummary | null,
 ): string {
     if (!userInfo) {
         return `
@@ -73,7 +77,7 @@ export function buildProfileContent(
     }
 
     const sortedConfigs = sortModels(configs, userInfo.modelSortOrder);
-    const quota = buildModelQuotaGrid(sortedConfigs, { embedded: true });
+    const quota = buildModelQuotaGrid(sortedConfigs, { embedded: true, quotaSummary });
     return `
         <div class="profile-page">
             ${buildAccountSection(userInfo)}
@@ -161,12 +165,12 @@ function buildCreditSection(userInfo: UserStatusInfo, billingDay?: number): stri
 }
 
 function quotaEffortLabel(effort: QuotaEffort): string {
-    return { low: tBi('Low', '低'), medium: tBi('Medium', '中'), high: tBi('High', '高'), xhigh: tBi('Extra', '超高') }[effort];
+    return { low: tBi('Low', '低'), medium: tBi('Medium', '中'), high: tBi('High', '高'), xhigh: tBi('Extra High', '超高') }[effort];
 }
 
 function quotaEffortsHtml(efforts: QuotaEffort[]): string {
     return tBiHtml(
-        efforts.map(e => ({ low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra' })[e]).join(' · '),
+        efforts.map(e => ({ low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High' })[e]).join(' · '),
         efforts.map(e => ({ low: '低', medium: '中', high: '高', xhigh: '超高' })[e]).join(' · '),
     );
 }
@@ -181,11 +185,40 @@ function quotaPercentage(fraction: number): string {
     return new Intl.NumberFormat(getLanguage() === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 8 }).format(fraction * 100);
 }
 
+function renderDualWindowBar(groupLabel: string, kind: '5h' | 'weekly', win: QuotaWindowSummary): string {
+    const labelHtml = kind === '5h' ? tBiHtml('5-Hour', '5 小时') : tBiHtml('Weekly', '每周');
+    const labelPlain = kind === '5h' ? tBi('5-Hour', '5 小时') : tBi('Weekly', '每周');
+    const rawFrac = win.remainingFraction;
+    const frac = typeof rawFrac === 'number' && Number.isFinite(rawFrac) && rawFrac >= 0 && rawFrac <= 1 ? rawFrac : null;
+    const pct = frac === null ? null : Number((frac * 100).toFixed(8));
+    const barTone = pct === null ? '' : pct <= 20 ? 'is-attention' : pct < 50 ? 'is-warn' : 'is-healthy';
+    const barColor = pct === null ? '' : pct <= 20 ? 'var(--ed-danger-fill)'
+        : pct < 50 ? 'var(--ed-warn-fill)' : 'var(--ed-good-fill)';
+    const pctPlain = frac === null ? tBi('Unknown', '未知') : formatQuotaWindowPercent(frac);
+    const pctHtml = frac === null ? `<span class="is-unknown">${tBiHtml('Unknown', '未知')}</span>` : esc(pctPlain);
+    const parsedReset = win.resetTime ? Date.parse(win.resetTime) : Number.NaN;
+    const resetHtml = win.resetTime && Number.isFinite(parsedReset) && parsedReset > 0
+        ? `${tBiHtml('Reset', '重置')} ${esc(quotaResetLabel(win.resetTime))}`
+        : tBiHtml('Reset time unavailable', '暂无重置时间');
+    return `
+        <div class="quota-dual-item" data-quota-window="${kind}">
+            <div class="quota-dual-head">
+                <span class="quota-dual-label">${labelHtml}</span>
+                <span class="quota-dual-pct">${pctHtml}</span>
+            </div>
+            <div class="quota-bar-wrap${pct === null ? ' is-unknown' : ''}" role="progressbar" aria-label="${esc(`${groupLabel} ${labelPlain}`)}"
+                aria-valuemin="0" aria-valuemax="100"${pct === null ? '' : ` aria-valuenow="${pct}"`} aria-valuetext="${esc(pctPlain)}">
+                ${pct === null ? '' : `<div class="quota-bar ${barTone}" style="width:${pct}%;background:${barColor}"></div>`}
+            </div>
+            <div class="model-card-meta"><span class="model-card-reset">${resetHtml}</span></div>
+        </div>`;
+}
+
 export function buildModelQuotaGrid(
     configs: ModelConfig[],
     options: ModelQuotaGridOptions = {},
 ): string {
-    const groups = groupModelQuotas(configs);
+    const groups = groupModelQuotas(configs, options.quotaSummary);
     if (groups.length === 0) { return ''; }
 
     const cards = groups.map(group => {
@@ -206,9 +239,15 @@ export function buildModelQuotaGrid(
         const resetLabelHtml = group.resetDiffers ? tBiHtml('Reset times differ', '重置时间不同')
             : group.resetTime ? `${tBiHtml('Reset', '重置')} ${esc(quotaResetLabel(group.resetTime))}`
                 : tBiHtml('Reset time unavailable', '暂无重置时间');
-        const members = group.pool ? `<ul class="model-quota-members">${group.members.map(member => `
-            <li><span>${esc(member.label)}</span>${member.efforts.length
-            ? `<span class="model-card-efforts">${quotaEffortsHtml(member.efforts)}</span>` : ''}</li>`).join('')}</ul>`
+        const members = group.pool ? `<ul class="model-quota-members">${group.members.map(member => {
+            const memberTag = member.tagTitle ? formatModelTagTitle(member.tagTitle) : null;
+            const memberTagCls = member.tagTitle === 'Notice' ? 'model-tag-badge tag-notice' : 'model-tag-badge';
+            const memberTagHtml = memberTag
+                ? ` <span class="${memberTagCls}" title="${esc(memberTag.plain)}">${memberTag.html}</span>` : '';
+            return `
+            <li><span>${esc(member.label)}${memberTagHtml}</span>${member.efforts.length
+                ? `<span class="model-card-efforts">${quotaEffortsHtml(member.efforts)}</span>` : ''}</li>`;
+        }).join('')}</ul>`
             : group.efforts.length ? `<div class="model-card-efforts">${quotaEffortsHtml(group.efforts)}</div>` : '';
         const notices: string[] = [];
         if (group.quotaDiffers || group.resetDiffers) { notices.push(tBiHtml('Reported values differ', '上报数值不一致')); }
@@ -228,22 +267,30 @@ export function buildModelQuotaGrid(
                     </ul>${precisionNotice}
                 </details>` : '';
         const tag = group.tagTitle ? formatModelTagTitle(group.tagTitle) : null;
-        const tagBadge = tag ? `<span class="model-tag-badge" title="${esc(tag.plain)}">${tag.html}</span>` : '';
+        const tagCls = group.tagTitle === 'Notice' ? 'model-tag-badge tag-notice' : 'model-tag-badge';
+        const tagBadge = tag ? `<span class="${tagCls}" title="${esc(tag.plain)}">${tag.html}</span>` : '';
         const names = [...new Set(group.readings.map(reading => reading.label))].join(' · ');
+        const hasDualWindow = Boolean(group.fiveHourQuota || group.weeklyQuota);
+        const metersHtml = hasDualWindow
+            ? `<div class="quota-dual-row">
+                    ${group.fiveHourQuota ? renderDualWindowBar(group.label, '5h', group.fiveHourQuota) : ''}
+                    ${group.weeklyQuota ? renderDualWindowBar(group.label, 'weekly', group.weeklyQuota) : ''}
+                </div>`
+            : `<div class="quota-bar-wrap${pct === null ? ' is-unknown' : ''}" role="progressbar" aria-label="${esc(`${group.label} ${tBi('quota remaining', '剩余配额')}`)}"
+                    aria-valuemin="0" aria-valuemax="100"${pct === null ? '' : ` aria-valuenow="${pct}"`} aria-valuetext="${esc(percentagePlain)}">
+                    ${pct === null ? '' : `<div class="quota-bar ${barTone}" style="width:${pct}%;background:${barColor}"></div>`}
+                </div>
+                <div class="model-card-meta"><span class="model-card-reset">${resetLabelHtml}</span></div>`;
         return `
             <div class="model-card" data-quota-family="${esc(group.key)}">
                 <div class="model-card-header">
                     <span class="model-card-name">
                         <span class="model-card-name-text" title="${esc(names)}">${esc(group.label)}</span>${tagBadge}
                     </span>
-                    <span class="model-card-pct${pct === null ? ' is-unknown' : ''}">${percentageHtml}</span>
+                    ${hasDualWindow ? '' : `<span class="model-card-pct${pct === null ? ' is-unknown' : ''}">${percentageHtml}</span>`}
                 </div>
                 ${members}
-                <div class="quota-bar-wrap${pct === null ? ' is-unknown' : ''}" role="progressbar" aria-label="${esc(`${group.label} ${tBi('quota remaining', '剩余配额')}`)}"
-                    aria-valuemin="0" aria-valuemax="100"${pct === null ? '' : ` aria-valuenow="${pct}"`} aria-valuetext="${esc(percentagePlain)}">
-                    ${pct === null ? '' : `<div class="quota-bar ${barTone}" style="width:${pct}%;background:${barColor}"></div>`}
-                </div>
-                <div class="model-card-meta"><span class="model-card-reset">${resetLabelHtml}</span></div>
+                ${metersHtml}
                 ${details}
             </div>`;
     }).join('');

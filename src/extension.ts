@@ -2,7 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { LSInfo } from './discovery';
-import { discoverCurrentLanguageServer as discoverLanguageServer } from './backend-connection';
+import {
+    discoverCurrentLanguageServer as discoverLanguageServer,
+    doesConnectionMatchActiveHint,
+    getActiveBackendHint,
+    isSameBackendConnection,
+} from './backend-connection';
 import {
     getAllTrajectories,
     getContextUsage,
@@ -12,24 +17,32 @@ import {
     normalizeModelDisplayName,
     normalizeUri,
     fetchFullUserStatus,
+    fetchOrchestratorSettings,
+    fetchUserQuotaSummary,
     updateModelDisplayNames,
     ContextUsage,
     TrajectorySummary,
     UserStatusInfo,
 } from './tracker';
-import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, registerResponseModelAlias, setAvailableImageModelIds, type ModelConfig, type FullUserStatus, updateModelSpec, getModelSpecs } from './models';
+import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, registerResponseModelAlias, setAvailableImageModelIds, type ModelConfig, type FullUserStatus, type OrchestratorSettings, type UserQuotaSummary, updateModelSpec, getModelSpecs } from './models';
 import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit, setTooltipDiagLogger } from './statusbar';
 import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
 import { aiCreditTotal, currentAICredits } from './account-credits';
 import { groupModelQuotas } from './model-quota';
 import { MONITOR_COMMAND } from './monitor-overview';
-import { showMonitorPanel, refreshMonitorPanelLanguage, updateMonitorPanel, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
+import { showMonitorPanel, refreshMonitorPanelLanguage, updateMonitorPanel, syncMonitorPanelSettings, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
 import { GMTracker, GMSummary, GMTrackerState, slimSummaryForPersistence } from './gm-tracker';
-import { PricingStore } from './pricing-store';
+import { PricingStore, calculateLedgerModelCosts, costFromTokens, findPricingForDate, selectPricingModel } from './pricing-store';
+import {
+    DEFAULT_CNY_EXCHANGE_RATE,
+    DEFAULT_DISPLAY_CURRENCY,
+    normalizeCurrencyPrefs,
+    type CurrencyPrefs,
+} from './currency';
 import { DailyStore, type DailyStoreState } from './daily-store';
 import { MonitorStore } from './monitor-store';
 import {
@@ -58,6 +71,8 @@ let allTrajectoryUsages: ContextUsage[] = [];
 let lastTrajectories: TrajectorySummary[] = [];
 let cachedModelConfigs: import('./models').ModelConfig[] = [];
 let cachedUserInfo: UserStatusInfo | null = null;
+let cachedOrchestratorSettings: OrchestratorSettings | null = null;
+let cachedQuotaSummary: UserQuotaSummary | null = null;
 let statusPollCount = 0;
 /** Refresh user status every N poll cycles (~10s at default 5s interval) */
 const STATUS_REFRESH_INTERVAL = 2;
@@ -126,6 +141,9 @@ let isSyncingCheckpointer = false;
 let checkpointerSyncAttempts = 0;
 /** Upper bound on those attempts, so an account with no checkpointer experiments stops re-asking. */
 const MAX_CHECKPOINTER_SYNC_ATTEMPTS = 5;
+let isRefreshingAuxiliaryMetadata = false;
+let auxMetadataConsecutiveFailures = 0;
+const MAX_AUX_METADATA_FAILURES = 3;
 let modelMetadataGeneration = 0;
 
 /** Do not carry tool-model availability across accounts or backend lifetimes. */
@@ -136,6 +154,14 @@ export function invalidateLiveModelMetadata(): void {
     hasSyncedCheckpointer = false;
     isSyncingCheckpointer = false;
     checkpointerSyncAttempts = 0;
+    isRefreshingAuxiliaryMetadata = false;
+    auxMetadataConsecutiveFailures = 0;
+    cachedOrchestratorSettings = null;
+    cachedQuotaSummary = null;
+    if (typeof statusBar !== 'undefined') {
+        statusBar.setOrchestratorSettings(null);
+        statusBar.setQuotaSummary(null);
+    }
 }
 
 /** Prevents schedulePoll() from creating new timers after deactivate. */
@@ -218,7 +244,10 @@ function rehydrateUsageForDisplay(
 ): ContextUsage {
     const model = usage.model || usage.lastModelUsage?.model || lastKnownModel || '';
     const modelDisplayName = normalizeModelDisplayName(model);
-    const contextLimit = getContextLimit(model, customLimits);
+    const limitModel = usage.tokenUsageSource === 'planner' && usage.lastModelUsage?.model
+        ? usage.lastModelUsage.model
+        : model;
+    const contextLimit = getContextLimit(limitModel, customLimits);
     const usagePercent = contextLimit > 0 ? (usage.contextUsed / contextLimit) * 100 : 0;
     if (
         model === usage.model
@@ -480,7 +509,73 @@ export function buildUsageScopeTrajectories(
     return [activeTrajectory, ...scope];
 }
 
+function readCurrencyPrefs(): CurrencyPrefs {
+    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    return normalizeCurrencyPrefs({
+        currency: cfg.get('pricing.displayCurrency', DEFAULT_DISPLAY_CURRENCY),
+        cnyRate: cfg.get('pricing.cnyExchangeRate', DEFAULT_CNY_EXCHANGE_RATE),
+    });
+}
+
+function computeLiveCostSnapshot(
+    summary: GMSummary | null,
+    activeCascadeId?: string,
+): { todayCostUsd: number; todayHasUnpriced: boolean; sessionCostUsd: number; sessionHasUnpriced: boolean } {
+    const custom = pricingStore?.getCustom() ?? {};
+
+    // Today's total from DailyLedger (active + settled)
+    let todayCostUsd = 0;
+    let todayHasUnpriced = false;
+    if (typeof dailyLedger !== 'undefined') {
+        for (const bucket of dailyLedger.getTodayActive()) {
+            for (const [modelKey, ms] of Object.entries(bucket.modelStats)) {
+                if (ms.calls <= 0) { continue; }
+                const res = calculateLedgerModelCosts(modelKey, ms, bucket, custom);
+                todayCostUsd += res.totalCost;
+                if (!res.pricing) { todayHasUnpriced = true; }
+            }
+        }
+        for (const entry of dailyLedger.getSettledEntries()) {
+            todayCostUsd += entry.totalEstimatedCost || 0;
+            if (!todayHasUnpriced && entry.totalCalls > 0 && entry.modelCalls) {
+                for (const [modelKey, calls] of Object.entries(entry.modelCalls)) {
+                    if (calls > 0 && !findPricingForDate(modelKey, custom, entry.settledAt)) {
+                        todayHasUnpriced = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Active conversation (or session fallback) cost from account-filtered GM summary
+    let sessionCostUsd = 0;
+    let sessionHasUnpriced = false;
+    if (summary && summary.conversations.length > 0) {
+        const activeConv = activeCascadeId
+            ? summary.conversations.find(c => c.cascadeId === activeCascadeId)
+            : undefined;
+        const calls = activeConv && activeConv.calls.length > 0
+            ? activeConv.calls
+            : summary.conversations.flatMap(c => c.calls);
+        for (const call of calls) {
+            const pricingModel = selectPricingModel(call.model || call.modelDisplay, call.responseModel, custom);
+            const pricing = findPricingForDate(pricingModel, custom, call.createdAt || '');
+            if (pricing) {
+                sessionCostUsd += costFromTokens(call, pricing);
+            } else {
+                sessionHasUnpriced = true;
+            }
+        }
+    }
+
+    return { todayCostUsd, todayHasUnpriced, sessionCostUsd, sessionHasUnpriced };
+}
+
 function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
+    const gmSummary = gmTracker.getUiSummary();
+    const currencyPrefs = readCurrencyPrefs();
+    const costs = computeLiveCostSnapshot(gmSummary, currentUsage?.cascadeId ?? trackedCascadeId ?? undefined);
     return {
         currentUsage,
         monitorStatus: statusBar?.monitorStatus,
@@ -492,7 +587,7 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         activitySummary: activityTracker?.getSummary() ?? null,
         archives: activityTracker?.getArchives(),
         activityTracker,
-        gmSummary: gmTracker.getUiSummary(),
+        gmSummary,
         gmFullSummary: gmTracker.getUiFullSummary(),
         gmConversations: monitorStore.getGMConversations(),
         pricingStore,
@@ -503,8 +598,74 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         todayLedgerActive: dailyLedger.getTodayActive(),
         customPricing: pricingStore.getCustom(),
         ledgerSettled: dailyLedger.getSettledEntries(),
+        orchestratorSettings: cachedOrchestratorSettings,
+        quotaSummary: cachedQuotaSummary,
+        currencyPrefs,
+        todayCostUsd: costs.todayCostUsd > 0 ? costs.todayCostUsd : undefined,
+        sessionCostUsd: costs.sessionCostUsd > 0 ? costs.sessionCostUsd : undefined,
         ...extra,
     };
+}
+
+/**
+ * Refresh auxiliary live metadata (global Orchestrator Settings + dual-window
+ * RetrieveUserQuotaSummary) non-blockingly in the background.
+ * Guarded by in-flight dedup, per-generation failure backoff, and modelMetadataGeneration
+ * so a stalled JetboxSubscribeToState stream never blocks core trajectory/context polling.
+ */
+function triggerLiveAuxiliaryMetadataRefresh(
+    ls: LSInfo,
+    configs: readonly ModelConfig[],
+    generation: number,
+    signal?: AbortSignal,
+): void {
+    if (isRefreshingAuxiliaryMetadata || auxMetadataConsecutiveFailures >= MAX_AUX_METADATA_FAILURES) {
+        return;
+    }
+    isRefreshingAuxiliaryMetadata = true;
+    void (async () => {
+        try {
+            const [orchRes, quotaRes] = await Promise.allSettled([
+                fetchOrchestratorSettings(ls, configs, signal),
+                fetchUserQuotaSummary(ls, signal),
+            ]);
+            if (generation !== modelMetadataGeneration || disposed) { return; }
+            let updated = false;
+            const gotOrch = orchRes.status === 'fulfilled' && !!orchRes.value;
+            const gotQuota = quotaRes.status === 'fulfilled' && !!quotaRes.value;
+            if (gotOrch) {
+                cachedOrchestratorSettings = orchRes.value;
+                if (typeof statusBar !== 'undefined') {
+                    statusBar.setOrchestratorSettings(orchRes.value);
+                }
+                updated = true;
+            }
+            if (gotQuota) {
+                cachedQuotaSummary = quotaRes.value;
+                if (typeof statusBar !== 'undefined') {
+                    statusBar.setQuotaSummary(quotaRes.value);
+                }
+                updated = true;
+            }
+            if (gotOrch || gotQuota) {
+                auxMetadataConsecutiveFailures = 0;
+            } else {
+                auxMetadataConsecutiveFailures++;
+            }
+            if (updated) {
+                if (typeof statusBar !== 'undefined') {
+                    statusBar.refreshFromConfig();
+                }
+                if (isMonitorPanelVisible()) {
+                    updateMonitorPanel(makePanelPayload());
+                }
+            }
+        } finally {
+            if (generation === modelMetadataGeneration) {
+                isRefreshingAuxiliaryMetadata = false;
+            }
+        }
+    })();
 }
 
 interface LiveModelStatusHandlers {
@@ -1445,7 +1606,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // Register commands
     context.subscriptions.push(
         vscode.commands.registerCommand(MONITOR_COMMAND, (destination: unknown) => {
-            const initialTab = destination === 'models' || destination === 'settings' ? destination : 'overview';
+            const initialTab = destination === 'models' || destination === 'settings' || destination === 'gmdata' || destination === 'pricing'
+                ? destination
+                : 'overview';
             showMonitorPanel(makePanelPayload({ context, initialTab }));
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
@@ -1524,10 +1687,15 @@ export function activate(context: vscode.ExtensionContext): void {
                 restartPolling();
             }
 
-            if (e.affectsConfiguration('antigravityContextMonitor.statusBar')) {
+            const pricingChanged = e.affectsConfiguration('antigravityContextMonitor.pricing');
+            if (e.affectsConfiguration('antigravityContextMonitor.statusBar') || pricingChanged) {
                 applyDisplayPrefs();
                 statusBar.refreshFromConfig();
-                log('Status bar display preferences updated');
+                if (isMonitorPanelVisible()) {
+                    updateMonitorPanel(makePanelPayload());
+                    syncMonitorPanelSettings(pricingChanged);
+                }
+                log('Status bar / pricing display preferences updated');
             }
             if (e.affectsConfiguration('window.zoomLevel')) {
                 statusBar.refreshFromConfig();
@@ -1598,7 +1766,9 @@ function applyDisplayPrefs(): void {
         showAiCredits: cfg.get<boolean>('statusBar.showAiCredits', true),
         showSpeed: cfg.get<boolean>('statusBar.showSpeed', false),
         showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', false),
+        showSessionCost: cfg.get<boolean>('statusBar.showSessionCost', false),
     });
+    statusBar.setCurrencyPrefs(readCurrencyPrefs());
     statusBar.setBillingDay(billingDaysMap[currentAccountEmail] ?? 0);
 }
 
@@ -1613,7 +1783,15 @@ function syncStatusBarTelemetry(refresh = false, activeCascadeOverride?: string 
         ? undefined
         : (activeCascadeOverride ?? currentUsage?.cascadeId ?? trackedCascadeId ?? undefined);
     const customPricing = pricingStore?.getCustom();
+    statusBar.setCurrencyPrefs(readCurrencyPrefs());
     statusBar.setTelemetry(summary, activeCascadeId, customPricing);
+    const costs = computeLiveCostSnapshot(summary, activeCascadeId);
+    statusBar.setCostSnapshot({
+        todayCostUsd: costs.todayCostUsd > 0 ? costs.todayCostUsd : null,
+        todayHasUnpriced: costs.todayHasUnpriced,
+        sessionCostUsd: costs.sessionCostUsd > 0 ? costs.sessionCostUsd : null,
+        sessionHasUnpriced: costs.sessionHasUnpriced,
+    });
     if (refresh) {
         statusBar.refreshFromConfig();
     }
@@ -1694,7 +1872,19 @@ async function pollContextUsage(): Promise<void> {
         // 2. 新一天的 GM / DailyLedger 记录必须建立在已 rollover 的干净状态上
         performDailyArchival();
 
-        // 2. Discover LS (with caching + periodic PID revalidation)
+        // 2. Discover LS (with caching + fast hint-change reconnect + periodic revalidation)
+        if (lsInfo) {
+            const activeHint = getActiveBackendHint();
+            if (!doesConnectionMatchActiveHint(lsInfo, activeHint)) {
+                log('Active IDE backend connection changed — forcing LS re-discovery');
+                cachedLsInfo = null;
+                lsInfo = null;
+                invalidateLiveModelMetadata();
+                lsRevalidationCounter = 0;
+                consecutiveIdlePolls = 0;
+                stalenessConfirmedIdle = false;
+            }
+        }
         if (!lsInfo) {
             log('Discovering language server...');
             statusBar.showInitializing();
@@ -1708,7 +1898,7 @@ async function pollContextUsage(): Promise<void> {
                 return;
             }
             resetBackoff();
-            log(`LS found: pid=${lsInfo.pid} port=${lsInfo.port}, tls=${lsInfo.useTls}`);
+            log(`LS found: pid=${lsInfo.pid} port=${lsInfo.port}, tls=${lsInfo.useTls}${lsInfo.hostname ? `, host=${lsInfo.hostname}` : ''}`);
 
             // Dynamically update model display names from GetUserStatus
             try {
@@ -1727,19 +1917,20 @@ async function pollContextUsage(): Promise<void> {
                     log(`User plan: ${fullStatus.userInfo.planName}`);
                     updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                 }
+                triggerLiveAuxiliaryMetadataRefresh(lsInfo, cachedModelConfigs, modelMetadataGeneration, abortController.signal);
             } catch { /* Silent degradation */ }
         } else {
-            // ─── Periodic LS PID Revalidation ─────────────────────────────────
-            // BUG FIX: When Antigravity updates, a new LS may start while the old
-            // one is still alive and responding with stale data. This periodic
-            // check detects PID changes and forces reconnection.
+            // ─── Periodic LS Connection Revalidation ─────────────────────────
+            // BUG FIX: When Antigravity updates or restarts, a new LS may start
+            // while the old one is still alive or port/token/TLS changed (even
+            // when pid=0 via direct hint). Compare full connection identity.
             lsRevalidationCounter++;
             if (lsRevalidationCounter >= LS_REVALIDATION_INTERVAL) {
                 lsRevalidationCounter = 0;
                 try {
                     const freshLs = await discoverLanguageServer(workspaceUri, abortController.signal, log);
-                    if (freshLs && freshLs.pid !== lsInfo.pid) {
-                        log(`⚠ LS PID changed: ${lsInfo.pid} → ${freshLs.pid} (port: ${lsInfo.port} → ${freshLs.port}). Reconnecting to new LS.`);
+                    if (freshLs && !isSameBackendConnection(freshLs, lsInfo)) {
+                        log(`⚠ LS connection changed: pid=${lsInfo.pid}→${freshLs.pid} port=${lsInfo.port}→${freshLs.port} tls=${lsInfo.useTls}→${freshLs.useTls}. Reconnecting to new LS.`);
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
                         invalidateLiveModelMetadata();
@@ -1757,6 +1948,7 @@ async function pollContextUsage(): Promise<void> {
                                 durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
                                 updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                             }
+                            triggerLiveAuxiliaryMetadataRefresh(lsInfo, cachedModelConfigs, modelMetadataGeneration, abortController.signal);
                         } catch { /* Silent */ }
                     }
                 } catch {
@@ -1785,6 +1977,7 @@ async function pollContextUsage(): Promise<void> {
                         durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
                         updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                     }
+                    triggerLiveAuxiliaryMetadataRefresh(lsInfo, cachedModelConfigs, modelMetadataGeneration, abortController.signal);
                     log('Refreshed user status (periodic)');
                 } catch { /* Silent — keep cached data */ }
             }
@@ -1883,8 +2076,8 @@ async function pollContextUsage(): Promise<void> {
                 consecutiveIdlePolls = 0;
                 try {
                     const freshLs = await discoverLanguageServer(workspaceUri, abortController.signal, log);
-                    if (freshLs && freshLs.pid !== lsInfo.pid) {
-                        log(`⚠ Stale LS confirmed: PID ${lsInfo.pid} → ${freshLs.pid}. Reconnecting.`);
+                    if (freshLs && !isSameBackendConnection(freshLs, lsInfo)) {
+                        log(`⚠ Stale LS confirmed: pid=${lsInfo.pid}→${freshLs.pid} port=${lsInfo.port}→${freshLs.port}. Reconnecting.`);
                         lsInfo = freshLs;
                         cachedLsInfo = freshLs;
                         invalidateLiveModelMetadata();
@@ -1894,7 +2087,7 @@ async function pollContextUsage(): Promise<void> {
                         trajectories = await getAllTrajectories(lsInfo, abortController.signal);
                         lastTrajectories = trajectories;
                     } else if (freshLs) {
-                        log('LS PID unchanged — staleness was a false alarm (cascade genuinely IDLE)');
+                        log('LS connection unchanged — staleness was a false alarm (cascade genuinely IDLE)');
                         stalenessConfirmedIdle = true;
                     }
                 } catch {

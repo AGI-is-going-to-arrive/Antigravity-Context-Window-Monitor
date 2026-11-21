@@ -550,6 +550,8 @@ export function extractTrajectoryModelHints(steps: unknown): Map<number, string>
             readPath(step, ['metadata', 'generatorModel']),
             readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'requestedModel']),
             readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'requestedModel', 'model']),
+            readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'planModel']),
+            readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'modelName']),
         ];
         const model = candidates.map(readModelFromUnknown).find(Boolean);
         if (model && !hints.has(stepIndex)) {
@@ -738,6 +740,10 @@ export function mergeGMCallEntries(primary: GMCallEntry, fallback: GMCallEntry):
         latestStableMessageIndex: primary.latestStableMessageIndex || fallback.latestStableMessageIndex,
         startStepIndex: primary.startStepIndex || fallback.startStepIndex,
         checkpointIndex: primary.checkpointIndex || fallback.checkpointIndex,
+        ...(primary.executionModel || fallback.executionModel
+            ? { executionModel: primary.executionModel || fallback.executionModel } : {}),
+        ...(primary.modelDisplayName || fallback.modelDisplayName
+            ? { modelDisplayName: primary.modelDisplayName || fallback.modelDisplayName } : {}),
     };
 }
 
@@ -983,6 +989,8 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
     const pc = (gm.plannerConfig || {}) as Record<string, unknown>;
     const contextWindowCapacity = parseContextCapacity(pc.truncationThresholdTokens)
         || parseContextCapacity(cwm.maxContextTokens);
+    const executionModel = resolveConcreteModelId(readPath(gm, ['plannerConfig', 'planExecuteConfig', 'executionModel']));
+    const modelDisplayName = cleanModelCandidate(cm.modelDisplayName);
 
     return {
         stepIndices: (gm.stepIndices as number[]) || [],
@@ -1034,6 +1042,8 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
         systemContextItems: promptData.systemContextItems,
         toolCallsByStep: promptData.toolCallsByStep,
         contextWindowCapacity,
+        ...(executionModel ? { executionModel } : {}),
+        ...(modelDisplayName ? { modelDisplayName } : {}),
     };
 }
 

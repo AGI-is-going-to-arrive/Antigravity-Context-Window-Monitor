@@ -25,10 +25,10 @@ describe('Hydrogen four-effort UI', () => {
         await setLanguageToState(language, state);
         const configs = hydrogenIds.map((id, i) => config(id, i === 3 ? 0.2 : 0.8));
         const html = buildModelQuotaGrid(configs);
-        const effortListText = language === 'en' ? 'Low · Medium · High · Extra'
-            : language === 'zh' ? '低 · 中 · 高 · 超高' : 'Low · Medium · High · Extra / 低 · 中 · 高 · 超高';
-        const extra = language === 'en' ? 'Extra' : language === 'zh' ? '超高' : 'Extra / 超高';
-        expect(html).toContain(tBiHtml('Low · Medium · High · Extra', '低 · 中 · 高 · 超高'));
+        const effortListText = language === 'en' ? 'Low · Medium · High · Extra High'
+            : language === 'zh' ? '低 · 中 · 高 · 超高' : 'Low · Medium · High · Extra High / 低 · 中 · 高 · 超高';
+        const extra = language === 'en' ? 'Extra High' : language === 'zh' ? '超高' : 'Extra High / 超高';
+        expect(html).toContain(tBiHtml('Low · Medium · High · Extra High', '低 · 中 · 高 · 超高'));
         expect(html.replace(/<[^>]+>/g, '')).toContain(effortListText);
         expect(html).toContain(`Gemini 4 Hydrogen (${extra})`);
         expect(html).toContain('20–80%');

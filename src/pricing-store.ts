@@ -39,15 +39,39 @@ export interface ModelCostRow {
 
 // ─── Default Pricing Table (per 1M tokens, USD) ─────────────────────────────
 // Source: https://platform.claude.com/docs/en/about-claude/pricing
+//         https://aistudio.google.com/docs/pricing
 //         https://cloud.google.com/vertex-ai/generative-ai/pricing
-// Claude 5.5 rates updated: 2026-10-03
+//         https://cloud.google.com/model-garden/partner-models/pricing
+// Verified 2026-11-22: Gemini 4 Neon ($3/$15/$0.15/$0), Claude Sonnet 5.5 cacheRead ($0.10),
+//                      Gemini 3.6 Flash bounded promo (2026-08-13 through 2026-12-31).
 // Cache: Claude cacheWrite uses the official 5-minute TTL rate; reads are model-specific.
-//        Gemini cacheRead = from official table; no separate cacheWrite pricing
+//        Gemini cacheRead = from official table; Gemini 4 uses implicit caching only ($0 write).
 // Thinking: = output price (Claude extended thinking / Gemini reasoning output)
 
-export const PRICING_LAST_UPDATED = '2026-11-13';
+export const PRICING_LAST_UPDATED = '2026-11-22';
 
 export type PricingDate = string | number | Date;
+
+export interface UpcomingRateChange {
+    /** Canonical pricing key (e.g. 'gemini-4-carbon'). */
+    modelKey: string;
+    /** Human-readable model family name. */
+    familyLabel: string;
+    /** Effective UTC date string 'YYYY-MM-DD'. */
+    effectiveDate: string;
+    /** Effective UTC timestamp in ms. */
+    effectiveTimestampMs: number;
+    /** Whole days remaining (ceil, >= 1 while upcoming). */
+    daysRemaining: number;
+    /** Current introductory rate. */
+    currentPricing: ModelPricing;
+    /** Post-cutover standard rate. */
+    nextPricing: ModelPricing;
+    /** Price multiplier (e.g. 2 for 2x). */
+    multiplier: number;
+}
+
+const NEON_PRICING: ModelPricing = { input: 3, output: 15, cacheRead: 0.15, cacheWrite: 0, thinking: 15 };
 const CARBON_RATE_CHANGE = Date.parse('2026-12-01T00:00:00Z');
 const CARBON_INTRO_PRICING: ModelPricing = { input: 2, output: 10, cacheRead: 0.10, cacheWrite: 0, thinking: 10 };
 const CARBON_STANDARD_PRICING: ModelPricing = { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 0, thinking: 20 };
@@ -57,6 +81,9 @@ const ARGON_STANDARD_PRICING: ModelPricing = { input: 4, output: 20, cacheRead: 
 const FLASH_RATE_CHANGE = Date.parse('2027-01-01T00:00:00Z');
 const FLASH_INTRO_PRICING: ModelPricing = { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, thinking: 3.75 };
 const FLASH_STANDARD_PRICING: ModelPricing = { input: 1.50, output: 7.50, cacheRead: 0.15, cacheWrite: 1.875, thinking: 7.50 };
+const FLASH36_PROMO_START = Date.parse('2026-08-13T00:00:00Z');
+const FLASH36_INTRO_PRICING: ModelPricing = { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.9375, thinking: 3.75 };
+const FLASH36_STANDARD_PRICING: ModelPricing = { input: 1.50, output: 7.50, cacheRead: 0.15, cacheWrite: 1.875, thinking: 7.50 };
 
 /** Calendar-only archive keys keep their stored day; full timestamps use UTC. */
 function pricingTimestamp(at: PricingDate): number | null {
@@ -71,44 +98,55 @@ function pricingTimestamp(at: PricingDate): number | null {
 }
 
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
-    // https://aistudio.google.com/docs/pricing#gemini-4-hydrogen (2026-11-13).
+    // https://aistudio.google.com/docs/whats-new-gemini-4-neon & https://cloud.google.com/vertex-ai/generative-ai/pricing (2026-11-22).
+    // Standard API reference, flat across full 1M context, all four efforts. No scheduled cutover;
+    // implicit cache reads only (95% off, $0.15); explicit cache-control write ($3.75 on Vertex AI) not effective until 2027-01-12.
+    'gemini-4-neon': NEON_PRICING,
+    // https://aistudio.google.com/docs/pricing#gemini-4-hydrogen (2026-11-13, re-verified 2026-11-22).
     // Standard API reference, all four efforts. No published scheduled cutover;
     // implicit cache reads only, no explicit caching or cache-write charge.
     'gemini-4-hydrogen': { input: 1.50, output: 7.50, cacheRead: 0.075, cacheWrite: 0, thinking: 7.50 },
     // Carbon has its own verified schedule, independent of Argon's equal rates.
-    // https://aistudio.google.com/docs/pricing#gemini-4-carbon (2026-11-11).
+    // https://aistudio.google.com/docs/pricing#gemini-4-carbon (2026-11-11, re-verified 2026-11-22).
     // Standard API reference; implicit cache reads only, no explicit cache writes.
     get 'gemini-4-carbon'() { return Date.now() < CARBON_RATE_CHANGE ? CARBON_INTRO_PRICING : CARBON_STANDARD_PRICING; },
     // Google standard API reference, not Batch/Flex/Priority or subscription credits.
-    // https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon (2026-10-31).
+    // https://ai.google.dev/gemini-api/docs/pricing#gemini-4-argon (2026-10-31, re-verified 2026-11-22).
     // Implicit cache reads only; explicit caching/cache-write fees are unsupported.
     get 'gemini-4-argon'() { return Date.now() < ARGON_RATE_CHANGE ? ARGON_INTRO_PRICING : ARGON_STANDARD_PRICING; },
     // ── Claude (platform.claude.com/docs/en/about-claude/pricing) ─────
     'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25, thinking: 25 },
     'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75, thinking: 15 },
-    // https://www.anthropic.com/pricing (verified 2026-10-03), all effort tiers.
+    // https://platform.claude.com/docs/en/about-claude/pricing & Anthropic rate card PDF (2026-10-07, re-verified 2026-11-22), all effort tiers.
     'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 5, thinking: 20 },
-    // Exact Sonnet 5.5 row confirmed in the user's official-pricing screenshot (2026-10-03).
-    'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.20, cacheWrite: 2.50, thinking: 10 },
-    // ── GPT-OSS (cloud.google.com/vertex-ai/generative-ai/pricing) ───
+    // https://platform.claude.com/docs/en/about-claude/pricing, https://www.anthropic.com/claude-sonnet-5-5,
+    // Anthropic rate card PDF (2026-10-07), and https://cloud.google.com/model-garden/partner-models/pricing (verified 2026-11-22).
+    // Cache read is 0.05× input ($0.10/1M), half of Sonnet 5's $0.20/1M.
+    'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.10, cacheWrite: 2.50, thinking: 10 },
+    // ── GPT-OSS (cloud.google.com/model-garden/partner-models/pricing) ─
     'gpt-oss-120b': { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0, thinking: 0.36 },
     // ── Gemini 3.x (cloud.google.com/vertex-ai/generative-ai/pricing) ─
     'gemini-3.1-pro': { input: 2, output: 12, cacheRead: 0.20, cacheWrite: 2.50, thinking: 12 },
     'gemini-3-flash': { input: 0.50, output: 3, cacheRead: 0.05, cacheWrite: 0.625, thinking: 3 },     // Gemini 3 Flash (M133=gemini-3-flash-b)
     // ── Gemini 3.5 Flash (ai.google.dev/gemini-api/docs/pricing) ────────
     'gemini-3.5-flash': { input: 1.50, output: 9, cacheRead: 0.15, cacheWrite: 1.875, thinking: 9 },
-    // ── Gemini 3.6 Flash (ai.google.dev/gemini-api/docs/pricing + artificialanalysis, verified 2026-07-22) ──
-    // Input unchanged at $1.50; output cut to $7.50 (vs 3.5 Flash's $9.00). Cache derived as 3.5 Flash (0.1× / 1.25× input).
-    'gemini-3.6-flash': { input: 1.50, output: 7.50, cacheRead: 0.15, cacheWrite: 1.875, thinking: 7.50 },
-    // ── Gemini 3.7 Flash (blog.google introduction post + VentureBeat + 9to5Google, verified 2026-08-14) ──
-    // INTRODUCTORY pricing, exactly half of 3.6 Flash: $0.75 input / $3.75 output per 1M tokens,
+    // ── Gemini 3.6 Flash (aistudio.google.com/docs/pricing#gemini-3.6-flash + Vertex AI, verified 2026-11-22) ──
+    // Bounded promotional pricing: $0.75 input / $3.75 output / $0.075 cacheRead from 2026-08-13 through 2026-12-31 UTC;
+    // standard $1.50 / $7.50 / $0.15 applies before 2026-08-13 and starting 2027-01-01 UTC.
+    get 'gemini-3.6-flash'() {
+        const now = Date.now();
+        return now >= FLASH36_PROMO_START && now < FLASH_RATE_CHANGE
+            ? FLASH36_INTRO_PRICING : FLASH36_STANDARD_PRICING;
+    },
+    // ── Gemini 3.7 Flash (blog.google introduction post + AI Studio + Vertex AI, re-verified 2026-11-22) ──
+    // INTRODUCTORY pricing, exactly half of standard: $0.75 input / $3.75 output per 1M tokens,
     // context caching $0.075. Google's footnote: "Introductory pricing expires on December 31, 2026.
     // Starting January 1, 2027, $1.50/1M input tokens and $7.50/1M output tokens will apply."
     // The getter rolls to the published post-introductory rate automatically;
     // dated calls retain their introductory rate during historical calculations.
     // cacheWrite derived at 1.25× input, consistent with how the 3.5/3.6 Flash rows were derived.
     get 'gemini-3.7-flash'() { return Date.now() < FLASH_RATE_CHANGE ? FLASH_INTRO_PRICING : FLASH_STANDARD_PRICING; },
-    // ── Gemini 3.8 Flash (Google Antigravity + Google launch posts, verified 2026-09-05) ──
+    // ── Gemini 3.8 Flash (aistudio.google.com/docs/pricing#gemini-3.8-flash + Vertex AI, re-verified 2026-11-22) ──
     // Same introductory rate and expiry as 3.7 Flash: $0.75 input / $3.75 output through 2026-12-31;
     // from 2027-01-01 the rates become $1.50 / $7.50. Cache rates follow the existing Flash policy.
     get 'gemini-3.8-flash'() { return Date.now() < FLASH_RATE_CHANGE ? FLASH_INTRO_PRICING : FLASH_STANDARD_PRICING; },
@@ -136,6 +174,7 @@ export function findPricing(
     }
     if (/^gemini[\s_-]+4[\s_-]+(?:neon|hydrogen|carbon|argon)/i.test(clean)
         && !/^gemini[\s_-]+4[\s_-]+(?:neon|hydrogen|carbon|argon)$/i.test(clean)
+        && !/^gemini[\s_-]+4[\s_-]+hydrogen[\s_-]+tiered[\s_-]+(?:high|xhigh)$/i.test(clean)
         && !modelId) { return null; }
     const imageModel = isImageGenerationModel(responseModel);
     const candidates: string[] = [];
@@ -161,7 +200,7 @@ export function findPricing(
             // Only model variants may extend a price key. A numeric continuation
             // is another version: Sonnet 5.5 cannot use a Sonnet 5 row.
             const isVariant = /^(?:(?:low|medium|high|thinking|tiered|preview|latest)(?:-|$)|\d{8}(?:-|$))/.test(suffix)
-                || (/^gemini-4-(?:neon|hydrogen)$/.test(normalizedKey) && /^(?:xhigh|extra(?:-high)?)$/.test(suffix));
+                || /^(?:xhigh|extra(?:-high)?)$/.test(suffix);
             if (normalizedKey && (candidate === normalizedKey || isVariant)) {
                 return pricing;
             }
@@ -201,9 +240,13 @@ function kebabCandidates(displayName: string): string[] {
         const base = s.replace(/[()]/g, '').trim().toLowerCase().replace(/[\s_]+/g, '-');
         return dashDecimals ? base.replace(/(\d+)\.(\d+)/g, '$1-$2') : base;
     };
-    // Coordinator variants are separate identities. Stripping the variant would
-    // apply a legacy custom "Orchestrator" rate to Argon or Neon.
-    const withoutTier = /^(?:orchestrator|编排器|协调器)\s*[（(]/i.test(displayName.trim())
+    // Coordinator, worker, and specialized non-effort variants (e.g. M669 Orchestrator, M578 Sonar)
+    // are separate identities. Stripping their parenthetical would apply a legacy custom "Orchestrator"
+    // rate to Argon/Neon or silently fall through onto the base Hydrogen row.
+    const trimmed = displayName.trim();
+    const isCoordinatorOrSpecialized = /^(?:orchestrator|编排器|协调器)\s*[（(]/i.test(trimmed)
+        || /[（(][^()（）]*(?:orchestrator|worker|sonar|编排器|协调器|执行器)[^()（）]*[）)]/i.test(trimmed);
+    const withoutTier = isCoordinatorOrSpecialized
         ? displayName : displayName.replace(/\s*\([^)]*\)\s*$/, '').trim();
     const out = [kebab(displayName, true), kebab(displayName, false)];
     if (withoutTier && withoutTier !== displayName) {
@@ -266,16 +309,133 @@ export function findPricingForDate(
         || pricing === base['gemini-4-carbon'];
     const isArgon = pricing === ARGON_INTRO_PRICING || pricing === ARGON_STANDARD_PRICING
         || pricing === base['gemini-4-argon'];
+    const isFlash36 = pricing === FLASH36_INTRO_PRICING || pricing === FLASH36_STANDARD_PRICING
+        || pricing === base['gemini-3.6-flash'];
     const isFlash = pricing === FLASH_INTRO_PRICING || pricing === FLASH_STANDARD_PRICING
         || pricing === base['gemini-3.7-flash'] || pricing === base['gemini-3.8-flash'];
-    if (!isCarbon && !isArgon && !isFlash) { return pricing; }
+    if (!isCarbon && !isArgon && !isFlash36 && !isFlash) { return pricing; }
     const time = pricingTimestamp(at);
     // An invalid historic timestamp is not evidence that today's rate applied.
     if (time === null) { return null; }
     if (isCarbon) { return time < CARBON_RATE_CHANGE ? CARBON_INTRO_PRICING : CARBON_STANDARD_PRICING; }
-    return isArgon
-        ? time < ARGON_RATE_CHANGE ? ARGON_INTRO_PRICING : ARGON_STANDARD_PRICING
-        : time < FLASH_RATE_CHANGE ? FLASH_INTRO_PRICING : FLASH_STANDARD_PRICING;
+    if (isArgon) { return time < ARGON_RATE_CHANGE ? ARGON_INTRO_PRICING : ARGON_STANDARD_PRICING; }
+    if (isFlash36) {
+        return time >= FLASH36_PROMO_START && time < FLASH_RATE_CHANGE
+            ? FLASH36_INTRO_PRICING : FLASH36_STANDARD_PRICING;
+    }
+    return time < FLASH_RATE_CHANGE ? FLASH_INTRO_PRICING : FLASH_STANDARD_PRICING;
+}
+
+const MS_PER_DAY = 86_400_000;
+
+const SCHEDULED_RATE_CHANGES: readonly {
+    modelKey: string;
+    familyLabel: string;
+    effectiveDate: string;
+    effectiveTimestampMs: number;
+    promoStartMs?: number;
+    currentPricing: ModelPricing;
+    nextPricing: ModelPricing;
+}[] = [
+    {
+        modelKey: 'gemini-4-carbon',
+        familyLabel: 'Gemini 4 Carbon',
+        effectiveDate: '2026-12-01',
+        effectiveTimestampMs: CARBON_RATE_CHANGE,
+        currentPricing: CARBON_INTRO_PRICING,
+        nextPricing: CARBON_STANDARD_PRICING,
+    },
+    {
+        modelKey: 'gemini-4-argon',
+        familyLabel: 'Gemini 4 Argon',
+        effectiveDate: '2026-12-01',
+        effectiveTimestampMs: ARGON_RATE_CHANGE,
+        currentPricing: ARGON_INTRO_PRICING,
+        nextPricing: ARGON_STANDARD_PRICING,
+    },
+    {
+        modelKey: 'gemini-3.8-flash',
+        familyLabel: 'Gemini 3.8 Flash',
+        effectiveDate: '2027-01-01',
+        effectiveTimestampMs: FLASH_RATE_CHANGE,
+        currentPricing: FLASH_INTRO_PRICING,
+        nextPricing: FLASH_STANDARD_PRICING,
+    },
+    {
+        modelKey: 'gemini-3.7-flash',
+        familyLabel: 'Gemini 3.7 Flash',
+        effectiveDate: '2027-01-01',
+        effectiveTimestampMs: FLASH_RATE_CHANGE,
+        currentPricing: FLASH_INTRO_PRICING,
+        nextPricing: FLASH_STANDARD_PRICING,
+    },
+    {
+        modelKey: 'gemini-3.6-flash',
+        familyLabel: 'Gemini 3.6 Flash',
+        effectiveDate: '2027-01-01',
+        effectiveTimestampMs: FLASH_RATE_CHANGE,
+        promoStartMs: FLASH36_PROMO_START,
+        currentPricing: FLASH36_INTRO_PRICING,
+        nextPricing: FLASH36_STANDARD_PRICING,
+    },
+];
+
+/**
+ * Return verified upcoming list-price cutovers occurring within `withinDays` of `nowMs`.
+ * Single source of truth shared by the status bar hover tooltip and Pricing tab.
+ */
+export function getUpcomingRateChanges(
+    nowMs: number = Date.now(),
+    withinDays: number = 30,
+): UpcomingRateChange[] {
+    if (!Number.isFinite(nowMs) || !Number.isFinite(withinDays) || withinDays < 0) {
+        return [];
+    }
+    const maxDeltaMs = withinDays * MS_PER_DAY;
+    const out: UpcomingRateChange[] = [];
+    for (const item of SCHEDULED_RATE_CHANGES) {
+        if (item.promoStartMs !== undefined && nowMs < item.promoStartMs) { continue; }
+        const remainingMs = item.effectiveTimestampMs - nowMs;
+        if (remainingMs <= 0 || remainingMs > maxDeltaMs) { continue; }
+        const multiplier = item.currentPricing.input > 0
+            ? Number((item.nextPricing.input / item.currentPricing.input).toFixed(2))
+            : 1;
+        out.push({
+            modelKey: item.modelKey,
+            familyLabel: item.familyLabel,
+            effectiveDate: item.effectiveDate,
+            effectiveTimestampMs: item.effectiveTimestampMs,
+            daysRemaining: Math.max(1, Math.ceil(remainingMs / MS_PER_DAY)),
+            currentPricing: item.currentPricing,
+            nextPricing: item.nextPricing,
+            multiplier,
+        });
+    }
+    out.sort((a, b) => a.effectiveTimestampMs - b.effectiveTimestampMs || a.modelKey.localeCompare(b.modelKey));
+    return out;
+}
+
+/**
+ * Return the upcoming verified rate change for a specific model identifier,
+ * or `null` if none applies (or if a user custom rate overrides the built-in schedule).
+ */
+export function getUpcomingRateChangeForModel(
+    model: string,
+    custom: Record<string, ModelPricing> = {},
+    nowMs: number = Date.now(),
+    withinDays: number = 30,
+): UpcomingRateChange | null {
+    if (!model || !model.trim()) { return null; }
+    if (findPricingWithCustom(model, custom, {})) { return null; }
+    const upcoming = getUpcomingRateChanges(nowMs, withinDays);
+    if (upcoming.length === 0) { return null; }
+    // Match against a single-entry probe table so exact variant & alias rules apply identically.
+    for (const change of upcoming) {
+        if (findPricing(model, { [change.modelKey]: change.currentPricing })) {
+            return change;
+        }
+    }
+    return null;
 }
 
 /** The spellings a single model answers to: as given, its model id, its display name. */
@@ -383,6 +543,7 @@ export function calculateUsageCosts(
     const builtIn = findPricing(model);
     const scheduled = builtIn === CARBON_INTRO_PRICING || builtIn === CARBON_STANDARD_PRICING
         || builtIn === ARGON_INTRO_PRICING || builtIn === ARGON_STANDARD_PRICING
+        || builtIn === FLASH36_INTRO_PRICING || builtIn === FLASH36_STANDARD_PRICING
         || builtIn === FLASH_INTRO_PRICING || builtIn === FLASH_STANDARD_PRICING;
     if (hasRemainder && !override && (scheduled || !pricing)
         && Number.isFinite(options.frozenCost) && (options.frozenCost || 0) > 0) {

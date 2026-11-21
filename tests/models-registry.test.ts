@@ -3,7 +3,7 @@ import {
     guessContextLimitSpec, getModelSpecs, resolveModelId, getContextLimit,
     getModelDisplayName, getModelBaseName, getQuotaPoolKey,
 } from '../src/models';
-import { findPricing } from '../src/pricing-store';
+import { findPricing, findPricingForDate } from '../src/pricing-store';
 
 describe('guessContextLimitSpec placeholder collision guard', () => {
     it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf'])(
@@ -199,11 +199,15 @@ describe('model identity takeover + 3.6 pricing', () => {
         expect(resolveModelId('gemini-3-flash-agent')).toBe('MODEL_PLACEHOLDER_M84');
     });
 
-    it('prices the Gemini 3.6 Flash family (input 1.50 / output 7.50)', () => {
-        const pricing = findPricing('gemini-3.6-flash-high');
-        expect(pricing).not.toBeNull();
-        expect(pricing?.input).toBe(1.5);
-        expect(pricing?.output).toBe(7.5);
+    it('prices the Gemini 3.6 Flash family with bounded promo (0.75 / 3.75) and standard (1.50 / 7.50) rates', () => {
+        const promoPricing = findPricingForDate('gemini-3.6-flash-high', {}, '2026-11-22T00:00:00Z');
+        expect(promoPricing).not.toBeNull();
+        expect(promoPricing?.input).toBe(0.75);
+        expect(promoPricing?.output).toBe(3.75);
+        const standardPricing = findPricingForDate('gemini-3.6-flash-high', {}, '2027-01-01T00:00:00Z');
+        expect(standardPricing).not.toBeNull();
+        expect(standardPricing?.input).toBe(1.5);
+        expect(standardPricing?.output).toBe(7.5);
     });
 });
 
@@ -315,7 +319,7 @@ describe('Gemini 3.8 Flash registration (two live Antigravity IDE LS probes, 202
             expect(findPricing(value)).toMatchObject({ input: 0.75, output: 3.75, cacheRead: 0.075, thinking: 3.75 });
         }
         expect(findPricing('gemini-3.7-flash-high')?.output).toBe(3.75);
-        expect(findPricing('gemini-3.6-flash-high')?.output).toBe(7.5);
+        expect(findPricingForDate('gemini-3.6-flash-high', {}, '2027-01-01T00:00:00Z')?.output).toBe(7.5);
     });
 
     it('carries the current effort levels without inventing a fixed thinking budget', () => {
@@ -386,7 +390,7 @@ describe('Gemini 3.7 Flash registration (live LS probe 2026-08-14)', () => {
         expect(pricing?.output).toBe(3.75);
         // Guard against the fuzzy matcher silently falling through to a neighbouring Flash generation.
         expect(findPricing('gemini-3.7-flash-low')?.output).toBe(3.75);
-        expect(findPricing('gemini-3.6-flash-high')?.output).toBe(7.5);
+        expect(findPricingForDate('gemini-3.6-flash-high', {}, '2027-01-01T00:00:00Z')?.output).toBe(7.5);
         expect(findPricing('gemini-3.5-flash-low')?.output).toBe(9);
     });
 

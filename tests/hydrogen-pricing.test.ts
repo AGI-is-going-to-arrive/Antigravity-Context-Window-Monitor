@@ -111,7 +111,25 @@ describe('independent Hydrogen standard API pricing', () => {
     it('counts thinking once and does not charge unsupported explicit caching', () => {
         expect(costFromTokens(tokens, rate)).toBeCloseTo(2.2875, 10);
         expect(findPricing('gemini-4-hydrogen')?.cacheWrite).toBe(0);
-        expect(PRICING_LAST_UPDATED).toBe('2026-11-13');
+        expect(PRICING_LAST_UPDATED).toBe('2026-11-22');
+    });
+
+    it('keeps M669 worker labels and sonar catalog entries deterministically unpriced while pricing tiered Hydrogen', () => {
+        for (const unpriced of [
+            'MODEL_PLACEHOLDER_M669',
+            'gemini-flash-worker-agy',
+            'Gemini Flash (Orchestrator Worker)',
+            'Gemini 4 Hydrogen (Orchestrator)',
+            'Gemini 4 Hydrogen (Orchestrator) (M669)',
+            'Gemini 4 Hydrogen (编排器)',
+            'gemini-4-hydrogen-sonar',
+        ]) {
+            expect(findPricing(unpriced), unpriced).toBeNull();
+            expect(findPricingWithCustom(unpriced, { 'gemini-4-hydrogen': override }), unpriced).toBeNull();
+            expect(findPricingWithCustom(unpriced, { [unpriced]: override }), unpriced).toBe(override);
+        }
+        expect(findPricing('gemini-4-hydrogen-tiered-high')).toEqual(rate);
+        expect(findPricing('gemini-4-hydrogen-tiered-xhigh')).toEqual(rate);
     });
 });
 
@@ -164,7 +182,7 @@ describe('Hydrogen cost records and presentation', () => {
             expect(html).toContain('https://aistudio.google.com/docs/pricing#gemini-4-hydrogen');
             expect(html).toContain(language === 'zh' ? 'Gemini 4 Hydrogen 标准 API 参考价' : 'Gemini 4 Hydrogen standard API reference');
             expect(html).toContain(language === 'zh' ? '官网未公布定时调价计划' : 'No scheduled price change is published');
-            expect(html).toContain(language === 'zh' ? 'Extra（XHigh）' : 'Extra (XHigh)');
+            expect(html).toContain(language === 'zh' ? 'Extra High（XHigh）' : 'Extra High (XHigh)');
         }
     });
 });

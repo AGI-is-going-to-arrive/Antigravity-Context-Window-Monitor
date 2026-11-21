@@ -154,6 +154,10 @@ export interface GMCallEntry {
     toolCallsByStep: Record<number, string[]>;
     /** Context window truncation threshold from plannerConfig (e.g. 160000) */
     contextWindowCapacity: number;
+    /** Configured execution model from plannerConfig.planExecuteConfig.executionModel (dynamic Orchestrator). */
+    executionModel?: string;
+    /** Optional raw display name emitted by newer LS payloads (chatModel.modelDisplayName). */
+    modelDisplayName?: string;
 }
 
 /** Aggregated per-model statistics */
@@ -450,6 +454,7 @@ export function slimCallForPersistence(call: GMCallEntry): GMCallEntry {
         accountEmail: call.accountEmail,
         toolCallsByStep: {},
         contextWindowCapacity: call.contextWindowCapacity,
+        ...(call.executionModel ? { executionModel: call.executionModel } : {}),
     };
 }
 

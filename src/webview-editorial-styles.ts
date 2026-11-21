@@ -408,7 +408,14 @@ export function getEditorialStyles(): string {
             .seg-chip-cache-hit,
             .prc-monthly-grand-label.is-partial,
             .prc-info-bar.prc-info-warn,
-            .cost-chip-total.is-partial
+            .cost-chip-total.is-partial,
+            .rate-change-banner,
+            .orch-route-pill,
+            .orch-route-badge,
+            .orch-mode-pill.is-custom,
+            .orch-role-status.is-custom,
+            .tag-notice,
+            .currency-btn.active
         ) :is(.bi-sep, .bi-zh) {
             color: inherit;
         }
@@ -1113,7 +1120,7 @@ export function getEditorialStyles(): string {
             border-radius: 8px;
             padding: 12px 14px;
         }
-        body .tab-pane .profile-quota .model-card .model-tag-badge {
+        body .tab-pane .profile-quota .model-card .model-tag-badge:not(.tag-notice) {
             background: var(--ed-surface);
         }
         body .tab-pane .profile-technical-body .card {
@@ -1140,6 +1147,10 @@ export function getEditorialStyles(): string {
             left: auto;
             right: 0;
             transform: none;
+        }
+        body .tab-pane .cal-overview-val,
+        body .tab-pane .cal-day-total-val {
+            overflow-wrap: anywhere;
         }
 
         /* ═══ 11. Tab 8: Settings ═══ */
@@ -1379,6 +1390,439 @@ export function getEditorialStyles(): string {
             body .spec-card,
             body .model-card {
                 padding: 14px 14px;
+            }
+        }
+
+        /* ═══ 15. v1.17.3 Orchestrator, Dual-Window Quota, Currency & Recent Calls ═══ */
+
+        /* Orchestrator active route pill (Overview) */
+        body .tab-pane .orch-route-pill {
+            display: inline-flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 4px 8px;
+            max-width: 100%;
+            margin-top: 8px;
+            padding: 4px 10px;
+            border-radius: var(--ed-radius-sm);
+            background: var(--ed-accent-tint);
+            border: 1px solid var(--ed-accent-border);
+            color: var(--ed-accent);
+            font-size: 12px;
+            line-height: 1.4;
+            overflow-wrap: anywhere;
+        }
+        body .tab-pane .orch-route-label {
+            font-weight: 600;
+        }
+        body .tab-pane .orch-route-pair {
+            color: var(--ed-ink);
+            font-weight: 500;
+        }
+        body .tab-pane .orch-route-arrow {
+            color: var(--ed-accent);
+            font-weight: 650;
+            margin-inline: 2px;
+        }
+        body .tab-pane .orch-route-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 1px 6px;
+            border-radius: var(--ed-radius-pill);
+            background: var(--ed-surface);
+            border: 1px solid var(--ed-accent-border);
+            color: var(--ed-accent);
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1.35;
+        }
+
+        /* Orchestrator Settings card (Models tab) */
+        body .tab-pane .orch-settings-card {
+            background: var(--ed-surface);
+            border: 1px solid var(--ed-border);
+            border-radius: var(--ed-radius-md);
+            padding: 16px 18px;
+            margin-bottom: 16px;
+            box-shadow: none;
+        }
+        body .tab-pane .orch-settings-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 6px 12px;
+            margin-bottom: 12px;
+        }
+        body .tab-pane .orch-settings-header h2 {
+            margin: 0;
+        }
+        body .tab-pane .orch-mode-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 9px;
+            border-radius: var(--ed-radius-pill);
+            font-size: 11.5px;
+            font-weight: 600;
+            border: 1px solid var(--ed-border);
+            background: var(--ed-surface-well);
+            color: var(--ed-ink-secondary);
+        }
+        body .tab-pane .orch-mode-pill.is-custom {
+            background: var(--ed-accent-tint);
+            border-color: var(--ed-accent-border);
+            color: var(--ed-accent);
+        }
+        body .tab-pane .orch-role-list {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+        body .tab-pane .orch-role-row {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
+            padding: 10px 12px;
+            background: var(--ed-surface-well);
+            border: 1px solid var(--ed-border);
+            border-radius: var(--ed-radius-sm);
+        }
+        body .tab-pane .orch-role-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 4px 8px;
+        }
+        body .tab-pane .orch-role-title {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: var(--ed-ink-muted);
+        }
+        body .tab-pane .orch-role-status {
+            font-size: 11px;
+            font-weight: 550;
+            padding: 1px 6px;
+            border-radius: var(--ed-radius-pill);
+            background: var(--ed-surface);
+            border: 1px solid var(--ed-border);
+            color: var(--ed-ink-secondary);
+        }
+        body .tab-pane .orch-role-status.is-custom {
+            background: var(--ed-accent-tint);
+            border-color: var(--ed-accent-border);
+            color: var(--ed-accent);
+        }
+        body .tab-pane .orch-role-value {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+            min-width: 0;
+        }
+        body .tab-pane .orch-role-value strong {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--ed-ink);
+            overflow-wrap: anywhere;
+        }
+        body .tab-pane .orch-role-value .spec-short-id {
+            max-width: 100%;
+            overflow-wrap: anywhere;
+        }
+        body .tab-pane .orch-pool-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 1px 7px;
+            border-radius: var(--ed-radius-pill);
+            background: var(--ed-surface);
+            border: 1px solid var(--ed-border-strong);
+            color: var(--ed-ink-secondary);
+            font-size: 11px;
+            font-weight: 550;
+        }
+        body .tab-pane .orch-families-grid {
+            margin: 12px 0 0;
+            padding-top: 10px;
+            border-top: 1px solid var(--ed-border);
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        body .tab-pane .orch-family-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 10px;
+            font-size: 12px;
+        }
+        body .tab-pane .orch-family-row dt {
+            color: var(--ed-ink-muted);
+            font-weight: 550;
+            flex-shrink: 0;
+        }
+        body .tab-pane .orch-family-row dd {
+            margin: 0;
+            color: var(--ed-ink-secondary);
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+        body .tab-pane .orch-settings-note {
+            margin: 10px 0 0;
+            font-size: 12px;
+            color: var(--ed-ink-muted);
+            line-height: 1.5;
+        }
+
+        /* Dual-window 5h + Weekly quota row (Overview, Models, Profile) */
+        body .tab-pane .quota-dual-row {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px 14px;
+            margin: 8px 0 6px;
+        }
+        body .tab-pane .quota-dual-item {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+        body .tab-pane .quota-dual-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 6px;
+            font-size: 12px;
+        }
+        body .tab-pane .quota-dual-label {
+            color: var(--ed-ink-secondary);
+            font-weight: 550;
+        }
+        body .tab-pane .quota-dual-pct {
+            color: var(--ed-ink);
+            font-weight: 650;
+            font-variant-numeric: tabular-nums lining-nums;
+            white-space: nowrap;
+        }
+        body .tab-pane .quota-dual-item .overview-meter,
+        body .tab-pane .quota-dual-item .quota-bar-wrap {
+            margin: 3px 0 2px;
+        }
+        body .tab-pane .quota-dual-reset {
+            font-size: 11.5px;
+        }
+
+        /* Spec card API reference price row (Models tab) */
+        body .tab-pane .spec-price-row {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 4px 10px;
+            margin-top: 10px;
+            padding: 7px 10px;
+            border-radius: var(--ed-radius-sm);
+            background: var(--ed-surface-well);
+            border: 1px solid var(--ed-border);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        body .tab-pane .spec-price-label {
+            color: var(--ed-ink-muted);
+            font-weight: 550;
+            flex-shrink: 0;
+        }
+        body .tab-pane .spec-price-values {
+            color: var(--ed-ink);
+            font-weight: 550;
+            font-variant-numeric: tabular-nums lining-nums;
+            overflow-wrap: anywhere;
+        }
+        body .tab-pane .spec-price-badge.is-unpriced {
+            display: inline-flex;
+            align-items: center;
+            padding: 1px 7px;
+            border-radius: var(--ed-radius-pill);
+            background: var(--ed-surface);
+            border: 1px solid var(--ed-border-strong);
+            color: var(--ed-ink-muted);
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        /* Amber Notice badge (GPT-OSS sunset notice) */
+        body .tab-pane .tag-notice,
+        body .tab-pane .model-tag-badge.tag-notice {
+            background: var(--ed-warn-tint);
+            border: 1px solid var(--ed-warn-border);
+            color: var(--ed-warn);
+            font-weight: 600;
+        }
+
+        /* Currency toggle & FX rate input (Cost + Settings tabs) */
+        body .tab-pane .currency-toggle-group {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            padding: 2px;
+            background: var(--ed-surface-well);
+            border: 1px solid var(--ed-border);
+            border-radius: var(--ed-radius-sm);
+            max-width: 100%;
+            flex-wrap: wrap;
+        }
+        body .tab-pane .currency-btn {
+            appearance: none;
+            background: transparent;
+            color: var(--ed-ink-muted);
+            border: 1px solid transparent;
+            border-radius: var(--ed-radius-xs);
+            padding: 4px 10px;
+            font: inherit;
+            font-size: 12px;
+            font-weight: 550;
+            cursor: pointer;
+            line-height: 1.35;
+            transition: background var(--ed-dur-fast) var(--ed-ease),
+                color var(--ed-dur-fast) var(--ed-ease),
+                border-color var(--ed-dur-fast) var(--ed-ease);
+        }
+        body .tab-pane .currency-btn.active {
+            background: var(--ed-surface);
+            color: var(--ed-ink);
+            font-weight: 650;
+            border-color: var(--ed-control-border);
+            box-shadow: var(--ed-shadow-segment);
+        }
+        body .tab-pane .fx-rate-input {
+            width: 76px;
+            min-width: 60px;
+            height: 28px;
+            padding: 0 8px;
+            background: var(--ed-input-bg);
+            border: 1px solid var(--ed-control-border);
+            border-radius: var(--ed-radius-sm);
+            color: var(--ed-ink);
+            font: inherit;
+            font-size: 12.5px;
+            font-variant-numeric: tabular-nums lining-nums;
+            text-align: end;
+        }
+
+        /* Upcoming rate-change banner (Cost tab) */
+        body .tab-pane .rate-change-banner {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 6px;
+            padding: 10px 14px;
+            margin-bottom: 14px;
+            border-radius: var(--ed-radius-sm);
+            background: var(--ed-warn-tint);
+            border: 1px solid var(--ed-warn-border);
+            color: var(--ed-warn);
+            font-size: 12.5px;
+            line-height: 1.5;
+            overflow-wrap: anywhere;
+        }
+        body .tab-pane .rate-change-banner-head {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-weight: 650;
+            min-width: 0;
+        }
+        body .tab-pane .rate-change-banner-head svg {
+            flex-shrink: 0;
+        }
+        body .tab-pane .rate-change-banner-list {
+            margin: 0;
+            padding-inline-start: 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+        body .tab-pane .rate-change-banner strong {
+            color: inherit;
+            font-weight: 650;
+        }
+
+        /* Recent Calls Ledger table (GM Data tab) */
+        body .tab-pane .recent-calls-card {
+            background: var(--ed-surface);
+            border: 1px solid var(--ed-border);
+            border-radius: var(--ed-radius-md);
+            padding: 14px 16px;
+            margin-top: 14px;
+            box-shadow: none;
+            min-width: 0;
+        }
+        body .tab-pane .recent-calls-table-wrap {
+            width: 100%;
+            max-width: 100%;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            margin-top: 10px;
+            border: 1px solid var(--ed-border);
+            border-radius: var(--ed-radius-sm);
+            background: var(--ed-surface);
+        }
+        body .tab-pane .recent-calls-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            line-height: 1.4;
+            font-variant-numeric: tabular-nums lining-nums;
+            color: var(--ed-ink);
+            min-width: 640px;
+        }
+        body .tab-pane .recent-calls-table thead th {
+            text-align: start;
+            padding: 8px 10px;
+            font-weight: 600;
+            font-size: 11.5px;
+            color: var(--ed-ink-muted);
+            background: var(--ed-surface-well);
+            border-bottom: 1px solid var(--ed-border);
+            white-space: nowrap;
+        }
+        body .tab-pane .recent-calls-table tbody td {
+            padding: 7px 10px;
+            border-bottom: 1px solid var(--ed-border);
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+        body .tab-pane .recent-calls-table tbody tr:last-child td {
+            border-bottom: 0;
+        }
+        body .tab-pane .recent-calls-table :is(th, td).is-num {
+            text-align: end;
+        }
+
+        @media (hover: hover) {
+            body .tab-pane .currency-btn:not(.active):hover {
+                background: var(--ed-surface-hover);
+                color: var(--ed-ink);
+            }
+            body .tab-pane .recent-calls-table tbody tr:hover {
+                background: var(--ed-surface-hover);
+            }
+        }
+
+        @media (max-width: 640px) {
+            body .tab-pane .orch-role-list {
+                grid-template-columns: minmax(0, 1fr);
+            }
+            body .tab-pane .orch-settings-card,
+            body .tab-pane .recent-calls-card {
+                padding: 12px 14px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            body .tab-pane .quota-dual-row {
+                grid-template-columns: minmax(0, 1fr);
+                gap: 8px;
             }
         }
 

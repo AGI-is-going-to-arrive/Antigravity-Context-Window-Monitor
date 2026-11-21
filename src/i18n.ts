@@ -93,6 +93,34 @@ const translations: Record<string, TranslationEntry> = {
     'telemetry.median': { en: 'Median', zh: '中位数' },
     'telemetry.range': { en: 'Range', zh: '范围' },
     'telemetry.notReported': { en: 'Not reported', zh: '未上报' },
+    'telemetry.totalLatency': { en: 'Total', zh: '总耗时' },
+    'telemetry.latestCall': { en: 'Latest Call', zh: '最近调用' },
+    'telemetry.recentCalls': { en: 'Recent Calls', zh: '最近调用明细' },
+    'telemetry.sessionCost': { en: 'Session', zh: '会话' },
+    'telemetry.todayCost': { en: 'Today', zh: '今日' },
+    'telemetry.cost': { en: 'Cost', zh: '费用' },
+    'telemetry.unpriced': { en: 'Unpriced', zh: '未定价' },
+    'telemetry.rateChange': { en: 'Price Notice', zh: '调价提醒' },
+    'telemetry.retryWaste': { en: 'Retry Waste', zh: '重试开销' },
+    'telemetry.blendedInput': { en: 'Eff. In', zh: '有效输入' },
+
+    // ─ Orchestrator & Quota Windows
+    'orchestrator.settings': { en: 'Orchestrator Settings', zh: '编排器设置' },
+    'orchestrator.model': { en: 'Orchestrator Model', zh: '编排模型' },
+    'orchestrator.executor': { en: 'Executor Model', zh: '执行模型' },
+    'orchestrator.planner': { en: 'Planner', zh: '规划' },
+    'orchestrator.worker': { en: 'Executor', zh: '执行' },
+    'orchestrator.crossPool': { en: 'Cross-pool', zh: '跨池' },
+    'orchestrator.default': { en: 'Default', zh: '默认' },
+    'orchestrator.custom': { en: 'Custom', zh: '自定义' },
+    'quota.fiveHour': { en: '5h', zh: '5h' },
+    'quota.weekly': { en: 'Weekly', zh: '周额度' },
+    'quota.notice': { en: 'Notice', zh: '提示' },
+
+    // ─ Currency
+    'currency.label': { en: 'Display Currency', zh: '显示币种' },
+    'currency.fxRate': { en: 'USD/CNY Rate', zh: '美元/人民币汇率' },
+    'currency.fxNote': { en: 'Reference local rate (offline)', zh: '本地参考汇率（离线）' },
 
     // ─ QuickPick Panel
     'panel.title': { en: 'Antigravity Monitor', zh: 'Antigravity 监控面板' },

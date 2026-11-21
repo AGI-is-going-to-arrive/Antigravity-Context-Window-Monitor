@@ -1,14 +1,23 @@
 import { aiCreditTotal } from './account-credits';
+import type { CurrencyPrefs } from './currency';
 import { formatNumber, getLanguage, tBi } from './i18n';
 import { getDaysUntilBillingDay } from './billing-day';
 import {
-    extractOverviewTelemetry, formatCompactTokens, formatSavingsUsd,
-    getContextReading, getContextRemaining, quotaPercentage,
-    selectMonitorQuotaGroups, usableCount,
+    extractOverviewTelemetry, formatCompactTokens, formatOverviewCost, formatOverviewSavings,
+    formatQuotaWindowPercent, getContextReading, getContextRemaining, quotaPercentage,
+    resolveActiveOrchestratorRoute, selectMonitorQuotaGroups, usableCount,
     type MonitorStatus, type OverviewTelemetryInput, type OverviewTelemetrySnapshot,
 } from './monitor-overview';
 import type { ModelQuotaGroup } from './model-quota';
-import { isShowModelShortId, localizeNeonPickerLabel, normalizeModelDisplayName, resolveModelId, type ModelConfig, type UserStatusInfo } from './models';
+import {
+    isShowModelShortId,
+    localizePickerEffortLabel,
+    normalizeModelDisplayName,
+    resolveModelId,
+    type ModelConfig,
+    type QuotaWindowSummary,
+    type UserStatusInfo,
+} from './models';
 import { formatResetAbsolute } from './reset-time';
 import { calculateCompressionStats } from './statusbar';
 import { formatCachePercent, formatLatency, formatSpeed, type CacheState } from './telemetry-metrics';
@@ -42,7 +51,7 @@ function quotaMeterTone(percent: number): MeterTone {
 }
 
 function meter(label: string, value: number, spoken: string, tone: MeterTone): string {
-    const fill = Math.max(0, Math.min(100, value));
+    const fill = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
     const toneClass = tone === 'default' ? '' : ` is-${tone}`;
     return `<div class="overview-meter${toneClass}" role="meter"
         aria-label="${esc(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${fill}" aria-valuetext="${esc(spoken)}">
@@ -83,10 +92,9 @@ function modelFamilyCountHtml(count: number): string {
     return tBiHtml(count === 1 ? '1 model' : `${count} models`, `${count} 个模型`);
 }
 
-function quotaResetHtml(group: Pick<ModelQuotaGroup, 'resetDiffers' | 'resetTime'>, now: number): string {
-    if (group.resetDiffers) { return tBiHtml('Reset times vary', '重置时间不同'); }
-    if (!group.resetTime) { return tBiHtml('Reset time unavailable', '暂无重置时间'); }
-    const at = Date.parse(group.resetTime);
+function formatResetDurationHtml(resetTime: string | null | undefined, now: number): string {
+    if (!resetTime) { return tBiHtml('Reset time unavailable', '暂无重置时间'); }
+    const at = Date.parse(resetTime);
     if (!Number.isFinite(at) || at <= 0 || !Number.isFinite(now)) {
         return tBiHtml('Reset time unavailable', '暂无重置时间');
     }
@@ -111,7 +119,38 @@ function quotaResetHtml(group: Pick<ModelQuotaGroup, 'resetDiffers' | 'resetTime
             remaining = tBiHtml(`${minutes}m`, `${minutes} 分钟`);
         }
     }
-    return `${remaining} · ${esc(formatResetAbsolute(group.resetTime))}`;
+    return `${remaining} · ${esc(formatResetAbsolute(resetTime))}`;
+}
+
+function quotaResetHtml(group: Pick<ModelQuotaGroup, 'resetDiffers' | 'resetTime'>, now: number): string {
+    if (group.resetDiffers) { return tBiHtml('Reset times vary', '重置时间不同'); }
+    return formatResetDurationHtml(group.resetTime, now);
+}
+
+function dualQuotaWindowHtml(
+    groupLabel: string,
+    kind: '5h' | 'weekly',
+    win: QuotaWindowSummary,
+    now: number,
+): string {
+    const labelHtml = kind === '5h' ? tBiHtml('5-Hour', '5 小时') : tBiHtml('Weekly', '每周');
+    const labelPlain = kind === '5h' ? tBi('5-Hour', '5 小时') : tBi('Weekly', '每周');
+    const rawFrac = win.remainingFraction;
+    const validFrac = typeof rawFrac === 'number' && Number.isFinite(rawFrac) && rawFrac >= 0 && rawFrac <= 1 ? rawFrac : null;
+    const unknown = validFrac === null;
+    const pctText = unknown ? tBi('Unknown', '未知') : formatQuotaWindowPercent(validFrac);
+    const pctHtml = unknown ? `<span class="overview-quota-unknown">${tBiHtml('Unknown', '未知')}</span>` : `<strong>${esc(pctText)}</strong>`;
+    const meterHtml = unknown
+        ? '<div class="overview-meter is-unknown" aria-hidden="true"></div>'
+        : meter(`${groupLabel} · ${labelPlain}`, validFrac * 100, pctText, quotaMeterTone(validFrac * 100));
+    return `<div class="quota-dual-item" data-quota-window="${kind}">
+        <div class="quota-dual-head">
+            <span class="quota-dual-label">${labelHtml}</span>
+            <span class="quota-dual-pct">${pctHtml}</span>
+        </div>
+        ${meterHtml}
+        <p class="overview-meta quota-dual-reset">${formatResetDurationHtml(win.resetTime, now)}</p>
+    </div>`;
 }
 
 function creditExpiryHtml(days: number | null): string {
@@ -137,7 +176,34 @@ function cacheWarmthMeta(state: CacheState): { cls: string; html: string } | nul
     }
 }
 
-function telemetryStrip(snapshot: OverviewTelemetrySnapshot): string {
+function buildCostTelemetryCell(
+    sessionCostUsd: number | undefined,
+    todayCostUsd: number | undefined,
+    currencyPrefs?: Partial<CurrencyPrefs>,
+): string {
+    const sessionStr = formatOverviewCost(sessionCostUsd, currencyPrefs);
+    const todayStr = formatOverviewCost(todayCostUsd, currencyPrefs);
+    if (!sessionStr && !todayStr) { return ''; }
+    if (sessionStr) {
+        const subHtml = todayStr ? `<span class="overview-telemetry-sub">${tBiHtml('Today', '今日')} ${esc(todayStr)}</span>` : '';
+        return `<div class="overview-telemetry-cell" data-telemetry-cell="cost">
+            <span class="overview-telemetry-label">${tBiHtml('Session Cost', '会话费用')}</span>
+            <strong class="overview-telemetry-value">${esc(sessionStr)}</strong>
+            ${subHtml}
+        </div>`;
+    }
+    return `<div class="overview-telemetry-cell" data-telemetry-cell="cost">
+        <span class="overview-telemetry-label">${tBiHtml('Today Cost', '今日费用')}</span>
+        <strong class="overview-telemetry-value">${esc(todayStr!)}</strong>
+    </div>`;
+}
+
+function telemetryStrip(
+    snapshot: OverviewTelemetrySnapshot,
+    currencyPrefs?: Partial<CurrencyPrefs>,
+    sessionCostUsd?: number,
+    todayCostUsd?: number,
+): string {
     const { primary, primaryScope, speedPrimary, ttftPrimary } = snapshot;
 
     // 1. Speed
@@ -198,15 +264,15 @@ function telemetryStrip(snapshot: OverviewTelemetrySnapshot): string {
         ? ` title="${esc(`${formatCompactTokens(primary.totalCacheReadTokens)} / ${formatCompactTokens(primary.totalPromptTokens)} tokens · ${primary.cachedCallCount}/${primary.totalCalls}`)}"`
         : '';
 
-    // 4. Cache Saved
-    const savingsUsd = formatSavingsUsd(primary.estCacheSavingsUsd);
+    // 4. Cache Saved (currency-aware)
+    const savingsFormatted = formatOverviewSavings(primary.estCacheSavingsUsd, currencyPrefs);
     let savedValueHtml: string;
     let savedClass = '';
     let savedTitleAttr = '';
-    if (savingsUsd !== null) {
-        savedValueHtml = esc(savingsUsd);
+    if (savingsFormatted !== null) {
+        savedValueHtml = esc(savingsFormatted);
         if (primary.estCacheSavedTokens > 0) {
-            savedTitleAttr = ` title="${esc(`${savingsUsd} · ${formatCompactTokens(primary.estCacheSavedTokens)} tokens`)}"`;
+            savedTitleAttr = ` title="${esc(`${savingsFormatted} · ${formatCompactTokens(primary.estCacheSavedTokens)} tokens`)}"`;
         }
     } else if (primary.estCacheSavedTokens > 0) {
         savedValueHtml = `${esc(formatCompactTokens(primary.estCacheSavedTokens))} tokens`;
@@ -216,12 +282,13 @@ function telemetryStrip(snapshot: OverviewTelemetrySnapshot): string {
         savedClass = ' is-muted';
     }
     const warmth = cacheWarmthMeta(primary.latestCacheState);
+    const costCellHtml = buildCostTelemetryCell(sessionCostUsd, todayCostUsd, currencyPrefs);
 
     const ariaLabel = primaryScope === 'active'
         ? tBi('Active conversation speed and prompt cache', '当前会话速度与提示词缓存')
         : tBi('Session speed and prompt cache', '会话速度与提示词缓存');
 
-    return `<div class="overview-telemetry-strip" data-telemetry-scope="${primaryScope}" role="group" aria-label="${esc(ariaLabel)}">
+    return `<div class="overview-telemetry-strip${costCellHtml ? ' has-cost' : ''}" data-telemetry-scope="${primaryScope}" role="group" aria-label="${esc(ariaLabel)}">
         <div class="overview-telemetry-cell"${speedTitleAttr}>
             <span class="overview-telemetry-label">${tBiHtml('Speed', '生成速度')}</span>
             <strong class="overview-telemetry-value${speedClass}">${esc(speedValue)}</strong>
@@ -242,6 +309,7 @@ function telemetryStrip(snapshot: OverviewTelemetrySnapshot): string {
             <strong class="overview-telemetry-value${savedClass}">${savedValueHtml}</strong>
             ${warmth ? `<span class="overview-telemetry-sub ${warmth.cls}">${warmth.html}</span>` : ''}
         </div>
+        ${costCellHtml}
     </div>`;
 }
 
@@ -252,7 +320,15 @@ function sessionDetails(usage: ContextUsage, telemetryHtml = ''): string {
     const compression = calculateCompressionStats(usage);
     const last = usage.lastModelUsage;
     const isPlanner = usage.tokenUsageSource === 'planner';
-    const modelLabel = localizeNeonPickerLabel(resolveModelId(usage.model) || usage.model, usage.modelDisplayName, getLanguage());
+    const modelLabel = localizePickerEffortLabel(resolveModelId(usage.model) || usage.model, usage.modelDisplayName, getLanguage());
+    const activeRoute = resolveActiveOrchestratorRoute(usage);
+    const routePillHtml = activeRoute
+        ? `<div class="orch-route-pill" data-cross-pool="${activeRoute.isCrossPool ? 'true' : 'false'}">
+            <span class="orch-route-label">${tBiHtml('Orchestrator', '编排器')}</span>
+            <span class="orch-route-pair">${esc(activeRoute.plannerLabel)} <span class="orch-route-arrow" aria-hidden="true">→</span> ${esc(activeRoute.executorLabel)}</span>
+            ${activeRoute.isCrossPool ? `<span class="orch-route-badge">${tBiHtml('Cross-pool', '跨配额池')}</span>` : ''}
+        </div>`
+        : '';
     const contextLabel = tBi('Context used', '上下文占用');
     const ratio = reading.percent === null ? '—' : `${number(reading.percent, 1)}%`;
     const precisionHtml = usage.isEstimated ? tBiHtml('Estimated', '估算') : tBiHtml('Measured', '实测');
@@ -295,6 +371,7 @@ function sessionDetails(usage: ContextUsage, telemetryHtml = ''): string {
     return `<div class="overview-session">
         ${usage.title ? `<p class="overview-session-title">${esc(usage.title)}</p>` : ''}
         <p class="overview-meta">${modelLabel ? `${esc(modelLabel)} · ` : ''}${precisionHtml}</p>
+        ${routePillHtml}
         <div class="overview-reading">
             <div><strong>${number(reading.used)}</strong><span> / ${number(reading.limit)} ${tokenUnit}</span></div>
             <span class="overview-percent">${ratio}</span>
@@ -342,8 +419,17 @@ export function buildOverviewTabContent(
             telemetry?.customPricing,
         )
         : null;
-    const telemetryHtml = telemetryData ? telemetryStrip(telemetryData) : '';
-    const groups = connected ? selectMonitorQuotaGroups(configs, active?.model) : [];
+    let telemetryHtml = telemetryData
+        ? telemetryStrip(telemetryData, telemetry?.currencyPrefs, telemetry?.sessionCostUsd, telemetry?.todayCostUsd)
+        : '';
+    if (!telemetryHtml && connected) {
+        const standaloneCost = buildCostTelemetryCell(telemetry?.sessionCostUsd, telemetry?.todayCostUsd, telemetry?.currencyPrefs);
+        if (standaloneCost) {
+            telemetryHtml = `<div class="overview-telemetry-strip is-cost-only" data-telemetry-scope="cost" role="group" aria-label="${esc(tBi('Session and today cost', '会话与今日费用'))}">${standaloneCost}</div>`;
+        }
+    }
+    const groups = connected ? selectMonitorQuotaGroups(configs, active?.model, telemetry?.quotaSummary) : [];
+    const activeRoute = active ? resolveActiveOrchestratorRoute(active) : null;
     const credits = aiCreditTotal(userInfo?.availableCredits || []);
     const expiryHtml = creditExpiryHtml(getDaysUntilBillingDay(billingDay, new Date(now)));
     const plan = userInfo ? [...new Set([userInfo.planName, userInfo.userTierName].filter(Boolean))].join(' · ') : '';
@@ -353,17 +439,33 @@ export function buildOverviewTabContent(
         const band = quotaPercentage(group);
         const unknownQuota = group.minimum === null;
         const partial = (group.missingQuota && group.minimum !== null) || (group.missingReset && group.resetTime);
-        return `<li class="overview-quota-row">
-            <div class="overview-quota-heading">
-                <div><h3>${esc(group.label)}</h3><span class="overview-meta">${modelFamilyCountHtml(group.members.length)}</span></div>
-                ${unknownQuota
-                    ? `<strong class="overview-quota-unknown">${tBiHtml('Unknown', '未知')}</strong>`
-                    : `<strong>${esc(band)}</strong>`}
-            </div>
-            ${unknownQuota
+        const hasDualWindow = Boolean(group.fiveHourQuota || group.weeklyQuota);
+        const poolRoleTag = activeRoute?.isCrossPool && group.pool
+            ? (activeRoute.plannerPool === group.pool
+                ? ` <span class="orch-route-badge">${tBiHtml('Planner', '规划')}</span>`
+                : activeRoute.executorPool === group.pool
+                    ? ` <span class="orch-route-badge">${tBiHtml('Executor', '执行')}</span>`
+                    : '')
+            : '';
+        const dualHtml = hasDualWindow
+            ? `<div class="quota-dual-row">
+                ${group.fiveHourQuota ? dualQuotaWindowHtml(group.label, '5h', group.fiveHourQuota, now) : ''}
+                ${group.weeklyQuota ? dualQuotaWindowHtml(group.label, 'weekly', group.weeklyQuota, now) : ''}
+            </div>`
+            : `${unknownQuota
                 ? '<div class="overview-meter is-unknown" aria-hidden="true"></div>'
                 : meter(`${group.label} · ${quotaTitlePlain}`, group.minimum! * 100, band, quotaMeterTone(group.minimum! * 100))}
-            <p class="overview-meta">${quotaResetHtml(group, now)}${partial ? ` · ${tBiHtml('Partial data', '数据不完整')}` : ''}</p>
+            <p class="overview-meta">${quotaResetHtml(group, now)}${partial ? ` · ${tBiHtml('Partial data', '数据不完整')}` : ''}</p>`;
+        return `<li class="overview-quota-row">
+            <div class="overview-quota-heading">
+                <div><h3>${esc(group.label)}${poolRoleTag}</h3><span class="overview-meta">${modelFamilyCountHtml(group.members.length)}</span></div>
+                ${hasDualWindow
+                    ? ''
+                    : (unknownQuota
+                        ? `<strong class="overview-quota-unknown">${tBiHtml('Unknown', '未知')}</strong>`
+                        : `<strong>${esc(band)}</strong>`)}
+            </div>
+            ${dualHtml}
             ${group.pool ? `<p class="overview-model-families">${group.members.map(member => esc(member.label)).join(' · ')}</p>` : ''}
         </li>`;
     }).join('');
@@ -493,6 +595,12 @@ export function getOverviewStyles(): string {
             border: 1px solid var(--overview-rule);
             border-radius: var(--ed-radius-sm, 6px);
         }
+        .overview-telemetry-strip.has-cost {
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+        }
+        .overview-telemetry-strip.is-cost-only {
+            grid-template-columns: minmax(0, 1fr);
+        }
         .overview-telemetry-cell {
             display: flex;
             flex-direction: column;
@@ -568,7 +676,8 @@ export function getOverviewStyles(): string {
         .overview-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin-top: 16px; padding: 14px 18px; background: var(--ed-surface, transparent); border: 1px solid var(--overview-rule); border-radius: var(--ed-radius-md, 10px); }
         .overview-footer p { display: flex; gap: 4px 10px; flex-wrap: wrap; align-items: baseline; }
         @media (min-width: 681px) and (max-width: 980px), (max-width: 640px) {
-            .overview-telemetry-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .overview-telemetry-strip,
+            .overview-telemetry-strip.has-cost { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (max-width: 680px) {
             .overview-grid { grid-template-columns: minmax(0, 1fr); }

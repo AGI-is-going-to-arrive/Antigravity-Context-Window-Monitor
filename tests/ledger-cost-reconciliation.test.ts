@@ -126,4 +126,50 @@ describe('existing ledger call metadata and missing official cost reconciliation
         expect(ledger.reconcileRecordedCalls([candidate])).toBe(1);
         expect(ledger.serialize().accounts[account].recordedCalls[0].estimatedCost).toBeCloseTo(0.02586, 10);
     });
+
+    it('reconciles legacy zero-cost Gemini 4 Neon calls using the newly verified official rate without adding calls', () => {
+        const neonCall: LedgerCallEntry = {
+            dedupKey: `neon:0|${encodeURIComponent('exec:neon-1')}`,
+            call: {
+                ...parseGMEntry({
+                    executionId: 'neon-1',
+                    stepIndices: [1],
+                    chatModel: {
+                        model: 'MODEL_PLACEHOLDER_M535',
+                        responseModel: 'gemini-4-neon',
+                        usage: {
+                            inputTokens: 1_000_000,
+                            outputTokens: 200_000,
+                            thinkingOutputTokens: 50_000,
+                            cacheReadTokens: 1_000_000,
+                        },
+                        chatStartMetadata: { createdAt: localIso(9) },
+                    },
+                }),
+                accountEmail: account,
+            },
+        };
+        const ledger = new DailyLedger();
+        expect(ledger.recordCalls([neonCall])).toBe(1);
+        const saved = JSON.parse(JSON.stringify(ledger.serialize())) as DailyLedgerState;
+        const bucket = saved.accounts[account];
+        const expectedCost = bucket.recordedCalls[0].estimatedCost;
+        // 1M * $3 + 0.15M * $15 + 0.05M * $15 + 1M * $0.15 = $6.15
+        expect(expectedCost).toBeCloseTo(6.15, 10);
+
+        // Simulate legacy state written when Neon was unpriced
+        bucket.totalEstimatedCost = 0;
+        for (const stats of Object.values(bucket.modelStats)) {
+            stats.estimatedCost = 0;
+        }
+        bucket.recordedCalls[0].estimatedCost = 0;
+
+        const restored = DailyLedger.restore(saved);
+        expect(restored.reconcileRecordedCalls([neonCall])).toBe(1);
+        const after = restored.serialize().accounts[account];
+        expect(after.totalCalls).toBe(1);
+        expect(after.totalEstimatedCost).toBeCloseTo(6.15, 10);
+        expect(after.recordedCalls[0].estimatedCost).toBeCloseTo(6.15, 10);
+        expect(restored.reconcileRecordedCalls([neonCall])).toBe(0);
+    });
 });

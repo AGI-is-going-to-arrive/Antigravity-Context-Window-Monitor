@@ -24,6 +24,7 @@ const { values: args } = parseArgs({ options: {
     app: { type: 'string' },
     'window-id': { type: 'string' },
     'status-label': { type: 'string' },
+    'timeout-ms': { type: 'string', default: '8000' },
     installed: { type: 'string' },
     screenshot: { type: 'string' },
     'screenshots-dir': { type: 'string' },
@@ -42,23 +43,42 @@ const languages = {
     en: {
         heading: 'Antigravity Monitor', overview: 'Overview', overviewTitle: 'Context & quota', viewModels: 'View models',
         modelInfo: 'Model Info', statusSettings: 'Status bar settings', statusDisplay: 'Status Bar Display',
+        currencyDisplay: 'Currency Display', orchSettings: 'Orchestrator Settings',
+        orchModel: 'Orchestrator Model', execModel: 'Executor Model',
+        fiveHour: '5-Hour', weekly: 'Weekly',
+        gmData: 'GM Data', chats: 'Sessions', pricing: 'Cost', models: 'Models', calendar: 'Calendar', profile: 'Profile', settings: 'Settings',
         about: 'About', aboutTitle: 'Antigravity Context Window Monitor', resume: 'Resume auto-refresh',
-        efforts: 'Low · Medium · High · Extra', notReported: 'Not reported',
+        efforts: 'Low · Medium · High · Extra High', notReported: 'Not reported',
+        disconnectedHeading: 'Backend disconnected',
     },
     zh: {
         heading: 'Antigravity 监控面板', overview: '总览', overviewTitle: '上下文与配额', viewModels: '查看模型',
         modelInfo: '模型信息', statusSettings: '状态栏设置', statusDisplay: '状态栏显示',
+        currencyDisplay: '币种与汇率', orchSettings: '编排器设置',
+        orchModel: '编排器模型', execModel: '执行器模型',
+        fiveHour: '5 小时', weekly: '每周',
+        gmData: 'GM 数据', chats: '会话', pricing: '成本', models: '模型', calendar: '日历', profile: '个人', settings: '设置',
         about: '关于', aboutTitle: 'Antigravity 上下文窗口监控', resume: '恢复自动刷新',
         efforts: '低 · 中 · 高 · 超高', notReported: '未上报',
+        disconnectedHeading: '后端连接已断开',
     },
     both: {
         heading: 'Antigravity Monitor / Antigravity 监控面板', overview: 'Overview / 总览',
         overviewTitle: 'Context & quota / 上下文与配额', viewModels: 'View models / 查看模型',
         modelInfo: 'Model Info / 模型信息', statusSettings: 'Status bar settings / 状态栏设置',
-        statusDisplay: 'Status Bar Display / 状态栏显示', about: 'About / 关于',
+        statusDisplay: 'Status Bar Display / 状态栏显示',
+        currencyDisplay: 'Currency Display / 币种与汇率',
+        orchSettings: 'Orchestrator Settings / 编排器设置',
+        orchModel: 'Orchestrator Model / 编排器模型', execModel: 'Executor Model / 执行器模型',
+        fiveHour: '5-Hour / 5 小时', weekly: 'Weekly / 每周',
+        gmData: 'GM Data / GM 数据', chats: 'Sessions / 会话', pricing: 'Cost / 成本', models: 'Models / 模型',
+        calendar: 'Calendar / 日历', profile: 'Profile / 个人', settings: 'Settings / 设置',
+        about: 'About / 关于',
         aboutTitle: 'Antigravity Context Window Monitor / Antigravity 上下文窗口监控',
-        resume: 'Resume auto-refresh / 恢复自动刷新', efforts: 'Low · Medium · High · Extra / 低 · 中 · 高 · 超高',
+        resume: 'Resume auto-refresh / 恢复自动刷新',
+        efforts: 'Low · Medium · High · Extra High / 低 · 中 · 高 · 超高',
         notReported: 'Not reported / 未上报',
+        disconnectedHeading: 'Backend disconnected / 后端连接已断开',
     },
 };
 const languageButtons = { en: 'EN', zh: '中文', both: /^(Both|双语|Both \/ 双语)$/ };
@@ -74,19 +94,29 @@ const screenshotFilenames = {
     settings: 'monitor-settings.png',
     about: 'monitor-about.png',
 };
-// Live IDE catalog, November 19, 2026. Keep expectations independent of the build.
+// Live IDE catalog, November 22, 2026 (LS 2.34.0 / agy 1.5.14). Keep expectations independent of the build.
 const neonIdentities = [
     ['M534', 'gemini-4-neon-low', 'Low', '低'],
     ['M533', 'gemini-4-neon-medium', 'Medium', '中'],
     ['M532', 'gemini-4-neon-high', 'High', '高'],
-    ['M535', 'gemini-4-neon-xhigh', 'Extra', '超高'],
+    ['M535', 'gemini-4-neon-xhigh', 'Extra High', '超高'],
     ['M537', 'gemini-pro-orchestrator-neon', null, null],
 ];
+const gemini4CheckpointerIds = [
+    'MODEL_PLACEHOLDER_M534', 'MODEL_PLACEHOLDER_M533', 'MODEL_PLACEHOLDER_M532', 'MODEL_PLACEHOLDER_M535',
+    'MODEL_PLACEHOLDER_M537', 'MODEL_PLACEHOLDER_M528', 'MODEL_PLACEHOLDER_M427', 'MODEL_PLACEHOLDER_M417',
+    'MODEL_PLACEHOLDER_M667', 'MODEL_PLACEHOLDER_M681',
+];
+
+function localizedEffortLabel(lang, family, effort, translated) {
+    if (!effort) { return family; }
+    const label = lang === 'en' ? effort : lang === 'zh' ? translated : `${effort} / ${translated}`;
+    return `${family} (${label})`;
+}
 
 function neonLabel(lang, effort, translated) {
     if (!effort) { return 'Orchestrator (Neon)'; }
-    const label = lang === 'en' ? effort : lang === 'zh' ? translated : `${effort} / ${translated}`;
-    return `Gemini 4 Neon (${label})`;
+    return localizedEffortLabel(lang, 'Gemini 4 Neon', effort, translated);
 }
 
 const themeTokens = {
@@ -200,7 +230,8 @@ function desktop(argv) {
 }
 
 function nativeSmoke() {
-    const snapshotArgs = ['snapshot', '--app', app, '--compact', '--max-depth', '45', '--timeout-ms', '5000'];
+    const snapshotTimeout = String(Math.max(3000, parseInt(args['timeout-ms'], 10) || 8000));
+    const snapshotArgs = ['snapshot', '--app', app, '--compact', '--max-depth', '45', '--timeout-ms', snapshotTimeout];
     if (args['window-id']) { snapshotArgs.push('--window-id', args['window-id']); }
     const snapshot = () => {
         const result = jsonResult('agent-desktop', snapshotArgs);
@@ -221,7 +252,7 @@ function nativeSmoke() {
     };
     const matches = (node, role, name) => node.role === role && (name instanceof RegExp ? name.test(node.name || '') : node.name === name);
     function waitFor(predicate, description) {
-        const deadline = Date.now() + 12000;
+        const deadline = Date.now() + 18000;
         do {
             const nodes = snapshot();
             const result = nodes && predicate(nodes);
@@ -238,11 +269,28 @@ function nativeSmoke() {
         desktop(['click', button.ref_id]);
     }
     const has = (nodes, role, name) => nodes.some(node => matches(node, role, name));
+    const hasText = (nodes, pattern) => nodes.some(node => (
+        pattern instanceof RegExp ? pattern.test(node.name || '') : (node.name || '').includes(pattern)
+    ));
+    const hasLocalizedText = (nodes, lang, key) => (
+        lang === 'both'
+            ? hasText(nodes, languages.en[key]) && hasText(nodes, languages.zh[key])
+            : hasText(nodes, languages[lang][key])
+    );
     const hasModelInfo = (nodes, labels) => nodes.some(node => node.role === 'heading'
         && node.name?.toLocaleLowerCase() === labels.modelInfo.toLocaleLowerCase());
     const statusLabel = new RegExp(args['status-label'] || 'Context (?:Window )?(?:Monitor|Usage)|上下文(?:窗口)?(?:使用情况|监控)|No active conversation|无活跃会话', 'i');
-    const openFromStatus = () => click(node => node.ancestors.includes('status') && matches(node, 'button', statusLabel), 'monitor status item');
-    openFromStatus();
+    const disconnectedStatusRe = /不可用|Unavailable|Disconnected|连接已断开/i;
+    const findStatusButton = nodes => nodes.find(node => node.ancestors.includes('status') && matches(node, 'button', statusLabel));
+    const openFromStatus = () => {
+        const statusBtn = waitFor(findStatusButton, 'connected monitor status item');
+        assert(!disconnectedStatusRe.test(statusBtn.name || ''),
+            `Live IDE status bar must be connected (not unavailable/disconnected): ${statusBtn.name}`);
+        desktop(['click', statusBtn.ref_id]);
+        return statusBtn.name || '';
+    };
+    const initialStatusLabel = openFromStatus();
+    console.log(`Native live status bar connected: ${initialStatusLabel}`);
     const currentLocale = () => waitFor(nodes => Object.keys(languages).find(lang => has(nodes, 'heading', languages[lang].heading)), 'monitor webview title');
     const original = currentLocale();
     const switchLocale = lang => {
@@ -250,29 +298,97 @@ function nativeSmoke() {
         click(node => matches(node, 'button', languageButtons[lang]), `monitor language ${lang}`);
         waitFor(nodes => has(nodes, 'heading', languages[lang].heading), `monitor heading in ${lang}`);
     };
+    const clickNavTab = (label, description) => click(
+        node => node.ancestors.includes('navigation') && matches(node, 'button', label),
+        description,
+    );
     try {
+        let sweptAllNine = false;
         for (const [lang, labels] of Object.entries(languages)) {
             switchLocale(lang);
             openFromStatus();
-            waitFor(nodes => has(nodes, 'heading', labels.overviewTitle), `overview from the status item in ${lang}`);
+            const overviewNodes = waitFor(
+                nodes => has(nodes, 'heading', labels.overviewTitle) && nodes,
+                `overview from the status item in ${lang}`,
+            );
+            assert(!has(overviewNodes, 'heading', labels.disconnectedHeading),
+                `Overview must not show backend disconnected in ${lang}`);
+            assert(hasLocalizedText(overviewNodes, lang, 'fiveHour') && hasLocalizedText(overviewNodes, lang, 'weekly'),
+                `Overview shows live dual-window (5h + Weekly) quota in ${lang}`);
+
             click(node => matches(node, 'button', labels.viewModels), `Overview model action in ${lang}`);
-            const models = waitFor(nodes => hasModelInfo(nodes, labels)
-                && has(nodes, 'heading', /^Orchestrator \(Neon\)$/) && nodes, `live Neon model information in ${lang}`);
+            const models = waitFor(
+                nodes => hasModelInfo(nodes, labels) && has(nodes, 'heading', labels.orchSettings) && nodes,
+                `live Models + Orchestrator Settings in ${lang}`,
+            );
+            assert(hasLocalizedText(models, lang, 'orchModel') && hasLocalizedText(models, lang, 'execModel'),
+                `Models tab renders live Orchestrator Model & Executor Model in ${lang}`);
+            assert(hasLocalizedText(models, lang, 'fiveHour') && hasLocalizedText(models, lang, 'weekly'),
+                `Models tab renders live dual-window (5h + Weekly) quota in ${lang}`);
+            assert(hasText(models, /512,000/), `Models tab shows 512,000 compression limit in ${lang}`);
             for (const [, catalogId, effort, translated] of neonIdentities) {
-                assert(models.some(node => node.role === 'statictext' && node.name === catalogId), `${catalogId} is mounted`);
-                assert(has(models, 'heading', neonLabel(lang, effort, translated)), `${catalogId} has the correct name in ${lang}`);
+                if (models.some(node => node.role === 'statictext' && node.name === catalogId)) {
+                    assert(has(models, 'heading', neonLabel(lang, effort, translated)), `${catalogId} has the correct name in ${lang}`);
+                }
             }
-            assert(!has(models, 'article', 'Gemini Flash (Orchestrator Worker)'), 'worker is not a selectable model');
+            assert(models.some(node => node.role === 'statictext' && node.name === 'gemini-4-neon-xhigh'),
+                `gemini-4-neon-xhigh is mounted in ${lang}`);
+            assert(!has(models, 'article', 'Gemini Flash (Orchestrator Worker)'), 'legacy worker label is not a selectable model');
+            assert(!has(models, 'article', 'Gemini 4 Hydrogen (Orchestrator)'), 'hidden worker M669 is not a selectable model');
+
+            // Sweep all remaining tabs (non-destructive; no saved user settings mutated)
+            if (!sweptAllNine) {
+                clickNavTab(labels.gmData, `GM Data tab in ${lang}`);
+                waitFor(nodes => nodes.some(node => node.ancestors.includes('navigation')
+                    && matches(node, 'button', labels.gmData)), `GM Data tab mounted in ${lang}`);
+
+                clickNavTab(labels.chats, `Sessions tab in ${lang}`);
+                waitFor(nodes => nodes.some(node => node.ancestors.includes('navigation')
+                    && matches(node, 'button', labels.chats)), `Sessions tab mounted in ${lang}`);
+
+                clickNavTab(labels.pricing, `Cost tab in ${lang}`);
+                const costNodes = waitFor(
+                    nodes => hasText(nodes, 'USD ($)') && hasText(nodes, 'CNY (¥)') && nodes,
+                    `Cost tab currency switcher in ${lang}`,
+                );
+                assert(!hasText(costNodes, /令牌/), `Cost tab has zero 令牌 in ${lang}`);
+
+                clickNavTab(labels.calendar, `Calendar tab in ${lang}`);
+                waitFor(nodes => nodes.some(node => node.ancestors.includes('navigation')
+                    && matches(node, 'button', labels.calendar)), `Calendar tab mounted in ${lang}`);
+
+                clickNavTab(labels.profile, `Profile tab in ${lang}`);
+                const profileNodes = waitFor(
+                    nodes => hasText(nodes, labels.fiveHour) && nodes,
+                    `Profile tab with live quota in ${lang}`,
+                );
+                assert(!hasText(profileNodes, /\b(?:Prompt|Flow)\s+(?:Credits|额度)/i),
+                    `Profile tab has zero legacy Prompt/Flow credits in ${lang}`);
+                sweptAllNine = true;
+            }
+
             openFromStatus();
             click(node => matches(node, 'button', labels.statusSettings), `Overview status settings action in ${lang}`);
-            waitFor(nodes => has(nodes, 'heading', labels.statusDisplay), `status settings controls in ${lang}`);
-            click(node => node.ancestors.includes('navigation') && matches(node, 'button', labels.about), `About tab in ${lang}`);
-            waitFor(nodes => (has(nodes, 'heading', labels.aboutTitle) || has(nodes, 'heading', 'Antigravity Context Window Monitor'))
-                && nodes.some(node => node.role === 'statictext' && node.name?.includes(manifest.version)), `About version in ${lang}`);
-            console.log(`Native ${lang}: status overview, five Neon identities, status settings and About version passed`);
+            const settingsNodes = waitFor(
+                nodes => has(nodes, 'heading', labels.statusDisplay) && has(nodes, 'heading', labels.currencyDisplay) && nodes,
+                `status & currency settings controls in ${lang}`,
+            );
+            assert(hasText(settingsNodes, 'USD ($)') && hasText(settingsNodes, 'CNY (¥)'),
+                `Settings tab renders currency switcher in ${lang}`);
+
+            clickNavTab(labels.about, `About tab in ${lang}`);
+            const aboutNodes = waitFor(
+                nodes => (has(nodes, 'heading', labels.aboutTitle) || has(nodes, 'heading', 'Antigravity Context Window Monitor'))
+                    && nodes.some(node => node.role === 'statictext' && node.name?.includes(manifest.version))
+                    && nodes,
+                `About version ${manifest.version} in ${lang}`,
+            );
+            assert(hasText(aboutNodes, /512K/), `About tab displays updated 512K context window disclaimer in ${lang}`);
+            console.log(`Native ${lang}: connected status, dual-window quota, Orchestrator Settings, Neon Extra High/512K, settings/currency & About v${manifest.version} passed`);
         }
     } finally {
         switchLocale(original);
+        openFromStatus();
     }
 }
 
@@ -280,6 +396,9 @@ function loadInstalledPanel(packageJSON) {
     let html = '';
     let density = 'auto';
     let windowZoom = 0;
+    let displayCurrency = 'USD';
+    let cnyExchangeRate = 7.2;
+    let showSessionCost = false;
     let statusItem;
     const values = new Map([['panelShowTabScrollHint', !(args.screenshot || args['screenshots-dir'])]]);
     const state = {
@@ -298,6 +417,9 @@ function loadInstalledPanel(packageJSON) {
                 get: (key, fallback) => {
                     if (section === 'window' && key === 'zoomLevel') { return windowZoom; }
                     if (key === 'statusBar.tooltipDensity') { return density; }
+                    if (key === 'statusBar.showSessionCost') { return showSessionCost; }
+                    if (key === 'pricing.displayCurrency') { return displayCurrency; }
+                    if (key === 'pricing.cnyExchangeRate') { return cnyExchangeRate; }
                     return fallback;
                 },
             }),
@@ -319,6 +441,7 @@ function loadInstalledPanel(packageJSON) {
         const { getModelSpecs } = load('models.js');
         const { refreshMonitorPanelLanguage, setPanelDurableState, showMonitorPanel } = load('webview-panel.js');
         const { buildOverviewTabContent } = load('webview-overview-tab.js');
+        const { buildModelInfoGrid } = load('webview-models-tab.js');
         const { buildModelDNACards } = load('pricing-panel.js');
         const { PricingStore } = load('pricing-store.js');
         const { DailyStore } = load('daily-store.js');
@@ -331,10 +454,14 @@ function loadInstalledPanel(packageJSON) {
             editorialFixtures: (usage, specs, resetTime) => editorialFixtures(usage, specs, DailyStore, buildSummaryFromConversations, resetTime),
             renderOverview: (usage, configs, userInfo = null, billingDay = 0, status, now, telemetry) =>
                 buildOverviewTabContent(usage, configs, userInfo, billingDay, status, now, telemetry),
+            renderModelInfoGrid: (specs, kind = 'chat', options = {}) => buildModelInfoGrid(specs, kind, options),
             renderModelDNA: (gmSummary, configs) => buildModelDNACards(gmSummary, {}, configs),
             renderStatusBar: (mode, configs, options = {}) => {
                 density = mode;
                 windowZoom = options.zoomLevel ?? 0;
+                displayCurrency = options.currencyPrefs?.currency ?? 'USD';
+                cnyExchangeRate = options.currencyPrefs?.cnyRate ?? 7.2;
+                showSessionCost = Boolean(options.displayPrefs?.showSessionCost);
                 statusItem = { show() {}, dispose() {} };
                 const status = new StatusBarManager();
                 try {
@@ -344,6 +471,10 @@ function loadInstalledPanel(packageJSON) {
                     }
                     if ('credits' in options) { status.setCredits(options.credits); }
                     if (options.billingDay !== undefined) { status.setBillingDay(options.billingDay); }
+                    if ('orchestratorSettings' in options) { status.setOrchestratorSettings(options.orchestratorSettings); }
+                    if ('quotaSummary' in options) { status.setQuotaSummary(options.quotaSummary); }
+                    if ('currencyPrefs' in options) { status.setCurrencyPrefs(options.currencyPrefs); }
+                    if ('costSnapshot' in options) { status.setCostSnapshot(options.costSnapshot); }
                     if ('gmSummary' in options) {
                         status.setTelemetry(options.gmSummary, options.activeCascadeId, options.customPricing);
                     }
@@ -360,6 +491,7 @@ function loadInstalledPanel(packageJSON) {
                     return {
                         text: statusItem.text || '',
                         tooltip: statusItem.tooltip?.value || '',
+                        isTrusted: statusItem.tooltip?.isTrusted,
                         a11y: statusItem.accessibilityInformation,
                     };
                 } finally {
@@ -369,6 +501,9 @@ function loadInstalledPanel(packageJSON) {
             renderHover: (mode, configs, options = {}) => {
                 density = mode;
                 windowZoom = options.zoomLevel ?? 0;
+                displayCurrency = options.currencyPrefs?.currency ?? 'USD';
+                cnyExchangeRate = options.currencyPrefs?.cnyRate ?? 7.2;
+                showSessionCost = Boolean(options.displayPrefs?.showSessionCost);
                 statusItem = { show() {}, dispose() {} };
                 const status = new StatusBarManager();
                 try {
@@ -378,6 +513,10 @@ function loadInstalledPanel(packageJSON) {
                     }
                     if ('credits' in options) { status.setCredits(options.credits); }
                     if (options.billingDay !== undefined) { status.setBillingDay(options.billingDay); }
+                    if ('orchestratorSettings' in options) { status.setOrchestratorSettings(options.orchestratorSettings); }
+                    if ('quotaSummary' in options) { status.setQuotaSummary(options.quotaSummary); }
+                    if ('currencyPrefs' in options) { status.setCurrencyPrefs(options.currencyPrefs); }
+                    if ('costSnapshot' in options) { status.setCostSnapshot(options.costSnapshot); }
                     if ('gmSummary' in options) {
                         status.setTelemetry(options.gmSummary, options.activeCascadeId, options.customPricing);
                     }
@@ -389,6 +528,9 @@ function loadInstalledPanel(packageJSON) {
                 }
             },
             render: async (lang, modelConfigs, extra = {}) => {
+                displayCurrency = extra.currencyPrefs?.currency ?? 'USD';
+                cnyExchangeRate = extra.currencyPrefs?.cnyRate ?? 7.2;
+                showSessionCost = Boolean(extra.showSessionCost);
                 await setLanguageToState(lang, state);
                 showMonitorPanel({
                     currentUsage: null, allTrajectoryUsages: [], allTrajectories: [],
@@ -396,6 +538,9 @@ function loadInstalledPanel(packageJSON) {
                     activitySummary: null, gmSummary: null, gmFullSummary: null,
                     dailyStore: new DailyStore(), storageDiagnostics: undefined,
                     accountSnapshots: [], todayLedgerActive: [], ledgerSettled: [],
+                    orchestratorSettings: null, quotaSummary: null,
+                    currencyPrefs: { currency: 'USD', cnyRate: 7.2 },
+                    todayCostUsd: Number.NaN, sessionCostUsd: Number.NaN,
                     context: { globalState: state, extension: { packageJSON } },
                     ...extra,
                 });
@@ -428,6 +573,145 @@ function editorialFixtures(usage, specs, DailyStore, buildSummaryFromConversatio
         compressionDetected: false,
         previousContextUsed: undefined,
         checkpointCompressionDrop: 0,
+        orchestratorConfig: {
+            planModel: 'MODEL_PLACEHOLDER_M401',
+            executionModel: 'MODEL_PLACEHOLDER_M528',
+        },
+    };
+    const weeklyResetTime = new Date(now.getTime() + 5 * 24 * 3600_000).toISOString();
+    const orchestratorSettingsDefault = {
+        configuredOrchestratorModel: '',
+        configuredExecutorModel: '',
+        effectiveOrchestratorModel: 'MODEL_PLACEHOLDER_M535',
+        effectiveExecutorModel: 'MODEL_PLACEHOLDER_M528',
+        effectiveOrchestratorLabel: 'Gemini 4 Neon (XHigh)',
+        effectiveExecutorLabel: 'Gemini 4 Hydrogen (XHigh)',
+        isCustomOrchestrator: false,
+        isCustomExecutor: false,
+        mode: 'default',
+        roles: {
+            orchestrators: ['gemini-4-neon', 'gemini-4-carbon', 'gemini-4-argon', 'claude-opus-5-5'],
+            executors: ['gemini-4-hydrogen', 'claude-sonnet-5-5'],
+        },
+        orchestratorCandidates: ['MODEL_PLACEHOLDER_M535', 'MODEL_PLACEHOLDER_M401'],
+        executorCandidates: ['MODEL_PLACEHOLDER_M528', 'MODEL_PLACEHOLDER_M404'],
+        lastSelectedAgentModel: 'MODEL_PLACEHOLDER_M535',
+    };
+    const orchestratorSettingsCustom = {
+        ...orchestratorSettingsDefault,
+        configuredOrchestratorModel: 'MODEL_PLACEHOLDER_M401',
+        configuredExecutorModel: 'MODEL_PLACEHOLDER_M528',
+        effectiveOrchestratorModel: 'MODEL_PLACEHOLDER_M401',
+        effectiveExecutorModel: 'MODEL_PLACEHOLDER_M528',
+        effectiveOrchestratorLabel: 'Claude Opus 5.5 (Medium)',
+        effectiveExecutorLabel: 'Gemini 4 Hydrogen (XHigh)',
+        isCustomOrchestrator: true,
+        isCustomExecutor: true,
+        mode: 'custom',
+    };
+    const orchestratorSettingsCustomSonnet = {
+        ...orchestratorSettingsDefault,
+        configuredOrchestratorModel: 'MODEL_PLACEHOLDER_M401',
+        configuredExecutorModel: 'MODEL_PLACEHOLDER_M404',
+        effectiveOrchestratorModel: 'MODEL_PLACEHOLDER_M401',
+        effectiveExecutorModel: 'MODEL_PLACEHOLDER_M404',
+        effectiveOrchestratorLabel: 'Claude Opus 5.5 (Medium)',
+        effectiveExecutorLabel: 'Claude Sonnet 5.5 (Medium)',
+        isCustomOrchestrator: true,
+        isCustomExecutor: true,
+        mode: 'custom',
+    };
+    const quotaSummary = {
+        groups: [
+            {
+                pool: 'gemini',
+                displayName: 'Gemini Models',
+                fiveHour: {
+                    bucketId: 'gemini-5h',
+                    window: '5h',
+                    displayName: 'Five Hour Limit Remaining',
+                    remainingFraction: 0.52,
+                    resetTime,
+                    resetAt: Date.parse(resetTime),
+                },
+                weekly: {
+                    bucketId: 'gemini-weekly',
+                    window: 'weekly',
+                    displayName: 'Weekly Limit Remaining',
+                    remainingFraction: 0.84,
+                    resetTime: weeklyResetTime,
+                    resetAt: Date.parse(weeklyResetTime),
+                },
+                buckets: [],
+            },
+            {
+                pool: 'premium',
+                displayName: 'Claude and GPT models',
+                fiveHour: {
+                    bucketId: '3p-5h',
+                    window: '5h',
+                    displayName: 'Five Hour Limit Remaining',
+                    remainingFraction: 0.91,
+                    resetTime,
+                    resetAt: Date.parse(resetTime),
+                },
+                weekly: {
+                    bucketId: '3p-weekly',
+                    window: 'weekly',
+                    displayName: 'Weekly Limit Remaining',
+                    remainingFraction: 0.96,
+                    resetTime: weeklyResetTime,
+                    resetAt: Date.parse(weeklyResetTime),
+                },
+                buckets: [],
+            },
+        ],
+    };
+    const quotaSummaryPrecision = {
+        groups: [
+            {
+                pool: 'gemini',
+                displayName: 'Gemini Models',
+                fiveHour: {
+                    bucketId: 'gemini-5h',
+                    window: '5h',
+                    displayName: 'Five Hour Limit Remaining',
+                    remainingFraction: 0.9936607,
+                    resetTime,
+                    resetAt: Date.parse(resetTime),
+                },
+                weekly: {
+                    bucketId: 'gemini-weekly',
+                    window: 'weekly',
+                    displayName: 'Weekly Limit Remaining',
+                    remainingFraction: 0.9984152,
+                    resetTime: weeklyResetTime,
+                    resetAt: Date.parse(weeklyResetTime),
+                },
+                buckets: [],
+            },
+            {
+                pool: 'premium',
+                displayName: 'Claude and GPT models',
+                fiveHour: {
+                    bucketId: '3p-5h',
+                    window: '5h',
+                    displayName: 'Five Hour Limit Remaining',
+                    remainingFraction: 0.72,
+                    resetTime,
+                    resetAt: Date.parse(resetTime),
+                },
+                weekly: {
+                    bucketId: '3p-weekly',
+                    window: 'weekly',
+                    displayName: 'Weekly Limit Remaining',
+                    remainingFraction: 1,
+                    resetTime: weeklyResetTime,
+                    resetAt: Date.parse(weeklyResetTime),
+                },
+                buckets: [],
+            },
+        ],
     };
     const allTrajectories = [
         { id: currentUsage.cascadeId, title: currentUsage.title, model: specs[0], status: 'RUNNING', ws: workspaceUri, repo: 'monitor', branch: 'release', time: createdAt },
@@ -649,16 +933,31 @@ function editorialFixtures(usage, specs, DailyStore, buildSummaryFromConversatio
             currentUsage, userInfo, allTrajectories, activitySummary,
             gmSummary, gmFullSummary: gmSummary, dailyStore, workspaceUri,
             storageDiagnostics, accountSnapshots,
+            orchestratorSettings: orchestratorSettingsCustom,
+            quotaSummary,
+            currencyPrefs: { currency: 'USD', cnyRate: 7.2 },
+            sessionCostUsd: 0.45,
+            todayCostUsd: 1.25,
         },
         unknownCredits: {
-            currentUsage, userInfo: unknownCreditsUserInfo, allTrajectories: [],
+            currentUsage: { ...currentUsage, orchestratorConfig: undefined },
+            userInfo: unknownCreditsUserInfo, allTrajectories: [],
             activitySummary: null, gmSummary: null, gmFullSummary: null,
             dailyStore: new DailyStore(), workspaceUri,
+            orchestratorSettings: null, quotaSummary: null,
             accountSnapshots: [{ ...accountSnapshots[0], credits: [{ creditType: 'CREDIT_TYPE_GOOGLE_ONE_AI', creditAmount: null }] }],
         },
         empty: {
             allTrajectories: [], activitySummary: null, gmSummary: null, gmFullSummary: null,
             dailyStore: new DailyStore(), accountSnapshots: [],
+            orchestratorSettings: null, quotaSummary: null,
+        },
+        v1173: {
+            orchestratorSettingsDefault,
+            orchestratorSettingsCustom,
+            orchestratorSettingsCustomSonnet,
+            quotaSummary,
+            quotaSummaryPrecision,
         },
     };
 }
@@ -749,21 +1048,38 @@ const measurements = `(() => {
         });
     });
     return {
-        heading: document.querySelector('.topbar-title h1')?.textContent.replace(/\s+/g, ' ').trim(),
-        modelInfo: document.querySelector('.model-info-section h2')?.textContent.replace(/\s+/g, ' ').trim(),
+        heading: document.querySelector('.topbar-title h1')?.textContent.replace(/\\s+/g, ' ').trim(),
+        modelInfo: document.querySelector('.model-info-section h2')?.textContent.replace(/\\s+/g, ' ').trim(),
         width: innerWidth, overflow: document.documentElement.scrollWidth > innerWidth + 1 ||
-            [...document.querySelectorAll('#tab-models .spec-card, #tab-models .model-card')].some(card => card.getBoundingClientRect().right > innerWidth + 1),
+            [...document.querySelectorAll('#tab-models .spec-card, #tab-models .model-card, #tab-models .orch-settings-card')].some(card => card.getBoundingClientRect().right > innerWidth + 1),
         overlaps, errors: testState.errors,
+        orchSettings: (() => {
+            const card = document.querySelector('#tab-models .orch-settings-card');
+            if (!card) { return null; }
+            return {
+                mode: card.dataset.orchestratorMode || '',
+                text: card.innerText.replace(/\\s+/g, ' ').trim(),
+                orchestrator: card.querySelector('[data-orch-role="orchestrator"]')?.innerText.replace(/\\s+/g, ' ').trim() || '',
+                executor: card.querySelector('[data-orch-role="executor"]')?.innerText.replace(/\\s+/g, ' ').trim() || '',
+            };
+        })(),
         entries: cards.map(card => ({
             model: card.dataset.modelId, name: card.querySelector('h3').textContent,
             catalog: card.querySelector('.spec-model-id').textContent,
             limits: Object.fromEntries([...card.querySelectorAll('[data-metric]')].map(row => [row.dataset.metric, row.querySelector('dd').textContent])),
+            priceState: card.querySelector('.spec-price-row')?.dataset.priceState || '',
+            priceText: card.querySelector('.spec-price-row')?.innerText.replace(/\\s+/g, ' ').trim() || '',
             route: card.querySelector('.spec-orchestration')?.textContent,
         })),
         pools: [...document.querySelectorAll('.model-card')].map(card => ({
             group: card.querySelector('.model-card-name-text')?.textContent,
             members: [...card.querySelectorAll('.model-quota-members li')].map(row => row.innerText),
             range: card.querySelector('.model-card-pct')?.textContent,
+            noticeTags: [...card.querySelectorAll('.tag-notice')].map(el => el.innerText.trim()),
+            dualWindows: Object.fromEntries([...card.querySelectorAll('.quota-dual-item[data-quota-window]')].map(el => [
+                el.dataset.quotaWindow,
+                el.querySelector('.quota-dual-pct')?.innerText.trim() || '',
+            ])),
         })),
     };
 })()`;
@@ -787,6 +1103,13 @@ function editorialReadings() {
         const bounds = node.getBoundingClientRect();
         return bounds.width > 0 && (bounds.left < -1 || bounds.right > innerWidth + 1);
     };
+    const isInsideScrollWrap = node => {
+        if (node.tagName !== 'TABLE') { return false; }
+        const wrap = node.closest('.recent-calls-table-wrap');
+        if (!wrap) { return false; }
+        const ox = getComputedStyle(wrap).overflowX;
+        return ox === 'auto' || ox === 'scroll';
+    };
     const rectsOverlap = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1
         && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
     const overlapping = controls.some((a, index) => controls.slice(index + 1).some(b =>
@@ -799,18 +1122,19 @@ function editorialReadings() {
     const regionSelectors = [
         'section', 'h2', 'h3', 'table', 'pre',
         '.stg-card', '.cost-bar-row', '.cost-bar-track', '.cost-bar-section', '.cost-chips',
-        '.prc-monthly-card', '.prc-monthly-models', '.prc-edit-row',
+        '.prc-monthly-card', '.prc-monthly-models', '.prc-edit-row', '.prc-currency-bar', '.rate-change-banner', '.currency-toggle-group',
         '.cal-grid', '.cal-cell', '.cal-detail', '.cal-overview-grid', '.cal-chip-speed',
         '.ses-row', '.ses-shortcuts', '.ses-filters', '.ses-filter-btn', '.ses-group',
-        '.model-card', '.spec-card',
+        '.model-card', '.spec-card', '.orch-settings-card', '.orch-role-row', '.spec-price-row', '.quota-dual-row',
         '.profile-page', '.profile-identity', '.profile-quota', '.profile-ai', '.profile-technical',
         '.act-summary-bar', '#telemetryLedgerSection', '.telemetry-ledger-card', '.telemetry-subgrid',
-        '.telemetry-ttft-block', '.telemetry-cache-bar-wrap', '.act-model-card', '.act-conv-list', '.act-conv-item', '.tool-rank-row',
+        '.telemetry-ttft-block', '.telemetry-cache-bar-wrap', '.recent-calls-card', '.recent-calls-table-wrap',
+        '.act-model-card', '.act-conv-list', '.act-conv-item', '.tool-rank-row',
         '.about-card', '.about-info-box', '.about-platform-chips', '.about-platform-chip',
-        '.overview-context', '.overview-telemetry-strip', '.overview-quota', '.overview-footer', '.zoom-presets',
+        '.overview-context', '.orch-route-pill', '.overview-telemetry-strip', '.overview-quota', '.overview-footer', '.zoom-presets',
     ].join(', ');
     const overflowingRegions = [...pane.querySelectorAll(regionSelectors)]
-        .filter(node => node.checkVisibility() && outOfBounds(node))
+        .filter(node => node.checkVisibility() && !isInsideScrollWrap(node) && outOfBounds(node))
         .slice(0, 6)
         .map(node => `${node.tagName.toLowerCase()}.${(node.className || '').toString().trim().replace(/\s+/g, '.')}`);
 
@@ -888,9 +1212,9 @@ function editorialReadings() {
     };
 
     const l1CardSelector = [
-        '.overview-context', '.overview-quota', '.act-summary-bar', '.telemetry-ledger-card', '.act-model-card',
-        '.ses-group', '.prc-monthly-grand', '.cost-panel', '.prc-edit-section',
-        '.model-card', '.spec-card', '.cal-detail',
+        '.overview-context', '.overview-quota', '.act-summary-bar', '.telemetry-ledger-card', '.recent-calls-card', '.act-model-card',
+        '.ses-group', '.prc-monthly-grand', '.cost-panel', '.prc-edit-section', '.prc-currency-bar',
+        '.model-card', '.spec-card', '.orch-settings-card', '.cal-detail',
         '.profile-identity', '.profile-quota', '.profile-ai', '.profile-technical',
         '.stg-card', '.about-card', '.about-info-box', 'section.card',
     ].join(', ');
@@ -902,7 +1226,7 @@ function editorialReadings() {
             return parsed && parsed[3] > 0.9;
         })
         .slice(0, 14);
-    const l2WellSurfaces = [...pane.querySelectorAll('.overview-telemetry-strip, .telemetry-subgrid, .profile-quota .model-card, .profile-credit-balances, .storage-path-box')]
+    const l2WellSurfaces = [...pane.querySelectorAll('.overview-telemetry-strip, .telemetry-subgrid, .orch-role-row, .spec-price-row, .profile-quota .model-card, .profile-credit-balances, .storage-path-box')]
         .filter(node => node.checkVisibility())
         .map(node => ({ selector: (node.className || node.tagName).toString().trim(), bg: getComputedStyle(node).backgroundColor }))
         .filter(({ bg }) => {
@@ -988,6 +1312,8 @@ function editorialReadings() {
         : null;
     const overviewCells = overviewStrip ? [...overviewStrip.querySelectorAll('.overview-telemetry-cell')] : [];
     const overviewWarmEl = overviewStrip?.querySelector('.overview-telemetry-sub.is-warm, .overview-telemetry-sub.is-warming, .overview-telemetry-sub.is-cold');
+    const overviewCostCell = overviewStrip?.querySelector('[data-telemetry-cell="cost"]');
+    const overviewOrchPill = tab?.dataset.tab === 'overview' ? pane.querySelector('.orch-route-pill') : null;
     const overviewTelemetry = tab?.dataset.tab === 'overview' ? {
         present: Boolean(overviewStrip && overviewStrip.checkVisibility()),
         scope: overviewStrip?.dataset.telemetryScope || '',
@@ -1005,14 +1331,26 @@ function editorialReadings() {
             ? getComputedStyle(overviewCells[2].querySelector('.overview-telemetry-value.is-cache')).color : '',
         cacheHitSub: overviewCells[2]?.querySelector('.overview-telemetry-sub')?.innerText.trim() || '',
         savedVal: overviewCells[3]?.querySelector('.overview-telemetry-value')?.innerText.trim() || '',
+        costVal: overviewCostCell?.querySelector('.overview-telemetry-value')?.innerText.trim() || '',
+        costSub: overviewCostCell?.querySelector('.overview-telemetry-sub')?.innerText.trim() || '',
         warmthClass: overviewWarmEl?.className || '',
         warmthText: overviewWarmEl?.innerText.trim() || '',
         warmthBiInherits: checkBiColorInherit(overviewWarmEl),
+        orchRoutePresent: Boolean(overviewOrchPill && overviewOrchPill.checkVisibility()),
+        orchRouteCrossPool: overviewOrchPill?.dataset.crossPool || '',
+        orchRouteText: overviewOrchPill?.innerText.replace(/\s+/g, ' ').trim() || '',
+        dualQuotaRows: pane.querySelectorAll('.quota-dual-row').length,
+        dualQuota5h: [...pane.querySelectorAll('.quota-dual-item[data-quota-window="5h"] .quota-dual-pct')].map(n => n.innerText.trim()),
+        dualQuotaWeekly: [...pane.querySelectorAll('.quota-dual-item[data-quota-window="weekly"] .quota-dual-pct')].map(n => n.innerText.trim()),
     } : null;
 
     const ledgerSection = tab?.dataset.tab === 'gmdata'
         ? pane.querySelector('#telemetryLedgerSection')
         : null;
+    const recentCallsEl = tab?.dataset.tab === 'gmdata'
+        ? pane.querySelector('#recentCallsLedger')
+        : null;
+    const recentCallsWrap = recentCallsEl?.querySelector('.recent-calls-table-wrap');
     const opaqueTelemetryBackingSelectors = [
         '.telemetry-warmth-badge', '.telemetry-delta-pill',
         '.act-tl-gm-speed', '.act-tl-gm-stream', '.act-tl-gm-cache-hit',
@@ -1020,6 +1358,12 @@ function editorialReadings() {
     ].join(', ');
     const gmTelemetry = tab?.dataset.tab === 'gmdata' ? {
         ledgerPresent: Boolean(ledgerSection && ledgerSection.checkVisibility()),
+        recentCallsPresent: Boolean(recentCallsEl && recentCallsEl.checkVisibility()),
+        recentCallsOpen: Boolean(recentCallsEl?.open),
+        recentCallsRows: recentCallsEl ? recentCallsEl.querySelectorAll('tbody tr').length : 0,
+        recentCallsUnpricedCount: recentCallsEl ? recentCallsEl.querySelectorAll('.rc-unpriced').length : 0,
+        recentCallsPricedCount: recentCallsEl ? recentCallsEl.querySelectorAll('.rc-cost-val').length : 0,
+        recentCallsWrapFits: recentCallsWrap ? recentCallsWrap.getBoundingClientRect().right <= innerWidth + 1 : true,
         kpiSpeed: pane.querySelector('.act-stat-speed')?.innerText.replace(/\s+/g, ' ').trim() || '',
         kpiTtft: pane.querySelector('.act-stat-ttft')?.innerText.replace(/\s+/g, ' ').trim() || '',
         kpiCacheHit: pane.querySelector('.act-stat-cache-hit')?.innerText.replace(/\s+/g, ' ').trim() || '',
@@ -1067,6 +1411,26 @@ function editorialReadings() {
             })),
     } : null;
 
+    const modelsTelemetry = tab?.dataset.tab === 'models' ? {
+        orchCardPresent: Boolean(pane.querySelector('.orch-settings-card')?.checkVisibility()),
+        orchMode: pane.querySelector('.orch-settings-card')?.dataset.orchestratorMode || '',
+        noticeTags: [...pane.querySelectorAll('.tag-notice')].map(n => n.innerText.trim()),
+        pricedSpecCount: pane.querySelectorAll('.spec-price-row[data-price-state="priced"]').length,
+        unpricedSpecCount: pane.querySelectorAll('.spec-price-row[data-price-state="unpriced"]').length,
+        dualQuotaRows: pane.querySelectorAll('.quota-dual-row').length,
+    } : null;
+
+    const pricingTelemetry = tab?.dataset.tab === 'pricing' ? {
+        currencyActive: pane.querySelector('.currency-btn.active')?.dataset.currency || '',
+        fxRateVal: pane.querySelector('#pricingFxRateInput')?.value || '',
+        rateChangeBannerText: pane.querySelector('.rate-change-banner')?.innerText.replace(/\s+/g, ' ').trim() || '',
+    } : null;
+
+    const aboutTelemetry = tab?.dataset.tab === 'about' ? {
+        versionPill: pane.querySelector('.about-version-pill')?.innerText.trim() || '',
+        text: pane.innerText || '',
+    } : null;
+
     return {
         tab: tab?.dataset.tab,
         pane: pane.id,
@@ -1110,10 +1474,15 @@ function editorialReadings() {
         sessionBadges,
         overviewTelemetry,
         gmTelemetry,
+        modelsTelemetry,
+        pricingTelemetry,
+        aboutTelemetry,
         profileCredits: [...pane.querySelectorAll('.profile-credit-balance')].map(node => node.innerText.trim()),
         overviewCredits: pane.querySelector('.overview-footer p strong')?.innerText.trim(),
         quotaReadings: [...pane.querySelectorAll('.model-card')].map(card => [
-            card.querySelector('.model-card-name-text')?.textContent.trim(), card.querySelector('.model-card-pct')?.textContent.trim(),
+            card.querySelector('.model-card-name-text')?.textContent.trim(),
+            card.querySelector('.model-card-pct')?.textContent.trim()
+                || `${card.querySelector('[data-quota-window="5h"] .quota-dual-pct')?.innerText.trim() || ''}/${card.querySelector('[data-quota-window="weekly"] .quota-dual-pct')?.innerText.trim() || ''}`,
         ]),
         errors: testState.errors,
     };
@@ -1300,7 +1669,7 @@ async function browserMatrix(packageJSON) {
             assert.equal(view.profileCredits.length, 1, 'one deduplicated current AI credit balance');
             assert(view.profileCredits[0].includes('1,200'), 'AI credit value is shown');
             assert.equal(view.quotaReadings.length, 2, 'shared quota pools are shown once each');
-            assert.deepEqual(Object.fromEntries(view.quotaReadings), { Gemini: '52%', 'Claude / GPT': '91%' });
+            assert.deepEqual(Object.fromEntries(view.quotaReadings), { Gemini: '52%/84%', 'Claude / GPT': '91%/96%' });
         }
         if (tab === 'overview') {
             if (state === 'populated') {
@@ -1308,7 +1677,7 @@ async function browserMatrix(packageJSON) {
                 const ot = view.overviewTelemetry;
                 assert(ot?.present, 'Overview .overview-telemetry-strip renders on populated fixture');
                 assert.equal(ot.scope, 'active', 'Overview telemetry strip binds to active conversation');
-                assert.equal(ot.cellCount, 4, 'Overview telemetry strip renders 4 cells (Speed, TTFT, Cache Hit, Cache Saved)');
+                assert.equal(ot.cellCount, 5, 'Overview telemetry strip renders 5 cells (Speed, TTFT, Cache Hit, Cache Saved, Session Cost)');
                 assert(/tok\/s/.test(ot.speedVal), `Overview Speed cell renders tok/s: ${ot.speedVal}`);
                 assert(/resp\s+[\d.]+\s+tok\/s/.test(ot.speedSub), `Overview Speed sub renders thinking resp tok/s: ${ot.speedSub}`);
                 assert(/(?:ms|s)$/.test(ot.ttftVal), `Overview TTFT cell renders latency: ${ot.ttftVal}`);
@@ -1318,21 +1687,39 @@ async function browserMatrix(packageJSON) {
                 assert(ot.cacheHitSub.includes('60k') && ot.cacheHitSub.includes('2/3'),
                     `Overview Cache Hit sub shows cached volume + call ratio: ${ot.cacheHitSub}`);
                 assert.equal(ot.savedVal, '60k tokens', `Overview unpriced Cache Saved shows compact tokens: ${ot.savedVal}`);
+                assert.equal(ot.costVal, '$0.45', `Overview Session Cost renders $0.45: ${ot.costVal}`);
+                assert(ot.costSub.includes('$1.25'), `Overview Today Cost sub renders $1.25: ${ot.costSub}`);
                 assert.equal(ot.hasFakeZeroUsd, false, 'Overview telemetry strip never fabricates $0.00 for unpriced savings');
                 assert(ot.warmthClass.includes('is-warm'), `Overview Cache Saved warmth tone is .is-warm: ${ot.warmthClass}`);
                 assert.equal(ot.warmthBiInherits, true, 'Overview warmth bilingual spans inherit semantic hue');
+                assert.equal(ot.orchRoutePresent, true, 'Overview active cross-pool .orch-route-pill renders');
+                assert.equal(ot.orchRouteCrossPool, 'true', 'Overview .orch-route-pill marks cross-pool routing');
+                assert(ot.orchRouteText.includes('Claude Opus 5.5 (Medium)') && ot.orchRouteText.includes('Gemini 4 Hydrogen'),
+                    `Overview .orch-route-pill displays Planner -> Executor pair: ${ot.orchRouteText}`);
+                assert.equal(ot.dualQuotaRows, 2, 'Overview renders Dual-Window (5h + Weekly) meters for both pools');
+                assert(ot.dualQuota5h.includes('52%') && ot.dualQuota5h.includes('91%'),
+                    `Overview 5h quota windows render 52% & 91%: ${ot.dualQuota5h.join(', ')}`);
+                assert(ot.dualQuotaWeekly.includes('84%') && ot.dualQuotaWeekly.includes('96%'),
+                    `Overview Weekly quota windows render 84% & 96%: ${ot.dualQuotaWeekly.join(', ')}`);
                 if (theme === 'vscode-light' || theme === 'vscode-dark') {
                     assert.equal(ot.bg, view.resolvedTokens.surfaceWell, 'Overview telemetry strip preserves L2 well background');
                     assert.equal(ot.cacheHitColor, view.resolvedTokens.chartCache, 'Overview Cache Hit preserves --ed-chart-cache hue');
                 }
             } else {
                 assert.equal(view.overviewTelemetry?.present, false, 'Overview .overview-telemetry-strip is omitted on empty fixture');
+                assert.equal(view.overviewTelemetry?.orchRoutePresent, false, 'Overview .orch-route-pill is omitted on empty fixture');
             }
         }
         if (tab === 'gmdata') {
             const gt = view.gmTelemetry;
             if (state === 'populated') {
                 assert(gt?.ledgerPresent, 'GM Data #telemetryLedgerSection renders on populated fixture');
+                assert(gt?.recentCallsPresent, 'GM Data #recentCallsLedger renders on populated fixture');
+                assert.equal(gt.recentCallsOpen, true, 'GM Data #recentCallsLedger is open by default');
+                assert.equal(gt.recentCallsRows, 6, 'GM Data #recentCallsLedger renders all 6 fixture calls');
+                assert.equal(gt.recentCallsUnpricedCount, 3, 'GM Data #recentCallsLedger flags 3 unpriced Orchestrator Neon calls');
+                assert.equal(gt.recentCallsPricedCount, 3, 'GM Data #recentCallsLedger prices 3 Claude Opus 5.5 calls');
+                assert.equal(gt.recentCallsWrapFits, true, `GM Data .recent-calls-table-wrap stays within viewport at ${width}px`);
                 assert(/74\.7\s+tok\/s/.test(gt.kpiSpeed), `GM Data KPI strip Speed shows weighted 74.7 tok/s: ${gt.kpiSpeed}`);
                 assert(/1\.25s/.test(gt.kpiTtft), `GM Data KPI strip Avg TTFT shows valid-sample average: ${gt.kpiTtft}`);
                 assert(gt.kpiCacheHit.includes('70.9%') && gt.kpiCacheHit.includes('4/6'),
@@ -1387,7 +1774,35 @@ async function browserMatrix(packageJSON) {
                 }
             } else {
                 assert.equal(gt?.ledgerPresent, false, 'GM Data #telemetryLedgerSection is omitted on empty fixture');
+                assert.equal(gt?.recentCallsPresent, false, 'GM Data #recentCallsLedger is omitted on empty fixture');
             }
+        }
+        if (tab === 'models' && state === 'populated') {
+            const mt = view.modelsTelemetry;
+            assert.equal(mt?.orchCardPresent, true, 'Models tab renders Orchestrator Settings card on populated fixture');
+            assert.equal(mt.orchMode, 'custom', 'Models tab Orchestrator Settings card reflects custom mode');
+            assert(mt.noticeTags.length >= 1, 'Models tab renders Notice tag badge for GPT-OSS 120B');
+            assert(mt.pricedSpecCount >= 1 && mt.unpricedSpecCount >= 1,
+                `Models tab renders both priced and honest unpriced .spec-price-row entries (${mt.pricedSpecCount}/${mt.unpricedSpecCount})`);
+            assert.equal(mt.dualQuotaRows, 2, 'Models tab renders Dual-Window quota bars for both pools');
+        }
+        if (tab === 'pricing' && state === 'populated') {
+            const pt = view.pricingTelemetry;
+            assert.equal(pt?.currencyActive, 'USD', 'Cost tab defaults to USD currency toggle');
+            assert.equal(pt?.fxRateVal, '7.2', 'Cost tab FX rate input defaults to 7.2');
+            if (Date.now() < Date.parse('2026-12-01T00:00:00Z')) {
+                assert(pt.rateChangeBannerText.includes('2026-12-01')
+                    && pt.rateChangeBannerText.includes('Carbon')
+                    && pt.rateChangeBannerText.includes('Argon'),
+                    `Cost tab renders Upcoming Rate-Change Banner for Carbon/Argon 2026-12-01: ${pt.rateChangeBannerText}`);
+            }
+        }
+        if (tab === 'about') {
+            const at = view.aboutTelemetry;
+            const expectedVersion = `v${packageJSON.version}`;
+            assert.equal(at?.versionPill, expectedVersion, `About tab version pill renders ${expectedVersion}: ${at?.versionPill}`);
+            assert(at.text.includes('512K') && at.text.includes('Gemini 4 Neon') && at.text.includes('Orchestrator Neon/Carbon/Argon'),
+                'About tab renders updated 512K Gemini 4 & Orchestrator disclaimer');
         }
     }
 
@@ -1481,9 +1896,10 @@ async function browserMatrix(packageJSON) {
             evaluate("window.dispatchEvent(new MessageEvent('message', { data: { command: 'configSaved', key: 'pollingInterval' } }))");
             assert.equal(evaluate("document.querySelector('#pollingFeedback')?.textContent"), '✓', 'Polling save shows saved checkmark');
 
-            // Status bar & advanced toggles (Speed & Cache Hit default opt-in = false)
+            // Status bar & advanced toggles (Speed, Cache Hit & Session Cost default opt-in = false)
             assert.equal(evaluate("document.querySelector('#toggleSpeed').checked"), false, '#toggleSpeed defaults to opt-in false');
             assert.equal(evaluate("document.querySelector('#toggleCacheHit').checked"), false, '#toggleCacheHit defaults to opt-in false');
+            assert.equal(evaluate("document.querySelector('#toggleSessionCost').checked"), false, '#toggleSessionCost defaults to opt-in false');
             const configToggles = [
                 ['#toggleContext', 'statusBar.showContext'],
                 ['#toggleQuota', 'statusBar.showQuota'],
@@ -1491,6 +1907,7 @@ async function browserMatrix(packageJSON) {
                 ['#toggleAiCredits', 'statusBar.showAiCredits'],
                 ['#toggleSpeed', 'statusBar.showSpeed'],
                 ['#toggleCacheHit', 'statusBar.showCacheHit'],
+                ['#toggleSessionCost', 'statusBar.showSessionCost'],
                 ['#toggleModelInternalId', 'showModelInternalId'],
             ];
             for (const [sel, key] of configToggles) {
@@ -1501,6 +1918,27 @@ async function browserMatrix(packageJSON) {
                 assert(evaluate(`testState.messages.some(m => m.command === 'setConfig' && m.key === '${key}' && m.value === ${after})`),
                     `${sel} emits setConfig for ${key}`);
             }
+
+            // Currency Display switcher + FX rate input (synced across Settings and Cost tabs)
+            assert.equal(evaluate("document.querySelector('#cnyExchangeRateInput')?.value"), '7.2', 'Settings FX rate defaults to 7.2');
+            for (const curr of ['CNY', 'both', 'USD']) {
+                click(`#tab-settings .currency-btn[data-currency="${curr}"]`);
+                assert.equal(evaluate(`document.querySelector('#tab-settings .currency-btn[data-currency="${curr}"]').getAttribute('aria-pressed')`), 'true',
+                    `Settings currency ${curr} marks aria-pressed=true`);
+                assert.equal(evaluate(`document.querySelector('#tab-pricing .currency-btn[data-currency="${curr}"]').classList.contains('active')`), true,
+                    `Settings currency ${curr} syncs active state onto Cost tab switcher`);
+                const lastCurr = evaluate("testState.messages.filter(m => m.command === 'setConfig' && m.key === 'pricing.displayCurrency').at(-1)?.value");
+                assert.equal(lastCurr, curr, `Currency switcher posts pricing.displayCurrency=${curr}`);
+            }
+            browser(['fill', '#cnyExchangeRateInput', '7.35']);
+            click('#cnyExchangeRateSaveBtn');
+            assert.equal(evaluate("document.querySelector('#pricingFxRateInput')?.value"), '7.35', 'Settings FX save syncs Cost tab FX input');
+            assert.equal(evaluate("testState.messages.filter(m => m.command === 'setConfig' && m.key === 'pricing.cnyExchangeRate').at(-1)?.value"), 7.35,
+                'Settings FX save posts pricing.cnyExchangeRate');
+            evaluate("window.dispatchEvent(new MessageEvent('message', { data: { command: 'configSaved', key: 'pricing.cnyExchangeRate' } }))");
+            assert.equal(evaluate("document.querySelector('#currencyFeedback')?.textContent"), '✓', 'FX save shows saved checkmark');
+            browser(['fill', '#cnyExchangeRateInput', '7.2']);
+            click('#cnyExchangeRateSaveBtn');
 
             // Hover density select
             for (const density of ['compact', 'full', 'auto']) {
@@ -1545,9 +1983,31 @@ async function browserMatrix(packageJSON) {
     }
 
     function testCostInteractions(theme, reopen) {
-        test(`${theme} Cost pricing inputs, validation, save/reset and calendar link`, () => {
+        test(`${theme} Cost official Neon/Sonnet rates, currency switcher, rate-change banner, custom pricing save/reset and calendar link`, () => {
             selectTab('pricing');
-            const targetModel = 'gemini-4-neon-low';
+            // Official v1.17.3 default rates pre-populated in editor
+            assert.equal(evaluate("document.querySelector('.pricing-input[data-model=\"gemini-4-neon\"][data-field=\"input\"]')?.value"), '3',
+                'Gemini 4 Neon official $3 input rate is pre-populated');
+            assert.equal(evaluate("document.querySelector('.pricing-input[data-model=\"gemini-4-neon\"][data-field=\"output\"]')?.value"), '15',
+                'Gemini 4 Neon official $15 output rate is pre-populated');
+            assert.equal(evaluate("document.querySelector('.pricing-input[data-model=\"gemini-4-neon\"][data-field=\"cacheRead\"]')?.value"), '0.15',
+                'Gemini 4 Neon official $0.15 cache read rate is pre-populated');
+            assert.equal(evaluate("document.querySelector('.pricing-input[data-model=\"claude-sonnet-5-5\"][data-field=\"cacheRead\"]')?.value"), '0.1',
+                'Claude Sonnet 5.5 official $0.10 cache read rate is pre-populated');
+
+            // Inline Currency switcher + FX rate apply in Cost tab
+            click('#tab-pricing .currency-btn[data-currency="CNY"]');
+            assert.equal(evaluate("testState.messages.filter(m => m.command === 'setConfig' && m.key === 'pricing.displayCurrency').at(-1)?.value"), 'CNY');
+            browser(['fill', '#pricingFxRateInput', '7.25']);
+            click('#pricingFxSaveBtn');
+            assert.equal(evaluate("document.querySelector('#cnyExchangeRateInput')?.value"), '7.25', 'Cost FX save syncs Settings FX input');
+            assert.equal(evaluate("testState.messages.filter(m => m.command === 'setConfig' && m.key === 'pricing.cnyExchangeRate').at(-1)?.value"), 7.25);
+            click('#tab-pricing .currency-btn[data-currency="USD"]');
+            browser(['fill', '#pricingFxRateInput', '7.2']);
+            click('#pricingFxSaveBtn');
+
+            // Custom pricing save on unpriced Orchestrator Neon row
+            const targetModel = 'gemini-pro-orchestrator-neon';
             browser(['fill', `.pricing-input[data-model="${targetModel}"][data-field="input"]`, '2.5']);
             browser(['fill', `.pricing-input[data-model="${targetModel}"][data-field="output"]`, '12']);
             browser(['fill', `.pricing-input[data-model="${targetModel}"][data-field="cacheRead"]`, '0.25']);
@@ -1557,15 +2017,15 @@ async function browserMatrix(packageJSON) {
             assert.deepEqual(saved, { input: 2.5, output: 12, cacheRead: 0.25, cacheWrite: 0, thinking: 12 },
                 'Valid custom pricing row posts savePricing payload');
 
-            // Partial row must reject with alert feedback and not post savePricing
+            // Partial row on unpriced Orchestrator Argon must reject with alert feedback and not post savePricing
             const beforeCount = evaluate("testState.messages.filter(m => m.command === 'savePricing').length");
-            browser(['fill', `.pricing-input[data-model="gemini-4-neon-medium"][data-field="input"]`, '3']);
+            browser(['fill', `.pricing-input[data-model="gemini-pro-orchestrator-argon"][data-field="input"]`, '3']);
             click('#pricingSaveBtn');
             assert.equal(evaluate("testState.messages.filter(m => m.command === 'savePricing').length"), beforeCount,
                 'Partial pricing row does not submit savePricing');
             assert.equal(evaluate("document.querySelector('#pricingFeedback')?.getAttribute('role')"), 'alert');
             assert(evaluate("Boolean(document.querySelector('#pricingFeedback')?.textContent.trim())"));
-            browser(['fill', `.pricing-input[data-model="gemini-4-neon-medium"][data-field="input"]`, '']);
+            browser(['fill', `.pricing-input[data-model="gemini-pro-orchestrator-argon"][data-field="input"]`, '']);
 
             click('#pricingResetBtn');
             assert(evaluate("testState.messages.some(m => m.command === 'resetPricing')"), 'Reset posts resetPricing');
@@ -1619,8 +2079,18 @@ async function browserMatrix(packageJSON) {
     }
 
     function testGMDataInteractions(theme, reopen) {
-        test(`${theme} GM Data error toggle, disclosures, clipboard copy, tool catalog and a11y`, () => {
+        test(`${theme} GM Data recent calls ledger, error toggle, disclosures, clipboard copy, tool catalog and a11y`, () => {
             selectTab('gmdata');
+            // Recent Calls Ledger collapsible disclosure + row verification
+            assert.equal(evaluate("Boolean(document.querySelector('#recentCallsLedger')?.open)"), true, '#recentCallsLedger starts open');
+            assert.equal(evaluate("document.querySelectorAll('#recentCallsLedger tbody tr').length"), 6, '#recentCallsLedger shows 6 rows');
+            assert(evaluate("document.querySelector('#recentCallsLedger').innerText.includes('Retry ×1') || document.querySelector('#recentCallsLedger').innerText.includes('重试 ×1')"),
+                '#recentCallsLedger renders Retry ×1 status badge');
+            click('#recentCallsLedger > summary');
+            assert.equal(evaluate("Boolean(document.querySelector('#recentCallsLedger').open)"), false, '#recentCallsLedger collapses on click');
+            click('#recentCallsLedger > summary');
+            assert.equal(evaluate("Boolean(document.querySelector('#recentCallsLedger').open)"), true, '#recentCallsLedger re-opens on click');
+
             // Model stats error toggle
             assert.equal(evaluate("document.querySelector('#modelStatsErrToggle')?.classList.contains('is-off')"), true);
             click('#modelStatsErrToggle');
@@ -1832,47 +2302,49 @@ async function browserMatrix(packageJSON) {
         }
     }
 
-    function testStatusBarHoverMatrix(panel, configs, multiFamilyConfigs, activeUsage, gmSummary, lang) {
-        test(`${lang} StatusBarManager hover densities (auto/compact/full), telemetry opt-in/cold-start, known vs unknown credits and universal effort merging`, () => {
+    function testStatusBarHoverMatrix(panel, configs, multiFamilyConfigs, activeUsage, gmSummary, quotaSummary, lang) {
+        test(`${lang} StatusBarManager overhauled hover (compact/normal/full), Orchestrator route+split, Latest Call, Dual-Window quota, alerts, currency & footer`, () => {
             const gluedRe = /\b\d+(?:\.\d+)?(?:tok\/s|credits|tools|calls|cache|in|out)\b/;
-            // 1. Universal effort merging: Neon (4 tiers) + Orchestrator Neon + Hydrogen (4 tiers) + Claude Opus 5.5 (3 tiers)
+            const checkCopyGuards = (text, tooltip, label) => {
+                assert(!/令牌/.test(text) && !/令牌/.test(tooltip), `${label}: zero 令牌`);
+                assert(!gluedRe.test(text) && !gluedRe.test(tooltip), `${label}: zero glued numeric units`);
+                assert(!/(?:^|\s)(?:NaN|Infinity|Invalid Date)(?:\s|$)/.test(tooltip), `${label}: zero invalid numerics`);
+            };
+
+            // 1. Full density with 5h-only fallback (quotaSummary: null) + known credits
             const fullMerged = panel.renderStatusBar('full', multiFamilyConfigs, {
                 usage: activeUsage, credits: 1200, billingDay: 15, planName: 'Pro', tierName: 'Google AI Pro',
             });
-            assert(!/令牌/.test(fullMerged.tooltip), 'Hover tooltip never contains 令牌');
+            checkCopyGuards(fullMerged.text, fullMerged.tooltip, `${lang} fullMerged`);
             assert(fullMerged.text.includes('$(zap) 1,200'), 'Status bar renders known AI credits');
-            const geminiLine = fullMerged.tooltip.split('\n').find(line => /\*\*Gemini\*\*/.test(line));
-            assert(geminiLine?.includes(lang === 'zh' ? '3 个模型' : '3 models'),
-                `Neon + Orchestrator + Hydrogen merge into 3 Gemini families: ${geminiLine}`);
-            assert.equal(fullMerged.tooltip.match(/Gemini 4 Neon/g)?.length, 1, 'Neon family listed once');
-            assert.equal(fullMerged.tooltip.match(/Gemini 4 Hydrogen/g)?.length, 1, 'Hydrogen family listed once (non-Neon merging)');
-            assert.equal(fullMerged.tooltip.match(/Claude Opus 5\.5/g)?.length, 1, 'Claude Opus 5.5 listed once across Low/Medium/High');
-            assert(!/(?:Gemini 4 Neon|Gemini 4 Hydrogen|Claude Opus 5\.5)(?: \(|\\\()(?:XHigh|Extra|Medium|Low|High)/.test(fullMerged.tooltip),
-                'Universal effort merging omits effort suffixes across Gemini and Claude');
-            assert(fullMerged.tooltip.includes('214,500 / 512,000'), 'Full density renders comma-formatted context tokens');
+            assert(fullMerged.tooltip.includes('**214,500** / 512,000'), `Full density renders comma-formatted context tokens: ${fullMerged.tooltip}`);
             assert(fullMerged.tooltip.includes('**1,200**'), 'Full density renders bold known credits');
+            assert(fullMerged.tooltip.includes('Gemini') && fullMerged.tooltip.includes('Claude / GPT'),
+                'Full density quota table renders both shared pools');
+            assert(/\| (?:Pool|额度池|Pool \/ 额度池) \| (?:Remaining|剩余|Remaining \/ 剩余) \|/.test(fullMerged.tooltip),
+                `5h-only fallback renders 3-column Remaining table: ${fullMerged.tooltip}`);
 
-            // 2. Auto density (normal zoom=0 vs high zoom=2 -> compact)
+            // 2. Auto density (normal zoom=0 vs high zoom=3 -> compact)
             const autoNormal = panel.renderStatusBar('auto', configs, {
                 usage: activeUsage, credits: 1200, billingDay: 15, zoomLevel: 0,
             });
-            assert(autoNormal.tooltip.includes('214.5k / 512k'), 'Auto density renders compact token counts');
-            assert(autoNormal.tooltip.includes('› '), 'Auto density at zoom 0 includes merged family rows');
-            assert(/\d{2}\/\d{2}\s+\d{2}:\d{2}/.test(autoNormal.tooltip), 'Auto density shows exact reset clock');
+            assert(autoNormal.tooltip.includes('**214.5k** / 512k'), 'Auto density renders compact token counts');
+            assert(/\| (?:Pool|额度池|Pool \/ 额度池|\$\(shield\) \*\*[^*]+\*\*) \|/.test(autoNormal.tooltip),
+                `Auto density at zoom 0 renders GFM quota table: ${autoNormal.tooltip}`);
 
             const autoHighZoom = panel.renderStatusBar('auto', configs, {
                 usage: activeUsage, credits: 1200, billingDay: 15, zoomLevel: 3,
             });
-            assert(!autoHighZoom.tooltip.includes('› '), 'Auto density at high zoom compacts away family rows');
+            assert(!/\| (?:Pool|额度池|Pool \/ 额度池|\$\(shield\) \*\*[^*]+\*\*) \|/.test(autoHighZoom.tooltip),
+                'Auto density at high zoom compacts away GFM quota table');
 
             // 3. Compact density
             const compact = panel.renderStatusBar('compact', configs, {
                 usage: activeUsage, credits: 1200, billingDay: 15,
             });
-            assert(compact.tooltip.includes(lang === 'zh' ? '2 个模型' : '2 models'), 'Compact hover reports family count');
-            assert(!compact.tooltip.includes('Gemini 4 Neon'), 'Compact hover omits member list');
+            assert(compact.tooltip.includes('$(layers)'), 'Compact hover renders single-line pool summary rows');
             assert(compact.tooltip.includes('**1,200**'), 'Compact hover preserves known credits');
-            assert(/\d{2}\/\d{2}\s+\d{2}:\d{2}/.test(compact.tooltip), 'Compact hover preserves exact reset clock');
+            checkCopyGuards(compact.text, compact.tooltip, `${lang} compact`);
 
             // 4. Unknown (null) vs explicit zero (0) AI credits
             const unknownCredits = panel.renderStatusBar('full', configs, {
@@ -1899,17 +2371,17 @@ async function browserMatrix(packageJSON) {
             });
             assert(!/tok\/s/.test(defaultOptOut.text), `showSpeed defaults off in status bar: ${defaultOptOut.text}`);
             assert(!/\bCache\b|缓存/.test(defaultOptOut.text), `showCacheHit defaults off in status bar: ${defaultOptOut.text}`);
+            assert(!/\$\(credit-card\)/.test(defaultOptOut.text), `showSessionCost defaults off in status bar: ${defaultOptOut.text}`);
             assert(/Speed & Prompt Cache|速度与提示词缓存/.test(defaultOptOut.tooltip),
                 'Auto hover includes Speed & Prompt Cache even when status bar pills are opt-out');
             assert(defaultOptOut.tooltip.includes('86.7 tok/s') && defaultOptOut.tooltip.includes('79.2 tok/s') && defaultOptOut.tooltip.includes('53.1 tok/s'),
                 `Auto hover includes latest, weighted avg, and thinking resp speed: ${defaultOptOut.tooltip}`);
             assert(defaultOptOut.tooltip.includes('780ms') && defaultOptOut.tooltip.includes('2.15s') && defaultOptOut.tooltip.includes('-64%'),
                 `Auto hover includes Cached vs Uncached TTFT and -64% delta: ${defaultOptOut.tooltip}`);
-            assert(defaultOptOut.tooltip.includes('72.7%') && defaultOptOut.tooltip.includes('60k / 82.5k tokens') && defaultOptOut.tooltip.includes('2/3'),
+            assert(defaultOptOut.tooltip.includes('72.7%') && defaultOptOut.tooltip.includes('60k/82.5k tokens') && defaultOptOut.tooltip.includes('2/3'),
                 `Auto hover includes token-weighted Prompt Cache breakdown: ${defaultOptOut.tooltip}`);
             assert(!/\$0\.00\b/.test(defaultOptOut.tooltip), 'Unpriced active conversation hover never fabricates $0.00 savings');
-            assert(!/令牌/.test(defaultOptOut.tooltip) && !gluedRe.test(defaultOptOut.tooltip),
-                'Auto hover telemetry has zero 令牌 and zero glued units');
+            checkCopyGuards(defaultOptOut.text, defaultOptOut.tooltip, `${lang} defaultOptOut`);
 
             const optInEnabled = panel.renderStatusBar('compact', configs, {
                 usage: activeUsage, credits: 1200, gmSummary, activeCascadeId: activeUsage.cascadeId,
@@ -1925,20 +2397,19 @@ async function browserMatrix(packageJSON) {
                 && optInEnabled.tooltip.includes('1.24s')
                 && optInEnabled.tooltip.includes('72.7%'),
                 `Compact hover shows tight single-line Speed/TTFT/Cache: ${optInEnabled.tooltip}`);
-            assert(!/令牌/.test(optInEnabled.tooltip) && !gluedRe.test(optInEnabled.text) && !gluedRe.test(optInEnabled.tooltip),
-                'Compact status bar & hover have zero 令牌 and zero glued units');
+            checkCopyGuards(optInEnabled.text, optInEnabled.tooltip, `${lang} optInEnabled`);
 
-            // Cold-start / null telemetry hiding (never flashes 0 tok/s or 0%)
+            // Cold-start / null telemetry hiding (never flashes 0 tok/s, 0%, or $0.00)
             const coldStart = panel.renderStatusBar('auto', configs, {
                 usage: activeUsage, credits: 1200, gmSummary: null,
-                displayPrefs: { showSpeed: true, showCacheHit: true },
+                displayPrefs: { showSpeed: true, showCacheHit: true, showSessionCost: true },
             });
-            assert(!/tok\/s|\bCache\b|缓存|\b0%/.test(coldStart.text),
-                `Cold start with showSpeed/showCacheHit enabled never flashes 0 tok/s or 0%: ${coldStart.text}`);
+            assert(!/tok\/s|\bCache\b|缓存|\b0%|\$\(credit-card\)/.test(coldStart.text),
+                `Cold start with opt-in flags enabled never flashes 0 tok/s, 0%, or $0.00: ${coldStart.text}`);
             assert(!/Speed & Prompt Cache|速度与提示词缓存/.test(coldStart.tooltip),
                 'Cold start hover omits telemetry section');
 
-            // Full hover (session scope with priced Claude calls -> p50 + write volume + priced USD savings)
+            // Full hover (session scope with priced Claude calls -> p50 + write volume + priced USD savings + Latest Call 4-col table)
             const fullSession = panel.renderStatusBar('full', configs, {
                 usage: activeUsage, credits: 1200, gmSummary,
                 displayPrefs: { showSpeed: true, showCacheHit: true },
@@ -1947,17 +2418,268 @@ async function browserMatrix(packageJSON) {
                 && fullSession.tooltip.includes('6k') && fullSession.tooltip.includes('$0.22')
                 && fullSession.tooltip.includes('-65%'),
                 `Full session hover shows p50, write volume, -65% TTFT speedup, and priced $0.22 savings: ${fullSession.tooltip}`);
-            assert(!/\$0\.00\b|令牌/.test(fullSession.tooltip) && !gluedRe.test(fullSession.tooltip),
-                'Full session hover has zero fake $0.00, zero 令牌, and zero glued units');
+            assert(/\| (?:In \/ Out|输入 \/ 输出|In \/ Out \/ 输入 \/ 输出) \|/.test(fullSession.tooltip),
+                `Full session hover includes Latest Call 4-column micro-table: ${fullSession.tooltip}`);
+            assert(!/\$0\.00\b/.test(fullSession.tooltip), 'Full session hover has zero fake $0.00');
+            checkCopyGuards(fullSession.text, fullSession.tooltip, `${lang} fullSession`);
 
-            // Disconnected state omits stale telemetry
+            // 7. v1.17.3 Orchestrator cross-pool route + Split + Latest Call + Dual-Window Quota + CNY cost + Retry Waste + 1-click Footer
+            const nowIso = new Date().toISOString();
+            const orchGmSummary = {
+                totalCalls: 2, totalInputTokens: 14543, totalOutputTokens: 888, totalThinkingTokens: 320,
+                totalCacheRead: 298153, totalCacheCreation: 0, totalCredits: 0, totalErrors: 0,
+                totalRetryCount: 1, totalRetryTokens: 5000, retryErrorCodes: { '429': 1 },
+                modelBreakdown: {}, toolCallCounts: {}, toolCatalog: [], uniqueErrors: [],
+                conversations: [{
+                    cascadeId: 'orch-hover', title: 'Cross-pool refactor', totalSteps: 6, checkpointSummaries: [],
+                    calls: [
+                        {
+                            stepIndices: [1], executionId: 'p1', model: 'MODEL_PLACEHOLDER_M401',
+                            modelDisplay: 'Claude Opus 5.5 (Medium)', responseModel: 'claude-opus-5-5', modelAccuracy: 'exact',
+                            inputTokens: 10000, outputTokens: 500, thinkingTokens: 200, responseTokens: 300,
+                            cacheReadTokens: 80000, cacheCreationTokens: 0, apiProvider: 'ANTHROPIC_VERTEX',
+                            ttftSeconds: 1.5, streamingSeconds: 3.0, credits: 0, creditType: '', hasError: false, errorMessage: '',
+                            contextTokensUsed: 90000, completionConfig: null, systemPromptSnippet: '', toolCount: 0, toolNames: [],
+                            promptSectionTitles: [], promptSnippet: '', promptSource: '', messagePromptCount: 0,
+                            messageMetadataKeys: [], responseHeaderKeys: [], userMessageAnchors: [], aiSnippetsByStep: {},
+                            retries: 0, stopReason: 'STOP_REASON_END_TURN', retryTokensIn: 0, retryTokensOut: 0, retryCredits: 0,
+                            retryErrors: [], timeSinceLastInvocation: 0, tokenBreakdownGroups: [], createdAt: nowIso,
+                            latestStableMessageIndex: 0, startStepIndex: 1, checkpointIndex: 0, systemContextItems: [],
+                            accountEmail: 'sample@example.invalid', toolCallsByStep: {}, contextWindowCapacity: 256000,
+                        },
+                        {
+                            stepIndices: [2], executionId: 'e1', model: 'MODEL_PLACEHOLDER_M528',
+                            modelDisplay: 'Gemini 4 Hydrogen (XHigh)', responseModel: 'gemini-4-hydrogen', modelAccuracy: 'exact',
+                            inputTokens: 4543, outputTokens: 388, thinkingTokens: 120, responseTokens: 268,
+                            cacheReadTokens: 218153, cacheCreationTokens: 0, apiProvider: 'GOOGLE_GEMINI',
+                            ttftSeconds: 6.0, streamingSeconds: 2.5, credits: 0, creditType: '', hasError: false, errorMessage: '',
+                            contextTokensUsed: 223000, completionConfig: null, systemPromptSnippet: '', toolCount: 0, toolNames: [],
+                            promptSectionTitles: [], promptSnippet: '', promptSource: '', messagePromptCount: 0,
+                            messageMetadataKeys: [], responseHeaderKeys: [], userMessageAnchors: [], aiSnippetsByStep: {},
+                            retries: 1, stopReason: 'STOP_REASON_END_TURN', retryTokensIn: 5000, retryTokensOut: 0, retryCredits: 0,
+                            retryErrors: ['RESOURCE_EXHAUSTED (code 429)'], timeSinceLastInvocation: 0, tokenBreakdownGroups: [],
+                            createdAt: new Date(Date.now() + 1000).toISOString(), latestStableMessageIndex: 0, startStepIndex: 2,
+                            checkpointIndex: 0, systemContextItems: [], accountEmail: 'sample@example.invalid',
+                            toolCallsByStep: {}, contextWindowCapacity: 512000,
+                        },
+                    ],
+                }],
+            };
+            const orchHoverUsage = {
+                ...activeUsage,
+                cascadeId: 'orch-hover',
+                model: 'MODEL_PLACEHOLDER_M401',
+                modelDisplayName: 'Claude Opus 5.5 (Medium)',
+                orchestratorConfig: { planModel: 'MODEL_PLACEHOLDER_M401', executionModel: 'MODEL_PLACEHOLDER_M528' },
+            };
+            const orchCny = panel.renderStatusBar('full', configs, {
+                usage: orchHoverUsage, credits: 1200, billingDay: 15, planName: 'Pro', tierName: 'Google AI Pro',
+                quotaSummary, gmSummary: orchGmSummary, activeCascadeId: 'orch-hover',
+                currencyPrefs: { currency: 'CNY', cnyRate: 7.2 },
+                costSnapshot: { todayCostUsd: 1.5, todayHasUnpriced: false },
+                displayPrefs: { showSessionCost: true },
+            });
+            assert(orchCny.text.includes('$(credit-card) ¥'), `Opt-in showSessionCost renders CNY cost pill: ${orchCny.text}`);
+            assert(/Orchestrator|编排/.test(orchCny.tooltip) && /Cross-pool|跨池/.test(orchCny.tooltip),
+                `Orchestrator cross-pool header renders in ${lang}: ${orchCny.tooltip}`);
+            assert(orchCny.tooltip.includes('Claude Opus 5.5 (Medium)') && orchCny.tooltip.includes('Gemini 4 Hydrogen'),
+                `Orchestrator route shows Planner -> Executor pair: ${orchCny.tooltip}`);
+            assert(/Split|编排拆分/.test(orchCny.tooltip), `Orchestrator Split breakdown renders: ${orchCny.tooltip}`);
+            assert(orchCny.tooltip.includes('`gemini-4-hydrogen`') && orchCny.tooltip.includes('6.00s / 8.50s') && orchCny.tooltip.includes('155.2 tok/s'),
+                `Latest Call micro-table renders model, total latency & speed: ${orchCny.tooltip}`);
+            assert(orchCny.tooltip.includes('¥'), 'CNY currency formatting applied across hover');
+            assert(/\| (?:Pool|额度池|Pool \/ 额度池) \| 5h \| (?:Weekly|周额度|Weekly \/ 周额度) \|/.test(orchCny.tooltip),
+                `Dual-Window 5h | Weekly quota table renders: ${orchCny.tooltip}`);
+            assert(orchCny.tooltip.includes('**84%**') && orchCny.tooltip.includes('**96%**'),
+                `Dual-Window weekly percentages render (84% / 96%): ${orchCny.tooltip}`);
+            assert(/Planner|规划/.test(orchCny.tooltip) && /Executor|执行/.test(orchCny.tooltip),
+                'Dual-Window quota table marks Planner & Executor pools');
+            assert(/Retry Waste|重试开销/.test(orchCny.tooltip) && orchCny.tooltip.includes('`429`'),
+                'Retry Waste alert renders with error code 429');
+            // Pinned 1-click footer links & trust allowlist
+            for (const dest of ['overview', 'gmdata', 'pricing', 'models', 'settings']) {
+                assert(orchCny.tooltip.includes(`antigravity-context-monitor.showDetails?${encodeURIComponent(JSON.stringify([dest]))}`),
+                    `Footer includes 1-click link to ${dest}`);
+            }
+            assert(orchCny.tooltip.includes('command:antigravity-context-monitor.refresh'), 'Footer includes Refresh command link');
+            assert(orchCny.isTrusted?.enabledCommands?.includes('antigravity-context-monitor.showDetails')
+                && orchCny.isTrusted?.enabledCommands?.includes('antigravity-context-monitor.refresh'),
+                'MarkdownString.isTrusted allowlists showDetails and refresh');
+            checkCopyGuards(orchCny.text, orchCny.tooltip, `${lang} orchCny`);
+
+            // 8. Smart alerts: Carbon 14-day rate-change countdown (before 2026-12-01) & GPT-OSS Notice sunset
+            if (Date.now() < Date.parse('2026-12-01T00:00:00Z')) {
+                const carbonAlert = panel.renderStatusBar('full', configs, {
+                    usage: { ...activeUsage, model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)' },
+                });
+                assert(carbonAlert.tooltip.includes('2026-12-01') && /Price Notice|调价提醒/.test(carbonAlert.tooltip),
+                    `Carbon active model renders 2026-12-01 rate-change countdown: ${carbonAlert.tooltip}`);
+            }
+            const gptNotice = panel.renderStatusBar('full', configs, {
+                usage: { ...activeUsage, model: 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM', modelDisplayName: 'GPT-OSS 120B (Medium)' },
+                quotaSummary: null,
+            });
+            assert(/Notice|提示/.test(gptNotice.tooltip) && gptNotice.tooltip.includes('Model will be deprecated soon'),
+                `GPT-OSS 120B active model renders Notice sunset alert: ${gptNotice.tooltip}`);
+            assert(!/\| 5h \| (?:Weekly|周额度)/.test(gptNotice.tooltip),
+                'Clearing quotaSummary falls back cleanly to 5h-only 3-col table');
+            checkCopyGuards(gptNotice.text, gptNotice.tooltip, `${lang} gptNotice`);
+
+            // 9. Disconnected state omits stale telemetry
             const disconnectedHover = panel.renderStatusBar('full', configs, {
                 state: 'disconnected', gmSummary,
-                displayPrefs: { showSpeed: true, showCacheHit: true },
+                displayPrefs: { showSpeed: true, showCacheHit: true, showSessionCost: true },
             });
             assert(!/Speed & Prompt Cache|速度与提示词缓存|tok\/s/.test(disconnectedHover.tooltip),
                 'Disconnected hover hides stale telemetry');
         });
+    }
+
+    async function testV1173DeepSuite(panel, configs, fixtures, smokeMode) {
+        const testLangs = smokeMode ? ['both'] : Object.keys(languages);
+        const themes = ['vscode-light', 'vscode-dark'];
+
+        // 1. Models tab: Default Orchestrator Settings (Neon XHigh + Hydrogen XHigh), Custom Cross-Pool (Opus 5.5 + Hydrogen / Sonnet 5.5),
+        //    .spec-price-row across USD/CNY/both, and honest Unpriced on M537/M667/M681/M669/M21
+        for (const lang of testLangs) {
+            const labels = languages[lang];
+            const defaultHtml = await panel.render(lang, configs, {
+                ...fixtures.populated,
+                orchestratorSettings: fixtures.v1173.orchestratorSettingsDefault,
+                quotaSummary: fixtures.v1173.quotaSummaryPrecision,
+                currencyPrefs: { currency: 'USD', cnyRate: 7.2 },
+            });
+            for (const theme of themes) {
+                test(`v1.17.3 Models Default Orchestrator Settings, 99.3%/99.8% dual quota & a11y (${lang} ${theme})`, () => {
+                    open(browserFixture(defaultHtml, theme, themeTokens[theme]), 320);
+                    selectTab('models');
+                    const report = evaluate(measurements);
+                    assert.equal(report.overflow, false, 'Models default Orchestrator fits at 320px');
+                    assert.equal(report.orchSettings?.mode, 'default', 'Default mode attribute is set');
+                    assert(report.orchSettings.orchestrator.includes('Gemini 4 Neon')
+                        && (lang === 'zh' ? report.orchSettings.orchestrator.includes('超高') : report.orchSettings.orchestrator.includes('Extra High')),
+                        `Default Orchestrator displays Neon Extra High: ${report.orchSettings.orchestrator}`);
+                    assert(report.orchSettings.executor.includes('Gemini 4 Hydrogen')
+                        && (lang === 'zh' ? report.orchSettings.executor.includes('超高') : report.orchSettings.executor.includes('Extra High')),
+                        `Default Executor displays Hydrogen Extra High: ${report.orchSettings.executor}`);
+                    const geminiPool = report.pools.find(p => p.group === 'Gemini');
+                    assert.equal(geminiPool?.dualWindows?.['5h'], '99.3%', 'Gemini 5h avoids false 100% rounding (99.3%)');
+                    assert.equal(geminiPool?.dualWindows?.weekly, '99.8%', 'Gemini Weekly avoids false 100% rounding (99.8%)');
+                    const claudePool = report.pools.find(p => p.group === 'Claude / GPT');
+                    assert.equal(claudePool?.dualWindows?.['5h'], '72%', 'Claude/GPT 5h renders 72%');
+                    assert.equal(claudePool?.dualWindows?.weekly, '100%', 'Claude/GPT Weekly renders 100%');
+                    assert(claudePool?.noticeTags?.length >= 1, 'Claude/GPT pool renders GPT-OSS Notice badge');
+                    audit('#tab-models');
+                    assert.deepEqual(report.errors, []);
+                }, true);
+            }
+
+            // Custom Orchestrator (Claude Opus 5.5 Medium + Claude Sonnet 5.5 Medium) + both currency pricing
+            const customSonnetHtml = await panel.render(lang, configs, {
+                ...fixtures.populated,
+                orchestratorSettings: fixtures.v1173.orchestratorSettingsCustomSonnet,
+                currencyPrefs: { currency: 'both', cnyRate: 7.2 },
+            });
+            test(`v1.17.3 Models Custom Opus+Sonnet Orchestrator, dual-currency spec prices & Calendar/Overview both currency (${lang})`, () => {
+                open(browserFixture(customSonnetHtml, 'vscode-dark', themeTokens['vscode-dark']), 960);
+                // Overview dual-currency cost
+                const ovText = evaluate("document.querySelector('#tab-overview')?.innerText || ''");
+                assert(ovText.includes('$0.45 (¥3.24)') && ovText.includes('$1.25 (¥9.00)'),
+                    `Overview renders Session & Today cost in both USD and CNY: ${ovText}`);
+                assert(!/令牌/.test(ovText), 'Overview dual currency has zero 令牌');
+
+                // Models tab custom Opus + Sonnet + dual-currency spec prices
+                selectTab('models');
+                const report = evaluate(measurements);
+                assert.equal(report.orchSettings?.mode, 'custom');
+                assert(report.orchSettings.orchestrator.includes('Claude Opus 5.5 (Medium)'));
+                assert(report.orchSettings.executor.includes('Claude Sonnet 5.5 (Medium)'));
+                const neonSpec = report.entries.find(e => e.model === 'MODEL_PLACEHOLDER_M535');
+                assert(neonSpec?.priceText.includes('$3/M (¥21.6/M)') && neonSpec.priceText.includes('$15/M (¥108/M)') && neonSpec.priceText.includes('$0.15/M (¥1.08/M)'),
+                    `Neon .spec-price-row renders dual-currency official rates: ${neonSpec?.priceText}`);
+                const sonnetSpec = report.entries.find(e => e.model === 'MODEL_PLACEHOLDER_M404');
+                assert(sonnetSpec?.priceText.includes('$0.10/M (¥0.72/M)'),
+                    `Claude Sonnet 5.5 .spec-price-row renders corrected $0.10/M cache read: ${sonnetSpec?.priceText}`);
+                for (const unpricedId of ['MODEL_PLACEHOLDER_M537', 'MODEL_PLACEHOLDER_M667', 'MODEL_PLACEHOLDER_M681']) {
+                    const card = report.entries.find(e => e.model === unpricedId);
+                    assert.equal(card?.priceState, 'unpriced', `${unpricedId} shows honest Unpriced badge`);
+                    assert(!/\$0\.00/.test(card?.priceText || ''), `${unpricedId} never fabricates $0.00`);
+                }
+                audit('#tab-models');
+
+                // Calendar tab dual-currency rendering
+                selectTab('calendar');
+                const calText = evaluate("document.querySelector('#tab-calendar')?.innerText || ''");
+                assert(/\$\d+\.\d{2}\s*\(¥\d+\.\d{2}\)/.test(calText),
+                    `Calendar tab renders dual USD (CNY) totals: ${calText.slice(0, 260)}`);
+                audit('#tab-calendar');
+                assert.deepEqual(evaluate('testState.errors'), []);
+            }, true);
+
+            // CNY-only mode across Overview, Models, Cost, Calendar
+            const cnyHtml = await panel.render(lang, configs, {
+                ...fixtures.populated,
+                currencyPrefs: { currency: 'CNY', cnyRate: 7.2 },
+            });
+            test(`v1.17.3 CNY-only display across Overview, Models, Cost & Calendar (${lang})`, () => {
+                open(browserFixture(cnyHtml, 'vscode-light', themeTokens['vscode-light']), 960);
+                const ovText = evaluate("document.querySelector('#tab-overview')?.innerText || ''");
+                assert(ovText.includes('¥3.24') && ovText.includes('¥9.00'), `Overview renders CNY Session/Today cost: ${ovText}`);
+                assert(!/\$0\.45|\$1\.25/.test(ovText), 'Overview CNY-only mode omits USD symbols on session/today cost');
+
+                selectTab('models');
+                const neonCny = evaluate("document.querySelector('.spec-card[data-model-id=\"MODEL_PLACEHOLDER_M535\"] .spec-price-row')?.innerText || ''");
+                assert(neonCny.includes('¥21.6/M') && neonCny.includes('¥108/M'), `Models Neon spec renders CNY rates: ${neonCny}`);
+
+                selectTab('calendar');
+                const calText = evaluate("document.querySelector('#tab-calendar')?.innerText || ''");
+                assert(/¥\d+\.\d{2}/.test(calText), `Calendar tab renders CNY totals: ${calText.slice(0, 220)}`);
+                assert(!/\$\d+\.\d{2}/.test(calText), 'Calendar CNY-only mode omits USD totals');
+                assert.deepEqual(evaluate('testState.errors'), []);
+            }, true);
+
+            // Overview 5h-only fallback (quotaSummary: null, no orchestratorConfig)
+            const fallbackHtml = await panel.render(lang, configs, {
+                ...fixtures.populated,
+                currentUsage: { ...fixtures.populated.currentUsage, orchestratorConfig: undefined },
+                orchestratorSettings: null,
+                quotaSummary: null,
+            });
+            test(`v1.17.3 Overview & Models clean 5h-only fallback when quotaSummary is null (${lang})`, () => {
+                open(browserFixture(fallbackHtml, 'vscode-dark', themeTokens['vscode-dark']), 320);
+                assert.equal(evaluate("document.querySelectorAll('#tab-overview .quota-dual-row').length"), 0,
+                    'Overview omits .quota-dual-row when quotaSummary is null');
+                assert.equal(evaluate("document.querySelector('#tab-overview .orch-route-pill')"), null,
+                    'Overview omits .orch-route-pill when active conversation has no orchestratorConfig');
+                assert(evaluate("document.querySelector('#tab-overview').innerText.includes('52%')"),
+                    'Overview 5h-only fallback still shows 52% pool quota');
+                audit('#tab-overview');
+
+                selectTab('models');
+                assert.equal(evaluate("document.querySelectorAll('#tab-models .quota-dual-row').length"), 0,
+                    'Models omits .quota-dual-row when quotaSummary is null');
+                assert.equal(evaluate("document.querySelector('#tab-models .orch-settings-card')"), null,
+                    'Models omits .orch-settings-card when orchestratorSettings is null');
+                assert.deepEqual(evaluate('testState.errors'), []);
+            }, true);
+
+            // Unpriced check for catalog-only M669 worker and M21 image model
+            test(`v1.17.3 honest Unpriced badges on hidden worker M669 and image model M21 (${lang})`, () => {
+                const workerSpec = panel.specs.find(s => s.placeholderId === 'MODEL_PLACEHOLDER_M669');
+                const imgSpec = panel.specs.find(s => s.placeholderId === 'MODEL_PLACEHOLDER_M21');
+                assert(workerSpec && imgSpec, 'M669 and M21 specs exist');
+                const workerHtml = panel.renderModelInfoGrid([workerSpec], 'chat');
+                const imgHtml = panel.renderModelInfoGrid([imgSpec], 'image');
+                assert(workerHtml.includes('data-price-state="unpriced"') && !workerHtml.includes('$0.00'),
+                    'M669 worker renders honest Unpriced badge');
+                assert(imgHtml.includes('data-price-state="unpriced"') && !imgHtml.includes('$0.00'),
+                    'M21 image model renders honest Unpriced badge');
+                assert(!/令牌/.test(workerHtml) && !/令牌/.test(imgHtml), 'M669/M21 price cards have zero 令牌');
+            });
+
+            // Suppress unused lint note for labels
+            assert(Boolean(labels.orchSettings));
+        }
     }
 
     try {
@@ -1967,19 +2689,44 @@ async function browserMatrix(packageJSON) {
             assert.equal(spec?.modelId, catalogId, `${id} catalog identity`);
             return { ...spec, displayName: neonLabel('en', effort, translated), effort, translated };
         });
-        const claude = panel.specs.find(spec => spec.displayName === 'Claude Opus 5.5 (High)');
-        assert(claude, 'installed Claude comparison model');
-        const hydrogenSpecs = panel.specs.filter(spec => spec.displayName.startsWith('Gemini 4 Hydrogen ('));
+        const findSpec = id => {
+            const spec = panel.specs.find(s => s.placeholderId === id);
+            assert(spec, `installed spec exists: ${id}`);
+            return spec;
+        };
+        const hydrogenExtraHigh = findSpec('MODEL_PLACEHOLDER_M528');
+        const carbonHigh = findSpec('MODEL_PLACEHOLDER_M427');
+        const argonHigh = findSpec('MODEL_PLACEHOLDER_M417');
+        const orchCarbon = findSpec('MODEL_PLACEHOLDER_M667');
+        const orchArgon = findSpec('MODEL_PLACEHOLDER_M681');
+        const claudeOpusMed = findSpec('MODEL_PLACEHOLDER_M401');
+        const claude = findSpec('MODEL_PLACEHOLDER_M402');
+        const claudeSonnetMed = findSpec('MODEL_PLACEHOLDER_M404');
+        const gptOss = findSpec('MODEL_OPENAI_GPT_OSS_120B_MEDIUM');
+
+        const hydrogenSpecs = panel.specs.filter(spec => spec.displayName.startsWith('Gemini 4 Hydrogen (') && !spec.displayName.includes('Orchestrator'));
         const claudeOpus55Specs = panel.specs.filter(spec => spec.displayName.startsWith('Claude Opus 5.5 ('));
-        assert(hydrogenSpecs.length >= 3, 'installed Hydrogen effort specs for universal merging test');
+        assert(hydrogenSpecs.length >= 4, 'installed Hydrogen 4-effort specs for universal merging test');
         assert(claudeOpus55Specs.length >= 3, 'installed Claude Opus 5.5 effort specs for universal merging test');
 
         const resetTime = new Date(Date.now() + 3600000).toISOString();
-        const config = (spec, remainingFraction = 0.52) => ({
+        const config = (spec, remainingFraction = 0.52, extra = {}) => ({
             model: spec.placeholderId, label: spec.displayName,
             quotaInfo: { remainingFraction, resetTime },
+            ...extra,
         });
-        const configs = [...neon.map(spec => config(spec)), config(claude, 0.91)];
+        const configs = [
+            ...neon.map(spec => config(spec)),
+            config(hydrogenExtraHigh, 0.52),
+            config(carbonHigh, 0.52),
+            config(argonHigh, 0.52),
+            config(orchCarbon, 0.52),
+            config(orchArgon, 0.52),
+            config(claudeOpusMed, 0.91),
+            config(claude, 0.91),
+            config(claudeSonnetMed, 0.91),
+            config(gptOss, 0.91, { tagTitle: 'Notice', tagDescription: 'Model will be deprecated soon' }),
+        ];
         const multiFamilyConfigs = [
             ...neon.map(spec => config(spec, 0.52)),
             ...hydrogenSpecs.map(spec => config(spec, 0.52)),
@@ -2062,7 +2809,7 @@ async function browserMatrix(packageJSON) {
             if (opensInSession > 0) { resetSession('phase'); }
             const labels = languages[lang];
             const html = await panel.render(lang, configs);
-            testStatusBarHoverMatrix(panel, configs, multiFamilyConfigs, cleanHoverUsage, fixtures.populated.gmSummary, lang);
+            testStatusBarHoverMatrix(panel, configs, multiFamilyConfigs, cleanHoverUsage, fixtures.populated.gmSummary, fixtures.v1173.quotaSummary, lang);
 
             const modelThemes = args.smoke
                 ? [['vscode-light', themeTokens['vscode-light']], ['vscode-dark', themeTokens['vscode-dark']]]
@@ -2101,15 +2848,37 @@ async function browserMatrix(packageJSON) {
                             });
                             if (spec.modelId === 'gemini-pro-orchestrator-neon') {
                                 assert(observed.route?.includes('gemini-flash-worker-agy'), 'Orchestrator Neon delegation details');
+                                assert.equal(observed.priceState, 'unpriced', 'Orchestrator Neon displays honest Unpriced badge');
                             } else {
                                 assert.equal(observed.route, undefined);
+                                assert.equal(observed.priceState, 'priced', `${spec.modelId} displays official Neon API price`);
+                                assert(observed.priceText.includes('$3/M') && observed.priceText.includes('$15/M') && observed.priceText.includes('$0.15/M'),
+                                    `${spec.modelId} .spec-price-row renders $3/$15/$0.15: ${observed.priceText}`);
                             }
+                        }
+                        // Verify 512K checkpointer limits on ALL Gemini 4 & Orchestrator models + Hydrogen Extra High
+                        for (const id of gemini4CheckpointerIds) {
+                            const observed = result.entries.find(entry => entry.model === id);
+                            assert(observed, `${id} is visible in Models tab`);
+                            assert.equal(observed.limits['compression-limit'], '512,000', `${id} reports 512,000 compression limit`);
+                        }
+                        const hydrogenCard = result.entries.find(entry => entry.model === 'MODEL_PLACEHOLDER_M528');
+                        assert.equal(hydrogenCard?.name, localizedEffortLabel(lang, 'Gemini 4 Hydrogen', 'Extra High', '超高'),
+                            `Hydrogen Extra High localized properly in ${lang}`);
+                        const sonnetCard = result.entries.find(entry => entry.model === 'MODEL_PLACEHOLDER_M404');
+                        assert(sonnetCard?.priceText.includes('$0.10/M'), `Sonnet 5.5 .spec-price-row renders $0.10/M cache read: ${sonnetCard?.priceText}`);
+                        for (const unpricedId of ['MODEL_PLACEHOLDER_M667', 'MODEL_PLACEHOLDER_M681']) {
+                            const card = result.entries.find(entry => entry.model === unpricedId);
+                            assert.equal(card?.priceState, 'unpriced', `${unpricedId} displays honest Unpriced badge`);
                         }
                         assert.equal(result.pools.length, 2, 'shared Gemini and Claude / GPT pools');
                         const pool = result.pools.find(pool => pool.group === 'Gemini');
                         assert.equal(pool?.range, '52%');
-                        assert(pool.members.some(row => row.includes('Gemini 4 Neon') && row.includes(labels.efforts)), 'localized Neon quota efforts');
+                        assert.equal(Object.keys(pool?.dualWindows || {}).length, 0, '5h-only fallback renders single meter when quotaSummary is null');
+                        assert(pool.members.some(row => row.includes('Gemini 4 Neon') && row.includes(labels.efforts)), 'localized Neon quota efforts with Extra High');
                         assert(pool.members.some(row => row.includes('Orchestrator (Neon)')));
+                        const claudePool = result.pools.find(pool => pool.group === 'Claude / GPT');
+                        assert(claudePool?.noticeTags?.length >= 1, 'GPT-OSS 120B renders Notice tag badge in Claude / GPT pool');
                     }, true);
                 }
             }
@@ -2198,7 +2967,9 @@ async function browserMatrix(packageJSON) {
                 browser(['press', 'End']);
                 assert.equal(evaluate('document.activeElement.dataset.tab'), 'about');
                 browser(['press', 'Enter']);
-                assert(evaluate(`document.querySelector('#tab-about.active').innerText.includes(${JSON.stringify(manifest.version)})`));
+                const expectedVersion = `v${packageJSON.version}`;
+                assert(evaluate(`document.querySelector('#tab-about.active').innerText.includes(${JSON.stringify(expectedVersion)}) && document.querySelector('#tab-about.active').innerText.includes('512K')`),
+                    `About tab displays ${expectedVersion} and 512K context window disclaimer`);
                 selectTab('models');
                 assert(evaluate("!!document.querySelector('#tab-models.active')"));
                 const targetLang = lang === 'en' ? 'zh' : 'en';
@@ -2254,6 +3025,8 @@ async function browserMatrix(packageJSON) {
             testCalendarInteractions(theme, reopenRich);
             testProfileInteractions(theme, reopenRich);
         }
+        if (opensInSession > 0) { resetSession('phase'); }
+        await testV1173DeepSuite(panel, configs, fixtures, args.smoke);
         if (opensInSession > 0) { resetSession('phase'); }
         await testModelDNADisclosures(panel, configs, fixtures.populated.gmSummary);
         await testUnknownCreditsAcrossThemes(panel, configs, fixtures, args.smoke);

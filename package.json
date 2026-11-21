@@ -2,7 +2,7 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Window Monitor",
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
-  "version": "1.17.2",
+  "version": "1.17.3",
   "publisher": "AGI-is-going-to-arrive",
   "license": "MIT",
   "repository": {
@@ -101,6 +101,28 @@
           "type": "boolean",
           "default": false,
           "description": "Show token-weighted prompt cache hit rate (%) in the status bar / 在状态栏显示按 token 加权的提示词缓存命中率（%）"
+        },
+        "antigravityContextMonitor.statusBar.showSessionCost": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show estimated session cost in the status bar / 在状态栏显示当前会话估算费用"
+        },
+        "antigravityContextMonitor.pricing.displayCurrency": {
+          "type": "string",
+          "enum": [
+            "USD",
+            "CNY",
+            "both"
+          ],
+          "default": "USD",
+          "description": "Display currency for cost estimates across the hover tooltip, Cost tab, GM Data, and Calendar (offline local conversion) / 费用估算的显示币种（悬停提示、费用页、活动数据与日历，使用本地参考汇率换算）"
+        },
+        "antigravityContextMonitor.pricing.cnyExchangeRate": {
+          "type": "number",
+          "default": 7.2,
+          "minimum": 0.01,
+          "maximum": 1000,
+          "description": "Reference USD-to-CNY exchange rate used when displaying CNY costs (offline local setting, no external network requests) / 显示人民币费用时使用的美元兑人民币参考汇率（本地离线配置，不发起外部网络请求）"
         },
         "antigravityContextMonitor.statusBar.tooltipDensity": {
           "type": "string",

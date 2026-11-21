@@ -104,7 +104,14 @@ describe('Claude 5.5 pricing boundaries', () => {
         }
         expect(expected).toEqual(model.family === 'Opus'
             ? { input: 4, output: 20, cacheRead: 0.20, cacheWrite: 5, thinking: 20 }
-            : { input: 2, output: 10, cacheRead: 0.20, cacheWrite: 2.50, thinking: 10 });
+            : { input: 2, output: 10, cacheRead: 0.10, cacheWrite: 2.50, thinking: 10 });
+    });
+
+    it('supports xhigh variant suffix on Claude 5.5 without leaking malformed names', () => {
+        expect(findPricing('claude-opus-5-5-xhigh')).toBe(DEFAULT_PRICING['claude-opus-5-5']);
+        expect(findPricing('claude-sonnet-5-5-xhigh')).toBe(DEFAULT_PRICING['claude-sonnet-5-5']);
+        expect(findPricing('claude-opus-5-5-xhighest')).toBeNull();
+        expect(findPricing('claude-sonnet-5-5-extra-garbage')).toBeNull();
     });
 
     it('does not price a future version or partial family from nearby rows', () => {

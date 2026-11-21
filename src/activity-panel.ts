@@ -7,10 +7,17 @@ import { tBi, formatNumber } from './i18n';
 import { ActivitySummary } from './activity-tracker';
 import { esc, formatShortTime as formatTime, tBiHtml } from './webview-helpers';
 import type { ContextUsage } from './tracker';
-import type { GMSummary, GMModelStats, GMSystemContextItem } from './gm-tracker';
+import type { GMSummary, GMModelStats, GMCallEntry, GMSystemContextItem } from './gm-tracker';
 import { currentAICredits, formatCreditTypeLabel } from './account-credits';
 import { normalizeModelDisplayName } from './models';
-import { findPricingWithCustom, costFromTokens, selectPricingModel, type ModelPricing } from './pricing-store';
+import { findPricingWithCustom, findPricingForDate, costFromTokens, selectPricingModel, type ModelPricing } from './pricing-store';
+import {
+    DEFAULT_CNY_EXCHANGE_RATE,
+    DEFAULT_DISPLAY_CURRENCY,
+    formatCurrencyCost,
+    normalizeCurrencyPrefs,
+    type CurrencyPrefs,
+} from './currency';
 import { toLocalDateKey, type LedgerAccountBucket, type LedgerSettledEntry } from './daily-ledger';
 import { formatResetCountdown, parseResetDate } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
@@ -33,10 +40,26 @@ function fmtCompactTokens(n: number): string {
     return String(Math.round(n));
 }
 
-function formatSavingsUsd(amount: number): string {
-    if (amount < 0.0001) { return '<$0.0001'; }
-    if (amount < 0.01) { return `$${amount.toFixed(4)}`; }
-    return `$${amount.toFixed(2)}`;
+function formatSavingsMoney(
+    amount: number,
+    prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE },
+): string {
+    if (!Number.isFinite(amount) || amount <= 0) { return ''; }
+    if (prefs.currency === 'USD') {
+        if (amount < 0.0001) { return '<$0.0001'; }
+        if (amount < 0.01) { return `$${amount.toFixed(4)}`; }
+        return `$${amount.toFixed(2)}`;
+    }
+    const cny = amount * prefs.cnyRate;
+    if (!Number.isFinite(cny)) { return ''; }
+    if (prefs.currency === 'CNY') {
+        if (cny < 0.0001) { return '<¥0.0001'; }
+        const formatted = formatCurrencyCost(amount, prefs, { precision: 'standard' });
+        return formatted === '—' ? '' : formatted;
+    }
+    const usdPart = amount < 0.0001 ? '<$0.0001' : (amount < 0.01 ? `$${amount.toFixed(4)}` : `$${amount.toFixed(2)}`);
+    const cnyPart = cny < 0.0001 ? '<¥0.0001' : (cny < 0.01 ? `¥${cny.toFixed(4)}` : `¥${cny.toFixed(2)}`);
+    return `${usdPart} (${cnyPart})`;
 }
 
 function formatSpeedRange(minTokPerSec: number, maxTokPerSec: number): string {
@@ -117,6 +140,7 @@ export function buildGMDataTabContent(
     todayLedgerActive?: LedgerAccountBucket[],
     ledgerSettled?: LedgerSettledEntry[],
     customPricing: Record<string, ModelPricing> = {},
+    currencyPrefs?: Partial<CurrencyPrefs>,
 ): string {
     if (!summary && (!gmSummary || gmSummary.totalCalls === 0)) {
         return `<p class="empty-msg">${tBiHtml(
@@ -125,6 +149,7 @@ export function buildGMDataTabContent(
         )}</p>`;
     }
 
+    const prefs = normalizeCurrencyPrefs(currencyPrefs);
     const parts: string[] = [];
     const telemetry = computeTelemetrySummary(gmSummary, {
         activeCascadeId: currentUsage?.cascadeId,
@@ -136,7 +161,12 @@ export function buildGMDataTabContent(
 
     // ── Dedicated Editorial Telemetry Ledger (Speed, Cached vs Uncached TTFT, Prompt Cache)
     if (gmSummary && telemetry.overall.totalCalls > 0) {
-        parts.push(buildTelemetryLedgerSection(telemetry));
+        parts.push(buildTelemetryLedgerSection(telemetry, prefs));
+    }
+
+    // ── Recent Calls Ledger Table (latest 20 account-filtered calls)
+    if (gmSummary && gmSummary.conversations.some(c => c.calls.length > 0)) {
+        parts.push(buildRecentCallsLedger(gmSummary, customPricing, prefs));
     }
 
     // ── Recent Timeline (activity)
@@ -144,7 +174,7 @@ export function buildGMDataTabContent(
 
     // ── Model Cards (merged activity counts + GM precision + telemetry)
     const activeEmail = accountSnapshots?.find(s => s.isActive)?.email || '';
-    parts.push(buildModelCards(summary, gmSummary, activeEmail, customPricing, telemetry));
+    parts.push(buildModelCards(summary, gmSummary, activeEmail, customPricing, telemetry, prefs));
 
     // ── Today's Ledger Panel (real-time incremental accumulation)
     if (todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) {
@@ -2598,6 +2628,143 @@ export function getGMDataTabStyles(): string {
         outline-offset: 2px;
     }
 
+    /* ─── Recent Calls Ledger Table (320px-safe horizontal scroll) ─── */
+    .recent-calls-card {
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
+        margin-bottom: 18px;
+        overflow: hidden;
+    }
+    .recent-calls-summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 11px 14px;
+        background: var(--ed-surface-well);
+        border-bottom: 1px solid transparent;
+        cursor: pointer;
+        user-select: none;
+        list-style: none;
+        font-size: 0.84rem;
+        font-weight: 600;
+        color: var(--ed-ink);
+    }
+    .recent-calls-summary::-webkit-details-marker { display: none; }
+    .recent-calls-card[open] > .recent-calls-summary {
+        border-bottom-color: var(--ed-border);
+    }
+    .recent-calls-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+    }
+    .recent-calls-count {
+        font-size: 0.72rem;
+        font-weight: 550;
+        color: var(--ed-ink-muted);
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: 9999px;
+        padding: 1px 8px;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .recent-calls-table-wrap {
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .recent-calls-table-wrap:focus-visible {
+        outline: 2px solid var(--ed-accent);
+        outline-offset: -2px;
+    }
+    .recent-calls-table {
+        width: 100%;
+        min-width: 640px;
+        border-collapse: collapse;
+        font-size: 0.76rem;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .recent-calls-table th {
+        text-align: left;
+        padding: 8px 10px;
+        font-size: 0.71rem;
+        font-weight: 600;
+        color: var(--ed-ink-muted);
+        background: var(--ed-surface-well);
+        border-bottom: 1px solid var(--ed-border);
+        white-space: nowrap;
+    }
+    .recent-calls-table th.rc-num,
+    .recent-calls-table td.rc-num {
+        text-align: right;
+    }
+    .recent-calls-table td {
+        padding: 7px 10px;
+        border-bottom: 1px solid var(--ed-border);
+        color: var(--ed-ink);
+        white-space: nowrap;
+        vertical-align: middle;
+    }
+    .recent-calls-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+    @media (hover: hover) {
+        .recent-calls-table tbody tr:hover td {
+            background: var(--ed-surface-hover);
+        }
+    }
+    .rc-model-cell {
+        font-family: var(--ed-mono);
+        font-size: 0.73rem;
+        max-width: 190px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .rc-sub {
+        display: inline-block;
+        margin-left: 4px;
+        font-size: 0.68rem;
+        color: var(--ed-ink-muted);
+    }
+    .rc-cache-hi { color: var(--ed-chart-cache, var(--ed-good)); font-weight: 600; }
+    .rc-cost-val { font-weight: 600; color: var(--ed-ink); }
+    .rc-unpriced {
+        display: inline-flex;
+        align-items: center;
+        padding: 1px 6px;
+        border-radius: var(--ed-radius-xs);
+        font-size: 0.69rem;
+        font-weight: 550;
+        background: var(--ed-surface-well);
+        color: var(--ed-ink-muted);
+        border: 1px solid var(--ed-border);
+    }
+    .rc-muted { color: var(--ed-ink-muted); }
+    .rc-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.72rem;
+        font-weight: 550;
+    }
+    .rc-status-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        display: inline-block;
+        flex-shrink: 0;
+    }
+    .rc-status.is-ok { color: var(--ed-good); }
+    .rc-status.is-ok .rc-status-dot { background: var(--ed-good); }
+    .rc-status.is-retry { color: var(--ed-warn); }
+    .rc-status.is-retry .rc-status-dot { background: var(--ed-warn); }
+    .rc-status.is-err { color: var(--ed-danger); }
+    .rc-status.is-err .rc-status-dot { background: var(--ed-danger); }
+
     /* ─── Responsive Breakpoints (Zero Overflow down to 320px) ─── */
     @media (max-width: 680px) {
         .telemetry-ledger-grid {
@@ -2852,7 +3019,10 @@ function buildSummaryBar(
     </div>`;
 }
 
-function buildTelemetryLedgerSection(telemetry: SessionTelemetrySummary): string {
+function buildTelemetryLedgerSection(
+    telemetry: SessionTelemetrySummary,
+    prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE },
+): string {
     const o = telemetry.overall;
     if (o.totalCalls <= 0) { return ''; }
 
@@ -3045,8 +3215,11 @@ function buildTelemetryLedgerSection(telemetry: SessionTelemetrySummary): string
         ? `<span class="telemetry-ledger-sub"><span>· ${tBiHtml('Reuse', '复用')} ${esc(formatCachePercent(o.cacheReuseRate))}</span></span>`
         : '';
 
+    const savingsMoney = o.estCacheSavingsUsd !== null && o.estCacheSavingsUsd > 0
+        ? formatSavingsMoney(o.estCacheSavingsUsd, prefs)
+        : '';
     const savingsHtml = o.estCacheSavedTokens > 0
-        ? `<span><b>${fmt(o.estCacheSavedTokens)}</b> tokens</span>${o.estCacheSavingsUsd !== null && o.estCacheSavingsUsd > 0 ? `<span class="telemetry-savings-usd">· ${esc(formatSavingsUsd(o.estCacheSavingsUsd))}</span>` : ''}`
+        ? `<span><b>${fmt(o.estCacheSavedTokens)}</b> tokens</span>${savingsMoney ? `<span class="telemetry-savings-usd">· ${esc(savingsMoney)}</span>` : ''}`
         : `<span class="telemetry-ledger-muted">—</span>`;
 
     const cacheHeroCls = o.tokenCacheHitRate === null ? ' is-empty' : o.tokenCacheHitRate > 0 ? ' is-cache' : '';
@@ -3096,12 +3269,150 @@ function buildTelemetryLedgerSection(telemetry: SessionTelemetrySummary): string
     </section>`;
 }
 
+const MAX_RECENT_CALLS_ROWS = 20;
+
+function formatRecentCallCachePct(rate: number | null): string {
+    if (rate === null || !Number.isFinite(rate)) { return '—'; }
+    const pct = Math.max(0, Math.min(100, rate * 100));
+    return `${pct.toFixed(2)}%`;
+}
+
+/**
+ * Build the collapsible Recent Calls Ledger table (latest 20 account-filtered calls).
+ * Presents actual model, fresh input, output (thinking share), cache hit %, call cost
+ * (or honest Unpriced badge), TTFT, total latency (TTFT+stream), noise-gated speed, and status.
+ */
+function buildRecentCallsLedger(
+    gm: GMSummary,
+    customPricing: Record<string, ModelPricing>,
+    prefs: CurrencyPrefs,
+): string {
+    const allCalls: GMCallEntry[] = [];
+    for (const conv of gm.conversations) {
+        for (const call of conv.calls) {
+            allCalls.push(call);
+        }
+    }
+    if (allCalls.length === 0) { return ''; }
+
+    const indexed = allCalls.map((call, order) => ({
+        call,
+        order,
+        ts: call.createdAt ? Date.parse(call.createdAt) : Number.NaN,
+    }));
+    indexed.sort((a, b) => {
+        const aValid = Number.isFinite(a.ts);
+        const bValid = Number.isFinite(b.ts);
+        if (aValid && bValid && a.ts !== b.ts) { return b.ts - a.ts; }
+        if (aValid !== bValid) { return aValid ? -1 : 1; }
+        return b.order - a.order;
+    });
+
+    const recent = indexed.slice(0, MAX_RECENT_CALLS_ROWS);
+    const rowsHtml: string[] = [];
+
+    for (const { call } of recent) {
+        const timeStr = call.createdAt ? formatTime(call.createdAt) : '—';
+        const actualModelRaw = call.responseModel || call.modelDisplay || call.model || '—';
+        const displayModel = call.responseModel
+            ? call.responseModel
+            : (normalizeModelDisplayName(call.modelDisplay || call.model) || actualModelRaw);
+        const modelTooltip = [call.modelDisplay || call.model, call.responseModel]
+            .filter((v, i, arr) => v && arr.indexOf(v) === i)
+            .join(' · ');
+
+        const freshIn = formatNumber(Math.max(0, call.inputTokens || 0));
+        const totalOut = Math.max(0, call.outputTokens || 0);
+        const thinkTok = Math.max(0, call.thinkingTokens || 0);
+        const thinkPct = totalOut > 0 && thinkTok > 0 ? Math.min(100, Math.round((thinkTok / totalOut) * 100)) : 0;
+        const outHtml = thinkPct > 0
+            ? `${formatNumber(totalOut)}<span class="rc-sub" title="${esc(tBi(`Thinking: ${formatNumber(thinkTok)} tokens`, `思考：${formatNumber(thinkTok)} tokens`))}">(${tBiHtml('Think', '思考')} ${thinkPct}%)</span>`
+            : formatNumber(totalOut);
+
+        const cacheRate = computeStepCacheHitRate(call.inputTokens, call.cacheReadTokens, call.cacheCreationTokens);
+        const cacheHtml = cacheRate !== null
+            ? `<span class="${cacheRate >= 0.5 ? 'rc-cache-hi' : ''}">${esc(formatRecentCallCachePct(cacheRate))}</span>`
+            : `<span class="rc-muted">—</span>`;
+
+        const pricingModel = selectPricingModel(call.model || call.modelDisplay, call.responseModel, customPricing);
+        const pricing = findPricingForDate(pricingModel, customPricing, call.createdAt || '');
+        const costHtml = pricing
+            ? `<span class="rc-cost-val">${esc(formatCurrencyCost(costFromTokens(call, pricing), prefs, { precision: 'call' }))}</span>`
+            : `<span class="rc-unpriced">${tBiHtml('Unpriced', '未定价')}</span>`;
+
+        const ttftSec = Number.isFinite(call.ttftSeconds) && call.ttftSeconds > 0 ? call.ttftSeconds : 0;
+        const streamSec = Number.isFinite(call.streamingSeconds) && call.streamingSeconds > 0 ? call.streamingSeconds : 0;
+        const totalSec = ttftSec + streamSec;
+        const ttftHtml = ttftSec > 0 ? esc(formatLatency(ttftSec)) : `<span class="rc-muted">—</span>`;
+        const totalHtml = totalSec > 0 ? esc(formatLatency(totalSec)) : `<span class="rc-muted">—</span>`;
+
+        const speed = computeStepSpeed(call.outputTokens, call.streamingSeconds);
+        const speedHtml = speed !== null ? esc(formatSpeed(speed)) : `<span class="rc-muted">—</span>`;
+
+        let statusCls = 'is-ok';
+        let statusLabel = tBiHtml('OK', '成功');
+        if (call.hasError) {
+            statusCls = 'is-err';
+            statusLabel = tBiHtml('Error', '失败');
+        } else if (call.retries > 0) {
+            statusCls = 'is-retry';
+            statusLabel = tBiHtml(`Retry ×${call.retries}`, `重试 ×${call.retries}`);
+        }
+        const statusTitle = call.hasError && call.errorMessage ? ` title="${esc(call.errorMessage)}"` : '';
+
+        rowsHtml.push(`<tr>
+            <td class="rc-muted">${esc(timeStr)}</td>
+            <td class="rc-model-cell" title="${esc(modelTooltip)}">${esc(displayModel)}</td>
+            <td class="rc-num">${freshIn}</td>
+            <td class="rc-num">${outHtml}</td>
+            <td class="rc-num">${cacheHtml}</td>
+            <td class="rc-num">${costHtml}</td>
+            <td class="rc-num">${ttftHtml}</td>
+            <td class="rc-num">${totalHtml}</td>
+            <td class="rc-num">${speedHtml}</td>
+            <td><span class="rc-status ${statusCls}"${statusTitle}><span class="rc-status-dot" aria-hidden="true"></span><span>${statusLabel}</span></span></td>
+        </tr>`);
+    }
+
+    const listIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>`;
+    const countLabel = allCalls.length > recent.length
+        ? `${recent.length} / ${allCalls.length}`
+        : `${recent.length}`;
+
+    return `<details class="recent-calls-card" id="recentCallsLedger" open>
+        <summary class="recent-calls-summary">
+            <span class="recent-calls-title">${listIcon}<span>${tBiHtml('Recent Calls', '最近调用明细')}</span></span>
+            <span class="recent-calls-count">${countLabel}</span>
+        </summary>
+        <div class="recent-calls-table-wrap" tabindex="0" role="region" aria-label="${esc(tBi('Recent calls table', '最近调用明细表'))}">
+            <table class="recent-calls-table">
+                <thead>
+                    <tr>
+                        <th>${tBiHtml('Time', '时间')}</th>
+                        <th>${tBiHtml('Actual Model', '实际模型')}</th>
+                        <th class="rc-num">${tBiHtml('Input', '输入')}</th>
+                        <th class="rc-num">${tBiHtml('Output', '输出')}</th>
+                        <th class="rc-num">${tBiHtml('Cache Hit', '缓存命中率')}</th>
+                        <th class="rc-num">${tBiHtml('Cost', '费用')}</th>
+                        <th class="rc-num">${tBiHtml('TTFT', '首字耗时')}</th>
+                        <th class="rc-num">${tBiHtml('Total', '总耗时')}</th>
+                        <th class="rc-num">${tBiHtml('Speed', '速度')}</th>
+                        <th>${tBiHtml('Status', '状态')}</th>
+                    </tr>
+                </thead>
+                <tbody>${rowsHtml.join('')}</tbody>
+            </table>
+        </div>
+    </details>`;
+}
+
 function buildModelCards(
     s: ActivitySummary | null,
     gm: GMSummary | null,
     activeEmail = '',
     custom: Record<string, ModelPricing> = {},
     telemetry?: SessionTelemetrySummary,
+    prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE },
 ): string {
     const actEntries = s ? Object.entries(s.modelStats).sort((a, b) => b[1].totalSteps - a[1].totalSteps) : [];
     const gmBreakEarly: Record<string, GMModelStats> | null = gm?.modelBreakdown ?? null;
@@ -3136,18 +3447,35 @@ function buildModelCards(
     if (entries.length === 0 && gmOnlyEntries.length === 0) { return ''; }
 
     const modelCostRow = (name: string, stats: GMModelStats): string => {
-        const model = selectPricingModel(name, stats.responseModel, custom);
-        const price = findPricingWithCustom(model, custom);
-        if (!price) { return ''; }
-        const cost = costFromTokens({
-            inputTokens: stats.totalInputTokens,
-            outputTokens: stats.totalOutputTokens,
-            thinkingTokens: stats.totalThinkingTokens,
-            cacheReadTokens: stats.totalCacheRead,
-        }, price);
-        if (cost <= 0) { return ''; }
-        const amount = cost.toFixed(cost < 0.01 ? 4 : cost < 1 ? 3 : 2);
-        return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBiHtml('Cost', '费用')}</span></span><span class="val val-cost">$${amount}</span></div>`;
+        const modelCalls = gm
+            ? gm.conversations.flatMap(conv => conv.calls.filter(c => (c.modelDisplay || c.model) === name))
+            : [];
+        let cost = 0;
+        if (modelCalls.length > 0) {
+            let pricedAny = false;
+            for (const c of modelCalls) {
+                const callModel = selectPricingModel(c.model || c.modelDisplay || name, c.responseModel || stats.responseModel, custom);
+                const callPrice = findPricingForDate(callModel, custom, c.createdAt || '');
+                if (!callPrice) { return ''; }
+                cost += costFromTokens(c, callPrice);
+                pricedAny = true;
+            }
+            if (!pricedAny || cost <= 0) { return ''; }
+        } else {
+            const model = selectPricingModel(name, stats.responseModel, custom);
+            const price = findPricingForDate(model, custom, '');
+            if (!price) { return ''; }
+            cost = costFromTokens({
+                inputTokens: stats.totalInputTokens,
+                outputTokens: stats.totalOutputTokens,
+                thinkingTokens: stats.totalThinkingTokens,
+                cacheReadTokens: stats.totalCacheRead,
+            }, price);
+            if (cost <= 0) { return ''; }
+        }
+        const formatted = formatCurrencyCost(cost, prefs, { precision: cost < 0.01 ? 'standard' : 'call' });
+        if (!formatted || formatted === '—') { return ''; }
+        return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBiHtml('Cost', '费用')}</span></span><span class="val val-cost">${esc(formatted)}</span></div>`;
     };
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 

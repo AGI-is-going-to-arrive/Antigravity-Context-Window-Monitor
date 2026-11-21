@@ -550,5 +550,120 @@ describe('GM Data Tab — Speed, TTFT (Cached vs Uncached) & Prompt Cache Teleme
         expect(css).toContain('.act-tl-gm-cache-hit { background: var(--ed-surface);');
         expect(css).toContain('.seg-chip-speed { border-color: var(--ed-accent-border); background: var(--ed-surface);');
         expect(css).toContain('.seg-chip-cache-hit { border-color: var(--ed-border-strong); background: var(--ed-surface);');
+        expect(css).toContain('.recent-calls-card');
+        expect(css).toContain('.recent-calls-table-wrap');
+        expect(css).toContain('.recent-calls-table');
+    });
+
+    it('renders the collapsible Recent Calls Ledger table with screenshot-parity columns, CNY costs, noise gate, unpriced badge, and 20-row cap', async () => {
+        await setLanguageToState('zh', state);
+        const calls: GMCallEntry[] = [
+            // Row with tiny decode burst (<0.05s) -> speed noise-gated to —
+            makeCall({
+                executionId: 'c-burst',
+                model: 'MODEL_PLACEHOLDER_M427',
+                modelDisplay: 'Gemini 4 Carbon (High)',
+                responseModel: 'gemini-4-carbon',
+                inputTokens: 2897,
+                outputTokens: 196,
+                thinkingTokens: 50,
+                cacheReadTokens: 221_677,
+                ttftSeconds: 6.4,
+                streamingSeconds: 0.02,
+                createdAt: '2026-11-22T01:00:00.000Z',
+            }),
+            // Row matching screenshot Row 2: 4543 in, 388 out, 97.96% cache, 6.0s TTFT, 8.5s total, 155.2 tok/s
+            makeCall({
+                executionId: 'c-steady',
+                model: 'MODEL_PLACEHOLDER_M427',
+                modelDisplay: 'Gemini 4 Carbon (High)',
+                responseModel: 'gemini-4-carbon',
+                inputTokens: 4543,
+                outputTokens: 388,
+                thinkingTokens: 120,
+                cacheReadTokens: 218_153,
+                ttftSeconds: 6.0,
+                streamingSeconds: 2.5,
+                createdAt: '2026-11-22T01:01:00.000Z',
+            }),
+            // Unpriced orchestrator call with error -> honest Unpriced badge & Error status (never $0.00)
+            makeCall({
+                executionId: 'c-unpriced',
+                model: 'MODEL_PLACEHOLDER_M537',
+                modelDisplay: 'Orchestrator (Neon)',
+                responseModel: 'gemini-pro-orchestrator-neon',
+                inputTokens: 1000,
+                outputTokens: 50,
+                thinkingTokens: 0,
+                cacheReadTokens: 0,
+                ttftSeconds: 1.2,
+                streamingSeconds: 1.0,
+                hasError: true,
+                errorMessage: '429 rate limit',
+                createdAt: '2026-11-22T01:02:00.000Z',
+            }),
+        ];
+        // Add 22 older calls to verify latest-20 cap
+        for (let i = 0; i < 22; i++) {
+            calls.push(makeCall({
+                executionId: `old-${i}`,
+                createdAt: `2026-11-22T00:${String(i).padStart(2, '0')}:00.000Z`,
+            }));
+        }
+
+        const gm = makeGMSummary(calls);
+        const html = buildGMDataTabContent(null, gm, null, undefined, undefined, undefined, {}, { currency: 'CNY', cnyRate: 7.2 });
+
+        expect(html).toContain('id="recentCallsLedger"');
+        expect(html).toContain('class="recent-calls-table-wrap" tabindex="0" role="region" aria-label="');
+        expect(html).toContain('class="recent-calls-table"');
+        expect(html).toContain('20 / 25');
+        expect(html).toContain('gemini-4-carbon');
+        expect(html).toContain('97.96%');
+        expect(html).toContain('8.50s');
+        expect(html).toContain('155.2 tok/s');
+        expect(html).toContain('¥');
+        expect(html).toContain('class="rc-unpriced"');
+        expect(html).toContain('未定价');
+        expect(html).toContain('rc-status is-err');
+        expect(html).toContain('rc-status is-ok');
+        expect(html).not.toContain('令牌');
+        // Exactly 20 <tr> rows inside <tbody>
+        const tbodyMatch = html.match(/<table class="recent-calls-table">[\s\S]*?<tbody>([\s\S]*?)<\/tbody>/);
+        expect(tbodyMatch).toBeTruthy();
+        expect(tbodyMatch![1].match(/<tr>/g)).toHaveLength(20);
+    });
+
+    it('keeps undated scheduled-cutover calls Unpriced in Recent Calls Ledger and guards micro-CNY savings (#31 #2/#9)', async () => {
+        await setLanguageToState('en', state);
+        const undatedCarbon = makeCall({
+            executionId: 'undated-carbon',
+            model: 'MODEL_PLACEHOLDER_M427',
+            modelDisplay: 'Gemini 4 Carbon (High)',
+            responseModel: 'gemini-4-carbon',
+            inputTokens: 1_000_000,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            createdAt: '',
+        });
+        const undatedHtml = buildGMDataTabContent(null, makeGMSummary([undatedCarbon]), null, undefined, undefined, undefined, {}, { currency: 'USD', cnyRate: 7.2 });
+        expect(undatedHtml).toContain('class="rc-unpriced"');
+        expect(undatedHtml).not.toContain('$2.00');
+
+        // Micro-CNY cache savings: 100 cached tokens on Neon ($2.85/M = $0.000285) at cnyRate 0.01 -> ¥0.00000285 -> '<¥0.0001' (never '¥0.0000')
+        const microCall = makeCall({
+            executionId: 'micro-save',
+            model: 'MODEL_PLACEHOLDER_M535',
+            modelDisplay: 'Gemini 4 Neon (XHigh)',
+            responseModel: 'gemini-4-neon',
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadTokens: 10,
+            createdAt: '2026-11-22T01:00:00.000Z',
+        });
+        const microCnyHtml = buildGMDataTabContent(null, makeGMSummary([microCall]), null, undefined, undefined, undefined, {}, { currency: 'CNY', cnyRate: 0.01 });
+        expect(microCnyHtml).toContain('class="telemetry-savings-usd">· &lt;¥0.0001</span>');
+        expect(microCnyHtml).not.toContain('class="telemetry-savings-usd">· ¥0.0000</span>');
+        expect(microCnyHtml).not.toContain('$NaN');
     });
 });

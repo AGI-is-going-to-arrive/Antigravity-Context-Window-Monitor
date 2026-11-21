@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { buildPricingTabContent } from '../src/pricing-panel';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getLanguage, setLanguageToState } from '../src/i18n';
+import { buildPricingTabContent, getPricingTabStyles } from '../src/pricing-panel';
 import { DEFAULT_PRICING, PricingStore, type ModelPricing } from '../src/pricing-store';
 import type { GMModelStats, GMSummary } from '../src/gm-tracker';
+
+const initialLanguage = getLanguage();
+const langState = { get: <T>(_k: string, fallback: T) => fallback, update: async () => {} };
 
 function makeModelStats(responseModel: string): GMModelStats {
     return {
@@ -161,5 +165,115 @@ describe('pricing panel', () => {
             'Claude Opus 5.5': makeModelStats('claude-opus-5-5'),
         }), new PricingStore());
         expect(html.match(/data-model="claude-opus-5-5" data-field="input"/g)).toHaveLength(1);
+    });
+
+    it('renders inline currency controls, Neon verified row/footnote, rate-change banner, and CNY + thinking share + cache savings', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-11-22T00:00:00Z'));
+        try {
+            const store = new PricingStore();
+            const stats: GMModelStats = {
+                ...makeModelStats('gemini-4-neon'),
+                totalInputTokens: 1_000_000,
+                totalOutputTokens: 200_000,
+                totalThinkingTokens: 100_000,
+                totalCacheRead: 1_000_000,
+            };
+            const html = buildPricingTabContent(
+                makeSummary({ 'Gemini 4 Neon (XHigh)': stats }),
+                store,
+                undefined,
+                undefined,
+                undefined,
+                false,
+                { currency: 'CNY', cnyRate: 7.2 },
+            );
+
+            // Inline currency switcher + FX rate input
+            expect(html).toContain('class="currency-toggle-group"');
+            expect(html).toContain('class="currency-btn active" data-currency="CNY"');
+            expect(html).toContain('id="pricingFxRateInput"');
+            // Neon moved from UNVERIFIED_PRICE_KEYS into built-in DEFAULT_PRICING ($3)
+            expect(html).toMatch(/data-model="gemini-4-neon" data-field="input" data-original-value="3"/);
+            expect(html).not.toContain('data-model="gemini-4-neon-xhigh"');
+            expect(html).toContain('https://aistudio.google.com/docs/whats-new-gemini-4-neon');
+            // Upcoming rate-change banner (Carbon/Argon Dec 1 + Flash Jan 1)
+            expect(html).toContain('class="rate-change-banner"');
+            expect(html).toContain('2026-12-01');
+            expect(html).toContain('2027-01-01');
+            // CNY formatting + Cache savings chip + Thinking share
+            expect(html).toContain('¥');
+            expect(html).toContain('cost-chip-saved');
+            expect(html).toContain('cost-detail-saved');
+            expect(html).toContain('cost-share-sub');
+            // Updated Custom Orchestrator note
+            expect(html).toContain('Custom Orchestrator Mode');
+            expect(html).not.toContain('令牌');
+
+            // After all cutovers pass (2027-02-01), rate-change banner disappears cleanly
+            vi.setSystemTime(new Date('2027-02-01T00:00:00Z'));
+            const postCutover = buildPricingTabContent(null, store);
+            expect(postCutover).not.toContain('class="rate-change-banner"');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('renders positive bilingual savings without double negatives or zero-rounded dashes and emits FX original value (#31 #6/#8)', async () => {
+        await setLanguageToState('both', langState);
+        try {
+            const store = new PricingStore();
+            const stats: GMModelStats = {
+                ...makeModelStats('gemini-4-neon'),
+                totalInputTokens: 100_000,
+                totalOutputTokens: 10_000,
+                totalThinkingTokens: 0,
+                totalCacheRead: 100_000, // savings = 0.1 * (3.0 - 0.15) = $0.285 -> $0.29 (¥2.05)
+            };
+
+            const bothHtml = buildPricingTabContent(
+                makeSummary({ 'Gemini 4 Neon (XHigh)': stats }),
+                store,
+                undefined,
+                undefined,
+                undefined,
+                false,
+                { currency: 'both', cnyRate: 7.2 },
+            );
+            expect(bothHtml).toContain('data-original-value="7.2"');
+            expect(bothHtml).toContain('cost-chip-saved');
+            expect(bothHtml).toContain('$0.28 (¥2.05)');
+            expect(bothHtml).not.toContain('-$0.28');
+            expect(bothHtml).not.toContain('(-¥');
+
+            // Tiny CNY savings where formatCurrencySavings rounds to '—' must omit savings chips cleanly
+            const tinyStats: GMModelStats = {
+                ...makeModelStats('gemini-4-neon'),
+                totalInputTokens: 1_000,
+                totalOutputTokens: 100,
+                totalThinkingTokens: 0,
+                totalCacheRead: 1_000, // savings = $0.00285 -> at cnyRate 0.01 = ¥0.0000285 -> '—'
+            };
+            const tinyHtml = buildPricingTabContent(
+                makeSummary({ 'Gemini 4 Neon (XHigh)': tinyStats }),
+                store,
+                undefined,
+                undefined,
+                undefined,
+                false,
+                { currency: 'CNY', cnyRate: 0.01 },
+            );
+            expect(tinyHtml).not.toContain('cost-chip-saved');
+            expect(tinyHtml).not.toContain('cost-detail-saved');
+            expect(tinyHtml).not.toContain('Cache saved —');
+            expect(tinyHtml).not.toContain('Saved —');
+
+            // WCAG 2.1 AA: .prc-currency-fx.is-muted must not reduce wrapper/button opacity below 4.5:1 contrast
+            const styles = getPricingTabStyles();
+            expect(styles).not.toMatch(/\.prc-currency-fx\.is-muted\s*\{[^}]*opacity\s*:/);
+            expect(styles).toContain('.prc-currency-fx.is-muted .prc-currency-fx-label');
+        } finally {
+            await setLanguageToState(initialLanguage, langState);
+        }
     });
 });

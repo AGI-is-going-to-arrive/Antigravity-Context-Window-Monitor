@@ -2,7 +2,9 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as https from 'https';
 import * as http from 'http';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 
 const execFileAsync = promisify(execFile);
 
@@ -108,12 +110,99 @@ export interface LSInfo {
     csrfToken: string;
     port: number;
     useTls: boolean;
+    /** Loopback hostname; omitted when default '127.0.0.1', set to '::1' for IPv6-only sockets. */
+    hostname?: string;
 }
 
 /** Optional connection identity exported by the current IDE's built-in extension. */
 export interface LSConnectionHint {
     port: number;
     csrfToken: string;
+}
+
+/** Parsed record from ~/.gemini/antigravity/daemon/hub_<port>.json. */
+export interface HubDiscoveryRecord {
+    pid: number;
+    httpPort: number | null;
+    httpsPort: number | null;
+    csrfToken: string;
+    lsVersion?: string;
+}
+
+/**
+ * Ordered read-only CSRF-authenticated Connect-RPC endpoints used to probe candidate ports.
+ * - GetStatus: lightweight 2-byte `{}` response on agy v1.5.14+ and modern language_server (CSRF-enforced).
+ * - GetUnleashData: legacy fallback for older language_server builds (removed in agy v1.5.14).
+ * - GetUserStatus: core RPC the extension requires anyway; ultimate future-proofing if both above are removed.
+ */
+export const PROBE_ENDPOINTS = ['GetStatus', 'GetUnleashData', 'GetUserStatus'] as const;
+
+function validPortNumber(value: unknown): number | null {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 65535
+        ? value : null;
+}
+
+/** Parse a daemon hub_<port>.json payload into a validated HubDiscoveryRecord. */
+export function parseHubDiscoveryJson(raw: string): HubDiscoveryRecord | null {
+    try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { return null; }
+        const obj = parsed as Record<string, unknown>;
+        const csrfToken = typeof obj.csrfToken === 'string' ? obj.csrfToken : '';
+        if (!csrfToken || /\s/.test(csrfToken)) { return null; }
+        const pid = typeof obj.pid === 'number' && Number.isSafeInteger(obj.pid)
+            && obj.pid > 0 && obj.pid <= 0xffffffff
+            ? obj.pid : 0;
+        const httpPort = validPortNumber(obj.httpPort);
+        const httpsPort = validPortNumber(obj.httpsPort);
+        if (httpPort === null && httpsPort === null) { return null; }
+        const lsVersion = typeof obj.lsVersion === 'string' && obj.lsVersion.trim()
+            ? obj.lsVersion.trim() : undefined;
+        return { pid, httpPort, httpsPort, csrfToken, ...(lsVersion ? { lsVersion } : {}) };
+    } catch {
+        return null;
+    }
+}
+
+export function getAntigravityDaemonDir(): string {
+    return join(homedir(), '.gemini', 'antigravity', 'daemon');
+}
+
+export function readHubDiscoveryFile(
+    port: number,
+    daemonDir: string = getAntigravityDaemonDir(),
+): HubDiscoveryRecord | null {
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65535) { return null; }
+    try {
+        const raw = readFileSync(join(daemonDir, `hub_${port}.json`), 'utf-8');
+        return parseHubDiscoveryJson(raw);
+    } catch {
+        return null;
+    }
+}
+
+export function readAllHubDiscoveryFiles(
+    daemonDir: string = getAntigravityDaemonDir(),
+): HubDiscoveryRecord[] {
+    try {
+        const entries = readdirSync(daemonDir).filter(name => /^hub_\d+\.json$/i.test(name));
+        const records: Array<{ record: HubDiscoveryRecord; mtimeMs: number }> = [];
+        for (const name of entries) {
+            const filePath = join(daemonDir, name);
+            try {
+                const raw = readFileSync(filePath, 'utf-8');
+                const record = parseHubDiscoveryJson(raw);
+                if (!record) { continue; }
+                let mtimeMs = 0;
+                try { mtimeMs = statSync(filePath).mtimeMs; } catch { /* order last */ }
+                records.push({ record, mtimeMs });
+            } catch { /* ignore unreadable or transient file */ }
+        }
+        records.sort((a, b) => b.mtimeMs - a.mtimeMs);
+        return records.map(item => item.record);
+    } catch {
+        return [];
+    }
 }
 
 // ─── CR2-Fix4: Exported Parsing Functions ────────────────────────────────────
@@ -275,12 +364,20 @@ function commandFlag(line: string, name: string): string | null {
     return null;
 }
 
+function commandFlagAny(line: string, names: readonly string[]): string | null {
+    for (const name of names) {
+        const value = commandFlag(line, name);
+        if (value !== null) { return value; }
+    }
+    return null;
+}
+
 export function extractCsrfToken(line: string): string | null {
-    return commandFlag(line, '--csrf_token');
+    return commandFlagAny(line, ['--csrf_token', '--csrf-token']);
 }
 
 export function extractWorkspaceId(line: string): string | null {
-    return commandFlag(line, '--workspace_id');
+    return commandFlagAny(line, ['--workspace_id', '--workspace-id']);
 }
 
 /** The new IDE hosts the same Connect RPC API in an agy --hub process. */
@@ -295,12 +392,12 @@ export function isAgyHubProcess(line: string): boolean {
     if (!executable[1] && !executable[2] && /\s+(?:[-/]|['"]?[A-Za-z]:[\\/]|['"]\/)/.test(path)) { return false; }
     const args = commandArguments(line).map(arg => arg.toLowerCase());
     const hub = args.includes('--hub') || args.includes('--hub=true');
-    const appDataDir = commandFlag(line, '--app_data_dir');
+    const appDataDir = commandFlagAny(line, ['--app_data_dir', '--app-data-dir']);
     return hub && !!appDataDir && /(?:^|[\\/])antigravity(?:-ide)?[\\/]?$/i.test(appDataDir);
 }
 
 export function extractHubPort(line: string): number | null {
-    const raw = commandFlag(line, '--hub-port');
+    const raw = commandFlagAny(line, ['--hub-port', '--hub_port']);
     if (!raw || !/^\d+$/.test(raw)) { return null; }
     const port = Number(raw);
     return Number.isSafeInteger(port) && port > 0 && port <= 65535 ? port : null;
@@ -354,6 +451,17 @@ export function selectMatchingProcessLine(lines: readonly string[], workspaceUri
     return lines[0];
 }
 
+/** Recognize Antigravity's standalone language_server(.exe) without platform suffix. */
+function isStandaloneLanguageServer(line: string): boolean {
+    const command = processCommandLine(line);
+    const executable = command.match(/^(?:"([^"\r\n]+)"|'([^'\r\n]+)'|((?:[A-Za-z]:[\\/]|\/)[^"\r\n]*?[\\/]language_server(?:\.exe)?|language_server(?:\.exe)?))(?=\s|$)/i);
+    if (!executable) { return false; }
+    const path = executable[1] || executable[2] || executable[3];
+    if (!/(?:^|[\\/])language_server(?:\.exe)?$/i.test(path)) { return false; }
+    if (!executable[1] && !executable[2] && /\s+(?:[-/]|['"]?[A-Za-z]:[\\/]|['"]\/)/.test(path)) { return false; }
+    return line.toLowerCase().includes('antigravity');
+}
+
 /**
  * Filter ps output lines for LS processes.
  * In WSL, looks for the Windows binary name since the LS runs on the Windows host.
@@ -370,8 +478,15 @@ export function filterLsProcessLines(psOutput: string, binaryOverride?: string):
         // extractCsrfToken and the request headers depend on the case-sensitive
         // csrf_token value, so the line must never be lower-cased in place.
         const low = l.toLowerCase();
-        return isAgyHubProcess(l) || (low.includes(binaryName.toLowerCase()) && low.includes('antigravity'));
+        return isAgyHubProcess(l)
+            || isStandaloneLanguageServer(l)
+            || (low.includes(binaryName.toLowerCase()) && low.includes('antigravity'));
     });
+}
+
+interface PortCandidate {
+    port: number;
+    ipv6Only?: boolean;
 }
 
 /**
@@ -379,8 +494,7 @@ export function filterLsProcessLines(psOutput: string, binaryOverride?: string):
  * Loopback itself plus the wildcard forms every tool spells differently
  * (`0.0.0.0`, `*`, `::`, `[::]`), which all include the loopback interface.
  * `[::1]` is IPv6-only loopback: on a dual-stack Windows socket the same port is
- * also open on IPv4, and when it isn't the probe just fails, so accepting it
- * costs one failed connect and buys the dual-stack case.
+ * also open on IPv4, and when it isn't the probe falls back to `::1`.
  */
 function isLoopbackReachableHost(host: string): boolean {
     // `ss` appends the bound interface to a SO_BINDTODEVICE socket (`127.0.0.1%lo`). Dropping it
@@ -391,12 +505,7 @@ function isLoopbackReachableHost(host: string): boolean {
         || bare === '::' || bare === '[::]' || bare === '[::1]';
 }
 
-/**
- * Extract the port from an `address:port` token, but only when a client on
- * 127.0.0.1 could actually reach it. Returns null for port 0, which is what a
- * foreign-address column reads as on a listening row.
- */
-function portFromAddressToken(token: string): number | null {
+function portCandidateFromAddressToken(token: string): PortCandidate | null {
     const m = token.match(/^(.*):(\d+)$/);
     if (!m || !isLoopbackReachableHost(m[1])) { return null; }
     const port = parseInt(m[2], 10);
@@ -404,7 +513,27 @@ function portFromAddressToken(token: string): number | null {
     // synchronously from inside the probe's promise executor, and the resulting rejection is
     // caught above the loop — so one bad value would abandon every remaining port rather than
     // skipping itself.
-    return port > 0 && port <= 65535 ? port : null;
+    if (port <= 0 || port > 65535) { return null; }
+    const bare = m[1].replace(/%[^\]]*(?=\]?$)/, '');
+    return bare === '[::1]' ? { port, ipv6Only: true } : { port };
+}
+
+/**
+ * Extract the port from an `address:port` token, but only when a client on
+ * loopback could actually reach it. Returns null for port 0, which is what a
+ * foreign-address column reads as on a listening row.
+ */
+function portFromAddressToken(token: string): number | null {
+    return portCandidateFromAddressToken(token)?.port ?? null;
+}
+
+function extractPortCandidate(line: string): PortCandidate | null {
+    const tokens = line.trim().split(/\s+/);
+    for (let i = tokens.length - 1; i >= 0; i--) {
+        const candidate = portCandidateFromAddressToken(tokens[i]);
+        if (candidate !== null) { return candidate; }
+    }
+    return null;
 }
 
 /**
@@ -418,12 +547,15 @@ export function extractPort(line: string): number | null {
     // program can set for itself, so it is the one column whose contents could also look like an
     // address. Scanning forwards would let it shadow the real port, and since only the first match
     // per line is taken the real one would never be seen at all.
-    const tokens = line.trim().split(/\s+/);
-    for (let i = tokens.length - 1; i >= 0; i--) {
-        const port = portFromAddressToken(tokens[i]);
-        if (port !== null) { return port; }
-    }
-    return null;
+    return extractPortCandidate(line)?.port ?? null;
+}
+
+function extractPortCandidateFromSs(line: string): PortCandidate | null {
+    const cols = line.trim().split(/\s+/);
+    // The header is not tokenizable the same way — it runs "Peer Address:PortProcess" together
+    // with no separating space — so anchor on the state column instead of on column count.
+    if (cols.length < 4 || cols[0].toUpperCase() !== 'LISTEN') { return null; }
+    return portCandidateFromAddressToken(cols[3]);
 }
 
 /**
@@ -440,11 +572,13 @@ export function extractPort(line: string): number | null {
  * source there rather than a rarely-used fallback.
  */
 export function extractPortFromSs(line: string): number | null {
+    return extractPortCandidateFromSs(line)?.port ?? null;
+}
+
+function extractPortCandidateFromNetstat(line: string): PortCandidate | null {
     const cols = line.trim().split(/\s+/);
-    // The header is not tokenizable the same way — it runs "Peer Address:PortProcess" together
-    // with no separating space — so anchor on the state column instead of on column count.
-    if (cols.length < 4 || cols[0].toUpperCase() !== 'LISTEN') { return null; }
-    return portFromAddressToken(cols[3]);
+    if (cols.length < 3) { return null; }
+    return portCandidateFromAddressToken(cols[1]);
 }
 
 /**
@@ -458,9 +592,7 @@ export function extractPortFromSs(line: string): number | null {
  * address is a real interface IP rather than loopback.
  */
 export function extractPortFromNetstat(line: string): number | null {
-    const cols = line.trim().split(/\s+/);
-    if (cols.length < 3) { return null; }
-    return portFromAddressToken(cols[1]);
+    return extractPortCandidateFromNetstat(line)?.port ?? null;
 }
 
 /**
@@ -501,13 +633,44 @@ export function extractWslDistro(uri: string): string | null {
     } catch { return null; }
 }
 
+function pushPortCandidate(list: PortCandidate[], candidate: PortCandidate | null): void {
+    if (!candidate) { return; }
+    const existing = list.find(c => c.port === candidate.port);
+    if (existing) {
+        if (candidate.ipv6Only) { existing.ipv6Only = true; }
+    } else {
+        list.push(candidate);
+    }
+}
+
+async function execCommandWithFallbacks(
+    binaries: readonly string[],
+    args: string[],
+    timeout: number,
+    signal?: AbortSignal,
+): Promise<string | null> {
+    for (const bin of binaries) {
+        if (signal?.aborted) { return null; }
+        try {
+            const result = await execFileAsync(bin, args, { encoding: 'utf-8', timeout, signal });
+            return result.stdout;
+        } catch (e) {
+            if (signal?.aborted) { return null; }
+            const code = (e as NodeJS.ErrnoException).code;
+            if (code === 'ENOENT') { continue; }
+            return null;
+        }
+    }
+    return null;
+}
+
 /**
  * Discover the Antigravity LS running INSIDE a WSL distro.
  * This handles the Remote-WSL scenario where the IDE spawns
  * language_server_linux_x64 inside the WSL environment.
  *
  * Strategy:
- * 1. Run `wsl -d <distro> -- ps aux` to find the LS process
+ * 1. Run `wsl -d <distro> -- ps -axww -o pid=,command=` to find the LS process
  * 2. Match workspace_id if available
  * 3. Extract CSRF token and PID
  * 4. Run `wsl -d <distro> -- ss -tlnp` to find listening ports
@@ -528,7 +691,7 @@ async function discoverWslLanguageServer(
         : 'wsl';
     try {
         const psResult = await execFileAsync(wslExe, [
-            '-d', distro, '--', 'ps', '-ax', '-o', 'pid=,command='
+            '-d', distro, '--', 'ps', '-axww', '-o', 'pid=,command='
         ], { encoding: 'utf-8', timeout: 10000, signal });
         const lines = filterLsProcessLines(psResult.stdout, 'language_server_linux');
         if (lines.length === 0) {
@@ -542,20 +705,24 @@ async function discoverWslLanguageServer(
             const csrfToken = extractCsrfToken(line);
             if (!pid || !csrfToken) { continue; }
             const found = await probeProcess(line, pid, csrfToken, async () => {
-                try {
-                    const ssResult = await execFileAsync(wslExe, [
-                        '-d', distro, '--', 'ss', '-tlnp'
-                    ], { encoding: 'utf-8', timeout: 5000, signal });
-                    const ports: number[] = [];
-                    for (const socket of ssResult.stdout.split('\n')) {
-                        if (socket.includes(`pid=${pid},`) || socket.includes(`pid=${pid})`)) {
-                            const port = extractPortFromSs(socket);
-                            if (port !== null) { ports.push(port); }
+                for (const ssBin of ['ss', '/usr/sbin/ss', '/bin/ss']) {
+                    if (signal?.aborted) { return []; }
+                    try {
+                        const ssResult = await execFileAsync(wslExe, [
+                            '-d', distro, '--', ssBin, '-tlnp'
+                        ], { encoding: 'utf-8', timeout: 5000, signal });
+                        const ports: PortCandidate[] = [];
+                        for (const socket of ssResult.stdout.split('\n')) {
+                            if (socket.includes(`pid=${pid},`) || socket.includes(`pid=${pid})`)) {
+                                pushPortCandidate(ports, extractPortCandidateFromSs(socket));
+                            }
                         }
-                    }
-                    return ports;
-                } catch { return []; }
-            }, signal);
+                        if (ports.length > 0) { return ports; }
+                        return [];
+                    } catch { /* try next ss path */ }
+                }
+                return [];
+            }, signal, log, hint?.port);
             if (found) { return found; }
         }
 
@@ -595,7 +762,7 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
         try {
             const result = await execFileAsync(wmicExe, [
                 'process', 'where',
-                "name like 'language_server_windows%' or name = 'agy.exe'",
+                "name like 'language_server%' or name = 'agy.exe'",
                 'get', 'ProcessId,CommandLine', '/format:csv'
             ], { encoding: 'utf-8', timeout: 5000, signal });
             // CR-#62: only trust/cache wmic when it actually returned LS rows.
@@ -615,14 +782,14 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
         log?.(`wmic not present at ${wmicExe} (Win11 24H2+ removes it); using Get-CimInstance`);
     }
 
-    // Fallback: PowerShell Get-CimInstance with server-side WMI filter.
+    // Fallback: PowerShell Get-CimInstance with UTF-8 stdout and server-side WMI filter.
+    // Setting OutputEncoding=UTF8 prevents OEM codepage corruption on CJK/non-ASCII user paths.
     // CR-#62: wrapped in try/catch so a powershell.exe ENOENT is logged and
-    // downgraded to an empty result (→ caller returns a reasoned null) instead of
-    // an unhandled rejection that collapses into the silent outer catch.
+    // downgraded to an empty result instead of collapsing into an unhandled error.
     try {
         const result = await execFileAsync(psExe, [
             '-NoProfile', '-NoLogo', '-Command',
-            'Get-CimInstance Win32_Process -Filter "Name like \'language_server_windows%\' or Name = \'agy.exe\'" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation'
+            '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Filter "Name like \'language_server%\' or Name = \'agy.exe\'" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation'
         ], { encoding: 'utf-8', timeout: 10000, signal });
         return result.stdout;
     } catch (e) {
@@ -633,17 +800,17 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
 }
 
 /**
- * Find listening TCP ports for a given PID.
- * Uses lsof (macOS + most Linux), with fallback to ss (Linux default).
+ * Find listening TCP port candidates for a given PID.
+ * Uses lsof (macOS + most Linux), with fallback to /usr/sbin/lsof (macOS) or ss / /usr/sbin/ss / /bin/ss (Linux).
  * In WSL, uses Windows netstat.exe since the LS is a Windows host process.
  *
  * `forceNative` skips that WSL assumption: when the PID belongs to a Linux LS running
  * inside this distro, its ports are in the distro's own network namespace and Windows
  * netstat.exe cannot see them.
  */
-async function findListeningPorts(
+async function findListeningPortCandidates(
     pid: number, signal?: AbortSignal, log?: (msg: string) => void, forceNative = false,
-): Promise<number[]> {
+): Promise<PortCandidate[]> {
     // Windows (or WSL): use netstat -ano to find Windows host ports
     if (!forceNative && (process.platform === 'win32' || isWSL())) {
         const winRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
@@ -652,15 +819,12 @@ async function findListeningPorts(
             const result = await execFileAsync(netstatExe, [
                 '-ano'
             ], { encoding: 'utf-8', timeout: 5000, signal });
-            const ports: number[] = [];
+            const ports: PortCandidate[] = [];
             for (const line of result.stdout.split('\n')) {
                 // netstat -ano format: TCP    127.0.0.1:PORT    0.0.0.0:0    LISTENING    PID
                 // CR-#62: exact PID-column match (previous endsWith matched 123 vs 1123).
                 if (netstatLineMatchesPid(line, pid)) {
-                    const port = extractPortFromNetstat(line);
-                    if (port !== null) {
-                        ports.push(port);
-                    }
+                    pushPortCandidate(ports, extractPortCandidateFromNetstat(line));
                 }
             }
             return ports;
@@ -671,44 +835,42 @@ async function findListeningPorts(
         return [];
     }
 
-    // macOS + Linux: try lsof first
-    try {
-        const result = await execFileAsync('lsof', [
-            '-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)
-        ], { encoding: 'utf-8', timeout: 5000, signal });
-        const lsofOutput = result.stdout.trim();
-        if (lsofOutput) {
-            const ports: number[] = [];
-            for (const line of lsofOutput.split('\n')) {
-                const port = extractPort(line);
-                if (port !== null) {
-                    ports.push(port);
-                }
-            }
-            if (ports.length > 0) {
-                return ports;
-            }
+    // macOS + Linux: try lsof first (on macOS also fall back to /usr/sbin/lsof when PATH omits /usr/sbin)
+    const lsofBins = process.platform === 'darwin' ? ['lsof', '/usr/sbin/lsof'] : ['lsof'];
+    const lsofOut = await execCommandWithFallbacks(
+        lsofBins,
+        ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)],
+        5000,
+        signal,
+    );
+    if (lsofOut && lsofOut.trim()) {
+        const ports: PortCandidate[] = [];
+        for (const line of lsofOut.trim().split('\n')) {
+            pushPortCandidate(ports, extractPortCandidate(line));
         }
-    } catch { /* lsof not available or failed — try fallback */ }
+        if (ports.length > 0) {
+            return ports;
+        }
+    }
 
-    // Linux fallback: ss command (installed by default via iproute2)
+    // Linux fallback: ss command (installed by default via iproute2), with absolute path fallbacks
     if (process.platform === 'linux') {
-        try {
-            const result = await execFileAsync('ss', [
-                '-tlnp'
-            ], { encoding: 'utf-8', timeout: 5000, signal });
-            const ports: number[] = [];
-            for (const line of result.stdout.split('\n')) {
+        const ssOut = await execCommandWithFallbacks(
+            ['ss', '/usr/sbin/ss', '/bin/ss'],
+            ['-tlnp'],
+            5000,
+            signal,
+        );
+        if (ssOut) {
+            const ports: PortCandidate[] = [];
+            for (const line of ssOut.split('\n')) {
                 // ss output includes process info like: users:(("language_server_linux",pid=1234,fd=5))
                 if (line.includes(`pid=${pid},`) || line.includes(`pid=${pid})`)) {
-                    const port = extractPortFromSs(line);
-                    if (port !== null) {
-                        ports.push(port);
-                    }
+                    pushPortCandidate(ports, extractPortCandidateFromSs(line));
                 }
             }
             return ports;
-        } catch { /* ss also failed */ }
+        }
     }
 
     return [];
@@ -718,9 +880,15 @@ async function findListeningPorts(
 function orderedProcessLines(lines: readonly string[], workspaceUri?: string, hint?: LSConnectionHint): string[] {
     // When the active IDE exports its connection, never silently attach to a
     // different hub/account if that connection has not started or has gone away.
+    // Allow extractHubPort === null for --hub-port=0 / ephemeral port allocation
+    // as long as the per-window CSRF token matches exactly.
     const remaining = hint
-        ? lines.filter(line => extractCsrfToken(line) === hint.csrfToken
-            && (!isAgyHubProcess(line) || extractHubPort(line) === hint.port))
+        ? lines.filter(line => {
+            if (extractCsrfToken(line) !== hint.csrfToken) { return false; }
+            if (!isAgyHubProcess(line)) { return true; }
+            const hubPort = extractHubPort(line);
+            return hubPort === null || hubPort === hint.port;
+        })
         : [...lines];
     const ordered: string[] = [];
     while (remaining.length > 0) {
@@ -732,37 +900,225 @@ function orderedProcessLines(lines: readonly string[], workspaceUri?: string, hi
     return ordered;
 }
 
+/**
+ * True when the OS process table already shows another Antigravity hub owning
+ * `hint.port` with a DIFFERENT CSRF token — meaning the hinted instance is
+ * absent and we must NOT probe `hint.port` or cross into another instance.
+ */
+function hasConflictingProcessForHint(lines: readonly string[], hint: LSConnectionHint): boolean {
+    return lines.some(line => {
+        const token = extractCsrfToken(line);
+        if (!token || token === hint.csrfToken) { return false; }
+        return isAgyHubProcess(line) && extractHubPort(line) === hint.port;
+    });
+}
+
+/** If a hub process matches hint.port without exposing --csrf_token in argv, recover its real PID. */
+function findPidForHintPortWithoutToken(
+    lines: readonly string[],
+    hint: LSConnectionHint,
+    windowsProcesses: boolean,
+): number {
+    for (const line of lines) {
+        if (!isAgyHubProcess(line)) { continue; }
+        if (extractHubPort(line) !== hint.port) { continue; }
+        if (extractCsrfToken(line) !== null) { continue; }
+        const pid = windowsProcesses ? extractWindowsPid(line) : extractPid(line);
+        if (pid) { return pid; }
+    }
+    return 0;
+}
+
+async function probeSchemeWithLoopbackFallback(
+    port: number,
+    csrfToken: string,
+    useTls: boolean,
+    pid: number,
+    allowIpv6Fallback: boolean,
+    signal: AbortSignal | undefined,
+    diagnostics: string[],
+): Promise<LSInfo | null> {
+    if (signal?.aborted) { return null; }
+    const v4 = await probePortWithDetail(port, csrfToken, useTls, signal, '127.0.0.1');
+    if (v4.ok) {
+        return { pid, csrfToken, port, useTls };
+    }
+    diagnostics.push(`${useTls ? 'https' : 'http'}://127.0.0.1:${port} (${v4.summary})`);
+    if ((allowIpv6Fallback || v4.connectionRefused) && !signal?.aborted) {
+        const v6 = await probePortWithDetail(port, csrfToken, useTls, signal, '::1');
+        if (v6.ok) {
+            return { pid, csrfToken, port, useTls, hostname: '::1' };
+        }
+        if (allowIpv6Fallback || !v6.connectionRefused) {
+            diagnostics.push(`${useTls ? 'https' : 'http'}://[::1]:${port} (${v6.summary})`);
+        }
+    }
+    return null;
+}
+
 async function probeProcess(
     line: string,
     pid: number,
     csrfToken: string,
-    getPorts: () => Promise<number[]>,
+    getPorts: () => Promise<PortCandidate[]>,
     signal?: AbortSignal,
+    log?: (msg: string) => void,
+    hintPort?: number,
+    attemptedKeys?: Set<string>,
 ): Promise<LSInfo | null> {
     if (signal?.aborted) { return null; }
     const hub = isAgyHubProcess(line);
     const declaredPort = hub ? extractHubPort(line) : null;
     const attempted = new Set<number>();
-    const tryPort = async (port: number): Promise<LSInfo | null> => {
+    const diagnostics: string[] = [];
+    const tryPort = async (candidate: PortCandidate): Promise<LSInfo | null> => {
+        const { port, ipv6Only } = candidate;
         if (attempted.has(port) || signal?.aborted) { return null; }
         attempted.add(port);
+        attemptedKeys?.add(`${port}:${csrfToken}`);
         // agy serves its hub over HTTP; legacy language_server usually uses TLS.
         for (const useTls of hub ? [false, true] : [true, false]) {
-            if (signal?.aborted) { return null; }
-            if (await probePort(port, csrfToken, useTls, signal)) {
-                return { pid, csrfToken, port, useTls };
-            }
+            const found = await probeSchemeWithLoopbackFallback(
+                port, csrfToken, useTls, pid, !!ipv6Only, signal, diagnostics,
+            );
+            if (found) { return found; }
         }
         return null;
     };
     if (declaredPort !== null) {
-        const found = await tryPort(declaredPort);
+        const found = await tryPort({ port: declaredPort });
+        if (found) { return found; }
+    } else if (hintPort !== undefined) {
+        // Ephemeral --hub-port=0 or omitted port flag: try the IDE's hinted port before socket tooling.
+        const found = await tryPort({ port: hintPort });
         if (found) { return found; }
     }
     if (signal?.aborted) { return null; }
-    for (const port of await getPorts()) {
-        const found = await tryPort(port);
+    for (const candidate of await getPorts()) {
+        const found = await tryPort(candidate);
         if (found) { return found; }
+    }
+    if (diagnostics.length > 0) {
+        log?.(`RPC probe diagnostics for pid ${pid}: ${diagnostics.join('; ')}`);
+    }
+    return null;
+}
+
+/**
+ * Probe a daemon hub_<port>.json record using its explicit HTTP/HTTPS ports.
+ * Never logs the CSRF token.
+ */
+async function probeHubRecord(
+    record: HubDiscoveryRecord,
+    preferredPort: number | undefined,
+    attemptedKeys: Set<string>,
+    signal?: AbortSignal,
+    log?: (msg: string) => void,
+): Promise<LSInfo | null> {
+    const attempts: Array<{ port: number; useTls: boolean }> = [];
+    const addAttempt = (port: number | null, useTls: boolean) => {
+        if (port === null) { return; }
+        if (!attempts.some(a => a.port === port && a.useTls === useTls)) {
+            attempts.push({ port, useTls });
+        }
+    };
+    if (preferredPort !== undefined && preferredPort === record.httpsPort) {
+        addAttempt(record.httpsPort, true);
+        addAttempt(record.httpPort, false);
+        addAttempt(record.httpsPort, false);
+    } else {
+        addAttempt(record.httpPort, false);
+        addAttempt(record.httpsPort, true);
+        addAttempt(record.httpPort, true);
+    }
+
+    const diagnostics: string[] = [];
+    for (const { port, useTls } of attempts) {
+        if (signal?.aborted) { return null; }
+        const key = `${port}:${record.csrfToken}:${useTls ? 'tls' : 'http'}`;
+        if (attemptedKeys.has(key) || attemptedKeys.has(`${port}:${record.csrfToken}`)) { continue; }
+        attemptedKeys.add(key);
+        const found = await probeSchemeWithLoopbackFallback(
+            port, record.csrfToken, useTls, record.pid, false, signal, diagnostics,
+        );
+        if (found) { return found; }
+    }
+    if (diagnostics.length > 0) {
+        log?.(`Daemon hub probe failed for pid ${record.pid}: ${diagnostics.join('; ')}`);
+    }
+    return null;
+}
+
+/**
+ * Hint-first daemon JSON + direct hint.port fallback when OS process listing
+ * fails (e.g. Windows WMI/PowerShell blocked, Linux hidepid) or argv omits
+ * --csrf_token / --hub-port. Preserves strict single-instance affinity.
+ */
+async function probeHintFallback(
+    hint: LSConnectionHint,
+    lines: readonly string[],
+    windowsProcesses: boolean,
+    attemptedKeys: Set<string>,
+    signal?: AbortSignal,
+    log?: (msg: string) => void,
+): Promise<LSInfo | null> {
+    if (signal?.aborted) { return null; }
+
+    // 1. Check ~/.gemini/antigravity/daemon/hub_<hint.port>.json (verifying exact CSRF token match).
+    const hubRecord = readHubDiscoveryFile(hint.port);
+    if (hubRecord && hubRecord.csrfToken === hint.csrfToken
+        && (hubRecord.httpPort === hint.port || hubRecord.httpsPort === hint.port)) {
+        const found = await probeHubRecord(hubRecord, hint.port, attemptedKeys, signal, log);
+        if (found) {
+            log?.(`Found backend via daemon hub_${hint.port}.json (pid=${found.pid}, port=${found.port}, tls=${found.useTls})`);
+            return found;
+        }
+    }
+
+    // 2. Direct probe of hint.port with hint.csrfToken (works even without daemon dir or process list).
+    if (signal?.aborted || attemptedKeys.has(`${hint.port}:${hint.csrfToken}`)) { return null; }
+    const pid = (hubRecord && hubRecord.csrfToken === hint.csrfToken && hubRecord.pid > 0)
+        ? hubRecord.pid
+        : findPidForHintPortWithoutToken(lines, hint, windowsProcesses);
+    const diagnostics: string[] = [];
+    for (const useTls of [false, true]) {
+        if (signal?.aborted) { return null; }
+        const schemeKey = `${hint.port}:${hint.csrfToken}:${useTls ? 'tls' : 'http'}`;
+        if (attemptedKeys.has(schemeKey)) { continue; }
+        attemptedKeys.add(schemeKey);
+        const found = await probeSchemeWithLoopbackFallback(
+            hint.port, hint.csrfToken, useTls, pid, false, signal, diagnostics,
+        );
+        if (found) {
+            log?.(`Found backend via direct IDE hint probe (pid=${found.pid}, port=${found.port}, tls=${found.useTls})`);
+            return found;
+        }
+    }
+    attemptedKeys.add(`${hint.port}:${hint.csrfToken}`);
+    if (diagnostics.length > 0) {
+        log?.(`Direct IDE hint probe failed for port ${hint.port}: ${diagnostics.join('; ')}`);
+    }
+    return null;
+}
+
+/**
+ * Legacy standalone fallback: scan ~/.gemini/antigravity/daemon/hub_*.json ONLY
+ * when no built-in IDE hint is present (hint === undefined).
+ */
+async function probeStandaloneHubFiles(
+    attemptedKeys: Set<string>,
+    signal?: AbortSignal,
+    log?: (msg: string) => void,
+): Promise<LSInfo | null> {
+    if (signal?.aborted) { return null; }
+    const records = readAllHubDiscoveryFiles();
+    for (const record of records) {
+        if (signal?.aborted) { return null; }
+        const found = await probeHubRecord(record, undefined, attemptedKeys, signal, log);
+        if (found) {
+            log?.(`Found standalone backend via daemon hub file (pid=${found.pid}, port=${found.port}, tls=${found.useTls})`);
+            return found;
+        }
     }
     return null;
 }
@@ -785,7 +1141,7 @@ async function discoverLocalLinuxLanguageServer(
 ): Promise<LSInfo | null> {
     let psOutput: string;
     try {
-        const result = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
+        const result = await execFileAsync('ps', ['-axww', '-o', 'pid=,command='], {
             encoding: 'utf-8', timeout: 5000, signal,
         });
         psOutput = result.stdout;
@@ -804,7 +1160,7 @@ async function discoverLocalLinuxLanguageServer(
         const csrfToken = extractCsrfToken(line);
         if (!pid || !csrfToken) { continue; }
         const found = await probeProcess(line, pid, csrfToken,
-            () => findListeningPorts(pid, signal, log, true), signal);
+            () => findListeningPortCandidates(pid, signal, log, true), signal, log, hint?.port);
         if (found) { return found; }
     }
     return null;
@@ -860,34 +1216,60 @@ export async function discoverLanguageServer(
             log?.('No LS inside this WSL distro, trying the Windows host LS');
         }
 
-        let lines: string[];
+        let lines: string[] = [];
         const windowsProcesses = process.platform === 'win32' || isWSL();
-        if (windowsProcesses) {
-            const output = await discoverWindowsProcesses(signal, log);
-            lines = filterLsProcessLines(output, 'language_server_windows');
-        } else {
-            const result = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
-                encoding: 'utf-8', timeout: 5000, signal,
-            });
-            lines = filterLsProcessLines(result.stdout);
+        try {
+            if (windowsProcesses) {
+                const output = await discoverWindowsProcesses(signal, log);
+                lines = filterLsProcessLines(output, 'language_server_windows');
+            } else {
+                const result = await execFileAsync('ps', ['-axww', '-o', 'pid=,command='], {
+                    encoding: 'utf-8', timeout: 5000, signal,
+                });
+                lines = filterLsProcessLines(result.stdout);
+            }
+        } catch (e) {
+            if (signal?.aborted) { return null; }
+            const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
+            log?.(`process listing failed (${code}); will try daemon/hint fallback`);
+            lines = [];
         }
 
-        if (lines.length === 0) {
-            log?.('matched 0 Antigravity language_server or agy hub processes');
-            return null;
-        }
+        if (signal?.aborted) { return null; }
 
-        for (const line of orderedProcessLines(lines, workspaceUri, hint)) {
+        const attemptedKeys = new Set<string>();
+        const ordered = orderedProcessLines(lines, workspaceUri, hint);
+
+        for (const line of ordered) {
             if (signal?.aborted) { return null; }
             const pid = windowsProcesses ? extractWindowsPid(line) : extractPid(line);
             const csrfToken = extractCsrfToken(line);
             if (!pid || !csrfToken) { continue; }
-            const result = await probeProcess(line, pid, csrfToken,
-                () => findListeningPorts(pid, signal, log), signal);
+            const result = await probeProcess(
+                line, pid, csrfToken,
+                () => findListeningPortCandidates(pid, signal, log),
+                signal, log, hint?.port, attemptedKeys,
+            );
             if (result) { return result; }
             log?.(`RPC probe failed for candidate pid ${pid}; trying remaining processes`);
         }
 
+        if (hint) {
+            if (hasConflictingProcessForHint(lines, hint)) {
+                log?.(`Hinted port ${hint.port} is owned by another Antigravity instance; waiting`);
+                return null;
+            }
+            return await probeHintFallback(hint, lines, windowsProcesses, attemptedKeys, signal, log);
+        }
+
+        // Legacy/standalone IDE (no built-in google.google-antigravity hint):
+        // try ~/.gemini/antigravity/daemon/hub_*.json for standalone language_server / agy hubs.
+        const standaloneResult = await probeStandaloneHubFiles(attemptedKeys, signal, log);
+        if (standaloneResult) { return standaloneResult; }
+
+        if (lines.length === 0) {
+            log?.('matched 0 Antigravity language_server or agy hub processes');
+        }
         if (isWSL()) {
             log?.('This extension host runs inside WSL and no reachable local server was found. '
                 + 'A Windows-host server bound to loopback is unreachable under default WSL2 NAT; '
@@ -901,20 +1283,39 @@ export async function discoverLanguageServer(
     }
 }
 
+type SingleProbeResult =
+    | { kind: 'ok' }
+    | { kind: 'unimplemented'; statusCode: number }
+    | { kind: 'fail'; reason: string; connectionRefused?: boolean };
+
+interface PortProbeDetail {
+    ok: boolean;
+    connectionRefused: boolean;
+    summary: string;
+}
+
 /**
- * Probe a port by sending a lightweight RPC request.
- * M3 fix: Now checks HTTP status code — rejects non-2xx responses.
+ * Send a single CSRF-authenticated Connect-RPC probe to `endpoint`.
+ * Returns `unimplemented` ONLY on HTTP 404/501 so callers fall through to the
+ * next compatible endpoint while stopping immediately on 401/403/400/TLS/socket/timeout.
  */
-async function probePort(port: number, csrfToken: string, useTls: boolean, signal?: AbortSignal): Promise<boolean> {
+async function probeEndpoint(
+    port: number,
+    csrfToken: string,
+    useTls: boolean,
+    endpoint: string,
+    hostname: string,
+    signal?: AbortSignal,
+): Promise<SingleProbeResult> {
     return new Promise((resolve) => {
         // CR-C2: Early abort check
         if (signal?.aborted) {
-            resolve(false);
+            resolve({ kind: 'fail', reason: 'aborted' });
             return;
         }
 
         let settled = false;
-        const settle = (value: boolean) => {
+        const settle = (value: SingleProbeResult) => {
             if (settled) { return; }
             settled = true;
             cleanupAbortListener();
@@ -931,10 +1332,9 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
         });
 
         const options: https.RequestOptions = {
-            hostname: '127.0.0.1',
+            hostname,
             port,
-            // Use GetUnleashData for lightweight port probing (per openusage docs)
-            path: '/exa.language_server_pb.LanguageServerService/GetUnleashData',
+            path: `/exa.language_server_pb.LanguageServerService/${endpoint}`,
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -956,8 +1356,8 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
         };
 
         const transport = useTls ? https : http;
-        // CR-M1: probePort body limit — only need to validate JSON, cap at 1MB
-        const PROBE_MAX_BODY = 1024 * 1024;
+        // CR-M1: probePort body limit — enough for GetUserStatus fallback (~55KB-500KB), cap at 2MB
+        const PROBE_MAX_BODY = 2 * 1024 * 1024;
         const req = transport.request(options, (res) => {
             let body = '';
             let bodySize = 0;
@@ -965,7 +1365,7 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
                 bodySize += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
                 if (bodySize > PROBE_MAX_BODY) {
                     req.destroy();
-                    settle(false);
+                    settle({ kind: 'fail', reason: 'response too large' });
                     return;
                 }
                 body += chunk;
@@ -973,29 +1373,47 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
             // CR2-Fix3: Handle response-side stream errors (e.g. TCP RST,
             // half-broken connections). Without this, the Promise would hang
             // until the req.on('timeout') fires.
-            res.on('error', () => settle(false));
+            res.on('error', (err) => settle({
+                kind: 'fail',
+                reason: (err as NodeJS.ErrnoException).code || err.message || 'response error',
+            }));
             res.on('end', () => {
-                // M3: Check HTTP status code — 4xx/5xx are not valid RPC endpoints
-                if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-                    settle(false);
+                const status = res.statusCode;
+                if (status === 404 || status === 501) {
+                    settle({ kind: 'unimplemented', statusCode: status });
+                    return;
+                }
+                // M3: Check HTTP status code — 401/403/400/5xx are not valid RPC endpoints
+                if (!status || status < 200 || status >= 300) {
+                    settle({ kind: 'fail', reason: `HTTP ${status ?? 'unknown'}` });
                     return;
                 }
                 try {
                     const parsed: unknown = JSON.parse(body);
-                    // Connect JSON messages are objects, including the empty
-                    // GetUnleashData response from current agy hubs.
-                    settle(parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed));
+                    // Connect JSON messages are objects (including `{}` from GetStatus / GetUnleashData).
+                    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        settle({ kind: 'ok' });
+                    } else {
+                        settle({ kind: 'fail', reason: 'non-object JSON' });
+                    }
                 } catch {
-                    settle(false);
+                    settle({ kind: 'fail', reason: 'invalid JSON' });
                 }
             });
         });
 
-        req.on('error', () => settle(false));
-        req.on('timeout', () => { req.destroy(); settle(false); });
+        req.on('error', (err) => {
+            const code = (err as NodeJS.ErrnoException).code;
+            settle({
+                kind: 'fail',
+                reason: code || err.message || 'socket error',
+                connectionRefused: code === 'ECONNREFUSED',
+            });
+        });
+        req.on('timeout', () => { req.destroy(); settle({ kind: 'fail', reason: 'timeout' }); });
 
         if (signal) {
-            onAbort = () => { req.destroy(); settle(false); };
+            onAbort = () => { req.destroy(); settle({ kind: 'fail', reason: 'aborted' }); };
             signal.addEventListener('abort', onAbort, { once: true });
             if (signal.aborted) { onAbort(); return; }
         }
@@ -1003,4 +1421,35 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
         req.write(postData);
         req.end();
     });
+}
+
+/**
+ * Probe a port across PROBE_ENDPOINTS (`GetStatus` → `GetUnleashData` → `GetUserStatus`).
+ * Advances ONLY on HTTP 404/501 (endpoint removed/unimplemented); stops immediately on
+ * auth errors (401/403), transport/TLS errors, invalid JSON, timeout, or abort.
+ */
+async function probePortWithDetail(
+    port: number,
+    csrfToken: string,
+    useTls: boolean,
+    signal?: AbortSignal,
+    hostname = '127.0.0.1',
+): Promise<PortProbeDetail> {
+    const attempts: string[] = [];
+    for (const endpoint of PROBE_ENDPOINTS) {
+        if (signal?.aborted) {
+            return { ok: false, connectionRefused: false, summary: 'aborted' };
+        }
+        const res = await probeEndpoint(port, csrfToken, useTls, endpoint, hostname, signal);
+        if (res.kind === 'ok') {
+            return { ok: true, connectionRefused: false, summary: `${endpoint}:200` };
+        }
+        if (res.kind === 'unimplemented') {
+            attempts.push(`${endpoint}:HTTP ${res.statusCode}`);
+            continue;
+        }
+        attempts.push(`${endpoint}:${res.reason}`);
+        return { ok: false, connectionRefused: !!res.connectionRefused, summary: attempts.join(' → ') };
+    }
+    return { ok: false, connectionRefused: false, summary: attempts.join(' → ') };
 }

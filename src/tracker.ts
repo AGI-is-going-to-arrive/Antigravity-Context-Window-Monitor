@@ -1,14 +1,22 @@
 import { parseCreditBalance } from './account-credits';
 import { LSInfo } from './discovery';
-import { rpcCall } from './rpc-client';
+import { rpcCall, rpcStreamFirstFrame } from './rpc-client';
 import {
     getContextLimit,
     getModelDisplayName,
     normalizeModelDisplayName,
     updateModelDisplayNames,
+    resolveOrchestratorSettings,
     ModelConfig,
     FullUserStatus,
     UserStatusInfo,
+    GroupedModelInfo,
+    GroupedModelThinkingLevel,
+    OrchestratorModelRoles,
+    OrchestratorSettings,
+    QuotaPoolSummary,
+    QuotaWindowSummary,
+    UserQuotaSummary,
     isImageGenerationModel,
     resolveModelId,
 } from './models';
@@ -31,6 +39,12 @@ export {
     ModelConfig,
     FullUserStatus,
     UserStatusInfo,
+    GroupedModelInfo,
+    OrchestratorModelRoles,
+    OrchestratorSettings,
+    QuotaPoolSummary,
+    QuotaWindowSummary,
+    UserQuotaSummary,
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -76,6 +90,12 @@ export interface ModelUsageInfo {
     cacheCreationTokens?: number;
 }
 
+/** Active per-conversation dynamic Orchestrator pair from USER_INPUT plannerConfig. */
+export interface ConversationOrchestratorConfig {
+    planModel: string;
+    executionModel: string;
+}
+
 export interface TokenUsageResult {
     /** Source of the latest token snapshot; absent only in pre-1.16.19 caches. */
     tokenUsageSource?: 'checkpoint' | 'planner' | 'estimated';
@@ -111,6 +131,8 @@ export interface TokenUsageResult {
     checkpointCompressionDrop: number;
     /** Model ID from the last checkpoint's modelUsage (shadow model, e.g. M50 Flash Lite) */
     checkpointModel: string;
+    /** Active Planner → Executor pair when dynamic Orchestrator mode is used in this conversation. */
+    orchestratorConfig?: ConversationOrchestratorConfig;
 }
 
 // ─── Token Estimation from Text ──────────────────────────────────────────────
@@ -174,6 +196,8 @@ export interface ContextUsage {
     hasGaps: boolean;
     /** Shadow model used by the last checkpoint (e.g. M50 Flash Lite) for transparency */
     checkpointModel: string;
+    /** Active Planner → Executor pair when dynamic Orchestrator mode is used in this conversation. */
+    orchestratorConfig?: ConversationOrchestratorConfig;
     // ─── Extended Transparency Fields ─────────────────────────────────────
     /** Created time of the trajectory */
     createdTime: string;
@@ -408,6 +432,14 @@ function extractModelUsage(meta: Record<string, unknown>): ModelUsageInfo | null
     return null;
 }
 
+function isConcreteModelString(value: unknown): value is string {
+    if (typeof value !== 'string') { return false; }
+    const trimmed = value.trim();
+    if (!trimmed) { return false; }
+    const upper = trimmed.toUpperCase();
+    return upper !== 'MODEL_UNSPECIFIED' && upper !== 'MODEL_PLACEHOLDER_UNSPECIFIED';
+}
+
 /**
  * Process an array of trajectory steps and compute token usage.
  * Pure function — no RPC calls, no side effects.
@@ -415,6 +447,7 @@ function extractModelUsage(meta: Record<string, unknown>): ModelUsageInfo | null
 export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageResult {
     let toolOutputTokens = 0;
     let model = '';
+    let orchestratorConfig: ConversationOrchestratorConfig | undefined;
     const stepDetails: StepTokenInfo[] = [];
     let lastModelUsage: ModelUsageInfo | null = null;
     let tokenUsageSource: 'checkpoint' | 'planner' | 'estimated' = 'estimated';
@@ -429,6 +462,24 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
     let prevCheckpointInputTokens = -1;
     let checkpointCompressionDetected = false;
     let checkpointCompressionDrop = 0;
+
+    const isDelegatedExecutor = (candidate: string): boolean => {
+        if (!orchestratorConfig || !candidate) { return false; }
+        const normCandidate = resolveModelId(candidate) || candidate;
+        const normExec = resolveModelId(orchestratorConfig.executionModel) || orchestratorConfig.executionModel;
+        return normCandidate === normExec;
+    };
+
+    const maybeClearStaleOrchestrator = (nextModel: string): void => {
+        if (!orchestratorConfig || !nextModel) { return; }
+        const resolvedNext = resolveModelId(nextModel);
+        const concreteNext = resolvedNext || (/^MODEL_[A-Z0-9_]+$/i.test(nextModel.trim()) ? nextModel.trim() : '');
+        if (!concreteNext) { return; }
+        const normPlan = resolveModelId(orchestratorConfig.planModel) || orchestratorConfig.planModel;
+        if (concreteNext !== normPlan) {
+            orchestratorConfig = undefined;
+        }
+    };
 
     for (let globalStepIdx = 0; globalStepIdx < steps.length; globalStepIdx++) {
         const step = steps[globalStepIdx];
@@ -445,8 +496,27 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
             const userInput = step.userInput as Record<string, unknown> | undefined;
             const userConfig = userInput?.userConfig as Record<string, unknown> | undefined;
             const plannerConfig = userConfig?.plannerConfig as Record<string, unknown> | undefined;
-            const selected = plannerConfig?.planModel || plannerConfig?.modelName;
-            if (typeof selected === 'string' && selected) { model = selected; }
+            const rawReq = plannerConfig?.requestedModel;
+            const reqModel = typeof rawReq === 'string'
+                ? rawReq
+                : (rawReq && typeof rawReq === 'object' && !Array.isArray(rawReq)
+                    ? (rawReq as Record<string, unknown>).model
+                    : undefined);
+            const rawSelected = plannerConfig?.planModel || plannerConfig?.modelName || reqModel;
+            const selected = isConcreteModelString(rawSelected) ? rawSelected.trim() : '';
+            const planExecuteConfig = plannerConfig?.planExecuteConfig as Record<string, unknown> | undefined;
+            const rawExec = planExecuteConfig?.executionModel;
+            const executionModel = isConcreteModelString(rawExec) ? rawExec.trim() : '';
+            if (selected) {
+                model = selected;
+                const normSelected = resolveModelId(selected) || selected;
+                const normExec = executionModel ? (resolveModelId(executionModel) || executionModel) : '';
+                if (executionModel && normExec !== normSelected) {
+                    orchestratorConfig = { planModel: selected, executionModel };
+                } else {
+                    orchestratorConfig = undefined;
+                }
+            }
         }
 
         // Count planner response steps
@@ -506,7 +576,10 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
                 tokenUsageSource = 'planner';
                 estimationOverhead = 0;
                 outputTokensSinceCheckpoint = 0;
-                if (usage.model) { model = usage.model; }
+                if (usage.model && !isDelegatedExecutor(usage.model)) {
+                    model = usage.model;
+                    maybeClearStaleOrchestrator(usage.model);
+                }
             }
         }
 
@@ -536,13 +609,17 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         // Skip CHECKPOINT steps — their generatorModel belongs to internal
         // shadow models (e.g. M50 Flash Lite for title/intent/compression).
         // Display model should only reflect user-facing model selections.
-        if (stepModel && stepType !== StepType.CHECKPOINT && !imageStep) {
+        if (stepModel && stepType !== StepType.CHECKPOINT && !imageStep && !isDelegatedExecutor(stepModel)) {
             model = stepModel;
+            maybeClearStaleOrchestrator(stepModel);
         }
 
         // requestedModel is highest priority (user's explicit selection)
         const rm = meta.requestedModel as Record<string, unknown> | undefined;
-        if (!imageStep && typeof rm?.model === 'string') { model = rm.model; }
+        if (!imageStep && typeof rm?.model === 'string' && !isDelegatedExecutor(rm.model)) {
+            model = rm.model;
+            maybeClearStaleOrchestrator(rm.model);
+        }
     }
 
     const estimatedDelta = outputTokensSinceCheckpoint + estimationOverhead;
@@ -568,6 +645,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
             checkpointCompressionDetected,
             checkpointCompressionDrop,
             checkpointModel,
+            ...(orchestratorConfig ? { orchestratorConfig } : {}),
         };
     }
 
@@ -592,6 +670,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         checkpointCompressionDetected: false,
         checkpointCompressionDrop: 0,
         checkpointModel: '',
+        ...(orchestratorConfig ? { orchestratorConfig } : {}),
     };
 }
 
@@ -801,7 +880,7 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
                     return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : Number.NaN;
                 }
                 const rt = typeof q.resetTime === 'string' ? q.resetTime.trim() : '';
-                if (!rt || rt === '1970-01-01T00:00:00Z') { return 1; }
+                if (!rt || rt === '1970-01-01T00:00:00Z' || Date.parse(rt) === 0) { return 1; }
                 const parsed = Date.parse(rt);
                 return Number.isFinite(parsed) && parsed > 0 ? 0 : Number.NaN;
             };
@@ -815,11 +894,46 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
                 } : undefined,
                 allowedTiers: (c.allowedTiers as string[]) || [],
                 tagTitle: (c.tagTitle as string) || undefined,
+                ...(typeof c.tagDescription === 'string' && c.tagDescription.trim()
+                    ? { tagDescription: c.tagDescription.trim() } : {}),
+                ...(typeof c.modelId === 'string' && c.modelId.trim()
+                    ? { modelId: c.modelId.trim() } : {}),
                 mimeTypeCount: mimeTypes ? Object.keys(mimeTypes).length : 0,
                 isRecommended: (c.isRecommended as boolean) || false,
                 supportedMimeTypes: mimeTypes ? Object.keys(mimeTypes) : [],
             };
         }).filter(c => c.model && c.label);
+
+        const rawGroupedModels = configData?.groupedModels as Record<string, unknown> | undefined;
+        let groupedModels: Record<string, GroupedModelInfo> | undefined;
+        if (rawGroupedModels && typeof rawGroupedModels === 'object' && !Array.isArray(rawGroupedModels)) {
+            const parsedGroups: Record<string, GroupedModelInfo> = {};
+            for (const [familyKey, rawEntry] of Object.entries(rawGroupedModels)) {
+                if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) { continue; }
+                const entry = rawEntry as Record<string, unknown>;
+                const displayName = typeof entry.displayName === 'string' ? entry.displayName.trim() : '';
+                const rawLevels = Array.isArray(entry.supportedThinkingLevels) ? entry.supportedThinkingLevels : [];
+                const supportedThinkingLevels: GroupedModelThinkingLevel[] = rawLevels.flatMap((lvl: unknown) => {
+                    if (!lvl || typeof lvl !== 'object' || Array.isArray(lvl)) { return []; }
+                    const rec = lvl as Record<string, unknown>;
+                    const thinkingSuffix = typeof rec.thinkingSuffix === 'string' ? rec.thinkingSuffix.trim() : '';
+                    const thinkingDisplayName = typeof rec.thinkingDisplayName === 'string' ? rec.thinkingDisplayName.trim() : '';
+                    return thinkingSuffix && thinkingDisplayName ? [{ thinkingSuffix, thinkingDisplayName }] : [];
+                });
+                const defaultThinkingSuffix = typeof entry.defaultThinkingSuffix === 'string' && entry.defaultThinkingSuffix.trim()
+                    ? entry.defaultThinkingSuffix.trim() : undefined;
+                if (displayName || supportedThinkingLevels.length > 0) {
+                    parsedGroups[familyKey] = {
+                        displayName: displayName || familyKey,
+                        supportedThinkingLevels,
+                        ...(defaultThinkingSuffix ? { defaultThinkingSuffix } : {}),
+                    };
+                }
+            }
+            if (Object.keys(parsedGroups).length > 0) {
+                groupedModels = parsedGroups;
+            }
+        }
 
         // ─── Plan Info ───
         const planStatus = userStatus.planStatus as Record<string, unknown> | undefined;
@@ -905,9 +1019,231 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
             userInfo._rawResponse = resp as Record<string, unknown>;
         }
 
-        return { configs, userInfo, rawResponse: resp as Record<string, unknown> };
+        return {
+            configs,
+            userInfo,
+            ...(groupedModels ? { groupedModels } : {}),
+            rawResponse: resp as Record<string, unknown>,
+        };
     } catch {
         return { configs: [], userInfo: null };
+    }
+}
+
+// ─── Orchestrator Settings (JetboxSubscribeToState + GetMendelFlags) ─────────
+
+/** Parse Mendel experiment payload for `orchestrator-model-roles`. */
+export function parseOrchestratorModelRoles(raw: unknown): OrchestratorModelRoles | null {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return null; }
+    const root = raw as Record<string, unknown>;
+    const response = (root.response && typeof root.response === 'object' && !Array.isArray(root.response))
+        ? root.response as Record<string, unknown> : root;
+    const expCfg = (response.experimentConfig && typeof response.experimentConfig === 'object' && !Array.isArray(response.experimentConfig))
+        ? response.experimentConfig as Record<string, unknown> : response;
+    const experiments = Array.isArray(expCfg.experiments) ? expCfg.experiments : [];
+    for (const item of experiments) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) { continue; }
+        const exp = item as Record<string, unknown>;
+        if (exp.disabled === true) { continue; }
+        const keyStr = typeof exp.keyString === 'string' ? exp.keyString.trim() : '';
+        if (keyStr !== 'orchestrator-model-roles') { continue; }
+        const payloadObj = (exp.payload && typeof exp.payload === 'object' && !Array.isArray(exp.payload))
+            ? exp.payload as Record<string, unknown> : undefined;
+        const jsonStr = typeof exp.string === 'string' ? exp.string
+            : typeof exp.stringValue === 'string' ? exp.stringValue
+                : typeof payloadObj?.value === 'string' ? payloadObj.value : '';
+        if (!jsonStr.trim()) { continue; }
+        try {
+            const parsed: unknown = JSON.parse(jsonStr);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { continue; }
+            const rec = parsed as Record<string, unknown>;
+            const orchestrators = Array.isArray(rec.orchestrators)
+                ? rec.orchestrators.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).map(v => v.trim())
+                : [];
+            const executors = Array.isArray(rec.executors)
+                ? rec.executors.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).map(v => v.trim())
+                : [];
+            if (orchestrators.length > 0 || executors.length > 0) {
+                return { orchestrators, executors };
+            }
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
+export interface JetboxOrchestratorPrefs {
+    orchestratorModel: string;
+    orchestratorExecutorModel: string;
+    lastSelectedAgentModel: string;
+}
+
+/** Extract Orchestrator preferences from frame 1 of JetboxSubscribeToState. */
+export function parseJetboxOrchestratorPrefs(frame: unknown): JetboxOrchestratorPrefs | null {
+    if (!frame || typeof frame !== 'object' || Array.isArray(frame)) { return null; }
+    const rec = frame as Record<string, unknown>;
+    const appState = (rec.appState && typeof rec.appState === 'object' && !Array.isArray(rec.appState))
+        ? rec.appState as Record<string, unknown> : undefined;
+    const userConfig = (rec.userConfig && typeof rec.userConfig === 'object' && !Array.isArray(rec.userConfig))
+        ? rec.userConfig as Record<string, unknown> : undefined;
+    const userSettings = (userConfig?.userSettings && typeof userConfig.userSettings === 'object' && !Array.isArray(userConfig.userSettings))
+        ? userConfig.userSettings as Record<string, unknown>
+        : (rec.userSettings && typeof rec.userSettings === 'object' && !Array.isArray(rec.userSettings))
+            ? rec.userSettings as Record<string, unknown> : undefined;
+
+    const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+    return {
+        orchestratorModel: str(userSettings?.orchestratorModel ?? userConfig?.orchestratorModel),
+        orchestratorExecutorModel: str(userSettings?.orchestratorExecutorModel ?? userConfig?.orchestratorExecutorModel),
+        lastSelectedAgentModel: str(appState?.lastSelectedAgentModel),
+    };
+}
+
+/**
+ * Fetch global Orchestrator Settings (Orchestrator Model + Executor Model + Mendel roles).
+ * Gracefully degrades to null on older LS builds that lack JetboxSubscribeToState / GetMendelFlags.
+ */
+export async function fetchOrchestratorSettings(
+    ls: LSInfo,
+    configs: readonly ModelConfig[],
+    signal?: AbortSignal,
+): Promise<OrchestratorSettings | null> {
+    try {
+        const [jetboxRes, mendelRes] = await Promise.allSettled([
+            rpcStreamFirstFrame(ls, 'JetboxSubscribeToState', {}, 5000, signal),
+            rpcCall(ls, 'GetMendelFlags', {}, 5000, signal),
+        ]);
+        const prefs = jetboxRes.status === 'fulfilled'
+            ? parseJetboxOrchestratorPrefs(jetboxRes.value) : null;
+        const roles = mendelRes.status === 'fulfilled'
+            ? parseOrchestratorModelRoles(mendelRes.value) : null;
+        if (!prefs && !roles) { return null; }
+        return resolveOrchestratorSettings(prefs, roles, configs);
+    } catch {
+        return null;
+    }
+}
+
+// ─── Dual-Window Quota Summary (RetrieveUserQuotaSummary) ────────────────────
+
+function parseStrictResetTimestamp(raw: unknown): { resetTime: string | null; resetAt: number | null } {
+    const reset = typeof raw === 'string' ? raw.trim() : '';
+    if (!reset) { return { resetTime: null, resetAt: null }; }
+    const isTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(reset);
+    if (!isTimestamp) { return { resetTime: null, resetAt: null }; }
+    const parsed = Date.parse(reset);
+    const calendarDate = new Date(`${reset.slice(0, 10)}T00:00:00Z`);
+    const validDate = Number.isFinite(calendarDate.getTime()) && calendarDate.toISOString().slice(0, 10) === reset.slice(0, 10);
+    if (!validDate || !Number.isFinite(parsed) || parsed <= 0) {
+        return { resetTime: null, resetAt: null };
+    }
+    return { resetTime: reset, resetAt: parsed };
+}
+
+function parseQuotaWindowRemaining(bucket: Record<string, unknown>, resetAt: number | null): number | null {
+    if (bucket.remainingFraction != null) {
+        const raw = typeof bucket.remainingFraction === 'string' && bucket.remainingFraction.trim() !== ''
+            ? Number(bucket.remainingFraction) : bucket.remainingFraction;
+        return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : null;
+    }
+    // Proto3 omits float 0.0: untouched quota has no/epoch resetTime → 1.0,
+    // exhausted quota has a valid future/non-epoch resetTime → 0.0.
+    const rawReset = typeof bucket.resetTime === 'string' ? bucket.resetTime.trim() : '';
+    if (!rawReset || rawReset === '1970-01-01T00:00:00Z' || Date.parse(rawReset) === 0) { return 1; }
+    return resetAt !== null ? 0 : null;
+}
+
+function inferQuotaSummaryPool(displayName: string, buckets: readonly QuotaWindowSummary[]): 'gemini' | 'premium' | undefined {
+    const ids = buckets.map(b => b.bucketId.toLowerCase());
+    if (ids.some(id => id.startsWith('gemini')) || /\bgemini\b/i.test(displayName)) {
+        return 'gemini';
+    }
+    if (ids.some(id => id.startsWith('3p') || id.startsWith('claude') || id.startsWith('gpt'))
+        || /\b(?:claude|gpt)\b/i.test(displayName)) {
+        return 'premium';
+    }
+    return undefined;
+}
+
+/** Parse RetrieveUserQuotaSummary response into canonical dual-window pool summaries. */
+export function parseUserQuotaSummary(raw: unknown): UserQuotaSummary | null {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return null; }
+    const root = raw as Record<string, unknown>;
+    const payload = (root.response && typeof root.response === 'object' && !Array.isArray(root.response))
+        ? root.response as Record<string, unknown> : root;
+    const rawGroups = Array.isArray(payload.groups) ? payload.groups : [];
+    const groups: QuotaPoolSummary[] = [];
+
+    for (const item of rawGroups) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) { continue; }
+        const rec = item as Record<string, unknown>;
+        const displayName = typeof rec.displayName === 'string' ? rec.displayName.trim() : '';
+        const description = typeof rec.description === 'string' && rec.description.trim()
+            ? rec.description.trim() : undefined;
+        const rawBuckets = Array.isArray(rec.buckets) ? rec.buckets : [];
+        const buckets: QuotaWindowSummary[] = [];
+
+        for (const rawBucket of rawBuckets) {
+            if (!rawBucket || typeof rawBucket !== 'object' || Array.isArray(rawBucket)) { continue; }
+            const b = rawBucket as Record<string, unknown>;
+            const bucketId = typeof b.bucketId === 'string' ? b.bucketId.trim() : '';
+            const rawWindow = typeof b.window === 'string' ? b.window.trim().toLowerCase() : '';
+            const window = rawWindow
+                || (bucketId.toLowerCase().endsWith('-weekly') ? 'weekly'
+                    : bucketId.toLowerCase().endsWith('-5h') ? '5h' : '');
+            if (!bucketId && !window) { continue; }
+            const { resetTime, resetAt } = parseStrictResetTimestamp(b.resetTime);
+            const remainingFraction = parseQuotaWindowRemaining(b, resetAt);
+            const bucketDisplayName = typeof b.displayName === 'string' ? b.displayName.trim() : '';
+            const bucketDescription = typeof b.description === 'string' && b.description.trim()
+                ? b.description.trim() : undefined;
+            buckets.push({
+                bucketId,
+                window,
+                displayName: bucketDisplayName || window || bucketId,
+                ...(bucketDescription ? { description: bucketDescription } : {}),
+                remainingFraction,
+                resetTime,
+                resetAt,
+            });
+        }
+
+        if (!displayName && buckets.length === 0) { continue; }
+        const pool = inferQuotaSummaryPool(displayName, buckets);
+        const fiveHour = buckets.find(b => b.window === '5h');
+        const weekly = buckets.find(b => b.window === 'weekly');
+        groups.push({
+            ...(pool ? { pool } : {}),
+            displayName: displayName || (pool === 'gemini' ? 'Gemini Models' : pool === 'premium' ? 'Claude and GPT models' : 'Models'),
+            ...(description ? { description } : {}),
+            ...(fiveHour ? { fiveHour } : {}),
+            ...(weekly ? { weekly } : {}),
+            buckets,
+        });
+    }
+
+    if (groups.length === 0) { return null; }
+    const description = typeof payload.description === 'string' && payload.description.trim()
+        ? payload.description.trim() : undefined;
+    return { groups, ...(description ? { description } : {}) };
+}
+
+/**
+ * Fetch dual-window (5h + weekly) quota summary from RetrieveUserQuotaSummary.
+ * Returns null gracefully on older LS builds or RPC failure.
+ */
+export async function fetchUserQuotaSummary(
+    ls: LSInfo,
+    signal?: AbortSignal,
+): Promise<UserQuotaSummary | null> {
+    try {
+        const resp = await rpcCall(ls, 'RetrieveUserQuotaSummary', {
+            metadata: { ideName: 'antigravity', extensionName: 'antigravity' },
+        }, 10000, signal);
+        return parseUserQuotaSummary(resp);
+    } catch {
+        return null;
     }
 }
 
@@ -937,7 +1273,15 @@ export async function getContextUsage(
     );
 
     const effectiveModel = result.model || trajectory.requestedModel || trajectory.generatorModel;
-    const contextLimit = getContextLimit(effectiveModel, customLimits);
+    // When the latest token snapshot came directly from a planner/executor step
+    // (never a CHECKPOINT whose lastModelUsage.model is a shadow model like M50),
+    // resolve contextLimit against that actual model so cross-pool Orchestrator
+    // turns (e.g. Opus 5.5 256K planner + Hydrogen 512K executor) match occupancy
+    // to the active step's compression limit.
+    const limitModel = result.tokenUsageSource === 'planner' && result.lastModelUsage?.model
+        ? result.lastModelUsage.model
+        : effectiveModel;
+    const contextLimit = getContextLimit(limitModel, customLimits);
     const usagePercent = contextLimit > 0 ? (result.contextUsed / contextLimit) * 100 : 0;
 
     const usage: ContextUsage = {
@@ -966,6 +1310,7 @@ export async function getContextUsage(
         checkpointCompressionDrop: result.checkpointCompressionDrop,
         hasGaps: result.hasGaps,
         checkpointModel: result.checkpointModel,
+        ...(result.orchestratorConfig ? { orchestratorConfig: result.orchestratorConfig } : {}),
         // Extended transparency fields
         createdTime: trajectory.createdTime,
         lastUserInputTime: trajectory.lastUserInputTime,

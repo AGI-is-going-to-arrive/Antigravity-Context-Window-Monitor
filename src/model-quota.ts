@@ -1,4 +1,12 @@
-import { getModelSpecs, getQuotaPoolKey, resolveModelId, type ModelConfig, type ModelSpec } from './models';
+import {
+    getModelSpecs,
+    getQuotaPoolKey,
+    resolveModelId,
+    type ModelConfig,
+    type ModelSpec,
+    type QuotaWindowSummary,
+    type UserQuotaSummary,
+} from './models';
 
 export type QuotaEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
@@ -33,6 +41,10 @@ export interface QuotaReadingSummary {
 export interface ModelQuotaGroup extends ModelQuotaMember, QuotaReadingSummary {
     pool?: 'gemini' | 'premium';
     members: ModelQuotaMember[];
+    /** Optional 5-hour quota window from RetrieveUserQuotaSummary (exact remainingFraction). */
+    fiveHourQuota?: QuotaWindowSummary;
+    /** Optional weekly quota window from RetrieveUserQuotaSummary (exact remainingFraction). */
+    weeklyQuota?: QuotaWindowSummary;
 }
 
 export function summarizeQuotaReadings(readings: readonly ModelQuotaReading[]): QuotaReadingSummary {
@@ -128,7 +140,10 @@ function readQuota(config: ModelConfig, model: string, effort?: QuotaEffort): Mo
 }
 
 /** Group the presentation by canonical pool; accounting/model identities stay intact. */
-export function groupModelQuotas(configs: readonly ModelConfig[]): ModelQuotaGroup[] {
+export function groupModelQuotas(
+    configs: readonly ModelConfig[],
+    quotaSummary?: UserQuotaSummary | null,
+): ModelQuotaGroup[] {
     const specs = new Map(getModelSpecs().map(spec => [spec.placeholderId, spec]));
     const groups = new Map<string, ModelQuotaGroup>();
     const seenReadings = new Set<string>();
@@ -174,6 +189,16 @@ export function groupModelQuotas(configs: readonly ModelConfig[]): ModelQuotaGro
         }
         member.readings.push(reading);
     }
+    const summaryByPool = new Map<'gemini' | 'premium', { fiveHour?: QuotaWindowSummary; weekly?: QuotaWindowSummary }>();
+    if (quotaSummary?.groups) {
+        for (const summaryGroup of quotaSummary.groups) {
+            if (summaryGroup.pool !== 'gemini' && summaryGroup.pool !== 'premium') { continue; }
+            const existing = summaryByPool.get(summaryGroup.pool) || {};
+            if (summaryGroup.fiveHour && !existing.fiveHour) { existing.fiveHour = summaryGroup.fiveHour; }
+            if (summaryGroup.weekly && !existing.weekly) { existing.weekly = summaryGroup.weekly; }
+            summaryByPool.set(summaryGroup.pool, existing);
+        }
+    }
     for (const group of groups.values()) {
         for (const member of group.members) {
             member.efforts = EFFORTS.filter(effort => member.readings.some(reading => reading.effort === effort));
@@ -182,6 +207,11 @@ export function groupModelQuotas(configs: readonly ModelConfig[]): ModelQuotaGro
         group.readings = group.members.flatMap(member => member.readings);
         group.efforts = EFFORTS.filter(effort => group.readings.some(reading => reading.effort === effort));
         Object.assign(group, summarizeQuotaReadings(group.readings));
+        if (group.pool) {
+            const windows = summaryByPool.get(group.pool);
+            if (windows?.fiveHour) { group.fiveHourQuota = windows.fiveHour; }
+            if (windows?.weekly) { group.weeklyQuota = windows.weekly; }
+        }
     }
     return [...groups.values()];
 }

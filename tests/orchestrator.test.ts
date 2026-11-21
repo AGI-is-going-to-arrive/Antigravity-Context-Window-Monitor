@@ -35,19 +35,19 @@ afterEach(async () => {
 });
 
 const identities = [
-    { id: coordinator, catalog: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' },
-    { id: worker, catalog: 'gemini-flash-worker-agy', label: 'Gemini Flash (Orchestrator Worker)' },
+    { id: coordinator, catalog: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)', aliases: [] as string[], level: 3 },
+    { id: worker, catalog: 'gemini-flash-worker-agy', label: 'Gemini 4 Hydrogen (Orchestrator)', aliases: ['Gemini Flash (Orchestrator Worker)'], level: 100 },
 ];
 describe('Orchestrator and catalog-only worker', () => {
-    it.each(identities)('recognizes $catalog before a live catalog is available', ({ id, catalog, label }) => {
+    it.each(identities)('recognizes $catalog before a live catalog is available', ({ id, catalog, label, aliases, level }) => {
         updateModelDisplayNames([], { authoritative: true });
-        for (const alias of [id, catalog, catalog.toUpperCase(), label, `${label} (${id.slice(18)})`]) {
+        for (const alias of [id, catalog, catalog.toUpperCase(), label, `${label} (${id.slice(18)})`, ...aliases]) {
             expect(resolveModelId(alias), alias).toBe(id);
-            expect(getContextLimit(alias), alias).toBe(255000);
+            expect(getContextLimit(alias), alias).toBe(511000);
         }
         expect(spec(id)).toMatchObject({ maxTokens: 1048576, maxOutputTokens: 262144,
-            cpLimit: 256000, cpThreshold: 50000, thinkingLevel: 3, thinkingBudget: 0, supportsThinking: true });
-        expect(guessContextLimitSpec(catalog)).toMatchObject({ cpLimit: 256000, cpThreshold: 50000 });
+            cpLimit: 512000, cpThreshold: 50000, thinkingLevel: level, thinkingBudget: 0, supportsThinking: true });
+        expect(guessContextLimitSpec(catalog)).toMatchObject({ cpLimit: 512000, cpThreshold: 50000 });
     });
     it.each(['Orchestrator (High)', 'Orchestrator Extra', 'orchestrators', 'gemini-pro-orchestrator-high',
         'gemini-flash-worker-agy-high', 'Gemini Flash', 'gemini-pro-orchestrator<script>'])(

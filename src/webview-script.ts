@@ -93,6 +93,49 @@ export function getScript(): string {
             var revealFailedText = ${JSON.stringify(tBi('Reveal failed', '定位失败'))};
             var invalidBillingDayText = ${JSON.stringify(tBi('Invalid', '无效'))};
             var invalidPricingText = ${JSON.stringify(tBi('Enter a non-negative price in every field of each row, or clear the entire row.', '请为每行的所有字段填写非负价格，或清空整行。'))};
+            var invalidFxRateText = ${JSON.stringify(tBi('Enter a rate between 0.01 and 1000', '请输入 0.01–1000 之间的汇率'))};
+
+            function parseStrictFxRate(raw) {
+                var trimmed = String(raw == null ? '' : raw).trim();
+                if (!/^(?:\\d+\\.?\\d*|\\.\\d+)$/.test(trimmed)) { return null; }
+                var val = Number(trimmed);
+                if (!Number.isFinite(val) || val < 0.01 || val > 1000) { return null; }
+                return val;
+            }
+
+            function getActiveDisplayCurrency() {
+                var activeBtn = document.querySelector('.currency-btn.active[data-currency]');
+                return activeBtn ? (activeBtn.getAttribute('data-currency') || 'USD') : 'USD';
+            }
+
+            function getActiveFxRate() {
+                var el = document.getElementById('cnyExchangeRateInput') || document.getElementById('pricingFxRateInput');
+                var parsed = el ? parseStrictFxRate(el.value) : null;
+                return parsed !== null ? parsed : 7.2;
+            }
+
+            function updateSessionCostPreview(currency, rate) {
+                var preview = document.getElementById('sessionCostPreview');
+                if (!preview) { return; }
+                var r = typeof rate === 'number' && Number.isFinite(rate) && rate >= 0.01 && rate <= 1000 ? rate : 7.2;
+                var cny = '\u00a5' + (0.27 * r).toFixed(2);
+                if (currency === 'CNY') {
+                    preview.textContent = cny;
+                } else if (currency === 'both') {
+                    preview.textContent = '$0.27 (' + cny + ')';
+                } else {
+                    preview.textContent = '$0.27';
+                }
+            }
+
+            function flashCurrencyFeedback(fbId, text, isError) {
+                var el = document.getElementById(fbId);
+                if (el) {
+                    el.setAttribute('role', isError ? 'alert' : 'status');
+                    el.style.color = isError ? 'var(--ed-danger)' : 'var(--ed-good)';
+                }
+                flashFeedback(fbId, text, isError ? 3200 : 2000);
+            }
 
             function setFeedback(id, text) {
                 var el = document.getElementById(id);
@@ -601,8 +644,8 @@ export function getScript(): string {
                 });
             }
 
-            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'toggleAiCredits', 'toggleSpeed', 'toggleCacheHit', 'toggleModelInternalId'];
-            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'statusBar.showAiCredits', 'statusBar.showSpeed', 'statusBar.showCacheHit', 'showModelInternalId'];
+            var toggleIds = ['toggleContext', 'toggleQuota', 'toggleCountdown', 'toggleAiCredits', 'toggleSpeed', 'toggleCacheHit', 'toggleSessionCost', 'toggleModelInternalId'];
+            var toggleKeys = ['statusBar.showContext', 'statusBar.showQuota', 'statusBar.showResetCountdown', 'statusBar.showAiCredits', 'statusBar.showSpeed', 'statusBar.showCacheHit', 'statusBar.showSessionCost', 'showModelInternalId'];
             for (var tgi = 0; tgi < toggleIds.length; tgi++) {
                 (function(idx) {
                     var cb = document.getElementById(toggleIds[idx]);
@@ -736,8 +779,15 @@ export function getScript(): string {
                         'pollingInterval': 'pollingFeedback',
                         'quotaNotificationThreshold': 'quotaNotifyFeedback',
                         'statePath': 'statePathFeedback',
-                        'panelShowTabScrollHint': 'panelHintFeedback'
+                        'panelShowTabScrollHint': 'panelHintFeedback',
+                        'pricing.displayCurrency': 'currencyFeedback',
+                        'pricing.cnyExchangeRate': 'currencyFeedback'
                     };
+                    if (msg.key === 'pricing.displayCurrency' || msg.key === 'pricing.cnyExchangeRate') {
+                        flashCurrencyFeedback('pricingCurrencyFeedback', '\u2713', false);
+                        flashCurrencyFeedback('currencyFeedback', '\u2713', false);
+                        return;
+                    }
                     // accountBillingDay feedback (Profile tab)
                     if (msg.key === 'accountBillingDay') {
                         flashProfileBillingFeedback('\u2713', false);
@@ -750,6 +800,53 @@ export function getScript(): string {
                             cfb.style.opacity = '1';
                             setTimeout(function() { cfb.style.opacity = '0'; }, 2000);
                         }
+                    }
+                }
+                if (msg.command === 'syncSettingsControls') {
+                    if (msg.displayCurrency) {
+                        var syncCurrBtns = document.querySelectorAll('.currency-btn[data-currency]');
+                        for (var sci = 0; sci < syncCurrBtns.length; sci++) {
+                            var isMatch = syncCurrBtns[sci].getAttribute('data-currency') === msg.displayCurrency;
+                            syncCurrBtns[sci].classList.toggle('active', isMatch);
+                            syncCurrBtns[sci].setAttribute('aria-pressed', String(isMatch));
+                        }
+                    }
+                    if (typeof msg.cnyExchangeRate === 'number' && Number.isFinite(msg.cnyExchangeRate)) {
+                        var fxRateStr = String(msg.cnyExchangeRate);
+                        var fxIds = ['cnyExchangeRateInput', 'pricingFxRateInput'];
+                        for (var fxi = 0; fxi < fxIds.length; fxi++) {
+                            var fxEl = document.getElementById(fxIds[fxi]);
+                            if (fxEl) {
+                                fxEl.setAttribute('data-original-value', fxRateStr);
+                                if (document.activeElement !== fxEl) {
+                                    fxEl.value = fxRateStr;
+                                }
+                            }
+                        }
+                    }
+                    updateSessionCostPreview(
+                        msg.displayCurrency || getActiveDisplayCurrency(),
+                        typeof msg.cnyExchangeRate === 'number' ? msg.cnyExchangeRate : getActiveFxRate(),
+                    );
+                    var syncTogglePairs = [
+                        ['toggleContext', 'showContext'],
+                        ['toggleQuota', 'showQuota'],
+                        ['toggleCountdown', 'showResetCountdown'],
+                        ['toggleAiCredits', 'showAiCredits'],
+                        ['toggleSpeed', 'showSpeed'],
+                        ['toggleCacheHit', 'showCacheHit'],
+                        ['toggleSessionCost', 'showSessionCost'],
+                    ];
+                    for (var sti = 0; sti < syncTogglePairs.length; sti++) {
+                        var fieldName = syncTogglePairs[sti][1];
+                        if (typeof msg[fieldName] === 'boolean') {
+                            var cbEl = document.getElementById(syncTogglePairs[sti][0]);
+                            if (cbEl) { cbEl.checked = msg[fieldName]; }
+                        }
+                    }
+                    if (typeof msg.tooltipDensity === 'string') {
+                        var tdEl = document.getElementById('statusTooltipDensity');
+                        if (tdEl) { tdEl.value = msg.tooltipDensity; }
                     }
                 }
                 if (msg.command === 'stateFileActionResult') {
@@ -976,6 +1073,47 @@ export function getScript(): string {
                         ueBtn.textContent = copiedText;
                         setTimeout(function() { ueBtn.innerHTML = origUeHtml; ueBtn.classList.remove('copied'); }, 2000);
                     });
+                    return;
+                }
+
+                // ── Currency Switcher (Cost tab & Settings tab) ──
+                var currBtn = target.closest('.currency-btn[data-currency]');
+                if (currBtn) {
+                    var chosenCurrency = currBtn.getAttribute('data-currency') || 'USD';
+                    var allCurrBtns = document.querySelectorAll('.currency-btn[data-currency]');
+                    for (var cbi = 0; cbi < allCurrBtns.length; cbi++) {
+                        var isCur = allCurrBtns[cbi].getAttribute('data-currency') === chosenCurrency;
+                        allCurrBtns[cbi].classList.toggle('active', isCur);
+                        allCurrBtns[cbi].setAttribute('aria-pressed', String(isCur));
+                    }
+                    updateSessionCostPreview(chosenCurrency, getActiveFxRate());
+                    vscode.postMessage({ command: 'setConfig', key: 'pricing.displayCurrency', value: chosenCurrency });
+                    return;
+                }
+
+                // ── Exchange Rate Save (Cost tab & Settings tab) ──
+                if (target.closest('#cnyExchangeRateSaveBtn') || target.closest('#pricingFxSaveBtn')) {
+                    var isPricingFx = !!target.closest('#pricingFxSaveBtn');
+                    var fxInput = document.getElementById(isPricingFx ? 'pricingFxRateInput' : 'cnyExchangeRateInput');
+                    var fxFbId = isPricingFx ? 'pricingCurrencyFeedback' : 'currencyFeedback';
+                    if (fxInput) {
+                        var fxVal = parseStrictFxRate(fxInput.value);
+                        if (fxVal === null) {
+                            flashCurrencyFeedback(fxFbId, invalidFxRateText, true);
+                            return;
+                        }
+                        var fxStr = String(fxVal);
+                        fxInput.value = fxStr;
+                        fxInput.setAttribute('data-original-value', fxStr);
+                        // Keep both Settings and Cost tab inputs synchronized
+                        var otherFx = document.getElementById(isPricingFx ? 'cnyExchangeRateInput' : 'pricingFxRateInput');
+                        if (otherFx) {
+                            otherFx.value = fxStr;
+                            otherFx.setAttribute('data-original-value', fxStr);
+                        }
+                        updateSessionCostPreview(getActiveDisplayCurrency(), fxVal);
+                        vscode.postMessage({ command: 'setConfig', key: 'pricing.cnyExchangeRate', value: fxVal });
+                    }
                     return;
                 }
 
@@ -1224,6 +1362,8 @@ export function getScript(): string {
                             // Carry only unsaved values across the new server markup;
                             // keep its updated defaults and validation attributes.
                             var pricingDrafts = new Map();
+                            var pricingFxDraft = null;
+                            var pricingFxFocused = false;
                             if (key === 'pricing') {
                                 pane.querySelectorAll('.pricing-input').forEach(function(input) {
                                     if (input.value !== (input.getAttribute('data-original-value') || '')) {
@@ -1231,6 +1371,14 @@ export function getScript(): string {
                                         pricingDrafts.set(identity, { value: input.value, focused: input === document.activeElement });
                                     }
                                 });
+                                var fxDraftInput = pane.querySelector('#pricingFxRateInput');
+                                if (fxDraftInput) {
+                                    var fxOrig = fxDraftInput.getAttribute('data-original-value') || fxDraftInput.defaultValue || '';
+                                    if (fxDraftInput.value !== fxOrig) {
+                                        pricingFxDraft = fxDraftInput.value;
+                                    }
+                                    pricingFxFocused = fxDraftInput === document.activeElement;
+                                }
                             }
                             var overviewFocus = key === 'overview' && pane.contains(document.activeElement)
                                 ? document.activeElement.dataset.overviewFocus : undefined;
@@ -1276,6 +1424,13 @@ export function getScript(): string {
                                         if (draft.focused) { input.focus({ preventScroll: true }); }
                                     }
                                 });
+                            }
+                            if (pricingFxDraft !== null || pricingFxFocused) {
+                                var nextFxInput = pane.querySelector('#pricingFxRateInput');
+                                if (nextFxInput) {
+                                    if (pricingFxDraft !== null) { nextFxInput.value = pricingFxDraft; }
+                                    if (pricingFxFocused) { nextFxInput.focus({ preventScroll: true }); }
+                                }
                             }
                             lastTabHtmls[key] = tabs[key];
                             changedTabKeys.push(key);

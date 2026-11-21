@@ -2,11 +2,34 @@
 // Centralizes model-related information: default model, personal model quota,
 // and official model configurations and limit parameters without GM data contamination.
 
+import { formatPerMillionRate, type CurrencyPrefs } from './currency';
 import { formatNumber, getLanguage } from './i18n';
-import { ModelConfig, UserStatusInfo, getModelSpecs, ModelSpec, updateModelSpec, guessContextLimitSpec, getAvailableImageModelSpecs, localizeNeonPickerLabel } from './models';
+import {
+    ModelConfig,
+    UserStatusInfo,
+    getModelSpecs,
+    ModelSpec,
+    updateModelSpec,
+    guessContextLimitSpec,
+    getAvailableImageModelSpecs,
+    getQuotaPoolKey,
+    localizePickerEffortLabel,
+    type OrchestratorSettings,
+    type UserQuotaSummary,
+} from './models';
+import { findPricingWithCustom, type ModelPricing } from './pricing-store';
 import { ICON } from './webview-icons';
 import { buildDefaultModelCard, buildModelQuotaGrid, sortModels } from './webview-profile-tab';
 import { esc, tBiHtml } from './webview-helpers';
+
+export interface ModelsTabOptions {
+    orchestratorSettings?: OrchestratorSettings | null;
+    quotaSummary?: UserQuotaSummary | null;
+    currencyPrefs?: Partial<CurrencyPrefs>;
+    customPricing?: Record<string, ModelPricing>;
+}
+
+const ORCH_ICON_SVG = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.5 7.5 11 15.5"/><path d="M15.5 7.5 13 15.5"/></svg>';
 
 const SPEC_ICON_SVG = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
 const IMAGE_SPEC_ICON_SVG = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>';
@@ -56,14 +79,137 @@ function orchestrationDescription(spec: ModelSpec): string {
         <p><strong>${tBiHtml('Configured execution model', '配置的执行模型')}:</strong> ${esc(worker?.displayName || target)}</p>
         <p><code>${esc(worker?.modelId || target)}</code></p>
         ${worker ? `<p>${tBiHtml('Execution context & max output', '执行上下文与最大输出')}: ${formatTokensHtml(worker.maxTokens)} / ${formatTokensHtml(worker.maxOutputTokens)}</p>` : ''}
-        <p>${tBiHtml('The coordinator may delegate work. Usage and costs follow the model reported for each call; this route alone does not imply an execution call.', '协调模型可能委派任务。用量和费用按每次调用实际报告的模型计算；配置此关系不代表已经发生执行调用。')}</p>
+        <p>${tBiHtml('Server-managed fixed coordinator route. Usage and costs follow the actual model reported per call; Custom Orchestrator Mode pairs eligible models dynamically via Orchestrator Settings.', '服务端管理的固定协调器路由。用量和费用按每次调用实际报告的模型计算；自定义编排器模式则通过编排器设置动态组合可选模型。')}</p>
     </div>`;
 }
 
-export function buildModelInfoGrid(specs: ModelSpec[], kind: 'chat' | 'image' = 'chat'): string {
+function formatRoleFamilyName(stem: string): string {
+    const known: Record<string, string> = {
+        'gemini-4-neon': 'Gemini 4 Neon',
+        'gemini-4-carbon': 'Gemini 4 Carbon',
+        'gemini-4-argon': 'Gemini 4 Argon',
+        'gemini-4-hydrogen': 'Gemini 4 Hydrogen',
+        'gemini-3.8-flash': 'Gemini 3.8 Flash',
+        'claude-opus-5-5': 'Claude Opus 5.5',
+        'claude-sonnet-5-5': 'Claude Sonnet 5.5',
+    };
+    const key = stem.trim().toLowerCase();
+    if (Object.hasOwn(known, key)) { return known[key]; }
+    return key
+        .replace(/-(\d+)-(\d+)$/, ' $1.$2')
+        .split(/[-_]+/)
+        .filter(Boolean)
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ');
+}
+
+function poolChipHtml(modelId: string): string {
+    const pool = getQuotaPoolKey(modelId);
+    if (pool === 'gemini') { return '<span class="orch-pool-chip">Gemini</span>'; }
+    if (pool === 'premium') { return '<span class="orch-pool-chip">Claude / GPT</span>'; }
+    return '';
+}
+
+export function buildOrchestratorSettingsCard(settings: OrchestratorSettings | null | undefined): string {
+    if (!settings) { return ''; }
+    const language = getLanguage();
+    const orchLabel = localizePickerEffortLabel(
+        settings.effectiveOrchestratorModel,
+        settings.effectiveOrchestratorLabel || settings.effectiveOrchestratorModel,
+        language,
+    );
+    const execLabel = localizePickerEffortLabel(
+        settings.effectiveExecutorModel,
+        settings.effectiveExecutorLabel || settings.effectiveExecutorModel,
+        language,
+    );
+    const modeBadge = settings.mode === 'custom'
+        ? `<span class="orch-mode-pill is-custom">${tBiHtml('Custom', '自定义')}</span>`
+        : `<span class="orch-mode-pill is-default">${tBiHtml('Default', '默认')}</span>`;
+    const roleStatus = (isCustom: boolean) => isCustom
+        ? `<span class="orch-role-status is-custom">${tBiHtml('Pinned', '已指定')}</span>`
+        : `<span class="orch-role-status">${tBiHtml('Auto default', '默认最高档')}</span>`;
+    const orchFamilies = settings.roles.orchestrators.map(formatRoleFamilyName);
+    const execFamilies = settings.roles.executors.map(formatRoleFamilyName);
+    const shortId = (id: string) => id ? `<code class="spec-short-id" title="${esc(id)}">${esc(id.replace(/^MODEL_PLACEHOLDER_/, ''))}</code>` : '';
+
+    return `
+        <section class="card orch-settings-card" data-orchestrator-mode="${settings.mode}">
+            <div class="orch-settings-header">
+                <h2>${ORCH_ICON_SVG} <span>${tBiHtml('Orchestrator Settings', '编排器设置')}</span></h2>
+                ${modeBadge}
+            </div>
+            <div class="orch-role-list">
+                <div class="orch-role-row" data-orch-role="orchestrator">
+                    <div class="orch-role-meta">
+                        <span class="orch-role-title">${tBiHtml('Orchestrator Model', '编排器模型')}</span>
+                        ${roleStatus(settings.isCustomOrchestrator)}
+                    </div>
+                    <div class="orch-role-value">
+                        <strong>${esc(orchLabel || '—')}</strong>
+                        ${shortId(settings.effectiveOrchestratorModel)}
+                        ${poolChipHtml(settings.effectiveOrchestratorModel)}
+                    </div>
+                </div>
+                <div class="orch-role-row" data-orch-role="executor">
+                    <div class="orch-role-meta">
+                        <span class="orch-role-title">${tBiHtml('Executor Model', '执行器模型')}</span>
+                        ${roleStatus(settings.isCustomExecutor)}
+                    </div>
+                    <div class="orch-role-value">
+                        <strong>${esc(execLabel || '—')}</strong>
+                        ${shortId(settings.effectiveExecutorModel)}
+                        ${poolChipHtml(settings.effectiveExecutorModel)}
+                    </div>
+                </div>
+            </div>
+            ${(orchFamilies.length > 0 || execFamilies.length > 0) ? `
+            <dl class="orch-families-grid">
+                ${orchFamilies.length > 0 ? `<div class="orch-family-row"><dt>${tBiHtml('Orchestrator families', '可用编排器系列')}</dt><dd>${esc(orchFamilies.join(' · '))}</dd></div>` : ''}
+                ${execFamilies.length > 0 ? `<div class="orch-family-row"><dt>${tBiHtml('Executor families', '可用执行器系列')}</dt><dd>${esc(execFamilies.join(' · '))}</dd></div>` : ''}
+            </dl>` : ''}
+            <p class="orch-settings-note">${tBiHtml(
+        'Orchestrator and Executor calls each draw from their own model\'s quota pool (Gemini vs Claude / GPT) and are metered under the actual model reported per call.',
+        '编排器与执行器调用分别消耗各自所属模型的配额池（Gemini 或 Claude / GPT），并按每次调用实际报告的模型分别计量与计费。',
+    )}</p>
+        </section>`;
+}
+
+function buildSpecPriceRowHtml(
+    spec: ModelSpec,
+    options?: Pick<ModelsTabOptions, 'currencyPrefs' | 'customPricing'>,
+): string {
+    const custom = options?.customPricing || {};
+    const pricing = spec.isImageGeneration
+        ? null
+        : (findPricingWithCustom(spec.placeholderId, custom) ?? findPricingWithCustom(spec.modelId, custom));
+    if (!pricing) {
+        return `<div class="spec-price-row is-unpriced" data-price-state="unpriced">
+            <span class="spec-price-label">${tBiHtml('API reference', 'API 参考价')}</span>
+            <span class="spec-price-badge is-unpriced">${tBiHtml('Unpriced', '未定价')}</span>
+        </div>`;
+    }
+    const items: string[] = [
+        `${tBiHtml('In', '输入')} ${esc(formatPerMillionRate(pricing.input, options?.currencyPrefs))}`,
+        `${tBiHtml('Out', '输出')} ${esc(formatPerMillionRate(pricing.output, options?.currencyPrefs))}`,
+    ];
+    if (pricing.cacheRead > 0) {
+        items.push(`${tBiHtml('Cache', '缓存')} ${esc(formatPerMillionRate(pricing.cacheRead, options?.currencyPrefs))}`);
+    }
+    return `<div class="spec-price-row" data-price-state="priced">
+        <span class="spec-price-label">${tBiHtml('API reference', 'API 参考价')}</span>
+        <span class="spec-price-values">${items.join(' · ')}</span>
+    </div>`;
+}
+
+export function buildModelInfoGrid(
+    specs: ModelSpec[],
+    kind: 'chat' | 'image' = 'chat',
+    options?: Pick<ModelsTabOptions, 'currencyPrefs' | 'customPricing'>,
+): string {
     const language = getLanguage();
     const cards = specs.map((s) => {
-        const name = localizeNeonPickerLabel(s.placeholderId, s.displayName, language);
+        const name = localizePickerEffortLabel(s.placeholderId, s.displayName, language);
         const shortId = s.placeholderId.replace(/^MODEL_PLACEHOLDER_/, '');
         const extraId = s.placeholderId && s.placeholderId !== s.modelId
             ? `<code class="spec-short-id" title="${esc(s.placeholderId)}">${esc(shortId)}</code>` : '';
@@ -95,6 +241,7 @@ export function buildModelInfoGrid(specs: ModelSpec[], kind: 'chat' | 'image' = 
                         <dd>${thinkingDescriptionHtml(s)}</dd>
                     </div>
                 </dl>
+                ${buildSpecPriceRowHtml(s, options)}
                 ${orchestrationDescription(s)}
                 <div class="spec-identity">
                     <code class="spec-model-id" title="${esc(s.modelId)}">${esc(s.modelId)}</code>${extraId}
@@ -122,6 +269,7 @@ export function buildModelInfoGrid(specs: ModelSpec[], kind: 'chat' | 'image' = 
 export function buildModelsTabContent(
     userInfo: UserStatusInfo | null,
     configs: ModelConfig[],
+    options: ModelsTabOptions = {},
 ): string {
     const parts: string[] = [];
     const sortedConfigs = userInfo ? sortModels(configs, userInfo.modelSortOrder) : configs;
@@ -132,8 +280,14 @@ export function buildModelsTabContent(
         parts.push(defaultModelHtml);
     }
 
-    // 2. Personal Model Quota Grid
-    const quotaHtml = buildModelQuotaGrid(sortedConfigs);
+    // 1b. Orchestrator Settings Card (live Jetbox + Mendel roles)
+    const orchestratorSettingsHtml = buildOrchestratorSettingsCard(options.orchestratorSettings);
+    if (orchestratorSettingsHtml) {
+        parts.push(orchestratorSettingsHtml);
+    }
+
+    // 2. Personal Model Quota Grid (dual-window 5h + Weekly when quotaSummary is available)
+    const quotaHtml = buildModelQuotaGrid(sortedConfigs, { quotaSummary: options.quotaSummary });
     if (quotaHtml) {
         parts.push(quotaHtml);
     }
@@ -176,7 +330,7 @@ export function buildModelsTabContent(
     }
 
     if (specs.length > 0) {
-        parts.push(buildModelInfoGrid(specs));
+        parts.push(buildModelInfoGrid(specs, 'chat', options));
     } else {
         parts.push(`
             <section class="card empty model-info-section">
@@ -194,7 +348,7 @@ export function buildModelsTabContent(
     // in a chat prompt does not identify an image-generation model.
     const imageSpecs = getAvailableImageModelSpecs();
     if (imageSpecs.length > 0) {
-        parts.push(buildModelInfoGrid(imageSpecs, 'image'));
+        parts.push(buildModelInfoGrid(imageSpecs, 'image', options));
     }
 
     if (parts.length === 0) {

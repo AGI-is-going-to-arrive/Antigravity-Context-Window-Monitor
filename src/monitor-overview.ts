@@ -1,7 +1,16 @@
+import { formatCurrencyCost, normalizeCurrencyPrefs, type CurrencyPrefs } from './currency';
 import type { GMSummary } from './gm/types';
-import { t, tBi } from './i18n';
+import { getLanguage, t, tBi } from './i18n';
 import { groupModelQuotas, type QuotaEffort, type QuotaReadingSummary, type ModelQuotaGroup } from './model-quota';
-import { resolveModelId, type ModelConfig } from './models';
+import {
+    getQuotaPoolKey,
+    localizePickerEffortLabel,
+    normalizeModelDisplayName,
+    resolveModelId,
+    type ModelConfig,
+    type OrchestratorSettings,
+    type UserQuotaSummary,
+} from './models';
 import type { ModelPricing } from './pricing-store';
 import { formatResetAbsolute } from './reset-time';
 import {
@@ -19,7 +28,7 @@ export interface MonitorStatus {
 }
 
 export const MONITOR_COMMAND = 'antigravity-context-monitor.showDetails';
-export type OverviewDestination = 'overview' | 'models' | 'settings';
+export type OverviewDestination = 'overview' | 'gmdata' | 'pricing' | 'models' | 'settings';
 
 export function monitorStatusLabel(state: MonitorState): string {
     switch (state) {
@@ -57,9 +66,13 @@ export function getContextRemaining(used: number | null, limit: number | null): 
     return { tokens, percent };
 }
 
-export function selectMonitorQuotaGroups(configs: readonly ModelConfig[], currentModel = ''): ModelQuotaGroup[] {
+export function selectMonitorQuotaGroups(
+    configs: readonly ModelConfig[],
+    currentModel = '',
+    quotaSummary?: UserQuotaSummary | null,
+): ModelQuotaGroup[] {
     const id = resolveModelId(currentModel) || currentModel;
-    return groupModelQuotas(configs).sort((a, b) => {
+    return groupModelQuotas(configs, quotaSummary).sort((a, b) => {
         const active = (group: ModelQuotaGroup) => id !== '' && group.readings.some(reading => reading.model === id);
         return Number(active(b)) - Number(active(a))
             || (a.minimum ?? Infinity) - (b.minimum ?? Infinity)
@@ -75,7 +88,7 @@ const EFFORT_LABELS: Record<QuotaEffort, readonly [string, string]> = {
     low: ['Low', '低'],
     medium: ['Medium', '中'],
     high: ['High', '高'],
-    xhigh: ['Extra', '超高'],
+    xhigh: ['Extra High', '超高'],
 };
 
 export function formatQuotaEffort(effort: QuotaEffort): string {
@@ -144,6 +157,61 @@ export interface OverviewTelemetryInput {
     gmSummary?: GMSummary | null;
     customPricing?: Record<string, ModelPricing>;
     activeCascadeId?: string;
+    orchestratorSettings?: OrchestratorSettings | null;
+    quotaSummary?: UserQuotaSummary | null;
+    currencyPrefs?: Partial<CurrencyPrefs>;
+    todayCostUsd?: number;
+    sessionCostUsd?: number;
+}
+
+export interface ActiveOrchestratorRoute {
+    plannerModel: string;
+    executorModel: string;
+    plannerLabel: string;
+    executorLabel: string;
+    plannerPool?: 'gemini' | 'premium';
+    executorPool?: 'gemini' | 'premium';
+    isCrossPool: boolean;
+}
+
+/** Resolve the active conversation's Planner -> Executor pair for Overview / Tooltip display. */
+export function resolveActiveOrchestratorRoute(usage: ContextUsage | null): ActiveOrchestratorRoute | null {
+    const cfg = usage?.orchestratorConfig;
+    if (!cfg?.planModel || !cfg?.executionModel) { return null; }
+    const plannerId = resolveModelId(cfg.planModel) || cfg.planModel;
+    const executorId = resolveModelId(cfg.executionModel) || cfg.executionModel;
+    const lang = getLanguage();
+    const plannerLabel = localizePickerEffortLabel(plannerId, normalizeModelDisplayName(plannerId), lang);
+    const executorLabel = localizePickerEffortLabel(executorId, normalizeModelDisplayName(executorId), lang);
+    const rawPlannerPool = getQuotaPoolKey(plannerId);
+    const rawExecutorPool = getQuotaPoolKey(executorId);
+    const plannerPool = rawPlannerPool === 'gemini' || rawPlannerPool === 'premium' ? rawPlannerPool : undefined;
+    const executorPool = rawExecutorPool === 'gemini' || rawExecutorPool === 'premium' ? rawExecutorPool : undefined;
+    return {
+        plannerModel: plannerId,
+        executorModel: executorId,
+        plannerLabel,
+        executorLabel,
+        plannerPool,
+        executorPool,
+        isCrossPool: Boolean(plannerPool && executorPool && plannerPool !== executorPool),
+    };
+}
+
+/** Format a single dual-window quota fraction cleanly without falsely rounding 99.3% to 100% or sub-1% to 0%. */
+export function formatQuotaWindowPercent(fraction: number | null | undefined): string {
+    if (fraction === null || fraction === undefined || !Number.isFinite(fraction) || fraction < 0 || fraction > 1) {
+        return '—';
+    }
+    if (fraction >= 1) { return '100%'; }
+    if (fraction <= 0) { return '0%'; }
+    const pct = fraction * 100;
+    if (pct > 99) {
+        const floored = Math.min(99.9, Math.floor(pct * 10) / 10);
+        return `${floored.toFixed(1)}%`;
+    }
+    if (pct < 1) { return '<1%'; }
+    return `${Math.round(pct)}%`;
 }
 
 export interface OverviewTelemetrySnapshot {
@@ -206,4 +274,50 @@ export function formatSavingsUsd(usd: number | null | undefined): string | null 
     if (usd >= 0.001) { return `$${usd.toFixed(3)}`; }
     if (usd >= 0.0001) { return `$${usd.toFixed(4)}`; }
     return '<$0.0001';
+}
+
+/** Currency-aware cache savings formatter; preserves exact USD helper output when USD is selected and avoids fake zero strings. */
+export function formatOverviewSavings(
+    usd: number | null | undefined,
+    currencyPrefs?: Partial<CurrencyPrefs>,
+): string | null {
+    if (usd === null || usd === undefined || !Number.isFinite(usd) || usd <= 0) {
+        return null;
+    }
+    const prefs = normalizeCurrencyPrefs(currencyPrefs);
+    if (prefs.currency === 'USD') {
+        return formatSavingsUsd(usd);
+    }
+    const cnyValue = usd * prefs.cnyRate;
+    if (!Number.isFinite(cnyValue)) {
+        return null;
+    }
+    const cnyPart = cnyValue < 0.0001
+        ? '<¥0.0001'
+        : formatCurrencyCost(usd, { currency: 'CNY', cnyRate: prefs.cnyRate }, { precision: 'standard' });
+    if (cnyPart === '—') {
+        return null;
+    }
+    if (prefs.currency === 'CNY') {
+        return cnyPart;
+    }
+    const usdPart = usd < 0.0001
+        ? '<$0.0001'
+        : formatCurrencyCost(usd, { currency: 'USD', cnyRate: prefs.cnyRate }, { precision: 'standard' });
+    if (usdPart === '—') {
+        return null;
+    }
+    return `${usdPart} (${cnyPart})`;
+}
+
+/** Currency-aware cost formatter for Session / Today cost pills; omits non-finite, negative, or overflowed inputs. */
+export function formatOverviewCost(
+    usd: number | null | undefined,
+    currencyPrefs?: Partial<CurrencyPrefs>,
+): string | null {
+    if (usd === null || usd === undefined || !Number.isFinite(usd) || usd < 0) {
+        return null;
+    }
+    const formatted = formatCurrencyCost(usd, currencyPrefs, { precision: 'standard' });
+    return formatted === '—' ? null : formatted;
 }

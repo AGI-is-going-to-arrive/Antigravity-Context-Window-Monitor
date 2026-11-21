@@ -13,7 +13,7 @@ import {
     resolveModelId, updateModelDisplayNames, updateModelSpec, type ModelConfig,
 } from '../src/models';
 import { buildPricingTabContent } from '../src/pricing-panel';
-import { calculateCosts, findPricingWithCustom, PricingStore } from '../src/pricing-store';
+import { calculateCosts, DEFAULT_PRICING, findPricingWithCustom, PricingStore } from '../src/pricing-store';
 import { rpcCall } from '../src/rpc-client';
 import { buildModelsTabContent } from '../src/webview-models-tab';
 
@@ -187,7 +187,7 @@ describe('Neon quota and presentation', () => {
         const html = buildModelsTabContent(null, configs);
         expect(html.match(/class="spec-card"/g)).toHaveLength(5);
         for (const tier of tiers) {
-            const en = tier.label === 'XHigh' ? 'Extra' : tier.label;
+            const en = tier.label === 'XHigh' ? 'Extra High' : tier.label;
             const display = lang === 'en' ? en : lang === 'zh' ? tier.zh : `${en} / ${tier.zh}`;
             expect(html).toContain(`<h3 class="spec-name">Gemini 4 Neon (${display})</h3>`);
         }
@@ -208,6 +208,15 @@ describe('Neon quota and presentation', () => {
         expect(resolveModelId(custom.label)).toBeUndefined();
         expect(normalizeModelDisplayName('gemini-4-neon-xhigh')).toBe('Gemini 4 Neon (XHigh)');
     });
+
+    it('resolves and prices bilingual slash picker labels while rejecting contradictory tier pairs', () => {
+        expect(resolveModelId('Gemini 4 Neon (Extra High / 超高)')).toBe('MODEL_PLACEHOLDER_M535');
+        expect(resolveModelId('Gemini 4 Hydrogen (Extra High / 超高)')).toBe('MODEL_PLACEHOLDER_M528');
+        expect(resolveModelId('Gemini 4 Carbon (High / 高)')).toBe('MODEL_PLACEHOLDER_M427');
+        expect(resolveModelId('Gemini 4 Argon (Low / 低)')).toBe('MODEL_PLACEHOLDER_M419');
+        expect(findPricingWithCustom('Gemini 4 Neon (Extra High / 超高)', {})).toEqual(DEFAULT_PRICING['gemini-4-neon']);
+        expect(resolveModelId('Gemini 4 Neon (High / 低)')).toBeUndefined();
+    });
 });
 
 describe('Neon accounting and cost editors', () => {
@@ -216,7 +225,9 @@ describe('Neon accounting and cost editors', () => {
             'gemini-4-carbon': rate, 'gemini-4-argon': rate, 'gemini-4-hydrogen': rate,
             Orchestrator: rate, 'gemini-pro-orchestrator-argon': rate, 'gemini-flash-worker-agy': rate,
         };
-        expect(findPricingWithCustom(model.id, otherRates)).toBeNull();
+        expect(findPricingWithCustom(model.id, otherRates)).toEqual(
+            model.id === orchestrator ? null : DEFAULT_PRICING['gemini-4-neon'],
+        );
         expect(findPricingWithCustom(model.id, { [model.key]: rate })).toEqual(rate);
         expect(findPricingWithCustom(carbon, { [model.key]: rate }, {})).toBeNull();
         expect(findPricingWithCustom(worker, { [model.key]: rate }, {})).toBeNull();
@@ -273,7 +284,7 @@ describe('Neon accounting and cost editors', () => {
         expect(calculateCosts(fallback, { [responseModel]: rate }).grandTotal).toBeGreaterThan(0);
     });
 
-    it('keeps Neon editor keys stable before and after calls and preserves saved aliases', async () => {
+    it('keeps official Neon family editor, saved per-tier overrides, and unpriced Orchestrator/worker rows stable before and after calls', async () => {
         const store = new PricingStore();
         const savedKey = 'Gemini 4 Neon（超高）';
         await store.set(savedKey, rate);
@@ -285,12 +296,16 @@ describe('Neon accounting and cost editors', () => {
             coveredSteps: 1, coverageRate: 1, checkpointSummaries: [],
         }], new Date().toISOString())!;
         expect(calculateCosts(summary, store.getCustom()).rows[0].pricing).toEqual(rate);
+        // Official gemini-4-neon family + saved per-tier alias + unpriced Orchestrator (Neon) & worker M669
         for (const html of [buildPricingTabContent(null, store), buildPricingTabContent(summary, store)]) {
-            for (const model of catalog) {
-                const key = model.id === tiers[3].id ? savedKey : model.key;
-                expect(html.split(`data-model="${key}"`).length - 1).toBe(4);
+            for (const key of ['gemini-4-neon', savedKey, 'gemini-pro-orchestrator-neon', 'gemini-flash-worker-agy']) {
+                expect(html.split(`data-model="${key}"`).length - 1, key).toBe(4);
             }
             expect(html).not.toContain('data-model="gemini-4-neon-xhigh"');
         }
+        // Without custom overrides, Orchestrator (Neon) and M669 remain unpriced while Neon uses official pricing
+        expect(findPricingWithCustom(orchestrator, {})).toBeNull();
+        expect(findPricingWithCustom(worker, {})).toBeNull();
+        expect(findPricingWithCustom(tiers[3].id, {})).toEqual(DEFAULT_PRICING['gemini-4-neon']);
     });
 });

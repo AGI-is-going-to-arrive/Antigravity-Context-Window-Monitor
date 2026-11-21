@@ -200,9 +200,12 @@ function generationScore(label: string): number {
     // Fractional tie-breaks keep a future 4.1 ahead of Hydrogen. Match complete
     // names and known effort labels so Carbonated/Highest cannot inherit it.
     const clean = label.trim().replace(/（/g, '(').replace(/）/g, ')');
-    const carbon = /^gemini\s+4\s+carbon(?:\s+(?:low|medium|high|低|中|高)|\s*\(\s*(?:low|medium|high|低|中|高)\s*\))?(?:\s+\(M\d+\))?$/i.test(clean);
-    const hydrogen = /^gemini\s+4\s+hydrogen(?:\s+(?:low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)|\s*\(\s*(?:low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)\s*\))?(?:\s+\(M\d+\))?$/i.test(clean);
-    return Number(m[1]) * 1000 + Number(m[2] || 0) + (hydrogen ? 0.75 : carbon ? 0.5 : 0);
+    const fourEffort = '(?:low|medium|high|xhigh|extra(?:[\\s_-]+high)?|低|中|高|超高|极高)';
+    const threeEffort = '(?:low|medium|high|低|中|高)';
+    const neon = new RegExp(`^gemini\\s+4\\s+neon(?:\\s+${fourEffort}|\\s*\\(\\s*${fourEffort}(?:\\s*\\/\\s*${fourEffort})?\\s*\\))?(?:\\s+\\(M\\d+\\))?$`, 'i').test(clean);
+    const carbon = new RegExp(`^gemini\\s+4\\s+carbon(?:\\s+${threeEffort}|\\s*\\(\\s*${threeEffort}(?:\\s*\\/\\s*${threeEffort})?\\s*\\))?(?:\\s+\\(M\\d+\\))?$`, 'i').test(clean);
+    const hydrogen = new RegExp(`^gemini\\s+4\\s+hydrogen(?:\\s+${fourEffort}|\\s*\\(\\s*${fourEffort}(?:\\s*\\/\\s*${fourEffort})?\\s*\\))?(?:\\s+\\(M\\d+\\))?$`, 'i').test(clean);
+    return Number(m[1]) * 1000 + Number(m[2] || 0) + (neon ? 0.85 : hydrogen ? 0.75 : carbon ? 0.5 : 0);
 }
 
 /** Suffix marking how many models a collapsed pool row stands for, e.g. " · 11". */
@@ -621,4 +624,222 @@ export function parseTooltipDensity(value: unknown): TooltipDensity {
         return value;
     }
     return 'auto';
+}
+
+// ─── Priority-Tiered Section Budget (v1.17.3+) ───────────────────────────────
+// Modern structured budgeting for MarkdownString hover sections (P0..P5),
+// replacing fragile post-hoc emoji regex slicing while preserving legacy helpers above.
+
+/** Semantic priority tier for hover sections (0 = P0 always kept; 5 = P5 dropped first). */
+export type HoverSectionPriority = 0 | 1 | 2 | 3 | 4 | 5;
+
+export interface HoverSection {
+    /** Stable section identifier (e.g. 'header', 'context', 'latest-call', 'session-kpi', 'quota', 'alerts', 'footer'). */
+    id: string;
+    /** Priority tier: 0 = never dropped, 1..5 = dropped from highest number first when over budget. */
+    priority: HoverSectionPriority;
+    /** Rendered Markdown lines for this section (excluding inter-section dividers). */
+    lines: string[];
+    /** Optional shorter fallback lines used before dropping this section when space is tight. */
+    compactLines?: string[];
+    /** When true, always kept and pinned at the bottom of the rendered hover (e.g. Footer Action Bar). */
+    pinBottom?: boolean;
+}
+
+export interface SectionBudgetResult {
+    sections: HoverSection[];
+    droppedIds: string[];
+    compactedIds: string[];
+    totalLines: number;
+    budget: number;
+}
+
+/** Visual line budgets for section-based hover rendering (at default zoom <= 0). */
+export const SECTION_COMPACT_MAX_LINES = 14;
+export const SECTION_NORMAL_MAX_LINES = 22;
+export const SECTION_FULL_MAX_LINES = 32;
+
+const SECTION_MIN_LINES_COMPACT = 10;
+const SECTION_MIN_LINES_NORMAL = 16;
+const SECTION_MIN_LINES_FULL = 24;
+
+/**
+ * Compute zoom-aware section line budget for the hover tooltip.
+ *
+ * - `compact` (or effective `compact` mode): <= 14 lines (tightens down to 10 on high zoom)
+ * - `auto` + `normal`: <= 22 lines (tightens down to 16 on high zoom)
+ * - `full`: <= 32 lines (tightens down to 24 on high zoom)
+ */
+export function getSectionLineBudget(
+    density: TooltipDensity,
+    mode: EffectiveMode,
+    zoomLevel = 0,
+): number {
+    const zoomPenalty = Number.isFinite(zoomLevel) && zoomLevel > 0
+        ? Math.min(8, Math.round(zoomLevel * 2))
+        : 0;
+
+    if (density === 'compact' || (density === 'auto' && mode === 'compact')) {
+        return Math.max(SECTION_MIN_LINES_COMPACT, SECTION_COMPACT_MAX_LINES - zoomPenalty);
+    }
+    if (density === 'full') {
+        return Math.max(SECTION_MIN_LINES_FULL, SECTION_FULL_MAX_LINES - zoomPenalty);
+    }
+    return Math.max(SECTION_MIN_LINES_NORMAL, SECTION_NORMAL_MAX_LINES - zoomPenalty);
+}
+
+/**
+ * Count total rendered visual lines across non-empty sections, including inter-section dividers.
+ */
+export function countSectionLines(
+    sections: readonly HoverSection[],
+    separatorCost = 1,
+): number {
+    let sectionCount = 0;
+    let total = 0;
+    for (const section of sections) {
+        if (section.lines.length === 0) { continue; }
+        sectionCount++;
+        total += section.lines.length;
+    }
+    if (sectionCount > 1 && separatorCost > 0) {
+        total += (sectionCount - 1) * separatorCost;
+    }
+    return total;
+}
+
+/**
+ * Apply priority-tiered budgeting to semantic hover sections (`P0..P5`).
+ *
+ * Guarantees:
+ * - Empty sections are removed without emitting empty dividers.
+ * - `pinBottom` sections (e.g. Footer Action Bar) are always kept and placed last.
+ * - `P0` sections are never dropped.
+ * - When over `budget`, walks priorities `P5 -> P1`: first tries `compactLines`
+ *   (from bottom to top within the tier), then drops sections of that tier (bottom to top).
+ */
+export function applySectionBudget(
+    sections: readonly HoverSection[],
+    budget: number,
+    separatorCost = 1,
+): SectionBudgetResult {
+    const body: HoverSection[] = [];
+    const pinned: HoverSection[] = [];
+    for (const section of sections) {
+        const cleanLines = section.lines.filter(l => l.trim().length > 0);
+        if (cleanLines.length === 0) { continue; }
+        const cleanCompact = section.compactLines
+            ? section.compactLines.filter(l => l.trim().length > 0)
+            : undefined;
+        const copy: HoverSection = {
+            ...section,
+            lines: cleanLines,
+            ...(cleanCompact && cleanCompact.length > 0 ? { compactLines: cleanCompact } : { compactLines: undefined }),
+        };
+        if (copy.pinBottom) {
+            pinned.push(copy);
+        } else {
+            body.push(copy);
+        }
+    }
+
+    const active = body.map(() => true);
+    const compactedIds: string[] = [];
+    const droppedIds: string[] = [];
+
+    const currentSections = (): HoverSection[] => {
+        const out: HoverSection[] = [];
+        for (let i = 0; i < body.length; i++) {
+            if (active[i]) { out.push(body[i]); }
+        }
+        return [...out, ...pinned];
+    };
+
+    const currentLineCount = (): number => countSectionLines(currentSections(), separatorCost);
+
+    if (Number.isFinite(budget) && budget >= 0 && currentLineCount() > budget) {
+        for (const tier of [5, 4, 3, 2, 1] as const) {
+            if (currentLineCount() <= budget) { break; }
+            // Pass A: compact eligible sections in this tier (bottom-to-top) before dropping.
+            for (let i = body.length - 1; i >= 0 && currentLineCount() > budget; i--) {
+                if (!active[i] || body[i].priority !== tier) { continue; }
+                const compact = body[i].compactLines;
+                if (compact && compact.length > 0 && compact.length < body[i].lines.length) {
+                    body[i] = { ...body[i], lines: compact, compactLines: undefined };
+                    compactedIds.push(body[i].id);
+                }
+            }
+            // Pass B: drop sections in this tier (bottom-to-top) if still over budget.
+            for (let i = body.length - 1; i >= 0 && currentLineCount() > budget; i--) {
+                if (!active[i] || body[i].priority !== tier) { continue; }
+                active[i] = false;
+                const compactIdx = compactedIds.indexOf(body[i].id);
+                if (compactIdx >= 0) {
+                    compactedIds.splice(compactIdx, 1);
+                }
+                droppedIds.push(body[i].id);
+            }
+        }
+        // Final safeguard: if protected P0 sections alone exceed budget, compact P0 sections
+        // that provide compactLines (bottom-to-top) without ever dropping a P0 section.
+        for (let i = body.length - 1; i >= 0 && currentLineCount() > budget; i--) {
+            if (!active[i] || body[i].priority !== 0) { continue; }
+            const compact = body[i].compactLines;
+            if (compact && compact.length > 0 && compact.length < body[i].lines.length) {
+                body[i] = { ...body[i], lines: compact, compactLines: undefined };
+                compactedIds.push(body[i].id);
+            }
+        }
+    }
+
+    const finalSections = currentSections();
+    return {
+        sections: finalSections,
+        droppedIds,
+        compactedIds,
+        totalLines: countSectionLines(finalSections, separatorCost),
+        budget,
+    };
+}
+
+/**
+ * Join lines within a single hover section while preserving valid GFM tables:
+ * - Inserts a blank line before a GFM table block when preceded by prose so VS Code renders the table.
+ * - Joins consecutive GFM table lines (`| ...`) with plain `\n`.
+ * - Joins prose lines with `  \n` for explicit Markdown soft line breaks.
+ */
+function joinHoverSectionLines(lines: readonly string[]): string {
+    const out: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const isTable = isMarkdownTableLine(line);
+        if (i === 0) {
+            out.push(line);
+            continue;
+        }
+        const prevIsTable = isMarkdownTableLine(lines[i - 1]);
+        if (isTable && prevIsTable) {
+            out.push('\n', line);
+        } else if (isTable && !prevIsTable) {
+            out.push('\n\n', line);
+        } else if (!isTable && prevIsTable) {
+            out.push('\n\n', line);
+        } else {
+            out.push('  \n', line);
+        }
+    }
+    return out.join('');
+}
+
+/**
+ * Render ordered hover sections into a single VS Code MarkdownString payload.
+ */
+export function renderHoverSections(
+    sections: readonly HoverSection[],
+    divider = '\n\n---\n\n',
+): string {
+    return sections
+        .filter(s => s.lines.length > 0)
+        .map(s => joinHoverSectionLines(s.lines))
+        .join(divider);
 }

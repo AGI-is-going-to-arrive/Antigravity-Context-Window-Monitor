@@ -4,7 +4,17 @@
 
 import { tBi } from './i18n';
 import { GMSummary, GMModelStats } from './gm-tracker';
-import { PricingStore, PRICING_LAST_UPDATED, findPricingWithCustom, findPricingForDate, calculateLedgerModelCosts, selectPricingModel, samePricingModel, ModelPricing, ModelCostRow } from './pricing-store';
+import { PricingStore, PRICING_LAST_UPDATED, findPricingWithCustom, findPricingForDate, calculateLedgerModelCosts, selectPricingModel, samePricingModel, getUpcomingRateChanges, ModelPricing, ModelCostRow } from './pricing-store';
+import {
+    DEFAULT_CNY_EXCHANGE_RATE,
+    DEFAULT_DISPLAY_CURRENCY,
+    MAX_CNY_EXCHANGE_RATE,
+    MIN_CNY_EXCHANGE_RATE,
+    formatCurrencyCost,
+    formatCurrencySavings,
+    normalizeCurrencyPrefs,
+    type CurrencyPrefs,
+} from './currency';
 import { esc, tBiHtml } from './webview-helpers';
 import type { MonthCostBreakdown } from './daily-store';
 import { getModelDNAKey, type PersistedModelDNA } from './model-dna-store';
@@ -20,12 +30,24 @@ export function buildPricingTabContent(
     ledgerSettled?: LedgerSettledEntry[],
     todayLedgerActive?: LedgerAccountBucket[],
     hasUnmeteredImageUsage = false,
+    currencyPrefs?: Partial<CurrencyPrefs>,
 ): string {
+    const prefs = normalizeCurrencyPrefs(currencyPrefs);
     const pendingArchiveCost = ledgerSettled ? ledgerSettled.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0) : 0;
     const hasActive = !!((todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) || (summary && summary.totalCalls > 0));
     const hasSettled = !!(ledgerSettled && ledgerSettled.length > 0);
     const hasGM = hasActive || hasSettled;
     const parts: string[] = [];
+
+    // Inline currency switcher + offline reference FX control
+    parts.push(buildCurrencyToolbar(prefs));
+
+    // Upcoming verified price cutover banner (within 45 days)
+    const rateChangeBanner = buildUpcomingRateChangeBanner(Date.now());
+    if (rateChangeBanner) {
+        parts.push(rateChangeBanner);
+    }
+
     if (hasUnmeteredImageUsage) {
         parts.push(`<section class="card image-cost-unavailable"><h2>${tBiHtml('Image generation costs', '图片生成费用')}</h2><p>${tBiHtml(
             'Image generation was detected, but the IDE did not report separate image token or credit usage. The amounts below are known subtotals and exclude image-generation fees; image generation is not free.',
@@ -137,7 +159,7 @@ export function buildPricingTabContent(
 
     // Monthly total cost summary (always shown if breakdown data exists)
     if (monthBreakdown) {
-        parts.push(buildMonthlyCostSummary(monthBreakdown, activeGrandTotal, rows, pendingArchiveCost, store.getCustom(), hasUnmeteredImageUsage));
+        parts.push(buildMonthlyCostSummary(monthBreakdown, activeGrandTotal, rows, pendingArchiveCost, store.getCustom(), hasUnmeteredImageUsage, prefs));
     }
 
     // Highlight the actual called model's editor even if the response uses a
@@ -155,7 +177,7 @@ export function buildPricingTabContent(
         const fullTotal = activeGrandTotal + pendingArchiveCost;
         const merged = store.getMerged();
         parts.push(
-            buildCostPanel(rows, fullTotal, summary, ledgerSettled, todayLedgerActive, hasUnmeteredImageUsage),
+            buildCostPanel(rows, fullTotal, summary, ledgerSettled, todayLedgerActive, hasUnmeteredImageUsage, prefs),
             buildEditablePricingTable(calledModelKeys, merged, custom),
         );
     } else {
@@ -174,6 +196,61 @@ export function buildPricingTabContent(
 
 export function getPricingTabStyles(): string {
     return `
+    /* ── Currency Toolbar & Upcoming Rate-Change Banner ── */
+    .prc-currency-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px 16px;
+        padding: 10px 14px;
+        margin-bottom: 14px;
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
+    }
+    .prc-currency-left,
+    .prc-currency-fx {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        min-width: 0;
+    }
+    .prc-currency-fx.is-muted .prc-currency-fx-label {
+        color: var(--ed-ink-muted);
+    }
+    .prc-currency-label,
+    .prc-currency-fx-label {
+        font-size: 0.78rem;
+        font-weight: 550;
+        color: var(--ed-ink-secondary);
+    }
+    .prc-fx-save-btn {
+        height: 28px;
+        padding: 0 10px;
+        font-size: 0.75rem;
+    }
+    .cost-chip-saved {
+        background: var(--ed-good-tint);
+        color: var(--ed-good);
+        border-color: var(--ed-good-border);
+    }
+    .cost-detail-saved {
+        font-size: 0.72rem;
+        font-weight: 550;
+        color: var(--ed-good);
+        background: var(--ed-good-tint);
+        border: 1px solid var(--ed-good-border);
+        border-radius: var(--ed-radius-xs);
+        padding: 1px 6px;
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .cost-share-sub {
+        color: var(--ed-ink-muted);
+        font-size: 0.72rem;
+    }
+
     /* ── Unmetered Image Cost Notice ── */
     .image-cost-unavailable {
         background: var(--ed-surface);
@@ -1116,10 +1193,66 @@ export function getPricingTabStyles(): string {
 
 // ─── Shared Formatters ───────────────────────────────────────────────────────
 
-function fmtUsd(n: number): string {
-    if (n < 0.01) { return `$${n.toFixed(4)}`; }
-    if (n < 1) { return `$${n.toFixed(3)}`; }
-    return `$${n.toFixed(2)}`;
+function fmtCost(n: number, prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE }): string {
+    if (!Number.isFinite(n)) { return '—'; }
+    const abs = Math.abs(n);
+    const precision = abs > 0 && abs < 0.01 ? 'standard' : 'call';
+    return formatCurrencyCost(n, prefs, { precision });
+}
+
+function fmtSavedMagnitude(usd: number, prefs: CurrencyPrefs): string | null {
+    if (!Number.isFinite(usd) || usd < 0.0001) { return null; }
+    const signed = formatCurrencySavings(usd, prefs);
+    if (signed === '—') { return null; }
+    return signed.replace(/(^|\()-/g, '$1');
+}
+
+function buildCurrencyToolbar(prefs: CurrencyPrefs): string {
+    const showFx = prefs.currency === 'CNY' || prefs.currency === 'both';
+    return `<div class="prc-currency-bar">
+        <div class="prc-currency-left">
+            <span class="prc-currency-label">${tBiHtml('Display Currency', '显示币种')}</span>
+            <div class="currency-toggle-group" role="group" aria-label="${esc(tBi('Display Currency', '显示币种'))}">
+                <button type="button" class="currency-btn${prefs.currency === 'USD' ? ' active' : ''}" data-currency="USD" aria-pressed="${prefs.currency === 'USD'}">USD ($)</button>
+                <button type="button" class="currency-btn${prefs.currency === 'CNY' ? ' active' : ''}" data-currency="CNY" aria-pressed="${prefs.currency === 'CNY'}">CNY (¥)</button>
+                <button type="button" class="currency-btn${prefs.currency === 'both' ? ' active' : ''}" data-currency="both" aria-pressed="${prefs.currency === 'both'}">${tBiHtml('Both', '双币种')}</button>
+            </div>
+        </div>
+        <div class="prc-currency-fx${showFx ? '' : ' is-muted'}">
+            <label for="pricingFxRateInput" class="prc-currency-fx-label">${tBiHtml('USD/CNY', '参考汇率')}</label>
+            <input type="number" id="pricingFxRateInput" class="fx-rate-input" value="${prefs.cnyRate}" data-original-value="${prefs.cnyRate}" min="${MIN_CNY_EXCHANGE_RATE}" max="${MAX_CNY_EXCHANGE_RATE}" step="0.05" aria-label="${esc(tBi('USD to CNY reference rate', '美元兑人民币参考汇率'))}" />
+            <button type="button" class="prc-btn prc-fx-save-btn" id="pricingFxSaveBtn"><span>${tBiHtml('Apply', '应用')}</span></button>
+            <span class="prc-feedback" id="pricingCurrencyFeedback" role="status"></span>
+        </div>
+    </div>`;
+}
+
+function buildUpcomingRateChangeBanner(nowMs: number): string {
+    const changes = getUpcomingRateChanges(nowMs, 45);
+    if (changes.length === 0) { return ''; }
+    // Group by effective date so Carbon + Argon (2026-12-01) and Flash 3.6/3.7/3.8 (2027-01-01) read cleanly.
+    const byDate = new Map<string, typeof changes>();
+    for (const change of changes) {
+        const list = byDate.get(change.effectiveDate) || [];
+        list.push(change);
+        byDate.set(change.effectiveDate, list);
+    }
+    const items: string[] = [];
+    for (const [date, group] of byDate.entries()) {
+        const names = group.map(g => g.familyLabel).join(', ');
+        const days = group[0].daysRemaining;
+        const mult = group[0].multiplier;
+        const sample = group[0];
+        items.push(`<li><strong>${esc(names)}</strong>: ${tBiHtml(
+            `intro rate ($${sample.currentPricing.input}/$${sample.currentPricing.output}) ends before ${date} (${days}d left → ${mult}× standard $${sample.nextPricing.input}/$${sample.nextPricing.output})`,
+            `优惠价（$${sample.currentPricing.input}/$${sample.currentPricing.output}）将于 ${date} 结束（剩余 ${days} 天 → ${mult}× 标准价 $${sample.nextPricing.input}/$${sample.nextPricing.output}）`,
+        )}</li>`);
+    }
+    const clockSvg = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
+    return `<div class="rate-change-banner" role="note">
+        <div class="rate-change-banner-head">${clockSvg}<span>${tBiHtml('Upcoming Scheduled Rate Changes', '官方定时调价提醒')}</span></div>
+        <ul class="rate-change-banner-list">${items.join('')}</ul>
+    </div>`;
 }
 
 function fmtTok(n: number): string {
@@ -1144,6 +1277,7 @@ function buildCostPanel(
     ledgerSettled?: LedgerSettledEntry[],
     todayLedgerActive?: LedgerAccountBucket[],
     hasUnmeteredImageUsage = false,
+    prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE },
 ): string {
     const priced = rows.filter(r => r.pricing);
     const unpriced = rows.filter(r => !r.pricing);
@@ -1155,6 +1289,17 @@ function buildCostPanel(
     const avgPerCall = totalCalls > 0 ? grandTotal / totalCalls : 0;
     const isPartial = unpriced.length > 0 || hasUnmeteredImageUsage;
 
+    let totalCacheSavedUsd = 0;
+    let totalThinkingCostUsd = 0;
+    for (const r of priced) {
+        if (!r.costBreakdownUnavailable && r.pricing) {
+            totalThinkingCostUsd += r.thinkingCost;
+            if (r.cacheTokens > 0 && r.pricing.input > r.pricing.cacheRead) {
+                totalCacheSavedUsd += (r.cacheTokens * (r.pricing.input - r.pricing.cacheRead)) / 1_000_000;
+            }
+        }
+    }
+
     let html = `<h2 class="act-section-title"><span>${tBiHtml('Cost Analysis', '费用分析')}</span></h2>`;
     html += '<div class="cost-panel">';
 
@@ -1162,13 +1307,23 @@ function buildCostPanel(
     html += '<div class="cost-chips">';
     const totalLabel = unpriced.length > 0 && priced.length === 0 && grandTotal <= 0
         ? `<span>${tBiHtml('Not available', '暂无法估算')}</span>`
-        : `<span>${fmtUsd(grandTotal)}${isPartial ? ` · ${tBiHtml('Partial total', '已知小计')}` : ''}</span>`;
+        : `<span>${esc(fmtCost(grandTotal, prefs))}${isPartial ? ` · ${tBiHtml('Partial total', '已知小计')}` : ''}</span>`;
     html += `<span class="cost-chip cost-chip-total${isPartial ? ' is-partial' : ''}">${totalLabel}</span>`;
     if (topModel) {
-        html += `<span class="cost-chip" title="${esc(topModel.name)}" data-tooltip="${esc(tBi('Top Spender', '最高消费'))}"><span>${esc(topModel.name)} ${fmtUsd(topModel.totalCost)}</span></span>`;
+        html += `<span class="cost-chip" title="${esc(topModel.name)}" data-tooltip="${esc(tBi('Top Spender', '最高消费'))}"><span>${esc(topModel.name)} ${esc(fmtCost(topModel.totalCost, prefs))}</span></span>`;
     }
     if (!isPartial) {
-        html += `<span class="cost-chip" data-tooltip="${esc(tBi('Avg per Call', '平均每次'))}"><span>${fmtUsd(avgPerCall)} ${tBiHtml('per call', '每次')}</span></span>`;
+        html += `<span class="cost-chip" data-tooltip="${esc(tBi('Avg per Call', '平均每次'))}"><span>${esc(fmtCost(avgPerCall, prefs))} ${tBiHtml('per call', '每次')}</span></span>`;
+    }
+    const totalSavedLabel = fmtSavedMagnitude(totalCacheSavedUsd, prefs);
+    if (totalSavedLabel) {
+        html += `<span class="cost-chip cost-chip-saved" data-tooltip="${esc(tBi('Estimated savings from prompt cache reads', '提示词缓存读取预计节省金额'))}"><span>${tBiHtml('Cache saved', '缓存省')} ${esc(totalSavedLabel)}</span></span>`;
+    }
+    if (totalThinkingCostUsd > 0 && grandTotal > 0) {
+        const thinkSharePct = Math.round((totalThinkingCostUsd / grandTotal) * 100);
+        if (thinkSharePct > 0) {
+            html += `<span class="cost-chip" data-tooltip="${esc(tBi('Share of cost from reasoning/thinking tokens', '思考 Token 费用占比'))}"><span>${tBiHtml('Thinking', '思考占比')} ${thinkSharePct}%</span></span>`;
+        }
     }
     html += `<span class="cost-chip" data-tooltip="${esc(tBi('Models with pricing', '有定价的模型'))}"><span>${priced.length} ${tBiHtml(priced.length === 1 ? 'model' : 'models', '模型')}</span></span>`;
     if (totalCalls > 0) {
@@ -1195,12 +1350,12 @@ function buildCostPanel(
                 <span class="cost-bar-label" title="${esc(r.name)}" data-tooltip="${esc(r.name)}${r.responseModel && r.responseModel !== r.name ? ' · ' + esc(r.responseModel) : ''}">${esc(r.name)}</span>
                 <div class="cost-bar-track">
                     ${r.costBreakdownUnavailable ? `<div class="cost-bar-seg cost-seg-historical" style="width:${pct.toFixed(1)}%" data-tooltip="${esc(tBi('Recorded historical total; token cost breakdown unavailable', '保留的历史总费用；缺少各类 Token 费用明细'))}"></div>` : `
-                    ${inputPct > 0 ? `<div class="cost-bar-seg cost-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Input: ${fmtUsd(r.inputCost)} (${fmtTok(r.inputTokens)} tokens)`, `输入：${fmtUsd(r.inputCost)}（${fmtTok(r.inputTokens)} tokens）`))}"></div>` : ''}
-                    ${outputPct > 0 ? `<div class="cost-bar-seg cost-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Output: ${fmtUsd(r.outputCost)} (${fmtTok(r.outputTokens)} tokens)`, `输出：${fmtUsd(r.outputCost)}（${fmtTok(r.outputTokens)} tokens）`))}"></div>` : ''}
-                    ${cachePct > 0 ? `<div class="cost-bar-seg cost-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="${esc(tBi(`Cache: ${fmtUsd(r.cacheCost)} (${fmtTok(r.cacheTokens)} tokens)`, `缓存：${fmtUsd(r.cacheCost)}（${fmtTok(r.cacheTokens)} tokens）`))}"></div>` : ''}
-                    ${thinkPct > 0 ? `<div class="cost-bar-seg cost-seg-think" style="width:${thinkPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Thinking: ${fmtUsd(r.thinkingCost)} (${fmtTok(r.thinkingTokens)} tokens)`, `思考：${fmtUsd(r.thinkingCost)}（${fmtTok(r.thinkingTokens)} tokens）`))}"></div>` : ''}`}
+                    ${inputPct > 0 ? `<div class="cost-bar-seg cost-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Input: ${fmtCost(r.inputCost, prefs)} (${fmtTok(r.inputTokens)} tokens)`, `输入：${fmtCost(r.inputCost, prefs)}（${fmtTok(r.inputTokens)} tokens）`))}"></div>` : ''}
+                    ${outputPct > 0 ? `<div class="cost-bar-seg cost-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Output: ${fmtCost(r.outputCost, prefs)} (${fmtTok(r.outputTokens)} tokens)`, `输出：${fmtCost(r.outputCost, prefs)}（${fmtTok(r.outputTokens)} tokens）`))}"></div>` : ''}
+                    ${cachePct > 0 ? `<div class="cost-bar-seg cost-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="${esc(tBi(`Cache: ${fmtCost(r.cacheCost, prefs)} (${fmtTok(r.cacheTokens)} tokens)`, `缓存：${fmtCost(r.cacheCost, prefs)}（${fmtTok(r.cacheTokens)} tokens）`))}"></div>` : ''}
+                    ${thinkPct > 0 ? `<div class="cost-bar-seg cost-seg-think" style="width:${thinkPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Thinking: ${fmtCost(r.thinkingCost, prefs)} (${fmtTok(r.thinkingTokens)} tokens)`, `思考：${fmtCost(r.thinkingCost, prefs)}（${fmtTok(r.thinkingTokens)} tokens）`))}"></div>` : ''}`}
                 </div>
-                <span class="cost-bar-val">${fmtUsd(r.totalCost)}</span>
+                <span class="cost-bar-val">${esc(fmtCost(r.totalCost, prefs))}</span>
             </div>`;
         }
 
@@ -1223,24 +1378,32 @@ function buildCostPanel(
             const rateTooltip = (tokens: number, rate: number): string => r.usesHistoricalRates
                 ? `${tBi('Priced at each call date', '按每次调用日期计价')} · ${fmtTok(tokens)} tokens`
                 : fmtTokPrice(tokens, rate);
+            const rowSavedUsd = !r.costBreakdownUnavailable && r.pricing && r.cacheTokens > 0 && r.pricing.input > r.pricing.cacheRead
+                ? (r.cacheTokens * (r.pricing.input - r.pricing.cacheRead)) / 1_000_000
+                : 0;
+            const rowSavedLabel = fmtSavedMagnitude(rowSavedUsd, prefs);
+            const rowThinkShare = !r.costBreakdownUnavailable && r.thinkingCost > 0 && r.totalCost > 0
+                ? Math.round((r.thinkingCost / r.totalCost) * 100)
+                : 0;
             html += `<div class="cost-detail-row">
                 <span class="cost-detail-name" title="${esc(r.name)}" data-tooltip="${esc(r.name)}${r.responseModel && r.responseModel !== r.name ? ' · ' + esc(r.responseModel) : ''}">${esc(r.name)}</span>
                 <div class="cost-detail-items">
                     ${r.costBreakdownUnavailable ? `<span class="cost-note">${tBiHtml('Historical total; token cost breakdown unavailable', '历史总费用；各类 Token 费用明细不可用')}</span>` : `
                     <span class="cost-detail-item" data-tooltip="${esc(rateTooltip(r.inputTokens, r.pricing!.input))}">
-                        <span class="cost-legend-dot cost-seg-input"></span>${fmtUsd(r.inputCost)}
+                        <span class="cost-legend-dot cost-seg-input"></span>${esc(fmtCost(r.inputCost, prefs))}
                     </span>
                     <span class="cost-detail-item" data-tooltip="${esc(rateTooltip(r.outputTokens, r.pricing!.output))}">
-                        <span class="cost-legend-dot cost-seg-output"></span>${fmtUsd(r.outputCost)}
+                        <span class="cost-legend-dot cost-seg-output"></span>${esc(fmtCost(r.outputCost, prefs))}
                     </span>
                     <span class="cost-detail-item" data-tooltip="${esc(rateTooltip(r.cacheTokens, r.pricing!.cacheRead))}">
-                        <span class="cost-legend-dot cost-seg-cache"></span>${fmtUsd(r.cacheCost)}
+                        <span class="cost-legend-dot cost-seg-cache"></span>${esc(fmtCost(r.cacheCost, prefs))}
                     </span>
                     ${r.thinkingTokens > 0 ? `<span class="cost-detail-item" data-tooltip="${esc(rateTooltip(r.thinkingTokens, r.pricing!.thinking))}">
-                        <span class="cost-legend-dot cost-seg-think"></span>${fmtUsd(r.thinkingCost)}
-                    </span>` : ''}`}
+                        <span class="cost-legend-dot cost-seg-think"></span>${esc(fmtCost(r.thinkingCost, prefs))}${rowThinkShare > 0 ? ` <span class="cost-share-sub">(${rowThinkShare}%)</span>` : ''}
+                    </span>` : ''}
+                    ${rowSavedLabel ? `<span class="cost-detail-saved" data-tooltip="${esc(tBi('Saved by prompt cache', '缓存预计节省'))}">${tBiHtml('Saved', '省')} ${esc(rowSavedLabel)}</span>` : ''}`}
                 </div>
-                <span class="cost-detail-total">${fmtUsd(r.totalCost)}</span>
+                <span class="cost-detail-total">${esc(fmtCost(r.totalCost, prefs))}</span>
             </div>`;
         }
         html += '</div>';
@@ -1465,7 +1628,6 @@ function pricingDisplayName(model: string): string {
 }
 
 const UNVERIFIED_PRICE_KEYS = [
-    'gemini-4-neon-low', 'gemini-4-neon-medium', 'gemini-4-neon-high', 'gemini-4-neon-xhigh',
     'gemini-pro-orchestrator-neon', 'gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon',
     'gemini-flash-worker-agy',
 ];
@@ -1480,15 +1642,22 @@ function editablePriceKeys(merged: Record<string, ModelPricing>): string[] {
 
 function orchestratorPricingNote(): string {
     return `<li>${tBiHtml(
-        'Prices for Gemini 4 Neon, the three Orchestrator variants and their execution model are unverified. Enter a custom rate for each identity when available. Costs follow the model recorded on each call.',
-        'Gemini 4 Neon、三个 Orchestrator 变体及其执行模型的费率待确认。掌握费率后可按模型分别设置自定义价格。费用按每次调用实际记录的模型计算。',
+        'Custom Orchestrator Mode executes on concrete planner and executor models (e.g. Gemini 4 Neon/Carbon/Argon, Claude Opus 5.5, Gemini 4 Hydrogen, Claude Sonnet 5.5) and bills each call automatically at its base model rate with no orchestration surcharge. Legacy server-managed Orchestrator (Neon/Carbon/Argon) and worker M669 entries remain unverified custom-priced identities.',
+        '自定义编排模式会直接调用具体的规划模型与执行模型（如 Gemini 4 Neon/Carbon/Argon、Claude Opus 5.5、Gemini 4 Hydrogen、Claude Sonnet 5.5），按每次调用实际记录的基础模型自动计费，无额外编排加价。旧版服务端托管的三个 Orchestrator 变体及 M669 仍保留为待确认的自定义单价项。',
     )}</li>`;
+}
+
+function neonPricingNote(): string {
+    return `<li>${tBiHtml(
+        'Gemini 4 Neon standard API reference (USD per 1M tokens), verified 2026-11-22: input $3.00, output including thinking $15.00, implicit cache reads $0.15 (95% off), flat across the full 1M context window. The same rates apply to Low, Medium, High, and Extra High (XHigh). No scheduled price cutover is published. Explicit caching is currently unsupported.',
+        'Gemini 4 Neon 标准 API 参考价（每百万 tokens，USD），2026-11-22 核实：输入 $3.00、输出（含思考）$15.00、隐式缓存读取 $0.15（95% 折扣），1M 上下文全窗口统一费率。Low、Medium、High 和 Extra High（XHigh）四档使用相同费率。官网未公布定时调价计划，当前不支持显式缓存。',
+    )} <a href="https://aistudio.google.com/docs/whats-new-gemini-4-neon">${tBiHtml('Official pricing', '官方价格')}</a></li>`;
 }
 
 function hydrogenPricingNote(): string {
     return `<li>${tBiHtml(
-        'Gemini 4 Hydrogen standard API reference (USD per 1M tokens), verified 2026-11-13: input $1.50, output including thinking $7.50, implicit cache reads $0.075. The same rates apply to Low, Medium, High and Extra (XHigh). No scheduled price change is published. Explicit caching is not supported. These are not Batch/Flex rates or Antigravity subscription charges.',
-        'Gemini 4 Hydrogen 标准 API 参考价（每百万 tokens，USD），2026-11-13 核实：输入 $1.50、输出（含思考）$7.50、隐式缓存读取 $0.075。Low、Medium、High 和 Extra（XHigh）四档使用相同费率。官网未公布定时调价计划，不支持显式缓存。这不是 Batch/Flex 费率，也不是 Antigravity 订阅收费。',
+        'Gemini 4 Hydrogen standard API reference (USD per 1M tokens), verified 2026-11-13: input $1.50, output including thinking $7.50, implicit cache reads $0.075. The same rates apply to Low, Medium, High and Extra High (XHigh). No scheduled price change is published. Explicit caching is not supported. These are not Batch/Flex rates or Antigravity subscription charges.',
+        'Gemini 4 Hydrogen 标准 API 参考价（每百万 tokens，USD），2026-11-13 核实：输入 $1.50、输出（含思考）$7.50、隐式缓存读取 $0.075。Low、Medium、High 和 Extra High（XHigh）四档使用相同费率。官网未公布定时调价计划，不支持显式缓存。这不是 Batch/Flex 费率，也不是 Antigravity 订阅收费。',
     )} <a href="https://aistudio.google.com/docs/pricing#gemini-4-hydrogen">${tBiHtml('Official pricing', '官方价格')}</a></li>`;
 }
 
@@ -1572,6 +1741,7 @@ function buildEditablePricingTable(
         <li>${tBiHtml('Edit prices above and click Save. Changes persist across sessions.', '编辑上方价格后点击“保存”，修改跨会话持久化。')}</li>
         <li>${tBiHtml('Reset restores built-in default prices. Clear all fields in a row to remove its override. Missing prices are not zero prices.', '“恢复默认”将还原内置价格。清空一行全部字段可移除该自定义价格；缺失价格不代表免费。')}</li>
         ${orchestratorPricingNote()}
+        ${neonPricingNote()}
         ${hydrogenPricingNote()}
         ${carbonPricingNote()}
         ${argonPricingNote()}
@@ -1622,6 +1792,7 @@ function buildDefaultPricingTable(
         <li>${tBiHtml('Edit prices above and click Save. Changes persist across sessions.', '编辑上方价格后点击“保存”，修改跨会话持久化。')}</li>
         <li>${tBiHtml('Clear all fields in a row to remove its override. Missing prices are not zero prices.', '清空一行全部字段可移除该自定义价格；缺失价格不代表免费。')}</li>
         ${orchestratorPricingNote()}
+        ${neonPricingNote()}
         ${hydrogenPricingNote()}
         ${carbonPricingNote()}
         ${argonPricingNote()}
@@ -1647,6 +1818,7 @@ function buildMonthlyCostSummary(
     pendingArchiveCost: number,
     customPricing: Record<string, ModelPricing>,
     hasUnmeteredImageUsage = false,
+    prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE },
 ): string {
     const monthEn = MONTH_NAMES_EN[breakdown.month - 1];
     const monthZh = MONTH_NAMES_ZH[breakdown.month - 1];
@@ -1761,7 +1933,7 @@ function buildMonthlyCostSummary(
     const isPartial = unpricedNames.size > 0 || hasUnmeteredImageUsage;
 
     html += `<div class="prc-monthly-grand">
-        <span class="prc-monthly-grand-val${allUnavailable ? ' is-unavailable' : ''}">${allUnavailable ? tBiHtml('Not available', '暂无法估算') : fmtUsd(grandTotal)}</span>
+        <span class="prc-monthly-grand-val${allUnavailable ? ' is-unavailable' : ''}">${allUnavailable ? tBiHtml('Not available', '暂无法估算') : esc(fmtCost(grandTotal, prefs))}</span>
         <span class="prc-monthly-grand-label${isPartial ? ' is-partial' : ''}">${isPartial ? tBiHtml('Partial total', '已知小计') : tBiHtml('Total', '总计')}</span>
         <span class="prc-monthly-grand-breakdown">${archivedLabel}</span>
     </div>`;
@@ -1773,9 +1945,9 @@ function buildMonthlyCostSummary(
         const pct = maxCost > 0 && m.totalCost > 0 ? Math.max(2, (m.totalCost / maxCost) * 100) : 0;
         const costHtml = isUnpriced
             ? (m.totalCost > 0
-                ? `${fmtUsd(m.totalCost)} <span class="prc-cost-partial-tag">· ${tBiHtml('Partial', '已知小计')}</span>`
+                ? `${esc(fmtCost(m.totalCost, prefs))} <span class="prc-cost-partial-tag">· ${tBiHtml('Partial', '已知小计')}</span>`
                 : `<span class="prc-cost-unavailable">${tBiHtml('Cost unavailable', '费用暂不可用')}</span>`)
-            : fmtUsd(m.totalCost);
+            : esc(fmtCost(m.totalCost, prefs));
         html += `<div class="prc-monthly-card">
             <span class="prc-monthly-model-name" title="${esc(m.name)}">${esc(m.name)}</span>
             <div class="prc-monthly-bar-wrap">

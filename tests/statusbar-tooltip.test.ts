@@ -834,13 +834,12 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
 
         manager.setTelemetry(summary, 'conv-1');
 
-        // Compact density: single tight line separated by ---
+        // Compact density: tight 1–2 line summary separated by ---
         mockDensity('compact');
         manager.update(makeContextUsage());
         const compactHover = (item.tooltip as vscode.MarkdownString).value;
         const compactTelemetrySection = compactHover.split('\n\n---\n\n').find(s => s.includes('Speed & Prompt Cache'));
         expect(compactTelemetrySection).toBeDefined();
-        expect(compactTelemetrySection).not.toContain('\n');
         expect(compactTelemetrySection).toContain('**64.2 tok/s**');
         expect(compactTelemetrySection).toContain('TTFT 1.46s');
         expect(compactTelemetrySection).toContain('Cache 80.2%');
@@ -857,24 +856,26 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
         expect(speedOnlySection).not.toContain('TTFT');
         expect(speedOnlySection).not.toContain('Cache ');
 
-        // Auto density: full 3-line breakdown with latest+avg speed, Cached vs Uncached TTFT, and Prompt Cache
+        // Auto density: structured GFM KPI table with latest+avg speed, Cached vs Uncached TTFT, and Prompt Cache
         manager.setTelemetry(summary, 'conv-1');
         mockDensity('auto', 0);
         manager.refreshFromConfig();
         const autoHover = (item.tooltip as vscode.MarkdownString).value;
-        expect(autoHover).toContain('**64.2 tok/s** latest · 57.1 tok/s avg');
-        expect(autoHover).toContain('**1.46s** avg (780ms cached vs 2.15s uncached · -64%)');
-        expect(autoHover).toContain('Prompt Cache · **80.2%** (142k / 177k tokens · 1/2 calls');
+        expect(autoHover).toContain('**64.2 tok/s** · avg 57.1 tok/s');
+        expect(autoHover).toContain('TTFT **1.46s**');
+        expect(autoHover).toContain('780ms cached vs 2.15s uncached -64%');
+        expect(autoHover).toContain('| Prompt Cache | **80.2%** | 1/2 calls | 142k/177k tokens');
         expect(autoHover).not.toContain('p50 ');
         expect(autoHover).not.toContain('write ');
 
-        // Full density: adds p50 medians and cache write volume
+        // Full density: adds p50 medians, cache write volume, and full Latest Call 4-col table
         mockDensity('full', 0);
         manager.refreshFromConfig();
         const fullHover = (item.tooltip as vscode.MarkdownString).value;
         expect(fullHover).toContain('p50 57.1 tok/s');
         expect(fullHover).toContain('p50 1.46s');
         expect(fullHover).toContain('write 10k');
+        expect(fullHover).toContain('| In / Out | Cache | Cost | TTFT / Total · Speed |');
 
         // Disconnected state omits telemetry (no stale readings)
         manager.showDisconnected('LS connection lost');
@@ -931,7 +932,7 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
         ])]), 'conv-1');
         manager.update(makeContextUsage());
         const cachedOnlyHover = (item.tooltip as vscode.MarkdownString).value;
-        expect(cachedOnlyHover).toContain('TTFT · **780ms** avg');
+        expect(cachedOnlyHover).toContain('TTFT **780ms**');
         expect(cachedOnlyHover).not.toContain(' vs ');
 
         // Both buckets present, cached slower than uncached -> shows signed positive +20%
@@ -941,7 +942,7 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
         ])]), 'conv-1');
         manager.refreshFromConfig();
         const slowerHover = (item.tooltip as vscode.MarkdownString).value;
-        expect(slowerHover).toContain('1.20s cached vs 1.00s uncached · +20%');
+        expect(slowerHover).toContain('1.20s cached vs 1.00s uncached +20%');
 
         manager.dispose();
     });
@@ -952,7 +953,7 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
         const item = create.mock.results[0].value as vscode.StatusBarItem;
         mockDensity('auto', 0);
 
-        // Unpriced unknown model -> estCacheSavingsUsd is null -> no $ sign at all
+        // Unpriced unknown model -> shows honest Unpriced label and no fabricated $ sign
         manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
             makeGMCall({
                 model: 'MODEL_UNKNOWN_UNPRICED_X',
@@ -964,10 +965,11 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
         ])]), 'conv-1');
         manager.update(makeContextUsage());
         const unpricedHover = (item.tooltip as vscode.MarkdownString).value;
-        expect(unpricedHover).toContain('Prompt Cache · **90.0%** (90k / 100k tokens · 1/1 call)');
+        expect(unpricedHover).toContain('| Prompt Cache | **90.0%** | 1/1 call | 90k/100k tokens |');
+        expect(unpricedHover).toContain('| Cost | Unpriced | — | — |');
         expect(unpricedHover).not.toMatch(/\$\d|est\./);
 
-        // Custom pricing with input === cacheRead -> $0 diff -> omits $ (never $0.00!)
+        // Custom pricing with input === cacheRead -> $0 cache savings diff -> omits est. savings (never -$0.00!)
         manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
             makeGMCall({
                 model: 'MODEL_UNKNOWN_UNPRICED_X',
@@ -981,8 +983,8 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
         });
         manager.refreshFromConfig();
         const zeroDiffHover = (item.tooltip as vscode.MarkdownString).value;
-        expect(zeroDiffHover).not.toContain('$0.00');
-        expect(zeroDiffHover).not.toMatch(/\$\d|est\./);
+        expect(zeroDiffHover).not.toContain('-$0.00');
+        expect(zeroDiffHover).not.toContain('est.');
 
         // Priced model: 100,000 cacheRead * ($5.0 - $0.5) / 1e6 = $0.45 saved
         manager.setTelemetry(makeGMSummary([makeConv('conv-1', [
@@ -999,7 +1001,7 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
         manager.refreshFromConfig();
         const pricedHover = (item.tooltip as vscode.MarkdownString).value;
         expect(pricedHover).toContain('est. -$0.45');
-        expect(pricedHover).not.toContain('$0.00');
+        expect(pricedHover).not.toContain('-$0.00');
 
         manager.dispose();
     });
@@ -1055,7 +1057,7 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
                 expect(hover).toContain('速度与提示词缓存');
                 expect(hover).toContain('可见 ');
                 expect(hover).toContain('命中 vs ');
-                expect(hover).toContain('约省 $0.45');
+                expect(hover).toContain('缓存省 $0.45');
             } else if (lang === 'en') {
                 expect(item.text).toContain('Cache 76.9%');
                 expect(hover).toContain('Speed & Prompt Cache');
@@ -1066,10 +1068,504 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
                 expect(item.text).toContain('Cache 76.9%');
                 expect(hover).toContain('Speed & Prompt Cache / 速度与提示词缓存');
                 expect(hover).toContain('resp / 可见');
-                expect(hover).toContain('est. -$0.45 / 约省 $0.45');
+                expect(hover).toContain('est. -$0.45 / 缓存省 $0.45');
             }
         }
 
         manager.dispose();
+    });
+
+    it('renders Orchestrator cross-pool route, split, dual-window 5h+weekly quota, CNY costs, smart alerts, and 1-click footer', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-11-22T00:00:00Z'));
+        try {
+            const create = vi.spyOn(vscode.window, 'createStatusBarItem');
+            const manager = new StatusBarManager();
+            const item = create.mock.results[0].value as vscode.StatusBarItem;
+            mockDensity('full', 0);
+            manager.setCurrencyPrefs({ currency: 'CNY', cnyRate: 7.2 });
+            manager.setDisplayPrefs({ showSessionCost: true });
+            manager.setPlanName('Pro', 'Google AI Pro');
+            manager.setModelConfigs([
+                {
+                    model: 'MODEL_PLACEHOLDER_M401',
+                    label: 'Claude Opus 5.5 (Medium)',
+                    supportsImages: true,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: false,
+                    quotaInfo: { remainingFraction: 0.8, resetTime: '2026-11-22T03:00:00Z' },
+                },
+                {
+                    model: 'MODEL_PLACEHOLDER_M528',
+                    label: 'Gemini 4 Hydrogen (XHigh)',
+                    supportsImages: true,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: true,
+                    quotaInfo: { remainingFraction: 0.65, resetTime: '2026-11-22T02:00:00Z' },
+                },
+                {
+                    model: 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
+                    label: 'GPT-OSS 120B (Medium)',
+                    tagTitle: 'Notice',
+                    tagDescription: 'Model will be deprecated soon',
+                    supportsImages: false,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: false,
+                    quotaInfo: { remainingFraction: 0.8, resetTime: '2026-11-22T03:00:00Z' },
+                },
+            ]);
+            manager.setQuotaSummary({
+                groups: [
+                    {
+                        pool: 'gemini',
+                        displayName: 'Gemini Models',
+                        fiveHour: {
+                            bucketId: 'gemini-5h',
+                            window: '5h',
+                            displayName: '5h',
+                            remainingFraction: 0.65,
+                            resetTime: '2026-11-22T02:00:00Z',
+                            resetAt: Date.parse('2026-11-22T02:00:00Z'),
+                        },
+                        weekly: {
+                            bucketId: 'gemini-weekly',
+                            window: 'weekly',
+                            displayName: 'Weekly',
+                            remainingFraction: 0.82,
+                            resetTime: '2026-11-26T00:00:00Z',
+                            resetAt: Date.parse('2026-11-26T00:00:00Z'),
+                        },
+                        buckets: [],
+                    },
+                    {
+                        pool: 'premium',
+                        displayName: 'Claude and GPT models',
+                        fiveHour: {
+                            bucketId: '3p-5h',
+                            window: '5h',
+                            displayName: '5h',
+                            remainingFraction: 0.8,
+                            resetTime: '2026-11-22T03:00:00Z',
+                            resetAt: Date.parse('2026-11-22T03:00:00Z'),
+                        },
+                        weekly: {
+                            bucketId: '3p-weekly',
+                            window: 'weekly',
+                            displayName: 'Weekly',
+                            remainingFraction: 0.94,
+                            resetTime: '2026-11-26T00:00:00Z',
+                            resetAt: Date.parse('2026-11-26T00:00:00Z'),
+                        },
+                        buckets: [],
+                    },
+                ],
+            });
+
+            const summary = makeGMSummary([makeConv('conv-orch', [
+                makeGMCall({
+                    executionId: 'p1',
+                    model: 'MODEL_PLACEHOLDER_M401',
+                    modelDisplay: 'Claude Opus 5.5 (Medium)',
+                    responseModel: 'claude-opus-5-5',
+                    inputTokens: 10_000,
+                    outputTokens: 500,
+                    responseTokens: 300,
+                    thinkingTokens: 200,
+                    cacheReadTokens: 80_000,
+                    ttftSeconds: 1.5,
+                    streamingSeconds: 3.0,
+                    createdAt: '2026-11-22T00:00:00Z',
+                }),
+                makeGMCall({
+                    executionId: 'e1',
+                    model: 'MODEL_PLACEHOLDER_M528',
+                    modelDisplay: 'Gemini 4 Hydrogen (XHigh)',
+                    responseModel: 'gemini-4-hydrogen',
+                    inputTokens: 4_543,
+                    outputTokens: 388,
+                    responseTokens: 268,
+                    thinkingTokens: 120,
+                    cacheReadTokens: 218_153,
+                    ttftSeconds: 6.0,
+                    streamingSeconds: 2.5,
+                    retries: 1,
+                    retryTokensIn: 5_000,
+                    retryTokensOut: 0,
+                    createdAt: '2026-11-22T00:01:00Z',
+                }),
+            ])]);
+            summary.totalRetryCount = 1;
+            summary.totalRetryTokens = 5_000;
+            summary.retryErrorCodes = { '429': 1 };
+
+            manager.setTelemetry(summary, 'conv-orch');
+            manager.setCostSnapshot({ todayCostUsd: 1.5, todayHasUnpriced: false });
+            manager.update(makeContextUsage({
+                cascadeId: 'conv-orch',
+                model: 'MODEL_PLACEHOLDER_M401',
+                modelDisplayName: 'Claude Opus 5.5 (Medium)',
+                orchestratorConfig: {
+                    planModel: 'MODEL_PLACEHOLDER_M401',
+                    executionModel: 'MODEL_PLACEHOLDER_M528',
+                },
+            }));
+
+            const md = item.tooltip as vscode.MarkdownString;
+            const hover = md.value;
+            // Status bar opt-in cost pill rendered in CNY
+            expect(item.text).toContain('$(credit-card) ¥');
+            // Orchestrator cross-pool header & split
+            expect(hover).toContain('Orchestrator');
+            expect(hover).toContain('Claude Opus 5.5 (Medium)');
+            expect(hover).toContain('Gemini 4 Hydrogen (Extra High)');
+            expect(hover).toContain('Cross-pool');
+            expect(hover).toContain('**Split**');
+            // Latest call 4-col table with total latency (6.0 + 2.5 = 8.50s), speed (155.2 tok/s), CNY cost
+            expect(hover).toContain('`gemini-4-hydrogen`');
+            expect(hover).toContain('6.00s / 8.50s');
+            expect(hover).toContain('155.2 tok/s');
+            expect(hover).toContain('¥');
+            // Dual-window quota (5h + Weekly) with Planner & Executor pool tags
+            expect(hover).toContain('| Pool | 5h | Weekly | Reset |');
+            expect(hover).toContain('**82%**');
+            expect(hover).toContain('**94%**');
+            expect(hover).toContain('*(Planner)*');
+            expect(hover).toContain('*(Executor)*');
+            // Retry waste alert
+            expect(hover).toContain('**Retry Waste**');
+            expect(hover).toContain('`429`');
+            // 1-click footer with Activity, Cost, Refresh & trusted commands
+            expect(hover).toContain('antigravity-context-monitor.showDetails?%5B%22gmdata%22%5D');
+            expect(hover).toContain('antigravity-context-monitor.showDetails?%5B%22pricing%22%5D');
+            expect(hover).toContain('command:antigravity-context-monitor.refresh');
+            expect((md.isTrusted as { enabledCommands: string[] }).enabledCommands).toContain('antigravity-context-monitor.refresh');
+
+            // Carbon active model triggers 14-day rate-change countdown alert
+            manager.update(makeContextUsage({
+                model: 'MODEL_PLACEHOLDER_M427',
+                modelDisplayName: 'Gemini 4 Carbon (High)',
+            }));
+            expect((item.tooltip as vscode.MarkdownString).value).toContain('2026-12-01');
+            expect((item.tooltip as vscode.MarkdownString).value).toContain('9d');
+
+            // GPT-OSS 120B active model triggers Notice sunset alert; clearing quotaSummary falls back to 5h-only 3-col table
+            manager.setQuotaSummary(null);
+            manager.update(makeContextUsage({
+                model: 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM',
+                modelDisplayName: 'GPT-OSS 120B (Medium)',
+            }));
+            const noticeHover = (item.tooltip as vscode.MarkdownString).value;
+            expect(noticeHover).toContain('**Notice**');
+            expect(noticeHover).toContain('Model will be deprecated soon');
+            expect(noticeHover).toContain('| Pool | Remaining | Reset |');
+            expect(noticeHover).not.toContain('| Pool | 5h | Weekly | Reset |');
+
+            manager.dispose();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('never drops Quota remaining in compact/zoomed modes and keeps Latest Call + Alerts at default auto zoom 0 (#31 #1)', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-11-22T00:00:00Z'));
+        try {
+            const create = vi.spyOn(vscode.window, 'createStatusBarItem');
+            const manager = new StatusBarManager();
+            const item = create.mock.results[0].value as vscode.StatusBarItem;
+            manager.setPlanName('Pro');
+            manager.setCredits(14_701);
+            manager.setModelConfigs([
+                {
+                    model: 'MODEL_PLACEHOLDER_M401',
+                    label: 'Claude Opus 5.5 (Medium)',
+                    supportsImages: true,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: false,
+                    quotaInfo: { remainingFraction: 0.8, resetTime: '2026-11-22T03:00:00Z' },
+                },
+                {
+                    model: 'MODEL_PLACEHOLDER_M528',
+                    label: 'Gemini 4 Hydrogen (XHigh)',
+                    supportsImages: true,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: true,
+                    quotaInfo: { remainingFraction: 0.65, resetTime: '2026-11-22T02:00:00Z' },
+                },
+                {
+                    model: 'MODEL_PLACEHOLDER_M21',
+                    label: 'Gemini 3.1 Flash Image',
+                    supportsImages: true,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: false,
+                    quotaInfo: { remainingFraction: 0.5, resetTime: '2026-11-22T04:00:00Z' },
+                },
+            ]);
+            const summary = makeGMSummary([makeConv('conv-1', [
+                makeGMCall({
+                    executionId: 'p1',
+                    model: 'MODEL_PLACEHOLDER_M401',
+                    modelDisplay: 'Claude Opus 5.5 (Medium)',
+                    responseModel: 'claude-opus-5-5',
+                    inputTokens: 10_000,
+                    outputTokens: 500,
+                    responseTokens: 300,
+                    thinkingTokens: 200,
+                    cacheReadTokens: 80_000,
+                    ttftSeconds: 1.5,
+                    streamingSeconds: 3.0,
+                    createdAt: '2026-11-22T00:00:00Z',
+                }),
+                makeGMCall({
+                    executionId: 'e1',
+                    model: 'MODEL_PLACEHOLDER_M528',
+                    modelDisplay: 'Gemini 4 Hydrogen (XHigh)',
+                    responseModel: 'gemini-4-hydrogen',
+                    inputTokens: 4_543,
+                    outputTokens: 388,
+                    responseTokens: 268,
+                    thinkingTokens: 120,
+                    cacheReadTokens: 218_153,
+                    ttftSeconds: 6.0,
+                    streamingSeconds: 2.5,
+                    createdAt: '2026-11-22T00:01:00Z',
+                }),
+            ])]);
+            manager.setTelemetry(summary, 'conv-1');
+            manager.setCostSnapshot({ todayCostUsd: 1.5, todayHasUnpriced: false });
+
+            const orchUsage = makeContextUsage({
+                cascadeId: 'conv-1',
+                model: 'MODEL_PLACEHOLDER_M401',
+                modelDisplayName: 'Claude Opus 5.5 (Medium)',
+                orchestratorConfig: {
+                    planModel: 'MODEL_PLACEHOLDER_M401',
+                    executionModel: 'MODEL_PLACEHOLDER_M528',
+                },
+            });
+
+            // 1. auto + zoom 0.5 (effective compact, budget 13) -> Quota remaining survives
+            mockDensity('auto', 0.5);
+            manager.update(orchUsage);
+            const zoomedHover = (item.tooltip as vscode.MarkdownString).value;
+            expect(zoomedHover).toContain('Quota remaining');
+            expect(zoomedHover).toContain('Gemini');
+            expect(zoomedHover).toContain('Claude / GPT');
+
+            // 2. compact + zoom 0 (3 pools) AND compact + zoom 5 (extreme budget 10) -> Quota remaining NEVER drops
+            for (const zoom of [0, 5]) {
+                mockDensity('compact', zoom);
+                manager.refreshFromConfig();
+                const compactHover = (item.tooltip as vscode.MarkdownString).value;
+                expect(compactHover).toContain('Quota remaining');
+                expect(compactHover).toContain('65%');
+                expect(compactHover).toContain('80%');
+            }
+
+            // 3. Default auto + zoom 0 (2 pools + Orchestrator + Split + Latest Call + Alerts) -> Latest Call AND Alerts survive
+            manager.setModelConfigs([
+                {
+                    model: 'MODEL_PLACEHOLDER_M401',
+                    label: 'Claude Opus 5.5 (Medium)',
+                    supportsImages: true,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: false,
+                    quotaInfo: { remainingFraction: 0.8, resetTime: '2026-11-22T03:00:00Z' },
+                },
+                {
+                    model: 'MODEL_PLACEHOLDER_M528',
+                    label: 'Gemini 4 Hydrogen (XHigh)',
+                    supportsImages: true,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: true,
+                    quotaInfo: { remainingFraction: 0.65, resetTime: '2026-11-22T02:00:00Z' },
+                },
+            ]);
+            mockDensity('auto', 0);
+            manager.refreshFromConfig();
+            const autoHover = (item.tooltip as vscode.MarkdownString).value;
+            expect(autoHover).toContain('**Latest Call**');
+            expect(autoHover).toContain('**Split**');
+            expect(autoHover).toContain('Quota remaining');
+            expect(autoHover).toContain('**AI credits**');
+
+            manager.dispose();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('guards undated scheduled-cutover pricing, empty-session cost cell, 0-token errors, bilingual savings, and invalid quota readings (#31 #2/#4/#5/#6/#7)', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-11-22T00:00:00Z'));
+        try {
+            const create = vi.spyOn(vscode.window, 'createStatusBarItem');
+            const manager = new StatusBarManager();
+            const item = create.mock.results[0].value as vscode.StatusBarItem;
+            mockDensity('full', 0);
+
+            // #31 #2: Undated call on scheduled-cutover model (Gemini 4 Carbon) must remain Unpriced (never priced with new Date())
+            manager.setTelemetry(makeGMSummary([makeConv('conv-undated', [
+                makeGMCall({
+                    executionId: 'u1',
+                    model: 'MODEL_PLACEHOLDER_M427',
+                    modelDisplay: 'Gemini 4 Carbon (High)',
+                    responseModel: 'gemini-4-carbon',
+                    inputTokens: 1_000_000,
+                    outputTokens: 0,
+                    cacheReadTokens: 0,
+                    createdAt: '',
+                }),
+            ])]), 'conv-undated');
+            manager.update(makeContextUsage({ cascadeId: 'conv-undated', model: 'MODEL_PLACEHOLDER_M427', modelDisplayName: 'Gemini 4 Carbon (High)' }));
+            const undatedHover = (item.tooltip as vscode.MarkdownString).value;
+            expect(undatedHover).toContain('| Cost | Unpriced |');
+            expect(undatedHover).not.toContain('$2.00');
+
+            // #31 #4: Empty session + todayCost > 0 must render '—' (NOT 'Unpriced') in Session cell
+            manager.setTelemetry(null);
+            manager.setCostSnapshot({ todayCostUsd: 2.5, todayHasUnpriced: false, sessionCostUsd: 0, sessionHasUnpriced: false });
+            manager.update(makeContextUsage({ cascadeId: 'conv-empty' }));
+            const emptySessionHover = (item.tooltip as vscode.MarkdownString).value;
+            expect(emptySessionHover).toContain('| Cost | — | **$2.50** | — |');
+            expect(emptySessionHover).not.toContain('| Cost | Unpriced |');
+
+            // #31 #5: Failed/retried 0-token, 0-timing call must still render Latest Call (Error) and Retry Waste
+            const errSummary = makeGMSummary([makeConv('conv-err', [
+                makeGMCall({
+                    executionId: 'err1',
+                    model: 'MODEL_PLACEHOLDER_M535',
+                    modelDisplay: 'Gemini 4 Neon (XHigh)',
+                    responseModel: 'gemini-4-neon',
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    thinkingTokens: 0,
+                    responseTokens: 0,
+                    cacheReadTokens: 0,
+                    ttftSeconds: 0,
+                    streamingSeconds: 0,
+                    hasError: true,
+                    retries: 3,
+                    retryTokensIn: 45_000,
+                    retryTokensOut: 0,
+                    createdAt: '2026-11-22T00:00:00Z',
+                }),
+            ])]);
+            errSummary.totalRetryCount = 3;
+            errSummary.totalRetryTokens = 45_000;
+            errSummary.retryErrorCodes = { '503': 3 };
+            manager.setTelemetry(errSummary, 'conv-err');
+            manager.setCostSnapshot({});
+            manager.update(makeContextUsage({ cascadeId: 'conv-err' }));
+            const errHover = (item.tooltip as vscode.MarkdownString).value;
+            expect(errHover).toContain('**Latest Call**');
+            expect(errHover).toContain('$(error) Error');
+            expect(errHover).toContain('**Retry Waste**');
+            expect(errHover).toContain('3×');
+            expect(errHover).toContain('`503`');
+
+            // #31 #6: Chinese dual-currency savings strips '-' on both USD & CNY legs; zero-rounded CNY savings omits 'est. —'
+            await setLanguage('zh', makeCtx());
+            manager.setCurrencyPrefs({ currency: 'both', cnyRate: 7.2 });
+            manager.setTelemetry(makeGMSummary([makeConv('conv-save', [
+                makeGMCall({
+                    executionId: 's1',
+                    model: 'MODEL_UNKNOWN_SAV',
+                    modelDisplay: 'Test Sav',
+                    responseModel: 'test-sav',
+                    inputTokens: 10_000,
+                    cacheReadTokens: 100_000,
+                    createdAt: '2026-11-22T00:00:00Z',
+                }),
+            ])]), 'conv-save', {
+                'test-sav': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25, thinking: 25.0 },
+            });
+            manager.update(makeContextUsage({ cascadeId: 'conv-save' }));
+            const zhBothHover = (item.tooltip as vscode.MarkdownString).value;
+            expect(zhBothHover).toContain('缓存省 $0.45 (¥3.24)');
+            expect(zhBothHover).not.toContain('(-¥');
+
+            await setLanguage('en', makeCtx());
+            manager.setCurrencyPrefs({ currency: 'CNY', cnyRate: 0.01 });
+            manager.setTelemetry(makeGMSummary([makeConv('conv-tiny', [
+                makeGMCall({
+                    executionId: 't1',
+                    model: 'MODEL_UNKNOWN_TINY',
+                    modelDisplay: 'Test Tiny',
+                    responseModel: 'test-tiny',
+                    inputTokens: 1_000,
+                    cacheReadTokens: 1_000,
+                    createdAt: '2026-11-22T00:00:00Z',
+                }),
+            ])]), 'conv-tiny', {
+                'test-tiny': { input: 3.0, output: 15.0, cacheRead: 0.15, cacheWrite: 0, thinking: 15.0 },
+            });
+            manager.update(makeContextUsage({ cascadeId: 'conv-tiny' }));
+            const tinyHover = (item.tooltip as vscode.MarkdownString).value;
+            expect(tinyHover).not.toContain('est. —');
+
+            // #31 #7: Out-of-range quota fractions (>1 / <0) and invalid resetTime never emit 150%, -20%, or false Ready
+            manager.setModelConfigs([
+                {
+                    model: 'MODEL_PLACEHOLDER_M528',
+                    label: 'Gemini 4 Hydrogen (XHigh)',
+                    supportsImages: true,
+                    allowedTiers: [],
+                    mimeTypeCount: 0,
+                    supportedMimeTypes: [],
+                    isRecommended: true,
+                    quotaInfo: { remainingFraction: 0.65, resetTime: '2026-11-22T02:00:00Z' },
+                },
+            ]);
+            manager.setQuotaSummary({
+                groups: [{
+                    pool: 'gemini',
+                    displayName: 'Gemini Models',
+                    fiveHour: {
+                        bucketId: 'bad-5h',
+                        window: '5h',
+                        displayName: '5h',
+                        remainingFraction: 1.5,
+                        resetTime: 'invalid-ts',
+                        resetAt: null,
+                    },
+                    weekly: {
+                        bucketId: 'bad-w',
+                        window: 'weekly',
+                        displayName: 'Weekly',
+                        remainingFraction: -0.2,
+                        resetTime: '1970-01-01T00:00:00Z',
+                        resetAt: 0,
+                    },
+                    buckets: [],
+                }],
+            });
+            manager.update(makeContextUsage({ cascadeId: 'conv-tiny' }));
+            const badQuotaHover = (item.tooltip as vscode.MarkdownString).value;
+            expect(badQuotaHover).not.toContain('150%');
+            expect(badQuotaHover).not.toContain('-20%');
+            expect(badQuotaHover).not.toContain('Ready');
+            expect(badQuotaHover).toContain('**65%**');
+
+            manager.dispose();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

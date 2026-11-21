@@ -17,9 +17,9 @@ import { processSteps } from '../src/tracker';
 vi.mock('../src/rpc-client', () => ({ rpcCall: vi.fn() }));
 const carbon = 'MODEL_PLACEHOLDER_M667', argon = 'MODEL_PLACEHOLDER_M681', worker = 'MODEL_PLACEHOLDER_M669';
 const identities = [
-    { id: carbon, catalog: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)', output: 262144 },
-    { id: argon, catalog: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)', output: 65536 },
-    { id: worker, catalog: 'gemini-flash-worker-agy', label: 'Gemini Flash (Orchestrator Worker)', output: 262144 },
+    { id: carbon, catalog: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)', aliases: [] as string[], output: 262144, level: 3 },
+    { id: argon, catalog: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)', aliases: [] as string[], output: 65536, level: 3 },
+    { id: worker, catalog: 'gemini-flash-worker-agy', label: 'Gemini 4 Hydrogen (Orchestrator)', aliases: ['Gemini Flash (Orchestrator Worker)'], output: 262144, level: 100 },
 ];
 const saved = getModelSpecs().map(s => ({ ...s })), limits = { ...DEFAULT_CONTEXT_LIMITS };
 const state = { get: <T>(_k: string, d: T) => d, update: async () => {} };
@@ -35,14 +35,14 @@ afterEach(async () => {
 });
 
 describe('Orchestrator Carbon/Argon split', () => {
-    it.each(identities)('resolves $label and preserves verified independent limits', ({ id, catalog, label, output }) => {
-        for (const alias of [id, catalog, catalog.toUpperCase(), label, label.toLowerCase(), `${label} (${id.slice(18)})`]) {
+    it.each(identities)('resolves $label and preserves verified independent limits', ({ id, catalog, label, aliases, output, level }) => {
+        for (const alias of [id, catalog, catalog.toUpperCase(), label, label.toLowerCase(), `${label} (${id.slice(18)})`, ...aliases]) {
             expect(resolveModelId(alias), alias).toBe(id);
-            expect(getContextLimit(alias)).toBe(255000);
+            expect(getContextLimit(alias)).toBe(511000);
             expect(getQuotaPoolKey(alias)).toBe('gemini');
         }
-        expect(guessContextLimitSpec(catalog)).toEqual({ cpLimit: 256000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true });
-        expect(getModelSpecs().find(s => s.placeholderId === id)).toMatchObject({ maxOutputTokens: output, thinkingLevel: 3, thinkingBudget: 0 });
+        expect(guessContextLimitSpec(catalog)).toEqual({ cpLimit: 512000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true });
+        expect(getModelSpecs().find(s => s.placeholderId === id)).toMatchObject({ maxOutputTokens: output, thinkingLevel: level, thinkingBudget: 0 });
     });
     it.each(['Orchestrator', '编排器', '协调器', 'Orchestrator Carbon', '协调器（Carbon）', 'ORCHESTRATOR_CARBON'])('preserves Carbon history %s', alias => {
         expect(resolveModelId(alias)).toBe(carbon);

@@ -1,12 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import { getActiveBackendHint, discoverCurrentLanguageServer } from '../src/backend-connection';
-import { discoverLanguageServer } from '../src/discovery';
+import {
+    getActiveBackendHint,
+    discoverCurrentLanguageServer,
+    isSameBackendConnection,
+    doesConnectionMatchActiveHint,
+} from '../src/backend-connection';
+import { discoverLanguageServer, type LSInfo } from '../src/discovery';
 
 const getExtension = vi.spyOn(vscode.extensions, 'getExtension');
 vi.mock('../src/discovery', () => ({ discoverLanguageServer: vi.fn().mockResolvedValue(null) }));
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env.ANTIGRAVITY_SERVER_URL;
+});
 
 describe('current IDE backend affinity', () => {
     it('uses the active built-in extension connection and reads fresh getters on each discovery', async () => {
@@ -49,5 +57,40 @@ describe('current IDE backend affinity', () => {
     it('tolerates throwing exports getters during a backend restart', () => {
         getExtension.mockReturnValue({ isActive: true, exports: { get port() { throw new Error('restarting'); } } });
         expect(getActiveBackendHint()).toBeNull();
+    });
+
+    it('derives loopback port from ANTIGRAVITY_SERVER_URL when exports.port is undefined, but rejects remote hosts', () => {
+        getExtension.mockReturnValue({ isActive: true, exports: { port: undefined, csrfToken: 'fixture-secret' } });
+        process.env.ANTIGRAVITY_SERVER_URL = 'http://127.0.0.1:4242';
+        expect(getActiveBackendHint()).toEqual({ port: 4242, csrfToken: 'fixture-secret' });
+
+        process.env.ANTIGRAVITY_SERVER_URL = 'https://evil.example.com:4242';
+        expect(getActiveBackendHint()).toBeNull();
+    });
+});
+
+describe('backend identity & fast hint-change reconnect helpers', () => {
+    const base: LSInfo = { pid: 100, port: 62103, csrfToken: 'tok-a', useTls: false };
+
+    it('compares full LS connection identity including port/token/TLS/hostname even when pid is 0', () => {
+        expect(isSameBackendConnection(base, { ...base })).toBe(true);
+        expect(isSameBackendConnection(base, { ...base, hostname: '127.0.0.1' })).toBe(true);
+        expect(isSameBackendConnection(base, { ...base, hostname: '::1' })).toBe(false);
+        expect(isSameBackendConnection(base, { ...base, port: 62104 })).toBe(false);
+        expect(isSameBackendConnection(base, { ...base, csrfToken: 'tok-b' })).toBe(false);
+        expect(isSameBackendConnection(base, { ...base, useTls: true })).toBe(false);
+        expect(isSameBackendConnection({ ...base, pid: 0, port: 62103 }, { ...base, pid: 0, port: 62200 })).toBe(false);
+        expect(isSameBackendConnection(null, base)).toBe(false);
+    });
+
+    it('detects active hint changes immediately while preserving legacy and HTTPS-paired connections', () => {
+        expect(doesConnectionMatchActiveHint(base, undefined)).toBe(true);
+        expect(doesConnectionMatchActiveHint(base, null)).toBe(false);
+        expect(doesConnectionMatchActiveHint(base, { port: 62103, csrfToken: 'tok-a' })).toBe(true);
+        expect(doesConnectionMatchActiveHint(base, { port: 62200, csrfToken: 'tok-a' })).toBe(false);
+        expect(doesConnectionMatchActiveHint(base, { port: 62103, csrfToken: 'tok-b' })).toBe(false);
+        // Paired HTTPS port (e.g. 62105) with the same hub CSRF token stays valid without reconnect loop
+        expect(doesConnectionMatchActiveHint({ ...base, port: 62105, useTls: true }, { port: 62103, csrfToken: 'tok-a' })).toBe(true);
+        expect(doesConnectionMatchActiveHint({ ...base, port: 62105, useTls: true }, { port: 62103, csrfToken: 'tok-b' })).toBe(false);
     });
 });

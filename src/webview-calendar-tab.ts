@@ -2,6 +2,7 @@
 // Renders the Calendar tab: month navigation, 7×6 calendar grid with data
 // indicators, and expandable daily detail panels.
 
+import { formatCurrencyCost, type CurrencyPrefs } from './currency';
 import { tBi } from './i18n';
 import { DailyStore, DailyRecord, MonthCellSummary } from './daily-store';
 import { ICON } from './webview-icons';
@@ -29,10 +30,9 @@ function formatTokensK(n: number): string {
     return String(n);
 }
 
-function formatCost(usd: number): string {
-    if (usd >= 1) { return '$' + usd.toFixed(2); }
-    if (usd > 0) { return '$' + usd.toFixed(4); }
-    return '—';
+function formatCost(usd: number, currencyPrefs?: Partial<CurrencyPrefs>): string {
+    if (!Number.isFinite(usd) || usd <= 0) { return '—'; }
+    return formatCurrencyCost(usd, currencyPrefs, { precision: 'standard' });
 }
 
 // ── Shared SVG icons for model/GM chip rows ──
@@ -45,7 +45,11 @@ const CAL_ICON = {
     dollar: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.3 0-1.59-.947-2.51-2.956-3.028l-.722-.187V3.467c1.122.11 1.879.714 2.07 1.616h1.47c-.166-1.6-1.54-2.748-3.54-2.875V1H7.591v1.233c-1.939.23-3.27 1.472-3.27 3.156 0 1.454.966 2.483 2.661 2.917l.61.162v4.031c-1.149-.17-1.94-.8-2.131-1.718zm3.391-3.836c-1.043-.263-1.6-.825-1.6-1.616 0-.944.704-1.641 1.8-1.828v3.495zM8.634 8.1C9.858 8.418 10.44 9 10.44 9.89c0 1.12-.789 1.816-2.007 1.931V8.1z"/></svg>',
 } as const;
 const fmtTok = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
-const fmtCostShort = (n: number) => n >= 1 ? '$' + n.toFixed(2) : n > 0 ? '$' + n.toFixed(4) : '';
+const fmtCostShort = (n: number, currencyPrefs?: Partial<CurrencyPrefs>): string => {
+    if (!Number.isFinite(n) || n <= 0) { return ''; }
+    const formatted = formatCurrencyCost(n, currencyPrefs, { precision: 'standard' });
+    return formatted === '—' ? '' : formatted;
+};
 
 /** Get days in month and what weekday the 1st falls on (0=Mon) */
 function getMonthGrid(year: number, month: number): { daysInMonth: number; startDay: number } {
@@ -66,7 +70,12 @@ function isToday(dateStr: string): boolean {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /** Build the complete Calendar tab HTML. */
-export function buildCalendarTabContent(store?: DailyStore, year?: number, month?: number): string {
+export function buildCalendarTabContent(
+    store?: DailyStore,
+    year?: number,
+    month?: number,
+    currencyPrefs?: Partial<CurrencyPrefs>,
+): string {
     if (!store) {
         return `
             <section class="card empty">
@@ -86,8 +95,8 @@ export function buildCalendarTabContent(store?: DailyStore, year?: number, month
 
     // ── Stats Summary (top position for quick overview) ──
     if (store.totalDays > 0) {
-        const allTimeSummary = buildOverallSummaryGrid(store);
-        const monthlySummary = buildMonthlySummaryGrid(store, currentYear, currentMonth);
+        const allTimeSummary = buildOverallSummaryGrid(store, currencyPrefs);
+        const monthlySummary = buildMonthlySummaryGrid(store, currentYear, currentMonth, currencyPrefs);
         parts.push(`
             <section class="card cal-summary-card">
                 <div class="cal-summary-header">
@@ -107,7 +116,7 @@ export function buildCalendarTabContent(store?: DailyStore, year?: number, month
     }
 
     // ── Month Navigation + Grid ──
-    parts.push(buildMonthView(store, currentYear, currentMonth));
+    parts.push(buildMonthView(store, currentYear, currentMonth, currencyPrefs));
 
     // ── Clear Button ──
     if (store.totalDays > 0) {
@@ -789,7 +798,12 @@ export function getCalendarTabStyles(): string {
 
 // ─── Builders ────────────────────────────────────────────────────────────────
 
-function buildMonthView(store: DailyStore, year: number, month: number): string {
+function buildMonthView(
+    store: DailyStore,
+    year: number,
+    month: number,
+    currencyPrefs?: Partial<CurrencyPrefs>,
+): string {
     const { daysInMonth, startDay } = getMonthGrid(year, month);
     const monthData = new Map<number, MonthCellSummary>();
     for (const cell of store.getMonthSummary(year, month)) {
@@ -838,7 +852,7 @@ function buildMonthView(store: DailyStore, year: number, month: number): string 
         const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
         const record = store.getRecord(dateStr);
         if (record) {
-            detailPanels.push(buildDayDetail(record, dateStr));
+            detailPanels.push(buildDayDetail(record, dateStr, currencyPrefs));
         }
     }
 
@@ -887,7 +901,11 @@ interface MergedCalendarGMModel {
     cost: number;
 }
 
-function buildDayDetail(record: DailyRecord, dateStr: string): string {
+function buildDayDetail(
+    record: DailyRecord,
+    dateStr: string,
+    currencyPrefs?: Partial<CurrencyPrefs>,
+): string {
     // ── Aggregate totals across all cycles ──
     let totalCost = 0, totalGMCalls = 0, totalGMCredits = 0;
 
@@ -966,7 +984,7 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
     for (const ms of Object.values(mergedGM)) {
         gmTotalTokens += ms.inputTokens + ms.outputTokens;
     }
-    const mergedGMHtml = buildMergedGMRows(mergedGM);
+    const mergedGMHtml = buildMergedGMRows(mergedGM, currencyPrefs);
     const todayBadge = isToday(dateStr)
         ? `<span class="badge info-badge cal-today-badge"><span>${tBiHtml('Today', '今天')}</span></span>`
         : '';
@@ -991,7 +1009,7 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
                 </div>` : ''}
                 ${totalCost > 0 ? `
                 <div class="cal-day-total">
-                    <div class="cal-day-total-val">${formatCost(totalCost)}</div>
+                    <div class="cal-day-total-val">${esc(formatCost(totalCost, currencyPrefs))}</div>
                     <div class="cal-day-total-label">${tBiHtml('Cost', '费用')}</div>
                 </div>` : ''}
                 ${totalGMCredits > 0 ? `
@@ -1006,7 +1024,10 @@ function buildDayDetail(record: DailyRecord, dateStr: string): string {
 
 
 /** Merged per-model GM rows across all cycles (with weighted averages) */
-function buildMergedGMRows(merged: Record<string, MergedCalendarGMModel>): string {
+function buildMergedGMRows(
+    merged: Record<string, MergedCalendarGMModel>,
+    currencyPrefs?: Partial<CurrencyPrefs>,
+): string {
     const entries = Object.entries(merged);
     if (entries.length === 0) { return ''; }
 
@@ -1036,7 +1057,10 @@ function buildMergedGMRows(merged: Record<string, MergedCalendarGMModel>): strin
                 : tBi('Cache hit rate (call ratio)', '缓存命中率（按调用占比）');
             chips.push(`<span class="cal-chip cal-chip-cache" title="${esc(cacheTitle)}">${CAL_ICON.cache} <span>${esc(formatCachePercent(avgCache))}</span></span>`);
         }
-        if (ms.cost > 0) { chips.push(`<span class="cal-chip cal-chip-cost">${CAL_ICON.dollar} <span>${fmtCostShort(ms.cost)}</span></span>`); }
+        const costChip = fmtCostShort(ms.cost, currencyPrefs);
+        if (costChip && costChip !== '—') {
+            chips.push(`<span class="cal-chip cal-chip-cost">${CAL_ICON.dollar} <span>${esc(costChip)}</span></span>`);
+        }
         const totalTok = ms.inputTokens + ms.outputTokens;
         if (totalTok > 0) { chips.push(`<span class="cal-chip cal-chip-tokens"><span>${fmtTok(totalTok)} ${tBiHtml('tokens', 'tokens')}</span></span>`); }
         html += `<div class="cal-model-row"><span class="cal-model-name" title="${esc(name)}">${esc(name)}</span><span class="cal-model-chips">${chips.join('')}</span></div>`;
@@ -1046,7 +1070,7 @@ function buildMergedGMRows(merged: Record<string, MergedCalendarGMModel>): strin
 }
 
 
-function buildOverallSummaryGrid(store: DailyStore): string {
+function buildOverallSummaryGrid(store: DailyStore, currencyPrefs?: Partial<CurrencyPrefs>): string {
     const dates = store.getDatesWithData();
     let totalCost = 0, totalGMCalls = 0, totalGMCredits = 0, totalGMTokens = 0;
 
@@ -1065,10 +1089,15 @@ function buildOverallSummaryGrid(store: DailyStore): string {
         }
     }
 
-    return buildSummaryOverviewGrid(dates.length, totalGMTokens, totalCost, totalGMCredits, totalGMCalls);
+    return buildSummaryOverviewGrid(dates.length, totalGMTokens, totalCost, totalGMCredits, totalGMCalls, currencyPrefs);
 }
 
-function buildMonthlySummaryGrid(store: DailyStore, year: number, month: number): string {
+function buildMonthlySummaryGrid(
+    store: DailyStore,
+    year: number,
+    month: number,
+    currencyPrefs?: Partial<CurrencyPrefs>,
+): string {
     const prefix = `${year}-${String(month).padStart(2, '0')}`;
     const dates = store.getDatesWithData().filter(d => d.startsWith(prefix));
 
@@ -1098,7 +1127,7 @@ function buildMonthlySummaryGrid(store: DailyStore, year: number, month: number)
         }
     }
 
-    return buildSummaryOverviewGrid(dates.length, totalGMTokens, totalCost, totalGMCredits, totalGMCalls);
+    return buildSummaryOverviewGrid(dates.length, totalGMTokens, totalCost, totalGMCredits, totalGMCalls, currencyPrefs);
 }
 
 /** Shared grid builder for all-time and monthly summaries */
@@ -1106,6 +1135,7 @@ function buildSummaryOverviewGrid(
     dayCount: number,
     gmTokens: number, cost: number,
     gmCredits: number, gmCalls: number,
+    currencyPrefs?: Partial<CurrencyPrefs>,
 ): string {
     return `
             <div class="cal-overview-grid">
@@ -1125,7 +1155,7 @@ function buildSummaryOverviewGrid(
                 </div>` : ''}
                 ${cost > 0 ? `
                 <div class="cal-overview-item">
-                    <div class="cal-overview-val">${formatCost(cost)}</div>
+                    <div class="cal-overview-val">${esc(formatCost(cost, currencyPrefs))}</div>
                     <div class="cal-overview-label">${tBiHtml('Cost', '费用')}</div>
                 </div>` : ''}
                 ${gmCredits > 0 ? `

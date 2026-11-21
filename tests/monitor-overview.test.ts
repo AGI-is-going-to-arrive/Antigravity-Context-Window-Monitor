@@ -140,7 +140,7 @@ afterEach(async () => {
 });
 
 describe('status hover and overview', () => {
-    it('offers three allowlisted hover destinations and counts both Neon types in one pool', () => {
+    it('offers allowlisted hover destinations and counts both Neon types in one pool', () => {
         const create = vi.spyOn(vscode.window, 'createStatusBarItem');
         const manager = new StatusBarManager();
         const item = create.mock.results[0].value as vscode.StatusBarItem;
@@ -150,12 +150,15 @@ describe('status hover and overview', () => {
         ]);
         manager.update(usage());
         const tooltip = item.tooltip as vscode.MarkdownString;
-        expect(tooltip.isTrusted).toEqual({ enabledCommands: [MONITOR_COMMAND] });
-        expect(tooltip.value.match(/\*\*Gemini\*\* · \*\*52%\*\*/g)).toHaveLength(1);
-        expect(tooltip.value).toContain('Gemini 4 Neon \\(Extra\\)');
-        for (const tab of ['overview', 'models', 'settings']) {
+        expect(tooltip.isTrusted).toEqual({
+            enabledCommands: [MONITOR_COMMAND, 'antigravity-context-monitor.refresh'],
+        });
+        expect(tooltip.value.match(/Gemini[^|\n]*\|[^|\n]*\*\*52%\*\*/g)).toHaveLength(1);
+        expect(tooltip.value).toContain('Gemini 4 Neon \\(Extra High\\)');
+        for (const tab of ['overview', 'gmdata', 'pricing', 'models', 'settings']) {
             expect(tooltip.value).toContain(`command:${MONITOR_COMMAND}?${encodeURIComponent(JSON.stringify([tab]))}`);
         }
+        expect(tooltip.value).toContain('command:antigravity-context-monitor.refresh');
         expect(item.text).not.toContain('||');
         manager.dispose();
     });
@@ -175,12 +178,9 @@ describe('status hover and overview', () => {
         manager.setModelConfigs([...configs, configs[0]]);
         manager.showNoConversation();
         const hover = (item.tooltip as vscode.MarkdownString).value;
-        expect(hover.match(/Gemini 4 Neon/g)).toHaveLength(1);
-        expect(hover.match(/Orchestrator/g)).toHaveLength(1);
-        expect(hover).toContain('2 models');
-        expect(hover).toContain('Gemini 4 Neon 35–60%');
+        expect(hover.match(/Gemini/g)).toHaveLength(1);
+        expect(hover).toContain('35–60%');
         expect(hover).toContain('Reset times vary');
-        expect(hover).toContain('Next reset');
         expect(hover).not.toMatch(/XHigh|5 models/);
         const overview = buildOverviewTabContent(null, configs, null, 0, { state: 'empty' }, now);
         expect(overview).toContain('2 models');
@@ -195,10 +195,10 @@ describe('status hover and overview', () => {
         manager.update(usage({ title: 'Release review', contextUsed: 24_000, hasGaps: true }));
         const hover = (item.tooltip as vscode.MarkdownString).value;
         expect(hover).toContain('**Release review**');
-        expect(hover).toContain('**24k / 512k**');
-        expect(hover).toContain('Remaining · 488k (95.3%)');
+        expect(hover).toContain('**24k** / 512k tokens');
+        expect(hover).toContain('Remaining **488k** (95.3%)');
         expect(hover).toContain('Some steps are missing');
-        expect(hover).toContain('Open overview');
+        expect(hover).toContain('[$(dashboard) Overview]');
         expect(hover).toContain('\n\n---\n\n');
         manager.dispose();
     });
@@ -220,21 +220,21 @@ describe('status hover and overview', () => {
         expect(item.text).not.toContain('$(zap)');
         const unknownHover = (item.tooltip as vscode.MarkdownString).value;
         expect(unknownHover).not.toContain('AI credits');
-        expect(unknownHover).toContain('1h 30m · ');
+        expect(unknownHover).toContain('1h 30m');
         expect(unknownHover).not.toContain('Reset time passed');
 
         // Explicit 0 credits -> displayed accurately as 0.
         manager.setCredits(0);
         manager.update(usage({ model: 'MODEL_PLACEHOLDER_M532', modelDisplayName: 'Gemini 4 Neon (High)' }));
         expect(item.text).toContain('$(zap) 0');
-        expect((item.tooltip as vscode.MarkdownString).value).toContain('AI credits · **0**');
+        expect((item.tooltip as vscode.MarkdownString).value).toContain('**AI credits** · **0**');
 
         // Unknown credits with billing day configured -> discloses Not reported instead of 0.
         manager.setCredits(null);
         manager.setBillingDay(25);
         manager.refreshFromConfig();
         const withExpiryHover = (item.tooltip as vscode.MarkdownString).value;
-        expect(withExpiryHover).toContain('AI credits · Not reported · ');
+        expect(withExpiryHover).toContain('**AI credits** · Not reported · ');
         expect(withExpiryHover).not.toContain('**0**');
         manager.dispose();
     });
@@ -254,7 +254,7 @@ describe('status hover and overview', () => {
         manager.setCredits(14_701);
 
         const getConfigSpy = vi.spyOn(vscode.workspace, 'getConfiguration');
-        // Compact density: includes remaining %, exact clock time + countdown, omits family lines & credits expiry
+        // Compact density: concise context gauge, countdown, omits expiry & detail lines
         getConfigSpy.mockImplementation((section?: string) => ({
             get: <T>(key: string, fallback?: T) => {
                 if (section === 'antigravityContextMonitor' && key === 'statusBar.tooltipDensity') { return 'compact' as T; }
@@ -264,9 +264,8 @@ describe('status hover and overview', () => {
         manager.update(usage({ title: '  \r\n  Windows\tCRLF\r\nSession  ' }));
         const compactHover = (item.tooltip as vscode.MarkdownString).value;
         expect(compactHover).toContain('**Windows CRLF Session**');
-        expect(compactHover).toContain('95.3% left');
-        expect(compactHover).toMatch(/1h 30m · \d{2}\/\d{2} \d{2}:\d{2}/);
-        expect(compactHover).not.toContain('› ');
+        expect(compactHover).toContain('**24k** / 512k tokens');
+        expect(compactHover).toContain('1h 30m');
         expect(compactHover).toContain('**14,701**');
         expect(compactHover).not.toContain('Expiry date not set');
 
@@ -279,16 +278,14 @@ describe('status hover and overview', () => {
         }) as unknown as vscode.WorkspaceConfiguration);
         manager.update(usage({
             title: 'Detailed check',
-            lastModelUsage: { inputTokens: 18_000, outputTokens: 2_000, responseOutputTokens: 1_500, cacheReadTokens: 4_000, cacheCreationTokens: 0 },
+            lastModelUsage: { model: neon, inputTokens: 18_000, outputTokens: 2_000, responseOutputTokens: 1_500, cacheReadTokens: 4_000, cacheCreationTokens: 0 },
             tokenUsageSource: 'planner',
         }));
         const detailedHover = (item.tooltip as vscode.MarkdownString).value;
-        expect(detailedHover).toContain('**24,000 / 512,000**');
-        expect(detailedHover).toContain('Remaining · 488,000 (95.3%)');
-        expect(detailedHover).toContain('Latest Model Usage');
-        expect(detailedHover).toContain('Input 18,000 · Output 2,000 · Cache 4,000');
+        expect(detailedHover).toContain('**24,000** / 512,000 tokens');
+        expect(detailedHover).toContain('Remaining **488,000** (95.3%)');
+        expect(detailedHover).toContain('Model Output 10 · Tool Results 100');
         expect(detailedHover).not.toContain('Image Gen 0');
-        expect(detailedHover).not.toContain('Cache creation');
         manager.dispose();
     });
 
@@ -303,8 +300,8 @@ describe('status hover and overview', () => {
         expect(getContextRemaining(null, 512_000)).toBeNull();
         expect(formatCreditExpiry(-3)).toBe('Expiry date not set');
         expect(formatCreditExpiry(0)).toBe('Expires today');
-        expect(formatQuotaEffort('xhigh')).toBe('Extra');
-        expect(formatQuotaEfforts(['low', 'medium', 'high', 'xhigh'])).toBe('Low · Medium · High · Extra');
+        expect(formatQuotaEffort('xhigh')).toBe('Extra High');
+        expect(formatQuotaEfforts(['low', 'medium', 'high', 'xhigh'])).toBe('Low · Medium · High · Extra High');
         await setLanguageToState('zh', state);
         expect(resetCountdown(now + 3_600_000, now)).toBe('1 小时');
         expect(formatQuotaEfforts(['low', 'xhigh'])).toBe('低 · 超高');
@@ -354,7 +351,7 @@ describe('status hover and overview', () => {
         const text = html.replace(/<[^>]+>/g, '');
         expect(html).toContain(tBiHtml('Context & quota', '上下文与配额'));
         expect(text).toContain('Context &amp; quota / 上下文与配额');
-        expect(html).toContain('Gemini 4 Neon (Extra / 超高)');
+        expect(html).toContain('Gemini 4 Neon (Extra High / 超高)');
         expect(html).toContain(tBiHtml('View models', '查看模型'));
         expect(text).toContain('View models / 查看模型');
         expect(html).not.toContain('令牌');

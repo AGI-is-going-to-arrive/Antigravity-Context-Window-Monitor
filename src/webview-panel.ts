@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { tBi, getLanguage, setLanguage, isLanguage } from './i18n';
 import { ContextUsage, TrajectorySummary } from './tracker';
-import { ModelConfig, UserStatusInfo } from './models';
+import { ModelConfig, UserStatusInfo, type OrchestratorSettings, type UserQuotaSummary } from './models';
 import { ActivityTracker, ActivitySummary, ActivityArchive } from './activity-tracker';
 import { buildGMDataTabContent, getGMDataTabStyles, buildAccountStatusPanel, hasAccountReadyPool, type AccountSnapshot } from './activity-panel';
 import { removeAccountSnapshot, getBillingDaysMap, setAccountBillingDay, refreshStatusBarTelemetry } from './extension';
@@ -28,6 +28,14 @@ import { getStyles } from './webview-styles';
 import { getEditorialStyles } from './webview-editorial-styles';
 import { buildOverviewTabContent, getOverviewStyles } from './webview-overview-tab';
 import { parseTooltipDensity } from './tooltip-budget';
+import {
+    DEFAULT_CNY_EXCHANGE_RATE,
+    DEFAULT_DISPLAY_CURRENCY,
+    normalizeCurrencyPrefs,
+    parseDisplayCurrency,
+    sanitizeCnyExchangeRate,
+    type CurrencyPrefs,
+} from './currency';
 import type { MonitorStatus, OverviewDestination } from './monitor-overview';
 import type { StateBucket } from './durable-state';
 import type { PersistedModelDNA } from './model-dna-store';
@@ -45,7 +53,7 @@ export interface PanelPayload {
     workspaceUri?: string;
     context?: vscode.ExtensionContext;
     activitySummary?: ActivitySummary | null;
-    initialTab?: OverviewDestination | 'gmdata';
+    initialTab?: OverviewDestination | 'gmdata' | 'pricing';
     archives?: ActivityArchive[];
     activityTracker?: ActivityTracker;
     gmSummary?: GMSummary | null;
@@ -63,6 +71,16 @@ export interface PanelPayload {
     ledgerSettled?: LedgerSettledEntry[];
     /** User custom model prices — applied when re-pricing Today's Ledger from tokens */
     customPricing?: Record<string, ModelPricing>;
+    /** Global Orchestrator Settings (Orchestrator Model + Executor Model + roles). */
+    orchestratorSettings?: OrchestratorSettings | null;
+    /** Dual-window (5h + weekly) quota summary from RetrieveUserQuotaSummary. */
+    quotaSummary?: UserQuotaSummary | null;
+    /** Offline display currency and reference FX rate preferences. */
+    currencyPrefs?: CurrencyPrefs;
+    /** Today's total estimated cost in USD (active + settled ledger). */
+    todayCostUsd?: number;
+    /** Current session/active conversation estimated cost in USD. */
+    sessionCostUsd?: number;
 }
 
 // ─── Panel State ──────────────────────────────────────────────────────────────
@@ -93,6 +111,11 @@ let lastAccountSnapshots: AccountSnapshot[] = [];
 let lastTodayLedgerActive: LedgerAccountBucket[] = [];
 let lastLedgerSettled: LedgerSettledEntry[] = [];
 let lastCustomPricing: Record<string, ModelPricing> = {};
+let lastOrchestratorSettings: OrchestratorSettings | null = null;
+let lastQuotaSummary: UserQuotaSummary | null = null;
+let lastCurrencyPrefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE };
+let lastTodayCostUsd: number | undefined;
+let lastSessionCostUsd: number | undefined;
 export const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
 
 /** Provide a durable state bucket for panel-level persistence (zoom, etc.). */
@@ -109,12 +132,17 @@ function sanitizeConfigValue(key: string, value: unknown): unknown {
     switch (key) {
         case 'statusBar.tooltipDensity':
             return parseTooltipDensity(value);
+        case 'pricing.displayCurrency':
+            return parseDisplayCurrency(value);
+        case 'pricing.cnyExchangeRate':
+            return sanitizeCnyExchangeRate(value);
         case 'statusBar.showContext':
         case 'statusBar.showQuota':
         case 'statusBar.showResetCountdown':
         case 'statusBar.showAiCredits':
         case 'statusBar.showSpeed':
         case 'statusBar.showCacheHit':
+        case 'statusBar.showSessionCost':
         case 'showModelInternalId':
             return !!value;
         case 'quotaNotificationThreshold':
@@ -320,6 +348,11 @@ export function showMonitorPanel(p: PanelPayload): void {
     if (p.todayLedgerActive) { lastTodayLedgerActive = p.todayLedgerActive; }
     if (p.ledgerSettled) { lastLedgerSettled = p.ledgerSettled; }
     if (p.customPricing !== undefined) { lastCustomPricing = p.customPricing; }
+    if (p.orchestratorSettings !== undefined) { lastOrchestratorSettings = p.orchestratorSettings; }
+    if (p.quotaSummary !== undefined) { lastQuotaSummary = p.quotaSummary; }
+    if (p.currencyPrefs !== undefined) { lastCurrencyPrefs = normalizeCurrencyPrefs(p.currencyPrefs); }
+    if ('todayCostUsd' in p) { lastTodayCostUsd = p.todayCostUsd; }
+    if ('sessionCostUsd' in p) { lastSessionCostUsd = p.sessionCostUsd; }
 
     if (panel) {
         const wasVisible = panel.visible;
@@ -375,6 +408,9 @@ export function showMonitorPanel(p: PanelPayload): void {
                 'statusBar.showAiCredits',
                 'statusBar.showSpeed',
                 'statusBar.showCacheHit',
+                'statusBar.showSessionCost',
+                'pricing.displayCurrency',
+                'pricing.cnyExchangeRate',
                 'showModelInternalId',
                 'quotaNotificationThreshold',
                 'activity.maxRecentSteps',
@@ -384,7 +420,22 @@ export function showMonitorPanel(p: PanelPayload): void {
             if (allowedKeys.includes(msg.key)) {
                 const normalizedValue = sanitizeConfigValue(msg.key, msg.value);
                 await vscode.workspace.getConfiguration('antigravityContextMonitor')
-                    .update(msg.key, normalizedValue, vscode.ConfigurationTarget.Global);
+                    .update(msg.key, normalizedValue, vscode.ConfigurationTarget?.Global);
+                if (msg.key === 'pricing.displayCurrency') {
+                    lastCurrencyPrefs = normalizeCurrencyPrefs({ ...lastCurrencyPrefs, currency: normalizedValue as CurrencyPrefs['currency'] });
+                    refreshStatusBarTelemetry();
+                    if (panel) {
+                        postCurrentTabs();
+                        postSettingsControlSync();
+                    }
+                } else if (msg.key === 'pricing.cnyExchangeRate') {
+                    lastCurrencyPrefs = normalizeCurrencyPrefs({ ...lastCurrencyPrefs, cnyRate: normalizedValue as number });
+                    refreshStatusBarTelemetry();
+                    if (panel) {
+                        postCurrentTabs();
+                        postSettingsControlSync();
+                    }
+                }
                 if (panel) {
                     safePostMessage({ command: 'configSaved', key: msg.key });
                 }
@@ -559,7 +610,53 @@ export function updateMonitorPanel(p: PanelPayload): void {
     if (p.todayLedgerActive) { lastTodayLedgerActive = p.todayLedgerActive; }
     if (p.ledgerSettled) { lastLedgerSettled = p.ledgerSettled; }
     if (p.customPricing !== undefined) { lastCustomPricing = p.customPricing; }
+    if (p.orchestratorSettings !== undefined) { lastOrchestratorSettings = p.orchestratorSettings; }
+    if (p.quotaSummary !== undefined) { lastQuotaSummary = p.quotaSummary; }
+    if (p.currencyPrefs !== undefined) { lastCurrencyPrefs = normalizeCurrencyPrefs(p.currencyPrefs); }
+    if ('todayCostUsd' in p) { lastTodayCostUsd = p.todayCostUsd; }
+    if ('sessionCostUsd' in p) { lastSessionCostUsd = p.sessionCostUsd; }
     if (panel?.visible && !isPaused) { postCurrentTabs(); }
+}
+
+function getExtensionVersion(): string | undefined {
+    const raw = (extensionCtx?.extension?.packageJSON as { version?: unknown } | undefined)?.version;
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+}
+
+function postSettingsControlSync(): void {
+    if (!panel) { return; }
+    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    const currencyPrefs = normalizeCurrencyPrefs({
+        currency: cfg.get('pricing.displayCurrency', lastCurrencyPrefs.currency),
+        cnyRate: cfg.get('pricing.cnyExchangeRate', lastCurrencyPrefs.cnyRate),
+    });
+    lastCurrencyPrefs = currencyPrefs;
+    safePostMessage({
+        command: 'syncSettingsControls',
+        displayCurrency: currencyPrefs.currency,
+        cnyExchangeRate: currencyPrefs.cnyRate,
+        showContext: cfg.get<boolean>('statusBar.showContext', true),
+        showQuota: cfg.get<boolean>('statusBar.showQuota', true),
+        showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
+        showAiCredits: cfg.get<boolean>('statusBar.showAiCredits', true),
+        showSpeed: cfg.get<boolean>('statusBar.showSpeed', false),
+        showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', false),
+        showSessionCost: cfg.get<boolean>('statusBar.showSessionCost', false),
+        tooltipDensity: parseTooltipDensity(cfg.get('statusBar.tooltipDensity', 'auto')),
+    });
+}
+
+/**
+ * Sync live VS Code settings changes (e.g. external Settings JSON/UI edits) into
+ * the open WebView's Settings controls and optionally force-refresh all tabs
+ * even when auto-refresh is paused (used for explicit currency/FX config edits).
+ */
+export function syncMonitorPanelSettings(forceRefreshTabs = false): void {
+    if (!panel) { return; }
+    postSettingsControlSync();
+    if (forceRefreshTabs) {
+        postCurrentTabs();
+    }
 }
 
 function postCurrentTabs(): void {
@@ -583,6 +680,11 @@ function buildOverview(usage: ContextUsage | null, configs: ModelConfig[], userI
             gmSummary: lastGMSummary,
             customPricing: lastPricingStore?.getCustom() ?? lastCustomPricing,
             activeCascadeId: usage?.cascadeId,
+            orchestratorSettings: lastOrchestratorSettings,
+            quotaSummary: lastQuotaSummary,
+            currencyPrefs: lastCurrencyPrefs,
+            todayCostUsd: lastTodayCostUsd,
+            sessionCostUsd: lastSessionCostUsd,
         },
     );
 }
@@ -599,9 +701,10 @@ function buildTabContents(
     userInfo: UserStatusInfo | null,
 ): Record<string, string | boolean> {
     const eoc = buildEocSentinel();
+    const customPricing = lastPricingStore?.getCustom() ?? lastCustomPricing;
     return {
         overview: buildOverview(usage, configs, userInfo) + eoc,
-        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, lastPricingStore?.getCustom() ?? lastCustomPricing) + eoc,
+        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, customPricing, lastCurrencyPrefs) + eoc,
         chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
         pricing: (lastPricingStore
             ? buildPricingTabContent(
@@ -611,12 +714,18 @@ function buildTabContents(
                 lastLedgerSettled,
                 lastTodayLedgerActive,
                 [usage, ...allUsages].some(item => (item?.imageGenStepCount || 0) > 0),
+                lastCurrencyPrefs,
             )
             : `<p class="empty-msg">${tBiHtml('Initializing...', '初始化中...')}</p>`) + eoc,
-        models: buildModelsTabContent(userInfo, configs) + eoc,
-        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth) + eoc,
-        profile: buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0) + eoc,
-        about: buildAboutTabContent() + eoc,
+        models: buildModelsTabContent(userInfo, configs, {
+            orchestratorSettings: lastOrchestratorSettings,
+            quotaSummary: lastQuotaSummary,
+            currencyPrefs: lastCurrencyPrefs,
+            customPricing,
+        }) + eoc,
+        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth, lastCurrencyPrefs) + eoc,
+        profile: buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0, lastQuotaSummary) + eoc,
+        about: buildAboutTabContent(getExtensionVersion()) + eoc,
         // Account popover: content-only update, does NOT affect open/close state
         accountPopover: lastAccountSnapshots.length > 0 ? buildAccountStatusPanel(lastAccountSnapshots, getBillingDaysMap()) : '',
         accountPopoverHasReady: lastAccountSnapshots.length > 0 ? hasAccountReadyPool(lastAccountSnapshots) : false,
@@ -641,8 +750,9 @@ function buildHtml(
     paused = false,
     initialTab?: PanelPayload['initialTab'],
 ): string {
+    const customPricing = lastPricingStore?.getCustom() ?? lastCustomPricing;
     const overviewHtml = buildOverview(usage, configs, userInfo);
-    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, lastPricingStore?.getCustom() ?? lastCustomPricing);
+    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, customPricing, lastCurrencyPrefs);
     const chatsHtml = buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(
@@ -652,11 +762,17 @@ function buildHtml(
             lastLedgerSettled,
             lastTodayLedgerActive,
             [usage, ...allUsages].some(item => (item?.imageGenStepCount || 0) > 0),
+            lastCurrencyPrefs,
         )
         : `<p class="empty-msg">${tBiHtml('Initializing...', '初始化中...')}</p>`;
-    const modelsHtml = buildModelsTabContent(userInfo, configs);
-    const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth);
-    const profileHtml = buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0);
+    const modelsHtml = buildModelsTabContent(userInfo, configs, {
+        orchestratorSettings: lastOrchestratorSettings,
+        quotaSummary: lastQuotaSummary,
+        currencyPrefs: lastCurrencyPrefs,
+        customPricing,
+    });
+    const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth, lastCurrencyPrefs);
+    const profileHtml = buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0, lastQuotaSummary);
     const settingsHtml = buildSettingsContent(configs, lastStorageDiagnostics, getPanelHintPreferences());
     const panelHintPrefs = getPanelHintPreferences();
     const eoc = buildEocSentinel();
@@ -785,7 +901,7 @@ ${getEditorialStyles()}
         ${eoc}
     </div>
     <div class="tab-pane" id="tab-about">
-        ${buildAboutTabContent()}
+        ${buildAboutTabContent(getExtensionVersion())}
         ${eoc}
     </div>
 

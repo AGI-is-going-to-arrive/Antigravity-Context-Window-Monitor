@@ -16,6 +16,7 @@ import {
     extractWslDistro,
     isAgyHubProcess,
     extractHubPort,
+    parseHubDiscoveryJson,
 } from '../src/discovery';
 
 describe('discovery.ts', () => {
@@ -494,6 +495,56 @@ describe('agy hub command lines', () => {
 
     it('tolerates malformed percent encoding when checking a remote workspace URI', () => {
         expect(extractWslDistro('vscode-remote://wsl%2BUbuntu/work%ZZ')).toBeNull();
+    });
+
+    it('accepts hyphenated and underscored flag aliases across platforms', () => {
+        const line = '42 /usr/local/bin/agy --hub --hub_port=62103 --app-data-dir=antigravity --csrf-token=Alias-Tok --workspace-id=ws_alias';
+        expect(isAgyHubProcess(line)).toBe(true);
+        expect(extractHubPort(line)).toBe(62103);
+        expect(extractCsrfToken(line)).toBe('Alias-Tok');
+        expect(extractWorkspaceId(line)).toBe('ws_alias');
+    });
+
+    it('recognizes standalone language_server(.exe) binaries without colliding with OS overrides', () => {
+        const out = [
+            '56560 /Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone --app_data_dir antigravity',
+            '101 /mnt/c/Users/x/language_server_windows_x64.exe --csrf_token DeF --app_data_dir antigravity',
+            '102 /usr/bin/language_server --other-tool',
+        ].join('\n');
+        const filtered = filterLsProcessLines(out, 'language_server_linux');
+        expect(filtered).toHaveLength(1);
+        expect(filtered[0]).toContain('56560');
+    });
+});
+
+describe('parseHubDiscoveryJson', () => {
+    it('parses valid hub_<port>.json records with httpPort and httpsPort', () => {
+        const parsed = parseHubDiscoveryJson(JSON.stringify({
+            pid: 65621,
+            httpsPort: 62105,
+            httpPort: 62103,
+            lsVersion: '2.34.0',
+            csrfToken: 'abc-123',
+        }));
+        expect(parsed).toEqual({
+            pid: 65621,
+            httpPort: 62103,
+            httpsPort: 62105,
+            lsVersion: '2.34.0',
+            csrfToken: 'abc-123',
+        });
+    });
+
+    it.each([
+        'not json',
+        'null',
+        '[]',
+        '{}',
+        '{"pid":1,"httpPort":62103}',
+        '{"pid":1,"httpPort":62103,"csrfToken":"bad token"}',
+        '{"pid":1,"httpPort":0,"httpsPort":99999,"csrfToken":"ok"}',
+    ])('rejects invalid daemon hub JSON: %s', raw => {
+        expect(parseHubDiscoveryJson(raw)).toBeNull();
     });
 });
 

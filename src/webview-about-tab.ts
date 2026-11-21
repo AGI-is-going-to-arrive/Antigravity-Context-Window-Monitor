@@ -78,8 +78,8 @@ function getFeatureCards(): FeatureCard[] {
             icon: ABOUT_ICON.cost,
             titleHtml: tBiHtml('Cost', '成本'),
             descriptionHtml: tBiHtml(
-                'Estimated USD cost analysis per model with monthly breakdown charts and custom rates per token type (input, output, cache, thinking).',
-                '按模型估算 USD 费用，含月度分项图表，支持按 Token 类型（输入、输出、缓存、思考）自定义单价。',
+                'Estimated USD / CNY cost analysis per model with monthly breakdown charts and custom rates per token type (input, output, cache, thinking).',
+                '按模型估算 USD / CNY 费用，含月度分项图表，支持按 Token 类型（输入、输出、缓存、思考）自定义单价。',
             ),
         },
         {
@@ -123,15 +123,17 @@ function getFeatureCards(): FeatureCard[] {
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-export function buildAboutTabContent(): string {
+export function buildAboutTabContent(version = '1.17.3'): string {
     const cards = getFeatureCards();
+    const normalizedVersion = typeof version === 'string' && version.trim() ? version.trim() : '1.17.3';
+    const versionTag = normalizedVersion.startsWith('v') ? normalizedVersion : `v${normalizedVersion}`;
 
     // ── Hero section ──
     const hero = `
     <header class="about-hero">
         <div class="about-hero-heading">
             <h2 class="about-hero-title">${tBiHtml('Antigravity Context Window Monitor', 'Antigravity 上下文窗口监控')}</h2>
-            <span class="about-version-pill">v1.17.2</span>
+            <span class="about-version-pill">${esc(versionTag)}</span>
         </div>
         <p class="about-hero-subtitle">${tBiHtml(
         'An open-source community extension for real-time monitoring and analytics of AI model usage in Antigravity IDE.',
@@ -224,9 +226,9 @@ export function buildAboutTabContent(): string {
             <span>${tBiHtml('Compatibility', '兼容性验证')}</span>
         </h3>
         <div class="about-info-box about-info-compat">
-            <p><strong class="about-compat-lead">${tBiHtml('Verified for extension v1.17.2:', '扩展 v1.17.2 本次验证：')}</strong> ${tBiHtml(
-        'Installed VSIX in Antigravity IDE 2.7.0 on macOS. This release adds Gemini 4 Neon (Low, Medium, High, Extra), Orchestrator (Neon), and the status bar Overview.',
-        '在 macOS 的 Antigravity IDE 2.7.0 中安装 VSIX。本版新增 Gemini 4 Neon（低、中、高、超高）、Orchestrator (Neon) 和状态栏总览。',
+            <p><strong class="about-compat-lead">${tBiHtml(`Verified for extension ${versionTag}:`, `扩展 ${versionTag} 本次验证：`)}</strong> ${tBiHtml(
+        'Verified against Antigravity IDE (agy hub LS 2.34.0) on macOS. This release adds Orchestrator Settings (Orchestrator Model + Executor Model, including Claude Opus 5.5 and Sonnet 5.5), dual-window (5h + Weekly) quota tracking, Extra High effort alignment across Gemini 4 Neon & Hydrogen, 512K context support across all Gemini 4 models, and dual-currency (USD / CNY) cost display.',
+        '在 macOS 的 Antigravity IDE（agy hub LS 2.34.0）中完成验证。本版新增编排器设置（编排器模型 + 执行器模型，含 Claude Opus 5.5 与 Sonnet 5.5）、双窗口（5 小时 + 每周）配额追踪、Gemini 4 Neon 与 Hydrogen 统一 Extra High / 超高档位、全系列 Gemini 4 模型 512K 上下文支持以及双币种（USD / CNY）费用显示。',
     )}</p>
             <p><strong>${tBiHtml('Earlier contributor checks:', '此前贡献者验证版本：')}</strong> v1.18.4, v1.19.6, v1.20.6, v1.23.2.</p>
             <p>${tBiHtml(
@@ -256,8 +258,8 @@ export function buildAboutTabContent(): string {
         '数据通过未公开文档且可能随时变更的内部接口获取。指标来自 Generator Metadata、检查点快照或字符启发式计算，所有数值均为尽力计算的近似值。',
     )}</p>
             <p><strong>${tBiHtml('Context Window Limitation:', '上下文窗口限制：')}</strong> ${tBiHtml(
-        'Antigravity does not always expose the full advertised context window of every underlying model. Effective compression limits are determined dynamically by each model\'s checkpoint parameters, currently ranging from 80K up to 512K tokens (with 512K on Gemini 4 Neon and Orchestrator (Neon) models).',
-        'Antigravity 并非总是使用底层模型标称的完整上下文窗口。实际有效压缩上限由各模型的检查点（checkpoint）参数动态决定，当前范围从 80K 至最高 512K tokens（Gemini 4 Neon 与 Orchestrator (Neon) 为 512K）。',
+        'Antigravity does not always expose the full advertised context window of every underlying model. Effective compression limits are determined dynamically by each model\'s checkpoint parameters, currently ranging from 80K up to 512K tokens (with 512K across Gemini 4 Neon, Carbon, Argon, Hydrogen, and Orchestrator Neon/Carbon/Argon models; 256K on Claude Opus/Sonnet 5.5 and Gemini 3.8 Flash).',
+        'Antigravity 并非总是使用底层模型标称的完整上下文窗口。实际有效压缩上限由各模型的检查点（checkpoint）参数动态决定，当前范围从 80K 至最高 512K tokens（Gemini 4 Neon、Carbon、Argon、Hydrogen 与 Orchestrator Neon/Carbon/Argon 均为 512K；Claude Opus/Sonnet 5.5 与 Gemini 3.8 Flash 为 256K）。',
     )}</p>
         </div>
     </section>`;

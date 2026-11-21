@@ -15,10 +15,12 @@ function ownValue<T>(table: Record<string, T>, key: string): T | undefined {
     return Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
-// Optional effort must be separated or enclosed in a complete pair of parentheses.
-const FOUR_EFFORT_GEMINI_4_NAME_PATTERN = /^gemini[\s_-]+4[\s_-]+(hydrogen|neon)(?:[\s_-]+(low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)|[\s_-]*\(\s*(low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)\s*\))?$/i;
-const GEMINI_4_NAME_PATTERN = /^gemini[\s_-]+4[\s_-]+(carbon|argon)(?:[\s_-]+(low|medium|high|低|中|高)|[\s_-]*\(\s*(low|medium|high|低|中|高)\s*\))?$/i;
+// Optional effort must be separated or enclosed in a complete pair of parentheses
+// (including bilingual localized picker forms like "Gemini 4 Neon (Extra High / 超高)").
+const FOUR_EFFORT_GEMINI_4_NAME_PATTERN = /^gemini[\s_-]+4[\s_-]+(hydrogen|neon)(?:[\s_-]+(low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)|[\s_-]*\(\s*(low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高)(?:\s*\/\s*(low|medium|high|xhigh|extra(?:[\s_-]+high)?|低|中|高|超高|极高))?\s*\))?$/i;
+const GEMINI_4_NAME_PATTERN = /^gemini[\s_-]+4[\s_-]+(carbon|argon)(?:[\s_-]+(low|medium|high|低|中|高)|[\s_-]*\(\s*(low|medium|high|低|中|高)(?:\s*\/\s*(low|medium|high|低|中|高))?\s*\))?$/i;
 const GEMINI_4_FAMILY_PATTERN = /^gemini[\s_-]+4[\s_-]+(?:neon|hydrogen|carbon|argon)$/i;
+const ORCHESTRATOR_WORKER_NAME_PATTERN = /^(?:gemini[-_ ]flash[-_ ]worker[-_ ]agy|gemini flash \(orchestrator worker\)|gemini 4 hydrogen \(orchestrator\))$/i;
 
 /** Named coordinators have their own identities, separate from Gemini effort tiers. */
 function resolveOrchestratorAlias(value: string): string | undefined {
@@ -38,16 +40,16 @@ function resolveOrchestratorAlias(value: string): string | undefined {
 // ─── Default Context Limits ──────────────────────────────────────────────────
 
 export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
-    // Neon, from the running IDE catalog on 2026-11-19. Live compression: 512,000.
+    // Neon, from the running IDE catalog on 2026-11-19 (re-verified 2026-11-22). Live compression: 512,000.
     MODEL_PLACEHOLDER_M532: 511_000, // High
     MODEL_PLACEHOLDER_M533: 511_000, // Medium
     MODEL_PLACEHOLDER_M534: 511_000, // Low
-    MODEL_PLACEHOLDER_M535: 511_000, // Extra (XHigh in the catalog)
+    MODEL_PLACEHOLDER_M535: 511_000, // Extra High (XHigh in the catalog)
     MODEL_PLACEHOLDER_M537: 511_000, // Orchestrator (Neon)
-    // Orchestrator coordinator and delegated worker, live IDE 2026-11-13.
-    MODEL_PLACEHOLDER_M667: 255_000,
-    MODEL_PLACEHOLDER_M681: 255_000,
-    MODEL_PLACEHOLDER_M669: 255_000,
+    // Orchestrator coordinators and delegated worker — live IDE 2026-11-22 doubled to 512,000.
+    MODEL_PLACEHOLDER_M667: 511_000, // Orchestrator (Carbon) — live compression limit: 512,000
+    MODEL_PLACEHOLDER_M681: 511_000, // Orchestrator (Argon) — live compression limit: 512,000
+    MODEL_PLACEHOLDER_M669: 511_000, // Gemini 4 Hydrogen (Orchestrator) — live compression limit: 512,000
     // ── Platform truncation thresholds (from GM plannerConfig.truncationThresholdTokens) ──
     // These are the ACTUAL context window limits enforced by the platform,
     // NOT the model's native context window size.
@@ -55,21 +57,24 @@ export const DEFAULT_CONTEXT_LIMITS: Record<string, number> = {
     // Gemini 3.6 Flash tiers + 3.5 Flash checkpointer bump verified via live LS probe (2026-07-22);
     // Gemini 3.8 Flash tiers verified against two live Antigravity IDE LS instances (2026-09-05).
     // Gemini 3.7 Flash tiers + the 3.6 Flash renumber verified via live LS probe (2026-08-14).
+    // All Gemini 4 families & Orchestrators verified at 512,000 via live LS 2.34.0 / agy 1.5.14 (2026-11-22).
     // Note: All fallback limits are intentionally offset by -1,000 (1K) so that in daily use,
     // you can instantly recognize if the extension has successfully overridden the fallback with live captures.
-    // Gemini 4 Hydrogen verified via the installed IDE agent hub, 2026-11-13.
-    'MODEL_PLACEHOLDER_M525': 255_000,  // High — live compression limit: 256,000
-    'MODEL_PLACEHOLDER_M526': 255_000,  // Medium
-    'MODEL_PLACEHOLDER_M527': 255_000,  // Low
-    'MODEL_PLACEHOLDER_M528': 255_000,  // XHigh (Extra in the IDE picker)
-    // Gemini 4 Carbon verified via the installed IDE agent hub, 2026-11-11.
-    'MODEL_PLACEHOLDER_M427': 255_000,  // High — live compression limit: 256,000
-    'MODEL_PLACEHOLDER_M437': 255_000,  // Medium
-    'MODEL_PLACEHOLDER_M438': 255_000,  // Low
-    // Gemini 4 Argon verified via the installed IDE agent hub, 2026-10-31.
-    'MODEL_PLACEHOLDER_M417': 255_000,  // High — live compression limit: 256,000
-    'MODEL_PLACEHOLDER_M418': 255_000,  // Medium
-    'MODEL_PLACEHOLDER_M419': 255_000,  // Low
+    // Gemini 4 Hydrogen verified via live LS 2.34.0 (2026-11-22).
+    'MODEL_PLACEHOLDER_M525': 511_000,  // High — live compression limit: 512,000
+    'MODEL_PLACEHOLDER_M526': 511_000,  // Medium
+    'MODEL_PLACEHOLDER_M527': 511_000,  // Low
+    'MODEL_PLACEHOLDER_M528': 511_000,  // XHigh (Extra High in the IDE picker)
+    'MODEL_PLACEHOLDER_M530': 511_000,  // Gemini 4 Hydrogen (Tiered High, catalog-only)
+    'MODEL_PLACEHOLDER_M531': 511_000,  // Gemini 4 Hydrogen (Tiered XHigh, catalog-only)
+    // Gemini 4 Carbon verified via live LS 2.34.0 (2026-11-22).
+    'MODEL_PLACEHOLDER_M427': 511_000,  // High — live compression limit: 512,000
+    'MODEL_PLACEHOLDER_M437': 511_000,  // Medium
+    'MODEL_PLACEHOLDER_M438': 511_000,  // Low
+    // Gemini 4 Argon verified via live LS 2.34.0 (2026-11-22).
+    'MODEL_PLACEHOLDER_M417': 511_000,  // High — live compression limit: 512,000
+    'MODEL_PLACEHOLDER_M418': 511_000,  // Medium
+    'MODEL_PLACEHOLDER_M419': 511_000,  // Low
     'MODEL_PLACEHOLDER_M318': 255_000,  // Gemini 3.8 Flash (High) — fallback offset by -1K (live: 256,000)
     'MODEL_PLACEHOLDER_M319': 255_000,  // Gemini 3.8 Flash (Medium) — fallback offset by -1K (live: 256,000)
     'MODEL_PLACEHOLDER_M320': 255_000,  // Gemini 3.8 Flash (Low) — fallback offset by -1K (live: 256,000)
@@ -126,11 +131,14 @@ let responseModelAliases: Record<string, string> = {
     'gemini-4-neon-medium': 'MODEL_PLACEHOLDER_M533',
     'gemini-4-neon-low': 'MODEL_PLACEHOLDER_M534',
     'gemini-4-neon-xhigh': 'MODEL_PLACEHOLDER_M535',
-    // Gemini 4 Hydrogen aliases (live GetUserStatus + GetAvailableModels, 2026-11-13).
+    // Gemini 4 Hydrogen aliases (live GetUserStatus + GetAvailableModels, 2026-11-22).
     'gemini-4-hydrogen-high': 'MODEL_PLACEHOLDER_M525',
     'gemini-4-hydrogen-medium': 'MODEL_PLACEHOLDER_M526',
     'gemini-4-hydrogen-low': 'MODEL_PLACEHOLDER_M527',
     'gemini-4-hydrogen-xhigh': 'MODEL_PLACEHOLDER_M528',
+    'gemini-4-hydrogen-tiered-high': 'MODEL_PLACEHOLDER_M530',
+    'gemini-4-hydrogen-tiered-xhigh': 'MODEL_PLACEHOLDER_M531',
+    'gemini-4-hydrogen-sonar': 'MODEL_PLACEHOLDER_M578',
     // Gemini 4 Carbon aliases (live GetUserStatus + GetAvailableModels, 2026-11-11).
     'gemini-4-carbon-high': 'MODEL_PLACEHOLDER_M427',
     'gemini-4-carbon-medium': 'MODEL_PLACEHOLDER_M437',
@@ -197,6 +205,9 @@ const KNOWN_QUOTA_POOLS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M526': 'gemini',
     'MODEL_PLACEHOLDER_M527': 'gemini',
     'MODEL_PLACEHOLDER_M528': 'gemini',
+    'MODEL_PLACEHOLDER_M530': 'gemini',
+    'MODEL_PLACEHOLDER_M531': 'gemini',
+    'MODEL_PLACEHOLDER_M578': 'gemini',
     'MODEL_PLACEHOLDER_M427': 'gemini',
     'MODEL_PLACEHOLDER_M437': 'gemini',
     'MODEL_PLACEHOLDER_M438': 'gemini',
@@ -262,7 +273,7 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     MODEL_PLACEHOLDER_M667: 'Orchestrator (Carbon)',
     MODEL_PLACEHOLDER_M681: 'Orchestrator (Argon)',
     MODEL_PLACEHOLDER_M537: 'Orchestrator (Neon)',
-    MODEL_PLACEHOLDER_M669: 'Gemini Flash (Orchestrator Worker)',
+    MODEL_PLACEHOLDER_M669: 'Gemini 4 Hydrogen (Orchestrator)',
     'MODEL_PLACEHOLDER_M21': 'Gemini 3.1 Flash Image',
     MODEL_PLACEHOLDER_M532: 'Gemini 4 Neon (High)',
     MODEL_PLACEHOLDER_M533: 'Gemini 4 Neon (Medium)',
@@ -272,6 +283,9 @@ const STATIC_MODEL_NAME_FALLBACKS: Record<string, string> = {
     'MODEL_PLACEHOLDER_M526': 'Gemini 4 Hydrogen (Medium)',
     'MODEL_PLACEHOLDER_M527': 'Gemini 4 Hydrogen (Low)',
     'MODEL_PLACEHOLDER_M528': 'Gemini 4 Hydrogen (XHigh)',
+    'MODEL_PLACEHOLDER_M530': 'Gemini 4 Hydrogen (Tiered High)',
+    'MODEL_PLACEHOLDER_M531': 'Gemini 4 Hydrogen (Tiered XHigh)',
+    'MODEL_PLACEHOLDER_M578': 'Gemini 4 Hydrogen (Sonar)',
     'MODEL_PLACEHOLDER_M427': 'Gemini 4 Carbon (High)',
     'MODEL_PLACEHOLDER_M437': 'Gemini 4 Carbon (Medium)',
     'MODEL_PLACEHOLDER_M438': 'Gemini 4 Carbon (Low)',
@@ -354,13 +368,21 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
     const placeholderMatch = idLower.match(/^model_placeholder_(m\d+)$/);
     if (placeholderMatch) {
         const num = placeholderMatch[1];
-        if (['m532', 'm533', 'm534', 'm535', 'm537'].includes(num)) {
+        if (['m532', 'm533', 'm534', 'm535', 'm537',
+            'm667', 'm681', 'm669',
+            'm525', 'm526', 'm527', 'm528', 'm530', 'm531',
+            'm427', 'm437', 'm438',
+            'm417', 'm418', 'm419'].includes(num)) {
             return { cpLimit: 512000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
         }
-        // Hydrogen, Carbon, Argon and the current 3.8 Flash picker use a 256K compression limit
-        // and 50K trigger (live agent hub, 2026-10-31). Older Flash profiles
-        // and the archived M322 tiered router retain their verified 140K trigger.
-        if (['m667', 'm681', 'm669', 'm525', 'm526', 'm527', 'm528', 'm427', 'm437', 'm438', 'm417', 'm418', 'm419', 'm318', 'm319', 'm320'].includes(num)) {
+        // Catalog-only Hydrogen safety monitor (no active checkpointer experiment, 1M native).
+        if (num === 'm578') {
+            return { cpLimit: 0, cpThreshold: 0, maxTokens: 1048576, supportsThinking: true };
+        }
+        // Gemini 3.8 Flash picker retains a 256K compression limit and 50K trigger
+        // (verified 2026-11-22). Older Flash profiles and the archived M322 tiered
+        // router retain their verified 140K trigger.
+        if (['m318', 'm319', 'm320'].includes(num)) {
             return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
         }
         // Claude 5.5 uses adaptive thinking and a 1M native window, with a 256K
@@ -405,13 +427,16 @@ export function guessContextLimitSpec(modelId: string): { cpLimit: number; cpThr
     const normalizedGeminiName = idLower.trim().replace(/（/g, '(').replace(/）/g, ')');
     const coordinator = resolveOrchestratorAlias(normalizedGeminiName);
     const fourEffortGemini = normalizedGeminiName.match(FOUR_EFFORT_GEMINI_4_NAME_PATTERN);
-    if (coordinator === 'MODEL_PLACEHOLDER_M537' || fourEffortGemini?.[1] === 'neon') {
+    if (coordinator
+        || ORCHESTRATOR_WORKER_NAME_PATTERN.test(normalizedGeminiName)
+        || /^gemini[-_ ]4[-_ ]hydrogen[-_ ]tiered[-_ ](?:high|xhigh)$/.test(normalizedGeminiName)
+        || fourEffortGemini || GEMINI_4_NAME_PATTERN.test(normalizedGeminiName)) {
         return { cpLimit: 512000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
     }
-    if (coordinator
-        || /^(?:gemini[-_ ]flash[-_ ]worker[-_ ]agy|gemini flash \(orchestrator worker\))$/.test(normalizedGeminiName)
-        || fourEffortGemini || GEMINI_4_NAME_PATTERN.test(normalizedGeminiName)
-        || /^gemini[\s_-]+3[._-]8[\s_-]+flash[\s_-]*\(?\s*(?:high|medium|low)\s*\)?$/.test(idLower)) {
+    if (/^gemini[-_ ]4[-_ ]hydrogen[-_ ]sonar$/.test(normalizedGeminiName)) {
+        return { cpLimit: 0, cpThreshold: 0, maxTokens: 1048576, supportsThinking: true };
+    }
+    if (/^gemini[\s_-]+3[._-]8[\s_-]+flash[\s_-]*\(?\s*(?:high|medium|low)\s*\)?$/.test(idLower)) {
         return { cpLimit: 256000, cpThreshold: 50000, maxTokens: 1048576, supportsThinking: true };
     }
 
@@ -500,22 +525,28 @@ export function getModelDisplayName(model: string): string {
         || (isConcreteAliasTarget(model) ? ownValue(activeModelSpecs, model)?.displayName : '') || model || 'Unknown Model';
 }
 
-const NEON_PICKER_EFFORTS: Record<string, readonly [string, string]> = {
+const FOUR_EFFORT_PICKER_LABELS: Record<string, readonly [string, string]> = {
     Low: ['Low', '低'],
     Medium: ['Medium', '中'],
     High: ['High', '高'],
-    XHigh: ['Extra', '超高'],
-    Extra: ['Extra', '超高'],
+    XHigh: ['Extra High', '超高'],
+    Extra: ['Extra High', '超高'],
+    'Extra High': ['Extra High', '超高'],
 };
 
-/** Format the standard Neon names for display while retaining API labels for storage. */
-export function localizeNeonPickerLabel(modelId: string, label: string, language: Language): string {
-    if (!/^MODEL_PLACEHOLDER_M53[2-5]$/.test(modelId)) { return label; }
-    const match = label.match(/^Gemini 4 Neon \((Low|Medium|High|XHigh|Extra)\)(\s+\(M\d+\))?$/);
+/** Format four-effort Gemini 4 Neon/Hydrogen picker names for display while retaining API labels for storage. */
+export function localizePickerEffortLabel(modelId: string, label: string, language: Language): string {
+    if (!/^MODEL_PLACEHOLDER_M(?:53[2-5]|52[5-8])$/.test(modelId)) { return label; }
+    const match = label.match(/^(Gemini 4 (?:Neon|Hydrogen)) \((Low|Medium|High|XHigh|Extra(?: High)?)\)(\s+\(M\d+\))?$/);
     if (!match) { return label; }
-    const [en, zh] = NEON_PICKER_EFFORTS[match[1]];
+    const [en, zh] = FOUR_EFFORT_PICKER_LABELS[match[2]];
     const effort = language === 'en' ? en : language === 'zh' ? zh : `${en} / ${zh}`;
-    return `Gemini 4 Neon (${effort})${match[2] || ''}`;
+    return `${match[1]} (${effort})${match[3] || ''}`;
+}
+
+/** Backward-compatible alias for localizePickerEffortLabel. */
+export function localizeNeonPickerLabel(modelId: string, label: string, language: Language): string {
+    return localizePickerEffortLabel(modelId, label, language);
 }
 
 /**
@@ -561,7 +592,7 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     // These are single identities, not effort tiers; do not accept suffix variants.
     const orchestratorId = resolveOrchestratorAlias(clean);
     if (orchestratorId) { return orchestratorId; }
-    if (/^(?:gemini[-_ ]flash[-_ ]worker[-_ ]agy|gemini flash \(orchestrator worker\))$/i.test(clean)) { return 'MODEL_PLACEHOLDER_M669'; }
+    if (ORCHESTRATOR_WORKER_NAME_PATTERN.test(clean.replace(/（/g, '(').replace(/）/g, ')'))) { return 'MODEL_PLACEHOLDER_M669'; }
     // Legacy Chinese name fallback (pre-v1.16 persisted data migration)
     const legacyId = ownValue(ZH_MODEL_NAME_ALIASES, clean);
     if (legacyId) { return legacyId; }
@@ -582,27 +613,37 @@ export function resolveModelId(modelOrDisplay: string): string | undefined {
     const geminiName = clean.replace(/（/g, '(').replace(/）/g, ')');
     const gemini4 = geminiName.match(FOUR_EFFORT_GEMINI_4_NAME_PATTERN) || geminiName.match(GEMINI_4_NAME_PATTERN);
     if (gemini4 && (gemini4[2] || gemini4[3])) {
-        const tier = (gemini4[2] || gemini4[3]).toLowerCase();
-        if (gemini4[1].toLowerCase() === 'neon') {
-            if (tier === 'low' || tier === '低') { return 'MODEL_PLACEHOLDER_M534'; }
-            if (tier === 'medium' || tier === '中') { return 'MODEL_PLACEHOLDER_M533'; }
-            if (tier === 'high' || tier === '高') { return 'MODEL_PLACEHOLDER_M532'; }
-            return 'MODEL_PLACEHOLDER_M535';
+        const canonicalTier = (raw: string): 'low' | 'medium' | 'high' | 'xhigh' => {
+            const t = raw.toLowerCase();
+            if (t === 'low' || t === '低') { return 'low'; }
+            if (t === 'medium' || t === '中') { return 'medium'; }
+            if (t === 'high' || t === '高') { return 'high'; }
+            return 'xhigh';
+        };
+        const tier = canonicalTier(gemini4[2] || gemini4[3]);
+        // Reject contradictory bilingual labels such as "(High / 低)".
+        if (!gemini4[4] || canonicalTier(gemini4[4]) === tier) {
+            if (gemini4[1].toLowerCase() === 'neon') {
+                if (tier === 'low') { return 'MODEL_PLACEHOLDER_M534'; }
+                if (tier === 'medium') { return 'MODEL_PLACEHOLDER_M533'; }
+                if (tier === 'high') { return 'MODEL_PLACEHOLDER_M532'; }
+                return 'MODEL_PLACEHOLDER_M535';
+            }
+            if (gemini4[1].toLowerCase() === 'hydrogen') {
+                if (tier === 'low') { return 'MODEL_PLACEHOLDER_M527'; }
+                if (tier === 'medium') { return 'MODEL_PLACEHOLDER_M526'; }
+                if (tier === 'high') { return 'MODEL_PLACEHOLDER_M525'; }
+                return 'MODEL_PLACEHOLDER_M528';
+            }
+            if (gemini4[1].toLowerCase() === 'carbon') {
+                return tier === 'high' ? 'MODEL_PLACEHOLDER_M427'
+                    : tier === 'medium' ? 'MODEL_PLACEHOLDER_M437'
+                    : 'MODEL_PLACEHOLDER_M438';
+            }
+            return tier === 'high' ? 'MODEL_PLACEHOLDER_M417'
+                : tier === 'medium' ? 'MODEL_PLACEHOLDER_M418'
+                : 'MODEL_PLACEHOLDER_M419';
         }
-        if (gemini4[1].toLowerCase() === 'hydrogen') {
-            if (tier === 'low' || tier === '低') { return 'MODEL_PLACEHOLDER_M527'; }
-            if (tier === 'medium' || tier === '中') { return 'MODEL_PLACEHOLDER_M526'; }
-            if (tier === 'high' || tier === '高') { return 'MODEL_PLACEHOLDER_M525'; }
-            return 'MODEL_PLACEHOLDER_M528';
-        }
-        if (gemini4[1].toLowerCase() === 'carbon') {
-            return tier === 'high' || tier === '高' ? 'MODEL_PLACEHOLDER_M427'
-                : tier === 'medium' || tier === '中' ? 'MODEL_PLACEHOLDER_M437'
-                : 'MODEL_PLACEHOLDER_M438';
-        }
-        return tier === 'high' || tier === '高' ? 'MODEL_PLACEHOLDER_M417'
-            : tier === 'medium' || tier === '中' ? 'MODEL_PLACEHOLDER_M418'
-            : 'MODEL_PLACEHOLDER_M419';
     }
     // Strip trailing diagnostic suffix "(Mxx)" and retry — handles persisted keys
     // that include the short ID appended by normalizeModelDisplayName()
@@ -657,9 +698,12 @@ export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
         return fixedPool;
     }
     // Bare Claude 5.5 response names identify the shared pool even though they do
-    // not identify an effort tier (see resolveModelId).
-    if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(modelId.trim())) { return 'premium'; }
-    if (GEMINI_4_FAMILY_PATTERN.test(modelId.trim())) { return 'gemini'; }
+    // not identify an effort tier (see resolveModelId). Explicit Orchestrator UI
+    // labels referencing Claude 5.5 also consume the Claude/GPT premium pool.
+    const trimmed = modelId.trim().replace(/（/g, '(').replace(/）/g, ')');
+    if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(trimmed)) { return 'premium'; }
+    if (/^(?:orchestrator|编排器|协调器)[\s_-]*\(?\s*claude[\s_-]+(?:opus|sonnet)[\s_-]+5[._-]5/i.test(trimmed)) { return 'premium'; }
+    if (GEMINI_4_FAMILY_PATTERN.test(trimmed)) { return 'gemini'; }
     // KNOWN_QUOTA_POOLS is keyed by placeholder ID, but callers also hold catalog model_ids
     // ('gemini-3.7-flash-high') and display labels ('Gemini 3.7 Flash (High)'). Without this
     // normalization those forms silently fall through to the resetTime branch — and resetTime is a
@@ -699,6 +743,17 @@ export interface QuotaInfo {
     resetTime: string;
 }
 
+export interface GroupedModelThinkingLevel {
+    thinkingSuffix: string;
+    thinkingDisplayName: string;
+}
+
+export interface GroupedModelInfo {
+    displayName: string;
+    supportedThinkingLevels: GroupedModelThinkingLevel[];
+    defaultThinkingSuffix?: string;
+}
+
 export interface ModelConfig {
     model: string;
     label: string;
@@ -706,6 +761,8 @@ export interface ModelConfig {
     quotaInfo?: QuotaInfo;
     allowedTiers: string[];
     tagTitle?: string;
+    tagDescription?: string;
+    modelId?: string;
     mimeTypeCount: number;
     isRecommended: boolean;
     supportedMimeTypes: string[];
@@ -770,6 +827,8 @@ export interface UserStatusInfo {
 export interface FullUserStatus {
     configs: ModelConfig[];
     userInfo: UserStatusInfo | null;
+    /** Grouped thinking-level families from cascadeModelConfigData.groupedModels */
+    groupedModels?: Record<string, GroupedModelInfo>;
     /** Raw LS response for diagnostic / transparency display */
     rawResponse?: Record<string, unknown>;
 }
@@ -857,7 +916,7 @@ export interface ModelSpec {
     supportsThinking: boolean;
     /** Adaptive thinking is independent of a fixed token budget. */
     supportsAdaptiveThinking?: boolean;
-    /** Platform effort level: 1 = Low, 2 = Medium, 3 = High, 100 = XHigh (Extra). */
+    /** Platform effort level: 1 = Low, 2 = Medium, 3 = High, 100 = XHigh (Extra High). */
     thinkingLevel?: number;
     /** Configured delegation target, not evidence that a particular call used it. */
     executionModelId?: string;
@@ -905,22 +964,22 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         displayName: 'Orchestrator (Carbon)', apiProvider: 'GOOGLE_GEMINI',
         maxTokens: 1048576, maxOutputTokens: 262144, thinkingBudget: 0,
         supportsThinking: true, thinkingLevel: 3, executionModelId: 'MODEL_PLACEHOLDER_M669',
-        cpLimit: 256000, cpThreshold: 50000,
+        cpLimit: 512000, cpThreshold: 50000,
     },
     MODEL_PLACEHOLDER_M681: {
         modelId: 'gemini-pro-orchestrator-argon', placeholderId: 'MODEL_PLACEHOLDER_M681',
         displayName: 'Orchestrator (Argon)', apiProvider: 'GOOGLE_GEMINI',
         maxTokens: 1048576, maxOutputTokens: 65536, thinkingBudget: 0,
         supportsThinking: true, thinkingLevel: 3, executionModelId: 'MODEL_PLACEHOLDER_M669',
-        cpLimit: 256000, cpThreshold: 50000,
+        cpLimit: 512000, cpThreshold: 50000,
     },
     MODEL_PLACEHOLDER_M669: {
         modelId: 'gemini-flash-worker-agy', placeholderId: 'MODEL_PLACEHOLDER_M669',
-        displayName: 'Gemini Flash (Orchestrator Worker)', apiProvider: 'GOOGLE_GEMINI',
+        displayName: 'Gemini 4 Hydrogen (Orchestrator)', apiProvider: 'GOOGLE_GEMINI',
         maxTokens: 1048576, maxOutputTokens: 262144, thinkingBudget: 0,
-        supportsThinking: true, thinkingLevel: 3, cpLimit: 256000, cpThreshold: 50000,
+        supportsThinking: true, thinkingLevel: 100, cpLimit: 512000, cpThreshold: 50000,
     },
-    // Gemini 4 Neon: GetAvailableModels and GetUserStatus, 2026-11-19.
+    // Gemini 4 Neon: GetAvailableModels and GetUserStatus, 2026-11-19 (re-verified 2026-11-22).
     MODEL_PLACEHOLDER_M532: {
         ...neonModelCapabilities,
         modelId: 'gemini-4-neon-high', placeholderId: 'MODEL_PLACEHOLDER_M532',
@@ -941,8 +1000,8 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         modelId: 'gemini-4-neon-xhigh', placeholderId: 'MODEL_PLACEHOLDER_M535',
         displayName: 'Gemini 4 Neon (XHigh)', thinkingLevel: 100,
     },
-    // Gemini 4 Hydrogen: live agent hub GetAvailableModels, 2026-11-13.
-    // The picker calls XHigh "Extra"; the backend reports thinkingLevel 100, not 4.
+    // Gemini 4 Hydrogen: live LS 2.34.0 GetAvailableModels, 2026-11-22 (cpLimit doubled to 512K).
+    // The picker calls XHigh "Extra High"; the backend reports thinkingLevel 100, not 4.
     'MODEL_PLACEHOLDER_M525': {
         modelId: 'gemini-4-hydrogen-high',
         placeholderId: 'MODEL_PLACEHOLDER_M525',
@@ -953,7 +1012,7 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         thinkingBudget: 0,
         supportsThinking: true,
         thinkingLevel: 3,
-        cpLimit: 256000,
+        cpLimit: 512000,
         cpThreshold: 50000,
     },
     'MODEL_PLACEHOLDER_M526': {
@@ -966,7 +1025,7 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         thinkingBudget: 0,
         supportsThinking: true,
         thinkingLevel: 2,
-        cpLimit: 256000,
+        cpLimit: 512000,
         cpThreshold: 50000,
     },
     'MODEL_PLACEHOLDER_M527': {
@@ -979,7 +1038,7 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         thinkingBudget: 0,
         supportsThinking: true,
         thinkingLevel: 1,
-        cpLimit: 256000,
+        cpLimit: 512000,
         cpThreshold: 50000,
     },
     'MODEL_PLACEHOLDER_M528': {
@@ -992,10 +1051,10 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         thinkingBudget: 0,
         supportsThinking: true,
         thinkingLevel: 100,
-        cpLimit: 256000,
+        cpLimit: 512000,
         cpThreshold: 50000,
     },
-    // Gemini 4 Carbon: live agent hub GetAvailableModels, 2026-11-11.
+    // Gemini 4 Carbon: live LS 2.34.0 GetAvailableModels, 2026-11-22 (cpLimit doubled to 512K).
     // Effort IDs are not contiguous; output capacity is 262,144 for every tier.
     // No fixed thinkingBudget or adaptive-thinking flag was returned.
     'MODEL_PLACEHOLDER_M427': {
@@ -1008,7 +1067,7 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         thinkingBudget: 0,
         supportsThinking: true,
         thinkingLevel: 3,
-        cpLimit: 256000,
+        cpLimit: 512000,
         cpThreshold: 50000,
     },
     'MODEL_PLACEHOLDER_M437': {
@@ -1021,7 +1080,7 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         thinkingBudget: 0,
         supportsThinking: true,
         thinkingLevel: 2,
-        cpLimit: 256000,
+        cpLimit: 512000,
         cpThreshold: 50000,
     },
     'MODEL_PLACEHOLDER_M438': {
@@ -1034,10 +1093,10 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         thinkingBudget: 0,
         supportsThinking: true,
         thinkingLevel: 1,
-        cpLimit: 256000,
+        cpLimit: 512000,
         cpThreshold: 50000,
     },
-    // Gemini 4 Argon: live agent hub GetAvailableModels, 2026-10-31.
+    // Gemini 4 Argon: live LS 2.34.0 GetAvailableModels, 2026-11-22 (cpLimit doubled to 512K).
     // No fixed thinkingBudget or adaptive-thinking flag was returned.
     'MODEL_PLACEHOLDER_M417': {
         modelId: 'gemini-4-argon-high',
@@ -1049,7 +1108,7 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         thinkingBudget: 0,
         supportsThinking: true,
         thinkingLevel: 3,
-        cpLimit: 256000,
+        cpLimit: 512000,
         cpThreshold: 50000,
     },
     'MODEL_PLACEHOLDER_M418': {
@@ -1062,7 +1121,7 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         thinkingBudget: 0,
         supportsThinking: true,
         thinkingLevel: 2,
-        cpLimit: 256000,
+        cpLimit: 512000,
         cpThreshold: 50000,
     },
     'MODEL_PLACEHOLDER_M419': {
@@ -1075,7 +1134,7 @@ let activeModelSpecs: Record<string, ModelSpec> = {
         thinkingBudget: 0,
         supportsThinking: true,
         thinkingLevel: 1,
-        cpLimit: 256000,
+        cpLimit: 512000,
         cpThreshold: 50000,
     },
     // ── Gemini 3.8 Flash (current agent-hub metadata, 2026-10-31) ──
@@ -1542,4 +1601,209 @@ export function setAvailableImageModelIds(ids: readonly string[]): void {
 
 export function getAvailableImageModelSpecs(): ModelSpec[] {
     return getModelSpecs().filter(spec => spec.isImageGeneration && availableImageModelIds.has(spec.placeholderId));
+}
+
+// ─── Orchestrator Settings & Dual-Window Quota Contracts ─────────────────────
+
+export interface OrchestratorModelRoles {
+    /** Family stems eligible for the Orchestrator (planner) role, in priority order. */
+    orchestrators: string[];
+    /** Family stems eligible for the Executor role, in priority order. */
+    executors: string[];
+}
+
+export interface OrchestratorSettings {
+    /** Raw configured Orchestrator model enum from Jetbox UserSettings ("" or MODEL_UNSPECIFIED = default). */
+    configuredOrchestratorModel: string;
+    /** Raw configured Executor model enum from Jetbox UserSettings ("" or MODEL_UNSPECIFIED = default). */
+    configuredExecutorModel: string;
+    /** Effective resolved Orchestrator model enum (explicit override or default highest effort of first role family). */
+    effectiveOrchestratorModel: string;
+    /** Effective resolved Executor model enum (explicit override or default highest effort of first role family). */
+    effectiveExecutorModel: string;
+    /** Display label for the effective Orchestrator model. */
+    effectiveOrchestratorLabel: string;
+    /** Display label for the effective Executor model. */
+    effectiveExecutorLabel: string;
+    /** True when the user explicitly pinned a custom Orchestrator model. */
+    isCustomOrchestrator: boolean;
+    /** True when the user explicitly pinned a custom Executor model. */
+    isCustomExecutor: boolean;
+    /** Overall selection mode: 'custom' if either role is explicitly pinned, otherwise 'default'. */
+    mode: 'default' | 'custom';
+    /** Role candidate family stems from GetMendelFlags ('orchestrator-model-roles'). */
+    roles: OrchestratorModelRoles;
+    /** Expanded live picker model IDs eligible for Orchestrator role. */
+    orchestratorCandidates: string[];
+    /** Expanded live picker model IDs eligible for Executor role. */
+    executorCandidates: string[];
+    /** Optional diagnostic lastSelectedAgentModel from Jetbox appState. */
+    lastSelectedAgentModel?: string;
+}
+
+export interface QuotaWindowSummary {
+    bucketId: string;
+    window: 'weekly' | '5h' | string;
+    displayName: string;
+    description?: string;
+    remainingFraction: number | null;
+    resetTime: string | null;
+    resetAt: number | null;
+}
+
+export interface QuotaPoolSummary {
+    pool?: 'gemini' | 'premium';
+    displayName: string;
+    description?: string;
+    fiveHour?: QuotaWindowSummary;
+    weekly?: QuotaWindowSummary;
+    buckets: QuotaWindowSummary[];
+}
+
+export interface UserQuotaSummary {
+    groups: QuotaPoolSummary[];
+    description?: string;
+}
+
+const ORCHESTRATOR_EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+const ORCHESTRATOR_EFFORT_SUFFIX = /-(low|medium|high|xhigh|max)$/i;
+
+function isFixedCoordinatorCatalogId(modelId: string | undefined): boolean {
+    if (!modelId) { return false; }
+    return modelId === 'gemini-pro-coordinator'
+        || modelId === 'gemini-pro-orchestrator'
+        || modelId.startsWith('gemini-pro-orchestrator-');
+}
+
+function isUnspecifiedModelValue(value: string | undefined): boolean {
+    const clean = (value || '').trim().toUpperCase();
+    return !clean || clean === 'MODEL_UNSPECIFIED' || clean === 'MODEL_PLACEHOLDER_UNSPECIFIED';
+}
+
+function catalogIdForConfig(config: ModelConfig, specMap: Map<string, ModelSpec>): string {
+    if (config.modelId && config.modelId.trim()) {
+        return config.modelId.trim().toLowerCase();
+    }
+    const resolved = resolveModelId(config.model) || config.model.trim();
+    const spec = specMap.get(resolved);
+    return spec?.modelId ? spec.modelId.trim().toLowerCase() : '';
+}
+
+function effortRankForCatalogId(catalogId: string): number {
+    const match = ORCHESTRATOR_EFFORT_SUFFIX.exec(catalogId);
+    if (!match) { return -1; }
+    return ORCHESTRATOR_EFFORT_ORDER.indexOf(match[1].toLowerCase() as typeof ORCHESTRATOR_EFFORT_ORDER[number]);
+}
+
+function resolveRoleCandidates(
+    roleFamilies: readonly string[],
+    configs: readonly ModelConfig[],
+    specMap: Map<string, ModelSpec>,
+): Array<{ model: string; label: string; catalogId: string; stem: string }> {
+    const familySet = new Set(roleFamilies.map(f => f.trim().toLowerCase()).filter(Boolean));
+    if (familySet.size === 0) { return []; }
+    const out: Array<{ model: string; label: string; catalogId: string; stem: string }> = [];
+    const seen = new Set<string>();
+    for (const config of configs) {
+        const model = resolveModelId(config.model) || config.model.trim();
+        if (!model || isUnspecifiedModelValue(model) || seen.has(model)) { continue; }
+        const catalogId = catalogIdForConfig(config, specMap);
+        if (!catalogId || isFixedCoordinatorCatalogId(catalogId)) { continue; }
+        const stem = catalogId.replace(ORCHESTRATOR_EFFORT_SUFFIX, '');
+        if (!familySet.has(stem)) { continue; }
+        seen.add(model);
+        out.push({ model, label: config.label.trim() || getModelDisplayName(model), catalogId, stem });
+    }
+    return out;
+}
+
+function pickDefaultRoleCandidate(
+    roleFamilies: readonly string[],
+    candidates: ReadonlyArray<{ model: string; label: string; catalogId: string; stem: string }>,
+): { model: string; label: string } | undefined {
+    for (const rawFamily of roleFamilies) {
+        const family = rawFamily.trim().toLowerCase();
+        const matches = candidates.filter(c => c.stem === family);
+        if (matches.length === 0) { continue; }
+        const best = matches.reduce((prev, curr) =>
+            effortRankForCatalogId(curr.catalogId) > effortRankForCatalogId(prev.catalogId) ? curr : prev);
+        return { model: best.model, label: best.label };
+    }
+    return undefined;
+}
+
+/**
+ * Resolve effective Orchestrator Model & Executor Model from Jetbox UserSettings,
+ * Mendel `orchestrator-model-roles` families, and live picker ModelConfig entries.
+ * Mirrors the Antigravity IDE webview (`cW`, `aW`, `eW` in main.js):
+ * - When unset or MODEL_UNSPECIFIED, defaults to the highest thinking level of
+ *   the first eligible family in each role list (e.g. Neon XHigh + Hydrogen XHigh).
+ * - Returns null when neither role metadata nor explicit settings are available.
+ */
+export function resolveOrchestratorSettings(
+    rawPrefs: {
+        orchestratorModel?: string;
+        orchestratorExecutorModel?: string;
+        lastSelectedAgentModel?: string;
+    } | null | undefined,
+    roles: OrchestratorModelRoles | null | undefined,
+    configs: readonly ModelConfig[],
+): OrchestratorSettings | null {
+    const cleanRoles: OrchestratorModelRoles = {
+        orchestrators: (roles?.orchestrators || []).map(s => s.trim()).filter(Boolean),
+        executors: (roles?.executors || []).map(s => s.trim()).filter(Boolean),
+    };
+    const specMap = new Map(getModelSpecs().map(s => [s.placeholderId, s]));
+    const orchCandidates = resolveRoleCandidates(cleanRoles.orchestrators, configs, specMap);
+    const execCandidates = resolveRoleCandidates(cleanRoles.executors, configs, specMap);
+
+    const defaultOrch = pickDefaultRoleCandidate(cleanRoles.orchestrators, orchCandidates);
+    const defaultExec = pickDefaultRoleCandidate(cleanRoles.executors, execCandidates);
+
+    const rawOrch = (rawPrefs?.orchestratorModel || '').trim();
+    const rawExec = (rawPrefs?.orchestratorExecutorModel || '').trim();
+    const configuredOrch = isUnspecifiedModelValue(rawOrch) ? '' : (resolveModelId(rawOrch) || rawOrch);
+    const configuredExec = isUnspecifiedModelValue(rawExec) ? '' : (resolveModelId(rawExec) || rawExec);
+
+    // Match IDE eW() semantics when role candidates are known; if role metadata
+    // was unavailable on an older/degraded LS, honor an explicitly pinned model.
+    const validOrchOverride = configuredOrch
+        && (orchCandidates.length === 0 || orchCandidates.some(c => c.model === configuredOrch))
+        ? configuredOrch : '';
+    const validExecOverride = configuredExec
+        && (execCandidates.length === 0 || execCandidates.some(c => c.model === configuredExec))
+        ? configuredExec : '';
+
+    const effectiveOrchestratorModel = validOrchOverride || defaultOrch?.model || '';
+    const effectiveExecutorModel = validExecOverride || defaultExec?.model || '';
+    if (!effectiveOrchestratorModel && !effectiveExecutorModel) {
+        return null;
+    }
+
+    const labelFor = (modelId: string, fallback?: string): string => {
+        if (!modelId) { return ''; }
+        const cfg = configs.find(c => (resolveModelId(c.model) || c.model) === modelId);
+        return cfg?.label?.trim() || fallback || getModelDisplayName(modelId);
+    };
+
+    const isCustomOrchestrator = !!validOrchOverride;
+    const isCustomExecutor = !!validExecOverride;
+    const rawLastSelected = (rawPrefs?.lastSelectedAgentModel || '').trim();
+
+    return {
+        configuredOrchestratorModel: configuredOrch,
+        configuredExecutorModel: configuredExec,
+        effectiveOrchestratorModel,
+        effectiveExecutorModel,
+        effectiveOrchestratorLabel: labelFor(effectiveOrchestratorModel, defaultOrch?.label),
+        effectiveExecutorLabel: labelFor(effectiveExecutorModel, defaultExec?.label),
+        isCustomOrchestrator,
+        isCustomExecutor,
+        mode: (isCustomOrchestrator || isCustomExecutor) ? 'custom' : 'default',
+        roles: cleanRoles,
+        orchestratorCandidates: orchCandidates.map(c => c.model),
+        executorCandidates: execCandidates.map(c => c.model),
+        ...(rawLastSelected && !isUnspecifiedModelValue(rawLastSelected)
+            ? { lastSelectedAgentModel: resolveModelId(rawLastSelected) || rawLastSelected } : {}),
+    };
 }

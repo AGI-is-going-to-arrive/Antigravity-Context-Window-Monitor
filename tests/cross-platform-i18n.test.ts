@@ -30,6 +30,25 @@ describe('i18n helpers and developer terminology', () => {
         }
         await setLanguageToState('zh', state);
         expect(t('tooltip.lastCheckpoint')).toBe('最近检查点');
+
+        // Verify all v1.17.3 Orchestrator, Quota Window, Telemetry, and Currency keys
+        const newKeys = [
+            'orchestrator.settings', 'orchestrator.model', 'orchestrator.executor',
+            'orchestrator.planner', 'orchestrator.worker', 'orchestrator.crossPool',
+            'quota.fiveHour', 'quota.weekly', 'quota.notice',
+            'telemetry.totalLatency', 'telemetry.latestCall', 'telemetry.recentCalls',
+            'telemetry.cost', 'telemetry.unpriced', 'telemetry.rateChange',
+            'telemetry.retryWaste', 'telemetry.blendedInput',
+            'currency.label', 'currency.fxRate', 'currency.fxNote',
+        ];
+        for (const lang of ['en', 'zh', 'both'] as const) {
+            await setLanguageToState(lang, state);
+            for (const key of newKeys) {
+                const val = t(key);
+                expect(val, `${lang}:${key}`).not.toBe(key);
+                expect(val, `${lang}:${key}`).not.toContain('令牌');
+            }
+        }
     });
 
     it('avoids dangling separators in tBi and structures bilingual HTML safely in tBiHtml', async () => {

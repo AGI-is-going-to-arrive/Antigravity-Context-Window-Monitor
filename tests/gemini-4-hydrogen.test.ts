@@ -48,17 +48,17 @@ describe('Hydrogen verified identities and context', () => {
             `Gemini 4 Hydrogen（${model.zh}）（${model.id}）`]) {
             expect(resolveModelId(alias), alias).toBe(id);
             expect(getModelBaseName(alias), alias).toBe(label);
-            expect(getContextLimit(alias), alias).toBe(255_000);
+            expect(getContextLimit(alias), alias).toBe(511_000);
             expect(getQuotaPoolKey(alias, 'different-reset'), alias).toBe('gemini');
         }
         expect(getModelDisplayName(id)).toBe(label);
-        expect(guessContextLimitSpec(id)).toEqual({ cpLimit: 256_000, cpThreshold: 50_000,
+        expect(guessContextLimitSpec(id)).toEqual({ cpLimit: 512_000, cpThreshold: 50_000,
             maxTokens: 1_048_576, supportsThinking: true });
         expect(guessContextLimitSpec(catalog)).toEqual(guessContextLimitSpec(id));
         expect(getModelSpecs().find(s => s.placeholderId === id)).toMatchObject({
             modelId: catalog, displayName: label, apiProvider: 'GOOGLE_GEMINI',
             maxTokens: 1_048_576, maxOutputTokens: 262_144, thinkingLevel: model.level,
-            thinkingBudget: 0, supportsThinking: true, cpLimit: 256_000, cpThreshold: 50_000,
+            thinkingBudget: 0, supportsThinking: true, cpLimit: 512_000, cpThreshold: 50_000,
         });
     });
 
@@ -86,7 +86,7 @@ describe('Hydrogen verified identities and context', () => {
         for (const family of ['gemini-4-hydrogen', 'Gemini 4 Hydrogen', 'GEMINI_4_HYDROGEN']) {
             for (const model of HYDROGEN) registerResponseModelAlias(family, `MODEL_PLACEHOLDER_${model.id}`);
             expect(resolveModelId(family)).toBeUndefined();
-            expect(getContextLimit(family)).toBe(255_000);
+            expect(getContextLimit(family)).toBe(511_000);
             expect(getQuotaPoolKey(family)).toBe('gemini');
             const call = parseGMEntry({ chatModel: { responseModel: family, usage: {} }, stepIndices: [1] });
             expect(call.model).toBe('');
@@ -252,9 +252,9 @@ describe('Hydrogen available catalog and multilingual presentation', () => {
             expect(html).toContain(`Gemini 4 Hydrogen (${model.tier})`);
             expect(html).toContain(`gemini-4-hydrogen-${model.tier.toLowerCase()}`);
         }
-        for (const value of ['1,048,576', '262,144', '256,000', '50,000']) expect(html).toContain(value);
+        for (const value of ['1,048,576', '262,144', '512,000', '50,000']) expect(html).toContain(value);
         const quota = buildModelQuotaGrid(configs());
-        expect(quota).toContain(language === 'zh' ? '低 · 中 · 高 · 超高' : 'Low · Medium · High · Extra');
+        expect(quota).toContain(language === 'zh' ? '低 · 中 · 高 · 超高' : 'Low · Medium · High · Extra High');
         expect(quota).not.toContain('undefined');
         const extraOnly = buildModelsTabContent(null, [configs()[3]]);
         expect(extraOnly.match(/class="spec-card"/g)).toHaveLength(1);

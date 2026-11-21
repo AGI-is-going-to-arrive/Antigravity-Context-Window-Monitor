@@ -50,16 +50,16 @@ describe('Gemini 4 Argon identity and verified metadata', () => {
         for (const alias of aliases) {
             expect(resolveModelId(alias), alias).toBe(id);
             expect(getModelBaseName(alias), alias).toBe(label);
-            expect(getContextLimit(alias), alias).toBe(255_000);
+            expect(getContextLimit(alias), alias).toBe(511_000);
             expect(getQuotaPoolKey(alias, 'different-reset'), alias).toBe('gemini');
         }
-        expect(guessContextLimitSpec(id)).toEqual({ cpLimit: 256_000, cpThreshold: 50_000,
+        expect(guessContextLimitSpec(id)).toEqual({ cpLimit: 512_000, cpThreshold: 50_000,
             maxTokens: 1_048_576, supportsThinking: true });
         expect(guessContextLimitSpec(catalog)).toEqual(guessContextLimitSpec(id));
         expect(getModelSpecs().find(s => s.placeholderId === id)).toMatchObject({
             modelId: catalog, displayName: label, apiProvider: 'GOOGLE_GEMINI',
             maxTokens: 1_048_576, maxOutputTokens: 65_536, thinkingLevel: model.effort,
-            cpLimit: 256_000, cpThreshold: 50_000, thinkingBudget: 0, supportsThinking: true,
+            cpLimit: 512_000, cpThreshold: 50_000, thinkingBudget: 0, supportsThinking: true,
         });
         expect(getModelSpecs().find(s => s.placeholderId === id)?.supportsAdaptiveThinking).toBeUndefined();
     });
@@ -69,7 +69,7 @@ describe('Gemini 4 Argon identity and verified metadata', () => {
             registerResponseModelAlias(family, 'MODEL_PLACEHOLDER_M419');
             expect(resolveModelId(family)).toBeUndefined();
             expect(getQuotaPoolKey(family, 'different-reset')).toBe('gemini');
-            expect(getContextLimit(family)).toBe(255_000);
+            expect(getContextLimit(family)).toBe(511_000);
         }
     });
 
@@ -189,7 +189,7 @@ describe('Argon model and tooltip presentation', () => {
             expect(html).toContain(`Gemini 4 Argon (${model.tier})`);
             expect(html).toContain(`gemini-4-argon-${model.tier.toLowerCase()}`);
         }
-        expect(html).toContain('256,000');
+        expect(html).toContain('512,000');
         expect(html).toContain('1,048,576');
         expect(html).toContain(language === 'zh' ? '支持 · 预算未指定' : 'Supported · Budget unspecified');
         expect(html).not.toContain('Gemini 3.8 Flash');
