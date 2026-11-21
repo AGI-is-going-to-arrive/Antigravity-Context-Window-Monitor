@@ -10,14 +10,7 @@ import type { ContextUsage } from './tracker';
 import type { GMSummary, GMModelStats, GMCallEntry, GMSystemContextItem } from './gm-tracker';
 import { currentAICredits, formatCreditTypeLabel } from './account-credits';
 import { normalizeModelDisplayName } from './models';
-import { findPricingWithCustom, findPricingForDate, costFromTokens, selectPricingModel, type ModelPricing } from './pricing-store';
-import {
-    DEFAULT_CNY_EXCHANGE_RATE,
-    DEFAULT_DISPLAY_CURRENCY,
-    formatCurrencyCost,
-    normalizeCurrencyPrefs,
-    type CurrencyPrefs,
-} from './currency';
+import { findPricingWithCustom, findPricingForDate, costFromTokens, selectPricingModel, formatUsdCost, type ModelPricing } from './pricing-store';
 import { toLocalDateKey, type LedgerAccountBucket, type LedgerSettledEntry } from './daily-ledger';
 import { formatResetCountdown, parseResetDate } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
@@ -40,26 +33,11 @@ function fmtCompactTokens(n: number): string {
     return String(Math.round(n));
 }
 
-function formatSavingsMoney(
-    amount: number,
-    prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE },
-): string {
+function formatSavingsMoney(amount: number): string {
     if (!Number.isFinite(amount) || amount <= 0) { return ''; }
-    if (prefs.currency === 'USD') {
-        if (amount < 0.0001) { return '<$0.0001'; }
-        if (amount < 0.01) { return `$${amount.toFixed(4)}`; }
-        return `$${amount.toFixed(2)}`;
-    }
-    const cny = amount * prefs.cnyRate;
-    if (!Number.isFinite(cny)) { return ''; }
-    if (prefs.currency === 'CNY') {
-        if (cny < 0.0001) { return '<¥0.0001'; }
-        const formatted = formatCurrencyCost(amount, prefs, { precision: 'standard' });
-        return formatted === '—' ? '' : formatted;
-    }
-    const usdPart = amount < 0.0001 ? '<$0.0001' : (amount < 0.01 ? `$${amount.toFixed(4)}` : `$${amount.toFixed(2)}`);
-    const cnyPart = cny < 0.0001 ? '<¥0.0001' : (cny < 0.01 ? `¥${cny.toFixed(4)}` : `¥${cny.toFixed(2)}`);
-    return `${usdPart} (${cnyPart})`;
+    if (amount < 0.0001) { return '<$0.0001'; }
+    const formatted = formatUsdCost(amount, { precision: 'standard' });
+    return formatted === '—' ? '' : formatted;
 }
 
 function formatSpeedRange(minTokPerSec: number, maxTokPerSec: number): string {
@@ -140,7 +118,6 @@ export function buildGMDataTabContent(
     todayLedgerActive?: LedgerAccountBucket[],
     ledgerSettled?: LedgerSettledEntry[],
     customPricing: Record<string, ModelPricing> = {},
-    currencyPrefs?: Partial<CurrencyPrefs>,
 ): string {
     if (!summary && (!gmSummary || gmSummary.totalCalls === 0)) {
         return `<p class="empty-msg">${tBiHtml(
@@ -149,7 +126,6 @@ export function buildGMDataTabContent(
         )}</p>`;
     }
 
-    const prefs = normalizeCurrencyPrefs(currencyPrefs);
     const parts: string[] = [];
     const telemetry = computeTelemetrySummary(gmSummary, {
         activeCascadeId: currentUsage?.cascadeId,
@@ -161,12 +137,12 @@ export function buildGMDataTabContent(
 
     // ── Dedicated Editorial Telemetry Ledger (Speed, Cached vs Uncached TTFT, Prompt Cache)
     if (gmSummary && telemetry.overall.totalCalls > 0) {
-        parts.push(buildTelemetryLedgerSection(telemetry, prefs));
+        parts.push(buildTelemetryLedgerSection(telemetry));
     }
 
     // ── Recent Calls Ledger Table (latest 20 account-filtered calls)
     if (gmSummary && gmSummary.conversations.some(c => c.calls.length > 0)) {
-        parts.push(buildRecentCallsLedger(gmSummary, customPricing, prefs));
+        parts.push(buildRecentCallsLedger(gmSummary, customPricing));
     }
 
     // ── Recent Timeline (activity)
@@ -174,7 +150,7 @@ export function buildGMDataTabContent(
 
     // ── Model Cards (merged activity counts + GM precision + telemetry)
     const activeEmail = accountSnapshots?.find(s => s.isActive)?.email || '';
-    parts.push(buildModelCards(summary, gmSummary, activeEmail, customPricing, telemetry, prefs));
+    parts.push(buildModelCards(summary, gmSummary, activeEmail, customPricing, telemetry));
 
     // ── Today's Ledger Panel (real-time incremental accumulation)
     if (todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) {
@@ -3021,7 +2997,6 @@ function buildSummaryBar(
 
 function buildTelemetryLedgerSection(
     telemetry: SessionTelemetrySummary,
-    prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE },
 ): string {
     const o = telemetry.overall;
     if (o.totalCalls <= 0) { return ''; }
@@ -3216,7 +3191,7 @@ function buildTelemetryLedgerSection(
         : '';
 
     const savingsMoney = o.estCacheSavingsUsd !== null && o.estCacheSavingsUsd > 0
-        ? formatSavingsMoney(o.estCacheSavingsUsd, prefs)
+        ? formatSavingsMoney(o.estCacheSavingsUsd)
         : '';
     const savingsHtml = o.estCacheSavedTokens > 0
         ? `<span><b>${fmt(o.estCacheSavedTokens)}</b> tokens</span>${savingsMoney ? `<span class="telemetry-savings-usd">· ${esc(savingsMoney)}</span>` : ''}`
@@ -3285,7 +3260,6 @@ function formatRecentCallCachePct(rate: number | null): string {
 function buildRecentCallsLedger(
     gm: GMSummary,
     customPricing: Record<string, ModelPricing>,
-    prefs: CurrencyPrefs,
 ): string {
     const allCalls: GMCallEntry[] = [];
     for (const conv of gm.conversations) {
@@ -3337,7 +3311,7 @@ function buildRecentCallsLedger(
         const pricingModel = selectPricingModel(call.model || call.modelDisplay, call.responseModel, customPricing);
         const pricing = findPricingForDate(pricingModel, customPricing, call.createdAt || '');
         const costHtml = pricing
-            ? `<span class="rc-cost-val">${esc(formatCurrencyCost(costFromTokens(call, pricing), prefs, { precision: 'call' }))}</span>`
+            ? `<span class="rc-cost-val">${esc(formatUsdCost(costFromTokens(call, pricing), { precision: 'call' }))}</span>`
             : `<span class="rc-unpriced">${tBiHtml('Unpriced', '未定价')}</span>`;
 
         const ttftSec = Number.isFinite(call.ttftSeconds) && call.ttftSeconds > 0 ? call.ttftSeconds : 0;
@@ -3412,7 +3386,6 @@ function buildModelCards(
     activeEmail = '',
     custom: Record<string, ModelPricing> = {},
     telemetry?: SessionTelemetrySummary,
-    prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE },
 ): string {
     const actEntries = s ? Object.entries(s.modelStats).sort((a, b) => b[1].totalSteps - a[1].totalSteps) : [];
     const gmBreakEarly: Record<string, GMModelStats> | null = gm?.modelBreakdown ?? null;
@@ -3473,7 +3446,7 @@ function buildModelCards(
             }, price);
             if (cost <= 0) { return ''; }
         }
-        const formatted = formatCurrencyCost(cost, prefs, { precision: cost < 0.01 ? 'standard' : 'call' });
+        const formatted = formatUsdCost(cost, { precision: cost < 0.01 ? 'standard' : 'call' });
         if (!formatted || formatted === '—') { return ''; }
         return `<div class="act-card-row act-card-row-cost"><span>${ICONS.coin} <span>${tBiHtml('Cost', '费用')}</span></span><span class="val val-cost">${esc(formatted)}</span></div>`;
     };

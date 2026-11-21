@@ -241,34 +241,22 @@ describe('Models tab: Orchestrator Settings card, API reference price row & Noti
         expect(customHtml).not.toContain('令牌');
     });
 
-    it('renders concise API reference prices in USD, CNY, and both, and honest Unpriced badges for unpriced models', async () => {
+    it('renders concise API reference prices in USD and honest Unpriced badges for unpriced models', async () => {
         await setLanguageToState('en', memState);
         const neonSpec = getModelSpecs().find(s => s.placeholderId === 'MODEL_PLACEHOLDER_M535')!;
         const orchSpec = getModelSpecs().find(s => s.placeholderId === 'MODEL_PLACEHOLDER_M537')!;
         const workerSpec = getModelSpecs().find(s => s.placeholderId === 'MODEL_PLACEHOLDER_M669')!;
         const imgSpec = getModelSpecs().find(s => s.placeholderId === 'MODEL_PLACEHOLDER_M21')!;
 
-        const usdHtml = buildModelInfoGrid([neonSpec, orchSpec, workerSpec], 'chat', {
-            currencyPrefs: { currency: 'USD', cnyRate: 7.2 },
-        });
+        const usdHtml = buildModelInfoGrid([neonSpec, orchSpec, workerSpec], 'chat');
         expect(usdHtml).toContain('class="spec-price-row"');
         expect(usdHtml).toContain('$3/M');
         expect(usdHtml).toContain('$15/M');
         expect(usdHtml).toContain('$0.15/M');
+        expect(usdHtml).not.toMatch(/[\u00a5\uffe5]/);
         expect(usdHtml.match(/data-price-state="unpriced"/g)).toHaveLength(2);
         expect(usdHtml).toContain('Unpriced');
         expect(usdHtml).not.toContain('$0.00');
-
-        const cnyHtml = buildModelInfoGrid([neonSpec], 'chat', {
-            currencyPrefs: { currency: 'CNY', cnyRate: 7.2 },
-        });
-        expect(cnyHtml).toContain('¥21.6/M');
-        expect(cnyHtml).toContain('¥108/M');
-
-        const bothHtml = buildModelInfoGrid([neonSpec], 'chat', {
-            currencyPrefs: { currency: 'both', cnyRate: 7.2 },
-        });
-        expect(bothHtml).toContain('$3/M (¥21.6/M)');
 
         await setLanguageToState('zh', memState);
         const imgHtml = buildModelInfoGrid([imgSpec], 'image');
@@ -301,7 +289,7 @@ describe('Models tab: Orchestrator Settings card, API reference price row & Noti
 });
 
 describe('Overview tab: active Orchestrator route, Session/Today cost & Dual-window quota', () => {
-    it.each(['en', 'zh', 'both'] as Language[])('shows active cross-pool Orchestrator route, dual-currency cost, and 5h + Weekly meters in %s', async lang => {
+    it.each(['en', 'zh', 'both'] as Language[])('shows active cross-pool Orchestrator route, USD cost, and 5h + Weekly meters in %s', async lang => {
         await setLanguageToState(lang, memState);
         const route = resolveActiveOrchestratorRoute(makeUsage());
         expect(route).not.toBeNull();
@@ -319,7 +307,6 @@ describe('Overview tab: active Orchestrator route, Session/Today cost & Dual-win
             {
                 orchestratorSettings: SAMPLE_ORCH_CUSTOM,
                 quotaSummary: SAMPLE_QUOTA_SUMMARY,
-                currencyPrefs: { currency: 'both', cnyRate: 7.2 },
                 sessionCostUsd: 0.45,
                 todayCostUsd: 1.25,
             },
@@ -328,8 +315,9 @@ describe('Overview tab: active Orchestrator route, Session/Today cost & Dual-win
         expect(html).toContain('data-cross-pool="true"');
         expect(html).toContain('Claude Opus 5.5 (Medium)');
         expect(html).toContain(lang === 'zh' ? 'Gemini 4 Hydrogen (超高)' : 'Gemini 4 Hydrogen (Extra High');
-        expect(html).toContain('$0.45 (¥3.24)');
-        expect(html).toContain('$1.25 (¥9.00)');
+        expect(html).toContain('$0.45');
+        expect(html).toContain('$1.25');
+        expect(html).not.toMatch(/[\u00a5\uffe5]/);
         expect(html).toContain('class="quota-dual-row"');
         expect(html).toContain('data-quota-window="5h"');
         expect(html).toContain('data-quota-window="weekly"');
@@ -349,15 +337,13 @@ describe('Overview tab: active Orchestrator route, Session/Today cost & Dual-win
         expect(formatQuotaWindowPercent(null)).toBe('—');
         expect(formatOverviewCost(NaN)).toBeNull();
         expect(formatOverviewCost(-1)).toBeNull();
-        expect(formatOverviewCost(1e308, { currency: 'CNY', cnyRate: 7.2 })).toBeNull();
-        expect(formatOverviewCost(1e308, { currency: 'both', cnyRate: 7.2 })).toBeNull();
-        expect(formatOverviewCost(1.25, { currency: 'CNY', cnyRate: 7.2 })).toBe('¥9.00');
-        expect(formatOverviewSavings(0.27, { currency: 'both', cnyRate: 7.2 })).toBe('$0.27 (¥1.94)');
-        expect(formatOverviewSavings(0.000001, { currency: 'CNY', cnyRate: 7.2 })).toBe('<¥0.0001');
-        expect(formatOverviewSavings(0.000001, { currency: 'both', cnyRate: 7.2 })).toBe('<$0.0001 (<¥0.0001)');
-        expect(formatOverviewSavings(0.00004, { currency: 'both', cnyRate: 7.2 })).toBe('<$0.0001 (¥0.0003)');
-        expect(formatOverviewSavings(1e308, { currency: 'CNY', cnyRate: 7.2 })).toBeNull();
-        expect(formatOverviewSavings(1e308, { currency: 'both', cnyRate: 7.2 })).toBeNull();
+        expect(formatOverviewCost(Number.POSITIVE_INFINITY)).toBeNull();
+        expect(formatOverviewCost(1.25)).toBe('$1.25');
+        expect(formatOverviewCost(0.0042)).toBe('$0.0042');
+        expect(formatOverviewSavings(0.27)).toBe('$0.27');
+        expect(formatOverviewSavings(0.000001)).toBe('<$0.0001');
+        expect(formatOverviewSavings(0)).toBeNull();
+        expect(formatOverviewSavings(Number.POSITIVE_INFINITY)).toBeNull();
 
         const fallbackHtml = buildOverviewTabContent(
             makeUsage({ orchestratorConfig: undefined }),
@@ -429,8 +415,8 @@ describe('Overview tab: active Orchestrator route, Session/Today cost & Dual-win
     });
 });
 
-describe('Calendar tab dual currency & About tab v1.17.3 + 512K disclaimer & shared CSS', () => {
-    it('formats daily, monthly, and per-model Calendar costs using currencyPrefs', async () => {
+describe('Calendar tab USD costs & About tab v1.17.3 + 512K disclaimer & shared CSS', () => {
+    it('formats daily, monthly, and per-model Calendar costs strictly in USD and guards Infinity', async () => {
         await setLanguageToState('en', memState);
         const store = makeCalendarStore({
             '2026-11-21': {
@@ -465,18 +451,11 @@ describe('Calendar tab dual currency & About tab v1.17.3 + 512K disclaimer & sha
             },
         });
 
-        const usdHtml = buildCalendarTabContent(store, 2026, 11, { currency: 'USD', cnyRate: 7.2 });
+        const usdHtml = buildCalendarTabContent(store, 2026, 11);
         expect(usdHtml).toContain('$1.50');
-        expect(usdHtml).not.toContain('¥');
+        expect(usdHtml).not.toMatch(/[\u00a5\uffe5]/);
 
-        const cnyHtml = buildCalendarTabContent(store, 2026, 11, { currency: 'CNY', cnyRate: 7.2 });
-        expect(cnyHtml).toContain('¥10.80');
-        expect(cnyHtml).not.toContain('$1.50');
-
-        const bothHtml = buildCalendarTabContent(store, 2026, 11, { currency: 'both', cnyRate: 7.2 });
-        expect(bothHtml).toContain('$1.50 (¥10.80)');
-
-        // Guard Infinity and CNY overflow against empty/dash cost chips
+        // Guard Infinity against empty/dash cost chips
         const extremeStore = makeCalendarStore({
             '2026-11-22': {
                 date: '2026-11-22',
@@ -496,21 +475,23 @@ describe('Calendar tab dual currency & About tab v1.17.3 + 512K disclaimer & sha
                     estimatedCost: Number.POSITIVE_INFINITY,
                     gmModelStats: {
                         'InfModel': { calls: 1, credits: 0, inputTokens: 500, outputTokens: 500, thinkingTokens: 0, avgTTFT: 0, cacheHitRate: 0, estimatedCost: Number.POSITIVE_INFINITY },
-                        'OverflowModel': { calls: 1, credits: 0, inputTokens: 500, outputTokens: 500, thinkingTokens: 0, avgTTFT: 0, cacheHitRate: 0, estimatedCost: 1e308 },
+                        'InvalidCostModel': { calls: 1, credits: 0, inputTokens: 500, outputTokens: 500, thinkingTokens: 0, avgTTFT: 0, cacheHitRate: 0, estimatedCost: Number.NaN },
                     },
                 }],
             },
         });
-        const extremeCnyHtml = buildCalendarTabContent(extremeStore, 2026, 11, { currency: 'CNY', cnyRate: 7.2 });
-        expect(extremeCnyHtml).not.toContain('cal-chip-cost');
-        expect(extremeCnyHtml).not.toContain('Infinity');
+        const extremeHtml = buildCalendarTabContent(extremeStore, 2026, 11);
+        expect(extremeHtml).not.toContain('cal-chip-cost');
+        expect(extremeHtml).not.toContain('Infinity');
+        expect(extremeHtml).not.toContain('NaN');
     });
 
     it.each(['en', 'zh', 'both'] as Language[])('renders About tab v1.17.3, Extra High, and full Gemini 4 512K disclaimer in %s', async lang => {
         await setLanguageToState(lang, memState);
         const html = buildAboutTabContent();
         expect(html).toContain('<span class="about-version-pill">v1.17.3</span>');
-        expect(html).toContain('USD / CNY');
+        expect(html).toContain('USD');
+        expect(html).not.toMatch(/USD\s*\/\s*[A-Z]{3}|[\u00a5\uffe5]/);
         expect(html).toContain('v1.17.3');
         expect(html).toContain('Extra High');
         expect(html).toContain('512K');
@@ -537,10 +518,6 @@ describe('Calendar tab dual currency & About tab v1.17.3 + 512K disclaimer & sha
             '.recent-calls-card',
             '.recent-calls-table-wrap',
             '.recent-calls-table',
-            '.currency-toggle-group',
-            '.currency-btn',
-            '.currency-btn.active',
-            '.fx-rate-input',
             '.rate-change-banner',
             '.rate-change-banner-head',
             '.rate-change-banner-list',
@@ -557,6 +534,9 @@ describe('Calendar tab dual currency & About tab v1.17.3 + 512K disclaimer & sha
         ]) {
             expect(editorialCss, cls).toContain(cls);
         }
+        expect(editorialCss).not.toContain('.currency-toggle-group');
+        expect(editorialCss).not.toContain('.currency-btn');
+        expect(editorialCss).not.toContain('.fx-rate-input');
         expect(editorialCss).toMatch(/\.rate-change-banner\s*\{[^}]*flex-direction:\s*column/);
         expect((editorialCss.match(/\{/g) || []).length).toBe((editorialCss.match(/\}/g) || []).length);
         expect((overviewCss.match(/\{/g) || []).length).toBe((overviewCss.match(/\}/g) || []).length);

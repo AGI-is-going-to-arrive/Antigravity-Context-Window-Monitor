@@ -414,8 +414,7 @@ export function getEditorialStyles(): string {
             .orch-route-badge,
             .orch-mode-pill.is-custom,
             .orch-role-status.is-custom,
-            .tag-notice,
-            .currency-btn.active
+            .tag-notice
         ) :is(.bi-sep, .bi-zh) {
             color: inherit;
         }
@@ -1393,7 +1392,7 @@ export function getEditorialStyles(): string {
             }
         }
 
-        /* ═══ 15. v1.17.3 Orchestrator, Dual-Window Quota, Currency & Recent Calls ═══ */
+        /* ═══ 15. v1.17.3 Orchestrator, Dual-Window Quota & Recent Calls ═══ */
 
         /* Orchestrator active route pill (Overview) */
         body .tab-pane .orch-route-pill {
@@ -1659,56 +1658,6 @@ export function getEditorialStyles(): string {
             font-weight: 600;
         }
 
-        /* Currency toggle & FX rate input (Cost + Settings tabs) */
-        body .tab-pane .currency-toggle-group {
-            display: inline-flex;
-            align-items: center;
-            gap: 2px;
-            padding: 2px;
-            background: var(--ed-surface-well);
-            border: 1px solid var(--ed-border);
-            border-radius: var(--ed-radius-sm);
-            max-width: 100%;
-            flex-wrap: wrap;
-        }
-        body .tab-pane .currency-btn {
-            appearance: none;
-            background: transparent;
-            color: var(--ed-ink-muted);
-            border: 1px solid transparent;
-            border-radius: var(--ed-radius-xs);
-            padding: 4px 10px;
-            font: inherit;
-            font-size: 12px;
-            font-weight: 550;
-            cursor: pointer;
-            line-height: 1.35;
-            transition: background var(--ed-dur-fast) var(--ed-ease),
-                color var(--ed-dur-fast) var(--ed-ease),
-                border-color var(--ed-dur-fast) var(--ed-ease);
-        }
-        body .tab-pane .currency-btn.active {
-            background: var(--ed-surface);
-            color: var(--ed-ink);
-            font-weight: 650;
-            border-color: var(--ed-control-border);
-            box-shadow: var(--ed-shadow-segment);
-        }
-        body .tab-pane .fx-rate-input {
-            width: 76px;
-            min-width: 60px;
-            height: 28px;
-            padding: 0 8px;
-            background: var(--ed-input-bg);
-            border: 1px solid var(--ed-control-border);
-            border-radius: var(--ed-radius-sm);
-            color: var(--ed-ink);
-            font: inherit;
-            font-size: 12.5px;
-            font-variant-numeric: tabular-nums lining-nums;
-            text-align: end;
-        }
-
         /* Upcoming rate-change banner (Cost tab) */
         body .tab-pane .rate-change-banner {
             display: flex;
@@ -1800,10 +1749,6 @@ export function getEditorialStyles(): string {
         }
 
         @media (hover: hover) {
-            body .tab-pane .currency-btn:not(.active):hover {
-                background: var(--ed-surface-hover);
-                color: var(--ed-ink);
-            }
             body .tab-pane .recent-calls-table tbody tr:hover {
                 background: var(--ed-surface-hover);
             }

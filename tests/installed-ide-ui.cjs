@@ -43,7 +43,7 @@ const languages = {
     en: {
         heading: 'Antigravity Monitor', overview: 'Overview', overviewTitle: 'Context & quota', viewModels: 'View models',
         modelInfo: 'Model Info', statusSettings: 'Status bar settings', statusDisplay: 'Status Bar Display',
-        currencyDisplay: 'Currency Display', orchSettings: 'Orchestrator Settings',
+        customPricing: 'Custom Pricing', orchSettings: 'Orchestrator Settings',
         orchModel: 'Orchestrator Model', execModel: 'Executor Model',
         fiveHour: '5-Hour', weekly: 'Weekly',
         gmData: 'GM Data', chats: 'Sessions', pricing: 'Cost', models: 'Models', calendar: 'Calendar', profile: 'Profile', settings: 'Settings',
@@ -54,7 +54,7 @@ const languages = {
     zh: {
         heading: 'Antigravity 监控面板', overview: '总览', overviewTitle: '上下文与配额', viewModels: '查看模型',
         modelInfo: '模型信息', statusSettings: '状态栏设置', statusDisplay: '状态栏显示',
-        currencyDisplay: '币种与汇率', orchSettings: '编排器设置',
+        customPricing: '自定义价格', orchSettings: '编排器设置',
         orchModel: '编排器模型', execModel: '执行器模型',
         fiveHour: '5 小时', weekly: '每周',
         gmData: 'GM 数据', chats: '会话', pricing: '成本', models: '模型', calendar: '日历', profile: '个人', settings: '设置',
@@ -67,7 +67,7 @@ const languages = {
         overviewTitle: 'Context & quota / 上下文与配额', viewModels: 'View models / 查看模型',
         modelInfo: 'Model Info / 模型信息', statusSettings: 'Status bar settings / 状态栏设置',
         statusDisplay: 'Status Bar Display / 状态栏显示',
-        currencyDisplay: 'Currency Display / 币种与汇率',
+        customPricing: 'Custom Pricing / 自定义价格',
         orchSettings: 'Orchestrator Settings / 编排器设置',
         orchModel: 'Orchestrator Model / 编排器模型', execModel: 'Executor Model / 执行器模型',
         fiveHour: '5-Hour / 5 小时', weekly: 'Weekly / 每周',
@@ -348,9 +348,10 @@ function nativeSmoke() {
 
                 clickNavTab(labels.pricing, `Cost tab in ${lang}`);
                 const costNodes = waitFor(
-                    nodes => hasText(nodes, 'USD ($)') && hasText(nodes, 'CNY (¥)') && nodes,
-                    `Cost tab currency switcher in ${lang}`,
+                    nodes => hasText(nodes, labels.customPricing) && hasText(nodes, /USD/) && nodes,
+                    `Cost tab USD-only pricing in ${lang}`,
                 );
+                assert(!hasText(costNodes, /\bCNY\b|¥|人民币|币种与汇率|参考汇率/), `Cost tab displays USD-only with zero CNY/FX controls in ${lang}`);
                 assert(!hasText(costNodes, /令牌/), `Cost tab has zero 令牌 in ${lang}`);
 
                 clickNavTab(labels.calendar, `Calendar tab in ${lang}`);
@@ -370,11 +371,11 @@ function nativeSmoke() {
             openFromStatus();
             click(node => matches(node, 'button', labels.statusSettings), `Overview status settings action in ${lang}`);
             const settingsNodes = waitFor(
-                nodes => has(nodes, 'heading', labels.statusDisplay) && has(nodes, 'heading', labels.currencyDisplay) && nodes,
-                `status & currency settings controls in ${lang}`,
+                nodes => has(nodes, 'heading', labels.statusDisplay) && hasText(nodes, '$0.27') && nodes,
+                `status bar settings controls in ${lang}`,
             );
-            assert(hasText(settingsNodes, 'USD ($)') && hasText(settingsNodes, 'CNY (¥)'),
-                `Settings tab renders currency switcher in ${lang}`);
+            assert(!hasText(settingsNodes, /Currency Display|币种与汇率|\bCNY\b|¥|参考汇率/),
+                `Settings tab omits Currency Display and renders USD-only in ${lang}`);
 
             clickNavTab(labels.about, `About tab in ${lang}`);
             const aboutNodes = waitFor(
@@ -384,7 +385,7 @@ function nativeSmoke() {
                 `About version ${manifest.version} in ${lang}`,
             );
             assert(hasText(aboutNodes, /512K/), `About tab displays updated 512K context window disclaimer in ${lang}`);
-            console.log(`Native ${lang}: connected status, dual-window quota, Orchestrator Settings, Neon Extra High/512K, settings/currency & About v${manifest.version} passed`);
+            console.log(`Native ${lang}: connected status, dual-window quota, Orchestrator Settings, Neon Extra High/512K, USD-only cost/settings & About v${manifest.version} passed`);
         }
     } finally {
         switchLocale(original);
@@ -396,8 +397,6 @@ function loadInstalledPanel(packageJSON) {
     let html = '';
     let density = 'auto';
     let windowZoom = 0;
-    let displayCurrency = 'USD';
-    let cnyExchangeRate = 7.2;
     let showSessionCost = false;
     let statusItem;
     const values = new Map([['panelShowTabScrollHint', !(args.screenshot || args['screenshots-dir'])]]);
@@ -418,8 +417,6 @@ function loadInstalledPanel(packageJSON) {
                     if (section === 'window' && key === 'zoomLevel') { return windowZoom; }
                     if (key === 'statusBar.tooltipDensity') { return density; }
                     if (key === 'statusBar.showSessionCost') { return showSessionCost; }
-                    if (key === 'pricing.displayCurrency') { return displayCurrency; }
-                    if (key === 'pricing.cnyExchangeRate') { return cnyExchangeRate; }
                     return fallback;
                 },
             }),
@@ -459,8 +456,6 @@ function loadInstalledPanel(packageJSON) {
             renderStatusBar: (mode, configs, options = {}) => {
                 density = mode;
                 windowZoom = options.zoomLevel ?? 0;
-                displayCurrency = options.currencyPrefs?.currency ?? 'USD';
-                cnyExchangeRate = options.currencyPrefs?.cnyRate ?? 7.2;
                 showSessionCost = Boolean(options.displayPrefs?.showSessionCost);
                 statusItem = { show() {}, dispose() {} };
                 const status = new StatusBarManager();
@@ -473,7 +468,6 @@ function loadInstalledPanel(packageJSON) {
                     if (options.billingDay !== undefined) { status.setBillingDay(options.billingDay); }
                     if ('orchestratorSettings' in options) { status.setOrchestratorSettings(options.orchestratorSettings); }
                     if ('quotaSummary' in options) { status.setQuotaSummary(options.quotaSummary); }
-                    if ('currencyPrefs' in options) { status.setCurrencyPrefs(options.currencyPrefs); }
                     if ('costSnapshot' in options) { status.setCostSnapshot(options.costSnapshot); }
                     if ('gmSummary' in options) {
                         status.setTelemetry(options.gmSummary, options.activeCascadeId, options.customPricing);
@@ -501,8 +495,6 @@ function loadInstalledPanel(packageJSON) {
             renderHover: (mode, configs, options = {}) => {
                 density = mode;
                 windowZoom = options.zoomLevel ?? 0;
-                displayCurrency = options.currencyPrefs?.currency ?? 'USD';
-                cnyExchangeRate = options.currencyPrefs?.cnyRate ?? 7.2;
                 showSessionCost = Boolean(options.displayPrefs?.showSessionCost);
                 statusItem = { show() {}, dispose() {} };
                 const status = new StatusBarManager();
@@ -515,7 +507,6 @@ function loadInstalledPanel(packageJSON) {
                     if (options.billingDay !== undefined) { status.setBillingDay(options.billingDay); }
                     if ('orchestratorSettings' in options) { status.setOrchestratorSettings(options.orchestratorSettings); }
                     if ('quotaSummary' in options) { status.setQuotaSummary(options.quotaSummary); }
-                    if ('currencyPrefs' in options) { status.setCurrencyPrefs(options.currencyPrefs); }
                     if ('costSnapshot' in options) { status.setCostSnapshot(options.costSnapshot); }
                     if ('gmSummary' in options) {
                         status.setTelemetry(options.gmSummary, options.activeCascadeId, options.customPricing);
@@ -528,8 +519,6 @@ function loadInstalledPanel(packageJSON) {
                 }
             },
             render: async (lang, modelConfigs, extra = {}) => {
-                displayCurrency = extra.currencyPrefs?.currency ?? 'USD';
-                cnyExchangeRate = extra.currencyPrefs?.cnyRate ?? 7.2;
                 showSessionCost = Boolean(extra.showSessionCost);
                 await setLanguageToState(lang, state);
                 showMonitorPanel({
@@ -539,7 +528,6 @@ function loadInstalledPanel(packageJSON) {
                     dailyStore: new DailyStore(), storageDiagnostics: undefined,
                     accountSnapshots: [], todayLedgerActive: [], ledgerSettled: [],
                     orchestratorSettings: null, quotaSummary: null,
-                    currencyPrefs: { currency: 'USD', cnyRate: 7.2 },
                     todayCostUsd: Number.NaN, sessionCostUsd: Number.NaN,
                     context: { globalState: state, extension: { packageJSON } },
                     ...extra,
@@ -935,7 +923,6 @@ function editorialFixtures(usage, specs, DailyStore, buildSummaryFromConversatio
             storageDiagnostics, accountSnapshots,
             orchestratorSettings: orchestratorSettingsCustom,
             quotaSummary,
-            currencyPrefs: { currency: 'USD', cnyRate: 7.2 },
             sessionCostUsd: 0.45,
             todayCostUsd: 1.25,
         },
@@ -1122,7 +1109,7 @@ function editorialReadings() {
     const regionSelectors = [
         'section', 'h2', 'h3', 'table', 'pre',
         '.stg-card', '.cost-bar-row', '.cost-bar-track', '.cost-bar-section', '.cost-chips',
-        '.prc-monthly-card', '.prc-monthly-models', '.prc-edit-row', '.prc-currency-bar', '.rate-change-banner', '.currency-toggle-group',
+        '.prc-monthly-card', '.prc-monthly-models', '.prc-edit-row', '.rate-change-banner',
         '.cal-grid', '.cal-cell', '.cal-detail', '.cal-overview-grid', '.cal-chip-speed',
         '.ses-row', '.ses-shortcuts', '.ses-filters', '.ses-filter-btn', '.ses-group',
         '.model-card', '.spec-card', '.orch-settings-card', '.orch-role-row', '.spec-price-row', '.quota-dual-row',
@@ -1213,7 +1200,7 @@ function editorialReadings() {
 
     const l1CardSelector = [
         '.overview-context', '.overview-quota', '.act-summary-bar', '.telemetry-ledger-card', '.recent-calls-card', '.act-model-card',
-        '.ses-group', '.prc-monthly-grand', '.cost-panel', '.prc-edit-section', '.prc-currency-bar',
+        '.ses-group', '.prc-monthly-grand', '.cost-panel', '.prc-edit-section',
         '.model-card', '.spec-card', '.orch-settings-card', '.cal-detail',
         '.profile-identity', '.profile-quota', '.profile-ai', '.profile-technical',
         '.stg-card', '.about-card', '.about-info-box', 'section.card',
@@ -1421,8 +1408,9 @@ function editorialReadings() {
     } : null;
 
     const pricingTelemetry = tab?.dataset.tab === 'pricing' ? {
-        currencyActive: pane.querySelector('.currency-btn.active')?.dataset.currency || '',
-        fxRateVal: pane.querySelector('#pricingFxRateInput')?.value || '',
+        hasCurrencyBar: Boolean(pane.querySelector('.prc-currency-bar, .currency-btn, #pricingFxRateInput')),
+        hasCnyOrYen: /\bCNY\b|¥|人民币|汇率/.test(pane.innerText || ''),
+        hasUsdAmount: /\$\d/.test(pane.innerText || ''),
         rateChangeBannerText: pane.querySelector('.rate-change-banner')?.innerText.replace(/\s+/g, ' ').trim() || '',
     } : null;
 
@@ -1468,6 +1456,7 @@ function editorialReadings() {
         chromeAccentSize: parseFloat(getComputedStyle(document.querySelector('#tabBar .tab-slider')).height),
         missingNumeric: /(?:^|\s)(?:NaN|Infinity|Invalid Date)(?:\s|$)/.test(pane.innerText),
         hasLingpai: /令牌/.test(`${fullVisibleText}\n${popoverText}\n${attrCopy}`),
+        hasCnyOrYen: /\bCNY\b|¥|人民币|币种与汇率|参考汇率/.test(`${fullVisibleText}\n${popoverText}`),
         gluedUnitMatches,
         legacyCredits: /\b(?:Prompt|Flow)\s+(?:Credits\b|额度)|8,765|7,654/i.test(`${fullVisibleText}\n${popoverText}`),
         brokenBilingualMatches,
@@ -1654,6 +1643,7 @@ async function browserMatrix(packageJSON) {
         assert(view.chromeAccentSize >= 1 && view.chromeAccentSize <= 4, 'selected tab uses a thin underline');
         assert.equal(view.missingNumeric, false, 'no invalid numeric readings');
         assert.equal(view.hasLingpai, false, 'copy guard: zero awkward "令牌" anywhere in rendered DOM text/attributes');
+        assert.equal(view.hasCnyOrYen, false, 'USD-only guard: zero CNY / ¥ / FX copy anywhere in rendered DOM');
         assert.deepEqual(view.gluedUnitMatches, [], 'copy guard: zero glued numeric units (e.g. 64tok/s, 2credits, 3calls)');
         assert.equal(view.legacyCredits, false, 'copy guard: zero legacy Prompt/Flow credits in rendered DOM');
         assert.deepEqual(view.brokenBilingualMatches, [], 'copy guard: zero broken bilingual strings or EOC dashes');
@@ -1788,8 +1778,9 @@ async function browserMatrix(packageJSON) {
         }
         if (tab === 'pricing' && state === 'populated') {
             const pt = view.pricingTelemetry;
-            assert.equal(pt?.currencyActive, 'USD', 'Cost tab defaults to USD currency toggle');
-            assert.equal(pt?.fxRateVal, '7.2', 'Cost tab FX rate input defaults to 7.2');
+            assert.equal(pt?.hasCurrencyBar, false, 'Cost tab omits removed Currency Display toolbar');
+            assert.equal(pt?.hasCnyOrYen, false, 'Cost tab renders strictly in USD with zero CNY/¥');
+            assert.equal(pt?.hasUsdAmount, true, 'Cost tab renders USD formatted amounts');
             if (Date.now() < Date.parse('2026-12-01T00:00:00Z')) {
                 assert(pt.rateChangeBannerText.includes('2026-12-01')
                     && pt.rateChangeBannerText.includes('Carbon')
@@ -1919,26 +1910,11 @@ async function browserMatrix(packageJSON) {
                     `${sel} emits setConfig for ${key}`);
             }
 
-            // Currency Display switcher + FX rate input (synced across Settings and Cost tabs)
-            assert.equal(evaluate("document.querySelector('#cnyExchangeRateInput')?.value"), '7.2', 'Settings FX rate defaults to 7.2');
-            for (const curr of ['CNY', 'both', 'USD']) {
-                click(`#tab-settings .currency-btn[data-currency="${curr}"]`);
-                assert.equal(evaluate(`document.querySelector('#tab-settings .currency-btn[data-currency="${curr}"]').getAttribute('aria-pressed')`), 'true',
-                    `Settings currency ${curr} marks aria-pressed=true`);
-                assert.equal(evaluate(`document.querySelector('#tab-pricing .currency-btn[data-currency="${curr}"]').classList.contains('active')`), true,
-                    `Settings currency ${curr} syncs active state onto Cost tab switcher`);
-                const lastCurr = evaluate("testState.messages.filter(m => m.command === 'setConfig' && m.key === 'pricing.displayCurrency').at(-1)?.value");
-                assert.equal(lastCurr, curr, `Currency switcher posts pricing.displayCurrency=${curr}`);
-            }
-            browser(['fill', '#cnyExchangeRateInput', '7.35']);
-            click('#cnyExchangeRateSaveBtn');
-            assert.equal(evaluate("document.querySelector('#pricingFxRateInput')?.value"), '7.35', 'Settings FX save syncs Cost tab FX input');
-            assert.equal(evaluate("testState.messages.filter(m => m.command === 'setConfig' && m.key === 'pricing.cnyExchangeRate').at(-1)?.value"), 7.35,
-                'Settings FX save posts pricing.cnyExchangeRate');
-            evaluate("window.dispatchEvent(new MessageEvent('message', { data: { command: 'configSaved', key: 'pricing.cnyExchangeRate' } }))");
-            assert.equal(evaluate("document.querySelector('#currencyFeedback')?.textContent"), '✓', 'FX save shows saved checkmark');
-            browser(['fill', '#cnyExchangeRateInput', '7.2']);
-            click('#cnyExchangeRateSaveBtn');
+            // USD-only Settings: #toggleSessionCost shows $0.27 preview and no Currency Display card exists
+            assert(evaluate("document.querySelector('label.toggle-row:has(#toggleSessionCost)')?.innerText.includes('$0.27')"),
+                '#toggleSessionCost renders $0.27 USD preview');
+            assert.equal(evaluate("document.querySelector('#tab-settings [data-accent=\"currency\"], #tab-settings .currency-btn, #cnyExchangeRateInput')"), null,
+                'Settings tab omits removed Currency Display card and FX controls');
 
             // Hover density select
             for (const density of ['compact', 'full', 'auto']) {
@@ -1983,7 +1959,7 @@ async function browserMatrix(packageJSON) {
     }
 
     function testCostInteractions(theme, reopen) {
-        test(`${theme} Cost official Neon/Sonnet rates, currency switcher, rate-change banner, custom pricing save/reset and calendar link`, () => {
+        test(`${theme} Cost official Neon/Sonnet rates, USD-only layout, rate-change banner, custom pricing save/reset and calendar link`, () => {
             selectTab('pricing');
             // Official v1.17.3 default rates pre-populated in editor
             assert.equal(evaluate("document.querySelector('.pricing-input[data-model=\"gemini-4-neon\"][data-field=\"input\"]')?.value"), '3',
@@ -1995,16 +1971,11 @@ async function browserMatrix(packageJSON) {
             assert.equal(evaluate("document.querySelector('.pricing-input[data-model=\"claude-sonnet-5-5\"][data-field=\"cacheRead\"]')?.value"), '0.1',
                 'Claude Sonnet 5.5 official $0.10 cache read rate is pre-populated');
 
-            // Inline Currency switcher + FX rate apply in Cost tab
-            click('#tab-pricing .currency-btn[data-currency="CNY"]');
-            assert.equal(evaluate("testState.messages.filter(m => m.command === 'setConfig' && m.key === 'pricing.displayCurrency').at(-1)?.value"), 'CNY');
-            browser(['fill', '#pricingFxRateInput', '7.25']);
-            click('#pricingFxSaveBtn');
-            assert.equal(evaluate("document.querySelector('#cnyExchangeRateInput')?.value"), '7.25', 'Cost FX save syncs Settings FX input');
-            assert.equal(evaluate("testState.messages.filter(m => m.command === 'setConfig' && m.key === 'pricing.cnyExchangeRate').at(-1)?.value"), 7.25);
-            click('#tab-pricing .currency-btn[data-currency="USD"]');
-            browser(['fill', '#pricingFxRateInput', '7.2']);
-            click('#pricingFxSaveBtn');
+            // USD-only Cost tab omits currency toolbar and FX controls
+            assert.equal(evaluate("document.querySelector('#tab-pricing .prc-currency-bar, #tab-pricing .currency-btn, #pricingFxRateInput')"), null,
+                'Cost tab omits removed Currency Display toolbar and FX input');
+            const costText = evaluate("document.querySelector('#tab-pricing')?.innerText || ''");
+            assert(/\$\d/.test(costText) && !/\bCNY\b|¥|汇率/.test(costText), 'Cost tab displays USD amounts with zero CNY/¥');
 
             // Custom pricing save on unpriced Orchestrator Neon row
             const targetModel = 'gemini-pro-orchestrator-neon';
@@ -2303,10 +2274,11 @@ async function browserMatrix(packageJSON) {
     }
 
     function testStatusBarHoverMatrix(panel, configs, multiFamilyConfigs, activeUsage, gmSummary, quotaSummary, lang) {
-        test(`${lang} StatusBarManager overhauled hover (compact/normal/full), Orchestrator route+split, Latest Call, Dual-Window quota, alerts, currency & footer`, () => {
+        test(`${lang} StatusBarManager overhauled hover (compact/normal/full), Orchestrator route+split, Latest Call, Dual-Window quota, alerts, USD session cost & footer`, () => {
             const gluedRe = /\b\d+(?:\.\d+)?(?:tok\/s|credits|tools|calls|cache|in|out)\b/;
             const checkCopyGuards = (text, tooltip, label) => {
                 assert(!/令牌/.test(text) && !/令牌/.test(tooltip), `${label}: zero 令牌`);
+                assert(!/\bCNY\b|¥/.test(text) && !/\bCNY\b|¥/.test(tooltip), `${label}: USD-only (zero CNY/¥)`);
                 assert(!gluedRe.test(text) && !gluedRe.test(tooltip), `${label}: zero glued numeric units`);
                 assert(!/(?:^|\s)(?:NaN|Infinity|Invalid Date)(?:\s|$)/.test(tooltip), `${label}: zero invalid numerics`);
             };
@@ -2423,7 +2395,7 @@ async function browserMatrix(packageJSON) {
             assert(!/\$0\.00\b/.test(fullSession.tooltip), 'Full session hover has zero fake $0.00');
             checkCopyGuards(fullSession.text, fullSession.tooltip, `${lang} fullSession`);
 
-            // 7. v1.17.3 Orchestrator cross-pool route + Split + Latest Call + Dual-Window Quota + CNY cost + Retry Waste + 1-click Footer
+            // 7. v1.17.3 Orchestrator cross-pool route + Split + Latest Call + Dual-Window Quota + USD cost + Retry Waste + 1-click Footer
             const nowIso = new Date().toISOString();
             const orchGmSummary = {
                 totalCalls: 2, totalInputTokens: 14543, totalOutputTokens: 888, totalThinkingTokens: 320,
@@ -2472,40 +2444,39 @@ async function browserMatrix(packageJSON) {
                 modelDisplayName: 'Claude Opus 5.5 (Medium)',
                 orchestratorConfig: { planModel: 'MODEL_PLACEHOLDER_M401', executionModel: 'MODEL_PLACEHOLDER_M528' },
             };
-            const orchCny = panel.renderStatusBar('full', configs, {
+            const orchUsd = panel.renderStatusBar('full', configs, {
                 usage: orchHoverUsage, credits: 1200, billingDay: 15, planName: 'Pro', tierName: 'Google AI Pro',
                 quotaSummary, gmSummary: orchGmSummary, activeCascadeId: 'orch-hover',
-                currencyPrefs: { currency: 'CNY', cnyRate: 7.2 },
                 costSnapshot: { todayCostUsd: 1.5, todayHasUnpriced: false },
                 displayPrefs: { showSessionCost: true },
             });
-            assert(orchCny.text.includes('$(credit-card) ¥'), `Opt-in showSessionCost renders CNY cost pill: ${orchCny.text}`);
-            assert(/Orchestrator|编排/.test(orchCny.tooltip) && /Cross-pool|跨池/.test(orchCny.tooltip),
-                `Orchestrator cross-pool header renders in ${lang}: ${orchCny.tooltip}`);
-            assert(orchCny.tooltip.includes('Claude Opus 5.5 (Medium)') && orchCny.tooltip.includes('Gemini 4 Hydrogen'),
-                `Orchestrator route shows Planner -> Executor pair: ${orchCny.tooltip}`);
-            assert(/Split|编排拆分/.test(orchCny.tooltip), `Orchestrator Split breakdown renders: ${orchCny.tooltip}`);
-            assert(orchCny.tooltip.includes('`gemini-4-hydrogen`') && orchCny.tooltip.includes('6.00s / 8.50s') && orchCny.tooltip.includes('155.2 tok/s'),
-                `Latest Call micro-table renders model, total latency & speed: ${orchCny.tooltip}`);
-            assert(orchCny.tooltip.includes('¥'), 'CNY currency formatting applied across hover');
-            assert(/\| (?:Pool|额度池|Pool \/ 额度池) \| 5h \| (?:Weekly|周额度|Weekly \/ 周额度) \|/.test(orchCny.tooltip),
-                `Dual-Window 5h | Weekly quota table renders: ${orchCny.tooltip}`);
-            assert(orchCny.tooltip.includes('**84%**') && orchCny.tooltip.includes('**96%**'),
-                `Dual-Window weekly percentages render (84% / 96%): ${orchCny.tooltip}`);
-            assert(/Planner|规划/.test(orchCny.tooltip) && /Executor|执行/.test(orchCny.tooltip),
+            assert(orchUsd.text.includes('$(credit-card) $'), `Opt-in showSessionCost renders USD cost pill: ${orchUsd.text}`);
+            assert(/Orchestrator|编排/.test(orchUsd.tooltip) && /Cross-pool|跨池/.test(orchUsd.tooltip),
+                `Orchestrator cross-pool header renders in ${lang}: ${orchUsd.tooltip}`);
+            assert(orchUsd.tooltip.includes('Claude Opus 5.5 (Medium)') && orchUsd.tooltip.includes('Gemini 4 Hydrogen'),
+                `Orchestrator route shows Planner -> Executor pair: ${orchUsd.tooltip}`);
+            assert(/Split|编排拆分/.test(orchUsd.tooltip), `Orchestrator Split breakdown renders: ${orchUsd.tooltip}`);
+            assert(orchUsd.tooltip.includes('`gemini-4-hydrogen`') && orchUsd.tooltip.includes('6.00s / 8.50s') && orchUsd.tooltip.includes('155.2 tok/s'),
+                `Latest Call micro-table renders model, total latency & speed: ${orchUsd.tooltip}`);
+            assert(orchUsd.tooltip.includes('$') && !orchUsd.tooltip.includes('¥'), 'USD-only formatting applied across hover');
+            assert(/\| (?:Pool|额度池|Pool \/ 额度池) \| 5h \| (?:Weekly|周额度|Weekly \/ 周额度) \|/.test(orchUsd.tooltip),
+                `Dual-Window 5h | Weekly quota table renders: ${orchUsd.tooltip}`);
+            assert(orchUsd.tooltip.includes('**84%**') && orchUsd.tooltip.includes('**96%**'),
+                `Dual-Window weekly percentages render (84% / 96%): ${orchUsd.tooltip}`);
+            assert(/Planner|规划/.test(orchUsd.tooltip) && /Executor|执行/.test(orchUsd.tooltip),
                 'Dual-Window quota table marks Planner & Executor pools');
-            assert(/Retry Waste|重试开销/.test(orchCny.tooltip) && orchCny.tooltip.includes('`429`'),
+            assert(/Retry Waste|重试开销/.test(orchUsd.tooltip) && orchUsd.tooltip.includes('`429`'),
                 'Retry Waste alert renders with error code 429');
             // Pinned 1-click footer links & trust allowlist
             for (const dest of ['overview', 'gmdata', 'pricing', 'models', 'settings']) {
-                assert(orchCny.tooltip.includes(`antigravity-context-monitor.showDetails?${encodeURIComponent(JSON.stringify([dest]))}`),
+                assert(orchUsd.tooltip.includes(`antigravity-context-monitor.showDetails?${encodeURIComponent(JSON.stringify([dest]))}`),
                     `Footer includes 1-click link to ${dest}`);
             }
-            assert(orchCny.tooltip.includes('command:antigravity-context-monitor.refresh'), 'Footer includes Refresh command link');
-            assert(orchCny.isTrusted?.enabledCommands?.includes('antigravity-context-monitor.showDetails')
-                && orchCny.isTrusted?.enabledCommands?.includes('antigravity-context-monitor.refresh'),
+            assert(orchUsd.tooltip.includes('command:antigravity-context-monitor.refresh'), 'Footer includes Refresh command link');
+            assert(orchUsd.isTrusted?.enabledCommands?.includes('antigravity-context-monitor.showDetails')
+                && orchUsd.isTrusted?.enabledCommands?.includes('antigravity-context-monitor.refresh'),
                 'MarkdownString.isTrusted allowlists showDetails and refresh');
-            checkCopyGuards(orchCny.text, orchCny.tooltip, `${lang} orchCny`);
+            checkCopyGuards(orchUsd.text, orchUsd.tooltip, `${lang} orchUsd`);
 
             // 8. Smart alerts: Carbon 14-day rate-change countdown (before 2026-12-01) & GPT-OSS Notice sunset
             if (Date.now() < Date.parse('2026-12-01T00:00:00Z')) {
@@ -2540,14 +2511,13 @@ async function browserMatrix(packageJSON) {
         const themes = ['vscode-light', 'vscode-dark'];
 
         // 1. Models tab: Default Orchestrator Settings (Neon XHigh + Hydrogen XHigh), Custom Cross-Pool (Opus 5.5 + Hydrogen / Sonnet 5.5),
-        //    .spec-price-row across USD/CNY/both, and honest Unpriced on M537/M667/M681/M669/M21
+        //    USD-only .spec-price-row, and honest Unpriced on M537/M667/M681/M669/M21
         for (const lang of testLangs) {
             const labels = languages[lang];
             const defaultHtml = await panel.render(lang, configs, {
                 ...fixtures.populated,
                 orchestratorSettings: fixtures.v1173.orchestratorSettingsDefault,
                 quotaSummary: fixtures.v1173.quotaSummaryPrecision,
-                currencyPrefs: { currency: 'USD', cnyRate: 7.2 },
             });
             for (const theme of themes) {
                 test(`v1.17.3 Models Default Orchestrator Settings, 99.3%/99.8% dual quota & a11y (${lang} ${theme})`, () => {
@@ -2574,32 +2544,33 @@ async function browserMatrix(packageJSON) {
                 }, true);
             }
 
-            // Custom Orchestrator (Claude Opus 5.5 Medium + Claude Sonnet 5.5 Medium) + both currency pricing
+            // Custom Orchestrator (Claude Opus 5.5 Medium + Claude Sonnet 5.5 Medium) + USD-only verification across Overview, Models, Calendar, Settings
             const customSonnetHtml = await panel.render(lang, configs, {
                 ...fixtures.populated,
                 orchestratorSettings: fixtures.v1173.orchestratorSettingsCustomSonnet,
-                currencyPrefs: { currency: 'both', cnyRate: 7.2 },
             });
-            test(`v1.17.3 Models Custom Opus+Sonnet Orchestrator, dual-currency spec prices & Calendar/Overview both currency (${lang})`, () => {
+            test(`v1.17.3 Models Custom Opus+Sonnet Orchestrator, USD-only spec prices & Overview/Calendar/Settings USD check (${lang})`, () => {
                 open(browserFixture(customSonnetHtml, 'vscode-dark', themeTokens['vscode-dark']), 960);
-                // Overview dual-currency cost
+                // Overview USD-only cost
                 const ovText = evaluate("document.querySelector('#tab-overview')?.innerText || ''");
-                assert(ovText.includes('$0.45 (¥3.24)') && ovText.includes('$1.25 (¥9.00)'),
-                    `Overview renders Session & Today cost in both USD and CNY: ${ovText}`);
-                assert(!/令牌/.test(ovText), 'Overview dual currency has zero 令牌');
+                assert(ovText.includes('$0.45') && ovText.includes('$1.25'),
+                    `Overview renders Session & Today cost in USD: ${ovText}`);
+                assert(!/\bCNY\b|¥/.test(ovText), 'Overview renders strictly in USD with zero CNY/¥');
+                assert(!/令牌/.test(ovText), 'Overview has zero 令牌');
 
-                // Models tab custom Opus + Sonnet + dual-currency spec prices
+                // Models tab custom Opus + Sonnet + USD-only spec prices
                 selectTab('models');
                 const report = evaluate(measurements);
                 assert.equal(report.orchSettings?.mode, 'custom');
                 assert(report.orchSettings.orchestrator.includes('Claude Opus 5.5 (Medium)'));
                 assert(report.orchSettings.executor.includes('Claude Sonnet 5.5 (Medium)'));
                 const neonSpec = report.entries.find(e => e.model === 'MODEL_PLACEHOLDER_M535');
-                assert(neonSpec?.priceText.includes('$3/M (¥21.6/M)') && neonSpec.priceText.includes('$15/M (¥108/M)') && neonSpec.priceText.includes('$0.15/M (¥1.08/M)'),
-                    `Neon .spec-price-row renders dual-currency official rates: ${neonSpec?.priceText}`);
+                assert(neonSpec?.priceText.includes('$3/M') && neonSpec.priceText.includes('$15/M') && neonSpec.priceText.includes('$0.15/M'),
+                    `Neon .spec-price-row renders official USD rates: ${neonSpec?.priceText}`);
+                assert(!/\bCNY\b|¥/.test(neonSpec?.priceText || ''), 'Neon .spec-price-row is USD-only');
                 const sonnetSpec = report.entries.find(e => e.model === 'MODEL_PLACEHOLDER_M404');
-                assert(sonnetSpec?.priceText.includes('$0.10/M (¥0.72/M)'),
-                    `Claude Sonnet 5.5 .spec-price-row renders corrected $0.10/M cache read: ${sonnetSpec?.priceText}`);
+                assert(sonnetSpec?.priceText.includes('$0.10/M') && !/\bCNY\b|¥/.test(sonnetSpec.priceText),
+                    `Claude Sonnet 5.5 .spec-price-row renders corrected $0.10/M USD cache read: ${sonnetSpec?.priceText}`);
                 for (const unpricedId of ['MODEL_PLACEHOLDER_M537', 'MODEL_PLACEHOLDER_M667', 'MODEL_PLACEHOLDER_M681']) {
                     const card = report.entries.find(e => e.model === unpricedId);
                     assert.equal(card?.priceState, 'unpriced', `${unpricedId} shows honest Unpriced badge`);
@@ -2607,34 +2578,21 @@ async function browserMatrix(packageJSON) {
                 }
                 audit('#tab-models');
 
-                // Calendar tab dual-currency rendering
+                // Calendar tab USD-only rendering
                 selectTab('calendar');
                 const calText = evaluate("document.querySelector('#tab-calendar')?.innerText || ''");
-                assert(/\$\d+\.\d{2}\s*\(¥\d+\.\d{2}\)/.test(calText),
-                    `Calendar tab renders dual USD (CNY) totals: ${calText.slice(0, 260)}`);
+                assert(/\$\d+\.\d{2}/.test(calText),
+                    `Calendar tab renders USD totals: ${calText.slice(0, 260)}`);
+                assert(!/\bCNY\b|¥/.test(calText), 'Calendar tab renders strictly in USD with zero CNY/¥');
                 audit('#tab-calendar');
-                assert.deepEqual(evaluate('testState.errors'), []);
-            }, true);
 
-            // CNY-only mode across Overview, Models, Cost, Calendar
-            const cnyHtml = await panel.render(lang, configs, {
-                ...fixtures.populated,
-                currencyPrefs: { currency: 'CNY', cnyRate: 7.2 },
-            });
-            test(`v1.17.3 CNY-only display across Overview, Models, Cost & Calendar (${lang})`, () => {
-                open(browserFixture(cnyHtml, 'vscode-light', themeTokens['vscode-light']), 960);
-                const ovText = evaluate("document.querySelector('#tab-overview')?.innerText || ''");
-                assert(ovText.includes('¥3.24') && ovText.includes('¥9.00'), `Overview renders CNY Session/Today cost: ${ovText}`);
-                assert(!/\$0\.45|\$1\.25/.test(ovText), 'Overview CNY-only mode omits USD symbols on session/today cost');
-
-                selectTab('models');
-                const neonCny = evaluate("document.querySelector('.spec-card[data-model-id=\"MODEL_PLACEHOLDER_M535\"] .spec-price-row')?.innerText || ''");
-                assert(neonCny.includes('¥21.6/M') && neonCny.includes('¥108/M'), `Models Neon spec renders CNY rates: ${neonCny}`);
-
-                selectTab('calendar');
-                const calText = evaluate("document.querySelector('#tab-calendar')?.innerText || ''");
-                assert(/¥\d+\.\d{2}/.test(calText), `Calendar tab renders CNY totals: ${calText.slice(0, 220)}`);
-                assert(!/\$\d+\.\d{2}/.test(calText), 'Calendar CNY-only mode omits USD totals');
+                // Settings tab USD-only rendering (#toggleSessionCost $0.27, no Currency Display section)
+                selectTab('settings');
+                const stgText = evaluate("document.querySelector('#tab-settings')?.innerText || ''");
+                assert(stgText.includes('$0.27'), 'Settings tab renders $0.27 USD preview on #toggleSessionCost');
+                assert(!/Currency Display|币种与汇率|\bCNY\b|¥/.test(stgText), 'Settings tab omits Currency Display and CNY/¥');
+                assert.equal(evaluate("document.querySelector('#tab-settings [data-accent=\"currency\"]')"), null);
+                audit('#tab-settings');
                 assert.deepEqual(evaluate('testState.errors'), []);
             }, true);
 

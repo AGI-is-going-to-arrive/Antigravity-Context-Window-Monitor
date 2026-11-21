@@ -4,17 +4,7 @@
 
 import { tBi } from './i18n';
 import { GMSummary, GMModelStats } from './gm-tracker';
-import { PricingStore, PRICING_LAST_UPDATED, findPricingWithCustom, findPricingForDate, calculateLedgerModelCosts, selectPricingModel, samePricingModel, getUpcomingRateChanges, ModelPricing, ModelCostRow } from './pricing-store';
-import {
-    DEFAULT_CNY_EXCHANGE_RATE,
-    DEFAULT_DISPLAY_CURRENCY,
-    MAX_CNY_EXCHANGE_RATE,
-    MIN_CNY_EXCHANGE_RATE,
-    formatCurrencyCost,
-    formatCurrencySavings,
-    normalizeCurrencyPrefs,
-    type CurrencyPrefs,
-} from './currency';
+import { PricingStore, PRICING_LAST_UPDATED, findPricingWithCustom, findPricingForDate, calculateLedgerModelCosts, selectPricingModel, samePricingModel, getUpcomingRateChanges, formatUsdCost, formatUsdSavings, ModelPricing, ModelCostRow } from './pricing-store';
 import { esc, tBiHtml } from './webview-helpers';
 import type { MonthCostBreakdown } from './daily-store';
 import { getModelDNAKey, type PersistedModelDNA } from './model-dna-store';
@@ -30,17 +20,12 @@ export function buildPricingTabContent(
     ledgerSettled?: LedgerSettledEntry[],
     todayLedgerActive?: LedgerAccountBucket[],
     hasUnmeteredImageUsage = false,
-    currencyPrefs?: Partial<CurrencyPrefs>,
 ): string {
-    const prefs = normalizeCurrencyPrefs(currencyPrefs);
     const pendingArchiveCost = ledgerSettled ? ledgerSettled.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0) : 0;
     const hasActive = !!((todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) || (summary && summary.totalCalls > 0));
     const hasSettled = !!(ledgerSettled && ledgerSettled.length > 0);
     const hasGM = hasActive || hasSettled;
     const parts: string[] = [];
-
-    // Inline currency switcher + offline reference FX control
-    parts.push(buildCurrencyToolbar(prefs));
 
     // Upcoming verified price cutover banner (within 45 days)
     const rateChangeBanner = buildUpcomingRateChangeBanner(Date.now());
@@ -159,7 +144,7 @@ export function buildPricingTabContent(
 
     // Monthly total cost summary (always shown if breakdown data exists)
     if (monthBreakdown) {
-        parts.push(buildMonthlyCostSummary(monthBreakdown, activeGrandTotal, rows, pendingArchiveCost, store.getCustom(), hasUnmeteredImageUsage, prefs));
+        parts.push(buildMonthlyCostSummary(monthBreakdown, activeGrandTotal, rows, pendingArchiveCost, store.getCustom(), hasUnmeteredImageUsage));
     }
 
     // Highlight the actual called model's editor even if the response uses a
@@ -177,7 +162,7 @@ export function buildPricingTabContent(
         const fullTotal = activeGrandTotal + pendingArchiveCost;
         const merged = store.getMerged();
         parts.push(
-            buildCostPanel(rows, fullTotal, summary, ledgerSettled, todayLedgerActive, hasUnmeteredImageUsage, prefs),
+            buildCostPanel(rows, fullTotal, summary, ledgerSettled, todayLedgerActive, hasUnmeteredImageUsage),
             buildEditablePricingTable(calledModelKeys, merged, custom),
         );
     } else {
@@ -196,41 +181,7 @@ export function buildPricingTabContent(
 
 export function getPricingTabStyles(): string {
     return `
-    /* ── Currency Toolbar & Upcoming Rate-Change Banner ── */
-    .prc-currency-bar {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        flex-wrap: wrap;
-        gap: 10px 16px;
-        padding: 10px 14px;
-        margin-bottom: 14px;
-        background: var(--ed-surface);
-        border: 1px solid var(--ed-border);
-        border-radius: var(--ed-radius-md);
-    }
-    .prc-currency-left,
-    .prc-currency-fx {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 8px;
-        min-width: 0;
-    }
-    .prc-currency-fx.is-muted .prc-currency-fx-label {
-        color: var(--ed-ink-muted);
-    }
-    .prc-currency-label,
-    .prc-currency-fx-label {
-        font-size: 0.78rem;
-        font-weight: 550;
-        color: var(--ed-ink-secondary);
-    }
-    .prc-fx-save-btn {
-        height: 28px;
-        padding: 0 10px;
-        font-size: 0.75rem;
-    }
+    /* ── Cache Savings & Thinking Share Chips ── */
     .cost-chip-saved {
         background: var(--ed-good-tint);
         color: var(--ed-good);
@@ -1193,38 +1144,18 @@ export function getPricingTabStyles(): string {
 
 // ─── Shared Formatters ───────────────────────────────────────────────────────
 
-function fmtCost(n: number, prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE }): string {
+function fmtCost(n: number): string {
     if (!Number.isFinite(n)) { return '—'; }
     const abs = Math.abs(n);
     const precision = abs > 0 && abs < 0.01 ? 'standard' : 'call';
-    return formatCurrencyCost(n, prefs, { precision });
+    return formatUsdCost(n, { precision });
 }
 
-function fmtSavedMagnitude(usd: number, prefs: CurrencyPrefs): string | null {
+function fmtSavedMagnitude(usd: number): string | null {
     if (!Number.isFinite(usd) || usd < 0.0001) { return null; }
-    const signed = formatCurrencySavings(usd, prefs);
+    const signed = formatUsdSavings(usd);
     if (signed === '—') { return null; }
-    return signed.replace(/(^|\()-/g, '$1');
-}
-
-function buildCurrencyToolbar(prefs: CurrencyPrefs): string {
-    const showFx = prefs.currency === 'CNY' || prefs.currency === 'both';
-    return `<div class="prc-currency-bar">
-        <div class="prc-currency-left">
-            <span class="prc-currency-label">${tBiHtml('Display Currency', '显示币种')}</span>
-            <div class="currency-toggle-group" role="group" aria-label="${esc(tBi('Display Currency', '显示币种'))}">
-                <button type="button" class="currency-btn${prefs.currency === 'USD' ? ' active' : ''}" data-currency="USD" aria-pressed="${prefs.currency === 'USD'}">USD ($)</button>
-                <button type="button" class="currency-btn${prefs.currency === 'CNY' ? ' active' : ''}" data-currency="CNY" aria-pressed="${prefs.currency === 'CNY'}">CNY (¥)</button>
-                <button type="button" class="currency-btn${prefs.currency === 'both' ? ' active' : ''}" data-currency="both" aria-pressed="${prefs.currency === 'both'}">${tBiHtml('Both', '双币种')}</button>
-            </div>
-        </div>
-        <div class="prc-currency-fx${showFx ? '' : ' is-muted'}">
-            <label for="pricingFxRateInput" class="prc-currency-fx-label">${tBiHtml('USD/CNY', '参考汇率')}</label>
-            <input type="number" id="pricingFxRateInput" class="fx-rate-input" value="${prefs.cnyRate}" data-original-value="${prefs.cnyRate}" min="${MIN_CNY_EXCHANGE_RATE}" max="${MAX_CNY_EXCHANGE_RATE}" step="0.05" aria-label="${esc(tBi('USD to CNY reference rate', '美元兑人民币参考汇率'))}" />
-            <button type="button" class="prc-btn prc-fx-save-btn" id="pricingFxSaveBtn"><span>${tBiHtml('Apply', '应用')}</span></button>
-            <span class="prc-feedback" id="pricingCurrencyFeedback" role="status"></span>
-        </div>
-    </div>`;
+    return signed.replace(/^-/, '');
 }
 
 function buildUpcomingRateChangeBanner(nowMs: number): string {
@@ -1277,7 +1208,6 @@ function buildCostPanel(
     ledgerSettled?: LedgerSettledEntry[],
     todayLedgerActive?: LedgerAccountBucket[],
     hasUnmeteredImageUsage = false,
-    prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE },
 ): string {
     const priced = rows.filter(r => r.pricing);
     const unpriced = rows.filter(r => !r.pricing);
@@ -1307,15 +1237,15 @@ function buildCostPanel(
     html += '<div class="cost-chips">';
     const totalLabel = unpriced.length > 0 && priced.length === 0 && grandTotal <= 0
         ? `<span>${tBiHtml('Not available', '暂无法估算')}</span>`
-        : `<span>${esc(fmtCost(grandTotal, prefs))}${isPartial ? ` · ${tBiHtml('Partial total', '已知小计')}` : ''}</span>`;
+        : `<span>${esc(fmtCost(grandTotal))}${isPartial ? ` · ${tBiHtml('Partial total', '已知小计')}` : ''}</span>`;
     html += `<span class="cost-chip cost-chip-total${isPartial ? ' is-partial' : ''}">${totalLabel}</span>`;
     if (topModel) {
-        html += `<span class="cost-chip" title="${esc(topModel.name)}" data-tooltip="${esc(tBi('Top Spender', '最高消费'))}"><span>${esc(topModel.name)} ${esc(fmtCost(topModel.totalCost, prefs))}</span></span>`;
+        html += `<span class="cost-chip" title="${esc(topModel.name)}" data-tooltip="${esc(tBi('Top Spender', '最高消费'))}"><span>${esc(topModel.name)} ${esc(fmtCost(topModel.totalCost))}</span></span>`;
     }
     if (!isPartial) {
-        html += `<span class="cost-chip" data-tooltip="${esc(tBi('Avg per Call', '平均每次'))}"><span>${esc(fmtCost(avgPerCall, prefs))} ${tBiHtml('per call', '每次')}</span></span>`;
+        html += `<span class="cost-chip" data-tooltip="${esc(tBi('Avg per Call', '平均每次'))}"><span>${esc(fmtCost(avgPerCall))} ${tBiHtml('per call', '每次')}</span></span>`;
     }
-    const totalSavedLabel = fmtSavedMagnitude(totalCacheSavedUsd, prefs);
+    const totalSavedLabel = fmtSavedMagnitude(totalCacheSavedUsd);
     if (totalSavedLabel) {
         html += `<span class="cost-chip cost-chip-saved" data-tooltip="${esc(tBi('Estimated savings from prompt cache reads', '提示词缓存读取预计节省金额'))}"><span>${tBiHtml('Cache saved', '缓存省')} ${esc(totalSavedLabel)}</span></span>`;
     }
@@ -1350,12 +1280,12 @@ function buildCostPanel(
                 <span class="cost-bar-label" title="${esc(r.name)}" data-tooltip="${esc(r.name)}${r.responseModel && r.responseModel !== r.name ? ' · ' + esc(r.responseModel) : ''}">${esc(r.name)}</span>
                 <div class="cost-bar-track">
                     ${r.costBreakdownUnavailable ? `<div class="cost-bar-seg cost-seg-historical" style="width:${pct.toFixed(1)}%" data-tooltip="${esc(tBi('Recorded historical total; token cost breakdown unavailable', '保留的历史总费用；缺少各类 Token 费用明细'))}"></div>` : `
-                    ${inputPct > 0 ? `<div class="cost-bar-seg cost-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Input: ${fmtCost(r.inputCost, prefs)} (${fmtTok(r.inputTokens)} tokens)`, `输入：${fmtCost(r.inputCost, prefs)}（${fmtTok(r.inputTokens)} tokens）`))}"></div>` : ''}
-                    ${outputPct > 0 ? `<div class="cost-bar-seg cost-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Output: ${fmtCost(r.outputCost, prefs)} (${fmtTok(r.outputTokens)} tokens)`, `输出：${fmtCost(r.outputCost, prefs)}（${fmtTok(r.outputTokens)} tokens）`))}"></div>` : ''}
-                    ${cachePct > 0 ? `<div class="cost-bar-seg cost-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="${esc(tBi(`Cache: ${fmtCost(r.cacheCost, prefs)} (${fmtTok(r.cacheTokens)} tokens)`, `缓存：${fmtCost(r.cacheCost, prefs)}（${fmtTok(r.cacheTokens)} tokens）`))}"></div>` : ''}
-                    ${thinkPct > 0 ? `<div class="cost-bar-seg cost-seg-think" style="width:${thinkPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Thinking: ${fmtCost(r.thinkingCost, prefs)} (${fmtTok(r.thinkingTokens)} tokens)`, `思考：${fmtCost(r.thinkingCost, prefs)}（${fmtTok(r.thinkingTokens)} tokens）`))}"></div>` : ''}`}
+                    ${inputPct > 0 ? `<div class="cost-bar-seg cost-seg-input" style="width:${inputPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Input: ${fmtCost(r.inputCost)} (${fmtTok(r.inputTokens)} tokens)`, `输入：${fmtCost(r.inputCost)}（${fmtTok(r.inputTokens)} tokens）`))}"></div>` : ''}
+                    ${outputPct > 0 ? `<div class="cost-bar-seg cost-seg-output" style="width:${outputPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Output: ${fmtCost(r.outputCost)} (${fmtTok(r.outputTokens)} tokens)`, `输出：${fmtCost(r.outputCost)}（${fmtTok(r.outputTokens)} tokens）`))}"></div>` : ''}
+                    ${cachePct > 0 ? `<div class="cost-bar-seg cost-seg-cache" style="width:${cachePct.toFixed(1)}%" data-tooltip="${esc(tBi(`Cache: ${fmtCost(r.cacheCost)} (${fmtTok(r.cacheTokens)} tokens)`, `缓存：${fmtCost(r.cacheCost)}（${fmtTok(r.cacheTokens)} tokens）`))}"></div>` : ''}
+                    ${thinkPct > 0 ? `<div class="cost-bar-seg cost-seg-think" style="width:${thinkPct.toFixed(1)}%" data-tooltip="${esc(tBi(`Thinking: ${fmtCost(r.thinkingCost)} (${fmtTok(r.thinkingTokens)} tokens)`, `思考：${fmtCost(r.thinkingCost)}（${fmtTok(r.thinkingTokens)} tokens）`))}"></div>` : ''}`}
                 </div>
-                <span class="cost-bar-val">${esc(fmtCost(r.totalCost, prefs))}</span>
+                <span class="cost-bar-val">${esc(fmtCost(r.totalCost))}</span>
             </div>`;
         }
 
@@ -1381,7 +1311,7 @@ function buildCostPanel(
             const rowSavedUsd = !r.costBreakdownUnavailable && r.pricing && r.cacheTokens > 0 && r.pricing.input > r.pricing.cacheRead
                 ? (r.cacheTokens * (r.pricing.input - r.pricing.cacheRead)) / 1_000_000
                 : 0;
-            const rowSavedLabel = fmtSavedMagnitude(rowSavedUsd, prefs);
+            const rowSavedLabel = fmtSavedMagnitude(rowSavedUsd);
             const rowThinkShare = !r.costBreakdownUnavailable && r.thinkingCost > 0 && r.totalCost > 0
                 ? Math.round((r.thinkingCost / r.totalCost) * 100)
                 : 0;
@@ -1390,20 +1320,20 @@ function buildCostPanel(
                 <div class="cost-detail-items">
                     ${r.costBreakdownUnavailable ? `<span class="cost-note">${tBiHtml('Historical total; token cost breakdown unavailable', '历史总费用；各类 Token 费用明细不可用')}</span>` : `
                     <span class="cost-detail-item" data-tooltip="${esc(rateTooltip(r.inputTokens, r.pricing!.input))}">
-                        <span class="cost-legend-dot cost-seg-input"></span>${esc(fmtCost(r.inputCost, prefs))}
+                        <span class="cost-legend-dot cost-seg-input"></span>${esc(fmtCost(r.inputCost))}
                     </span>
                     <span class="cost-detail-item" data-tooltip="${esc(rateTooltip(r.outputTokens, r.pricing!.output))}">
-                        <span class="cost-legend-dot cost-seg-output"></span>${esc(fmtCost(r.outputCost, prefs))}
+                        <span class="cost-legend-dot cost-seg-output"></span>${esc(fmtCost(r.outputCost))}
                     </span>
                     <span class="cost-detail-item" data-tooltip="${esc(rateTooltip(r.cacheTokens, r.pricing!.cacheRead))}">
-                        <span class="cost-legend-dot cost-seg-cache"></span>${esc(fmtCost(r.cacheCost, prefs))}
+                        <span class="cost-legend-dot cost-seg-cache"></span>${esc(fmtCost(r.cacheCost))}
                     </span>
                     ${r.thinkingTokens > 0 ? `<span class="cost-detail-item" data-tooltip="${esc(rateTooltip(r.thinkingTokens, r.pricing!.thinking))}">
-                        <span class="cost-legend-dot cost-seg-think"></span>${esc(fmtCost(r.thinkingCost, prefs))}${rowThinkShare > 0 ? ` <span class="cost-share-sub">(${rowThinkShare}%)</span>` : ''}
+                        <span class="cost-legend-dot cost-seg-think"></span>${esc(fmtCost(r.thinkingCost))}${rowThinkShare > 0 ? ` <span class="cost-share-sub">(${rowThinkShare}%)</span>` : ''}
                     </span>` : ''}
                     ${rowSavedLabel ? `<span class="cost-detail-saved" data-tooltip="${esc(tBi('Saved by prompt cache', '缓存预计节省'))}">${tBiHtml('Saved', '省')} ${esc(rowSavedLabel)}</span>` : ''}`}
                 </div>
-                <span class="cost-detail-total">${esc(fmtCost(r.totalCost, prefs))}</span>
+                <span class="cost-detail-total">${esc(fmtCost(r.totalCost))}</span>
             </div>`;
         }
         html += '</div>';
@@ -1818,7 +1748,6 @@ function buildMonthlyCostSummary(
     pendingArchiveCost: number,
     customPricing: Record<string, ModelPricing>,
     hasUnmeteredImageUsage = false,
-    prefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE },
 ): string {
     const monthEn = MONTH_NAMES_EN[breakdown.month - 1];
     const monthZh = MONTH_NAMES_ZH[breakdown.month - 1];
@@ -1933,7 +1862,7 @@ function buildMonthlyCostSummary(
     const isPartial = unpricedNames.size > 0 || hasUnmeteredImageUsage;
 
     html += `<div class="prc-monthly-grand">
-        <span class="prc-monthly-grand-val${allUnavailable ? ' is-unavailable' : ''}">${allUnavailable ? tBiHtml('Not available', '暂无法估算') : esc(fmtCost(grandTotal, prefs))}</span>
+        <span class="prc-monthly-grand-val${allUnavailable ? ' is-unavailable' : ''}">${allUnavailable ? tBiHtml('Not available', '暂无法估算') : esc(fmtCost(grandTotal))}</span>
         <span class="prc-monthly-grand-label${isPartial ? ' is-partial' : ''}">${isPartial ? tBiHtml('Partial total', '已知小计') : tBiHtml('Total', '总计')}</span>
         <span class="prc-monthly-grand-breakdown">${archivedLabel}</span>
     </div>`;
@@ -1945,9 +1874,9 @@ function buildMonthlyCostSummary(
         const pct = maxCost > 0 && m.totalCost > 0 ? Math.max(2, (m.totalCost / maxCost) * 100) : 0;
         const costHtml = isUnpriced
             ? (m.totalCost > 0
-                ? `${esc(fmtCost(m.totalCost, prefs))} <span class="prc-cost-partial-tag">· ${tBiHtml('Partial', '已知小计')}</span>`
+                ? `${esc(fmtCost(m.totalCost))} <span class="prc-cost-partial-tag">· ${tBiHtml('Partial', '已知小计')}</span>`
                 : `<span class="prc-cost-unavailable">${tBiHtml('Cost unavailable', '费用暂不可用')}</span>`)
-            : esc(fmtCost(m.totalCost, prefs));
+            : esc(fmtCost(m.totalCost));
         html += `<div class="prc-monthly-card">
             <span class="prc-monthly-model-name" title="${esc(m.name)}">${esc(m.name)}</span>
             <div class="prc-monthly-bar-wrap">

@@ -178,18 +178,16 @@ describe('status bar speed and prompt cache settings UI & script wiring', () => 
         expect(html).toMatch(/id="toggleCacheHit"[^>]*checked/);
     });
 
-    it('wires #toggleSpeed, #toggleCacheHit, #toggleSessionCost, and currency controls in settings & script', async () => {
+    it('wires #toggleSpeed, #toggleCacheHit, and USD #toggleSessionCost without any currency/FX controls', async () => {
         for (const lang of ['en', 'zh', 'both'] as const) {
             await setLanguageToState(lang, state);
             const html = buildSettingsContent([]);
             expect(html).not.toContain('令牌');
             expect(html).toContain('id="toggleSessionCost"');
-            expect(html).toContain('class="currency-toggle-group"');
-            expect(html).toContain('data-currency="USD"');
-            expect(html).toContain('data-currency="CNY"');
-            expect(html).toContain('data-currency="both"');
-            expect(html).toContain('id="cnyExchangeRateInput"');
-            expect(html).toContain('id="cnyExchangeRateSaveBtn"');
+            expect(html).toContain('<code>$0.27</code>');
+            expect(html).not.toContain('currency-toggle-group');
+            expect(html).not.toContain('data-currency');
+            expect(html).not.toMatch(/[\u00a5\uffe5]/);
         }
         const script = getScript();
         expect(script).toContain("'toggleSpeed'");
@@ -198,46 +196,16 @@ describe('status bar speed and prompt cache settings UI & script wiring', () => 
         expect(script).toContain("'statusBar.showSpeed'");
         expect(script).toContain("'statusBar.showCacheHit'");
         expect(script).toContain("'statusBar.showSessionCost'");
-        expect(script).toContain("'pricing.displayCurrency'");
-        expect(script).toContain("'pricing.cnyExchangeRate'");
-    });
-
-    it('renders dynamic #sessionCostPreview, strict FX validation, settings sync handler, and pricing FX draft preservation (#31 #8)', async () => {
-        await setLanguageToState('en', state);
-        vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({
-            get: <T>(key: string, fallback?: T): T => {
-                if (key === 'pricing.displayCurrency') { return 'both' as T; }
-                if (key === 'pricing.cnyExchangeRate') { return 7.5 as T; }
-                return fallback as T;
-            },
-        } as vscode.WorkspaceConfiguration);
-
-        const html = buildSettingsContent([]);
-        expect(html).toContain('id="sessionCostPreview">$0.27 (¥2.03)</code>');
-        expect(html).toContain('id="cnyExchangeRateInput"');
-        expect(html).toContain('data-original-value="7.5"');
-
-        const script = getScript();
-        // Strict numeric FX validation + inline error feedback
-        expect(script).toContain('function parseStrictFxRate');
-        expect(script).toContain('invalidFxRateText');
-        expect(script).toContain('flashCurrencyFeedback');
-        // External settings control sync + live preview updater
         expect(script).toContain("msg.command === 'syncSettingsControls'");
-        expect(script).toContain('updateSessionCostPreview');
-        // Pricing FX input draft preservation during polling updateTabs
-        expect(script).toContain('pricingFxDraft');
-        expect(script).toContain('#pricingFxRateInput');
+        expect(script).not.toContain('data-currency');
+        expect(script).not.toContain("key: 'pricing.");
     });
 
-    it('clears stale session/today costs, passes manifest version to About, and refreshes currency even while paused (#31 #3/#8, #30 #5)', async () => {
+    it('clears stale session/today costs, passes manifest version to About, and syncs live status bar settings', async () => {
         await setLanguageToState('en', state);
-        let onMessage: ((msg: Record<string, unknown>) => Promise<void> | void) | undefined;
         let onDispose: (() => void) | undefined;
         const posted: Array<Record<string, unknown>> = [];
         const configValues: Record<string, unknown> = {
-            'pricing.displayCurrency': 'USD',
-            'pricing.cnyExchangeRate': 7.2,
             'statusBar.showSessionCost': false,
         };
         vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({
@@ -250,10 +218,7 @@ describe('status bar speed and prompt cache settings UI & script wiring', () => 
             webview: {
                 html: '',
                 postMessage: (msg: Record<string, unknown>) => { posted.push(msg); return Promise.resolve(true); },
-                onDidReceiveMessage: (cb: (msg: Record<string, unknown>) => Promise<void> | void) => {
-                    onMessage = cb;
-                    return { dispose: () => {} };
-                },
+                onDidReceiveMessage: () => ({ dispose: () => {} }),
             },
             reveal: () => {},
             onDidChangeViewState: () => ({ dispose: () => {} }),
@@ -305,12 +270,11 @@ describe('status bar speed and prompt cache settings UI & script wiring', () => 
                 context: fakeCtx,
                 todayCostUsd: 4.5,
                 sessionCostUsd: 1.25,
-                currencyPrefs: { currency: 'USD', cnyRate: 7.2 },
             });
 
             // #30 #5: Dynamic packageJSON.version flows into About tab
             expect(fakePanel.webview.html).toContain('v9.8.7');
-            // Initial overview shows initial session/today costs
+            // Initial overview shows initial session/today USD costs
             expect(fakePanel.webview.html).toContain('$4.50');
             expect(fakePanel.webview.html).toContain('$1.25');
 
@@ -330,23 +294,12 @@ describe('status bar speed and prompt cache settings UI & script wiring', () => 
             expect(clearedMsg!.tabs.overview).not.toContain('$1.25');
             expect(clearedMsg!.tabs.about).toContain('v9.8.7');
 
-            // #31 #8: Pause panel, then explicitly change currency -> tabs MUST still refresh & Settings controls MUST sync
-            await onMessage?.({ command: 'togglePause' });
+            // External config sync posts syncSettingsControls and optionally refreshes tabs
             posted.length = 0;
-            await onMessage?.({ command: 'setConfig', key: 'pricing.displayCurrency', value: 'CNY' });
-            expect(posted.some(m => m.command === 'updateTabs')).toBe(true);
-            expect(posted.some(m => m.command === 'syncSettingsControls' && m.displayCurrency === 'CNY')).toBe(true);
-
-            // External config sync posts syncSettingsControls and force-refreshes when pricing changed
-            posted.length = 0;
-            configValues['pricing.cnyExchangeRate'] = 7.5;
             configValues['statusBar.showSessionCost'] = true;
             syncMonitorPanelSettings(true);
-            expect(posted.some(m => m.command === 'syncSettingsControls' && m.cnyExchangeRate === 7.5 && m.showSessionCost === true)).toBe(true);
+            expect(posted.some(m => m.command === 'syncSettingsControls' && m.showSessionCost === true)).toBe(true);
             expect(posted.some(m => m.command === 'updateTabs')).toBe(true);
-
-            // Unpause cleanly
-            await onMessage?.({ command: 'togglePause' });
         } finally {
             onDispose?.();
         }

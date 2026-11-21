@@ -28,14 +28,6 @@ import { getStyles } from './webview-styles';
 import { getEditorialStyles } from './webview-editorial-styles';
 import { buildOverviewTabContent, getOverviewStyles } from './webview-overview-tab';
 import { parseTooltipDensity } from './tooltip-budget';
-import {
-    DEFAULT_CNY_EXCHANGE_RATE,
-    DEFAULT_DISPLAY_CURRENCY,
-    normalizeCurrencyPrefs,
-    parseDisplayCurrency,
-    sanitizeCnyExchangeRate,
-    type CurrencyPrefs,
-} from './currency';
 import type { MonitorStatus, OverviewDestination } from './monitor-overview';
 import type { StateBucket } from './durable-state';
 import type { PersistedModelDNA } from './model-dna-store';
@@ -75,8 +67,6 @@ export interface PanelPayload {
     orchestratorSettings?: OrchestratorSettings | null;
     /** Dual-window (5h + weekly) quota summary from RetrieveUserQuotaSummary. */
     quotaSummary?: UserQuotaSummary | null;
-    /** Offline display currency and reference FX rate preferences. */
-    currencyPrefs?: CurrencyPrefs;
     /** Today's total estimated cost in USD (active + settled ledger). */
     todayCostUsd?: number;
     /** Current session/active conversation estimated cost in USD. */
@@ -113,7 +103,6 @@ let lastLedgerSettled: LedgerSettledEntry[] = [];
 let lastCustomPricing: Record<string, ModelPricing> = {};
 let lastOrchestratorSettings: OrchestratorSettings | null = null;
 let lastQuotaSummary: UserQuotaSummary | null = null;
-let lastCurrencyPrefs: CurrencyPrefs = { currency: DEFAULT_DISPLAY_CURRENCY, cnyRate: DEFAULT_CNY_EXCHANGE_RATE };
 let lastTodayCostUsd: number | undefined;
 let lastSessionCostUsd: number | undefined;
 export const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
@@ -132,10 +121,6 @@ function sanitizeConfigValue(key: string, value: unknown): unknown {
     switch (key) {
         case 'statusBar.tooltipDensity':
             return parseTooltipDensity(value);
-        case 'pricing.displayCurrency':
-            return parseDisplayCurrency(value);
-        case 'pricing.cnyExchangeRate':
-            return sanitizeCnyExchangeRate(value);
         case 'statusBar.showContext':
         case 'statusBar.showQuota':
         case 'statusBar.showResetCountdown':
@@ -350,7 +335,6 @@ export function showMonitorPanel(p: PanelPayload): void {
     if (p.customPricing !== undefined) { lastCustomPricing = p.customPricing; }
     if (p.orchestratorSettings !== undefined) { lastOrchestratorSettings = p.orchestratorSettings; }
     if (p.quotaSummary !== undefined) { lastQuotaSummary = p.quotaSummary; }
-    if (p.currencyPrefs !== undefined) { lastCurrencyPrefs = normalizeCurrencyPrefs(p.currencyPrefs); }
     if ('todayCostUsd' in p) { lastTodayCostUsd = p.todayCostUsd; }
     if ('sessionCostUsd' in p) { lastSessionCostUsd = p.sessionCostUsd; }
 
@@ -409,8 +393,6 @@ export function showMonitorPanel(p: PanelPayload): void {
                 'statusBar.showSpeed',
                 'statusBar.showCacheHit',
                 'statusBar.showSessionCost',
-                'pricing.displayCurrency',
-                'pricing.cnyExchangeRate',
                 'showModelInternalId',
                 'quotaNotificationThreshold',
                 'activity.maxRecentSteps',
@@ -421,21 +403,6 @@ export function showMonitorPanel(p: PanelPayload): void {
                 const normalizedValue = sanitizeConfigValue(msg.key, msg.value);
                 await vscode.workspace.getConfiguration('antigravityContextMonitor')
                     .update(msg.key, normalizedValue, vscode.ConfigurationTarget?.Global);
-                if (msg.key === 'pricing.displayCurrency') {
-                    lastCurrencyPrefs = normalizeCurrencyPrefs({ ...lastCurrencyPrefs, currency: normalizedValue as CurrencyPrefs['currency'] });
-                    refreshStatusBarTelemetry();
-                    if (panel) {
-                        postCurrentTabs();
-                        postSettingsControlSync();
-                    }
-                } else if (msg.key === 'pricing.cnyExchangeRate') {
-                    lastCurrencyPrefs = normalizeCurrencyPrefs({ ...lastCurrencyPrefs, cnyRate: normalizedValue as number });
-                    refreshStatusBarTelemetry();
-                    if (panel) {
-                        postCurrentTabs();
-                        postSettingsControlSync();
-                    }
-                }
                 if (panel) {
                     safePostMessage({ command: 'configSaved', key: msg.key });
                 }
@@ -612,7 +579,6 @@ export function updateMonitorPanel(p: PanelPayload): void {
     if (p.customPricing !== undefined) { lastCustomPricing = p.customPricing; }
     if (p.orchestratorSettings !== undefined) { lastOrchestratorSettings = p.orchestratorSettings; }
     if (p.quotaSummary !== undefined) { lastQuotaSummary = p.quotaSummary; }
-    if (p.currencyPrefs !== undefined) { lastCurrencyPrefs = normalizeCurrencyPrefs(p.currencyPrefs); }
     if ('todayCostUsd' in p) { lastTodayCostUsd = p.todayCostUsd; }
     if ('sessionCostUsd' in p) { lastSessionCostUsd = p.sessionCostUsd; }
     if (panel?.visible && !isPaused) { postCurrentTabs(); }
@@ -626,15 +592,8 @@ function getExtensionVersion(): string | undefined {
 function postSettingsControlSync(): void {
     if (!panel) { return; }
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
-    const currencyPrefs = normalizeCurrencyPrefs({
-        currency: cfg.get('pricing.displayCurrency', lastCurrencyPrefs.currency),
-        cnyRate: cfg.get('pricing.cnyExchangeRate', lastCurrencyPrefs.cnyRate),
-    });
-    lastCurrencyPrefs = currencyPrefs;
     safePostMessage({
         command: 'syncSettingsControls',
-        displayCurrency: currencyPrefs.currency,
-        cnyExchangeRate: currencyPrefs.cnyRate,
         showContext: cfg.get<boolean>('statusBar.showContext', true),
         showQuota: cfg.get<boolean>('statusBar.showQuota', true),
         showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
@@ -649,7 +608,7 @@ function postSettingsControlSync(): void {
 /**
  * Sync live VS Code settings changes (e.g. external Settings JSON/UI edits) into
  * the open WebView's Settings controls and optionally force-refresh all tabs
- * even when auto-refresh is paused (used for explicit currency/FX config edits).
+ * even when auto-refresh is paused.
  */
 export function syncMonitorPanelSettings(forceRefreshTabs = false): void {
     if (!panel) { return; }
@@ -682,7 +641,6 @@ function buildOverview(usage: ContextUsage | null, configs: ModelConfig[], userI
             activeCascadeId: usage?.cascadeId,
             orchestratorSettings: lastOrchestratorSettings,
             quotaSummary: lastQuotaSummary,
-            currencyPrefs: lastCurrencyPrefs,
             todayCostUsd: lastTodayCostUsd,
             sessionCostUsd: lastSessionCostUsd,
         },
@@ -704,7 +662,7 @@ function buildTabContents(
     const customPricing = lastPricingStore?.getCustom() ?? lastCustomPricing;
     return {
         overview: buildOverview(usage, configs, userInfo) + eoc,
-        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, customPricing, lastCurrencyPrefs) + eoc,
+        gmdata: buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, customPricing) + eoc,
         chats: buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri) + eoc,
         pricing: (lastPricingStore
             ? buildPricingTabContent(
@@ -714,16 +672,14 @@ function buildTabContents(
                 lastLedgerSettled,
                 lastTodayLedgerActive,
                 [usage, ...allUsages].some(item => (item?.imageGenStepCount || 0) > 0),
-                lastCurrencyPrefs,
             )
             : `<p class="empty-msg">${tBiHtml('Initializing...', '初始化中...')}</p>`) + eoc,
         models: buildModelsTabContent(userInfo, configs, {
             orchestratorSettings: lastOrchestratorSettings,
             quotaSummary: lastQuotaSummary,
-            currencyPrefs: lastCurrencyPrefs,
             customPricing,
         }) + eoc,
-        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth, lastCurrencyPrefs) + eoc,
+        calendar: buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth) + eoc,
         profile: buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0, lastQuotaSummary) + eoc,
         about: buildAboutTabContent(getExtensionVersion()) + eoc,
         // Account popover: content-only update, does NOT affect open/close state
@@ -752,7 +708,7 @@ function buildHtml(
 ): string {
     const customPricing = lastPricingStore?.getCustom() ?? lastCustomPricing;
     const overviewHtml = buildOverview(usage, configs, userInfo);
-    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, customPricing, lastCurrencyPrefs);
+    const gmDataHtml = buildGMDataTabContent(lastActivitySummary, lastGMSummary, usage, lastAccountSnapshots, lastTodayLedgerActive, lastLedgerSettled, customPricing);
     const chatsHtml = buildChatHistoryTabContent(lastTrajectories, usage, lastGMSummary, lastGMConversations, lastWorkspaceUri);
     const pricingHtml = lastPricingStore
         ? buildPricingTabContent(
@@ -762,16 +718,14 @@ function buildHtml(
             lastLedgerSettled,
             lastTodayLedgerActive,
             [usage, ...allUsages].some(item => (item?.imageGenStepCount || 0) > 0),
-            lastCurrencyPrefs,
         )
         : `<p class="empty-msg">${tBiHtml('Initializing...', '初始化中...')}</p>`;
     const modelsHtml = buildModelsTabContent(userInfo, configs, {
         orchestratorSettings: lastOrchestratorSettings,
         quotaSummary: lastQuotaSummary,
-        currencyPrefs: lastCurrencyPrefs,
         customPricing,
     });
-    const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth, lastCurrencyPrefs);
+    const calendarHtml = buildCalendarTabContent(lastDailyStore ?? undefined, calendarYear, calendarMonth);
     const profileHtml = buildProfileContent(userInfo, configs, getBillingDaysMap()[userInfo?.email ?? ''] ?? 0, lastQuotaSummary);
     const settingsHtml = buildSettingsContent(configs, lastStorageDiagnostics, getPanelHintPreferences());
     const panelHintPrefs = getPanelHintPreferences();

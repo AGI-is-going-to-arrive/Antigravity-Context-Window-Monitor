@@ -19,11 +19,10 @@ antigravity-context-monitor/
 │   ├── tracker.ts                # Planner/checkpoint 精确 Token 快照、跨池 Orchestrator 匹配、Orchestrator Settings（JetboxSubscribeToState + GetMendelFlags）与双窗口配额（RetrieveUserQuotaSummary）
 │   ├── models.ts                 # 模型配置、512K Gemini 4/Orchestrator 阈值、OrchestratorSettings/UserQuotaSummary、M669/M530/M531/M578 与跨语言归一化
 │   ├── model-quota.ts            # 跨家族通用基础模型思考档位合并、共享配额池与 5h/Weekly 双窗口配额汇总
-│   ├── currency.ts               # 纯离线本地币种与汇率格式化引擎（USD / CNY / both、安全汇率限幅与每百万费率格式化，零外部网络请求）
 │   ├── tooltip-budget.ts         # 优先级分层悬停区块预算（HoverSection[] P0–P5、缩放感知行数约束、GFM 表格拼接与配额池代表选择）
 │   ├── constants.ts              # 全局常量（Step 类型、阈值、限制值）
 │   ├── statusbar.ts              # 状态栏读数（含可选 showSpeed/showCacheHit/showSessionCost）与分层结构化悬停摘要（Hero、Latest Call 微表、KPI/费用/缓存/速度表、双窗口配额表、事件警报与一键页脚）
-│   ├── monitor-overview.ts       # 状态栏与总览共用的连接状态、活跃编排路由、上下文读数、双窗口百分比、双币种费用/节省及 L2 遥测条格式化
+│   ├── monitor-overview.ts       # 状态栏与总览共用的连接状态、活跃编排路由、上下文读数、双窗口百分比、美元费用/节省及 L2 遥测条格式化
 │   ├── account-credits.ts        # 当前 Google AI 积分归一化、去重、本地化标签及未知安全汇总（过滤旧 Prompt/Flow）
 │   ├── telemetry-metrics.ts      # 纯遥测指标计算引擎（tok/s 生成速度、TTFT 缓存/非缓存对比、提示词缓存命中率与节省估算，零 VS Code/DOM 依赖）
 │   ├── durable-state.ts          # 扩展外部持久化：JSON 文件 + VS Code state 镜像
@@ -45,34 +44,33 @@ antigravity-context-monitor/
 │   │   ├── parser.ts             #   解析器 + 提取器 + 匹配/合并/增强 + trajectory 模型提示回填 + 动态编排器计划/执行模型识别 + 检查点摘要/工具调用/系统上下文提取
 │   │   ├── summary.ts            #   汇总构建 + 过滤 + 标准化（按有效样本加权合并 TTFT/流耗时，含 toolCallCounts 透传）
 │   │   └── tracker.ts            #   GMTracker 类核心（fetch/reset/serialize + live UI summary + 额度重置过滤 + toolCallCounts 聚合 + toolCatalog 持久化/清空）
-│   ├── pricing-store.ts          # 定价数据层：内置官方费率（含 Gemini 4 Neon 官方价、Sonnet 5.5 $0.10 缓存读校正、Flash 3.6 有界优惠期、定时调价提醒 helper）+ 用户自定义持久化 + 费用计算
+│   ├── pricing-store.ts          # 定价数据层：内置官方费率（含 Gemini 4 Neon 官方价、Sonnet 5.5 $0.10 缓存读校正、Flash 3.6 有界优惠期、定时调价提醒 helper）、纯 USD 格式化 helper（formatUsdCost/Savings/PerMillion）+ 用户自定义持久化 + 费用计算
 │   ├── model-dna-store.ts        # 模型信息持久化：跨周期保留静态模型 DNA
 │   ├── daily-store.ts            # 日历数据层：按日聚合 Activity / GM / Cost（每日单快照，含 v1 兼容耗时/速度/缓存 token 归档字段）
-│   ├── webview-panel.ts          # WebView 面板框架、body[data-lang]、吸顶页首、标签切换、增量刷新、动态清单版本透传及消息通信（含 showSessionCost / displayCurrency / cnyExchangeRate 白名单与跨标签控件同步）
+│   ├── webview-panel.ts          # WebView 面板框架、body[data-lang]、吸顶页首、标签切换、增量刷新、动态清单版本透传及消息通信（含 showSessionCost 白名单与跨标签控件同步）
 │   ├── webview-overview-tab.ts   # 总览页：活跃会话上下文、跨池编排路由胶囊、L2 速度/TTFT/缓存/费用遥测条、可折叠诊断、5h+Weekly 双窗口配额与 AI 积分页脚
 │   ├── webview-styles.ts         # WebView 基础布局与组件样式
-│   ├── webview-editorial-styles.ts # Studio Telemetry Ledger 设计系统样式（深/浅/高对比度主题、零宋体排版、双语层级、编排设置/双窗口配额/双币种/最近调用/调价横幅样式规范）
-│   ├── webview-script.ts         # WebView 客户端 JS（标签滑动条、币种/汇率与设置同步、草稿保护、隐私交互、增量 DOM 刷新与焦点保持）
+│   ├── webview-editorial-styles.ts # Studio Telemetry Ledger 设计系统样式（深/浅/高对比度主题、零宋体排版、双语层级、编排设置/双窗口配额/最近调用/调价横幅样式规范）
+│   ├── webview-script.ts         # WebView 客户端 JS（标签滑动条、设置同步、草稿保护、隐私交互、增量 DOM 刷新与焦点保持）
 │   ├── webview-helpers.ts        # WebView 共享工具函数（esc、时间/大小格式化，并复导 i18n 的 tBiHtml）
 │   ├── webview-icons.ts          # WebView 内联 SVG 图标（含 ICON.search 等单线条图标）
 │   ├── webview-models-tab.ts     # 模型页：实时 Orchestrator Settings 卡片、默认模型、双窗口共享配额池、聊天/图片分区、API 参考价行与不适用/未定价状态
-│   ├── webview-settings-tab.ts   # 设置页：持久化存储诊断、悬停密度（auto/compact/full）、7 项状态栏开关（含会话费用）、币种与本地参考汇率卡片、轮询与缩放
+│   ├── webview-settings-tab.ts   # 设置页：持久化存储诊断、悬停密度（auto/compact/full）、7 项状态栏开关（含会话费用 $0.27 预览）、轮询与缩放
 │   ├── webview-profile-tab.ts    # 个人页：隐私遮罩账号、5h+Weekly 共享模型配额、AI 积分与到期日、可折叠计划限制与功能配置
 │   ├── webview-chat-history-tab.ts # 会话目录：工作区分组、搜索、筛选、本地化状态/存储标签及会话操作
 │   ├── activity-panel.ts         # GM 数据：KPI、双列速度与首字缓存账本、可折叠最近调用明细表（Recent Calls Ledger）、模型统计、时间线遥测标签、上下文情报、工具、错误和全局账号面板浮层
-│   ├── pricing-panel.ts          # 成本：顶部双币种与汇率工具栏、官方定时调价倒计时横幅、月度/实时多币种成本分析（含缓存节省与思考占比）、四分项分布图及自定义价格编辑
-│   ├── webview-calendar-tab.ts   # 日历：多币种月度/全部汇总、7 列交互月历、每日明细（含归档速度/TTFT/缓存命中）及周期归档
+│   ├── pricing-panel.ts          # 成本：官方定时调价倒计时横幅、月度/实时美元成本分析（含缓存节省与思考占比）、四分项分布图及自定义价格编辑
+│   ├── webview-calendar-tab.ts   # 日历：美元月度/全部汇总、7 列交互月历、每日明细（含归档速度/TTFT/缓存命中）及周期归档
 │   ├── webview-about-tab.ts      # 关于页：清单动态版本、平台范围、8 页功能导航卡片、Gemini 4 全系 512K 窗口说明、兼容性与文档
-│   ├── i18n.ts                   # 国际化：三语言模式、翻译表（含编排器、双窗口配额、双币种与悬停微表键）、tBi / tBiHtml、formatNumber 与偏好持久化
+│   ├── i18n.ts                   # 国际化：三语言模式、翻译表（含编排器、双窗口配额与悬停微表键）、tBi / tBiHtml、formatNumber 与偏好持久化
 │   ├── legacy-migration.ts       # 旧版 Antigravity 数据自动迁移（检测旧 state.vscdb + child_process 提取）
-│   └── images/                   # README 定稿截图资源（全部 9 页 monitor-*.png，含浅/深双主题）
+│   └── images/                   # README 定稿截图资源（全部 9 页 monitor-*.png，Obsidian Slate 深色双语）
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
-├── tests/                        # Vitest 单元测试（61 个测试文件）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
-│   ├── currency.test.ts          # 离线多币种与汇率格式化、边界限幅及零值省略回归
+├── tests/                        # Vitest 单元测试（60 个测试文件）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
 │   ├── neon-pricing.test.ts      # Gemini 4 Neon 官方定价、Sonnet 5.5 $0.10 缓存读、Flash 3.6 优惠期与定时调价倒计时回归
 │   ├── orchestrator-settings.test.ts # JetboxSubscribeToState 流首帧、GetMendelFlags 编排角色、RetrieveUserQuotaSummary 双窗口与跨池上下文回归
-│   ├── webview-orchestrator-ui.test.ts # 编排设置卡、跨池路由、双窗口配额、双币种、Notice 徽章、About 动态版本与样式系统回归
+│   ├── webview-orchestrator-ui.test.ts # 编排设置卡、跨池路由、双窗口配额、美元费用、Notice 徽章、About 动态版本与样式系统回归
 │   ├── tooltip-budget.test.ts    # 优先级分层悬停预算（P0–P5 压缩/降级、Quota 永不丢弃、缩放收紧与 GFM 表格渲染）回归
 │   ├── telemetry-metrics.test.ts # 纯遥测引擎（相加式缓存、显式/隐式思考、总和比值加权、双层噪声门限、缓存/非缓存 TTFT、未定价节省）
 │   ├── activity-telemetry-panel.test.ts # GM 数据 KPI、速度与首字缓存账本、最近调用明细表、模型卡片与时间线遥测标签回归
@@ -108,15 +106,15 @@ antigravity-context-monitor/
 │   ├── claude-55.test.ts         # Claude 5.5 六档参数、别名、计价与历史模型兼容
 │   ├── model-live-sync.test.ts   # 实时模型同步、空 picker 清理与 catalog ID 保留
 │   ├── model-info.test.ts        # 模型信息卡片：i18n、自适应思考、转义、缺失数据与账号展示范围
-│   ├── pricing-resolution.test.ts # 家族计价、跨语言身份、自定义价格与未定价模型
+│   ├── pricing-resolution.test.ts # 家族计价、跨语言身份、自定义价格、未定价模型与纯 USD 格式化边界回归
 │   ├── cost-backfill.test.ts     # 历史成本回填与定价时期边界
 │   ├── ledger-cost-reconciliation.test.ts # 账本已记录调用零费用补账与幂等校验回归
-│   ├── pricing-panel.test.ts     # Cost 价格表、双币种、调价横幅与缓存节省回归测试
-│   ├── webview-script.test.ts    # WebView 价格保存、汇率校验与客户端交互回归测试
+│   ├── pricing-panel.test.ts     # Cost 价格表、美元费用、调价横幅与缓存节省回归测试
+│   ├── webview-script.test.ts    # WebView 价格保存与客户端交互回归测试
 │   ├── tool-catalog-clear.test.ts # 工具目录清空持久化回归测试
 │   ├── billing-day.test.ts       # 积分到期日 DST 安全日历日差测试
 │   ├── extension-selection.test.ts # 模型选择与版本恢复回归测试
-│   ├── statusbar-tooltip.test.ts # 状态栏读数、分层悬停摘要、双窗口配额、双币种与密度预算回归
+│   ├── statusbar-tooltip.test.ts # 状态栏读数、分层悬停摘要、双窗口配额、美元费用与密度预算回归
 │   ├── installed-ide-ui.cjs      # Chromium 浅/深/高对比度 + axe WCAG 2.1 AA 无障碍 + 9 页响应式、v1.17.3 深度检查与截图验收脚本（另支持 --native）
 │   ├── activity-estimated-context.test.ts # 活动估算上下文与精确快照边界测试
 │   ├── activity-recent-steps.test.ts # 最近操作 warm-up 全量恢复与持久化安全上限测试
@@ -203,12 +201,6 @@ antigravity-context-monitor/
 
 ---
 
-### currency.ts -- 本地离线多币种与汇率格式化
-
-零 VS Code 依赖、零外部网络请求的纯格式化模块：支持 `USD`、`CNY`、`both` 三种显示模式（`parseDisplayCurrency()`）及安全限幅汇率 `0.01–1000`（默认 `7.2`，`sanitizeCnyExchangeRate()`）。提供 `formatCurrencyCost()`（`standard` / `call` / `rate` 三种精度与 `paren` / `slash` 双币连接）、`formatCurrencySavings()`（带零舍入保护，绝不输出 `-0.00`）与 `formatPerMillionRate()`，统一服务于状态栏、悬停摘要、总览、GM 数据、成本、模型与日历全部页面。
-
----
-
 ### account-credits.ts -- 当前 Google AI 积分聚合与未知安全处理
 
 统一过滤旧版 `PROMPT` / `FLOW` / `UNSPECIFIED` 积分桶（`isCurrentCreditType()`），对有效积分键去重并校验冲突读数（`currentAICredits()`、`parseCreditBalance()`），提供中英双语本地化标签（`formatCreditTypeLabel()`）及未知安全总额计算（`aiCreditTotal(): number | null`、`summarizeAccountCredits()`）。状态栏、总览页、个人页与顶部账号面板共用该模块，缺失或冲突时统一返回 `null` 并呈现**未上报**，绝不伪造 `0`。
@@ -233,13 +225,13 @@ antigravity-context-monitor/
 
 ### statusbar.ts -- 状态栏 UI 与重构后的悬停摘要
 
-`StatusBarManager` 展示上下文用量、剩余配额、重置倒计时、AI 积分及三项默认关闭的可选状态栏读数：`statusBar.showSpeed`（`$(pulse)`）、`statusBar.showCacheHit` 与 `statusBar.showSessionCost`（`$(credit-card)`，支持 `USD`/`CNY`/`both` 多币种）；冷启动无有效数据时自动隐藏，未知积分绝不伪造 `0`。
+`StatusBarManager` 展示上下文用量、剩余配额、重置倒计时、AI 积分及三项默认关闭的可选状态栏读数：`statusBar.showSpeed`（`$(pulse)`）、`statusBar.showCacheHit` 与 `statusBar.showSessionCost`（`$(credit-card)`，美元格式）；冷启动无有效数据时自动隐藏，未知积分绝不伪造 `0`。
 
 1.17.3 全面重构原生 Markdown 悬停摘要，采用 `tooltip-budget.ts` 优先级分层区块与 GFM 微表布局：
 - **P0 Hero 区块**：账号计划、会话标题/步数、编排器跨池路由（`Planner → Executor (Cross-pool)`）、Unicode 胶囊上下文条与压缩/缺口警报。
 - **P0 配额区块（永不丢弃）**：`5h | Weekly` 双窗口配额表（无周窗口时自动回退 5h 单列），带 `Planner`/`Executor`/`Active` 池角色标注与精确重置倒计时，窄预算下压缩为单行紧凑摘要。
 - **P1 会话与今日 KPI 账本表**：`Cost`（会话/今日/缓存节省，空会话不误报未定价）、`Prompt Cache`（命中率、有效综合输入费率 `Eff. In` 与缓存写入量）、`Speed / TTFT`（含缓存 vs 非缓存 TTFT 对比）及可选 1 行 `Orchestrator Split` 拆分行。
-- **P3 最近调用微表（Latest Call）**：最新一次调用的模型、状态徽章（含 0-token 失败/重试调用）、`In / Out (Think)`、缓存命中率、多币种费用及 `TTFT / Total · Speed`。
+- **P3 最近调用微表（Latest Call）**：最新一次调用的模型、状态徽章（含 0-token 失败/重试调用）、`In / Out (Think)`、缓存命中率、美元费用及 `TTFT / Total · Speed`。
 - **P4 智能事件警报**：14 天内官方定时调价倒计时、模型下线 `Notice` 提醒、重试开销（`Retry Waste`）及 AI 积分到期提醒。
 - **P0 置底一键操作栏**：`MarkdownString.isTrusted` 仅白名单放行 `antigravity-context-monitor.showDetails`（直达 `Overview · Activity · Cost · Models · Settings`）与 `antigravity-context-monitor.refresh`。
 
@@ -282,7 +274,7 @@ antigravity-context-monitor/
 ---
 ### activity-panel.ts -- GM Data 统一面板渲染与全局账号面板
 
-GM 数据页接入 `telemetry-metrics.ts` 与 `currency.ts`，在按账号过滤的 KPI 条展示生成速度、平均首字延迟与按 token 加权的缓存命中率；在 KPI 下方渲染双列 **Speed & First-Token Cache Ledger（`#telemetryLedgerSection`）**（含多币种缓存节省估算），并在其下方新增可折叠 **Recent Calls Ledger（`#recentCallsLedger`）**（按账号过滤最近 20 次调用：时间、实际模型、新输入、输出及思考占比、缓存命中率、多币种费用或诚实 `Unpriced` 徽章、TTFT、总耗时、噪声门限过滤速度和成功/重试/失败状态，支持 320px 安全横向滚动）；同时保留统一模型统计卡片、时间线遥测标签、上下文情报、工具排行、错误详情、检查点、系统上下文及待归档费用。`buildAccountStatusPanel()` 与 `hasAccountReadyPool()` 供顶部全局账号面板复用。
+GM 数据页接入 `telemetry-metrics.ts` 与 `pricing-store.ts`，在按账号过滤的 KPI 条展示生成速度、平均首字延迟与按 token 加权的缓存命中率；在 KPI 下方渲染双列 **Speed & First-Token Cache Ledger（`#telemetryLedgerSection`）**（含美元缓存节省估算），并在其下方新增可折叠 **Recent Calls Ledger（`#recentCallsLedger`）**（按账号过滤最近 20 次调用：时间、实际模型、新输入、输出及思考占比、缓存命中率、美元费用或诚实 `Unpriced` 徽章、TTFT、总耗时、噪声门限过滤速度和成功/重试/失败状态，支持键盘聚焦与 320px 安全横向滚动）；同时保留统一模型统计卡片、时间线遥测标签、上下文情报、工具排行、错误详情、检查点、系统上下文及待归档费用。`buildAccountStatusPanel()` 与 `hasAccountReadyPool()` 供顶部全局账号面板复用。
 
 ---
 
@@ -312,7 +304,7 @@ GM 数据页接入 `telemetry-metrics.ts` 与 `currency.ts`，在按账号过滤
 
 ### pricing-panel.ts -- Cost 标签页渲染
 
-生成 Cost 标签页 HTML，导出 `buildModelDNACards()` 供 Models 标签页复用。1.17.3 顶部新增内联**显示币种切换条 + 本地参考汇率输入（`.prc-currency-bar`）**与 **45 天内官方定时调价倒计时横幅（`.rate-change-banner`）**；月度汇总、费用分布条与逐模型明细全面接入 `currency.ts` 并补充提示词缓存节省徽章与思考费用占比。检测到生图但缺少独立图片 Token/积分/GM 计量时仍显示“已知小计，未计入图片生成费用”。价格编辑区展示官方 `gemini-4-neon` 与未定价编排器行，保存时仅持久化自定义或实际改动行。
+生成 Cost 标签页 HTML，导出 `buildModelDNACards()` 供 Models 标签页复用。1.17.3 顶部新增 **45 天内官方定时调价倒计时横幅（`.rate-change-banner`）**；月度汇总、费用分布条与逐模型明细全部以美元（USD）呈现，并补充提示词缓存节省徽章与思考费用占比。检测到生图但缺少独立图片 Token/积分/GM 计量时仍显示“已知小计，未计入图片生成费用”。价格编辑区展示官方 `gemini-4-neon` 与未定价编排器行，保存时仅持久化自定义或实际改动行。
 
 ---
 
@@ -351,11 +343,11 @@ GM 数据页接入 `telemetry-metrics.ts` 与 `currency.ts`，在按账号过滤
 
 ### webview-panel.ts -- WebView 面板框架与 Studio Telemetry Ledger 样式架构
 
-面板框架在 `<body>` 注入 `data-lang="${currentLang}"` 属性，管理吸顶两行页首、2px 滑动标签指示条、全局账号下拉面板、消息通信（白名单含 `statusBar.showSpeed` / `statusBar.showCacheHit` / `statusBar.showSessionCost` / `pricing.displayCurrency` / `pricing.cnyExchangeRate`，显式币种与汇率变更即使在暂停态也立即刷新并向设置页同步控件状态）、动态透传扩展清单版本给关于页，以及增量刷新（通过 `'todayCostUsd' in p` / `'sessionCostUsd' in p` 避免切换会话或账号时残留旧费用）。`webview-overview-tab.ts` 渲染连接与会话状态、跨池编排器路由胶囊（`.orch-route-pill`）、上下文已用与可用余量、内嵌 4–5 格 L2 速度/TTFT/缓存/会话与今日费用遥测条（`.overview-telemetry-strip`）、可折叠诊断、5h+Weekly 双窗口共享配额池及 AI 积分页脚。
+面板框架在 `<body>` 注入 `data-lang="${currentLang}"` 属性，管理吸顶两行页首、2px 滑动标签指示条、全局账号下拉面板、消息通信（白名单含 `statusBar.showSpeed` / `statusBar.showCacheHit` / `statusBar.showSessionCost`）、动态透传扩展清单版本给关于页，以及增量刷新（通过 `'todayCostUsd' in p` / `'sessionCostUsd' in p` 避免切换会话或账号时残留旧费用）。`webview-overview-tab.ts` 渲染连接与会话状态、跨池编排器路由胶囊（`.orch-route-pill`）、上下文已用与可用余量、内嵌 4–5 格 L2 速度/TTFT/缓存/会话与今日费用遥测条（`.overview-telemetry-strip`）、可折叠诊断、5h+Weekly 双窗口共享配额池及 AI 积分页脚。
 
-`webview-editorial-styles.ts`（`getEditorialStyles()`）实现 `DESIGN.md` 定义的 **Studio Telemetry Ledger** 设计系统，并在 1.17.3 补充 `.orch-settings-card`、`.orch-route-pill`、`.quota-dual-row`、`.spec-price-row`、`.tag-notice`、`.recent-calls-card`、`.rate-change-banner` 与币种/汇率控件样式，继续保持 Obsidian Slate 深色、Alabaster Studio 浅色、高对比度透传、零宋体排版及 `320px–1440px` 零横向溢出规则。
+`webview-editorial-styles.ts`（`getEditorialStyles()`）实现 `DESIGN.md` 定义的 **Studio Telemetry Ledger** 设计系统，并在 1.17.3 补充 `.orch-settings-card`、`.orch-route-pill`、`.quota-dual-row`、`.spec-price-row`、`.tag-notice`、`.recent-calls-card` 与 `.rate-change-banner` 样式，继续保持 Obsidian Slate 深色、Alabaster Studio 浅色、高对比度透传、零宋体排版及 `320px–1440px` 零横向溢出规则。
 
-其他子模块包括 `webview-models-tab.ts`（模型页：实时 **Orchestrator Settings** 卡片展示 Orchestrator Model + Executor Model 与 Default/Custom 徽章、双窗口共享配额池、聊天/图片目录与每模型 API 参考价/诚实 `Unpriced` 行）、`webview-settings-tab.ts`（设置页：7 项状态栏开关含 `#toggleSessionCost` + 独立 **Currency Display / 币种与汇率** 卡片）、`webview-profile-tab.ts`（个人页：隐私遮罩账号、5h+Weekly 双窗口配额与琥珀 `Notice` 标签、AI 积分及可折叠计划详情）、`webview-chat-history-tab.ts`（会话）、`webview-calendar-tab.ts`（多币种日历）、`webview-about-tab.ts`（动态清单版本、USD/CNY 费用简介与全系 Gemini 4 512K 窗口说明）、`webview-script.ts`、`webview-styles.ts`、`webview-icons.ts` 与 `webview-helpers.ts`。
+其他子模块包括 `webview-models-tab.ts`（模型页：实时 **Orchestrator Settings** 卡片展示 Orchestrator Model + Executor Model 与 Default/Custom 徽章、双窗口共享配额池、聊天/图片目录与每模型 USD API 参考价/诚实 `Unpriced` 行）、`webview-settings-tab.ts`（设置页：7 项状态栏开关含 `#toggleSessionCost` `$0.27` 预览）、`webview-profile-tab.ts`（个人页：隐私遮罩账号、5h+Weekly 双窗口配额与琥珀 `Notice` 标签、AI 积分及可折叠计划详情）、`webview-chat-history-tab.ts`（会话）、`webview-calendar-tab.ts`（美元日历）、`webview-about-tab.ts`（动态清单版本、USD 费用简介与全系 Gemini 4 512K 窗口说明）、`webview-script.ts`、`webview-styles.ts`、`webview-icons.ts` 与 `webview-helpers.ts`。
 
 ---
 
@@ -405,14 +397,13 @@ extension.ts (入口 + 调度)
 │   └── gm-tracker.ts (types)
 ├── pool-utils.ts         ← 配额池辅助
 ├── model-quota.ts        ← 跨家族基础模型思考档位合并与 5h/Weekly 双窗口配额汇总
-├── currency.ts           ← 离线本地 USD/CNY/both 币种与汇率格式化
 ├── account-credits.ts    ← 当前 AI 积分归一化、去重与未知安全汇总
 ├── telemetry-metrics.ts  ← 纯遥测引擎（tok/s、Cached/Uncached TTFT、提示词缓存与节省估算）
 │   ├── gm/types.ts (types)
 │   ├── models.ts
 │   └── pricing-store.ts
-├── monitor-overview.ts   ← 状态栏与总览共享的状态/编排路由/上下文/双窗口配额/多币种与遥测格式化
-│   ├── currency.ts
+├── monitor-overview.ts   ← 状态栏与总览共享的状态/编排路由/上下文/双窗口配额/美元费用与遥测格式化
+│   ├── pricing-store.ts
 │   └── telemetry-metrics.ts
 ├── tooltip-budget.ts     ← 优先级分层悬停区块预算（HoverSection[]）与配额池代表选择
 ├── backend-connection.ts ← 当前 IDE 实例连接提示与完整连接标识比对
@@ -423,7 +414,6 @@ extension.ts (入口 + 调度)
 │   │   └── i18n.ts       ← 国际化
 │   └── constants.ts      ← 常量
 ├── statusbar.ts          ← 状态栏（含可选速度/缓存/会话费用）与分层结构化悬停摘要 UI
-│   ├── currency.ts
 │   ├── pricing-store.ts
 │   ├── tracker.ts
 │   ├── models.ts

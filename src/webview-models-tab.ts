@@ -2,7 +2,6 @@
 // Centralizes model-related information: default model, personal model quota,
 // and official model configurations and limit parameters without GM data contamination.
 
-import { formatPerMillionRate, type CurrencyPrefs } from './currency';
 import { formatNumber, getLanguage } from './i18n';
 import {
     ModelConfig,
@@ -17,7 +16,7 @@ import {
     type OrchestratorSettings,
     type UserQuotaSummary,
 } from './models';
-import { findPricingWithCustom, type ModelPricing } from './pricing-store';
+import { findPricingWithCustom, formatUsdPerMillion, type ModelPricing } from './pricing-store';
 import { ICON } from './webview-icons';
 import { buildDefaultModelCard, buildModelQuotaGrid, sortModels } from './webview-profile-tab';
 import { esc, tBiHtml } from './webview-helpers';
@@ -25,7 +24,6 @@ import { esc, tBiHtml } from './webview-helpers';
 export interface ModelsTabOptions {
     orchestratorSettings?: OrchestratorSettings | null;
     quotaSummary?: UserQuotaSummary | null;
-    currencyPrefs?: Partial<CurrencyPrefs>;
     customPricing?: Record<string, ModelPricing>;
 }
 
@@ -177,7 +175,7 @@ export function buildOrchestratorSettingsCard(settings: OrchestratorSettings | n
 
 function buildSpecPriceRowHtml(
     spec: ModelSpec,
-    options?: Pick<ModelsTabOptions, 'currencyPrefs' | 'customPricing'>,
+    options?: Pick<ModelsTabOptions, 'customPricing'>,
 ): string {
     const custom = options?.customPricing || {};
     const pricing = spec.isImageGeneration
@@ -190,11 +188,11 @@ function buildSpecPriceRowHtml(
         </div>`;
     }
     const items: string[] = [
-        `${tBiHtml('In', '输入')} ${esc(formatPerMillionRate(pricing.input, options?.currencyPrefs))}`,
-        `${tBiHtml('Out', '输出')} ${esc(formatPerMillionRate(pricing.output, options?.currencyPrefs))}`,
+        `${tBiHtml('In', '输入')} ${esc(formatUsdPerMillion(pricing.input))}`,
+        `${tBiHtml('Out', '输出')} ${esc(formatUsdPerMillion(pricing.output))}`,
     ];
     if (pricing.cacheRead > 0) {
-        items.push(`${tBiHtml('Cache', '缓存')} ${esc(formatPerMillionRate(pricing.cacheRead, options?.currencyPrefs))}`);
+        items.push(`${tBiHtml('Cache', '缓存')} ${esc(formatUsdPerMillion(pricing.cacheRead))}`);
     }
     return `<div class="spec-price-row" data-price-state="priced">
         <span class="spec-price-label">${tBiHtml('API reference', 'API 参考价')}</span>
@@ -205,7 +203,7 @@ function buildSpecPriceRowHtml(
 export function buildModelInfoGrid(
     specs: ModelSpec[],
     kind: 'chat' | 'image' = 'chat',
-    options?: Pick<ModelsTabOptions, 'currencyPrefs' | 'customPricing'>,
+    options?: Pick<ModelsTabOptions, 'customPricing'>,
 ): string {
     const language = getLanguage();
     const cards = specs.map((s) => {

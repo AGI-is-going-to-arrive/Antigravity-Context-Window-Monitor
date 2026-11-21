@@ -1,8 +1,8 @@
 # Antigravity 上下文窗口监控
 
-在 Antigravity IDE 中实时监控会话上下文、Orchestrator 编排与执行路由、双窗口模型配额（`5h` + `周`）、模型生成速度（`tok/s`）、首字延迟与提示词缓存效率、双币种 API 等价费用（`USD` / `CNY`）、重置时间和 AI 积分。
+在 Antigravity IDE 中实时监控会话上下文、Orchestrator 编排与执行路由、双窗口模型配额（`5h` + `周`）、模型生成速度（`tok/s`）、首字延迟与提示词缓存效率、API 等价费用（美元 USD）、重置时间和 AI 积分。
 
-**1.17.3** 修复了 `agy` v1.5.14+ 后端发现异常（彻底解决因 `GetUnleashData` 接口下线导致的「上下文: 不可用」），全面支持**自定义编排模式与 Orchestrator 设置**（含 **Orchestrator Claude Opus 5.5**、跨池 `规划 → 执行` 追踪、Neon 与 Hydrogen 统一的 `超高 / Extra High` 思考档位，以及 512K 实时检查点上限），新增**双窗口配额（`5 小时` + `每周`）**，全面更新**官方模型计费表**（新增 **Gemini 4 Neon** `$3/$15/$0.15` 官方价、修正 **Claude Sonnet 5.5** 缓存读取费率 `$0.20 → $0.10`、补充 **Gemini 3.6 Flash** 有界优惠区间，并带来纯离线 **USD / CNY / 双币种**切换与官方调价倒计时），同时全面重构**状态栏悬停摘要**并在 **GM 数据**页新增可折叠的**最近调用明细**。
+**1.17.3** 修复了 `agy` v1.5.14+ 后端发现异常（彻底解决因 `GetUnleashData` 接口下线导致的「上下文: 不可用」），全面支持**自定义编排模式与 Orchestrator 设置**（含 **Orchestrator Claude Opus 5.5**、跨池 `规划 → 执行` 追踪、Neon 与 Hydrogen 统一的 `超高 / Extra High` 思考档位，以及 512K 实时检查点上限），新增**双窗口配额（`5 小时` + `每周`）**，全面更新**官方模型计费表**（新增 **Gemini 4 Neon** `$3/$15/$0.15` 官方价、修正 **Claude Sonnet 5.5** 缓存读取费率 `$0.20 → $0.10`、补充 **Gemini 3.6 Flash** 有界优惠区间，并以美元展示官方定时调价倒计时），同时全面重构**状态栏悬停摘要**并在 **GM 数据**页新增可折叠的**最近调用明细**。
 
 [English](README.md) · [1.17.3 发布说明与验证](docs/releases/1.17.3.md#中文) · [技术实现](docs/technical_implementation.md) · [项目结构](docs/project_structure.md) · [变更日志](CHANGELOG.md)
 
@@ -10,7 +10,7 @@
 
 - **修复后端发现（适配 `agy` v1.5.14+，解决「上下文: 不可用」）：** 将单一 `GetUnleashData` 探活升级为多端点 CSRF 探测链（`GetStatus → GetUnleashData → GetUserStatus`），新增 `daemon/hub_<port>.json` 与直连提示回退（不再因 `GetUnleashData` 返回 404 中断连接），加固 macOS、Windows、Linux、WSL 与 IPv6（`[::1]` / `127.0.0.1`）本地环回适配，并在后端重启后即时自动重连。
 - **全面支持 Orchestrator 与编排设置（含 `Orchestrator Claude Opus 5.5` 与跨池路由）：** 通过 Connect 协议 `JetboxSubscribeToState` 与 Mendel `orchestrator-model-roles` 实时读取全局 **Orchestrator 设置**（`编排模型` + `执行模型`），完整支持各编排/执行模型的可选思考档位（Gemini 4 Neon 与 Gemini 4 Hydrogen 统一对齐 **`Extra High / 超高`**），在**总览**、**模型**与悬停摘要中追踪跨池 `规划 → 执行` 组合（如 `Claude Opus 5.5 + Gemini 4 Hydrogen` 或 `Gemini 4 Neon + Claude Sonnet 5.5`），将全部 Gemini 4 与 Orchestrator 模型统一同步至 **512K（`512,000`）** 实时检查点上限，新增 `M669`（`Gemini 4 Hydrogen (Orchestrator)`）及 `M530`/`M531`/`M578` 支持，并展示 **GPT-OSS 120B** 的 `Notice` 下线提示标签。
-- **官方模型计费更新与离线双币种（`USD` / `CNY` / `双币种`）：** 新增经核实的 **Gemini 4 Neon** 官方价（输入 `$3.00` / 输出与思考 `$15.00` / 缓存读取 `$0.15` 每百万 tokens，全 1M 上下文统一费率，并自动对历史零费用账目执行补算对齐），修正 **Claude Sonnet 5.5** 缓存读取费率（`$0.20 → $0.10`），补充 **Gemini 3.6 Flash** 有界优惠排期（`[2026-08-13, 2027-01-01)`），新增纯离线币种切换（`USD`、`CNY` 或`双币种`）与自定义参考汇率（默认 `7.2`，零外部网络请求），提供**官方定时调价提醒**横幅（Carbon/Argon `2026-12-01`、Flash `2027-01-01`），严格守护未定价模型（`M537`/`M667`/`M681`/`M669`/`M578`/`M21` 绝不伪造 `$0.00`），并在**模型**规格卡片展示 API 参考价格。
+- **官方模型计费更新（USD）：** 新增经核实的 **Gemini 4 Neon** 官方价（输入 `$3.00` / 输出与思考 `$15.00` / 缓存读取 `$0.15` 每百万 tokens，全 1M 上下文统一费率，并自动对历史零费用账目执行补算对齐），修正 **Claude Sonnet 5.5** 缓存读取费率（`$0.20 → $0.10`），补充 **Gemini 3.6 Flash** 有界优惠排期（`[2026-08-13, 2027-01-01)`），提供**官方定时调价提醒**横幅（Carbon/Argon `2026-12-01`、Flash `2027-01-01`），严格守护未定价模型（`M537`/`M667`/`M681`/`M669`/`M578`/`M21` 绝不伪造 `$0.00`），并在**模型**规格卡片展示美元 API 参考价格。
 - **双窗口配额（`5 小时` + `每周`）：** 通过 `RetrieveUserQuotaSummary` 实时获取 5 小时与每周双窗口配额（在旧版后端上平滑降级为单窗口 5h 显示），统一贯穿**总览**、**模型**、**个人**与**悬停摘要**，高比例读数采用向下截断精度（`99.3%`–`99.9%` 不再误四舍五入为 `100%`）。
 - **重构状态栏悬停摘要与最近调用明细：** 采用按优先级分层、缩放感知的预算引擎（`compact` / `auto` / `full`），在任何缩放级别下均保护**剩余配额**与底部快捷栏不被裁剪；新增**最近一次调用**微表（新鲜输入 / 输出与思考 / 缓存命中率 / 费用 / 首字与总耗时 / 去噪解码速度 / 状态）、**会话与今日费用**（含缓存节省与等效混合输入单价）、**编排拆分**（规划 vs 执行调用次数与费用）、事件驱动告警（14 天调价倒计时、GPT-OSS `Notice` 下线提示、重试损耗、AI 积分）、一键受信任底部导航（`总览 · 活动 · 费用 · 模型 · 设置 · 刷新`）、可选状态栏会话费用胶囊（`statusBar.showSessionCost`），以及 **GM 数据**页中的可折叠**最近调用明细**（展示最新 20 次调用）。
 
@@ -36,7 +36,7 @@
 
 ### 总览
 
-查看当前会话、活跃**编排 `规划 → 执行`**跨池路由标签、上下文已用与可用余量、内嵌 4–5 格 L2 遥测条（生成速度 `tok/s`、自适应 TTFT、按 token 加权的缓存命中率、缓存节省及按所选币种展示的会话/今日费用）、可折叠会话诊断、带语义健康进度条与重置倒计时的**双窗口（`5h` + `周`）**共享配额池，以及底部 AI 积分摘要。
+查看当前会话、活跃**编排 `规划 → 执行`**跨池路由标签、上下文已用与可用余量、内嵌 4–5 格 L2 遥测条（生成速度 `tok/s`、自适应 TTFT、按 token 加权的缓存命中率、缓存节省及以美元展示的会话/今日费用）、可折叠会话诊断、带语义健康进度条与重置倒计时的**双窗口（`5h` + `周`）**共享配额池，以及底部 AI 积分摘要。
 
 ![Obsidian Slate 深色主题下的双语总览页，展示活跃上下文、编排路由标签、L2 速度/TTFT/缓存/费用遥测条、双窗口共享配额池与 AI 积分](src/images/monitor-overview.png)
 
@@ -59,11 +59,11 @@
 </details>
 
 <details>
-<summary>成本 — 双币种估算、官方调价提醒与自定义 API 费率</summary>
+<summary>成本 — 美元估算、官方调价提醒与自定义 API 费率</summary>
 
-通过顶部内联币种工具栏与纯离线参考汇率以 **USD**、**CNY** 或**双币种**查看月度与当日费用估算、汇总与逐模型缓存节省、思考费用占比、四分项成本分布堆叠条（输入 / 输出 / 缓存 / 思考），以及**官方定时调价提醒**横幅（Carbon/Argon `2026-12-01`、Flash `2027-01-01`）。支持按每百万 tokens 自定义家族或单模型费率；尚未核实价格的用量明确标注为未定价，绝不伪造 `$0.00`。
+以美元（USD）查看月度与当日费用估算、汇总与逐模型缓存节省、思考费用占比、四分项成本分布堆叠条（输入 / 输出 / 缓存 / 思考），以及**官方定时调价提醒**横幅（Carbon/Argon `2026-12-01`、Flash `2027-01-01`）。支持按每百万 tokens 自定义家族或单模型费率；尚未核实价格的用量明确标注为未定价，绝不伪造 `$0.00`。
 
-![Obsidian Slate 深色主题下的双语成本页，展示双币种控件、调价提醒横幅、四分项分布图与自定义定价表](src/images/monitor-cost.png)
+![Obsidian Slate 深色主题下的双语成本页，展示调价提醒横幅、美元月度汇总、四分项分布图与自定义定价表](src/images/monitor-cost.png)
 
 </details>
 
@@ -77,11 +77,11 @@
 </details>
 
 <details>
-<summary>日历 — 每日用量、双币种汇总、归档速度/TTFT/缓存与周期归档</summary>
+<summary>日历 — 每日用量、美元汇总、归档速度/TTFT/缓存与周期归档</summary>
 
-在**月度**与**全部**统计间一键切换，通过 7 列交互月历浏览每日活跃标记与双币种费用标签，展开任意日期即可查看逐模型统计、归档生成速度（`tok/s`）、自适应 TTFT、按 token 加权的提示词缓存命中率与归档周期。
+在**月度**与**全部**统计间一键切换，通过 7 列交互月历浏览每日活跃标记与美元费用标签，展开任意日期即可查看逐模型统计、归档生成速度（`tok/s`）、自适应 TTFT、按 token 加权的提示词缓存命中率与归档周期。
 
-![Obsidian Slate 深色主题下的双语日历页，展示月度汇总、双币种总额与每日活跃网格](src/images/monitor-calendar.png)
+![Obsidian Slate 深色主题下的双语日历页，展示月度汇总、美元总额与每日活跃网格](src/images/monitor-calendar.png)
 
 </details>
 
@@ -95,11 +95,11 @@
 </details>
 
 <details>
-<summary>设置 — 持久化存储、轮询、币种汇率与状态栏</summary>
+<summary>设置 — 持久化存储、轮询与状态栏</summary>
 
-查看外部持久化存储状态与路径，配置低配额提醒阈值、轮询间隔、七项状态栏开关（含可选开启的生成速度 `tok/s`、提示词缓存命中率 `%` 与带实时币种预览的**当前会话费用**）、**币种与汇率**（`USD` / `CNY` / `双币种` + 离线参考汇率）、悬停摘要密度（`auto` / `compact` / `full`）、内部模型 ID 显示、界面缩放比例，以及滚动条和页底提示偏好。
+查看外部持久化存储状态与路径，配置低配额提醒阈值、轮询间隔、七项状态栏开关（含可选开启的生成速度 `tok/s`、提示词缓存命中率 `%` 与带 `$0.27` 美元预览的**当前会话费用**）、悬停摘要密度（`auto` / `compact` / `full`）、内部模型 ID 显示、界面缩放比例，以及滚动条和页底提示偏好。
 
-![Obsidian Slate 深色主题下的双语设置页，展示状态栏开关、币种与汇率卡片及持久化存储](src/images/monitor-settings.png)
+![Obsidian Slate 深色主题下的双语设置页，展示状态栏开关、显示偏好及持久化存储](src/images/monitor-settings.png)
 
 </details>
 
@@ -140,7 +140,7 @@
 | **Switch Display Language** | 选择英文、中文或双语显示 |
 | **Show Model Activity** | 打开 GM 数据 |
 
-IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 15 项）：
+IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 13 项）：
 
 | 设置项 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -151,10 +151,8 @@ IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 15 项）：
 | `statusBar.showAiCredits` | `true` | 在状态栏显示 AI 积分余额（未上报时隐藏） |
 | `statusBar.showSpeed` | `false` | 在状态栏显示最新或加权平均模型生成速度（`tok/s`，无有效耗时样本时自动隐藏） |
 | `statusBar.showCacheHit` | `false` | 在状态栏显示按 token 加权的提示词缓存命中率（`%`，无提示词数据时自动隐藏） |
-| `statusBar.showSessionCost` | `false` | 在状态栏显示当前会话估算的 API 等价费用（费用为 0 或未定价时自动隐藏） |
+| `statusBar.showSessionCost` | `false` | 在状态栏显示当前会话估算的 API 等价美元费用（费用为 0 或未定价时自动隐藏） |
 | `statusBar.tooltipDensity` | `auto` | 选择 `auto`（自动）、`compact`（精简）或 `full`（完整）悬停摘要密度 |
-| `pricing.displayCurrency` | `"USD"` | 选择费用显示币种：`"USD"`（美元）、`"CNY"`（人民币）或 `"both"`（双币种） |
-| `pricing.cnyExchangeRate` | `7.2` | 离线美元兑人民币参考汇率（`0.01`–`1000`，不发起外部网络请求） |
 | `quotaNotificationThreshold` | `20` | 低于该配额百分比时提醒，设为 `0` 可禁用 |
 | `showModelInternalId` | `false` | 在模型名旁显示内部 ID |
 | `activity.maxRecentSteps` | `100` | 限制持久化保留的近期活动时间线条数 |

@@ -167,7 +167,7 @@ describe('pricing panel', () => {
         expect(html.match(/data-model="claude-opus-5-5" data-field="input"/g)).toHaveLength(1);
     });
 
-    it('renders inline currency controls, Neon verified row/footnote, rate-change banner, and CNY + thinking share + cache savings', () => {
+    it('renders USD-only Cost tab with Neon verified row/footnote, rate-change banner, thinking share, and cache savings', () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-11-22T00:00:00Z'));
         try {
@@ -182,17 +182,12 @@ describe('pricing panel', () => {
             const html = buildPricingTabContent(
                 makeSummary({ 'Gemini 4 Neon (XHigh)': stats }),
                 store,
-                undefined,
-                undefined,
-                undefined,
-                false,
-                { currency: 'CNY', cnyRate: 7.2 },
             );
 
-            // Inline currency switcher + FX rate input
-            expect(html).toContain('class="currency-toggle-group"');
-            expect(html).toContain('class="currency-btn active" data-currency="CNY"');
-            expect(html).toContain('id="pricingFxRateInput"');
+            // Strictly USD-only (no currency switcher or FX rate controls)
+            expect(html).not.toContain('prc-currency-bar');
+            expect(html).not.toContain('currency-toggle-group');
+            expect(html).not.toMatch(/[\u00a5\uffe5]/);
             // Neon moved from UNVERIFIED_PRICE_KEYS into built-in DEFAULT_PRICING ($3)
             expect(html).toMatch(/data-model="gemini-4-neon" data-field="input" data-original-value="3"/);
             expect(html).not.toContain('data-model="gemini-4-neon-xhigh"');
@@ -201,8 +196,9 @@ describe('pricing panel', () => {
             expect(html).toContain('class="rate-change-banner"');
             expect(html).toContain('2026-12-01');
             expect(html).toContain('2027-01-01');
-            // CNY formatting + Cache savings chip + Thinking share
-            expect(html).toContain('¥');
+            // USD formatting + Cache savings chip + Thinking share
+            expect(html).toContain('$6.15');
+            expect(html).toContain('$2.85');
             expect(html).toContain('cost-chip-saved');
             expect(html).toContain('cost-detail-saved');
             expect(html).toContain('cost-share-sub');
@@ -219,7 +215,7 @@ describe('pricing panel', () => {
         }
     });
 
-    it('renders positive bilingual savings without double negatives or zero-rounded dashes and emits FX original value (#31 #6/#8)', async () => {
+    it('renders positive USD savings without double negatives or zero-rounded dashes', async () => {
         await setLanguageToState('both', langState);
         try {
             const store = new PricingStore();
@@ -228,50 +224,38 @@ describe('pricing panel', () => {
                 totalInputTokens: 100_000,
                 totalOutputTokens: 10_000,
                 totalThinkingTokens: 0,
-                totalCacheRead: 100_000, // savings = 0.1 * (3.0 - 0.15) = $0.285 -> $0.29 (¥2.05)
+                totalCacheRead: 100_000, // savings = 0.1 * (3.0 - 0.15) = $0.285 -> $0.28
             };
 
-            const bothHtml = buildPricingTabContent(
+            const html = buildPricingTabContent(
                 makeSummary({ 'Gemini 4 Neon (XHigh)': stats }),
                 store,
-                undefined,
-                undefined,
-                undefined,
-                false,
-                { currency: 'both', cnyRate: 7.2 },
             );
-            expect(bothHtml).toContain('data-original-value="7.2"');
-            expect(bothHtml).toContain('cost-chip-saved');
-            expect(bothHtml).toContain('$0.28 (¥2.05)');
-            expect(bothHtml).not.toContain('-$0.28');
-            expect(bothHtml).not.toContain('(-¥');
+            expect(html).toContain('cost-chip-saved');
+            expect(html).toContain('$0.28');
+            expect(html).not.toContain('-$0.28');
+            expect(html).not.toMatch(/[\u00a5\uffe5]/);
 
-            // Tiny CNY savings where formatCurrencySavings rounds to '—' must omit savings chips cleanly
+            // Sub-threshold USD savings (< $0.0001) omit savings chips cleanly instead of showing '—'
             const tinyStats: GMModelStats = {
                 ...makeModelStats('gemini-4-neon'),
                 totalInputTokens: 1_000,
                 totalOutputTokens: 100,
                 totalThinkingTokens: 0,
-                totalCacheRead: 1_000, // savings = $0.00285 -> at cnyRate 0.01 = ¥0.0000285 -> '—'
+                totalCacheRead: 10, // savings = $0.0000285 -> omitted
             };
             const tinyHtml = buildPricingTabContent(
                 makeSummary({ 'Gemini 4 Neon (XHigh)': tinyStats }),
                 store,
-                undefined,
-                undefined,
-                undefined,
-                false,
-                { currency: 'CNY', cnyRate: 0.01 },
             );
             expect(tinyHtml).not.toContain('cost-chip-saved');
             expect(tinyHtml).not.toContain('cost-detail-saved');
             expect(tinyHtml).not.toContain('Cache saved —');
             expect(tinyHtml).not.toContain('Saved —');
 
-            // WCAG 2.1 AA: .prc-currency-fx.is-muted must not reduce wrapper/button opacity below 4.5:1 contrast
             const styles = getPricingTabStyles();
-            expect(styles).not.toMatch(/\.prc-currency-fx\.is-muted\s*\{[^}]*opacity\s*:/);
-            expect(styles).toContain('.prc-currency-fx.is-muted .prc-currency-fx-label');
+            expect(styles).not.toContain('.prc-currency-bar');
+            expect(styles).not.toContain('.prc-fx-save-btn');
         } finally {
             await setLanguageToState(initialLanguage, langState);
         }

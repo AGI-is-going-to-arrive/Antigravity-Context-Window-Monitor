@@ -215,7 +215,7 @@ describe('priority-tiered hover section budget (P0..P5)', () => {
                     '$(history) **Latest Call** · `gemini-4-carbon`',
                     '| In / Out | Cache | Cost | Speed |',
                     '| :--- | ---: | ---: | ---: |',
-                    '| 4,543 / 388 | **97.96%** | **¥0.465** | **155** tok/s |',
+                    '| 4,543 / 388 | **97.96%** | **$0.065** | **155** tok/s |',
                     'Note after table',
                 ],
             },
@@ -230,7 +230,7 @@ describe('priority-tiered hover section budget (P0..P5)', () => {
         // Blank line inserted between prose title and GFM table header
         expect(md).toContain('$(history) **Latest Call** · `gemini-4-carbon`\n\n| In / Out | Cache | Cost | Speed |');
         // Consecutive table rows joined with plain newline (no trailing two spaces)
-        expect(md).toContain('| In / Out | Cache | Cost | Speed |\n| :--- | ---: | ---: | ---: |\n| 4,543 / 388 | **97.96%** | **¥0.465** | **155** tok/s |');
+        expect(md).toContain('| In / Out | Cache | Cost | Speed |\n| :--- | ---: | ---: | ---: |\n| 4,543 / 388 | **97.96%** | **$0.065** | **155** tok/s |');
         // Blank line after table before trailing prose
         expect(md).toContain('| **155** tok/s |\n\nNote after table');
         // Sections separated by horizontal rule and prose lines joined with two-space soft break

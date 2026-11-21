@@ -5,6 +5,9 @@ import {
     findPricingForDate,
     findPricingWithCustom,
     costFromTokens,
+    formatUsdCost,
+    formatUsdSavings,
+    formatUsdPerMillion,
     type ModelPricing,
 } from '../src/pricing-store';
 import { buildGMSummaryFromLedger } from '../src/daily-archival';
@@ -205,5 +208,56 @@ describe('Gemini 3.6 Flash bounded promotional pricing window', () => {
         expect(findPricingForDate('gemini-3.6-flash', {}, 'invalid')).toBeNull();
         expect(findPricingForDate('gemini-3.6-flash', { 'gemini-3.6-flash': TENFOLD_37_FLASH }, 'invalid'))
             .toBe(TENFOLD_37_FLASH);
+    });
+});
+
+describe('formatUsdCost, formatUsdSavings & formatUsdPerMillion', () => {
+    it('formats standard and per-call USD costs cleanly', () => {
+        expect(formatUsdCost(0)).toBe('$0.00');
+        expect(formatUsdCost(0.0042)).toBe('$0.0042');
+        expect(formatUsdCost(0.27)).toBe('$0.27');
+        expect(formatUsdCost(1.42)).toBe('$1.42');
+
+        expect(formatUsdCost(0.065, { precision: 'call' })).toBe('$0.065');
+        expect(formatUsdCost(0.0004, { precision: 'call' })).toBe('$0.0004');
+        expect(formatUsdCost(1.25, { precision: 'call' })).toBe('$1.25');
+    });
+
+    it('handles negative, -0, NaN, Infinity, and tiny negative zero safely', () => {
+        expect(formatUsdCost(-0)).toBe('$0.00');
+        expect(formatUsdCost(-0.5)).toBe('$0.00');
+        expect(formatUsdCost(-0.5, { allowNegative: true })).toBe('-$0.50');
+        expect(formatUsdCost(Number.NaN)).toBe('—');
+        expect(formatUsdCost(Number.POSITIVE_INFINITY)).toBe('—');
+        expect(formatUsdCost(Number.NEGATIVE_INFINITY)).toBe('—');
+        // Never emit -$0.0000 for tiny negatives that round to zero
+        expect(formatUsdCost(-0.00001, { allowNegative: true })).toBe('$0.0000');
+    });
+
+    it('handles rounding across precision thresholds cleanly without $1.000 or $0.0100', () => {
+        expect(formatUsdCost(0.00999, { precision: 'standard' })).toBe('$0.01');
+        expect(formatUsdCost(0.00994, { precision: 'standard' })).toBe('$0.0099');
+        expect(formatUsdCost(0.9999, { precision: 'call' })).toBe('$1.00');
+        expect(formatUsdCost(0.00099, { precision: 'call' })).toBe('$0.001');
+        expect(formatUsdPerMillion(0.9999)).toBe('$1/M');
+    });
+
+    it('formats USD cache savings with leading minus sign and returns em-dash for zero/invalid/sub-precision', () => {
+        expect(formatUsdSavings(0.45)).toBe('-$0.45');
+        expect(formatUsdSavings(0.0042)).toBe('-$0.0042');
+        expect(formatUsdSavings(0.00001)).toBe('—');
+        expect(formatUsdSavings(0)).toBe('—');
+        expect(formatUsdSavings(-1)).toBe('—');
+        expect(formatUsdSavings(Number.NaN)).toBe('—');
+    });
+
+    it('formats per-million USD list and effective blended rates cleanly', () => {
+        expect(formatUsdPerMillion(3)).toBe('$3/M');
+        expect(formatUsdPerMillion(0.15)).toBe('$0.15/M');
+        expect(formatUsdPerMillion(0.075)).toBe('$0.075/M');
+        expect(formatUsdPerMillion(0.14)).toBe('$0.14/M');
+        expect(formatUsdPerMillion(-1)).toBe('—');
+        expect(formatUsdPerMillion(Number.NaN)).toBe('—');
+        expect(formatUsdPerMillion(Number.POSITIVE_INFINITY)).toBe('—');
     });
 });

@@ -6,15 +6,6 @@ import * as vscode from 'vscode';
 import { tBi } from './i18n';
 import type { ModelConfig } from './models';
 import { parseTooltipDensity } from './tooltip-budget';
-import {
-    DEFAULT_CNY_EXCHANGE_RATE,
-    DEFAULT_DISPLAY_CURRENCY,
-    formatCurrencyCost,
-    MAX_CNY_EXCHANGE_RATE,
-    MIN_CNY_EXCHANGE_RATE,
-    parseDisplayCurrency,
-    sanitizeCnyExchangeRate,
-} from './currency';
 import { ICON } from './webview-icons';
 import { esc, formatFileSize, tBiHtml } from './webview-helpers';
 
@@ -50,9 +41,6 @@ export function buildSettingsContent(
     const showSpeed = cfg.get<boolean>('statusBar.showSpeed', false);
     const showCacheHit = cfg.get<boolean>('statusBar.showCacheHit', false);
     const showSessionCost = cfg.get<boolean>('statusBar.showSessionCost', false);
-    const displayCurrency = parseDisplayCurrency(cfg.get('pricing.displayCurrency', DEFAULT_DISPLAY_CURRENCY));
-    const cnyExchangeRate = sanitizeCnyExchangeRate(cfg.get('pricing.cnyExchangeRate', DEFAULT_CNY_EXCHANGE_RATE));
-    const sessionCostPreview = formatCurrencyCost(0.27, { currency: displayCurrency, cnyRate: cnyExchangeRate }, { precision: 'standard' });
     const tooltipDensity = parseTooltipDensity(cfg.get('statusBar.tooltipDensity', 'auto'));
     const showModelInternalId = cfg.get<boolean>('showModelInternalId', false);
     const quotaNotifyThreshold = cfg.get<number>('quotaNotificationThreshold', 20);
@@ -185,7 +173,7 @@ export function buildSettingsContent(
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleSessionCost" class="toggle-cb" ${showSessionCost ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBiHtml('Session cost', '当前会话费用')} <code id="sessionCostPreview">${esc(sessionCostPreview)}</code></span>
+                    <span>${tBiHtml('Session cost', '当前会话费用')} <code>$0.27</code></span>
                 </label>
             </div>
             <label class="stg-select-row" for="statusTooltipDensity">
@@ -196,35 +184,6 @@ export function buildSettingsContent(
                     <option value="full"${tooltipDensity === 'full' ? ' selected' : ''}>${esc(tBi('Full', '完整'))}</option>
                 </select>
             </label>
-        </section>
-
-        <section class="stg-card" data-accent="currency">
-            <div class="stg-header">
-                <span class="stg-header-icon">${ICON.chart}</span>
-                <h2>${tBiHtml('Currency Display', '币种与汇率')}</h2>
-            </div>
-            <p class="raw-desc">${tBiHtml(
-        'Display estimated costs in USD, CNY, or both using a local offline reference rate (no external network requests).',
-        '使用本地离线参考汇率以美元、人民币或双币种显示估算费用（不发起外部网络请求）。',
-    )}</p>
-            <div class="setting-row">
-                <label>${tBiHtml('Display Currency', '显示币种')}</label>
-                <div class="currency-toggle-group" role="group" aria-label="${esc(tBi('Display Currency', '显示币种'))}">
-                    <button type="button" class="currency-btn${displayCurrency === 'USD' ? ' active' : ''}" data-currency="USD" aria-pressed="${displayCurrency === 'USD'}">USD ($)</button>
-                    <button type="button" class="currency-btn${displayCurrency === 'CNY' ? ' active' : ''}" data-currency="CNY" aria-pressed="${displayCurrency === 'CNY'}">CNY (¥)</button>
-                    <button type="button" class="currency-btn${displayCurrency === 'both' ? ' active' : ''}" data-currency="both" aria-pressed="${displayCurrency === 'both'}">${tBiHtml('Both', '双币种')}</button>
-                </div>
-            </div>
-            <div class="setting-row">
-                <label for="cnyExchangeRateInput">${tBiHtml('USD to CNY reference rate', '美元兑人民币参考汇率')}</label>
-                <div class="threshold-input-row">
-                    <input type="number" id="cnyExchangeRateInput" class="threshold-input fx-rate-input"
-                           value="${cnyExchangeRate}" data-original-value="${cnyExchangeRate}" min="${MIN_CNY_EXCHANGE_RATE}" max="${MAX_CNY_EXCHANGE_RATE}" step="0.05"
-                           aria-label="${esc(tBi('USD to CNY exchange rate', '美元兑人民币汇率'))}" />
-                    <button type="button" class="action-btn" id="cnyExchangeRateSaveBtn"><span>${tBiHtml('Save', '保存')}</span></button>
-                    <span id="currencyFeedback" class="threshold-feedback" role="status"></span>
-                </div>
-            </div>
         </section>
 
         <section class="stg-card" data-accent="display">

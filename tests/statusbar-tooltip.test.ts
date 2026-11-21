@@ -1075,7 +1075,7 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
         manager.dispose();
     });
 
-    it('renders Orchestrator cross-pool route, split, dual-window 5h+weekly quota, CNY costs, smart alerts, and 1-click footer', async () => {
+    it('renders Orchestrator cross-pool route, split, dual-window 5h+weekly quota, USD costs, smart alerts, and 1-click footer', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-11-22T00:00:00Z'));
         try {
@@ -1083,7 +1083,6 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
             const manager = new StatusBarManager();
             const item = create.mock.results[0].value as vscode.StatusBarItem;
             mockDensity('full', 0);
-            manager.setCurrencyPrefs({ currency: 'CNY', cnyRate: 7.2 });
             manager.setDisplayPrefs({ showSessionCost: true });
             manager.setPlanName('Pro', 'Google AI Pro');
             manager.setModelConfigs([
@@ -1218,19 +1217,21 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
 
             const md = item.tooltip as vscode.MarkdownString;
             const hover = md.value;
-            // Status bar opt-in cost pill rendered in CNY
-            expect(item.text).toContain('$(credit-card) ¥');
+            // Status bar opt-in cost pill rendered in USD
+            expect(item.text).toContain('$(credit-card) $');
+            expect(item.text).not.toMatch(/[\u00a5\uffe5]/);
             // Orchestrator cross-pool header & split
             expect(hover).toContain('Orchestrator');
             expect(hover).toContain('Claude Opus 5.5 (Medium)');
             expect(hover).toContain('Gemini 4 Hydrogen (Extra High)');
             expect(hover).toContain('Cross-pool');
             expect(hover).toContain('**Split**');
-            // Latest call 4-col table with total latency (6.0 + 2.5 = 8.50s), speed (155.2 tok/s), CNY cost
+            // Latest call 4-col table with total latency (6.0 + 2.5 = 8.50s), speed (155.2 tok/s), USD cost
             expect(hover).toContain('`gemini-4-hydrogen`');
             expect(hover).toContain('6.00s / 8.50s');
             expect(hover).toContain('155.2 tok/s');
-            expect(hover).toContain('¥');
+            expect(hover).toContain('**$1.50**');
+            expect(hover).not.toMatch(/[\u00a5\uffe5]/);
             // Dual-window quota (5h + Weekly) with Planner & Executor pool tags
             expect(hover).toContain('| Pool | 5h | Weekly | Reset |');
             expect(hover).toContain('**82%**');
@@ -1480,9 +1481,8 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
             expect(errHover).toContain('3×');
             expect(errHover).toContain('`503`');
 
-            // #31 #6: Chinese dual-currency savings strips '-' on both USD & CNY legs; zero-rounded CNY savings omits 'est. —'
+            // #31 #6: Chinese USD savings strips '-' cleanly; sub-threshold USD savings omits 'est. —'
             await setLanguage('zh', makeCtx());
-            manager.setCurrencyPrefs({ currency: 'both', cnyRate: 7.2 });
             manager.setTelemetry(makeGMSummary([makeConv('conv-save', [
                 makeGMCall({
                     executionId: 's1',
@@ -1497,12 +1497,12 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
                 'test-sav': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25, thinking: 25.0 },
             });
             manager.update(makeContextUsage({ cascadeId: 'conv-save' }));
-            const zhBothHover = (item.tooltip as vscode.MarkdownString).value;
-            expect(zhBothHover).toContain('缓存省 $0.45 (¥3.24)');
-            expect(zhBothHover).not.toContain('(-¥');
+            const zhHover = (item.tooltip as vscode.MarkdownString).value;
+            expect(zhHover).toContain('缓存省 $0.45');
+            expect(zhHover).not.toContain('缓存省 -$0.45');
+            expect(zhHover).not.toMatch(/[\u00a5\uffe5]/);
 
             await setLanguage('en', makeCtx());
-            manager.setCurrencyPrefs({ currency: 'CNY', cnyRate: 0.01 });
             manager.setTelemetry(makeGMSummary([makeConv('conv-tiny', [
                 makeGMCall({
                     executionId: 't1',
@@ -1510,7 +1510,7 @@ describe('StatusBarManager telemetry segments and hover tooltip', () => {
                     modelDisplay: 'Test Tiny',
                     responseModel: 'test-tiny',
                     inputTokens: 1_000,
-                    cacheReadTokens: 1_000,
+                    cacheReadTokens: 10,
                     createdAt: '2026-11-22T00:00:00Z',
                 }),
             ])]), 'conv-tiny', {

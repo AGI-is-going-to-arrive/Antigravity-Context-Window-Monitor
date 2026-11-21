@@ -1,4 +1,3 @@
-import { formatCurrencyCost, normalizeCurrencyPrefs, type CurrencyPrefs } from './currency';
 import type { GMSummary } from './gm/types';
 import { getLanguage, t, tBi } from './i18n';
 import { groupModelQuotas, type QuotaEffort, type QuotaReadingSummary, type ModelQuotaGroup } from './model-quota';
@@ -11,7 +10,7 @@ import {
     type OrchestratorSettings,
     type UserQuotaSummary,
 } from './models';
-import type { ModelPricing } from './pricing-store';
+import { formatUsdCost, type ModelPricing } from './pricing-store';
 import { formatResetAbsolute } from './reset-time';
 import {
     computeTelemetrySummary,
@@ -159,7 +158,6 @@ export interface OverviewTelemetryInput {
     activeCascadeId?: string;
     orchestratorSettings?: OrchestratorSettings | null;
     quotaSummary?: UserQuotaSummary | null;
-    currencyPrefs?: Partial<CurrencyPrefs>;
     todayCostUsd?: number;
     sessionCostUsd?: number;
 }
@@ -276,48 +274,16 @@ export function formatSavingsUsd(usd: number | null | undefined): string | null 
     return '<$0.0001';
 }
 
-/** Currency-aware cache savings formatter; preserves exact USD helper output when USD is selected and avoids fake zero strings. */
-export function formatOverviewSavings(
-    usd: number | null | undefined,
-    currencyPrefs?: Partial<CurrencyPrefs>,
-): string | null {
-    if (usd === null || usd === undefined || !Number.isFinite(usd) || usd <= 0) {
-        return null;
-    }
-    const prefs = normalizeCurrencyPrefs(currencyPrefs);
-    if (prefs.currency === 'USD') {
-        return formatSavingsUsd(usd);
-    }
-    const cnyValue = usd * prefs.cnyRate;
-    if (!Number.isFinite(cnyValue)) {
-        return null;
-    }
-    const cnyPart = cnyValue < 0.0001
-        ? '<¥0.0001'
-        : formatCurrencyCost(usd, { currency: 'CNY', cnyRate: prefs.cnyRate }, { precision: 'standard' });
-    if (cnyPart === '—') {
-        return null;
-    }
-    if (prefs.currency === 'CNY') {
-        return cnyPart;
-    }
-    const usdPart = usd < 0.0001
-        ? '<$0.0001'
-        : formatCurrencyCost(usd, { currency: 'USD', cnyRate: prefs.cnyRate }, { precision: 'standard' });
-    if (usdPart === '—') {
-        return null;
-    }
-    return `${usdPart} (${cnyPart})`;
+/** USD cache savings formatter for Overview telemetry; avoids fake zero strings. */
+export function formatOverviewSavings(usd: number | null | undefined): string | null {
+    return formatSavingsUsd(usd);
 }
 
-/** Currency-aware cost formatter for Session / Today cost pills; omits non-finite, negative, or overflowed inputs. */
-export function formatOverviewCost(
-    usd: number | null | undefined,
-    currencyPrefs?: Partial<CurrencyPrefs>,
-): string | null {
+/** USD cost formatter for Session / Today cost pills; omits non-finite or negative inputs. */
+export function formatOverviewCost(usd: number | null | undefined): string | null {
     if (usd === null || usd === undefined || !Number.isFinite(usd) || usd < 0) {
         return null;
     }
-    const formatted = formatCurrencyCost(usd, currencyPrefs, { precision: 'standard' });
+    const formatted = formatUsdCost(usd, { precision: 'standard' });
     return formatted === '—' ? null : formatted;
 }

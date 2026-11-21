@@ -117,11 +117,6 @@ const translations: Record<string, TranslationEntry> = {
     'quota.weekly': { en: 'Weekly', zh: '周额度' },
     'quota.notice': { en: 'Notice', zh: '提示' },
 
-    // ─ Currency
-    'currency.label': { en: 'Display Currency', zh: '显示币种' },
-    'currency.fxRate': { en: 'USD/CNY Rate', zh: '美元/人民币汇率' },
-    'currency.fxNote': { en: 'Reference local rate (offline)', zh: '本地参考汇率（离线）' },
-
     // ─ QuickPick Panel
     'panel.title': { en: 'Antigravity Monitor', zh: 'Antigravity 监控面板' },
     'panel.placeholder': { en: 'View context details for all sessions', zh: '查看各会话的上下文使用详情' },

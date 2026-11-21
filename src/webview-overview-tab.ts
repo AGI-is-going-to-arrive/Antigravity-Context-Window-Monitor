@@ -1,5 +1,4 @@
 import { aiCreditTotal } from './account-credits';
-import type { CurrencyPrefs } from './currency';
 import { formatNumber, getLanguage, tBi } from './i18n';
 import { getDaysUntilBillingDay } from './billing-day';
 import {
@@ -179,10 +178,9 @@ function cacheWarmthMeta(state: CacheState): { cls: string; html: string } | nul
 function buildCostTelemetryCell(
     sessionCostUsd: number | undefined,
     todayCostUsd: number | undefined,
-    currencyPrefs?: Partial<CurrencyPrefs>,
 ): string {
-    const sessionStr = formatOverviewCost(sessionCostUsd, currencyPrefs);
-    const todayStr = formatOverviewCost(todayCostUsd, currencyPrefs);
+    const sessionStr = formatOverviewCost(sessionCostUsd);
+    const todayStr = formatOverviewCost(todayCostUsd);
     if (!sessionStr && !todayStr) { return ''; }
     if (sessionStr) {
         const subHtml = todayStr ? `<span class="overview-telemetry-sub">${tBiHtml('Today', '今日')} ${esc(todayStr)}</span>` : '';
@@ -200,7 +198,6 @@ function buildCostTelemetryCell(
 
 function telemetryStrip(
     snapshot: OverviewTelemetrySnapshot,
-    currencyPrefs?: Partial<CurrencyPrefs>,
     sessionCostUsd?: number,
     todayCostUsd?: number,
 ): string {
@@ -264,8 +261,8 @@ function telemetryStrip(
         ? ` title="${esc(`${formatCompactTokens(primary.totalCacheReadTokens)} / ${formatCompactTokens(primary.totalPromptTokens)} tokens · ${primary.cachedCallCount}/${primary.totalCalls}`)}"`
         : '';
 
-    // 4. Cache Saved (currency-aware)
-    const savingsFormatted = formatOverviewSavings(primary.estCacheSavingsUsd, currencyPrefs);
+    // 4. Cache Saved (USD)
+    const savingsFormatted = formatOverviewSavings(primary.estCacheSavingsUsd);
     let savedValueHtml: string;
     let savedClass = '';
     let savedTitleAttr = '';
@@ -282,7 +279,7 @@ function telemetryStrip(
         savedClass = ' is-muted';
     }
     const warmth = cacheWarmthMeta(primary.latestCacheState);
-    const costCellHtml = buildCostTelemetryCell(sessionCostUsd, todayCostUsd, currencyPrefs);
+    const costCellHtml = buildCostTelemetryCell(sessionCostUsd, todayCostUsd);
 
     const ariaLabel = primaryScope === 'active'
         ? tBi('Active conversation speed and prompt cache', '当前会话速度与提示词缓存')
@@ -420,10 +417,10 @@ export function buildOverviewTabContent(
         )
         : null;
     let telemetryHtml = telemetryData
-        ? telemetryStrip(telemetryData, telemetry?.currencyPrefs, telemetry?.sessionCostUsd, telemetry?.todayCostUsd)
+        ? telemetryStrip(telemetryData, telemetry?.sessionCostUsd, telemetry?.todayCostUsd)
         : '';
     if (!telemetryHtml && connected) {
-        const standaloneCost = buildCostTelemetryCell(telemetry?.sessionCostUsd, telemetry?.todayCostUsd, telemetry?.currencyPrefs);
+        const standaloneCost = buildCostTelemetryCell(telemetry?.sessionCostUsd, telemetry?.todayCostUsd);
         if (standaloneCost) {
             telemetryHtml = `<div class="overview-telemetry-strip is-cost-only" data-telemetry-scope="cost" role="group" aria-label="${esc(tBi('Session and today cost', '会话与今日费用'))}">${standaloneCost}</div>`;
         }

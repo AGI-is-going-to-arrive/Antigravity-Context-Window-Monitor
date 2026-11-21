@@ -37,12 +37,6 @@ import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPR
 import { QuotaTracker } from './quota-tracker';
 import { GMTracker, GMSummary, GMTrackerState, slimSummaryForPersistence } from './gm-tracker';
 import { PricingStore, calculateLedgerModelCosts, costFromTokens, findPricingForDate, selectPricingModel } from './pricing-store';
-import {
-    DEFAULT_CNY_EXCHANGE_RATE,
-    DEFAULT_DISPLAY_CURRENCY,
-    normalizeCurrencyPrefs,
-    type CurrencyPrefs,
-} from './currency';
 import { DailyStore, type DailyStoreState } from './daily-store';
 import { MonitorStore } from './monitor-store';
 import {
@@ -509,14 +503,6 @@ export function buildUsageScopeTrajectories(
     return [activeTrajectory, ...scope];
 }
 
-function readCurrencyPrefs(): CurrencyPrefs {
-    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
-    return normalizeCurrencyPrefs({
-        currency: cfg.get('pricing.displayCurrency', DEFAULT_DISPLAY_CURRENCY),
-        cnyRate: cfg.get('pricing.cnyExchangeRate', DEFAULT_CNY_EXCHANGE_RATE),
-    });
-}
-
 function computeLiveCostSnapshot(
     summary: GMSummary | null,
     activeCascadeId?: string,
@@ -574,7 +560,6 @@ function computeLiveCostSnapshot(
 
 function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
     const gmSummary = gmTracker.getUiSummary();
-    const currencyPrefs = readCurrencyPrefs();
     const costs = computeLiveCostSnapshot(gmSummary, currentUsage?.cascadeId ?? trackedCascadeId ?? undefined);
     return {
         currentUsage,
@@ -600,7 +585,6 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         ledgerSettled: dailyLedger.getSettledEntries(),
         orchestratorSettings: cachedOrchestratorSettings,
         quotaSummary: cachedQuotaSummary,
-        currencyPrefs,
         todayCostUsd: costs.todayCostUsd > 0 ? costs.todayCostUsd : undefined,
         sessionCostUsd: costs.sessionCostUsd > 0 ? costs.sessionCostUsd : undefined,
         ...extra,
@@ -1687,15 +1671,14 @@ export function activate(context: vscode.ExtensionContext): void {
                 restartPolling();
             }
 
-            const pricingChanged = e.affectsConfiguration('antigravityContextMonitor.pricing');
-            if (e.affectsConfiguration('antigravityContextMonitor.statusBar') || pricingChanged) {
+            if (e.affectsConfiguration('antigravityContextMonitor.statusBar')) {
                 applyDisplayPrefs();
                 statusBar.refreshFromConfig();
                 if (isMonitorPanelVisible()) {
                     updateMonitorPanel(makePanelPayload());
-                    syncMonitorPanelSettings(pricingChanged);
+                    syncMonitorPanelSettings();
                 }
-                log('Status bar / pricing display preferences updated');
+                log('Status bar display preferences updated');
             }
             if (e.affectsConfiguration('window.zoomLevel')) {
                 statusBar.refreshFromConfig();
@@ -1768,7 +1751,6 @@ function applyDisplayPrefs(): void {
         showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', false),
         showSessionCost: cfg.get<boolean>('statusBar.showSessionCost', false),
     });
-    statusBar.setCurrencyPrefs(readCurrencyPrefs());
     statusBar.setBillingDay(billingDaysMap[currentAccountEmail] ?? 0);
 }
 
@@ -1783,7 +1765,6 @@ function syncStatusBarTelemetry(refresh = false, activeCascadeOverride?: string 
         ? undefined
         : (activeCascadeOverride ?? currentUsage?.cascadeId ?? trackedCascadeId ?? undefined);
     const customPricing = pricingStore?.getCustom();
-    statusBar.setCurrencyPrefs(readCurrencyPrefs());
     statusBar.setTelemetry(summary, activeCascadeId, customPricing);
     const costs = computeLiveCostSnapshot(summary, activeCascadeId);
     statusBar.setCostSnapshot({

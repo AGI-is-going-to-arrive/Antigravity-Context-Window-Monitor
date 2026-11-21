@@ -1,8 +1,8 @@
 # Antigravity Context Window Monitor
 
-Monitor conversation context, Orchestrator & Executor routing, dual-window model quotas (`5h` + `Weekly`), generation speed (`tok/s`), TTFT & prompt cache efficiency, dual-currency API-equivalent costs (`USD` / `CNY`), reset times, and AI credits in Antigravity IDE.
+Monitor conversation context, Orchestrator & Executor routing, dual-window model quotas (`5h` + `Weekly`), generation speed (`tok/s`), TTFT & prompt cache efficiency, API-equivalent costs (USD), reset times, and AI credits in Antigravity IDE.
 
-**1.17.3** fixes backend discovery against `agy` v1.5.14+ (resolving `上下文: 不可用` / `GetUnleashData` removal), adds full **Custom Orchestrator Mode & Orchestrator Settings** support (including **Orchestrator Claude Opus 5.5**, cross-pool `Planner → Executor` tracking, selectable thinking levels with `Extra High` aligned across Neon & Hydrogen, and 512K checkpointer limits), introduces **Dual-Window Quota (`5-Hour` + `Weekly`)**, updates **official model pricing** (adding **Gemini 4 Neon** `$3/$15/$0.15`, fixing **Claude Sonnet 5.5** cache read `$0.20 → $0.10`, adding bounded **Gemini 3.6 Flash** promo dates, and adding offline-first **USD / CNY / Both** dual-currency display with rate-change countdowns), and overhauls the **Status Bar Hover Tooltip** plus the collapsible **Recent Calls Ledger** in **GM Data**.
+**1.17.3** fixes backend discovery against `agy` v1.5.14+ (resolving `上下文: 不可用` / `GetUnleashData` removal), adds full **Custom Orchestrator Mode & Orchestrator Settings** support (including **Orchestrator Claude Opus 5.5**, cross-pool `Planner → Executor` tracking, selectable thinking levels with `Extra High` aligned across Neon & Hydrogen, and 512K checkpointer limits), introduces **Dual-Window Quota (`5-Hour` + `Weekly`)**, updates **official model pricing** (adding **Gemini 4 Neon** `$3/$15/$0.15`, fixing **Claude Sonnet 5.5** cache read `$0.20 → $0.10`, adding bounded **Gemini 3.6 Flash** promo dates, and surfacing scheduled rate-change countdowns in USD), and overhauls the **Status Bar Hover Tooltip** plus the collapsible **Recent Calls Ledger** in **GM Data**.
 
 [中文文档](readme_CN.md) · [1.17.3 release notes and validation](docs/releases/1.17.3.md) · [Technical guide](docs/technical_implementation.md) · [Project structure](docs/project_structure.md) · [Changelog](CHANGELOG.md)
 
@@ -10,7 +10,7 @@ Monitor conversation context, Orchestrator & Executor routing, dual-window model
 
 - **Backend discovery fix (`agy` v1.5.14+ / `上下文: 不可用`):** Replaces the single-endpoint `GetUnleashData` health check with a multi-endpoint CSRF probe (`GetStatus → GetUnleashData → GetUserStatus`), adds `daemon/hub_<port>.json` & direct-hint fallback without aborting on `GetUnleashData` 404s, hardens cross-platform loopback handling across macOS, Windows, Linux, WSL, and IPv6 (`[::1]` / `127.0.0.1`), and reconnects immediately when the backend restarts.
 - **Orchestrator & Orchestrator Settings (`Orchestrator Claude Opus 5.5` & cross-pool routing):** Reads live global **Orchestrator Settings** (`Orchestrator Model` + `Executor Model` via Connect-protocol `JetboxSubscribeToState` and Mendel `orchestrator-model-roles` flags), supports selectable thinking levels across all Orchestrator & Executor models (aligning **`Extra High`** across both Gemini 4 Neon and Gemini 4 Hydrogen), tracks cross-pool `Planner → Executor` pairings (e.g. `Claude Opus 5.5 + Gemini 4 Hydrogen` or `Gemini 4 Neon + Claude Sonnet 5.5`) across **Overview**, **Models**, and the hover tooltip, unifies **512K (`512,000`)** live checkpointer limits across all Gemini 4 & Orchestrator models, adds `M669` (`Gemini 4 Hydrogen (Orchestrator)`) + `M530`/`M531`/`M578` support, and surfaces the **GPT-OSS 120B** `Notice` sunset tag.
-- **Official model pricing & offline-first dual currency (`USD` / `CNY` / `USD + CNY`):** Adds verified official **Gemini 4 Neon** pricing (`$3.00` input / `$15.00` output & thinking / `$0.15` cache read per 1M tokens, flat across the full 1M context, with automatic zero-cost reconciliation/backfill), fixes **Claude Sonnet 5.5** cache read (`$0.20 → $0.10`), adds the bounded **Gemini 3.6 Flash** promotional schedule (`[2026-08-13, 2027-01-01)`), adds an offline-first currency switcher (`USD`, `CNY`, or `Both`) with a configurable reference FX rate (default `7.2`, zero external network requests), displays **Upcoming Scheduled Rate Changes** banners (Carbon/Argon `2026-12-01`, Flash `2027-01-01`), preserves strict unpriced guards (`M537`/`M667`/`M681`/`M669`/`M578`/`M21` never fabricate `$0.00`), and shows API reference prices on **Models** spec cards.
+- **Official model pricing (USD):** Adds verified official **Gemini 4 Neon** pricing (`$3.00` input / `$15.00` output & thinking / `$0.15` cache read per 1M tokens, flat across the full 1M context, with automatic zero-cost reconciliation/backfill), fixes **Claude Sonnet 5.5** cache read (`$0.20 → $0.10`), adds the bounded **Gemini 3.6 Flash** promotional schedule (`[2026-08-13, 2027-01-01)`), displays **Upcoming Scheduled Rate Changes** banners (Carbon/Argon `2026-12-01`, Flash `2027-01-01`), preserves strict unpriced guards (`M537`/`M667`/`M681`/`M669`/`M578`/`M21` never fabricate `$0.00`), and shows API reference prices in USD on **Models** spec cards.
 - **Dual-Window Quota (`5-Hour` + `Weekly`):** Fetches live 5-hour and weekly quota buckets via `RetrieveUserQuotaSummary` (with graceful 5h-only fallback on older backends) and renders both windows consistently across **Overview**, **Models**, **Profile**, and the **Hover Tooltip** (with floored high-percentage precision so `99.3%`–`99.9%` never falsely rounds to `100%`).
 - **Overhauled hover tooltip & collapsible Recent Calls Ledger:** Introduces priority-tiered, zoom-aware section budgeting (`compact` / `auto` / `full`) that protects **Quota remaining** and the pinned footer at every zoom level; adds a **Latest Call** micro-table (Fresh In / Out / Think / Cache Hit % / Cost / TTFT & Total Latency / noise-gated Speed / Status), Session & Today Cost + Cache Savings + Effective Blended Input Rate, **Orchestrator Split** (Planner vs Executor calls & cost), event-driven alerts (14-day rate-cutover countdown, GPT-OSS `Notice` sunset, Retry Waste, AI credits), 1-click trusted footer links (`Overview · Activity · Cost · Models · Settings · Refresh`), an opt-in status bar session cost pill (`statusBar.showSessionCost`), and a collapsible **Recent Calls Ledger** (latest 20 calls) in **GM Data**.
 
@@ -36,7 +36,7 @@ The panel adapts cleanly from `320px` narrow split-panes to `1440px` wide editor
 
 ### Overview
 
-See the active conversation, active **Orchestrator `Planner → Executor`** cross-pool route pill, context used and remaining tokens, the recessed 4–5 cell L2 telemetry strip (generation speed `tok/s`, adaptive TTFT, token-weighted cache hit rate, estimated cache savings, and Session / Today cost in your chosen currency), collapsible session diagnostics, dual-window (`5h` + `Weekly`) shared quota pools with semantic health meters and reset timers, and the AI credits footer.
+See the active conversation, active **Orchestrator `Planner → Executor`** cross-pool route pill, context used and remaining tokens, the recessed 4–5 cell L2 telemetry strip (generation speed `tok/s`, adaptive TTFT, token-weighted cache hit rate, estimated cache savings, and Session / Today cost in USD), collapsible session diagnostics, dual-window (`5h` + `Weekly`) shared quota pools with semantic health meters and reset timers, and the AI credits footer.
 
 ![Overview in Obsidian Slate Dark mode showing active context, Orchestrator route pill, L2 speed/TTFT/cache/cost strip, dual-window quota pools, and AI credits](src/images/monitor-overview.png)
 
@@ -59,11 +59,11 @@ Browse conversation context and history grouped by workspace. Filter by current 
 </details>
 
 <details>
-<summary>Cost — dual-currency estimates, rate-change alerts, and custom API rates</summary>
+<summary>Cost — USD estimates, rate-change alerts, and custom API rates</summary>
 
-Review monthly and daily usage estimates in **USD**, **CNY**, or **Both** using the inline currency toolbar and offline reference FX rate, inspect total & per-model cache savings, thinking cost share, 4-series cost distribution (input, output, cache, thinking), and **Upcoming Scheduled Rate Changes** banners (Carbon/Argon `2026-12-01`, Flash `2027-01-01`). Set custom rates per 1M tokens for any family or individual model; unpriced usage is flagged honestly without fabricating `$0.00`.
+Review monthly and daily usage estimates in **USD**, inspect total & per-model cache savings, thinking cost share, 4-series cost distribution (input, output, cache, thinking), and **Upcoming Scheduled Rate Changes** banners (Carbon/Argon `2026-12-01`, Flash `2027-01-01`). Set custom rates per 1M tokens for any family or individual model; unpriced usage is flagged honestly without fabricating `$0.00`.
 
-![Cost in Obsidian Slate Dark mode showing dual-currency controls, upcoming rate-change banner, 4-series chart, and custom pricing table](src/images/monitor-cost.png)
+![Cost in Obsidian Slate Dark mode showing upcoming rate-change banner, USD monthly summary, 4-series chart, and custom pricing table](src/images/monitor-cost.png)
 
 </details>
 
@@ -77,11 +77,11 @@ Inspect live **Orchestrator Settings** (`Orchestrator Model` + `Executor Model`,
 </details>
 
 <details>
-<summary>Calendar — daily usage, dual-currency totals, archived speed/TTFT/cache, and cycles</summary>
+<summary>Calendar — daily usage, USD totals, archived speed/TTFT/cache, and cycles</summary>
 
-Switch between **Monthly** and **All-Time** summaries, browse daily activity and dual-currency cost chips on the interactive 7-column calendar, and expand any day to inspect per-model totals, archived generation speed (`tok/s`), adaptive TTFT, token-weighted prompt cache hit rate, and archived cycles.
+Switch between **Monthly** and **All-Time** summaries, browse daily activity and USD cost chips on the interactive 7-column calendar, and expand any day to inspect per-model totals, archived generation speed (`tok/s`), adaptive TTFT, token-weighted prompt cache hit rate, and archived cycles.
 
-![Calendar in Obsidian Slate Dark mode showing monthly summary, dual-currency totals, and daily activity grid](src/images/monitor-calendar.png)
+![Calendar in Obsidian Slate Dark mode showing monthly summary, USD totals, and daily activity grid](src/images/monitor-calendar.png)
 
 </details>
 
@@ -95,11 +95,11 @@ Review account identity (masked by default with a one-click privacy toggle), cur
 </details>
 
 <details>
-<summary>Settings — persistent storage, polling, currency display, and status bar</summary>
+<summary>Settings — persistent storage, polling, and status bar</summary>
 
-Inspect external persistent storage, configure the low-quota warning threshold, polling interval, seven status bar toggles (including opt-in generation speed `tok/s`, prompt cache hit rate `%`, and **Session cost** with live currency preview), **Currency Display** (`USD` / `CNY` / `Both` + offline reference USD/CNY rate), hover density (`auto` / `compact` / `full`), internal model ID display, interface zoom, and scrollbar / end-of-content preferences.
+Inspect external persistent storage, configure the low-quota warning threshold, polling interval, seven status bar toggles (including opt-in generation speed `tok/s`, prompt cache hit rate `%`, and **Session cost** `$0.27` USD preview), hover density (`auto` / `compact` / `full`), internal model ID display, interface zoom, and scrollbar / end-of-content preferences.
 
-![Settings in Obsidian Slate Dark mode showing status bar switches, Currency Display card, and persistent storage](src/images/monitor-settings.png)
+![Settings in Obsidian Slate Dark mode showing status bar switches, display options, and persistent storage](src/images/monitor-settings.png)
 
 </details>
 
@@ -140,7 +140,7 @@ Confirm the installed extension version (`v1.17.3`, dynamically read from the ex
 | **Switch Display Language** | Choose English, Chinese, or bilingual display |
 | **Show Model Activity** | Open GM Data |
 
-IDE settings use the `antigravityContextMonitor.` prefix (15 settings total):
+IDE settings use the `antigravityContextMonitor.` prefix (13 settings total):
 
 | Setting | Default | Action |
 | --- | --- | --- |
@@ -151,10 +151,8 @@ IDE settings use the `antigravityContextMonitor.` prefix (15 settings total):
 | `statusBar.showAiCredits` | `true` | Show AI credit balance in the status bar (hidden when unreported) |
 | `statusBar.showSpeed` | `false` | Show latest or weighted-average model generation speed (`tok/s`) in the status bar (hidden when untimed) |
 | `statusBar.showCacheHit` | `false` | Show token-weighted prompt cache hit rate (`%`) in the status bar (hidden when no prompt tokens exist) |
-| `statusBar.showSessionCost` | `false` | Show the active session's estimated API-equivalent cost in the status bar (hidden when `$0` or unpriced) |
+| `statusBar.showSessionCost` | `false` | Show the active session's estimated API-equivalent USD cost in the status bar (hidden when `$0` or unpriced) |
 | `statusBar.tooltipDensity` | `auto` | Set `auto`, `compact`, or `full` hover density |
-| `pricing.displayCurrency` | `"USD"` | Display estimated costs in `"USD"`, `"CNY"`, or `"both"` |
-| `pricing.cnyExchangeRate` | `7.2` | Offline reference USD-to-CNY exchange rate (`0.01`–`1000`, zero external network requests) |
 | `quotaNotificationThreshold` | `20` | Warn below this quota percentage. Use `0` to disable |
 | `showModelInternalId` | `false` | Add the internal ID to model names |
 | `activity.maxRecentSteps` | `100` | Limit retained recent activity steps in persistence |

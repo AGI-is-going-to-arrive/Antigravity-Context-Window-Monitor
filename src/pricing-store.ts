@@ -690,3 +690,98 @@ export class PricingStore {
         }
     }
 }
+
+// ─── USD Formatting Helpers ──────────────────────────────────────────────────
+
+export interface FormatUsdOptions {
+    /**
+     * - `'standard'` (default): totals & panels ($0.00, $0.0042 for <0.01, $1.42 for >=0.01)
+     * - `'call'`: per-call telemetry ($0.00, $0.0004 for <0.001, $0.065 for <1, $1.25 for >=1)
+     * - `'rate'`: list or effective per-1M rate ($3, $0.15, $0.075)
+     */
+    precision?: 'standard' | 'call' | 'rate';
+    /** Preserve negative sign instead of clamping negative numbers to 0. */
+    allowNegative?: boolean;
+}
+
+function trimTrailingZeros(fixed: string, minDecimals = 0): string {
+    if (!fixed.includes('.')) { return fixed; }
+    const [whole, frac] = fixed.split('.');
+    let end = frac.length;
+    while (end > minDecimals && frac[end - 1] === '0') {
+        end--;
+    }
+    return end === 0 ? whole : `${whole}.${frac.slice(0, end)}`;
+}
+
+function formatUsdMagnitude(
+    absAmount: number,
+    precision: 'standard' | 'call' | 'rate',
+): string {
+    if (absAmount === 0) {
+        return precision === 'rate' ? '0' : '0.00';
+    }
+    if (precision === 'rate') {
+        if (absAmount < 0.01 && Number(absAmount.toFixed(4)) < 0.01) {
+            return trimTrailingZeros(absAmount.toFixed(4));
+        }
+        if (absAmount < 1 && Number(absAmount.toFixed(3)) < 1) {
+            return trimTrailingZeros(absAmount.toFixed(3), 2);
+        }
+        return trimTrailingZeros(absAmount.toFixed(2));
+    }
+    if (precision === 'call') {
+        if (absAmount < 0.001 && Number(absAmount.toFixed(4)) < 0.001) {
+            return absAmount.toFixed(4);
+        }
+        if (absAmount < 1 && Number(absAmount.toFixed(3)) < 1) {
+            return absAmount.toFixed(3);
+        }
+        return absAmount.toFixed(2);
+    }
+    // 'standard'
+    if (absAmount < 0.01 && Number(absAmount.toFixed(4)) < 0.01) {
+        return absAmount.toFixed(4);
+    }
+    return absAmount.toFixed(2);
+}
+
+/**
+ * Format a USD cost amount safely.
+ * Returns `'—'` for non-finite inputs (`NaN`, `Infinity`, `-Infinity`).
+ */
+export function formatUsdCost(
+    usdAmount: number,
+    options: FormatUsdOptions = {},
+): string {
+    if (!Number.isFinite(usdAmount)) { return '—'; }
+    const precision = options.precision ?? 'standard';
+    const allowNegative = options.allowNegative ?? false;
+    const normalized = !allowNegative && usdAmount < 0 ? 0 : (Object.is(usdAmount, -0) ? 0 : usdAmount);
+    const formatted = formatUsdMagnitude(Math.abs(normalized), precision);
+    const isRoundedZero = /^0(?:\.0+)?$/.test(formatted);
+    const sign = normalized < 0 && !isRoundedZero ? '-' : '';
+    return `${sign}$${formatted}`;
+}
+
+/**
+ * Format positive USD cache savings with a leading minus sign (e.g. `-$0.45`).
+ * Returns `'—'` when `usdSaved` is non-finite, `<= 0`, or rounds to zero at display precision.
+ */
+export function formatUsdSavings(
+    usdSaved: number,
+    options: Omit<FormatUsdOptions, 'allowNegative'> = {},
+): string {
+    if (!Number.isFinite(usdSaved) || usdSaved <= 0) { return '—'; }
+    const formatted = formatUsdCost(-usdSaved, { ...options, allowNegative: true });
+    return formatted.startsWith('-') ? formatted : '—';
+}
+
+/**
+ * Format a USD per-million-token rate (e.g. `$3/M`, `$0.15/M`, `$0.075/M`).
+ * Returns `'—'` for non-finite or negative inputs.
+ */
+export function formatUsdPerMillion(usdPerMillion: number): string {
+    if (!Number.isFinite(usdPerMillion) || usdPerMillion < 0) { return '—'; }
+    return `${formatUsdCost(usdPerMillion, { precision: 'rate' })}/M`;
+}

@@ -4,19 +4,13 @@ import type { GMCallEntry, GMSummary } from './gm/types';
 import {
     costFromTokens,
     findPricingForDate,
+    formatUsdCost,
+    formatUsdPerMillion,
+    formatUsdSavings,
     getUpcomingRateChangeForModel,
     selectPricingModel,
     type ModelPricing,
 } from './pricing-store';
-import {
-    DEFAULT_CNY_EXCHANGE_RATE,
-    DEFAULT_DISPLAY_CURRENCY,
-    formatCurrencyCost,
-    formatCurrencySavings,
-    formatPerMillionRate,
-    normalizeCurrencyPrefs,
-    type CurrencyPrefs,
-} from './currency';
 import {
     getModelDisplayName,
     getQuotaPoolKey,
@@ -576,10 +570,6 @@ export class StatusBarManager {
         showCacheHit: false,
         showSessionCost: false,
     };
-    private currencyPrefs: CurrencyPrefs = {
-        currency: DEFAULT_DISPLAY_CURRENCY,
-        cnyRate: DEFAULT_CNY_EXCHANGE_RATE,
-    };
     private cachedCreditsTotal: number | null = null;
     private cachedBillingDay: number = 0;
     private cachedTelemetry: SessionTelemetrySummary | null = null;
@@ -618,14 +608,6 @@ export class StatusBarManager {
 
     getQuotaSummary(): UserQuotaSummary | null {
         return this.cachedQuotaSummary;
-    }
-
-    setCurrencyPrefs(prefs: Partial<CurrencyPrefs>): void {
-        this.currencyPrefs = normalizeCurrencyPrefs(prefs);
-    }
-
-    getCurrencyPrefs(): CurrencyPrefs {
-        return { ...this.currencyPrefs };
     }
 
     setCostSnapshot(snapshot: HoverCostSnapshot): void {
@@ -854,7 +836,7 @@ export class StatusBarManager {
             ? `${cacheLabel} ${formatCachePercent(primary.tokenCacheHitRate)}` : '';
         const sessionCost = this.effectiveSessionCost();
         const costSegment = this.displayPrefs.showSessionCost && sessionCost !== null
-            ? `$(credit-card) ${formatCurrencyCost(sessionCost, this.currencyPrefs, { precision: 'standard' })}`
+            ? `$(credit-card) ${formatUsdCost(sessionCost, { precision: 'standard' })}`
             : '';
         return [quota, reset, credits, speedSegment, cacheSegment, costSegment];
     }
@@ -1137,7 +1119,7 @@ export class StatusBarManager {
             ? `**${(latest.cacheHitRate * 100).toFixed(2)}%**`
             : '—';
         const costCell = latest.costUsd !== null
-            ? `**${formatCurrencyCost(latest.costUsd, this.currencyPrefs, { precision: 'call' })}**`
+            ? `**${formatUsdCost(latest.costUsd, { precision: 'call' })}**`
             : t('telemetry.unpriced');
         const ttftStr = latest.ttftSeconds !== null ? formatLatency(latest.ttftSeconds) : '—';
         const totalStr = latest.totalSeconds !== null ? formatLatency(latest.totalSeconds) : '—';
@@ -1197,12 +1179,12 @@ export class StatusBarManager {
         if (cacheRate !== null) { compactParts.push(`${tBi('Cache', '缓存')} ${formatCachePercent(cacheRate)}`); }
         const compactCostParts: string[] = [];
         if (sessionCost !== null) {
-            compactCostParts.push(`${t('telemetry.sessionCost')} **${formatCurrencyCost(sessionCost, this.currencyPrefs)}**`);
+            compactCostParts.push(`${t('telemetry.sessionCost')} **${formatUsdCost(sessionCost)}**`);
         } else if (sessionUnpriced && hasTel) {
             compactCostParts.push(`${t('telemetry.sessionCost')} ${t('telemetry.unpriced')}`);
         }
         if (todayCost !== null) {
-            compactCostParts.push(`${t('telemetry.todayCost')} **${formatCurrencyCost(todayCost, this.currencyPrefs)}**`);
+            compactCostParts.push(`${t('telemetry.todayCost')} **${formatUsdCost(todayCost)}**`);
         }
         const compactLines: string[] = [];
         if (compactParts.length > 0 && compactCostParts.length > 0) {
@@ -1230,16 +1212,16 @@ export class StatusBarManager {
         // Row 1: Cost (Session / Today / Savings or Unpriced)
         if (sessionCost !== null || todayCost !== null || sessionUnpriced) {
             const sessionCell = sessionCost !== null
-                ? `**${formatCurrencyCost(sessionCost, this.currencyPrefs)}**${sessionUnpriced ? ` *(${tBi('partial', '部分')})*` : ''}`
+                ? `**${formatUsdCost(sessionCost)}**${sessionUnpriced ? ` *(${tBi('partial', '部分')})*` : ''}`
                 : (sessionUnpriced ? t('telemetry.unpriced') : '—');
             const todayCell = todayCost !== null
-                ? `**${formatCurrencyCost(todayCost, this.currencyPrefs)}**${todayUnpriced ? ` *(${tBi('partial', '部分')})*` : ''}`
+                ? `**${formatUsdCost(todayCost)}**${todayUnpriced ? ` *(${tBi('partial', '部分')})*` : ''}`
                 : '—';
             let costNote = '—';
             if (primary?.estCacheSavingsUsd !== null && primary?.estCacheSavingsUsd !== undefined && primary.estCacheSavingsUsd >= 0.0001) {
-                const savedSigned = formatCurrencySavings(primary.estCacheSavingsUsd, this.currencyPrefs);
+                const savedSigned = formatUsdSavings(primary.estCacheSavingsUsd);
                 if (savedSigned !== '—') {
-                    const savedPositive = savedSigned.replace(/(^|\()-/g, '$1');
+                    const savedPositive = savedSigned.replace(/^-/, '');
                     costNote = tBi(`est. ${savedSigned}`, `缓存省 ${savedPositive}`);
                 }
             } else if (sessionCost !== null && sessionUnpriced) {
@@ -1255,7 +1237,7 @@ export class StatusBarManager {
                 `${formatTokenCount(primary.totalCacheReadTokens)}/${formatTokenCount(primary.totalPromptTokens)} tokens`,
             ];
             if (this.cachedExtras?.blendedInputUsdPerMillion !== null && this.cachedExtras?.blendedInputUsdPerMillion !== undefined) {
-                detailParts.push(`${t('telemetry.blendedInput')} ${formatPerMillionRate(this.cachedExtras.blendedInputUsdPerMillion, this.currencyPrefs)}`);
+                detailParts.push(`${t('telemetry.blendedInput')} ${formatUsdPerMillion(this.cachedExtras.blendedInputUsdPerMillion)}`);
             }
             if (full && primary.totalCacheCreationTokens > 0) {
                 detailParts.push(`${tBi('write', '写入')} ${formatTokenCount(primary.totalCacheCreationTokens)}`);
@@ -1315,10 +1297,10 @@ export class StatusBarManager {
             );
             if (split) {
                 const planCost = split.plannerCostUsd !== null
-                    ? ` **${formatCurrencyCost(split.plannerCostUsd, this.currencyPrefs)}**`
+                    ? ` **${formatUsdCost(split.plannerCostUsd)}**`
                     : '';
                 const execCost = split.executorCostUsd !== null
-                    ? ` **${formatCurrencyCost(split.executorCostUsd, this.currencyPrefs)}**`
+                    ? ` **${formatUsdCost(split.executorCostUsd)}**`
                     : '';
                 lines.push(`$(git-branch) **${tBi('Split', '编排拆分')}** · ${t('orchestrator.planner')} ${formatHoverText(split.plannerLabel, 32)} ${split.plannerCalls}×${planCost} ｜ ${t('orchestrator.worker')} ${formatHoverText(split.executorLabel, 32)} ${split.executorCalls}×${execCost}`);
             }
@@ -1504,7 +1486,7 @@ export class StatusBarManager {
         const retry = this.cachedExtras?.retryWaste;
         if (retry && retry.retryCount > 0) {
             const wasteCostStr = retry.estWasteCostUsd !== null
-                ? ` (${formatCurrencyCost(retry.estWasteCostUsd, this.currencyPrefs)})`
+                ? ` (${formatUsdCost(retry.estWasteCostUsd)})`
                 : '';
             const codeStr = retry.topErrorCode ? ` · ${formatInlineCode(retry.topErrorCode, 16)}` : '';
             lines.push(`$(warning) **${t('telemetry.retryWaste')}** · ${retry.retryCount}× · ${formatTokenCount(retry.retryTokens)} tokens${wasteCostStr}${codeStr}`);

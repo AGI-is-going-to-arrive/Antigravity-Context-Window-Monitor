@@ -78,8 +78,8 @@ function getFeatureCards(): FeatureCard[] {
             icon: ABOUT_ICON.cost,
             titleHtml: tBiHtml('Cost', '成本'),
             descriptionHtml: tBiHtml(
-                'Estimated USD / CNY cost analysis per model with monthly breakdown charts and custom rates per token type (input, output, cache, thinking).',
-                '按模型估算 USD / CNY 费用，含月度分项图表，支持按 Token 类型（输入、输出、缓存、思考）自定义单价。',
+                'Estimated USD cost analysis per model with monthly breakdown charts and custom rates per token type (input, output, cache, thinking).',
+                '按模型估算 USD 费用，含月度分项图表，支持按 Token 类型（输入、输出、缓存、思考）自定义单价。',
             ),
         },
         {
@@ -227,8 +227,8 @@ export function buildAboutTabContent(version = '1.17.3'): string {
         </h3>
         <div class="about-info-box about-info-compat">
             <p><strong class="about-compat-lead">${tBiHtml(`Verified for extension ${versionTag}:`, `扩展 ${versionTag} 本次验证：`)}</strong> ${tBiHtml(
-        'Verified against Antigravity IDE (agy hub LS 2.34.0) on macOS. This release adds Orchestrator Settings (Orchestrator Model + Executor Model, including Claude Opus 5.5 and Sonnet 5.5), dual-window (5h + Weekly) quota tracking, Extra High effort alignment across Gemini 4 Neon & Hydrogen, 512K context support across all Gemini 4 models, and dual-currency (USD / CNY) cost display.',
-        '在 macOS 的 Antigravity IDE（agy hub LS 2.34.0）中完成验证。本版新增编排器设置（编排器模型 + 执行器模型，含 Claude Opus 5.5 与 Sonnet 5.5）、双窗口（5 小时 + 每周）配额追踪、Gemini 4 Neon 与 Hydrogen 统一 Extra High / 超高档位、全系列 Gemini 4 模型 512K 上下文支持以及双币种（USD / CNY）费用显示。',
+        'Verified against Antigravity IDE (agy hub LS 2.34.0) on macOS. This release adds Orchestrator Settings (Orchestrator Model + Executor Model, including Claude Opus 5.5 and Sonnet 5.5), dual-window (5h + Weekly) quota tracking, Extra High effort alignment across Gemini 4 Neon & Hydrogen, 512K context support across all Gemini 4 models, and official USD cost & telemetry tracking.',
+        '在 macOS 的 Antigravity IDE（agy hub LS 2.34.0）中完成验证。本版新增编排器设置（编排器模型 + 执行器模型，含 Claude Opus 5.5 与 Sonnet 5.5）、双窗口（5 小时 + 每周）配额追踪、Gemini 4 Neon 与 Hydrogen 统一 Extra High / 超高档位、全系列 Gemini 4 模型 512K 上下文支持以及官方 USD 费用与调用遥测追踪。',
     )}</p>
             <p><strong>${tBiHtml('Earlier contributor checks:', '此前贡献者验证版本：')}</strong> v1.18.4, v1.19.6, v1.20.6, v1.23.2.</p>
             <p>${tBiHtml(
