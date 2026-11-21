@@ -570,7 +570,8 @@ export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuota
     for (const c of configs) {
         if (!c.quotaInfo) { continue; }
         const rawReset = typeof c.quotaInfo.resetTime === 'string' ? c.quotaInfo.resetTime.trim() : '';
-        const resetTime = rawReset && rawReset !== '1970-01-01T00:00:00Z' ? rawReset : '';
+        const parsedReset = rawReset ? Date.parse(rawReset) : NaN;
+        const resetTime = rawReset && (!Number.isFinite(parsedReset) || parsedReset !== 0) ? rawReset : '';
         const key = getQuotaPoolKey(c.model, resetTime || undefined);
         const pool = poolMap.get(key) || { labels: [], modelIds: [], resetTimes: [], minFraction: 1 };
         const label = c.label || c.model;

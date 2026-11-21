@@ -801,9 +801,11 @@ export async function fetchFullUserStatus(ls: LSInfo, signal?: AbortSignal): Pro
                     return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : Number.NaN;
                 }
                 const rt = typeof q.resetTime === 'string' ? q.resetTime.trim() : '';
-                if (!rt || rt === '1970-01-01T00:00:00Z') { return 1; }
+                if (!rt) { return 1; }
                 const parsed = Date.parse(rt);
-                return Number.isFinite(parsed) && parsed > 0 ? 0 : Number.NaN;
+                if (!Number.isFinite(parsed)) { return Number.NaN; }
+                if (parsed === 0) { return 1; }
+                return parsed > 0 ? 0 : Number.NaN;
             };
             return {
                 model: ((c.modelOrAlias as Record<string, unknown>)?.model as string) || '',

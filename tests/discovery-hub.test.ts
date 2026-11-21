@@ -211,6 +211,36 @@ describe('hub discovery through real loopback HTTP and mocked OS process listing
         expect(await discoverLanguageServer()).toBeNull();
     });
 
+    it.each([
+        '{}',
+        JSON.stringify({ userStatus: [] }),
+        JSON.stringify({ userStatus: null }),
+    ])('rejects invalid GetUserStatus fallback body %s when GetUnleashData returns 404', async (body) => {
+        platform('win32');
+        const port = await server(404, 'not found');
+        // Override server handler to return 404 on GetUnleashData and `body` on GetUserStatus
+        const customServer = createServer((req, res) => {
+            req.resume();
+            if (req.url === '/exa.language_server_pb.LanguageServerService/GetUnleashData') {
+                res.writeHead(404, { 'Content-Type': 'text/plain' });
+                res.end('404');
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(body);
+        });
+        servers.push(customServer);
+        await new Promise<void>(resolve => customServer.listen(0, '127.0.0.1', resolve));
+        const customPort = (customServer.address() as AddressInfo).port;
+        commands.run.mockImplementation(async (file) => {
+            if (/WMIC\.exe$/i.test(file)) { throw Object.assign(new Error('not found'), { code: 'ENOENT' }); }
+            if (/powershell\.exe$/i.test(file)) { return { stdout: row(port, 123), stderr: '' }; }
+            return { stdout: `  TCP    127.0.0.1:${customPort}        0.0.0.0:0              LISTENING       123`, stderr: '' };
+        });
+
+        expect(await discoverLanguageServer()).toBeNull();
+    });
+
     it('falls back to GetUserStatus when GetUnleashData returns 404', async () => {
         platform('win32');
         const httpServer = createServer((req, res) => {

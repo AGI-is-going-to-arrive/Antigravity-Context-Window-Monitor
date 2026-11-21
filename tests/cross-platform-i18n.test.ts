@@ -92,6 +92,11 @@ describe('modern account status and quota parsing', () => {
                             quotaInfo: { resetTime: '1970-01-01T00:00:00Z' }, // proto3 untouched -> 1
                         },
                         {
+                            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M533' },
+                            label: 'Gemini 4 Neon (Medium)',
+                            quotaInfo: { resetTime: '1970-01-01T00:00:00.000Z' }, // equivalent epoch -> 1
+                        },
+                        {
                             modelOrAlias: { model: 'MODEL_PLACEHOLDER_M532' },
                             label: 'Gemini 4 Neon (High)',
                             quotaInfo: { resetTime: '2026-11-19T06:00:00Z' }, // proto3 exhausted -> 0
@@ -119,8 +124,9 @@ describe('modern account status and quota parsing', () => {
         ]);
 
         expect(status.configs[0].quotaInfo?.remainingFraction).toBe(1);
-        expect(status.configs[1].quotaInfo?.remainingFraction).toBe(0);
-        expect(Number.isNaN(status.configs[2].quotaInfo?.remainingFraction)).toBe(true);
+        expect(status.configs[1].quotaInfo?.remainingFraction).toBe(1);
+        expect(status.configs[2].quotaInfo?.remainingFraction).toBe(0);
+        expect(Number.isNaN(status.configs[3].quotaInfo?.remainingFraction)).toBe(true);
 
         // NaN fraction and epoch 1970 resetTime must not poison quota pool aggregation
         const pools = groupModelConfigsByQuotaPool(status.configs);

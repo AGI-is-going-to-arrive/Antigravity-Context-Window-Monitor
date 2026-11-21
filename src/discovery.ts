@@ -1043,7 +1043,7 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
             '/exa.language_server_pb.LanguageServerService/GetUserStatus',
             { metadata },
             signal,
-            (parsed) => typeof parsed.userStatus === 'object' && parsed.userStatus !== null,
+            (parsed) => typeof parsed.userStatus === 'object' && parsed.userStatus !== null && !Array.isArray(parsed.userStatus),
         );
         return userStatus.ok;
     }
