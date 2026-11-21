@@ -743,11 +743,11 @@ async function probeProcess(
     const hub = isAgyHubProcess(line);
     const declaredPort = hub ? extractHubPort(line) : null;
     const attempted = new Set<number>();
-    const tryPort = async (port: number): Promise<LSInfo | null> => {
+    const tryPort = async (port: number, preferHttp: boolean): Promise<LSInfo | null> => {
         if (attempted.has(port) || signal?.aborted) { return null; }
         attempted.add(port);
-        // agy serves its hub over HTTP; legacy language_server usually uses TLS.
-        for (const useTls of hub ? [false, true] : [true, false]) {
+        // agy serves its declared hub port over HTTP, while secondary/legacy ports may use TLS.
+        for (const useTls of preferHttp ? [false, true] : [true, false]) {
             if (signal?.aborted) { return null; }
             if (await probePort(port, csrfToken, useTls, signal)) {
                 return { pid, csrfToken, port, useTls };
@@ -756,12 +756,14 @@ async function probeProcess(
         return null;
     };
     if (declaredPort !== null) {
-        const found = await tryPort(declaredPort);
+        const found = await tryPort(declaredPort, hub);
         if (found) { return found; }
     }
     if (signal?.aborted) { return null; }
     for (const port of await getPorts()) {
-        const found = await tryPort(port);
+        // When a hub's declaredPort already failed, secondary ports (e.g. agy >=1.5.14)
+        // typically use TLS; trying TLS first avoids spurious HTTP-to-HTTPS handshake errors.
+        const found = await tryPort(port, hub && declaredPort === null);
         if (found) { return found; }
     }
     return null;
@@ -901,40 +903,45 @@ export async function discoverLanguageServer(
     }
 }
 
+interface ProbeResult {
+    ok: boolean;
+    status?: number;
+}
+
 /**
- * Probe a port by sending a lightweight RPC request.
- * M3 fix: Now checks HTTP status code — rejects non-2xx responses.
+ * Probe a single Connect-RPC endpoint on `port`.
+ * Checks HTTP 2xx status and validates that the response body is a JSON object.
  */
-async function probePort(port: number, csrfToken: string, useTls: boolean, signal?: AbortSignal): Promise<boolean> {
+async function probeEndpoint(
+    port: number,
+    csrfToken: string,
+    useTls: boolean,
+    path: string,
+    payload: Record<string, unknown>,
+    signal?: AbortSignal,
+    validateBody?: (parsed: Record<string, unknown>) => boolean,
+): Promise<ProbeResult> {
     return new Promise((resolve) => {
         // CR-C2: Early abort check
         if (signal?.aborted) {
-            resolve(false);
+            resolve({ ok: false });
             return;
         }
 
         let settled = false;
-        const settle = (value: boolean) => {
+        const settle = (value: ProbeResult) => {
             if (settled) { return; }
             settled = true;
             cleanupAbortListener();
             resolve(value);
         };
 
-        const postData = JSON.stringify({
-            metadata: {
-                ideName: 'antigravity',
-                extensionName: 'antigravity',
-                ideVersion: 'unknown',
-                locale: 'en'
-            }
-        });
+        const postData = JSON.stringify(payload);
 
         const options: https.RequestOptions = {
             hostname: '127.0.0.1',
             port,
-            // Use GetUnleashData for lightweight port probing (per openusage docs)
-            path: '/exa.language_server_pb.LanguageServerService/GetUnleashData',
+            path,
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -965,7 +972,7 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
                 bodySize += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
                 if (bodySize > PROBE_MAX_BODY) {
                     req.destroy();
-                    settle(false);
+                    settle({ ok: false, status: res.statusCode });
                     return;
                 }
                 body += chunk;
@@ -973,29 +980,31 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
             // CR2-Fix3: Handle response-side stream errors (e.g. TCP RST,
             // half-broken connections). Without this, the Promise would hang
             // until the req.on('timeout') fires.
-            res.on('error', () => settle(false));
+            res.on('error', () => settle({ ok: false }));
             res.on('end', () => {
                 // M3: Check HTTP status code — 4xx/5xx are not valid RPC endpoints
                 if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-                    settle(false);
+                    settle({ ok: false, status: res.statusCode });
                     return;
                 }
                 try {
                     const parsed: unknown = JSON.parse(body);
                     // Connect JSON messages are objects, including the empty
                     // GetUnleashData response from current agy hubs.
-                    settle(parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed));
+                    const isObj = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+                    const valid = isObj && (!validateBody || validateBody(parsed as Record<string, unknown>));
+                    settle({ ok: valid, status: res.statusCode });
                 } catch {
-                    settle(false);
+                    settle({ ok: false, status: res.statusCode });
                 }
             });
         });
 
-        req.on('error', () => settle(false));
-        req.on('timeout', () => { req.destroy(); settle(false); });
+        req.on('error', () => settle({ ok: false }));
+        req.on('timeout', () => { req.destroy(); settle({ ok: false }); });
 
         if (signal) {
-            onAbort = () => { req.destroy(); settle(false); };
+            onAbort = () => { req.destroy(); settle({ ok: false }); };
             signal.addEventListener('abort', onAbort, { once: true });
             if (signal.aborted) { onAbort(); return; }
         }
@@ -1003,4 +1012,40 @@ async function probePort(port: number, csrfToken: string, useTls: boolean, signa
         req.write(postData);
         req.end();
     });
+}
+
+/**
+ * Probe a port by sending a lightweight RPC request.
+ * Tries GetUnleashData first, falling back to GetUserStatus when a hub/LS
+ * returns 404 on GetUnleashData (e.g. agy >=1.5.14 secondary RPC ports).
+ */
+async function probePort(port: number, csrfToken: string, useTls: boolean, signal?: AbortSignal): Promise<boolean> {
+    const metadata = {
+        ideName: 'antigravity',
+        extensionName: 'antigravity',
+        ideVersion: 'unknown',
+        locale: 'en'
+    };
+    const unleash = await probeEndpoint(
+        port,
+        csrfToken,
+        useTls,
+        '/exa.language_server_pb.LanguageServerService/GetUnleashData',
+        { metadata },
+        signal,
+    );
+    if (unleash.ok) { return true; }
+    if (unleash.status === 404 && !signal?.aborted) {
+        const userStatus = await probeEndpoint(
+            port,
+            csrfToken,
+            useTls,
+            '/exa.language_server_pb.LanguageServerService/GetUserStatus',
+            { metadata },
+            signal,
+            (parsed) => typeof parsed.userStatus === 'object' && parsed.userStatus !== null,
+        );
+        return userStatus.ok;
+    }
+    return false;
 }

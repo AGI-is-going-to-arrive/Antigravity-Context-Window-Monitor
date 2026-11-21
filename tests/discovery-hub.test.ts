@@ -210,4 +210,69 @@ describe('hub discovery through real loopback HTTP and mocked OS process listing
         commands.run.mockImplementation(async file => ({ stdout: file === 'ps' ? row(port) : '', stderr: '' }));
         expect(await discoverLanguageServer()).toBeNull();
     });
+
+    it('falls back to GetUserStatus when GetUnleashData returns 404', async () => {
+        platform('win32');
+        const httpServer = createServer((req, res) => {
+            received.push({ port: (httpServer.address() as AddressInfo).port, token: req.headers['x-codeium-csrf-token'], path: req.url });
+            req.resume();
+            if (req.url === '/exa.language_server_pb.LanguageServerService/GetUnleashData') {
+                res.writeHead(404, { 'Content-Type': 'text/plain' });
+                res.end('404 page not found');
+                return;
+            }
+            if (req.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ userStatus: { name: 'Test' } }));
+                return;
+            }
+            res.writeHead(404);
+            res.end();
+        });
+        servers.push(httpServer);
+        await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
+        const port = (httpServer.address() as AddressInfo).port;
+        commands.run.mockResolvedValue({ stdout: row(port), stderr: '' });
+
+        const found = await discoverLanguageServer();
+
+        expect(found).toEqual({ pid: 123, port, csrfToken: 'Mixed-Case-Token', useTls: false });
+        expect(received.map(r => r.path)).toEqual([
+            '/exa.language_server_pb.LanguageServerService/GetUnleashData',
+            '/exa.language_server_pb.LanguageServerService/GetUserStatus',
+        ]);
+    });
+
+    it('falls back to secondary TLS port via netstat when declared hub port returns 404', async () => {
+        platform('win32');
+        const hubPort = await server(404, '404 page not found');
+        // Secondary port over HTTP returning 404 on GetUnleashData and 200 on GetUserStatus
+        // (covers secondary socket discovery when declared hubPort only serves web/404)
+        const secondaryServer = createServer((req, res) => {
+            received.push({ port: (secondaryServer.address() as AddressInfo).port, token: req.headers['x-codeium-csrf-token'], path: req.url });
+            req.resume();
+            if (req.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ userStatus: { name: 'Test' } }));
+                return;
+            }
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('Not found');
+        });
+        servers.push(secondaryServer);
+        await new Promise<void>(resolve => secondaryServer.listen(0, '127.0.0.1', resolve));
+        const secondaryPort = (secondaryServer.address() as AddressInfo).port;
+
+        commands.run.mockImplementation(async (file) => {
+            if (/WMIC\.exe$/i.test(file)) { throw Object.assign(new Error('not found'), { code: 'ENOENT' }); }
+            if (/powershell\.exe$/i.test(file)) { return { stdout: row(hubPort, 6108), stderr: '' }; }
+            return {
+                stdout: `  TCP    127.0.0.1:${hubPort}        0.0.0.0:0              LISTENING       6108\n  TCP    127.0.0.1:${secondaryPort}        0.0.0.0:0              LISTENING       6108`,
+                stderr: '',
+            };
+        });
+
+        const found = await discoverLanguageServer();
+        expect(found).toEqual({ pid: 6108, port: secondaryPort, csrfToken: 'Mixed-Case-Token', useTls: false });
+    });
 });
