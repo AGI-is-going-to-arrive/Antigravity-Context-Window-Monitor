@@ -9,9 +9,11 @@
  *   - dist/antigravity-context-monitor-app/
  *   - dist/antigravity-context-monitor-app-<version>.zip
  *   - dist/antigravity-context-monitor-app-<version>.tar.gz
+ *   - dist/SHA256SUMS.txt
  */
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
     cpSync,
     existsSync,
@@ -22,7 +24,8 @@ import {
     statSync,
     writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateRawSync, gzipSync } from 'node:zlib';
 
@@ -264,21 +267,87 @@ function copyFilteredDir(srcDir, dstDir, filterFn) {
     }
 }
 
-function validateWithAgyCli(targetPath) {
+// ─── SHA-256 Checksum Helpers ────────────────────────────────────────────────
+
+export function computeSha256Hex(data) {
+    return createHash('sha256').update(data).digest('hex');
+}
+
+export function computeFileSha256Hex(filePath) {
+    return computeSha256Hex(readFileSync(filePath));
+}
+
+/**
+ * Formats checksum entries into standard GNU `sha256sum` text (UTF-8, LF, no BOM).
+ * @param {Array<{ filename: string, sha256: string }>} entries
+ * @returns {string}
+ */
+export function formatSha256Sums(entries) {
+    return entries
+        .map(({ filename, sha256 }) => `${String(sha256).toLowerCase()}  ${basename(filename)}`)
+        .join('\n') + '\n';
+}
+
+function findAgyCliBinary() {
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    const home = homedir();
+    const candidates = [
+        'agy',
+        join(home, '.gemini', 'bin', `agy${ext}`),
+        join(home, '.local', 'bin', `agy${ext}`),
+    ];
+    for (const bin of candidates) {
+        if (bin !== 'agy' && !existsSync(bin)) { continue; }
+        try {
+            execFileSync(bin, ['--version'], { stdio: 'ignore', windowsHide: true });
+            return bin;
+        } catch {
+            // Try next candidate
+        }
+    }
+    return null;
+}
+
+export function validateWithAgyCli(targetPath) {
+    const agyBin = findAgyCliBinary();
+    if (!agyBin) {
+        return { ran: false, ok: true, skipped: true, findings: [] };
+    }
     try {
-        const out = execFileSync('agy', ['plugin', 'validate', '--strict', '--json', targetPath], {
+        const out = execFileSync(agyBin, ['plugin', 'validate', '--strict', '--json', targetPath], {
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
         });
-        return { ran: true, ok: true, output: out.trim() };
+        const trimmed = out.trim();
+        let report = null;
+        try {
+            report = JSON.parse(trimmed);
+        } catch {
+            return {
+                ran: true,
+                ok: false,
+                output: `Invalid JSON from agy plugin validate --strict --json:\n${trimmed}`,
+                findings: null,
+            };
+        }
+        const findings = Array.isArray(report?.findings) ? report.findings : null;
+        if (!findings || findings.length > 0) {
+            return {
+                ran: true,
+                ok: false,
+                output: trimmed,
+                findings: findings || [],
+            };
+        }
+        return { ran: true, ok: true, output: trimmed, findings: [] };
     } catch (err) {
         if (err && typeof err === 'object' && err.code === 'ENOENT') {
-            return { ran: false, ok: true, skipped: true };
+            return { ran: false, ok: true, skipped: true, findings: [] };
         }
         const stderr = err && err.stderr ? String(err.stderr) : '';
         const stdout = err && err.stdout ? String(err.stdout) : '';
-        return { ran: true, ok: false, output: `${stdout}\n${stderr}`.trim() };
+        return { ran: true, ok: false, output: `${stdout}\n${stderr}`.trim(), findings: null };
     }
 }
 
@@ -357,17 +426,42 @@ export function packageAppPlugin(options = {}) {
 
     // 6. Build cross-platform zero-dependency .zip and .tar.gz archives
     const entries = collectEntries(stageDir, PLUGIN_DIR_NAME);
-    const zipPath = join(distRoot, `antigravity-context-monitor-app-${version}.zip`);
-    const tarGzPath = join(distRoot, `antigravity-context-monitor-app-${version}.tar.gz`);
+    const zipFilename = `antigravity-context-monitor-app-${version}.zip`;
+    const tarGzFilename = `antigravity-context-monitor-app-${version}.tar.gz`;
+    const zipPath = join(distRoot, zipFilename);
+    const tarGzPath = join(distRoot, tarGzFilename);
 
-    writeFileSync(zipPath, buildZipBuffer(entries));
-    writeFileSync(tarGzPath, buildTarGzBuffer(entries));
+    const zipBuf = buildZipBuffer(entries);
+    const tarGzBuf = buildTarGzBuffer(entries);
+    writeFileSync(zipPath, zipBuf);
+    writeFileSync(tarGzPath, tarGzBuf);
+
+    // 7. Emit dist/SHA256SUMS.txt for release verification (zip, tar.gz, and optional root vsix)
+    const checksumEntries = [
+        { filename: zipFilename, path: zipPath, sha256: computeSha256Hex(zipBuf) },
+        { filename: tarGzFilename, path: tarGzPath, sha256: computeSha256Hex(tarGzBuf) },
+    ];
+    const vsixFilename = `antigravity-context-monitor-${version}.vsix`;
+    const vsixCandidates = [join(repoRoot, vsixFilename), join(distRoot, vsixFilename)];
+    const foundVsixPath = vsixCandidates.find((p) => existsSync(p) && statSync(p).isFile()) || null;
+    if (foundVsixPath) {
+        checksumEntries.push({
+            filename: vsixFilename,
+            path: foundVsixPath,
+            sha256: computeFileSha256Hex(foundVsixPath),
+        });
+    }
+    const checksumsPath = join(distRoot, 'SHA256SUMS.txt');
+    writeFileSync(checksumsPath, formatSha256Sums(checksumEntries), 'utf8');
 
     return {
         version,
         stageDir,
         zipPath,
         tarGzPath,
+        checksumsPath,
+        checksums: checksumEntries.map(({ filename, sha256 }) => ({ filename, sha256 })),
+        vsixIncluded: Boolean(foundVsixPath),
         entryCount: entries.length,
         validation,
         hasSidecarRuntime,
@@ -384,9 +478,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         console.log(`  Stage dir : ${result.stageDir}`);
         console.log(`  ZIP       : ${result.zipPath}`);
         console.log(`  TAR.GZ    : ${result.tarGzPath}`);
+        console.log(`  SHA256SUMS: ${result.checksumsPath} (${result.checksums.map((c) => c.filename).join(', ')})`);
         console.log(`  Runtime   : sidecar-runtime=${result.hasSidecarRuntime ? 'yes' : 'no'}, webview-document=${result.hasWebviewDocument ? 'yes' : 'fallback'}, images=${result.bundledImages.length}`);
         if (result.validation.ran) {
-            console.log('  Validation: agy plugin validate --strict PASSED (0 findings)');
+            console.log('  Validation: agy plugin validate --strict --json PASSED (0 findings)');
         } else {
             console.log('  Validation: skipped (`agy` CLI not on PATH)');
         }

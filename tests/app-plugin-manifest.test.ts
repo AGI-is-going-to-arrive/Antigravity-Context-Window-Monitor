@@ -108,7 +108,7 @@ describe('app-plugin manifest & sidecar assets', () => {
         execFileSync(process.execPath, ['--check', mainMjsPath], { stdio: 'pipe', windowsHide: true });
     });
 
-    it('includes a valid companion SKILL.md with frontmatter and clickable sidecar:// pill', () => {
+    it('includes a valid companion SKILL.md with frontmatter, clickable sidecar:// pill, and safe upgrade guidance', () => {
         const skillPath = path.join(PLUGIN_DIR, 'skills', 'context-monitor', 'SKILL.md');
         expect(fs.existsSync(skillPath)).toBe(true);
         expect(hasUtf8Bom(skillPath)).toBe(false);
@@ -119,6 +119,35 @@ describe('app-plugin manifest & sidecar assets', () => {
         expect(md).toMatch(/^description:/m);
         expect(md).toContain('sidecar://antigravity-context-monitor/context_monitor/');
         expect(md).toContain('customization://antigravity-context-monitor');
+        expect(md).toContain('--status');
+        expect(md).toContain('--upgrade');
+    });
+
+    it('keeps app-plugin/plugin.json version aligned with root package.json', () => {
+        const rootPkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+        const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'plugin.json'), 'utf8'));
+        expect(manifest.version).toBe(rootPkg.version);
+    });
+
+    it('ships bilingual root AGENTS.md with one-sentence install/upgrade commands and safety boundaries', () => {
+        const agentsPath = path.join(REPO_ROOT, 'AGENTS.md');
+        expect(fs.existsSync(agentsPath)).toBe(true);
+        expect(hasUtf8Bom(agentsPath)).toBe(false);
+
+        const md = fs.readFileSync(agentsPath, 'utf8');
+        expect(md).toContain('## English');
+        expect(md).toContain('## 中文');
+        expect(md).toContain('AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor');
+        expect(md).toContain('--from-github');
+        expect(md).toContain('--upgrade');
+        expect(md).toContain('--status');
+        expect(md).toContain('SHA256SUMS.txt');
+        expect(md).toContain('app.asar');
+        expect(md).toMatch(/NEVER Kill or Force-Quit/i);
+        expect(md).toContain('严禁强杀');
+        expect(md).toContain('customization://antigravity-context-monitor');
+        expect(md).toContain('sidecar://antigravity-context-monitor/context_monitor/');
+        expect(md).toContain('antigravity-ide --install-extension');
     });
 
     it('passes `agy plugin validate --strict --json` with zero findings when agy CLI is installed', () => {

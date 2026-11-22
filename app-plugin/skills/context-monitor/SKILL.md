@@ -49,3 +49,20 @@ Instead, guide the user to enable the plugin and sidecar in Customizations:
 - **Conversation Switcher & Quick Actions**: Lock to Main Agent toggle,
   multi-conversation selector, one-click `/context` report copy, and compact
   handoff prompt generator.
+
+## Checking Status & Upgrading
+
+When the user asks to check their installed version, verify plugin health, or
+upgrade Antigravity Context Monitor:
+
+- **In-panel update check:** Users can check for new GitHub Releases and apply
+  verified updates directly from the **Settings** / **About** panel inside
+  Context Monitor.
+- **CLI status & one-command upgrade:** From a repository checkout (or using the
+  zero-clone one-liner in root `AGENTS.md`), run:
+  - Status & remote check: `node scripts/install-app-plugin.mjs --status --check-remote`
+  - Upgrade from GitHub Releases (SHA-256 verified, atomic swap): `node scripts/install-app-plugin.mjs --upgrade`
+- **Safe reload rule:** Never force-quit or kill the running Antigravity App
+  process during an active session. After upgrading files on disk, guide the
+  user to open [Antigravity Context Monitor](customization://antigravity-context-monitor)
+  and toggle the plugin **Off → On** so the sidecar loads the new version safely.
