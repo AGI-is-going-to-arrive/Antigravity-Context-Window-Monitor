@@ -11,6 +11,10 @@ import * as fs from 'fs';
 import * as http from 'http';
 import type * as net from 'net';
 import * as path from 'path';
+import {
+    generateSessionToken,
+    validateOverlayBridgeRequest,
+} from './cdp-injector';
 import { getHostBridgeScript, type HostBridgeOptions } from './host-bridge';
 import { getThemeAdapterStyles } from './theme-adapter';
 import type {
@@ -26,11 +30,48 @@ import type {
 } from './sidecar-types';
 
 export const MAX_ACTION_BODY_BYTES = 256 * 1024;
+export const MAX_OVERLAY_ACTION_BODY_BYTES = 16 * 1024;
 export const DEFAULT_SIDECAR_VERSION = '1.17.5';
 export const ALLOWED_IMAGE_FILENAME_RE = /^[a-z0-9-]+\.png$/;
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 const IMAGE_ROUTE_RE = /^\/assets\/images\/([a-z0-9-]+\.png)$/;
+
+export type SidecarOverlayBridgeCommand =
+    | 'refresh'
+    | 'openSidecar'
+    | 'togglePanel'
+    | 'openPanel'
+    | 'togglePause'
+    | 'ping';
+
+const ALLOWED_OVERLAY_BRIDGE_COMMANDS: ReadonlySet<SidecarOverlayBridgeCommand> = new Set([
+    'refresh',
+    'openSidecar',
+    'togglePanel',
+    'openPanel',
+    'togglePause',
+    'ping',
+]);
+
+export interface SidecarOverlayBridgeRequest {
+    command: SidecarOverlayBridgeCommand;
+    source?: 'composer' | 'topbar';
+}
+
+export interface SidecarOverlayBridgeOptions {
+    /** 256-bit hex session token for `X-Monitor-Token` validation. */
+    token?: string;
+    /** Optional pinned Hub origin (e.g. `http://127.0.0.1:49999`). */
+    allowedOrigin?: string;
+    /** Optional custom action handler for authenticated overlay actions. */
+    onAction?: (action: SidecarOverlayBridgeRequest) => Promise<SidecarActionResponse | void> | SidecarActionResponse | void;
+}
+
+export interface SidecarOverlayAwareProvider extends SidecarProvider {
+    getOverlayBridgeAuth?(): { token: string; allowedOrigin?: string };
+    handleOverlayAction?(action: SidecarOverlayBridgeRequest): Promise<SidecarActionResponse | void> | SidecarActionResponse | void;
+}
 
 export interface SidecarHandlerOptions {
     /** Plugin version returned by /api/health and passed to renderHtml. */
@@ -41,6 +82,8 @@ export interface SidecarHandlerOptions {
     hostBridgeOptions?: HostBridgeOptions;
     /** Optional override directory containing bundled offline PNG illustrations. */
     imagesDir?: string;
+    /** Optional auth & handler config for loopback `POST /api/overlay/action`. */
+    overlayBridge?: SidecarOverlayBridgeOptions;
 }
 
 export interface RenderedPageResult {
@@ -70,7 +113,17 @@ export type SidecarSnapshotHttpBody =
 export type SidecarActionHttpBody = SidecarActionResponse & {
     text?: string;
     copiedHint?: string;
+    filename?: string;
+    content?: string;
+    mimeType?: string;
+    type?: string;
 };
+
+export interface SidecarOverlayActionResult {
+    status: number;
+    headers: Record<string, string>;
+    body?: Record<string, unknown>;
+}
 
 export interface SidecarHandler {
     renderPage(viewMode: SidecarViewMode, rawUrl?: string): Promise<RenderedPageResult>;
@@ -79,6 +132,14 @@ export interface SidecarHandler {
         ifNoneMatch?: string,
     ): Promise<{ status: number; headers: Record<string, string>; body: SidecarSnapshotHttpBody }>;
     handleActionPayload(rawBody: unknown): Promise<{ status: number; body: SidecarActionHttpBody }>;
+    handleOverlayAction(params: {
+        method: string;
+        originHeader?: string;
+        tokenHeader?: string;
+        rawBody?: unknown;
+    }): Promise<SidecarOverlayActionResult>;
+    getOverlayBridgeToken(): string;
+    setOverlayAllowedOrigin(origin: string | undefined): void;
     handleAssetImage(filename: string): Promise<AssetImageResult>;
     listAssetImages(): string[];
     getHealth(): SidecarHealthResponse;
@@ -91,6 +152,7 @@ export interface StandaloneServerOptions {
     version?: string;
     hostBridgeOptions?: HostBridgeOptions;
     imagesDir?: string;
+    overlayBridge?: SidecarOverlayBridgeOptions;
 }
 
 export interface StandaloneServerHandle {
@@ -98,6 +160,7 @@ export interface StandaloneServerHandle {
     host: string;
     port: number;
     url: string;
+    overlayBridgeToken: string;
     close(): Promise<void>;
 }
 
@@ -317,7 +380,7 @@ function sendJson(
  * Create the unified HTTP & SidecarApp router bound to a `SidecarProvider`.
  */
 export function createSidecarHandler(
-    provider: SidecarProvider,
+    provider: SidecarOverlayAwareProvider,
     options: SidecarHandlerOptions = {},
 ): SidecarHandler {
     const startedAtMs = Date.now();
@@ -326,6 +389,29 @@ export function createSidecarHandler(
     const cachedThemeCss = getThemeAdapterStyles();
     const cachedBridgeJs = getHostBridgeScript(options.hostBridgeOptions);
     const resolvedImagesDir = resolveDefaultImagesDir(options.imagesDir);
+    const fallbackOverlayToken = options.overlayBridge?.token && options.overlayBridge.token.length >= 32
+        ? options.overlayBridge.token
+        : generateSessionToken();
+    let explicitAllowedOrigin = options.overlayBridge?.allowedOrigin;
+
+    function getOverlayBridgeToken(): string {
+        if (options.overlayBridge?.token && options.overlayBridge.token.length >= 32) {
+            return options.overlayBridge.token;
+        }
+        const providerToken = provider.getOverlayBridgeAuth?.().token;
+        if (providerToken && providerToken.length >= 32) {
+            return providerToken;
+        }
+        return fallbackOverlayToken;
+    }
+
+    function getOverlayAllowedOrigin(): string | undefined {
+        return explicitAllowedOrigin ?? provider.getOverlayBridgeAuth?.().allowedOrigin;
+    }
+
+    function setOverlayAllowedOrigin(origin: string | undefined): void {
+        explicitAllowedOrigin = origin;
+    }
 
     function listAssetImages(): string[] {
         if (!resolvedImagesDir) { return []; }
@@ -488,9 +574,13 @@ export function createSidecarHandler(
             const response = await provider.handleAction(action) as SidecarActionHttpBody | undefined;
             const sanitized: SidecarActionHttpBody = {
                 ok: Boolean(response?.ok),
+                ...(typeof response?.type === 'string' ? { type: response.type } : {}),
                 ...(response?.result !== undefined ? { result: response.result } : {}),
                 ...(typeof response?.text === 'string' ? { text: response.text } : {}),
                 ...(typeof response?.copiedHint === 'string' ? { copiedHint: response.copiedHint } : {}),
+                ...(typeof response?.filename === 'string' ? { filename: response.filename } : {}),
+                ...(typeof response?.content === 'string' ? { content: response.content } : {}),
+                ...(typeof response?.mimeType === 'string' ? { mimeType: response.mimeType } : {}),
                 ...(Array.isArray(response?.messages) ? { messages: response.messages } : {}),
                 ...(response?.reload ? { reload: true } : {}),
                 ...(response?.snapshot !== undefined
@@ -511,6 +601,123 @@ export function createSidecarHandler(
         } catch {
             // Never leak raw Error stacks or internal file paths over HTTP
             return { status: 500, body: { ok: false, error: 'Internal action error' } };
+        }
+    }
+
+    function buildOverlayCorsHeaders(origin: string | undefined): Record<string, string> {
+        if (!origin) { return {}; }
+        return {
+            'Access-Control-Allow-Origin': origin,
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, X-Monitor-Token',
+            'Vary': 'Origin',
+        };
+    }
+
+    async function handleOverlayAction(params: {
+        method: string;
+        originHeader?: string;
+        tokenHeader?: string;
+        rawBody?: unknown;
+    }): Promise<SidecarOverlayActionResult> {
+        const method = (params.method || 'GET').toUpperCase();
+        const expectedToken = getOverlayBridgeToken();
+        const allowedOrigin = getOverlayAllowedOrigin();
+
+        if (method === 'OPTIONS') {
+            const check = validateOverlayBridgeRequest({
+                originHeader: params.originHeader,
+                tokenHeader: params.tokenHeader,
+                expectedToken,
+                allowedOrigin,
+                isPreflight: true,
+            });
+            if (!check.ok) {
+                return { status: check.status, headers: {}, body: { ok: false, error: check.error } };
+            }
+            return {
+                status: 204,
+                headers: {
+                    ...buildOverlayCorsHeaders(check.origin),
+                    'Access-Control-Max-Age': '300',
+                },
+            };
+        }
+
+        if (method !== 'POST') {
+            return { status: 405, headers: {}, body: { ok: false, error: 'Method Not Allowed' } };
+        }
+
+        const check = validateOverlayBridgeRequest({
+            originHeader: params.originHeader,
+            tokenHeader: params.tokenHeader,
+            expectedToken,
+            allowedOrigin,
+            isPreflight: false,
+        });
+        if (!check.ok) {
+            return { status: check.status, headers: {}, body: { ok: false, error: check.error } };
+        }
+
+        const corsHeaders = buildOverlayCorsHeaders(check.origin);
+        if (!params.rawBody || typeof params.rawBody !== 'object' || Array.isArray(params.rawBody)) {
+            return { status: 400, headers: corsHeaders, body: { ok: false, error: 'Invalid overlay action payload' } };
+        }
+        const rec = params.rawBody as Record<string, unknown>;
+        const rawCmd = typeof rec.command === 'string' ? rec.command.trim() as SidecarOverlayBridgeCommand : '' as SidecarOverlayBridgeCommand;
+        if (!ALLOWED_OVERLAY_BRIDGE_COMMANDS.has(rawCmd)) {
+            return { status: 400, headers: corsHeaders, body: { ok: false, error: 'Unsupported overlay action' } };
+        }
+        const source = rec.source === 'composer' || rec.source === 'topbar' ? rec.source : undefined;
+        const overlayReq: SidecarOverlayBridgeRequest = { command: rawCmd, source };
+
+        if (rawCmd === 'ping') {
+            return {
+                status: 200,
+                headers: corsHeaders,
+                body: { ok: true, command: 'ping', result: { pong: true, version } },
+            };
+        }
+
+        try {
+            if (options.overlayBridge?.onAction) {
+                const res = await options.overlayBridge.onAction(overlayReq);
+                if (res && typeof res === 'object') {
+                    return {
+                        status: res.ok === false ? (res.statusCode || 400) : 200,
+                        headers: corsHeaders,
+                        body: { ok: res.ok !== false, command: rawCmd, ...(res.result !== undefined ? { result: res.result } : {}), ...(res.error ? { error: res.error } : {}) },
+                    };
+                }
+                return { status: 200, headers: corsHeaders, body: { ok: true, command: rawCmd } };
+            }
+            if (typeof provider.handleOverlayAction === 'function') {
+                const res = await provider.handleOverlayAction(overlayReq);
+                if (res && typeof res === 'object') {
+                    return {
+                        status: res.ok === false ? (res.statusCode || 400) : 200,
+                        headers: corsHeaders,
+                        body: { ok: res.ok !== false, command: rawCmd, ...(res.result !== undefined ? { result: res.result } : {}), ...(res.error ? { error: res.error } : {}) },
+                    };
+                }
+                return { status: 200, headers: corsHeaders, body: { ok: true, command: rawCmd } };
+            }
+            if (rawCmd === 'refresh' || rawCmd === 'togglePause') {
+                const actionRes = await provider.handleAction({ command: rawCmd, source });
+                return {
+                    status: actionRes?.ok === false ? (actionRes.statusCode || 400) : 200,
+                    headers: corsHeaders,
+                    body: { ok: actionRes?.ok !== false, command: rawCmd, ...(actionRes?.result !== undefined ? { result: actionRes.result } : {}) },
+                };
+            }
+            // openSidecar / togglePanel / openPanel acknowledged cleanly on loopback bridge
+            return {
+                status: 200,
+                headers: corsHeaders,
+                body: { ok: true, command: rawCmd, result: { acknowledged: true, command: rawCmd } },
+            };
+        } catch {
+            return { status: 500, headers: corsHeaders, body: { ok: false, error: 'Overlay action failed' } };
         }
     }
 
@@ -614,6 +821,52 @@ export function createSidecarHandler(
                 return;
             }
 
+            if (pathname === '/api/overlay/action') {
+                const originHeader = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+                const tokenHeader = typeof req.headers['x-monitor-token'] === 'string'
+                    ? req.headers['x-monitor-token']
+                    : undefined;
+                if (method === 'OPTIONS') {
+                    const preflight = await handleOverlayAction({ method, originHeader, tokenHeader });
+                    if (preflight.status === 204) {
+                        res.writeHead(204, preflight.headers);
+                        res.end();
+                    } else {
+                        sendJson(res, preflight.status, preflight.body || { ok: false, error: 'Forbidden' }, preflight.headers);
+                    }
+                    return;
+                }
+                if (method !== 'POST') {
+                    sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
+                    return;
+                }
+                // Validate Origin + X-Monitor-Token BEFORE reading body so unauthenticated callers cannot buffer memory
+                const authCheck = validateOverlayBridgeRequest({
+                    originHeader,
+                    tokenHeader,
+                    expectedToken: getOverlayBridgeToken(),
+                    allowedOrigin: getOverlayAllowedOrigin(),
+                    isPreflight: false,
+                });
+                if (!authCheck.ok) {
+                    sendJson(res, authCheck.status, { ok: false, error: authCheck.error });
+                    return;
+                }
+                const parsed = await readJsonBodyWithLimit(req, MAX_OVERLAY_ACTION_BODY_BYTES);
+                if (!parsed.ok) {
+                    sendJson(res, parsed.status, { ok: false, error: parsed.error }, buildOverlayCorsHeaders(authCheck.origin));
+                    return;
+                }
+                const result = await handleOverlayAction({
+                    method,
+                    originHeader,
+                    tokenHeader,
+                    rawBody: parsed.data,
+                });
+                sendJson(res, result.status, result.body || { ok: true }, result.headers);
+                return;
+            }
+
             sendJson(res, 404, { ok: false, error: 'Not Found' });
         } catch {
             sendJson(res, 500, { ok: false, error: 'Internal Server Error' });
@@ -624,6 +877,9 @@ export function createSidecarHandler(
         renderPage,
         handleSnapshotQuery,
         handleActionPayload,
+        handleOverlayAction,
+        getOverlayBridgeToken,
+        setOverlayAllowedOrigin,
         handleAssetImage,
         listAssetImages,
         getHealth,
@@ -636,7 +892,7 @@ export function createSidecarHandler(
  * headless Chromium verification, or local development outside Antigravity App.
  */
 export async function startStandaloneServer(
-    provider: SidecarProvider,
+    provider: SidecarOverlayAwareProvider,
     options: StandaloneServerOptions = {},
 ): Promise<StandaloneServerHandle> {
     const host = options.host || '127.0.0.1';
@@ -649,6 +905,7 @@ export async function startStandaloneServer(
         isSidecarEnv: false,
         hostBridgeOptions: options.hostBridgeOptions,
         imagesDir: options.imagesDir,
+        overlayBridge: options.overlayBridge,
     });
 
     const server = http.createServer((req, res) => {
@@ -703,6 +960,7 @@ export async function startStandaloneServer(
         host,
         port: resolvedPort,
         url: `http://${urlHost}:${resolvedPort}`,
+        overlayBridgeToken: handler.getOverlayBridgeToken(),
         close,
     };
 }

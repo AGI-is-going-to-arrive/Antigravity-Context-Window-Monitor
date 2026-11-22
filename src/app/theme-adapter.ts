@@ -254,6 +254,10 @@ export function getThemeAdapterStyles(): string {
             body[data-acm-surface="app-sidecar"] .tab-pane {
                 padding-inline: var(--ed-gutter);
             }
+            body[data-acm-surface="app-sidecar"] #nativeHudHost {
+                padding-inline: var(--ed-gutter);
+                box-sizing: border-box;
+            }
             body[data-acm-surface="app-sidecar"] :is(
                 .overview-grid,
                 .overview-kpi-grid,
@@ -261,7 +265,8 @@ export function getThemeAdapterStyles(): string {
                 .models-grid,
                 .profile-grid,
                 .acm-breakdown-grid,
-                .acm-runway-grid
+                .acm-runway-grid,
+                .stg-form-grid
             ) {
                 grid-template-columns: 1fr !important;
             }
@@ -292,6 +297,7 @@ export function getThemeAdapterStyles(): string {
 
         @media (min-width: 900px) {
             body[data-acm-view="sidebar"] #monitor-content,
+            body[data-acm-view="sidebar"] #nativeHudHost,
             body[data-acm-view="sidebar"] .topbar-title,
             body[data-acm-view="sidebar"] .masthead-context-bar,
             body[data-acm-view="sidebar"] .tab-bar-wrapper {

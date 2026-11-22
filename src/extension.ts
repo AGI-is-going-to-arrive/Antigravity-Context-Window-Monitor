@@ -54,20 +54,35 @@ import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
 import { GMTracker, GMSummary, GMTrackerState, slimSummaryForPersistence } from './gm-tracker';
-import { PricingStore, calculateLedgerModelCosts, costFromTokens, findPricingForDate, selectPricingModel } from './pricing-store';
+import { PricingStore, calculateLedgerModelCosts, costFromTokens, findPricingForDate, normalizeOrchestratorPricingMode, selectPricingModel, type OrchestratorPricingMode } from './pricing-store';
 import { DailyStore, type DailyStoreState } from './daily-store';
 import { MonitorStore } from './monitor-store';
 import {
     performDailyArchival as performDailyArchivalCore,
     type DailyArchivalContext,
 } from './daily-archival';
-import { DurableState, StateBucket } from './durable-state';
+import {
+    DEFAULT_APP_SETTINGS,
+    DurableState,
+    StateBucket,
+    normalizeAppSettings,
+    type AppSettings,
+    type LastUpdateCheckRecord,
+} from './durable-state';
 import { mergeModelDNAState, PersistedModelDNA, restoreModelDNAState, serializeModelDNAState, type ModelDNAStoreState } from './model-dna-store';
-import type { StorageDiagnostics } from './webview-settings-tab';
+import type { StorageDiagnostics, UpdateStatusView } from './webview-settings-tab';
 import type { AccountSnapshot } from './activity-panel';
 import { isBillingDay, isBillingDaySetting } from './billing-day';
 import { expandModelIdsToPool } from './pool-utils';
 import { DailyLedger, toLocalDateKey, type DailyLedgerState } from './daily-ledger';
+import {
+    CliUsageScanner,
+    type CliDailyUsageRecord,
+    type SubscriptionPlanPresetId,
+} from './cli-usage-scanner';
+import { checkForUpdates } from './app/plugin-updater';
+import type { UpdateCheckResult } from './app/sidecar-types';
+import { parseTooltipDensity } from './tooltip-budget';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -140,6 +155,682 @@ let lastTurnDiagnostics: TurnDiagnosticsSummary | null = null;
 const maxObservedStepCounts = new Map<string, number>();
 const previousBreakdownUsedTokens = new Map<string, number>();
 
+// ─── v1.17.6 Shared App Settings, CLI Scanner, Updates & Bidirectional Hot Sync ─
+export const OPEN_VSX_EXTENSION_URL = 'https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor';
+const CLI_SCAN_TTL_MS = 60_000;
+
+let sharedAppSettings: AppSettings = { ...DEFAULT_APP_SETTINGS, showNativeHudBar: false };
+let sharedSubscriptionPlan: SubscriptionPlanPresetId = 'none';
+let lastSyncedDiskAppSettings: AppSettings | null = null;
+let pendingConfigSyncCount = 0;
+const cliUsageScanner = new CliUsageScanner();
+let cachedCliDays: CliDailyUsageRecord[] = [];
+let lastCliScanAtMs = 0;
+let lastUpdateStatusView: UpdateStatusView | null = null;
+let autoUpdateCheckInFlight = false;
+
+function clampNum(value: number, min: number, max: number): number {
+    return Math.min(Math.max(value, min), max);
+}
+
+function inferIdeSubscriptionPlan(
+    rawPlan: unknown,
+    monthlyFee: number | null,
+): SubscriptionPlanPresetId {
+    if (rawPlan === 'none' || rawPlan === 'google-ai-pro' || rawPlan === 'google-ai-ultra' || rawPlan === 'custom') {
+        return rawPlan;
+    }
+    if (monthlyFee !== null && monthlyFee > 0) {
+        if (Math.abs(monthlyFee - 19.99) < 0.01) { return 'google-ai-pro'; }
+        if (Math.abs(monthlyFee - 249.99) < 0.01) { return 'google-ai-ultra'; }
+        return 'custom';
+    }
+    return 'none';
+}
+
+function getIdeExtensionVersion(): string {
+    const raw = (extensionContext?.extension?.packageJSON as { version?: unknown } | undefined)?.version;
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : '1.17.5';
+}
+
+const VSCODE_TO_APP_SETTING_MAP: ReadonlyArray<{
+    vscodeKey: string;
+    appKey: keyof AppSettings;
+}> = [
+    { vscodeKey: 'pollingInterval', appKey: 'pollingInterval' },
+    { vscodeKey: 'quotaNotificationThreshold', appKey: 'quotaNotificationThreshold' },
+    { vscodeKey: 'statusBar.showContext', appKey: 'showContext' },
+    { vscodeKey: 'statusBar.showQuota', appKey: 'showQuota' },
+    { vscodeKey: 'statusBar.showResetCountdown', appKey: 'showResetCountdown' },
+    { vscodeKey: 'statusBar.showAiCredits', appKey: 'showAiCredits' },
+    { vscodeKey: 'statusBar.showSpeed', appKey: 'showSpeed' },
+    { vscodeKey: 'statusBar.showCacheHit', appKey: 'showCacheHit' },
+    { vscodeKey: 'statusBar.showSessionCost', appKey: 'showSessionCost' },
+    { vscodeKey: 'statusBar.tooltipDensity', appKey: 'tooltipDensity' },
+    { vscodeKey: 'showModelInternalId', appKey: 'showModelInternalId' },
+    { vscodeKey: 'activity.maxRecentSteps', appKey: 'activityMaxRecentSteps' },
+    { vscodeKey: 'activity.maxArchives', appKey: 'activityMaxArchives' },
+    { vscodeKey: 'orchestratorPricingMode', appKey: 'orchestratorPricingMode' },
+    { vscodeKey: 'displayCurrency', appKey: 'displayCurrency' },
+    { vscodeKey: 'customFxRate', appKey: 'customFxRate' },
+    { vscodeKey: 'subscriptionMonthlyFee', appKey: 'subscriptionMonthlyFee' },
+    { vscodeKey: 'subscriptionCurrency', appKey: 'subscriptionCurrency' },
+    { vscodeKey: 'calendarRetentionDays', appKey: 'calendarRetentionDays' },
+    { vscodeKey: 'autoCheckUpdates', appKey: 'autoCheckUpdates' },
+    { vscodeKey: 'showNativeHudBar', appKey: 'showNativeHudBar' },
+];
+
+function mirrorVscodeKeysFromAppSettings(
+    prev: AppSettings | null,
+    next: AppSettings,
+    nextPlan: SubscriptionPlanPresetId,
+    prevPlan: SubscriptionPlanPresetId,
+): void {
+    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    if (typeof cfg.update !== 'function') { return; }
+
+    const updates: Array<[string, unknown]> = [];
+    for (const { vscodeKey, appKey } of VSCODE_TO_APP_SETTING_MAP) {
+        if (!prev) { continue; }
+        if (prev[appKey] !== next[appKey]) {
+            const currentVal = cfg.get(vscodeKey);
+            if (currentVal !== next[appKey]) {
+                updates.push([vscodeKey, next[appKey]]);
+            }
+        }
+    }
+    if (prev && prevPlan !== nextPlan) {
+        if (cfg.get('subscriptionPlan') !== nextPlan) {
+            updates.push(['subscriptionPlan', nextPlan]);
+        }
+    }
+    if (updates.length === 0) { return; }
+
+    pendingConfigSyncCount++;
+    void Promise.allSettled(
+        updates.map(([k, v]) => Promise.resolve(cfg.update(k, v, vscode.ConfigurationTarget?.Global))),
+    ).finally(() => {
+        pendingConfigSyncCount = Math.max(0, pendingConfigSyncCount - 1);
+    });
+}
+
+function hydrateSharedAppSettingsFromDisk(initialLoad: boolean): {
+    changed: boolean;
+    prevSettings: AppSettings | null;
+} {
+    if (!durableState || !durableFileGlobalState) {
+        return { changed: false, prevSettings: lastSyncedDiskAppSettings };
+    }
+    const prevSettings = lastSyncedDiskAppSettings ? { ...lastSyncedDiskAppSettings } : null;
+    const prevPlan = sharedSubscriptionPlan;
+    const rawDisk = durableFileGlobalState.get<Record<string, unknown> | null>('appSettings', null);
+    const hasRawDiskObj = Boolean(rawDisk && typeof rawDisk === 'object' && !Array.isArray(rawDisk));
+    const diskNormalized = durableState.getAppSettings();
+    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+
+    // Reconcile orchestratorPricingMode between appSettings and PricingStore
+    const explicitDiskOrch = hasRawDiskObj ? rawDisk!.orchestratorPricingMode : undefined;
+    const resolvedOrchMode: OrchestratorPricingMode = (explicitDiskOrch === 'mapped' || explicitDiskOrch === 'strict')
+        ? explicitDiskOrch
+        : (pricingStore ? pricingStore.getOrchestratorPricingMode() : normalizeOrchestratorPricingMode(cfg.get('orchestratorPricingMode', 'mapped')));
+    if (pricingStore && pricingStore.getOrchestratorPricingMode() !== resolvedOrchMode) {
+        pricingStore.setOrchestratorPricingModeSync(resolvedOrchMode);
+    }
+
+    // Reconcile lockToMainAgent
+    const persistedLock = durableFileGlobalState.get<boolean | undefined>('lockToMainAgent', undefined);
+    const resolvedLock = typeof persistedLock === 'boolean' ? persistedLock : diskNormalized.lockToMainAgent;
+    lockToMainAgent = resolvedLock;
+
+    // On initial IDE load, preserve IDE's default showNativeHudBar=false unless explicitly set on disk or VS Code config
+    const explicitDiskHud = hasRawDiskObj && typeof rawDisk!.showNativeHudBar === 'boolean'
+        ? rawDisk!.showNativeHudBar
+        : undefined;
+    const resolvedNativeHud = initialLoad
+        ? (explicitDiskHud !== undefined ? explicitDiskHud : cfg.get<boolean>('showNativeHudBar', false))
+        : diskNormalized.showNativeHudBar;
+
+    const nextSettings: AppSettings = {
+        ...diskNormalized,
+        lockToMainAgent: resolvedLock,
+        orchestratorPricingMode: resolvedOrchMode,
+        showNativeHudBar: resolvedNativeHud,
+    };
+
+    const persistedPlan = durableFileGlobalState.get<string>('subscriptionPlan', '');
+    const nextPlan = inferIdeSubscriptionPlan(
+        persistedPlan || (initialLoad ? cfg.get<string>('subscriptionPlan', 'none') : ''),
+        nextSettings.subscriptionMonthlyFee,
+    );
+
+    // On initial load when DurableState has no appSettings yet, seed from VS Code config
+    if (initialLoad && !hasRawDiskObj) {
+        const seeded = normalizeAppSettings({
+            pollingInterval: cfg.get<number>('pollingInterval', 5),
+            quotaNotificationThreshold: cfg.get<number>('quotaNotificationThreshold', 20),
+            showContext: cfg.get<boolean>('statusBar.showContext', true),
+            showQuota: cfg.get<boolean>('statusBar.showQuota', true),
+            showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
+            showAiCredits: cfg.get<boolean>('statusBar.showAiCredits', true),
+            showSpeed: cfg.get<boolean>('statusBar.showSpeed', false),
+            showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', false),
+            showSessionCost: cfg.get<boolean>('statusBar.showSessionCost', false),
+            tooltipDensity: parseTooltipDensity(cfg.get('statusBar.tooltipDensity', 'auto')),
+            showModelInternalId: cfg.get<boolean>('showModelInternalId', false),
+            activityMaxRecentSteps: cfg.get<number>('activity.maxRecentSteps', 100),
+            activityMaxArchives: cfg.get<number>('activity.maxArchives', 20),
+            orchestratorPricingMode: cfg.get<string>('orchestratorPricingMode', resolvedOrchMode),
+            displayCurrency: cfg.get<string>('displayCurrency', 'USD'),
+            customFxRate: cfg.get<number | null>('customFxRate', null),
+            subscriptionMonthlyFee: cfg.get<number | null>('subscriptionMonthlyFee', null),
+            subscriptionCurrency: cfg.get<string>('subscriptionCurrency', 'USD'),
+            calendarRetentionDays: cfg.get<number>('calendarRetentionDays', 400),
+            autoCheckUpdates: cfg.get<boolean>('autoCheckUpdates', true),
+            showNativeHudBar: cfg.get<boolean>('showNativeHudBar', false),
+            lockToMainAgent: resolvedLock,
+        });
+        sharedAppSettings = seeded;
+        sharedSubscriptionPlan = inferIdeSubscriptionPlan(cfg.get<string>('subscriptionPlan', 'none'), seeded.subscriptionMonthlyFee);
+        lastSyncedDiskAppSettings = { ...seeded };
+        return { changed: false, prevSettings };
+    }
+
+    const changed = !prevSettings || JSON.stringify(prevSettings) !== JSON.stringify(nextSettings) || prevPlan !== nextPlan;
+    sharedAppSettings = nextSettings;
+    sharedSubscriptionPlan = nextPlan;
+    lastSyncedDiskAppSettings = { ...nextSettings };
+
+    // Hydrate update status view from persisted lastUpdateCheck
+    if (nextSettings.lastUpdateCheck) {
+        const luc = nextSettings.lastUpdateCheck;
+        if (!lastUpdateStatusView || (luc.checkedAt && (!lastUpdateStatusView.checkedAt || luc.checkedAt > lastUpdateStatusView.checkedAt))) {
+            lastUpdateStatusView = {
+                currentVersion: getIdeExtensionVersion(),
+                latestVersion: luc.latestVersion ?? null,
+                updateAvailable: Boolean(luc.hasUpdate),
+                hasUpdate: Boolean(luc.hasUpdate),
+                status: luc.error ? 'error' : (luc.hasUpdate ? 'update_available' : 'up_to_date'),
+                checkedAt: luc.checkedAt,
+                releaseUrl: luc.releaseUrl ?? null,
+                releaseNotesSummary: luc.releaseNotesSummary ?? null,
+                error: luc.error ?? null,
+            };
+        }
+    }
+
+    if (!initialLoad && changed) {
+        mirrorVscodeKeysFromAppSettings(prevSettings, nextSettings, nextPlan, prevPlan);
+    }
+
+    return { changed, prevSettings };
+}
+
+/**
+ * Check whether the shared DurableState file was modified externally (e.g. by
+ * Antigravity App Sidecar or another IDE window) and re-hydrate all shared
+ * state in-place without restarting the extension.
+ */
+export function syncFromDurableStateIfChanged(refreshUi = true): boolean {
+    if (!durableState || !durableFileGlobalState) { return false; }
+    const reloaded = durableState.reloadIfChanged();
+    if (!reloaded) { return false; }
+
+    const prevLang = getLanguage();
+    initI18nFromState(durableFileGlobalState);
+    const nextLang = getLanguage();
+    const langChanged = prevLang !== nextLang;
+    if (langChanged && extensionContext?.globalState) {
+        void extensionContext.globalState.update('displayLanguage', nextLang);
+    }
+
+    if (pricingStore) {
+        pricingStore.init(durableGlobalState);
+    }
+
+    const { prevSettings } = hydrateSharedAppSettingsFromDisk(false);
+
+    if (dailyStore) {
+        dailyStore.init(durableGlobalState, { maxDays: sharedAppSettings.calendarRetentionDays });
+        dailyStore.setMaxDays(sharedAppSettings.calendarRetentionDays);
+    }
+
+    restoreAccountSnapshots();
+    restoreBillingDays();
+
+    // Re-hydrate DailyLedger if disk has newer date or additional records
+    const diskLedger = durableFileGlobalState.get<DailyLedgerState | undefined>('dailyLedgerState', undefined);
+    if (diskLedger && dailyLedger) {
+        if (diskLedger.dateKey === dailyLedger.dateKey) {
+            const restored = DailyLedger.restore(diskLedger);
+            restored.setSurface('ide');
+            if (restored.getTodayActive().length >= dailyLedger.getTodayActive().length
+                && restored.getSettledEntries().length >= dailyLedger.getSettledEntries().length) {
+                dailyLedger = restored;
+            }
+        } else if (diskLedger.dateKey && diskLedger.dateKey > dailyLedger.dateKey) {
+            dailyLedger = DailyLedger.restore(diskLedger);
+            dailyLedger.setSurface('ide');
+        }
+    }
+
+    // Apply live runtime side effects
+    setShowModelShortId(sharedAppSettings.showModelInternalId);
+    if (prevSettings && prevSettings.pollingInterval !== sharedAppSettings.pollingInterval) {
+        baseIntervalMs = Math.max(1, sharedAppSettings.pollingInterval) * 1000;
+        currentIntervalMs = baseIntervalMs;
+        if (!disposed) { restartPolling(); }
+    }
+
+    if (refreshUi) {
+        if (typeof statusBar !== 'undefined') {
+            applyDisplayPrefs();
+            syncStatusBarTelemetry(true);
+        }
+        if (isMonitorPanelVisible()) {
+            if (langChanged) {
+                refreshMonitorPanelLanguage();
+            } else {
+                updateMonitorPanel(makePanelPayload());
+                syncMonitorPanelSettings();
+            }
+        }
+    }
+    return true;
+}
+
+/** Alias exported for webview-panel.ts & external callers. */
+export const syncDurableStateFromDisk = syncFromDurableStateIfChanged;
+
+export function getSharedAppSettings(): AppSettings & { subscriptionPlan: SubscriptionPlanPresetId } {
+    return { ...sharedAppSettings, subscriptionPlan: sharedSubscriptionPlan };
+}
+
+export async function flushDurableState(): Promise<void> {
+    if (durableState) {
+        await durableState.flush();
+    }
+}
+
+export async function setSharedOrchestratorPricingMode(mode: OrchestratorPricingMode): Promise<void> {
+    const normalized = normalizeOrchestratorPricingMode(mode);
+    sharedAppSettings.orchestratorPricingMode = normalized;
+    const pStore = pricingStore ? pricingStore.setOrchestratorPricingMode(normalized) : undefined;
+    if (durableState) {
+        const pSettings = durableState.updateAppSettings({ orchestratorPricingMode: normalized });
+        await durableState.flush();
+        sharedAppSettings = await pSettings;
+        lastSyncedDiskAppSettings = { ...sharedAppSettings };
+    }
+    if (pStore) { await pStore; }
+    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    if (typeof cfg.update === 'function') {
+        pendingConfigSyncCount++;
+        try {
+            await cfg.update('orchestratorPricingMode', normalized, vscode.ConfigurationTarget?.Global);
+        } finally {
+            pendingConfigSyncCount = Math.max(0, pendingConfigSyncCount - 1);
+        }
+    }
+    syncStatusBarTelemetry(true);
+}
+
+export async function updateSharedAppSetting(
+    key: string,
+    value: unknown,
+): Promise<{ ok: boolean; normalizedKey: string; error?: string }> {
+    const cleanKey = key.trim();
+    const patch: Partial<AppSettings> = {};
+    let normalizedKey = cleanKey;
+    let vscodeMirrorKey: string | undefined;
+    let vscodeMirrorValue: unknown;
+    let mirrorPlan: SubscriptionPlanPresetId | undefined;
+
+    switch (cleanKey) {
+        case 'appComposerRingEnabled':
+            patch.appComposerRingEnabled = Boolean(value);
+            break;
+        case 'appTopBarEnabled':
+            patch.appTopBarEnabled = Boolean(value);
+            break;
+        case 'showNativeHudBar':
+            patch.showNativeHudBar = Boolean(value);
+            vscodeMirrorKey = 'showNativeHudBar';
+            vscodeMirrorValue = patch.showNativeHudBar;
+            break;
+        case 'orchestratorPricingMode': {
+            if (value !== 'mapped' && value !== 'strict') {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid orchestratorPricingMode' };
+            }
+            await setSharedOrchestratorPricingMode(value);
+            return { ok: true, normalizedKey: 'orchestratorPricingMode' };
+        }
+        case 'displayCurrency': {
+            if (typeof value !== 'string' || !value.trim()) {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid displayCurrency' };
+            }
+            const norm = normalizeAppSettings({ displayCurrency: value });
+            patch.displayCurrency = norm.displayCurrency;
+            vscodeMirrorKey = 'displayCurrency';
+            vscodeMirrorValue = norm.displayCurrency;
+            break;
+        }
+        case 'customFxRate': {
+            if (value === null || value === '' || value === undefined) {
+                patch.customFxRate = null;
+            } else {
+                const n = Number(value);
+                if (!Number.isFinite(n) || n <= 0 || n > 100_000) {
+                    return { ok: false, normalizedKey: cleanKey, error: 'Invalid customFxRate' };
+                }
+                patch.customFxRate = n;
+            }
+            vscodeMirrorKey = 'customFxRate';
+            vscodeMirrorValue = patch.customFxRate;
+            break;
+        }
+        case 'subscriptionPlan': {
+            if (value !== 'none' && value !== 'google-ai-pro' && value !== 'google-ai-ultra' && value !== 'custom') {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid subscriptionPlan' };
+            }
+            sharedSubscriptionPlan = value;
+            mirrorPlan = value;
+            if (value === 'none') {
+                patch.subscriptionMonthlyFee = null;
+            } else if (value === 'google-ai-pro') {
+                patch.subscriptionMonthlyFee = 19.99;
+                patch.subscriptionCurrency = 'USD';
+            } else if (value === 'google-ai-ultra') {
+                patch.subscriptionMonthlyFee = 249.99;
+                patch.subscriptionCurrency = 'USD';
+            }
+            break;
+        }
+        case 'subscriptionMonthlyFee': {
+            if (value === null || value === '' || value === undefined) {
+                patch.subscriptionMonthlyFee = null;
+            } else {
+                const n = Number(value);
+                if (!Number.isFinite(n) || n < 0 || n > 1_000_000) {
+                    return { ok: false, normalizedKey: cleanKey, error: 'Invalid subscriptionMonthlyFee' };
+                }
+                patch.subscriptionMonthlyFee = n > 0 ? n : null;
+                if (patch.subscriptionMonthlyFee !== null && sharedSubscriptionPlan === 'none') {
+                    sharedSubscriptionPlan = 'custom';
+                    mirrorPlan = 'custom';
+                }
+            }
+            vscodeMirrorKey = 'subscriptionMonthlyFee';
+            vscodeMirrorValue = patch.subscriptionMonthlyFee;
+            break;
+        }
+        case 'subscriptionCurrency': {
+            if (typeof value !== 'string' || !value.trim()) {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid subscriptionCurrency' };
+            }
+            const norm = normalizeAppSettings({ subscriptionCurrency: value });
+            patch.subscriptionCurrency = norm.subscriptionCurrency;
+            vscodeMirrorKey = 'subscriptionCurrency';
+            vscodeMirrorValue = norm.subscriptionCurrency;
+            break;
+        }
+        case 'calendarRetentionDays': {
+            const n = Number(value);
+            if (!Number.isFinite(n)) {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid calendarRetentionDays' };
+            }
+            const clamped = clampNum(Math.round(n), 30, 3650);
+            patch.calendarRetentionDays = clamped;
+            dailyStore?.setMaxDays(clamped);
+            vscodeMirrorKey = 'calendarRetentionDays';
+            vscodeMirrorValue = clamped;
+            break;
+        }
+        case 'autoCheckUpdates':
+            patch.autoCheckUpdates = Boolean(value);
+            vscodeMirrorKey = 'autoCheckUpdates';
+            vscodeMirrorValue = patch.autoCheckUpdates;
+            break;
+        case 'activityMaxRecentSteps':
+        case 'maxRecentSteps':
+        case 'activity.maxRecentSteps': {
+            const n = Number(value);
+            if (!Number.isFinite(n)) { return { ok: false, normalizedKey: cleanKey, error: 'Invalid activityMaxRecentSteps' }; }
+            const clamped = clampNum(Math.round(n), 10, 500);
+            patch.activityMaxRecentSteps = clamped;
+            patch.maxRecentSteps = clamped;
+            normalizedKey = 'activityMaxRecentSteps';
+            vscodeMirrorKey = 'activity.maxRecentSteps';
+            vscodeMirrorValue = clamped;
+            break;
+        }
+        case 'activityMaxArchives':
+        case 'maxArchives':
+        case 'activity.maxArchives': {
+            const n = Number(value);
+            if (!Number.isFinite(n)) { return { ok: false, normalizedKey: cleanKey, error: 'Invalid activityMaxArchives' }; }
+            const clamped = clampNum(Math.round(n), 1, 100);
+            patch.activityMaxArchives = clamped;
+            patch.maxArchives = clamped;
+            normalizedKey = 'activityMaxArchives';
+            vscodeMirrorKey = 'activity.maxArchives';
+            vscodeMirrorValue = clamped;
+            break;
+        }
+        case 'quotaNotificationThreshold': {
+            const n = Number(value);
+            if (!Number.isFinite(n)) { return { ok: false, normalizedKey: cleanKey, error: 'Invalid quotaNotificationThreshold' }; }
+            const clamped = clampNum(Math.round(n), 0, 99);
+            patch.quotaNotificationThreshold = clamped;
+            vscodeMirrorKey = 'quotaNotificationThreshold';
+            vscodeMirrorValue = clamped;
+            break;
+        }
+        case 'pollingInterval': {
+            const n = Number(value);
+            if (!Number.isFinite(n)) { return { ok: false, normalizedKey: cleanKey, error: 'Invalid pollingInterval' }; }
+            const clamped = clampNum(Math.round(n), 1, 60);
+            patch.pollingInterval = clamped;
+            baseIntervalMs = clamped * 1000;
+            currentIntervalMs = baseIntervalMs;
+            if (!disposed) { restartPolling(); }
+            vscodeMirrorKey = 'pollingInterval';
+            vscodeMirrorValue = clamped;
+            break;
+        }
+        case 'showModelInternalId':
+            patch.showModelInternalId = Boolean(value);
+            setShowModelShortId(patch.showModelInternalId);
+            vscodeMirrorKey = 'showModelInternalId';
+            vscodeMirrorValue = patch.showModelInternalId;
+            break;
+        case 'lockToMainAgent':
+            setLockToMainAgent(Boolean(value));
+            return { ok: true, normalizedKey: 'lockToMainAgent' };
+        case 'statusBar.tooltipDensity':
+        case 'tooltipDensity':
+            patch.tooltipDensity = parseTooltipDensity(value);
+            normalizedKey = 'statusBar.tooltipDensity';
+            vscodeMirrorKey = 'statusBar.tooltipDensity';
+            vscodeMirrorValue = patch.tooltipDensity;
+            break;
+        case 'statusBar.showContext':
+        case 'showContext':
+            patch.showContext = Boolean(value);
+            normalizedKey = 'statusBar.showContext';
+            vscodeMirrorKey = 'statusBar.showContext';
+            vscodeMirrorValue = patch.showContext;
+            break;
+        case 'statusBar.showQuota':
+        case 'showQuota':
+            patch.showQuota = Boolean(value);
+            normalizedKey = 'statusBar.showQuota';
+            vscodeMirrorKey = 'statusBar.showQuota';
+            vscodeMirrorValue = patch.showQuota;
+            break;
+        case 'statusBar.showResetCountdown':
+        case 'showResetCountdown':
+            patch.showResetCountdown = Boolean(value);
+            normalizedKey = 'statusBar.showResetCountdown';
+            vscodeMirrorKey = 'statusBar.showResetCountdown';
+            vscodeMirrorValue = patch.showResetCountdown;
+            break;
+        case 'statusBar.showAiCredits':
+        case 'showAiCredits':
+            patch.showAiCredits = Boolean(value);
+            normalizedKey = 'statusBar.showAiCredits';
+            vscodeMirrorKey = 'statusBar.showAiCredits';
+            vscodeMirrorValue = patch.showAiCredits;
+            break;
+        case 'statusBar.showSpeed':
+        case 'showSpeed':
+            patch.showSpeed = Boolean(value);
+            normalizedKey = 'statusBar.showSpeed';
+            vscodeMirrorKey = 'statusBar.showSpeed';
+            vscodeMirrorValue = patch.showSpeed;
+            break;
+        case 'statusBar.showCacheHit':
+        case 'showCacheHit':
+            patch.showCacheHit = Boolean(value);
+            normalizedKey = 'statusBar.showCacheHit';
+            vscodeMirrorKey = 'statusBar.showCacheHit';
+            vscodeMirrorValue = patch.showCacheHit;
+            break;
+        case 'statusBar.showSessionCost':
+        case 'showSessionCost':
+            patch.showSessionCost = Boolean(value);
+            normalizedKey = 'statusBar.showSessionCost';
+            vscodeMirrorKey = 'statusBar.showSessionCost';
+            vscodeMirrorValue = patch.showSessionCost;
+            break;
+        default:
+            return { ok: false, normalizedKey: cleanKey, error: `Unknown setting key: ${cleanKey}` };
+    }
+
+    sharedAppSettings = { ...sharedAppSettings, ...patch };
+    if (durableState) {
+        const pSettings = durableState.updateAppSettings(patch);
+        const pPlan = durableFileGlobalState
+            ? durableFileGlobalState.update('subscriptionPlan', sharedSubscriptionPlan)
+            : undefined;
+        await durableState.flush();
+        sharedAppSettings = await pSettings;
+        if (pPlan) { await pPlan; }
+        lastSyncedDiskAppSettings = { ...sharedAppSettings };
+    }
+
+    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    if (typeof cfg.update === 'function') {
+        const cfgWrites: Array<[string, unknown]> = [];
+        if (vscodeMirrorKey) {
+            cfgWrites.push([vscodeMirrorKey, vscodeMirrorValue]);
+        }
+        if (mirrorPlan !== undefined) {
+            cfgWrites.push(['subscriptionPlan', mirrorPlan]);
+            if (patch.subscriptionMonthlyFee !== undefined) {
+                cfgWrites.push(['subscriptionMonthlyFee', patch.subscriptionMonthlyFee]);
+            }
+            if (patch.subscriptionCurrency !== undefined) {
+                cfgWrites.push(['subscriptionCurrency', patch.subscriptionCurrency]);
+            }
+        }
+        if (cfgWrites.length > 0) {
+            pendingConfigSyncCount++;
+            try {
+                await Promise.allSettled(
+                    cfgWrites.map(([k, v]) => Promise.resolve(cfg.update(k, v, vscode.ConfigurationTarget?.Global))),
+                );
+            } finally {
+                pendingConfigSyncCount = Math.max(0, pendingConfigSyncCount - 1);
+            }
+        }
+    }
+
+    if (typeof statusBar !== 'undefined') {
+        applyDisplayPrefs();
+        syncStatusBarTelemetry(true);
+    }
+
+    return { ok: true, normalizedKey };
+}
+
+export function getCachedCliUsageDays(force = false): CliDailyUsageRecord[] {
+    const nowMs = Date.now();
+    if (!force && lastCliScanAtMs > 0 && nowMs - lastCliScanAtMs < CLI_SCAN_TTL_MS) {
+        return cachedCliDays;
+    }
+    try {
+        const res = cliUsageScanner.scan({
+            cliRootDir: process.env.ANTIGRAVITY_CLI_DATA_DIR || undefined,
+            customPricing: pricingStore?.getCustom(),
+            now: nowMs,
+        });
+        cachedCliDays = res.available ? res.days : [];
+        lastCliScanAtMs = nowMs;
+    } catch {
+        cachedCliDays = [];
+        lastCliScanAtMs = nowMs;
+    }
+    return cachedCliDays;
+}
+
+export function getLastUpdateStatusView(): UpdateStatusView | null {
+    return lastUpdateStatusView;
+}
+
+export async function checkIdeReleaseUpdates(force = true): Promise<UpdateCheckResult> {
+    const prev = sharedAppSettings.lastUpdateCheck;
+    const currentVersion = getIdeExtensionVersion();
+    const res = await checkForUpdates({
+        currentVersion,
+        force,
+        etag: prev?.etag ?? null,
+        lastCheckedAt: prev?.checkedAt ?? null,
+    });
+    if (res.status !== 'throttled') {
+        const record: LastUpdateCheckRecord = {
+            checkedAt: res.checkedAt,
+            latestVersion: res.latestVersion ?? (res.status === 'not_modified' ? prev?.latestVersion ?? null : null),
+            hasUpdate: res.status === 'not_modified' ? Boolean(prev?.hasUpdate) : Boolean(res.hasUpdate),
+            etag: res.etag ?? prev?.etag ?? null,
+            releaseUrl: res.releaseInfo?.releaseUrl ?? (res.status === 'not_modified' ? prev?.releaseUrl ?? null : null),
+            releaseNotesSummary: res.releaseInfo?.releaseNotesSummary ?? (res.status === 'not_modified' ? prev?.releaseNotesSummary ?? null : null),
+            assetName: res.releaseInfo?.assetName ?? (res.status === 'not_modified' ? prev?.assetName ?? null : null),
+            assetUrl: res.releaseInfo?.assetUrl ?? (res.status === 'not_modified' ? prev?.assetUrl ?? null : null),
+            checksumsUrl: res.releaseInfo?.checksumsUrl ?? (res.status === 'not_modified' ? prev?.checksumsUrl ?? null : null),
+            error: res.status === 'error' ? (res.error ?? 'Update check failed') : null,
+        };
+        if (durableState) {
+            const pSettings = durableState.updateAppSettings({ lastUpdateCheck: record });
+            await durableState.flush();
+            sharedAppSettings = await pSettings;
+            lastSyncedDiskAppSettings = { ...sharedAppSettings };
+        } else {
+            sharedAppSettings = { ...sharedAppSettings, lastUpdateCheck: record };
+        }
+        lastUpdateStatusView = {
+            currentVersion,
+            latestVersion: record.latestVersion,
+            updateAvailable: Boolean(record.hasUpdate),
+            hasUpdate: Boolean(record.hasUpdate),
+            status: res.status,
+            checkedAt: record.checkedAt,
+            releaseUrl: record.releaseUrl,
+            releaseNotesSummary: record.releaseNotesSummary,
+            error: record.error,
+        };
+    }
+    return res;
+}
+
+function triggerIdeBackgroundUpdateCheck(): void {
+    if (disposed || autoUpdateCheckInFlight || !sharedAppSettings.autoCheckUpdates) { return; }
+    if (process.env.VITEST) { return; }
+    autoUpdateCheckInFlight = true;
+    void checkIdeReleaseUpdates(false)
+        .catch(() => { /* offline-safe */ })
+        .finally(() => { autoUpdateCheckInFlight = false; });
+}
+
 /** Discover the Antigravity IDE language server (explicitly preferring IDE when both App + IDE run). */
 function discoverLanguageServer(
     workspaceUri?: string,
@@ -163,6 +854,7 @@ export function getLockToMainAgent(): boolean {
 export function setLockToMainAgent(locked?: boolean): boolean {
     const next = typeof locked === 'boolean' ? locked : !lockToMainAgent;
     lockToMainAgent = next;
+    sharedAppSettings.lockToMainAgent = next;
     if (next && trackedCascadeId) {
         lockedMainCascadeId = trackedCascadeId;
     } else if (!next) {
@@ -170,6 +862,13 @@ export function setLockToMainAgent(locked?: boolean): boolean {
     }
     if (durableFileGlobalState) {
         void durableFileGlobalState.update('lockToMainAgent', lockToMainAgent);
+    }
+    if (durableState) {
+        void durableState.updateAppSettings({ lockToMainAgent: next }).then((updated) => {
+            sharedAppSettings = updated;
+            lastSyncedDiskAppSettings = { ...updated };
+            return durableState.flush();
+        });
     }
     return lockToMainAgent;
 }
@@ -661,6 +1360,7 @@ function computeLiveCostSnapshot(
     activeCascadeId?: string,
 ): { todayCostUsd: number; todayHasUnpriced: boolean; sessionCostUsd: number; sessionHasUnpriced: boolean } {
     const custom = pricingStore?.getCustom() ?? {};
+    const orchMode = sharedAppSettings.orchestratorPricingMode;
 
     // Today's total from DailyLedger (active + settled)
     let todayCostUsd = 0;
@@ -669,7 +1369,7 @@ function computeLiveCostSnapshot(
         for (const bucket of dailyLedger.getTodayActive()) {
             for (const [modelKey, ms] of Object.entries(bucket.modelStats)) {
                 if (ms.calls <= 0) { continue; }
-                const res = calculateLedgerModelCosts(modelKey, ms, bucket, custom);
+                const res = calculateLedgerModelCosts(modelKey, ms, bucket, custom, undefined, orchMode);
                 todayCostUsd += res.totalCost;
                 if (!res.pricing) { todayHasUnpriced = true; }
             }
@@ -678,7 +1378,7 @@ function computeLiveCostSnapshot(
             todayCostUsd += entry.totalEstimatedCost || 0;
             if (!todayHasUnpriced && entry.totalCalls > 0 && entry.modelCalls) {
                 for (const [modelKey, calls] of Object.entries(entry.modelCalls)) {
-                    if (calls > 0 && !findPricingForDate(modelKey, custom, entry.settledAt)) {
+                    if (calls > 0 && !findPricingForDate(modelKey, custom, entry.settledAt, undefined, orchMode)) {
                         todayHasUnpriced = true;
                         break;
                     }
@@ -699,7 +1399,7 @@ function computeLiveCostSnapshot(
             : summary.conversations.flatMap(c => c.calls);
         for (const call of calls) {
             const pricingModel = selectPricingModel(call.model || call.modelDisplay, call.responseModel, custom);
-            const pricing = findPricingForDate(pricingModel, custom, call.createdAt || '');
+            const pricing = findPricingForDate(pricingModel, custom, call.createdAt || '', undefined, orchMode);
             if (pricing) {
                 sessionCostUsd += costFromTokens(call, pricing);
             } else {
@@ -763,6 +1463,10 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         activeConversationId: activeId ?? null,
         pinnedConversationId,
         lockToMainAgent,
+        cliDays: getCachedCliUsageDays(false),
+        orchestratorPricingMode: sharedAppSettings.orchestratorPricingMode,
+        appSettings: getSharedAppSettings(),
+        updateStatus: lastUpdateStatusView,
         ...extra,
     };
 }
@@ -1549,6 +2253,7 @@ function performDailyArchival(force = false): void {
         persistedModelDNA,
         lastArchivalDateKey,
         dailyLedger,
+        surface: 'ide',
         persist: (updates) => {
             lastArchivalDateKey = updates.lastArchivalDateKey;
             lastGMSummary = updates.lastGMSummary;
@@ -1577,7 +2282,8 @@ export function activate(context: vscode.ExtensionContext): void {
     outputChannel = vscode.window.createOutputChannel('Antigravity Context Monitor');
     log('Extension activating...');
     const workspaceKey = normalizeUri(getWorkspaceUri() || 'no-workspace');
-    durableState = new DurableState();
+    const customStatePath = process.env.ANTIGRAVITY_CONTEXT_MONITOR_STATE_PATH?.trim() || undefined;
+    durableState = new DurableState(customStatePath);
     durableGlobalState = durableState.globalBucket(context.globalState);
     durableWorkspaceState = durableState.workspaceBucket(workspaceKey, context.workspaceState);
     durableFileGlobalState = durableState.globalBucket();
@@ -1660,16 +2366,19 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     pricingStore = new PricingStore();
     pricingStore.init(durableGlobalState);
+    // Hydrate v1.17.6 shared app settings (reconciles orchestratorPricingMode, retention, currency, etc.)
+    hydrateSharedAppSettingsFromDisk(true);
     // Restore multi-account snapshots from file-backed state
     restoreAccountSnapshots();
     restoreBillingDays();
     // Restore current account email from GMTracker persisted state
     currentAccountEmail = gmTracker.getCurrentAccount();
     dailyStore = new DailyStore();
-    dailyStore.init(durableGlobalState);
-    // Initialize DailyLedger — restores from durable state
+    dailyStore.init(durableGlobalState, { maxDays: sharedAppSettings.calendarRetentionDays });
+    // Initialize DailyLedger — restores from durable state and tags IDE surface
     const savedLedger = durableGlobalState.get<DailyLedgerState | undefined>('dailyLedgerState', undefined);
     dailyLedger = DailyLedger.restore(savedLedger);
+    dailyLedger.setSurface('ide');
     if (savedLedger?.version === 1 && savedLedger.dateKey && savedLedger.dateKey !== dailyLedger.dateKey) {
         // Log only — never persist a normalization-only (still empty) ledger:
         // flushing an empty full snapshot can overwrite another window's
@@ -1831,7 +2540,8 @@ export function activate(context: vscode.ExtensionContext): void {
             pollContextUsage(true);
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.switchLanguage', () => {
-            showLanguagePicker(context, durableGlobalState).then(() => {
+            showLanguagePicker(context, durableGlobalState).then(async () => {
+                await flushDurableState();
                 // Rebuild statusBar and WebView to reflect new language immediately
                 statusBar.refreshFromConfig();
                 refreshMonitorPanelLanguage();
@@ -1884,7 +2594,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     });
 
-    // Listen for config changes
+    // Listen for config changes (and mirror shared v1.17.6 settings into DurableState for App ↔ IDE sync)
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('antigravityContextMonitor.pollingInterval')) {
@@ -1914,6 +2624,74 @@ export function activate(context: vscode.ExtensionContext): void {
                 setShowModelShortId(newConfig.get<boolean>('showModelInternalId', false));
                 log('Model internal ID display setting updated');
             }
+
+            // Mirror any affected shared setting to DurableState (guarded against self-triggered loop)
+            if (pendingConfigSyncCount === 0 && e.affectsConfiguration('antigravityContextMonitor')) {
+                const cfgNow = vscode.workspace.getConfiguration('antigravityContextMonitor');
+                const patch: Partial<AppSettings> = {};
+                let anyChanged = false;
+                let orchModeChanged = false;
+                let retentionChanged = false;
+
+                for (const { vscodeKey, appKey } of VSCODE_TO_APP_SETTING_MAP) {
+                    if (!e.affectsConfiguration(`antigravityContextMonitor.${vscodeKey}`)) { continue; }
+                    const rawVal = cfgNow.get(vscodeKey);
+                    const normPatch = normalizeAppSettings({ ...sharedAppSettings, [appKey]: rawVal });
+                    const normalizedVal = normPatch[appKey];
+                    if (sharedAppSettings[appKey] !== normalizedVal) {
+                        (patch as Record<string, unknown>)[appKey] = normalizedVal;
+                        anyChanged = true;
+                        if (appKey === 'orchestratorPricingMode') { orchModeChanged = true; }
+                        if (appKey === 'calendarRetentionDays') { retentionChanged = true; }
+                    }
+                }
+
+                let planChanged = false;
+                if (e.affectsConfiguration('antigravityContextMonitor.subscriptionPlan')) {
+                    const nextPlan = inferIdeSubscriptionPlan(cfgNow.get<string>('subscriptionPlan', 'none'), patch.subscriptionMonthlyFee ?? sharedAppSettings.subscriptionMonthlyFee);
+                    if (nextPlan !== sharedSubscriptionPlan) {
+                        sharedSubscriptionPlan = nextPlan;
+                        planChanged = true;
+                        if (nextPlan === 'none') {
+                            patch.subscriptionMonthlyFee = null;
+                            anyChanged = true;
+                        } else if (nextPlan === 'google-ai-pro') {
+                            patch.subscriptionMonthlyFee = 19.99;
+                            patch.subscriptionCurrency = 'USD';
+                            anyChanged = true;
+                        } else if (nextPlan === 'google-ai-ultra') {
+                            patch.subscriptionMonthlyFee = 249.99;
+                            patch.subscriptionCurrency = 'USD';
+                            anyChanged = true;
+                        }
+                    }
+                }
+
+                if (anyChanged || planChanged) {
+                    if (orchModeChanged && patch.orchestratorPricingMode && pricingStore) {
+                        void pricingStore.setOrchestratorPricingMode(patch.orchestratorPricingMode);
+                    }
+                    if (retentionChanged && typeof patch.calendarRetentionDays === 'number' && dailyStore) {
+                        dailyStore.setMaxDays(patch.calendarRetentionDays);
+                    }
+                    sharedAppSettings = { ...sharedAppSettings, ...patch };
+                    if (durableState) {
+                        void durableState.updateAppSettings(patch).then(async (updated) => {
+                            sharedAppSettings = updated;
+                            lastSyncedDiskAppSettings = { ...updated };
+                            if (planChanged && durableFileGlobalState) {
+                                await durableFileGlobalState.update('subscriptionPlan', sharedSubscriptionPlan);
+                            }
+                            await durableState.flush();
+                        });
+                    }
+                    syncStatusBarTelemetry(true);
+                    if (isMonitorPanelVisible()) {
+                        updateMonitorPanel(makePanelPayload());
+                        syncMonitorPanelSettings();
+                    }
+                }
+            }
         }),
         // ─── Workspace Switch Detection ─────────────────────────────────────
         // When workspace folders change (open different project, add/remove folder),
@@ -1940,11 +2718,12 @@ export function activate(context: vscode.ExtensionContext): void {
     // Immediate first poll: reduces panel "waiting" state from ~6s to ~1-2s.
     // Activity processing is now merged into pollContextUsage — single unified loop.
     void pollContextUsage();
+    triggerIdeBackgroundUpdateCheck();
 }
 
 // ─── Deactivation ─────────────────────────────────────────────────────────────
 
-export function deactivate(): void {
+export async function deactivate(): Promise<void> {
     disposed = true;
     resetImageWorkflowCache();
     if (pollingTimer) {
@@ -1952,9 +2731,19 @@ export function deactivate(): void {
         pollingTimer = undefined;
     }
     abortController.abort();
-    // Persist activity data on deactivate
-    if (activityTracker && extensionContext) {
-        durableGlobalState.update('activityTrackerState', activityTracker.serialize());
+    // Persist activity & GM data on deactivate
+    const pendingUpdates: Array<PromiseLike<unknown>> = [];
+    if (activityTracker && durableGlobalState) {
+        pendingUpdates.push(durableGlobalState.update('activityTrackerState', activityTracker.serialize()));
+    }
+    if (gmTracker && durableGlobalState) {
+        pendingUpdates.push(durableGlobalState.update('gmTrackerState', gmTracker.serialize()));
+    }
+    if (durableState) {
+        await durableState.flush();
+    }
+    if (pendingUpdates.length > 0) {
+        await Promise.allSettled(pendingUpdates);
     }
     if (statusBar) {
         statusBar.dispose();
@@ -2077,6 +2866,9 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             stalenessConfirmedIdle = false;
         }
         lastPolledWorkspaceUri = normalizedWs;
+
+        // Hot-reload shared DurableState changes written externally (e.g. by App Sidecar)
+        syncFromDurableStateIfChanged(false);
 
         // 午夜归档必须在本轮轮询前半段执行：
         // 1. 不能被“无会话 / 无活跃对话”的提前 return 跳过
@@ -2607,7 +3399,7 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                         if (ledgerNormalizedBeforeRecord) {
                             log(`[DailyLedger] normalized empty ledger date ${ledgerDateBeforeRecord} → ${dailyLedger.dateKey} before recording`);
                         }
-                        const added = dailyLedger.recordCalls(newEntries);
+                        const added = dailyLedger.recordCalls(newEntries, 'ide');
                         log(`[DailyLedger] extracted=${newEntries.length} added=${added} dedup_rejected=${newEntries.length - added}`);
                         for (const d of ledgerDebug) { log(`[DailyLedger]   ${d}`); }
                         if (added === newEntries.length) {
@@ -3025,6 +3817,7 @@ function getStorageDiagnostics(): StorageDiagnostics {
 }
 
 function log(message: string): void {
+    if (!outputChannel) { return; }
     const timestamp = new Date().toISOString().substring(11, 23);
     outputChannel.appendLine(`[${timestamp}] ${message}`);
 }

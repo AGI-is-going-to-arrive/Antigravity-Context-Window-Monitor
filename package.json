@@ -121,6 +121,95 @@
           "type": "boolean",
           "default": false,
           "description": "Show internal model ID suffix (e.g. M16, M26) next to model display names. Useful for diagnosing platform-level model changes. / 在模型名后显示内部 ID 后缀（如 M16、M26），用于诊断平台级模型变更。"
+        },
+        "antigravityContextMonitor.orchestratorPricingMode": {
+          "type": "string",
+          "enum": [
+            "mapped",
+            "strict"
+          ],
+          "default": "mapped",
+          "description": "Pricing strategy for Antigravity Orchestrator models: 'mapped' uses the verified Gemini 4 base model API rate; 'strict' leaves unpriced unless a custom override is set. / 编排模型计费模式：mapped 按已验证的基础 Gemini 4 官方费率映射，strict 仅在配置自定义价格时计费。"
+        },
+        "antigravityContextMonitor.displayCurrency": {
+          "type": "string",
+          "enum": [
+            "USD",
+            "CNY",
+            "EUR",
+            "JPY",
+            "GBP",
+            "KRW",
+            "HKD",
+            "TWD",
+            "CAD",
+            "AUD"
+          ],
+          "default": "USD",
+          "description": "Display currency for cost estimates and calendar summaries / 费用估算与日历统计的显示币种"
+        },
+        "antigravityContextMonitor.customFxRate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0.0001,
+          "description": "Optional custom exchange rate per 1 USD (null uses built-in reference rate) / 可选自定义汇率（1 USD 对应目标币种，留空使用内置参考汇率）"
+        },
+        "antigravityContextMonitor.subscriptionPlan": {
+          "type": "string",
+          "enum": [
+            "none",
+            "google-ai-pro",
+            "google-ai-ultra",
+            "custom"
+          ],
+          "default": "none",
+          "description": "Subscription plan preset for Calendar Plan ROI comparison / 用于日历套餐回本对比的订阅方案预设"
+        },
+        "antigravityContextMonitor.subscriptionMonthlyFee": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "description": "Monthly subscription fee amount for Plan ROI calculation / 用于回本计算的月订阅费用金额"
+        },
+        "antigravityContextMonitor.subscriptionCurrency": {
+          "type": "string",
+          "enum": [
+            "USD",
+            "CNY",
+            "EUR",
+            "JPY",
+            "GBP",
+            "KRW",
+            "HKD",
+            "TWD",
+            "CAD",
+            "AUD"
+          ],
+          "default": "USD",
+          "description": "Currency of the monthly subscription fee / 月订阅费用所使用的币种"
+        },
+        "antigravityContextMonitor.calendarRetentionDays": {
+          "type": "number",
+          "default": 400,
+          "minimum": 30,
+          "maximum": 3650,
+          "description": "Maximum number of days retained in Calendar usage history (30–3650) / 日历用量历史最长保留天数（30–3650）"
+        },
+        "antigravityContextMonitor.autoCheckUpdates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically check GitHub Releases for updates in the background (throttled every 6 hours) / 后台自动检查 GitHub Releases 更新（每 6 小时最多一次）"
+        },
+        "antigravityContextMonitor.showNativeHudBar": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the compact Native Ambient HUD bar at the top of the monitor panel / 在监控面板顶部显示原生精简 HUD 状态条"
         }
       }
     }

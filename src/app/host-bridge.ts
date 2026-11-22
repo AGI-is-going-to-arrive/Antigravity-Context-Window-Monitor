@@ -212,6 +212,33 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     }
   }
 
+  // ─── Browser File Download Helper (Calendar CSV/JSON Export) ───
+  function triggerFileDownload(filename, content, mimeType) {
+    try {
+      if (typeof Blob === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+        return false;
+      }
+      var safeName = (typeof filename === 'string' && filename.trim()) ? filename.trim() : 'antigravity-export.txt';
+      var blob = new Blob([String(content == null ? '' : content)], {
+        type: (typeof mimeType === 'string' && mimeType.trim()) ? mimeType.trim() : 'text/plain;charset=utf-8'
+      });
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = safeName;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(function() {
+        try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+      }, 1000);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // ─── Sidecar / Standalone Transport & Visibility-Gated ETag Polling ───
   var urlParams = new URLSearchParams((window.location && window.location.search) || '');
   var initialUrlConversationId = urlParams.get('conversationId') || '';
@@ -233,6 +260,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
   var workspaceListeners = [];
   var pinnedConversationId = '';
   var lockToMainAgent = false;
+  var lastBridgeNativeHudHtml = null;
 
   function bridgeFetch(url, opts) {
     if (sidecarApi && typeof sidecarApi.fetch === 'function') {
@@ -244,11 +272,44 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
 
   function dispatchWebviewMessage(msg) {
     if (!msg || typeof msg !== 'object') { return; }
-    try {
-      window.dispatchEvent(new MessageEvent('message', { data: msg }));
-    } catch (_) {
-      window.postMessage(msg, '*');
+    var normalized = msg;
+    if (typeof msg.type === 'string' && !msg.command) {
+      normalized = Object.assign({ command: msg.type }, msg);
+    } else if (typeof msg.command === 'string' && !msg.type) {
+      normalized = Object.assign({ type: msg.command }, msg);
     }
+    try {
+      window.dispatchEvent(new MessageEvent('message', { data: normalized }));
+    } catch (_) {
+      window.postMessage(normalized, '*');
+    }
+  }
+
+  function patchNativeHudHostFallback(nextNativeHud, prevInnerHtml) {
+    if (typeof nextNativeHud !== 'string') { return; }
+    if (nextNativeHud === lastBridgeNativeHudHtml) { return; }
+    var hudHostEl = document.getElementById('nativeHudHost');
+    if (!hudHostEl) {
+      lastBridgeNativeHudHtml = nextNativeHud;
+      return;
+    }
+    // If webview-script already updated #nativeHudHost during dispatchWebviewMessage,
+    // record the latest string and avoid redundant DOM replacement.
+    if (hudHostEl.innerHTML !== prevInnerHtml) {
+      lastBridgeNativeHudHtml = nextNativeHud;
+      return;
+    }
+    hudHostEl.innerHTML = nextNativeHud;
+    hudHostEl.hidden = !nextNativeHud.trim();
+    lastBridgeNativeHudHtml = nextNativeHud;
+    var stored = readStoredState();
+    var isExp = !!stored.nativeHudExpanded;
+    var bar = document.getElementById('nativeHudBar');
+    var toggle = document.getElementById('nativeHudToggle');
+    var drawer = document.getElementById('nativeHudDrawer');
+    if (bar) { bar.setAttribute('data-hud-expanded', String(isExp)); }
+    if (toggle) { toggle.setAttribute('aria-expanded', String(isExp)); }
+    if (drawer) { drawer.hidden = !isExp; }
   }
 
   function syncLocalStateFromSnapshot(snapshot) {
@@ -275,6 +336,11 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
 
   function notifySnapshot(snapshot, hash) {
     syncLocalStateFromSnapshot(snapshot);
+    var nextNativeHud = (snapshot && snapshot.tabs && typeof snapshot.tabs.nativeHud === 'string')
+      ? snapshot.tabs.nativeHud
+      : (snapshot && typeof snapshot.nativeHud === 'string' ? snapshot.nativeHud : null);
+    var hudHostBefore = document.getElementById('nativeHudHost');
+    var prevHudInner = hudHostBefore ? hudHostBefore.innerHTML : null;
     for (var i = 0; i < snapshotListeners.length; i++) {
       try { snapshotListeners[i](snapshot, hash); } catch (_) { /* isolate listener */ }
     }
@@ -289,6 +355,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
       dispatchWebviewMessage({
         command: 'updateTabs',
         tabs: snapshot.tabs,
+        nativeHud: nextNativeHud,
         time: snapshot.time || '',
         snapshot: snapshot,
         activeConversationId: snapshot.activeConversationId !== undefined ? snapshot.activeConversationId : null,
@@ -300,6 +367,9 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
         isStale: !!snapshot.isStale,
         staleState: snapshot.staleState || null
       });
+    }
+    if (nextNativeHud !== null) {
+      patchNativeHudHostFallback(nextNativeHud, prevHudInner);
     }
   }
 
@@ -371,10 +441,11 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     return s;
   }
 
-  function sendAction(msg) {
+  function sendAction(msg, actionOpts) {
     if (!msg || typeof msg !== 'object') {
       return Promise.resolve({ ok: false, error: 'Invalid action' });
     }
+    var autoDownload = !!(actionOpts && actionOpts.autoDownload);
     if (nativeVsCodeApi) {
       nativeVsCodeApi.postMessage(msg);
       return Promise.resolve({ ok: true });
@@ -423,7 +494,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
       pollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.value * 1000)));
       scheduleNextPoll();
     }
-    if (msg.command === 'updateSetting' && msg.key === 'pollingInterval' && typeof msg.value === 'number' && Number.isFinite(msg.value)) {
+    if ((msg.command === 'updateSetting' || msg.command === 'setAppSetting') && msg.key === 'pollingInterval' && typeof msg.value === 'number' && Number.isFinite(msg.value)) {
       pollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.value * 1000)));
       scheduleNextPoll();
     }
@@ -468,17 +539,44 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
           : Promise.resolve(true);
 
         return copyPromise.then(function() {
+          var dispatchedTypes = {};
           if (Array.isArray(data.messages)) {
             for (var i = 0; i < data.messages.length; i++) {
               var m = data.messages[i];
-              if (m && m.command === 'setPaused') {
+              if (!m || typeof m !== 'object') { continue; }
+              var mKind = m.command || m.type || '';
+              if (mKind) { dispatchedTypes[mKind] = true; }
+              if (mKind === 'setPaused') {
                 pollPaused = !!m.paused;
                 if (!pollPaused) { scheduleNextPoll(); }
               }
-              if (m && m.command === 'copyToClipboard' && typeof m.text === 'string') {
+              if (mKind === 'copyToClipboard' && typeof m.text === 'string') {
                 void copyText(m.text);
               }
+              if (mKind === 'downloadFile' && typeof m.content === 'string') {
+                triggerFileDownload(m.filename, m.content, m.mimeType);
+              }
               dispatchWebviewMessage(m);
+            }
+          }
+          // Forward structured action responses (updateCheckResult, pluginUpdateResult,
+          // configSaved, syncSettingsControls) even when returned in data.result or top-level.
+          var structuredCandidate = (data.result && typeof data.result === 'object' && !Array.isArray(data.result) && (data.result.type || data.result.command))
+            ? data.result
+            : ((data.type || data.command) ? data : null);
+          if (structuredCandidate) {
+            var sKind = structuredCandidate.command || structuredCandidate.type;
+            if ((sKind === 'updateCheckResult' || sKind === 'pluginUpdateResult' || sKind === 'configSaved' || sKind === 'syncSettingsControls') && !dispatchedTypes[sKind]) {
+              dispatchWebviewMessage(structuredCandidate);
+              dispatchedTypes[sKind] = true;
+            }
+          }
+          // Trigger browser download for CSV/JSON exports when invoked via postMessage
+          // (direct sendAction callers like webview-script handle res.result themselves).
+          if (autoDownload && data.ok && (msg.command === 'calendarExportCsv' || msg.command === 'calendarExportJson')) {
+            var dlPayload = (data.result && typeof data.result.content === 'string') ? data.result : data;
+            if (dlPayload && typeof dlPayload.content === 'string') {
+              triggerFileDownload(dlPayload.filename, dlPayload.content, dlPayload.mimeType);
             }
           }
           if (data.snapshot) {
@@ -539,7 +637,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     getState: readStoredState,
     setState: writeStoredState,
     postMessage: function(msg) {
-      void sendAction(msg);
+      void sendAction(msg, { autoDownload: true });
     }
   };
 
@@ -548,9 +646,10 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     getViewMode: detectViewMode,
     getState: readStoredState,
     setState: writeStoredState,
-    postMessage: function(msg) { return sendAction(msg); },
+    postMessage: function(msg) { return sendAction(msg, { autoDownload: true }); },
     sendAction: sendAction,
     copyText: copyText,
+    downloadFile: triggerFileDownload,
     copyContextReport: function() { return sendAction({ command: 'copyContextReport' }); },
     copyHandoffPrompt: function() { return sendAction({ command: 'copyHandoffPrompt' }); },
     selectConversation: function(conversationId) {

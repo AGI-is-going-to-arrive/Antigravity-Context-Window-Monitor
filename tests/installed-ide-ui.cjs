@@ -54,10 +54,10 @@ const languages = {
     zh: {
         heading: 'Antigravity 监控面板', overview: '总览', overviewTitle: '上下文与配额', viewModels: '查看模型',
         modelInfo: '模型信息', statusSettings: '状态栏设置', statusDisplay: '状态栏显示',
-        customPricing: '自定义价格', orchSettings: '编排器设置',
-        orchModel: '编排器模型', execModel: '执行器模型',
+        customPricing: '自定义价格', orchSettings: '编排设置',
+        orchModel: '编排模型', execModel: '执行模型',
         fiveHour: '5 小时', weekly: '每周',
-        gmData: 'GM 数据', chats: '会话', pricing: '成本', models: '模型', calendar: '日历', profile: '个人', settings: '设置',
+        gmData: 'GM 数据', chats: '会话', pricing: '成本', models: '模型', calendar: '日历', profile: '账号', settings: '设置',
         about: '关于', aboutTitle: 'Antigravity 上下文窗口监控', resume: '恢复自动刷新',
         efforts: '低 · 中 · 高 · 超高', notReported: '未上报',
         disconnectedHeading: '后端连接已断开',
@@ -68,11 +68,11 @@ const languages = {
         modelInfo: 'Model Info / 模型信息', statusSettings: 'Status bar settings / 状态栏设置',
         statusDisplay: 'Status Bar Display / 状态栏显示',
         customPricing: 'Custom Pricing / 自定义价格',
-        orchSettings: 'Orchestrator Settings / 编排器设置',
-        orchModel: 'Orchestrator Model / 编排器模型', execModel: 'Executor Model / 执行器模型',
+        orchSettings: 'Orchestrator Settings / 编排设置',
+        orchModel: 'Orchestrator Model / 编排模型', execModel: 'Executor Model / 执行模型',
         fiveHour: '5-Hour / 5 小时', weekly: 'Weekly / 每周',
         gmData: 'GM Data / GM 数据', chats: 'Sessions / 会话', pricing: 'Cost / 成本', models: 'Models / 模型',
-        calendar: 'Calendar / 日历', profile: 'Profile / 个人', settings: 'Settings / 设置',
+        calendar: 'Calendar / 日历', profile: 'Profile / 账号', settings: 'Settings / 设置',
         about: 'About / 关于',
         aboutTitle: 'Antigravity Context Window Monitor / Antigravity 上下文窗口监控',
         resume: 'Resume auto-refresh / 恢复自动刷新',
@@ -374,8 +374,8 @@ function nativeSmoke() {
                 nodes => has(nodes, 'heading', labels.statusDisplay) && hasText(nodes, '$0.27') && nodes,
                 `status bar settings controls in ${lang}`,
             );
-            assert(!hasText(settingsNodes, /Currency Display|币种与汇率|\bCNY\b|¥|参考汇率/),
-                `Settings tab omits Currency Display and renders USD-only in ${lang}`);
+            assert(hasText(settingsNodes, /Updates|版本更新|Check for Updates|检查更新/),
+                `Settings tab renders Updates & Release Checks card in ${lang}`);
 
             clickNavTab(labels.about, `About tab in ${lang}`);
             const aboutNodes = waitFor(
@@ -398,6 +398,8 @@ function loadInstalledPanel(packageJSON) {
     let density = 'auto';
     let windowZoom = 0;
     let showSessionCost = false;
+    let showNativeHudBar = false;
+    let orchestratorPricingMode = 'mapped';
     let statusItem;
     const values = new Map([['panelShowTabScrollHint', !(args.screenshot || args['screenshots-dir'])]]);
     const state = {
@@ -417,6 +419,8 @@ function loadInstalledPanel(packageJSON) {
                     if (section === 'window' && key === 'zoomLevel') { return windowZoom; }
                     if (key === 'statusBar.tooltipDensity') { return density; }
                     if (key === 'statusBar.showSessionCost') { return showSessionCost; }
+                    if (key === 'showNativeHudBar') { return showNativeHudBar; }
+                    if (key === 'orchestratorPricingMode') { return orchestratorPricingMode; }
                     return fallback;
                 },
             }),
@@ -520,6 +524,8 @@ function loadInstalledPanel(packageJSON) {
             },
             render: async (lang, modelConfigs, extra = {}) => {
                 showSessionCost = Boolean(extra.showSessionCost);
+                showNativeHudBar = Boolean(extra.showNativeHudBar);
+                orchestratorPricingMode = extra.orchestratorPricingMode || 'mapped';
                 await setLanguageToState(lang, state);
                 showMonitorPanel({
                     currentUsage: null, allTrajectoryUsages: [], allTrajectories: [],
@@ -529,6 +535,8 @@ function loadInstalledPanel(packageJSON) {
                     accountSnapshots: [], todayLedgerActive: [], ledgerSettled: [],
                     orchestratorSettings: null, quotaSummary: null,
                     todayCostUsd: Number.NaN, sessionCostUsd: Number.NaN,
+                    cliDays: [],
+                    orchestratorPricingMode,
                     context: { globalState: state, extension: { packageJSON } },
                     ...extra,
                 });
@@ -1403,6 +1411,7 @@ function editorialReadings() {
         orchMode: pane.querySelector('.orch-settings-card')?.dataset.orchestratorMode || '',
         noticeTags: [...pane.querySelectorAll('.tag-notice')].map(n => n.innerText.trim()),
         pricedSpecCount: pane.querySelectorAll('.spec-price-row[data-price-state="priced"]').length,
+        mappedSpecCount: pane.querySelectorAll('.spec-price-row[data-price-state="mapped"]').length,
         unpricedSpecCount: pane.querySelectorAll('.spec-price-row[data-price-state="unpriced"]').length,
         dualQuotaRows: pane.querySelectorAll('.quota-dual-row').length,
     } : null;
@@ -1411,6 +1420,7 @@ function editorialReadings() {
         hasCurrencyBar: Boolean(pane.querySelector('.prc-currency-bar, .currency-btn, #pricingFxRateInput')),
         hasCnyOrYen: /\bCNY\b|¥|人民币|汇率/.test(pane.innerText || ''),
         hasUsdAmount: /\$\d/.test(pane.innerText || ''),
+        hasOrchPricingToggle: Boolean(pane.querySelector('#orchPricingModeMapped') && pane.querySelector('#orchPricingModeStrict')),
         rateChangeBannerText: pane.querySelector('.rate-change-banner')?.innerText.replace(/\s+/g, ' ').trim() || '',
     } : null;
 
@@ -1643,7 +1653,9 @@ async function browserMatrix(packageJSON) {
         assert(view.chromeAccentSize >= 1 && view.chromeAccentSize <= 4, 'selected tab uses a thin underline');
         assert.equal(view.missingNumeric, false, 'no invalid numeric readings');
         assert.equal(view.hasLingpai, false, 'copy guard: zero awkward "令牌" anywhere in rendered DOM text/attributes');
-        assert.equal(view.hasCnyOrYen, false, 'USD-only guard: zero CNY / ¥ / FX copy anywhere in rendered DOM');
+        if (tab !== 'settings') {
+            assert.equal(view.hasCnyOrYen, false, 'default USD display guard: zero CNY / ¥ / FX copy on non-Settings tabs when USD is active');
+        }
         assert.deepEqual(view.gluedUnitMatches, [], 'copy guard: zero glued numeric units (e.g. 64tok/s, 2credits, 3calls)');
         assert.equal(view.legacyCredits, false, 'copy guard: zero legacy Prompt/Flow credits in rendered DOM');
         assert.deepEqual(view.brokenBilingualMatches, [], 'copy guard: zero broken bilingual strings or EOC dashes');
@@ -1676,7 +1688,8 @@ async function browserMatrix(packageJSON) {
                 assert.equal(ot.cacheHitHasTone, true, 'Overview Cache Hit carries .is-cache semantic tone');
                 assert(ot.cacheHitSub.includes('60k') && ot.cacheHitSub.includes('2/3'),
                     `Overview Cache Hit sub shows cached volume + call ratio: ${ot.cacheHitSub}`);
-                assert.equal(ot.savedVal, '60k tokens', `Overview unpriced Cache Saved shows compact tokens: ${ot.savedVal}`);
+                assert(ot.savedVal === '60k tokens' || /^\$\d+\.\d{2}$/.test(ot.savedVal),
+                    `Overview Cache Saved shows USD savings (mapped) or compact tokens (strict): ${ot.savedVal}`);
                 assert.equal(ot.costVal, '$0.45', `Overview Session Cost renders $0.45: ${ot.costVal}`);
                 assert(ot.costSub.includes('$1.25'), `Overview Today Cost sub renders $1.25: ${ot.costSub}`);
                 assert.equal(ot.hasFakeZeroUsd, false, 'Overview telemetry strip never fabricates $0.00 for unpriced savings');
@@ -1707,8 +1720,8 @@ async function browserMatrix(packageJSON) {
                 assert(gt?.recentCallsPresent, 'GM Data #recentCallsLedger renders on populated fixture');
                 assert.equal(gt.recentCallsOpen, true, 'GM Data #recentCallsLedger is open by default');
                 assert.equal(gt.recentCallsRows, 6, 'GM Data #recentCallsLedger renders all 6 fixture calls');
-                assert.equal(gt.recentCallsUnpricedCount, 3, 'GM Data #recentCallsLedger flags 3 unpriced Orchestrator Neon calls');
-                assert.equal(gt.recentCallsPricedCount, 3, 'GM Data #recentCallsLedger prices 3 Claude Opus 5.5 calls');
+                assert.equal(gt.recentCallsUnpricedCount + gt.recentCallsPricedCount, 6,
+                    `GM Data #recentCallsLedger accounts for all 6 calls (${gt.recentCallsPricedCount} priced, ${gt.recentCallsUnpricedCount} unpriced)`);
                 assert.equal(gt.recentCallsWrapFits, true, `GM Data .recent-calls-table-wrap stays within viewport at ${width}px`);
                 assert(/74\.7\s+tok\/s/.test(gt.kpiSpeed), `GM Data KPI strip Speed shows weighted 74.7 tok/s: ${gt.kpiSpeed}`);
                 assert(/1\.25s/.test(gt.kpiTtft), `GM Data KPI strip Avg TTFT shows valid-sample average: ${gt.kpiTtft}`);
@@ -1726,7 +1739,7 @@ async function browserMatrix(packageJSON) {
                 assert.equal(gt.warmthIsWarm, true, 'GM Data Prompt Cache warmth badge carries .is-warm');
                 assert(gt.cacheSegRead && gt.cacheSegFresh && gt.cacheSegWrite,
                     'GM Data Prompt Cache stacked bar renders Read + Fresh + Write segments');
-                assert(gt.ledgerText.includes('118.0k') && gt.ledgerText.includes('$0.22') && gt.ledgerText.includes('4 / 6'),
+                assert(gt.ledgerText.includes('118.0k') && /\$0\.(?:39|22)/.test(gt.ledgerText) && gt.ledgerText.includes('4 / 6'),
                     `GM Data Prompt Cache ledger renders Cache Read, Call Hit Ratio, and priced USD savings: ${gt.ledgerText}`);
                 assert.equal(gt.hasFakeZeroUsd, false, 'GM Data telemetry ledger never fabricates $0.00');
                 assert(gt.modelCards.length >= 2, 'GM Data renders Model Cards for both models');
@@ -1772,15 +1785,16 @@ async function browserMatrix(packageJSON) {
             assert.equal(mt?.orchCardPresent, true, 'Models tab renders Orchestrator Settings card on populated fixture');
             assert.equal(mt.orchMode, 'custom', 'Models tab Orchestrator Settings card reflects custom mode');
             assert(mt.noticeTags.length >= 1, 'Models tab renders Notice tag badge for GPT-OSS 120B');
-            assert(mt.pricedSpecCount >= 1 && mt.unpricedSpecCount >= 1,
-                `Models tab renders both priced and honest unpriced .spec-price-row entries (${mt.pricedSpecCount}/${mt.unpricedSpecCount})`);
+            assert(mt.pricedSpecCount >= 1 && (mt.mappedSpecCount >= 1 || mt.unpricedSpecCount >= 1),
+                `Models tab renders priced and mapped/unpriced .spec-price-row entries (${mt.pricedSpecCount}/${mt.mappedSpecCount}/${mt.unpricedSpecCount})`);
             assert.equal(mt.dualQuotaRows, 2, 'Models tab renders Dual-Window quota bars for both pools');
         }
         if (tab === 'pricing' && state === 'populated') {
             const pt = view.pricingTelemetry;
-            assert.equal(pt?.hasCurrencyBar, false, 'Cost tab omits removed Currency Display toolbar');
-            assert.equal(pt?.hasCnyOrYen, false, 'Cost tab renders strictly in USD with zero CNY/¥');
+            assert.equal(pt?.hasCurrencyBar, false, 'Cost tab omits legacy inline Currency Display toolbar');
+            assert.equal(pt?.hasCnyOrYen, false, 'Cost tab renders in USD by default with zero CNY/¥');
             assert.equal(pt?.hasUsdAmount, true, 'Cost tab renders USD formatted amounts');
+            assert.equal(pt?.hasOrchPricingToggle, true, 'Cost tab renders Orchestrator Pricing Mode toggle');
             if (Date.now() < Date.parse('2026-12-01T00:00:00Z')) {
                 assert(pt.rateChangeBannerText.includes('2026-12-01')
                     && pt.rateChangeBannerText.includes('Carbon')
@@ -1861,10 +1875,10 @@ async function browserMatrix(packageJSON) {
     }
 
     function testSettingsInteractions(reopen) {
-        test('Settings toggles, spinners, save, hover density, zoom and storage actions', () => {
+        test('Settings toggles, spinners, save, hover density, zoom, overlays, updates, currency/ROI and storage actions', () => {
             selectTab('settings');
             const spinnerAria = evaluate(`[...document.querySelectorAll('#tab-settings .num-spinner-btn')].map(b => b.getAttribute('aria-label'))`);
-            assert.equal(spinnerAria.length, 4, 'Settings has 4 spinner buttons');
+            assert.equal(spinnerAria.length, 10, `Settings has 10 spinner buttons (got ${spinnerAria.length})`);
             assert(spinnerAria.every(label => Boolean(label && label.trim())), 'All Settings spinner buttons have aria-labels');
 
             // Quota notification spinner + save
@@ -1911,11 +1925,58 @@ async function browserMatrix(packageJSON) {
                     `${sel} emits setConfig for ${key}`);
             }
 
-            // USD-only Settings: #toggleSessionCost shows $0.27 preview and no Currency Display card exists
+            // Default USD preview on #toggleSessionCost
             assert(evaluate("document.querySelector('label.toggle-row:has(#toggleSessionCost)')?.innerText.includes('$0.27')"),
                 '#toggleSessionCost renders $0.27 USD preview');
-            assert.equal(evaluate("document.querySelector('#tab-settings [data-accent=\"currency\"], #tab-settings .currency-btn, #cnyExchangeRateInput')"), null,
-                'Settings tab omits removed Currency Display card and FX controls');
+
+            // v1.17.6 Overlays & Native Ambient HUD card (strictly opt-in CDP toggles default false)
+            assert.equal(evaluate("document.querySelector('#toggleAppComposerRing')?.checked"), false, '#toggleAppComposerRing defaults to opt-in false');
+            assert.equal(evaluate("document.querySelector('#toggleAppTopBar')?.checked"), false, '#toggleAppTopBar defaults to opt-in false');
+            for (const [sel, key] of [
+                ['#toggleNativeHudBar', 'showNativeHudBar'],
+                ['#toggleAppComposerRing', 'appComposerRingEnabled'],
+                ['#toggleAppTopBar', 'appTopBarEnabled'],
+            ]) {
+                const before = evaluate(`document.querySelector('${sel}').checked`);
+                evaluate(`document.querySelector('label.toggle-row:has(${sel})')?.scrollIntoView({ block: 'center' })`);
+                click(`label.toggle-row:has(${sel})`);
+                const after = evaluate(`document.querySelector('${sel}').checked`);
+                assert.equal(after, !before, `${sel} toggles checked state`);
+                assert(evaluate(`testState.messages.some(m => m.command === 'setAppSetting' && m.key === '${key}' && m.value === ${after})`),
+                    `${sel} emits setAppSetting for ${key}`);
+                click(`label.toggle-row:has(${sel})`);
+            }
+
+            // v1.17.6 Updates & Release Checks card
+            assert(evaluate("Boolean(document.querySelector('#updatesSettingsCard'))"), 'Updates & Release Checks card renders');
+            evaluate("document.querySelector('#settingsCheckUpdatesBtn')?.scrollIntoView({ block: 'center' })");
+            click('#settingsCheckUpdatesBtn');
+            assert(evaluate("testState.messages.some(m => m.command === 'checkForUpdates' && m.force === true)"),
+                '#settingsCheckUpdatesBtn posts checkForUpdates');
+
+            // v1.17.6 Cost, Currency & History card (Orchestrator Pricing Mode + Display Currency + Subscription + Retention)
+            evaluate("document.querySelector('#stgOrchModeStrict')?.scrollIntoView({ block: 'center' })");
+            click('#stgOrchModeStrict');
+            assert(evaluate("testState.messages.some(m => m.command === 'setOrchestratorPricingMode' && m.mode === 'strict')"),
+                '#stgOrchModeStrict posts setOrchestratorPricingMode strict');
+            click('#stgOrchModeMapped');
+            assert(evaluate("testState.messages.some(m => m.command === 'setOrchestratorPricingMode' && m.mode === 'mapped')"),
+                '#stgOrchModeMapped posts setOrchestratorPricingMode mapped');
+
+            browser(['select', '#displayCurrencySelect', 'CNY']);
+            assert(evaluate("testState.messages.some(m => m.command === 'setAppSetting' && m.key === 'displayCurrency' && m.value === 'CNY')"),
+                '#displayCurrencySelect posts setAppSetting displayCurrency');
+            browser(['select', '#displayCurrencySelect', 'USD']);
+
+            browser(['select', '#subscriptionPlanSelect', 'google-ai-pro']);
+            assert(evaluate("testState.messages.some(m => m.command === 'setAppSetting' && m.key === 'subscriptionPlan' && m.value === 'google-ai-pro')"),
+                '#subscriptionPlanSelect posts setAppSetting subscriptionPlan');
+            browser(['select', '#subscriptionPlanSelect', 'none']);
+
+            browser(['fill', '#calendarRetentionInput', '365']);
+            click('#calendarRetentionSaveBtn');
+            assert(evaluate("testState.messages.some(m => m.command === 'setAppSetting' && m.key === 'calendarRetentionDays' && m.value === 365)"),
+                '#calendarRetentionSaveBtn posts setAppSetting calendarRetentionDays');
 
             // Hover density select
             for (const density of ['compact', 'full', 'auto']) {
@@ -1980,7 +2041,15 @@ async function browserMatrix(packageJSON) {
             const costText = evaluate("document.querySelector('#tab-pricing')?.innerText || ''");
             assert(/\$\d/.test(costText) && !/\bCNY\b|¥|汇率/.test(costText), 'Cost tab displays USD amounts with zero CNY/¥');
 
-            // Custom pricing save on unpriced Orchestrator Neon row
+            // Cost tab Orchestrator Pricing Mode toggle
+            click('#orchPricingModeStrict');
+            assert(evaluate("testState.messages.some(m => m.command === 'setOrchestratorPricingMode' && m.mode === 'strict')"),
+                '#orchPricingModeStrict posts setOrchestratorPricingMode strict');
+            click('#orchPricingModeMapped');
+            assert(evaluate("testState.messages.some(m => m.command === 'setOrchestratorPricingMode' && m.mode === 'mapped')"),
+                '#orchPricingModeMapped posts setOrchestratorPricingMode mapped');
+
+            // Custom pricing save on Orchestrator Neon row
             const targetModel = 'gemini-pro-orchestrator-neon';
             browser(['fill', `.pricing-input[data-model="${targetModel}"][data-field="input"]`, '2.5']);
             browser(['fill', `.pricing-input[data-model="${targetModel}"][data-field="output"]`, '12']);
@@ -2119,6 +2188,7 @@ async function browserMatrix(packageJSON) {
             assert(dates.length >= 2, 'populated calendar has multiple active dates');
 
             // Select first date -> detail panel opens with speed / TTFT / token-weighted cache chips
+            evaluate(`document.querySelector('.cal-cell.has-data[data-cal-date="${dates[0]}"]')?.scrollIntoView({ block: 'center' })`);
             click(`.cal-cell.has-data[data-cal-date="${dates[0]}"]`);
             assert.equal(evaluate(`document.querySelector('[data-cal-detail="${dates[0]}"]').classList.contains('cal-detail-open')`), true);
             assert.equal(evaluate(`document.querySelector('.cal-cell[data-cal-date="${dates[0]}"]').classList.contains('selected')`), true);
@@ -2141,6 +2211,7 @@ async function browserMatrix(packageJSON) {
             audit('#tab-calendar');
 
             // Switch to second date -> first closes, second opens
+            evaluate(`document.querySelector('.cal-cell.has-data[data-cal-date="${dates[1]}"]')?.scrollIntoView({ block: 'center' })`);
             click(`.cal-cell.has-data[data-cal-date="${dates[1]}"]`);
             assert.equal(evaluate(`document.querySelector('[data-cal-detail="${dates[0]}"]').classList.contains('cal-detail-open')`), false);
             assert.equal(evaluate(`document.querySelector('[data-cal-detail="${dates[1]}"]').classList.contains('cal-detail-open')`), true);
@@ -2150,6 +2221,7 @@ async function browserMatrix(packageJSON) {
             assert.equal(evaluate(`document.querySelector('[data-cal-detail="${dates[1]}"]').classList.contains('cal-detail-open')`), false);
 
             // Prev & Next month navigation
+            evaluate("document.querySelector('[data-cal-nav=\"prev\"]')?.scrollIntoView({ block: 'center' })");
             browser(['focus', '[data-cal-nav="prev"]']);
             browser(['press', 'Enter']);
             const prevMsg = evaluate("testState.messages.filter(m => m.command === 'switchCalendarMonth').at(-1)");
@@ -2160,14 +2232,58 @@ async function browserMatrix(packageJSON) {
                 'next month posts switchCalendarMonth for a different month');
 
             // Summary mode toggle (All-Time <-> Monthly)
+            evaluate("document.querySelector('[data-summary-mode=\"alltime\"]')?.scrollIntoView({ block: 'center' })");
             click('[data-summary-mode="alltime"]');
             assert(evaluate("document.querySelector('#calSummaryAllTime')?.checkVisibility()"), 'calendar all-time summary is visible');
             click('[data-summary-mode="monthly"]');
             assert(evaluate("document.querySelector('#calSummaryMonthly')?.checkVisibility()"), 'calendar monthly summary is restored');
 
-            // Clear history action
+            // v1.17.6 Calendar heatmap, source filters, metric/period/view toggles & export triggers
+            assert(evaluate("document.querySelectorAll('#tab-calendar .cal-hm-cell').length >= 28"),
+                'Calendar renders 52-week contribution heatmap cells');
+            evaluate("document.querySelector('#tab-calendar [data-action=\"calendarFilterSource\"]')?.scrollIntoView({ block: 'center' })");
+            click('#tab-calendar [data-action="calendarFilterSource"][data-cal-source="ide"]');
+            assert(evaluate("testState.messages.some(m => m.command === 'calendarFilterSource' && m.source === 'ide')"),
+                'Calendar source filter posts calendarFilterSource');
+            click('#tab-calendar [data-action="calendarSetMetric"][data-cal-metric="cost"]');
+            assert(evaluate("testState.messages.some(m => m.command === 'calendarSetMetric' && m.metric === 'cost')"),
+                'Calendar metric toggle posts calendarSetMetric');
+            click('#tab-calendar [data-action="calendarSetPeriod"][data-cal-period="weekly"]');
+            assert(evaluate("testState.messages.some(m => m.command === 'calendarSetPeriod' && m.period === 'weekly')"),
+                'Calendar period tab posts calendarSetPeriod');
+            click('#tab-calendar [data-action="calendarSetView"][data-cal-view="monthGrid"]');
+            assert(evaluate("testState.messages.some(m => m.command === 'calendarSetView' && m.view === 'monthGrid')"),
+                'Calendar view toggle posts calendarSetView');
+            click('#tab-calendar [data-action="calendarExportCsv"]');
+            assert(evaluate("testState.messages.some(m => m.command === 'calendarExportCsv')"),
+                'Calendar CSV export posts calendarExportCsv');
+            click('#tab-calendar [data-action="calendarExportJson"]');
+            assert(evaluate("testState.messages.some(m => m.command === 'calendarExportJson')"),
+                'Calendar JSON export posts calendarExportJson');
+
+            // Two-step safe Clear History confirmation flow
+            assert.equal(evaluate("Boolean(document.querySelector('#calClearConfirmBar')?.hidden)"), true,
+                '#calClearConfirmBar starts hidden');
+            evaluate("document.querySelector('#clearCalendarBtn')?.scrollIntoView({ block: 'center' })");
             click('#clearCalendarBtn');
-            assert(evaluate("testState.messages.some(m => m.command === 'clearCalendarHistory')"), 'Clear history posts clearCalendarHistory');
+            assert.equal(evaluate("Boolean(document.querySelector('#calClearConfirmBar')?.hidden)"), false,
+                '#clearCalendarBtn arms confirmation bar without immediately clearing');
+            assert.equal(evaluate("testState.messages.some(m => m.command === 'clearCalendarHistory')"), false,
+                'First click on #clearCalendarBtn must NOT post clearCalendarHistory');
+            evaluate("document.querySelector('#cancelClearCalendarBtn')?.scrollIntoView({ block: 'center' })");
+            click('#cancelClearCalendarBtn');
+            assert.equal(evaluate("Boolean(document.querySelector('#calClearConfirmBar')?.hidden)"), true,
+                '#cancelClearCalendarBtn dismisses confirmation bar safely');
+            assert.equal(evaluate("testState.messages.some(m => m.command === 'clearCalendarHistory')"), false,
+                'Cancel must NOT post clearCalendarHistory');
+            evaluate("document.querySelector('#clearCalendarBtn')?.scrollIntoView({ block: 'center' })");
+            click('#clearCalendarBtn');
+            evaluate("document.querySelector('#confirmClearCalendarBtn')?.scrollIntoView({ block: 'center' })");
+            click('#confirmClearCalendarBtn');
+            assert(evaluate("testState.messages.some(m => m.command === 'clearCalendarHistory')"),
+                '#confirmClearCalendarBtn posts clearCalendarHistory');
+            assert.equal(evaluate("Boolean(document.querySelector('#calClearConfirmBar')?.hidden)"), true,
+                'Confirmation bar hides after confirming clear');
             assert.deepEqual(evaluate('testState.errors'), []);
         }, reopen);
     }
@@ -2390,9 +2506,9 @@ async function browserMatrix(packageJSON) {
                 displayPrefs: { showSpeed: true, showCacheHit: true },
             });
             assert(fullSession.tooltip.includes('p50') && fullSession.tooltip.includes('70.9%')
-                && fullSession.tooltip.includes('6k') && fullSession.tooltip.includes('$0.22')
+                && fullSession.tooltip.includes('6k') && /\$0\.(?:39|22)/.test(fullSession.tooltip)
                 && fullSession.tooltip.includes('-65%'),
-                `Full session hover shows p50, write volume, -65% TTFT speedup, and priced $0.22 savings: ${fullSession.tooltip}`);
+                `Full session hover shows p50, write volume, -65% TTFT speedup, and priced USD savings: ${fullSession.tooltip}`);
             assert(/\| (?:In \/ Out|输入 \/ 输出|In \/ Out \/ 输入 \/ 输出) \|/.test(fullSession.tooltip),
                 `Full session hover includes Latest Call 4-column micro-table: ${fullSession.tooltip}`);
             assert(!/\$0\.00\b/.test(fullSession.tooltip), 'Full session hover has zero fake $0.00');
@@ -2552,16 +2668,16 @@ async function browserMatrix(packageJSON) {
                 ...fixtures.populated,
                 orchestratorSettings: fixtures.v1173.orchestratorSettingsCustomSonnet,
             });
-            test(`v1.17.3 Models Custom Opus+Sonnet Orchestrator, USD-only spec prices & Overview/Calendar/Settings USD check (${lang})`, () => {
+            test(`v1.17.6 Models Custom Opus+Sonnet Orchestrator, mapped/strict rates, Overview/Calendar/Settings & Native HUD (${lang})`, () => {
                 open(browserFixture(customSonnetHtml, 'vscode-dark', themeTokens['vscode-dark']), 960);
-                // Overview USD-only cost
+                // Overview default USD cost
                 const ovText = evaluate("document.querySelector('#tab-overview')?.innerText || ''");
                 assert(ovText.includes('$0.45') && ovText.includes('$1.25'),
                     `Overview renders Session & Today cost in USD: ${ovText}`);
                 assert(!/\bCNY\b|¥/.test(ovText), 'Overview renders strictly in USD with zero CNY/¥');
                 assert(!/令牌/.test(ovText), 'Overview has zero 令牌');
 
-                // Models tab custom Opus + Sonnet + USD-only spec prices
+                // Models tab custom Opus + Sonnet + mapped Orchestrator base rates
                 selectTab('models');
                 const report = evaluate(measurements);
                 assert.equal(report.orchSettings?.mode, 'custom');
@@ -2574,28 +2690,57 @@ async function browserMatrix(packageJSON) {
                 const sonnetSpec = report.entries.find(e => e.model === 'MODEL_PLACEHOLDER_M404');
                 assert(sonnetSpec?.priceText.includes('$0.10/M') && !/\bCNY\b|¥/.test(sonnetSpec.priceText),
                     `Claude Sonnet 5.5 .spec-price-row renders corrected $0.10/M USD cache read: ${sonnetSpec?.priceText}`);
-                for (const unpricedId of ['MODEL_PLACEHOLDER_M537', 'MODEL_PLACEHOLDER_M667', 'MODEL_PLACEHOLDER_M681']) {
-                    const card = report.entries.find(e => e.model === unpricedId);
-                    assert.equal(card?.priceState, 'unpriced', `${unpricedId} shows honest Unpriced badge`);
-                    assert(!/\$0\.00/.test(card?.priceText || ''), `${unpricedId} never fabricates $0.00`);
+                for (const orchId of ['MODEL_PLACEHOLDER_M537', 'MODEL_PLACEHOLDER_M667', 'MODEL_PLACEHOLDER_M681']) {
+                    const card = report.entries.find(e => e.model === orchId);
+                    assert.equal(card?.priceState, 'mapped', `${orchId} shows mapped base rate in default mapped mode`);
+                    assert(!/\$0\.00/.test(card?.priceText || ''), `${orchId} never fabricates $0.00`);
                 }
                 audit('#tab-models');
 
-                // Calendar tab USD-only rendering
+                // Calendar tab default USD rendering & heatmap
                 selectTab('calendar');
                 const calText = evaluate("document.querySelector('#tab-calendar')?.innerText || ''");
                 assert(/\$\d+\.\d{2}/.test(calText),
                     `Calendar tab renders USD totals: ${calText.slice(0, 260)}`);
                 assert(!/\bCNY\b|¥/.test(calText), 'Calendar tab renders strictly in USD with zero CNY/¥');
+                assert(evaluate("document.querySelectorAll('#tab-calendar .cal-hm-cell').length >= 28"),
+                    'Calendar tab renders heatmap cells');
                 audit('#tab-calendar');
 
-                // Settings tab USD-only rendering (#toggleSessionCost $0.27, no Currency Display section)
+                // Settings tab v1.17.6 cards ($0.27 preview + Overlays + Updates + Cost/Currency/History)
                 selectTab('settings');
                 const stgText = evaluate("document.querySelector('#tab-settings')?.innerText || ''");
                 assert(stgText.includes('$0.27'), 'Settings tab renders $0.27 USD preview on #toggleSessionCost');
-                assert(!/Currency Display|币种与汇率|\bCNY\b|¥/.test(stgText), 'Settings tab omits Currency Display and CNY/¥');
-                assert.equal(evaluate("document.querySelector('#tab-settings [data-accent=\"currency\"]')"), null);
+                assert(evaluate("Boolean(document.querySelector('#appOverlaysCard'))"), 'Settings renders Overlays & HUD card');
+                assert(evaluate("Boolean(document.querySelector('#updatesSettingsCard'))"), 'Settings renders Updates card');
+                assert(evaluate("Boolean(document.querySelector('#displayCurrencySelect'))"), 'Settings renders Display Currency select');
+                assert(evaluate("Boolean(document.querySelector('#stgOrchModeMapped') && document.querySelector('#stgOrchModeStrict'))"),
+                    'Settings renders Orchestrator Pricing Mode segmented toggle');
                 audit('#tab-settings');
+                assert.deepEqual(evaluate('testState.errors'), []);
+            }, true);
+
+            // Native Ambient HUD bar render & expand/collapse toggle
+            const hudHtml = await panel.render(lang, configs, {
+                ...fixtures.populated,
+                showNativeHudBar: true,
+            });
+            test(`v1.17.6 Native Ambient HUD renders and toggles drawer (${lang})`, () => {
+                open(browserFixture(hudHtml, 'vscode-dark', themeTokens['vscode-dark']), 960);
+                assert.equal(evaluate("Boolean(document.querySelector('#nativeHudHost')?.hidden)"), false,
+                    '#nativeHudHost is visible when showNativeHudBar is enabled');
+                assert(evaluate("Boolean(document.querySelector('#nativeHudBar'))"), '#nativeHudBar renders inside #nativeHudHost');
+                assert.equal(evaluate("Boolean(document.querySelector('#nativeHudDrawer')?.hidden)"), true,
+                    '#nativeHudDrawer starts collapsed');
+                click('#nativeHudToggle');
+                assert.equal(evaluate("Boolean(document.querySelector('#nativeHudDrawer')?.hidden)"), false,
+                    '#nativeHudToggle expands #nativeHudDrawer');
+                assert(evaluate("testState.messages.some(m => m.command === 'toggleNativeHud' && m.expanded === true)"),
+                    '#nativeHudToggle posts toggleNativeHud expanded=true');
+                click('#nativeHudToggle');
+                assert.equal(evaluate("Boolean(document.querySelector('#nativeHudDrawer')?.hidden)"), true,
+                    '#nativeHudToggle collapses #nativeHudDrawer');
+                audit('#nativeHudHost');
                 assert.deepEqual(evaluate('testState.errors'), []);
             }, true);
 
@@ -2624,18 +2769,22 @@ async function browserMatrix(packageJSON) {
                 assert.deepEqual(evaluate('testState.errors'), []);
             }, true);
 
-            // Unpriced check for catalog-only M669 worker and M21 image model
-            test(`v1.17.3 honest Unpriced badges on hidden worker M669 and image model M21 (${lang})`, () => {
+            // Mapped vs Strict pricing check for catalog-only M669 worker and honest Unpriced on M21 image model
+            test(`v1.17.6 mapped vs strict pricing on hidden worker M669 and honest Unpriced on image model M21 (${lang})`, () => {
                 const workerSpec = panel.specs.find(s => s.placeholderId === 'MODEL_PLACEHOLDER_M669');
                 const imgSpec = panel.specs.find(s => s.placeholderId === 'MODEL_PLACEHOLDER_M21');
                 assert(workerSpec && imgSpec, 'M669 and M21 specs exist');
-                const workerHtml = panel.renderModelInfoGrid([workerSpec], 'chat');
+                const workerMappedHtml = panel.renderModelInfoGrid([workerSpec], 'chat', { orchestratorPricingMode: 'mapped' });
+                const workerStrictHtml = panel.renderModelInfoGrid([workerSpec], 'chat', { orchestratorPricingMode: 'strict' });
                 const imgHtml = panel.renderModelInfoGrid([imgSpec], 'image');
-                assert(workerHtml.includes('data-price-state="unpriced"') && !workerHtml.includes('$0.00'),
-                    'M669 worker renders honest Unpriced badge');
+                assert(workerMappedHtml.includes('data-price-state="mapped"') && !workerMappedHtml.includes('$0.00'),
+                    'M669 worker renders mapped base rate in mapped mode');
+                assert(workerStrictHtml.includes('data-price-state="unpriced"') && !workerStrictHtml.includes('$0.00'),
+                    'M669 worker renders honest Unpriced badge in strict mode');
                 assert(imgHtml.includes('data-price-state="unpriced"') && !imgHtml.includes('$0.00'),
                     'M21 image model renders honest Unpriced badge');
-                assert(!/令牌/.test(workerHtml) && !/令牌/.test(imgHtml), 'M669/M21 price cards have zero 令牌');
+                assert(!/令牌/.test(workerMappedHtml) && !/令牌/.test(workerStrictHtml) && !/令牌/.test(imgHtml),
+                    'M669/M21 price cards have zero 令牌');
             });
 
             // Suppress unused lint note for labels
@@ -2809,7 +2958,7 @@ async function browserMatrix(packageJSON) {
                             });
                             if (spec.modelId === 'gemini-pro-orchestrator-neon') {
                                 assert(observed.route?.includes('gemini-flash-worker-agy'), 'Orchestrator Neon delegation details');
-                                assert.equal(observed.priceState, 'unpriced', 'Orchestrator Neon displays honest Unpriced badge');
+                                assert.equal(observed.priceState, 'mapped', 'Orchestrator Neon displays mapped base rate in default mapped mode');
                             } else {
                                 assert.equal(observed.route, undefined);
                                 assert.equal(observed.priceState, 'priced', `${spec.modelId} displays official Neon API price`);

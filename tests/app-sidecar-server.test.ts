@@ -128,6 +128,8 @@ describe('theme-adapter stylesheet generator', () => {
         expect(css).toContain('body[data-acm-view="sidebar"]');
         expect(css).toContain('@media (max-width: 520px)');
         expect(css).toContain('@media (min-width: 900px)');
+        expect(css).toContain('#nativeHudHost');
+        expect(css).toContain('.stg-form-grid');
         // Guard against dangling comma syntax errors before @media
         expect(css).not.toMatch(/,\s*@media/);
     });

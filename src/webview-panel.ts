@@ -15,9 +15,18 @@ import {
     getLockToMainAgent,
     setLockToMainAgent,
     selectPinnedConversation,
+    getSharedAppSettings,
+    updateSharedAppSetting,
+    setSharedOrchestratorPricingMode,
+    syncDurableStateFromDisk,
+    getCachedCliUsageDays,
+    checkIdeReleaseUpdates,
+    getLastUpdateStatusView,
+    flushDurableState,
+    OPEN_VSX_EXTENSION_URL,
 } from './extension';
 import type { LedgerAccountBucket, LedgerSettledEntry } from './daily-ledger';
-import { PricingStore, ModelPricing } from './pricing-store';
+import { PricingStore, ModelPricing, normalizeOrchestratorPricingMode, type OrchestratorPricingMode } from './pricing-store';
 import { GMSummary, GMConversationData } from './gm-tracker';
 import { formatFileSize } from './webview-helpers';
 import {
@@ -25,11 +34,12 @@ import {
     type StorageDiagnostics,
     type PanelHintPreferences,
     type MonitorDocumentSettings,
+    type UpdateStatusView,
 } from './webview-settings-tab';
 import { DailyStore } from './daily-store';
 import { parseTooltipDensity } from './tooltip-budget';
 import type { MonitorStatus, OverviewDestination } from './monitor-overview';
-import type { StateBucket } from './durable-state';
+import type { AppSettings, StateBucket } from './durable-state';
 import type { PersistedModelDNA } from './model-dna-store';
 import {
     formatContextTextReport,
@@ -44,12 +54,28 @@ import { t } from './i18n-core';
 import type { TurnDiagnosticsSummary } from './turn-diagnostics';
 import type { QuotaRunwayEstimate } from './quota-runway';
 import type { ConversationOption } from './conversation-selector';
-import type { MonitorStaleState } from './webview-overview-tab';
+import type { LowQuotaWarningState, MonitorStaleState } from './webview-overview-tab';
 import {
     buildMonitorDocumentHtml,
     buildMonitorTabsPayload,
     type MonitorDocumentBuildParams,
 } from './webview-document';
+import {
+    buildCalendarExportData,
+    type CalendarMetricMode,
+    type CalendarPeriodMode,
+    type CalendarRenderOptions,
+    type CalendarSourceFilter,
+    type CalendarViewMode,
+} from './webview-calendar-tab';
+import { toLocalDateKey } from './daily-archival';
+import type {
+    CliDailyUsageRecord,
+    CurrencyConfig,
+    SubscriptionConfig,
+    SubscriptionPlanPresetId,
+} from './cli-usage-scanner';
+import { validateExternalUrl } from './app/sidecar-runtime';
 
 // ─── Panel Payload ────────────────────────────────────────────────────────────
 
@@ -108,6 +134,16 @@ export interface PanelPayload {
     pinnedConversationId?: string | null;
     /** v1.17.5 Whether Lock to Main Agent is active. */
     lockToMainAgent?: boolean;
+    /** v1.17.6 Scanned Antigravity CLI daily usage records. */
+    cliDays?: CliDailyUsageRecord[];
+    /** v1.17.6 Orchestrator pricing mode ('mapped' | 'strict'). */
+    orchestratorPricingMode?: OrchestratorPricingMode;
+    /** v1.17.6 Shared AppSettings snapshot (currency, subscription, retention, HUD, updates). */
+    appSettings?: Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId };
+    /** v1.17.6 Release update status view. */
+    updateStatus?: UpdateStatusView | null;
+    /** v1.17.6 Optional explicit low-quota warning override. */
+    lowQuotaWarning?: LowQuotaWarningState | null;
 }
 
 // ─── Panel State ──────────────────────────────────────────────────────────────
@@ -151,6 +187,11 @@ let lastConversationOptions: ConversationOption[] = [];
 let lastActiveConversationId: string | null = null;
 let lastPinnedConversationId: string | null = null;
 let lastLockToMainAgent = false;
+let lastCliDays: CliDailyUsageRecord[] | undefined;
+let lastOrchestratorPricingMode: OrchestratorPricingMode | undefined;
+let lastAppSettings: (Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId }) | undefined;
+let lastUpdateStatus: UpdateStatusView | null = null;
+let lastLowQuotaWarning: LowQuotaWarningState | null | undefined;
 export const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
 const SAFE_CASCADE_ID_RE = /^[a-zA-Z0-9_-]{4,128}$/;
 
@@ -188,22 +229,50 @@ function sanitizeConfigValue(key: string, value: unknown): unknown {
 }
 
 function readIdeDocumentSettings(): MonitorDocumentSettings {
+    syncDurableStateFromDisk(false);
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    const shared = getSharedAppSettings();
+    const maxRecentSteps = cfg.get<number>('activity.maxRecentSteps', shared.activityMaxRecentSteps ?? 100);
+    const maxArchives = cfg.get<number>('activity.maxArchives', shared.activityMaxArchives ?? 20);
+    const orchRaw = cfg.get<string>('orchestratorPricingMode', shared.orchestratorPricingMode ?? 'mapped');
+    const orchestratorPricingMode = normalizeOrchestratorPricingMode(orchRaw);
+    const displayCurrency = (cfg.get<string>('displayCurrency', shared.displayCurrency ?? 'USD') || 'USD') as AppSettings['displayCurrency'];
+    const customFxRate = cfg.get<number | null>('customFxRate', shared.customFxRate ?? null);
+    const subscriptionPlan = (cfg.get<string>('subscriptionPlan', shared.subscriptionPlan ?? 'none') || 'none') as SubscriptionPlanPresetId;
+    const subscriptionMonthlyFee = cfg.get<number | null>('subscriptionMonthlyFee', shared.subscriptionMonthlyFee ?? null);
+    const subscriptionCurrency = (cfg.get<string>('subscriptionCurrency', shared.subscriptionCurrency ?? 'USD') || 'USD') as AppSettings['subscriptionCurrency'];
+    const calendarRetentionDays = cfg.get<number>('calendarRetentionDays', shared.calendarRetentionDays ?? 400);
+    const autoCheckUpdates = cfg.get<boolean>('autoCheckUpdates', shared.autoCheckUpdates ?? true);
+    const showNativeHudBar = cfg.get<boolean>('showNativeHudBar', false);
+
     return {
-        pollingInterval: cfg.get<number>('pollingInterval', 5),
-        quotaNotificationThreshold: cfg.get<number>('quotaNotificationThreshold', 20),
-        showContext: cfg.get<boolean>('statusBar.showContext', true),
-        showQuota: cfg.get<boolean>('statusBar.showQuota', true),
-        showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
-        showAiCredits: cfg.get<boolean>('statusBar.showAiCredits', true),
-        showSpeed: cfg.get<boolean>('statusBar.showSpeed', false),
-        showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', false),
-        showSessionCost: cfg.get<boolean>('statusBar.showSessionCost', false),
-        tooltipDensity: parseTooltipDensity(cfg.get('statusBar.tooltipDensity', 'auto')),
-        showModelInternalId: cfg.get<boolean>('showModelInternalId', false),
-        maxRecentSteps: cfg.get<number>('activity.maxRecentSteps', 100),
-        maxArchives: cfg.get<number>('activity.maxArchives', 20),
+        pollingInterval: cfg.get<number>('pollingInterval', shared.pollingInterval ?? 5),
+        quotaNotificationThreshold: cfg.get<number>('quotaNotificationThreshold', shared.quotaNotificationThreshold ?? 20),
+        showContext: cfg.get<boolean>('statusBar.showContext', shared.showContext ?? true),
+        showQuota: cfg.get<boolean>('statusBar.showQuota', shared.showQuota ?? true),
+        showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', shared.showResetCountdown ?? true),
+        showAiCredits: cfg.get<boolean>('statusBar.showAiCredits', shared.showAiCredits ?? true),
+        showSpeed: cfg.get<boolean>('statusBar.showSpeed', shared.showSpeed ?? false),
+        showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', shared.showCacheHit ?? false),
+        showSessionCost: cfg.get<boolean>('statusBar.showSessionCost', shared.showSessionCost ?? false),
+        tooltipDensity: parseTooltipDensity(cfg.get('statusBar.tooltipDensity', shared.tooltipDensity ?? 'auto')),
+        showModelInternalId: cfg.get<boolean>('showModelInternalId', shared.showModelInternalId ?? false),
+        maxRecentSteps,
+        maxArchives,
         lockToMainAgent: getLockToMainAgent(),
+        appComposerRingEnabled: shared.appComposerRingEnabled,
+        appTopBarEnabled: shared.appTopBarEnabled,
+        showNativeHudBar,
+        orchestratorPricingMode,
+        displayCurrency,
+        customFxRate,
+        subscriptionPlan,
+        subscriptionMonthlyFee,
+        subscriptionCurrency,
+        calendarRetentionDays,
+        autoCheckUpdates,
+        activityMaxRecentSteps: maxRecentSteps,
+        activityMaxArchives: maxArchives,
     };
 }
 
@@ -371,9 +440,61 @@ function safePostMessage(message: unknown): void {
 /** When true, auto-refresh updates are buffered but not rendered. */
 let isPaused = false;
 
-/** Calendar month navigation state (defaults to current month) */
+/** Calendar interactive navigation & filter state */
 let calendarYear = new Date().getFullYear();
 let calendarMonth = new Date().getMonth() + 1;
+let calendarSourceFilter: CalendarSourceFilter = 'all';
+let calendarMetricMode: CalendarMetricMode = 'tokens';
+let calendarPeriodMode: CalendarPeriodMode = 'daily';
+let calendarViewMode: CalendarViewMode | undefined = undefined;
+let calendarSelectedDate = '';
+
+function buildIdeCurrencyConfig(docSettings: MonitorDocumentSettings): CurrencyConfig {
+    return {
+        code: docSettings.displayCurrency ?? 'USD',
+        ...(typeof docSettings.customFxRate === 'number' && Number.isFinite(docSettings.customFxRate) && docSettings.customFxRate > 0
+            ? { customRatePerUsd: docSettings.customFxRate }
+            : {}),
+    };
+}
+
+function buildIdeSubscriptionConfig(docSettings: MonitorDocumentSettings): SubscriptionConfig | null {
+    const planId = docSettings.subscriptionPlan ?? 'none';
+    if (planId === 'none') { return null; }
+    return {
+        planId,
+        ...(typeof docSettings.subscriptionMonthlyFee === 'number' && Number.isFinite(docSettings.subscriptionMonthlyFee) && docSettings.subscriptionMonthlyFee > 0
+            ? { monthlyFee: docSettings.subscriptionMonthlyFee }
+            : {}),
+        feeCurrency: docSettings.subscriptionCurrency ?? 'USD',
+        ...(typeof docSettings.customFxRate === 'number' && Number.isFinite(docSettings.customFxRate) && docSettings.customFxRate > 0
+            ? { customRatePerUsd: docSettings.customFxRate }
+            : {}),
+    };
+}
+
+function buildIdeCalendarOptions(docSettings: MonitorDocumentSettings, nowMs = Date.now()): CalendarRenderOptions {
+    const customPricing = lastPricingStore?.getCustom() ?? lastCustomPricing;
+    const cliDays = lastCliDays !== undefined ? lastCliDays : getCachedCliUsageDays(false);
+    return {
+        liveLedger: {
+            active: lastTodayLedgerActive,
+            settled: lastLedgerSettled,
+            customPricing,
+            defaultSurface: 'ide',
+        },
+        cliDays,
+        sourceFilter: calendarSourceFilter,
+        metricMode: calendarMetricMode,
+        periodMode: calendarPeriodMode,
+        ...(calendarViewMode ? { viewMode: calendarViewMode } : {}),
+        ...(calendarSelectedDate ? { selectedDate: calendarSelectedDate } : {}),
+        currency: buildIdeCurrencyConfig(docSettings),
+        subscription: buildIdeSubscriptionConfig(docSettings),
+        customPricing,
+        now: nowMs,
+    };
+}
 
 function buildFallbackSnapshotForReport(): ContextBreakdownSnapshot {
     if (lastContextBreakdown) {
@@ -446,6 +567,11 @@ function cachePayload(p: PanelPayload): void {
     if ('activeConversationId' in p) { lastActiveConversationId = p.activeConversationId ?? null; }
     if ('pinnedConversationId' in p) { lastPinnedConversationId = p.pinnedConversationId ?? null; }
     if ('lockToMainAgent' in p) { lastLockToMainAgent = !!p.lockToMainAgent; }
+    if ('cliDays' in p) { lastCliDays = p.cliDays; }
+    if ('orchestratorPricingMode' in p) { lastOrchestratorPricingMode = p.orchestratorPricingMode; }
+    if ('appSettings' in p) { lastAppSettings = p.appSettings; }
+    if ('updateStatus' in p) { lastUpdateStatus = p.updateStatus ?? null; }
+    if ('lowQuotaWarning' in p) { lastLowQuotaWarning = p.lowQuotaWarning; }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -455,6 +581,7 @@ function cachePayload(p: PanelPayload): void {
  * Creates the panel on first call, reveals it on subsequent calls.
  */
 export function showMonitorPanel(p: PanelPayload): void {
+    syncDurableStateFromDisk(false);
     cachePayload(p);
 
     if (panel) {
@@ -479,6 +606,17 @@ export function showMonitorPanel(p: PanelPayload): void {
         value?: unknown;
         key?: string;
         action?: string;
+        mode?: string;
+        url?: string;
+        force?: boolean;
+        expanded?: boolean;
+        source?: string;
+        metric?: string;
+        period?: string;
+        view?: string;
+        date?: string | null;
+        year?: number;
+        month?: number;
         cascadeId?: string;
         conversationId?: string | null;
         locked?: boolean;
@@ -498,6 +636,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                 return;
             }
             await setLanguage(msg.lang, extensionCtx, panelDurableState);
+            await flushDurableState();
             refreshMonitorPanelLanguage();
             vscode.commands.executeCommand('antigravity-context-monitor.refresh');
         } else if (msg.command === 'refresh') {
@@ -506,6 +645,9 @@ export function showMonitorPanel(p: PanelPayload): void {
             isPaused = !isPaused;
             safePostMessage({ command: 'setPaused', paused: isPaused });
             if (!isPaused) { postCurrentTabs(); }
+        } else if (msg.command === 'toggleNativeHud') {
+            // Expanded state is persisted in webview state; no host-side mutation required
+            return;
         } else if (msg.command === 'selectConversation' || msg.command === 'pinConversation') {
             const rawTarget = msg.conversationId !== undefined ? msg.conversationId : msg.cascadeId;
             const targetId = typeof rawTarget === 'string' && rawTarget.trim() && rawTarget !== 'auto' && rawTarget !== '__auto__'
@@ -555,10 +697,37 @@ export function showMonitorPanel(p: PanelPayload): void {
             }, getLanguage());
             await vscode.env.clipboard.writeText(text);
             safePostMessage({ command: 'copyActionResult', action: 'copyHandoffPrompt', ok: true });
+        } else if (msg.command === 'setOrchestratorPricingMode') {
+            const rawMode = msg.mode !== undefined ? msg.mode : msg.value;
+            if (rawMode === 'mapped' || rawMode === 'strict') {
+                const mode = normalizeOrchestratorPricingMode(rawMode);
+                await setSharedOrchestratorPricingMode(mode);
+                lastOrchestratorPricingMode = mode;
+                lastAppSettings = getSharedAppSettings();
+                if (panel) {
+                    safePostMessage({ command: 'configSaved', key: 'orchestratorPricingMode' });
+                    postSettingsControlSync();
+                    postCurrentTabs();
+                }
+            }
+        } else if (msg.command === 'setAppSetting' && msg.key) {
+            const res = await updateSharedAppSetting(msg.key, msg.value);
+            if (res.ok) {
+                lastAppSettings = getSharedAppSettings();
+                lastOrchestratorPricingMode = lastAppSettings.orchestratorPricingMode;
+                if (panel) {
+                    safePostMessage({ command: 'configSaved', key: res.normalizedKey });
+                    postSettingsControlSync();
+                    postCurrentTabs();
+                }
+            }
         } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
             const val = Math.max(1, Math.min(60, msg.value));
-            await vscode.workspace.getConfiguration('antigravityContextMonitor')
-                .update('pollingInterval', val, vscode.ConfigurationTarget.Global);
+            const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+            if (typeof cfg.update === 'function') {
+                await cfg.update('pollingInterval', val, vscode.ConfigurationTarget?.Global);
+            }
+            await updateSharedAppSetting('pollingInterval', val);
             if (panel) {
                 safePostMessage({ command: 'configSaved', key: 'pollingInterval' });
             }
@@ -579,14 +748,53 @@ export function showMonitorPanel(p: PanelPayload): void {
             ];
             if (allowedKeys.includes(msg.key)) {
                 const normalizedValue = sanitizeConfigValue(msg.key, msg.value);
-                await vscode.workspace.getConfiguration('antigravityContextMonitor')
-                    .update(msg.key, normalizedValue, vscode.ConfigurationTarget?.Global);
+                const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+                if (typeof cfg.update === 'function') {
+                    await cfg.update(msg.key, normalizedValue, vscode.ConfigurationTarget?.Global);
+                }
+                await updateSharedAppSetting(msg.key, normalizedValue);
                 if (panel) {
                     safePostMessage({ command: 'configSaved', key: msg.key });
                 }
             }
+        } else if (msg.command === 'checkForUpdates') {
+            const res = await checkIdeReleaseUpdates(msg.force !== false);
+            lastUpdateStatus = getLastUpdateStatusView();
+            safePostMessage({
+                type: 'updateCheckResult',
+                command: 'updateCheckResult',
+                status: res.status,
+                currentVersion: res.currentVersion,
+                latestVersion: res.latestVersion ?? lastUpdateStatus?.latestVersion ?? null,
+                hasUpdate: Boolean(res.hasUpdate || (res.status === 'not_modified' && lastUpdateStatus?.hasUpdate)),
+                updateAvailable: Boolean(res.hasUpdate || (res.status === 'not_modified' && lastUpdateStatus?.hasUpdate)),
+                checkedAt: res.checkedAt,
+                releaseUrl: res.releaseInfo?.releaseUrl ?? lastUpdateStatus?.releaseUrl ?? null,
+                releaseNotesSummary: res.releaseInfo?.releaseNotesSummary ?? lastUpdateStatus?.releaseNotesSummary ?? null,
+                openVsxUrl: OPEN_VSX_EXTENSION_URL,
+                error: res.error ?? null,
+            });
+            if (panel) { postCurrentTabs(); }
+        } else if (msg.command === 'applyPluginUpdate') {
+            safePostMessage({
+                type: 'pluginUpdateResult',
+                command: 'pluginUpdateResult',
+                ok: false,
+                requiresReload: false,
+                openVsxUrl: OPEN_VSX_EXTENSION_URL,
+                message: tBi(
+                    'In Antigravity IDE, update the extension via Open VSX Marketplace (AGI-is-going-to-arrive.antigravity-context-monitor) or Extensions view.',
+                    '在 Antigravity IDE 中，请通过 Open VSX 商店（AGI-is-going-to-arrive.antigravity-context-monitor）或扩展面板更新扩展。',
+                ),
+            });
+        } else if (msg.command === 'openExternalUrl') {
+            const safeUrl = validateExternalUrl(msg.url);
+            if (safeUrl && typeof vscode.env?.openExternal === 'function') {
+                await vscode.env.openExternal(vscode.Uri.parse(safeUrl));
+            }
         } else if (msg.command === 'setAccountBillingDay' && msg.email && typeof msg.day === 'number') {
             const saved = setAccountBillingDay(msg.email, msg.day);
+            await flushDurableState();
             if (saved && panel) {
                 safePostMessage({ command: 'configSaved', key: 'accountBillingDay' });
             }
@@ -645,20 +853,23 @@ export function showMonitorPanel(p: PanelPayload): void {
             }
         } else if (msg.command === 'setPanelPref' && msg.key && ['panelShowTabScrollHint', 'panelShowScrollbar', 'panelShowEndOfContent'].includes(msg.key)) {
             if (panelDurableState) {
-                panelDurableState.update(msg.key, !!msg.value);
+                await panelDurableState.update(msg.key, !!msg.value);
+                await flushDurableState();
             }
             safePostMessage({ command: 'panelPrefUpdated', key: msg.key, value: !!msg.value });
             safePostMessage({ command: 'configSaved', key: msg.key });
         } else if (msg.command === 'setZoomLevel' && typeof msg.value === 'number') {
             const zoom = clamp(Math.round(msg.value as number), 50, 200);
             if (panelDurableState) {
-                panelDurableState.update('panelZoomLevel', zoom);
+                await panelDurableState.update('panelZoomLevel', zoom);
+                await flushDurableState();
             }
         } else if ((msg.command === 'savePricing' || msg.command === 'saveCustomPricing') && lastPricingStore) {
             const rawRec = msg as Record<string, unknown>;
             const data = (rawRec.overrides ?? rawRec.value) as Record<string, ModelPricing>;
             if (data && typeof data === 'object' && !Array.isArray(data)) {
-                lastPricingStore.setAll(data).then(() => {
+                lastPricingStore.setAll(data).then(async () => {
+                    await flushDurableState();
                     lastCustomPricing = lastPricingStore!.getCustom();
                     refreshLocalStorageDiagnostics();
                     refreshStatusBarTelemetry();
@@ -669,7 +880,8 @@ export function showMonitorPanel(p: PanelPayload): void {
                 });
             }
         } else if ((msg.command === 'resetPricing' || msg.command === 'resetCustomPricing') && lastPricingStore) {
-            lastPricingStore.reset().then(() => {
+            lastPricingStore.reset().then(async () => {
+                await flushDurableState();
                 lastCustomPricing = lastPricingStore!.getCustom();
                 refreshLocalStorageDiagnostics();
                 refreshStatusBarTelemetry();
@@ -678,8 +890,90 @@ export function showMonitorPanel(p: PanelPayload): void {
                     safePostMessage({ command: 'pricingReset' });
                 }
             });
+        } else if (msg.command === 'calendarFilterSource') {
+            const rawSrc = msg.source !== undefined ? msg.source : msg.value;
+            if (rawSrc === 'all' || rawSrc === 'app' || rawSrc === 'ide' || rawSrc === 'cli') {
+                calendarSourceFilter = rawSrc;
+                postCurrentTabs();
+            }
+        } else if (msg.command === 'calendarSetMetric') {
+            const rawMet = msg.metric !== undefined ? msg.metric : msg.value;
+            if (rawMet === 'tokens' || rawMet === 'cost') {
+                calendarMetricMode = rawMet;
+                postCurrentTabs();
+            }
+        } else if (msg.command === 'calendarSetPeriod') {
+            const rawPer = msg.period !== undefined ? msg.period : msg.value;
+            if (rawPer === 'daily' || rawPer === 'weekly' || rawPer === 'monthly' || rawPer === 'year' || rawPer === 'all') {
+                calendarPeriodMode = rawPer;
+                postCurrentTabs();
+            }
+        } else if (msg.command === 'calendarSetView') {
+            const rawView = msg.view !== undefined ? msg.view : msg.value;
+            if (rawView === '' || rawView === null || rawView === undefined || rawView === 'both') {
+                calendarViewMode = undefined;
+                postCurrentTabs();
+            } else if (rawView === 'heatmap' || rawView === 'monthGrid') {
+                calendarViewMode = rawView;
+                postCurrentTabs();
+            }
+        } else if (msg.command === 'calendarSelectDate') {
+            const rawDate = msg.date;
+            if (rawDate === null || rawDate === undefined || rawDate === '') {
+                calendarSelectedDate = '';
+                postCurrentTabs();
+            } else if (typeof rawDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawDate.trim())) {
+                calendarSelectedDate = rawDate.trim();
+                postCurrentTabs();
+            }
+        } else if (msg.command === 'calendarJumpDate') {
+            const rawDate = typeof msg.date === 'string' ? msg.date.trim() : '';
+            if (/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+                const parts = rawDate.split('-');
+                const yr = Number(msg.year ?? parts[0]);
+                const mo = Number(msg.month ?? parts[1]);
+                if (Number.isInteger(yr) && yr >= 2020 && yr <= 2100 && Number.isInteger(mo) && mo >= 1 && mo <= 12) {
+                    calendarYear = yr;
+                    calendarMonth = mo;
+                }
+                calendarSelectedDate = rawDate;
+                calendarPeriodMode = 'daily';
+                postCurrentTabs();
+            }
+        } else if (msg.command === 'calendarExportCsv' || msg.command === 'calendarExportJson') {
+            const isCsv = msg.command === 'calendarExportCsv';
+            const docSettings = readIdeDocumentSettings();
+            const nowMs = Date.now();
+            const bundle = buildCalendarExportData(
+                lastDailyStore,
+                calendarYear,
+                calendarMonth,
+                buildIdeCalendarOptions(docSettings, nowMs),
+            );
+            const dateStamp = toLocalDateKey(new Date(nowMs));
+            const ext = isCsv ? 'csv' : 'json';
+            const filename = `antigravity-usage-${calendarSourceFilter}-${calendarPeriodMode}-${dateStamp}.${ext}`;
+            const content = isCsv ? bundle.csv : bundle.json;
+            if (typeof vscode.window.showSaveDialog === 'function') {
+                const targetUri = await vscode.window.showSaveDialog({
+                    defaultUri: vscode.Uri.file(path.join(os.homedir(), filename)),
+                    filters: isCsv ? { CSV: ['csv'] } : { JSON: ['json'] },
+                });
+                if (targetUri) {
+                    if (typeof vscode.workspace.fs?.writeFile === 'function') {
+                        await vscode.workspace.fs.writeFile(targetUri, Buffer.from(content, 'utf8'));
+                    } else if (targetUri.fsPath) {
+                        await fs.promises.writeFile(targetUri.fsPath, content, 'utf8');
+                    }
+                    void vscode.window.showInformationMessage(
+                        tBi(`Exported usage history to ${targetUri.fsPath || filename}`, `已导出用量记录到 ${targetUri.fsPath || filename}`),
+                    );
+                }
+            }
         } else if (msg.command === 'clearCalendarHistory' && lastDailyStore) {
             lastDailyStore.clear();
+            calendarSelectedDate = '';
+            await flushDurableState();
             refreshLocalStorageDiagnostics();
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
@@ -693,6 +987,7 @@ export function showMonitorPanel(p: PanelPayload): void {
         } else if ((msg.command === 'removeAccount' || msg.command === 'removeAccountSnapshot') && typeof (msg as Record<string, unknown>).email === 'string') {
             const email = (msg as Record<string, unknown>).email as string;
             const updated = removeAccountSnapshot(email);
+            await flushDurableState();
             lastAccountSnapshots = updated;
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
@@ -707,6 +1002,7 @@ export function showMonitorPanel(p: PanelPayload): void {
 
     panel.onDidChangeViewState((e) => {
         if (e.webviewPanel.visible) {
+            syncDurableStateFromDisk(false);
             sendPendingTab();
             if (!isPaused) { postCurrentTabs(); }
         }
@@ -746,19 +1042,32 @@ function getExtensionVersion(): string | undefined {
 
 function postSettingsControlSync(): void {
     if (!panel) { return; }
-    const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
+    const docSettings = readIdeDocumentSettings();
     safePostMessage({
         command: 'syncSettingsControls',
-        showContext: cfg.get<boolean>('statusBar.showContext', true),
-        showQuota: cfg.get<boolean>('statusBar.showQuota', true),
-        showResetCountdown: cfg.get<boolean>('statusBar.showResetCountdown', true),
-        showAiCredits: cfg.get<boolean>('statusBar.showAiCredits', true),
-        showSpeed: cfg.get<boolean>('statusBar.showSpeed', false),
-        showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', false),
-        showSessionCost: cfg.get<boolean>('statusBar.showSessionCost', false),
-        showModelInternalId: cfg.get<boolean>('showModelInternalId', false),
-        lockToMainAgent: getLockToMainAgent(),
-        tooltipDensity: parseTooltipDensity(cfg.get('statusBar.tooltipDensity', 'auto')),
+        showContext: docSettings.showContext,
+        showQuota: docSettings.showQuota,
+        showResetCountdown: docSettings.showResetCountdown,
+        showAiCredits: docSettings.showAiCredits,
+        showSpeed: docSettings.showSpeed,
+        showCacheHit: docSettings.showCacheHit,
+        showSessionCost: docSettings.showSessionCost,
+        showModelInternalId: docSettings.showModelInternalId,
+        lockToMainAgent: docSettings.lockToMainAgent,
+        tooltipDensity: docSettings.tooltipDensity,
+        appComposerRingEnabled: docSettings.appComposerRingEnabled,
+        appTopBarEnabled: docSettings.appTopBarEnabled,
+        showNativeHudBar: docSettings.showNativeHudBar,
+        autoCheckUpdates: docSettings.autoCheckUpdates,
+        orchestratorPricingMode: docSettings.orchestratorPricingMode,
+        displayCurrency: docSettings.displayCurrency,
+        customFxRate: docSettings.customFxRate,
+        subscriptionPlan: docSettings.subscriptionPlan,
+        subscriptionMonthlyFee: docSettings.subscriptionMonthlyFee,
+        subscriptionCurrency: docSettings.subscriptionCurrency,
+        calendarRetentionDays: docSettings.calendarRetentionDays,
+        activityMaxRecentSteps: docSettings.activityMaxRecentSteps,
+        activityMaxArchives: docSettings.activityMaxArchives,
     });
 }
 
@@ -783,6 +1092,24 @@ function makeDocumentParams(
     paused = false,
     initialTab?: PanelPayload['initialTab'],
 ): MonitorDocumentBuildParams {
+    const docSettings = readIdeDocumentSettings();
+    const effectiveAppSettings: Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId } = {
+        ...getSharedAppSettings(),
+        ...(lastAppSettings ?? {}),
+        showNativeHudBar: docSettings.showNativeHudBar,
+        orchestratorPricingMode: docSettings.orchestratorPricingMode,
+        displayCurrency: docSettings.displayCurrency,
+        customFxRate: docSettings.customFxRate,
+        subscriptionPlan: docSettings.subscriptionPlan,
+        subscriptionMonthlyFee: docSettings.subscriptionMonthlyFee,
+        subscriptionCurrency: docSettings.subscriptionCurrency,
+        calendarRetentionDays: docSettings.calendarRetentionDays,
+        autoCheckUpdates: docSettings.autoCheckUpdates,
+        activityMaxRecentSteps: docSettings.activityMaxRecentSteps,
+        activityMaxArchives: docSettings.activityMaxArchives,
+    };
+    const effectiveOrchMode = lastOrchestratorPricingMode ?? docSettings.orchestratorPricingMode ?? 'mapped';
+    const effectiveUpdateStatus = lastUpdateStatus ?? getLastUpdateStatusView();
     return {
         surface: 'ide',
         version: getExtensionVersion(),
@@ -813,9 +1140,14 @@ function makeDocumentParams(
         sessionCostUsd: lastSessionCostUsd,
         calendarYear,
         calendarMonth,
+        calendarOptions: buildIdeCalendarOptions(docSettings),
+        orchestratorPricingMode: effectiveOrchMode,
+        appSettings: effectiveAppSettings,
+        updateStatus: effectiveUpdateStatus,
+        ...(lastLowQuotaWarning !== undefined ? { lowQuotaWarning: lastLowQuotaWarning } : {}),
         paused,
         initialTab,
-        settings: readIdeDocumentSettings(),
+        settings: docSettings,
         contextBreakdown: lastContextBreakdown,
         turnDiagnostics: lastTurnDiagnostics,
         quotaRunways: lastQuotaRunways,

@@ -116,6 +116,8 @@ async function loadProvider(serverMod, version) {
                     statePath: process.env.ANTIGRAVITY_CONTEXT_MONITOR_STATE_PATH || undefined,
                     dataDir: process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR || undefined,
                     pluginRoot: resolve(__dirname, '..', '..'),
+                    targetPluginDir: process.env.ANTIGRAVITY_PLUGIN_DIR || undefined,
+                    cliDataDir: process.env.ANTIGRAVITY_CLI_DATA_DIR || undefined,
                 });
             }
         } catch (err) {

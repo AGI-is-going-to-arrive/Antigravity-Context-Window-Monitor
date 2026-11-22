@@ -19,6 +19,15 @@ import { currentAICredits } from '../account-credits';
 import { ActivityTracker, type ActivitySummary, type ActivityTrackerState } from '../activity-tracker';
 import type { AccountSnapshot, ResetPool } from '../activity-panel';
 import { isBillingDay, isBillingDaySetting } from '../billing-day';
+import {
+    CliUsageScanner,
+    formatCurrencyAmount,
+    SUBSCRIPTION_PLAN_PRESETS,
+    type CliDailyUsageRecord,
+    type CurrencyConfig,
+    type SubscriptionConfig,
+    type SubscriptionPlanPresetId,
+} from '../cli-usage-scanner';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS } from '../constants';
 import {
     buildDotMatrix,
@@ -45,13 +54,27 @@ import {
     type LedgerAccountBucket,
     type LedgerSettledEntry,
 } from '../daily-ledger';
-import { DailyStore, type DailyStoreState } from '../daily-store';
+import {
+    computeAdditiveTokens,
+    computeCycleTokenTotals,
+    DailyStore,
+    type DailyStoreState,
+} from '../daily-store';
 import {
     discoverLanguageServer,
     type DiscoverLanguageServerOptions,
     type LSInfo,
 } from '../discovery';
-import { DurableState, type StateBucket } from '../durable-state';
+import {
+    DEFAULT_APP_SETTINGS,
+    DurableState,
+    normalizeAppSettings,
+    SUPPORTED_DISPLAY_CURRENCIES,
+    type AppSettings,
+    type DisplayCurrencyCode,
+    type LastUpdateCheckRecord,
+    type StateBucket,
+} from '../durable-state';
 import {
     GMTracker,
     slimSummaryForPersistence,
@@ -96,16 +119,28 @@ import {
     type UserQuotaSummary,
     type UserStatusInfo,
 } from '../models';
-import type { MonitorStatus } from '../monitor-overview';
+import {
+    extractOverviewTelemetry,
+    resetCountdown,
+    selectMonitorQuotaGroups,
+    type MonitorStatus,
+} from '../monitor-overview';
 import { MonitorStore } from '../monitor-store';
+import {
+    analyzeUserTurnCacheStates,
+    computeContextWatermarks,
+    evaluateSpeedSample,
+} from '../orchestrator-attribution';
 import { expandModelIdsToPool } from '../pool-utils';
 import {
     calculateLedgerModelCosts,
     costFromTokens,
     findPricingForDate,
+    normalizeOrchestratorPricingMode,
     PricingStore,
     selectPricingModel,
     type ModelPricing,
+    type OrchestratorPricingMode,
 } from '../pricing-store';
 import {
     isCustomModel,
@@ -139,14 +174,49 @@ import {
 } from '../tracker';
 import { analyzeTurnDiagnostics, type TurnDiagnosticsSummary } from '../turn-diagnostics';
 import {
+    buildCalendarExportData,
+    type CalendarMetricMode,
+    type CalendarPeriodMode,
+    type CalendarRenderOptions,
+    type CalendarSourceFilter,
+    type CalendarViewMode,
+} from '../webview-calendar-tab';
+import {
     buildMonitorDocumentHtml,
     buildMonitorTabsPayload,
     type MonitorTabId,
 } from '../webview-document';
 import { esc, formatFileSize } from '../webview-helpers';
-import type { PanelHintPreferences, StorageDiagnostics } from '../webview-settings-tab';
-import { DEFAULT_SIDECAR_VERSION, type SidecarActionHttpBody } from './sidecar-server';
 import type {
+    PanelHintPreferences,
+    StorageDiagnostics,
+    UpdateStatusView,
+} from '../webview-settings-tab';
+import {
+    createCdpAmbientOverlayManager,
+    createOverlayActionBridge,
+    generateSessionToken,
+    type CdpAmbientOverlayManager,
+    type CdpAmbientOverlayManagerOptions,
+} from './cdp-injector';
+import {
+    applyAppPluginUpdate,
+    checkForUpdates,
+    EXPECTED_PLUGIN_NAME,
+    type ApplyAppPluginUpdateOptions,
+    type CheckForUpdatesOptions,
+} from './plugin-updater';
+import {
+    DEFAULT_SIDECAR_VERSION,
+    type SidecarActionHttpBody,
+    type SidecarOverlayBridgeRequest,
+} from './sidecar-server';
+import type {
+    ApplyPluginUpdateResult,
+    CdpOverlayPayload,
+    CdpOverlayQuotaPool,
+    CdpStatus,
+    PluginReleaseInfo,
     SidecarActionRequest,
     SidecarConversationOption,
     SidecarProvider,
@@ -154,6 +224,7 @@ import type {
     SidecarSnapshotPayload,
     SidecarSnapshotQuery,
     SidecarViewMode,
+    UpdateCheckResult,
 } from './sidecar-types';
 
 // ─── Public Contracts ────────────────────────────────────────────────────────
@@ -173,6 +244,19 @@ export interface MonitorDocumentSettings {
     maxRecentSteps?: number;
     maxArchives?: number;
     lockToMainAgent?: boolean;
+    appComposerRingEnabled?: boolean;
+    appTopBarEnabled?: boolean;
+    showNativeHudBar?: boolean;
+    orchestratorPricingMode?: OrchestratorPricingMode;
+    displayCurrency?: DisplayCurrencyCode;
+    customFxRate?: number | null;
+    subscriptionPlan?: SubscriptionPlanPresetId;
+    subscriptionMonthlyFee?: number | null;
+    subscriptionCurrency?: DisplayCurrencyCode;
+    calendarRetentionDays?: number;
+    autoCheckUpdates?: boolean;
+    activityMaxRecentSteps?: number;
+    activityMaxArchives?: number;
 }
 
 export interface SidecarStaleState {
@@ -196,6 +280,11 @@ export interface MonitorDocumentV1175Extras {
     extraHeadHtml?: string;
     extraBodyEndHtml?: string;
     imagesBaseUri?: string;
+    calendarOptions?: CalendarRenderOptions;
+    orchestratorPricingMode?: OrchestratorPricingMode;
+    appSettings?: Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId };
+    cdpStatus?: CdpStatus | null;
+    updateStatus?: UpdateStatusView | UpdateCheckResult | null;
 }
 
 /**
@@ -298,6 +387,12 @@ export interface SidecarRuntimeDeps {
         signal?: AbortSignal,
     ) => Promise<GMSummary | null>;
     revealInOs: (targetPath: string, isDirectory: boolean) => Promise<void>;
+    openExternalUrl: (url: string) => Promise<void>;
+    createCdpOverlayManager: (opts: CdpAmbientOverlayManagerOptions) => CdpAmbientOverlayManager;
+    createOverlayBridge: typeof createOverlayActionBridge;
+    checkForUpdates: (opts: CheckForUpdatesOptions) => Promise<UpdateCheckResult>;
+    applyAppPluginUpdate: (opts: ApplyAppPluginUpdateOptions) => Promise<ApplyPluginUpdateResult>;
+    cliUsageScanner: CliUsageScanner;
     now: () => number;
     homedir: () => string;
 }
@@ -311,6 +406,16 @@ export interface SidecarRuntimeOptions {
     dataDir?: string;
     /** Optional plugin root directory (for reading plugin.json version). */
     pluginRoot?: string;
+    /** Optional explicit target directory for in-app plugin self-upgrade. */
+    targetPluginDir?: string;
+    /** Optional Antigravity CLI data directory override for Calendar CLI usage scanning. */
+    cliDataDir?: string;
+    /** Disable CLI usage scanning (useful for isolated unit tests). */
+    disableCliScan?: boolean;
+    /** Explicit opt-in/out for background GitHub release auto-checks at startup. */
+    enableAutoUpdateCheck?: boolean;
+    /** Optional pre-configured 256-bit overlay bridge auth token. */
+    overlayBridgeToken?: string;
     /** Initial workspace URIs if known at startup. */
     initialWorkspaceUris?: string[];
     /** Automatically start background adaptive polling (default: true). */
@@ -348,6 +453,10 @@ export interface SidecarRuntimeStateSnapshot {
     lockedMainId: string | null;
     isPaused: boolean;
     settings: MonitorDocumentSettings;
+    appSettings: AppSettings & { subscriptionPlan: SubscriptionPlanPresetId };
+    orchestratorPricingMode: OrchestratorPricingMode;
+    cdpStatus: CdpStatus;
+    updateStatus: UpdateStatusView | null;
     lastUpdatedTime: string;
     pollCount: number;
     lastPollAtMs: number;
@@ -358,6 +467,11 @@ export interface SidecarRuntimeProvider extends SidecarProvider {
     getState(): SidecarRuntimeStateSnapshot;
     getDurableState(): DurableState;
     getStorageDiagnostics(): StorageDiagnostics;
+    getOverlayBridgeAuth(): { token: string; allowedOrigin?: string };
+    handleOverlayAction(action: SidecarOverlayBridgeRequest): Promise<SidecarActionHttpBody>;
+    getCdpStatus(): CdpStatus;
+    buildOverlayPayload(): CdpOverlayPayload;
+    getAppSettings(): AppSettings & { subscriptionPlan: SubscriptionPlanPresetId };
     dispose(): Promise<void>;
 }
 
@@ -645,21 +759,158 @@ export function validateRevealTargetPath(
     };
 }
 
-function defaultRevealInOs(targetPath: string, isDirectory: boolean): Promise<void> {
-    return new Promise((resolve, reject) => {
-        let cmd: string;
-        let args: string[];
-        if (process.platform === 'darwin') {
-            cmd = 'open';
-            args = isDirectory ? [targetPath] : ['-R', targetPath];
-        } else if (process.platform === 'win32') {
-            cmd = 'explorer.exe';
-            args = isDirectory ? [targetPath] : [`/select,${targetPath}`];
-        } else {
-            cmd = 'xdg-open';
-            args = [isDirectory ? targetPath : path.dirname(targetPath)];
+export interface RevealCommandSpec {
+    cmd: string;
+    args: string[];
+    options: {
+        windowsHide: boolean;
+        timeout: number;
+        shell: false;
+        windowsVerbatimArguments?: boolean;
+    };
+}
+
+/**
+ * Build a shell-free, cross-platform command spec to reveal a validated local
+ * file or directory in the OS file manager.
+ *
+ * - macOS: `open -R <file>` / `open <dir>`
+ * - Windows: `explorer.exe /select, "<file>"` with `windowsVerbatimArguments: true`
+ *   and `shell: false` so paths containing spaces AND commas select cleanly without
+ *   invoking `cmd.exe`.
+ * - Linux: `xdg-open <parentDir|dir>`
+ */
+export function buildRevealInOsCommand(
+    targetPath: string,
+    isDirectory: boolean,
+    platform: NodeJS.Platform = process.platform,
+): RevealCommandSpec {
+    if (typeof targetPath !== 'string' || !targetPath.trim()) {
+        throw new Error('Reveal target path is required');
+    }
+    if (/[\0\r\n]/.test(targetPath)) {
+        throw new Error('Reveal target path contains forbidden control characters');
+    }
+    if (platform === 'darwin') {
+        return {
+            cmd: 'open',
+            args: isDirectory ? [targetPath] : ['-R', targetPath],
+            options: { windowsHide: true, timeout: 10_000, shell: false },
+        };
+    }
+    if (platform === 'win32') {
+        if (targetPath.includes('"')) {
+            throw new Error('Windows reveal target path contains forbidden quote character');
         }
-        execFile(cmd, args, { windowsHide: true, timeout: 10_000 }, (err) => {
+        const quoted = `"${targetPath}"`;
+        return {
+            cmd: 'explorer.exe',
+            args: isDirectory ? [quoted] : ['/select,', quoted],
+            options: {
+                windowsHide: true,
+                timeout: 10_000,
+                shell: false,
+                windowsVerbatimArguments: true,
+            },
+        };
+    }
+    const dirTarget = isDirectory ? targetPath : path.dirname(targetPath);
+    return {
+        cmd: 'xdg-open',
+        args: [dirTarget],
+        options: { windowsHide: true, timeout: 10_000, shell: false },
+    };
+}
+
+export function defaultRevealInOs(targetPath: string, isDirectory: boolean): Promise<void> {
+    return new Promise((resolve, reject) => {
+        let spec: RevealCommandSpec;
+        try {
+            spec = buildRevealInOsCommand(targetPath, isDirectory, process.platform);
+        } catch (err) {
+            reject(err);
+            return;
+        }
+        execFile(spec.cmd, spec.args, spec.options, (err) => {
+            if (err) { reject(err); return; }
+            resolve();
+        });
+    });
+}
+
+export const ALLOWED_EXTERNAL_URL_HOSTS: ReadonlySet<string> = new Set([
+    'github.com',
+    'docs.github.com',
+    'raw.githubusercontent.com',
+    'open-vsx.org',
+    'marketplace.visualstudio.com',
+    'antigravity.google',
+]);
+
+/**
+ * Strictly validate external URLs before delegating to the OS browser opener.
+ * Allows ONLY `https://` URLs targeting allowlisted hosts with zero credentials
+ * and zero shell/control metacharacters.
+ */
+export function validateExternalUrl(rawUrl: unknown): string | null {
+    if (typeof rawUrl !== 'string') { return null; }
+    const trimmed = rawUrl.trim();
+    if (!trimmed || trimmed.length > 2048 || /[\0\r\n"&|^<>`%]/.test(trimmed.replace(/%[0-9A-Fa-f]{2}/g, ''))) {
+        return null;
+    }
+    let parsed: URL;
+    try {
+        parsed = new URL(trimmed);
+    } catch {
+        return null;
+    }
+    if (parsed.protocol !== 'https:') { return null; }
+    if (parsed.username || parsed.password) { return null; }
+    if (parsed.port && parsed.port !== '443') { return null; }
+    const host = parsed.hostname.toLowerCase();
+    if (!ALLOWED_EXTERNAL_URL_HOSTS.has(host)) { return null; }
+    return parsed.toString();
+}
+
+export function buildOpenExternalUrlCommand(
+    safeUrl: string,
+    platform: NodeJS.Platform = process.platform,
+): RevealCommandSpec {
+    const validated = validateExternalUrl(safeUrl);
+    if (!validated) {
+        throw new Error('External URL rejected by strict HTTPS allowlist');
+    }
+    if (platform === 'darwin') {
+        return {
+            cmd: 'open',
+            args: [validated],
+            options: { windowsHide: true, timeout: 10_000, shell: false },
+        };
+    }
+    if (platform === 'win32') {
+        return {
+            cmd: 'rundll32.exe',
+            args: ['url.dll,FileProtocolHandler', validated],
+            options: { windowsHide: true, timeout: 10_000, shell: false },
+        };
+    }
+    return {
+        cmd: 'xdg-open',
+        args: [validated],
+        options: { windowsHide: true, timeout: 10_000, shell: false },
+    };
+}
+
+export function defaultOpenExternalUrl(rawUrl: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        let spec: RevealCommandSpec;
+        try {
+            spec = buildOpenExternalUrlCommand(rawUrl, process.platform);
+        } catch (err) {
+            reject(err);
+            return;
+        }
+        execFile(spec.cmd, spec.args, spec.options, (err) => {
             if (err) { reject(err); return; }
             resolve();
         });
@@ -981,6 +1232,12 @@ export function createSidecarRuntimeProvider(
             }
         }),
         revealInOs: options.deps?.revealInOs ?? defaultRevealInOs,
+        openExternalUrl: options.deps?.openExternalUrl ?? defaultOpenExternalUrl,
+        createCdpOverlayManager: options.deps?.createCdpOverlayManager ?? createCdpAmbientOverlayManager,
+        createOverlayBridge: options.deps?.createOverlayBridge ?? createOverlayActionBridge,
+        checkForUpdates: options.deps?.checkForUpdates ?? checkForUpdates,
+        applyAppPluginUpdate: options.deps?.applyAppPluginUpdate ?? applyAppPluginUpdate,
+        cliUsageScanner: options.deps?.cliUsageScanner ?? new CliUsageScanner(),
         processActivity: options.deps?.processActivity,
         fetchGM: options.deps?.fetchGM,
         now: options.deps?.now ?? (() => Date.now()),
@@ -1017,12 +1274,14 @@ export function createSidecarRuntimeProvider(
     const pricingStore = new PricingStore();
     pricingStore.init(globalState);
 
-    const dailyStore = new DailyStore();
-    dailyStore.init(globalState);
+    const initialAppSettings = durableState.getAppSettings();
+    const dailyStore = new DailyStore(initialAppSettings.calendarRetentionDays);
+    dailyStore.init(globalState, { maxDays: initialAppSettings.calendarRetentionDays });
     dailyStore.backfillMissingCosts(pricingStore.getCustom());
 
     const savedLedger = globalState.get<DailyLedgerState | undefined>('dailyLedgerState', undefined);
     let dailyLedger = DailyLedger.restore(savedLedger);
+    dailyLedger.setSurface('app');
     let lastArchivalDateKey = globalState.get<string>('lastArchivalDateKey', '');
 
     const monitorStore = new MonitorStore();
@@ -1042,6 +1301,8 @@ export function createSidecarRuntimeProvider(
     let selectedAccountKey = '';
     const notifiedAccountResets = new Set<string>();
 
+    let appSettings: AppSettings = { ...DEFAULT_APP_SETTINGS, ...initialAppSettings };
+    let subscriptionPlan: SubscriptionPlanPresetId = 'none';
     let settings: MonitorDocumentSettings = { ...DEFAULT_DOCUMENT_SETTINGS };
     let panelHintPrefs: PanelHintPreferences = {
         showTabScrollHint: true,
@@ -1051,6 +1312,46 @@ export function createSidecarRuntimeProvider(
     let zoomLevel = 100;
     let calendarYear = new Date(deps.now()).getFullYear();
     let calendarMonth = new Date(deps.now()).getMonth() + 1;
+    let calendarSourceFilter: CalendarSourceFilter = 'all';
+    let calendarMetricMode: CalendarMetricMode = 'tokens';
+    let calendarPeriodMode: CalendarPeriodMode = 'daily';
+    let calendarViewMode: CalendarViewMode | undefined = undefined;
+    let calendarSelectedDate = '';
+
+    // ── CLI Scanner Cache (Lazy, Non-Blocking, 60s TTL) ──────────────────────
+    const CLI_SCAN_TTL_MS = 60_000;
+    let cachedCliDays: CliDailyUsageRecord[] = [];
+    let lastCliScanAtMs = 0;
+
+    // ── Update Checker & Self-Updater State ──────────────────────────────────
+    let lastUpdateStatusView: UpdateStatusView | null = null;
+    let lastCachedReleaseInfo: PluginReleaseInfo | null = null;
+    let autoUpdateCheckInFlight = false;
+
+    // ── Opt-In CDP Ambient Overlays & Authenticated Bridge State ─────────────
+    const overlayBridgeToken = (options.overlayBridgeToken && options.overlayBridgeToken.length >= 32)
+        ? options.overlayBridgeToken
+        : generateSessionToken();
+    let lastSyncedOverlayToggles = {
+        appComposerRingEnabled: false,
+        appTopBarEnabled: false,
+    };
+    let overlayAllowedOrigin: string | undefined;
+
+    const overlayManager = deps.createCdpOverlayManager({
+        createBridge: (bridgeOpts) => deps.createOverlayBridge({
+            ...bridgeOpts,
+            token: overlayBridgeToken,
+        }),
+        onBridgeAction: async (bridgeAction) => {
+            await handleOverlayAction({
+                command: bridgeAction.command,
+                source: bridgeAction.source,
+            });
+        },
+        log,
+        now: deps.now,
+    });
 
     // ── Live Telemetry State ─────────────────────────────────────────────────
     let cachedLsInfo: LSInfo | null = null;
@@ -1155,32 +1456,147 @@ export function createSidecarRuntimeProvider(
         billingDaysMap = restored;
     }
 
+    function inferSubscriptionPlan(
+        rawPlan: unknown,
+        monthlyFee: number | null,
+    ): SubscriptionPlanPresetId {
+        if (rawPlan === 'none' || rawPlan === 'google-ai-pro' || rawPlan === 'google-ai-ultra' || rawPlan === 'custom') {
+            return rawPlan;
+        }
+        if (monthlyFee !== null && monthlyFee > 0) {
+            if (Math.abs(monthlyFee - 19.99) < 0.01) { return 'google-ai-pro'; }
+            if (Math.abs(monthlyFee - 249.99) < 0.01) { return 'google-ai-ultra'; }
+            return 'custom';
+        }
+        return 'none';
+    }
+
+    function getFullAppSettings(): AppSettings & { subscriptionPlan: SubscriptionPlanPresetId } {
+        return { ...appSettings, subscriptionPlan };
+    }
+
+    function buildCurrencyConfig(): CurrencyConfig {
+        return {
+            code: appSettings.displayCurrency,
+            ...(appSettings.customFxRate !== null && appSettings.customFxRate > 0
+                ? { customRatePerUsd: appSettings.customFxRate }
+                : {}),
+        };
+    }
+
+    function buildSubscriptionConfig(): SubscriptionConfig | null {
+        if (subscriptionPlan === 'none') { return null; }
+        return {
+            planId: subscriptionPlan,
+            ...(appSettings.subscriptionMonthlyFee !== null && appSettings.subscriptionMonthlyFee > 0
+                ? { monthlyFee: appSettings.subscriptionMonthlyFee }
+                : {}),
+            feeCurrency: appSettings.subscriptionCurrency,
+            ...(appSettings.customFxRate !== null && appSettings.customFxRate > 0
+                ? { customRatePerUsd: appSettings.customFxRate }
+                : {}),
+        };
+    }
+
+    function syncOverlayTogglesIfChanged(): Promise<CdpStatus> | null {
+        const nextComposer = Boolean(appSettings.appComposerRingEnabled);
+        const nextTopBar = Boolean(appSettings.appTopBarEnabled);
+        if (nextComposer === lastSyncedOverlayToggles.appComposerRingEnabled
+            && nextTopBar === lastSyncedOverlayToggles.appTopBarEnabled) {
+            return null;
+        }
+        lastSyncedOverlayToggles = {
+            appComposerRingEnabled: nextComposer,
+            appTopBarEnabled: nextTopBar,
+        };
+        return overlayManager.setToggles({
+            appComposerRingEnabled: nextComposer,
+            appTopBarEnabled: nextTopBar,
+        }).then((status) => {
+            if (status.targetUrl) {
+                try { overlayAllowedOrigin = new URL(status.targetUrl).origin; } catch { /* ignore */ }
+            } else if (status.state === 'disabled') {
+                overlayAllowedOrigin = undefined;
+            }
+            return status;
+        });
+    }
+
     function restoreSharedSettingsFromDisk(): void {
-        const savedApp = globalState.get<Record<string, unknown> | null>('appSettings', null);
-        const raw = (savedApp && typeof savedApp === 'object' && !Array.isArray(savedApp)) ? savedApp : {};
+        const rawDisk = globalState.get<Record<string, unknown> | null>('appSettings', null);
+        const normalized = durableState.getAppSettings();
         const persistedLock = globalState.get<boolean | undefined>('lockToMainAgent', undefined);
         const resolvedLock = typeof persistedLock === 'boolean'
             ? persistedLock
-            : (typeof raw.lockToMainAgent === 'boolean' ? raw.lockToMainAgent : DEFAULT_DOCUMENT_SETTINGS.lockToMainAgent ?? false);
+            : normalized.lockToMainAgent;
+
+        // Reconcile orchestratorPricingMode between appSettings and PricingStore
+        const explicitDiskOrchMode = rawDisk && typeof rawDisk === 'object' && !Array.isArray(rawDisk)
+            ? rawDisk.orchestratorPricingMode
+            : undefined;
+        const resolvedOrchMode: OrchestratorPricingMode = (explicitDiskOrchMode === 'mapped' || explicitDiskOrchMode === 'strict')
+            ? explicitDiskOrchMode
+            : pricingStore.getOrchestratorPricingMode();
+        if (pricingStore.getOrchestratorPricingMode() !== resolvedOrchMode) {
+            pricingStore.setOrchestratorPricingModeSync(resolvedOrchMode);
+        }
+
+        appSettings = {
+            ...normalized,
+            lockToMainAgent: resolvedLock,
+            orchestratorPricingMode: resolvedOrchMode,
+        };
+        const persistedPlan = globalState.get<string>('subscriptionPlan', '');
+        subscriptionPlan = inferSubscriptionPlan(persistedPlan, appSettings.subscriptionMonthlyFee);
+
+        // Hydrate cached release info from durable lastUpdateCheck when not already set in memory
+        if (!lastUpdateStatusView && appSettings.lastUpdateCheck) {
+            const luc = appSettings.lastUpdateCheck;
+            lastUpdateStatusView = {
+                currentVersion: version,
+                latestVersion: luc.latestVersion ?? null,
+                updateAvailable: Boolean(luc.hasUpdate),
+                hasUpdate: Boolean(luc.hasUpdate),
+                status: luc.error ? 'error' : (luc.hasUpdate ? 'update_available' : 'up_to_date'),
+                checkedAt: luc.checkedAt,
+                releaseUrl: luc.releaseUrl ?? null,
+                releaseNotesSummary: luc.releaseNotesSummary ?? null,
+                error: luc.error ?? null,
+            };
+        }
 
         settings = {
-            pollingInterval: clamp(Number(raw.pollingInterval ?? DEFAULT_DOCUMENT_SETTINGS.pollingInterval) || 5, 1, 60),
-            quotaNotificationThreshold: clamp(Number(raw.quotaNotificationThreshold ?? DEFAULT_DOCUMENT_SETTINGS.quotaNotificationThreshold) || 0, 0, 99),
-            showContext: typeof raw.showContext === 'boolean' ? raw.showContext : DEFAULT_DOCUMENT_SETTINGS.showContext,
-            showQuota: typeof raw.showQuota === 'boolean' ? raw.showQuota : DEFAULT_DOCUMENT_SETTINGS.showQuota,
-            showResetCountdown: typeof raw.showResetCountdown === 'boolean' ? raw.showResetCountdown : DEFAULT_DOCUMENT_SETTINGS.showResetCountdown,
-            showAiCredits: typeof raw.showAiCredits === 'boolean' ? raw.showAiCredits : DEFAULT_DOCUMENT_SETTINGS.showAiCredits,
-            showSpeed: typeof raw.showSpeed === 'boolean' ? raw.showSpeed : DEFAULT_DOCUMENT_SETTINGS.showSpeed,
-            showCacheHit: typeof raw.showCacheHit === 'boolean' ? raw.showCacheHit : DEFAULT_DOCUMENT_SETTINGS.showCacheHit,
-            showSessionCost: typeof raw.showSessionCost === 'boolean' ? raw.showSessionCost : DEFAULT_DOCUMENT_SETTINGS.showSessionCost,
-            tooltipDensity: parseTooltipDensity(raw.tooltipDensity ?? DEFAULT_DOCUMENT_SETTINGS.tooltipDensity),
-            showModelInternalId: typeof raw.showModelInternalId === 'boolean' ? raw.showModelInternalId : DEFAULT_DOCUMENT_SETTINGS.showModelInternalId,
-            maxRecentSteps: clamp(Number(raw.maxRecentSteps ?? DEFAULT_DOCUMENT_SETTINGS.maxRecentSteps) || 100, 10, 500),
-            maxArchives: clamp(Number(raw.maxArchives ?? DEFAULT_DOCUMENT_SETTINGS.maxArchives) || 20, 1, 100),
+            pollingInterval: appSettings.pollingInterval,
+            quotaNotificationThreshold: appSettings.quotaNotificationThreshold,
+            showContext: appSettings.showContext,
+            showQuota: appSettings.showQuota,
+            showResetCountdown: appSettings.showResetCountdown,
+            showAiCredits: appSettings.showAiCredits,
+            showSpeed: appSettings.showSpeed,
+            showCacheHit: appSettings.showCacheHit,
+            showSessionCost: appSettings.showSessionCost,
+            tooltipDensity: appSettings.tooltipDensity,
+            showModelInternalId: appSettings.showModelInternalId,
+            maxRecentSteps: appSettings.activityMaxRecentSteps,
+            maxArchives: appSettings.activityMaxArchives,
             lockToMainAgent: resolvedLock,
+            appComposerRingEnabled: appSettings.appComposerRingEnabled,
+            appTopBarEnabled: appSettings.appTopBarEnabled,
+            showNativeHudBar: appSettings.showNativeHudBar,
+            orchestratorPricingMode: appSettings.orchestratorPricingMode,
+            displayCurrency: appSettings.displayCurrency,
+            customFxRate: appSettings.customFxRate,
+            subscriptionPlan,
+            subscriptionMonthlyFee: appSettings.subscriptionMonthlyFee,
+            subscriptionCurrency: appSettings.subscriptionCurrency,
+            calendarRetentionDays: appSettings.calendarRetentionDays,
+            autoCheckUpdates: appSettings.autoCheckUpdates,
+            activityMaxRecentSteps: appSettings.activityMaxRecentSteps,
+            activityMaxArchives: appSettings.activityMaxArchives,
         };
         lockToMainAgent = resolvedLock;
         setShowModelShortId(settings.showModelInternalId);
+        dailyStore.setMaxDays(appSettings.calendarRetentionDays);
 
         panelHintPrefs = {
             showTabScrollHint: globalState.get<boolean>('panelShowTabScrollHint', true),
@@ -1188,6 +1604,7 @@ export function createSidecarRuntimeProvider(
             showEndOfContent: globalState.get<boolean>('panelShowEndOfContent', true),
         };
         zoomLevel = clamp(Math.round(Number(globalState.get<number>('panelZoomLevel', 100)) || 100), 50, 200);
+        void syncOverlayTogglesIfChanged();
     }
 
     function syncFromDurableStateIfChanged(): boolean {
@@ -1195,19 +1612,22 @@ export function createSidecarRuntimeProvider(
         if (!changed) { return false; }
         initI18nFromState(globalState);
         pricingStore.init(globalState);
-        dailyStore.init(globalState);
+        const reloadedAppSettings = durableState.getAppSettings();
+        dailyStore.init(globalState, { maxDays: reloadedAppSettings.calendarRetentionDays });
         restoreAccountSnapshotsFromDisk();
         restoreBillingDaysFromDisk();
         restoreSharedSettingsFromDisk();
         const diskLedger = globalState.get<DailyLedgerState | undefined>('dailyLedgerState', undefined);
         if (diskLedger && diskLedger.dateKey === dailyLedger.dateKey) {
             const restored = DailyLedger.restore(diskLedger);
+            restored.setSurface('app');
             if (restored.getTodayActive().length >= dailyLedger.getTodayActive().length
                 && restored.getSettledEntries().length >= dailyLedger.getSettledEntries().length) {
                 dailyLedger = restored;
             }
         } else if (diskLedger && diskLedger.dateKey && diskLedger.dateKey > dailyLedger.dateKey) {
             dailyLedger = DailyLedger.restore(diskLedger);
+            dailyLedger.setSurface('app');
         }
         return true;
     }
@@ -1248,6 +1668,7 @@ export function createSidecarRuntimeProvider(
             persistedModelDNA,
             lastArchivalDateKey,
             dailyLedger,
+            surface: 'app',
             persist: (updates) => {
                 lastArchivalDateKey = updates.lastArchivalDateKey;
                 lastGMSummary = updates.lastGMSummary;
@@ -1264,6 +1685,411 @@ export function createSidecarRuntimeProvider(
             log,
         };
         performDailyArchivalCore(ctx, force);
+    }
+
+    // ── CLI Scanner, Update Checker & CDP Overlay Helpers ────────────────────
+
+    function getCachedCliDays(force = false): CliDailyUsageRecord[] {
+        if (options.disableCliScan) { return []; }
+        const nowMs = deps.now();
+        if (!force && lastCliScanAtMs > 0 && nowMs - lastCliScanAtMs < CLI_SCAN_TTL_MS) {
+            return cachedCliDays;
+        }
+        try {
+            const res = deps.cliUsageScanner.scan({
+                cliRootDir: options.cliDataDir,
+                customPricing: pricingStore.getCustom(),
+                now: nowMs,
+            });
+            cachedCliDays = res.available ? res.days : [];
+            lastCliScanAtMs = nowMs;
+        } catch {
+            cachedCliDays = [];
+            lastCliScanAtMs = nowMs;
+        }
+        return cachedCliDays;
+    }
+
+    function buildCalendarRenderOptions(nowMs = deps.now()): CalendarRenderOptions {
+        const customPricing = pricingStore.getCustom();
+        const todayLedgerActive = dailyLedger.getTodayActive();
+        const ledgerSettled = dailyLedger.getSettledEntries();
+        const cliDays = getCachedCliDays(false);
+        return {
+            liveLedger: {
+                ledger: dailyLedger,
+                active: todayLedgerActive,
+                settled: ledgerSettled,
+                customPricing,
+                defaultSurface: 'app',
+            },
+            cliDays,
+            sourceFilter: calendarSourceFilter,
+            metricMode: calendarMetricMode,
+            periodMode: calendarPeriodMode,
+            ...(calendarViewMode ? { viewMode: calendarViewMode } : {}),
+            ...(calendarSelectedDate ? { selectedDate: calendarSelectedDate } : {}),
+            currency: buildCurrencyConfig(),
+            subscription: buildSubscriptionConfig(),
+            customPricing,
+            now: nowMs,
+        };
+    }
+
+    function computeCumulativeRecordedTokens(): number {
+        let total = 0;
+        const archivedDates = new Set<string>();
+        for (const rec of dailyStore.getAllRecords()) {
+            archivedDates.add(rec.date);
+            for (const cycle of rec.cycles || []) {
+                total += computeCycleTokenTotals(cycle).totalTokens;
+            }
+        }
+        // Add live today's ledger tokens (avoiding double-count if today already archived)
+        const liveTotals = dailyLedger.getTodayDetailedTotals();
+        if (liveTotals.totalAdditiveTokens > 0 && !archivedDates.has(dailyLedger.dateKey)) {
+            total += liveTotals.totalAdditiveTokens;
+        }
+        // Add CLI scanned daily tokens
+        for (const cliDay of getCachedCliDays(false)) {
+            total += cliDay.totalTokens > 0 ? cliDay.totalTokens : computeAdditiveTokens(cliDay);
+        }
+        return total;
+    }
+
+    function buildCdpOverlayPayload(nowMs = deps.now()): CdpOverlayPayload {
+        const lang = getLanguage();
+        const customPricing = pricingStore.getCustom();
+        const orchMode = appSettings.orchestratorPricingMode;
+        const uiGmSummary = gmTracker.getUiSummary() || lastGMSummary;
+        const activeId = currentUsage?.cascadeId ?? lastResolution.cascadeId ?? undefined;
+        const costs = computeLiveCostSnapshot(uiGmSummary, activeId);
+        const currencyCfg = buildCurrencyConfig();
+        const estCostUsd = costs.sessionCostUsd > 0
+            ? costs.sessionCostUsd
+            : (costs.todayCostUsd > 0 ? costs.todayCostUsd : null);
+        const estCostFormatted = estCostUsd !== null
+            ? formatCurrencyAmount(estCostUsd, currencyCfg)
+            : '—';
+        const localCostFormatted = estCostUsd !== null && currencyCfg.code !== 'USD'
+            ? formatCurrencyAmount(estCostUsd, currencyCfg)
+            : null;
+
+        const contextUsedTokens = (contextBreakdown && contextBreakdown.usedTokens > 0)
+            ? contextBreakdown.usedTokens
+            : (currentUsage?.contextUsed ?? 0);
+        const contextEffectiveLimit = (contextBreakdown && contextBreakdown.effectiveBudgetTokens > 0)
+            ? contextBreakdown.effectiveBudgetTokens
+            : (currentUsage?.contextLimit ?? 0);
+        const contextNativeLimit = (contextBreakdown && contextBreakdown.nativeLimitTokens > 0)
+            ? contextBreakdown.nativeLimitTokens
+            : contextEffectiveLimit;
+        const contextPct = contextEffectiveLimit > 0
+            ? Math.round((contextUsedTokens / contextEffectiveLimit) * 1000) / 10
+            : 0;
+        const watermarks = currentUsage || contextEffectiveLimit > 0
+            ? computeContextWatermarks({
+                contextUsed: contextUsedTokens,
+                compactionLimit: contextEffectiveLimit > 0 ? contextEffectiveLimit : undefined,
+                physicalContextWindow: contextNativeLimit > 0 ? contextNativeLimit : undefined,
+                model: currentUsage?.model,
+            })
+            : null;
+
+        const telemetry = extractOverviewTelemetry(uiGmSummary, activeId, customPricing);
+        const primary = telemetry?.primary ?? null;
+        const latestCall = primary?.latestCall ?? null;
+        const speedEval = primary?.latestSpeedSample
+            ?? (latestCall
+                ? evaluateSpeedSample({
+                    outputTokens: latestCall.outputTokens,
+                    streamingSeconds: latestCall.streamingSeconds,
+                    ttftSeconds: latestCall.ttftSeconds,
+                })
+                : null);
+
+        const activeConvCalls = activeId
+            ? (uiGmSummary?.conversations.find(c => c.cascadeId === activeId)?.calls ?? [])
+            : [];
+        const turnCache = activeConvCalls.length > 0
+            ? analyzeUserTurnCacheStates(activeConvCalls, {
+                orchestratorConfig: currentUsage?.orchestratorConfig,
+                orchestratorHistory: currentUsage?.orchestratorHistory,
+                orchestratorSettings: cachedOrchestratorSettings,
+                orchestratorPricingMode: orchMode,
+            })
+            : null;
+
+        let inputTokens = 0;
+        let outputTokens = 0;
+        let cacheReadTokens = 0;
+        let cacheCreationTokens = 0;
+        if (activeConvCalls.length > 0) {
+            for (const c of activeConvCalls) {
+                inputTokens += c.inputTokens || 0;
+                outputTokens += c.outputTokens || 0;
+                cacheReadTokens += c.cacheReadTokens || 0;
+                cacheCreationTokens += c.cacheCreationTokens || 0;
+            }
+        } else if (currentUsage?.lastModelUsage) {
+            inputTokens = currentUsage.lastModelUsage.inputTokens || 0;
+            outputTokens = currentUsage.lastModelUsage.outputTokens || 0;
+            cacheReadTokens = currentUsage.lastModelUsage.cacheReadTokens || 0;
+            cacheCreationTokens = currentUsage.lastModelUsage.cacheCreationTokens || 0;
+        }
+        const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+
+        // Quota pools + tightest quota ring (isolated for BYOK/custom models)
+        const quotaPools: CdpOverlayQuotaPool[] = [];
+        let tightestQuotaPct: number | null = null;
+        let tightestQuotaWindowTag: string | undefined;
+        let sessionQuota5hPct: number | null = null;
+        let sessionQuota5hReset: string | undefined;
+        let sessionQuotaWeeklyPct: number | null = null;
+        let sessionQuotaWeeklyReset: string | undefined;
+
+        if (!isCustomModelActive && cachedModelConfigs.length > 0) {
+            const activeModelId = currentUsage?.model ? (resolveModelId(currentUsage.model) || currentUsage.model) : '';
+            const groups = selectMonitorQuotaGroups(cachedModelConfigs, currentUsage?.model, cachedQuotaSummary);
+            for (const g of groups) {
+                const isGroupActive = Boolean(activeModelId && g.readings.some(r => r.model === activeModelId));
+                const frac5h = g.fiveHourQuota?.remainingFraction ?? g.minimum;
+                const pct5h = typeof frac5h === 'number' && Number.isFinite(frac5h) ? Math.round(frac5h * 100) : null;
+                const reset5hIso = g.fiveHourQuota?.resetTime ?? g.resetTime ?? undefined;
+                const reset5hCountdown = reset5hIso ? resetCountdown(Date.parse(reset5hIso), nowMs) : undefined;
+
+                const fracWk = g.weeklyQuota?.remainingFraction ?? null;
+                const pctWk = typeof fracWk === 'number' && Number.isFinite(fracWk) ? Math.round(fracWk * 100) : null;
+                const resetWkIso = g.weeklyQuota?.resetTime ?? undefined;
+                const resetWkCountdown = resetWkIso ? resetCountdown(Date.parse(resetWkIso), nowMs) : undefined;
+
+                const effectivePct = pct5h !== null && pctWk !== null
+                    ? Math.min(pct5h, pctWk)
+                    : (pct5h ?? pctWk);
+                const windowTag = pctWk !== null && (pct5h === null || pctWk < pct5h)
+                    ? 'wk'
+                    : (g.fiveHourQuota ? '5h' : undefined);
+
+                if (effectivePct !== null && (tightestQuotaPct === null || effectivePct < tightestQuotaPct)) {
+                    tightestQuotaPct = effectivePct;
+                    tightestQuotaWindowTag = windowTag;
+                }
+                if (isGroupActive) {
+                    sessionQuota5hPct = pct5h;
+                    sessionQuota5hReset = reset5hCountdown;
+                    sessionQuotaWeeklyPct = pctWk;
+                    sessionQuotaWeeklyReset = resetWkCountdown;
+                }
+                const health: CdpOverlayQuotaPool['health'] = effectivePct === null
+                    ? 'unknown'
+                    : effectivePct <= 20
+                        ? 'danger'
+                        : effectivePct < 50
+                            ? 'warn'
+                            : 'good';
+                quotaPools.push({
+                    poolKey: g.pool || g.key,
+                    label: g.label,
+                    modelChips: g.members.map(m => m.label).filter(Boolean),
+                    remainingPct: pct5h,
+                    windowTag: g.fiveHourQuota ? '5h' : undefined,
+                    resetCountdown: reset5hCountdown,
+                    resetAtIso: reset5hIso,
+                    weeklyRemainingPct: pctWk,
+                    weeklyResetCountdown: resetWkCountdown,
+                    isCurrentSessionModel: isGroupActive,
+                    health,
+                });
+            }
+        }
+
+        const recentCacheHitPct = turnCache?.latestTurn?.cacheHitPct != null
+            ? Math.round(turnCache.latestTurn.cacheHitPct * 10) / 10
+            : (turnDiagnostics?.lastTurnCacheHitPct ?? null);
+        const avgCacheHitPct = primary?.tokenCacheHitRate != null
+            ? Math.round(primary.tokenCacheHitRate * 1000) / 10
+            : (turnDiagnostics?.sessionCacheHitPct ?? null);
+        const turnCacheState = turnCache?.latestTurn?.cacheStart
+            ?? (turnDiagnostics?.lastTurnStartKind === 'warm' || turnDiagnostics?.lastTurnStartKind === 'partial' || turnDiagnostics?.lastTurnStartKind === 'cold'
+                ? turnDiagnostics.lastTurnStartKind
+                : 'unknown');
+
+        return {
+            updatedAt: new Date(nowMs).toISOString(),
+            nextRefreshSec: clamp(settings.pollingInterval, 1, 60),
+            language: lang,
+            theme: 'auto',
+            modelName: currentUsage?.modelDisplayName || (currentUsage?.model ? normalizeModelDisplayName(currentUsage.model) : ''),
+            contextUsedTokens,
+            contextEffectiveLimit,
+            contextNativeLimit,
+            contextPct,
+            compactionThresholdPct: watermarks?.hasDistinctPhysicalWindow ? watermarks.compactionMarkerPct : null,
+            tier200kMarkerPct: watermarks?.showLongContextMarker ? watermarks.longContextMarkerPctOfCompaction : null,
+            outputSpeedTps: speedEval?.isShortSample || speedEval?.isWaitingTtft
+                ? null
+                : (speedEval?.displaySpeed ?? telemetry?.speedPrimary ?? null),
+            avgOutputSpeedTps: primary?.weightedGenTokPerSec ?? null,
+            isShortSample: Boolean(speedEval?.isShortSample),
+            isWaitingTtft: Boolean(speedEval?.isWaitingTtft),
+            ttftMs: telemetry?.ttftPrimary != null ? Math.round(telemetry.ttftPrimary * 1000) : null,
+            recentCacheHitPct,
+            avgCacheHitPct,
+            turnCacheState,
+            estCostUsd,
+            estCostFormatted,
+            localCostFormatted,
+            inputTokens,
+            outputTokens,
+            cacheReadTokens,
+            totalTokens,
+            cumulativeRecordedTokens: computeCumulativeRecordedTokens(),
+            tightestQuotaPct,
+            tightestQuotaWindowTag,
+            sessionQuota5hPct,
+            sessionQuota5hReset,
+            sessionQuotaWeeklyPct,
+            sessionQuotaWeeklyReset,
+            quotaPools,
+        };
+    }
+
+    function pushOverlayPayloadAsync(nowMs = deps.now()): void {
+        try {
+            const payload = buildCdpOverlayPayload(nowMs);
+            void overlayManager.updatePayload(payload).then((status) => {
+                if (status.targetUrl) {
+                    try { overlayAllowedOrigin = new URL(status.targetUrl).origin; } catch { /* ignore */ }
+                }
+            }).catch(() => {});
+        } catch {
+            // Never let optional CDP overlay payload formatting disrupt core telemetry
+        }
+    }
+
+    function resolveLivePluginDir(): string {
+        if (options.targetPluginDir && options.targetPluginDir.trim()) {
+            return path.resolve(options.targetPluginDir.trim());
+        }
+        const envDir = process.env.ANTIGRAVITY_PLUGIN_DIR;
+        if (typeof envDir === 'string' && envDir.trim()) {
+            return path.resolve(envDir.trim());
+        }
+        if (options.pluginRoot && options.pluginRoot.trim()) {
+            const resolvedRoot = path.resolve(options.pluginRoot.trim());
+            const isPackagedInstalledLayout = path.basename(resolvedRoot) === EXPECTED_PLUGIN_NAME
+                || fs.existsSync(path.join(resolvedRoot, 'sidecars', 'context_monitor', 'runtime'));
+            if (isPackagedInstalledLayout && fs.existsSync(path.join(resolvedRoot, 'plugin.json'))) {
+                return resolvedRoot;
+            }
+        }
+        return path.join(deps.homedir(), '.gemini', 'config', 'plugins', EXPECTED_PLUGIN_NAME);
+    }
+
+    async function persistUpdateCheckResult(res: UpdateCheckResult): Promise<void> {
+        const prev = appSettings.lastUpdateCheck;
+        const releaseInfo = res.releaseInfo ?? (res.status === 'not_modified' ? lastCachedReleaseInfo ?? undefined : undefined);
+        if (releaseInfo) {
+            lastCachedReleaseInfo = releaseInfo;
+        }
+        const record: LastUpdateCheckRecord = {
+            checkedAt: res.checkedAt,
+            latestVersion: res.latestVersion ?? (res.status === 'not_modified' || res.status === 'throttled' ? prev?.latestVersion ?? null : null),
+            hasUpdate: res.status === 'not_modified' || res.status === 'throttled'
+                ? Boolean(prev?.hasUpdate)
+                : Boolean(res.hasUpdate),
+            etag: res.etag ?? prev?.etag ?? null,
+            releaseUrl: releaseInfo?.releaseUrl ?? (res.status === 'not_modified' || res.status === 'throttled' ? prev?.releaseUrl ?? null : null),
+            releaseNotesSummary: releaseInfo?.releaseNotesSummary ?? (res.status === 'not_modified' || res.status === 'throttled' ? prev?.releaseNotesSummary ?? null : null),
+            assetName: releaseInfo?.assetName ?? (res.status === 'not_modified' || res.status === 'throttled' ? prev?.assetName ?? null : null),
+            assetUrl: releaseInfo?.assetUrl ?? (res.status === 'not_modified' || res.status === 'throttled' ? prev?.assetUrl ?? null : null),
+            checksumsUrl: releaseInfo?.checksumsUrl ?? (res.status === 'not_modified' || res.status === 'throttled' ? prev?.checksumsUrl ?? null : null),
+            error: res.status === 'error' ? (res.error ?? 'Update check failed') : null,
+        };
+        const updPromise = durableState.updateAppSettings({ lastUpdateCheck: record });
+        await durableState.flush();
+        appSettings = await updPromise;
+
+        lastUpdateStatusView = {
+            currentVersion: res.currentVersion,
+            latestVersion: record.latestVersion,
+            updateAvailable: Boolean(record.hasUpdate),
+            hasUpdate: Boolean(record.hasUpdate),
+            status: res.status === 'throttled'
+                ? (record.hasUpdate ? 'update_available' : 'up_to_date')
+                : res.status,
+            checkedAt: record.checkedAt,
+            releaseUrl: record.releaseUrl,
+            releaseNotesSummary: record.releaseNotesSummary,
+            error: record.error,
+        };
+    }
+
+    async function runUpdateCheck(force: boolean): Promise<UpdateCheckResult> {
+        const prev = appSettings.lastUpdateCheck;
+        const res = await deps.checkForUpdates({
+            currentVersion: version,
+            force,
+            etag: prev?.etag ?? null,
+            lastCheckedAt: prev?.checkedAt ?? null,
+            now: deps.now,
+        });
+        if (res.status !== 'throttled') {
+            await persistUpdateCheckResult(res);
+        } else if (!lastUpdateStatusView && prev) {
+            lastUpdateStatusView = {
+                currentVersion: version,
+                latestVersion: prev.latestVersion ?? null,
+                updateAvailable: Boolean(prev.hasUpdate),
+                hasUpdate: Boolean(prev.hasUpdate),
+                status: prev.hasUpdate ? 'update_available' : 'up_to_date',
+                checkedAt: prev.checkedAt,
+                releaseUrl: prev.releaseUrl ?? null,
+                releaseNotesSummary: prev.releaseNotesSummary ?? null,
+                error: prev.error ?? null,
+            };
+        }
+        return res;
+    }
+
+    function triggerBackgroundUpdateCheck(): void {
+        if (disposed || autoUpdateCheckInFlight || !appSettings.autoCheckUpdates) { return; }
+        if (options.enableAutoUpdateCheck === false) { return; }
+        // Avoid unsolicited live GitHub HTTPS calls during Vitest unless explicitly enabled or mocked
+        if (process.env.VITEST && options.enableAutoUpdateCheck !== true && !options.deps?.checkForUpdates) {
+            return;
+        }
+        autoUpdateCheckInFlight = true;
+        void runUpdateCheck(false)
+            .catch(() => { /* offline-safe: never throw */ })
+            .finally(() => { autoUpdateCheckInFlight = false; });
+    }
+
+    async function handleOverlayAction(action: SidecarOverlayBridgeRequest): Promise<SidecarActionHttpBody> {
+        lastClientActivityMs = deps.now();
+        switch (action.command) {
+            case 'ping':
+                return { ok: true, result: { pong: true, version, source: action.source } };
+            case 'refresh':
+                await runPollCycle(true);
+                return { ok: true, result: { refreshed: true, time: lastUpdatedTime, source: action.source } };
+            case 'togglePause':
+                return handleAction({ command: 'togglePause' });
+            case 'openSidecar':
+            case 'togglePanel':
+            case 'openPanel':
+                return {
+                    ok: true,
+                    result: {
+                        acknowledged: true,
+                        command: action.command,
+                        sidecarUri: 'sidecar://antigravity-context-monitor/context_monitor/',
+                        source: action.source,
+                    },
+                };
+            default:
+                return { ok: false, statusCode: 400, error: `Unsupported overlay command: ${String(action.command)}` };
+        }
     }
 
     // Immediate startup cross-day archival
@@ -1577,11 +2403,12 @@ export function createSidecarRuntimeProvider(
         sessionCostUsd: number;
     } {
         const custom = pricingStore.getCustom();
+        const orchMode = appSettings.orchestratorPricingMode;
         let todayCostUsd = 0;
         for (const bucket of dailyLedger.getTodayActive()) {
             for (const [modelKey, ms] of Object.entries(bucket.modelStats)) {
                 if (ms.calls <= 0) { continue; }
-                todayCostUsd += calculateLedgerModelCosts(modelKey, ms, bucket, custom).totalCost;
+                todayCostUsd += calculateLedgerModelCosts(modelKey, ms, bucket, custom, undefined, orchMode).totalCost;
             }
         }
         for (const entry of dailyLedger.getSettledEntries()) {
@@ -1598,7 +2425,7 @@ export function createSidecarRuntimeProvider(
                 : summary.conversations.flatMap(c => c.calls);
             for (const call of calls) {
                 const pricingModel = selectPricingModel(call.model || call.modelDisplay, call.responseModel, custom);
-                const pricing = findPricingForDate(pricingModel, custom, call.createdAt || '');
+                const pricing = findPricingForDate(pricingModel, custom, call.createdAt || '', undefined, orchMode);
                 if (pricing) {
                     sessionCostUsd += costFromTokens(call, pricing);
                 }
@@ -1745,6 +2572,7 @@ export function createSidecarRuntimeProvider(
 
     function computeDataSignature(): string {
         const stale = getCombinedStaleState();
+        const cdp = overlayManager.getStatus();
         return JSON.stringify({
             status: monitorStatus.state,
             stale: stale.isStale,
@@ -1767,7 +2595,11 @@ export function createSidecarRuntimeProvider(
             acctCount: accountSnapshots.size,
             billingDays: billingDaysMap,
             settings,
-            calendar: `${calendarYear}-${calendarMonth}-${dailyStore.totalDays}`,
+            orchMode: appSettings.orchestratorPricingMode,
+            currency: `${appSettings.displayCurrency}:${appSettings.customFxRate ?? ''}:${subscriptionPlan}:${appSettings.subscriptionMonthlyFee ?? ''}:${appSettings.subscriptionCurrency}`,
+            cdp: `${cdp.state}:${cdp.composerEnabled}:${cdp.topBarEnabled}`,
+            upd: lastUpdateStatusView ? `${lastUpdateStatusView.status}:${lastUpdateStatusView.latestVersion ?? ''}:${lastUpdateStatusView.requiresReload ?? false}` : '',
+            calendar: `${calendarYear}-${calendarMonth}-${dailyStore.totalDays}-${calendarSourceFilter}-${calendarMetricMode}-${calendarPeriodMode}-${calendarViewMode ?? 'both'}-${calendarSelectedDate}-${cachedCliDays.length}`,
         });
     }
 
@@ -1986,7 +2818,7 @@ export function createSidecarRuntimeProvider(
                         }
                         if (newEntries.length > 0) {
                             dailyLedger.normalizeIfStaleEmpty();
-                            const added = dailyLedger.recordCalls(newEntries);
+                            const added = dailyLedger.recordCalls(newEntries, 'app');
                             if (added === newEntries.length) {
                                 gmTracker.markLedgerEntriesRecorded(newEntries);
                             }
@@ -2043,6 +2875,7 @@ export function createSidecarRuntimeProvider(
                     lastPollAtMs = nowMs;
                     lastUpdatedTime = formatClockTime(new Date(nowMs), getLanguage());
                 }
+                pushOverlayPayloadAsync(nowMs);
                 isPolling = false;
                 activePollPromise = null;
             }
@@ -2119,6 +2952,10 @@ export function createSidecarRuntimeProvider(
         const todayLedgerActive = dailyLedger.getTodayActive();
         const ledgerSettled = dailyLedger.getSettledEntries();
 
+        const calendarOptions = buildCalendarRenderOptions(nowMs);
+        const fullAppSettings = getFullAppSettings();
+        const cdpStatus = overlayManager.getStatus();
+
         const extras: MonitorDocumentV1175Extras = {
             surface: 'app-sidecar',
             version,
@@ -2132,6 +2969,11 @@ export function createSidecarRuntimeProvider(
             pinnedConversationId,
             lockToMainAgent,
             imagesBaseUri: '/assets/images',
+            calendarOptions,
+            orchestratorPricingMode: appSettings.orchestratorPricingMode,
+            appSettings: fullAppSettings,
+            cdpStatus,
+            updateStatus: lastUpdateStatusView,
         };
 
         return {
@@ -2178,6 +3020,11 @@ export function createSidecarRuntimeProvider(
             zoomLevel,
             calendarYear,
             calendarMonth,
+            calendarOptions,
+            orchestratorPricingMode: appSettings.orchestratorPricingMode,
+            appSettings: fullAppSettings,
+            cdpStatus,
+            updateStatus: lastUpdateStatusView,
             storageDiagnostics: getStorageDiagnostics(),
             modelDNA: persistedModelDNA,
             isPaused,
@@ -2317,6 +3164,10 @@ export function createSidecarRuntimeProvider(
                     todayCostUsd: docParams.todayCostUsd,
                     sessionCostUsd: docParams.sessionCostUsd,
                     settings: docParams.settings,
+                    appSettings: docParams.appSettings,
+                    orchestratorPricingMode: docParams.orchestratorPricingMode,
+                    cdpStatus: docParams.cdpStatus,
+                    updateStatus: docParams.updateStatus,
                     accountSnapshots: docParams.accountSnapshots,
                     activeAccountKey: docParams.activeAccountKey,
                     billingDays: docParams.billingDays,
@@ -2391,31 +3242,237 @@ export function createSidecarRuntimeProvider(
         return roots;
     }
 
-    function applySingleSetting(key: string, value: unknown): { ok: boolean; normalizedKey: string; error?: string } {
+    function syncSettingsMirrorFromAppSettings(): void {
+        settings = {
+            pollingInterval: appSettings.pollingInterval,
+            quotaNotificationThreshold: appSettings.quotaNotificationThreshold,
+            showContext: appSettings.showContext,
+            showQuota: appSettings.showQuota,
+            showResetCountdown: appSettings.showResetCountdown,
+            showAiCredits: appSettings.showAiCredits,
+            showSpeed: appSettings.showSpeed,
+            showCacheHit: appSettings.showCacheHit,
+            showSessionCost: appSettings.showSessionCost,
+            tooltipDensity: appSettings.tooltipDensity,
+            showModelInternalId: appSettings.showModelInternalId,
+            maxRecentSteps: appSettings.activityMaxRecentSteps,
+            maxArchives: appSettings.activityMaxArchives,
+            lockToMainAgent,
+            appComposerRingEnabled: appSettings.appComposerRingEnabled,
+            appTopBarEnabled: appSettings.appTopBarEnabled,
+            showNativeHudBar: appSettings.showNativeHudBar,
+            orchestratorPricingMode: appSettings.orchestratorPricingMode,
+            displayCurrency: appSettings.displayCurrency,
+            customFxRate: appSettings.customFxRate,
+            subscriptionPlan,
+            subscriptionMonthlyFee: appSettings.subscriptionMonthlyFee,
+            subscriptionCurrency: appSettings.subscriptionCurrency,
+            calendarRetentionDays: appSettings.calendarRetentionDays,
+            autoCheckUpdates: appSettings.autoCheckUpdates,
+            activityMaxRecentSteps: appSettings.activityMaxRecentSteps,
+            activityMaxArchives: appSettings.activityMaxArchives,
+        };
+    }
+
+    async function persistAppSettingsToDisk(): Promise<void> {
+        const { lastUpdateCheck: _preserve, ...patchWithoutUpdateCheck } = appSettings;
+        const pSettings = durableState.updateAppSettings({
+            ...patchWithoutUpdateCheck,
+            lockToMainAgent,
+        });
+        const pLock = globalState.update('lockToMainAgent', lockToMainAgent);
+        const pPlan = globalState.update('subscriptionPlan', subscriptionPlan);
+        await durableState.flush();
+        appSettings = await pSettings;
+        await Promise.all([pLock, pPlan]);
+        syncSettingsMirrorFromAppSettings();
+    }
+
+    function buildSyncSettingsControlsMessage(): Record<string, unknown> {
+        return {
+            command: 'syncSettingsControls',
+            showContext: settings.showContext,
+            showQuota: settings.showQuota,
+            showResetCountdown: settings.showResetCountdown,
+            showAiCredits: settings.showAiCredits,
+            showSpeed: settings.showSpeed,
+            showCacheHit: settings.showCacheHit,
+            showSessionCost: settings.showSessionCost,
+            showModelInternalId: settings.showModelInternalId,
+            tooltipDensity: settings.tooltipDensity,
+            lockToMainAgent,
+            appComposerRingEnabled: appSettings.appComposerRingEnabled,
+            appTopBarEnabled: appSettings.appTopBarEnabled,
+            showNativeHudBar: appSettings.showNativeHudBar,
+            autoCheckUpdates: appSettings.autoCheckUpdates,
+            orchestratorPricingMode: appSettings.orchestratorPricingMode,
+            displayCurrency: appSettings.displayCurrency,
+            customFxRate: appSettings.customFxRate,
+            subscriptionPlan,
+            subscriptionMonthlyFee: appSettings.subscriptionMonthlyFee,
+            subscriptionCurrency: appSettings.subscriptionCurrency,
+            calendarRetentionDays: appSettings.calendarRetentionDays,
+            activityMaxRecentSteps: appSettings.activityMaxRecentSteps,
+            activityMaxArchives: appSettings.activityMaxArchives,
+        };
+    }
+
+    function applySingleSetting(key: string, value: unknown): {
+        ok: boolean;
+        normalizedKey: string;
+        overlayChanged?: boolean;
+        error?: string;
+    } {
         switch (key) {
             case 'pollingInterval': {
                 const n = Number(value);
                 if (!Number.isFinite(n)) { return { ok: false, normalizedKey: key, error: 'Invalid pollingInterval' }; }
-                settings.pollingInterval = clamp(Math.round(n), 1, 60);
+                const clamped = clamp(Math.round(n), 1, 60);
+                settings.pollingInterval = clamped;
+                appSettings.pollingInterval = clamped;
                 scheduleNextPoll();
                 return { ok: true, normalizedKey: 'pollingInterval' };
             }
             case 'quotaNotificationThreshold': {
                 const n = Number(value);
                 if (!Number.isFinite(n)) { return { ok: false, normalizedKey: key, error: 'Invalid quotaNotificationThreshold' }; }
-                settings.quotaNotificationThreshold = clamp(Math.round(n), 0, 99);
+                const clamped = clamp(Math.round(n), 0, 99);
+                settings.quotaNotificationThreshold = clamped;
+                appSettings.quotaNotificationThreshold = clamped;
                 return { ok: true, normalizedKey: 'quotaNotificationThreshold' };
             }
             case 'showModelInternalId': {
-                settings.showModelInternalId = Boolean(value);
-                setShowModelShortId(settings.showModelInternalId);
+                const boolVal = Boolean(value);
+                settings.showModelInternalId = boolVal;
+                appSettings.showModelInternalId = boolVal;
+                setShowModelShortId(boolVal);
                 return { ok: true, normalizedKey: 'showModelInternalId' };
             }
             case 'lockToMainAgent': {
                 lockToMainAgent = Boolean(value);
                 settings.lockToMainAgent = lockToMainAgent;
+                appSettings.lockToMainAgent = lockToMainAgent;
                 void globalState.update('lockToMainAgent', lockToMainAgent);
                 return { ok: true, normalizedKey: 'lockToMainAgent' };
+            }
+            case 'appComposerRingEnabled': {
+                const next = Boolean(value);
+                const changed = appSettings.appComposerRingEnabled !== next;
+                appSettings.appComposerRingEnabled = next;
+                settings.appComposerRingEnabled = next;
+                return { ok: true, normalizedKey: 'appComposerRingEnabled', overlayChanged: changed };
+            }
+            case 'appTopBarEnabled': {
+                const next = Boolean(value);
+                const changed = appSettings.appTopBarEnabled !== next;
+                appSettings.appTopBarEnabled = next;
+                settings.appTopBarEnabled = next;
+                return { ok: true, normalizedKey: 'appTopBarEnabled', overlayChanged: changed };
+            }
+            case 'showNativeHudBar': {
+                const next = Boolean(value);
+                appSettings.showNativeHudBar = next;
+                settings.showNativeHudBar = next;
+                return { ok: true, normalizedKey: 'showNativeHudBar' };
+            }
+            case 'orchestratorPricingMode': {
+                if (value !== 'mapped' && value !== 'strict') {
+                    return { ok: false, normalizedKey: key, error: 'Invalid orchestratorPricingMode (expected mapped or strict)' };
+                }
+                const mode = normalizeOrchestratorPricingMode(value);
+                appSettings.orchestratorPricingMode = mode;
+                settings.orchestratorPricingMode = mode;
+                pricingStore.setOrchestratorPricingModeSync(mode);
+                return { ok: true, normalizedKey: 'orchestratorPricingMode' };
+            }
+            case 'displayCurrency': {
+                if (typeof value !== 'string' || !value.trim()) {
+                    return { ok: false, normalizedKey: key, error: 'Invalid displayCurrency' };
+                }
+                const norm = normalizeAppSettings({ displayCurrency: value });
+                appSettings.displayCurrency = norm.displayCurrency;
+                settings.displayCurrency = norm.displayCurrency;
+                return { ok: true, normalizedKey: 'displayCurrency' };
+            }
+            case 'customFxRate': {
+                if (value === null || value === '' || value === undefined) {
+                    appSettings.customFxRate = null;
+                    settings.customFxRate = null;
+                    return { ok: true, normalizedKey: 'customFxRate' };
+                }
+                const n = Number(value);
+                if (!Number.isFinite(n) || n <= 0 || n > 100_000) {
+                    return { ok: false, normalizedKey: key, error: 'Invalid customFxRate' };
+                }
+                appSettings.customFxRate = n;
+                settings.customFxRate = n;
+                return { ok: true, normalizedKey: 'customFxRate' };
+            }
+            case 'subscriptionPlan': {
+                if (value !== 'none' && value !== 'google-ai-pro' && value !== 'google-ai-ultra' && value !== 'custom') {
+                    return { ok: false, normalizedKey: key, error: 'Invalid subscriptionPlan' };
+                }
+                subscriptionPlan = value;
+                settings.subscriptionPlan = value;
+                if (value === 'none') {
+                    appSettings.subscriptionMonthlyFee = null;
+                    settings.subscriptionMonthlyFee = null;
+                } else if (value === 'google-ai-pro') {
+                    appSettings.subscriptionMonthlyFee = 19.99;
+                    appSettings.subscriptionCurrency = 'USD';
+                    settings.subscriptionMonthlyFee = 19.99;
+                    settings.subscriptionCurrency = 'USD';
+                } else if (value === 'google-ai-ultra') {
+                    appSettings.subscriptionMonthlyFee = 249.99;
+                    appSettings.subscriptionCurrency = 'USD';
+                    settings.subscriptionMonthlyFee = 249.99;
+                    settings.subscriptionCurrency = 'USD';
+                }
+                return { ok: true, normalizedKey: 'subscriptionPlan' };
+            }
+            case 'subscriptionMonthlyFee': {
+                if (value === null || value === '' || value === undefined) {
+                    appSettings.subscriptionMonthlyFee = null;
+                    settings.subscriptionMonthlyFee = null;
+                    return { ok: true, normalizedKey: 'subscriptionMonthlyFee' };
+                }
+                const n = Number(value);
+                if (!Number.isFinite(n) || n < 0 || n > 1_000_000) {
+                    return { ok: false, normalizedKey: key, error: 'Invalid subscriptionMonthlyFee' };
+                }
+                appSettings.subscriptionMonthlyFee = n > 0 ? n : null;
+                settings.subscriptionMonthlyFee = appSettings.subscriptionMonthlyFee;
+                if (appSettings.subscriptionMonthlyFee !== null && subscriptionPlan === 'none') {
+                    subscriptionPlan = 'custom';
+                    settings.subscriptionPlan = 'custom';
+                }
+                return { ok: true, normalizedKey: 'subscriptionMonthlyFee' };
+            }
+            case 'subscriptionCurrency': {
+                if (typeof value !== 'string' || !value.trim()) {
+                    return { ok: false, normalizedKey: key, error: 'Invalid subscriptionCurrency' };
+                }
+                const norm = normalizeAppSettings({ subscriptionCurrency: value });
+                appSettings.subscriptionCurrency = norm.subscriptionCurrency;
+                settings.subscriptionCurrency = norm.subscriptionCurrency;
+                return { ok: true, normalizedKey: 'subscriptionCurrency' };
+            }
+            case 'calendarRetentionDays': {
+                const n = Number(value);
+                if (!Number.isFinite(n)) {
+                    return { ok: false, normalizedKey: key, error: 'Invalid calendarRetentionDays' };
+                }
+                const clamped = clamp(Math.round(n), 30, 3650);
+                appSettings.calendarRetentionDays = clamped;
+                settings.calendarRetentionDays = clamped;
+                dailyStore.setMaxDays(clamped);
+                return { ok: true, normalizedKey: 'calendarRetentionDays' };
+            }
+            case 'autoCheckUpdates': {
+                const next = Boolean(value);
+                appSettings.autoCheckUpdates = next;
+                settings.autoCheckUpdates = next;
+                return { ok: true, normalizedKey: 'autoCheckUpdates' };
             }
             case 'uiZoom':
             case 'panelZoomLevel': {
@@ -2443,48 +3500,69 @@ export function createSidecarRuntimeProvider(
                 void globalState.update('panelShowEndOfContent', panelHintPrefs.showEndOfContent);
                 return { ok: true, normalizedKey: 'panelShowEndOfContent' };
             }
+            case 'activityMaxRecentSteps':
             case 'maxRecentSteps':
             case 'activity.maxRecentSteps': {
-                settings.maxRecentSteps = clamp(Number(value) || 100, 10, 500);
-                return { ok: true, normalizedKey: 'activity.maxRecentSteps' };
+                const n = Number(value);
+                if (!Number.isFinite(n)) { return { ok: false, normalizedKey: key, error: 'Invalid activityMaxRecentSteps' }; }
+                const clamped = clamp(Math.round(n), 10, 500);
+                settings.maxRecentSteps = clamped;
+                settings.activityMaxRecentSteps = clamped;
+                appSettings.activityMaxRecentSteps = clamped;
+                return { ok: true, normalizedKey: 'activityMaxRecentSteps' };
             }
+            case 'activityMaxArchives':
             case 'maxArchives':
             case 'activity.maxArchives': {
-                settings.maxArchives = clamp(Number(value) || 20, 1, 100);
-                return { ok: true, normalizedKey: 'activity.maxArchives' };
+                const n = Number(value);
+                if (!Number.isFinite(n)) { return { ok: false, normalizedKey: key, error: 'Invalid activityMaxArchives' }; }
+                const clamped = clamp(Math.round(n), 1, 100);
+                settings.maxArchives = clamped;
+                settings.activityMaxArchives = clamped;
+                appSettings.activityMaxArchives = clamped;
+                return { ok: true, normalizedKey: 'activityMaxArchives' };
             }
             case 'tooltipDensity':
             case 'statusBar.tooltipDensity': {
-                settings.tooltipDensity = parseTooltipDensity(value);
+                const d = parseTooltipDensity(value);
+                settings.tooltipDensity = d;
+                appSettings.tooltipDensity = d;
                 return { ok: true, normalizedKey: 'statusBar.tooltipDensity' };
             }
             case 'showContext':
             case 'statusBar.showContext':
                 settings.showContext = Boolean(value);
+                appSettings.showContext = settings.showContext;
                 return { ok: true, normalizedKey: 'statusBar.showContext' };
             case 'showQuota':
             case 'statusBar.showQuota':
                 settings.showQuota = Boolean(value);
+                appSettings.showQuota = settings.showQuota;
                 return { ok: true, normalizedKey: 'statusBar.showQuota' };
             case 'showResetCountdown':
             case 'statusBar.showResetCountdown':
                 settings.showResetCountdown = Boolean(value);
+                appSettings.showResetCountdown = settings.showResetCountdown;
                 return { ok: true, normalizedKey: 'statusBar.showResetCountdown' };
             case 'showAiCredits':
             case 'statusBar.showAiCredits':
                 settings.showAiCredits = Boolean(value);
+                appSettings.showAiCredits = settings.showAiCredits;
                 return { ok: true, normalizedKey: 'statusBar.showAiCredits' };
             case 'showSpeed':
             case 'statusBar.showSpeed':
                 settings.showSpeed = Boolean(value);
+                appSettings.showSpeed = settings.showSpeed;
                 return { ok: true, normalizedKey: 'statusBar.showSpeed' };
             case 'showCacheHit':
             case 'statusBar.showCacheHit':
                 settings.showCacheHit = Boolean(value);
+                appSettings.showCacheHit = settings.showCacheHit;
                 return { ok: true, normalizedKey: 'statusBar.showCacheHit' };
             case 'showSessionCost':
             case 'statusBar.showSessionCost':
                 settings.showSessionCost = Boolean(value);
+                appSettings.showSessionCost = settings.showSessionCost;
                 return { ok: true, normalizedKey: 'statusBar.showSessionCost' };
             default:
                 return { ok: false, normalizedKey: key, error: `Unknown setting key: ${key}` };
@@ -2670,9 +3748,8 @@ export function createSidecarRuntimeProvider(
                     lockToMainAgent = !lockToMainAgent;
                 }
                 settings.lockToMainAgent = lockToMainAgent;
-                await globalState.update('lockToMainAgent', lockToMainAgent);
-                await globalState.update('appSettings', { ...settings });
-                await durableState.flush();
+                appSettings.lockToMainAgent = lockToMainAgent;
+                await persistAppSettingsToDisk();
                 const resolved = recomputeConversationResolution();
                 const targetTrajectory = findResolvedTrajectory(resolved);
                 if (targetTrajectory && cachedLsInfo && targetTrajectory.cascadeId !== currentUsage?.cascadeId) {
@@ -2688,7 +3765,7 @@ export function createSidecarRuntimeProvider(
                         lockedMainId: resolved.lockedMainId,
                         activeConversationId: resolved.cascadeId,
                     },
-                    messages: [{ command: 'syncSettingsControls', lockToMainAgent }],
+                    messages: [buildSyncSettingsControlsMessage()],
                     snapshot: buildSnapshotPayload(viewMode),
                 };
             }
@@ -2706,6 +3783,13 @@ export function createSidecarRuntimeProvider(
                     result: { paused: isPaused },
                     messages: [{ command: 'setPaused', paused: isPaused }],
                     snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'toggleNativeHud': {
+                return {
+                    ok: true,
+                    result: { expanded: Boolean(action.expanded) },
                 };
             }
 
@@ -2743,6 +3827,34 @@ export function createSidecarRuntimeProvider(
                 };
             }
 
+            case 'setOrchestratorPricingMode': {
+                const rawMode = action.mode !== undefined ? action.mode : action.value;
+                if (rawMode !== 'mapped' && rawMode !== 'strict') {
+                    return { ok: false, statusCode: 400, error: 'Invalid orchestratorPricingMode (expected mapped or strict)' };
+                }
+                const mode = normalizeOrchestratorPricingMode(rawMode);
+                appSettings.orchestratorPricingMode = mode;
+                settings.orchestratorPricingMode = mode;
+                const pMode = pricingStore.setOrchestratorPricingMode(mode);
+                await persistAppSettingsToDisk();
+                await pMode;
+                pushOverlayPayloadAsync();
+                lastUpdatedTime = formatClockTime(new Date(deps.now()), getLanguage());
+                return {
+                    ok: true,
+                    result: {
+                        orchestratorPricingMode: mode,
+                        appSettings: getFullAppSettings(),
+                    },
+                    messages: [
+                        { command: 'configSaved', key: 'orchestratorPricingMode' },
+                        buildSyncSettingsControlsMessage(),
+                    ],
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'setAppSetting':
             case 'updateSetting':
             case 'setConfig':
             case 'setPanelPref': {
@@ -2754,15 +3866,46 @@ export function createSidecarRuntimeProvider(
                 if (!applied.ok) {
                     return { ok: false, statusCode: 400, error: applied.error };
                 }
-                await globalState.update('appSettings', { ...settings });
-                await durableState.flush();
-                const msgs: Array<Record<string, unknown>> = [{ command: 'configSaved', key: applied.normalizedKey }];
+                const pOrchMode = applied.normalizedKey === 'orchestratorPricingMode'
+                    ? pricingStore.setOrchestratorPricingMode(appSettings.orchestratorPricingMode)
+                    : undefined;
+                await persistAppSettingsToDisk();
+                if (pOrchMode) { await pOrchMode; }
+
+                let cdpStatus = overlayManager.getStatus();
+                if (applied.overlayChanged) {
+                    const togglePromise = syncOverlayTogglesIfChanged();
+                    if (togglePromise) {
+                        cdpStatus = await togglePromise;
+                    }
+                    if (appSettings.appComposerRingEnabled || appSettings.appTopBarEnabled) {
+                        cdpStatus = await overlayManager.updatePayload(buildCdpOverlayPayload()).catch(() => overlayManager.getStatus());
+                    }
+                } else if (appSettings.appComposerRingEnabled || appSettings.appTopBarEnabled) {
+                    pushOverlayPayloadAsync();
+                }
+
+                if (applied.normalizedKey === 'autoCheckUpdates' && appSettings.autoCheckUpdates) {
+                    triggerBackgroundUpdateCheck();
+                }
+
+                const msgs: Array<Record<string, unknown>> = [
+                    { command: 'configSaved', key: applied.normalizedKey },
+                    buildSyncSettingsControlsMessage(),
+                ];
                 if (action.command === 'setPanelPref') {
                     msgs.unshift({ command: 'panelPrefUpdated', key: applied.normalizedKey, value: Boolean(action.value) });
                 }
                 return {
                     ok: true,
-                    result: { settings: { ...settings }, panelPrefs: { ...panelHintPrefs }, zoomLevel },
+                    result: {
+                        key: applied.normalizedKey,
+                        settings: { ...settings },
+                        appSettings: getFullAppSettings(),
+                        cdpStatus,
+                        panelPrefs: { ...panelHintPrefs },
+                        zoomLevel,
+                    },
                     messages: msgs,
                     snapshot: buildSnapshotPayload(viewMode),
                 };
@@ -2773,8 +3916,7 @@ export function createSidecarRuntimeProvider(
                 if (!applied.ok) {
                     return { ok: false, statusCode: 400, error: applied.error };
                 }
-                await globalState.update('appSettings', { ...settings });
-                await durableState.flush();
+                await persistAppSettingsToDisk();
                 return {
                     ok: true,
                     result: { pollingInterval: settings.pollingInterval },
@@ -2801,21 +3943,198 @@ export function createSidecarRuntimeProvider(
                     : action;
                 const ignoredKeys = new Set(['command', 'settings', 'conversationId', 'workspaceUris', 'viewMode']);
                 const updatedKeys: string[] = [];
+                let anyOverlayChanged = false;
+                let orchModeChanged = false;
                 for (const [k, v] of Object.entries(bag)) {
                     if (ignoredKeys.has(k)) { continue; }
                     const applied = applySingleSetting(k, v);
                     if (!applied.ok) {
                         return { ok: false, statusCode: 400, error: applied.error };
                     }
+                    if (applied.overlayChanged) { anyOverlayChanged = true; }
+                    if (applied.normalizedKey === 'orchestratorPricingMode') { orchModeChanged = true; }
                     updatedKeys.push(applied.normalizedKey);
                 }
-                await globalState.update('appSettings', { ...settings });
-                await durableState.flush();
+                if (orchModeChanged) {
+                    await pricingStore.setOrchestratorPricingMode(appSettings.orchestratorPricingMode);
+                }
+                await persistAppSettingsToDisk();
+                if (anyOverlayChanged) {
+                    const togglePromise = syncOverlayTogglesIfChanged();
+                    if (togglePromise) { await togglePromise; }
+                    if (appSettings.appComposerRingEnabled || appSettings.appTopBarEnabled) {
+                        await overlayManager.updatePayload(buildCdpOverlayPayload()).catch(() => {});
+                    }
+                }
                 return {
                     ok: true,
-                    result: { updatedKeys, settings: { ...settings }, panelPrefs: { ...panelHintPrefs }, zoomLevel },
-                    messages: updatedKeys.map(k => ({ command: 'configSaved', key: k })),
+                    result: {
+                        updatedKeys,
+                        settings: { ...settings },
+                        appSettings: getFullAppSettings(),
+                        cdpStatus: overlayManager.getStatus(),
+                        panelPrefs: { ...panelHintPrefs },
+                        zoomLevel,
+                    },
+                    messages: [
+                        ...updatedKeys.map(k => ({ command: 'configSaved', key: k })),
+                        buildSyncSettingsControlsMessage(),
+                    ],
                     snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'checkForUpdates': {
+                const force = action.force !== false;
+                const res = await runUpdateCheck(force);
+                const msgPayload: Record<string, unknown> = {
+                    type: 'updateCheckResult',
+                    command: 'updateCheckResult',
+                    status: res.status,
+                    currentVersion: res.currentVersion,
+                    latestVersion: res.latestVersion ?? lastUpdateStatusView?.latestVersion ?? null,
+                    hasUpdate: Boolean(res.hasUpdate || (res.status === 'not_modified' && lastUpdateStatusView?.hasUpdate)),
+                    updateAvailable: Boolean(res.hasUpdate || (res.status === 'not_modified' && lastUpdateStatusView?.hasUpdate)),
+                    checkedAt: res.checkedAt,
+                    releaseUrl: res.releaseInfo?.releaseUrl ?? lastUpdateStatusView?.releaseUrl ?? null,
+                    releaseNotesSummary: res.releaseInfo?.releaseNotesSummary ?? lastUpdateStatusView?.releaseNotesSummary ?? null,
+                    releaseInfo: res.releaseInfo ?? lastCachedReleaseInfo ?? null,
+                    error: res.error ?? null,
+                };
+                return {
+                    ok: res.status !== 'error',
+                    statusCode: 200,
+                    result: msgPayload,
+                    messages: [msgPayload],
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'applyPluginUpdate': {
+                let releaseInfo: PluginReleaseInfo | null = lastCachedReleaseInfo;
+                if (!releaseInfo && appSettings.lastUpdateCheck) {
+                    const luc = appSettings.lastUpdateCheck;
+                    if (luc.latestVersion && luc.assetUrl && luc.assetName) {
+                        releaseInfo = {
+                            version: luc.latestVersion,
+                            tagName: `v${luc.latestVersion.replace(/^v/i, '')}`,
+                            releaseUrl: luc.releaseUrl || `https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/tag/v${luc.latestVersion.replace(/^v/i, '')}`,
+                            releaseNotesSummary: luc.releaseNotesSummary || '',
+                            assetName: luc.assetName,
+                            assetUrl: luc.assetUrl,
+                            checksumsUrl: luc.checksumsUrl || null,
+                        };
+                    }
+                }
+                if (!releaseInfo) {
+                    const checked = await runUpdateCheck(true);
+                    if (checked.releaseInfo && checked.hasUpdate) {
+                        releaseInfo = checked.releaseInfo;
+                    } else if (!checked.hasUpdate && checked.status !== 'error') {
+                        const upToDatePayload: Record<string, unknown> = {
+                            type: 'pluginUpdateResult',
+                            command: 'pluginUpdateResult',
+                            ok: true,
+                            previousVersion: version,
+                            installedVersion: version,
+                            requiresReload: false,
+                            message: tBi(
+                                `Already on the latest version (v${version}).`,
+                                `当前已是最新版本（v${version}）。`,
+                            ),
+                        };
+                        return {
+                            ok: true,
+                            statusCode: 200,
+                            result: upToDatePayload,
+                            messages: [upToDatePayload],
+                            snapshot: buildSnapshotPayload(viewMode),
+                        };
+                    } else {
+                        const errMsg = checked.error || tBi(
+                            'No downloadable plugin release found. Run Check for Updates first.',
+                            '未找到可下载的插件版本，请先检查更新。',
+                        );
+                        const failPayload: Record<string, unknown> = {
+                            type: 'pluginUpdateResult',
+                            command: 'pluginUpdateResult',
+                            ok: false,
+                            previousVersion: version,
+                            installedVersion: version,
+                            requiresReload: false,
+                            message: errMsg,
+                            error: errMsg,
+                        };
+                        return {
+                            ok: false,
+                            statusCode: 200,
+                            error: errMsg,
+                            result: failPayload,
+                            messages: [failPayload],
+                            snapshot: buildSnapshotPayload(viewMode),
+                        };
+                    }
+                }
+
+                const targetPluginDir = resolveLivePluginDir();
+                const applied = await deps.applyAppPluginUpdate({
+                    targetPluginDir,
+                    releaseInfo,
+                    currentVersion: version,
+                });
+
+                if (applied.ok) {
+                    lastUpdateStatusView = {
+                        currentVersion: version,
+                        latestVersion: applied.installedVersion,
+                        updateAvailable: false,
+                        hasUpdate: false,
+                        status: 'applied',
+                        checkedAt: deps.now(),
+                        releaseUrl: releaseInfo.releaseUrl,
+                        releaseNotesSummary: releaseInfo.releaseNotesSummary,
+                        error: null,
+                        requiresReload: applied.requiresReload !== false,
+                    };
+                }
+
+                const msgPayload: Record<string, unknown> = {
+                    type: 'pluginUpdateResult',
+                    command: 'pluginUpdateResult',
+                    ok: applied.ok,
+                    previousVersion: applied.previousVersion,
+                    installedVersion: applied.installedVersion,
+                    requiresReload: applied.ok ? true : Boolean(applied.requiresReload),
+                    checksumVerified: applied.checksumVerified,
+                    rolledBack: applied.rolledBack,
+                    targetPluginDir,
+                    message: applied.ok
+                        ? (applied.message || tBi(
+                            `Updated to v${applied.installedVersion}. Toggle the plugin Off -> On in Antigravity Customizations to reload (do not force-kill Antigravity).`,
+                            `已升级至 v${applied.installedVersion}。请在 Antigravity 插件管理中将插件关闭再重新开启以安全重载。`,
+                        ))
+                        : (applied.error || applied.message || 'Plugin update failed'),
+                    ...(applied.error ? { error: applied.error } : {}),
+                };
+                return {
+                    ok: applied.ok,
+                    statusCode: 200,
+                    ...(applied.ok ? {} : { error: applied.error || applied.message }),
+                    result: msgPayload,
+                    messages: [msgPayload],
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'openExternalUrl': {
+                const safeUrl = validateExternalUrl(action.url);
+                if (!safeUrl) {
+                    return { ok: false, statusCode: 403, error: 'External URL rejected by strict HTTPS allowlist' };
+                }
+                await deps.openExternalUrl(safeUrl);
+                return {
+                    ok: true,
+                    result: { opened: safeUrl },
                 };
             }
 
@@ -2990,6 +4309,123 @@ export function createSidecarRuntimeProvider(
                 return { ok: true, result: { revealed: check.resolvedPath } };
             }
 
+            case 'calendarFilterSource': {
+                const rawSrc = action.source !== undefined ? action.source : action.value;
+                if (rawSrc !== 'all' && rawSrc !== 'app' && rawSrc !== 'ide' && rawSrc !== 'cli') {
+                    return { ok: false, statusCode: 400, error: 'Invalid calendar source filter' };
+                }
+                calendarSourceFilter = rawSrc;
+                return {
+                    ok: true,
+                    result: { sourceFilter: calendarSourceFilter },
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'calendarSetMetric': {
+                const rawMetric = action.metric !== undefined ? action.metric : action.value;
+                if (rawMetric !== 'tokens' && rawMetric !== 'cost') {
+                    return { ok: false, statusCode: 400, error: 'Invalid calendar metric mode' };
+                }
+                calendarMetricMode = rawMetric;
+                return {
+                    ok: true,
+                    result: { metricMode: calendarMetricMode },
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'calendarSetPeriod': {
+                const rawPeriod = action.period !== undefined ? action.period : action.value;
+                if (rawPeriod !== 'daily' && rawPeriod !== 'weekly' && rawPeriod !== 'monthly' && rawPeriod !== 'year' && rawPeriod !== 'all') {
+                    return { ok: false, statusCode: 400, error: 'Invalid calendar period mode' };
+                }
+                calendarPeriodMode = rawPeriod;
+                return {
+                    ok: true,
+                    result: { periodMode: calendarPeriodMode },
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'calendarSetView': {
+                const rawView = action.view !== undefined ? action.view : action.value;
+                if (rawView === '' || rawView === null || rawView === undefined || rawView === 'both') {
+                    calendarViewMode = undefined;
+                } else if (rawView === 'heatmap' || rawView === 'monthGrid') {
+                    calendarViewMode = rawView;
+                } else {
+                    return { ok: false, statusCode: 400, error: 'Invalid calendar view mode' };
+                }
+                return {
+                    ok: true,
+                    result: { viewMode: calendarViewMode ?? 'both' },
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'calendarSelectDate': {
+                const rawDate = action.date;
+                if (rawDate === null || rawDate === undefined || rawDate === '') {
+                    calendarSelectedDate = '';
+                } else if (typeof rawDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawDate.trim())) {
+                    calendarSelectedDate = rawDate.trim();
+                } else {
+                    return { ok: false, statusCode: 400, error: 'Invalid calendar date (expected YYYY-MM-DD)' };
+                }
+                return {
+                    ok: true,
+                    result: { selectedDate: calendarSelectedDate || null },
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'calendarJumpDate': {
+                const rawDate = typeof action.date === 'string' ? action.date.trim() : '';
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+                    return { ok: false, statusCode: 400, error: 'Invalid calendar jump date (expected YYYY-MM-DD)' };
+                }
+                const parts = rawDate.split('-');
+                const yr = Number(action.year ?? parts[0]);
+                const mo = Number(action.month ?? parts[1]);
+                if (Number.isInteger(yr) && yr >= 2020 && yr <= 2100 && Number.isInteger(mo) && mo >= 1 && mo <= 12) {
+                    calendarYear = yr;
+                    calendarMonth = mo;
+                }
+                calendarSelectedDate = rawDate;
+                calendarPeriodMode = 'daily';
+                return {
+                    ok: true,
+                    result: { selectedDate: calendarSelectedDate, year: calendarYear, month: calendarMonth },
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'calendarExportCsv':
+            case 'calendarExportJson': {
+                const isCsv = action.command === 'calendarExportCsv';
+                const nowMs = deps.now();
+                const exportOpts = buildCalendarRenderOptions(nowMs);
+                const bundle = buildCalendarExportData(dailyStore, calendarYear, calendarMonth, exportOpts);
+                const dateStamp = toLocalDateKey(new Date(nowMs));
+                const ext = isCsv ? 'csv' : 'json';
+                const filename = `antigravity-usage-${calendarSourceFilter}-${calendarPeriodMode}-${dateStamp}.${ext}`;
+                const content = isCsv ? bundle.csv : bundle.json;
+                const mimeType = isCsv ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8';
+                return {
+                    ok: true,
+                    filename,
+                    content,
+                    mimeType,
+                    result: {
+                        filename,
+                        content,
+                        mimeType,
+                        rowCount: bundle.rows.length,
+                    },
+                };
+            }
+
             case 'switchCalendarMonth': {
                 const yr = Number(action.year);
                 const mo = Number(action.month);
@@ -3007,6 +4443,7 @@ export function createSidecarRuntimeProvider(
 
             case 'clearCalendarHistory': {
                 dailyStore.clear();
+                calendarSelectedDate = '';
                 await durableState.flush();
                 return {
                     ok: true,
@@ -3042,11 +4479,15 @@ export function createSidecarRuntimeProvider(
             pollTimer = undefined;
         }
         abortController.abort();
+        try {
+            await overlayManager.dispose();
+        } catch { /* ignore */ }
         await durableState.flush();
     }
 
     if (options.autoStart !== false) {
         scheduleNextPoll();
+        triggerBackgroundUpdateCheck();
     }
 
     return {
@@ -3054,6 +4495,14 @@ export function createSidecarRuntimeProvider(
         renderHtml,
         getSnapshot,
         handleAction,
+        getOverlayBridgeAuth: () => ({
+            token: overlayBridgeToken,
+            allowedOrigin: overlayAllowedOrigin,
+        }),
+        handleOverlayAction,
+        getCdpStatus: () => overlayManager.getStatus(),
+        buildOverlayPayload: (nowMs?: number) => buildCdpOverlayPayload(nowMs),
+        getAppSettings: () => getFullAppSettings(),
         pollNow: (force = true) => runPollCycle(force),
         getState: () => ({
             lsInfo: cachedLsInfo,
@@ -3074,6 +4523,10 @@ export function createSidecarRuntimeProvider(
             lockedMainId,
             isPaused,
             settings: { ...settings, lockToMainAgent },
+            appSettings: getFullAppSettings(),
+            orchestratorPricingMode: appSettings.orchestratorPricingMode,
+            cdpStatus: overlayManager.getStatus(),
+            updateStatus: lastUpdateStatusView,
             lastUpdatedTime,
             pollCount,
             lastPollAtMs,
