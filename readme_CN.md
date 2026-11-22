@@ -218,4 +218,16 @@ IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 13 项）：
 
 由 **AGI-is-going-to-arrive** 维护。感谢 **SecretLUL** 报告 Windows 后端发现问题（[Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)），并感谢 **@AxelDZP** 提出次要端口 TLS 优先探测、`GetUserStatus` 结构校验与等价 proto3 纪元零值 `resetTime` 修复（[PR #74](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/74)）。
 
+衷心感谢以下 Antigravity 开源社区项目在交互设计与工程实践上的启发，为 **v1.17.5** 的体验与架构升级提供了宝贵参考（本项目的实现完全基于自有 TypeScript 核心与官方 Sidecar / VSIX 接口从零独立编写，未修改 `app.asar`，亦未复制任何外部代码）：
+
+- [`dimitr-io/antigravity-desktop-context`](https://github.com/dimitr-io/antigravity-desktop-context) — Antigravity App Sidecar `AUX_PANE` 工作流、20×5 点阵上下文可视化、双上限清晰标注及 CLI 风格 `/context` 纯文本导出。
+- [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) — 桌面端遥测交互探索、轮次与缓存可视化思路，以及 Antigravity v2.33+/v2.34+ 社区稳定性实践经验。
+- [`yuhuan-dev/antigravity-usage-monitor`](https://github.com/yuhuan-dev/antigravity-usage-monitor) — 零依赖 Sidecar 架构、Linux `/proc` 端口发现兜底方案，以及防范后台子智能体抢占的「锁定主会话（Lock to Main Agent）」保护机制。
+- [`ahmetdotsh/agy-context`](https://github.com/ahmetdotsh/agy-context) 与 [`ahmetdotsh/agy-usage`](https://github.com/ahmetdotsh/agy-usage) — 分段条形图 ↔ 点阵视图切换、有效预算与原生上限对照展示、最近一轮与会话累计缓存命中率区分，以及 ETag `unchanged` 增量短路优化。
+- [`arthurcavallari/antigravity-context-monitor`](https://github.com/arthurcavallari/antigravity-context-monitor) 与 [`arthurcavallari/antigravity-sidecar-kit`](https://github.com/arthurcavallari/antigravity-sidecar-kit) — 压缩检查点与最大占用项（Largest Items）上下文排查、`custom-*` 自定义模型配额隔离，以及跨平台无 BOM 安装实践。
+- [`jule-x/antigravity-context-monitor`](https://github.com/jule-x/antigravity-context-monitor) — 逐轮冷启动 / 部分命中 / 热缓存（Cold / Partial / Warm）提示词缓存分类与 `+Δ` 上下文净增长诊断。
+- [`bocai991/antigravity-quota-meter`](https://github.com/bocai991/antigravity-quota-meter) — `AUX_PANE` + `SIDEBAR` 双入口 Sidecar 挂载与滚动窗口配额消耗速率及续航预测。
+- [`vladsboev-web/chat_tokens`](https://github.com/vladsboev-web/chat_tokens) — 一键复制 `HANDOFF.md` 续接提示词与近期会话切换思路。
+- [`benedictusrey/Antigravity-Monitor`](https://github.com/benedictusrey/Antigravity-Monitor) — 明确区分「实测（Measured）」与「估算（Estimated）」状态徽章，以及将「回退（Rewind）」与「压缩（Compaction）」区分呈现的设计。
+
 [MIT 许可证](LICENSE) · [LINUX DO](https://linux.do/) · [Star 趋势](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)

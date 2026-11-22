@@ -214,8 +214,20 @@ IDE settings use the `antigravityContextMonitor.` prefix (13 settings total):
 - In WSL, the IDE extension can inspect the active distribution and connect through WSL interop. For Remote-WSL or Remote SSH, Antigravity may run the extension on the local UI host. [Project structure](docs/project_structure.md)
 - Long or internally summarized sessions can have incomplete telemetry. The monitor marks post-compaction/rewind estimates and missing steps explicitly. In Orchestrator mode, the monitor tracks both `planModel` and `executionModel` independently across cross-pool calls while preserving accurate context readings. [Context and token calculation](docs/technical_implementation.md) · [Community discussion of checkpoint summaries](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)
 
-## Credits
+## Acknowledgments
 
 Maintained by **AGI-is-going-to-arrive**. Thanks to **SecretLUL** for the Windows discovery report ([Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)) and **@AxelDZP** for secondary-port TLS-first discovery, `GetUserStatus` shape validation, and equivalent proto3 epoch-0 `resetTime` fixes ([PR #74](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/74)).
+
+We are grateful to the open-source Antigravity community projects whose design exploration and real-world engineering lessons inspired UX and architectural improvements in **v1.17.5** (our implementation is built independently from scratch atop our own TypeScript core and official Sidecar / VSIX APIs, without patching `app.asar` or copying code):
+
+- [`dimitr-io/antigravity-desktop-context`](https://github.com/dimitr-io/antigravity-desktop-context) — Antigravity App Sidecar `AUX_PANE` workflow, 20×5 dot-matrix context visualization, dual-cap clarity, and CLI-style `/context` text export.
+- [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) — Desktop telemetry UX exploration, turn/cache visualization ideas, and community stability lessons on Antigravity v2.33+/v2.34+.
+- [`yuhuan-dev/antigravity-usage-monitor`](https://github.com/yuhuan-dev/antigravity-usage-monitor) — Zero-dependency Sidecar architecture, Linux `/proc` port discovery fallback, and the "Lock to Main Agent" safeguard against subagent bursts.
+- [`ahmetdotsh/agy-context`](https://github.com/ahmetdotsh/agy-context) & [`ahmetdotsh/agy-usage`](https://github.com/ahmetdotsh/agy-usage) — Segmented bar ↔ matrix toggle, effective vs native limit presentation, last-turn vs cumulative cache rate distinction, and ETag `unchanged` short-circuiting.
+- [`arthurcavallari/antigravity-context-monitor`](https://github.com/arthurcavallari/antigravity-context-monitor) & [`arthurcavallari/antigravity-sidecar-kit`](https://github.com/arthurcavallari/antigravity-sidecar-kit) — Compaction checkpoint & largest-items context inspection, `custom-*` model quota isolation, and cross-platform BOM-safe installation practices.
+- [`jule-x/antigravity-context-monitor`](https://github.com/jule-x/antigravity-context-monitor) — Per-turn Cold / Partial / Warm prompt cache classification and `+Δ` context growth diagnostics.
+- [`bocai991/antigravity-quota-meter`](https://github.com/bocai991/antigravity-quota-meter) — Dual `AUX_PANE` + `SIDEBAR` Sidecar mounting and rolling quota burn-rate / runway estimation.
+- [`vladsboev-web/chat_tokens`](https://github.com/vladsboev-web/chat_tokens) — One-click `HANDOFF.md` continuation prompt export and recent conversation switching.
+- [`benedictusrey/Antigravity-Monitor`](https://github.com/benedictusrey/Antigravity-Monitor) — Explicit `Measured` vs `Estimated` state badges and distinguishing Rewind from Compaction.
 
 [MIT License](LICENSE) · [LINUX DO](https://linux.do/) · [Star history](https://www.star-history.com/#AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor&type=date&legend=top-left)

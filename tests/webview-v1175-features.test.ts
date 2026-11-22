@@ -694,6 +694,9 @@ describe('v1.17.5 Settings App-Sidecar Adaptation, About Dual Support, Script & 
                     : 'Antigravity App (Desktop 2.0+ Sidecar)',
             );
             expect(aboutHtml.match(/class="about-platform-chip about-platform-active"/g)).toHaveLength(2);
+            expect(aboutHtml).toContain('about-acks');
+            expect(aboutHtml).toContain('https://github.com/dimitr-io/antigravity-desktop-context');
+            expect(aboutHtml).toContain('https://github.com/benedictusrey/Antigravity-Monitor');
             expect(aboutHtml).not.toContain('令牌');
         }
     });

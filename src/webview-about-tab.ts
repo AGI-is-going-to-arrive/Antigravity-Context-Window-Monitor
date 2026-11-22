@@ -33,6 +33,8 @@ const ABOUT_ICON = {
     shieldCheck: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11.5 14.5 15.5 10"/></svg>',
     /** Globe */
     globe: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
+    /** Heart — Acknowledgments */
+    heart: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
 } as const;
 
 // ─── Feature Card Definitions ────────────────────────────────────────────────
@@ -203,6 +205,87 @@ export function buildAboutTabContent(version = '1.17.5'): string {
         </div>
     </section>`;
 
+    // ── Acknowledgments section ──
+    const ackProjects: Array<{
+        links: Array<{ label: string; href: string }>;
+        en: string;
+        zh: string;
+    }> = [
+        {
+            links: [{ label: 'dimitr-io/antigravity-desktop-context', href: 'https://github.com/dimitr-io/antigravity-desktop-context' }],
+            en: 'App Sidecar AUX_PANE workflow, 20×5 dot-matrix context view, dual-cap clarity, and /context text export.',
+            zh: 'App Sidecar AUX_PANE 工作流、20×5 点阵上下文视图、双上限清晰标注与 /context 文本导出。',
+        },
+        {
+            links: [{ label: 'elviscjn-cjn/antigravity-context-viewer', href: 'https://github.com/elviscjn-cjn/antigravity-context-viewer' }],
+            en: 'Desktop telemetry UX exploration, turn/cache visualization ideas, and v2.33+/v2.34+ stability lessons.',
+            zh: '桌面端遥测交互探索、轮次/缓存可视化思路与 Antigravity v2.33+/v2.34+ 稳定性实践经验。',
+        },
+        {
+            links: [{ label: 'yuhuan-dev/antigravity-usage-monitor', href: 'https://github.com/yuhuan-dev/antigravity-usage-monitor' }],
+            en: 'Zero-dependency Sidecar architecture, Linux /proc port discovery fallback, and Lock to Main Agent.',
+            zh: '零依赖 Sidecar 架构、Linux /proc 端口发现兜底与「锁定主会话」防子智能体抢占机制。',
+        },
+        {
+            links: [
+                { label: 'ahmetdotsh/agy-context', href: 'https://github.com/ahmetdotsh/agy-context' },
+                { label: 'agy-usage', href: 'https://github.com/ahmetdotsh/agy-usage' },
+            ],
+            en: 'Segmented bar ↔ matrix toggle, effective vs native limits, last-turn vs cumulative cache rate, and ETag short-circuiting.',
+            zh: '分段条形 ↔ 点阵切换、有效预算与原生上限对照、最近一轮与累计缓存率区分及 ETag 增量短路。',
+        },
+        {
+            links: [
+                { label: 'arthurcavallari/antigravity-context-monitor', href: 'https://github.com/arthurcavallari/antigravity-context-monitor' },
+                { label: 'antigravity-sidecar-kit', href: 'https://github.com/arthurcavallari/antigravity-sidecar-kit' },
+            ],
+            en: 'Compaction checkpoint & largest-items inspection, custom-* quota isolation, and BOM-safe installation.',
+            zh: '压缩检查点与最大占用项排查、custom-* 自定义模型配额隔离及跨平台无 BOM 安装实践。',
+        },
+        {
+            links: [{ label: 'jule-x/antigravity-context-monitor', href: 'https://github.com/jule-x/antigravity-context-monitor' }],
+            en: 'Per-turn Cold / Partial / Warm prompt cache classification and +Δ context growth diagnostics.',
+            zh: '逐轮冷启动 / 部分命中 / 热缓存提示词缓存分类与 +Δ 上下文净增长诊断。',
+        },
+        {
+            links: [{ label: 'bocai991/antigravity-quota-meter', href: 'https://github.com/bocai991/antigravity-quota-meter' }],
+            en: 'Dual AUX_PANE + SIDEBAR Sidecar mounting and rolling quota burn-rate / runway estimation.',
+            zh: 'AUX_PANE + SIDEBAR 双入口 Sidecar 挂载与滚动窗口配额消耗速率及续航预测。',
+        },
+        {
+            links: [{ label: 'vladsboev-web/chat_tokens', href: 'https://github.com/vladsboev-web/chat_tokens' }],
+            en: 'One-click HANDOFF.md continuation prompt export and recent conversation switching.',
+            zh: '一键导出 HANDOFF.md 续接提示词与近期会话切换。',
+        },
+        {
+            links: [{ label: 'benedictusrey/Antigravity-Monitor', href: 'https://github.com/benedictusrey/Antigravity-Monitor' }],
+            en: 'Explicit Measured vs Estimated state badges and distinguishing Rewind from Compaction.',
+            zh: '明确区分实测与估算状态徽章，以及将回退（Rewind）与压缩（Compaction）区分呈现。',
+        },
+    ];
+
+    const ackItems = ackProjects.map(project => {
+        const linkHtml = project.links
+            .map(l => `<a class="about-ack-link" href="${esc(l.href)}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a>`)
+            .join(' &amp; ');
+        return `<li class="about-ack-item">${linkHtml} — <span class="about-ack-desc">${tBiHtml(project.en, project.zh)}</span></li>`;
+    }).join('');
+
+    const acknowledgments = `
+    <section class="about-section about-acks">
+        <h3 class="about-section-title">
+            ${ABOUT_ICON.heart}
+            <span>${tBiHtml('Acknowledgments', '致谢')}</span>
+        </h3>
+        <div class="about-info-box about-info-acks">
+            <p>${tBiHtml(
+        'Built independently from scratch atop our own core and official Sidecar / VSIX APIs without patching app.asar or copying code. Grateful to the open-source Antigravity community projects that inspired UX and architecture improvements in v1.17.5:',
+        '本项目基于自有核心与官方 Sidecar / VSIX 接口从零独立实现（不修改 app.asar、不复制外部代码）。衷心感谢以下开源 Antigravity 社区项目为 v1.17.5 带来的交互与架构启发：',
+    )}</p>
+            <ul class="about-ack-list">${ackItems}</ul>
+        </div>
+    </section>`;
+
     // ── Tips section ──
     const tips = `
     <section class="about-section">
@@ -279,7 +362,7 @@ export function buildAboutTabContent(version = '1.17.5'): string {
         </div>
     </section>`;
 
-    return `<div class="about-page">${hero}${nav}${github}${tips}${compatibility}${disclaimer}${langHint}</div>`;
+    return `<div class="about-page">${hero}${nav}${github}${acknowledgments}${tips}${compatibility}${disclaimer}${langHint}</div>`;
 }
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
@@ -609,6 +692,44 @@ body[data-lang="both"] .about-card-desc .bi-zh {
     height: 13px;
     color: var(--ed-accent);
     flex-shrink: 0;
+}
+
+/* Open-source community acknowledgments list */
+.about-ack-list {
+    list-style: none;
+    margin: 10px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.about-ack-item {
+    font-size: 12px;
+    line-height: 1.52;
+    color: var(--ed-ink-secondary);
+    overflow-wrap: anywhere;
+    min-width: 0;
+}
+
+.about-ack-link {
+    color: var(--ed-accent);
+    font-weight: 550;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    overflow-wrap: anywhere;
+}
+
+@media (hover: hover) {
+    .about-ack-link:hover {
+        color: var(--ed-accent-hover);
+    }
+}
+
+.about-ack-link:focus-visible {
+    outline: 2px solid var(--ed-accent);
+    outline-offset: 2px;
+    border-radius: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
