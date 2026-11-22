@@ -17,6 +17,32 @@ import { MIN_OUTPUT_TOKENS_FOR_SPEED, MIN_STREAM_SECONDS } from './telemetry-met
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+/** Origin surface where usage was captured (backward-compatible; legacy records default to 'unknown'). */
+export type UsageSurface = 'app' | 'ide' | 'cli' | 'unknown';
+
+/** Normalize raw surface strings (e.g. 'app-sidecar', 'vscode', 'desktop') to canonical UsageSurface. */
+export function normalizeUsageSurface(raw?: string | null): UsageSurface {
+    if (!raw || typeof raw !== 'string') { return 'unknown'; }
+    const v = raw.trim().toLowerCase();
+    if (!v) { return 'unknown'; }
+    if (v === 'app' || v === 'app-sidecar' || v === 'desktop' || v === 'antigravity-app') { return 'app'; }
+    if (v === 'ide' || v === 'vscode' || v === 'antigravity-ide') { return 'ide'; }
+    if (v === 'cli' || v === 'agy-cli' || v === 'antigravity-cli') { return 'cli'; }
+    return 'unknown';
+}
+
+/** Per-surface aggregated usage breakdown within a bucket, settled entry, or archived cycle. */
+export interface SurfaceUsageStats {
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    credits: number;
+    estimatedCost: number;
+}
+
 /** Additive timing and cache-hit telemetry carried per model in ledger & settled entries */
 export interface LedgerModelTelemetry {
     ttftSum: number;
@@ -78,6 +104,8 @@ export interface LedgerRecordedCall {
     ttftSeconds?: number;
     /** Valid streamingSeconds (> 0) for timing preservation across settlement (optional for v1 compat) */
     streamingSeconds?: number;
+    /** Origin surface where this call was captured (optional for v1 compat) */
+    surface?: UsageSurface;
 }
 
 /** A single account bucket within a day */
@@ -97,6 +125,10 @@ export interface LedgerAccountBucket {
     recordedCallIds: string[];
     /** Accepted calls retained for cutoff-aware quota settlement */
     recordedCalls: LedgerRecordedCall[];
+    /** Dominant/latest known origin surface for this bucket (optional for v1 compat) */
+    surface?: UsageSurface;
+    /** Per-surface usage breakdown when tagged calls are present (optional for v1 compat) */
+    surfaceBreakdown?: Partial<Record<UsageSurface, SurfaceUsageStats>>;
 }
 
 /** A settled (quota-reset) entry — frozen snapshot of a pool's data at reset time */
@@ -124,6 +156,10 @@ export interface LedgerSettledEntry {
     modelCalls: Record<string, number>;
     /** Per-model additive timing & cache-hit telemetry preserved across quota settlement (optional for v1 compat) */
     modelTelemetry?: Record<string, LedgerModelTelemetry>;
+    /** Dominant/origin surface for this settled entry (optional for v1 compat) */
+    surface?: UsageSurface;
+    /** Per-surface usage breakdown preserved across settlement (optional for v1 compat) */
+    surfaceBreakdown?: Partial<Record<UsageSurface, SurfaceUsageStats>>;
 }
 
 /** Full day entry containing active buckets + settled entries */
@@ -184,6 +220,8 @@ export interface LedgerCallEntry {
     call: GMCallEntry;
     /** Externally-provided unique key (e.g. 'cascadeId:index'). Used for dedup. */
     dedupKey: string;
+    /** Optional origin surface ('app' | 'ide' | 'cli' | 'unknown'). */
+    surface?: UsageSurface;
 }
 
 /** Fallback: build a dedup key from call fields (best-effort, may collide for placeholder data). */
@@ -485,6 +523,100 @@ function subtractStatsFromBucket(bucket: LedgerAccountBucket, key: string, stats
     }
 }
 
+function emptySurfaceStats(): SurfaceUsageStats {
+    return {
+        calls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        credits: 0,
+        estimatedCost: 0,
+    };
+}
+
+function addSurfaceStats(target: SurfaceUsageStats, source: SurfaceUsageStats): void {
+    target.calls += source.calls;
+    target.inputTokens += source.inputTokens;
+    target.outputTokens += source.outputTokens;
+    target.thinkingTokens += source.thinkingTokens;
+    target.cacheReadTokens += source.cacheReadTokens;
+    target.cacheCreationTokens += source.cacheCreationTokens;
+    target.credits += source.credits;
+    target.estimatedCost += source.estimatedCost;
+}
+
+function subtractSurfaceStats(target: SurfaceUsageStats, source: SurfaceUsageStats): void {
+    target.calls = Math.max(0, target.calls - source.calls);
+    target.inputTokens = Math.max(0, target.inputTokens - source.inputTokens);
+    target.outputTokens = Math.max(0, target.outputTokens - source.outputTokens);
+    target.thinkingTokens = Math.max(0, target.thinkingTokens - source.thinkingTokens);
+    target.cacheReadTokens = Math.max(0, target.cacheReadTokens - source.cacheReadTokens);
+    target.cacheCreationTokens = Math.max(0, target.cacheCreationTokens - source.cacheCreationTokens);
+    target.credits = Math.max(0, target.credits - source.credits);
+    target.estimatedCost = Math.max(0, target.estimatedCost - source.estimatedCost);
+}
+
+function hasSurfaceStatsData(stats: SurfaceUsageStats): boolean {
+    return stats.calls > 0
+        || stats.inputTokens > 0
+        || stats.outputTokens > 0
+        || stats.thinkingTokens > 0
+        || stats.cacheReadTokens > 0
+        || stats.cacheCreationTokens > 0
+        || stats.credits > 0
+        || stats.estimatedCost > 0;
+}
+
+export function cloneSurfaceBreakdown(
+    breakdown?: Partial<Record<UsageSurface, SurfaceUsageStats>>,
+): Partial<Record<UsageSurface, SurfaceUsageStats>> | undefined {
+    if (!breakdown || typeof breakdown !== 'object') { return undefined; }
+    const out: Partial<Record<UsageSurface, SurfaceUsageStats>> = {};
+    let count = 0;
+    for (const [key, val] of Object.entries(breakdown)) {
+        if (!val || typeof val !== 'object') { continue; }
+        const surf = normalizeUsageSurface(key);
+        const existing = out[surf] || emptySurfaceStats();
+        addSurfaceStats(existing, {
+            calls: Number(val.calls) || 0,
+            inputTokens: Number(val.inputTokens) || 0,
+            outputTokens: Number(val.outputTokens) || 0,
+            thinkingTokens: Number(val.thinkingTokens) || 0,
+            cacheReadTokens: Number(val.cacheReadTokens) || 0,
+            cacheCreationTokens: Number(val.cacheCreationTokens) || 0,
+            credits: Number(val.credits) || 0,
+            estimatedCost: Number(val.estimatedCost) || 0,
+        });
+        if (hasSurfaceStatsData(existing)) {
+            out[surf] = existing;
+            count++;
+        }
+    }
+    return count > 0 ? out : undefined;
+}
+
+export function dominantUsageSurface(
+    breakdown?: Partial<Record<UsageSurface, SurfaceUsageStats>>,
+    fallback?: UsageSurface,
+): UsageSurface | undefined {
+    if (breakdown) {
+        let best: UsageSurface | undefined;
+        let bestCalls = -1;
+        for (const [k, v] of Object.entries(breakdown)) {
+            const surf = normalizeUsageSurface(k);
+            if (surf === 'unknown' || !v || !hasSurfaceStatsData(v)) { continue; }
+            if (v.calls > bestCalls) {
+                bestCalls = v.calls;
+                best = surf;
+            }
+        }
+        if (best) { return best; }
+    }
+    return fallback && fallback !== 'unknown' ? fallback : undefined;
+}
+
 function emptyBucket(email: string): LedgerAccountBucket {
     return {
         accountEmail: email,
@@ -506,6 +638,7 @@ function emptyBucket(email: string): LedgerAccountBucket {
 
 export class DailyLedger {
     private _dateKey: string;
+    private _defaultSurface?: UsageSurface;
     /** Per-account active buckets (key = accountEmail or '' for unknown) */
     private _accounts = new Map<string, LedgerAccountBucket>();
     /** Settled entries from quota resets (waiting for midnight flush) */
@@ -513,12 +646,25 @@ export class DailyLedger {
     /** Fast lookup set for deduplication (union of all bucket recordedCallIds) */
     private _allRecordedIds = new Set<string>();
 
-    constructor(dateKey?: string) {
+    constructor(dateKey?: string, surface?: UsageSurface) {
         this._dateKey = dateKey || toLocalDateKey();
+        const normalized = normalizeUsageSurface(surface);
+        if (normalized !== 'unknown') {
+            this._defaultSurface = normalized;
+        }
     }
 
     /** Current date key */
     get dateKey(): string { return this._dateKey; }
+
+    /** Default surface tag applied to calls without an explicit per-call surface */
+    get surface(): UsageSurface { return this._defaultSurface || 'unknown'; }
+
+    /** Configure default surface tag ('app' | 'ide' | 'cli' | 'unknown') */
+    setSurface(surface?: UsageSurface): void {
+        const normalized = normalizeUsageSurface(surface);
+        this._defaultSurface = normalized === 'unknown' ? undefined : normalized;
+    }
 
     /**
      * Normalize an empty ledger whose date no longer matches the local day.
@@ -611,9 +757,10 @@ export class DailyLedger {
      * Each entry carries a `dedupKey` (provided by the tracker) for reliable dedup.
      * @returns number of newly recorded calls
      */
-    recordCalls(entries: LedgerCallEntry[]): number {
+    recordCalls(entries: LedgerCallEntry[], defaultSurface?: UsageSurface): number {
         let added = 0;
         const todayKey = toLocalDateKey();
+        const fallbackSurface = normalizeUsageSurface(defaultSurface ?? this._defaultSurface);
 
         // If the date has rolled over, data-bearing ledgers must wait for
         // performDailyArchival() to rollover before recording for the new day.
@@ -651,6 +798,28 @@ export class DailyLedger {
                 this._accounts.set(email, bucket);
             }
 
+            const callSurface = normalizeUsageSurface(
+                entry.surface ?? (call as { surface?: string }).surface ?? fallbackSurface,
+            );
+
+            // If this bucket previously accumulated untagged calls and now receives a tagged call,
+            // seed surfaceBreakdown with the prior untagged totals so per-surface sums match bucket totals.
+            if (callSurface !== 'unknown' && !bucket.surfaceBreakdown && bucket.totalCalls > 0) {
+                const priorSurface = normalizeUsageSurface(bucket.surface);
+                bucket.surfaceBreakdown = {
+                    [priorSurface]: {
+                        calls: bucket.totalCalls,
+                        inputTokens: bucket.totalInputTokens,
+                        outputTokens: bucket.totalOutputTokens,
+                        thinkingTokens: bucket.totalThinkingTokens,
+                        cacheReadTokens: bucket.totalCacheRead,
+                        cacheCreationTokens: bucket.totalCacheCreation,
+                        credits: bucket.totalCredits,
+                        estimatedCost: bucket.totalEstimatedCost,
+                    },
+                };
+            }
+
             // Accumulate totals
             bucket.totalCalls++;
             bucket.totalInputTokens += call.inputTokens;
@@ -662,6 +831,28 @@ export class DailyLedger {
 
             const cost = estimateCallCost(call, this._dateKey);
             bucket.totalEstimatedCost += cost;
+
+            if (callSurface !== 'unknown' || bucket.surfaceBreakdown) {
+                if (!bucket.surfaceBreakdown) {
+                    bucket.surfaceBreakdown = {};
+                }
+                const sStats = bucket.surfaceBreakdown[callSurface] || emptySurfaceStats();
+                addSurfaceStats(sStats, {
+                    calls: 1,
+                    inputTokens: call.inputTokens,
+                    outputTokens: call.outputTokens,
+                    thinkingTokens: call.thinkingTokens,
+                    cacheReadTokens: call.cacheReadTokens,
+                    cacheCreationTokens: call.cacheCreationTokens,
+                    credits: call.credits,
+                    estimatedCost: cost,
+                });
+                bucket.surfaceBreakdown[callSurface] = sStats;
+                const dominant = dominantUsageSurface(bucket.surfaceBreakdown, callSurface);
+                if (dominant) {
+                    bucket.surface = dominant;
+                }
+            }
 
             // Per-model breakdown.
             // normalizeModelDisplayName() returns its input UNCHANGED when it cannot resolve a name,
@@ -716,6 +907,9 @@ export class DailyLedger {
             }
             if (typeof call.streamingSeconds === 'number' && Number.isFinite(call.streamingSeconds) && call.streamingSeconds > 0) {
                 recordedCall.streamingSeconds = call.streamingSeconds;
+            }
+            if (callSurface !== 'unknown') {
+                recordedCall.surface = callSurface;
             }
             bucket.recordedCalls.push(recordedCall);
             this._allRecordedIds.add(id);
@@ -788,6 +982,12 @@ export class DailyLedger {
                         recorded.estimatedCost = cost;
                         stats.estimatedCost += cost;
                         bucket.totalEstimatedCost += cost;
+                        if (bucket.surfaceBreakdown) {
+                            const surf = normalizeUsageSurface(recorded.surface ?? bucket.surface);
+                            if (bucket.surfaceBreakdown[surf]) {
+                                bucket.surfaceBreakdown[surf]!.estimatedCost += cost;
+                            }
+                        }
                         updated = true;
                     }
                 }
@@ -817,6 +1017,8 @@ export class DailyLedger {
             : undefined;
         const settledStatsByModel: Record<string, LedgerModelStats> = {};
         const representedStatsByModel: Record<string, LedgerModelStats> = {};
+        const settledSurfaceBreakdown: Partial<Record<UsageSurface, SurfaceUsageStats>> = {};
+        const hasSurfaceTracking = Boolean(bucket.surfaceBreakdown || bucket.surface);
         const recordedCalls = Array.isArray(bucket.recordedCalls) ? bucket.recordedCalls : [];
         const remainingCalls: LedgerRecordedCall[] = [];
 
@@ -834,6 +1036,22 @@ export class DailyLedger {
             const stats = settledStatsByModel[call.modelKey] || emptyModelStats();
             addRecordedCallStats(stats, call);
             settledStatsByModel[call.modelKey] = stats;
+
+            if (hasSurfaceTracking || call.surface) {
+                const surf = normalizeUsageSurface(call.surface ?? bucket.surface);
+                const sStats = settledSurfaceBreakdown[surf] || emptySurfaceStats();
+                addSurfaceStats(sStats, {
+                    calls: 1,
+                    inputTokens: call.inputTokens,
+                    outputTokens: call.outputTokens,
+                    thinkingTokens: call.thinkingTokens,
+                    cacheReadTokens: call.cacheReadTokens,
+                    cacheCreationTokens: call.cacheCreationTokens,
+                    credits: call.credits,
+                    estimatedCost: call.estimatedCost,
+                });
+                settledSurfaceBreakdown[surf] = sStats;
+            }
         }
         bucket.recordedCalls = remainingCalls;
 
@@ -844,6 +1062,21 @@ export class DailyLedger {
                 const stats = settledStatsByModel[modelKey] || emptyModelStats();
                 addModelStats(stats, unrepresented);
                 settledStatsByModel[modelKey] = stats;
+                if (hasSurfaceTracking) {
+                    const fallbackSurf = normalizeUsageSurface(bucket.surface);
+                    const sStats = settledSurfaceBreakdown[fallbackSurf] || emptySurfaceStats();
+                    addSurfaceStats(sStats, {
+                        calls: unrepresented.calls,
+                        inputTokens: unrepresented.inputTokens,
+                        outputTokens: unrepresented.outputTokens,
+                        thinkingTokens: unrepresented.thinkingTokens,
+                        cacheReadTokens: unrepresented.cacheReadTokens,
+                        cacheCreationTokens: unrepresented.cacheCreationTokens,
+                        credits: unrepresented.credits,
+                        estimatedCost: unrepresented.estimatedCost,
+                    });
+                    settledSurfaceBreakdown[fallbackSurf] = sStats;
+                }
             }
         }
 
@@ -885,6 +1118,25 @@ export class DailyLedger {
             subtractStatsFromBucket(bucket, key, ms);
         }
 
+        if (bucket.surfaceBreakdown) {
+            for (const [surfKey, sStats] of Object.entries(settledSurfaceBreakdown)) {
+                const surf = normalizeUsageSurface(surfKey);
+                const activeSurf = bucket.surfaceBreakdown[surf];
+                if (activeSurf && sStats) {
+                    subtractSurfaceStats(activeSurf, sStats);
+                    if (!hasSurfaceStatsData(activeSurf)) {
+                        delete bucket.surfaceBreakdown[surf];
+                    }
+                }
+            }
+            if (Object.keys(bucket.surfaceBreakdown).length === 0) {
+                delete bucket.surfaceBreakdown;
+            }
+        }
+
+        const clonedSettledBreakdown = cloneSurfaceBreakdown(settledSurfaceBreakdown);
+        const settledDominantSurface = dominantUsageSurface(clonedSettledBreakdown, bucket.surface);
+
         const entry: LedgerSettledEntry = {
             settledAt: new Date().toISOString(),
             accountEmail: email,
@@ -901,6 +1153,8 @@ export class DailyLedger {
             settledCutoffTime: cutoffMs,
             modelCalls,
             ...(Object.keys(modelTelemetry).length > 0 ? { modelTelemetry } : {}),
+            ...(settledDominantSurface ? { surface: settledDominantSurface } : {}),
+            ...(clonedSettledBreakdown ? { surfaceBreakdown: clonedSettledBreakdown } : {}),
         };
 
         this._settled.push(entry);
@@ -908,13 +1162,14 @@ export class DailyLedger {
     }
 
     /**
-     * Midnight rollover: return all data for the completed day, then reset.
-     * Returns combined active + settled data for the day.
+     * Non-destructive snapshot of the current ledger day (active + settled) for
+     * live Calendar rendering and diagnostics without resetting state.
      */
-    rollover(archiveDateKey?: string): LedgerDayData {
-        const dateKey = archiveDateKey || this._dateKey;
+    getLiveDaySnapshot(dateKeyOverride?: string): LedgerDayData {
+        const dateKey = dateKeyOverride || this._dateKey;
         const accounts: Record<string, LedgerAccountBucket> = {};
         for (const [email, bucket] of this._accounts) {
+            const clonedBreakdown = cloneSurfaceBreakdown(bucket.surfaceBreakdown);
             accounts[email] = {
                 ...bucket,
                 modelStats: Object.fromEntries(
@@ -922,14 +1177,37 @@ export class DailyLedger {
                 ),
                 recordedCallIds: [...bucket.recordedCallIds],
                 recordedCalls: bucket.recordedCalls.map(c => ({ ...c })),
+                ...(clonedBreakdown ? { surfaceBreakdown: clonedBreakdown } : {}),
             };
         }
 
-        const result: LedgerDayData = {
+        return {
             dateKey,
             accounts,
-            settled: [...this._settled],
+            settled: this._settled.map(s => {
+                const clonedBreakdown = cloneSurfaceBreakdown(s.surfaceBreakdown);
+                return {
+                    ...s,
+                    poolModelIds: [...(s.poolModelIds || [])],
+                    poolModelLabels: [...(s.poolModelLabels || [])],
+                    modelCalls: { ...(s.modelCalls || {}) },
+                    ...(s.modelTelemetry ? {
+                        modelTelemetry: Object.fromEntries(
+                            Object.entries(s.modelTelemetry).map(([k, v]) => [k, { ...v }]),
+                        ),
+                    } : {}),
+                    ...(clonedBreakdown ? { surfaceBreakdown: clonedBreakdown } : {}),
+                };
+            }),
         };
+    }
+
+    /**
+     * Midnight rollover: return all data for the completed day, then reset.
+     * Returns combined active + settled data for the day.
+     */
+    rollover(archiveDateKey?: string): LedgerDayData {
+        const result = this.getLiveDaySnapshot(archiveDateKey || this._dateKey);
 
         // Reset for new day
         this._resetForNewDay(toLocalDateKey());
@@ -967,6 +1245,61 @@ export class DailyLedger {
         return { totalCalls, totalCost };
     }
 
+    /** Get combined additive token, call, credit, and cost totals (active + settled) for today */
+    getTodayDetailedTotals(): {
+        totalCalls: number;
+        totalCost: number;
+        totalCredits: number;
+        totalInputTokens: number;
+        totalOutputTokens: number;
+        totalThinkingTokens: number;
+        totalCacheRead: number;
+        totalCacheCreation: number;
+        totalAdditiveTokens: number;
+    } {
+        let totalCalls = 0;
+        let totalCost = 0;
+        let totalCredits = 0;
+        let totalInputTokens = 0;
+        let totalOutputTokens = 0;
+        let totalThinkingTokens = 0;
+        let totalCacheRead = 0;
+        let totalCacheCreation = 0;
+
+        for (const bucket of this._accounts.values()) {
+            totalCalls += bucket.totalCalls;
+            totalCost += bucket.totalEstimatedCost;
+            totalCredits += bucket.totalCredits;
+            totalInputTokens += bucket.totalInputTokens;
+            totalOutputTokens += bucket.totalOutputTokens;
+            totalThinkingTokens += bucket.totalThinkingTokens;
+            totalCacheRead += bucket.totalCacheRead;
+            totalCacheCreation += bucket.totalCacheCreation;
+        }
+        for (const entry of this._settled) {
+            totalCalls += entry.totalCalls;
+            totalCost += entry.totalEstimatedCost;
+            totalCredits += entry.totalCredits;
+            totalInputTokens += entry.totalInputTokens;
+            totalOutputTokens += entry.totalOutputTokens;
+            totalThinkingTokens += entry.totalThinkingTokens || 0;
+            totalCacheRead += entry.totalCacheRead;
+            totalCacheCreation += entry.totalCacheCreation || 0;
+        }
+
+        return {
+            totalCalls,
+            totalCost,
+            totalCredits,
+            totalInputTokens,
+            totalOutputTokens,
+            totalThinkingTokens,
+            totalCacheRead,
+            totalCacheCreation,
+            totalAdditiveTokens: totalInputTokens + totalCacheRead + totalCacheCreation + totalOutputTokens,
+        };
+    }
+
     /** Check if ledger has any data (active or settled) */
     get hasData(): boolean {
         for (const bucket of this._accounts.values()) {
@@ -978,22 +1311,12 @@ export class DailyLedger {
     // ─── Serialization ───────────────────────────────────────────────────
 
     serialize(): DailyLedgerState {
-        const accounts: Record<string, LedgerAccountBucket> = {};
-        for (const [email, bucket] of this._accounts) {
-            accounts[email] = {
-                ...bucket,
-                modelStats: Object.fromEntries(
-                    Object.entries(bucket.modelStats || {}).map(([k, v]) => [k, { ...v }]),
-                ),
-                recordedCallIds: [...bucket.recordedCallIds],
-                recordedCalls: bucket.recordedCalls.map(c => ({ ...c })),
-            };
-        }
+        const snapshot = this.getLiveDaySnapshot(this._dateKey);
         return {
             version: 1,
-            dateKey: this._dateKey,
-            accounts,
-            settled: [...this._settled],
+            dateKey: snapshot.dateKey,
+            accounts: snapshot.accounts,
+            settled: snapshot.settled,
         };
     }
 
@@ -1007,7 +1330,15 @@ export class DailyLedger {
         // starting the new day. Empty stale ledgers are normalized instead;
         // there is nothing to flush.
         ledger._dateKey = data.dateKey;
-        ledger._settled = Array.isArray(data.settled) ? [...data.settled] : [];
+        ledger._settled = Array.isArray(data.settled)
+            ? data.settled.map(s => {
+                const clonedBreakdown = cloneSurfaceBreakdown(s.surfaceBreakdown);
+                return {
+                    ...s,
+                    ...(clonedBreakdown ? { surfaceBreakdown: clonedBreakdown } : {}),
+                };
+            })
+            : [];
 
         if (data.accounts && typeof data.accounts === 'object') {
             for (const [email, bucket] of Object.entries(data.accounts)) {
@@ -1017,6 +1348,7 @@ export class DailyLedger {
                         restoredModelStats[k] = { ...v };
                     }
                 }
+                const clonedBreakdown = cloneSurfaceBreakdown(bucket.surfaceBreakdown);
                 const restored: LedgerAccountBucket = {
                     ...bucket,
                     modelStats: restoredModelStats,
@@ -1026,6 +1358,7 @@ export class DailyLedger {
                     recordedCalls: Array.isArray(bucket.recordedCalls)
                         ? bucket.recordedCalls.map(c => ({ ...c }))
                         : [],
+                    ...(clonedBreakdown ? { surfaceBreakdown: clonedBreakdown } : {}),
                 };
                 ledger._accounts.set(email, restored);
                 // Rebuild dedup set
