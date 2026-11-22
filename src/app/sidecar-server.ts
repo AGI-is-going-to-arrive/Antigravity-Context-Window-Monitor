@@ -7,7 +7,10 @@
  */
 
 import * as crypto from 'crypto';
+import * as fs from 'fs';
 import * as http from 'http';
+import type * as net from 'net';
+import * as path from 'path';
 import { getHostBridgeScript, type HostBridgeOptions } from './host-bridge';
 import { getThemeAdapterStyles } from './theme-adapter';
 import type {
@@ -24,8 +27,10 @@ import type {
 
 export const MAX_ACTION_BODY_BYTES = 256 * 1024;
 export const DEFAULT_SIDECAR_VERSION = '1.17.5';
+export const ALLOWED_IMAGE_FILENAME_RE = /^[a-z0-9-]+\.png$/;
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const IMAGE_ROUTE_RE = /^\/assets\/images\/([a-z0-9-]+\.png)$/;
 
 export interface SidecarHandlerOptions {
     /** Plugin version returned by /api/health and passed to renderHtml. */
@@ -34,6 +39,8 @@ export interface SidecarHandlerOptions {
     isSidecarEnv?: boolean;
     /** Optional overrides for the injected host bridge script. */
     hostBridgeOptions?: HostBridgeOptions;
+    /** Optional override directory containing bundled offline PNG illustrations. */
+    imagesDir?: string;
 }
 
 export interface RenderedPageResult {
@@ -43,13 +50,37 @@ export interface RenderedPageResult {
     headers: Record<string, string>;
 }
 
+export interface AssetImageResult {
+    status: number;
+    contentType: string;
+    body: Buffer | string;
+    headers: Record<string, string>;
+}
+
+export type SidecarSnapshotHttpBody =
+    | { unchanged: true; hash: string }
+    | {
+        unchanged: false;
+        hash: string;
+        snapshot: SidecarSnapshotPayload;
+        data?: unknown;
+        html?: string;
+    };
+
+export type SidecarActionHttpBody = SidecarActionResponse & {
+    text?: string;
+    copiedHint?: string;
+};
+
 export interface SidecarHandler {
     renderPage(viewMode: SidecarViewMode, rawUrl?: string): Promise<RenderedPageResult>;
     handleSnapshotQuery(
         query: Record<string, string | string[] | undefined>,
         ifNoneMatch?: string,
-    ): Promise<{ status: number; headers: Record<string, string>; body: SidecarSnapshotResponse }>;
-    handleActionPayload(rawBody: unknown): Promise<{ status: number; body: SidecarActionResponse }>;
+    ): Promise<{ status: number; headers: Record<string, string>; body: SidecarSnapshotHttpBody }>;
+    handleActionPayload(rawBody: unknown): Promise<{ status: number; body: SidecarActionHttpBody }>;
+    handleAssetImage(filename: string): Promise<AssetImageResult>;
+    listAssetImages(): string[];
     getHealth(): SidecarHealthResponse;
     handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void>;
 }
@@ -59,6 +90,7 @@ export interface StandaloneServerOptions {
     host?: string;
     version?: string;
     hostBridgeOptions?: HostBridgeOptions;
+    imagesDir?: string;
 }
 
 export interface StandaloneServerHandle {
@@ -67,6 +99,29 @@ export interface StandaloneServerHandle {
     port: number;
     url: string;
     close(): Promise<void>;
+}
+
+/** Resolve the bundled static PNG images directory across TS source, repo `out/`, and packaged plugin layouts. */
+export function resolveDefaultImagesDir(explicitDir?: string): string | null {
+    const candidates: string[] = [];
+    if (explicitDir && explicitDir.trim()) {
+        candidates.push(path.resolve(explicitDir));
+    }
+    candidates.push(
+        path.resolve(__dirname, '..', 'images'),
+        path.resolve(__dirname, '..', '..', 'src', 'images'),
+        path.resolve(__dirname, '..', '..', 'images'),
+    );
+    for (const candidate of candidates) {
+        try {
+            if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+                return candidate;
+            }
+        } catch {
+            // Try next candidate
+        }
+    }
+    return null;
 }
 
 /** Deterministic canonical JSON stringification so ETag hashes are stable regardless of key order. */
@@ -270,6 +325,59 @@ export function createSidecarHandler(
     const isSidecarEnv = options.isSidecarEnv ?? Boolean(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT);
     const cachedThemeCss = getThemeAdapterStyles();
     const cachedBridgeJs = getHostBridgeScript(options.hostBridgeOptions);
+    const resolvedImagesDir = resolveDefaultImagesDir(options.imagesDir);
+
+    function listAssetImages(): string[] {
+        if (!resolvedImagesDir) { return []; }
+        try {
+            return fs.readdirSync(resolvedImagesDir)
+                .filter((name) => ALLOWED_IMAGE_FILENAME_RE.test(name))
+                .sort();
+        } catch {
+            return [];
+        }
+    }
+
+    async function handleAssetImage(filename: string): Promise<AssetImageResult> {
+        const notFound: AssetImageResult = {
+            status: 404,
+            contentType: 'application/json; charset=utf-8',
+            body: JSON.stringify({ ok: false, error: 'Not Found' }),
+            headers: {
+                'Cache-Control': 'no-store',
+                'X-Content-Type-Options': 'nosniff',
+            },
+        };
+        if (!resolvedImagesDir || typeof filename !== 'string' || !ALLOWED_IMAGE_FILENAME_RE.test(filename)) {
+            return notFound;
+        }
+        try {
+            const realBase = await fs.promises.realpath(resolvedImagesDir);
+            const candidate = path.join(realBase, filename);
+            const realTarget = await fs.promises.realpath(candidate);
+            const rel = path.relative(realBase, realTarget);
+            if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel !== filename) {
+                return notFound;
+            }
+            const stat = await fs.promises.stat(realTarget);
+            if (!stat.isFile()) {
+                return notFound;
+            }
+            const buf = await fs.promises.readFile(realTarget);
+            return {
+                status: 200,
+                contentType: 'image/png',
+                body: buf,
+                headers: {
+                    'Cache-Control': 'public, max-age=3600',
+                    'X-Content-Type-Options': 'nosniff',
+                    'Content-Length': String(buf.length),
+                },
+            };
+        } catch {
+            return notFound;
+        }
+    }
 
     async function renderPage(viewMode: SidecarViewMode, rawUrl = '/'): Promise<RenderedPageResult> {
         const parsedUrl = new URL(rawUrl, 'http://127.0.0.1');
@@ -302,15 +410,23 @@ export function createSidecarHandler(
     async function handleSnapshotQuery(
         query: Record<string, string | string[] | undefined>,
         ifNoneMatch?: string,
-    ): Promise<{ status: number; headers: Record<string, string>; body: SidecarSnapshotResponse }> {
+    ): Promise<{ status: number; headers: Record<string, string>; body: SidecarSnapshotHttpBody }> {
         const clientEtag = normalizeEtag(firstString(query.etag) || ifNoneMatch);
-        const snapshotQuery: SidecarSnapshotQuery = {
+        const rawView = firstString(query.viewMode) || firstString(query.view);
+        const viewMode = parseViewMode(rawView, isSidecarEnv ? 'aux' : 'standalone');
+        const rawLang = firstString(query.lang);
+        const lang = (rawLang === 'en' || rawLang === 'zh' || rawLang === 'both') ? rawLang : undefined;
+        const includeHtml = firstString(query.includeHtml) === 'true' || firstString(query.includeHtml) === '1';
+
+        const snapshotQuery: SidecarSnapshotQuery & { lang?: 'en' | 'zh' | 'both'; includeHtml?: boolean } = {
             conversationId: firstString(query.conversationId) || undefined,
             workspaceUris: parseWorkspaceUrisParam(firstString(query.workspaceUris)),
             etag: clientEtag || undefined,
-            viewMode: parseViewMode(firstString(query.viewMode), isSidecarEnv ? 'aux' : 'standalone'),
+            viewMode,
             pinnedConversationId: firstString(query.pinnedConversationId) || undefined,
             lockToMainAgent: firstString(query.lockToMainAgent) === 'true',
+            ...(lang ? { lang } : {}),
+            ...(includeHtml ? { includeHtml: true } : {}),
         };
         const snapshot = await provider.getSnapshot(snapshotQuery);
         const hash = computeSnapshotHash(snapshot);
@@ -325,14 +441,33 @@ export function createSidecarHandler(
                 body: { unchanged: true, hash },
             };
         }
+        const snapRecord = snapshot as Record<string, unknown>;
+        let html: string | undefined = typeof snapRecord.html === 'string' ? snapRecord.html : undefined;
+        if (includeHtml && !html) {
+            const qs = new URLSearchParams();
+            if (snapshotQuery.conversationId) { qs.set('conversationId', snapshotQuery.conversationId); }
+            if (snapshotQuery.workspaceUris && snapshotQuery.workspaceUris.length > 0) {
+                qs.set('workspaceUris', JSON.stringify(snapshotQuery.workspaceUris));
+            }
+            const pagePath = viewMode === 'sidebar' ? '/full' : '/';
+            const pageUrl = qs.toString() ? `${pagePath}?${qs.toString()}` : pagePath;
+            const rendered = await renderPage(viewMode, pageUrl);
+            html = rendered.body;
+        }
         return {
             status: 200,
             headers,
-            body: { unchanged: false, hash, snapshot },
+            body: {
+                unchanged: false,
+                hash,
+                snapshot,
+                data: snapRecord.data !== undefined ? snapRecord.data : snapshot,
+                ...(html !== undefined ? { html } : {}),
+            },
         };
     }
 
-    async function handleActionPayload(rawBody: unknown): Promise<{ status: number; body: SidecarActionResponse }> {
+    async function handleActionPayload(rawBody: unknown): Promise<{ status: number; body: SidecarActionHttpBody }> {
         if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
             return { status: 400, body: { ok: false, error: 'Action payload must be a JSON object' } };
         }
@@ -343,10 +478,12 @@ export function createSidecarHandler(
         }
         const action: SidecarActionRequest = { ...record, command };
         try {
-            const response = await provider.handleAction(action);
-            const sanitized: SidecarActionResponse = {
+            const response = await provider.handleAction(action) as SidecarActionHttpBody | undefined;
+            const sanitized: SidecarActionHttpBody = {
                 ok: Boolean(response?.ok),
                 ...(response?.result !== undefined ? { result: response.result } : {}),
+                ...(typeof response?.text === 'string' ? { text: response.text } : {}),
+                ...(typeof response?.copiedHint === 'string' ? { copiedHint: response.copiedHint } : {}),
                 ...(Array.isArray(response?.messages) ? { messages: response.messages } : {}),
                 ...(response?.reload ? { reload: true } : {}),
                 ...(response?.snapshot !== undefined
@@ -383,6 +520,7 @@ export function createSidecarHandler(
 
     async function handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         const method = (req.method || 'GET').toUpperCase();
+        const rawUrlPath = (req.url || '/').split('?')[0];
         let parsedUrl: URL;
         try {
             parsedUrl = new URL(req.url || '/', 'http://127.0.0.1');
@@ -407,6 +545,26 @@ export function createSidecarHandler(
                     ...rendered.headers,
                 });
                 res.end(rendered.body);
+                return;
+            }
+
+            if (rawUrlPath.startsWith('/assets/images/') || pathname.startsWith('/assets/images/')) {
+                if (method !== 'GET' && method !== 'HEAD') {
+                    sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
+                    return;
+                }
+                const rawMatch = IMAGE_ROUTE_RE.exec(rawUrlPath);
+                const parsedMatch = IMAGE_ROUTE_RE.exec(pathname);
+                if (!rawMatch || !parsedMatch || rawMatch[1] !== parsedMatch[1]) {
+                    sendJson(res, 404, { ok: false, error: 'Not Found' });
+                    return;
+                }
+                const asset = await handleAssetImage(rawMatch[1]);
+                res.writeHead(asset.status, {
+                    'Content-Type': asset.contentType,
+                    ...asset.headers,
+                });
+                res.end(method === 'HEAD' ? undefined : asset.body);
                 return;
             }
 
@@ -459,6 +617,8 @@ export function createSidecarHandler(
         renderPage,
         handleSnapshotQuery,
         handleActionPayload,
+        handleAssetImage,
+        listAssetImages,
         getHealth,
         handleHttp,
     };
@@ -481,10 +641,17 @@ export async function startStandaloneServer(
         version: options.version,
         isSidecarEnv: false,
         hostBridgeOptions: options.hostBridgeOptions,
+        imagesDir: options.imagesDir,
     });
 
     const server = http.createServer((req, res) => {
         void handler.handleHttp(req, res);
+    });
+
+    const activeSockets = new Set<net.Socket>();
+    server.on('connection', (socket) => {
+        activeSockets.add(socket);
+        socket.on('close', () => { activeSockets.delete(socket); });
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -499,17 +666,37 @@ export async function startStandaloneServer(
     const resolvedPort = typeof addr === 'object' && addr ? addr.port : port;
     const urlHost = host === '::1' ? '[::1]' : host;
 
+    let closePromise: Promise<void> | null = null;
+    const close = (): Promise<void> => {
+        if (closePromise) { return closePromise; }
+        closePromise = (async () => {
+            await new Promise<void>((resolve, reject) => {
+                server.close((err) => {
+                    if (err && (err as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
+                        reject(err);
+                        return;
+                    }
+                    resolve();
+                });
+                if (typeof server.closeIdleConnections === 'function') {
+                    server.closeIdleConnections();
+                }
+                for (const socket of activeSockets) {
+                    socket.destroy();
+                }
+                activeSockets.clear();
+            });
+            await Promise.resolve(provider.dispose?.());
+        })();
+        return closePromise;
+    };
+
     return {
         server,
         host,
         port: resolvedPort,
         url: `http://${urlHost}:${resolvedPort}`,
-        close: () => new Promise<void>((resolve, reject) => {
-            server.close((err) => {
-                if (err) { reject(err); return; }
-                Promise.resolve(provider.dispose?.()).then(() => resolve(), reject);
-            });
-        }),
+        close,
     };
 }
 

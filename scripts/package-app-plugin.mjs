@@ -293,8 +293,17 @@ export function packageAppPlugin(options = {}) {
     if (!existsSync(join(appPluginSrc, 'plugin.json'))) {
         throw new Error(`Missing app-plugin/plugin.json under ${repoRoot}`);
     }
-    if (!existsSync(join(outSrc, 'app', 'sidecar-server.js'))) {
-        throw new Error('Missing compiled out/app/sidecar-server.js. Run `npm run compile` first.');
+    const requiredCompiledFiles = [
+        join('app', 'sidecar-server.js'),
+        join('app', 'sidecar-runtime.js'),
+    ];
+    for (const rel of requiredCompiledFiles) {
+        if (!existsSync(join(outSrc, rel))) {
+            throw new Error(`Missing compiled out/${rel.replace(/\\/g, '/')}. Run \`npm run compile\` first.`);
+        }
+    }
+    if (options.requireWebviewDocument && !existsSync(join(outSrc, 'webview-document.js'))) {
+        throw new Error('Missing compiled out/webview-document.js. Run `npm run compile` first.');
     }
 
     const manifest = readJsonNoBom(join(appPluginSrc, 'plugin.json'));
@@ -308,13 +317,24 @@ export function packageAppPlugin(options = {}) {
     // 1. Copy plugin manifest, logo, sidecar entrypoint, and skill
     copyFilteredDir(appPluginSrc, stageDir);
 
-    // 2. Copy compiled out/ runtime (excluding source maps to keep package lean)
-    copyFilteredDir(outSrc, join(runtimeDir, 'out'), (_p, name) => !name.endsWith('.map'));
+    // 2. Copy all compiled out/**/*.js runtime files (excluding source maps to keep package lean)
+    copyFilteredDir(outSrc, join(runtimeDir, 'out'), (_p, name, st) => st.isDirectory() || (name.endsWith('.js') && !name.endsWith('.map')));
 
-    // 3. Copy static PNG assets if present
+    // 3. Copy static offline PNG illustrations if present
+    const bundledImages = [];
     if (existsSync(imagesSrc)) {
-        copyFilteredDir(imagesSrc, join(runtimeDir, 'src', 'images'), (_p, name, st) => st.isDirectory() || name.endsWith('.png'));
+        const dstImagesDir = join(runtimeDir, 'src', 'images');
+        copyFilteredDir(imagesSrc, dstImagesDir, (_p, name, st) => {
+            if (st.isDirectory()) { return true; }
+            const ok = /^[a-z0-9-]+\.png$/.test(name);
+            if (ok) { bundledImages.push(name); }
+            return ok;
+        });
+        bundledImages.sort();
     }
+
+    const hasSidecarRuntime = existsSync(join(runtimeDir, 'out', 'app', 'sidecar-runtime.js'));
+    const hasWebviewDocument = existsSync(join(runtimeDir, 'out', 'webview-document.js'));
 
     // 4. Write minimal runtime package.json (strict UTF-8, no BOM)
     const runtimePkg = {
@@ -349,6 +369,9 @@ export function packageAppPlugin(options = {}) {
         tarGzPath,
         entryCount: entries.length,
         validation,
+        hasSidecarRuntime,
+        hasWebviewDocument,
+        bundledImages,
     };
 }
 
@@ -360,6 +383,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         console.log(`  Stage dir : ${result.stageDir}`);
         console.log(`  ZIP       : ${result.zipPath}`);
         console.log(`  TAR.GZ    : ${result.tarGzPath}`);
+        console.log(`  Runtime   : sidecar-runtime=${result.hasSidecarRuntime ? 'yes' : 'no'}, webview-document=${result.hasWebviewDocument ? 'yes' : 'fallback'}, images=${result.bundledImages.length}`);
         if (result.validation.ran) {
             console.log('  Validation: agy plugin validate --strict PASSED (0 findings)');
         } else {
