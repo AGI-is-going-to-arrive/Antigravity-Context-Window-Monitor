@@ -2,9 +2,16 @@
 // Builds HTML for the "About" tab: plugin overview, feature navigation cards,
 // GitHub info, tips, and disclaimer — consolidated from the former topbar chips.
 
-import { tBi } from './i18n';
+import { formatClockTime, getLanguage, tBi } from './i18n-core';
+import type { UpdateStatusView } from './webview-settings-tab';
 import { ICON } from './webview-icons';
 import { esc, tBiHtml } from './webview-helpers';
+
+export interface AboutTabOptions {
+    surface?: 'ide' | 'app-sidecar' | 'app';
+    updateStatus?: UpdateStatusView | null;
+    now?: number;
+}
 
 // ─── SVG Icons (About-specific, 16px / stroke-width 1.65) ───────────────────
 
@@ -105,7 +112,7 @@ function getFeatureCards(): FeatureCard[] {
         {
             tabId: 'profile',
             icon: ABOUT_ICON.profile,
-            titleHtml: tBiHtml('Profile', '个人'),
+            titleHtml: tBiHtml('Profile', '账号信息'),
             descriptionHtml: tBiHtml(
                 'Account identity with privacy mask, shared model quota pools, AI credits and expiry countdown, plus plan limits and capabilities.',
                 '当前账户身份与隐私遮罩、共享模型配额池、AI 积分与到期倒计时，以及计划限制与功能配置。',
@@ -125,10 +132,84 @@ function getFeatureCards(): FeatureCard[] {
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-export function buildAboutTabContent(version = '1.17.5'): string {
+function formatCheckedAtLabel(checkedAt: number | null | undefined): string {
+    if (typeof checkedAt !== 'number' || !Number.isFinite(checkedAt) || checkedAt <= 0) {
+        return tBiHtml('Not checked yet', '尚未检查');
+    }
+    const d = new Date(checkedAt);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const clock = formatClockTime(d, getLanguage());
+    return esc(`${yyyy}-${mm}-${dd} ${clock}`);
+}
+
+const OPEN_VSX_URL = 'https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor';
+
+export function buildAboutTabContent(version = '1.17.5', options?: AboutTabOptions): string {
     const cards = getFeatureCards();
     const normalizedVersion = typeof version === 'string' && version.trim() ? version.trim() : '1.17.5';
     const versionTag = normalizedVersion.startsWith('v') ? normalizedVersion : `v${normalizedVersion}`;
+    const surface = options?.surface ?? 'ide';
+    const isAppSidecar = surface === 'app-sidecar' || surface === 'app';
+    const updateStatus = options?.updateStatus ?? null;
+    const updateAvailable = Boolean(
+        updateStatus?.updateAvailable
+        || updateStatus?.hasUpdate
+        || updateStatus?.status === 'update_available',
+    );
+    const rawLatest = updateStatus?.latestVersion?.trim() || null;
+    const latestTag = rawLatest ? (rawLatest.startsWith('v') ? rawLatest : `v${rawLatest}`) : null;
+
+    let updateStatusPillHtml: string;
+    if (updateAvailable && latestTag) {
+        updateStatusPillHtml = `<span class="stg-status-pill is-update" data-about-update-status="update_available">${tBiHtml(`Update available: ${latestTag}`, `有可用更新：${latestTag}`)}</span>`;
+    } else if (updateStatus?.status === 'error') {
+        const errTitle = updateStatus.error ? ` title="${esc(updateStatus.error)}"` : '';
+        updateStatusPillHtml = `<span class="stg-status-pill is-error" data-about-update-status="error"${errTitle}>${tBiHtml('Check failed', '检查失败')}</span>`;
+    } else if (updateStatus?.status === 'up_to_date' || updateStatus?.status === 'not_modified' || (updateStatus?.checkedAt && !updateAvailable)) {
+        updateStatusPillHtml = `<span class="stg-status-pill is-uptodate" data-about-update-status="up_to_date">${tBiHtml('Up to date', '已是最新')}</span>`;
+    } else {
+        updateStatusPillHtml = `<span class="stg-status-pill" data-about-update-status="idle">${tBiHtml('Ready', '就绪')}</span>`;
+    }
+
+    const versionUpdates = `
+    <section class="about-section" id="aboutUpdatesSection">
+        <h3 class="about-section-title">
+            ${ICON.refresh}
+            <span>${tBiHtml('Version & Updates', '版本与更新')}</span>
+        </h3>
+        <div class="about-updates-card" data-about-updates="true" data-surface="${isAppSidecar ? 'app-sidecar' : 'ide'}">
+            <div class="about-updates-head">
+                <div class="about-updates-meta">
+                    <span><strong>${tBiHtml('Current', '当前版本')}:</strong> ${esc(versionTag)}</span>
+                    <span><strong>${tBiHtml('Last checked', '上次检查')}:</strong> ${formatCheckedAtLabel(updateStatus?.checkedAt)}</span>
+                </div>
+                ${updateStatusPillHtml}
+            </div>
+            <div class="about-updates-actions">
+                <button type="button" class="about-action-btn" id="aboutCheckUpdatesBtn" data-action="checkForUpdates">
+                    ${ICON.refresh} <span>${tBiHtml('Check for Updates', '检查更新')}</span>
+                </button>
+                ${isAppSidecar && updateAvailable
+            ? `<button type="button" class="about-action-btn is-primary" id="aboutUpgradeNowBtn" data-action="applyPluginUpdate"><span>${tBiHtml('Upgrade Now', '立即升级')}</span></button>`
+            : (!isAppSidecar
+                ? `<a class="about-action-btn" id="aboutOpenVsxLink" data-action="openExternalUrl" data-url="${OPEN_VSX_URL}" href="${OPEN_VSX_URL}" target="_blank" rel="noopener noreferrer">${ICON.externalLink} <span>${tBiHtml('Open VSX', 'Open VSX 市场')}</span></a>`
+                : '')}
+                <span id="aboutUpdatesFeedback" class="threshold-feedback" role="status"></span>
+            </div>
+            <div class="about-agent-tip" data-agents-tip="true">
+                <strong>${tBiHtml('AI Agent one-sentence install / upgrade (AGENTS.md):', 'AI Agent 一句话安装 / 升级（AGENTS.md）：')}</strong>
+                <span>${tBiHtml(
+        'Ask your coding agent: ',
+        '直接对 AI 助手说：',
+    )}</span><code>${esc(tBi(
+        'Follow AGENTS.md in AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor to install or upgrade this plugin.',
+        '请按 AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor 仓库的 AGENTS.md 安装或升级该插件。',
+    ))}</code>
+            </div>
+        </div>
+    </section>`;
 
     // ── Hero section ──
     const hero = `
@@ -243,6 +324,16 @@ export function buildAboutTabContent(version = '1.17.5'): string {
             zh: '压缩检查点与最大占用项排查、custom-* 自定义模型配额隔离及跨平台无 BOM 安装实践。',
         },
         {
+            links: [{ label: 'Lumidarin/agy-capsule', href: 'https://github.com/Lumidarin/agy-capsule' }],
+            en: 'Design inspiration for compact desktop context capsule and composer-adjacent ring telemetry UX.',
+            zh: '为紧凑桌面端上下文胶囊与输入框旁悬浮环交互体验提供设计灵感。',
+        },
+        {
+            links: [{ label: 'evenluo/agy-pulse', href: 'https://github.com/evenluo/agy-pulse' }],
+            en: 'Design inspiration for multi-period activity pulse heatmaps and usage analytics dashboards.',
+            zh: '为多周期活动脉搏热力图与用量统计看板提供设计灵感。',
+        },
+        {
             links: [{ label: 'jule-x/antigravity-context-monitor', href: 'https://github.com/jule-x/antigravity-context-monitor' }],
             en: 'Per-turn Cold / Partial / Warm prompt cache classification and +Δ context growth diagnostics.',
             zh: '逐轮冷启动 / 部分命中 / 热缓存提示词缓存分类与 +Δ 上下文净增长诊断。',
@@ -279,8 +370,8 @@ export function buildAboutTabContent(version = '1.17.5'): string {
         </h3>
         <div class="about-info-box about-info-acks">
             <p>${tBiHtml(
-        'Built independently from scratch atop our own core and official Sidecar / VSIX APIs without patching app.asar or copying code. Grateful to the open-source Antigravity community projects that inspired UX and architecture improvements in v1.17.5:',
-        '本项目基于自有核心与官方 Sidecar / VSIX 接口从零独立实现（不修改 app.asar、不复制外部代码）。衷心感谢以下开源 Antigravity 社区项目为 v1.17.5 带来的交互与架构启发：',
+        'Built independently from scratch with a zero-patch architecture atop our own core and official Sidecar / VSIX APIs (never patching app.asar or copying third-party code). Grateful to the open-source Antigravity community projects that offered design inspiration:',
+        '本项目采用独立零篡改架构，基于自有核心与官方 Sidecar / VSIX 接口从零实现（绝不修改 app.asar，不复制外部代码）。衷心感谢以下开源 Antigravity 社区项目带来的设计启发：',
     )}</p>
             <ul class="about-ack-list">${ackItems}</ul>
         </div>
@@ -362,7 +453,7 @@ export function buildAboutTabContent(version = '1.17.5'): string {
         </div>
     </section>`;
 
-    return `<div class="about-page">${hero}${nav}${github}${acknowledgments}${tips}${compatibility}${disclaimer}${langHint}</div>`;
+    return `<div class="about-page">${hero}${versionUpdates}${nav}${github}${acknowledgments}${tips}${compatibility}${disclaimer}${langHint}</div>`;
 }
 
 // ─── Styles ──────────────────────────────────────────────────────────────────

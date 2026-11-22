@@ -2,12 +2,19 @@ import { aiCreditTotal } from './account-credits';
 import { formatClockTime, formatNumber, getLanguage, tBi } from './i18n-core';
 import { getDaysUntilBillingDay } from './billing-day';
 import {
+    formatCurrencyAmount,
+    formatDualCurrencyAmount,
+    resolveCurrencyConfig,
+    type CurrencyInput,
+} from './cli-usage-scanner';
+import {
     CONTEXT_CATEGORY_META,
     buildDotMatrix,
     type ContextBreakdownSnapshot,
     type ContextCategoryKey,
     type ContextMeasurementState,
 } from './context-breakdown';
+import type { GMCallEntry, GMConversationData } from './gm/types';
 import {
     extractOverviewTelemetry, formatCompactTokens, formatOverviewCost, formatOverviewSavings,
     formatQuotaWindowPercent, getContextReading, getContextRemaining, quotaPercentage,
@@ -24,6 +31,18 @@ import {
     type QuotaWindowSummary,
     type UserStatusInfo,
 } from './models';
+import {
+    analyzeUserTurnCacheStates,
+    buildOrchestratorSplitCardHtml,
+    computeContextWatermarks,
+    computeOrchestratorSplit,
+    evaluateSpeedSample,
+    type ContextDualWatermark,
+    type OrchestratorSplitSummary,
+    type SpeedSampleEvaluation,
+    type UserTurnCacheSummary,
+} from './orchestrator-attribution';
+import type { OrchestratorPricingMode } from './pricing-store';
 import type { QuotaRunwayEstimate } from './quota-runway';
 import { formatResetAbsolute } from './reset-time';
 import { formatCachePercent, formatLatency, formatSpeed, type CacheState } from './telemetry-metrics';
@@ -69,7 +88,7 @@ export function calculateCompressionStats(usage: ContextUsage): CompressionStats
     return null;
 }
 
-// ─── Shared v1.17.5 Types & Banner/Runway Helpers ────────────────────────────
+// ─── Shared v1.17.5 / v1.17.6 Types & Banner/Runway Helpers ─────────────────
 
 export interface MonitorStaleState {
     isStale: boolean;
@@ -77,11 +96,44 @@ export interface MonitorStaleState {
     lastError?: string | null;
 }
 
+export interface LowQuotaWarningItem {
+    poolKey: string;
+    label: string;
+    remainingPct: number;
+    windowLabel?: string;
+    resetTime?: string | null;
+}
+
+export interface LowQuotaWarningState {
+    threshold: number;
+    pools: LowQuotaWarningItem[];
+}
+
 export interface OverviewExtras extends OverviewTelemetryInput {
     contextBreakdown?: ContextBreakdownSnapshot | null;
     quotaRunways?: Record<string, QuotaRunwayEstimate>;
     isCustomModelActive?: boolean;
     staleState?: MonitorStaleState | null;
+    /** v1.17.6: Surface identifier ('ide' | 'app-sidecar'). */
+    surface?: 'ide' | 'app-sidecar';
+    /** v1.17.6: Orchestrator pricing mode ('mapped' | 'strict'). */
+    orchestratorPricingMode?: OrchestratorPricingMode;
+    /** v1.17.6: Display currency & optional custom FX rate. */
+    displayCurrency?: CurrencyInput;
+    /** v1.17.6: Low-quota threshold percentage (0 = disabled, 1..99 = active). */
+    quotaNotificationThreshold?: number;
+    /** v1.17.6: Explicit pre-computed low-quota warning banner state. */
+    lowQuotaWarning?: LowQuotaWarningState | null;
+    /** v1.17.6: Pre-computed user-turn cache start & +Δ net growth summary. */
+    turnCacheInfo?: UserTurnCacheSummary | null;
+    /** v1.17.6: Pre-computed dual context watermarks (compaction limit + 200k tier). */
+    watermarks?: ContextDualWatermark | null;
+    /** v1.17.6: Pre-computed sparse-sample speed evaluation. */
+    speedSample?: SpeedSampleEvaluation | null;
+    /** v1.17.6: Pre-computed Orchestrator vs Executor breakdown. */
+    orchestratorSplit?: OrchestratorSplitSummary | null;
+    /** v1.17.6: Optional per-conversation GM call records for live split/turn analysis. */
+    gmConversations?: Record<string, GMConversationData>;
 }
 
 export function formatRunwayDurationHtml(ms: number): string {
@@ -173,6 +225,122 @@ export function buildCustomModelBannerHtml(): string {
         '当前会话使用自定义 / BYOK 模型，不消耗 Google Antigravity 配额池，已自动折叠并静音配额池预警。',
     )}</span>
     </div>`;
+}
+
+// ─── v1.17.6 Low-Quota Warning Banner & Jargon Tooltips ──────────────────────
+
+/**
+ * Evaluate whether any quota pool's remaining percentage is at or below `threshold`.
+ * Automatically suppressed when `threshold <= 0` or `isCustomModelActive` is true.
+ */
+export function evaluateLowQuotaWarning(
+    groups: readonly ModelQuotaGroup[],
+    threshold: number | undefined,
+    isCustomModelActive = false,
+): LowQuotaWarningState | null {
+    if (isCustomModelActive) { return null; }
+    if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold <= 0) {
+        return null;
+    }
+    const clampedThreshold = Math.min(99, Math.max(1, Math.round(threshold)));
+    const triggered: LowQuotaWarningItem[] = [];
+
+    for (const group of groups) {
+        let minFrac: number | null = null;
+        let windowLabel: string | undefined;
+        let resetTime: string | null | undefined = group.resetTime;
+
+        const consider = (frac: number | null | undefined, label: string | undefined, rt?: string | null) => {
+            if (typeof frac !== 'number' || !Number.isFinite(frac) || frac < 0 || frac > 1) { return; }
+            if (minFrac === null || frac < minFrac) {
+                minFrac = frac;
+                windowLabel = label;
+                if (rt !== undefined) { resetTime = rt; }
+            }
+        };
+
+        if (group.fiveHourQuota) {
+            consider(group.fiveHourQuota.remainingFraction, tBi('5h', '5h'), group.fiveHourQuota.resetTime);
+        }
+        if (group.weeklyQuota) {
+            consider(group.weeklyQuota.remainingFraction, tBi('Weekly', '周额度'), group.weeklyQuota.resetTime);
+        }
+        if (minFrac === null && group.minimum !== null) {
+            consider(group.minimum, undefined, group.resetTime);
+        }
+        if (minFrac === null) { continue; }
+
+        const pct = Math.round(minFrac * 100);
+        if (minFrac * 100 <= clampedThreshold || pct <= clampedThreshold) {
+            triggered.push({
+                poolKey: group.pool || group.key,
+                label: group.label,
+                remainingPct: pct,
+                windowLabel,
+                resetTime,
+            });
+        }
+    }
+
+    if (triggered.length === 0) { return null; }
+    triggered.sort((a, b) => a.remainingPct - b.remainingPct);
+    return { threshold: clampedThreshold, pools: triggered };
+}
+
+export function buildLowQuotaWarningBannerHtml(
+    warning: LowQuotaWarningState | null | undefined,
+    now = Date.now(),
+): string {
+    if (!warning || !Array.isArray(warning.pools) || warning.pools.length === 0) {
+        return '';
+    }
+    const poolChips = warning.pools.map((pool) => {
+        const winPart = pool.windowLabel ? ` (${esc(pool.windowLabel)})` : '';
+        const resetPart = pool.resetTime ? ` · ${formatResetDurationHtml(pool.resetTime, now)}` : '';
+        return `<span class="low-quota-pool-chip" data-low-quota-pool="${esc(pool.poolKey)}">
+            <span>${esc(pool.label)}${winPart}</span>
+            <strong>${esc(String(pool.remainingPct))}%</strong>
+            ${resetPart ? `<span class="low-quota-reset">${resetPart}</span>` : ''}
+        </span>`;
+    }).join('');
+
+    return `<div class="low-quota-banner" id="lowQuotaBanner" role="alert" data-low-quota-banner="true" data-threshold="${warning.threshold}">
+        <div class="low-quota-banner-head">
+            <span class="low-quota-title">${ICON.bolt} <span>${tBiHtml('Low Quota Warning', '低配额警告')} (≤ ${warning.threshold}%)</span></span>
+            <button type="button" class="low-quota-settings-btn" data-overview-target="settings">${tBiHtml('Threshold', '调整阈值')}</button>
+        </div>
+        <div class="low-quota-pools">${poolChips}</div>
+    </div>`;
+}
+
+type JargonKey = 'gm-data' | 'ttft' | 'dual-cap' | 'compaction-vs-physical' | 'mapped-base-rate';
+
+function jargonTipHtml(key: JargonKey): string {
+    const copy: Record<JargonKey, [string, string]> = {
+        'gm-data': [
+            'GM Data: Generator Metadata emitted by Antigravity for every LLM request (measured tokens, latency, cache, and credits).',
+            'GM 数据：Antigravity 为每次模型请求记录的底层生成元数据（实测 Token、延迟、缓存与积分）。',
+        ],
+        ttft: [
+            'TTFT (Time To First Token): latency from sending a request until the model emits its first token.',
+            'TTFT（首字延迟）：从发送请求到模型输出第一个 Token 的等待时间。',
+        ],
+        'dual-cap': [
+            'Dual-Cap: compares Effective Budget (platform auto-compaction ceiling) against Native Ceiling (underlying model physical window).',
+            '双上限：对照有效预算（平台自动压缩上限）与原生上限（底层模型物理窗口）。',
+        ],
+        'compaction-vs-physical': [
+            'Compaction Limit vs Physical Window: Antigravity triggers auto-compaction at the Compaction Limit before the model Physical Window fills up.',
+            '自动压缩上限 vs 物理窗口：Antigravity 会在到达自动压缩上限时自动压缩对话，早于模型物理窗口耗尽。',
+        ],
+        'mapped-base-rate': [
+            'Mapped Base Rate: legacy fixed Orchestrator IDs (M537/M667/M681/M669) lack public rate cards; Mapped Base mode estimates cost via their underlying base model official rate.',
+            '按底座估算：旧版固定编排 ID（M537/M667/M681/M669）无独立公开价目表，按底座估算模式会使用其底座模型官方单价进行估算。',
+        ],
+    };
+    const [en, zh] = copy[key];
+    const tip = tBi(en, zh);
+    return `<span class="jargon-tip" tabindex="0" role="note" data-jargon="${key}" title="${esc(tip)}" aria-label="${esc(tip)}">?</span>`;
 }
 
 // ─── Overview Rendering Helpers ──────────────────────────────────────────────
@@ -329,24 +497,52 @@ function cacheWarmthMeta(state: CacheState): { cls: string; html: string } | nul
     }
 }
 
+function formatOverviewCostInCurrency(
+    usd: number | undefined,
+    displayCurrency?: CurrencyInput,
+): { display: string; title?: string } | null {
+    if (usd === undefined || !Number.isFinite(usd) || usd < 0) {
+        return null;
+    }
+    const { preset } = resolveCurrencyConfig(displayCurrency);
+    if (preset.code === 'USD') {
+        const formatted = formatOverviewCost(usd);
+        return formatted ? { display: formatted } : null;
+    }
+    const display = formatCurrencyAmount(usd, displayCurrency);
+    if (!display || display === '—') { return null; }
+    return {
+        display,
+        title: formatDualCurrencyAmount(usd, displayCurrency),
+    };
+}
+
 function buildCostTelemetryCell(
     sessionCostUsd: number | undefined,
     todayCostUsd: number | undefined,
+    displayCurrency?: CurrencyInput,
+    orchestratorPricingMode?: OrchestratorPricingMode,
 ): string {
-    const sessionStr = formatOverviewCost(sessionCostUsd);
-    const todayStr = formatOverviewCost(todayCostUsd);
-    if (!sessionStr && !todayStr) { return ''; }
-    if (sessionStr) {
-        const subHtml = todayStr ? `<span class="overview-telemetry-sub">${tBiHtml('Today', '今日')} ${esc(todayStr)}</span>` : '';
-        return `<div class="overview-telemetry-cell" data-telemetry-cell="cost">
-            <span class="overview-telemetry-label">${tBiHtml('Session Cost', '会话费用')}</span>
-            <strong class="overview-telemetry-value">${esc(sessionStr)}</strong>
+    const sessionCost = formatOverviewCostInCurrency(sessionCostUsd, displayCurrency);
+    const todayCost = formatOverviewCostInCurrency(todayCostUsd, displayCurrency);
+    if (!sessionCost && !todayCost) { return ''; }
+    const mappedTip = orchestratorPricingMode !== 'strict' ? jargonTipHtml('mapped-base-rate') : '';
+    if (sessionCost) {
+        const subHtml = todayCost
+            ? `<span class="overview-telemetry-sub">${tBiHtml('Today', '今日')} ${esc(todayCost.display)}</span>`
+            : '';
+        const titleParts = [sessionCost.title, todayCost?.title ? `${tBi('Today', '今日')}: ${todayCost.title}` : ''].filter(Boolean);
+        const titleAttr = titleParts.length ? ` title="${esc(titleParts.join(' · '))}"` : '';
+        return `<div class="overview-telemetry-cell" data-telemetry-cell="cost"${titleAttr}>
+            <span class="overview-telemetry-label">${tBiHtml('Session Cost', '会话费用')}${mappedTip}</span>
+            <strong class="overview-telemetry-value">${esc(sessionCost.display)}</strong>
             ${subHtml}
         </div>`;
     }
-    return `<div class="overview-telemetry-cell" data-telemetry-cell="cost">
-        <span class="overview-telemetry-label">${tBiHtml('Today Cost', '今日费用')}</span>
-        <strong class="overview-telemetry-value">${esc(todayStr!)}</strong>
+    const titleAttr = todayCost?.title ? ` title="${esc(todayCost.title)}"` : '';
+    return `<div class="overview-telemetry-cell" data-telemetry-cell="cost"${titleAttr}>
+        <span class="overview-telemetry-label">${tBiHtml('Today Cost', '今日费用')}${mappedTip}</span>
+        <strong class="overview-telemetry-value">${esc(todayCost!.display)}</strong>
     </div>`;
 }
 
@@ -354,14 +550,48 @@ function telemetryStrip(
     snapshot: OverviewTelemetrySnapshot,
     sessionCostUsd?: number,
     todayCostUsd?: number,
+    options?: {
+        speedSample?: SpeedSampleEvaluation | null;
+        displayCurrency?: CurrencyInput;
+        orchestratorPricingMode?: OrchestratorPricingMode;
+    },
 ): string {
     const { primary, primaryScope, speedPrimary, ttftPrimary } = snapshot;
 
-    // 1. Speed
-    const speedValue = formatSpeed(speedPrimary);
-    const speedClass = speedPrimary === null ? ' is-muted' : '';
+    // 1. Speed (with sparse-sample Short sample / Waiting TTFT guard)
+    const speedSample = options?.speedSample
+        ?? primary.latestSpeedSample
+        ?? (primary.latestCall
+            ? evaluateSpeedSample({
+                outputTokens: primary.latestCall.outputTokens,
+                streamingSeconds: primary.latestCall.streamingSeconds,
+                ttftSeconds: primary.latestCall.ttftSeconds,
+            })
+            : null);
+
+    let speedHtml: string;
+    let speedClass = '';
+    let speedStateAttr = '';
+    if (speedSample?.isWaitingTtft) {
+        const waitSuffix = typeof speedSample.waitingSeconds === 'number' && Number.isFinite(speedSample.waitingSeconds) && speedSample.waitingSeconds > 0
+            ? ` (${speedSample.waitingSeconds.toFixed(1)}s)`
+            : '';
+        speedHtml = `${tBiHtml('Waiting TTFT', '等待首字')}${esc(waitSuffix)}`;
+        speedClass = ' is-muted is-short-sample';
+        speedStateAttr = ' data-speed-state="waiting-ttft"';
+    } else if (speedSample?.isShortSample) {
+        speedHtml = tBiHtml('Short sample', '短样本');
+        speedClass = ' is-muted is-short-sample';
+        speedStateAttr = ' data-speed-state="short-sample"';
+    } else {
+        speedHtml = esc(formatSpeed(speedPrimary));
+        speedClass = speedPrimary === null ? ' is-muted' : '';
+    }
+
     let speedSubHtml = '';
-    if (primary.hasThinking && primary.weightedVisibleTokPerSec !== null) {
+    if (speedSample?.isShortSample && primary.weightedGenTokPerSec !== null) {
+        speedSubHtml = esc(`avg ${formatSpeed(primary.weightedGenTokPerSec)}`);
+    } else if (primary.hasThinking && primary.weightedVisibleTokPerSec !== null) {
         speedSubHtml = esc(`resp ${formatSpeed(primary.weightedVisibleTokPerSec)}`);
     } else if (
         primary.latestGenTokPerSec !== null
@@ -371,6 +601,9 @@ function telemetryStrip(
         speedSubHtml = esc(`avg ${formatSpeed(primary.weightedGenTokPerSec)}`);
     }
     const speedTipParts: string[] = [];
+    if (speedSample?.isShortSample && speedSample.rawSpeed !== null) {
+        speedTipParts.push(`${tBi('Raw (short sample)', '原始值（短样本）')}: ${formatSpeed(speedSample.rawSpeed)}`);
+    }
     if (primary.latestGenTokPerSec !== null) {
         speedTipParts.push(`${tBi('Latest', '最近')}: ${formatSpeed(primary.latestGenTokPerSec)}`);
     }
@@ -415,15 +648,24 @@ function telemetryStrip(
         ? ` title="${esc(`${formatCompactTokens(primary.totalCacheReadTokens)} / ${formatCompactTokens(primary.totalPromptTokens)} tokens · ${primary.cachedCallCount}/${primary.totalCalls}`)}"`
         : '';
 
-    // 4. Cache Saved (USD)
+    // 4. Cache Saved
     const savingsFormatted = formatOverviewSavings(primary.estCacheSavingsUsd);
+    const { preset: currencyPreset } = resolveCurrencyConfig(options?.displayCurrency);
     let savedValueHtml: string;
     let savedClass = '';
     let savedTitleAttr = '';
-    if (savingsFormatted !== null) {
-        savedValueHtml = esc(savingsFormatted);
+    if (savingsFormatted !== null && primary.estCacheSavingsUsd !== null) {
+        const displaySav = currencyPreset.code === 'USD'
+            ? savingsFormatted
+            : formatCurrencyAmount(primary.estCacheSavingsUsd, options?.displayCurrency);
+        savedValueHtml = esc(displaySav);
+        const savRef = currencyPreset.code === 'USD'
+            ? savingsFormatted
+            : formatDualCurrencyAmount(primary.estCacheSavingsUsd, options?.displayCurrency);
         if (primary.estCacheSavedTokens > 0) {
-            savedTitleAttr = ` title="${esc(`${savingsFormatted} · ${formatCompactTokens(primary.estCacheSavedTokens)} tokens`)}"`;
+            savedTitleAttr = ` title="${esc(`${savRef} · ${formatCompactTokens(primary.estCacheSavedTokens)} tokens`)}"`;
+        } else if (currencyPreset.code !== 'USD') {
+            savedTitleAttr = ` title="${esc(savRef)}"`;
         }
     } else if (primary.estCacheSavedTokens > 0) {
         savedValueHtml = `${esc(formatCompactTokens(primary.estCacheSavedTokens))} tokens`;
@@ -433,20 +675,25 @@ function telemetryStrip(
         savedClass = ' is-muted';
     }
     const warmth = cacheWarmthMeta(primary.latestCacheState);
-    const costCellHtml = buildCostTelemetryCell(sessionCostUsd, todayCostUsd);
+    const costCellHtml = buildCostTelemetryCell(
+        sessionCostUsd,
+        todayCostUsd,
+        options?.displayCurrency,
+        options?.orchestratorPricingMode,
+    );
 
     const ariaLabel = primaryScope === 'active'
         ? tBi('Active conversation speed and prompt cache', '当前会话速度与提示词缓存')
         : tBi('Session speed and prompt cache', '会话速度与提示词缓存');
 
     return `<div class="overview-telemetry-strip${costCellHtml ? ' has-cost' : ''}" data-telemetry-scope="${primaryScope}" role="group" aria-label="${esc(ariaLabel)}">
-        <div class="overview-telemetry-cell"${speedTitleAttr}>
+        <div class="overview-telemetry-cell"${speedTitleAttr}${speedStateAttr}>
             <span class="overview-telemetry-label">${tBiHtml('Speed', '生成速度')}</span>
-            <strong class="overview-telemetry-value${speedClass}">${esc(speedValue)}</strong>
+            <strong class="overview-telemetry-value${speedClass}">${speedHtml}</strong>
             ${speedSubHtml ? `<span class="overview-telemetry-sub">${speedSubHtml}</span>` : ''}
         </div>
         <div class="overview-telemetry-cell"${ttftTitleAttr}>
-            <span class="overview-telemetry-label">${tBiHtml('TTFT', '首字延迟')}</span>
+            <span class="overview-telemetry-label">${tBiHtml('TTFT', '首字延迟')}${jargonTipHtml('ttft')}</span>
             <strong class="overview-telemetry-value${ttftClass}">${esc(ttftValue)}</strong>
             ${ttftSubHtml ? `<span class="overview-telemetry-sub">${ttftSubHtml}</span>` : ''}
         </div>
@@ -498,12 +745,12 @@ export function buildContextBreakdownCard(cb: ContextBreakdownSnapshot | null | 
     // ── Dual-Cap Clarity strip ──
     const dualCapHtml = cb.hasDualCap ? `<div class="ctx-dual-cap-row" data-dual-cap="true">
         <div class="ctx-cap-pill is-effective">
-            <span class="ctx-cap-label">${tBiHtml('Effective Budget', '有效预算')}</span>
+            <span class="ctx-cap-label">${tBiHtml('Effective Budget', '有效预算')}${jargonTipHtml('dual-cap')}</span>
             <strong class="ctx-cap-value">${esc(formatCompactTokens(cb.usedTokens))} / ${esc(formatCompactTokens(cb.effectiveBudgetTokens))}</strong>
             <span class="ctx-cap-pct">${esc(cb.effectivePct.toFixed(1))}%</span>
         </div>
         <div class="ctx-cap-pill is-native">
-            <span class="ctx-cap-label">${tBiHtml('Native Ceiling', '原生上限')}</span>
+            <span class="ctx-cap-label">${tBiHtml('Native Ceiling', '原生上限')}${jargonTipHtml('compaction-vs-physical')}</span>
             <strong class="ctx-cap-value">${esc(formatCompactTokens(cb.usedTokens))} / ${esc(formatCompactTokens(cb.nativeLimitTokens))}</strong>
             <span class="ctx-cap-pct">${esc(cb.nativePct.toFixed(1))}%</span>
         </div>
@@ -623,10 +870,124 @@ export function buildContextBreakdownCard(cb: ContextBreakdownSnapshot | null | 
     </section>`;
 }
 
+function buildDualWatermarkMeterHtml(
+    label: string,
+    percent: number,
+    spoken: string,
+    tone: MeterTone,
+    watermarks: ContextDualWatermark | null,
+): string {
+    const baseMeter = meter(label, percent, spoken, tone);
+    if (!watermarks) { return baseMeter; }
+
+    const markers: string[] = [];
+    const pills: string[] = [];
+
+    if (watermarks.showLongContextMarker && watermarks.longContextMarkerPctOfCompaction !== null) {
+        const leftPct = Math.max(2, Math.min(98, watermarks.longContextMarkerPctOfCompaction));
+        const exceeded = watermarks.exceedsLongContextTier;
+        const tip = exceeded
+            ? tBi(
+                `200k long-context pricing tier exceeded (${formatCompactTokens(watermarks.contextUsed)} / 200k tokens). Higher per-token rates may apply.`,
+                `已超过 200k 长上下文阶梯计费线（当前 ${formatCompactTokens(watermarks.contextUsed)} / 200k tokens），可能触发更高阶梯单价。`,
+            )
+            : tBi(
+                `200k long-context pricing tier threshold (${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} tokens remaining before 200k).`,
+                `200k 长上下文阶梯计费线（距离 200k 还有 ${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} tokens）。`,
+            );
+        markers.push(`<span class="overview-watermark-tick is-tier-200k${exceeded ? ' is-exceeded' : ''}" data-watermark="long-context-200k" style="left:${leftPct.toFixed(1)}%" title="${esc(tip)}" aria-label="${esc(tip)}"></span>`);
+        pills.push(`<span class="overview-watermark-pill${exceeded ? ' is-tier-exceeded' : ''}" data-watermark-pill="long-context-200k" title="${esc(tip)}">${
+            exceeded
+                ? tBiHtml('> 200k Tier', '已超 200k 阶梯')
+                : `${tBiHtml('200k Tier', '200k 阶梯')} · ${esc(formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0))} ${tBiHtml('left', '剩余')}`
+        }</span>`);
+    }
+
+    if (watermarks.hasDistinctPhysicalWindow) {
+        const compTip = tBi(
+            `Compaction ceiling at ${formatCompactTokens(watermarks.compactionLimit)} (${watermarks.compactionMarkerPct.toFixed(0)}% of ${formatCompactTokens(watermarks.physicalContextWindow)} physical window).`,
+            `自动压缩上限为 ${formatCompactTokens(watermarks.compactionLimit)}（占 ${formatCompactTokens(watermarks.physicalContextWindow)} 物理窗口的 ${watermarks.compactionMarkerPct.toFixed(0)}%）。`,
+        );
+        markers.push(`<span class="overview-watermark-tick is-compaction-cap" data-watermark="compaction-limit" style="left:100%" title="${esc(compTip)}" aria-label="${esc(compTip)}"></span>`);
+        pills.push(`<span class="overview-watermark-pill" data-watermark-pill="compaction-limit" title="${esc(compTip)}">${tBiHtml('Compaction', '压缩上限')} ${esc(formatCompactTokens(watermarks.compactionLimit))} / ${tBiHtml('Physical', '物理窗口')} ${esc(formatCompactTokens(watermarks.physicalContextWindow))}${jargonTipHtml('compaction-vs-physical')}</span>`);
+    }
+
+    if (markers.length === 0 && pills.length === 0) {
+        return baseMeter;
+    }
+
+    return `<div class="overview-meter-wrap" data-dual-watermark="true">
+        ${baseMeter}
+        ${markers.length > 0 ? `<div class="overview-meter-markers">${markers.join('')}</div>` : ''}
+    </div>
+    ${pills.length > 0 ? `<div class="overview-watermark-meta">${pills.join('')}</div>` : ''}`;
+}
+
+function buildTurnCacheSummaryHtml(turnCacheInfo: UserTurnCacheSummary | null | undefined): string {
+    const latest = turnCacheInfo?.latestTurn;
+    if (!latest || latest.cacheStart === 'unknown') { return ''; }
+
+    let pillCls = 'is-cold';
+    let pillHtml = tBiHtml('Cold Start', '冷启动');
+    if (latest.cacheStart === 'warm') {
+        pillCls = 'is-warm';
+        pillHtml = tBiHtml('Warm Start', '热缓存启动');
+    } else if (latest.cacheStart === 'partial') {
+        pillCls = 'is-partial';
+        pillHtml = tBiHtml('Partial Start', '部分命中');
+    }
+
+    const hitPctHtml = latest.cacheHitPct !== null
+        ? ` <span>(${esc(latest.cacheHitPct.toFixed(0))}%)</span>`
+        : '';
+
+    let deltaHtml = '';
+    if (latest.netContextDeltaTokens !== null) {
+        const sign = latest.netContextDeltaTokens >= 0 ? '+' : '−';
+        const formatted = `${sign}${formatCompactTokens(Math.abs(latest.netContextDeltaTokens))}`;
+        deltaHtml = `<span class="overview-turn-delta${latest.isCompactionDrop ? ' is-compaction' : ''}" data-turn-net-delta="${latest.netContextDeltaTokens}">${tBiHtml('Δ Context', '上下文净增长')} ${esc(formatted)}</span>`;
+    }
+
+    const switchHtml = latest.hadColdCacheSwitch
+        ? `<span class="orch-cold-switch-pill">${tBiHtml('Switch Cold', '切换冷启动')}</span>`
+        : '';
+
+    return `<div class="overview-turn-cache-row" data-turn-cache-state="${latest.cacheStart}" data-turn-index="${latest.turnIndex}">
+        <span class="turn-start-pill ${pillCls}" data-turn-start="${latest.cacheStart}">${pillHtml}${hitPctHtml}</span>
+        ${deltaHtml}
+        ${switchHtml}
+    </div>`;
+}
+
+function resolveActiveConversationCalls(
+    telemetry: OverviewExtras | undefined,
+    activeCascadeId: string | undefined,
+): GMCallEntry[] {
+    if (!telemetry) { return []; }
+    if (activeCascadeId && telemetry.gmConversations && telemetry.gmConversations[activeCascadeId]?.calls?.length) {
+        return telemetry.gmConversations[activeCascadeId].calls;
+    }
+    const convs = telemetry.gmSummary?.conversations;
+    if (!Array.isArray(convs) || convs.length === 0) { return []; }
+    if (activeCascadeId) {
+        const match = convs.find(c => c.cascadeId === activeCascadeId);
+        if (match?.calls?.length) { return match.calls; }
+    }
+    if (convs.length === 1 && convs[0].calls?.length) {
+        return convs[0].calls;
+    }
+    return [];
+}
+
 function sessionDetails(
     usage: ContextUsage,
     telemetryHtml = '',
     breakdownHtml = '',
+    v1176?: {
+        watermarks?: ContextDualWatermark | null;
+        turnCacheHtml?: string;
+        orchestratorSplitHtml?: string;
+    },
 ): string {
     const reading = getContextReading(usage);
     const remaining = getContextRemaining(reading.used, reading.limit);
@@ -638,7 +999,7 @@ function sessionDetails(
     const activeRoute = resolveActiveOrchestratorRoute(usage);
     const routePillHtml = activeRoute
         ? `<div class="orch-route-pill" data-cross-pool="${activeRoute.isCrossPool ? 'true' : 'false'}">
-            <span class="orch-route-label">${tBiHtml('Orchestrator', '编排器')}</span>
+            <span class="orch-route-label">${tBiHtml('Orchestrator', '编排模型')}</span>
             <span class="orch-route-pair">${esc(activeRoute.plannerLabel)} <span class="orch-route-arrow" aria-hidden="true">→</span> ${esc(activeRoute.executorLabel)}</span>
             ${activeRoute.isCrossPool ? `<span class="orch-route-badge">${tBiHtml('Cross-pool', '跨配额池')}</span>` : ''}
         </div>`
@@ -692,11 +1053,13 @@ function sessionDetails(
         </div>
         ${reading.percent === null
             ? `<p class="overview-meta">${tBiHtml('Context measurement unavailable', '暂无上下文计量')}</p>`
-            : meter(contextLabel, reading.percent, ratio, contextMeterTone(reading.percent))}
+            : buildDualWatermarkMeterHtml(contextLabel, reading.percent, ratio, contextMeterTone(reading.percent), v1176?.watermarks ?? null)}
         ${remaining !== null
             ? `<p class="overview-meta">${tBiHtml('Remaining', '可用余量')} · ${number(remaining.tokens)} ${tokenUnit}</p>` : ''}
+        ${v1176?.turnCacheHtml || ''}
         ${breakdownHtml}
         ${telemetryHtml}
+        ${v1176?.orchestratorSplitHtml || ''}
         ${warnings.length ? `<ul class="overview-notices">${warnings.map(warning => `<li>${warning}</li>`).join('')}</ul>` : ''}
         <details id="overview-session-diagnostics" class="overview-details" data-state-key="overview-diagnostics:${esc(usage.cascadeId)}">
             <summary data-overview-focus="diagnostics"><span>${tBiHtml('Session diagnostics', '会话诊断')}</span></summary>
@@ -731,24 +1094,78 @@ export function buildOverviewTabContent(
     const active = (status.state === 'active' || hasStaleFallbackData) ? usage : null;
     const isCustomModelActive = Boolean(telemetry?.isCustomModelActive);
     const breakdownHtml = connected ? buildContextBreakdownCard(telemetry?.contextBreakdown) : '';
+    const activeCascadeId = telemetry?.activeCascadeId || active?.cascadeId;
 
     const telemetryData = connected
         ? extractOverviewTelemetry(
             telemetry?.gmSummary,
-            telemetry?.activeCascadeId || active?.cascadeId,
+            activeCascadeId,
             telemetry?.customPricing,
         )
         : null;
     let telemetryHtml = telemetryData
-        ? telemetryStrip(telemetryData, telemetry?.sessionCostUsd, telemetry?.todayCostUsd)
+        ? telemetryStrip(telemetryData, telemetry?.sessionCostUsd, telemetry?.todayCostUsd, {
+            speedSample: telemetry?.speedSample,
+            displayCurrency: telemetry?.displayCurrency,
+            orchestratorPricingMode: telemetry?.orchestratorPricingMode,
+        })
         : '';
     if (!telemetryHtml && connected) {
-        const standaloneCost = buildCostTelemetryCell(telemetry?.sessionCostUsd, telemetry?.todayCostUsd);
+        const standaloneCost = buildCostTelemetryCell(
+            telemetry?.sessionCostUsd,
+            telemetry?.todayCostUsd,
+            telemetry?.displayCurrency,
+            telemetry?.orchestratorPricingMode,
+        );
         if (standaloneCost) {
             telemetryHtml = `<div class="overview-telemetry-strip is-cost-only" data-telemetry-scope="cost" role="group" aria-label="${esc(tBi('Session and today cost', '会话与今日费用'))}">${standaloneCost}</div>`;
         }
     }
+
+    const activeCalls = connected ? resolveActiveConversationCalls(telemetry, activeCascadeId) : [];
+    const splitOptions = {
+        orchestratorConfig: active?.orchestratorConfig,
+        orchestratorHistory: active?.orchestratorHistory,
+        orchestratorSettings: telemetry?.orchestratorSettings,
+        orchestratorPricingMode: telemetry?.orchestratorPricingMode,
+    };
+    const resolvedSplit = connected
+        ? (telemetry?.orchestratorSplit !== undefined
+            ? telemetry.orchestratorSplit
+            : (activeCalls.length > 0
+                ? computeOrchestratorSplit(activeCalls, splitOptions, telemetry?.customPricing || {})
+                : null))
+        : null;
+    const orchestratorSplitHtml = buildOrchestratorSplitCardHtml(resolvedSplit, { compact: true });
+
+    const resolvedTurnCache = connected
+        ? (telemetry?.turnCacheInfo !== undefined
+            ? telemetry.turnCacheInfo
+            : (activeCalls.length > 0 ? analyzeUserTurnCacheStates(activeCalls, splitOptions) : null))
+        : null;
+    const turnCacheHtml = buildTurnCacheSummaryHtml(resolvedTurnCache);
+
+    const activeReading = active ? getContextReading(active) : null;
+    const resolvedWatermarks = active
+        ? (telemetry?.watermarks !== undefined
+            ? telemetry.watermarks
+            : (activeReading && activeReading.used !== null && activeReading.limit !== null
+                ? computeContextWatermarks({
+                    contextUsed: activeReading.used,
+                    compactionLimit: activeReading.limit,
+                    physicalContextWindow: telemetry?.contextBreakdown?.nativeLimitTokens,
+                    model: active.model,
+                })
+                : null))
+        : null;
+
     const groups = connected ? selectMonitorQuotaGroups(configs, active?.model, telemetry?.quotaSummary) : [];
+    const resolvedLowQuota = connected
+        ? (telemetry?.lowQuotaWarning !== undefined
+            ? (isCustomModelActive ? null : telemetry.lowQuotaWarning)
+            : evaluateLowQuotaWarning(groups, telemetry?.quotaNotificationThreshold, isCustomModelActive))
+        : null;
+    const lowQuotaBannerHtml = buildLowQuotaWarningBannerHtml(resolvedLowQuota, now);
     const activeRoute = active ? resolveActiveOrchestratorRoute(active) : null;
     const credits = aiCreditTotal(userInfo?.availableCredits || []);
     const expiryHtml = creditExpiryHtml(getDaysUntilBillingDay(billingDay, new Date(now)));
@@ -810,17 +1227,26 @@ export function buildOverviewTabContent(
         ? tBiHtml('No context measurement for this conversation yet.', '当前会话暂无上下文计量。')
         : tBiHtml('Open an Antigravity conversation to see its context usage.', '打开 Antigravity 会话后即可查看上下文用量。');
 
+    const jargonFooterHtml = connected ? `<div class="overview-jargon-row" aria-label="${esc(tBi('Terminology glossary', '术语说明'))}">
+        <span class="overview-jargon-item">${tBiHtml('GM Data', 'GM 数据')}${jargonTipHtml('gm-data')}</span>
+        <span class="overview-jargon-item">${tBiHtml('Dual-Cap', '双上限')}${jargonTipHtml('dual-cap')}</span>
+        <span class="overview-jargon-item">${tBiHtml('Compaction vs Physical', '压缩上限 vs 物理窗口')}${jargonTipHtml('compaction-vs-physical')}</span>
+        <span class="overview-jargon-item">${tBiHtml('Mapped Base Rate', '按底座估算')}${jargonTipHtml('mapped-base-rate')}</span>
+    </div>` : '';
+
     return `<section class="monitor-overview" data-monitor-overview data-monitor-state="${status.state}" aria-labelledby="overview-heading">
         <header class="overview-header">
             <h2 id="overview-heading" data-overview-focus="heading" tabindex="-1">${tBiHtml('Context & quota', '上下文与配额')}</h2>
             ${connected && plan ? `<p class="overview-meta overview-plan-pill">${esc(plan)}</p>` : ''}
         </header>
         ${staleBannerHtml}
+        ${lowQuotaBannerHtml}
         ${connected ? `<div class="overview-grid">
             <section class="overview-context" aria-labelledby="overview-context-heading">
                 <h3 id="overview-context-heading" class="overview-section-heading"><span class="overview-state-dot" aria-hidden="true"></span><span>${statusHeadingHtml(status.state)}</span></h3>
-                ${active ? sessionDetails(active, telemetryHtml, breakdownHtml) : `<p class="overview-empty">${emptyContextHtml}</p>${breakdownHtml}${telemetryHtml}`}
+                ${active ? sessionDetails(active, telemetryHtml, breakdownHtml, { watermarks: resolvedWatermarks, turnCacheHtml, orchestratorSplitHtml }) : `<p class="overview-empty">${emptyContextHtml}</p>${turnCacheHtml}${breakdownHtml}${telemetryHtml}${orchestratorSplitHtml}`}
                 ${action('gmdata', tBiHtml('View model activity', '查看模型活动'))}
+                ${jargonFooterHtml}
             </section>
             <section class="overview-quota" aria-labelledby="overview-quota-heading">
                 <h3 id="overview-quota-heading" class="overview-section-heading"><span>${quotaTitleHtml}</span></h3>

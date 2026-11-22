@@ -98,6 +98,55 @@ export function getScript(): string {
             var revealFailedText = ${JSON.stringify(tBi('Reveal failed', '定位失败'))};
             var invalidBillingDayText = ${JSON.stringify(tBi('Invalid', '无效'))};
             var invalidPricingText = ${JSON.stringify(tBi('Enter a non-negative price in every field of each row, or clear the entire row.', '请为每行的所有字段填写非负价格，或清空整行。'))};
+            var checkingUpdatesText = ${JSON.stringify(tBi('Checking...', '正在检查...'))};
+            var upgradingText = ${JSON.stringify(tBi('Upgrading...', '正在升级...'))};
+            var upToDateText = ${JSON.stringify(`✓ ${tBi('Up to date', '已是最新')}`)};
+            var updateAvailableText = ${JSON.stringify(tBi('Update available', '有可用更新'))};
+            var upgradeDoneText = ${JSON.stringify(`✓ ${tBi('Upgraded — reload to apply', '升级完成，重启后生效')}`)};
+            var checkFailedText = ${JSON.stringify(tBi('Check failed', '检查失败'))};
+            var exportedText = ${JSON.stringify(`✓ ${tBi('Exported', '已导出')}`)};
+
+            function triggerClientDownload(filename, content, mimeType) {
+                try {
+                    var blob = new Blob([String(content || '')], { type: mimeType || 'text/plain;charset=utf-8' });
+                    var url = URL.createObjectURL(blob);
+                    var a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename || 'antigravity-calendar-export.txt';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            }
+
+            function getNativeHudExpanded() {
+                var s = vscode.getState() || {};
+                return !!s.nativeHudExpanded;
+            }
+
+            function applyNativeHudExpanded(expanded) {
+                var bar = document.getElementById('nativeHudBar');
+                var toggle = document.getElementById('nativeHudToggle');
+                var drawer = document.getElementById('nativeHudDrawer');
+                var isExp = !!expanded;
+                if (bar) { bar.setAttribute('data-hud-expanded', String(isExp)); }
+                if (toggle) { toggle.setAttribute('aria-expanded', String(isExp)); }
+                if (drawer) { drawer.hidden = !isExp; }
+            }
+
+            function syncOrchestratorPricingModeVisual(mode) {
+                var resolvedMode = mode === 'strict' ? 'strict' : 'mapped';
+                var modeBtns = document.querySelectorAll('[data-action="setOrchestratorPricingMode"]');
+                for (var mi = 0; mi < modeBtns.length; mi++) {
+                    var isMatch = modeBtns[mi].getAttribute('data-mode') === resolvedMode;
+                    modeBtns[mi].classList.toggle('is-active', isMatch);
+                    modeBtns[mi].setAttribute('aria-checked', String(isMatch));
+                }
+            }
 
             function copyTextSafe(text) {
                 var value = String(text == null ? '' : text);
@@ -604,15 +653,24 @@ export function getScript(): string {
                 topbar.classList.toggle('scrolled', window.scrollY > 8);
             }
 
-            // ─── Settings: Polling Interval ───
+            // ─── Settings: Polling Interval (auto-save on change / Enter + Save button) ───
             var pollingInput = document.getElementById('pollingInput');
             var pollingSaveBtn = document.getElementById('pollingSaveBtn');
+            function savePollingInterval() {
+                if (!pollingInput) { return; }
+                var val = parseInt(pollingInput.value, 10);
+                if (val >= 1 && val <= 60) {
+                    vscode.postMessage({ command: 'setPollingInterval', value: val });
+                    flashFeedback('pollingFeedback', savedText, 2000);
+                }
+            }
             if (pollingSaveBtn && pollingInput) {
-                pollingSaveBtn.addEventListener('click', function() {
-                    var val = parseInt(pollingInput.value, 10);
-                    if (val >= 1 && val <= 60) {
-                        vscode.postMessage({ command: 'setPollingInterval', value: val });
-                    }
+                pollingSaveBtn.addEventListener('click', savePollingInterval);
+            }
+            if (pollingInput) {
+                pollingInput.addEventListener('change', savePollingInterval);
+                pollingInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') { e.preventDefault(); savePollingInterval(); }
                 });
             }
 
@@ -818,7 +876,20 @@ export function getScript(): string {
                         'pollingInterval': 'pollingFeedback',
                         'quotaNotificationThreshold': 'quotaNotifyFeedback',
                         'statePath': 'statePathFeedback',
-                        'panelShowTabScrollHint': 'panelHintFeedback'
+                        'panelShowTabScrollHint': 'panelHintFeedback',
+                        'appComposerRingEnabled': 'appOverlaysFeedback',
+                        'appTopBarEnabled': 'appOverlaysFeedback',
+                        'showNativeHudBar': 'appOverlaysFeedback',
+                        'autoCheckUpdates': 'updatesFeedback',
+                        'orchestratorPricingMode': 'orchPricingModeFeedback',
+                        'displayCurrency': 'customFxRateFeedback',
+                        'customFxRate': 'customFxRateFeedback',
+                        'subscriptionPlan': 'subscriptionFeedback',
+                        'subscriptionMonthlyFee': 'subscriptionFeedback',
+                        'subscriptionCurrency': 'subscriptionFeedback',
+                        'calendarRetentionDays': 'calendarRetentionFeedback',
+                        'activityMaxRecentSteps': 'activityMaxRecentStepsFeedback',
+                        'activityMaxArchives': 'activityMaxArchivesFeedback'
                     };
                     // accountBillingDay feedback (Profile tab)
                     if (msg.key === 'accountBillingDay') {
@@ -834,6 +905,18 @@ export function getScript(): string {
                         }
                     }
                 }
+                if (msg.command === 'updateCheckResult') {
+                    var updMsg = msg.error
+                        ? (msg.error || checkFailedText)
+                        : (msg.hasUpdate || msg.updateAvailable ? updateAvailableText : upToDateText);
+                    flashFeedback('updatesFeedback', updMsg, 3500);
+                    flashFeedback('aboutUpdatesFeedback', updMsg, 3500);
+                }
+                if (msg.command === 'pluginUpdateResult') {
+                    var applyMsg = msg.ok ? (msg.message || upgradeDoneText) : (msg.error || msg.message || checkFailedText);
+                    flashFeedback('updatesFeedback', applyMsg, 4500);
+                    flashFeedback('aboutUpdatesFeedback', applyMsg, 4500);
+                }
                 if (msg.command === 'syncSettingsControls') {
                     var syncTogglePairs = [
                         ['toggleContext', 'showContext'],
@@ -844,6 +927,10 @@ export function getScript(): string {
                         ['toggleCacheHit', 'showCacheHit'],
                         ['toggleSessionCost', 'showSessionCost'],
                         ['toggleModelInternalId', 'showModelInternalId'],
+                        ['toggleAppComposerRing', 'appComposerRingEnabled'],
+                        ['toggleAppTopBar', 'appTopBarEnabled'],
+                        ['toggleNativeHudBar', 'showNativeHudBar'],
+                        ['toggleAutoCheckUpdates', 'autoCheckUpdates'],
                     ];
                     for (var sti = 0; sti < syncTogglePairs.length; sti++) {
                         var fieldName = syncTogglePairs[sti][1];
@@ -858,6 +945,33 @@ export function getScript(): string {
                     if (typeof msg.tooltipDensity === 'string') {
                         var tdEl = document.getElementById('statusTooltipDensity');
                         if (tdEl) { tdEl.value = msg.tooltipDensity; }
+                    }
+                    if (typeof msg.orchestratorPricingMode === 'string') {
+                        syncOrchestratorPricingModeVisual(msg.orchestratorPricingMode);
+                    }
+                    if (typeof msg.displayCurrency === 'string') {
+                        var dcEl = document.getElementById('displayCurrencySelect');
+                        if (dcEl) { dcEl.value = msg.displayCurrency; }
+                    }
+                    if (typeof msg.subscriptionCurrency === 'string') {
+                        var scEl = document.getElementById('subscriptionCurrencySelect');
+                        if (scEl) { scEl.value = msg.subscriptionCurrency; }
+                    }
+                    if (typeof msg.subscriptionPlan === 'string') {
+                        var spEl = document.getElementById('subscriptionPlanSelect');
+                        if (spEl) { spEl.value = msg.subscriptionPlan; }
+                    }
+                    if (typeof msg.calendarRetentionDays === 'number') {
+                        var crEl = document.getElementById('calendarRetentionInput');
+                        if (crEl) { crEl.value = String(msg.calendarRetentionDays); }
+                    }
+                    if (typeof msg.activityMaxRecentSteps === 'number') {
+                        var msEl = document.getElementById('activityMaxRecentStepsInput');
+                        if (msEl) { msEl.value = String(msg.activityMaxRecentSteps); }
+                    }
+                    if (typeof msg.activityMaxArchives === 'number') {
+                        var maEl = document.getElementById('activityMaxArchivesInput');
+                        if (maEl) { maEl.value = String(msg.activityMaxArchives); }
                     }
                 }
                 if (msg.command === 'copyActionResult') {
@@ -929,15 +1043,24 @@ export function getScript(): string {
 
             // copyRawJson: handled by body delegation below
 
-            // ─── Quota Notification Threshold ───
+            // ─── Quota Notification Threshold (auto-save on change / Enter + Save button) ───
             var quotaNotifyBtn = document.getElementById('quotaNotifySaveBtn');
             var quotaNotifyInput = document.getElementById('quotaNotifyInput');
+            function saveQuotaThreshold() {
+                if (!quotaNotifyInput) { return; }
+                var val = parseInt(quotaNotifyInput.value, 10);
+                if (val >= 0 && val <= 99) {
+                    vscode.postMessage({ command: 'setConfig', key: 'quotaNotificationThreshold', value: val });
+                    flashFeedback('quotaNotifyFeedback', savedText, 2000);
+                }
+            }
             if (quotaNotifyBtn && quotaNotifyInput) {
-                quotaNotifyBtn.addEventListener('click', function() {
-                    var val = parseInt(quotaNotifyInput.value, 10);
-                    if (val >= 0 && val <= 99) {
-                        vscode.postMessage({ command: 'setConfig', key: 'quotaNotificationThreshold', value: val });
-                    }
+                quotaNotifyBtn.addEventListener('click', saveQuotaThreshold);
+            }
+            if (quotaNotifyInput) {
+                quotaNotifyInput.addEventListener('change', saveQuotaThreshold);
+                quotaNotifyInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') { e.preventDefault(); saveQuotaThreshold(); }
                 });
             }
 
@@ -967,13 +1090,75 @@ export function getScript(): string {
             }
             applyPrivacyMask();
             applyContextVizMode(getContextVizMode());
+            applyNativeHudExpanded(getNativeHudExpanded());
 
-            // ─── Masthead Conversation Switcher (delegated for live DOM patching) ───
+            function commitAppSettingControl(el) {
+                if (!el || !el.getAttribute) { return; }
+                var key = el.getAttribute('data-app-setting');
+                if (!key) { return; }
+                var fbId = el.getAttribute('data-feedback-id') || '';
+                var value;
+                if (el.type === 'checkbox') {
+                    value = !!el.checked;
+                    if (key === 'showNativeHudBar') {
+                        var hudHost = document.getElementById('nativeHudHost');
+                        if (hudHost) {
+                            hudHost.hidden = !value || !hudHost.innerHTML.trim();
+                        }
+                    }
+                } else if (el.tagName === 'SELECT') {
+                    value = el.value;
+                } else {
+                    var settingType = el.getAttribute('data-setting-type') || 'string';
+                    var raw = String(el.value || '').trim();
+                    if (settingType === 'int') {
+                        var parsedInt = parseInt(raw, 10);
+                        var minAttr = el.min !== '' ? parseInt(el.min, 10) : -Infinity;
+                        var maxAttr = el.max !== '' ? parseInt(el.max, 10) : Infinity;
+                        if (!isFinite(parsedInt) || parsedInt < minAttr || parsedInt > maxAttr) {
+                            if (fbId) { flashFeedback(fbId, invalidBillingDayText, 2000); }
+                            return;
+                        }
+                        value = parsedInt;
+                    } else if (settingType === 'nullable-float') {
+                        if (!raw) {
+                            value = null;
+                        } else {
+                            var parsedFloat = parseFloat(raw);
+                            var minF = el.min !== '' ? parseFloat(el.min) : -Infinity;
+                            var maxF = el.max !== '' ? parseFloat(el.max) : Infinity;
+                            if (!isFinite(parsedFloat) || parsedFloat < minF || parsedFloat > maxF) {
+                                if (fbId) { flashFeedback(fbId, invalidBillingDayText, 2000); }
+                                return;
+                            }
+                            value = parsedFloat;
+                        }
+                    } else {
+                        value = raw;
+                    }
+                }
+                vscode.postMessage({ command: 'setAppSetting', key: key, value: value });
+                if (fbId) { flashFeedback(fbId, savedText, 2000); }
+            }
+
+            // ─── Delegated Change & Enter Auto-Save (Conversation Switcher + App Settings) ───
             document.body.addEventListener('change', function(e) {
                 var target = e.target;
                 if (target && target.id === 'conversationSwitcher') {
                     var selectedId = target.value || null;
                     vscode.postMessage({ command: 'selectConversation', conversationId: selectedId });
+                    return;
+                }
+                if (target && target.getAttribute && target.getAttribute('data-app-setting')) {
+                    commitAppSettingControl(target);
+                }
+            });
+            document.body.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter') { return; }
+                var target = e.target;
+                if (target && target.tagName === 'INPUT' && target.getAttribute && target.getAttribute('data-app-setting')) {
+                    e.preventDefault();
+                    commitAppSettingControl(target);
                 }
             });
 
@@ -1064,6 +1249,7 @@ export function getScript(): string {
                             }
                             spinInput.value = val;
                             spinInput.dispatchEvent(new Event('input', { bubbles: true }));
+                            spinInput.dispatchEvent(new Event('change', { bubbles: true }));
                         }
                     }
                     return;
@@ -1266,16 +1452,171 @@ export function getScript(): string {
 
 
 
-                // ── Date Cell Click: expand/collapse detail panel ──
-                var cell = target.closest('.cal-cell.has-data');
+                // ── Native HUD Expand/Collapse Toggle ──
+                var hudToggleBtn = target.closest('[data-action="toggleNativeHud"]');
+                if (hudToggleBtn) {
+                    var nextHudExp = hudToggleBtn.getAttribute('aria-expanded') !== 'true';
+                    var hudSt = vscode.getState() || {};
+                    hudSt.nativeHudExpanded = nextHudExp;
+                    vscode.setState(hudSt);
+                    applyNativeHudExpanded(nextHudExp);
+                    vscode.postMessage({ command: 'toggleNativeHud', expanded: nextHudExp });
+                    return;
+                }
+
+                // ── Orchestrator Pricing Mode Toggle (Cost & Settings tabs) ──
+                var orchModeBtn = target.closest('[data-action="setOrchestratorPricingMode"]');
+                if (orchModeBtn) {
+                    var nextPricingMode = orchModeBtn.getAttribute('data-mode') === 'strict' ? 'strict' : 'mapped';
+                    syncOrchestratorPricingModeVisual(nextPricingMode);
+                    flashFeedback('orchPricingModeFeedback', savedText, 2000);
+                    vscode.postMessage({ command: 'setOrchestratorPricingMode', mode: nextPricingMode });
+                    return;
+                }
+
+                // ── Updates & Release Check Actions (Settings & About tabs) ──
+                var checkUpdatesBtn = target.closest('[data-action="checkForUpdates"]');
+                if (checkUpdatesBtn) {
+                    setFeedback('updatesFeedback', checkingUpdatesText);
+                    setFeedback('aboutUpdatesFeedback', checkingUpdatesText);
+                    vscode.postMessage({ command: 'checkForUpdates', force: true });
+                    return;
+                }
+                var applyUpdateBtn = target.closest('[data-action="applyPluginUpdate"]');
+                if (applyUpdateBtn) {
+                    setFeedback('updatesFeedback', upgradingText);
+                    setFeedback('aboutUpdatesFeedback', upgradingText);
+                    vscode.postMessage({ command: 'applyPluginUpdate' });
+                    return;
+                }
+
+                // ── External URL Open Action ──
+                var extUrlEl = target.closest('[data-action="openExternalUrl"]');
+                if (extUrlEl) {
+                    var targetUrl = extUrlEl.getAttribute('data-url') || extUrlEl.getAttribute('href') || '';
+                    if (targetUrl) {
+                        if (extUrlEl.tagName !== 'A') { e.preventDefault(); }
+                        vscode.postMessage({ command: 'openExternalUrl', url: targetUrl });
+                    }
+                    return;
+                }
+
+                // ── Settings: Calendar Retention Save Button (alongside auto-save) ──
+                if (target.closest('#calendarRetentionSaveBtn')) {
+                    var calRetInput = document.getElementById('calendarRetentionInput');
+                    if (calRetInput) { commitAppSettingControl(calRetInput); }
+                    return;
+                }
+
+                // ── Calendar Controls (Source / Metric / Period / View / Export) ──
+                var calSourceBtn = target.closest('[data-action="calendarFilterSource"]');
+                if (calSourceBtn) {
+                    var srcVal = calSourceBtn.getAttribute('data-cal-source') || 'all';
+                    vscode.postMessage({ command: 'calendarFilterSource', source: srcVal });
+                    return;
+                }
+                var calMetricBtn = target.closest('[data-action="calendarSetMetric"]');
+                if (calMetricBtn) {
+                    var metVal = calMetricBtn.getAttribute('data-cal-metric') || 'tokens';
+                    vscode.postMessage({ command: 'calendarSetMetric', metric: metVal });
+                    return;
+                }
+                var calPeriodBtn = target.closest('[data-action="calendarSetPeriod"]');
+                if (calPeriodBtn) {
+                    var perVal = calPeriodBtn.getAttribute('data-cal-period') || 'daily';
+                    vscode.postMessage({ command: 'calendarSetPeriod', period: perVal });
+                    return;
+                }
+                var calViewBtn = target.closest('[data-action="calendarSetView"]');
+                if (calViewBtn) {
+                    var viewVal = calViewBtn.getAttribute('data-cal-view') || 'heatmap';
+                    vscode.postMessage({ command: 'calendarSetView', view: viewVal });
+                    return;
+                }
+                var calExportBtn = target.closest('[data-action="calendarExportCsv"], [data-action="calendarExportJson"]');
+                if (calExportBtn) {
+                    var exportCmd = calExportBtn.getAttribute('data-action');
+                    if (bridge && bridge.surface !== 'vscode' && typeof bridge.sendAction === 'function') {
+                        bridge.sendAction({ command: exportCmd }).then(function(res) {
+                            var payload = (res && res.result) ? res.result : res;
+                            if (payload && typeof payload.content === 'string') {
+                                triggerClientDownload(payload.filename, payload.content, payload.mimeType);
+                            }
+                        });
+                    } else {
+                        vscode.postMessage({ command: exportCmd });
+                    }
+                    return;
+                }
+
+                // ── Calendar Two-Step Safe Clear History ──
+                var calClearArmBtn = target.closest('[data-action="calendarClearArm"]');
+                if (calClearArmBtn) {
+                    var confirmBar = document.getElementById('calClearConfirmBar');
+                    if (confirmBar) {
+                        var nextOpen = confirmBar.hidden;
+                        confirmBar.hidden = !nextOpen;
+                        calClearArmBtn.setAttribute('aria-expanded', String(nextOpen));
+                    }
+                    return;
+                }
+                if (target.closest('[data-action="calendarClearConfirm"]')) {
+                    var confirmBar2 = document.getElementById('calClearConfirmBar');
+                    var armBtn2 = document.getElementById('clearCalendarBtn');
+                    if (confirmBar2) { confirmBar2.hidden = true; }
+                    if (armBtn2) { armBtn2.setAttribute('aria-expanded', 'false'); }
+                    vscode.postMessage({ command: 'clearCalendarHistory' });
+                    return;
+                }
+                if (target.closest('[data-action="calendarClearCancel"]')) {
+                    var confirmBar3 = document.getElementById('calClearConfirmBar');
+                    var armBtn3 = document.getElementById('clearCalendarBtn');
+                    if (confirmBar3) { confirmBar3.hidden = true; }
+                    if (armBtn3) {
+                        armBtn3.setAttribute('aria-expanded', 'false');
+                        armBtn3.focus();
+                    }
+                    return;
+                }
+
+                // ── Calendar Jump Date (Peak day / Period bar jump) ──
+                var calJumpBtn = target.closest('[data-action="calendarJumpDate"]');
+                if (calJumpBtn) {
+                    var jumpDate = calJumpBtn.getAttribute('data-cal-date') || '';
+                    if (jumpDate) {
+                        var js = vscode.getState() || {};
+                        js.calendarSelectedDate = jumpDate;
+                        vscode.setState(js);
+                        var parts = jumpDate.split('-');
+                        var jYr = parts.length >= 2 ? parseInt(parts[0], 10) : 0;
+                        var jMo = parts.length >= 2 ? parseInt(parts[1], 10) : 0;
+                        var jumpPanel = document.querySelector('[data-cal-detail="' + jumpDate + '"]');
+                        if (jumpPanel) {
+                            var allJumpPanels = document.querySelectorAll('[data-cal-detail]');
+                            for (var jpi = 0; jpi < allJumpPanels.length; jpi++) {
+                                var isTarget = allJumpPanels[jpi] === jumpPanel;
+                                allJumpPanels[jpi].classList.toggle('cal-detail-open', isTarget);
+                                allJumpPanels[jpi].style.display = isTarget ? 'block' : 'none';
+                            }
+                            jumpPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                        }
+                        vscode.postMessage({ command: 'calendarJumpDate', date: jumpDate, year: jYr || undefined, month: jMo || undefined });
+                    }
+                    return;
+                }
+
+                // ── Date Cell / Heatmap Cell Click: expand/collapse detail panel ──
+                var cell = target.closest('[data-action="calendarSelectDate"], .cal-cell.has-data');
                 if (cell) {
                     var date = cell.getAttribute('data-cal-date');
                     if (!date) return;
                     var newSelected = '';
+                    var matchedLocalPanel = false;
                     var allPanels = document.querySelectorAll('[data-cal-detail]');
                     for (var pi = 0; pi < allPanels.length; pi++) {
                         var p = allPanels[pi];
                         if (p.getAttribute('data-cal-detail') === date) {
+                            matchedLocalPanel = true;
                             var isHidden = !p.classList.contains('cal-detail-open');
                             p.classList.toggle('cal-detail-open', isHidden);
                             p.style.display = isHidden ? 'block' : 'none';
@@ -1286,8 +1627,11 @@ export function getScript(): string {
                             p.style.display = 'none';
                         }
                     }
+                    if (!matchedLocalPanel) {
+                        newSelected = date;
+                    }
                     // Deselect other cells
-                    var allCells = document.querySelectorAll('.cal-cell.has-data');
+                    var allCells = document.querySelectorAll('.cal-cell.has-data, .cal-hm-cell.has-data');
                     for (var oi = 0; oi < allCells.length; oi++) {
                         if (allCells[oi] !== cell) {
                             allCells[oi].classList.remove('selected');
@@ -1297,6 +1641,7 @@ export function getScript(): string {
                     var cs = vscode.getState() || {};
                     cs.calendarSelectedDate = newSelected;
                     vscode.setState(cs);
+                    vscode.postMessage({ command: 'calendarSelectDate', date: newSelected || null });
                     return;
                 }
 
@@ -1325,13 +1670,6 @@ export function getScript(): string {
                     }
                     return;
                 }
-
-                // ── Clear History Button ──
-                if (target.closest('#clearCalendarBtn')) {
-                    vscode.postMessage({ command: 'clearCalendarHistory' });
-                    return;
-                }
-
 
                 // ── Chat History actions ──
                 var historyBtn = target.closest('[data-history-action]');
@@ -1370,8 +1708,8 @@ export function getScript(): string {
                     return;
                 }
 
-                // ── Month Navigation Buttons ──
-                var navBtn = target.closest('.cal-nav-btn');
+                // ── Month Navigation & Chart Jump Triggers ──
+                var navBtn = target.closest('[data-cal-nav], .cal-nav-btn');
                 if (navBtn) {
                     var yr = navBtn.getAttribute('data-cal-year');
                     var mo = navBtn.getAttribute('data-cal-month');
@@ -1386,6 +1724,10 @@ export function getScript(): string {
             var lastMastheadHtml = (function() {
                 var mh = document.getElementById('mastheadContextBar');
                 return mh ? mh.innerHTML : '';
+            })();
+            var lastNativeHudHtml = (function() {
+                var nh = document.getElementById('nativeHudHost');
+                return nh ? nh.innerHTML : '';
             })();
             var lastAccountPopoverHtml = (function() {
                 var pb = document.getElementById('acctPopoverBody');
@@ -1510,6 +1852,20 @@ export function getScript(): string {
                                 }
                             }
                         }
+                    }
+                }
+
+                // Patch Native Ambient HUD without losing expanded state
+                var nextNativeHud = typeof tabs.nativeHud === 'string'
+                    ? tabs.nativeHud
+                    : (typeof msg.nativeHud === 'string' ? msg.nativeHud : null);
+                if (nextNativeHud !== null && nextNativeHud !== lastNativeHudHtml) {
+                    var hudHostEl = document.getElementById('nativeHudHost');
+                    if (hudHostEl) {
+                        hudHostEl.innerHTML = nextNativeHud;
+                        hudHostEl.hidden = !nextNativeHud.trim();
+                        lastNativeHudHtml = nextNativeHud;
+                        applyNativeHudExpanded(getNativeHudExpanded());
                     }
                 }
 
