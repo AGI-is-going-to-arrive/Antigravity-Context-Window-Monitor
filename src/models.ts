@@ -25,13 +25,13 @@ const ORCHESTRATOR_WORKER_NAME_PATTERN = /^(?:gemini[-_ ]flash[-_ ]worker[-_ ]ag
 /** Named coordinators have their own identities, separate from Gemini effort tiers. */
 function resolveOrchestratorAlias(value: string): string | undefined {
     const name = value.trim().replace(/（/g, '(').replace(/）/g, ')');
-    if (/^(?:orchestrator|编排器|协调器)(?:[\s_-]+carbon|\s*\(\s*carbon\s*\))?$|^gemini[-_ ]pro[-_ ]orchestrator$/i.test(name)) {
+    if (/^(?:orchestrator|编排模型|编排器|协调器)(?:[\s_-]+carbon|\s*\(\s*carbon\s*\))?$|^gemini[-_ ]pro[-_ ]orchestrator$/i.test(name)) {
         return 'MODEL_PLACEHOLDER_M667';
     }
-    if (/^(?:orchestrator|编排器|协调器)(?:[\s_-]+argon|\s*\(\s*argon\s*\))$|^gemini[-_ ]pro[-_ ]orchestrator[-_ ]argon$/i.test(name)) {
+    if (/^(?:orchestrator|编排模型|编排器|协调器)(?:[\s_-]+argon|\s*\(\s*argon\s*\))$|^gemini[-_ ]pro[-_ ]orchestrator[-_ ]argon$/i.test(name)) {
         return 'MODEL_PLACEHOLDER_M681';
     }
-    if (/^(?:orchestrator|编排器|协调器)(?:[\s_-]+neon|\s*\(\s*neon\s*\))$|^gemini[-_ ]pro[-_ ]orchestrator[-_ ]neon$/i.test(name)) {
+    if (/^(?:orchestrator|编排模型|编排器|协调器)(?:[\s_-]+neon|\s*\(\s*neon\s*\))$|^gemini[-_ ]pro[-_ ]orchestrator[-_ ]neon$/i.test(name)) {
         return 'MODEL_PLACEHOLDER_M537';
     }
     return undefined;
@@ -702,7 +702,7 @@ export function getQuotaPoolKey(modelId: string, resetTime?: string): string {
     // labels referencing Claude 5.5 also consume the Claude/GPT premium pool.
     const trimmed = modelId.trim().replace(/（/g, '(').replace(/）/g, ')');
     if (/^claude-(?:opus|sonnet)-5[.-]5$/i.test(trimmed)) { return 'premium'; }
-    if (/^(?:orchestrator|编排器|协调器)[\s_-]*\(?\s*claude[\s_-]+(?:opus|sonnet)[\s_-]+5[._-]5/i.test(trimmed)) { return 'premium'; }
+    if (/^(?:orchestrator|编排模型|编排器|协调器)[\s_-]*\(?\s*claude[\s_-]+(?:opus|sonnet)[\s_-]+5[._-]5/i.test(trimmed)) { return 'premium'; }
     if (GEMINI_4_FAMILY_PATTERN.test(trimmed)) { return 'gemini'; }
     // KNOWN_QUOTA_POOLS is keyed by placeholder ID, but callers also hold catalog model_ids
     // ('gemini-3.7-flash-high') and display labels ('Gemini 3.7 Flash (High)'). Without this
@@ -1639,6 +1639,10 @@ export interface OrchestratorSettings {
     executorCandidates: string[];
     /** Optional diagnostic lastSelectedAgentModel from Jetbox appState. */
     lastSelectedAgentModel?: string;
+    /** Optional AI Credit overage preference from Jetbox UserSettings or ~/.gemini/config/config.json. */
+    useAiCredits?: boolean;
+    /** Provenance of the resolved settings ('rpc' | 'config_fallback' | 'merged'). */
+    settingsSource?: 'rpc' | 'config_fallback' | 'merged';
 }
 
 export interface QuotaWindowSummary {
@@ -1745,6 +1749,8 @@ export function resolveOrchestratorSettings(
         orchestratorModel?: string;
         orchestratorExecutorModel?: string;
         lastSelectedAgentModel?: string;
+        useAiCredits?: boolean;
+        settingsSource?: 'rpc' | 'config_fallback' | 'merged';
     } | null | undefined,
     roles: OrchestratorModelRoles | null | undefined,
     configs: readonly ModelConfig[],
@@ -1805,5 +1811,38 @@ export function resolveOrchestratorSettings(
         executorCandidates: execCandidates.map(c => c.model),
         ...(rawLastSelected && !isUnspecifiedModelValue(rawLastSelected)
             ? { lastSelectedAgentModel: resolveModelId(rawLastSelected) || rawLastSelected } : {}),
+        ...(typeof rawPrefs?.useAiCredits === 'boolean' ? { useAiCredits: rawPrefs.useAiCredits } : {}),
+        ...(rawPrefs?.settingsSource ? { settingsSource: rawPrefs.settingsSource } : {}),
     };
+}
+
+/**
+ * Resolve a concise human-readable thinking/effort level label for a model ID or catalog ID
+ * (e.g. 'Extra High', 'High', 'Medium', 'Low', or 'Adaptive').
+ */
+export function getModelThinkingEffortLabel(model: string, language: Language = 'en'): string {
+    const resolved = resolveModelId(model) || model.trim();
+    if (!resolved) { return ''; }
+    const spec = getModelSpecs().find(s => s.placeholderId === resolved || s.modelId === resolved);
+    const catalogId = (spec?.modelId || resolved).toLowerCase();
+    const match = ORCHESTRATOR_EFFORT_SUFFIX.exec(catalogId);
+    const labels: Record<string, readonly [string, string]> = {
+        low: ['Low', '低'],
+        medium: ['Medium', '中'],
+        high: ['High', '高'],
+        xhigh: ['Extra High', '超高'],
+        max: ['Max', '最高'],
+    };
+    const pick = (en: string, zh: string): string => (language === 'zh' ? zh : language === 'both' ? `${en} / ${zh}` : en);
+    if (match) {
+        const pair = labels[match[1].toLowerCase()];
+        if (pair) { return pick(pair[0], pair[1]); }
+    }
+    if (spec?.thinkingLevel === 100) { return pick('Extra High', '超高'); }
+    if (spec?.thinkingLevel === 3) { return pick('High', '高'); }
+    if (spec?.thinkingLevel === 2) { return pick('Medium', '中'); }
+    if (spec?.thinkingLevel === 1) { return pick('Low', '低'); }
+    if (spec?.supportsAdaptiveThinking) { return pick('Adaptive', '自适应'); }
+    if (spec?.supportsThinking) { return pick('Thinking', '思考'); }
+    return '';
 }

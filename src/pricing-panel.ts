@@ -2,14 +2,46 @@
 // Renders the "Pricing" tab: cost estimation and editable pricing table.
 // Model DNA is rendered in the dedicated Models tab.
 
-import { tBi } from './i18n';
+import { getLanguage, tBi } from './i18n';
 import { GMSummary, GMModelStats } from './gm-tracker';
-import { PricingStore, PRICING_LAST_UPDATED, findPricingWithCustom, findPricingForDate, calculateLedgerModelCosts, selectPricingModel, samePricingModel, getUpcomingRateChanges, formatUsdCost, formatUsdSavings, ModelPricing, ModelCostRow } from './pricing-store';
+import {
+    PricingStore,
+    PRICING_LAST_UPDATED,
+    calculateCosts,
+    findPricingWithCustom,
+    resolvePricingDetail,
+    calculateLedgerModelCosts,
+    selectPricingModel,
+    samePricingModel,
+    getUpcomingRateChanges,
+    getOrchestratorPricingMode,
+    formatUsdCost,
+    formatUsdPerMillion,
+    formatUsdSavings,
+    type ModelPricing,
+    type ModelCostRow,
+    type OrchestratorPricingMode,
+    type PricingProvenance,
+} from './pricing-store';
 import { esc, tBiHtml } from './webview-helpers';
 import type { MonthCostBreakdown } from './daily-store';
 import { getModelDNAKey, type PersistedModelDNA } from './model-dna-store';
-import { ModelConfig, normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDisplayName } from './models';
+import {
+    ModelConfig,
+    normalizeModelDisplayName,
+    getModelBaseName,
+    resolveModelId,
+    getModelDisplayName,
+    getModelThinkingEffortLabel,
+    localizePickerEffortLabel,
+    type OrchestratorSettings,
+} from './models';
 import type { LedgerSettledEntry, LedgerAccountBucket } from './daily-ledger';
+
+export interface PricingTabOptions {
+    orchestratorSettings?: OrchestratorSettings | null;
+    orchestratorPricingMode?: OrchestratorPricingMode;
+}
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -20,7 +52,12 @@ export function buildPricingTabContent(
     ledgerSettled?: LedgerSettledEntry[],
     todayLedgerActive?: LedgerAccountBucket[],
     hasUnmeteredImageUsage = false,
+    options?: PricingTabOptions,
 ): string {
+    const mode: OrchestratorPricingMode = options?.orchestratorPricingMode
+        ?? store.getOrchestratorPricingMode?.()
+        ?? getOrchestratorPricingMode();
+    const custom = store.getCustom();
     const pendingArchiveCost = ledgerSettled ? ledgerSettled.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0) : 0;
     const hasActive = !!((todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) || (summary && summary.totalCalls > 0));
     const hasSettled = !!(ledgerSettled && ledgerSettled.length > 0);
@@ -32,6 +69,9 @@ export function buildPricingTabContent(
     if (rateChangeBanner) {
         parts.push(rateChangeBanner);
     }
+
+    // Active Orchestrator Pricing Banner & Mode Toggle (Mapped Base Pricing vs Strict Mode)
+    parts.push(buildActiveOrchestratorPricingCard(options?.orchestratorSettings, custom, mode));
 
     if (hasUnmeteredImageUsage) {
         parts.push(`<section class="card image-cost-unavailable"><h2>${tBiHtml('Image generation costs', '图片生成费用')}</h2><p>${tBiHtml(
@@ -52,8 +92,8 @@ export function buildPricingTabContent(
                 const baseName = getModelBaseName(modelKey) || displayName;
                 // Retained call timestamps keep rate changes from re-pricing old
                 // usage; custom prices still apply consistently to every call.
-                const { pricing, inputCost, outputCost, cacheCost, thinkingCost, totalCost, costBreakdownUnavailable, usesHistoricalRates } =
-                    calculateLedgerModelCosts(modelKey, ms, bucket, store.getCustom());
+                const { pricing, provenance, mappedBaseLabel, inputCost, outputCost, cacheCost, thinkingCost, totalCost, costBreakdownUnavailable, usesHistoricalRates } =
+                    calculateLedgerModelCosts(modelKey, ms, bucket, custom, undefined, mode);
                 activeGrandTotal += totalCost;
 
                 const existing = mergedRowsMap.get(baseName);
@@ -69,7 +109,10 @@ export function buildPricingTabContent(
                     existing.thinkingTokens += ms.thinkingTokens;
                     existing.costBreakdownUnavailable ||= costBreakdownUnavailable;
                     existing.usesHistoricalRates ||= usesHistoricalRates;
-                    if (!pricing) { existing.pricing = null; }
+                    if (!pricing) {
+                        existing.pricing = null;
+                        existing.provenance = 'unpriced';
+                    }
                 } else {
                     mergedRowsMap.set(baseName, {
                         name: displayName, responseModel: modelKey,
@@ -79,6 +122,8 @@ export function buildPricingTabContent(
                         cacheTokens: ms.cacheReadTokens,
                         thinkingTokens: ms.thinkingTokens,
                         pricing: pricing || null,
+                        provenance: pricing ? (provenance ?? 'official') : 'unpriced',
+                        ...(mappedBaseLabel ? { mappedBaseLabel } : {}),
                         costBreakdownUnavailable,
                         usesHistoricalRates,
                     });
@@ -87,7 +132,11 @@ export function buildPricingTabContent(
         }
     } else {
         // 没有任何今日活跃账本（极罕见），降级使用活跃 Summary 的统计
-        const costResult = summary ? store.calculateCosts(summary) : { rows: [] as ModelCostRow[], grandTotal: 0 };
+        const costResult = summary
+            ? (options?.orchestratorPricingMode !== undefined
+                ? calculateCosts(summary, custom, mode)
+                : store.calculateCosts(summary))
+            : { rows: [] as ModelCostRow[], grandTotal: 0 };
         activeGrandTotal = costResult.grandTotal;
         for (const r of costResult.rows) {
             mergedRowsMap.set(r.name, { ...r });
@@ -107,9 +156,9 @@ export function buildPricingTabContent(
 
                 const displayName = normalizeModelDisplayName(modelKey);
                 const baseName = getModelBaseName(modelKey) || displayName;
-                const pricing = findPricingForDate(modelKey, store.getCustom(), entry.settledAt);
+                const detail = resolvePricingDetail(modelKey, custom, { at: entry.settledAt, orchestratorPricingMode: mode });
+                const pricing = detail.pricing;
 
-                // 根据 token 数与单价粗略算下输入/输出/缓存的占比，支持 SVG 色条中漂亮的四色渲染
                 // Only a frozen pool total survives settlement; a rate at its
                 // end time cannot reconstruct historical per-token cost parts.
                 const inputCost = 0;
@@ -127,13 +176,19 @@ export function buildPricingTabContent(
                     existing.outputTokens += outputTokens;
                     existing.cacheTokens += cacheTokens;
                     existing.costBreakdownUnavailable = true;
-                    if (!pricing) { existing.pricing = null; }
+                    if (!pricing) {
+                        existing.pricing = null;
+                        existing.provenance = 'unpriced';
+                    }
                 } else {
                     mergedRowsMap.set(baseName, {
                         name: displayName, responseModel: modelKey,
                         inputCost, outputCost, cacheCost, thinkingCost, totalCost,
                         inputTokens, outputTokens, cacheTokens,
-                        thinkingTokens: 0, pricing: pricing || null, costBreakdownUnavailable: true,
+                        thinkingTokens: 0, pricing: pricing || null,
+                        provenance: pricing ? detail.provenance : 'unpriced',
+                        ...(detail.mappedBaseLabel ? { mappedBaseLabel: detail.mappedBaseLabel } : {}),
+                        costBreakdownUnavailable: true,
                     });
                 }
             }
@@ -144,13 +199,12 @@ export function buildPricingTabContent(
 
     // Monthly total cost summary (always shown if breakdown data exists)
     if (monthBreakdown) {
-        parts.push(buildMonthlyCostSummary(monthBreakdown, activeGrandTotal, rows, pendingArchiveCost, store.getCustom(), hasUnmeteredImageUsage));
+        parts.push(buildMonthlyCostSummary(monthBreakdown, activeGrandTotal, rows, pendingArchiveCost, custom, hasUnmeteredImageUsage, mode));
     }
 
     // Highlight the actual called model's editor even if the response uses a
     // shared family or names a different model.
     const calledModelKeys = new Set<string>();
-    const custom = store.getCustom();
     for (const r of rows) {
         if (r.totalCost > 0 || r.inputTokens > 0 || r.outputTokens > 0 || r.thinkingTokens > 0 || r.cacheTokens > 0) {
             const model = selectPricingModel(r.name, r.responseModel, custom);
@@ -163,7 +217,7 @@ export function buildPricingTabContent(
         const merged = store.getMerged();
         parts.push(
             buildCostPanel(rows, fullTotal, summary, ledgerSettled, todayLedgerActive, hasUnmeteredImageUsage),
-            buildEditablePricingTable(calledModelKeys, merged, custom),
+            buildEditablePricingTable(calledModelKeys, merged, custom, mode),
         );
     } else {
         // No GM data yet — still show the editable pricing table with defaults
@@ -172,7 +226,7 @@ export function buildPricingTabContent(
                 'Cost analysis will appear after GM data is available. You can configure custom prices below.',
                 '费用分析将在 GM 数据可用后显示。您可以在下方配置自定义价格。',
             )}</p>`,
-            buildDefaultPricingTable(store.getMerged(), custom),
+            buildDefaultPricingTable(store.getMerged(), custom, mode),
         );
     }
 
@@ -1042,6 +1096,7 @@ export function getPricingTabStyles(): string {
     }
     .prc-custom-badge,
     .prc-called-badge,
+    .prc-mapped-badge,
     .prc-unpriced-badge {
         display: inline-flex;
         align-items: center;
@@ -1063,13 +1118,154 @@ export function getPricingTabStyles(): string {
         color: var(--ed-accent);
         border-color: var(--ed-accent-border);
     }
+    .prc-mapped-badge {
+        background: var(--ed-surface);
+        color: var(--ed-accent);
+        border-color: var(--ed-accent-border);
+    }
     .prc-unpriced-badge {
         background: var(--ed-surface);
         color: var(--ed-ink-muted);
         border-color: var(--ed-border-strong);
     }
-    body .tab-pane :is(.prc-called-badge, .prc-custom-badge, .cost-chip-total) :is(.bi-sep, .bi-zh) {
+    body .tab-pane :is(.prc-called-badge, .prc-custom-badge, .prc-mapped-badge, .cost-chip-total) :is(.bi-sep, .bi-zh) {
         color: inherit;
+    }
+
+    /* ── Active Orchestrator Pricing Card & Mode Toggle ── */
+    .prc-orch-card {
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-md);
+        padding: 14px 16px;
+        margin-bottom: 18px;
+    }
+    .prc-orch-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 8px 12px;
+        margin-bottom: 10px;
+    }
+    .prc-orch-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        margin: 0;
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: var(--ed-ink);
+    }
+    .prc-orch-title svg {
+        width: 15px;
+        height: 15px;
+        color: var(--ed-accent);
+        flex-shrink: 0;
+    }
+    .prc-orch-toggle {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        padding: 3px;
+        border-radius: var(--ed-radius-sm);
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+    }
+    .prc-orch-toggle-btn {
+        appearance: none;
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: var(--ed-radius-xs);
+        border: 1px solid transparent;
+        background: transparent;
+        color: var(--ed-ink-secondary);
+        font-family: inherit;
+        font-size: 0.72rem;
+        font-weight: 550;
+        cursor: pointer;
+        transition: background var(--ed-dur-fast) var(--ed-ease), color var(--ed-dur-fast) var(--ed-ease), border-color var(--ed-dur-fast) var(--ed-ease);
+    }
+    .prc-orch-toggle-btn.is-active {
+        background: var(--ed-surface);
+        border-color: var(--ed-accent-border);
+        color: var(--ed-accent);
+        font-weight: 650;
+    }
+    .prc-orch-toggle-btn:focus-visible {
+        outline: 2px solid var(--ed-accent);
+        outline-offset: 1px;
+    }
+    .prc-orch-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+    .prc-orch-role {
+        background: var(--ed-surface-well);
+        border: 1px solid var(--ed-border);
+        border-radius: var(--ed-radius-sm);
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        min-width: 0;
+    }
+    .prc-orch-role-head {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: var(--ed-ink-muted);
+    }
+    .prc-orch-role-model {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        color: var(--ed-ink);
+        min-width: 0;
+    }
+    .prc-orch-effort {
+        display: inline-flex;
+        align-items: center;
+        padding: 1px 6px;
+        border-radius: var(--ed-radius-xs);
+        background: var(--ed-surface);
+        border: 1px solid var(--ed-border);
+        color: var(--ed-ink-secondary);
+        font-size: 0.6875rem;
+        font-weight: 550;
+    }
+    .prc-orch-rates {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 10px;
+        font-size: 0.72rem;
+        color: var(--ed-ink-secondary);
+        font-variant-numeric: tabular-nums lining-nums;
+    }
+    .prc-orch-note {
+        margin: 0;
+        font-size: 0.72rem;
+        line-height: 1.5;
+        color: var(--ed-ink-muted);
+    }
+    .prc-mapped-sub {
+        font-size: 0.6875rem;
+        font-weight: 500;
+        color: var(--ed-ink-muted);
+    }
+    @media (max-width: 640px) {
+        .prc-orch-grid {
+            grid-template-columns: minmax(0, 1fr);
+        }
     }
 
     /* ── Responsive Breakpoints (Zero Overflow down to 320px) ── */
@@ -1135,6 +1331,7 @@ export function getPricingTabStyles(): string {
         .prc-edit-row,
         .prc-edit-input,
         .prc-btn,
+        .prc-orch-toggle-btn,
         .prc-feedback {
             transition: none;
         }
@@ -1156,6 +1353,106 @@ function fmtSavedMagnitude(usd: number): string | null {
     const signed = formatUsdSavings(usd);
     if (signed === '—') { return null; }
     return signed.replace(/^-/, '');
+}
+
+function renderProvenanceBadge(
+    provenance: PricingProvenance | undefined,
+    mappedBaseLabel?: string,
+): string {
+    if (provenance === 'custom') {
+        return `<span class="prc-custom-badge" data-pricing-provenance="custom">${tBiHtml('Custom', '自定义')}</span>`;
+    }
+    if (provenance === 'mapped_base') {
+        const tip = mappedBaseLabel
+            ? ` title="${esc(tBi(`Estimated via base model: ${mappedBaseLabel}`, `按底座模型估算：${mappedBaseLabel}`))}"`
+            : '';
+        return `<span class="prc-mapped-badge" data-pricing-provenance="mapped_base"${tip}>${tBiHtml('Est. via Base Model', '按底座估算')}</span>`;
+    }
+    if (provenance === 'unpriced') {
+        return `<span class="prc-unpriced-badge" data-pricing-provenance="unpriced">${tBiHtml('Price unavailable', '价格待确认')}</span>`;
+    }
+    return '';
+}
+
+/**
+ * Active Orchestrator Pricing Banner & Mode Toggle card.
+ * Shows currently configured Orchestrator Model + Executor Model (with thinking effort &
+ * effective input/output/cache/thinking rates) and a toggle between Mapped Base Pricing (Default)
+ * and Strict Mode. Exported for standalone tests and Phase B integration.
+ */
+export function buildActiveOrchestratorPricingCard(
+    orchestratorSettings: OrchestratorSettings | null | undefined,
+    customPricing: Record<string, ModelPricing> = {},
+    mode: OrchestratorPricingMode = getOrchestratorPricingMode(),
+): string {
+    const lang = getLanguage();
+    const orchSvg = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.5 7.5 11 15.5"/><path d="M15.5 7.5 13 15.5"/></svg>`;
+
+    const renderRoleCard = (
+        roleKey: 'orchestrator' | 'executor',
+        titleEn: string,
+        titleZh: string,
+        modelId: string,
+        rawLabel: string,
+    ): string => {
+        const label = localizePickerEffortLabel(modelId, rawLabel || getModelDisplayName(modelId) || modelId, lang);
+        const effort = getModelThinkingEffortLabel(modelId, lang);
+        const detail = resolvePricingDetail(modelId, customPricing, { orchestratorPricingMode: mode });
+        const badge = renderProvenanceBadge(detail.provenance, detail.mappedBaseLabel);
+        const ratesHtml = detail.pricing
+            ? `<div class="prc-orch-rates">
+                <span>${tBiHtml('In', '输入')} ${esc(formatUsdPerMillion(detail.pricing.input))}</span>
+                <span>${tBiHtml('Out', '输出')} ${esc(formatUsdPerMillion(detail.pricing.output))}</span>
+                <span>${tBiHtml('Cache', '缓存')} ${esc(formatUsdPerMillion(detail.pricing.cacheRead))}</span>
+                <span>${tBiHtml('Think', '思考')} ${esc(formatUsdPerMillion(detail.pricing.thinking))}</span>
+            </div>`
+            : `<div class="prc-orch-rates"><span>${tBiHtml('No verified price (set override below)', '暂无核实价格（可在下方自定义）')}</span></div>`;
+
+        return `<div class="prc-orch-role" data-orch-pricing-role="${roleKey}">
+            <div class="prc-orch-role-head">
+                <span>${tBiHtml(titleEn, titleZh)}</span>
+                ${badge}
+            </div>
+            <div class="prc-orch-role-model">
+                <span>${esc(label || '—')}</span>
+                ${effort ? `<span class="prc-orch-effort">${esc(effort)}</span>` : ''}
+            </div>
+            ${ratesHtml}
+        </div>`;
+    };
+
+    const rolesGrid = orchestratorSettings && (orchestratorSettings.effectiveOrchestratorModel || orchestratorSettings.effectiveExecutorModel)
+        ? `<div class="prc-orch-grid">
+            ${orchestratorSettings.effectiveOrchestratorModel
+                ? renderRoleCard('orchestrator', 'Orchestrator Model', '编排模型', orchestratorSettings.effectiveOrchestratorModel, orchestratorSettings.effectiveOrchestratorLabel)
+                : ''}
+            ${orchestratorSettings.effectiveExecutorModel
+                ? renderRoleCard('executor', 'Executor Model', '执行模型', orchestratorSettings.effectiveExecutorModel, orchestratorSettings.effectiveExecutorLabel)
+                : ''}
+        </div>`
+        : '';
+
+    const noteHtml = mode === 'mapped'
+        ? tBiHtml(
+            'Mapped Base Pricing (Default): Legacy Orchestrator IDs (M537/M667/M681/M669) estimate costs via their verified Gemini 4 base family rates (honoring UTC cutovers). Custom overrides below always win.',
+            '按底座估算（默认）：旧版编排标识（M537/M667/M681/M669）按对应 Gemini 4 底座模型费率估算（遵循 UTC 调价日期）。下方自定义价格始终优先。',
+        )
+        : tBiHtml(
+            'Strict Mode: Legacy Orchestrator IDs (M537/M667/M681/M669) remain unpriced unless you enter a custom override below. Custom Orchestrator Mode continues billing automatically via concrete base models.',
+            '严格模式：旧版编排标识（M537/M667/M681/M669）保持待确认状态，仅在下方填写自定义单价后计费；自定义编排模式仍按具体底座模型自动计费。',
+        );
+
+    return `<section class="prc-orch-card" id="activeOrchestratorPricingCard" data-orchestrator-pricing-mode="${mode}">
+        <div class="prc-orch-head">
+            <h2 class="prc-orch-title">${orchSvg}<span>${tBiHtml('Orchestrator Pricing', '编排计费')}</span></h2>
+            <div class="prc-orch-toggle" role="radiogroup" aria-label="${esc(tBi('Orchestrator pricing mode', '编排计费模式'))}">
+                <button type="button" class="prc-orch-toggle-btn${mode === 'mapped' ? ' is-active' : ''}" id="orchPricingModeMapped" data-action="setOrchestratorPricingMode" data-mode="mapped" role="radio" aria-checked="${mode === 'mapped' ? 'true' : 'false'}">${tBiHtml('Mapped Base Pricing (Default)', '按底座估算（默认）')}</button>
+                <button type="button" class="prc-orch-toggle-btn${mode === 'strict' ? ' is-active' : ''}" id="orchPricingModeStrict" data-action="setOrchestratorPricingMode" data-mode="strict" role="radio" aria-checked="${mode === 'strict' ? 'true' : 'false'}">${tBiHtml('Strict Mode', '严格模式')}</button>
+            </div>
+        </div>
+        ${rolesGrid}
+        <p class="prc-orch-note">${noteHtml}</p>
+    </section>`;
 }
 
 function buildUpcomingRateChangeBanner(nowMs: number): string {
@@ -1315,8 +1612,11 @@ function buildCostPanel(
             const rowThinkShare = !r.costBreakdownUnavailable && r.thinkingCost > 0 && r.totalCost > 0
                 ? Math.round((r.thinkingCost / r.totalCost) * 100)
                 : 0;
+            const provBadge = r.provenance === 'mapped_base'
+                ? ` ${renderProvenanceBadge('mapped_base', r.mappedBaseLabel)}`
+                : '';
             html += `<div class="cost-detail-row">
-                <span class="cost-detail-name" title="${esc(r.name)}" data-tooltip="${esc(r.name)}${r.responseModel && r.responseModel !== r.name ? ' · ' + esc(r.responseModel) : ''}">${esc(r.name)}</span>
+                <span class="cost-detail-name" title="${esc(r.name)}" data-tooltip="${esc(r.name)}${r.responseModel && r.responseModel !== r.name ? ' · ' + esc(r.responseModel) : ''}">${esc(r.name)}${provBadge}</span>
                 <div class="cost-detail-items">
                     ${r.costBreakdownUnavailable ? `<span class="cost-note">${tBiHtml('Historical total; token cost breakdown unavailable', '历史总费用；各类 Token 费用明细不可用')}</span>` : `
                     <span class="cost-detail-item" data-tooltip="${esc(rateTooltip(r.inputTokens, r.pricing!.input))}">
@@ -1570,10 +1870,14 @@ function editablePriceKeys(merged: Record<string, ModelPricing>): string[] {
     return [...keys, ...UNVERIFIED_PRICE_KEYS.filter(key => !configuredIds.has(resolveModelId(key)))];
 }
 
-function orchestratorPricingNote(): string {
+function orchestratorPricingNote(mode: OrchestratorPricingMode = getOrchestratorPricingMode()): string {
     return `<li>${tBiHtml(
-        'Custom Orchestrator Mode executes on concrete planner and executor models (e.g. Gemini 4 Neon/Carbon/Argon, Claude Opus 5.5, Gemini 4 Hydrogen, Claude Sonnet 5.5) and bills each call automatically at its base model rate with no orchestration surcharge. Legacy server-managed Orchestrator (Neon/Carbon/Argon) and worker M669 entries remain unverified custom-priced identities.',
-        '自定义编排模式会直接调用具体的规划模型与执行模型（如 Gemini 4 Neon/Carbon/Argon、Claude Opus 5.5、Gemini 4 Hydrogen、Claude Sonnet 5.5），按每次调用实际记录的基础模型自动计费，无额外编排加价。旧版服务端托管的三个 Orchestrator 变体及 M669 仍保留为待确认的自定义单价项。',
+        mode === 'mapped'
+            ? 'Custom Orchestrator Mode executes on concrete Orchestrator and Executor models (e.g. Gemini 4 Neon/Carbon/Argon, Claude Opus 5.5, Gemini 4 Hydrogen, Claude Sonnet 5.5) and bills each call automatically at its base model rate with no orchestration surcharge. In Mapped Base Pricing mode, legacy M537/M667/M681/M669 identities estimate via their verified Gemini 4 base family rates (enter custom values above to override, or switch to Strict Mode).'
+            : 'Custom Orchestrator Mode executes on concrete Orchestrator and Executor models (e.g. Gemini 4 Neon/Carbon/Argon, Claude Opus 5.5, Gemini 4 Hydrogen, Claude Sonnet 5.5) and bills each call automatically at its base model rate with no orchestration surcharge. In Strict Mode, legacy server-managed Orchestrator (Neon/Carbon/Argon) and worker M669 entries remain unpriced unless custom-overridden.',
+        mode === 'mapped'
+            ? '自定义编排模式会直接调用具体的编排模型与执行模型（如 Gemini 4 Neon/Carbon/Argon、Claude Opus 5.5、Gemini 4 Hydrogen、Claude Sonnet 5.5），按每次调用实际记录的底座模型自动计费，无额外编排加价。在“按底座估算”模式下，旧版 M537/M667/M681/M669 会按对应 Gemini 4 底座费率估算（可在上方填写自定义单价覆盖，或切换为严格模式）。'
+            : '自定义编排模式会直接调用具体的编排模型与执行模型（如 Gemini 4 Neon/Carbon/Argon、Claude Opus 5.5、Gemini 4 Hydrogen、Claude Sonnet 5.5），按每次调用实际记录的底座模型自动计费，无额外编排加价。在严格模式下，旧版服务端托管的三个 Orchestrator 变体及 M669 仅在自定义单价后计费。',
     )}</li>`;
 }
 
@@ -1609,6 +1913,7 @@ function buildEditablePricingTable(
     calledModelKeys: Set<string>,
     merged: Record<string, ModelPricing>,
     custom: Record<string, ModelPricing>,
+    mode: OrchestratorPricingMode = getOrchestratorPricingMode(),
 ): string {
     // Keep family-rate editors stable when a first call adds a concrete tier.
     // Otherwise polling can remove a family row with an unsaved price draft.
@@ -1642,19 +1947,37 @@ function buildEditablePricingTable(
     html += `<div class="prc-edit-list">`;
 
     for (const entry of allEntries) {
-        const pricing = findPricingWithCustom(entry.responseModel, custom);
+        const detail = resolvePricingDetail(entry.responseModel, custom, { orchestratorPricingMode: mode });
+        const pricing = detail.pricing;
         const isCustom = !!custom[entry.responseModel];
+        const isMapped = detail.provenance === 'mapped_base';
         const rowStateClass = entry.isCalled ? ' prc-edit-called' : ' prc-edit-uncalled';
+        const provBadge = isCustom
+            ? renderProvenanceBadge('custom')
+            : isMapped
+                ? renderProvenanceBadge('mapped_base', detail.mappedBaseLabel)
+                : !pricing
+                    ? renderProvenanceBadge('unpriced')
+                    : '';
+        const mappedSub = isMapped && detail.mappedBaseLabel
+            ? `<span class="prc-mapped-sub">→ ${esc(detail.mappedBaseLabel)}</span>`
+            : '';
 
-        html += `<div class="prc-edit-row${rowStateClass}">`;
-        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(entry.name)}" data-tooltip="${esc(entry.name)}${entry.responseModel && entry.responseModel !== entry.name ? ' · ' + esc(entry.responseModel) : ''}"><span class="prc-edit-card-name-text">${esc(entry.name)}</span>${entry.isCalled ? `<span class="prc-called-badge">${tBiHtml('Active', '已调用')}</span>` : ''}${isCustom ? `<span class="prc-custom-badge">${tBiHtml('Custom', '自定义')}</span>` : ''}${!pricing ? `<span class="prc-unpriced-badge">${tBiHtml('Price unavailable', '价格待确认')}</span>` : ''}</span></div>`;
+        html += `<div class="prc-edit-row${rowStateClass}" data-pricing-provenance="${detail.provenance}">`;
+        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(entry.name)}" data-tooltip="${esc(entry.name)}${entry.responseModel && entry.responseModel !== entry.name ? ' · ' + esc(entry.responseModel) : ''}"><span class="prc-edit-card-name-text">${esc(entry.name)}</span>${entry.isCalled ? `<span class="prc-called-badge">${tBiHtml('Active', '已调用')}</span>` : ''}${provBadge}${mappedSub}</span></div>`;
         html += `<div class="prc-edit-row-right">`;
         for (const f of fields) {
             const [en, zh] = FIELD_LABELS[f] || [f, f];
-            const value = pricing ? String(pricing[f]) : '';
+            // Legacy Orchestrator rows in mapped mode show effective mapped rates as
+            // editable placeholders (value="") so saving untouched does not create fake overrides.
+            const value = pricing && !isMapped ? String(pricing[f]) : '';
+            const placeholder = isMapped && pricing
+                ? String(pricing[f])
+                : tBi('Not set', '未设置');
+            const mappedAttr = isMapped && pricing ? ` data-mapped-value="${esc(String(pricing[f]))}"` : '';
             html += `<div class="prc-edit-field">
                 <span class="prc-edit-field-label">${tBiHtml(en, zh)}</span>
-                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(entry.responseModel)}" data-field="${f}" data-original-value="${esc(value)}" data-was-custom="${isCustom ? '1' : '0'}" data-cache-write="${pricing?.cacheWrite ?? 0}" value="${esc(value)}" placeholder="${esc(tBi('Not set', '未设置'))}" step="any" min="0" aria-label="${esc(entry.name)} ${esc(tBi(en, zh))}">
+                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(entry.responseModel)}" data-field="${f}" data-original-value="${esc(value)}" data-was-custom="${isCustom ? '1' : '0'}" data-cache-write="${pricing?.cacheWrite ?? 0}"${mappedAttr} value="${esc(value)}" placeholder="${esc(placeholder)}" step="any" min="0" aria-label="${esc(entry.name)} ${esc(tBi(en, zh))}">
             </div>`;
         }
         html += `</div></div>`;
@@ -1670,7 +1993,7 @@ function buildEditablePricingTable(
     html += `<div class="prc-info-bar">${infoSvg2}<div class="prc-info-bar-body"><ul>
         <li>${tBiHtml('Edit prices above and click Save. Changes persist across sessions.', '编辑上方价格后点击“保存”，修改跨会话持久化。')}</li>
         <li>${tBiHtml('Reset restores built-in default prices. Clear all fields in a row to remove its override. Missing prices are not zero prices.', '“恢复默认”将还原内置价格。清空一行全部字段可移除该自定义价格；缺失价格不代表免费。')}</li>
-        ${orchestratorPricingNote()}
+        ${orchestratorPricingNote(mode)}
         ${neonPricingNote()}
         ${hydrogenPricingNote()}
         ${carbonPricingNote()}
@@ -1686,6 +2009,7 @@ function buildEditablePricingTable(
 function buildDefaultPricingTable(
     merged: Record<string, ModelPricing>,
     custom: Record<string, ModelPricing>,
+    mode: OrchestratorPricingMode = getOrchestratorPricingMode(),
 ): string {
     const entries = editablePriceKeys(merged);
     if (entries.length === 0) { return ''; }
@@ -1696,20 +2020,36 @@ function buildDefaultPricingTable(
     html += `<div class="prc-edit-section"><div class="prc-edit-list">`;
 
     for (const model of entries) {
-        const p = findPricingWithCustom(model, custom);
+        const detail = resolvePricingDetail(model, custom, { orchestratorPricingMode: mode });
+        const p = detail.pricing;
         const isCustom = !!custom[model];
+        const isMapped = detail.provenance === 'mapped_base';
         const resolved = resolveModelId(model);
         const displayName = resolved ? getModelDisplayName(resolved) : pricingDisplayName(model);
+        const provBadge = isCustom
+            ? renderProvenanceBadge('custom')
+            : isMapped
+                ? renderProvenanceBadge('mapped_base', detail.mappedBaseLabel)
+                : !p
+                    ? renderProvenanceBadge('unpriced')
+                    : '';
+        const mappedSub = isMapped && detail.mappedBaseLabel
+            ? `<span class="prc-mapped-sub">→ ${esc(detail.mappedBaseLabel)}</span>`
+            : '';
 
-        html += `<div class="prc-edit-row">`;
-        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(displayName)}" data-tooltip="${esc(displayName)}${model !== displayName ? ' · ' + esc(model) : ''}"><span class="prc-edit-card-name-text">${esc(displayName)}</span>${isCustom ? `<span class="prc-custom-badge">${tBiHtml('Custom', '自定义')}</span>` : ''}${!p ? `<span class="prc-unpriced-badge">${tBiHtml('Price unavailable', '价格待确认')}</span>` : ''}</span></div>`;
+        html += `<div class="prc-edit-row" data-pricing-provenance="${detail.provenance}">`;
+        html += `<div class="prc-edit-row-left"><span class="prc-edit-card-name" title="${esc(displayName)}" data-tooltip="${esc(displayName)}${model !== displayName ? ' · ' + esc(model) : ''}"><span class="prc-edit-card-name-text">${esc(displayName)}</span>${provBadge}${mappedSub}</span></div>`;
         html += `<div class="prc-edit-row-right">`;
         for (const f of fields) {
             const [en, zh] = FIELD_LABELS[f] || [f, f];
-            const value = p ? String(p[f]) : '';
+            const value = p && !isMapped ? String(p[f]) : '';
+            const placeholder = isMapped && p
+                ? String(p[f])
+                : tBi('Not set', '未设置');
+            const mappedAttr = isMapped && p ? ` data-mapped-value="${esc(String(p[f]))}"` : '';
             html += `<div class="prc-edit-field">
                 <span class="prc-edit-field-label">${tBiHtml(en, zh)}</span>
-                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(model)}" data-field="${f}" data-original-value="${esc(value)}" data-was-custom="${isCustom ? '1' : '0'}" data-cache-write="${p?.cacheWrite ?? 0}" value="${esc(value)}" placeholder="${esc(tBi('Not set', '未设置'))}" step="any" min="0" aria-label="${esc(displayName)} ${esc(tBi(en, zh))}">
+                <input type="number" class="prc-edit-input pricing-input" data-model="${esc(model)}" data-field="${f}" data-original-value="${esc(value)}" data-was-custom="${isCustom ? '1' : '0'}" data-cache-write="${p?.cacheWrite ?? 0}"${mappedAttr} value="${esc(value)}" placeholder="${esc(placeholder)}" step="any" min="0" aria-label="${esc(displayName)} ${esc(tBi(en, zh))}">
             </div>`;
         }
         html += `</div></div>`;
@@ -1721,7 +2061,7 @@ function buildDefaultPricingTable(
     html += `<div class="prc-info-bar">${infoSvg3}<div class="prc-info-bar-body"><ul>
         <li>${tBiHtml('Edit prices above and click Save. Changes persist across sessions.', '编辑上方价格后点击“保存”，修改跨会话持久化。')}</li>
         <li>${tBiHtml('Clear all fields in a row to remove its override. Missing prices are not zero prices.', '清空一行全部字段可移除该自定义价格；缺失价格不代表免费。')}</li>
-        ${orchestratorPricingNote()}
+        ${orchestratorPricingNote(mode)}
         ${neonPricingNote()}
         ${hydrogenPricingNote()}
         ${carbonPricingNote()}
@@ -1748,6 +2088,7 @@ function buildMonthlyCostSummary(
     pendingArchiveCost: number,
     customPricing: Record<string, ModelPricing>,
     hasUnmeteredImageUsage = false,
+    mode: OrchestratorPricingMode = getOrchestratorPricingMode(),
 ): string {
     const monthEn = MONTH_NAMES_EN[breakdown.month - 1];
     const monthZh = MONTH_NAMES_ZH[breakdown.month - 1];
@@ -1807,7 +2148,7 @@ function buildMonthlyCostSummary(
     const totalCycles = breakdown.cycleCount + (isCurrentMonth && currentCycleCost > 0 ? 1 : 0);
     const models = [...mergedModels.values()].sort((a, b) => b.totalCost - a.totalCost);
     const unpricedNames = new Set(models
-        .filter(m => m.totalCost <= 0 && !findPricingWithCustom(m.name, customPricing))
+        .filter(m => m.totalCost <= 0 && !findPricingWithCustom(m.name, customPricing, undefined, mode))
         .map(m => m.name));
     if (isCurrentMonth) {
         for (const row of currentCycleRows) {

@@ -10,6 +10,28 @@ import { normalizeModelDisplayName, getModelBaseName, resolveModelId, getModelDi
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+export type OrchestratorPricingMode = 'mapped' | 'strict';
+export type PricingProvenance = 'official' | 'mapped_base' | 'custom' | 'unpriced';
+
+export interface OrchestratorBaseMapping {
+    placeholderId: string;
+    catalogId: string;
+    baseKey: string;
+    baseLabel: string;
+    note: string;
+}
+
+export interface ResolvedPricingInfo {
+    pricing: ModelPricing | null;
+    provenance: PricingProvenance;
+    /** Base model pricing key when provenance === 'mapped_base' (or when strict hides an available mapping). */
+    mappedBaseKey?: string;
+    /** Human-readable base model family label (e.g. 'Gemini 4 Neon'). */
+    mappedBaseLabel?: string;
+    /** True when the underlying built-in rate has a UTC scheduled cutover. */
+    isScheduled?: boolean;
+}
+
 export interface ModelPricing {
     input: number;       // $ per 1M input tokens
     output: number;      // $ per 1M output tokens
@@ -31,6 +53,10 @@ export interface ModelCostRow {
     cacheTokens: number;
     thinkingTokens: number;
     pricing: ModelPricing | null;
+    /** Rate provenance for transparent UI badging ('official' | 'mapped_base' | 'custom' | 'unpriced'). */
+    provenance?: PricingProvenance;
+    /** Mapped base family label when provenance === 'mapped_base'. */
+    mappedBaseLabel?: string;
     /** A frozen total survives, but its historical per-token price split does not. */
     costBreakdownUnavailable?: boolean;
     /** Components use dated rates, so a single current-price multiplication is misleading. */
@@ -152,6 +178,78 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
     get 'gemini-3.8-flash'() { return Date.now() < FLASH_RATE_CHANGE ? FLASH_INTRO_PRICING : FLASH_STANDARD_PRICING; },
 };
 
+// ─── Orchestrator Base-Model Mapping & Mode ──────────────────────────────────
+// Legacy fixed-route Orchestrator placeholder IDs have no standalone published
+// API rate card, but execute on verified Gemini 4 base families (live LS 2.34.0
+// confirms M669 shares base MODEL_PLACEHOLDER_M432 with Gemini 4 Hydrogen).
+// In default 'mapped' mode, these 4 verified IDs resolve to their base family's
+// rates (honoring UTC dated cutovers and letting user custom overrides win).
+// In 'strict' mode, they stay unpriced unless explicitly custom-overridden.
+
+export const ORCHESTRATOR_BASE_PRICE_MAP: Readonly<Record<string, OrchestratorBaseMapping>> = {
+    MODEL_PLACEHOLDER_M537: {
+        placeholderId: 'MODEL_PLACEHOLDER_M537',
+        catalogId: 'gemini-pro-orchestrator-neon',
+        baseKey: 'gemini-4-neon',
+        baseLabel: 'Gemini 4 Neon',
+        note: 'Maps Orchestrator (Neon) to Gemini 4 Neon base rates.',
+    },
+    MODEL_PLACEHOLDER_M667: {
+        placeholderId: 'MODEL_PLACEHOLDER_M667',
+        catalogId: 'gemini-pro-orchestrator',
+        baseKey: 'gemini-4-carbon',
+        baseLabel: 'Gemini 4 Carbon',
+        note: 'Maps Orchestrator (Carbon) to Gemini 4 Carbon dated base rates.',
+    },
+    MODEL_PLACEHOLDER_M681: {
+        placeholderId: 'MODEL_PLACEHOLDER_M681',
+        catalogId: 'gemini-pro-orchestrator-argon',
+        baseKey: 'gemini-4-argon',
+        baseLabel: 'Gemini 4 Argon',
+        note: 'Maps Orchestrator (Argon) to Gemini 4 Argon dated base rates.',
+    },
+    MODEL_PLACEHOLDER_M669: {
+        placeholderId: 'MODEL_PLACEHOLDER_M669',
+        catalogId: 'gemini-flash-worker-agy',
+        baseKey: 'gemini-4-hydrogen',
+        baseLabel: 'Gemini 4 Hydrogen',
+        note: 'Shares base model MODEL_PLACEHOLDER_M432 with Gemini 4 Hydrogen.',
+    },
+};
+
+let activeOrchestratorPricingMode: OrchestratorPricingMode = 'mapped';
+
+export function normalizeOrchestratorPricingMode(value: unknown): OrchestratorPricingMode {
+    return value === 'strict' ? 'strict' : 'mapped';
+}
+
+export function getOrchestratorPricingMode(): OrchestratorPricingMode {
+    return activeOrchestratorPricingMode;
+}
+
+export function setOrchestratorPricingMode(mode: OrchestratorPricingMode): void {
+    activeOrchestratorPricingMode = normalizeOrchestratorPricingMode(mode);
+}
+
+/** Return the verified base-model mapping for one of the 4 Orchestrator placeholder IDs, or null. */
+export function getOrchestratorBaseMapping(model: string): OrchestratorBaseMapping | null {
+    if (!model || !model.trim()) { return null; }
+    const modelId = resolveModelId(model);
+    if (typeof modelId !== 'string') { return null; }
+    return Object.prototype.hasOwnProperty.call(ORCHESTRATOR_BASE_PRICE_MAP, modelId)
+        ? ORCHESTRATOR_BASE_PRICE_MAP[modelId]
+        : null;
+}
+
+function isScheduledPricingRate(pricing: ModelPricing | null, base: Record<string, ModelPricing>): boolean {
+    if (!pricing) { return false; }
+    return pricing === CARBON_INTRO_PRICING || pricing === CARBON_STANDARD_PRICING || pricing === base['gemini-4-carbon']
+        || pricing === ARGON_INTRO_PRICING || pricing === ARGON_STANDARD_PRICING || pricing === base['gemini-4-argon']
+        || pricing === FLASH36_INTRO_PRICING || pricing === FLASH36_STANDARD_PRICING || pricing === base['gemini-3.6-flash']
+        || pricing === FLASH_INTRO_PRICING || pricing === FLASH_STANDARD_PRICING
+        || pricing === base['gemini-3.7-flash'] || pricing === base['gemini-3.8-flash'];
+}
+
 // ─── Pricing Lookup ──────────────────────────────────────────────────────────
 
 /** Find pricing for a model by exact identity or a complete family-name prefix.
@@ -160,6 +258,7 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
 export function findPricing(
     responseModel: string,
     table: Record<string, ModelPricing> = DEFAULT_PRICING,
+    orchestratorPricingMode: OrchestratorPricingMode = getOrchestratorPricingMode(),
 ): ModelPricing | null {
     if (!responseModel.trim()) { return null; }
     if (Object.prototype.hasOwnProperty.call(table, responseModel) && table[responseModel]) { return table[responseModel]; }
@@ -169,7 +268,7 @@ export function findPricing(
     // family's price. Exact-key prices above remain intentional user overrides;
     // older families retain their existing preview/latest/dated alias support.
     const clean = responseModel.trim();
-    if (/^(?:orchestrator|编排器|协调器|gemini[-_ ]pro[-_ ]orchestrator)/i.test(clean) && !modelId) {
+    if (/^(?:orchestrator|编排模型|编排器|协调器|gemini[-_ ]pro[-_ ]orchestrator)/i.test(clean) && !modelId) {
         return null;
     }
     if (/^gemini[\s_-]+4[\s_-]+(?:neon|hydrogen|carbon|argon)/i.test(clean)
@@ -213,7 +312,16 @@ export function findPricing(
     if (typeof modelId === 'string') {
         const catalogId = getModelSpecs().find(spec => spec.placeholderId === modelId)?.modelId;
         if (catalogId && catalogId !== responseModel && resolveModelId(catalogId) === modelId) {
-            return findPricing(catalogId, table);
+            const directCatalog = findPricing(catalogId, table, 'strict');
+            if (directCatalog) { return directCatalog; }
+        }
+    }
+    // Mapped-base mode: map the 4 verified Orchestrator placeholders (M537/M667/M681/M669)
+    // to their verified base Gemini 4 family rate in `table`.
+    if (orchestratorPricingMode === 'mapped') {
+        const mapping = getOrchestratorBaseMapping(responseModel);
+        if (mapping && Object.prototype.hasOwnProperty.call(table, mapping.baseKey) && table[mapping.baseKey]) {
+            return table[mapping.baseKey];
         }
     }
     return null;
@@ -244,8 +352,8 @@ function kebabCandidates(displayName: string): string[] {
     // are separate identities. Stripping their parenthetical would apply a legacy custom "Orchestrator"
     // rate to Argon/Neon or silently fall through onto the base Hydrogen row.
     const trimmed = displayName.trim();
-    const isCoordinatorOrSpecialized = /^(?:orchestrator|编排器|协调器)\s*[（(]/i.test(trimmed)
-        || /[（(][^()（）]*(?:orchestrator|worker|sonar|编排器|协调器|执行器)[^()（）]*[）)]/i.test(trimmed);
+    const isCoordinatorOrSpecialized = /^(?:orchestrator|编排模型|编排器|协调器)\s*[（(]/i.test(trimmed)
+        || /[（(][^()（）]*(?:orchestrator|worker|sonar|编排模型|编排器|协调器|执行模型|执行器)[^()（）]*[）)]/i.test(trimmed);
     const withoutTier = isCoordinatorOrSpecialized
         ? displayName : displayName.replace(/\s*\([^)]*\)\s*$/, '').trim();
     const out = [kebab(displayName, true), kebab(displayName, false)];
@@ -273,6 +381,7 @@ export function findPricingWithCustom(
     responseModel: string,
     custom: Record<string, ModelPricing>,
     base: Record<string, ModelPricing> = DEFAULT_PRICING,
+    orchestratorPricingMode: OrchestratorPricingMode = getOrchestratorPricingMode(),
 ): ModelPricing | null {
     if (responseModel && Object.keys(custom).length > 0) {
         for (const alias of pricingLookupAliases(responseModel)) {
@@ -286,10 +395,12 @@ export function findPricingWithCustom(
                 if (resolveModelId(key) === modelId) { return pricing; }
             }
         }
-        const viaCustom = findPricing(responseModel, custom);
+        // Never map base-family custom overrides onto legacy Orchestrator identities;
+        // explicit overrides on the Orchestrator identity itself still match above.
+        const viaCustom = findPricing(responseModel, custom, 'strict');
         if (viaCustom) { return viaCustom; }
     }
-    return findPricing(responseModel, base);
+    return findPricing(responseModel, base, orchestratorPricingMode);
 }
 
 /** Resolve the standard rate at usage time, while every explicit custom rate wins. */
@@ -298,10 +409,11 @@ export function findPricingForDate(
     custom: Record<string, ModelPricing> = {},
     at: PricingDate = new Date(),
     base: Record<string, ModelPricing> = DEFAULT_PRICING,
+    orchestratorPricingMode: OrchestratorPricingMode = getOrchestratorPricingMode(),
 ): ModelPricing | null {
-    const override = findPricingWithCustom(model, custom, {});
+    const override = findPricingWithCustom(model, custom, {}, 'strict');
     if (override) { return override; }
-    const pricing = findPricing(model, base);
+    const pricing = findPricing(model, base, orchestratorPricingMode);
     if (!pricing) { return null; }
     // Check both immutable rate eras before reading dynamic default getters;
     // crossing midnight between two reads must not lose the family identity.
@@ -324,6 +436,75 @@ export function findPricingForDate(
             ? FLASH36_INTRO_PRICING : FLASH36_STANDARD_PRICING;
     }
     return time < FLASH_RATE_CHANGE ? FLASH_INTRO_PRICING : FLASH_STANDARD_PRICING;
+}
+
+/**
+ * Resolve pricing along with transparent rate provenance:
+ * - `'custom'`: explicit user custom override (always wins in both mapped and strict modes)
+ * - `'official'`: built-in verified standard API rate
+ * - `'mapped_base'`: mapped via verified base Gemini 4 family rate (in `'mapped'` mode)
+ * - `'unpriced'`: no rate available (or strict mode without custom override, or missing date on scheduled cutover)
+ */
+export function resolvePricingDetail(
+    model: string,
+    custom: Record<string, ModelPricing> = {},
+    options: {
+        at?: PricingDate;
+        base?: Record<string, ModelPricing>;
+        orchestratorPricingMode?: OrchestratorPricingMode;
+    } = {},
+): ResolvedPricingInfo {
+    const base = options.base ?? DEFAULT_PRICING;
+    const mode = options.orchestratorPricingMode ?? getOrchestratorPricingMode();
+    if (!model || !model.trim()) {
+        return { pricing: null, provenance: 'unpriced' };
+    }
+    const mapping = getOrchestratorBaseMapping(model);
+
+    // 1. User custom override always wins.
+    const customMatch = findPricingWithCustom(model, custom, {}, 'strict');
+    if (customMatch) {
+        return {
+            pricing: customMatch,
+            provenance: 'custom',
+            ...(mapping ? { mappedBaseKey: mapping.baseKey, mappedBaseLabel: mapping.baseLabel } : {}),
+            isScheduled: false,
+        };
+    }
+
+    // 2. Direct official built-in rate (strict lookup).
+    const officialMatch = options.at !== undefined
+        ? findPricingForDate(model, {}, options.at, base, 'strict')
+        : findPricing(model, base, 'strict');
+    if (officialMatch) {
+        return {
+            pricing: officialMatch,
+            provenance: 'official',
+            isScheduled: isScheduledPricingRate(officialMatch, base),
+        };
+    }
+
+    // 3. Base-model mapped rate for the 4 verified Orchestrator placeholders (mapped mode only).
+    if (mode === 'mapped' && mapping) {
+        const mappedMatch = options.at !== undefined
+            ? findPricingForDate(model, {}, options.at, base, 'mapped')
+            : findPricing(model, base, 'mapped');
+        if (mappedMatch) {
+            return {
+                pricing: mappedMatch,
+                provenance: 'mapped_base',
+                mappedBaseKey: mapping.baseKey,
+                mappedBaseLabel: mapping.baseLabel,
+                isScheduled: isScheduledPricingRate(mappedMatch, base),
+            };
+        }
+    }
+
+    return {
+        pricing: null,
+        provenance: 'unpriced',
+        ...(mapping ? { mappedBaseKey: mapping.baseKey, mappedBaseLabel: mapping.baseLabel } : {}),
+    };
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -424,14 +605,15 @@ export function getUpcomingRateChangeForModel(
     custom: Record<string, ModelPricing> = {},
     nowMs: number = Date.now(),
     withinDays: number = 30,
+    orchestratorPricingMode: OrchestratorPricingMode = getOrchestratorPricingMode(),
 ): UpcomingRateChange | null {
     if (!model || !model.trim()) { return null; }
-    if (findPricingWithCustom(model, custom, {})) { return null; }
+    if (findPricingWithCustom(model, custom, {}, 'strict')) { return null; }
     const upcoming = getUpcomingRateChanges(nowMs, withinDays);
     if (upcoming.length === 0) { return null; }
     // Match against a single-entry probe table so exact variant & alias rules apply identically.
     for (const change of upcoming) {
-        if (findPricing(model, { [change.modelKey]: change.currentPricing })) {
+        if (findPricing(model, { [change.modelKey]: change.currentPricing }, orchestratorPricingMode)) {
             return change;
         }
     }
@@ -484,7 +666,7 @@ interface DatedPricingUsage extends PricingTokenUsage {
 }
 
 type CostBreakdown = Pick<ModelCostRow,
-    'inputCost' | 'outputCost' | 'cacheCost' | 'thinkingCost' | 'totalCost' | 'pricing' | 'costBreakdownUnavailable' | 'usesHistoricalRates'>;
+    'inputCost' | 'outputCost' | 'cacheCost' | 'thinkingCost' | 'totalCost' | 'pricing' | 'provenance' | 'mappedBaseLabel' | 'costBreakdownUnavailable' | 'usesHistoricalRates'>;
 
 /** Match concrete tiers without letting a shared response family merge them. */
 export function samePricingModel(left: string, right: string): boolean {
@@ -518,13 +700,21 @@ export function calculateUsageCosts(
     model: string,
     tokens: PricingTokenUsage,
     custom: Record<string, ModelPricing>,
-    options: { at?: PricingDate; calls?: readonly DatedPricingUsage[]; callCount?: number; frozenCost?: number } = {},
+    options: {
+        at?: PricingDate;
+        calls?: readonly DatedPricingUsage[];
+        callCount?: number;
+        frozenCost?: number;
+        orchestratorPricingMode?: OrchestratorPricingMode;
+    } = {},
 ): CostBreakdown {
+    const mode = options.orchestratorPricingMode ?? getOrchestratorPricingMode();
     const calls = options.calls || [];
     const fields = ['inputTokens', 'outputTokens', 'thinkingTokens', 'cacheReadTokens'] as const;
     // A retrieval/snapshot time is never a usage date. Only a caller supplying
     // an actual archived calendar day may price the otherwise undated remainder.
-    const pricing = findPricingForDate(model, custom, options.at ?? '');
+    const pricing = findPricingForDate(model, custom, options.at ?? '', DEFAULT_PRICING, mode);
+    const detail = resolvePricingDetail(model, custom, { orchestratorPricingMode: mode });
     const usableCalls = (options.callCount === undefined || calls.length <= options.callCount)
         && fields.every(field => calls.every(call => Number.isFinite(call[field]) && call[field] >= 0)
             && calls.reduce((sum, call) => sum + call[field], 0) <= tokens[field]);
@@ -532,36 +722,47 @@ export function calculateUsageCosts(
     const parts: CostBreakdown[] = [];
     if (usableCalls) {
         for (const call of calls) {
-            const callPricing = findPricingForDate(call.model || model, custom, call.createdAt);
+            const callPricing = findPricingForDate(call.model || model, custom, call.createdAt, DEFAULT_PRICING, mode);
             if (!callPricing) { continue; }
             parts.push(tokenCostBreakdown(call, callPricing));
             for (const field of fields) { remainder[field] -= call[field]; }
         }
     }
     const hasRemainder = fields.some(field => remainder[field] > 0);
-    const override = findPricingWithCustom(model, custom, {});
-    const builtIn = findPricing(model);
-    const scheduled = builtIn === CARBON_INTRO_PRICING || builtIn === CARBON_STANDARD_PRICING
-        || builtIn === ARGON_INTRO_PRICING || builtIn === ARGON_STANDARD_PRICING
-        || builtIn === FLASH36_INTRO_PRICING || builtIn === FLASH36_STANDARD_PRICING
-        || builtIn === FLASH_INTRO_PRICING || builtIn === FLASH_STANDARD_PRICING;
+    const override = findPricingWithCustom(model, custom, {}, 'strict');
+    const builtIn = findPricing(model, DEFAULT_PRICING, mode);
+    const scheduled = isScheduledPricingRate(builtIn, DEFAULT_PRICING);
     if (hasRemainder && !override && (scheduled || !pricing)
         && Number.isFinite(options.frozenCost) && (options.frozenCost || 0) > 0) {
         // A pool/day aggregate may cross a UTC price boundary. Preserve its
         // already-recorded total instead of inventing a split between rate eras.
-        return { inputCost: 0, outputCost: 0, cacheCost: 0, thinkingCost: 0,
-            totalCost: options.frozenCost!, pricing: pricing || builtIn, costBreakdownUnavailable: true };
+        const effPricing = pricing || builtIn;
+        const prov: PricingProvenance = effPricing ? detail.provenance : 'unpriced';
+        return {
+            inputCost: 0, outputCost: 0, cacheCost: 0, thinkingCost: 0,
+            totalCost: options.frozenCost!, pricing: effPricing, provenance: prov,
+            ...(detail.mappedBaseLabel ? { mappedBaseLabel: detail.mappedBaseLabel } : {}),
+            costBreakdownUnavailable: true,
+        };
     }
     if (hasRemainder && pricing) { parts.push(tokenCostBreakdown(remainder, pricing)); }
     const incomplete = hasRemainder && !pricing;
-    const displayedPricing = incomplete ? null : pricing || parts[0]?.pricing || findPricingWithCustom(model, custom);
+    const displayedPricing = incomplete ? null : pricing || parts[0]?.pricing || findPricingWithCustom(model, custom, DEFAULT_PRICING, mode);
+    const displayedProvenance: PricingProvenance = displayedPricing ? detail.provenance : 'unpriced';
     const usesHistoricalRates = parts.some(part => part.pricing !== displayedPricing);
     return parts.reduce<CostBreakdown>((total, part) => ({
         inputCost: total.inputCost + part.inputCost, outputCost: total.outputCost + part.outputCost,
         cacheCost: total.cacheCost + part.cacheCost, thinkingCost: total.thinkingCost + part.thinkingCost,
-        totalCost: total.totalCost + part.totalCost, pricing: displayedPricing, usesHistoricalRates,
-    }), { inputCost: 0, outputCost: 0, cacheCost: 0, thinkingCost: 0, totalCost: 0,
-        pricing: displayedPricing, usesHistoricalRates });
+        totalCost: total.totalCost + part.totalCost, pricing: displayedPricing,
+        provenance: displayedProvenance,
+        ...(detail.mappedBaseLabel ? { mappedBaseLabel: detail.mappedBaseLabel } : {}),
+        usesHistoricalRates,
+    }), {
+        inputCost: 0, outputCost: 0, cacheCost: 0, thinkingCost: 0, totalCost: 0,
+        pricing: displayedPricing, provenance: displayedProvenance,
+        ...(detail.mappedBaseLabel ? { mappedBaseLabel: detail.mappedBaseLabel } : {}),
+        usesHistoricalRates,
+    });
 }
 
 /** Shared ledger/archival/UI pricing path, with per-call timestamps when retained. */
@@ -571,12 +772,14 @@ export function calculateLedgerModelCosts(
     bucket: LedgerAccountBucket,
     custom: Record<string, ModelPricing>,
     date?: PricingDate,
+    orchestratorPricingMode?: OrchestratorPricingMode,
 ): CostBreakdown {
     const calls = (bucket.recordedCalls || []).filter(call => samePricingModel(call.modelKey, modelKey));
     return calculateUsageCosts(modelKey, stats, custom, {
         at: date,
         callCount: stats.calls,
         frozenCost: stats.estimatedCost,
+        orchestratorPricingMode,
         // createdAtMs can be the ledger's ingestion-time fallback, so it is not
         // evidence of when a historical provider call was actually made.
         calls: calls.map(call => ({ ...call, model: call.modelId || modelKey, createdAt: call.createdAt || '' })),
@@ -588,6 +791,7 @@ export function calculateLedgerModelCosts(
 export function calculateCosts(
     summary: GMSummary,
     customPricing: Record<string, ModelPricing>,
+    orchestratorPricingMode: OrchestratorPricingMode = getOrchestratorPricingMode(),
 ): { rows: ModelCostRow[]; grandTotal: number } {
     const entries = Object.entries(summary.modelBreakdown);
     // Merge rows by base model name (e.g. M37 + M16 both → "Gemini 3.1 Pro (High)")
@@ -603,8 +807,8 @@ export function calculateCosts(
         const costs = calculateUsageCosts(model, {
             inputTokens: ms.totalInputTokens, outputTokens: ms.totalOutputTokens,
             thinkingTokens: ms.totalThinkingTokens, cacheReadTokens: ms.totalCacheRead,
-        }, customPricing, { calls, callCount: ms.callCount });
-        const { pricing, inputCost, outputCost, cacheCost, thinkingCost, totalCost } = costs;
+        }, customPricing, { calls, callCount: ms.callCount, orchestratorPricingMode });
+        const { pricing, provenance, mappedBaseLabel, inputCost, outputCost, cacheCost, thinkingCost, totalCost } = costs;
         const responseOutputTokens = Math.max(0, ms.totalOutputTokens - ms.totalThinkingTokens);
         grandTotal += totalCost;
 
@@ -620,7 +824,10 @@ export function calculateCosts(
             existing.cacheTokens += ms.totalCacheRead;
             existing.thinkingTokens += ms.totalThinkingTokens;
             existing.usesHistoricalRates ||= costs.usesHistoricalRates;
-            if (!pricing) { existing.pricing = null; }
+            if (!pricing) {
+                existing.pricing = null;
+                existing.provenance = 'unpriced';
+            }
         } else {
             mergedRows.set(baseName, {
                 name: displayName, responseModel: ms.responseModel,
@@ -628,6 +835,8 @@ export function calculateCosts(
                 inputTokens: ms.totalInputTokens, outputTokens: responseOutputTokens,
                 cacheTokens: ms.totalCacheRead,
                 thinkingTokens: ms.totalThinkingTokens, pricing: pricing || null,
+                provenance: pricing ? (provenance ?? 'official') : 'unpriced',
+                ...(mappedBaseLabel ? { mappedBaseLabel } : {}),
                 usesHistoricalRates: costs.usesHistoricalRates,
             });
         }
@@ -640,15 +849,45 @@ export function calculateCosts(
 // ─── Pricing Store (globalState persistence) ─────────────────────────────────
 
 const STORAGE_KEY = 'customModelPricing';
+const ORCHESTRATOR_MODE_STORAGE_KEY = 'orchestratorPricingMode';
 
 export class PricingStore {
     private _custom: Record<string, ModelPricing> = {};
+    private _orchestratorPricingMode: OrchestratorPricingMode = 'mapped';
+    private _modeExplicit = false;
     private _globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): PromiseLike<void> } | null = null;
 
     /** Initialize from globalState */
     init(globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): PromiseLike<void> }): void {
         this._globalState = globalState;
         this._custom = globalState.get<Record<string, ModelPricing>>(STORAGE_KEY, {});
+        this._orchestratorPricingMode = normalizeOrchestratorPricingMode(
+            globalState.get<unknown>(ORCHESTRATOR_MODE_STORAGE_KEY, 'mapped'),
+        );
+        this._modeExplicit = true;
+        setOrchestratorPricingMode(this._orchestratorPricingMode);
+    }
+
+    /** Get current Orchestrator pricing mode ('mapped' default vs 'strict'). */
+    getOrchestratorPricingMode(): OrchestratorPricingMode {
+        return this._modeExplicit ? this._orchestratorPricingMode : getOrchestratorPricingMode();
+    }
+
+    /** Update Orchestrator pricing mode synchronously (in-memory + active module default). */
+    setOrchestratorPricingModeSync(mode: OrchestratorPricingMode): void {
+        this._orchestratorPricingMode = normalizeOrchestratorPricingMode(mode);
+        this._modeExplicit = true;
+        setOrchestratorPricingMode(this._orchestratorPricingMode);
+    }
+
+    /** Update Orchestrator pricing mode and persist to globalState. */
+    async setOrchestratorPricingMode(mode: OrchestratorPricingMode): Promise<void> {
+        this._orchestratorPricingMode = normalizeOrchestratorPricingMode(mode);
+        this._modeExplicit = true;
+        setOrchestratorPricingMode(this._orchestratorPricingMode);
+        if (this._globalState) {
+            await this._globalState.update(ORCHESTRATOR_MODE_STORAGE_KEY, this._orchestratorPricingMode);
+        }
     }
 
     /** Get merged pricing table (custom overrides default) */
@@ -679,9 +918,9 @@ export class PricingStore {
         await this._persist();
     }
 
-    /** Calculate costs using current merged pricing */
+    /** Calculate costs using current merged pricing & Orchestrator pricing mode */
     calculateCosts(summary: GMSummary): { rows: ModelCostRow[]; grandTotal: number } {
-        return calculateCosts(summary, this._custom);
+        return calculateCosts(summary, this._custom, this.getOrchestratorPricingMode());
     }
 
     private async _persist(): Promise<void> {

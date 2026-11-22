@@ -225,7 +225,12 @@ describe('Neon accounting and cost editors', () => {
             'gemini-4-carbon': rate, 'gemini-4-argon': rate, 'gemini-4-hydrogen': rate,
             Orchestrator: rate, 'gemini-pro-orchestrator-argon': rate, 'gemini-flash-worker-agy': rate,
         };
-        expect(findPricingWithCustom(model.id, otherRates)).toEqual(
+        // Default mapped mode maps M537 -> Neon base rate (never leaking Carbon/Argon/other overrides)
+        expect(findPricingWithCustom(model.id, otherRates, DEFAULT_PRICING, 'mapped')).toEqual(
+            DEFAULT_PRICING['gemini-4-neon'],
+        );
+        // Strict mode keeps M537 unpriced unless explicitly overridden
+        expect(findPricingWithCustom(model.id, otherRates, DEFAULT_PRICING, 'strict')).toEqual(
             model.id === orchestrator ? null : DEFAULT_PRICING['gemini-4-neon'],
         );
         expect(findPricingWithCustom(model.id, { [model.key]: rate })).toEqual(rate);
@@ -257,7 +262,7 @@ describe('Neon accounting and cost editors', () => {
         expect(Object.keys(restored.getAccountActive('neon@example.test')!.modelStats)).toEqual(ids.map(getModelDisplayName));
     });
 
-    it('leaves a known unpriced call unpriced even when telemetry also reports a priced model', () => {
+    it('never adopts a conflicting responseModel rate; maps to Neon in mapped mode and stays unpriced in strict mode', () => {
         const responseModel = 'gemini-4-carbon-low';
         const timestamp = new Date().toISOString();
         const call = parseGMEntry({
@@ -270,12 +275,18 @@ describe('Neon accounting and cost editors', () => {
             coveredSteps: 1, coverageRate: 1, checkpointSummaries: [],
         }], timestamp)!;
         expect(summary.modelBreakdown['Orchestrator (Neon)'].responseModel).toBe(responseModel);
-        expect(calculateCosts(summary, {}).rows[0].pricing).toBeNull();
-        expect(calculateCosts(summary, {}).grandTotal).toBe(0);
-        expect(buildGMDataTabContent(null, summary)).not.toContain('act-card-row-cost');
+        // Mapped mode (default): M537 maps to Neon ($3/$15), NOT conflicting responseModel Carbon ($2/$10)!
+        const mapped = calculateCosts(summary, {}, 'mapped');
+        expect(mapped.rows[0].pricing).toEqual(DEFAULT_PRICING['gemini-4-neon']);
+        expect(mapped.rows[0].provenance).toBe('mapped_base');
+        expect(mapped.grandTotal).toBeCloseTo((1000 * 3 + 100 * 15) / 1e6, 10);
+
+        // Strict mode: stays strictly unpriced even though responseModel is a priced model
+        expect(calculateCosts(summary, {}, 'strict').rows[0].pricing).toBeNull();
+        expect(calculateCosts(summary, {}, 'strict').grandTotal).toBe(0);
         const ledger = new DailyLedger();
-        expect(ledger.recordCalls([{ dedupKey: 'unpriced-neon', call: { ...call, accountEmail: 'neon@example.test' } }])).toBe(1);
-        expect(ledger.getAccountActive('neon@example.test')?.totalEstimatedCost).toBe(0);
+        expect(ledger.recordCalls([{ dedupKey: 'mapped-neon', call: { ...call, accountEmail: 'neon@example.test' } }])).toBe(1);
+        expect(ledger.getAccountActive('neon@example.test')?.totalEstimatedCost).toBeCloseTo((1000 * 3 + 100 * 15) / 1e6, 10);
 
         // Recovery still works when old data has no resolvable display identity.
         const fallback = { ...summary, modelBreakdown: {
@@ -303,9 +314,11 @@ describe('Neon accounting and cost editors', () => {
             }
             expect(html).not.toContain('data-model="gemini-4-neon-xhigh"');
         }
-        // Without custom overrides, Orchestrator (Neon) and M669 remain unpriced while Neon uses official pricing
-        expect(findPricingWithCustom(orchestrator, {})).toBeNull();
-        expect(findPricingWithCustom(worker, {})).toBeNull();
+        // Default mapped mode maps M537 -> Neon and M669 -> Hydrogen; strict mode keeps both unpriced
+        expect(findPricingWithCustom(orchestrator, {}, DEFAULT_PRICING, 'mapped')).toEqual(DEFAULT_PRICING['gemini-4-neon']);
+        expect(findPricingWithCustom(worker, {}, DEFAULT_PRICING, 'mapped')).toEqual(DEFAULT_PRICING['gemini-4-hydrogen']);
+        expect(findPricingWithCustom(orchestrator, {}, DEFAULT_PRICING, 'strict')).toBeNull();
+        expect(findPricingWithCustom(worker, {}, DEFAULT_PRICING, 'strict')).toBeNull();
         expect(findPricingWithCustom(tiers[3].id, {})).toEqual(DEFAULT_PRICING['gemini-4-neon']);
     });
 });

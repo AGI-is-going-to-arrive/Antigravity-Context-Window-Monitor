@@ -254,9 +254,18 @@ describe('Models tab: Orchestrator Settings card, API reference price row & Noti
         expect(usdHtml).toContain('$15/M');
         expect(usdHtml).toContain('$0.15/M');
         expect(usdHtml).not.toMatch(/[\u00a5\uffe5]/);
-        expect(usdHtml.match(/data-price-state="unpriced"/g)).toHaveLength(2);
-        expect(usdHtml).toContain('Unpriced');
+        // Default mapped mode shows mapped base prices for M537/M669 with transparent badge
+        expect(usdHtml.match(/data-price-state="mapped"/g)).toHaveLength(2);
+        expect(usdHtml).toContain('Est. via Base Model');
         expect(usdHtml).not.toContain('$0.00');
+
+        // Strict mode renders honest Unpriced badges for M537/M669
+        const strictHtml = buildModelInfoGrid([neonSpec, orchSpec, workerSpec], 'chat', {
+            orchestratorPricingMode: 'strict',
+        });
+        expect(strictHtml.match(/data-price-state="unpriced"/g)).toHaveLength(2);
+        expect(strictHtml).toContain('Unpriced');
+        expect(strictHtml).not.toContain('$0.00');
 
         await setLanguageToState('zh', memState);
         const imgHtml = buildModelInfoGrid([imgSpec], 'image');

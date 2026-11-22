@@ -256,12 +256,12 @@ describe('GM Data Tab — Speed, TTFT (Cached vs Uncached) & Prompt Cache Teleme
     it('handles single-bucket TTFT states honestly without fabricating the missing half, and omits USD savings for unpriced models', async () => {
         await setLanguageToState('en', state);
 
-        // 1. All timed calls cached + unpriced model (Orchestrator Neon = MODEL_PLACEHOLDER_M537)
+        // 1. All timed calls cached + unpriced model (Sonar M578 — unpriced in both mapped & strict modes)
         const allCachedGm = makeGMSummary([
             makeCall({
-                model: 'MODEL_PLACEHOLDER_M537',
-                modelDisplay: 'Orchestrator (Neon)',
-                responseModel: 'gemini-4-carbon-low',
+                model: 'MODEL_PLACEHOLDER_M578',
+                modelDisplay: 'Gemini 4 Hydrogen (Sonar)',
+                responseModel: 'gemini-4-hydrogen-sonar',
                 inputTokens: 2000,
                 cacheReadTokens: 18000,
                 cacheCreationTokens: 0,
@@ -586,12 +586,12 @@ describe('GM Data Tab — Speed, TTFT (Cached vs Uncached) & Prompt Cache Teleme
                 streamingSeconds: 2.5,
                 createdAt: '2026-11-22T01:01:00.000Z',
             }),
-            // Unpriced orchestrator call with error -> honest Unpriced badge & Error status (never $0.00)
+            // Unpriced specialized model with error -> honest Unpriced badge & Error status (never $0.00)
             makeCall({
                 executionId: 'c-unpriced',
-                model: 'MODEL_PLACEHOLDER_M537',
-                modelDisplay: 'Orchestrator (Neon)',
-                responseModel: 'gemini-pro-orchestrator-neon',
+                model: 'MODEL_PLACEHOLDER_M578',
+                modelDisplay: 'Gemini 4 Hydrogen (Sonar)',
+                responseModel: 'gemini-4-hydrogen-sonar',
                 inputTokens: 1000,
                 outputTokens: 50,
                 thinkingTokens: 0,
