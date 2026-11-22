@@ -1,6 +1,7 @@
 .DS_Store
 node_modules/
 out/
+dist/
 cache/
 *.map
 
@@ -10,7 +11,10 @@ cache/
 .ccg/
 .claude/
 llmdoc/
-scripts/
+scripts/*
+!scripts/*.mjs
+!scripts/*.sh
+!scripts/*.ps1
 
 # Docker test files
 Dockerfile*

@@ -26,6 +26,13 @@ import {
     type TelemetryAggregate,
     type CacheState,
 } from './telemetry-metrics';
+import {
+    analyzeTurnDiagnostics,
+    classifyTurnStartKind,
+    type TurnDiagnosticEntry,
+    type TurnDiagnosticsSummary,
+    type TurnStartKind,
+} from './turn-diagnostics';
 
 function fmtCompactTokens(n: number): string {
     if (n >= 1_000_000) { return `${(n / 1_000_000).toFixed(2)}M`; }
@@ -118,8 +125,10 @@ export function buildGMDataTabContent(
     todayLedgerActive?: LedgerAccountBucket[],
     ledgerSettled?: LedgerSettledEntry[],
     customPricing: Record<string, ModelPricing> = {},
+    turnDiagnostics?: TurnDiagnosticsSummary | null,
 ): string {
-    if (!summary && (!gmSummary || gmSummary.totalCalls === 0)) {
+    const hasTurnDiagnostics = Boolean(turnDiagnostics && turnDiagnostics.turns.length > 0);
+    if (!summary && (!gmSummary || gmSummary.totalCalls === 0) && !hasTurnDiagnostics) {
         return `<p class="empty-msg">${tBiHtml(
             'Waiting for data... GM and Activity information will appear automatically.',
             '正在等待数据... GM 和活动信息将自动显示。',
@@ -131,18 +140,23 @@ export function buildGMDataTabContent(
         activeCascadeId: currentUsage?.cascadeId,
         customPricing,
     });
+    const effectiveTurnDiagnostics = resolveEffectiveTurnDiagnostics(gmSummary, currentUsage?.cascadeId, turnDiagnostics);
 
     // ── Summary Bar (merged activity + account-filtered GM telemetry)
-    parts.push(buildSummaryBar(summary, gmSummary, currentUsage?.cascadeId, telemetry));
+    if (summary || (gmSummary && gmSummary.totalCalls > 0)) {
+        parts.push(buildSummaryBar(summary, gmSummary, currentUsage?.cascadeId, telemetry));
+    }
 
     // ── Dedicated Editorial Telemetry Ledger (Speed, Cached vs Uncached TTFT, Prompt Cache)
     if (gmSummary && telemetry.overall.totalCalls > 0) {
-        parts.push(buildTelemetryLedgerSection(telemetry));
+        parts.push(buildTelemetryLedgerSection(telemetry, effectiveTurnDiagnostics));
     }
 
     // ── Recent Calls Ledger Table (latest 20 account-filtered calls)
     if (gmSummary && gmSummary.conversations.some(c => c.calls.length > 0)) {
         parts.push(buildRecentCallsLedger(gmSummary, customPricing));
+    } else if (hasTurnDiagnostics && turnDiagnostics) {
+        parts.push(buildTurnDiagnosticsFallbackCard(turnDiagnostics));
     }
 
     // ── Recent Timeline (activity)
@@ -1089,7 +1103,8 @@ export function getGMDataTabStyles(): string {
         font-weight: 650;
     }
     body:is(.vscode-high-contrast, .vscode-high-contrast-light,
-        [data-vscode-theme-kind="vscode-high-contrast"], [data-vscode-theme-kind="vscode-high-contrast-light"])
+        [data-vscode-theme-kind="vscode-high-contrast"], [data-vscode-theme-kind="vscode-high-contrast-light"],
+        [data-acm-theme="hc"], [data-acm-theme="hc-light"])
         :is(.telemetry-bar-track, .telemetry-cache-bar-track) {
         outline: 1px solid var(--ed-border);
     }
@@ -2995,8 +3010,62 @@ function buildSummaryBar(
     </div>`;
 }
 
+function renderTurnStartPill(kind: TurnStartKind, compact = false): string {
+    switch (kind) {
+        case 'cold':
+            return `<span class="turn-start-pill is-cold${compact ? ' is-compact' : ''}" data-turn-start="cold">${compact ? tBiHtml('Cold', '冷启动') : tBiHtml('Cold Start', '冷启动')}</span>`;
+        case 'partial':
+            return `<span class="turn-start-pill is-partial${compact ? ' is-compact' : ''}" data-turn-start="partial">${compact ? tBiHtml('Partial', '部分') : tBiHtml('Partial Start', '部分命中')}</span>`;
+        case 'warm':
+            return `<span class="turn-start-pill is-warm${compact ? ' is-compact' : ''}" data-turn-start="warm">${compact ? tBiHtml('Warm', '热缓存') : tBiHtml('Warm Start', '热缓存启动')}</span>`;
+        default:
+            return '';
+    }
+}
+
+function formatSignedTokenDeltaHtml(deltaTokens: number | null, isCompactionDrop = false): string {
+    if (deltaTokens === null || !Number.isFinite(deltaTokens)) {
+        return `<span class="rc-muted">—</span>`;
+    }
+    const absStr = fmtCompactTokens(Math.abs(deltaTokens));
+    if (deltaTokens === 0) {
+        return `<span class="rc-muted">0</span>`;
+    }
+    if (deltaTokens > 0) {
+        return `<span class="rc-delta rc-delta-pos" data-delta-tokens="${deltaTokens}">+${esc(absStr)}</span>`;
+    }
+    const cls = isCompactionDrop ? 'rc-delta rc-delta-neg rc-delta-compaction' : 'rc-delta rc-delta-neg';
+    const titleAttr = isCompactionDrop
+        ? ` title="${esc(tBi('Context dropped (compaction / rewind)', '上下文显著下降（压缩或回退）'))}"`
+        : '';
+    return `<span class="${cls}" data-delta-tokens="${deltaTokens}"${titleAttr}>−${esc(absStr)}</span>`;
+}
+
+function resolveEffectiveTurnDiagnostics(
+    gm: GMSummary | null,
+    activeCascadeId: string | undefined,
+    explicit?: TurnDiagnosticsSummary | null,
+): TurnDiagnosticsSummary | null {
+    if (explicit && explicit.turns.length > 0) {
+        return explicit;
+    }
+    if (!gm || !Array.isArray(gm.conversations)) { return null; }
+    const activeConv = activeCascadeId
+        ? gm.conversations.find(c => c.cascadeId === activeCascadeId && c.calls.length > 0)
+        : undefined;
+    if (activeConv) {
+        return analyzeTurnDiagnostics(activeConv.calls);
+    }
+    const withCalls = gm.conversations.filter(c => c.calls.length > 0);
+    if (withCalls.length === 0) { return null; }
+    // Prefer the conversation containing the most recent call
+    const latestConv = withCalls[withCalls.length - 1];
+    return analyzeTurnDiagnostics(latestConv.calls);
+}
+
 function buildTelemetryLedgerSection(
     telemetry: SessionTelemetrySummary,
+    turnDiagnostics?: TurnDiagnosticsSummary | null,
 ): string {
     const o = telemetry.overall;
     if (o.totalCalls <= 0) { return ''; }
@@ -3202,6 +3271,23 @@ function buildTelemetryLedgerSection(
         ? `<span class="telemetry-hero-meta"><span>${fmt(totalPrompt)} ${tBiHtml('prompt tokens', '提示词 tokens')}</span></span>`
         : `<span class="telemetry-hero-meta"><span>${tBiHtml('Token-weighted hit rate', '按 Token 加权命中率')}</span></span>`;
 
+    const lastTurnCacheRowHtml = (() => {
+        if (!turnDiagnostics || (turnDiagnostics.lastTurnCacheHitPct === null && turnDiagnostics.sessionCacheHitPct === null)) {
+            return '';
+        }
+        const lastPctStr = turnDiagnostics.lastTurnCacheHitPct !== null
+            ? `${turnDiagnostics.lastTurnCacheHitPct.toFixed(1)}%`
+            : '—';
+        const sessionPctStr = turnDiagnostics.sessionCacheHitPct !== null
+            ? `${turnDiagnostics.sessionCacheHitPct.toFixed(1)}%`
+            : formatCachePercent(o.tokenCacheHitRate);
+        const startPill = renderTurnStartPill(turnDiagnostics.lastTurnStartKind, false);
+        return `<div class="telemetry-ledger-row" data-turn-cache-comparison="true">
+                <span class="telemetry-ledger-key">${tBiHtml('Last-Turn / Session Cache', '上轮 / 会话缓存')}</span>
+                <span class="telemetry-ledger-val-group"><b>${esc(lastPctStr)}</b> ${startPill}<span class="telemetry-ledger-sub">· ${tBiHtml('Session', '会话')} ${esc(sessionPctStr)}</span></span>
+            </div>`;
+    })();
+
     const rightCard = `<div class="telemetry-ledger-card telemetry-card-cache">
         <div class="telemetry-card-head">
             <span class="telemetry-card-title-wrap">${cacheIcon}<h3 class="telemetry-card-title">${tBiHtml('Prompt Cache Efficiency & Savings', '首字与提示词缓存')}</h3></span>
@@ -3220,6 +3306,7 @@ function buildTelemetryLedgerSection(
             </div>
         </div>
         <div class="telemetry-ledger-rows">
+            ${lastTurnCacheRowHtml}
             <div class="telemetry-ledger-row">
                 <span class="telemetry-ledger-key">${tBiHtml('Cache Read', '缓存读取')}</span>
                 <span class="telemetry-ledger-val-group"><b>${fmt(o.totalCacheReadTokens)}</b><span class="telemetry-ledger-sub"><span>${tBiHtml('Fresh Input', '新增输入')} ${fmt(o.totalFreshInputTokens)}</span>${cacheWriteSub}</span></span>
@@ -3262,7 +3349,17 @@ function buildRecentCallsLedger(
     customPricing: Record<string, ModelPricing>,
 ): string {
     const allCalls: GMCallEntry[] = [];
+    const callDiagMap = new WeakMap<GMCallEntry, TurnDiagnosticEntry>();
     for (const conv of gm.conversations) {
+        if (conv.calls.length > 0) {
+            const convDiag = analyzeTurnDiagnostics(conv.calls, { maxTurns: conv.calls.length });
+            for (let ci = 0; ci < conv.calls.length; ci++) {
+                const entry = convDiag.turns[ci];
+                if (entry) {
+                    callDiagMap.set(conv.calls[ci], entry);
+                }
+            }
+        }
         for (const call of conv.calls) {
             allCalls.push(call);
         }
@@ -3303,10 +3400,15 @@ function buildRecentCallsLedger(
             ? `${formatNumber(totalOut)}<span class="rc-sub" title="${esc(tBi(`Thinking: ${formatNumber(thinkTok)} tokens`, `思考：${formatNumber(thinkTok)} tokens`))}">(${tBiHtml('Think', '思考')} ${thinkPct}%)</span>`
             : formatNumber(totalOut);
 
+        const diag = callDiagMap.get(call);
         const cacheRate = computeStepCacheHitRate(call.inputTokens, call.cacheReadTokens, call.cacheCreationTokens);
+        const startKind: TurnStartKind = diag?.startKind
+            ?? classifyTurnStartKind(cacheRate !== null ? cacheRate * 100 : null, Math.max(0, (call.inputTokens || 0) + (call.cacheReadTokens || 0) + (call.cacheCreationTokens || 0)));
+        const startPillHtml = renderTurnStartPill(startKind, true);
         const cacheHtml = cacheRate !== null
-            ? `<span class="${cacheRate >= 0.5 ? 'rc-cache-hi' : ''}">${esc(formatRecentCallCachePct(cacheRate))}</span>`
+            ? `<span class="${cacheRate >= 0.5 ? 'rc-cache-hi' : ''}">${esc(formatRecentCallCachePct(cacheRate))}</span>${startPillHtml ? ` ${startPillHtml}` : ''}`
             : `<span class="rc-muted">—</span>`;
+        const deltaHtml = formatSignedTokenDeltaHtml(diag?.deltaTokens ?? null, !!diag?.isCompactionDrop);
 
         const pricingModel = selectPricingModel(call.model || call.modelDisplay, call.responseModel, customPricing);
         const pricing = findPricingForDate(pricingModel, customPricing, call.createdAt || '');
@@ -3338,6 +3440,7 @@ function buildRecentCallsLedger(
             <td class="rc-muted">${esc(timeStr)}</td>
             <td class="rc-model-cell" title="${esc(modelTooltip)}">${esc(displayModel)}</td>
             <td class="rc-num">${freshIn}</td>
+            <td class="rc-num">${deltaHtml}</td>
             <td class="rc-num">${outHtml}</td>
             <td class="rc-num">${cacheHtml}</td>
             <td class="rc-num">${costHtml}</td>
@@ -3365,6 +3468,7 @@ function buildRecentCallsLedger(
                         <th>${tBiHtml('Time', '时间')}</th>
                         <th>${tBiHtml('Actual Model', '实际模型')}</th>
                         <th class="rc-num">${tBiHtml('Input', '输入')}</th>
+                        <th class="rc-num">${tBiHtml('Net Δ', '净增量 Δ')}</th>
                         <th class="rc-num">${tBiHtml('Output', '输出')}</th>
                         <th class="rc-num">${tBiHtml('Cache Hit', '缓存命中率')}</th>
                         <th class="rc-num">${tBiHtml('Cost', '费用')}</th>
@@ -3375,6 +3479,58 @@ function buildRecentCallsLedger(
                     </tr>
                 </thead>
                 <tbody>${rowsHtml.join('')}</tbody>
+            </table>
+        </div>
+    </details>`;
+}
+
+/**
+ * Fallback Turn Diagnostics card when raw generatorMetadata turns are available
+ * even before GMTracker conversations[].calls are populated.
+ */
+function buildTurnDiagnosticsFallbackCard(td: TurnDiagnosticsSummary): string {
+    const recentTurns = [...td.turns].reverse().slice(0, MAX_RECENT_CALLS_ROWS);
+    if (recentTurns.length === 0) { return ''; }
+    const lastPct = td.lastTurnCacheHitPct !== null ? `${td.lastTurnCacheHitPct.toFixed(1)}%` : '—';
+    const sessPct = td.sessionCacheHitPct !== null ? `${td.sessionCacheHitPct.toFixed(1)}%` : '—';
+    const startBadge = renderTurnStartPill(td.lastTurnStartKind, false);
+    const rows = recentTurns.map(turn => {
+        const timeStr = turn.timestamp ? formatTime(turn.timestamp) : `#${turn.turnIndex}`;
+        const cacheStr = turn.cacheHitPct !== null ? `${turn.cacheHitPct.toFixed(1)}%` : '—';
+        const pill = renderTurnStartPill(turn.startKind, true);
+        const ttftStr = turn.ttftMs !== null ? esc(formatLatency(turn.ttftMs / 1000)) : `<span class="rc-muted">—</span>`;
+        const speedStr = turn.tokPerSec !== null ? esc(formatSpeed(turn.tokPerSec)) : `<span class="rc-muted">—</span>`;
+        return `<tr>
+            <td class="rc-muted">${esc(timeStr)}</td>
+            <td class="rc-model-cell">${esc(turn.model || '—')}</td>
+            <td class="rc-num">${formatNumber(turn.inputTokens)}</td>
+            <td class="rc-num">${formatSignedTokenDeltaHtml(turn.deltaTokens, turn.isCompactionDrop)}</td>
+            <td class="rc-num">${formatNumber(turn.outputTokens)}</td>
+            <td class="rc-num"><span>${esc(cacheStr)}</span>${pill ? ` ${pill}` : ''}</td>
+            <td class="rc-num">${ttftStr}</td>
+            <td class="rc-num">${speedStr}</td>
+        </tr>`;
+    }).join('');
+    return `<details class="recent-calls-card" id="turnDiagnosticsLedger" open>
+        <summary class="recent-calls-summary">
+            <span class="recent-calls-title"><span>${tBiHtml('Turn Diagnostics', '轮次诊断')}</span> ${startBadge}</span>
+            <span class="recent-calls-count">${tBiHtml('Last-Turn Cache', '上轮缓存')} ${esc(lastPct)} · ${tBiHtml('Session Cache', '会话缓存')} ${esc(sessPct)}</span>
+        </summary>
+        <div class="recent-calls-table-wrap" tabindex="0" role="region" aria-label="${esc(tBi('Turn diagnostics table', '轮次诊断表'))}">
+            <table class="recent-calls-table">
+                <thead>
+                    <tr>
+                        <th>${tBiHtml('Turn', '轮次')}</th>
+                        <th>${tBiHtml('Model', '模型')}</th>
+                        <th class="rc-num">${tBiHtml('Input', '输入')}</th>
+                        <th class="rc-num">${tBiHtml('Net Δ', '净增量 Δ')}</th>
+                        <th class="rc-num">${tBiHtml('Output', '输出')}</th>
+                        <th class="rc-num">${tBiHtml('Cache Hit', '缓存命中率')}</th>
+                        <th class="rc-num">${tBiHtml('TTFT', '首字耗时')}</th>
+                        <th class="rc-num">${tBiHtml('Speed', '速度')}</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
             </table>
         </div>
     </details>`;

@@ -79,7 +79,12 @@ export function collectPricingInputOverrides(inputs: ArrayLike<PricingInputLike>
 export function getScript(): string {
     return `
         (function() {
-            var vscode = acquireVsCodeApi();
+            var bridge = window.__ACM_BRIDGE__ || null;
+            var vscode = (bridge && typeof bridge.asVsCodeApi === 'function')
+                ? bridge.asVsCodeApi()
+                : (typeof acquireVsCodeApi === 'function'
+                    ? acquireVsCodeApi()
+                    : { getState: function() { return {}; }, setState: function() {}, postMessage: function() {} });
             var collectPricingInputOverrides = (${collectPricingInputOverrides.toString()});
             var savedState = vscode.getState() || {};
             var copiedText = ${JSON.stringify(`✓ ${tBi('Copied', '已复制')}`)};
@@ -93,6 +98,75 @@ export function getScript(): string {
             var revealFailedText = ${JSON.stringify(tBi('Reveal failed', '定位失败'))};
             var invalidBillingDayText = ${JSON.stringify(tBi('Invalid', '无效'))};
             var invalidPricingText = ${JSON.stringify(tBi('Enter a non-negative price in every field of each row, or clear the entire row.', '请为每行的所有字段填写非负价格，或清空整行。'))};
+
+            function copyTextSafe(text) {
+                var value = String(text == null ? '' : text);
+                if (bridge && typeof bridge.copyText === 'function') {
+                    return Promise.resolve(bridge.copyText(value));
+                }
+                if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                    return navigator.clipboard.writeText(value).then(function() { return true; }).catch(function() {
+                        return false;
+                    });
+                }
+                try {
+                    var ta = document.createElement('textarea');
+                    ta.value = value;
+                    ta.setAttribute('readonly', '');
+                    ta.style.position = 'fixed';
+                    ta.style.top = '-9999px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    var ok = document.execCommand('copy');
+                    document.body.removeChild(ta);
+                    return Promise.resolve(!!ok);
+                } catch (_) {
+                    return Promise.resolve(false);
+                }
+            }
+
+            function flashCopyButton(btn) {
+                if (btn) {
+                    if (!btn.dataset.origHtml) { btn.dataset.origHtml = btn.innerHTML; }
+                    btn.classList.add('copied');
+                    btn.textContent = copiedText;
+                    if (btn._copyResetTimer) { clearTimeout(btn._copyResetTimer); }
+                    btn._copyResetTimer = setTimeout(function() {
+                        if (btn.dataset.origHtml) { btn.innerHTML = btn.dataset.origHtml; }
+                        btn.classList.remove('copied');
+                    }, 2000);
+                }
+                flashFeedback('ctxCopyFeedback', copiedText, 2000);
+            }
+
+            function getContextVizMode() {
+                var s = vscode.getState() || {};
+                return s.ctxVizMode === 'dots' ? 'dots' : 'bar';
+            }
+
+            function applyContextVizMode(mode) {
+                var resolved = mode === 'dots' ? 'dots' : 'bar';
+                var cards = document.querySelectorAll('.ctx-breakdown-card');
+                for (var ci = 0; ci < cards.length; ci++) {
+                    cards[ci].setAttribute('data-viz-mode', resolved);
+                    var btns = cards[ci].querySelectorAll('[data-ctx-viz]');
+                    for (var bi = 0; bi < btns.length; bi++) {
+                        var isMatch = btns[bi].getAttribute('data-ctx-viz') === resolved;
+                        btns[bi].classList.toggle('is-active', isMatch);
+                        btns[bi].setAttribute('aria-pressed', String(isMatch));
+                    }
+                }
+            }
+
+            function syncLockMainVisual(locked) {
+                var lockBtn = document.getElementById('lockMainBtn');
+                if (lockBtn) {
+                    lockBtn.classList.toggle('is-locked', !!locked);
+                    lockBtn.setAttribute('aria-pressed', String(!!locked));
+                }
+                var lockCb = document.getElementById('toggleLockMainAgent');
+                if (lockCb) { lockCb.checked = !!locked; }
+            }
 
             function setFeedback(id, text) {
                 var el = document.getElementById(id);
@@ -613,6 +687,14 @@ export function getScript(): string {
                     }
                 })(tgi);
             }
+            var lockMainSettingsCb = document.getElementById('toggleLockMainAgent');
+            if (lockMainSettingsCb) {
+                lockMainSettingsCb.addEventListener('change', function() {
+                    var nextLocked = !!this.checked;
+                    syncLockMainVisual(nextLocked);
+                    vscode.postMessage({ command: 'toggleLockMain', locked: nextLocked });
+                });
+            }
 
             // ─── Settings: Scrollbar & End-of-Content Toggles ───
             function applyScrollbarHide(hide) {
@@ -769,9 +851,18 @@ export function getScript(): string {
                             if (cbEl) { cbEl.checked = msg[fieldName]; }
                         }
                     }
+                    if (typeof msg.lockToMainAgent === 'boolean') {
+                        syncLockMainVisual(msg.lockToMainAgent);
+                    }
                     if (typeof msg.tooltipDensity === 'string') {
                         var tdEl = document.getElementById('statusTooltipDensity');
                         if (tdEl) { tdEl.value = msg.tooltipDensity; }
+                    }
+                }
+                if (msg.command === 'copyActionResult') {
+                    if (msg.ok) {
+                        var actionBtn = msg.action ? document.querySelector('[data-action="' + msg.action + '"]') : null;
+                        flashCopyButton(actionBtn);
                     }
                 }
                 if (msg.command === 'stateFileActionResult') {
@@ -874,6 +965,52 @@ export function getScript(): string {
                 }
             }
             applyPrivacyMask();
+            applyContextVizMode(getContextVizMode());
+
+            // ─── Masthead Conversation Switcher (delegated for live DOM patching) ───
+            document.body.addEventListener('change', function(e) {
+                var target = e.target;
+                if (target && target.id === 'conversationSwitcher') {
+                    var selectedId = target.value || null;
+                    vscode.postMessage({ command: 'selectConversation', conversationId: selectedId });
+                }
+            });
+
+            // ─── Synced Hover / Focus Highlight for Context Composition Breakdown ───
+            function setCtxHighlight(target, active) {
+                if (!target || !target.closest) { return; }
+                var catEl = target.closest('[data-ctx-cat]');
+                if (!catEl) { return; }
+                var card = catEl.closest('.ctx-breakdown-card');
+                if (!card) { return; }
+                var cat = catEl.getAttribute('data-ctx-cat');
+                if (active && cat && cat !== 'free') {
+                    card.setAttribute('data-highlight-cat', cat);
+                } else {
+                    card.removeAttribute('data-highlight-cat');
+                }
+            }
+            document.body.addEventListener('mouseover', function(e) {
+                var target = e.target instanceof Element ? e.target : null;
+                setCtxHighlight(target, true);
+            });
+            document.body.addEventListener('mouseout', function(e) {
+                var target = e.target instanceof Element ? e.target : null;
+                var rel = e.relatedTarget instanceof Element ? e.relatedTarget : null;
+                if (target && target.closest && target.closest('[data-ctx-cat]')) {
+                    if (!rel || !rel.closest || !rel.closest('[data-ctx-cat]')) {
+                        setCtxHighlight(target, false);
+                    }
+                }
+            });
+            document.body.addEventListener('focusin', function(e) {
+                var target = e.target instanceof Element ? e.target : null;
+                setCtxHighlight(target, true);
+            });
+            document.body.addEventListener('focusout', function(e) {
+                var target = e.target instanceof Element ? e.target : null;
+                setCtxHighlight(target, false);
+            });
 
             // ─── Restore scroll position (per-tab, debounced) ───
             var tabScrolls = savedState.tabScrolls || {};
@@ -971,12 +1108,52 @@ export function getScript(): string {
                     return;
                 }
 
+                // ── Lock to Main Agent toggle ──
+                var lockBtn = target.closest('[data-action="toggleLockMain"]');
+                if (lockBtn) {
+                    var nextLocked = lockBtn.getAttribute('aria-pressed') !== 'true';
+                    syncLockMainVisual(nextLocked);
+                    vscode.postMessage({ command: 'toggleLockMain', locked: nextLocked });
+                    return;
+                }
+
+                // ── Context Composition Visualization Mode Toggle (Bar / Dot Matrix) ──
+                var ctxVizBtn = target.closest('[data-ctx-viz]');
+                if (ctxVizBtn) {
+                    var nextViz = ctxVizBtn.getAttribute('data-ctx-viz') === 'dots' ? 'dots' : 'bar';
+                    var vs = vscode.getState() || {};
+                    vs.ctxVizMode = nextViz;
+                    vscode.setState(vs);
+                    applyContextVizMode(nextViz);
+                    return;
+                }
+
+                // ── Quick Copy Actions (/context Report & Handoff Prompt) ──
+                var copyActionBtn = target.closest('[data-action="copyContextReport"], [data-action="copyHandoffPrompt"]');
+                if (copyActionBtn) {
+                    var actionName = copyActionBtn.getAttribute('data-action');
+                    if (bridge && bridge.surface !== 'vscode' && typeof bridge.sendAction === 'function') {
+                        bridge.sendAction({ command: actionName }).then(function(res) {
+                            if (res && typeof res.text === 'string') {
+                                copyTextSafe(res.text).then(function() { flashCopyButton(copyActionBtn); });
+                            } else if (res && res.result && typeof res.result.text === 'string') {
+                                copyTextSafe(res.result.text).then(function() { flashCopyButton(copyActionBtn); });
+                            } else if (res && res.ok) {
+                                flashCopyButton(copyActionBtn);
+                            }
+                        });
+                    } else {
+                        vscode.postMessage({ command: actionName });
+                    }
+                    return;
+                }
+
                 // ── Copy Raw JSON ──
                 if (target.closest('#copyRawJson')) {
                     var cpyBtn = target.closest('#copyRawJson');
                     var rawEl = document.getElementById('rawJsonContent');
                     if (!rawEl) return;
-                    navigator.clipboard.writeText(rawEl.textContent || '').then(function() {
+                    copyTextSafe(rawEl.textContent || '').then(function() {
                         cpyBtn.classList.add('copied');
                         var origHtml = cpyBtn.innerHTML;
                         cpyBtn.textContent = copiedText;
@@ -992,7 +1169,7 @@ export function getScript(): string {
                     var ueBtn = target.closest('#copyAllErrors');
                     var ueData = document.getElementById('ueClipboardData');
                     if (!ueData) return;
-                    navigator.clipboard.writeText(ueData.textContent || '').then(function() {
+                    copyTextSafe(ueData.textContent || '').then(function() {
                         ueBtn.classList.add('copied');
                         var origUeHtml = ueBtn.innerHTML;
                         ueBtn.textContent = copiedText;
@@ -1202,7 +1379,206 @@ export function getScript(): string {
                 }
             });
 
-            // ─── Listen for extension messages ───
+            // ─── Unified Incremental DOM Patcher (VS Code messages + acm:snapshot) ───
+            var lastMastheadHtml = (function() {
+                var mh = document.getElementById('mastheadContextBar');
+                return mh ? mh.innerHTML : '';
+            })();
+
+            function applyIncrementalUpdate(msg) {
+                if (!msg || !msg.tabs) { return; }
+                var tabs = msg.tabs;
+                var visibleEocTabs = captureVisibleEocTabs();
+                var changedTabKeys = [];
+
+                // Save scrollTop of inner scrollable elements before DOM swap
+                var scrollableSelectors = ['.raw-json', '.act-timeline', '.details-body', '.cp-viewer', '.cp-card-body'];
+                var savedScrolls = {};
+                for (var ss = 0; ss < scrollableSelectors.length; ss++) {
+                    var sel = scrollableSelectors[ss];
+                    var els = document.querySelectorAll(sel);
+                    for (var se = 0; se < els.length; se++) {
+                        if (els[se].scrollTop > 0) {
+                            savedScrolls[sel + ':' + se] = els[se].scrollTop;
+                        }
+                    }
+                }
+
+                for (var key in tabs) {
+                    if (!Object.prototype.hasOwnProperty.call(tabs, key)) continue;
+                    if (lastTabHtmls[key] === tabs[key]) { continue; }
+                    var pane = document.getElementById('tab-' + key);
+                    if (pane) {
+                        var pricingDrafts = new Map();
+                        if (key === 'pricing') {
+                            pane.querySelectorAll('.pricing-input').forEach(function(input) {
+                                if (input.value !== (input.getAttribute('data-original-value') || '')) {
+                                    var identity = JSON.stringify([input.getAttribute('data-model'), input.getAttribute('data-field')]);
+                                    pricingDrafts.set(identity, { value: input.value, focused: input === document.activeElement });
+                                }
+                            });
+                        }
+                        var overviewFocus = key === 'overview' && pane.contains(document.activeElement)
+                            ? document.activeElement.dataset.overviewFocus : undefined;
+                        var diagnostics = key === 'overview' ? pane.querySelector('#overview-session-diagnostics') : null;
+                        if (diagnostics) {
+                            var overviewState = vscode.getState() || {};
+                            var openDetails = overviewState.detailsOpen || {};
+                            openDetails[diagnostics.dataset.stateKey] = diagnostics.open;
+                            overviewState.detailsOpen = openDetails;
+                            vscode.setState(overviewState);
+                        }
+                        var billingInput = key === 'profile' ? pane.querySelector('#profileBillingDayInput') : null;
+                        var billingDraft = billingInput && billingInput.value !== billingInput.defaultValue ? billingInput.value : null;
+                        var billingFocused = billingInput && billingInput === document.activeElement;
+                        var billingAccount = billingInput && billingInput.dataset.email;
+                        var privacyFocused = key === 'profile' && document.activeElement && document.activeElement.id === 'privacyToggle';
+                        pane.innerHTML = tabs[key];
+                        if (billingInput) {
+                            var nextBilling = pane.querySelector('#profileBillingDayInput');
+                            if (nextBilling && nextBilling.dataset.email === billingAccount) {
+                                if (billingDraft !== null) { nextBilling.value = billingDraft; }
+                                if (billingFocused) { nextBilling.focus({ preventScroll: true }); }
+                            }
+                        }
+                        if (privacyFocused) {
+                            var privBtn = pane.querySelector('#privacyToggle');
+                            if (privBtn) { privBtn.focus({ preventScroll: true }); }
+                        }
+                        if (overviewFocus) {
+                            var focusTarget = Array.from(pane.querySelectorAll('[data-overview-focus]')).find(function(el) {
+                                return el.dataset.overviewFocus === overviewFocus;
+                            });
+                            if (focusTarget) { focusTarget.focus({ preventScroll: true }); }
+                            else {
+                                var overviewHeading = pane.querySelector('#overview-heading');
+                                if (overviewHeading) { overviewHeading.focus({ preventScroll: true }); }
+                            }
+                        }
+                        if (pricingDrafts.size) {
+                            pane.querySelectorAll('.pricing-input').forEach(function(input) {
+                                var identity = JSON.stringify([input.getAttribute('data-model'), input.getAttribute('data-field')]);
+                                var draft = pricingDrafts.get(identity);
+                                if (draft) {
+                                    input.value = draft.value;
+                                    if (draft.focused) { input.focus({ preventScroll: true }); }
+                                }
+                            });
+                        }
+                        lastTabHtmls[key] = tabs[key];
+                        changedTabKeys.push(key);
+                    }
+                }
+
+                // Patch masthead context controls (Conversation Switcher, Lock, Stale Badge)
+                // without disrupting an open <select> dropdown.
+                var nextMasthead = typeof tabs.mastheadControls === 'string'
+                    ? tabs.mastheadControls
+                    : (typeof msg.mastheadControls === 'string' ? msg.mastheadControls : null);
+                if (nextMasthead !== null && nextMasthead !== lastMastheadHtml) {
+                    var mhEl = document.getElementById('mastheadContextBar');
+                    var swEl = document.getElementById('conversationSwitcher');
+                    if (mhEl && (!swEl || document.activeElement !== swEl)) {
+                        mhEl.innerHTML = nextMasthead;
+                        lastMastheadHtml = nextMasthead;
+                    }
+                }
+
+                for (var cti = 0; cti < changedTabKeys.length; cti++) {
+                    if (visibleEocTabs[changedTabKeys[cti]]) {
+                        restoreVisibleEoc(changedTabKeys[cti]);
+                    }
+                }
+
+                // !! CRITICAL: restore details & context viz mode IMMEDIATELY after innerHTML swap,
+                // BEFORE any DOM read that could force layout with collapsed details.
+                restoreDetailsState(vscode.getState() || {});
+                applyContextVizMode(getContextVizMode());
+                bindToolCatalogTooltips();
+
+                // NOW restore scrollTop (details are open, heights are correct)
+                for (var rs = 0; rs < scrollableSelectors.length; rs++) {
+                    var rsel = scrollableSelectors[rs];
+                    var rels = document.querySelectorAll(rsel);
+                    for (var re = 0; re < rels.length; re++) {
+                        var rkey = rsel + ':' + re;
+                        if (savedScrolls[rkey]) {
+                            rels[re].scrollTop = savedScrolls[rkey];
+                        }
+                    }
+                }
+
+                // Update timestamp
+                if (msg.time) {
+                    var timeEl = document.querySelector('.update-time');
+                    if (timeEl) {
+                        var pausedEl = timeEl.querySelector('.paused-indicator');
+                        timeEl.textContent = '';
+                        if (pausedEl) { timeEl.appendChild(pausedEl); }
+                        timeEl.appendChild(document.createTextNode(' ' + msg.time));
+                    }
+                }
+
+                // Restore calendar selection
+                var calSel = (vscode.getState() || {}).calendarSelectedDate || '';
+                if (calSel) {
+                    var calPanel = document.querySelector('[data-cal-detail="' + calSel + '"]');
+                    var calCell = document.querySelector('.cal-cell.has-data[data-cal-date="' + calSel + '"]');
+                    if (calPanel) {
+                        calPanel.style.display = 'block';
+                        calPanel.style.animation = 'none';
+                        calPanel.classList.add('cal-detail-open');
+                    }
+                    if (calCell) { calCell.classList.add('selected'); }
+                }
+
+                applyPrivacyMask();
+
+                // ── Account Popover: content-only refresh, preserve open/close state ──
+                if (typeof tabs.accountPopover === 'string') {
+                    var popBody = document.getElementById('acctPopoverBody');
+                    if (popBody && tabs.accountPopover) {
+                        popBody.innerHTML = tabs.accountPopover;
+                    }
+                }
+                var dotEl = document.querySelector('.acct-popover-dot');
+                if (tabs.accountPopoverHasReady) {
+                    if (!dotEl) {
+                        var trigEl = document.getElementById('acctPopoverTrigger');
+                        if (trigEl) {
+                            var d = document.createElement('span');
+                            d.className = 'acct-popover-dot';
+                            trigEl.appendChild(d);
+                        }
+                    }
+                } else {
+                    if (dotEl) { dotEl.remove(); }
+                }
+
+                if (msg.snapshot && typeof msg.snapshot.lockToMainAgent === 'boolean') {
+                    syncLockMainVisual(msg.snapshot.lockToMainAgent);
+                }
+
+                updateTabSlider();
+                updateTabOverflowHint();
+                updateTabArrows();
+                if (refreshBtn) { refreshBtn.classList.remove('spinning'); }
+                bindHistoryCatalog();
+                bindEocObserver();
+                requestAnimationFrame(function() { initErrorOverflow(); });
+
+                var errToggle2 = document.getElementById('modelStatsErrToggle');
+                var cardsGrid2 = document.querySelector('.act-cards-grid');
+                if ((vscode.getState() || {}).modelStatsShowErrors) {
+                    if (errToggle2) { errToggle2.classList.remove('is-off'); }
+                    if (cardsGrid2) { cardsGrid2.classList.add('model-stats-show-errors'); }
+                } else {
+                    if (errToggle2) { errToggle2.classList.add('is-off'); }
+                    if (cardsGrid2) { cardsGrid2.classList.remove('model-stats-show-errors'); }
+                }
+            }
+
+            // ─── Listen for extension & host-bridge messages ───
             window.addEventListener('message', function(event) {
                 var msg = event.data;
                 if (msg && msg.command === 'switchToTab' && msg.tab) {
@@ -1218,188 +1594,21 @@ export function getScript(): string {
                         setTimeout(function() { fb.style.opacity = '0'; }, 2000);
                     }
                 } else if (msg && msg.command === 'updateTabs') {
-                    // ── Incremental refresh: update tab pane innerHTML without page reload ──
-                    var tabs = msg.tabs;
-                    var visibleEocTabs = captureVisibleEocTabs();
-                    var changedTabKeys = [];
+                    applyIncrementalUpdate(msg);
+                }
+            });
 
-                    // Save scrollTop of inner scrollable elements before DOM swap
-                    var scrollableSelectors = ['.raw-json', '.act-timeline', '.details-body', '.cp-viewer', '.cp-card-body'];
-                    var savedScrolls = {};
-                    for (var ss = 0; ss < scrollableSelectors.length; ss++) {
-                        var sel = scrollableSelectors[ss];
-                        var els = document.querySelectorAll(sel);
-                        for (var se = 0; se < els.length; se++) {
-                            if (els[se].scrollTop > 0) {
-                                // Use selector + index as key
-                                savedScrolls[sel + ':' + se] = els[se].scrollTop;
-                            }
-                        }
-                    }
-
-                    for (var key in tabs) {
-                        if (!tabs.hasOwnProperty(key)) continue;
-                        if (lastTabHtmls[key] === tabs[key]) { continue; }
-                        var pane = document.getElementById('tab-' + key);
-                        if (pane) {
-                            // Polling can change totals while a user is editing rates.
-                            // Carry only unsaved values across the new server markup;
-                            // keep its updated defaults and validation attributes.
-                            var pricingDrafts = new Map();
-                            if (key === 'pricing') {
-                                pane.querySelectorAll('.pricing-input').forEach(function(input) {
-                                    if (input.value !== (input.getAttribute('data-original-value') || '')) {
-                                        var identity = JSON.stringify([input.getAttribute('data-model'), input.getAttribute('data-field')]);
-                                        pricingDrafts.set(identity, { value: input.value, focused: input === document.activeElement });
-                                    }
-                                });
-                            }
-                            var overviewFocus = key === 'overview' && pane.contains(document.activeElement)
-                                ? document.activeElement.dataset.overviewFocus : undefined;
-                            var diagnostics = key === 'overview' ? pane.querySelector('#overview-session-diagnostics') : null;
-                            if (diagnostics) {
-                                var overviewState = vscode.getState() || {};
-                                var openDetails = overviewState.detailsOpen || {};
-                                // At a polling boundary a queued toggle may have yet to save the state.
-                                openDetails[diagnostics.dataset.stateKey] = diagnostics.open;
-                                overviewState.detailsOpen = openDetails;
-                                vscode.setState(overviewState);
-                            }
-                            var billingInput = key === 'profile' ? pane.querySelector('#profileBillingDayInput') : null;
-                            var billingDraft = billingInput && billingInput.value !== billingInput.defaultValue ? billingInput.value : null;
-                            var billingFocused = billingInput && billingInput === document.activeElement;
-                            var billingAccount = billingInput && billingInput.dataset.email;
-                            var privacyFocused = key === 'profile' && document.activeElement?.id === 'privacyToggle';
-                            pane.innerHTML = tabs[key];
-                            if (billingInput) {
-                                var nextBilling = pane.querySelector('#profileBillingDayInput');
-                                if (nextBilling && nextBilling.dataset.email === billingAccount) {
-                                    if (billingDraft !== null) { nextBilling.value = billingDraft; }
-                                    if (billingFocused) { nextBilling.focus({ preventScroll: true }); }
-                                }
-                            }
-                            if (privacyFocused) { pane.querySelector('#privacyToggle')?.focus({ preventScroll: true }); }
-                            if (overviewFocus) {
-                                var focusTarget = Array.from(pane.querySelectorAll('[data-overview-focus]')).find(function(el) {
-                                    return el.dataset.overviewFocus === overviewFocus;
-                                });
-                                if (focusTarget) { focusTarget.focus({ preventScroll: true }); }
-                                else {
-                                    var overviewHeading = pane.querySelector('#overview-heading');
-                                    if (overviewHeading) { overviewHeading.focus({ preventScroll: true }); }
-                                }
-                            }
-                            if (pricingDrafts.size) {
-                                pane.querySelectorAll('.pricing-input').forEach(function(input) {
-                                    var identity = JSON.stringify([input.getAttribute('data-model'), input.getAttribute('data-field')]);
-                                    var draft = pricingDrafts.get(identity);
-                                    if (draft) {
-                                        input.value = draft.value;
-                                        if (draft.focused) { input.focus({ preventScroll: true }); }
-                                    }
-                                });
-                            }
-                            lastTabHtmls[key] = tabs[key];
-                            changedTabKeys.push(key);
-                        }
-                    }
-
-                    for (var cti = 0; cti < changedTabKeys.length; cti++) {
-                        if (visibleEocTabs[changedTabKeys[cti]]) {
-                            restoreVisibleEoc(changedTabKeys[cti]);
-                        }
-                    }
-
-                    // !! CRITICAL: restore details IMMEDIATELY after innerHTML swap,
-                    // BEFORE any DOM read that could force layout with collapsed details.
-                    // Otherwise: details closed → page height shrinks → scrollTop read
-                    // forces layout → browser adjusts scroll position → details reopen
-                    // too late → scroll stuck in wrong position ("Monitor tab jumps").
-                    restoreDetailsState(vscode.getState() || {});
-                    bindToolCatalogTooltips();
-
-
-
-                    // NOW restore scrollTop (details are open, heights are correct)
-                    for (var rs = 0; rs < scrollableSelectors.length; rs++) {
-                        var rsel = scrollableSelectors[rs];
-                        var rels = document.querySelectorAll(rsel);
-                        for (var re = 0; re < rels.length; re++) {
-                            var rkey = rsel + ':' + re;
-                            if (savedScrolls[rkey]) {
-                                rels[re].scrollTop = savedScrolls[rkey];
-                            }
-                        }
-                    }
-
-                    // Update timestamp
-                    if (msg.time) {
-                        var timeEl = document.querySelector('.update-time');
-                        if (timeEl) {
-                            var pausedEl = timeEl.querySelector('.paused-indicator');
-                            timeEl.textContent = '';
-                            if (pausedEl) { timeEl.appendChild(pausedEl); }
-                            timeEl.appendChild(document.createTextNode(' ' + msg.time));
-                        }
-                    }
-
-                    // Restore calendar selection
-                    var calSel = (vscode.getState() || {}).calendarSelectedDate || '';
-                    if (calSel) {
-                        var calPanel = document.querySelector('[data-cal-detail="' + calSel + '"]');
-                        var calCell = document.querySelector('.cal-cell.has-data[data-cal-date="' + calSel + '"]');
-                        if (calPanel) {
-                            calPanel.style.display = 'block';
-                            calPanel.style.animation = 'none';
-                            calPanel.classList.add('cal-detail-open');
-                        }
-                        if (calCell) { calCell.classList.add('selected'); }
-                    }
-
-                    applyPrivacyMask();
-
-                    // ── Account Popover: content-only refresh, preserve open/close state ──
-                    if (typeof tabs.accountPopover === 'string') {
-                        var popBody = document.getElementById('acctPopoverBody');
-                        if (popBody && tabs.accountPopover) {
-                            popBody.innerHTML = tabs.accountPopover;
-                        }
-                    }
-                    // Red-dot sync
-                    var dotEl = document.querySelector('.acct-popover-dot');
-                    if (tabs.accountPopoverHasReady) {
-                        if (!dotEl) {
-                            var trigEl = document.getElementById('acctPopoverTrigger');
-                            if (trigEl) {
-                                var d = document.createElement('span');
-                                d.className = 'acct-popover-dot';
-                                trigEl.appendChild(d);
-                            }
-                        }
-                    } else {
-                        if (dotEl) { dotEl.remove(); }
-                    }
-
-                    // Recalculate tab slider position after content swap
-                    // (tab button widths may change due to language or data updates)
-                    updateTabSlider();
-                    updateTabOverflowHint();
-                    updateTabArrows();
-                    if (refreshBtn) { refreshBtn.classList.remove('spinning'); }
-                    bindHistoryCatalog();
-                    bindEocObserver();
-                    requestAnimationFrame(function() { initErrorOverflow(); });
-
-                    // Restore model stats error toggle state (default: hidden)
-                    var errToggle2 = document.getElementById('modelStatsErrToggle');
-                    var cardsGrid2 = document.querySelector('.act-cards-grid');
-                    if ((vscode.getState() || {}).modelStatsShowErrors) {
-                        if (errToggle2) { errToggle2.classList.remove('is-off'); }
-                        if (cardsGrid2) { cardsGrid2.classList.add('model-stats-show-errors'); }
-                    } else {
-                        if (errToggle2) { errToggle2.classList.add('is-off'); }
-                        if (cardsGrid2) { cardsGrid2.classList.remove('model-stats-show-errors'); }
-                    }
+            // ─── Listen for Antigravity App Sidecar custom snapshot events ───
+            window.addEventListener('acm:snapshot', function(event) {
+                var detail = event && event.detail;
+                if (!detail || typeof detail !== 'object') { return; }
+                var snap = detail.snapshot || detail;
+                if (snap && snap.tabs) {
+                    applyIncrementalUpdate({
+                        tabs: snap.tabs,
+                        time: snap.time || detail.time || '',
+                        snapshot: snap
+                    });
                 }
             });
             // ─── End-of-Content IntersectionObserver ───

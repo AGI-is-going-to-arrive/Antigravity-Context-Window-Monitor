@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { LSInfo } from './discovery';
 import {
-    discoverCurrentLanguageServer as discoverLanguageServer,
+    discoverPreferredBackend,
     doesConnectionMatchActiveHint,
     getActiveBackendHint,
     isSameBackendConnection,
@@ -19,6 +19,8 @@ import {
     fetchFullUserStatus,
     fetchOrchestratorSettings,
     fetchUserQuotaSummary,
+    fetchTrajectoryGeneratorMetadata,
+    fetchTrajectorySteps,
     parseStrictResetTimestamp,
     updateModelDisplayNames,
     ContextUsage,
@@ -28,7 +30,22 @@ import {
 import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, registerResponseModelAlias, setAvailableImageModelIds, type ModelConfig, type FullUserStatus, type OrchestratorSettings, type UserQuotaSummary, updateModelSpec, getModelSpecs } from './models';
 import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit, setTooltipDiagLogger } from './statusbar';
-import { initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
+import { getLanguage, initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
+import { parseContextBreakdown, type ContextBreakdownSnapshot } from './context-breakdown';
+import { analyzeTurnDiagnostics, type TurnDiagnosticsSummary } from './turn-diagnostics';
+import {
+    QuotaRunwayTracker,
+    StaleCacheGuard,
+    isCustomModel,
+    type QuotaRunwayEstimate,
+    type SerializedQuotaRunwayState,
+} from './quota-runway';
+import {
+    buildConversationOptions,
+    resolveTargetConversation,
+    type ConversationOption,
+} from './conversation-selector';
+import type { MonitorStaleState } from './webview-overview-tab';
 import { aiCreditTotal, currentAICredits } from './account-credits';
 import { groupModelQuotas } from './model-quota';
 import { MONITOR_COMMAND } from './monitor-overview';
@@ -109,6 +126,128 @@ let extensionContext: vscode.ExtensionContext;
 /** The cascade ID that THIS window instance is tracking. */
 let trackedCascadeId: string | null = null;
 
+// ─── v1.17.5 Telemetry, Runway, Stale Guard & Conversation Lock State ─────────
+let lockToMainAgent = false;
+let pinnedConversationId: string | null = null;
+let lockedMainCascadeId: string | null = null;
+let quotaRunwayTracker = new QuotaRunwayTracker();
+let lastRunwayPersistMs = 0;
+const userStatusStaleGuard = new StaleCacheGuard<FullUserStatus>();
+const trajectoriesStaleGuard = new StaleCacheGuard<TrajectorySummary[]>();
+let lastContextBreakdown: ContextBreakdownSnapshot | null = null;
+let lastContextBreakdownKey = '';
+let lastTurnDiagnostics: TurnDiagnosticsSummary | null = null;
+const maxObservedStepCounts = new Map<string, number>();
+const previousBreakdownUsedTokens = new Map<string, number>();
+
+/** Discover the Antigravity IDE language server (explicitly preferring IDE when both App + IDE run). */
+function discoverLanguageServer(
+    workspaceUri?: string,
+    signal?: AbortSignal,
+    logger?: (message: string) => void,
+): Promise<LSInfo | null> {
+    return discoverPreferredBackend({
+        workspaceUri,
+        signal,
+        log: logger,
+        preferredSurface: 'ide',
+    });
+}
+
+/** Get whether Main-Agent Lock is enabled. */
+export function getLockToMainAgent(): boolean {
+    return lockToMainAgent;
+}
+
+/** Toggle or explicitly set Main-Agent Lock, persisting in shared DurableState. */
+export function setLockToMainAgent(locked?: boolean): boolean {
+    const next = typeof locked === 'boolean' ? locked : !lockToMainAgent;
+    lockToMainAgent = next;
+    if (next && trackedCascadeId) {
+        lockedMainCascadeId = trackedCascadeId;
+    } else if (!next) {
+        lockedMainCascadeId = null;
+    }
+    if (durableFileGlobalState) {
+        void durableFileGlobalState.update('lockToMainAgent', lockToMainAgent);
+    }
+    return lockToMainAgent;
+}
+
+/** Get the manually pinned conversation ID (or null for Follow Active). */
+export function getPinnedConversationId(): string | null {
+    return pinnedConversationId;
+}
+
+/** Pin a specific conversation ID or pass null/empty to return to Follow Active. */
+export function selectPinnedConversation(cascadeId: string | null): void {
+    const normalized = typeof cascadeId === 'string' && cascadeId.trim() ? cascadeId.trim() : null;
+    pinnedConversationId = normalized;
+    if (normalized) {
+        trackedCascadeId = normalized;
+    }
+    if (durableFileWorkspaceState) {
+        void durableFileWorkspaceState.update('pinnedConversationId', pinnedConversationId);
+    }
+}
+
+function recordQuotaRunwaysFromState(
+    configs: ModelConfig[],
+    quotaSummary?: UserQuotaSummary | null,
+    nowMs = Date.now(),
+): void {
+    const recordedPools = new Set<string>();
+    if (quotaSummary?.groups) {
+        for (const group of quotaSummary.groups) {
+            const win = group.fiveHour;
+            if (!win || typeof win.remainingFraction !== 'number' || !Number.isFinite(win.remainingFraction)) {
+                continue;
+            }
+            const poolKey = group.pool || group.displayName;
+            if (!poolKey || recordedPools.has(poolKey)) { continue; }
+            recordedPools.add(poolKey);
+            const resetMs = win.resetTime ? parsePositivePoolResetMs(win.resetTime) : null;
+            quotaRunwayTracker.record(poolKey, win.remainingFraction, nowMs, resetMs);
+        }
+    }
+    for (const group of groupModelQuotas(configs, quotaSummary)) {
+        const poolKey = group.pool || group.key;
+        if (!poolKey || recordedPools.has(poolKey) || group.minimum === null) { continue; }
+        recordedPools.add(poolKey);
+        const resetMs = group.resetTime ? parsePositivePoolResetMs(group.resetTime) : null;
+        quotaRunwayTracker.record(poolKey, group.minimum, nowMs, resetMs);
+    }
+    if (durableFileGlobalState && nowMs - lastRunwayPersistMs >= 30_000) {
+        lastRunwayPersistMs = nowMs;
+        void durableFileGlobalState.update('quotaRunwayState', quotaRunwayTracker.serialize());
+    }
+}
+
+function getCurrentQuotaRunways(nowMs = Date.now()): Record<string, QuotaRunwayEstimate> {
+    const isCustomActive = isCustomModel(currentUsage?.model, currentUsage?.modelDisplayName);
+    return quotaRunwayTracker.estimateAll(nowMs, {
+        modelId: currentUsage?.model,
+        modelLabel: currentUsage?.modelDisplayName,
+        isCustomModel: isCustomActive,
+    });
+}
+
+function getCurrentStaleState(): MonitorStaleState | null {
+    const userSnap = userStatusStaleGuard.getSnapshot();
+    const trajSnap = trajectoriesStaleGuard.getSnapshot();
+    const staleSnap = trajSnap.isStale
+        ? trajSnap
+        : (userSnap.isStale ? userSnap : null);
+    if (!staleSnap || staleSnap.lastSuccessAtMs === null) {
+        return null;
+    }
+    return {
+        isStale: true,
+        lastSuccessAtMs: staleSnap.lastSuccessAtMs,
+        lastError: staleSnap.lastError,
+    };
+}
+
 /** Previous poll's step counts per cascade — used to detect activity. */
 const previousStepCounts = new Map<string, number>();
 
@@ -153,9 +292,14 @@ export function invalidateLiveModelMetadata(): void {
     auxMetadataConsecutiveFailures = 0;
     cachedOrchestratorSettings = null;
     cachedQuotaSummary = null;
+    lastContextBreakdown = null;
+    lastContextBreakdownKey = '';
+    lastTurnDiagnostics = null;
     if (typeof statusBar !== 'undefined') {
         statusBar.setOrchestratorSettings(null);
         statusBar.setQuotaSummary(null);
+        statusBar.setStaleState(null);
+        statusBar.setQuotaRunways(null);
         statusBar.clearStabilizedResetTimes();
     }
 }
@@ -562,7 +706,21 @@ function computeLiveCostSnapshot(
 
 function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
     const gmSummary = gmTracker.getUiSummary();
-    const costs = computeLiveCostSnapshot(gmSummary, currentUsage?.cascadeId ?? trackedCascadeId ?? undefined);
+    const activeId = currentUsage?.cascadeId ?? trackedCascadeId ?? undefined;
+    const costs = computeLiveCostSnapshot(gmSummary, activeId);
+    const workspaceUri = getWorkspaceUri();
+    const isCustomActive = isCustomModel(currentUsage?.model, currentUsage?.modelDisplayName);
+    const quotaRunways = getCurrentQuotaRunways();
+    const staleState = getCurrentStaleState();
+    const conversationOptions: ConversationOption[] = buildConversationOptions(
+        lastTrajectories,
+        activeId ?? null,
+        lockedMainCascadeId,
+        {
+            workspaceUris: workspaceUri ? [workspaceUri] : [],
+            lang: getLanguage(),
+        },
+    );
     return {
         currentUsage,
         monitorStatus: statusBar?.monitorStatus,
@@ -570,7 +728,7 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         allTrajectories: lastTrajectories,
         modelConfigs: cachedModelConfigs,
         userInfo: cachedUserInfo,
-        workspaceUri: getWorkspaceUri(),
+        workspaceUri,
         activitySummary: activityTracker?.getSummary() ?? null,
         archives: activityTracker?.getArchives(),
         activityTracker,
@@ -589,6 +747,15 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         quotaSummary: cachedQuotaSummary,
         todayCostUsd: costs.todayCostUsd > 0 ? costs.todayCostUsd : undefined,
         sessionCostUsd: costs.sessionCostUsd > 0 ? costs.sessionCostUsd : undefined,
+        contextBreakdown: lastContextBreakdown,
+        turnDiagnostics: lastTurnDiagnostics,
+        quotaRunways,
+        isCustomModelActive: isCustomActive,
+        staleState,
+        conversationOptions,
+        activeConversationId: activeId ?? null,
+        pinnedConversationId,
+        lockToMainAgent,
         ...extra,
     };
 }
@@ -641,8 +808,10 @@ function triggerLiveAuxiliaryMetadataRefresh(
             if (gotQuota) {
                 const quotaChanged = hasAuxiliaryMetadataChanged(cachedQuotaSummary, quotaRes.value);
                 cachedQuotaSummary = quotaRes.value;
+                recordQuotaRunwaysFromState(cachedModelConfigs, cachedQuotaSummary);
                 if (typeof statusBar !== 'undefined') {
                     statusBar.setQuotaSummary(quotaRes.value);
+                    statusBar.setQuotaRunways(getCurrentQuotaRunways());
                 }
                 if (quotaChanged) { updated = true; }
             }
@@ -685,6 +854,10 @@ export function applyLiveModelStatus(
         switchAccount: handleAccountSwitchIfNeeded,
         updateQuota: (configs, email) => {
             quotaTracker.processUpdate(configs, buildUsedModelIds(email), email);
+            recordQuotaRunwaysFromState(configs, cachedQuotaSummary);
+            if (typeof statusBar !== 'undefined') {
+                statusBar.setQuotaRunways(getCurrentQuotaRunways());
+            }
             checkQuotaNotification(configs);
         },
     },
@@ -1406,6 +1579,12 @@ export function activate(context: vscode.ExtensionContext): void {
     // Inject durable state into webview-panel for zoom persistence
     setPanelDurableState(durableFileGlobalState);
 
+    // Restore v1.17.5 conversation lock, pinned session, and quota runway history
+    lockToMainAgent = durableFileGlobalState.get<boolean>('lockToMainAgent', false);
+    pinnedConversationId = durableFileWorkspaceState.get<string | null>('pinnedConversationId', null);
+    const savedRunway = durableFileGlobalState.get<SerializedQuotaRunwayState | undefined>('quotaRunwayState', undefined);
+    quotaRunwayTracker = savedRunway ? QuotaRunwayTracker.deserialize(savedRunway) : new QuotaRunwayTracker();
+
     // Initialize quota tracker
     quotaTracker = new QuotaTracker(context, durableGlobalState);
     // The UI toggle is gone, but quota cycle detection still feeds GM repair and daily settlement.
@@ -1930,6 +2109,8 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             // Dynamically update model display names from GetUserStatus
             try {
                 const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
+                userStatusStaleGuard.recordSuccess(fullStatus);
+                statusBar.setStaleState(getCurrentStaleState());
                 if (applyLiveModelStatus(fullStatus)) {
                     log(`Updated model display names: ${fullStatus.configs.map(c => c.label).join(', ')}`);
                 }
@@ -1945,7 +2126,10 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                     updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
                 }
                 triggerLiveAuxiliaryMetadataRefresh(lsInfo, cachedModelConfigs, modelMetadataGeneration, abortController.signal);
-            } catch { /* Silent degradation */ }
+            } catch (statusErr) {
+                userStatusStaleGuard.recordFailure(statusErr);
+                statusBar.setStaleState(getCurrentStaleState());
+            }
         } else {
             // ─── Periodic LS Connection Revalidation ─────────────────────────
             // BUG FIX: When Antigravity updates or restarts, a new LS may start
@@ -1994,6 +2178,8 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                 statusPollCount = 0;
                 try {
                     const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
+                    userStatusStaleGuard.recordSuccess(fullStatus);
+                    statusBar.setStaleState(getCurrentStaleState());
                     applyLiveModelStatus(fullStatus);
                     if (fullStatus.userInfo) {
                         cachedUserInfo = fullStatus.userInfo;
@@ -2006,7 +2192,10 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                     }
                     triggerLiveAuxiliaryMetadataRefresh(lsInfo, cachedModelConfigs, modelMetadataGeneration, abortController.signal);
                     log('Refreshed user status (periodic)');
-                } catch { /* Silent — keep cached data */ }
+                } catch (statusErr) {
+                    userStatusStaleGuard.recordFailure(statusErr);
+                    statusBar.setStaleState(getCurrentStaleState());
+                }
             }
         }
 
@@ -2039,8 +2228,12 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
         let trajectories: TrajectorySummary[];
         try {
             trajectories = await getAllTrajectories(lsInfo, abortController.signal);
+            trajectoriesStaleGuard.recordSuccess(trajectories);
+            statusBar.setStaleState(getCurrentStaleState());
         } catch (err) {
             log(`RPC failed, retrying discovery: ${err}`);
+            trajectoriesStaleGuard.recordFailure(err);
+            statusBar.setStaleState(getCurrentStaleState());
             invalidateLiveModelMetadata();
             lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal, log);
             cachedLsInfo = lsInfo;
@@ -2050,6 +2243,8 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             }
             resetBackoff();
             trajectories = await getAllTrajectories(lsInfo, abortController.signal);
+            trajectoriesStaleGuard.recordSuccess(trajectories);
+            statusBar.setStaleState(getCurrentStaleState());
         }
 
         resetBackoff();
@@ -2176,6 +2371,30 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             const mostRecent = qualifiedTrajectories[0];
             newCandidateId = mostRecent.cascadeId;
             selectionReason = 'most recently modified in ws (fallback)';
+        }
+
+        // --- v1.17.5 Override: Manual Conversation Pin or Lock to Main Agent ---
+        if (pinnedConversationId || lockToMainAgent) {
+            const resolved = resolveTargetConversation({
+                trajectories,
+                pinnedId: pinnedConversationId,
+                lockToMainAgent,
+                lockedMainId: lockedMainCascadeId,
+                currentActiveId: newCandidateId || trackedCascadeId,
+                workspaceUris: workspaceUri ? [workspaceUri] : [],
+            });
+            if (resolved.pinnedFallback && pinnedConversationId) {
+                log(`Pinned conversation ${pinnedConversationId.substring(0, 8)} no longer exists — returning to auto-follow`);
+                pinnedConversationId = null;
+                if (durableFileWorkspaceState) {
+                    void durableFileWorkspaceState.update('pinnedConversationId', null);
+                }
+            }
+            lockedMainCascadeId = resolved.lockedMainId;
+            if (resolved.cascadeId) {
+                newCandidateId = resolved.cascadeId;
+                selectionReason = resolved.reason;
+            }
         }
 
         // Update tracked cascade
@@ -2483,7 +2702,49 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             }
         }
 
-        // 6d. Update WebView panel if visible (single unified refresh point)
+        // 6d. Compute v1.17.5 Context Composition Breakdown & Turn Diagnostics for active conversation
+        if (lsInfo && activeTrajectory && currentUsage && isMonitorPanelVisible()) {
+            const breakdownKey = `${activeTrajectory.cascadeId}:${activeTrajectory.stepCount}:${activeTrajectory.lastModifiedTime}:${currentUsage.contextUsed}:${currentUsage.contextLimit}`;
+            if (breakdownKey !== lastContextBreakdownKey) {
+                try {
+                    const rawMeta = await fetchTrajectoryGeneratorMetadata(lsInfo, activeTrajectory.cascadeId, abortController.signal);
+                    const hasPromptSections = rawMeta.some(entry => {
+                        const cm = entry?.chatModel as { promptSections?: unknown[] } | undefined;
+                        return Array.isArray(cm?.promptSections) && cm.promptSections.length > 0;
+                    });
+                    let rawSteps: Array<Record<string, unknown>> | undefined;
+                    if (!hasPromptSections && activeTrajectory.stepCount > 0) {
+                        const fetched = await fetchTrajectorySteps(lsInfo, activeTrajectory.cascadeId, activeTrajectory.stepCount, abortController.signal);
+                        rawSteps = fetched.steps;
+                    }
+                    const prevMaxSteps = maxObservedStepCounts.get(activeTrajectory.cascadeId);
+                    const prevUsedTokens = previousBreakdownUsedTokens.get(activeTrajectory.cascadeId);
+                    lastContextBreakdown = parseContextBreakdown({
+                        generatorMetadata: rawMeta,
+                        steps: rawSteps,
+                        currentStepCount: activeTrajectory.stepCount,
+                        previousMaxStepCount: prevMaxSteps,
+                        previousUsedTokens: prevUsedTokens,
+                        model: currentUsage.model,
+                        modelDisplayName: currentUsage.modelDisplayName,
+                        effectiveBudgetTokens: currentUsage.contextLimit,
+                    });
+                    maxObservedStepCounts.set(
+                        activeTrajectory.cascadeId,
+                        Math.max(prevMaxSteps ?? 0, activeTrajectory.stepCount),
+                    );
+                    if (lastContextBreakdown.usedTokens > 0) {
+                        previousBreakdownUsedTokens.set(activeTrajectory.cascadeId, lastContextBreakdown.usedTokens);
+                    }
+                    lastTurnDiagnostics = rawMeta.length > 0 ? analyzeTurnDiagnostics(rawMeta) : null;
+                    lastContextBreakdownKey = breakdownKey;
+                } catch (bdErr) {
+                    log(`Context breakdown fetch error: ${bdErr}`);
+                }
+            }
+        }
+
+        // 6e. Update WebView panel if visible (single unified refresh point)
         if (isMonitorPanelVisible()) {
             updateMonitorPanel(makePanelPayload());
         }
@@ -2511,6 +2772,8 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
 
 function handleLsFailure(message: string, isDiscoveryFailure = false): void {
     consecutiveFailures++;
+    trajectoriesStaleGuard.recordFailure(message);
+    statusBar.setStaleState(getCurrentStaleState());
     currentUsage = null;
     allTrajectoryUsages = monitorStore.getAll();
     statusBar.showDisconnected(message);
@@ -2587,6 +2850,8 @@ function restartPolling(): void {
 // ─── Low Quota Notification ───────────────────────────────────────────────────
 
 function checkQuotaNotification(configs: import('./models').ModelConfig[]): void {
+    // Suppress Google quota pool alert popups when active session uses a custom / BYOK model
+    if (isCustomModel(currentUsage?.model, currentUsage?.modelDisplayName)) { return; }
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
     const thresholdPct = cfg.get<number>('quotaNotificationThreshold', 20);
     if (thresholdPct <= 0) { return; } // disabled

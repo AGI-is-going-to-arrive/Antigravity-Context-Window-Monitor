@@ -1,6 +1,13 @@
 import { aiCreditTotal } from './account-credits';
-import { formatNumber, getLanguage, tBi } from './i18n';
+import { formatClockTime, formatNumber, getLanguage, tBi } from './i18n-core';
 import { getDaysUntilBillingDay } from './billing-day';
+import {
+    CONTEXT_CATEGORY_META,
+    buildDotMatrix,
+    type ContextBreakdownSnapshot,
+    type ContextCategoryKey,
+    type ContextMeasurementState,
+} from './context-breakdown';
 import {
     extractOverviewTelemetry, formatCompactTokens, formatOverviewCost, formatOverviewSavings,
     formatQuotaWindowPercent, getContextReading, getContextRemaining, quotaPercentage,
@@ -17,11 +24,158 @@ import {
     type QuotaWindowSummary,
     type UserStatusInfo,
 } from './models';
+import type { QuotaRunwayEstimate } from './quota-runway';
 import { formatResetAbsolute } from './reset-time';
-import { calculateCompressionStats } from './statusbar';
 import { formatCachePercent, formatLatency, formatSpeed, type CacheState } from './telemetry-metrics';
 import type { ContextUsage } from './tracker';
+import { ICON } from './webview-icons';
 import { esc, tBiHtml } from './webview-helpers';
+
+// ─── Pure Compression Stats Helper (shared with statusbar.ts, zero vscode) ───
+
+export interface CompressionStats {
+    source: 'context' | 'checkpoint';
+    dropTokens: number;
+    dropPercent: number;
+}
+
+/**
+ * Calculate compression amount for UI display.
+ */
+export function calculateCompressionStats(usage: ContextUsage): CompressionStats | null {
+    if (!usage.compressionDetected) { return null; }
+
+    if (usage.previousContextUsed !== undefined && usage.previousContextUsed > usage.contextUsed) {
+        const dropTokens = usage.previousContextUsed - usage.contextUsed;
+        const dropPercent = usage.previousContextUsed > 0
+            ? (dropTokens / usage.previousContextUsed) * 100
+            : 0;
+        return { source: 'context', dropTokens, dropPercent };
+    }
+
+    if (usage.checkpointCompressionDrop > 0) {
+        const currentInput = usage.lastModelUsage
+            ? usage.lastModelUsage.inputTokens + usage.lastModelUsage.cacheReadTokens + (usage.lastModelUsage.cacheCreationTokens || 0)
+            : undefined;
+        const previousInput = currentInput !== undefined
+            ? currentInput + usage.checkpointCompressionDrop
+            : 0;
+        const dropPercent = previousInput > 0
+            ? (usage.checkpointCompressionDrop / previousInput) * 100
+            : 0;
+        return { source: 'checkpoint', dropTokens: usage.checkpointCompressionDrop, dropPercent };
+    }
+
+    return null;
+}
+
+// ─── Shared v1.17.5 Types & Banner/Runway Helpers ────────────────────────────
+
+export interface MonitorStaleState {
+    isStale: boolean;
+    lastSuccessAtMs: number | null;
+    lastError?: string | null;
+}
+
+export interface OverviewExtras extends OverviewTelemetryInput {
+    contextBreakdown?: ContextBreakdownSnapshot | null;
+    quotaRunways?: Record<string, QuotaRunwayEstimate>;
+    isCustomModelActive?: boolean;
+    staleState?: MonitorStaleState | null;
+}
+
+export function formatRunwayDurationHtml(ms: number): string {
+    if (!Number.isFinite(ms) || ms <= 0) {
+        return tBiHtml('<1m', '<1 分钟');
+    }
+    const totalMinutes = Math.max(1, Math.ceil(ms / 60_000));
+    const hours = Math.floor(totalMinutes / 60);
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    const remMinutes = totalMinutes % 60;
+    if (days > 0) {
+        return remHours > 0
+            ? tBiHtml(`${days}d ${remHours}h`, `${days} 天 ${remHours} 小时`)
+            : tBiHtml(`${days}d`, `${days} 天`);
+    }
+    if (hours > 0) {
+        return remMinutes > 0
+            ? tBiHtml(`${hours}h ${remMinutes}m`, `${hours} 小时 ${remMinutes} 分钟`)
+            : tBiHtml(`${hours}h`, `${hours} 小时`);
+    }
+    return tBiHtml(`${totalMinutes}m`, `${totalMinutes} 分钟`);
+}
+
+export function formatRunwayBadgeHtml(estimate: QuotaRunwayEstimate | undefined): string {
+    if (!estimate) { return ''; }
+    const burnRatePart = typeof estimate.burnRatePctPerHour === 'number'
+        && Number.isFinite(estimate.burnRatePctPerHour)
+        && estimate.burnRatePctPerHour > 0
+        ? ` · ${esc(estimate.burnRatePctPerHour.toFixed(1))}%/h`
+        : '';
+
+    switch (estimate.status) {
+        case 'safe_until_reset':
+            return `<div class="quota-runway-row" data-runway-status="safe_until_reset">
+                <span class="quota-runway-pill is-safe">${tBiHtml('Safe before reset', '重置前充裕')}${burnRatePart}</span>
+            </div>`;
+        case 'at_risk': {
+            const exhaustHtml = estimate.estExhaustMs !== null
+                ? formatRunwayDurationHtml(estimate.estExhaustMs)
+                : '—';
+            return `<div class="quota-runway-row" data-runway-status="at_risk">
+                <span class="quota-runway-pill is-risk">${tBiHtml('Est. exhaust in', '预计耗尽')} ${exhaustHtml}${burnRatePart}</span>
+            </div>`;
+        }
+        case 'exhausted':
+            return `<div class="quota-runway-row" data-runway-status="exhausted">
+                <span class="quota-runway-pill is-exhausted">${tBiHtml('Quota exhausted', '配额已耗尽')}</span>
+            </div>`;
+        case 'custom_model_isolated':
+            return '';
+        case 'insufficient_data':
+        default:
+            if (estimate.recoveredRecently) {
+                return `<div class="quota-runway-row" data-runway-status="recovered">
+                    <span class="quota-runway-pill is-safe">${tBiHtml('Quota recently recovered', '配额刚恢复')}</span>
+                </div>`;
+            }
+            if (burnRatePart) {
+                return `<div class="quota-runway-row" data-runway-status="insufficient_data">
+                    <span class="quota-runway-pill is-muted">${tBiHtml('Burn rate', '消耗速率')} ${esc(estimate.burnRatePctPerHour!.toFixed(1))}%/h</span>
+                </div>`;
+            }
+            return '';
+    }
+}
+
+export function buildStaleBannerHtml(staleState: MonitorStaleState | null | undefined): string {
+    if (!staleState?.isStale) { return ''; }
+    const lang = getLanguage();
+    const lastTime = staleState.lastSuccessAtMs
+        ? formatClockTime(new Date(staleState.lastSuccessAtMs), lang)
+        : '';
+    const updatedPart = lastTime
+        ? ` <span class="stale-banner-time">· ${tBiHtml('Last updated', '上次更新')} ${esc(lastTime)}</span>`
+        : '';
+    const errTip = staleState.lastError ? ` title="${esc(staleState.lastError)}"` : '';
+    return `<div class="stale-data-banner" role="status" data-stale-banner="true"${errTip}>
+        <span class="stale-badge-pill"><span class="stale-dot" aria-hidden="true"></span><span>${tBiHtml('Cached / Stale', '缓存数据（待刷新）')}</span></span>
+        <span class="stale-banner-desc">${tBiHtml('Showing last known telemetry while reconnecting to the local backend.', '正在重连本地后端，当前保留上次成功拉取的缓存数据。')}${updatedPart}</span>
+    </div>`;
+}
+
+export function buildCustomModelBannerHtml(): string {
+    return `<div class="custom-model-banner" role="status" data-custom-model-isolated="true">
+        <span class="custom-model-pill">${tBiHtml('Custom Model Isolated', '自定义模型（配额独立）')}</span>
+        <span class="custom-model-desc">${tBiHtml(
+        'Active session uses a custom / BYOK model that does not consume Google Antigravity quota pools. Pool alerts are suppressed.',
+        '当前会话使用自定义 / BYOK 模型，不消耗 Google Antigravity 配额池，已自动折叠并静音配额池预警。',
+    )}</span>
+    </div>`;
+}
+
+// ─── Overview Rendering Helpers ──────────────────────────────────────────────
 
 const arrow = '<svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h9m-4-4 4 4-4 4"/></svg>';
 
@@ -310,7 +464,170 @@ function telemetryStrip(
     </div>`;
 }
 
-function sessionDetails(usage: ContextUsage, telemetryHtml = ''): string {
+// ─── Context Composition Breakdown Card (v1.17.5) ────────────────────────────
+
+function measurementBadgeMeta(state: ContextMeasurementState): { cls: string; html: string } {
+    switch (state) {
+        case 'measured':
+            return { cls: 'is-measured', html: tBiHtml('Measured', '实测') };
+        case 'estimated_post_compaction':
+            return { cls: 'is-compacted', html: tBiHtml('Estimated (Post-Compaction)', '估算（压缩后）') };
+        case 'estimated_rewind':
+            return { cls: 'is-rewind', html: tBiHtml('Estimated (Rewind)', '估算（回退重算）') };
+        case 'awaiting_generation':
+        default:
+            return { cls: 'is-awaiting', html: tBiHtml('Awaiting Generation', '等待生成') };
+    }
+}
+
+function categoryFallbackColor(key: ContextCategoryKey): string {
+    return CONTEXT_CATEGORY_META[key]?.fallbackColor || '#8A96A8';
+}
+
+export function buildContextBreakdownCard(cb: ContextBreakdownSnapshot | null | undefined): string {
+    if (!cb) { return ''; }
+
+    const badge = measurementBadgeMeta(cb.measurementState);
+    const capacity = cb.effectiveBudgetTokens > 0
+        ? cb.effectiveBudgetTokens
+        : (cb.nativeLimitTokens > 0 ? cb.nativeLimitTokens : cb.usedTokens);
+    const latestCompaction = cb.compactionCheckpoints.length > 0
+        ? cb.compactionCheckpoints[cb.compactionCheckpoints.length - 1]
+        : null;
+
+    // ── Dual-Cap Clarity strip ──
+    const dualCapHtml = cb.hasDualCap ? `<div class="ctx-dual-cap-row" data-dual-cap="true">
+        <div class="ctx-cap-pill is-effective">
+            <span class="ctx-cap-label">${tBiHtml('Effective Budget', '有效预算')}</span>
+            <strong class="ctx-cap-value">${esc(formatCompactTokens(cb.usedTokens))} / ${esc(formatCompactTokens(cb.effectiveBudgetTokens))}</strong>
+            <span class="ctx-cap-pct">${esc(cb.effectivePct.toFixed(1))}%</span>
+        </div>
+        <div class="ctx-cap-pill is-native">
+            <span class="ctx-cap-label">${tBiHtml('Native Ceiling', '原生上限')}</span>
+            <strong class="ctx-cap-value">${esc(formatCompactTokens(cb.usedTokens))} / ${esc(formatCompactTokens(cb.nativeLimitTokens))}</strong>
+            <span class="ctx-cap-pct">${esc(cb.nativePct.toFixed(1))}%</span>
+        </div>
+    </div>` : '';
+
+    // ── Compaction saved summary chip ──
+    const compactionChipHtml = latestCompaction && latestCompaction.savedTokens > 0
+        ? `<div class="ctx-compaction-chip" data-compaction-saved="${latestCompaction.savedTokens}">
+            <span class="ctx-compaction-label">${tBiHtml('Compaction checkpoint saved', '压缩检查点节省')}</span>
+            <strong>−${esc(formatCompactTokens(latestCompaction.savedTokens))} tokens</strong>
+            <span class="ctx-compaction-range">(${esc(formatCompactTokens(latestCompaction.beforeTokens))} → ${esc(formatCompactTokens(latestCompaction.afterTokens))})</span>
+        </div>`
+        : '';
+
+    const isAwaiting = cb.measurementState === 'awaiting_generation' || cb.segments.length === 0;
+
+    let vizHtml = '';
+    if (isAwaiting) {
+        vizHtml = `<p class="ctx-awaiting-msg">${tBiHtml(
+            'Awaiting model generation metadata to measure context composition.',
+            '等待模型生成元数据以统计上下文构成。',
+        )}</p>`;
+    } else {
+        const denom = Math.max(capacity, cb.usedTokens, 1);
+        const segBarSlices = cb.segments.map((seg) => {
+            const rawW = (seg.tokens / denom) * 100;
+            const widthPct = Math.max(0.8, Math.min(100, rawW));
+            const fallback = categoryFallbackColor(seg.key);
+            const tip = `${tBi(seg.labelEn, seg.labelZh)}: ${formatNumber(seg.tokens)} tokens (${seg.pct.toFixed(1)}%)`;
+            return `<span class="ctx-seg-slice" data-ctx-cat="${seg.key}" style="width:${widthPct.toFixed(2)}%;background:var(${seg.colorToken}, ${fallback})" title="${esc(tip)}"></span>`;
+        }).join('');
+        const freeTokens = Math.max(0, capacity - cb.usedTokens);
+        const freePct = capacity > 0 ? Math.max(0, (freeTokens / denom) * 100) : 0;
+        const freeSlice = freePct > 0.5
+            ? `<span class="ctx-seg-slice is-free" data-ctx-cat="free" style="width:${freePct.toFixed(2)}%" title="${esc(`${tBi('Free', '剩余可用')}: ${formatNumber(freeTokens)} tokens`)}"></span>`
+            : '';
+
+        const summarySpoken = `${tBi('Context composition', '上下文构成')}: ${formatCompactTokens(cb.usedTokens)} / ${formatCompactTokens(capacity)} (${cb.effectivePct.toFixed(1)}%), ${cb.segments.slice(0, 4).map(s => `${tBi(s.labelEn, s.labelZh)} ${s.pct.toFixed(1)}%`).join(', ')}`;
+
+        // 20x5 = 100-dot matrix
+        const dotCells = buildDotMatrix(cb.segments, cb.usedTokens, capacity, 100);
+        const dotsHtml = dotCells.map((cell) => {
+            if (cell.isFree) {
+                return `<span class="ctx-dot is-free" data-ctx-cat="free" aria-hidden="true"></span>`;
+            }
+            const fallback = categoryFallbackColor(cell.category as ContextCategoryKey);
+            const dotTip = `${tBi(cell.labelEn, cell.labelZh)}`;
+            return `<span class="ctx-dot" data-ctx-cat="${cell.category}" style="background:var(${cell.colorToken}, ${fallback})" title="${esc(dotTip)}" aria-hidden="true"></span>`;
+        }).join('');
+
+        // Interactive legend (only populated segments — never fake 0s)
+        const legendHtml = cb.segments.map((seg) => {
+            const fallback = categoryFallbackColor(seg.key);
+            return `<button type="button" class="ctx-legend-item" data-ctx-cat="${seg.key}">
+                <span class="ctx-legend-swatch" style="background:var(${seg.colorToken}, ${fallback})" aria-hidden="true"></span>
+                <span class="ctx-legend-name">${tBiHtml(seg.labelEn, seg.labelZh)}</span>
+                <span class="ctx-legend-val">${esc(formatCompactTokens(seg.tokens))}</span>
+                <span class="ctx-legend-pct">${esc(seg.pct.toFixed(1))}%</span>
+            </button>`;
+        }).join('');
+
+        vizHtml = `
+            <div class="ctx-viz-bar-wrap">
+                <div class="ctx-seg-bar" role="img" aria-label="${esc(summarySpoken)}">${segBarSlices}${freeSlice}</div>
+            </div>
+            <div class="ctx-viz-dots-wrap">
+                <div class="ctx-dot-matrix" role="img" aria-label="${esc(summarySpoken)}">${dotsHtml}</div>
+            </div>
+            <div class="ctx-legend" role="list" aria-label="${esc(tBi('Context category breakdown', '上下文分类明细'))}">${legendHtml}</div>`;
+    }
+
+    // ── Largest Items (collapsible Top 5) ──
+    const largestItemsHtml = cb.largestItems.length > 0 ? `
+        <details id="overview-largest-items" class="ctx-largest-details" data-state-key="overview-largest-items">
+            <summary>
+                <span>${tBiHtml('Largest Items', '最大占用项')}</span>
+                <span class="ctx-largest-count">${cb.largestItems.length}</span>
+            </summary>
+            <ol class="ctx-largest-list">
+                ${cb.largestItems.slice(0, 5).map((item) => {
+        const meta = CONTEXT_CATEGORY_META[item.category];
+        const fallback = meta?.fallbackColor || '#8A96A8';
+        const colorToken = meta?.colorToken || '--ctx-cat-other';
+        return `<li class="ctx-largest-row" data-ctx-cat="${item.category}">
+                        <span class="ctx-legend-swatch" style="background:var(${colorToken}, ${fallback})" aria-hidden="true"></span>
+                        <span class="ctx-largest-title" title="${esc(item.title)}">${esc(item.title)}</span>
+                        <span class="ctx-largest-tokens">${esc(formatCompactTokens(item.tokens))}</span>
+                        <span class="ctx-largest-pct">${esc(item.pct.toFixed(1))}%</span>
+                    </li>`;
+    }).join('')}
+            </ol>
+        </details>` : '';
+
+    // ── One-click Quick Actions ──
+    const quickActionsHtml = `<div class="ctx-quick-actions">
+        <button type="button" class="ctx-action-btn" id="copyContextReportBtn" data-action="copyContextReport">${ICON.copy} <span>${tBiHtml('Copy /context Report', '复制 /context 报告')}</span></button>
+        <button type="button" class="ctx-action-btn" id="copyHandoffPromptBtn" data-action="copyHandoffPrompt">${ICON.file} <span>${tBiHtml('Copy Handoff Prompt', '复制交接提示词')}</span></button>
+        <span id="ctxCopyFeedback" class="threshold-feedback" role="status"></span>
+    </div>`;
+
+    return `<section class="ctx-breakdown-card" data-ctx-breakdown="true" data-viz-mode="bar" aria-labelledby="ctx-breakdown-heading">
+        <header class="ctx-breakdown-head">
+            <div class="ctx-breakdown-title-wrap">
+                <h4 id="ctx-breakdown-heading">${tBiHtml('Context Composition', '上下文构成')}</h4>
+                <span class="ctx-measure-badge ${badge.cls}" data-measurement-state="${cb.measurementState}">${badge.html}</span>
+            </div>
+            ${isAwaiting ? '' : `<div class="ctx-viz-toggle" role="group" aria-label="${esc(tBi('Visualization mode', '视图模式'))}">
+                <button type="button" class="ctx-viz-btn is-active" data-ctx-viz="bar" aria-pressed="true">${tBiHtml('Bar View', '条形视图')}</button>
+                <button type="button" class="ctx-viz-btn" data-ctx-viz="dots" aria-pressed="false">${tBiHtml('Dot Matrix', '点阵视图')}</button>
+            </div>`}
+        </header>
+        ${dualCapHtml}
+        ${compactionChipHtml}
+        ${vizHtml}
+        ${largestItemsHtml}
+        ${quickActionsHtml}
+    </section>`;
+}
+
+function sessionDetails(
+    usage: ContextUsage,
+    telemetryHtml = '',
+    breakdownHtml = '',
+): string {
     const reading = getContextReading(usage);
     const remaining = getContextRemaining(reading.used, reading.limit);
     const tokenUnit = 'tokens';
@@ -378,6 +695,7 @@ function sessionDetails(usage: ContextUsage, telemetryHtml = ''): string {
             : meter(contextLabel, reading.percent, ratio, contextMeterTone(reading.percent))}
         ${remaining !== null
             ? `<p class="overview-meta">${tBiHtml('Remaining', '可用余量')} · ${number(remaining.tokens)} ${tokenUnit}</p>` : ''}
+        ${breakdownHtml}
         ${telemetryHtml}
         ${warnings.length ? `<ul class="overview-notices">${warnings.map(warning => `<li>${warning}</li>`).join('')}</ul>` : ''}
         <details id="overview-session-diagnostics" class="overview-details" data-state-key="overview-diagnostics:${esc(usage.cascadeId)}">
@@ -405,10 +723,15 @@ export function buildOverviewTabContent(
     billingDay = 0,
     status: MonitorStatus = { state: usage ? 'active' : configs.length || userInfo ? 'empty' : 'connecting' },
     now = Date.now(),
-    telemetry?: OverviewTelemetryInput,
+    telemetry?: OverviewExtras,
 ): string {
-    const connected = status.state !== 'connecting' && status.state !== 'disconnected';
-    const active = status.state === 'active' ? usage : null;
+    const staleBannerHtml = buildStaleBannerHtml(telemetry?.staleState);
+    const hasStaleFallbackData = Boolean(telemetry?.staleState?.isStale && (configs.length > 0 || usage || userInfo));
+    const connected = (status.state !== 'connecting' && status.state !== 'disconnected') || hasStaleFallbackData;
+    const active = (status.state === 'active' || hasStaleFallbackData) ? usage : null;
+    const isCustomModelActive = Boolean(telemetry?.isCustomModelActive);
+    const breakdownHtml = connected ? buildContextBreakdownCard(telemetry?.contextBreakdown) : '';
+
     const telemetryData = connected
         ? extractOverviewTelemetry(
             telemetry?.gmSummary,
@@ -432,6 +755,8 @@ export function buildOverviewTabContent(
     const plan = userInfo ? [...new Set([userInfo.planName, userInfo.userTierName].filter(Boolean))].join(' · ') : '';
     const quotaTitlePlain = tBi('Quota remaining', '剩余配额');
     const quotaTitleHtml = tBiHtml('Quota remaining', '剩余配额');
+    const runways = telemetry?.quotaRunways;
+
     const quotaRows = groups.map(group => {
         const band = quotaPercentage(group);
         const unknownQuota = group.minimum === null;
@@ -444,6 +769,10 @@ export function buildOverviewTabContent(
                     ? ` <span class="orch-route-badge">${tBiHtml('Executor', '执行')}</span>`
                     : '')
             : '';
+        const runwayEstimate = runways
+            ? ((group.pool && runways[group.pool]) || runways[group.key])
+            : undefined;
+        const runwayHtml = isCustomModelActive ? '' : formatRunwayBadgeHtml(runwayEstimate);
         const dualHtml = hasDualWindow
             ? `<div class="quota-dual-row">
                 ${group.fiveHourQuota ? dualQuotaWindowHtml(group.label, '5h', group.fiveHourQuota, now) : ''}
@@ -463,9 +792,20 @@ export function buildOverviewTabContent(
                         : `<strong>${esc(band)}</strong>`)}
             </div>
             ${dualHtml}
+            ${runwayHtml}
             ${group.pool ? `<p class="overview-model-families">${group.members.map(member => esc(member.label)).join(' · ')}</p>` : ''}
         </li>`;
     }).join('');
+
+    const quotaBodyHtml = isCustomModelActive
+        ? `${buildCustomModelBannerHtml()}${quotaRows ? `<details id="overview-custom-model-pools" class="custom-model-pools-collapse" data-state-key="overview-custom-model-pools">
+            <summary><span>${tBiHtml('Google Quota Pools (Paused for Custom Model)', 'Google 配额池（自定义模型已隔离）')}</span></summary>
+            <ul class="overview-quotas">${quotaRows}</ul>
+        </details>` : ''}`
+        : (quotaRows
+            ? `<ul class="overview-quotas">${quotaRows}</ul>`
+            : `<p class="overview-empty">${tBiHtml('Waiting for quota data.', '等待配额数据。')}</p>`);
+
     const emptyContextHtml = status.state === 'idle'
         ? tBiHtml('No context measurement for this conversation yet.', '当前会话暂无上下文计量。')
         : tBiHtml('Open an Antigravity conversation to see its context usage.', '打开 Antigravity 会话后即可查看上下文用量。');
@@ -475,16 +815,16 @@ export function buildOverviewTabContent(
             <h2 id="overview-heading" data-overview-focus="heading" tabindex="-1">${tBiHtml('Context & quota', '上下文与配额')}</h2>
             ${connected && plan ? `<p class="overview-meta overview-plan-pill">${esc(plan)}</p>` : ''}
         </header>
+        ${staleBannerHtml}
         ${connected ? `<div class="overview-grid">
             <section class="overview-context" aria-labelledby="overview-context-heading">
                 <h3 id="overview-context-heading" class="overview-section-heading"><span class="overview-state-dot" aria-hidden="true"></span><span>${statusHeadingHtml(status.state)}</span></h3>
-                ${active ? sessionDetails(active, telemetryHtml) : `<p class="overview-empty">${emptyContextHtml}</p>${telemetryHtml}`}
+                ${active ? sessionDetails(active, telemetryHtml, breakdownHtml) : `<p class="overview-empty">${emptyContextHtml}</p>${breakdownHtml}${telemetryHtml}`}
                 ${action('gmdata', tBiHtml('View model activity', '查看模型活动'))}
             </section>
             <section class="overview-quota" aria-labelledby="overview-quota-heading">
                 <h3 id="overview-quota-heading" class="overview-section-heading"><span>${quotaTitleHtml}</span></h3>
-                ${quotaRows ? `<ul class="overview-quotas">${quotaRows}</ul>`
-                    : `<p class="overview-empty">${tBiHtml('Waiting for quota data.', '等待配额数据。')}</p>`}
+                ${quotaBodyHtml}
                 ${action('models', tBiHtml('View models', '查看模型'))}
             </section>
         </div>` : `<div class="overview-connection">
@@ -682,8 +1022,8 @@ export function getOverviewStyles(): string {
         @media (max-width: 420px) {
             .overview-telemetry-strip { padding: 10px; gap: 10px; }
         }
-        .vscode-high-contrast .overview-action, .vscode-high-contrast-light .overview-action { border-color: var(--overview-rule); margin-inline-start: 0; }
-        .vscode-high-contrast .overview-meter, .vscode-high-contrast-light .overview-meter { outline: 1px solid var(--overview-rule); }
+        :is(.vscode-high-contrast, .vscode-high-contrast-light, [data-acm-theme="hc"], [data-acm-theme="hc-light"]) .overview-action { border-color: var(--overview-rule); margin-inline-start: 0; }
+        :is(.vscode-high-contrast, .vscode-high-contrast-light, [data-acm-theme="hc"], [data-acm-theme="hc-light"]) .overview-meter { outline: 1px solid var(--overview-rule); }
         @media (prefers-reduced-motion: reduce) {
             .overview-action, .overview-action svg, .overview-meter span { transition: none; }
         }

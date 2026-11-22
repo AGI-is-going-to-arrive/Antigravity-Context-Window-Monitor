@@ -17,7 +17,14 @@ import {
     type UserQuotaSummary,
 } from './models';
 import { findPricingWithCustom, formatUsdPerMillion, type ModelPricing } from './pricing-store';
+import type { QuotaRunwayEstimate } from './quota-runway';
 import { ICON } from './webview-icons';
+import {
+    buildCustomModelBannerHtml,
+    buildStaleBannerHtml,
+    formatRunwayBadgeHtml,
+    type MonitorStaleState,
+} from './webview-overview-tab';
 import { buildDefaultModelCard, buildModelQuotaGrid, sortModels } from './webview-profile-tab';
 import { esc, tBiHtml } from './webview-helpers';
 
@@ -25,6 +32,9 @@ export interface ModelsTabOptions {
     orchestratorSettings?: OrchestratorSettings | null;
     quotaSummary?: UserQuotaSummary | null;
     customPricing?: Record<string, ModelPricing>;
+    quotaRunways?: Record<string, QuotaRunwayEstimate>;
+    isCustomModelActive?: boolean;
+    staleState?: MonitorStaleState | null;
 }
 
 const ORCH_ICON_SVG = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.5 7.5 11 15.5"/><path d="M15.5 7.5 13 15.5"/></svg>';
@@ -264,6 +274,33 @@ export function buildModelInfoGrid(
         </section>`;
 }
 
+function formatRunwayPoolName(poolKey: string): string {
+    const key = poolKey.trim().toLowerCase();
+    if (key === 'gemini') { return 'Gemini'; }
+    if (key === 'premium') { return 'Claude / GPT'; }
+    return poolKey;
+}
+
+function buildModelsRunwayStrip(runways?: Record<string, QuotaRunwayEstimate>): string {
+    if (!runways) { return ''; }
+    const items: string[] = [];
+    for (const [poolKey, estimate] of Object.entries(runways)) {
+        const badgeHtml = formatRunwayBadgeHtml(estimate);
+        if (!badgeHtml) { continue; }
+        items.push(`<div class="models-runway-item" data-runway-pool="${esc(poolKey)}">
+            <span class="models-runway-pool">${esc(formatRunwayPoolName(poolKey))}</span>
+            ${badgeHtml}
+        </div>`);
+    }
+    if (items.length === 0) { return ''; }
+    return `<section class="card models-runway-card" aria-label="${esc(tBiHtml('Quota Runway', '配额续航').replace(/<[^>]+>/g, ''))}">
+        <div class="models-runway-head">
+            <h3>${ICON.clock} <span>${tBiHtml('Quota Runway', '配额续航')}</span></h3>
+        </div>
+        <div class="models-runway-grid acm-runway-grid">${items.join('')}</div>
+    </section>`;
+}
+
 export function buildModelsTabContent(
     userInfo: UserStatusInfo | null,
     configs: ModelConfig[],
@@ -271,6 +308,12 @@ export function buildModelsTabContent(
 ): string {
     const parts: string[] = [];
     const sortedConfigs = userInfo ? sortModels(configs, userInfo.modelSortOrder) : configs;
+
+    // 0. Stale-Safe Cached Banner (when RPC hiccup occurred)
+    const staleHtml = buildStaleBannerHtml(options.staleState);
+    if (staleHtml) {
+        parts.push(staleHtml);
+    }
 
     // 1. Default Model Card
     const defaultModelHtml = buildDefaultModelCard(userInfo);
@@ -284,10 +327,24 @@ export function buildModelsTabContent(
         parts.push(orchestratorSettingsHtml);
     }
 
-    // 2. Personal Model Quota Grid (dual-window 5h + Weekly when quotaSummary is available)
+    // 2. Personal Model Quota Grid (dual-window 5h + Weekly + Runway + Custom-Model Isolation)
     const quotaHtml = buildModelQuotaGrid(sortedConfigs, { quotaSummary: options.quotaSummary });
-    if (quotaHtml) {
-        parts.push(quotaHtml);
+    if (options.isCustomModelActive) {
+        parts.push(buildCustomModelBannerHtml());
+        if (quotaHtml) {
+            parts.push(`<details id="models-custom-model-pools" class="custom-model-pools-collapse" data-state-key="models-custom-model-pools">
+                <summary><span>${tBiHtml('Google Quota Pools (Paused for Custom Model)', 'Google 配额池（自定义模型已隔离）')}</span></summary>
+                ${quotaHtml}
+            </details>`);
+        }
+    } else {
+        const runwayHtml = buildModelsRunwayStrip(options.quotaRunways);
+        if (runwayHtml) {
+            parts.push(runwayHtml);
+        }
+        if (quotaHtml) {
+            parts.push(quotaHtml);
+        }
     }
 
     // 3. Official Model Info Grid

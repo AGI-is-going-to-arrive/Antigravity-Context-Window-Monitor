@@ -64,6 +64,15 @@ import {
     type MonitorStatus,
     type OverviewDestination,
 } from './monitor-overview';
+import {
+    calculateCompressionStats,
+    type CompressionStats,
+    type MonitorStaleState,
+} from './webview-overview-tab';
+import type { QuotaRunwayEstimate } from './quota-runway';
+
+export { calculateCompressionStats };
+export type { CompressionStats };
 
 // Re-export pure helpers for tests / external callers
 export {
@@ -444,42 +453,6 @@ function computeOrchestratorSplit(
     };
 }
 
-export interface CompressionStats {
-    source: 'context' | 'checkpoint';
-    dropTokens: number;
-    dropPercent: number;
-}
-
-/**
- * Calculate compression amount for UI display.
- */
-export function calculateCompressionStats(usage: ContextUsage): CompressionStats | null {
-    if (!usage.compressionDetected) { return null; }
-
-    if (usage.previousContextUsed !== undefined && usage.previousContextUsed > usage.contextUsed) {
-        const dropTokens = usage.previousContextUsed - usage.contextUsed;
-        const dropPercent = usage.previousContextUsed > 0
-            ? (dropTokens / usage.previousContextUsed) * 100
-            : 0;
-        return { source: 'context', dropTokens, dropPercent };
-    }
-
-    if (usage.checkpointCompressionDrop > 0) {
-        const currentInput = usage.lastModelUsage
-            ? usage.lastModelUsage.inputTokens + usage.lastModelUsage.cacheReadTokens + (usage.lastModelUsage.cacheCreationTokens || 0)
-            : undefined;
-        const previousInput = currentInput !== undefined
-            ? currentInput + usage.checkpointCompressionDrop
-            : 0;
-        const dropPercent = previousInput > 0
-            ? (usage.checkpointCompressionDrop / previousInput) * 100
-            : 0;
-        return { source: 'checkpoint', dropTokens: usage.checkpointCompressionDrop, dropPercent };
-    }
-
-    return null;
-}
-
 // ─── Status Bar Colors ────────────────────────────────────────────────────────
 
 type StatusBarSeverity = 'ok' | 'warning' | 'error' | 'critical';
@@ -576,6 +549,8 @@ export class StatusBarManager {
     private cachedCustomPricing: Record<string, ModelPricing> = {};
     private cachedExtras: ComputedHoverExtras | null = null;
     private cachedCostSnapshot: HoverCostSnapshot = {};
+    private cachedStaleState: MonitorStaleState | null = null;
+    private cachedQuotaRunways: Record<string, QuotaRunwayEstimate> = {};
     private lastRender: LastRender = { kind: 'initializing' };
 
     // Last committed StatusBarItem property values — prevents redundant setter
@@ -630,6 +605,16 @@ export class StatusBarManager {
     /** Clear all cached reset-minute stabilization entries (e.g., on account switch or reconnect). */
     clearStabilizedResetTimes(): void {
         this.stabilizedResetMinutes.clear();
+    }
+
+    /** Record optional stale-cache status for compact tooltip notice (does not trigger redundant re-renders). */
+    setStaleState(stale: MonitorStaleState | null): void {
+        this.cachedStaleState = stale;
+    }
+
+    /** Record optional quota runway estimates for compact at-risk tooltip notice. */
+    setQuotaRunways(runways: Record<string, QuotaRunwayEstimate> | null): void {
+        this.cachedQuotaRunways = runways ?? {};
     }
 
     private stabilizeResetMinute(key: string, rawResetMs: number): number {
@@ -1587,6 +1572,22 @@ export class StatusBarManager {
         nowMs: number,
     ): HoverSection | null {
         const lines: string[] = [];
+
+        // 0. Compact Stale / At-Risk Runway Hint (strictly within existing priority-3 alerts budget)
+        if (this.cachedStaleState?.isStale) {
+            lines.push(`$(history) **${t('quota.cachedStale')}**`);
+        }
+        for (const [poolKey, runway] of Object.entries(this.cachedQuotaRunways)) {
+            if (runway.status === 'at_risk' && runway.estExhaustMs !== null && Number.isFinite(runway.estExhaustMs)) {
+                const mins = Math.max(1, Math.ceil(runway.estExhaustMs / 60_000));
+                const hrs = Math.floor(mins / 60);
+                const remM = mins % 60;
+                const dur = hrs > 0 ? (remM > 0 ? `${hrs}h ${remM}m` : `${hrs}h`) : `${mins}m`;
+                const poolLabel = poolKey === 'gemini' ? 'Gemini' : poolKey === 'premium' ? 'Claude / GPT' : poolKey;
+                lines.push(`$(flame) **${t('quota.runway')}** · ${escapeMarkdown(poolLabel)} ${t('quota.exhaustsIn')} ~${dur}`);
+                break;
+            }
+        }
 
         // 1. Scheduled Rate-Cutover Countdown (within 14 days for active / orchestrator models)
         const candidateModels = new Set<string>();

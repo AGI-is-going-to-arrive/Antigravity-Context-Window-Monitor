@@ -136,17 +136,17 @@ export function buildAboutTabContent(version = '1.17.4'): string {
             <span class="about-version-pill">${esc(versionTag)}</span>
         </div>
         <p class="about-hero-subtitle">${tBiHtml(
-        'An open-source community extension for real-time monitoring and analytics of AI model usage in Antigravity IDE.',
-        '一款开源社区扩展，用于实时监控和分析 Antigravity IDE 中 AI 模型的使用情况。',
+        'An open-source community monitor for real-time context window, quota runway, and AI model telemetry across Antigravity IDE and Antigravity App.',
+        '一款开源社区监控工具，用于实时分析 Antigravity IDE 与 Antigravity App 中的上下文窗口、配额续航与 AI 模型遥测数据。',
     )}</p>
         <div class="about-platform-chips" role="group" aria-label="${esc(tBi('Supported platforms', '支持的平台'))}">
-            <span class="about-platform-chip about-platform-active" role="status" aria-label="${esc(tBi('IDE: actively supported', 'IDE：已支持'))}">
+            <span class="about-platform-chip about-platform-active" role="status" aria-label="${esc(tBi('Antigravity IDE: actively supported', 'Antigravity IDE：已支持'))}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                <span>${tBiHtml('IDE', 'IDE')}</span>
+                <span>${tBiHtml('Antigravity IDE', 'Antigravity IDE')}</span>
             </span>
-            <span class="about-platform-chip" aria-label="${esc(tBi('Desktop: not supported', '桌面版：不支持'))}">
+            <span class="about-platform-chip about-platform-active" role="status" aria-label="${esc(tBi('Antigravity App (Desktop 2.0+ Sidecar): actively supported', 'Antigravity App（桌面版 2.0+ 侧边插件）：已支持'))}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="3"/></svg>
-                <span>${tBiHtml('Desktop', '桌面版')}</span>
+                <span>${tBiHtml('Antigravity App (Desktop 2.0+ Sidecar)', 'Antigravity App（桌面版 2.0+ Sidecar）')}</span>
             </span>
             <span class="about-platform-chip" aria-label="${esc(tBi('SDK: not supported', 'SDK：不支持'))}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
@@ -158,8 +158,8 @@ export function buildAboutTabContent(version = '1.17.4'): string {
             </span>
         </div>
         <p class="about-platform-note">${tBiHtml(
-        'Designed for the Antigravity IDE platform. Desktop, SDK, and CLI are separate product lines and are not supported.',
-        '本插件面向 Antigravity IDE 平台开发。桌面版、SDK 和 CLI 均为独立产品线，不在支持范围内。',
+        'Actively supports both Antigravity IDE (VSIX extension) and Antigravity App (Desktop 2.0+ native Sidecar plugin). SDK and standalone CLI are separate product lines and are not supported.',
+        '现已同时支持 Antigravity IDE（VSIX 扩展）与 Antigravity App（桌面版 2.0+ 原生 Sidecar 插件）。SDK 与独立 CLI 属于不同产品线，不在支持范围内。',
     )}</p>
     </header>`;
 
@@ -226,14 +226,14 @@ export function buildAboutTabContent(version = '1.17.4'): string {
             <span>${tBiHtml('Compatibility', '兼容性验证')}</span>
         </h3>
         <div class="about-info-box about-info-compat">
-            <p><strong class="about-compat-lead">${tBiHtml(`Verified for extension ${versionTag}:`, `扩展 ${versionTag} 本次验证：`)}</strong> ${tBiHtml(
-        'Verified against Antigravity IDE (agy hub LS 2.34.0) on macOS. This release adds Orchestrator Settings (Orchestrator Model + Executor Model, including Claude Opus 5.5 and Sonnet 5.5), dual-window (5h + Weekly) quota tracking, Extra High effort alignment across Gemini 4 Neon & Hydrogen, 512K context support across all Gemini 4 models, and official USD cost & telemetry tracking.',
-        '在 macOS 的 Antigravity IDE（agy hub LS 2.34.0）中完成验证。本版新增编排器设置（编排器模型 + 执行器模型，含 Claude Opus 5.5 与 Sonnet 5.5）、双窗口（5 小时 + 每周）配额追踪、Gemini 4 Neon 与 Hydrogen 统一 Extra High / 超高档位、全系列 Gemini 4 模型 512K 上下文支持以及官方 USD 费用与调用遥测追踪。',
+            <p><strong class="about-compat-lead">${tBiHtml(`Verified for ${versionTag}:`, `${versionTag} 本次验证：`)}</strong> ${tBiHtml(
+        'Verified against both Antigravity IDE (agy hub LS 2.34.0) and Antigravity App (Desktop 2.0+ Sidecar plugin) on macOS. Includes Context Composition Breakdown (Bar & 100-Dot Matrix, Dual-Cap Clarity), Conversation Switcher & Main-Agent Lock, Quota Burn-Rate Runway with Stale-Safe fallback and custom-* isolation, Orchestrator Settings (Orchestrator Model + Executor Model, including Claude Opus 5.5 and Sonnet 5.5), dual-window (5h + Weekly) quota tracking, Extra High effort alignment across Gemini 4 Neon & Hydrogen, 512K context support across all Gemini 4 models, and official USD cost & telemetry tracking.',
+        '在 macOS 上同时通过 Antigravity IDE（agy hub LS 2.34.0）与 Antigravity App（桌面版 2.0+ Sidecar 插件）双端验证。包含上下文构成明细（条形 / 100 点阵视图与双上限标注）、会话切换与锁定主会话、配额续航预测与缓存保底及 custom-* 模型隔离、编排器设置（含 Claude Opus 5.5 与 Sonnet 5.5）、双窗口（5 小时 + 每周）配额追踪、Gemini 4 Neon 与 Hydrogen 统一 Extra High / 超高档位、全系列 Gemini 4 模型 512K 上下文支持以及官方 USD 费用与调用遥测追踪。',
     )}</p>
             <p><strong>${tBiHtml('Earlier contributor checks:', '此前贡献者验证版本：')}</strong> v1.18.4, v1.19.6, v1.20.6, v1.23.2.</p>
             <p>${tBiHtml(
-        'Windows and Linux compatibility is covered by platform regression tests; native IDE validation is performed on macOS. Future IDE updates may change internal APIs. See the Disclaimer below for details.',
-        'Windows 和 Linux 兼容性由平台回归测试覆盖；原生 IDE 验证环境为 macOS。未来 IDE 更新可能变更内部 API，详见下方免责声明。',
+        'Windows and Linux compatibility is covered by platform regression tests; native IDE & Antigravity App validation is performed on macOS. Future updates may change internal APIs. See the Disclaimer below for details.',
+        'Windows 和 Linux 兼容性由平台回归测试覆盖；原生 IDE 与 Antigravity App 验证环境为 macOS。未来版本更新可能变更内部 API，详见下方免责声明。',
     )}</p>
         </div>
     </section>`;
