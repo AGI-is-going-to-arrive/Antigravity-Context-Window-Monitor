@@ -120,6 +120,10 @@ describe('theme-adapter stylesheet generator', () => {
         expect(css).toContain('body[data-acm-theme="dark"]');
         expect(css).toContain('body[data-acm-theme="light"]');
         expect(css).toContain('body[data-acm-theme="hc"]');
+        expect(css).toContain('body[data-acm-theme="hc-light"]');
+        expect(css).toContain('--ed-good: #005A32;');
+        expect(css).toContain('--ed-warn: #7A4F01;');
+        expect(css).toContain('--ed-chart-cache: #005A32;');
         expect(css).toContain('body[data-acm-view="aux"]');
         expect(css).toContain('body[data-acm-view="sidebar"]');
         expect(css).toContain('@media (max-width: 520px)');

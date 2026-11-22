@@ -214,8 +214,15 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
 
   // ─── Sidecar / Standalone Transport & Visibility-Gated ETag Polling ───
   var urlParams = new URLSearchParams((window.location && window.location.search) || '');
-  var currentConversationId = (sidecarApi && sidecarApi.conversationId) || urlParams.get('conversationId') || '';
+  var initialUrlConversationId = urlParams.get('conversationId') || '';
   var currentWorkspaceUris = [];
+
+  function getActiveConversationId() {
+    if (sidecarApi && typeof sidecarApi.conversationId === 'string' && sidecarApi.conversationId) {
+      return sidecarApi.conversationId;
+    }
+    return initialUrlConversationId;
+  }
   var lastEtag = '';
   var pollIntervalMs = DEFAULT_POLL_MS;
   var pollPaused = false;
@@ -299,7 +306,8 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
   function buildSnapshotUrl(forceFull) {
     var qs = new URLSearchParams();
     var view = detectViewMode();
-    if (currentConversationId) { qs.set('conversationId', currentConversationId); }
+    var activeConvId = getActiveConversationId();
+    if (activeConvId) { qs.set('conversationId', activeConvId); }
     if (currentWorkspaceUris.length > 0) { qs.set('workspaceUris', JSON.stringify(currentWorkspaceUris)); }
     if (!forceFull && lastEtag) { qs.set('etag', lastEtag); }
     var urlLang = urlParams.get('lang');
@@ -425,7 +433,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     }
 
     var payload = Object.assign({
-      conversationId: currentConversationId,
+      conversationId: getActiveConversationId(),
       workspaceUris: currentWorkspaceUris,
       viewMode: detectViewMode()
     }, msg);
@@ -556,7 +564,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     revealPath: function(targetPath) {
       return sendAction({ command: 'revealPath', path: targetPath });
     },
-    getConversationId: function() { return currentConversationId; },
+    getConversationId: function() { return getActiveConversationId(); },
     getWorkspaceUris: function() {
       if (sidecarApi && typeof sidecarApi.getWorkspaceUris === 'function') {
         return Promise.resolve(sidecarApi.getWorkspaceUris()).then(function(uris) {

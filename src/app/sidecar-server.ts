@@ -421,13 +421,16 @@ export function createSidecarHandler(
         const lang = (rawLang === 'en' || rawLang === 'zh' || rawLang === 'both') ? rawLang : undefined;
         const includeHtml = firstString(query.includeHtml) === 'true' || firstString(query.includeHtml) === '1';
 
+        const rawLockMain = firstString(query.lockToMainAgent);
+        const lockToMainAgent = rawLockMain !== undefined ? rawLockMain === 'true' : undefined;
+
         const snapshotQuery: SidecarSnapshotQuery & { lang?: 'en' | 'zh' | 'both'; includeHtml?: boolean } = {
             conversationId: firstString(query.conversationId) || undefined,
             workspaceUris: parseWorkspaceUrisParam(firstString(query.workspaceUris)),
             etag: clientEtag || undefined,
             viewMode,
             pinnedConversationId: firstString(query.pinnedConversationId) || undefined,
-            lockToMainAgent: firstString(query.lockToMainAgent) === 'true',
+            ...(lockToMainAgent !== undefined ? { lockToMainAgent } : {}),
             ...(lang ? { lang } : {}),
             ...(includeHtml ? { includeHtml: true } : {}),
         };

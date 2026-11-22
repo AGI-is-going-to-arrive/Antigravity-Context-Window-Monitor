@@ -203,7 +203,7 @@ function readIdeDocumentSettings(): MonitorDocumentSettings {
         showModelInternalId: cfg.get<boolean>('showModelInternalId', false),
         maxRecentSteps: cfg.get<number>('activity.maxRecentSteps', 100),
         maxArchives: cfg.get<number>('activity.maxArchives', 20),
-        lockToMainAgent: lastLockToMainAgent || getLockToMainAgent(),
+        lockToMainAgent: getLockToMainAgent(),
     };
 }
 
@@ -757,7 +757,7 @@ function postSettingsControlSync(): void {
         showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', false),
         showSessionCost: cfg.get<boolean>('statusBar.showSessionCost', false),
         showModelInternalId: cfg.get<boolean>('showModelInternalId', false),
-        lockToMainAgent: lastLockToMainAgent || getLockToMainAgent(),
+        lockToMainAgent: getLockToMainAgent(),
         tooltipDensity: parseTooltipDensity(cfg.get('statusBar.tooltipDensity', 'auto')),
     });
 }

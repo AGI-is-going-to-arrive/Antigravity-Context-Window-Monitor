@@ -1820,8 +1820,8 @@ export function getEditorialStyles(): string {
             align-items: center;
             justify-content: space-between;
             flex-wrap: wrap;
-            gap: 8px 10px;
-            padding: 6px var(--ed-gutter, 20px) 8px;
+            gap: 6px 10px;
+            padding: 3px var(--ed-gutter, 20px) 5px;
             max-width: var(--ed-column, 1120px);
             margin-inline: auto;
             width: 100%;
@@ -1845,7 +1845,7 @@ export function getEditorialStyles(): string {
         body .conv-switcher-select {
             width: 100%;
             min-width: 0;
-            height: 28px;
+            height: 26px;
             padding: 0 24px 0 9px;
             border-radius: var(--ed-radius-sm);
             border: 1px solid var(--ed-control-border);
@@ -1873,7 +1873,7 @@ export function getEditorialStyles(): string {
             display: inline-flex;
             align-items: center;
             gap: 5px;
-            height: 28px;
+            height: 26px;
             padding: 0 10px;
             border-radius: var(--ed-radius-sm);
             border: 1px solid var(--ed-border-strong);
@@ -2136,11 +2136,21 @@ export function getEditorialStyles(): string {
             opacity: 0.65;
         }
         body .ctx-legend {
+            list-style: none;
+            margin: 0;
+            padding: 0;
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(min(100%, 155px), 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
             gap: 4px 8px;
         }
+        body .ctx-legend-row {
+            margin: 0;
+            padding: 0;
+            min-width: 0;
+            display: flex;
+        }
         body .ctx-legend-item {
+            width: 100%;
             display: flex;
             align-items: center;
             gap: 6px;
@@ -2476,8 +2486,8 @@ export function getEditorialStyles(): string {
         }
 
         /* IDE-only Settings Card Styling on Antigravity App Sidecar */
-        body .stg-card.is-ide-only {
-            opacity: 0.78;
+        body .stg-card.is-ide-only .toggle-track {
+            opacity: 0.55;
         }
         body .stg-card.is-ide-only .toggle-row,
         body .stg-card.is-ide-only select {
@@ -2488,8 +2498,8 @@ export function getEditorialStyles(): string {
             padding: 2px 7px;
             border-radius: var(--ed-radius-pill);
             background: var(--ed-surface-well);
-            border: 1px solid var(--ed-border);
-            color: var(--ed-ink-muted);
+            border: 1px solid var(--ed-border-strong);
+            color: var(--ed-ink-secondary);
             font-size: 11px;
             font-weight: 600;
             white-space: nowrap;

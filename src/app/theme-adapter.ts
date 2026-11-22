@@ -51,6 +51,20 @@ export function getThemeAdapterStyles(): string {
         }
 
         body[data-acm-theme="light"] {
+            --vscode-editor-background: var(--background, #FAFBFC);
+            --vscode-editorWidget-background: var(--card, #FFFFFF);
+            --vscode-foreground: var(--foreground, #111318);
+            --vscode-descriptionForeground: var(--muted-foreground, #5A6475);
+            --vscode-widget-border: var(--border, #E4E8EF);
+            --vscode-contrastBorder: var(--border, transparent);
+            --vscode-focusBorder: var(--ring, var(--primary, #1D4ED8));
+            --vscode-textLink-foreground: var(--primary, #1D4ED8);
+            --vscode-progressBar-background: var(--primary, #1D4ED8);
+            --vscode-list-hoverBackground: var(--accent, #E9EEF5);
+            --vscode-toolbar-hoverBackground: var(--accent, #E9EEF5);
+            --vscode-errorForeground: var(--destructive, #C02430);
+            --vscode-editorError-foreground: var(--destructive, #C02430);
+            --vscode-editorWarning-foreground: var(--warning, #945605);
             --ed-bg: var(--background, #FAFBFC);
             --ed-surface: var(--card, #FFFFFF);
             --ed-surface-well: var(--secondary, #F2F4F8);
@@ -82,29 +96,113 @@ export function getThemeAdapterStyles(): string {
             --ed-danger-fill: #D02B37;
             --ed-danger-tint: rgba(220, 38, 38, 0.10);
             --ed-danger-border: rgba(192, 36, 48, 0.30);
+            --ed-chart-cache: #0D7A64;
             color-scheme: light;
         }
 
-        body[data-acm-theme="hc"],
-        body[data-acm-theme="hc-light"] {
-            --ed-bg: var(--background, Canvas);
-            --ed-surface: var(--background, Canvas);
-            --ed-surface-well: var(--background, Canvas);
-            --ed-surface-hover: var(--accent, Canvas);
-            --ed-surface-overlay: var(--background, Canvas);
-            --ed-border: var(--border, CanvasText);
-            --ed-border-strong: var(--border, CanvasText);
-            --ed-control-border: var(--border, CanvasText);
-            --ed-ink: var(--foreground, CanvasText);
-            --ed-ink-secondary: var(--foreground, CanvasText);
-            --ed-ink-muted: var(--foreground, CanvasText);
-            --ed-accent: var(--primary, LinkText);
-            --ed-danger: var(--destructive, CanvasText);
+        body[data-acm-theme="hc"] {
+            --vscode-editor-background: var(--background, #000000);
+            --vscode-editorWidget-background: var(--card, #0C141F);
+            --vscode-foreground: var(--foreground, #FFFFFF);
+            --vscode-descriptionForeground: var(--muted-foreground, #FFFFFF);
+            --vscode-widget-border: var(--border, #6FC3DF);
+            --vscode-contrastBorder: var(--border, #FFFFFF);
+            --vscode-focusBorder: var(--ring, #F38518);
+            --vscode-textLink-foreground: var(--primary, #75BEFF);
+            --vscode-progressBar-background: var(--primary, #75BEFF);
+            --vscode-list-hoverBackground: var(--accent, #1A1A1A);
+            --vscode-toolbar-hoverBackground: var(--accent, #1A1A1A);
+            --vscode-errorForeground: var(--destructive, #FF6B6B);
+            --vscode-editorError-foreground: var(--destructive, #FF6B6B);
+            --vscode-editorWarning-foreground: var(--warning, #FFD700);
+            --ed-bg: var(--background, #000000);
+            --ed-surface: var(--background, #000000);
+            --ed-surface-well: var(--background, #000000);
+            --ed-surface-hover: var(--accent, #1A1A1A);
+            --ed-surface-overlay: var(--background, #000000);
+            --ed-input-bg: var(--background, #000000);
+            --ed-track: var(--background, #000000);
+            --ed-border: var(--border, #6FC3DF);
+            --ed-border-strong: var(--border, #FFFFFF);
+            --ed-control-border: var(--border, #FFFFFF);
+            --ed-ink: var(--foreground, #FFFFFF);
+            --ed-ink-secondary: var(--foreground, #FFFFFF);
+            --ed-ink-muted: var(--foreground, #FFFFFF);
+            --ed-accent: var(--primary, #75BEFF);
+            --ed-accent-hover: #9CDCFE;
+            --ed-accent-track: var(--primary, #75BEFF);
+            --ed-accent-ink: #000000;
+            --ed-accent-tint: #1A1A1A;
+            --ed-accent-border: #6FC3DF;
+            --ed-good: #89D185;
+            --ed-good-fill: #89D185;
+            --ed-good-tint: #000000;
+            --ed-good-border: #89D185;
+            --ed-warn: #FFD700;
+            --ed-warn-fill: #FFD700;
+            --ed-warn-tint: #000000;
+            --ed-warn-border: #FFD700;
+            --ed-danger: var(--destructive, #FF6B6B);
+            --ed-danger-fill: #FF6B6B;
+            --ed-danger-tint: #000000;
+            --ed-danger-border: #FF6B6B;
+            --ed-chart-cache: #89D185;
             --ed-shadow-popover: none;
             --ed-shadow-tooltip: none;
             --ed-shadow-segment: none;
+            color-scheme: dark;
         }
+
         body[data-acm-theme="hc-light"] {
+            --vscode-editor-background: var(--background, #FFFFFF);
+            --vscode-editorWidget-background: var(--card, #FFFFFF);
+            --vscode-foreground: var(--foreground, #000000);
+            --vscode-descriptionForeground: var(--muted-foreground, #000000);
+            --vscode-widget-border: var(--border, #0F4A85);
+            --vscode-contrastBorder: var(--border, #000000);
+            --vscode-focusBorder: var(--ring, #006BBD);
+            --vscode-textLink-foreground: var(--primary, #0F4A85);
+            --vscode-progressBar-background: var(--primary, #0F4A85);
+            --vscode-list-hoverBackground: var(--accent, #E6EEF7);
+            --vscode-toolbar-hoverBackground: var(--accent, #E6EEF7);
+            --vscode-errorForeground: var(--destructive, #B5200D);
+            --vscode-editorError-foreground: var(--destructive, #B5200D);
+            --vscode-editorWarning-foreground: var(--warning, #7A4F01);
+            --ed-bg: var(--background, #FFFFFF);
+            --ed-surface: var(--background, #FFFFFF);
+            --ed-surface-well: var(--background, #FFFFFF);
+            --ed-surface-hover: var(--accent, #E6EEF7);
+            --ed-surface-overlay: var(--background, #FFFFFF);
+            --ed-input-bg: var(--background, #FFFFFF);
+            --ed-track: var(--background, #FFFFFF);
+            --ed-border: var(--border, #0F4A85);
+            --ed-border-strong: var(--border, #000000);
+            --ed-control-border: var(--border, #000000);
+            --ed-ink: var(--foreground, #000000);
+            --ed-ink-secondary: var(--foreground, #000000);
+            --ed-ink-muted: var(--foreground, #000000);
+            --ed-accent: var(--primary, #0F4A85);
+            --ed-accent-hover: #003A70;
+            --ed-accent-track: var(--primary, #0F4A85);
+            --ed-accent-ink: #FFFFFF;
+            --ed-accent-tint: #E6EEF7;
+            --ed-accent-border: #0F4A85;
+            --ed-good: #005A32;
+            --ed-good-fill: #005A32;
+            --ed-good-tint: #FFFFFF;
+            --ed-good-border: #005A32;
+            --ed-warn: #7A4F01;
+            --ed-warn-fill: #7A4F01;
+            --ed-warn-tint: #FFFFFF;
+            --ed-warn-border: #7A4F01;
+            --ed-danger: var(--destructive, #B5200D);
+            --ed-danger-fill: #B5200D;
+            --ed-danger-tint: #FFFFFF;
+            --ed-danger-border: #B5200D;
+            --ed-chart-cache: #005A32;
+            --ed-shadow-popover: none;
+            --ed-shadow-tooltip: none;
+            --ed-shadow-segment: none;
             color-scheme: light;
         }
 

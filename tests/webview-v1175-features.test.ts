@@ -448,6 +448,10 @@ describe('v1.17.5 Overview Context Composition Breakdown & Quick Actions', () =>
         expect(html).toContain('data-ctx-viz="bar"');
         expect(html).toContain('data-ctx-viz="dots"');
         expect(html).toContain('class="ctx-seg-bar"');
+        // WCAG aria-required-children: legend uses valid <ul><li><button> structure
+        expect(html).toContain('<ul class="ctx-legend"');
+        expect(html).toContain('<li class="ctx-legend-row"><button');
+        expect(html).not.toContain('role="list"');
         expect(html).toContain('class="ctx-dot-matrix"');
         // Exact 20x5 = 100 dot cells
         expect(html.match(/class="ctx-dot(?:\s+is-free)?"/g)).toHaveLength(100);

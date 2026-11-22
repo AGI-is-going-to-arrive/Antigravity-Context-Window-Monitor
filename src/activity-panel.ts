@@ -3840,7 +3840,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
 
     let html = `<h2 class="act-section-title"><svg class="act-icon act-icon-good" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>${tBiHtml('Recent Activity', '最近操作')}</span>${scopeBadge}${helpPopup}</h2>
     ${checkpointHtml}
-    <div class="act-timeline">`;
+    <div class="act-timeline" tabindex="0">`;
 
     const renderEventRow = (e: any, extraClass = '') => {
         const time = formatTime(e.timestamp);
@@ -4142,7 +4142,7 @@ function buildConversations(s: GMSummary): string {
     const iconClock = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
     const iconCalls = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`;
 
-    let html = `<h2 class="act-section-title"><span>${tBiHtml('Conversations', '对话分布')}</span></h2><div class="act-conv-list">`;
+    let html = `<h2 class="act-section-title"><span>${tBiHtml('Conversations', '对话分布')}</span></h2><div class="act-conv-list" tabindex="0">`;
     for (const c of convs) {
         let totalCredits = 0;
         let earliest = '';
@@ -4747,7 +4747,7 @@ function buildContextIntelViewer(s: GMSummary): string {
 
     return `<details class="ci-section" id="ciSection">
     <summary class="ci-section-header">${titleIcon}<span>${tBiHtml('Context Intelligence', '上下文情报')}</span> <span class="ci-badges">${badgeParts.join(' ')}</span></summary>
-    <div class="cp-viewer">${allCards}</div>
+    <div class="cp-viewer" tabindex="0">${allCards}</div>
     </details>`;
 }
 

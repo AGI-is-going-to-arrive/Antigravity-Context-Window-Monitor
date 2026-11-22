@@ -616,6 +616,17 @@ describe('app sidecar runtime engine', () => {
         expect(unpinRes.ok).toBe(true);
         expect(provider2.getState().pinnedConversationId).toBeNull();
         expect(provider2.getState().activeConversationId).toBe('conv-main-0001');
+        // Waiting/completed conversation with valid usage MUST still render active hero context gauge (not idle empty state)
+        expect(provider2.getState().monitorStatus.state).toBe('active');
+        const mainHtml = await provider2.renderHtml({
+            viewMode: 'aux',
+            pathname: '/',
+            lang: 'en',
+            isSidecarEnv: true,
+            version: '1.17.5',
+        });
+        expect(mainHtml).toContain('class="overview-session"');
+        expect(mainHtml).not.toContain('No context measurement for this conversation yet.');
     });
 
     it('preserves cached quotas & context via StaleCacheGuard on transient RPC outage and recovers on LS rediscovery', async () => {

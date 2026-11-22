@@ -1903,6 +1903,7 @@ async function browserMatrix(packageJSON) {
             ];
             for (const [sel, key] of configToggles) {
                 const before = evaluate(`document.querySelector('${sel}').checked`);
+                evaluate(`document.querySelector('label.toggle-row:has(${sel})')?.scrollIntoView({ block: 'center' })`);
                 click(`label.toggle-row:has(${sel})`);
                 const after = evaluate(`document.querySelector('${sel}').checked`);
                 assert.equal(after, !before, `${sel} toggles checked state`);
@@ -1933,12 +1934,14 @@ async function browserMatrix(packageJSON) {
 
             // Scrollbar & EOC panel prefs
             const scrollBefore = evaluate("document.querySelector('#toggleScrollbar').checked");
+            evaluate("document.querySelector('label.toggle-row:has(#toggleScrollbar)')?.scrollIntoView({ block: 'center' })");
             click('label.toggle-row:has(#toggleScrollbar)');
             assert.equal(evaluate("document.body.getAttribute('data-hide-scrollbar')"), String(scrollBefore));
             assert(evaluate(`testState.messages.some(m => m.command === 'setPanelPref' && m.key === 'panelShowScrollbar' && m.value === ${!scrollBefore})`));
             click('label.toggle-row:has(#toggleScrollbar)');
 
             const eocBefore = evaluate("document.querySelector('#toggleEndOfContent').checked");
+            evaluate("document.querySelector('label.toggle-row:has(#toggleEndOfContent)')?.scrollIntoView({ block: 'center' })");
             click('label.toggle-row:has(#toggleEndOfContent)');
             assert.equal(evaluate("document.body.getAttribute('data-hide-eoc')"), String(eocBefore));
             assert(evaluate(`testState.messages.some(m => m.command === 'setPanelPref' && m.key === 'panelShowEndOfContent' && m.value === ${!eocBefore})`));

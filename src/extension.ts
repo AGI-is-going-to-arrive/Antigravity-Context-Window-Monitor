@@ -179,6 +179,12 @@ export function getPinnedConversationId(): string | null {
     return pinnedConversationId;
 }
 
+function clearActiveContextTelemetry(): void {
+    lastContextBreakdown = null;
+    lastContextBreakdownKey = '';
+    lastTurnDiagnostics = null;
+}
+
 /** Pin a specific conversation ID or pass null/empty to return to Follow Active. */
 export function selectPinnedConversation(cascadeId: string | null): void {
     const normalized = typeof cascadeId === 'string' && cascadeId.trim() ? cascadeId.trim() : null;
@@ -186,6 +192,7 @@ export function selectPinnedConversation(cascadeId: string | null): void {
     if (normalized) {
         trackedCascadeId = normalized;
     }
+    clearActiveContextTelemetry();
     if (durableFileWorkspaceState) {
         void durableFileWorkspaceState.update('pinnedConversationId', pinnedConversationId);
     }
@@ -2256,6 +2263,7 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             syncStatusBarTelemetry(false, null);
             statusBar.showNoConversation(noConvLimitStr, lastKnownModel);
             currentUsage = null;
+            clearActiveContextTelemetry();
             allTrajectoryUsages = monitorStore.getAll();
             if (isMonitorPanelVisible()) {
                 updateMonitorPanel(makePanelPayload({ currentUsage: null }));
@@ -2404,6 +2412,7 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                 trackedCascadeId = newCandidateId;
                 consecutiveIdlePolls = 0;
                 stalenessConfirmedIdle = false;
+                clearActiveContextTelemetry();
             } else if (selectionReason) {
                 log(`Refreshing cascade ${trackedCascadeId?.substring(0, 8)} (${selectionReason})`);
             }
@@ -2413,6 +2422,7 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             if (!currentTracked) {
                 log(`Tracked cascade ${trackedCascadeId.substring(0, 8)} no longer in any list, clearing`);
                 trackedCascadeId = null;
+                clearActiveContextTelemetry();
             }
         }
 
@@ -2435,6 +2445,7 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             syncStatusBarTelemetry(false, null);
             statusBar.showIdle(idleLimitStr, lastKnownModel);
             currentUsage = null;
+            clearActiveContextTelemetry();
             allTrajectoryUsages = monitorStore.getAll();
             if (isMonitorPanelVisible()) {
                 updateMonitorPanel(makePanelPayload({ currentUsage: null }));
@@ -2703,7 +2714,9 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
         }
 
         // 6d. Compute v1.17.5 Context Composition Breakdown & Turn Diagnostics for active conversation
-        if (lsInfo && activeTrajectory && currentUsage && isMonitorPanelVisible()) {
+        if (!activeTrajectory || !currentUsage) {
+            clearActiveContextTelemetry();
+        } else if (lsInfo && isMonitorPanelVisible()) {
             const breakdownKey = `${activeTrajectory.cascadeId}:${activeTrajectory.stepCount}:${activeTrajectory.lastModifiedTime}:${currentUsage.contextUsed}:${currentUsage.contextLimit}`;
             if (breakdownKey !== lastContextBreakdownKey) {
                 try {

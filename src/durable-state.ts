@@ -313,7 +313,9 @@ async function acquireLockFile(lockPath: string): Promise<() => Promise<void>> {
             };
         } catch (err) {
             const code = (err as NodeJS.ErrnoException).code;
-            if (code !== 'EEXIST') {
+            const isContention = code === 'EEXIST'
+                || (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES' || code === 'EBUSY'));
+            if (!isContention) {
                 throw err;
             }
             try {

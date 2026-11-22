@@ -557,12 +557,12 @@ export function buildContextBreakdownCard(cb: ContextBreakdownSnapshot | null | 
         // Interactive legend (only populated segments — never fake 0s)
         const legendHtml = cb.segments.map((seg) => {
             const fallback = categoryFallbackColor(seg.key);
-            return `<button type="button" class="ctx-legend-item" data-ctx-cat="${seg.key}">
+            return `<li class="ctx-legend-row"><button type="button" class="ctx-legend-item" data-ctx-cat="${seg.key}">
                 <span class="ctx-legend-swatch" style="background:var(${seg.colorToken}, ${fallback})" aria-hidden="true"></span>
                 <span class="ctx-legend-name">${tBiHtml(seg.labelEn, seg.labelZh)}</span>
                 <span class="ctx-legend-val">${esc(formatCompactTokens(seg.tokens))}</span>
                 <span class="ctx-legend-pct">${esc(seg.pct.toFixed(1))}%</span>
-            </button>`;
+            </button></li>`;
         }).join('');
 
         vizHtml = `
@@ -572,7 +572,7 @@ export function buildContextBreakdownCard(cb: ContextBreakdownSnapshot | null | 
             <div class="ctx-viz-dots-wrap">
                 <div class="ctx-dot-matrix" role="img" aria-label="${esc(summarySpoken)}">${dotsHtml}</div>
             </div>
-            <div class="ctx-legend" role="list" aria-label="${esc(tBi('Context category breakdown', '上下文分类明细'))}">${legendHtml}</div>`;
+            <ul class="ctx-legend" aria-label="${esc(tBi('Context category breakdown', '上下文分类明细'))}">${legendHtml}</ul>`;
     }
 
     // ── Largest Items (collapsible Top 5) ──

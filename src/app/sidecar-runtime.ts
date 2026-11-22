@@ -1738,7 +1738,7 @@ export function createSidecarRuntimeProvider(
             isCustomModel: isCustomModelActive,
         });
 
-        monitorStatus = activeTrajectory.status === CascadeStatus.RUNNING
+        monitorStatus = currentUsage
             ? { state: 'active' }
             : { state: 'idle' };
     }
