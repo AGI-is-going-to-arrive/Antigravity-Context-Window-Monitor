@@ -162,6 +162,7 @@ const CLI_SCAN_TTL_MS = 60_000;
 let sharedAppSettings: AppSettings = { ...DEFAULT_APP_SETTINGS, showNativeHudBar: false };
 let sharedSubscriptionPlan: SubscriptionPlanPresetId = 'none';
 let lastSyncedDiskAppSettings: AppSettings | null = null;
+let hasHydratedSharedSettings = false;
 let pendingConfigSyncCount = 0;
 const cliUsageScanner = new CliUsageScanner();
 let cachedCliDays: CliDailyUsageRecord[] = [];
@@ -225,24 +226,27 @@ function mirrorVscodeKeysFromAppSettings(
     next: AppSettings,
     nextPlan: SubscriptionPlanPresetId,
     prevPlan: SubscriptionPlanPresetId,
+    initialDiskKeys?: ReadonlySet<string>,
 ): void {
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
     if (typeof cfg.update !== 'function') { return; }
 
     const updates: Array<[string, unknown]> = [];
     for (const { vscodeKey, appKey } of VSCODE_TO_APP_SETTING_MAP) {
-        if (!prev) { continue; }
-        if (prev[appKey] !== next[appKey]) {
-            const currentVal = cfg.get(vscodeKey);
-            if (currentVal !== next[appKey]) {
-                updates.push([vscodeKey, next[appKey]]);
-            }
+        const shouldMirror = prev
+            ? prev[appKey] !== next[appKey]
+            : Boolean(initialDiskKeys && initialDiskKeys.has(appKey));
+        if (!shouldMirror) { continue; }
+        const currentVal = cfg.get(vscodeKey);
+        if (currentVal !== next[appKey]) {
+            updates.push([vscodeKey, next[appKey]]);
         }
     }
-    if (prev && prevPlan !== nextPlan) {
-        if (cfg.get('subscriptionPlan') !== nextPlan) {
-            updates.push(['subscriptionPlan', nextPlan]);
-        }
+    const shouldMirrorPlan = prev
+        ? prevPlan !== nextPlan
+        : Boolean(initialDiskKeys && initialDiskKeys.has('subscriptionPlan'));
+    if (shouldMirrorPlan && cfg.get('subscriptionPlan') !== nextPlan) {
+        updates.push(['subscriptionPlan', nextPlan]);
     }
     if (updates.length === 0) { return; }
 
@@ -282,13 +286,13 @@ function hydrateSharedAppSettingsFromDisk(initialLoad: boolean): {
     const resolvedLock = typeof persistedLock === 'boolean' ? persistedLock : diskNormalized.lockToMainAgent;
     lockToMainAgent = resolvedLock;
 
-    // On initial IDE load, preserve IDE's default showNativeHudBar=false unless explicitly set on disk or VS Code config
+    // Respect explicit disk showNativeHudBar (including hot-reloads); otherwise preserve IDE's default false / prior value
     const explicitDiskHud = hasRawDiskObj && typeof rawDisk!.showNativeHudBar === 'boolean'
         ? rawDisk!.showNativeHudBar
         : undefined;
-    const resolvedNativeHud = initialLoad
-        ? (explicitDiskHud !== undefined ? explicitDiskHud : cfg.get<boolean>('showNativeHudBar', false))
-        : diskNormalized.showNativeHudBar;
+    const resolvedNativeHud = explicitDiskHud !== undefined
+        ? explicitDiskHud
+        : (prevSettings ? prevSettings.showNativeHudBar : cfg.get<boolean>('showNativeHudBar', false));
 
     const nextSettings: AppSettings = {
         ...diskNormalized,
@@ -332,6 +336,7 @@ function hydrateSharedAppSettingsFromDisk(initialLoad: boolean): {
         sharedAppSettings = seeded;
         sharedSubscriptionPlan = inferIdeSubscriptionPlan(cfg.get<string>('subscriptionPlan', 'none'), seeded.subscriptionMonthlyFee);
         lastSyncedDiskAppSettings = { ...seeded };
+        hasHydratedSharedSettings = true;
         return { changed: false, prevSettings };
     }
 
@@ -339,6 +344,7 @@ function hydrateSharedAppSettingsFromDisk(initialLoad: boolean): {
     sharedAppSettings = nextSettings;
     sharedSubscriptionPlan = nextPlan;
     lastSyncedDiskAppSettings = { ...nextSettings };
+    hasHydratedSharedSettings = true;
 
     // Hydrate update status view from persisted lastUpdateCheck
     if (nextSettings.lastUpdateCheck) {
@@ -358,7 +364,16 @@ function hydrateSharedAppSettingsFromDisk(initialLoad: boolean): {
         }
     }
 
-    if (!initialLoad && changed) {
+    if (initialLoad && hasRawDiskObj) {
+        const presentKeys = new Set<string>(Object.keys(rawDisk!));
+        if (explicitDiskOrch === 'mapped' || explicitDiskOrch === 'strict' || pricingStore) {
+            presentKeys.add('orchestratorPricingMode');
+        }
+        if (persistedPlan) {
+            presentKeys.add('subscriptionPlan');
+        }
+        mirrorVscodeKeysFromAppSettings(null, nextSettings, nextPlan, prevPlan, presentKeys);
+    } else if (!initialLoad && changed) {
         mirrorVscodeKeysFromAppSettings(prevSettings, nextSettings, nextPlan, prevPlan);
     }
 
@@ -440,6 +455,10 @@ export function syncFromDurableStateIfChanged(refreshUi = true): boolean {
 
 /** Alias exported for webview-panel.ts & external callers. */
 export const syncDurableStateFromDisk = syncFromDurableStateIfChanged;
+
+export function isSharedAppSettingsHydrated(): boolean {
+    return Boolean(durableState && hasHydratedSharedSettings);
+}
 
 export function getSharedAppSettings(): AppSettings & { subscriptionPlan: SubscriptionPlanPresetId } {
     return { ...sharedAppSettings, subscriptionPlan: sharedSubscriptionPlan };
@@ -2725,6 +2744,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export async function deactivate(): Promise<void> {
     disposed = true;
+    hasHydratedSharedSettings = false;
     resetImageWorkflowCache();
     if (pollingTimer) {
         clearTimeout(pollingTimer);

@@ -425,6 +425,48 @@ describe('App Plugin Self-Updater Engine', () => {
             expect(manifest.version).toBe('1.17.5');
         });
 
+        it('fails closed when SHA256SUMS.txt is published but returns non-2xx or omits assetName', async () => {
+            const targetDir = path.join(tempDir, 'plugins-failclosed-sha', EXPECTED_PLUGIN_NAME);
+            seedInstalledPlugin(targetDir, '1.17.5');
+            const zipBuf = makeValidPluginZip('1.17.6');
+
+            // Case A: SHA256SUMS.txt returns 500
+            const resHttpErr = await applyAppPluginUpdate({
+                targetPluginDir: targetDir,
+                releaseInfo: makeReleaseInfo('1.17.6', true),
+                currentVersion: '1.17.5',
+                transport: async (url) => {
+                    if (url.pathname.endsWith('SHA256SUMS.txt')) {
+                        return { statusCode: 500, headers: {}, body: Buffer.from('upstream error', 'utf8') };
+                    }
+                    return { statusCode: 200, headers: {}, body: zipBuf };
+                },
+            });
+            expect(resHttpErr.ok).toBe(false);
+            expect(resHttpErr.error).toMatch(/SHA256SUMS\.txt.*HTTP 500/i);
+            expect(JSON.parse(fs.readFileSync(path.join(targetDir, 'plugin.json'), 'utf8')).version).toBe('1.17.5');
+
+            // Case B: SHA256SUMS.txt returns 200 OK but omits our asset entry
+            const resMissingEntry = await applyAppPluginUpdate({
+                targetPluginDir: targetDir,
+                releaseInfo: makeReleaseInfo('1.17.6', true),
+                currentVersion: '1.17.5',
+                transport: async (url) => {
+                    if (url.pathname.endsWith('SHA256SUMS.txt')) {
+                        return {
+                            statusCode: 200,
+                            headers: {},
+                            body: Buffer.from(`${'a'.repeat(64)}  unrelated-asset.vsix\n`, 'utf8'),
+                        };
+                    }
+                    return { statusCode: 200, headers: {}, body: zipBuf };
+                },
+            });
+            expect(resMissingEntry.ok).toBe(false);
+            expect(resMissingEntry.error).toMatch(/did not contain an entry/i);
+            expect(JSON.parse(fs.readFileSync(path.join(targetDir, 'plugin.json'), 'utf8')).version).toBe('1.17.5');
+        });
+
         it('rejects invalid bundles (wrong name or missing main.mjs) before touching existing install', async () => {
             const targetDir = path.join(tempDir, 'plugins-invalid', EXPECTED_PLUGIN_NAME);
             seedInstalledPlugin(targetDir, '1.17.5');

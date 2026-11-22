@@ -38,6 +38,9 @@ import {
 import { showMonitorPanel } from '../src/webview-panel';
 import { DailyStore } from '../src/daily-store';
 import { PricingStore } from '../src/pricing-store';
+import { extractOverviewTelemetry } from '../src/monitor-overview';
+import { toLocalDateKey } from '../src/daily-archival';
+import type { GMSummary } from '../src/gm-tracker';
 import * as backendConnection from '../src/backend-connection';
 
 interface HttpResponse {
@@ -681,6 +684,203 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         expect(script).toContain('configSaved');
         expect(script).toContain('syncSettingsControls');
     });
+
+    it('keeps CDP overlay estCostFormatted in USD + localCostFormatted in local currency, preserves post-archive live tokens, and forwards orchestratorPricingMode', async () => {
+        const tmp = makeTmpDir();
+        tmpDirs.push(tmp);
+        const statePath = path.join(tmp, 'state.json');
+        const fixedNow = Date.parse('2026-11-22T14:00:00Z');
+        const todayKey = toLocalDateKey(new Date(fixedNow));
+
+        // Seed state.json with an earlier archived cycle for today AND a live post-archive ledger bucket for today
+        const seedState = new DurableState(statePath);
+        const seedGlobal = seedState.globalBucket();
+        await seedGlobal.update('dailyStoreState', {
+            version: 1,
+            records: {
+                [todayKey]: {
+                    date: todayKey,
+                    cycles: [{
+                        startTime: '2026-11-22T09:00:00Z',
+                        endTime: '2026-11-22T10:00:00Z',
+                        triggeredBy: 'daily-rollover',
+                        totalReasoning: 0,
+                        totalToolCalls: 0,
+                        totalErrors: 0,
+                        totalInputTokens: 10_000,
+                        totalOutputTokens: 2_000,
+                        estSteps: 2,
+                        modelNames: ['Gemini 4 Neon'],
+                        modelStats: {},
+                        gmTotalCalls: 2,
+                        gmTotalTokens: 12_000,
+                        gmTotalCacheRead: 3_000,
+                        gmTotalAllTokens: 15_000,
+                        gmEstimatedCost: 0.06,
+                        surface: 'app',
+                    }],
+                },
+            },
+        });
+        await seedGlobal.update('dailyLedgerState', {
+            version: 1,
+            dateKey: todayKey,
+            accounts: {
+                'alice@example.com': {
+                    email: 'alice@example.com',
+                    totalCalls: 1,
+                    totalInputTokens: 5_000,
+                    totalOutputTokens: 1_000,
+                    totalThinkingTokens: 0,
+                    totalCacheRead: 2_000,
+                    totalCacheCreation: 0,
+                    totalCredits: 0,
+                    totalEstimatedCost: 0.05,
+                    surfaceBreakdown: {
+                        app: {
+                            calls: 1,
+                            inputTokens: 5_000,
+                            outputTokens: 1_000,
+                            thinkingTokens: 0,
+                            cacheReadTokens: 2_000,
+                            cacheCreationTokens: 0,
+                            credits: 0,
+                            estimatedCost: 0.05,
+                        },
+                    },
+                    modelStats: {
+                        'Gemini 4 Neon': {
+                            calls: 1,
+                            inputTokens: 5_000,
+                            outputTokens: 1_000,
+                            thinkingTokens: 0,
+                            cacheReadTokens: 2_000,
+                            cacheCreationTokens: 0,
+                            credits: 0,
+                            estimatedCost: 0.05,
+                        },
+                    },
+                    recordedCallIds: ['call-post-archive-1'],
+                    recordedCalls: [{
+                        callId: 'call-post-archive-1',
+                        createdAt: '2026-11-22T12:30:00Z',
+                        createdAtMs: Date.parse('2026-11-22T12:30:00Z'),
+                        modelId: 'MODEL_PLACEHOLDER_M535',
+                        modelKey: 'Gemini 4 Neon',
+                        inputTokens: 5_000,
+                        outputTokens: 1_000,
+                        thinkingTokens: 0,
+                        cacheReadTokens: 2_000,
+                        cacheCreationTokens: 0,
+                        credits: 0,
+                        estimatedCost: 0.05,
+                        surface: 'app',
+                    }],
+                },
+            },
+            settled: [],
+        });
+        await seedState.updateAppSettings({ displayCurrency: 'CNY', customFxRate: 7.25 });
+        await seedState.flush();
+
+        const traj = makeTrajectory();
+        const orchGmSummary = {
+            totalCalls: 1,
+            totalStepsCovered: 1,
+            totalCredits: 0,
+            totalInputTokens: 100_000,
+            totalOutputTokens: 20_000,
+            totalThinkingTokens: 0,
+            totalCacheRead: 200_000,
+            totalCacheCreation: 0,
+            totalRetryCount: 0,
+            totalRetryTokens: 0,
+            totalRetryCredits: 0,
+            stopReasonCounts: {},
+            retryErrorCodes: {},
+            toolCallCounts: {},
+            recentErrors: [],
+            modelBreakdown: {},
+            contextGrowth: [],
+            conversations: [{
+                cascadeId: traj.cascadeId,
+                title: traj.summary,
+                totalSteps: 1,
+                coveredSteps: 1,
+                coverageRate: 1,
+                calls: [{
+                    stepIndices: [1],
+                    executionId: 'orch-exec-1',
+                    model: 'MODEL_PLACEHOLDER_M537',
+                    modelDisplay: 'Orchestrator (Neon)',
+                    responseModel: 'gemini-pro-orchestrator-neon',
+                    modelAccuracy: 'exact' as const,
+                    inputTokens: 100_000,
+                    outputTokens: 20_000,
+                    thinkingTokens: 0,
+                    responseTokens: 20_000,
+                    cacheReadTokens: 200_000,
+                    cacheCreationTokens: 0,
+                    apiProvider: 'GOOGLE_GENAI',
+                    ttftSeconds: 0.8,
+                    streamingSeconds: 4.0,
+                    credits: 0,
+                    creditType: '',
+                    hasError: false,
+                    errorMessage: '',
+                    contextTokensUsed: 300_000,
+                    completionConfig: null,
+                    systemPromptSnippet: '',
+                    toolCount: 0,
+                    toolNames: [],
+                    promptSectionTitles: [],
+                    promptSnippet: '',
+                    promptSource: '',
+                    messagePromptCount: 0,
+                    createdAt: '2026-11-22T13:55:00Z',
+                }],
+            }],
+        } as unknown as GMSummary;
+
+        const provider = await createSidecarRuntimeProvider({
+            version: '1.17.5',
+            statePath,
+            autoStart: false,
+            disableCliScan: true,
+            deps: {
+                now: () => fixedNow,
+                discoverLS: async () => makeMockLS(),
+                fetchFullUserStatus: async () => makeMockUserStatus(),
+                fetchAvailableModels: async () => null,
+                fetchOrchestratorSettings: async () => null,
+                fetchUserQuotaSummary: async () => null,
+                getAllTrajectories: async () => [traj],
+                getContextUsage: async () => makeUsage(traj),
+                refreshWorkflowImageUsage: async (_ls, u) => u,
+                fetchTrajectoryGeneratorMetadata: async () => [],
+                fetchTrajectorySteps: async () => ({ steps: [], totalSteps: 0 }),
+                processActivity: async () => false,
+                fetchGM: async () => orchGmSummary,
+            },
+        });
+        providers.push(provider);
+        await provider.pollNow(true);
+
+        const overlay = provider.buildOverlayPayload();
+        // #3: USD primary + CNY local conversion (never duplicate ¥... ≈ ¥...)
+        expect(overlay.estCostFormatted).toMatch(/^\$\d+\.\d{2}$/);
+        expect(overlay.localCostFormatted).toMatch(/^¥\d+\.\d{2}$/);
+        expect(overlay.estCostFormatted).not.toBe(overlay.localCostFormatted);
+
+        // #5: Archived today cycle (15,000) + post-archive live ledger (8,000) = 23,000 (not dropped!)
+        expect(overlay.cumulativeRecordedTokens).toBe(23_000);
+
+        // #6: extractOverviewTelemetry forwards orchestratorPricingMode explicitly
+        const mappedTelemetry = extractOverviewTelemetry(orchGmSummary, traj.cascadeId, {}, 'mapped');
+        const strictTelemetry = extractOverviewTelemetry(orchGmSummary, traj.cascadeId, {}, 'strict');
+        expect(mappedTelemetry?.primary.estCacheSavingsUsd).not.toBeNull();
+        expect(strictTelemetry?.primary.estCacheSavingsUsd).toBeNull();
+    });
 });
 
 describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel parity', () => {
@@ -776,6 +976,129 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
 
         // Restore default language for downstream tests
         await setLanguageToState('both', appGlobal);
+    });
+
+    it('renders hot-reloaded App-written DurableState settings in IDE showMonitorPanel even when VS Code cfg.get still returns schema defaults', async () => {
+        const tmp = makeTmpDir();
+        tmpDirs.push(tmp);
+        const stateFile = path.join(tmp, 'shared-state-defaults.json');
+        process.env.ANTIGRAVITY_CONTEXT_MONITOR_STATE_PATH = stateFile;
+        vi.spyOn(backendConnection, 'discoverPreferredBackend').mockResolvedValue(null);
+
+        // Pre-seed disk state from App Sidecar BEFORE IDE activates (tests initialLoad mirroring too)
+        const appState = new DurableState(stateFile);
+        await appState.updateAppSettings({
+            displayCurrency: 'CNY',
+            orchestratorPricingMode: 'strict',
+            showNativeHudBar: true,
+            calendarRetentionDays: 240,
+        });
+        await appState.flush();
+
+        // Simulate VS Code workspace.getConfiguration ALWAYS returning package.json schema defaults
+        // (matching the async race window before cfg.update settles)
+        const mirroredCalls: Array<[string, unknown]> = [];
+        const schemaDefaults: Record<string, unknown> = {
+            pollingInterval: 5,
+            quotaNotificationThreshold: 20,
+            'statusBar.showContext': true,
+            'statusBar.showQuota': true,
+            'statusBar.showResetCountdown': true,
+            'statusBar.showAiCredits': true,
+            'statusBar.showSpeed': false,
+            'statusBar.showCacheHit': false,
+            'statusBar.showSessionCost': false,
+            'statusBar.tooltipDensity': 'auto',
+            showModelInternalId: false,
+            'activity.maxRecentSteps': 100,
+            'activity.maxArchives': 20,
+            orchestratorPricingMode: 'mapped',
+            displayCurrency: 'USD',
+            customFxRate: null,
+            subscriptionPlan: 'none',
+            subscriptionMonthlyFee: null,
+            subscriptionCurrency: 'USD',
+            calendarRetentionDays: 400,
+            autoCheckUpdates: true,
+            showNativeHudBar: false,
+        };
+        vi.spyOn(vscode.workspace, 'getConfiguration').mockImplementation(() => ({
+            get: <T>(key: string, defaultValue?: T) => (key in schemaDefaults ? schemaDefaults[key] : defaultValue) as T,
+            update: async (key: string, value: unknown) => {
+                mirroredCalls.push([key, value]);
+            },
+        }) as unknown as vscode.WorkspaceConfiguration);
+        (vscode.workspace as unknown as Record<string, unknown>).onDidChangeWorkspaceFolders = () => ({ dispose: () => {} });
+
+        const memGlobal = new Map<string, unknown>();
+        const memWorkspace = new Map<string, unknown>();
+        const fakeContext = {
+            subscriptions: [] as Array<{ dispose(): void }>,
+            globalState: {
+                get: <T>(k: string, d?: T) => (memGlobal.has(k) ? memGlobal.get(k) : d) as T,
+                update: async (k: string, v: unknown) => { memGlobal.set(k, v); },
+            },
+            workspaceState: {
+                get: <T>(k: string, d?: T) => (memWorkspace.has(k) ? memWorkspace.get(k) : d) as T,
+                update: async (k: string, v: unknown) => { memWorkspace.set(k, v); },
+            },
+            extension: { packageJSON: { version: '1.17.5' } },
+        } as unknown as vscode.ExtensionContext;
+
+        activate(fakeContext);
+
+        // Initial load over pre-existing disk state mirrors into VS Code config
+        expect(mirroredCalls).toContainEqual(['displayCurrency', 'CNY']);
+        expect(mirroredCalls).toContainEqual(['orchestratorPricingMode', 'strict']);
+        expect(mirroredCalls).toContainEqual(['showNativeHudBar', true]);
+
+        let onDispose: (() => void) | undefined;
+        const fakePanel = {
+            visible: true,
+            webview: {
+                html: '',
+                postMessage: () => Promise.resolve(true),
+                onDidReceiveMessage: () => ({ dispose: () => {} }),
+            },
+            reveal: () => {},
+            onDidChangeViewState: () => ({ dispose: () => {} }),
+            onDidDispose: (cb: () => void) => { onDispose = cb; return { dispose: () => {} }; },
+        };
+        vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(fakePanel as unknown as vscode.WebviewPanel);
+
+        try {
+            showMonitorPanel({
+                currentUsage: null,
+                allTrajectoryUsages: [],
+                modelConfigs: [],
+                userInfo: null,
+                cliDays: [],
+                context: fakeContext,
+            });
+            // Rendered HTML reflects App-written CNY + strict mode + Native HUD despite VS Code cfg.get returning schema defaults!
+            expect(fakePanel.webview.html).toContain('<option value="CNY" selected>');
+            expect(fakePanel.webview.html).toMatch(/id="stgOrchModeStrict"[^>]*aria-checked="true"/);
+            expect(fakePanel.webview.html).toContain('id="nativeHudBar"');
+
+            // Hot-reload another App edit (EUR + mapped) while cfg.get STILL returns USD/mapped
+            await appState.updateAppSettings({ displayCurrency: 'EUR', orchestratorPricingMode: 'mapped' });
+            await appState.flush();
+            expect(syncFromDurableStateIfChanged(false)).toBe(true);
+            onDispose?.();
+            fakePanel.webview.html = '';
+            showMonitorPanel({
+                currentUsage: null,
+                allTrajectoryUsages: [],
+                modelConfigs: [],
+                userInfo: null,
+                cliDays: [],
+                context: fakeContext,
+            });
+            expect(fakePanel.webview.html).toContain('<option value="EUR" selected>');
+            expect(fakePanel.webview.html).toMatch(/id="stgOrchModeMapped"[^>]*aria-checked="true"/);
+        } finally {
+            onDispose?.();
+        }
     });
 
     it('IDE webview panel handles Calendar controls, CSV/JSON save dialog export, Orchestrator mode, applyPluginUpdate notice & strict external URLs', async () => {

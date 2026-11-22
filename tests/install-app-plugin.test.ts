@@ -182,6 +182,10 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
             }),
         })).rejects.toThrow(/allowlist/i);
 
+        // Explicit non-443 HTTPS port is rejected
+        expect(() => mod.assertAllowedDownloadUrl('https://github.com:8443/a/b/releases/download/v1/x.zip'))
+            .toThrow(/port/i);
+
         // Redirect loop (>5 hops) is blocked
         await expect(mod.fetchBufferWithAllowlist('https://github.com/loop', {
             requestFn: async () => ({
@@ -238,12 +242,18 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         expect(() => mod.extractZipBufferSafely(evilSlipZip, slipDest)).toThrow(/traversal/i);
         expect(fs.existsSync(path.join(tmpBase, 'pwned.txt'))).toBe(false);
 
-        // Symlink entry (Unix mode S_IFLNK = 0o120777) must be rejected
+        // Symlink entry (Unix mode S_IFLNK = 0o120777) must be rejected — even when versionMadeBy hostOs != 3
         const symlinkZip = packager.buildZipBuffer([
             { name: 'antigravity-context-monitor/evil-link', data: Buffer.from('/etc/passwd'), mode: 0o120777 },
         ]);
         const symDest = path.join(tmpBase, 'sym-out');
         expect(() => mod.extractZipBufferSafely(symlinkZip, symDest)).toThrow(/symlink/i);
+
+        const spoofedHostOsSymlinkZip = Buffer.from(symlinkZip);
+        const cdSigOffset = spoofedHostOsSymlinkZip.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+        expect(cdSigOffset).toBeGreaterThan(-1);
+        spoofedHostOsSymlinkZip.writeUInt16LE(20, cdSigOffset + 4); // hostOs=0 (DOS) + version 2.0
+        expect(() => mod.extractZipBufferSafely(spoofedHostOsSymlinkZip, path.join(tmpBase, 'sym-dos-out'))).toThrow(/symlink/i);
 
         // Corrupted CRC-32 payload must be rejected
         const validZip: Buffer = packager.buildZipBuffer(makeMinimalPluginEntries('1.17.6'));
@@ -424,6 +434,20 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
             requestFn: badSumsRequestFn,
         })).rejects.toThrow(/checksum mismatch/i);
         expect(JSON.parse(fs.readFileSync(path.join(targetDir, 'plugin.json'), 'utf8')).version).toBe('1.17.6');
+
+        // 3b. Missing entry in published SHA256SUMS.txt fails closed even without --require-checksum
+        const missingEntryRequestFn = async (urlObj: URL) => {
+            if (urlObj.pathname.endsWith('SHA256SUMS.txt')) {
+                return { statusCode: 200, headers: {}, buffer: Buffer.from(`${'a'.repeat(64)}  other-file.vsix\n`) };
+            }
+            return mockRequestFn(urlObj);
+        };
+        await expect(mod.runInstallerAsync({
+            action: 'upgrade',
+            target: targetDir,
+            configPath: cfgPath,
+            requestFn: missingEntryRequestFn,
+        })).rejects.toThrow(/did not contain an entry/i);
 
         // 4. --install auto-falls back to --from-github when local dist/out are missing
         const emptyRepo = path.join(tmpBase, 'empty-repo');

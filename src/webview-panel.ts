@@ -16,6 +16,7 @@ import {
     setLockToMainAgent,
     selectPinnedConversation,
     getSharedAppSettings,
+    isSharedAppSettingsHydrated,
     updateSharedAppSetting,
     setSharedOrchestratorPricingMode,
     syncDurableStateFromDisk,
@@ -230,8 +231,44 @@ function sanitizeConfigValue(key: string, value: unknown): unknown {
 
 function readIdeDocumentSettings(): MonitorDocumentSettings {
     syncDurableStateFromDisk(false);
+    const hydrated = isSharedAppSettingsHydrated();
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
     const shared = getSharedAppSettings();
+
+    if (hydrated) {
+        const maxRecentSteps = shared.activityMaxRecentSteps;
+        const maxArchives = shared.activityMaxArchives;
+        return {
+            pollingInterval: shared.pollingInterval,
+            quotaNotificationThreshold: shared.quotaNotificationThreshold,
+            showContext: shared.showContext,
+            showQuota: shared.showQuota,
+            showResetCountdown: shared.showResetCountdown,
+            showAiCredits: shared.showAiCredits,
+            showSpeed: shared.showSpeed,
+            showCacheHit: shared.showCacheHit,
+            showSessionCost: shared.showSessionCost,
+            tooltipDensity: shared.tooltipDensity,
+            showModelInternalId: shared.showModelInternalId,
+            maxRecentSteps,
+            maxArchives,
+            lockToMainAgent: getLockToMainAgent(),
+            appComposerRingEnabled: shared.appComposerRingEnabled,
+            appTopBarEnabled: shared.appTopBarEnabled,
+            showNativeHudBar: shared.showNativeHudBar,
+            orchestratorPricingMode: shared.orchestratorPricingMode,
+            displayCurrency: shared.displayCurrency,
+            customFxRate: shared.customFxRate,
+            subscriptionPlan: shared.subscriptionPlan,
+            subscriptionMonthlyFee: shared.subscriptionMonthlyFee,
+            subscriptionCurrency: shared.subscriptionCurrency,
+            calendarRetentionDays: shared.calendarRetentionDays,
+            autoCheckUpdates: shared.autoCheckUpdates,
+            activityMaxRecentSteps: maxRecentSteps,
+            activityMaxArchives: maxArchives,
+        };
+    }
+
     const maxRecentSteps = cfg.get<number>('activity.maxRecentSteps', shared.activityMaxRecentSteps ?? 100);
     const maxArchives = cfg.get<number>('activity.maxArchives', shared.activityMaxArchives ?? 20);
     const orchRaw = cfg.get<string>('orchestratorPricingMode', shared.orchestratorPricingMode ?? 'mapped');
@@ -1093,22 +1130,41 @@ function makeDocumentParams(
     initialTab?: PanelPayload['initialTab'],
 ): MonitorDocumentBuildParams {
     const docSettings = readIdeDocumentSettings();
-    const effectiveAppSettings: Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId } = {
-        ...getSharedAppSettings(),
-        ...(lastAppSettings ?? {}),
-        showNativeHudBar: docSettings.showNativeHudBar,
-        orchestratorPricingMode: docSettings.orchestratorPricingMode,
-        displayCurrency: docSettings.displayCurrency,
-        customFxRate: docSettings.customFxRate,
-        subscriptionPlan: docSettings.subscriptionPlan,
-        subscriptionMonthlyFee: docSettings.subscriptionMonthlyFee,
-        subscriptionCurrency: docSettings.subscriptionCurrency,
-        calendarRetentionDays: docSettings.calendarRetentionDays,
-        autoCheckUpdates: docSettings.autoCheckUpdates,
-        activityMaxRecentSteps: docSettings.activityMaxRecentSteps,
-        activityMaxArchives: docSettings.activityMaxArchives,
-    };
-    const effectiveOrchMode = lastOrchestratorPricingMode ?? docSettings.orchestratorPricingMode ?? 'mapped';
+    const hydrated = isSharedAppSettingsHydrated();
+    const shared = getSharedAppSettings();
+    const effectiveAppSettings: Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId } = hydrated
+        ? {
+            ...shared,
+            showNativeHudBar: docSettings.showNativeHudBar,
+            orchestratorPricingMode: docSettings.orchestratorPricingMode,
+            displayCurrency: docSettings.displayCurrency,
+            customFxRate: docSettings.customFxRate,
+            subscriptionPlan: docSettings.subscriptionPlan,
+            subscriptionMonthlyFee: docSettings.subscriptionMonthlyFee,
+            subscriptionCurrency: docSettings.subscriptionCurrency,
+            calendarRetentionDays: docSettings.calendarRetentionDays,
+            autoCheckUpdates: docSettings.autoCheckUpdates,
+            activityMaxRecentSteps: docSettings.activityMaxRecentSteps,
+            activityMaxArchives: docSettings.activityMaxArchives,
+        }
+        : {
+            ...shared,
+            ...(lastAppSettings ?? {}),
+            showNativeHudBar: lastAppSettings?.showNativeHudBar ?? docSettings.showNativeHudBar,
+            orchestratorPricingMode: lastAppSettings?.orchestratorPricingMode ?? docSettings.orchestratorPricingMode,
+            displayCurrency: lastAppSettings?.displayCurrency ?? docSettings.displayCurrency,
+            customFxRate: lastAppSettings?.customFxRate !== undefined ? lastAppSettings.customFxRate : docSettings.customFxRate,
+            subscriptionPlan: lastAppSettings?.subscriptionPlan ?? docSettings.subscriptionPlan,
+            subscriptionMonthlyFee: lastAppSettings?.subscriptionMonthlyFee !== undefined ? lastAppSettings.subscriptionMonthlyFee : docSettings.subscriptionMonthlyFee,
+            subscriptionCurrency: lastAppSettings?.subscriptionCurrency ?? docSettings.subscriptionCurrency,
+            calendarRetentionDays: lastAppSettings?.calendarRetentionDays ?? docSettings.calendarRetentionDays,
+            autoCheckUpdates: lastAppSettings?.autoCheckUpdates ?? docSettings.autoCheckUpdates,
+            activityMaxRecentSteps: lastAppSettings?.activityMaxRecentSteps ?? docSettings.activityMaxRecentSteps,
+            activityMaxArchives: lastAppSettings?.activityMaxArchives ?? docSettings.activityMaxArchives,
+        };
+    const effectiveOrchMode = hydrated
+        ? (docSettings.orchestratorPricingMode ?? 'mapped')
+        : (lastOrchestratorPricingMode ?? docSettings.orchestratorPricingMode ?? 'mapped');
     const effectiveUpdateStatus = lastUpdateStatus ?? getLastUpdateStatusView();
     return {
         surface: 'ide',

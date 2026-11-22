@@ -892,7 +892,7 @@ export async function applyAppPluginUpdate(
         }
         const zipBuf = zipRes.body;
 
-        // 3. Download & verify SHA256SUMS.txt if published
+        // 3. Download & verify SHA256SUMS.txt if published (fail closed whenever published)
         if (checksumsUrl) {
             const sumRes = await fetchAllowedHttps(checksumsUrl, {
                 headers: {
@@ -903,17 +903,19 @@ export async function applyAppPluginUpdate(
                 maxBytes: MAX_CHECKSUMS_BYTES,
                 transport: options.transport,
             });
-            if (sumRes.statusCode >= 200 && sumRes.statusCode < 300) {
-                const sums = parseSha256Sums(sumRes.body.toString('utf8'));
-                const assetKey = options.releaseInfo.assetName.trim().toLowerCase();
-                const expectedDigest = sums.get(assetKey) || sums.get(path.posix.basename(assetKey));
-                if (expectedDigest) {
-                    if (!verifyBufferSha256(zipBuf, expectedDigest)) {
-                        throw new Error(`SHA-256 checksum mismatch for ${options.releaseInfo.assetName}`);
-                    }
-                    checksumVerified = true;
-                }
+            if (sumRes.statusCode < 200 || sumRes.statusCode >= 300) {
+                throw new Error(`Failed to download SHA256SUMS.txt (HTTP ${sumRes.statusCode})`);
             }
+            const sums = parseSha256Sums(sumRes.body.toString('utf8'));
+            const assetKey = options.releaseInfo.assetName.trim().toLowerCase();
+            const expectedDigest = sums.get(assetKey) || sums.get(path.posix.basename(assetKey));
+            if (!expectedDigest) {
+                throw new Error(`SHA256SUMS.txt did not contain an entry for ${options.releaseInfo.assetName}`);
+            }
+            if (!verifyBufferSha256(zipBuf, expectedDigest)) {
+                throw new Error(`SHA-256 checksum mismatch for ${options.releaseInfo.assetName}`);
+            }
+            checksumVerified = true;
         }
 
         // 4. Safe pure-Node ZIP extraction into temp staging dir

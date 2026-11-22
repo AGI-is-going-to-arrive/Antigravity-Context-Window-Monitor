@@ -263,6 +263,9 @@ export function assertAllowedDownloadUrl(rawUrl) {
     if (parsed.username || parsed.password) {
         throw new Error(`Refusing URL with embedded credentials: ${parsed.origin}${parsed.pathname}`);
     }
+    if (parsed.port && parsed.port !== '443') {
+        throw new Error(`Refusing non-443 HTTPS port "${parsed.port}": ${rawUrl}`);
+    }
     const host = parsed.hostname.toLowerCase();
     if (!ALLOWED_DOWNLOAD_HOSTS.has(host)) {
         throw new Error(`Refusing download host "${host}" (not in GitHub HTTPS allowlist).`);
@@ -532,14 +535,14 @@ export function extractZipBufferSafely(zipBuffer, destDir, options = {}) {
         const entryName = buf.toString('utf8', nameStart, nameEnd);
         cursor = nameEnd + extraLen + commentLen;
 
-        // Check Unix file mode for symlinks & special files (versionMadeBy high byte === 3 => Unix)
+        // Check Unix file mode for symlinks unconditionally, and reject special files on Unix entries
         const hostOs = versionMadeBy >> 8;
         const unixMode = (externalAttrs >>> 16) & 0xffff;
+        if ((unixMode & 0o170000) === 0o120000) {
+            throw new Error(`Refusing symlink entry in archive: ${entryName}`);
+        }
         if (hostOs === 3 && unixMode !== 0) {
             const fileType = unixMode & 0o170000;
-            if (fileType === 0o120000) {
-                throw new Error(`Refusing symlink entry in archive: ${entryName}`);
-            }
             if (fileType !== 0 && fileType !== 0o100000 && fileType !== 0o040000) {
                 throw new Error(`Refusing special file entry (mode 0o${unixMode.toString(8)}) in archive: ${entryName}`);
             }
@@ -1013,10 +1016,8 @@ export async function installFromGitHub(options = {}) {
             verifyBufferSha256(zipRes.buffer, expected, release.zipAsset.name);
             checksumVerified = true;
             checksumStatus = 'verified';
-        } else if (options.requireChecksum) {
-            throw new Error(`SHA256SUMS.txt did not contain an entry for ${release.zipAsset.name}.`);
         } else {
-            checksumStatus = 'missing-entry';
+            throw new Error(`SHA256SUMS.txt did not contain an entry for ${release.zipAsset.name}.`);
         }
     } else if (options.requireChecksum) {
         throw new Error(`Release ${release.tagName} did not publish SHA256SUMS.txt (--require-checksum set).`);

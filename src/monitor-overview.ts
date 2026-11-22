@@ -10,7 +10,7 @@ import {
     type OrchestratorSettings,
     type UserQuotaSummary,
 } from './models';
-import { formatUsdCost, type ModelPricing } from './pricing-store';
+import { formatUsdCost, type ModelPricing, type OrchestratorPricingMode } from './pricing-store';
 import { formatResetAbsolute } from './reset-time';
 import {
     computeTelemetrySummary,
@@ -229,9 +229,10 @@ export function extractOverviewTelemetry(
     gmSummary?: GMSummary | null,
     activeCascadeId?: string,
     customPricing?: Record<string, ModelPricing>,
+    orchestratorPricingMode?: OrchestratorPricingMode,
 ): OverviewTelemetrySnapshot | null {
     if (!gmSummary) { return null; }
-    const summary = computeTelemetrySummary(gmSummary, { activeCascadeId, customPricing });
+    const summary = computeTelemetrySummary(gmSummary, { activeCascadeId, customPricing, orchestratorPricingMode });
     const { primary, primaryScope } = summary;
     const speedPrimary = primary.latestGenTokPerSec ?? primary.weightedGenTokPerSec;
     const ttftPrimary = primary.latestTtftSeconds ?? primary.avgTtftSeconds;

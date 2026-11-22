@@ -44,6 +44,7 @@ import {
     type ResolvedConversationTarget,
 } from '../conversation-selector';
 import {
+    mergeArchivedAndLiveRecords,
     performDailyArchival as performDailyArchivalCore,
     type DailyArchivalContext,
 } from '../daily-archival';
@@ -1736,19 +1737,19 @@ export function createSidecarRuntimeProvider(
         };
     }
 
-    function computeCumulativeRecordedTokens(): number {
+    function computeCumulativeRecordedTokens(nowMs = deps.now()): number {
         let total = 0;
-        const archivedDates = new Set<string>();
-        for (const rec of dailyStore.getAllRecords()) {
-            archivedDates.add(rec.date);
+        const merged = mergeArchivedAndLiveRecords({
+            store: dailyStore,
+            liveLedger: dailyLedger,
+            customPricing: pricingStore.getCustom(),
+            defaultSurface: 'app',
+            now: nowMs,
+        });
+        for (const rec of merged.values()) {
             for (const cycle of rec.cycles || []) {
                 total += computeCycleTokenTotals(cycle).totalTokens;
             }
-        }
-        // Add live today's ledger tokens (avoiding double-count if today already archived)
-        const liveTotals = dailyLedger.getTodayDetailedTotals();
-        if (liveTotals.totalAdditiveTokens > 0 && !archivedDates.has(dailyLedger.dateKey)) {
-            total += liveTotals.totalAdditiveTokens;
         }
         // Add CLI scanned daily tokens
         for (const cliDay of getCachedCliDays(false)) {
@@ -1769,7 +1770,7 @@ export function createSidecarRuntimeProvider(
             ? costs.sessionCostUsd
             : (costs.todayCostUsd > 0 ? costs.todayCostUsd : null);
         const estCostFormatted = estCostUsd !== null
-            ? formatCurrencyAmount(estCostUsd, currencyCfg)
+            ? formatCurrencyAmount(estCostUsd, { code: 'USD' })
             : '—';
         const localCostFormatted = estCostUsd !== null && currencyCfg.code !== 'USD'
             ? formatCurrencyAmount(estCostUsd, currencyCfg)
@@ -1796,7 +1797,7 @@ export function createSidecarRuntimeProvider(
             })
             : null;
 
-        const telemetry = extractOverviewTelemetry(uiGmSummary, activeId, customPricing);
+        const telemetry = extractOverviewTelemetry(uiGmSummary, activeId, customPricing, orchMode);
         const primary = telemetry?.primary ?? null;
         const latestCall = primary?.latestCall ?? null;
         const speedEval = primary?.latestSpeedSample
@@ -1943,7 +1944,7 @@ export function createSidecarRuntimeProvider(
             outputTokens,
             cacheReadTokens,
             totalTokens,
-            cumulativeRecordedTokens: computeCumulativeRecordedTokens(),
+            cumulativeRecordedTokens: computeCumulativeRecordedTokens(nowMs),
             tightestQuotaPct,
             tightestQuotaWindowTag,
             sessionQuota5hPct,
@@ -2093,7 +2094,7 @@ export function createSidecarRuntimeProvider(
     }
 
     // Immediate startup cross-day archival
-    if (dailyLedger.hasData && dailyLedger.dateKey !== toLocalDateKey()) {
+    if (dailyLedger.hasData && dailyLedger.dateKey !== toLocalDateKey(new Date(deps.now()))) {
         lastArchivalDateKey = dailyLedger.dateKey;
         performDailyArchival();
     }
