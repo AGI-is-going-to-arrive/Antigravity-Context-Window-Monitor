@@ -3,14 +3,16 @@ import { promisify } from 'util';
 import * as https from 'https';
 import * as http from 'http';
 import { readFileSync, existsSync, readdirSync, readlinkSync, statSync } from 'fs';
-import { homedir } from 'os';
+import { homedir, userInfo } from 'os';
 import { join } from 'path';
 
 const execFileAsync = promisify(execFile);
 
-// ─── WSL Detection ────────────────────────────────────────────────────────────
+// ─── WSL Detection & Dynamic Windows Host Bridging ───────────────────────────
 // Cached tri-state: null = untested, true = WSL, false = not WSL.
 let wslDetected: boolean | null = null;
+let cachedWslWinRoot: string | null = null;
+let cachedWslUserProfile: string | null | undefined = undefined;
 
 /**
  * Detect if running inside Windows Subsystem for Linux.
@@ -33,9 +35,281 @@ export function isWSL(): boolean {
     return wslDetected;
 }
 
-/** Reset WSL detection cache (exported for testing). */
+/** Reset WSL detection & path caches (exported for testing). */
 export function resetWslCache(): void {
     wslDetected = null;
+    cachedWslWinRoot = null;
+    cachedWslUserProfile = undefined;
+}
+
+function unescapeProcMountPath(raw: string): string {
+    return raw.replace(/\\([0-7]{3})/g, (_m, oct: string) => String.fromCharCode(parseInt(oct, 8)));
+}
+
+/**
+ * Parse `/proc/mounts` lines to discover WSL Windows drive mount points (both
+ * WSL1 `drvfs` and WSL2 `9p ... aname=drvfs;path=D:\` entries, including custom
+ * `/etc/wsl.conf` `[automount] root` paths like `/c` or `/win/d`).
+ * Returns a map of uppercase drive letter (e.g. `'C'`, `'D'`) -> POSIX mount path.
+ */
+export function parseWslDrvFsMounts(procMountsContent: string): Map<string, string> {
+    const mounts = new Map<string, string>();
+    for (const rawLine of procMountsContent.split('\n')) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) { continue; }
+        const cols = line.split(/\s+/);
+        if (cols.length < 4) { continue; }
+        const source = unescapeProcMountPath(cols[0]);
+        const mountPoint = unescapeProcMountPath(cols[1]).replace(/\/+$/, '') || '/';
+        const fsType = cols[2].toLowerCase();
+        const opts = cols[3];
+
+        if (fsType === 'drvfs') {
+            const driveMatch = source.match(/^([A-Za-z]):/);
+            if (driveMatch) {
+                mounts.set(driveMatch[1].toUpperCase(), mountPoint);
+            }
+            continue;
+        }
+
+        if (fsType === '9p') {
+            // WSL2 mounts Windows drives via 9p with `aname=drvfs;path=C:\;...`
+            if (/(?:^|,)aname=drvfs(?:;|,|$)/i.test(opts)) {
+                const pathMatch = opts.match(/(?:^|;|,)path=([A-Za-z]):/i);
+                if (pathMatch) {
+                    mounts.set(pathMatch[1].toUpperCase(), mountPoint);
+                    continue;
+                }
+            }
+            const srcDrive = source.match(/^([A-Za-z]):[\\/]?$/);
+            if (srcDrive) {
+                mounts.set(srcDrive[1].toUpperCase(), mountPoint);
+            }
+        }
+    }
+    return mounts;
+}
+
+/**
+ * Convert a Windows drive-qualified path (e.g. `D:\Windows`, `C:\Users\Alice`)
+ * into its WSL POSIX path using discovered `/proc/mounts` drvfs mount points
+ * (falling back to `/mnt/<drive>` when mount table is unavailable).
+ */
+export function convertWindowsPathToWsl(
+    winPath: string,
+    mounts?: ReadonlyMap<string, string>,
+    fallbackMountRoot = '/mnt',
+): string | null {
+    const trimmed = winPath.trim();
+    const match = trimmed.match(/^([A-Za-z]):(?:[\\/](.*))?$/);
+    if (!match) { return null; }
+    const drive = match[1].toUpperCase();
+    const rest = (match[2] || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    const baseMount = (mounts?.get(drive) || `${fallbackMountRoot.replace(/\/+$/, '')}/${drive.toLowerCase()}`)
+        .replace(/\/+$/, '');
+    return rest ? `${baseMount}/${rest}` : baseMount;
+}
+
+export interface WslPathResolveOptions {
+    env?: NodeJS.ProcessEnv;
+    procMountsContent?: string;
+    existsSyncFn?: (filePath: string) => boolean;
+    username?: string;
+}
+
+function readProcMountsSafe(overrideContent?: string): string {
+    if (overrideContent !== undefined) { return overrideContent; }
+    try {
+        return readFileSync('/proc/mounts', 'utf-8');
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * Dynamically resolve the Windows system root directory from inside WSL
+ * (e.g. `/mnt/c/Windows`, `/mnt/d/Windows`, `/c/Windows`) without hardcoding `/mnt/c`.
+ *
+ * Resolution order:
+ * 1. Env vars (`SystemRoot` / `SYSTEMROOT` / `windir` / `WINDIR`) mapped through `/proc/mounts`
+ * 2. Inherited Windows `System32` directory in `PATH`
+ * 3. Mounted drvfs drives from `/proc/mounts` containing `<mount>/Windows/System32`
+ * 4. Default `/mnt/c/Windows` fallback
+ */
+export function resolveWslWindowsRoot(options?: WslPathResolveOptions): string {
+    const useCache = !options;
+    if (useCache && cachedWslWinRoot !== null) {
+        return cachedWslWinRoot;
+    }
+
+    const env = options?.env ?? process.env;
+    const existsFn = options?.existsSyncFn ?? existsSync;
+    const mounts = parseWslDrvFsMounts(readProcMountsSafe(options?.procMountsContent));
+
+    const finish = (resolved: string): string => {
+        const clean = resolved.replace(/\/+$/, '') || '/mnt/c/Windows';
+        if (useCache) { cachedWslWinRoot = clean; }
+        return clean;
+    };
+
+    // 1. Explicit Windows SystemRoot/windir env var (e.g. forwarded via WSLENV)
+    for (const rawWinRoot of [env.SystemRoot, env.SYSTEMROOT, env.windir, env.WINDIR]) {
+        if (!rawWinRoot || !rawWinRoot.trim()) { continue; }
+        const trimmed = rawWinRoot.trim();
+        if (trimmed.startsWith('/')) {
+            return finish(trimmed);
+        }
+        const converted = convertWindowsPathToWsl(trimmed, mounts);
+        if (converted) {
+            return finish(converted);
+        }
+    }
+
+    // 2. WSL interop inherits Windows System32 on PATH (works for any drive & custom automount root)
+    const pathVar = env.PATH || env.Path || '';
+    for (const entry of pathVar.split(':')) {
+        const clean = entry.trim().replace(/\/+$/, '');
+        const sys32Match = clean.match(/^(\/[^:]+\/Windows)\/System32(?:\/.*)?$/i);
+        if (sys32Match) {
+            return finish(sys32Match[1]);
+        }
+    }
+
+    // 3. Probe drvfs mounts from /proc/mounts (preferring C:, then sorted remaining drives)
+    if (mounts.size > 0) {
+        const orderedDrives = [...mounts.keys()].sort((a, b) => {
+            if (a === 'C') { return -1; }
+            if (b === 'C') { return 1; }
+            return a.localeCompare(b);
+        });
+        for (const drive of orderedDrives) {
+            const mountPoint = mounts.get(drive)!;
+            const candidate = `${mountPoint}/Windows`;
+            if (existsFn(`${candidate}/System32`) || existsFn(`${candidate}/system32`)) {
+                return finish(candidate);
+            }
+        }
+        const preferredMount = mounts.get('C') || mounts.get(orderedDrives[0])!;
+        return finish(`${preferredMount}/Windows`);
+    }
+
+    return finish('/mnt/c/Windows');
+}
+
+/**
+ * Async WSL Windows root resolver that augments `resolveWslWindowsRoot()` with
+ * `wslpath -u` when sync env/PATH/mount discovery fell back to the default path.
+ */
+export async function resolveWslWindowsRootAsync(options?: {
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+}): Promise<string> {
+    const syncRoot = resolveWslWindowsRoot(options?.env ? { env: options.env } : undefined);
+    if (existsSync(`${syncRoot}/System32`) || existsSync(`${syncRoot}/system32`)) {
+        return syncRoot;
+    }
+    const env = options?.env ?? process.env;
+    const rawWinRoot = env.SystemRoot || env.SYSTEMROOT || env.windir || env.WINDIR || 'C:\\Windows';
+    try {
+        const res = await execFileAsync('wslpath', ['-u', rawWinRoot], {
+            encoding: 'utf-8',
+            timeout: 2000,
+            signal: options?.signal,
+            windowsHide: true,
+        });
+        const converted = res.stdout.trim().replace(/\/+$/, '');
+        if (converted.startsWith('/')) {
+            if (!options?.env) { cachedWslWinRoot = converted; }
+            return converted;
+        }
+    } catch {
+        // wslpath unavailable or failed; keep sync resolution
+    }
+    return syncRoot;
+}
+
+/**
+ * Build the WSL POSIX path to a Windows system executable given the resolved
+ * WSL Windows root directory (e.g. `/mnt/d/Windows` or `/c/Windows`).
+ */
+export function buildWslWindowsExePath(wslWinRoot: string | null | undefined, kind: WindowsExeKind): string {
+    const bare: Record<WindowsExeKind, string> = {
+        wmic: 'WMIC.exe',
+        powershell: 'powershell.exe',
+        netstat: 'netstat.exe',
+    };
+    if (!wslWinRoot || !wslWinRoot.trim()) {
+        return bare[kind];
+    }
+    const root = wslWinRoot.trim().replace(/\/+$/, '');
+    const rel: Record<WindowsExeKind, string> = {
+        wmic: 'System32/wbem/WMIC.exe',
+        powershell: 'System32/WindowsPowerShell/v1.0/powershell.exe',
+        netstat: 'System32/netstat.exe',
+    };
+    return `${root}/${rel[kind]}`;
+}
+
+/**
+ * Resolve the Windows host `%USERPROFILE%` path accessible from inside WSL
+ * (e.g. `/mnt/c/Users/Alice` or `/win/d/Users/Alice`) so Antigravity data stored
+ * under `%USERPROFILE%\.gemini\antigravity` can be bridged cleanly from WSL.
+ */
+export function resolveWslWindowsUserProfile(options?: WslPathResolveOptions): string | null {
+    const useCache = !options;
+    if (useCache && cachedWslUserProfile !== undefined) {
+        return cachedWslUserProfile;
+    }
+
+    const env = options?.env ?? process.env;
+    const existsFn = options?.existsSyncFn ?? existsSync;
+    const mounts = parseWslDrvFsMounts(readProcMountsSafe(options?.procMountsContent));
+
+    const finish = (resolved: string | null): string | null => {
+        const clean = resolved ? resolved.replace(/\/+$/, '') : null;
+        if (useCache) { cachedWslUserProfile = clean; }
+        return clean;
+    };
+
+    // 1. Explicit Windows USERPROFILE env vars (e.g. via WSLENV)
+    for (const rawProfile of [env.ANTIGRAVITY_WIN_USERPROFILE, env.USERPROFILE]) {
+        if (!rawProfile || !rawProfile.trim()) { continue; }
+        const trimmed = rawProfile.trim();
+        if (trimmed.startsWith('/')) {
+            return finish(trimmed);
+        }
+        const converted = convertWindowsPathToWsl(trimmed, mounts);
+        if (converted) {
+            return finish(converted);
+        }
+    }
+
+    // 2. Infer Windows user profile from inherited Windows AppData entries in WSL PATH
+    const pathVar = env.PATH || env.Path || '';
+    for (const entry of pathVar.split(':')) {
+        const clean = entry.trim().replace(/\/+$/, '');
+        const userMatch = clean.match(/^(\/[^:]+\/Users\/[^/:]+)\/AppData(?:\/|$)/i);
+        if (userMatch) {
+            return finish(userMatch[1]);
+        }
+    }
+
+    // 3. Probe `<mount>/Users/<username>` on drvfs mounts if `.gemini/antigravity` exists there
+    let uname = options?.username ?? env.USER ?? env.LOGNAME ?? '';
+    if (!uname) {
+        try { uname = userInfo().username; } catch { uname = ''; }
+    }
+    if (uname && mounts.size > 0) {
+        const orderedDrives = [...mounts.keys()].sort((a, b) => (a === 'C' ? -1 : b === 'C' ? 1 : a.localeCompare(b)));
+        for (const drive of orderedDrives) {
+            const candidate = `${mounts.get(drive)!}/Users/${uname}`;
+            if (existsFn(`${candidate}/.gemini/antigravity`) || existsFn(`${candidate}/.gemini`)) {
+                return finish(candidate);
+            }
+        }
+    }
+
+    return finish(null);
 }
 
 // ─── Windows Process Discovery: wmic availability cache ──────────────────────
@@ -199,8 +473,47 @@ export function parseHubDiscoveryJson(raw: string): HubDiscoveryRecord | null {
     }
 }
 
+export interface AntigravityAppDataDirOptions extends WslPathResolveOptions {
+    homedir?: string;
+    inWsl?: boolean;
+}
+
+/**
+ * Resolve all candidate `.gemini/antigravity` data directories.
+ * On macOS/Windows/native Linux, returns `[~/.gemini/antigravity]`.
+ * Inside WSL, returns the local Linux directory first AND bridges the Windows
+ * host `%USERPROFILE%\.gemini\antigravity` directory when resolvable.
+ */
+export function getAntigravityAppDataDirs(options?: AntigravityAppDataDirOptions): string[] {
+    const home = options?.homedir ?? homedir();
+    const dirs: string[] = [join(home, '.gemini', 'antigravity')];
+    const inWsl = options?.inWsl ?? isWSL();
+    if (inWsl) {
+        const winProfile = resolveWslWindowsUserProfile(options);
+        if (winProfile) {
+            const winDataDir = join(winProfile, '.gemini', 'antigravity');
+            if (!dirs.includes(winDataDir)) {
+                dirs.push(winDataDir);
+            }
+        }
+    }
+    return dirs;
+}
+
+/**
+ * Resolve all candidate Antigravity daemon directories containing `hub_<port>.json`.
+ * Inside WSL this includes both the distro-local dir and the bridged Windows host dir.
+ */
+export function getAntigravityDaemonDirs(options?: AntigravityAppDataDirOptions): string[] {
+    return getAntigravityAppDataDirs(options).map(dir => join(dir, 'daemon'));
+}
+
 export function getAntigravityDaemonDir(): string {
-    return join(homedir(), '.gemini', 'antigravity', 'daemon');
+    const dirs = getAntigravityDaemonDirs();
+    if (dirs.length > 1 && !existsSync(dirs[0]) && existsSync(dirs[1])) {
+        return dirs[1];
+    }
+    return dirs[0];
 }
 
 export function readHubDiscoveryFile(
@@ -219,25 +532,41 @@ export function readHubDiscoveryFile(
 export function readAllHubDiscoveryFiles(
     daemonDir: string = getAntigravityDaemonDir(),
 ): HubDiscoveryRecord[] {
-    try {
-        const entries = readdirSync(daemonDir).filter(name => /^hub_\d+\.json$/i.test(name));
-        const records: Array<{ record: HubDiscoveryRecord; mtimeMs: number }> = [];
-        for (const name of entries) {
-            const filePath = join(daemonDir, name);
-            try {
-                const raw = readFileSync(filePath, 'utf-8');
-                const record = parseHubDiscoveryJson(raw);
-                if (!record) { continue; }
-                let mtimeMs = 0;
-                try { mtimeMs = statSync(filePath).mtimeMs; } catch { /* order last */ }
-                records.push({ record, mtimeMs });
-            } catch { /* ignore unreadable or transient file */ }
+    return readAllHubDiscoveryFilesFromDirs([daemonDir]);
+}
+
+export function readAllHubDiscoveryFilesFromDirs(
+    daemonDirs: readonly string[],
+): HubDiscoveryRecord[] {
+    const records: Array<{ record: HubDiscoveryRecord; mtimeMs: number }> = [];
+    const seenKeys = new Set<string>();
+    const visitedDirs = new Set<string>();
+
+    for (const daemonDir of daemonDirs) {
+        if (!daemonDir || visitedDirs.has(daemonDir)) { continue; }
+        visitedDirs.add(daemonDir);
+        try {
+            const entries = readdirSync(daemonDir).filter(name => /^hub_\d+\.json$/i.test(name));
+            for (const name of entries) {
+                const filePath = join(daemonDir, name);
+                try {
+                    const raw = readFileSync(filePath, 'utf-8');
+                    const record = parseHubDiscoveryJson(raw);
+                    if (!record) { continue; }
+                    const key = `${record.pid}:${record.httpPort ?? ''}:${record.httpsPort ?? ''}:${record.csrfToken}`;
+                    if (seenKeys.has(key)) { continue; }
+                    seenKeys.add(key);
+                    let mtimeMs = 0;
+                    try { mtimeMs = statSync(filePath).mtimeMs; } catch { /* order last */ }
+                    records.push({ record, mtimeMs });
+                } catch { /* ignore unreadable or transient file */ }
+            }
+        } catch {
+            // ignore missing/unreadable daemon dir
         }
-        records.sort((a, b) => b.mtimeMs - a.mtimeMs);
-        return records.map(item => item.record);
-    } catch {
-        return [];
     }
+    records.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return records.map(item => item.record);
 }
 
 // ─── CR2-Fix4: Exported Parsing Functions ────────────────────────────────────
@@ -1062,21 +1391,22 @@ async function discoverWslLanguageServer(
  * Caches wmic availability to avoid retrying a missing executable every poll cycle.
  * Returns raw CSV output containing CommandLine and ProcessId fields.
  *
- * When running inside WSL, uses full paths under /mnt/c/ for Windows executables
- * via WSL interop, falling back to bare exe names (which WSL also resolves).
+ * When running inside WSL, dynamically resolves the Windows system root via
+ * `/proc/mounts`, inherited PATH, or `wslpath` (never hardcoding `/mnt/c`),
+ * falling back to bare exe names if needed.
  */
 async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string) => void): Promise<string> {
     const inWSL = isWSL();
     const winRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+    const wslWinRoot = inWSL ? await resolveWslWindowsRootAsync({ signal }) : null;
 
     // Determine executable paths.
-    // - WSL: explicit /mnt/c paths (Windows host binaries via interop) — including
-    //   powershell.exe, which was previously a bare no-op ternary (CR-#62).
+    // - WSL: dynamically resolved Windows mount root (e.g. /mnt/c/Windows, /mnt/d/Windows, /c/Windows)
     // - Native Windows: absolute %SystemRoot% paths so discovery does not depend
     //   on the Extension Host's inherited PATH. buildWindowsExePath falls back to
     //   bare names when %SystemRoot% is somehow unset.
-    const wmicExe = inWSL ? '/mnt/c/Windows/System32/wbem/WMIC.exe' : buildWindowsExePath(winRoot, 'wmic');
-    const psExe = inWSL ? '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe' : buildWindowsExePath(winRoot, 'powershell');
+    const wmicExe = inWSL ? buildWslWindowsExePath(wslWinRoot, 'wmic') : buildWindowsExePath(winRoot, 'wmic');
+    const psExe = inWSL ? buildWslWindowsExePath(wslWinRoot, 'powershell') : buildWindowsExePath(winRoot, 'powershell');
 
     // Try wmic unless already known unavailable, or the executable is absent on
     // disk. Win11 24H2+/25H2 removed WMIC by default (KB 5067470); pre-checking
@@ -1111,17 +1441,26 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
     // Setting OutputEncoding=UTF8 prevents OEM codepage corruption on CJK/non-ASCII user paths.
     // CR-#62: wrapped in try/catch so a powershell.exe ENOENT is logged and
     // downgraded to an empty result instead of collapsing into an unhandled error.
-    try {
-        const result = await execFileAsync(psExe, [
-            '-NoProfile', '-NoLogo', '-Command',
-            '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Filter "Name like \'language_server%\' or Name = \'agy.exe\'" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation'
-        ], { encoding: 'utf-8', timeout: 10000, signal, windowsHide: true });
-        return result.stdout;
-    } catch (e) {
-        const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
-        log?.(`PowerShell discovery failed (${code}); exe=${psExe}`);
-        return '';
+    const psArgs = [
+        '-NoProfile', '-NoLogo', '-Command',
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Filter "Name like \'language_server%\' or Name = \'agy.exe\'" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation',
+    ];
+    const psCandidates = inWSL && psExe !== 'powershell.exe' ? [psExe, 'powershell.exe'] : [psExe];
+    for (let i = 0; i < psCandidates.length; i++) {
+        const candidate = psCandidates[i];
+        try {
+            const result = await execFileAsync(candidate, psArgs, { encoding: 'utf-8', timeout: 10000, signal, windowsHide: true });
+            return result.stdout;
+        } catch (e) {
+            const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
+            if (code === 'ENOENT' && i + 1 < psCandidates.length) {
+                continue;
+            }
+            log?.(`PowerShell discovery failed (${code}); exe=${candidate}`);
+            return '';
+        }
     }
+    return '';
 }
 
 /**
@@ -1139,24 +1478,33 @@ async function findListeningPortCandidates(
 ): Promise<PortCandidate[]> {
     // Windows (or WSL): use netstat -ano to find Windows host ports
     if (!forceNative && (process.platform === 'win32' || isWSL())) {
+        const inWSL = isWSL();
         const winRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
-        const netstatExe = isWSL() ? '/mnt/c/Windows/System32/netstat.exe' : buildWindowsExePath(winRoot, 'netstat');
-        try {
-            const result = await execFileAsync(netstatExe, [
-                '-ano'
-            ], { encoding: 'utf-8', timeout: 5000, signal, windowsHide: true });
-            const ports: PortCandidate[] = [];
-            for (const line of result.stdout.split('\n')) {
-                // netstat -ano format: TCP    127.0.0.1:PORT    0.0.0.0:0    LISTENING    PID
-                // CR-#62: exact PID-column match (previous endsWith matched 123 vs 1123).
-                if (netstatLineMatchesPid(line, pid)) {
-                    pushPortCandidate(ports, extractPortCandidateFromNetstat(line));
+        const wslWinRoot = inWSL ? await resolveWslWindowsRootAsync({ signal }) : null;
+        const netstatExe = inWSL ? buildWslWindowsExePath(wslWinRoot, 'netstat') : buildWindowsExePath(winRoot, 'netstat');
+        const netstatCandidates = inWSL && netstatExe !== 'netstat.exe' ? [netstatExe, 'netstat.exe'] : [netstatExe];
+        for (let i = 0; i < netstatCandidates.length; i++) {
+            const candidate = netstatCandidates[i];
+            try {
+                const result = await execFileAsync(candidate, [
+                    '-ano'
+                ], { encoding: 'utf-8', timeout: 5000, signal, windowsHide: true });
+                const ports: PortCandidate[] = [];
+                for (const line of result.stdout.split('\n')) {
+                    // netstat -ano format: TCP    127.0.0.1:PORT    0.0.0.0:0    LISTENING    PID
+                    // CR-#62: exact PID-column match (previous endsWith matched 123 vs 1123).
+                    if (netstatLineMatchesPid(line, pid)) {
+                        pushPortCandidate(ports, extractPortCandidateFromNetstat(line));
+                    }
                 }
+                return ports;
+            } catch (e) {
+                const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
+                if (code === 'ENOENT' && i + 1 < netstatCandidates.length) {
+                    continue;
+                }
+                log?.(`netstat failed (${code}); exe=${candidate}`);
             }
-            return ports;
-        } catch (e) {
-            const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
-            log?.(`netstat failed (${code}); exe=${netstatExe}`);
         }
         return [];
     }
@@ -1458,12 +1806,13 @@ async function probeStandaloneHubFiles(
     processLines: readonly string[] = [],
     preferredSurface?: 'app' | 'ide',
     windowsProcesses = process.platform === 'win32' || isWSL(),
-    daemonDir: string = getAntigravityDaemonDir(),
+    daemonDirs: string | readonly string[] = getAntigravityDaemonDirs(),
     includeMetadata = false,
 ): Promise<LSInfo | null> {
     if (signal?.aborted) { return null; }
+    const dirs = typeof daemonDirs === 'string' ? [daemonDirs] : daemonDirs;
     const records = selectMatchingHubRecords(
-        readAllHubDiscoveryFiles(daemonDir),
+        readAllHubDiscoveryFilesFromDirs(dirs),
         processLines,
         preferredSurface,
         windowsProcesses,
@@ -1557,10 +1906,12 @@ export async function discoverLanguageServer(
     const preferredSurface = isOptionsCall ? workspaceUriOrOptions.preferredSurface : undefined;
     const env = isOptionsCall ? (workspaceUriOrOptions.env ?? process.env) : process.env;
     const explicitDaemonDir = isOptionsCall ? workspaceUriOrOptions.daemonDir : undefined;
-    const daemonDir = explicitDaemonDir
-        ?? (isOptionsCall && typeof env.ANTIGRAVITY_APP_DATA_DIR === 'string' && env.ANTIGRAVITY_APP_DATA_DIR.trim()
-            ? join(env.ANTIGRAVITY_APP_DATA_DIR.trim(), 'daemon')
-            : getAntigravityDaemonDir());
+    const daemonDirs: string[] = explicitDaemonDir
+        ? [explicitDaemonDir]
+        : (isOptionsCall && typeof env.ANTIGRAVITY_APP_DATA_DIR === 'string' && env.ANTIGRAVITY_APP_DATA_DIR.trim()
+            ? [join(env.ANTIGRAVITY_APP_DATA_DIR.trim(), 'daemon')]
+            : getAntigravityDaemonDirs({ env }));
+    const daemonDir = daemonDirs[0] || getAntigravityDaemonDir();
     const useEnv = isOptionsCall
         ? (workspaceUriOrOptions.useEnv ?? (preferredSurface !== 'ide' && !hint))
         : false;
@@ -1641,7 +1992,7 @@ export async function discoverLanguageServer(
         let hubRecordsCache: HubDiscoveryRecord[] | null = null;
         const getHubRecords = (): HubDiscoveryRecord[] => {
             if (hubRecordsCache === null) {
-                hubRecordsCache = readAllHubDiscoveryFiles(daemonDir);
+                hubRecordsCache = readAllHubDiscoveryFilesFromDirs(daemonDirs);
             }
             return hubRecordsCache;
         };
@@ -1697,7 +2048,7 @@ export async function discoverLanguageServer(
         // Standalone / App hub file fallback (no built-in google.google-antigravity hint):
         // scan ~/.gemini/antigravity/daemon/hub_*.json preferring `preferredSurface` when set.
         const standaloneResult = await probeStandaloneHubFiles(
-            attemptedKeys, signal, log, lines, preferredSurface, windowsProcesses, daemonDir, includeMetadata,
+            attemptedKeys, signal, log, lines, preferredSurface, windowsProcesses, daemonDirs, includeMetadata,
         );
         if (standaloneResult) { return standaloneResult; }
 

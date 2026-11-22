@@ -4,7 +4,148 @@
  * and unit tests can import this module without an IDE host.
  */
 
+export {
+    DEFAULT_APP_SETTINGS,
+    SUPPORTED_DISPLAY_CURRENCIES,
+    normalizeAppSettings,
+    type AppSettings,
+    type DisplayCurrencyCode,
+    type LastUpdateCheckRecord,
+    type OrchestratorPricingMode,
+} from '../durable-state';
+
 export type SidecarViewMode = 'aux' | 'sidebar' | 'standalone';
+
+// ─── Opt-In CDP Ambient Overlay Contracts (v1.17.6) ──────────────────────────
+
+export type CdpConnectionState = 'disabled' | 'connected' | 'cdp_unavailable' | 'error';
+
+export interface CdpPlatformGuide {
+    platform: 'darwin' | 'win32' | 'linux';
+    command: string;
+    en: string;
+    zh: string;
+}
+
+export interface CdpStatus {
+    state: CdpConnectionState;
+    composerEnabled: boolean;
+    topBarEnabled: boolean;
+    targetUrl?: string;
+    targetTitle?: string;
+    lastInjectedAt?: number;
+    errorMessage?: string;
+    platformGuide: CdpPlatformGuide;
+}
+
+export interface CdpOverlayToggles {
+    appComposerRingEnabled: boolean;
+    appTopBarEnabled: boolean;
+}
+
+export type CdpOverlayTurnCacheState = 'cold' | 'partial' | 'warm' | 'unknown';
+
+export interface CdpOverlayQuotaPool {
+    poolKey: string;
+    label: string;
+    modelChips: string[];
+    remainingPct: number | null;
+    windowTag?: string;
+    resetCountdown?: string;
+    resetAtIso?: string;
+    weeklyRemainingPct?: number | null;
+    weeklyResetCountdown?: string;
+    isCurrentSessionModel?: boolean;
+    health?: 'good' | 'warn' | 'danger' | 'unknown';
+}
+
+export interface CdpOverlayPayload {
+    updatedAt: string;
+    nextRefreshSec?: number;
+    language: 'en' | 'zh' | 'both';
+    theme?: 'auto' | 'dark' | 'light';
+    // Current session / context telemetry
+    modelName: string;
+    contextUsedTokens: number;
+    contextEffectiveLimit: number;
+    contextNativeLimit?: number;
+    contextPct: number;
+    compactionThresholdPct?: number | null;
+    tier200kMarkerPct?: number | null;
+    // Performance
+    outputSpeedTps: number | null;
+    avgOutputSpeedTps: number | null;
+    isShortSample: boolean;
+    isWaitingTtft?: boolean;
+    ttftMs: number | null;
+    // Cache
+    recentCacheHitPct: number | null;
+    avgCacheHitPct: number | null;
+    turnCacheState: CdpOverlayTurnCacheState;
+    // Tokens & Cost
+    estCostUsd: number | null;
+    estCostFormatted?: string;
+    localCostFormatted?: string | null;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    totalTokens: number;
+    // Top bar aggregate / quota board
+    cumulativeRecordedTokens: number;
+    tightestQuotaPct: number | null;
+    tightestQuotaWindowTag?: string;
+    sessionQuota5hPct?: number | null;
+    sessionQuota5hReset?: string;
+    sessionQuotaWeeklyPct?: number | null;
+    sessionQuotaWeeklyReset?: string;
+    quotaPools: CdpOverlayQuotaPool[];
+    // Authenticated loopback action bridge (127.0.0.1 + 256-bit X-Monitor-Token)
+    bridgeUrl?: string;
+    bridgeToken?: string;
+}
+
+export type CdpOverlayBridgeActionCommand = 'openPanel' | 'refresh' | 'togglePause';
+
+export interface CdpOverlayBridgeAction {
+    command: CdpOverlayBridgeActionCommand;
+    source?: 'composer' | 'topbar';
+}
+
+// ─── Self-Updater Engine Contracts (v1.17.6) ─────────────────────────────────
+
+export interface PluginReleaseInfo {
+    version: string;
+    tagName: string;
+    releaseUrl: string;
+    publishedAt?: string;
+    releaseNotesSummary: string;
+    assetName: string;
+    assetUrl: string;
+    assetSize?: number;
+    checksumsUrl?: string | null;
+}
+
+export interface UpdateCheckResult {
+    status: 'update_available' | 'up_to_date' | 'not_modified' | 'throttled' | 'error';
+    hasUpdate: boolean;
+    currentVersion: string;
+    latestVersion?: string;
+    etag?: string | null;
+    checkedAt: number;
+    releaseInfo?: PluginReleaseInfo;
+    error?: string;
+}
+
+export interface ApplyPluginUpdateResult {
+    ok: boolean;
+    previousVersion: string;
+    installedVersion: string;
+    requiresReload: boolean;
+    checksumVerified?: boolean;
+    rolledBack?: boolean;
+    message: string;
+    error?: string;
+}
 
 export type SidecarSurface = 'vscode' | 'sidecar' | 'standalone';
 
