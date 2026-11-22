@@ -146,8 +146,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     if (surface === 'vscode' || !document.body) { return; }
     var kind = resolveThemeFromHost();
     if (!kind) { return; }
-    var attrKind = kind === 'hc-light' ? 'hc' : kind;
-    document.body.setAttribute('data-acm-theme', attrKind);
+    document.body.setAttribute('data-acm-theme', kind);
     document.body.classList.toggle('vscode-light', kind === 'light');
     document.body.classList.toggle('vscode-dark', kind === 'dark');
     document.body.classList.toggle('vscode-high-contrast', kind === 'hc');
@@ -245,26 +244,66 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     }
   }
 
+  function syncLocalStateFromSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') { return; }
+    if (typeof snapshot.paused === 'boolean') {
+      pollPaused = snapshot.paused;
+    }
+    if (typeof snapshot.pinnedConversationId === 'string') {
+      pinnedConversationId = snapshot.pinnedConversationId;
+    } else if (snapshot.pinnedConversationId === null) {
+      pinnedConversationId = '';
+    }
+    if (typeof snapshot.lockToMainAgent === 'boolean') {
+      lockToMainAgent = snapshot.lockToMainAgent;
+    }
+    var snapSettings = snapshot.data && snapshot.data.settings;
+    if (snapSettings && typeof snapSettings.pollingInterval === 'number' && Number.isFinite(snapSettings.pollingInterval)) {
+      var nextMs = Math.max(1000, Math.min(60000, Math.round(snapSettings.pollingInterval * 1000)));
+      if (nextMs !== pollIntervalMs) {
+        pollIntervalMs = nextMs;
+      }
+    }
+  }
+
   function notifySnapshot(snapshot, hash) {
+    syncLocalStateFromSnapshot(snapshot);
     for (var i = 0; i < snapshotListeners.length; i++) {
       try { snapshotListeners[i](snapshot, hash); } catch (_) { /* isolate listener */ }
     }
+    try {
+      if (typeof window.CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('acm:snapshot', {
+          detail: { snapshot: snapshot, hash: hash || '' }
+        }));
+      }
+    } catch (_) { /* ignore CustomEvent unavailability */ }
     if (snapshot && snapshot.tabs) {
       dispatchWebviewMessage({
         command: 'updateTabs',
         tabs: snapshot.tabs,
         time: snapshot.time || '',
-        snapshot: snapshot
+        snapshot: snapshot,
+        activeConversationId: snapshot.activeConversationId !== undefined ? snapshot.activeConversationId : null,
+        pinnedConversationId: snapshot.pinnedConversationId !== undefined ? snapshot.pinnedConversationId : (pinnedConversationId || null),
+        lockToMainAgent: typeof snapshot.lockToMainAgent === 'boolean' ? snapshot.lockToMainAgent : lockToMainAgent,
+        conversations: Array.isArray(snapshot.conversationOptions)
+          ? snapshot.conversationOptions
+          : (Array.isArray(snapshot.conversations) ? snapshot.conversations : []),
+        isStale: !!snapshot.isStale,
+        staleState: snapshot.staleState || null
       });
     }
   }
 
   function buildSnapshotUrl(forceFull) {
     var qs = new URLSearchParams();
+    var view = detectViewMode();
     if (currentConversationId) { qs.set('conversationId', currentConversationId); }
     if (currentWorkspaceUris.length > 0) { qs.set('workspaceUris', JSON.stringify(currentWorkspaceUris)); }
     if (!forceFull && lastEtag) { qs.set('etag', lastEtag); }
-    qs.set('viewMode', detectViewMode());
+    qs.set('viewMode', view);
+    qs.set('view', view);
     if (pinnedConversationId) { qs.set('pinnedConversationId', pinnedConversationId); }
     if (lockToMainAgent) { qs.set('lockToMainAgent', 'true'); }
     return '/api/snapshot?' + qs.toString();
@@ -301,9 +340,6 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
         consecutivePollErrors = 0;
         if (data && data.hash) { lastEtag = String(data.hash); }
         if (data && data.unchanged === false && data.snapshot) {
-          if (typeof data.snapshot.paused === 'boolean') {
-            pollPaused = data.snapshot.paused;
-          }
           notifySnapshot(data.snapshot, data.hash || '');
         }
         return data;
@@ -316,6 +352,13 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
         pollInFlight = false;
         scheduleNextPoll();
       });
+  }
+
+  function normalizeConversationPin(rawId) {
+    if (rawId === null || rawId === undefined) { return ''; }
+    var s = String(rawId).trim();
+    if (!s || s === 'auto' || s === '__auto__') { return ''; }
+    return s;
   }
 
   function sendAction(msg) {
@@ -335,6 +378,9 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
         sidecarApi.ui.toggleConversation(cid, msg.options);
         return Promise.resolve({ ok: true });
       }
+      if (cid) {
+        return sendAction({ command: 'selectConversation', conversationId: cid });
+      }
     }
     if (msg.command === 'openFileInAuxPane' && msg.uri && sidecarApi && sidecarApi.ui && typeof sidecarApi.ui.toggleAuxPane === 'function') {
       sidecarApi.ui.toggleAuxPane({ tabType: 'fileView', uri: msg.uri });
@@ -346,16 +392,34 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
         return { ok: ok };
       });
     }
-    if (msg.command === 'pinConversation') {
-      pinnedConversationId = typeof msg.cascadeId === 'string' ? msg.cascadeId : '';
+    if (msg.command === 'selectConversation' || msg.command === 'pinConversation') {
+      var nextPin = normalizeConversationPin(
+        msg.conversationId !== undefined ? msg.conversationId : msg.cascadeId
+      );
+      pinnedConversationId = nextPin;
+      lastEtag = '';
+    }
+    if (msg.command === 'toggleLockMain') {
+      lockToMainAgent = typeof msg.locked === 'boolean'
+        ? msg.locked
+        : (typeof msg.value === 'boolean' ? msg.value : !lockToMainAgent);
       lastEtag = '';
     }
     if (msg.command === 'setLockToMainAgent') {
-      lockToMainAgent = !!msg.value;
+      lockToMainAgent = !!(msg.value !== undefined ? msg.value : msg.locked);
       lastEtag = '';
     }
     if (msg.command === 'setPollingInterval' && typeof msg.value === 'number' && Number.isFinite(msg.value)) {
       pollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.value * 1000)));
+      scheduleNextPoll();
+    }
+    if (msg.command === 'updateSetting' && msg.key === 'pollingInterval' && typeof msg.value === 'number' && Number.isFinite(msg.value)) {
+      pollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.value * 1000)));
+      scheduleNextPoll();
+    }
+    if (msg.command === 'updateSettings' && msg.settings && typeof msg.settings.pollingInterval === 'number' && Number.isFinite(msg.settings.pollingInterval)) {
+      pollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.settings.pollingInterval * 1000)));
+      scheduleNextPoll();
     }
 
     var payload = Object.assign({
@@ -371,24 +435,50 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
       .then(function(res) { return res.json(); })
       .then(function(data) {
         if (!data || typeof data !== 'object') { return { ok: false }; }
-        if (Array.isArray(data.messages)) {
-          for (var i = 0; i < data.messages.length; i++) {
-            var m = data.messages[i];
-            if (m && m.command === 'setPaused') {
-              pollPaused = !!m.paused;
-              if (!pollPaused) { scheduleNextPoll(); }
-            }
-            dispatchWebviewMessage(m);
+        var textToCopy = null;
+        if (data.ok) {
+          if (typeof data.text === 'string' && (msg.command === 'copyContextReport' || msg.command === 'copyHandoffPrompt' || msg.command === 'copyStatePath' || typeof data.copiedHint === 'string')) {
+            textToCopy = data.text;
+          } else if (data.result && typeof data.result.text === 'string' && (msg.command === 'copyContextReport' || msg.command === 'copyHandoffPrompt' || msg.command === 'copyStatePath')) {
+            textToCopy = data.result.text;
           }
         }
-        if (data.snapshot) {
-          if (data.hash) { lastEtag = String(data.hash); }
-          notifySnapshot(data.snapshot, data.hash || '');
-        }
-        if (data.reload) {
-          window.location.reload();
-        }
-        return data;
+        var copyPromise = textToCopy !== null
+          ? copyText(textToCopy).then(function(copyOk) {
+              dispatchWebviewMessage({
+                command: 'copyTextResult',
+                ok: copyOk,
+                source: msg.command,
+                copiedHint: data.copiedHint || (data.result && data.result.copiedHint) || '',
+                text: textToCopy
+              });
+              return copyOk;
+            })
+          : Promise.resolve(true);
+
+        return copyPromise.then(function() {
+          if (Array.isArray(data.messages)) {
+            for (var i = 0; i < data.messages.length; i++) {
+              var m = data.messages[i];
+              if (m && m.command === 'setPaused') {
+                pollPaused = !!m.paused;
+                if (!pollPaused) { scheduleNextPoll(); }
+              }
+              if (m && m.command === 'copyToClipboard' && typeof m.text === 'string') {
+                void copyText(m.text);
+              }
+              dispatchWebviewMessage(m);
+            }
+          }
+          if (data.snapshot) {
+            if (data.hash) { lastEtag = String(data.hash); }
+            notifySnapshot(data.snapshot, data.hash || '');
+          }
+          if (data.reload) {
+            window.location.reload();
+          }
+          return data;
+        });
       })
       .catch(function(err) {
         return { ok: false, error: err && err.message ? err.message : 'Network error' };
@@ -442,6 +532,19 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     postMessage: function(msg) { return sendAction(msg); },
     sendAction: sendAction,
     copyText: copyText,
+    copyContextReport: function() { return sendAction({ command: 'copyContextReport' }); },
+    copyHandoffPrompt: function() { return sendAction({ command: 'copyHandoffPrompt' }); },
+    selectConversation: function(conversationId) {
+      return sendAction({ command: 'selectConversation', conversationId: conversationId === undefined ? null : conversationId });
+    },
+    toggleLockMain: function(locked) {
+      var msg = { command: 'toggleLockMain' };
+      if (typeof locked === 'boolean') { msg.locked = locked; }
+      return sendAction(msg);
+    },
+    revealPath: function(targetPath) {
+      return sendAction({ command: 'revealPath', path: targetPath });
+    },
     getConversationId: function() { return currentConversationId; },
     getWorkspaceUris: function() {
       if (sidecarApi && typeof sidecarApi.getWorkspaceUris === 'function') {
@@ -471,6 +574,10 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     toggleConversation: function(conversationId, opts) {
       if (sidecarApi && sidecarApi.ui && typeof sidecarApi.ui.toggleConversation === 'function') {
         sidecarApi.ui.toggleConversation(conversationId, opts);
+        return true;
+      }
+      if (conversationId) {
+        void sendAction({ command: 'selectConversation', conversationId: conversationId });
         return true;
       }
       return false;
