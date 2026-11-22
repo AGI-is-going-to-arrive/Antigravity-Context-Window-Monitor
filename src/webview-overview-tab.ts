@@ -895,7 +895,7 @@ function buildDualWatermarkMeterHtml(
                 `200k long-context pricing tier threshold (${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} tokens remaining before 200k).`,
                 `200k 长上下文阶梯计费线（距离 200k 还有 ${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} tokens）。`,
             );
-        markers.push(`<span class="overview-watermark-tick is-tier-200k${exceeded ? ' is-exceeded' : ''}" data-watermark="long-context-200k" style="left:${leftPct.toFixed(1)}%" title="${esc(tip)}" aria-label="${esc(tip)}"></span>`);
+        markers.push(`<span class="overview-watermark-tick is-tier-200k${exceeded ? ' is-exceeded' : ''}" data-watermark="long-context-200k" style="left:${leftPct.toFixed(1)}%" title="${esc(tip)}" aria-hidden="true"></span>`);
         pills.push(`<span class="overview-watermark-pill${exceeded ? ' is-tier-exceeded' : ''}" data-watermark-pill="long-context-200k" title="${esc(tip)}">${
             exceeded
                 ? tBiHtml('> 200k Tier', '已超 200k 阶梯')
@@ -908,7 +908,7 @@ function buildDualWatermarkMeterHtml(
             `Compaction ceiling at ${formatCompactTokens(watermarks.compactionLimit)} (${watermarks.compactionMarkerPct.toFixed(0)}% of ${formatCompactTokens(watermarks.physicalContextWindow)} physical window).`,
             `自动压缩上限为 ${formatCompactTokens(watermarks.compactionLimit)}（占 ${formatCompactTokens(watermarks.physicalContextWindow)} 物理窗口的 ${watermarks.compactionMarkerPct.toFixed(0)}%）。`,
         );
-        markers.push(`<span class="overview-watermark-tick is-compaction-cap" data-watermark="compaction-limit" style="left:100%" title="${esc(compTip)}" aria-label="${esc(compTip)}"></span>`);
+        markers.push(`<span class="overview-watermark-tick is-compaction-cap" data-watermark="compaction-limit" style="left:100%" title="${esc(compTip)}" aria-hidden="true"></span>`);
         pills.push(`<span class="overview-watermark-pill" data-watermark-pill="compaction-limit" title="${esc(compTip)}">${tBiHtml('Compaction', '压缩上限')} ${esc(formatCompactTokens(watermarks.compactionLimit))} / ${tBiHtml('Physical', '物理窗口')} ${esc(formatCompactTokens(watermarks.physicalContextWindow))}${jargonTipHtml('compaction-vs-physical')}</span>`);
     }
 

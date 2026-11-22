@@ -2977,9 +2977,10 @@ async function browserMatrix(packageJSON) {
                             `Hydrogen Extra High localized properly in ${lang}`);
                         const sonnetCard = result.entries.find(entry => entry.model === 'MODEL_PLACEHOLDER_M404');
                         assert(sonnetCard?.priceText.includes('$0.10/M'), `Sonnet 5.5 .spec-price-row renders $0.10/M cache read: ${sonnetCard?.priceText}`);
-                        for (const unpricedId of ['MODEL_PLACEHOLDER_M667', 'MODEL_PLACEHOLDER_M681']) {
-                            const card = result.entries.find(entry => entry.model === unpricedId);
-                            assert.equal(card?.priceState, 'unpriced', `${unpricedId} displays honest Unpriced badge`);
+                        for (const orchId of ['MODEL_PLACEHOLDER_M667', 'MODEL_PLACEHOLDER_M681']) {
+                            const card = result.entries.find(entry => entry.model === orchId);
+                            assert.equal(card?.priceState, 'mapped', `${orchId} shows mapped base rate in default mapped mode`);
+                            assert(!/\$0\.00/.test(card?.priceText || ''), `${orchId} never fabricates $0.00`);
                         }
                         assert.equal(result.pools.length, 2, 'shared Gemini and Claude / GPT pools');
                         const pool = result.pools.find(pool => pool.group === 'Gemini');

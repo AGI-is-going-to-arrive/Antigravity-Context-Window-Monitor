@@ -534,7 +534,9 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
                 res.writeHead(426);
                 res.end();
             });
+            srv.on('clientError', (_err, sock) => { sock.destroy(); });
             srv.on('upgrade', (req, socket) => {
+                socket.on('error', () => {});
                 upgradedSockets.add(socket);
                 socket.on('close', () => upgradedSockets.delete(socket));
                 const key = req.headers['sec-websocket-key'];
