@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Antigravity Context Monitor">
+  <defs>
+    <linearGradient id="acm-arc-primary" x1="16" y1="96" x2="112" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="58%" stop-color="#5B9CF6"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+    <linearGradient id="acm-disc" x1="20" y1="16" x2="108" y2="112" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1B2434"/>
+      <stop offset="100%" stop-color="#0E141E"/>
+    </linearGradient>
+  </defs>
+  <!-- Outer badge with ~10% transparent safe margin (radius 50 inside 128x128) -->
+  <circle cx="64" cy="64" r="50" fill="url(#acm-disc)" stroke="#475569" stroke-opacity="0.55" stroke-width="2.5"/>
+  <!-- Gauge track -->
+  <circle cx="64" cy="64" r="35" fill="none" stroke="#2B3648" stroke-width="8" stroke-dasharray="165 60" stroke-dashoffset="-28" stroke-linecap="round" transform="rotate(135 64 64)"/>
+  <!-- Active telemetry arc -->
+  <circle cx="64" cy="64" r="35" fill="none" stroke="url(#acm-arc-primary)" stroke-width="8" stroke-dasharray="122 103" stroke-dashoffset="-28" stroke-linecap="round" transform="rotate(135 64 64)"/>
+  <!-- Subtle warning accent tick near upper cap -->
+  <circle cx="94" cy="81" r="3.5" fill="#F5B841"/>
+  <!-- Center telemetry ledger bars -->
+  <rect x="49" y="66" width="6" height="14" rx="2.5" fill="#34D399"/>
+  <rect x="61" y="54" width="6" height="26" rx="2.5" fill="#5B9CF6"/>
+  <rect x="73" y="60" width="6" height="20" rx="2.5" fill="#A78BFA"/>
+  <!-- Crisp focus dot -->
+  <circle cx="64" cy="43" r="3.2" fill="#F2F4F8"/>
+</svg>

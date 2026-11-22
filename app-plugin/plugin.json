@@ -1,0 +1,27 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "antigravity-context-monitor",
+  "displayName": "Antigravity Context Monitor",
+  "version": "1.17.5",
+  "description": "Real-time context window telemetry, token breakdown, prompt cache diagnostics, and model quota runway monitor for Antigravity.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Open the Context Monitor panel and check my current context window usage",
+    "Inspect my prompt cache hit rate and model quota runway",
+    "Generate a compact handoff summary for this conversation"
+  ],
+  "author": {
+    "name": "AGI-is-going-to-arrive",
+    "url": "https://github.com/AGI-is-going-to-arrive"
+  },
+  "homepage": "https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor",
+  "repository": "https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor",
+  "license": "MIT",
+  "keywords": [
+    "context",
+    "tokens",
+    "quota",
+    "telemetry",
+    "monitor"
+  ]
+}
