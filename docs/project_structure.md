@@ -2,15 +2,40 @@
 
 本文档说明 Antigravity Context Window Monitor 的源码组织方式、模块职责以及依赖关系。
 
-当前版本为 **1.17.4**。发布说明先列英文，再列中文。[1.17.4 发布说明](releases/1.17.4.md)
+当前版本为 **1.17.5**。发布说明先列英文，再列中文。[1.17.5 发布说明](releases/1.17.5.md)
 
 ---
 
 ## 目录总览
 ```text
 antigravity-context-monitor/
+├── app-plugin/                   # Antigravity App（桌面版 2.0+）原生 Sidecar 插件清单与入口
+│   ├── plugin.json               #   插件清单（v1.17.5，通过 agy plugin validate --strict 0 告警校验）
+│   ├── assets/logo.svg           #   插件图标
+│   ├── sidecars/context_monitor/ #   Sidecar 声明与运行时入口（零外部 npm 依赖，运行于内置 Node v24+）
+│   │   ├── sidecar.json          #     声明 AUX_PANE（/）与 SIDEBAR（/full）双视图
+│   │   └── main.mjs              #     SidecarApp / 独立回环 127.0.0.1 HTTP 启动入口
+│   └── skills/context-monitor/   #   配套 Skill（零 MCP 工具 schema token 开销）
+│       └── SKILL.md              #     通过 sidecar://antigravity-context-monitor/context_monitor/ 一键唤起面板
+├── scripts/                      # 跨平台 App 插件打包与安装脚本（零外部依赖）
+│   ├── package-app-plugin.mjs    #   纯 Node 生成 dist/antigravity-context-monitor-app/、.zip 与 .tar.gz，并自动校验
+│   ├── install-app-plugin.mjs    #   跨平台安装/卸载至 ~/.gemini/config/plugins/antigravity-context-monitor
+│   ├── install-app-plugin.sh     #   macOS / Linux 包装脚本（自动回退 Antigravity 内置 agy-node）
+│   └── install-app-plugin.ps1    #   Windows PowerShell 包装脚本（自动回退 agy-node.cmd）
 ├── src/                          # TypeScript 源码
-│   ├── extension.ts              # 扩展入口：激活/停用、轮询调度、非阻塞辅助元数据刷新、命令注册、实时费用快照与状态恢复
+│   ├── app/                      # Antigravity App 原生 Sidecar 运行时与适配层（零 vscode 依赖）
+│   │   ├── sidecar-runtime.ts    #   实时后端发现、轮询、状态持久化、全 9 页渲染与动作分发引擎
+│   │   ├── sidecar-server.ts     #   HTTP/Sidecar 路由（/、/full、/api/health、ETag /api/snapshot、/api/action、/assets/images/*）
+│   │   ├── sidecar-types.ts      #   Sidecar 视图/快照/动作契约类型
+│   │   ├── host-bridge.ts        #   浏览器端桥接（window.__ACM_BRIDGE__、acquireVsCodeApi 垫片、可见性门控 ETag 轮询）
+│   │   └── theme-adapter.ts      #   App 宿主主题 CSS 变量 → --vscode-*/--ed-* 桥接（dark/light/hc/hc-light）与 AUX_PANE/SIDEBAR 响应式排版
+│   ├── context-breakdown.ts      # 纯上下文构成归因引擎（9 类语义占比、双上限有效预算 vs 原生上限、20×5 点阵、Top 5 最大占用项、/context 与交接提示词导出）
+│   ├── turn-diagnostics.ts       # 纯逐轮缓存诊断引擎（最近一轮 vs 会话缓存命中率、冷/部分/热启动分类与 +Δ 上下文净增长）
+│   ├── quota-runway.ts           # 纯配额续航预测引擎（45 分钟滚动速率、抖动过滤、恢复检测、断连缓存保底与 custom-* 模型隔离）
+│   ├── conversation-selector.ts  # 纯会话选择与锁定主会话引擎（手动固定、Lock to Main Agent 防子智能体抢占、自动跟随）
+│   ├── i18n-core.ts              # 纯 Node 零 vscode 依赖国际化核心（三语言表、tBi、tBiHtml、formatNumber、formatClockTime）
+│   ├── webview-document.ts       # 纯 Node 零 vscode 依赖 9 页 Studio Telemetry Ledger 文档与增量标签构建器（IDE 与 App Sidecar 共用）
+│   ├── extension.ts              # IDE 扩展入口：激活/停用、轮询调度、非阻塞辅助元数据刷新、命令注册、实时费用快照、会话固定/锁定与状态恢复
 │   ├── daily-archival.ts         # 每日归档核心逻辑（可测试纯函数，依赖注入）
 │   ├── daily-ledger.ts           # 实时增量账本（按日期+账号分桶，去重记录，额度重置结算，零费用补账，午夜归档数据源）
 │   ├── discovery.ts              # agy hub 与旧版 Language Server 进程发现（多端点 CSRF 探测、daemon/hub_<port>.json 兜底、跨平台/IPv6 加固）
@@ -67,7 +92,18 @@ antigravity-context-monitor/
 │   └── images/                   # README 定稿截图资源（全部 9 页 monitor-*.png，Obsidian Slate 深色双语）
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
-├── tests/                        # Vitest 单元测试（60 个测试文件）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
+├── tests/                        # Vitest 单元测试（71 个测试文件，1,350 项测试）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
+│   ├── app-plugin-manifest.test.ts # App 插件清单、sidecar.json、SKILL.md 与脚本结构回归
+│   ├── app-sidecar-server.test.ts # Sidecar HTTP 路由、ETag 缓存、静态资源与安装器回归
+│   ├── app-sidecar-runtime.test.ts # Sidecar 运行时全 9 页渲染、语言/主题/动作分发与无障碍标题/隐私按钮回归
+│   ├── context-breakdown.test.ts # 上下文构成 9 类归因、双上限、20×5 点阵、Top 5 与 /context 报告回归
+│   ├── turn-diagnostics.test.ts  # 逐轮缓存命中率、冷/部分/热启动与 +Δ 净增长回归
+│   ├── quota-runway.test.ts      # 45 分钟滚动配额消耗速率、恢复重置、缓存保底与 custom-* 隔离回归
+│   ├── conversation-selector.test.ts # 手动固定、锁定主会话（防子智能体抢占）与跨平台工作区 URI 归一化回归
+│   ├── discovery-app-ide.test.ts # App 与 IDE 双端后端隔离发现、ANTIGRAVITY_LS_ADDRESS 与 Linux /proc/<pid> 回归
+│   ├── durable-state-concurrency.test.ts # DurableState 原子 O_CREAT|O_EXCL 文件锁、三方合并与多进程并发回归
+│   ├── i18n-core.test.ts         # 纯 Node i18n-core 翻译完整性、术语规范与零 vscode 依赖回归
+│   ├── webview-v1175-features.test.ts # 双端纯文档、上下文构成、逐轮诊断、续航预测与 IDE 仅限卡片回归
 │   ├── neon-pricing.test.ts      # Gemini 4 Neon 官方定价、Sonnet 5.5 $0.10 缓存读、Flash 3.6 优惠期与定时调价倒计时回归
 │   ├── orchestrator-settings.test.ts # JetboxSubscribeToState 流首帧、GetMendelFlags 编排角色、RetrieveUserQuotaSummary 双窗口与跨池上下文回归
 │   ├── webview-orchestrator-ui.test.ts # 编排设置卡、跨池路由、双窗口配额、美元费用、Notice 徽章、About 动态版本与样式系统回归
@@ -133,7 +169,7 @@ antigravity-context-monitor/
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   ├── project_structure.md          # 本文件
-│   └── releases/1.17.4.md            # 当前发布说明（先英文，再中文）
+│   └── releases/1.17.5.md            # 当前发布说明（先英文，再中文）
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── PRODUCT.md                    # 产品定位、9 页能力清单、术语约束与无障碍承诺
 ├── DESIGN.md                     # Studio Telemetry Ledger 设计系统规范（色板、排版、组件与 9 页契约）
@@ -237,9 +273,9 @@ antigravity-context-monitor/
 
 ---
 
-### durable-state.ts -- 扩展外部持久化
+### durable-state.ts -- 跨端并发原子锁外部持久化
 
-在 VS Code state 之外维护 JSON 文件持久化层（`%APPDATA%\Antigravity Context Monitor\state-v1.json`），双层镜像读写、异步防抖写入、重装恢复。
+在 VS Code state 之外维护共享 JSON 文件持久化层（macOS `~/Library/Application Support/Antigravity Context Monitor/state-v1.json`、Windows `%APPDATA%\Antigravity Context Monitor\state-v1.json`、Linux `$XDG_STATE_HOME/antigravity-context-monitor/state-v1.json`），支持双层镜像读写、异步防抖写入与重装恢复。1.17.5 新增跨平台原子 `O_CREAT | O_EXCL` 文件锁（`state-v1.json.lock`，POSIX `0o600` 权限、5s 过期锁回收、Windows NTFS `EPERM`/`EACCES`/`EBUSY` 争用重试与 `finally` 释放）、三方对象与账号快照合并以及外部变更通知标志（`_hasUnnotifiedExternalChanges`），确保 Antigravity App 与 Antigravity IDE 并发写入互不覆盖。
 
 ---
 

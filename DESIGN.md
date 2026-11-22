@@ -725,14 +725,60 @@ The refactored `webview-profile-tab.ts` styles all sections under the Studio Tel
 
 #### 9. About (`src/webview-about-tab.ts`)
 - **Colophon Reading Column:** Clean left-aligned editorial layout (`max-width: 820px`) with generous breathing room.
-- **Hero Header:** Page title `Antigravity Context Window Monitor`, dynamic manifest version pill (`v1.17.4`), readable subtitle (`65ch` measure), crisp platform chips (`IDE` active in `--ed-accent-tint` + `--ed-accent` border/text; `Desktop`, `SDK`, `CLI` quiet muted border — zero orange!), and concise platform scope note.
+- **Hero Header:** Page title `Antigravity Context Window Monitor`, dynamic manifest version pill (`v1.17.5`), readable subtitle (`65ch` measure), crisp platform chips (**Antigravity IDE** and **Antigravity App (Desktop 2.0+ Sidecar)** both active in `--ed-accent-tint` + `--ed-accent` border/text; `SDK`, `CLI` quiet muted border — zero orange!), and concise dual-host scope note.
 - **Feature Navigation (`.about-cards`):** 2-column responsive grid (`repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 10px;`) of clickable L1 navigation cards with `16px` crisp monochrome/accent SVG icon, bold tab title, 2-line muted description, and right-aligned hover chevron that glides smoothly (`translateX(2px)`).
-- **Info Panels (`Open Source`, `Tips`, `Compatibility`, `Disclaimer`, `Language`):** Clean L1 cards (`border: 1px solid var(--ed-border); border-radius: 10px; padding: 14px 16px;`) — **no 3px colored left strips** and **no pulsing heart or twinkling star animations**. `Disclaimer` uses crisp Crimson header icon + bold warning lead; `Compatibility` highlights `v1.17.4` clearly (alongside the full Gemini 4 `512K` context-window note); `Open Source` features a crisp secondary `GitHub Repository ↗` button.
+- **Info Panels (`Open Source`, `Tips`, `Compatibility`, `Disclaimer`, `Language`):** Clean L1 cards (`border: 1px solid var(--ed-border); border-radius: 10px; padding: 14px 16px;`) — **no 3px colored left strips** and **no pulsing heart or twinkling star animations**. `Disclaimer` uses crisp Crimson header icon + bold warning lead; `Compatibility` highlights `v1.17.5` dual-host verification clearly (alongside the full Gemini 4 `512K` context-window note); `Open Source` features a crisp secondary `GitHub Repository ↗` button.
 
 #### 10. Status Bar Hover Tooltip (`src/statusbar.ts`, `src/tooltip-budget.ts`)
 - **Priority-Tiered Studio Ledger in Native Markdown:** Built from ordered `HoverSection[]` blocks (`P0`–`P5`) separated by crisp `---` rules and bounded by zoom-aware visual line budgets (`compact` ≤ 14 lines, `auto`/`normal` ≤ 22 lines, `full` ≤ 32 lines, tightening under positive `window.zoomLevel`).
 - **Protected `P0` Contract:** `Hero` (account plan, active title/steps, cross-pool `Orchestrator` route, Unicode capsule context gauge `▰▱`) and `Quota remaining` (`5h | Weekly` table with `Planner`/`Executor` role tags and graceful 5h-only fallback) are `P0` with `compactLines` fallbacks so `Quota remaining` never drops in `compact` or zoomed modes; the 1-click footer (`Overview · Activity · Cost · Models · Settings · Refresh`) stays pinned at bottom via `pinBottom: true` with strict `MarkdownString.isTrusted` command allowlisting.
 - **Information-Dense GFM Micro-Tables (`P1`/`P3`/`P4`):** `P1` presents the 4-column `Metric | Session | Today / Ratio | Detail` ledger (Cost + positive Cache Savings, Prompt Cache + `Eff. In`, Speed/TTFT + Cached vs Uncached comparison, optional `Orchestrator Split`); `P3` renders the Latest Call micro-table (including 0-token failed/retried calls); `P4` emits event-driven alerts (upcoming rate changes, sunset `Notice`, `Retry Waste`, AI credits) only when active. All dynamic strings are escaped and CRLF-normalized so tables and emphasis never break.
+
+---
+
+## Dual-Surface Architecture & v1.17.5 Telemetry Extensions
+
+### Shared Pure Webview Document (`src/webview-document.ts`) & App Sidecar (`src/app/`)
+- **Single source of HTML truth:** `buildMonitorDocumentHtml()` and `buildMonitorTabsPayload()` compile and render all 9 Studio Telemetry Ledger views with **zero `vscode` runtime imports**, serving both `src/webview-panel.ts` (Antigravity IDE VS Code Webview) and `src/app/sidecar-runtime.ts` (Antigravity App Desktop 2.0+ native Sidecar plugin) without divergent markup or fallback stubs. Every rendered document includes `<title>${esc(tBi('Antigravity Monitor', 'Antigravity 监控面板'))}</title>` in `<head>` for WCAG 2.1 Level A `document-title` compliance.
+- **App Sidecar Runtime & HTTP Bridge (`src/app/sidecar-runtime.ts`, `src/app/sidecar-server.ts`, `src/app/host-bridge.ts`):** Serves `AUX_PANE` (`/`), full-width `SIDEBAR` (`/full`), `/api/health`, ETag-diffed `/api/snapshot`, `/api/action`, and static `/assets/images/*.png` on loopback HTTP (via Antigravity's `sidecar_sdk` `SidecarApp` or standalone `127.0.0.1` mode). `host-bridge.ts` installs `window.__ACM_BRIDGE__`, polyfills `acquireVsCodeApi` onto `/api/action`, dynamically tracks `window.sidecar.conversationId`, deduplicates incremental DOM patching per poll, and runs visibility-gated ETag polling (pausing cleanly when `document.hidden === true`).
+- **Host Theme Adapter (`src/app/theme-adapter.ts`):** Bridges Antigravity App host CSS variables (`--background`, `--card`, `--foreground`, `--muted-foreground`, `--border`, `--primary`, `--destructive`, `--warning`) pushed via `/preload.js` `theme-change` events onto `--vscode-*` and `--ed-*` tokens under `body[data-acm-surface="app-sidecar"]` and `body[data-acm-theme="dark"|"light"|"hc"|"hc-light"]`. High-contrast light (`hc-light`) enforces WCAG-verified contrast overrides (`#005A32`, `#7A4F01`, `#B5200D` on `#FFFFFF`). Narrow `AUX_PANE` (`300px–500px`) and wide `SIDEBAR` (`≥ 900px`) refine masthead alignment without introducing horizontal scroll.
+- **IDE-Only Settings Affordance (`.stg-card.is-ide-only`):** Inside Antigravity App, IDE status-bar toggle cards display an accessible `.stg-ide-only-badge` (`var(--ed-ink-secondary)` + `var(--ed-border-strong)`) and dim only `.toggle-track` (`opacity: 0.55`) — never reducing card-level opacity so label text remains above WCAG AA contrast in all 4 themes.
+
+### Masthead Context Bar (`.masthead-context-bar`)
+- Compact secondary bar integrated cleanly into `.panel-topbar` (`padding: 3px … 5px`, control height `26px`, aligned cleanly with `SIDEBAR` at `≥ 900px` and stacking cleanly at `≤ 640px`):
+  - **Conversation Switcher (`#conversationSwitcher`):** `<select>` listing `Follow Active` plus workspace-prioritized trajectories with `[Running · Subagent · Main · Workspace]` metadata; preserves `#lockMainBtn` and `#staleBadge` live updates even while `<select>` holds focus.
+  - **Lock to Main Agent (`#lockMainBtn`):** Tactile toggle (`aria-pressed`, active `.is-locked` Studio Cobalt tint) ignoring background subagent bursts to keep the main conversation pinned.
+  - **Surface & Stale Badges (`.surface-badge`, `#staleBadge`):** Compact pill badges declaring `Antigravity App` vs `Antigravity IDE` and surfacing `Cached / Stale` with last-updated clock time when local RPC fallback is active.
+
+### Context Composition Breakdown, 20×5 Dot Matrix & Editorial Category Tokens
+- **Editorial Context Category Tokens (`src/webview-editorial-styles.ts`):** Calibrated separately for Dark (`Obsidian Slate`) and Light (`Alabaster Studio`) themes, bridged cleanly in High-Contrast modes:
+  - `--ctx-cat-system`: `#6E8BB8` (Dark) / `#47628A` (Light)
+  - `--ctx-cat-rules-skills`: `#8B7CF6` (Dark) / `#6D28D9` (Light)
+  - `--ctx-cat-plugins-mcp`: `#2DD4BF` (Dark) / `#0F766E` (Light)
+  - `--ctx-cat-subagents`: `#F472B6` (Dark) / `#BE185D` (Light)
+  - `--ctx-cat-user`: `#5B9CF6` (Dark) / `#1D4ED8` (Light)
+  - `--ctx-cat-assistant`: `#A78BFA` (Dark) / `#7C3AED` (Light)
+  - `--ctx-cat-tools`: `#F5B841` (Dark) / `#B45309` (Light)
+  - `--ctx-cat-media`: `#34D399` (Dark) / `#047857` (Light)
+  - `--ctx-cat-other`: `#8C98A9` (Dark) / `#5A6475` (Light)
+  - `--ctx-cat-free`: `var(--ed-track)`
+- **Component Grammar (`.ctx-breakdown-card`):**
+  - Header with `.ctx-measure-badge` (`is-measured`, `is-compacted`, `is-rewind`, `is-awaiting`) and segmented **Bar View ↔ Dot Matrix** toggle (`.ctx-viz-toggle`, preserving active mode across live refreshes).
+  - **Dual-Cap Row (`.ctx-dual-cap-row`):** Side-by-side pills contrasting **Effective Budget** (`used / effectiveBudgetTokens`) against **Native Ceiling** (`used / nativeLimitTokens`) whenever effective autocompact budget is tighter than native context.
+  - **Visualizations:** Proportional segmented capsule bar (`.ctx-seg-bar`) and **20×5 (100-cell) Dot Matrix** (`.ctx-dot-matrix` / `.ctx-dot`, High-Contrast outlined via `outline: 1px solid var(--ed-border)`).
+  - **Semantic Interactive Legend (`<ul class="ctx-legend"><li class="ctx-legend-row"><button class="ctx-legend-item">`):** Grid columns `minmax(min(100%, 200px), 1fr)` ensuring zero bilingual truncation at `1440px` and clean 1-column collapse at `320px`; clicking or hovering highlights matching `[data-ctx-cat]` slices/dots while dimming non-matching categories.
+  - **Collapsible Top 5 Largest Items (`#overview-largest-items`) & Quick Actions (`.ctx-quick-actions`):** Ordered list of heaviest context items plus one-click `#copyContextReportBtn` (`Copy /context Report`) and `#copyHandoffPromptBtn` (`Copy Handoff Prompt`) with `role="status"` feedback.
+
+### Turn Diagnostics, Quota Runway & Resilient State Banners
+- **Turn Diagnostics (`src/turn-diagnostics.ts`, `src/activity-panel.ts`):** Adds Last-Turn vs Session Cache Hit comparison, semantic start pills (`.turn-start-pill.is-cold` / `.is-partial` / `.is-warm`), and signed net context delta cells (`.rc-delta-pos`, `.rc-delta-neg`, `.rc-delta-compaction`) in GM Data's Recent Calls Ledger.
+- **Quota Burn-Rate Runway (`src/quota-runway.ts`):** Compact `.quota-runway-pill` rows beneath pool meters (`is-safe` Emerald, `is-risk` Amber, `is-exhausted` Crimson, `is-muted` Neutral) showing `%/h` burn rates and estimated exhaustion time.
+- **Stale-Safe & Custom-Model Banners:** `.stale-data-banner` (Amber tint + pulsing-free static status dot + last-updated timestamp) preserves prior telemetry during transient RPC drops; `.custom-model-banner` + collapsible `.custom-model-pools-collapse` cleanly isolates `custom-*` / BYOK / local models.
+
+### Concurrent Persistence (`DurableState`) & Verified WCAG 2.1 AA Matrix
+- **Atomic Lockfile `DurableState` (`src/durable-state.ts`):** Wraps read-merge-write-rename cycles on shared `state-v1.json` in a cross-platform exclusive `O_CREAT | O_EXCL` lockfile (`state-v1.json.lock`, `0o600` POSIX mode, 5s stale-lock recovery, Windows NTFS `EPERM`/`EACCES`/`EBUSY` retry, guaranteed `finally` unlink), 3-way object/account-snapshot merging, and `_hasUnnotifiedExternalChanges` tracking so concurrent Antigravity App and Antigravity IDE processes never drop each other's writes.
+- **Verified Accessibility Matrix (v1.17.5):**
+  - **App Sidecar Chromium + full-document axe-core WCAG 2.1 AA:** **432/432 combinations PASS with 0 violations** (`320px`/`420px`/`1024px`/`1440px` × `dark`/`light`/`hc`/`hc-light` × `en`/`zh`/`both` × all 9 tabs), including 0 `color-contrast`, 0 `aria-required-children`, 0 `scrollable-region-focusable` (`tabindex="0"` on `.recent-calls-table-wrap`, `.act-conv-list`, `.act-timeline`, `.cp-viewer`), 0 `document-title`, 0 `label-content-name-mismatch` (`#privacyToggle` aligned with visible label, hover-only `.gm-ue-tooltip` marked `aria-hidden="true"`), and 0 horizontal overflow.
+  - **Installed IDE Chromium UI Matrix (`tests/installed-ide-ui.cjs`):** **739/739 PASS** with 0 axe-core WCAG 2.1 AA violations and 0 WCAG 1.4.11 non-text contrast failures.
 
 ---
 
