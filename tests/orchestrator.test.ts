@@ -7,7 +7,7 @@ import { fetchAndOverrideCheckpointerLimits, measuredContextDrop } from '../src/
 import { rpcCall } from '../src/rpc-client';
 import { parseGMEntry, applyTrajectoryModelHints, maybeEnrichCallsFromTrajectory, buildGMMatchKey } from '../src/gm/parser';
 import { buildSummaryFromConversations } from '../src/gm/summary';
-import { calculateCosts, findPricingWithCustom, PricingStore } from '../src/pricing-store';
+import { calculateCosts, DEFAULT_PRICING, findPricingWithCustom, PricingStore } from '../src/pricing-store';
 import { buildPricingTabContent } from '../src/pricing-panel';
 import { buildModelsTabContent, buildModelInfoGrid } from '../src/webview-models-tab';
 import { groupModelQuotas } from '../src/model-quota';
@@ -122,19 +122,28 @@ function summary() {
         coveredSteps: 2, coverageRate: 1, calls, checkpointSummaries: [] }], '2026-11-13T00:01:00Z')!;
 }
 describe('Orchestrator accounting and presentation', () => {
-    it('keeps unknown rates explicit and custom coordinator/worker rates separate', () => {
+    it('keeps strict mode explicit, maps base rates in mapped mode, and keeps custom coordinator/worker rates separate', () => {
         const rate = { input: 2, output: 10, thinking: 10, cacheRead: 0.1, cacheWrite: 0 };
+        const familyCustom = { input: 9, output: 29, thinking: 29, cacheRead: 0.9, cacheWrite: 0 };
         for (const { id, catalog } of identities) {
-            expect(findPricingWithCustom(id, {})).toBeNull();
-            expect(findPricingWithCustom(catalog, { 'gemini-4-carbon': rate, 'gemini-4-hydrogen': rate })).toBeNull();
+            expect(findPricingWithCustom(id, {}, DEFAULT_PRICING, 'strict')).toBeNull();
+            expect(findPricingWithCustom(catalog, { 'gemini-4-carbon': familyCustom, 'gemini-4-hydrogen': familyCustom }, DEFAULT_PRICING, 'strict')).toBeNull();
+            expect(findPricingWithCustom(catalog, { 'gemini-4-carbon': familyCustom, 'gemini-4-hydrogen': familyCustom }, DEFAULT_PRICING, 'mapped')).not.toEqual(familyCustom);
         }
         const custom = { 'gemini-pro-orchestrator': rate };
         expect(findPricingWithCustom(coordinator, custom)).toEqual(rate);
-        expect(findPricingWithCustom(worker, custom)).toBeNull();
-        const result = calculateCosts(summary(), custom);
-        expect(result.rows).toHaveLength(2);
-        expect(result.grandTotal).toBeCloseTo(0.00305, 10);
-        expect(result.rows.filter(r => !r.pricing)).toHaveLength(1);
+        expect(findPricingWithCustom(worker, custom, DEFAULT_PRICING, 'strict')).toBeNull();
+        expect(findPricingWithCustom(worker, custom, DEFAULT_PRICING, 'mapped')).toEqual(DEFAULT_PRICING['gemini-4-hydrogen']);
+
+        const strictResult = calculateCosts(summary(), custom, 'strict');
+        expect(strictResult.rows).toHaveLength(2);
+        expect(strictResult.grandTotal).toBeCloseTo(0.00305, 10);
+        expect(strictResult.rows.filter(r => !r.pricing)).toHaveLength(1);
+
+        const mappedResult = calculateCosts(summary(), custom, 'mapped');
+        expect(mappedResult.rows).toHaveLength(2);
+        expect(mappedResult.rows.filter(r => !r.pricing)).toHaveLength(0);
+        expect(mappedResult.grandTotal).toBeGreaterThan(strictResult.grandTotal);
     });
     it('persists both actual calls without adding a call for the configured route', () => {
         const s = summary();
@@ -158,10 +167,17 @@ describe('Orchestrator accounting and presentation', () => {
         expect(html).toContain(language === 'zh' ? '配置的执行模型' : 'Configured execution model');
         expect(html).toContain('1,048,576 / 262,144');
         expect(buildModelsTabContent(null, [])).not.toContain('spec-orchestration');
-        const pricing = buildPricingTabContent(summary(), new PricingStore());
-        expect(pricing).toContain('data-model="gemini-pro-orchestrator"');
-        expect(pricing).toContain('data-model="gemini-flash-worker-agy"');
-        expect(pricing).toContain(language === 'zh' ? '价格待确认' : 'Price unavailable');
+        const pricingMapped = buildPricingTabContent(summary(), new PricingStore());
+        expect(pricingMapped).toContain('data-model="gemini-pro-orchestrator"');
+        expect(pricingMapped).toContain('data-model="gemini-flash-worker-agy"');
+        expect(pricingMapped).toContain(language === 'zh' ? '按底座估算' : 'Est. via Base Model');
+
+        const pricingStrict = buildPricingTabContent(summary(), new PricingStore(), undefined, undefined, undefined, false, {
+            orchestratorPricingMode: 'strict',
+        });
+        expect(pricingStrict).toContain('data-model="gemini-pro-orchestrator"');
+        expect(pricingStrict).toContain('data-model="gemini-flash-worker-agy"');
+        expect(pricingStrict).toContain(language === 'zh' ? '价格待确认' : 'Price unavailable');
     });
     it('escapes live labels and rejects malicious or self-referencing execution links', () => {
         expect(buildModelsTabContent(null, [cfg(coordinator, '<img src=x onerror=alert(1)>')])).not.toContain('<img');

@@ -16,7 +16,12 @@ import {
     type OrchestratorSettings,
     type UserQuotaSummary,
 } from './models';
-import { findPricingWithCustom, formatUsdPerMillion, type ModelPricing } from './pricing-store';
+import {
+    resolvePricingDetail,
+    formatUsdPerMillion,
+    type ModelPricing,
+    type OrchestratorPricingMode,
+} from './pricing-store';
 import type { QuotaRunwayEstimate } from './quota-runway';
 import { ICON } from './webview-icons';
 import {
@@ -32,6 +37,7 @@ export interface ModelsTabOptions {
     orchestratorSettings?: OrchestratorSettings | null;
     quotaSummary?: UserQuotaSummary | null;
     customPricing?: Record<string, ModelPricing>;
+    orchestratorPricingMode?: OrchestratorPricingMode;
     quotaRunways?: Record<string, QuotaRunwayEstimate>;
     isCustomModelActive?: boolean;
     staleState?: MonitorStaleState | null;
@@ -87,7 +93,7 @@ function orchestrationDescription(spec: ModelSpec): string {
         <p><strong>${tBiHtml('Configured execution model', '配置的执行模型')}:</strong> ${esc(worker?.displayName || target)}</p>
         <p><code>${esc(worker?.modelId || target)}</code></p>
         ${worker ? `<p>${tBiHtml('Execution context & max output', '执行上下文与最大输出')}: ${formatTokensHtml(worker.maxTokens)} / ${formatTokensHtml(worker.maxOutputTokens)}</p>` : ''}
-        <p>${tBiHtml('Server-managed fixed coordinator route. Usage and costs follow the actual model reported per call; Custom Orchestrator Mode pairs eligible models dynamically via Orchestrator Settings.', '服务端管理的固定协调器路由。用量和费用按每次调用实际报告的模型计算；自定义编排器模式则通过编排器设置动态组合可选模型。')}</p>
+        <p>${tBiHtml('Server-managed fixed coordinator route. Usage and costs follow the actual model reported per call; Custom Orchestrator Mode pairs eligible models dynamically via Orchestrator Settings.', '服务端管理的固定协调器路由。用量和费用按每次调用实际报告的模型计算；自定义编排模式则通过编排设置动态组合可选模型。')}</p>
     </div>`;
 }
 
@@ -118,7 +124,38 @@ function poolChipHtml(modelId: string): string {
     return '';
 }
 
-export function buildOrchestratorSettingsCard(settings: OrchestratorSettings | null | undefined): string {
+function buildRoleEffectiveRatesHtml(
+    modelId: string,
+    customPricing?: Record<string, ModelPricing>,
+    orchestratorPricingMode?: OrchestratorPricingMode,
+): string {
+    if (!modelId) { return ''; }
+    const detail = resolvePricingDetail(modelId, customPricing || {}, { orchestratorPricingMode });
+    if (!detail.pricing) {
+        return `<div class="orch-role-rates" data-price-state="unpriced"><span class="spec-price-badge is-unpriced">${tBiHtml('Unpriced', '未定价')}</span></div>`;
+    }
+    const items: string[] = [
+        `${tBiHtml('In', '输入')} ${esc(formatUsdPerMillion(detail.pricing.input))}`,
+        `${tBiHtml('Out', '输出')} ${esc(formatUsdPerMillion(detail.pricing.output))}`,
+    ];
+    if (detail.pricing.cacheRead > 0) {
+        items.push(`${tBiHtml('Cache', '缓存')} ${esc(formatUsdPerMillion(detail.pricing.cacheRead))}`);
+    }
+    if (detail.pricing.thinking > 0 && detail.pricing.thinking !== detail.pricing.output) {
+        items.push(`${tBiHtml('Think', '思考')} ${esc(formatUsdPerMillion(detail.pricing.thinking))}`);
+    }
+    const provTag = detail.provenance === 'mapped_base'
+        ? ` <span class="orch-role-status" data-pricing-provenance="mapped_base">${tBiHtml('Est. via Base Model', '按底座估算')}</span>`
+        : detail.provenance === 'custom'
+            ? ` <span class="orch-role-status is-custom" data-pricing-provenance="custom">${tBiHtml('Custom', '自定义')}</span>`
+            : '';
+    return `<div class="orch-role-rates" data-price-state="${detail.provenance === 'mapped_base' ? 'mapped' : 'priced'}"><span class="spec-price-values">${items.join(' · ')}</span>${provTag}</div>`;
+}
+
+export function buildOrchestratorSettingsCard(
+    settings: OrchestratorSettings | null | undefined,
+    options?: Pick<ModelsTabOptions, 'customPricing' | 'orchestratorPricingMode'>,
+): string {
     if (!settings) { return ''; }
     const language = getLanguage();
     const orchLabel = localizePickerEffortLabel(
@@ -140,17 +177,24 @@ export function buildOrchestratorSettingsCard(settings: OrchestratorSettings | n
     const orchFamilies = settings.roles.orchestrators.map(formatRoleFamilyName);
     const execFamilies = settings.roles.executors.map(formatRoleFamilyName);
     const shortId = (id: string) => id ? `<code class="spec-short-id" title="${esc(id)}">${esc(id.replace(/^MODEL_PLACEHOLDER_/, ''))}</code>` : '';
+    const sourceBadge = settings.settingsSource === 'config_fallback'
+        ? `<span class="orch-role-status" data-settings-source="config_fallback">${tBiHtml('Local config', '本地配置')}</span>`
+        : '';
+    const creditsMeta = typeof settings.useAiCredits === 'boolean'
+        ? `<div class="orch-family-row"><dt>${tBiHtml('AI Credit Overages', 'AI 积分超额')}</dt><dd>${settings.useAiCredits ? tBiHtml('Enabled', '已开启') : tBiHtml('Disabled', '已关闭')}</dd></div>`
+        : '';
 
     return `
         <section class="card orch-settings-card" data-orchestrator-mode="${settings.mode}">
             <div class="orch-settings-header">
-                <h2>${ORCH_ICON_SVG} <span>${tBiHtml('Orchestrator Settings', '编排器设置')}</span></h2>
+                <h2>${ORCH_ICON_SVG} <span>${tBiHtml('Orchestrator Settings', '编排设置')}</span></h2>
+                ${sourceBadge}
                 ${modeBadge}
             </div>
             <div class="orch-role-list">
                 <div class="orch-role-row" data-orch-role="orchestrator">
                     <div class="orch-role-meta">
-                        <span class="orch-role-title">${tBiHtml('Orchestrator Model', '编排器模型')}</span>
+                        <span class="orch-role-title">${tBiHtml('Orchestrator Model', '编排模型')}</span>
                         ${roleStatus(settings.isCustomOrchestrator)}
                     </div>
                     <div class="orch-role-value">
@@ -158,10 +202,11 @@ export function buildOrchestratorSettingsCard(settings: OrchestratorSettings | n
                         ${shortId(settings.effectiveOrchestratorModel)}
                         ${poolChipHtml(settings.effectiveOrchestratorModel)}
                     </div>
+                    ${buildRoleEffectiveRatesHtml(settings.effectiveOrchestratorModel, options?.customPricing, options?.orchestratorPricingMode)}
                 </div>
                 <div class="orch-role-row" data-orch-role="executor">
                     <div class="orch-role-meta">
-                        <span class="orch-role-title">${tBiHtml('Executor Model', '执行器模型')}</span>
+                        <span class="orch-role-title">${tBiHtml('Executor Model', '执行模型')}</span>
                         ${roleStatus(settings.isCustomExecutor)}
                     </div>
                     <div class="orch-role-value">
@@ -169,28 +214,37 @@ export function buildOrchestratorSettingsCard(settings: OrchestratorSettings | n
                         ${shortId(settings.effectiveExecutorModel)}
                         ${poolChipHtml(settings.effectiveExecutorModel)}
                     </div>
+                    ${buildRoleEffectiveRatesHtml(settings.effectiveExecutorModel, options?.customPricing, options?.orchestratorPricingMode)}
                 </div>
             </div>
-            ${(orchFamilies.length > 0 || execFamilies.length > 0) ? `
+            ${(orchFamilies.length > 0 || execFamilies.length > 0 || creditsMeta) ? `
             <dl class="orch-families-grid">
-                ${orchFamilies.length > 0 ? `<div class="orch-family-row"><dt>${tBiHtml('Orchestrator families', '可用编排器系列')}</dt><dd>${esc(orchFamilies.join(' · '))}</dd></div>` : ''}
-                ${execFamilies.length > 0 ? `<div class="orch-family-row"><dt>${tBiHtml('Executor families', '可用执行器系列')}</dt><dd>${esc(execFamilies.join(' · '))}</dd></div>` : ''}
+                ${orchFamilies.length > 0 ? `<div class="orch-family-row"><dt>${tBiHtml('Orchestrator families', '可用编排系列')}</dt><dd>${esc(orchFamilies.join(' · '))}</dd></div>` : ''}
+                ${execFamilies.length > 0 ? `<div class="orch-family-row"><dt>${tBiHtml('Executor families', '可用执行系列')}</dt><dd>${esc(execFamilies.join(' · '))}</dd></div>` : ''}
+                ${creditsMeta}
             </dl>` : ''}
             <p class="orch-settings-note">${tBiHtml(
         'Orchestrator and Executor calls each draw from their own model\'s quota pool (Gemini vs Claude / GPT) and are metered under the actual model reported per call.',
-        '编排器与执行器调用分别消耗各自所属模型的配额池（Gemini 或 Claude / GPT），并按每次调用实际报告的模型分别计量与计费。',
+        '编排模型与执行模型调用分别消耗各自所属模型的配额池（Gemini 或 Claude / GPT），并按每次调用实际报告的模型分别计量与计费。',
     )}</p>
         </section>`;
 }
 
 function buildSpecPriceRowHtml(
     spec: ModelSpec,
-    options?: Pick<ModelsTabOptions, 'customPricing'>,
+    options?: Pick<ModelsTabOptions, 'customPricing' | 'orchestratorPricingMode'>,
 ): string {
     const custom = options?.customPricing || {};
-    const pricing = spec.isImageGeneration
-        ? null
-        : (findPricingWithCustom(spec.placeholderId, custom) ?? findPricingWithCustom(spec.modelId, custom));
+    const mode = options?.orchestratorPricingMode;
+    const detail = spec.isImageGeneration
+        ? { pricing: null, provenance: 'unpriced' as const }
+        : (() => {
+            const byPlaceholder = resolvePricingDetail(spec.placeholderId, custom, { orchestratorPricingMode: mode });
+            return byPlaceholder.pricing
+                ? byPlaceholder
+                : resolvePricingDetail(spec.modelId, custom, { orchestratorPricingMode: mode });
+        })();
+    const pricing = detail.pricing;
     if (!pricing) {
         return `<div class="spec-price-row is-unpriced" data-price-state="unpriced">
             <span class="spec-price-label">${tBiHtml('API reference', 'API 参考价')}</span>
@@ -204,16 +258,22 @@ function buildSpecPriceRowHtml(
     if (pricing.cacheRead > 0) {
         items.push(`${tBiHtml('Cache', '缓存')} ${esc(formatUsdPerMillion(pricing.cacheRead))}`);
     }
-    return `<div class="spec-price-row" data-price-state="priced">
+    const isMapped = detail.provenance === 'mapped_base';
+    const badgeHtml = isMapped
+        ? ` <span class="spec-price-badge is-mapped" data-pricing-provenance="mapped_base">${tBiHtml('Est. via Base Model', '按底座估算')}</span>`
+        : detail.provenance === 'custom'
+            ? ` <span class="spec-price-badge is-custom" data-pricing-provenance="custom">${tBiHtml('Custom', '自定义')}</span>`
+            : '';
+    return `<div class="spec-price-row${isMapped ? ' is-mapped' : ''}" data-price-state="${isMapped ? 'mapped' : 'priced'}">
         <span class="spec-price-label">${tBiHtml('API reference', 'API 参考价')}</span>
-        <span class="spec-price-values">${items.join(' · ')}</span>
+        <span class="spec-price-values">${items.join(' · ')}${badgeHtml}</span>
     </div>`;
 }
 
 export function buildModelInfoGrid(
     specs: ModelSpec[],
     kind: 'chat' | 'image' = 'chat',
-    options?: Pick<ModelsTabOptions, 'customPricing'>,
+    options?: Pick<ModelsTabOptions, 'customPricing' | 'orchestratorPricingMode'>,
 ): string {
     const language = getLanguage();
     const cards = specs.map((s) => {
@@ -321,8 +381,11 @@ export function buildModelsTabContent(
         parts.push(defaultModelHtml);
     }
 
-    // 1b. Orchestrator Settings Card (live Jetbox + Mendel roles)
-    const orchestratorSettingsHtml = buildOrchestratorSettingsCard(options.orchestratorSettings);
+    // 1b. Orchestrator Settings Card (live Jetbox + Mendel roles + effective per-1M rates)
+    const orchestratorSettingsHtml = buildOrchestratorSettingsCard(options.orchestratorSettings, {
+        customPricing: options.customPricing,
+        orchestratorPricingMode: options.orchestratorPricingMode,
+    });
     if (orchestratorSettingsHtml) {
         parts.push(orchestratorSettingsHtml);
     }

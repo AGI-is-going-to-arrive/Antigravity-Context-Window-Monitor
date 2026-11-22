@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
-import { parseStrictResetTimestamp, type ContextUsage, type ConversationOrchestratorConfig } from './tracker';
+import { parseStrictResetTimestamp, type ContextUsage } from './tracker';
 import type { GMCallEntry, GMSummary } from './gm/types';
+import {
+    computeOrchestratorSplit,
+    type OrchestratorSplitSummary,
+} from './orchestrator-attribution';
 import {
     costFromTokens,
     findPricingForDate,
@@ -71,8 +75,8 @@ import {
 } from './webview-overview-tab';
 import type { QuotaRunwayEstimate } from './quota-runway';
 
-export { calculateCompressionStats };
-export type { CompressionStats };
+export { calculateCompressionStats, computeOrchestratorSplit };
+export type { CompressionStats, OrchestratorSplitSummary };
 
 // Re-export pure helpers for tests / external callers
 export {
@@ -118,16 +122,6 @@ export interface LatestCallSnapshot {
     speedTokPerSec: number | null;
     status: 'ok' | 'retried' | 'error';
     retries: number;
-}
-
-export interface OrchestratorSplitSummary {
-    plannerLabel: string;
-    plannerCalls: number;
-    plannerCostUsd: number | null;
-    executorLabel: string;
-    executorCalls: number;
-    executorCostUsd: number | null;
-    hasUnpriced: boolean;
 }
 
 export interface RetryWasteSummary {
@@ -403,53 +397,6 @@ function computeHoverExtras(
         blendedInputUsdPerMillion,
         retryWaste,
         primaryCalls,
-    };
-}
-
-function computeOrchestratorSplit(
-    calls: readonly GMCallEntry[],
-    orchestratorConfig: ConversationOrchestratorConfig | undefined,
-    customPricing: Record<string, ModelPricing>,
-): OrchestratorSplitSummary | null {
-    if (!orchestratorConfig?.planModel || !orchestratorConfig?.executionModel || calls.length === 0) {
-        return null;
-    }
-    const planId = resolveModelId(orchestratorConfig.planModel) || orchestratorConfig.planModel;
-    const execId = resolveModelId(orchestratorConfig.executionModel) || orchestratorConfig.executionModel;
-    if (!planId || !execId || planId === execId) { return null; }
-
-    let plannerCalls = 0;
-    let plannerCost = 0;
-    let plannerPriced = false;
-    let executorCalls = 0;
-    let executorCost = 0;
-    let executorPriced = false;
-    let hasUnpriced = false;
-
-    for (const c of calls) {
-        const cid = resolveModelId(c.model || c.modelDisplay || c.responseModel) || c.model;
-        const pricingModel = selectPricingModel(c.model || c.modelDisplay, c.responseModel, customPricing);
-        const pricing = findPricingForDate(pricingModel, customPricing, c.createdAt || '');
-        const callCost = pricing ? costFromTokens(c, pricing) : null;
-        if (cid === planId) {
-            plannerCalls++;
-            if (callCost !== null) { plannerCost += callCost; plannerPriced = true; } else { hasUnpriced = true; }
-        } else if (cid === execId) {
-            executorCalls++;
-            if (callCost !== null) { executorCost += callCost; executorPriced = true; } else { hasUnpriced = true; }
-        }
-    }
-
-    if (plannerCalls === 0 && executorCalls === 0) { return null; }
-    const lang = getLanguage();
-    return {
-        plannerLabel: localizePickerEffortLabel(planId, getModelDisplayName(planId), lang),
-        plannerCalls,
-        plannerCostUsd: plannerPriced ? plannerCost : null,
-        executorLabel: localizePickerEffortLabel(execId, getModelDisplayName(execId), lang),
-        executorCalls,
-        executorCostUsd: executorPriced ? executorCost : null,
-        hasUnpriced,
     };
 }
 
@@ -1385,10 +1332,13 @@ export class StatusBarManager {
         ];
 
         // Optional 1-line Orchestrator Planner vs Executor Split
-        if (this.cachedExtras && usage?.orchestratorConfig) {
+        if (this.cachedExtras && this.cachedExtras.primaryCalls.length > 0) {
             const split = computeOrchestratorSplit(
                 this.cachedExtras.primaryCalls,
-                usage.orchestratorConfig,
+                {
+                    orchestratorConfig: usage?.orchestratorConfig,
+                    orchestratorHistory: usage?.orchestratorHistory,
+                },
                 this.cachedCustomPricing,
             );
             if (split) {
@@ -1398,7 +1348,10 @@ export class StatusBarManager {
                 const execCost = split.executorCostUsd !== null
                     ? ` **${formatUsdCost(split.executorCostUsd)}**`
                     : '';
-                lines.push(`$(git-branch) **${tBi('Split', '编排拆分')}** · ${t('orchestrator.planner')} ${formatHoverText(split.plannerLabel, 32)} ${split.plannerCalls}×${planCost} ｜ ${t('orchestrator.worker')} ${formatHoverText(split.executorLabel, 32)} ${split.executorCalls}×${execCost}`);
+                const coldHint = split.coldCacheSwitchCount > 0
+                    ? ` · ${split.coldCacheSwitchCount}× ${tBi('cold switch', '切换冷启动')}`
+                    : '';
+                lines.push(`$(git-branch) **${tBi('Split', '编排拆分')}** · ${t('orchestrator.planner')} ${formatHoverText(split.plannerLabel, 32)} ${split.plannerCalls}×${planCost} ｜ ${t('orchestrator.worker')} ${formatHoverText(split.executorLabel, 32)} ${split.executorCalls}×${execCost}${coldHint}`);
             }
         }
 

@@ -27,6 +27,14 @@ import {
     filterLsProcessLines,
     parseProcNetTcp,
     findListeningPortsFromProc,
+    parseWslDrvFsMounts,
+    convertWindowsPathToWsl,
+    resolveWslWindowsRoot,
+    buildWslWindowsExePath,
+    resolveWslWindowsUserProfile,
+    getAntigravityAppDataDirs,
+    getAntigravityDaemonDirs,
+    readAllHubDiscoveryFilesFromDirs,
     resetPathDiagLog,
     resetWmicCache,
     resetWslCache,
@@ -505,6 +513,111 @@ describe('Antigravity App + IDE unified discovery & cross-platform hardening', (
                 trajectoryMetadata: { parentCascadeId: 'main-1', role: 'worker' },
                 killed: false,
             });
+        });
+    });
+
+    describe('WSL dynamic drive/mount root & Windows host %USERPROFILE% bridging', () => {
+        const sampleProcMounts = [
+            'none /mnt/wsl tmpfs rw,relatime 0 0',
+            'C:\\134 /win/c drvfs rw,noatime 0 0',
+            'drvfs /win/d 9p rw,dirsync,noatime,aname=drvfs;path=D:\\;uid=1000;gid=1000 0 0',
+            'tools /init 9p ro,dirsync,aname=tools 0 0',
+        ].join('\n');
+
+        it('parses both WSL1 drvfs and WSL2 9p drvfs mount tables with custom automount roots', () => {
+            const mounts = parseWslDrvFsMounts(sampleProcMounts);
+            expect(mounts.get('C')).toBe('/win/c');
+            expect(mounts.get('D')).toBe('/win/d');
+            expect(mounts.size).toBe(2);
+
+            expect(convertWindowsPathToWsl('D:\\Windows\\System32', mounts)).toBe('/win/d/Windows/System32');
+            expect(convertWindowsPathToWsl('C:\\Users\\Alice', mounts)).toBe('/win/c/Users/Alice');
+            expect(convertWindowsPathToWsl('E:\\Data', mounts)).toBe('/mnt/e/Data');
+            expect(convertWindowsPathToWsl('/already/posix', mounts)).toBeNull();
+        });
+
+        it('resolves non-C Windows roots via env SystemRoot, inherited PATH, or /proc/mounts without hardcoding /mnt/c', () => {
+            // 1. Explicit SystemRoot on D: mapped via custom mount table
+            const viaEnv = resolveWslWindowsRoot({
+                env: { SystemRoot: 'D:\\Windows' },
+                procMountsContent: sampleProcMounts,
+                existsSyncFn: () => false,
+            });
+            expect(viaEnv).toBe('/win/d/Windows');
+            expect(buildWslWindowsExePath(viaEnv, 'wmic')).toBe('/win/d/Windows/System32/wbem/WMIC.exe');
+            expect(buildWslWindowsExePath(viaEnv, 'powershell')).toBe('/win/d/Windows/System32/WindowsPowerShell/v1.0/powershell.exe');
+            expect(buildWslWindowsExePath(viaEnv, 'netstat')).toBe('/win/d/Windows/System32/netstat.exe');
+
+            // 2. Inherited Windows System32 on WSL PATH
+            const viaPath = resolveWslWindowsRoot({
+                env: { PATH: '/usr/bin:/custom-mnt/e/Windows/System32:/custom-mnt/e/Windows' },
+                procMountsContent: '',
+                existsSyncFn: () => false,
+            });
+            expect(viaPath).toBe('/custom-mnt/e/Windows');
+
+            // 3. Probe drvfs mounts for Windows/System32 when env/PATH unset
+            const viaMounts = resolveWslWindowsRoot({
+                env: {},
+                procMountsContent: sampleProcMounts,
+                existsSyncFn: (p) => p === '/win/d/Windows/System32',
+            });
+            expect(viaMounts).toBe('/win/d/Windows');
+        });
+
+        it('bridges Windows host %USERPROFILE%\\.gemini\\antigravity and deduplicates multi-dir hub records in WSL', () => {
+            // Via USERPROFILE env
+            expect(resolveWslWindowsUserProfile({
+                env: { USERPROFILE: 'D:\\Users\\Alice' },
+                procMountsContent: sampleProcMounts,
+                existsSyncFn: () => false,
+            })).toBe('/win/d/Users/Alice');
+
+            // Via inherited Windows AppData PATH entry
+            expect(resolveWslWindowsUserProfile({
+                env: { PATH: '/usr/local/bin:/win/c/Users/Bob/AppData/Local/Microsoft/WindowsApps' },
+                procMountsContent: '',
+                existsSyncFn: () => false,
+            })).toBe('/win/c/Users/Bob');
+
+            // AppData & daemon dirs include both WSL Linux home and bridged Windows host profile
+            const dataDirs = getAntigravityAppDataDirs({
+                homedir: '/home/bob',
+                inWsl: true,
+                env: { USERPROFILE: 'D:\\Users\\Bob' },
+                procMountsContent: sampleProcMounts,
+                existsSyncFn: () => false,
+            });
+            expect(dataDirs).toEqual([
+                path.join('/home/bob', '.gemini', 'antigravity'),
+                path.join('/win/d/Users/Bob', '.gemini', 'antigravity'),
+            ]);
+
+            const daemonDirs = getAntigravityDaemonDirs({
+                homedir: '/home/bob',
+                inWsl: true,
+                env: { USERPROFILE: 'D:\\Users\\Bob' },
+                procMountsContent: sampleProcMounts,
+                existsSyncFn: () => false,
+            });
+            expect(daemonDirs).toEqual([
+                path.join('/home/bob', '.gemini', 'antigravity', 'daemon'),
+                path.join('/win/d/Users/Bob', '.gemini', 'antigravity', 'daemon'),
+            ]);
+
+            // Multi-dir hub file scan merges & deduplicates records cleanly
+            const dirA = path.join(tempDir, 'daemon-a');
+            const dirB = path.join(tempDir, 'daemon-b');
+            fs.mkdirSync(dirA, { recursive: true });
+            fs.mkdirSync(dirB, { recursive: true });
+            const sharedRec = JSON.stringify({ pid: 100, httpPort: 62502, httpsPort: 62501, csrfToken: 'TokShared' });
+            const winOnlyRec = JSON.stringify({ pid: 200, httpPort: 62602, httpsPort: 62601, csrfToken: 'TokWin' });
+            fs.writeFileSync(path.join(dirA, 'hub_62502.json'), sharedRec, 'utf8');
+            fs.writeFileSync(path.join(dirB, 'hub_62502.json'), sharedRec, 'utf8');
+            fs.writeFileSync(path.join(dirB, 'hub_62602.json'), winOnlyRec, 'utf8');
+
+            const merged = readAllHubDiscoveryFilesFromDirs([dirA, dirB]);
+            expect(merged.map(r => r.pid).sort()).toEqual([100, 200]);
         });
     });
 });

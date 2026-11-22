@@ -2,6 +2,12 @@ import { parseCreditBalance } from './account-credits';
 import { LSInfo } from './discovery';
 import { rpcCall, rpcStreamFirstFrame } from './rpc-client';
 import {
+    getAntigravityUserConfigPath,
+    parseAntigravityUserConfig,
+    readLocalOrchestratorConfigFallback,
+    type OrchestratorRouteSegment,
+} from './orchestrator-attribution';
+import {
     getContextLimit,
     getModelDisplayName,
     normalizeModelDisplayName,
@@ -45,6 +51,10 @@ export {
     QuotaPoolSummary,
     QuotaWindowSummary,
     UserQuotaSummary,
+    getAntigravityUserConfigPath,
+    parseAntigravityUserConfig,
+    readLocalOrchestratorConfigFallback,
+    type OrchestratorRouteSegment,
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -157,6 +167,8 @@ export interface TokenUsageResult {
     checkpointModel: string;
     /** Active Planner → Executor pair when dynamic Orchestrator mode is used in this conversation. */
     orchestratorConfig?: ConversationOrchestratorConfig;
+    /** Chronological per-turn Orchestrator route segments (tracks mid-conversation reconfigurations). */
+    orchestratorHistory?: OrchestratorRouteSegment[];
 }
 
 // ─── Token Estimation from Text ──────────────────────────────────────────────
@@ -222,6 +234,8 @@ export interface ContextUsage {
     checkpointModel: string;
     /** Active Planner → Executor pair when dynamic Orchestrator mode is used in this conversation. */
     orchestratorConfig?: ConversationOrchestratorConfig;
+    /** Chronological per-turn Orchestrator route segments (tracks mid-conversation reconfigurations). */
+    orchestratorHistory?: OrchestratorRouteSegment[];
     // ─── Extended Transparency Fields ─────────────────────────────────────
     /** Created time of the trajectory */
     createdTime: string;
@@ -489,6 +503,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
     let toolOutputTokens = 0;
     let model = '';
     let orchestratorConfig: ConversationOrchestratorConfig | undefined;
+    const orchestratorHistory: OrchestratorRouteSegment[] = [];
     const stepDetails: StepTokenInfo[] = [];
     let lastModelUsage: ModelUsageInfo | null = null;
     let tokenUsageSource: 'checkpoint' | 'planner' | 'estimated' = 'estimated';
@@ -552,6 +567,19 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
                 model = selected;
                 const normSelected = resolveModelId(selected) || selected;
                 const normExec = executionModel ? (resolveModelId(executionModel) || executionModel) : '';
+                const segStep = typeof step.stepIndex === 'number' && Number.isSafeInteger(step.stepIndex) && step.stepIndex >= 0
+                    ? step.stepIndex
+                    : globalStepIdx;
+                const prevSeg = orchestratorHistory[orchestratorHistory.length - 1];
+                if (!prevSeg
+                    || (resolveModelId(prevSeg.planModel) || prevSeg.planModel) !== normSelected
+                    || (prevSeg.executionModel ? (resolveModelId(prevSeg.executionModel) || prevSeg.executionModel) : '') !== normExec) {
+                    orchestratorHistory.push({
+                        startStepIndex: segStep,
+                        planModel: selected,
+                        executionModel: executionModel || '',
+                    });
+                }
                 if (executionModel && normExec !== normSelected) {
                     orchestratorConfig = { planModel: selected, executionModel };
                 } else {
@@ -687,6 +715,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
             checkpointCompressionDrop,
             checkpointModel,
             ...(orchestratorConfig ? { orchestratorConfig } : {}),
+            ...(orchestratorHistory.length > 0 ? { orchestratorHistory } : {}),
         };
     }
 
@@ -712,6 +741,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         checkpointCompressionDrop: 0,
         checkpointModel: '',
         ...(orchestratorConfig ? { orchestratorConfig } : {}),
+        ...(orchestratorHistory.length > 0 ? { orchestratorHistory } : {}),
     };
 }
 
@@ -1199,6 +1229,7 @@ export interface JetboxOrchestratorPrefs {
     orchestratorModel: string;
     orchestratorExecutorModel: string;
     lastSelectedAgentModel: string;
+    useAiCredits?: boolean;
 }
 
 /** Extract Orchestrator preferences from frame 1 of JetboxSubscribeToState. */
@@ -1215,33 +1246,97 @@ export function parseJetboxOrchestratorPrefs(frame: unknown): JetboxOrchestrator
             ? rec.userSettings as Record<string, unknown> : undefined;
 
     const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+    const useAiCredits = typeof userSettings?.useAiCredits === 'boolean'
+        ? userSettings.useAiCredits
+        : typeof userConfig?.useAiCredits === 'boolean'
+            ? userConfig.useAiCredits
+            : undefined;
     return {
         orchestratorModel: str(userSettings?.orchestratorModel ?? userConfig?.orchestratorModel),
         orchestratorExecutorModel: str(userSettings?.orchestratorExecutorModel ?? userConfig?.orchestratorExecutorModel),
         lastSelectedAgentModel: str(appState?.lastSelectedAgentModel),
+        ...(useAiCredits !== undefined ? { useAiCredits } : {}),
     };
+}
+
+export interface FetchOrchestratorSettingsOptions {
+    /** Override path to `~/.gemini/config/config.json` (used for testing / custom profiles). */
+    configPath?: string;
+    /** Override home directory for `~/.gemini/config/config.json` fallback resolution. */
+    homeDir?: string;
+    /** Skip local `config.json` fallback read when true. */
+    disableConfigFallback?: boolean;
+}
+
+function isConcretePrefModel(value: string | undefined): boolean {
+    const clean = (value || '').trim().toUpperCase();
+    return Boolean(clean) && clean !== 'MODEL_UNSPECIFIED' && clean !== 'MODEL_PLACEHOLDER_UNSPECIFIED';
 }
 
 /**
  * Fetch global Orchestrator Settings (Orchestrator Model + Executor Model + Mendel roles).
- * Gracefully degrades to null on older LS builds that lack JetboxSubscribeToState / GetMendelFlags.
+ * Falls back read-only to `~/.gemini/config/config.json` (`userSettings.{orchestratorModel,
+ * orchestratorExecutorModel, useAiCredits}`) when `JetboxSubscribeToState` has not populated
+ * them yet, and gracefully degrades to null when neither RPC nor local config has data.
  */
 export async function fetchOrchestratorSettings(
     ls: LSInfo,
     configs: readonly ModelConfig[],
     signal?: AbortSignal,
+    options?: FetchOrchestratorSettingsOptions,
 ): Promise<OrchestratorSettings | null> {
     try {
         const [jetboxRes, mendelRes] = await Promise.allSettled([
             rpcStreamFirstFrame(ls, 'JetboxSubscribeToState', {}, 5000, signal),
             rpcCall(ls, 'GetMendelFlags', {}, 5000, signal),
         ]);
-        const prefs = jetboxRes.status === 'fulfilled'
+        const rpcPrefs = jetboxRes.status === 'fulfilled'
             ? parseJetboxOrchestratorPrefs(jetboxRes.value) : null;
         const roles = mendelRes.status === 'fulfilled'
             ? parseOrchestratorModelRoles(mendelRes.value) : null;
-        if (!prefs && !roles) { return null; }
-        return resolveOrchestratorSettings(prefs, roles, configs);
+
+        const needsConfigFallback = !options?.disableConfigFallback && (
+            !rpcPrefs
+            || !isConcretePrefModel(rpcPrefs.orchestratorModel)
+            || !isConcretePrefModel(rpcPrefs.orchestratorExecutorModel)
+            || rpcPrefs.useAiCredits === undefined
+        );
+        const diskPrefs = needsConfigFallback
+            ? readLocalOrchestratorConfigFallback({ configPath: options?.configPath, homeDir: options?.homeDir })
+            : null;
+
+        if (!rpcPrefs && !diskPrefs && !roles) { return null; }
+
+        const mergedOrch = isConcretePrefModel(rpcPrefs?.orchestratorModel)
+            ? rpcPrefs!.orchestratorModel
+            : (diskPrefs?.orchestratorModel || rpcPrefs?.orchestratorModel || '');
+        const mergedExec = isConcretePrefModel(rpcPrefs?.orchestratorExecutorModel)
+            ? rpcPrefs!.orchestratorExecutorModel
+            : (diskPrefs?.orchestratorExecutorModel || rpcPrefs?.orchestratorExecutorModel || '');
+        const mergedCredits = rpcPrefs?.useAiCredits !== undefined
+            ? rpcPrefs.useAiCredits
+            : diskPrefs?.useAiCredits;
+
+        const usedDisk = Boolean(
+            diskPrefs && (
+                (!isConcretePrefModel(rpcPrefs?.orchestratorModel) && isConcretePrefModel(diskPrefs.orchestratorModel))
+                || (!isConcretePrefModel(rpcPrefs?.orchestratorExecutorModel) && isConcretePrefModel(diskPrefs.orchestratorExecutorModel))
+                || (rpcPrefs?.useAiCredits === undefined && diskPrefs.useAiCredits !== undefined)
+            ),
+        );
+        const settingsSource: 'rpc' | 'config_fallback' | 'merged' = rpcPrefs
+            ? (usedDisk ? 'merged' : 'rpc')
+            : (diskPrefs ? 'config_fallback' : 'rpc');
+
+        const mergedPrefs = (rpcPrefs || diskPrefs) ? {
+            orchestratorModel: mergedOrch,
+            orchestratorExecutorModel: mergedExec,
+            lastSelectedAgentModel: rpcPrefs?.lastSelectedAgentModel || '',
+            ...(mergedCredits !== undefined ? { useAiCredits: mergedCredits } : {}),
+            settingsSource,
+        } : null;
+
+        return resolveOrchestratorSettings(mergedPrefs, roles, configs);
     } catch {
         return null;
     }
@@ -1472,6 +1567,7 @@ export async function getContextUsage(
         hasGaps: result.hasGaps,
         checkpointModel: result.checkpointModel,
         ...(result.orchestratorConfig ? { orchestratorConfig: result.orchestratorConfig } : {}),
+        ...(result.orchestratorHistory ? { orchestratorHistory: result.orchestratorHistory } : {}),
         // Extended transparency fields
         createdTime: trajectory.createdTime,
         lastUserInputTime: trajectory.lastUserInputTime,

@@ -114,17 +114,28 @@ describe('independent Hydrogen standard API pricing', () => {
         expect(PRICING_LAST_UPDATED).toBe('2026-11-22');
     });
 
-    it('keeps M669 worker labels and sonar catalog entries deterministically unpriced while pricing tiered Hydrogen', () => {
-        for (const unpriced of [
+    it('maps M669 worker to Hydrogen in mapped mode, stays unpriced in strict mode, and keeps sonar/unmapped labels unpriced', () => {
+        const mappedWorkerAliases = [
             'MODEL_PLACEHOLDER_M669',
             'gemini-flash-worker-agy',
             'Gemini Flash (Orchestrator Worker)',
             'Gemini 4 Hydrogen (Orchestrator)',
             'Gemini 4 Hydrogen (Orchestrator) (M669)',
-            'Gemini 4 Hydrogen (编排器)',
-            'gemini-4-hydrogen-sonar',
-        ]) {
-            expect(findPricing(unpriced), unpriced).toBeNull();
+        ];
+        for (const id of mappedWorkerAliases) {
+            // Default mapped mode maps M669 -> Hydrogen base rate without leaking family custom overrides
+            expect(findPricing(id, DEFAULT_PRICING, 'mapped'), id).toEqual(rate);
+            expect(findPricingWithCustom(id, { 'gemini-4-hydrogen': override }, DEFAULT_PRICING, 'mapped'), id).toEqual(rate);
+            // Strict mode preserves strict unpriced behavior unless explicitly overridden
+            expect(findPricing(id, DEFAULT_PRICING, 'strict'), id).toBeNull();
+            expect(findPricingWithCustom(id, { 'gemini-4-hydrogen': override }, DEFAULT_PRICING, 'strict'), id).toBeNull();
+            expect(findPricingWithCustom(id, { [id]: override }, DEFAULT_PRICING, 'strict'), id).toBe(override);
+            expect(findPricingWithCustom(id, { [id]: override }, DEFAULT_PRICING, 'mapped'), id).toBe(override);
+        }
+        // Unverified specialized entries (Sonar, unmapped localized labels) stay unpriced in BOTH modes
+        for (const unpriced of ['Gemini 4 Hydrogen (编排器)', 'gemini-4-hydrogen-sonar']) {
+            expect(findPricing(unpriced, DEFAULT_PRICING, 'mapped'), unpriced).toBeNull();
+            expect(findPricing(unpriced, DEFAULT_PRICING, 'strict'), unpriced).toBeNull();
             expect(findPricingWithCustom(unpriced, { 'gemini-4-hydrogen': override }), unpriced).toBeNull();
             expect(findPricingWithCustom(unpriced, { [unpriced]: override }), unpriced).toBe(override);
         }

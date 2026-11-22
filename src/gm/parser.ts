@@ -637,10 +637,69 @@ function pickTrajectoryTimeForCall(call: GMCallEntry, times: TrajectoryCallTime[
     return timestamps.size === 1 ? [...timestamps][0] : '';
 }
 
+export interface TrajectoryOrchestratorRoute {
+    startStepIndex: number;
+    planModel: string;
+    executionModel: string;
+}
+
+/**
+ * Extract chronological per-turn Orchestrator route segments from trajectory steps
+ * (`USER_INPUT.userConfig.plannerConfig.{planModel, planExecuteConfig.executionModel}`).
+ */
+export function extractTrajectoryOrchestratorRoutes(steps: unknown): TrajectoryOrchestratorRoute[] {
+    const routes: TrajectoryOrchestratorRoute[] = [];
+    if (!Array.isArray(steps)) { return routes; }
+
+    for (let i = 0; i < steps.length; i++) {
+        const step = asRecord(steps[i]);
+        if (!step || step.type !== 'CORTEX_STEP_TYPE_USER_INPUT') { continue; }
+        const stepIndex = typeof step.stepIndex === 'number' && Number.isSafeInteger(step.stepIndex) && step.stepIndex >= 0
+            ? step.stepIndex
+            : i;
+        const planCandidates = [
+            readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'planModel']),
+            readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'modelName']),
+            readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'requestedModel']),
+            readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'requestedModel', 'model']),
+        ];
+        const planModel = planCandidates.map(readModelFromUnknown).find(Boolean) || '';
+        const executionModel = resolveConcreteModelId(
+            readPath(step, ['userInput', 'userConfig', 'plannerConfig', 'planExecuteConfig', 'executionModel']),
+        );
+        if (!planModel && !executionModel) { continue; }
+        routes.push({ startStepIndex: stepIndex, planModel, executionModel });
+    }
+
+    return routes;
+}
+
+function findActiveRouteForCall(
+    call: Pick<GMCallEntry, 'stepIndices' | 'startStepIndex'>,
+    routes: readonly TrajectoryOrchestratorRoute[],
+): TrajectoryOrchestratorRoute | null {
+    if (routes.length === 0) { return null; }
+    const step = call.stepIndices.length > 0
+        ? Math.min(...call.stepIndices)
+        : (call.startStepIndex >= 0 ? call.startStepIndex : -1);
+    if (step < 0) { return null; }
+    let active: TrajectoryOrchestratorRoute | null = null;
+    for (const r of routes) {
+        if (r.startStepIndex <= step) {
+            active = r;
+        } else {
+            break;
+        }
+    }
+    return active;
+}
+
 export function applyTrajectoryModelHints(calls: GMCallEntry[], steps: unknown): GMCallEntry[] {
     if (calls.length === 0) { return calls; }
     const hints = extractTrajectoryModelHints(steps);
     const times = calls.some(call => !isValidCallTimestamp(call.createdAt)) ? extractTrajectoryCallTimes(steps) : [];
+    const routes = calls.some(call => !call.executionModel) ? extractTrajectoryOrchestratorRoutes(steps) : [];
+    const hasDelegatedRoute = routes.some(r => Boolean(r.executionModel));
 
     let changed = false;
     const updated = calls.map(call => {
@@ -648,31 +707,42 @@ export function applyTrajectoryModelHints(calls: GMCallEntry[], steps: unknown):
         if (!isValidCallTimestamp(call.createdAt)) {
             const timestamp = pickTrajectoryTimeForCall(call, times);
             if (timestamp) {
-                enriched = { ...call, createdAt: timestamp };
+                enriched = { ...enriched, createdAt: timestamp };
                 changed = true;
             }
         }
         const hasAuthoritativeModel = isConcreteModelId(call.model)
             && call.modelSource !== 'responseAlias'
             && call.modelSource !== 'unknown';
-        if (hasAuthoritativeModel) {
-            return enriched;
+        if (!hasAuthoritativeModel) {
+            const model = pickTrajectoryModelForCall(call, hints);
+            if (model && model !== call.model) {
+                if (call.responseModel) {
+                    registerResponseModelAlias(call.responseModel, model);
+                }
+                changed = true;
+                enriched = {
+                    ...enriched,
+                    model,
+                    modelDisplay: normalizeModelDisplayName(model),
+                    modelSource: 'trajectory' as GMModelSource,
+                };
+            }
         }
-
-        const model = pickTrajectoryModelForCall(call, hints);
-        if (!model || model === call.model) {
-            return enriched;
+        // Propagate per-turn plannerConfig.planExecuteConfig.executionModel onto
+        // planner calls when lightweight GM metadata omitted plannerConfig.
+        if (hasDelegatedRoute && !enriched.executionModel) {
+            const route = findActiveRouteForCall(enriched, routes);
+            if (route && route.executionModel) {
+                const callModelId = resolveConcreteModelId(enriched.model);
+                const matchesPlanner = !route.planModel || (callModelId && callModelId === route.planModel);
+                if (matchesPlanner) {
+                    enriched = { ...enriched, executionModel: route.executionModel };
+                    changed = true;
+                }
+            }
         }
-        if (call.responseModel) {
-            registerResponseModelAlias(call.responseModel, model);
-        }
-        changed = true;
-        return {
-            ...enriched,
-            model,
-            modelDisplay: normalizeModelDisplayName(model),
-            modelSource: 'trajectory' as GMModelSource,
-        };
+        return enriched;
     });
 
     return changed ? updated : calls;

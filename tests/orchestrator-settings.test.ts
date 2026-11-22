@@ -399,7 +399,7 @@ describe('Orchestrator Settings resolution (Mendel roles + Jetbox prefs)', () =>
             res.writeHead(501);
             res.end();
         }, async (ls) => {
-            expect(await fetchOrchestratorSettings(ls, LIVE_LIKE_CONFIGS)).toBeNull();
+            expect(await fetchOrchestratorSettings(ls, LIVE_LIKE_CONFIGS, undefined, { disableConfigFallback: true })).toBeNull();
         });
     });
 });

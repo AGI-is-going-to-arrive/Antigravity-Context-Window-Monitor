@@ -135,16 +135,20 @@ describe('Gemini 4 Neon verified official standard API pricing', () => {
         }
     });
 
-    it('keeps M537 (Orchestrator Neon) and M669 (worker/Hydrogen Orchestrator) deterministically unpriced', () => {
-        const unpricedIdentities = [
+    it('maps M537/M669 to base rates in mapped mode, stays unpriced in strict mode, and keeps Sonar unpriced', () => {
+        const mappedNeonIds = [
             'MODEL_PLACEHOLDER_M537',
             'Orchestrator (Neon)',
             'gemini-pro-orchestrator-neon',
+        ];
+        const mappedWorkerIds = [
             'MODEL_PLACEHOLDER_M669',
             'gemini-flash-worker-agy',
             'Gemini Flash (Orchestrator Worker)',
             'Gemini 4 Hydrogen (Orchestrator)',
             'Gemini 4 Hydrogen (Orchestrator) (M669)',
+        ];
+        const alwaysUnpricedIds = [
             'Gemini 4 Hydrogen（编排器）',
             'MODEL_PLACEHOLDER_M578',
             'gemini-4-hydrogen-sonar',
@@ -154,8 +158,23 @@ describe('Gemini 4 Neon verified official standard API pricing', () => {
             'gemini-4-neon': CUSTOM_OVERRIDE,
             'gemini-4-hydrogen': CUSTOM_OVERRIDE,
         };
-        for (const id of unpricedIdentities) {
-            expect(findPricing(id), id).toBeNull();
+        for (const id of mappedNeonIds) {
+            expect(findPricing(id, DEFAULT_PRICING, 'mapped'), id).toEqual(NEON_RATE);
+            expect(findPricingWithCustom(id, familyOverrides, DEFAULT_PRICING, 'mapped'), id).toEqual(NEON_RATE);
+            expect(findPricing(id, DEFAULT_PRICING, 'strict'), id).toBeNull();
+            expect(findPricingWithCustom(id, familyOverrides, DEFAULT_PRICING, 'strict'), id).toBeNull();
+            expect(findPricingWithCustom(id, { [id]: CUSTOM_OVERRIDE }), id).toBe(CUSTOM_OVERRIDE);
+        }
+        for (const id of mappedWorkerIds) {
+            expect(findPricing(id, DEFAULT_PRICING, 'mapped'), id).toEqual(DEFAULT_PRICING['gemini-4-hydrogen']);
+            expect(findPricingWithCustom(id, familyOverrides, DEFAULT_PRICING, 'mapped'), id).toEqual(DEFAULT_PRICING['gemini-4-hydrogen']);
+            expect(findPricing(id, DEFAULT_PRICING, 'strict'), id).toBeNull();
+            expect(findPricingWithCustom(id, familyOverrides, DEFAULT_PRICING, 'strict'), id).toBeNull();
+            expect(findPricingWithCustom(id, { [id]: CUSTOM_OVERRIDE }), id).toBe(CUSTOM_OVERRIDE);
+        }
+        for (const id of alwaysUnpricedIds) {
+            expect(findPricing(id, DEFAULT_PRICING, 'mapped'), id).toBeNull();
+            expect(findPricing(id, DEFAULT_PRICING, 'strict'), id).toBeNull();
             expect(findPricingWithCustom(id, familyOverrides), id).toBeNull();
             expect(findPricingWithCustom(id, { [id]: CUSTOM_OVERRIDE }), id).toBe(CUSTOM_OVERRIDE);
         }

@@ -4,12 +4,30 @@
 
 import type { ActivityTracker } from './activity-tracker';
 import type { GMTracker, GMSummary, GMModelStats } from './gm-tracker';
-import type { DailyStore } from './daily-store';
+import {
+    buildGMPerModelStats,
+    computeAdditiveTokens,
+    getCycleSurfaces,
+    type DailyCycleEntry,
+    type DailyRecord,
+    type DailyStore,
+} from './daily-store';
 import type { PricingStore, ModelPricing } from './pricing-store';
 import { calculateLedgerModelCosts, calculateUsageCosts, samePricingModel, selectPricingModel } from './pricing-store';
 import type { PersistedModelDNA } from './model-dna-store';
 import { mergeModelDNAState } from './model-dna-store';
-import type { DailyLedger, LedgerDayData, LedgerModelTelemetry } from './daily-ledger';
+import {
+    cloneSurfaceBreakdown,
+    dominantUsageSurface,
+    normalizeUsageSurface,
+    type DailyLedger,
+    type LedgerAccountBucket,
+    type LedgerDayData,
+    type LedgerModelTelemetry,
+    type LedgerSettledEntry,
+    type SurfaceUsageStats,
+    type UsageSurface,
+} from './daily-ledger';
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
@@ -35,6 +53,8 @@ export interface DailyArchivalContext {
     lastArchivalDateKey: string;
     /** DailyLedger for incremental accounting (added v1.18.0) */
     dailyLedger: DailyLedger | null;
+    /** Optional origin surface ('app' | 'ide' | 'cli' | 'unknown') for source tagging */
+    surface?: UsageSurface;
 
     /** Write-back: called when state needs persisting. */
     persist: (updates: DailyArchivalPersistUpdates) => void;
@@ -109,6 +129,9 @@ export function performDailyArchival(
     let gmSummary: GMSummary | null = null;
     let costTotal: number | undefined;
     let costPerModel: Record<string, number> | undefined;
+    let resolvedSurface: UsageSurface | undefined = ctx.surface ? normalizeUsageSurface(ctx.surface) : undefined;
+    let resolvedSurfaceBreakdown: Partial<Record<UsageSurface, SurfaceUsageStats>> | undefined;
+    let resolvedAccountEmail: string | undefined;
 
     if (ctx.dailyLedger && !ctx.dailyLedger.hasData) {
         const previousLedgerDateKey = ctx.dailyLedger.dateKey;
@@ -124,6 +147,18 @@ export function performDailyArchival(
         gmSummary = result.summary;
         costTotal = result.totalCost > 0 ? result.totalCost : undefined;
         costPerModel = result.costPerModel;
+        resolvedSurface = result.surface ?? resolvedSurface ?? (ctx.dailyLedger.surface !== 'unknown' ? ctx.dailyLedger.surface : undefined);
+        resolvedSurfaceBreakdown = result.surfaceBreakdown;
+        const distinctEmails = new Set<string>();
+        for (const email of Object.keys(dayData.accounts)) {
+            if (email) { distinctEmails.add(email); }
+        }
+        for (const s of dayData.settled) {
+            if (s.accountEmail) { distinctEmails.add(s.accountEmail); }
+        }
+        if (distinctEmails.size === 1) {
+            resolvedAccountEmail = [...distinctEmails][0];
+        }
         ctx.log(`DailyLedger rollover: ${gmSummary.totalCalls} calls, $${(result.totalCost || 0).toFixed(4)} cost`);
     } else {
         // ── Legacy path: getArchivalSummary + pendingArchives ──
@@ -161,12 +196,23 @@ export function performDailyArchival(
 
     // 4. Write to DailyStore (only if there's actual data)
     if ((hasActivity || hasGM) && ctx.dailyStore) {
+        const meta = (resolvedSurface && resolvedSurface !== 'unknown')
+            || resolvedSurfaceBreakdown
+            || resolvedAccountEmail
+            ? {
+                ...(resolvedSurface && resolvedSurface !== 'unknown' ? { surface: resolvedSurface } : {}),
+                ...(resolvedSurfaceBreakdown ? { surfaceBreakdown: resolvedSurfaceBreakdown } : {}),
+                ...(resolvedAccountEmail ? { accountEmail: resolvedAccountEmail } : {}),
+            }
+            : undefined;
         ctx.dailyStore.addDailySnapshot(
             archiveDateKey,
             activitySummary,
             gmSummary || null,
             costTotal,
             costPerModel,
+            false,
+            meta,
         );
         ctx.log(`Daily snapshot written for ${archiveDateKey}`);
     } else {
@@ -221,6 +267,8 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
     summary: GMSummary;
     totalCost: number;
     costPerModel: Record<string, number>;
+    surface?: UsageSurface;
+    surfaceBreakdown?: Partial<Record<UsageSurface, SurfaceUsageStats>>;
 } {
     let totalCalls = 0;
     let totalIn = 0, totalOut = 0, totalThinking = 0;
@@ -229,6 +277,25 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
     const modelBreakdown: Record<string, GMModelStats> = {};
     const telemetryByModel: Record<string, LedgerModelTelemetry> = {};
     const costPerModel: Record<string, number> = {};
+    const surfaceBreakdown: Partial<Record<UsageSurface, SurfaceUsageStats>> = {};
+    let hasExplicitSurface = false;
+
+    const addSurfaceEntry = (surf: UsageSurface, stats: SurfaceUsageStats): void => {
+        if (surf !== 'unknown') { hasExplicitSurface = true; }
+        const cur = surfaceBreakdown[surf] || {
+            calls: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0,
+            cacheReadTokens: 0, cacheCreationTokens: 0, credits: 0, estimatedCost: 0,
+        };
+        cur.calls += stats.calls;
+        cur.inputTokens += stats.inputTokens;
+        cur.outputTokens += stats.outputTokens;
+        cur.thinkingTokens += stats.thinkingTokens;
+        cur.cacheReadTokens += stats.cacheReadTokens;
+        cur.cacheCreationTokens += stats.cacheCreationTokens;
+        cur.credits += stats.credits;
+        cur.estimatedCost += stats.estimatedCost;
+        surfaceBreakdown[surf] = cur;
+    };
 
     // Merge active buckets
     for (const bucket of Object.values(dayData.accounts)) {
@@ -240,6 +307,7 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
         totalCacheCreation += bucket.totalCacheCreation;
         totalCredits += bucket.totalCredits;
 
+        let bucketRepricedCost = 0;
         for (const [modelKey, ms] of Object.entries(bucket.modelStats)) {
             mergeModelIntoBreakdown(modelBreakdown, telemetryByModel, modelKey, ms.calls,
                 ms.inputTokens, ms.outputTokens, ms.thinkingTokens,
@@ -261,7 +329,33 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
             if (cost > 0) {
                 costPerModel[modelKey] = (costPerModel[modelKey] || 0) + cost;
             }
+            bucketRepricedCost += cost;
             totalCost += cost;
+        }
+
+        if (bucket.totalCalls > 0) {
+            if (bucket.surfaceBreakdown) {
+                const rawCostSum = Object.values(bucket.surfaceBreakdown).reduce((s, v) => s + (v?.estimatedCost || 0), 0);
+                const costScale = rawCostSum > 0 && bucketRepricedCost > 0 ? bucketRepricedCost / rawCostSum : 1;
+                for (const [sk, sv] of Object.entries(bucket.surfaceBreakdown)) {
+                    if (!sv || sv.calls <= 0) { continue; }
+                    addSurfaceEntry(normalizeUsageSurface(sk), {
+                        ...sv,
+                        estimatedCost: sv.estimatedCost * costScale,
+                    });
+                }
+            } else {
+                addSurfaceEntry(normalizeUsageSurface(bucket.surface), {
+                    calls: bucket.totalCalls,
+                    inputTokens: bucket.totalInputTokens,
+                    outputTokens: bucket.totalOutputTokens,
+                    thinkingTokens: bucket.totalThinkingTokens,
+                    cacheReadTokens: bucket.totalCacheRead,
+                    cacheCreationTokens: bucket.totalCacheCreation,
+                    credits: bucket.totalCredits,
+                    estimatedCost: bucketRepricedCost,
+                });
+            }
         }
     }
 
@@ -275,6 +369,26 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
         totalCacheCreation += entry.totalCacheCreation || 0;
         totalCredits += entry.totalCredits;
         totalCost += entry.totalEstimatedCost;
+
+        if (entry.totalCalls > 0) {
+            if (entry.surfaceBreakdown) {
+                for (const [sk, sv] of Object.entries(entry.surfaceBreakdown)) {
+                    if (!sv || sv.calls <= 0) { continue; }
+                    addSurfaceEntry(normalizeUsageSurface(sk), sv);
+                }
+            } else {
+                addSurfaceEntry(normalizeUsageSurface(entry.surface), {
+                    calls: entry.totalCalls,
+                    inputTokens: entry.totalInputTokens,
+                    outputTokens: entry.totalOutputTokens,
+                    thinkingTokens: entry.totalThinkingTokens || 0,
+                    cacheReadTokens: entry.totalCacheRead,
+                    cacheCreationTokens: entry.totalCacheCreation || 0,
+                    credits: entry.totalCredits,
+                    estimatedCost: entry.totalEstimatedCost,
+                });
+            }
+        }
 
         const allocated = allocateSettledEntryByModel(entry);
 
@@ -341,7 +455,16 @@ export function buildGMSummaryFromLedger(dayData: LedgerDayData, customPricing?:
         toolCatalog: [],
     };
 
-    return { summary, totalCost, costPerModel };
+    const clonedSurfaceBreakdown = hasExplicitSurface ? cloneSurfaceBreakdown(surfaceBreakdown) : undefined;
+    const dominantSurface = hasExplicitSurface ? dominantUsageSurface(clonedSurfaceBreakdown) : undefined;
+
+    return {
+        summary,
+        totalCost,
+        costPerModel,
+        ...(dominantSurface ? { surface: dominantSurface } : {}),
+        ...(clonedSurfaceBreakdown ? { surfaceBreakdown: clonedSurfaceBreakdown } : {}),
+    };
 }
 
 function allocateSettledEntryByModel(entry: LedgerDayData['settled'][number]): Record<string, {
@@ -479,4 +602,314 @@ function buildGMSummaryLegacy(ctx: DailyArchivalContext): GMSummary | null {
     return (ctx.lastGMSummary && lastCalls > liveCalls)
         ? ctx.lastGMSummary
         : liveSummary || ctx.lastGMSummary;
+}
+
+// ─── Live Today Merge (Calendar / Dashboard) ─────────────────────────────────
+
+/** Live ledger input accepted by {@link mergeArchivedAndLiveRecords}. */
+export type LiveLedgerSource =
+    | Pick<DailyLedger, 'dateKey' | 'hasData' | 'getLiveDaySnapshot' | 'getTodayActive' | 'getSettledEntries'>
+    | {
+        dateKey?: string;
+        active?: LedgerAccountBucket[];
+        settled?: LedgerSettledEntry[];
+        ledger?: Pick<DailyLedger, 'dateKey' | 'hasData' | 'getLiveDaySnapshot' | 'getTodayActive' | 'getSettledEntries'> | null;
+        customPricing?: Record<string, ModelPricing>;
+        defaultSurface?: UsageSurface;
+    };
+
+export interface MergeArchivedAndLiveOptions {
+    store?: DailyStore | null;
+    liveLedger?: LiveLedgerSource | null;
+    cliRecords?: readonly DailyRecord[] | null;
+    customPricing?: Record<string, ModelPricing>;
+    defaultSurface?: UsageSurface;
+    now?: Date | number;
+}
+
+function resolveNowDate(now?: Date | number): Date {
+    if (now instanceof Date && Number.isFinite(now.getTime())) { return now; }
+    if (typeof now === 'number' && Number.isFinite(now)) { return new Date(now); }
+    return new Date();
+}
+
+function extractLiveDayData(
+    liveLedger: LiveLedgerSource | null | undefined,
+    fallbackDateKey: string,
+): { dayData: LedgerDayData; customPricing?: Record<string, ModelPricing>; defaultSurface?: UsageSurface } | null {
+    if (!liveLedger) { return null; }
+
+    // Direct DailyLedger instance (has getLiveDaySnapshot or getTodayActive)
+    if ('getLiveDaySnapshot' in liveLedger && typeof liveLedger.getLiveDaySnapshot === 'function') {
+        if ('hasData' in liveLedger && !liveLedger.hasData) { return null; }
+        const snapshot = liveLedger.getLiveDaySnapshot();
+        const surface = 'surface' in liveLedger && typeof (liveLedger as DailyLedger).surface === 'string'
+            ? (liveLedger as DailyLedger).surface
+            : undefined;
+        return { dayData: snapshot, defaultSurface: surface };
+    }
+
+    // Wrapper object with nested `ledger`
+    if ('ledger' in liveLedger && liveLedger.ledger) {
+        const inner = extractLiveDayData(liveLedger.ledger, liveLedger.dateKey || fallbackDateKey);
+        if (inner) {
+            return {
+                dayData: liveLedger.dateKey ? { ...inner.dayData, dateKey: liveLedger.dateKey } : inner.dayData,
+                customPricing: liveLedger.customPricing,
+                defaultSurface: liveLedger.defaultSurface ?? inner.defaultSurface,
+            };
+        }
+    }
+
+    // Plain `{ dateKey?, active?, settled? }` snapshot
+    const active = ('active' in liveLedger && Array.isArray(liveLedger.active))
+        ? liveLedger.active.filter(b => b && b.totalCalls > 0)
+        : ('getTodayActive' in liveLedger && typeof liveLedger.getTodayActive === 'function'
+            ? liveLedger.getTodayActive()
+            : []);
+    const settled = ('settled' in liveLedger && Array.isArray(liveLedger.settled))
+        ? liveLedger.settled.filter(s => s && s.totalCalls > 0)
+        : ('getSettledEntries' in liveLedger && typeof liveLedger.getSettledEntries === 'function'
+            ? liveLedger.getSettledEntries()
+            : []);
+
+    if (active.length === 0 && settled.length === 0) { return null; }
+
+    let dateKey = ('dateKey' in liveLedger && typeof liveLedger.dateKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(liveLedger.dateKey))
+        ? liveLedger.dateKey
+        : '';
+    if (!dateKey) {
+        // Infer dateKey from recorded calls / settled timestamps when caller omitted dateKey
+        let latestMs = 0;
+        for (const bucket of active) {
+            for (const c of bucket.recordedCalls || []) {
+                const ms = c.createdAt ? Date.parse(c.createdAt) : (Number.isFinite(c.createdAtMs) ? c.createdAtMs : 0);
+                if (ms > latestMs) { latestMs = ms; }
+            }
+        }
+        for (const s of settled) {
+            const ms = s.settledAt ? Date.parse(s.settledAt) : 0;
+            if (ms > latestMs) { latestMs = ms; }
+        }
+        dateKey = latestMs > 0 ? toLocalDateKey(new Date(latestMs)) : fallbackDateKey;
+    }
+
+    const accounts: Record<string, LedgerAccountBucket> = {};
+    for (let i = 0; i < active.length; i++) {
+        const b = active[i];
+        const key = b.accountEmail || `__acct_${i}`;
+        accounts[key] = b;
+    }
+
+    return {
+        dayData: { dateKey, accounts, settled },
+        customPricing: 'customPricing' in liveLedger ? liveLedger.customPricing : undefined,
+        defaultSurface: 'defaultSurface' in liveLedger ? liveLedger.defaultSurface : undefined,
+    };
+}
+
+function getLiveTimeBounds(dayData: LedgerDayData, fallbackIso: string): {
+    startIso: string;
+    endIso: string;
+    earliestMs: number;
+    latestMs: number;
+} {
+    let earliestMs = Infinity;
+    let latestMs = 0;
+    for (const bucket of Object.values(dayData.accounts)) {
+        for (const call of bucket.recordedCalls || []) {
+            const ms = call.createdAt ? Date.parse(call.createdAt) : (Number.isFinite(call.createdAtMs) ? call.createdAtMs : NaN);
+            if (Number.isFinite(ms) && ms > 0) {
+                if (ms < earliestMs) { earliestMs = ms; }
+                if (ms > latestMs) { latestMs = ms; }
+            }
+        }
+    }
+    for (const s of dayData.settled) {
+        const ms = s.settledAt ? Date.parse(s.settledAt) : NaN;
+        if (Number.isFinite(ms) && ms > 0) {
+            if (ms < earliestMs) { earliestMs = ms; }
+            if (ms > latestMs) { latestMs = ms; }
+        }
+    }
+    const startIso = Number.isFinite(earliestMs) && earliestMs < Infinity
+        ? new Date(earliestMs).toISOString()
+        : `${dayData.dateKey}T00:00:00`;
+    const endIso = latestMs > 0 ? new Date(latestMs).toISOString() : fallbackIso;
+    return {
+        startIso,
+        endIso,
+        earliestMs: Number.isFinite(earliestMs) && earliestMs < Infinity ? earliestMs : 0,
+        latestMs,
+    };
+}
+
+/**
+ * Convert a live {@link LedgerDayData} snapshot into a virtual {@link DailyCycleEntry}
+ * marked with `isLive: true`, suitable for merging into Calendar displays on Day 1.
+ */
+export function buildLiveDailyCycleFromLedger(
+    dayData: LedgerDayData,
+    customPricing?: Record<string, ModelPricing>,
+    options?: { defaultSurface?: UsageSurface; now?: Date | number },
+): DailyCycleEntry | null {
+    const built = buildGMSummaryFromLedger(dayData, customPricing);
+    if (built.summary.totalCalls <= 0) { return null; }
+
+    const nowDate = resolveNowDate(options?.now);
+    const bounds = getLiveTimeBounds(dayData, nowDate.toISOString());
+    const additiveTotal = computeAdditiveTokens({
+        inputTokens: built.summary.totalInputTokens,
+        outputTokens: built.summary.totalOutputTokens,
+        cacheReadTokens: built.summary.totalCacheRead,
+        cacheCreationTokens: built.summary.totalCacheCreation,
+    });
+
+    const distinctEmails = new Set<string>();
+    for (const bucket of Object.values(dayData.accounts)) {
+        if (bucket.accountEmail) { distinctEmails.add(bucket.accountEmail); }
+    }
+    for (const s of dayData.settled) {
+        if (s.accountEmail) { distinctEmails.add(s.accountEmail); }
+    }
+
+    const fallbackSurf = normalizeUsageSurface(options?.defaultSurface);
+    const surface = built.surface ?? (fallbackSurf !== 'unknown' ? fallbackSurf : undefined);
+
+    const cycle: DailyCycleEntry = {
+        startTime: bounds.startIso,
+        endTime: bounds.endIso,
+        totalReasoning: 0,
+        totalToolCalls: 0,
+        totalErrors: 0,
+        totalInputTokens: built.summary.totalInputTokens,
+        totalOutputTokens: built.summary.totalOutputTokens,
+        estSteps: 0,
+        modelNames: Object.keys(built.summary.modelBreakdown),
+        gmTotalCalls: built.summary.totalCalls,
+        gmTotalCredits: built.summary.totalCredits,
+        gmTotalTokens: built.summary.totalInputTokens + built.summary.totalOutputTokens,
+        gmTotalAllTokens: additiveTotal,
+        ...(built.summary.totalCacheRead > 0 ? { gmTotalCacheRead: built.summary.totalCacheRead } : {}),
+        ...(built.summary.totalCacheCreation > 0 ? { gmTotalCacheCreation: built.summary.totalCacheCreation } : {}),
+        ...(built.summary.totalThinkingTokens > 0 ? { gmTotalThinkingTokens: built.summary.totalThinkingTokens } : {}),
+        ...(built.totalCost > 0 ? { estimatedCost: built.totalCost } : {}),
+        gmModelStats: buildGMPerModelStats(built.summary, built.costPerModel),
+        ...(distinctEmails.size === 1 ? { accountEmail: [...distinctEmails][0] } : {}),
+        ...(surface && surface !== 'unknown' ? { surface } : {}),
+        ...(built.surfaceBreakdown ? { surfaceBreakdown: built.surfaceBreakdown } : {}),
+        isLive: true,
+    };
+
+    return cycle;
+}
+
+/**
+ * Merge archived {@link DailyStore} records, live {@link DailyLedger} activity,
+ * and optional CLI {@link DailyRecord}s into a clean date-keyed map WITHOUT mutating
+ * the store and WITHOUT double-counting across midnight rollover or same-day snapshots.
+ */
+export function mergeArchivedAndLiveRecords(options: MergeArchivedAndLiveOptions): Map<string, DailyRecord> {
+    const nowDate = resolveNowDate(options.now);
+    const todayKey = toLocalDateKey(nowDate);
+    const merged = new Map<string, DailyRecord>();
+
+    // 1. Clone archived DailyStore records
+    if (options.store) {
+        for (const rec of options.store.getAllRecords()) {
+            merged.set(rec.date, {
+                date: rec.date,
+                cycles: rec.cycles.map(c => ({ ...c })),
+            });
+        }
+    }
+
+    // 2. Merge live DailyLedger (active + settled) with strict rollover deduplication
+    const extracted = extractLiveDayData(options.liveLedger, todayKey);
+    if (extracted) {
+        const { dayData } = extracted;
+        const customPricing = options.customPricing ?? extracted.customPricing;
+        const defaultSurface = options.defaultSurface ?? extracted.defaultSurface;
+        const liveCycle = buildLiveDailyCycleFromLedger(dayData, customPricing, { defaultSurface, now: nowDate });
+
+        if (liveCycle) {
+            const existing = merged.get(dayData.dateKey);
+            if (!existing) {
+                merged.set(dayData.dateKey, { date: dayData.dateKey, cycles: [liveCycle] });
+            } else if (dayData.dateKey < todayKey) {
+                // Past date already exists in DailyStore (midnight rollover completed):
+                // never double-count stale un-flushed ledger state on top of the archive!
+                // Only merge if surfaces are strictly disjoint and known (e.g. archived CLI only, live App).
+                const archivedSurfaces = new Set(existing.cycles.flatMap(c => getCycleSurfaces(c)));
+                const liveSurfaces = getCycleSurfaces(liveCycle);
+                const disjointKnown = liveSurfaces.every(s => s !== 'unknown' && !archivedSurfaces.has(s))
+                    && [...archivedSurfaces].every(s => s !== 'unknown');
+                if (disjointKnown) {
+                    existing.cycles.push(liveCycle);
+                }
+            } else {
+                // Same-day (`dayData.dateKey >= todayKey`) with existing archived entry (e.g. forced archival or CLI):
+                const archivedSurfaces = new Set(existing.cycles.flatMap(c => getCycleSurfaces(c)));
+                const liveSurfaces = getCycleSurfaces(liveCycle);
+                const disjointKnown = liveSurfaces.every(s => s !== 'unknown' && !archivedSurfaces.has(s))
+                    && [...archivedSurfaces].every(s => s !== 'unknown');
+
+                if (disjointKnown) {
+                    existing.cycles.push(liveCycle);
+                } else {
+                    // Check whether all live calls occurred strictly after the archived snapshot endTime
+                    // (e.g. forced archival ran at 14:00 and reset ledger, then new calls came in at 15:00).
+                    const bounds = getLiveTimeBounds(dayData, nowDate.toISOString());
+                    let maxArchivedEndMs = 0;
+                    for (const c of existing.cycles) {
+                        const t = c.endTime ? Date.parse(c.endTime) : NaN;
+                        if (Number.isFinite(t) && t > maxArchivedEndMs) { maxArchivedEndMs = t; }
+                    }
+                    if (bounds.earliestMs > 0 && maxArchivedEndMs > 0 && bounds.earliestMs > maxArchivedEndMs) {
+                        existing.cycles.push(liveCycle);
+                    } else {
+                        // Overlapping window (likely same calls already archived or superseded snapshot):
+                        // replace only if live cycle strictly supersedes archived non-CLI total; NEVER sum!
+                        const archivedCalls = existing.cycles.reduce((s, c) => s + (c.gmTotalCalls || 0), 0);
+                        const archivedTokens = existing.cycles.reduce((s, c) => s + (c.gmTotalAllTokens || c.gmTotalTokens || 0), 0);
+                        const liveCalls = liveCycle.gmTotalCalls || 0;
+                        const liveTokens = liveCycle.gmTotalAllTokens || liveCycle.gmTotalTokens || 0;
+                        if (liveCalls > archivedCalls || (liveCalls === archivedCalls && liveTokens > archivedTokens)) {
+                            // Keep any disjoint CLI cycles on that date while replacing overlapping cycles
+                            const nonOverlapping = existing.cycles.filter(c => {
+                                const s = getCycleSurfaces(c);
+                                return s.length === 1 && s[0] === 'cli' && !liveSurfaces.includes('cli');
+                            });
+                            existing.cycles = [...nonOverlapping, liveCycle];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Merge CLI records (surface: 'cli') cleanly without duplicating already-present CLI cycles
+    if (options.cliRecords && options.cliRecords.length > 0) {
+        for (const cliRec of options.cliRecords) {
+            if (!cliRec || !cliRec.date || !Array.isArray(cliRec.cycles) || cliRec.cycles.length === 0) {
+                continue;
+            }
+            const existing = merged.get(cliRec.date);
+            if (!existing) {
+                merged.set(cliRec.date, {
+                    date: cliRec.date,
+                    cycles: cliRec.cycles.map(c => ({ ...c, surface: 'cli' as UsageSurface })),
+                });
+            } else {
+                const alreadyHasCli = existing.cycles.some(c => getCycleSurfaces(c).includes('cli'));
+                if (!alreadyHasCli) {
+                    for (const c of cliRec.cycles) {
+                        existing.cycles.push({ ...c, surface: 'cli' as UsageSurface });
+                    }
+                }
+            }
+        }
+    }
+
+    return merged;
 }

@@ -8,6 +8,203 @@ export interface StateBucket {
     update(key: string, value: unknown): PromiseLike<void>;
 }
 
+export type OrchestratorPricingMode = 'mapped' | 'strict';
+
+export type DisplayCurrencyCode =
+    | 'USD'
+    | 'CNY'
+    | 'EUR'
+    | 'JPY'
+    | 'KRW'
+    | 'GBP'
+    | 'AUD'
+    | 'HKD'
+    | 'TWD';
+
+export const SUPPORTED_DISPLAY_CURRENCIES: readonly DisplayCurrencyCode[] = [
+    'USD',
+    'CNY',
+    'EUR',
+    'JPY',
+    'KRW',
+    'GBP',
+    'AUD',
+    'HKD',
+    'TWD',
+] as const;
+
+export interface LastUpdateCheckRecord {
+    checkedAt: number;
+    latestVersion?: string | null;
+    hasUpdate?: boolean;
+    etag?: string | null;
+    releaseUrl?: string | null;
+    releaseNotesSummary?: string | null;
+    assetName?: string | null;
+    assetUrl?: string | null;
+    checksumsUrl?: string | null;
+    error?: string | null;
+}
+
+export interface AppSettings {
+    // Existing shared settings (v1.17.5 and earlier)
+    pollingInterval: number;
+    quotaNotificationThreshold: number;
+    showContext: boolean;
+    showQuota: boolean;
+    showResetCountdown: boolean;
+    showAiCredits: boolean;
+    showSpeed: boolean;
+    showCacheHit: boolean;
+    showSessionCost: boolean;
+    tooltipDensity: 'auto' | 'compact' | 'full';
+    showModelInternalId: boolean;
+    maxRecentSteps: number;
+    maxArchives: number;
+    lockToMainAgent: boolean;
+
+    // v1.17.6 settings (strictly backward-compatible defaults)
+    appComposerRingEnabled: boolean;
+    appTopBarEnabled: boolean;
+    orchestratorPricingMode: OrchestratorPricingMode;
+    displayCurrency: DisplayCurrencyCode;
+    customFxRate: number | null;
+    subscriptionMonthlyFee: number | null;
+    subscriptionCurrency: DisplayCurrencyCode;
+    calendarRetentionDays: number;
+    autoCheckUpdates: boolean;
+    showNativeHudBar: boolean;
+    lastUpdateCheck: LastUpdateCheckRecord | null;
+    activityMaxRecentSteps: number;
+    activityMaxArchives: number;
+}
+
+export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = Object.freeze({
+    pollingInterval: 5,
+    quotaNotificationThreshold: 20,
+    showContext: true,
+    showQuota: true,
+    showResetCountdown: true,
+    showAiCredits: true,
+    showSpeed: false,
+    showCacheHit: false,
+    showSessionCost: false,
+    tooltipDensity: 'auto',
+    showModelInternalId: false,
+    maxRecentSteps: 100,
+    maxArchives: 20,
+    lockToMainAgent: false,
+
+    appComposerRingEnabled: false,
+    appTopBarEnabled: false,
+    orchestratorPricingMode: 'mapped',
+    displayCurrency: 'USD',
+    customFxRate: null,
+    subscriptionMonthlyFee: null,
+    subscriptionCurrency: 'USD',
+    calendarRetentionDays: 400,
+    autoCheckUpdates: true,
+    showNativeHudBar: true,
+    lastUpdateCheck: null,
+    activityMaxRecentSteps: 100,
+    activityMaxArchives: 20,
+});
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+    const n = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
+    if (!Number.isFinite(n)) { return fallback; }
+    return Math.min(Math.max(Math.round(n), min), max);
+}
+
+function normalizeDisplayCurrency(value: unknown, fallback: DisplayCurrencyCode = 'USD'): DisplayCurrencyCode {
+    if (typeof value !== 'string') { return fallback; }
+    const upper = value.trim().toUpperCase();
+    return (SUPPORTED_DISPLAY_CURRENCIES as readonly string[]).includes(upper)
+        ? (upper as DisplayCurrencyCode)
+        : fallback;
+}
+
+function normalizePositiveNullableNumber(value: unknown, allowZero = false): number | null {
+    if (value === null || value === undefined || value === '') { return null; }
+    const n = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(n)) { return null; }
+    if (allowZero ? n < 0 : n <= 0) { return null; }
+    return n;
+}
+
+function normalizeLastUpdateCheck(value: unknown): LastUpdateCheckRecord | null {
+    if (!isPlainObject(value)) { return null; }
+    const checkedAt = typeof value.checkedAt === 'number' && Number.isFinite(value.checkedAt) && value.checkedAt > 0
+        ? Math.floor(value.checkedAt)
+        : 0;
+    if (checkedAt <= 0) { return null; }
+    const optStr = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+    return {
+        checkedAt,
+        latestVersion: optStr(value.latestVersion),
+        hasUpdate: typeof value.hasUpdate === 'boolean' ? value.hasUpdate : false,
+        etag: optStr(value.etag),
+        releaseUrl: optStr(value.releaseUrl),
+        releaseNotesSummary: optStr(value.releaseNotesSummary),
+        assetName: optStr(value.assetName),
+        assetUrl: optStr(value.assetUrl),
+        checksumsUrl: optStr(value.checksumsUrl),
+        error: optStr(value.error),
+    };
+}
+
+/**
+ * Normalize raw persisted `appSettings` into a complete, schema-safe `AppSettings` object.
+ * Preserves full backward compatibility with v1.17.5 payloads (e.g. `maxRecentSteps`/`maxArchives`).
+ */
+export function normalizeAppSettings(raw: unknown): AppSettings {
+    const src = isPlainObject(raw) ? raw : {};
+    const tooltipDensity = src.tooltipDensity === 'compact' || src.tooltipDensity === 'full' || src.tooltipDensity === 'auto'
+        ? src.tooltipDensity
+        : DEFAULT_APP_SETTINGS.tooltipDensity;
+    const orchestratorPricingMode: OrchestratorPricingMode = src.orchestratorPricingMode === 'strict'
+        ? 'strict'
+        : 'mapped';
+
+    const resolvedMaxRecentSteps = src.activityMaxRecentSteps !== undefined
+        ? clampInt(src.activityMaxRecentSteps, DEFAULT_APP_SETTINGS.activityMaxRecentSteps, 10, 500)
+        : clampInt(src.maxRecentSteps, DEFAULT_APP_SETTINGS.maxRecentSteps, 10, 500);
+    const resolvedMaxArchives = src.activityMaxArchives !== undefined
+        ? clampInt(src.activityMaxArchives, DEFAULT_APP_SETTINGS.activityMaxArchives, 1, 100)
+        : clampInt(src.maxArchives, DEFAULT_APP_SETTINGS.maxArchives, 1, 100);
+
+    return {
+        pollingInterval: clampInt(src.pollingInterval, DEFAULT_APP_SETTINGS.pollingInterval, 1, 60),
+        quotaNotificationThreshold: clampInt(src.quotaNotificationThreshold, DEFAULT_APP_SETTINGS.quotaNotificationThreshold, 0, 99),
+        showContext: typeof src.showContext === 'boolean' ? src.showContext : DEFAULT_APP_SETTINGS.showContext,
+        showQuota: typeof src.showQuota === 'boolean' ? src.showQuota : DEFAULT_APP_SETTINGS.showQuota,
+        showResetCountdown: typeof src.showResetCountdown === 'boolean' ? src.showResetCountdown : DEFAULT_APP_SETTINGS.showResetCountdown,
+        showAiCredits: typeof src.showAiCredits === 'boolean' ? src.showAiCredits : DEFAULT_APP_SETTINGS.showAiCredits,
+        showSpeed: typeof src.showSpeed === 'boolean' ? src.showSpeed : DEFAULT_APP_SETTINGS.showSpeed,
+        showCacheHit: typeof src.showCacheHit === 'boolean' ? src.showCacheHit : DEFAULT_APP_SETTINGS.showCacheHit,
+        showSessionCost: typeof src.showSessionCost === 'boolean' ? src.showSessionCost : DEFAULT_APP_SETTINGS.showSessionCost,
+        tooltipDensity,
+        showModelInternalId: typeof src.showModelInternalId === 'boolean' ? src.showModelInternalId : DEFAULT_APP_SETTINGS.showModelInternalId,
+        maxRecentSteps: resolvedMaxRecentSteps,
+        maxArchives: resolvedMaxArchives,
+        lockToMainAgent: typeof src.lockToMainAgent === 'boolean' ? src.lockToMainAgent : DEFAULT_APP_SETTINGS.lockToMainAgent,
+
+        appComposerRingEnabled: typeof src.appComposerRingEnabled === 'boolean' ? src.appComposerRingEnabled : DEFAULT_APP_SETTINGS.appComposerRingEnabled,
+        appTopBarEnabled: typeof src.appTopBarEnabled === 'boolean' ? src.appTopBarEnabled : DEFAULT_APP_SETTINGS.appTopBarEnabled,
+        orchestratorPricingMode,
+        displayCurrency: normalizeDisplayCurrency(src.displayCurrency, DEFAULT_APP_SETTINGS.displayCurrency),
+        customFxRate: normalizePositiveNullableNumber(src.customFxRate, false),
+        subscriptionMonthlyFee: normalizePositiveNullableNumber(src.subscriptionMonthlyFee, true),
+        subscriptionCurrency: normalizeDisplayCurrency(src.subscriptionCurrency, DEFAULT_APP_SETTINGS.subscriptionCurrency),
+        calendarRetentionDays: clampInt(src.calendarRetentionDays, DEFAULT_APP_SETTINGS.calendarRetentionDays, 30, 3650),
+        autoCheckUpdates: typeof src.autoCheckUpdates === 'boolean' ? src.autoCheckUpdates : DEFAULT_APP_SETTINGS.autoCheckUpdates,
+        showNativeHudBar: typeof src.showNativeHudBar === 'boolean' ? src.showNativeHudBar : DEFAULT_APP_SETTINGS.showNativeHudBar,
+        lastUpdateCheck: normalizeLastUpdateCheck(src.lastUpdateCheck),
+        activityMaxRecentSteps: resolvedMaxRecentSteps,
+        activityMaxArchives: resolvedMaxArchives,
+    };
+}
+
 interface DurableStateFile {
     version: 1;
     global: Record<string, unknown>;
@@ -15,6 +212,7 @@ interface DurableStateFile {
 }
 
 const DEEP_MERGE_OBJECT_KEYS = new Set<string>([
+    'appSettings',
     'dailyLedger',
     'dailyLedgerState',
     'accountSnapshots',
@@ -28,6 +226,8 @@ const DEEP_MERGE_OBJECT_KEYS = new Set<string>([
 
 const RENAME_RETRY_DELAYS_MS = [15, 30, 60, 120, 200];
 const LOCK_STALE_MS = 5_000;
+const LOCK_HARD_STALE_MS = 15_000;
+const LOCK_EMPTY_GRACE_MS = 250;
 const LOCK_ACQUIRE_TIMEOUT_MS = 2_500;
 const MAX_MERGE_DEPTH = 6;
 let tmpNonceCounter = 0;
@@ -291,26 +491,196 @@ function buildTempFilePath(filePath: string): string {
     return path.join(path.dirname(filePath), `${path.basename(filePath)}.${process.pid}.${nonce}.tmp`);
 }
 
-async function acquireLockFile(lockPath: string): Promise<() => Promise<void>> {
-    const deadline = Date.now() + LOCK_ACQUIRE_TIMEOUT_MS;
+export interface LockFileMetadata {
+    pid: number | null;
+    createdAtMs: number | null;
+    token: string | null;
+}
+
+export interface AcquireLockOptions {
+    /** Max milliseconds to wait for an active lock before throwing DurableStateLockTimeoutError. */
+    timeoutMs?: number;
+    /** Age threshold (ms) after which a corrupt/PID-less lock is considered stale. */
+    staleMs?: number;
+    /** Hard age cap (ms) after which even a recycled-PID lock is reclaimed as abandoned. */
+    hardStaleMs?: number;
+    /** Injectable PID liveness probe (defaults to process.kill(pid, 0)). */
+    isPidAlive?: (pid: number) => boolean;
+    /** Injectable clock (defaults to Date.now). */
+    now?: () => number;
+}
+
+export interface DurableStateOptions {
+    lockOptions?: AcquireLockOptions;
+}
+
+export class DurableStateLockTimeoutError extends Error {
+    readonly code = 'ELOCKTIMEOUT';
+    readonly lockPath: string;
+    readonly holderPid: number | null;
+
+    constructor(lockPath: string, holderPid: number | null) {
+        super(
+            holderPid !== null
+                ? `Timed out waiting for durable state lock held by active PID ${holderPid}: ${lockPath}`
+                : `Timed out waiting for active durable state lock: ${lockPath}`,
+        );
+        this.name = 'DurableStateLockTimeoutError';
+        this.lockPath = lockPath;
+        this.holderPid = holderPid;
+    }
+}
+
+/**
+ * Parse lock file contents formatted as `<pid>:<timestampMs>[:<ownerToken>]`.
+ */
+export function parseLockFileContent(raw: string): LockFileMetadata | null {
+    const trimmed = raw.trim();
+    if (!trimmed) { return null; }
+    const parts = trimmed.split(':');
+    const pid = /^\d+$/.test(parts[0] || '') ? Number(parts[0]) : null;
+    const validPid = pid !== null && Number.isSafeInteger(pid) && pid > 0 && pid <= 0xffffffff ? pid : null;
+    const createdAtMs = parts.length >= 2 && /^\d+$/.test(parts[1] || '') ? Number(parts[1]) : null;
+    const validTs = createdAtMs !== null && Number.isSafeInteger(createdAtMs) && createdAtMs > 0 ? createdAtMs : null;
+    const token = parts.length >= 3 && parts[2].trim().length > 0 ? parts[2].trim() : null;
+    if (validPid === null && validTs === null && token === null) {
+        return null;
+    }
+    return { pid: validPid, createdAtMs: validTs, token };
+}
+
+/**
+ * Check whether an OS PID is currently alive.
+ * `EPERM` means the process exists under another privilege/user boundary (alive).
+ * `ESRCH` means no such process exists (dead).
+ */
+export function isPidAlive(pid: number): boolean {
+    if (!Number.isSafeInteger(pid) || pid <= 0) { return false; }
+    if (pid === process.pid) { return true; }
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'EPERM') { return true; }
+        return false;
+    }
+}
+
+async function inspectLockStaleness(
+    lockPath: string,
+    staleMs: number,
+    hardStaleMs: number,
+    checkPidAlive: (pid: number) => boolean,
+    nowFn: () => number,
+): Promise<{ exists: boolean; stale: boolean; holderPid: number | null }> {
+    let st: fs.Stats;
+    try {
+        st = await fs.promises.stat(lockPath);
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+            return { exists: false, stale: false, holderPid: null };
+        }
+        return { exists: true, stale: false, holderPid: null };
+    }
+
+    const nowMs = nowFn();
+    const ageMs = Math.max(0, nowMs - st.mtimeMs);
+    const raw = await fs.promises.readFile(lockPath, 'utf8').catch(() => null);
+    if (raw === null) {
+        // Lock disappeared or could not be read due to transient contention; only treat stale past hard cap.
+        return { exists: true, stale: ageMs > hardStaleMs, holderPid: null };
+    }
+
+    if (raw.trim().length === 0) {
+        // Another writer may have just created the lock via 'wx' before finishing writeFile().
+        if (ageMs < LOCK_EMPTY_GRACE_MS) {
+            return { exists: true, stale: false, holderPid: null };
+        }
+        return { exists: true, stale: ageMs > staleMs, holderPid: null };
+    }
+
+    const meta = parseLockFileContent(raw);
+    if (!meta || meta.pid === null) {
+        // Corrupt or non-PID lock file: reclaim once older than staleMs.
+        return { exists: true, stale: ageMs > staleMs, holderPid: null };
+    }
+
+    // Dead owning process -> definitively stale and safe to reclaim immediately.
+    if (meta.pid !== process.pid && !checkPidAlive(meta.pid)) {
+        return { exists: true, stale: true, holderPid: meta.pid };
+    }
+
+    // Active PID: never steal a fresh lock! Only treat as abandoned past hardStaleMs (e.g. PID reuse).
+    return {
+        exists: true,
+        stale: ageMs > hardStaleMs,
+        holderPid: meta.pid,
+    };
+}
+
+async function reclaimStaleLockFile(lockPath: string): Promise<void> {
+    const tombstone = `${lockPath}.stale.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
+    try {
+        // Atomic rename prevents a racing waiter from unlinking a freshly created lock.
+        await fs.promises.rename(lockPath, tombstone);
+        await fs.promises.unlink(tombstone).catch(() => {});
+    } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+            return;
+        }
+        // Fallback if rename is blocked on certain filesystems
+        await fs.promises.unlink(lockPath).catch(() => {});
+    }
+}
+
+export async function acquireLockFile(
+    lockPath: string,
+    options: AcquireLockOptions = {},
+): Promise<() => Promise<void>> {
+    const timeoutMs = options.timeoutMs ?? LOCK_ACQUIRE_TIMEOUT_MS;
+    const staleMs = options.staleMs ?? LOCK_STALE_MS;
+    const hardStaleMs = options.hardStaleMs ?? Math.max(staleMs * 3, LOCK_HARD_STALE_MS);
+    const checkPidAlive = options.isPidAlive ?? isPidAlive;
+    const nowFn = options.now ?? (() => Date.now());
+
+    const deadline = nowFn() + Math.max(0, timeoutMs);
     await fs.promises.mkdir(path.dirname(lockPath), { recursive: true });
     const mode = process.platform === 'win32' ? undefined : 0o600;
+    const ownerToken = crypto.randomBytes(8).toString('hex');
     let attempt = 0;
+
+    const createOwnedLock = async (): Promise<() => Promise<void>> => {
+        const handle = await fs.promises.open(lockPath, 'wx', mode);
+        try {
+            await handle.writeFile(`${process.pid}:${nowFn()}:${ownerToken}\n`, 'utf8');
+        } finally {
+            await handle.close();
+        }
+        let released = false;
+        return async () => {
+            if (released) { return; }
+            released = true;
+            try {
+                // Verify we still own this lockfile before unlinking so we never remove another writer's lock.
+                const current = await fs.promises.readFile(lockPath, 'utf8');
+                const meta = parseLockFileContent(current);
+                if (meta?.token && meta.token !== ownerToken) {
+                    return;
+                }
+            } catch (readErr) {
+                if ((readErr as NodeJS.ErrnoException).code === 'ENOENT') {
+                    return;
+                }
+            }
+            await fs.promises.unlink(lockPath).catch(() => {});
+        };
+    };
 
     while (true) {
         try {
-            const handle = await fs.promises.open(lockPath, 'wx', mode);
-            try {
-                await handle.writeFile(`${process.pid}:${Date.now()}\n`, 'utf8');
-            } finally {
-                await handle.close();
-            }
-            let released = false;
-            return async () => {
-                if (released) { return; }
-                released = true;
-                await fs.promises.unlink(lockPath).catch(() => {});
-            };
+            return await createOwnedLock();
         } catch (err) {
             const code = (err as NodeJS.ErrnoException).code;
             const isContention = code === 'EEXIST'
@@ -318,26 +688,25 @@ async function acquireLockFile(lockPath: string): Promise<() => Promise<void>> {
             if (!isContention) {
                 throw err;
             }
-            try {
-                const st = await fs.promises.stat(lockPath);
-                if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-                    await fs.promises.unlink(lockPath).catch(() => {});
-                    continue;
-                }
-            } catch (statErr) {
-                if ((statErr as NodeJS.ErrnoException).code === 'ENOENT') {
-                    continue;
-                }
+
+            const inspection = await inspectLockStaleness(lockPath, staleMs, hardStaleMs, checkPidAlive, nowFn);
+            if (!inspection.exists) {
+                continue;
             }
-            if (Date.now() >= deadline) {
-                await fs.promises.unlink(lockPath).catch(() => {});
-                return async () => {
-                    await fs.promises.unlink(lockPath).catch(() => {});
-                };
+            if (inspection.stale) {
+                await reclaimStaleLockFile(lockPath);
+                continue;
             }
+
+            if (nowFn() >= deadline) {
+                // Active writer still holds a non-stale lock — NEVER delete it or proceed unlocked.
+                throw new DurableStateLockTimeoutError(lockPath, inspection.holderPid);
+            }
+
             attempt++;
             const jitter = Math.floor(Math.random() * 8);
-            await sleep(Math.min(5 + attempt * 5 + jitter, 50));
+            const remaining = Math.max(1, deadline - nowFn());
+            await sleep(Math.min(5 + attempt * 5 + jitter, 50, remaining));
         }
     }
 }
@@ -345,6 +714,7 @@ async function acquireLockFile(lockPath: string): Promise<() => Promise<void>> {
 export class DurableState {
     private static readonly SAVE_DEBOUNCE_MS = 250;
     private readonly _filePath: string;
+    private readonly _lockOptions?: AcquireLockOptions;
     private _data: DurableStateFile;
     private _baseData: DurableStateFile;
     private _lastSerialized: string;
@@ -368,8 +738,9 @@ export class DurableState {
     private _flushInFlight: Promise<void> | null = null;
     private _waiters = new Map<number, Array<() => void>>();
 
-    constructor(filePath: string = getDefaultStateFilePath()) {
+    constructor(filePath: string = getDefaultStateFilePath(), options?: DurableStateOptions) {
         this._filePath = filePath;
+        this._lockOptions = options?.lockOptions;
         this._data = this._load();
         this._baseData = deepClone(this._data);
         this._lastSerialized = this._serialize(this._data);
@@ -381,6 +752,19 @@ export class DurableState {
 
     workspaceBucket(workspaceKey: string, fallback?: StateBucket): StateBucket {
         return this._createBucket('workspace', workspaceKey, fallback);
+    }
+
+    /** Read normalized v1.17.6+ `global.appSettings` with safe backward-compatible defaults. */
+    getAppSettings(): AppSettings {
+        return normalizeAppSettings(this.globalBucket().get<unknown>('appSettings', null));
+    }
+
+    /** Merge and persist a partial update into `global.appSettings` (deep-merged per key across App & IDE). */
+    async updateAppSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+        const current = this.getAppSettings();
+        const merged = normalizeAppSettings({ ...current, ...patch });
+        await this.globalBucket().update('appSettings', merged);
+        return merged;
     }
 
     getFilePath(): string {
@@ -729,7 +1113,7 @@ export class DurableState {
         this._flushInFlight = (async () => {
             let releaseLock: (() => Promise<void>) | null = null;
             try {
-                releaseLock = await acquireLockFile(`${this._filePath}.lock`);
+                releaseLock = await acquireLockFile(`${this._filePath}.lock`, this._lockOptions);
 
                 let dataToWrite = localSnapshot;
                 let diskExists = false;

@@ -6,7 +6,7 @@ import { fetchAndOverrideCheckpointerLimits, measuredContextDrop } from '../src/
 import { rpcCall } from '../src/rpc-client';
 import { parseGMEntry, applyTrajectoryModelHints } from '../src/gm/parser';
 import { buildSummaryFromConversations } from '../src/gm/summary';
-import { calculateCosts, findPricingWithCustom, PricingStore } from '../src/pricing-store';
+import { calculateCosts, DEFAULT_PRICING, findPricingWithCustom, PricingStore } from '../src/pricing-store';
 import { buildPricingTabContent } from '../src/pricing-panel';
 import { buildModelsTabContent } from '../src/webview-models-tab';
 import { groupModelQuotas } from '../src/model-quota';
@@ -99,12 +99,19 @@ describe('Orchestrator Carbon/Argon split', () => {
         expect(groupModelQuotas([a, b])[0].missingQuota).toBe(true);
     });
     it.each(['Orchestrator', 'orchestrator', 'Orchestrator (Carbon)', 'gemini-pro-orchestrator', carbon])('never shares old custom rate %s with Argon/worker', key => {
-        expect(findPricingWithCustom(carbon, { [key]: rate })).toEqual(rate);
-        expect(findPricingWithCustom(argon, { [key]: rate })).toBeNull();
-        expect(findPricingWithCustom(worker, { [key]: rate })).toBeNull();
+        const distinctCustom = { input: 9.9, output: 19.9, thinking: 19.9, cacheRead: 0.99, cacheWrite: 0 };
+        expect(findPricingWithCustom(carbon, { [key]: distinctCustom })).toEqual(distinctCustom);
+        // In strict mode, Argon/worker stay null; in mapped mode, they use their own base rates, NEVER Carbon's custom override
+        expect(findPricingWithCustom(argon, { [key]: distinctCustom }, DEFAULT_PRICING, 'strict')).toBeNull();
+        expect(findPricingWithCustom(worker, { [key]: distinctCustom }, DEFAULT_PRICING, 'strict')).toBeNull();
+        expect(findPricingWithCustom(argon, { [key]: distinctCustom }, DEFAULT_PRICING, 'mapped')).not.toEqual(distinctCustom);
+        expect(findPricingWithCustom(worker, { [key]: distinctCustom }, DEFAULT_PRICING, 'mapped')).not.toEqual(distinctCustom);
     });
-    it.each(identities)('keeps $label unpriced regardless of ordinary family rates', m => {
-        expect(findPricingWithCustom(m.id, { 'gemini-4-carbon': rate, 'gemini-4-argon': rate, 'gemini-4-hydrogen': rate })).toBeNull();
+    it.each(identities)('isolates $label from ordinary family custom rates and respects strict vs mapped modes', m => {
+        const familyCustom = { input: 9.9, output: 19.9, thinking: 19.9, cacheRead: 0.99, cacheWrite: 0 };
+        const familyTable = { 'gemini-4-carbon': familyCustom, 'gemini-4-argon': familyCustom, 'gemini-4-hydrogen': familyCustom };
+        expect(findPricingWithCustom(m.id, familyTable, DEFAULT_PRICING, 'strict')).toBeNull();
+        expect(findPricingWithCustom(m.id, familyTable, DEFAULT_PRICING, 'mapped')).not.toEqual(familyCustom);
         expect(findPricingWithCustom(m.id, { [m.catalog]: rate })).toEqual(rate);
     });
     it.each(['en', 'zh', 'both'] as Language[])('renders both routes, separate price editors and localized empty state in %s', async lang => {
@@ -123,9 +130,12 @@ describe('Orchestrator Carbon/Argon split', () => {
             chatModel: { model: m.id, responseModel: m.catalog, usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 500, thinkingOutputTokens: 20 },
                 chatStartMetadata: { createdAt: '2026-11-13T00:00:00Z' } } }));
         const summary = buildSummaryFromConversations([{ cascadeId: 'test', title: 'synthetic', totalSteps: 3, coveredSteps: 3, coverageRate: 1, calls, checkpointSummaries: [] }], '2026-11-13T00:01:00Z')!;
-        const priced = calculateCosts(summary, { 'gemini-pro-orchestrator-argon': rate });
-        expect(priced.rows).toHaveLength(3); expect(priced.rows.filter(r => r.pricing)).toHaveLength(1);
-        expect(priced.grandTotal).toBeCloseTo(0.00305, 10);
+        const pricedStrict = calculateCosts(summary, { 'gemini-pro-orchestrator-argon': rate }, 'strict');
+        expect(pricedStrict.rows).toHaveLength(3); expect(pricedStrict.rows.filter(r => r.pricing)).toHaveLength(1);
+        expect(pricedStrict.grandTotal).toBeCloseTo(0.00305, 10);
+        const pricedMapped = calculateCosts(summary, { 'gemini-pro-orchestrator-argon': rate }, 'mapped');
+        expect(pricedMapped.rows).toHaveLength(3); expect(pricedMapped.rows.filter(r => r.pricing)).toHaveLength(3);
+        expect(pricedMapped.grandTotal).toBeGreaterThan(pricedStrict.grandTotal);
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime(new Date(calls[0].createdAt));
         const ledger = new DailyLedger();

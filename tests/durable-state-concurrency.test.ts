@@ -4,7 +4,14 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DurableState } from '../src/durable-state';
+import {
+    DEFAULT_APP_SETTINGS,
+    DurableState,
+    DurableStateLockTimeoutError,
+    acquireLockFile,
+    normalizeAppSettings,
+    parseLockFileContent,
+} from '../src/durable-state';
 import { DailyStore } from '../src/daily-store';
 import { PricingStore } from '../src/pricing-store';
 import { MonitorStore } from '../src/monitor-store';
@@ -364,5 +371,158 @@ describe('DurableState atomic writes & concurrent App + IDE safety', () => {
             'b@test.local': 22,
         });
         expect(fs.readdirSync(tempDir).filter(f => f.endsWith('.tmp') || f.endsWith('.lock'))).toEqual([]);
+    });
+
+    it('reclaims stale locks owned by dead PIDs immediately while preserving active live-writer locks on timeout', async () => {
+        const lockPath = statePath('hardened.lock');
+
+        // 1. Dead PID lock is reclaimed immediately without waiting for mtime staleness
+        fs.writeFileSync(lockPath, '999999:1700000000000:deadtoken\n', 'utf8');
+        const release1 = await acquireLockFile(lockPath, {
+            timeoutMs: 200,
+            staleMs: 60_000,
+            isPidAlive: (pid) => pid === process.pid,
+        });
+        const lockMeta = parseLockFileContent(fs.readFileSync(lockPath, 'utf8'));
+        expect(lockMeta?.pid).toBe(process.pid);
+        expect(lockMeta?.token).toBeTruthy();
+
+        // 2. While lock1 is held by an active alive PID, a second writer MUST time out cleanly
+        //    with DurableStateLockTimeoutError instead of deleting lock1 and proceeding unlocked!
+        await expect(acquireLockFile(lockPath, {
+            timeoutMs: 80,
+            staleMs: 5_000,
+            hardStaleMs: 15_000,
+            isPidAlive: () => true,
+        })).rejects.toBeInstanceOf(DurableStateLockTimeoutError);
+
+        // Original lock file MUST still exist and retain lock1's owner token
+        const stillOwned = parseLockFileContent(fs.readFileSync(lockPath, 'utf8'));
+        expect(stillOwned?.token).toBe(lockMeta?.token);
+
+        // 3. Releasing lock1 cleans up its own lock cleanly
+        await release1();
+        expect(fs.existsSync(lockPath)).toBe(false);
+    });
+
+    it('DurableState._flush never clobbers disk or deletes an active lock on lock timeout, and retries on next flush', async () => {
+        const filePath = statePath('locked-flush.json');
+        const seed = new DurableState(filePath);
+        await seed.globalBucket().update('displayLanguage', 'en');
+        await seed.flush();
+
+        // Simulate another live process actively holding the lock
+        const activeLockPath = `${filePath}.lock`;
+        const activeLockBody = `424242:${Date.now()}:activewriter\n`;
+        fs.writeFileSync(activeLockPath, activeLockBody, 'utf8');
+
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const writer = new DurableState(filePath, {
+            lockOptions: {
+                timeoutMs: 60,
+                staleMs: 5_000,
+                hardStaleMs: 15_000,
+                isPidAlive: () => true,
+            },
+        });
+        await writer.globalBucket().update('displayLanguage', 'zh');
+        await writer.flush();
+
+        // Flush failed safely: active lock was NOT deleted, disk still has 'en', warning was logged
+        expect(warnSpy).toHaveBeenCalled();
+        expect(fs.existsSync(activeLockPath)).toBe(true);
+        expect(fs.readFileSync(activeLockPath, 'utf8')).toBe(activeLockBody);
+        expect(readJson(filePath).global.displayLanguage).toBe('en');
+
+        // Once the active writer releases its lock, subsequent write/flush persists cleanly
+        fs.unlinkSync(activeLockPath);
+        await writer.globalBucket().update('panelZoomLevel', 115);
+        await writer.flush();
+        expect(readJson(filePath).global.displayLanguage).toBe('zh');
+        expect(readJson(filePath).global.panelZoomLevel).toBe(115);
+    });
+
+    it('normalizes all v1.17.6 AppSettings with backward compatibility and deep-merges appSettings across App + IDE', async () => {
+        // Legacy v1.17.5 payload with only old keys
+        const normalizedLegacy = normalizeAppSettings({
+            pollingInterval: 10,
+            maxRecentSteps: 250,
+            maxArchives: 40,
+        });
+        expect(normalizedLegacy).toMatchObject({
+            pollingInterval: 10,
+            maxRecentSteps: 250,
+            activityMaxRecentSteps: 250,
+            maxArchives: 40,
+            activityMaxArchives: 40,
+            appComposerRingEnabled: false,
+            appTopBarEnabled: false,
+            orchestratorPricingMode: 'mapped',
+            displayCurrency: 'USD',
+            customFxRate: null,
+            subscriptionMonthlyFee: null,
+            subscriptionCurrency: 'USD',
+            calendarRetentionDays: 400,
+            autoCheckUpdates: true,
+            showNativeHudBar: true,
+            lastUpdateCheck: null,
+        });
+
+        // New v1.17.6 keys with validation & clamping
+        const normalizedNew = normalizeAppSettings({
+            appComposerRingEnabled: true,
+            appTopBarEnabled: true,
+            orchestratorPricingMode: 'strict',
+            displayCurrency: 'cny',
+            customFxRate: 7.25,
+            subscriptionMonthlyFee: 19.99,
+            subscriptionCurrency: 'usd',
+            calendarRetentionDays: 5000, // clamped to 3650
+            autoCheckUpdates: false,
+            showNativeHudBar: false,
+            activityMaxRecentSteps: 300,
+            activityMaxArchives: 50,
+            lastUpdateCheck: {
+                checkedAt: 1700000000000,
+                latestVersion: '1.17.6',
+                hasUpdate: true,
+                etag: '"abc"',
+            },
+        });
+        expect(normalizedNew.appComposerRingEnabled).toBe(true);
+        expect(normalizedNew.appTopBarEnabled).toBe(true);
+        expect(normalizedNew.orchestratorPricingMode).toBe('strict');
+        expect(normalizedNew.displayCurrency).toBe('CNY');
+        expect(normalizedNew.customFxRate).toBe(7.25);
+        expect(normalizedNew.subscriptionMonthlyFee).toBe(19.99);
+        expect(normalizedNew.calendarRetentionDays).toBe(3650);
+        expect(normalizedNew.autoCheckUpdates).toBe(false);
+        expect(normalizedNew.showNativeHudBar).toBe(false);
+        expect(normalizedNew.maxRecentSteps).toBe(300);
+        expect(normalizedNew.activityMaxRecentSteps).toBe(300);
+        expect(normalizedNew.maxArchives).toBe(50);
+        expect(normalizedNew.activityMaxArchives).toBe(50);
+        expect(normalizedNew.lastUpdateCheck?.latestVersion).toBe('1.17.6');
+
+        // Concurrent App + IDE updates to distinct keys in global.appSettings deep-merge cleanly
+        const filePath = statePath('app-settings-merge.json');
+        const seed = new DurableState(filePath);
+        await seed.updateAppSettings({ ...DEFAULT_APP_SETTINGS });
+        await seed.flush();
+
+        const appInstance = new DurableState(filePath);
+        const ideInstance = new DurableState(filePath);
+
+        await appInstance.updateAppSettings({ appComposerRingEnabled: true, displayCurrency: 'CNY' });
+        await appInstance.flush();
+
+        await ideInstance.updateAppSettings({ orchestratorPricingMode: 'strict', calendarRetentionDays: 730 });
+        await ideInstance.flush();
+
+        const reloaded = new DurableState(filePath).getAppSettings();
+        expect(reloaded.appComposerRingEnabled).toBe(true);
+        expect(reloaded.displayCurrency).toBe('CNY');
+        expect(reloaded.orchestratorPricingMode).toBe('strict');
+        expect(reloaded.calendarRetentionDays).toBe(730);
     });
 });

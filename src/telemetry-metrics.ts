@@ -14,12 +14,14 @@
 //     visibleResponseTokens.
 
 import type { GMCallEntry, GMModelStats, GMSummary } from './gm/types';
-import { normalizeModelDisplayName } from './models';
+import { getContextLimit, getModelSpecs, normalizeModelDisplayName, resolveModelId } from './models';
 import {
     findPricingForDate,
     findPricingWithCustom,
+    getOrchestratorPricingMode,
     selectPricingModel,
     type ModelPricing,
+    type OrchestratorPricingMode,
 } from './pricing-store';
 
 // ─── Noise & Validity Thresholds ─────────────────────────────────────────────
@@ -36,9 +38,90 @@ export const REP_MIN_STREAM_SECONDS = 0.25;
 /** Representative lower bound on output tokens for median/min/max spread. */
 export const REP_MIN_OUTPUT_TOKENS = 10;
 
+/** Sparse-sample speed guard minimum output tokens (below this -> Short sample / 短样本). */
+export const SHORT_SAMPLE_MIN_OUTPUT_TOKENS = 16;
+
+/** Sparse-sample speed guard minimum streaming duration in seconds (below this -> Short sample). */
+export const SHORT_SAMPLE_MIN_STREAM_SECONDS = 0.3;
+
+/** Standard long-context pricing tier threshold (200k prompt tokens). */
+export const LONG_CONTEXT_TIER_THRESHOLD = 200_000;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type CacheState = 'warm' | 'warming' | 'cold' | 'unknown';
+
+export interface SpeedSampleInput {
+    outputTokens?: number | null;
+    streamingSeconds?: number | null;
+    ttftSeconds?: number | null;
+    /** True when a response is actively in-flight awaiting first token. */
+    isStreaming?: boolean;
+    /** Optional elapsed wait duration (seconds) while waiting for TTFT. */
+    elapsedWaitSeconds?: number | null;
+    /** Optional override for minimum output tokens before showing steady TPS (default 16). */
+    minOutputTokens?: number;
+    /** Optional override for minimum decode duration in seconds (default 0.3). */
+    minStreamSeconds?: number;
+}
+
+export interface SpeedSampleEvaluation {
+    /** True when output or duration is too short for a reliable steady TPS reading. */
+    isShortSample: boolean;
+    /** Display-safe reliable tok/s, or null when waiting TTFT, unmeasured, or suppressed as short sample. */
+    displaySpeed: number | null;
+    /** Raw unfiltered tok/s (outputTokens / streamingSeconds) when both > 0; useful for tooltips/drawers. */
+    rawSpeed: number | null;
+    /** True when awaiting first token (no decoded output/stream yet while in-flight or TTFT pending). */
+    isWaitingTtft: boolean;
+    /** Optional wait seconds when isWaitingTtft is true. */
+    waitingSeconds?: number | null;
+}
+
+export interface ContextDualWatermarkInput {
+    /** Current context tokens used. */
+    contextUsed: number;
+    /** Auto-compaction / platform truncation limit (e.g. 256k or 512k). Falls back to model lookup if omitted. */
+    compactionLimit?: number | null;
+    /** Model's physical / native context window (e.g. 1,048,576). Falls back to model spec lookup if omitted. */
+    physicalContextWindow?: number | null;
+    /** Optional model identifier used to look up physical window and compaction limit when omitted. */
+    model?: string;
+    /** Long-context pricing tier threshold (default 200,000 tokens). */
+    longContextThreshold?: number;
+}
+
+export interface ContextDualWatermark {
+    contextUsed: number;
+    /** Auto-compaction / checkpointer ceiling (platform usable limit). */
+    compactionLimit: number;
+    /** Physical / native model context window (always >= compactionLimit when known). */
+    physicalContextWindow: number;
+    /** Percentage of auto-compaction limit currently used (0..100+). */
+    compactionUsagePct: number;
+    /** Percentage of physical context window currently used (0..100). */
+    physicalUsagePct: number;
+    /** Position (0..100%) of the auto-compaction ceiling along the physical window bar. */
+    compactionMarkerPct: number;
+    /** True when physicalContextWindow strictly exceeds compactionLimit. */
+    hasDistinctPhysicalWindow: boolean;
+    /** 200k long-context pricing tier boundary. */
+    longContextThreshold: number;
+    /** True when the 200k long-context pricing tier marker falls inside the window (> 200k). */
+    showLongContextMarker: boolean;
+    /** Position (0..100%) of the 200k marker relative to the compaction bar, or null if compactionLimit <= threshold. */
+    longContextMarkerPctOfCompaction: number | null;
+    /** Position (0..100%) of the 200k marker relative to the physical window bar, or null if physicalWindow <= threshold. */
+    longContextMarkerPctOfPhysical: number | null;
+    /** True when current contextUsed > 200,000 tokens. */
+    exceedsLongContextTier: boolean;
+    /** Remaining tokens until auto-compaction limit (clamped >= 0). */
+    tokensUntilCompaction: number;
+    /** Remaining tokens until 200k threshold (0 when exceeded; null when not applicable). */
+    tokensUntilLongContextTier: number | null;
+    /** Usage severity band relative to compaction limit. */
+    severity: 'safe' | 'caution' | 'critical';
+}
 
 /** GMCallEntry with optional conversation cascadeId attached for session aggregation. */
 export type TelemetryCallInput = GMCallEntry & { cascadeId?: string };
@@ -65,6 +148,8 @@ export interface CallTelemetryPoint {
     isCacheHit: boolean;
     cacheState: CacheState;
     estCacheSavingsUsd: number | null;
+    /** Sparse-sample speed guard evaluation for this call. */
+    speedSample?: SpeedSampleEvaluation;
 }
 
 export interface TelemetryAggregate {
@@ -116,6 +201,8 @@ export interface TelemetryAggregate {
     // Snapshots
     latestCall: CallTelemetryPoint | null;
     latestTimedCall: CallTelemetryPoint | null;
+    /** Sparse-sample speed guard evaluation for the latest call. */
+    latestSpeedSample?: SpeedSampleEvaluation | null;
 }
 
 export interface SessionTelemetrySummary {
@@ -129,6 +216,7 @@ export interface SessionTelemetrySummary {
 export interface TelemetrySummaryOptions {
     activeCascadeId?: string;
     customPricing?: Record<string, ModelPricing>;
+    orchestratorPricingMode?: OrchestratorPricingMode;
 }
 
 // ─── Internal Helpers ────────────────────────────────────────────────────────
@@ -204,27 +292,195 @@ function resolveModelLabel(call: Pick<GMCallEntry, 'modelDisplay' | 'model' | 'r
 function resolvePricingForCall(
     call: Pick<GMCallEntry, 'model' | 'modelDisplay' | 'responseModel' | 'createdAt'>,
     customPricing?: Record<string, ModelPricing>,
+    orchestratorPricingMode: OrchestratorPricingMode = getOrchestratorPricingMode(),
 ): ModelPricing | null {
     const custom = customPricing || {};
     const fallback = selectPricingModel(call.modelDisplay || '', call.responseModel || '', custom);
     const pricingModel = selectPricingModel(call.model || '', fallback, custom);
     if (!pricingModel) { return null; }
     if (call.createdAt) {
-        const dated = findPricingForDate(pricingModel, custom, call.createdAt);
+        const dated = findPricingForDate(pricingModel, custom, call.createdAt, undefined, orchestratorPricingMode);
         if (dated) { return dated; }
     }
-    return findPricingWithCustom(pricingModel, custom);
+    return findPricingWithCustom(pricingModel, custom, undefined, orchestratorPricingMode);
 }
 
 function resolvePricingForModelKey(
     modelKey: string,
     responseModel: string,
     customPricing?: Record<string, ModelPricing>,
+    orchestratorPricingMode: OrchestratorPricingMode = getOrchestratorPricingMode(),
 ): ModelPricing | null {
     const custom = customPricing || {};
     const pricingModel = selectPricingModel(modelKey, responseModel, custom);
     if (!pricingModel) { return null; }
-    return findPricingWithCustom(pricingModel, custom);
+    return findPricingWithCustom(pricingModel, custom, undefined, orchestratorPricingMode);
+}
+
+// ─── Sparse-Sample Speed Guard & Dual Watermark ──────────────────────────────
+
+/**
+ * Evaluate a decode throughput sample with sparse-sample micro-burst suppression.
+ * Prevents noisy TPS spikes on tiny bursts (e.g. 4 tokens in 15ms) while keeping
+ * `rawSpeed` available for tooltips/detail drawers and exposing explicit TTFT waiting state.
+ */
+export function evaluateSpeedSample(input: SpeedSampleInput): SpeedSampleEvaluation {
+    const out = safeNonNeg(input.outputTokens);
+    const stream = positiveOrNull(input.streamingSeconds);
+    const ttft = positiveOrNull(input.ttftSeconds);
+    const elapsedWait = positiveOrNull(input.elapsedWaitSeconds);
+
+    const minOut = typeof input.minOutputTokens === 'number' && Number.isFinite(input.minOutputTokens) && input.minOutputTokens > 0
+        ? Math.max(MIN_OUTPUT_TOKENS_FOR_SPEED, input.minOutputTokens)
+        : SHORT_SAMPLE_MIN_OUTPUT_TOKENS;
+    const minStream = typeof input.minStreamSeconds === 'number' && Number.isFinite(input.minStreamSeconds) && input.minStreamSeconds > 0
+        ? Math.max(MIN_STREAM_SECONDS, input.minStreamSeconds)
+        : SHORT_SAMPLE_MIN_STREAM_SECONDS;
+
+    // Waiting for first token: no output tokens / decode duration yet, but request is streaming or TTFT pending.
+    if (out === 0 && stream === null) {
+        if (input.isStreaming === true || elapsedWait !== null || ttft !== null) {
+            return {
+                isShortSample: false,
+                displaySpeed: null,
+                rawSpeed: null,
+                isWaitingTtft: true,
+                waitingSeconds: elapsedWait ?? ttft ?? null,
+            };
+        }
+        return {
+            isShortSample: false,
+            displaySpeed: null,
+            rawSpeed: null,
+            isWaitingTtft: false,
+        };
+    }
+
+    // Output arrived with no recorded positive stream duration (or positive stream with 0 output).
+    if (out <= 0 || stream === null) {
+        if (input.isStreaming === true && out === 0) {
+            return {
+                isShortSample: false,
+                displaySpeed: null,
+                rawSpeed: null,
+                isWaitingTtft: true,
+                waitingSeconds: elapsedWait ?? ttft ?? null,
+            };
+        }
+        return {
+            isShortSample: false,
+            displaySpeed: null,
+            rawSpeed: null,
+            isWaitingTtft: false,
+        };
+    }
+
+    const rawSpeed = out / stream;
+    if (!Number.isFinite(rawSpeed) || rawSpeed <= 0) {
+        return {
+            isShortSample: false,
+            displaySpeed: null,
+            rawSpeed: null,
+            isWaitingTtft: false,
+        };
+    }
+
+    if (out < minOut || stream < minStream) {
+        return {
+            isShortSample: true,
+            displaySpeed: null,
+            rawSpeed,
+            isWaitingTtft: false,
+        };
+    }
+
+    return {
+        isShortSample: false,
+        displaySpeed: rawSpeed,
+        rawSpeed,
+        isWaitingTtft: false,
+    };
+}
+
+/**
+ * Compute dual-watermark context metadata comparing platform auto-compaction ceiling
+ * against physical model context window, plus the 200k long-context pricing tier marker.
+ */
+export function computeContextWatermarks(input: ContextDualWatermarkInput): ContextDualWatermark {
+    const contextUsed = safeNonNeg(input.contextUsed);
+    const threshold = typeof input.longContextThreshold === 'number'
+        && Number.isFinite(input.longContextThreshold)
+        && input.longContextThreshold > 0
+        ? input.longContextThreshold
+        : LONG_CONTEXT_TIER_THRESHOLD;
+
+    let specMaxTokens = 0;
+    let specCpLimit = 0;
+    if (input.model && input.model.trim()) {
+        const resolved = resolveModelId(input.model) || input.model.trim();
+        const spec = getModelSpecs().find(s => s.placeholderId === resolved || s.modelId === resolved);
+        if (spec) {
+            specMaxTokens = safeNonNeg(spec.maxTokens);
+            specCpLimit = safeNonNeg(spec.cpLimit);
+        }
+        if (specCpLimit <= 0) {
+            specCpLimit = safeNonNeg(getContextLimit(input.model));
+        }
+    }
+
+    const explicitCompaction = positiveOrNull(input.compactionLimit);
+    const explicitPhysical = positiveOrNull(input.physicalContextWindow);
+
+    const compactionLimit = explicitCompaction ?? (specCpLimit > 0 ? specCpLimit : (explicitPhysical ?? specMaxTokens));
+    const rawPhysical = explicitPhysical ?? (specMaxTokens > 0 ? specMaxTokens : compactionLimit);
+    const physicalContextWindow = Math.max(compactionLimit, rawPhysical);
+
+    const compactionUsagePct = compactionLimit > 0 ? (contextUsed / compactionLimit) * 100 : 0;
+    const physicalUsagePct = physicalContextWindow > 0
+        ? Math.min(100, (contextUsed / physicalContextWindow) * 100)
+        : 0;
+    const compactionMarkerPct = physicalContextWindow > 0 && compactionLimit > 0
+        ? Math.min(100, (compactionLimit / physicalContextWindow) * 100)
+        : 100;
+    const hasDistinctPhysicalWindow = physicalContextWindow > compactionLimit && compactionLimit > 0;
+
+    const longContextMarkerPctOfCompaction = compactionLimit > threshold
+        ? (threshold / compactionLimit) * 100
+        : null;
+    const longContextMarkerPctOfPhysical = physicalContextWindow > threshold
+        ? (threshold / physicalContextWindow) * 100
+        : null;
+    const showLongContextMarker = longContextMarkerPctOfCompaction !== null || longContextMarkerPctOfPhysical !== null;
+    const exceedsLongContextTier = contextUsed > threshold;
+
+    const tokensUntilCompaction = compactionLimit > 0 ? Math.max(0, compactionLimit - contextUsed) : 0;
+    const tokensUntilLongContextTier = showLongContextMarker
+        ? Math.max(0, threshold - contextUsed)
+        : null;
+
+    const severity: 'safe' | 'caution' | 'critical' = compactionUsagePct >= 80
+        ? 'critical'
+        : compactionUsagePct >= 50
+            ? 'caution'
+            : 'safe';
+
+    return {
+        contextUsed,
+        compactionLimit,
+        physicalContextWindow,
+        compactionUsagePct,
+        physicalUsagePct,
+        compactionMarkerPct,
+        hasDistinctPhysicalWindow,
+        longContextThreshold: threshold,
+        showLongContextMarker,
+        longContextMarkerPctOfCompaction,
+        longContextMarkerPctOfPhysical,
+        exceedsLongContextTier,
+        tokensUntilCompaction,
+        tokensUntilLongContextTier,
+        severity,
+    };
 }
 
 /**
@@ -304,6 +560,7 @@ export function createEmptyTelemetryAggregate(): TelemetryAggregate {
 
         latestCall: null,
         latestTimedCall: null,
+        latestSpeedSample: null,
     };
 }
 
@@ -341,6 +598,7 @@ export function computeCallTelemetry(
     call: TelemetryCallInput,
     customPricing?: Record<string, ModelPricing>,
     cascadeIdOverride?: string,
+    orchestratorPricingMode?: OrchestratorPricingMode,
 ): CallTelemetryPoint {
     const cascadeId = cascadeIdOverride ?? call.cascadeId ?? '';
     const model = resolveModelLabel(call);
@@ -389,10 +647,16 @@ export function computeCallTelemetry(
         ? outputTokens / (ttftSeconds + streamingSeconds!)
         : null;
 
+    const speedSample = evaluateSpeedSample({
+        outputTokens,
+        streamingSeconds,
+        ttftSeconds,
+    });
+
     // Cache read savings in USD — null when unpriced or no cache read (never fake $0.00)
     let estCacheSavingsUsd: number | null = null;
     if (cacheReadTokens > 0) {
-        const pricing = resolvePricingForCall(call, customPricing);
+        const pricing = resolvePricingForCall(call, customPricing, orchestratorPricingMode);
         if (pricing) {
             const rateDiff = Math.max(0, pricing.input - pricing.cacheRead);
             estCacheSavingsUsd = (cacheReadTokens * rateDiff) / 1_000_000;
@@ -421,6 +685,7 @@ export function computeCallTelemetry(
         isCacheHit,
         cacheState,
         estCacheSavingsUsd,
+        speedSample,
     };
 }
 
@@ -432,6 +697,7 @@ export function computeCallTelemetry(
 export function computeTelemetryAggregateFromModelStats(
     modelStats: Record<string, GMModelStats> | readonly (GMModelStats & { modelName?: string })[],
     customPricing?: Record<string, ModelPricing>,
+    orchestratorPricingMode?: OrchestratorPricingMode,
 ): TelemetryAggregate {
     const entries: Array<[string, GMModelStats]> = Array.isArray(modelStats)
         ? modelStats.map((ms, idx) => [ms.modelName || ms.responseModel || `model_${idx}`, ms])
@@ -536,7 +802,7 @@ export function computeTelemetryAggregateFromModelStats(
 
         // Cache USD savings
         if (cacheRead > 0) {
-            const pricing = resolvePricingForModelKey(modelKey, ms.responseModel || '', customPricing);
+            const pricing = resolvePricingForModelKey(modelKey, ms.responseModel || '', customPricing, orchestratorPricingMode);
             if (pricing) {
                 const rateDiff = Math.max(0, pricing.input - pricing.cacheRead);
                 savingsUsdSum += (cacheRead * rateDiff) / 1_000_000;
@@ -599,6 +865,7 @@ export function computeTelemetryAggregateFromModelStats(
 
         latestCall: null,
         latestTimedCall: null,
+        latestSpeedSample: null,
     };
 }
 
@@ -611,6 +878,7 @@ export function computeTelemetryAggregate(
     calls: readonly TelemetryCallInput[],
     customPricing?: Record<string, ModelPricing>,
     fallbackModelStats?: Record<string, GMModelStats> | readonly (GMModelStats & { modelName?: string })[],
+    orchestratorPricingMode?: OrchestratorPricingMode,
 ): TelemetryAggregate {
     const filteredCalls = calls.filter(c => !isInternalCompactionCall(c));
 
@@ -620,7 +888,7 @@ export function computeTelemetryAggregate(
                 ? fallbackModelStats.length > 0
                 : Object.keys(fallbackModelStats).length > 0;
             if (hasFallback) {
-                return computeTelemetryAggregateFromModelStats(fallbackModelStats, customPricing);
+                return computeTelemetryAggregateFromModelStats(fallbackModelStats, customPricing, orchestratorPricingMode);
             }
         }
         return createEmptyTelemetryAggregate();
@@ -653,7 +921,7 @@ export function computeTelemetryAggregate(
 
     for (let i = 0; i < filteredCalls.length; i++) {
         const call = filteredCalls[i];
-        const point = computeCallTelemetry(call, customPricing);
+        const point = computeCallTelemetry(call, customPricing, undefined, orchestratorPricingMode);
         const ordered: OrderedPoint = {
             point,
             ts: parseValidTimestamp(point.createdAt),
@@ -780,6 +1048,7 @@ export function computeTelemetryAggregate(
 
         latestCall,
         latestTimedCall,
+        latestSpeedSample: latestCall?.speedSample ?? latestTimedCall?.speedSample ?? null,
     };
 }
 
@@ -803,6 +1072,7 @@ export function computeTelemetrySummary(
 
     const customPricing = opts?.customPricing;
     const activeCascadeId = opts?.activeCascadeId;
+    const orchestratorPricingMode = opts?.orchestratorPricingMode;
     const conversations = Array.isArray(gmSummary.conversations) ? gmSummary.conversations : [];
     const modelBreakdown = gmSummary.modelBreakdown || {};
 
@@ -831,11 +1101,11 @@ export function computeTelemetrySummary(
         }
     }
 
-    const overall = computeTelemetryAggregate(allCalls, customPricing, modelBreakdown);
+    const overall = computeTelemetryAggregate(allCalls, customPricing, modelBreakdown, orchestratorPricingMode);
 
     let active: TelemetryAggregate | null = null;
     if (activeCascadeId && activeCalls.length > 0) {
-        const computedActive = computeTelemetryAggregate(activeCalls, customPricing);
+        const computedActive = computeTelemetryAggregate(activeCalls, customPricing, undefined, orchestratorPricingMode);
         if (computedActive.totalCalls > 0) {
             active = computedActive;
         }
@@ -843,7 +1113,7 @@ export function computeTelemetrySummary(
 
     const byModel: Record<string, TelemetryAggregate> = {};
     for (const [modelKey, modelCalls] of callsByModel) {
-        const agg = computeTelemetryAggregate(modelCalls, customPricing);
+        const agg = computeTelemetryAggregate(modelCalls, customPricing, undefined, orchestratorPricingMode);
         if (agg.totalCalls > 0) {
             byModel[modelKey] = agg;
         }
@@ -852,7 +1122,7 @@ export function computeTelemetrySummary(
     for (const [rawKey, stats] of Object.entries(modelBreakdown)) {
         const modelKey = (normalizeModelDisplayName(rawKey) || rawKey).trim();
         if (!modelKey || byModel[modelKey]) { continue; }
-        const agg = computeTelemetryAggregateFromModelStats({ [modelKey]: stats }, customPricing);
+        const agg = computeTelemetryAggregateFromModelStats({ [modelKey]: stats }, customPricing, orchestratorPricingMode);
         if (agg.totalCalls > 0) {
             byModel[modelKey] = agg;
         }

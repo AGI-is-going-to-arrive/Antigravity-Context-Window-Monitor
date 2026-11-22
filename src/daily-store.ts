@@ -5,10 +5,18 @@
 
 import type { ActivityArchive, ActivitySummary } from './activity-tracker';
 import type { GMSummary, GMModelStats } from './gm-tracker';
+import {
+    cloneSurfaceBreakdown,
+    normalizeUsageSurface,
+    type SurfaceUsageStats,
+    type UsageSurface,
+} from './daily-ledger';
 import { normalizeModelDisplayName } from './models';
 import type { ModelPricing } from './pricing-store';
 import { DEFAULT_PRICING, findPricingForDate, costFromTokens } from './pricing-store';
 import { MIN_OUTPUT_TOKENS_FOR_SPEED, MIN_STREAM_SECONDS } from './telemetry-metrics';
+
+export type { SurfaceUsageStats, UsageSurface };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -66,7 +74,15 @@ export interface DailyCycleEntry {
     // GM
     gmTotalCalls?: number;
     gmTotalCredits?: number;
-    gmTotalTokens?: number;          // input + output
+    gmTotalTokens?: number;          // legacy input + output (retained for backward compatibility)
+    /** Additive total tokens: input + cacheRead + cacheCreation + output (optional for v1 compat) */
+    gmTotalAllTokens?: number;
+    /** Total cache read tokens across all models in this cycle (optional for v1 compat) */
+    gmTotalCacheRead?: number;
+    /** Total cache creation/write tokens across all models in this cycle (optional for v1 compat) */
+    gmTotalCacheCreation?: number;
+    /** Total thinking tokens (subset of outputTokens) across all models in this cycle (optional for v1 compat) */
+    gmTotalThinkingTokens?: number;
     gmRetryTokens?: number;          // retry overhead: tokens wasted
     gmRetryCredits?: number;         // retry overhead: credits lost
     gmRetryCount?: number;           // retry overhead: number of retried calls
@@ -76,6 +92,12 @@ export interface DailyCycleEntry {
     gmModelStats?: Record<string, GMModelCycleStats>;
     /** Account email that produced this cycle (multi-account isolation) */
     accountEmail?: string;
+    /** Origin surface ('app' | 'ide' | 'cli' | 'unknown'); omitted on legacy untagged records */
+    surface?: UsageSurface;
+    /** Per-surface split when multiple surfaces contributed to the same archived cycle */
+    surfaceBreakdown?: Partial<Record<UsageSurface, SurfaceUsageStats>>;
+    /** Runtime-only flag for live merged ledger cycles (never persisted to DailyStore) */
+    isLive?: boolean;
 }
 
 /** All cycles for a single calendar day */
@@ -92,6 +114,15 @@ export interface MonthCellSummary {
     totalToolCalls: number;
     totalCost: number;
     gmCalls: number;
+    /** Additive total tokens (input + cacheRead + cacheCreation + output) */
+    totalTokens?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    thinkingTokens?: number;
+    /** Distinct surfaces observed on this date */
+    surfaces?: UsageSurface[];
 }
 
 /** Per-model cost aggregation for a month */
@@ -159,7 +190,7 @@ function buildPerModelStats(modelStats: Record<string, {
     return Object.keys(perModel).length > 0 ? perModel : undefined;
 }
 
-function buildGMPerModelStats(
+export function buildGMPerModelStats(
     gmSummaryOrBreakdown?: GMSummary | Record<string, GMModelStats> | null,
     costPerModel?: Record<string, number>,
 ): Record<string, GMModelCycleStats> | undefined {
@@ -245,10 +276,134 @@ export interface CostBackfillOptions {
     basePricing?: Record<string, ModelPricing>;
 }
 
+/** Optional metadata when writing a daily snapshot. */
+export interface DailySnapshotMetadata {
+    surface?: UsageSurface;
+    surfaceBreakdown?: Partial<Record<UsageSurface, SurfaceUsageStats>>;
+    accountEmail?: string;
+}
+
+/** Optional initialization parameters for {@link DailyStore.init}. */
+export interface DailyStoreInitOptions {
+    /** Override maximum days retained (defaults to DEFAULT_MAX_DAYS = 400). */
+    maxDays?: number;
+}
+
+/** Canonical additive token totals for a single cycle or record. */
+export interface AdditiveTokenTotals {
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    /** inputTokens + cacheReadTokens + cacheCreationTokens + outputTokens (thinking is a subset of output). */
+    totalTokens: number;
+}
+
+function safeNonNeg(n: number | undefined): number {
+    return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Antigravity additive token total:
+ * `inputTokens + cacheReadTokens + cacheCreationTokens + outputTokens`.
+ * `thinkingTokens` is strictly a subset of `outputTokens` and is never added a second time.
+ */
+export function computeAdditiveTokens(t: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+}): number {
+    return safeNonNeg(t.inputTokens)
+        + safeNonNeg(t.cacheReadTokens)
+        + safeNonNeg(t.cacheCreationTokens)
+        + safeNonNeg(t.outputTokens);
+}
+
+/**
+ * Compute additive token totals and breakdown for a single {@link DailyCycleEntry}.
+ * Uses `gmModelStats` when present (most exact), with graceful fallback to cycle-level
+ * fields for legacy archived records.
+ */
+export function computeCycleTokenTotals(cycle: DailyCycleEntry): AdditiveTokenTotals {
+    if (cycle.gmModelStats && Object.keys(cycle.gmModelStats).length > 0) {
+        let inputTokens = 0;
+        let outputTokens = 0;
+        let thinkingTokens = 0;
+        let cacheReadTokens = 0;
+        let cacheCreationTokens = 0;
+        for (const gm of Object.values(cycle.gmModelStats)) {
+            inputTokens += safeNonNeg(gm.inputTokens);
+            outputTokens += safeNonNeg(gm.outputTokens);
+            thinkingTokens += safeNonNeg(gm.thinkingTokens);
+            cacheReadTokens += safeNonNeg(gm.cacheReadTokens);
+            cacheCreationTokens += safeNonNeg(gm.cacheCreationTokens);
+        }
+        return {
+            inputTokens,
+            outputTokens,
+            thinkingTokens,
+            cacheReadTokens,
+            cacheCreationTokens,
+            totalTokens: inputTokens + cacheReadTokens + cacheCreationTokens + outputTokens,
+        };
+    }
+
+    const cacheReadTokens = safeNonNeg(cycle.gmTotalCacheRead);
+    const cacheCreationTokens = safeNonNeg(cycle.gmTotalCacheCreation);
+    const thinkingTokens = safeNonNeg(cycle.gmTotalThinkingTokens);
+    const inputTokens = safeNonNeg(cycle.totalInputTokens);
+    const outputTokens = safeNonNeg(cycle.totalOutputTokens);
+    const fallbackAll = safeNonNeg(cycle.gmTotalAllTokens);
+    const fallbackLegacy = safeNonNeg(cycle.gmTotalTokens);
+
+    const totalTokens = fallbackAll > 0
+        ? fallbackAll
+        : (fallbackLegacy > 0
+            ? fallbackLegacy + cacheReadTokens + cacheCreationTokens
+            : inputTokens + cacheReadTokens + cacheCreationTokens + outputTokens);
+
+    return {
+        inputTokens,
+        outputTokens,
+        thinkingTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
+        totalTokens,
+    };
+}
+
+/** Extract distinct surfaces present on a cycle (backward-compatible default: ['unknown']). */
+export function getCycleSurfaces(cycle: DailyCycleEntry): UsageSurface[] {
+    const out = new Set<UsageSurface>();
+    if (cycle.surfaceBreakdown) {
+        for (const [key, stats] of Object.entries(cycle.surfaceBreakdown)) {
+            if (stats && (stats.calls > 0 || computeAdditiveTokens(stats) > 0 || stats.estimatedCost > 0)) {
+                out.add(normalizeUsageSurface(key));
+            }
+        }
+    }
+    if (out.size === 0) {
+        out.add(normalizeUsageSurface(cycle.surface));
+    }
+    return [...out];
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const STORAGE_KEY = 'dailyStoreState';
-const DEFAULT_MAX_DAYS = 90;
+/** Default retention supports a full 52-week/year heatmap plus buffer (400 days). */
+export const DEFAULT_MAX_DAYS = 400;
+export const MIN_RETENTION_DAYS = 7;
+export const MAX_RETENTION_DAYS = 3650;
+
+function normalizeMaxDays(days?: number): number {
+    if (typeof days !== 'number' || !Number.isFinite(days)) {
+        return DEFAULT_MAX_DAYS;
+    }
+    return Math.min(MAX_RETENTION_DAYS, Math.max(MIN_RETENTION_DAYS, Math.floor(days)));
+}
 
 // ─── DailyStore Class ────────────────────────────────────────────────────────
 
@@ -257,9 +412,34 @@ export class DailyStore {
     private _maxDays = DEFAULT_MAX_DAYS;
     private _globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): PromiseLike<void> } | null = null;
 
+    constructor(maxDays?: number) {
+        this._maxDays = normalizeMaxDays(maxDays);
+    }
+
+    /** Current configured maximum number of days retained. */
+    get maxDays(): number { return this._maxDays; }
+
+    /** Update maximum retention days (clamped to 7–3650) and trim excess oldest records. */
+    setMaxDays(days: number): void {
+        const next = normalizeMaxDays(days);
+        if (next === this._maxDays) { return; }
+        this._maxDays = next;
+        const sizeBefore = this._records.size;
+        this._trimOld();
+        if (this._records.size !== sizeBefore) {
+            this._persist();
+        }
+    }
+
     /** Initialize from globalState */
-    init(globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): PromiseLike<void> }): void {
+    init(
+        globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): PromiseLike<void> },
+        options?: DailyStoreInitOptions,
+    ): void {
         this._globalState = globalState;
+        if (options?.maxDays !== undefined) {
+            this._maxDays = normalizeMaxDays(options.maxDays);
+        }
         const saved = globalState.get<DailyStoreState | null>(STORAGE_KEY, null);
         if (saved && saved.version === 1 && saved.records) {
             for (const [date, record] of Object.entries(saved.records)) {
@@ -367,6 +547,8 @@ export class DailyStore {
         costPerModel?: Record<string, number>,
         /** If true, appends a cycle instead of replacing the day's entry. */
         append?: boolean,
+        /** Optional surface/account metadata for source tagging. */
+        meta?: DailySnapshotMetadata,
     ): void {
         let record = this._records.get(dateKey);
         if (!record) {
@@ -391,6 +573,24 @@ export class DailyStore {
             entry.gmTotalCalls = gmSummary.totalCalls;
             entry.gmTotalCredits = gmSummary.totalCredits;
             entry.gmTotalTokens = gmSummary.totalInputTokens + gmSummary.totalOutputTokens;
+            const additiveTotal = computeAdditiveTokens({
+                inputTokens: gmSummary.totalInputTokens,
+                outputTokens: gmSummary.totalOutputTokens,
+                cacheReadTokens: gmSummary.totalCacheRead,
+                cacheCreationTokens: gmSummary.totalCacheCreation,
+            });
+            if (additiveTotal > 0) {
+                entry.gmTotalAllTokens = additiveTotal;
+            }
+            if (gmSummary.totalCacheRead > 0) {
+                entry.gmTotalCacheRead = gmSummary.totalCacheRead;
+            }
+            if (gmSummary.totalCacheCreation > 0) {
+                entry.gmTotalCacheCreation = gmSummary.totalCacheCreation;
+            }
+            if (gmSummary.totalThinkingTokens > 0) {
+                entry.gmTotalThinkingTokens = gmSummary.totalThinkingTokens;
+            }
             if (gmSummary.totalRetryTokens > 0) {
                 entry.gmRetryTokens = gmSummary.totalRetryTokens;
                 entry.gmRetryCredits = gmSummary.totalRetryCredits;
@@ -403,6 +603,18 @@ export class DailyStore {
         }
 
         entry.gmModelStats = buildGMPerModelStats(gmSummary, costPerModel);
+
+        if (meta?.accountEmail) {
+            entry.accountEmail = meta.accountEmail;
+        }
+        const surface = normalizeUsageSurface(meta?.surface);
+        if (surface !== 'unknown') {
+            entry.surface = surface;
+        }
+        const clonedBreakdown = cloneSurfaceBreakdown(meta?.surfaceBreakdown);
+        if (clonedBreakdown) {
+            entry.surfaceBreakdown = clonedBreakdown;
+        }
 
         if (append) {
             record.cycles.push(entry);
@@ -424,6 +636,7 @@ export class DailyStore {
         costTotal?: number,
         costPerModel?: Record<string, number>,
         accountEmail?: string,
+        surface?: UsageSurface,
     ): void {
         const dateKey = toDateKey(archive.endTime);
         let record = this._records.get(dateKey);
@@ -451,6 +664,24 @@ export class DailyStore {
             cycle.gmTotalCalls = gmSummary.totalCalls;
             cycle.gmTotalCredits = gmSummary.totalCredits;
             cycle.gmTotalTokens = gmSummary.totalInputTokens + gmSummary.totalOutputTokens;
+            const additiveTotal = computeAdditiveTokens({
+                inputTokens: gmSummary.totalInputTokens,
+                outputTokens: gmSummary.totalOutputTokens,
+                cacheReadTokens: gmSummary.totalCacheRead,
+                cacheCreationTokens: gmSummary.totalCacheCreation,
+            });
+            if (additiveTotal > 0) {
+                cycle.gmTotalAllTokens = additiveTotal;
+            }
+            if (gmSummary.totalCacheRead > 0) {
+                cycle.gmTotalCacheRead = gmSummary.totalCacheRead;
+            }
+            if (gmSummary.totalCacheCreation > 0) {
+                cycle.gmTotalCacheCreation = gmSummary.totalCacheCreation;
+            }
+            if (gmSummary.totalThinkingTokens > 0) {
+                cycle.gmTotalThinkingTokens = gmSummary.totalThinkingTokens;
+            }
             if (gmSummary.totalRetryTokens > 0) {
                 cycle.gmRetryTokens = gmSummary.totalRetryTokens;
                 cycle.gmRetryCredits = gmSummary.totalRetryCredits;
@@ -463,6 +694,8 @@ export class DailyStore {
         }
         cycle.gmModelStats = buildGMPerModelStats(gmSummary, costPerModel);
         if (accountEmail) { cycle.accountEmail = accountEmail; }
+        const normSurface = normalizeUsageSurface(surface);
+        if (normSurface !== 'unknown') { cycle.surface = normSurface; }
 
         record.cycles.push(cycle);
         this._trimOld();
@@ -481,6 +714,13 @@ export class DailyStore {
         return [...this._records.keys()].sort().reverse();
     }
 
+    /** Get all recorded days, sorted ascending by date */
+    getAllRecords(): DailyRecord[] {
+        return [...this._records.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([, rec]) => rec);
+    }
+
     /** Get summary data for each day in a month (for calendar grid) */
     getMonthSummary(year: number, month: number): MonthCellSummary[] {
         const prefix = `${year}-${String(month).padStart(2, '0')}`;
@@ -489,11 +729,25 @@ export class DailyStore {
         for (const [date, record] of this._records) {
             if (!date.startsWith(prefix)) { continue; }
             let totalReasoning = 0, totalToolCalls = 0, totalCost = 0, gmCalls = 0;
+            let totalTokens = 0, inputTokens = 0, outputTokens = 0;
+            let cacheReadTokens = 0, cacheCreationTokens = 0, thinkingTokens = 0;
+            const surfaces = new Set<UsageSurface>();
+
             for (const c of record.cycles) {
                 totalReasoning += c.totalReasoning;
                 totalToolCalls += c.totalToolCalls;
-                totalCost += c.estimatedCost || 0;
+                totalCost += Number.isFinite(c.estimatedCost) ? (c.estimatedCost || 0) : 0;
                 gmCalls += c.gmTotalCalls || 0;
+                const tok = computeCycleTokenTotals(c);
+                totalTokens += tok.totalTokens;
+                inputTokens += tok.inputTokens;
+                outputTokens += tok.outputTokens;
+                cacheReadTokens += tok.cacheReadTokens;
+                cacheCreationTokens += tok.cacheCreationTokens;
+                thinkingTokens += tok.thinkingTokens;
+                for (const s of getCycleSurfaces(c)) {
+                    surfaces.add(s);
+                }
             }
             results.push({
                 date,
@@ -502,6 +756,13 @@ export class DailyStore {
                 totalToolCalls,
                 totalCost,
                 gmCalls,
+                totalTokens,
+                inputTokens,
+                outputTokens,
+                cacheReadTokens,
+                cacheCreationTokens,
+                thinkingTokens,
+                surfaces: [...surfaces],
             });
         }
 

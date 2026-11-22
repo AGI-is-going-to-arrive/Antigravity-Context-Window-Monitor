@@ -10,7 +10,7 @@ import type { ContextUsage } from './tracker';
 import type { GMSummary, GMModelStats, GMCallEntry, GMSystemContextItem } from './gm-tracker';
 import { currentAICredits, formatCreditTypeLabel } from './account-credits';
 import { normalizeModelDisplayName } from './models';
-import { findPricingWithCustom, findPricingForDate, costFromTokens, selectPricingModel, formatUsdCost, type ModelPricing } from './pricing-store';
+import { findPricingWithCustom, findPricingForDate, resolvePricingDetail, costFromTokens, selectPricingModel, formatUsdCost, type ModelPricing } from './pricing-store';
 import { toLocalDateKey, type LedgerAccountBucket, type LedgerSettledEntry } from './daily-ledger';
 import { formatResetCountdown, parseResetDate } from './reset-time';
 import { getDaysUntilBillingDay } from './billing-day';
@@ -19,6 +19,7 @@ import {
     computeTelemetryAggregateFromModelStats,
     computeStepSpeed,
     computeStepCacheHitRate,
+    evaluateSpeedSample,
     formatSpeed,
     formatLatency,
     formatCachePercent,
@@ -26,6 +27,14 @@ import {
     type TelemetryAggregate,
     type CacheState,
 } from './telemetry-metrics';
+import {
+    buildOrchestratorSplitCardHtml,
+    classifyConversationCalls,
+    computeOrchestratorSplit,
+    getOrchestratorAttributionStyles,
+    renderCallRoleBadgeHtml,
+    type AttributedGMCall,
+} from './orchestrator-attribution';
 import {
     analyzeTurnDiagnostics,
     classifyTurnStartKind,
@@ -152,9 +161,31 @@ export function buildGMDataTabContent(
         parts.push(buildTelemetryLedgerSection(telemetry, effectiveTurnDiagnostics));
     }
 
+    // ── Orchestrator vs Executor Split Card (auto-hidden for single-model conversations)
+    if (gmSummary && gmSummary.conversations.some(c => c.calls.length > 0)) {
+        const activeConv = currentUsage?.cascadeId
+            ? gmSummary.conversations.find(c => c.cascadeId === currentUsage.cascadeId && c.calls.length > 0)
+            : undefined;
+        const splitCalls = activeConv
+            ? activeConv.calls
+            : gmSummary.conversations.flatMap(c => c.calls);
+        const orchSplit = computeOrchestratorSplit(
+            splitCalls,
+            {
+                orchestratorConfig: currentUsage?.orchestratorConfig,
+                orchestratorHistory: currentUsage?.orchestratorHistory,
+            },
+            customPricing,
+        );
+        const splitHtml = buildOrchestratorSplitCardHtml(orchSplit);
+        if (splitHtml) {
+            parts.push(splitHtml);
+        }
+    }
+
     // ── Recent Calls Ledger Table (latest 20 account-filtered calls)
     if (gmSummary && gmSummary.conversations.some(c => c.calls.length > 0)) {
-        parts.push(buildRecentCallsLedger(gmSummary, customPricing));
+        parts.push(buildRecentCallsLedger(gmSummary, customPricing, currentUsage));
     } else if (hasTurnDiagnostics && turnDiagnostics) {
         parts.push(buildTurnDiagnosticsFallbackCard(turnDiagnostics));
     }
@@ -2867,6 +2898,7 @@ export function getGMDataTabStyles(): string {
             transition: none;
         }
     }
+    ${getOrchestratorAttributionStyles()}
     `;
 }
 
@@ -3347,9 +3379,11 @@ function formatRecentCallCachePct(rate: number | null): string {
 function buildRecentCallsLedger(
     gm: GMSummary,
     customPricing: Record<string, ModelPricing>,
+    currentUsage?: ContextUsage | null,
 ): string {
     const allCalls: GMCallEntry[] = [];
     const callDiagMap = new WeakMap<GMCallEntry, TurnDiagnosticEntry>();
+    const callAttrMap = new WeakMap<GMCallEntry, AttributedGMCall>();
     for (const conv of gm.conversations) {
         if (conv.calls.length > 0) {
             const convDiag = analyzeTurnDiagnostics(conv.calls, { maxTurns: conv.calls.length });
@@ -3357,6 +3391,23 @@ function buildRecentCallsLedger(
                 const entry = convDiag.turns[ci];
                 if (entry) {
                     callDiagMap.set(conv.calls[ci], entry);
+                }
+            }
+            const isActiveConv = Boolean(currentUsage?.cascadeId && conv.cascadeId === currentUsage.cascadeId);
+            const convAttr = classifyConversationCalls(
+                conv.calls,
+                isActiveConv
+                    ? {
+                        orchestratorConfig: currentUsage?.orchestratorConfig,
+                        orchestratorHistory: currentUsage?.orchestratorHistory,
+                    }
+                    : undefined,
+                customPricing,
+            );
+            for (let ci = 0; ci < conv.calls.length; ci++) {
+                const attr = convAttr[ci];
+                if (attr) {
+                    callAttrMap.set(conv.calls[ci], attr);
                 }
             }
         }
@@ -3392,6 +3443,14 @@ function buildRecentCallsLedger(
             .filter((v, i, arr) => v && arr.indexOf(v) === i)
             .join(' · ');
 
+        const attr = callAttrMap.get(call);
+        const roleBadgeHtml = attr && attr.role !== 'direct'
+            ? renderCallRoleBadgeHtml(attr.role, false)
+            : '';
+        const modelCellHtml = roleBadgeHtml
+            ? `<span class="rc-role-wrap"><span>${esc(displayModel)}</span>${roleBadgeHtml}</span>`
+            : esc(displayModel);
+
         const freshIn = formatNumber(Math.max(0, call.inputTokens || 0));
         const totalOut = Math.max(0, call.outputTokens || 0);
         const thinkTok = Math.max(0, call.thinkingTokens || 0);
@@ -3405,15 +3464,21 @@ function buildRecentCallsLedger(
         const startKind: TurnStartKind = diag?.startKind
             ?? classifyTurnStartKind(cacheRate !== null ? cacheRate * 100 : null, Math.max(0, (call.inputTokens || 0) + (call.cacheReadTokens || 0) + (call.cacheCreationTokens || 0)));
         const startPillHtml = renderTurnStartPill(startKind, true);
+        const coldSwitchPillHtml = attr?.isColdCacheSwitch
+            ? renderCallRoleBadgeHtml('direct', true, attr.switchDirection)
+            : '';
         const cacheHtml = cacheRate !== null
-            ? `<span class="${cacheRate >= 0.5 ? 'rc-cache-hi' : ''}">${esc(formatRecentCallCachePct(cacheRate))}</span>${startPillHtml ? ` ${startPillHtml}` : ''}`
+            ? `<span class="${cacheRate >= 0.5 ? 'rc-cache-hi' : ''}">${esc(formatRecentCallCachePct(cacheRate))}</span>${startPillHtml ? ` ${startPillHtml}` : ''}${coldSwitchPillHtml ? ` ${coldSwitchPillHtml}` : ''}`
             : `<span class="rc-muted">—</span>`;
         const deltaHtml = formatSignedTokenDeltaHtml(diag?.deltaTokens ?? null, !!diag?.isCompactionDrop);
 
         const pricingModel = selectPricingModel(call.model || call.modelDisplay, call.responseModel, customPricing);
-        const pricing = findPricingForDate(pricingModel, customPricing, call.createdAt || '');
-        const costHtml = pricing
-            ? `<span class="rc-cost-val">${esc(formatUsdCost(costFromTokens(call, pricing), { precision: 'call' }))}</span>`
+        const pricingDetail = resolvePricingDetail(pricingModel, customPricing, { at: call.createdAt || '' });
+        const costTitle = pricingDetail.provenance === 'mapped_base' && pricingDetail.mappedBaseLabel
+            ? ` title="${esc(tBi(`Estimated via base model: ${pricingDetail.mappedBaseLabel}`, `按底座模型估算：${pricingDetail.mappedBaseLabel}`))}" data-pricing-provenance="mapped_base"`
+            : '';
+        const costHtml = pricingDetail.pricing
+            ? `<span class="rc-cost-val"${costTitle}>${esc(formatUsdCost(costFromTokens(call, pricingDetail.pricing), { precision: 'call' }))}</span>`
             : `<span class="rc-unpriced">${tBiHtml('Unpriced', '未定价')}</span>`;
 
         const ttftSec = Number.isFinite(call.ttftSeconds) && call.ttftSeconds > 0 ? call.ttftSeconds : 0;
@@ -3422,8 +3487,16 @@ function buildRecentCallsLedger(
         const ttftHtml = ttftSec > 0 ? esc(formatLatency(ttftSec)) : `<span class="rc-muted">—</span>`;
         const totalHtml = totalSec > 0 ? esc(formatLatency(totalSec)) : `<span class="rc-muted">—</span>`;
 
-        const speed = computeStepSpeed(call.outputTokens, call.streamingSeconds);
-        const speedHtml = speed !== null ? esc(formatSpeed(speed)) : `<span class="rc-muted">—</span>`;
+        const speedEval = evaluateSpeedSample({
+            outputTokens: call.outputTokens,
+            streamingSeconds: call.streamingSeconds,
+            ttftSeconds: call.ttftSeconds,
+        });
+        const speedHtml = speedEval.displaySpeed !== null
+            ? esc(formatSpeed(speedEval.displaySpeed))
+            : speedEval.isShortSample && speedEval.rawSpeed !== null
+                ? `<span class="rc-short-sample" data-short-sample="true" title="${esc(tBi(`Short sample (raw est. ${formatSpeed(speedEval.rawSpeed)})`, `短样本（原始估算 ${formatSpeed(speedEval.rawSpeed)}）`))}">${tBiHtml('Short sample', '短样本')}</span>`
+                : `<span class="rc-muted">—</span>`;
 
         let statusCls = 'is-ok';
         let statusLabel = tBiHtml('OK', '成功');
@@ -3438,7 +3511,7 @@ function buildRecentCallsLedger(
 
         rowsHtml.push(`<tr>
             <td class="rc-muted">${esc(timeStr)}</td>
-            <td class="rc-model-cell" title="${esc(modelTooltip)}">${esc(displayModel)}</td>
+            <td class="rc-model-cell" title="${esc(modelTooltip)}">${modelCellHtml}</td>
             <td class="rc-num">${freshIn}</td>
             <td class="rc-num">${deltaHtml}</td>
             <td class="rc-num">${outHtml}</td>
