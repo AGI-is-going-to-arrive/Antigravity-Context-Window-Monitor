@@ -72,6 +72,30 @@ export interface TrajectorySummary {
     branchName: string;
     /** Git root absolute URI */
     gitRootUri: string;
+    /** Optional trajectory kind reported by v2.34+ hubs (e.g. subagent/swarm vs user chat) */
+    trajectoryType?: string;
+    /** Optional parent cascade ID when trajectory was spawned as a subagent */
+    parentCascadeId?: string;
+    /** Optional raw trajectoryMetadata bag from GetAllCascadeTrajectories */
+    trajectoryMetadata?: Record<string, unknown>;
+    /** Whether the trajectory has been explicitly killed */
+    killed?: boolean;
+}
+
+export interface RawPromptSection {
+    title?: string;
+    tokenType?: string;
+    contentLen?: number;
+    [key: string]: unknown;
+}
+
+export interface RawGeneratorMetadataEntry {
+    stepIndices?: number[];
+    chatModel?: Record<string, unknown> & {
+        promptSections?: RawPromptSection[];
+        usage?: Record<string, unknown>;
+    };
+    [key: string]: unknown;
 }
 
 export interface StepTokenInfo {
@@ -277,6 +301,16 @@ export async function getAllTrajectories(ls: LSInfo, signal?: AbortSignal): Prom
         const branchName = (firstWs?.branchName as string) || '';
         const gitRootUri = (firstWs?.gitRootAbsoluteUri as string) || '';
 
+        const trajectoryMetadata = data.trajectoryMetadata && typeof data.trajectoryMetadata === 'object'
+            && !Array.isArray(data.trajectoryMetadata)
+            ? data.trajectoryMetadata as Record<string, unknown>
+            : undefined;
+        const rawParentCascadeId = typeof data.parentCascadeId === 'string' && data.parentCascadeId.trim()
+            ? data.parentCascadeId.trim()
+            : typeof trajectoryMetadata?.parentCascadeId === 'string' && trajectoryMetadata.parentCascadeId.trim()
+                ? trajectoryMetadata.parentCascadeId.trim()
+                : undefined;
+
         result.push({
             cascadeId,
             trajectoryId: (data.trajectoryId as string) || '',
@@ -294,6 +328,10 @@ export async function getAllTrajectories(ls: LSInfo, signal?: AbortSignal): Prom
             gitOriginUrl,
             branchName,
             gitRootUri,
+            ...(typeof data.trajectoryType === 'string' && data.trajectoryType ? { trajectoryType: data.trajectoryType } : {}),
+            ...(rawParentCascadeId ? { parentCascadeId: rawParentCascadeId } : {}),
+            ...(trajectoryMetadata ? { trajectoryMetadata } : {}),
+            ...(typeof data.killed === 'boolean' ? { killed: data.killed } : {}),
         });
     }
 
@@ -320,24 +358,27 @@ export function normalizeUri(uri: string, platform: NodeJS.Platform = process.pl
     // Handle vscode-remote:// URIs — extract just the path portion
     // e.g., vscode-remote://wsl+Ubuntu/home/user/project → /home/user/project
     // e.g., vscode-remote://ssh-remote+host/home/user/project → /home/user/project
-    const remoteMatch = normalized.match(/^vscode-remote:\/\/[^/]+(\/.*)/);
+    const remoteMatch = normalized.match(/^vscode-remote:\/\/[^/]+(\/.*)/i);
     if (remoteMatch) {
         normalized = remoteMatch[1];
     }
-    normalized = normalized.replace(/^file:\/\/\//, '/');
-    normalized = normalized.replace(/^file:\/\//, '');
+    // RFC 8089 file:// URIs (case-insensitive scheme, optional localhost authority)
+    normalized = normalized.replace(/^file:\/\/localhost\//i, '/');
+    normalized = normalized.replace(/^file:\/\/\//i, '/');
+    normalized = normalized.replace(/^file:\/\//i, '');
     try {
         normalized = decodeURIComponent(normalized);
     } catch {
         // If decoding fails, keep as-is
     }
+    const isWindowsDrivePath = /^\/?[a-zA-Z]:(?:[\\/]|$)/.test(normalized);
     // Normalize Windows backslashes so raw paths and file:/// URIs compare equal.
-    if (platform === 'win32' || /^[a-zA-Z]:\\/.test(normalized)) {
+    if (platform === 'win32' || isWindowsDrivePath) {
         normalized = normalized.replace(/\\/g, '/');
     }
-    // Windows: strip leading / before drive letter (e.g., /c:/ → c:/)
-    if (platform === 'win32') {
-        normalized = normalized.replace(/^\/([a-zA-Z]:)/, '$1');
+    // Strip leading slash(es) before Windows drive letters (e.g., /C:/ → C:/)
+    if (platform === 'win32' || isWindowsDrivePath) {
+        normalized = normalized.replace(/^\/+([a-zA-Z]:)/, '$1');
     }
     normalized = normalized.replace(/\/+$/, '');
     if (platform === 'darwin' || platform === 'win32') {
@@ -674,38 +715,97 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
     };
 }
 
+/** True when a Connect-RPC error indicates an unimplemented or removed endpoint (HTTP 404/501). */
+export function isRpcUnimplementedError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err ?? '');
+    return /\bHTTP\s+(?:404|501)\b/i.test(message) || /\bunimplemented\b/i.test(message);
+}
+
 /**
- * Get context window usage for a cascade by iterating through steps.
- * Fetches steps in batches from the LS via RPC.
+ * Fetch raw GetCascadeTrajectoryGeneratorMetadata entries without stripping
+ * `chatModel.promptSections` (`{ title, tokenType, contentLen }`) or `chatModel.usage`.
+ * Gracefully degrades to `[]` on 501/404 or transient errors.
  */
-export async function getTrajectoryTokenUsage(
+export async function fetchTrajectoryGeneratorMetadata(
+    ls: LSInfo,
+    cascadeId: string,
+    signal?: AbortSignal,
+): Promise<RawGeneratorMetadataEntry[]> {
+    try {
+        const resp = await rpcCall(ls, 'GetCascadeTrajectoryGeneratorMetadata', {
+            cascadeId,
+            metadata: { ideName: 'antigravity', extensionName: 'antigravity' },
+        }, 15000, signal);
+        const raw = resp.generatorMetadata;
+        if (!Array.isArray(raw)) { return []; }
+        return raw.filter((item): item is RawGeneratorMetadataEntry =>
+            !!item && typeof item === 'object' && !Array.isArray(item));
+    } catch (err) {
+        if (signal?.aborted) { throw err; }
+        return [];
+    }
+}
+
+/**
+ * Fetch trajectory steps across both legacy `startIndex`/`endIndex` servers
+ * and Antigravity v2.34+ `stepOffset` hubs without duplicating overlapping batches.
+ */
+export async function fetchTrajectorySteps(
     ls: LSInfo,
     cascadeId: string,
     totalSteps: number,
-    signal?: AbortSignal
-): Promise<TokenUsageResult> {
+    signal?: AbortSignal,
+): Promise<{ steps: Array<Record<string, unknown>>; hasGaps: boolean }> {
     const maxSteps = Math.max(totalSteps, 0);
     const allSteps: Array<Record<string, unknown>> = [];
     let hasGaps = false;
 
-    // Build batch ranges
     const batchRanges: Array<{ start: number; end: number }> = [];
     for (let start = 0; start < maxSteps; start += STEP_BATCH_SIZE) {
         batchRanges.push({ start, end: Math.min(start + STEP_BATCH_SIZE, maxSteps) });
     }
+    if (batchRanges.length === 0) {
+        return { steps: allSteps, hasGaps: false };
+    }
 
-    // Process batches in groups to avoid bursting concurrent RPC calls
-    for (let groupStart = 0; groupStart < batchRanges.length; groupStart += MAX_CONCURRENT_BATCHES) {
+    const fetchBatch = ({ start, end }: { start: number; end: number }) =>
+        rpcCall(ls, 'GetCascadeTrajectorySteps', {
+            cascadeId,
+            startIndex: start,
+            endIndex: end,
+            stepOffset: start,
+        }, 30000, signal);
+
+    // Probe the first batch when multiple pages are expected: v2.34+ hubs ignore
+    // endIndex and can return all steps from stepOffset=0 in one response.
+    let remainingStart = 0;
+    if (batchRanges.length > 1) {
+        remainingStart = 1;
+        try {
+            const firstResp = await fetchBatch(batchRanges[0]);
+            const firstSteps = firstResp.steps as Array<Record<string, unknown>> | undefined;
+            if (firstSteps && firstSteps.length > 0) {
+                allSteps.push(...firstSteps);
+                if (firstSteps.length >= maxSteps || firstSteps.length > STEP_BATCH_SIZE) {
+                    return { steps: allSteps, hasGaps: false };
+                }
+            }
+        } catch (err) {
+            if (signal?.aborted) { throw err; }
+            if (!isRpcUnimplementedError(err)) {
+                console.warn(
+                    `[ContextMonitor] Failed to fetch steps batch [${batchRanges[0].start}-${batchRanges[0].end}] ` +
+                    `for cascade ${cascadeId.substring(0, 8)}: ${err}`,
+                );
+            }
+            hasGaps = true;
+        }
+    }
+
+    // Process remaining batches in groups to avoid bursting concurrent RPC calls
+    for (let groupStart = remainingStart; groupStart < batchRanges.length; groupStart += MAX_CONCURRENT_BATCHES) {
         const group = batchRanges.slice(groupStart, groupStart + MAX_CONCURRENT_BATCHES);
-        const groupResults = await Promise.allSettled(
-            group.map(({ start, end }) =>
-                rpcCall(ls, 'GetCascadeTrajectorySteps', {
-                    cascadeId,
-                    startIndex: start,
-                    endIndex: end
-                }, 30000, signal)
-            )
-        );
+        const groupResults = await Promise.allSettled(group.map(fetchBatch));
 
         for (let i = 0; i < groupResults.length; i++) {
             const result = groupResults[i];
@@ -716,15 +816,31 @@ export async function getTrajectoryTokenUsage(
                 }
             } else {
                 const { start, end } = group[i];
-                console.warn(
-                    `[ContextMonitor] Failed to fetch steps batch [${start}-${end}] ` +
-                    `for cascade ${cascadeId.substring(0, 8)}: ${result.reason}`
-                );
+                if (!isRpcUnimplementedError(result.reason)) {
+                    console.warn(
+                        `[ContextMonitor] Failed to fetch steps batch [${start}-${end}] ` +
+                        `for cascade ${cascadeId.substring(0, 8)}: ${result.reason}`,
+                    );
+                }
                 hasGaps = true;
             }
         }
     }
 
+    return { steps: allSteps, hasGaps };
+}
+
+/**
+ * Get context window usage for a cascade by iterating through steps.
+ * Fetches steps in batches from the LS via RPC.
+ */
+export async function getTrajectoryTokenUsage(
+    ls: LSInfo,
+    cascadeId: string,
+    totalSteps: number,
+    signal?: AbortSignal
+): Promise<TokenUsageResult> {
+    const { steps: allSteps, hasGaps } = await fetchTrajectorySteps(ls, cascadeId, totalSteps, signal);
     const result = processSteps(allSteps);
     result.hasGaps = hasGaps;
     return result;
@@ -1275,11 +1391,30 @@ export async function fetchUserQuotaSummary(
 
 /**
  * @deprecated Use `fetchFullUserStatus()` instead.
- * Backward-compatible wrapper — returns only model configs (no user info).
+ * Backward-compatible wrapper — relies on `GetUserStatus` (never calling
+ * `GetCommandModelConfigs`, which returns `501 unimplemented` on v2.34+ App & v2.7+ IDE).
  */
 export async function fetchModelConfigs(ls: LSInfo, signal?: AbortSignal): Promise<ModelConfig[]> {
     const result = await fetchFullUserStatus(ls, signal);
     return result.configs;
+}
+
+/**
+ * Safely read model configs without hitting `GetCommandModelConfigs` `501 unimplemented`
+ * spam on Antigravity App v2.34+ / IDE v2.7+ hubs. Uses `GetUserStatus` directly and
+ * degrades cleanly to `[]` if unavailable.
+ */
+export async function fetchCommandModelConfigsSafe(
+    ls: LSInfo,
+    signal?: AbortSignal,
+): Promise<ModelConfig[]> {
+    try {
+        const result = await fetchFullUserStatus(ls, signal);
+        return result.configs;
+    } catch (err) {
+        if (signal?.aborted) { throw err; }
+        return [];
+    }
 }
 
 /**

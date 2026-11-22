@@ -255,10 +255,10 @@ const DEFAULT_MAX_DAYS = 90;
 export class DailyStore {
     private _records = new Map<string, DailyRecord>();
     private _maxDays = DEFAULT_MAX_DAYS;
-    private _globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): Thenable<void> } | null = null;
+    private _globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): PromiseLike<void> } | null = null;
 
     /** Initialize from globalState */
-    init(globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): Thenable<void> }): void {
+    init(globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): PromiseLike<void> }): void {
         this._globalState = globalState;
         const saved = globalState.get<DailyStoreState | null>(STORAGE_KEY, null);
         if (saved && saved.version === 1 && saved.records) {

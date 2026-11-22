@@ -643,10 +643,10 @@ const STORAGE_KEY = 'customModelPricing';
 
 export class PricingStore {
     private _custom: Record<string, ModelPricing> = {};
-    private _globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): Thenable<void> } | null = null;
+    private _globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): PromiseLike<void> } | null = null;
 
     /** Initialize from globalState */
-    init(globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): Thenable<void> }): void {
+    init(globalState: { get<T>(k: string, d: T): T; update(k: string, v: unknown): PromiseLike<void> }): void {
         this._globalState = globalState;
         this._custom = globalState.get<Record<string, ModelPricing>>(STORAGE_KEY, {});
     }

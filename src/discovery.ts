@@ -2,7 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as https from 'https';
 import * as http from 'http';
-import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, readlinkSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -105,6 +105,9 @@ function logDiscoveryPathOnce(log?: (msg: string) => void): void {
     log(`PATH check: hasWbem=${low.includes('wbem')} hasWindowsPowerShell=${low.includes('windowspowershell')} SystemRoot=${process.env.SystemRoot || process.env.windir || '(unset)'}`);
 }
 
+export type LSSurface = 'app' | 'ide' | 'cli' | 'unknown';
+export type LSDiscoverySource = 'env' | 'hub-file' | 'process' | 'hint';
+
 export interface LSInfo {
     pid: number;
     csrfToken: string;
@@ -112,12 +115,44 @@ export interface LSInfo {
     useTls: boolean;
     /** Loopback hostname; omitted when default '127.0.0.1', set to '::1' for IPv6-only sockets. */
     hostname?: string;
+    /** Detected Antigravity runtime surface (populated by options-based discovery & discoverFromEnv). */
+    surface?: LSSurface;
+    /** How this LS endpoint was discovered (populated by options-based discovery & discoverFromEnv). */
+    source?: LSDiscoverySource;
 }
+
+/** Alias preserving camelCase naming for consumers expecting `LsInfo`. */
+export type LsInfo = LSInfo;
 
 /** Optional connection identity exported by the current IDE's built-in extension. */
 export interface LSConnectionHint {
     port: number;
     csrfToken: string;
+}
+
+/** Options object for unified Antigravity App + IDE discovery. */
+export interface DiscoverLanguageServerOptions {
+    workspaceUri?: string;
+    signal?: AbortSignal;
+    log?: (msg: string) => void;
+    hint?: LSConnectionHint;
+    /** Prefer Antigravity App standalone hub or Antigravity IDE hub when both are running. */
+    preferredSurface?: 'app' | 'ide';
+    /** Environment map to read ANTIGRAVITY_LS_ADDRESS / ANTIGRAVITY_CSRF_TOKEN from (defaults to process.env). */
+    env?: NodeJS.ProcessEnv;
+    /** Override daemon directory containing hub_<port>.json files (defaults to ~/.gemini/antigravity/daemon). */
+    daemonDir?: string;
+    /** Explicitly enable or disable env-var discovery. Defaults to true unless preferredSurface === 'ide' or hint is provided. */
+    useEnv?: boolean;
+}
+
+/** Parsed loopback address from ANTIGRAVITY_LS_ADDRESS. */
+export interface ParsedLsAddress {
+    hostname: string;
+    port: number;
+    useTls?: boolean;
+    ipv6Only?: boolean;
+    allowIpv6Fallback?: boolean;
 }
 
 /** Parsed record from ~/.gemini/antigravity/daemon/hub_<port>.json. */
@@ -229,8 +264,9 @@ export function buildExpectedWorkspaceId(workspaceUri: string): string {
         // Reconstruct as file URI for consistent workspace_id generation
         id = 'file://' + remoteMatch[1];
     }
-    // Step 1: Strip the URI scheme separator
-    id = id.replace(':///', '_');
+    // Step 1: Strip the URI scheme separator (including RFC 8089 file://localhost/)
+    id = id.replace(/^file:\/\/localhost\//i, 'file:///');
+    id = id.replace(/:\/\/\//, '_');
     if (process.platform === 'win32' || isWSL()) {
         // Windows / WSL: the LS hex-encodes the drive-letter colon as _3A_
         // Encode colon BEFORE the catch-all replacement to preserve the
@@ -404,20 +440,103 @@ export function extractHubPort(line: string): number | null {
 }
 
 /**
- * Select the LS process line for the current workspace.
- *
- * PRIORITY ORDER (Antigravity 1.22.2+ compatibility):
- * 1. Processes WITHOUT --workspace_id → new shared LS architecture (preferred)
- * 2. Processes WITH matching workspace_id → old per-workspace LS (fallback)
- * 3. First discovered LS → last resort
- *
- * BUG FIX: Antigravity 1.22.2+ launches a single shared LS without
- * --workspace_id. When an old LS (with workspace_id) is still alive,
- * the previous logic always picked the old stale LS because it had a
- * matching workspace_id. The new shared LS (without workspace_id) is
- * the active instance and should be preferred.
+ * Recognize Antigravity App (2.0 / v2.34+) standalone hub Language Server:
+ * `language_server` / `language_server.exe` launched with `--standalone` and
+ * `--subclient_type hub` (which intentionally omits `--csrf_token` from argv
+ * and publishes its CSRF token + ports in `~/.gemini/antigravity/daemon/hub_<port>.json`).
  */
-export function selectMatchingProcessLine(lines: readonly string[], workspaceUri?: string): string | null {
+export function isAppStandaloneHubProcess(line: string): boolean {
+    const command = processCommandLine(line);
+    const executable = command.match(
+        /^(?:"([^"\r\n]+)"|'([^'\r\n]+)'|((?:[A-Za-z]:[\\/]|\/)[^"\r\n]*?[\\/]language_server(?:_[a-z0-9_]+)?(?:\.exe)?|language_server(?:_[a-z0-9_]+)?(?:\.exe)?))(?=\s|$)/i,
+    );
+    if (!executable) { return false; }
+    const exePath = executable[1] || executable[2] || executable[3];
+    if (!/(?:^|[\\/])language_server(?:_[a-z0-9_]+)?(?:\.exe)?$/i.test(exePath)) { return false; }
+    if (!executable[1] && !executable[2] && /\s+(?:[-/]|['"]?[A-Za-z]:[\\/]|['"]\/)/.test(exePath)) { return false; }
+    const args = commandArguments(line).map(arg => arg.toLowerCase());
+    const standalone = args.includes('--standalone') || args.includes('--standalone=true');
+    const subclientType = commandFlagAny(line, ['--subclient_type', '--subclient-type'])?.toLowerCase();
+    if (!standalone || subclientType !== 'hub') { return false; }
+    return line.toLowerCase().includes('antigravity');
+}
+
+/** Classify which Antigravity surface owns a discovered LS process line. */
+export function classifyProcessSurface(line: string): LSSurface {
+    const low = line.toLowerCase();
+    if (isAppStandaloneHubProcess(line)) {
+        const appDataDir = commandFlagAny(line, ['--app_data_dir', '--app-data-dir']) || '';
+        if (/antigravity[- ]ide/i.test(appDataDir) || /antigravity ide/i.test(low)) {
+            return 'ide';
+        }
+        return 'app';
+    }
+    if (isAgyHubProcess(line)) {
+        const subclient = commandFlagAny(line, ['--subclient_type', '--subclient-type'])?.toLowerCase();
+        if (subclient === 'cli') { return 'cli'; }
+        return 'ide';
+    }
+    if (isStandaloneLanguageServer(line) || (low.includes('language_server_') && low.includes('antigravity'))) {
+        return 'ide';
+    }
+    return 'unknown';
+}
+
+/** Classify which Antigravity surface owns a daemon hub_<port>.json record by matching its PID against process lines. */
+export function classifyHubRecordSurface(
+    record: HubDiscoveryRecord,
+    processLines: readonly string[],
+    windowsProcesses: boolean = process.platform === 'win32' || isWSL(),
+): LSSurface {
+    if (record.pid > 0) {
+        for (const line of processLines) {
+            const pid = windowsProcesses ? extractWindowsPid(line) : extractPid(line);
+            if (pid === record.pid) {
+                return classifyProcessSurface(line);
+            }
+        }
+    }
+    return 'unknown';
+}
+
+/**
+ * Order daemon hub_<port>.json records with optional surface preference
+ * while preserving newest-mtime-first ordering within the same surface rank.
+ */
+export function selectMatchingHubRecords(
+    records: readonly HubDiscoveryRecord[],
+    processLines: readonly string[],
+    preferredSurface?: 'app' | 'ide',
+    windowsProcesses: boolean = process.platform === 'win32' || isWSL(),
+): HubDiscoveryRecord[] {
+    if (!preferredSurface || records.length <= 1) {
+        return [...records];
+    }
+    const rank = (record: HubDiscoveryRecord): number => {
+        const surface = classifyHubRecordSurface(record, processLines, windowsProcesses);
+        if (surface === preferredSurface) { return 0; }
+        if (surface === 'unknown') { return 1; }
+        return 2;
+    };
+    return records
+        .map((record, index) => ({ record, index, rank: rank(record) }))
+        .sort((a, b) => a.rank - b.rank || a.index - b.index)
+        .map(item => item.record);
+}
+
+/**
+ * Select the LS process line for the current workspace (and optional preferred surface).
+ *
+ * PRIORITY ORDER (Antigravity 1.22.2+ / 2.34+ compatibility):
+ * - When `preferredSurface === 'app'`: App standalone hub -> agy hub -> shared LS -> workspace match -> first
+ * - When `preferredSurface === 'ide'`: agy hub -> non-App IDE LS -> App standalone hub -> first
+ * - When `preferredSurface` is omitted: agy hub -> shared LS (no workspace_id) -> workspace match -> first
+ */
+export function selectMatchingProcessLine(
+    lines: readonly string[],
+    workspaceUri?: string,
+    preferredSurface?: 'app' | 'ide',
+): string | null {
     if (lines.length === 0) {
         return null;
     }
@@ -425,15 +544,30 @@ export function selectMatchingProcessLine(lines: readonly string[], workspaceUri
         return lines[0];
     }
 
+    if (preferredSurface === 'app') {
+        const appHub = lines.find(isAppStandaloneHubProcess);
+        if (appHub) { return appHub; }
+    }
+
     const hub = lines.find(isAgyHubProcess);
     if (hub) { return hub; }
 
+    if (preferredSurface === 'ide') {
+        const ideCandidates = lines.filter(line => !isAppStandaloneHubProcess(line));
+        if (ideCandidates.length > 0) {
+            return selectLegacyOrSharedLine(ideCandidates, workspaceUri);
+        }
+    }
+
+    return selectLegacyOrSharedLine(lines, workspaceUri);
+}
+
+function selectLegacyOrSharedLine(lines: readonly string[], workspaceUri?: string): string {
     // Separate processes into new-style (no workspace_id) and old-style (has workspace_id)
     const newStyleLines = lines.filter(line => extractWorkspaceId(line) === null);
     const oldStyleLines = lines.filter(line => extractWorkspaceId(line) !== null);
 
     // Priority 1: Prefer new-style shared LS (no workspace_id)
-    // These are Antigravity 1.22.2+ processes — the active instance.
     if (newStyleLines.length > 0) {
         return newStyleLines[0];
     }
@@ -479,6 +613,7 @@ export function filterLsProcessLines(psOutput: string, binaryOverride?: string):
         // csrf_token value, so the line must never be lower-cased in place.
         const low = l.toLowerCase();
         return isAgyHubProcess(l)
+            || isAppStandaloneHubProcess(l)
             || isStandaloneLanguageServer(l)
             || (low.includes(binaryName.toLowerCase()) && low.includes('antigravity'));
     });
@@ -652,7 +787,7 @@ async function execCommandWithFallbacks(
     for (const bin of binaries) {
         if (signal?.aborted) { return null; }
         try {
-            const result = await execFileAsync(bin, args, { encoding: 'utf-8', timeout, signal });
+            const result = await execFileAsync(bin, args, { encoding: 'utf-8', timeout, signal, windowsHide: true });
             return result.stdout;
         } catch (e) {
             if (signal?.aborted) { return null; }
@@ -660,6 +795,196 @@ async function execCommandWithFallbacks(
             if (code === 'ENOENT') { continue; }
             return null;
         }
+    }
+    return null;
+}
+
+/**
+ * Parse Linux `/proc/net/tcp` or `/proc/net/tcp6` content for LISTEN sockets (`st === '0A'`)
+ * bound to loopback/wildcard whose socket inode belongs to `targetInodes`.
+ */
+export function parseProcNetTcp(
+    content: string,
+    isIpv6: boolean,
+    targetInodes: ReadonlySet<string>,
+): PortCandidate[] {
+    if (targetInodes.size === 0) { return []; }
+    const ports: PortCandidate[] = [];
+    for (const rawLine of content.split('\n')) {
+        const cols = rawLine.trim().split(/\s+/);
+        if (cols.length < 10) { continue; }
+        // Column 3 is socket state: '0A' === TCP_LISTEN
+        if (cols[3].toUpperCase() !== '0A') { continue; }
+        const inode = cols[9];
+        if (!targetInodes.has(inode)) { continue; }
+
+        const addrParts = cols[1].split(':');
+        if (addrParts.length !== 2) { continue; }
+        const hexAddr = addrParts[0].toUpperCase();
+        const port = parseInt(addrParts[1], 16);
+        if (!Number.isSafeInteger(port) || port < 1 || port > 65535) { continue; }
+
+        if (!isIpv6) {
+            if (hexAddr === '00000000' || hexAddr === '0100007F' || hexAddr === '7F000001') {
+                pushPortCandidate(ports, { port });
+            }
+        } else {
+            if (hexAddr === '00000000000000000000000000000000'
+                || hexAddr === '0000000000000000FFFF00000100007F'
+                || hexAddr === '00000000000000000000FFFF7F000001') {
+                pushPortCandidate(ports, { port });
+            } else if (hexAddr === '00000000000000000000000001000000'
+                || hexAddr === '00000000000000000000000000000001') {
+                pushPortCandidate(ports, { port, ipv6Only: true });
+            }
+        }
+    }
+    return ports;
+}
+
+/**
+ * Pure-Node Linux fallback when both `lsof` and `ss` are unavailable:
+ * inspects `/proc/<pid>/fd` symlinks for `socket:[<inode>]` and correlates
+ * them against `/proc/net/tcp` and `/proc/net/tcp6`.
+ */
+export function findListeningPortsFromProc(pid: number, procRoot = '/proc'): PortCandidate[] {
+    if (!Number.isSafeInteger(pid) || pid <= 0) { return []; }
+    const fdDir = join(procRoot, String(pid), 'fd');
+    const inodes = new Set<string>();
+    try {
+        const entries = readdirSync(fdDir);
+        for (const fd of entries) {
+            try {
+                const link = readlinkSync(join(fdDir, fd));
+                const match = link.match(/^socket:\[(\d+)\]$/);
+                if (match) { inodes.add(match[1]); }
+            } catch { /* ignore closed or unreadable fd */ }
+        }
+    } catch {
+        return [];
+    }
+    if (inodes.size === 0) { return []; }
+
+    const ports: PortCandidate[] = [];
+    for (const [file, isIpv6] of [['tcp', false], ['tcp6', true]] as const) {
+        try {
+            const content = readFileSync(join(procRoot, 'net', file), 'utf-8');
+            for (const candidate of parseProcNetTcp(content, isIpv6, inodes)) {
+                pushPortCandidate(ports, candidate);
+            }
+        } catch { /* tcp6 may be absent if IPv6 is disabled */ }
+    }
+    return ports;
+}
+
+const LOOPBACK_ENV_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+/**
+ * Parse `ANTIGRAVITY_LS_ADDRESS` (e.g. `localhost:62502`, `127.0.0.1:62502`,
+ * `[::1]:62502`, `http://localhost:62502`, `https://127.0.0.1:62501`).
+ * Strictly accepts loopback hosts only; rejects remote addresses and malformed values.
+ */
+export function parseLsAddressEnv(rawAddress: string | undefined): ParsedLsAddress | null {
+    if (typeof rawAddress !== 'string') { return null; }
+    const trimmed = rawAddress.trim();
+    if (!trimmed || /\s/.test(trimmed)) { return null; }
+
+    const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+    let parsed: URL;
+    try {
+        parsed = new URL(hasScheme ? trimmed : `http://${trimmed}`);
+    } catch {
+        return null;
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { return null; }
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) { return null; }
+    if (parsed.pathname && parsed.pathname !== '/') { return null; }
+
+    const hostLower = parsed.hostname.toLowerCase();
+    if (!LOOPBACK_ENV_HOSTS.has(hostLower)) { return null; }
+
+    const rawPort = parsed.port;
+    if (!rawPort || !/^\d+$/.test(rawPort)) { return null; }
+    const port = Number(rawPort);
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65535) { return null; }
+
+    const isIpv6 = hostLower === '::1' || hostLower === '[::1]';
+    const isLocalhost = hostLower === 'localhost';
+    return {
+        hostname: isIpv6 ? '::1' : '127.0.0.1',
+        port,
+        ...(hasScheme ? { useTls: parsed.protocol === 'https:' } : {}),
+        ...(isIpv6 ? { ipv6Only: true } : {}),
+        ...(isLocalhost ? { allowIpv6Fallback: true } : {}),
+    };
+}
+
+function inferEnvSurface(env: NodeJS.ProcessEnv): LSSurface {
+    const exe = (env.ANTIGRAVITY_AGENTAPI_EXE || '').toLowerCase();
+    if (exe.includes('antigravity ide') || exe.includes('agy-ide')) {
+        return 'ide';
+    }
+    return 'app';
+}
+
+/**
+ * First-priority env-var discovery for Antigravity App Sidecar / agent subprocesses:
+ * reads `ANTIGRAVITY_LS_ADDRESS` + `ANTIGRAVITY_CSRF_TOKEN`, enforces loopback-only
+ * targeting, and verifies reachability via Connect-RPC probe. Never logs the CSRF token.
+ */
+export async function discoverFromEnv(
+    env: NodeJS.ProcessEnv = process.env,
+    signal?: AbortSignal,
+    log?: (msg: string) => void,
+    daemonDir?: string,
+): Promise<LSInfo | null> {
+    if (signal?.aborted) { return null; }
+    const parsed = parseLsAddressEnv(env.ANTIGRAVITY_LS_ADDRESS);
+    const csrfToken = typeof env.ANTIGRAVITY_CSRF_TOKEN === 'string' ? env.ANTIGRAVITY_CSRF_TOKEN.trim() : '';
+    if (!parsed || !csrfToken || /\s/.test(csrfToken)) {
+        return null;
+    }
+
+    const effectiveDaemonDir = daemonDir
+        || (typeof env.ANTIGRAVITY_APP_DATA_DIR === 'string' && env.ANTIGRAVITY_APP_DATA_DIR.trim()
+            ? join(env.ANTIGRAVITY_APP_DATA_DIR.trim(), 'daemon')
+            : getAntigravityDaemonDir());
+    const directHub = readHubDiscoveryFile(parsed.port, effectiveDaemonDir);
+    const matchedHub = (directHub && (directHub.httpPort === parsed.port || directHub.httpsPort === parsed.port))
+        ? directHub
+        : readAllHubDiscoveryFiles(effectiveDaemonDir).find(
+            r => r.httpPort === parsed.port || r.httpsPort === parsed.port,
+        );
+    const pid = matchedHub && matchedHub.pid > 0 ? matchedHub.pid : 0;
+    const schemes: boolean[] = parsed.useTls === true ? [true, false] : [false, true];
+    const diagnostics: string[] = [];
+    const surface = inferEnvSurface(env);
+
+    for (const useTls of schemes) {
+        if (signal?.aborted) { return null; }
+        let found: LSInfo | null = null;
+        if (parsed.ipv6Only) {
+            const v6 = await probePortWithDetail(parsed.port, csrfToken, useTls, signal, '::1');
+            if (v6.ok) {
+                found = { pid, csrfToken, port: parsed.port, useTls, hostname: '::1' };
+            } else {
+                diagnostics.push(`${useTls ? 'https' : 'http'}://[::1]:${parsed.port} (${v6.summary})`);
+            }
+        } else {
+            found = await probeSchemeWithLoopbackFallback(
+                parsed.port, csrfToken, useTls, pid, !!parsed.allowIpv6Fallback, signal, diagnostics,
+            );
+        }
+        if (found) {
+            const result: LSInfo = { ...found, surface, source: 'env' };
+            log?.(`Found backend via ANTIGRAVITY_LS_ADDRESS (pid=${result.pid}, port=${result.port}, tls=${result.useTls}, surface=${surface})`);
+            return result;
+        }
+    }
+
+    if (diagnostics.length > 0) {
+        log?.(`ANTIGRAVITY_LS_ADDRESS probe failed for port ${parsed.port}: ${diagnostics.join('; ')}`);
     }
     return null;
 }
@@ -692,7 +1017,7 @@ async function discoverWslLanguageServer(
     try {
         const psResult = await execFileAsync(wslExe, [
             '-d', distro, '--', 'ps', '-axww', '-o', 'pid=,command='
-        ], { encoding: 'utf-8', timeout: 10000, signal });
+        ], { encoding: 'utf-8', timeout: 10000, signal, windowsHide: true });
         const lines = filterLsProcessLines(psResult.stdout, 'language_server_linux');
         if (lines.length === 0) {
             log?.(`WSL[${distro}]: no Antigravity server process found inside distro`);
@@ -710,7 +1035,7 @@ async function discoverWslLanguageServer(
                     try {
                         const ssResult = await execFileAsync(wslExe, [
                             '-d', distro, '--', ssBin, '-tlnp'
-                        ], { encoding: 'utf-8', timeout: 5000, signal });
+                        ], { encoding: 'utf-8', timeout: 5000, signal, windowsHide: true });
                         const ports: PortCandidate[] = [];
                         for (const socket of ssResult.stdout.split('\n')) {
                             if (socket.includes(`pid=${pid},`) || socket.includes(`pid=${pid})`)) {
@@ -764,7 +1089,7 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
                 'process', 'where',
                 "name like 'language_server%' or name = 'agy.exe'",
                 'get', 'ProcessId,CommandLine', '/format:csv'
-            ], { encoding: 'utf-8', timeout: 5000, signal });
+            ], { encoding: 'utf-8', timeout: 5000, signal, windowsHide: true });
             // CR-#62: only trust/cache wmic when it actually returned LS rows.
             // A transient empty stdout must NOT cache wmicAvailable=true, else the
             // PowerShell fallback would be permanently skipped.
@@ -790,7 +1115,7 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
         const result = await execFileAsync(psExe, [
             '-NoProfile', '-NoLogo', '-Command',
             '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Filter "Name like \'language_server%\' or Name = \'agy.exe\'" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation'
-        ], { encoding: 'utf-8', timeout: 10000, signal });
+        ], { encoding: 'utf-8', timeout: 10000, signal, windowsHide: true });
         return result.stdout;
     } catch (e) {
         const code = (e as NodeJS.ErrnoException).code ?? (e as Error).message ?? 'error';
@@ -801,7 +1126,8 @@ async function discoverWindowsProcesses(signal?: AbortSignal, log?: (msg: string
 
 /**
  * Find listening TCP port candidates for a given PID.
- * Uses lsof (macOS + most Linux), with fallback to /usr/sbin/lsof (macOS) or ss / /usr/sbin/ss / /bin/ss (Linux).
+ * Uses lsof (macOS + most Linux), with fallback to /usr/sbin/lsof (macOS) or
+ * ss / /usr/sbin/ss / /bin/ss and `/proc/<pid>/fd` + `/proc/net/tcp{,6}` (Linux).
  * In WSL, uses Windows netstat.exe since the LS is a Windows host process.
  *
  * `forceNative` skips that WSL assumption: when the PID belongs to a Linux LS running
@@ -818,7 +1144,7 @@ async function findListeningPortCandidates(
         try {
             const result = await execFileAsync(netstatExe, [
                 '-ano'
-            ], { encoding: 'utf-8', timeout: 5000, signal });
+            ], { encoding: 'utf-8', timeout: 5000, signal, windowsHide: true });
             const ports: PortCandidate[] = [];
             for (const line of result.stdout.split('\n')) {
                 // netstat -ano format: TCP    127.0.0.1:PORT    0.0.0.0:0    LISTENING    PID
@@ -869,7 +1195,15 @@ async function findListeningPortCandidates(
                     pushPortCandidate(ports, extractPortCandidateFromSs(line));
                 }
             }
-            return ports;
+            if (ports.length > 0) {
+                return ports;
+            }
+        }
+
+        // Minimal Linux fallback: inspect /proc/<pid>/fd + /proc/net/tcp{,6} directly
+        const procPorts = findListeningPortsFromProc(pid);
+        if (procPorts.length > 0) {
+            return procPorts;
         }
     }
 
@@ -877,7 +1211,12 @@ async function findListeningPortCandidates(
 }
 
 /** Keep workspace/shared-server preference, but do not let a stale PID hide a live one. */
-function orderedProcessLines(lines: readonly string[], workspaceUri?: string, hint?: LSConnectionHint): string[] {
+function orderedProcessLines(
+    lines: readonly string[],
+    workspaceUri?: string,
+    hint?: LSConnectionHint,
+    preferredSurface?: 'app' | 'ide',
+): string[] {
     // When the active IDE exports its connection, never silently attach to a
     // different hub/account if that connection has not started or has gone away.
     // Allow extractHubPort === null for --hub-port=0 / ephemeral port allocation
@@ -892,7 +1231,7 @@ function orderedProcessLines(lines: readonly string[], workspaceUri?: string, hi
         : [...lines];
     const ordered: string[] = [];
     while (remaining.length > 0) {
-        const preferred = selectMatchingProcessLine(remaining, workspaceUri);
+        const preferred = selectMatchingProcessLine(remaining, workspaceUri, preferredSurface);
         if (preferred === null) { break; }
         ordered.push(preferred);
         remaining.splice(remaining.indexOf(preferred), 1);
@@ -1064,17 +1403,21 @@ async function probeHintFallback(
     attemptedKeys: Set<string>,
     signal?: AbortSignal,
     log?: (msg: string) => void,
+    daemonDir: string = getAntigravityDaemonDir(),
+    includeMetadata = false,
 ): Promise<LSInfo | null> {
     if (signal?.aborted) { return null; }
 
     // 1. Check ~/.gemini/antigravity/daemon/hub_<hint.port>.json (verifying exact CSRF token match).
-    const hubRecord = readHubDiscoveryFile(hint.port);
+    const hubRecord = readHubDiscoveryFile(hint.port, daemonDir);
     if (hubRecord && hubRecord.csrfToken === hint.csrfToken
         && (hubRecord.httpPort === hint.port || hubRecord.httpsPort === hint.port)) {
         const found = await probeHubRecord(hubRecord, hint.port, attemptedKeys, signal, log);
         if (found) {
             log?.(`Found backend via daemon hub_${hint.port}.json (pid=${found.pid}, port=${found.port}, tls=${found.useTls})`);
-            return found;
+            return includeMetadata
+                ? { ...found, surface: classifyHubRecordSurface(hubRecord, lines, windowsProcesses) === 'unknown' ? 'ide' : classifyHubRecordSurface(hubRecord, lines, windowsProcesses), source: 'hub-file' }
+                : found;
         }
     }
 
@@ -1094,7 +1437,7 @@ async function probeHintFallback(
         );
         if (found) {
             log?.(`Found backend via direct IDE hint probe (pid=${found.pid}, port=${found.port}, tls=${found.useTls})`);
-            return found;
+            return includeMetadata ? { ...found, surface: 'ide', source: 'hint' } : found;
         }
     }
     attemptedKeys.add(`${hint.port}:${hint.csrfToken}`);
@@ -1105,22 +1448,34 @@ async function probeHintFallback(
 }
 
 /**
- * Legacy standalone fallback: scan ~/.gemini/antigravity/daemon/hub_*.json ONLY
- * when no built-in IDE hint is present (hint === undefined).
+ * Standalone daemon hub_<port>.json fallback (scanned ONLY when no built-in IDE hint is present).
+ * Orders records by `preferredSurface` when requested (App vs IDE) while preserving mtime order within a surface.
  */
 async function probeStandaloneHubFiles(
     attemptedKeys: Set<string>,
     signal?: AbortSignal,
     log?: (msg: string) => void,
+    processLines: readonly string[] = [],
+    preferredSurface?: 'app' | 'ide',
+    windowsProcesses = process.platform === 'win32' || isWSL(),
+    daemonDir: string = getAntigravityDaemonDir(),
+    includeMetadata = false,
 ): Promise<LSInfo | null> {
     if (signal?.aborted) { return null; }
-    const records = readAllHubDiscoveryFiles();
+    const records = selectMatchingHubRecords(
+        readAllHubDiscoveryFiles(daemonDir),
+        processLines,
+        preferredSurface,
+        windowsProcesses,
+    );
     for (const record of records) {
         if (signal?.aborted) { return null; }
         const found = await probeHubRecord(record, undefined, attemptedKeys, signal, log);
         if (found) {
             log?.(`Found standalone backend via daemon hub file (pid=${found.pid}, port=${found.port}, tls=${found.useTls})`);
-            return found;
+            if (!includeMetadata) { return found; }
+            const surface = classifyHubRecordSurface(record, processLines, windowsProcesses);
+            return { ...found, surface, source: 'hub-file' };
         }
     }
     return null;
@@ -1140,12 +1495,12 @@ async function probeStandaloneHubFiles(
  */
 async function discoverLocalLinuxLanguageServer(
     workspaceUri?: string, signal?: AbortSignal, log?: (msg: string) => void,
-    hint?: LSConnectionHint,
+    hint?: LSConnectionHint, preferredSurface?: 'app' | 'ide', includeMetadata = false,
 ): Promise<LSInfo | null> {
     let psOutput: string;
     try {
         const result = await execFileAsync('ps', ['-axww', '-o', 'pid=,command='], {
-            encoding: 'utf-8', timeout: 5000, signal,
+            encoding: 'utf-8', timeout: 5000, signal, windowsHide: true,
         });
         psOutput = result.stdout;
     } catch (e) {
@@ -1157,29 +1512,60 @@ async function discoverLocalLinuxLanguageServer(
     const lines = filterLsProcessLines(psOutput, 'language_server_linux');
     if (lines.length === 0) { return null; }
 
-    for (const line of orderedProcessLines(lines, workspaceUri, hint)) {
+    for (const line of orderedProcessLines(lines, workspaceUri, hint, preferredSurface)) {
         if (signal?.aborted) { return null; }
         const pid = extractPid(line);
         const csrfToken = extractCsrfToken(line);
         if (!pid || !csrfToken) { continue; }
         const found = await probeProcess(line, pid, csrfToken,
             () => findListeningPortCandidates(pid, signal, log, true), signal, log, hint?.port);
-        if (found) { return found; }
+        if (found) {
+            return includeMetadata
+                ? { ...found, surface: classifyProcessSurface(line), source: 'process' }
+                : found;
+        }
     }
     return null;
 }
 
 /**
- * Discover the Antigravity language server process that belongs to this workspace.
- * Extracts PID, CSRF token from process args, and finds the listening port.
+ * Discover the Antigravity language server process (supporting both Antigravity App 2.0
+ * and Antigravity IDE across macOS, Windows, Linux, and WSL).
  *
- * S2 fix: Uses async execFile instead of execSync to avoid blocking the VS Code UI thread.
- * S3 fix: Uses execFile (no shell) to prevent command injection risks.
- * CR-#3: Accepts AbortSignal for cancellation on extension deactivate.
+ * Accepts either the options object (`DiscoverLanguageServerOptions`, enabling first-priority
+ * `ANTIGRAVITY_LS_ADDRESS` env discovery, `preferredSurface` disambiguation, and `surface`/`source`
+ * metadata) or the legacy positional parameters `(workspaceUri?, signal?, log?, hint?)`.
  */
+export async function discoverLanguageServer(options: DiscoverLanguageServerOptions): Promise<LSInfo | null>;
 export async function discoverLanguageServer(
-    workspaceUri?: string, signal?: AbortSignal, log?: (msg: string) => void, hint?: LSConnectionHint,
+    workspaceUri?: string,
+    signal?: AbortSignal,
+    log?: (msg: string) => void,
+    hint?: LSConnectionHint,
+): Promise<LSInfo | null>;
+export async function discoverLanguageServer(
+    workspaceUriOrOptions?: string | DiscoverLanguageServerOptions,
+    signalArg?: AbortSignal,
+    logArg?: (msg: string) => void,
+    hintArg?: LSConnectionHint,
 ): Promise<LSInfo | null> {
+    const isOptionsCall = typeof workspaceUriOrOptions === 'object' && workspaceUriOrOptions !== null;
+    const workspaceUri = isOptionsCall ? workspaceUriOrOptions.workspaceUri : workspaceUriOrOptions;
+    const signal = isOptionsCall ? workspaceUriOrOptions.signal : signalArg;
+    const log = isOptionsCall ? workspaceUriOrOptions.log : logArg;
+    const hint = isOptionsCall ? workspaceUriOrOptions.hint : hintArg;
+    const preferredSurface = isOptionsCall ? workspaceUriOrOptions.preferredSurface : undefined;
+    const env = isOptionsCall ? (workspaceUriOrOptions.env ?? process.env) : process.env;
+    const explicitDaemonDir = isOptionsCall ? workspaceUriOrOptions.daemonDir : undefined;
+    const daemonDir = explicitDaemonDir
+        ?? (isOptionsCall && typeof env.ANTIGRAVITY_APP_DATA_DIR === 'string' && env.ANTIGRAVITY_APP_DATA_DIR.trim()
+            ? join(env.ANTIGRAVITY_APP_DATA_DIR.trim(), 'daemon')
+            : getAntigravityDaemonDir());
+    const useEnv = isOptionsCall
+        ? (workspaceUriOrOptions.useEnv ?? (preferredSurface !== 'ide' && !hint))
+        : false;
+    const includeMetadata = isOptionsCall;
+
     // CR-#62: one-time PATH visibility so a missing Wbem / WindowsPowerShell dir
     // (the suspected root cause of "LS not found") is immediately diagnosable.
     if (signal?.aborted) { return null; }
@@ -1190,6 +1576,14 @@ export async function discoverLanguageServer(
     }
     logDiscoveryPathOnce(log);
     try {
+        // ─── Priority 1 (App / options mode): ANTIGRAVITY_LS_ADDRESS + CSRF env vars ─
+        if (useEnv && !hint) {
+            const envResult = await discoverFromEnv(env, signal, log, daemonDir);
+            if (envResult) {
+                return envResult;
+            }
+        }
+
         // ─── Remote-WSL: discover LS running inside WSL distro ──────────
         // When workspace is vscode-remote://wsl+<distro>/..., the IDE
         // spawns language_server_linux_x64 inside the WSL environment.
@@ -1201,7 +1595,7 @@ export async function discoverLanguageServer(
                 const wslResult = await discoverWslLanguageServer(wslDistro, workspaceUri, signal, log, hint);
                 if (wslResult) {
                     log?.(`Found WSL LS: port=${wslResult.port}, pid=${wslResult.pid}`);
-                    return wslResult;
+                    return includeMetadata ? { ...wslResult, surface: 'ide', source: 'process' } : wslResult;
                 }
                 log?.('WSL LS not found, falling back to Windows LS');
             }
@@ -1211,7 +1605,9 @@ export async function discoverLanguageServer(
         // Reachable on 127.0.0.1; the Windows-host LS below is not (see
         // discoverLocalLinuxLanguageServer). Try it first, fall through if absent.
         if (isWSL()) {
-            const localResult = await discoverLocalLinuxLanguageServer(workspaceUri, signal, log, hint);
+            const localResult = await discoverLocalLinuxLanguageServer(
+                workspaceUri, signal, log, hint, preferredSurface, includeMetadata,
+            );
             if (localResult) {
                 log?.(`Found LS inside WSL distro: port=${localResult.port}, pid=${localResult.pid}`);
                 return localResult;
@@ -1227,7 +1623,7 @@ export async function discoverLanguageServer(
                 lines = filterLsProcessLines(output, 'language_server_windows');
             } else {
                 const result = await execFileAsync('ps', ['-axww', '-o', 'pid=,command='], {
-                    encoding: 'utf-8', timeout: 5000, signal,
+                    encoding: 'utf-8', timeout: 5000, signal, windowsHide: true,
                 });
                 lines = filterLsProcessLines(result.stdout);
             }
@@ -1241,20 +1637,51 @@ export async function discoverLanguageServer(
         if (signal?.aborted) { return null; }
 
         const attemptedKeys = new Set<string>();
-        const ordered = orderedProcessLines(lines, workspaceUri, hint);
+        const ordered = orderedProcessLines(lines, workspaceUri, hint, preferredSurface);
+        let hubRecordsCache: HubDiscoveryRecord[] | null = null;
+        const getHubRecords = (): HubDiscoveryRecord[] => {
+            if (hubRecordsCache === null) {
+                hubRecordsCache = readAllHubDiscoveryFiles(daemonDir);
+            }
+            return hubRecordsCache;
+        };
 
         for (const line of ordered) {
             if (signal?.aborted) { return null; }
             const pid = windowsProcesses ? extractWindowsPid(line) : extractPid(line);
+            if (!pid) { continue; }
             const csrfToken = extractCsrfToken(line);
-            if (!pid || !csrfToken) { continue; }
-            const result = await probeProcess(
-                line, pid, csrfToken,
-                () => findListeningPortCandidates(pid, signal, log),
-                signal, log, hint?.port, attemptedKeys,
-            );
-            if (result) { return result; }
-            log?.(`RPC probe failed for candidate pid ${pid}; trying remaining processes`);
+            if (csrfToken) {
+                const result = await probeProcess(
+                    line, pid, csrfToken,
+                    () => findListeningPortCandidates(pid, signal, log),
+                    signal, log, hint?.port, attemptedKeys,
+                );
+                if (result) {
+                    return includeMetadata
+                        ? { ...result, surface: classifyProcessSurface(line), source: 'process' }
+                        : result;
+                }
+                log?.(`RPC probe failed for candidate pid ${pid}; trying remaining processes`);
+                continue;
+            }
+
+            // Antigravity App v2.34+ standalone hub (`language_server --standalone --subclient_type hub`)
+            // intentionally omits --csrf_token from argv and writes ~/.gemini/antigravity/daemon/hub_<port>.json.
+            // Pair the process PID against hub_*.json when no conflicting hint restricts us.
+            if (!hint) {
+                const matchingHub = getHubRecords().find(r => r.pid === pid);
+                if (matchingHub) {
+                    const hubResult = await probeHubRecord(matchingHub, undefined, attemptedKeys, signal, log);
+                    if (hubResult) {
+                        const surface = classifyProcessSurface(line);
+                        log?.(`Paired pid=${pid} (${surface}) with daemon hub file (port=${hubResult.port}, tls=${hubResult.useTls})`);
+                        return includeMetadata
+                            ? { ...hubResult, surface, source: 'hub-file' }
+                            : hubResult;
+                    }
+                }
+            }
         }
 
         if (hint) {
@@ -1262,12 +1689,16 @@ export async function discoverLanguageServer(
                 log?.(`Hinted port ${hint.port} is owned by another Antigravity instance; waiting`);
                 return null;
             }
-            return await probeHintFallback(hint, lines, windowsProcesses, attemptedKeys, signal, log);
+            return await probeHintFallback(
+                hint, lines, windowsProcesses, attemptedKeys, signal, log, daemonDir, includeMetadata,
+            );
         }
 
-        // Legacy/standalone IDE (no built-in google.google-antigravity hint):
-        // try ~/.gemini/antigravity/daemon/hub_*.json for standalone language_server / agy hubs.
-        const standaloneResult = await probeStandaloneHubFiles(attemptedKeys, signal, log);
+        // Standalone / App hub file fallback (no built-in google.google-antigravity hint):
+        // scan ~/.gemini/antigravity/daemon/hub_*.json preferring `preferredSurface` when set.
+        const standaloneResult = await probeStandaloneHubFiles(
+            attemptedKeys, signal, log, lines, preferredSurface, windowsProcesses, daemonDir, includeMetadata,
+        );
         if (standaloneResult) { return standaloneResult; }
 
         if (lines.length === 0) {

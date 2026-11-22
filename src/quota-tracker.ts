@@ -5,9 +5,10 @@
 // IDLE: waiting for first usage detection
 // TRACKING: recording snapshots until cycle ends (resetTime passes or shifts)
 
-import * as vscode from 'vscode';
 import { getQuotaPoolKey, ModelConfig } from './models';
 import type { StateBucket } from './durable-state';
+
+export type QuotaStateSource = StateBucket | { globalState: StateBucket };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -100,13 +101,11 @@ export class QuotaTracker {
     private history: QuotaSession[] = [];
     private maxHistory: number = DEFAULT_MAX_HISTORY;
     private enabled: boolean = true;
-    private context: vscode.ExtensionContext;
     private state: StateBucket;
     private _onQuotaReset?: (modelIds: string[], cutoffTime?: string) => void;
 
-    constructor(context: vscode.ExtensionContext, state?: StateBucket) {
-        this.context = context;
-        this.state = state || context.globalState;
+    constructor(contextOrState: QuotaStateSource, state?: StateBucket) {
+        this.state = state || ('globalState' in contextOrState ? contextOrState.globalState : contextOrState);
         this.restore();
     }
 

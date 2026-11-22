@@ -5,7 +5,7 @@
 import { LSInfo } from '../discovery';
 import { rpcCall } from '../rpc-client';
 import { normalizeModelDisplayName } from '../models';
-import { tBi } from '../i18n';
+import { tBi } from '../i18n-core';
 import type { GMSummary, GMModelStats } from '../gm-tracker';
 import type {
     ModelActivityStats,
@@ -43,7 +43,8 @@ import {
 function getMaxPersistedRecentSteps(): number {
     try {
         const vscode = require('vscode');
-        return vscode.workspace.getConfiguration('antigravityContextMonitor').get('activity.maxRecentSteps', 100) || 100;
+        const configured = vscode?.workspace?.getConfiguration?.('antigravityContextMonitor')?.get?.('activity.maxRecentSteps', 100);
+        return typeof configured === 'number' && Number.isFinite(configured) && configured > 0 ? configured : 100;
     } catch { return 100; }
 }
 
@@ -51,7 +52,8 @@ function getMaxPersistedRecentSteps(): number {
 function getMaxArchives(): number {
     try {
         const vscode = require('vscode');
-        return vscode.workspace.getConfiguration('antigravityContextMonitor').get('activity.maxArchives', 20) || 20;
+        const configured = vscode?.workspace?.getConfiguration?.('antigravityContextMonitor')?.get?.('activity.maxArchives', 20);
+        return typeof configured === 'number' && Number.isFinite(configured) && configured > 0 ? configured : 20;
     } catch { return 20; }
 }
 

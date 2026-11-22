@@ -4,7 +4,7 @@ import { slimConversationForPersistence } from './gm-tracker';
 
 interface WorkspaceStateLike {
     get<T>(key: string, defaultValue: T): T;
-    update(key: string, value: unknown): Thenable<void>;
+    update(key: string, value: unknown): PromiseLike<void>;
 }
 
 interface MonitorStoreState {

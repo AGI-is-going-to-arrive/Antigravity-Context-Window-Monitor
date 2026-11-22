@@ -1,19 +1,45 @@
 import * as vscode from 'vscode';
-import { discoverLanguageServer, type LSConnectionHint, type LSInfo } from './discovery';
+import {
+    discoverLanguageServer,
+    type DiscoverLanguageServerOptions,
+    type LSConnectionHint,
+    type LSInfo,
+} from './discovery';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
 function parseLoopbackServerUrlPort(rawUrl: unknown): number | null {
     if (typeof rawUrl !== 'string' || !rawUrl.trim()) { return null; }
+    const trimmed = rawUrl.trim();
+    if (/\s/.test(trimmed)) { return null; }
+    const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
     try {
-        const parsed = new URL(rawUrl.trim());
+        const parsed = new URL(hasScheme ? trimmed : `http://${trimmed}`);
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { return null; }
         if (!LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())) { return null; }
-        const port = parsed.port ? Number(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80);
+        if (hasScheme) {
+            const port = parsed.port ? Number(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80);
+            return Number.isSafeInteger(port) && port >= 1 && port <= 65535 ? port : null;
+        }
+        if (!parsed.port || !/^\d+$/.test(parsed.port)) { return null; }
+        const port = Number(parsed.port);
         return Number.isSafeInteger(port) && port >= 1 && port <= 65535 ? port : null;
     } catch {
         return null;
     }
+}
+
+/**
+ * Parse loopback `ANTIGRAVITY_LS_ADDRESS` + `ANTIGRAVITY_CSRF_TOKEN` injected by
+ * Antigravity App Sidecar / agent subprocesses into an `LSConnectionHint`.
+ */
+export function getEnvBackendHint(env: NodeJS.ProcessEnv = process.env): LSConnectionHint | null {
+    const port = parseLoopbackServerUrlPort(env.ANTIGRAVITY_LS_ADDRESS);
+    const csrfToken = typeof env.ANTIGRAVITY_CSRF_TOKEN === 'string' ? env.ANTIGRAVITY_CSRF_TOKEN.trim() : '';
+    if (port === null || !csrfToken || /\s/.test(csrfToken)) {
+        return null;
+    }
+    return { port, csrfToken };
 }
 
 function getConfiguredLoopbackServerPort(): number | null {
@@ -91,4 +117,28 @@ export function discoverCurrentLanguageServer(
         return Promise.resolve(null);
     }
     return discoverLanguageServer(workspaceUri, signal, log, hint);
+}
+
+/**
+ * Surface-aware backend discovery for unified IDE + Antigravity App callers.
+ * When `preferredSurface === 'app'`, skips VS Code extension affinity and prefers
+ * `ANTIGRAVITY_LS_ADDRESS` env vars / App standalone hub. When `'ide'`, respects
+ * strict built-in extension hint affinity.
+ */
+export function discoverPreferredBackend(
+    options: Omit<DiscoverLanguageServerOptions, 'hint'> = {},
+): Promise<LSInfo | null> {
+    if (options.preferredSurface === 'app') {
+        return discoverLanguageServer({ ...options, preferredSurface: 'app' });
+    }
+    const hint = getActiveBackendHint();
+    if (hint === null) {
+        options.log?.('Current IDE backend is starting or restarting; waiting without selecting another instance');
+        return Promise.resolve(null);
+    }
+    return discoverLanguageServer({
+        ...options,
+        preferredSurface: options.preferredSurface ?? 'ide',
+        hint,
+    });
 }
