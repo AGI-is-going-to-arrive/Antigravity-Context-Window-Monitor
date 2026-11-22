@@ -125,8 +125,8 @@ function buildEntries(
     const currentRepoName = currentUsage?.repositoryName || '';
 
     return trajectories.map((trajectory) => {
-        const workspaceUri = trajectory.workspaceUris[0] || trajectory.gitRootUri || '';
-        const workspaceMeta = getWorkspaceLabel(workspaceUri, trajectory.repositoryName);
+        const workspaceUri = (Array.isArray(trajectory.workspaceUris) ? trajectory.workspaceUris[0] : '') || trajectory.gitRootUri || '';
+        const workspaceMeta = getWorkspaceLabel(workspaceUri, trajectory.repositoryName || '');
         const normalizedWorkspace = workspaceUri ? normalizeUri(workspaceUri) : '';
         const gmStats = getGMStats(trajectory.cascadeId, gmSummary, gmConversations);
         const pbPath = path.join(antigravityRoot, 'conversations', `${trajectory.cascadeId}.pb`);
@@ -134,7 +134,7 @@ function buildEntries(
         const recordingDir = path.join(antigravityRoot, 'browser_recordings', trajectory.cascadeId);
         const modelId = trajectory.requestedModel || trajectory.generatorModel || '';
 
-        const shortId = trajectory.cascadeId.substring(0, 8);
+        const shortId = (trajectory.cascadeId || '').substring(0, 8);
         return {
             cascadeId: trajectory.cascadeId,
             title: trajectory.summary || `${tBi('Conversation', '对话')} ${shortId}`,
@@ -146,9 +146,9 @@ function buildEntries(
             workspaceSubtitleHtml: workspaceMeta.subtitleHtml,
             workspacePath: workspaceMeta.localPath,
             workspaceUri,
-            repositoryName: trajectory.repositoryName,
-            branchName: trajectory.branchName,
-            status: trajectory.status.replace('CASCADE_STATUS_', '').replace('CASCADE_RUN_STATUS_', ''),
+            repositoryName: trajectory.repositoryName || '',
+            branchName: trajectory.branchName || '',
+            status: (trajectory.status || 'UNKNOWN').replace('CASCADE_STATUS_', '').replace('CASCADE_RUN_STATUS_', ''),
             modelLabel: getModelDisplayName(modelId || ''),
             stepCount: trajectory.stepCount,
             createdTime: trajectory.createdTime,

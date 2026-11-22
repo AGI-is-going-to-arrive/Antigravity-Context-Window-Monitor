@@ -123,9 +123,9 @@ function getFeatureCards(): FeatureCard[] {
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-export function buildAboutTabContent(version = '1.17.4'): string {
+export function buildAboutTabContent(version = '1.17.5'): string {
     const cards = getFeatureCards();
-    const normalizedVersion = typeof version === 'string' && version.trim() ? version.trim() : '1.17.4';
+    const normalizedVersion = typeof version === 'string' && version.trim() ? version.trim() : '1.17.5';
     const versionTag = normalizedVersion.startsWith('v') ? normalizedVersion : `v${normalizedVersion}`;
 
     // ── Hero section ──

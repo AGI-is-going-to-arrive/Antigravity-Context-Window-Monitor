@@ -843,6 +843,7 @@ export function getScript(): string {
                         ['toggleSpeed', 'showSpeed'],
                         ['toggleCacheHit', 'showCacheHit'],
                         ['toggleSessionCost', 'showSessionCost'],
+                        ['toggleModelInternalId', 'showModelInternalId'],
                     ];
                     for (var sti = 0; sti < syncTogglePairs.length; sti++) {
                         var fieldName = syncTogglePairs[sti][1];
@@ -1134,7 +1135,9 @@ export function getScript(): string {
                     var actionName = copyActionBtn.getAttribute('data-action');
                     if (bridge && bridge.surface !== 'vscode' && typeof bridge.sendAction === 'function') {
                         bridge.sendAction({ command: actionName }).then(function(res) {
-                            if (res && typeof res.text === 'string') {
+                            if (res && res._copiedByBridge) {
+                                flashCopyButton(copyActionBtn);
+                            } else if (res && typeof res.text === 'string') {
                                 copyTextSafe(res.text).then(function() { flashCopyButton(copyActionBtn); });
                             } else if (res && res.result && typeof res.result.text === 'string') {
                                 copyTextSafe(res.result.text).then(function() { flashCopyButton(copyActionBtn); });
@@ -1384,6 +1387,12 @@ export function getScript(): string {
                 var mh = document.getElementById('mastheadContextBar');
                 return mh ? mh.innerHTML : '';
             })();
+            var lastAccountPopoverHtml = (function() {
+                var pb = document.getElementById('acctPopoverBody');
+                return pb ? pb.innerHTML : '';
+            })();
+            var emptyAccountPopoverHtml = ${JSON.stringify(`<p class="empty-msg">${tBi('No account data yet.', '暂无账号数据。')}</p>`)};
+            var lastHandledSnapshotRef = null;
 
             function applyIncrementalUpdate(msg) {
                 if (!msg || !msg.tabs) { return; }
@@ -1478,9 +1487,29 @@ export function getScript(): string {
                 if (nextMasthead !== null && nextMasthead !== lastMastheadHtml) {
                     var mhEl = document.getElementById('mastheadContextBar');
                     var swEl = document.getElementById('conversationSwitcher');
-                    if (mhEl && (!swEl || document.activeElement !== swEl)) {
-                        mhEl.innerHTML = nextMasthead;
-                        lastMastheadHtml = nextMasthead;
+                    if (mhEl) {
+                        if (!swEl || document.activeElement !== swEl) {
+                            mhEl.innerHTML = nextMasthead;
+                            lastMastheadHtml = nextMasthead;
+                        } else {
+                            // Keep <select> undisturbed while focused, but still refresh badges & lock button
+                            var tmpMh = document.createElement('div');
+                            tmpMh.innerHTML = nextMasthead;
+                            var nextBadges = tmpMh.querySelector('.masthead-context-badges');
+                            var curBadges = mhEl.querySelector('.masthead-context-badges');
+                            if (nextBadges && curBadges && curBadges.innerHTML !== nextBadges.innerHTML) {
+                                curBadges.innerHTML = nextBadges.innerHTML;
+                            }
+                            var nextLock = tmpMh.querySelector('#lockMainBtn');
+                            var curLock = mhEl.querySelector('#lockMainBtn');
+                            if (nextLock && curLock) {
+                                curLock.className = nextLock.className;
+                                curLock.setAttribute('aria-pressed', nextLock.getAttribute('aria-pressed') || 'false');
+                                if (curLock.innerHTML !== nextLock.innerHTML) {
+                                    curLock.innerHTML = nextLock.innerHTML;
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1537,8 +1566,10 @@ export function getScript(): string {
                 // ── Account Popover: content-only refresh, preserve open/close state ──
                 if (typeof tabs.accountPopover === 'string') {
                     var popBody = document.getElementById('acctPopoverBody');
-                    if (popBody && tabs.accountPopover) {
-                        popBody.innerHTML = tabs.accountPopover;
+                    var nextPopHtml = tabs.accountPopover || emptyAccountPopoverHtml;
+                    if (popBody && nextPopHtml !== lastAccountPopoverHtml) {
+                        popBody.innerHTML = nextPopHtml;
+                        lastAccountPopoverHtml = nextPopHtml;
                     }
                 }
                 var dotEl = document.querySelector('.acct-popover-dot');
@@ -1594,6 +1625,8 @@ export function getScript(): string {
                         setTimeout(function() { fb.style.opacity = '0'; }, 2000);
                     }
                 } else if (msg && msg.command === 'updateTabs') {
+                    if (msg.snapshot && msg.snapshot === lastHandledSnapshotRef) { return; }
+                    if (msg.snapshot) { lastHandledSnapshotRef = msg.snapshot; }
                     applyIncrementalUpdate(msg);
                 }
             });
@@ -1603,7 +1636,9 @@ export function getScript(): string {
                 var detail = event && event.detail;
                 if (!detail || typeof detail !== 'object') { return; }
                 var snap = detail.snapshot || detail;
+                if (snap && snap === lastHandledSnapshotRef) { return; }
                 if (snap && snap.tabs) {
+                    lastHandledSnapshotRef = snap;
                     applyIncrementalUpdate({
                         tabs: snap.tabs,
                         time: snap.time || detail.time || '',

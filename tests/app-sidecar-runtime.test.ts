@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { getHostBridgeScript } from '../src/app/host-bridge';
 import {
     createSidecarRuntimeProvider,
+    renderFallbackDocumentHtml,
     validateRevealTargetPath,
     type SidecarDocumentParams,
     type SidecarRuntimeDeps,
@@ -319,12 +320,14 @@ describe('app sidecar runtime engine', () => {
         }
     });
 
-    it('loads compiled sidecar-runtime.js and sidecar-server.js in pure Node with ZERO vscode dependency', () => {
+    it('loads compiled sidecar-runtime.js, sidecar-server.js, and webview-document.js in pure Node with ZERO vscode dependency', () => {
         const repoRoot = path.resolve(__dirname, '..');
         const outRuntime = path.join(repoRoot, 'out', 'app', 'sidecar-runtime.js');
-        if (!fs.existsSync(outRuntime)) {
+        const outDoc = path.join(repoRoot, 'out', 'webview-document.js');
+        if (!fs.existsSync(outRuntime) || !fs.existsSync(outDoc)) {
             execFileSync('npm', ['run', 'compile'], { cwd: repoRoot, stdio: 'pipe', windowsHide: true });
         }
+        const tmpState = path.join(makeTempDir('acm-pure-node-'), 'state-v1.json');
         const checkScript = `
             const Module = require('module');
             const origLoad = Module._load;
@@ -334,9 +337,34 @@ describe('app sidecar runtime engine', () => {
             };
             const rt = require(${JSON.stringify(outRuntime)});
             const srv = require(${JSON.stringify(path.join(repoRoot, 'out', 'app', 'sidecar-server.js'))});
+            const doc = require(${JSON.stringify(outDoc)});
             if (typeof rt.createSidecarRuntimeProvider !== 'function') throw new Error('missing factory');
             if (typeof srv.createSidecarHandler !== 'function') throw new Error('missing handler');
-            console.log('ZERO_VSCODE_OK');
+            if (typeof doc.buildMonitorDocumentHtml !== 'function') throw new Error('missing doc builder');
+            (async () => {
+                const provider = rt.createSidecarRuntimeProvider({
+                    version: '1.17.5',
+                    statePath: ${JSON.stringify(tmpState)},
+                    autoStart: false,
+                });
+                try {
+                    const html = await provider.renderHtml({
+                        viewMode: 'aux',
+                        pathname: '/',
+                        isSidecarEnv: true,
+                        version: '1.17.5',
+                    });
+                    if (!html.includes('id="tab-settings"') || !html.includes('data-monitor-overview')) {
+                        throw new Error('did not render full 9-tab webview-document');
+                    }
+                    if (html.includes('acm-hero-metric')) {
+                        throw new Error('unexpectedly fell back to stub renderer');
+                    }
+                    console.log('ZERO_VSCODE_OK');
+                } finally {
+                    await provider.dispose();
+                }
+            })().catch(err => { console.error(err); process.exit(1); });
         `;
         const stdout = execFileSync(process.execPath, ['-e', checkScript], {
             encoding: 'utf8',
@@ -419,13 +447,33 @@ describe('app sidecar runtime engine', () => {
         expect(p.extras.contextBreakdown).toBe(p.contextBreakdown);
     });
 
-    it('renders rich fallback HTML when webview-document is absent and no custom renderDocument is passed', async () => {
+    it('renders full 9-tab Studio Telemetry Ledger via webview-document.ts by default with XSS escaping and per-request lang override', async () => {
         const tmpDir = makeTempDir();
+        const xssTitle = '<script>alert("title-xss")</script><img src=x onerror=alert(1)>';
+        const xssSection = '"><svg onload=alert("sec-xss")>';
+        const xssPath = `file:///tmp/<img src=x onerror=alert("ws")>/repo`;
+        const xssTraj = makeTrajectory({
+            summary: xssTitle,
+            workspaceUris: [xssPath],
+            gitRootUri: xssPath,
+        });
+        const xssGm = makeMockGeneratorMetadata();
+        xssGm[1].chatModel!.promptSections!.push({
+            title: xssSection,
+            tokenType: 'TOKEN_TYPE_FILES',
+            contentLen: 80_000,
+        });
+
+        let capturedParams: SidecarDocumentParams | null = null;
         const provider = createSidecarRuntimeProvider({
             version: '1.17.5',
             statePath: path.join(tmpDir, 'state-v1.json'),
+            initialWorkspaceUris: [xssPath],
             autoStart: false,
-            deps: createMockDeps(),
+            deps: createMockDeps({
+                trajectories: [xssTraj],
+                gmEntries: xssGm,
+            }),
         });
         providers.push(provider);
 
@@ -433,17 +481,55 @@ describe('app sidecar runtime engine', () => {
         const html = await provider.renderHtml({
             viewMode: 'sidebar',
             pathname: '/full',
+            lang: 'en',
             isSidecarEnv: false,
             version: '1.17.5',
         });
 
+        // Full 9-tab Studio Telemetry Ledger (NOT stub fallback)
         expect(html).toContain('data-acm-surface="app-sidecar"');
+        expect(html).toContain('data-monitor-overview');
+        expect(html).toContain('id="mastheadContextBar"');
         expect(html).toContain('id="conversationSwitcher"');
         expect(html).toContain('data-action="toggleLockMain"');
         expect(html).toContain('data-action="copyContextReport"');
         expect(html).toContain('data-action="copyHandoffPrompt"');
-        expect(html).toContain('acm-dot-grid');
-        expect(html).toContain('acm-dual-cap');
+        expect(html).toContain('ctx-dot-matrix');
+        expect(html).toContain('ctx-dual-cap-row');
+        for (const tabId of ['overview', 'gmdata', 'chats', 'pricing', 'models', 'calendar', 'profile', 'settings', 'about']) {
+            expect(html).toContain(`id="tab-${tabId}"`);
+        }
+        expect(html).not.toContain('acm-hero-metric');
+        expect(html).toContain('data-lang="en"');
+
+        // Strict XSS escaping for untrusted titles, prompt section names, and workspace paths
+        expect(html).not.toContain('<script>alert("title-xss")</script>');
+        expect(html).not.toContain('<img src=x onerror=alert(1)>');
+        expect(html).not.toContain('<svg onload=alert("sec-xss")>');
+        expect(html).toContain('&lt;script&gt;alert(&quot;title-xss&quot;)&lt;/script&gt;');
+
+        // Explicit fallback renderer still works cleanly when invoked directly
+        const fallbackProbe = createSidecarRuntimeProvider({
+            version: '1.17.5',
+            statePath: path.join(tmpDir, 'fallback-state.json'),
+            autoStart: false,
+            deps: createMockDeps(),
+            renderDocument: (p) => {
+                capturedParams = p;
+                return renderFallbackDocumentHtml(p);
+            },
+        });
+        providers.push(fallbackProbe);
+        await fallbackProbe.pollNow(true);
+        const fallbackHtml = await fallbackProbe.renderHtml({
+            viewMode: 'sidebar',
+            pathname: '/full',
+            isSidecarEnv: false,
+            version: '1.17.5',
+        });
+        expect(capturedParams).not.toBeNull();
+        expect(fallbackHtml).toContain('acm-dot-grid');
+        expect(fallbackHtml).toContain('acm-dual-cap');
     });
 
     it('detects rewind across polls when step count shrinks (estimated_rewind, not compaction)', async () => {
@@ -479,7 +565,7 @@ describe('app sidecar runtime engine', () => {
         const mainTraj = makeTrajectory({
             cascadeId: 'conv-main-0001',
             summary: 'Main Feature Work',
-            status: CascadeStatus.IDLE,
+            status: 'CASCADE_RUN_STATUS_IDLE',
             lastModifiedTime: '2026-11-22T18:00:00.000Z',
         });
         const subagentTraj = makeTrajectory({

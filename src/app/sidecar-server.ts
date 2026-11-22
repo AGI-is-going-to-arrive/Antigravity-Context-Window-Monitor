@@ -381,11 +381,14 @@ export function createSidecarHandler(
 
     async function renderPage(viewMode: SidecarViewMode, rawUrl = '/'): Promise<RenderedPageResult> {
         const parsedUrl = new URL(rawUrl, 'http://127.0.0.1');
+        const rawLang = parsedUrl.searchParams.get('lang') || undefined;
+        const lang = (rawLang === 'en' || rawLang === 'zh' || rawLang === 'both') ? rawLang : undefined;
         const ctx: SidecarRenderContext = {
             viewMode,
             pathname: parsedUrl.pathname,
             conversationId: parsedUrl.searchParams.get('conversationId') || undefined,
             workspaceUris: parseWorkspaceUrisParam(parsedUrl.searchParams.get('workspaceUris') || undefined),
+            ...(lang ? { lang } : {}),
             isSidecarEnv,
             version,
         };
@@ -449,6 +452,7 @@ export function createSidecarHandler(
             if (snapshotQuery.workspaceUris && snapshotQuery.workspaceUris.length > 0) {
                 qs.set('workspaceUris', JSON.stringify(snapshotQuery.workspaceUris));
             }
+            if (lang) { qs.set('lang', lang); }
             const pagePath = viewMode === 'sidebar' ? '/full' : '/';
             const pageUrl = qs.toString() ? `${pagePath}?${qs.toString()}` : pagePath;
             const rendered = await renderPage(viewMode, pageUrl);

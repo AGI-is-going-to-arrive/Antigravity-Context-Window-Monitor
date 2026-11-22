@@ -294,6 +294,7 @@ export function packageAppPlugin(options = {}) {
         throw new Error(`Missing app-plugin/plugin.json under ${repoRoot}`);
     }
     const requiredCompiledFiles = [
+        'webview-document.js',
         join('app', 'sidecar-server.js'),
         join('app', 'sidecar-runtime.js'),
     ];

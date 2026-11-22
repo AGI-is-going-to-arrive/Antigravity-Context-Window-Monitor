@@ -27,6 +27,8 @@ const DEEP_MERGE_OBJECT_KEYS = new Set<string>([
 ]);
 
 const RENAME_RETRY_DELAYS_MS = [15, 30, 60, 120, 200];
+const LOCK_STALE_MS = 5_000;
+const LOCK_ACQUIRE_TIMEOUT_MS = 2_500;
 const MAX_MERGE_DEPTH = 6;
 let tmpNonceCounter = 0;
 
@@ -289,6 +291,55 @@ function buildTempFilePath(filePath: string): string {
     return path.join(path.dirname(filePath), `${path.basename(filePath)}.${process.pid}.${nonce}.tmp`);
 }
 
+async function acquireLockFile(lockPath: string): Promise<() => Promise<void>> {
+    const deadline = Date.now() + LOCK_ACQUIRE_TIMEOUT_MS;
+    await fs.promises.mkdir(path.dirname(lockPath), { recursive: true });
+    const mode = process.platform === 'win32' ? undefined : 0o600;
+    let attempt = 0;
+
+    while (true) {
+        try {
+            const handle = await fs.promises.open(lockPath, 'wx', mode);
+            try {
+                await handle.writeFile(`${process.pid}:${Date.now()}\n`, 'utf8');
+            } finally {
+                await handle.close();
+            }
+            let released = false;
+            return async () => {
+                if (released) { return; }
+                released = true;
+                await fs.promises.unlink(lockPath).catch(() => {});
+            };
+        } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code !== 'EEXIST') {
+                throw err;
+            }
+            try {
+                const st = await fs.promises.stat(lockPath);
+                if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+                    await fs.promises.unlink(lockPath).catch(() => {});
+                    continue;
+                }
+            } catch (statErr) {
+                if ((statErr as NodeJS.ErrnoException).code === 'ENOENT') {
+                    continue;
+                }
+            }
+            if (Date.now() >= deadline) {
+                await fs.promises.unlink(lockPath).catch(() => {});
+                return async () => {
+                    await fs.promises.unlink(lockPath).catch(() => {});
+                };
+            }
+            attempt++;
+            const jitter = Math.floor(Math.random() * 8);
+            await sleep(Math.min(5 + attempt * 5 + jitter, 50));
+        }
+    }
+}
+
 export class DurableState {
     private static readonly SAVE_DEBOUNCE_MS = 250;
     private readonly _filePath: string;
@@ -308,6 +359,7 @@ export class DurableState {
      * DailyLedger) from silently clobbering entries added by the peer process.
      */
     private _unseenExternalGlobal = new Map<string, { base: unknown; disk: unknown }>();
+    private _hasUnnotifiedExternalChanges = false;
     private _saveTimer: ReturnType<typeof setTimeout> | undefined;
     private _pendingVersion = 0;
     private _writtenVersion = 0;
@@ -358,6 +410,8 @@ export class DurableState {
      * Returns true when external changes were loaded.
      */
     reloadIfChanged(): boolean {
+        const hadBufferedExternal = this._hasUnnotifiedExternalChanges;
+        this._hasUnnotifiedExternalChanges = false;
         try {
             const stat = fs.statSync(this._filePath);
             const changedByStat = this._lastKnownMtimeMs === null
@@ -366,11 +420,11 @@ export class DurableState {
             const raw = fs.readFileSync(this._filePath, 'utf8');
             const clean = stripUtf8Bom(raw);
             if (!changedByStat && clean === this._lastSerialized) {
-                return false;
+                return hadBufferedExternal;
             }
             const diskData = parseStateFile(clean);
             if (!diskData) {
-                return false;
+                return hadBufferedExternal;
             }
             const merged = this._mergeWithDisk(
                 diskData,
@@ -384,7 +438,7 @@ export class DurableState {
             this._lastKnownSize = stat.size;
             return true;
         } catch {
-            return false;
+            return hadBufferedExternal;
         }
     }
 
@@ -400,8 +454,13 @@ export class DurableState {
                 if (hasOwn(source, key)) {
                     return source[key] as T;
                 }
-                const fallbackValue = fallback?.get<T>(key, defaultValue) ?? defaultValue;
-                this._set(kind, key, fallbackValue, workspaceKey, false);
+                if (!fallback) {
+                    return defaultValue;
+                }
+                const fallbackValue = fallback.get<T>(key, defaultValue);
+                if (!deepEqual(fallbackValue, defaultValue)) {
+                    this._set(kind, key, fallbackValue, workspaceKey, false);
+                }
                 return fallbackValue;
             },
             update: async (key: string, value: unknown): Promise<void> => {
@@ -428,6 +487,9 @@ export class DurableState {
                 if (unseen) {
                     this._unseenExternalGlobal.delete(key);
                     effectiveValue = mergeConcurrentValue(key, unseen.base, unseen.disk, value);
+                    if (!deepEqual(effectiveValue, value)) {
+                        this._hasUnnotifiedExternalChanges = true;
+                    }
                 }
             }
             this._data.global[key] = effectiveValue;
@@ -605,6 +667,9 @@ export class DurableState {
                         disk: deepClone(v),
                     });
                 }
+                if (!hasOwn(this._data.global, k) || !deepEqual(this._data.global[k], v)) {
+                    this._hasUnnotifiedExternalChanges = true;
+                }
                 this._data.global[k] = deepClone(v);
             }
         }
@@ -616,6 +681,9 @@ export class DurableState {
             for (const [k, v] of Object.entries(wsObj)) {
                 const dirtyVer = dirtyWs?.get(k);
                 if (dirtyVer === undefined || dirtyVer <= targetVersion) {
+                    if (!hasOwn(this._data.workspaces[wsKey], k) || !deepEqual(this._data.workspaces[wsKey][k], v)) {
+                        this._hasUnnotifiedExternalChanges = true;
+                    }
                     this._data.workspaces[wsKey][k] = deepClone(v);
                 }
             }
@@ -657,7 +725,10 @@ export class DurableState {
             || this._seededWorkspaceKeys.size > 0;
 
         this._flushInFlight = (async () => {
+            let releaseLock: (() => Promise<void>) | null = null;
             try {
+                releaseLock = await acquireLockFile(`${this._filePath}.lock`);
+
                 let dataToWrite = localSnapshot;
                 let diskExists = false;
                 let diskChanged = false;
@@ -731,6 +802,9 @@ export class DurableState {
             } catch (err) {
                 console.warn('[Antigravity Context Monitor] Durable state persistence failed:', err);
             } finally {
+                if (releaseLock) {
+                    await releaseLock();
+                }
                 this._writtenVersion = Math.max(this._writtenVersion, targetVersion);
                 this._resolveWaitersUpTo(this._writtenVersion);
                 this._flushInFlight = null;

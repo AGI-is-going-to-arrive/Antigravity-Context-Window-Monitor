@@ -268,6 +268,39 @@ describe('DurableState atomic writes & concurrent App + IDE safety', () => {
         await pending;
     });
 
+    it('reloadIfChanged still reports true after _flush absorbs concurrent external disk changes', async () => {
+        const filePath = statePath('flush-absorbed-external.json');
+        const stateA = new DurableState(filePath);
+        const stateB = new DurableState(filePath);
+
+        // External process (IDE) writes bob@example.com account snapshot first.
+        await stateA.globalBucket().update('accountSnapshots', [
+            { email: 'bob@example.com', planName: 'Pro', isActive: false },
+        ]);
+        await stateA.flush();
+
+        // Local process (Sidecar) flushes an unrelated key before calling reloadIfChanged().
+        await stateB.globalBucket().update('panelZoomLevel', 110);
+        await stateB.flush();
+
+        // Even though _flush() already merged bob@example.com into disk and _data,
+        // reloadIfChanged() MUST return true once so callers refresh in-memory caches.
+        expect(stateB.reloadIfChanged()).toBe(true);
+        const snaps = stateB.globalBucket().get<Array<{ email: string }>>('accountSnapshots', []);
+        expect(snaps.map(s => s.email)).toEqual(['bob@example.com']);
+        // Subsequent call with no new disk change returns false.
+        expect(stateB.reloadIfChanged()).toBe(false);
+    });
+
+    it('read-only get() without a fallback bucket never creates a state file or schedules spurious writes', async () => {
+        const filePath = statePath('readonly-get.json');
+        const reader = new DurableState(filePath);
+        expect(reader.globalBucket().get('accountSnapshots', null)).toBeNull();
+        expect(reader.globalBucket().get('displayLanguage', 'both')).toBe('both');
+        await reader.flush();
+        expect(fs.existsSync(filePath)).toBe(false);
+    });
+
     it('works cleanly with DailyStore, PricingStore, MonitorStore, and QuotaTracker using StateBucket directly (no vscode)', async () => {
         const filePath = statePath('stores-compat.json');
         const durable = new DurableState(filePath);
@@ -323,7 +356,13 @@ describe('DurableState atomic writes & concurrent App + IDE safety', () => {
         ]);
 
         const raw = fs.readFileSync(filePath, 'utf8');
-        expect(() => JSON.parse(raw)).not.toThrow();
-        expect(fs.readdirSync(tempDir).filter(f => f.endsWith('.tmp'))).toEqual([]);
+        const parsed = JSON.parse(raw) as { global: Record<string, unknown> };
+        expect(parsed.global.procA).toBe('11');
+        expect(parsed.global.procB).toBe('22');
+        expect(parsed.global.accountBillingDays).toEqual({
+            'a@test.local': 11,
+            'b@test.local': 22,
+        });
+        expect(fs.readdirSync(tempDir).filter(f => f.endsWith('.tmp') || f.endsWith('.lock'))).toEqual([]);
     });
 });

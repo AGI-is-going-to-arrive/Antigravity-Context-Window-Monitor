@@ -85,7 +85,8 @@ export function getThemeAdapterStyles(): string {
             color-scheme: light;
         }
 
-        body[data-acm-theme="hc"] {
+        body[data-acm-theme="hc"],
+        body[data-acm-theme="hc-light"] {
             --ed-bg: var(--background, Canvas);
             --ed-surface: var(--background, Canvas);
             --ed-surface-well: var(--background, Canvas);
@@ -103,9 +104,12 @@ export function getThemeAdapterStyles(): string {
             --ed-shadow-tooltip: none;
             --ed-shadow-segment: none;
         }
+        body[data-acm-theme="hc-light"] {
+            color-scheme: light;
+        }
 
         @media (prefers-color-scheme: light) {
-            body[data-acm-surface="app-sidecar"]:not([data-acm-theme="dark"]):not([data-acm-theme="hc"]):not(.vscode-dark) {
+            body[data-acm-surface="app-sidecar"]:not([data-acm-theme="dark"]):not([data-acm-theme="hc"]):not([data-acm-theme="hc-light"]):not(.vscode-dark) {
                 --ed-bg: var(--background, #FAFBFC);
                 --ed-surface: var(--card, #FFFFFF);
                 --ed-ink: var(--foreground, #111318);
@@ -191,6 +195,7 @@ export function getThemeAdapterStyles(): string {
         @media (min-width: 900px) {
             body[data-acm-view="sidebar"] #monitor-content,
             body[data-acm-view="sidebar"] .topbar-title,
+            body[data-acm-view="sidebar"] .masthead-context-bar,
             body[data-acm-view="sidebar"] .tab-bar-wrapper {
                 max-width: var(--ed-column);
                 margin-inline: auto;

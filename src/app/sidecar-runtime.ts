@@ -138,6 +138,11 @@ import {
     type TrajectorySummary,
 } from '../tracker';
 import { analyzeTurnDiagnostics, type TurnDiagnosticsSummary } from '../turn-diagnostics';
+import {
+    buildMonitorDocumentHtml,
+    buildMonitorTabsPayload,
+    type MonitorTabId,
+} from '../webview-document';
 import { esc, formatFileSize } from '../webview-helpers';
 import type { PanelHintPreferences, StorageDiagnostics } from '../webview-settings-tab';
 import { DEFAULT_SIDECAR_VERSION, type SidecarActionHttpBody } from './sidecar-server';
@@ -246,7 +251,8 @@ export interface SidecarDocumentParams extends MonitorDocumentV1175Extras {
     paused: boolean;
     backendStatus: MonitorStatus;
     monitorStatus: MonitorStatus;
-    initialTab?: string;
+    initialTab?: MonitorTabId;
+    now: number;
     imagesBaseUri: string;
     extras: MonitorDocumentV1175Extras;
 }
@@ -660,30 +666,7 @@ function defaultRevealInOs(targetPath: string, isDirectory: boolean): Promise<vo
     });
 }
 
-// ─── Dynamic `../webview-document` Loader ────────────────────────────────────
-
-interface WebviewDocumentModule {
-    buildMonitorDocumentHtml?: (params: SidecarDocumentParams) => string;
-    buildMonitorTabsPayload?: (params: SidecarDocumentParams) => Record<string, string | boolean>;
-}
-
-function tryLoadWebviewDocumentModule(): WebviewDocumentModule | null {
-    try {
-        // Dynamic specifier prevents compile-time failure when webview-document.ts
-        // is built in a parallel branch before merge.
-        const moduleId = '../webview-document';
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const mod = require(moduleId) as WebviewDocumentModule;
-        if (mod && typeof mod.buildMonitorDocumentHtml === 'function') {
-            return mod;
-        }
-    } catch {
-        // Cleanly fall back to built-in renderer when module is absent
-    }
-    return null;
-}
-
-// ─── Clean Rich Fallback Renderer (Standalone / Pre-Merge Safety) ────────────
+// ─── Clean Rich Fallback Renderer (Explicit Diagnostics / Unit Tests) ────────
 
 function formatCompactNum(n: number): string {
     if (!Number.isFinite(n) || n <= 0) { return '0'; }
@@ -2201,6 +2184,7 @@ export function createSidecarRuntimeProvider(
             paused: isPaused,
             backendStatus: monitorStatus,
             monitorStatus,
+            now: nowMs,
             imagesBaseUri: '/assets/images',
             extras,
         };
@@ -2210,33 +2194,25 @@ export function createSidecarRuntimeProvider(
         if (options.renderDocument) {
             return options.renderDocument(params);
         }
-        const docMod = tryLoadWebviewDocumentModule();
-        if (docMod?.buildMonitorDocumentHtml) {
-            return docMod.buildMonitorDocumentHtml(params);
-        }
-        return renderFallbackDocumentHtml(params);
+        return buildMonitorDocumentHtml(params);
     }
 
     function renderTabsPayload(params: SidecarDocumentParams): Record<string, string | boolean> {
         if (options.renderTabs) {
             return options.renderTabs(params);
         }
-        const docMod = tryLoadWebviewDocumentModule();
-        if (docMod?.buildMonitorTabsPayload) {
-            return docMod.buildMonitorTabsPayload(params);
-        }
-        return buildFallbackTabsPayload(params);
+        return buildMonitorTabsPayload(params);
     }
 
-    function buildQuotaSummaryLines(): ContextQuotaSummaryLine[] {
+    function buildQuotaSummaryLines(lang: Language = getLanguage()): ContextQuotaSummaryLine[] {
         if (isCustomModelActive) { return []; }
         const nowMs = deps.now();
         return groupModelConfigsByQuotaPool(cachedModelConfigs).map(pool => {
             const rw = quotaRunways[pool.key];
             const runwayLabel = rw?.status === 'safe_until_reset'
-                ? t('quota.safeBeforeReset')
+                ? t('quota.safeBeforeReset', lang)
                 : rw?.status === 'at_risk' && rw.estExhaustMs !== null
-                    ? `${t('quota.exhaustsIn')} ${Math.max(1, Math.round(rw.estExhaustMs / 60_000))}m`
+                    ? `${t('quota.exhaustsIn', lang)} ${Math.max(1, Math.round(rw.estExhaustMs / 60_000))}m`
                     : undefined;
             return {
                 poolName: pool.labels.slice(0, 2).join(', ') || pool.key,
@@ -2261,7 +2237,7 @@ export function createSidecarRuntimeProvider(
             branchName: currentUsage?.branchName || lastResolution.target?.branchName || undefined,
             cacheHitPct: turnDiagnostics?.lastTurnCacheHitPct ?? turnDiagnostics?.sessionCacheHitPct ?? null,
             turnStartKind: turnDiagnostics?.lastTurnStartKind ?? 'unknown',
-            quotaSummary: buildQuotaSummaryLines(),
+            quotaSummary: buildQuotaSummaryLines(lang),
         }, lang);
     }
 
@@ -2547,11 +2523,23 @@ export function createSidecarRuntimeProvider(
         applyContextFromRequest(ctx.conversationId, ctx.workspaceUris);
         if (pollCount === 0 && options.autoStart !== false) {
             await runPollCycle(false);
-        } else if (allTrajectories.length > 0) {
-            recomputeConversationResolution();
         }
-        const params = buildDocumentParams(ctx.viewMode);
-        return renderDocumentHtml(params);
+        const prevLang = getLanguage();
+        const langOverride = ctx.lang && isLanguage(ctx.lang) ? ctx.lang : undefined;
+        if (langOverride && langOverride !== prevLang) {
+            setLanguageInMemory(langOverride);
+        }
+        try {
+            if (allTrajectories.length > 0) {
+                recomputeConversationResolution();
+            }
+            const params = buildDocumentParams(ctx.viewMode, langOverride);
+            return renderDocumentHtml(params);
+        } finally {
+            if (langOverride && langOverride !== prevLang) {
+                setLanguageInMemory(prevLang);
+            }
+        }
     }
 
     async function getSnapshot(
@@ -2594,6 +2582,9 @@ export function createSidecarRuntimeProvider(
             case 'ping':
                 return { ok: true, result: { pong: true, version } };
 
+            case 'tabShown':
+                return { ok: true };
+
             case 'refresh': {
                 await runPollCycle(true);
                 return {
@@ -2603,6 +2594,7 @@ export function createSidecarRuntimeProvider(
                 };
             }
 
+            case 'panelReady':
             case 'getSnapshot':
                 return {
                     ok: true,
@@ -2696,6 +2688,7 @@ export function createSidecarRuntimeProvider(
                         lockedMainId: resolved.lockedMainId,
                         activeConversationId: resolved.cascadeId,
                     },
+                    messages: [{ command: 'syncSettingsControls', lockToMainAgent }],
                     snapshot: buildSnapshotPayload(viewMode),
                 };
             }

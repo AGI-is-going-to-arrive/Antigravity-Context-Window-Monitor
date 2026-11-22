@@ -156,9 +156,9 @@ export function runInstaller(options = {}) {
 
         if (needsRuntimeCopy) {
             const runtimeDir = join(targetDir, 'sidecars', 'context_monitor', 'runtime');
-            copyDirectoryRealFiles(outSrc, join(runtimeDir, 'out'), (_p, name) => !name.endsWith('.map'));
+            copyDirectoryRealFiles(outSrc, join(runtimeDir, 'out'), (_p, name, st) => st.isDirectory() || (name.endsWith('.js') && !name.endsWith('.map')));
             if (existsSync(imagesSrc)) {
-                copyDirectoryRealFiles(imagesSrc, join(runtimeDir, 'src', 'images'), (_p, name, st) => st.isDirectory() || name.endsWith('.png'));
+                copyDirectoryRealFiles(imagesSrc, join(runtimeDir, 'src', 'images'), (_p, name, st) => st.isDirectory() || /^[a-z0-9-]+\.png$/.test(name));
             }
             const runtimePkg = {
                 name: 'antigravity-context-monitor-app-runtime',

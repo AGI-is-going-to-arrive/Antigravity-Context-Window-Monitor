@@ -17,6 +17,8 @@ export interface SidecarRenderContext {
     conversationId?: string;
     /** Active workspace folder URIs if known at render time. */
     workspaceUris?: string[];
+    /** Optional per-request display language override (without mutating persisted state). */
+    lang?: 'zh' | 'en' | 'both';
     /** True when running inside Antigravity App's Sidecar SDK environment. */
     isSidecarEnv: boolean;
     /** Plugin/extension semantic version string. */

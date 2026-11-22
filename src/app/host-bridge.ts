@@ -302,10 +302,12 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     if (currentConversationId) { qs.set('conversationId', currentConversationId); }
     if (currentWorkspaceUris.length > 0) { qs.set('workspaceUris', JSON.stringify(currentWorkspaceUris)); }
     if (!forceFull && lastEtag) { qs.set('etag', lastEtag); }
+    var urlLang = urlParams.get('lang');
+    if (urlLang === 'en' || urlLang === 'zh' || urlLang === 'both') {
+      qs.set('lang', urlLang);
+    }
     qs.set('viewMode', view);
     qs.set('view', view);
-    if (pinnedConversationId) { qs.set('pinnedConversationId', pinnedConversationId); }
-    if (lockToMainAgent) { qs.set('lockToMainAgent', 'true'); }
     return '/api/snapshot?' + qs.toString();
   }
 
@@ -445,6 +447,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
         }
         var copyPromise = textToCopy !== null
           ? copyText(textToCopy).then(function(copyOk) {
+              try { data._copiedByBridge = true; } catch (_) { /* ignore */ }
               dispatchWebviewMessage({
                 command: 'copyTextResult',
                 ok: copyOk,
@@ -475,6 +478,14 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
             notifySnapshot(data.snapshot, data.hash || '');
           }
           if (data.reload) {
+            if (msg.command === 'switchLanguage' && urlParams.has('lang')) {
+              try {
+                var nextUrl = new URL(window.location.href);
+                nextUrl.searchParams.delete('lang');
+                window.location.replace(nextUrl.toString());
+                return data;
+              } catch (_) { /* fall through to reload */ }
+            }
             window.location.reload();
           }
           return data;

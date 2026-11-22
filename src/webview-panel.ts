@@ -36,7 +36,11 @@ import {
     formatHandoffPrompt,
     parseContextBreakdown,
     type ContextBreakdownSnapshot,
+    type ContextQuotaSummaryLine,
 } from './context-breakdown';
+import { selectMonitorQuotaGroups } from './monitor-overview';
+import { formatResetCountdown } from './reset-time';
+import { t } from './i18n-core';
 import type { TurnDiagnosticsSummary } from './turn-diagnostics';
 import type { QuotaRunwayEstimate } from './quota-runway';
 import type { ConversationOption } from './conversation-selector';
@@ -148,6 +152,7 @@ let lastActiveConversationId: string | null = null;
 let lastPinnedConversationId: string | null = null;
 let lastLockToMainAgent = false;
 export const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
+const SAFE_CASCADE_ID_RE = /^[a-zA-Z0-9_-]{4,128}$/;
 
 /** Provide a durable state bucket for panel-level persistence (zoom, etc.). */
 export function setPanelDurableState(state: StateBucket): void {
@@ -383,6 +388,31 @@ function buildFallbackSnapshotForReport(): ContextBreakdownSnapshot {
     });
 }
 
+function buildIdeQuotaSummaryLines(): ContextQuotaSummaryLine[] {
+    if (lastIsCustomModelActive || lastConfigs.length === 0) {
+        return [];
+    }
+    const lang = getLanguage();
+    const groups = selectMonitorQuotaGroups(lastConfigs, lastUsage?.model, lastQuotaSummary);
+    return groups.map(group => {
+        const pct = group.minimum !== null ? Math.round(group.minimum * 100) : 0;
+        const rw = lastQuotaRunways
+            ? ((group.pool && lastQuotaRunways[group.pool]) || lastQuotaRunways[group.key])
+            : undefined;
+        const runwayLabel = rw?.status === 'safe_until_reset'
+            ? t('quota.safeBeforeReset', lang)
+            : rw?.status === 'at_risk' && rw.estExhaustMs !== null
+                ? `${t('quota.exhaustsIn', lang)} ${Math.max(1, Math.round(rw.estExhaustMs / 60_000))}m`
+                : undefined;
+        return {
+            poolName: group.label,
+            remainingPct: pct,
+            resetCountdown: group.resetTime ? formatResetCountdown(group.resetTime) : undefined,
+            runwayLabel,
+        };
+    });
+}
+
 function cachePayload(p: PanelPayload): void {
     lastUsage = p.currentUsage;
     lastMonitorStatus = p.monitorStatus;
@@ -476,15 +506,19 @@ export function showMonitorPanel(p: PanelPayload): void {
             isPaused = !isPaused;
             safePostMessage({ command: 'setPaused', paused: isPaused });
             if (!isPaused) { postCurrentTabs(); }
-        } else if (msg.command === 'selectConversation') {
-            const targetId = typeof msg.conversationId === 'string' && msg.conversationId.trim()
-                ? msg.conversationId.trim()
+        } else if (msg.command === 'selectConversation' || msg.command === 'pinConversation') {
+            const rawTarget = msg.conversationId !== undefined ? msg.conversationId : msg.cascadeId;
+            const targetId = typeof rawTarget === 'string' && rawTarget.trim() && rawTarget !== 'auto' && rawTarget !== '__auto__'
+                ? rawTarget.trim()
                 : null;
             lastPinnedConversationId = targetId;
             selectPinnedConversation(targetId);
             vscode.commands.executeCommand('antigravity-context-monitor.refresh');
-        } else if (msg.command === 'toggleLockMain') {
-            const nextLocked = setLockToMainAgent(typeof msg.locked === 'boolean' ? msg.locked : undefined);
+        } else if (msg.command === 'toggleLockMain' || msg.command === 'setLockToMainAgent') {
+            const explicitLocked = typeof msg.locked === 'boolean'
+                ? msg.locked
+                : (typeof msg.value === 'boolean' ? msg.value : undefined);
+            const nextLocked = setLockToMainAgent(explicitLocked);
             lastLockToMainAgent = nextLocked;
             safePostMessage({ command: 'syncSettingsControls', lockToMainAgent: nextLocked });
             vscode.commands.executeCommand('antigravity-context-monitor.refresh');
@@ -497,11 +531,19 @@ export function showMonitorPanel(p: PanelPayload): void {
                 branchName: lastUsage?.branchName || undefined,
                 cacheHitPct: lastTurnDiagnostics?.lastTurnCacheHitPct ?? lastTurnDiagnostics?.sessionCacheHitPct ?? null,
                 turnStartKind: lastTurnDiagnostics?.lastTurnStartKind,
+                quotaSummary: buildIdeQuotaSummaryLines(),
             }, getLanguage());
             await vscode.env.clipboard.writeText(text);
             safePostMessage({ command: 'copyActionResult', action: 'copyContextReport', ok: true });
         } else if (msg.command === 'copyHandoffPrompt') {
             const snapshot = buildFallbackSnapshotForReport();
+            const activeTools = lastGMSummary?.toolCallCounts
+                ? Object.entries(lastGMSummary.toolCallCounts)
+                    .filter(([, count]) => count > 0)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 6)
+                    .map(([name]) => name)
+                : [];
             const text = formatHandoffPrompt({
                 snapshot,
                 title: lastUsage?.title,
@@ -509,6 +551,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                 branchName: lastUsage?.branchName || undefined,
                 model: lastUsage?.model,
                 modelDisplayName: lastUsage?.modelDisplayName,
+                activeTools,
             }, getLanguage());
             await vscode.env.clipboard.writeText(text);
             safePostMessage({ command: 'copyActionResult', action: 'copyHandoffPrompt', ok: true });
@@ -597,8 +640,8 @@ export function showMonitorPanel(p: PanelPayload): void {
         } else if (msg.command === 'historyAction' && msg.action) {
             if (msg.action === 'workspace') {
                 await revealUriOrParent(workspaceTargetFromUri(msg.uri || ''));
-            } else if ((msg.action === 'record' || msg.action === 'pb') && msg.cascadeId) {
-                await revealUriOrParent(getConversationTarget(msg.cascadeId, msg.action));
+            } else if ((msg.action === 'record' || msg.action === 'pb') && msg.cascadeId && SAFE_CASCADE_ID_RE.test(msg.cascadeId.trim())) {
+                await revealUriOrParent(getConversationTarget(msg.cascadeId.trim(), msg.action));
             }
         } else if (msg.command === 'setPanelPref' && msg.key && ['panelShowTabScrollHint', 'panelShowScrollbar', 'panelShowEndOfContent'].includes(msg.key)) {
             if (panelDurableState) {
@@ -611,9 +654,10 @@ export function showMonitorPanel(p: PanelPayload): void {
             if (panelDurableState) {
                 panelDurableState.update('panelZoomLevel', zoom);
             }
-        } else if (msg.command === 'savePricing' && lastPricingStore) {
-            const data = msg.value as Record<string, ModelPricing>;
-            if (data && typeof data === 'object') {
+        } else if ((msg.command === 'savePricing' || msg.command === 'saveCustomPricing') && lastPricingStore) {
+            const rawRec = msg as Record<string, unknown>;
+            const data = (rawRec.overrides ?? rawRec.value) as Record<string, ModelPricing>;
+            if (data && typeof data === 'object' && !Array.isArray(data)) {
                 lastPricingStore.setAll(data).then(() => {
                     lastCustomPricing = lastPricingStore!.getCustom();
                     refreshLocalStorageDiagnostics();
@@ -624,7 +668,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                     }
                 });
             }
-        } else if (msg.command === 'resetPricing' && lastPricingStore) {
+        } else if ((msg.command === 'resetPricing' || msg.command === 'resetCustomPricing') && lastPricingStore) {
             lastPricingStore.reset().then(() => {
                 lastCustomPricing = lastPricingStore!.getCustom();
                 refreshLocalStorageDiagnostics();
@@ -646,7 +690,7 @@ export function showMonitorPanel(p: PanelPayload): void {
             if (panel) {
                 panel.webview.html = buildHtml(lastUsage, lastAllUsages, lastConfigs, lastUserInfo, isPaused);
             }
-        } else if (msg.command === 'removeAccount' && typeof (msg as Record<string, unknown>).email === 'string') {
+        } else if ((msg.command === 'removeAccount' || msg.command === 'removeAccountSnapshot') && typeof (msg as Record<string, unknown>).email === 'string') {
             const email = (msg as Record<string, unknown>).email as string;
             const updated = removeAccountSnapshot(email);
             lastAccountSnapshots = updated;
@@ -712,6 +756,7 @@ function postSettingsControlSync(): void {
         showSpeed: cfg.get<boolean>('statusBar.showSpeed', false),
         showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', false),
         showSessionCost: cfg.get<boolean>('statusBar.showSessionCost', false),
+        showModelInternalId: cfg.get<boolean>('showModelInternalId', false),
         lockToMainAgent: lastLockToMainAgent || getLockToMainAgent(),
         tooltipDensity: parseTooltipDensity(cfg.get('statusBar.tooltipDensity', 'auto')),
     });

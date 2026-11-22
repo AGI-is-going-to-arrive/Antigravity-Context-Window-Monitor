@@ -113,16 +113,18 @@ export function sortModels(configs: ModelConfig[], sortOrder: string[]): ModelCo
 // ─── Section Builders ────────────────────────────────────────────────────────
 
 function buildAccountSection(userInfo: UserStatusInfo): string {
-    const maskedName = userInfo.name ? `${userInfo.name.charAt(0)}***` : '***';
-    const maskedEmail = userInfo.email.replace(/^(.{2}).*(@.*)$/, '$1****$2');
+    const name = userInfo.name || '';
+    const email = userInfo.email || '';
+    const maskedName = name ? `${name.charAt(0)}***` : '***';
+    const maskedEmail = email ? email.replace(/^(.{2}).*(@.*)$/, '$1****$2') : '***';
     const plan = [...new Set([userInfo.planName, userInfo.userTierName].filter(Boolean))].join(' · ');
     return `
         <header class="profile-identity">
             <div>
                 <h2>${tBiHtml('Account', '账户')}</h2>
                 <div class="account-info">
-                    <span class="account-name" data-real="${esc(userInfo.name)}" data-masked="${esc(maskedName)}">${esc(maskedName)}</span>
-                    <span class="account-email" data-real="${esc(userInfo.email)}" data-masked="${esc(maskedEmail)}">${esc(maskedEmail)}</span>
+                    <span class="account-name" data-real="${esc(name)}" data-masked="${esc(maskedName)}">${esc(maskedName)}</span>
+                    <span class="account-email" data-real="${esc(email)}" data-masked="${esc(maskedEmail)}">${esc(maskedEmail)}</span>
                 </div>
                 ${plan ? `<p class="profile-plan-name">${esc(plan)}</p>` : ''}
             </div>
@@ -319,15 +321,22 @@ export function buildDefaultModelCard(userInfo: UserStatusInfo | null): string {
 }
 
 function buildLimitsSection(userInfo: UserStatusInfo): string {
-    const fmtLimit = (v: number): string => v === -1 ? '∞' : formatNumber(v);
     const pl = userInfo.planLimits;
+    if (!pl) { return ''; }
+    const fmtLimit = (v: unknown): string => {
+        if (typeof v !== 'number' || !Number.isFinite(v)) { return '—'; }
+        return v === -1 ? '∞' : formatNumber(v);
+    };
+    const flexAmount = typeof pl.monthlyFlexCreditPurchaseAmount === 'number' && Number.isFinite(pl.monthlyFlexCreditPurchaseAmount)
+        ? `${esc(formatNumber(pl.monthlyFlexCreditPurchaseAmount))} ${tBiHtml('per month', '每月')}`
+        : '—';
     const limitCards: Array<[string, string]> = [
         [tBiHtml('Max Input Tokens', '最大输入'), esc(fmtLimit(pl.maxNumChatInputTokens))],
         [tBiHtml('Premium Messages', '高级消息数'), esc(fmtLimit(pl.maxNumPremiumChatMessages))],
         [tBiHtml('Custom Instructions', '自定义指令'), `${esc(fmtLimit(pl.maxCustomChatInstructionCharacters))} ${tBiHtml('chars', '字符')}`],
         [tBiHtml('Pinned Context', '固定上下文'), esc(fmtLimit(pl.maxNumPinnedContextItems))],
         [tBiHtml('Local Index', '本地索引'), esc(fmtLimit(pl.maxLocalIndexSize))],
-        [tBiHtml('Flex Credits', 'Flex 积分'), `${esc(formatNumber(pl.monthlyFlexCreditPurchaseAmount))} ${tBiHtml('per month', '每月')}`],
+        [tBiHtml('Flex Credits', 'Flex 积分'), flexAmount],
     ];
     const limitCardsHtml = limitCards.map(([k, v]) => `
         <div class="profile-metric-card">
@@ -345,18 +354,18 @@ function buildLimitsSection(userInfo: UserStatusInfo): string {
 function buildFeatureAndTeamGrid(userInfo: UserStatusInfo): string {
     // Feature flags
     const allFeatures: { label: string; enabled: boolean }[] = [
-        { label: tBiHtml('Web Search', '网页搜索'), enabled: userInfo.cascadeWebSearchEnabled },
-        { label: tBiHtml('Browser', '浏览器'), enabled: userInfo.browserEnabled },
-        { label: tBiHtml('Knowledge Base', '知识库'), enabled: userInfo.knowledgeBaseEnabled },
-        { label: tBiHtml('Commit Msg', '提交信息'), enabled: userInfo.canGenerateCommitMessages },
-        { label: tBiHtml('Auto Run', '自动执行'), enabled: userInfo.cascadeCanAutoRunCommands },
-        { label: tBiHtml('Background', '后台'), enabled: userInfo.canAllowCascadeInBackground },
-        { label: tBiHtml('Buy Credits', '购买积分'), enabled: userInfo.canBuyMoreCredits },
-        { label: tBiHtml('Fast Autocomplete', '快速补全'), enabled: userInfo.hasAutocompleteFastMode },
-        { label: tBiHtml('Sticky Premium', '锁定高级'), enabled: userInfo.allowStickyPremiumModels },
-        { label: tBiHtml('Command Models', '命令模型'), enabled: userInfo.allowPremiumCommandModels },
-        { label: tBiHtml('Tab Jump', 'Tab 跳转'), enabled: userInfo.hasTabToJump },
-        { label: tBiHtml('Custom Icon', '自定义图标'), enabled: userInfo.canCustomizeAppIcon },
+        { label: tBiHtml('Web Search', '网页搜索'), enabled: !!userInfo.cascadeWebSearchEnabled },
+        { label: tBiHtml('Browser', '浏览器'), enabled: !!userInfo.browserEnabled },
+        { label: tBiHtml('Knowledge Base', '知识库'), enabled: !!userInfo.knowledgeBaseEnabled },
+        { label: tBiHtml('Commit Msg', '提交信息'), enabled: !!userInfo.canGenerateCommitMessages },
+        { label: tBiHtml('Auto Run', '自动执行'), enabled: !!userInfo.cascadeCanAutoRunCommands },
+        { label: tBiHtml('Background', '后台'), enabled: !!userInfo.canAllowCascadeInBackground },
+        { label: tBiHtml('Buy Credits', '购买积分'), enabled: !!userInfo.canBuyMoreCredits },
+        { label: tBiHtml('Fast Autocomplete', '快速补全'), enabled: !!userInfo.hasAutocompleteFastMode },
+        { label: tBiHtml('Sticky Premium', '锁定高级'), enabled: !!userInfo.allowStickyPremiumModels },
+        { label: tBiHtml('Command Models', '命令模型'), enabled: !!userInfo.allowPremiumCommandModels },
+        { label: tBiHtml('Tab Jump', 'Tab 跳转'), enabled: !!userInfo.hasTabToJump },
+        { label: tBiHtml('Custom Icon', '自定义图标'), enabled: !!userInfo.canCustomizeAppIcon },
     ];
     const featureTags = allFeatures.map(f =>
         `<span class="feature-tag${f.enabled ? ' enabled' : ''}"><span>${f.label}</span></span>`
@@ -365,9 +374,9 @@ function buildFeatureAndTeamGrid(userInfo: UserStatusInfo): string {
     // Team config
     const tc = userInfo.teamConfig;
     const teamTags = [
-        { label: tBiHtml('MCP Servers', 'MCP 服务'), enabled: tc.allowMcpServers },
-        { label: tBiHtml('Auto Run Cmd', '自动执行命令'), enabled: tc.allowAutoRunCommands },
-        { label: tBiHtml('Browser Experimental', '浏览器实验'), enabled: tc.allowBrowserExperimentalFeatures },
+        { label: tBiHtml('MCP Servers', 'MCP 服务'), enabled: !!tc?.allowMcpServers },
+        { label: tBiHtml('Auto Run Cmd', '自动执行命令'), enabled: !!tc?.allowAutoRunCommands },
+        { label: tBiHtml('Browser Experimental', '浏览器实验'), enabled: !!tc?.allowBrowserExperimentalFeatures },
     ].map(f => `<span class="feature-tag${f.enabled ? ' enabled' : ''}"><span>${f.label}</span></span>`).join('');
 
     return `
