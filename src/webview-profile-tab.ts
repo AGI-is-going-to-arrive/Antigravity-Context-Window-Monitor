@@ -128,7 +128,7 @@ function buildAccountSection(userInfo: UserStatusInfo): string {
                 </div>
                 ${plan ? `<p class="profile-plan-name">${esc(plan)}</p>` : ''}
             </div>
-            <button type="button" class="privacy-btn active" id="privacyToggle" aria-label="${esc(tBi('Toggle privacy mask', '切换隐私遮罩'))}" aria-pressed="true">
+            <button type="button" class="privacy-btn active" id="privacyToggle" aria-pressed="true">
                 ${ICON.shield}<span>${tBiHtml('Privacy mask', '隐私遮罩')}</span>
             </button>
         </header>`;

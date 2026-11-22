@@ -4420,7 +4420,7 @@ function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): stri
 
     const copyIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="14" height="14"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
     const copyBtnHtml = clipboardParts.length > 0
-        ? `<button type="button" class="gm-ue-copy-btn" id="copyAllErrors" aria-label="${esc(tBi('Copy all errors', '\u590d\u5236\u5168\u90e8\u9519\u8bef'))}"><span class="gm-ue-tooltip">${tBiHtml('Copy all errors', '\u590d\u5236\u5168\u90e8\u9519\u8bef')}</span>${copyIcon}</button>`
+        ? `<button type="button" class="gm-ue-copy-btn" id="copyAllErrors" aria-label="${esc(tBi('Copy all errors', '\u590d\u5236\u5168\u90e8\u9519\u8bef'))}"><span class="gm-ue-tooltip" aria-hidden="true">${tBiHtml('Copy all errors', '\u590d\u5236\u5168\u90e8\u9519\u8bef')}</span>${copyIcon}</button>`
         : '';
 
     return `<h2 class="act-section-title"><svg class="act-icon act-icon-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span>${tBiHtml('Error Details', '\u9519\u8bef\u8be6\u60c5')}</span>${convDeltaBadge}${copyBtnHtml}</h2>

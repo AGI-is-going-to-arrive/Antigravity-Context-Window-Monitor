@@ -1135,4 +1135,30 @@ describe('app sidecar runtime engine', () => {
         const escapeRes = await httpRequest(handle.url, 'GET', '/assets/images/escape-icon.png');
         expect(escapeRes.status).toBe(404);
     });
+
+    it('emits WCAG-compliant <title> in <head> and accessible #privacyToggle across en, zh, and both', async () => {
+        const tmpDir = makeTempDir();
+        const provider = createSidecarRuntimeProvider({
+            statePath: path.join(tmpDir, 'state-v1.json'),
+            autoStart: false,
+            deps: createMockDeps(),
+        });
+        providers.push(provider);
+        await provider.pollNow(true);
+
+        for (const lang of ['en', 'zh', 'both'] as const) {
+            const html = await provider.renderHtml({
+                viewMode: 'sidebar',
+                pathname: '/full',
+                lang,
+                isSidecarEnv: true,
+                version: '1.17.5',
+            });
+            expect(html).toMatch(/<head>[\s\S]*?<title>[^<]+<\/title>[\s\S]*?<\/head>/);
+            const privacyMatch = html.match(/<button[^>]*id="privacyToggle"[^>]*>/);
+            expect(privacyMatch).not.toBeNull();
+            expect(privacyMatch![0]).toContain('aria-pressed="true"');
+            expect(privacyMatch![0]).not.toContain('aria-label=');
+        }
+    });
 });
