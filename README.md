@@ -1,86 +1,109 @@
 # Antigravity Context Window Monitor
 
-Monitor conversation context composition, Orchestrator & Executor routing, dual-window model quotas (`5h` + `Weekly`) with burn-rate runway, generation speed (`tok/s`), TTFT & turn-level prompt cache diagnostics, API-equivalent costs (USD), reset times, and AI credits across **Antigravity App (Desktop 2.0+ Native Sidecar Plugin)** and **Antigravity IDE (VSIX Extension)**.
+Monitor conversation context composition, dual context watermarks (`Compaction` + `200k` tier), Orchestrator & Executor routing with base-mapped pricing & role attribution, dual-window model quotas (`5h` + `Weekly`) with burn-rate runway, generation speed (`tok/s`), TTFT & turn-level prompt cache diagnostics, 52-week multi-source activity heatmaps (`App` / `IDE` / `CLI`), multi-currency API-equivalent costs & optional Subscription ROI, reset times, and AI credits across **Antigravity App (Desktop 2.0+ Native Sidecar Plugin)** and **Antigravity IDE (VSIX Extension)**.
 
-**1.17.5** introduces full native **Antigravity App (2.0+ Sidecar Plugin)** support (`AUX_PANE` + `SIDEBAR` + companion `SKILL.md` with zero external runtime dependencies, zero LLM tool-schema tokens, and zero `app.asar`/CDP patching), adds the **Context Composition Breakdown** (Bar ↔ 20×5 Dot Matrix, Dual-Cap budget vs native ceiling, Top 5 Largest Items, and one-click `/context` & Handoff copy), **Header Conversation Switcher & Lock to Main Agent**, **Turn-Level Cache Diagnostics** (`Cold`/`Partial`/`Warm` Start + `+Δ` net growth), **Quota Burn-Rate Runway** with **Stale-Safe Cached Fallback** & **`custom-*` Model Isolation**, and **concurrent App + IDE atomic lockfile persistence**.
+**1.17.6** introduces **One-Sentence AI Agent Install & Upgrade (`AGENTS.md`)**, an **In-App Auto / Manual Update Checker & Fail-Closed One-Click Self-Updater**, a **Native Sidecar Ambient HUD** plus **Strictly Opt-In CDP Ambient Overlays** (zero `app.asar`/binary patching, Shadow DOM, zero `innerHTML`, 256-bit loopback auth), a **52-Week Activity Heatmap Calendar & Multi-Source Telemetry Dashboard** (live Today merge, additive tokens, 400-day retention, read-only CLI scanner, multi-currency + Subscription ROI, CSV/JSON export, 2-step Clear History guard), **Orchestrator Base-Mapped Pricing & Full-Stack Role Attribution**, and **App ↔ IDE Bidirectional Hot Sync & Cross-Platform Hardening**.
 
-[中文文档](readme_CN.md) · [1.17.5 release notes and validation](docs/releases/1.17.5.md) · [Technical guide](docs/technical_implementation.md) · [Project structure](docs/project_structure.md) · [Changelog](CHANGELOG.md)
+[中文文档](readme_CN.md) · [AI Agent Install (`AGENTS.md`)](AGENTS.md) · [1.17.6 release notes and validation](docs/releases/1.17.6.md) · [Technical guide](docs/technical_implementation.md) · [Project structure](docs/project_structure.md) · [Changelog](CHANGELOG.md)
 
-## Highlights in 1.17.5
+## For AI Agents — One-Sentence Install / Upgrade (`AGENTS.md`)
 
-- **Native Antigravity App (2.0+ Sidecar Plugin):** Runs natively inside Antigravity Desktop 2.0+ with dual view entrypoints — compact side panel (`AUX_PANE` at `/`) and full-width dashboard (`SIDEBAR` at `/full`) — plus a companion `context-monitor` `SKILL.md` that opens the monitor via `sidecar://antigravity-context-monitor/context_monitor/`. Executes directly on Antigravity App's bundled Node runtime (`v24.22.0`) with **zero external npm runtime dependencies**, **zero LLM tool-schema token overhead**, and **zero `app.asar` patching or CDP hacks**. Features automatic Light / Dark / High-Contrast (`hc` & `hc-light`) host theme bridging (`src/app/theme-adapter.ts`), visibility-gated ETag live polling (`/api/snapshot`), and a shared pure zero-`vscode` document builder (`src/webview-document.ts`) delivering full 9-tab feature parity with Antigravity IDE.
-- **Context Composition Breakdown & Dual-Cap Clarity:** Breaks down active conversation context across semantic categories (`system`, `rules/skills`, `plugins/MCP`, `subagents`, `user`, `assistant/thinking`, `tools`, `media/files`, `other`) with an interactive **Bar View ↔ 20×5 (100-cell) Dot Matrix** toggle, cross-highlighting category legend, **Dual-Cap** readout comparing effective autocompact budget against the native model ceiling, honest measurement badges (**Measured**, **Estimated (Post-Compaction)**, **Estimated (Rewind)**, **Awaiting Generation**), compaction saved-token chips, collapsible **Top 5 Largest Items**, and one-click **Copy `/context` Report** & **Copy Handoff Prompt** quick actions.
-- **Header Conversation Switcher & Lock to Main Agent:** Adds a compact Masthead Context Bar across both App and IDE surfaces to stay on **Follow Active** or pin any conversation, toggle **Lock to Main Agent** (preventing background subagent bursts from hijacking the active context readout), and inspect surface (`Antigravity App` / `Antigravity IDE`) and stale-cache status at a glance.
-- **Turn-Level Prompt Cache Diagnostics (`GM Data`):** Compares **Last-Turn** vs token-weighted **Session Cache Hit** rates, classifies turns as **Cold Start (`<10%`)**, **Partial Start (`10%–<70%`)**, or **Warm Start (`≥70%`)**, and surfaces per-turn **`+Δ` net context growth** alongside compaction/rewind drop indicators in the Recent Calls Ledger.
-- **Quota Burn-Rate Runway, Stale-Safe Fallback & `custom-*` Model Isolation:** Computes rolling 45-minute jitter-filtered quota burn rates (`Safe before reset`, `Est. exhaust in ...`, `Quota exhausted`, `Quota recently recovered`) per pool; retains last-known telemetry with an explicit **Cached / Stale** banner and timestamp during transient local RPC interruptions; and automatically isolates `custom-*` / BYOK / local models so irrelevant Google quota pool alerts are suppressed.
-- **Concurrent App + IDE Persistence, Discovery & Accessibility Hardening:** Protects shared `state-v1.json` persistence (`DurableState`) with a cross-platform atomic `O_CREAT | O_EXCL` lockfile (stale-lock recovery, 3-way object/account-snapshot merge, and Windows NTFS `EPERM`/`EACCES`/`EBUSY` contention retry) so Antigravity App and Antigravity IDE can run simultaneously without data loss. Unifies App + IDE backend discovery (`ANTIGRAVITY_LS_ADDRESS`, surface-classified `daemon/hub_<port>.json`, Linux `/proc/<pid>` fallback, macOS/Windows/WSL hardening), decouples pure `i18n-core.ts`, and passes **WCAG 2.1 AA with 0 violations** across all 432 App Sidecar matrix combinations and 739 IDE UI checks.
-- **Full v1.17.4 & v1.17.3 feature set retained:** Zero-flicker 3-layer Status Bar hover tooltip, secondary-port TLS-first discovery & strict RFC 3339 epoch-0 pool reset handling, live Custom **Orchestrator Settings**, Dual-Window Quota (`5-Hour` + `Weekly`), verified official USD pricing (Gemini 4 Neon `$3/$15/$0.15`, Claude Sonnet 5.5 `$0.10` cache read, scheduled rate-change banners), and priority-tiered `P0`–`P5` Hover Tooltip.
+Paste this single sentence to any AI coding agent (Antigravity, Claude Code, Codex, etc.) to install or upgrade safely — **zero `app.asar` patching, zero external npm dependencies, automatic SHA-256 verification, and never force-quitting a running Antigravity session**:
+
+> Read `AGENTS.md` in `https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor` and install/upgrade Antigravity Context Monitor for my Antigravity App.
+
+Or run one of the cross-platform zero-dependency one-liners directly from your terminal (add `--version <x.y.z>` to pin a release):
+
+- **macOS / Linux (`curl` + `node`):**
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/scripts/install-app-plugin.mjs -o /tmp/acm-install.mjs && node /tmp/acm-install.mjs --from-github && rm -f /tmp/acm-install.mjs
+  ```
+- **Windows (PowerShell `irm` + `node`):**
+  ```powershell
+  $f = Join-Path $env:TEMP 'acm-install.mjs'; irm 'https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/scripts/install-app-plugin.mjs' -OutFile $f; node $f --from-github; Remove-Item $f -Force
+  ```
+- **Cross-Platform Pure Node One-Liner (macOS / Windows / Linux):**
+  ```bash
+  node -e "const fs=require('fs'),os=require('os'),p=require('path'),cp=require('child_process');fetch('https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/main/scripts/install-app-plugin.mjs').then(r=>{if(!r.ok)throw new Error(r.status);return r.text()}).then(s=>{const f=p.join(os.tmpdir(),'acm-install.mjs');fs.writeFileSync(f,s);try{cp.execFileSync(process.execPath,[f,'--from-github'],{stdio:'inherit'})}finally{fs.rmSync(f,{force:true})}})"
+  ```
+- **From a local clone:** `node scripts/install-app-plugin.mjs --upgrade` (or `./scripts/install-app-plugin.sh --upgrade` / `.\scripts\install-app-plugin.ps1 --upgrade` which auto-discover bundled `agy-node` or Electron `ELECTRON_RUN_AS_NODE=1`) and `node scripts/install-app-plugin.mjs --status --check-remote` to verify version, enabled state, and live sidecar health. See [AGENTS.md](AGENTS.md) for the complete safety contract.
+
+## Highlights in 1.17.6
+
+- **For AI Agents — One-Sentence Install / Upgrade (`AGENTS.md`):** Ships a bilingual [AGENTS.md](AGENTS.md) contract and zero-dependency cross-platform installers (`install-app-plugin.{mjs,sh,ps1}`) supporting `--from-github`, `--upgrade`, `--install` (local-first with automatic GitHub Releases fallback), `--status [--check-remote] [--json]`, `--uninstall`, and `--print-cdp-guide`. All downloads enforce a strict HTTPS GitHub allowlist (including port `443` on every redirect hop), fail-closed `SHA256SUMS.txt` verification, zip-slip / symlink / CRC-32 checks, atomic backup+swap with automatic rollback, and non-clobbering `~/.gemini/config/config.json` registration (`agy plugin enable` when available).
+- **In-App Auto / Manual Update Checker & One-Click Self-Upgrade (`src/app/plugin-updater.ts`):** Checks GitHub Releases via conditional ETag (`If-None-Match` / `304`, throttled every 6 hours when `autoCheckUpdates` is on, or on demand from **Settings** / **About**). In **Antigravity App**, clicking **Upgrade Now** downloads, fail-closed verifies `SHA256SUMS.txt`, safely extracts, and atomically swaps the installed plugin with automatic rollback — then prompts you to toggle the plugin Off → On without ever killing the running host. In **Antigravity IDE**, surfaces the update status alongside a one-click **Open VSX** link.
+- **Native Sidecar Ambient HUD + Strictly Opt-In CDP Overlays (`src/app/cdp-injector.ts`, `src/app/cdp-overlay-assets.ts`):**
+  - **Zero-CDP Native Ambient HUD (on by default in App):** Compact collapsible HUD bar pinned atop the Sidecar panel showing live context pressure, dual watermarks, tightest quota pool, speed / `Short sample` guard, and session cost with zero extra flags.
+  - **Strictly Opt-In CDP Ambient Overlays (both default `OFF`):** Independently toggle **Composer Context Ring** (positioned immediately left of `Turbo` / `Auto` / `Ask` / `Plan` with hover & pin frosted-glass Usage Card — single-column metric rows for TPS, TTFT, Cache Hit, USD + local currency, and bottom quick pill) and **Top-Right Status Bar + Model Quota Board** (tightest quota ring, context ring, speed badge, cumulative tokens, Windows WCO spacer, narrow-window `···` overflow). 100% Antigravity ToS-compliant: **zero `app.asar` or binary patching**, pure-Node RFC 6455 WebSocket client, strict Trusted-Types-safe **Shadow DOM** (zero `innerHTML`/`outerHTML`/`insertAdjacentHTML`/`eval`), loopback-only authenticated `/api/overlay/action` bridge (constant-time 256-bit `X-Monitor-Token` + strict loopback/Hub `Origin`), immediate per-slot unmount when toggled off, and quiet degradation to the Native HUD when CDP is not enabled.
+- **52-Week Activity Heatmap Calendar & Multi-Source Telemetry (`src/cli-usage-scanner.ts`, `src/webview-calendar-tab.ts`, `src/daily-store.ts`):**
+  - **Live Today Merge & Additive Token Accounting:** Non-destructively merges live `DailyLedger` activity into Calendar so today's usage appears immediately with zero rollover double-counting; fixes all KPI cards and drawers to report true additive tokens (`input + cacheRead + cacheCreation + output`).
+  - **400-Day Configurable Retention & Multi-Source Filter (`All / App / IDE / CLI`):** Expands default `DailyStore` retention from 90 → **400 days** (`30–3650` configurable) and adds a zero-dependency, strictly read-only `~/.gemini/antigravity-cli` scanner (`CliUsageScanner`, mtime+size LRU cached, SQLite `immutable=1` + JSONL fallback creating zero `-wal`/`-shm` sidecars).
+  - **Multi-Period Views, Multi-Currency, Plan ROI & Safe Exports:** Switch between **52-Week Heatmap** and **Month Grid**, **Daily / Weekly / Monthly / This Year / All-Time** periods, and **Tokens / API Cost** metrics; convert estimates across **9 currencies** (`USD`, `CNY`, `EUR`, `JPY`, `KRW`, `GBP`, `AUD`, `HKD`, `TWD` + custom FX rate) with optional **Subscription Plan ROI** comparison (`Google AI Pro`, `Google AI Ultra`, or custom fee with clear non-billing disclaimer); export RFC 4180 formula-safe **CSV** or **JSON**; and protect history resets behind a **2-step Clear History confirmation bar**.
+- **Orchestrator Base-Mapped Pricing & Full-Stack Role Attribution (`src/orchestrator-attribution.ts`, `src/pricing-store.ts`, `src/telemetry-metrics.ts`):**
+  - **Auto-Detected Orchestrator Config & Pricing Modes:** Combines live RPC `Orchestrator Settings` with read-only `~/.gemini/config/config.json` fallback (`userSettings.{orchestratorModel, orchestratorExecutorModel, useAiCredits}`). Introduces **Mapped Base Pricing (Default)** — mapping `M537` → Gemini 4 Neon, `M667` → Carbon (UTC-dated), `M681` → Argon (UTC-dated), and `M669` → Hydrogen — vs **Strict Mode** (unpriced unless custom overridden), always preserving custom override precedence and untouched-Save safety.
+  - **Full Role Attribution & Telemetry Honesty Guards:** Renders auto-hiding **Orchestrator Split** cards across Overview & GM Data, `Orchestrator / Executor / Subagent` role badges, `Switch Cold` (`cacheRead === 0`) cross-model handoff detection, a `Short sample` speed guard preventing noisy sub-threshold `tok/s` spikes, dual context watermarks (**Compaction** cap + **200k** long-context tier), effective per-1M rates inside Models' Orchestrator Settings card, and interactive jargon tooltips.
+- **App ↔ IDE Bidirectional Hot Sync & Cross-Platform Hardening (`src/durable-state.ts`, `src/discovery.ts`, `src/app/theme-adapter.ts`):**
+  - **Concurrent 3-Way State Sync & Safe Lockfile:** Mirrors `appSettings`, pricing mode, currency/ROI, retention, language, and locks bidirectionally between App and IDE via `DurableState` 3-way merge (`DEEP_MERGE_OBJECT_KEYS`), dead-PID stale lock reclamation, owner-token verification, strict refusal to bypass live writers, and `async deactivate()` awaiting flush.
+  - **Dual-Surface Polish & Platform Fixes:** Adds App-side **Low-Quota Warning Banner** (suppressed for BYOK/`custom-*`), collapses IDE-only status bar toggles inside `<details>` on App, overrides Antigravity `/preload.js` inline body fallbacks to preserve Dark/HC WCAG contrast, wraps narrow `320px` settings headers cleanly, unifies EN/ZH terminology (`账号信息`, `编排模型` / `执行模型`, `锁定主会话`), adds dynamic WSL mount/home resolution (`drvfs`/`9p`/`wslpath`, eliminating hardcoded `/mnt/c`), fixes Windows `explorer.exe /select,` verbatim quoting for spaces & commas, expands `.sh`/`.ps1` bundled Node discovery, and removes obsolete `CHANGELOG-v2.md`.
 
 ## Install
 
 ### Option A — Antigravity App (Desktop 2.0+ Native Sidecar Plugin)
 
-Works on **macOS, Windows, and Linux** with zero external dependencies (uses Antigravity App's bundled Node runtime).
+Works on **macOS, Windows, and Linux** with zero external dependencies (runs on Antigravity App's bundled Node runtime).
 
-1. **From GitHub Releases (recommended):** Download `antigravity-context-monitor-app-1.17.5.zip` (macOS / Windows / Linux) or `antigravity-context-monitor-app-1.17.5.tar.gz` (macOS / Linux) from [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases).
-   - **Via `agy` CLI (all platforms):** Extract the archive (creates `antigravity-context-monitor/`), then run:
+1. **One-command install / upgrade from GitHub Releases (recommended):**
+   - Run the zero-clone one-liner in [For AI Agents — One-Sentence Install / Upgrade (`AGENTS.md`)](#for-ai-agents--one-sentence-install--upgrade-agentsmd) above — it verifies `SHA256SUMS.txt`, extracts safely, and registers the plugin cleanly without clobbering `config.json`.
+   - Or download `antigravity-context-monitor-app-1.17.6.zip` (macOS / Windows / Linux), `antigravity-context-monitor-app-1.17.6.tar.gz` (macOS / Linux), and `SHA256SUMS.txt` from [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases), extract (`antigravity-context-monitor/`), and run:
      ```bash
      agy plugin install ./antigravity-context-monitor
      ```
-   - **Or extract directly into the Antigravity plugins directory:**
-     - **macOS / Linux:** Extract into `~/.gemini/config/plugins/` (so `plugin.json` is at `~/.gemini/config/plugins/antigravity-context-monitor/plugin.json`).
-     - **Windows (PowerShell):**
-       ```powershell
-       Expand-Archive -Path .\antigravity-context-monitor-app-1.17.5.zip -DestinationPath "$env:USERPROFILE\.gemini\config\plugins" -Force
-       ```
-2. **Or from a source checkout (using the cross-platform installer):**
-   - Build & package first:
+     *(Or extract directly into `~/.gemini/config/plugins/` on macOS/Linux or `%USERPROFILE%\.gemini\config\plugins\` on Windows.)*
+2. **From a local source checkout:**
+   - Upgrade from latest GitHub Release (no build required): `node scripts/install-app-plugin.mjs --upgrade` (`./scripts/install-app-plugin.sh --upgrade` on macOS/Linux, `.\scripts\install-app-plugin.ps1 --upgrade` on Windows).
+   - Build & install from local working tree:
      ```bash
-     npm run compile && node scripts/package-app-plugin.mjs
+     npm ci && npm run compile && node scripts/package-app-plugin.mjs && node scripts/install-app-plugin.mjs --install
      ```
-   - Install (automatically falls back to Antigravity's bundled `agy-node` when `node` is not on `PATH`):
-     - **Any OS (Node):** `node scripts/install-app-plugin.mjs --install`
-     - **macOS / Linux:** `./scripts/install-app-plugin.sh --install`
-     - **Windows (PowerShell):** `.\scripts\install-app-plugin.ps1 --install`
-     - *(Pass `--uninstall` to remove, or `--dry-run` to preview.)*
+   - Inspect installed state, remote version, and sidecar status: `node scripts/install-app-plugin.mjs --status --check-remote` (add `--json` for machine parsing, `--uninstall` to remove, or `--print-cdp-guide` for opt-in CDP launch instructions).
 3. **Enable & open inside Antigravity App:**
-   - Open **Customizations → Installed** (or `customization://antigravity-context-monitor`) and confirm **Antigravity Context Monitor** and its **Context Monitor** sidecar are enabled. *(When upgrading an existing install, toggle Disable → Enable or restart Antigravity App so the sidecar loads the new runtime.)*
-   - Open the monitor from the side panel **`+`** menu (`AUX_PANE`), **Plugins → Context Monitor** in the left sidebar (`SIDEBAR` wide dashboard), or ask the agent to open Context Monitor (`sidecar://antigravity-context-monitor/context_monitor/`).
+   - Open **Customizations → Installed** (`customization://antigravity-context-monitor`) and confirm **Antigravity Context Monitor** and its **Context Monitor** sidecar are enabled. *(When upgrading over a running sidecar, toggle **Off → On** safely — never force-quit Antigravity during an active chat.)*
+   - Open from the side panel **`+`** menu (`AUX_PANE`), **Plugins → Context Monitor** in the left sidebar (`SIDEBAR`), or `sidecar://antigravity-context-monitor/context_monitor/`.
+   - Future App plugin updates can be checked and applied in one click directly inside **Settings** or **About**.
 
 ### Option B — Antigravity IDE (VSIX Extension)
 
-1. Download `antigravity-context-monitor-1.17.5.vsix` from [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases) or build it locally with `npm run package`.
+1. Download `antigravity-context-monitor-1.17.6.vsix` (and verify against `SHA256SUMS.txt`) from [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases), or build locally with `npm run compile && npm run package`.
 2. In Antigravity IDE, open the Command Palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows/Linux), run **Extensions: Install from VSIX...**, and select the file — or install via CLI:
    ```bash
-   antigravity-ide --install-extension antigravity-context-monitor-1.17.5.vsix --force
+   antigravity-ide --install-extension antigravity-context-monitor-1.17.6.vsix --force
    ```
-3. Reload the window. Confirm **1.17.5** in extension details or the monitor's **About** page.
+3. Reload the IDE window and confirm **1.17.6** in extension details or the monitor's **About** page.
 
-You can also install the IDE extension from [Open VSX](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
+You can also install and auto-update the IDE extension from [Open VSX](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
 
-Both plugins support **macOS, Windows, and Linux** (plus **WSL** for IDE). Native live App (v2.34.0) + IDE (v2.7.0) verification for 1.17.5 ran on macOS; the release notes transparently separate native checks from mocked Windows and Linux unit-test coverage. [Validation](docs/releases/1.17.5.md#validation)
+Both plugins support **macOS, Windows, and Linux** (plus **WSL** for IDE). Native live App + IDE verification for 1.17.6 ran on macOS; the release notes transparently separate native checks from mocked Windows and Linux unit-test coverage. [Validation](docs/releases/1.17.6.md#validation)
 
 ## Use the monitor
 
-- **In Antigravity App:** Open **Context Monitor** in the compact **`AUX_PANE`** alongside chat or in the full-width **`SIDEBAR`** dashboard. Use the Masthead Context Bar to switch or pin conversations, enable **Lock to Main Agent** during subagent swarms, toggle **Bar View ↔ 20×5 Dot Matrix**, inspect **Top 5 Largest Items**, and click **Copy `/context` Report** or **Copy Handoff Prompt**. Theme changes (Light / Dark / High-Contrast) follow the host automatically, and polling pauses cleanly when the pane is hidden.
-- **In Antigravity IDE — Hover over the bottom-right status item** for the active session and model (or cross-pool **Orchestrator `Planner → Executor`** route), context gauge with used/remaining tokens, **Latest Call** telemetry (input/output/thinking tokens, cache hit %, cost, TTFT / total latency, and noise-gated decode speed), **Session & Today Cost** with cache savings & effective blended input rate, **Orchestrator Split**, **Dual-Window (`5h` + `Weekly`) Quota** with Planner/Executor pool markers, smart event-driven alerts (rate-cutover countdown, model sunset notice, retry waste, AI credits), and 1-click links to **Overview**, **Activity**, **Cost**, **Models**, **Settings**, and **Refresh**. Choose **Automatic**, **Compact**, or **Full** in Settings; enable opt-in **Generation speed (`tok/s`)**, **Prompt cache hit rate (`%`)**, or **Session cost** in the status bar (all hidden automatically when no live data exists).
-- **Click the status item (IDE) or open the panel (App)** to inspect all 9 tabs. Use the sticky header controls to inspect multi-account snapshots (**Account Panel**), switch between Chinese, English, and bilingual display, pause live polling, or refresh manually.
-- **Expand Session diagnostics & Largest Items** for provider-reported token counts, compaction checkpoints, top context consumers, and image activity. The monitor explicitly distinguishes measured values from post-compaction/rewind estimates, updates streaming responses in place, and recalculates context on undo or a model switch.
+- **In Antigravity App:** Open **Context Monitor** in the compact **`AUX_PANE`** alongside chat or in the full-width **`SIDEBAR`** dashboard. Keep the collapsible **Native Ambient HUD** pinned at the top for zero-CDP glanceable telemetry, or optionally enable the opt-in **CDP Composer Context Ring** (`Turbo`-left) and **Top-Right Status Bar** in **Settings → Overlays & CDP** (see `--print-cdp-guide` for zero-patch launch flags). Use the Masthead Context Bar to switch or pin conversations, enable **Lock to Main Agent** during subagent swarms, toggle **Bar View ↔ 20×5 Dot Matrix**, inspect **Top 5 Largest Items**, and click **Copy `/context` Report** or **Copy Handoff Prompt**.
+- **In Antigravity IDE — Hover over the bottom-right status item** for the active session and model (or cross-pool **Orchestrator `Planner → Executor`** route), context gauge with used/remaining tokens, **Latest Call** telemetry, **Session & Today Cost** with cache savings & effective blended input rate, **Orchestrator Split**, **Dual-Window (`5h` + `Weekly`) Quota** with Planner/Executor markers, smart event-driven alerts, and 1-click links to **Overview**, **Activity**, **Cost**, **Models**, **Settings**, and **Refresh**.
+- **Click the status item (IDE) or open the panel (App)** to inspect all 9 tabs. Settings, pricing mode, currency, retention, and language sync bidirectionally between App and IDE via shared `state-v1.json`.
 
 ## Monitor views
 
-The panel adapts cleanly from `320px` narrow side panes (`AUX_PANE` / split panes) to `1440px` wide dashboards (`SIDEBAR` / editor tabs), follows Light, Dark, and High-Contrast (`hc` & `hc-light`) themes, and passes **WCAG 2.1 AA** with zero violations. Screenshots below use example data and showcase the **Obsidian Slate Dark** theme in bilingual mode.
+The panel adapts cleanly from `320px` narrow side panes (`AUX_PANE` / split panes) to `1440px` wide dashboards (`SIDEBAR` / editor tabs), follows Light, Dark, and High-Contrast (`hc` & `hc-light`) themes, and passes **WCAG 2.1 AA** with zero violations across all 432 App Sidecar layout cells, 332 App Sidecar axe-core audits, and 742 installed IDE UI checks. Screenshots below showcase the **Obsidian Slate Dark** theme in bilingual mode.
 
 ### Overview
 
-See the active conversation, **Masthead Context Bar** (Conversation Switcher, Lock to Main Agent, surface & stale-cache badges), active **Orchestrator `Planner → Executor`** cross-pool route pill, context used and remaining tokens, **Context Composition** card (Bar ↔ 20×5 Dot Matrix, Dual-Cap effective budget vs native ceiling, measurement badge, compaction savings, collapsible Top 5 Largest Items, and Copy `/context` Report / Copy Handoff Prompt buttons), recessed 4–5 cell L2 telemetry strip (generation speed `tok/s`, adaptive TTFT, token-weighted cache hit rate, estimated cache savings, and Session / Today cost in USD), collapsible session diagnostics, dual-window (`5h` + `Weekly`) shared quota pools with **Quota Burn-Rate Runway** badges (or `custom-*` Model Isolation banner), and the AI credits footer.
+See the optional collapsible **Native Ambient HUD**, **Masthead Context Bar** (Conversation Switcher, Lock to Main Agent, surface & stale-cache badges), App-side **Low-Quota Warning Banner**, active conversation hero with **Dual Context Watermarks** (`Compaction` + `200k` tier), active **Orchestrator `Planner → Executor`** cross-pool route pill & auto-hiding **Orchestrator Split** card, **Context Composition** card (Bar ↔ 20×5 Dot Matrix, Dual-Cap effective budget vs native ceiling, measurement badge, compaction savings, collapsible Top 5 Largest Items, and Copy `/context` Report / Copy Handoff Prompt), recessed L2 telemetry strip (with `Short sample` speed guard and jargon tooltips), collapsible session diagnostics, dual-window (`5h` + `Weekly`) shared quota pools with **Quota Burn-Rate Runway** badges (or `custom-*` Model Isolation banner), and the AI credits footer.
 
 ![Overview in Obsidian Slate Dark mode showing active context, Orchestrator route pill, L2 speed/TTFT/cache/cost strip, dual-window quota pools, and AI credits](src/images/monitor-overview.png)
 
 <details>
-<summary>GM Data — speed, TTFT, turn-level cache diagnostics, Recent Calls Ledger, and timeline</summary>
+<summary>GM Data — speed, TTFT, turn-level cache diagnostics, Orchestrator Split, Recent Calls Ledger, and timeline</summary>
 
-Inspect real-time Generator Metadata by model and session, including the account-filtered KPI strip, the 2-column **Speed & First-Token Cache Ledger** (weighted/latest/median/visible `tok/s`, **Cached vs Uncached TTFT** comparison bars, 3-segment Prompt Cache bar, and **Last-Turn vs Session Cache Hit** comparison with **Cold / Partial / Warm Start** pills), the collapsible **Recent Calls Ledger** (latest 20 calls with Time, Actual Model, Fresh Input, `+Δ` net context growth / compaction drop, Output w/ Think %, Cache Hit %, Cost / Unpriced, TTFT, Total Latency, noise-gated Speed, and Status), unified per-model stats cards, per-step/per-turn timeline telemetry pills, today's ledgers, tool call ranking, context growth chart, and error details.
+Inspect real-time Generator Metadata by model and session, including the account-filtered KPI strip, the 2-column **Speed & First-Token Cache Ledger** (weighted/latest/median/visible `tok/s`, **Cached vs Uncached TTFT** comparison bars, 3-segment Prompt Cache bar, and **Last-Turn vs Session Cache Hit** with **Cold / Partial / Warm Start** pills), the auto-hiding **Orchestrator Split** breakdown, the collapsible **Recent Calls Ledger** (with `Orchestrator / Executor / Subagent` role badges, `Switch Cold` cross-model handoff pills, `Short sample` speed guards, `+Δ` net context growth / compaction drops, Cost / Mapped / Unpriced, TTFT, Total Latency, and Status), unified per-model stats cards, timeline telemetry pills, today's ledgers, tool call ranking, context growth chart, and error details.
 
 ![GM Data in Obsidian Slate Dark mode showing KPI strip, Speed & First-Token Cache Ledger, Recent Calls Ledger, and model stats](src/images/monitor-gm-data.png)
 
@@ -89,36 +112,36 @@ Inspect real-time Generator Metadata by model and session, including the account
 <details>
 <summary>Sessions — searchable conversation history</summary>
 
-Browse conversation context and history grouped by workspace. Filter by current workspace, repository, running state, or backup availability, and reveal local workspace, Brain, or `.pb` files.
+Browse conversation context and history grouped by workspace. Filter by current workspace, repository, running state, or backup availability, and reveal local workspace, Brain, or `.pb` files (with hardened Windows `explorer.exe /select,` quoting and macOS/Linux reveal).
 
 ![Sessions in Obsidian Slate Dark mode showing workspace groups, search, and localized status badges](src/images/monitor-sessions.png)
 
 </details>
 
 <details>
-<summary>Cost — USD estimates, rate-change alerts, and custom API rates</summary>
+<summary>Cost — Orchestrator Mapped vs Strict pricing, multi-currency estimates, rate-change alerts, and custom API rates</summary>
 
-Review monthly and daily usage estimates in **USD**, inspect total & per-model cache savings, thinking cost share, 4-series cost distribution (input, output, cache, thinking), and **Upcoming Scheduled Rate Changes** banners (Carbon/Argon `2026-12-01`, Flash `2027-01-01`). Set custom rates per 1M tokens for any family or individual model; unpriced usage is flagged honestly without fabricating `$0.00`.
+Switch between **Mapped Base Pricing (Default)** and **Strict Mode** for Orchestrator models while keeping custom per-1M overrides first in precedence; review monthly and daily usage estimates in USD or your selected display currency, inspect total & per-model cache savings, thinking cost share, 4-series cost distribution (input, output, cache, thinking), and **Upcoming Scheduled Rate Changes** banners (Carbon/Argon `2026-12-01`, Flash `2027-01-01`).
 
-![Cost in Obsidian Slate Dark mode showing upcoming rate-change banner, USD monthly summary, 4-series chart, and custom pricing table](src/images/monitor-cost.png)
+![Cost in Obsidian Slate Dark mode showing Orchestrator pricing mode switcher, upcoming rate-change banner, monthly summary, 4-series chart, and custom pricing table](src/images/monitor-cost.png)
 
 </details>
 
 <details>
-<summary>Models — Orchestrator Settings, dual-window quota pools, runway badges, and model specifications</summary>
+<summary>Models — Orchestrator Settings with effective rates, dual-window quota pools, runway badges, and model specifications</summary>
 
-Inspect live **Orchestrator Settings** (`Orchestrator Model` + `Executor Model`, default vs custom pairing, and cross-pool role indicator), the default model, merged Gemini and Claude / GPT **Dual-Window (`5h` + `Weekly`)** quota pools with **Quota Burn-Rate Runway** indicators, reset schedules, available families & effort tiers (`Low` / `Medium` / `High` / `Extra High`), API reference pricing rows on spec cards, `Notice` sunset tags (e.g. GPT-OSS 120B), and full backend-reported model specifications. Chat models and the image-generation catalog are presented separately.
+Inspect live **Orchestrator Settings** (`Orchestrator Model` + `Executor Model`, RPC + `~/.gemini/config/config.json` fallback, default vs custom pairing, effective per-1M API reference rates, and cross-pool role indicator), the default model, merged Gemini and Claude / GPT **Dual-Window (`5h` + `Weekly`)** quota pools with **Quota Burn-Rate Runway** indicators, reset schedules, available families & effort tiers (`Low` / `Medium` / `High` / `Extra High`), API reference pricing rows on spec cards, `Notice` sunset tags (e.g. GPT-OSS 120B), and full backend-reported model specifications. Chat models and the image-generation catalog are presented separately.
 
 ![Models in Obsidian Slate Dark mode showing Orchestrator Settings, dual-window quota pools, API reference prices, and 512K Gemini 4 specs](src/images/monitor-models.png)
 
 </details>
 
 <details>
-<summary>Calendar — daily usage, USD totals, archived speed/TTFT/cache, and cycles</summary>
+<summary>Calendar — 52-week activity heatmap, live Today merge, multi-source (App/IDE/CLI), multi-currency, Plan ROI & exports</summary>
 
-Switch between **Monthly** and **All-Time** summaries, browse daily activity and USD cost chips on the interactive 7-column calendar, and expand any day to inspect per-model totals, archived generation speed (`tok/s`), adaptive TTFT, token-weighted prompt cache hit rate, and archived cycles.
+Explore up to **400 days** (configurable `30–3650`) of usage across **All / App / IDE / CLI** sources with live Today merging and additive token accounting. Toggle between the **52-Week Heatmap** and **Month Grid**, switch **Daily / Weekly / Monthly / This Year / All-Time** periods and **Tokens / API Cost** metrics, inspect streaks, dual-currency totals, optional **Subscription Plan ROI**, expandable Day Detail Drawers (token breakdown, model proportions, source badges, archived speed/TTFT/cache, and cycles), one-click **CSV / JSON export**, and a safe **2-step Clear History** guard.
 
-![Calendar in Obsidian Slate Dark mode showing monthly summary, USD totals, and daily activity grid](src/images/monitor-calendar.png)
+![Calendar in Obsidian Slate Dark mode showing 52-week activity heatmap, multi-source filters, live Today KPIs, and daily breakdown](src/images/monitor-calendar.png)
 
 </details>
 
@@ -132,20 +155,20 @@ Review account identity (masked by default with a one-click privacy toggle), cur
 </details>
 
 <details>
-<summary>Settings — persistent storage, polling, status bar, and surface adaptation</summary>
+<summary>Settings — Overlays & CDP, Updates, Cost/Currency/History, persistent storage, and surface adaptation</summary>
 
-Inspect shared external persistent storage (`state-v1.json` with atomic lockfile concurrency between App and IDE), configure the low-quota warning threshold, polling interval, seven IDE status bar toggles (including opt-in generation speed `tok/s`, prompt cache hit rate `%`, and **Session cost** `$0.27` USD preview — clearly badged as IDE-only when running inside Antigravity App), hover density (`auto` / `compact` / `full`), internal model ID display, interface zoom, and scrollbar / end-of-content preferences.
+Configure **Overlays & CDP** (Native Ambient HUD toggle + independent opt-in toggles for Composer Context Ring and Top-Right Status Bar with live CDP connection status and platform launch guide), **Updates** (6h auto-check toggle, Check Now, and App one-click Upgrade Now), **Cost, Currency & History** (Orchestrator pricing mode, 9 display currencies + custom FX rate, Subscription Plan ROI presets, and Calendar retention days), shared persistent storage (`state-v1.json` with atomic lockfile hot-sync between App and IDE), low-quota warning threshold, polling interval, IDE status bar toggles (collapsed neatly inside `<details>` when running in Antigravity App), hover density, internal model ID display, interface zoom, and scrollbar / end-of-content preferences.
 
-![Settings in Obsidian Slate Dark mode showing status bar switches, display options, and persistent storage](src/images/monitor-settings.png)
+![Settings in Obsidian Slate Dark mode showing Overlays & CDP, Updates, Cost/Currency/History, status bar switches, and persistent storage](src/images/monitor-settings.png)
 
 </details>
 
 <details>
-<summary>About — version, dual-host compatibility, and navigation</summary>
+<summary>About — Version & Updates card, AGENTS.md one-sentence tip, dual-host compatibility, and navigation</summary>
 
-Confirm the installed version (`v1.17.5`, dynamically read from the manifest), dual-host support badges (**Antigravity IDE** + **Antigravity App (Desktop 2.0+ Sidecar)**), and 512K context compatibility scope, jump directly to any monitor view via the feature navigation directory, and access repository and compatibility notes.
+Inspect the live **Version & Updates** card (`v1.17.6`, last-checked timestamp, **Check for Updates**, **Upgrade Now** on App or **Open VSX** on IDE), copy the **AGENTS.md** one-sentence AI agent install/upgrade prompt, view dual-host support badges (**Antigravity IDE** + **Antigravity App (Desktop 2.0+ Sidecar)**), jump directly to any monitor view via the feature navigation directory, and read community acknowledgments and compatibility notes.
 
-![About in Obsidian Slate Dark mode showing version and feature navigation cards](src/images/monitor-about.png)
+![About in Obsidian Slate Dark mode showing Version & Updates card, AGENTS.md tip, and feature navigation cards](src/images/monitor-about.png)
 
 </details>
 
@@ -153,6 +176,7 @@ Confirm the installed version (`v1.17.5`, dynamically read from the manifest), d
 
 - The signed-in account's live catalog determines model availability. The status bar hover and **Overview** count verified thinking-effort variants once per base-model family; **Models**, **GM Data**, and **Cost** retain each effort's exact ID.
 - **Orchestrator & Gemini 4 family:** All **Gemini 4** families (**Neon**, **Hydrogen**, **Carbon**, **Argon**) and **Orchestrator** models (`M537`, `M667`, `M681`, `M669`) use the unified **512,000-token** live checkpointer limit (`1,048,576` model context, `262,144` max output). Both **Gemini 4 Neon** and **Gemini 4 Hydrogen** expose `Low` / `Medium` / `High` / `Extra High` thinking tiers. Under **Custom Orchestrator Mode**, any eligible Orchestrator model (including **Claude Opus 5.5** and **Gemini 4 Neon**) can pair with any eligible Executor model (such as **Gemini 4 Hydrogen** or **Claude Sonnet 5.5**), with each leg billed to its own actual model and tracked across quota pools.
+- **Orchestrator Base-Mapped Pricing (v1.17.6):** By default (`Mapped Base Pricing`), legacy Orchestrator & worker IDs resolve to their verified Gemini 4 base model's official API rate (respecting UTC cutover dates for Carbon/Argon) while keeping custom overrides highest in precedence. Switch to **Strict Mode** in **Cost** or **Settings** at any time to leave unpriced unless customized.
 - **Verified built-in API-equivalent pricing (USD per 1M tokens, verified 2026-11-22):**
 
 | Model Family | Input | Output / Thinking | Cache Read | Cache Write | Notes / Schedule |
@@ -164,7 +188,8 @@ Confirm the installed version (`v1.17.5`, dynamically read from the manifest), d
 | **Claude Sonnet 5.5** (`Low`–`High`) | `$2.00` | `$10.00` | `$0.10` | `$2.50` | Fixed cache read rate (`$0.10`); 5-min TTL write |
 | **Gemini 3.8 / 3.7 / 3.6 Flash** | `$0.75` → `$1.50` | `$3.75` → `$7.50` | `$0.075` → `$0.15` | `$0.9375` → `$1.875` | Promo ends `2027-01-01` UTC (3.6 bounded from `2026-08-13`) |
 | **GPT-OSS 120B (Medium)** | `$0.09` | `$0.36` | `$0` | `$0` | Displays `Notice` sunset badge when reported |
-| **Legacy Orchestrators & Image** (`M537`/`M667`/`M681`/`M669`/`M578`/`M21`) | Unpriced | Unpriced | Unpriced | Unpriced | Never fabricated as `$0.00`; set custom overrides in **Cost** |
+| **Orchestrators** (`M537` / `M667` / `M681` / `M669`) | Mapped base | Mapped base | Mapped base | `$0` | Default: maps to Neon / Carbon (dated) / Argon (dated) / Hydrogen; `Strict Mode` leaves unpriced unless customized |
+| **Sonar & Image** (`M578` / `M21`) | Unpriced | Unpriced | Unpriced | Unpriced | Never fabricated as `$0.00`; set custom overrides in **Cost** |
 
 - Context readings prioritize provider-reported fresh input, cache reads, cache creation, and output from the current planner response or checkpoint. Undated historical calls on scheduled-cutover models remain honestly unpriced rather than fabricating current-date rates. Subscription AI credits are tracked separately (unknown readings display **Not reported** instead of `0`). [Model and pricing details](docs/technical_implementation.md)
 
@@ -179,7 +204,7 @@ Confirm the installed version (`v1.17.5`, dynamically read from the manifest), d
 | **Switch Display Language** | Choose English, Chinese, or bilingual display |
 | **Show Model Activity** | Open GM Data |
 
-IDE settings use the `antigravityContextMonitor.` prefix (13 settings total):
+IDE settings use the `antigravityContextMonitor.` prefix (22 settings total; shared preferences mirror bidirectionally with Antigravity App via `state-v1.json`):
 
 | Setting | Default | Action |
 | --- | --- | --- |
@@ -188,14 +213,23 @@ IDE settings use the `antigravityContextMonitor.` prefix (13 settings total):
 | `statusBar.showQuota` | `true` | Show the current model's quota percentage |
 | `statusBar.showResetCountdown` | `true` | Show the current model's reset countdown |
 | `statusBar.showAiCredits` | `true` | Show AI credit balance in the status bar (hidden when unreported) |
-| `statusBar.showSpeed` | `false` | Show latest or weighted-average model generation speed (`tok/s`) in the status bar (hidden when untimed) |
-| `statusBar.showCacheHit` | `false` | Show token-weighted prompt cache hit rate (`%`) in the status bar (hidden when no prompt tokens exist) |
-| `statusBar.showSessionCost` | `false` | Show the active session's estimated API-equivalent USD cost in the status bar (hidden when `$0` or unpriced) |
+| `statusBar.showSpeed` | `false` | Show latest or weighted-average model generation speed (`tok/s`) in the status bar |
+| `statusBar.showCacheHit` | `false` | Show token-weighted prompt cache hit rate (`%`) in the status bar |
+| `statusBar.showSessionCost` | `false` | Show the active session's estimated API-equivalent cost in the status bar |
 | `statusBar.tooltipDensity` | `auto` | Set `auto`, `compact`, or `full` hover density |
-| `quotaNotificationThreshold` | `20` | Warn below this quota percentage. Use `0` to disable |
+| `quotaNotificationThreshold` | `20` | Warn below this quota percentage (IDE notification & App Overview banner). Use `0` to disable |
 | `showModelInternalId` | `false` | Add the internal ID to model names |
-| `activity.maxRecentSteps` | `100` | Limit retained recent activity steps in persistence |
-| `activity.maxArchives` | `20` | Limit retained activity archives |
+| `activity.maxRecentSteps` | `100` | Limit retained recent activity steps in persistence (`10–500`) |
+| `activity.maxArchives` | `20` | Limit retained activity archives (`1–100`) |
+| `orchestratorPricingMode` | `mapped` | Orchestrator pricing mode: `mapped` (Gemini 4 base rates) or `strict` (custom-only) |
+| `displayCurrency` | `USD` | Display currency for Cost & Calendar estimates (`USD`, `CNY`, `EUR`, `JPY`, `GBP`, `KRW`, `HKD`, `TWD`, `AUD`) |
+| `customFxRate` | `null` | Optional custom exchange rate per 1 USD (`null` uses built-in indicative rate) |
+| `subscriptionPlan` | `none` | Optional Calendar Plan ROI preset (`none`, `google-ai-pro`, `google-ai-ultra`, `custom`) |
+| `subscriptionMonthlyFee` | `null` | Optional monthly subscription fee amount for Plan ROI calculation |
+| `subscriptionCurrency` | `USD` | Currency of the monthly subscription fee |
+| `calendarRetentionDays` | `400` | Maximum Calendar history retention in days (`30–3650`) |
+| `autoCheckUpdates` | `true` | Automatically check GitHub Releases in the background (6h ETag throttle) |
+| `showNativeHudBar` | `false` (`true` on App) | Show the compact Native Ambient HUD bar at the top of the monitor panel |
 
 ### Antigravity App Sidecar Endpoints & Views
 
@@ -203,28 +237,31 @@ IDE settings use the `antigravityContextMonitor.` prefix (13 settings total):
 | --- | --- |
 | `AUX_PANE` (`/`) | Compact side panel opened from the side panel `+` menu or `sidecar://antigravity-context-monitor/context_monitor/` |
 | `SIDEBAR` (`/full`) | Full-width dashboard opened from **Plugins → Context Monitor** in the left sidebar |
-| `/api/health`, `/api/snapshot`, `/api/action` | Local loopback health check, visibility-gated ETag snapshot feed, and UI action endpoint (polling interval, language, low-quota threshold, custom pricing, zoom, conversation pinning, and Lock to Main Agent persist directly to shared `state-v1.json`) |
+| `/api/health`, `/api/snapshot`, `/api/action` | Local loopback health check, visibility-gated ETag snapshot feed, and UI action endpoint (including updates, calendar filters/exports, Orchestrator pricing mode, currency/ROI, and App↔IDE synced `appSettings`) |
+| `POST /api/overlay/action` | Loopback-only authenticated bridge for opt-in CDP Shadow DOM overlays — enforces constant-time 256-bit `X-Monitor-Token`, strict loopback/Hub `Origin`, bounded `16 KB` payload, and command allowlist (`ping`, `refresh`, `openSidecar`, `togglePanel`, `openPanel`, `togglePause`) |
 
 ## Troubleshooting and limits
 
-- **No active conversation** means the backend is connected and there is no loaded conversation in the current view. Open a conversation (or pick one in the Masthead Conversation Switcher) to load its context. Windows on the same workspace can share session data; open different folders for independent views.
-- **Running Antigravity App and Antigravity IDE together:** Both hosts automatically isolate their respective local backends (`preferredSurface: 'app'` vs `'ide'`) with zero crosstalk and coordinate shared history in `state-v1.json` via an atomic `O_CREAT | O_EXCL` lockfile + 3-way merge.
-- **Upgrading the Antigravity App plugin:** After installing a new release, toggle **Antigravity Context Monitor** Disable → Enable in **Customizations → Installed** (or restart Antigravity App) so the running sidecar process restarts onto the new build. Verify the version badge in **About** or `/api/health`.
-- **Backend disconnected** or **LS not found** points to local discovery or connectivity. Reload after installing, then open **Output → Antigravity Context Monitor** (IDE) and inspect `PATH check:`. Discovery supports `ANTIGRAVITY_LS_ADDRESS`, `agy --hub` (including v1.5.14+ via `GetStatus` / `daemon/hub_<port>.json`), legacy language servers, Linux `/proc/<pid>` socket fallback, and macOS/Windows/WSL discovery tools. Run Antigravity under a standard user account. [Backend discovery](docs/technical_implementation.md)
-- In WSL, the IDE extension can inspect the active distribution and connect through WSL interop. For Remote-WSL or Remote SSH, Antigravity may run the extension on the local UI host. [Project structure](docs/project_structure.md)
-- Long or internally summarized sessions can have incomplete telemetry. The monitor marks post-compaction/rewind estimates and missing steps explicitly. In Orchestrator mode, the monitor tracks both `planModel` and `executionModel` independently across cross-pool calls while preserving accurate context readings. [Context and token calculation](docs/technical_implementation.md) · [Community discussion of checkpoint summaries](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)
+- **No active conversation** means the backend is connected and there is no loaded conversation in the current view. Open a conversation (or pick one in the Masthead Conversation Switcher) to load its context.
+- **Running Antigravity App and Antigravity IDE together:** Both hosts automatically isolate their respective local backends (`preferredSurface: 'app'` vs `'ide'`) with zero crosstalk and hot-sync shared history and settings in `state-v1.json` via a hardened atomic `O_CREAT | O_EXCL` lockfile (dead-PID stale reclamation + owner-token release) and 3-way merge.
+- **Upgrading the Antigravity App plugin:** After an in-app **Upgrade Now** or CLI `--upgrade`, toggle **Antigravity Context Monitor** **Off → On** in **Customizations → Installed** (`customization://antigravity-context-monitor`) or restart Antigravity App when ready — never kill a running Antigravity host from inside an active chat.
+- **Opt-in CDP Overlays showing `CDP unavailable`:** Core Sidecar `AUX_PANE`, `SIDEBAR`, and the Native Ambient HUD work 100% natively without CDP. If you want the optional Composer Context Ring or Top-Right Status Bar overlays, run `node scripts/install-app-plugin.mjs --print-cdp-guide` (or view the platform launch card in **Settings → Overlays & CDP**) to launch Antigravity App with `--remote-debugging-port` — zero binary modification required.
+- **Backend disconnected** or **LS not found** points to local discovery or connectivity. Reload after installing, then open **Output → Antigravity Context Monitor** (IDE) and inspect `PATH check:`. Discovery supports `ANTIGRAVITY_LS_ADDRESS`, `agy --hub` (including v1.5.14+ via `GetStatus` / `daemon/hub_<port>.json`), legacy language servers, Linux `/proc/<pid>` socket fallback, and dynamic WSL mount/home resolution (`drvfs` / `9p` / `wslpath`). [Backend discovery](docs/technical_implementation.md)
+- Long or internally summarized sessions can have incomplete telemetry. The monitor marks post-compaction/rewind estimates, `Short sample` speed guards, and missing steps explicitly. [Context and token calculation](docs/technical_implementation.md) · [Community discussion of checkpoint summaries](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)
 
 ## Acknowledgments
 
 Maintained by **AGI-is-going-to-arrive**. Thanks to **SecretLUL** for the Windows discovery report ([Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)) and **@AxelDZP** for secondary-port TLS-first discovery, `GetUserStatus` shape validation, and equivalent proto3 epoch-0 `resetTime` fixes ([PR #74](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/74)).
 
-We are grateful to the open-source Antigravity community projects whose design exploration and real-world engineering lessons inspired UX and architectural improvements in **v1.17.5** (our implementation is built independently from scratch atop our own TypeScript core and official Sidecar / VSIX APIs, without patching `app.asar` or copying code):
+We are grateful to the open-source Antigravity community projects whose design exploration and real-world engineering lessons inspired UX and architectural improvements across **v1.17.5–v1.17.6** (our implementation is built independently from scratch atop our own TypeScript core and official Sidecar / VSIX APIs, without patching `app.asar` or copying third-party code):
 
 - [`dimitr-io/antigravity-desktop-context`](https://github.com/dimitr-io/antigravity-desktop-context) — Antigravity App Sidecar `AUX_PANE` workflow, 20×5 dot-matrix context visualization, dual-cap clarity, and CLI-style `/context` text export.
 - [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) — Desktop telemetry UX exploration, turn/cache visualization ideas, and community stability lessons on Antigravity v2.33+/v2.34+.
 - [`yuhuan-dev/antigravity-usage-monitor`](https://github.com/yuhuan-dev/antigravity-usage-monitor) — Zero-dependency Sidecar architecture, Linux `/proc` port discovery fallback, and the "Lock to Main Agent" safeguard against subagent bursts.
 - [`ahmetdotsh/agy-context`](https://github.com/ahmetdotsh/agy-context) & [`ahmetdotsh/agy-usage`](https://github.com/ahmetdotsh/agy-usage) — Segmented bar ↔ matrix toggle, effective vs native limit presentation, last-turn vs cumulative cache rate distinction, and ETag `unchanged` short-circuiting.
 - [`arthurcavallari/antigravity-context-monitor`](https://github.com/arthurcavallari/antigravity-context-monitor) & [`arthurcavallari/antigravity-sidecar-kit`](https://github.com/arthurcavallari/antigravity-sidecar-kit) — Compaction checkpoint & largest-items context inspection, `custom-*` model quota isolation, and cross-platform BOM-safe installation practices.
+- [`Lumidarin/agy-capsule`](https://github.com/Lumidarin/agy-capsule) — Design inspiration for compact desktop context capsule and composer-adjacent ring telemetry UX.
+- [`evenluo/agy-pulse`](https://github.com/evenluo/agy-pulse) — Design inspiration for multi-period activity pulse heatmaps and usage analytics dashboards.
 - [`jule-x/antigravity-context-monitor`](https://github.com/jule-x/antigravity-context-monitor) — Per-turn Cold / Partial / Warm prompt cache classification and `+Δ` context growth diagnostics.
 - [`bocai991/antigravity-quota-meter`](https://github.com/bocai991/antigravity-quota-meter) — Dual `AUX_PANE` + `SIDEBAR` Sidecar mounting and rolling quota burn-rate / runway estimation.
 - [`vladsboev-web/chat_tokens`](https://github.com/vladsboev-web/chat_tokens) — One-click `HANDOFF.md` continuation prompt export and recent conversation switching.

@@ -2,33 +2,39 @@
 
 本文档说明 Antigravity Context Window Monitor 的源码组织方式、模块职责以及依赖关系。
 
-当前版本为 **1.17.5**。发布说明先列英文，再列中文。[1.17.5 发布说明](releases/1.17.5.md)
+当前版本为 **1.17.6**。发布说明先列英文，再列中文。[1.17.6 发布说明](releases/1.17.6.md)
 
 ---
 
 ## 目录总览
 ```text
 antigravity-context-monitor/
+├── AGENTS.md                     # 给任意 AI 智能体的双语一句话安装/升级安全契约（零 app.asar 修改、严禁强杀宿主、SHA-256 强制校验）
 ├── app-plugin/                   # Antigravity App（桌面版 2.0+）原生 Sidecar 插件清单与入口
-│   ├── plugin.json               #   插件清单（v1.17.5，通过 agy plugin validate --strict 0 告警校验）
+│   ├── plugin.json               #   插件清单（v1.17.6，通过 agy plugin validate --strict 0 告警校验）
 │   ├── assets/logo.svg           #   插件图标
 │   ├── sidecars/context_monitor/ #   Sidecar 声明与运行时入口（零外部 npm 依赖，运行于内置 Node v24+）
 │   │   ├── sidecar.json          #     声明 AUX_PANE（/）与 SIDEBAR（/full）双视图
 │   │   └── main.mjs              #     SidecarApp / 独立回环 127.0.0.1 HTTP 启动入口
 │   └── skills/context-monitor/   #   配套 Skill（零 MCP 工具 schema token 开销）
-│       └── SKILL.md              #     通过 sidecar://antigravity-context-monitor/context_monitor/ 一键唤起面板
+│       └── SKILL.md              #     通过 sidecar://antigravity-context-monitor/context_monitor/ 一键唤起面板及升级指引
 ├── scripts/                      # 跨平台 App 插件打包与安装脚本（零外部依赖）
-│   ├── package-app-plugin.mjs    #   纯 Node 生成 dist/antigravity-context-monitor-app/、.zip 与 .tar.gz，并自动校验
-│   ├── install-app-plugin.mjs    #   跨平台安装/卸载至 ~/.gemini/config/plugins/antigravity-context-monitor
-│   ├── install-app-plugin.sh     #   macOS / Linux 包装脚本（自动回退 Antigravity 内置 agy-node）
-│   └── install-app-plugin.ps1    #   Windows PowerShell 包装脚本（自动回退 agy-node.cmd）
+│   ├── package-app-plugin.mjs    #   纯 Node 生成 dist/antigravity-context-monitor-app/、.zip、.tar.gz 与 dist/SHA256SUMS.txt，并自动严格校验
+│   ├── install-app-plugin.mjs    #   跨平台安装/升级/卸载/状态核验（--from-github / --upgrade / --install / --status / --print-cdp-guide，SHA-256 失败即中止 + 原子回滚）
+│   ├── install-app-plugin.sh     #   macOS / Linux 包装脚本（自动探测 node / agy-node / Electron ELECTRON_RUN_AS_NODE=1）
+│   └── install-app-plugin.ps1    #   Windows PowerShell 包装脚本（自动探测 node / agy-node.exe / agy-node.cmd / Electron）
 ├── src/                          # TypeScript 源码
 │   ├── app/                      # Antigravity App 原生 Sidecar 运行时与适配层（零 vscode 依赖）
-│   │   ├── sidecar-runtime.ts    #   实时后端发现、轮询、状态持久化、全 9 页渲染与动作分发引擎
-│   │   ├── sidecar-server.ts     #   HTTP/Sidecar 路由（/、/full、/api/health、ETag /api/snapshot、/api/action、/assets/images/*）
-│   │   ├── sidecar-types.ts      #   Sidecar 视图/快照/动作契约类型
-│   │   ├── host-bridge.ts        #   浏览器端桥接（window.__ACM_BRIDGE__、acquireVsCodeApi 垫片、可见性门控 ETag 轮询）
-│   │   └── theme-adapter.ts      #   App 宿主主题 CSS 变量 → --vscode-*/--ed-* 桥接（dark/light/hc/hc-light）与 AUX_PANE/SIDEBAR 响应式排版
+│   │   ├── sidecar-runtime.ts    #   实时后端发现、轮询、App↔IDE 双向热同步、CDP 悬浮层调度、自更新、全 9 页渲染与动作分发引擎
+│   │   ├── sidecar-server.ts     #   HTTP/Sidecar 路由（/、/full、/api/health、ETag /api/snapshot、/api/action、256-bit 鉴权 POST /api/overlay/action、/assets/images/*）
+│   │   ├── sidecar-types.ts      #   Sidecar 视图/快照/动作、CDP 悬浮层与自更新契约类型
+│   │   ├── host-bridge.ts        #   浏览器端桥接（window.__ACM_BRIDGE__、acquireVsCodeApi 垫片、可见性门控 ETag 轮询、CSV/JSON 下载）
+│   │   ├── theme-adapter.ts      #   App 宿主主题 CSS 变量 → --vscode-*/--ed-* 桥接（dark/light/hc/hc-light，覆写 /preload.js 内联浅色兜底）与窄侧栏排版
+│   │   ├── cdp-injector.ts       #   严格按需（默认关闭）纯 Node RFC 6455 CDP WebSocket 客户端、DevToolsActivePort 发现、悬浮层生命周期与 256-bit 回环鉴权桥
+│   │   ├── cdp-overlay-assets.ts #   零 innerHTML / Trusted-Types 安全 Shadow DOM 悬浮层（Turbo 左侧输入框上下文环 + 单列用量卡、右上角状态条 + 配额看板）
+│   │   └── plugin-updater.ts     #   面板内 GitHub Releases 条件 ETag（6h 节流）更新检查与失败即中止 SHA-256 原子自更新引擎
+│   ├── orchestrator-attribution.ts # 编排全链路角色归因（Orchestrator/Executor/Subagent）、config.json 只读回退、跨模型切换冷启动检测与双水位线
+│   ├── cli-usage-scanner.ts      # 零依赖严格只读 ~/.gemini/antigravity-cli 扫描器（SQLite immutable=1 + JSONL 回退、mtime+size 缓存）、9 币种换算、套餐 ROI 与防公式注入 CSV/JSON 导出
 │   ├── context-breakdown.ts      # 纯上下文构成归因引擎（9 类语义占比、双上限有效预算 vs 原生上限、20×5 点阵、Top 5 最大占用项、/context 与交接提示词导出）
 │   ├── turn-diagnostics.ts       # 纯逐轮缓存诊断引擎（最近一轮 vs 会话缓存命中率、冷/部分/热启动分类与 +Δ 上下文净增长）
 │   ├── quota-runway.ts           # 纯配额续航预测引擎（45 分钟滚动速率、抖动过滤、恢复检测、断连缓存保底与 custom-* 模型隔离）
@@ -92,8 +98,17 @@ antigravity-context-monitor/
 │   └── images/                   # README 定稿截图资源（全部 9 页 monitor-*.png，Obsidian Slate 深色双语）
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
-├── tests/                        # Vitest 单元测试（71 个测试文件，1,350 项测试）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
-│   ├── app-plugin-manifest.test.ts # App 插件清单、sidecar.json、SKILL.md 与脚本结构回归
+├── tests/                        # Vitest 单元测试（80 个测试文件，1,462 项测试）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
+│   ├── app-cdp-injector.test.ts  # 纯 Node RFC 6455 WebSocket、CDP 发现、Shadow DOM 零 innerHTML 与 256-bit 鉴权桥回归
+│   ├── app-plugin-updater.test.ts # GitHub ETag 检查、HTTPS/443 白名单、fail-closed SHA-256、安全解压与原子回滚回归
+│   ├── calendar-engine.test.ts   # 52 周热力图、今日实时合并零重复计数、相加式 Token、400 天保留与两步清空回归
+│   ├── cli-usage-scanner.test.ts # 只读 CLI 扫描器（SQLite immutable=1 / JSONL）、9 币种换算、套餐 ROI 与 CSV 公式防护回归
+│   ├── install-app-plugin.test.ts # 跨平台安装器（--from-github / --upgrade / --status / --print-cdp-guide）、SHA-256 与 config.json 保护回归
+│   ├── orchestrator-attribution-pricing.test.ts # 编排映射/严格计价、config.json 回退、角色归因、切换冷启动、短样本与双水位线回归
+│   ├── package-app-plugin.test.ts # 纯 Node zip/tar.gz 打包器与 dist/SHA256SUMS.txt 校验回归
+│   ├── runtime-v1176-sync.test.ts # App↔IDE 双向热同步、CDP 桥、自更新、日历导出与 Windows explorer.exe 转义回归
+│   ├── webview-v1176-ui.test.ts  # 原生精简 HUD、总览/设置/关于 v1.17.6 面板、双水位线与三语言统一术语回归
+│   ├── app-plugin-manifest.test.ts # App 插件清单、sidecar.json、SKILL.md、AGENTS.md 与脚本结构回归
 │   ├── app-sidecar-server.test.ts # Sidecar HTTP 路由、ETag 缓存、静态资源与安装器回归
 │   ├── app-sidecar-runtime.test.ts # Sidecar 运行时全 9 页渲染、语言/主题/动作分发与无障碍标题/隐私按钮回归
 │   ├── context-breakdown.test.ts # 上下文构成 9 类归因、双上限、20×5 点阵、Top 5 与 /context 报告回归
@@ -169,18 +184,17 @@ antigravity-context-monitor/
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   ├── project_structure.md          # 本文件
-│   └── releases/1.17.5.md            # 当前发布说明（先英文，再中文）
+│   └── releases/1.17.6.md            # 当前发布说明（先英文，再中文）
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── PRODUCT.md                    # 产品定位、9 页能力清单、术语约束与无障碍承诺
 ├── DESIGN.md                     # Studio Telemetry Ledger 设计系统规范（色板、排版、组件与 9 页契约）
-├── package.json                  # 扩展清单、命令、配置项
+├── package.json                  # 扩展清单、命令、配置项（22 项设置）
 ├── package-lock.json             # 提交的 npm 锁文件，供本地使用 npm ci 复现依赖
 ├── tsconfig.json                 # TypeScript 编译配置
 ├── vitest.config.ts              # 测试框架配置
 ├── README.md                     # 英文文档
 ├── readme_CN.md                  # 中文文档
 ├── CHANGELOG.md                  # 唯一主变更日志（含 v1.15.2+ 详细维护记录）
-├── CHANGELOG-v2.md               # 旧链接兼容指针，后续不再维护新条目
 └── LICENSE                       # 许可证
 ```
 
@@ -566,11 +580,11 @@ npm run test:watch
 npm run package
 ```
 
-在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.4.vsix` 后重载窗口。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
+在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.6.vsix` 后重载窗口（命令行：`antigravity-ide --install-extension antigravity-context-monitor-1.17.6.vsix --force`）。对于 Antigravity App 插件，可运行 `node scripts/package-app-plugin.mjs && node scripts/install-app-plugin.mjs --install`（或使用 `AGENTS.md` 中的 `--from-github` / `--upgrade` 一键命令）。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
 
-测试文件位于 `tests/`，仅供 Vitest 与本地浏览器/原生验收使用，不会被打包到 VSIX 中。
+测试文件位于 `tests/`，仅供 Vitest 与本地浏览器/原生验收使用，不会被打包到 VSIX 或 App 插件包中。
 
-发布验收使用编译输出与重新打包安装的 1.17.4。编译、回归测试、安装包一致性、无障碍/响应式矩阵、原生 IDE 交互和平台测试范围集中记录在发布说明。[1.17.4 验证](releases/1.17.4.md#验证)
+发布验收使用编译输出与重新打包安装的 **1.17.6**。编译、单元测试（**80 个文件 / 1,462 项测试**）、安装包校验（`agy plugin validate --strict` **0 告警** + `dist/SHA256SUMS.txt`）、App Sidecar 与 CDP 悬浮层无障碍/安全矩阵、已安装 IDE UI 矩阵（**742/742**）和平台验证范围集中记录在发布说明。[1.17.6 验证](releases/1.17.6.md#验证)
 
 自动化 UI 与视觉验收统一由 `tests/installed-ide-ui.cjs` 驱动：
 - `node tests/installed-ide-ui.cjs --installed <目录>`（加 `--smoke` 运行快速冒烟）：基于 Chromium 与已编译/已安装 JS 渲染合成数据，覆盖全部 9 个标签页、浅色 / 深色 / 高对比度主题、三种语言（`en` / `zh` / `both`）与 `320px–1440px` 宽度，校验 axe-core WCAG 2.1 AA 对比度、WCAG 1.4.11 非文本对比度、零横向溢出、交互状态及零旧版 Prompt/Flow 残留，并内置 CDP 断连/超时自动回收会话机制。
