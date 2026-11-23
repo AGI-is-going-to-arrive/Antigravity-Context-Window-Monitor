@@ -35,6 +35,13 @@ export function getThemeAdapterStyles(): string {
             --vscode-editor-font-family: var(--font-mono, ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace);
         }
 
+        /* Override Antigravity /preload.js inline body background/color fallbacks (#fafafa/#333)
+         * while preserving host --background/--foreground CSS variables via --ed-bg/--ed-ink. */
+        body[data-acm-surface="app-sidecar"] {
+            background: var(--ed-bg) !important;
+            color: var(--ed-ink) !important;
+        }
+
         /* ═══ App Sidecar Theme Polarity (Light / Dark / High-Contrast) ═══ */
         body[data-acm-theme="dark"] {
             --ed-bg: var(--background, #0D1014);

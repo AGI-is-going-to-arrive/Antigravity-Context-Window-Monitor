@@ -133,6 +133,21 @@ describe('theme-adapter stylesheet generator', () => {
         // Guard against dangling comma syntax errors before @media
         expect(css).not.toMatch(/,\s*@media/);
     });
+
+    it('overrides Antigravity /preload.js inline body background/color while preserving host CSS variables', () => {
+        const css = getThemeAdapterStyles();
+        // Dedicated body[data-acm-surface="app-sidecar"] rule (not :root) must force --ed-bg / --ed-ink
+        // so /preload.js inline body.style.background/color fallbacks (#fafafa/#333) cannot cause low contrast
+        // in Dark or High-Contrast modes when host --background is unset.
+        expect(css).toMatch(
+            /(?:^|\n)\s*body\[data-acm-surface="app-sidecar"\]\s*\{\s*background:\s*var\(--ed-bg\)\s*!important;\s*color:\s*var\(--ed-ink\)\s*!important;\s*\}/,
+        );
+        // Each theme polarity must still respect host --background / --foreground when pushed via theme-change.
+        expect(css).toMatch(/body\[data-acm-theme="dark"\][\s\S]*?--ed-bg:\s*var\(--background,\s*#0D1014\);[\s\S]*?--ed-ink:\s*var\(--foreground,\s*#F2F4F8\);/);
+        expect(css).toMatch(/body\[data-acm-theme="light"\][\s\S]*?--ed-bg:\s*var\(--background,\s*#FAFBFC\);[\s\S]*?--ed-ink:\s*var\(--foreground,\s*#111318\);/);
+        expect(css).toMatch(/body\[data-acm-theme="hc"\][\s\S]*?--ed-bg:\s*var\(--background,\s*#000000\);[\s\S]*?--ed-ink:\s*var\(--foreground,\s*#FFFFFF\);/);
+        expect(css).toMatch(/body\[data-acm-theme="hc-light"\][\s\S]*?--ed-bg:\s*var\(--background,\s*#FFFFFF\);[\s\S]*?--ed-ink:\s*var\(--foreground,\s*#000000\);/);
+    });
 });
 
 describe('HTML injection & ETag hashing helpers', () => {
