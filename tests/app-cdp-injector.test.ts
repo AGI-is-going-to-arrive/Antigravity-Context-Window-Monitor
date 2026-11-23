@@ -694,9 +694,13 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
             expect(encoded).not.toContain('</script>');
             expect(encoded).toContain('\\u003c/script\\u003e');
 
-            // Styles include both dark & light themes and reduced-motion rules
-            expect(getComposerOverlayCss()).toContain(':host([data-theme="light"])');
-            expect(getComposerOverlayCss()).toContain('prefers-reduced-motion');
+            // Styles include both dark & light themes, reduced-motion rules, and single-column popover rows (zero label truncation)
+            const composerCss = getComposerOverlayCss();
+            expect(composerCss).toContain(':host([data-theme="light"])');
+            expect(composerCss).toContain('prefers-reduced-motion');
+            expect(composerCss).toMatch(/\.acm-kv-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+            expect(composerCss).not.toMatch(/\.acm-kv-grid\s*\{[^}]*repeat\(2,/);
+            expect(composerCss).toMatch(/\.acm-v\s*\{[^}]*flex-shrink:\s*0;/);
             expect(getTopBarOverlayCss()).toContain('.acm-wco-spacer');
             expect(getTopBarOverlayCss()).toContain('.acm-overflow-menu');
         });

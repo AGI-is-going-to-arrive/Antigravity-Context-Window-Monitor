@@ -12,7 +12,7 @@
 
 import type { CdpOverlayPayload, CdpOverlayToggles } from './sidecar-types';
 
-export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.6-r1';
+export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.6-r2';
 export const CDP_COMPOSER_HOST_ID = 'acm-cdp-composer-host';
 export const CDP_TOPBAR_HOST_ID = 'acm-cdp-topbar-host';
 export const CDP_RUNTIME_GLOBAL_KEY = '__ACM_CDP_OVERLAY_V1__';
@@ -318,6 +318,8 @@ export function getComposerOverlayCss(): string {
   position: fixed;
   z-index: 2147483600;
   width: min(344px, calc(100vw - 20px));
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
   padding: 14px 15px 12px;
   border-radius: 12px;
   border: 1px solid var(--acm-border-strong);
@@ -444,28 +446,25 @@ export function getComposerOverlayCss(): string {
 
 .acm-kv-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
 }
 
 .acm-kv {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 12px;
   min-width: 0;
 }
 
-.acm-kv.is-full {
-  grid-column: 1 / -1;
-}
-
 .acm-k {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--acm-ink-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .acm-v {
@@ -473,6 +472,8 @@ export function getComposerOverlayCss(): string {
   font-weight: 600;
   color: var(--acm-ink);
   white-space: nowrap;
+  flex-shrink: 0;
+  text-align: right;
 }
 
 .acm-v-sub {
@@ -1224,17 +1225,17 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     var perfSec = el('div', 'acm-section');
     var perfLabel = el('div', 'acm-section-label', 'Performance / 性能');
     var perfGrid = el('div', 'acm-kv-grid');
-    function makeKv(labelText, fullWidth) {
-      var row = el('div', fullWidth ? 'acm-kv is-full' : 'acm-kv');
+    function makeKv(labelText) {
+      var row = el('div', 'acm-kv');
       var k = el('span', 'acm-k', labelText);
       var v = el('span', 'acm-v acm-num', '—');
       row.appendChild(k);
       row.appendChild(v);
       return { row: row, k: k, v: v };
     }
-    var kvSpeed = makeKv('Output Speed', true);
-    var kvAvgSpeed = makeKv('Avg Speed', false);
-    var kvTtft = makeKv('First Token', false);
+    var kvSpeed = makeKv('Output Speed');
+    var kvAvgSpeed = makeKv('Avg Speed');
+    var kvTtft = makeKv('First Token');
     perfGrid.appendChild(kvSpeed.row);
     perfGrid.appendChild(kvAvgSpeed.row);
     perfGrid.appendChild(kvTtft.row);
@@ -1245,9 +1246,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     var cacheSec = el('div', 'acm-section');
     var cacheLabel = el('div', 'acm-section-label', 'Cache / 缓存');
     var cacheGrid = el('div', 'acm-kv-grid');
-    var kvRecentCh = makeKv('Recent CH', false);
-    var kvAvgCh = makeKv('Avg CH', false);
-    var kvTurnState = makeKv('Turn Cache', true);
+    var kvRecentCh = makeKv('Recent CH');
+    var kvAvgCh = makeKv('Avg CH');
+    var kvTurnState = makeKv('Turn Cache');
     var turnBadge = el('span', 'acm-pill-badge', '—');
     clearChildren(kvTurnState.v);
     kvTurnState.v.appendChild(turnBadge);
@@ -1261,10 +1262,10 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     var tcSec = el('div', 'acm-section');
     var tcLabel = el('div', 'acm-section-label', 'Tokens & Cost');
     var tcGrid = el('div', 'acm-kv-grid');
-    var kvCost = makeKv('Est. Cost', true);
-    var kvInOut = makeKv('Input / Output', false);
-    var kvCacheRead = makeKv('Cache Read', false);
-    var kvTotal = makeKv('Total Tokens', true);
+    var kvCost = makeKv('Est. Cost');
+    var kvInOut = makeKv('Input / Output');
+    var kvCacheRead = makeKv('Cache Read');
+    var kvTotal = makeKv('Total Tokens');
     tcGrid.appendChild(kvCost.row);
     tcGrid.appendChild(kvInOut.row);
     tcGrid.appendChild(kvCacheRead.row);
