@@ -115,7 +115,7 @@ function getFeatureCards(): FeatureCard[] {
             titleHtml: tBiHtml('Profile', '账号信息'),
             descriptionHtml: tBiHtml(
                 'Account identity with privacy mask, shared model quota pools, AI credits and expiry countdown, plus plan limits and capabilities.',
-                '当前账户身份与隐私遮罩、共享模型配额池、AI 积分与到期倒计时，以及计划限制与功能配置。',
+                '当前账号身份与隐私遮罩、共享模型配额池、AI 积分与到期倒计时，以及计划限制与功能配置。',
             ),
         },
         {
@@ -231,11 +231,11 @@ export function buildAboutTabContent(version = '1.17.5', options?: AboutTabOptio
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="3"/></svg>
                 <span>${tBiHtml('Antigravity App (Desktop 2.0+ Sidecar)', 'Antigravity App（桌面版 2.0+ Sidecar）')}</span>
             </span>
-            <span class="about-platform-chip" aria-label="${esc(tBi('SDK: not supported', 'SDK：不支持'))}">
+            <span class="about-platform-chip" role="status" aria-label="${esc(tBi('SDK: not supported', 'SDK：不支持'))}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                 <span>${tBiHtml('SDK', 'SDK')}</span>
             </span>
-            <span class="about-platform-chip" aria-label="${esc(tBi('CLI: not supported', 'CLI：不支持'))}">
+            <span class="about-platform-chip" role="status" aria-label="${esc(tBi('CLI: not supported', 'CLI：不支持'))}">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
                 <span>${tBiHtml('CLI', 'CLI')}</span>
             </span>

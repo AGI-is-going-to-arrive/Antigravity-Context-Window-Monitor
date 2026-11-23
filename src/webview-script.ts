@@ -961,6 +961,30 @@ export function getScript(): string {
                         var spEl = document.getElementById('subscriptionPlanSelect');
                         if (spEl) { spEl.value = msg.subscriptionPlan; }
                     }
+                    if (typeof msg.pollingInterval === 'number') {
+                        var piEl = document.getElementById('pollingInput');
+                        if (piEl) { piEl.value = String(msg.pollingInterval); }
+                    }
+                    if (typeof msg.quotaNotificationThreshold === 'number') {
+                        var qnEl = document.getElementById('quotaNotifyInput');
+                        if (qnEl) { qnEl.value = String(msg.quotaNotificationThreshold); }
+                    }
+                    if (Object.prototype.hasOwnProperty.call(msg, 'customFxRate')) {
+                        var fxEl = document.getElementById('customFxRateInput');
+                        if (fxEl) {
+                            fxEl.value = (typeof msg.customFxRate === 'number' && isFinite(msg.customFxRate))
+                                ? String(msg.customFxRate)
+                                : '';
+                        }
+                    }
+                    if (Object.prototype.hasOwnProperty.call(msg, 'subscriptionMonthlyFee')) {
+                        var sfEl = document.getElementById('subscriptionFeeInput');
+                        if (sfEl) {
+                            sfEl.value = (typeof msg.subscriptionMonthlyFee === 'number' && isFinite(msg.subscriptionMonthlyFee))
+                                ? String(msg.subscriptionMonthlyFee)
+                                : '';
+                        }
+                    }
                     if (typeof msg.calendarRetentionDays === 'number') {
                         var crEl = document.getElementById('calendarRetentionInput');
                         if (crEl) { crEl.value = String(msg.calendarRetentionDays); }
@@ -1495,7 +1519,7 @@ export function getScript(): string {
                 if (extUrlEl) {
                     var targetUrl = extUrlEl.getAttribute('data-url') || extUrlEl.getAttribute('href') || '';
                     if (targetUrl) {
-                        if (extUrlEl.tagName !== 'A') { e.preventDefault(); }
+                        e.preventDefault();
                         vscode.postMessage({ command: 'openExternalUrl', url: targetUrl });
                     }
                     return;

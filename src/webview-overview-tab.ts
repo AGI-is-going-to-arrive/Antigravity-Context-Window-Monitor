@@ -1101,6 +1101,7 @@ export function buildOverviewTabContent(
             telemetry?.gmSummary,
             activeCascadeId,
             telemetry?.customPricing,
+            telemetry?.orchestratorPricingMode,
         )
         : null;
     let telemetryHtml = telemetryData
@@ -1227,7 +1228,7 @@ export function buildOverviewTabContent(
         ? tBiHtml('No context measurement for this conversation yet.', '当前会话暂无上下文计量。')
         : tBiHtml('Open an Antigravity conversation to see its context usage.', '打开 Antigravity 会话后即可查看上下文用量。');
 
-    const jargonFooterHtml = connected ? `<div class="overview-jargon-row" aria-label="${esc(tBi('Terminology glossary', '术语说明'))}">
+    const jargonFooterHtml = connected ? `<div class="overview-jargon-row" role="group" aria-label="${esc(tBi('Terminology glossary', '术语说明'))}">
         <span class="overview-jargon-item">${tBiHtml('GM Data', 'GM 数据')}${jargonTipHtml('gm-data')}</span>
         <span class="overview-jargon-item">${tBiHtml('Dual-Cap', '双上限')}${jargonTipHtml('dual-cap')}</span>
         <span class="overview-jargon-item">${tBiHtml('Compaction vs Physical', '压缩上限 vs 物理窗口')}${jargonTipHtml('compaction-vs-physical')}</span>

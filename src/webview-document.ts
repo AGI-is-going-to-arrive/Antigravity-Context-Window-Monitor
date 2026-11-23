@@ -474,7 +474,7 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
 
     // Telemetry (Speed with Short sample guard, TTFT, Cache Hit %)
     const activeCascadeId = input.activeCascadeId || input.usage?.cascadeId;
-    const telemetry = extractOverviewTelemetry(input.gmSummary, activeCascadeId, input.customPricing);
+    const telemetry = extractOverviewTelemetry(input.gmSummary, activeCascadeId, input.customPricing, input.orchestratorPricingMode);
     const primary = telemetry?.primary ?? null;
     const speedSample = input.speedSample
         ?? primary?.latestSpeedSample

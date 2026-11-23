@@ -394,12 +394,31 @@ describe('v1.17.6 Overview Tab: Orchestrator Split, Dual Watermarks, Speed/Turn 
                 orchestratorSettings: SAMPLE_ORCH_SETTINGS,
             },
         );
-        expect(multiHtml).toContain('id="orchestratorSplitCard"');
+        expect(multiHtml).toContain('id="overviewOrchestratorSplitCard"');
         expect(multiHtml).toContain('data-orchestrator-split="true"');
         expect(multiHtml).toContain('编排模型');
         expect(multiHtml).toContain('执行模型');
         expect(multiHtml).not.toContain('编排器模型');
         expect(multiHtml).not.toContain('执行器模型');
+
+        // Full document containing both #tab-overview and #tab-gmdata must have ZERO duplicate split card IDs
+        const fullDoc = buildMonitorDocumentHtml({
+            surface: 'app-sidecar',
+            data: makeUsage({
+                model: 'MODEL_PLACEHOLDER_M401',
+                orchestratorConfig: {
+                    planModel: 'MODEL_PLACEHOLDER_M401',
+                    executionModel: 'MODEL_PLACEHOLDER_M528',
+                },
+            }),
+            modelConfigs: [makeConfig('MODEL_PLACEHOLDER_M401'), makeConfig('MODEL_PLACEHOLDER_M528')],
+            userInfo: makeUserInfo(),
+            gmSummary: makeGMSummary(multiCalls),
+            orchestratorSettings: SAMPLE_ORCH_SETTINGS,
+            now: NOW,
+        });
+        expect(fullDoc.match(/id="overviewOrchestratorSplitCard"/g)).toHaveLength(1);
+        expect(fullDoc.match(/id="orchestratorSplitCard"/g)).toHaveLength(1);
 
         const singleCalls = [makeCall({ executionId: 's1' }), makeCall({ executionId: 's2' })];
         const singleHtml = buildOverviewTabContent(
@@ -411,6 +430,7 @@ describe('v1.17.6 Overview Tab: Orchestrator Split, Dual Watermarks, Speed/Turn 
             NOW,
             { gmSummary: makeGMSummary(singleCalls) },
         );
+        expect(singleHtml).not.toContain('id="overviewOrchestratorSplitCard"');
         expect(singleHtml).not.toContain('id="orchestratorSplitCard"');
     });
 
@@ -483,10 +503,46 @@ describe('v1.17.6 Overview Tab: Orchestrator Split, Dual Watermarks, Speed/Turn 
         expect(html).toContain('data-turn-net-delta="20000"');
         expect(html).toContain('+20k');
 
-        // All 5 accessible inline jargon explainer tooltips
+        // All 5 accessible inline jargon explainer tooltips + valid role="group" container
+        expect(html).toContain('<div class="overview-jargon-row" role="group" aria-label=');
         for (const jargon of ['gm-data', 'ttft', 'dual-cap', 'compaction-vs-physical', 'mapped-base-rate']) {
             expect(html, `missing jargon tip ${jargon}`).toContain(`data-jargon="${jargon}"`);
         }
+    });
+
+    it('forwards orchestratorPricingMode to Overview telemetry so legacy M537 cache savings resolve in mapped mode and omit USD in strict mode', async () => {
+        await setLanguageToState('en', memState);
+        const legacyCall = makeCall({
+            model: 'MODEL_PLACEHOLDER_M537',
+            modelDisplay: 'Orchestrator (Neon)',
+            responseModel: 'gemini-pro-orchestrator-neon',
+            inputTokens: 10_000,
+            cacheReadTokens: 100_000,
+            outputTokens: 400,
+            streamingSeconds: 4.0,
+        });
+        const gm = makeGMSummary([legacyCall]);
+        const mappedHtml = buildOverviewTabContent(
+            makeUsage({ model: 'MODEL_PLACEHOLDER_M537' }),
+            [makeConfig('MODEL_PLACEHOLDER_M537')],
+            makeUserInfo(),
+            15,
+            { state: 'active' },
+            NOW,
+            { gmSummary: gm, orchestratorPricingMode: 'mapped' },
+        );
+        const strictHtml = buildOverviewTabContent(
+            makeUsage({ model: 'MODEL_PLACEHOLDER_M537' }),
+            [makeConfig('MODEL_PLACEHOLDER_M537')],
+            makeUserInfo(),
+            15,
+            { state: 'active' },
+            NOW,
+            { gmSummary: gm, orchestratorPricingMode: 'strict' },
+        );
+        expect(mappedHtml).toContain('$0.28'); // 100k cacheRead * ($3 - $0.15) / 1e6 = $0.285 -> $0.28 / $0.29
+        expect(strictHtml).not.toContain('$0.28');
+        expect(strictHtml).toContain('100k tokens');
     });
 
     it('renders App-side Low-Quota Warning Banner when pool remaining % <= threshold and suppresses for BYOK / threshold=0', async () => {
@@ -695,9 +751,12 @@ describe('v1.17.6 About Tab: Version & Updates Strip, AGENTS.md Tip & Community 
             expect(appAbout, `missing acknowledgment ${repo}`).toContain(repo);
         }
 
-        // Unified Profile terminology (never '个人' on feature card)
+        // Unified Profile terminology (never '个人' on feature card, never '当前账户')
         expect(appAbout).not.toContain('>个人<');
+        expect(appAbout).not.toContain('当前账户');
         expect(appAbout).not.toContain('令牌');
+        // All 4 platform chips carry valid role="status" for aria-label WCAG compliance
+        expect(appAbout.match(/class="about-platform-chip[^"]*" role="status"/g)).toHaveLength(4);
 
         const ideAbout = buildAboutTabContent('1.17.5', {
             surface: 'ide',
@@ -764,6 +823,14 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
         }
         // Two-step clear guard: #clearCalendarBtn must NOT directly post clearCalendarHistory
         expect(script).not.toMatch(/target\.closest\('#clearCalendarBtn'\)\)\s*\{\s*vscode\.postMessage\(\{\s*command:\s*'clearCalendarHistory'/);
+        // syncSettingsControls syncs polling, quota threshold, customFxRate, and subscriptionMonthlyFee
+        expect(script).toContain("typeof msg.pollingInterval === 'number'");
+        expect(script).toContain("typeof msg.quotaNotificationThreshold === 'number'");
+        expect(script).toContain("Object.prototype.hasOwnProperty.call(msg, 'customFxRate')");
+        expect(script).toContain("Object.prototype.hasOwnProperty.call(msg, 'subscriptionMonthlyFee')");
+        // openExternalUrl always calls e.preventDefault() so <a> links do not double-open
+        expect(script).not.toContain("if (extUrlEl.tagName !== 'A') { e.preventDefault(); }");
+        expect(script).toMatch(/command:\s*'openExternalUrl'[\s\S]{0,120}|e\.preventDefault\(\);\s*vscode\.postMessage\(\{\s*command:\s*'openExternalUrl'/);
     });
 
     it('enforces unified EN/ZH/Both i18n terminology with zero raw fallback keys or 令牌', async () => {

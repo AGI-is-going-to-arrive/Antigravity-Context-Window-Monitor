@@ -869,4 +869,89 @@ describe('Studio-Telemetry Calendar & Activity Heatmap Dashboard UI', () => {
         expect(css).toContain('.cal-clear-confirm');
         expect(css).toContain('--ed-accent');
     });
+
+    it('keeps ISO week keys and range spans DST-safe across spring-forward transitions and emits valid ARIA roles', () => {
+        const store = new DailyStore();
+        // Cover both Northern (Mar 8, 2026) and Southern (Oct 4, 2026) spring-forward DST weeks
+        const sampleDates = [
+            '2026-03-02', // W10
+            '2026-03-09', // W11
+            '2026-03-16', // W12
+            '2026-09-28', // W40
+            '2026-10-05', // W41
+            '2026-10-12', // W42
+            '2026-10-19', // W43
+        ];
+        const records: DailyStoreState['records'] = {};
+        for (const dk of sampleDates) {
+            records[dk] = {
+                date: dk,
+                cycles: [{
+                    startTime: `${dk}T01:00:00Z`,
+                    endTime: `${dk}T02:00:00Z`,
+                    totalReasoning: 0, totalToolCalls: 0, totalErrors: 0,
+                    totalInputTokens: 0, totalOutputTokens: 0, estSteps: 0,
+                    modelNames: ['Gemini 4 Neon (High)'],
+                    gmTotalCalls: 1,
+                    gmTotalTokens: 10_000,
+                    gmTotalAllTokens: 50_000,
+                    estimatedCost: 0.5,
+                    surface: 'app',
+                    gmModelStats: {
+                        'Gemini 4 Neon (High)': {
+                            calls: 1, credits: 0,
+                            inputTokens: 8_000, outputTokens: 2_000, thinkingTokens: 0,
+                            cacheReadTokens: 40_000, cacheCreationTokens: 0,
+                            avgTTFT: 0.4, cacheHitRate: 0.8, estimatedCost: 0.5,
+                        },
+                    },
+                }],
+            };
+        }
+        store.restoreSnapshot({ version: 1, records });
+
+        // Weekly chart in Oct 2026 must keep distinct 2026-W40..W43 bars (no DST collision!)
+        const octWeeklyHtml = buildCalendarTabContent(store, 2026, 10, {
+            periodMode: 'weekly',
+            now: localDate(2026, 10, 20),
+            language: 'en',
+        });
+        expect(octWeeklyHtml).toContain('>2026-W40<');
+        expect(octWeeklyHtml).toContain('>2026-W41<');
+        expect(octWeeklyHtml).toContain('>2026-W42<');
+        expect(octWeeklyHtml).toContain('>2026-W43<');
+        expect(octWeeklyHtml).not.toContain('100.0k'); // No two 50k weeks collided into one 100k week!
+
+        // Weekly chart in Mar 2026 must keep distinct 2026-W10..W12 bars (no US DST collision!)
+        const marWeeklyHtml = buildCalendarTabContent(store, 2026, 3, {
+            periodMode: 'weekly',
+            now: localDate(2026, 3, 20),
+            language: 'en',
+        });
+        expect(marWeeklyHtml).toContain('>2026-W10<');
+        expect(marWeeklyHtml).toContain('>2026-W11<');
+        expect(marWeeklyHtml).toContain('>2026-W12<');
+        expect(marWeeklyHtml).not.toContain('100.0k');
+
+        // All-Time span from 2026-03-02 to 2026-10-19 inclusive is strictly 232 calendar days
+        const allHtml = buildCalendarTabContent(store, 2026, 10, {
+            periodMode: 'all',
+            now: localDate(2026, 10, 20),
+            language: 'en',
+        });
+        expect(allHtml).toContain('232d');
+
+        // Non-interactive <div> bars must NOT carry prohibited aria-label
+        expect(octWeeklyHtml).not.toMatch(/<div class="cal-bar-row[^"]*"[^>]*aria-label=/);
+
+        // Daily view legend and day token breakdown carry role="group" with aria-label
+        const dailyHtml = buildCalendarTabContent(store, 2026, 10, {
+            periodMode: 'daily',
+            selectedDate: '2026-10-19',
+            now: localDate(2026, 10, 20),
+            language: 'en',
+        });
+        expect(dailyHtml).toContain('<div class="cal-hm-legend" role="group" aria-label=');
+        expect(dailyHtml).toContain('<div class="cal-token-breakdown" role="group" aria-label=');
+    });
 });

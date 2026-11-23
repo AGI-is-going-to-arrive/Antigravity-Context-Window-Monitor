@@ -171,6 +171,11 @@ function addLocalDays(date: Date, deltaDays: number): Date {
     return d;
 }
 
+/** DST-safe integer day index using UTC midnight for the Date's local Y/M/D. */
+function utcDayNumber(date: Date): number {
+    return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000);
+}
+
 function getMonthGrid(year: number, month: number): { daysInMonth: number; startDay: number } {
     const daysInMonth = new Date(year, month, 0).getDate();
     const firstDay = new Date(year, month - 1, 1).getDay(); // 0=Sun
@@ -190,7 +195,7 @@ function getIsoWeekKey(dateStr: string): { key: string; label: string; startDate
     const jan4 = new Date(isoYear, 0, 4);
     const jan4Day = jan4.getDay() === 0 ? 7 : jan4.getDay();
     const week1Monday = new Date(isoYear, 0, 4 + (1 - jan4Day));
-    const weekNum = Math.floor((monday.getTime() - week1Monday.getTime()) / (7 * 86_400_000)) + 1;
+    const weekNum = Math.floor((utcDayNumber(monday) - utcDayNumber(week1Monday)) / 7) + 1;
     const wStr = String(Math.max(1, Math.min(53, weekNum))).padStart(2, '0');
     return {
         key: `${isoYear}-W${wStr}`,
@@ -600,7 +605,7 @@ function filterDaysForRange(
         const rangeEnd = isCurYear ? todayKey : `${currentYear}-12-31`;
         const startD = new Date(currentYear, 0, 1);
         const endD = isCurYear ? todayDate : new Date(currentYear, 11, 31);
-        const spanDays = Math.max(1, Math.floor((endD.getTime() - startD.getTime()) / 86_400_000) + 1);
+        const spanDays = Math.max(1, utcDayNumber(endD) - utcDayNumber(startD) + 1);
         return {
             days: allSorted.filter(d => d.date.startsWith(yearPrefix)),
             rangeStart,
@@ -613,7 +618,7 @@ function filterDaysForRange(
         // Last 12 months ending at selected/current month
         const startD = new Date(todayDate.getFullYear(), todayDate.getMonth() - 11, 1);
         const rangeStart = toLocalDateKey(startD);
-        const spanDays = Math.max(1, Math.floor((todayDate.getTime() - startD.getTime()) / 86_400_000) + 1);
+        const spanDays = Math.max(1, utcDayNumber(todayDate) - utcDayNumber(startD) + 1);
         return {
             days: allSorted.filter(d => d.date >= rangeStart && d.date <= todayKey),
             rangeStart,
@@ -640,7 +645,7 @@ function filterDaysForRange(
         const sD = parseDateKeyLocal(rangeStart);
         const eD = parseDateKeyLocal(rangeEnd);
         const spanDays = sD && eD && eD >= sD
-            ? Math.floor((eD.getTime() - sD.getTime()) / 86_400_000) + 1
+            ? utcDayNumber(eD) - utcDayNumber(sD) + 1
             : Math.max(1, allSorted.length);
         return { days: allSorted, rangeStart, rangeEnd, spanDays };
     }
@@ -659,7 +664,7 @@ function filterDaysForRange(
         : Math.max(1, (() => {
             const sD = parseDateKeyLocal(effectiveStart);
             const eD = parseDateKeyLocal(effectiveEnd);
-            return sD && eD && eD >= sD ? Math.floor((eD.getTime() - sD.getTime()) / 86_400_000) + 1 : 1;
+            return sD && eD && eD >= sD ? utcDayNumber(eD) - utcDayNumber(sD) + 1 : 1;
         })());
 
     return { days: effectiveDays, rangeStart: effectiveStart, rangeEnd: effectiveEnd, spanDays };
@@ -1205,7 +1210,7 @@ function buildHeatmapSection(
         <div class="cal-heatmap-section" data-cal-heatmap="true">
             <div class="cal-heatmap-head">
                 <span class="cal-heatmap-caption">${biHtml(`Last ${weeks} Weeks`, `近 ${weeks} 周活动热力图`)}</span>
-                <div class="cal-hm-legend" aria-label="${esc(bi('Activity intensity scale', '活动强度图例'))}">
+                <div class="cal-hm-legend" role="group" aria-label="${esc(bi('Activity intensity scale', '活动强度图例'))}">
                     <span class="cal-hm-legend-text">${biHtml('Less', '较少')}</span>
                     ${legendCells}
                     <span class="cal-hm-legend-text">${biHtml('More', '较多')}</span>
@@ -1363,8 +1368,10 @@ function buildPeriodBarsHtml(
         const tag = jumpAttrs ? 'button type="button"' : 'div';
         const closeTag = jumpAttrs ? 'button' : 'div';
 
+        const ariaLabelAttr = jumpAttrs ? ` aria-label="${esc(tip)}"` : '';
+
         return `
-            <${tag} class="cal-bar-row${isPeak ? ' is-peak' : ''}${jumpAttrs ? ' is-interactive' : ''}"${jumpAttrs} title="${esc(tip)}" aria-label="${esc(tip)}">
+            <${tag} class="cal-bar-row${isPeak ? ' is-peak' : ''}${jumpAttrs ? ' is-interactive' : ''}"${jumpAttrs} title="${esc(tip)}"${ariaLabelAttr}>
                 <span class="cal-bar-label">
                     <span class="cal-bar-title">${esc(b.label)}</span>
                     <span class="cal-bar-sub">${esc(b.sublabel)}</span>
@@ -1772,7 +1779,7 @@ function buildDayDetail(
             ? ` (${biHtml('Thinking', '思考')}: ${formatTokensCompact(day.thinkingTokens)})`
             : '';
         return `
-            <div class="cal-token-breakdown" aria-label="${esc(bi('Token breakdown', 'Token 构成'))}">
+            <div class="cal-token-breakdown" role="group" aria-label="${esc(bi('Token breakdown', 'Token 构成'))}">
                 <div class="cal-tok-bar" aria-hidden="true">
                     ${day.inputTokens > 0 ? `<span class="cal-tok-seg is-input" style="width:${Math.max(1, inPct)}%"></span>` : ''}
                     ${day.cacheReadTokens > 0 ? `<span class="cal-tok-seg is-cache" style="width:${Math.max(1, crPct)}%"></span>` : ''}

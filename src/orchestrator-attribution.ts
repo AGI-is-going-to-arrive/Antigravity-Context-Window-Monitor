@@ -1136,7 +1136,9 @@ export function buildOrchestratorSplitCardHtml(
 
     const branchIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.5 7.5 11 15.5"/><path d="M15.5 7.5 13 15.5"/></svg>`;
 
-    return `<section class="orch-split-card${compact ? ' is-compact' : ''}" id="orchestratorSplitCard" data-orchestrator-split="true" data-cold-switches="${split.coldCacheSwitchCount}">
+    const cardId = compact ? 'overviewOrchestratorSplitCard' : 'orchestratorSplitCard';
+
+    return `<section class="orch-split-card${compact ? ' is-compact' : ''}" id="${cardId}" data-orchestrator-split="true" data-cold-switches="${split.coldCacheSwitchCount}">
         <div class="orch-split-head">
             <h3 class="orch-split-title">${branchIcon}<span>${tBiHtml('Orchestrator vs Executor', '编排模型 vs 执行模型')}</span></h3>
             <div class="orch-split-meta">${metaPills.join('')}</div>
