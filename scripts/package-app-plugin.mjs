@@ -377,7 +377,7 @@ export function packageAppPlugin(options = {}) {
     }
 
     const manifest = readJsonNoBom(join(appPluginSrc, 'plugin.json'));
-    const version = String(manifest.version || '1.17.5').trim();
+    const version = String(manifest.version || '1.17.6').trim();
     const stageDir = join(distRoot, 'antigravity-context-monitor-app');
     const runtimeDir = join(stageDir, 'sidecars', 'context_monitor', 'runtime');
 

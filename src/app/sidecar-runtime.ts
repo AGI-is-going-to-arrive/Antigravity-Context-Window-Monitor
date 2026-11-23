@@ -399,7 +399,7 @@ export interface SidecarRuntimeDeps {
 }
 
 export interface SidecarRuntimeOptions {
-    /** Semantic version string (defaults to package.json / '1.17.5'). */
+    /** Semantic version string (defaults to package.json / '1.17.6'). */
     version?: string;
     /** Override path for DurableState `state-v1.json` (defaults to platform-native shared path). */
     statePath?: string;
