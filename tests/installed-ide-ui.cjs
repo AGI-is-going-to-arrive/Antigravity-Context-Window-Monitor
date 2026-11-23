@@ -2938,6 +2938,7 @@ async function browserMatrix(packageJSON) {
                         if (width === 320 && (theme === 'vscode-light' || theme === 'vscode-dark')) { audit('#tab-overview'); }
                         const quickModels = '#tab-overview [data-overview-target="models"]';
                         assert(evaluate(`document.querySelector('${quickModels}')?.checkVisibility()`), 'overview model action is visible');
+                        evaluate(`document.querySelector('${quickModels}')?.scrollIntoView({ block: 'center' })`);
                         click(quickModels);
                         assert(evaluate('!!document.querySelector("#tab-models.active")'), 'overview model action opens Models');
                         const result = evaluate(measurements);
