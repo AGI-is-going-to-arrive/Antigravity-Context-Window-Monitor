@@ -783,6 +783,10 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
         expect(docHtml).toContain('.cal-kpi-grid');
         expect(docHtml).toContain('.native-hud-bar');
 
+        const editorialCss = getEditorialStyles();
+        expect(editorialCss).toMatch(/body\s+\.stg-header\s*\{[^}]*flex-wrap:\s*wrap/);
+        expect(editorialCss).toMatch(/body\s+\.stg-status-pill\s*\{[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/);
+
         for (const css of [
             getEditorialStyles(),
             getOverviewStyles(),

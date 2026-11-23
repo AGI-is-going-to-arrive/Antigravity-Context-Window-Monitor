@@ -2896,6 +2896,14 @@ export function getEditorialStyles(): string {
         }
 
         /* Settings v1.17.6 Cards, Collapsible IDE Card, Status Pills, CDP Guide & Form Grid */
+        body .stg-header {
+            flex-wrap: wrap;
+            gap: 6px 8px;
+            min-width: 0;
+        }
+        body .stg-header h2 {
+            min-width: 0;
+        }
         body .stg-card-details {
             margin: 0;
             padding: 0;
@@ -2905,7 +2913,9 @@ export function getEditorialStyles(): string {
             cursor: pointer;
             display: flex;
             align-items: center;
-            gap: 8px;
+            flex-wrap: wrap;
+            gap: 6px 8px;
+            min-width: 0;
             margin-bottom: 0;
             padding-block: 2px;
         }
@@ -2937,6 +2947,7 @@ export function getEditorialStyles(): string {
             margin-inline-start: auto;
             display: inline-flex;
             align-items: center;
+            flex-wrap: wrap;
             gap: 5px;
             padding: 2px 8px;
             border-radius: var(--ed-radius-pill);
@@ -2945,7 +2956,10 @@ export function getEditorialStyles(): string {
             border: 1px solid var(--ed-border-strong);
             background: var(--ed-surface-well);
             color: var(--ed-ink-secondary);
-            white-space: nowrap;
+            max-width: 100%;
+            box-sizing: border-box;
+            white-space: normal;
+            overflow-wrap: anywhere;
         }
         body .stg-status-pill.is-connected,
         body .stg-status-pill.is-uptodate {
@@ -3224,6 +3238,9 @@ export function getEditorialStyles(): string {
             }
             body .stg-form-grid {
                 grid-template-columns: minmax(0, 1fr);
+            }
+            body .stg-status-pill {
+                margin-inline-start: 0;
             }
         }
 
