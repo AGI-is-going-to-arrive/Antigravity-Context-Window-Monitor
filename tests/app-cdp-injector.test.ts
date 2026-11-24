@@ -28,13 +28,16 @@ import {
     encodeWebSocketFrame,
     fetchCdpTargets,
     getCdpPlatformGuide,
+    inspectAntigravityHostProcess,
     isLoopbackUrl,
+    parseAntigravityHostCommandLine,
     parseDevToolsActivePortContent,
     resolveDevToolsActivePortPaths,
     selectAntigravityHubTarget,
     validateOverlayBridgeRequest,
     type CdpClientLike,
     type CdpTargetInfo,
+    type ProcessTableEntry,
 } from '../src/app/cdp-injector';
 import type { CdpOverlayBridgeAction, CdpOverlayPayload } from '../src/app/sidecar-types';
 
@@ -422,6 +425,18 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
                 '/custom/run/DevToolsActivePort',
                 '/Users/alice/Library/Application Support/Antigravity/DevToolsActivePort',
             ]);
+
+            // Custom --user-data-dir prepends <dir>/DevToolsActivePort ahead of all defaults
+            expect(resolveDevToolsActivePortPaths({
+                platform: 'darwin',
+                homedir: '/Users/alice',
+                customUserDataDir: '/tmp/custom-agy-profile',
+                env: { AGY_BROWSER_ACTIVE_PORT_FILE: '/custom/run/DevToolsActivePort' },
+            })).toEqual([
+                '/tmp/custom-agy-profile/DevToolsActivePort',
+                '/custom/run/DevToolsActivePort',
+                '/Users/alice/Library/Application Support/Antigravity/DevToolsActivePort',
+            ]);
         });
 
         it('parses valid DevToolsActivePort payloads and rejects malformed entries', () => {
@@ -448,14 +463,88 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
             });
         });
 
-        it('provides concise zero-patch launch guides for macOS, Windows, and Linux', () => {
+        it('provides concise zero-patch launch guides with macOS 5s teardown wait & persistent launcher guidance', () => {
             for (const plat of ['darwin', 'win32', 'linux'] as const) {
                 const guide = getCdpPlatformGuide(plat);
                 expect(guide.platform).toBe(plat);
                 expect(guide.command).toContain('--remote-debugging-port=0');
+                expect(guide.en).toContain('--setup-cdp-launcher');
+                expect(guide.zh).toContain('--setup-cdp-launcher');
                 expect(guide.en.length).toBeGreaterThan(20);
                 expect(guide.zh.length).toBeGreaterThan(15);
             }
+            const macGuide = getCdpPlatformGuide('darwin');
+            expect(macGuide.command).toContain('while pgrep -f');
+            expect(macGuide.en).toMatch(/5s|5-second/);
+            expect(macGuide.zh).toContain('5 秒');
+        });
+
+        it('parses Antigravity main host argv and walks grandparent PIDs read-only while excluding IDE/Helper processes', () => {
+            // macOS main process without flag
+            expect(parseAntigravityHostCommandLine('/Applications/Antigravity.app/Contents/MacOS/Antigravity')).toEqual({
+                isAntigravityHost: true,
+                hasRemoteDebuggingFlag: false,
+            });
+            // macOS main process with =0 and quoted --user-data-dir
+            expect(parseAntigravityHostCommandLine(
+                '/Applications/Antigravity.app/Contents/MacOS/Antigravity --user-data-dir="/tmp/my agy profile" --remote-debugging-port=0',
+            )).toEqual({
+                isAntigravityHost: true,
+                hasRemoteDebuggingFlag: true,
+                customUserDataDir: '/tmp/my agy profile',
+            });
+            // macOS main process with fixed port 9222 and unquoted --user-data-dir containing spaces
+            expect(parseAntigravityHostCommandLine(
+                '/Applications/Antigravity.app/Contents/MacOS/Antigravity --user-data-dir=/tmp/space profile --remote-debugging-port=9222',
+            )).toEqual({
+                isAntigravityHost: true,
+                hasRemoteDebuggingFlag: true,
+                explicitPort: 9222,
+                customUserDataDir: '/tmp/space profile',
+            });
+            // Windows main process
+            expect(parseAntigravityHostCommandLine(
+                '"C:\\Users\\Alice\\AppData\\Local\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=9333',
+            )).toEqual({
+                isAntigravityHost: true,
+                hasRemoteDebuggingFlag: true,
+                explicitPort: 9333,
+            });
+            // Linux main process
+            expect(parseAntigravityHostCommandLine('/opt/Antigravity/antigravity --remote-debugging-port=0')).toEqual({
+                isAntigravityHost: true,
+                hasRemoteDebuggingFlag: true,
+            });
+            // Excluded non-host processes (Antigravity IDE, Helper/Renderer, language_server, sidecar)
+            for (const nonHost of [
+                '/Applications/Antigravity IDE.app/Contents/MacOS/Electron --remote-debugging-port=9222',
+                '/Applications/Antigravity Tools.app/Contents/MacOS/Antigravity Tools',
+                '/Applications/Antigravity.app/Contents/Frameworks/Antigravity Helper (Renderer).app/Contents/MacOS/Antigravity Helper (Renderer) --type=renderer',
+                '/Applications/Antigravity.app/Contents/Resources/bin/language_server_macos_arm --csrf_token=abc',
+                'node /Users/alice/.gemini/config/plugins/antigravity-context-monitor/sidecars/context_monitor/main.mjs',
+                '/bin/zsh -c "pgrep -f /Applications/Antigravity.app/Contents/MacOS/Antigravity"',
+                'bash -c "/Applications/Antigravity.app/Contents/MacOS/Antigravity"',
+            ]) {
+                expect(parseAntigravityHostCommandLine(nonHost).isAntigravityHost).toBe(false);
+            }
+
+            // Grandparent walk: sidecar -> ppid 52018 (language_server) -> ppid 51565 (Antigravity main)
+            const procTable = new Map<number, ProcessTableEntry>([
+                [52018, { pid: 52018, ppid: 51565, command: '/Applications/Antigravity.app/Contents/Resources/bin/language_server_macos_arm' }],
+                [51565, { pid: 51565, ppid: 1, command: '/Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=9222 --user-data-dir=/tmp/agy-alt' }],
+            ]);
+            const inspected = inspectAntigravityHostProcess({
+                platform: 'darwin',
+                startPid: 52018,
+                readProcessEntry: (pid) => procTable.get(pid) ?? null,
+            });
+            expect(inspected).toMatchObject({
+                found: true,
+                pid: 51565,
+                hasRemoteDebuggingFlag: true,
+                explicitPort: 9222,
+                customUserDataDir: '/tmp/agy-alt',
+            });
         });
     });
 
@@ -562,6 +651,12 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
             expect(selectAntigravityHubTarget(
                 [sidecarZh, sidecarEnvPort, swarmTarget, pluginTarget],
                 { env: { ANTIGRAVITY_SIDECAR_WEB_PORT: '54999' } },
+            )).toBeNull();
+
+            // Also excludes ANTIGRAVITY_SIDECAR_PORT alongside ANTIGRAVITY_SIDECAR_WEB_PORT
+            expect(selectAntigravityHubTarget(
+                [sidecarEnvPort],
+                { env: { ANTIGRAVITY_SIDECAR_PORT: '54999' } },
             )).toBeNull();
         });
 
@@ -1174,6 +1269,168 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
             expect(stEvalErr.errorMessage).toContain('Target crashed');
 
             await mgr.dispose();
+        });
+
+        it('detaches open WebSocket and honors reconnectBackoffMs when createBridgeFn() throws (zero socket leak)', async () => {
+            let nowMs = 3_000_000;
+            let open = true;
+            const closeSpy = vi.fn().mockImplementation(async () => { open = false; });
+            const evalSpy = vi.fn().mockResolvedValue({ ok: true });
+            const fakeClient: CdpClientLike = {
+                get isOpen() { return open; },
+                send: vi.fn().mockResolvedValue({}),
+                evaluate: evalSpy,
+                close: closeSpy,
+            };
+            const connectSpy = vi.fn().mockImplementation(async () => {
+                open = true;
+                return fakeClient;
+            });
+            const bridgeSpy = vi.fn().mockRejectedValue(new Error('EADDRINUSE bridge failure'));
+
+            const mgr = createCdpAmbientOverlayManager({
+                platform: 'darwin',
+                enableActionBridge: true,
+                reconnectBackoffMs: 15_000,
+                now: () => nowMs,
+                discoverActivePort: () => ({ port: 9222, wsPath: '/devtools/browser/1', filePath: '/tmp/DevToolsActivePort' }),
+                fetchTargets: async () => [{
+                    id: 'hub-1',
+                    type: 'page',
+                    title: 'Antigravity',
+                    url: 'https://127.0.0.1:62501/',
+                    webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/hub-1',
+                }],
+                connectClient: connectSpy,
+                createBridge: bridgeSpy,
+            });
+
+            const stErr = await mgr.setToggles({ appComposerRingEnabled: true, appTopBarEnabled: false });
+            expect(stErr.state).toBe('error');
+            expect(stErr.diagnosticCode).toBe('ws_error');
+            expect(stErr.errorMessage).toContain('EADDRINUSE bridge failure');
+            // Open WebSocket MUST have been detached & closed immediately on bridge failure
+            expect(closeSpy).toHaveBeenCalledTimes(1);
+            expect(fakeClient.isOpen).toBe(false);
+            expect(evalSpy).not.toHaveBeenCalled();
+
+            // Subsequent payload tick inside reconnectBackoffMs MUST respect backoff (no reconnect, no eval with null bridge)
+            nowMs += 5_000;
+            const stBackoff = await mgr.updatePayload(makeSamplePayload());
+            expect(stBackoff.state).toBe('error');
+            expect(connectSpy).toHaveBeenCalledTimes(1);
+            expect(evalSpy).not.toHaveBeenCalled();
+
+            // Once backoff expires, retries cleanly
+            nowMs += 15_000;
+            await mgr.updatePayload(makeSamplePayload());
+            expect(connectSpy).toHaveBeenCalledTimes(2);
+            expect(closeSpy).toHaveBeenCalledTimes(2);
+
+            await mgr.dispose();
+        });
+
+        it('reports host_missing_flag, discovers custom --user-data-dir DevToolsActivePort, falls back to fixed --remote-debugging-port=9222, and attaches launcherStatus', async () => {
+            // 1. Host confirmed running WITHOUT --remote-debugging-port -> host_missing_flag + hostHasDebugFlag: false
+            const mgrNoFlag = createCdpAmbientOverlayManager({
+                platform: 'darwin',
+                enableActionBridge: false,
+                discoverActivePort: () => null,
+                inspectHostProcess: () => ({
+                    found: true,
+                    pid: 51565,
+                    commandLine: '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
+                    hasRemoteDebuggingFlag: false,
+                }),
+            });
+            const stNoFlag = await mgrNoFlag.setToggles({ appComposerRingEnabled: true, appTopBarEnabled: false });
+            expect(stNoFlag.state).toBe('cdp_unavailable');
+            expect(stNoFlag.diagnosticCode).toBe('host_missing_flag');
+            expect(stNoFlag.hostHasDebugFlag).toBe(false);
+            expect(stNoFlag.launcherStatus).toBeDefined();
+            expect(stNoFlag.launcherStatus?.platform).toBe('darwin');
+            await mgrNoFlag.dispose();
+
+            // 2. Custom --user-data-dir DevToolsActivePort discovery via host argv
+            const customProfileDir = path.join(tempDir, 'custom-profile');
+            fs.mkdirSync(customProfileDir, { recursive: true });
+            const customPortFile = path.join(customProfileDir, 'DevToolsActivePort');
+            fs.writeFileSync(customPortFile, '61444\n/devtools/browser/custom-uuid\n', 'utf8');
+
+            const fetchedPorts: number[] = [];
+            const makeMockClient = (): CdpClientLike => {
+                let open = true;
+                return {
+                    get isOpen() { return open; },
+                    send: vi.fn().mockResolvedValue({}),
+                    evaluate: vi.fn().mockResolvedValue({ ok: true }),
+                    close: vi.fn().mockImplementation(async () => { open = false; }),
+                };
+            };
+
+            const mgrCustomDir = createCdpAmbientOverlayManager({
+                platform: 'darwin',
+                env: { HOME: path.join(tempDir, 'empty-home') },
+                enableActionBridge: false,
+                inspectHostProcess: () => ({
+                    found: true,
+                    pid: 60001,
+                    hasRemoteDebuggingFlag: true,
+                    customUserDataDir: customProfileDir,
+                }),
+                fetchTargets: async (port) => {
+                    fetchedPorts.push(port);
+                    return [{
+                        id: 'hub-custom',
+                        type: 'page',
+                        title: 'Antigravity',
+                        url: 'https://127.0.0.1:62501/',
+                        webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/hub-custom`,
+                    }];
+                },
+                connectClient: async () => makeMockClient(),
+            });
+
+            const stCustom = await mgrCustomDir.setToggles({ appComposerRingEnabled: true, appTopBarEnabled: false });
+            expect(stCustom.state).toBe('connected');
+            expect(stCustom.discoveredPort).toBe(61444);
+            expect(stCustom.portFilePath).toBe(customPortFile);
+            expect(stCustom.hostHasDebugFlag).toBe(true);
+            expect(fetchedPorts).toEqual([61444]);
+            await mgrCustomDir.dispose();
+
+            // 3. Fixed --remote-debugging-port=9222 fallback when DevToolsActivePort is missing
+            const probedFixedPorts: number[] = [];
+            const mgrFixedPort = createCdpAmbientOverlayManager({
+                platform: 'darwin',
+                enableActionBridge: false,
+                discoverActivePort: () => null,
+                inspectHostProcess: () => ({
+                    found: true,
+                    pid: 60002,
+                    hasRemoteDebuggingFlag: true,
+                    explicitPort: 9222,
+                }),
+                fetchTargets: async (port) => {
+                    probedFixedPorts.push(port);
+                    return [{
+                        id: 'hub-9222',
+                        type: 'page',
+                        title: 'Jetski Web',
+                        url: 'https://127.0.0.1:62501/',
+                        webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/hub-9222`,
+                    }];
+                },
+                connectClient: async () => makeMockClient(),
+            });
+
+            const stFixed = await mgrFixedPort.setToggles({ appComposerRingEnabled: false, appTopBarEnabled: true });
+            expect(stFixed.state).toBe('connected');
+            expect(stFixed.diagnosticCode).toBe('connected');
+            expect(stFixed.discoveredPort).toBe(9222);
+            expect(stFixed.hostHasDebugFlag).toBe(true);
+            expect(probedFixedPorts).toEqual([9222]);
+            await mgrFixedPort.dispose();
         });
     });
 });

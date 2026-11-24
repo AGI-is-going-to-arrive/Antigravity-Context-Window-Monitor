@@ -11,12 +11,14 @@
  *   node scripts/install-app-plugin.mjs [options]
  *
  * Modes:
- *   --install            Install from local dist/build (auto-falls back to --from-github if missing)
- *   --from-github        Download & install latest (or --version <v>) release from GitHub Releases
- *   --upgrade            Upgrade to latest (or --version <v>) GitHub Release (atomic backup + swap)
- *   --status             Show installed App plugin, config, sidecar, CDP, and IDE VSIX status
- *   --uninstall          Remove the installed App plugin directory
- *   --print-cdp-guide    Print zero-patch macOS/Windows/Linux --remote-debugging-port=0 guide
+ *   --install               Install from local dist/build (auto-falls back to --from-github if missing)
+ *   --from-github           Download & install latest (or --version <v>) release from GitHub Releases
+ *   --upgrade               Upgrade to latest (or --version <v>) GitHub Release (atomic backup + swap)
+ *   --status                Show installed App plugin, config, sidecar, CDP, launcher, and IDE VSIX status
+ *   --uninstall             Remove the installed App plugin directory
+ *   --print-cdp-guide       Print zero-patch macOS/Windows/Linux --remote-debugging-port=0 guide
+ *   --setup-cdp-launcher    Create a zero-patch persistent CDP launcher (macOS .app / Windows .lnk / Linux .desktop)
+ *   --remove-cdp-launcher   Remove the zero-patch persistent CDP launcher
  *
  * Options:
  *   --version <v>        Specific release version (e.g. 1.17.7 or v1.17.7)
@@ -34,6 +36,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import {
     chmodSync,
+    copyFileSync,
     cpSync,
     existsSync,
     mkdirSync,
@@ -41,6 +44,7 @@ import {
     readdirSync,
     readFileSync,
     renameSync,
+    rmdirSync,
     rmSync,
     statSync,
     writeFileSync,
@@ -49,7 +53,7 @@ import * as http from 'node:http';
 import * as https from 'node:https';
 import * as net from 'node:net';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, join, resolve, sep, win32 as win32Path } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 
@@ -188,6 +192,10 @@ export function parseInstallerArgs(argv) {
             opts.action = 'uninstall';
         } else if (arg === '--print-cdp-guide') {
             opts.action = 'print-cdp-guide';
+        } else if (arg === '--setup-cdp-launcher') {
+            opts.action = 'setup-cdp-launcher';
+        } else if (arg === '--remove-cdp-launcher') {
+            opts.action = 'remove-cdp-launcher';
         } else if (arg === '--use-cli') {
             opts.useCli = true;
         } else if (arg === '--check-remote') {
@@ -1150,6 +1158,29 @@ export function runInstaller(options = {}) {
         };
     }
 
+    if (action === 'setup-cdp-launcher') {
+        return setupCdpLauncher({
+            env,
+            platform,
+            homeDir: options.homeDir,
+            appPath: options.appPath,
+            dryRun,
+            execFileSyncFn: options.execFileSyncFn,
+            commandExistsFn: options.commandExistsFn,
+        });
+    }
+
+    if (action === 'remove-cdp-launcher') {
+        return removeCdpLauncher({
+            env,
+            platform,
+            homeDir: options.homeDir,
+            appPath: options.appPath,
+            dryRun,
+            commandExistsFn: options.commandExistsFn,
+        });
+    }
+
     if (action === 'uninstall') {
         const existed = existsSync(targetDir);
         if (!dryRun && existed) {
@@ -1482,11 +1513,26 @@ export async function collectStatus(options = {}) {
     const runningPid = health && Number.isInteger(health.pid) ? health.pid : null;
     const reloadRequired = Boolean(processActive && runningVersion && version && runningVersion !== version);
 
-    // 4. CDP status
+    // 4. CDP & Persistent Launcher status
     const cdp = await inspectDevToolsActivePort(cdpPortFilePath, {
         probeCdpPort: options.probeCdpPort,
         probeCdpPortFn: options.probeCdpPortFn,
     });
+    const launcherStatus = inspectCdpLauncher({
+        env,
+        platform,
+        homeDir: options.homeDir,
+        appPath: options.appPath,
+        commandExistsFn: options.commandExistsFn,
+    });
+    const cdpLauncher = {
+        installed: launcherStatus.installed,
+        path: launcherStatus.launcherPath,
+        platform: launcherStatus.platform,
+        supported: launcherStatus.supported,
+        displayName: launcherStatus.displayName,
+        targetAppFound: launcherStatus.targetAppFound,
+    };
 
     // 5. IDE VSIX status
     const ideVsix = detectIdeExtensions(env, platform);
@@ -1545,6 +1591,7 @@ export async function collectStatus(options = {}) {
             reloadRequired,
         },
         cdp,
+        cdpLauncher,
         ideVsix,
         remote,
     };
@@ -1556,6 +1603,9 @@ export async function runInstallerAsync(options = {}) {
     const action = options.action || 'install';
     if (action === 'print-cdp-guide') {
         return { action: 'print-cdp-guide', guide: formatCdpGuide() };
+    }
+    if (action === 'setup-cdp-launcher' || action === 'remove-cdp-launcher') {
+        return runInstaller(options);
     }
     if (action === 'status') {
         return collectStatus(options);
@@ -1584,9 +1634,575 @@ export async function runInstallerAsync(options = {}) {
     return installFromGitHub({ ...options, action: 'install', fallbackFromLocal: true });
 }
 
+// ─── Zero-Patch Persistent CDP Launcher (Standalone Pure Node.js) ────────────
+
+export const CDP_LAUNCHER_DISPLAY_NAME = 'Antigravity (CDP)';
+export const MACOS_CDP_LAUNCHER_BUNDLE_ID = 'com.antigravity-context-monitor.cdp-launcher';
+export const MACOS_ANTIGRAVITY_BUNDLE_ID = 'com.google.antigravity';
+
+function joinLauncherTargetPath(platform, ...segments) {
+    if (
+        platform === 'win32'
+        && segments.length > 0
+        && (/^[A-Za-z]:/.test(segments[0]) || segments[0].includes('\\'))
+    ) {
+        return win32Path.join(...segments);
+    }
+    return join(...segments);
+}
+
+function escapeSingleQuotedPosix(value) {
+    return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function escapeExtendedRegex(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function defaultLauncherCommandExists(cmd, env = process.env) {
+    const pathEnv = env.PATH || '';
+    for (const dir of pathEnv.split(delimiter)) {
+        if (!dir) { continue; }
+        const full = join(dir, cmd);
+        try {
+            if (statSync(full).isFile()) { return true; }
+        } catch {
+            // ignore
+        }
+    }
+    return false;
+}
+
+export function getSafeCdpLaunchCommand(platform = process.platform) {
+    if (platform === 'darwin') {
+        return 'while pgrep -f \'^/Applications/Antigravity\\.app/Contents/MacOS/Antigravity($| )\' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0';
+    }
+    if (platform === 'win32') {
+        return '& "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0';
+    }
+    return 'antigravity --remote-debugging-port=0';
+}
+
+export function resolveCdpLauncherPaths(options = {}) {
+    const platform = options.platform || process.platform;
+    const env = options.env || process.env;
+    const homeDir = (options.homeDir && String(options.homeDir).trim()) || resolveUserHome(env, platform);
+
+    if (platform === 'darwin') {
+        const macAppDir = joinLauncherTargetPath('darwin', homeDir, 'Applications', `${CDP_LAUNCHER_DISPLAY_NAME}.app`);
+        let targetAppPath = (options.appPath && String(options.appPath).trim()) || '/Applications/Antigravity.app';
+        if (!options.appPath && !existsSync(targetAppPath)) {
+            const userApp = joinLauncherTargetPath('darwin', homeDir, 'Applications', 'Antigravity.app');
+            if (existsSync(userApp)) {
+                targetAppPath = userApp;
+            }
+        }
+        return {
+            platform,
+            supported: true,
+            homeDir,
+            launcherPath: macAppDir,
+            targetAppPath,
+            macAppDir,
+        };
+    }
+
+    if (platform === 'win32') {
+        const localAppData = env.LOCALAPPDATA && env.LOCALAPPDATA.trim()
+            ? env.LOCALAPPDATA.trim()
+            : joinLauncherTargetPath('win32', homeDir, 'AppData', 'Local');
+        const appData = env.APPDATA && env.APPDATA.trim()
+            ? env.APPDATA.trim()
+            : joinLauncherTargetPath('win32', homeDir, 'AppData', 'Roaming');
+        const winCmdPath = joinLauncherTargetPath('win32', localAppData, 'AntigravityContextMonitor', 'launch-antigravity-cdp.cmd');
+        const winDesktopLnkPath = joinLauncherTargetPath('win32', homeDir, 'Desktop', `${CDP_LAUNCHER_DISPLAY_NAME}.lnk`);
+        const winStartMenuLnkPath = joinLauncherTargetPath(
+            'win32',
+            appData,
+            'Microsoft',
+            'Windows',
+            'Start Menu',
+            'Programs',
+            `${CDP_LAUNCHER_DISPLAY_NAME}.lnk`,
+        );
+        const targetAppPath = (options.appPath && String(options.appPath).trim())
+            || joinLauncherTargetPath('win32', localAppData, 'Programs', 'Antigravity', 'Antigravity.exe');
+        return {
+            platform,
+            supported: true,
+            homeDir,
+            launcherPath: winDesktopLnkPath,
+            targetAppPath,
+            winCmdPath,
+            winDesktopLnkPath,
+            winStartMenuLnkPath,
+        };
+    }
+
+    if (platform === 'linux') {
+        const linuxWrapperPath = joinLauncherTargetPath('linux', homeDir, '.local', 'bin', 'antigravity-cdp');
+        const linuxDesktopEntryPath = joinLauncherTargetPath(
+            'linux',
+            homeDir,
+            '.local',
+            'share',
+            'applications',
+            'antigravity-cdp.desktop',
+        );
+        let targetAppPath = (options.appPath && String(options.appPath).trim()) || '';
+        if (!targetAppPath) {
+            const candidates = [
+                '/usr/bin/antigravity',
+                '/usr/local/bin/antigravity',
+                '/opt/Antigravity/antigravity',
+                joinLauncherTargetPath('linux', homeDir, '.local', 'bin', 'antigravity'),
+            ];
+            targetAppPath = candidates.find((p) => existsSync(p)) || 'antigravity';
+        }
+        return {
+            platform,
+            supported: true,
+            homeDir,
+            launcherPath: linuxDesktopEntryPath,
+            targetAppPath,
+            linuxWrapperPath,
+            linuxDesktopEntryPath,
+        };
+    }
+
+    return {
+        platform,
+        supported: false,
+        homeDir,
+        launcherPath: '',
+        targetAppPath: (options.appPath && String(options.appPath).trim()) || '',
+    };
+}
+
+function buildMacOsLauncherPlist() {
+    return [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">',
+        '<dict>',
+        '    <key>CFBundleDevelopmentRegion</key>',
+        '    <string>en</string>',
+        '    <key>CFBundleDisplayName</key>',
+        `    <string>${CDP_LAUNCHER_DISPLAY_NAME}</string>`,
+        '    <key>CFBundleExecutable</key>',
+        '    <string>launch</string>',
+        '    <key>CFBundleIconFile</key>',
+        '    <string>icon.icns</string>',
+        '    <key>CFBundleIdentifier</key>',
+        `    <string>${MACOS_CDP_LAUNCHER_BUNDLE_ID}</string>`,
+        '    <key>CFBundleInfoDictionaryVersion</key>',
+        '    <string>6.0</string>',
+        '    <key>CFBundleName</key>',
+        `    <string>${CDP_LAUNCHER_DISPLAY_NAME}</string>`,
+        '    <key>CFBundlePackageType</key>',
+        '    <string>APPL</string>',
+        '    <key>CFBundleShortVersionString</key>',
+        '    <string>1.0.0</string>',
+        '    <key>CFBundleVersion</key>',
+        '    <string>1</string>',
+        '    <key>LSMinimumSystemVersion</key>',
+        '    <string>12.0</string>',
+        '    <key>LSUIElement</key>',
+        '    <true/>',
+        '</dict>',
+        '</plist>',
+        '',
+    ].join('\n');
+}
+
+function buildMacOsLauncherScript(targetAppPath = '/Applications/Antigravity.app') {
+    const cleanTarget = String(targetAppPath || '/Applications/Antigravity.app').replace(/\/+$/, '') || '/Applications/Antigravity.app';
+    const mainBinaryRegex = `^${escapeExtendedRegex(`${cleanTarget}/Contents/MacOS/Antigravity`)}($| )`;
+
+    return [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        '',
+        '# Zero-patch persistent CDP launcher generated by Antigravity Context Monitor.',
+        '# Never modifies /Applications/Antigravity.app and eliminates the 5s before-quit race.',
+        `APP_PATH=${escapeSingleQuotedPosix(cleanTarget)}`,
+        `APP_REGEX=${escapeSingleQuotedPosix(mainBinaryRegex)}`,
+        `BUNDLE_ID=${escapeSingleQuotedPosix(MACOS_ANTIGRAVITY_BUNDLE_ID)}`,
+        '',
+        'if [ ! -d "$APP_PATH" ]; then',
+        '  osascript -e \'display alert "Antigravity App Not Found" message "Could not locate Antigravity.app. Please install Antigravity App first."\' >/dev/null 2>&1 || true',
+        '  exit 1',
+        'fi',
+        '',
+        'find_main_pids() {',
+        '  pgrep -f "$APP_REGEX" 2>/dev/null || true',
+        '}',
+        '',
+        'wait_for_exit() {',
+        '  local max_ticks=60',
+        '  local tick=0',
+        '  while [ "$tick" -lt "$max_ticks" ]; do',
+        '    if [ -z "$(find_main_pids)" ]; then',
+        '      return 0',
+        '    fi',
+        '    sleep 0.25',
+        '    tick=$((tick + 1))',
+        '  done',
+        '  return 1',
+        '}',
+        '',
+        'PIDS="$(find_main_pids)"',
+        '',
+        'if [ -n "$PIDS" ]; then',
+        '  HAS_CDP=0',
+        '  for pid in $PIDS; do',
+        '    CMDLINE="$(ps -p "$pid" -o command= 2>/dev/null || true)"',
+        '    if printf \'%s\' "$CMDLINE" | grep -q -- \'--remote-debugging-port\'; then',
+        '      HAS_CDP=1',
+        '      break',
+        '    fi',
+        '  done',
+        '',
+        '  if [ "$HAS_CDP" -eq 1 ]; then',
+        '    open -a "$APP_PATH"',
+        '    exit 0',
+        '  fi',
+        '',
+        '  CHOICE="$(osascript \\',
+        '    -e \'set dialogResult to display dialog "Antigravity is currently running without CDP remote debugging. Quit & relaunch with CDP enabled?" with title "Antigravity (CDP)" buttons {"Cancel", "Quit & Relaunch"} default button "Quit & Relaunch" cancel button "Cancel"\' \\',
+        '    -e \'return button returned of dialogResult\' 2>/dev/null || true)"',
+        '  if [ "$CHOICE" != "Quit & Relaunch" ]; then',
+        '    exit 0',
+        '  fi',
+        '',
+        '  osascript -e "tell application id \\"$BUNDLE_ID\\" to quit" >/dev/null 2>&1 || true',
+        '  if ! wait_for_exit; then',
+        '    osascript -e \'display alert "Antigravity Still Closing" message "Antigravity did not finish exiting within 15 seconds. Wait for its Dock indicator dot to disappear, then open Antigravity (CDP) again."\' >/dev/null 2>&1 || true',
+        '    exit 1',
+        '  fi',
+        'else',
+        '  # Wait cleanly up to 15s in case a dying PID is still finishing background teardown.',
+        '  if ! wait_for_exit; then',
+        '    exit 1',
+        '  fi',
+        'fi',
+        '',
+        'open -a "$APP_PATH" --args --remote-debugging-port=0',
+        '',
+    ].join('\n');
+}
+
+function buildWindowsLauncherCmd(targetExePath) {
+    const exeExpr = targetExePath && String(targetExePath).trim()
+        ? String(targetExePath).trim().replace(/\//g, '\\').replace(/"/g, '')
+        : '%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe';
+
+    return [
+        '@echo off',
+        'setlocal EnableExtensions',
+        'rem Zero-patch persistent CDP launcher generated by Antigravity Context Monitor.',
+        `set "APP_EXE=${exeExpr}"`,
+        'if not exist "%APP_EXE%" (',
+        '  set "APP_EXE=%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe"',
+        ')',
+        'if not exist "%APP_EXE%" (',
+        '  powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(\'Could not find Antigravity.exe. Please install Antigravity App first.\', \'Antigravity (CDP)\')" >nul 2>&1',
+        '  exit /b 1',
+        ')',
+        '',
+        'powershell -NoProfile -NonInteractive -Command "$p = Get-CimInstance Win32_Process -Filter \\"Name=\'Antigravity.exe\'\\" -ErrorAction SilentlyContinue; if ($p | Where-Object { $_.CommandLine -match \'--remote-debugging-port\' }) { exit 10 } elseif ($p) { exit 20 } else { exit 0 }" >nul 2>&1',
+        'set "STATE=%ERRORLEVEL%"',
+        '',
+        'if "%STATE%"=="10" (',
+        '  start "" "%APP_EXE%"',
+        '  exit /b 0',
+        ')',
+        'if not "%STATE%"=="20" goto launch_cdp',
+        '',
+        'set /a TICKS=0',
+        ':wait_loop',
+        'tasklist /FI "IMAGENAME eq Antigravity.exe" 2>nul | find /I "Antigravity.exe" >nul',
+        'if errorlevel 1 goto launch_cdp',
+        'if %TICKS% GEQ 12 goto still_running',
+        'set /a TICKS+=1',
+        'powershell -NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds 500" >nul 2>&1',
+        'goto wait_loop',
+        '',
+        ':still_running',
+        'powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(\'Antigravity is currently running without CDP remote debugging. Please close all Antigravity windows and tray icon first, then open Antigravity (CDP) again.\', \'Antigravity (CDP)\')" >nul 2>&1',
+        'exit /b 0',
+        '',
+        ':launch_cdp',
+        'start "" "%APP_EXE%" --remote-debugging-port=0',
+        'exit /b 0',
+        '',
+    ].join('\r\n');
+}
+
+function buildLinuxLauncherScript(targetAppPath) {
+    const cleanTarget = targetAppPath && String(targetAppPath).trim() && String(targetAppPath).trim() !== 'antigravity'
+        ? String(targetAppPath).trim()
+        : 'antigravity';
+    return [
+        '#!/usr/bin/env sh',
+        'set -eu',
+        '',
+        '# Zero-patch persistent CDP launcher generated by Antigravity Context Monitor.',
+        `APP_BIN="\${ANTIGRAVITY_BIN:-${cleanTarget.replace(/["$`\\]/g, '\\$&')}}"`,
+        '',
+        'tick=0',
+        'while [ "$tick" -lt 20 ]; do',
+        '  if ! pgrep -x antigravity >/dev/null 2>&1; then',
+        '    break',
+        '  fi',
+        '  if pgrep -af \'antigravity.*--remote-debugging-port\' >/dev/null 2>&1; then',
+        '    break',
+        '  fi',
+        '  sleep 0.25',
+        '  tick=$((tick + 1))',
+        'done',
+        '',
+        'exec "$APP_BIN" --remote-debugging-port=0 "$@"',
+        '',
+    ].join('\n');
+}
+
+function buildLinuxDesktopEntry(wrapperPath) {
+    const escapedExec = wrapperPath.includes(' ')
+        ? `"${wrapperPath.replace(/"/g, '\\"')}"`
+        : wrapperPath;
+    return [
+        '[Desktop Entry]',
+        'Type=Application',
+        'Version=1.0',
+        `Name=${CDP_LAUNCHER_DISPLAY_NAME}`,
+        'Comment=Launch Antigravity with local CDP remote debugging enabled for Antigravity Context Monitor',
+        `Exec=${escapedExec} %U`,
+        'Icon=antigravity',
+        'Terminal=false',
+        'Categories=Development;IDE;',
+        'StartupWMClass=Antigravity',
+        '',
+    ].join('\n');
+}
+
+const WINDOWS_SHORTCUT_PS_SCRIPT = [
+    '$ErrorActionPreference = "Stop"',
+    '$ws = New-Object -ComObject WScript.Shell',
+    '$targets = @($env:ACM_LNK_DESKTOP, $env:ACM_LNK_STARTMENU) | Where-Object { $_ -and $_.Trim().Length -gt 0 }',
+    'foreach ($lnkPath in $targets) {',
+    '  $dir = Split-Path -Parent $lnkPath',
+    '  if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }',
+    '  $sc = $ws.CreateShortcut($lnkPath)',
+    '  $sc.TargetPath = $env:ACM_CMD_PATH',
+    '  $sc.WorkingDirectory = $env:ACM_WORKDIR',
+    '  $sc.WindowStyle = 7',
+    '  $sc.Description = "Launch Antigravity with CDP remote debugging enabled (zero-patch)"',
+    '  if ($env:ACM_ICON_PATH -and (Test-Path -LiteralPath $env:ACM_ICON_PATH)) { $sc.IconLocation = "$env:ACM_ICON_PATH,0" }',
+    '  $sc.Save()',
+    '}',
+].join('; ');
+
+export function inspectCdpLauncher(options = {}) {
+    const resolved = resolveCdpLauncherPaths(options);
+    const safeTerminalCommand = getSafeCdpLaunchCommand(resolved.platform);
+    let installed = false;
+    let targetAppFound = false;
+
+    if (resolved.platform === 'darwin' && resolved.macAppDir) {
+        installed = existsSync(join(resolved.macAppDir, 'Contents', 'Info.plist'))
+            && existsSync(join(resolved.macAppDir, 'Contents', 'MacOS', 'launch'));
+        targetAppFound = Boolean(resolved.targetAppPath && existsSync(resolved.targetAppPath));
+    } else if (resolved.platform === 'win32' && resolved.winCmdPath) {
+        installed = existsSync(resolved.winCmdPath)
+            && (existsSync(resolved.winDesktopLnkPath) || existsSync(resolved.winStartMenuLnkPath));
+        targetAppFound = Boolean(resolved.targetAppPath && existsSync(resolved.targetAppPath));
+    } else if (resolved.platform === 'linux' && resolved.linuxDesktopEntryPath && resolved.linuxWrapperPath) {
+        installed = existsSync(resolved.linuxDesktopEntryPath) && existsSync(resolved.linuxWrapperPath);
+        if (resolved.targetAppPath && resolved.targetAppPath !== 'antigravity') {
+            targetAppFound = existsSync(resolved.targetAppPath);
+        } else {
+            const existsFn = options.commandExistsFn || ((cmd) => defaultLauncherCommandExists(cmd, options.env || process.env));
+            targetAppFound = existsFn('antigravity');
+        }
+    }
+
+    return {
+        supported: resolved.supported,
+        platform: resolved.platform,
+        installed,
+        launcherPath: resolved.launcherPath,
+        displayName: CDP_LAUNCHER_DISPLAY_NAME,
+        targetAppFound,
+        ...(resolved.targetAppPath ? { targetAppPath: resolved.targetAppPath } : {}),
+        safeTerminalCommand,
+    };
+}
+
+export function setupCdpLauncher(options = {}) {
+    const resolved = resolveCdpLauncherPaths(options);
+    const dryRun = Boolean(options.dryRun);
+
+    if (!resolved.supported) {
+        const status = inspectCdpLauncher(options);
+        return {
+            action: 'setup-cdp-launcher',
+            ok: false,
+            dryRun,
+            launcherPath: resolved.launcherPath,
+            platform: resolved.platform,
+            status,
+            error: `Unsupported platform: ${resolved.platform}`,
+        };
+    }
+
+    if (dryRun) {
+        return {
+            action: 'setup-cdp-launcher',
+            ok: true,
+            dryRun: true,
+            launcherPath: resolved.launcherPath,
+            platform: resolved.platform,
+            status: inspectCdpLauncher(options),
+        };
+    }
+
+    if (resolved.platform === 'darwin' && resolved.macAppDir) {
+        const contentsDir = join(resolved.macAppDir, 'Contents');
+        const macOsDir = join(contentsDir, 'MacOS');
+        const resourcesDir = join(contentsDir, 'Resources');
+        mkdirSync(macOsDir, { recursive: true });
+        mkdirSync(resourcesDir, { recursive: true });
+        writeFileSync(join(contentsDir, 'Info.plist'), buildMacOsLauncherPlist(), 'utf8');
+        const launchScriptPath = join(macOsDir, 'launch');
+        writeFileSync(launchScriptPath, buildMacOsLauncherScript(resolved.targetAppPath), 'utf8');
+        chmodSync(launchScriptPath, 0o755);
+
+        const iconCandidates = [
+            join(resolved.targetAppPath, 'Contents', 'Resources', 'icon.icns'),
+            join(resolved.targetAppPath, 'Contents', 'Resources', 'Antigravity.icns'),
+            join(resolved.targetAppPath, 'Contents', 'Resources', 'electron.icns'),
+        ];
+        for (const iconSrc of iconCandidates) {
+            if (existsSync(iconSrc)) {
+                try {
+                    copyFileSync(iconSrc, join(resourcesDir, 'icon.icns'));
+                    break;
+                } catch {
+                    // Best-effort icon copy
+                }
+            }
+        }
+    } else if (resolved.platform === 'win32' && resolved.winCmdPath) {
+        mkdirSync(dirname(resolved.winCmdPath), { recursive: true });
+        writeFileSync(resolved.winCmdPath, buildWindowsLauncherCmd(resolved.targetAppPath), 'utf8');
+
+        const runner = options.execFileSyncFn || ((file, args, opts) => execFileSync(file, args, opts));
+        runner(
+            'powershell.exe',
+            ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', WINDOWS_SHORTCUT_PS_SCRIPT],
+            {
+                env: {
+                    ...(options.env || process.env),
+                    ACM_LNK_DESKTOP: resolved.winDesktopLnkPath,
+                    ACM_LNK_STARTMENU: resolved.winStartMenuLnkPath,
+                    ACM_CMD_PATH: resolved.winCmdPath,
+                    ACM_WORKDIR: dirname(resolved.winCmdPath),
+                    ACM_ICON_PATH: resolved.targetAppPath || '',
+                },
+                windowsHide: true,
+                stdio: 'pipe',
+            },
+        );
+    } else if (resolved.platform === 'linux' && resolved.linuxWrapperPath && resolved.linuxDesktopEntryPath) {
+        mkdirSync(dirname(resolved.linuxWrapperPath), { recursive: true });
+        mkdirSync(dirname(resolved.linuxDesktopEntryPath), { recursive: true });
+        writeFileSync(resolved.linuxWrapperPath, buildLinuxLauncherScript(resolved.targetAppPath), 'utf8');
+        if (process.platform !== 'win32') {
+            chmodSync(resolved.linuxWrapperPath, 0o755);
+        }
+        writeFileSync(resolved.linuxDesktopEntryPath, buildLinuxDesktopEntry(resolved.linuxWrapperPath), 'utf8');
+    }
+
+    const status = inspectCdpLauncher(options);
+    return {
+        action: 'setup-cdp-launcher',
+        ok: true,
+        dryRun: false,
+        launcherPath: status.launcherPath,
+        platform: status.platform,
+        status,
+    };
+}
+
+export function removeCdpLauncher(options = {}) {
+    const resolved = resolveCdpLauncherPaths(options);
+    const dryRun = Boolean(options.dryRun);
+    const before = inspectCdpLauncher(options);
+
+    if (!resolved.supported) {
+        return {
+            action: 'remove-cdp-launcher',
+            ok: false,
+            dryRun,
+            existed: false,
+            removed: false,
+            launcherPath: resolved.launcherPath,
+            platform: resolved.platform,
+            status: before,
+            error: `Unsupported platform: ${resolved.platform}`,
+        };
+    }
+
+    let existed = before.installed;
+    if (!dryRun) {
+        if (resolved.platform === 'darwin' && resolved.macAppDir) {
+            if (basename(resolved.macAppDir) === `${CDP_LAUNCHER_DISPLAY_NAME}.app` && existsSync(resolved.macAppDir)) {
+                existed = true;
+                rmSync(resolved.macAppDir, { recursive: true, force: true });
+            }
+        } else if (resolved.platform === 'win32') {
+            for (const p of [resolved.winDesktopLnkPath, resolved.winStartMenuLnkPath, resolved.winCmdPath]) {
+                if (p && existsSync(p)) {
+                    existed = true;
+                    rmSync(p, { force: true });
+                }
+            }
+            if (resolved.winCmdPath) {
+                const dir = dirname(resolved.winCmdPath);
+                try {
+                    if (existsSync(dir) && readdirSync(dir).length === 0) {
+                        rmdirSync(dir);
+                    }
+                } catch { /* ignore */ }
+            }
+        } else if (resolved.platform === 'linux') {
+            for (const p of [resolved.linuxDesktopEntryPath, resolved.linuxWrapperPath]) {
+                if (p && existsSync(p)) {
+                    existed = true;
+                    rmSync(p, { force: true });
+                }
+            }
+        }
+    }
+
+    const status = inspectCdpLauncher(options);
+    return {
+        action: 'remove-cdp-launcher',
+        ok: true,
+        dryRun,
+        existed,
+        removed: existed && !dryRun,
+        launcherPath: resolved.launcherPath,
+        platform: resolved.platform,
+        status,
+    };
+}
+
 // ─── CDP Guide & Bilingual CLI Output ────────────────────────────────────────
 
 export function formatCdpGuide() {
+    const macSafeCmd = getSafeCdpLaunchCommand('darwin');
     return `
 Antigravity Context Monitor — Optional CDP Launch Guide (Zero Binary Patching)
 Antigravity Context Monitor — 可选 CDP 启动指南（零二进制 / 零 app.asar 修改）
@@ -1597,38 +2213,49 @@ ambient in-chrome overlays (Composer Ring & Top-Right Status Bar) on Antigravity
 提示：核心 Context Monitor 侧栏/主视图与面板顶部紧凑 HUD 完全原生运行，无需 CDP。
 仅当你主动开启 Antigravity 2.33+ 的对话框悬浮环与右上角常驻状态栏时，才需要附带 --remote-debugging-port=0 启动。
 
-IMPORTANT / 重要提示:
+RECOMMENDED — 1-Command Persistent Launcher (Zero Terminal After Setup, Auto-Update Proof)
+推荐 — 一键创建持久化启动器（创建后无需终端，自动更新后依然有效，零二进制修改）：
+  Create / 创建: node scripts/install-app-plugin.mjs --setup-cdp-launcher
+  Remove / 移除: node scripts/install-app-plugin.mjs --remove-cdp-launcher
+  - macOS  : ~/Applications/Antigravity (CDP).app (pin to Dock or open via Spotlight; waits for 5s Cmd+Q teardown!)
+  - Windows: Desktop & Start Menu "Antigravity (CDP).lnk" + %LOCALAPPDATA%\\AntigravityContextMonitor\\launch-antigravity-cdp.cmd
+  - Linux  : ~/.local/share/applications/antigravity-cdp.desktop + ~/.local/bin/antigravity-cdp
+
+IMPORTANT / 重要提示 (macOS 5-Second Background Teardown / macOS 5 秒后台退出陷阱):
   Always quit Antigravity App COMPLETELY first before relaunching with --remote-debugging-port=0.
-  On macOS, running "open -a" while Antigravity is still running silently ignores --args.
-  请务必先完全退出 Antigravity App 再用下方命令重启（macOS 下若应用仍在运行，open -a 会静默忽略 --args）。
+  On macOS, pressing Cmd+Q closes all windows immediately, but Antigravity stays alive in the background
+  for up to ~5 seconds while terminating language_server. Running "open -a" during those 5 seconds
+  silently ignores --args! Wait until the Dock indicator dot disappears, or use the race-free command below.
+  请务必先完全退出 Antigravity App 再重启：macOS 按 Cmd+Q 后窗口会立刻消失，但后台仍需约 5 秒清理 language_server；
+  在此 5 秒内运行 open -a 会静默丢弃 --args。请等待程序坞指示灯彻底消失，或直接使用下方防竞态等待命令。
 
 [macOS]
-  1. Quit Antigravity App completely (Cmd+Q), then launch from Terminal:
-       open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0
-  2. Optional persistent Dock/Spotlight launcher (preserves Apple code signature):
-       osacompile -o "/Applications/Antigravity-CDP.app" \\
-         -e 'do shell script "open -a \\"/Applications/Antigravity.app\\" --args --remote-debugging-port=0"'
+  1. Recommended persistent Dock/Spotlight launcher (zero binary patching, survives auto-updates):
+       node scripts/install-app-plugin.mjs --setup-cdp-launcher
+  2. Manual race-free Terminal command (after Cmd+Q, automatically waits for the 5s background exit):
+       ${macSafeCmd}
 
 [Windows]
-  1. Close Antigravity Desktop completely (all windows & system tray icon), then launch:
+  1. Recommended persistent Desktop & Start Menu shortcuts (zero binary patching):
+       node scripts/install-app-plugin.mjs --setup-cdp-launcher
+  2. Or close Antigravity Desktop completely (all windows & system tray icon), then launch:
      PowerShell:
        & "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0
      CMD / Run dialog:
        "%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0
-  2. Optional persistent shortcut: right-click the Antigravity shortcut (.lnk) ->
-     Properties -> append  --remote-debugging-port=0  after the closing quote in Target.
 
 [Linux]
-  1. Close Antigravity completely (all windows & tray icon), then launch from terminal:
+  1. Recommended persistent application menu / dock launcher (zero binary patching):
+       node scripts/install-app-plugin.mjs --setup-cdp-launcher
+  2. Or close Antigravity completely (all windows & tray icon), then launch from terminal:
        antigravity --remote-debugging-port=0
-  2. Optional persistent launcher: copy antigravity.desktop to
-     ~/.local/share/applications/antigravity.desktop and append
-     --remote-debugging-port=0 to the Exec= line.
 
 Auto-Update Note / 自动更新提示:
-  Antigravity auto-updates restart the app without CLI flags. After an update, quit completely
-  and relaunch with --remote-debugging-port=0 (or your persistent launcher), then click Recheck CDP.
-  Antigravity 自动更新重启后会丢弃命令行参数；更新后请完全退出并重新按上述命令启动，再点击「重新检测」。
+  Antigravity auto-updates restart the app without CLI flags. After an update, simply open
+  "Antigravity (CDP)" (your persistent launcher) or quit completely and relaunch with
+  --remote-debugging-port=0, then click Recheck CDP.
+  Antigravity 自动更新重启后会丢弃命令行参数；更新后直接点击持久化启动器「Antigravity (CDP)」
+  （或完全退出后按上述命令重启），再点击「重新检测」即可。
 
 Verify CDP is active / 验证 CDP 状态:
   node scripts/install-app-plugin.mjs --status
@@ -1643,30 +2270,33 @@ Usage:
   node scripts/install-app-plugin.mjs [mode] [options]
 
 Modes:
-  --install            Install from local build/dist (auto-falls back to --from-github if missing)
-  --from-github        Download & install latest (or --version <v>) release from GitHub Releases
-  --upgrade            Upgrade to latest (or --version <v>) GitHub Release (atomic backup + swap)
-  --status             Inspect installed version, config, sidecar, CDP, and IDE VSIX status
-  --uninstall          Remove the installed App plugin directory
-  --print-cdp-guide    Print zero-patch macOS / Windows / Linux --remote-debugging-port=0 guide
+  --install               Install from local build/dist (auto-falls back to --from-github if missing)
+  --from-github           Download & install latest (or --version <v>) release from GitHub Releases
+  --upgrade               Upgrade to latest (or --version <v>) GitHub Release (atomic backup + swap)
+  --status                Inspect installed version, config, sidecar, CDP, launcher, and IDE VSIX status
+  --uninstall             Remove the installed App plugin directory
+  --print-cdp-guide       Print zero-patch macOS / Windows / Linux --remote-debugging-port=0 guide
+  --setup-cdp-launcher    Create a zero-patch persistent CDP launcher (macOS .app / Windows .lnk / Linux .desktop)
+  --remove-cdp-launcher   Remove the zero-patch persistent CDP launcher
 
 Options:
-  --version <v>        Target GitHub release version (e.g. 1.17.7 or v1.17.7)
-  --source <dir>       Explicit local plugin directory containing plugin.json
-  --target <dir>       Override install path (default: ~/.gemini/config/plugins/antigravity-context-monitor)
-  --use-cli            Use \`agy plugin install\` / \`agy plugin uninstall\` when available
-  --check-remote       With --status, check latest GitHub Release for updates
-  --require-checksum   Fail if SHA256SUMS.txt is absent from the GitHub Release
-  --json               Print machine-readable JSON output
-  --dry-run            Preview actions without modifying files
-  --repo <owner/repo>  Override GitHub repository slug
-  -h, --help           Show this help message`);
+  --version <v>           Target GitHub release version (e.g. 1.17.7 or v1.17.7)
+  --source <dir>          Explicit local plugin directory containing plugin.json
+  --target <dir>          Override install path (default: ~/.gemini/config/plugins/antigravity-context-monitor)
+  --use-cli               Use \`agy plugin install\` / \`agy plugin uninstall\` when available
+  --check-remote          With --status, check latest GitHub Release for updates
+  --require-checksum      Fail if SHA256SUMS.txt is absent from the GitHub Release
+  --json                  Print machine-readable JSON output
+  --dry-run               Preview actions without modifying files
+  --repo <owner/repo>     Override GitHub repository slug
+  -h, --help              Show this help message`);
 }
 
 function formatStatusText(status) {
     const app = status.appPlugin;
     const sc = status.sidecar;
     const cdp = status.cdp;
+    const launcher = status.cdpLauncher;
     const ide = status.ideVsix;
     const rem = status.remote;
 
@@ -1684,6 +2314,7 @@ function formatStatusText(status) {
     }
     lines.push(
         `CDP        : ${cdp.active ? `Active (port ${cdp.port})` : (cdp.stale ? `Inactive — stale DevToolsActivePort (port ${cdp.port ?? 'invalid'} unreachable; quit & relaunch with --remote-debugging-port=0)` : 'Inactive (not required for core Sidecar UI)')}`,
+        `CDP Launch : ${launcher?.installed ? `Installed (${launcher.path})` : (launcher?.supported ? `Not created (run --setup-cdp-launcher -> ${launcher.path})` : `Unsupported (${launcher?.platform || process.platform})`)}`,
         `IDE VSIX   : ${ide.installed ? ide.installations.map((i) => `${i.editor} v${i.version}`).join(', ') : 'Not detected'}`,
     );
     if (rem.checked) {
@@ -1704,6 +2335,32 @@ function printCliResult(result, asJson) {
 
     if (result.action === 'print-cdp-guide') {
         console.log(result.guide);
+        return;
+    }
+
+    if (result.action === 'setup-cdp-launcher') {
+        if (!result.ok) {
+            console.error(`Failed to create persistent CDP launcher: ${result.error || 'unknown error'}`);
+            return;
+        }
+        if (result.dryRun) {
+            console.log(`[dry-run] Would create persistent CDP launcher (${result.platform}): ${result.launcherPath}`);
+            return;
+        }
+        console.log(`✓ Created zero-patch persistent CDP launcher (${result.platform}):\n  ${result.launcherPath}\n已创建零侵入持久化 CDP 启动器。`);
+        return;
+    }
+
+    if (result.action === 'remove-cdp-launcher') {
+        if (!result.ok) {
+            console.error(`Failed to remove persistent CDP launcher: ${result.error || 'unknown error'}`);
+            return;
+        }
+        console.log(result.dryRun
+            ? `[dry-run] Would remove persistent CDP launcher: ${result.launcherPath}`
+            : (result.existed
+                ? `Removed persistent CDP launcher:\n  ${result.launcherPath}\n已移除持久化 CDP 启动器。`
+                : `Persistent CDP launcher was not installed:\n  ${result.launcherPath}\n未检测到已安装的持久化 CDP 启动器。`));
         return;
     }
 
@@ -1768,6 +2425,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
             }
             const result = await runInstallerAsync(opts);
             printCliResult(result, opts.json);
+            if (result && result.ok === false) {
+                process.exitCode = 1;
+            }
         } catch (err) {
             console.error(`[install-app-plugin] ERROR: ${err instanceof Error ? err.message : String(err)}`);
             process.exit(1);

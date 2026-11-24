@@ -106,6 +106,8 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
 
         expect(mod.parseInstallerArgs(['--uninstall'])).toMatchObject({ action: 'uninstall' });
         expect(mod.parseInstallerArgs(['--print-cdp-guide'])).toMatchObject({ action: 'print-cdp-guide' });
+        expect(mod.parseInstallerArgs(['--setup-cdp-launcher'])).toMatchObject({ action: 'setup-cdp-launcher' });
+        expect(mod.parseInstallerArgs(['--remove-cdp-launcher'])).toMatchObject({ action: 'remove-cdp-launcher' });
         expect(mod.parseInstallerArgs(['-h'])).toMatchObject({ help: true });
 
         expect(() => mod.parseInstallerArgs(['--unknown-flag'])).toThrow(/Unknown option/);
@@ -539,6 +541,11 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
             port: 9222,
             wsPath: '/devtools/browser/test-id',
         });
+        expect(status.cdpLauncher).toMatchObject({
+            installed: false,
+            platform: 'darwin',
+            path: path.join(fakeHome, 'Applications', 'Antigravity (CDP).app'),
+        });
         expect(status.ideVsix.installed).toBe(true);
         expect(status.ideVsix.installations[0]).toMatchObject({
             editor: 'Antigravity IDE',
@@ -554,6 +561,10 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
 
         const cdpGuide = mod.runInstaller({ action: 'print-cdp-guide' }).guide;
         expect(cdpGuide).toContain('--remote-debugging-port=0');
+        expect(cdpGuide).toContain('--setup-cdp-launcher');
+        expect(cdpGuide).toContain('--remove-cdp-launcher');
+        expect(cdpGuide).toContain('while pgrep -f');
+        expect(cdpGuide).toMatch(/5-Second|5 秒/);
         expect(cdpGuide).toContain('[macOS]');
         expect(cdpGuide).toContain('[Windows]');
         expect(cdpGuide).toContain('[Linux]');
@@ -561,6 +572,102 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         expect(cdpGuide).toContain('CMD / Run dialog:');
         expect(cdpGuide).toMatch(/Auto-Update|自动更新/);
         expect(cdpGuide).toMatch(/Zero Binary Patching|零二进制/);
+    });
+
+    it('supports --setup-cdp-launcher, --remove-cdp-launcher, --dry-run, and --status --json cdpLauncher field', async () => {
+        const mod = await loadInstaller();
+        const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'acm-cli-launcher-'));
+        tmpDirs.push(tmpBase);
+
+        const fakeHome = path.join(tmpBase, 'home');
+        const fakeApp = path.join(tmpBase, 'Antigravity.app');
+        fs.mkdirSync(path.join(fakeApp, 'Contents', 'Resources'), { recursive: true });
+        fs.writeFileSync(path.join(fakeApp, 'Contents', 'Resources', 'icon.icns'), 'icns');
+
+        // 1. Dry-run creates nothing
+        const dryRes = await mod.runInstallerAsync({
+            action: 'setup-cdp-launcher',
+            platform: 'darwin',
+            homeDir: fakeHome,
+            appPath: fakeApp,
+            dryRun: true,
+        });
+        expect(dryRes).toMatchObject({
+            action: 'setup-cdp-launcher',
+            ok: true,
+            dryRun: true,
+            platform: 'darwin',
+        });
+        expect(fs.existsSync(dryRes.launcherPath)).toBe(false);
+
+        // 2. Real setup creates ~/Applications/Antigravity (CDP).app and --status reports installed: true
+        const setupRes = await mod.runInstallerAsync({
+            action: 'setup-cdp-launcher',
+            platform: 'darwin',
+            homeDir: fakeHome,
+            appPath: fakeApp,
+        });
+        expect(setupRes.ok).toBe(true);
+        expect(setupRes.status.installed).toBe(true);
+        expect(fs.existsSync(path.join(setupRes.launcherPath, 'Contents', 'Info.plist'))).toBe(true);
+        expect(fs.existsSync(path.join(setupRes.launcherPath, 'Contents', 'MacOS', 'launch'))).toBe(true);
+
+        const statusInstalled = await mod.collectStatus({
+            env: { HOME: fakeHome },
+            platform: 'darwin',
+            probeHealth: false,
+            probeCdpPort: false,
+        });
+        expect(statusInstalled.cdpLauncher).toMatchObject({
+            installed: true,
+            platform: 'darwin',
+            path: setupRes.launcherPath,
+        });
+
+        // 3. CLI subprocess --status --json with isolated HOME returns cdpLauncher object
+        const cliOut = execFileSync(process.execPath, [INSTALLER_PATH, '--status', '--json'], {
+            encoding: 'utf8',
+            env: { ...process.env, HOME: fakeHome },
+        });
+        const cliJson = JSON.parse(cliOut);
+        expect(cliJson.cdpLauncher).toMatchObject({
+            installed: process.platform === 'darwin',
+            platform: process.platform,
+        });
+        expect(typeof cliJson.cdpLauncher.path).toBe('string');
+
+        // 4. --remove-cdp-launcher removes launcher cleanly
+        const removeRes = await mod.runInstallerAsync({
+            action: 'remove-cdp-launcher',
+            platform: 'darwin',
+            homeDir: fakeHome,
+            appPath: fakeApp,
+        });
+        expect(removeRes).toMatchObject({
+            action: 'remove-cdp-launcher',
+            ok: true,
+            existed: true,
+            removed: true,
+        });
+        expect(removeRes.status.installed).toBe(false);
+        expect(fs.existsSync(setupRes.launcherPath)).toBe(false);
+
+        // 5. Linux launcher via installer
+        const linuxHome = path.join(tmpBase, 'linux-home');
+        const linuxSetup = await mod.runInstallerAsync({
+            action: 'setup-cdp-launcher',
+            platform: 'linux',
+            homeDir: linuxHome,
+        });
+        expect(linuxSetup.ok).toBe(true);
+        expect(linuxSetup.status.installed).toBe(true);
+        const linuxRemove = await mod.runInstallerAsync({
+            action: 'remove-cdp-launcher',
+            platform: 'linux',
+            homeDir: linuxHome,
+        });
+        expect(linuxRemove.removed).toBe(true);
+        expect(linuxRemove.status.installed).toBe(false);
     });
 
     it('probes TCP reachability for DevToolsActivePort (distinguishing live vs stale ports) and respects AGY_BROWSER_ACTIVE_PORT_FILE', async () => {
