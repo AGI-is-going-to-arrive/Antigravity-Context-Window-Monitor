@@ -6,10 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     CDP_LAUNCHER_DISPLAY_NAME,
     MACOS_CDP_LAUNCHER_BUNDLE_ID,
+    buildLinuxDesktopEntry,
+    buildLinuxLauncherScript,
     createCdpLauncher,
     getSafeCdpLaunchCommand,
     inspectCdpLauncher,
     removeCdpLauncher,
+    revealCdpLauncher,
 } from '../src/app/cdp-launcher';
 
 describe('Zero-Patch Persistent CDP Launcher (macOS, Windows, Linux)', () => {
@@ -92,12 +95,17 @@ describe('Zero-Patch Persistent CDP Launcher (macOS, Windows, Linux)', () => {
             execFileSync('bash', ['-n', launchPath], { stdio: 'pipe' });
         }
 
-        // Verify race-free logic, exact Antigravity.app regex, user dialog, graceful AppleScript quit, 15s poll, and zero force-kill
+        // Verify race-free logic, exact Antigravity.app regex, frontmost user dialog, graceful AppleScript quit + TCC fallback alert, 15s poll, and zero force-kill
         expect(launchScript).toContain('Contents/MacOS/Antigravity($| )');
         expect(launchScript).toContain('--remote-debugging-port');
+        expect(launchScript).toContain("-e 'activate'");
+        expect(launchScript.indexOf("-e 'activate'")).toBeLessThan(launchScript.indexOf('display dialog'));
         expect(launchScript).toContain('display dialog "Antigravity is currently running without CDP remote debugging. Quit & relaunch with CDP enabled?"');
         expect(launchScript).toContain('buttons {"Cancel", "Quit & Relaunch"}');
         expect(launchScript).toContain('tell application id \\"$BUNDLE_ID\\" to quit');
+        expect(launchScript).toContain('QUIT_RC=0');
+        expect(launchScript).toContain('Allow Automation permission for Antigravity (CDP)');
+        expect(launchScript).toContain('Cmd+Q');
         expect(launchScript).toContain('max_ticks=60');
         expect(launchScript).toContain('sleep 0.25');
         expect(launchScript).toContain('open -a "$APP_PATH" --args --remote-debugging-port=0');
@@ -243,5 +251,146 @@ describe('Zero-Patch Persistent CDP Launcher (macOS, Windows, Linux)', () => {
 
         const removeRes = removeCdpLauncher({ platform: plat, homeDir: tempRoot });
         expect(removeRes.ok).toBe(false);
+
+        const revealRes = revealCdpLauncher({ platform: plat, homeDir: tempRoot });
+        expect(revealRes.ok).toBe(false);
+        expect(revealRes.error).toMatch(/Unsupported platform/);
+    });
+
+    it('reveals installed launchers across darwin, win32, and linux via injected spawnImpl and fails cleanly when not installed', () => {
+        // 1. Not installed -> clear error without spawning anything
+        const unusedSpawn = vi.fn();
+        const macHome = path.join(tempRoot, 'reveal-mac');
+        const missingRes = revealCdpLauncher({
+            platform: 'darwin',
+            homeDir: macHome,
+            spawnImpl: unusedSpawn,
+        });
+        expect(missingRes.ok).toBe(false);
+        expect(missingRes.error).toBe('Launcher not created yet');
+        expect(unusedSpawn).not.toHaveBeenCalled();
+
+        // 2. macOS -> open -R <launcherPath>
+        createCdpLauncher({ platform: 'darwin', homeDir: macHome });
+        const macSpawnCalls: Array<{ cmd: string; args: readonly string[]; detached?: boolean }> = [];
+        const macUnref = vi.fn();
+        const macReveal = revealCdpLauncher({
+            platform: 'darwin',
+            homeDir: macHome,
+            spawnImpl: (cmd, args, options) => {
+                macSpawnCalls.push({ cmd, args, detached: options?.detached });
+                return { unref: macUnref, on: vi.fn() };
+            },
+        });
+        expect(macReveal.ok).toBe(true);
+        expect(macReveal.messageEn).toContain('Finder');
+        expect(macReveal.messageZh).toContain('访达');
+        expect(macSpawnCalls).toEqual([{
+            cmd: 'open',
+            args: ['-R', path.join(macHome, 'Applications', 'Antigravity (CDP).app')],
+            detached: true,
+        }]);
+        expect(macUnref).toHaveBeenCalledTimes(1);
+
+        // 3. Windows -> explorer.exe /select,<launcherPath> (and parent dir fallback if /select throws)
+        const winHome = path.join(tempRoot, 'reveal-win');
+        const winEnv = {
+            USERPROFILE: winHome,
+            LOCALAPPDATA: path.join(winHome, 'AppData', 'Local'),
+            APPDATA: path.join(winHome, 'AppData', 'Roaming'),
+        };
+        createCdpLauncher({
+            platform: 'win32',
+            homeDir: winHome,
+            env: winEnv,
+            execFileSyncFn: (_file, _args, options) => {
+                for (const p of [options?.env?.ACM_LNK_DESKTOP, options?.env?.ACM_LNK_STARTMENU]) {
+                    if (p) {
+                        fs.mkdirSync(path.dirname(p), { recursive: true });
+                        fs.writeFileSync(p, 'mock-lnk', 'utf8');
+                    }
+                }
+            },
+        });
+        const winDesktopLnk = path.join(winHome, 'Desktop', 'Antigravity (CDP).lnk');
+        const winCalls: Array<{ cmd: string; args: readonly string[] }> = [];
+        const winReveal = revealCdpLauncher({
+            platform: 'win32',
+            homeDir: winHome,
+            env: winEnv,
+            spawnImpl: (cmd, args) => {
+                winCalls.push({ cmd, args });
+                return { unref: vi.fn(), on: vi.fn() };
+            },
+        });
+        expect(winReveal.ok).toBe(true);
+        expect(winReveal.messageEn).toContain('Explorer');
+        expect(winReveal.messageZh).toContain('资源管理器');
+        expect(winCalls).toEqual([{
+            cmd: 'explorer.exe',
+            args: [`/select,${winDesktopLnk}`],
+        }]);
+
+        // Windows fallback to parent directory if /select throws
+        const winFallbackCalls: Array<{ cmd: string; args: readonly string[] }> = [];
+        const winFallback = revealCdpLauncher({
+            platform: 'win32',
+            homeDir: winHome,
+            env: winEnv,
+            spawnImpl: (cmd, args) => {
+                winFallbackCalls.push({ cmd, args });
+                if (args[0]?.startsWith('/select,')) {
+                    throw new Error('select failed');
+                }
+                return { unref: vi.fn(), on: vi.fn() };
+            },
+        });
+        expect(winFallback.ok).toBe(true);
+        expect(winFallbackCalls).toEqual([
+            { cmd: 'explorer.exe', args: [`/select,${winDesktopLnk}`] },
+            { cmd: 'explorer.exe', args: [path.dirname(winDesktopLnk)] },
+        ]);
+
+        // 4. Linux -> xdg-open <dirname(launcherPath)>
+        const linuxHome = path.join(tempRoot, 'reveal-linux');
+        createCdpLauncher({ platform: 'linux', homeDir: linuxHome });
+        const linuxCalls: Array<{ cmd: string; args: readonly string[] }> = [];
+        const linuxReveal = revealCdpLauncher({
+            platform: 'linux',
+            homeDir: linuxHome,
+            spawnImpl: (cmd, args) => {
+                linuxCalls.push({ cmd, args });
+                return { unref: vi.fn(), on: vi.fn() };
+            },
+        });
+        expect(linuxReveal.ok).toBe(true);
+        expect(linuxCalls).toEqual([{
+            cmd: 'xdg-open',
+            args: [path.join(linuxHome, '.local', 'share', 'applications')],
+        }]);
+    });
+
+    it('escapes Linux custom paths containing apostrophes, braces, and Freedesktop reserved characters cleanly', () => {
+        const trickyBin = "/opt/user's {custom}/anti}gravity/$bin \"quoted\"";
+        const script = buildLinuxLauncherScript(trickyBin);
+        expect(script).toContain('DEFAULT_BIN=');
+        expect(script).toContain('APP_BIN="${ANTIGRAVITY_BIN:-$DEFAULT_BIN}"');
+
+        const scriptFile = path.join(tempRoot, 'tricky-linux-wrapper.sh');
+        fs.writeFileSync(scriptFile, script, 'utf8');
+        if (process.platform !== 'win32') {
+            execFileSync('sh', ['-n', scriptFile], { stdio: 'pipe' });
+        }
+
+        // Plain path stays unquoted
+        const plainEntry = buildLinuxDesktopEntry('/home/alice/.local/bin/antigravity-cdp');
+        expect(plainEntry).toContain('Exec=/home/alice/.local/bin/antigravity-cdp %U');
+
+        // Reserved characters (space, apostrophe, quotes, $, `, \, %) are quoted/escaped per Freedesktop Exec spec
+        const specialWrapper = `/home/o'malley/my "app" $1 \`x\` 100%\\bin/antigravity-cdp`;
+        const specialEntry = buildLinuxDesktopEntry(specialWrapper);
+        expect(specialEntry).toContain(
+            'Exec="/home/o\'malley/my \\\\"app\\\\" \\\\$1 \\\\`x\\\\` 100%%\\\\\\\\bin/antigravity-cdp" %U',
+        );
     });
 });

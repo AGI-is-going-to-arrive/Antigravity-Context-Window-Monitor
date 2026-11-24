@@ -694,12 +694,18 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
         });
         expect(hostMissingHtml).toContain('data-cdp-diagnostic="host_missing_flag"');
         expect(hostMissingHtml).toContain('5s');
+        expect(hostMissingHtml).not.toContain('一键生成并重启');
+        expect(hostMissingHtml).toContain('Step 1');
+        expect(hostMissingHtml).toContain('Step 2');
+        expect(hostMissingHtml).toContain('步骤 1');
+        expect(hostMissingHtml).toContain('步骤 2');
         expect(hostMissingHtml).toContain('id="cdpLauncherBox"');
         expect(hostMissingHtml).toContain('id="cdpLauncherStatus"');
         expect(hostMissingHtml).toContain('data-launcher-installed="false"');
         expect(hostMissingHtml).toContain('id="cdpSetupLauncherBtn"');
         expect(hostMissingHtml).toContain('Create Persistent Launcher');
         expect(hostMissingHtml).toContain('一键生成持久化启动器');
+        expect(hostMissingHtml).toMatch(/id="cdpRevealLauncherBtn"[^>]*data-action="revealCdpLauncher"[^>]*hidden/);
         expect(hostMissingHtml).toMatch(/id="cdpRemoveLauncherBtn"[^>]*hidden/);
         expect(hostMissingHtml).toContain('pgrep -f');
         expect(hostMissingHtml).toContain('cdp-copy-btn');
@@ -709,6 +715,8 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
             appSettings: { appComposerRingEnabled: true },
             cdpStatus: {
                 ...connectedStatus,
+                state: 'cdp_unavailable',
+                diagnosticCode: 'host_missing_flag',
                 launcherStatus: {
                     supported: true,
                     platform: 'darwin',
@@ -726,7 +734,59 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
         expect(installedLauncherHtml).toContain('data-launcher-installed="true"');
         expect(installedLauncherHtml).toContain('Recreate Launcher');
         expect(installedLauncherHtml).toContain('重新生成启动器');
+        expect(installedLauncherHtml).toContain('Reveal in Finder');
+        expect(installedLauncherHtml).toContain('在访达中显示');
+        expect(installedLauncherHtml).toContain('持久化启动器已就绪');
+        expect(installedLauncherHtml).not.toContain('一键生成并重启');
+        expect(installedLauncherHtml).not.toMatch(/id="cdpRevealLauncherBtn"[^>]*hidden/);
         expect(installedLauncherHtml).not.toMatch(/id="cdpRemoveLauncherBtn"[^>]*hidden/);
+
+        // Platform-aware reveal labels on Windows and Linux
+        const winInstalledHtml = buildSettingsContent([], undefined, undefined, {
+            surface: 'app-sidecar',
+            appSettings: { appComposerRingEnabled: true },
+            cdpStatus: {
+                ...connectedStatus,
+                state: 'cdp_unavailable',
+                diagnosticCode: 'host_missing_flag',
+                launcherStatus: {
+                    supported: true,
+                    platform: 'win32',
+                    installed: true,
+                    launcherPath: 'C:\\Users\\Alice\\Desktop\\Antigravity (CDP).lnk',
+                    displayName: 'Antigravity (CDP)',
+                    targetAppFound: true,
+                    safeTerminalCommand: '& "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0',
+                    noteEn: 'Win note',
+                    noteZh: 'Win 说明',
+                },
+            },
+        });
+        expect(winInstalledHtml).toContain('Show in Explorer');
+        expect(winInstalledHtml).toContain('在资源管理器中显示');
+
+        const linuxInstalledHtml = buildSettingsContent([], undefined, undefined, {
+            surface: 'app-sidecar',
+            appSettings: { appComposerRingEnabled: true },
+            cdpStatus: {
+                ...connectedStatus,
+                state: 'cdp_unavailable',
+                diagnosticCode: 'host_missing_flag',
+                launcherStatus: {
+                    supported: true,
+                    platform: 'linux',
+                    installed: true,
+                    launcherPath: '/home/alice/.local/share/applications/antigravity-cdp.desktop',
+                    displayName: 'Antigravity (CDP)',
+                    targetAppFound: true,
+                    safeTerminalCommand: 'antigravity --remote-debugging-port=0',
+                    noteEn: 'Linux note',
+                    noteZh: 'Linux 说明',
+                },
+            },
+        });
+        expect(linuxInstalledHtml).toContain('Open Folder');
+        expect(linuxInstalledHtml).toContain('打开所在目录');
 
         const disabledHtml = buildSettingsContent([], undefined, undefined, {
             surface: 'app-sidecar',
@@ -771,12 +831,14 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
         // Cost, Currency & History card
         expect(appHtml).toContain('id="costCurrencyHistoryCard"');
         expect(appHtml).toMatch(/id="stgOrchModeStrict"[^>]*aria-checked="true"/);
-        expect(appHtml).toContain('id="displayCurrencySelect"');
+        expect(appHtml).toContain('class="stg-form-grid stg-form-grid-subscription"');
+        expect(appHtml).toContain('class="stg-field stg-field-plan"');
+        expect(appHtml).toContain('id="displayCurrencySelect" class="stg-select"');
         expect(appHtml).toContain('<option value="CNY" selected>');
         expect(appHtml).toContain('<option value="TWD">');
         expect(appHtml).toContain('id="customFxRateInput"');
         expect(appHtml).toContain('value="7.3"');
-        expect(appHtml).toContain('id="subscriptionPlanSelect"');
+        expect(appHtml).toContain('id="subscriptionPlanSelect" class="stg-select"');
         expect(appHtml).toContain('<option value="none">');
         expect(appHtml).toContain('<option value="google-ai-pro">Google AI Pro ($19.99/mo)</option>');
         expect(appHtml).toContain('<option value="google-ai-ultra-5x">Google AI Ultra 5x ($99.99/mo)</option>');
@@ -933,6 +995,9 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
         const editorialCss = getEditorialStyles();
         expect(editorialCss).toMatch(/body\s+\.stg-header\s*\{[^}]*flex-wrap:\s*wrap/);
         expect(editorialCss).toMatch(/body\s+\.stg-status-pill\s*\{[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/);
+        expect(editorialCss).toContain('.stg-form-grid-subscription');
+        expect(editorialCss).toContain('.stg-select');
+        expect(editorialCss).toMatch(/body\s+\.stg-field\s*\{[^}]*min-width:\s*0/);
 
         for (const css of [
             getEditorialStyles(),
@@ -966,6 +1031,7 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
             'setAppSetting',
             'recheckCdp',
             'setupCdpLauncher',
+            'revealCdpLauncher',
             'removeCdpLauncher',
             'checkForUpdates',
             'applyPluginUpdate',
@@ -975,6 +1041,7 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
         for (const action of requiredActions) {
             expect(script, `missing script action ${action}`).toContain(action);
         }
+        expect(script).not.toContain('一键生成并重启');
         // Live CDP & Update pill/diagnostic/launcher synchronization across syncSettingsControls & acm:snapshot
         expect(script).toContain('syncCdpStatusUi');
         expect(script).toContain('syncCdpLauncherUi');
@@ -982,12 +1049,14 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
         expect(script).toContain('cdpDiagnosticHint');
         expect(script).toContain('cdpStatusResult');
         expect(script).toContain('cdpLauncherResult');
+        expect(script).toContain('cdpRevealLauncherBtn');
         expect(script).toContain('host_missing_flag');
         expect(script).toContain('cdp-copy-btn');
         expect(script).toContain('msg.snapshot.data.cdpStatus');
-        // Verify syncCdpLauncherUi & host_missing_flag live DOM update via minimal VM harness
+        // Verify syncCdpLauncherUi, #cdpRevealLauncherBtn & host_missing_flag live DOM update via minimal VM harness
         const vm = await import('vm');
         const attrs = new Map<string, Map<string, string>>();
+        const postedMessages: any[] = [];
         const makeEl = (id: string) => {
             const elAttrs = new Map<string, string>();
             attrs.set(id, elAttrs);
@@ -1020,6 +1089,11 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
             if (id === 'cdpSetupLauncherBtn') {
                 el._span = { textContent: 'Create Persistent Launcher' };
             }
+            if (id === 'cdpRevealLauncherBtn') {
+                el._span = { textContent: 'Reveal in Finder' };
+                elAttrs.set('data-action', 'revealCdpLauncher');
+                el.closest = (sel: string) => sel.includes('revealCdpLauncher') ? el : null;
+            }
             return el;
         };
         const domMap = new Map<string, any>([
@@ -1028,21 +1102,26 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
             ['cdpLauncherStatus', makeEl('cdpLauncherStatus')],
             ['cdpLauncherNote', makeEl('cdpLauncherNote')],
             ['cdpSetupLauncherBtn', makeEl('cdpSetupLauncherBtn')],
+            ['cdpRevealLauncherBtn', makeEl('cdpRevealLauncherBtn')],
             ['cdpRemoveLauncherBtn', makeEl('cdpRemoveLauncherBtn')],
             ['cdpLauncherFeedback', makeEl('cdpLauncherFeedback')],
             ['appOverlaysFeedback', makeEl('appOverlaysFeedback')],
             ['toggleAppComposerRing', makeEl('toggleAppComposerRing')],
             ['toggleAppTopBar', makeEl('toggleAppTopBar')],
         ]);
+        domMap.get('cdpRevealLauncherBtn').hidden = true;
         domMap.get('cdpRemoveLauncherBtn').hidden = true;
         const msgListeners: Array<(ev: { data: any }) => void> = [];
+        const bodyClickListeners: Array<(ev: any) => void> = [];
+        class FakeElement {}
+        Object.setPrototypeOf(domMap.get('cdpRevealLauncherBtn'), FakeElement.prototype);
         const docStub: any = {
             body: {
                 style: {},
                 dataset: {},
                 getAttribute: (k: string) => (k === 'data-lang' ? 'both' : null),
                 setAttribute: () => {},
-                addEventListener: () => {},
+                addEventListener: (type: string, fn: any) => { if (type === 'click') { bodyClickListeners.push(fn); } },
                 classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
             },
             documentElement: { style: { setProperty: () => {} } },
@@ -1063,22 +1142,51 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
         vm.runInNewContext(script, {
             window: winStub,
             document: docStub,
-            acquireVsCodeApi: () => ({ getState: () => ({}), setState: () => {}, postMessage: () => {} }),
+            Element: FakeElement,
+            acquireVsCodeApi: () => ({ getState: () => ({}), setState: () => {}, postMessage: (m: any) => { postedMessages.push(m); } }),
             requestAnimationFrame: () => 0,
             setTimeout: () => 0,
             clearTimeout: () => {},
             navigator: {},
             console,
         });
+        // 1. Before launcher is created -> Step 1 / Step 2 guidance & reveal button hidden
+        for (const fn of msgListeners) {
+            fn({
+                data: {
+                    command: 'cdpStatusResult',
+                    cdpStatus: {
+                        state: 'cdp_unavailable',
+                        diagnosticCode: 'host_missing_flag',
+                        hostHasDebugFlag: false,
+                        composerEnabled: true,
+                        topBarEnabled: false,
+                        launcherStatus: {
+                            installed: false,
+                            platform: 'darwin',
+                            launcherPath: '/tmp/vm-home/Applications/Antigravity (CDP).app',
+                        },
+                    },
+                },
+            });
+        }
+        expect(domMap.get('cdpRevealLauncherBtn').hidden).toBe(true);
+        expect(domMap.get('cdpDiagnosticHint').textContent).toContain('Step 1');
+        expect(domMap.get('cdpDiagnosticHint').textContent).toContain('步骤 1');
+        expect(domMap.get('cdpDiagnosticHint').textContent).not.toContain('一键生成并重启');
+
+        // 2. After setupCdpLauncher succeeds -> reveal button appears live & hint flips to "launcher is ready"
         for (const fn of msgListeners) {
             fn({
                 data: {
                     command: 'cdpLauncherResult',
+                    action: 'setupCdpLauncher',
                     ok: true,
                     messageEn: 'Created persistent launcher',
                     messageZh: '已生成持久化启动器',
                     launcherStatus: {
                         installed: true,
+                        platform: 'darwin',
                         launcherPath: '/tmp/vm-home/Applications/Antigravity (CDP).app',
                         noteEn: 'Updated note EN',
                         noteZh: '更新说明 ZH',
@@ -1091,6 +1199,7 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
                         topBarEnabled: false,
                         launcherStatus: {
                             installed: true,
+                            platform: 'darwin',
                             launcherPath: '/tmp/vm-home/Applications/Antigravity (CDP).app',
                         },
                     },
@@ -1100,11 +1209,43 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
         expect(attrs.get('cdpDiagnosticHint')?.get('data-cdp-diagnostic')).toBe('host_missing_flag');
         expect(domMap.get('cdpDiagnosticHint').hidden).toBe(false);
         expect(domMap.get('cdpDiagnosticHint').textContent).toContain('--remote-debugging-port=0');
+        expect(domMap.get('cdpDiagnosticHint').textContent).toContain('Reveal in Finder');
+        expect(domMap.get('cdpDiagnosticHint').textContent).toContain('持久化启动器已就绪');
         expect(attrs.get('cdpLauncherStatus')?.get('data-launcher-installed')).toBe('true');
         expect(attrs.get('cdpLauncherStatus')?.get('data-launcher-path')).toBe('/tmp/vm-home/Applications/Antigravity (CDP).app');
         expect(domMap.get('cdpSetupLauncherBtn')._span.textContent).toContain('Recreate Launcher');
+        expect(domMap.get('cdpRevealLauncherBtn').hidden).toBe(false);
+        expect(domMap.get('cdpRevealLauncherBtn')._span.textContent).toContain('Reveal in Finder');
         expect(domMap.get('cdpRemoveLauncherBtn').hidden).toBe(false);
         expect(domMap.get('cdpLauncherFeedback').textContent).toContain('Created persistent launcher');
+
+        // 3. Clicking #cdpRevealLauncherBtn dispatches { command: 'revealCdpLauncher' }
+        for (const fn of bodyClickListeners) {
+            fn({ target: domMap.get('cdpRevealLauncherBtn') });
+        }
+        expect(postedMessages).toContainEqual({ command: 'revealCdpLauncher' });
+
+        // 4. Removing launcher (even without cdpStatus in payload) hides reveal button & flips hint back to Step 1 / Step 2
+        for (const fn of msgListeners) {
+            fn({
+                data: {
+                    command: 'cdpLauncherResult',
+                    action: 'removeCdpLauncher',
+                    ok: true,
+                    messageEn: 'Removed launcher',
+                    messageZh: '已移除启动器',
+                    launcherStatus: {
+                        installed: false,
+                        platform: 'darwin',
+                        launcherPath: '/tmp/vm-home/Applications/Antigravity (CDP).app',
+                    },
+                },
+            });
+        }
+        expect(domMap.get('cdpRevealLauncherBtn').hidden).toBe(true);
+        expect(domMap.get('cdpRemoveLauncherBtn').hidden).toBe(true);
+        expect(domMap.get('cdpDiagnosticHint').textContent).toContain('Step 1');
+        expect(domMap.get('cdpDiagnosticHint').textContent).toContain('步骤 1');
         // Two-step clear guard: #clearCalendarBtn must NOT directly post clearCalendarHistory
         expect(script).not.toMatch(/target\.closest\('#clearCalendarBtn'\)\)\s*\{\s*vscode\.postMessage\(\{\s*command:\s*'clearCalendarHistory'/);
         // syncSettingsControls syncs polling, quota threshold, customFxRate, and subscriptionMonthlyFee
