@@ -47,6 +47,7 @@ import {
 } from 'node:fs';
 import * as http from 'node:http';
 import * as https from 'node:https';
+import * as net from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -124,6 +125,9 @@ export function getAntigravityUserDataDir(env = process.env, platform = process.
 }
 
 export function getDevToolsActivePortPath(env = process.env, platform = process.platform) {
+    if (env.AGY_BROWSER_ACTIVE_PORT_FILE && env.AGY_BROWSER_ACTIVE_PORT_FILE.trim()) {
+        return env.AGY_BROWSER_ACTIVE_PORT_FILE.trim();
+    }
     return join(getAntigravityUserDataDir(env, platform), 'DevToolsActivePort');
 }
 
@@ -1302,9 +1306,47 @@ function parseLatestSidecarLogPort(logContent) {
     return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
 }
 
-function inspectDevToolsActivePort(portFilePath) {
+function probeSingleLoopbackHost(host, port, timeoutMs) {
+    return new Promise((resolvePromise) => {
+        let settled = false;
+        const finish = (result) => {
+            if (settled) { return; }
+            settled = true;
+            resolvePromise(result);
+        };
+        const sock = net.createConnection({ host, port });
+        sock.setTimeout(timeoutMs);
+        sock.once('connect', () => {
+            sock.destroy();
+            finish({ ok: true, code: null });
+        });
+        sock.once('timeout', () => {
+            sock.destroy();
+            finish({ ok: false, code: 'ETIMEDOUT' });
+        });
+        sock.once('error', (err) => {
+            sock.destroy();
+            finish({ ok: false, code: err && err.code ? String(err.code) : 'ERR' });
+        });
+    });
+}
+
+export async function probeLoopbackTcpPort(port, timeoutMs = 300) {
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+        return false;
+    }
+    const ipv4 = await probeSingleLoopbackHost('127.0.0.1', port, timeoutMs);
+    if (ipv4.ok) { return true; }
+    if (ipv4.code === 'ECONNREFUSED') {
+        const ipv6 = await probeSingleLoopbackHost('::1', port, timeoutMs);
+        return ipv6.ok;
+    }
+    return false;
+}
+
+export async function inspectDevToolsActivePort(portFilePath, options = {}) {
     if (!existsSync(portFilePath)) {
-        return { active: false, portFilePath, port: null, wsPath: null };
+        return { active: false, stale: false, portFilePath, port: null, wsPath: null };
     }
     try {
         const lines = readFileSync(portFilePath, 'utf8')
@@ -1314,14 +1356,23 @@ function inspectDevToolsActivePort(portFilePath) {
         const port = Number(lines[0]);
         const wsPath = lines[1] || null;
         const valid = Number.isInteger(port) && port > 0 && port <= 65535;
+        if (!valid) {
+            return { active: false, stale: true, portFilePath, port: null, wsPath: null };
+        }
+        if (options.probeCdpPort === false) {
+            return { active: true, stale: false, portFilePath, port, wsPath };
+        }
+        const probeFn = options.probeCdpPortFn || probeLoopbackTcpPort;
+        const reachable = Boolean(await probeFn(port));
         return {
-            active: valid,
+            active: reachable,
+            stale: !reachable,
             portFilePath,
-            port: valid ? port : null,
-            wsPath: valid ? wsPath : null,
+            port,
+            wsPath,
         };
     } catch {
-        return { active: false, portFilePath, port: null, wsPath: null };
+        return { active: false, stale: false, portFilePath, port: null, wsPath: null };
     }
 }
 
@@ -1432,7 +1483,10 @@ export async function collectStatus(options = {}) {
     const reloadRequired = Boolean(processActive && runningVersion && version && runningVersion !== version);
 
     // 4. CDP status
-    const cdp = inspectDevToolsActivePort(cdpPortFilePath);
+    const cdp = await inspectDevToolsActivePort(cdpPortFilePath, {
+        probeCdpPort: options.probeCdpPort,
+        probeCdpPortFn: options.probeCdpPortFn,
+    });
 
     // 5. IDE VSIX status
     const ideVsix = detectIdeExtensions(env, platform);
@@ -1537,11 +1591,16 @@ export function formatCdpGuide() {
 Antigravity Context Monitor — Optional CDP Launch Guide (Zero Binary Patching)
 Antigravity Context Monitor — 可选 CDP 启动指南（零二进制 / 零 app.asar 修改）
 
-NOTE: The core Context Monitor Sidecar (AUX_PANE + SIDEBAR) works 100% natively
-without CDP. Only enable --remote-debugging-port=0 if you opt in to experimental
-ambient in-chrome overlays on Antigravity Desktop 2.33+.
-提示：核心 Context Monitor 侧栏/主视图完全原生运行，无需 CDP。仅当你主动开启
-Antigravity 2.33+ 的可选顶部/输入框浮层时，才需要附带 --remote-debugging-port=0 启动。
+NOTE: The core Context Monitor Sidecar (AUX_PANE + SIDEBAR) and Native Panel Compact HUD
+work 100% natively without CDP. Only enable --remote-debugging-port=0 if you opt in to
+ambient in-chrome overlays (Composer Ring & Top-Right Status Bar) on Antigravity Desktop 2.33+.
+提示：核心 Context Monitor 侧栏/主视图与面板顶部紧凑 HUD 完全原生运行，无需 CDP。
+仅当你主动开启 Antigravity 2.33+ 的对话框悬浮环与右上角常驻状态栏时，才需要附带 --remote-debugging-port=0 启动。
+
+IMPORTANT / 重要提示:
+  Always quit Antigravity App COMPLETELY first before relaunching with --remote-debugging-port=0.
+  On macOS, running "open -a" while Antigravity is still running silently ignores --args.
+  请务必先完全退出 Antigravity App 再用下方命令重启（macOS 下若应用仍在运行，open -a 会静默忽略 --args）。
 
 [macOS]
   1. Quit Antigravity App completely (Cmd+Q), then launch from Terminal:
@@ -1551,17 +1610,25 @@ Antigravity 2.33+ 的可选顶部/输入框浮层时，才需要附带 --remote-
          -e 'do shell script "open -a \\"/Applications/Antigravity.app\\" --args --remote-debugging-port=0"'
 
 [Windows]
-  1. Close Antigravity Desktop completely, then launch from PowerShell:
+  1. Close Antigravity Desktop completely (all windows & system tray icon), then launch:
+     PowerShell:
        & "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0
+     CMD / Run dialog:
+       "%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0
   2. Optional persistent shortcut: right-click the Antigravity shortcut (.lnk) ->
      Properties -> append  --remote-debugging-port=0  after the closing quote in Target.
 
 [Linux]
-  1. Close Antigravity completely, then launch from terminal:
+  1. Close Antigravity completely (all windows & tray icon), then launch from terminal:
        antigravity --remote-debugging-port=0
   2. Optional persistent launcher: copy antigravity.desktop to
      ~/.local/share/applications/antigravity.desktop and append
      --remote-debugging-port=0 to the Exec= line.
+
+Auto-Update Note / 自动更新提示:
+  Antigravity auto-updates restart the app without CLI flags. After an update, quit completely
+  and relaunch with --remote-debugging-port=0 (or your persistent launcher), then click Recheck CDP.
+  Antigravity 自动更新重启后会丢弃命令行参数；更新后请完全退出并重新按上述命令启动，再点击「重新检测」。
 
 Verify CDP is active / 验证 CDP 状态:
   node scripts/install-app-plugin.mjs --status
@@ -1616,7 +1683,7 @@ function formatStatusText(status) {
         lines.push(`  Notice   : Installed v${app.version} differs from running sidecar v${sc.runningVersion} — toggle plugin Off -> On in Customizations to reload.`);
     }
     lines.push(
-        `CDP        : ${cdp.active ? `Active (port ${cdp.port})` : 'Inactive (not required for core Sidecar UI)'}`,
+        `CDP        : ${cdp.active ? `Active (port ${cdp.port})` : (cdp.stale ? `Inactive — stale DevToolsActivePort (port ${cdp.port ?? 'invalid'} unreachable; quit & relaunch with --remote-debugging-port=0)` : 'Inactive (not required for core Sidecar UI)')}`,
         `IDE VSIX   : ${ide.installed ? ide.installations.map((i) => `${i.editor} v${i.version}`).join(', ') : 'Not detected'}`,
     );
     if (rem.checked) {

@@ -2982,6 +2982,47 @@ export function getEditorialStyles(): string {
             border-color: var(--ed-danger-border);
             color: var(--ed-danger);
         }
+        body .stg-diagnostic-hint {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: var(--ed-radius-sm);
+            border: 1px solid var(--ed-border);
+            background: var(--ed-surface-well);
+            color: var(--ed-ink-secondary);
+            font-size: 11.5px;
+            line-height: 1.5;
+            overflow-wrap: anywhere;
+        }
+        body .stg-diagnostic-hint[hidden] {
+            display: none;
+        }
+        body .stg-diagnostic-hint.is-good {
+            background: var(--ed-good-tint);
+            border-color: var(--ed-good-border);
+            color: var(--ed-good);
+        }
+        body .stg-diagnostic-hint.is-warn {
+            background: var(--ed-warn-tint);
+            border-color: var(--ed-warn-border);
+            color: var(--ed-warn);
+        }
+        body .stg-diagnostic-hint.is-error {
+            background: var(--ed-danger-tint);
+            border-color: var(--ed-danger-border);
+            color: var(--ed-danger);
+        }
+        body .stg-cdp-actions {
+            margin-top: 8px;
+        }
+        body .stg-guide-step {
+            font-weight: 600;
+            color: var(--ed-ink);
+        }
+        body .stg-guide-note {
+            font-size: 11px;
+            color: var(--ed-ink-muted);
+            line-height: 1.48;
+        }
         body .stg-guide-details {
             margin-top: 10px;
             border: 1px solid var(--ed-border);
@@ -3197,7 +3238,7 @@ export function getEditorialStyles(): string {
         body:is(.vscode-high-contrast, .vscode-high-contrast-light,
             [data-vscode-theme-kind="vscode-high-contrast"], [data-vscode-theme-kind="vscode-high-contrast-light"],
             [data-acm-theme="hc"], [data-acm-theme="hc-light"])
-            :is(.native-hud-bar, .native-hud-chip, .low-quota-banner, .stg-status-pill, .about-updates-card, .jargon-tip) {
+            :is(.native-hud-bar, .native-hud-chip, .low-quota-banner, .stg-status-pill, .stg-diagnostic-hint, .about-updates-card, .jargon-tip) {
             border-color: var(--ed-border);
         }
 

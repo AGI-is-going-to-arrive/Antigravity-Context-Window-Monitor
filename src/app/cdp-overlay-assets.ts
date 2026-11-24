@@ -12,7 +12,7 @@
 
 import type { CdpOverlayPayload, CdpOverlayToggles } from './sidecar-types';
 
-export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.6-r2';
+export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.7-r1';
 export const CDP_COMPOSER_HOST_ID = 'acm-cdp-composer-host';
 export const CDP_TOPBAR_HOST_ID = 'acm-cdp-topbar-host';
 export const CDP_RUNTIME_GLOBAL_KEY = '__ACM_CDP_OVERLAY_V1__';
@@ -955,12 +955,27 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       var html = document.documentElement;
       var body = document.body;
       var cls = ((html && html.className) || '') + ' ' + ((body && body.className) || '');
-      var dataTheme = (html && html.getAttribute('data-theme')) || (body && body.getAttribute('data-theme')) || '';
+      var dataTheme = (html && html.getAttribute('data-theme'))
+        || (body && body.getAttribute('data-theme'))
+        || (html && html.getAttribute('data-agy-theme'))
+        || (body && body.getAttribute('data-agy-theme'))
+        || '';
       var combined = (cls + ' ' + dataTheme).toLowerCase();
-      if (/\\b(?:vscode-light|light)\\b/.test(combined) && !/\\b(?:vscode-dark|dark)\\b/.test(combined)) {
+      var hasLight = /\\b(?:vscode-light|theme-light|light-theme|light)\\b/.test(combined);
+      var hasDark = /\\b(?:vscode-dark|theme-dark|dark-theme|dark)\\b/.test(combined);
+      if (hasLight && !hasDark) {
         return 'light';
       }
-      if (/\\b(?:vscode-dark|dark)\\b/.test(combined)) {
+      if (hasDark && !hasLight) {
+        return 'dark';
+      }
+      var colorScheme = String(
+        ((html && html.style && html.style.colorScheme) || (body && body.style && body.style.colorScheme) || '')
+      ).toLowerCase();
+      if (/\\blight\\b/.test(colorScheme) && !/\\bdark\\b/.test(colorScheme)) {
+        return 'light';
+      }
+      if (/\\bdark\\b/.test(colorScheme) && !/\\blight\\b/.test(colorScheme)) {
         return 'dark';
       }
       var target = body || html;
@@ -985,6 +1000,29 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     return 'dark';
   }
 
+  function isElementVisible(node) {
+    if (!node || !node.isConnected) { return false; }
+    try {
+      if (node.hidden === true) { return false; }
+      if (node.style && (node.style.display === 'none' || node.style.visibility === 'hidden')) {
+        return false;
+      }
+      if (typeof window.getComputedStyle === 'function') {
+        var cs = window.getComputedStyle(node);
+        if (cs && (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0')) {
+          return false;
+        }
+      }
+      if (typeof node.getBoundingClientRect === 'function') {
+        var rect = node.getBoundingClientRect();
+        if (rect && typeof rect.width === 'number' && typeof rect.height === 'number') {
+          if (rect.width <= 0 || rect.height <= 0) { return false; }
+        }
+      }
+    } catch (_e) {}
+    return true;
+  }
+
   function isWindowsClient() {
     try {
       var ua = (navigator.userAgent || '') + ' ' + (navigator.platform || '');
@@ -995,6 +1033,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
   }
 
   function computeWcoInsetPx(isFixedAnchor) {
+    if (!isFixedAnchor && document.querySelector('[data-testid="window-controls-reserve"]')) {
+      return 0;
+    }
     try {
       if (navigator.windowControlsOverlay && navigator.windowControlsOverlay.visible) {
         var rect = navigator.windowControlsOverlay.getTitlebarAreaRect();
@@ -1010,11 +1051,18 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     return 0;
   }
 
+  function hasLoopbackBridge(payload) {
+    return Boolean(
+      payload
+      && typeof payload.bridgeUrl === 'string'
+      && /^http:\\/\\/127\\.0\\.0\\.1:\\d+$/.test(payload.bridgeUrl)
+      && typeof payload.bridgeToken === 'string'
+      && payload.bridgeToken
+    );
+  }
+
   function sendBridgeAction(payload, command, source, feedbackEl) {
-    if (!payload || typeof payload.bridgeUrl !== 'string' || typeof payload.bridgeToken !== 'string') {
-      return;
-    }
-    if (!/^http:\\/\\/127\\.0\\.0\\.1:\\d+$/.test(payload.bridgeUrl) || !payload.bridgeToken) {
+    if (!hasLoopbackBridge(payload)) {
       return;
     }
     try {
@@ -1041,21 +1089,66 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     } catch (_e) {}
   }
 
+  function triggerOpenPanelAction(payload, source, feedbackEl) {
+    var toggledHostSidebar = false;
+    try {
+      var auxBtn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
+      if (auxBtn && auxBtn.getAttribute('aria-expanded') === 'false' && typeof auxBtn.click === 'function') {
+        auxBtn.click();
+        toggledHostSidebar = true;
+      }
+    } catch (_e) {}
+    if (hasLoopbackBridge(payload)) {
+      sendBridgeAction(payload, 'openPanel', source, feedbackEl);
+    } else if (toggledHostSidebar && feedbackEl) {
+      feedbackEl.textContent = bi((payload && payload.language) || 'both', 'Opened', '已打开');
+    }
+  }
+
   function clearChildren(node) {
     while (node.firstChild) {
       node.removeChild(node.firstChild);
     }
   }
 
+  function normalizePermButtonLabel(text) {
+    return String(text || '')
+      .replace(/keyboard_arrow_(?:down|up)|expand_(?:more|less)|arrow_drop_down/gi, ' ')
+      .replace(/\\s+/g, ' ')
+      .trim();
+  }
+
+  function findLastElementChild(parent) {
+    if (!parent) { return null; }
+    if (parent.lastElementChild) { return parent.lastElementChild; }
+    var nodes = parent.childNodes || [];
+    for (var k = nodes.length - 1; k >= 0; k--) {
+      if (nodes[k] && nodes[k].nodeType === 1) { return nodes[k]; }
+    }
+    return null;
+  }
+
   function findComposerAnchor() {
-    var footers = document.querySelectorAll('.agy-composer-footer, [data-testid="composer-footer"], [class*="composer-footer"]');
+    var footers = document.querySelectorAll('.agy-composer-footer, [data-testid="composer-footer"], [class*="composer-footer"], [data-testid="input-box-bottom-toolbar"]');
     var permRe = /^(?:turbo|auto|ask|plan|fast|agent|chat|edit|自动|询问|计划|极速)$/i;
-    for (var i = 0; i < footers.length; i++) {
-      var footer = footers[i];
+    var candidateFooters = [];
+    for (var fi = 0; fi < footers.length; fi++) {
+      if (isElementVisible(footers[fi])) { candidateFooters.push(footers[fi]); }
+    }
+    if (candidateFooters.length === 0) {
+      for (var fj = 0; fj < footers.length; fj++) { candidateFooters.push(footers[fj]); }
+    }
+
+    for (var i = 0; i < candidateFooters.length; i++) {
+      var footer = candidateFooters[i];
+      var directPerm = footer.querySelector ? footer.querySelector('[data-testid="permissions-selector-trigger"]') : null;
+      if (directPerm && directPerm.parentElement) {
+        return { parent: directPerm.parentElement, before: directPerm, mode: 'inline' };
+      }
       var buttons = footer.querySelectorAll('button, [role="button"]');
       for (var j = 0; j < buttons.length; j++) {
         var btn = buttons[j];
-        var label = (btn.textContent || '').trim();
+        var label = normalizePermButtonLabel(btn.textContent);
         var tid = (btn.getAttribute('data-testid') || '').toLowerCase();
         if (permRe.test(label) || tid.indexOf('permission') >= 0 || tid.indexOf('mode') >= 0) {
           if (btn.parentElement) {
@@ -1063,11 +1156,31 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
           }
         }
       }
+      var actionBtn = footer.querySelector
+        ? footer.querySelector('[data-testid="voice-start-button"], [data-testid="send-button"], [data-testid="send-button-loading"], [data-testid="send-button-pending"]')
+        : null;
+      if (actionBtn && actionBtn.parentElement) {
+        return { parent: actionBtn.parentElement, before: actionBtn, mode: 'inline' };
+      }
+      var rightGroup = findLastElementChild(footer);
       var firstGroup = footer.firstElementChild;
+      if (rightGroup && rightGroup !== firstGroup) {
+        return { parent: rightGroup, before: rightGroup.firstChild, mode: 'inline' };
+      }
       if (firstGroup) {
         return { parent: firstGroup, before: firstGroup.firstChild, mode: 'inline' };
       }
       return { parent: footer, before: footer.firstChild, mode: 'inline' };
+    }
+
+    var directTriggers = document.querySelectorAll('[data-testid="permissions-selector-trigger"]');
+    for (var ti = 0; ti < directTriggers.length; ti++) {
+      if (isElementVisible(directTriggers[ti]) && directTriggers[ti].parentElement) {
+        return { parent: directTriggers[ti].parentElement, before: directTriggers[ti], mode: 'inline' };
+      }
+    }
+    if (directTriggers.length > 0 && directTriggers[0].parentElement) {
+      return { parent: directTriggers[0].parentElement, before: directTriggers[0], mode: 'inline' };
     }
     return null;
   }
@@ -1075,7 +1188,12 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
   function findTopBarAnchor() {
     var auxBtn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
     if (auxBtn && auxBtn.parentElement) {
-      return { parent: auxBtn.parentElement, before: auxBtn, mode: 'inline' };
+      var parent = auxBtn.parentElement;
+      var maxBtn = parent.querySelector ? parent.querySelector('[data-testid="toggle-maximize-pane"]') : null;
+      if (maxBtn && maxBtn.parentElement === parent) {
+        return { parent: parent, before: maxBtn, mode: 'inline' };
+      }
+      return { parent: parent, before: auxBtn, mode: 'inline' };
     }
     var toolbar = document.querySelector('[data-testid="pane-titlebar-toolbar"], [class*="@container/titlebar"]');
     if (toolbar) {
@@ -1351,7 +1469,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
 
     openBtn.addEventListener('click', function(ev) {
       ev.stopPropagation();
-      sendBridgeAction(state.payload, 'openPanel', 'composer', actionFeedback);
+      triggerOpenPanelAction(state.payload, 'composer', actionFeedback);
     });
     refreshBtn.addEventListener('click', function(ev) {
       ev.stopPropagation();
@@ -1399,9 +1517,12 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
   function anchorComposerHost() {
     if (!state.composerEnabled) { return; }
     if (!state.composerHost) { createComposerSlot(); }
-    if (state.composerHost && state.composerHost.isConnected) { return; }
+    if (state.composerHost && state.composerHost.isConnected && isElementVisible(state.composerHost)) { return; }
     var anchor = findComposerAnchor();
     if (!anchor || !anchor.parent) { return; }
+    if (state.composerHost.parentNode === anchor.parent && state.composerHost.nextSibling === anchor.before) {
+      return;
+    }
     if (anchor.before && anchor.before.parentNode === anchor.parent) {
       anchor.parent.insertBefore(state.composerHost, anchor.before);
     } else {
@@ -1531,8 +1652,11 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
 
     r.openBtn.textContent = bi(lang, 'Open Panel', '打开面板');
     r.refreshBtn.textContent = bi(lang, 'Refresh', '刷新');
-    var hasBridge = typeof p.bridgeUrl === 'string' && /^http:\\/\\/127\\.0\\.0\\.1:\\d+$/.test(p.bridgeUrl) && Boolean(p.bridgeToken);
-    r.actionsRow.style.display = hasBridge ? 'flex' : 'none';
+    var hasBridge = hasLoopbackBridge(p);
+    var canOpenDirectly = Boolean(document.querySelector('[data-testid="toggle-aux-sidebar"]'));
+    r.openBtn.style.display = (hasBridge || canOpenDirectly) ? '' : 'none';
+    r.refreshBtn.style.display = hasBridge ? '' : 'none';
+    r.actionsRow.style.display = (hasBridge || canOpenDirectly) ? 'flex' : 'none';
   }
 
   function makeMiniRing(isAccent) {
@@ -1719,7 +1843,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     });
     qpOpenBtn.addEventListener('click', function(ev) {
       ev.stopPropagation();
-      sendBridgeAction(state.payload, 'openPanel', 'topbar', qpFooterFeedback);
+      triggerOpenPanelAction(state.payload, 'topbar', qpFooterFeedback);
     });
 
     state.topBarHost = host;
@@ -1756,8 +1880,22 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     if (!state.topBarRefs) { return; }
     var r = state.topBarRefs;
     var vw = window.innerWidth || 1280;
-    var hideTotal = vw < 1120;
-    var hideSpeed = vw < 860;
+    var auxBtn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
+    var auxOpen = Boolean(auxBtn && auxBtn.getAttribute('aria-expanded') === 'true');
+    var effectiveWidth = vw;
+    try {
+      var titlebar = document.querySelector('[data-testid="pane-titlebar-toolbar"], [class*="@container/titlebar"]');
+      if (titlebar && typeof titlebar.getBoundingClientRect === 'function') {
+        var tbRect = titlebar.getBoundingClientRect();
+        if (tbRect && typeof tbRect.width === 'number' && tbRect.width > 120) {
+          effectiveWidth = Math.min(effectiveWidth, tbRect.width);
+        }
+      }
+    } catch (_e) {}
+    var totalThreshold = auxOpen ? 1360 : 1120;
+    var speedThreshold = auxOpen ? 1040 : 860;
+    var hideTotal = effectiveWidth < totalThreshold;
+    var hideSpeed = effectiveWidth < speedThreshold;
     r.totalPill.classList.toggle('is-hidden', hideTotal);
     r.speedPill.classList.toggle('is-hidden', hideSpeed);
     var showOverflow = hideTotal || hideSpeed;
@@ -1913,9 +2051,10 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     r.qpTitle.textContent = bi(lang, 'Model Quota Board', '模型配额面板');
     r.qpRefreshBtn.textContent = bi(lang, 'Refresh', '刷新');
     r.qpOpenBtn.textContent = bi(lang, 'Open Panel', '打开面板');
-    var hasBridge = typeof p.bridgeUrl === 'string' && /^http:\\/\\/127\\.0\\.0\\.1:\\d+$/.test(p.bridgeUrl) && Boolean(p.bridgeToken);
+    var hasBridge = hasLoopbackBridge(p);
+    var canOpenDirectly = Boolean(document.querySelector('[data-testid="toggle-aux-sidebar"]'));
     r.qpRefreshBtn.style.display = hasBridge ? '' : 'none';
-    r.qpOpenBtn.style.display = hasBridge ? '' : 'none';
+    r.qpOpenBtn.style.display = (hasBridge || canOpenDirectly) ? '' : 'none';
 
     state.countdownSec = typeof p.nextRefreshSec === 'number' && Number.isFinite(p.nextRefreshSec)
       ? Math.max(0, Math.round(p.nextRefreshSec))
@@ -2064,9 +2203,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     }
     if (!state.themeObserver && typeof MutationObserver !== 'undefined' && document.documentElement) {
       state.themeObserver = new MutationObserver(function() { syncThemes(); });
-      state.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+      state.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-agy-theme'] });
       if (document.body) {
-        state.themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+        state.themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-agy-theme'] });
       }
     }
     if (!state.countdownTimer) {

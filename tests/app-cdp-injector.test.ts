@@ -26,6 +26,7 @@ import {
     createOverlayActionBridge,
     discoverDevToolsActivePort,
     encodeWebSocketFrame,
+    fetchCdpTargets,
     getCdpPlatformGuide,
     isLoopbackUrl,
     parseDevToolsActivePortContent,
@@ -112,6 +113,9 @@ class FakeElement {
     style: Record<string, string> = {};
     listeners = new Map<string, Array<(ev: unknown) => void>>();
     type = '';
+    hidden = false;
+    _rect: { top: number; left: number; right: number; bottom: number; width: number; height: number } | null = null;
+    clickCount = 0;
 
     constructor(tag: string) {
         this.tagName = tag.toUpperCase();
@@ -120,6 +124,17 @@ class FakeElement {
     get parentElement(): FakeElement | null { return this.parentNode; }
     get firstChild(): FakeElement | null { return this.childNodes[0] ?? null; }
     get firstElementChild(): FakeElement | null { return this.childNodes.find(n => n.nodeType === 1) ?? null; }
+    get lastElementChild(): FakeElement | null {
+        for (let i = this.childNodes.length - 1; i >= 0; i--) {
+            if (this.childNodes[i].nodeType === 1) { return this.childNodes[i]; }
+        }
+        return null;
+    }
+    get nextSibling(): FakeElement | null {
+        if (!this.parentNode) { return null; }
+        const idx = this.parentNode.childNodes.indexOf(this);
+        return idx >= 0 ? (this.parentNode.childNodes[idx + 1] ?? null) : null;
+    }
     get isConnected(): boolean {
         let cur: FakeElement | null = this;
         while (cur) {
@@ -216,8 +231,16 @@ class FakeElement {
         if (idx >= 0) { list.splice(idx, 1); }
     }
 
+    click(): void {
+        this.clickCount += 1;
+        const handlers = this.listeners.get('click') ?? [];
+        for (const fn of handlers) {
+            fn({ stopPropagation: () => {}, target: this });
+        }
+    }
+
     getBoundingClientRect() {
-        return { top: 400, left: 600, right: 626, bottom: 426, width: 26, height: 26 };
+        return this._rect ?? { top: 400, left: 600, right: 626, bottom: 426, width: 26, height: 26 };
     }
 
     private _matchesSimple(sel: string): boolean {
@@ -389,6 +412,16 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
                 homedir: '/home/alice',
                 env: {},
             })).toEqual(['/home/alice/.config/Antigravity/DevToolsActivePort']);
+
+            // AGY_BROWSER_ACTIVE_PORT_FILE takes precedence ahead of OS defaults
+            expect(resolveDevToolsActivePortPaths({
+                platform: 'darwin',
+                homedir: '/Users/alice',
+                env: { AGY_BROWSER_ACTIVE_PORT_FILE: '/custom/run/DevToolsActivePort' },
+            })).toEqual([
+                '/custom/run/DevToolsActivePort',
+                '/Users/alice/Library/Application Support/Antigravity/DevToolsActivePort',
+            ]);
         });
 
         it('parses valid DevToolsActivePort payloads and rejects malformed entries', () => {
@@ -473,6 +506,96 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
             expect(selectAntigravityHubTarget([targets[0], targets[1], targets[3]])).toBeNull();
             expect(isLoopbackUrl('https://evil.example.com/')).toBe(false);
             expect(isLoopbackUrl('ws://127.0.0.1:9222/devtools/page/1', ['ws:'])).toBe(true);
+        });
+
+        it('excludes own ANTIGRAVITY_SIDECAR_WEB_PORT, sidecar titles, plugin:// URLs, prefers https Hub, and recognizes Jetski Web', () => {
+            const sidecarZh: CdpTargetInfo = {
+                id: 'sidecar-zh',
+                type: 'page',
+                title: 'Antigravity 监控面板',
+                url: 'http://127.0.0.1:53761/',
+                webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/sidecar-zh',
+            };
+            const sidecarEnvPort: CdpTargetInfo = {
+                id: 'sidecar-env',
+                type: 'page',
+                title: 'Antigravity',
+                url: 'http://127.0.0.1:54999/',
+                webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/sidecar-env',
+            };
+            const swarmTarget: CdpTargetInfo = {
+                id: 'swarm',
+                type: 'page',
+                title: 'Swarm Board',
+                url: 'http://127.0.0.1:53762/',
+                webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/swarm',
+            };
+            const pluginTarget: CdpTargetInfo = {
+                id: 'plugin',
+                type: 'page',
+                title: 'Antigravity Plugin',
+                url: 'plugin://antigravity-context-monitor/index.html',
+                webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/plugin',
+            };
+            const httpOther: CdpTargetInfo = {
+                id: 'http-other',
+                type: 'page',
+                title: 'Local Helper',
+                url: 'http://127.0.0.1:41234/',
+                webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/http-other',
+            };
+            const jetskiHub: CdpTargetInfo = {
+                id: 'jetski-hub',
+                type: 'page',
+                title: 'Jetski Web',
+                url: 'https://127.0.0.1:62505/',
+                webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/jetski-hub',
+            };
+
+            const picked = selectAntigravityHubTarget(
+                [sidecarZh, sidecarEnvPort, swarmTarget, pluginTarget, httpOther, jetskiHub],
+                { env: { ANTIGRAVITY_SIDECAR_WEB_PORT: '54999' } },
+            );
+            expect(picked?.id).toBe('jetski-hub');
+
+            // Only excluded sidecar/plugin/swarm targets -> returns null
+            expect(selectAntigravityHubTarget(
+                [sidecarZh, sidecarEnvPort, swarmTarget, pluginTarget],
+                { env: { ANTIGRAVITY_SIDECAR_WEB_PORT: '54999' } },
+            )).toBeNull();
+        });
+
+        it('falls back to IPv6 [::1] in fetchCdpTargets when 127.0.0.1 refuses connections', async () => {
+            const srv = http.createServer((req, res) => {
+                if (req.url === '/json/list') {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify([{
+                        id: 'v6-hub',
+                        type: 'page',
+                        title: 'Jetski Web',
+                        url: 'https://127.0.0.1:62501/',
+                        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/v6-hub',
+                    }]));
+                    return;
+                }
+                res.writeHead(404);
+                res.end();
+            });
+            servers.push(srv);
+            let listeningOnV6 = false;
+            await new Promise<void>((resolve) => {
+                srv.once('error', () => resolve());
+                srv.listen(0, '::1', () => {
+                    listeningOnV6 = true;
+                    resolve();
+                });
+            });
+            if (!listeningOnV6) { return; }
+
+            const port = (srv.address() as AddressInfo).port;
+            const targets = await fetchCdpTargets(port, 1500);
+            expect(targets).toHaveLength(1);
+            expect(targets[0].id).toBe('v6-hub');
         });
     });
 
@@ -767,6 +890,104 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
             expect(dom.doc.getElementById(CDP_TOPBAR_HOST_ID)).toBeNull();
             expect(dom.win[CDP_RUNTIME_GLOBAL_KEY]).toBeUndefined();
         });
+
+        it('anchors TopBar before toggle-maximize-pane without double WCO spacing, adapts to open aux sidebar, re-anchors hidden Composer Ring, detects Hub themes, and opens collapsed sidebar directly', () => {
+            const dom = createFakeDomContext({ innerWidth: 1280, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' });
+
+            // Add toggle-maximize-pane directly before toggle-aux-sidebar (Antigravity 2.35+ right cluster)
+            const maxBtn = dom.doc.createElement('button');
+            maxBtn.setAttribute('data-testid', 'toggle-maximize-pane');
+            dom.titlebar.insertBefore(maxBtn, dom.auxBtn);
+            dom.auxBtn.setAttribute('aria-expanded', 'true');
+
+            // Add native window-controls-reserve + mock Windows WCO API to verify ZERO double spacer in inline mode
+            const wcoReserve = dom.doc.createElement('div');
+            wcoReserve.setAttribute('data-testid', 'window-controls-reserve');
+            dom.doc.body.appendChild(wcoReserve);
+            (dom.ctx as { navigator: Record<string, unknown> }).navigator.windowControlsOverlay = {
+                visible: true,
+                getTitlebarAreaRect: () => ({ right: 1140 }),
+            };
+
+            // Hide first composer tab (simulating background tab) and add a visible active tab with Material ligature Turbo text
+            const firstFooter = dom.footerGroup.parentNode!;
+            firstFooter._rect = { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+            dom.turboBtn._rect = { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+
+            const activeFooter = dom.doc.createElement('div');
+            activeFooter.setAttribute('data-testid', 'input-box-bottom-toolbar');
+            const leftGroup = dom.doc.createElement('div');
+            const rightGroup = dom.doc.createElement('div');
+            const activeTurbo = dom.doc.createElement('button');
+            activeTurbo.setAttribute('data-testid', 'permissions-selector-trigger');
+            activeTurbo.textContent = 'Turbokeyboard_arrow_down';
+            rightGroup.appendChild(activeTurbo);
+            activeFooter.appendChild(leftGroup);
+            activeFooter.appendChild(rightGroup);
+            dom.doc.body.appendChild(activeFooter);
+
+            // Detect theme via colorScheme='light' and theme-light / dark-theme classes
+            dom.doc.documentElement.style.colorScheme = 'light';
+
+            vm.runInContext(buildOverlayBootstrapScript(), dom.ctx);
+            vm.runInContext(
+                buildOverlayUpdateScript(makeSamplePayload({ theme: undefined }), { appComposerRingEnabled: true, appTopBarEnabled: true }),
+                dom.ctx,
+            );
+
+            // 1. TopBar inserted BEFORE toggle-maximize-pane (never splitting [max, aux])
+            const topBarHost = dom.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+            expect(dom.titlebar.childNodes[0]).toBe(topBarHost);
+            expect(dom.titlebar.childNodes[1]).toBe(maxBtn);
+            expect(dom.titlebar.childNodes[2]).toBe(dom.auxBtn);
+            expect(topBarHost.getAttribute('data-theme')).toBe('light');
+
+            // 2. No double WCO spacer when inline & window-controls-reserve exists
+            const wcoSpacer = topBarHost.shadowRoot!.querySelector('.acm-wco-spacer')!;
+            expect(wcoSpacer.style.display).toBe('none');
+            expect(wcoSpacer.style.width).toBe('0px');
+
+            // 3. Aux pane open on 1280px collapses overflow trigger earlier (threshold 1360)
+            const overflowBtn = topBarHost.shadowRoot!.querySelector('[aria-label="More telemetry"]')!;
+            expect(overflowBtn.classList.contains('is-hidden')).toBe(false);
+
+            // 4. Composer Ring mounted in the VISIBLE active tab before activeTurbo
+            const composerHost = dom.doc.getElementById(CDP_COMPOSER_HOST_ID)!;
+            expect(rightGroup.childNodes[0]).toBe(composerHost);
+            expect(rightGroup.childNodes[1]).toBe(activeTurbo);
+            expect(composerHost.getAttribute('data-theme')).toBe('light');
+
+            // 5. Switching to dark-theme class updates theme, and hiding active tab re-anchors to newly visible tab
+            dom.doc.documentElement.style.colorScheme = '';
+            dom.doc.body.className = 'dark-theme';
+            activeFooter._rect = { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+            composerHost._rect = { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+            const tab3Footer = dom.doc.createElement('div');
+            tab3Footer.className = 'agy-composer-footer';
+            const tab3Left = dom.doc.createElement('div');
+            const tab3Right = dom.doc.createElement('div');
+            const sendBtn = dom.doc.createElement('button');
+            sendBtn.setAttribute('data-testid', 'send-button');
+            tab3Right.appendChild(sendBtn);
+            tab3Footer.appendChild(tab3Left);
+            tab3Footer.appendChild(tab3Right);
+            dom.doc.body.appendChild(tab3Footer);
+
+            vm.runInContext(
+                buildOverlayUpdateScript(makeSamplePayload({ theme: undefined }), { appComposerRingEnabled: true, appTopBarEnabled: true }),
+                dom.ctx,
+            );
+            expect(composerHost.getAttribute('data-theme')).toBe('dark');
+            expect(tab3Right.childNodes[0]).toBe(composerHost);
+            expect(tab3Right.childNodes[1]).toBe(sendBtn);
+
+            // 6. Clicking Open Panel directly clicks collapsed toggle-aux-sidebar even without bridgeUrl
+            dom.auxBtn.setAttribute('aria-expanded', 'false');
+            const openBtn = composerHost.shadowRoot!.querySelector('.is-primary')!;
+            expect(openBtn.style.display).not.toBe('none');
+            openBtn.click();
+            expect(dom.auxBtn.clickCount).toBe(1);
+        });
     });
 
     describe('CdpAmbientOverlayManager opt-in lifecycle & silent degradation', () => {
@@ -855,8 +1076,102 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
             // Turn off both -> evaluates unmount('all'), closes client & bridge, returns disabled
             const off = await mgr.setToggles({ appComposerRingEnabled: false, appTopBarEnabled: false });
             expect(off.state).toBe('disabled');
+            expect(off.diagnosticCode).toBe('disabled');
             expect(evaluatedExprs.some(e => e.includes('"all"'))).toBe(true);
             expect(fakeClient.close).toHaveBeenCalledTimes(1);
+
+            await mgr.dispose();
+        });
+
+        it('populates structured diagnosticCode across all failure modes, serializes concurrent sync calls, and bypasses backoff on recheck()', async () => {
+            let nowMs = 2_000_000;
+            let activePort: { port: number; wsPath: string; filePath: string } | null = null;
+            let targetsImpl: () => Promise<CdpTargetInfo[]> = async () => { throw new Error('ECONNREFUSED'); };
+            let connectCalls = 0;
+            let evaluateError: Error | null = null;
+
+            const makeClient = (): CdpClientLike => {
+                let open = true;
+                return {
+                    get isOpen() { return open; },
+                    send: vi.fn().mockResolvedValue({}),
+                    evaluate: vi.fn().mockImplementation(async () => {
+                        if (evaluateError) { throw evaluateError; }
+                        return { ok: true };
+                    }),
+                    close: vi.fn().mockImplementation(async () => { open = false; }),
+                };
+            };
+
+            const mgr = createCdpAmbientOverlayManager({
+                platform: 'darwin',
+                enableActionBridge: false,
+                reconnectBackoffMs: 60_000,
+                now: () => nowMs,
+                discoverActivePort: () => activePort,
+                fetchTargets: async () => targetsImpl(),
+                connectClient: async () => {
+                    connectCalls += 1;
+                    await new Promise(resolve => setTimeout(resolve, 25));
+                    return makeClient();
+                },
+            });
+
+            // 1. disabled
+            expect(mgr.getStatus().diagnosticCode).toBe('disabled');
+
+            // 2. missing_port_file
+            const stMissing = await mgr.setToggles({ appComposerRingEnabled: true, appTopBarEnabled: false });
+            expect(stMissing.state).toBe('cdp_unavailable');
+            expect(stMissing.diagnosticCode).toBe('missing_port_file');
+
+            // 3. port_unreachable (recheck bypasses 60s backoff immediately!)
+            activePort = { port: 9229, wsPath: '/devtools/browser/1', filePath: '/tmp/DevToolsActivePort' };
+            const stUnreachable = await mgr.recheck();
+            expect(stUnreachable.state).toBe('cdp_unavailable');
+            expect(stUnreachable.diagnosticCode).toBe('port_unreachable');
+            expect(stUnreachable.discoveredPort).toBe(9229);
+            expect(stUnreachable.portFilePath).toBe('/tmp/DevToolsActivePort');
+
+            // 4. no_hub_target
+            targetsImpl = async () => [{
+                id: 'dt',
+                type: 'page',
+                title: 'DevTools',
+                url: 'devtools://devtools/bundled/inspector.html',
+                webSocketDebuggerUrl: 'ws://127.0.0.1:9229/devtools/page/dt',
+            }];
+            const stNoHub = await mgr.recheck();
+            expect(stNoHub.state).toBe('cdp_unavailable');
+            expect(stNoHub.diagnosticCode).toBe('no_hub_target');
+            expect(stNoHub.discoveredPort).toBe(9229);
+
+            // 5. Concurrent setToggles + updatePayload + recheck must serialize and open ONLY ONE WebSocket
+            targetsImpl = async () => [{
+                id: 'hub-1',
+                type: 'page',
+                title: 'Jetski Web',
+                url: 'https://127.0.0.1:62501/',
+                webSocketDebuggerUrl: 'ws://127.0.0.1:9229/devtools/page/hub-1',
+            }];
+            const [r1, r2, r3] = await Promise.all([
+                mgr.recheck(),
+                mgr.updatePayload(makeSamplePayload()),
+                mgr.setToggles({ appComposerRingEnabled: true, appTopBarEnabled: true }),
+            ]);
+            expect(connectCalls).toBe(1);
+            expect(r1.state).toBe('connected');
+            expect(r1.diagnosticCode).toBe('connected');
+            expect(r1.discoveredPort).toBe(9229);
+            expect(r2.state).toBe('connected');
+            expect(r3.state).toBe('connected');
+
+            // 6. eval_error
+            evaluateError = new Error('Target crashed');
+            const stEvalErr = await mgr.updatePayload(makeSamplePayload({ contextPct: 50 }));
+            expect(stEvalErr.state).toBe('error');
+            expect(stEvalErr.diagnosticCode).toBe('eval_error');
+            expect(stEvalErr.errorMessage).toContain('Target crashed');
 
             await mgr.dispose();
         });

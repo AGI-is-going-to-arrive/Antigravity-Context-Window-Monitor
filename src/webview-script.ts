@@ -105,6 +105,38 @@ export function getScript(): string {
             var upgradeDoneText = ${JSON.stringify(`✓ ${tBi('Upgraded — reload to apply', '升级完成，重启后生效')}`)};
             var checkFailedText = ${JSON.stringify(tBi('Check failed', '检查失败'))};
             var exportedText = ${JSON.stringify(`✓ ${tBi('Exported', '已导出')}`)};
+            var cdpCheckingText = ${JSON.stringify(tBi('Checking CDP...', '正在检测 CDP...'))};
+            var cdpConnectedText = ${JSON.stringify(tBi('Connected', '已连接'))};
+            var cdpErrorText = ${JSON.stringify(tBi('CDP Error', 'CDP 异常'))};
+            var cdpInactiveText = ${JSON.stringify(tBi('CDP Inactive', 'CDP 未就绪'))};
+            var cdpDisabledText = ${JSON.stringify(tBi('Disabled', '未启用'))};
+            var cdpDiagMissingText = ${JSON.stringify(tBi(
+        'DevToolsActivePort not found — Antigravity App was launched without --remote-debugging-port=0 (or an auto-update restart dropped the flag). Quit completely first (Cmd+Q on macOS), relaunch with the command below, then click Recheck CDP.',
+        '未检测到 DevToolsActivePort —— Antigravity App 未使用 --remote-debugging-port=0 启动（或自动更新重启丢弃了启动参数）。请先完全退出（macOS 按 Cmd+Q），按下方命令重启后再点击「重新检测」。',
+    ))};
+            var cdpDiagUnreachableTpl = ${JSON.stringify(tBi(
+        'Found DevToolsActivePort{port}, but the CDP port is unreachable (stale file from an earlier run). Fully quit Antigravity App, relaunch with --remote-debugging-port=0, then click Recheck CDP.',
+        '检测到 DevToolsActivePort{port}，但调试端口无响应（可能是旧会话残留文件）。请完全退出 Antigravity App 并以 --remote-debugging-port=0 重启，再点击「重新检测」。',
+    ))};
+            var cdpDiagNoHubTpl = ${JSON.stringify(tBi(
+        'CDP port{port} is listening, but no Antigravity Hub window target was found (only sidecar or DevTools targets detected). Open an Antigravity workspace window and click Recheck CDP.',
+        'CDP 端口{port}已响应，但未找到 Antigravity 主窗口目标（仅检测到侧栏或 DevTools 页面）。请打开 Antigravity 主窗口后点击「重新检测」。',
+    ))};
+            var cdpDiagWsErrorTpl = ${JSON.stringify(tBi(
+        'CDP WebSocket connection failed{err}. Click Recheck CDP or relaunch Antigravity App with --remote-debugging-port=0.',
+        'CDP WebSocket 连接失败{err}。请点击「重新检测」或以 --remote-debugging-port=0 重启 Antigravity App。',
+    ))};
+            var cdpDiagEvalErrorTpl = ${JSON.stringify(tBi(
+        'Connected to Antigravity Hub, but overlay injection failed{err}. Click Recheck CDP once the window finishes loading.',
+        '已连接 Antigravity 主窗口，但悬浮组件注入失败{err}。请待窗口加载完成后点击「重新检测」。',
+    ))};
+            var cdpDiagConnectedTpl = ${JSON.stringify(tBi(
+        'Connected to Antigravity Hub{port}{title}.',
+        '已连接到 Antigravity 主窗口{port}{title}。',
+    ))};
+            var updateAvailablePillTpl = ${JSON.stringify(tBi('Update available: {ver}', '有可用更新：{ver}'))};
+            var upToDatePillTpl = ${JSON.stringify(tBi('Up to date ({ver})', '已是最新（{ver}）'))};
+            var currentVerPillTpl = ${JSON.stringify(tBi('Current {ver}', '当前版本 {ver}'))};
 
             function triggerClientDownload(filename, content, mimeType) {
                 try {
@@ -145,6 +177,109 @@ export function getScript(): string {
                     var isMatch = modeBtns[mi].getAttribute('data-mode') === resolvedMode;
                     modeBtns[mi].classList.toggle('is-active', isMatch);
                     modeBtns[mi].setAttribute('aria-checked', String(isMatch));
+                }
+            }
+
+            function syncCdpStatusUi(cdpStatus, fallbackComposerOn, fallbackTopBarOn) {
+                var compCb = document.getElementById('toggleAppComposerRing');
+                var topCb = document.getElementById('toggleAppTopBar');
+                var compOn = typeof fallbackComposerOn === 'boolean' ? fallbackComposerOn : Boolean(compCb && compCb.checked);
+                var topOn = typeof fallbackTopBarOn === 'boolean' ? fallbackTopBarOn : Boolean(topCb && topCb.checked);
+                var anyEnabled = compOn || topOn;
+
+                var state = (cdpStatus && typeof cdpStatus.state === 'string')
+                    ? cdpStatus.state
+                    : (anyEnabled ? 'cdp_unavailable' : 'disabled');
+                var diag = (cdpStatus && typeof cdpStatus.diagnosticCode === 'string')
+                    ? cdpStatus.diagnosticCode
+                    : (state === 'connected' ? 'connected'
+                        : (state === 'error' ? 'ws_error'
+                            : (state === 'cdp_unavailable' ? 'missing_port_file' : 'disabled')));
+
+                var pill = document.getElementById('cdpStatusPill');
+                if (pill) {
+                    var pillCls = 'stg-status-pill ' + (state === 'connected' ? 'is-connected'
+                        : (state === 'error' ? 'is-error'
+                            : (state === 'cdp_unavailable' ? 'is-inactive' : 'is-disabled')));
+                    pill.className = pillCls;
+                    pill.setAttribute('data-cdp-state', state);
+                    pill.setAttribute('data-cdp-diagnostic', diag);
+                    pill.textContent = state === 'connected' ? cdpConnectedText
+                        : (state === 'error' ? cdpErrorText
+                            : (state === 'cdp_unavailable' ? cdpInactiveText : cdpDisabledText));
+                    var tip = state === 'connected'
+                        ? (cdpStatus && cdpStatus.targetTitle ? String(cdpStatus.targetTitle) : '')
+                        : (cdpStatus && cdpStatus.errorMessage ? String(cdpStatus.errorMessage) : '');
+                    if (tip) { pill.setAttribute('title', tip); } else { pill.removeAttribute('title'); }
+                }
+
+                var hint = document.getElementById('cdpDiagnosticHint');
+                if (hint) {
+                    hint.setAttribute('data-cdp-diagnostic', diag);
+                    if (state === 'disabled' || diag === 'disabled') {
+                        hint.hidden = true;
+                        hint.textContent = '';
+                        hint.className = 'stg-diagnostic-hint';
+                    } else {
+                        var portPart = (cdpStatus && typeof cdpStatus.discoveredPort === 'number')
+                            ? (' (:' + cdpStatus.discoveredPort + ')')
+                            : '';
+                        var titlePart = (cdpStatus && cdpStatus.targetTitle) ? (' — ' + String(cdpStatus.targetTitle)) : '';
+                        var errPart = (cdpStatus && cdpStatus.errorMessage) ? (': ' + String(cdpStatus.errorMessage)) : '';
+                        var tone = state === 'connected' ? 'is-good'
+                            : ((state === 'error' || diag === 'ws_error' || diag === 'eval_error') ? 'is-error' : 'is-warn');
+                        var msgText = cdpDiagMissingText;
+                        if (diag === 'connected') {
+                            msgText = cdpDiagConnectedTpl.replace(/\{port\}/g, portPart).replace(/\{title\}/g, titlePart);
+                        } else if (diag === 'port_unreachable') {
+                            msgText = cdpDiagUnreachableTpl.replace(/\{port\}/g, portPart);
+                        } else if (diag === 'no_hub_target') {
+                            msgText = cdpDiagNoHubTpl.replace(/\{port\}/g, portPart);
+                        } else if (diag === 'ws_error') {
+                            msgText = cdpDiagWsErrorTpl.replace(/\{err\}/g, errPart);
+                        } else if (diag === 'eval_error') {
+                            msgText = cdpDiagEvalErrorTpl.replace(/\{err\}/g, errPart);
+                        }
+                        hint.className = 'stg-diagnostic-hint ' + tone;
+                        hint.textContent = msgText;
+                        hint.hidden = false;
+                    }
+                }
+            }
+
+            function syncUpdateStatusUi(updateStatus) {
+                if (!updateStatus || typeof updateStatus !== 'object') { return; }
+                var pill = document.getElementById('updateStatusPill');
+                if (!pill) { return; }
+                var rawLatest = typeof updateStatus.latestVersion === 'string' ? updateStatus.latestVersion.trim() : '';
+                var latestTag = rawLatest ? (rawLatest.charAt(0) === 'v' ? rawLatest : ('v' + rawLatest)) : '';
+                var rawCur = typeof updateStatus.currentVersion === 'string' ? updateStatus.currentVersion.trim() : '';
+                var curTag = rawCur ? (rawCur.charAt(0) === 'v' ? rawCur : ('v' + rawCur)) : '';
+                var hasUpd = Boolean(
+                    updateStatus.updateAvailable
+                    || updateStatus.hasUpdate
+                    || updateStatus.status === 'update_available'
+                );
+                if (hasUpd && latestTag) {
+                    pill.className = 'stg-status-pill is-update';
+                    pill.setAttribute('data-update-status', 'update_available');
+                    pill.textContent = updateAvailablePillTpl.replace(/\{ver\}/g, latestTag);
+                    pill.removeAttribute('title');
+                } else if (updateStatus.status === 'error' || updateStatus.error) {
+                    pill.className = 'stg-status-pill is-error';
+                    pill.setAttribute('data-update-status', 'error');
+                    pill.textContent = checkFailedText;
+                    if (updateStatus.error) { pill.setAttribute('title', String(updateStatus.error)); }
+                } else if (updateStatus.status === 'up_to_date' || updateStatus.status === 'not_modified' || (updateStatus.checkedAt && !hasUpd)) {
+                    pill.className = 'stg-status-pill is-uptodate';
+                    pill.setAttribute('data-update-status', 'up_to_date');
+                    pill.textContent = curTag ? upToDatePillTpl.replace(/\{ver\}/g, curTag) : upToDateText;
+                    pill.removeAttribute('title');
+                } else if (curTag) {
+                    pill.className = 'stg-status-pill';
+                    pill.setAttribute('data-update-status', 'idle');
+                    pill.textContent = currentVerPillTpl.replace(/\{ver\}/g, curTag);
+                    pill.removeAttribute('title');
                 }
             }
 
@@ -909,8 +1044,16 @@ export function getScript(): string {
                     var updMsg = msg.error
                         ? (msg.error || checkFailedText)
                         : (msg.hasUpdate || msg.updateAvailable ? updateAvailableText : upToDateText);
+                    syncUpdateStatusUi(msg.updateStatus || msg);
                     flashFeedback('updatesFeedback', updMsg, 3500);
                     flashFeedback('aboutUpdatesFeedback', updMsg, 3500);
+                }
+                if (msg.command === 'cdpStatusResult') {
+                    var nextCdpRes = msg.cdpStatus || msg;
+                    syncCdpStatusUi(nextCdpRes);
+                    var cdpResText = nextCdpRes.state === 'connected' ? cdpConnectedText
+                        : (nextCdpRes.state === 'error' ? cdpErrorText : cdpInactiveText);
+                    flashFeedback('appOverlaysFeedback', cdpResText, 3200);
                 }
                 if (msg.command === 'pluginUpdateResult') {
                     var applyMsg = msg.ok ? (msg.message || upgradeDoneText) : (msg.error || msg.message || checkFailedText);
@@ -996,6 +1139,22 @@ export function getScript(): string {
                     if (typeof msg.activityMaxArchives === 'number') {
                         var maEl = document.getElementById('activityMaxArchivesInput');
                         if (maEl) { maEl.value = String(msg.activityMaxArchives); }
+                    }
+                    if (msg.cdpStatus && typeof msg.cdpStatus === 'object') {
+                        syncCdpStatusUi(msg.cdpStatus, msg.appComposerRingEnabled, msg.appTopBarEnabled);
+                    } else if (typeof msg.appComposerRingEnabled === 'boolean' || typeof msg.appTopBarEnabled === 'boolean') {
+                        var cOn = typeof msg.appComposerRingEnabled === 'boolean'
+                            ? msg.appComposerRingEnabled
+                            : Boolean((document.getElementById('toggleAppComposerRing') || {}).checked);
+                        var tOn = typeof msg.appTopBarEnabled === 'boolean'
+                            ? msg.appTopBarEnabled
+                            : Boolean((document.getElementById('toggleAppTopBar') || {}).checked);
+                        if (!cOn && !tOn) {
+                            syncCdpStatusUi({ state: 'disabled', diagnosticCode: 'disabled' }, false, false);
+                        }
+                    }
+                    if (msg.updateStatus && typeof msg.updateStatus === 'object') {
+                        syncUpdateStatusUi(msg.updateStatus);
                     }
                 }
                 if (msg.command === 'copyActionResult') {
@@ -1498,6 +1657,37 @@ export function getScript(): string {
                     return;
                 }
 
+                // ── CDP Recheck Action (Settings tab) ──
+                var recheckCdpBtn = target.closest('[data-action="recheckCdp"]');
+                if (recheckCdpBtn) {
+                    recheckCdpBtn.disabled = true;
+                    setFeedback('appOverlaysFeedback', cdpCheckingText);
+                    if (bridge && bridge.surface !== 'vscode' && typeof bridge.sendAction === 'function') {
+                        Promise.resolve(bridge.sendAction({ command: 'recheckCdp' })).then(function(res) {
+                            recheckCdpBtn.disabled = false;
+                            var payload = (res && res.result) ? res.result : res;
+                            var nextCdp = (payload && payload.cdpStatus)
+                                ? payload.cdpStatus
+                                : (payload && typeof payload.state === 'string' ? payload : null);
+                            if (nextCdp) {
+                                syncCdpStatusUi(nextCdp);
+                                var resLabel = nextCdp.state === 'connected' ? cdpConnectedText
+                                    : (nextCdp.state === 'error' ? cdpErrorText : cdpInactiveText);
+                                flashFeedback('appOverlaysFeedback', resLabel, 3200);
+                            } else {
+                                flashFeedback('appOverlaysFeedback', savedText, 2200);
+                            }
+                        }).catch(function() {
+                            recheckCdpBtn.disabled = false;
+                            flashFeedback('appOverlaysFeedback', checkFailedText, 3000);
+                        });
+                    } else {
+                        vscode.postMessage({ command: 'recheckCdp' });
+                        setTimeout(function() { recheckCdpBtn.disabled = false; }, 1200);
+                    }
+                    return;
+                }
+
                 // ── Updates & Release Check Actions (Settings & About tabs) ──
                 var checkUpdatesBtn = target.closest('[data-action="checkForUpdates"]');
                 if (checkUpdatesBtn) {
@@ -1968,6 +2158,20 @@ export function getScript(): string {
 
                 if (msg.snapshot && typeof msg.snapshot.lockToMainAgent === 'boolean') {
                     syncLockMainVisual(msg.snapshot.lockToMainAgent);
+                }
+                var liveCdpStatus = (msg.snapshot && msg.snapshot.data && msg.snapshot.data.cdpStatus)
+                    || (msg.snapshot && msg.snapshot.cdpStatus)
+                    || msg.cdpStatus
+                    || null;
+                if (liveCdpStatus && typeof liveCdpStatus === 'object') {
+                    syncCdpStatusUi(liveCdpStatus);
+                }
+                var liveUpdateStatus = (msg.snapshot && msg.snapshot.data && msg.snapshot.data.updateStatus)
+                    || (msg.snapshot && msg.snapshot.updateStatus)
+                    || msg.updateStatus
+                    || null;
+                if (liveUpdateStatus && typeof liveUpdateStatus === 'object') {
+                    syncUpdateStatusUi(liveUpdateStatus);
                 }
 
                 updateTabSlider();

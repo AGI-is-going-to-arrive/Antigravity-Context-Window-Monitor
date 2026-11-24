@@ -622,22 +622,58 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
         expect(html).not.toMatch(/id="toggleAppTopBar"[^>]*checked/);
         expect(html).toMatch(/id="toggleNativeHudBar"[^>]*checked/);
         expect(html).toContain('data-cdp-state="connected"');
+        expect(html).toContain('data-cdp-diagnostic="connected"');
+        expect(html).toContain('id="cdpDiagnosticHint"');
+        expect(html).toContain('id="cdpRecheckBtn"');
+        expect(html).toContain('data-action="recheckCdp"');
         expect(html).toContain('id="settings-cdp-guide"');
         expect(html).toContain('--remote-debugging-port=0');
+        expect(html).toContain('/Applications/Antigravity.app');
+        expect(html).toContain('$env:LOCALAPPDATA');
+        expect(html).toContain('%LOCALAPPDATA%');
+        expect(html).toContain('Cmd+Q');
         expect(html).toContain('app.asar');
 
         const inactiveHtml = buildSettingsContent([], undefined, undefined, {
             surface: 'app-sidecar',
             appSettings: { appComposerRingEnabled: true },
-            cdpStatus: { ...connectedStatus, state: 'cdp_unavailable' },
+            cdpStatus: { ...connectedStatus, state: 'cdp_unavailable', diagnosticCode: 'missing_port_file' },
         });
         expect(inactiveHtml).toContain('data-cdp-state="cdp_unavailable"');
+        expect(inactiveHtml).toContain('data-cdp-diagnostic="missing_port_file"');
         expect(inactiveHtml).toContain('CDP Inactive');
+        expect(inactiveHtml).toContain('DevToolsActivePort');
+
+        const unreachableHtml = buildSettingsContent([], undefined, undefined, {
+            surface: 'app-sidecar',
+            appSettings: { appComposerRingEnabled: true },
+            cdpStatus: {
+                ...connectedStatus,
+                state: 'cdp_unavailable',
+                diagnosticCode: 'port_unreachable',
+                discoveredPort: 9222,
+            },
+        });
+        expect(unreachableHtml).toContain('data-cdp-diagnostic="port_unreachable"');
+        expect(unreachableHtml).toContain('9222');
+
+        const noHubHtml = buildSettingsContent([], undefined, undefined, {
+            surface: 'app-sidecar',
+            appSettings: { appComposerRingEnabled: true },
+            cdpStatus: {
+                ...connectedStatus,
+                state: 'cdp_unavailable',
+                diagnosticCode: 'no_hub_target',
+                discoveredPort: 9222,
+            },
+        });
+        expect(noHubHtml).toContain('data-cdp-diagnostic="no_hub_target"');
 
         const disabledHtml = buildSettingsContent([], undefined, undefined, {
             surface: 'app-sidecar',
         });
         expect(disabledHtml).toContain('data-cdp-state="disabled"');
+        expect(disabledHtml).toMatch(/id="cdpDiagnosticHint"[^>]*hidden/);
     });
 
     it('renders Updates card (App Upgrade Now vs IDE Open VSX hint), Cost/Currency/History card, collapsed IDE-only card, and live zoom SSR', async () => {
@@ -817,6 +853,7 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
             'calendarClearCancel',
             'setOrchestratorPricingMode',
             'setAppSetting',
+            'recheckCdp',
             'checkForUpdates',
             'applyPluginUpdate',
             'toggleNativeHud',
@@ -825,6 +862,12 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
         for (const action of requiredActions) {
             expect(script, `missing script action ${action}`).toContain(action);
         }
+        // Live CDP & Update pill/diagnostic synchronization across syncSettingsControls & acm:snapshot
+        expect(script).toContain('syncCdpStatusUi');
+        expect(script).toContain('syncUpdateStatusUi');
+        expect(script).toContain('cdpDiagnosticHint');
+        expect(script).toContain('cdpStatusResult');
+        expect(script).toContain('msg.snapshot.data.cdpStatus');
         // Two-step clear guard: #clearCalendarBtn must NOT directly post clearCalendarHistory
         expect(script).not.toMatch(/target\.closest\('#clearCalendarBtn'\)\)\s*\{\s*vscode\.postMessage\(\{\s*command:\s*'clearCalendarHistory'/);
         // syncSettingsControls syncs polling, quota threshold, customFxRate, and subscriptionMonthlyFee
