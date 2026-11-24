@@ -77,6 +77,14 @@ import type {
     SubscriptionPlanPresetId,
 } from './cli-usage-scanner';
 import { validateExternalUrl } from './app/sidecar-runtime';
+import {
+    discoverDevToolsActivePort,
+    fetchCdpTargets,
+    getCdpPlatformGuide,
+    resolveDevToolsActivePortPaths,
+    selectAntigravityHubTarget,
+} from './app/cdp-injector';
+import type { CdpStatus } from './app/sidecar-types';
 
 // ─── Panel Payload ────────────────────────────────────────────────────────────
 
@@ -192,6 +200,7 @@ let lastCliDays: CliDailyUsageRecord[] | undefined;
 let lastOrchestratorPricingMode: OrchestratorPricingMode | undefined;
 let lastAppSettings: (Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId }) | undefined;
 let lastUpdateStatus: UpdateStatusView | null = null;
+let lastCdpStatus: CdpStatus | null = null;
 let lastLowQuotaWarning: LowQuotaWarningState | null | undefined;
 export const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
 const SAFE_CASCADE_ID_RE = /^[a-zA-Z0-9_-]{4,128}$/;
@@ -752,11 +761,37 @@ export function showMonitorPanel(p: PanelPayload): void {
             if (res.ok) {
                 lastAppSettings = getSharedAppSettings();
                 lastOrchestratorPricingMode = lastAppSettings.orchestratorPricingMode;
+                if ((res.normalizedKey === 'appComposerRingEnabled' || res.normalizedKey === 'appTopBarEnabled')
+                    && !lastAppSettings.appComposerRingEnabled
+                    && !lastAppSettings.appTopBarEnabled) {
+                    lastCdpStatus = {
+                        state: 'disabled',
+                        diagnosticCode: 'disabled',
+                        composerEnabled: false,
+                        topBarEnabled: false,
+                        platformGuide: getCdpPlatformGuide(process.platform),
+                    };
+                }
                 if (panel) {
                     safePostMessage({ command: 'configSaved', key: res.normalizedKey });
                     postSettingsControlSync();
                     postCurrentTabs();
                 }
+            }
+        } else if (msg.command === 'recheckCdp') {
+            const docSettings = readIdeDocumentSettings();
+            const cdpStatus = await probeIdeCdpStatus(
+                Boolean(docSettings.appComposerRingEnabled),
+                Boolean(docSettings.appTopBarEnabled),
+            );
+            lastCdpStatus = cdpStatus;
+            safePostMessage({
+                type: 'cdpStatusResult',
+                command: 'cdpStatusResult',
+                cdpStatus,
+            });
+            if (panel) {
+                postSettingsControlSync();
             }
         } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
             const val = Math.max(1, Math.min(60, msg.value));
@@ -809,9 +844,13 @@ export function showMonitorPanel(p: PanelPayload): void {
                 releaseUrl: res.releaseInfo?.releaseUrl ?? lastUpdateStatus?.releaseUrl ?? null,
                 releaseNotesSummary: res.releaseInfo?.releaseNotesSummary ?? lastUpdateStatus?.releaseNotesSummary ?? null,
                 openVsxUrl: OPEN_VSX_EXTENSION_URL,
+                updateStatus: lastUpdateStatus,
                 error: res.error ?? null,
             });
-            if (panel) { postCurrentTabs(); }
+            if (panel) {
+                postSettingsControlSync();
+                postCurrentTabs();
+            }
         } else if (msg.command === 'applyPluginUpdate') {
             safePostMessage({
                 type: 'pluginUpdateResult',
@@ -1077,11 +1116,95 @@ function getExtensionVersion(): string | undefined {
     return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
 }
 
+async function probeIdeCdpStatus(
+    composerEnabled: boolean,
+    topBarEnabled: boolean,
+): Promise<CdpStatus> {
+    const platformGuide = getCdpPlatformGuide(process.platform);
+    if (!composerEnabled && !topBarEnabled) {
+        return {
+            state: 'disabled',
+            diagnosticCode: 'disabled',
+            composerEnabled: false,
+            topBarEnabled: false,
+            platformGuide,
+        };
+    }
+    const portInfo = discoverDevToolsActivePort({ platform: process.platform, env: process.env });
+    if (!portInfo) {
+        return {
+            state: 'cdp_unavailable',
+            diagnosticCode: 'missing_port_file',
+            portFilePath: resolveDevToolsActivePortPaths({ platform: process.platform, env: process.env })[0],
+            composerEnabled,
+            topBarEnabled,
+            platformGuide,
+        };
+    }
+    let targets;
+    try {
+        targets = await fetchCdpTargets(portInfo.port, 2_500);
+    } catch (err) {
+        return {
+            state: 'cdp_unavailable',
+            diagnosticCode: 'port_unreachable',
+            portFilePath: portInfo.filePath,
+            discoveredPort: portInfo.port,
+            composerEnabled,
+            topBarEnabled,
+            errorMessage: err instanceof Error ? err.message : String(err),
+            platformGuide,
+        };
+    }
+    const hubTarget = selectAntigravityHubTarget(targets, { env: process.env });
+    if (!hubTarget || !hubTarget.webSocketDebuggerUrl) {
+        return {
+            state: 'cdp_unavailable',
+            diagnosticCode: 'no_hub_target',
+            portFilePath: portInfo.filePath,
+            discoveredPort: portInfo.port,
+            composerEnabled,
+            topBarEnabled,
+            errorMessage: 'No Antigravity Hub target page found on CDP port',
+            platformGuide,
+        };
+    }
+    return {
+        state: 'connected',
+        diagnosticCode: 'connected',
+        portFilePath: portInfo.filePath,
+        discoveredPort: portInfo.port,
+        targetUrl: hubTarget.url,
+        targetTitle: hubTarget.title,
+        composerEnabled,
+        topBarEnabled,
+        platformGuide,
+    };
+}
+
+function resolveEffectiveIdeCdpStatus(docSettings: MonitorDocumentSettings): CdpStatus | undefined {
+    if (!lastCdpStatus) { return undefined; }
+    if (!docSettings.appComposerRingEnabled && !docSettings.appTopBarEnabled) {
+        return {
+            ...lastCdpStatus,
+            state: 'disabled',
+            diagnosticCode: 'disabled',
+            composerEnabled: false,
+            topBarEnabled: false,
+        };
+    }
+    return lastCdpStatus;
+}
+
 function postSettingsControlSync(): void {
     if (!panel) { return; }
     const docSettings = readIdeDocumentSettings();
+    const effectiveUpdateStatus = lastUpdateStatus ?? getLastUpdateStatusView();
+    const effectiveCdpStatus = resolveEffectiveIdeCdpStatus(docSettings);
     safePostMessage({
         command: 'syncSettingsControls',
+        pollingInterval: docSettings.pollingInterval,
+        quotaNotificationThreshold: docSettings.quotaNotificationThreshold,
         showContext: docSettings.showContext,
         showQuota: docSettings.showQuota,
         showResetCountdown: docSettings.showResetCountdown,
@@ -1105,6 +1228,8 @@ function postSettingsControlSync(): void {
         calendarRetentionDays: docSettings.calendarRetentionDays,
         activityMaxRecentSteps: docSettings.activityMaxRecentSteps,
         activityMaxArchives: docSettings.activityMaxArchives,
+        ...(effectiveCdpStatus ? { cdpStatus: effectiveCdpStatus } : {}),
+        ...(effectiveUpdateStatus ? { updateStatus: effectiveUpdateStatus } : {}),
     });
 }
 
@@ -1166,6 +1291,7 @@ function makeDocumentParams(
         ? (docSettings.orchestratorPricingMode ?? 'mapped')
         : (lastOrchestratorPricingMode ?? docSettings.orchestratorPricingMode ?? 'mapped');
     const effectiveUpdateStatus = lastUpdateStatus ?? getLastUpdateStatusView();
+    const effectiveCdpStatus = resolveEffectiveIdeCdpStatus(docSettings);
     return {
         surface: 'ide',
         version: getExtensionVersion(),
@@ -1199,6 +1325,7 @@ function makeDocumentParams(
         calendarOptions: buildIdeCalendarOptions(docSettings),
         orchestratorPricingMode: effectiveOrchMode,
         appSettings: effectiveAppSettings,
+        ...(effectiveCdpStatus ? { cdpStatus: effectiveCdpStatus } : {}),
         updateStatus: effectiveUpdateStatus,
         ...(lastLowQuotaWarning !== undefined ? { lowQuotaWarning: lastLowQuotaWarning } : {}),
         paused,
@@ -1223,6 +1350,8 @@ function postCurrentTabs(): void {
         command: 'updateTabs',
         tabs: buildMonitorTabsPayload(params),
         time: formatClockTime(new Date(), getLanguage()),
+        ...(params.cdpStatus ? { cdpStatus: params.cdpStatus } : {}),
+        ...(params.updateStatus ? { updateStatus: params.updateStatus } : {}),
     });
 }
 

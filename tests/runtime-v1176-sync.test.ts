@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
+import * as vm from 'vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { getHostBridgeScript } from '../src/app/host-bridge';
@@ -17,7 +18,11 @@ import {
     startStandaloneServer,
     type StandaloneServerHandle,
 } from '../src/app/sidecar-server';
-import type { CdpAmbientOverlayManager } from '../src/app/cdp-injector';
+import {
+    createCdpAmbientOverlayManager,
+    type CdpAmbientOverlayManager,
+    type CdpClientLike,
+} from '../src/app/cdp-injector';
 import type { CdpOverlayPayload, CdpOverlayToggles, CdpStatus, PluginReleaseInfo } from '../src/app/sidecar-types';
 import { CascadeStatus } from '../src/constants';
 import type { LSInfo } from '../src/discovery';
@@ -681,8 +686,215 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         expect(script).toContain('downloadFile');
         expect(script).toContain('updateCheckResult');
         expect(script).toContain('pluginUpdateResult');
+        expect(script).toContain('cdpStatusResult');
         expect(script).toContain('configSaved');
         expect(script).toContain('syncSettingsControls');
+    });
+
+    it('wires recheckCdp end-to-end across HTTP /api/action, live setListeningPort exclusion, telemetry push, cdpStatusResult/syncSettingsControls, and host-bridge dispatch', async () => {
+        const tmp = makeTmpDir();
+        tmpDirs.push(tmp);
+        const traj = makeTrajectory();
+
+        let portReady = false;
+        let standalonePort = 0;
+        const connectedWsUrls: string[] = [];
+        const evaluatedScripts: string[] = [];
+
+        const provider = await createSidecarRuntimeProvider({
+            version: '1.17.6',
+            statePath: path.join(tmp, 'state.json'),
+            autoStart: false,
+            disableCliScan: true,
+            deps: {
+                discoverLS: async () => makeMockLS(),
+                fetchFullUserStatus: async () => makeMockUserStatus(),
+                fetchAvailableModels: async () => null,
+                fetchOrchestratorSettings: async () => null,
+                fetchUserQuotaSummary: async () => null,
+                getAllTrajectories: async () => [traj],
+                getContextUsage: async () => makeUsage(traj),
+                refreshWorkflowImageUsage: async (_ls, u) => u,
+                fetchTrajectoryGeneratorMetadata: async () => [],
+                fetchTrajectorySteps: async () => ({ steps: [], totalSteps: 0 }),
+                processActivity: async () => false,
+                fetchGM: async () => null,
+                checkForUpdates: async () => ({
+                    status: 'up_to_date',
+                    hasUpdate: false,
+                    currentVersion: '1.17.6',
+                    latestVersion: '1.17.6',
+                    checkedAt: Date.parse('2026-11-24T10:00:00Z'),
+                }),
+                createCdpOverlayManager: (mgrOpts) => createCdpAmbientOverlayManager({
+                    ...mgrOpts,
+                    enableActionBridge: false,
+                    reconnectBackoffMs: 60_000,
+                    discoverActivePort: () => (portReady
+                        ? { port: 9333, wsPath: '/devtools/browser/test', filePath: '/tmp/DevToolsActivePort' }
+                        : null),
+                    fetchTargets: async () => [
+                        // Standalone sidecar's own listening port (registered AFTER createCdpOverlayManager via setListeningPort)
+                        {
+                            id: 'sidecar-self',
+                            type: 'page',
+                            title: 'Antigravity',
+                            url: `https://127.0.0.1:${standalonePort}/`,
+                            webSocketDebuggerUrl: 'ws://127.0.0.1:9333/devtools/page/sidecar-self',
+                        },
+                        // Genuine Hub target
+                        {
+                            id: 'hub-main',
+                            type: 'page',
+                            title: 'Jetski Web',
+                            url: 'https://127.0.0.1:49888/',
+                            webSocketDebuggerUrl: 'ws://127.0.0.1:9333/devtools/page/hub-main',
+                        },
+                    ],
+                    connectClient: async (wsUrl): Promise<CdpClientLike> => {
+                        connectedWsUrls.push(wsUrl);
+                        let open = true;
+                        return {
+                            get isOpen() { return open; },
+                            send: async () => ({} as never),
+                            evaluate: async <T = unknown>(expr: string) => {
+                                evaluatedScripts.push(expr);
+                                return { ok: true } as T;
+                            },
+                            close: async () => { open = false; },
+                        };
+                    },
+                }),
+            },
+        });
+        providers.push(provider);
+
+        // Start standalone server -> calls provider.setListeningPort(handle.port) AFTER createCdpOverlayManager
+        const handle = await startStandaloneServer(provider, { host: '127.0.0.1', port: 0, version: '1.17.6' });
+        servers.push(handle);
+        standalonePort = handle.port;
+
+        await provider.pollNow(true);
+        await provider.handleAction({ command: 'checkForUpdates', force: true });
+
+        // Enable Composer Ring while DevToolsActivePort is missing -> cdp_unavailable + missing_port_file
+        const toggleHttp = await httpRequest(handle.url, 'POST', '/api/action', {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'setAppSetting', key: 'appComposerRingEnabled', value: true }),
+        });
+        expect(toggleHttp.status).toBe(200);
+        const toggleBody = toggleHttp.json();
+        expect(toggleBody.ok).toBe(true);
+        expect(toggleBody.result.cdpStatus.state).toBe('cdp_unavailable');
+        expect(toggleBody.result.cdpStatus.diagnosticCode).toBe('missing_port_file');
+
+        // Now Antigravity restarts with CDP enabled -> user clicks Recheck CDP (despite 60s backoff!)
+        portReady = true;
+        evaluatedScripts.length = 0;
+        const recheckHttp = await httpRequest(handle.url, 'POST', '/api/action', {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'recheckCdp', viewMode: 'aux' }),
+        });
+        expect(recheckHttp.status).toBe(200);
+        const recheckBody = recheckHttp.json();
+        expect(recheckBody.ok).toBe(true);
+
+        // Live setListeningPort excluded standalonePort and attached to genuine Hub target
+        expect(connectedWsUrls).toEqual(['ws://127.0.0.1:9333/devtools/page/hub-main']);
+        // Both bootstrap AND fresh telemetry update payload were pushed immediately on reconnect
+        expect(evaluatedScripts.length).toBeGreaterThanOrEqual(2);
+        expect(evaluatedScripts.some(s => s.includes('180000') || s.includes('Gemini 4 Neon'))).toBe(true);
+
+        // Structured cdpStatusResult + syncSettingsControls + snapshot.data.{cdpStatus,updateStatus}
+        expect(recheckBody.result.type).toBe('cdpStatusResult');
+        expect(recheckBody.result.command).toBe('cdpStatusResult');
+        expect(recheckBody.result.cdpStatus.state).toBe('connected');
+        expect(recheckBody.result.cdpStatus.diagnosticCode).toBe('connected');
+        expect(recheckBody.result.cdpStatus.discoveredPort).toBe(9333);
+        expect(recheckBody.result.cdpStatus.targetTitle).toBe('Jetski Web');
+
+        const cdpMsg = (recheckBody.messages as Array<Record<string, any>>).find(m => m.command === 'cdpStatusResult');
+        const syncMsg = (recheckBody.messages as Array<Record<string, any>>).find(m => m.command === 'syncSettingsControls');
+        expect(cdpMsg?.cdpStatus?.state).toBe('connected');
+        expect(syncMsg?.cdpStatus?.state).toBe('connected');
+        expect(syncMsg?.cdpStatus?.diagnosticCode).toBe('connected');
+        expect(syncMsg?.updateStatus?.status).toBe('up_to_date');
+        expect(typeof syncMsg?.pollingInterval).toBe('number');
+        expect(typeof syncMsg?.quotaNotificationThreshold).toBe('number');
+        expect(recheckBody.snapshot?.data?.cdpStatus?.state).toBe('connected');
+        expect(recheckBody.snapshot?.data?.updateStatus?.status).toBe('up_to_date');
+
+        // Verify host-bridge.ts forwards structured cdpStatusResult even when returned only in data.result
+        const dispatched: Array<Record<string, unknown>> = [];
+        const listeners = new Map<string, Array<(ev: any) => void>>();
+        const docStub = {
+            readyState: 'complete',
+            hidden: false,
+            body: { getAttribute: () => 'aux', setAttribute: () => {}, classList: { toggle: () => {} } },
+            documentElement: { style: { getPropertyValue: () => '', setProperty: () => {} } },
+            addEventListener: () => {},
+            getElementById: () => null,
+        };
+        const sandbox: Record<string, unknown> = {
+            URLSearchParams,
+            URL,
+            Promise,
+            setTimeout,
+            clearTimeout,
+            document: docStub,
+            navigator: {},
+            MessageEvent: class FakeMessageEvent {
+                type: string;
+                data: unknown;
+                constructor(type: string, init?: { data?: unknown }) {
+                    this.type = type;
+                    this.data = init?.data;
+                }
+            },
+            CustomEvent: class FakeCustomEvent {
+                type: string;
+                detail: unknown;
+                constructor(type: string, init?: { detail?: unknown }) {
+                    this.type = type;
+                    this.detail = init?.detail;
+                }
+            },
+        };
+        const winStub: Record<string, any> = {
+            location: { pathname: '/', search: '', href: 'http://127.0.0.1/' },
+            addEventListener: (type: string, fn: (ev: any) => void) => {
+                const arr = listeners.get(type) ?? [];
+                arr.push(fn);
+                listeners.set(type, arr);
+            },
+            dispatchEvent: (ev: any) => {
+                if (ev?.type === 'message' && ev.data) {
+                    dispatched.push(ev.data as Record<string, unknown>);
+                }
+                for (const fn of listeners.get(ev?.type) ?? []) {
+                    fn(ev);
+                }
+                return true;
+            },
+            postMessage: (msg: Record<string, unknown>) => { dispatched.push(msg); },
+            fetch: async () => ({
+                ok: true,
+                json: async () => ({
+                    ok: true,
+                    result: {
+                        type: 'cdpStatusResult',
+                        command: 'cdpStatusResult',
+                        cdpStatus: { state: 'connected', diagnosticCode: 'connected', discoveredPort: 9333 },
+                    },
+                }),
+            }),
+            CustomEvent: sandbox.CustomEvent,
+            MessageEvent: sandbox.MessageEvent,
+        };
+        sandbox.window = winStub;
+        vm.runInNewContext(getHostBridgeScript({ pollIntervalMs: 4000, autoPoll: false }), sandbox);
+        await winStub.__ACM_BRIDGE__.sendAction({ command: 'recheckCdp' });
+        expect(dispatched.some(m => m.command === 'cdpStatusResult' && (m.cdpStatus as CdpStatus)?.diagnosticCode === 'connected')).toBe(true);
     });
 
     it('keeps CDP overlay estCostFormatted in USD + localCostFormatted in local currency, preserves post-archive live tokens, and forwards orchestratorPricingMode', async () => {
@@ -1181,6 +1393,69 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
             expect(updNotice!.type).toBe('pluginUpdateResult');
             expect(updNotice!.requiresReload).toBe(false);
             expect(String(updNotice!.message)).toContain('Open VSX');
+
+            // recheckCdp in IDE webview replies with structured cdpStatusResult + syncSettingsControls
+            const prevPortFileEnv = process.env.AGY_BROWSER_ACTIVE_PORT_FILE;
+            let fakeCdpServer: http.Server | undefined;
+            try {
+                posted.length = 0;
+                await onMessage!({ command: 'recheckCdp' });
+                const disabledCdpMsg = posted.find(m => m.command === 'cdpStatusResult');
+                expect(disabledCdpMsg).toBeDefined();
+                expect((disabledCdpMsg!.cdpStatus as CdpStatus)?.state).toBe('disabled');
+                expect((disabledCdpMsg!.cdpStatus as CdpStatus)?.diagnosticCode).toBe('disabled');
+                const disabledSyncMsg = posted.find(m => m.command === 'syncSettingsControls');
+                expect((disabledSyncMsg?.cdpStatus as CdpStatus)?.state).toBe('disabled');
+
+                // Enable overlay toggle and point AGY_BROWSER_ACTIVE_PORT_FILE to a fake loopback CDP /json/list server
+                fakeCdpServer = http.createServer((_req, res) => {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify([{
+                        id: 'hub-ide-test',
+                        type: 'page',
+                        title: 'Jetski Web',
+                        url: 'https://127.0.0.1:49991/',
+                        webSocketDebuggerUrl: 'ws://127.0.0.1:9444/devtools/page/hub-ide-test',
+                    }]));
+                });
+                await new Promise<void>(resolve => fakeCdpServer!.listen(0, '127.0.0.1', resolve));
+                const cdpPort = (fakeCdpServer.address() as { port: number }).port;
+                const portFile = path.join(tmp, 'DevToolsActivePort');
+                fs.writeFileSync(portFile, `${cdpPort}\n/devtools/browser/ide-test\n`, 'utf8');
+                process.env.AGY_BROWSER_ACTIVE_PORT_FILE = portFile;
+
+                await onMessage!({ command: 'setAppSetting', key: 'appComposerRingEnabled', value: true });
+                posted.length = 0;
+                await onMessage!({ command: 'recheckCdp' });
+                const connCdpMsg = posted.find(m => m.command === 'cdpStatusResult');
+                expect(connCdpMsg).toBeDefined();
+                expect((connCdpMsg!.cdpStatus as CdpStatus)?.state).toBe('connected');
+                expect((connCdpMsg!.cdpStatus as CdpStatus)?.diagnosticCode).toBe('connected');
+                expect((connCdpMsg!.cdpStatus as CdpStatus)?.discoveredPort).toBe(cdpPort);
+                expect((connCdpMsg!.cdpStatus as CdpStatus)?.targetTitle).toBe('Jetski Web');
+
+                // Close fake CDP server -> port_unreachable diagnostic
+                await new Promise<void>(resolve => fakeCdpServer!.close(() => resolve()));
+                fakeCdpServer = undefined;
+                posted.length = 0;
+                await onMessage!({ command: 'recheckCdp' });
+                const staleCdpMsg = posted.find(m => m.command === 'cdpStatusResult');
+                expect(staleCdpMsg).toBeDefined();
+                expect((staleCdpMsg!.cdpStatus as CdpStatus)?.state).toBe('cdp_unavailable');
+                expect((staleCdpMsg!.cdpStatus as CdpStatus)?.diagnosticCode).toBe('port_unreachable');
+
+                // Reset toggle cleanly -> returns to disabled
+                await onMessage!({ command: 'setAppSetting', key: 'appComposerRingEnabled', value: false });
+            } finally {
+                if (fakeCdpServer) {
+                    await new Promise<void>(resolve => fakeCdpServer!.close(() => resolve()));
+                }
+                if (prevPortFileEnv === undefined) {
+                    delete process.env.AGY_BROWSER_ACTIVE_PORT_FILE;
+                } else {
+                    process.env.AGY_BROWSER_ACTIVE_PORT_FILE = prevPortFileEnv;
+                }
+            }
 
             // openExternalUrl allows strict https:// allowlisted host and rejects bad schemes
             await onMessage!({ command: 'openExternalUrl', url: 'https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor' });

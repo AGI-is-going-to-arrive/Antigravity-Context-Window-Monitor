@@ -3488,6 +3488,8 @@ export function createSidecarRuntimeProvider(
     function buildSyncSettingsControlsMessage(): Record<string, unknown> {
         return {
             command: 'syncSettingsControls',
+            pollingInterval: settings.pollingInterval,
+            quotaNotificationThreshold: settings.quotaNotificationThreshold,
             showContext: settings.showContext,
             showQuota: settings.showQuota,
             showResetCountdown: settings.showResetCountdown,
@@ -4684,15 +4686,11 @@ export function createSidecarRuntimeProvider(
             }
 
             case 'recheckCdp': {
-                const mgrWithRecheck = overlayManager as CdpAmbientOverlayManager & {
-                    recheck?: () => Promise<CdpStatus>;
-                };
                 let cdpStatus: CdpStatus;
-                if (typeof mgrWithRecheck.recheck === 'function') {
-                    cdpStatus = await mgrWithRecheck.recheck().catch(() => overlayManager.getStatus());
+                if (typeof overlayManager.recheck === 'function') {
+                    cdpStatus = await overlayManager.recheck().catch(() => overlayManager.getStatus());
                     if ((appSettings.appComposerRingEnabled || appSettings.appTopBarEnabled)
-                        && cdpStatus.state === 'connected'
-                        && cdpStatus.lastInjectedAt === undefined) {
+                        && cdpStatus.state === 'connected') {
                         cdpStatus = await overlayManager.updatePayload(buildCdpOverlayPayload()).catch(() => cdpStatus);
                     }
                 } else {
@@ -4701,7 +4699,7 @@ export function createSidecarRuntimeProvider(
                         appTopBarEnabled: Boolean(appSettings.appTopBarEnabled),
                     };
                     cdpStatus = await overlayManager.setToggles(toggles).catch(() => overlayManager.getStatus());
-                    if (toggles.appComposerRingEnabled || toggles.appTopBarEnabled) {
+                    if ((toggles.appComposerRingEnabled || toggles.appTopBarEnabled) && cdpStatus.state === 'connected') {
                         cdpStatus = await overlayManager.updatePayload(buildCdpOverlayPayload()).catch(() => overlayManager.getStatus());
                     }
                 }
@@ -4711,10 +4709,15 @@ export function createSidecarRuntimeProvider(
                     overlayAllowedOrigin = undefined;
                 }
                 bumpStateRevision();
+                const cdpStatusMsg: Record<string, unknown> = {
+                    type: 'cdpStatusResult',
+                    command: 'cdpStatusResult',
+                    cdpStatus,
+                };
                 return {
                     ok: true,
-                    result: { cdpStatus },
-                    messages: [buildSyncSettingsControlsMessage()],
+                    result: cdpStatusMsg,
+                    messages: [cdpStatusMsg, buildSyncSettingsControlsMessage()],
                     snapshot: buildSnapshotPayload(viewMode),
                 };
             }
@@ -4763,7 +4766,10 @@ export function createSidecarRuntimeProvider(
         getCdpStatus: () => overlayManager.getStatus(),
         buildOverlayPayload: (nowMs?: number) => buildCdpOverlayPayload(nowMs),
         getAppSettings: () => getFullAppSettings(),
-        setListeningPort: (port: number) => { addExcludedCdpPort(port); },
+        setListeningPort: (port: number) => {
+            addExcludedCdpPort(port);
+            overlayManager.addExcludedPort?.(port);
+        },
         pollNow: (force = true) => runPollCycle(force),
         getState: () => ({
             lsInfo: cachedLsInfo,

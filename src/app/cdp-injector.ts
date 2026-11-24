@@ -1064,6 +1064,7 @@ export interface CdpAmbientOverlayManager {
     setToggles(toggles: CdpOverlayToggles): Promise<CdpStatus>;
     updatePayload(payload: CdpOverlayPayload): Promise<CdpStatus>;
     recheck?(): Promise<CdpStatus>;
+    addExcludedPort?(port: number): void;
     dispose(): Promise<void>;
 }
 
@@ -1077,13 +1078,20 @@ export interface CdpAmbientOverlayManager {
  */
 export function createCdpAmbientOverlayManager(
     options: CdpAmbientOverlayManagerOptions = {},
-): CdpAmbientOverlayManager & { recheck(): Promise<CdpStatus> } {
+): CdpAmbientOverlayManager & { recheck(): Promise<CdpStatus>; addExcludedPort(port: number): void } {
     const platform = options.platform ?? process.platform;
     const env = options.env ?? process.env;
     const reconnectBackoffMs = options.reconnectBackoffMs ?? DEFAULT_RECONNECT_BACKOFF_MS;
     const enableActionBridge = options.enableActionBridge !== false;
     const nowFn = options.now ?? (() => Date.now());
     const log = options.log ?? (() => {});
+    const dynamicExcludedPorts = new Set<number>();
+
+    function addExcludedPort(port: number): void {
+        if (Number.isSafeInteger(port) && port >= 1 && port <= 65535) {
+            dynamicExcludedPorts.add(port);
+        }
+    }
 
     const discoverPortFn = options.discoverActivePort ?? (() => discoverDevToolsActivePort({ platform, env }));
     const fetchTargetsFn = options.fetchTargets ?? ((port: number) => fetchCdpTargets(port));
@@ -1211,6 +1219,7 @@ export function createCdpAmbientOverlayManager(
         const ownSidecarPort = parseSidecarWebPort(env);
         const excludedPorts = [
             ...(options.excludeTargetPorts ?? []),
+            ...dynamicExcludedPorts,
             ...(ownSidecarPort !== null ? [ownSidecarPort] : []),
             ...(bridge ? [bridge.port] : []),
         ];
@@ -1402,6 +1411,7 @@ export function createCdpAmbientOverlayManager(
         setToggles,
         updatePayload,
         recheck,
+        addExcludedPort,
         dispose,
     };
 }

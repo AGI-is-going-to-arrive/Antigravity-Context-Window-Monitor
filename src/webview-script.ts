@@ -1049,10 +1049,13 @@ export function getScript(): string {
                     flashFeedback('aboutUpdatesFeedback', updMsg, 3500);
                 }
                 if (msg.command === 'cdpStatusResult') {
+                    var cdpRecheckEl = document.getElementById('cdpRecheckBtn');
+                    if (cdpRecheckEl) { cdpRecheckEl.disabled = false; }
                     var nextCdpRes = msg.cdpStatus || msg;
                     syncCdpStatusUi(nextCdpRes);
                     var cdpResText = nextCdpRes.state === 'connected' ? cdpConnectedText
-                        : (nextCdpRes.state === 'error' ? cdpErrorText : cdpInactiveText);
+                        : (nextCdpRes.state === 'error' ? cdpErrorText
+                            : (nextCdpRes.state === 'disabled' ? cdpDisabledText : cdpInactiveText));
                     flashFeedback('appOverlaysFeedback', cdpResText, 3200);
                 }
                 if (msg.command === 'pluginUpdateResult') {
@@ -1672,7 +1675,8 @@ export function getScript(): string {
                             if (nextCdp) {
                                 syncCdpStatusUi(nextCdp);
                                 var resLabel = nextCdp.state === 'connected' ? cdpConnectedText
-                                    : (nextCdp.state === 'error' ? cdpErrorText : cdpInactiveText);
+                                    : (nextCdp.state === 'error' ? cdpErrorText
+                                        : (nextCdp.state === 'disabled' ? cdpDisabledText : cdpInactiveText));
                                 flashFeedback('appOverlaysFeedback', resLabel, 3200);
                             } else {
                                 flashFeedback('appOverlaysFeedback', savedText, 2200);
