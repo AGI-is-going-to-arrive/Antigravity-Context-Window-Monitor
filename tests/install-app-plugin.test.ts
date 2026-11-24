@@ -502,6 +502,7 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
                 version: '1.17.5',
                 pid: 42424,
             }),
+            probeCdpPortFn: async (port: number) => port === 9222,
             requestFn: async () => ({
                 statusCode: 200,
                 headers: {},
@@ -534,6 +535,7 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         });
         expect(status.cdp).toMatchObject({
             active: true,
+            stale: false,
             port: 9222,
             wsPath: '/devtools/browser/test-id',
         });
@@ -555,7 +557,49 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         expect(cdpGuide).toContain('[macOS]');
         expect(cdpGuide).toContain('[Windows]');
         expect(cdpGuide).toContain('[Linux]');
+        expect(cdpGuide).toContain('PowerShell:');
+        expect(cdpGuide).toContain('CMD / Run dialog:');
+        expect(cdpGuide).toMatch(/Auto-Update|自动更新/);
         expect(cdpGuide).toMatch(/Zero Binary Patching|零二进制/);
+    });
+
+    it('probes TCP reachability for DevToolsActivePort (distinguishing live vs stale ports) and respects AGY_BROWSER_ACTIVE_PORT_FILE', async () => {
+        const mod = await loadInstaller();
+        const net = await import('node:net');
+        const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'acm-cdp-probe-'));
+        tmpDirs.push(tmpBase);
+
+        // AGY_BROWSER_ACTIVE_PORT_FILE override
+        const customPortFile = path.join(tmpBase, 'CustomDevToolsActivePort');
+        expect(mod.getDevToolsActivePortPath({ HOME: tmpBase, AGY_BROWSER_ACTIVE_PORT_FILE: customPortFile }, 'darwin'))
+            .toBe(customPortFile);
+
+        // Bind a real ephemeral loopback server, then close it for the stale check
+        const srv = net.createServer();
+        await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
+        const livePort = (srv.address() as import('node:net').AddressInfo).port;
+
+        try {
+            fs.writeFileSync(customPortFile, `${livePort}\n/devtools/browser/live-id\n`, 'utf8');
+            const liveRes = await mod.inspectDevToolsActivePort(customPortFile);
+            expect(liveRes).toMatchObject({
+                active: true,
+                stale: false,
+                port: livePort,
+                wsPath: '/devtools/browser/live-id',
+            });
+        } finally {
+            await new Promise<void>((resolve) => srv.close(() => resolve()));
+        }
+
+        // Now that the listener is closed, the same DevToolsActivePort file must be reported as stale!
+        const staleRes = await mod.inspectDevToolsActivePort(customPortFile);
+        expect(staleRes).toMatchObject({
+            active: false,
+            stale: true,
+            port: livePort,
+            wsPath: '/devtools/browser/live-id',
+        });
     });
 
     it('ships valid cross-platform .sh and .ps1 wrappers with bundled agy-node & Electron fallbacks', () => {

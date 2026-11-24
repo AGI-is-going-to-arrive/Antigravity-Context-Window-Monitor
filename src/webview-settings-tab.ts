@@ -23,7 +23,7 @@ import {
     type DisplayCurrencyCode,
     type OrchestratorPricingMode,
 } from './durable-state';
-import type { CdpStatus } from './app/sidecar-types';
+import type { CdpDiagnosticCode, CdpStatus } from './app/sidecar-types';
 import { ICON } from './webview-icons';
 import { esc, formatFileSize, tBiHtml } from './webview-helpers';
 
@@ -276,6 +276,22 @@ function readOptionalVsCodeSettings(): Partial<MonitorDocumentSettings> {
     }
 }
 
+function resolveCdpDiagnosticCode(
+    cdpStatus: CdpStatus | null | undefined,
+    composerEnabled: boolean,
+    topBarEnabled: boolean,
+): CdpDiagnosticCode {
+    if (cdpStatus?.diagnosticCode) {
+        return cdpStatus.diagnosticCode;
+    }
+    const anyEnabled = composerEnabled || topBarEnabled;
+    const state = cdpStatus?.state ?? (anyEnabled ? 'cdp_unavailable' : 'disabled');
+    if (state === 'connected') { return 'connected'; }
+    if (state === 'error') { return 'ws_error'; }
+    if (state === 'cdp_unavailable') { return 'missing_port_file'; }
+    return 'disabled';
+}
+
 function buildCdpStatusPillHtml(
     cdpStatus: CdpStatus | null | undefined,
     composerEnabled: boolean,
@@ -283,20 +299,88 @@ function buildCdpStatusPillHtml(
 ): string {
     const anyEnabled = composerEnabled || topBarEnabled;
     const state = cdpStatus?.state ?? (anyEnabled ? 'cdp_unavailable' : 'disabled');
+    const diagCode = resolveCdpDiagnosticCode(cdpStatus, composerEnabled, topBarEnabled);
     if (state === 'connected') {
         const title = cdpStatus?.targetTitle
             ? ` title="${esc(cdpStatus.targetTitle)}"`
             : '';
-        return `<span class="stg-status-pill is-connected" id="cdpStatusPill" data-cdp-state="connected"${title}>${tBiHtml('Connected', '已连接')}</span>`;
+        return `<span class="stg-status-pill is-connected" id="cdpStatusPill" data-cdp-state="connected" data-cdp-diagnostic="${esc(diagCode)}"${title}>${tBiHtml('Connected', '已连接')}</span>`;
     }
     if (state === 'error') {
         const title = cdpStatus?.errorMessage ? ` title="${esc(cdpStatus.errorMessage)}"` : '';
-        return `<span class="stg-status-pill is-error" id="cdpStatusPill" data-cdp-state="error"${title}>${tBiHtml('CDP Error', 'CDP 异常')}</span>`;
+        return `<span class="stg-status-pill is-error" id="cdpStatusPill" data-cdp-state="error" data-cdp-diagnostic="${esc(diagCode)}"${title}>${tBiHtml('CDP Error', 'CDP 异常')}</span>`;
     }
     if (state === 'cdp_unavailable') {
-        return `<span class="stg-status-pill is-inactive" id="cdpStatusPill" data-cdp-state="cdp_unavailable">${tBiHtml('CDP Inactive', 'CDP 未就绪')}</span>`;
+        return `<span class="stg-status-pill is-inactive" id="cdpStatusPill" data-cdp-state="cdp_unavailable" data-cdp-diagnostic="${esc(diagCode)}">${tBiHtml('CDP Inactive', 'CDP 未就绪')}</span>`;
     }
-    return `<span class="stg-status-pill is-disabled" id="cdpStatusPill" data-cdp-state="disabled">${tBiHtml('Disabled', '未启用')}</span>`;
+    return `<span class="stg-status-pill is-disabled" id="cdpStatusPill" data-cdp-state="disabled" data-cdp-diagnostic="disabled">${tBiHtml('Disabled', '未启用')}</span>`;
+}
+
+function buildCdpDiagnosticHintHtml(
+    cdpStatus: CdpStatus | null | undefined,
+    composerEnabled: boolean,
+    topBarEnabled: boolean,
+): string {
+    const anyEnabled = composerEnabled || topBarEnabled;
+    const state = cdpStatus?.state ?? (anyEnabled ? 'cdp_unavailable' : 'disabled');
+    const diagCode = resolveCdpDiagnosticCode(cdpStatus, composerEnabled, topBarEnabled);
+    if (state === 'disabled' || diagCode === 'disabled') {
+        return `<div class="stg-diagnostic-hint" id="cdpDiagnosticHint" data-cdp-diagnostic="disabled" role="status" hidden></div>`;
+    }
+    const portSuffixEn = typeof cdpStatus?.discoveredPort === 'number' ? ` (port ${cdpStatus.discoveredPort})` : '';
+    const portSuffixZh = typeof cdpStatus?.discoveredPort === 'number' ? `（端口 ${cdpStatus.discoveredPort}）` : '';
+    const titleSuffix = cdpStatus?.targetTitle ? ` — ${cdpStatus.targetTitle}` : '';
+    const errSuffixEn = cdpStatus?.errorMessage ? `: ${cdpStatus.errorMessage}` : '';
+    const errSuffixZh = cdpStatus?.errorMessage ? `：${cdpStatus.errorMessage}` : '';
+
+    let toneClass = 'is-warn';
+    let messageHtml = '';
+    switch (diagCode) {
+        case 'connected':
+            toneClass = 'is-good';
+            messageHtml = tBiHtml(
+                `Connected to Antigravity Hub${portSuffixEn}${titleSuffix}.`,
+                `已连接到 Antigravity 主窗口${portSuffixZh}${titleSuffix}。`,
+            );
+            break;
+        case 'port_unreachable':
+            toneClass = 'is-warn';
+            messageHtml = tBiHtml(
+                `Found DevToolsActivePort${portSuffixEn}, but the CDP port is unreachable (stale file from an earlier run). Fully quit Antigravity App, relaunch with --remote-debugging-port=0, then click Recheck CDP.`,
+                `检测到 DevToolsActivePort${portSuffixZh}，但调试端口无响应（可能是旧会话残留文件）。请完全退出 Antigravity App 并以 --remote-debugging-port=0 重启，再点击「重新检测」。`,
+            );
+            break;
+        case 'no_hub_target':
+            toneClass = 'is-warn';
+            messageHtml = tBiHtml(
+                `CDP port${portSuffixEn} is listening, but no Antigravity Hub window target was found (only sidecar or DevTools targets detected). Open an Antigravity workspace window and click Recheck CDP.`,
+                `CDP 端口${portSuffixZh}已响应，但未找到 Antigravity 主窗口目标（仅检测到侧栏或 DevTools 页面）。请打开 Antigravity 主窗口后点击「重新检测」。`,
+            );
+            break;
+        case 'ws_error':
+            toneClass = 'is-error';
+            messageHtml = tBiHtml(
+                `CDP WebSocket connection failed${errSuffixEn}. Click Recheck CDP or relaunch Antigravity App with --remote-debugging-port=0.`,
+                `CDP WebSocket 连接失败${errSuffixZh}。请点击「重新检测」或以 --remote-debugging-port=0 重启 Antigravity App。`,
+            );
+            break;
+        case 'eval_error':
+            toneClass = 'is-error';
+            messageHtml = tBiHtml(
+                `Connected to Antigravity Hub, but overlay injection failed${errSuffixEn}. Click Recheck CDP once the window finishes loading.`,
+                `已连接 Antigravity 主窗口，但悬浮组件注入失败${errSuffixZh}。请待窗口加载完成后点击「重新检测」。`,
+            );
+            break;
+        case 'missing_port_file':
+        default:
+            toneClass = 'is-warn';
+            messageHtml = tBiHtml(
+                'DevToolsActivePort not found — Antigravity App was launched without --remote-debugging-port=0 (or an auto-update restart dropped the flag). Quit completely first (Cmd+Q on macOS), relaunch with the command below, then click Recheck CDP.',
+                '未检测到 DevToolsActivePort —— Antigravity App 未使用 --remote-debugging-port=0 启动（或自动更新重启丢弃了启动参数）。请先完全退出（macOS 按 Cmd+Q），按下方命令重启后再点击「重新检测」。',
+            );
+            break;
+    }
+    return `<div class="stg-diagnostic-hint ${toneClass}" id="cdpDiagnosticHint" data-cdp-diagnostic="${esc(diagCode)}" role="status">${messageHtml}</div>`;
 }
 
 function buildUpdateStatusPillHtml(
@@ -426,6 +510,7 @@ export function buildSettingsContent(
 
     // ── App Ambient Overlays (Opt-In CDP) & Native Panel Compact HUD Card ──
     const cdpPillHtml = buildCdpStatusPillHtml(options?.cdpStatus, appComposerRingEnabled, appTopBarEnabled);
+    const cdpDiagnosticHintHtml = buildCdpDiagnosticHintHtml(options?.cdpStatus, appComposerRingEnabled, appTopBarEnabled);
     const appOverlaysCard = `
         <section class="stg-card" id="appOverlaysCard" data-accent="display">
             <div class="stg-header">
@@ -434,41 +519,57 @@ export function buildSettingsContent(
                 ${cdpPillHtml}
             </div>
             <p class="raw-desc">${tBiHtml(
-        'Native Panel Compact HUD works immediately with zero CDP. Opt-in desktop overlays attach read-only Shadow DOM indicators when Antigravity App is launched with remote debugging enabled — zero app.asar patching and 100% ToS-safe.',
-        '面板顶部紧凑 HUD 无需 CDP 即开即用；可选桌面悬浮组件仅在以远程调试参数启动 Antigravity App 时以只读 Shadow DOM 渲染，零 app.asar 修改且 100% 合规。',
+        'Native Panel Compact HUD renders immediately at the top of this monitor panel with zero CDP. The two desktop floating overlays below attach read-only Shadow DOM widgets inside Antigravity App when launched with --remote-debugging-port=0 — zero app.asar patching and 100% ToS-safe.',
+        '「面板顶部紧凑 HUD」会直接渲染在本监控面板顶部，无需 CDP 即开即用；下方两项桌面悬浮组件需先以 --remote-debugging-port=0 启动 Antigravity App 才会在主窗口内以只读 Shadow DOM 渲染，零 app.asar 修改且 100% 合规。',
     )}</p>
             <div class="toggle-group">
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleNativeHudBar" class="toggle-cb" data-app-setting="showNativeHudBar" data-feedback-id="appOverlaysFeedback" ${showNativeHudBar ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBiHtml('Native Panel Compact HUD', '面板顶部紧凑 HUD')}</span>
+                    <span>${tBiHtml('Native Panel Compact HUD (in-panel top bar, no CDP)', '面板顶部紧凑 HUD（本面板顶部常驻，无需 CDP）')}</span>
                 </label>
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleAppComposerRing" class="toggle-cb" data-app-setting="appComposerRingEnabled" data-feedback-id="appOverlaysFeedback" ${appComposerRingEnabled ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBiHtml('Composer Context Ring — Left of Turbo', '对话框悬浮环（Turbo 左侧）')}</span>
+                    <span>${tBiHtml('Composer Context Ring — Left of Turbo (CDP)', '对话框悬浮环（Turbo 左侧，需 CDP）')}</span>
                 </label>
                 <label class="toggle-row">
                     <input type="checkbox" id="toggleAppTopBar" class="toggle-cb" data-app-setting="appTopBarEnabled" data-feedback-id="appOverlaysFeedback" ${appTopBarEnabled ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBiHtml('Top-Right Status Bar & Quota Board', '右上角常驻状态栏与额度看板')}</span>
+                    <span>${tBiHtml('Top-Right Status Bar & Quota Board (CDP)', '右上角常驻状态栏与额度看板（需 CDP）')}</span>
                 </label>
             </div>
-            <span id="appOverlaysFeedback" class="threshold-feedback" role="status"></span>
+            ${cdpDiagnosticHintHtml}
+            <div class="storage-actions stg-cdp-actions">
+                <button type="button" class="action-btn" id="cdpRecheckBtn" data-action="recheckCdp">${ICON.refresh} <span>${tBiHtml('Recheck CDP', '重新检测')}</span></button>
+                <span id="appOverlaysFeedback" class="threshold-feedback" role="status"></span>
+            </div>
             <details id="settings-cdp-guide" class="stg-guide-details" data-state-key="settings-cdp-guide">
                 <summary>${tBiHtml('Cross-platform CDP launch guide (macOS / Windows / Linux)', '跨平台 CDP 启动指引（macOS / Windows / Linux）')}</summary>
                 <div class="stg-guide-body">
                     <p>${tBiHtml(
-        'Zero app.asar patching · 100% ToS-safe read-only observation. Launch Antigravity App with --remote-debugging-port=0 to activate opt-in Composer Ring and Top-Right Status Bar overlays:',
-        '零 app.asar 篡改 · 100% 合规只读观测。使用 --remote-debugging-port=0 启动 Antigravity App 即可激活可选的对话框悬浮环与右上角常驻状态栏：',
+        'Zero app.asar patching · 100% ToS-safe read-only observation.',
+        '零 app.asar 篡改 · 100% 合规只读观测。',
+    )}</p>
+                    <p class="stg-guide-step">${tBiHtml(
+        'Step 1 — Quit Antigravity App completely first (macOS: Cmd+Q; Windows/Linux: close all windows & tray icon). If Antigravity is still running, macOS "open -a" silently ignores --args.',
+        '第一步 — 先完全退出 Antigravity App（macOS 按 Cmd+Q；Windows/Linux 关闭所有窗口及托盘图标）。若应用仍在运行，macOS 的 open -a 会直接忽略 --args 参数。',
+    )}</p>
+                    <p class="stg-guide-step">${tBiHtml(
+        'Step 2 — Relaunch Antigravity App with --remote-debugging-port=0, then click Recheck CDP:',
+        '第二步 — 使用 --remote-debugging-port=0 重新启动 Antigravity App，然后点击「重新检测」：',
     )}</p>
                     <div class="stg-code-list">
                         <div class="stg-code-item${activePlatform === 'darwin' ? ' is-current-platform' : ''}">
-                            <strong>macOS</strong>
-                            <code>open -a "Antigravity" --args --remote-debugging-port=0</code>
+                            <strong>macOS (Terminal)</strong>
+                            <code>open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0</code>
                         </div>
                         <div class="stg-code-item${activePlatform === 'win32' ? ' is-current-platform' : ''}">
-                            <strong>Windows</strong>
+                            <strong>Windows (PowerShell)</strong>
+                            <code>&amp; "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0</code>
+                        </div>
+                        <div class="stg-code-item${activePlatform === 'win32' ? ' is-current-platform' : ''}">
+                            <strong>Windows (CMD / Shortcut)</strong>
                             <code>"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0</code>
                         </div>
                         <div class="stg-code-item${activePlatform === 'linux' ? ' is-current-platform' : ''}">
@@ -476,6 +577,10 @@ export function buildSettingsContent(
                             <code>antigravity --remote-debugging-port=0</code>
                         </div>
                     </div>
+                    <p class="stg-guide-note">${tBiHtml(
+        'Note: Antigravity auto-updates restart the app without CLI flags. After an update, quit completely and relaunch with --remote-debugging-port=0 (or use a persistent launcher/shortcut), then click Recheck CDP.',
+        '提示：Antigravity 自动更新重启后会丢弃启动参数。更新后请完全退出并重新以 --remote-debugging-port=0 启动（或使用持久化快捷方式），再点击「重新检测」。',
+    )}</p>
                 </div>
             </details>
         </section>`;

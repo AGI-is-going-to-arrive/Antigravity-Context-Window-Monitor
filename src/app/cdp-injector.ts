@@ -24,6 +24,7 @@ import {
 } from './cdp-overlay-assets';
 import type {
     CdpConnectionState,
+    CdpDiagnosticCode,
     CdpOverlayBridgeAction,
     CdpOverlayBridgeActionCommand,
     CdpOverlayPayload,
@@ -60,6 +61,7 @@ export interface DevToolsActivePortInfo {
 
 /**
  * Resolve cross-platform candidate paths for Antigravity's `DevToolsActivePort` file.
+ * Checks `AGY_BROWSER_ACTIVE_PORT_FILE` first (if set), followed by default OS paths:
  * - macOS: `~/Library/Application Support/Antigravity/DevToolsActivePort`
  * - Windows: `%APPDATA%\Antigravity\DevToolsActivePort`
  * - Linux: `${XDG_CONFIG_HOME:-~/.config}/Antigravity/DevToolsActivePort`
@@ -72,25 +74,32 @@ export function resolveDevToolsActivePortPaths(options: DevToolsPortDiscoveryOpt
     const home = options.homedir ?? os.homedir();
     const env = options.env ?? process.env;
     const paths: string[] = [];
+    const pushUnique = (candidate: string) => {
+        const trimmed = candidate.trim();
+        if (trimmed && !paths.includes(trimmed)) {
+            paths.push(trimmed);
+        }
+    };
+
+    if (typeof env.AGY_BROWSER_ACTIVE_PORT_FILE === 'string' && env.AGY_BROWSER_ACTIVE_PORT_FILE.trim()) {
+        pushUnique(env.AGY_BROWSER_ACTIVE_PORT_FILE);
+    }
 
     if (platform === 'darwin') {
-        paths.push(path.posix.join(home, 'Library', 'Application Support', 'Antigravity', 'DevToolsActivePort'));
+        pushUnique(path.posix.join(home, 'Library', 'Application Support', 'Antigravity', 'DevToolsActivePort'));
     } else if (platform === 'win32') {
         const appData = typeof env.APPDATA === 'string' && env.APPDATA.trim()
             ? env.APPDATA.trim()
             : '';
         if (appData) {
-            paths.push(path.win32.join(appData, 'Antigravity', 'DevToolsActivePort'));
+            pushUnique(path.win32.join(appData, 'Antigravity', 'DevToolsActivePort'));
         }
-        const fallback = path.win32.join(home, 'AppData', 'Roaming', 'Antigravity', 'DevToolsActivePort');
-        if (!paths.includes(fallback)) {
-            paths.push(fallback);
-        }
+        pushUnique(path.win32.join(home, 'AppData', 'Roaming', 'Antigravity', 'DevToolsActivePort'));
     } else {
         const xdgConfig = typeof env.XDG_CONFIG_HOME === 'string' && env.XDG_CONFIG_HOME.trim()
             ? env.XDG_CONFIG_HOME.trim()
             : path.posix.join(home, '.config');
-        paths.push(path.posix.join(xdgConfig, 'Antigravity', 'DevToolsActivePort'));
+        pushUnique(path.posix.join(xdgConfig, 'Antigravity', 'DevToolsActivePort'));
     }
     return paths;
 }
@@ -140,29 +149,29 @@ export function discoverDevToolsActivePort(
  */
 export function getCdpPlatformGuide(platform: NodeJS.Platform = process.platform): CdpPlatformGuide {
     if (platform === 'darwin') {
-        const command = 'open -a Antigravity --args --remote-debugging-port=0';
+        const command = 'open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0';
         return {
             platform: 'darwin',
             command,
-            en: `Antigravity 2.33+ disables remote debugging by default. Quit Antigravity and launch it with \`${command}\` (no app binary modification needed).`,
-            zh: `Antigravity 2.33+ 默认关闭远程调试端口。请退出 Antigravity 后运行 \`${command}\` 启动（无需修改任何应用文件）。`,
+            en: `Antigravity 2.33+ disables remote debugging by default. Completely quit Antigravity App first (Cmd+Q), then launch it with \`${command}\` (no app binary modification needed). Note: Antigravity auto-updates restart without CLI flags, so relaunch with this command after updates.`,
+            zh: `Antigravity 2.33+ 默认关闭远程调试端口。请先按 Cmd+Q 完全退出 Antigravity App，再运行 \`${command}\` 启动（无需修改任何应用文件）。提示：应用自动更新重启后会丢失命令行参数，更新后需重新带参启动。`,
         };
     }
     if (platform === 'win32') {
-        const command = '"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0';
+        const command = '& "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0';
         return {
             platform: 'win32',
             command,
-            en: `Antigravity 2.33+ disables remote debugging by default. Launch Antigravity with \`--remote-debugging-port=0\` (or add it to your Antigravity shortcut target).`,
-            zh: `Antigravity 2.33+ 默认关闭远程调试端口。请在快捷方式目标末尾添加 \`--remote-debugging-port=0\` 后重新启动 Antigravity（无需修改任何应用文件）。`,
+            en: `Antigravity 2.33+ disables remote debugging by default. Close all Antigravity windows and tray processes first, then launch in PowerShell with \`${command}\` (or CMD / shortcut target: \`"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0\`). Auto-updates restart without CLI flags.`,
+            zh: `Antigravity 2.33+ 默认关闭远程调试端口。请先完全退出 Antigravity（含托盘进程），再在 PowerShell 运行 \`${command}\`（或在 CMD / 快捷方式目标使用 \`"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0\`）。自动更新重启后需重新带参启动。`,
         };
     }
     const command = 'antigravity --remote-debugging-port=0';
     return {
         platform: 'linux',
         command,
-        en: `Antigravity 2.33+ disables remote debugging by default. Launch Antigravity with \`${command}\` (or add the flag to your .desktop Exec entry).`,
-        zh: `Antigravity 2.33+ 默认关闭远程调试端口。请使用 \`${command}\` 启动或在 .desktop 的 Exec 中添加该参数（无需修改任何应用文件）。`,
+        en: `Antigravity 2.33+ disables remote debugging by default. Close all running Antigravity instances first, then launch with \`${command}\` (or add the flag to your .desktop Exec entry). Auto-updates restart without CLI flags.`,
+        zh: `Antigravity 2.33+ 默认关闭远程调试端口。请先完全退出正在运行的 Antigravity，再使用 \`${command}\` 启动或在 .desktop 的 Exec 中添加该参数。自动更新重启后需重新带参启动。`,
     };
 }
 
@@ -193,15 +202,36 @@ export function isLoopbackUrl(rawUrl: string, allowedProtocols: readonly string[
     }
 }
 
+function parseSidecarWebPort(env: NodeJS.ProcessEnv = process.env): number | null {
+    const raw = env.ANTIGRAVITY_SIDECAR_WEB_PORT;
+    if (typeof raw !== 'string' || !/^\d+$/.test(raw.trim())) { return null; }
+    const port = Number(raw.trim());
+    return Number.isSafeInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+function isExcludedSidecarOrDevToolsTitle(titleLower: string): boolean {
+    if (!titleLower) { return false; }
+    return titleLower.includes('devtools')
+        || titleLower.includes('antigravity context monitor')
+        || titleLower.includes('antigravity monitor')
+        || titleLower.includes('antigravity 监控面板')
+        || /\bswarm\b/i.test(titleLower);
+}
+
 /**
  * Select ONLY the Antigravity Hub target page from CDP `/json/list` targets.
- * Guarantees unrelated websites, DevTools pages, extensions, and sidecar iframes are NEVER touched.
+ * Guarantees unrelated websites, DevTools pages, extensions, and sidecar views/iframes are NEVER touched.
  */
 export function selectAntigravityHubTarget(
     targets: readonly CdpTargetInfo[],
-    options: { excludePorts?: readonly number[] } = {},
+    options: { excludePorts?: readonly number[]; env?: NodeJS.ProcessEnv } = {},
 ): CdpTargetInfo | null {
     const excluded = new Set(options.excludePorts ?? []);
+    const ownSidecarPort = parseSidecarWebPort(options.env ?? process.env);
+    if (ownSidecarPort !== null) {
+        excluded.add(ownSidecarPort);
+    }
+
     let bestTarget: CdpTargetInfo | null = null;
     let bestScore = -1;
 
@@ -210,7 +240,7 @@ export function selectAntigravityHubTarget(
         if (!target.webSocketDebuggerUrl || !isLoopbackUrl(target.webSocketDebuggerUrl, ['ws:'])) {
             continue;
         }
-        if (!target.url || !isLoopbackUrl(target.url, ['http:', 'https:'])) {
+        if (!target.url || /^plugin:\/\//i.test(target.url.trim()) || !isLoopbackUrl(target.url, ['http:', 'https:'])) {
             continue;
         }
 
@@ -228,20 +258,33 @@ export function selectAntigravityHubTarget(
         // Never attach to sidecar API/full views or DevTools endpoints
         if (pathname.startsWith('/api/') || pathname === '/full') { continue; }
 
-        const titleLower = (target.title || '').toLowerCase();
-        if (titleLower.includes('devtools') || titleLower.includes('antigravity context monitor')) {
+        const titleLower = (target.title || '').trim().toLowerCase();
+        if (isExcludedSidecarOrDevToolsTitle(titleLower)) {
             continue;
         }
 
         let score = 10;
+        const isHttps = parsedUrl.protocol === 'https:';
         const isRootPath = pathname === '/' || pathname === '/index.html' || pathname.startsWith('/hub');
         const hasAgyTitle = titleLower.includes('antigravity');
+        const isJetskiTitle = titleLower.includes('jetski web') || titleLower === 'jetski';
+
         if (hasAgyTitle && isRootPath) {
             score = 100;
+        } else if (isJetskiTitle && isRootPath) {
+            score = 95;
         } else if (hasAgyTitle) {
             score = 75;
+        } else if (isJetskiTitle) {
+            score = 70;
         } else if (isRootPath) {
-            score = 50;
+            score = 40;
+        }
+
+        // Antigravity 2.33+ Desktop Hub serves over https://127.0.0.1:<port>/,
+        // whereas sidecars use http://127.0.0.1:<port>/ or plugin://.
+        if (isHttps) {
+            score += 40;
         }
 
         if (score > bestScore) {
@@ -253,10 +296,7 @@ export function selectAntigravityHubTarget(
     return bestTarget;
 }
 
-/**
- * Fetch the CDP target list from `http://127.0.0.1:<port>/json/list`.
- */
-export function fetchCdpTargets(port: number, timeoutMs = 3_000): Promise<CdpTargetInfo[]> {
+function fetchCdpTargetsFromHost(hostname: string, port: number, timeoutMs: number): Promise<CdpTargetInfo[]> {
     return new Promise((resolve, reject) => {
         if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
             reject(new Error(`Invalid CDP port: ${port}`));
@@ -271,7 +311,7 @@ export function fetchCdpTargets(port: number, timeoutMs = 3_000): Promise<CdpTar
         };
 
         const req = http.request({
-            hostname: '127.0.0.1',
+            hostname,
             port,
             path: '/json/list',
             method: 'GET',
@@ -316,6 +356,39 @@ export function fetchCdpTargets(port: number, timeoutMs = 3_000): Promise<CdpTar
         });
         req.end();
     });
+}
+
+function isConnectionRefusedError(err: unknown): boolean {
+    if (!err || typeof err !== 'object') { return false; }
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ECONNREFUSED') { return true; }
+    const msg = err instanceof Error ? err.message : String(err);
+    return /ECONNREFUSED/i.test(msg);
+}
+
+/**
+ * Fetch the CDP target list from `http://127.0.0.1:<port>/json/list`,
+ * falling back to IPv6 loopback `http://[::1]:<port>/json/list` if IPv4 returns `ECONNREFUSED`.
+ */
+export async function fetchCdpTargets(
+    port: number,
+    timeoutMs = 3_000,
+    options: { hosts?: readonly string[] } = {},
+): Promise<CdpTargetInfo[]> {
+    const hosts = options.hosts && options.hosts.length > 0 ? options.hosts : ['127.0.0.1', '::1'];
+    let lastErr: unknown;
+    for (let i = 0; i < hosts.length; i++) {
+        try {
+            return await fetchCdpTargetsFromHost(hosts[i], port, timeoutMs);
+        } catch (err) {
+            lastErr = err;
+            if (i + 1 < hosts.length && isConnectionRefusedError(err)) {
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw (lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? 'Failed to fetch CDP targets')));
 }
 
 // ─── Pure-Node RFC 6455 WebSocket Framing & CDP Client ───────────────────────
@@ -969,6 +1042,7 @@ export async function createOverlayActionBridge(options: {
 
 export interface CdpAmbientOverlayManagerOptions {
     platform?: NodeJS.Platform;
+    env?: NodeJS.ProcessEnv;
     reconnectBackoffMs?: number;
     enableActionBridge?: boolean;
     excludeTargetPorts?: readonly number[];
@@ -989,6 +1063,7 @@ export interface CdpAmbientOverlayManager {
     getStatus(): CdpStatus;
     setToggles(toggles: CdpOverlayToggles): Promise<CdpStatus>;
     updatePayload(payload: CdpOverlayPayload): Promise<CdpStatus>;
+    recheck?(): Promise<CdpStatus>;
     dispose(): Promise<void>;
 }
 
@@ -996,19 +1071,21 @@ export interface CdpAmbientOverlayManager {
  * Manages the full opt-in lifecycle for Antigravity App ambient Shadow DOM overlays:
  * - Strictly disabled by default (zero CDP probing until user turns a toggle on).
  * - Independent `appComposerRingEnabled` and `appTopBarEnabled` toggles with immediate unmount on disable.
- * - Silent, structured `cdp_unavailable` degradation when Antigravity runs without `--remote-debugging-port`.
+ * - Silent, structured `cdp_unavailable` degradation with explicit `diagnosticCode` when Antigravity runs without `--remote-debugging-port`.
+ * - Serialized connection/sync queue so concurrent `setToggles` / `updatePayload` / `recheck` calls never open duplicate WebSockets.
  * - Authenticated `127.0.0.1` loopback action bridge with 256-bit `X-Monitor-Token` & strict `Origin`.
  */
 export function createCdpAmbientOverlayManager(
     options: CdpAmbientOverlayManagerOptions = {},
-): CdpAmbientOverlayManager {
+): CdpAmbientOverlayManager & { recheck(): Promise<CdpStatus> } {
     const platform = options.platform ?? process.platform;
+    const env = options.env ?? process.env;
     const reconnectBackoffMs = options.reconnectBackoffMs ?? DEFAULT_RECONNECT_BACKOFF_MS;
     const enableActionBridge = options.enableActionBridge !== false;
     const nowFn = options.now ?? (() => Date.now());
     const log = options.log ?? (() => {});
 
-    const discoverPortFn = options.discoverActivePort ?? (() => discoverDevToolsActivePort({ platform }));
+    const discoverPortFn = options.discoverActivePort ?? (() => discoverDevToolsActivePort({ platform, env }));
     const fetchTargetsFn = options.fetchTargets ?? ((port: number) => fetchCdpTargets(port));
     const connectClientFn = options.connectClient ?? ((wsUrl: string) => CdpWebSocketClient.connect(wsUrl));
     const createBridgeFn = options.createBridge ?? createOverlayActionBridge;
@@ -1018,8 +1095,11 @@ export function createCdpAmbientOverlayManager(
         appTopBarEnabled: false,
     };
     let state: CdpConnectionState = 'disabled';
+    let diagnosticCode: CdpDiagnosticCode = 'disabled';
     let targetUrl: string | undefined;
     let targetTitle: string | undefined;
+    let portFilePath: string | undefined;
+    let discoveredPort: number | undefined;
     let lastInjectedAt: number | undefined;
     let errorMessage: string | undefined;
     let lastPayload: CdpOverlayPayload | null = null;
@@ -1029,6 +1109,7 @@ export function createCdpAmbientOverlayManager(
     let bootstrapped = false;
     let bridge: OverlayActionBridgeHandle | null = null;
     let disposed = false;
+    let opQueue: Promise<unknown> = Promise.resolve();
 
     const platformGuide = getCdpPlatformGuide(platform);
 
@@ -1036,13 +1117,22 @@ export function createCdpAmbientOverlayManager(
         return toggles.appComposerRingEnabled || toggles.appTopBarEnabled;
     }
 
+    function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+        const run = opQueue.then(fn, fn);
+        opQueue = run.then(() => undefined, () => undefined);
+        return run;
+    }
+
     function getStatus(): CdpStatus {
         return {
             state,
+            diagnosticCode,
             composerEnabled: toggles.appComposerRingEnabled,
             topBarEnabled: toggles.appTopBarEnabled,
             ...(targetUrl ? { targetUrl } : {}),
             ...(targetTitle ? { targetTitle } : {}),
+            ...(portFilePath ? { portFilePath } : {}),
+            ...(discoveredPort !== undefined ? { discoveredPort } : {}),
             ...(lastInjectedAt !== undefined ? { lastInjectedAt } : {}),
             ...(errorMessage ? { errorMessage } : {}),
             platformGuide,
@@ -1076,6 +1166,10 @@ export function createCdpAmbientOverlayManager(
     async function ensureConnected(forceRetry: boolean): Promise<boolean> {
         if (disposed || !anyEnabled()) { return false; }
         if (client && client.isOpen) { return true; }
+        if (client && !client.isOpen) {
+            client = null;
+            bootstrapped = false;
+        }
 
         const nowMs = nowFn();
         if (!forceRetry && lastFailedAttemptAt > 0 && nowMs - lastFailedAttemptAt < reconnectBackoffMs) {
@@ -1086,32 +1180,45 @@ export function createCdpAmbientOverlayManager(
         if (!portInfo) {
             lastFailedAttemptAt = nowMs;
             state = 'cdp_unavailable';
+            diagnosticCode = 'missing_port_file';
+            portFilePath = resolveDevToolsActivePortPaths({ platform, env })[0];
+            discoveredPort = undefined;
             targetUrl = undefined;
             targetTitle = undefined;
             errorMessage = undefined;
             return false;
         }
 
+        portFilePath = portInfo.filePath;
+        discoveredPort = portInfo.port;
+
         let targets: CdpTargetInfo[];
         try {
             targets = await fetchTargetsFn(portInfo.port);
         } catch (err) {
+            if (disposed || !anyEnabled()) { return false; }
             lastFailedAttemptAt = nowMs;
             state = 'cdp_unavailable';
+            diagnosticCode = 'port_unreachable';
             targetUrl = undefined;
             targetTitle = undefined;
             errorMessage = err instanceof Error ? err.message : String(err);
             return false;
         }
 
+        if (disposed || !anyEnabled()) { return false; }
+
+        const ownSidecarPort = parseSidecarWebPort(env);
         const excludedPorts = [
             ...(options.excludeTargetPorts ?? []),
+            ...(ownSidecarPort !== null ? [ownSidecarPort] : []),
             ...(bridge ? [bridge.port] : []),
         ];
-        const hubTarget = selectAntigravityHubTarget(targets, { excludePorts: excludedPorts });
+        const hubTarget = selectAntigravityHubTarget(targets, { excludePorts: excludedPorts, env });
         if (!hubTarget || !hubTarget.webSocketDebuggerUrl) {
             lastFailedAttemptAt = nowMs;
             state = 'cdp_unavailable';
+            diagnosticCode = 'no_hub_target';
             targetUrl = undefined;
             targetTitle = undefined;
             errorMessage = 'No Antigravity Hub target page found on CDP port';
@@ -1120,28 +1227,43 @@ export function createCdpAmbientOverlayManager(
 
         try {
             const connected = await connectClientFn(hubTarget.webSocketDebuggerUrl);
+            if (disposed || !anyEnabled()) {
+                await connected.close().catch(() => {});
+                return false;
+            }
             client = connected;
             bootstrapped = false;
             targetUrl = hubTarget.url;
             targetTitle = hubTarget.title;
             errorMessage = undefined;
             state = 'connected';
+            diagnosticCode = 'connected';
 
             if (enableActionBridge) {
                 const targetOrigin = hubTarget.url ? new URL(hubTarget.url).origin : undefined;
                 if (!bridge) {
-                    bridge = await createBridgeFn({
+                    const createdBridge = await createBridgeFn({
                         onAction: options.onBridgeAction,
                         allowedOrigin: targetOrigin,
                     });
+                    if (disposed || !anyEnabled()) {
+                        await createdBridge.close().catch(() => {});
+                        await detachClient(false);
+                        return false;
+                    }
+                    bridge = createdBridge;
                 } else {
                     bridge.setAllowedOrigin(targetOrigin);
                 }
             }
             return true;
         } catch (err) {
+            if (disposed || !anyEnabled()) { return false; }
             lastFailedAttemptAt = nowMs;
             state = 'error';
+            diagnosticCode = 'ws_error';
+            targetUrl = undefined;
+            targetTitle = undefined;
             errorMessage = err instanceof Error ? err.message : String(err);
             log(`[CDP Overlay] Connection error: ${errorMessage}`);
             return false;
@@ -1153,7 +1275,7 @@ export function createCdpAmbientOverlayManager(
             return getStatus();
         }
         const ok = await ensureConnected(forceRetry);
-        if (!ok || !client) {
+        if (!ok || !client || disposed || !anyEnabled()) {
             return getStatus();
         }
 
@@ -1177,11 +1299,13 @@ export function createCdpAmbientOverlayManager(
             }
             lastInjectedAt = nowFn();
             state = 'connected';
+            diagnosticCode = 'connected';
             errorMessage = undefined;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             errorMessage = msg;
             state = 'error';
+            diagnosticCode = 'eval_error';
             lastFailedAttemptAt = nowFn();
             await detachClient(false);
             log(`[CDP Overlay] Evaluation error: ${msg}`);
@@ -1189,59 +1313,95 @@ export function createCdpAmbientOverlayManager(
         return getStatus();
     }
 
-    async function setToggles(nextToggles: CdpOverlayToggles): Promise<CdpStatus> {
-        if (disposed) { return getStatus(); }
-        const prev = { ...toggles };
-        toggles = {
-            appComposerRingEnabled: Boolean(nextToggles.appComposerRingEnabled),
-            appTopBarEnabled: Boolean(nextToggles.appTopBarEnabled),
-        };
+    function setToggles(nextToggles: CdpOverlayToggles): Promise<CdpStatus> {
+        return enqueue(async () => {
+            if (disposed) { return getStatus(); }
+            const prev = { ...toggles };
+            toggles = {
+                appComposerRingEnabled: Boolean(nextToggles.appComposerRingEnabled),
+                appTopBarEnabled: Boolean(nextToggles.appTopBarEnabled),
+            };
 
-        if (!anyEnabled()) {
+            if (!anyEnabled()) {
+                await detachClient(true);
+                await closeBridge();
+                state = 'disabled';
+                diagnosticCode = 'disabled';
+                targetUrl = undefined;
+                targetTitle = undefined;
+                portFilePath = undefined;
+                discoveredPort = undefined;
+                errorMessage = undefined;
+                lastFailedAttemptAt = 0;
+                return getStatus();
+            }
+
+            // If one toggle was turned off while the other stayed on, unmount the disabled slot immediately.
+            if (client && client.isOpen) {
+                if (prev.appComposerRingEnabled && !toggles.appComposerRingEnabled) {
+                    await client.evaluate(buildOverlayUnmountScript('composer'), 2_000).catch(() => {});
+                }
+                if (prev.appTopBarEnabled && !toggles.appTopBarEnabled) {
+                    await client.evaluate(buildOverlayUnmountScript('topbar'), 2_000).catch(() => {});
+                }
+            }
+
+            return syncToHub(true);
+        });
+    }
+
+    function updatePayload(payload: CdpOverlayPayload): Promise<CdpStatus> {
+        lastPayload = payload;
+        if (disposed || !anyEnabled()) {
+            return Promise.resolve(getStatus());
+        }
+        return enqueue(async () => {
+            if (disposed || !anyEnabled()) {
+                return getStatus();
+            }
+            return syncToHub(false);
+        });
+    }
+
+    function recheck(): Promise<CdpStatus> {
+        return enqueue(async () => {
+            if (disposed || !anyEnabled()) {
+                return getStatus();
+            }
+            lastFailedAttemptAt = 0;
+            if (client && !client.isOpen) {
+                client = null;
+                bootstrapped = false;
+            }
+            return syncToHub(true);
+        });
+    }
+
+    function dispose(): Promise<void> {
+        if (disposed) {
+            return opQueue.then(() => undefined, () => undefined);
+        }
+        disposed = true;
+        toggles = { appComposerRingEnabled: false, appTopBarEnabled: false };
+        return enqueue(async () => {
             await detachClient(true);
             await closeBridge();
             state = 'disabled';
+            diagnosticCode = 'disabled';
             targetUrl = undefined;
             targetTitle = undefined;
+            portFilePath = undefined;
+            discoveredPort = undefined;
             errorMessage = undefined;
             lastFailedAttemptAt = 0;
-            return getStatus();
-        }
-
-        // If one toggle was turned off while the other stayed on, unmount the disabled slot immediately.
-        if (client && client.isOpen) {
-            if (prev.appComposerRingEnabled && !toggles.appComposerRingEnabled) {
-                await client.evaluate(buildOverlayUnmountScript('composer'), 2_000).catch(() => {});
-            }
-            if (prev.appTopBarEnabled && !toggles.appTopBarEnabled) {
-                await client.evaluate(buildOverlayUnmountScript('topbar'), 2_000).catch(() => {});
-            }
-        }
-
-        return syncToHub(true);
-    }
-
-    async function updatePayload(payload: CdpOverlayPayload): Promise<CdpStatus> {
-        lastPayload = payload;
-        if (disposed || !anyEnabled()) {
-            return getStatus();
-        }
-        return syncToHub(false);
-    }
-
-    async function dispose(): Promise<void> {
-        if (disposed) { return; }
-        disposed = true;
-        toggles = { appComposerRingEnabled: false, appTopBarEnabled: false };
-        await detachClient(true);
-        await closeBridge();
-        state = 'disabled';
+        });
     }
 
     return {
         getStatus,
         setToggles,
         updatePayload,
+        recheck,
         dispose,
     };
 }
