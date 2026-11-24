@@ -1406,6 +1406,9 @@ export function createSidecarRuntimeProvider(
     let lastDataSignature = '';
     let lastUpdatedTime = formatClockTime(new Date(deps.now()), getLanguage());
     let lastClientActivityMs = deps.now();
+    let scheduledPollDelayMs = 0;
+    let stateRevision = 0;
+    let snapshotCache: { key: string; payload: SidecarSnapshotPayload } | null = null;
     let consecutiveFailures = 0;
     let statusPollCount = 0;
     let lsRevalidationCounter = 0;
@@ -1415,6 +1418,21 @@ export function createSidecarRuntimeProvider(
     let auxMetadataConsecutiveFailures = 0;
     let modelMetadataGeneration = 0;
     const abortController = new AbortController();
+
+    function bumpStateRevision(): void {
+        stateRevision++;
+        snapshotCache = null;
+    }
+
+    function markClientActivity(): void {
+        const nowMs = deps.now();
+        const wasIdle = (nowMs - lastClientActivityMs) > idleThresholdMs;
+        lastClientActivityMs = nowMs;
+        const baseMs = clamp(settings.pollingInterval, 1, 60) * 1000;
+        if (wasIdle && pollTimer && scheduledPollDelayMs > baseMs && consecutiveFailures === 0) {
+            scheduleNextPoll();
+        }
+    }
 
     // ── State Restoration Helpers ────────────────────────────────────────────
 
@@ -1519,6 +1537,7 @@ export function createSidecarRuntimeProvider(
             } else if (status.state === 'disabled') {
                 overlayAllowedOrigin = undefined;
             }
+            bumpStateRevision();
             return status;
         });
     }
@@ -1630,6 +1649,7 @@ export function createSidecarRuntimeProvider(
             dailyLedger = DailyLedger.restore(diskLedger);
             dailyLedger.setSurface('app');
         }
+        bumpStateRevision();
         return true;
     }
 
@@ -1657,6 +1677,7 @@ export function createSidecarRuntimeProvider(
         lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
         void globalState.update('gmTrackerState', gmTracker.serialize());
         void globalState.update('gmDetailedSummary', lastGMSummary ? slimSummaryForPersistence(lastGMSummary) : null);
+        bumpStateRevision();
     };
 
     function performDailyArchival(force = false): void {
@@ -1957,10 +1978,18 @@ export function createSidecarRuntimeProvider(
 
     function pushOverlayPayloadAsync(nowMs = deps.now()): void {
         try {
+            const prevCdp = overlayManager.getStatus();
             const payload = buildCdpOverlayPayload(nowMs);
             void overlayManager.updatePayload(payload).then((status) => {
                 if (status.targetUrl) {
                     try { overlayAllowedOrigin = new URL(status.targetUrl).origin; } catch { /* ignore */ }
+                }
+                if (status.state !== prevCdp.state
+                    || status.composerEnabled !== prevCdp.composerEnabled
+                    || status.topBarEnabled !== prevCdp.topBarEnabled
+                    || status.targetUrl !== prevCdp.targetUrl
+                    || status.errorMessage !== prevCdp.errorMessage) {
+                    bumpStateRevision();
                 }
             }).catch(() => {});
         } catch {
@@ -2024,6 +2053,7 @@ export function createSidecarRuntimeProvider(
             releaseNotesSummary: record.releaseNotesSummary,
             error: record.error,
         };
+        bumpStateRevision();
     }
 
     async function runUpdateCheck(force: boolean): Promise<UpdateCheckResult> {
@@ -2049,6 +2079,7 @@ export function createSidecarRuntimeProvider(
                 releaseNotesSummary: prev.releaseNotesSummary ?? null,
                 error: prev.error ?? null,
             };
+            bumpStateRevision();
         }
         return res;
     }
@@ -2067,7 +2098,9 @@ export function createSidecarRuntimeProvider(
     }
 
     async function handleOverlayAction(action: SidecarOverlayBridgeRequest): Promise<SidecarActionHttpBody> {
-        lastClientActivityMs = deps.now();
+        if (action.command !== 'ping') {
+            markClientActivity();
+        }
         switch (action.command) {
             case 'ping':
                 return { ok: true, result: { pong: true, version, source: action.source } };
@@ -2246,8 +2279,10 @@ export function createSidecarRuntimeProvider(
             }
         }
 
-        for (const snap of accountSnapshots.values()) {
-            snap.isActive = false;
+        for (const [snapKey, snap] of accountSnapshots.entries()) {
+            if (snapKey !== email && snap.isActive) {
+                accountSnapshots.set(snapKey, { ...snap, isActive: false });
+            }
         }
 
         const validCredits = currentAICredits(userInfo.availableCredits || []).flatMap(c =>
@@ -2576,6 +2611,9 @@ export function createSidecarRuntimeProvider(
         const cdp = overlayManager.getStatus();
         return JSON.stringify({
             status: monitorStatus.state,
+            backendIssue: monitorStatus.state === 'disconnected' ? monitorStatus.backendIssue : '',
+            lsPid: cachedLsInfo?.pid ?? null,
+            lsPort: cachedLsInfo?.port ?? null,
             stale: stale.isStale,
             lang: getLanguage(),
             paused: isPaused,
@@ -2653,31 +2691,33 @@ export function createSidecarRuntimeProvider(
                         refreshAuxiliaryMetadata(lsInfo, modelMetadataGeneration),
                     ]);
                 } else {
-                    lsRevalidationCounter++;
-                    if (lsRevalidationCounter >= LS_REVALIDATION_INTERVAL) {
-                        lsRevalidationCounter = 0;
-                        try {
-                            const freshLs = await deps.discoverLS({
-                                preferredSurface: 'app',
-                                workspaceUri: activeWorkspaceUris[0],
-                                signal: abortController.signal,
-                                log,
-                            });
-                            if (freshLs && !isSameLSConnection(freshLs, lsInfo)) {
-                                log(`[sidecar-runtime] LS reconnected: port=${lsInfo.port} -> ${freshLs.port}`);
-                                lsInfo = freshLs;
-                                cachedLsInfo = freshLs;
-                                invalidateLiveModelMetadata();
-                                try {
-                                    const fullStatus = await deps.fetchFullUserStatus(lsInfo, abortController.signal);
-                                    userStatusGuard.recordSuccess(fullStatus, nowMs);
-                                    applyFullUserStatus(fullStatus, nowMs);
-                                } catch (err) {
-                                    userStatusGuard.recordFailure(err);
+                    if (lsInfo.source !== 'env') {
+                        lsRevalidationCounter++;
+                        if (lsRevalidationCounter >= LS_REVALIDATION_INTERVAL) {
+                            lsRevalidationCounter = 0;
+                            try {
+                                const freshLs = await deps.discoverLS({
+                                    preferredSurface: 'app',
+                                    workspaceUri: activeWorkspaceUris[0],
+                                    signal: abortController.signal,
+                                    log,
+                                });
+                                if (freshLs && !isSameLSConnection(freshLs, lsInfo)) {
+                                    log(`[sidecar-runtime] LS reconnected: port=${lsInfo.port} -> ${freshLs.port}`);
+                                    lsInfo = freshLs;
+                                    cachedLsInfo = freshLs;
+                                    invalidateLiveModelMetadata();
+                                    try {
+                                        const fullStatus = await deps.fetchFullUserStatus(lsInfo, abortController.signal);
+                                        userStatusGuard.recordSuccess(fullStatus, nowMs);
+                                        applyFullUserStatus(fullStatus, nowMs);
+                                    } catch (err) {
+                                        userStatusGuard.recordFailure(err);
+                                    }
                                 }
+                            } catch {
+                                // Keep current LS connection on discovery hiccup
                             }
-                        } catch {
-                            // Keep current LS connection on discovery hiccup
                         }
                     }
 
@@ -2875,6 +2915,7 @@ export function createSidecarRuntimeProvider(
                     lastDataSignature = nextSig;
                     lastPollAtMs = nowMs;
                     lastUpdatedTime = formatClockTime(new Date(nowMs), getLanguage());
+                    bumpStateRevision();
                 }
                 pushOverlayPayloadAsync(nowMs);
                 isPolling = false;
@@ -2890,6 +2931,9 @@ export function createSidecarRuntimeProvider(
         if (consecutiveFailures > 0) {
             const cap = cachedLsInfo ? MAX_BACKOFF_INTERVAL_MS : MAX_DISCOVERY_BACKOFF_MS;
             return Math.min(baseMs * Math.pow(2, consecutiveFailures - 1), cap);
+        }
+        if (allTrajectories.some(tr => tr.status === CascadeStatus.RUNNING)) {
+            return baseMs;
         }
         const idleMs = deps.now() - lastClientActivityMs;
         if (idleMs > idleThresholdMs) {
@@ -2908,6 +2952,7 @@ export function createSidecarRuntimeProvider(
         }
         const myGen = ++pollGeneration;
         const delayMs = computeNextPollDelayMs();
+        scheduledPollDelayMs = delayMs;
         pollTimer = setTimeout(() => {
             pollTimer = undefined;
             if (disposed || isPaused || myGen !== pollGeneration) { return; }
@@ -2949,7 +2994,7 @@ export function createSidecarRuntimeProvider(
         const staleState = getCombinedStaleState(nowMs);
         const activeEmail = selectedAccountKey || cachedUserInfo?.email || currentAccountEmail || '';
         const customPricing = pricingStore.getCustom();
-        const snapArray = [...accountSnapshots.values()];
+        const snapArray = [...accountSnapshots.values()].map(s => ({ ...s }));
         const todayLedgerActive = dailyLedger.getTodayActive();
         const ledgerSettled = dailyLedger.getSettledEntries();
 
@@ -3122,8 +3167,32 @@ export function createSidecarRuntimeProvider(
         }, lang);
     }
 
-    function buildSnapshotPayload(viewMode: SidecarViewMode, langOverride?: Language): SidecarSnapshotPayload {
+    function buildSnapshotPayload(
+        viewMode: SidecarViewMode,
+        langOverride?: Language,
+        useCache = false,
+    ): SidecarSnapshotPayload {
         const prevLang = getLanguage();
+        const effectiveLang = (langOverride && isLanguage(langOverride)) ? langOverride : prevLang;
+        const effectivePollIntervalMs = computeNextPollDelayMs();
+        const cacheKey = `${stateRevision}|${viewMode}|${effectiveLang}|${effectivePollIntervalMs}`;
+
+        if (useCache && snapshotCache && snapshotCache.key === cacheKey) {
+            const cachedMeta = snapshotCache.payload.meta;
+            if (cachedMeta && typeof cachedMeta === 'object' && cachedMeta.pollCount !== pollCount) {
+                const updatedPayload: SidecarSnapshotPayload = {
+                    ...snapshotCache.payload,
+                    meta: {
+                        ...cachedMeta,
+                        pollCount,
+                    },
+                };
+                snapshotCache = { key: cacheKey, payload: updatedPayload };
+                return updatedPayload;
+            }
+            return snapshotCache.payload;
+        }
+
         if (langOverride && isLanguage(langOverride) && langOverride !== prevLang) {
             setLanguageInMemory(langOverride);
         }
@@ -3139,7 +3208,7 @@ export function createSidecarRuntimeProvider(
                 lastModifiedTime: opt.lastModifiedTime || undefined,
             }));
 
-            return {
+            const payload: SidecarSnapshotPayload = {
                 tabs,
                 time: docParams.lastUpdatedTime,
                 language: docParams.language,
@@ -3156,7 +3225,7 @@ export function createSidecarRuntimeProvider(
                 turnDiagnostics,
                 quotaRunways,
                 data: {
-                    usage: currentUsage,
+                    usage: currentUsage ? { ...currentUsage } : null,
                     monitorStatus,
                     userInfo: cachedUserInfo,
                     modelConfigs: cachedModelConfigs,
@@ -3187,8 +3256,14 @@ export function createSidecarRuntimeProvider(
                     pinnedFallback: lastResolution.pinnedFallback,
                     pollCount,
                     lastPollAtMs,
+                    effectivePollIntervalMs,
                 },
             };
+
+            if (useCache) {
+                snapshotCache = { key: cacheKey, payload };
+            }
+            return payload;
         } finally {
             if (langOverride && langOverride !== prevLang) {
                 setLanguageInMemory(prevLang);
@@ -3597,9 +3672,11 @@ export function createSidecarRuntimeProvider(
     // ── SidecarProvider Interface Implementation ─────────────────────────────
 
     async function renderHtml(ctx: SidecarRenderContext): Promise<string> {
-        lastClientActivityMs = deps.now();
+        markClientActivity();
         syncFromDurableStateIfChanged();
-        applyContextFromRequest(ctx.conversationId, ctx.workspaceUris);
+        if (applyContextFromRequest(ctx.conversationId, ctx.workspaceUris)) {
+            bumpStateRevision();
+        }
         if (pollCount === 0 && options.autoStart !== false) {
             await runPollCycle(false);
         }
@@ -3624,7 +3701,6 @@ export function createSidecarRuntimeProvider(
     async function getSnapshot(
         query: SidecarSnapshotQuery & { lang?: Language; includeHtml?: boolean },
     ): Promise<SidecarSnapshotPayload> {
-        lastClientActivityMs = deps.now();
         syncFromDurableStateIfChanged();
         const selectionChanged = applyContextFromRequest(
             query.conversationId,
@@ -3632,6 +3708,12 @@ export function createSidecarRuntimeProvider(
             query.pinnedConversationId,
             query.lockToMainAgent,
         );
+        if (selectionChanged) {
+            bumpStateRevision();
+        }
+        if (query.userActive === true || selectionChanged) {
+            markClientActivity();
+        }
         if (selectionChanged && allTrajectories.length > 0) {
             const resolved = recomputeConversationResolution();
             const targetTrajectory = findResolvedTrajectory(resolved);
@@ -3640,21 +3722,28 @@ export function createSidecarRuntimeProvider(
                     await refreshActiveConversationTelemetry(cachedLsInfo, targetTrajectory, deps.now());
                 } catch { /* keep cached */ }
             }
+            bumpStateRevision();
         }
         const viewMode: SidecarViewMode = query.viewMode || 'aux';
         const langOverride = query.lang && isLanguage(query.lang) ? query.lang : undefined;
-        return buildSnapshotPayload(viewMode, langOverride);
+        return buildSnapshotPayload(viewMode, langOverride, true);
     }
 
     async function handleAction(action: SidecarActionRequest): Promise<SidecarActionHttpBody> {
-        lastClientActivityMs = deps.now();
+        const isPassiveReadAction = action.command === 'ping' || action.command === 'getSnapshot';
+        if (!isPassiveReadAction) {
+            markClientActivity();
+            bumpStateRevision();
+        }
         syncFromDurableStateIfChanged();
 
         const viewMode: SidecarViewMode = action.viewMode === 'sidebar' || action.viewMode === 'standalone'
             ? action.viewMode
             : 'aux';
         if (typeof action.conversationId === 'string' && action.command !== 'selectConversation' && action.command !== 'pinConversation') {
-            applyContextFromRequest(action.conversationId, Array.isArray(action.workspaceUris) ? action.workspaceUris as string[] : undefined);
+            if (applyContextFromRequest(action.conversationId, Array.isArray(action.workspaceUris) ? action.workspaceUris as string[] : undefined)) {
+                bumpStateRevision();
+            }
         }
 
         switch (action.command) {
@@ -3773,10 +3862,13 @@ export function createSidecarRuntimeProvider(
 
             case 'togglePause': {
                 isPaused = typeof action.paused === 'boolean' ? action.paused : !isPaused;
-                if (isPaused && pollTimer) {
-                    clearTimeout(pollTimer);
-                    pollTimer = undefined;
-                } else if (!isPaused) {
+                if (isPaused) {
+                    if (pollTimer) {
+                        clearTimeout(pollTimer);
+                        pollTimer = undefined;
+                    }
+                    scheduledPollDelayMs = 0;
+                } else {
                     scheduleNextPoll();
                 }
                 return {
@@ -4097,6 +4189,7 @@ export function createSidecarRuntimeProvider(
                         error: null,
                         requiresReload: applied.requiresReload !== false,
                     };
+                    bumpStateRevision();
                 }
 
                 const msgPayload: Record<string, unknown> = {
@@ -4479,6 +4572,7 @@ export function createSidecarRuntimeProvider(
             clearTimeout(pollTimer);
             pollTimer = undefined;
         }
+        scheduledPollDelayMs = 0;
         abortController.abort();
         try {
             await overlayManager.dispose();

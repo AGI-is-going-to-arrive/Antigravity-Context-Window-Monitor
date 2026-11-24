@@ -203,7 +203,16 @@ function stableStringify(value: unknown): string {
 
 /** Compute a strong deterministic content hash for snapshot ETag comparison. */
 export function computeSnapshotHash(snapshot: unknown): string {
-    return crypto.createHash('sha256').update(stableStringify(snapshot)).digest('hex').slice(0, 32);
+    let hashInput = snapshot;
+    if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
+        const snapObj = snapshot as Record<string, unknown>;
+        const meta = snapObj.meta;
+        if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
+            const { pollCount: _ignoredPollCount, ...stableMeta } = meta as Record<string, unknown>;
+            hashInput = { ...snapObj, meta: stableMeta };
+        }
+    }
+    return crypto.createHash('sha256').update(stableStringify(hashInput)).digest('hex').slice(0, 32);
 }
 
 function normalizeEtag(raw: string | undefined): string {
@@ -509,6 +518,8 @@ export function createSidecarHandler(
 
         const rawLockMain = firstString(query.lockToMainAgent);
         const lockToMainAgent = rawLockMain !== undefined ? rawLockMain === 'true' : undefined;
+        const rawActive = firstString(query.active);
+        const userActive = rawActive === '1' || rawActive === 'true';
 
         const snapshotQuery: SidecarSnapshotQuery & { lang?: 'en' | 'zh' | 'both'; includeHtml?: boolean } = {
             conversationId: firstString(query.conversationId) || undefined,
@@ -517,6 +528,7 @@ export function createSidecarHandler(
             viewMode,
             pinnedConversationId: firstString(query.pinnedConversationId) || undefined,
             ...(lockToMainAgent !== undefined ? { lockToMainAgent } : {}),
+            ...(userActive ? { userActive: true } : {}),
             ...(lang ? { lang } : {}),
             ...(includeHtml ? { includeHtml: true } : {}),
         };
