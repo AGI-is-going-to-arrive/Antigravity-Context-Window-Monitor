@@ -251,7 +251,9 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     return initialUrlConversationId;
   }
   var lastEtag = '';
+  var configuredPollIntervalMs = DEFAULT_POLL_MS;
   var pollIntervalMs = DEFAULT_POLL_MS;
+  var hasPendingUserActivity = false;
   var pollPaused = false;
   var pollTimer = null;
   var pollInFlight = false;
@@ -312,10 +314,25 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     if (drawer) { drawer.hidden = !isExp; }
   }
 
+  function markUserInteraction() {
+    if (surface === 'vscode') { return; }
+    hasPendingUserActivity = true;
+    if (pollIntervalMs > configuredPollIntervalMs && !pollPaused && !document.hidden) {
+      pollIntervalMs = configuredPollIntervalMs;
+      if (!pollInFlight) {
+        scheduleNextPoll();
+      }
+    }
+  }
+
   function syncLocalStateFromSnapshot(snapshot) {
     if (!snapshot || typeof snapshot !== 'object') { return; }
     if (typeof snapshot.paused === 'boolean') {
       pollPaused = snapshot.paused;
+      if (pollPaused && pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
     }
     if (typeof snapshot.pinnedConversationId === 'string') {
       pinnedConversationId = snapshot.pinnedConversationId;
@@ -327,10 +344,13 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     }
     var snapSettings = snapshot.data && snapshot.data.settings;
     if (snapSettings && typeof snapSettings.pollingInterval === 'number' && Number.isFinite(snapSettings.pollingInterval)) {
-      var nextMs = Math.max(1000, Math.min(60000, Math.round(snapSettings.pollingInterval * 1000)));
-      if (nextMs !== pollIntervalMs) {
-        pollIntervalMs = nextMs;
-      }
+      configuredPollIntervalMs = Math.max(1000, Math.min(60000, Math.round(snapSettings.pollingInterval * 1000)));
+    }
+    var effectiveMs = snapshot.meta && typeof snapshot.meta.effectivePollIntervalMs === 'number' && Number.isFinite(snapshot.meta.effectivePollIntervalMs)
+      ? Math.max(1000, Math.min(60000, Math.round(snapshot.meta.effectivePollIntervalMs)))
+      : configuredPollIntervalMs;
+    if (effectiveMs !== pollIntervalMs) {
+      pollIntervalMs = effectiveMs;
     }
   }
 
@@ -373,13 +393,14 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     }
   }
 
-  function buildSnapshotUrl(forceFull) {
+  function buildSnapshotUrl(forceFull, isActive) {
     var qs = new URLSearchParams();
     var view = detectViewMode();
     var activeConvId = getActiveConversationId();
     if (activeConvId) { qs.set('conversationId', activeConvId); }
     if (currentWorkspaceUris.length > 0) { qs.set('workspaceUris', JSON.stringify(currentWorkspaceUris)); }
     if (!forceFull && lastEtag) { qs.set('etag', lastEtag); }
+    if (isActive) { qs.set('active', '1'); }
     var urlLang = urlParams.get('lang');
     if (urlLang === 'en' || urlLang === 'zh' || urlLang === 'both') {
       qs.set('lang', urlLang);
@@ -407,11 +428,13 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
   }
 
   function pollSnapshot(forceFull) {
-    if (surface === 'vscode' || pollInFlight || (document.hidden && !forceFull)) {
+    if (surface === 'vscode' || pollInFlight || (!forceFull && (document.hidden || pollPaused))) {
       return Promise.resolve(null);
     }
     pollInFlight = true;
-    return bridgeFetch(buildSnapshotUrl(!!forceFull), { method: 'GET' })
+    var sendActive = hasPendingUserActivity;
+    hasPendingUserActivity = false;
+    return bridgeFetch(buildSnapshotUrl(!!forceFull, sendActive), { method: 'GET' })
       .then(function(res) {
         if (!res.ok) { throw new Error('HTTP ' + res.status); }
         return res.json();
@@ -425,6 +448,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
         return data;
       })
       .catch(function() {
+        if (sendActive) { hasPendingUserActivity = true; }
         consecutivePollErrors += 1;
         return null;
       })
@@ -491,15 +515,18 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
       lastEtag = '';
     }
     if (msg.command === 'setPollingInterval' && typeof msg.value === 'number' && Number.isFinite(msg.value)) {
-      pollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.value * 1000)));
+      configuredPollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.value * 1000)));
+      pollIntervalMs = configuredPollIntervalMs;
       scheduleNextPoll();
     }
     if ((msg.command === 'updateSetting' || msg.command === 'setAppSetting') && msg.key === 'pollingInterval' && typeof msg.value === 'number' && Number.isFinite(msg.value)) {
-      pollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.value * 1000)));
+      configuredPollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.value * 1000)));
+      pollIntervalMs = configuredPollIntervalMs;
       scheduleNextPoll();
     }
     if (msg.command === 'updateSettings' && msg.settings && typeof msg.settings.pollingInterval === 'number' && Number.isFinite(msg.settings.pollingInterval)) {
-      pollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.settings.pollingInterval * 1000)));
+      configuredPollIntervalMs = Math.max(1000, Math.min(60000, Math.round(msg.settings.pollingInterval * 1000)));
+      pollIntervalMs = configuredPollIntervalMs;
       scheduleNextPoll();
     }
 
@@ -548,7 +575,11 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
               if (mKind) { dispatchedTypes[mKind] = true; }
               if (mKind === 'setPaused') {
                 pollPaused = !!m.paused;
-                if (!pollPaused) { scheduleNextPoll(); }
+                if (pollPaused) {
+                  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+                } else {
+                  scheduleNextPoll();
+                }
               }
               if (mKind === 'copyToClipboard' && typeof m.text === 'string') {
                 void copyText(m.text);
@@ -624,11 +655,19 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     }
   }
 
+  if (surface !== 'vscode') {
+    window.addEventListener('pointerdown', markUserInteraction, { passive: true });
+    window.addEventListener('keydown', markUserInteraction, { passive: true });
+    window.addEventListener('wheel', markUserInteraction, { passive: true });
+    window.addEventListener('focus', markUserInteraction, { passive: true });
+  }
+
   // Visibility-gated polling: pause immediately when tab/pane is hidden, resume on reveal
   document.addEventListener('visibilitychange', function() {
     if (document.hidden) {
       if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     } else if (surface !== 'vscode' && AUTO_POLL && !pollPaused) {
+      markUserInteraction();
       pollSnapshot(false);
     }
   });

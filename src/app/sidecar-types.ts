@@ -179,6 +179,8 @@ export interface SidecarSnapshotQuery {
     pinnedConversationId?: string;
     /** Whether the user enabled "Lock to Main Agent". */
     lockToMainAgent?: boolean;
+    /** Explicit signal that genuine user interaction occurred since the previous snapshot request. */
+    userActive?: boolean;
 }
 
 export interface SidecarConversationOption {
