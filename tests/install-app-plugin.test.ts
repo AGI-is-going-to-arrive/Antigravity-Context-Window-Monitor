@@ -609,8 +609,15 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         });
         expect(setupRes.ok).toBe(true);
         expect(setupRes.status.installed).toBe(true);
+        const macLaunchPath = path.join(setupRes.launcherPath, 'Contents', 'MacOS', 'launch');
         expect(fs.existsSync(path.join(setupRes.launcherPath, 'Contents', 'Info.plist'))).toBe(true);
-        expect(fs.existsSync(path.join(setupRes.launcherPath, 'Contents', 'MacOS', 'launch'))).toBe(true);
+        expect(fs.existsSync(macLaunchPath)).toBe(true);
+        const macLaunchScript = fs.readFileSync(macLaunchPath, 'utf8');
+        expect(macLaunchScript).toContain("-e 'activate'");
+        expect(macLaunchScript).toContain('Allow Automation permission for Antigravity (CDP)');
+        if (process.platform !== 'win32') {
+            execFileSync('bash', ['-n', macLaunchPath], { stdio: 'pipe' });
+        }
 
         const statusInstalled = await mod.collectStatus({
             env: { HOME: fakeHome },
@@ -652,15 +659,26 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         expect(removeRes.status.installed).toBe(false);
         expect(fs.existsSync(setupRes.launcherPath)).toBe(false);
 
-        // 5. Linux launcher via installer
-        const linuxHome = path.join(tmpBase, 'linux-home');
+        // 5. Linux launcher via installer (including custom appPath with apostrophe & closing brace)
+        const linuxHome = path.join(tmpBase, "linux user's home");
+        const trickyLinuxApp = "/opt/user's {dir}/anti}gravity/antigravity";
         const linuxSetup = await mod.runInstallerAsync({
             action: 'setup-cdp-launcher',
             platform: 'linux',
             homeDir: linuxHome,
+            appPath: trickyLinuxApp,
         });
         expect(linuxSetup.ok).toBe(true);
         expect(linuxSetup.status.installed).toBe(true);
+        const linuxWrapperPath = path.join(linuxHome, '.local', 'bin', 'antigravity-cdp');
+        const linuxWrapperText = fs.readFileSync(linuxWrapperPath, 'utf8');
+        expect(linuxWrapperText).toContain('DEFAULT_BIN=');
+        expect(linuxWrapperText).toContain('APP_BIN="${ANTIGRAVITY_BIN:-$DEFAULT_BIN}"');
+        if (process.platform !== 'win32') {
+            execFileSync('sh', ['-n', linuxWrapperPath], { stdio: 'pipe' });
+        }
+        const linuxDesktopText = fs.readFileSync(linuxSetup.launcherPath, 'utf8');
+        expect(linuxDesktopText).toContain(`Exec="${linuxWrapperPath}" %U`);
         const linuxRemove = await mod.runInstallerAsync({
             action: 'remove-cdp-launcher',
             platform: 'linux',

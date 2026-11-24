@@ -10,7 +10,7 @@
  *   `before-quit` language_server teardown race.
  */
 
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -21,6 +21,11 @@ export type { CdpLauncherActionResult, CdpLauncherStatus };
 export const CDP_LAUNCHER_DISPLAY_NAME = 'Antigravity (CDP)';
 export const MACOS_CDP_LAUNCHER_BUNDLE_ID = 'com.antigravity-context-monitor.cdp-launcher';
 export const MACOS_ANTIGRAVITY_BUNDLE_ID = 'com.google.antigravity';
+
+export interface SpawnedLauncherProcessLike {
+    unref?: () => void;
+    on?: (event: string, listener: (err: Error) => void) => unknown;
+}
 
 export interface CdpLauncherOptions {
     platform?: NodeJS.Platform;
@@ -33,6 +38,12 @@ export interface CdpLauncherOptions {
         args: readonly string[],
         options?: { env?: NodeJS.ProcessEnv; windowsHide?: boolean; stdio?: 'pipe' | 'ignore' },
     ) => unknown;
+    /** Injectable detached process spawner for hermetic `revealCdpLauncher` tests. */
+    spawnImpl?: (
+        command: string,
+        args: readonly string[],
+        options?: { detached?: boolean; stdio?: 'ignore'; windowsHide?: boolean },
+    ) => SpawnedLauncherProcessLike | undefined;
     /** Injectable PATH lookup for Linux `antigravity` binary detection in tests. */
     commandExistsFn?: (cmd: string) => boolean;
 }
@@ -96,6 +107,17 @@ function escapeXmlText(value: string): string {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&apos;');
+}
+
+function escapeFreedesktopExecArg(value: string): string {
+    const clean = value.replace(/[\r\n]+/g, '');
+    const pctEscaped = clean.replace(/%/g, '%%');
+    if (pctEscaped.length === 0 || /[\s"'\\><~|&;$*?#()`]/.test(pctEscaped)) {
+        const execQuoted = pctEscaped.replace(/([\\"`$])/g, '\\$1');
+        const desktopEscaped = execQuoted.replace(/\\/g, '\\\\');
+        return `"${desktopEscaped}"`;
+    }
+    return pctEscaped;
 }
 
 function defaultCommandExists(cmd: string, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -280,7 +302,7 @@ export function buildMacOsLauncherScript(targetAppPath = '/Applications/Antigrav
         `BUNDLE_ID=${escapeSingleQuotedPosix(MACOS_ANTIGRAVITY_BUNDLE_ID)}`,
         '',
         'if [ ! -d "$APP_PATH" ]; then',
-        '  osascript -e \'display alert "Antigravity App Not Found" message "Could not locate Antigravity.app. Please install Antigravity App first."\' >/dev/null 2>&1 || true',
+        '  osascript -e \'activate\' -e \'display alert "Antigravity App Not Found" message "Could not locate Antigravity.app. Please install Antigravity App first."\' >/dev/null 2>&1 || true',
         '  exit 1',
         'fi',
         '',
@@ -319,15 +341,26 @@ export function buildMacOsLauncherScript(targetAppPath = '/Applications/Antigrav
         '  fi',
         '',
         '  CHOICE="$(osascript \\',
+        '    -e \'activate\' \\',
         '    -e \'set dialogResult to display dialog "Antigravity is currently running without CDP remote debugging. Quit & relaunch with CDP enabled?" with title "Antigravity (CDP)" buttons {"Cancel", "Quit & Relaunch"} default button "Quit & Relaunch" cancel button "Cancel"\' \\',
         '    -e \'return button returned of dialogResult\' 2>/dev/null || true)"',
         '  if [ "$CHOICE" != "Quit & Relaunch" ]; then',
         '    exit 0',
         '  fi',
         '',
-        '  osascript -e "tell application id \\"$BUNDLE_ID\\" to quit" >/dev/null 2>&1 || true',
+        '  QUIT_RC=0',
+        '  osascript -e "tell application id \\"$BUNDLE_ID\\" to quit" >/dev/null 2>&1 || QUIT_RC=$?',
+        '  if [ "$QUIT_RC" -ne 0 ]; then',
+        '    sleep 0.5',
+        '    if [ -n "$(find_main_pids)" ]; then',
+        '      osascript \\',
+        '        -e \'activate\' \\',
+        '        -e \'display alert "Permission Needed to Quit Antigravity" message "Allow Automation permission for Antigravity (CDP) in System Settings > Privacy & Security > Automation, or press Cmd+Q to quit Antigravity first and then open Antigravity (CDP) again."\' >/dev/null 2>&1 || true',
+        '      exit 1',
+        '    fi',
+        '  fi',
         '  if ! wait_for_exit; then',
-        '    osascript -e \'display alert "Antigravity Still Closing" message "Antigravity did not finish exiting within 15 seconds. Wait for its Dock indicator dot to disappear, then open Antigravity (CDP) again."\' >/dev/null 2>&1 || true',
+        '    osascript -e \'activate\' -e \'display alert "Antigravity Still Closing" message "Antigravity did not finish exiting within 15 seconds. Wait for its Dock indicator dot to disappear, then open Antigravity (CDP) again."\' >/dev/null 2>&1 || true',
         '    exit 1',
         '  fi',
         'else',
@@ -392,16 +425,18 @@ export function buildWindowsLauncherCmd(targetExePath?: string): string {
 }
 
 export function buildLinuxLauncherScript(targetAppPath?: string): string {
-    const cleanTarget = targetAppPath && targetAppPath.trim() && targetAppPath.trim() !== 'antigravity'
-        ? targetAppPath.trim()
+    const rawTarget = targetAppPath && targetAppPath.trim() && targetAppPath.trim() !== 'antigravity'
+        ? targetAppPath.trim().replace(/[\r\n]+/g, '')
         : 'antigravity';
+    const cleanTarget = rawTarget || 'antigravity';
 
     return [
         '#!/usr/bin/env sh',
         'set -eu',
         '',
         '# Zero-patch persistent CDP launcher generated by Antigravity Context Monitor.',
-        `APP_BIN="\${ANTIGRAVITY_BIN:-${cleanTarget.replace(/["$`\\]/g, '\\$&')}}"`,
+        `DEFAULT_BIN=${escapeSingleQuotedPosix(cleanTarget)}`,
+        'APP_BIN="${ANTIGRAVITY_BIN:-$DEFAULT_BIN}"',
         '',
         '# Wait cleanly up to 5s if an exiting Antigravity process is still tearing down.',
         'tick=0',
@@ -422,9 +457,7 @@ export function buildLinuxLauncherScript(targetAppPath?: string): string {
 }
 
 export function buildLinuxDesktopEntry(wrapperPath: string): string {
-    const escapedExec = wrapperPath.includes(' ')
-        ? `"${wrapperPath.replace(/"/g, '\\"')}"`
-        : wrapperPath;
+    const escapedExec = escapeFreedesktopExecArg(wrapperPath);
     return [
         '[Desktop Entry]',
         'Type=Application',
@@ -579,8 +612,8 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
             return {
                 ok: true,
                 status,
-                messageEn: `Created persistent macOS launcher at "${status.launcherPath}". Drag it to your Dock or launch it via Spotlight whenever you want CDP enabled.`,
-                messageZh: `已创建 macOS 持久化启动器："${status.launcherPath}"。可将其拖入程序坞或通过 Spotlight 打开以带 CDP 启动 Antigravity。`,
+                messageEn: `Created persistent macOS launcher at "${status.launcherPath}". Click "Reveal in Finder" (or open it via Spotlight / drag to your Dock) to launch Antigravity with CDP — the original Antigravity icon is untouched.`,
+                messageZh: `已创建 macOS 持久化启动器："${status.launcherPath}"。请点击「在访达中显示」并改从该图标启动（可拖入程序坞，原版 Antigravity 图标不会被修改）。`,
             };
         }
 
@@ -615,8 +648,8 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
             return {
                 ok: true,
                 status,
-                messageEn: `Created persistent Windows CDP shortcuts (Desktop & Start Menu) using "${resolved.winCmdPath}".`,
-                messageZh: `已创建 Windows 持久化 CDP 快捷方式（桌面与开始菜单），底层脚本位于 "${resolved.winCmdPath}"。`,
+                messageEn: `Created persistent Windows CDP shortcuts (Desktop & Start Menu) using "${resolved.winCmdPath}". Launch from "Antigravity (CDP)" (click "Show in Explorer" to locate it).`,
+                messageZh: `已创建 Windows 持久化 CDP 快捷方式（桌面与开始菜单），底层脚本位于 "${resolved.winCmdPath}"。请改从「Antigravity (CDP)」快捷方式启动（可点击「在资源管理器中显示」定位）。`,
             };
         }
 
@@ -634,8 +667,8 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
             return {
                 ok: true,
                 status,
-                messageEn: `Created persistent Linux CDP launcher at "${resolved.linuxDesktopEntryPath}" (wrapper: "${resolved.linuxWrapperPath}").`,
-                messageZh: `已创建 Linux 持久化 CDP 启动入口："${resolved.linuxDesktopEntryPath}"（脚本："${resolved.linuxWrapperPath}"）。`,
+                messageEn: `Created persistent Linux CDP launcher at "${resolved.linuxDesktopEntryPath}" (wrapper: "${resolved.linuxWrapperPath}"). Launch "Antigravity (CDP)" from your application menu or click "Open Folder".`,
+                messageZh: `已创建 Linux 持久化 CDP 启动入口："${resolved.linuxDesktopEntryPath}"（脚本："${resolved.linuxWrapperPath}"）。请从应用菜单打开「Antigravity (CDP)」或点击「打开所在目录」。`,
             };
         }
 
@@ -655,6 +688,120 @@ export function createCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherAct
             status,
             messageEn: `Failed to create persistent CDP launcher: ${errorMsg}`,
             messageZh: `创建持久化 CDP 启动器失败：${errorMsg}`,
+            error: errorMsg,
+        };
+    }
+}
+
+function dirnameTargetPath(platform: NodeJS.Platform, target: string): string {
+    if (platform === 'win32' && (/^[A-Za-z]:/.test(target) || target.includes('\\'))) {
+        return path.win32.dirname(target);
+    }
+    return path.dirname(target);
+}
+
+export function revealCdpLauncher(opts: CdpLauncherOptions = {}): CdpLauncherActionResult {
+    const resolved = resolveCdpLauncherPaths(opts);
+    const status = inspectCdpLauncher(opts);
+
+    if (!status.supported) {
+        return {
+            ok: false,
+            status,
+            messageEn: `Persistent CDP launcher is not supported on ${status.platform}.`,
+            messageZh: `当前平台 ${status.platform} 不支持定位持久化 CDP 启动器。`,
+            error: `Unsupported platform: ${status.platform}`,
+        };
+    }
+
+    if (!status.installed) {
+        return {
+            ok: false,
+            status,
+            messageEn: 'Persistent CDP launcher has not been created yet. Click "Create Persistent Launcher" first.',
+            messageZh: '尚未创建持久化 CDP 启动器，请先点击「一键生成持久化启动器」。',
+            error: 'Launcher not created yet',
+        };
+    }
+
+    const spawnFn = opts.spawnImpl
+        ?? ((
+            command: string,
+            args: readonly string[],
+            options?: { detached?: boolean; stdio?: 'ignore'; windowsHide?: boolean },
+        ) => spawn(command, [...args], {
+            detached: options?.detached ?? true,
+            stdio: options?.stdio ?? 'ignore',
+            windowsHide: options?.windowsHide ?? true,
+        }));
+    const spawnOpts = { detached: true, stdio: 'ignore' as const, windowsHide: true };
+    const launchDetached = (command: string, args: readonly string[]): void => {
+        const child = spawnFn(command, args, spawnOpts);
+        child?.on?.('error', () => { /* avoid unhandled error events on detached launcher helper */ });
+        child?.unref?.();
+    };
+
+    try {
+        if (status.platform === 'darwin') {
+            launchDetached('open', ['-R', status.launcherPath]);
+            return {
+                ok: true,
+                status,
+                messageEn: `Revealed "${status.launcherPath}" in Finder. Open it (or drag it to your Dock) to launch Antigravity with CDP.`,
+                messageZh: `已在访达中定位「${status.launcherPath}」。打开该图标（或拖入程序坞固定）即可带 CDP 启动 Antigravity。`,
+            };
+        }
+
+        if (status.platform === 'win32') {
+            const selectTarget = fs.existsSync(status.launcherPath)
+                ? status.launcherPath
+                : (resolved.winStartMenuLnkPath && fs.existsSync(resolved.winStartMenuLnkPath)
+                    ? resolved.winStartMenuLnkPath
+                    : '');
+            const parentDir = dirnameTargetPath('win32', selectTarget || status.launcherPath);
+            if (selectTarget) {
+                try {
+                    launchDetached('explorer.exe', [`/select,${selectTarget}`]);
+                } catch {
+                    launchDetached('explorer.exe', [parentDir]);
+                }
+            } else {
+                launchDetached('explorer.exe', [parentDir]);
+            }
+            const revealedTarget = selectTarget || parentDir;
+            return {
+                ok: true,
+                status,
+                messageEn: `Opened Explorer at "${revealedTarget}". Launch "Antigravity (CDP)" from there to enable CDP.`,
+                messageZh: `已在资源管理器中定位「${revealedTarget}」。请从该「Antigravity (CDP)」快捷方式启动。`,
+            };
+        }
+
+        if (status.platform === 'linux') {
+            const folderPath = dirnameTargetPath('linux', status.launcherPath);
+            launchDetached('xdg-open', [folderPath]);
+            return {
+                ok: true,
+                status,
+                messageEn: `Opened launcher folder "${folderPath}". Launch "Antigravity (CDP)" from your application menu or run ~/.local/bin/antigravity-cdp.`,
+                messageZh: `已打开启动器目录「${folderPath}」。可从应用菜单启动「Antigravity (CDP)」或运行 ~/.local/bin/antigravity-cdp。`,
+            };
+        }
+
+        return {
+            ok: false,
+            status,
+            messageEn: `Persistent CDP launcher is not supported on ${status.platform}.`,
+            messageZh: `当前平台 ${status.platform} 不支持定位持久化 CDP 启动器。`,
+            error: `Unsupported platform: ${status.platform}`,
+        };
+    } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        return {
+            ok: false,
+            status,
+            messageEn: `Failed to reveal persistent CDP launcher: ${errorMsg}`,
+            messageZh: `无法打开持久化 CDP 启动器位置：${errorMsg}`,
             error: errorMsg,
         };
     }

@@ -310,10 +310,21 @@ function buildCdpStatusPillHtml(
     return `<span class="stg-status-pill is-disabled" id="cdpStatusPill" data-cdp-state="disabled" data-cdp-diagnostic="disabled">${tBiHtml('Disabled', '未启用')}</span>`;
 }
 
+function getRevealLauncherLabel(platform?: string): { en: string; zh: string } {
+    if (platform === 'win32') {
+        return { en: 'Show in Explorer', zh: '在资源管理器中显示' };
+    }
+    if (platform === 'linux') {
+        return { en: 'Open Folder', zh: '打开所在目录' };
+    }
+    return { en: 'Reveal in Finder', zh: '在访达中显示' };
+}
+
 function buildCdpDiagnosticHintHtml(
     cdpStatus: CdpStatus | null | undefined,
     composerEnabled: boolean,
     topBarEnabled: boolean,
+    activePlatform?: string,
 ): string {
     const anyEnabled = composerEnabled || topBarEnabled;
     const state = cdpStatus?.state ?? (anyEnabled ? 'cdp_unavailable' : 'disabled');
@@ -326,6 +337,27 @@ function buildCdpDiagnosticHintHtml(
     const titleSuffix = cdpStatus?.targetTitle ? ` — ${cdpStatus.targetTitle}` : '';
     const errSuffixEn = cdpStatus?.errorMessage ? `: ${cdpStatus.errorMessage}` : '';
     const errSuffixZh = cdpStatus?.errorMessage ? `：${cdpStatus.errorMessage}` : '';
+    const launcherInstalled = Boolean(cdpStatus?.launcherStatus?.installed);
+    const resolvedPlatform = cdpStatus?.launcherStatus?.platform || activePlatform || cdpStatus?.platformGuide?.platform || 'darwin';
+
+    const buildInstalledLauncherHint = (prefixEn: string, prefixZh: string): string => {
+        if (resolvedPlatform === 'win32') {
+            return tBiHtml(
+                `${prefixEn}Persistent launcher is ready, but this session was opened from the original Antigravity app (without --remote-debugging-port=0). Launch from the "Antigravity (CDP)" shortcut instead (click "Show in Explorer" below to locate it), then click Recheck CDP.`,
+                `${prefixZh}持久化启动器已就绪，但本次打开的是原版 Antigravity（未启用 --remote-debugging-port=0）。请改从「Antigravity (CDP)」快捷方式启动（可点击下方「在资源管理器中显示」直接定位），启动后点击「重新检测」。`,
+            );
+        }
+        if (resolvedPlatform === 'linux') {
+            return tBiHtml(
+                `${prefixEn}Persistent launcher is ready, but this session was opened from the original Antigravity app (without --remote-debugging-port=0). Launch from the "Antigravity (CDP)" application entry instead (click "Open Folder" below to locate it), then click Recheck CDP.`,
+                `${prefixZh}持久化启动器已就绪，但本次打开的是原版 Antigravity（未启用 --remote-debugging-port=0）。请改从应用菜单中的「Antigravity (CDP)」图标启动（可点击下方「打开所在目录」定位启动器目录），启动后点击「重新检测」。`,
+            );
+        }
+        return tBiHtml(
+            `${prefixEn}Persistent launcher is ready, but this session was opened from the original Antigravity app (without --remote-debugging-port=0). Launch from the "Antigravity (CDP)" icon instead (click "Reveal in Finder" below to locate it and drag it to your Dock), then click Recheck CDP.`,
+            `${prefixZh}持久化启动器已就绪，但本次打开的是原版 Antigravity（未启用 --remote-debugging-port=0）。请改从「Antigravity (CDP)」图标启动（可点击下方「在访达中显示」直接定位并拖到程序坞），启动后点击「重新检测」。`,
+        );
+    };
 
     let toneClass = 'is-warn';
     let messageHtml = '';
@@ -367,18 +399,22 @@ function buildCdpDiagnosticHintHtml(
             break;
         case 'host_missing_flag':
             toneClass = 'is-warn';
-            messageHtml = tBiHtml(
-                'Antigravity App is running without --remote-debugging-port=0 (e.g. launched from Dock/Spotlight, restarted by an auto-update, or relaunched during the ~5s background shutdown after Cmd+Q). Use the 1-click Persistent CDP Launcher below, then click Recheck CDP.',
-                '当前运行的 Antigravity App 未启用 --remote-debugging-port=0（例如从 Dock/Spotlight 启动、自动更新重启，或在按 Cmd+Q 后约 5 秒后台清理尚未完成时运行了 open -a）。请使用下方「持久化启动器」一键生成并重启，再点击「重新检测」。',
-            );
+            messageHtml = launcherInstalled
+                ? buildInstalledLauncherHint('', '')
+                : tBiHtml(
+                    'Antigravity App is running without --remote-debugging-port=0 (e.g. opened from the original icon, auto-updated, or relaunched during the ~5s shutdown after Cmd+Q). Step 1: click "Create Persistent Launcher" below to create a separate launcher. Step 2: launch from the new "Antigravity (CDP)" icon instead (the original Antigravity icon is never modified), then click Recheck CDP.',
+                    '当前运行的 Antigravity App 未启用 --remote-debugging-port=0（例如从原版图标启动、自动更新重启，或按 Cmd+Q 后约 5 秒后台清理尚未完成）。步骤 1：点击下方「一键生成持久化启动器」创建独立启动器；步骤 2：之后改从新建的「Antigravity (CDP)」图标启动（原版 Antigravity 图标不会被修改），启动后点击「重新检测」。',
+                );
             break;
         case 'missing_port_file':
         default:
             toneClass = 'is-warn';
-            messageHtml = tBiHtml(
-                'DevToolsActivePort not found — Antigravity App was launched without --remote-debugging-port=0 (or an auto-update restart dropped the flag). Quit completely first (Cmd+Q and wait ~5s on macOS), or use the 1-click Persistent CDP Launcher below, then click Recheck CDP.',
-                '未检测到 DevToolsActivePort —— Antigravity App 未使用 --remote-debugging-port=0 启动（或自动更新重启丢弃了启动参数）。请先完全退出（macOS 按 Cmd+Q 后等待约 5 秒）或使用下方一键持久化启动器重启，再点击「重新检测」。',
-            );
+            messageHtml = launcherInstalled
+                ? buildInstalledLauncherHint('DevToolsActivePort not found — ', '未检测到 DevToolsActivePort —— ')
+                : tBiHtml(
+                    'DevToolsActivePort not found — Antigravity App is running without --remote-debugging-port=0 (or was relaunched during the ~5s shutdown after Cmd+Q). Step 1: click "Create Persistent Launcher" below to create a separate launcher. Step 2: launch from the new "Antigravity (CDP)" icon instead (the original Antigravity icon is never modified), then click Recheck CDP.',
+                    '未检测到 DevToolsActivePort —— 当前运行的 Antigravity App 未启用 --remote-debugging-port=0（或按 Cmd+Q 后约 5 秒后台清理尚未完成）。步骤 1：点击下方「一键生成持久化启动器」创建独立启动器；步骤 2：之后改从新建的「Antigravity (CDP)」图标启动（原版 Antigravity 图标不会被修改），启动后点击「重新检测」。',
+                );
             break;
     }
     return `<div class="stg-diagnostic-hint ${toneClass}" id="cdpDiagnosticHint" data-cdp-diagnostic="${esc(diagCode)}" role="status">${messageHtml}</div>`;
@@ -395,14 +431,17 @@ function buildCdpLauncherRowHtml(
     activePlatform?: string,
 ): string {
     const installed = Boolean(launcherStatus?.installed);
+    const resolvedPlatform = launcherStatus?.platform || activePlatform || 'darwin';
     const displayPath = launcherStatus?.launcherPath?.trim()
-        || getDefaultLauncherDisplayPath(activePlatform || launcherStatus?.platform);
+        || getDefaultLauncherDisplayPath(resolvedPlatform);
     const statusBadgeHtml = installed
         ? `<span class="stg-cdp-launcher-badge is-installed">${tBiHtml('Installed', '已创建')}</span>`
         : `<span class="stg-cdp-launcher-badge">${tBiHtml('Not created', '未创建')}</span>`;
     const setupLabelHtml = installed
         ? tBiHtml('Recreate Launcher', '重新生成启动器')
         : tBiHtml('Create Persistent Launcher', '一键生成持久化启动器');
+    const revealLabel = getRevealLauncherLabel(resolvedPlatform);
+    const revealLabelHtml = tBiHtml(revealLabel.en, revealLabel.zh);
     const noteHtml = launcherStatus?.noteEn && launcherStatus?.noteZh
         ? tBiHtml(launcherStatus.noteEn, launcherStatus.noteZh)
         : tBiHtml(
@@ -413,11 +452,12 @@ function buildCdpLauncherRowHtml(
             <div class="stg-cdp-launcher-box" id="cdpLauncherBox">
                 <div class="stg-cdp-launcher-head">
                     <span class="stg-cdp-launcher-title">${tBiHtml('Persistent CDP Launcher (Zero-Patch)', '持久化 CDP 启动器（零魔改）')}</span>
-                    <span class="stg-cdp-launcher-status" id="cdpLauncherStatus" data-launcher-installed="${installed ? 'true' : 'false'}" data-launcher-path="${esc(displayPath)}">${statusBadgeHtml}<code class="stg-cdp-launcher-path">${esc(displayPath)}</code></span>
+                    <span class="stg-cdp-launcher-status" id="cdpLauncherStatus" data-launcher-installed="${installed ? 'true' : 'false'}" data-launcher-platform="${esc(resolvedPlatform)}" data-launcher-path="${esc(displayPath)}">${statusBadgeHtml}<code class="stg-cdp-launcher-path">${esc(displayPath)}</code></span>
                 </div>
                 <p class="stg-cdp-launcher-note" id="cdpLauncherNote">${noteHtml}</p>
                 <div class="storage-actions stg-cdp-launcher-actions">
-                    <button type="button" class="action-btn stg-btn-primary" id="cdpSetupLauncherBtn" data-action="setupCdpLauncher"><span>${setupLabelHtml}</span></button>
+                    <button type="button" class="action-btn${installed ? '' : ' stg-btn-primary'}" id="cdpSetupLauncherBtn" data-action="setupCdpLauncher"><span>${setupLabelHtml}</span></button>
+                    <button type="button" class="action-btn${installed ? ' stg-btn-primary' : ''}" id="cdpRevealLauncherBtn" data-action="revealCdpLauncher" data-launcher-platform="${esc(resolvedPlatform)}"${installed ? '' : ' hidden'}>${ICON.folder} <span>${revealLabelHtml}</span></button>
                     <button type="button" class="action-btn" id="cdpRemoveLauncherBtn" data-action="removeCdpLauncher"${installed ? '' : ' hidden'}><span>${tBiHtml('Remove Launcher', '移除启动器')}</span></button>
                     <span id="cdpLauncherFeedback" class="threshold-feedback" role="status"></span>
                 </div>
@@ -513,7 +553,9 @@ export function buildSettingsContent(
 
     const resolvedZoom = clampNumber(options?.zoomLevel, 100, 60, 150);
     const currentVersion = (options?.version && options.version.trim()) || options?.updateStatus?.currentVersion || '1.17.7';
-    const activePlatform = options?.cdpStatus?.platformGuide?.platform;
+    const activePlatform = options?.cdpStatus?.launcherStatus?.platform
+        || options?.cdpStatus?.platformGuide?.platform
+        || (typeof process !== 'undefined' ? process.platform : 'darwin');
 
     const tabScrollHintEnabled = panelPrefs?.showTabScrollHint ?? true;
     const showScrollbar = panelPrefs?.showScrollbar ?? false;
@@ -551,7 +593,7 @@ export function buildSettingsContent(
 
     // ── App Ambient Overlays (Opt-In CDP) & Native Panel Compact HUD Card ──
     const cdpPillHtml = buildCdpStatusPillHtml(options?.cdpStatus, appComposerRingEnabled, appTopBarEnabled);
-    const cdpDiagnosticHintHtml = buildCdpDiagnosticHintHtml(options?.cdpStatus, appComposerRingEnabled, appTopBarEnabled);
+    const cdpDiagnosticHintHtml = buildCdpDiagnosticHintHtml(options?.cdpStatus, appComposerRingEnabled, appTopBarEnabled, activePlatform);
     const cdpLauncherRowHtml = buildCdpLauncherRowHtml(options?.cdpStatus?.launcherStatus, activePlatform);
     const macWaitLaunchCmd = `while pgrep -f '^/Applications/Antigravity\\.app/Contents/MacOS/Antigravity($| )' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0`;
     const winPsCmd = '& "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0';
@@ -723,7 +765,7 @@ export function buildSettingsContent(
             <div class="stg-form-grid">
                 <div class="stg-field">
                     <label for="displayCurrencySelect">${tBiHtml('Display currency', '显示货币')}</label>
-                    <select id="displayCurrencySelect" data-app-setting="displayCurrency" data-feedback-id="customFxRateFeedback">
+                    <select id="displayCurrencySelect" class="stg-select" data-app-setting="displayCurrency" data-feedback-id="customFxRateFeedback">
                         ${currencyOptionsHtml}
                     </select>
                 </div>
@@ -738,10 +780,10 @@ export function buildSettingsContent(
                 </div>
             </div>
 
-            <div class="stg-form-grid">
-                <div class="stg-field">
+            <div class="stg-form-grid stg-form-grid-subscription">
+                <div class="stg-field stg-field-plan">
                     <label for="subscriptionPlanSelect">${tBiHtml('Subscription plan (ROI)', '订阅方案（ROI 参考）')}</label>
-                    <select id="subscriptionPlanSelect" data-app-setting="subscriptionPlan" data-feedback-id="subscriptionFeedback">
+                    <select id="subscriptionPlanSelect" class="stg-select" data-app-setting="subscriptionPlan" data-feedback-id="subscriptionFeedback">
                         ${planOptionsHtml}
                     </select>
                 </div>
@@ -755,7 +797,7 @@ export function buildSettingsContent(
                 </div>
                 <div class="stg-field">
                     <label for="subscriptionCurrencySelect">${tBiHtml('Fee currency', '月费币种')}</label>
-                    <select id="subscriptionCurrencySelect" data-app-setting="subscriptionCurrency" data-feedback-id="subscriptionFeedback">
+                    <select id="subscriptionCurrencySelect" class="stg-select" data-app-setting="subscriptionCurrency" data-feedback-id="subscriptionFeedback">
                         ${subCurrencyOptionsHtml}
                     </select>
                     <span id="subscriptionFeedback" class="threshold-feedback" role="status"></span>

@@ -3166,7 +3166,8 @@ export function getEditorialStyles(): string {
             color: var(--ed-accent-ink);
             font-weight: 600;
         }
-        body .stg-btn-primary:hover {
+        body .stg-btn-primary:hover,
+        body .tab-pane .action-btn.stg-btn-primary:not(:disabled):hover {
             background: var(--ed-accent-hover);
             border-color: var(--ed-accent-hover);
             color: var(--ed-accent-ink);
@@ -3210,7 +3211,7 @@ export function getEditorialStyles(): string {
         }
         body .stg-form-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
             gap: 12px;
             margin-top: 10px;
         }
@@ -3226,7 +3227,8 @@ export function getEditorialStyles(): string {
             color: var(--ed-ink);
         }
         body .stg-field select,
-        body .stg-field input[type="number"] {
+        body .stg-field input[type="number"],
+        body .stg-select {
             height: 32px;
             padding: 0 10px;
             border-radius: var(--ed-radius-sm);
@@ -3237,7 +3239,34 @@ export function getEditorialStyles(): string {
             font-size: 12.5px;
             min-width: 0;
             width: 100%;
+            max-width: 100%;
             box-sizing: border-box;
+        }
+        body .stg-field select,
+        body .stg-select {
+            padding-inline: 10px 26px;
+            text-overflow: ellipsis;
+        }
+        @media (min-width: 521px) and (max-width: 679px) {
+            body .stg-form-grid-subscription {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            body .stg-form-grid-subscription .stg-field-plan {
+                grid-column: 1 / -1;
+            }
+        }
+        @media (min-width: 680px) and (max-width: 899px) {
+            body .stg-form-grid-subscription {
+                grid-template-columns: minmax(220px, 1.45fr) minmax(110px, 0.65fr) minmax(140px, 0.9fr);
+            }
+        }
+        @media (min-width: 900px) {
+            body .stg-form-grid-subscription {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            body .stg-form-grid-subscription .stg-field-plan {
+                grid-column: 1 / -1;
+            }
         }
         body .stg-divider {
             height: 1px;
