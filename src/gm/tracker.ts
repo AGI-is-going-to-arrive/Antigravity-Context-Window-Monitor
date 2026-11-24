@@ -23,9 +23,11 @@ import { cloneConversationData, cloneTokenBreakdownGroups } from './types';
 import {
     parseGMEntry,
     maybeEnrichCallsFromTrajectory,
+    mergeGMCallEntries,
     applyTrajectoryModelHints,
     isValidCallTimestamp,
     shouldEnrichConversation,
+    buildGMMatchKey,
     buildGMArchiveKey,
     deduplicateApiErrorText,
     extractCheckpointsFromTrajectorySteps,
@@ -147,56 +149,78 @@ function sameStepIndices(a: number[], b: number[]): boolean {
     return a.length === b.length && a.every((v, idx) => v === b[idx]);
 }
 
-function inheritEnrichedCallFields(calls: GMCallEntry[], cachedCalls: GMCallEntry[] | undefined): void {
-    if (!cachedCalls || cachedCalls.length === 0 || calls.length === 0) { return; }
+function hasConflictingExecutionId(
+    a: Pick<GMCallEntry, 'executionId'>,
+    b: Pick<GMCallEntry, 'executionId'>,
+): boolean {
+    return Boolean(a.executionId && b.executionId && a.executionId !== b.executionId);
+}
 
-    const uniqueCachedByExecId = new Map<string, GMCallEntry>();
-    const ambiguousExecIds = new Set<string>();
+function inheritEnrichedCallFields(calls: GMCallEntry[], cachedCalls: GMCallEntry[] | undefined): GMCallEntry[] {
+    if (!cachedCalls || cachedCalls.length === 0 || calls.length === 0) { return calls; }
+
+    const cachedByMatchKey = new Map<string, GMCallEntry[]>();
+    const cachedByExecId = new Map<string, GMCallEntry[]>();
     for (const prev of cachedCalls) {
-        if (!prev.executionId) { continue; }
-        if (uniqueCachedByExecId.has(prev.executionId)) {
-            ambiguousExecIds.add(prev.executionId);
-            uniqueCachedByExecId.delete(prev.executionId);
-        } else if (!ambiguousExecIds.has(prev.executionId)) {
-            uniqueCachedByExecId.set(prev.executionId, prev);
+        const matchKey = buildGMMatchKey(prev);
+        const byKey = cachedByMatchKey.get(matchKey);
+        if (byKey) { byKey.push(prev); } else { cachedByMatchKey.set(matchKey, [prev]); }
+        if (prev.executionId) {
+            const byExec = cachedByExecId.get(prev.executionId);
+            if (byExec) { byExec.push(prev); } else { cachedByExecId.set(prev.executionId, [prev]); }
         }
     }
 
-    for (let i = 0; i < calls.length; i++) {
-        const call = calls[i];
-        let prev: GMCallEntry | undefined = call.executionId ? uniqueCachedByExecId.get(call.executionId) : undefined;
-        if (!prev && i < cachedCalls.length) {
-            const candidate = cachedCalls[i];
-            const stepsMatch = call.stepIndices.length > 0 && candidate.stepIndices.length > 0
-                && sameStepIndices(call.stepIndices, candidate.stepIndices);
-            const fallbackMatch = candidate.startStepIndex === call.startStepIndex
-                && candidate.inputTokens === call.inputTokens
-                && candidate.outputTokens === call.outputTokens;
-            if (stepsMatch || fallbackMatch) {
-                prev = candidate;
+    const callsExecIdCount = new Map<string, number>();
+    for (const call of calls) {
+        if (call.executionId) {
+            callsExecIdCount.set(call.executionId, (callsExecIdCount.get(call.executionId) ?? 0) + 1);
+        }
+    }
+
+    return calls.map((call, i) => {
+        let prev: GMCallEntry | undefined;
+
+        const exactMatches = cachedByMatchKey.get(buildGMMatchKey(call));
+        if (exactMatches && exactMatches.length === 1 && !hasConflictingExecutionId(call, exactMatches[0])) {
+            prev = exactMatches[0];
+        }
+
+        if (!prev && call.executionId) {
+            const execCandidates = cachedByExecId.get(call.executionId) || [];
+            if (execCandidates.length === 1 && callsExecIdCount.get(call.executionId) === 1) {
+                prev = execCandidates[0];
+            } else if (execCandidates.length > 0 && call.stepIndices.length > 0) {
+                const overlapping = execCandidates.filter(c =>
+                    c.stepIndices.some(idx => call.stepIndices.includes(idx)),
+                );
+                if (overlapping.length === 1) {
+                    prev = overlapping[0];
+                }
             }
         }
-        if (!prev) { continue; }
 
-        if (call.userMessageAnchors.length === 0 && prev.userMessageAnchors.length > 0) {
-            call.userMessageAnchors = prev.userMessageAnchors;
+        if (!prev && i < cachedCalls.length) {
+            const candidate = cachedCalls[i];
+            if (!hasConflictingExecutionId(call, candidate)) {
+                const stepsMatch = call.stepIndices.length > 0 && candidate.stepIndices.length > 0
+                    && sameStepIndices(call.stepIndices, candidate.stepIndices);
+                const fallbackMatch = candidate.startStepIndex === call.startStepIndex
+                    && candidate.inputTokens === call.inputTokens
+                    && candidate.outputTokens === call.outputTokens;
+                if (stepsMatch || fallbackMatch) {
+                    prev = candidate;
+                }
+            }
         }
-        if (!isValidCallTimestamp(call.createdAt) && isValidCallTimestamp(prev.createdAt)) {
-            call.createdAt = prev.createdAt;
+
+        if (!prev) { return call; }
+        const merged = mergeGMCallEntries(call, prev);
+        if (merged.modelAccuracy !== 'exact' && prev.modelAccuracy === 'exact') {
+            return { ...merged, modelAccuracy: 'exact' };
         }
-        if (call.checkpointSummaries.length === 0 && prev.checkpointSummaries.length > 0) {
-            call.checkpointSummaries = prev.checkpointSummaries;
-        }
-        if (call.systemContextItems.length === 0 && prev.systemContextItems.length > 0) {
-            call.systemContextItems = prev.systemContextItems;
-        }
-        if (Object.keys(call.aiSnippetsByStep).length === 0 && Object.keys(prev.aiSnippetsByStep).length > 0) {
-            call.aiSnippetsByStep = prev.aiSnippetsByStep;
-        }
-        if (Object.keys(call.toolCallsByStep).length === 0 && Object.keys(prev.toolCallsByStep).length > 0) {
-            call.toolCallsByStep = prev.toolCallsByStep;
-        }
-    }
+        return merged;
+    });
 }
 
 // PendingArchiveEntry is now defined in ./types and re-exported from this module.
@@ -273,6 +297,34 @@ export class GMTracker {
         }
     }
 
+    private _recordIdleErrorBackoff(cascadeId: string, stepCount: number, nowMs: number): void {
+        const prev = this._errorBackoffByCascade.get(cascadeId);
+        const attempts = prev && prev.stepCount === stepCount ? prev.attempts + 1 : 1;
+        const delayMs = Math.min(
+            IDLE_ERROR_BACKOFF_MAX_MS,
+            IDLE_ERROR_BACKOFF_BASE_MS * Math.pow(2, attempts - 1),
+        );
+        this._errorBackoffByCascade.set(cascadeId, {
+            stepCount,
+            attempts,
+            nextRetryAt: nowMs + delayMs,
+        });
+    }
+
+    /**
+     * Reset idle RPC/enrichment error backoff timers (e.g. on manual refresh)
+     * so previously failed conversations retry immediately on the next fetchAll().
+     */
+    clearErrorBackoff(): void {
+        for (const [cascadeId, entry] of this._errorBackoffByCascade.entries()) {
+            this._errorBackoffByCascade.set(cascadeId, {
+                stepCount: entry.stepCount,
+                attempts: 0,
+                nextRetryAt: 0,
+            });
+        }
+    }
+
     /**
      * Fetch GM data for the given trajectories.
      * Only re-fetches RUNNING conversations; IDLE ones use cache.
@@ -302,12 +354,20 @@ export class GMTracker {
             this._lastRunningStatus.set(t.cascadeId, isRunning);
             const justBecameIdle = wasRunning && !isRunning;
 
+            if (justBecameIdle || (cached && t.stepCount < cached.totalSteps)) {
+                this._enrichedSnapshots.delete(t.cascadeId);
+                this._settledIdleStepCounts.delete(t.cascadeId);
+            }
+
+            let retryingAfterBackoff = false;
             const existingBackoff = this._errorBackoffByCascade.get(t.cascadeId);
             if (existingBackoff) {
                 if (isRunning || justBecameIdle || existingBackoff.stepCount !== t.stepCount) {
                     this._errorBackoffByCascade.delete(t.cascadeId);
                 } else if (nowMs < existingBackoff.nextRetryAt) {
                     continue;
+                } else {
+                    retryingAfterBackoff = true;
                 }
             }
 
@@ -318,6 +378,7 @@ export class GMTracker {
             const canSkipIdle = !!cached
                 && !isRunning
                 && !justBecameIdle
+                && !retryingAfterBackoff
                 && cached.totalSteps === t.stepCount
                 && (alreadyHydrated || alreadySettledAtSteps);
 
@@ -330,11 +391,14 @@ export class GMTracker {
                     { cascadeId: t.cascadeId, ...meta }, 30000, signal) as Record<string, unknown>;
                 const rawGM = (resp.generatorMetadata || []) as Record<string, unknown>[];
 
-                let calls = rawGM.map(parseGMEntry);
-                inheritEnrichedCallFields(calls, cached?.calls);
+                let calls = inheritEnrichedCallFields(rawGM.map(parseGMEntry), cached?.calls);
                 const enrichKey = `${t.stepCount}:${calls.length}`;
+                const skipCachedEnrichment = !isRunning
+                    && !justBecameIdle
+                    && this._enrichedSnapshots.get(t.cascadeId) === enrichKey;
                 let trajectorySteps: any[] = [];
-                if (this._enrichedSnapshots.get(t.cascadeId) !== enrichKey && shouldEnrichConversation(t.stepCount, calls)) {
+                let enrichmentFailed = false;
+                if (!skipCachedEnrichment && shouldEnrichConversation(t.stepCount, calls)) {
                     try {
                         const fullResp = await rpcCall(ls, 'GetCascadeTrajectory',
                             { cascadeId: t.cascadeId, ...meta }, 60000, signal) as Record<string, unknown>;
@@ -350,8 +414,11 @@ export class GMTracker {
                             );
                         }
                         calls = applyTrajectoryModelHints(calls, trajectorySteps);
-                        this._enrichedSnapshots.set(t.cascadeId, enrichKey);
+                        if (!isRunning) {
+                            this._enrichedSnapshots.set(t.cascadeId, enrichKey);
+                        }
                     } catch {
+                        enrichmentFailed = true;
                         // Enrichment is best-effort only; keep lightweight GM payload.
                     }
                 }
@@ -396,7 +463,16 @@ export class GMTracker {
                 const existingCPNums = new Set(finalCPs.map(c => c.checkpointNumber));
                 for (const tcp of trajCheckpoints) {
                     if (!existingCPNums.has(tcp.checkpointNumber)) {
+                        existingCPNums.add(tcp.checkpointNumber);
                         finalCPs.push(tcp);
+                    }
+                }
+                if (trajectorySteps.length === 0 && cached && cached.totalSteps <= t.stepCount) {
+                    for (const prevCp of cached.checkpointSummaries || []) {
+                        if (!existingCPNums.has(prevCp.checkpointNumber)) {
+                            existingCPNums.add(prevCp.checkpointNumber);
+                            finalCPs.push(prevCp);
+                        }
                     }
                 }
                 finalCPs.sort((a, b) => a.checkpointNumber - b.checkpointNumber);
@@ -405,6 +481,7 @@ export class GMTracker {
                 const existingCPStepsInContext = new Set(finalContextItems.filter(i => i.type === 'checkpoint').map(i => i.stepIndex));
                 for (const tcp of trajCheckpoints) {
                     if (!existingCPStepsInContext.has(tcp.stepIndex)) {
+                        existingCPStepsInContext.add(tcp.stepIndex);
                         finalContextItems.push({
                             type: 'checkpoint',
                             stepIndex: tcp.stepIndex,
@@ -413,6 +490,16 @@ export class GMTracker {
                             fullText: tcp.fullText,
                             checkpointNumber: tcp.checkpointNumber
                         });
+                    }
+                }
+                if (trajectorySteps.length === 0 && cached && cached.totalSteps <= t.stepCount) {
+                    const existingCtxKeys = new Set(finalContextItems.map(i => `${i.type}:${i.stepIndex}`));
+                    for (const prevItem of cached.systemContextItems || []) {
+                        const itemKey = `${prevItem.type}:${prevItem.stepIndex}`;
+                        if (!existingCtxKeys.has(itemKey)) {
+                            existingCtxKeys.add(itemKey);
+                            finalContextItems.push(prevItem);
+                        }
                     }
                 }
                 finalContextItems.sort((a, b) => a.stepIndex - b.stepIndex);
@@ -428,25 +515,20 @@ export class GMTracker {
                     checkpointSummaries: finalCPs,
                     systemContextItems: finalContextItems,
                 });
-                this._errorBackoffByCascade.delete(t.cascadeId);
-                if (!isRunning) {
-                    this._settledIdleStepCounts.set(t.cascadeId, t.stepCount);
-                } else {
+                if (enrichmentFailed && !isRunning) {
                     this._settledIdleStepCounts.delete(t.cascadeId);
+                    this._recordIdleErrorBackoff(t.cascadeId, t.stepCount, nowMs);
+                } else {
+                    this._errorBackoffByCascade.delete(t.cascadeId);
+                    if (!isRunning) {
+                        this._settledIdleStepCounts.set(t.cascadeId, t.stepCount);
+                    } else {
+                        this._settledIdleStepCounts.delete(t.cascadeId);
+                    }
                 }
             } catch {
                 if (!isRunning) {
-                    const prev = this._errorBackoffByCascade.get(t.cascadeId);
-                    const attempts = prev && prev.stepCount === t.stepCount ? prev.attempts + 1 : 1;
-                    const delayMs = Math.min(
-                        IDLE_ERROR_BACKOFF_MAX_MS,
-                        IDLE_ERROR_BACKOFF_BASE_MS * Math.pow(2, attempts - 1),
-                    );
-                    this._errorBackoffByCascade.set(t.cascadeId, {
-                        stepCount: t.stepCount,
-                        attempts,
-                        nextRetryAt: nowMs + delayMs,
-                    });
+                    this._recordIdleErrorBackoff(t.cascadeId, t.stepCount, nowMs);
                 }
                 // Keep stale cache on error
                 if (!cached) {

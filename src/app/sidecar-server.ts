@@ -940,6 +940,7 @@ export async function startStandaloneServer(
 
     const addr = server.address();
     const resolvedPort = typeof addr === 'object' && addr ? addr.port : port;
+    (provider as { setListeningPort?: (p: number) => void }).setListeningPort?.(resolvedPort);
     const urlHost = host === '::1' ? '[::1]' : host;
 
     let closePromise: Promise<void> | null = null;

@@ -254,6 +254,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
   var configuredPollIntervalMs = DEFAULT_POLL_MS;
   var pollIntervalMs = DEFAULT_POLL_MS;
   var hasPendingUserActivity = false;
+  var pendingImmediateWakePoll = false;
   var pollPaused = false;
   var pollTimer = null;
   var pollInFlight = false;
@@ -317,10 +318,13 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
   function markUserInteraction() {
     if (surface === 'vscode') { return; }
     hasPendingUserActivity = true;
-    if (pollIntervalMs > configuredPollIntervalMs && !pollPaused && !document.hidden) {
+    if (pollIntervalMs > configuredPollIntervalMs && AUTO_POLL && !pollPaused && !document.hidden) {
       pollIntervalMs = configuredPollIntervalMs;
-      if (!pollInFlight) {
-        scheduleNextPoll();
+      if (pollInFlight) {
+        pendingImmediateWakePoll = true;
+      } else {
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        void pollSnapshot(false);
       }
     }
   }
@@ -349,8 +353,13 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     var effectiveMs = snapshot.meta && typeof snapshot.meta.effectivePollIntervalMs === 'number' && Number.isFinite(snapshot.meta.effectivePollIntervalMs)
       ? Math.max(1000, Math.min(60000, Math.round(snapshot.meta.effectivePollIntervalMs)))
       : configuredPollIntervalMs;
-    if (effectiveMs !== pollIntervalMs) {
-      pollIntervalMs = effectiveMs;
+    var visibleIdleCapMs = Math.max(configuredPollIntervalMs, 15000);
+    var targetMs = Math.min(effectiveMs, visibleIdleCapMs);
+    if (hasPendingUserActivity && targetMs > configuredPollIntervalMs) {
+      targetMs = configuredPollIntervalMs;
+    }
+    if (targetMs !== pollIntervalMs) {
+      pollIntervalMs = targetMs;
     }
   }
 
@@ -454,6 +463,12 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
       })
       .finally(function() {
         pollInFlight = false;
+        if (pendingImmediateWakePoll && AUTO_POLL && !pollPaused && !document.hidden) {
+          pendingImmediateWakePoll = false;
+          void pollSnapshot(false);
+          return;
+        }
+        pendingImmediateWakePoll = false;
         scheduleNextPoll();
       });
   }
@@ -749,7 +764,8 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     pollNow: function(forceFull) { return pollSnapshot(forceFull !== false); },
     setPollIntervalMs: function(ms) {
       if (typeof ms === 'number' && Number.isFinite(ms)) {
-        pollIntervalMs = Math.max(1000, Math.min(60000, Math.round(ms)));
+        configuredPollIntervalMs = Math.max(1000, Math.min(60000, Math.round(ms)));
+        pollIntervalMs = configuredPollIntervalMs;
         scheduleNextPoll();
       }
     },

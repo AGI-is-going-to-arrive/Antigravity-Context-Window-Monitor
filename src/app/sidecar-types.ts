@@ -20,6 +20,8 @@ export type SidecarViewMode = 'aux' | 'sidebar' | 'standalone';
 
 export type CdpConnectionState = 'disabled' | 'connected' | 'cdp_unavailable' | 'error';
 
+export type CdpDiagnosticCode = 'disabled' | 'missing_port_file' | 'port_unreachable' | 'no_hub_target' | 'ws_error' | 'eval_error' | 'connected';
+
 export interface CdpPlatformGuide {
     platform: 'darwin' | 'win32' | 'linux';
     command: string;
@@ -29,6 +31,9 @@ export interface CdpPlatformGuide {
 
 export interface CdpStatus {
     state: CdpConnectionState;
+    diagnosticCode?: CdpDiagnosticCode;
+    portFilePath?: string;
+    discoveredPort?: number;
     composerEnabled: boolean;
     topBarEnabled: boolean;
     targetUrl?: string;
@@ -232,8 +237,10 @@ export type SidecarSnapshotResponse =
     | SidecarSnapshotUnchangedResponse
     | SidecarSnapshotChangedResponse;
 
+export type SidecarActionCommand = 'recheckCdp' | (string & {});
+
 export interface SidecarActionRequest {
-    command: string;
+    command: SidecarActionCommand;
     [key: string]: unknown;
 }
 

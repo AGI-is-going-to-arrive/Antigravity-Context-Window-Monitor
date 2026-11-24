@@ -417,6 +417,8 @@ export interface SidecarRuntimeOptions {
     enableAutoUpdateCheck?: boolean;
     /** Optional pre-configured 256-bit overlay bridge auth token. */
     overlayBridgeToken?: string;
+    /** Optional sidecar listening port(s) to exclude from CDP Hub target discovery. */
+    excludeTargetPorts?: number[];
     /** Initial workspace URIs if known at startup. */
     initialWorkspaceUris?: string[];
     /** Automatically start background adaptive polling (default: true). */
@@ -473,6 +475,7 @@ export interface SidecarRuntimeProvider extends SidecarProvider {
     getCdpStatus(): CdpStatus;
     buildOverlayPayload(): CdpOverlayPayload;
     getAppSettings(): AppSettings & { subscriptionPlan: SubscriptionPlanPresetId };
+    setListeningPort?(port: number): void;
     dispose(): Promise<void>;
 }
 
@@ -1339,7 +1342,23 @@ export function createSidecarRuntimeProvider(
     };
     let overlayAllowedOrigin: string | undefined;
 
+    const excludedCdpPorts: number[] = [];
+    const addExcludedCdpPort = (raw: unknown): void => {
+        const parsed = typeof raw === 'number'
+            ? raw
+            : (typeof raw === 'string' && raw.trim() ? Number(raw.trim()) : NaN);
+        if (Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 65535 && !excludedCdpPorts.includes(parsed)) {
+            excludedCdpPorts.push(parsed);
+        }
+    };
+    addExcludedCdpPort(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT);
+    addExcludedCdpPort(process.env.ANTIGRAVITY_SIDECAR_PORT);
+    if (Array.isArray(options.excludeTargetPorts)) {
+        for (const p of options.excludeTargetPorts) { addExcludedCdpPort(p); }
+    }
+
     const overlayManager = deps.createCdpOverlayManager({
+        excludeTargetPorts: excludedCdpPorts,
         createBridge: (bridgeOpts) => deps.createOverlayBridge({
             ...bridgeOpts,
             token: overlayBridgeToken,
@@ -1408,7 +1427,9 @@ export function createSidecarRuntimeProvider(
     let lastClientActivityMs = deps.now();
     let scheduledPollDelayMs = 0;
     let stateRevision = 0;
-    let snapshotCache: { key: string; payload: SidecarSnapshotPayload } | null = null;
+    let activityChangeSeq = 0;
+    const MAX_SNAPSHOT_CACHE_ENTRIES = 8;
+    const snapshotCache = new Map<string, SidecarSnapshotPayload>();
     let consecutiveFailures = 0;
     let statusPollCount = 0;
     let lsRevalidationCounter = 0;
@@ -1421,15 +1442,13 @@ export function createSidecarRuntimeProvider(
 
     function bumpStateRevision(): void {
         stateRevision++;
-        snapshotCache = null;
+        snapshotCache.clear();
     }
 
     function markClientActivity(): void {
-        const nowMs = deps.now();
-        const wasIdle = (nowMs - lastClientActivityMs) > idleThresholdMs;
-        lastClientActivityMs = nowMs;
+        lastClientActivityMs = deps.now();
         const baseMs = clamp(settings.pollingInterval, 1, 60) * 1000;
-        if (wasIdle && pollTimer && scheduledPollDelayMs > baseMs && consecutiveFailures === 0) {
+        if (pollTimer && scheduledPollDelayMs > baseMs && consecutiveFailures === 0) {
             scheduleNextPoll();
         }
     }
@@ -1703,6 +1722,7 @@ export function createSidecarRuntimeProvider(
                 void globalState.update('gmTrackerState', gmTracker.serialize());
                 void globalState.update('dailyLedgerState', dailyLedger.serialize());
                 void globalState.update('gmDetailedSummary', lastGMSummary ? slimSummaryForPersistence(lastGMSummary) : null);
+                bumpStateRevision();
             },
             log,
         };
@@ -1985,9 +2005,13 @@ export function createSidecarRuntimeProvider(
                     try { overlayAllowedOrigin = new URL(status.targetUrl).origin; } catch { /* ignore */ }
                 }
                 if (status.state !== prevCdp.state
+                    || status.diagnosticCode !== prevCdp.diagnosticCode
                     || status.composerEnabled !== prevCdp.composerEnabled
                     || status.topBarEnabled !== prevCdp.topBarEnabled
                     || status.targetUrl !== prevCdp.targetUrl
+                    || status.targetTitle !== prevCdp.targetTitle
+                    || status.discoveredPort !== prevCdp.discoveredPort
+                    || status.portFilePath !== prevCdp.portFilePath
                     || status.errorMessage !== prevCdp.errorMessage) {
                     bumpStateRevision();
                 }
@@ -2184,6 +2208,7 @@ export function createSidecarRuntimeProvider(
                 void globalState.update('gmTrackerState', gmTracker.serialize());
                 void globalState.update('dailyLedgerState', dailyLedger.serialize());
                 void globalState.update('gmDetailedSummary', lastGMSummary ? slimSummaryForPersistence(lastGMSummary) : null);
+                bumpStateRevision();
             }
         }
     }
@@ -2249,6 +2274,7 @@ export function createSidecarRuntimeProvider(
                     void globalState.update('gmTrackerState', gmTracker.serialize());
                     void globalState.update('dailyLedgerState', dailyLedger.serialize());
                     void globalState.update('gmDetailedSummary', lastGMSummary ? slimSummaryForPersistence(lastGMSummary) : null);
+                    bumpStateRevision();
                 }
             }
         }
@@ -2609,36 +2635,116 @@ export function createSidecarRuntimeProvider(
     function computeDataSignature(): string {
         const stale = getCombinedStaleState();
         const cdp = overlayManager.getStatus();
+        const uiGm = gmTracker.getUiSummary() || lastGMSummary;
+        const actSum = activityTracker.getSummary();
+        const cliDays = getCachedCliDays(false);
+        const todayLedgerActive = dailyLedger.getTodayActive();
+        const ledgerSettled = dailyLedger.getSettledEntries();
+
+        const gmSig = uiGm ? {
+            calls: uiGm.totalCalls ?? 0,
+            inTok: uiGm.totalInputTokens ?? 0,
+            outTok: uiGm.totalOutputTokens ?? 0,
+            cacheRead: uiGm.totalCacheRead ?? 0,
+            cacheCreate: uiGm.totalCacheCreation ?? 0,
+            thinkTok: uiGm.totalThinkingTokens ?? 0,
+            credits: uiGm.totalCredits ?? 0,
+            retries: uiGm.totalRetryCount ?? 0,
+            retryTok: uiGm.totalRetryTokens ?? 0,
+            retryCodes: Object.entries(uiGm.retryErrorCodes || {})
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([k, v]) => `${k}=${v}`),
+            tools: Object.entries(uiGm.toolCallCounts || {})
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([k, v]) => `${k}=${v}`),
+            toolCat: uiGm.toolCatalog?.length ?? 0,
+            uniqErr: uiGm.uniqueErrors?.length ?? 0,
+            models: Object.entries(uiGm.modelBreakdown || {})
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([m, st]) => `${m}:${st.callCount}:${st.totalInputTokens}:${st.totalOutputTokens}:${st.errorCount}:${st.exactCallCount}:${st.placeholderOnlyCalls}`),
+            convs: (uiGm.conversations || []).map(c =>
+                `${c.cascadeId}:${c.totalSteps}:${(c.calls || []).length}:${(c.checkpointSummaries || []).length}:${(c.systemContextItems || []).length}:${(c.calls || []).map(x => `${x.model}:${x.responseModel}:${x.executionModel ?? ''}:${x.modelAccuracy}:${(x.userMessageAnchors || []).length}:${x.createdAt}:${x.hasError ? 1 : 0}`).join(',')}`,
+            ),
+        } : null;
+
         return JSON.stringify({
             status: monitorStatus.state,
             backendIssue: monitorStatus.state === 'disconnected' ? monitorStatus.backendIssue : '',
             lsPid: cachedLsInfo?.pid ?? null,
             lsPort: cachedLsInfo?.port ?? null,
+            lsSurface: cachedLsInfo?.surface ?? null,
+            lsSource: cachedLsInfo?.source ?? null,
             stale: stale.isStale,
+            staleLastOk: stale.lastSuccessAtMs,
+            staleErr: stale.lastError ?? '',
             lang: getLanguage(),
             paused: isPaused,
             activeId: lastResolution.cascadeId,
+            selectionMode: lastResolution.mode,
             pinnedId: pinnedConversationId,
             lock: lockToMainAgent,
-            used: currentUsage?.contextUsed ?? 0,
-            steps: currentUsage?.stepCount ?? 0,
-            model: currentUsage?.model ?? '',
+            lockedMainId: lastResolution.lockedMainId,
+            pinnedFallback: lastResolution.pinnedFallback,
+            ignoredSubagentBurst: lastResolution.ignoredSubagentBurst,
+            usage: currentUsage
+                ? `${currentUsage.cascadeId}:${currentUsage.contextUsed}:${currentUsage.stepCount}:${currentUsage.model}:${currentUsage.modelDisplayName}:${currentUsage.status}:${currentUsage.lastModifiedTime}:${currentUsage.totalOutputTokens}:${currentUsage.totalToolCallOutputTokens}:${currentUsage.contextLimit}:${currentUsage.isEstimated ? 1 : 0}:${currentUsage.compressionDetected ? 1 : 0}:${currentUsage.imageGenStepCount}`
+                : '',
             bdUsed: contextBreakdown?.usedTokens ?? 0,
             bdState: contextBreakdown?.measurementState ?? '',
+            bdBudget: contextBreakdown?.effectiveBudgetTokens ?? 0,
             tdTurns: turnDiagnostics?.totalTurns ?? 0,
             tdLastCache: turnDiagnostics?.lastTurnCacheHitPct ?? null,
-            gmCalls: lastGMSummary?.totalCalls ?? 0,
-            quotas: cachedModelConfigs.map(c => `${c.model}:${c.quotaInfo?.remainingFraction ?? ''}:${c.quotaInfo?.resetTime ?? ''}`),
-            runways: Object.entries(quotaRunways).map(([k, v]) => `${k}:${v.status}:${v.burnRatePctPerHour}`),
-            trajCount: allTrajectories.length,
-            acctCount: accountSnapshots.size,
+            tdSessionCache: turnDiagnostics?.sessionCacheHitPct ?? null,
+            tdStartKind: turnDiagnostics?.lastTurnStartKind ?? '',
+            customModel: isCustomModelActive,
+            trajectories: allTrajectories.map(tr =>
+                `${tr.cascadeId}:${tr.status}:${tr.stepCount}:${tr.summary || ''}:${tr.lastModifiedTime || ''}`,
+            ),
+            userInfo: cachedUserInfo
+                ? `${cachedUserInfo.email}:${cachedUserInfo.name}:${cachedUserInfo.planName}:${cachedUserInfo.userTierName}:${(cachedUserInfo.availableCredits || []).map(c => `${c.creditType}=${c.creditAmount}`).join(',')}`
+                : '',
+            activeAccount: selectedAccountKey || cachedUserInfo?.email || currentAccountEmail || '',
+            accounts: [...accountSnapshots.values()].map(s =>
+                `${s.email}:${s.isActive ? 1 : 0}:${s.planName}:${s.tierName}:${s.earliestResetTime}:${(s.credits || []).map(c => `${c.creditType}=${c.creditAmount}`).join(',')}:${(s.resetPools || []).map(p => `${p.resetTime}=${p.remainingPercent ?? ''}:${p.hasUsage ? 1 : 0}`).join(';')}`,
+            ),
+            quotas: cachedModelConfigs.map(c => `${c.model}:${c.label}:${c.quotaInfo?.remainingFraction ?? ''}:${c.quotaInfo?.resetTime ?? ''}`),
+            runways: Object.entries(quotaRunways).map(([k, v]) => `${k}:${v.status}:${v.burnRatePctPerHour}:${v.estExhaustMs ?? ''}`),
+            quotaSummary: cachedQuotaSummary ?? null,
+            orchSettings: cachedOrchestratorSettings ?? null,
+            gm: gmSig,
+            activity: {
+                seq: activityChangeSeq,
+                user: actSum?.totalUserInputs ?? 0,
+                reas: actSum?.totalReasoning ?? 0,
+                tools: actSum?.totalToolCalls ?? 0,
+                err: actSum?.totalErrors ?? 0,
+                cp: actSum?.totalCheckpoints ?? 0,
+                est: actSum?.estSteps ?? 0,
+                recent: actSum?.recentSteps?.length ?? 0,
+                lastStep: actSum?.recentSteps?.[0]?.stepFingerprint || actSum?.recentSteps?.[0]?.timestamp || '',
+            },
+            ledger: {
+                date: dailyLedger.dateKey,
+                active: todayLedgerActive.map(b =>
+                    `${b.accountEmail}:${b.totalCalls}:${b.totalInputTokens}:${b.totalOutputTokens}:${b.totalCacheRead}:${b.totalEstimatedCost.toFixed(6)}`,
+                ),
+                settled: ledgerSettled.map(s =>
+                    `${s.accountEmail}:${s.settledAt}:${s.totalCalls}:${s.totalInputTokens}:${s.totalOutputTokens}:${s.totalEstimatedCost.toFixed(6)}`,
+                ),
+            },
+            cliDays: cliDays.map(d => `${d.date}:${d.calls}:${d.totalTokens}:${d.estimatedCost.toFixed(6)}`),
             billingDays: billingDaysMap,
             settings,
+            customPricing: pricingStore.getCustom(),
+            panelHintPrefs,
+            zoomLevel,
             orchMode: appSettings.orchestratorPricingMode,
             currency: `${appSettings.displayCurrency}:${appSettings.customFxRate ?? ''}:${subscriptionPlan}:${appSettings.subscriptionMonthlyFee ?? ''}:${appSettings.subscriptionCurrency}`,
-            cdp: `${cdp.state}:${cdp.composerEnabled}:${cdp.topBarEnabled}`,
-            upd: lastUpdateStatusView ? `${lastUpdateStatusView.status}:${lastUpdateStatusView.latestVersion ?? ''}:${lastUpdateStatusView.requiresReload ?? false}` : '',
-            calendar: `${calendarYear}-${calendarMonth}-${dailyStore.totalDays}-${calendarSourceFilter}-${calendarMetricMode}-${calendarPeriodMode}-${calendarViewMode ?? 'both'}-${calendarSelectedDate}-${cachedCliDays.length}`,
+            cdp: `${cdp.state}:${cdp.diagnosticCode ?? ''}:${cdp.composerEnabled}:${cdp.topBarEnabled}:${cdp.targetUrl ?? ''}:${cdp.targetTitle ?? ''}:${cdp.discoveredPort ?? ''}:${cdp.portFilePath ?? ''}:${cdp.errorMessage ?? ''}`,
+            upd: lastUpdateStatusView
+                ? `${lastUpdateStatusView.status}:${lastUpdateStatusView.latestVersion ?? ''}:${lastUpdateStatusView.hasUpdate}:${lastUpdateStatusView.requiresReload ?? false}:${lastUpdateStatusView.error ?? ''}`
+                : '',
+            calendar: `${calendarYear}-${calendarMonth}-${dailyStore.totalDays}-${calendarSourceFilter}-${calendarMetricMode}-${calendarPeriodMode}-${calendarViewMode ?? 'both'}-${calendarSelectedDate}`,
         });
     }
 
@@ -2823,6 +2929,13 @@ export function createSidecarRuntimeProvider(
                             })),
                             abortController.signal,
                         );
+                    if (activityChanged) {
+                        activityChangeSeq++;
+                    }
+
+                    if (isManualRefresh) {
+                        gmTracker.clearErrorBackoff();
+                    }
 
                     try {
                         const gmSummary = deps.fetchGM
@@ -3175,22 +3288,24 @@ export function createSidecarRuntimeProvider(
         const prevLang = getLanguage();
         const effectiveLang = (langOverride && isLanguage(langOverride)) ? langOverride : prevLang;
         const effectivePollIntervalMs = computeNextPollDelayMs();
-        const cacheKey = `${stateRevision}|${viewMode}|${effectiveLang}|${effectivePollIntervalMs}`;
+        const minuteBucket = Math.floor(deps.now() / 60_000);
+        const cacheKey = `${stateRevision}|${viewMode}|${effectiveLang}|${effectivePollIntervalMs}|${minuteBucket}`;
 
-        if (useCache && snapshotCache && snapshotCache.key === cacheKey) {
-            const cachedMeta = snapshotCache.payload.meta;
+        const cachedPayload = useCache ? snapshotCache.get(cacheKey) : undefined;
+        if (cachedPayload) {
+            const cachedMeta = cachedPayload.meta;
             if (cachedMeta && typeof cachedMeta === 'object' && cachedMeta.pollCount !== pollCount) {
                 const updatedPayload: SidecarSnapshotPayload = {
-                    ...snapshotCache.payload,
+                    ...cachedPayload,
                     meta: {
                         ...cachedMeta,
                         pollCount,
                     },
                 };
-                snapshotCache = { key: cacheKey, payload: updatedPayload };
+                snapshotCache.set(cacheKey, updatedPayload);
                 return updatedPayload;
             }
-            return snapshotCache.payload;
+            return cachedPayload;
         }
 
         if (langOverride && isLanguage(langOverride) && langOverride !== prevLang) {
@@ -3261,7 +3376,13 @@ export function createSidecarRuntimeProvider(
             };
 
             if (useCache) {
-                snapshotCache = { key: cacheKey, payload };
+                if (!snapshotCache.has(cacheKey) && snapshotCache.size >= MAX_SNAPSHOT_CACHE_ENTRIES) {
+                    const oldestKey = snapshotCache.keys().next().value;
+                    if (oldestKey !== undefined) {
+                        snapshotCache.delete(oldestKey);
+                    }
+                }
+                snapshotCache.set(cacheKey, payload);
             }
             return payload;
         } finally {
@@ -3390,6 +3511,8 @@ export function createSidecarRuntimeProvider(
             calendarRetentionDays: appSettings.calendarRetentionDays,
             activityMaxRecentSteps: appSettings.activityMaxRecentSteps,
             activityMaxArchives: appSettings.activityMaxArchives,
+            cdpStatus: overlayManager.getStatus(),
+            updateStatus: lastUpdateStatusView,
         };
     }
 
@@ -3746,6 +3869,7 @@ export function createSidecarRuntimeProvider(
             }
         }
 
+        try {
         switch (action.command) {
             case 'ping':
                 return { ok: true, result: { pong: true, version } };
@@ -4559,8 +4683,49 @@ export function createSidecarRuntimeProvider(
                 };
             }
 
+            case 'recheckCdp': {
+                const mgrWithRecheck = overlayManager as CdpAmbientOverlayManager & {
+                    recheck?: () => Promise<CdpStatus>;
+                };
+                let cdpStatus: CdpStatus;
+                if (typeof mgrWithRecheck.recheck === 'function') {
+                    cdpStatus = await mgrWithRecheck.recheck().catch(() => overlayManager.getStatus());
+                    if ((appSettings.appComposerRingEnabled || appSettings.appTopBarEnabled)
+                        && cdpStatus.state === 'connected'
+                        && cdpStatus.lastInjectedAt === undefined) {
+                        cdpStatus = await overlayManager.updatePayload(buildCdpOverlayPayload()).catch(() => cdpStatus);
+                    }
+                } else {
+                    const toggles = {
+                        appComposerRingEnabled: Boolean(appSettings.appComposerRingEnabled),
+                        appTopBarEnabled: Boolean(appSettings.appTopBarEnabled),
+                    };
+                    cdpStatus = await overlayManager.setToggles(toggles).catch(() => overlayManager.getStatus());
+                    if (toggles.appComposerRingEnabled || toggles.appTopBarEnabled) {
+                        cdpStatus = await overlayManager.updatePayload(buildCdpOverlayPayload()).catch(() => overlayManager.getStatus());
+                    }
+                }
+                if (cdpStatus.targetUrl) {
+                    try { overlayAllowedOrigin = new URL(cdpStatus.targetUrl).origin; } catch { /* ignore */ }
+                } else if (cdpStatus.state === 'disabled') {
+                    overlayAllowedOrigin = undefined;
+                }
+                bumpStateRevision();
+                return {
+                    ok: true,
+                    result: { cdpStatus },
+                    messages: [buildSyncSettingsControlsMessage()],
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
             default:
                 return { ok: false, statusCode: 400, error: `Unknown action: ${action.command}` };
+        }
+        } finally {
+            if (!isPassiveReadAction) {
+                bumpStateRevision();
+            }
         }
     }
 
@@ -4598,6 +4763,7 @@ export function createSidecarRuntimeProvider(
         getCdpStatus: () => overlayManager.getStatus(),
         buildOverlayPayload: (nowMs?: number) => buildCdpOverlayPayload(nowMs),
         getAppSettings: () => getFullAppSettings(),
+        setListeningPort: (port: number) => { addExcludedCdpPort(port); },
         pollNow: (force = true) => runPollCycle(force),
         getState: () => ({
             lsInfo: cachedLsInfo,
