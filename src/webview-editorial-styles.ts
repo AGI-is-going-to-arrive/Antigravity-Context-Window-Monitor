@@ -3014,6 +3014,96 @@ export function getEditorialStyles(): string {
         body .stg-cdp-actions {
             margin-top: 8px;
         }
+        body .stg-cdp-launcher-box {
+            margin-top: 10px;
+            padding: 10px 12px;
+            border-radius: var(--ed-radius-sm);
+            border: 1px solid var(--ed-border);
+            background: var(--ed-surface-well);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
+        }
+        body .stg-cdp-launcher-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px 10px;
+            min-width: 0;
+        }
+        body .stg-cdp-launcher-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--ed-ink);
+        }
+        body .stg-cdp-launcher-status {
+            display: inline-flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            max-width: 100%;
+        }
+        body .stg-cdp-launcher-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 1px 7px;
+            border-radius: 999px;
+            font-size: 10.5px;
+            font-weight: 600;
+            border: 1px solid var(--ed-border-strong);
+            background: var(--ed-surface);
+            color: var(--ed-ink-secondary);
+            white-space: nowrap;
+        }
+        body .stg-cdp-launcher-badge.is-installed {
+            background: var(--ed-good-tint);
+            border-color: var(--ed-good-border);
+            color: var(--ed-good);
+        }
+        body .stg-cdp-launcher-path {
+            font-family: var(--ed-mono);
+            font-size: 10.5px;
+            color: var(--ed-ink-secondary);
+            background: var(--ed-surface);
+            border: 1px solid var(--ed-border);
+            border-radius: var(--ed-radius-xs);
+            padding: 1px 6px;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            min-width: 0;
+        }
+        body .stg-cdp-launcher-note {
+            margin: 0;
+            font-size: 11px;
+            line-height: 1.48;
+            color: var(--ed-ink-muted);
+            overflow-wrap: anywhere;
+        }
+        body .stg-cdp-launcher-actions {
+            margin-top: 2px;
+        }
+        body .stg-cdp-launcher-actions [hidden] {
+            display: none;
+        }
+        body .stg-code-item-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 4px 8px;
+            min-width: 0;
+        }
+        body .cdp-copy-btn {
+            padding: 2px 7px;
+            font-size: 11px;
+            line-height: 1.3;
+            min-height: 22px;
+            gap: 4px;
+            flex-shrink: 0;
+        }
         body .stg-guide-step {
             font-weight: 600;
             color: var(--ed-ink);
@@ -3238,7 +3328,7 @@ export function getEditorialStyles(): string {
         body:is(.vscode-high-contrast, .vscode-high-contrast-light,
             [data-vscode-theme-kind="vscode-high-contrast"], [data-vscode-theme-kind="vscode-high-contrast-light"],
             [data-acm-theme="hc"], [data-acm-theme="hc-light"])
-            :is(.native-hud-bar, .native-hud-chip, .low-quota-banner, .stg-status-pill, .stg-diagnostic-hint, .about-updates-card, .jargon-tip) {
+            :is(.native-hud-bar, .native-hud-chip, .low-quota-banner, .stg-status-pill, .stg-diagnostic-hint, .stg-cdp-launcher-box, .stg-cdp-launcher-badge, .about-updates-card, .jargon-tip) {
             border-color: var(--ed-border);
         }
 

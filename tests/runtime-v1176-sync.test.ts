@@ -15,6 +15,7 @@ import {
     type SidecarRuntimeProvider,
 } from '../src/app/sidecar-runtime';
 import {
+    computeSnapshotHash,
     startStandaloneServer,
     type StandaloneServerHandle,
 } from '../src/app/sidecar-server';
@@ -948,6 +949,124 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         vm.runInNewContext(getHostBridgeScript({ pollIntervalMs: 4000, autoPoll: false }), sandbox);
         await winStub.__ACM_BRIDGE__.sendAction({ command: 'recheckCdp' });
         expect(dispatched.some(m => m.command === 'cdpStatusResult' && (m.cdpStatus as CdpStatus)?.diagnosticCode === 'connected')).toBe(true);
+
+        // 5. Verify host-bridge.ts also forwards structured cdpLauncherResult
+        const launcherDispatched: Array<Record<string, unknown>> = [];
+        const launcherSandbox: Record<string, unknown> = {
+            console,
+            setTimeout,
+            clearTimeout,
+            URLSearchParams,
+            CustomEvent: class CustomEvent { constructor(public type: string, public init?: { detail?: unknown }) { this.detail = init?.detail; } detail: unknown; },
+            MessageEvent: class MessageEvent { constructor(public type: string, public init?: { data?: unknown }) { this.data = init?.data; } data: unknown; },
+            document: { hidden: false, readyState: 'complete', addEventListener: () => {} },
+            navigator: { clipboard: { writeText: async () => {} } },
+        };
+        const launcherWinStub: Record<string, any> = {
+            location: { href: 'http://127.0.0.1:49999/', pathname: '/', search: '' },
+            addEventListener: () => {},
+            dispatchEvent: (ev: any) => {
+                if (ev?.type === 'message' && ev?.data) { launcherDispatched.push(ev.data); }
+                return true;
+            },
+            postMessage: (msg: Record<string, unknown>) => { launcherDispatched.push(msg); },
+            fetch: async () => ({
+                ok: true,
+                json: async () => ({
+                    ok: true,
+                    result: {
+                        type: 'cdpLauncherResult',
+                        command: 'cdpLauncherResult',
+                        ok: true,
+                        launcherStatus: { installed: true, launcherPath: '/tmp/fake/Antigravity (CDP).app' },
+                    },
+                }),
+            }),
+            CustomEvent: launcherSandbox.CustomEvent,
+            MessageEvent: launcherSandbox.MessageEvent,
+        };
+        launcherSandbox.window = launcherWinStub;
+        vm.runInNewContext(getHostBridgeScript({ pollIntervalMs: 4000, autoPoll: false }), launcherSandbox);
+        await launcherWinStub.__ACM_BRIDGE__.sendAction({ command: 'setupCdpLauncher' });
+        expect(launcherDispatched.some(m => m.command === 'cdpLauncherResult' && (m.launcherStatus as { installed?: boolean })?.installed === true)).toBe(true);
+
+        // 6. Verify App Sidecar setupCdpLauncher & removeCdpLauncher via injected hermetic deps (never touches ~/Applications)
+        let launcherInstalled = false;
+        const fakeLauncherPath = path.join(tmp, 'Applications', 'Antigravity (CDP).app');
+        const makeLauncherStatus = () => ({
+            supported: true,
+            platform: 'darwin' as const,
+            installed: launcherInstalled,
+            launcherPath: fakeLauncherPath,
+            displayName: 'Antigravity (CDP)',
+            targetAppFound: true,
+            targetAppPath: '/Applications/Antigravity.app',
+            safeTerminalCommand: 'while pgrep -f \'^/Applications/Antigravity\\.app/Contents/MacOS/Antigravity($| )\' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0',
+            noteEn: 'Hermetic launcher EN',
+            noteZh: '隔离测试启动器 ZH',
+        });
+        const launcherStatePath = path.join(tmp, 'launcher-state.json');
+        const launcherProvider = await createSidecarRuntimeProvider({
+            version: '1.17.7',
+            statePath: launcherStatePath,
+            autoStart: false,
+            disableCliScan: true,
+            deps: {
+                discoverLS: async () => makeMockLS(),
+                fetchFullUserStatus: async () => makeMockUserStatus(),
+                fetchAvailableModels: async () => null,
+                fetchOrchestratorSettings: async () => null,
+                fetchUserQuotaSummary: async () => null,
+                getAllTrajectories: async () => [makeTrajectory('cascade-launcher')],
+                getContextUsage: async () => makeUsage(makeTrajectory('cascade-launcher')),
+                refreshWorkflowImageUsage: async (_ls, u) => u,
+                fetchTrajectoryGeneratorMetadata: async () => [],
+                fetchTrajectorySteps: async () => ({ steps: [], totalSteps: 0 }),
+                processActivity: async () => false,
+                fetchGM: async () => null,
+                inspectCdpLauncher: () => makeLauncherStatus(),
+                createCdpLauncher: () => {
+                    launcherInstalled = true;
+                    return {
+                        ok: true,
+                        status: makeLauncherStatus(),
+                        messageEn: 'Created persistent CDP launcher',
+                        messageZh: '已生成持久化 CDP 启动器',
+                    };
+                },
+                removeCdpLauncher: () => {
+                    launcherInstalled = false;
+                    return {
+                        ok: true,
+                        status: makeLauncherStatus(),
+                        messageEn: 'Removed persistent CDP launcher',
+                        messageZh: '已移除持久化 CDP 启动器',
+                    };
+                },
+            },
+        });
+        providers.push(launcherProvider);
+        await launcherProvider.pollNow(true);
+        const snapBeforeLauncher = await launcherProvider.getSnapshot({ viewMode: 'aux' });
+        expect(snapBeforeLauncher.data.cdpStatus?.launcherStatus?.installed).toBe(false);
+
+        const setupRes = await launcherProvider.handleAction({ command: 'setupCdpLauncher', viewMode: 'aux' });
+        expect(setupRes.ok).toBe(true);
+        const setupResult = setupRes.result as Record<string, unknown>;
+        expect(setupResult.command).toBe('cdpLauncherResult');
+        expect((setupResult.launcherStatus as { installed?: boolean })?.installed).toBe(true);
+        expect(setupRes.messages?.some(m => m.command === 'cdpLauncherResult')).toBe(true);
+        expect(setupRes.messages?.some(m => m.command === 'cdpStatusResult')).toBe(true);
+        expect(setupRes.messages?.some(m => m.command === 'syncSettingsControls')).toBe(true);
+        const snapAfterSetup = await launcherProvider.getSnapshot({ viewMode: 'aux' });
+        expect(snapAfterSetup.data.cdpStatus?.launcherStatus?.installed).toBe(true);
+        expect(computeSnapshotHash(snapAfterSetup)).not.toBe(computeSnapshotHash(snapBeforeLauncher));
+
+        const removeRes = await launcherProvider.handleAction({ command: 'removeCdpLauncher', viewMode: 'aux' });
+        expect(removeRes.ok).toBe(true);
+        expect((removeRes.result as { launcherStatus?: { installed?: boolean } })?.launcherStatus?.installed).toBe(false);
+        const snapAfterRemove = await launcherProvider.getSnapshot({ viewMode: 'aux' });
+        expect(snapAfterRemove.data.cdpStatus?.launcherStatus?.installed).toBe(false);
     });
 
     it('keeps CDP overlay estCostFormatted in USD + localCostFormatted in local currency, preserves post-archive live tokens, and forwards orchestratorPricingMode', async () => {
@@ -1145,6 +1264,182 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         const strictTelemetry = extractOverviewTelemetry(orchGmSummary, traj.cascadeId, {}, 'strict');
         expect(mappedTelemetry?.primary.estCacheSavingsUsd).not.toBeNull();
         expect(strictTelemetry?.primary.estCacheSavingsUsd).toBeNull();
+    });
+
+    it('handles App Sidecar setupCdpLauncher/removeCdpLauncher hermetically, surfaces host_missing_flag, and forwards cdpLauncherResult via host-bridge', async () => {
+        const tmp = makeTmpDir();
+        const traj = makeTrajectory();
+        const fakeLauncherPath = path.join(tmp, 'Applications', 'Antigravity (CDP).app');
+        let launcherInstalled = false;
+
+        const makeLauncherStatus = () => ({
+            supported: true,
+            platform: 'darwin' as const,
+            installed: launcherInstalled,
+            launcherPath: fakeLauncherPath,
+            displayName: 'Antigravity (CDP)',
+            targetAppFound: true,
+            targetAppPath: '/Applications/Antigravity.app',
+            safeTerminalCommand: 'while pgrep -f \'^/Applications/Antigravity\\.app/Contents/MacOS/Antigravity($| )\' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0',
+            noteEn: 'Hermetic launcher note EN',
+            noteZh: '隔离启动器说明 ZH',
+        });
+
+        const provider = await createSidecarRuntimeProvider({
+            version: '1.17.7',
+            statePath: path.join(tmp, 'state.json'),
+            autoStart: false,
+            disableCliScan: true,
+            deps: {
+                discoverLS: async () => makeMockLS(),
+                fetchFullUserStatus: async () => makeMockUserStatus(),
+                fetchAvailableModels: async () => null,
+                fetchOrchestratorSettings: async () => null,
+                fetchUserQuotaSummary: async () => null,
+                getAllTrajectories: async () => [traj],
+                getContextUsage: async () => makeUsage(traj),
+                refreshWorkflowImageUsage: async (_ls, u) => u,
+                fetchTrajectoryGeneratorMetadata: async () => [],
+                fetchTrajectorySteps: async () => ({ steps: [], totalSteps: 0 }),
+                processActivity: async () => false,
+                fetchGM: async () => null,
+                inspectCdpLauncher: () => makeLauncherStatus(),
+                createCdpLauncher: () => {
+                    launcherInstalled = true;
+                    return {
+                        ok: true,
+                        status: makeLauncherStatus(),
+                        messageEn: 'Created persistent CDP launcher.',
+                        messageZh: '已生成持久化 CDP 启动器。',
+                    };
+                },
+                removeCdpLauncher: () => {
+                    launcherInstalled = false;
+                    return {
+                        ok: true,
+                        status: makeLauncherStatus(),
+                        messageEn: 'Removed persistent CDP launcher.',
+                        messageZh: '已移除持久化 CDP 启动器。',
+                    };
+                },
+                createCdpOverlayManager: (mgrOpts) => createCdpAmbientOverlayManager({
+                    ...mgrOpts,
+                    enableActionBridge: false,
+                    discoverActivePort: () => null,
+                    inspectHostProcess: () => ({
+                        found: true,
+                        pid: 42424,
+                        hasRemoteDebuggingFlag: false,
+                        commandLine: '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
+                    }),
+                }),
+            },
+        });
+        providers.push(provider);
+
+        const handle = await startStandaloneServer(provider, { host: '127.0.0.1', port: 0, version: '1.17.7' });
+        servers.push(handle);
+        await provider.pollNow(true);
+
+        // Enable overlay while host lacks --remote-debugging-port=0 -> host_missing_flag
+        const toggleRes = await httpRequest(handle.url, 'POST', '/api/action', {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'setAppSetting', key: 'appComposerRingEnabled', value: true }),
+        });
+        expect(toggleRes.status).toBe(200);
+        const toggleJson = toggleRes.json();
+        expect(toggleJson.result.cdpStatus.state).toBe('cdp_unavailable');
+        expect(toggleJson.result.cdpStatus.diagnosticCode).toBe('host_missing_flag');
+        expect(toggleJson.result.cdpStatus.hostHasDebugFlag).toBe(false);
+        expect(toggleJson.result.cdpStatus.launcherStatus.installed).toBe(false);
+
+        // 1-click setupCdpLauncher -> installs hermetically & updates cdpLauncherResult + snapshot
+        const setupRes = await httpRequest(handle.url, 'POST', '/api/action', {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'setupCdpLauncher', viewMode: 'aux' }),
+        });
+        expect(setupRes.status).toBe(200);
+        const setupJson = setupRes.json();
+        expect(setupJson.ok).toBe(true);
+        expect(setupJson.result.command).toBe('cdpLauncherResult');
+        expect(setupJson.result.launcherStatus.installed).toBe(true);
+        expect(setupJson.result.launcherStatus.launcherPath).toBe(fakeLauncherPath);
+        expect(setupJson.snapshot.data.cdpStatus.launcherStatus.installed).toBe(true);
+        expect((setupJson.messages as Array<Record<string, any>>).some(m => m.command === 'cdpLauncherResult')).toBe(true);
+        expect((setupJson.messages as Array<Record<string, any>>).some(m => m.command === 'syncSettingsControls' && m.cdpStatus?.launcherStatus?.installed === true)).toBe(true);
+
+        // Verify host-bridge.ts forwards structured cdpLauncherResult returned in data.result
+        const forwarded: any[] = [];
+        const winListeners: Record<string, Array<(ev: any) => void>> = {};
+        const docListeners: Record<string, Array<(ev: any) => void>> = {};
+        const fakeDoc = {
+            hidden: false,
+            readyState: 'complete',
+            documentElement: { style: { getPropertyValue: () => '' }, className: '' },
+            body: {
+                setAttribute: () => {},
+                getAttribute: () => null,
+                style: {},
+                classList: { toggle: () => {}, add: () => {}, remove: () => {} },
+            },
+            addEventListener: (t: string, fn: (ev: any) => void) => { (docListeners[t] ||= []).push(fn); },
+            dispatchEvent: () => true,
+        };
+        const fakeWin: Record<string, any> = {
+            document: fakeDoc,
+            location: { href: handle.url + '/', search: '' },
+            addEventListener: (t: string, fn: (ev: any) => void) => { (winListeners[t] ||= []).push(fn); },
+            dispatchEvent: (ev: any) => {
+                for (const fn of winListeners[ev.type] || []) { fn(ev); }
+                return true;
+            },
+            postMessage: (data: any) => {
+                forwarded.push(data);
+                for (const fn of winListeners.message || []) { fn({ data }); }
+            },
+            setInterval: () => 1,
+            clearInterval: () => {},
+            setTimeout: () => 1,
+            clearTimeout: () => {},
+            CustomEvent: class { constructor(public type: string, public detail?: any) {} },
+            fetch: async () => ({
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    ok: true,
+                    result: setupJson.result,
+                }),
+            }),
+        };
+        fakeWin.window = fakeWin;
+        fakeWin.self = fakeWin;
+        vm.runInNewContext(getHostBridgeScript({ viewMode: 'aux', pollIntervalMs: 5000, autoPoll: false }), {
+            window: fakeWin,
+            document: fakeDoc,
+            console,
+            URLSearchParams,
+            setInterval: fakeWin.setInterval,
+            clearInterval: fakeWin.clearInterval,
+            setTimeout: fakeWin.setTimeout,
+            clearTimeout: fakeWin.clearTimeout,
+            CustomEvent: fakeWin.CustomEvent,
+            fetch: fakeWin.fetch,
+            Promise,
+        });
+        await fakeWin.__ACM_BRIDGE__.sendAction({ command: 'setupCdpLauncher' });
+        expect(forwarded.some(m => m && m.command === 'cdpLauncherResult' && m.launcherStatus?.installed === true)).toBe(true);
+
+        // Remove launcher -> installed flips back to false
+        const removeRes = await httpRequest(handle.url, 'POST', '/api/action', {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'removeCdpLauncher', viewMode: 'aux' }),
+        });
+        expect(removeRes.status).toBe(200);
+        const removeJson = removeRes.json();
+        expect(removeJson.ok).toBe(true);
+        expect(removeJson.result.command).toBe('cdpLauncherResult');
+        expect(removeJson.result.launcherStatus.installed).toBe(false);
+        expect(removeJson.snapshot.data.cdpStatus.launcherStatus.installed).toBe(false);
     });
 });
 
@@ -1533,6 +1828,35 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
 
                 // Cleanly disable again before exiting
                 await onMessage!({ command: 'setAppSetting', key: 'appComposerRingEnabled', value: false });
+
+                // Hermetic IDE setupCdpLauncher & removeCdpLauncher using temporary HOME (never touches real ~/Applications)
+                const prevHomeEnv = process.env.HOME;
+                const prevUserProfileEnv = process.env.USERPROFILE;
+                const fakeHome = path.join(tmp, 'ide-launcher-home');
+                fs.mkdirSync(fakeHome, { recursive: true });
+                try {
+                    process.env.HOME = fakeHome;
+                    process.env.USERPROFILE = fakeHome;
+                    posted.length = 0;
+                    await onMessage!({ command: 'setupCdpLauncher' });
+                    const ideSetupMsg = posted.find(m => m.command === 'cdpLauncherResult');
+                    expect(ideSetupMsg).toBeDefined();
+                    expect(ideSetupMsg!.ok).toBe(true);
+                    expect((ideSetupMsg!.launcherStatus as { installed?: boolean; launcherPath?: string })?.installed).toBe(true);
+                    expect((ideSetupMsg!.launcherStatus as { launcherPath?: string })?.launcherPath).toContain(fakeHome);
+                    expect(posted.some(m => m.command === 'cdpStatusResult')).toBe(true);
+                    expect(posted.some(m => m.command === 'syncSettingsControls')).toBe(true);
+
+                    posted.length = 0;
+                    await onMessage!({ command: 'removeCdpLauncher' });
+                    const ideRemoveMsg = posted.find(m => m.command === 'cdpLauncherResult');
+                    expect(ideRemoveMsg).toBeDefined();
+                    expect(ideRemoveMsg!.ok).toBe(true);
+                    expect((ideRemoveMsg!.launcherStatus as { installed?: boolean })?.installed).toBe(false);
+                } finally {
+                    if (prevHomeEnv === undefined) { delete process.env.HOME; } else { process.env.HOME = prevHomeEnv; }
+                    if (prevUserProfileEnv === undefined) { delete process.env.USERPROFILE; } else { process.env.USERPROFILE = prevUserProfileEnv; }
+                }
             } finally {
                 if (fakeCdpServer) {
                     await new Promise<void>(resolve => fakeCdpServer!.close(() => resolve()));

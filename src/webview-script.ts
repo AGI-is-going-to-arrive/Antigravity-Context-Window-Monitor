@@ -121,10 +121,21 @@ export function getScript(): string {
             var cdpErrorText = ${JSON.stringify(tBi('CDP Error', 'CDP 异常'))};
             var cdpInactiveText = ${JSON.stringify(tBi('CDP Inactive', 'CDP 未就绪'))};
             var cdpDisabledText = ${JSON.stringify(tBi('Disabled', '未启用'))};
-            var cdpDiagMissingText = ${JSON.stringify(tBi(
-        'DevToolsActivePort not found — Antigravity App was launched without --remote-debugging-port=0 (or an auto-update restart dropped the flag). Quit completely first (Cmd+Q on macOS), relaunch with the command below, then click Recheck CDP.',
-        '未检测到 DevToolsActivePort —— Antigravity App 未使用 --remote-debugging-port=0 启动（或自动更新重启丢弃了启动参数）。请先完全退出（macOS 按 Cmd+Q），按下方命令重启后再点击「重新检测」。',
+            var cdpDiagHostMissingText = ${JSON.stringify(tBi(
+        'Antigravity App is running without --remote-debugging-port=0 (e.g. launched from Dock/Spotlight, restarted by an auto-update, or relaunched during the ~5s background shutdown after Cmd+Q). Use the 1-click Persistent CDP Launcher below, then click Recheck CDP.',
+        '当前运行的 Antigravity App 未启用 --remote-debugging-port=0（例如从 Dock/Spotlight 启动、自动更新重启，或在按 Cmd+Q 后约 5 秒后台清理尚未完成时运行了 open -a）。请使用下方「持久化启动器」一键生成并重启，再点击「重新检测」。',
     ))};
+            var cdpDiagMissingText = ${JSON.stringify(tBi(
+        'DevToolsActivePort not found — Antigravity App was launched without --remote-debugging-port=0 (or an auto-update restart dropped the flag). Quit completely first (Cmd+Q and wait ~5s on macOS), or use the 1-click Persistent CDP Launcher below, then click Recheck CDP.',
+        '未检测到 DevToolsActivePort —— Antigravity App 未使用 --remote-debugging-port=0 启动（或自动更新重启丢弃了启动参数）。请先完全退出（macOS 按 Cmd+Q 后等待约 5 秒）或使用下方一键持久化启动器重启，再点击「重新检测」。',
+    ))};
+            var cdpLauncherCreatingText = ${JSON.stringify(tBi('Creating launcher...', '正在生成启动器...'))};
+            var cdpLauncherRemovingText = ${JSON.stringify(tBi('Removing launcher...', '正在移除启动器...'))};
+            var cdpLauncherInstalledText = ${JSON.stringify(tBi('Installed', '已创建'))};
+            var cdpLauncherNotInstalledText = ${JSON.stringify(tBi('Not created', '未创建'))};
+            var cdpLauncherCreateBtnText = ${JSON.stringify(tBi('Create Persistent Launcher', '一键生成持久化启动器'))};
+            var cdpLauncherRecreateBtnText = ${JSON.stringify(tBi('Recreate Launcher', '重新生成启动器'))};
+            var cdpLauncherActionFailedText = ${JSON.stringify(tBi('Launcher action failed', '启动器操作失败'))};
             var cdpDiagUnreachableTpl = ${JSON.stringify(tBi(
         'Found DevToolsActivePort{port}, but the CDP port is unreachable (stale file from an earlier run). Fully quit Antigravity App, relaunch with --remote-debugging-port=0, then click Recheck CDP.',
         '检测到 DevToolsActivePort{port}，但调试端口无响应（可能是旧会话残留文件）。请完全退出 Antigravity App 并以 --remote-debugging-port=0 重启，再点击「重新检测」。',
@@ -199,10 +210,53 @@ export function getScript(): string {
                 sfEl.placeholder = subscriptionPlanPlaceholders[planId] || defaultSubscriptionFeePlaceholder;
             }
 
-            function syncSubscriptionFeePlaceholder(planId) {
-                var sfEl = document.getElementById('subscriptionFeeInput');
-                if (!sfEl) { return; }
-                sfEl.placeholder = subscriptionPlanPlaceholders[planId] || defaultSubscriptionFeePlaceholder;
+            function pickLocalizedText(enText, zhText) {
+                var lang = (document.body && document.body.getAttribute('data-lang')) || 'both';
+                var enStr = typeof enText === 'string' ? enText.trim() : '';
+                var zhStr = typeof zhText === 'string' ? zhText.trim() : '';
+                if (lang === 'en') { return enStr || zhStr; }
+                if (lang === 'zh') { return zhStr || enStr; }
+                if (enStr && zhStr && enStr !== zhStr) { return enStr + ' / ' + zhStr; }
+                return enStr || zhStr;
+            }
+
+            function syncCdpLauncherUi(launcherStatus) {
+                if (!launcherStatus || typeof launcherStatus !== 'object') { return; }
+                var installed = !!launcherStatus.installed;
+                var statusEl = document.getElementById('cdpLauncherStatus');
+                if (statusEl) {
+                    statusEl.setAttribute('data-launcher-installed', String(installed));
+                    var pathStr = typeof launcherStatus.launcherPath === 'string' ? launcherStatus.launcherPath : '';
+                    if (pathStr) { statusEl.setAttribute('data-launcher-path', pathStr); }
+                    statusEl.textContent = '';
+                    var badge = document.createElement('span');
+                    badge.className = 'stg-cdp-launcher-badge' + (installed ? ' is-installed' : '');
+                    badge.textContent = installed ? cdpLauncherInstalledText : cdpLauncherNotInstalledText;
+                    statusEl.appendChild(badge);
+                    if (pathStr) {
+                        var codeEl = document.createElement('code');
+                        codeEl.className = 'stg-cdp-launcher-path';
+                        codeEl.textContent = pathStr;
+                        statusEl.appendChild(codeEl);
+                    }
+                }
+                var noteEl = document.getElementById('cdpLauncherNote');
+                if (noteEl && (launcherStatus.noteEn || launcherStatus.noteZh)) {
+                    noteEl.textContent = pickLocalizedText(launcherStatus.noteEn, launcherStatus.noteZh);
+                }
+                var setupBtn = document.getElementById('cdpSetupLauncherBtn');
+                if (setupBtn) {
+                    var labelSpan = setupBtn.querySelector('span');
+                    if (labelSpan) {
+                        labelSpan.textContent = installed ? cdpLauncherRecreateBtnText : cdpLauncherCreateBtnText;
+                    } else {
+                        setupBtn.textContent = installed ? cdpLauncherRecreateBtnText : cdpLauncherCreateBtnText;
+                    }
+                }
+                var removeBtn = document.getElementById('cdpRemoveLauncherBtn');
+                if (removeBtn) {
+                    removeBtn.hidden = !installed;
+                }
             }
 
             function syncCdpStatusUi(cdpStatus, fallbackComposerOn, fallbackTopBarOn) {
@@ -256,6 +310,8 @@ export function getScript(): string {
                         var msgText = cdpDiagMissingText;
                         if (diag === 'connected') {
                             msgText = cdpDiagConnectedTpl.replace(/\{port\}/g, portPart).replace(/\{title\}/g, titlePart);
+                        } else if (diag === 'host_missing_flag') {
+                            msgText = cdpDiagHostMissingText;
                         } else if (diag === 'port_unreachable') {
                             msgText = cdpDiagUnreachableTpl.replace(/\{port\}/g, portPart);
                         } else if (diag === 'no_hub_target') {
@@ -269,6 +325,10 @@ export function getScript(): string {
                         hint.textContent = msgText;
                         hint.hidden = false;
                     }
+                }
+
+                if (cdpStatus && cdpStatus.launcherStatus && typeof cdpStatus.launcherStatus === 'object') {
+                    syncCdpLauncherUi(cdpStatus.launcherStatus);
                 }
             }
 
@@ -1083,6 +1143,23 @@ export function getScript(): string {
                             : (nextCdpRes.state === 'disabled' ? cdpDisabledText : cdpInactiveText));
                     flashFeedback('appOverlaysFeedback', cdpResText, 3200);
                 }
+                if (msg.command === 'cdpLauncherResult') {
+                    var setupLauncherEl = document.getElementById('cdpSetupLauncherBtn');
+                    var removeLauncherEl = document.getElementById('cdpRemoveLauncherBtn');
+                    if (setupLauncherEl) { setupLauncherEl.disabled = false; }
+                    if (removeLauncherEl) { removeLauncherEl.disabled = false; }
+                    var nextLauncherStatus = msg.launcherStatus || msg.status || (msg.cdpStatus && msg.cdpStatus.launcherStatus) || null;
+                    if (nextLauncherStatus) {
+                        syncCdpLauncherUi(nextLauncherStatus);
+                    }
+                    if (msg.cdpStatus && typeof msg.cdpStatus === 'object') {
+                        syncCdpStatusUi(msg.cdpStatus);
+                    }
+                    var launcherFb = msg.ok
+                        ? (pickLocalizedText(msg.messageEn, msg.messageZh) || savedText)
+                        : (msg.error || pickLocalizedText(msg.messageEn, msg.messageZh) || cdpLauncherActionFailedText);
+                    flashFeedback('cdpLauncherFeedback', launcherFb, 4500);
+                }
                 if (msg.command === 'pluginUpdateResult') {
                     var applyMsg = msg.ok ? (msg.message || upgradeDoneText) : (msg.error || msg.message || checkFailedText);
                     flashFeedback('updatesFeedback', applyMsg, 4500);
@@ -1722,6 +1799,59 @@ export function getScript(): string {
                     } else {
                         vscode.postMessage({ command: 'recheckCdp' });
                         setTimeout(function() { recheckCdpBtn.disabled = false; }, 1200);
+                    }
+                    return;
+                }
+
+                // ── Persistent CDP Launcher Actions (Settings tab) ──
+                var launcherActionBtn = target.closest('[data-action="setupCdpLauncher"], [data-action="removeCdpLauncher"]');
+                if (launcherActionBtn) {
+                    var launcherCmd = launcherActionBtn.getAttribute('data-action');
+                    var setupBtnRef = document.getElementById('cdpSetupLauncherBtn');
+                    var removeBtnRef = document.getElementById('cdpRemoveLauncherBtn');
+                    if (setupBtnRef) { setupBtnRef.disabled = true; }
+                    if (removeBtnRef) { removeBtnRef.disabled = true; }
+                    setFeedback('cdpLauncherFeedback', launcherCmd === 'removeCdpLauncher' ? cdpLauncherRemovingText : cdpLauncherCreatingText);
+                    if (bridge && bridge.surface !== 'vscode' && typeof bridge.sendAction === 'function') {
+                        Promise.resolve(bridge.sendAction({ command: launcherCmd })).then(function(res) {
+                            if (setupBtnRef) { setupBtnRef.disabled = false; }
+                            if (removeBtnRef) { removeBtnRef.disabled = false; }
+                            var payload = (res && res.result) ? res.result : res;
+                            var st = payload && (payload.launcherStatus || payload.status || (payload.cdpStatus && payload.cdpStatus.launcherStatus));
+                            if (st) { syncCdpLauncherUi(st); }
+                            if (payload && payload.cdpStatus) { syncCdpStatusUi(payload.cdpStatus); }
+                            var fbText = (payload && payload.ok === false)
+                                ? (payload.error || pickLocalizedText(payload.messageEn, payload.messageZh) || cdpLauncherActionFailedText)
+                                : (pickLocalizedText(payload && payload.messageEn, payload && payload.messageZh) || savedText);
+                            flashFeedback('cdpLauncherFeedback', fbText, 4500);
+                        }).catch(function() {
+                            if (setupBtnRef) { setupBtnRef.disabled = false; }
+                            if (removeBtnRef) { removeBtnRef.disabled = false; }
+                            flashFeedback('cdpLauncherFeedback', cdpLauncherActionFailedText, 3500);
+                        });
+                    } else {
+                        vscode.postMessage({ command: launcherCmd });
+                        setTimeout(function() {
+                            if (setupBtnRef) { setupBtnRef.disabled = false; }
+                            if (removeBtnRef) { removeBtnRef.disabled = false; }
+                        }, 1800);
+                    }
+                    return;
+                }
+
+                // ── CDP Guide Command Copy Button ──
+                var cdpCopyBtn = target.closest('.cdp-copy-btn[data-copy-command]');
+                if (cdpCopyBtn) {
+                    var cmdText = cdpCopyBtn.getAttribute('data-copy-command') || '';
+                    if (cmdText) {
+                        copyTextSafe(cmdText).then(function(ok) {
+                            if (ok) {
+                                flashCopyButton(cdpCopyBtn);
+                            } else {
+                                vscode.postMessage({ command: 'copyText', text: cmdText, source: 'cdpGuideCommand' });
+                                flashCopyButton(cdpCopyBtn);
+                            }
+                        });
                     }
                     return;
                 }

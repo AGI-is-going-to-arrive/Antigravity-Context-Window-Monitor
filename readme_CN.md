@@ -2,7 +2,7 @@
 
 在 **Antigravity App（桌面版 2.0+ 原生 Sidecar 插件）** 与 **Antigravity IDE（VSIX 扩展）** 中实时监控会话上下文构成与双水位线（`自动压缩` + `200k` 档位）、带基础费率映射与全链路角色归因的 Orchestrator 编排/执行路由、带续航预测的双窗口模型配额（`5h` + `周`）、模型生成速度（`tok/s`）、首字延迟与逐轮提示词缓存诊断、52 周多源活动热力图（`App` / `IDE` / `CLI`）、多币种 API 等价费用与可选套餐回本估算、重置时间和 AI 积分。
 
-**1.17.7** 带来重磅 **Sidecar 空闲退避轮询、ETag 稳定性与 GM 缓存优化**（空闲期减少约 4,900+ 次/小时本地 LS RPC 调用——致谢 **`@reidentify`**，Issue #75 / PR #76），并全面修复 **App CDP 目标发现、桌面悬浮层锚定、设置页实时诊断与跨平台启动指南**（修复 Hub 自挂载、右上角状态条与输入框悬浮环锚点、打开面板按钮、实时 `#cdpStatusPill` / `#cdpDiagnosticHint` / `#cdpRecheckBtn` 联动、过期 `DevToolsActivePort` TCP 探测及先完全退出再带参重启的 macOS/Windows/Linux 指引）。
+**1.17.7** 带来三大核心升级：(1) **Sidecar 空闲退避轮询、ETag 稳定性与 GM 缓存优化**（空闲期减少约 4,900+ 次/小时本地 LS RPC 调用——致谢 **`@reidentify`**，Issue #75 / PR #76，并补齐 IDE 手动刷新退避重置）；(2) **App CDP 发现、悬浮层、实时诊断（`host_missing_flag`）与一键零魔改持久化 CDP 启动器**（通过 `~/Applications/Antigravity (CDP).app`、Windows `.lnk`/`.cmd` 与 Linux `.desktop` 彻底解决 macOS 按 `Cmd+Q` 后约 5 秒后台清理竞态及自动更新丢参问题，同时修复 Hub 自挂载、悬浮层锚点与 IDE 开关实时探测）；(3) **订阅套餐回本（Plan ROI）预设升级**（**Google AI Pro `$19.99/月`**、**Google AI Ultra 5x `$99.99/月`**、**Google AI Ultra 20x `$199.99/月`**，无损兼容旧版 `'google-ai-ultra'` 配置）。
 
 [English](README.md) · [AI 智能体一键安装（`AGENTS.md`）](AGENTS.md) · [1.17.7 发布说明与验证](docs/releases/1.17.7.md#中文) · [技术实现](docs/technical_implementation.md) · [项目结构](docs/project_structure.md) · [变更日志](CHANGELOG.md)
 
@@ -32,12 +32,16 @@
 
 - **空闲退避轮询、ETag 稳定性与 GM 缓存优化（致谢 [`@reidentify`](https://github.com/reidentify) — [Issue #75](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/75) / [PR #76](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/76) 及后续加固）：**
   - **打破空闲退避自锁（`src/app/sidecar-runtime.ts`、`src/app/sidecar-server.ts`、`src/app/host-bridge.ts`）：** 被动 `/api/snapshot` 轮询不再重置 `lastClientActivityMs`；空闲期平滑从 `5s → 30s` 退避，在任意会话处于 `CascadeStatus.RUNNING` 时始终保持基础高频轮询，并在真实用户交互（`?active=1` 或 `/api/action`）时立即唤醒休眠定时器（可见侧客户端空闲轮询上限收敛至 `≤ 15s`）。
-  - **空闲期消除约 4,900+ 次/小时本地 LS RPC（`src/gm/tracker.ts`、`src/app/sidecar-runtime.ts`）：** `GMTracker.fetchAll()` 在当前会话处于 `IDLE` 且步数未变化时跳过重复拉取，记录无调用/无时间戳空闲会话的稳定步数（`_settledIdleStepCounts`），对瞬态 `GetCascadeTrajectory` 报错改用有界指数退避（`60s → 10m`，手动刷新即清空）而非永久冻结不完整数据，通过 `buildGMMatchKey()` + `mergeGMCallEntries()` 与严格 `executionId` 防冲突守卫完整保留已补全字段（含 `model`、`responseModel`、`executionModel`、锚点、工具与会话级检查点），保护 `RUNNING → IDLE` 尾帧补全，并对静态 `env` 来源 LS 跳过冗余 6 周期复验探测。
+  - **空闲期消除约 4,900+ 次/小时本地 LS RPC（`src/gm/tracker.ts`、`src/app/sidecar-runtime.ts`、`src/extension.ts`）：** `GMTracker.fetchAll()` 在当前会话处于 `IDLE` 且步数未变化时跳过重复拉取，记录无调用/无时间戳空闲会话的稳定步数（`_settledIdleStepCounts`），对瞬态 `GetCascadeTrajectory` 报错改用有界指数退避（`60s → 10m`，App Sidecar 与 IDE 手动刷新均立即清空）而非永久冻结不完整数据，通过 `buildGMMatchKey()` + `mergeGMCallEntries()` 与严格 `executionId` 防冲突守卫完整保留已补全字段（含 `model`、`responseModel`、`executionModel`、锚点、工具与会话级检查点），保护 `RUNNING → IDLE` 尾帧补全，并对静态 `env` 来源 LS 跳过冗余 6 周期复验探测。
   - **稳定 ETag 与多槽位分钟桶快照缓存：** `computeSnapshotHash()` 剔除易变 `meta.pollCount`，将 `snapshotCache` 升级为带 1 分钟时间桶的有界多槽位 `Map`（解决 `AUX_PANE` + `SIDEBAR` 同时打开时互相驱逐缓存且不冻结实时重置倒计时与就绪点），扩展 `computeDataSignature()` 覆盖全部渲染状态，并消除异步 `handleAction()` 缓存污染竞态。
-- **App CDP 发现、桌面悬浮层与实时诊断修复（`src/app/cdp-injector.ts`、`src/app/cdp-overlay-assets.ts`、`src/webview-settings-tab.ts`、`src/webview-script.ts`、`src/webview-panel.ts`、`scripts/install-app-plugin.mjs`）：**
-  - **目标发现防自挂载与并发互斥：** 修复 `selectAntigravityHubTarget()` 误挂自身 Sidecar 的缺陷——自动排除自身监听端口（`ANTIGRAVITY_SIDECAR_WEB_PORT`、`ANTIGRAVITY_SIDECAR_PORT` 及独立模式实时端口）、`plugin://` URL 与监控/蜂群标题（`Antigravity 监控面板` / `Antigravity Monitor` / `Antigravity Context Monitor`），优先匹配 `https:` 本地回环 Hub 并识别 `Jetski Web`；支持 `AGY_BROWSER_ACTIVE_PORT_FILE` 与 IPv6 `[::1]` 回退，引入连接互斥锁杜绝重复/泄漏 WebSocket，并在 `install-app-plugin.mjs --status` 中新增回环 TCP 可达性探测以识别过期残留的 `DevToolsActivePort`。
-  - **悬浮层精准锚定、WCO 避让、主题与「打开面板」修复（`CDP_OVERLAY_SCRIPT_VERSION = '1.17.7-r1'`）：** 右上角状态条改为锚定在 `[data-testid="toggle-maximize-pane"]` 之前且在内联模式下不重复叠加 Windows WCO 占位留白；输入框悬浮环优先绑定可见的 `.agy-composer-footer` / `[data-testid="input-box-bottom-toolbar"]` / `[data-testid="permissions-selector-trigger"]` 并在旧标签页隐藏后自动重锚；「打开面板」动作直接展开已折叠的侧栏；增强宿主深浅主题检测。
-  - **设置页实时诊断联动与先退出再启动跨平台指引：** 新增结构化 `CdpDiagnosticCode` 状态、实时同步更新 `#cdpStatusPill`、双语 `#cdpDiagnosticHint` 与 `#updateStatusPill`，新增**重新检测（`#cdpRecheckBtn`）**按钮（App Sidecar 与 IDE 只读回环探测双端均已打通），并全面修正跨平台 CDP 启动指南（明确先按 `Cmd+Q` / 完全退出、macOS 完整 `/Applications/Antigravity.app` 路径、Windows PowerShell 与 CMD/快捷方式双语法、以及自动更新重启丢弃启动参数提示）。
+- **App CDP 发现、桌面悬浮层、实时诊断与一键零魔改持久化启动器（`src/app/cdp-launcher.ts`、`src/app/cdp-injector.ts`、`src/app/cdp-overlay-assets.ts`、`src/webview-settings-tab.ts`、`src/webview-script.ts`、`src/webview-panel.ts`、`scripts/install-app-plugin.mjs`）：**
+  - **一键零魔改持久化 CDP 启动器：** 在**设置 → 悬浮层与 CDP** 点击**一键生成持久化启动器**（或运行 `node scripts/install-app-plugin.mjs --setup-cdp-launcher`，支持 `--remove-cdp-launcher` 移除），零修改 `/Applications/Antigravity.app` 与 `app.asar`，永久免疫自动更新丢参：
+    - **macOS（`~/Applications/Antigravity (CDP).app`）：** 复用原生图标与 `LSUIElement=true`；精确识别运行中的 Antigravity App 主进程（忽略 IDE/Tools），若未带 CDP 启动则弹出系统确认框后优雅退出，并轮询最多 15 秒直至 `Cmd+Q` 后约 5 秒的 `language_server` 后台清理彻底结束再以 `--remote-debugging-port=0` 启动。
+    - **Windows（桌面 + 开始菜单 `.lnk` + `%LOCALAPPDATA%\AntigravityContextMonitor\launch-antigravity-cdp.cmd`）** 与 **Linux（`~/.local/share/applications/antigravity-cdp.desktop` + `~/.local/bin/antigravity-cdp`）**。
+  - **智能宿主参数发现与并发加固：** 修复 `selectAntigravityHubTarget()` 误挂自身 Sidecar（自动排除 `ANTIGRAVITY_SIDECAR_WEB_PORT`、`ANTIGRAVITY_SIDECAR_PORT`、独立监听端口、`plugin://` 及监控/蜂群标题，优先 `https:` 本地回环 Hub 与 `Jetski Web`）；新增只读父进程命令行检测（精准诊断 `host_missing_flag`、自定义 `--user-data-dir` 与固定 `--remote-debugging-port=<N>` 直连回退）；支持 IPv6 `[::1]` 回退、互斥锁与桥创建失败断开防泄漏；`install-app-plugin.mjs --status` 新增回环 TCP 探测识别过期 `DevToolsActivePort`（`cdp.stale`）及 `cdpLauncher` 状态。
+  - **悬浮层锚定、WCO、主题、「打开面板」与双端实时诊断（`CDP_OVERLAY_SCRIPT_VERSION = '1.17.7-r1'`）：** 右上角状态条锚定在 `[data-testid="toggle-maximize-pane"]` 之前且不重复叠加内联 WCO 留白；输入框悬浮环自动定位可见工具栏并在切换隐藏标签后重锚；「打开面板」直接展开折叠侧栏；完善深浅主题检测；打通 `#cdpStatusPill`、双语 `#cdpDiagnosticHint`（含 `host_missing_flag`）、`#cdpLauncherStatus`、`#cdpSetupLauncherBtn`、`#cdpRecheckBtn`、一键复制按钮（`.cdp-copy-btn`）及 IDE 端打开开关实时探测。
+- **订阅套餐回本（Plan ROI）预设升级（`src/cli-usage-scanner.ts`、`package.json`、`src/webview-settings-tab.ts`、`src/webview-script.ts`）：**
+  - 日历订阅回本预设更新为 **Google AI Pro（`$19.99/月`）**、**Google AI Ultra 5x（`$99.99/月`）** 与 **Google AI Ultra 20x（`$199.99/月`）**（及自定义月费），通过 `normalizeSubscriptionPlanId()` 无损兼容旧版 `'google-ai-ultra'` 配置（完整保留用户已保存的如 `$249.99` 历史月费）并动态同步 `#subscriptionFeeInput` 占位提示。
 
 ### 基于 1.17.6 核心底座
 
@@ -158,7 +162,7 @@ IDE 扩展也可以通过 [Open VSX](https://open-vsx.org/extension/AGI-is-going
 <details>
 <summary>设置 — 悬浮层与 CDP、更新检查、成本/币种/历史、持久化存储与双端适配</summary>
 
-统一配置**悬浮层与 CDP**（原生精简 HUD 开关，以及默认关闭的输入框上下文环与右上角状态条独立开关、实时 `#cdpStatusPill` 连接状态、双语诊断提示、**重新检测**按钮与先退出再启动的跨平台指南）、**更新**（6 小时自动检查开关、立即检查与 App 端一键立即升级）、**成本、币种与历史**（编排计价模式、9 种显示币种 + 自定义汇率、订阅套餐回本预设与日历保留天数）、共享外部持久化存储（`state-v1.json`，App ↔ IDE 原子锁热同步）、低配额提醒阈值、轮询间隔、IDE 状态栏开关（在 Antigravity App 中自动折叠于 `<details>`）、悬停摘要密度、内部模型 ID 显示、界面缩放比例，以及滚动条和页底提示偏好。
+统一配置**悬浮层与 CDP**（原生精简 HUD 开关，以及默认关闭的输入框上下文环与右上角状态条独立开关、实时 `#cdpStatusPill` 连接状态、双语诊断提示含 `host_missing_flag`、**一键持久化 CDP 启动器**创建/移除、**重新检测**按钮与可一键复制的跨平台无竞态启动命令）、**更新**（6 小时自动检查开关、立即检查与 App 端一键立即升级）、**成本、币种与历史**（编排计价模式、9 种显示币种 + 自定义汇率、`Pro $19.99` / `Ultra 5x $99.99` / `Ultra 20x $199.99` 订阅套餐回本预设与日历保留天数）、共享外部持久化存储（`state-v1.json`，App ↔ IDE 原子锁热同步）、低配额提醒阈值、轮询间隔、IDE 状态栏开关（在 Antigravity App 中自动折叠于 `<details>`）、悬停摘要密度、内部模型 ID 显示、界面缩放比例，以及滚动条和页底提示偏好。
 
 ![Obsidian Slate 深色主题下的双语设置页，展示悬浮层与 CDP、更新、成本币种与历史、状态栏开关及持久化存储](src/images/monitor-settings.png)
 
@@ -225,7 +229,7 @@ IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 22 项；共享偏
 | `orchestratorPricingMode` | `mapped` | 编排模型计费模式：`mapped`（映射基础 Gemini 4 费率）或 `strict`（仅自定义费率） |
 | `displayCurrency` | `USD` | 成本与日历页的显示币种（`USD`、`CNY`、`EUR`、`JPY`、`GBP`、`KRW`、`HKD`、`TWD`、`AUD`） |
 | `customFxRate` | `null` | 可选自定义汇率（1 USD 对应目标币种，`null` 使用内置参考汇率） |
-| `subscriptionPlan` | `none` | 可选日历套餐回本预设（`none`、`google-ai-pro`、`google-ai-ultra`、`custom`） |
+| `subscriptionPlan` | `none` | 可选日历套餐回本预设（`none`、`google-ai-pro` `$19.99`、`google-ai-ultra-5x` `$99.99`、`google-ai-ultra-20x` `$199.99`、`custom`；旧版 `google-ai-ultra` 自动无损迁移） |
 | `subscriptionMonthlyFee` | `null` | 可选月订阅费用金额，用于回本计算 |
 | `subscriptionCurrency` | `USD` | 月订阅费用使用的币种 |
 | `calendarRetentionDays` | `400` | 日历用量历史最长保留天数（`30–3650`） |
@@ -246,12 +250,14 @@ IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 22 项；共享偏
 - **无活跃会话**表示后端已连接，当前视图尚无已加载对话。打开任意对话（或在顶部会话切换器中指定会话）即可读取上下文。
 - **同时运行 Antigravity App 与 Antigravity IDE：** 双端自动按运行端隔离各自的本地后端（`preferredSurface: 'app'` 与 `'ide'`）零串扰，并通过加固后的原子 `O_CREAT | O_EXCL` 文件锁（死进程 PID 过期回收 + 持有者令牌校验）与三方合并安全热同步 `state-v1.json` 历史记录与设置。
 - **升级 Antigravity App 插件：** 在面板内点击**立即升级**或命令行执行 `--upgrade` 后，请在 **Customizations → Installed**（`customization://antigravity-context-monitor`）中将插件**关闭再重新开启**，或在方便时由您自行重启 Antigravity App——绝不可在活跃对话期间强杀运行中的宿主进程。
-- **可选 CDP 悬浮层显示 `CDP 未就绪` / `CDP 不可用`：** 核心 Sidecar `AUX_PANE`、`SIDEBAR` 与原生精简 HUD 均 100% 原生工作，不依赖 CDP。如需启用输入框上下文环或右上角状态条，请**务必先完全退出 Antigravity App**（macOS 按 `Cmd+Q`；Windows / Linux 关闭全部窗口与托盘图标——macOS 下若应用仍在运行，`open -a` 会静默忽略 `--args`），再使用 `--remote-debugging-port=0` 重新启动并在**设置 → 悬浮层与 CDP** 点击**重新检测**（零二进制修改）：
-  - **macOS：** `open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0`
-  - **Windows（PowerShell）：** `& "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
-  - **Windows（CMD / 快捷方式目标）：** `"%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
-  - **Linux：** `antigravity --remote-debugging-port=0`
-  - *（提示：Antigravity 自动更新重启后会丢弃命令行启动参数；更新后请先完全退出再重新带参启动，或运行 `node scripts/install-app-plugin.mjs --print-cdp-guide` 查看完整指引。）*
+- **可选 CDP 悬浮层显示 `CDP 未就绪` / `CDP 不可用`：** 核心 Sidecar `AUX_PANE`、`SIDEBAR` 与原生精简 HUD 均 100% 原生工作，不依赖 CDP。如需启用输入框上下文环或右上角状态条（零 `app.asar` 修改）：
+  - **推荐方案（一键持久化，永久免疫自动更新丢参）：** 在**设置 → 悬浮层与 CDP** 点击**一键生成持久化启动器**（或运行 `node scripts/install-app-plugin.mjs --setup-cdp-launcher`），自动生成 `~/Applications/Antigravity (CDP).app`（macOS）、桌面与开始菜单 `.lnk`（Windows）或 `~/.local/share/applications/antigravity-cdp.desktop`（Linux），之后直接从该启动器打开即可。
+  - **手动终端重启：** **务必先完全退出 Antigravity App**（macOS 按 `Cmd+Q` 后请等待约 5 秒让后台 `language_server` 彻底退出，否则 `open -a` 会静默忽略 `--args`；Windows / Linux 关闭全部窗口与托盘图标），再带参重启并在设置页点击**重新检测**：
+    - **macOS（无竞态等待并启动）：** `while pgrep -f '^/Applications/Antigravity\.app/Contents/MacOS/Antigravity($| )' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0`
+    - **Windows（PowerShell）：** `& "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
+    - **Windows（CMD / 快捷方式目标）：** `"%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
+    - **Linux：** `antigravity --remote-debugging-port=0`
+  - *（提示：Antigravity 自动更新重启会丢弃命令行参数，使用持久化启动器可免去重复敲命令；也可运行 `node scripts/install-app-plugin.mjs --print-cdp-guide` 查看完整指引。）*
 - **后端连接已断开**或 **LS not found** 指向本地发现或连接异常。安装后请重载窗口，在 IDE 中打开**输出 → Antigravity Context Monitor** 检查 `PATH check:`。发现机制支持 `ANTIGRAVITY_LS_ADDRESS`、`agy --hub`（含 v1.5.14+ 的 `GetStatus` 与 `daemon/hub_<port>.json`）、旧版语言服务器、Linux `/proc/<pid>` 套接字兜底以及 WSL 动态挂载与宿主目录解析（`drvfs` / `9p` / `wslpath`）。[后端发现](docs/technical_implementation.md)
 - 超长或经过内部摘要处理的会话可能存在部分遥测缺失，监控器会明确标注压缩后/回退估算值、`短样本`速度保护与缺失步骤。[上下文与 Token 计算](docs/technical_implementation.md) · [Checkpoint 摘要社区讨论](https://www.reddit.com/r/google_antigravity/comments/1q7zcag/heres_how_to_find_which_mcp_tools_are_leading_to/)
 

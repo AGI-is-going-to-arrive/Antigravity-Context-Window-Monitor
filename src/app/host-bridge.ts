@@ -606,13 +606,13 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
             }
           }
           // Forward structured action responses (updateCheckResult, pluginUpdateResult,
-          // cdpStatusResult, configSaved, syncSettingsControls) even when returned in data.result or top-level.
+          // cdpStatusResult, cdpLauncherResult, configSaved, syncSettingsControls) even when returned in data.result or top-level.
           var structuredCandidate = (data.result && typeof data.result === 'object' && !Array.isArray(data.result) && (data.result.type || data.result.command))
             ? data.result
             : ((data.type || data.command) ? data : null);
           if (structuredCandidate) {
             var sKind = structuredCandidate.command || structuredCandidate.type;
-            if ((sKind === 'updateCheckResult' || sKind === 'pluginUpdateResult' || sKind === 'cdpStatusResult' || sKind === 'configSaved' || sKind === 'syncSettingsControls') && !dispatchedTypes[sKind]) {
+            if ((sKind === 'updateCheckResult' || sKind === 'pluginUpdateResult' || sKind === 'cdpStatusResult' || sKind === 'cdpLauncherResult' || sKind === 'configSaved' || sKind === 'syncSettingsControls') && !dispatchedTypes[sKind]) {
               dispatchWebviewMessage(structuredCandidate);
               dispatchedTypes[sKind] = true;
             }

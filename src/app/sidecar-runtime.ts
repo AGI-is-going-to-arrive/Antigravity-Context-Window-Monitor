@@ -203,6 +203,12 @@ import {
     type CdpAmbientOverlayManagerOptions,
 } from './cdp-injector';
 import {
+    createCdpLauncher,
+    inspectCdpLauncher,
+    removeCdpLauncher,
+    type CdpLauncherOptions,
+} from './cdp-launcher';
+import {
     applyAppPluginUpdate,
     checkForUpdates,
     EXPECTED_PLUGIN_NAME,
@@ -216,6 +222,8 @@ import {
 } from './sidecar-server';
 import type {
     ApplyPluginUpdateResult,
+    CdpLauncherActionResult,
+    CdpLauncherStatus,
     CdpOverlayPayload,
     CdpOverlayQuotaPool,
     CdpStatus,
@@ -393,6 +401,9 @@ export interface SidecarRuntimeDeps {
     openExternalUrl: (url: string) => Promise<void>;
     createCdpOverlayManager: (opts: CdpAmbientOverlayManagerOptions) => CdpAmbientOverlayManager;
     createOverlayBridge: typeof createOverlayActionBridge;
+    inspectCdpLauncher: (opts?: CdpLauncherOptions) => CdpLauncherStatus;
+    createCdpLauncher: (opts?: CdpLauncherOptions) => CdpLauncherActionResult;
+    removeCdpLauncher: (opts?: CdpLauncherOptions) => CdpLauncherActionResult;
     checkForUpdates: (opts: CheckForUpdatesOptions) => Promise<UpdateCheckResult>;
     applyAppPluginUpdate: (opts: ApplyAppPluginUpdateOptions) => Promise<ApplyPluginUpdateResult>;
     cliUsageScanner: CliUsageScanner;
@@ -1241,6 +1252,9 @@ export function createSidecarRuntimeProvider(
         openExternalUrl: options.deps?.openExternalUrl ?? defaultOpenExternalUrl,
         createCdpOverlayManager: options.deps?.createCdpOverlayManager ?? createCdpAmbientOverlayManager,
         createOverlayBridge: options.deps?.createOverlayBridge ?? createOverlayActionBridge,
+        inspectCdpLauncher: options.deps?.inspectCdpLauncher ?? inspectCdpLauncher,
+        createCdpLauncher: options.deps?.createCdpLauncher ?? createCdpLauncher,
+        removeCdpLauncher: options.deps?.removeCdpLauncher ?? removeCdpLauncher,
         checkForUpdates: options.deps?.checkForUpdates ?? checkForUpdates,
         applyAppPluginUpdate: options.deps?.applyAppPluginUpdate ?? applyAppPluginUpdate,
         cliUsageScanner: options.deps?.cliUsageScanner ?? new CliUsageScanner(),
@@ -1361,6 +1375,7 @@ export function createSidecarRuntimeProvider(
 
     const overlayManager = deps.createCdpOverlayManager({
         excludeTargetPorts: excludedCdpPorts,
+        inspectLauncher: () => deps.inspectCdpLauncher(),
         createBridge: (bridgeOpts) => deps.createOverlayBridge({
             ...bridgeOpts,
             token: overlayBridgeToken,
@@ -2734,7 +2749,7 @@ export function createSidecarRuntimeProvider(
             zoomLevel,
             orchMode: appSettings.orchestratorPricingMode,
             currency: `${appSettings.displayCurrency}:${appSettings.customFxRate ?? ''}:${subscriptionPlan}:${appSettings.subscriptionMonthlyFee ?? ''}:${appSettings.subscriptionCurrency}`,
-            cdp: `${cdp.state}:${cdp.diagnosticCode ?? ''}:${cdp.composerEnabled}:${cdp.topBarEnabled}:${cdp.targetUrl ?? ''}:${cdp.targetTitle ?? ''}:${cdp.discoveredPort ?? ''}:${cdp.portFilePath ?? ''}:${cdp.errorMessage ?? ''}`,
+            cdp: `${cdp.state}:${cdp.diagnosticCode ?? ''}:${cdp.composerEnabled}:${cdp.topBarEnabled}:${cdp.targetUrl ?? ''}:${cdp.targetTitle ?? ''}:${cdp.discoveredPort ?? ''}:${cdp.portFilePath ?? ''}:${cdp.errorMessage ?? ''}:${cdp.hostHasDebugFlag ?? ''}:${cdp.launcherStatus?.installed ? 1 : 0}:${cdp.launcherStatus?.launcherPath ?? ''}`,
             upd: lastUpdateStatusView
                 ? `${lastUpdateStatusView.status}:${lastUpdateStatusView.latestVersion ?? ''}:${lastUpdateStatusView.hasUpdate}:${lastUpdateStatusView.requiresReload ?? false}:${lastUpdateStatusView.error ?? ''}`
                 : '',
@@ -4710,6 +4725,55 @@ export function createSidecarRuntimeProvider(
                     ok: true,
                     result: cdpStatusMsg,
                     messages: [cdpStatusMsg, buildSyncSettingsControlsMessage()],
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'setupCdpLauncher':
+            case 'removeCdpLauncher': {
+                const launcherRes = action.command === 'setupCdpLauncher'
+                    ? deps.createCdpLauncher()
+                    : deps.removeCdpLauncher();
+                let cdpStatus: CdpStatus;
+                if (typeof overlayManager.recheck === 'function') {
+                    cdpStatus = await overlayManager.recheck().catch(() => overlayManager.getStatus());
+                    if ((appSettings.appComposerRingEnabled || appSettings.appTopBarEnabled)
+                        && cdpStatus.state === 'connected') {
+                        cdpStatus = await overlayManager.updatePayload(buildCdpOverlayPayload()).catch(() => cdpStatus);
+                    }
+                } else {
+                    cdpStatus = overlayManager.getStatus();
+                }
+                cdpStatus = {
+                    ...cdpStatus,
+                    launcherStatus: launcherRes.status,
+                };
+                bumpStateRevision();
+                const launcherMsg: Record<string, unknown> = {
+                    type: 'cdpLauncherResult',
+                    command: 'cdpLauncherResult',
+                    action: action.command,
+                    ok: launcherRes.ok,
+                    launcherStatus: launcherRes.status,
+                    messageEn: launcherRes.messageEn,
+                    messageZh: launcherRes.messageZh,
+                    ...(launcherRes.error ? { error: launcherRes.error } : {}),
+                    cdpStatus,
+                };
+                const cdpStatusMsg: Record<string, unknown> = {
+                    type: 'cdpStatusResult',
+                    command: 'cdpStatusResult',
+                    cdpStatus,
+                };
+                const syncMsg: Record<string, unknown> = {
+                    ...buildSyncSettingsControlsMessage(),
+                    cdpStatus,
+                };
+                return {
+                    ok: launcherRes.ok,
+                    ...(launcherRes.error ? { error: launcherRes.error } : {}),
+                    result: launcherMsg,
+                    messages: [launcherMsg, cdpStatusMsg, syncMsg],
                     snapshot: buildSnapshotPayload(viewMode),
                 };
             }

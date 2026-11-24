@@ -72,17 +72,24 @@ upgrade Antigravity Context Monitor:
 Core `AUX_PANE`, `SIDEBAR`, and the **Native Panel Compact HUD** work 100%
 natively without CDP. Only if the user explicitly wants the optional Composer
 Context Ring or Top-Right Status Bar floating overlays inside Antigravity App
-(zero `app.asar` patching), instruct them to:
+(zero `app.asar` patching), recommend the 1-click Persistent CDP Launcher first:
 
-1. **Quit Antigravity App completely first** (macOS: `Cmd+Q`; Windows/Linux:
-   close all windows and tray icon — running `open -a` on macOS while
-   Antigravity is still running silently ignores `--args`). Never kill the app
-   yourself during an active chat.
-2. **Relaunch with `--remote-debugging-port=0`:**
-   - **macOS:** `open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0`
-   - **Windows (PowerShell):** `& "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
-   - **Windows (CMD / Shortcut target):** `"%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
-   - **Linux:** `antigravity --remote-debugging-port=0`
-3. Open **Settings → Overlays & CDP** in Context Monitor and click **Recheck CDP**
-   (note: Antigravity auto-updates restart without CLI flags, so re-apply the
-   flag after updates).
+- **Recommended (1-click, auto-update proof):** Click **Create Persistent
+  Launcher** in **Settings → Overlays & CDP** (or run
+  `node scripts/install-app-plugin.mjs --setup-cdp-launcher`) to create
+  `~/Applications/Antigravity (CDP).app` (macOS), Desktop/Start Menu `.lnk`
+  (Windows), or `~/.local/share/applications/antigravity-cdp.desktop` (Linux).
+  It waits cleanly for Antigravity's ~5s background shutdown and launches with
+  `--remote-debugging-port=0` without patching any host binaries.
+- **Manual terminal relaunch:**
+  1. **Quit Antigravity App completely first** (macOS: press `Cmd+Q` and wait
+     ~5s for background `language_server` teardown to complete — running
+     `open -a` while the old PID is still exiting silently ignores `--args`;
+     Windows/Linux: close all windows and tray icon). Never kill the app
+     yourself during an active chat.
+  2. **Relaunch with `--remote-debugging-port=0`:**
+     - **macOS (race-free):** `while pgrep -f '^/Applications/Antigravity\.app/Contents/MacOS/Antigravity($| )' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0`
+     - **Windows (PowerShell):** `& "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
+     - **Windows (CMD / Shortcut target):** `"%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
+     - **Linux:** `antigravity --remote-debugging-port=0`
+  3. Open **Settings → Overlays & CDP** in Context Monitor and click **Recheck CDP**.

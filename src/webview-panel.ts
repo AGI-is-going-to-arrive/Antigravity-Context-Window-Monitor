@@ -85,6 +85,11 @@ import {
     resolveDevToolsActivePortPaths,
     selectAntigravityHubTarget,
 } from './app/cdp-injector';
+import {
+    createCdpLauncher,
+    inspectCdpLauncher,
+    removeCdpLauncher,
+} from './app/cdp-launcher';
 import type { CdpStatus } from './app/sidecar-types';
 
 // ─── Panel Payload ────────────────────────────────────────────────────────────
@@ -653,6 +658,7 @@ export function showMonitorPanel(p: PanelPayload): void {
     panel.webview.onDidReceiveMessage(async (msg: {
         command: string;
         lang?: string;
+        text?: string;
         value?: unknown;
         key?: string;
         action?: string;
@@ -775,6 +781,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                             diagnosticCode: 'disabled',
                             composerEnabled: false,
                             topBarEnabled: false,
+                            launcherStatus: inspectCdpLauncher({ env: process.env }),
                             platformGuide: getCdpPlatformGuide(process.platform),
                         };
                     } else {
@@ -789,6 +796,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                                 diagnosticCode: 'disabled',
                                 composerEnabled: false,
                                 topBarEnabled: false,
+                                launcherStatus: inspectCdpLauncher({ env: process.env }),
                                 platformGuide: getCdpPlatformGuide(process.platform),
                             };
                         } else {
@@ -827,6 +835,40 @@ export function showMonitorPanel(p: PanelPayload): void {
             });
             if (panel) {
                 postSettingsControlSync();
+            }
+        } else if (msg.command === 'setupCdpLauncher' || msg.command === 'removeCdpLauncher') {
+            const launcherRes = msg.command === 'setupCdpLauncher'
+                ? createCdpLauncher({ env: process.env })
+                : removeCdpLauncher({ env: process.env });
+            const docSettings = readIdeDocumentSettings();
+            const probed = await probeIdeCdpStatus(
+                Boolean(docSettings.appComposerRingEnabled),
+                Boolean(docSettings.appTopBarEnabled),
+            );
+            const cdpStatus: CdpStatus = {
+                ...probed,
+                launcherStatus: launcherRes.status,
+            };
+            lastCdpStatus = cdpStatus;
+            safePostMessage({
+                type: 'cdpLauncherResult',
+                command: 'cdpLauncherResult',
+                action: msg.command,
+                ok: launcherRes.ok,
+                launcherStatus: launcherRes.status,
+                messageEn: launcherRes.messageEn,
+                messageZh: launcherRes.messageZh,
+                ...(launcherRes.error ? { error: launcherRes.error } : {}),
+                cdpStatus,
+            });
+            safePostMessage({
+                type: 'cdpStatusResult',
+                command: 'cdpStatusResult',
+                cdpStatus,
+            });
+            if (panel) {
+                postSettingsControlSync();
+                postCurrentTabs();
             }
         } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
             const val = Math.max(1, Math.min(60, msg.value));
@@ -912,6 +954,9 @@ export function showMonitorPanel(p: PanelPayload): void {
         } else if (msg.command === 'copyStatePath' && lastStorageDiagnostics?.stateFilePath) {
             await vscode.env.clipboard.writeText(lastStorageDiagnostics.stateFilePath);
             safePostMessage({ command: 'configSaved', key: 'statePath' });
+        } else if (msg.command === 'copyText' && typeof msg.text === 'string' && msg.text.length <= 4096) {
+            await vscode.env.clipboard.writeText(msg.text);
+            safePostMessage({ command: 'copyActionResult', action: 'copyText', ok: true });
         } else if (msg.command === 'openStateFile' && lastStorageDiagnostics?.stateFilePath) {
             const uri = vscode.Uri.file(lastStorageDiagnostics.stateFilePath);
             const stat = await vscode.workspace.fs.stat(uri).then(result => result, () => null);
@@ -1156,12 +1201,14 @@ async function probeIdeCdpStatus(
     topBarEnabled: boolean,
 ): Promise<CdpStatus> {
     const platformGuide = getCdpPlatformGuide(process.platform);
+    const launcherStatus = inspectCdpLauncher({ env: process.env });
     if (!composerEnabled && !topBarEnabled) {
         return {
             state: 'disabled',
             diagnosticCode: 'disabled',
             composerEnabled: false,
             topBarEnabled: false,
+            launcherStatus,
             platformGuide,
         };
     }
@@ -1173,6 +1220,7 @@ async function probeIdeCdpStatus(
             portFilePath: resolveDevToolsActivePortPaths({ platform: process.platform, env: process.env })[0],
             composerEnabled,
             topBarEnabled,
+            launcherStatus,
             platformGuide,
         };
     }
@@ -1188,6 +1236,7 @@ async function probeIdeCdpStatus(
             composerEnabled,
             topBarEnabled,
             errorMessage: err instanceof Error ? err.message : String(err),
+            launcherStatus,
             platformGuide,
         };
     }
@@ -1201,6 +1250,7 @@ async function probeIdeCdpStatus(
             composerEnabled,
             topBarEnabled,
             errorMessage: 'No Antigravity Hub target page found on CDP port',
+            launcherStatus,
             platformGuide,
         };
     }
@@ -1213,30 +1263,40 @@ async function probeIdeCdpStatus(
         targetTitle: hubTarget.title,
         composerEnabled,
         topBarEnabled,
+        launcherStatus,
         platformGuide,
     };
 }
 
 function resolveEffectiveIdeCdpStatus(docSettings: MonitorDocumentSettings): CdpStatus | undefined {
-    if (!lastCdpStatus) { return undefined; }
     const composerEnabled = Boolean(docSettings.appComposerRingEnabled);
     const topBarEnabled = Boolean(docSettings.appTopBarEnabled);
+    const launcherStatus = lastCdpStatus?.launcherStatus ?? inspectCdpLauncher({ env: process.env });
     if (!composerEnabled && !topBarEnabled) {
         return {
-            ...lastCdpStatus,
+            ...(lastCdpStatus ?? { platformGuide: getCdpPlatformGuide(process.platform) }),
             state: 'disabled',
             diagnosticCode: 'disabled',
             composerEnabled: false,
             topBarEnabled: false,
+            launcherStatus,
         };
     }
-    if (lastCdpStatus.state === 'disabled') {
-        return undefined;
+    if (!lastCdpStatus || lastCdpStatus.state === 'disabled') {
+        return {
+            state: 'cdp_unavailable',
+            diagnosticCode: 'missing_port_file',
+            composerEnabled,
+            topBarEnabled,
+            launcherStatus,
+            platformGuide: getCdpPlatformGuide(process.platform),
+        };
     }
     return {
         ...lastCdpStatus,
         composerEnabled,
         topBarEnabled,
+        launcherStatus,
     };
 }
 

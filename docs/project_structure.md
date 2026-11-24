@@ -20,7 +20,7 @@ antigravity-context-monitor/
 │       └── SKILL.md              #     通过 sidecar://antigravity-context-monitor/context_monitor/ 一键唤起面板及升级指引
 ├── scripts/                      # 跨平台 App 插件打包与安装脚本（零外部依赖）
 │   ├── package-app-plugin.mjs    #   纯 Node 生成 dist/antigravity-context-monitor-app/、.zip、.tar.gz 与 dist/SHA256SUMS.txt，并自动严格校验
-│   ├── install-app-plugin.mjs    #   跨平台安装/升级/卸载/状态核验（--from-github / --upgrade / --install / --status / --print-cdp-guide，SHA-256 失败即中止 + 原子回滚）
+│   ├── install-app-plugin.mjs    #   跨平台安装/升级/卸载/状态核验/持久化启动器（--from-github / --upgrade / --install / --status / --setup-cdp-launcher / --remove-cdp-launcher / --print-cdp-guide，SHA-256 失败即中止 + 原子回滚）
 │   ├── install-app-plugin.sh     #   macOS / Linux 包装脚本（自动探测 node / agy-node / Electron ELECTRON_RUN_AS_NODE=1）
 │   └── install-app-plugin.ps1    #   Windows PowerShell 包装脚本（自动探测 node / agy-node.exe / agy-node.cmd / Electron）
 ├── src/                          # TypeScript 源码
@@ -30,7 +30,8 @@ antigravity-context-monitor/
 │   │   ├── sidecar-types.ts      #   Sidecar 视图/快照/动作、CDP 悬浮层与自更新契约类型
 │   │   ├── host-bridge.ts        #   浏览器端桥接（window.__ACM_BRIDGE__、acquireVsCodeApi 垫片、可见性门控 ETag 轮询、CSV/JSON 下载）
 │   │   ├── theme-adapter.ts      #   App 宿主主题 CSS 变量 → --vscode-*/--ed-* 桥接（dark/light/hc/hc-light，覆写 /preload.js 内联浅色兜底）与窄侧栏排版
-│   │   ├── cdp-injector.ts       #   严格按需（默认关闭）纯 Node RFC 6455 CDP WebSocket 客户端、DevToolsActivePort 发现、悬浮层生命周期与 256-bit 回环鉴权桥
+│   │   ├── cdp-injector.ts       #   严格按需（默认关闭）纯 Node RFC 6455 CDP WebSocket 客户端、DevToolsActivePort 与父进程参数发现（host_missing_flag）、悬浮层生命周期与 256-bit 回环鉴权桥
+│   │   ├── cdp-launcher.ts       #   纯 Node 零魔改跨平台持久化 CDP 启动器生成与检测（macOS ~/Applications/Antigravity (CDP).app 无竞态 15s 退出轮询、Windows .lnk/.cmd、Linux .desktop）
 │   │   ├── cdp-overlay-assets.ts #   零 innerHTML / Trusted-Types 安全 Shadow DOM 悬浮层（Turbo 左侧输入框上下文环 + 单列用量卡、右上角状态条 + 配额看板）
 │   │   └── plugin-updater.ts     #   面板内 GitHub Releases 条件 ETag（6h 节流）更新检查与失败即中止 SHA-256 原子自更新引擎
 │   ├── orchestrator-attribution.ts # 编排全链路角色归因（Orchestrator/Executor/Subagent）、config.json 只读回退、跨模型切换冷启动检测与双水位线
@@ -98,9 +99,10 @@ antigravity-context-monitor/
 │   └── images/                   # README 定稿截图资源（全部 9 页 monitor-*.png，Obsidian Slate 深色双语）
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
-├── tests/                        # Vitest 单元测试（81 个测试文件，1,486 项测试）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
+├── tests/                        # Vitest 单元测试（82 个测试文件，1,498 项测试）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
 │   ├── sidecar-idle-backoff-and-gm-cache.test.ts # Sidecar 空闲退避唤醒、多槽位分钟桶 ETag 缓存、GM 稳定跳过/字段保留/错误退避回归
-│   ├── app-cdp-injector.test.ts  # 纯 Node RFC 6455 WebSocket、CDP 发现防自挂载、IPv6 回退、互斥锁、Shadow DOM 零 innerHTML 与 256-bit 鉴权桥回归
+│   ├── app-cdp-launcher.test.ts  # 纯 Node 零魔改跨平台持久化 CDP 启动器（macOS .app / Windows .cmd+.lnk / Linux .desktop）生成、检测与移除回归
+│   ├── app-cdp-injector.test.ts  # 纯 Node RFC 6455 WebSocket、CDP 发现防自挂载、父进程参数检测（host_missing_flag）、IPv6 回退、互斥锁、Shadow DOM 零 innerHTML 与 256-bit 鉴权桥回归
 │   ├── app-plugin-updater.test.ts # GitHub ETag 检查、HTTPS/443 白名单、fail-closed SHA-256、安全解压与原子回滚回归
 │   ├── calendar-engine.test.ts   # 52 周热力图、今日实时合并零重复计数、相加式 Token、400 天保留与两步清空回归
 │   ├── cli-usage-scanner.test.ts # 只读 CLI 扫描器（SQLite immutable=1 / JSONL）、9 币种换算、套餐 ROI 与 CSV 公式防护回归
@@ -585,7 +587,7 @@ npm run package
 
 测试文件位于 `tests/`，仅供 Vitest 与本地浏览器/原生验收使用，不会被打包到 VSIX 或 App 插件包中。
 
-发布验收使用编译输出与重新打包安装的 **1.17.7**。编译、单元测试（**81 个文件 / 1,486 项测试**）、安装包校验（`agy plugin validate --strict` **0 告警** + `dist/SHA256SUMS.txt`）和平台验证范围集中记录在发布说明。[1.17.7 验证](releases/1.17.7.md#验证)
+发布验收使用编译输出与重新打包安装的 **1.17.7**。编译、单元测试（**82 个文件 / 1,498 项测试**）、安装包校验（`agy plugin validate --strict` **0 告警** + `dist/SHA256SUMS.txt`）和平台验证范围集中记录在发布说明。[1.17.7 验证](releases/1.17.7.md#验证)
 
 自动化 UI 与视觉验收统一由 `tests/installed-ide-ui.cjs` 驱动：
 - `node tests/installed-ide-ui.cjs --installed <目录>`（加 `--smoke` 运行快速冒烟）：基于 Chromium 与已编译/已安装 JS 渲染合成数据，覆盖全部 9 个标签页、浅色 / 深色 / 高对比度主题、三种语言（`en` / `zh` / `both`）与 `320px–1440px` 宽度，校验 axe-core WCAG 2.1 AA 对比度、WCAG 1.4.11 非文本对比度、零横向溢出、交互状态及零旧版 Prompt/Flow 残留，并内置 CDP 断连/超时自动回收会话机制。

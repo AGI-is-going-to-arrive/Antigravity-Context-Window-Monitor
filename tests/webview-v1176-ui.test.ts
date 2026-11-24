@@ -669,6 +669,65 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
         });
         expect(noHubHtml).toContain('data-cdp-diagnostic="no_hub_target"');
 
+        // host_missing_flag diagnostic + Persistent CDP Launcher controls (uninstalled vs installed) + race-free macOS guide
+        const hostMissingHtml = buildSettingsContent([], undefined, undefined, {
+            surface: 'app-sidecar',
+            appSettings: { appComposerRingEnabled: true },
+            cdpStatus: {
+                ...connectedStatus,
+                state: 'cdp_unavailable',
+                diagnosticCode: 'host_missing_flag',
+                hostHasDebugFlag: false,
+                launcherStatus: {
+                    supported: true,
+                    platform: 'darwin',
+                    installed: false,
+                    launcherPath: '/tmp/test-home/Applications/Antigravity (CDP).app',
+                    displayName: 'Antigravity (CDP)',
+                    targetAppFound: true,
+                    targetAppPath: '/Applications/Antigravity.app',
+                    safeTerminalCommand: 'while pgrep -f \'^/Applications/Antigravity\\.app/Contents/MacOS/Antigravity($| )\' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0',
+                    noteEn: 'Zero-patch launcher note EN',
+                    noteZh: '零魔改启动器说明 ZH',
+                },
+            },
+        });
+        expect(hostMissingHtml).toContain('data-cdp-diagnostic="host_missing_flag"');
+        expect(hostMissingHtml).toContain('5s');
+        expect(hostMissingHtml).toContain('id="cdpLauncherBox"');
+        expect(hostMissingHtml).toContain('id="cdpLauncherStatus"');
+        expect(hostMissingHtml).toContain('data-launcher-installed="false"');
+        expect(hostMissingHtml).toContain('id="cdpSetupLauncherBtn"');
+        expect(hostMissingHtml).toContain('Create Persistent Launcher');
+        expect(hostMissingHtml).toContain('一键生成持久化启动器');
+        expect(hostMissingHtml).toMatch(/id="cdpRemoveLauncherBtn"[^>]*hidden/);
+        expect(hostMissingHtml).toContain('pgrep -f');
+        expect(hostMissingHtml).toContain('cdp-copy-btn');
+
+        const installedLauncherHtml = buildSettingsContent([], undefined, undefined, {
+            surface: 'app-sidecar',
+            appSettings: { appComposerRingEnabled: true },
+            cdpStatus: {
+                ...connectedStatus,
+                launcherStatus: {
+                    supported: true,
+                    platform: 'darwin',
+                    installed: true,
+                    launcherPath: '/tmp/test-home/Applications/Antigravity (CDP).app',
+                    displayName: 'Antigravity (CDP)',
+                    targetAppFound: true,
+                    targetAppPath: '/Applications/Antigravity.app',
+                    safeTerminalCommand: 'while pgrep -f \'^/Applications/Antigravity\\.app/Contents/MacOS/Antigravity($| )\' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0',
+                    noteEn: 'Zero-patch launcher note EN',
+                    noteZh: '零魔改启动器说明 ZH',
+                },
+            },
+        });
+        expect(installedLauncherHtml).toContain('data-launcher-installed="true"');
+        expect(installedLauncherHtml).toContain('Recreate Launcher');
+        expect(installedLauncherHtml).toContain('重新生成启动器');
+        expect(installedLauncherHtml).not.toMatch(/id="cdpRemoveLauncherBtn"[^>]*hidden/);
+
         const disabledHtml = buildSettingsContent([], undefined, undefined, {
             surface: 'app-sidecar',
         });
@@ -887,7 +946,7 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
         }
     });
 
-    it('wires all Calendar, Orchestrator, Settings, About & HUD actions in valid browser JS', () => {
+    it('wires all Calendar, Orchestrator, Settings, About & HUD actions in valid browser JS', async () => {
         const script = getScript();
         expect(() => new Function(script)).not.toThrow();
 
@@ -906,6 +965,8 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
             'setOrchestratorPricingMode',
             'setAppSetting',
             'recheckCdp',
+            'setupCdpLauncher',
+            'removeCdpLauncher',
             'checkForUpdates',
             'applyPluginUpdate',
             'toggleNativeHud',
@@ -914,12 +975,136 @@ describe('v1.17.6 Document Styles, Client Script Action Wiring & i18n Unificatio
         for (const action of requiredActions) {
             expect(script, `missing script action ${action}`).toContain(action);
         }
-        // Live CDP & Update pill/diagnostic synchronization across syncSettingsControls & acm:snapshot
+        // Live CDP & Update pill/diagnostic/launcher synchronization across syncSettingsControls & acm:snapshot
         expect(script).toContain('syncCdpStatusUi');
+        expect(script).toContain('syncCdpLauncherUi');
         expect(script).toContain('syncUpdateStatusUi');
         expect(script).toContain('cdpDiagnosticHint');
         expect(script).toContain('cdpStatusResult');
+        expect(script).toContain('cdpLauncherResult');
+        expect(script).toContain('host_missing_flag');
+        expect(script).toContain('cdp-copy-btn');
         expect(script).toContain('msg.snapshot.data.cdpStatus');
+        // Verify syncCdpLauncherUi & host_missing_flag live DOM update via minimal VM harness
+        const vm = await import('vm');
+        const attrs = new Map<string, Map<string, string>>();
+        const makeEl = (id: string) => {
+            const elAttrs = new Map<string, string>();
+            attrs.set(id, elAttrs);
+            const children: any[] = [];
+            const el: any = {
+                id,
+                className: '',
+                hidden: false,
+                disabled: false,
+                checked: true,
+                textContent: '',
+                style: {},
+                dataset: {},
+                children,
+                classList: {
+                    add: () => {},
+                    remove: () => {},
+                    toggle: () => {},
+                    contains: () => false,
+                },
+                setAttribute: (k: string, v: string) => { elAttrs.set(k, String(v)); },
+                getAttribute: (k: string) => elAttrs.get(k) ?? null,
+                removeAttribute: (k: string) => { elAttrs.delete(k); },
+                appendChild: (c: any) => { children.push(c); return c; },
+                querySelector: (sel: string) => sel === 'span' ? el._span ?? null : null,
+                querySelectorAll: () => [],
+                addEventListener: () => {},
+                closest: () => null,
+            };
+            if (id === 'cdpSetupLauncherBtn') {
+                el._span = { textContent: 'Create Persistent Launcher' };
+            }
+            return el;
+        };
+        const domMap = new Map<string, any>([
+            ['cdpStatusPill', makeEl('cdpStatusPill')],
+            ['cdpDiagnosticHint', makeEl('cdpDiagnosticHint')],
+            ['cdpLauncherStatus', makeEl('cdpLauncherStatus')],
+            ['cdpLauncherNote', makeEl('cdpLauncherNote')],
+            ['cdpSetupLauncherBtn', makeEl('cdpSetupLauncherBtn')],
+            ['cdpRemoveLauncherBtn', makeEl('cdpRemoveLauncherBtn')],
+            ['cdpLauncherFeedback', makeEl('cdpLauncherFeedback')],
+            ['appOverlaysFeedback', makeEl('appOverlaysFeedback')],
+            ['toggleAppComposerRing', makeEl('toggleAppComposerRing')],
+            ['toggleAppTopBar', makeEl('toggleAppTopBar')],
+        ]);
+        domMap.get('cdpRemoveLauncherBtn').hidden = true;
+        const msgListeners: Array<(ev: { data: any }) => void> = [];
+        const docStub: any = {
+            body: {
+                style: {},
+                dataset: {},
+                getAttribute: (k: string) => (k === 'data-lang' ? 'both' : null),
+                setAttribute: () => {},
+                addEventListener: () => {},
+                classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
+            },
+            documentElement: { style: { setProperty: () => {} } },
+            getElementById: (id: string) => domMap.get(id) ?? null,
+            querySelector: () => null,
+            querySelectorAll: () => [],
+            createElement: (tag: string) => ({ tagName: tag.toUpperCase(), className: '', textContent: '', setAttribute: () => {}, style: {}, appendChild: () => {} }),
+            addEventListener: () => {},
+        };
+        const winStub: any = {
+            addEventListener: (type: string, fn: any) => { if (type === 'message') { msgListeners.push(fn); } },
+            removeEventListener: () => {},
+            location: { href: 'http://127.0.0.1:49999/' },
+            requestAnimationFrame: () => 0,
+            setTimeout: () => 0,
+            clearTimeout: () => {},
+        };
+        vm.runInNewContext(script, {
+            window: winStub,
+            document: docStub,
+            acquireVsCodeApi: () => ({ getState: () => ({}), setState: () => {}, postMessage: () => {} }),
+            requestAnimationFrame: () => 0,
+            setTimeout: () => 0,
+            clearTimeout: () => {},
+            navigator: {},
+            console,
+        });
+        for (const fn of msgListeners) {
+            fn({
+                data: {
+                    command: 'cdpLauncherResult',
+                    ok: true,
+                    messageEn: 'Created persistent launcher',
+                    messageZh: '已生成持久化启动器',
+                    launcherStatus: {
+                        installed: true,
+                        launcherPath: '/tmp/vm-home/Applications/Antigravity (CDP).app',
+                        noteEn: 'Updated note EN',
+                        noteZh: '更新说明 ZH',
+                    },
+                    cdpStatus: {
+                        state: 'cdp_unavailable',
+                        diagnosticCode: 'host_missing_flag',
+                        hostHasDebugFlag: false,
+                        composerEnabled: true,
+                        topBarEnabled: false,
+                        launcherStatus: {
+                            installed: true,
+                            launcherPath: '/tmp/vm-home/Applications/Antigravity (CDP).app',
+                        },
+                    },
+                },
+            });
+        }
+        expect(attrs.get('cdpDiagnosticHint')?.get('data-cdp-diagnostic')).toBe('host_missing_flag');
+        expect(domMap.get('cdpDiagnosticHint').hidden).toBe(false);
+        expect(domMap.get('cdpDiagnosticHint').textContent).toContain('--remote-debugging-port=0');
+        expect(attrs.get('cdpLauncherStatus')?.get('data-launcher-installed')).toBe('true');
+        expect(attrs.get('cdpLauncherStatus')?.get('data-launcher-path')).toBe('/tmp/vm-home/Applications/Antigravity (CDP).app');
+        expect(domMap.get('cdpSetupLauncherBtn')._span.textContent).toContain('Recreate Launcher');
+        expect(domMap.get('cdpRemoveLauncherBtn').hidden).toBe(false);
+        expect(domMap.get('cdpLauncherFeedback').textContent).toContain('Created persistent launcher');
         // Two-step clear guard: #clearCalendarBtn must NOT directly post clearCalendarHistory
         expect(script).not.toMatch(/target\.closest\('#clearCalendarBtn'\)\)\s*\{\s*vscode\.postMessage\(\{\s*command:\s*'clearCalendarHistory'/);
         // syncSettingsControls syncs polling, quota threshold, customFxRate, and subscriptionMonthlyFee

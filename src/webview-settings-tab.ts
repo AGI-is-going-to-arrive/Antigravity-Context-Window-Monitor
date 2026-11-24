@@ -25,7 +25,7 @@ import {
     type DisplayCurrencyCode,
     type OrchestratorPricingMode,
 } from './durable-state';
-import type { CdpDiagnosticCode, CdpStatus } from './app/sidecar-types';
+import type { CdpDiagnosticCode, CdpLauncherStatus, CdpStatus } from './app/sidecar-types';
 import { ICON } from './webview-icons';
 import { esc, formatFileSize, tBiHtml } from './webview-helpers';
 
@@ -365,16 +365,63 @@ function buildCdpDiagnosticHintHtml(
                 `已连接 Antigravity 主窗口，但悬浮组件注入失败${errSuffixZh}。请待窗口加载完成后点击「重新检测」。`,
             );
             break;
+        case 'host_missing_flag':
+            toneClass = 'is-warn';
+            messageHtml = tBiHtml(
+                'Antigravity App is running without --remote-debugging-port=0 (e.g. launched from Dock/Spotlight, restarted by an auto-update, or relaunched during the ~5s background shutdown after Cmd+Q). Use the 1-click Persistent CDP Launcher below, then click Recheck CDP.',
+                '当前运行的 Antigravity App 未启用 --remote-debugging-port=0（例如从 Dock/Spotlight 启动、自动更新重启，或在按 Cmd+Q 后约 5 秒后台清理尚未完成时运行了 open -a）。请使用下方「持久化启动器」一键生成并重启，再点击「重新检测」。',
+            );
+            break;
         case 'missing_port_file':
         default:
             toneClass = 'is-warn';
             messageHtml = tBiHtml(
-                'DevToolsActivePort not found — Antigravity App was launched without --remote-debugging-port=0 (or an auto-update restart dropped the flag). Quit completely first (Cmd+Q on macOS), relaunch with the command below, then click Recheck CDP.',
-                '未检测到 DevToolsActivePort —— Antigravity App 未使用 --remote-debugging-port=0 启动（或自动更新重启丢弃了启动参数）。请先完全退出（macOS 按 Cmd+Q），按下方命令重启后再点击「重新检测」。',
+                'DevToolsActivePort not found — Antigravity App was launched without --remote-debugging-port=0 (or an auto-update restart dropped the flag). Quit completely first (Cmd+Q and wait ~5s on macOS), or use the 1-click Persistent CDP Launcher below, then click Recheck CDP.',
+                '未检测到 DevToolsActivePort —— Antigravity App 未使用 --remote-debugging-port=0 启动（或自动更新重启丢弃了启动参数）。请先完全退出（macOS 按 Cmd+Q 后等待约 5 秒）或使用下方一键持久化启动器重启，再点击「重新检测」。',
             );
             break;
     }
     return `<div class="stg-diagnostic-hint ${toneClass}" id="cdpDiagnosticHint" data-cdp-diagnostic="${esc(diagCode)}" role="status">${messageHtml}</div>`;
+}
+
+function getDefaultLauncherDisplayPath(platform?: string): string {
+    if (platform === 'win32') { return '%USERPROFILE%\\Desktop\\Antigravity (CDP).lnk'; }
+    if (platform === 'linux') { return '~/.local/share/applications/antigravity-cdp.desktop'; }
+    return '~/Applications/Antigravity (CDP).app';
+}
+
+function buildCdpLauncherRowHtml(
+    launcherStatus: CdpLauncherStatus | null | undefined,
+    activePlatform?: string,
+): string {
+    const installed = Boolean(launcherStatus?.installed);
+    const displayPath = launcherStatus?.launcherPath?.trim()
+        || getDefaultLauncherDisplayPath(activePlatform || launcherStatus?.platform);
+    const statusBadgeHtml = installed
+        ? `<span class="stg-cdp-launcher-badge is-installed">${tBiHtml('Installed', '已创建')}</span>`
+        : `<span class="stg-cdp-launcher-badge">${tBiHtml('Not created', '未创建')}</span>`;
+    const setupLabelHtml = installed
+        ? tBiHtml('Recreate Launcher', '重新生成启动器')
+        : tBiHtml('Create Persistent Launcher', '一键生成持久化启动器');
+    const noteHtml = launcherStatus?.noteEn && launcherStatus?.noteZh
+        ? tBiHtml(launcherStatus.noteEn, launcherStatus.noteZh)
+        : tBiHtml(
+            'Zero-patch launcher outside Antigravity.app — survives auto-updates and waits cleanly through macOS\'s ~5s background shutdown after Cmd+Q.',
+            '独立于 Antigravity.app 的零魔改启动器——跨自动更新持久生效，并自动等待 macOS 按 Cmd+Q 后约 5 秒的后台退出清理完成。',
+        );
+    return `
+            <div class="stg-cdp-launcher-box" id="cdpLauncherBox">
+                <div class="stg-cdp-launcher-head">
+                    <span class="stg-cdp-launcher-title">${tBiHtml('Persistent CDP Launcher (Zero-Patch)', '持久化 CDP 启动器（零魔改）')}</span>
+                    <span class="stg-cdp-launcher-status" id="cdpLauncherStatus" data-launcher-installed="${installed ? 'true' : 'false'}" data-launcher-path="${esc(displayPath)}">${statusBadgeHtml}<code class="stg-cdp-launcher-path">${esc(displayPath)}</code></span>
+                </div>
+                <p class="stg-cdp-launcher-note" id="cdpLauncherNote">${noteHtml}</p>
+                <div class="storage-actions stg-cdp-launcher-actions">
+                    <button type="button" class="action-btn stg-btn-primary" id="cdpSetupLauncherBtn" data-action="setupCdpLauncher"><span>${setupLabelHtml}</span></button>
+                    <button type="button" class="action-btn" id="cdpRemoveLauncherBtn" data-action="removeCdpLauncher"${installed ? '' : ' hidden'}><span>${tBiHtml('Remove Launcher', '移除启动器')}</span></button>
+                    <span id="cdpLauncherFeedback" class="threshold-feedback" role="status"></span>
+                </div>
+            </div>`;
 }
 
 function buildUpdateStatusPillHtml(
@@ -505,6 +552,11 @@ export function buildSettingsContent(
     // ── App Ambient Overlays (Opt-In CDP) & Native Panel Compact HUD Card ──
     const cdpPillHtml = buildCdpStatusPillHtml(options?.cdpStatus, appComposerRingEnabled, appTopBarEnabled);
     const cdpDiagnosticHintHtml = buildCdpDiagnosticHintHtml(options?.cdpStatus, appComposerRingEnabled, appTopBarEnabled);
+    const cdpLauncherRowHtml = buildCdpLauncherRowHtml(options?.cdpStatus?.launcherStatus, activePlatform);
+    const macWaitLaunchCmd = `while pgrep -f '^/Applications/Antigravity\\.app/Contents/MacOS/Antigravity($| )' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0`;
+    const winPsCmd = '& "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0';
+    const winCmdShortcut = '"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0';
+    const linuxLaunchCmd = 'antigravity --remote-debugging-port=0';
     const appOverlaysCard = `
         <section class="stg-card" id="appOverlaysCard" data-accent="display">
             <div class="stg-header">
@@ -538,42 +590,55 @@ export function buildSettingsContent(
                 <button type="button" class="action-btn" id="cdpRecheckBtn" data-action="recheckCdp">${ICON.refresh} <span>${tBiHtml('Recheck CDP', '重新检测')}</span></button>
                 <span id="appOverlaysFeedback" class="threshold-feedback" role="status"></span>
             </div>
+            ${cdpLauncherRowHtml}
             <details id="settings-cdp-guide" class="stg-guide-details" data-state-key="settings-cdp-guide">
-                <summary>${tBiHtml('Cross-platform CDP launch guide (macOS / Windows / Linux)', '跨平台 CDP 启动指引（macOS / Windows / Linux）')}</summary>
+                <summary>${tBiHtml('Manual terminal CDP launch guide (macOS / Windows / Linux)', '手动终端 CDP 启动指引（macOS / Windows / Linux）')}</summary>
                 <div class="stg-guide-body">
                     <p>${tBiHtml(
         'Zero app.asar patching · 100% ToS-safe read-only observation.',
         '零 app.asar 篡改 · 100% 合规只读观测。',
     )}</p>
                     <p class="stg-guide-step">${tBiHtml(
-        'Step 1 — Quit Antigravity App completely first (macOS: Cmd+Q; Windows/Linux: close all windows & tray icon). If Antigravity is still running, macOS "open -a" silently ignores --args.',
-        '第一步 — 先完全退出 Antigravity App（macOS 按 Cmd+Q；Windows/Linux 关闭所有窗口及托盘图标）。若应用仍在运行，macOS 的 open -a 会直接忽略 --args 参数。',
+        'Step 1 — Quit Antigravity App completely first (macOS: Cmd+Q and wait ~5s for background language_server teardown; Windows/Linux: close all windows & tray icon). If Antigravity is still exiting, macOS "open -a" silently drops --args.',
+        '第一步 — 先完全退出 Antigravity App（macOS 按 Cmd+Q 后需等待约 5 秒后台 language_server 清理完成；Windows/Linux 关闭所有窗口及托盘图标）。若旧进程仍在退出中，macOS 的 open -a 会静默丢弃 --args 参数。',
     )}</p>
                     <p class="stg-guide-step">${tBiHtml(
-        'Step 2 — Relaunch Antigravity App with --remote-debugging-port=0, then click Recheck CDP:',
-        '第二步 — 使用 --remote-debugging-port=0 重新启动 Antigravity App，然后点击「重新检测」：',
+        'Step 2 — Relaunch Antigravity App with --remote-debugging-port=0 (the macOS command below automatically waits out the 5s teardown), then click Recheck CDP:',
+        '第二步 — 使用 --remote-debugging-port=0 重新启动 Antigravity App（下方 macOS 命令会自动等待 5 秒后台清理结束），然后点击「重新检测」：',
     )}</p>
                     <div class="stg-code-list">
                         <div class="stg-code-item${activePlatform === 'darwin' ? ' is-current-platform' : ''}">
-                            <strong>macOS (Terminal)</strong>
-                            <code>open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0</code>
+                            <div class="stg-code-item-head">
+                                <strong>macOS (Terminal — race-free wait &amp; launch)</strong>
+                                <button type="button" class="action-btn cdp-copy-btn" data-copy-command="${esc(macWaitLaunchCmd)}" aria-label="${esc(tBi('Copy macOS command', '复制 macOS 命令'))}">${ICON.copy} <span>${tBiHtml('Copy', '复制')}</span></button>
+                            </div>
+                            <code>${esc(macWaitLaunchCmd)}</code>
                         </div>
                         <div class="stg-code-item${activePlatform === 'win32' ? ' is-current-platform' : ''}">
-                            <strong>Windows (PowerShell)</strong>
-                            <code>&amp; "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0</code>
+                            <div class="stg-code-item-head">
+                                <strong>Windows (PowerShell)</strong>
+                                <button type="button" class="action-btn cdp-copy-btn" data-copy-command="${esc(winPsCmd)}" aria-label="${esc(tBi('Copy Windows PowerShell command', '复制 Windows PowerShell 命令'))}">${ICON.copy} <span>${tBiHtml('Copy', '复制')}</span></button>
+                            </div>
+                            <code>${esc(winPsCmd)}</code>
                         </div>
                         <div class="stg-code-item${activePlatform === 'win32' ? ' is-current-platform' : ''}">
-                            <strong>Windows (CMD / Shortcut)</strong>
-                            <code>"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0</code>
+                            <div class="stg-code-item-head">
+                                <strong>Windows (CMD / Shortcut)</strong>
+                                <button type="button" class="action-btn cdp-copy-btn" data-copy-command="${esc(winCmdShortcut)}" aria-label="${esc(tBi('Copy Windows CMD command', '复制 Windows CMD 命令'))}">${ICON.copy} <span>${tBiHtml('Copy', '复制')}</span></button>
+                            </div>
+                            <code>${esc(winCmdShortcut)}</code>
                         </div>
                         <div class="stg-code-item${activePlatform === 'linux' ? ' is-current-platform' : ''}">
-                            <strong>Linux</strong>
-                            <code>antigravity --remote-debugging-port=0</code>
+                            <div class="stg-code-item-head">
+                                <strong>Linux</strong>
+                                <button type="button" class="action-btn cdp-copy-btn" data-copy-command="${esc(linuxLaunchCmd)}" aria-label="${esc(tBi('Copy Linux command', '复制 Linux 命令'))}">${ICON.copy} <span>${tBiHtml('Copy', '复制')}</span></button>
+                            </div>
+                            <code>${esc(linuxLaunchCmd)}</code>
                         </div>
                     </div>
                     <p class="stg-guide-note">${tBiHtml(
-        'Note: Antigravity auto-updates restart the app without CLI flags. After an update, quit completely and relaunch with --remote-debugging-port=0 (or use a persistent launcher/shortcut), then click Recheck CDP.',
-        '提示：Antigravity 自动更新重启后会丢弃启动参数。更新后请完全退出并重新以 --remote-debugging-port=0 启动（或使用持久化快捷方式），再点击「重新检测」。',
+        'Tip: Antigravity auto-updates restart the app without CLI flags. Use the 1-click Persistent CDP Launcher above (or run `node scripts/install-app-plugin.mjs --setup-cdp-launcher`) so you never have to retype terminal commands.',
+        '提示：Antigravity 自动更新重启后会丢弃启动参数。建议使用上方「一键生成持久化启动器」（或运行 `node scripts/install-app-plugin.mjs --setup-cdp-launcher`），以后直接从启动器打开即可永久生效。',
     )}</p>
                 </div>
             </details>
