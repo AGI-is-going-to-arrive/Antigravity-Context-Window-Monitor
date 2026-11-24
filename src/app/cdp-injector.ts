@@ -11,12 +11,14 @@
  *   strict `Origin` validation).
  */
 
+import { execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as http from 'http';
 import type * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import { getSafeCdpLaunchCommand, inspectCdpLauncher } from './cdp-launcher';
 import {
     buildOverlayBootstrapScript,
     buildOverlayUnmountScript,
@@ -25,6 +27,7 @@ import {
 import type {
     CdpConnectionState,
     CdpDiagnosticCode,
+    CdpLauncherStatus,
     CdpOverlayBridgeAction,
     CdpOverlayBridgeActionCommand,
     CdpOverlayPayload,
@@ -50,6 +53,7 @@ export interface DevToolsPortDiscoveryOptions {
     homedir?: string;
     env?: NodeJS.ProcessEnv;
     explicitPaths?: readonly string[];
+    customUserDataDir?: string;
     readFileSyncFn?: (filePath: string, encoding: 'utf8') => string;
 }
 
@@ -61,7 +65,8 @@ export interface DevToolsActivePortInfo {
 
 /**
  * Resolve cross-platform candidate paths for Antigravity's `DevToolsActivePort` file.
- * Checks `AGY_BROWSER_ACTIVE_PORT_FILE` first (if set), followed by default OS paths:
+ * Prepends `<customUserDataDir>/DevToolsActivePort` when a custom `--user-data-dir` is detected,
+ * checks `AGY_BROWSER_ACTIVE_PORT_FILE` next (if set), followed by default OS paths:
  * - macOS: `~/Library/Application Support/Antigravity/DevToolsActivePort`
  * - Windows: `%APPDATA%\Antigravity\DevToolsActivePort`
  * - Linux: `${XDG_CONFIG_HOME:-~/.config}/Antigravity/DevToolsActivePort`
@@ -80,6 +85,15 @@ export function resolveDevToolsActivePortPaths(options: DevToolsPortDiscoveryOpt
             paths.push(trimmed);
         }
     };
+
+    if (typeof options.customUserDataDir === 'string' && options.customUserDataDir.trim()) {
+        const customDir = options.customUserDataDir.trim();
+        if (platform === 'win32' && (/^[A-Za-z]:/.test(customDir) || customDir.includes('\\'))) {
+            pushUnique(path.win32.join(customDir, 'DevToolsActivePort'));
+        } else {
+            pushUnique(path.posix.join(customDir, 'DevToolsActivePort'));
+        }
+    }
 
     if (typeof env.AGY_BROWSER_ACTIVE_PORT_FILE === 'string' && env.AGY_BROWSER_ACTIVE_PORT_FILE.trim()) {
         pushUnique(env.AGY_BROWSER_ACTIVE_PORT_FILE);
@@ -143,35 +157,255 @@ export function discoverDevToolsActivePort(
     return null;
 }
 
+// ─── Read-Only Grandparent Antigravity Host Process Inspection ───────────────
+
+export interface HostProcessInspectionResult {
+    found: boolean;
+    pid?: number;
+    commandLine?: string;
+    hasRemoteDebuggingFlag: boolean;
+    /** Explicit port N when `--remote-debugging-port=N` with N > 0 (`undefined` when `=0` or absent). */
+    explicitPort?: number;
+    /** Custom `--user-data-dir=<dir>` if passed to the host Antigravity process. */
+    customUserDataDir?: string;
+}
+
+export interface ProcessTableEntry {
+    pid: number;
+    ppid: number;
+    command: string;
+}
+
+export interface InspectHostProcessOptions {
+    platform?: NodeJS.Platform;
+    startPid?: number;
+    timeoutMs?: number;
+    maxHops?: number;
+    readProcessEntry?: (pid: number) => ProcessTableEntry | null;
+}
+
+function extractExecutableToken(commandLine: string): string {
+    const trimmed = commandLine.trim();
+    if (!trimmed) { return ''; }
+    if (trimmed.startsWith('"')) {
+        const end = trimmed.indexOf('"', 1);
+        return end > 1 ? trimmed.slice(1, end) : trimmed.slice(1);
+    }
+    if (trimmed.startsWith('\'')) {
+        const end = trimmed.indexOf('\'', 1);
+        return end > 1 ? trimmed.slice(1, end) : trimmed.slice(1);
+    }
+    const flagIdx = trimmed.search(/\s+--/);
+    const prefix = flagIdx >= 0 ? trimmed.slice(0, flagIdx) : trimmed;
+    const firstSpace = prefix.search(/\s/);
+    if (firstSpace < 0) { return prefix; }
+    // Handle macOS/Windows unquoted app paths containing spaces (e.g. "/My Apps/Antigravity.app/Contents/MacOS/Antigravity ...")
+    // while strictly rejecting shell wrappers like "zsh -c '/Applications/Antigravity.app/...'"
+    const macMatch = prefix.match(/^(\/[^"']+\.app\/Contents\/MacOS\/[^\s"']+)(?=\s|$)/i);
+    if (macMatch && !/\s-\S/.test(macMatch[1])) { return macMatch[1]; }
+    const exeMatch = prefix.match(/^([A-Za-z]:\\[^"']+\.exe)(?=\s|$)/i);
+    if (exeMatch && !/\s-\S/.test(exeMatch[1])) { return exeMatch[1]; }
+    return prefix.slice(0, firstSpace);
+}
+
+/**
+ * Pure parser for an Antigravity App main process command line.
+ * Identifies the Antigravity Desktop main process (strictly excluding Antigravity IDE,
+ * Electron helper/renderer processes, `language_server`, and sidecar processes) and extracts
+ * `--remote-debugging-port` and `--user-data-dir`.
+ */
+export function parseAntigravityHostCommandLine(commandLine: string): {
+    isAntigravityHost: boolean;
+    hasRemoteDebuggingFlag: boolean;
+    explicitPort?: number;
+    customUserDataDir?: string;
+} {
+    const raw = typeof commandLine === 'string' ? commandLine.trim() : '';
+    if (!raw) {
+        return { isAntigravityHost: false, hasRemoteDebuggingFlag: false };
+    }
+
+    // Strictly exclude Antigravity IDE, Antigravity Tools, Electron helper/child processes,
+    // language_server, and our own sidecar/launcher scripts.
+    if (
+        /\bantigravity[\s-]+ide\b/i.test(raw)
+        || /\bantigravity[\s-]+tools\b/i.test(raw)
+        || /\bantigravity\s+helper\b/i.test(raw)
+        || /\blanguage_server\b/i.test(raw)
+        || /\bantigravity-context-monitor\b/i.test(raw)
+        || /\bantigravity-cdp\b/i.test(raw)
+        || /(?:^|\s)--type=/i.test(raw)
+    ) {
+        return { isAntigravityHost: false, hasRemoteDebuggingFlag: false };
+    }
+
+    const exe = extractExecutableToken(raw);
+    const isMacMain = /\/Antigravity\.app\/Contents\/MacOS\/Antigravity$/i.test(exe);
+    const isWinMain = /(?:^|[\\/])Antigravity\.exe$/i.test(exe);
+    const isLinuxMain = /(?:^|\/)antigravity$/.test(exe);
+
+    if (!isMacMain && !isWinMain && !isLinuxMain) {
+        return { isAntigravityHost: false, hasRemoteDebuggingFlag: false };
+    }
+
+    let hasRemoteDebuggingFlag = false;
+    let explicitPort: number | undefined;
+    const portMatch = raw.match(/(?:^|\s)--remote-debugging-port(?:=|\s+)["']?(\d+)["']?(?=\s|$)/);
+    if (portMatch) {
+        hasRemoteDebuggingFlag = true;
+        const parsedPort = Number(portMatch[1]);
+        if (Number.isSafeInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535) {
+            explicitPort = parsedPort;
+        }
+    } else if (/(?:^|\s)--remote-debugging-port(?==|\s|$)/.test(raw)) {
+        hasRemoteDebuggingFlag = true;
+    }
+
+    const quotedDirMatch = raw.match(/(?:^|\s)--user-data-dir(?:=|\s+)(?:"([^"]+)"|'([^']+)')(?=\s|$)/);
+    const unquotedDirMatch = quotedDirMatch
+        ? null
+        : raw.match(/(?:^|\s)--user-data-dir(?:=|\s+)([^\s"'](?:.*?))(?=\s+--|$)/);
+    const customUserDataDir = (quotedDirMatch?.[1] ?? quotedDirMatch?.[2] ?? unquotedDirMatch?.[1] ?? '').trim() || undefined;
+
+    return {
+        isAntigravityHost: true,
+        hasRemoteDebuggingFlag,
+        ...(explicitPort !== undefined ? { explicitPort } : {}),
+        ...(customUserDataDir ? { customUserDataDir } : {}),
+    };
+}
+
+function readLinuxProcEntry(pid: number): ProcessTableEntry | null {
+    try {
+        const statRaw = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        const closeParen = statRaw.lastIndexOf(')');
+        if (closeParen < 0) { return null; }
+        const after = statRaw.slice(closeParen + 1).trim().split(/\s+/);
+        // after[0] is process state, after[1] is ppid
+        const ppid = Number(after[1]);
+        if (!Number.isSafeInteger(ppid) || ppid < 0) { return null; }
+        const cmdlineBuf = fs.readFileSync(`/proc/${pid}/cmdline`);
+        const args = cmdlineBuf
+            .toString('utf8')
+            .split('\0')
+            .filter(Boolean)
+            .map((arg) => (/\s/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg));
+        if (args.length === 0) { return null; }
+        return { pid, ppid, command: args.join(' ') };
+    } catch {
+        return null;
+    }
+}
+
+function readPosixPsEntry(pid: number, timeoutMs: number): ProcessTableEntry | null {
+    try {
+        const out = execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], {
+            encoding: 'utf8',
+            timeout: timeoutMs,
+            stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        const line = out.trim();
+        if (!line) { return null; }
+        const match = line.match(/^(\d+)\s+(.+)$/);
+        if (!match) { return null; }
+        const ppid = Number(match[1]);
+        if (!Number.isSafeInteger(ppid) || ppid < 0) { return null; }
+        return { pid, ppid, command: match[2].trim() };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Read-only walk up `process.ppid` -> grandparent PID to locate the host Antigravity App
+ * main process and inspect its `--remote-debugging-port` and `--user-data-dir` argv flags.
+ * Fast (~100ms timeout cap) and completely fail-safe (returns `{ found: false }` on any error).
+ */
+export function inspectAntigravityHostProcess(
+    options: InspectHostProcessOptions = {},
+): HostProcessInspectionResult {
+    const platform = options.platform ?? process.platform;
+    const timeoutMs = options.timeoutMs ?? 120;
+    const maxHops = options.maxHops ?? 6;
+    const startPid = options.startPid ?? process.ppid;
+
+    if (!Number.isSafeInteger(startPid) || startPid <= 1) {
+        return { found: false, hasRemoteDebuggingFlag: false };
+    }
+
+    const readEntry = options.readProcessEntry ?? ((pid: number): ProcessTableEntry | null => {
+        if (platform === 'linux') {
+            return readLinuxProcEntry(pid) ?? readPosixPsEntry(pid, timeoutMs);
+        }
+        if (platform === 'darwin') {
+            return readPosixPsEntry(pid, timeoutMs);
+        }
+        // On Windows, spawning PowerShell/CIM synchronously risks blocking the sidecar event loop
+        // beyond the ~100ms budget; skip cleanly unless an explicit reader is injected.
+        return null;
+    });
+
+    const visited = new Set<number>();
+    let currentPid = startPid;
+
+    for (let hop = 0; hop < maxHops && currentPid > 1 && !visited.has(currentPid); hop++) {
+        visited.add(currentPid);
+        let entry: ProcessTableEntry | null = null;
+        try {
+            entry = readEntry(currentPid);
+        } catch {
+            entry = null;
+        }
+        if (!entry) { break; }
+
+        const parsed = parseAntigravityHostCommandLine(entry.command);
+        if (parsed.isAntigravityHost) {
+            return {
+                found: true,
+                pid: entry.pid,
+                commandLine: entry.command,
+                hasRemoteDebuggingFlag: parsed.hasRemoteDebuggingFlag,
+                ...(parsed.explicitPort !== undefined ? { explicitPort: parsed.explicitPort } : {}),
+                ...(parsed.customUserDataDir ? { customUserDataDir: parsed.customUserDataDir } : {}),
+            };
+        }
+
+        if (!Number.isSafeInteger(entry.ppid) || entry.ppid <= 1 || entry.ppid === currentPid) {
+            break;
+        }
+        currentPid = entry.ppid;
+    }
+
+    return { found: false, hasRemoteDebuggingFlag: false };
+}
+
 /**
  * Concise, zero-patch launch instructions for opting into Chromium's documented
  * `--remote-debugging-port=0` flag across macOS, Windows, and Linux.
  */
 export function getCdpPlatformGuide(platform: NodeJS.Platform = process.platform): CdpPlatformGuide {
+    const command = getSafeCdpLaunchCommand(platform);
     if (platform === 'darwin') {
-        const command = 'open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0';
         return {
             platform: 'darwin',
             command,
-            en: `Antigravity 2.33+ disables remote debugging by default. Completely quit Antigravity App first (Cmd+Q), then launch it with \`${command}\` (no app binary modification needed). Note: Antigravity auto-updates restart without CLI flags, so relaunch with this command after updates.`,
-            zh: `Antigravity 2.33+ 默认关闭远程调试端口。请先按 Cmd+Q 完全退出 Antigravity App，再运行 \`${command}\` 启动（无需修改任何应用文件）。提示：应用自动更新重启后会丢失命令行参数，更新后需重新带参启动。`,
+            en: `Recommended: create the zero-patch Persistent Launcher (~/Applications/Antigravity (CDP).app) via Settings or \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`. Or quit Antigravity App (Cmd+Q), wait ~5s for background shutdown (until the Dock dot disappears — running \`open -a\` during teardown silently drops \`--args\`), and run \`${command}\`. Auto-updates restart without CLI flags.`,
+            zh: `推荐：在设置中一键创建零侵入持久化启动器（~/Applications/Antigravity (CDP).app，或运行 \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`）。若手动启动，请先按 Cmd+Q 退出并等待约 5 秒后台清理完成（待程序坞指示灯消失，否则 open -a 会静默丢弃 --args），再执行 \`${command}\`。自动更新重启后需再次通过启动器或带参命令启动。`,
         };
     }
     if (platform === 'win32') {
-        const command = '& "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0';
         return {
             platform: 'win32',
             command,
-            en: `Antigravity 2.33+ disables remote debugging by default. Close all Antigravity windows and tray processes first, then launch in PowerShell with \`${command}\` (or CMD / shortcut target: \`"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0\`). Auto-updates restart without CLI flags.`,
-            zh: `Antigravity 2.33+ 默认关闭远程调试端口。请先完全退出 Antigravity（含托盘进程），再在 PowerShell 运行 \`${command}\`（或在 CMD / 快捷方式目标使用 \`"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0\`）。自动更新重启后需重新带参启动。`,
+            en: `Recommended: create the zero-patch Persistent Launcher shortcuts (Desktop & Start Menu) via Settings or \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`. Or close all Antigravity windows and tray processes first, then launch in PowerShell with \`${command}\` (or CMD / shortcut target: \`"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0\`). Auto-updates restart without CLI flags.`,
+            zh: `推荐：在设置中一键创建桌面与开始菜单零侵入持久化快捷方式（或运行 \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`）。若手动启动，请先完全退出 Antigravity（含托盘进程），再在 PowerShell 运行 \`${command}\`（或 CMD / 快捷方式目标 \`"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0\`）。自动更新重启后需重新带参启动。`,
         };
     }
-    const command = 'antigravity --remote-debugging-port=0';
     return {
         platform: 'linux',
         command,
-        en: `Antigravity 2.33+ disables remote debugging by default. Close all running Antigravity instances first, then launch with \`${command}\` (or add the flag to your .desktop Exec entry). Auto-updates restart without CLI flags.`,
-        zh: `Antigravity 2.33+ 默认关闭远程调试端口。请先完全退出正在运行的 Antigravity，再使用 \`${command}\` 启动或在 .desktop 的 Exec 中添加该参数。自动更新重启后需重新带参启动。`,
+        en: `Recommended: create the zero-patch Persistent Launcher (~/.local/share/applications/antigravity-cdp.desktop) via Settings or \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`. Or close all running Antigravity instances first, then launch with \`${command}\`. Auto-updates restart without CLI flags.`,
+        zh: `推荐：在设置中一键创建零侵入持久化启动入口（~/.local/share/applications/antigravity-cdp.desktop，或运行 \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`）。若手动启动，请先完全退出正在运行的 Antigravity，再运行 \`${command}\`。自动更新重启后需重新带参启动。`,
     };
 }
 
@@ -202,11 +436,16 @@ export function isLoopbackUrl(rawUrl: string, allowedProtocols: readonly string[
     }
 }
 
-function parseSidecarWebPort(env: NodeJS.ProcessEnv = process.env): number | null {
-    const raw = env.ANTIGRAVITY_SIDECAR_WEB_PORT;
-    if (typeof raw !== 'string' || !/^\d+$/.test(raw.trim())) { return null; }
-    const port = Number(raw.trim());
-    return Number.isSafeInteger(port) && port >= 1 && port <= 65535 ? port : null;
+function parseSidecarWebPort(env: NodeJS.ProcessEnv = process.env): number[] {
+    const ports: number[] = [];
+    for (const raw of [env.ANTIGRAVITY_SIDECAR_WEB_PORT, env.ANTIGRAVITY_SIDECAR_PORT]) {
+        if (typeof raw !== 'string' || !/^\d+$/.test(raw.trim())) { continue; }
+        const port = Number(raw.trim());
+        if (Number.isSafeInteger(port) && port >= 1 && port <= 65535 && !ports.includes(port)) {
+            ports.push(port);
+        }
+    }
+    return ports;
 }
 
 function isExcludedSidecarOrDevToolsTitle(titleLower: string): boolean {
@@ -227,9 +466,8 @@ export function selectAntigravityHubTarget(
     options: { excludePorts?: readonly number[]; env?: NodeJS.ProcessEnv } = {},
 ): CdpTargetInfo | null {
     const excluded = new Set(options.excludePorts ?? []);
-    const ownSidecarPort = parseSidecarWebPort(options.env ?? process.env);
-    if (ownSidecarPort !== null) {
-        excluded.add(ownSidecarPort);
+    for (const ownPort of parseSidecarWebPort(options.env ?? process.env)) {
+        excluded.add(ownPort);
     }
 
     let bestTarget: CdpTargetInfo | null = null;
@@ -1050,7 +1288,9 @@ export interface CdpAmbientOverlayManagerOptions {
     log?: (msg: string) => void;
     now?: () => number;
     // Injectable dependencies for deterministic testing
-    discoverActivePort?: () => DevToolsActivePortInfo | null;
+    discoverActivePort?: (opts?: { customUserDataDir?: string }) => DevToolsActivePortInfo | null;
+    inspectHostProcess?: () => HostProcessInspectionResult;
+    inspectLauncher?: () => CdpLauncherStatus;
     fetchTargets?: (port: number) => Promise<CdpTargetInfo[]>;
     connectClient?: (wsUrl: string) => Promise<CdpClientLike>;
     createBridge?: (opts: {
@@ -1093,7 +1333,19 @@ export function createCdpAmbientOverlayManager(
         }
     }
 
-    const discoverPortFn = options.discoverActivePort ?? (() => discoverDevToolsActivePort({ platform, env }));
+    const discoverPortFn = options.discoverActivePort
+        ?? ((discOpts?: { customUserDataDir?: string }) => discoverDevToolsActivePort({
+            platform,
+            env,
+            customUserDataDir: discOpts?.customUserDataDir,
+        }));
+    // When a test injects `discoverActivePort` without `inspectHostProcess`, keep it hermetic
+    // rather than inspecting the live developer/CI host process tree.
+    const inspectHostProcessFn = options.inspectHostProcess
+        ?? (options.discoverActivePort
+            ? () => ({ found: false, hasRemoteDebuggingFlag: false })
+            : () => inspectAntigravityHostProcess({ platform }));
+    const inspectLauncherFn = options.inspectLauncher ?? (() => inspectCdpLauncher({ platform, env }));
     const fetchTargetsFn = options.fetchTargets ?? ((port: number) => fetchCdpTargets(port));
     const connectClientFn = options.connectClient ?? ((wsUrl: string) => CdpWebSocketClient.connect(wsUrl));
     const createBridgeFn = options.createBridge ?? createOverlayActionBridge;
@@ -1110,6 +1362,9 @@ export function createCdpAmbientOverlayManager(
     let discoveredPort: number | undefined;
     let lastInjectedAt: number | undefined;
     let errorMessage: string | undefined;
+    let hostHasDebugFlag: boolean | undefined;
+    let cachedLauncherStatus: CdpLauncherStatus | undefined;
+    let lastLauncherCheckAt = -Infinity;
     let lastPayload: CdpOverlayPayload | null = null;
     let lastFailedAttemptAt = 0;
 
@@ -1120,6 +1375,20 @@ export function createCdpAmbientOverlayManager(
     let opQueue: Promise<unknown> = Promise.resolve();
 
     const platformGuide = getCdpPlatformGuide(platform);
+    const LAUNCHER_CACHE_TTL_MS = 2_000;
+
+    function getLauncherStatus(forceRefresh = false): CdpLauncherStatus | undefined {
+        const nowMs = nowFn();
+        if (forceRefresh || !cachedLauncherStatus || Math.abs(nowMs - lastLauncherCheckAt) >= LAUNCHER_CACHE_TTL_MS) {
+            try {
+                cachedLauncherStatus = inspectLauncherFn();
+                lastLauncherCheckAt = nowMs;
+            } catch {
+                // Best-effort launcher inspection must never break status reporting.
+            }
+        }
+        return cachedLauncherStatus;
+    }
 
     function anyEnabled(): boolean {
         return toggles.appComposerRingEnabled || toggles.appTopBarEnabled;
@@ -1132,6 +1401,7 @@ export function createCdpAmbientOverlayManager(
     }
 
     function getStatus(): CdpStatus {
+        const launcherStatus = getLauncherStatus(false);
         return {
             state,
             diagnosticCode,
@@ -1143,6 +1413,8 @@ export function createCdpAmbientOverlayManager(
             ...(discoveredPort !== undefined ? { discoveredPort } : {}),
             ...(lastInjectedAt !== undefined ? { lastInjectedAt } : {}),
             ...(errorMessage ? { errorMessage } : {}),
+            ...(hostHasDebugFlag !== undefined ? { hostHasDebugFlag } : {}),
+            ...(launcherStatus ? { launcherStatus } : {}),
             platformGuide,
         };
     }
@@ -1184,12 +1456,37 @@ export function createCdpAmbientOverlayManager(
             return false;
         }
 
-        const portInfo = discoverPortFn();
-        if (!portInfo) {
+        let hostInfo: HostProcessInspectionResult = { found: false, hasRemoteDebuggingFlag: false };
+        try {
+            hostInfo = inspectHostProcessFn();
+        } catch {
+            hostInfo = { found: false, hasRemoteDebuggingFlag: false };
+        }
+        hostHasDebugFlag = hostInfo.found ? hostInfo.hasRemoteDebuggingFlag : undefined;
+
+        const portInfo = discoverPortFn({ customUserDataDir: hostInfo.customUserDataDir });
+        let targetPort: number;
+        if (portInfo) {
+            portFilePath = portInfo.filePath;
+            discoveredPort = portInfo.port;
+            targetPort = portInfo.port;
+        } else if (hostInfo.found && typeof hostInfo.explicitPort === 'number' && hostInfo.explicitPort > 0) {
+            // Host process passed an explicit fixed port (e.g. `--remote-debugging-port=9222`);
+            // probe it directly even when DevToolsActivePort is absent.
+            portFilePath = undefined;
+            discoveredPort = hostInfo.explicitPort;
+            targetPort = hostInfo.explicitPort;
+        } else {
             lastFailedAttemptAt = nowMs;
             state = 'cdp_unavailable';
-            diagnosticCode = 'missing_port_file';
-            portFilePath = resolveDevToolsActivePortPaths({ platform, env })[0];
+            diagnosticCode = hostInfo.found && hostInfo.hasRemoteDebuggingFlag === false
+                ? 'host_missing_flag'
+                : 'missing_port_file';
+            portFilePath = resolveDevToolsActivePortPaths({
+                platform,
+                env,
+                customUserDataDir: hostInfo.customUserDataDir,
+            })[0];
             discoveredPort = undefined;
             targetUrl = undefined;
             targetTitle = undefined;
@@ -1197,12 +1494,9 @@ export function createCdpAmbientOverlayManager(
             return false;
         }
 
-        portFilePath = portInfo.filePath;
-        discoveredPort = portInfo.port;
-
         let targets: CdpTargetInfo[];
         try {
-            targets = await fetchTargetsFn(portInfo.port);
+            targets = await fetchTargetsFn(targetPort);
         } catch (err) {
             if (disposed || !anyEnabled()) { return false; }
             lastFailedAttemptAt = nowMs;
@@ -1216,11 +1510,11 @@ export function createCdpAmbientOverlayManager(
 
         if (disposed || !anyEnabled()) { return false; }
 
-        const ownSidecarPort = parseSidecarWebPort(env);
+        const ownSidecarPorts = parseSidecarWebPort(env);
         const excludedPorts = [
             ...(options.excludeTargetPorts ?? []),
             ...dynamicExcludedPorts,
-            ...(ownSidecarPort !== null ? [ownSidecarPort] : []),
+            ...ownSidecarPorts,
             ...(bridge ? [bridge.port] : []),
         ];
         const hubTarget = selectAntigravityHubTarget(targets, { excludePorts: excludedPorts, env });
@@ -1267,6 +1561,7 @@ export function createCdpAmbientOverlayManager(
             }
             return true;
         } catch (err) {
+            await detachClient(false);
             if (disposed || !anyEnabled()) { return false; }
             lastFailedAttemptAt = nowMs;
             state = 'error';
@@ -1340,8 +1635,10 @@ export function createCdpAmbientOverlayManager(
                 targetTitle = undefined;
                 portFilePath = undefined;
                 discoveredPort = undefined;
+                hostHasDebugFlag = undefined;
                 errorMessage = undefined;
                 lastFailedAttemptAt = 0;
+                getLauncherStatus(true);
                 return getStatus();
             }
 
@@ -1355,6 +1652,7 @@ export function createCdpAmbientOverlayManager(
                 }
             }
 
+            getLauncherStatus(true);
             return syncToHub(true);
         });
     }
@@ -1374,6 +1672,7 @@ export function createCdpAmbientOverlayManager(
 
     function recheck(): Promise<CdpStatus> {
         return enqueue(async () => {
+            getLauncherStatus(true);
             if (disposed || !anyEnabled()) {
                 return getStatus();
             }
@@ -1401,6 +1700,7 @@ export function createCdpAmbientOverlayManager(
             targetTitle = undefined;
             portFilePath = undefined;
             discoveredPort = undefined;
+            hostHasDebugFlag = undefined;
             errorMessage = undefined;
             lastFailedAttemptAt = 0;
         });

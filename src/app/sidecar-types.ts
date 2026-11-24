@@ -22,6 +22,7 @@ export type CdpConnectionState = 'disabled' | 'connected' | 'cdp_unavailable' | 
 
 export type CdpDiagnosticCode =
     | 'disabled'
+    | 'host_missing_flag'
     | 'missing_port_file'
     | 'port_unreachable'
     | 'no_hub_target'
@@ -36,6 +37,27 @@ export interface CdpPlatformGuide {
     zh: string;
 }
 
+export interface CdpLauncherStatus {
+    supported: boolean;
+    platform: NodeJS.Platform;
+    installed: boolean;
+    launcherPath: string;
+    displayName: string;
+    targetAppFound: boolean;
+    targetAppPath?: string;
+    safeTerminalCommand: string;
+    noteEn: string;
+    noteZh: string;
+}
+
+export interface CdpLauncherActionResult {
+    ok: boolean;
+    status: CdpLauncherStatus;
+    messageEn: string;
+    messageZh: string;
+    error?: string;
+}
+
 export interface CdpStatus {
     state: CdpConnectionState;
     diagnosticCode?: CdpDiagnosticCode;
@@ -47,6 +69,8 @@ export interface CdpStatus {
     discoveredPort?: number;
     lastInjectedAt?: number;
     errorMessage?: string;
+    hostHasDebugFlag?: boolean;
+    launcherStatus?: CdpLauncherStatus;
     platformGuide: CdpPlatformGuide;
 }
 
@@ -244,7 +268,11 @@ export type SidecarSnapshotResponse =
     | SidecarSnapshotUnchangedResponse
     | SidecarSnapshotChangedResponse;
 
-export type SidecarActionCommand = 'recheckCdp' | (string & {});
+export type SidecarActionCommand =
+    | 'recheckCdp'
+    | 'setupCdpLauncher'
+    | 'removeCdpLauncher'
+    | (string & {});
 
 export interface SidecarActionRequest {
     command: SidecarActionCommand;
