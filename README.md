@@ -2,9 +2,9 @@
 
 Monitor conversation context composition, dual context watermarks (`Compaction` + `200k` tier), Orchestrator & Executor routing with base-mapped pricing & role attribution, dual-window model quotas (`5h` + `Weekly`) with burn-rate runway, generation speed (`tok/s`), TTFT & turn-level prompt cache diagnostics, 52-week multi-source activity heatmaps (`App` / `IDE` / `CLI`), multi-currency API-equivalent costs & optional Subscription ROI, reset times, and AI credits across **Antigravity App (Desktop 2.0+ Native Sidecar Plugin)** and **Antigravity IDE (VSIX Extension)**.
 
-**1.17.7** delivers three major upgrades: (1) **Sidecar Idle Polling, ETag Stability & GM Cache Optimizations** (eliminating ~4,900+ idle Language Server RPCs/hour — thanks to **`@reidentify`**, Issue #75 / PR #76, plus IDE manual-refresh backoff parity), (2) **App CDP Discovery, Floating Overlays, Live Diagnostics (`host_missing_flag`) & 1-Click Zero-Patch Persistent CDP Launcher** (solving macOS's ~5s `Cmd+Q` background teardown race and auto-update flag loss via `~/Applications/Antigravity (CDP).app`, Windows `.lnk`/`.cmd`, and Linux `.desktop`, plus Hub anti-self-attachment, anchoring, and IDE live toggle-ON probes), and (3) **Updated Subscription Plan ROI Presets** (**Google AI Pro `$19.99/mo`**, **Google AI Ultra 5x `$99.99/mo`**, and **Google AI Ultra 20x `$199.99/mo`** with non-destructive legacy `'google-ai-ultra'` migration).
+**1.17.8** polishes the desktop overlay and launcher workflow on top of v1.17.7: (1) **Top-Right Status Bar 4-View Popover & Context-Aware Tab Routing** (clicking Quota, Context, Speed, or Total pills—or narrow `···` overflow items—opens its dedicated view with an interactive 4-segment switcher, local `HH:MM:SS` update clock, 8 new live `CdpOverlayPayload` speed/today/cumulative/ROI fields, and context-aware `Open Panel` switching to `Models` / `Overview` / `GM Data` / `Calendar`), (2) **Persistent CDP Launcher UX & Cross-Platform Hardening** (macOS foreground `activate` dialog + Automation TCC fallback alert, one-click **Reveal in Finder / Explorer / Folder** across both App Sidecar and IDE, clearer Step 1 / Step 2 guidance, Linux `DEFAULT_BIN` + Freedesktop `Exec=` escaping, and responsive narrow-pane Subscription Plan `<select>`), and (3) **100% Hermetic CDP Test Isolation** (real-`HOME` `npm test` passes even while `Antigravity (CDP).app` is actively running).
 
-[中文文档](readme_CN.md) · [AI Agent Install (`AGENTS.md`)](AGENTS.md) · [1.17.7 release notes and validation](docs/releases/1.17.7.md) · [Technical guide](docs/technical_implementation.md) · [Project structure](docs/project_structure.md) · [Changelog](CHANGELOG.md)
+[中文文档](readme_CN.md) · [AI Agent Install (`AGENTS.md`)](AGENTS.md) · [1.17.8 release notes and validation](docs/releases/1.17.8.md) · [Technical guide](docs/technical_implementation.md) · [Project structure](docs/project_structure.md) · [Changelog](CHANGELOG.md)
 
 ## For AI Agents — One-Sentence Install / Upgrade (`AGENTS.md`)
 
@@ -28,7 +28,17 @@ Or run one of the cross-platform zero-dependency one-liners directly from your t
   ```
 - **From a local clone:** `node scripts/install-app-plugin.mjs --upgrade` (or `./scripts/install-app-plugin.sh --upgrade` / `.\scripts\install-app-plugin.ps1 --upgrade` which auto-discover bundled `agy-node` or Electron `ELECTRON_RUN_AS_NODE=1`) and `node scripts/install-app-plugin.mjs --status --check-remote` to verify version, enabled state, and live sidecar health. See [AGENTS.md](AGENTS.md) for the complete safety contract.
 
-## Highlights in 1.17.7
+## Highlights in 1.17.8
+
+- **Top-Right Status Bar 4-View Popover, Local `HH:MM:SS` Clock & Context-Aware `Open Panel` (`CDP_OVERLAY_SCRIPT_VERSION = '1.17.8-r1'` — `src/app/cdp-overlay-assets.ts`, `src/app/sidecar-types.ts`, `src/app/sidecar-runtime.ts`, `src/app/sidecar-server.ts`, `src/app/cdp-injector.ts`, `src/webview-script.ts`):**
+  - **4 Dedicated Views (`Quota` / `Context` / `Speed` / `Total`):** Clicking any Top-Right Status Bar pill—or any item in the narrow-titlebar `···` overflow menu—opens directly to its dedicated popover view with an interactive 4-segment switcher, smooth cross-pill switching (no accidental close-on-switch), and a local `HH:MM:SS` update clock.
+  - **8 Live Speed & Total Telemetry Fields (`buildCdpOverlayPayload()`):** Populates `todayTokens`, `todayCostFormatted`, `cumulativeCostFormatted`, `recordedDaysCount`, `sessionCount`, `Short sample`-filtered `peakOutputSpeedTps`, `recentCallCount`, and `subscriptionRoiSummary` directly from live runtime state.
+  - **Context-Aware `Open Panel` `targetTab` Routing:** Clicking **Open Panel** routes directly to the matching monitor tab (`quota → Models`, `context → Overview`, `speed → GM Data`, `total → Calendar`) via the authenticated 256-bit `POST /api/overlay/action` bridge and monotonic `meta.overlayTargetTab` snapshot updates.
+- **Persistent CDP Launcher UX, One-Click Reveal & Cross-Platform Hardening (`src/app/cdp-launcher.ts`, `src/app/sidecar-runtime.ts`, `src/webview-panel.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-editorial-styles.ts`, `scripts/install-app-plugin.mjs`):**
+  - **macOS foreground dialog & TCC fallback alert:** Explicit AppleScript `activate` ensures confirmation dialogs surface in front of other windows, with a clear fallback alert if macOS Automation (TCC) denies Apple Events.
+  - **One-click `Reveal in Finder / Explorer / Folder` (`#cdpRevealLauncherBtn`):** Wired across BOTH Antigravity App Sidecar and Antigravity IDE alongside clearer Step 1 / Step 2 guidance, hardened Linux `DEFAULT_BIN` + Freedesktop `.desktop` `Exec=` escaping, and a responsive Subscription Plan ROI `<select>` preventing narrow-pane truncation of `Google AI Ultra 20x ($199.99/mo)`.
+
+### Built on v1.17.7 Foundations
 
 - **Idle Polling, ETag Stability & GM Cache Optimization (thanks to [`@reidentify`](https://github.com/reidentify) — [Issue #75](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/75) / [PR #76](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/76) + follow-up hardening):**
   - **Idle-Backoff Self-Lock Fixed (`src/app/sidecar-runtime.ts`, `src/app/sidecar-server.ts`, `src/app/host-bridge.ts`):** Passive `/api/snapshot` polls no longer reset `lastClientActivityMs`; polling smoothly backs off `5s → 30s` when idle while staying at base cadence during `CascadeStatus.RUNNING`, and wakes immediately on genuine user interaction (`?active=1` or `/api/action`, with visible client idle polling capped cleanly at `≤ 15s`).
@@ -36,10 +46,10 @@ Or run one of the cross-platform zero-dependency one-liners directly from your t
   - **Stable ETag & Multi-Slot Minute-Bucket Snapshot Cache:** Excludes volatile `meta.pollCount` from `computeSnapshotHash()`, upgrades `snapshotCache` to a bounded multi-slot `Map` keyed with a 1-minute bucket so dual `AUX_PANE` + `SIDEBAR` views never thrash while live reset countdowns and ready indicators stay fresh, expands `computeDataSignature()` across all rendered state, and closes async `handleAction()` cache-poisoning races.
 - **App CDP Discovery, Floating Overlays, Live Diagnostics & 1-Click Zero-Patch Persistent CDP Launcher (`src/app/cdp-launcher.ts`, `src/app/cdp-injector.ts`, `src/app/cdp-overlay-assets.ts`, `src/webview-settings-tab.ts`, `src/webview-script.ts`, `src/webview-panel.ts`, `scripts/install-app-plugin.mjs`):**
   - **1-Click Zero-Patch Persistent CDP Launcher:** Create a native, auto-update-proof launcher from **Settings → Overlays & CDP** (`Create Persistent Launcher`) or CLI (`node scripts/install-app-plugin.mjs --setup-cdp-launcher`, remove via `--remove-cdp-launcher`) — zero modification to `/Applications/Antigravity.app` or `app.asar`:
-    - **macOS (`~/Applications/Antigravity (CDP).app`):** Native icon & `LSUIElement=true`; checks running Antigravity App process (ignoring IDE/Tools), prompts for user confirmation if running without CDP, sends graceful quit, and polls up to 15s until the ~5s `before-quit` `language_server` teardown fully completes before launching with `--remote-debugging-port=0`.
+    - **macOS (`~/Applications/Antigravity (CDP).app`):** Native icon & `LSUIElement=true`; checks running Antigravity App process (ignoring IDE/Tools), prompts with a foreground-activated confirmation dialog if running without CDP (with Automation TCC fallback), sends graceful quit, and polls up to 15s until the ~5s `before-quit` `language_server` teardown fully completes before launching with `--remote-debugging-port=0`.
     - **Windows (`Desktop` + `Start Menu` `.lnk` + `%LOCALAPPDATA%\AntigravityContextMonitor\launch-antigravity-cdp.cmd`)** and **Linux (`~/.local/share/applications/antigravity-cdp.desktop` + `~/.local/bin/antigravity-cdp`)**.
   - **Smart Host Argv Discovery & Concurrency Hardening:** Fixed `selectAntigravityHubTarget()` self-attachment (auto-excluding `ANTIGRAVITY_SIDECAR_WEB_PORT`, `ANTIGRAVITY_SIDECAR_PORT`, standalone listening port, `plugin://`, and sidecar/swarm titles while preferring `https:` loopback Hub and `Jetski Web`), added read-only grandparent host process inspection (detecting `host_missing_flag`, custom `--user-data-dir`, and fixed `--remote-debugging-port=<N>` direct fallback), added IPv6 `[::1]` fallback, serialized connections with a mutex & socket-detach catch guard, and added loopback TCP reachability probing in `install-app-plugin.mjs --status` (`cdp.stale` + `cdpLauncher`).
-  - **Overlay Anchoring, WCO, Theme, `Open Panel` & Live Dual-Surface Diagnostics (`CDP_OVERLAY_SCRIPT_VERSION = '1.17.7-r1'`):** Anchored Top-Right Status Bar before `[data-testid="toggle-maximize-pane"]` without duplicating inline WCO spacers; fixed Composer Floating Ring visibility/hidden-tab re-anchoring and `input-box-bottom-toolbar` / `permissions-selector-trigger` fallback; made `Open Panel` expand collapsed side panels directly; improved host theme detection; added live `#cdpStatusPill`, bilingual `#cdpDiagnosticHint` (including `host_missing_flag`), `#cdpLauncherStatus`, `#cdpSetupLauncherBtn`, `#cdpRecheckBtn`, copyable commands (`.cdp-copy-btn`), and live IDE toggle-ON CDP probing.
+  - **Overlay Anchoring, WCO, Theme, `Open Panel` & Live Dual-Surface Diagnostics (`CDP_OVERLAY_SCRIPT_VERSION = '1.17.8-r1'`):** Anchored Top-Right Status Bar before `[data-testid="toggle-maximize-pane"]` without duplicating inline WCO spacers; fixed Composer Floating Ring visibility/hidden-tab re-anchoring and `input-box-bottom-toolbar` / `permissions-selector-trigger` fallback; made `Open Panel` expand collapsed side panels and route directly to the active view's monitor tab; improved host theme detection; added live `#cdpStatusPill`, bilingual `#cdpDiagnosticHint` (including `host_missing_flag`), `#cdpLauncherStatus`, `#cdpSetupLauncherBtn`, `#cdpRevealLauncherBtn`, `#cdpRecheckBtn`, copyable commands (`.cdp-copy-btn`), and live IDE toggle-ON CDP probing.
 - **Updated Subscription Plan ROI Presets (`src/cli-usage-scanner.ts`, `package.json`, `src/webview-settings-tab.ts`, `src/webview-script.ts`):**
   - Updated built-in Calendar Plan ROI presets to **Google AI Pro (`$19.99/mo`)**, **Google AI Ultra 5x (`$99.99/mo`)**, and **Google AI Ultra 20x (`$199.99/mo`)** (plus `custom`), with centralized `normalizeSubscriptionPlanId()` non-destructive migration for legacy `'google-ai-ultra'` selections (preserving any historical user-saved monthly fee such as `$249.99`) and dynamic `#subscriptionFeeInput` placeholder updates.
 
@@ -64,7 +74,7 @@ Works on **macOS, Windows, and Linux** with zero external dependencies (runs on 
 
 1. **One-command install / upgrade from GitHub Releases (recommended):**
    - Run the zero-clone one-liner in [For AI Agents — One-Sentence Install / Upgrade (`AGENTS.md`)](#for-ai-agents--one-sentence-install--upgrade-agentsmd) above — it verifies `SHA256SUMS.txt`, extracts safely, and registers the plugin cleanly without clobbering `config.json`.
-   - Or download `antigravity-context-monitor-app-1.17.7.zip` (macOS / Windows / Linux), `antigravity-context-monitor-app-1.17.7.tar.gz` (macOS / Linux), and `SHA256SUMS.txt` from [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases), extract (`antigravity-context-monitor/`), and run:
+   - Or download `antigravity-context-monitor-app-1.17.8.zip` (macOS / Windows / Linux), `antigravity-context-monitor-app-1.17.8.tar.gz` (macOS / Linux), and `SHA256SUMS.txt` from [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases), extract (`antigravity-context-monitor/`), and run:
      ```bash
      agy plugin install ./antigravity-context-monitor
      ```
@@ -83,16 +93,16 @@ Works on **macOS, Windows, and Linux** with zero external dependencies (runs on 
 
 ### Option B — Antigravity IDE (VSIX Extension)
 
-1. Download `antigravity-context-monitor-1.17.7.vsix` (and verify against `SHA256SUMS.txt`) from [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases), or build locally with `npm run compile && npm run package`.
+1. Download `antigravity-context-monitor-1.17.8.vsix` (and verify against `SHA256SUMS.txt`) from [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases), or build locally with `npm run compile && npm run package`.
 2. In Antigravity IDE, open the Command Palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows/Linux), run **Extensions: Install from VSIX...**, and select the file — or install via CLI:
    ```bash
-   antigravity-ide --install-extension antigravity-context-monitor-1.17.7.vsix --force
+   antigravity-ide --install-extension antigravity-context-monitor-1.17.8.vsix --force
    ```
-3. Reload the IDE window and confirm **1.17.7** in extension details or the monitor's **About** page.
+3. Reload the IDE window and confirm **1.17.8** in extension details or the monitor's **About** page.
 
 You can also install and auto-update the IDE extension from [Open VSX](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor).
 
-Both plugins support **macOS, Windows, and Linux** (plus **WSL** for IDE). Native live App + IDE verification for 1.17.7 runs on macOS; the release notes transparently separate native checks from mocked Windows and Linux unit-test coverage. [Validation](docs/releases/1.17.7.md#validation)
+Both plugins support **macOS, Windows, and Linux** (plus **WSL** for IDE). Native live App + IDE verification for 1.17.8 runs on macOS; the release notes transparently separate native checks from mocked Windows and Linux unit-test coverage. [Validation](docs/releases/1.17.8.md#validation)
 
 ## Use the monitor
 
@@ -176,7 +186,7 @@ Configure **Overlays & CDP** (Native Ambient HUD toggle + independent opt-in tog
 <details>
 <summary>About — Version & Updates card, AGENTS.md one-sentence tip, dual-host compatibility, and navigation</summary>
 
-Inspect the live **Version & Updates** card (`v1.17.7`, last-checked timestamp, **Check for Updates**, **Upgrade Now** on App or **Open VSX** on IDE), copy the **AGENTS.md** one-sentence AI agent install/upgrade prompt, view dual-host support badges (**Antigravity IDE** + **Antigravity App (Desktop 2.0+ Sidecar)**), jump directly to any monitor view via the feature navigation directory, and read community acknowledgments and compatibility notes.
+Inspect the live **Version & Updates** card (`v1.17.8`, last-checked timestamp, **Check for Updates**, **Upgrade Now** on App or **Open VSX** on IDE), copy the **AGENTS.md** one-sentence AI agent install/upgrade prompt, view dual-host support badges (**Antigravity IDE** + **Antigravity App (Desktop 2.0+ Sidecar)**), jump directly to any monitor view via the feature navigation directory, and read community acknowledgments and compatibility notes.
 
 ![About in Obsidian Slate Dark mode showing Version & Updates card, AGENTS.md tip, and feature navigation cards](src/images/monitor-about.png)
 
@@ -270,7 +280,7 @@ IDE settings use the `antigravityContextMonitor.` prefix (22 settings total; sha
 
 Maintained by **AGI-is-going-to-arrive**. Thanks to **SecretLUL** for the Windows discovery report ([Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)), **@AxelDZP** for secondary-port TLS-first discovery, `GetUserStatus` shape validation, and equivalent proto3 epoch-0 `resetTime` fixes ([PR #74](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/74)), and **@reidentify** for identifying and fixing the Sidecar idle-backoff self-lock, idle/empty GM cache churn, ETag instability, and redundant `env` LS revalidation ([Issue #75](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/75) / [PR #76](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/76)).
 
-We are grateful to the open-source Antigravity community projects whose design exploration and real-world engineering lessons inspired UX and architectural improvements across **v1.17.5–v1.17.7** (our implementation is built independently from scratch atop our own TypeScript core and official Sidecar / VSIX APIs, without patching `app.asar` or copying third-party code):
+We are grateful to the open-source Antigravity community projects whose design exploration and real-world engineering lessons inspired UX and architectural improvements across **v1.17.5–v1.17.8** (our implementation is built independently from scratch atop our own TypeScript core and official Sidecar / VSIX APIs, without patching `app.asar` or copying third-party code):
 
 - [`dimitr-io/antigravity-desktop-context`](https://github.com/dimitr-io/antigravity-desktop-context) — Antigravity App Sidecar `AUX_PANE` workflow, 20×5 dot-matrix context visualization, dual-cap clarity, and CLI-style `/context` text export.
 - [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) — Desktop telemetry UX exploration, turn/cache visualization ideas, and community stability lessons on Antigravity v2.33+/v2.34+.

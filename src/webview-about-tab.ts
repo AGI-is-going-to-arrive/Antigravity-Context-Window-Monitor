@@ -146,9 +146,9 @@ function formatCheckedAtLabel(checkedAt: number | null | undefined): string {
 
 const OPEN_VSX_URL = 'https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor';
 
-export function buildAboutTabContent(version = '1.17.7', options?: AboutTabOptions): string {
+export function buildAboutTabContent(version = '1.17.8', options?: AboutTabOptions): string {
     const cards = getFeatureCards();
-    const normalizedVersion = typeof version === 'string' && version.trim() ? version.trim() : '1.17.7';
+    const normalizedVersion = typeof version === 'string' && version.trim() ? version.trim() : '1.17.8';
     const versionTag = normalizedVersion.startsWith('v') ? normalizedVersion : `v${normalizedVersion}`;
     const surface = options?.surface ?? 'ide';
     const isAppSidecar = surface === 'app-sidecar' || surface === 'app';

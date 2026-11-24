@@ -21,6 +21,7 @@ import type { AccountSnapshot, ResetPool } from '../activity-panel';
 import { isBillingDay, isBillingDaySetting } from '../billing-day';
 import {
     CliUsageScanner,
+    estimateSubscriptionRoi,
     formatCurrencyAmount,
     isSubscriptionPlanPresetId,
     normalizeSubscriptionPlanId,
@@ -206,6 +207,7 @@ import {
     createCdpLauncher,
     inspectCdpLauncher,
     removeCdpLauncher,
+    revealCdpLauncher,
     type CdpLauncherOptions,
 } from './cdp-launcher';
 import {
@@ -226,6 +228,7 @@ import type {
     CdpLauncherStatus,
     CdpOverlayPayload,
     CdpOverlayQuotaPool,
+    CdpOverlayTargetTab,
     CdpStatus,
     PluginReleaseInfo,
     SidecarActionRequest,
@@ -404,6 +407,7 @@ export interface SidecarRuntimeDeps {
     inspectCdpLauncher: (opts?: CdpLauncherOptions) => CdpLauncherStatus;
     createCdpLauncher: (opts?: CdpLauncherOptions) => CdpLauncherActionResult;
     removeCdpLauncher: (opts?: CdpLauncherOptions) => CdpLauncherActionResult;
+    revealCdpLauncher: (opts?: CdpLauncherOptions) => CdpLauncherActionResult;
     checkForUpdates: (opts: CheckForUpdatesOptions) => Promise<UpdateCheckResult>;
     applyAppPluginUpdate: (opts: ApplyAppPluginUpdateOptions) => Promise<ApplyPluginUpdateResult>;
     cliUsageScanner: CliUsageScanner;
@@ -412,7 +416,7 @@ export interface SidecarRuntimeDeps {
 }
 
 export interface SidecarRuntimeOptions {
-    /** Semantic version string (defaults to package.json / '1.17.7'). */
+    /** Semantic version string (defaults to package.json / '1.17.8'). */
     version?: string;
     /** Override path for DurableState `state-v1.json` (defaults to platform-native shared path). */
     statePath?: string;
@@ -503,6 +507,16 @@ const MAX_CHECKPOINTER_SYNC_ATTEMPTS = 5;
 const MAX_AUX_METADATA_FAILURES = 3;
 const RESET_TIME_TURNOVER_MIN_JUMP_MS = 10 * 60 * 1000;
 const SAFE_CASCADE_ID_RE = /^[a-zA-Z0-9_-]{4,128}$/;
+const ALLOWED_OVERLAY_TARGET_TABS: ReadonlySet<CdpOverlayTargetTab> = new Set([
+    'overview',
+    'gm',
+    'sessions',
+    'cost',
+    'models',
+    'calendar',
+    'accounts',
+    'settings',
+]);
 
 const DEFAULT_DOCUMENT_SETTINGS: MonitorDocumentSettings = {
     pollingInterval: 5,
@@ -1255,6 +1269,7 @@ export function createSidecarRuntimeProvider(
         inspectCdpLauncher: options.deps?.inspectCdpLauncher ?? inspectCdpLauncher,
         createCdpLauncher: options.deps?.createCdpLauncher ?? createCdpLauncher,
         removeCdpLauncher: options.deps?.removeCdpLauncher ?? removeCdpLauncher,
+        revealCdpLauncher: options.deps?.revealCdpLauncher ?? revealCdpLauncher,
         checkForUpdates: options.deps?.checkForUpdates ?? checkForUpdates,
         applyAppPluginUpdate: options.deps?.applyAppPluginUpdate ?? applyAppPluginUpdate,
         cliUsageScanner: options.deps?.cliUsageScanner ?? new CliUsageScanner(),
@@ -1357,6 +1372,8 @@ export function createSidecarRuntimeProvider(
         appTopBarEnabled: false,
     };
     let overlayAllowedOrigin: string | undefined;
+    let overlayTabSeq = 0;
+    let overlayTargetTab: { seq: number; tab: CdpOverlayTargetTab } | null = null;
 
     const excludedCdpPorts: number[] = [];
     const addExcludedCdpPort = (raw: unknown): void => {
@@ -1384,6 +1401,7 @@ export function createSidecarRuntimeProvider(
             await handleOverlayAction({
                 command: bridgeAction.command,
                 source: bridgeAction.source,
+                ...(bridgeAction.targetTab ? { targetTab: bridgeAction.targetTab } : {}),
             });
         },
         log,
@@ -1735,7 +1753,7 @@ export function createSidecarRuntimeProvider(
             },
             log,
         };
-        performDailyArchivalCore(ctx, force);
+        performDailyArchivalCore(ctx, force, new Date(deps.now()));
     }
 
     // ── CLI Scanner, Update Checker & CDP Overlay Helpers ────────────────────
@@ -1787,8 +1805,21 @@ export function createSidecarRuntimeProvider(
         };
     }
 
-    function computeCumulativeRecordedTokens(nowMs = deps.now()): number {
-        let total = 0;
+    function computeRecordedHistoryTelemetry(nowMs = deps.now()): {
+        cumulativeTokens: number;
+        cumulativeCostUsd: number;
+        todayTokens: number;
+        todayCostUsd: number;
+        recordedDaysCount: number;
+        earliestDateKey: string | null;
+        todayKey: string;
+    } {
+        const todayKey = toLocalDateKey(new Date(nowMs));
+        let cumulativeTokens = 0;
+        let cumulativeCostUsd = 0;
+        let todayTokens = 0;
+        let todayCostUsd = 0;
+        const recordedDayKeys = new Set<string>();
         const merged = mergeArchivedAndLiveRecords({
             store: dailyStore,
             liveLedger: dailyLedger,
@@ -1796,23 +1827,69 @@ export function createSidecarRuntimeProvider(
             defaultSurface: 'app',
             now: nowMs,
         });
-        for (const rec of merged.values()) {
+        for (const [dateKey, rec] of merged.entries()) {
+            let dayTokens = 0;
+            let dayCost = 0;
+            let dayCalls = 0;
             for (const cycle of rec.cycles || []) {
-                total += computeCycleTokenTotals(cycle).totalTokens;
+                dayTokens += computeCycleTokenTotals(cycle).totalTokens;
+                if (typeof cycle.estimatedCost === 'number' && Number.isFinite(cycle.estimatedCost) && cycle.estimatedCost > 0) {
+                    dayCost += cycle.estimatedCost;
+                }
+                dayCalls += cycle.gmTotalCalls || 0;
+            }
+            cumulativeTokens += dayTokens;
+            cumulativeCostUsd += dayCost;
+            if (dayTokens > 0 || dayCost > 0 || dayCalls > 0) {
+                recordedDayKeys.add(dateKey);
+            }
+            if (dateKey === todayKey) {
+                todayTokens += dayTokens;
+                todayCostUsd += dayCost;
             }
         }
-        // Add CLI scanned daily tokens
+        // Add CLI scanned daily tokens & costs
         for (const cliDay of getCachedCliDays(false)) {
-            total += cliDay.totalTokens > 0 ? cliDay.totalTokens : computeAdditiveTokens(cliDay);
+            const cliTok = cliDay.totalTokens > 0 ? cliDay.totalTokens : computeAdditiveTokens(cliDay);
+            const cliCost = typeof cliDay.estimatedCost === 'number' && Number.isFinite(cliDay.estimatedCost) && cliDay.estimatedCost > 0
+                ? cliDay.estimatedCost
+                : 0;
+            cumulativeTokens += cliTok;
+            cumulativeCostUsd += cliCost;
+            if (cliDay.date && (cliTok > 0 || cliCost > 0 || cliDay.calls > 0)) {
+                recordedDayKeys.add(cliDay.date);
+            }
+            if (cliDay.date === todayKey) {
+                todayTokens += cliTok;
+                todayCostUsd += cliCost;
+            }
         }
-        return total;
+        let earliestDateKey: string | null = null;
+        for (const k of recordedDayKeys) {
+            if (earliestDateKey === null || k < earliestDateKey) {
+                earliestDateKey = k;
+            }
+        }
+        return {
+            cumulativeTokens,
+            cumulativeCostUsd,
+            todayTokens,
+            todayCostUsd,
+            recordedDaysCount: recordedDayKeys.size,
+            earliestDateKey,
+            todayKey,
+        };
+    }
+
+    function getActiveUiGmSummary(): GMSummary | null {
+        return deps.fetchGM ? lastGMSummary : (gmTracker.getUiSummary() || lastGMSummary);
     }
 
     function buildCdpOverlayPayload(nowMs = deps.now()): CdpOverlayPayload {
         const lang = getLanguage();
         const customPricing = pricingStore.getCustom();
         const orchMode = appSettings.orchestratorPricingMode;
-        const uiGmSummary = gmTracker.getUiSummary() || lastGMSummary;
+        const uiGmSummary = getActiveUiGmSummary();
         const activeId = currentUsage?.cascadeId ?? lastResolution.cascadeId ?? undefined;
         const costs = computeLiveCostSnapshot(uiGmSummary, activeId);
         const currencyCfg = buildCurrencyConfig();
@@ -1862,6 +1939,36 @@ export function createSidecarRuntimeProvider(
         const activeConvCalls = activeId
             ? (uiGmSummary?.conversations.find(c => c.cascadeId === activeId)?.calls ?? [])
             : [];
+        const recentSpeedCalls = activeConvCalls.length > 0
+            ? activeConvCalls
+            : (uiGmSummary?.conversations.flatMap(c => c.calls) ?? []);
+        let peakOutputSpeedTps: number | null = null;
+        for (const c of recentSpeedCalls) {
+            const ev = evaluateSpeedSample({
+                outputTokens: c.outputTokens,
+                streamingSeconds: c.streamingSeconds,
+                ttftSeconds: c.ttftSeconds,
+            });
+            if (!ev.isShortSample && !ev.isWaitingTtft
+                && typeof ev.displaySpeed === 'number' && Number.isFinite(ev.displaySpeed) && ev.displaySpeed > 0) {
+                if (peakOutputSpeedTps === null || ev.displaySpeed > peakOutputSpeedTps) {
+                    peakOutputSpeedTps = ev.displaySpeed;
+                }
+            }
+        }
+        const liveOutputSpeedTps = speedEval?.isShortSample || speedEval?.isWaitingTtft
+            ? null
+            : (speedEval?.displaySpeed ?? telemetry?.speedPrimary ?? null);
+        if (peakOutputSpeedTps === null && typeof liveOutputSpeedTps === 'number' && Number.isFinite(liveOutputSpeedTps) && liveOutputSpeedTps > 0) {
+            peakOutputSpeedTps = liveOutputSpeedTps;
+        }
+        if (peakOutputSpeedTps !== null) {
+            peakOutputSpeedTps = Math.round(peakOutputSpeedTps * 10) / 10;
+        }
+        const recentCallCount = activeConvCalls.length > 0
+            ? activeConvCalls.length
+            : (uiGmSummary && uiGmSummary.totalCalls > 0 ? uiGmSummary.totalCalls : null);
+
         const turnCache = activeConvCalls.length > 0
             ? analyzeUserTurnCacheStates(activeConvCalls, {
                 orchestratorConfig: currentUsage?.orchestratorConfig,
@@ -1889,6 +1996,50 @@ export function createSidecarRuntimeProvider(
             cacheCreationTokens = currentUsage.lastModelUsage.cacheCreationTokens || 0;
         }
         const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+
+        // Recorded local history (daily ledger + dailyStore + CLI) & Subscription ROI
+        const history = computeRecordedHistoryTelemetry(nowMs);
+        const effectiveTodayCostUsd = history.todayCostUsd > 0
+            ? history.todayCostUsd
+            : (costs.todayCostUsd > 0 ? costs.todayCostUsd : 0);
+        const effectiveCumulativeCostUsd = history.cumulativeCostUsd > 0
+            ? history.cumulativeCostUsd
+            : effectiveTodayCostUsd;
+        const todayTokens = history.todayTokens > 0 ? history.todayTokens : null;
+        const todayCostFormatted = effectiveTodayCostUsd > 0
+            ? formatCurrencyAmount(effectiveTodayCostUsd, currencyCfg)
+            : null;
+        const cumulativeCostFormatted = effectiveCumulativeCostUsd > 0
+            ? formatCurrencyAmount(effectiveCumulativeCostUsd, currencyCfg)
+            : null;
+        const recordedDaysCount = history.recordedDaysCount > 0 ? history.recordedDaysCount : null;
+        const sessionCount = allTrajectories.length > 0
+            ? allTrajectories.length
+            : (uiGmSummary && uiGmSummary.conversations.length > 0 ? uiGmSummary.conversations.length : null);
+
+        let subscriptionRoiSummary: string | null = null;
+        const subCfg = buildSubscriptionConfig();
+        if (subCfg) {
+            const apiRefUsd = effectiveCumulativeCostUsd > 0
+                ? effectiveCumulativeCostUsd
+                : (effectiveTodayCostUsd > 0 ? effectiveTodayCostUsd : (estCostUsd ?? 0));
+            let spanDays = Math.max(1, history.recordedDaysCount);
+            if (history.earliestDateKey) {
+                const startMs = Date.parse(`${history.earliestDateKey}T00:00:00Z`);
+                const endMs = Date.parse(`${history.todayKey}T00:00:00Z`);
+                if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs) {
+                    spanDays = Math.max(1, Math.round((endMs - startMs) / 86_400_000) + 1);
+                }
+            }
+            const roi = estimateSubscriptionRoi(apiRefUsd, spanDays, subCfg, currencyCfg);
+            if (roi && roi.enabled) {
+                const planLabel = lang === 'zh' ? roi.planLabelZh : roi.planLabelEn;
+                const multStr = roi.roiMultiple !== null && Number.isFinite(roi.roiMultiple)
+                    ? `${roi.roiMultiple.toFixed(1)}×`
+                    : '—';
+                subscriptionRoiSummary = `${planLabel} · ${multStr}`;
+            }
+        }
 
         // Quota pools + tightest quota ring (isolated for BYOK/custom models)
         const quotaPools: CdpOverlayQuotaPool[] = [];
@@ -1977,10 +2128,10 @@ export function createSidecarRuntimeProvider(
             contextPct,
             compactionThresholdPct: watermarks?.hasDistinctPhysicalWindow ? watermarks.compactionMarkerPct : null,
             tier200kMarkerPct: watermarks?.showLongContextMarker ? watermarks.longContextMarkerPctOfCompaction : null,
-            outputSpeedTps: speedEval?.isShortSample || speedEval?.isWaitingTtft
-                ? null
-                : (speedEval?.displaySpeed ?? telemetry?.speedPrimary ?? null),
+            outputSpeedTps: liveOutputSpeedTps,
             avgOutputSpeedTps: primary?.weightedGenTokPerSec ?? null,
+            peakOutputSpeedTps,
+            recentCallCount,
             isShortSample: Boolean(speedEval?.isShortSample),
             isWaitingTtft: Boolean(speedEval?.isWaitingTtft),
             ttftMs: telemetry?.ttftPrimary != null ? Math.round(telemetry.ttftPrimary * 1000) : null,
@@ -1994,7 +2145,13 @@ export function createSidecarRuntimeProvider(
             outputTokens,
             cacheReadTokens,
             totalTokens,
-            cumulativeRecordedTokens: computeCumulativeRecordedTokens(nowMs),
+            cumulativeRecordedTokens: history.cumulativeTokens,
+            todayTokens,
+            todayCostFormatted,
+            cumulativeCostFormatted,
+            recordedDaysCount,
+            sessionCount,
+            subscriptionRoiSummary,
             tightestQuotaPct,
             tightestQuotaWindowTag,
             sessionQuota5hPct,
@@ -2144,7 +2301,20 @@ export function createSidecarRuntimeProvider(
                 return handleAction({ command: 'togglePause' });
             case 'openSidecar':
             case 'togglePanel':
-            case 'openPanel':
+            case 'openPanel': {
+                const rawTargetTab = typeof action.targetTab === 'string'
+                    ? action.targetTab.trim() as CdpOverlayTargetTab
+                    : undefined;
+                const validTargetTab = rawTargetTab && ALLOWED_OVERLAY_TARGET_TABS.has(rawTargetTab)
+                    ? rawTargetTab
+                    : undefined;
+                if (validTargetTab) {
+                    overlayTargetTab = {
+                        seq: ++overlayTabSeq,
+                        tab: validTargetTab,
+                    };
+                    bumpStateRevision();
+                }
                 return {
                     ok: true,
                     result: {
@@ -2152,8 +2322,13 @@ export function createSidecarRuntimeProvider(
                         command: action.command,
                         sidecarUri: 'sidecar://antigravity-context-monitor/context_monitor/',
                         source: action.source,
+                        ...(validTargetTab && overlayTargetTab ? {
+                            targetTab: overlayTargetTab.tab,
+                            targetTabSeq: overlayTargetTab.seq,
+                        } : {}),
                     },
                 };
+            }
             default:
                 return { ok: false, statusCode: 400, error: `Unsupported overlay command: ${String(action.command)}` };
         }
@@ -2644,7 +2819,7 @@ export function createSidecarRuntimeProvider(
     function computeDataSignature(): string {
         const stale = getCombinedStaleState();
         const cdp = overlayManager.getStatus();
-        const uiGm = gmTracker.getUiSummary() || lastGMSummary;
+        const uiGm = getActiveUiGmSummary();
         const actSum = activityTracker.getSummary();
         const cliDays = getCachedCliDays(false);
         const todayLedgerActive = dailyLedger.getTodayActive();
@@ -3110,8 +3285,8 @@ export function createSidecarRuntimeProvider(
     function buildDocumentParams(viewMode: SidecarViewMode, langOverride?: Language): SidecarDocumentParams {
         const lang = langOverride ?? getLanguage();
         const nowMs = deps.now();
-        const uiGmSummary = gmTracker.getUiSummary() || lastGMSummary;
-        const uiGmFullSummary = gmTracker.getUiFullSummary() || uiGmSummary;
+        const uiGmSummary = getActiveUiGmSummary();
+        const uiGmFullSummary = deps.fetchGM ? uiGmSummary : (gmTracker.getUiFullSummary() || uiGmSummary);
         const costs = computeLiveCostSnapshot(uiGmSummary, currentUsage?.cascadeId ?? lastResolution.cascadeId ?? undefined);
         const staleState = getCombinedStaleState(nowMs);
         const activeEmail = selectedAccountKey || cachedUserInfo?.email || currentAccountEmail || '';
@@ -3381,6 +3556,7 @@ export function createSidecarRuntimeProvider(
                     pollCount,
                     lastPollAtMs,
                     effectivePollIntervalMs,
+                    ...(overlayTargetTab ? { overlayTargetTab: { ...overlayTargetTab } } : {}),
                 },
             };
 
@@ -4774,6 +4950,36 @@ export function createSidecarRuntimeProvider(
                     ...(launcherRes.error ? { error: launcherRes.error } : {}),
                     result: launcherMsg,
                     messages: [launcherMsg, cdpStatusMsg, syncMsg],
+                    snapshot: buildSnapshotPayload(viewMode),
+                };
+            }
+
+            case 'revealCdpLauncher': {
+                const launcherRes = deps.revealCdpLauncher();
+                const cdpStatus: CdpStatus = {
+                    ...overlayManager.getStatus(),
+                    launcherStatus: launcherRes.status,
+                };
+                const launcherMsg: Record<string, unknown> = {
+                    type: 'cdpLauncherResult',
+                    command: 'cdpLauncherResult',
+                    action: 'revealCdpLauncher',
+                    ok: launcherRes.ok,
+                    launcherStatus: launcherRes.status,
+                    messageEn: launcherRes.messageEn,
+                    messageZh: launcherRes.messageZh,
+                    ...(launcherRes.error ? { error: launcherRes.error } : {}),
+                    cdpStatus,
+                };
+                const syncMsg: Record<string, unknown> = {
+                    ...buildSyncSettingsControlsMessage(),
+                    cdpStatus,
+                };
+                return {
+                    ok: launcherRes.ok,
+                    ...(launcherRes.error ? { error: launcherRes.error } : {}),
+                    result: launcherMsg,
+                    messages: [launcherMsg, syncMsg],
                     snapshot: buildSnapshotPayload(viewMode),
                 };
             }

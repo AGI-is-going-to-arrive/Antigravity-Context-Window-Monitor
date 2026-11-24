@@ -2,7 +2,7 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Monitor",
-  "version": "1.17.7",
+  "version": "1.17.8",
   "description": "Real-time context window telemetry, token breakdown, prompt cache diagnostics, and model quota runway monitor for Antigravity.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [

@@ -509,10 +509,10 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
                 statusCode: 200,
                 headers: {},
                 buffer: Buffer.from(JSON.stringify({
-                    tag_name: 'v1.17.7',
-                    html_url: 'https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/tag/v1.17.7',
+                    tag_name: 'v1.17.8',
+                    html_url: 'https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/tag/v1.17.8',
                     assets: [
-                        { name: 'antigravity-context-monitor-app-1.17.7.zip', browser_download_url: 'https://github.com/a/b/x.zip' },
+                        { name: 'antigravity-context-monitor-app-1.17.8.zip', browser_download_url: 'https://github.com/a/b/x.zip' },
                         { name: 'SHA256SUMS.txt', browser_download_url: 'https://github.com/a/b/SHA256SUMS.txt' },
                     ],
                 })),
@@ -553,7 +553,7 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         });
         expect(status.remote).toMatchObject({
             checked: true,
-            latestVersion: '1.17.7',
+            latestVersion: '1.17.8',
             updateAvailable: true,
             hasChecksums: true,
             error: null,

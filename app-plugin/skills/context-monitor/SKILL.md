@@ -78,9 +78,13 @@ Context Ring or Top-Right Status Bar floating overlays inside Antigravity App
   Launcher** in **Settings → Overlays & CDP** (or run
   `node scripts/install-app-plugin.mjs --setup-cdp-launcher`) to create
   `~/Applications/Antigravity (CDP).app` (macOS), Desktop/Start Menu `.lnk`
-  (Windows), or `~/.local/share/applications/antigravity-cdp.desktop` (Linux).
-  It waits cleanly for Antigravity's ~5s background shutdown and launches with
-  `--remote-debugging-port=0` without patching any host binaries.
+  (Windows), or `~/.local/share/applications/antigravity-cdp.desktop` (Linux),
+  then click **Reveal in Finder / Explorer / Folder** in Settings to open its
+  location directly. It waits cleanly for Antigravity's ~5s background shutdown
+  and launches with `--remote-debugging-port=0` without patching any host
+  binaries. Once active, clicking any Top-Right Status Bar metric opens its
+  matching 4-view popover (`Quota`, `Context`, `Speed`, or `Total`) with
+  context-aware **Open Panel** tab switching.
 - **Manual terminal relaunch:**
   1. **Quit Antigravity App completely first** (macOS: press `Cmd+Q` and wait
      ~5s for background `language_server` teardown to complete — running

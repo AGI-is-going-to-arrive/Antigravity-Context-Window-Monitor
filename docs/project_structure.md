@@ -2,7 +2,7 @@
 
 本文档说明 Antigravity Context Window Monitor 的源码组织方式、模块职责以及依赖关系。
 
-当前版本为 **1.17.7**。发布说明先列英文，再列中文。[1.17.7 发布说明](releases/1.17.7.md)
+当前版本为 **1.17.8**。发布说明先列英文，再列中文。[1.17.8 发布说明](releases/1.17.8.md)
 
 ---
 
@@ -11,7 +11,7 @@
 antigravity-context-monitor/
 ├── AGENTS.md                     # 给任意 AI 智能体的双语一句话安装/升级安全契约（零 app.asar 修改、严禁强杀宿主、SHA-256 强制校验）
 ├── app-plugin/                   # Antigravity App（桌面版 2.0+）原生 Sidecar 插件清单与入口
-│   ├── plugin.json               #   插件清单（v1.17.7，通过 agy plugin validate --strict 0 告警校验）
+│   ├── plugin.json               #   插件清单（v1.17.8，通过 agy plugin validate --strict 0 告警校验）
 │   ├── assets/logo.svg           #   插件图标
 │   ├── sidecars/context_monitor/ #   Sidecar 声明与运行时入口（零外部 npm 依赖，运行于内置 Node v24+）
 │   │   ├── sidecar.json          #     声明 AUX_PANE（/）与 SIDEBAR（/full）双视图
@@ -31,8 +31,8 @@ antigravity-context-monitor/
 │   │   ├── host-bridge.ts        #   浏览器端桥接（window.__ACM_BRIDGE__、acquireVsCodeApi 垫片、可见性门控 ETag 轮询、CSV/JSON 下载）
 │   │   ├── theme-adapter.ts      #   App 宿主主题 CSS 变量 → --vscode-*/--ed-* 桥接（dark/light/hc/hc-light，覆写 /preload.js 内联浅色兜底）与窄侧栏排版
 │   │   ├── cdp-injector.ts       #   严格按需（默认关闭）纯 Node RFC 6455 CDP WebSocket 客户端、DevToolsActivePort 与父进程参数发现（host_missing_flag）、悬浮层生命周期与 256-bit 回环鉴权桥
-│   │   ├── cdp-launcher.ts       #   纯 Node 零魔改跨平台持久化 CDP 启动器生成与检测（macOS ~/Applications/Antigravity (CDP).app 无竞态 15s 退出轮询、Windows .lnk/.cmd、Linux .desktop）
-│   │   ├── cdp-overlay-assets.ts #   零 innerHTML / Trusted-Types 安全 Shadow DOM 悬浮层（Turbo 左侧输入框上下文环 + 单列用量卡、右上角状态条 + 配额看板）
+│   │   ├── cdp-launcher.ts       #   纯 Node 零魔改跨平台持久化 CDP 启动器生成、定位（revealCdpLauncher）与检测（macOS activate+TCC 兜底+15s 退出轮询、Windows .lnk/.cmd、Linux .desktop）
+│   │   ├── cdp-overlay-assets.ts #   零 innerHTML / Trusted-Types 安全 Shadow DOM 悬浮层（Turbo 左侧输入框上下文环 + 单列用量卡、右上角状态条 4 视图弹窗与上下文感知切页）
 │   │   └── plugin-updater.ts     #   面板内 GitHub Releases 条件 ETag（6h 节流）更新检查与失败即中止 SHA-256 原子自更新引擎
 │   ├── orchestrator-attribution.ts # 编排全链路角色归因（Orchestrator/Executor/Subagent）、config.json 只读回退、跨模型切换冷启动检测与双水位线
 │   ├── cli-usage-scanner.ts      # 零依赖严格只读 ~/.gemini/antigravity-cli 扫描器（SQLite immutable=1 + JSONL 回退、mtime+size 缓存）、9 币种换算、套餐 ROI 与防公式注入 CSV/JSON 导出
@@ -99,7 +99,8 @@ antigravity-context-monitor/
 │   └── images/                   # README 定稿截图资源（全部 9 页 monitor-*.png，Obsidian Slate 深色双语）
 ├── __mocks__/
 │   └── vscode.ts                 # VS Code API mock（Vitest 用）
-├── tests/                        # Vitest 单元测试（82 个测试文件，1,498 项测试）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
+├── tests/                        # Vitest 单元测试（83 个测试文件，1,507 项测试）与 Chromium/原生验收脚本（开发用，不参与插件运行时）
+│   ├── app-cdp-topbar-views.test.ts # 右上角状态条 4 视图弹窗（quota/context/speed/total）、本地 HH:MM:SS 时钟、窄屏折叠路由与 targetTab 回归
 │   ├── sidecar-idle-backoff-and-gm-cache.test.ts # Sidecar 空闲退避唤醒、多槽位分钟桶 ETag 缓存、GM 稳定跳过/字段保留/错误退避回归
 │   ├── app-cdp-launcher.test.ts  # 纯 Node 零魔改跨平台持久化 CDP 启动器（macOS .app / Windows .cmd+.lnk / Linux .desktop）生成、检测与移除回归
 │   ├── app-cdp-injector.test.ts  # 纯 Node RFC 6455 WebSocket、CDP 发现防自挂载、父进程参数检测（host_missing_flag）、IPv6 回退、互斥锁、Shadow DOM 零 innerHTML 与 256-bit 鉴权桥回归
@@ -187,7 +188,7 @@ antigravity-context-monitor/
 ├── docs/
 │   ├── technical_implementation.md   # 技术实现指南
 │   ├── project_structure.md          # 本文件
-│   └── releases/1.17.7.md            # 当前发布说明（先英文，再中文）
+│   └── releases/1.17.8.md            # 当前发布说明（先英文，再中文）
 ├── out/                          # tsc 编译输出（已从 git 索引移除，.gitignore 忽略）
 ├── PRODUCT.md                    # 产品定位、9 页能力清单、术语约束与无障碍承诺
 ├── DESIGN.md                     # Studio Telemetry Ledger 设计系统规范（色板、排版、组件与 9 页契约）
@@ -583,11 +584,11 @@ npm run test:watch
 npm run package
 ```
 
-在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.7.vsix` 后重载窗口（命令行：`antigravity-ide --install-extension antigravity-context-monitor-1.17.7.vsix --force`）。对于 Antigravity App 插件，可运行 `node scripts/package-app-plugin.mjs && node scripts/install-app-plugin.mjs --install`（或使用 `AGENTS.md` 中的 `--from-github` / `--upgrade` 一键命令）。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
+在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `antigravity-context-monitor-1.17.8.vsix` 后重载窗口（命令行：`antigravity-ide --install-extension antigravity-context-monitor-1.17.8.vsix --force`）。对于 Antigravity App 插件，可运行 `node scripts/package-app-plugin.mjs && node scripts/install-app-plugin.mjs --install`（或使用 `AGENTS.md` 中的 `--from-github` / `--upgrade` 一键命令）。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
 
 测试文件位于 `tests/`，仅供 Vitest 与本地浏览器/原生验收使用，不会被打包到 VSIX 或 App 插件包中。
 
-发布验收使用编译输出与重新打包安装的 **1.17.7**。编译、单元测试（**82 个文件 / 1,498 项测试**）、安装包校验（`agy plugin validate --strict` **0 告警** + `dist/SHA256SUMS.txt`）和平台验证范围集中记录在发布说明。[1.17.7 验证](releases/1.17.7.md#验证)
+发布验收使用编译输出与重新打包安装的 **1.17.8**。编译、单元测试（**83 个文件 / 1,507 项测试**）、安装包校验（`agy plugin validate --strict` **0 告警** + `dist/SHA256SUMS.txt`）和平台验证范围集中记录在发布说明。[1.17.8 验证](releases/1.17.8.md#验证)
 
 自动化 UI 与视觉验收统一由 `tests/installed-ide-ui.cjs` 驱动：
 - `node tests/installed-ide-ui.cjs --installed <目录>`（加 `--smoke` 运行快速冒烟）：基于 Chromium 与已编译/已安装 JS 渲染合成数据，覆盖全部 9 个标签页、浅色 / 深色 / 高对比度主题、三种语言（`en` / `zh` / `both`）与 `320px–1440px` 宽度，校验 axe-core WCAG 2.1 AA 对比度、WCAG 1.4.11 非文本对比度、零横向溢出、交互状态及零旧版 Prompt/Flow 残留，并内置 CDP 断连/超时自动回收会话机制。

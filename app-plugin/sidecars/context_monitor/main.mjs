@@ -56,7 +56,7 @@ function readPluginVersion() {
             // Try next candidate
         }
     }
-    return '1.17.7';
+    return '1.17.8';
 }
 
 function resolveCompiledModule(relPath) {

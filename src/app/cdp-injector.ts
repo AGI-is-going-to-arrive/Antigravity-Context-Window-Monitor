@@ -31,6 +31,7 @@ import type {
     CdpOverlayBridgeAction,
     CdpOverlayBridgeActionCommand,
     CdpOverlayPayload,
+    CdpOverlayTargetTab,
     CdpOverlayToggles,
     CdpPlatformGuide,
     CdpStatus,
@@ -45,6 +46,22 @@ const DEFAULT_RECONNECT_BACKOFF_MS = 15_000;
 
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const ALLOWED_BRIDGE_COMMANDS = new Set<CdpOverlayBridgeActionCommand>(['openPanel', 'refresh', 'togglePause']);
+const ALLOWED_OVERLAY_TARGET_TABS = new Set<CdpOverlayTargetTab>([
+    'overview',
+    'gm',
+    'sessions',
+    'cost',
+    'models',
+    'calendar',
+    'accounts',
+    'settings',
+]);
+
+function parseOverlayTargetTab(raw: unknown): CdpOverlayTargetTab | undefined {
+    if (typeof raw !== 'string') { return undefined; }
+    const trimmed = raw.trim() as CdpOverlayTargetTab;
+    return ALLOWED_OVERLAY_TARGET_TABS.has(trimmed) ? trimmed : undefined;
+}
 
 // ─── Cross-Platform DevToolsActivePort Discovery ─────────────────────────────
 
@@ -1230,7 +1247,8 @@ export async function createOverlayActionBridge(options: {
                 return;
             }
             const source = parsed.source === 'composer' || parsed.source === 'topbar' ? parsed.source : undefined;
-            Promise.resolve(options.onAction?.({ command: cmd, source }))
+            const targetTab = parseOverlayTargetTab(parsed.targetTab);
+            Promise.resolve(options.onAction?.({ command: cmd, source, ...(targetTab ? { targetTab } : {}) }))
                 .then(() => send(200, { ok: true, command: cmd }, check.origin))
                 .catch(() => send(500, { ok: false, error: 'Action handler failed' }, check.origin));
         });

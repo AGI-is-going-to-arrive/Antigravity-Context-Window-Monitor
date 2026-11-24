@@ -2196,6 +2196,37 @@ export function getScript(): string {
             })();
             var emptyAccountPopoverHtml = ${JSON.stringify(`<p class="empty-msg">${tBi('No account data yet.', '暂无账号数据。')}</p>`)};
             var lastHandledSnapshotRef = null;
+            var lastHandledOverlayTabSeq = Number(savedState.lastHandledOverlayTabSeq) || 0;
+            var OVERLAY_TARGET_TAB_MAP = {
+                overview: 'overview',
+                gm: 'gmdata',
+                gmdata: 'gmdata',
+                sessions: 'chats',
+                chats: 'chats',
+                cost: 'pricing',
+                pricing: 'pricing',
+                models: 'models',
+                calendar: 'calendar',
+                accounts: 'profile',
+                profile: 'profile',
+                settings: 'settings',
+                about: 'about'
+            };
+
+            function maybeHandleOverlayTargetTab(snapshot) {
+                var req = snapshot && snapshot.meta && snapshot.meta.overlayTargetTab;
+                if (!req || typeof req !== 'object') { return; }
+                var seq = Number(req.seq);
+                var rawTab = typeof req.tab === 'string' ? req.tab.trim() : '';
+                if (!isFinite(seq) || seq <= 0 || !rawTab) { return; }
+                if (seq <= lastHandledOverlayTabSeq) { return; }
+                lastHandledOverlayTabSeq = seq;
+                var resolvedTab = OVERLAY_TARGET_TAB_MAP[rawTab] || rawTab;
+                switchTab(resolvedTab, false, false);
+                var st = vscode.getState() || {};
+                st.lastHandledOverlayTabSeq = seq;
+                vscode.setState(st);
+            }
 
             function applyIncrementalUpdate(msg) {
                 if (!msg || !msg.tabs) { return; }
@@ -2420,6 +2451,9 @@ export function getScript(): string {
                 if (liveUpdateStatus && typeof liveUpdateStatus === 'object') {
                     syncUpdateStatusUi(liveUpdateStatus);
                 }
+                if (msg.snapshot) {
+                    maybeHandleOverlayTargetTab(msg.snapshot);
+                }
 
                 updateTabSlider();
                 updateTabOverflowHint();
@@ -2475,6 +2509,9 @@ export function getScript(): string {
                         time: snap.time || detail.time || '',
                         snapshot: snap
                     });
+                } else if (snap) {
+                    lastHandledSnapshotRef = snap;
+                    maybeHandleOverlayTargetTab(snap);
                 }
             });
             // ─── End-of-Content IntersectionObserver ───

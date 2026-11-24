@@ -18,6 +18,7 @@ import {
 import { getHostBridgeScript, type HostBridgeOptions } from './host-bridge';
 import { getThemeAdapterStyles } from './theme-adapter';
 import type {
+    CdpOverlayTargetTab,
     SidecarActionRequest,
     SidecarActionResponse,
     SidecarHealthResponse,
@@ -31,7 +32,7 @@ import type {
 
 export const MAX_ACTION_BODY_BYTES = 256 * 1024;
 export const MAX_OVERLAY_ACTION_BODY_BYTES = 16 * 1024;
-export const DEFAULT_SIDECAR_VERSION = '1.17.7';
+export const DEFAULT_SIDECAR_VERSION = '1.17.8';
 export const ALLOWED_IMAGE_FILENAME_RE = /^[a-z0-9-]+\.png$/;
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -54,9 +55,21 @@ const ALLOWED_OVERLAY_BRIDGE_COMMANDS: ReadonlySet<SidecarOverlayBridgeCommand> 
     'ping',
 ]);
 
+const ALLOWED_OVERLAY_TARGET_TABS: ReadonlySet<CdpOverlayTargetTab> = new Set([
+    'overview',
+    'gm',
+    'sessions',
+    'cost',
+    'models',
+    'calendar',
+    'accounts',
+    'settings',
+]);
+
 export interface SidecarOverlayBridgeRequest {
     command: SidecarOverlayBridgeCommand;
     source?: 'composer' | 'topbar';
+    targetTab?: CdpOverlayTargetTab;
 }
 
 export interface SidecarOverlayBridgeOptions {
@@ -681,7 +694,13 @@ export function createSidecarHandler(
             return { status: 400, headers: corsHeaders, body: { ok: false, error: 'Unsupported overlay action' } };
         }
         const source = rec.source === 'composer' || rec.source === 'topbar' ? rec.source : undefined;
-        const overlayReq: SidecarOverlayBridgeRequest = { command: rawCmd, source };
+        const rawTargetTab = typeof rec.targetTab === 'string' ? rec.targetTab.trim() as CdpOverlayTargetTab : undefined;
+        const targetTab = rawTargetTab && ALLOWED_OVERLAY_TARGET_TABS.has(rawTargetTab) ? rawTargetTab : undefined;
+        const overlayReq: SidecarOverlayBridgeRequest = {
+            command: rawCmd,
+            source,
+            ...(targetTab ? { targetTab } : {}),
+        };
 
         if (rawCmd === 'ping') {
             return {

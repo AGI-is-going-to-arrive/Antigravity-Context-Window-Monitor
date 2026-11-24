@@ -85,11 +85,7 @@ import {
     resolveDevToolsActivePortPaths,
     selectAntigravityHubTarget,
 } from './app/cdp-injector';
-import {
-    createCdpLauncher,
-    inspectCdpLauncher,
-    removeCdpLauncher,
-} from './app/cdp-launcher';
+import * as cdpLauncher from './app/cdp-launcher';
 import type { CdpStatus } from './app/sidecar-types';
 
 // ─── Panel Payload ────────────────────────────────────────────────────────────
@@ -781,7 +777,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                             diagnosticCode: 'disabled',
                             composerEnabled: false,
                             topBarEnabled: false,
-                            launcherStatus: inspectCdpLauncher({ env: process.env }),
+                            launcherStatus: cdpLauncher.inspectCdpLauncher({ env: process.env }),
                             platformGuide: getCdpPlatformGuide(process.platform),
                         };
                     } else {
@@ -796,7 +792,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                                 diagnosticCode: 'disabled',
                                 composerEnabled: false,
                                 topBarEnabled: false,
-                                launcherStatus: inspectCdpLauncher({ env: process.env }),
+                                launcherStatus: cdpLauncher.inspectCdpLauncher({ env: process.env }),
                                 platformGuide: getCdpPlatformGuide(process.platform),
                             };
                         } else {
@@ -838,8 +834,8 @@ export function showMonitorPanel(p: PanelPayload): void {
             }
         } else if (msg.command === 'setupCdpLauncher' || msg.command === 'removeCdpLauncher') {
             const launcherRes = msg.command === 'setupCdpLauncher'
-                ? createCdpLauncher({ env: process.env })
-                : removeCdpLauncher({ env: process.env });
+                ? cdpLauncher.createCdpLauncher({ env: process.env })
+                : cdpLauncher.removeCdpLauncher({ env: process.env });
             const docSettings = readIdeDocumentSettings();
             const probed = await probeIdeCdpStatus(
                 Boolean(docSettings.appComposerRingEnabled),
@@ -869,6 +865,35 @@ export function showMonitorPanel(p: PanelPayload): void {
             if (panel) {
                 postSettingsControlSync();
                 postCurrentTabs();
+            }
+        } else if (msg.command === 'revealCdpLauncher') {
+            const launcherRes = cdpLauncher.revealCdpLauncher({ env: process.env });
+            const docSettings = readIdeDocumentSettings();
+            const baseStatus = resolveEffectiveIdeCdpStatus(docSettings) ?? {
+                state: 'disabled' as const,
+                diagnosticCode: 'disabled' as const,
+                composerEnabled: Boolean(docSettings.appComposerRingEnabled),
+                topBarEnabled: Boolean(docSettings.appTopBarEnabled),
+                platformGuide: getCdpPlatformGuide(process.platform),
+            };
+            const cdpStatus: CdpStatus = {
+                ...baseStatus,
+                launcherStatus: launcherRes.status,
+            };
+            lastCdpStatus = cdpStatus;
+            safePostMessage({
+                type: 'cdpLauncherResult',
+                command: 'cdpLauncherResult',
+                action: 'revealCdpLauncher',
+                ok: launcherRes.ok,
+                launcherStatus: launcherRes.status,
+                messageEn: launcherRes.messageEn,
+                messageZh: launcherRes.messageZh,
+                ...(launcherRes.error ? { error: launcherRes.error } : {}),
+                cdpStatus,
+            });
+            if (panel) {
+                postSettingsControlSync();
             }
         } else if (msg.command === 'setPollingInterval' && typeof msg.value === 'number') {
             const val = Math.max(1, Math.min(60, msg.value));
@@ -1201,7 +1226,7 @@ async function probeIdeCdpStatus(
     topBarEnabled: boolean,
 ): Promise<CdpStatus> {
     const platformGuide = getCdpPlatformGuide(process.platform);
-    const launcherStatus = inspectCdpLauncher({ env: process.env });
+    const launcherStatus = cdpLauncher.inspectCdpLauncher({ env: process.env });
     if (!composerEnabled && !topBarEnabled) {
         return {
             state: 'disabled',
@@ -1271,7 +1296,7 @@ async function probeIdeCdpStatus(
 function resolveEffectiveIdeCdpStatus(docSettings: MonitorDocumentSettings): CdpStatus | undefined {
     const composerEnabled = Boolean(docSettings.appComposerRingEnabled);
     const topBarEnabled = Boolean(docSettings.appTopBarEnabled);
-    const launcherStatus = lastCdpStatus?.launcherStatus ?? inspectCdpLauncher({ env: process.env });
+    const launcherStatus = lastCdpStatus?.launcherStatus ?? cdpLauncher.inspectCdpLauncher({ env: process.env });
     if (!composerEnabled && !topBarEnabled) {
         return {
             ...(lastCdpStatus ?? { platformGuide: getCdpPlatformGuide(process.platform) }),

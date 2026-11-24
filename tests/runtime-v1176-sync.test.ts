@@ -50,6 +50,8 @@ import { GMTracker, type GMSummary } from '../src/gm-tracker';
 import { ActivityTracker } from '../src/activity-tracker';
 import * as backendConnection from '../src/backend-connection';
 import * as trackerModule from '../src/tracker';
+import * as cdpLauncherModule from '../src/app/cdp-launcher';
+import { getScript } from '../src/webview-script';
 
 interface HttpResponse {
     status: number;
@@ -642,7 +644,7 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         await legacy249State.updateAppSettings({ subscriptionMonthlyFee: 249.99, subscriptionCurrency: 'USD' });
         await legacy249State.flush();
         const hydrated249 = await createSidecarRuntimeProvider({
-            version: '1.17.7',
+            version: '1.17.8',
             statePath: legacy249Path,
             autoStart: false,
             disableCliScan: true,
@@ -657,7 +659,7 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         await legacy99State.updateAppSettings({ subscriptionMonthlyFee: 99.99, subscriptionCurrency: 'USD' });
         await legacy99State.flush();
         const hydrated99 = await createSidecarRuntimeProvider({
-            version: '1.17.7',
+            version: '1.17.8',
             statePath: legacy99Path,
             autoStart: false,
             disableCliScan: true,
@@ -1007,7 +1009,7 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         });
         const launcherStatePath = path.join(tmp, 'launcher-state.json');
         const launcherProvider = await createSidecarRuntimeProvider({
-            version: '1.17.7',
+            version: '1.17.8',
             statePath: launcherStatePath,
             autoStart: false,
             disableCliScan: true,
@@ -1286,7 +1288,7 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         });
 
         const provider = await createSidecarRuntimeProvider({
-            version: '1.17.7',
+            version: '1.17.8',
             statePath: path.join(tmp, 'state.json'),
             autoStart: false,
             disableCliScan: true,
@@ -1337,7 +1339,7 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         });
         providers.push(provider);
 
-        const handle = await startStandaloneServer(provider, { host: '127.0.0.1', port: 0, version: '1.17.7' });
+        const handle = await startStandaloneServer(provider, { host: '127.0.0.1', port: 0, version: '1.17.8' });
         servers.push(handle);
         await provider.pollNow(true);
 
@@ -1440,6 +1442,534 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         expect(removeJson.result.command).toBe('cdpLauncherResult');
         expect(removeJson.result.launcherStatus.installed).toBe(false);
         expect(removeJson.snapshot.data.cdpStatus.launcherStatus.installed).toBe(false);
+    });
+
+    it('v1.17.8: wires App Sidecar revealCdpLauncher, rich buildCdpOverlayPayload speed/total fields, and context-aware openPanel targetTab switching', async () => {
+        const tmp = makeTmpDir();
+        const fixedNow = Date.parse('2026-11-24T12:00:00Z');
+        const todayKey = toLocalDateKey(new Date(fixedNow));
+        const yesterdayKey = toLocalDateKey(new Date(fixedNow - 86_400_000));
+        const statePath = path.join(tmp, 'v1178-runtime-state.json');
+
+        // Seed 2 days of recorded history (yesterday archived in DailyStore + today active/settled in DailyLedger) + subscription plan
+        const seedState = new DurableState(statePath);
+        const seedBucket = seedState.globalBucket();
+        const seedStore = new DailyStore(400);
+        seedStore.init(seedBucket, { maxDays: 400 });
+        seedStore.addDailySnapshot(
+            yesterdayKey,
+            {
+                totalUserInputs: 4,
+                totalReasoning: 8,
+                totalToolCalls: 10,
+                totalErrors: 0,
+                totalCheckpoints: 1,
+                estSteps: 22,
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                modelStats: {},
+                toolBreakdown: {},
+                recentSteps: [],
+            } as any,
+            {
+                totalCalls: 4,
+                totalInputTokens: 50_000,
+                totalOutputTokens: 10_000,
+                totalCacheRead: 40_000,
+                totalCacheCreation: 0,
+                totalThinkingTokens: 0,
+                totalCredits: 0,
+                totalRetryCount: 0,
+                totalRetryTokens: 0,
+                totalRetryCredits: 0,
+                retryErrorCodes: {},
+                modelBreakdown: {},
+                conversations: [],
+                toolCallCounts: {},
+                toolCatalog: [],
+                uniqueErrors: [],
+                fetchedAt: fixedNow - 86_400_000,
+            } as unknown as GMSummary,
+            12.5,
+            undefined,
+            false,
+            { surface: 'app' },
+        );
+
+        await seedBucket.update('lastArchivalDateKey', todayKey);
+        await seedBucket.update('dailyLedgerState', {
+            version: 1,
+            dateKey: todayKey,
+            surface: 'app',
+            accounts: {
+                'tester@example.com': {
+                    email: 'tester@example.com',
+                    accountEmail: 'tester@example.com',
+                    totalCalls: 1,
+                    totalInputTokens: 20_000,
+                    totalOutputTokens: 4_000,
+                    totalThinkingTokens: 0,
+                    totalCacheRead: 30_000,
+                    totalCacheCreation: 0,
+                    totalCredits: 0,
+                    totalEstimatedCost: 4.2,
+                    surfaceBreakdown: {
+                        app: {
+                            calls: 1,
+                            inputTokens: 20_000,
+                            outputTokens: 4_000,
+                            thinkingTokens: 0,
+                            cacheReadTokens: 30_000,
+                            cacheCreationTokens: 0,
+                            credits: 0,
+                            estimatedCost: 4.2,
+                        },
+                    },
+                    modelStats: {
+                        'Gemini 4 Neon': {
+                            calls: 1,
+                            inputTokens: 20_000,
+                            outputTokens: 4_000,
+                            thinkingTokens: 0,
+                            cacheReadTokens: 30_000,
+                            cacheCreationTokens: 0,
+                            credits: 0,
+                            estimatedCost: 4.2,
+                        },
+                    },
+                    recordedCallIds: ['today-call-1'],
+                    recordedCalls: [{
+                        callId: 'today-call-1',
+                        createdAt: new Date(fixedNow - 60_000).toISOString(),
+                        createdAtMs: fixedNow - 60_000,
+                        modelId: 'MODEL_PLACEHOLDER_M535',
+                        modelKey: 'Gemini 4 Neon',
+                        inputTokens: 20_000,
+                        outputTokens: 4_000,
+                        thinkingTokens: 0,
+                        cacheReadTokens: 30_000,
+                        cacheCreationTokens: 0,
+                        credits: 0,
+                        estimatedCost: 4.2,
+                        surface: 'app',
+                    }],
+                },
+            },
+            settled: [{
+                settledAt: new Date(fixedNow - 30_000).toISOString(),
+                accountEmail: 'tester@example.com',
+                poolModelIds: ['MODEL_PLACEHOLDER_M535'],
+                poolModelLabels: ['Gemini 4 Neon'],
+                totalCalls: 1,
+                totalInputTokens: 10_000,
+                totalOutputTokens: 2_000,
+                totalThinkingTokens: 0,
+                totalCacheRead: 14_000,
+                totalCacheCreation: 0,
+                totalCredits: 0,
+                totalEstimatedCost: 1.8,
+                modelCalls: { 'Gemini 4 Neon': 1 },
+                surface: 'app',
+            }],
+        });
+        await seedBucket.update('subscriptionPlan', 'google-ai-ultra-20x');
+        await seedState.updateAppSettings({
+            displayCurrency: 'USD',
+            subscriptionMonthlyFee: 199.99,
+            subscriptionCurrency: 'USD',
+        });
+        await seedState.flush();
+
+        const traj1: TrajectorySummary = { ...makeTrajectory(), cascadeId: 'cascade-main-v1178', trajectoryId: 'traj-main-v1178' };
+        const traj2: TrajectorySummary = { ...makeTrajectory(), cascadeId: 'cascade-second-v1178', trajectoryId: 'traj-second-v1178', summary: 'Second Session' };
+        const gmWithSpeed: GMSummary = {
+            totalCalls: 3,
+            totalStepsCovered: 12,
+            totalInputTokens: 30_000,
+            totalOutputTokens: 6_010,
+            totalCacheRead: 44_000,
+            totalCacheCreation: 0,
+            totalThinkingTokens: 0,
+            totalCredits: 0,
+            totalRetryCount: 0,
+            totalRetryTokens: 0,
+            totalRetryCredits: 0,
+            contextGrowth: [],
+            latestTokenBreakdown: [],
+            stopReasonCounts: {},
+            recentErrors: [],
+            retryErrorCodes: {},
+            modelBreakdown: {},
+            toolCallCounts: {},
+            toolCatalog: [],
+            uniqueErrors: [],
+            fetchedAt: new Date(fixedNow).toISOString(),
+            conversations: [{
+                cascadeId: traj1.cascadeId,
+                title: 'Main Session',
+                totalSteps: 12,
+                coveredSteps: 12,
+                coverageRate: 1,
+                checkpointSummaries: [],
+                systemContextItems: [],
+                calls: [
+                    // Valid call: 1,000 tok / 10s = 100.0 tok/s
+                    {
+                        model: 'MODEL_PLACEHOLDER_M535',
+                        modelDisplay: 'Gemini 4 Neon',
+                        responseModel: 'gemini-4-neon',
+                        modelAccuracy: 'exact',
+                        inputTokens: 10_000,
+                        outputTokens: 1_000,
+                        cacheReadTokens: 20_000,
+                        cacheCreationTokens: 0,
+                        thinkingTokens: 0,
+                        ttftSeconds: 0.8,
+                        streamingSeconds: 10,
+                        createdAt: new Date(fixedNow - 90_000).toISOString(),
+                        hasError: false,
+                        toolCallsByStep: {},
+                        userMessageAnchors: [],
+                    },
+                    // Peak valid call: 2,260 tok / 20s = 113.0 tok/s
+                    {
+                        model: 'MODEL_PLACEHOLDER_M535',
+                        modelDisplay: 'Gemini 4 Neon',
+                        responseModel: 'gemini-4-neon',
+                        modelAccuracy: 'exact',
+                        inputTokens: 15_000,
+                        outputTokens: 2_260,
+                        cacheReadTokens: 24_000,
+                        cacheCreationTokens: 0,
+                        thinkingTokens: 0,
+                        ttftSeconds: 0.6,
+                        streamingSeconds: 20,
+                        createdAt: new Date(fixedNow - 40_000).toISOString(),
+                        hasError: false,
+                        toolCallsByStep: {},
+                        userMessageAnchors: [],
+                    },
+                    // Short sample: 10 tok / 0.02s = 500 tok/s (MUST be filtered out of peakOutputSpeedTps!)
+                    {
+                        model: 'MODEL_PLACEHOLDER_M535',
+                        modelDisplay: 'Gemini 4 Neon',
+                        responseModel: 'gemini-4-neon',
+                        modelAccuracy: 'exact',
+                        inputTokens: 5_000,
+                        outputTokens: 10,
+                        cacheReadTokens: 0,
+                        cacheCreationTokens: 0,
+                        thinkingTokens: 0,
+                        ttftSeconds: 0.4,
+                        streamingSeconds: 0.02,
+                        createdAt: new Date(fixedNow - 10_000).toISOString(),
+                        hasError: false,
+                        toolCallsByStep: {},
+                        userMessageAnchors: [],
+                    },
+                ],
+            }],
+        } as unknown as GMSummary;
+
+        const fakeLauncherPath = path.join(tmp, 'Applications', 'Antigravity (CDP).app');
+        let launcherInstalled = true;
+        let revealCallCount = 0;
+        const makeLauncherStatus = () => ({
+            supported: true,
+            platform: 'darwin' as const,
+            installed: launcherInstalled,
+            launcherPath: fakeLauncherPath,
+            displayName: 'Antigravity (CDP)',
+            targetAppFound: true,
+            targetAppPath: '/Applications/Antigravity.app',
+            safeTerminalCommand: 'open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0',
+            noteEn: 'Ready',
+            noteZh: '已就绪',
+        });
+
+        const provider = await createSidecarRuntimeProvider({
+            version: '1.17.8',
+            statePath,
+            autoStart: false,
+            disableCliScan: true,
+            deps: {
+                now: () => fixedNow,
+                discoverLS: async () => makeMockLS(),
+                fetchFullUserStatus: async () => makeMockUserStatus(),
+                fetchAvailableModels: async () => null,
+                fetchOrchestratorSettings: async () => null,
+                fetchUserQuotaSummary: async () => null,
+                getAllTrajectories: async () => [traj1, traj2],
+                getContextUsage: async () => makeUsage(traj1),
+                refreshWorkflowImageUsage: async (_ls, u) => u,
+                fetchTrajectoryGeneratorMetadata: async () => [],
+                fetchTrajectorySteps: async () => ({ steps: [], hasGaps: false }),
+                processActivity: async () => false,
+                fetchGM: async () => gmWithSpeed,
+                inspectCdpLauncher: () => makeLauncherStatus(),
+                revealCdpLauncher: () => {
+                    revealCallCount++;
+                    if (!launcherInstalled) {
+                        return {
+                            ok: false,
+                            status: makeLauncherStatus(),
+                            messageEn: 'Not created yet',
+                            messageZh: '尚未创建',
+                            error: 'Launcher not created yet',
+                        };
+                    }
+                    return {
+                        ok: true,
+                        status: makeLauncherStatus(),
+                        messageEn: `Revealed "${fakeLauncherPath}" in Finder.`,
+                        messageZh: `已在访达中定位「${fakeLauncherPath}」。`,
+                    };
+                },
+                createCdpOverlayManager: (mgrOpts) => createCdpAmbientOverlayManager({
+                    ...mgrOpts,
+                    enableActionBridge: false,
+                    discoverActivePort: () => null,
+                }),
+            },
+        });
+        providers.push(provider);
+        const handle = await startStandaloneServer(provider, { host: '127.0.0.1', port: 0, version: '1.17.8' });
+        servers.push(handle);
+        await provider.pollNow(true);
+
+        // 1. Verify all 8 new buildCdpOverlayPayload() fields
+        const overlay = provider.buildOverlayPayload();
+        expect(overlay.todayTokens).toBe(80_000); // 20k+4k+30k + 10k+2k+14k
+        expect(overlay.cumulativeRecordedTokens).toBe(180_000); // yesterday 100k + today 80k
+        expect(overlay.todayCostFormatted).toMatch(/^\$\d+\.\d{2}$/);
+        expect(overlay.cumulativeCostFormatted).toMatch(/^\$\d+\.\d{2}$/);
+        expect(overlay.recordedDaysCount).toBe(2);
+        expect(overlay.sessionCount).toBe(2);
+        expect(overlay.peakOutputSpeedTps).toBe(113); // short sample (500 tok/s) excluded!
+        expect(overlay.recentCallCount).toBe(3);
+        expect(overlay.subscriptionRoiSummary).toMatch(/^Google AI Ultra 20x · \d+\.\d×$/);
+
+        // Turn subscription plan off -> subscriptionRoiSummary becomes null
+        await provider.handleAction({ command: 'setAppSetting', key: 'subscriptionPlan', value: 'none' });
+        expect(provider.buildOverlayPayload().subscriptionRoiSummary).toBeNull();
+
+        // 2. Verify App Sidecar revealCdpLauncher (success + error)
+        const revealOkRes = await httpRequest(handle.url, 'POST', '/api/action', {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'revealCdpLauncher', viewMode: 'aux' }),
+        });
+        expect(revealOkRes.status).toBe(200);
+        const revealOkJson = revealOkRes.json();
+        expect(revealCallCount).toBe(1);
+        expect(revealOkJson.ok).toBe(true);
+        expect(revealOkJson.result).toMatchObject({
+            type: 'cdpLauncherResult',
+            command: 'cdpLauncherResult',
+            action: 'revealCdpLauncher',
+            ok: true,
+        });
+        expect(revealOkJson.result.launcherStatus.installed).toBe(true);
+        expect(revealOkJson.result.cdpStatus.launcherStatus.installed).toBe(true);
+        expect((revealOkJson.messages as Array<Record<string, any>>).map(m => m.command)).toEqual([
+            'cdpLauncherResult',
+            'syncSettingsControls',
+        ]);
+
+        launcherInstalled = false;
+        const revealErrRes = await provider.handleAction({ command: 'revealCdpLauncher', viewMode: 'aux' });
+        expect(revealErrRes.ok).toBe(false);
+        expect(revealErrRes.error).toBe('Launcher not created yet');
+        expect((revealErrRes.result as Record<string, any>).action).toBe('revealCdpLauncher');
+
+        // 3. Verify context-aware openPanel targetTab through /api/overlay/action -> /api/snapshot -> webview-script.ts VM
+        const initialSnapRes = await httpRequest(handle.url, 'GET', '/api/snapshot?viewMode=aux');
+        expect(initialSnapRes.status).toBe(200);
+        const initialSnapJson = initialSnapRes.json();
+        expect(initialSnapJson.snapshot.meta.overlayTargetTab).toBeUndefined();
+
+        const overlayOpenRes = await httpRequest(handle.url, 'POST', '/api/overlay/action', {
+            headers: {
+                'Content-Type': 'application/json',
+                'Origin': 'http://127.0.0.1:49999',
+                'X-Monitor-Token': handle.overlayBridgeToken,
+            },
+            body: JSON.stringify({ command: 'openPanel', source: 'topbar', targetTab: 'gm' }),
+        });
+        expect(overlayOpenRes.status).toBe(200);
+        expect(overlayOpenRes.json().result).toMatchObject({
+            acknowledged: true,
+            command: 'openPanel',
+            targetTab: 'gm',
+            targetTabSeq: 1,
+        });
+
+        // ETag changed immediately and snapshot exposes meta.overlayTargetTab = { seq: 1, tab: 'gm' }
+        const snapAfterGmRes = await httpRequest(
+            handle.url,
+            'GET',
+            `/api/snapshot?viewMode=aux&etag=${encodeURIComponent(initialSnapJson.hash)}`,
+        );
+        expect(snapAfterGmRes.status).toBe(200);
+        const snapAfterGmJson = snapAfterGmRes.json();
+        expect(snapAfterGmJson.unchanged).toBe(false);
+        expect(snapAfterGmJson.snapshot.meta.overlayTargetTab).toEqual({ seq: 1, tab: 'gm' });
+
+        // Invalid targetTab is safely ignored (does not bump seq)
+        await httpRequest(handle.url, 'POST', '/api/overlay/action', {
+            headers: {
+                'Content-Type': 'application/json',
+                'Origin': 'http://127.0.0.1:49999',
+                'X-Monitor-Token': handle.overlayBridgeToken,
+            },
+            body: JSON.stringify({ command: 'openPanel', source: 'topbar', targetTab: 'evil-tab' }),
+        });
+        const snapAfterInvalid = (await httpRequest(handle.url, 'GET', '/api/snapshot?viewMode=aux')).json();
+        expect(snapAfterInvalid.snapshot.meta.overlayTargetTab).toEqual({ seq: 1, tab: 'gm' });
+
+        // Second valid targetTab ('cost') bumps monotonic seq to 2
+        await httpRequest(handle.url, 'POST', '/api/overlay/action', {
+            headers: {
+                'Content-Type': 'application/json',
+                'Origin': 'http://127.0.0.1:49999',
+                'X-Monitor-Token': handle.overlayBridgeToken,
+            },
+            body: JSON.stringify({ command: 'openPanel', source: 'topbar', targetTab: 'cost' }),
+        });
+        const snapAfterCostJson = (await httpRequest(handle.url, 'GET', '/api/snapshot?viewMode=aux')).json();
+        expect(snapAfterCostJson.snapshot.meta.overlayTargetTab).toEqual({ seq: 2, tab: 'cost' });
+
+        // Execute webview-script.ts in a lightweight DOM VM and confirm acm:snapshot switches tabs (gm -> gmdata, cost -> pricing) & deduplicates stale seq
+        const tabIds = ['overview', 'gmdata', 'chats', 'pricing', 'models', 'calendar', 'profile', 'settings', 'about'];
+        const makeClassList = (initial: string[] = []) => {
+            const set = new Set(initial);
+            return {
+                add: (...cls: string[]) => { for (const c of cls) set.add(c); },
+                remove: (...cls: string[]) => { for (const c of cls) set.delete(c); },
+                toggle: (c: string, force?: boolean) => {
+                    const next = force !== undefined ? !!force : !set.has(c);
+                    if (next) set.add(c); else set.delete(c);
+                    return next;
+                },
+                contains: (c: string) => set.has(c),
+            };
+        };
+        const tabBtns = tabIds.map(id => {
+            const attrs: Record<string, string> = { 'data-tab': id };
+            return {
+                dataset: { tab: id },
+                classList: makeClassList(id === 'overview' ? ['tab-btn', 'active'] : ['tab-btn']),
+                setAttribute: (k: string, v: string) => { attrs[k] = v; },
+                removeAttribute: (k: string) => { delete attrs[k]; },
+                getAttribute: (k: string) => attrs[k] ?? null,
+                focus: () => {},
+                scrollIntoView: () => {},
+                offsetLeft: 0,
+                offsetWidth: 60,
+                addEventListener: () => {},
+            };
+        });
+        const tabPanes = tabIds.map(id => ({
+            id: `tab-${id}`,
+            innerHTML: '',
+            classList: makeClassList(id === 'overview' ? ['tab-pane', 'active'] : ['tab-pane']),
+            querySelector: () => null,
+            querySelectorAll: () => [],
+            contains: () => false,
+        }));
+        const paneById = new Map(tabPanes.map(p => [p.id, p]));
+        let storedWebviewState: Record<string, any> = {};
+        const winListeners: Record<string, Array<(ev: any) => void>> = {};
+        const fakeDoc: Record<string, any> = {
+            documentElement: { setAttribute: () => {}, getAttribute: () => null },
+            body: {
+                dataset: {},
+                style: {},
+                getAttribute: () => null,
+                setAttribute: () => {},
+                addEventListener: () => {},
+            },
+            activeElement: null,
+            querySelectorAll: (sel: string) => {
+                if (sel === '.tab-btn') { return tabBtns; }
+                if (sel === '.tab-pane') { return tabPanes; }
+                return [];
+            },
+            querySelector: (sel: string) => {
+                if (sel === '.tab-btn.active') { return tabBtns.find(b => b.classList.contains('active')) || null; }
+                return null;
+            },
+            getElementById: (id: string) => paneById.get(id) || null,
+            addEventListener: () => {},
+        };
+        const fakeWin: Record<string, any> = {
+            document: fakeDoc,
+            scrollY: 0,
+            scrollTo: () => {},
+            requestAnimationFrame: (cb: () => void) => cb(),
+            setTimeout: () => 1,
+            clearTimeout: () => {},
+            addEventListener: (type: string, fn: (ev: any) => void) => { (winListeners[type] ||= []).push(fn); },
+            dispatchEvent: (ev: any) => {
+                for (const fn of winListeners[ev.type] || []) { fn(ev); }
+                return true;
+            },
+            acquireVsCodeApi: () => ({
+                getState: () => storedWebviewState,
+                setState: (s: Record<string, any>) => { storedWebviewState = { ...s }; },
+                postMessage: () => {},
+            }),
+        };
+        fakeWin.window = fakeWin;
+        vm.runInNewContext(getScript(), {
+            window: fakeWin,
+            document: fakeDoc,
+            acquireVsCodeApi: fakeWin.acquireVsCodeApi,
+            requestAnimationFrame: fakeWin.requestAnimationFrame,
+            setTimeout: fakeWin.setTimeout,
+            clearTimeout: fakeWin.clearTimeout,
+            navigator: {},
+            Element: function Element() {},
+            Map,
+            Set,
+            Array,
+            Object,
+            JSON,
+            Number,
+            String,
+            Boolean,
+            Math,
+            isFinite,
+            parseInt,
+            parseFloat,
+            console,
+        });
+
+        // Dispatch seq 1 (targetTab: 'gm') -> switches active tab to 'gmdata'
+        fakeWin.dispatchEvent({
+            type: 'acm:snapshot',
+            detail: { snapshot: snapAfterGmJson.snapshot, hash: snapAfterGmJson.hash },
+        });
+        expect(storedWebviewState.activeTab).toBe('gmdata');
+        expect(storedWebviewState.lastHandledOverlayTabSeq).toBe(1);
+        expect(paneById.get('tab-gmdata')!.classList.contains('active')).toBe(true);
+
+        // User manually switches to 'overview'; replaying stale seq 1 must NOT override user's choice
+        fakeWin.dispatchEvent({ type: 'message', data: { command: 'switchToTab', tab: 'overview' } });
+        expect(storedWebviewState.activeTab).toBe('overview');
+        fakeWin.dispatchEvent({
+            type: 'acm:snapshot',
+            detail: { snapshot: { ...snapAfterGmJson.snapshot }, hash: 'replay-1' },
+        });
+        expect(storedWebviewState.activeTab).toBe('overview');
+
+        // Dispatch newer seq 2 (targetTab: 'cost') -> switches active tab to 'pricing'
+        fakeWin.dispatchEvent({
+            type: 'acm:snapshot',
+            detail: { snapshot: snapAfterCostJson.snapshot, hash: snapAfterCostJson.hash },
+        });
+        expect(storedWebviewState.activeTab).toBe('pricing');
+        expect(storedWebviewState.lastHandledOverlayTabSeq).toBe(2);
+        expect(paneById.get('tab-pricing')!.classList.contains('active')).toBe(true);
     });
 });
 
@@ -1808,35 +2338,42 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
                 const offSyncMsg = posted.find(m => m.command === 'syncSettingsControls');
                 expect((offSyncMsg?.cdpStatus as CdpStatus)?.state).toBe('disabled');
 
-                // Toggle TopBar ON with missing port file -> probes immediately & NEVER stays stuck on stale 'disabled'
-                process.env.AGY_BROWSER_ACTIVE_PORT_FILE = path.join(tmp, 'nonexistent-DevToolsActivePort');
-                posted.length = 0;
-                await onMessage!({ command: 'setAppSetting', key: 'appTopBarEnabled', value: true });
-                const toggleOnMissingCdp = posted.find(m => m.command === 'cdpStatusResult');
-                expect((toggleOnMissingCdp?.cdpStatus as CdpStatus)?.state).toBe('cdp_unavailable');
-                expect((toggleOnMissingCdp?.cdpStatus as CdpStatus)?.diagnosticCode).toBe('missing_port_file');
-                const toggleOnMissingSync = posted.find(m => m.command === 'syncSettingsControls');
-                expect((toggleOnMissingSync?.cdpStatus as CdpStatus)?.state).toBe('cdp_unavailable');
-
-                // External toggle-ON after cached 'disabled' never emits stale { state: 'disabled' }
-                await onMessage!({ command: 'setAppSetting', key: 'appTopBarEnabled', value: false });
-                await updateSharedAppSetting('appComposerRingEnabled', true);
-                posted.length = 0;
-                syncMonitorPanelSettings(false);
-                const extSyncMsg = posted.find(m => m.command === 'syncSettingsControls');
-                expect((extSyncMsg?.cdpStatus as CdpStatus | undefined)?.state).not.toBe('disabled');
-
-                // Cleanly disable again before exiting
-                await onMessage!({ command: 'setAppSetting', key: 'appComposerRingEnabled', value: false });
-
-                // Hermetic IDE setupCdpLauncher & removeCdpLauncher using temporary HOME (never touches real ~/Applications)
+                // Isolate HOME / USERPROFILE / APPDATA / XDG_CONFIG_HOME so missing_port_file & launcher tests are 100% hermetic
+                // even when a real live `Antigravity (CDP).app` has a DevToolsActivePort file under the host user's real HOME.
                 const prevHomeEnv = process.env.HOME;
                 const prevUserProfileEnv = process.env.USERPROFILE;
+                const prevAppDataEnv = process.env.APPDATA;
+                const prevXdgConfigEnv = process.env.XDG_CONFIG_HOME;
                 const fakeHome = path.join(tmp, 'ide-launcher-home');
                 fs.mkdirSync(fakeHome, { recursive: true });
                 try {
                     process.env.HOME = fakeHome;
                     process.env.USERPROFILE = fakeHome;
+                    process.env.APPDATA = path.join(fakeHome, 'AppData', 'Roaming');
+                    process.env.XDG_CONFIG_HOME = path.join(fakeHome, '.config');
+
+                    // Toggle TopBar ON with missing port file -> probes immediately & NEVER stays stuck on stale 'disabled'
+                    process.env.AGY_BROWSER_ACTIVE_PORT_FILE = path.join(tmp, 'nonexistent-DevToolsActivePort');
+                    posted.length = 0;
+                    await onMessage!({ command: 'setAppSetting', key: 'appTopBarEnabled', value: true });
+                    const toggleOnMissingCdp = posted.find(m => m.command === 'cdpStatusResult');
+                    expect((toggleOnMissingCdp?.cdpStatus as CdpStatus)?.state).toBe('cdp_unavailable');
+                    expect((toggleOnMissingCdp?.cdpStatus as CdpStatus)?.diagnosticCode).toBe('missing_port_file');
+                    const toggleOnMissingSync = posted.find(m => m.command === 'syncSettingsControls');
+                    expect((toggleOnMissingSync?.cdpStatus as CdpStatus)?.state).toBe('cdp_unavailable');
+
+                    // External toggle-ON after cached 'disabled' never emits stale { state: 'disabled' }
+                    await onMessage!({ command: 'setAppSetting', key: 'appTopBarEnabled', value: false });
+                    await updateSharedAppSetting('appComposerRingEnabled', true);
+                    posted.length = 0;
+                    syncMonitorPanelSettings(false);
+                    const extSyncMsg = posted.find(m => m.command === 'syncSettingsControls');
+                    expect((extSyncMsg?.cdpStatus as CdpStatus | undefined)?.state).not.toBe('disabled');
+
+                    // Cleanly disable again before exiting
+                    await onMessage!({ command: 'setAppSetting', key: 'appComposerRingEnabled', value: false });
+
+                    // Hermetic IDE setupCdpLauncher, revealCdpLauncher & removeCdpLauncher using temporary HOME (never touches real ~/Applications)
                     posted.length = 0;
                     await onMessage!({ command: 'setupCdpLauncher' });
                     const ideSetupMsg = posted.find(m => m.command === 'cdpLauncherResult');
@@ -1847,6 +2384,28 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
                     expect(posted.some(m => m.command === 'cdpStatusResult')).toBe(true);
                     expect(posted.some(m => m.command === 'syncSettingsControls')).toBe(true);
 
+                    // Hermetic IDE revealCdpLauncher (spied so Finder/Explorer is never actually spawned during tests)
+                    const revealSpy = vi.spyOn(cdpLauncherModule, 'revealCdpLauncher').mockReturnValue({
+                        ok: true,
+                        status: cdpLauncherModule.inspectCdpLauncher({ env: process.env }),
+                        messageEn: 'Revealed persistent launcher in Finder.',
+                        messageZh: '已在访达中定位持久化启动器。',
+                    });
+                    try {
+                        posted.length = 0;
+                        await onMessage!({ command: 'revealCdpLauncher' });
+                        expect(revealSpy).toHaveBeenCalledTimes(1);
+                        const ideRevealMsg = posted.find(m => m.command === 'cdpLauncherResult');
+                        expect(ideRevealMsg).toBeDefined();
+                        expect(ideRevealMsg!.type).toBe('cdpLauncherResult');
+                        expect(ideRevealMsg!.action).toBe('revealCdpLauncher');
+                        expect(ideRevealMsg!.ok).toBe(true);
+                        expect((ideRevealMsg!.launcherStatus as { installed?: boolean })?.installed).toBe(true);
+                        expect(posted.some(m => m.command === 'syncSettingsControls')).toBe(true);
+                    } finally {
+                        revealSpy.mockRestore();
+                    }
+
                     posted.length = 0;
                     await onMessage!({ command: 'removeCdpLauncher' });
                     const ideRemoveMsg = posted.find(m => m.command === 'cdpLauncherResult');
@@ -1856,6 +2415,8 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
                 } finally {
                     if (prevHomeEnv === undefined) { delete process.env.HOME; } else { process.env.HOME = prevHomeEnv; }
                     if (prevUserProfileEnv === undefined) { delete process.env.USERPROFILE; } else { process.env.USERPROFILE = prevUserProfileEnv; }
+                    if (prevAppDataEnv === undefined) { delete process.env.APPDATA; } else { process.env.APPDATA = prevAppDataEnv; }
+                    if (prevXdgConfigEnv === undefined) { delete process.env.XDG_CONFIG_HOME; } else { process.env.XDG_CONFIG_HOME = prevXdgConfigEnv; }
                 }
             } finally {
                 if (fakeCdpServer) {
@@ -1946,7 +2507,7 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
                 get: <T>(k: string, d?: T) => (memWorkspace.has(k) ? memWorkspace.get(k) : d) as T,
                 update: async (k: string, v: unknown) => { memWorkspace.set(k, v); },
             },
-            extension: { packageJSON: { version: '1.17.7' } },
+            extension: { packageJSON: { version: '1.17.8' } },
         } as unknown as vscode.ExtensionContext;
 
         activate(fakeContext);
