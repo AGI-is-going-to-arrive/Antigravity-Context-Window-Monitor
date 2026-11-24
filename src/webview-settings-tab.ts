@@ -12,8 +12,10 @@ import { parseTooltipDensity } from './tooltip-budget';
 import {
     CURRENCY_CODES,
     CURRENCY_PRESETS,
+    normalizeSubscriptionPlanId,
     ROI_DISCLAIMER_EN,
     ROI_DISCLAIMER_ZH,
+    SUBSCRIPTION_PLAN_PRESET_ORDER,
     SUBSCRIPTION_PLAN_PRESETS,
     type SubscriptionPlanPresetId,
 } from './cli-usage-scanner';
@@ -151,15 +153,7 @@ function normalizeSubscriptionPlan(
     rawPlan: unknown,
     monthlyFee: number | null,
 ): SubscriptionPlanPresetId {
-    if (rawPlan === 'none' || rawPlan === 'google-ai-pro' || rawPlan === 'google-ai-ultra' || rawPlan === 'custom') {
-        return rawPlan;
-    }
-    if (monthlyFee !== null && monthlyFee > 0) {
-        if (Math.abs(monthlyFee - 19.99) < 0.01) { return 'google-ai-pro'; }
-        if (Math.abs(monthlyFee - 249.99) < 0.01) { return 'google-ai-ultra'; }
-        return 'custom';
-    }
-    return 'none';
+    return normalizeSubscriptionPlanId(rawPlan, monthlyFee);
 }
 
 /** Normalize partial plain settings into a complete, bounds-checked settings object. */
@@ -627,12 +621,17 @@ export function buildSettingsContent(
         const label = `${code} — ${tBi(preset.nameEn, preset.nameZh)}`;
         return `<option value="${code}"${subscriptionCurrency === code ? ' selected' : ''}>${esc(label)}</option>`;
     }).join('');
-    const planOptionsHtml = (['none', 'google-ai-pro', 'google-ai-ultra', 'custom'] as const).map((planId) => {
+    const planOptionsHtml = SUBSCRIPTION_PLAN_PRESET_ORDER.map((planId) => {
         const preset = SUBSCRIPTION_PLAN_PRESETS[planId];
         const feeHint = preset.monthlyUsd > 0 ? ` ($${preset.monthlyUsd}/mo)` : '';
         const label = `${tBi(preset.labelEn, preset.labelZh)}${feeHint}`;
         return `<option value="${planId}"${subscriptionPlan === planId ? ' selected' : ''}>${esc(label)}</option>`;
     }).join('');
+    const subscriptionFeePlaceholder = String(
+        SUBSCRIPTION_PLAN_PRESETS[subscriptionPlan]?.monthlyUsd > 0
+            ? SUBSCRIPTION_PLAN_PRESETS[subscriptionPlan].monthlyUsd
+            : SUBSCRIPTION_PLAN_PRESETS['google-ai-pro'].monthlyUsd,
+    );
     const defaultFxPlaceholder = String(CURRENCY_PRESETS[displayCurrency]?.defaultRatePerUsd ?? 1);
 
     const costCurrencyHistoryCard = `
@@ -687,7 +686,7 @@ export function buildSettingsContent(
                            data-app-setting="subscriptionMonthlyFee" data-setting-type="nullable-float" data-feedback-id="subscriptionFeedback"
                            min="0" max="100000" step="0.01"
                            value="${subscriptionMonthlyFee !== null ? esc(String(subscriptionMonthlyFee)) : ''}"
-                           placeholder="${esc(subscriptionPlan === 'google-ai-ultra' ? '249.99' : '19.99')}" />
+                           placeholder="${esc(subscriptionFeePlaceholder)}" />
                 </div>
                 <div class="stg-field">
                     <label for="subscriptionCurrencySelect">${tBiHtml('Fee currency', '月费币种')}</label>

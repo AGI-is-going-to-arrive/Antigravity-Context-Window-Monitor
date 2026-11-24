@@ -8,6 +8,8 @@ import {
     CliUsageScanner,
     ROI_DISCLAIMER_EN,
     ROI_DISCLAIMER_ZH,
+    SUBSCRIPTION_PLAN_PRESET_ORDER,
+    SUBSCRIPTION_PLAN_PRESETS,
     aggregateCliCallsByDay,
     buildCalendarExportCsv,
     buildCalendarExportJson,
@@ -19,6 +21,8 @@ import {
     estimateSubscriptionRoi,
     formatCurrencyAmount,
     formatDualCurrencyAmount,
+    isSubscriptionPlanPresetId,
+    normalizeSubscriptionPlanId,
     resolveCurrencyConfig,
     resolveDefaultCliDataDir,
     type CalendarExportDayRow,
@@ -399,22 +403,86 @@ describe('Multi-Currency Engine & Subscription ROI Estimator', () => {
         expect(resolveCurrencyConfig({ code: 'EUR', customRatePerUsd: -2 }).ratePerUsd).toBe(CURRENCY_PRESETS.EUR.defaultRatePerUsd);
     });
 
-    it('computes prorated Subscription Plan ROI with honest disclaimer', () => {
+    it('computes prorated Subscription Plan ROI with honest disclaimer and supports Pro / Ultra 5x / Ultra 20x + legacy migration', () => {
+        expect(SUBSCRIPTION_PLAN_PRESET_ORDER).toEqual([
+            'none',
+            'google-ai-pro',
+            'google-ai-ultra-5x',
+            'google-ai-ultra-20x',
+            'custom',
+        ]);
+        expect(SUBSCRIPTION_PLAN_PRESETS['google-ai-pro'].monthlyUsd).toBe(19.99);
+        expect(SUBSCRIPTION_PLAN_PRESETS['google-ai-ultra-5x'].monthlyUsd).toBe(99.99);
+        expect(SUBSCRIPTION_PLAN_PRESETS['google-ai-ultra-20x'].monthlyUsd).toBe(199.99);
+
+        expect(isSubscriptionPlanPresetId('google-ai-pro')).toBe(true);
+        expect(isSubscriptionPlanPresetId('google-ai-ultra-5x')).toBe(true);
+        expect(isSubscriptionPlanPresetId('google-ai-ultra-20x')).toBe(true);
+        expect(isSubscriptionPlanPresetId('google-ai-ultra')).toBe(false);
+
+        // Centralized normalization & backward-compatible legacy 'google-ai-ultra' migration
+        expect(normalizeSubscriptionPlanId('google-ai-pro')).toBe('google-ai-pro');
+        expect(normalizeSubscriptionPlanId('google-ai-ultra-5x')).toBe('google-ai-ultra-5x');
+        expect(normalizeSubscriptionPlanId('google-ai-ultra-20x')).toBe('google-ai-ultra-20x');
+        expect(normalizeSubscriptionPlanId('google-ai-ultra')).toBe('google-ai-ultra-20x');
+        expect(normalizeSubscriptionPlanId('google-ai-ultra', 249.99)).toBe('google-ai-ultra-20x');
+        expect(normalizeSubscriptionPlanId('google-ai-ultra', 99.99)).toBe('google-ai-ultra-5x');
+        expect(normalizeSubscriptionPlanId('', 19.99)).toBe('google-ai-pro');
+        expect(normalizeSubscriptionPlanId('', 99.99)).toBe('google-ai-ultra-5x');
+        expect(normalizeSubscriptionPlanId('', 199.99)).toBe('google-ai-ultra-20x');
+        expect(normalizeSubscriptionPlanId('', 49.0)).toBe('custom');
+        expect(normalizeSubscriptionPlanId('', null)).toBe('none');
+
         expect(estimateSubscriptionRoi(50, 30, { planId: 'none' })).toBeNull();
         expect(estimateSubscriptionRoi(50, 30, null)).toBeNull();
 
         // Google AI Pro ($19.99/mo) over 30 days with $39.98 API reference value -> 2.00x
         const pro = estimateSubscriptionRoi(39.98, 30, { planId: 'google-ai-pro' })!;
         expect(pro.enabled).toBe(true);
+        expect(pro.planId).toBe('google-ai-pro');
         expect(pro.proratedFeeUsd).toBeCloseTo(19.99, 4);
         expect(pro.roiMultiple).toBeCloseTo(2.0, 2);
         expect(pro.disclaimerEn).toBe(ROI_DISCLAIMER_EN);
         expect(pro.disclaimerZh).toBe(ROI_DISCLAIMER_ZH);
 
-        // Google AI Ultra ($249.99/mo) over 15 days -> prorated $124.995
-        const ultra = estimateSubscriptionRoi(249.99, 15, { planId: 'google-ai-ultra' })!;
-        expect(ultra.proratedFeeUsd).toBeCloseTo(124.995, 4);
-        expect(ultra.roiMultiple).toBeCloseTo(2.0, 2);
+        // Google AI Ultra 5x ($99.99/mo) over 15 days -> prorated $49.995
+        const ultra5x = estimateSubscriptionRoi(99.99, 15, { planId: 'google-ai-ultra-5x' })!;
+        expect(ultra5x.planId).toBe('google-ai-ultra-5x');
+        expect(ultra5x.planLabelEn).toBe('Google AI Ultra 5x');
+        expect(ultra5x.proratedFeeUsd).toBeCloseTo(49.995, 4);
+        expect(ultra5x.roiMultiple).toBeCloseTo(2.0, 2);
+
+        // Google AI Ultra 20x ($199.99/mo) over 15 days -> prorated $99.995
+        const ultra20x = estimateSubscriptionRoi(199.99, 15, { planId: 'google-ai-ultra-20x' })!;
+        expect(ultra20x.planId).toBe('google-ai-ultra-20x');
+        expect(ultra20x.planLabelEn).toBe('Google AI Ultra 20x');
+        expect(ultra20x.proratedFeeUsd).toBeCloseTo(99.995, 4);
+        expect(ultra20x.roiMultiple).toBeCloseTo(2.0, 2);
+
+        // Legacy 'google-ai-ultra' fallback: defaults to Ultra 20x ($199.99/mo),
+        // preserves an explicit historical saved fee (e.g. $249.99), or maps ~99.99 -> Ultra 5x
+        const legacyDefault = estimateSubscriptionRoi(199.99, 30, {
+            planId: 'google-ai-ultra' as unknown as 'google-ai-ultra-20x',
+        })!;
+        expect(legacyDefault.planId).toBe('google-ai-ultra-20x');
+        expect(legacyDefault.monthlyFeeUsd).toBeCloseTo(199.99, 4);
+        expect(legacyDefault.roiMultiple).toBeCloseTo(1.0, 2);
+
+        const legacyHistoricalFee = estimateSubscriptionRoi(249.99, 30, {
+            planId: 'google-ai-ultra' as unknown as 'google-ai-ultra-20x',
+            monthlyFee: 249.99,
+            feeCurrency: 'USD',
+        })!;
+        expect(legacyHistoricalFee.planId).toBe('google-ai-ultra-20x');
+        expect(legacyHistoricalFee.monthlyFeeUsd).toBeCloseTo(249.99, 4);
+
+        const legacy5x = estimateSubscriptionRoi(99.99, 30, {
+            planId: 'google-ai-ultra' as unknown as 'google-ai-ultra-5x',
+            monthlyFee: 99.99,
+            feeCurrency: 'USD',
+        })!;
+        expect(legacy5x.planId).toBe('google-ai-ultra-5x');
+        expect(legacy5x.monthlyFeeUsd).toBeCloseTo(99.99, 4);
 
         // Custom plan in user's local currency (CNY 145 @ 7.25 = $20 USD/mo)
         const custom = estimateSubscriptionRoi(60, 30, {

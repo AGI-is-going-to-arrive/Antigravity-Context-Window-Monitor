@@ -87,6 +87,7 @@ import { formatCachePercent, formatLatency, formatSpeed } from './telemetry-metr
 import {
     formatCurrencyAmount,
     formatDualCurrencyAmount,
+    normalizeSubscriptionPlanId,
     resolveCurrencyConfig,
     type CurrencyConfig,
     type CurrencyInput,
@@ -362,8 +363,7 @@ function resolveSubscriptionFromSettings(
         ? appSettings.subscriptionMonthlyFee
         : settings?.subscriptionMonthlyFee;
     const rawPlan = appSettings?.subscriptionPlan ?? settings?.subscriptionPlan;
-    const planId: SubscriptionPlanPresetId = rawPlan
-        ?? (typeof fee === 'number' && Number.isFinite(fee) && fee > 0 ? 'custom' : 'none');
+    const planId = normalizeSubscriptionPlanId(rawPlan, typeof fee === 'number' ? fee : null);
     if (planId === 'none') { return null; }
     const feeCurrency = appSettings?.subscriptionCurrency ?? settings?.subscriptionCurrency ?? currency.code;
     return {

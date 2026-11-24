@@ -694,8 +694,8 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
                 orchestratorPricingMode: 'strict',
                 displayCurrency: 'CNY',
                 customFxRate: 7.3,
-                subscriptionPlan: 'google-ai-ultra',
-                subscriptionMonthlyFee: 249.99,
+                subscriptionPlan: 'google-ai-ultra-20x',
+                subscriptionMonthlyFee: 199.99,
                 subscriptionCurrency: 'USD',
                 calendarRetentionDays: 450,
                 activityMaxRecentSteps: 200,
@@ -718,8 +718,13 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
         expect(appHtml).toContain('id="customFxRateInput"');
         expect(appHtml).toContain('value="7.3"');
         expect(appHtml).toContain('id="subscriptionPlanSelect"');
-        expect(appHtml).toContain('<option value="google-ai-ultra" selected>');
+        expect(appHtml).toContain('<option value="none">');
+        expect(appHtml).toContain('<option value="google-ai-pro">Google AI Pro ($19.99/mo)</option>');
+        expect(appHtml).toContain('<option value="google-ai-ultra-5x">Google AI Ultra 5x ($99.99/mo)</option>');
+        expect(appHtml).toContain('<option value="google-ai-ultra-20x" selected>Google AI Ultra 20x ($199.99/mo)</option>');
+        expect(appHtml).toContain('<option value="custom">');
         expect(appHtml).toContain('id="subscriptionFeeInput"');
+        expect(appHtml).toMatch(/id="subscriptionFeeInput"[^>]*placeholder="199\.99"/);
         expect(appHtml).toContain('id="subscriptionCurrencySelect"');
         expect(appHtml).toContain('id="calendarRetentionInput"');
         expect(appHtml).toContain('value="450"');
@@ -753,6 +758,53 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
         expect(ideHtml).not.toContain('id="settingsUpgradeNowBtn"');
         expect(ideHtml).toContain('Open VSX');
         expect(ideHtml).toMatch(/id="zoomRange"[^>]*value="90"/);
+    });
+
+    it('normalizes legacy google-ai-ultra settings cleanly and updates subscription fee placeholders dynamically', async () => {
+        await setLanguageToState('en', memState);
+        // Ultra 5x placeholder ($99.99)
+        const ultra5xHtml = buildSettingsContent([], undefined, undefined, {
+            surface: 'app-sidecar',
+            appSettings: {
+                subscriptionPlan: 'google-ai-ultra-5x',
+                subscriptionMonthlyFee: 99.99,
+                subscriptionCurrency: 'USD',
+            },
+        });
+        expect(ultra5xHtml).toContain('<option value="google-ai-ultra-5x" selected>Google AI Ultra 5x ($99.99/mo)</option>');
+        expect(ultra5xHtml).toMatch(/id="subscriptionFeeInput"[^>]*placeholder="99\.99"/);
+
+        // Legacy 'google-ai-ultra' with saved historical $249.99 fee maps to Ultra 20x while preserving input value non-destructively
+        const legacy249Html = buildSettingsContent([], undefined, undefined, {
+            surface: 'app-sidecar',
+            appSettings: {
+                subscriptionPlan: 'google-ai-ultra' as unknown as 'google-ai-ultra-20x',
+                subscriptionMonthlyFee: 249.99,
+                subscriptionCurrency: 'USD',
+            },
+        });
+        expect(legacy249Html).toContain('<option value="google-ai-ultra-20x" selected>');
+        expect(legacy249Html).toMatch(/id="subscriptionFeeInput"[^>]*value="249\.99"/);
+        expect(legacy249Html).toMatch(/id="subscriptionFeeInput"[^>]*placeholder="199\.99"/);
+
+        // Legacy 'google-ai-ultra' with $99.99 fee maps to Ultra 5x
+        const legacy99Html = buildSettingsContent([], undefined, undefined, {
+            surface: 'app-sidecar',
+            appSettings: {
+                subscriptionPlan: 'google-ai-ultra' as unknown as 'google-ai-ultra-5x',
+                subscriptionMonthlyFee: 99.99,
+                subscriptionCurrency: 'USD',
+            },
+        });
+        expect(legacy99Html).toContain('<option value="google-ai-ultra-5x" selected>');
+        expect(legacy99Html).toMatch(/id="subscriptionFeeInput"[^>]*placeholder="99\.99"/);
+
+        // Client script includes dynamic placeholder sync & live toggle-ON CDP non-disabled fallback
+        const script = getScript();
+        expect(script).toContain('syncSubscriptionFeePlaceholder');
+        expect(script).toContain('"google-ai-ultra-5x":"99.99"');
+        expect(script).toContain('"google-ai-ultra-20x":"199.99"');
+        expect(script).toContain("cdpPillNow.getAttribute('data-cdp-state') === 'disabled'");
     });
 });
 

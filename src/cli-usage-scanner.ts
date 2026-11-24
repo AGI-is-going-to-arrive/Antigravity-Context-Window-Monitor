@@ -165,7 +165,20 @@ export function formatDualCurrencyAmount(
 
 // ─── Subscription Plan ROI Estimator ─────────────────────────────────────────
 
-export type SubscriptionPlanPresetId = 'none' | 'google-ai-pro' | 'google-ai-ultra' | 'custom';
+export type SubscriptionPlanPresetId =
+    | 'none'
+    | 'google-ai-pro'
+    | 'google-ai-ultra-5x'
+    | 'google-ai-ultra-20x'
+    | 'custom';
+
+export const SUBSCRIPTION_PLAN_PRESET_ORDER: readonly SubscriptionPlanPresetId[] = [
+    'none',
+    'google-ai-pro',
+    'google-ai-ultra-5x',
+    'google-ai-ultra-20x',
+    'custom',
+] as const;
 
 export interface SubscriptionPlanPreset {
     id: SubscriptionPlanPresetId;
@@ -178,9 +191,47 @@ export interface SubscriptionPlanPreset {
 export const SUBSCRIPTION_PLAN_PRESETS: Readonly<Record<SubscriptionPlanPresetId, SubscriptionPlanPreset>> = {
     none: { id: 'none', labelEn: 'Off', labelZh: '未启用', monthlyUsd: 0 },
     'google-ai-pro': { id: 'google-ai-pro', labelEn: 'Google AI Pro', labelZh: 'Google AI Pro', monthlyUsd: 19.99 },
-    'google-ai-ultra': { id: 'google-ai-ultra', labelEn: 'Google AI Ultra', labelZh: 'Google AI Ultra', monthlyUsd: 249.99 },
+    'google-ai-ultra-5x': { id: 'google-ai-ultra-5x', labelEn: 'Google AI Ultra 5x', labelZh: 'Google AI Ultra 5x', monthlyUsd: 99.99 },
+    'google-ai-ultra-20x': { id: 'google-ai-ultra-20x', labelEn: 'Google AI Ultra 20x', labelZh: 'Google AI Ultra 20x', monthlyUsd: 199.99 },
     custom: { id: 'custom', labelEn: 'Custom Plan', labelZh: '自定义订阅', monthlyUsd: 0 },
 };
+
+export function isSubscriptionPlanPresetId(value: unknown): value is SubscriptionPlanPresetId {
+    return typeof value === 'string' && Object.prototype.hasOwnProperty.call(SUBSCRIPTION_PLAN_PRESETS, value);
+}
+
+/**
+ * Normalize a raw or persisted subscription plan ID (including backward-compatible
+ * migration for legacy `'google-ai-ultra'` and fee-based inference when empty).
+ */
+export function normalizeSubscriptionPlanId(
+    rawPlan: unknown,
+    monthlyFee?: number | null,
+): SubscriptionPlanPresetId {
+    const cleaned = typeof rawPlan === 'string' ? rawPlan.trim() : '';
+    if (isSubscriptionPlanPresetId(cleaned)) {
+        return cleaned;
+    }
+    const validFee = typeof monthlyFee === 'number' && Number.isFinite(monthlyFee) && monthlyFee > 0
+        ? monthlyFee
+        : null;
+    if (cleaned === 'google-ai-ultra') {
+        if (validFee !== null && Math.abs(validFee - SUBSCRIPTION_PLAN_PRESETS['google-ai-ultra-5x'].monthlyUsd) < 0.01) {
+            return 'google-ai-ultra-5x';
+        }
+        return 'google-ai-ultra-20x';
+    }
+    if (validFee !== null) {
+        for (const planId of SUBSCRIPTION_PLAN_PRESET_ORDER) {
+            const preset = SUBSCRIPTION_PLAN_PRESETS[planId];
+            if (preset.monthlyUsd > 0 && Math.abs(validFee - preset.monthlyUsd) < 0.01) {
+                return planId;
+            }
+        }
+        return 'custom';
+    }
+    return 'none';
+}
 
 export interface SubscriptionConfig {
     planId: SubscriptionPlanPresetId;
@@ -220,8 +271,10 @@ export function estimateSubscriptionRoi(
     subscription?: SubscriptionConfig | null,
     displayCurrency?: CurrencyInput,
 ): SubscriptionRoiEstimate | null {
-    if (!subscription || subscription.planId === 'none') { return null; }
-    const preset = SUBSCRIPTION_PLAN_PRESETS[subscription.planId];
+    if (!subscription) { return null; }
+    const normalizedPlanId = normalizeSubscriptionPlanId(subscription.planId, subscription.monthlyFee);
+    if (normalizedPlanId === 'none') { return null; }
+    const preset = SUBSCRIPTION_PLAN_PRESETS[normalizedPlanId];
     if (!preset) { return null; }
 
     let monthlyFeeUsd = preset.monthlyUsd;

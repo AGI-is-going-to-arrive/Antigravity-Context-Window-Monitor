@@ -40,13 +40,15 @@ import {
     syncFromDurableStateIfChanged,
     updateSharedAppSetting,
 } from '../src/extension';
-import { showMonitorPanel } from '../src/webview-panel';
+import { showMonitorPanel, syncMonitorPanelSettings } from '../src/webview-panel';
 import { DailyStore } from '../src/daily-store';
 import { PricingStore } from '../src/pricing-store';
 import { extractOverviewTelemetry } from '../src/monitor-overview';
 import { toLocalDateKey } from '../src/daily-archival';
-import type { GMSummary } from '../src/gm-tracker';
+import { GMTracker, type GMSummary } from '../src/gm-tracker';
+import { ActivityTracker } from '../src/activity-tracker';
 import * as backendConnection from '../src/backend-connection';
+import * as trackerModule from '../src/tracker';
 
 interface HttpResponse {
     status: number;
@@ -611,6 +613,57 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
         expect(savedSettings.activityMaxArchives).toBe(45);
         expect(savedSettings.quotaNotificationThreshold).toBe(15);
         expect(savedSettings.pollingInterval).toBe(10);
+
+        // Subscription Plan presets: Ultra 5x ($99.99), Ultra 20x ($199.99), legacy 'google-ai-ultra' -> Ultra 20x ($199.99), invalid rejection
+        const u5Res = await provider.handleAction({ command: 'setAppSetting', key: 'subscriptionPlan', value: 'google-ai-ultra-5x' });
+        expect(u5Res.ok).toBe(true);
+        expect(provider.getAppSettings().subscriptionPlan).toBe('google-ai-ultra-5x');
+        expect(provider.getDurableState().getAppSettings().subscriptionMonthlyFee).toBe(99.99);
+        expect(provider.getDurableState().getAppSettings().subscriptionCurrency).toBe('USD');
+
+        const u20Res = await provider.handleAction({ command: 'setAppSetting', key: 'subscriptionPlan', value: 'google-ai-ultra-20x' });
+        expect(u20Res.ok).toBe(true);
+        expect(provider.getAppSettings().subscriptionPlan).toBe('google-ai-ultra-20x');
+        expect(provider.getDurableState().getAppSettings().subscriptionMonthlyFee).toBe(199.99);
+
+        const legacyRes = await provider.handleAction({ command: 'setAppSetting', key: 'subscriptionPlan', value: 'google-ai-ultra' });
+        expect(legacyRes.ok).toBe(true);
+        expect(provider.getAppSettings().subscriptionPlan).toBe('google-ai-ultra-20x');
+        expect(provider.getDurableState().getAppSettings().subscriptionMonthlyFee).toBe(199.99);
+
+        const badPlanRes = await provider.handleAction({ command: 'setAppSetting', key: 'subscriptionPlan', value: 'bogus-tier' });
+        expect(badPlanRes.ok).toBe(false);
+
+        // Hydrating persisted legacy 'google-ai-ultra' preserves historical $249.99 fee non-destructively (or maps $99.99 -> Ultra 5x)
+        const legacy249Path = path.join(tmp, 'legacy-ultra-249.json');
+        const legacy249State = new DurableState(legacy249Path);
+        await legacy249State.globalBucket().update('subscriptionPlan', 'google-ai-ultra');
+        await legacy249State.updateAppSettings({ subscriptionMonthlyFee: 249.99, subscriptionCurrency: 'USD' });
+        await legacy249State.flush();
+        const hydrated249 = await createSidecarRuntimeProvider({
+            version: '1.17.7',
+            statePath: legacy249Path,
+            autoStart: false,
+            disableCliScan: true,
+        });
+        providers.push(hydrated249);
+        expect(hydrated249.getAppSettings().subscriptionPlan).toBe('google-ai-ultra-20x');
+        expect(hydrated249.getAppSettings().subscriptionMonthlyFee).toBe(249.99);
+
+        const legacy99Path = path.join(tmp, 'legacy-ultra-99.json');
+        const legacy99State = new DurableState(legacy99Path);
+        await legacy99State.globalBucket().update('subscriptionPlan', 'google-ai-ultra');
+        await legacy99State.updateAppSettings({ subscriptionMonthlyFee: 99.99, subscriptionCurrency: 'USD' });
+        await legacy99State.flush();
+        const hydrated99 = await createSidecarRuntimeProvider({
+            version: '1.17.7',
+            statePath: legacy99Path,
+            autoStart: false,
+            disableCliScan: true,
+        });
+        providers.push(hydrated99);
+        expect(hydrated99.getAppSettings().subscriptionPlan).toBe('google-ai-ultra-5x');
+        expect(hydrated99.getAppSettings().subscriptionMonthlyFee).toBe(99.99);
 
         // Calendar interactive actions + CSV/JSON exports
         expect((await provider.handleAction({ command: 'calendarFilterSource', source: 'cli' })).ok).toBe(true);
@@ -1424,7 +1477,17 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
                 fs.writeFileSync(portFile, `${cdpPort}\n/devtools/browser/ide-test\n`, 'utf8');
                 process.env.AGY_BROWSER_ACTIVE_PORT_FILE = portFile;
 
+                posted.length = 0;
                 await onMessage!({ command: 'setAppSetting', key: 'appComposerRingEnabled', value: true });
+                // Toggling an overlay ON immediately probes CDP without requiring a manual recheckCdp click
+                const liveToggleCdpMsg = posted.find(m => m.command === 'cdpStatusResult');
+                expect(liveToggleCdpMsg).toBeDefined();
+                expect((liveToggleCdpMsg!.cdpStatus as CdpStatus)?.state).toBe('connected');
+                expect((liveToggleCdpMsg!.cdpStatus as CdpStatus)?.diagnosticCode).toBe('connected');
+                expect((liveToggleCdpMsg!.cdpStatus as CdpStatus)?.discoveredPort).toBe(cdpPort);
+                const liveToggleSyncMsg = posted.find(m => m.command === 'syncSettingsControls');
+                expect((liveToggleSyncMsg?.cdpStatus as CdpStatus)?.state).toBe('connected');
+
                 posted.length = 0;
                 await onMessage!({ command: 'recheckCdp' });
                 const connCdpMsg = posted.find(m => m.command === 'cdpStatusResult');
@@ -1445,6 +1508,30 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
                 expect((staleCdpMsg!.cdpStatus as CdpStatus)?.diagnosticCode).toBe('port_unreachable');
 
                 // Reset toggle cleanly -> returns to disabled
+                posted.length = 0;
+                await onMessage!({ command: 'setAppSetting', key: 'appComposerRingEnabled', value: false });
+                const offSyncMsg = posted.find(m => m.command === 'syncSettingsControls');
+                expect((offSyncMsg?.cdpStatus as CdpStatus)?.state).toBe('disabled');
+
+                // Toggle TopBar ON with missing port file -> probes immediately & NEVER stays stuck on stale 'disabled'
+                process.env.AGY_BROWSER_ACTIVE_PORT_FILE = path.join(tmp, 'nonexistent-DevToolsActivePort');
+                posted.length = 0;
+                await onMessage!({ command: 'setAppSetting', key: 'appTopBarEnabled', value: true });
+                const toggleOnMissingCdp = posted.find(m => m.command === 'cdpStatusResult');
+                expect((toggleOnMissingCdp?.cdpStatus as CdpStatus)?.state).toBe('cdp_unavailable');
+                expect((toggleOnMissingCdp?.cdpStatus as CdpStatus)?.diagnosticCode).toBe('missing_port_file');
+                const toggleOnMissingSync = posted.find(m => m.command === 'syncSettingsControls');
+                expect((toggleOnMissingSync?.cdpStatus as CdpStatus)?.state).toBe('cdp_unavailable');
+
+                // External toggle-ON after cached 'disabled' never emits stale { state: 'disabled' }
+                await onMessage!({ command: 'setAppSetting', key: 'appTopBarEnabled', value: false });
+                await updateSharedAppSetting('appComposerRingEnabled', true);
+                posted.length = 0;
+                syncMonitorPanelSettings(false);
+                const extSyncMsg = posted.find(m => m.command === 'syncSettingsControls');
+                expect((extSyncMsg?.cdpStatus as CdpStatus | undefined)?.state).not.toBe('disabled');
+
+                // Cleanly disable again before exiting
                 await onMessage!({ command: 'setAppSetting', key: 'appComposerRingEnabled', value: false });
             } finally {
                 if (fakeCdpServer) {
@@ -1468,5 +1555,105 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
             delete (vscode.window as unknown as Record<string, unknown>).showSaveDialog;
             delete (vscode.env as unknown as Record<string, unknown>).openExternal;
         }
+    });
+
+    it('clears GMTracker error backoff before gmTracker.fetchAll on IDE manual refresh and supports Pro / Ultra 5x / Ultra 20x in IDE', async () => {
+        const tmp = makeTmpDir();
+        tmpDirs.push(tmp);
+        const stateFile = path.join(tmp, 'ide-manual-refresh-state.json');
+        process.env.ANTIGRAVITY_CONTEXT_MONITOR_STATE_PATH = stateFile;
+
+        const callOrder: string[] = [];
+        const registeredCommands = new Map<string, (...args: unknown[]) => unknown>();
+        vi.spyOn(vscode.commands, 'registerCommand').mockImplementation((command: string, callback: (...args: unknown[]) => unknown) => {
+            registeredCommands.set(command, callback);
+            return { dispose: () => {} };
+        });
+        (vscode.workspace as unknown as Record<string, unknown>).onDidChangeWorkspaceFolders = () => ({ dispose: () => {} });
+
+        const traj = makeTrajectory('cascade-ide-refresh');
+        let discoverCount = 0;
+        vi.spyOn(backendConnection, 'discoverPreferredBackend').mockImplementation(async () => {
+            discoverCount++;
+            // Return null on initial activate() auto-poll so manual refresh runs deterministically without overlapping isPolling
+            return discoverCount === 1 ? null : makeMockLS();
+        });
+        vi.spyOn(trackerModule, 'fetchFullUserStatus').mockResolvedValue(makeMockUserStatus());
+        vi.spyOn(trackerModule, 'fetchOrchestratorSettings').mockResolvedValue(null);
+        vi.spyOn(trackerModule, 'fetchUserQuotaSummary').mockResolvedValue(null);
+        vi.spyOn(trackerModule, 'getAllTrajectories').mockResolvedValue([traj]);
+        vi.spyOn(trackerModule, 'getContextUsage').mockResolvedValue(makeUsage(traj));
+        vi.spyOn(trackerModule, 'refreshWorkflowImageUsage').mockImplementation(async (_ls, u) => u);
+        vi.spyOn(ActivityTracker.prototype, 'processTrajectories').mockResolvedValue(false);
+
+        const clearSpy = vi.spyOn(GMTracker.prototype, 'clearErrorBackoff').mockImplementation(() => {
+            callOrder.push('clearErrorBackoff');
+        });
+        const fetchSpy = vi.spyOn(GMTracker.prototype, 'fetchAll').mockImplementation(async () => {
+            callOrder.push('fetchAll');
+            return {
+                conversations: [],
+                modelBreakdown: {},
+                totalCalls: 0,
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                totalThinkingTokens: 0,
+                totalCacheReadTokens: 0,
+                totalCacheCreationTokens: 0,
+                totalCredits: 0,
+                totalEstimatedCost: 0,
+                latestTimestamp: '',
+                totalRetryCount: 0,
+                totalErrorCount: 0,
+                contextGrowthRate: 0,
+                toolsCatalog: [],
+            } as unknown as GMSummary;
+        });
+
+        const memGlobal = new Map<string, unknown>();
+        const memWorkspace = new Map<string, unknown>();
+        const fakeContext = {
+            subscriptions: [] as Array<{ dispose(): void }>,
+            globalState: {
+                get: <T>(k: string, d?: T) => (memGlobal.has(k) ? memGlobal.get(k) : d) as T,
+                update: async (k: string, v: unknown) => { memGlobal.set(k, v); },
+            },
+            workspaceState: {
+                get: <T>(k: string, d?: T) => (memWorkspace.has(k) ? memWorkspace.get(k) : d) as T,
+                update: async (k: string, v: unknown) => { memWorkspace.set(k, v); },
+            },
+            extension: { packageJSON: { version: '1.17.7' } },
+        } as unknown as vscode.ExtensionContext;
+
+        activate(fakeContext);
+        // Wait for initial auto-poll (which returns null LS cleanly) to settle
+        await new Promise(resolve => setTimeout(resolve, 40));
+        expect(clearSpy).not.toHaveBeenCalled();
+
+        // Trigger IDE manual refresh command -> pollContextUsage(true)
+        const refreshCmd = registeredCommands.get('antigravity-context-monitor.refresh');
+        expect(refreshCmd).toBeDefined();
+        refreshCmd!();
+        for (let i = 0; i < 40 && fetchSpy.mock.calls.length === 0; i++) {
+            await new Promise(resolve => setTimeout(resolve, 15));
+        }
+
+        expect(clearSpy).toHaveBeenCalledTimes(1);
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        expect(callOrder.indexOf('clearErrorBackoff')).toBeGreaterThanOrEqual(0);
+        expect(callOrder.indexOf('clearErrorBackoff')).toBeLessThan(callOrder.indexOf('fetchAll'));
+
+        // IDE updateSharedAppSetting supports Pro ($19.99), Ultra 5x ($99.99), Ultra 20x ($199.99), and legacy 'google-ai-ultra'
+        expect((await updateSharedAppSetting('subscriptionPlan', 'google-ai-ultra-5x')).ok).toBe(true);
+        expect(getSharedAppSettings().subscriptionPlan).toBe('google-ai-ultra-5x');
+        expect(getSharedAppSettings().subscriptionMonthlyFee).toBe(99.99);
+
+        expect((await updateSharedAppSetting('subscriptionPlan', 'google-ai-ultra-20x')).ok).toBe(true);
+        expect(getSharedAppSettings().subscriptionPlan).toBe('google-ai-ultra-20x');
+        expect(getSharedAppSettings().subscriptionMonthlyFee).toBe(199.99);
+
+        expect((await updateSharedAppSetting('subscriptionPlan', 'google-ai-ultra')).ok).toBe(true);
+        expect(getSharedAppSettings().subscriptionPlan).toBe('google-ai-ultra-20x');
+        expect(getSharedAppSettings().subscriptionMonthlyFee).toBe(199.99);
     });
 });

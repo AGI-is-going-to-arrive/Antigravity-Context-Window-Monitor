@@ -22,6 +22,8 @@ import { isBillingDay, isBillingDaySetting } from '../billing-day';
 import {
     CliUsageScanner,
     formatCurrencyAmount,
+    isSubscriptionPlanPresetId,
+    normalizeSubscriptionPlanId,
     SUBSCRIPTION_PLAN_PRESETS,
     type CliDailyUsageRecord,
     type CurrencyConfig,
@@ -1498,15 +1500,7 @@ export function createSidecarRuntimeProvider(
         rawPlan: unknown,
         monthlyFee: number | null,
     ): SubscriptionPlanPresetId {
-        if (rawPlan === 'none' || rawPlan === 'google-ai-pro' || rawPlan === 'google-ai-ultra' || rawPlan === 'custom') {
-            return rawPlan;
-        }
-        if (monthlyFee !== null && monthlyFee > 0) {
-            if (Math.abs(monthlyFee - 19.99) < 0.01) { return 'google-ai-pro'; }
-            if (Math.abs(monthlyFee - 249.99) < 0.01) { return 'google-ai-ultra'; }
-            return 'custom';
-        }
-        return 'none';
+        return normalizeSubscriptionPlanId(rawPlan, monthlyFee);
     }
 
     function getFullAppSettings(): AppSettings & { subscriptionPlan: SubscriptionPlanPresetId } {
@@ -3610,23 +3604,21 @@ export function createSidecarRuntimeProvider(
                 return { ok: true, normalizedKey: 'customFxRate' };
             }
             case 'subscriptionPlan': {
-                if (value !== 'none' && value !== 'google-ai-pro' && value !== 'google-ai-ultra' && value !== 'custom') {
+                const rawPlan = typeof value === 'string' ? value.trim() : '';
+                if (!isSubscriptionPlanPresetId(rawPlan) && rawPlan !== 'google-ai-ultra') {
                     return { ok: false, normalizedKey: key, error: 'Invalid subscriptionPlan' };
                 }
-                subscriptionPlan = value;
-                settings.subscriptionPlan = value;
-                if (value === 'none') {
+                const nextPlan = normalizeSubscriptionPlanId(rawPlan);
+                const preset = SUBSCRIPTION_PLAN_PRESETS[nextPlan];
+                subscriptionPlan = nextPlan;
+                settings.subscriptionPlan = nextPlan;
+                if (nextPlan === 'none') {
                     appSettings.subscriptionMonthlyFee = null;
                     settings.subscriptionMonthlyFee = null;
-                } else if (value === 'google-ai-pro') {
-                    appSettings.subscriptionMonthlyFee = 19.99;
+                } else if (preset.monthlyUsd > 0) {
+                    appSettings.subscriptionMonthlyFee = preset.monthlyUsd;
                     appSettings.subscriptionCurrency = 'USD';
-                    settings.subscriptionMonthlyFee = 19.99;
-                    settings.subscriptionCurrency = 'USD';
-                } else if (value === 'google-ai-ultra') {
-                    appSettings.subscriptionMonthlyFee = 249.99;
-                    appSettings.subscriptionCurrency = 'USD';
-                    settings.subscriptionMonthlyFee = 249.99;
+                    settings.subscriptionMonthlyFee = preset.monthlyUsd;
                     settings.subscriptionCurrency = 'USD';
                 }
                 return { ok: true, normalizedKey: 'subscriptionPlan' };

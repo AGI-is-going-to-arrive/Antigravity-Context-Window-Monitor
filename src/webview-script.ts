@@ -1,5 +1,16 @@
 import { tBi } from './i18n';
 import type { ModelPricing } from './pricing-store';
+import {
+    SUBSCRIPTION_PLAN_PRESET_ORDER,
+    SUBSCRIPTION_PLAN_PRESETS,
+} from './cli-usage-scanner';
+
+const SUBSCRIPTION_PLAN_PLACEHOLDERS: Readonly<Record<string, string>> = Object.fromEntries(
+    SUBSCRIPTION_PLAN_PRESET_ORDER
+        .filter((planId) => SUBSCRIPTION_PLAN_PRESETS[planId].monthlyUsd > 0)
+        .map((planId) => [planId, String(SUBSCRIPTION_PLAN_PRESETS[planId].monthlyUsd)]),
+);
+const DEFAULT_SUBSCRIPTION_FEE_PLACEHOLDER = String(SUBSCRIPTION_PLAN_PRESETS['google-ai-pro'].monthlyUsd);
 
 // ─── WebView Client-Side Script ──────────────────────────────────────────────
 // Frontend JavaScript injected into the WebView panel.
@@ -137,6 +148,8 @@ export function getScript(): string {
             var updateAvailablePillTpl = ${JSON.stringify(tBi('Update available: {ver}', '有可用更新：{ver}'))};
             var upToDatePillTpl = ${JSON.stringify(tBi('Up to date ({ver})', '已是最新（{ver}）'))};
             var currentVerPillTpl = ${JSON.stringify(tBi('Current {ver}', '当前版本 {ver}'))};
+            var subscriptionPlanPlaceholders = ${JSON.stringify(SUBSCRIPTION_PLAN_PLACEHOLDERS)};
+            var defaultSubscriptionFeePlaceholder = ${JSON.stringify(DEFAULT_SUBSCRIPTION_FEE_PLACEHOLDER)};
 
             function triggerClientDownload(filename, content, mimeType) {
                 try {
@@ -178,6 +191,18 @@ export function getScript(): string {
                     modeBtns[mi].classList.toggle('is-active', isMatch);
                     modeBtns[mi].setAttribute('aria-checked', String(isMatch));
                 }
+            }
+
+            function syncSubscriptionFeePlaceholder(planId) {
+                var sfEl = document.getElementById('subscriptionFeeInput');
+                if (!sfEl) { return; }
+                sfEl.placeholder = subscriptionPlanPlaceholders[planId] || defaultSubscriptionFeePlaceholder;
+            }
+
+            function syncSubscriptionFeePlaceholder(planId) {
+                var sfEl = document.getElementById('subscriptionFeeInput');
+                if (!sfEl) { return; }
+                sfEl.placeholder = subscriptionPlanPlaceholders[planId] || defaultSubscriptionFeePlaceholder;
             }
 
             function syncCdpStatusUi(cdpStatus, fallbackComposerOn, fallbackTopBarOn) {
@@ -1106,6 +1131,7 @@ export function getScript(): string {
                     if (typeof msg.subscriptionPlan === 'string') {
                         var spEl = document.getElementById('subscriptionPlanSelect');
                         if (spEl) { spEl.value = msg.subscriptionPlan; }
+                        syncSubscriptionFeePlaceholder(msg.subscriptionPlan);
                     }
                     if (typeof msg.pollingInterval === 'number') {
                         var piEl = document.getElementById('pollingInput');
@@ -1154,6 +1180,11 @@ export function getScript(): string {
                             : Boolean((document.getElementById('toggleAppTopBar') || {}).checked);
                         if (!cOn && !tOn) {
                             syncCdpStatusUi({ state: 'disabled', diagnosticCode: 'disabled' }, false, false);
+                        } else {
+                            var cdpPillNow = document.getElementById('cdpStatusPill');
+                            if (cdpPillNow && cdpPillNow.getAttribute('data-cdp-state') === 'disabled') {
+                                syncCdpStatusUi({ state: 'cdp_unavailable', diagnosticCode: 'missing_port_file' }, cOn, tOn);
+                            }
                         }
                     }
                     if (msg.updateStatus && typeof msg.updateStatus === 'object') {
@@ -1294,6 +1325,9 @@ export function getScript(): string {
                     }
                 } else if (el.tagName === 'SELECT') {
                     value = el.value;
+                    if (key === 'subscriptionPlan') {
+                        syncSubscriptionFeePlaceholder(value);
+                    }
                 } else {
                     var settingType = el.getAttribute('data-setting-type') || 'string';
                     var raw = String(el.value || '').trim();

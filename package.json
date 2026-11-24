@@ -162,7 +162,8 @@
           "enum": [
             "none",
             "google-ai-pro",
-            "google-ai-ultra",
+            "google-ai-ultra-5x",
+            "google-ai-ultra-20x",
             "custom"
           ],
           "default": "none",

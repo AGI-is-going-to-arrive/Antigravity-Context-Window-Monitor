@@ -70,11 +70,12 @@ import {
     type CalendarViewMode,
 } from './webview-calendar-tab';
 import { toLocalDateKey } from './daily-archival';
-import type {
-    CliDailyUsageRecord,
-    CurrencyConfig,
-    SubscriptionConfig,
-    SubscriptionPlanPresetId,
+import {
+    normalizeSubscriptionPlanId,
+    type CliDailyUsageRecord,
+    type CurrencyConfig,
+    type SubscriptionConfig,
+    type SubscriptionPlanPresetId,
 } from './cli-usage-scanner';
 import { validateExternalUrl } from './app/sidecar-runtime';
 import {
@@ -268,7 +269,7 @@ function readIdeDocumentSettings(): MonitorDocumentSettings {
             orchestratorPricingMode: shared.orchestratorPricingMode,
             displayCurrency: shared.displayCurrency,
             customFxRate: shared.customFxRate,
-            subscriptionPlan: shared.subscriptionPlan,
+            subscriptionPlan: normalizeSubscriptionPlanId(shared.subscriptionPlan, shared.subscriptionMonthlyFee),
             subscriptionMonthlyFee: shared.subscriptionMonthlyFee,
             subscriptionCurrency: shared.subscriptionCurrency,
             calendarRetentionDays: shared.calendarRetentionDays,
@@ -284,8 +285,11 @@ function readIdeDocumentSettings(): MonitorDocumentSettings {
     const orchestratorPricingMode = normalizeOrchestratorPricingMode(orchRaw);
     const displayCurrency = (cfg.get<string>('displayCurrency', shared.displayCurrency ?? 'USD') || 'USD') as AppSettings['displayCurrency'];
     const customFxRate = cfg.get<number | null>('customFxRate', shared.customFxRate ?? null);
-    const subscriptionPlan = (cfg.get<string>('subscriptionPlan', shared.subscriptionPlan ?? 'none') || 'none') as SubscriptionPlanPresetId;
     const subscriptionMonthlyFee = cfg.get<number | null>('subscriptionMonthlyFee', shared.subscriptionMonthlyFee ?? null);
+    const subscriptionPlan = normalizeSubscriptionPlanId(
+        cfg.get<string>('subscriptionPlan', shared.subscriptionPlan ?? 'none'),
+        subscriptionMonthlyFee,
+    );
     const subscriptionCurrency = (cfg.get<string>('subscriptionCurrency', shared.subscriptionCurrency ?? 'USD') || 'USD') as AppSettings['subscriptionCurrency'];
     const calendarRetentionDays = cfg.get<number>('calendarRetentionDays', shared.calendarRetentionDays ?? 400);
     const autoCheckUpdates = cfg.get<boolean>('autoCheckUpdates', shared.autoCheckUpdates ?? true);
@@ -505,7 +509,7 @@ function buildIdeCurrencyConfig(docSettings: MonitorDocumentSettings): CurrencyC
 }
 
 function buildIdeSubscriptionConfig(docSettings: MonitorDocumentSettings): SubscriptionConfig | null {
-    const planId = docSettings.subscriptionPlan ?? 'none';
+    const planId = normalizeSubscriptionPlanId(docSettings.subscriptionPlan, docSettings.subscriptionMonthlyFee);
     if (planId === 'none') { return null; }
     return {
         planId,
@@ -761,19 +765,50 @@ export function showMonitorPanel(p: PanelPayload): void {
             if (res.ok) {
                 lastAppSettings = getSharedAppSettings();
                 lastOrchestratorPricingMode = lastAppSettings.orchestratorPricingMode;
-                if ((res.normalizedKey === 'appComposerRingEnabled' || res.normalizedKey === 'appTopBarEnabled')
-                    && !lastAppSettings.appComposerRingEnabled
-                    && !lastAppSettings.appTopBarEnabled) {
-                    lastCdpStatus = {
-                        state: 'disabled',
-                        diagnosticCode: 'disabled',
-                        composerEnabled: false,
-                        topBarEnabled: false,
-                        platformGuide: getCdpPlatformGuide(process.platform),
-                    };
+                const isOverlayToggle = res.normalizedKey === 'appComposerRingEnabled' || res.normalizedKey === 'appTopBarEnabled';
+                if (isOverlayToggle) {
+                    const composerOn = Boolean(lastAppSettings.appComposerRingEnabled);
+                    const topBarOn = Boolean(lastAppSettings.appTopBarEnabled);
+                    if (!composerOn && !topBarOn) {
+                        lastCdpStatus = {
+                            state: 'disabled',
+                            diagnosticCode: 'disabled',
+                            composerEnabled: false,
+                            topBarEnabled: false,
+                            platformGuide: getCdpPlatformGuide(process.platform),
+                        };
+                    } else {
+                        const probed = await probeIdeCdpStatus(composerOn, topBarOn);
+                        const latestApp = getSharedAppSettings();
+                        const latestComposerOn = Boolean(latestApp.appComposerRingEnabled);
+                        const latestTopBarOn = Boolean(latestApp.appTopBarEnabled);
+                        lastAppSettings = latestApp;
+                        if (!latestComposerOn && !latestTopBarOn) {
+                            lastCdpStatus = {
+                                state: 'disabled',
+                                diagnosticCode: 'disabled',
+                                composerEnabled: false,
+                                topBarEnabled: false,
+                                platformGuide: getCdpPlatformGuide(process.platform),
+                            };
+                        } else {
+                            lastCdpStatus = {
+                                ...probed,
+                                composerEnabled: latestComposerOn,
+                                topBarEnabled: latestTopBarOn,
+                            };
+                        }
+                    }
                 }
                 if (panel) {
                     safePostMessage({ command: 'configSaved', key: res.normalizedKey });
+                    if (isOverlayToggle && lastCdpStatus) {
+                        safePostMessage({
+                            type: 'cdpStatusResult',
+                            command: 'cdpStatusResult',
+                            cdpStatus: lastCdpStatus,
+                        });
+                    }
                     postSettingsControlSync();
                     postCurrentTabs();
                 }
@@ -1184,7 +1219,9 @@ async function probeIdeCdpStatus(
 
 function resolveEffectiveIdeCdpStatus(docSettings: MonitorDocumentSettings): CdpStatus | undefined {
     if (!lastCdpStatus) { return undefined; }
-    if (!docSettings.appComposerRingEnabled && !docSettings.appTopBarEnabled) {
+    const composerEnabled = Boolean(docSettings.appComposerRingEnabled);
+    const topBarEnabled = Boolean(docSettings.appTopBarEnabled);
+    if (!composerEnabled && !topBarEnabled) {
         return {
             ...lastCdpStatus,
             state: 'disabled',
@@ -1193,7 +1230,14 @@ function resolveEffectiveIdeCdpStatus(docSettings: MonitorDocumentSettings): Cdp
             topBarEnabled: false,
         };
     }
-    return lastCdpStatus;
+    if (lastCdpStatus.state === 'disabled') {
+        return undefined;
+    }
+    return {
+        ...lastCdpStatus,
+        composerEnabled,
+        topBarEnabled,
+    };
 }
 
 function postSettingsControlSync(): void {

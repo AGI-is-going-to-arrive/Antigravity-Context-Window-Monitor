@@ -77,6 +77,9 @@ import { expandModelIdsToPool } from './pool-utils';
 import { DailyLedger, toLocalDateKey, type DailyLedgerState } from './daily-ledger';
 import {
     CliUsageScanner,
+    isSubscriptionPlanPresetId,
+    normalizeSubscriptionPlanId,
+    SUBSCRIPTION_PLAN_PRESETS,
     type CliDailyUsageRecord,
     type SubscriptionPlanPresetId,
 } from './cli-usage-scanner';
@@ -178,15 +181,7 @@ function inferIdeSubscriptionPlan(
     rawPlan: unknown,
     monthlyFee: number | null,
 ): SubscriptionPlanPresetId {
-    if (rawPlan === 'none' || rawPlan === 'google-ai-pro' || rawPlan === 'google-ai-ultra' || rawPlan === 'custom') {
-        return rawPlan;
-    }
-    if (monthlyFee !== null && monthlyFee > 0) {
-        if (Math.abs(monthlyFee - 19.99) < 0.01) { return 'google-ai-pro'; }
-        if (Math.abs(monthlyFee - 249.99) < 0.01) { return 'google-ai-ultra'; }
-        return 'custom';
-    }
-    return 'none';
+    return normalizeSubscriptionPlanId(rawPlan, monthlyFee);
 }
 
 function getIdeExtensionVersion(): string {
@@ -548,18 +543,18 @@ export async function updateSharedAppSetting(
             break;
         }
         case 'subscriptionPlan': {
-            if (value !== 'none' && value !== 'google-ai-pro' && value !== 'google-ai-ultra' && value !== 'custom') {
+            const rawPlan = typeof value === 'string' ? value.trim() : '';
+            if (!isSubscriptionPlanPresetId(rawPlan) && rawPlan !== 'google-ai-ultra') {
                 return { ok: false, normalizedKey: cleanKey, error: 'Invalid subscriptionPlan' };
             }
-            sharedSubscriptionPlan = value;
-            mirrorPlan = value;
-            if (value === 'none') {
+            const nextPlan = normalizeSubscriptionPlanId(rawPlan);
+            const preset = SUBSCRIPTION_PLAN_PRESETS[nextPlan];
+            sharedSubscriptionPlan = nextPlan;
+            mirrorPlan = nextPlan;
+            if (nextPlan === 'none') {
                 patch.subscriptionMonthlyFee = null;
-            } else if (value === 'google-ai-pro') {
-                patch.subscriptionMonthlyFee = 19.99;
-                patch.subscriptionCurrency = 'USD';
-            } else if (value === 'google-ai-ultra') {
-                patch.subscriptionMonthlyFee = 249.99;
+            } else if (preset.monthlyUsd > 0) {
+                patch.subscriptionMonthlyFee = preset.monthlyUsd;
                 patch.subscriptionCurrency = 'USD';
             }
             break;
@@ -2671,15 +2666,12 @@ export function activate(context: vscode.ExtensionContext): void {
                     if (nextPlan !== sharedSubscriptionPlan) {
                         sharedSubscriptionPlan = nextPlan;
                         planChanged = true;
+                        const preset = SUBSCRIPTION_PLAN_PRESETS[nextPlan];
                         if (nextPlan === 'none') {
                             patch.subscriptionMonthlyFee = null;
                             anyChanged = true;
-                        } else if (nextPlan === 'google-ai-pro') {
-                            patch.subscriptionMonthlyFee = 19.99;
-                            patch.subscriptionCurrency = 'USD';
-                            anyChanged = true;
-                        } else if (nextPlan === 'google-ai-ultra') {
-                            patch.subscriptionMonthlyFee = 249.99;
+                        } else if (preset.monthlyUsd > 0) {
+                            patch.subscriptionMonthlyFee = preset.monthlyUsd;
                             patch.subscriptionCurrency = 'USD';
                             anyChanged = true;
                         }
@@ -3383,6 +3375,9 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                 const hadUiSummary = gmTracker.getUiSummary() !== null;
                 try {
                     const prevSummary = lastGMSummary;
+                    if (isManualRefresh) {
+                        gmTracker.clearErrorBackoff();
+                    }
                     const gmSummary = await gmTracker.fetchAll(
                         lsInfo,
                         trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
