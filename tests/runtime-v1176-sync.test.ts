@@ -354,7 +354,7 @@ describe('v1.17.6 Sidecar runtime: overlay bridge auth, CDP toggle lifecycle, up
                 composerEnabled: currentToggles.appComposerRingEnabled,
                 topBarEnabled: currentToggles.appTopBarEnabled,
                 targetUrl: (currentToggles.appComposerRingEnabled || currentToggles.appTopBarEnabled) ? 'http://127.0.0.1:41234/' : undefined,
-                platformGuide: { platform: 'darwin', command: 'open -a Antigravity --args --remote-debugging-port=0', en: 'en', zh: 'zh' },
+                platformGuide: { platform: 'darwin', command: 'open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0', en: 'en', zh: 'zh' },
             }),
             setToggles: async (next) => {
                 currentToggles = { ...next };

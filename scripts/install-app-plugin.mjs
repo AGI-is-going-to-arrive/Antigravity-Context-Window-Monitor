@@ -19,7 +19,7 @@
  *   --print-cdp-guide    Print zero-patch macOS/Windows/Linux --remote-debugging-port=0 guide
  *
  * Options:
- *   --version <v>        Specific release version (e.g. 1.17.6 or v1.17.6)
+ *   --version <v>        Specific release version (e.g. 1.17.7 or v1.17.7)
  *   --source <dir>       Explicit local plugin directory containing plugin.json
  *   --target <dir>       Override install path (default: ~/.gemini/config/plugins/antigravity-context-monitor)
  *   --use-cli            Use `agy plugin install` / `agy plugin uninstall` when available
@@ -145,7 +145,7 @@ export function getIdeExtensionDirs(env = process.env, platform = process.platfo
 export function normalizeVersionArg(raw) {
     const cleaned = String(raw || '').trim().replace(/^v/i, '');
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(cleaned)) {
-        throw new Error(`Invalid --version value "${raw}". Expected semver like 1.17.6 or v1.17.6.`);
+        throw new Error(`Invalid --version value "${raw}". Expected semver like 1.17.7 or v1.17.7.`);
     }
     return cleaned;
 }
@@ -1651,7 +1651,7 @@ Modes:
   --print-cdp-guide    Print zero-patch macOS / Windows / Linux --remote-debugging-port=0 guide
 
 Options:
-  --version <v>        Target GitHub release version (e.g. 1.17.6 or v1.17.6)
+  --version <v>        Target GitHub release version (e.g. 1.17.7 or v1.17.7)
   --source <dir>       Explicit local plugin directory containing plugin.json
   --target <dir>       Override install path (default: ~/.gemini/config/plugins/antigravity-context-monitor)
   --use-cli            Use \`agy plugin install\` / \`agy plugin uninstall\` when available

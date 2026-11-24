@@ -84,7 +84,7 @@ If the user also uses **Antigravity IDE**:
 
 - **Uninstall App Plugin:** `node scripts/install-app-plugin.mjs --uninstall`
 - **Optional CDP Launch Guide (strictly opt-in, zero binary patching):** `node scripts/install-app-plugin.mjs --print-cdp-guide`  
-  *(Core Sidecar `AUX_PANE` / `SIDEBAR` works 100% natively without CDP.)*
+  *(Core Sidecar `AUX_PANE` / `SIDEBAR` and the Native Ambient HUD work 100% natively without CDP. If a user opts into desktop floating overlays, remind them to **quit Antigravity App completely first** — `Cmd+Q` on macOS, close all windows & tray icon on Windows/Linux — then relaunch with `--remote-debugging-port=0` using `open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0` on macOS, `& "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0` in Windows PowerShell / `"%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0` in CMD/Shortcut, or `antigravity --remote-debugging-port=0` on Linux, and click **Recheck CDP** in Settings. Note: Antigravity auto-updates restart without CLI flags, and remember Safety Rule #2 — NEVER kill Antigravity yourself.)*
 
 ---
 
@@ -163,4 +163,4 @@ node scripts/install-app-plugin.mjs --status --check-remote
 
 - **卸载 App 插件：** `node scripts/install-app-plugin.mjs --uninstall`
 - **查看可选 CDP 启动指南（纯启动参数，零二进制修改）：** `node scripts/install-app-plugin.mjs --print-cdp-guide`  
-  *（核心侧栏/主视图完全原生工作，不依赖 CDP。）*
+  *（核心侧栏/主视图与原生精简 HUD 完全原生工作，不依赖 CDP。若用户主动开启桌面悬浮层，请提示其**先自行完全退出 Antigravity App**——macOS 按 `Cmd+Q`，Windows/Linux 关闭全部窗口与托盘图标——再附带 `--remote-debugging-port=0` 重启：macOS 执行 `open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0`，Windows PowerShell 执行 `& "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`（CMD / 快捷方式目标为 `"%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`），Linux 执行 `antigravity --remote-debugging-port=0`，启动后在设置页点击「重新检测」。提示：自动更新重启会丢弃命令行参数，且务必遵守安全边界第 2 条——绝不由智能体强杀宿主进程。）*

@@ -602,7 +602,7 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
             targetTitle: 'Antigravity Hub',
             platformGuide: {
                 platform: 'darwin',
-                command: 'open -a "Antigravity" --args --remote-debugging-port=0',
+                command: 'open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0',
                 en: 'Launch with --remote-debugging-port=0',
                 zh: '使用 --remote-debugging-port=0 启动',
             },

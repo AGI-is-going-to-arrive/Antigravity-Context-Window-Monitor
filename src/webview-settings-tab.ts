@@ -471,7 +471,7 @@ export function buildSettingsContent(
     const activityMaxArchives = resolved.activityMaxArchives ?? resolved.maxArchives ?? 20;
 
     const resolvedZoom = clampNumber(options?.zoomLevel, 100, 60, 150);
-    const currentVersion = (options?.version && options.version.trim()) || options?.updateStatus?.currentVersion || '1.17.6';
+    const currentVersion = (options?.version && options.version.trim()) || options?.updateStatus?.currentVersion || '1.17.7';
     const activePlatform = options?.cdpStatus?.platformGuide?.platform;
 
     const tabScrollHintEnabled = panelPrefs?.showTabScrollHint ?? true;

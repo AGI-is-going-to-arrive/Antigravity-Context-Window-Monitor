@@ -66,3 +66,23 @@ upgrade Antigravity Context Monitor:
   process during an active session. After upgrading files on disk, guide the
   user to open [Antigravity Context Monitor](customization://antigravity-context-monitor)
   and toggle the plugin **Off → On** so the sidecar loads the new version safely.
+
+## Optional CDP Desktop Overlays (Strictly Opt-In)
+
+Core `AUX_PANE`, `SIDEBAR`, and the **Native Panel Compact HUD** work 100%
+natively without CDP. Only if the user explicitly wants the optional Composer
+Context Ring or Top-Right Status Bar floating overlays inside Antigravity App
+(zero `app.asar` patching), instruct them to:
+
+1. **Quit Antigravity App completely first** (macOS: `Cmd+Q`; Windows/Linux:
+   close all windows and tray icon — running `open -a` on macOS while
+   Antigravity is still running silently ignores `--args`). Never kill the app
+   yourself during an active chat.
+2. **Relaunch with `--remote-debugging-port=0`:**
+   - **macOS:** `open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0`
+   - **Windows (PowerShell):** `& "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
+   - **Windows (CMD / Shortcut target):** `"%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
+   - **Linux:** `antigravity --remote-debugging-port=0`
+3. Open **Settings → Overlays & CDP** in Context Monitor and click **Recheck CDP**
+   (note: Antigravity auto-updates restart without CLI flags, so re-apply the
+   flag after updates).
