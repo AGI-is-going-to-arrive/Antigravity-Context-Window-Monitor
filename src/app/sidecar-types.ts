@@ -111,6 +111,8 @@ export interface CdpOverlayPayload {
     // Performance
     outputSpeedTps: number | null;
     avgOutputSpeedTps: number | null;
+    peakOutputSpeedTps?: number | null;
+    recentCallCount?: number | null;
     isShortSample: boolean;
     isWaitingTtft?: boolean;
     ttftMs: number | null;
@@ -128,6 +130,12 @@ export interface CdpOverlayPayload {
     totalTokens: number;
     // Top bar aggregate / quota board
     cumulativeRecordedTokens: number;
+    todayTokens?: number | null;
+    todayCostFormatted?: string | null;
+    cumulativeCostFormatted?: string | null;
+    recordedDaysCount?: number | null;
+    sessionCount?: number | null;
+    subscriptionRoiSummary?: string | null;
     tightestQuotaPct: number | null;
     tightestQuotaWindowTag?: string;
     sessionQuota5hPct?: number | null;
@@ -142,9 +150,20 @@ export interface CdpOverlayPayload {
 
 export type CdpOverlayBridgeActionCommand = 'openPanel' | 'refresh' | 'togglePause';
 
+export type CdpOverlayTargetTab =
+    | 'overview'
+    | 'gm'
+    | 'sessions'
+    | 'cost'
+    | 'models'
+    | 'calendar'
+    | 'accounts'
+    | 'settings';
+
 export interface CdpOverlayBridgeAction {
     command: CdpOverlayBridgeActionCommand;
     source?: 'composer' | 'topbar';
+    targetTab?: CdpOverlayTargetTab;
 }
 
 // ─── Self-Updater Engine Contracts (v1.17.6) ─────────────────────────────────
@@ -272,6 +291,7 @@ export type SidecarActionCommand =
     | 'recheckCdp'
     | 'setupCdpLauncher'
     | 'removeCdpLauncher'
+    | 'revealCdpLauncher'
     | (string & {});
 
 export interface SidecarActionRequest {

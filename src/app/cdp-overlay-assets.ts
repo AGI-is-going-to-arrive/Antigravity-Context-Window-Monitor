@@ -12,7 +12,7 @@
 
 import type { CdpOverlayPayload, CdpOverlayToggles } from './sidecar-types';
 
-export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.7-r1';
+export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.8-r1';
 export const CDP_COMPOSER_HOST_ID = 'acm-cdp-composer-host';
 export const CDP_TOPBAR_HOST_ID = 'acm-cdp-topbar-host';
 export const CDP_RUNTIME_GLOBAL_KEY = '__ACM_CDP_OVERLAY_V1__';
@@ -660,10 +660,34 @@ export function getTopBarOverlayCss(): string {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 5px 8px;
+  width: 100%;
+  padding: 6px 8px;
   border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-family: var(--acm-sans);
   font-size: 11px;
   color: var(--acm-ink-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background 140ms var(--acm-ease), border-color 140ms var(--acm-ease), color 140ms var(--acm-ease);
+}
+
+.acm-overflow-row:hover {
+  background: var(--acm-hover);
+  border-color: var(--acm-border-strong);
+  color: var(--acm-ink);
+}
+
+.acm-overflow-row:focus-visible {
+  outline: 2px solid var(--acm-accent);
+  outline-offset: 1px;
+}
+
+.acm-overflow-row strong {
+  color: var(--acm-ink);
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .acm-quota-popover {
@@ -715,6 +739,59 @@ export function getTopBarOverlayCss(): string {
   flex-shrink: 0;
 }
 
+.acm-qp-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+  margin-top: 10px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--acm-well);
+  border: 1px solid var(--acm-border);
+}
+
+.acm-qp-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 5px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--acm-ink-secondary);
+  font-family: var(--acm-sans);
+  font-size: 11px;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 140ms var(--acm-ease), border-color 140ms var(--acm-ease), color 140ms var(--acm-ease);
+}
+
+.acm-qp-tab:hover {
+  background: var(--acm-hover);
+  color: var(--acm-ink);
+}
+
+.acm-qp-tab.is-active {
+  background: var(--acm-surface-solid);
+  border-color: var(--acm-border-strong);
+  color: var(--acm-ink);
+  font-weight: 650;
+}
+
+.acm-qp-tab:focus-visible {
+  outline: 2px solid var(--acm-accent);
+  outline-offset: 1px;
+}
+
+.acm-qp-body {
+  display: flex;
+  flex-direction: column;
+}
+
 .acm-qp-section {
   margin-top: 11px;
 }
@@ -724,6 +801,225 @@ export function getTopBarOverlayCss(): string {
   font-weight: 600;
   color: var(--acm-ink-muted);
   margin-bottom: 7px;
+}
+
+.acm-k {
+  font-size: 11.5px;
+  color: var(--acm-ink-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.acm-v {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--acm-ink);
+  white-space: nowrap;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.acm-v-sub {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--acm-ink-muted);
+  margin-left: 4px;
+}
+
+.acm-qp-hero-card {
+  padding: 11px 12px;
+  border-radius: 9px;
+  background: var(--acm-well);
+  border: 1px solid var(--acm-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.acm-qp-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.acm-qp-hero-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--acm-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.acm-qp-hero-metric-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.acm-qp-hero-value {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--acm-ink);
+}
+
+.acm-qp-hero-value.is-accent { color: var(--acm-accent); }
+.acm-qp-hero-value.is-good { color: var(--acm-good); }
+.acm-qp-hero-value.is-warn { color: var(--acm-warn); }
+.acm-qp-hero-value.is-danger { color: var(--acm-danger); }
+
+.acm-qp-hero-unit {
+  font-size: 11px;
+  font-weight: 550;
+  color: var(--acm-ink-muted);
+  margin-left: 5px;
+}
+
+.acm-qp-hero-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--acm-ink-muted);
+}
+
+.acm-qp-meter-wrap {
+  position: relative;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--acm-track);
+  overflow: visible;
+}
+
+.acm-qp-meter-fill {
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--acm-accent);
+  transition: width 220ms var(--acm-ease), background 180ms var(--acm-ease);
+}
+
+.acm-qp-meter-fill.is-warn { background: var(--acm-warn-fill); }
+.acm-qp-meter-fill.is-danger { background: var(--acm-danger-fill); }
+
+.acm-qp-watermark-tick {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  border-radius: 1px;
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+
+.acm-qp-watermark-tick.is-compaction {
+  background: var(--acm-warn);
+}
+
+.acm-qp-watermark-tick.is-tier200k {
+  background: var(--acm-ink-muted);
+}
+
+.acm-qp-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.acm-qp-stat-card {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--acm-well);
+  border: 1px solid var(--acm-border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.acm-qp-stat-label {
+  font-size: 10.5px;
+  color: var(--acm-ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acm-qp-stat-val {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--acm-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acm-qp-stat-sub {
+  font-size: 10.5px;
+  color: var(--acm-ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acm-qp-kv-card {
+  padding: 4px 11px;
+  border-radius: 9px;
+  background: var(--acm-well);
+  border: 1px solid var(--acm-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.acm-qp-kv-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--acm-border);
+  min-width: 0;
+}
+
+.acm-qp-kv-row:last-child {
+  border-bottom: none;
+}
+
+.acm-qp-roi-row {
+  margin-top: 7px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--acm-accent-tint);
+  border: 1px solid var(--acm-accent-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--acm-ink);
+}
+
+.acm-qp-roi-label {
+  font-weight: 600;
+  color: var(--acm-accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.acm-qp-roi-val {
+  font-weight: 600;
+  color: var(--acm-ink);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .acm-qp-session-card {
@@ -949,6 +1245,53 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     return '$' + usd.toFixed(4);
   }
 
+  function pad2(n) {
+    return n < 10 ? ('0' + n) : String(n);
+  }
+
+  function formatLocalClockTime(raw) {
+    if (raw === null || raw === undefined) { return ''; }
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      var fromNum = new Date(raw);
+      if (!isNaN(fromNum.getTime())) {
+        return pad2(fromNum.getHours()) + ':' + pad2(fromNum.getMinutes()) + ':' + pad2(fromNum.getSeconds());
+      }
+      return '';
+    }
+    var str = String(raw).trim();
+    if (!str) { return ''; }
+    var hmsMatch = str.match(/^(\\d{1,2}):(\\d{2}):(\\d{2})$/);
+    if (hmsMatch) {
+      return pad2(parseInt(hmsMatch[1], 10)) + ':' + hmsMatch[2] + ':' + hmsMatch[3];
+    }
+    var parsed = new Date(str);
+    if (!isNaN(parsed.getTime())) {
+      return pad2(parsed.getHours()) + ':' + pad2(parsed.getMinutes()) + ':' + pad2(parsed.getSeconds());
+    }
+    return str;
+  }
+
+  function buildTurnCacheBadge(lang, turnCacheState) {
+    var tcState = turnCacheState || 'unknown';
+    var cls = 'acm-pill-badge' + (
+      tcState === 'warm' ? ' is-good' : (tcState === 'partial' ? ' is-warn' : (tcState === 'cold' ? ' is-danger' : ''))
+    );
+    var label = tcState === 'warm'
+      ? bi(lang, 'Warm', '热缓存')
+      : (tcState === 'partial'
+        ? bi(lang, 'Partial', '部分命中')
+        : (tcState === 'cold' ? bi(lang, 'Cold', '冷启动') : '—'));
+    return el('span', cls, label);
+  }
+
+  function getTargetTabForTopBarView(view) {
+    if (view === 'quota') { return 'models'; }
+    if (view === 'context') { return 'overview'; }
+    if (view === 'speed') { return 'gm'; }
+    if (view === 'total') { return 'cost'; }
+    return 'models';
+  }
+
   function detectHostTheme(explicitTheme) {
     if (explicitTheme === 'light' || explicitTheme === 'dark') { return explicitTheme; }
     try {
@@ -1061,11 +1404,21 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     );
   }
 
-  function sendBridgeAction(payload, command, source, feedbackEl) {
+  function sendBridgeAction(payload, command, source, feedbackEl, extra) {
     if (!hasLoopbackBridge(payload)) {
       return;
     }
     try {
+      var bodyObj = { command: command, source: source };
+      if (extra && typeof extra === 'object') {
+        var extraKeys = Object.keys(extra);
+        for (var i = 0; i < extraKeys.length; i++) {
+          var k = extraKeys[i];
+          if (extra[k] !== undefined && extra[k] !== null) {
+            bodyObj[k] = extra[k];
+          }
+        }
+      }
       fetch(payload.bridgeUrl + '/api/overlay/action', {
         method: 'POST',
         mode: 'cors',
@@ -1074,7 +1427,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
           'Content-Type': 'application/json',
           'X-Monitor-Token': payload.bridgeToken
         },
-        body: JSON.stringify({ command: command, source: source })
+        body: JSON.stringify(bodyObj)
       }).then(function(res) {
         if (feedbackEl) {
           feedbackEl.textContent = res.ok
@@ -1089,7 +1442,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     } catch (_e) {}
   }
 
-  function triggerOpenPanelAction(payload, source, feedbackEl) {
+  function triggerOpenPanelAction(payload, source, feedbackEl, targetTab) {
     var toggledHostSidebar = false;
     try {
       var auxBtn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
@@ -1099,7 +1452,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       }
     } catch (_e) {}
     if (hasLoopbackBridge(payload)) {
-      sendBridgeAction(payload, 'openPanel', source, feedbackEl);
+      sendBridgeAction(payload, 'openPanel', source, feedbackEl, targetTab ? { targetTab: targetTab } : undefined);
     } else if (toggledHostSidebar && feedbackEl) {
       feedbackEl.textContent = bi((payload && payload.language) || 'both', 'Opened', '已打开');
     }
@@ -1223,7 +1576,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     topBarShadow: null,
     topBarRefs: null,
     topBarAnchorMode: 'inline',
-    quotaOpen: false,
+    topBarActiveView: null,
     overflowOpen: false,
     countdownSec: null,
     countdownTimer: null,
@@ -1676,6 +2029,105 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     return { svg: svg, arc: arc };
   }
 
+  var TOPBAR_VIEWS = ['quota', 'context', 'speed', 'total'];
+
+  function normalizeTopBarView(view) {
+    if (view === 'quota' || view === 'context' || view === 'speed' || view === 'total') {
+      return view;
+    }
+    return 'quota';
+  }
+
+  function getTopBarPillForView(view) {
+    if (!state.topBarRefs) { return null; }
+    var r = state.topBarRefs;
+    if (view === 'context') { return r.ctxPill; }
+    if (view === 'speed') { return r.speedPill; }
+    if (view === 'total') { return r.totalPill; }
+    return r.quotaPill;
+  }
+
+  function resolveTopBarAnchor(view, explicitAnchor) {
+    if (!state.topBarRefs) { return explicitAnchor || null; }
+    var r = state.topBarRefs;
+    if (explicitAnchor && !explicitAnchor.classList.contains('is-hidden')) {
+      return explicitAnchor;
+    }
+    var pill = getTopBarPillForView(view);
+    if (pill && !pill.classList.contains('is-hidden')) {
+      return pill;
+    }
+    if (r.overflowBtn && !r.overflowBtn.classList.contains('is-hidden')) {
+      return r.overflowBtn;
+    }
+    return r.cluster || r.quotaPill;
+  }
+
+  function syncTopBarPillStates() {
+    if (!state.topBarRefs) { return; }
+    var r = state.topBarRefs;
+    var active = state.topBarActiveView;
+    var tabActive = active || 'quota';
+    for (var i = 0; i < TOPBAR_VIEWS.length; i++) {
+      var v = TOPBAR_VIEWS[i];
+      var pill = getTopBarPillForView(v);
+      var isPillActive = active === v;
+      if (pill) {
+        pill.classList.toggle('is-active', isPillActive);
+        pill.setAttribute('aria-expanded', isPillActive ? 'true' : 'false');
+      }
+      var tabBtn = r.qpTabs && r.qpTabs[v];
+      if (tabBtn) {
+        var isTabActive = tabActive === v;
+        tabBtn.classList.toggle('is-active', isTabActive);
+        tabBtn.setAttribute('aria-selected', isTabActive ? 'true' : 'false');
+      }
+    }
+  }
+
+  function closeOverflowMenu() {
+    state.overflowOpen = false;
+    if (state.topBarRefs) {
+      state.topBarRefs.overflowMenu.classList.remove('is-open');
+      state.topBarRefs.overflowBtn.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function closeTopBarPopover() {
+    state.topBarActiveView = null;
+    if (state.topBarRefs) {
+      state.topBarRefs.quotaPopover.classList.remove('is-open');
+      if (typeof state.topBarRefs.quotaPopover.removeAttribute === 'function') {
+        state.topBarRefs.quotaPopover.removeAttribute('data-active-view');
+      } else {
+        state.topBarRefs.quotaPopover.setAttribute('data-active-view', '');
+      }
+      syncTopBarPillStates();
+    }
+  }
+
+  function openTopBarView(view, anchorPill) {
+    if (!state.topBarRefs) { return; }
+    var nextView = normalizeTopBarView(view);
+    closeOverflowMenu();
+    state.topBarActiveView = nextView;
+    state.topBarRefs.quotaPopover.setAttribute('data-active-view', nextView);
+    state.topBarRefs.qpFooterFeedback.textContent = '';
+    syncTopBarPillStates();
+    renderTopBarPopover();
+    var targetAnchor = resolveTopBarAnchor(nextView, anchorPill);
+    positionPopoverNear(targetAnchor, state.topBarRefs.quotaPopover, false);
+  }
+
+  function toggleTopBarView(view, anchorPill) {
+    var nextView = normalizeTopBarView(view);
+    if (state.topBarActiveView === nextView) {
+      closeTopBarPopover();
+      return;
+    }
+    openTopBarView(nextView, anchorPill);
+  }
+
   function createTopBarSlot() {
     var existingNode = document.getElementById(TOPBAR_HOST_ID);
     if (existingNode && existingNode.parentNode) {
@@ -1697,6 +2149,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     // 1. Tightest quota pill
     var quotaPill = el('button', 'acm-bar-pill acm-num');
     quotaPill.type = 'button';
+    quotaPill.setAttribute('data-view', 'quota');
     quotaPill.setAttribute('aria-haspopup', 'dialog');
     quotaPill.setAttribute('aria-expanded', 'false');
     var qRing = makeMiniRing(false);
@@ -1709,6 +2162,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     // 2. Context ring pill
     var ctxPill = el('button', 'acm-bar-pill acm-num');
     ctxPill.type = 'button';
+    ctxPill.setAttribute('data-view', 'context');
+    ctxPill.setAttribute('aria-haspopup', 'dialog');
+    ctxPill.setAttribute('aria-expanded', 'false');
     var cRing = makeMiniRing(true);
     var cPctText = el('span', '', '0%');
     ctxPill.appendChild(cRing.svg);
@@ -1717,10 +2173,16 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     // 3. Speed / short-sample pill
     var speedPill = el('button', 'acm-bar-pill acm-num', '—');
     speedPill.type = 'button';
+    speedPill.setAttribute('data-view', 'speed');
+    speedPill.setAttribute('aria-haspopup', 'dialog');
+    speedPill.setAttribute('aria-expanded', 'false');
 
     // 4. Cumulative recorded tokens pill
     var totalPill = el('button', 'acm-bar-pill acm-num', '0');
     totalPill.type = 'button';
+    totalPill.setAttribute('data-view', 'total');
+    totalPill.setAttribute('aria-haspopup', 'dialog');
+    totalPill.setAttribute('aria-expanded', 'false');
 
     // 5. Overflow button (···) for narrow windows
     var overflowBtn = el('button', 'acm-bar-pill is-hidden', '···');
@@ -1741,7 +2203,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     var overflowMenu = el('div', 'acm-overflow-menu');
     overflowMenu.setAttribute('role', 'menu');
 
-    // Model Quota Board Popover
+    // 4-View Telemetry Popover
     var quotaPopover = el('div', 'acm-quota-popover');
     quotaPopover.setAttribute('role', 'dialog');
 
@@ -1766,17 +2228,27 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     qpHead.appendChild(qpTitleWrap);
     qpHead.appendChild(qpHeadActions);
 
-    var qpSessionSec = el('div', 'acm-qp-section');
-    var qpSessionTitle = el('div', 'acm-qp-section-title', 'Current Session Model');
-    var qpSessionCard = el('div', 'acm-qp-session-card');
-    qpSessionSec.appendChild(qpSessionTitle);
-    qpSessionSec.appendChild(qpSessionCard);
+    // Compact 4-segment view switcher inside popover
+    var qpTabsBar = el('div', 'acm-qp-tabs');
+    qpTabsBar.setAttribute('role', 'tablist');
+    var qpTabs = {};
+    for (var ti = 0; ti < TOPBAR_VIEWS.length; ti++) {
+      (function(viewKey) {
+        var tabBtn = el('button', 'acm-qp-tab', viewKey);
+        tabBtn.type = 'button';
+        tabBtn.setAttribute('role', 'tab');
+        tabBtn.setAttribute('data-tab-view', viewKey);
+        tabBtn.setAttribute('aria-selected', viewKey === 'quota' ? 'true' : 'false');
+        tabBtn.addEventListener('click', function(ev) {
+          ev.stopPropagation();
+          openTopBarView(viewKey, getTopBarPillForView(viewKey));
+        });
+        qpTabs[viewKey] = tabBtn;
+        qpTabsBar.appendChild(tabBtn);
+      })(TOPBAR_VIEWS[ti]);
+    }
 
-    var qpPoolsSec = el('div', 'acm-qp-section');
-    var qpPoolsTitle = el('div', 'acm-qp-section-title', 'Shared Quota Pools');
-    var qpPoolList = el('div', 'acm-pool-list');
-    qpPoolsSec.appendChild(qpPoolsTitle);
-    qpPoolsSec.appendChild(qpPoolList);
+    var qpBody = el('div', 'acm-qp-body');
 
     var qpFooter = el('div', 'acm-qp-footer acm-num');
     var qpFooterTotal = el('span', '', '');
@@ -1785,8 +2257,8 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     qpFooter.appendChild(qpFooterFeedback);
 
     quotaPopover.appendChild(qpHead);
-    quotaPopover.appendChild(qpSessionSec);
-    quotaPopover.appendChild(qpPoolsSec);
+    quotaPopover.appendChild(qpTabsBar);
+    quotaPopover.appendChild(qpBody);
     quotaPopover.appendChild(qpFooter);
 
     shadow.appendChild(cluster);
@@ -1794,32 +2266,26 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     shadow.appendChild(overflowMenu);
     shadow.appendChild(quotaPopover);
 
-    function toggleQuotaBoard(ev) {
+    quotaPill.addEventListener('click', function(ev) {
       ev.stopPropagation();
-      state.overflowOpen = false;
-      overflowMenu.classList.remove('is-open');
-      overflowBtn.setAttribute('aria-expanded', 'false');
-      state.quotaOpen = !state.quotaOpen;
-      quotaPill.classList.toggle('is-active', state.quotaOpen);
-      quotaPill.setAttribute('aria-expanded', state.quotaOpen ? 'true' : 'false');
-      if (state.quotaOpen) {
-        positionPopoverNear(quotaPill, quotaPopover, false);
-      } else {
-        quotaPopover.classList.remove('is-open');
-      }
-    }
-
-    quotaPill.addEventListener('click', toggleQuotaBoard);
-    ctxPill.addEventListener('click', toggleQuotaBoard);
-    speedPill.addEventListener('click', toggleQuotaBoard);
-    totalPill.addEventListener('click', toggleQuotaBoard);
+      toggleTopBarView('quota', quotaPill);
+    });
+    ctxPill.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      toggleTopBarView('context', ctxPill);
+    });
+    speedPill.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      toggleTopBarView('speed', speedPill);
+    });
+    totalPill.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      toggleTopBarView('total', totalPill);
+    });
 
     overflowBtn.addEventListener('click', function(ev) {
       ev.stopPropagation();
-      state.quotaOpen = false;
-      quotaPopover.classList.remove('is-open');
-      quotaPill.classList.remove('is-active');
-      quotaPill.setAttribute('aria-expanded', 'false');
+      closeTopBarPopover();
       state.overflowOpen = !state.overflowOpen;
       overflowBtn.setAttribute('aria-expanded', state.overflowOpen ? 'true' : 'false');
       if (state.overflowOpen) {
@@ -1831,10 +2297,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
 
     qpCloseBtn.addEventListener('click', function(ev) {
       ev.stopPropagation();
-      state.quotaOpen = false;
-      quotaPopover.classList.remove('is-open');
-      quotaPill.classList.remove('is-active');
-      quotaPill.setAttribute('aria-expanded', 'false');
+      closeTopBarPopover();
     });
 
     qpRefreshBtn.addEventListener('click', function(ev) {
@@ -1843,7 +2306,8 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     });
     qpOpenBtn.addEventListener('click', function(ev) {
       ev.stopPropagation();
-      triggerOpenPanelAction(state.payload, 'topbar', qpFooterFeedback);
+      var targetTab = getTargetTabForTopBarView(state.topBarActiveView || 'quota');
+      triggerOpenPanelAction(state.payload, 'topbar', qpFooterFeedback, targetTab);
     });
 
     state.topBarHost = host;
@@ -1867,10 +2331,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       qpMeta: qpMeta,
       qpRefreshBtn: qpRefreshBtn,
       qpOpenBtn: qpOpenBtn,
-      qpSessionTitle: qpSessionTitle,
-      qpSessionCard: qpSessionCard,
-      qpPoolsTitle: qpPoolsTitle,
-      qpPoolList: qpPoolList,
+      qpTabsBar: qpTabsBar,
+      qpTabs: qpTabs,
+      qpBody: qpBody,
       qpFooterTotal: qpFooterTotal,
       qpFooterFeedback: qpFooterFeedback
     };
@@ -1894,15 +2357,17 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     } catch (_e) {}
     var totalThreshold = auxOpen ? 1360 : 1120;
     var speedThreshold = auxOpen ? 1040 : 860;
+    var ctxThreshold = auxOpen ? 760 : 620;
     var hideTotal = effectiveWidth < totalThreshold;
     var hideSpeed = effectiveWidth < speedThreshold;
+    var hideCtx = effectiveWidth < ctxThreshold;
     r.totalPill.classList.toggle('is-hidden', hideTotal);
     r.speedPill.classList.toggle('is-hidden', hideSpeed);
-    var showOverflow = hideTotal || hideSpeed;
+    r.ctxPill.classList.toggle('is-hidden', hideCtx);
+    var showOverflow = hideTotal || hideSpeed || hideCtx;
     r.overflowBtn.classList.toggle('is-hidden', !showOverflow);
     if (!showOverflow) {
-      state.overflowOpen = false;
-      r.overflowMenu.classList.remove('is-open');
+      closeOverflowMenu();
     }
     var wcoPx = computeWcoInsetPx(state.topBarAnchorMode === 'fixed');
     if (wcoPx > 0) {
@@ -1960,17 +2425,422 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     return row;
   }
 
+  function buildQpKvRow(label, valueNodeOrText, subText) {
+    var row = el('div', 'acm-qp-kv-row');
+    row.appendChild(el('span', 'acm-k', label));
+    var valWrap = el('span', 'acm-v acm-num');
+    if (valueNodeOrText && typeof valueNodeOrText === 'object' && valueNodeOrText.nodeType === 1) {
+      valWrap.appendChild(valueNodeOrText);
+    } else {
+      valWrap.appendChild(document.createTextNode(String(valueNodeOrText)));
+    }
+    if (subText) {
+      valWrap.appendChild(el('span', 'acm-v-sub', subText));
+    }
+    row.appendChild(valWrap);
+    return row;
+  }
+
+  function buildQpStatCard(label, valueText, subText) {
+    var card = el('div', 'acm-qp-stat-card');
+    card.appendChild(el('div', 'acm-qp-stat-label', label));
+    card.appendChild(el('div', 'acm-qp-stat-val acm-num', valueText));
+    if (subText) {
+      card.appendChild(el('div', 'acm-qp-stat-sub acm-num', subText));
+    }
+    return card;
+  }
+
   function updateQuotaMetaClock() {
     if (!state.topBarRefs || !state.payload) { return; }
     var lang = state.payload.language || 'both';
     var parts = [];
-    if (state.payload.updatedAt) {
-      parts.push(bi(lang, 'Updated', '更新于') + ' ' + state.payload.updatedAt);
+    var clockStr = formatLocalClockTime(state.payload.updatedAt);
+    if (clockStr) {
+      parts.push(bi(lang, 'Updated', '更新于') + ' ' + clockStr);
     }
     if (typeof state.countdownSec === 'number' && state.countdownSec >= 0) {
       parts.push(bi(lang, 'Next refresh in', '下次刷新') + ' ' + state.countdownSec + 's');
     }
     state.topBarRefs.qpMeta.textContent = parts.join(' · ') || '—';
+  }
+
+  function renderTopBarQuotaView(p, lang, body, cPct) {
+    var sessionSec = el('div', 'acm-qp-section');
+    sessionSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Current Session Model', '当前会话模型')));
+    var sessionCard = el('div', 'acm-qp-session-card');
+
+    var sessTop = el('div', 'acm-qp-session-model');
+    sessTop.appendChild(el('span', '', p.modelName || bi(lang, 'No active model', '暂无活跃模型')));
+    sessTop.appendChild(el('span', 'acm-pill-badge is-accent acm-num', Math.round(cPct) + '% ' + bi(lang, 'Ctx', '上下文')));
+    sessionCard.appendChild(sessTop);
+
+    var sess5hPct = p.sessionQuota5hPct !== undefined ? p.sessionQuota5hPct : p.tightestQuotaPct;
+    sessionCard.appendChild(buildQuotaBarNode(
+      bi(lang, '5h Window', '5 小时窗口'),
+      sess5hPct,
+      p.sessionQuota5hReset || ''
+    ));
+    if (p.sessionQuotaWeeklyPct !== undefined && p.sessionQuotaWeeklyPct !== null) {
+      sessionCard.appendChild(buildQuotaBarNode(
+        bi(lang, 'Weekly Limit', '每周限额'),
+        p.sessionQuotaWeeklyPct,
+        p.sessionQuotaWeeklyReset || ''
+      ));
+    }
+    sessionSec.appendChild(sessionCard);
+    body.appendChild(sessionSec);
+
+    var poolsSec = el('div', 'acm-qp-section');
+    poolsSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Shared Quota Pools', '共享配额池')));
+    var poolList = el('div', 'acm-pool-list');
+    var pools = Array.isArray(p.quotaPools) ? p.quotaPools : [];
+    if (pools.length === 0) {
+      poolList.appendChild(el('div', 'acm-k', bi(lang, 'Waiting for quota pool telemetry...', '正在等待配额池数据...')));
+    } else {
+      for (var i = 0; i < pools.length; i++) {
+        var pool = pools[i];
+        var card = el('div', pool.isCurrentSessionModel ? 'acm-pool-card is-current' : 'acm-pool-card');
+        var top = el('div', 'acm-pool-top');
+        top.appendChild(el('div', 'acm-pool-name', pool.label || pool.poolKey || 'Pool'));
+
+        var right = el('div', 'acm-pool-right');
+        var rem = typeof pool.remainingPct === 'number' && Number.isFinite(pool.remainingPct)
+          ? clampNum(pool.remainingPct, 0, 100)
+          : null;
+        var health = pool.health || (rem === null ? 'unknown' : (rem >= 50 ? 'good' : (rem >= 20 ? 'warn' : 'danger')));
+        var healthLabel = health === 'good'
+          ? bi(lang, 'Healthy', '充裕')
+          : (health === 'warn'
+            ? bi(lang, 'Caution', '偏低')
+            : (health === 'danger' ? bi(lang, 'Critical', '紧张') : bi(lang, 'Unknown', '未知')));
+        right.appendChild(el('span', 'acm-pill-badge' + (health !== 'unknown' ? (' is-' + health) : ''), healthLabel));
+        top.appendChild(right);
+        card.appendChild(top);
+
+        var resetLabel = (pool.windowTag ? (pool.windowTag + ' · ') : '') + (pool.resetCountdown || '');
+        card.appendChild(buildQuotaBarNode(
+          rem !== null ? (Math.round(rem) + '% ' + bi(lang, 'remaining', '剩余')) : bi(lang, 'Quota', '配额'),
+          rem,
+          resetLabel
+        ));
+
+        if (Array.isArray(pool.modelChips) && pool.modelChips.length > 0) {
+          var chipRow = el('div', 'acm-chip-row');
+          for (var c = 0; c < pool.modelChips.length; c++) {
+            chipRow.appendChild(el('span', 'acm-model-chip', pool.modelChips[c]));
+          }
+          card.appendChild(chipRow);
+        }
+        poolList.appendChild(card);
+      }
+    }
+    poolsSec.appendChild(poolList);
+    body.appendChild(poolsSec);
+  }
+
+  function renderTopBarContextView(p, lang, body) {
+    var clampedPct = clampNum(p.contextPct, 0, 100);
+    var rawPct = Number.isFinite(Number(p.contextPct)) ? Math.max(0, Number(p.contextPct)) : 0;
+    var severity = rawPct >= 80 ? 'danger' : (rawPct >= 65 ? 'warn' : 'normal');
+
+    var heroSec = el('div', 'acm-qp-section');
+    heroSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Active Context Window', '当前上下文窗口')));
+    var heroCard = el('div', 'acm-qp-hero-card');
+
+    var heroTop = el('div', 'acm-qp-hero-top');
+    heroTop.appendChild(el('div', 'acm-qp-hero-label', p.modelName || bi(lang, 'No active model', '暂无活跃模型')));
+    var sevBadgeLabel = severity === 'danger'
+      ? bi(lang, 'High pressure', '高压预警')
+      : (severity === 'warn' ? bi(lang, 'Elevated', '偏高') : bi(lang, 'Healthy', '充裕'));
+    var sevBadgeCls = 'acm-pill-badge' + (severity === 'danger' ? ' is-danger' : (severity === 'warn' ? ' is-warn' : ' is-good'));
+    heroTop.appendChild(el('span', sevBadgeCls, sevBadgeLabel));
+    heroCard.appendChild(heroTop);
+
+    var metricRow = el('div', 'acm-qp-hero-metric-row');
+    var pctCls = 'acm-qp-hero-value acm-num' + (severity === 'danger' ? ' is-danger' : (severity === 'warn' ? ' is-warn' : ' is-accent'));
+    metricRow.appendChild(el('div', pctCls, rawPct.toFixed(1).replace(/\\.0$/, '') + '%'));
+    var nativeSuffix = p.contextNativeLimit && p.contextNativeLimit > p.contextEffectiveLimit
+      ? (' (' + formatCompact(p.contextNativeLimit) + ' max)')
+      : '';
+    var tokCapText = formatCompact(p.contextUsedTokens) + ' / ' + formatCompact(p.contextEffectiveLimit) + nativeSuffix;
+    metricRow.appendChild(el('div', 'acm-v acm-num', tokCapText));
+    heroCard.appendChild(metricRow);
+
+    var meterWrap = el('div', 'acm-qp-meter-wrap');
+    var meterFill = el('div', 'acm-qp-meter-fill' + (severity === 'danger' ? ' is-danger' : (severity === 'warn' ? ' is-warn' : '')));
+    meterFill.style.width = clampedPct.toFixed(1) + '%';
+    meterWrap.appendChild(meterFill);
+
+    var marks = [];
+    if (typeof p.compactionThresholdPct === 'number' && Number.isFinite(p.compactionThresholdPct) && p.compactionThresholdPct > 2 && p.compactionThresholdPct < 99) {
+      var tickComp = el('div', 'acm-qp-watermark-tick is-compaction');
+      tickComp.style.left = clampNum(p.compactionThresholdPct, 2, 98).toFixed(1) + '%';
+      tickComp.setAttribute('title', bi(lang, 'Compaction limit', '压缩阈值') + ' ' + Math.round(p.compactionThresholdPct) + '%');
+      meterWrap.appendChild(tickComp);
+      marks.push(bi(lang, 'Compact', '压缩') + ' ' + Math.round(p.compactionThresholdPct) + '%');
+    }
+    if (typeof p.tier200kMarkerPct === 'number' && Number.isFinite(p.tier200kMarkerPct) && p.tier200kMarkerPct > 2 && p.tier200kMarkerPct < 99) {
+      var tick200k = el('div', 'acm-qp-watermark-tick is-tier200k');
+      tick200k.style.left = clampNum(p.tier200kMarkerPct, 2, 98).toFixed(1) + '%';
+      tick200k.setAttribute('title', bi(lang, '200k pricing tier', '200k 计费阶梯'));
+      meterWrap.appendChild(tick200k);
+      marks.push('200k');
+    }
+    heroCard.appendChild(meterWrap);
+
+    var subRow = el('div', 'acm-qp-hero-sub acm-num');
+    var remTokens = Math.max(0, (Number(p.contextEffectiveLimit) || 0) - (Number(p.contextUsedTokens) || 0));
+    subRow.appendChild(el('span', '', bi(lang, 'Remaining', '剩余可用') + ': ' + formatCompact(remTokens)));
+    subRow.appendChild(el('span', '', marks.join(' · ')));
+    heroCard.appendChild(subRow);
+    heroSec.appendChild(heroCard);
+    body.appendChild(heroSec);
+
+    var tokSec = el('div', 'acm-qp-section');
+    tokSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Session Token Breakdown', '本会话 Token 明细')));
+    var tokCard = el('div', 'acm-qp-kv-card');
+    tokCard.appendChild(buildQpKvRow(bi(lang, 'Input / Output', '输入 / 输出'), formatCompact(p.inputTokens) + ' / ' + formatCompact(p.outputTokens)));
+    tokCard.appendChild(buildQpKvRow(bi(lang, 'Cache Read', '缓存读取'), formatCompact(p.cacheReadTokens)));
+    tokCard.appendChild(buildQpKvRow(bi(lang, 'Session Total Tokens', '本会话总 Tokens'), formatCompact(p.totalTokens)));
+    tokSec.appendChild(tokCard);
+    body.appendChild(tokSec);
+
+    var cacheSec = el('div', 'acm-qp-section');
+    cacheSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Cache Efficiency', '缓存命中效率')));
+    var cacheCard = el('div', 'acm-qp-kv-card');
+    cacheCard.appendChild(buildQpKvRow(bi(lang, 'Recent Cache Hit', '近期缓存命中'), formatPct(p.recentCacheHitPct)));
+    cacheCard.appendChild(buildQpKvRow(bi(lang, 'Avg Cache Hit', '平均缓存命中'), formatPct(p.avgCacheHitPct)));
+    cacheCard.appendChild(buildQpKvRow(bi(lang, 'Turn Cache State', '轮次缓存状态'), buildTurnCacheBadge(lang, p.turnCacheState)));
+    cacheSec.appendChild(cacheCard);
+    body.appendChild(cacheSec);
+  }
+
+  function renderTopBarSpeedView(p, lang, body) {
+    var heroSec = el('div', 'acm-qp-section');
+    heroSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Live Output Speed', '实时生成速度')));
+    var heroCard = el('div', 'acm-qp-hero-card');
+
+    var heroTop = el('div', 'acm-qp-hero-top');
+    heroTop.appendChild(el('div', 'acm-qp-hero-label', p.modelName || bi(lang, 'Output Throughput', '输出吞吐')));
+    var statusBadge;
+    if (p.isWaitingTtft) {
+      statusBadge = el('span', 'acm-pill-badge is-warn', bi(lang, 'Waiting for first token', '等待首字'));
+    } else if (p.isShortSample) {
+      statusBadge = el('span', 'acm-pill-badge is-warn', bi(lang, 'Short sample', '短样本'));
+    } else if (typeof p.outputSpeedTps === 'number' && Number.isFinite(p.outputSpeedTps) && p.outputSpeedTps > 0) {
+      statusBadge = el('span', 'acm-pill-badge is-good', bi(lang, 'Live', '实时'));
+    } else {
+      statusBadge = el('span', 'acm-pill-badge', bi(lang, 'Idle', '空闲'));
+    }
+    heroTop.appendChild(statusBadge);
+    heroCard.appendChild(heroTop);
+
+    var metricRow = el('div', 'acm-qp-hero-metric-row');
+    if (p.isWaitingTtft) {
+      metricRow.appendChild(el('div', 'acm-qp-hero-value is-warn', bi(lang, 'Waiting...', '等待首字...')));
+    } else if (p.isShortSample) {
+      var shortVal = el('div', 'acm-qp-hero-value is-warn acm-num', bi(lang, 'Short sample', '短样本'));
+      if (typeof p.outputSpeedTps === 'number' && Number.isFinite(p.outputSpeedTps) && p.outputSpeedTps > 0) {
+        shortVal.appendChild(el('span', 'acm-qp-hero-unit', '(' + formatTps(p.outputSpeedTps) + ')'));
+      }
+      metricRow.appendChild(shortVal);
+    } else {
+      metricRow.appendChild(el('div', 'acm-qp-hero-value is-accent acm-num', formatTps(p.outputSpeedTps)));
+    }
+    heroCard.appendChild(metricRow);
+
+    var subRow = el('div', 'acm-qp-hero-sub acm-num');
+    subRow.appendChild(el('span', '', bi(lang, 'First Token Latency (TTFT)', '首字延迟 (TTFT)') + ': ' + formatTtft(p.ttftMs)));
+    subRow.appendChild(el('span', '', bi(lang, 'Avg', '平均') + ': ' + formatTps(p.avgOutputSpeedTps)));
+    heroCard.appendChild(subRow);
+    heroSec.appendChild(heroCard);
+    body.appendChild(heroSec);
+
+    var metricsSec = el('div', 'acm-qp-section');
+    metricsSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Throughput & Latency', '吞吐与延迟指标')));
+    var statGrid = el('div', 'acm-qp-stat-grid');
+    statGrid.appendChild(buildQpStatCard(bi(lang, 'Avg Output Speed', '平均输出速度'), formatTps(p.avgOutputSpeedTps)));
+    statGrid.appendChild(buildQpStatCard(bi(lang, 'First Token (TTFT)', '首字延迟'), formatTtft(p.ttftMs)));
+    if (typeof p.peakOutputSpeedTps === 'number' && Number.isFinite(p.peakOutputSpeedTps) && p.peakOutputSpeedTps > 0) {
+      statGrid.appendChild(buildQpStatCard(bi(lang, 'Peak Output Speed', '峰值输出速度'), formatTps(p.peakOutputSpeedTps)));
+    }
+    if (typeof p.recentCallCount === 'number' && Number.isFinite(p.recentCallCount) && p.recentCallCount >= 0) {
+      statGrid.appendChild(buildQpStatCard(bi(lang, 'Recent LLM Calls', '近期模型调用'), String(Math.round(p.recentCallCount))));
+    }
+    metricsSec.appendChild(statGrid);
+    body.appendChild(metricsSec);
+
+    var cacheSec = el('div', 'acm-qp-section');
+    cacheSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Cache Efficiency (Prefill)', '缓存效率（影响首字延迟）')));
+    var cacheCard = el('div', 'acm-qp-kv-card');
+    cacheCard.appendChild(buildQpKvRow(bi(lang, 'Recent Cache Hit', '近期缓存命中'), formatPct(p.recentCacheHitPct)));
+    cacheCard.appendChild(buildQpKvRow(bi(lang, 'Avg Cache Hit', '平均缓存命中'), formatPct(p.avgCacheHitPct)));
+    cacheCard.appendChild(buildQpKvRow(bi(lang, 'Turn Cache State', '轮次缓存状态'), buildTurnCacheBadge(lang, p.turnCacheState)));
+    cacheSec.appendChild(cacheCard);
+    body.appendChild(cacheSec);
+  }
+
+  function renderTopBarTotalView(p, lang, body) {
+    var cumStr = formatCompact(p.cumulativeRecordedTokens);
+    var costStr = formatUsd(p.estCostUsd, p.estCostFormatted);
+
+    var heroSec = el('div', 'acm-qp-section');
+    heroSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Recorded Local Total', '本机已记录总用量')));
+    var heroCard = el('div', 'acm-qp-hero-card');
+
+    var heroTop = el('div', 'acm-qp-hero-top');
+    heroTop.appendChild(el('div', 'acm-qp-hero-label', bi(lang, 'Cumulative Recorded Tokens', '本机累计 Tokens')));
+    if (typeof p.cumulativeCostFormatted === 'string' && p.cumulativeCostFormatted.trim()) {
+      heroTop.appendChild(el('span', 'acm-pill-badge is-accent acm-num', p.cumulativeCostFormatted.trim()));
+    }
+    heroCard.appendChild(heroTop);
+
+    var metricRow = el('div', 'acm-qp-hero-metric-row');
+    var heroVal = el('div', 'acm-qp-hero-value is-accent acm-num', cumStr);
+    heroVal.appendChild(el('span', 'acm-qp-hero-unit', 'tokens'));
+    metricRow.appendChild(heroVal);
+    heroCard.appendChild(metricRow);
+
+    var daysVal = typeof p.recordedDaysCount === 'number' && Number.isFinite(p.recordedDaysCount) && p.recordedDaysCount > 0
+      ? Math.round(p.recordedDaysCount)
+      : null;
+    var sessVal = typeof p.sessionCount === 'number' && Number.isFinite(p.sessionCount) && p.sessionCount > 0
+      ? Math.round(p.sessionCount)
+      : null;
+    var scopeEnParts = [];
+    var scopeZhParts = [];
+    var scopeCompactParts = [];
+    if (daysVal !== null) {
+      scopeEnParts.push(daysVal + (daysVal === 1 ? ' day' : ' days'));
+      scopeZhParts.push(daysVal + ' 天');
+      scopeCompactParts.push(lang === 'zh' ? (daysVal + ' 天') : (daysVal + 'd'));
+    }
+    if (sessVal !== null) {
+      scopeEnParts.push(sessVal + (sessVal === 1 ? ' session' : ' sessions'));
+      scopeZhParts.push(sessVal + ' 会话');
+      scopeCompactParts.push(lang === 'zh' ? (sessVal + ' 会话') : (sessVal + ' ' + bi(lang, sessVal === 1 ? 'session' : 'sessions', '会话')));
+    }
+    var hasScope = scopeEnParts.length > 0;
+    var scopeFullText = hasScope ? bi(lang, scopeEnParts.join(' · '), scopeZhParts.join(' · ')) : '';
+    var scopeCompactText = hasScope
+      ? (lang === 'en' ? scopeEnParts.join(' · ') : (lang === 'zh' ? scopeZhParts.join(' · ') : (daysVal !== null && sessVal !== null ? (daysVal + 'd · ' + sessVal + ' sess') : scopeCompactParts.join(' · '))))
+      : '';
+    var subRow = el('div', 'acm-qp-hero-sub acm-num');
+    subRow.appendChild(el('span', '', hasScope
+      ? (bi(lang, 'Recorded Scope', '记录范围') + ': ' + scopeFullText)
+      : (bi(lang, 'Session Total', '本会话总计') + ': ' + formatCompact(p.totalTokens))));
+    if (typeof p.todayCostFormatted === 'string' && p.todayCostFormatted.trim()) {
+      subRow.appendChild(el('span', '', bi(lang, 'Today', '今日') + ': ' + p.todayCostFormatted.trim()));
+    }
+    heroCard.appendChild(subRow);
+    heroSec.appendChild(heroCard);
+    body.appendChild(heroSec);
+
+    var hasToday = (typeof p.todayTokens === 'number' && Number.isFinite(p.todayTokens))
+      || (typeof p.todayCostFormatted === 'string' && p.todayCostFormatted.trim().length > 0);
+    var hasHistory = hasScope
+      || (typeof p.cumulativeCostFormatted === 'string' && p.cumulativeCostFormatted.trim().length > 0);
+    var hasRoi = typeof p.subscriptionRoiSummary === 'string' && p.subscriptionRoiSummary.trim().length > 0;
+
+    if (hasToday || hasHistory || hasRoi) {
+      var histSec = el('div', 'acm-qp-section');
+      histSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Today & Recorded History', '今日与历史统计')));
+      if (hasToday || hasHistory) {
+        var grid = el('div', 'acm-qp-stat-grid');
+        if (hasToday) {
+          var todayVal = typeof p.todayTokens === 'number' && Number.isFinite(p.todayTokens)
+            ? formatCompact(p.todayTokens)
+            : (p.todayCostFormatted || '—');
+          var todaySub = (typeof p.todayTokens === 'number' && Number.isFinite(p.todayTokens) && p.todayCostFormatted)
+            ? (bi(lang, 'Est.', '约') + ' ' + p.todayCostFormatted)
+            : '';
+          grid.appendChild(buildQpStatCard(bi(lang, 'Today Tokens & Cost', '今日用量与估算'), todayVal, todaySub));
+        }
+        if (hasHistory) {
+          var histVal = hasScope ? scopeCompactText : (p.cumulativeCostFormatted || '—');
+          var histSub = (hasScope && p.cumulativeCostFormatted)
+            ? (bi(lang, 'Cumulative', '累计') + ' ' + p.cumulativeCostFormatted)
+            : '';
+          grid.appendChild(buildQpStatCard(bi(lang, 'Recorded History', '历史记录范围'), histVal, histSub));
+        }
+        histSec.appendChild(grid);
+      }
+      if (hasRoi) {
+        var roiRow = el('div', 'acm-qp-roi-row');
+        roiRow.appendChild(el('span', 'acm-qp-roi-label', bi(lang, 'Subscription ROI', '订阅回报')));
+        roiRow.appendChild(el('span', 'acm-qp-roi-val acm-num', p.subscriptionRoiSummary.trim()));
+        histSec.appendChild(roiRow);
+      }
+      body.appendChild(histSec);
+    }
+
+    var sessSec = el('div', 'acm-qp-section');
+    sessSec.appendChild(el('div', 'acm-qp-section-title', bi(lang, 'Current Session Breakdown', '当前会话明细')));
+    var sessCard = el('div', 'acm-qp-kv-card');
+    sessCard.appendChild(buildQpKvRow(
+      bi(lang, 'Est. Cost', '估算费用'),
+      costStr,
+      p.localCostFormatted ? ('≈ ' + p.localCostFormatted) : ''
+    ));
+    sessCard.appendChild(buildQpKvRow(bi(lang, 'Input / Output', '输入 / 输出'), formatCompact(p.inputTokens) + ' / ' + formatCompact(p.outputTokens)));
+    sessCard.appendChild(buildQpKvRow(bi(lang, 'Cache Read', '缓存读取'), formatCompact(p.cacheReadTokens)));
+    sessCard.appendChild(buildQpKvRow(bi(lang, 'Session Total', '会话总 Tokens'), formatCompact(p.totalTokens)));
+    sessSec.appendChild(sessCard);
+    body.appendChild(sessSec);
+  }
+
+  function renderTopBarPopover() {
+    if (!state.topBarRefs || !state.payload) { return; }
+    var p = state.payload;
+    var r = state.topBarRefs;
+    var lang = p.language || 'both';
+    var view = normalizeTopBarView(state.topBarActiveView || 'quota');
+    var cPct = clampNum(p.contextPct, 0, 100);
+    var cumStr = formatCompact(p.cumulativeRecordedTokens);
+    var costStr = formatUsd(p.estCostUsd, p.estCostFormatted);
+
+    // Localized view title
+    if (view === 'context') {
+      r.qpTitle.textContent = bi(lang, 'Context Usage', '上下文用量');
+    } else if (view === 'speed') {
+      r.qpTitle.textContent = bi(lang, 'Speed & Throughput', '生成速度与吞吐');
+    } else if (view === 'total') {
+      r.qpTitle.textContent = bi(lang, 'Total Usage & Cost', '本机累计用量与成本');
+    } else {
+      r.qpTitle.textContent = bi(lang, 'Model Quota Board', '模型配额面板');
+    }
+
+    // Localized compact segmented switcher labels
+    r.qpTabs.quota.textContent = lang === 'both' ? 'Quota 配额' : bi(lang, 'Quota', '配额');
+    r.qpTabs.context.textContent = lang === 'both' ? 'Ctx 上下文' : bi(lang, 'Context', '上下文');
+    r.qpTabs.speed.textContent = lang === 'both' ? 'Speed 速度' : bi(lang, 'Speed', '速度');
+    r.qpTabs.total.textContent = lang === 'both' ? 'Total 累计' : bi(lang, 'Total', '累计');
+    syncTopBarPillStates();
+
+    r.qpRefreshBtn.textContent = bi(lang, 'Refresh', '刷新');
+    r.qpOpenBtn.textContent = bi(lang, 'Open Panel', '打开面板');
+    var hasBridge = hasLoopbackBridge(p);
+    var canOpenDirectly = Boolean(document.querySelector('[data-testid="toggle-aux-sidebar"]'));
+    r.qpRefreshBtn.style.display = hasBridge ? '' : 'none';
+    r.qpOpenBtn.style.display = (hasBridge || canOpenDirectly) ? '' : 'none';
+
+    updateQuotaMetaClock();
+
+    clearChildren(r.qpBody);
+    if (view === 'context') {
+      renderTopBarContextView(p, lang, r.qpBody);
+      r.qpFooterTotal.textContent = bi(lang, 'Session Cost', '本会话费用') + ': ' + costStr + (p.localCostFormatted ? (' (≈ ' + p.localCostFormatted + ')') : '');
+    } else if (view === 'speed') {
+      renderTopBarSpeedView(p, lang, r.qpBody);
+      r.qpFooterTotal.textContent = bi(lang, 'Session Output', '本会话输出') + ': ' + formatCompact(p.outputTokens) + ' tok';
+    } else if (view === 'total') {
+      renderTopBarTotalView(p, lang, r.qpBody);
+      r.qpFooterTotal.textContent = bi(lang, 'Active Model', '当前模型') + ': ' + (p.modelName || '—');
+    } else {
+      renderTopBarQuotaView(p, lang, r.qpBody, cPct);
+      r.qpFooterTotal.textContent = bi(lang, 'Recorded Total', '本机已记录总量') + ': ' + cumStr;
+    }
   }
 
   function renderTopBar() {
@@ -1994,6 +2864,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       r.qPctText.textContent = '—';
     }
     r.qWinTag.textContent = p.tightestQuotaWindowTag || '5h';
+    r.quotaPill.setAttribute('aria-label', bi(lang, 'Model Quota Board', '模型配额面板'));
 
     // Context ring
     var cPct = clampNum(p.contextPct, 0, 100);
@@ -2002,7 +2873,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     r.cRing.arc.classList.toggle('is-accent', cSev === 'normal');
     r.cRing.arc.classList.toggle('is-warn', cSev === 'warn');
     r.cRing.arc.classList.toggle('is-danger', cSev === 'danger');
-    r.cPctText.textContent = Math.round(cPct) + '%';
+    var ctxLabel = Math.round(cPct) + '%';
+    r.cPctText.textContent = ctxLabel;
+    r.ctxPill.setAttribute('aria-label', bi(lang, 'Context Usage', '上下文用量'));
 
     // Speed / short sample pill
     var speedLabel;
@@ -2020,116 +2893,46 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       r.speedPill.classList.remove('is-warn');
     }
     r.speedPill.textContent = speedLabel;
+    r.speedPill.setAttribute('aria-label', bi(lang, 'Speed & Throughput', '生成速度与吞吐'));
 
     // Cumulative recorded tokens pill
     var cumStr = formatCompact(p.cumulativeRecordedTokens);
     r.totalPill.textContent = cumStr;
+    r.totalPill.setAttribute('aria-label', bi(lang, 'Total Usage & Cost', '本机累计用量与成本'));
 
-    // Overflow dropdown content
+    // Overflow dropdown content (each item opens its dedicated popover view!)
     clearChildren(r.overflowMenu);
-    var ovSpeed = el('div', 'acm-overflow-row');
-    ovSpeed.appendChild(el('span', '', bi(lang, 'Speed', '生成速度')));
-    ovSpeed.appendChild(el('strong', 'acm-num', speedLabel));
-    var ovCum = el('div', 'acm-overflow-row');
-    ovCum.appendChild(el('span', '', bi(lang, 'Recorded Total', '本机已记录')));
-    ovCum.appendChild(el('strong', 'acm-num', cumStr));
-    var ovBoardBtn = el('button', 'acm-btn', bi(lang, 'Open Quota Board', '打开配额面板'));
+    function makeOverflowItem(viewKey, labelText, valueText) {
+      var item = el('button', 'acm-overflow-row');
+      item.type = 'button';
+      item.setAttribute('role', 'menuitem');
+      item.setAttribute('data-overflow-view', viewKey);
+      item.appendChild(el('span', '', labelText));
+      item.appendChild(el('strong', 'acm-num', valueText));
+      item.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        openTopBarView(viewKey, r.overflowBtn);
+      });
+      return item;
+    }
+    r.overflowMenu.appendChild(makeOverflowItem('context', bi(lang, 'Context', '上下文用量'), ctxLabel));
+    r.overflowMenu.appendChild(makeOverflowItem('speed', bi(lang, 'Speed', '生成速度'), speedLabel));
+    r.overflowMenu.appendChild(makeOverflowItem('total', bi(lang, 'Recorded Total', '本机已记录'), cumStr));
+    var ovBoardBtn = el('button', 'acm-btn', bi(lang, 'Model Quota Board', '模型配额面板'));
     ovBoardBtn.type = 'button';
+    ovBoardBtn.setAttribute('role', 'menuitem');
+    ovBoardBtn.setAttribute('data-overflow-view', 'quota');
     ovBoardBtn.addEventListener('click', function(ev) {
       ev.stopPropagation();
-      state.overflowOpen = false;
-      r.overflowMenu.classList.remove('is-open');
-      state.quotaOpen = true;
-      r.quotaPill.classList.add('is-active');
-      positionPopoverNear(r.quotaPill, r.quotaPopover, false);
+      openTopBarView('quota', r.overflowBtn);
     });
-    r.overflowMenu.appendChild(ovSpeed);
-    r.overflowMenu.appendChild(ovCum);
     r.overflowMenu.appendChild(ovBoardBtn);
-
-    // Model Quota Board Popover
-    r.qpTitle.textContent = bi(lang, 'Model Quota Board', '模型配额面板');
-    r.qpRefreshBtn.textContent = bi(lang, 'Refresh', '刷新');
-    r.qpOpenBtn.textContent = bi(lang, 'Open Panel', '打开面板');
-    var hasBridge = hasLoopbackBridge(p);
-    var canOpenDirectly = Boolean(document.querySelector('[data-testid="toggle-aux-sidebar"]'));
-    r.qpRefreshBtn.style.display = hasBridge ? '' : 'none';
-    r.qpOpenBtn.style.display = (hasBridge || canOpenDirectly) ? '' : 'none';
 
     state.countdownSec = typeof p.nextRefreshSec === 'number' && Number.isFinite(p.nextRefreshSec)
       ? Math.max(0, Math.round(p.nextRefreshSec))
       : null;
-    updateQuotaMetaClock();
 
-    // Current session model card
-    r.qpSessionTitle.textContent = bi(lang, 'Current Session Model', '当前会话模型');
-    clearChildren(r.qpSessionCard);
-    var sessTop = el('div', 'acm-qp-session-model');
-    sessTop.appendChild(el('span', '', p.modelName || bi(lang, 'No active model', '暂无活跃模型')));
-    sessTop.appendChild(el('span', 'acm-pill-badge is-accent acm-num', Math.round(cPct) + '% ' + bi(lang, 'Ctx', '上下文')));
-    r.qpSessionCard.appendChild(sessTop);
-
-    var sess5hPct = p.sessionQuota5hPct !== undefined ? p.sessionQuota5hPct : p.tightestQuotaPct;
-    r.qpSessionCard.appendChild(buildQuotaBarNode(
-      bi(lang, '5h Window', '5 小时窗口'),
-      sess5hPct,
-      p.sessionQuota5hReset || ''
-    ));
-    if (p.sessionQuotaWeeklyPct !== undefined && p.sessionQuotaWeeklyPct !== null) {
-      r.qpSessionCard.appendChild(buildQuotaBarNode(
-        bi(lang, 'Weekly Limit', '每周限额'),
-        p.sessionQuotaWeeklyPct,
-        p.sessionQuotaWeeklyReset || ''
-      ));
-    }
-
-    // Shared quota pools
-    r.qpPoolsTitle.textContent = bi(lang, 'Shared Quota Pools', '共享配额池');
-    clearChildren(r.qpPoolList);
-    var pools = Array.isArray(p.quotaPools) ? p.quotaPools : [];
-    if (pools.length === 0) {
-      r.qpPoolList.appendChild(el('div', 'acm-k', bi(lang, 'Waiting for quota pool telemetry...', '正在等待配额池数据...')));
-    } else {
-      for (var i = 0; i < pools.length; i++) {
-        var pool = pools[i];
-        var card = el('div', pool.isCurrentSessionModel ? 'acm-pool-card is-current' : 'acm-pool-card');
-        var top = el('div', 'acm-pool-top');
-        top.appendChild(el('div', 'acm-pool-name', pool.label || pool.poolKey || 'Pool'));
-
-        var right = el('div', 'acm-pool-right');
-        var rem = typeof pool.remainingPct === 'number' && Number.isFinite(pool.remainingPct)
-          ? clampNum(pool.remainingPct, 0, 100)
-          : null;
-        var health = pool.health || (rem === null ? 'unknown' : (rem >= 50 ? 'good' : (rem >= 20 ? 'warn' : 'danger')));
-        var healthLabel = health === 'good'
-          ? bi(lang, 'Healthy', '充裕')
-          : (health === 'warn'
-            ? bi(lang, 'Caution', '偏低')
-            : (health === 'danger' ? bi(lang, 'Critical', '紧张') : bi(lang, 'Unknown', '未知')));
-        var badge = el('span', 'acm-pill-badge' + (health !== 'unknown' ? (' is-' + health) : ''), healthLabel);
-        right.appendChild(badge);
-        top.appendChild(right);
-        card.appendChild(top);
-
-        var resetLabel = (pool.windowTag ? (pool.windowTag + ' · ') : '') + (pool.resetCountdown || '');
-        card.appendChild(buildQuotaBarNode(
-          rem !== null ? (Math.round(rem) + '% ' + bi(lang, 'remaining', '剩余')) : bi(lang, 'Quota', '配额'),
-          rem,
-          resetLabel
-        ));
-
-        if (Array.isArray(pool.modelChips) && pool.modelChips.length > 0) {
-          var chipRow = el('div', 'acm-chip-row');
-          for (var c = 0; c < pool.modelChips.length; c++) {
-            chipRow.appendChild(el('span', 'acm-model-chip', pool.modelChips[c]));
-          }
-          card.appendChild(chipRow);
-        }
-        r.qpPoolList.appendChild(card);
-      }
-    }
-
-    r.qpFooterTotal.textContent = bi(lang, 'Recorded Total', '本机已记录总量') + ': ' + cumStr;
+    renderTopBarPopover();
     applyTopBarResponsiveLayout();
   }
 
@@ -2145,16 +2948,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
         state.composerRefs.pinBadge.style.display = 'none';
       }
     }
-    if ((state.quotaOpen || state.overflowOpen) && state.topBarHost && path.indexOf(state.topBarHost) < 0) {
-      state.quotaOpen = false;
-      state.overflowOpen = false;
-      if (state.topBarRefs) {
-        state.topBarRefs.quotaPopover.classList.remove('is-open');
-        state.topBarRefs.overflowMenu.classList.remove('is-open');
-        state.topBarRefs.quotaPill.classList.remove('is-active');
-        state.topBarRefs.quotaPill.setAttribute('aria-expanded', 'false');
-        state.topBarRefs.overflowBtn.setAttribute('aria-expanded', 'false');
-      }
+    if ((state.topBarActiveView || state.overflowOpen) && state.topBarHost && path.indexOf(state.topBarHost) < 0) {
+      closeTopBarPopover();
+      closeOverflowMenu();
     }
   }
 
@@ -2168,14 +2964,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       state.composerRefs.trigger.setAttribute('aria-expanded', 'false');
       state.composerRefs.pinBadge.style.display = 'none';
     }
-    if ((state.quotaOpen || state.overflowOpen) && state.topBarRefs) {
-      state.quotaOpen = false;
-      state.overflowOpen = false;
-      state.topBarRefs.quotaPopover.classList.remove('is-open');
-      state.topBarRefs.overflowMenu.classList.remove('is-open');
-      state.topBarRefs.quotaPill.classList.remove('is-active');
-      state.topBarRefs.quotaPill.setAttribute('aria-expanded', 'false');
-      state.topBarRefs.overflowBtn.setAttribute('aria-expanded', 'false');
+    if (state.topBarActiveView || state.overflowOpen) {
+      closeTopBarPopover();
+      closeOverflowMenu();
     }
   }
 
@@ -2184,8 +2975,8 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     if (state.composerOpen && state.composerRefs) {
       positionPopoverNear(state.composerRefs.trigger, state.composerRefs.popover, true);
     }
-    if (state.quotaOpen && state.topBarRefs) {
-      positionPopoverNear(state.topBarRefs.quotaPill, state.topBarRefs.quotaPopover, false);
+    if (state.topBarActiveView && state.topBarRefs) {
+      positionPopoverNear(resolveTopBarAnchor(state.topBarActiveView, null), state.topBarRefs.quotaPopover, false);
     }
   }
 
@@ -2210,7 +3001,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     }
     if (!state.countdownTimer) {
       state.countdownTimer = setInterval(function() {
-        if (state.quotaOpen && typeof state.countdownSec === 'number' && state.countdownSec > 0) {
+        if (state.topBarActiveView && typeof state.countdownSec === 'number' && state.countdownSec > 0) {
           state.countdownSec -= 1;
           updateQuotaMetaClock();
         }
@@ -2245,7 +3036,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     }
     if (slot === 'topbar' || slot === 'all') {
       state.topBarEnabled = false;
-      state.quotaOpen = false;
+      state.topBarActiveView = null;
       state.overflowOpen = false;
       if (state.topBarHost && state.topBarHost.parentNode) {
         state.topBarHost.parentNode.removeChild(state.topBarHost);
@@ -2315,7 +3106,8 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
         composerEnabled: state.composerEnabled,
         topBarEnabled: state.topBarEnabled,
         composerMounted: Boolean(state.composerHost && state.composerHost.isConnected),
-        topBarMounted: Boolean(state.topBarHost && state.topBarHost.isConnected)
+        topBarMounted: Boolean(state.topBarHost && state.topBarHost.isConnected),
+        topBarActiveView: state.topBarActiveView
       };
     }
   };
