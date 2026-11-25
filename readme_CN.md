@@ -33,7 +33,7 @@
 - **右上角状态条 4 视图弹窗、本地 `HH:MM:SS` 时钟与上下文感知「打开面板」（`CDP_OVERLAY_SCRIPT_VERSION = '1.17.8-r1'` — `src/app/cdp-overlay-assets.ts`、`src/app/sidecar-types.ts`、`src/app/sidecar-runtime.ts`、`src/app/sidecar-server.ts`、`src/app/cdp-injector.ts`、`src/webview-script.ts`）：**
   - **4 个专属视图（配额 / 上下文 / 速度 / 累计）：** 点击右上角状态条的任意胶囊指标（或窄屏 `···` 折叠菜单项）即可直达对应弹窗视图，内置 4 段切换器、跨指标点击平滑切视图（不会误关闭），并以本地 `HH:MM:SS` 时钟替代原始 UTC 时间戳。
   - **8 项实时速度与累计遥测字段（`buildCdpOverlayPayload()`）：** 直接由运行时实时计算 `todayTokens`、`todayCostFormatted`、`cumulativeCostFormatted`、`recordedDaysCount`、`sessionCount`、过滤短样本后的 `peakOutputSpeedTps`、`recentCallCount` 与 `subscriptionRoiSummary`。
-  - **上下文感知「打开面板」`targetTab` 切页：** 在不同视图点击**打开面板**时，经 256-bit 本地回环鉴权桥与单调 `meta.overlayTargetTab` 自动切换至对应监控标签页（`quota → 模型`、`context → 总览`、`speed → GM 数据`、`total → 日历`）。
+  - **上下文感知「打开面板」`targetTab` 切页：** 在不同视图点击**打开面板**时，经 256-bit 本地回环鉴权桥与单调 `meta.overlayTargetTab` 自动切换至对应监控标签页（`quota → 模型`、`context → 总览`、`speed → GM 数据`、`total → 成本`）。
 - **持久化 CDP 启动器交互升级、一键定位与跨平台加固（`src/app/cdp-launcher.ts`、`src/app/sidecar-runtime.ts`、`src/webview-panel.ts`、`src/webview-settings-tab.ts`、`src/webview-script.ts`、`src/webview-editorial-styles.ts`、`scripts/install-app-plugin.mjs`）：**
   - **macOS 前台弹窗与自动化权限回退：** 显式调用 AppleScript `activate` 确保确认对话窗浮于前台，并在 macOS 拒绝 Apple Events（TCC）权限时展示清晰的 `Cmd+Q` 手动退出指引。
   - **双端一键定位启动器（`#cdpRevealLauncherBtn`）：** 在 App Sidecar 与 IDE 双端打通「在访达 / 资源管理器 / 文件夹中显示」，优化 Step 1 / Step 2 文案，加固 Linux `DEFAULT_BIN` 与 Freedesktop `.desktop` `Exec=` 转义，并修复 `AUX_PANE` 窄侧栏下 `Google AI Ultra 20x ($199.99/mo)` 下拉选项截断。
