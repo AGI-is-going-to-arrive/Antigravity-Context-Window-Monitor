@@ -2,9 +2,9 @@
 
 在 **Antigravity App（桌面版 2.0+ 原生 Sidecar 插件）** 与 **Antigravity IDE（VSIX 扩展）** 中实时监控会话上下文构成与双水位线（`自动压缩` + `200k` 档位）、带基础费率映射与全链路角色归因的 Orchestrator 编排/执行路由、带续航预测的双窗口模型配额（`5h` + `周`）、模型生成速度（`tok/s`）、首字延迟与逐轮提示词缓存诊断、52 周多源活动热力图（`App` / `IDE` / `CLI`）、多币种 API 等价费用与可选套餐回本估算、重置时间和 AI 积分。
 
-**1.17.8** 在 v1.17.7 基础上进一步打磨桌面悬浮层与持久化启动器体验：(1) **右上角状态条 4 视图弹窗与上下文感知切页**（点击配额、上下文、速度或累计胶囊以及窄屏 `···` 折叠项即可直达对应视图，内置 4 段切换器、本地 `HH:MM:SS` 时钟、8 项实时速度/今日/累计/回本字段，以及点击「打开面板」自动切至对应监控标签页）；(2) **持久化 CDP 启动器交互升级与跨平台加固**（macOS 前台 `activate` 弹窗与自动化 TCC 权限回退提示、App 与 IDE 双端一键**在访达/资源管理器/文件夹中显示**、清晰的 Step 1 / Step 2 文案、Linux `DEFAULT_BIN` 与 Freedesktop `Exec=` 转义，以及窄侧栏不截断的订阅套餐 `<select>`）；(3) **100% 隔离的 CDP 单元测试**（即便本机正在运行 `Antigravity (CDP).app`，使用真实 `HOME` 执行 `npm test` 依然全绿）。
+**1.17.9** 在 v1.17.8 基础上彻底修复 Antigravity 2.35+ 桌面端 CDP 悬浮层定位、Top Layer 层级遮挡与输入框锚定问题：(1) **右上角状态条 4 级锚定与实时可用空间预算**（收起侧边栏时不再遮挡 macOS 交通灯、侧边栏切换、前进/后退与搜索图标，自动重锚至右侧 Chrome 浮层，精准预算 `AUX_PANE` 拖拽留白与 Windows WCO 避让）；(2) **Top Layer 弹窗（`popover="manual"`）与侧边栏动态避让夹紧**（右上角 4 视图弹窗、`···` 折叠菜单与输入框用量卡跳出 `agy-sheet` 的 `z:0; overflow:hidden` 层叠上下文，配合 `ResizeObserver` / `MutationObserver` / `transitionend` 实时跟随侧边栏开关与拖拽，不再被左侧边栏裁切或压在下方）；(3) **输入框上下文环精准锚定 `Turbo` 左侧与 HTTPS Hub 防误排**（将顶部 `This Computer` 元信息栏 `[data-testid="input-box-bottom-toolbar"]` 移出候选并拉黑，兼容全部权限预设/中文/`<400px` 纯图标/取消态/分屏聚焦切换、避开 `voice-live-pill` 包裹陷阱，并修复工作区/会话标题含 `"antigravity context monitor"` 或 `"swarm"` 时误排 HTTPS Hub 窗口）。
 
-[English](README.md) · [AI 智能体一键安装（`AGENTS.md`）](AGENTS.md) · [1.17.8 发布说明与验证](docs/releases/1.17.8.md#中文) · [技术实现](docs/technical_implementation.md) · [项目结构](docs/project_structure.md) · [变更日志](CHANGELOG.md)
+[English](README.md) · [AI 智能体一键安装（`AGENTS.md`）](AGENTS.md) · [1.17.9 发布说明与验证](docs/releases/1.17.9.md#中文) · [技术实现](docs/technical_implementation.md) · [项目结构](docs/project_structure.md) · [变更日志](CHANGELOG.md)
 
 ## 给 AI 智能体的一句话安装 / 升级（`AGENTS.md`）
 
@@ -28,9 +28,18 @@
   ```
 - **在本地仓库中执行：** `node scripts/install-app-plugin.mjs --upgrade`（macOS/Linux 可用 `./scripts/install-app-plugin.sh --upgrade`，Windows 可用 `.\scripts\install-app-plugin.ps1 --upgrade`，均自动发现内置 `agy-node` 或 Electron `ELECTRON_RUN_AS_NODE=1`），执行 `node scripts/install-app-plugin.mjs --status --check-remote` 即可复核已安装版本、启用状态与实时 Sidecar 状态。完整安全边界见 [AGENTS.md](AGENTS.md)。
 
-## 1.17.8 核心更新
+## 1.17.9 核心更新
 
-- **右上角状态条 4 视图弹窗、本地 `HH:MM:SS` 时钟与上下文感知「打开面板」（`CDP_OVERLAY_SCRIPT_VERSION = '1.17.8-r1'` — `src/app/cdp-overlay-assets.ts`、`src/app/sidecar-types.ts`、`src/app/sidecar-runtime.ts`、`src/app/sidecar-server.ts`、`src/app/cdp-injector.ts`、`src/webview-script.ts`）：**
+- **右上角状态条 4 级锚定、Top Layer 弹窗与侧边栏安全定位（`CDP_OVERLAY_SCRIPT_VERSION = '1.17.9'` — `src/app/cdp-overlay-assets.ts`）：**
+  - **收起/展开侧边栏零遮挡：** 移除误匹配 `@container/titlebar`（`x=0`）与 `.agy-hover-actions` 的旧选择器，重构为严格 4 级锚定（`toggle-aux-sidebar` / `toggle-maximize-pane` 左侧 → `window-controls-reserve` → 独立可见非悬停 `pane-titlebar-toolbar` → 右上角 `fixed` 兜底，含 WCO 留白与左侧控件安全 `maxWidth`），支持跨页面动态重锚、`:host { flex-shrink: 0 }` 与 `AUX_PANE` 真实空闲宽度预算。
+  - **Top Layer `popover="manual"` + 侧边栏动态夹紧：** 将右上角 4 视图弹窗、`···` 折叠菜单与输入框用量卡全部提升至 Chromium Top Layer（`popover="manual"` + `inset: auto; margin: 0;`），彻底越过 `agy-sheet`（`z:0; overflow:hidden`）、左侧边栏（`z:10`）、分隔条（`z:30`）与 `AUX_PANE` iframe；新增 `getOpenSidebarRightPx()` 避让夹紧、4 标签页统一锚定 `r.cluster` 零跳动，以及 `ResizeObserver` / 布局属性 `MutationObserver` / `transitionend` 实时重定位。
+- **输入框上下文环精准锚定 `Turbo` 左侧与 HTTPS Hub 目标修复（`src/app/cdp-overlay-assets.ts`、`src/app/cdp-injector.ts`）：**
+  - **严格位于 `Turbo` 左侧（绝不落入 `This Computer` 栏）：** 拉黑顶部元信息栏 `[data-testid="input-box-bottom-toolbar"]`（`This Computer` / 项目 / 分支），采用全局严格分层、聚焦分屏（`data-pane-unfocused`）优先与 64 层祖先可见性检查，兼容 `Request Review` / `Default` / `Auto` / `Turbo` / 中文 / `<400px` 纯图标 / 取消态，并自动跳出 `span[data-testid="voice-live-pill"]`。
+  - **不再自排除 HTTPS Hub：** 更新 `isExcludedSidecarOrDevToolsTitle()`，避免工作区或会话标题包含 `"antigravity context monitor"` 或 `"swarm"` 时误排除真正的 HTTPS `... - Antigravity` Hub 窗口。
+
+### 基于 1.17.8 核心升级
+
+- **右上角状态条 4 视图弹窗、本地 `HH:MM:SS` 时钟与上下文感知「打开面板」（`src/app/cdp-overlay-assets.ts`、`src/app/sidecar-types.ts`、`src/app/sidecar-runtime.ts`、`src/app/sidecar-server.ts`、`src/app/cdp-injector.ts`、`src/webview-script.ts`）：**
   - **4 个专属视图（配额 / 上下文 / 速度 / 累计）：** 点击右上角状态条的任意胶囊指标（或窄屏 `···` 折叠菜单项）即可直达对应弹窗视图，内置 4 段切换器、跨指标点击平滑切视图（不会误关闭），并以本地 `HH:MM:SS` 时钟替代原始 UTC 时间戳。
   - **8 项实时速度与累计遥测字段（`buildCdpOverlayPayload()`）：** 直接由运行时实时计算 `todayTokens`、`todayCostFormatted`、`cumulativeCostFormatted`、`recordedDaysCount`、`sessionCount`、过滤短样本后的 `peakOutputSpeedTps`、`recentCallCount` 与 `subscriptionRoiSummary`。
   - **上下文感知「打开面板」`targetTab` 切页：** 在不同视图点击**打开面板**时，经 256-bit 本地回环鉴权桥与单调 `meta.overlayTargetTab` 自动切换至对应监控标签页（`quota → 模型`、`context → 总览`、`speed → GM 数据`、`total → 成本`）。
@@ -49,7 +58,7 @@
     - **macOS（`~/Applications/Antigravity (CDP).app`）：** 复用原生图标与 `LSUIElement=true`；精确识别运行中的 Antigravity App 主进程（忽略 IDE/Tools），若未带 CDP 启动则前台弹出系统确认框（含 TCC 权限回退提示）后优雅退出，并轮询最多 15 秒直至 `Cmd+Q` 后约 5 秒的 `language_server` 后台清理彻底结束再以 `--remote-debugging-port=0` 启动。
     - **Windows（桌面 + 开始菜单 `.lnk` + `%LOCALAPPDATA%\AntigravityContextMonitor\launch-antigravity-cdp.cmd`）** 与 **Linux（`~/.local/share/applications/antigravity-cdp.desktop` + `~/.local/bin/antigravity-cdp`）**。
   - **智能宿主参数发现与并发加固：** 修复 `selectAntigravityHubTarget()` 误挂自身 Sidecar（自动排除 `ANTIGRAVITY_SIDECAR_WEB_PORT`、`ANTIGRAVITY_SIDECAR_PORT`、独立监听端口、`plugin://` 及监控/蜂群标题，优先 `https:` 本地回环 Hub 与 `Jetski Web`）；新增只读父进程命令行检测（精准诊断 `host_missing_flag`、自定义 `--user-data-dir` 与固定 `--remote-debugging-port=<N>` 直连回退）；支持 IPv6 `[::1]` 回退、互斥锁与桥创建失败断开防泄漏；`install-app-plugin.mjs --status` 新增回环 TCP 探测识别过期 `DevToolsActivePort`（`cdp.stale`）及 `cdpLauncher` 状态。
-  - **悬浮层锚定、WCO、主题、「打开面板」与双端实时诊断（`CDP_OVERLAY_SCRIPT_VERSION = '1.17.8-r1'`）：** 右上角状态条锚定在 `[data-testid="toggle-maximize-pane"]` 之前且不重复叠加内联 WCO 留白；输入框悬浮环自动定位可见工具栏并在切换隐藏标签后重锚；「打开面板」直接展开折叠侧栏并切换至对应视图标签页；完善深浅主题检测；打通 `#cdpStatusPill`、双语 `#cdpDiagnosticHint`（含 `host_missing_flag`）、`#cdpLauncherStatus`、`#cdpSetupLauncherBtn`、`#cdpRevealLauncherBtn`、`#cdpRecheckBtn`、一键复制按钮（`.cdp-copy-btn`）及 IDE 端打开开关实时探测。
+  - **悬浮层锚定、WCO、主题、「打开面板」与双端实时诊断（`CDP_OVERLAY_SCRIPT_VERSION = '1.17.9'`）：** 右上角状态条按 4 级右浮层优先锚定在 `[data-testid="toggle-maximize-pane"]` 之前且不重复叠加内联 WCO 留白，弹窗经 Chromium Top Layer（`popover="manual"`）与侧边栏感知夹紧彻底消除裁切；输入框悬浮环严格锚定 `permissions-selector-trigger`（`Turbo` 左侧，绝不落入顶部 `This Computer` 元信息栏）；「打开面板」直接展开折叠侧栏并切换至对应视图标签页；完善深浅主题检测；打通 `#cdpStatusPill`、双语 `#cdpDiagnosticHint`（含 `host_missing_flag`）、`#cdpLauncherStatus`、`#cdpSetupLauncherBtn`、`#cdpRevealLauncherBtn`、`#cdpRecheckBtn`、一键复制按钮（`.cdp-copy-btn`）及 IDE 端打开开关实时探测。
 - **订阅套餐回本（Plan ROI）预设升级（`src/cli-usage-scanner.ts`、`package.json`、`src/webview-settings-tab.ts`、`src/webview-script.ts`）：**
   - 日历订阅回本预设更新为 **Google AI Pro（`$19.99/月`）**、**Google AI Ultra 5x（`$99.99/月`）** 与 **Google AI Ultra 20x（`$199.99/月`）**（及自定义月费），通过 `normalizeSubscriptionPlanId()` 无损兼容旧版 `'google-ai-ultra'` 配置（完整保留用户已保存的如 `$249.99` 历史月费）并动态同步 `#subscriptionFeeInput` 占位提示。
 
@@ -69,7 +78,7 @@
 
 1. **从 GitHub Releases 一键安装 / 升级（推荐）：**
    - 直接运行上方[给 AI 智能体的一句话安装 / 升级（`AGENTS.md`）](#给-ai-智能体的一句话安装--升级agentsmd)中的任意零克隆命令——自动校验 `SHA256SUMS.txt`、安全解压并无损注册到 `config.json`。
-   - 或前往 [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases) 手动下载 `antigravity-context-monitor-app-1.17.8.zip`（macOS / Windows / Linux）、`antigravity-context-monitor-app-1.17.8.tar.gz`（macOS / Linux）与 `SHA256SUMS.txt`，解压得到 `antigravity-context-monitor/` 后执行：
+   - 或前往 [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases) 手动下载 `antigravity-context-monitor-app-1.17.9.zip`（macOS / Windows / Linux）、`antigravity-context-monitor-app-1.17.9.tar.gz`（macOS / Linux）与 `SHA256SUMS.txt`，解压得到 `antigravity-context-monitor/` 后执行：
      ```bash
      agy plugin install ./antigravity-context-monitor
      ```
@@ -88,16 +97,16 @@
 
 ### 方式二 — Antigravity IDE（VSIX 扩展）
 
-1. 从 [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases) 下载 `antigravity-context-monitor-1.17.8.vsix`（并对照 `SHA256SUMS.txt` 校验），或运行 `npm run compile && npm run package` 在本地打包。
+1. 从 [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases) 下载 `antigravity-context-monitor-1.17.9.vsix`（并对照 `SHA256SUMS.txt` 校验），或运行 `npm run compile && npm run package` 在本地打包。
 2. 在 Antigravity IDE 命令面板（macOS：`Cmd+Shift+P`，Windows / Linux：`Ctrl+Shift+P`）执行 **Extensions: Install from VSIX...** 选择该文件，或命令行执行：
    ```bash
-   antigravity-ide --install-extension antigravity-context-monitor-1.17.8.vsix --force
+   antigravity-ide --install-extension antigravity-context-monitor-1.17.9.vsix --force
    ```
-3. 重载 IDE 窗口，在扩展详情或监控器的**关于**页确认版本为 **1.17.8**。
+3. 重载 IDE 窗口，在扩展详情或监控器的**关于**页确认版本为 **1.17.9**。
 
 IDE 扩展也可以通过 [Open VSX](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装并自动获取更新。
 
-双端插件均支持 **macOS、Windows、Linux**（IDE 另支持 **WSL**）。1.17.8 原生实机验收在 macOS 完成，Windows 与 Linux 平台分支由自动化单元与模拟回归测试覆盖，详见发布说明。[验证](docs/releases/1.17.8.md#验证)
+双端插件均支持 **macOS、Windows、Linux**（IDE 另支持 **WSL**）。1.17.9 原生实机验收在 macOS 完成，Windows 与 Linux 平台分支由自动化单元与模拟回归测试覆盖，详见发布说明。[验证](docs/releases/1.17.9.md#验证)
 
 ## 使用监控器
 
@@ -181,7 +190,7 @@ IDE 扩展也可以通过 [Open VSX](https://open-vsx.org/extension/AGI-is-going
 <details>
 <summary>关于 — 版本与更新卡片、AGENTS.md 一句话提示、双端兼容性与功能导航</summary>
 
-查看实时**版本与更新**卡片（`v1.17.8`、上次检查时间、**检查更新**、App 端**立即升级**或 IDE 端 **Open VSX 市场**）、复制 **AGENTS.md** AI 智能体一句话安装/升级提示词、核对双端官方支持标识（**Antigravity IDE** + **Antigravity App（桌面版 2.0+ Sidecar）**），通过功能导航卡片直达各页面，并查阅社区致谢与兼容性记录。
+查看实时**版本与更新**卡片（`v1.17.9`、上次检查时间、**检查更新**、App 端**立即升级**或 IDE 端 **Open VSX 市场**）、复制 **AGENTS.md** AI 智能体一句话安装/升级提示词、核对双端官方支持标识（**Antigravity IDE** + **Antigravity App（桌面版 2.0+ Sidecar）**），通过功能导航卡片直达各页面，并查阅社区致谢与兼容性记录。
 
 ![Obsidian Slate 深色主题下的双语关于页，展示版本与更新卡片、AGENTS.md 提示与功能导航卡片](src/images/monitor-about.png)
 
@@ -275,7 +284,7 @@ IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 22 项；共享偏
 
 由 **AGI-is-going-to-arrive** 维护。感谢 **SecretLUL** 报告 Windows 后端发现问题（[Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)），感谢 **@AxelDZP** 提出次要端口 TLS 优先探测、`GetUserStatus` 结构校验与等价 proto3 纪元零值 `resetTime` 修复（[PR #74](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/74)），并感谢 **@reidentify** 定位并修复 Sidecar 空闲退避自锁、空闲/空调用 GM 缓存重复拉取、ETag 抖动与 `env` LS 冗余复验问题（[Issue #75](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/75) / [PR #76](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/76)）。
 
-衷心感谢以下 Antigravity 开源社区项目在交互设计与工程实践上的启发，为 **v1.17.5–v1.17.8** 的体验与架构升级提供了宝贵参考（本项目的实现完全基于自有 TypeScript 核心与官方 Sidecar / VSIX 接口从零独立编写，未修改 `app.asar`，亦未复制任何外部代码）：
+衷心感谢以下 Antigravity 开源社区项目在交互设计与工程实践上的启发，为 **v1.17.5–v1.17.9** 的体验与架构升级提供了宝贵参考（本项目的实现完全基于自有 TypeScript 核心与官方 Sidecar / VSIX 接口从零独立编写，未修改 `app.asar`，亦未复制任何外部代码）：
 
 - [`dimitr-io/antigravity-desktop-context`](https://github.com/dimitr-io/antigravity-desktop-context) — Antigravity App Sidecar `AUX_PANE` 工作流、20×5 点阵上下文可视化、双上限清晰标注及 CLI 风格 `/context` 纯文本导出。
 - [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) — 桌面端遥测交互探索、轮次与缓存可视化思路，以及 Antigravity v2.33+/v2.34+ 社区稳定性实践经验。

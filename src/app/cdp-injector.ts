@@ -465,10 +465,21 @@ function parseSidecarWebPort(env: NodeJS.ProcessEnv = process.env): number[] {
     return ports;
 }
 
-function isExcludedSidecarOrDevToolsTitle(titleLower: string): boolean {
+function isExcludedSidecarOrDevToolsTitle(titleLower: string, isHttps = false): boolean {
     if (!titleLower) { return false; }
-    return titleLower.includes('devtools')
-        || titleLower.includes('antigravity context monitor')
+    if (titleLower.includes('devtools')) { return true; }
+    // Antigravity Hub pages on https://127.0.0.1:<port>/ embed the active workspace or
+    // conversation name in their title (e.g. "Swarm Fix - antigravity context monitor - Antigravity").
+    // Never self-exclude a real HTTPS Hub window because of its workspace/conversation title.
+    if (isHttps && (
+        titleLower === 'antigravity'
+        || titleLower.endsWith(' - antigravity')
+        || titleLower.includes('jetski web')
+        || titleLower === 'jetski'
+    )) {
+        return false;
+    }
+    return titleLower.includes('antigravity context monitor')
         || titleLower.includes('antigravity monitor')
         || titleLower.includes('antigravity 监控面板')
         || /\bswarm\b/i.test(titleLower);
@@ -513,13 +524,13 @@ export function selectAntigravityHubTarget(
         // Never attach to sidecar API/full views or DevTools endpoints
         if (pathname.startsWith('/api/') || pathname === '/full') { continue; }
 
+        const isHttps = parsedUrl.protocol === 'https:';
         const titleLower = (target.title || '').trim().toLowerCase();
-        if (isExcludedSidecarOrDevToolsTitle(titleLower)) {
+        if (isExcludedSidecarOrDevToolsTitle(titleLower, isHttps)) {
             continue;
         }
 
         let score = 10;
-        const isHttps = parsedUrl.protocol === 'https:';
         const isRootPath = pathname === '/' || pathname === '/index.html' || pathname.startsWith('/hub');
         const hasAgyTitle = titleLower.includes('antigravity');
         const isJetskiTitle = titleLower.includes('jetski web') || titleLower === 'jetski';

@@ -658,6 +658,17 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
                 [sidecarEnvPort],
                 { env: { ANTIGRAVITY_SIDECAR_PORT: '54999' } },
             )).toBeNull();
+
+            // Does NOT self-exclude a real HTTPS Antigravity Hub conversation whose workspace/title contains
+            // "antigravity context monitor" or "swarm"
+            const workspaceHub: CdpTargetInfo = {
+                id: 'workspace-hub',
+                type: 'page',
+                title: 'Swarm Plugin Bug Fix - antigravity context monitor - Antigravity',
+                url: 'https://127.0.0.1:60154/c/abc-123',
+                webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/workspace-hub',
+            };
+            expect(selectAntigravityHubTarget([sidecarZh, swarmTarget, workspaceHub])?.id).toBe('workspace-hub');
         });
 
         it('falls back to IPv6 [::1] in fetchCdpTargets when 127.0.0.1 refuses connections', async () => {

@@ -21,7 +21,7 @@
  *   --remove-cdp-launcher   Remove the zero-patch persistent CDP launcher
  *
  * Options:
- *   --version <v>        Specific release version (e.g. 1.17.8 or v1.17.8)
+ *   --version <v>        Specific release version (e.g. 1.17.9 or v1.17.9)
  *   --source <dir>       Explicit local plugin directory containing plugin.json
  *   --target <dir>       Override install path (default: ~/.gemini/config/plugins/antigravity-context-monitor)
  *   --use-cli            Use `agy plugin install` / `agy plugin uninstall` when available
@@ -149,7 +149,7 @@ export function getIdeExtensionDirs(env = process.env, platform = process.platfo
 export function normalizeVersionArg(raw) {
     const cleaned = String(raw || '').trim().replace(/^v/i, '');
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(cleaned)) {
-        throw new Error(`Invalid --version value "${raw}". Expected semver like 1.17.8 or v1.17.8.`);
+        throw new Error(`Invalid --version value "${raw}". Expected semver like 1.17.9 or v1.17.9.`);
     }
     return cleaned;
 }
@@ -2302,7 +2302,7 @@ Modes:
   --remove-cdp-launcher   Remove the zero-patch persistent CDP launcher
 
 Options:
-  --version <v>           Target GitHub release version (e.g. 1.17.8 or v1.17.8)
+  --version <v>           Target GitHub release version (e.g. 1.17.9 or v1.17.9)
   --source <dir>          Explicit local plugin directory containing plugin.json
   --target <dir>          Override install path (default: ~/.gemini/config/plugins/antigravity-context-monitor)
   --use-cli               Use \`agy plugin install\` / \`agy plugin uninstall\` when available

@@ -552,7 +552,7 @@ export function buildSettingsContent(
     const activityMaxArchives = resolved.activityMaxArchives ?? resolved.maxArchives ?? 20;
 
     const resolvedZoom = clampNumber(options?.zoomLevel, 100, 60, 150);
-    const currentVersion = (options?.version && options.version.trim()) || options?.updateStatus?.currentVersion || '1.17.8';
+    const currentVersion = (options?.version && options.version.trim()) || options?.updateStatus?.currentVersion || '1.17.9';
     const activePlatform = options?.cdpStatus?.launcherStatus?.platform
         || options?.cdpStatus?.platformGuide?.platform
         || (typeof process !== 'undefined' ? process.platform : 'darwin');
