@@ -12,7 +12,7 @@
 
 import type { CdpOverlayPayload, CdpOverlayToggles } from './sidecar-types';
 
-export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.9';
+export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.10';
 export const CDP_COMPOSER_HOST_ID = 'acm-cdp-composer-host';
 export const CDP_TOPBAR_HOST_ID = 'acm-cdp-topbar-host';
 export const CDP_RUNTIME_GLOBAL_KEY = '__ACM_CDP_OVERLAY_V1__';
@@ -1482,28 +1482,47 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     } catch (_e) {}
   }
 
-  function computeWcoInsetPx(isFixedAnchor) {
+  function findVisibleTopRightWcoReserve() {
+    var vw = window.innerWidth || 1280;
     var reserveSel = '[data-testid="window-controls-reserve"], [data-testid="legacy-window-controls-reserve"]';
-    var reserveEl = document.querySelector(reserveSel);
-    if (!isFixedAnchor && reserveEl) {
+    try {
+      var reserveEls = document.querySelectorAll(reserveSel);
+      for (var i = 0; i < reserveEls.length; i++) {
+        var elNode = reserveEls[i];
+        if (!elNode || !isElementVisible(elNode)) { continue; }
+        var resRect = getSafeRect(elNode);
+        if (resRect && resRect.top < 48 && resRect.width > 0 && resRect.width < vw * 0.5 && resRect.right >= vw - 60) {
+          return { el: elNode, rect: resRect };
+        }
+      }
+    } catch (_e) {}
+    return null;
+  }
+
+  function computeWcoInsetPx(isFixedAnchor) {
+    if (!isFixedAnchor) {
       return 0;
     }
-    if (isFixedAnchor && reserveEl && isElementVisible(reserveEl)) {
-      var resRect = getSafeRect(reserveEl);
-      if (resRect && resRect.top < 48 && resRect.width > 0) {
-        return Math.round(resRect.width) + 8;
-      }
+    var vw = window.innerWidth || 1280;
+    var visibleReserve = findVisibleTopRightWcoReserve();
+    if (visibleReserve) {
+      return Math.round(visibleReserve.rect.width) + 8;
     }
     try {
       if (navigator.windowControlsOverlay && navigator.windowControlsOverlay.visible) {
         var rect = navigator.windowControlsOverlay.getTitlebarAreaRect();
-        if (rect && typeof rect.right === 'number') {
-          var rightGap = Math.max(0, Math.round(window.innerWidth - rect.right));
-          if (rightGap > 0) { return rightGap + 8; }
+        if (rect && typeof rect.right === 'number' && Number.isFinite(rect.right) && rect.right > 0) {
+          var rightGap = Math.max(0, Math.round(vw - rect.right));
+          if (rightGap === 0) {
+            return 0;
+          }
+          if (rightGap > 0 && rightGap < vw * 0.5) {
+            return rightGap + 8;
+          }
         }
       }
     } catch (_e) {}
-    if (isFixedAnchor && isWindowsClient()) {
+    if (isWindowsClient()) {
       return 138;
     }
     return 0;
@@ -1858,18 +1877,72 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     return maxRight;
   }
 
+  function getRightPaddingAndBorderPx(node) {
+    if (!node) { return 0; }
+    var pad = 0;
+    var border = 0;
+    var hasCsPad = false;
+    var hasCsBorder = false;
+    try {
+      if (typeof window.getComputedStyle === 'function') {
+        var cs = window.getComputedStyle(node);
+        if (cs) {
+          if (typeof cs.paddingRight === 'string' && cs.paddingRight) {
+            pad = parsePxValue(cs.paddingRight);
+            hasCsPad = true;
+          }
+          if (typeof cs.borderRightWidth === 'string' && cs.borderRightWidth) {
+            border = parsePxValue(cs.borderRightWidth);
+            hasCsBorder = true;
+          }
+        }
+      }
+    } catch (_e) {}
+    if (!hasCsPad && node.style && typeof node.style.paddingRight === 'string') {
+      pad = parsePxValue(node.style.paddingRight);
+    }
+    if (!hasCsBorder && node.style && typeof node.style.borderRightWidth === 'string') {
+      border = parsePxValue(node.style.borderRightWidth);
+    }
+    return Math.max(0, pad) + Math.max(0, border);
+  }
+
+  function getFollowingSiblingsMinLeftPx(host) {
+    if (!host || !host.parentElement) { return Infinity; }
+    var minLeft = Infinity;
+    var sib = host.nextSibling;
+    while (sib) {
+      if (sib.nodeType === 1 && sib !== host && sib.id !== TOPBAR_HOST_ID && isElementVisible(sib)) {
+        var sr = getSafeRect(sib);
+        if (sr && sr.top < 96 && sr.width > 0 && sr.left > 0 && sr.left < minLeft) {
+          minLeft = Math.round(sr.left);
+        }
+      }
+      sib = sib.nextSibling;
+    }
+    return minLeft;
+  }
+
   function getRightChromeLeftPx() {
     var vw = window.innerWidth || 1280;
-    var minLeft = vw - 10 - computeWcoInsetPx(true);
+    var isFixed = state.topBarAnchorMode === 'fixed';
+    if (!isFixed) {
+      var sibMinLeft = getFollowingSiblingsMinLeftPx(state.topBarHost);
+      if (sibMinLeft < Infinity) {
+        return Math.max(0, sibMinLeft);
+      }
+    }
+    var minLeft = isFixed ? (vw - 10 - computeWcoInsetPx(true)) : (vw - 10);
+    var maxTop = isFixed ? 48 : 96;
     try {
       var rightCtrls = document.querySelectorAll(
         '[data-testid="toggle-maximize-pane"], [data-testid="toggle-aux-sidebar"], [data-testid="window-controls-reserve"], [data-testid="legacy-window-controls-reserve"]'
       );
       for (var i = 0; i < rightCtrls.length; i++) {
         var c = rightCtrls[i];
-        if (!isElementVisible(c)) { continue; }
+        if (!c || c === state.topBarHost || c.id === TOPBAR_HOST_ID || !isElementVisible(c)) { continue; }
         var r = getSafeRect(c);
-        if (r && r.top < 48 && r.width > 0 && r.left > 0 && r.left < minLeft) {
+        if (r && r.top < maxTop && r.width > 0 && r.left > 0 && r.left < minLeft) {
           minLeft = Math.round(r.left);
         }
       }
@@ -1904,6 +1977,56 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     if (!node || typeof node.getAttribute !== 'function') { return false; }
     var val = node.getAttribute('data-reveal-on-hover');
     return val !== null && val !== 'false';
+  }
+
+  function hasVisibleNativeChildren(container, excludeHost) {
+    var children = getElementChildren(container);
+    for (var i = 0; i < children.length; i++) {
+      var child = children[i];
+      if (!child || child === excludeHost || child.id === TOPBAR_HOST_ID) { continue; }
+      if (isElementVisible(child)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function doesEmptyToolbarOverlapRightWco(tb, tbRect) {
+    if (!tb || !tbRect || tbRect.width <= 0 || tbRect.height <= 0) {
+      return false;
+    }
+    if (hasVisibleNativeChildren(tb, state.topBarHost)) {
+      return false;
+    }
+    if (findVisibleTopRightWcoReserve()) {
+      return false;
+    }
+    try {
+      var wco = navigator.windowControlsOverlay;
+      if (!wco || !wco.visible || typeof wco.getTitlebarAreaRect !== 'function') {
+        return false;
+      }
+      var wcoRect = wco.getTitlebarAreaRect();
+      if (!wcoRect || typeof wcoRect.right !== 'number' || !Number.isFinite(wcoRect.right) || wcoRect.right <= 0) {
+        return false;
+      }
+      var vw = window.innerWidth || 1280;
+      var rightGap = Math.max(0, Math.round(vw - wcoRect.right));
+      if (rightGap <= 0 || rightGap >= vw * 0.5) {
+        return false;
+      }
+      var wcoTop = (typeof wcoRect.top === 'number' && Number.isFinite(wcoRect.top)) ? wcoRect.top : 0;
+      var wcoBottom = (typeof wcoRect.bottom === 'number' && Number.isFinite(wcoRect.bottom))
+        ? wcoRect.bottom
+        : (wcoTop + ((typeof wcoRect.height === 'number' && Number.isFinite(wcoRect.height) && wcoRect.height > 0) ? wcoRect.height : 32));
+      if (!(tbRect.top < wcoBottom && tbRect.bottom > wcoTop)) {
+        return false;
+      }
+      var tbContentRight = tbRect.right - getRightPaddingAndBorderPx(tb);
+      return tbContentRight > wcoRect.right;
+    } catch (_e) {
+      return false;
+    }
   }
 
   function findTopBarAnchor() {
@@ -1953,6 +2076,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       if (leftChromeRight > 0 && tbRect && tbRect.right > 0 && tbRect.right < leftChromeRight + 100) {
         continue;
       }
+      if (doesEmptyToolbarOverlapRightWco(tb, tbRect)) {
+        continue;
+      }
       return { parent: tb, before: tb.firstChild, mode: 'inline', tier: 'pane-toolbar' };
     }
 
@@ -1989,7 +2115,8 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     reanchorTimer: null,
     layoutSyncHandle: null,
     layoutSyncIsRaf: false,
-    sidebarTransitionTimer: null
+    sidebarTransitionTimer: null,
+    boundWcoTarget: null
   };
 
   function syncThemes() {
@@ -2325,13 +2452,14 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       }
       return;
     }
+    var anchorBefore = anchor.before === state.composerHost ? state.composerHost.nextSibling : anchor.before;
     var alreadyPlaced = state.composerHost.parentNode === anchor.parent
-      && (anchor.before ? state.composerHost.nextSibling === anchor.before : state.composerHost.nextSibling === null);
+      && (anchorBefore ? state.composerHost.nextSibling === anchorBefore : state.composerHost.nextSibling === null);
     if (alreadyPlaced) {
       return;
     }
-    if (anchor.before && anchor.before.parentNode === anchor.parent) {
-      anchor.parent.insertBefore(state.composerHost, anchor.before);
+    if (anchorBefore && anchorBefore.parentNode === anchor.parent) {
+      anchor.parent.insertBefore(state.composerHost, anchorBefore);
     } else {
       anchor.parent.appendChild(state.composerHost);
     }
@@ -2864,12 +2992,26 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       } else if (state.topBarAnchorTier === 'pane-toolbar') {
         var tbHostParent = state.topBarHost && state.topBarHost.parentElement;
         var tbOuter = tbHostParent && tbHostParent.parentElement;
-        var tbRectLive = getSafeRect(tbOuter) || getSafeRect(tbHostParent);
+        var tbOuterRect = getSafeRect(tbOuter);
+        var tbHostRect = getSafeRect(tbHostParent);
+        var tbRectLive = tbOuterRect || tbHostRect;
         var leftEdge = Math.max(leftObstruction, (tbRectLive && tbRectLive.left > 0) ? Math.round(tbRectLive.left) : 0);
-        var rightEdge = (tbRectLive && tbRectLive.right > 0) ? Math.round(tbRectLive.right) : rightChromeLeft;
-        var tbNativeW = measureNativeToolbarButtonsWidth(tbHostParent, state.topBarHost);
+        var tbRightBound = (tbRectLive && tbRectLive.right > 0) ? Math.round(tbRectLive.right) : rightChromeLeft;
+        if (tbHostRect && tbHostRect.right > 0) {
+          var tbContentRight = Math.round(tbHostRect.right - getRightPaddingAndBorderPx(tbHostParent));
+          if (tbContentRight > 0 && tbContentRight < tbRightBound) {
+            tbRightBound = tbContentRight;
+          }
+        }
+        var tbSibMinLeft = getFollowingSiblingsMinLeftPx(state.topBarHost);
         var hasCrumbTb = Boolean(document.querySelector('[aria-label="Breadcrumb"]'));
-        freeSpace = Math.max(0, rightEdge - leftEdge - tbNativeW - (hasCrumbTb ? 140 : 24) - 24);
+        if (tbSibMinLeft < Infinity && tbSibMinLeft <= tbRightBound) {
+          freeSpace = Math.max(0, tbSibMinLeft - leftEdge - (hasCrumbTb ? 140 : 24) - 24);
+        } else {
+          var tbNativeW = measureNativeToolbarButtonsWidth(tbHostParent, state.topBarHost);
+          var effectiveRight = Math.min(tbRightBound, rightChromeLeft);
+          freeSpace = Math.max(0, effectiveRight - leftEdge - tbNativeW - (hasCrumbTb ? 140 : 24) - 24);
+        }
       } else {
         var paneTb = document.querySelector('[data-testid="pane-titlebar-toolbar"]');
         var paneTbVisible = paneTb && isElementVisible(paneTb) && !isRevealOnHoverElement(paneTb);
@@ -2942,10 +3084,11 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     var anchor = findTopBarAnchor();
     if (!anchor || !anchor.parent) { return; }
 
+    var anchorBefore = anchor.before === state.topBarHost ? state.topBarHost.nextSibling : anchor.before;
     var alreadyPlaced = state.topBarHost.parentNode === anchor.parent
       && (anchor.mode === 'fixed'
         ? true
-        : (anchor.before ? state.topBarHost.nextSibling === anchor.before : state.topBarHost.nextSibling === null));
+        : (anchorBefore ? state.topBarHost.nextSibling === anchorBefore : state.topBarHost.nextSibling === null));
 
     state.topBarAnchorMode = anchor.mode;
     state.topBarAnchorTier = anchor.tier || anchor.mode;
@@ -2962,8 +3105,8 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     }
 
     if (!alreadyPlaced) {
-      if (anchor.before && anchor.before.parentNode === anchor.parent) {
-        anchor.parent.insertBefore(state.topBarHost, anchor.before);
+      if (anchorBefore && anchorBefore.parentNode === anchor.parent) {
+        anchor.parent.insertBefore(state.topBarHost, anchorBefore);
       } else {
         anchor.parent.appendChild(state.topBarHost);
       }
@@ -3639,6 +3782,25 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     repositionOpenPopovers();
   }
 
+  function onWcoGeometryChange() {
+    if (!state.topBarEnabled && !state.composerEnabled) { return; }
+    if (state.topBarEnabled) {
+      anchorTopBarHost();
+      applyTopBarResponsiveLayout();
+    }
+    repositionOpenPopovers();
+  }
+
+  function ensureWcoListenerBound() {
+    if (state.boundWcoTarget) { return; }
+    try {
+      if (navigator && navigator.windowControlsOverlay && typeof navigator.windowControlsOverlay.addEventListener === 'function') {
+        navigator.windowControlsOverlay.addEventListener('geometrychange', onWcoGeometryChange);
+        state.boundWcoTarget = navigator.windowControlsOverlay;
+      }
+    } catch (_e) {}
+  }
+
   function onTransitionEnd(ev) {
     if (!state.topBarEnabled && !state.composerEnabled) { return; }
     var prop = ev && ev.propertyName ? String(ev.propertyName) : '';
@@ -3649,6 +3811,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
   }
 
   function ensureObserversRunning() {
+    ensureWcoListenerBound();
     if (!state.domObserver && typeof MutationObserver !== 'undefined' && document.body) {
       state.domObserver = new MutationObserver(function(records) {
         var hasLayoutAttrChange = false;
@@ -3759,6 +3922,13 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       document.removeEventListener('keydown', onGlobalKeyDown, true);
       document.removeEventListener('transitionend', onTransitionEnd, true);
       window.removeEventListener('resize', onWindowResize);
+      try {
+        var wcoTarget = state.boundWcoTarget || (navigator && navigator.windowControlsOverlay);
+        if (wcoTarget && typeof wcoTarget.removeEventListener === 'function') {
+          wcoTarget.removeEventListener('geometrychange', onWcoGeometryChange);
+        }
+      } catch (_e) {}
+      state.boundWcoTarget = null;
       try { delete window[GLOBAL_KEY]; } catch (_e) { window[GLOBAL_KEY] = undefined; }
     }
     return { unmounted: slot };
@@ -3768,6 +3938,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
   document.addEventListener('keydown', onGlobalKeyDown, true);
   document.addEventListener('transitionend', onTransitionEnd, true);
   window.addEventListener('resize', onWindowResize);
+  ensureWcoListenerBound();
 
   window[GLOBAL_KEY] = {
     version: SCRIPT_VERSION,

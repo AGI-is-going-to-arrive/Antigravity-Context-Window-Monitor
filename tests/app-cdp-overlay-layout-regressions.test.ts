@@ -242,6 +242,7 @@ function createAntigravityShellHarness(options: {
     innerWidth?: number;
     innerHeight?: number;
     userAgent?: string;
+    platform?: string;
     sidebarOpen?: boolean;
     sidebarWidth?: number;
     withRightOverlay?: boolean;
@@ -249,6 +250,7 @@ function createAntigravityShellHarness(options: {
     withPaneToolbar?: boolean;
     paneToolbarRevealOnHover?: boolean;
     withWcoReserve?: boolean;
+    windowControlsOverlay?: { visible: boolean; rect: Partial<RectLike> };
 } = {}) {
     const innerWidth = options.innerWidth ?? 1678;
     const innerHeight = options.innerHeight ?? 1085;
@@ -312,6 +314,7 @@ function createAntigravityShellHarness(options: {
     titlebarContainer.appendChild(breadcrumbWrap);
 
     let paneToolbar: LayoutTestElement | null = null;
+    let moreBtn: LayoutTestElement | null = null;
     if (options.withPaneToolbar !== false) {
         paneToolbar = new LayoutTestElement('div');
         paneToolbar.setAttribute('data-testid', 'pane-titlebar-toolbar');
@@ -326,7 +329,7 @@ function createAntigravityShellHarness(options: {
             width: 140,
             height: 40,
         };
-        const moreBtn = new LayoutTestElement('button');
+        moreBtn = new LayoutTestElement('button');
         moreBtn.setAttribute('data-testid', 'titlebar-more-actions');
         moreBtn._rect = { top: 6, left: sidebarWidth + mainPaneWidth - 110, right: sidebarWidth + mainPaneWidth - 82, bottom: 34, width: 28, height: 28 };
         paneToolbar.appendChild(moreBtn);
@@ -436,6 +439,7 @@ function createAntigravityShellHarness(options: {
 
     const docListeners = new Map<string, Array<(ev: unknown) => void>>();
     const winListeners = new Map<string, Array<(ev: unknown) => void>>();
+    const wcoListeners = new Map<string, Array<(ev: unknown) => void>>();
     const resizeObservers: FakeResizeObserverInstance[] = [];
     const mutationObservers: FakeMutationObserverInstance[] = [];
     const rafQueue: Array<{ id: number; fn: () => void }> = [];
@@ -524,18 +528,47 @@ function createAntigravityShellHarness(options: {
             display: el?.style?.display || 'flex',
             visibility: el?.style?.visibility || 'visible',
             opacity: el?.style?.opacity || '1',
+            paddingRight: el?.style?.paddingRight || '0px',
+            borderRightWidth: el?.style?.borderRightWidth || '0px',
         }),
         matchMedia: () => ({ matches: false }),
     };
     win.window = win;
 
+    let wcoState: { visible: boolean; rect: Partial<RectLike> } | null = options.windowControlsOverlay ?? null;
+    const wcoObj = {
+        get visible() { return Boolean(wcoState?.visible); },
+        getTitlebarAreaRect: () => ({ ...(wcoState?.rect ?? { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }) }),
+        addEventListener: (type: string, fn: (ev: unknown) => void) => {
+            const list = wcoListeners.get(type) ?? [];
+            list.push(fn);
+            wcoListeners.set(type, list);
+        },
+        removeEventListener: (type: string, fn: (ev: unknown) => void) => {
+            const list = wcoListeners.get(type);
+            if (!list) { return; }
+            const idx = list.indexOf(fn);
+            if (idx >= 0) { list.splice(idx, 1); }
+        },
+    };
+
+    const inferredPlatform = options.platform
+        ?? (options.userAgent?.includes('Windows')
+            ? 'Win32'
+            : (options.userAgent?.includes('Linux') ? 'Linux x86_64' : 'MacIntel'));
+
+    const navObj: Record<string, unknown> = {
+        userAgent: options.userAgent ?? 'Mozilla/5.0 (Macintosh; Intel Mac OS X)',
+        platform: inferredPlatform,
+    };
+    if (wcoState) {
+        navObj.windowControlsOverlay = wcoObj;
+    }
+
     const sandbox: Record<string, unknown> = {
         window: win,
         document: doc,
-        navigator: {
-            userAgent: options.userAgent ?? 'Mozilla/5.0 (Macintosh; Intel Mac OS X)',
-            platform: options.userAgent?.includes('Windows') ? 'Win32' : 'MacIntel',
-        },
+        navigator: navObj,
         ResizeObserver: FakeResizeObserver,
         MutationObserver: FakeMutationObserver,
         requestAnimationFrame: (fn: () => void) => {
@@ -555,6 +588,21 @@ function createAntigravityShellHarness(options: {
     };
 
     const ctx = vm.createContext(sandbox);
+
+    function setWindowControlsOverlay(next: { visible: boolean; rect: Partial<RectLike> } | null) {
+        wcoState = next;
+        if (next) {
+            navObj.windowControlsOverlay = wcoObj;
+        } else {
+            delete navObj.windowControlsOverlay;
+        }
+    }
+
+    function dispatchWcoGeometryChange() {
+        for (const fn of (wcoListeners.get('geometrychange') ?? [])) {
+            fn({ titlebarAreaRect: wcoObj.getTitlebarAreaRect(), visible: wcoObj.visible });
+        }
+    }
 
     function flushRaf() {
         while (rafQueue.length > 0) {
@@ -618,16 +666,20 @@ function createAntigravityShellHarness(options: {
         mainPane,
         titlebarContainer,
         paneToolbar,
+        moreBtn,
         auxStrip,
         auxDragSpacer,
         leftOverlay,
         sidebarToggle,
         searchBtn,
+        get rightOverlay() { return rightOverlayInner?.parentNode ?? null; },
         get rightOverlayInner() { return rightOverlayInner; },
         get maxBtn() { return maxBtn; },
         get auxBtn() { return auxBtn; },
         get wcoReserve() { return wcoReserve; },
         mountRightOverlay,
+        setWindowControlsOverlay,
+        dispatchWcoGeometryChange,
         setSidebarState,
         triggerResizeObservers,
         triggerLayoutAttributeMutation,
@@ -637,6 +689,7 @@ function createAntigravityShellHarness(options: {
         resizeObservers,
         mutationObservers,
         docListeners,
+        wcoListeners,
     };
 }
 
@@ -1323,5 +1376,590 @@ describe('Antigravity App CDP Overlay Layout, Top Layer Popover & Composer Ancho
 
         expect(composerHost.parentNode).toBe(paneB.rightGroup);
         expect(composerHost.nextSibling).toBe(paneB.permBtn);
+    });
+
+    it('fixes Issue #77: Windows 2.35.2 two-row inline right-overlay without window-controls-reserve has zero wcoSpacer gap and keeps all 4 pills visible (AUX closed & open)', () => {
+        // Exact Issue #77 repro (1024px Windows Antigravity 2.35.2 two-row layout):
+        // Row 1 (0..32px): dark OS titlebar with _ □ × (WCO visible, right=886, rightGap=138), NO window-controls-reserve on Row 2.
+        // Row 2 (38..78px): conversation header with rightOverlay + toggle-aux-sidebar at left=988, top=50 (>= 48!).
+        const dom = createAntigravityShellHarness({
+            innerWidth: 1024,
+            innerHeight: 768,
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            sidebarOpen: true,
+            sidebarWidth: 256,
+            withRightOverlay: true,
+            withWcoReserve: false,
+            withAuxOpen: false,
+            withPaneToolbar: true,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 32, left: 0, right: 886, width: 886, height: 32 },
+            },
+        });
+
+        // Remove maxBtn so only toggle-aux-sidebar sits at the far right of Row 2 (exact screenshot DOM)
+        dom.rightOverlayInner!.removeChild(dom.maxBtn!);
+        dom.rightOverlay!._rect = { top: 38, left: 980, right: 1024, bottom: 78, width: 44, height: 40 };
+        dom.rightOverlayInner!._rect = { top: 44, left: 980, right: 1024, bottom: 78, width: 44, height: 34 };
+        dom.auxBtn!._rect = { top: 50, left: 988, right: 1016, bottom: 78, width: 28, height: 28 };
+
+        // Row 2 native pane toolbar buttons totaling 136px (more + Open IDE + doc icon):
+        // With buggy rightChromeLeft = 1024 - 10 - 146 = 868 -> freeSpace = 868 - 256 - 136 - 140 - 24 = 312 (< 340 -> collapsed!)
+        // With fixed rightChromeLeft = 988 (from following sibling auxBtn) -> freeSpace = 988 - 256 - 136 - 140 - 24 = 432 (>= 340 -> all 4 visible!)
+        dom.paneToolbar!._rect = { top: 38, left: 450, right: 590, bottom: 74, width: 140, height: 36 };
+        dom.moreBtn!._rect = { top: 44, left: 454, right: 482, bottom: 72, width: 28, height: 28 };
+        const openIdeBtn = dom.doc.createElement('button');
+        openIdeBtn._rect = { top: 44, left: 486, right: 562, bottom: 72, width: 76, height: 28 };
+        const docBtn = dom.doc.createElement('button');
+        docBtn._rect = { top: 44, left: 566, right: 590, bottom: 72, width: 24, height: 28 };
+        dom.paneToolbar!.appendChild(openIdeBtn);
+        dom.paneToolbar!.appendChild(docBtn);
+
+        vm.runInContext(buildOverlayBootstrapScript(), dom.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            dom.ctx,
+        );
+
+        const host = dom.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        const sr = host.shadowRoot!;
+        const wcoSpacer = sr.querySelector('.acm-wco-spacer')!;
+        expect(host.getAttribute('data-anchor')).toBe('inline');
+        expect(host.getAttribute('data-anchor-tier')).toBe('right-overlay');
+        expect(host.parentNode).toBe(dom.rightOverlayInner);
+        expect(host.nextSibling).toBe(dom.auxBtn);
+        expect(wcoSpacer.style.display).toBe('none');
+        expect(wcoSpacer.style.width).toBe('0px');
+        expect(sr.querySelector('[data-view="total"]')!.classList.contains('is-hidden')).toBe(false);
+        expect(sr.querySelector('[data-view="speed"]')!.classList.contains('is-hidden')).toBe(false);
+        expect(sr.querySelector('[data-view="context"]')!.classList.contains('is-hidden')).toBe(false);
+        expect(sr.querySelector('[aria-label="More telemetry"]')!.classList.contains('is-hidden')).toBe(true);
+
+        // Same Windows 2.35.2 Row-2 setup with AUX_PANE OPEN:
+        // auxTabsRight = 620 -> fixed freeSpace = 988 - 620 - 16 = 352 (>= 340 -> all 4 pills visible!)
+        // (buggy 868 - 620 - 16 = 232 < 275 would have hidden both total & speed!)
+        const domAux = createAntigravityShellHarness({
+            innerWidth: 1024,
+            innerHeight: 768,
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            sidebarOpen: false,
+            withRightOverlay: true,
+            withWcoReserve: false,
+            withAuxOpen: true,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 32, left: 0, right: 886, width: 886, height: 32 },
+            },
+        });
+        domAux.rightOverlayInner!.removeChild(domAux.maxBtn!);
+        domAux.rightOverlay!._rect = { top: 38, left: 980, right: 1024, bottom: 78, width: 44, height: 40 };
+        domAux.auxBtn!._rect = { top: 50, left: 988, right: 1016, bottom: 78, width: 28, height: 28 };
+        domAux.auxStrip!._rect = { top: 38, left: 500, right: 1024, bottom: 78, width: 524, height: 40 };
+        domAux.auxDragSpacer!._rect = { top: 38, left: 620, right: 980, bottom: 78, width: 360, height: 40 };
+
+        vm.runInContext(buildOverlayBootstrapScript(), domAux.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domAux.ctx,
+        );
+
+        const hostAux = domAux.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        const srAux = hostAux.shadowRoot!;
+        const wcoSpacerAux = srAux.querySelector('.acm-wco-spacer')!;
+        expect(hostAux.getAttribute('data-anchor')).toBe('inline');
+        expect(wcoSpacerAux.style.display).toBe('none');
+        expect(wcoSpacerAux.style.width).toBe('0px');
+        expect(srAux.querySelector('[data-view="total"]')!.classList.contains('is-hidden')).toBe(false);
+        expect(srAux.querySelector('[data-view="speed"]')!.classList.contains('is-hidden')).toBe(false);
+        expect(srAux.querySelector('[data-view="context"]')!.classList.contains('is-hidden')).toBe(false);
+        expect(srAux.querySelector('[aria-label="More telemetry"]')!.classList.contains('is-hidden')).toBe(true);
+
+        // When AUX tabs crowd near 988, it still collapses cleanly into ··· without overlapping tabs
+        domAux.auxDragSpacer!._rect = { top: 38, left: 860, right: 980, bottom: 78, width: 120, height: 40 };
+        domAux.triggerResizeObservers();
+        expect(srAux.querySelector('[data-view="total"]')!.classList.contains('is-hidden')).toBe(true);
+        expect(srAux.querySelector('[data-view="speed"]')!.classList.contains('is-hidden')).toBe(true);
+        expect(srAux.querySelector('[data-view="context"]')!.classList.contains('is-hidden')).toBe(true);
+        expect(srAux.querySelector('[aria-label="More telemetry"]')!.classList.contains('is-hidden')).toBe(false);
+    });
+
+    it('keeps wcoSpacer at 0px on Windows single-row inline layouts without window-controls-reserve (CSS-padded right-overlay & populated pane-toolbar) and measures pane-toolbar right-chrome accurately', () => {
+        // 1. Single-row CSS-padded right-overlay (no window-controls-reserve)
+        const domRight = createAntigravityShellHarness({
+            innerWidth: 1440,
+            innerHeight: 900,
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            sidebarOpen: false,
+            withRightOverlay: true,
+            withWcoReserve: false,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 32, left: 0, right: 1302, width: 1302, height: 32 },
+            },
+        });
+        domRight.rightOverlayInner!.style.paddingRight = '140px';
+        domRight.maxBtn!._rect = { top: 6, left: 1230, right: 1258, bottom: 34, width: 28, height: 28 };
+        domRight.auxBtn!._rect = { top: 6, left: 1262, right: 1290, bottom: 34, width: 28, height: 28 };
+
+        vm.runInContext(buildOverlayBootstrapScript(), domRight.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domRight.ctx,
+        );
+
+        const rightHost = domRight.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        const rightSpacer = rightHost.shadowRoot!.querySelector('.acm-wco-spacer')!;
+        expect(rightHost.getAttribute('data-anchor')).toBe('inline');
+        expect(rightHost.getAttribute('data-anchor-tier')).toBe('right-overlay');
+        expect(rightHost.nextSibling).toBe(domRight.maxBtn);
+        expect(rightSpacer.style.display).toBe('none');
+        expect(rightSpacer.style.width).toBe('0px');
+
+        // 2. Populated Tier 3 pane-toolbar without right-overlay / window-controls-reserve (no gap before moreBtn, no phantom WCO subtraction)
+        const domTb = createAntigravityShellHarness({
+            innerWidth: 1024,
+            innerHeight: 768,
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            sidebarOpen: true,
+            sidebarWidth: 440,
+            withRightOverlay: false,
+            withWcoReserve: false,
+            withPaneToolbar: true,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 32, left: 0, right: 886, width: 886, height: 32 },
+            },
+        });
+        // Row-2 populated pane-toolbar with moreBtn at left=988, top=50:
+        // Free space = 988 - 440 - 140 - 24 = 384 >= 340 -> all 4 pills stay visible (no phantom 146px WCO subtraction!)
+        domTb.titlebarContainer._rect = { top: 38, left: 440, right: 1024, bottom: 78, width: 584, height: 40 };
+        domTb.paneToolbar!._rect = { top: 38, left: 940, right: 1024, bottom: 78, width: 84, height: 40 };
+        domTb.moreBtn!._rect = { top: 50, left: 988, right: 1016, bottom: 78, width: 28, height: 28 };
+
+        vm.runInContext(buildOverlayBootstrapScript(), domTb.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domTb.ctx,
+        );
+
+        const tbHost = domTb.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        const tbSr = tbHost.shadowRoot!;
+        const tbSpacer = tbSr.querySelector('.acm-wco-spacer')!;
+        expect(tbHost.getAttribute('data-anchor')).toBe('inline');
+        expect(tbHost.getAttribute('data-anchor-tier')).toBe('pane-toolbar');
+        expect(tbHost.nextSibling).toBe(domTb.moreBtn);
+        expect(tbSpacer.style.display).toBe('none');
+        expect(tbSpacer.style.width).toBe('0px');
+        expect(tbSr.querySelector('[data-view="total"]')!.classList.contains('is-hidden')).toBe(false);
+        expect(tbSr.querySelector('[aria-label="More telemetry"]')!.classList.contains('is-hidden')).toBe(true);
+
+        // Moving moreBtn left to 720 (crowded toolbar) accurately reflects following-sibling right chrome and collapses to ···
+        domTb.moreBtn!._rect = { top: 50, left: 720, right: 748, bottom: 78, width: 28, height: 28 };
+        domTb.triggerResizeObservers();
+        expect(tbSr.querySelector('[data-view="total"]')!.classList.contains('is-hidden')).toBe(true);
+        expect(tbSr.querySelector('[data-view="speed"]')!.classList.contains('is-hidden')).toBe(true);
+        expect(tbSr.querySelector('[data-view="context"]')!.classList.contains('is-hidden')).toBe(true);
+        expect(tbSr.querySelector('[aria-label="More telemetry"]')!.classList.contains('is-hidden')).toBe(false);
+    });
+
+    it('skips empty Row-1 pane-toolbar overlapping right WCO cutout (falling through to Tier 4 fixed) while keeping Row-2 or CSS-padded empty pane-toolbar inline', () => {
+        // 1. Windows empty Row-1 pane-toolbar overlapping right WCO -> MUST fall through to Tier 4 fixed with wcoSpacer = 146px
+        const domWin = createAntigravityShellHarness({
+            innerWidth: 1024,
+            innerHeight: 768,
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            sidebarOpen: false,
+            withRightOverlay: false,
+            withWcoReserve: false,
+            withPaneToolbar: true,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 32, left: 0, right: 886, width: 886, height: 32 },
+            },
+        });
+        domWin.paneToolbar!.removeChild(domWin.moreBtn!);
+        domWin.paneToolbar!._rect = { top: 0, bottom: 32, left: 884, right: 1024, width: 140, height: 32 };
+
+        vm.runInContext(buildOverlayBootstrapScript(), domWin.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domWin.ctx,
+        );
+
+        const winHost = domWin.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        const winSpacer = winHost.shadowRoot!.querySelector('.acm-wco-spacer')!;
+        expect(winHost.parentNode).toBe(domWin.body);
+        expect(winHost.getAttribute('data-anchor')).toBe('fixed');
+        expect(winHost.getAttribute('data-anchor-tier')).toBe('fixed');
+        expect(winSpacer.style.display).toBe('block');
+        expect(winSpacer.style.width).toBe('146px');
+
+        // 2. Linux right-WCO empty Row-1 pane-toolbar -> falls through to Tier 4 fixed with wcoSpacer = 118px
+        const domLinux = createAntigravityShellHarness({
+            innerWidth: 1440,
+            innerHeight: 900,
+            userAgent: 'Mozilla/5.0 (X11; Linux x86_64)',
+            sidebarOpen: false,
+            withRightOverlay: false,
+            withWcoReserve: false,
+            withPaneToolbar: true,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 32, left: 0, right: 1330, width: 1330, height: 32 },
+            },
+        });
+        domLinux.paneToolbar!.removeChild(domLinux.moreBtn!);
+        domLinux.paneToolbar!._rect = { top: 0, bottom: 32, left: 1280, right: 1440, width: 160, height: 32 };
+
+        vm.runInContext(buildOverlayBootstrapScript(), domLinux.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domLinux.ctx,
+        );
+
+        const linuxHost = domLinux.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        const linuxSpacer = linuxHost.shadowRoot!.querySelector('.acm-wco-spacer')!;
+        expect(linuxHost.parentNode).toBe(domLinux.body);
+        expect(linuxHost.getAttribute('data-anchor')).toBe('fixed');
+        expect(linuxSpacer.style.display).toBe('block');
+        expect(linuxSpacer.style.width).toBe('118px');
+
+        // 3. Windows empty Row-2 pane-toolbar (top: 36..72, below WCO cutout) -> stays inline with wcoSpacer = 0px
+        domWin.paneToolbar!._rect = { top: 36, bottom: 72, left: 884, right: 1024, width: 140, height: 36 };
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domWin.ctx,
+        );
+        expect(winHost.parentNode).toBe(domWin.paneToolbar);
+        expect(winHost.getAttribute('data-anchor')).toBe('inline');
+        expect(winHost.getAttribute('data-anchor-tier')).toBe('pane-toolbar');
+        expect(winSpacer.style.display).toBe('none');
+        expect(winSpacer.style.width).toBe('0px');
+
+        // 4. Windows empty Row-1 pane-toolbar WITH paddingRight: '140px' (tbContentRight = 884 <= 886) -> stays inline with wcoSpacer = 0px
+        domWin.paneToolbar!._rect = { top: 0, bottom: 32, left: 744, right: 1024, width: 280, height: 32 };
+        domWin.paneToolbar!.style.paddingRight = '140px';
+        // Also verify resilient handling when getComputedStyle throws on padding lookup (falls back cleanly to style.paddingRight)
+        const origGetComputedStyle = domWin.win.getComputedStyle as (el: LayoutTestElement) => Record<string, string>;
+        domWin.win.getComputedStyle = (el: LayoutTestElement) => {
+            if (el === domWin.paneToolbar) {
+                return { display: 'flex', visibility: 'visible', opacity: '1' };
+            }
+            return origGetComputedStyle(el);
+        };
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domWin.ctx,
+        );
+        expect(winHost.parentNode).toBe(domWin.paneToolbar);
+        expect(winHost.getAttribute('data-anchor')).toBe('inline');
+        expect(winSpacer.style.display).toBe('none');
+        expect(winSpacer.style.width).toBe('0px');
+    });
+
+    it('handles Windows fixed <-> inline round-trip transitions cleanly (146px -> 0px -> 146px)', () => {
+        const dom = createAntigravityShellHarness({
+            innerWidth: 1440,
+            innerHeight: 900,
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            sidebarOpen: false,
+            withRightOverlay: false,
+            withPaneToolbar: false,
+            withWcoReserve: false,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 32, left: 0, right: 1302, width: 1302, height: 32 },
+            },
+        });
+
+        vm.runInContext(buildOverlayBootstrapScript(), dom.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            dom.ctx,
+        );
+
+        const host = dom.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        const wcoSpacer = host.shadowRoot!.querySelector('.acm-wco-spacer')!;
+
+        // 1. Fixed mode reserves WCO via WCO API (1440 - 1302 + 8 = 146px)
+        expect(host.getAttribute('data-anchor')).toBe('fixed');
+        expect(wcoSpacer.style.display).toBe('block');
+        expect(wcoSpacer.style.width).toBe('146px');
+
+        // 2. Navigating to a screen with right-overlay (even without window-controls-reserve) clears wcoSpacer to 0px
+        const mounted = dom.mountRightOverlay(true, false);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            dom.ctx,
+        );
+        expect(host.getAttribute('data-anchor')).toBe('inline');
+        expect(host.parentNode).toBe(mounted.rightOverlayInner);
+        expect(wcoSpacer.style.display).toBe('none');
+        expect(wcoSpacer.style.width).toBe('0px');
+
+        // 3. Leaving conversation removes right-overlay -> returns to fixed and restores 146px
+        dom.shell.removeChild(mounted.rightOverlay);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            dom.ctx,
+        );
+        expect(host.getAttribute('data-anchor')).toBe('fixed');
+        expect(host.parentNode).toBe(dom.body);
+        expect(wcoSpacer.style.display).toBe('block');
+        expect(wcoSpacer.style.width).toBe('146px');
+    });
+
+    it('handles computeWcoInsetPx(true) boundary cases: Windows RTL/Fullscreen, empty DOMRect(0,0,0,0), hidden-then-visible reserve, and Linux/macOS WCO sides', () => {
+        // 1. Windows Fullscreen / RTL (wco.visible=true, right === vw -> rightGap === 0) MUST return 0px, NOT fall through to 138px!
+        const domWin = createAntigravityShellHarness({
+            innerWidth: 1440,
+            innerHeight: 900,
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            sidebarOpen: false,
+            withRightOverlay: false,
+            withPaneToolbar: false,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 32, left: 0, right: 1440, width: 1440, height: 32 },
+            },
+        });
+        vm.runInContext(buildOverlayBootstrapScript(), domWin.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domWin.ctx,
+        );
+        const winHost = domWin.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        const winSpacer = winHost.shadowRoot!.querySelector('.acm-wco-spacer')!;
+        expect(winHost.getAttribute('data-anchor')).toBe('fixed');
+        expect(winSpacer.style.display).toBe('none');
+        expect(winSpacer.style.width).toBe('0px');
+
+        // Windows RTL (buttons on left: left=138, right=1440) -> still 0px!
+        domWin.setWindowControlsOverlay({
+            visible: true,
+            rect: { top: 0, bottom: 32, left: 138, right: 1440, width: 1302, height: 32 },
+        });
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domWin.ctx,
+        );
+        expect(winSpacer.style.display).toBe('none');
+        expect(winSpacer.style.width).toBe('0px');
+
+        // 2. Empty DOMRect(0,0,0,0) -> NEVER produces vw + 8 (1448px); falls back cleanly to 138px on Windows, 0px on macOS/Linux
+        domWin.setWindowControlsOverlay({
+            visible: true,
+            rect: { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 },
+        });
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domWin.ctx,
+        );
+        expect(winSpacer.style.display).toBe('block');
+        expect(winSpacer.style.width).toBe('138px');
+
+        const domMac = createAntigravityShellHarness({
+            innerWidth: 1440,
+            innerHeight: 900,
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X)',
+            sidebarOpen: false,
+            withRightOverlay: false,
+            withPaneToolbar: false,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 },
+            },
+        });
+        vm.runInContext(buildOverlayBootstrapScript(), domMac.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domMac.ctx,
+        );
+        const macSpacer = domMac.doc.getElementById(CDP_TOPBAR_HOST_ID)!.shadowRoot!.querySelector('.acm-wco-spacer')!;
+        expect(macSpacer.style.display).toBe('none');
+        expect(macSpacer.style.width).toBe('0px');
+
+        // 3. Hidden legacy-window-controls-reserve followed by visible window-controls-reserve (width: 132) in fixed mode -> uses 140px
+        const hiddenLegacyReserve = domWin.doc.createElement('div');
+        hiddenLegacyReserve.setAttribute('data-testid', 'legacy-window-controls-reserve');
+        hiddenLegacyReserve.style.display = 'none';
+        hiddenLegacyReserve._rect = { top: 0, left: 1300, right: 1440, bottom: 32, width: 140, height: 32 };
+        const visibleReserve = domWin.doc.createElement('div');
+        visibleReserve.setAttribute('data-testid', 'window-controls-reserve');
+        visibleReserve._rect = { top: 0, left: 1308, right: 1440, bottom: 32, width: 132, height: 32 };
+        // Direct body children so Tier 2 skips anchoring to them and Tier 4 fixed exercises computeWcoInsetPx(true)
+        domWin.body.appendChild(hiddenLegacyReserve);
+        domWin.body.appendChild(visibleReserve);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domWin.ctx,
+        );
+        expect(winHost.getAttribute('data-anchor')).toBe('fixed');
+        expect(winSpacer.style.display).toBe('block');
+        expect(winSpacer.style.width).toBe('140px');
+
+        // 4. Linux right-WCO fixed (rightGap = 110 -> 118px) vs Linux/macOS left-WCO fixed (left = 78, right = vw -> 0px)
+        const domLinux = createAntigravityShellHarness({
+            innerWidth: 1440,
+            innerHeight: 900,
+            userAgent: 'Mozilla/5.0 (X11; Linux x86_64)',
+            sidebarOpen: false,
+            withRightOverlay: false,
+            withPaneToolbar: false,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 32, left: 0, right: 1330, width: 1330, height: 32 },
+            },
+        });
+        vm.runInContext(buildOverlayBootstrapScript(), domLinux.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domLinux.ctx,
+        );
+        const linuxSpacer = domLinux.doc.getElementById(CDP_TOPBAR_HOST_ID)!.shadowRoot!.querySelector('.acm-wco-spacer')!;
+        expect(linuxSpacer.style.display).toBe('block');
+        expect(linuxSpacer.style.width).toBe('118px');
+
+        domLinux.setWindowControlsOverlay({
+            visible: true,
+            rect: { top: 0, bottom: 32, left: 78, right: 1440, width: 1362, height: 32 },
+        });
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domLinux.ctx,
+        );
+        expect(linuxSpacer.style.display).toBe('none');
+        expect(linuxSpacer.style.width).toBe('0px');
+
+        domMac.setWindowControlsOverlay({
+            visible: true,
+            rect: { top: 0, bottom: 32, left: 78, right: 1440, width: 1362, height: 32 },
+        });
+        // Visible top-left macOS traffic-light window-controls-reserve (left=0, right=78, width=78)
+        // MUST be ignored by both Tier 2 and computeWcoInsetPx(true) -> fixed mode keeps wcoSpacer = 0px!
+        const macLeftReserve = domMac.doc.createElement('div');
+        macLeftReserve.setAttribute('data-testid', 'window-controls-reserve');
+        macLeftReserve._rect = { top: 0, left: 0, right: 78, bottom: 32, width: 78, height: 32 };
+        domMac.shell.appendChild(macLeftReserve);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            domMac.ctx,
+        );
+        const macHost = domMac.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        expect(macHost.getAttribute('data-anchor')).toBe('fixed');
+        expect(macSpacer.style.display).toBe('none');
+        expect(macSpacer.style.width).toBe('0px');
+    });
+
+    it('keeps anchorTopBarHost() (Tier 3 pane-toolbar) and anchorComposerHost() (Tier 2c) idempotent across repeated update ticks without self-referential insertBefore', () => {
+        const dom = createAntigravityShellHarness({
+            innerWidth: 1440,
+            innerHeight: 900,
+            sidebarOpen: false,
+            withRightOverlay: false,
+            withPaneToolbar: true,
+        });
+        // Add a Tier 2c composer footer (no perm/action buttons -> returns { parent: rightGroup, before: rightGroup.firstChild })
+        const footer = dom.doc.createElement('div');
+        footer.className = 'agy-composer-footer';
+        const leftGroup = dom.doc.createElement('div');
+        const rightGroup = dom.doc.createElement('div');
+        const customRightBtn = dom.doc.createElement('button');
+        customRightBtn.textContent = 'Custom';
+        rightGroup.appendChild(customRightBtn);
+        footer.appendChild(leftGroup);
+        footer.appendChild(rightGroup);
+        dom.mainPane.appendChild(footer);
+
+        const tbInsertSpy = vi.spyOn(dom.paneToolbar!, 'insertBefore');
+        const tbAppendSpy = vi.spyOn(dom.paneToolbar!, 'appendChild');
+        const compInsertSpy = vi.spyOn(rightGroup, 'insertBefore');
+        const compAppendSpy = vi.spyOn(rightGroup, 'appendChild');
+
+        vm.runInContext(buildOverlayBootstrapScript(), dom.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: true, appTopBarEnabled: true }),
+            dom.ctx,
+        );
+
+        const topHost = dom.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        const compHost = dom.doc.getElementById(CDP_COMPOSER_HOST_ID)!;
+        expect(dom.paneToolbar!.childNodes[0]).toBe(topHost);
+        expect(dom.paneToolbar!.childNodes[1]).toBe(dom.moreBtn);
+        expect(topHost.nextSibling).toBe(dom.moreBtn);
+        expect(rightGroup.childNodes[0]).toBe(compHost);
+        expect(rightGroup.childNodes[1]).toBe(customRightBtn);
+        expect(compHost.nextSibling).toBe(customRightBtn);
+        expect(tbInsertSpy).toHaveBeenCalledTimes(1);
+        expect(compInsertSpy).toHaveBeenCalledTimes(1);
+
+        // Repeat 3 update ticks -> MUST remain strictly before moreBtn / customRightBtn with ZERO extra DOM mutations
+        for (let tick = 0; tick < 3; tick++) {
+            vm.runInContext(
+                buildOverlayUpdateScript(makePayload({ contextPct: 10 + tick }), { appComposerRingEnabled: true, appTopBarEnabled: true }),
+                dom.ctx,
+            );
+        }
+
+        expect(dom.paneToolbar!.childNodes[0]).toBe(topHost);
+        expect(dom.paneToolbar!.childNodes[1]).toBe(dom.moreBtn);
+        expect(topHost.nextSibling).toBe(dom.moreBtn);
+        expect(rightGroup.childNodes[0]).toBe(compHost);
+        expect(rightGroup.childNodes[1]).toBe(customRightBtn);
+        expect(compHost.nextSibling).toBe(customRightBtn);
+        expect(tbInsertSpy).toHaveBeenCalledTimes(1);
+        expect(tbAppendSpy).toHaveBeenCalledTimes(0);
+        expect(compInsertSpy).toHaveBeenCalledTimes(1);
+        expect(compAppendSpy).toHaveBeenCalledTimes(0);
+    });
+
+    it('updates fixed wcoSpacer live on windowControlsOverlay geometrychange events and removes the listener on unmount("all")', () => {
+        const dom = createAntigravityShellHarness({
+            innerWidth: 1440,
+            innerHeight: 900,
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            sidebarOpen: false,
+            withRightOverlay: false,
+            withPaneToolbar: false,
+            windowControlsOverlay: {
+                visible: true,
+                rect: { top: 0, bottom: 32, left: 0, right: 1302, width: 1302, height: 32 },
+            },
+        });
+
+        vm.runInContext(buildOverlayBootstrapScript(), dom.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload(), { appComposerRingEnabled: false, appTopBarEnabled: true }),
+            dom.ctx,
+        );
+
+        const host = dom.doc.getElementById(CDP_TOPBAR_HOST_ID)!;
+        const wcoSpacer = host.shadowRoot!.querySelector('.acm-wco-spacer')!;
+        expect(dom.wcoListeners.get('geometrychange')?.length).toBe(1);
+        expect(wcoSpacer.style.display).toBe('block');
+        expect(wcoSpacer.style.width).toBe('146px');
+
+        // DPI / caption width change fires geometrychange -> wcoSpacer updates immediately without window.resize
+        dom.setWindowControlsOverlay({
+            visible: true,
+            rect: { top: 0, bottom: 32, left: 0, right: 1340, width: 1340, height: 32 },
+        });
+        dom.dispatchWcoGeometryChange();
+        expect(wcoSpacer.style.display).toBe('block');
+        expect(wcoSpacer.style.width).toBe('108px');
+
+        // Entering fullscreen fires geometrychange with right === vw -> wcoSpacer collapses to 0px immediately
+        dom.setWindowControlsOverlay({
+            visible: true,
+            rect: { top: 0, bottom: 32, left: 0, right: 1440, width: 1440, height: 32 },
+        });
+        dom.dispatchWcoGeometryChange();
+        expect(wcoSpacer.style.display).toBe('none');
+        expect(wcoSpacer.style.width).toBe('0px');
+
+        // unmount('all') removes the geometrychange listener cleanly
+        vm.runInContext(buildOverlayUnmountScript('all'), dom.ctx);
+        expect(dom.wcoListeners.get('geometrychange')?.length).toBe(0);
     });
 });
