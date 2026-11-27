@@ -797,6 +797,18 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
         expect(linuxInstalledHtml).toContain('Open Folder');
         expect(linuxInstalledHtml).toContain('打开所在目录');
 
+        const probingHtml = buildSettingsContent([], undefined, undefined, {
+            surface: 'ide',
+            appSettings: { appComposerRingEnabled: true, appTopBarEnabled: false },
+            cdpStatus: { ...connectedStatus, state: 'probing', diagnosticCode: 'probing' },
+        });
+        expect(probingHtml).toContain('data-cdp-state="probing"');
+        expect(probingHtml).toContain('data-cdp-diagnostic="probing"');
+        expect(probingHtml).toContain('Checking…');
+        expect(probingHtml).toContain('检测中…');
+        expect(probingHtml).toContain('Checking Antigravity App CDP connection…');
+        expect(probingHtml).not.toContain('data-cdp-diagnostic="missing_port_file"');
+
         const disabledHtml = buildSettingsContent([], undefined, undefined, {
             surface: 'app-sidecar',
         });

@@ -4286,7 +4286,7 @@ function buildModelCards(
         return `
         <div class="act-card-row"><span>${ICONS.tool} <span>${tBiHtml('Calls', '调用')}</span></span><span class="val val-calls">${gmStats.callCount}</span></div>
         <div class="act-card-row"><span>${ICONS.speed} <span>${tBiHtml('Speed', '生成速度')}</span></span>${speedValHtml}</div>
-        <div class="act-card-row"><span>${ICONS.clock} <span>${tBiHtml('Avg TTFT', '平均 TTFT')}</span></span>${ttftValHtml}</div>
+        <div class="act-card-row"><span>${ICONS.clock} <span>${tBiHtml('Avg TTFT', '平均首字')}</span></span>${ttftValHtml}</div>
         ${avgStream !== null ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBiHtml('Avg Stream', '平均流耗时')}</span></span><span class="val val-time">${esc(formatLatency(avgStream))}</span></div>` : ''}
         <div class="act-card-row"><span>${ICONS.coin} <span>${tBiHtml('In', '输入')}</span></span><span class="val val-in">${fmt(gmStats.totalInputTokens)}</span></div>
         <div class="act-card-row"><span>${ICONS.coin} <span>${tBiHtml('Out', '输出')}</span></span><span class="val val-out">${fmt(gmStats.totalOutputTokens)}</span></div>

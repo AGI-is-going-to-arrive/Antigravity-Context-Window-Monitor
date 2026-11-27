@@ -117,10 +117,12 @@ export function getScript(): string {
             var checkFailedText = ${JSON.stringify(tBi('Check failed', '检查失败'))};
             var exportedText = ${JSON.stringify(`✓ ${tBi('Exported', '已导出')}`)};
             var cdpCheckingText = ${JSON.stringify(tBi('Checking CDP...', '正在检测 CDP...'))};
+            var cdpProbingText = ${JSON.stringify(tBi('Checking…', '检测中…'))};
             var cdpConnectedText = ${JSON.stringify(tBi('Connected', '已连接'))};
             var cdpErrorText = ${JSON.stringify(tBi('CDP Error', 'CDP 异常'))};
             var cdpInactiveText = ${JSON.stringify(tBi('CDP Inactive', 'CDP 未就绪'))};
             var cdpDisabledText = ${JSON.stringify(tBi('Disabled', '未启用'))};
+            var cdpDiagProbingText = ${JSON.stringify(tBi('Checking Antigravity App CDP connection…', '正在检测 Antigravity App 的 CDP 连接状态…'))};
             var cdpDiagHostMissingText = ${JSON.stringify(tBi(
         'Antigravity App is running without --remote-debugging-port=0 (e.g. opened from the original icon, auto-updated, or relaunched during the ~5s shutdown after Cmd+Q). Step 1: click "Create Persistent Launcher" below to create a separate launcher. Step 2: launch from the new "Antigravity (CDP)" icon instead (the original Antigravity icon is never modified), then click Recheck CDP.',
         '当前运行的 Antigravity App 未启用 --remote-debugging-port=0（例如从原版图标启动、自动更新重启，或按 Cmd+Q 后约 5 秒后台清理尚未完成）。步骤 1：点击下方「一键生成持久化启动器」创建独立启动器；步骤 2：之后改从新建的「Antigravity (CDP)」图标启动（原版 Antigravity 图标不会被修改），启动后点击「重新检测」。',
@@ -190,6 +192,7 @@ export function getScript(): string {
             var updateTipBodyIdle = ${JSON.stringify(tBi('Click "Check for Updates" to check GitHub Releases.', '点击「检查更新」可立即检查 GitHub Releases。'))};
             var cdpPillTipTitle = ${JSON.stringify(tBi('Desktop Overlays (CDP) Status', '桌面悬浮层 (CDP) 状态'))};
             var cdpPillTipConnectedFallback = ${JSON.stringify(tBi('Connected to Antigravity main window via local CDP debugging port.', '已通过本地 CDP 调试端口连接到 Antigravity 主窗口。'))};
+            var cdpPillTipProbingBody = ${JSON.stringify(tBi('Checking whether Antigravity App is running with its local Chrome debugging port enabled.', '正在检测 Antigravity App 是否已开启本地浏览器调试端口（CDP）。'))};
             var cdpPillTipInactiveBody = ${JSON.stringify(tBi('Antigravity is running without --remote-debugging-port=0. Launch via the "Antigravity (CDP)" launcher, then click Recheck CDP.', '当前 Antigravity 未携带 --remote-debugging-port=0 启动。请改从「Antigravity (CDP)」启动器打开后点击「重新检测」。'))};
             var cdpPillTipDisabledBody = ${JSON.stringify(tBi('Both optional desktop floating overlays are currently turned off.', '两项可选桌面悬浮层目前均处于关闭状态。'))};
             var cdpPillTipErrorFallback = ${JSON.stringify(tBi('Failed to attach to the local CDP debugging target.', '连接本地 CDP 调试目标失败。'))};
@@ -354,28 +357,33 @@ export function getScript(): string {
                 var diag = (cdpStatus && typeof cdpStatus.diagnosticCode === 'string')
                     ? cdpStatus.diagnosticCode
                     : (state === 'connected' ? 'connected'
-                        : (state === 'error' ? 'ws_error'
-                            : (state === 'cdp_unavailable' ? 'missing_port_file' : 'disabled')));
+                        : (state === 'probing' ? 'probing'
+                            : (state === 'error' ? 'ws_error'
+                                : (state === 'cdp_unavailable' ? 'missing_port_file' : 'disabled'))));
 
                 var pill = document.getElementById('cdpStatusPill');
                 if (pill) {
-                    var pillCls = 'stg-status-pill ' + (state === 'connected' ? 'is-connected'
-                        : (state === 'error' ? 'is-error'
-                            : (state === 'cdp_unavailable' ? 'is-inactive' : 'is-disabled')));
+                    var pillCls = 'stg-status-pill' + (state === 'connected' ? ' is-connected'
+                        : (state === 'probing' ? ''
+                            : (state === 'error' ? ' is-error'
+                                : (state === 'cdp_unavailable' ? ' is-inactive' : ' is-disabled'))));
                     pill.className = pillCls;
                     pill.setAttribute('data-cdp-state', state);
                     pill.setAttribute('data-cdp-diagnostic', diag);
                     pill.textContent = state === 'connected' ? cdpConnectedText
-                        : (state === 'error' ? cdpErrorText
-                            : (state === 'cdp_unavailable' ? cdpInactiveText : cdpDisabledText));
+                        : (state === 'probing' ? cdpProbingText
+                            : (state === 'error' ? cdpErrorText
+                                : (state === 'cdp_unavailable' ? cdpInactiveText : cdpDisabledText)));
                     pill.removeAttribute('title');
                     pill.setAttribute('data-popover-key', 'settings:cdp-status');
                     pill.setAttribute('data-tip-title', cdpPillTipTitle);
                     var cdpTipBody = state === 'connected'
                         ? (cdpStatus && cdpStatus.targetTitle ? String(cdpStatus.targetTitle) : cdpPillTipConnectedFallback)
-                        : (state === 'error'
-                            ? (cdpStatus && cdpStatus.errorMessage ? String(cdpStatus.errorMessage) : cdpPillTipErrorFallback)
-                            : (state === 'cdp_unavailable' ? cdpPillTipInactiveBody : cdpPillTipDisabledBody));
+                        : (state === 'probing'
+                            ? cdpPillTipProbingBody
+                            : (state === 'error'
+                                ? (cdpStatus && cdpStatus.errorMessage ? String(cdpStatus.errorMessage) : cdpPillTipErrorFallback)
+                                : (state === 'cdp_unavailable' ? cdpPillTipInactiveBody : cdpPillTipDisabledBody)));
                     pill.setAttribute('data-tip-body', cdpTipBody);
                     pill.setAttribute('data-tip-meta', cdpPillTipMeta);
                 }
@@ -387,6 +395,10 @@ export function getScript(): string {
                         hint.hidden = true;
                         hint.textContent = '';
                         hint.className = 'stg-diagnostic-hint';
+                    } else if (state === 'probing' || diag === 'probing') {
+                        hint.className = 'stg-diagnostic-hint';
+                        hint.textContent = cdpDiagProbingText;
+                        hint.hidden = false;
                     } else {
                         var launcherStatusEl = document.getElementById('cdpLauncherStatus');
                         var launcherInstalled = (cdpStatus && cdpStatus.launcherStatus && typeof cdpStatus.launcherStatus.installed === 'boolean')
@@ -1408,7 +1420,7 @@ export function getScript(): string {
                         } else {
                             var cdpPillNow = document.getElementById('cdpStatusPill');
                             if (cdpPillNow && cdpPillNow.getAttribute('data-cdp-state') === 'disabled') {
-                                syncCdpStatusUi({ state: 'cdp_unavailable', diagnosticCode: 'missing_port_file' }, cOn, tOn);
+                                syncCdpStatusUi({ state: 'probing', diagnosticCode: 'probing' }, cOn, tOn);
                             }
                         }
                     }

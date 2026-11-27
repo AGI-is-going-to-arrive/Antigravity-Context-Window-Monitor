@@ -710,7 +710,7 @@ function creditExpiryHtml(days: number | null): string {
 function cacheWarmthMeta(state: CacheState): { cls: string; html: string } | null {
     switch (state) {
         case 'warm':
-            return { cls: 'is-warm', html: tBiHtml('Warm', '热缓存（已命中）') };
+            return { cls: 'is-warm', html: tBiHtml('Warm', '热缓存（命中）') };
         case 'warming':
             return { cls: 'is-warming', html: tBiHtml('Warming', '缓存预热中') };
         case 'cold':
@@ -888,7 +888,8 @@ function telemetryStrip(
     const ttftClass = ttftPrimary === null ? ' is-muted' : '';
     let ttftSubHtml = '';
     if (primary.cachedAvgTtftSeconds !== null) {
-        ttftSubHtml = esc(`cached ${formatLatency(primary.cachedAvgTtftSeconds)}`);
+        const cachedLatency = formatLatency(primary.cachedAvgTtftSeconds);
+        ttftSubHtml = tBiHtml(`cached ${cachedLatency}`, `缓存首字 ${cachedLatency}`);
     } else if (primary.medianTtftSeconds !== null) {
         ttftSubHtml = esc(`p50 ${formatLatency(primary.medianTtftSeconds)}`);
     }

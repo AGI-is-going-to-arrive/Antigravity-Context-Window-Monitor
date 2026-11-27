@@ -2237,7 +2237,7 @@ export function buildLinuxBadgedSvg(embeddedIcon) {
     ].join('\n');
 }
 
-const MACOS_ICON_BADGE_JXA = [
+export const MACOS_ICON_BADGE_JXA = [
     'ObjC.import("AppKit");',
     'ObjC.import("Foundation");',
     'const env = $.NSProcessInfo.processInfo.environment;',
@@ -2266,14 +2266,14 @@ const MACOS_ICON_BADGE_JXA = [
     'bp.setLineWidth(14);',
     'bp.stroke;',
     'const font = $.NSFont.systemFontOfSizeWeight(152, $.NSFontWeightHeavy);',
-    'const style = $.NSMutableParagraphStyle.alloc.init; style.setAlignment($.NSTextAlignmentCenter);',
     'const attrs = $.NSMutableDictionary.dictionary;',
     'attrs.setObjectForKey(font, $.NSFontAttributeName);',
     'attrs.setObjectForKey($.NSColor.whiteColor, $.NSForegroundColorAttributeName);',
-    'attrs.setObjectForKey(style, $.NSParagraphStyleAttributeName);',
     'const text = $.NSString.stringWithString("CDP");',
     'const textSize = text.sizeWithAttributes(attrs);',
-    'text.drawInRectWithAttributes($.NSMakeRect(badgeX, badgeY + (badgeH - textSize.height) / 2 - 4, badgeW, textSize.height), attrs);',
+    'const textX = badgeX + (badgeW - textSize.width) / 2;',
+    'const textY = badgeY + (badgeH - textSize.height) / 2 - 4;',
+    'text.drawAtPointWithAttributes($.NSMakePoint(textX, textY), attrs);',
     '$.NSGraphicsContext.restoreGraphicsState;',
     'const pngData = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $.NSDictionary.dictionary);',
     'if (!pngData.writeToFileAtomically(dstPath, true)) { throw new Error("Failed to write badged PNG"); }',

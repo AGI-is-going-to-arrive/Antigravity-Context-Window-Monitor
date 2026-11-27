@@ -1156,12 +1156,21 @@ describe('Overview Tab, Topbar & Native Ambient HUD De-noising & Threshold Align
         expect(html).not.toContain('令牌');
         expect(html).not.toContain('子代理');
         if (lang === 'zh') {
-            expect(html).toContain('热缓存（已命中）');
+            expect(html).toContain('热缓存（命中）');
+            expect(html).toContain('缓存首字');
+            expect(html).not.toContain('cached ');
             expect(html).toContain('正文速度');
             expect(html).toContain('子智能体');
             expect(html).toContain('自动压缩上限');
             expect(html).not.toContain('resp ');
         }
+        // Bilingual 320px dual-cap watermark pill wraps cleanly without mid-word crushing
+        const editorialCss = getEditorialStyles();
+        const watermarkPillRule = editorialCss.match(/body \.overview-watermark-pill\s*\{([^}]*)\}/)?.[1] ?? '';
+        expect(watermarkPillRule).toContain('flex-wrap: wrap');
+        expect(watermarkPillRule).toContain('max-width: 100%');
+        expect(watermarkPillRule).toContain('border-radius: 10px');
+        expect(watermarkPillRule).toContain('line-height: 1.4');
         // Verify CONTEXT_CATEGORY_ORDER & CONTEXT_FREE_SPACE_META stay intact
         expect(CONTEXT_CATEGORY_ORDER).toHaveLength(9);
         expect(CONTEXT_CATEGORY_META.subagents.labelZh).toBe('子智能体');

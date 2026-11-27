@@ -3386,10 +3386,6 @@ export function getCalendarTabStyles(): string {
             pointer-events: none;
         }
 
-        .cal-cell[data-tooltip]:not(:hover, :focus-visible)::after { display: none; }
-        .cal-cell:nth-child(7n+1)[data-tooltip]::after { left: 0; right: auto; transform: none; }
-        .cal-cell:nth-child(7n)[data-tooltip]::after { left: auto; right: 0; transform: none; }
-
         .cal-dot {
             display: block;
             width: 5px;

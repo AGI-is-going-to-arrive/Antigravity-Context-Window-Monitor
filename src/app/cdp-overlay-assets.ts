@@ -1510,7 +1510,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
         : (tcState === 'cold' ? bi(lang, 'Cold', '冷启动') : '—'));
     var tip = getTurnCacheTooltip(lang, tcState);
     badgeEl.setAttribute('tabindex', '0');
-    badgeEl.setAttribute('title', tip);
+    if (typeof badgeEl.removeAttribute === 'function') { badgeEl.removeAttribute('title'); }
     badgeEl.setAttribute('data-tooltip', tip);
     badgeEl.setAttribute('aria-label', badgeEl.textContent + ' — ' + tip);
   }
@@ -2896,7 +2896,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       r.tickCompaction.classList.toggle('is-align-right', compPct >= 62);
       r.tickCompaction.setAttribute('role', 'img');
       r.tickCompaction.setAttribute('tabindex', '0');
-      r.tickCompaction.setAttribute('title', compTip);
+      if (typeof r.tickCompaction.removeAttribute === 'function') { r.tickCompaction.removeAttribute('title'); }
       r.tickCompaction.setAttribute('data-tooltip', compTip);
       r.tickCompaction.setAttribute('aria-label', compTip);
       marks.push(bi(lang, 'Compact', '压缩') + ' ' + Math.round(p.compactionThresholdPct) + '%');
@@ -2912,7 +2912,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       r.tick200k.classList.toggle('is-align-right', tierPct >= 62);
       r.tick200k.setAttribute('role', 'img');
       r.tick200k.setAttribute('tabindex', '0');
-      r.tick200k.setAttribute('title', tierTip);
+      if (typeof r.tick200k.removeAttribute === 'function') { r.tick200k.removeAttribute('title'); }
       r.tick200k.setAttribute('data-tooltip', tierTip);
       r.tick200k.setAttribute('aria-label', tierTip);
       marks.push('200k');
@@ -3704,7 +3704,6 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       tickComp.style.left = compPct.toFixed(1) + '%';
       tickComp.setAttribute('role', 'img');
       tickComp.setAttribute('tabindex', '0');
-      tickComp.setAttribute('title', compTip);
       tickComp.setAttribute('data-tooltip', compTip);
       tickComp.setAttribute('aria-label', compTip);
       meterWrap.appendChild(tickComp);
@@ -3717,7 +3716,6 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       tick200k.style.left = tierPct.toFixed(1) + '%';
       tick200k.setAttribute('role', 'img');
       tick200k.setAttribute('tabindex', '0');
-      tick200k.setAttribute('title', tierTip);
       tick200k.setAttribute('data-tooltip', tierTip);
       tick200k.setAttribute('aria-label', tierTip);
       meterWrap.appendChild(tick200k);

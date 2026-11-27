@@ -281,6 +281,7 @@ function resolveCdpDiagnosticCode(
     const anyEnabled = composerEnabled || topBarEnabled;
     const state = cdpStatus?.state ?? (anyEnabled ? 'cdp_unavailable' : 'disabled');
     if (state === 'connected') { return 'connected'; }
+    if (state === 'probing') { return 'probing'; }
     if (state === 'error') { return 'ws_error'; }
     if (state === 'cdp_unavailable') { return 'missing_port_file'; }
     return 'disabled';
@@ -324,6 +325,18 @@ function buildCdpStatusPillHtml(
             '只读桌面悬浮层连接正常。',
         );
         return `<span class="stg-status-pill is-connected" id="cdpStatusPill" data-cdp-state="connected" data-cdp-diagnostic="${esc(diagCode)}"${tip}>${tBiHtml('Connected', '已连接')}</span>`;
+    }
+    if (state === 'probing') {
+        const probingTip = stgRichTipAttrs(
+            'settings-cdp-status-pill',
+            'Checking CDP Connection',
+            '正在检测 CDP 连接',
+            'Checking whether Antigravity App is currently running with its local Chrome debugging port enabled.',
+            '正在检测当前运行的 Antigravity App 是否已开启本地浏览器调试端口（CDP）。',
+            'This usually finishes in under a second.',
+            '检测通常在 1 秒内完成。',
+        );
+        return `<span class="stg-status-pill" id="cdpStatusPill" data-cdp-state="probing" data-cdp-diagnostic="probing"${probingTip}>${tBiHtml('Checking…', '检测中…')}</span>`;
     }
     if (state === 'error') {
         const errBody = cdpStatus?.errorMessage?.trim()
@@ -376,6 +389,12 @@ function buildCdpDiagnosticHintHtml(
     const diagCode = resolveCdpDiagnosticCode(cdpStatus, composerEnabled, topBarEnabled);
     if (state === 'disabled' || diagCode === 'disabled') {
         return `<div class="stg-diagnostic-hint" id="cdpDiagnosticHint" data-cdp-diagnostic="disabled" role="status" hidden></div>`;
+    }
+    if (state === 'probing' || diagCode === 'probing') {
+        return `<div class="stg-diagnostic-hint" id="cdpDiagnosticHint" data-cdp-diagnostic="probing" role="status">${tBiHtml(
+            'Checking Antigravity App CDP connection…',
+            '正在检测 Antigravity App 的 CDP 连接状态…',
+        )}</div>`;
     }
     const portSuffixEn = typeof cdpStatus?.discoveredPort === 'number' ? ` (port ${cdpStatus.discoveredPort})` : '';
     const portSuffixZh = typeof cdpStatus?.discoveredPort === 'number' ? `（端口 ${cdpStatus.discoveredPort}）` : '';

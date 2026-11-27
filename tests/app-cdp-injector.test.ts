@@ -216,6 +216,12 @@ class FakeElement {
         return this.attributes.get(name) ?? null;
     }
 
+    removeAttribute(name: string): void {
+        if (name === 'id') { this.id = ''; }
+        if (name === 'class') { this.className = ''; }
+        this.attributes.delete(name);
+    }
+
     attachShadow(_opts: { mode: string }): FakeElement {
         this.shadowRoot = new FakeElement('#shadow-root');
         return this.shadowRoot;

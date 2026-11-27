@@ -203,6 +203,8 @@ let lastOrchestratorPricingMode: OrchestratorPricingMode | undefined;
 let lastAppSettings: (Partial<AppSettings> & { subscriptionPlan?: SubscriptionPlanPresetId }) | undefined;
 let lastUpdateStatus: UpdateStatusView | null = null;
 let lastCdpStatus: CdpStatus | null = null;
+let ideCdpProbeSeq = 0;
+let ideCdpProbeInFlight: Promise<void> | null = null;
 let lastLowQuotaWarning: LowQuotaWarningState | null | undefined;
 export const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
 const SAFE_CASCADE_ID_RE = /^[a-zA-Z0-9_-]{4,128}$/;
@@ -349,6 +351,9 @@ function clearDisposedPanel(): void {
     panel = undefined;
     pendingTab = undefined;
     isPaused = false;
+    lastCdpStatus = null;
+    ideCdpProbeSeq += 1;
+    ideCdpProbeInFlight = null;
 }
 
 export async function openUriInEditor(target: vscode.Uri): Promise<void> {
@@ -641,6 +646,7 @@ export function showMonitorPanel(p: PanelPayload): void {
         panel.reveal(undefined, false);
         if (wasVisible) { sendPendingTab(); }
         if (!isPaused) { postCurrentTabs(); }
+        scheduleIdeCdpProbeIfEnabled();
         return;
     }
 
@@ -680,6 +686,7 @@ export function showMonitorPanel(p: PanelPayload): void {
         if (msg.command === 'panelReady') {
             sendPendingTab();
             if (!isPaused) { postCurrentTabs(); }
+            scheduleIdeCdpProbeIfEnabled();
         } else if (msg.command === 'tabShown') {
             if (msg.requestId === pendingTab?.requestId) { pendingTab = undefined; }
         } else if (msg.command === 'switchLanguage' && extensionCtx) {
@@ -769,6 +776,8 @@ export function showMonitorPanel(p: PanelPayload): void {
                 lastOrchestratorPricingMode = lastAppSettings.orchestratorPricingMode;
                 const isOverlayToggle = res.normalizedKey === 'appComposerRingEnabled' || res.normalizedKey === 'appTopBarEnabled';
                 if (isOverlayToggle) {
+                    const seq = ++ideCdpProbeSeq;
+                    ideCdpProbeInFlight = null;
                     const composerOn = Boolean(lastAppSettings.appComposerRingEnabled);
                     const topBarOn = Boolean(lastAppSettings.appTopBarEnabled);
                     if (!composerOn && !topBarOn) {
@@ -782,6 +791,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                         };
                     } else {
                         const probed = await probeIdeCdpStatus(composerOn, topBarOn);
+                        if (!panel || seq !== ideCdpProbeSeq) { return; }
                         const latestApp = getSharedAppSettings();
                         const latestComposerOn = Boolean(latestApp.appComposerRingEnabled);
                         const latestTopBarOn = Boolean(latestApp.appTopBarEnabled);
@@ -818,11 +828,14 @@ export function showMonitorPanel(p: PanelPayload): void {
                 }
             }
         } else if (msg.command === 'recheckCdp') {
+            const seq = ++ideCdpProbeSeq;
+            ideCdpProbeInFlight = null;
             const docSettings = readIdeDocumentSettings();
             const cdpStatus = await probeIdeCdpStatus(
                 Boolean(docSettings.appComposerRingEnabled),
                 Boolean(docSettings.appTopBarEnabled),
             );
+            if (!panel || seq !== ideCdpProbeSeq) { return; }
             lastCdpStatus = cdpStatus;
             safePostMessage({
                 type: 'cdpStatusResult',
@@ -833,6 +846,8 @@ export function showMonitorPanel(p: PanelPayload): void {
                 postSettingsControlSync();
             }
         } else if (msg.command === 'setupCdpLauncher' || msg.command === 'removeCdpLauncher') {
+            const seq = ++ideCdpProbeSeq;
+            ideCdpProbeInFlight = null;
             const launcherRes = msg.command === 'setupCdpLauncher'
                 ? cdpLauncher.createCdpLauncher({ env: process.env })
                 : cdpLauncher.removeCdpLauncher({ env: process.env });
@@ -841,6 +856,7 @@ export function showMonitorPanel(p: PanelPayload): void {
                 Boolean(docSettings.appComposerRingEnabled),
                 Boolean(docSettings.appTopBarEnabled),
             );
+            if (!panel || seq !== ideCdpProbeSeq) { return; }
             const cdpStatus: CdpStatus = {
                 ...probed,
                 launcherStatus: launcherRes.status,
@@ -1186,6 +1202,7 @@ export function showMonitorPanel(p: PanelPayload): void {
             syncDurableStateFromDisk(false);
             sendPendingTab();
             if (!isPaused) { postCurrentTabs(); }
+            scheduleIdeCdpProbeIfEnabled();
         }
     });
 
@@ -1194,6 +1211,7 @@ export function showMonitorPanel(p: PanelPayload): void {
     });
 
     panel.webview.html = buildHtml(p.currentUsage, p.allTrajectoryUsages, p.modelConfigs, p.userInfo, isPaused, p.initialTab);
+    scheduleIdeCdpProbeIfEnabled();
 }
 
 function sendPendingTab(): void {
@@ -1309,8 +1327,8 @@ function resolveEffectiveIdeCdpStatus(docSettings: MonitorDocumentSettings): Cdp
     }
     if (!lastCdpStatus || lastCdpStatus.state === 'disabled') {
         return {
-            state: 'cdp_unavailable',
-            diagnosticCode: 'missing_port_file',
+            state: 'probing',
+            diagnosticCode: 'probing',
             composerEnabled,
             topBarEnabled,
             launcherStatus,
@@ -1323,6 +1341,81 @@ function resolveEffectiveIdeCdpStatus(docSettings: MonitorDocumentSettings): Cdp
         topBarEnabled,
         launcherStatus,
     };
+}
+
+function scheduleIdeCdpProbeIfEnabled(force = false): void {
+    if (!panel) { return; }
+    const docSettings = readIdeDocumentSettings();
+    const composerEnabled = Boolean(docSettings.appComposerRingEnabled);
+    const topBarEnabled = Boolean(docSettings.appTopBarEnabled);
+    if (!composerEnabled && !topBarEnabled) {
+        return;
+    }
+    if (!force && lastCdpStatus && lastCdpStatus.state !== 'disabled' && lastCdpStatus.state !== 'probing') {
+        return;
+    }
+    if (!force && ideCdpProbeInFlight) {
+        return;
+    }
+    const seq = ++ideCdpProbeSeq;
+    let probePromise: Promise<void> | null = null;
+    probePromise = (async () => {
+        try {
+            const probed = await probeIdeCdpStatus(composerEnabled, topBarEnabled);
+            if (!panel || seq !== ideCdpProbeSeq) { return; }
+            const latestSettings = readIdeDocumentSettings();
+            const latestComposerOn = Boolean(latestSettings.appComposerRingEnabled);
+            const latestTopBarOn = Boolean(latestSettings.appTopBarEnabled);
+            if (!latestComposerOn && !latestTopBarOn) {
+                lastCdpStatus = {
+                    state: 'disabled',
+                    diagnosticCode: 'disabled',
+                    composerEnabled: false,
+                    topBarEnabled: false,
+                    launcherStatus: probed.launcherStatus ?? cdpLauncher.inspectCdpLauncher({ env: process.env }),
+                    platformGuide: probed.platformGuide ?? getCdpPlatformGuide(process.platform),
+                };
+            } else {
+                lastCdpStatus = {
+                    ...probed,
+                    composerEnabled: latestComposerOn,
+                    topBarEnabled: latestTopBarOn,
+                };
+            }
+            safePostMessage({
+                type: 'cdpStatusResult',
+                command: 'cdpStatusResult',
+                cdpStatus: lastCdpStatus,
+            });
+            postSettingsControlSync();
+        } catch (err) {
+            if (!panel || seq !== ideCdpProbeSeq) { return; }
+            const latestSettings = readIdeDocumentSettings();
+            const latestComposerOn = Boolean(latestSettings.appComposerRingEnabled);
+            const latestTopBarOn = Boolean(latestSettings.appTopBarEnabled);
+            if (!latestComposerOn && !latestTopBarOn) { return; }
+            lastCdpStatus = {
+                state: 'error',
+                diagnosticCode: 'ws_error',
+                composerEnabled: latestComposerOn,
+                topBarEnabled: latestTopBarOn,
+                errorMessage: err instanceof Error ? err.message : String(err),
+                launcherStatus: cdpLauncher.inspectCdpLauncher({ env: process.env }),
+                platformGuide: getCdpPlatformGuide(process.platform),
+            };
+            safePostMessage({
+                type: 'cdpStatusResult',
+                command: 'cdpStatusResult',
+                cdpStatus: lastCdpStatus,
+            });
+            postSettingsControlSync();
+        } finally {
+            if (ideCdpProbeInFlight === probePromise) {
+                ideCdpProbeInFlight = null;
+            }
+        }
+    })();
+    ideCdpProbeInFlight = probePromise;
 }
 
 function postSettingsControlSync(): void {
@@ -1373,6 +1466,7 @@ export function syncMonitorPanelSettings(forceRefreshTabs = false): void {
     if (forceRefreshTabs) {
         postCurrentTabs();
     }
+    scheduleIdeCdpProbeIfEnabled();
 }
 
 function makeDocumentParams(

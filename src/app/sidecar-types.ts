@@ -18,10 +18,11 @@ export type SidecarViewMode = 'aux' | 'sidebar' | 'standalone';
 
 // ─── Opt-In CDP Ambient Overlay Contracts (v1.17.6) ──────────────────────────
 
-export type CdpConnectionState = 'disabled' | 'connected' | 'cdp_unavailable' | 'error';
+export type CdpConnectionState = 'disabled' | 'probing' | 'connected' | 'cdp_unavailable' | 'error';
 
 export type CdpDiagnosticCode =
     | 'disabled'
+    | 'probing'
     | 'host_missing_flag'
     | 'missing_port_file'
     | 'port_unreachable'

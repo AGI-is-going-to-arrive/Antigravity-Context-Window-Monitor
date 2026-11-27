@@ -3050,9 +3050,13 @@ export function getEditorialStyles(): string {
         body .overview-watermark-pill {
             display: inline-flex;
             align-items: center;
-            gap: 4px;
-            padding: 1px 7px;
-            border-radius: var(--ed-radius-pill);
+            flex-wrap: wrap;
+            max-width: 100%;
+            box-sizing: border-box;
+            gap: 2px 4px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            line-height: 1.4;
             border: 1px solid var(--ed-border);
             background: var(--ed-surface-well);
             color: var(--ed-ink-secondary);

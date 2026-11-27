@@ -2106,7 +2106,7 @@ describe('Antigravity App CDP Overlay Layout, Top Layer Popover & Composer Ancho
             ) => {
                 expect(el).toBeTruthy();
                 const tip = el.getAttribute('data-tooltip') ?? '';
-                expect(el.getAttribute('title')).toBe(tip);
+                expect(el.getAttribute('title')).toBeNull();
                 expect(el.getAttribute('aria-label')).toBe(tip);
                 for (const sub of expectedSubs) {
                     expect(tip).toContain(sub);
@@ -2120,7 +2120,8 @@ describe('Antigravity App CDP Overlay Layout, Top Layer Popover & Composer Ancho
             const verifyTurnBadge = (el: LayoutTestElement, expectedSubs: string[]) => {
                 expect(el).toBeTruthy();
                 const tip = el.getAttribute('data-tooltip') ?? '';
-                expect(el.getAttribute('title')).toBe(tip);
+                expect(el.getAttribute('title')).toBeNull();
+                expect(el.getAttribute('aria-label')).toContain(tip);
                 expect(el.getAttribute('tabindex')).toBe('0');
                 for (const sub of expectedSubs) {
                     expect(tip).toContain(sub);

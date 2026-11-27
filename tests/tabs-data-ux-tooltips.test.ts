@@ -669,6 +669,8 @@ describe('GM Data tab & Account Status rich tooltips (tabs-data)', () => {
             expect(html).toContain('首字延迟 650ms');
             expect(html).toContain('首字延迟 1.2');
             expect(html).toContain('首字延迟 1.20s');
+            expect(html).toContain('平均首字');
+            expect(html).not.toContain('平均 TTFT');
             expect(html).not.toMatch(/class="act-tl-gm-tag act-tl-gm-ttft"[^>]*>[^<]*TTFT/);
         } else if (language === 'en') {
             expect(html).toContain('TTFT 1.90s');

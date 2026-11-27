@@ -767,6 +767,10 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         expect(installer.buildLinuxDesktopEntry('/home/alice/.local/bin/antigravity-cdp', '/home/alice/.local/share/icons/hicolor/scalable/apps/antigravity-cdp.svg'))
             .toBe(launcherMod.buildLinuxDesktopEntry('/home/alice/.local/bin/antigravity-cdp', '/home/alice/.local/share/icons/hicolor/scalable/apps/antigravity-cdp.svg'));
         expect(installer.buildLinuxBadgedSvg()).toBe(launcherMod.buildLinuxBadgedSvg());
+        expect(installer.MACOS_ICON_BADGE_JXA).toBe(launcherMod.MACOS_ICON_BADGE_JXA);
+        expect(installer.MACOS_ICON_BADGE_JXA).toContain('const textX = badgeX + (badgeW - textSize.width) / 2;');
+        expect(installer.MACOS_ICON_BADGE_JXA).toContain('text.drawAtPointWithAttributes($.NSMakePoint(textX, textY), attrs);');
+        expect(installer.MACOS_ICON_BADGE_JXA).not.toContain('NSTextAlignmentCenter');
         expect(installer.WINDOWS_DESKTOP_PS_SCRIPT).toBe(launcherMod.WINDOWS_DESKTOP_PS_SCRIPT);
         expect(installer.WINDOWS_SHORTCUT_PS_SCRIPT).toBe(launcherMod.WINDOWS_SHORTCUT_PS_SCRIPT);
 

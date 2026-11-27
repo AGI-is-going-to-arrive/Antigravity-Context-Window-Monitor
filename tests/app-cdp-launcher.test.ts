@@ -7,6 +7,7 @@ import {
     CDP_LAUNCHER_DISPLAY_NAME,
     LINUX_CDP_ICON_FILENAME,
     MACOS_CDP_LAUNCHER_BUNDLE_ID,
+    MACOS_ICON_BADGE_JXA,
     WINDOWS_DESKTOP_PS_SCRIPT,
     WINDOWS_SHORTCUT_PS_SCRIPT,
     buildLinuxBadgedSvg,
@@ -84,6 +85,9 @@ describe('Zero-Patch Persistent CDP Launcher (macOS, Windows, Linux)', () => {
         expect(fs.readFileSync(copiedIconPath).toString('utf8')).toBe('icns-mock-bytes');
 
         // Verify Info.plist metadata
+        expect(MACOS_ICON_BADGE_JXA).toContain('const textX = badgeX + (badgeW - textSize.width) / 2;');
+        expect(MACOS_ICON_BADGE_JXA).toContain('text.drawAtPointWithAttributes($.NSMakePoint(textX, textY), attrs);');
+        expect(MACOS_ICON_BADGE_JXA).not.toContain('NSTextAlignmentCenter');
         const plist = fs.readFileSync(plistPath, 'utf8');
         expect(plist).toContain(`<string>${MACOS_CDP_LAUNCHER_BUNDLE_ID}</string>`);
         expect(plist).toContain('<key>CFBundleName</key>');
