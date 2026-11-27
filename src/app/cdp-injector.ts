@@ -45,7 +45,13 @@ const DEFAULT_CDP_TIMEOUT_MS = 5_000;
 const DEFAULT_RECONNECT_BACKOFF_MS = 15_000;
 
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
-const ALLOWED_BRIDGE_COMMANDS = new Set<CdpOverlayBridgeActionCommand>(['openPanel', 'refresh', 'togglePause']);
+const ALLOWED_BRIDGE_COMMANDS = new Set<CdpOverlayBridgeActionCommand>([
+    'openPanel',
+    'refresh',
+    'togglePause',
+    'focusConversation',
+]);
+const OVERLAY_CONVERSATION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ALLOWED_OVERLAY_TARGET_TABS = new Set<CdpOverlayTargetTab>([
     'overview',
     'gm',
@@ -61,6 +67,13 @@ function parseOverlayTargetTab(raw: unknown): CdpOverlayTargetTab | undefined {
     if (typeof raw !== 'string') { return undefined; }
     const trimmed = raw.trim() as CdpOverlayTargetTab;
     return ALLOWED_OVERLAY_TARGET_TABS.has(trimmed) ? trimmed : undefined;
+}
+
+function parseOverlayConversationId(raw: unknown): string | null | undefined {
+    if (raw === null) { return null; }
+    if (typeof raw !== 'string') { return undefined; }
+    const trimmed = raw.trim();
+    return OVERLAY_CONVERSATION_UUID_RE.test(trimmed) ? trimmed : undefined;
 }
 
 // ─── Cross-Platform DevToolsActivePort Discovery ─────────────────────────────
@@ -1259,6 +1272,26 @@ export async function createOverlayActionBridge(options: {
             }
             const source = parsed.source === 'composer' || parsed.source === 'topbar' ? parsed.source : undefined;
             const targetTab = parseOverlayTargetTab(parsed.targetTab);
+            if (cmd === 'focusConversation') {
+                const conversationId = parseOverlayConversationId(parsed.conversationId);
+                const isNewConversation = typeof parsed.isNewConversation === 'boolean'
+                    ? parsed.isNewConversation
+                    : false;
+                if (conversationId === undefined && !isNewConversation) {
+                    send(400, { ok: false, error: 'Invalid conversation focus payload' }, check.origin);
+                    return;
+                }
+                const sanitizedId = typeof conversationId === 'string' ? conversationId : null;
+                Promise.resolve(options.onAction?.({
+                    command: cmd,
+                    source,
+                    conversationId: sanitizedId,
+                    isNewConversation,
+                }))
+                    .then(() => send(200, { ok: true, command: cmd }, check.origin))
+                    .catch(() => send(500, { ok: false, error: 'Action handler failed' }, check.origin));
+                return;
+            }
             Promise.resolve(options.onAction?.({ command: cmd, source, ...(targetTab ? { targetTab } : {}) }))
                 .then(() => send(200, { ok: true, command: cmd }, check.origin))
                 .catch(() => send(500, { ok: false, error: 'Action handler failed' }, check.origin));

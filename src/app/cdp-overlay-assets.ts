@@ -1770,7 +1770,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
         var extraKeys = Object.keys(extra);
         for (var i = 0; i < extraKeys.length; i++) {
           var k = extraKeys[i];
-          if (extra[k] !== undefined && extra[k] !== null) {
+          if (extra[k] !== undefined) {
             bodyObj[k] = extra[k];
           }
         }
@@ -2338,8 +2338,177 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     layoutSyncHandle: null,
     layoutSyncIsRaf: false,
     sidebarTransitionTimer: null,
-    boundWcoTarget: null
+    boundWcoTarget: null,
+    focusSyncTimer: null,
+    lastReportedFocusKey: null,
+    lastReportedBridgeUrl: null
   };
+
+  var HUB_UUID_EXACT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  var HUB_UUID_ROUTE_RE = /(?:^|[\\/#?&:=])([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?=$|[\\/#?&])/i;
+  var HUB_NEW_CHAT_ROUTE_RE = /(?:^|\\/)(?:new|new-chat|new-conversation)(?:\\/|$)/i;
+  var HUB_ROOT_ROUTE_RE = /^\\/(?:$|index\\.html$|hub\\/?$|chat\\/?$|c\\/?$|conversation\\/?$|conversations\\/?$)/i;
+
+  function extractHubUuid(raw) {
+    if (typeof raw !== 'string') { return null; }
+    var trimmed = raw.trim();
+    if (!trimmed) { return null; }
+    if (HUB_UUID_EXACT_RE.test(trimmed)) { return trimmed; }
+    var m = trimmed.match(HUB_UUID_ROUTE_RE);
+    return m && m[1] ? m[1] : null;
+  }
+
+  function isInsideUnfocusedPane(node) {
+    var cur = node;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      if (typeof cur.getAttribute === 'function' && cur.getAttribute('data-pane-unfocused') === 'true') {
+        return true;
+      }
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+
+  function isInsideSidebarContainer(node) {
+    var cur = node;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      if (typeof cur.getAttribute === 'function') {
+        var tid = cur.getAttribute('data-testid') || '';
+        if (tid === 'sidebar-split') { return false; }
+        if (tid.indexOf('sidebar') >= 0 && tid !== 'toggle-aux-sidebar') { return true; }
+      }
+      var tag = String(cur.tagName || '').toUpperCase();
+      if (tag === 'ASIDE' || tag === 'NAV') { return true; }
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+
+  function detectHubConversationFocus() {
+    var loc = null;
+    try {
+      loc = window && window.location ? window.location : null;
+    } catch (_e) {
+      loc = null;
+    }
+    var pathname = loc && typeof loc.pathname === 'string' ? loc.pathname : '';
+    var search = loc && typeof loc.search === 'string' ? loc.search : '';
+    var hash = loc && typeof loc.hash === 'string' ? loc.hash : '';
+
+    // 1. URL / route UUID takes top priority
+    var urlUuid = extractHubUuid(pathname) || extractHubUuid(hash) || extractHubUuid(search);
+    if (urlUuid) {
+      return { conversationId: urlUuid, isNewConversation: false };
+    }
+
+    // 2. Explicit active conversation DOM attributes or aria-current/aria-selected items
+    var explicitSelectors = [
+      '[data-active-conversation-id]',
+      '[aria-current="page"]',
+      '[aria-selected="true"]',
+      '[data-active="true"]'
+    ];
+    for (var si = 0; si < explicitSelectors.length; si++) {
+      var nodes = [];
+      try { nodes = document.querySelectorAll(explicitSelectors[si]); } catch (_e) { nodes = []; }
+      for (var ni = 0; ni < nodes.length; ni++) {
+        var n = nodes[ni];
+        if (!n || isInsideUnfocusedPane(n) || typeof n.getAttribute !== 'function') { continue; }
+        var candidate = n.getAttribute('data-active-conversation-id')
+          || n.getAttribute('data-conversation-id')
+          || n.getAttribute('data-cascade-id')
+          || n.getAttribute('href')
+          || '';
+        var foundUuid = extractHubUuid(candidate);
+        if (foundUuid) {
+          return { conversationId: foundUuid, isNewConversation: false };
+        }
+      }
+    }
+
+    // 3. Main-pane conversation/cascade ID attributes (strictly excluding sidebar lists & unfocused panes)
+    var paneSelectors = ['[data-conversation-id]', '[data-cascade-id]'];
+    for (var pi = 0; pi < paneSelectors.length; pi++) {
+      var pNodes = [];
+      try { pNodes = document.querySelectorAll(paneSelectors[pi]); } catch (_e) { pNodes = []; }
+      for (var pni = 0; pni < pNodes.length; pni++) {
+        var pn = pNodes[pni];
+        if (!pn || isInsideUnfocusedPane(pn) || isInsideSidebarContainer(pn) || typeof pn.getAttribute !== 'function') {
+          continue;
+        }
+        var pVal = pn.getAttribute('data-conversation-id') || pn.getAttribute('data-cascade-id') || '';
+        var paneUuid = extractHubUuid(pVal);
+        if (paneUuid) {
+          return { conversationId: paneUuid, isNewConversation: false };
+        }
+      }
+    }
+
+    // 4. Explicit new-chat DOM marker or Hub new-chat / empty composer route
+    try {
+      var newMarker = document.querySelector('[data-new-conversation="true"]');
+      if (newMarker && !isInsideUnfocusedPane(newMarker)) {
+        return { conversationId: null, isNewConversation: true };
+      }
+    } catch (_e) {}
+
+    if (pathname || hash) {
+      var cleanHashPath = hash.replace(/^#!?/, '');
+      if (HUB_NEW_CHAT_ROUTE_RE.test(pathname) || HUB_NEW_CHAT_ROUTE_RE.test(cleanHashPath)) {
+        return { conversationId: null, isNewConversation: true };
+      }
+      var isRootRoute = HUB_ROOT_ROUTE_RE.test(pathname)
+        && (!cleanHashPath || HUB_ROOT_ROUTE_RE.test(cleanHashPath));
+      if (isRootRoute) {
+        var hasComposer = Boolean(
+          document.querySelector('[data-testid="agent-input-box"]')
+          || document.querySelector('.surface-composer')
+          || document.querySelector('.agy-composer-footer')
+        );
+        if (hasComposer) {
+          return { conversationId: null, isNewConversation: true };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function syncHubConversationFocus() {
+    if (!state.topBarEnabled && !state.composerEnabled) { return; }
+    if (!hasLoopbackBridge(state.payload)) { return; }
+    var detected = detectHubConversationFocus();
+    if (!detected) { return; }
+    var key = detected.conversationId
+      ? ('id:' + detected.conversationId.toLowerCase())
+      : (detected.isNewConversation ? 'new' : '');
+    if (!key) { return; }
+    var bridgeUrl = state.payload && state.payload.bridgeUrl ? state.payload.bridgeUrl : '';
+    if (key === state.lastReportedFocusKey && bridgeUrl === state.lastReportedBridgeUrl) {
+      return;
+    }
+    state.lastReportedFocusKey = key;
+    state.lastReportedBridgeUrl = bridgeUrl;
+    var source = state.topBarEnabled ? 'topbar' : 'composer';
+    sendBridgeAction(state.payload, 'focusConversation', source, null, {
+      conversationId: detected.conversationId,
+      isNewConversation: Boolean(detected.isNewConversation)
+    });
+  }
+
+  function scheduleHubFocusSync() {
+    if (!state.topBarEnabled && !state.composerEnabled) { return; }
+    if (state.focusSyncTimer) { clearTimeout(state.focusSyncTimer); }
+    state.focusSyncTimer = setTimeout(function() {
+      state.focusSyncTimer = null;
+      syncHubConversationFocus();
+    }, 120);
+  }
+
+  function onHubNavigationChange() {
+    if (!state.topBarEnabled && !state.composerEnabled) { return; }
+    syncHubConversationFocus();
+  }
 
   function syncThemes() {
     var theme = detectHostTheme(state.payload && state.payload.theme);
@@ -4085,6 +4254,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
             runLayoutSyncNow();
           }, 150);
         }
+        if (hasLayoutAttrChange || hasRelevantChildChange) {
+          scheduleHubFocusSync();
+        }
       });
       state.domObserver.observe(document.body, {
         childList: true,
@@ -4126,6 +4298,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     cancelScheduledLayoutSync();
     if (state.countdownTimer) { clearInterval(state.countdownTimer); state.countdownTimer = null; }
     if (state.composerHideTimer) { clearTimeout(state.composerHideTimer); state.composerHideTimer = null; }
+    if (state.focusSyncTimer) { clearTimeout(state.focusSyncTimer); state.focusSyncTimer = null; }
   }
 
   function unmountSlot(slot) {
@@ -4164,6 +4337,10 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       document.removeEventListener('keydown', onGlobalKeyDown, true);
       document.removeEventListener('transitionend', onTransitionEnd, true);
       window.removeEventListener('resize', onWindowResize);
+      window.removeEventListener('popstate', onHubNavigationChange);
+      window.removeEventListener('hashchange', onHubNavigationChange);
+      state.lastReportedFocusKey = null;
+      state.lastReportedBridgeUrl = null;
       try {
         var wcoTarget = state.boundWcoTarget || (navigator && navigator.windowControlsOverlay);
         if (wcoTarget && typeof wcoTarget.removeEventListener === 'function') {
@@ -4180,6 +4357,8 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
   document.addEventListener('keydown', onGlobalKeyDown, true);
   document.addEventListener('transitionend', onTransitionEnd, true);
   window.addEventListener('resize', onWindowResize);
+  window.addEventListener('popstate', onHubNavigationChange);
+  window.addEventListener('hashchange', onHubNavigationChange);
   ensureWcoListenerBound();
 
   window[GLOBAL_KEY] = {
@@ -4212,6 +4391,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       }
       if (nextComposer || nextTopBar) {
         refreshResizeObserverTargets();
+        syncHubConversationFocus();
       }
       syncThemes();
       return {

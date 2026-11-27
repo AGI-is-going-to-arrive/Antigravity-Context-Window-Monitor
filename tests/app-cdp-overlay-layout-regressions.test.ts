@@ -565,6 +565,12 @@ function createAntigravityShellHarness(options: {
         navObj.windowControlsOverlay = wcoObj;
     }
 
+    const fetchCalls: Array<{ url: string; init: { method?: string; headers?: Record<string, string>; body?: string } }> = [];
+    const fetchMock = vi.fn().mockImplementation((url: string, init: { method?: string; headers?: Record<string, string>; body?: string }) => {
+        fetchCalls.push({ url, init });
+        return Promise.resolve({ ok: true });
+    });
+
     const sandbox: Record<string, unknown> = {
         window: win,
         document: doc,
@@ -584,7 +590,7 @@ function createAntigravityShellHarness(options: {
         clearTimeout,
         setInterval: () => 1,
         clearInterval: () => {},
-        fetch: vi.fn().mockResolvedValue({ ok: true }),
+        fetch: fetchMock,
     };
 
     const ctx = vm.createContext(sandbox);
@@ -654,6 +660,12 @@ function createAntigravityShellHarness(options: {
         }
     }
 
+    function dispatchWinEvent(type: string) {
+        for (const fn of (winListeners.get(type) ?? [])) {
+            fn({});
+        }
+    }
+
     return {
         ctx,
         win,
@@ -685,10 +697,14 @@ function createAntigravityShellHarness(options: {
         triggerLayoutAttributeMutation,
         dispatchTransitionEnd,
         dispatchResize,
+        dispatchWinEvent,
         flushRaf,
+        fetchCalls,
+        fetchMock,
         resizeObservers,
         mutationObservers,
         docListeners,
+        winListeners,
         wcoListeners,
     };
 }
@@ -2118,5 +2134,83 @@ describe('Antigravity App CDP Overlay Layout, Top Layer Popover & Composer Ancho
             verifyTurnBadge(compTurnBadge, sc.expectCacheSubs);
             verifyTurnBadge(topCtxTurnBadge, sc.expectCacheSubs);
         }
+    });
+
+    it('reports Hub focusConversation transitions (UUID, brand-new chat, deduplication, sidebar isolation, and listener cleanup on unmount)', () => {
+        const dom = createAntigravityShellHarness({ innerWidth: 1440, innerHeight: 900 });
+        buildLiveComposerDom(dom.mainPane, { metadataBarPosition: 'top', permTestId: true, actionKind: 'send' });
+
+        // Add an unrelated historical conversation item inside sidebar to verify it NEVER hijacks New Chat detection
+        const sidebarNav = dom.doc.createElement('aside');
+        const oldSidebarItem = dom.doc.createElement('div');
+        oldSidebarItem.setAttribute('data-conversation-id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+        sidebarNav.appendChild(oldSidebarItem);
+        dom.sidebarOuter.appendChild(sidebarNav);
+
+        const uuidA = '0323401e-1fdf-418a-a0eb-8697e0becc9f';
+        const uuidB = '11111111-2222-4333-8444-555555555555';
+        const loc = { pathname: `/c/${uuidA}`, search: '', hash: '' };
+        dom.win.location = loc;
+
+        const payload = makePayload();
+        vm.runInContext(buildOverlayBootstrapScript(), dom.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(payload, { appComposerRingEnabled: true, appTopBarEnabled: true }),
+            dom.ctx,
+        );
+
+        // 1. Initial mount on /c/<uuidA> reports focusConversation with uuidA
+        expect(dom.fetchCalls).toHaveLength(1);
+        expect(dom.fetchCalls[0].url).toBe(`${payload.bridgeUrl}/api/overlay/action`);
+        expect(dom.fetchCalls[0].init.headers?.['X-Monitor-Token']).toBe(payload.bridgeToken);
+        expect(JSON.parse(dom.fetchCalls[0].init.body || '{}')).toEqual({
+            command: 'focusConversation',
+            source: 'topbar',
+            conversationId: uuidA,
+            isNewConversation: false,
+        });
+
+        // 2. Subsequent identical applyState ticks are strictly deduplicated (ZERO extra fetch calls!)
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload({ contextPct: 12, bridgeUrl: payload.bridgeUrl, bridgeToken: payload.bridgeToken }), {
+                appComposerRingEnabled: true,
+                appTopBarEnabled: true,
+            }),
+            dom.ctx,
+        );
+        expect(dom.fetchCalls).toHaveLength(1);
+
+        // 3. Navigating to brand-new empty chat route '/' (with composer visible + sidebar history item) emits conversationId: null, isNewConversation: true
+        loc.pathname = '/';
+        dom.dispatchWinEvent('popstate');
+        expect(dom.fetchCalls).toHaveLength(2);
+        expect(JSON.parse(dom.fetchCalls[1].init.body || '{}')).toEqual({
+            command: 'focusConversation',
+            source: 'topbar',
+            conversationId: null,
+            isNewConversation: true,
+        });
+
+        // Repeated popstate on same new-chat route is deduplicated
+        dom.dispatchWinEvent('popstate');
+        expect(dom.fetchCalls).toHaveLength(2);
+
+        // 4. Navigating via hashchange to #/c/<uuidB> reports uuidB immediately
+        loc.hash = `#/c/${uuidB}`;
+        dom.dispatchWinEvent('hashchange');
+        expect(dom.fetchCalls).toHaveLength(3);
+        expect(JSON.parse(dom.fetchCalls[2].init.body || '{}')).toEqual({
+            command: 'focusConversation',
+            source: 'topbar',
+            conversationId: uuidB,
+            isNewConversation: false,
+        });
+
+        // 5. unmount('all') removes popstate & hashchange listeners cleanly
+        expect(dom.winListeners.get('popstate')?.length).toBe(1);
+        expect(dom.winListeners.get('hashchange')?.length).toBe(1);
+        vm.runInContext(buildOverlayUnmountScript('all'), dom.ctx);
+        expect(dom.winListeners.get('popstate')?.length).toBe(0);
+        expect(dom.winListeners.get('hashchange')?.length).toBe(0);
     });
 });
