@@ -1023,6 +1023,22 @@ function fmtCompact(n: number): string {
     return String(Math.round(n));
 }
 
+function richTipAttrs(key: string, title: string, body: string, meta?: string): string {
+    const parts = [
+        `data-popover-key="${esc(key)}"`,
+        `data-tip-title="${esc(title)}"`,
+        `data-tip-body="${esc(body)}"`,
+    ];
+    if (meta) {
+        parts.push(`data-tip-meta="${esc(meta)}"`);
+    }
+    return parts.join(' ');
+}
+
+function toSafeTipKey(raw: string): string {
+    return raw.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
+}
+
 /**
  * Render a compact role badge (`Orchestrator` / `Executor` / `Subagent`) and optional
  * cold-cache switch pill for Recent Calls Ledger rows and Overview details.
@@ -1032,23 +1048,67 @@ export function renderCallRoleBadgeHtml(
     role: OrchestratorCallRole,
     isColdCacheSwitch = false,
     switchDirection?: RoleSwitchDirection,
+    keySuffix = 'default',
 ): string {
+    const safeSuffix = toSafeTipKey(keySuffix);
     const parts: string[] = [];
     if (role === 'orchestrator') {
-        parts.push(`<span class="orch-role-badge is-orchestrator" data-call-role="orchestrator">${tBiHtml('Orchestrator', '编排')}</span>`);
+        const tip = richTipAttrs(
+            `orch-role-orchestrator-${safeSuffix}`,
+            tBi('Orchestrator', '编排模型'),
+            tBi(
+                'Plans tasks, coordinates reasoning, and decides when to delegate work.',
+                '负责任务规划、思路拆解，并决定何时将具体步骤委派给执行模型。',
+            ),
+            tBi('Attributed from planner route config or legacy orchestrator ID', '依据编排路由配置或旧版编排标识归属'),
+        );
+        parts.push(`<span class="orch-role-badge is-orchestrator" data-call-role="orchestrator" ${tip}>${tBiHtml('Orchestrator', '编排')}</span>`);
     } else if (role === 'executor') {
-        parts.push(`<span class="orch-role-badge is-executor" data-call-role="executor">${tBiHtml('Executor', '执行')}</span>`);
+        const tip = richTipAttrs(
+            `orch-role-executor-${safeSuffix}`,
+            tBi('Executor', '执行模型'),
+            tBi(
+                'Runs delegated coding, editing, and tool-execution steps assigned by the orchestrator.',
+                '负责执行编排模型委派的代码编写、文件修改与工具调用步骤。',
+            ),
+            tBi('Attributed from active executionModel route or worker ID', '依据当前执行路由或工作模型标识归属'),
+        );
+        parts.push(`<span class="orch-role-badge is-executor" data-call-role="executor" ${tip}>${tBiHtml('Executor', '执行')}</span>`);
     } else if (role === 'subagent') {
-        parts.push(`<span class="orch-role-badge is-subagent" data-call-role="subagent">${tBiHtml('Subagent', '子智能体')}</span>`);
+        const tip = richTipAttrs(
+            `orch-role-subagent-${safeSuffix}`,
+            tBi('Subagent', '子智能体'),
+            tBi(
+                'An isolated helper agent spawned to handle a focused sub-task independently.',
+                '为处理独立子任务而派生的隔离辅助智能体。',
+            ),
+            tBi('Detected from subagent / swarm worker execution metadata', '根据子智能体或并行工作节点执行元数据识别'),
+        );
+        parts.push(`<span class="orch-role-badge is-subagent" data-call-role="subagent" ${tip}>${tBiHtml('Subagent', '子智能体')}</span>`);
     }
 
     if (isColdCacheSwitch) {
-        const dirTip = switchDirection === 'orchestrator_to_executor'
-            ? tBi('Role switch (Orchestrator → Executor) started with cold prompt cache (0 cache read)', '角色切换（编排模型 → 执行模型）触发冷缓存（缓存读取为 0）')
+        const dirBody = switchDirection === 'orchestrator_to_executor'
+            ? tBi(
+                'Switching from Orchestrator to Executor started with an empty prompt cache, so the prompt had to be prefilled from scratch.',
+                '从编排模型切换到执行模型时提示词缓存为空，需要从头重新预填充上下文。',
+            )
             : switchDirection === 'executor_to_orchestrator'
-                ? tBi('Role switch (Executor → Orchestrator) started with cold prompt cache (0 cache read)', '角色切换（执行模型 → 编排模型）触发冷缓存（缓存读取为 0）')
-                : tBi('Role switch started with cold prompt cache (0 cache read)', '角色切换触发冷缓存（缓存读取为 0）');
-        parts.push(`<span class="orch-cold-switch-pill" data-cold-cache-switch="true" title="${esc(dirTip)}">${tBiHtml('Switch Cold', '切换冷启动')}</span>`);
+                ? tBi(
+                    'Switching from Executor back to Orchestrator started with an empty prompt cache, so the prompt had to be prefilled from scratch.',
+                    '从执行模型切回编排模型时提示词缓存为空，需要从头重新预填充上下文。',
+                )
+                : tBi(
+                    'Switching roles started with an empty prompt cache because each role maintains a separate cache.',
+                    '角色切换时提示词缓存为空，因为不同角色各自维护独立缓存。',
+                );
+        const switchTip = richTipAttrs(
+            `orch-cold-switch-${safeSuffix}`,
+            tBi('Switch Cold', '切换冷启动'),
+            dirBody,
+            tBi('Trigger: Orchestrator ↔ Executor role transition with cacheRead = 0', '触发条件：编排模型 ↔ 执行模型切换且缓存读取为 0'),
+        );
+        parts.push(`<span class="orch-cold-switch-pill" data-cold-cache-switch="true" ${switchTip} tabindex="0">${tBiHtml('Switch Cold', '切换冷启动')}</span>`);
     }
 
     return parts.join(' ');
@@ -1067,6 +1127,7 @@ export function buildOrchestratorSplitCardHtml(
     }
 
     const compact = options?.compact === true;
+    const keyPrefix = compact ? 'ov-orch' : 'gm-orch';
     const orch = split.orchestrator;
     const exec = split.executor;
     const sub = split.subagent;
@@ -1080,6 +1141,30 @@ export function buildOrchestratorSplitCardHtml(
     const totalWeight = orchWeight + execWeight;
     const orchPct = totalWeight > 0 ? Math.round((orchWeight / totalWeight) * 100) : 50;
     const execPct = Math.max(0, 100 - orchPct);
+
+    const roleTipCopy: Record<'orchestrator' | 'executor' | 'subagent', { body: string; meta: string }> = {
+        orchestrator: {
+            body: tBi(
+                'Plans tasks, coordinates reasoning, and delegates execution steps.',
+                '负责任务规划与整体编排，并将具体实现委派给执行模型。',
+            ),
+            meta: tBi('Share bar reflects cost share (or token share when unpriced)', '比例条按费用占比绘制（未定价时按 Token 占比）'),
+        },
+        executor: {
+            body: tBi(
+                'Executes delegated file edits, commands, and tool steps from the orchestrator.',
+                '负责落实编排模型委派的文件编辑、命令执行与工具调用。',
+            ),
+            meta: tBi('Each role keeps an independent prompt cache', '编排模型与执行模型各自维护独立提示词缓存'),
+        },
+        subagent: {
+            body: tBi(
+                'Isolated background agent spawned to investigate or complete a sub-task.',
+                '为独立调研或完成子任务而派生的隔离辅助智能体。',
+            ),
+            meta: tBi('Tracked separately from main orchestrator/executor turns', '独立于主对话编排/执行轮次单独统计'),
+        },
+    };
 
     const renderRoleRow = (
         roleKey: 'orchestrator' | 'executor' | 'subagent',
@@ -1096,13 +1181,39 @@ export function buildOrchestratorSplitCardHtml(
             ? formatUsdCost(metrics.costUsd, { precision: metrics.costUsd < 0.01 ? 'standard' : 'call' })
             : tBi('Unpriced', '未定价');
         const mappedHint = metrics.mappedBaseCalls > 0
-            ? ` <span class="orch-split-mapped-tag">${tBiHtml('Est.', '估算')}</span>`
+            ? ` <span class="orch-split-mapped-tag" ${richTipAttrs(
+                `${keyPrefix}-${roleKey}-est`,
+                tBi('Estimated via Base Model', '按底座估算'),
+                tBi(
+                    'Cost for legacy orchestrator calls in this role is estimated using the mapped base model API rate.',
+                    '此角色中的旧版编排调用按对应底座模型的公开 API 参考费率估算。',
+                ),
+                tBi(
+                    `${metrics.mappedBaseCalls} mapped-base ${metrics.mappedBaseCalls === 1 ? 'call' : 'calls'} · Switch to Strict Mode in Cost tab to exclude`,
+                    `含 ${metrics.mappedBaseCalls} 次按底座估算调用 · 可在成本页切换严格模式`,
+                ),
+            )} tabindex="0">${tBiHtml('Est.', '估算')}</span>`
             : '';
         const cacheStr = formatCachePercent(metrics.cacheHitRate);
+        const roleTip = richTipAttrs(
+            `${keyPrefix}-${roleKey}-badge`,
+            tBi(titleEn, titleZh),
+            roleTipCopy[roleKey].body,
+            roleTipCopy[roleKey].meta,
+        );
+        const modelTip = richTipAttrs(
+            `${keyPrefix}-${roleKey}-model`,
+            tBi(`${titleEn} model`, `${titleZh}所用模型`),
+            modelLabel,
+            tBi(
+                `${formatNumber(metrics.calls)} ${metrics.calls === 1 ? 'call' : 'calls'} · ${fmtCompact(totalTok)} total tokens`,
+                `共 ${formatNumber(metrics.calls)} 次调用 · 合计 ${fmtCompact(totalTok)} tokens`,
+            ),
+        );
         return `<div class="orch-split-row" data-split-role="${roleKey}">
             <div class="orch-split-row-main">
-                <span class="orch-role-badge is-${roleKey}">${tBiHtml(titleEn, titleZh)}</span>
-                <span class="orch-split-model" title="${esc(modelLabel)}">${esc(modelLabel)}</span>
+                <span class="orch-role-badge is-${roleKey}" ${roleTip}>${tBiHtml(titleEn, titleZh)}</span>
+                <span class="orch-split-model" ${modelTip}>${esc(modelLabel)}</span>
             </div>
             <div class="orch-split-row-metrics">
                 <span class="orch-split-metric">${formatNumber(metrics.calls)} ${tBiHtml(metrics.calls === 1 ? 'call' : 'calls', '次')}</span>
@@ -1115,18 +1226,61 @@ export function buildOrchestratorSplitCardHtml(
 
     const metaPills: string[] = [];
     if (split.isSameModelOrchestrated) {
-        metaPills.push(`<span class="orch-split-meta-pill">${tBiHtml('Same-model', '同模型编排')}</span>`);
+        const sameTip = richTipAttrs(
+            `${keyPrefix}-same-model`,
+            tBi('Same-model Orchestration', '同模型编排'),
+            tBi(
+                'Both Orchestrator and Executor are configured to the same underlying model, separated by planner vs execution roles.',
+                '编排模型与执行模型配置为同一个底座模型，仅按规划与执行角色拆分调用。',
+            ),
+            tBi('Triggered when planModel equals executionModel', '触发条件：编排模型与执行模型配置相同'),
+        );
+        metaPills.push(`<span class="orch-split-meta-pill" ${sameTip} tabindex="0">${tBiHtml('Same-model', '同模型编排')}</span>`);
     }
     if (split.hasMidConversationReconfig) {
-        metaPills.push(`<span class="orch-split-meta-pill">${tBiHtml('Reconfigured', '中途切换配置')}</span>`);
+        const reconfigTip = richTipAttrs(
+            `${keyPrefix}-reconfigured`,
+            tBi('Mid-Conversation Reconfiguration', '中途切换配置'),
+            tBi(
+                'The Orchestrator or Executor model selection changed during this conversation; each call is attributed to the route active at its turn.',
+                '本次对话中途更改过编排或执行模型，每次调用均按所在轮次生效的路由归属统计。',
+            ),
+            tBi('Detected >1 distinct model in a role or >1 route pair across turns', '触发条件：同一角色出现多个模型或跨轮次路由对变化'),
+        );
+        metaPills.push(`<span class="orch-split-meta-pill" ${reconfigTip} tabindex="0">${tBiHtml('Reconfigured', '中途切换配置')}</span>`);
     }
     if (split.totalCostUsd !== null) {
-        metaPills.push(`<span class="orch-split-meta-pill is-total">${esc(formatUsdCost(split.totalCostUsd))}</span>`);
+        const totalTip = richTipAttrs(
+            `${keyPrefix}-total-cost`,
+            tBi('Combined Reference Cost', '合计 API 参考费用'),
+            tBi(
+                'Combined estimated API reference cost across all attributed roles in this conversation.',
+                '本次对话中各角色调用合计的 API 参考估算费用（非订阅实际账单）。',
+            ),
+            tBi(
+                `Orchestrator ${orchPct}% · Executor ${execPct}%`,
+                `编排占比 ${orchPct}% · 执行占比 ${execPct}%`,
+            ),
+        );
+        metaPills.push(`<span class="orch-split-meta-pill is-total" ${totalTip} tabindex="0">${esc(formatUsdCost(split.totalCostUsd))}</span>`);
     }
+
+    const coldSwitchPillTip = richTipAttrs(
+        `${keyPrefix}-cold-switch-banner`,
+        tBi('Cold Cache Role Switch', '角色切换冷启动'),
+        tBi(
+            'When execution hands off between Orchestrator and Executor, the target role starts with a cold cache if it has not cached the latest prefix.',
+            '编排模型与执行模型之间交接任务时，若目标角色未命中最新前缀缓存，会触发一次冷启动重新预填充。',
+        ),
+        tBi(
+            `${split.coldCacheSwitchCount} of ${split.roleSwitchCount} role switches had cacheRead = 0 (${fmtCompact(split.coldCacheSwitchInputTokens)} fresh input)`,
+            `${split.roleSwitchCount} 次角色切换中有 ${split.coldCacheSwitchCount} 次缓存读取为 0（重填 ${fmtCompact(split.coldCacheSwitchInputTokens)} 新增输入）`,
+        ),
+    );
 
     const coldSwitchBanner = split.coldCacheSwitchCount > 0
         ? `<div class="orch-split-cold-note" data-cold-switch-count="${split.coldCacheSwitchCount}">
-            <span class="orch-cold-switch-pill">${tBiHtml('Cold Switch', '切换冷启动')} ×${split.coldCacheSwitchCount}</span>
+            <span class="orch-cold-switch-pill" ${coldSwitchPillTip} tabindex="0">${tBiHtml('Cold Switch', '切换冷启动')} ×${split.coldCacheSwitchCount}</span>
             <span>${tBiHtml(
                 `${fmtCompact(split.coldCacheSwitchInputTokens)} fresh input re-prefilled when switching between Orchestrator and Executor (each role keeps a separate prompt cache).`,
                 `编排模型与执行模型切换时有 ${fmtCompact(split.coldCacheSwitchInputTokens)} 新增输入重新预填充（两者的提示词缓存相互独立）。`,
