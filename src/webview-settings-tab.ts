@@ -286,6 +286,21 @@ function resolveCdpDiagnosticCode(
     return 'disabled';
 }
 
+function stgRichTipAttrs(
+    key: string,
+    titleEn: string,
+    titleZh: string,
+    bodyEn: string,
+    bodyZh: string,
+    metaEn?: string,
+    metaZh?: string,
+): string {
+    const title = tBi(titleEn, titleZh);
+    const body = tBi(bodyEn, bodyZh);
+    const meta = metaEn || metaZh ? tBi(metaEn || '', metaZh || '') : '';
+    return ` data-popover-key="${esc(key)}" data-tip-title="${esc(title)}" data-tip-body="${esc(body)}"${meta ? ` data-tip-meta="${esc(meta)}"` : ''}`;
+}
+
 function buildCdpStatusPillHtml(
     cdpStatus: CdpStatus | null | undefined,
     composerEnabled: boolean,
@@ -295,19 +310,49 @@ function buildCdpStatusPillHtml(
     const state = cdpStatus?.state ?? (anyEnabled ? 'cdp_unavailable' : 'disabled');
     const diagCode = resolveCdpDiagnosticCode(cdpStatus, composerEnabled, topBarEnabled);
     if (state === 'connected') {
-        const title = cdpStatus?.targetTitle
-            ? ` title="${esc(cdpStatus.targetTitle)}"`
-            : '';
-        return `<span class="stg-status-pill is-connected" id="cdpStatusPill" data-cdp-state="connected" data-cdp-diagnostic="${esc(diagCode)}"${title}>${tBiHtml('Connected', '已连接')}</span>`;
+        const portPart = typeof cdpStatus?.discoveredPort === 'number' ? `:${cdpStatus.discoveredPort}` : '';
+        const targetInfo = cdpStatus?.targetTitle
+            ? `${cdpStatus.targetTitle}${portPart ? ` (${portPart})` : ''}`
+            : (portPart ? `CDP ${portPart}` : 'Antigravity Hub');
+        const tip = stgRichTipAttrs(
+            'settings-cdp-status-pill',
+            'CDP Overlay Connected',
+            'CDP 悬浮层已连接',
+            `Connected to Antigravity window: ${targetInfo}.`,
+            `已连接到 Antigravity 主窗口：${targetInfo}。`,
+            'Read-only desktop overlay connection active.',
+            '只读桌面悬浮层连接正常。',
+        );
+        return `<span class="stg-status-pill is-connected" id="cdpStatusPill" data-cdp-state="connected" data-cdp-diagnostic="${esc(diagCode)}"${tip}>${tBiHtml('Connected', '已连接')}</span>`;
     }
     if (state === 'error') {
-        const title = cdpStatus?.errorMessage ? ` title="${esc(cdpStatus.errorMessage)}"` : '';
-        return `<span class="stg-status-pill is-error" id="cdpStatusPill" data-cdp-state="error" data-cdp-diagnostic="${esc(diagCode)}"${title}>${tBiHtml('CDP Error', 'CDP 异常')}</span>`;
+        const errBody = cdpStatus?.errorMessage?.trim()
+            || tBi('Unable to connect to the Antigravity CDP debugging session.', '无法连接到 Antigravity 的 CDP 调试会话。');
+        const tip = ` data-popover-key="settings-cdp-status-pill" data-tip-title="${esc(tBi('CDP Connection Error', 'CDP 连接异常'))}" data-tip-body="${esc(errBody)}" data-tip-meta="${esc(tBi(`Diagnostic code: ${diagCode} · Click Recheck CDP after relaunching.`, `诊断码：${diagCode} · 请重启后点击「重新检测」。`))}"`;
+        return `<span class="stg-status-pill is-error" id="cdpStatusPill" data-cdp-state="error" data-cdp-diagnostic="${esc(diagCode)}"${tip}>${tBiHtml('CDP Error', 'CDP 异常')}</span>`;
     }
     if (state === 'cdp_unavailable') {
-        return `<span class="stg-status-pill is-inactive" id="cdpStatusPill" data-cdp-state="cdp_unavailable" data-cdp-diagnostic="${esc(diagCode)}">${tBiHtml('CDP Inactive', 'CDP 未就绪')}</span>`;
+        const tip = stgRichTipAttrs(
+            'settings-cdp-status-pill',
+            'CDP Not Ready Yet',
+            'CDP 尚未就绪',
+            'Antigravity App is running without its Chrome debugging port enabled, so desktop floating overlays cannot attach yet.',
+            '当前运行的 Antigravity App 未开启浏览器调试端口（CDP），桌面悬浮层暂无法挂载。',
+            `Diagnostic code: ${diagCode} · Launch via "Antigravity (CDP)" then click Recheck CDP.`,
+            `诊断码：${diagCode} · 请从「Antigravity (CDP)」启动后点击「重新检测」。`,
+        );
+        return `<span class="stg-status-pill is-inactive" id="cdpStatusPill" data-cdp-state="cdp_unavailable" data-cdp-diagnostic="${esc(diagCode)}"${tip}>${tBiHtml('CDP Inactive', 'CDP 未就绪')}</span>`;
     }
-    return `<span class="stg-status-pill is-disabled" id="cdpStatusPill" data-cdp-state="disabled" data-cdp-diagnostic="disabled">${tBiHtml('Disabled', '未启用')}</span>`;
+    const disabledTip = stgRichTipAttrs(
+        'settings-cdp-status-pill',
+        'Desktop Overlays Disabled',
+        '桌面悬浮层未启用',
+        'Both optional CDP desktop overlays are currently turned off. The in-panel Compact HUD works without CDP.',
+        '下方两项可选 CDP 桌面悬浮层当前均为关闭状态；面板顶部紧凑 HUD 无需 CDP 即可使用。',
+        'Toggle either CDP overlay on to enable connection checks.',
+        '开启任一 CDP 悬浮开关后将自动检测连接状态。',
+    );
+    return `<span class="stg-status-pill is-disabled" id="cdpStatusPill" data-cdp-state="disabled" data-cdp-diagnostic="disabled"${disabledTip}>${tBiHtml('Disabled', '未启用')}</span>`;
 }
 
 function getRevealLauncherLabel(platform?: string): { en: string; zh: string } {
@@ -343,19 +388,19 @@ function buildCdpDiagnosticHintHtml(
     const buildInstalledLauncherHint = (prefixEn: string, prefixZh: string): string => {
         if (resolvedPlatform === 'win32') {
             return tBiHtml(
-                `${prefixEn}Persistent launcher is ready, but this session was opened from the original Antigravity app (without --remote-debugging-port=0). Launch from the "Antigravity (CDP)" shortcut instead (click "Show in Explorer" below to locate it), then click Recheck CDP.`,
-                `${prefixZh}持久化启动器已就绪，但本次打开的是原版 Antigravity（未启用 --remote-debugging-port=0）。请改从「Antigravity (CDP)」快捷方式启动（可点击下方「在资源管理器中显示」直接定位），启动后点击「重新检测」。`,
+                `${prefixEn}Persistent launcher is ready, but this session was opened from the original Antigravity app (without --remote-debugging-port=0). Launch from the direct "Antigravity (CDP)" shortcut instead (you can right-click it to Pin to Taskbar, or click "Show in Explorer" below), then click Recheck CDP.`,
+                `${prefixZh}持久化启动器已就绪，但本次打开的是原版 Antigravity（未启用 --remote-debugging-port=0）。请改从「Antigravity (CDP)」直连快捷方式启动（支持原生「固定到任务栏」，可点击下方「在资源管理器中显示」定位），启动后点击「重新检测」。`,
             );
         }
         if (resolvedPlatform === 'linux') {
             return tBiHtml(
-                `${prefixEn}Persistent launcher is ready, but this session was opened from the original Antigravity app (without --remote-debugging-port=0). Launch from the "Antigravity (CDP)" application entry instead (click "Open Folder" below to locate it), then click Recheck CDP.`,
-                `${prefixZh}持久化启动器已就绪，但本次打开的是原版 Antigravity（未启用 --remote-debugging-port=0）。请改从应用菜单中的「Antigravity (CDP)」图标启动（可点击下方「打开所在目录」定位启动器目录），启动后点击「重新检测」。`,
+                `${prefixEn}Persistent launcher is ready, but this session was opened from the original Antigravity app (without --remote-debugging-port=0). Launch from the "Antigravity (CDP)" app launcher entry (pin that launcher entry to Ubuntu Dock — avoid pinning an already-running non-CDP window; click "Open Folder" below to locate it), then click Recheck CDP.`,
+                `${prefixZh}持久化启动器已就绪，但本次打开的是原版 Antigravity（未启用 --remote-debugging-port=0）。请改从应用菜单中的「Antigravity (CDP)」启动（建议从应用启动器直接固定到 Ubuntu Dock，避免固定无参运行中的窗口；可点击下方「打开所在目录」定位），启动后点击「重新检测」。`,
             );
         }
         return tBiHtml(
-            `${prefixEn}Persistent launcher is ready, but this session was opened from the original Antigravity app (without --remote-debugging-port=0). Launch from the "Antigravity (CDP)" icon instead (click "Reveal in Finder" below to locate it and drag it to your Dock), then click Recheck CDP.`,
-            `${prefixZh}持久化启动器已就绪，但本次打开的是原版 Antigravity（未启用 --remote-debugging-port=0）。请改从「Antigravity (CDP)」图标启动（可点击下方「在访达中显示」直接定位并拖到程序坞），启动后点击「重新检测」。`,
+            `${prefixEn}Persistent launcher is ready, but this session was opened from the original Antigravity app (without --remote-debugging-port=0). Launch from "Antigravity (CDP)" instead (click "Reveal in Finder" below and drag it from Finder into your Dock — NEVER right-click the running icon to choose "Keep in Dock"), then click Recheck CDP.`,
+            `${prefixZh}持久化启动器已就绪，但本次打开的是原版 Antigravity（未启用 --remote-debugging-port=0）。请改从「Antigravity (CDP)」启动（点击下方「在访达中显示」并从访达拖入程序坞——切勿右键运行中图标选「在程序坞中保留」），启动后点击「重新检测」。`,
         );
     };
 
@@ -423,7 +468,26 @@ function buildCdpDiagnosticHintHtml(
 function getDefaultLauncherDisplayPath(platform?: string): string {
     if (platform === 'win32') { return '%USERPROFILE%\\Desktop\\Antigravity (CDP).lnk'; }
     if (platform === 'linux') { return '~/.local/share/applications/antigravity-cdp.desktop'; }
-    return '~/Applications/Antigravity (CDP).app';
+    return '/Applications/Antigravity (CDP).app';
+}
+
+function getDefaultLauncherNote(platform?: string): { en: string; zh: string } {
+    if (platform === 'win32') {
+        return {
+            en: 'Zero-patch direct .lnk shortcut (survives auto-updates, no CMD flash). Right-click the shortcut to Pin to Taskbar natively.',
+            zh: '零魔改直连 .lnk 快捷方式（跨自动更新生效，无黑框闪烁），支持右键原生「固定到任务栏」。',
+        };
+    }
+    if (platform === 'linux') {
+        return {
+            en: 'Zero-patch desktop launcher (survives auto-updates). Pin "Antigravity (CDP)" from your app menu to Ubuntu Dock — avoid pinning an argless running window.',
+            zh: '零魔改桌面入口（跨自动更新生效）。请从应用启动器将「Antigravity (CDP)」固定到 Ubuntu Dock，避免固定无参运行中的窗口。',
+        };
+    }
+    return {
+        en: 'Zero-patch launcher saved to /Applications (or ~/Applications if read-only) — survives auto-updates and waits cleanly through macOS\'s ~5s shutdown after Cmd+Q. Drag it from Finder into your Dock; NEVER right-click the running icon to choose "Keep in Dock".',
+        zh: '零魔改启动器优先写入 /Applications（无写权限时回退 ~/Applications），跨自动更新持久生效并自动等待 Cmd+Q 后约 5 秒清理。请从访达拖入程序坞，切勿右键运行中图标选「在程序坞中保留」。',
+    };
 }
 
 function buildCdpLauncherRowHtml(
@@ -442,12 +506,10 @@ function buildCdpLauncherRowHtml(
         : tBiHtml('Create Persistent Launcher', '一键生成持久化启动器');
     const revealLabel = getRevealLauncherLabel(resolvedPlatform);
     const revealLabelHtml = tBiHtml(revealLabel.en, revealLabel.zh);
+    const defaultNote = getDefaultLauncherNote(resolvedPlatform);
     const noteHtml = launcherStatus?.noteEn && launcherStatus?.noteZh
         ? tBiHtml(launcherStatus.noteEn, launcherStatus.noteZh)
-        : tBiHtml(
-            'Zero-patch launcher outside Antigravity.app — survives auto-updates and waits cleanly through macOS\'s ~5s background shutdown after Cmd+Q.',
-            '独立于 Antigravity.app 的零魔改启动器——跨自动更新持久生效，并自动等待 macOS 按 Cmd+Q 后约 5 秒的后台退出清理完成。',
-        );
+        : tBiHtml(defaultNote.en, defaultNote.zh);
     return `
             <div class="stg-cdp-launcher-box" id="cdpLauncherBox">
                 <div class="stg-cdp-launcher-head">
@@ -477,31 +539,58 @@ function buildUpdateStatusPillHtml(
         || updateStatus?.status === 'update_available',
     );
     if (updateAvailable && latestTag) {
+        const tip = stgRichTipAttrs(
+            'settings-update-status-pill',
+            `Update Available (${latestTag})`,
+            `有可用更新（${latestTag}）`,
+            `A newer release (${latestTag}) is published on GitHub Releases (installed: ${curTag}).`,
+            `GitHub Releases 已发布新版本 ${latestTag}（当前已安装：${curTag}）。`,
+            'Click Upgrade Now (App) or update via Open VSX (IDE).',
+            'App 端可点击「立即升级」，IDE 端可通过 Open VSX 更新。',
+        );
         return {
             updateAvailable: true,
             latestTag,
-            pillHtml: `<span class="stg-status-pill is-update" id="updateStatusPill" data-update-status="update_available">${tBiHtml(`Update available: ${latestTag}`, `有可用更新：${latestTag}`)}</span>`,
+            pillHtml: `<span class="stg-status-pill is-update" id="updateStatusPill" data-update-status="update_available"${tip}>${tBiHtml(`Update available: ${latestTag}`, `有可用更新：${latestTag}`)}</span>`,
         };
     }
     if (updateStatus?.status === 'error') {
-        const title = updateStatus.error ? ` title="${esc(updateStatus.error)}"` : '';
+        const errDetail = updateStatus.error?.trim()
+            || tBi('Unable to reach GitHub Releases to check for updates.', '无法连接 GitHub Releases 检查更新。');
+        const tip = ` data-popover-key="settings-update-status-pill" data-tip-title="${esc(tBi('Update Check Failed', '更新检查失败'))}" data-tip-body="${esc(errDetail)}" data-tip-meta="${esc(tBi('Click "Check for Updates" to retry once network access is available.', '网络恢复后可点击「检查更新」重试。'))}"`;
         return {
             updateAvailable: false,
             latestTag,
-            pillHtml: `<span class="stg-status-pill is-error" id="updateStatusPill" data-update-status="error"${title}>${tBiHtml('Check failed', '检查失败')}</span>`,
+            pillHtml: `<span class="stg-status-pill is-error" id="updateStatusPill" data-update-status="error"${tip}>${tBiHtml('Check failed', '检查失败')}</span>`,
         };
     }
     if (updateStatus?.status === 'up_to_date' || updateStatus?.status === 'not_modified' || (updateStatus?.checkedAt && !updateAvailable)) {
+        const tip = stgRichTipAttrs(
+            'settings-update-status-pill',
+            `Up to Date (${curTag})`,
+            `已是最新版本（${curTag}）`,
+            `Installed version ${curTag} matches the latest GitHub Release.`,
+            `当前已安装的 ${curTag} 已是 GitHub Releases 最新版本。`,
+        );
         return {
             updateAvailable: false,
             latestTag,
-            pillHtml: `<span class="stg-status-pill is-uptodate" id="updateStatusPill" data-update-status="up_to_date">${tBiHtml(`Up to date (${curTag})`, `已是最新（${curTag}）`)}</span>`,
+            pillHtml: `<span class="stg-status-pill is-uptodate" id="updateStatusPill" data-update-status="up_to_date"${tip}>${tBiHtml(`Up to date (${curTag})`, `已是最新（${curTag}）`)}</span>`,
         };
     }
+    const idleTip = stgRichTipAttrs(
+        'settings-update-status-pill',
+        `Installed Version ${curTag}`,
+        `当前已安装版本 ${curTag}`,
+        'No update check has run yet in this session.',
+        '本次会话尚未执行更新检查。',
+        'Click "Check for Updates" to query GitHub Releases.',
+        '点击「检查更新」可立即查询 GitHub Releases。',
+    );
     return {
         updateAvailable: false,
         latestTag,
-        pillHtml: `<span class="stg-status-pill" id="updateStatusPill" data-update-status="idle">${tBiHtml(`Current ${curTag}`, `当前版本 ${curTag}`)}</span>`,
+        pillHtml: `<span class="stg-status-pill" id="updateStatusPill" data-update-status="idle"${idleTip}>${tBiHtml(`Current ${curTag}`, `当前版本 ${curTag}`)}</span>`,
     };
 }
 
@@ -599,29 +688,56 @@ export function buildSettingsContent(
     const winPsCmd = '& "$env:LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0';
     const winCmdShortcut = '"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0';
     const linuxLaunchCmd = 'antigravity --remote-debugging-port=0';
+    const nativeHudTip = stgRichTipAttrs(
+        'settings-tip-native-hud',
+        'Native Panel Compact HUD',
+        '面板顶部紧凑状态条 (HUD)',
+        'HUD (Heads-Up Display) pins a compact telemetry strip at the top of this monitor panel showing context %, speed, TTFT, cache hit, cost, and quota.',
+        'HUD（抬头状态条）直接固定在本监控面板顶部，一栏展示上下文占比、速度、首字延迟、缓存、费用与配额。',
+        'Works 100% natively — no CDP debugging port required.',
+        '纯原生运行，无需开启 CDP 调试端口。',
+    );
+    const composerRingTip = stgRichTipAttrs(
+        'settings-tip-composer-ring',
+        'Composer Context Ring (CDP)',
+        '输入框上下文圆环（需 CDP）',
+        'Adds a small circular context usage ring inside the Antigravity chat input box (Composer), placed right next to the Turbo / submit mode control.',
+        '在 Antigravity 聊天输入框（Composer）的 Turbo / 提交模式按钮左侧显示迷你上下文进度环。',
+        'Requires launching Antigravity App via the Persistent CDP Launcher (Chrome debugging port).',
+        '需通过持久化 CDP 启动器（开启 Chrome 调试端口）启动 Antigravity App。',
+    );
+    const topBarOverlayTip = stgRichTipAttrs(
+        'settings-tip-topbar-overlay',
+        'Top-Right Status Bar & Quota Board (CDP)',
+        '右上角状态栏与额度看板（需 CDP）',
+        'Pins a floating status capsule and expandable quota board in the top-right corner of the Antigravity App window.',
+        '在 Antigravity App 主窗口右上角悬浮显示实时状态胶囊与可展开的配额看板。',
+        'Requires launching Antigravity App via the Persistent CDP Launcher (Chrome debugging port).',
+        '需通过持久化 CDP 启动器（开启 Chrome 调试端口）启动 Antigravity App。',
+    );
     const appOverlaysCard = `
         <section class="stg-card" id="appOverlaysCard" data-accent="display">
             <div class="stg-header">
                 <span class="stg-header-icon">${ICON.bolt}</span>
-                <h2>${tBiHtml('App Ambient Overlays (Opt-In CDP)', 'App 桌面悬浮组件（可选 CDP）')}</h2>
+                <h2>${tBiHtml('App Ambient Overlays (Opt-In CDP)', '桌面悬浮层（可选 CDP）')}</h2>
                 ${cdpPillHtml}
             </div>
             <p class="raw-desc">${tBiHtml(
-        'Native Panel Compact HUD renders immediately at the top of this monitor panel with zero CDP. The two desktop floating overlays below attach read-only Shadow DOM widgets inside Antigravity App when launched with --remote-debugging-port=0 — zero app.asar patching and 100% ToS-safe.',
-        '「面板顶部紧凑 HUD」会直接渲染在本监控面板顶部，无需 CDP 即开即用；下方两项桌面悬浮组件需先以 --remote-debugging-port=0 启动 Antigravity App 才会在主窗口内以只读 Shadow DOM 渲染，零 app.asar 修改且 100% 合规。',
+        'The Compact HUD (status strip) works immediately at the top of this monitor panel with no extra setup. The two optional desktop overlays display live widgets directly inside the Antigravity App window (next to the chat input / Turbo area and in the top-right corner) once Antigravity is started with Chrome debugging (CDP) enabled — never modifying the app itself.',
+        '「面板顶部紧凑 HUD」（状态条）会直接显示在本监控面板顶部，无需任何额外配置。下方两项桌面悬浮层会在开启浏览器调试端口（CDP）后，直接浮现于 Antigravity 主窗口的聊天输入框（Turbo 按钮左侧）与右上角，全程不修改应用本身。',
     )}</p>
             <div class="toggle-group">
-                <label class="toggle-row">
+                <label class="toggle-row"${nativeHudTip}>
                     <input type="checkbox" id="toggleNativeHudBar" class="toggle-cb" data-app-setting="showNativeHudBar" data-feedback-id="appOverlaysFeedback" ${showNativeHudBar ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBiHtml('Native Panel Compact HUD (in-panel top bar, no CDP)', '面板顶部紧凑 HUD（本面板顶部常驻，无需 CDP）')}</span>
+                    <span>${tBiHtml('Native Panel Compact HUD (in-panel top bar, no CDP)', '面板顶部紧凑 HUD（本面板顶部状态条，无需 CDP）')}</span>
                 </label>
-                <label class="toggle-row">
+                <label class="toggle-row"${composerRingTip}>
                     <input type="checkbox" id="toggleAppComposerRing" class="toggle-cb" data-app-setting="appComposerRingEnabled" data-feedback-id="appOverlaysFeedback" ${appComposerRingEnabled ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                    <span>${tBiHtml('Composer Context Ring — Left of Turbo (CDP)', '对话框悬浮环（Turbo 左侧，需 CDP）')}</span>
+                    <span>${tBiHtml('Composer Context Ring — Left of Turbo (CDP)', '输入框上下文环（Turbo 按钮左侧，需 CDP）')}</span>
                 </label>
-                <label class="toggle-row">
+                <label class="toggle-row"${topBarOverlayTip}>
                     <input type="checkbox" id="toggleAppTopBar" class="toggle-cb" data-app-setting="appTopBarEnabled" data-feedback-id="appOverlaysFeedback" ${appTopBarEnabled ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
                     <span>${tBiHtml('Top-Right Status Bar & Quota Board (CDP)', '右上角常驻状态栏与额度看板（需 CDP）')}</span>
@@ -634,11 +750,11 @@ export function buildSettingsContent(
             </div>
             ${cdpLauncherRowHtml}
             <details id="settings-cdp-guide" class="stg-guide-details" data-state-key="settings-cdp-guide">
-                <summary>${tBiHtml('Manual terminal CDP launch guide (macOS / Windows / Linux)', '手动终端 CDP 启动指引（macOS / Windows / Linux）')}</summary>
+                <summary>${tBiHtml('Technical details & manual terminal CDP launch guide (macOS / Windows / Linux)', '技术原理与手动终端 CDP 启动指引（macOS / Windows / Linux）')}</summary>
                 <div class="stg-guide-body">
                     <p>${tBiHtml(
-        'Zero app.asar patching · 100% ToS-safe read-only observation.',
-        '零 app.asar 篡改 · 100% 合规只读观测。',
+        'How it works: overlays mount read-only Shadow DOM widgets via Chrome DevTools Protocol (DevToolsActivePort) — zero app.asar patching and 100% ToS-safe.',
+        '实现原理：通过 Chrome 调试协议（DevToolsActivePort）在主窗口挂载只读 Shadow DOM 悬浮组件——零 app.asar 篡改，100% 合规。',
     )}</p>
                     <p class="stg-guide-step">${tBiHtml(
         'Step 1 — Quit Antigravity App completely first (macOS: Cmd+Q and wait ~5s for background language_server teardown; Windows/Linux: close all windows & tray icon). If Antigravity is still exiting, macOS "open -a" silently drops --args.',
@@ -679,8 +795,8 @@ export function buildSettingsContent(
                         </div>
                     </div>
                     <p class="stg-guide-note">${tBiHtml(
-        'Tip: Antigravity auto-updates restart the app without CLI flags. Use the 1-click Persistent CDP Launcher above (or run `node scripts/install-app-plugin.mjs --setup-cdp-launcher`) so you never have to retype terminal commands.',
-        '提示：Antigravity 自动更新重启后会丢弃启动参数。建议使用上方「一键生成持久化启动器」（或运行 `node scripts/install-app-plugin.mjs --setup-cdp-launcher`），以后直接从启动器打开即可永久生效。',
+        'Dock & Taskbar tips: on macOS, drag "Antigravity (CDP).app" from /Applications (or Finder) into the Dock — NEVER right-click the running icon and choose "Keep in Dock" (that saves the original app without --remote-debugging-port=0). On Windows, right-click the direct .lnk shortcut to Pin to Taskbar natively. On Linux, pin "Antigravity (CDP)" from your app launcher to Ubuntu Dock.',
+        '固定到 Dock / 任务栏提示：macOS 请从访达将「Antigravity (CDP).app」拖入程序坞，切勿右键运行中图标选「在程序坞中保留」（否则会固定无参原版应用）；Windows 直连 .lnk 支持右键原生「固定到任务栏」；Linux 请从应用启动器将「Antigravity (CDP)」固定到 Ubuntu Dock。',
     )}</p>
                 </div>
             </details>
@@ -741,6 +857,70 @@ export function buildSettingsContent(
     );
     const defaultFxPlaceholder = String(CURRENCY_PRESETS[displayCurrency]?.defaultRatePerUsd ?? 1);
 
+    const orchMappedTip = stgRichTipAttrs(
+        'settings-tip-orch-mapped',
+        'Mapped Base Mode',
+        '按底座估算模式',
+        'Estimates fixed server-managed Orchestrator models using their corresponding underlying base model official API rate.',
+        '使用对应底座模型的公开官方单价，估算服务端固定编排模型的参考费用。',
+        'Recommended for complete cost charts.',
+        '推荐开启，让成本图表完整覆盖编排调用。',
+    );
+    const orchStrictTip = stgRichTipAttrs(
+        'settings-tip-orch-strict',
+        'Strict Pricing Mode',
+        '严格计价模式',
+        'Marks fixed server-managed Orchestrator models as Unpriced until you manually enter a custom rate in the Cost tab.',
+        '在你于「成本」页手动填写自定义单价前，将无公开标价的固定编排模型标记为「未定价」。',
+        'Use when you only want strictly published API prices included in totals.',
+        '适合仅希望统计明确公开标价模型的场景。',
+    );
+    const customFxTip = stgRichTipAttrs(
+        'settings-tip-custom-fx',
+        'Custom FX (Foreign Exchange) Rate',
+        '自定义汇率 (FX)',
+        'Optional exchange rate per 1 USD used to convert API reference costs into your selected display currency.',
+        '可选的 1 USD 兑换目标显示货币的汇率（FX = 外汇汇率），用于换算参考费用。',
+        'Leave blank to automatically use the built-in reference exchange rate.',
+        '留空时自动采用内置参考汇率。',
+    );
+    const subRoiTip = stgRichTipAttrs(
+        'settings-tip-subscription-roi',
+        'Subscription Plan (ROI Reference)',
+        '订阅方案（ROI 参考）',
+        'ROI (Return on Investment) compares your estimated API reference value against your prorated monthly subscription fee in the Calendar tab.',
+        'ROI（投入产出比）用于在「日历」页将你的等效 API 参考估值与按天折算的订阅月费进行对比。',
+        'Prorated fee = monthly fee × (range days ÷ 30). Local estimate only.',
+        '折算公式：月费 ×（区间天数 ÷ 30）。仅作本地参考。',
+    );
+    const calRetentionTip = stgRichTipAttrs(
+        'settings-tip-calendar-retention',
+        'Calendar Retention (Days)',
+        '日历历史保留天数',
+        'How many daily usage archive records are retained in local persistent storage (30 to 3,650 days).',
+        '本地持久化存储中保留的每日用量归档天数上限（范围 30–3,650 天）。',
+        'Older archived days beyond this limit are automatically trimmed on save.',
+        '超出保留天数的较早归档会在保存时自动清理。',
+    );
+    const maxRecentStepsTip = stgRichTipAttrs(
+        'settings-tip-max-recent-steps',
+        'Max Recent Activity Steps',
+        '最近活动步骤上限',
+        'Maximum number of recent tool/reasoning steps kept in memory for the current session in GM Data (10 to 500).',
+        '当前会话在「GM 数据」时间线中保留的最近步骤条数上限（范围 10–500）。',
+        'Higher values show deeper step history at slightly higher memory usage.',
+        '数值越大可回看越多步骤细节，内存占用略微增加。',
+    );
+    const maxArchivesTip = stgRichTipAttrs(
+        'settings-tip-max-archives',
+        'Max Archived Activity Sessions',
+        '活动归档会话上限',
+        'Maximum number of past conversation activity summaries kept locally before older sessions rotate out (1 to 100).',
+        '本地保留的过往会话活动归档份数上限（范围 1–100），超出后自动淘汰最早归档。',
+        'Applies to GM Data session archives; Calendar daily totals follow Calendar retention above.',
+        '仅影响「GM 数据」会话归档；日历按天汇总遵循上方日历保留天数。',
+    );
+
     const costCurrencyHistoryCard = `
         <section class="stg-card" id="costCurrencyHistoryCard" data-accent="history">
             <div class="stg-header">
@@ -750,12 +930,12 @@ export function buildSettingsContent(
             <div class="setting-row">
                 <label>${tBiHtml('Orchestrator pricing mode', '编排模型计费模式')}</label>
                 <p class="raw-desc">${tBiHtml(
-        'Mapped Base estimates legacy fixed Orchestrator IDs (M537/M667/M681/M669) using their base model official rate; Strict mode marks them Unpriced until custom rates are entered.',
-        '按底座估算会使用对应底座模型的官方单价估算旧版固定编排模型（M537/M667/M681/M669）；严格模式在填写自定义价格前将其标记为未定价。',
+        'Mapped Base estimates fixed server-managed Orchestrator models (such as Orchestrator Neon, Carbon, and Argon) using their underlying base model\'s official rate; Strict mode marks them Unpriced until custom rates are entered.',
+        '按底座估算会使用对应底座模型的官方单价估算服务端固定编排模型（如 Orchestrator Neon、Carbon、Argon 等）；严格模式在填写自定义价格前将其标记为未定价。',
     )}</p>
                 <div class="stg-seg-group" role="radiogroup" aria-label="${esc(tBi('Orchestrator pricing mode', '编排模型计费模式'))}">
-                    <button type="button" class="stg-seg-btn${orchestratorPricingMode === 'mapped' ? ' is-active' : ''}" id="stgOrchModeMapped" data-action="setOrchestratorPricingMode" data-mode="mapped" role="radio" aria-checked="${orchestratorPricingMode === 'mapped' ? 'true' : 'false'}">${tBiHtml('Mapped Base', '按底座估算')}</button>
-                    <button type="button" class="stg-seg-btn${orchestratorPricingMode === 'strict' ? ' is-active' : ''}" id="stgOrchModeStrict" data-action="setOrchestratorPricingMode" data-mode="strict" role="radio" aria-checked="${orchestratorPricingMode === 'strict' ? 'true' : 'false'}">${tBiHtml('Strict', '严格模式')}</button>
+                    <button type="button" class="stg-seg-btn${orchestratorPricingMode === 'mapped' ? ' is-active' : ''}" id="stgOrchModeMapped" data-action="setOrchestratorPricingMode" data-mode="mapped" role="radio" aria-checked="${orchestratorPricingMode === 'mapped' ? 'true' : 'false'}"${orchMappedTip}>${tBiHtml('Mapped Base', '按底座估算')}</button>
+                    <button type="button" class="stg-seg-btn${orchestratorPricingMode === 'strict' ? ' is-active' : ''}" id="stgOrchModeStrict" data-action="setOrchestratorPricingMode" data-mode="strict" role="radio" aria-checked="${orchestratorPricingMode === 'strict' ? 'true' : 'false'}"${orchStrictTip}>${tBiHtml('Strict', '严格模式')}</button>
                 </div>
                 <span id="orchPricingModeFeedback" class="threshold-feedback" role="status"></span>
             </div>
@@ -770,7 +950,7 @@ export function buildSettingsContent(
                     </select>
                 </div>
                 <div class="stg-field">
-                    <label for="customFxRateInput">${tBiHtml('Custom FX rate (per 1 USD)', '自定义汇率（每 1 USD）')}</label>
+                    <label for="customFxRateInput"${customFxTip}>${tBiHtml('Custom FX rate (per 1 USD)', '自定义汇率（每 1 USD）')}</label>
                     <input type="number" id="customFxRateInput" class="threshold-input"
                            data-app-setting="customFxRate" data-setting-type="nullable-float" data-feedback-id="customFxRateFeedback"
                            min="0.0001" max="1000000" step="0.01"
@@ -779,10 +959,11 @@ export function buildSettingsContent(
                     <span id="customFxRateFeedback" class="threshold-feedback" role="status"></span>
                 </div>
             </div>
+            <p class="stg-hint-note">${tBiHtml('FX = foreign exchange rate per 1 USD. Leave blank to use the built-in reference rate.', 'FX 为每 1 USD 折算汇率，留空自动使用内置参考汇率。')}</p>
 
             <div class="stg-form-grid stg-form-grid-subscription">
                 <div class="stg-field stg-field-plan">
-                    <label for="subscriptionPlanSelect">${tBiHtml('Subscription plan (ROI)', '订阅方案（ROI 参考）')}</label>
+                    <label for="subscriptionPlanSelect"${subRoiTip}>${tBiHtml('Subscription plan (ROI)', '订阅方案（ROI 参考）')}</label>
                     <select id="subscriptionPlanSelect" class="stg-select" data-app-setting="subscriptionPlan" data-feedback-id="subscriptionFeedback">
                         ${planOptionsHtml}
                     </select>
@@ -808,7 +989,8 @@ export function buildSettingsContent(
             <div class="stg-divider"></div>
 
             <div class="setting-row">
-                <label for="calendarRetentionInput">${tBiHtml('Calendar retention (days)', '日历历史保留天数')}</label>
+                <label for="calendarRetentionInput"${calRetentionTip}>${tBiHtml('Calendar retention (days)', '日历历史保留天数')}</label>
+                <p class="raw-desc">${tBiHtml('Number of daily usage archive days kept locally (30–3,650 days).', '本地保留的每日用量归档天数（30–3,650 天），超出自动清理较早记录。')}</p>
                 <div class="threshold-input-row">
                     <div class="num-spinner">
                         <button type="button" class="num-spinner-btn decrement" data-target="calendarRetentionInput" aria-label="${esc(tBi('Decrease calendar retention days', '减少日历保留天数'))}">−</button>
@@ -824,7 +1006,7 @@ export function buildSettingsContent(
 
             <div class="stg-form-grid">
                 <div class="stg-field">
-                    <label for="activityMaxRecentStepsInput">${tBiHtml('Max recent activity steps', '最近活动步骤上限')}</label>
+                    <label for="activityMaxRecentStepsInput"${maxRecentStepsTip}>${tBiHtml('Max recent activity steps', '最近活动步骤上限')}</label>
                     <div class="threshold-input-row">
                         <div class="num-spinner">
                             <button type="button" class="num-spinner-btn decrement" data-target="activityMaxRecentStepsInput" aria-label="${esc(tBi('Decrease max recent activity steps', '减小最近活动步骤上限'))}">−</button>
@@ -837,7 +1019,7 @@ export function buildSettingsContent(
                     </div>
                 </div>
                 <div class="stg-field">
-                    <label for="activityMaxArchivesInput">${tBiHtml('Max archived activity sessions', '活动归档会话上限')}</label>
+                    <label for="activityMaxArchivesInput"${maxArchivesTip}>${tBiHtml('Max archived activity sessions', '活动归档会话上限')}</label>
                     <div class="threshold-input-row">
                         <div class="num-spinner">
                             <button type="button" class="num-spinner-btn decrement" data-target="activityMaxArchivesInput" aria-label="${esc(tBi('Decrease max archived activity sessions', '减小活动归档会话上限'))}">−</button>
@@ -911,10 +1093,22 @@ export function buildSettingsContent(
                 <h2>${tBiHtml('Polling', '轮询')}</h2>
             </div>
             <div class="setting-row">
-                <label for="pollingInput">${tBiHtml(
+                <label for="pollingInput"${stgRichTipAttrs(
+        'settings-tip-polling-interval',
+        'Polling Interval',
+        '轮询间隔',
+        'How frequently the monitor queries the local Antigravity service for updated context and quota metrics.',
+        '监控向本地 Antigravity 服务拉取上下文与配额更新的时间间隔。',
+        '1–60s · Shorter intervals feel fresher; longer intervals reduce background CPU usage (default: 5s).',
+        '范围 1–60 秒 · 间隔越短刷新越及时，间隔越长后台 CPU 占用越低（默认 5 秒）。',
+    )}>${tBiHtml(
         'Polling interval (seconds)',
         '轮询间隔（秒）',
     )}</label>
+                <p class="raw-desc">${tBiHtml(
+        'How often to refresh context and quota data (1–60s). Shorter intervals update faster; longer intervals use less CPU.',
+        '多久刷新一次上下文与配额数据（1–60 秒）。间隔越短更新越及时，间隔越长后台占用越低。',
+    )}</p>
                 <div class="threshold-input-row">
                     <div class="num-spinner">
                         <button type="button" class="num-spinner-btn decrement" data-target="pollingInput" aria-label="${esc(tBi('Decrease polling interval', '减小轮询间隔'))}">−</button>
@@ -963,7 +1157,15 @@ export function buildSettingsContent(
                             <span class="toggle-track"><span class="toggle-thumb"></span></span>
                             <span>${tBiHtml('Generation speed', '生成速度')} <code>64 tok/s</code></span>
                         </label>
-                        <label class="toggle-row">
+                        <label class="toggle-row"${stgRichTipAttrs(
+        'settings-tip-cache-hit',
+        'Prompt Cache Hit Rate',
+        '提示词缓存命中率',
+        'Shows the percentage of prompt tokens served directly from provider cache in the IDE status bar (higher means faster responses and lower reference cost).',
+        '在 IDE 状态栏中显示提示词缓存复用占比（越高代表首字响应越快、等效费用越低）。',
+        'Formula: Cache Read ÷ (Fresh Input + Cache Read + Cache Write).',
+        '口径：缓存读取 ÷（新输入 + 缓存读取 + 缓存写入）。',
+    )}>
                             <input type="checkbox" id="toggleCacheHit" class="toggle-cb" ${showCacheHit ? 'checked' : ''}${ideOnlyDisabledAttr} />
                             <span class="toggle-track"><span class="toggle-thumb"></span></span>
                             <span>${tBiHtml('Prompt cache hit rate', '提示词缓存命中率')} <code>Cache 84%</code></span>
@@ -974,7 +1176,15 @@ export function buildSettingsContent(
                             <span>${tBiHtml('Session cost', '当前会话费用')} <code>$0.27</code></span>
                         </label>
                     </div>
-                    <label class="stg-select-row" for="statusTooltipDensity">
+                    <label class="stg-select-row" for="statusTooltipDensity"${stgRichTipAttrs(
+        'settings-tip-hover-density',
+        'IDE Status Bar Hover Density',
+        'IDE 状态栏悬停摘要密度',
+        'Controls how many detail sections appear when hovering the Antigravity IDE status bar item.',
+        '控制鼠标悬停在 Antigravity IDE 状态栏上时展示的摘要详细程度。',
+        'Automatic: adapts to window zoom & pool count · Compact: ≤14 lines · Full: ≤32 lines (all sections).',
+        '自动：随缩放和配额池数自适应 · 精简：≤14 行 · 完整：≤32 行（展示全部板块）。',
+    )}>
                         <span>${tBiHtml('Hover density', '悬停摘要密度')}</span>
                         <select id="statusTooltipDensity"${ideOnlyDisabledAttr}>
                             <option value="auto"${tooltipDensity === 'auto' ? ' selected' : ''}>${esc(tBi('Automatic', '自动'))}</option>
@@ -996,12 +1206,28 @@ export function buildSettingsContent(
         '控制诊断信息展示及跨 Antigravity IDE 与 App 的会话跟踪行为。',
     )}</p>
             <div class="toggle-group">
-                <label class="toggle-row">
+                <label class="toggle-row"${stgRichTipAttrs(
+        'settings-tip-lock-main-agent',
+        'Lock to Main Agent',
+        '锁定主会话',
+        'Keeps the monitor focused on your main conversation instead of jumping whenever a background subagent runs.',
+        '持续跟踪你的主对话，不会因为后台子智能体运行而自动切换视图焦点。',
+        'You can still switch conversations manually using the header switcher.',
+        '开启后仍可通过顶栏会话切换器手动查看任意对话。',
+    )}>
                     <input type="checkbox" id="toggleLockMainAgent" class="toggle-cb" ${lockToMainAgent ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
                     <span>${tBiHtml('Lock to Main Agent (ignore background subagents)', '锁定主会话（忽略后台子智能体）')}</span>
                 </label>
-                <label class="toggle-row">
+                <label class="toggle-row"${stgRichTipAttrs(
+        'settings-tip-model-internal-id',
+        'Show Model Internal ID',
+        '显示模型内部 ID',
+        'Appends Antigravity\'s short internal catalog ID (such as M16 or M535) next to model names.',
+        '在模型名称旁附加 Antigravity 内部目录短编号（例如 M16 或 M535）。',
+        'Helpful when debugging model routing, effort tiers, or custom pricing rules.',
+        '适合排查模型路由、推理档位或自定义定价匹配时开启。',
+    )}>
                     <input type="checkbox" id="toggleModelInternalId" class="toggle-cb" ${showModelInternalId ? 'checked' : ''} />
                     <span class="toggle-track"><span class="toggle-thumb"></span></span>
                     <span>${tBiHtml('Show model internal ID', '显示模型内部 ID')} <code>(M16)</code></span>
@@ -1033,11 +1259,19 @@ export function buildSettingsContent(
         <section class="stg-card" data-accent="history">
             <div class="stg-header">
                 <span class="stg-header-icon">${ICON.timeline}</span>
-                <h2>${tBiHtml('Panel Tips', '界面提示')}</h2>
+                <h2${stgRichTipAttrs(
+        'settings-tip-panel-tips',
+        'Tab-Bar Scroll Hint',
+        '顶栏横向滚动提示',
+        'Controls the brief tip reminding you that the top navigation tab bar scrolls horizontally in narrow side panes.',
+        '控制窄侧栏顶部标签导航栏可横向滚动的引导提示。',
+        'Click "Show Hint Now" to re-display the tab-bar horizontal scroll hint immediately once.',
+        '点击「立即显示一次提示」可在顶部立刻重新显示一次标签栏滚动提示。',
+    )}>${tBiHtml('Panel Tips', '界面提示')}</h2>
             </div>
             <p class="raw-desc">${tBiHtml(
-        'This state only means whether auto-display is enabled. It does not mean the hint is currently visible at the top. Use the button below to show it immediately once.',
-        '这里的状态只表示“是否启用自动提示”，不代表顶部当前一定可见。要立刻看到这条提示，请用下面的按钮显示一次。',
+        'Controls the top tab-bar horizontal scroll hint (useful in narrow side panes). The badge below shows whether auto-display is enabled; click the button to re-show the tab-bar scroll hint immediately once.',
+        '控制顶部标签导航栏的横向滚动提示（在窄侧栏中方便发现更多标签页）。下方状态仅表示是否启用自动提示，点击按钮可立即重新显示一次标签栏滚动提示。',
     )}</p>
             <div class="storage-actions">
                 <button type="button" class="action-btn" id="restoreTabScrollHint">${ICON.refresh} <span>${tBiHtml('Show Hint Now', '立即显示一次提示')}</span></button>

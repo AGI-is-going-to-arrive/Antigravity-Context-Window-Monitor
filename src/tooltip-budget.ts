@@ -3,7 +3,7 @@
  * Pure functions — safe to unit-test without VS Code UI.
  */
 
-import type { Language } from './i18n';
+import { getLanguage, type Language } from './i18n';
 import { getQuotaPoolKey } from './models';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -117,6 +117,7 @@ export function selectQuotaRows<T extends QuotaSelectable>(
     models: T[],
     currentId: string,
     maxRows: number,
+    lang: Language = getLanguage(),
 ): SelectQuotaRowsResult<T> {
     const withQ = models.filter(m => !!m.quotaInfo);
 
@@ -144,7 +145,7 @@ export function selectQuotaRows<T extends QuotaSelectable>(
     const ordered: T[] = [];
     for (const members of groups.values()) {
         const rep = pickPoolRepresentative(members, currentId);
-        ordered.push(annotatePoolLabel(rep, members.length));
+        ordered.push(annotatePoolLabel(rep, members.length, lang));
     }
 
     ordered.sort((a, b) => {
@@ -208,20 +209,23 @@ function generationScore(label: string): number {
     return Number(m[1]) * 1000 + Number(m[2] || 0) + (neon ? 0.85 : hydrogen ? 0.75 : carbon ? 0.5 : 0);
 }
 
-/** Suffix marking how many models a collapsed pool row stands for, e.g. " · 11". */
-export function poolSizeSuffix(poolSize: number): string {
-    return poolSize > 1 ? ` · ${poolSize}` : '';
+/** Suffix marking how many models a collapsed pool row stands for, e.g. " · 11 models" / " · 11 个模型". */
+export function poolSizeSuffix(poolSize: number, lang: Language = getLanguage()): string {
+    if (poolSize <= 1) {
+        return '';
+    }
+    return lang === 'zh' ? ` · ${poolSize} 个模型` : ` · ${poolSize} models`;
 }
 
-function annotatePoolLabel<T extends QuotaSelectable>(rep: T, poolSize: number): T {
-    const suffix = poolSizeSuffix(poolSize);
+function annotatePoolLabel<T extends QuotaSelectable>(rep: T, poolSize: number, lang: Language = getLanguage()): T {
+    const suffix = poolSizeSuffix(poolSize, lang);
     if (!suffix) {
         return rep;
     }
     // Carry the size separately as well. The renderer truncates labels to a fixed display width,
-    // and "Claude Opus 4.6 (Thinking) · 3" is wider than that budget — appending first would let the
-    // count be the part that gets cut, turning a 3-model pool row into something that reads like a
-    // single model. The renderer trims the base label to fit AROUND the suffix instead.
+    // and "Claude Opus 4.6 (Thinking) · 3 models" is wider than that budget — appending first would
+    // let the count be the part that gets cut, turning a 3-model pool row into something that reads
+    // like a single model. The renderer trims the base label to fit AROUND the suffix instead.
     return { ...rep, label: `${rep.label}${suffix}`, poolSize };
 }
 

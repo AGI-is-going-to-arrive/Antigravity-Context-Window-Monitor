@@ -4,6 +4,7 @@ import {
     applySectionBudget,
     countSectionLines,
     getSectionLineBudget,
+    poolSizeSuffix,
     renderHoverSections,
     SECTION_COMPACT_MAX_LINES,
     SECTION_FULL_MAX_LINES,
@@ -95,6 +96,19 @@ describe('same-generation Gemini quota representative', () => {
         const biCarbon = model(CARBON_HIGH, 'Gemini 4 Carbon (High / 高)');
         expect(selectQuotaRows([biCarbon, biHydrogen, biNeon], '', 3).rows[0].model).toBe('MODEL_PLACEHOLDER_M535');
         expect(selectQuotaRows([biCarbon, biHydrogen], '', 3).rows[0].model).toBe('MODEL_PLACEHOLDER_M528');
+    });
+
+    it('formats collapsed pool size suffix with models / 个模型 units instead of bare numbers', () => {
+        expect(poolSizeSuffix(1, 'en')).toBe('');
+        expect(poolSizeSuffix(1, 'zh')).toBe('');
+        expect(poolSizeSuffix(4, 'en')).toBe(' · 4 models');
+        expect(poolSizeSuffix(4, 'both')).toBe(' · 4 models');
+        expect(poolSizeSuffix(4, 'zh')).toBe(' · 4 个模型');
+
+        const carbon = model(CARBON_HIGH, 'Gemini 4 Carbon (High)');
+        const argon = model(ARGON_HIGH, 'Gemini 4 Argon (High)');
+        expect(selectQuotaRows([argon, carbon], '', 3, 'en').rows[0].label).toBe('Gemini 4 Carbon (High) · 2 models');
+        expect(selectQuotaRows([argon, carbon], '', 3, 'zh').rows[0].label).toBe('Gemini 4 Carbon (High) · 2 个模型');
     });
 });
 
