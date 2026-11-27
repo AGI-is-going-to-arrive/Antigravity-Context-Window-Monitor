@@ -107,6 +107,10 @@ export function getScript(): string {
             var revealedText = ${JSON.stringify(`✓ ${tBi('Revealed', '已定位')}`)};
             var openFailedText = ${JSON.stringify(tBi('Open failed', '打开失败'))};
             var revealFailedText = ${JSON.stringify(tBi('Reveal failed', '定位失败'))};
+            var grReloadingText = ${JSON.stringify(tBi('Reloading...', '正在重新加载...'))};
+            var grSavingText = ${JSON.stringify(tBi('Saving...', '正在保存...'))};
+            var grSaveFailedText = ${JSON.stringify(tBi('Save failed', '保存失败'))};
+            var grLoadFailedText = ${JSON.stringify(tBi('Load failed', '加载失败'))};
             var invalidBillingDayText = ${JSON.stringify(tBi('Invalid', '无效'))};
             var invalidPricingText = ${JSON.stringify(tBi('Enter a non-negative price in every field of each row, or clear the entire row.', '请为每行的所有字段填写非负价格，或清空整行。'))};
             var checkingUpdatesText = ${JSON.stringify(tBi('Checking...', '正在检查...'))};
@@ -523,6 +527,34 @@ export function getScript(): string {
                     el.style.color = isError ? 'var(--ed-danger)' : 'var(--ed-good)';
                 }
                 flashFeedback('profileBillingDayFeedback', text, 2000);
+            }
+
+            // ─── Global Rules: shared size/state pill sync ───
+            function formatGlobalRulesBytes(bytes) {
+                var n = Number(bytes) || 0;
+                if (n <= 0) { return '0 B'; }
+                if (n < 1024) { return Math.round(n) + ' B'; }
+                if (n < 1024 * 1024) { return (n / 1024).toFixed(n >= 10 * 1024 ? 0 : 1) + ' KB'; }
+                return (n / (1024 * 1024)).toFixed(n >= 10 * 1024 * 1024 ? 0 : 1) + ' MB';
+            }
+            function updateGlobalRulesMeta(payload) {
+                var sizeEl = document.getElementById('globalRulesSizeVal');
+                if (sizeEl && payload && typeof payload.sizeBytes === 'number') {
+                    sizeEl.textContent = formatGlobalRulesBytes(payload.sizeBytes);
+                }
+                var stateEl = document.getElementById('globalRulesState');
+                if (stateEl && payload && typeof payload.exists === 'boolean') {
+                    stateEl.setAttribute('data-gr-exists', String(payload.exists));
+                    stateEl.setAttribute('data-gr-too-large', String(!!payload.tooLarge));
+                    stateEl.classList.toggle('is-ready', payload.exists);
+                    stateEl.classList.toggle('is-missing', !payload.exists);
+                    var labelEl = stateEl.querySelector('span');
+                    if (labelEl) {
+                        labelEl.textContent = payload.exists
+                            ? ${JSON.stringify(`✓ ${tBi('Ready', '已存在')}`)}
+                            : ${JSON.stringify(tBi('Missing', '不存在'))};
+                    }
+                }
             }
 
             // ─── Tab System ───
@@ -1353,6 +1385,37 @@ export function getScript(): string {
                     }
                     flashFeedback('statePathFeedback', text, 3200);
                 }
+                if (msg.command === 'globalRulesFileContent') {
+                    var grEditor = document.getElementById('globalRulesEditor');
+                    if (msg.ok && grEditor) {
+                        if (!msg.tooLarge) {
+                            grEditor.value = typeof msg.content === 'string' ? msg.content : '';
+                        }
+                        updateGlobalRulesMeta(msg);
+                        flashFeedback('globalRulesFeedback', \`✓ ${tBi('Reloaded', '已重新加载')}\`, 2600);
+                    } else if (!msg.ok) {
+                        flashFeedback('globalRulesFeedback', msg.message || grLoadFailedText, 4000);
+                    }
+                }
+                if (msg.command === 'globalRulesSaveResult') {
+                    var grSaveBtn = document.getElementById('globalRulesSaveBtn');
+                    if (grSaveBtn) { grSaveBtn.disabled = false; }
+                    if (msg.ok) {
+                        updateGlobalRulesMeta(msg);
+                        flashFeedback('globalRulesFeedback', savedText, 2600);
+                    } else {
+                        flashFeedback('globalRulesFeedback', msg.message || grSaveFailedText, 4500);
+                    }
+                }
+                if (msg.command === 'globalRulesActionResult') {
+                    var grText = '';
+                    if (msg.ok) {
+                        grText = msg.action === 'reveal' ? revealedText : openedText;
+                    } else {
+                        grText = msg.message || (msg.action === 'reveal' ? revealFailedText : openFailedText);
+                    }
+                    flashFeedback('globalRulesFeedback', grText, 3200);
+                }
             });
 
 
@@ -1814,6 +1877,90 @@ export function getScript(): string {
                         hint.hidden = false;
                     }
                     vscode.postMessage({ command: 'setPanelPref', key: 'panelShowTabScrollHint', value: true });
+                    return;
+                }
+
+                // ── Settings: Global Rules Actions (delegation) ──
+                if (target.closest('#globalRulesOpenBtn')) {
+                    setFeedback('globalRulesFeedback', openingText);
+                    if (bridge && bridge.surface !== 'vscode' && typeof bridge.sendAction === 'function') {
+                        Promise.resolve(bridge.sendAction({ command: 'openGlobalRulesFile' })).then(function(res) {
+                            var payload = (res && res.result) ? res.result : res;
+                            flashFeedback('globalRulesFeedback', (payload && payload.ok === false)
+                                ? (payload.error || openFailedText)
+                                : openedText, 3200);
+                        }).catch(function() {
+                            flashFeedback('globalRulesFeedback', openFailedText, 3200);
+                        });
+                    } else {
+                        vscode.postMessage({ command: 'openGlobalRulesFile' });
+                    }
+                    return;
+                }
+                if (target.closest('#globalRulesRevealBtn')) {
+                    setFeedback('globalRulesFeedback', revealingText);
+                    if (bridge && bridge.surface !== 'vscode' && typeof bridge.sendAction === 'function') {
+                        Promise.resolve(bridge.sendAction({ command: 'revealGlobalRulesFile' })).then(function(res) {
+                            var payload = (res && res.result) ? res.result : res;
+                            flashFeedback('globalRulesFeedback', (payload && payload.ok === false)
+                                ? (payload.error || revealFailedText)
+                                : revealedText, 3200);
+                        }).catch(function() {
+                            flashFeedback('globalRulesFeedback', revealFailedText, 3200);
+                        });
+                    } else {
+                        vscode.postMessage({ command: 'revealGlobalRulesFile' });
+                    }
+                    return;
+                }
+                if (target.closest('#globalRulesReloadBtn')) {
+                    setFeedback('globalRulesFeedback', grReloadingText);
+                    if (bridge && bridge.surface !== 'vscode' && typeof bridge.sendAction === 'function') {
+                        Promise.resolve(bridge.sendAction({ command: 'readGlobalRulesFile' })).then(function(res) {
+                            var payload = (res && res.result) ? res.result : res;
+                            var grEditorEl = document.getElementById('globalRulesEditor');
+                            if (payload && payload.ok !== false && grEditorEl) {
+                                if (!payload.tooLarge) {
+                                    grEditorEl.value = typeof payload.content === 'string' ? payload.content : '';
+                                }
+                                updateGlobalRulesMeta(payload);
+                                flashFeedback('globalRulesFeedback', \`✓ ${tBi('Reloaded', '已重新加载')}\`, 2600);
+                            } else {
+                                flashFeedback('globalRulesFeedback', (payload && payload.error) || grLoadFailedText, 4000);
+                            }
+                        }).catch(function() {
+                            flashFeedback('globalRulesFeedback', grLoadFailedText, 3200);
+                        });
+                    } else {
+                        vscode.postMessage({ command: 'readGlobalRulesFile' });
+                    }
+                    return;
+                }
+                if (target.closest('#globalRulesSaveBtn')) {
+                    var grSaveEditor = document.getElementById('globalRulesEditor');
+                    if (!grSaveEditor) { return; }
+                    var grSaveBtnRef = document.getElementById('globalRulesSaveBtn');
+                    if (grSaveBtnRef) { grSaveBtnRef.disabled = true; }
+                    setFeedback('globalRulesFeedback', grSavingText);
+                    var grContent = String(grSaveEditor.value || '');
+                    if (bridge && bridge.surface !== 'vscode' && typeof bridge.sendAction === 'function') {
+                        Promise.resolve(bridge.sendAction({ command: 'saveGlobalRulesFile', content: grContent })).then(function(res) {
+                            if (grSaveBtnRef) { grSaveBtnRef.disabled = false; }
+                            var payload = (res && res.result) ? res.result : res;
+                            if (payload && payload.ok === false) {
+                                flashFeedback('globalRulesFeedback', payload.error || grSaveFailedText, 4500);
+                            } else {
+                                updateGlobalRulesMeta({ sizeBytes: payload && payload.sizeBytes, exists: true, tooLarge: false });
+                                flashFeedback('globalRulesFeedback', savedText, 2600);
+                            }
+                        }).catch(function() {
+                            if (grSaveBtnRef) { grSaveBtnRef.disabled = false; }
+                            flashFeedback('globalRulesFeedback', grSaveFailedText, 4000);
+                        });
+                    } else {
+                        vscode.postMessage({ command: 'saveGlobalRulesFile', content: grContent });
+                        // Re-enabled by the globalRulesSaveResult message handler.
+                    }
                     return;
                 }
 

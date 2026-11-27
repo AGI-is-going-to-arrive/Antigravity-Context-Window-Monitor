@@ -1,5 +1,6 @@
 // ─── Settings Tab Content Builder ────────────────────────────────────────────
-// Builds HTML for the "Settings" tab: storage diagnostics, App Ambient Overlays
+// Builds HTML for the "Settings" tab: storage diagnostics, Antigravity global
+// rules (`~/.gemini/GEMINI.md`) inline editor, App Ambient Overlays
 // (Opt-In CDP), Updates & Release Checks, Cost/Currency/History, quota threshold,
 // polling, collapsible IDE status bar toggles, advanced display, zoom, and panel prefs.
 //
@@ -9,6 +10,11 @@
 import { tBi } from './i18n-core';
 import type { ModelConfig } from './models';
 import { parseTooltipDensity } from './tooltip-budget';
+import {
+    GLOBAL_RULES_MAX_BYTES,
+    readGlobalRulesStatus,
+    type GlobalRulesStatus,
+} from './global-rules';
 import {
     CURRENCY_CODES,
     CURRENCY_PRESETS,
@@ -95,6 +101,8 @@ export interface SettingsTabOptions {
     version?: string;
     cdpStatus?: CdpStatus | null;
     updateStatus?: UpdateStatusView | null;
+    /** Global rules file snapshot; computed lazily via `readGlobalRulesStatus()` when omitted. Pass `null` to hide the card. */
+    globalRules?: GlobalRulesStatus | null;
 }
 
 export const DEFAULT_MONITOR_DOCUMENT_SETTINGS: MonitorDocumentSettings = {
@@ -505,6 +513,53 @@ function buildUpdateStatusPillHtml(
     };
 }
 
+// ─── Antigravity Global Rules Card (~/.gemini/GEMINI.md) ─────────────────────
+
+function buildGlobalRulesCardHtml(gr: GlobalRulesStatus): string {
+    const sizeLabel = formatFileSize(gr.sizeBytes);
+    const maxLabel = formatFileSize(GLOBAL_RULES_MAX_BYTES);
+    const stateHtml = gr.exists
+        ? `<span class="storage-path-state is-ready" id="globalRulesState" data-gr-exists="true" data-gr-too-large="${gr.tooLarge ? 'true' : 'false'}"><span>${tBiHtml('Ready', '已存在')}</span></span>`
+        : `<span class="storage-path-state is-missing" id="globalRulesState" data-gr-exists="false" data-gr-too-large="false"><span>${tBiHtml('Missing', '不存在')}</span></span>`;
+    const editorValue = gr.tooLarge ? '' : gr.content;
+    const editorPlaceholder = gr.tooLarge
+        ? tBi(`File exceeds ${maxLabel} — edit it in an external editor.`, `文件超过 ${maxLabel}，请使用外部编辑器修改。`)
+        : tBi('Write your global rules in Markdown…', '用 Markdown 书写你的全局规则…');
+    return `
+        <section class="stg-card" id="globalRulesCard" data-accent="display">
+            <div class="stg-header">
+                <span class="stg-header-icon">${ICON.file}</span>
+                <h2>${tBiHtml('Antigravity Global Rules', 'Antigravity 全局规则')}</h2>
+            </div>
+            <p class="raw-desc">${tBiHtml(
+        `Manage the machine-global rules file (~/.gemini/GEMINI.md) that Antigravity applies to every agent conversation across all workspaces. Edit inline below and click Save, or open the file in your editor of choice.`,
+        `管理 Antigravity 的机器级全局规则文件（~/.gemini/GEMINI.md），对所有工作区的所有智能体会话生效。可直接在下方文本框编辑后点击「保存」，也可以点击「打开文件」用外部编辑器修改。`,
+    )}</p>
+            <div class="storage-path-box">
+                <code class="storage-path-text" id="globalRulesPathText">${esc(gr.path)}</code>
+                ${stateHtml}
+            </div>
+            <div class="storage-actions">
+                <button type="button" class="action-btn" id="globalRulesOpenBtn">${ICON.file} <span>${tBiHtml('Open File', '打开文件')}</span></button>
+                <button type="button" class="action-btn" id="globalRulesRevealBtn">${ICON.folder} <span>${tBiHtml('Reveal', '定位文件')}</span></button>
+                <button type="button" class="action-btn" id="globalRulesReloadBtn">${ICON.refresh} <span>${tBiHtml('Reload', '重新加载')}</span></button>
+                <button type="button" class="action-btn stg-btn-primary" id="globalRulesSaveBtn"><span>${tBiHtml('Save', '保存')}</span></button>
+                <span id="globalRulesFeedback" class="threshold-feedback" role="status"></span>
+            </div>
+            <textarea id="globalRulesEditor" class="stg-globalrules-editor"
+                      spellcheck="false" aria-label="${esc(tBi('Global rules content', '全局规则内容'))}"
+                      placeholder="${esc(editorPlaceholder)}">${esc(editorValue)}</textarea>
+            <div class="storage-stat-grid" style="margin-top: 12px;">
+                <div class="storage-stat"><span class="storage-stat-val" id="globalRulesSizeVal">${esc(sizeLabel)}</span><span class="storage-stat-label">${tBiHtml('File Size', '文件大小')}</span></div>
+                <div class="storage-stat"><span class="storage-stat-val">${tBiHtml('All workspaces', '全部工作区')}</span><span class="storage-stat-label">${tBiHtml('Applies to every conversation', '对所有会话生效')}</span></div>
+            </div>
+            <p class="stg-hint-note">${tBiHtml(
+        `Saving writes ${maxLabel} max and only touches ~/.gemini/GEMINI.md — workspace rules are never modified.`,
+        `保存上限为 ${maxLabel}，且只写入 ~/.gemini/GEMINI.md，绝不会修改任何工作区规则。`,
+    )}</p>
+        </section>`;
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /** Build the Settings tab HTML from plain settings (or lazy VS Code config fallback). */
@@ -552,7 +607,7 @@ export function buildSettingsContent(
     const activityMaxArchives = resolved.activityMaxArchives ?? resolved.maxArchives ?? 20;
 
     const resolvedZoom = clampNumber(options?.zoomLevel, 100, 60, 150);
-    const currentVersion = (options?.version && options.version.trim()) || options?.updateStatus?.currentVersion || '1.17.10';
+    const currentVersion = (options?.version && options.version.trim()) || options?.updateStatus?.currentVersion || '1.18.0';
     const activePlatform = options?.cdpStatus?.launcherStatus?.platform
         || options?.cdpStatus?.platformGuide?.platform
         || (typeof process !== 'undefined' ? process.platform : 'darwin');
@@ -562,6 +617,13 @@ export function buildSettingsContent(
     const showEndOfContent = panelPrefs?.showEndOfContent ?? true;
     const stateFileSizeLabel = storage ? formatFileSize(storage.stateFileSizeBytes) : '0 B';
     const ideOnlyDisabledAttr = isAppSidecar ? ' disabled aria-disabled="true"' : '';
+
+    // Antigravity global rules (~/.gemini/GEMINI.md): lazy pure-Node read when
+    // the host did not supply a snapshot; explicit `null` hides the card.
+    const globalRulesStatus = options?.globalRules !== undefined
+        ? options.globalRules
+        : readGlobalRulesStatus({ includeContent: true });
+    const globalRulesCard = globalRulesStatus ? buildGlobalRulesCardHtml(globalRulesStatus) : '';
 
     const storageCard = storage ? `
         <section class="stg-card" data-accent="storage">
@@ -871,6 +933,8 @@ export function buildSettingsContent(
 
     return `
         ${storageCard}
+
+        ${globalRulesCard}
 
         ${appOverlaysCard}
 

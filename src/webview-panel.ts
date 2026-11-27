@@ -39,6 +39,14 @@ import {
 } from './webview-settings-tab';
 import { DailyStore } from './daily-store';
 import { parseTooltipDensity } from './tooltip-budget';
+import {
+    DEFAULT_GLOBAL_RULES_TEMPLATE,
+    GLOBAL_RULES_MAX_BYTES,
+    getGlobalRulesPath,
+    readGlobalRulesStatus,
+    writeGlobalRulesFile,
+    type GlobalRulesStatus,
+} from './global-rules';
 import type { MonitorStatus, OverviewDestination } from './monitor-overview';
 import type { AppSettings, StateBucket } from './durable-state';
 import type { PersistedModelDNA } from './model-dna-store';
@@ -375,6 +383,26 @@ function reportStateFileError(action: 'open' | 'reveal', err: unknown): void {
     safePostMessage({ command: 'stateFileActionResult', action, ok: false, message: warning });
 }
 
+function reportGlobalRulesError(action: 'read' | 'save' | 'open' | 'reveal', err: unknown): void {
+    const reason = err instanceof Error ? err.message : String(err);
+    const labels: Record<typeof action, { en: string; zh: string }> = {
+        read: { en: 'Failed to read global rules file.', zh: '读取全局规则文件失败。' },
+        save: { en: 'Failed to save global rules file.', zh: '保存全局规则文件失败。' },
+        open: { en: 'Failed to open global rules file.', zh: '打开全局规则文件失败。' },
+        reveal: { en: 'Failed to reveal global rules file.', zh: '定位全局规则文件失败。' },
+    };
+    const label = labels[action];
+    const warning = `${tBi(label.en, label.zh)} ${reason}`;
+    void vscode.window.showWarningMessage(warning);
+    if (action === 'save') {
+        safePostMessage({ command: 'globalRulesSaveResult', ok: false, message: warning });
+    } else if (action === 'read') {
+        safePostMessage({ command: 'globalRulesFileContent', ok: false, message: warning });
+    } else {
+        safePostMessage({ command: 'globalRulesActionResult', action, ok: false, message: warning });
+    }
+}
+
 // formatFileSize is re-exported from webview-helpers for external consumers
 export { formatFileSize } from './webview-helpers';
 
@@ -676,6 +704,7 @@ export function showMonitorPanel(p: PanelPayload): void {
         email?: string;
         day?: number;
         requestId?: number;
+        content?: string;
     }) => {
         if (msg.command === 'panelReady') {
             sendPendingTab();
@@ -1025,6 +1054,54 @@ export function showMonitorPanel(p: PanelPayload): void {
                 safePostMessage({ command: 'stateFileActionResult', action: 'reveal', ok: true });
             } catch (err) {
                 reportStateFileError('reveal', err);
+            }
+        } else if (msg.command === 'readGlobalRulesFile') {
+            try {
+                const status: GlobalRulesStatus = readGlobalRulesStatus({ includeContent: true });
+                safePostMessage({ command: 'globalRulesFileContent', ok: true, ...status });
+            } catch (err) {
+                reportGlobalRulesError('read', err);
+            }
+        } else if (msg.command === 'saveGlobalRulesFile' && typeof msg.content === 'string') {
+            const byteLen = Buffer.byteLength(msg.content, 'utf8');
+            if (byteLen > GLOBAL_RULES_MAX_BYTES) {
+                safePostMessage({
+                    command: 'globalRulesSaveResult',
+                    ok: false,
+                    message: tBi(
+                        `Content is too large (${formatFileSize(byteLen)} > ${formatFileSize(GLOBAL_RULES_MAX_BYTES)} limit).`,
+                        `内容过大（${formatFileSize(byteLen)}，超过 ${formatFileSize(GLOBAL_RULES_MAX_BYTES)} 上限）。`,
+                    ),
+                });
+                return;
+            }
+            try {
+                const status = writeGlobalRulesFile(msg.content);
+                safePostMessage({ command: 'globalRulesSaveResult', ok: true, sizeBytes: status.sizeBytes, path: status.path });
+            } catch (err) {
+                reportGlobalRulesError('save', err);
+            }
+        } else if (msg.command === 'openGlobalRulesFile') {
+            const rulesPath = getGlobalRulesPath();
+            try {
+                if (!fs.existsSync(rulesPath)) {
+                    writeGlobalRulesFile(DEFAULT_GLOBAL_RULES_TEMPLATE);
+                }
+                await openUriInEditor(vscode.Uri.file(rulesPath));
+                safePostMessage({ command: 'globalRulesActionResult', action: 'open', ok: true });
+            } catch (err) {
+                reportGlobalRulesError('open', err);
+            }
+        } else if (msg.command === 'revealGlobalRulesFile') {
+            const rulesPath = getGlobalRulesPath();
+            const target = fs.existsSync(rulesPath)
+                ? vscode.Uri.file(rulesPath)
+                : vscode.Uri.file(path.dirname(rulesPath));
+            try {
+                await vscode.commands.executeCommand('revealFileInOS', target);
+                safePostMessage({ command: 'globalRulesActionResult', action: 'reveal', ok: true });
+            } catch (err) {
+                reportGlobalRulesError('reveal', err);
             }
         } else if (msg.command === 'historyAction' && msg.action) {
             if (msg.action === 'workspace') {

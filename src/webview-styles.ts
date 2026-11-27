@@ -1755,6 +1755,37 @@ export function getStyles(): string {
             color: var(--ed-ink-muted);
         }
 
+        /* ─── Global Rules Inline Editor (Settings) ─── */
+        .stg-globalrules-editor {
+            appearance: none;
+            display: block;
+            width: 100%;
+            min-height: 180px;
+            max-height: 420px;
+            resize: vertical;
+            padding: 10px 12px;
+            background: var(--ed-surface-well);
+            border: 1px solid var(--ed-control-border);
+            border-radius: var(--ed-radius-sm, 6px);
+            color: var(--ed-ink);
+            font-family: var(--ed-mono);
+            font-size: 12px;
+            line-height: 1.55;
+            tab-size: 2;
+            transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1);
+        }
+        .stg-globalrules-editor:focus-visible {
+            outline: none;
+            border-color: var(--ed-accent);
+        }
+        .stg-globalrules-editor::placeholder {
+            color: var(--ed-ink-muted);
+        }
+        .stg-globalrules-editor:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
         /* ─── Raw JSON & Copy Button ─── */
         .raw-json {
             background: var(--ed-surface-well);

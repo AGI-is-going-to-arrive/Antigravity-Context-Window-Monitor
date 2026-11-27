@@ -56,7 +56,7 @@ function readPluginVersion() {
             // Try next candidate
         }
     }
-    return '1.17.10';
+    return '1.18.0';
 }
 
 function resolveCompiledModule(relPath) {

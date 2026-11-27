@@ -80,6 +80,13 @@ import {
     type StateBucket,
 } from '../durable-state';
 import {
+    DEFAULT_GLOBAL_RULES_TEMPLATE,
+    GLOBAL_RULES_MAX_BYTES,
+    getGlobalRulesPath,
+    readGlobalRulesStatus,
+    writeGlobalRulesFile,
+} from '../global-rules';
+import {
     GMTracker,
     slimSummaryForPersistence,
     type GMConversationData,
@@ -416,7 +423,7 @@ export interface SidecarRuntimeDeps {
 }
 
 export interface SidecarRuntimeOptions {
-    /** Semantic version string (defaults to package.json / '1.17.10'). */
+    /** Semantic version string (defaults to package.json / '1.18.0'). */
     version?: string;
     /** Override path for DurableState `state-v1.json` (defaults to platform-native shared path). */
     statePath?: string;
@@ -3611,6 +3618,7 @@ export function createSidecarRuntimeProvider(
     function getAllowedRevealRoots(): string[] {
         const home = deps.homedir();
         const roots = [
+            path.join(home, '.gemini'),
             path.join(home, '.gemini', 'antigravity'),
             path.join(home, '.gemini', 'config'),
             path.dirname(durableState.getFilePath()),
@@ -4677,6 +4685,69 @@ export function createSidecarRuntimeProvider(
                     ok: true,
                     result: { revealed: check.resolvedPath },
                     messages: [{ command: 'stateFileActionResult', action: 'reveal', ok: true }],
+                };
+            }
+
+            case 'readGlobalRulesFile': {
+                const status = readGlobalRulesStatus({ homedir: deps.homedir(), includeContent: true });
+                return {
+                    ok: true,
+                    result: status,
+                    messages: [{ command: 'globalRulesFileContent', ok: true, ...status }],
+                };
+            }
+
+            case 'saveGlobalRulesFile': {
+                const rawContent = typeof action.content === 'string' ? action.content : '';
+                if (typeof action.content !== 'string') {
+                    return { ok: false, statusCode: 400, error: 'Missing string content' };
+                }
+                const byteLen = Buffer.byteLength(rawContent, 'utf8');
+                if (byteLen > GLOBAL_RULES_MAX_BYTES) {
+                    return {
+                        ok: false,
+                        statusCode: 413,
+                        error: `Global rules content is too large (${byteLen} bytes > ${GLOBAL_RULES_MAX_BYTES} bytes limit)`,
+                    };
+                }
+                let status;
+                try {
+                    status = writeGlobalRulesFile(rawContent, deps.homedir());
+                } catch (err) {
+                    const reason = err instanceof Error ? err.message : String(err);
+                    return {
+                        ok: false,
+                        statusCode: 500,
+                        error: reason,
+                        messages: [{ command: 'globalRulesSaveResult', ok: false, message: reason }],
+                    };
+                }
+                return {
+                    ok: true,
+                    result: { saved: true, path: status.path, sizeBytes: status.sizeBytes },
+                    messages: [{ command: 'globalRulesSaveResult', ok: true, sizeBytes: status.sizeBytes }],
+                };
+            }
+
+            case 'openGlobalRulesFile':
+            case 'revealGlobalRulesFile': {
+                const rulesPath = getGlobalRulesPath(deps.homedir());
+                const exists = fs.existsSync(rulesPath);
+                const target = exists ? rulesPath : path.dirname(rulesPath);
+                const check = validateRevealTargetPath(target, getAllowedRevealRoots());
+                if (!check.ok || !check.resolvedPath) {
+                    return {
+                        ok: false,
+                        statusCode: check.statusCode ?? 404,
+                        error: check.error || 'Global rules path does not exist',
+                        messages: [{ command: 'globalRulesActionResult', action: 'reveal', ok: false }],
+                    };
+                }
+                await deps.revealInOs(check.resolvedPath, Boolean(check.isDirectory));
+                return {
+                    ok: true,
+                    result: { revealed: check.resolvedPath, rulesPath, exists },
+                    messages: [{ command: 'globalRulesActionResult', action: 'reveal', ok: true }],
                 };
             }
 

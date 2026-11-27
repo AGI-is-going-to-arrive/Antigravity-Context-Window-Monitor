@@ -41,6 +41,7 @@ import {
     type StorageDiagnostics,
     type UpdateStatusView,
 } from './webview-settings-tab';
+import type { GlobalRulesStatus } from './global-rules';
 import { buildAboutTabContent, getAboutTabStyles } from './webview-about-tab';
 import {
     buildCalendarTabContent,
@@ -201,6 +202,8 @@ export interface MonitorDocumentBuildParams extends MonitorDocumentV1175Extras {
     initialTab?: MonitorTabId;
     /** Plain document settings (zero `vscode` dependency). */
     settings?: Partial<MonitorDocumentSettings>;
+    /** Optional Antigravity global rules file snapshot (Settings tab card); lazily computed when omitted. */
+    globalRules?: GlobalRulesStatus | null;
     /** Explicit formatted clock string (defaults to `formatClockTime(new Date(now), getLanguage())`). */
     lastUpdatedTime?: string;
     /** Optional deterministic timestamp (ms) for tests. */
@@ -1230,6 +1233,7 @@ export function buildMonitorDocumentHtml(params: MonitorDocumentBuildParams): st
             version: extras.version,
             cdpStatus: extras.cdpStatus,
             updateStatus: resolvedUpdateStatus,
+            globalRules: params.globalRules,
         },
     );
 

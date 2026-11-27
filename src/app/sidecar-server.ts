@@ -32,7 +32,7 @@ import type {
 
 export const MAX_ACTION_BODY_BYTES = 256 * 1024;
 export const MAX_OVERLAY_ACTION_BODY_BYTES = 16 * 1024;
-export const DEFAULT_SIDECAR_VERSION = '1.17.10';
+export const DEFAULT_SIDECAR_VERSION = '1.18.0';
 export const ALLOWED_IMAGE_FILENAME_RE = /^[a-z0-9-]+\.png$/;
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
