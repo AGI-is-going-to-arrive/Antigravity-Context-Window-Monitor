@@ -175,6 +175,25 @@ export function getScript(): string {
             var updateAvailablePillTpl = ${JSON.stringify(tBi('Update available: {ver}', '有可用更新：{ver}'))};
             var upToDatePillTpl = ${JSON.stringify(tBi('Up to date ({ver})', '已是最新（{ver}）'))};
             var currentVerPillTpl = ${JSON.stringify(tBi('Current {ver}', '当前版本 {ver}'))};
+            var aboutReadyText = ${JSON.stringify(tBi('Ready', '就绪'))};
+            var aboutUpToDatePlainText = ${JSON.stringify(tBi('Up to date', '已是最新'))};
+            var closeTipAriaText = ${JSON.stringify(tBi('Close tip', '关闭说明'))};
+            var updateTipTitleAvailable = ${JSON.stringify(tBi('Update Available', '发现新版本'))};
+            var updateTipTitleError = ${JSON.stringify(tBi('Update Check Failed', '更新检查失败'))};
+            var updateTipTitleOk = ${JSON.stringify(tBi('Plugin Up to Date', '已是最新版本'))};
+            var updateTipTitleIdle = ${JSON.stringify(tBi('Version Check Status', '版本检查状态'))};
+            var updateTipBodyAvailableTpl = ${JSON.stringify(tBi('Release {ver} is available on GitHub Releases.', 'GitHub Releases 已发布新版本 {ver}。'))};
+            var updateTipMetaAvailable = ${JSON.stringify(tBi('Click "Upgrade Now" (App) or update from Open VSX (IDE).', 'App 端可点击「立即升级」，IDE 端可通过 Open VSX 更新。'))};
+            var updateTipBodyErrorFallback = ${JSON.stringify(tBi('Unable to query GitHub Releases for the latest version.', '暂时无法连接 GitHub Releases 获取最新版本信息。'))};
+            var updateTipMetaError = ${JSON.stringify(tBi('Check your network/proxy and click "Check for Updates" to retry.', '请检查网络或代理设置后，点击「检查更新」重试。'))};
+            var updateTipBodyOk = ${JSON.stringify(tBi('You are running the latest published version.', '当前已是已发布的最新版本。'))};
+            var updateTipBodyIdle = ${JSON.stringify(tBi('Click "Check for Updates" to check GitHub Releases.', '点击「检查更新」可立即检查 GitHub Releases。'))};
+            var cdpPillTipTitle = ${JSON.stringify(tBi('Desktop Overlays (CDP) Status', '桌面悬浮层 (CDP) 状态'))};
+            var cdpPillTipConnectedFallback = ${JSON.stringify(tBi('Connected to Antigravity main window via local CDP debugging port.', '已通过本地 CDP 调试端口连接到 Antigravity 主窗口。'))};
+            var cdpPillTipInactiveBody = ${JSON.stringify(tBi('Antigravity is running without --remote-debugging-port=0. Launch via the "Antigravity (CDP)" launcher, then click Recheck CDP.', '当前 Antigravity 未携带 --remote-debugging-port=0 启动。请改从「Antigravity (CDP)」启动器打开后点击「重新检测」。'))};
+            var cdpPillTipDisabledBody = ${JSON.stringify(tBi('Both optional desktop floating overlays are currently turned off.', '两项可选桌面悬浮层目前均处于关闭状态。'))};
+            var cdpPillTipErrorFallback = ${JSON.stringify(tBi('Failed to attach to the local CDP debugging target.', '连接本地 CDP 调试目标失败。'))};
+            var cdpPillTipMeta = ${JSON.stringify(tBi('Native panel views and in-panel HUD work 100% natively without CDP.', '本监控面板与面板顶部紧凑 HUD 完全原生工作，不依赖 CDP。'))};
             var subscriptionPlanPlaceholders = ${JSON.stringify(SUBSCRIPTION_PLAN_PLACEHOLDERS)};
             var defaultSubscriptionFeePlaceholder = ${JSON.stringify(DEFAULT_SUBSCRIPTION_FEE_PLACEHOLDER)};
 
@@ -349,10 +368,16 @@ export function getScript(): string {
                     pill.textContent = state === 'connected' ? cdpConnectedText
                         : (state === 'error' ? cdpErrorText
                             : (state === 'cdp_unavailable' ? cdpInactiveText : cdpDisabledText));
-                    var tip = state === 'connected'
-                        ? (cdpStatus && cdpStatus.targetTitle ? String(cdpStatus.targetTitle) : '')
-                        : (cdpStatus && cdpStatus.errorMessage ? String(cdpStatus.errorMessage) : '');
-                    if (tip) { pill.setAttribute('title', tip); } else { pill.removeAttribute('title'); }
+                    pill.removeAttribute('title');
+                    pill.setAttribute('data-popover-key', 'settings:cdp-status');
+                    pill.setAttribute('data-tip-title', cdpPillTipTitle);
+                    var cdpTipBody = state === 'connected'
+                        ? (cdpStatus && cdpStatus.targetTitle ? String(cdpStatus.targetTitle) : cdpPillTipConnectedFallback)
+                        : (state === 'error'
+                            ? (cdpStatus && cdpStatus.errorMessage ? String(cdpStatus.errorMessage) : cdpPillTipErrorFallback)
+                            : (state === 'cdp_unavailable' ? cdpPillTipInactiveBody : cdpPillTipDisabledBody));
+                    pill.setAttribute('data-tip-body', cdpTipBody);
+                    pill.setAttribute('data-tip-meta', cdpPillTipMeta);
                 }
 
                 var hint = document.getElementById('cdpDiagnosticHint');
@@ -397,12 +422,13 @@ export function getScript(): string {
                         hint.hidden = false;
                     }
                 }
+                if (typeof reanchorRichTipPopover === 'function') {
+                    reanchorRichTipPopover();
+                }
             }
 
             function syncUpdateStatusUi(updateStatus) {
                 if (!updateStatus || typeof updateStatus !== 'object') { return; }
-                var pill = document.getElementById('updateStatusPill');
-                if (!pill) { return; }
                 var rawLatest = typeof updateStatus.latestVersion === 'string' ? updateStatus.latestVersion.trim() : '';
                 var latestTag = rawLatest ? (rawLatest.charAt(0) === 'v' ? rawLatest : ('v' + rawLatest)) : '';
                 var rawCur = typeof updateStatus.currentVersion === 'string' ? updateStatus.currentVersion.trim() : '';
@@ -412,26 +438,67 @@ export function getScript(): string {
                     || updateStatus.hasUpdate
                     || updateStatus.status === 'update_available'
                 );
-                if (hasUpd && latestTag) {
-                    pill.className = 'stg-status-pill is-update';
-                    pill.setAttribute('data-update-status', 'update_available');
-                    pill.textContent = updateAvailablePillTpl.replace(/\{ver\}/g, latestTag);
-                    pill.removeAttribute('title');
-                } else if (updateStatus.status === 'error' || updateStatus.error) {
-                    pill.className = 'stg-status-pill is-error';
-                    pill.setAttribute('data-update-status', 'error');
-                    pill.textContent = checkFailedText;
-                    if (updateStatus.error) { pill.setAttribute('title', String(updateStatus.error)); }
-                } else if (updateStatus.status === 'up_to_date' || updateStatus.status === 'not_modified' || (updateStatus.checkedAt && !hasUpd)) {
-                    pill.className = 'stg-status-pill is-uptodate';
-                    pill.setAttribute('data-update-status', 'up_to_date');
-                    pill.textContent = curTag ? upToDatePillTpl.replace(/\{ver\}/g, curTag) : upToDateText;
-                    pill.removeAttribute('title');
-                } else if (curTag) {
-                    pill.className = 'stg-status-pill';
-                    pill.setAttribute('data-update-status', 'idle');
-                    pill.textContent = currentVerPillTpl.replace(/\{ver\}/g, curTag);
-                    pill.removeAttribute('title');
+                var isErr = Boolean(updateStatus.status === 'error' || updateStatus.error);
+                var isUpToDate = Boolean(updateStatus.status === 'up_to_date' || updateStatus.status === 'not_modified' || (updateStatus.checkedAt && !hasUpd));
+
+                var statusCode = (hasUpd && latestTag) ? 'update_available'
+                    : (isErr ? 'error' : (isUpToDate ? 'up_to_date' : 'idle'));
+                var pillClass = statusCode === 'update_available' ? 'stg-status-pill is-update'
+                    : (statusCode === 'error' ? 'stg-status-pill is-error'
+                        : (statusCode === 'up_to_date' ? 'stg-status-pill is-uptodate' : 'stg-status-pill'));
+                var tipTitle = statusCode === 'update_available' ? updateTipTitleAvailable
+                    : (statusCode === 'error' ? updateTipTitleError
+                        : (statusCode === 'up_to_date' ? updateTipTitleOk : updateTipTitleIdle));
+                var tipBody = statusCode === 'update_available' ? updateTipBodyAvailableTpl.replace(/\{ver\}/g, latestTag)
+                    : (statusCode === 'error' ? (updateStatus.error ? String(updateStatus.error) : updateTipBodyErrorFallback)
+                        : (statusCode === 'up_to_date' ? updateTipBodyOk : updateTipBodyIdle));
+                var tipMeta = statusCode === 'update_available' ? updateTipMetaAvailable
+                    : (statusCode === 'error' ? updateTipMetaError : '');
+
+                function applyPillRichTip(el, key) {
+                    el.removeAttribute('title');
+                    el.setAttribute('data-popover-key', key);
+                    el.setAttribute('data-tip-title', tipTitle);
+                    el.setAttribute('data-tip-body', tipBody);
+                    if (tipMeta) { el.setAttribute('data-tip-meta', tipMeta); }
+                    else { el.removeAttribute('data-tip-meta'); }
+                }
+
+                var settingsPill = document.getElementById('updateStatusPill');
+                if (settingsPill) {
+                    settingsPill.className = pillClass;
+                    settingsPill.setAttribute('data-update-status', statusCode);
+                    if (statusCode === 'update_available') {
+                        settingsPill.textContent = updateAvailablePillTpl.replace(/\{ver\}/g, latestTag);
+                    } else if (statusCode === 'error') {
+                        settingsPill.textContent = checkFailedText;
+                    } else if (statusCode === 'up_to_date') {
+                        settingsPill.textContent = curTag ? upToDatePillTpl.replace(/\{ver\}/g, curTag) : upToDateText;
+                    } else if (curTag) {
+                        settingsPill.textContent = currentVerPillTpl.replace(/\{ver\}/g, curTag);
+                    }
+                    applyPillRichTip(settingsPill, 'settings:update-status');
+                }
+
+                var aboutPills = document.querySelectorAll('[data-about-update-status]');
+                for (var api = 0; api < aboutPills.length; api++) {
+                    var ap = aboutPills[api];
+                    ap.className = pillClass;
+                    ap.setAttribute('data-about-update-status', statusCode);
+                    if (statusCode === 'update_available') {
+                        ap.textContent = updateAvailablePillTpl.replace(/\{ver\}/g, latestTag);
+                    } else if (statusCode === 'error') {
+                        ap.textContent = checkFailedText;
+                    } else if (statusCode === 'up_to_date') {
+                        ap.textContent = aboutUpToDatePlainText;
+                    } else {
+                        ap.textContent = aboutReadyText;
+                    }
+                    applyPillRichTip(ap, 'about:update-status');
+                }
+
+                if (typeof reanchorRichTipPopover === 'function') {
+                    reanchorRichTipPopover();
                 }
             }
 
@@ -625,7 +692,11 @@ export function getScript(): string {
                 if (!restoring) { ts[activeTab] = window.scrollY; }
                 s.tabScrolls = ts;
 
+                var prevTab = activeTab;
                 activeTab = tabName;
+                if (prevTab !== tabName && typeof hideRichTip === 'function') {
+                    hideRichTip(true);
+                }
                 for (var i = 0; i < tabBtns.length; i++) {
                     tabBtns[i].classList.toggle('active', tabBtns[i] === selected);
                     if (tabBtns[i] === selected) { tabBtns[i].setAttribute('aria-current', 'page'); }
@@ -985,6 +1056,9 @@ export function getScript(): string {
                     updateTabSlider();
                     updateTabOverflowHint();
                     updateTabArrows();
+                    if (typeof positionRichTip === 'function' && richTipActiveEl) {
+                        positionRichTip();
+                    }
                 });
             }
             // Apply on load
@@ -1123,9 +1197,13 @@ export function getScript(): string {
                     var paused = !!msg.paused;
                     pauseBtn.classList.toggle('paused', paused);
                     var pauseLabel = pauseBtn.getAttribute(paused ? 'data-label-resume' : 'data-label-pause') || '';
-                    pauseBtn.setAttribute('data-tooltip', pauseLabel);
+                    var pauseTipBody = pauseBtn.getAttribute(paused ? 'data-tip-body-resume' : 'data-tip-body-pause') || pauseLabel;
+                    pauseBtn.setAttribute('data-tip-title', pauseLabel);
+                    pauseBtn.setAttribute('data-tip-body', pauseTipBody);
+                    pauseBtn.removeAttribute('data-tooltip');
                     pauseBtn.setAttribute('aria-label', pauseLabel);
                     pauseBtn.setAttribute('aria-pressed', String(paused));
+                    if (typeof reanchorRichTipPopover === 'function') { reanchorRichTipPopover(); }
                     var pauseIcon = pauseBtn.querySelector('svg');
                     if (pauseIcon) {
                         pauseIcon.innerHTML = paused
@@ -1377,31 +1455,8 @@ export function getScript(): string {
             // ─── Restore & persist ALL <details> states ───
             restoreDetailsState(savedState);
 
-            // ─── Tool Catalog: smart tooltip (show full name when truncated) ───
-            function bindToolCatalogTooltips() {
-                var chips = document.querySelectorAll('.tool-cat-chip:not([data-tc-bound])');
-                for (var tci = 0; tci < chips.length; tci++) {
-                    chips[tci].setAttribute('data-tc-bound', 'true');
-                    chips[tci].addEventListener('mouseenter', function() {
-                        var name = this.getAttribute('data-tooltip-name') || '';
-                        var desc = this.getAttribute('data-tooltip-desc') || '';
-                        var textEl = this.querySelector('.tool-cat-chip-text');
-                        var isTruncated = textEl ? textEl.scrollWidth > textEl.clientWidth : false;
-                        if (isTruncated) {
-                            this.setAttribute('data-tooltip', desc ? name + ' \u2014 ' + desc : name);
-                        } else {
-                            if (desc) {
-                                this.setAttribute('data-tooltip', desc);
-                            } else {
-                                this.removeAttribute('data-tooltip');
-                            }
-                        }
-                    });
-                }
-            }
-
             // Run overflow check after layout settles
-            requestAnimationFrame(function() { initErrorOverflow(); bindToolCatalogTooltips(); });
+            requestAnimationFrame(function() { initErrorOverflow(); });
 
             // num-spinner-btn: handled by body delegation below
 
@@ -1529,7 +1584,450 @@ export function getScript(): string {
                 }
             });
 
-            // ─── Synced Hover / Focus Highlight for Context Composition Breakdown ───
+            // ─── Unified Body-Level Adaptive Popover Engine (#acmRichTipPopover) ───
+            var RICH_TIP_SEL = '[data-tip-body], [data-tip-html-id], [data-tooltip]';
+            var RICH_TIP_GRACE_MS = 180;
+            var richTipActiveEl = null;
+            var richTipActiveKey = '';
+            var richTipPinned = false;
+            var richTipHideTimer = null;
+            var richTipPointerInsidePop = false;
+            var richTipPopBound = false;
+
+            function ensureRichTipEl() {
+                var pop = document.getElementById('acmRichTipPopover');
+                if (!pop && document.body && typeof document.createElement === 'function') {
+                    pop = document.createElement('div');
+                    pop.id = 'acmRichTipPopover';
+                    pop.className = 'acm-rich-tip';
+                    pop.setAttribute('role', 'tooltip');
+                    pop.setAttribute('data-pinned', 'false');
+                    pop.setAttribute('data-placement', 'top');
+                    pop.setAttribute('aria-hidden', 'true');
+                    pop.hidden = true;
+                    var head = document.createElement('div');
+                    head.id = 'acmRichTipHead';
+                    head.className = 'acm-rich-tip-head';
+                    head.hidden = true;
+                    var titleEl = document.createElement('div');
+                    titleEl.id = 'acmRichTipTitle';
+                    titleEl.className = 'acm-rich-tip-title';
+                    var closeBtn = document.createElement('button');
+                    closeBtn.id = 'acmRichTipClose';
+                    closeBtn.type = 'button';
+                    closeBtn.className = 'acm-rich-tip-close';
+                    closeBtn.setAttribute('aria-label', closeTipAriaText);
+                    closeBtn.textContent = '\u00d7';
+                    closeBtn.hidden = true;
+                    head.appendChild(titleEl);
+                    head.appendChild(closeBtn);
+                    var bodyEl = document.createElement('div');
+                    bodyEl.id = 'acmRichTipBody';
+                    bodyEl.className = 'acm-rich-tip-body';
+                    var metaEl = document.createElement('div');
+                    metaEl.id = 'acmRichTipMeta';
+                    metaEl.className = 'acm-rich-tip-meta';
+                    metaEl.hidden = true;
+                    pop.appendChild(head);
+                    pop.appendChild(bodyEl);
+                    pop.appendChild(metaEl);
+                    if (typeof document.body.appendChild === 'function') {
+                        document.body.appendChild(pop);
+                    }
+                }
+                if (pop && !richTipPopBound && typeof pop.addEventListener === 'function') {
+                    richTipPopBound = true;
+                    pop.addEventListener('mouseenter', function() {
+                        richTipPointerInsidePop = true;
+                        cancelRichTipHide();
+                    });
+                    pop.addEventListener('mouseleave', function(ev) {
+                        richTipPointerInsidePop = false;
+                        var rel = ev && ev.relatedTarget instanceof Element ? ev.relatedTarget : null;
+                        if (!richTipPinned && (!rel || !richTipActiveEl || (rel !== richTipActiveEl && !(richTipActiveEl.contains && richTipActiveEl.contains(rel))))) {
+                            scheduleRichTipHide();
+                        }
+                    });
+                }
+                return pop;
+            }
+
+            function cancelRichTipHide() {
+                if (richTipHideTimer) {
+                    clearTimeout(richTipHideTimer);
+                    richTipHideTimer = null;
+                }
+            }
+
+            function hideRichTip(immediate) {
+                cancelRichTipHide();
+                if (!immediate && richTipPinned) { return; }
+                var pop = document.getElementById('acmRichTipPopover');
+                if (pop) {
+                    pop.hidden = true;
+                    pop.setAttribute('data-pinned', 'false');
+                    pop.setAttribute('aria-hidden', 'true');
+                }
+                richTipActiveEl = null;
+                richTipActiveKey = '';
+                richTipPinned = false;
+                richTipPointerInsidePop = false;
+            }
+
+            function scheduleRichTipHide() {
+                cancelRichTipHide();
+                if (richTipPinned) { return; }
+                richTipHideTimer = setTimeout(function() {
+                    richTipHideTimer = null;
+                    if (!richTipPinned && !richTipPointerInsidePop) {
+                        hideRichTip(true);
+                    }
+                }, RICH_TIP_GRACE_MS);
+            }
+
+            function suppressNativeTitle(el) {
+                if (!el || !el.getAttribute || !el.removeAttribute) { return; }
+                var nativeTitle = el.getAttribute('title');
+                if (nativeTitle) {
+                    el.setAttribute('data-suppressed-title', nativeTitle);
+                    el.removeAttribute('title');
+                }
+            }
+
+            function extractRichTipData(el) {
+                if (!el || !el.getAttribute) { return null; }
+                var title = el.getAttribute('data-tip-title') || el.getAttribute('data-tooltip-name') || '';
+                var body = el.getAttribute('data-tip-body') || el.getAttribute('data-tooltip-desc') || el.getAttribute('data-tooltip') || '';
+                var meta = el.getAttribute('data-tip-meta') || '';
+                var htmlId = el.getAttribute('data-tip-html-id') || '';
+                var key = el.getAttribute('data-popover-key') || '';
+                if (!title && !body && !htmlId && !meta) { return null; }
+                return { title: title, body: body, meta: meta, htmlId: htmlId, key: key };
+            }
+
+            function isClickPinnableRichTip(el) {
+                if (!el || !el.getAttribute) { return false; }
+                if (el.getAttribute('data-tip-pin') === 'true') { return true; }
+                if (el.hasAttribute && el.hasAttribute('data-tip-html-id')) { return true; }
+                if (el.classList && (el.classList.contains('jargon-tip') || el.classList.contains('rich-tip-disabled-wrap') || el.classList.contains('act-tl-help-btn'))) {
+                    return true;
+                }
+                if (el.classList && (el.classList.contains('ctx-seg-slice') || el.classList.contains('ctx-dot') || el.classList.contains('ctx-legend-item'))) {
+                    return false;
+                }
+                var tag = (el.tagName || '').toUpperCase();
+                if (tag === 'A' || tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'SUMMARY') {
+                    return false;
+                }
+                var actionAttrs = [
+                    'data-action', 'data-overview-target', 'data-switch-tab', 'data-navigate-tab',
+                    'data-ctx-viz', 'data-cal-date', 'data-cal-nav', 'data-history-action',
+                    'data-summary-mode', 'data-copy-command', 'data-tab', 'data-lang', 'data-zoom',
+                    'data-history-filter', 'data-history-shortcut', 'data-mode'
+                ];
+                for (var ai = 0; ai < actionAttrs.length; ai++) {
+                    if (el.getAttribute(actionAttrs[ai])) { return false; }
+                }
+                var nonPinIds = {
+                    pauseBtn: 1, refreshBtn: 1, acctPopoverTrigger: 1, privacyToggle: 1,
+                    copyRawJson: 1, copyAllErrors: 1, pricingSaveBtn: 1, pricingResetBtn: 1,
+                    clearToolCatalogBtn: 1, profileBillingDaySaveBtn: 1, copyStatePath: 1,
+                    openStateFile: 1, revealStateFile: 1, restoreTabScrollHint: 1,
+                    modelStatsErrToggle: 1, calendarRetentionSaveBtn: 1, dismissTabScrollHint: 1,
+                    tabArrowLeft: 1, tabArrowRight: 1
+                };
+                if (el.id && nonPinIds[el.id]) { return false; }
+                if (el.classList && (
+                    el.classList.contains('acct-delete-btn') || el.classList.contains('cdp-copy-btn')
+                    || el.classList.contains('num-spinner-btn') || el.classList.contains('cal-cell')
+                    || el.classList.contains('cal-hm-cell')
+                )) {
+                    return false;
+                }
+                return true;
+            }
+
+            function renderRichTipContent(pop, data, pinned) {
+                var headEl = document.getElementById('acmRichTipHead') || (pop.querySelector ? pop.querySelector('.acm-rich-tip-head') : null);
+                var titleEl = document.getElementById('acmRichTipTitle') || (pop.querySelector ? pop.querySelector('.acm-rich-tip-title') : null);
+                var closeBtn = document.getElementById('acmRichTipClose') || (pop.querySelector ? pop.querySelector('.acm-rich-tip-close') : null);
+                var bodyEl = document.getElementById('acmRichTipBody') || (pop.querySelector ? pop.querySelector('.acm-rich-tip-body') : null);
+                var metaEl = document.getElementById('acmRichTipMeta') || (pop.querySelector ? pop.querySelector('.acm-rich-tip-meta') : null);
+
+                var prevScrollTop = pop.scrollTop || 0;
+                pop.setAttribute('data-pinned', pinned ? 'true' : 'false');
+                if (headEl) { headEl.hidden = !(data.title || pinned); }
+                if (titleEl) { titleEl.textContent = data.title || ''; }
+                if (closeBtn) { closeBtn.hidden = !pinned; }
+
+                if (bodyEl) {
+                    var renderedTpl = false;
+                    if (data.htmlId) {
+                        var tpl = document.getElementById(data.htmlId);
+                        if (tpl) {
+                            bodyEl.textContent = '';
+                            if (data.body && typeof document.createElement === 'function') {
+                                var lead = document.createElement('p');
+                                lead.className = 'acm-rich-tip-lead';
+                                lead.textContent = data.body;
+                                bodyEl.appendChild(lead);
+                            }
+                            if (tpl.content && typeof tpl.content.cloneNode === 'function' && typeof bodyEl.appendChild === 'function') {
+                                bodyEl.appendChild(tpl.content.cloneNode(true));
+                            } else if (typeof tpl.innerHTML === 'string') {
+                                if (data.body) {
+                                    bodyEl.innerHTML = bodyEl.innerHTML + tpl.innerHTML;
+                                } else {
+                                    bodyEl.innerHTML = tpl.innerHTML;
+                                }
+                            }
+                            renderedTpl = true;
+                        }
+                    }
+                    if (!renderedTpl) {
+                        bodyEl.textContent = data.body || '';
+                    }
+                }
+                if (metaEl) {
+                    if (data.meta) {
+                        metaEl.textContent = data.meta;
+                        metaEl.hidden = false;
+                    } else {
+                        metaEl.textContent = '';
+                        metaEl.hidden = true;
+                    }
+                }
+                if (prevScrollTop > 0) {
+                    pop.scrollTop = prevScrollTop;
+                }
+            }
+
+            function getEffectiveZoomFactor() {
+                var bodyZoomVal = (document.body && document.body.style && document.body.style.zoom)
+                    ? parseFloat(document.body.style.zoom)
+                    : NaN;
+                if (isFinite(bodyZoomVal) && bodyZoomVal > 0.2 && bodyZoomVal < 4) {
+                    return bodyZoomVal;
+                }
+                var z = (typeof zoomLevel === 'number' && isFinite(zoomLevel) && zoomLevel > 20)
+                    ? (zoomLevel / 100)
+                    : 1;
+                return z > 0 ? z : 1;
+            }
+
+            function positionRichTip() {
+                var pop = document.getElementById('acmRichTipPopover');
+                if (!pop || pop.hidden || !richTipActiveEl || typeof richTipActiveEl.getBoundingClientRect !== 'function') {
+                    return;
+                }
+                var z = getEffectiveZoomFactor();
+                var rawVpW = (typeof window !== 'undefined' && window.innerWidth)
+                    || (document.documentElement && document.documentElement.clientWidth)
+                    || 320;
+                var rawVpH = (typeof window !== 'undefined' && window.innerHeight)
+                    || (document.documentElement && document.documentElement.clientHeight)
+                    || 600;
+                var vpW = rawVpW / z;
+                var vpH = rawVpH / z;
+                var margin = 8;
+                var gap = 8;
+
+                var maxW = Math.max(140, Math.min(300, Math.floor(vpW - margin * 2)));
+                var maxH = Math.max(110, Math.min(340, Math.floor(vpH - margin * 3)));
+                pop.style.maxWidth = maxW + 'px';
+                pop.style.maxHeight = maxH + 'px';
+
+                var tr = richTipActiveEl.getBoundingClientRect();
+                var tLeft = tr.left / z;
+                var tRight = tr.right / z;
+                var tTop = tr.top / z;
+                var tBottom = tr.bottom / z;
+                var tCenterX = (tLeft + tRight) / 2;
+
+                var popRect = typeof pop.getBoundingClientRect === 'function' ? pop.getBoundingClientRect() : null;
+                var popW = pop.offsetWidth || (popRect && popRect.width ? (popRect.width / z) : maxW);
+                var popH = pop.offsetHeight || (popRect && popRect.height ? (popRect.height / z) : 72);
+                if (popW > maxW) { popW = maxW; }
+                if (popH > maxH) { popH = maxH; }
+
+                var spaceAbove = tTop - margin;
+                var spaceBelow = vpH - tBottom - margin;
+                var placement = 'top';
+                var topPos;
+                if (spaceAbove >= popH + gap) {
+                    placement = 'top';
+                    topPos = tTop - popH - gap;
+                } else if (spaceBelow >= popH + gap || spaceBelow >= spaceAbove) {
+                    placement = 'bottom';
+                    topPos = tBottom + gap;
+                } else {
+                    placement = 'top';
+                    topPos = tTop - popH - gap;
+                }
+                var maxTop = Math.max(margin, vpH - popH - margin);
+                if (topPos < margin) { topPos = margin; }
+                if (topPos > maxTop) { topPos = maxTop; }
+
+                var leftPos = tCenterX - (popW / 2);
+                var maxLeft = Math.max(margin, vpW - popW - margin);
+                if (leftPos < margin) { leftPos = margin; }
+                if (leftPos > maxLeft) { leftPos = maxLeft; }
+
+                pop.setAttribute('data-placement', placement);
+                pop.style.left = Math.round(leftPos) + 'px';
+                pop.style.top = Math.round(topPos) + 'px';
+            }
+
+            function showRichTip(el, pinned) {
+                var data = extractRichTipData(el);
+                if (!data) { return; }
+                var pop = ensureRichTipEl();
+                if (!pop) { return; }
+                cancelRichTipHide();
+                suppressNativeTitle(el);
+                richTipActiveEl = el;
+                richTipActiveKey = data.key || '';
+                richTipPinned = !!pinned;
+                renderRichTipContent(pop, data, richTipPinned);
+                pop.hidden = false;
+                pop.setAttribute('aria-hidden', 'false');
+                positionRichTip();
+            }
+
+            function isRichTipElementVisibleInActiveContext(el) {
+                if (!el) { return false; }
+                var cur = el;
+                while (cur && cur !== document.body) {
+                    if (cur.hidden === true) { return false; }
+                    if (cur.classList && cur.classList.contains('tab-pane') && !cur.classList.contains('active')) {
+                        return false;
+                    }
+                    cur = cur.parentElement;
+                }
+                return true;
+            }
+
+            function findElementByPopoverKey(key) {
+                if (!key) { return null; }
+                var all = document.querySelectorAll('[data-popover-key]');
+                var fallbackMatch = null;
+                for (var ki = 0; ki < all.length; ki++) {
+                    if (all[ki].getAttribute('data-popover-key') === key) {
+                        if (isRichTipElementVisibleInActiveContext(all[ki])) {
+                            return all[ki];
+                        }
+                        if (!fallbackMatch) { fallbackMatch = all[ki]; }
+                    }
+                }
+                return null;
+            }
+
+            function reanchorRichTipPopover() {
+                var pop = document.getElementById('acmRichTipPopover');
+                if (!pop || pop.hidden) { return; }
+                if (richTipActiveKey) {
+                    var nextEl = findElementByPopoverKey(richTipActiveKey);
+                    if (!nextEl) {
+                        hideRichTip(true);
+                        return;
+                    }
+                    suppressNativeTitle(nextEl);
+                    var nextData = extractRichTipData(nextEl);
+                    if (!nextData) {
+                        hideRichTip(true);
+                        return;
+                    }
+                    richTipActiveEl = nextEl;
+                    renderRichTipContent(pop, nextData, richTipPinned);
+                    positionRichTip();
+                    return;
+                }
+                if (richTipActiveEl && (!document.body || !document.body.contains || document.body.contains(richTipActiveEl)) && isRichTipElementVisibleInActiveContext(richTipActiveEl)) {
+                    var curData = extractRichTipData(richTipActiveEl);
+                    if (curData) {
+                        renderRichTipContent(pop, curData, richTipPinned);
+                        positionRichTip();
+                        return;
+                    }
+                }
+                hideRichTip(true);
+            }
+
+            // ─── Synced Hover / Focus / Click-Lock for Context Composition Breakdown ───
+            var lockedCtxCat = savedState.lockedCtxCat || '';
+
+            function renderLockedCtxDrawer() {
+                var cards = document.querySelectorAll('.ctx-breakdown-card');
+                for (var ci = 0; ci < cards.length; ci++) {
+                    var card = cards[ci];
+                    var drawer = card.querySelector('#ctxSelectedDrawer') || card.querySelector('.ctx-selected-drawer');
+                    var legendBtns = card.querySelectorAll('.ctx-legend-item[data-ctx-cat]');
+                    if (!lockedCtxCat) {
+                        if (drawer) {
+                            drawer.hidden = true;
+                            drawer.textContent = '';
+                            drawer.setAttribute('data-ctx-drawer-active', '');
+                        }
+                        card.removeAttribute('data-locked-cat');
+                        card.removeAttribute('data-highlight-cat');
+                        for (var li = 0; li < legendBtns.length; li++) {
+                            legendBtns[li].classList.remove('is-locked');
+                            legendBtns[li].setAttribute('aria-pressed', 'false');
+                        }
+                        continue;
+                    }
+                    var tpl = null;
+                    var tpls = card.querySelectorAll('template[data-ctx-drawer-cat]');
+                    for (var ti = 0; ti < tpls.length; ti++) {
+                        if (tpls[ti].getAttribute('data-ctx-drawer-cat') === lockedCtxCat) {
+                            tpl = tpls[ti];
+                            break;
+                        }
+                    }
+                    if (!tpl || !drawer) {
+                        lockedCtxCat = '';
+                        var sClr = vscode.getState() || {};
+                        sClr.lockedCtxCat = '';
+                        vscode.setState(sClr);
+                        if (drawer) {
+                            drawer.hidden = true;
+                            drawer.textContent = '';
+                            drawer.setAttribute('data-ctx-drawer-active', '');
+                        }
+                        card.removeAttribute('data-locked-cat');
+                        card.removeAttribute('data-highlight-cat');
+                        for (var lj = 0; lj < legendBtns.length; lj++) {
+                            legendBtns[lj].classList.remove('is-locked');
+                            legendBtns[lj].setAttribute('aria-pressed', 'false');
+                        }
+                        continue;
+                    }
+                    drawer.textContent = '';
+                    if (tpl.content && typeof tpl.content.cloneNode === 'function' && typeof drawer.appendChild === 'function') {
+                        drawer.appendChild(tpl.content.cloneNode(true));
+                    } else if (typeof tpl.innerHTML === 'string') {
+                        drawer.innerHTML = tpl.innerHTML;
+                    }
+                    drawer.hidden = false;
+                    drawer.setAttribute('data-ctx-drawer-active', lockedCtxCat);
+                    card.setAttribute('data-locked-cat', lockedCtxCat);
+                    card.setAttribute('data-highlight-cat', lockedCtxCat);
+                    for (var lk = 0; lk < legendBtns.length; lk++) {
+                        var isMatch = legendBtns[lk].getAttribute('data-ctx-cat') === lockedCtxCat;
+                        legendBtns[lk].classList.toggle('is-locked', isMatch);
+                        legendBtns[lk].setAttribute('aria-pressed', String(isMatch));
+                    }
+                }
+            }
+
+            function setLockedCtxCategory(cat) {
+                lockedCtxCat = cat || '';
+                var st = vscode.getState() || {};
+                st.lockedCtxCat = lockedCtxCat;
+                vscode.setState(st);
+                renderLockedCtxDrawer();
+            }
+
             function setCtxHighlight(target, active) {
                 if (!target || !target.closest) { return; }
                 var catEl = target.closest('[data-ctx-cat]');
@@ -1537,15 +2035,37 @@ export function getScript(): string {
                 var card = catEl.closest('.ctx-breakdown-card');
                 if (!card) { return; }
                 var cat = catEl.getAttribute('data-ctx-cat');
-                if (active && cat && cat !== 'free') {
+                if (active && cat) {
                     card.setAttribute('data-highlight-cat', cat);
+                } else if (lockedCtxCat) {
+                    card.setAttribute('data-highlight-cat', lockedCtxCat);
                 } else {
                     card.removeAttribute('data-highlight-cat');
                 }
             }
+
+            renderLockedCtxDrawer();
+            ensureRichTipEl();
+
             document.body.addEventListener('mouseover', function(e) {
                 var target = e.target instanceof Element ? e.target : null;
+                if (!target) { return; }
                 setCtxHighlight(target, true);
+                var pop = document.getElementById('acmRichTipPopover');
+                if (pop && (target === pop || (pop.contains && pop.contains(target)))) {
+                    richTipPointerInsidePop = true;
+                    cancelRichTipHide();
+                    return;
+                }
+                if (richTipPinned) { return; }
+                var tipTrigger = target.closest ? target.closest(RICH_TIP_SEL) : null;
+                if (tipTrigger) {
+                    if (tipTrigger !== richTipActiveEl || !pop || pop.hidden) {
+                        showRichTip(tipTrigger, false);
+                    } else {
+                        cancelRichTipHide();
+                    }
+                }
             });
             document.body.addEventListener('mouseout', function(e) {
                 var target = e.target instanceof Element ? e.target : null;
@@ -1555,15 +2075,88 @@ export function getScript(): string {
                         setCtxHighlight(target, false);
                     }
                 }
+                if (!richTipPinned && target && target.closest) {
+                    var leavingTrigger = target.closest(RICH_TIP_SEL);
+                    if (leavingTrigger && leavingTrigger === richTipActiveEl) {
+                        var pop = document.getElementById('acmRichTipPopover');
+                        var enteringSame = rel && (rel === leavingTrigger || (leavingTrigger.contains && leavingTrigger.contains(rel)));
+                        var enteringPop = rel && pop && (rel === pop || (pop.contains && pop.contains(rel)));
+                        if (!enteringSame && !enteringPop) {
+                            scheduleRichTipHide();
+                        }
+                    }
+                }
             });
             document.body.addEventListener('focusin', function(e) {
                 var target = e.target instanceof Element ? e.target : null;
+                if (!target) { return; }
                 setCtxHighlight(target, true);
+                if (richTipPinned) { return; }
+                var tipTrigger = target.closest ? target.closest(RICH_TIP_SEL) : null;
+                if (tipTrigger) {
+                    showRichTip(tipTrigger, false);
+                }
             });
             document.body.addEventListener('focusout', function(e) {
                 var target = e.target instanceof Element ? e.target : null;
+                var rel = e.relatedTarget instanceof Element ? e.relatedTarget : null;
                 setCtxHighlight(target, false);
+                if (!richTipPinned && richTipActiveEl) {
+                    var pop = document.getElementById('acmRichTipPopover');
+                    var focusIntoPop = rel && pop && (rel === pop || (pop.contains && pop.contains(rel)));
+                    var focusIntoTrigger = rel && (rel === richTipActiveEl || (richTipActiveEl.contains && richTipActiveEl.contains(rel)));
+                    if (!focusIntoPop && !focusIntoTrigger) {
+                        scheduleRichTipHide();
+                    }
+                }
             });
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    var pop = document.getElementById('acmRichTipPopover');
+                    if (pop && !pop.hidden) {
+                        var prevEl = richTipActiveEl;
+                        hideRichTip(true);
+                        if (prevEl && pop.contains && pop.contains(document.activeElement) && typeof prevEl.focus === 'function') {
+                            prevEl.focus({ preventScroll: true });
+                        }
+                        e.stopPropagation();
+                        return;
+                    }
+                    if (lockedCtxCat) {
+                        setLockedCtxCategory('');
+                        e.stopPropagation();
+                        return;
+                    }
+                }
+                if (e.key === 'Enter' || e.key === ' ') {
+                    var active = document.activeElement instanceof Element ? document.activeElement : null;
+                    if (!active) { return; }
+                    if (active.classList && (active.classList.contains('ctx-seg-slice') || active.classList.contains('ctx-dot'))) {
+                        var ctxCat = active.getAttribute('data-ctx-cat') || '';
+                        if (ctxCat) {
+                            e.preventDefault();
+                            hideRichTip(true);
+                            setLockedCtxCategory(lockedCtxCat === ctxCat ? '' : ctxCat);
+                            return;
+                        }
+                    }
+                    var tipTrig = active.closest ? active.closest(RICH_TIP_SEL) : null;
+                    if (tipTrig && tipTrig === active && isClickPinnableRichTip(tipTrig)) {
+                        e.preventDefault();
+                        if (richTipPinned && richTipActiveEl === tipTrig) {
+                            hideRichTip(true);
+                        } else {
+                            showRichTip(tipTrig, true);
+                        }
+                    }
+                }
+            });
+            window.addEventListener('resize', function() {
+                if (richTipActiveEl) { positionRichTip(); }
+            });
+            window.addEventListener('scroll', function() {
+                if (richTipActiveEl) { positionRichTip(); }
+            }, { passive: true });
 
             // ─── Restore scroll position (per-tab, debounced) ───
             var tabScrolls = savedState.tabScrolls || {};
@@ -1597,6 +2190,49 @@ export function getScript(): string {
                     ? e.target
                     : (e.target && e.target.parentElement ? e.target.parentElement : null);
                 if (!target || !target.closest) { return; }
+
+                // ── Rich Tip Popover close button & click-inside / click-outside / click-to-pin ──
+                if (target.closest('#acmRichTipClose')) {
+                    hideRichTip(true);
+                    return;
+                }
+                var activePopEl = document.getElementById('acmRichTipPopover');
+                if (activePopEl && (target === activePopEl || (activePopEl.contains && activePopEl.contains(target)))) {
+                    return;
+                }
+                var clickedTipTrigger = target.closest(RICH_TIP_SEL);
+                if (richTipPinned && (!clickedTipTrigger || clickedTipTrigger !== richTipActiveEl)) {
+                    hideRichTip(true);
+                }
+                if (clickedTipTrigger && isClickPinnableRichTip(clickedTipTrigger)) {
+                    // Do not intercept clicks on enabled interactive controls nested inside a tip-bearing container
+                    var nestedInteractive = target.closest('button, a[href], input, select, textarea, summary, [data-action], [data-overview-target], [data-switch-tab], [data-navigate-tab]');
+                    var isNestedAction = nestedInteractive
+                        && nestedInteractive !== clickedTipTrigger
+                        && (!nestedInteractive.disabled)
+                        && (!clickedTipTrigger.contains || clickedTipTrigger.contains(nestedInteractive));
+                    if (!isNestedAction) {
+                        if (richTipPinned && richTipActiveEl === clickedTipTrigger) {
+                            hideRichTip(true);
+                        } else {
+                            showRichTip(clickedTipTrigger, true);
+                        }
+                        return;
+                    }
+                }
+
+                // ── Context Composition Inline Detail Drawer Close & Category Click-Lock ──
+                if (target.closest('[data-action="closeCtxDrawer"]')) {
+                    setLockedCtxCategory('');
+                    return;
+                }
+                var ctxClickEl = target.closest('.ctx-seg-slice[data-ctx-cat], .ctx-dot[data-ctx-cat], .ctx-legend-item[data-ctx-cat]');
+                if (ctxClickEl) {
+                    var clickedCat = ctxClickEl.getAttribute('data-ctx-cat') || '';
+                    hideRichTip(true);
+                    setLockedCtxCategory(lockedCtxCat === clickedCat ? '' : clickedCat);
+                    return;
+                }
 
                 // ── Num-spinner buttons (universal, all tabs) ──
                 var spinnerBtn = target.closest('.num-spinner-btn');
@@ -2367,11 +3003,11 @@ export function getScript(): string {
                     }
                 }
 
-                // !! CRITICAL: restore details & context viz mode IMMEDIATELY after innerHTML swap,
+                // !! CRITICAL: restore details, context viz mode & locked category drawer IMMEDIATELY after innerHTML swap,
                 // BEFORE any DOM read that could force layout with collapsed details.
                 restoreDetailsState(vscode.getState() || {});
                 applyContextVizMode(getContextVizMode());
-                bindToolCatalogTooltips();
+                renderLockedCtxDrawer();
 
                 // NOW restore scrollTop (details are open, heights are correct)
                 for (var rs = 0; rs < scrollableSelectors.length; rs++) {
@@ -2454,6 +3090,9 @@ export function getScript(): string {
                 if (msg.snapshot) {
                     maybeHandleOverlayTargetTab(msg.snapshot);
                 }
+
+                // Re-anchor open #acmRichTipPopover to freshly swapped DOM nodes without flicker
+                reanchorRichTipPopover();
 
                 updateTabSlider();
                 updateTabOverflowHint();
