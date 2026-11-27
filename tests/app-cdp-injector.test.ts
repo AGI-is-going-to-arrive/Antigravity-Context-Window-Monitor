@@ -477,6 +477,17 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
             expect(macGuide.command).toContain('while pgrep -f');
             expect(macGuide.en).toMatch(/5s|5-second/);
             expect(macGuide.zh).toContain('5 秒');
+            expect(macGuide.en).toContain('/Applications/Antigravity (CDP).app');
+            expect(macGuide.en).toContain('Keep in Dock');
+            expect(macGuide.zh).toContain('在程序坞中保留');
+
+            const winGuide = getCdpPlatformGuide('win32');
+            expect(winGuide.en).toContain('Pin to taskbar');
+            expect(winGuide.zh).toContain('固定到任务栏');
+
+            const linuxGuide = getCdpPlatformGuide('linux');
+            expect(linuxGuide.en).toContain('Pin to Dash');
+            expect(linuxGuide.zh).toContain('固定到停靠栏');
         });
 
         it('parses Antigravity main host argv and walks grandparent PIDs read-only while excluding IDE/Helper processes', () => {

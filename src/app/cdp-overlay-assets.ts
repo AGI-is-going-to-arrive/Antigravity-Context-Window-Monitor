@@ -223,6 +223,50 @@ export function getSharedOverlayThemeCss(): string {
   border-color: var(--acm-accent-border);
 }
 
+.acm-pill-badge.acm-has-tip {
+  position: relative;
+  cursor: help;
+  pointer-events: auto;
+}
+
+.acm-pill-badge.acm-has-tip:focus-visible {
+  outline: 1.5px solid var(--acm-accent);
+  outline-offset: 2px;
+}
+
+.acm-pill-badge.acm-has-tip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  left: auto;
+  width: max-content;
+  max-width: 268px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--acm-border-strong);
+  background: var(--acm-surface-solid);
+  color: var(--acm-ink);
+  font-family: var(--acm-sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.38;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.30);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 25;
+  transition: opacity 120ms var(--acm-ease);
+}
+
+.acm-pill-badge.acm-has-tip:hover::after,
+.acm-pill-badge.acm-has-tip:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     transition: none !important;
@@ -409,20 +453,85 @@ export function getComposerOverlayCss(): string {
 
 .acm-watermark-tick {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
+  top: -3px;
+  bottom: -3px;
+  width: 10px;
+  transform: translateX(-5px);
+  background: transparent;
+  pointer-events: auto;
+  cursor: help;
+  z-index: 2;
+}
+
+.acm-watermark-tick::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 50%;
   width: 2px;
   border-radius: 1px;
   transform: translateX(-1px);
   pointer-events: none;
 }
 
-.acm-watermark-tick.is-compaction {
+.acm-watermark-tick.is-compaction::before {
   background: var(--acm-warn);
 }
 
-.acm-watermark-tick.is-tier200k {
+.acm-watermark-tick.is-tier200k::before {
   background: var(--acm-ink-muted);
+}
+
+.acm-watermark-tick:focus-visible {
+  outline: 1.5px solid var(--acm-accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+.acm-watermark-tick::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 280px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--acm-border-strong);
+  background: var(--acm-surface-solid);
+  color: var(--acm-ink);
+  font-family: var(--acm-sans);
+  font-size: 10.5px;
+  font-weight: 550;
+  line-height: 1.3;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 20;
+  transition: opacity 120ms var(--acm-ease);
+}
+
+.acm-watermark-tick.is-align-left::after {
+  left: 0;
+  right: auto;
+  transform: none;
+}
+
+.acm-watermark-tick.is-align-right::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.acm-watermark-tick:hover::after,
+.acm-watermark-tick:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
 }
 
 .acm-meter-caption {
@@ -926,20 +1035,85 @@ export function getTopBarOverlayCss(): string {
 
 .acm-qp-watermark-tick {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
+  top: -3px;
+  bottom: -3px;
+  width: 10px;
+  transform: translateX(-5px);
+  background: transparent;
+  pointer-events: auto;
+  cursor: help;
+  z-index: 2;
+}
+
+.acm-qp-watermark-tick::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 50%;
   width: 2px;
   border-radius: 1px;
   transform: translateX(-1px);
   pointer-events: none;
 }
 
-.acm-qp-watermark-tick.is-compaction {
+.acm-qp-watermark-tick.is-compaction::before {
   background: var(--acm-warn);
 }
 
-.acm-qp-watermark-tick.is-tier200k {
+.acm-qp-watermark-tick.is-tier200k::before {
   background: var(--acm-ink-muted);
+}
+
+.acm-qp-watermark-tick:focus-visible {
+  outline: 1.5px solid var(--acm-accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+.acm-qp-watermark-tick::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 280px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--acm-border-strong);
+  background: var(--acm-surface-solid);
+  color: var(--acm-ink);
+  font-family: var(--acm-sans);
+  font-size: 10.5px;
+  font-weight: 550;
+  line-height: 1.3;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 20;
+  transition: opacity 120ms var(--acm-ease);
+}
+
+.acm-qp-watermark-tick.is-align-left::after {
+  left: 0;
+  right: auto;
+  transform: none;
+}
+
+.acm-qp-watermark-tick.is-align-right::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.acm-qp-watermark-tick:hover::after,
+.acm-qp-watermark-tick:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
 }
 
 .acm-qp-stat-grid {
@@ -1286,17 +1460,65 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     return str;
   }
 
-  function buildTurnCacheBadge(lang, turnCacheState) {
+  function getTier200kTooltip(lang) {
+    return bi(
+      lang,
+      '200k long-context tier: API ref rate & latency rise above 200k — not an extra Antigravity subscription charge or hard cutoff',
+      '200k 长上下文参考阶梯：超过后延迟可能升高且 API 参考价翻倍，不会对订阅额外扣费或强制截断'
+    );
+  }
+
+  function getTurnCacheTooltip(lang, turnCacheState) {
     var tcState = turnCacheState || 'unknown';
-    var cls = 'acm-pill-badge' + (
+    if (tcState === 'warm') {
+      return bi(
+        lang,
+        'Prompt Cache warm (>=70% reused): reuses cached prefix for faster first token & lower API ref cost',
+        '热缓存命中（>=70% 复用）：直接复用历史前缀，首字更快且 API 参考费用更低'
+      );
+    }
+    if (tcState === 'partial') {
+      return bi(
+        lang,
+        'Prompt Cache partial (10-70% reused): partial prefix reuse after history edits or compaction',
+        '部分缓存命中（10-70% 复用）：仅复用部分前缀（常见于编辑历史或上下文压缩后）'
+      );
+    }
+    if (tcState === 'cold') {
+      return bi(
+        lang,
+        'Prompt Cache cold (<10% reused): prefix re-read on new chat, >5m idle expiry, or model switch',
+        '冷启动（<10% 复用）：新对话、静置超 5 分钟过期或切换模型后需重新读取前缀'
+      );
+    }
+    return bi(
+      lang,
+      'Prompt Cache reuse: >=70% warm (faster), 10-70% partial, <10% cold (new chat / idle / model switch)',
+      'Prompt 缓存复用：>=70% 热缓存（首字更快），10-70% 部分命中，<10% 冷启动（新对话/静置过期/切模型）'
+    );
+  }
+
+  function applyTurnCacheBadgeProps(badgeEl, lang, turnCacheState) {
+    var tcState = turnCacheState || 'unknown';
+    badgeEl.className = 'acm-pill-badge acm-has-tip' + (
       tcState === 'warm' ? ' is-good' : (tcState === 'partial' ? ' is-warn' : (tcState === 'cold' ? ' is-danger' : ''))
     );
-    var label = tcState === 'warm'
+    badgeEl.textContent = tcState === 'warm'
       ? bi(lang, 'Warm', '热缓存')
       : (tcState === 'partial'
         ? bi(lang, 'Partial', '部分命中')
         : (tcState === 'cold' ? bi(lang, 'Cold', '冷启动') : '—'));
-    return el('span', cls, label);
+    var tip = getTurnCacheTooltip(lang, tcState);
+    badgeEl.setAttribute('tabindex', '0');
+    badgeEl.setAttribute('title', tip);
+    badgeEl.setAttribute('data-tooltip', tip);
+    badgeEl.setAttribute('aria-label', badgeEl.textContent + ' — ' + tip);
+  }
+
+  function buildTurnCacheBadge(lang, turnCacheState) {
+    var badge = el('span', 'acm-pill-badge acm-has-tip', '');
+    applyTurnCacheBadgeProps(badge, lang, turnCacheState);
+    return badge;
   }
 
   function getTargetTabForTopBarView(view) {
@@ -2497,17 +2719,33 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
 
     var marks = [];
     if (typeof p.compactionThresholdPct === 'number' && Number.isFinite(p.compactionThresholdPct) && p.compactionThresholdPct > 2 && p.compactionThresholdPct < 99) {
+      var compPct = clampNum(p.compactionThresholdPct, 2, 98);
+      var compTip = bi(lang, 'Auto-compaction limit', '自动压缩上限') + ' ' + Math.round(p.compactionThresholdPct) + '%';
       r.tickCompaction.style.display = '';
-      r.tickCompaction.style.left = clampNum(p.compactionThresholdPct, 2, 98).toFixed(1) + '%';
-      r.tickCompaction.setAttribute('title', bi(lang, 'Compaction limit', '压缩阈值') + ' ' + Math.round(p.compactionThresholdPct) + '%');
+      r.tickCompaction.style.left = compPct.toFixed(1) + '%';
+      r.tickCompaction.classList.toggle('is-align-left', compPct <= 35);
+      r.tickCompaction.classList.toggle('is-align-right', compPct >= 62);
+      r.tickCompaction.setAttribute('role', 'img');
+      r.tickCompaction.setAttribute('tabindex', '0');
+      r.tickCompaction.setAttribute('title', compTip);
+      r.tickCompaction.setAttribute('data-tooltip', compTip);
+      r.tickCompaction.setAttribute('aria-label', compTip);
       marks.push(bi(lang, 'Compact', '压缩') + ' ' + Math.round(p.compactionThresholdPct) + '%');
     } else {
       r.tickCompaction.style.display = 'none';
     }
     if (typeof p.tier200kMarkerPct === 'number' && Number.isFinite(p.tier200kMarkerPct) && p.tier200kMarkerPct > 2 && p.tier200kMarkerPct < 99) {
+      var tierPct = clampNum(p.tier200kMarkerPct, 2, 98);
+      var tierTip = getTier200kTooltip(lang);
       r.tick200k.style.display = '';
-      r.tick200k.style.left = clampNum(p.tier200kMarkerPct, 2, 98).toFixed(1) + '%';
-      r.tick200k.setAttribute('title', bi(lang, '200k pricing tier', '200k 计费阶梯'));
+      r.tick200k.style.left = tierPct.toFixed(1) + '%';
+      r.tick200k.classList.toggle('is-align-left', tierPct <= 35);
+      r.tick200k.classList.toggle('is-align-right', tierPct >= 62);
+      r.tick200k.setAttribute('role', 'img');
+      r.tick200k.setAttribute('tabindex', '0');
+      r.tick200k.setAttribute('title', tierTip);
+      r.tick200k.setAttribute('data-tooltip', tierTip);
+      r.tick200k.setAttribute('aria-label', tierTip);
       marks.push('200k');
     } else {
       r.tick200k.style.display = 'none';
@@ -2546,15 +2784,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     r.kvRecentCh.v.textContent = formatPct(p.recentCacheHitPct);
     r.kvAvgCh.v.textContent = formatPct(p.avgCacheHitPct);
 
-    var tcState = p.turnCacheState || 'unknown';
-    r.turnBadge.className = 'acm-pill-badge' + (
-      tcState === 'warm' ? ' is-good' : (tcState === 'partial' ? ' is-warn' : (tcState === 'cold' ? ' is-danger' : ''))
-    );
-    r.turnBadge.textContent = tcState === 'warm'
-      ? bi(lang, 'Warm', '热缓存')
-      : (tcState === 'partial'
-        ? bi(lang, 'Partial', '部分命中')
-        : (tcState === 'cold' ? bi(lang, 'Cold', '冷启动') : '—'));
+    applyTurnCacheBadgeProps(r.turnBadge, lang, p.turnCacheState);
 
     // Tokens & Cost
     r.tcLabel.textContent = bi(lang, 'Tokens & Cost', '用量与费用');
@@ -3299,16 +3529,28 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
 
     var marks = [];
     if (typeof p.compactionThresholdPct === 'number' && Number.isFinite(p.compactionThresholdPct) && p.compactionThresholdPct > 2 && p.compactionThresholdPct < 99) {
-      var tickComp = el('div', 'acm-qp-watermark-tick is-compaction');
-      tickComp.style.left = clampNum(p.compactionThresholdPct, 2, 98).toFixed(1) + '%';
-      tickComp.setAttribute('title', bi(lang, 'Compaction limit', '压缩阈值') + ' ' + Math.round(p.compactionThresholdPct) + '%');
+      var compPct = clampNum(p.compactionThresholdPct, 2, 98);
+      var compTip = bi(lang, 'Auto-compaction limit', '自动压缩上限') + ' ' + Math.round(p.compactionThresholdPct) + '%';
+      var tickComp = el('div', 'acm-qp-watermark-tick is-compaction' + (compPct <= 35 ? ' is-align-left' : (compPct >= 62 ? ' is-align-right' : '')));
+      tickComp.style.left = compPct.toFixed(1) + '%';
+      tickComp.setAttribute('role', 'img');
+      tickComp.setAttribute('tabindex', '0');
+      tickComp.setAttribute('title', compTip);
+      tickComp.setAttribute('data-tooltip', compTip);
+      tickComp.setAttribute('aria-label', compTip);
       meterWrap.appendChild(tickComp);
       marks.push(bi(lang, 'Compact', '压缩') + ' ' + Math.round(p.compactionThresholdPct) + '%');
     }
     if (typeof p.tier200kMarkerPct === 'number' && Number.isFinite(p.tier200kMarkerPct) && p.tier200kMarkerPct > 2 && p.tier200kMarkerPct < 99) {
-      var tick200k = el('div', 'acm-qp-watermark-tick is-tier200k');
-      tick200k.style.left = clampNum(p.tier200kMarkerPct, 2, 98).toFixed(1) + '%';
-      tick200k.setAttribute('title', bi(lang, '200k pricing tier', '200k 计费阶梯'));
+      var tierPct = clampNum(p.tier200kMarkerPct, 2, 98);
+      var tierTip = getTier200kTooltip(lang);
+      var tick200k = el('div', 'acm-qp-watermark-tick is-tier200k' + (tierPct <= 35 ? ' is-align-left' : (tierPct >= 62 ? ' is-align-right' : '')));
+      tick200k.style.left = tierPct.toFixed(1) + '%';
+      tick200k.setAttribute('role', 'img');
+      tick200k.setAttribute('tabindex', '0');
+      tick200k.setAttribute('title', tierTip);
+      tick200k.setAttribute('data-tooltip', tierTip);
+      tick200k.setAttribute('aria-label', tierTip);
       meterWrap.appendChild(tick200k);
       marks.push('200k');
     }
