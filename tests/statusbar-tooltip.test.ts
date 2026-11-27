@@ -151,16 +151,16 @@ describe('selectQuotaRows', () => {
         expect(compact.rows).toHaveLength(2);
         expect(compact.hiddenCount).toBe(0);
         expect(compact.rows[0].model).toBe('MODEL_PLACEHOLDER_M318');
-        expect(compact.rows[0].label).toBe('Gemini 3.8 Flash (High) · 11');
-        expect(compact.rows[1].label).toMatch(/ · 3$/);
+        expect(compact.rows[0].label).toBe('Gemini 3.8 Flash (High) · 11 models');
+        expect(compact.rows[1].label).toMatch(/ · 3 models$/);
 
         const noCurrent = selectQuotaRows(payload, '', 3);
         expect(noCurrent.rows[0].model).toBe('MODEL_PLACEHOLDER_M318');
-        expect(noCurrent.rows[0].label).toBe('Gemini 3.8 Flash (High) · 11');
+        expect(noCurrent.rows[0].label).toBe('Gemini 3.8 Flash (High) · 11 models');
 
         const currentIs31 = selectQuotaRows(payload, 'MODEL_PLACEHOLDER_M16', 3);
         expect(currentIs31.rows[0].model).toBe('MODEL_PLACEHOLDER_M16');
-        expect(currentIs31.rows[0].label).toBe('Gemini 3.1 Pro (High) · 11');
+        expect(currentIs31.rows[0].label).toBe('Gemini 3.1 Pro (High) · 11 models');
     });
 });
 
@@ -581,19 +581,19 @@ describe('collapsed pool row label rendering', () => {
     };
 
     it('keeps the pool size visible even when the model name has to be cut', () => {
-        // "Claude Opus 4.6 (Thinking) · 3" is 30 display units against a 28 budget. Truncating the
+        // "Claude Opus 4.6 (Thinking) · 3 models" exceeds the 28-unit budget. Truncating the
         // combined string dropped the count, so a 3-model pool row read like a single model.
-        const label = 'Claude Opus 4.6 (Thinking) · 3';
+        const label = 'Claude Opus 4.6 (Thinking) · 3 models';
         expect(measureDisplayWidth(label)).toBeGreaterThan(LABEL_MAX_DISPLAY_WIDTH);
 
         const rendered = renderQuotaLabel(label, 3);
-        expect(rendered.endsWith(' · 3')).toBe(true);
+        expect(rendered.endsWith(' · 3 models')).toBe(true);
         expect(measureDisplayWidth(rendered)).toBeLessThanOrEqual(LABEL_MAX_DISPLAY_WIDTH);
     });
 
     it('keeps a three-digit pool size visible too', () => {
-        const rendered = renderQuotaLabel('Gemini 3.7 Flash (High) · 128', 128);
-        expect(rendered.endsWith(' · 128')).toBe(true);
+        const rendered = renderQuotaLabel('Gemini 3.7 Flash (High) · 128 models', 128);
+        expect(rendered.endsWith(' · 128 models')).toBe(true);
         expect(measureDisplayWidth(rendered)).toBeLessThanOrEqual(LABEL_MAX_DISPLAY_WIDTH);
     });
 

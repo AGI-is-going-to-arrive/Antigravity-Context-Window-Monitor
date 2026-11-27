@@ -698,21 +698,25 @@ describe('overview telemetry strip and helper', () => {
             if (lang === 'en') {
                 expect(html).toContain('Speed');
                 expect(html).toContain('TTFT');
+                expect(html).toContain('cached 650ms');
                 expect(html).toContain('Cache Hit');
                 expect(html).toContain('Cache Saved');
                 expect(html).toContain('Warm');
             } else if (lang === 'zh') {
                 expect(html).toContain('生成速度');
                 expect(html).toContain('首字延迟');
+                expect(html).toContain('缓存首字 650ms');
+                expect(html).not.toContain('cached 650ms');
                 expect(html).toContain('缓存命中');
                 expect(html).toContain('缓存节省');
-                expect(html).toContain('已命中');
+                expect(html).toContain('热缓存（命中）');
             } else {
                 expect(html).toContain(tBiHtml('Speed', '生成速度'));
                 expect(html).toContain(tBiHtml('TTFT', '首字延迟'));
+                expect(html).toContain(tBiHtml('cached 650ms', '缓存首字 650ms'));
                 expect(html).toContain(tBiHtml('Cache Hit', '缓存命中'));
                 expect(html).toContain(tBiHtml('Cache Saved', '缓存节省'));
-                expect(html).toContain(tBiHtml('Warm', '已命中'));
+                expect(html).toContain(tBiHtml('Warm', '热缓存（命中）'));
             }
         }
 
@@ -810,6 +814,8 @@ describe('calendar archived telemetry', () => {
 
         const calCss = getCalendarTabStyles();
         expect(calCss).toContain('.cal-chip-speed');
+        expect(calCss).not.toContain('.cal-cell[data-tooltip]');
+        expect(calCss).not.toContain('[data-tooltip]::after');
         expect((calCss.match(/\{/g) || []).length).toBe((calCss.match(/\}/g) || []).length);
     });
 

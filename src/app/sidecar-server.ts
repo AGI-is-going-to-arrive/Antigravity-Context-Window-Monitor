@@ -33,6 +33,7 @@ import type {
 export const MAX_ACTION_BODY_BYTES = 256 * 1024;
 export const MAX_OVERLAY_ACTION_BODY_BYTES = 16 * 1024;
 export const DEFAULT_SIDECAR_VERSION = '1.18.0';
+export const DEFAULT_SIDECAR_VERSION = '1.17.11';
 export const ALLOWED_IMAGE_FILENAME_RE = /^[a-z0-9-]+\.png$/;
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -44,6 +45,7 @@ export type SidecarOverlayBridgeCommand =
     | 'togglePanel'
     | 'openPanel'
     | 'togglePause'
+    | 'focusConversation'
     | 'ping';
 
 const ALLOWED_OVERLAY_BRIDGE_COMMANDS: ReadonlySet<SidecarOverlayBridgeCommand> = new Set([
@@ -52,6 +54,7 @@ const ALLOWED_OVERLAY_BRIDGE_COMMANDS: ReadonlySet<SidecarOverlayBridgeCommand> 
     'togglePanel',
     'openPanel',
     'togglePause',
+    'focusConversation',
     'ping',
 ]);
 
@@ -70,6 +73,10 @@ export interface SidecarOverlayBridgeRequest {
     command: SidecarOverlayBridgeCommand;
     source?: 'composer' | 'topbar';
     targetTab?: CdpOverlayTargetTab;
+    /** Currently focused Hub conversation ID (or null when leaving a conversation). */
+    conversationId?: string | null;
+    /** True when the Hub is showing a brand-new empty conversation screen before an ID exists. */
+    isNewConversation?: boolean;
 }
 
 export interface SidecarOverlayBridgeOptions {
@@ -533,8 +540,17 @@ export function createSidecarHandler(
         const lockToMainAgent = rawLockMain !== undefined ? rawLockMain === 'true' : undefined;
         const rawActive = firstString(query.active);
         const userActive = rawActive === '1' || rawActive === 'true';
+        const rawConvCleared = firstString(query.conversationCleared);
+        const conversationCleared = rawConvCleared === '1' || rawConvCleared === 'true';
+        const rawIsNewConv = firstString(query.isNewConversation);
+        const isNewConversation = rawIsNewConv === '1' || rawIsNewConv === 'true';
 
-        const snapshotQuery: SidecarSnapshotQuery & { lang?: 'en' | 'zh' | 'both'; includeHtml?: boolean } = {
+        const snapshotQuery: SidecarSnapshotQuery & {
+            lang?: 'en' | 'zh' | 'both';
+            includeHtml?: boolean;
+            conversationCleared?: boolean;
+            isNewConversation?: boolean;
+        } = {
             conversationId: firstString(query.conversationId) || undefined,
             workspaceUris: parseWorkspaceUrisParam(firstString(query.workspaceUris)),
             etag: clientEtag || undefined,
@@ -542,6 +558,8 @@ export function createSidecarHandler(
             pinnedConversationId: firstString(query.pinnedConversationId) || undefined,
             ...(lockToMainAgent !== undefined ? { lockToMainAgent } : {}),
             ...(userActive ? { userActive: true } : {}),
+            ...(conversationCleared ? { conversationCleared: true } : {}),
+            ...(isNewConversation ? { isNewConversation: true } : {}),
             ...(lang ? { lang } : {}),
             ...(includeHtml ? { includeHtml: true } : {}),
         };
@@ -696,10 +714,16 @@ export function createSidecarHandler(
         const source = rec.source === 'composer' || rec.source === 'topbar' ? rec.source : undefined;
         const rawTargetTab = typeof rec.targetTab === 'string' ? rec.targetTab.trim() as CdpOverlayTargetTab : undefined;
         const targetTab = rawTargetTab && ALLOWED_OVERLAY_TARGET_TABS.has(rawTargetTab) ? rawTargetTab : undefined;
+        const rawConvId = typeof rec.conversationId === 'string'
+            ? rec.conversationId.trim()
+            : (rec.conversationId === null ? null : undefined);
+        const isNewConversation = rec.isNewConversation === true;
         const overlayReq: SidecarOverlayBridgeRequest = {
             command: rawCmd,
             source,
             ...(targetTab ? { targetTab } : {}),
+            ...(rawConvId !== undefined ? { conversationId: rawConvId } : {}),
+            ...(isNewConversation ? { isNewConversation: true } : {}),
         };
 
         if (rawCmd === 'ping') {

@@ -32,8 +32,9 @@ describe('GM estimated context labels', () => {
         const label = language === 'en' ? 'Estimated context' : language === 'zh' ? '估算上下文' : 'Estimated context / 估算上下文';
         const chart = language === 'en' ? 'Estimated context growth' : language === 'zh' ? '估算上下文增长' : 'Estimated context growth / 估算上下文增长';
         for (const className of ['act-tl-gm-tag act-tl-gm-ctx', 'seg-chip seg-chip-ctx', 'cp-card-chip cp-card-chip-step']) {
-            expect(html).toContain(`class="${className}" title=`);
-            expect(html).toMatch(new RegExp(`class="${className}" title="[^"]+">${label} 18\\.3k`));
+            expect(html).toContain(`class="${className}" data-popover-key=`);
+            expect(html).not.toContain(`class="${className}" title=`);
+            expect(html).toMatch(new RegExp(`class="${className}"[^>]*data-tip-body="[^"]+"[^>]*>${label} 18\\.3k`));
         }
         expect(html).toContain(chart);
         expect(html).toContain(language === 'zh' ? '可能与回复后报告的 Token 数不同' : 'may differ from the token counts reported after the response');

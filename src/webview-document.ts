@@ -428,6 +428,23 @@ function formatConversationOptionLabel(opt: ConversationOption): string {
     return tags.length > 0 ? `${titlePart} [${tags.join(' · ')}]` : titlePart;
 }
 
+function docRichTipAttrs(opts: {
+    key: string;
+    title?: string;
+    body: string;
+    meta?: string;
+    focusable?: boolean;
+}): string {
+    const parts = [
+        `data-popover-key="${esc(opts.key)}"`,
+        opts.title ? `data-tip-title="${esc(opts.title)}"` : '',
+        `data-tip-body="${esc(opts.body)}"`,
+        opts.meta ? `data-tip-meta="${esc(opts.meta)}"` : '',
+        opts.focusable ? 'tabindex="0"' : '',
+    ].filter(Boolean);
+    return parts.length ? ` ${parts.join(' ')}` : '';
+}
+
 // ─── Native Sidecar Collapsible Ambient HUD (v1.17.6, Zero-CDP) ─────────────
 
 /**
@@ -441,9 +458,10 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
     const clampedPct = rawPct !== null && Number.isFinite(rawPct) ? Math.max(0, Math.min(100, rawPct)) : 0;
     const ringCircumference = 2 * Math.PI * 8; // r = 8 -> 50.265
     const ringOffset = ringCircumference * (1 - clampedPct / 100);
+    // Aligned with Overview contextMeterTone (>= 80% danger/attention, >= 65% warn)
     const ringTone = rawPct === null
         ? ' is-muted'
-        : rawPct >= 85
+        : rawPct >= 80
             ? ' is-danger'
             : rawPct >= 65
                 ? ' is-warn'
@@ -461,19 +479,37 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
             })
             : null);
 
-    const ctxTipParts: string[] = [];
+    const ctxTipLines: string[] = [
+        tBi(
+            'Current conversation context usage relative to the platform auto-compaction ceiling.',
+            '当前会话的上下文占用量（按平台自动压缩上限计算）。',
+        ),
+    ];
+    const ctxDetails: string[] = [];
     if (reading && reading.used !== null && reading.limit !== null) {
-        ctxTipParts.push(`${tBi('Context', '上下文')}: ${formatCompactTokens(reading.used)} / ${formatCompactTokens(reading.limit)}`);
+        ctxDetails.push(`${tBi('Context', '上下文')}: ${formatCompactTokens(reading.used)} / ${formatCompactTokens(reading.limit)}`);
     }
     if (watermarks?.hasDistinctPhysicalWindow) {
-        ctxTipParts.push(`${tBi('Physical', '物理窗口')}: ${formatCompactTokens(watermarks.physicalContextWindow)}`);
+        ctxDetails.push(`${tBi('Native Ceiling', '原生窗口上限')}: ${formatCompactTokens(watermarks.physicalContextWindow)}`);
     }
     if (watermarks?.showLongContextMarker) {
-        ctxTipParts.push(watermarks.exceedsLongContextTier
+        ctxDetails.push(watermarks.exceedsLongContextTier
             ? tBi('> 200k long-context tier', '已超 200k 长上下文阶梯')
             : tBi('Below 200k tier', '低于 200k 阶梯'));
     }
-    const ctxTipAttr = ctxTipParts.length ? ` title="${esc(ctxTipParts.join(' · '))}"` : '';
+    if (ctxDetails.length > 0) {
+        ctxTipLines.push(ctxDetails.join(' · '));
+    }
+    const ctxTipAttr = docRichTipAttrs({
+        key: 'hud:chip:context',
+        title: tBi('Context Window Usage', '上下文窗口占用'),
+        body: ctxTipLines.join('\n'),
+        meta: tBi(
+            'Color thresholds: <65% normal · ≥65% warning · ≥80% danger (aligned with Overview).',
+            '警戒阈值：<65% 正常 · ≥65% 预警 · ≥80% 高危（与总览口径一致）。',
+        ),
+        focusable: true,
+    });
 
     // Telemetry (Speed with Short sample guard, TTFT, Cache Hit %)
     const activeCascadeId = input.activeCascadeId || input.usage?.cascadeId;
@@ -493,32 +529,108 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
     let speedChipCls = ' is-muted';
     let speedAttr = '';
     let speedTip = '';
+    let speedTipBody = tBi(
+        'Model token generation speed during streaming output.',
+        '模型流式输出阶段每秒生成的 Token 速度。',
+    );
+    let speedTipMeta = tBi(
+        'Formula: outputTokens / streamingSeconds; shows Short sample when output < 16 tokens or < 0.3s.',
+        '计算口径：输出 Token ÷ 流式耗时；当输出不足 16 tokens 或耗时不足 0.3s 时标记为「短样本」。',
+    );
     if (speedSample?.isWaitingTtft) {
         speedValHtml = tBiHtml('Waiting TTFT', '等待首字');
         speedAttr = ' data-hud-speed="waiting-ttft"';
         speedTip = tBi('Waiting for first token', '正在等待模型首字输出');
+        speedTipBody = tBi(
+            'Request is active and waiting for the model to emit its first token.',
+            '请求已发出，正在等待模型输出第一个 Token。',
+        );
     } else if (speedSample?.isShortSample) {
         speedValHtml = tBiHtml('Short sample', '短样本');
         speedAttr = ' data-hud-speed="short-sample"';
         speedTip = speedSample.rawSpeed !== null
             ? `${tBi('Raw (short sample)', '原始值（短样本）')}: ${formatSpeed(speedSample.rawSpeed)}`
             : tBi('Short sample (< 16 tokens or < 0.3s)', '短样本（输出不足 16 tokens 或耗时不足 0.3s）');
+        speedTipBody = `${tBi(
+            'Latest reply was too brief to measure throughput reliably.',
+            '最近一次回复过短，速度波动较大，暂不直接展示瞬时极值。',
+        )}\n${speedTip}`;
     } else if (telemetry?.speedPrimary !== null && telemetry?.speedPrimary !== undefined) {
         speedValHtml = esc(formatSpeed(telemetry.speedPrimary));
         speedChipCls = '';
         speedTip = primary?.weightedGenTokPerSec !== null && primary?.weightedGenTokPerSec !== undefined
             ? `${tBi('Weighted Avg', '加权平均')}: ${formatSpeed(primary.weightedGenTokPerSec)}`
             : '';
+        if (speedTip) {
+            speedTipBody = `${speedTipBody}\n${speedTip}`;
+        }
     }
-    const speedTitleAttr = speedTip ? ` title="${esc(speedTip)}"` : '';
+    const speedTipAttr = docRichTipAttrs({
+        key: 'hud:chip:speed',
+        title: tBi('Generation Speed', '生成速度'),
+        body: speedTipBody,
+        meta: speedTipMeta,
+        focusable: true,
+    });
 
     const ttftVal = telemetry ? formatLatency(telemetry.ttftPrimary) : '—';
     const ttftCls = ttftVal === '—' ? ' is-muted' : '';
+    const ttftDetails: string[] = [];
+    if (primary?.avgTtftSeconds !== null && primary?.avgTtftSeconds !== undefined) {
+        ttftDetails.push(`${tBi('Avg', '均值')}: ${formatLatency(primary.avgTtftSeconds)}`);
+    }
+    if (primary?.medianTtftSeconds !== null && primary?.medianTtftSeconds !== undefined) {
+        ttftDetails.push(`p50: ${formatLatency(primary.medianTtftSeconds)}`);
+    }
+    if (primary?.cachedAvgTtftSeconds !== null && primary?.cachedAvgTtftSeconds !== undefined) {
+        ttftDetails.push(`${tBi('Cached', '命中缓存')}: ${formatLatency(primary.cachedAvgTtftSeconds)}`);
+    }
+    if (primary?.uncachedAvgTtftSeconds !== null && primary?.uncachedAvgTtftSeconds !== undefined) {
+        ttftDetails.push(`${tBi('Uncached', '未命中')}: ${formatLatency(primary.uncachedAvgTtftSeconds)}`);
+    }
+    const ttftTipBody = [
+        tBi(
+            'Time To First Token: how long you wait from sending a request until the first token appears.',
+            '首字延迟（TTFT）：从发送请求到模型吐出第一个字所等待的时间。',
+        ),
+        ...(ttftDetails.length ? [ttftDetails.join(' · ')] : []),
+    ].join('\n');
+    const ttftTipAttr = docRichTipAttrs({
+        key: 'hud:chip:ttft',
+        title: tBi('TTFT (Time To First Token)', '首字延迟 (TTFT)'),
+        body: ttftTipBody,
+        meta: tBi(
+            'Includes prompt prefill & queue time; warm prompt cache typically cuts TTFT significantly.',
+            '包含提示词预填充与排队耗时；命中热缓存通常可大幅缩短首字等待。',
+        ),
+        focusable: true,
+    });
 
     const cacheVal = primary ? formatCachePercent(primary.tokenCacheHitRate) : '—';
     const cacheCls = primary?.tokenCacheHitRate !== null && primary?.tokenCacheHitRate !== undefined && primary.tokenCacheHitRate > 0
         ? ' is-good'
         : ' is-muted';
+    const cacheBodyLines = [
+        tBi(
+            'Share of prompt tokens reused from server-side prompt cache instead of being recomputed.',
+            '本次会话中直接命中服务端提示词缓存、免于重复计算的输入 Token 占比。',
+        ),
+    ];
+    if (primary && primary.totalPromptTokens > 0) {
+        cacheBodyLines.push(
+            `${formatCompactTokens(primary.totalCacheReadTokens)} / ${formatCompactTokens(primary.totalPromptTokens)} tokens · ${primary.cachedCallCount}/${primary.totalCalls} ${tBi('calls', '次调用')}`,
+        );
+    }
+    const cacheTipAttr = docRichTipAttrs({
+        key: 'hud:chip:cache',
+        title: tBi('Prompt Cache Hit Rate', '提示词缓存命中率'),
+        body: cacheBodyLines.join('\n'),
+        meta: tBi(
+            'Real server-side Prompt Cache reuse: Warm ≥70% (faster TTFT) · Partial 10%–70% (after edits/compaction) · Cold <10% (first turn / >5m idle / model switch).',
+            '真实服务端提示词缓存复用：热缓存 ≥70%（首字更快）· 部分命中 10%–70%（改动/压缩）· 冷启动 <10%（首轮 / 闲置超 5 分钟 / 切换模型）。',
+        ),
+        focusable: true,
+    });
 
     // Cost (selected display currency)
     const primaryCostUsd = typeof input.sessionCostUsd === 'number' && Number.isFinite(input.sessionCostUsd) && input.sessionCostUsd >= 0
@@ -531,12 +643,24 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
         ? formatCurrencyAmount(primaryCostUsd, input.displayCurrency)
         : '—';
     const costCls = costDisplay === '—' ? ' is-muted' : '';
-    const costTip = primaryCostUsd !== null
+    const costRefLine = primaryCostUsd !== null
         ? (currencyPreset.code !== 'USD'
             ? formatDualCurrencyAmount(primaryCostUsd, input.displayCurrency)
-            : `${tBi('Est. Cost', '估算费用')}: ${costDisplay}`)
-        : '';
-    const costTitleAttr = costTip ? ` title="${esc(costTip)}"` : '';
+            : `${tBi('Est. Cost', '参考费用')}: ${costDisplay}`)
+        : tBi('No priced calls recorded yet.', '暂无可计价的模型调用记录。');
+    const costTipAttr = docRichTipAttrs({
+        key: 'hud:chip:cost',
+        title: tBi('API Reference Cost', 'API 参考费用'),
+        body: `${tBi(
+            'Estimated equivalent API spend for the active session (or today) at public token rates.',
+            '按模型公开单价估算的当前会话（或今日）等价 API 参考费用。',
+        )}\n${costRefLine}`,
+        meta: tBi(
+            'Reference estimate only — not your Google Antigravity subscription bill.',
+            '仅作用量价值参考，不代表实际 Google Antigravity 订阅账单扣费。',
+        ),
+        focusable: true,
+    });
 
     // Tightest Quota % + reset tag
     const quotaGroups = selectMonitorQuotaGroups(input.modelConfigs, input.usage?.model, input.quotaSummary);
@@ -581,7 +705,20 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
             tightestQuotaTip = `${bestLabel}: ${bestPct}%${bestReset ? ` · ${bestReset}` : ''}`;
         }
     }
-    const quotaTitleAttr = tightestQuotaTip ? ` title="${esc(tightestQuotaTip)}"` : '';
+    const quotaTipAttr = docRichTipAttrs({
+        key: 'hud:chip:quota',
+        title: tBi('Tightest Quota Window', '最紧俏配额窗口'),
+        body: tightestQuotaTip
+            ? `${tBi(
+                'Lowest remaining allowance across your active shared model quota windows.',
+                '当前各共享模型配额池中剩余比例最低的窗口。',
+            )}\n${tightestQuotaTip}`
+            : tBi('Waiting for shared quota pool telemetry from backend.', '正在等待本地服务上报共享配额池数据。'),
+        meta: input.isCustomModelActive
+            ? tBi('BYOK / custom models do not consume Google quota pools.', '自定义 / BYOK 模型独立计费，不占用 Google 配额池。')
+            : tBi('Color thresholds: >50% healthy · 21–49% warning · ≤20% low quota.', '状态阈值：≥50% 充裕 · 21%–49% 偏紧 · ≤20% 低配额警告。'),
+        focusable: true,
+    });
 
     // Turn cache start (for expanded micro-breakdown drawer)
     let turnCache = input.turnCacheInfo ?? null;
@@ -661,23 +798,23 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
                     <span class="native-hud-chip-label">${tBiHtml('Ctx', '上下文')}</span>
                     <span class="native-hud-chip-val">${esc(ctxPctText)}</span>
                 </span>
-                <span class="native-hud-chip${speedChipCls}" data-hud-metric="speed"${speedAttr}${speedTitleAttr}>
+                <span class="native-hud-chip${speedChipCls}" data-hud-metric="speed"${speedAttr}${speedTipAttr}>
                     <span class="native-hud-chip-label">${tBiHtml('Speed', '速度')}</span>
                     <span class="native-hud-chip-val">${speedValHtml}</span>
                 </span>
-                <span class="native-hud-chip${ttftCls}" data-hud-metric="ttft">
+                <span class="native-hud-chip${ttftCls}" data-hud-metric="ttft"${ttftTipAttr}>
                     <span class="native-hud-chip-label">${tBiHtml('TTFT', '首字')}</span>
                     <span class="native-hud-chip-val">${esc(ttftVal)}</span>
                 </span>
-                <span class="native-hud-chip${cacheCls}" data-hud-metric="cache">
+                <span class="native-hud-chip${cacheCls}" data-hud-metric="cache"${cacheTipAttr}>
                     <span class="native-hud-chip-label">${tBiHtml('Cache', '缓存')}</span>
                     <span class="native-hud-chip-val">${esc(cacheVal)}</span>
                 </span>
-                <span class="native-hud-chip${costCls}" data-hud-metric="cost"${costTitleAttr}>
+                <span class="native-hud-chip${costCls}" data-hud-metric="cost"${costTipAttr}>
                     <span class="native-hud-chip-label">${tBiHtml('Cost', '费用')}</span>
                     <span class="native-hud-chip-val">${esc(costDisplay)}</span>
                 </span>
-                <span class="native-hud-chip${tightestQuotaCls}" data-hud-metric="quota"${quotaTitleAttr}>
+                <span class="native-hud-chip${tightestQuotaCls}" data-hud-metric="quota"${quotaTipAttr}>
                     <span class="native-hud-chip-label">${tBiHtml('Quota', '配额')}</span>
                     <span class="native-hud-chip-val">${tightestQuotaHtml}</span>
                 </span>
@@ -764,12 +901,45 @@ export function buildMonitorMastheadControlsHtml(extras: MonitorDocumentV1175Ext
         const ts = extras.staleState.lastSuccessAtMs
             ? ` · ${esc(formatClockTime(new Date(extras.staleState.lastSuccessAtMs), currentLang))}`
             : '';
-        const errTitle = extras.staleState.lastError ? ` title="${esc(extras.staleState.lastError)}"` : '';
-        return `<span class="stale-badge" id="staleBadge" role="status"${errTitle}>
+        const errLine = extras.staleState.lastError
+            ? `\n${tBi('Last error', '最近错误')}: ${extras.staleState.lastError}`
+            : '';
+        const staleTipAttrs = docRichTipAttrs({
+            key: 'topbar:stale-badge',
+            title: tBi('Cached / Stale Data', '缓存数据（待刷新）'),
+            body: `${tBi(
+                'Temporarily unable to reach the local Antigravity service; preserving the last good telemetry snapshot until reconnection succeeds.',
+                '暂时无法连接本地 Antigravity 服务，当前保留上次成功拉取的遥测快照直至重连恢复。',
+            )}${errLine}`,
+            meta: tBi('Polling retries automatically in the background.', '后台会自动重试连接，无需手动重启。'),
+            focusable: true,
+        });
+        return `<span class="stale-badge" id="staleBadge" role="status"${staleTipAttrs}>
             <span class="stale-dot" aria-hidden="true"></span>
             <span>${tBiHtml('Cached / Stale', '缓存数据（待刷新）')}${ts}</span>
         </span>`;
     })() : '';
+
+    const lockTipAttrs = docRichTipAttrs({
+        key: 'topbar:lock-main',
+        title: tBi('Lock to Main Agent', '锁定主会话'),
+        body: tBi(
+            'Ignore background subagent conversations so the monitor stays focused on your main conversation thread.',
+            '开启后将忽略后台子智能体会话，避免监控视图在主会话与子任务之间来回跳动。',
+        ),
+        meta: locked
+            ? tBi('Status: Locked — click to resume tracking all conversations.', '当前状态：已锁定 · 点击可恢复跟随全部会话。')
+            : tBi('Status: Unlocked — click to pin monitoring to the main conversation.', '当前状态：未锁定 · 点击可固定监控主会话。'),
+    });
+
+    const surfaceTipAttrs = docRichTipAttrs({
+        key: 'topbar:surface-badge',
+        title: surface === 'app-sidecar' ? 'Antigravity App' : 'Antigravity IDE',
+        body: surface === 'app-sidecar'
+            ? tBi('Running as a native Antigravity App Sidecar plugin (zero binary patching).', '当前运行于 Antigravity App 原生侧边插件（Sidecar）环境，零二进制修改。')
+            : tBi('Running inside the Antigravity IDE extension webview.', '当前运行于 Antigravity IDE 扩展面板环境。'),
+        focusable: true,
+    });
 
     return `
         <div class="masthead-context-controls">
@@ -780,15 +950,14 @@ export function buildMonitorMastheadControlsHtml(extras: MonitorDocumentV1175Ext
                 </select>
             </label>
             <button type="button" class="lock-main-btn${locked ? ' is-locked' : ''}" id="lockMainBtn"
-                data-action="toggleLockMain" aria-pressed="${locked ? 'true' : 'false'}"
-                title="${esc(tBi('Ignore background subagents and keep tracking the main conversation', '忽略后台子智能体并持续锁定当前主会话'))}">
+                data-action="toggleLockMain" aria-pressed="${locked ? 'true' : 'false'}"${lockTipAttrs}>
                 ${locked ? LOCK_ICON_SVG : UNLOCK_ICON_SVG}
                 <span>${tBiHtml('Lock to Main Agent', '锁定主会话')}</span>
             </button>
         </div>
         <div class="masthead-context-badges">
             ${staleBadgeHtml}
-            <span class="surface-badge" data-surface="${surface}">${surfaceLabelHtml}</span>
+            <span class="surface-badge" data-surface="${surface}"${surfaceTipAttrs}>${surfaceLabelHtml}</span>
         </div>`;
 }
 
@@ -1097,13 +1266,22 @@ ${extras.extraHeadHtml || ''}
                     data-label-pause="${esc(tBi('Pause auto-refresh', '暂停自动刷新'))}"
                     data-label-resume="${esc(tBi('Resume auto-refresh', '恢复自动刷新'))}"
                     data-label-paused="${esc(tBi('PAUSED', '已暂停'))}"
-                    data-tooltip="${esc(tBi(paused ? 'Resume auto-refresh' : 'Pause auto-refresh', paused ? '恢复自动刷新' : '暂停自动刷新'))}">
+                    data-tip-body-pause="${esc(tBi('Temporarily pause periodic polling so figures stay still while you inspect.', '暂停定时自动刷新，方便静置核对当前各项数据。'))}"
+                    data-tip-body-resume="${esc(tBi('Auto-refresh is paused. Click to resume periodic polling.', '当前已暂停自动刷新，点击恢复定时轮询更新。'))}"
+                    data-popover-key="topbar:pause"
+                    data-tip-title="${esc(tBi(paused ? 'Resume auto-refresh' : 'Pause auto-refresh', paused ? '恢复自动刷新' : '暂停自动刷新'))}"
+                    data-tip-body="${esc(tBi(paused ? 'Auto-refresh is paused. Click to resume periodic polling.' : 'Temporarily pause periodic polling so figures stay still while you inspect.', paused ? '当前已暂停自动刷新，点击恢复定时轮询更新。' : '暂停定时自动刷新，方便静置核对当前各项数据。'))}"
+                    data-tip-meta="${esc(tBi('Does not affect Antigravity itself — only pauses panel polling.', '仅暂停本监控面板轮询，不影响 Antigravity 正常运行。'))}">
                     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">${paused
             ? '<path fill="currentColor" d="M11.596 8.697l-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393"/>'
             : '<path fill="currentColor" d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5m5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5"/>'
         }</svg>
                 </button>
-                <button class="action-btn" id="refreshBtn" aria-label="${esc(tBi('Refresh', '刷新'))}" data-tooltip="${esc(tBi('Refresh', '刷新'))}">
+                <button class="action-btn" id="refreshBtn" aria-label="${esc(tBi('Refresh', '刷新'))}"
+                    data-popover-key="topbar:refresh"
+                    data-tip-title="${esc(tBi('Refresh Now', '立即刷新'))}"
+                    data-tip-body="${esc(tBi('Fetch the latest context usage, GM telemetry, and model quotas right away.', '立即拉取最新的上下文占用、GM 遥测与模型配额数据。'))}"
+                    data-tip-meta="${esc(tBi('Bypasses the polling interval for an immediate read-only update.', '跳过轮询间隔直接执行一次只读拉取。'))}">
                     ${ICON.refresh}
                 </button>
                 <span class="update-time">${paused ? `<span class="paused-indicator">${tBiHtml('PAUSED', '已暂停')}</span>` : ''} ${esc(lastUpdatedTime)}</span>
@@ -1179,6 +1357,14 @@ ${extras.extraHeadHtml || ''}
     </div>
 
     </main>
+    <div id="acmRichTipPopover" class="acm-rich-tip" role="tooltip" hidden data-pinned="false" data-placement="top" aria-hidden="true">
+        <div class="acm-rich-tip-head" id="acmRichTipHead" hidden>
+            <div class="acm-rich-tip-title" id="acmRichTipTitle"></div>
+            <button type="button" class="acm-rich-tip-close" id="acmRichTipClose" aria-label="${esc(tBi('Close tip', '关闭说明'))}" hidden>×</button>
+        </div>
+        <div class="acm-rich-tip-body" id="acmRichTipBody"></div>
+        <div class="acm-rich-tip-meta" id="acmRichTipMeta" hidden></div>
+    </div>
     <script>
         ${getScript()}
     </script>

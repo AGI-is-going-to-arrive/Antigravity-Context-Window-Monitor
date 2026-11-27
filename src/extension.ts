@@ -187,6 +187,7 @@ function inferIdeSubscriptionPlan(
 function getIdeExtensionVersion(): string {
     const raw = (extensionContext?.extension?.packageJSON as { version?: unknown } | undefined)?.version;
     return typeof raw === 'string' && raw.trim() ? raw.trim() : '1.18.0';
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : '1.17.11';
 }
 
 const VSCODE_TO_APP_SETTING_MAP: ReadonlyArray<{

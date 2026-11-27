@@ -2,7 +2,7 @@
 // Centralizes model-related information: default model, personal model quota,
 // and official model configurations and limit parameters without GM data contamination.
 
-import { formatNumber, getLanguage } from './i18n';
+import { formatNumber, getLanguage, tBi } from './i18n';
 import {
     ModelConfig,
     UserStatusInfo,
@@ -48,6 +48,26 @@ const ORCH_ICON_SVG = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" 
 const SPEC_ICON_SVG = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
 const IMAGE_SPEC_ICON_SVG = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>';
 
+function slugKey(raw: string): string {
+    const cleaned = raw.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+    return (cleaned || 'item').slice(0, 48);
+}
+
+function richTipAttrs(
+    key: string,
+    titleEn: string,
+    titleZh: string,
+    bodyEn: string,
+    bodyZh: string,
+    metaEn?: string,
+    metaZh?: string,
+): string {
+    const title = tBi(titleEn, titleZh);
+    const body = tBi(bodyEn, bodyZh);
+    const meta = metaEn || metaZh ? tBi(metaEn || '', metaZh || '') : '';
+    return ` data-popover-key="${esc(key)}" data-tip-title="${esc(title)}" data-tip-body="${esc(body)}"${meta ? ` data-tip-meta="${esc(meta)}"` : ''}`;
+}
+
 /** Use the selected UI locale, independent of the extension host's OS locale. */
 function formatTokensHtml(value: number): string {
     return Number.isSafeInteger(value) && value > 0
@@ -70,6 +90,74 @@ function thinkingDescriptionHtml(spec: ModelSpec): string {
     return tBiHtml('Supported · Budget unspecified', '支持 · 预算未指定');
 }
 
+function thinkingRichTipAttrs(key: string, spec: ModelSpec): string {
+    if (spec.isImageGeneration && spec.thinkingCapabilityReported === false) {
+        return richTipAttrs(
+            key,
+            'Thinking Capability',
+            '思考能力',
+            'Image-generation catalog entries do not report text reasoning metadata.',
+            '图片生成模型目录未上报文本推理（思考）能力参数。',
+            'Applies to chat reasoning models only.',
+            '仅适用于对话推理模型。',
+        );
+    }
+    if (!spec.supportsThinking) {
+        return richTipAttrs(
+            key,
+            'Thinking: Not Supported',
+            '思考能力：不支持',
+            'This model generates direct answers without a separate internal reasoning trace.',
+            '该模型直接生成回答，不包含独立的内部思考过程。',
+            'Catalog flag: supportsThinking = false.',
+            '目录标记：不支持扩展思考。',
+        );
+    }
+    if (spec.supportsAdaptiveThinking) {
+        return richTipAttrs(
+            key,
+            'Adaptive Thinking',
+            '自适应思考',
+            'The model automatically scales its internal reasoning depth based on task difficulty.',
+            '模型会根据任务复杂度自动调节内部思考深度，无需固定 token 预算。',
+            'Mode: Adaptive · Higher effort tiers allow deeper reasoning.',
+            '模式：自适应 · 更高推理档位允许更深入的思考。',
+        );
+    }
+    if (spec.thinkingBudget === -1) {
+        return richTipAttrs(
+            key,
+            'Dynamic Thinking',
+            '动态思考',
+            'The backend allocates thinking tokens dynamically per turn instead of enforcing a fixed cap.',
+            '后端会按单轮任务复杂度动态分配思考 token，而不设固定上限。',
+            'Mode: Dynamic (thinkingBudget = -1).',
+            '模式：动态分配（thinkingBudget = -1）。',
+        );
+    }
+    if (Number.isFinite(spec.thinkingBudget) && spec.thinkingBudget > 0) {
+        const formatted = formatNumber(spec.thinkingBudget);
+        return richTipAttrs(
+            key,
+            'Fixed Thinking Budget',
+            '固定思考预算',
+            `The model can spend up to ${formatted} internal reasoning tokens before writing the final answer.`,
+            `模型在输出正文前最多可使用 ${formatted} 个内部思考 token。`,
+            'Mode: Budget · Thinking tokens count inside Max Output.',
+            '模式：固定预算 · 思考 token 计入最大输出上限内。',
+        );
+    }
+    return richTipAttrs(
+        key,
+        'Thinking Supported',
+        '支持思考能力',
+        'Extended reasoning is supported, though the host catalog did not publish a fixed token cap.',
+        '该模型支持扩展思考，但宿主目录未公布固定的 token 预算上限。',
+        'Mode: Supported · Budget managed by server or effort tier.',
+        '模式：支持 · 预算由服务端或所选档位管理。',
+    );
+}
+
 function providerLabelHtml(provider: string): string {
     const key = provider.replace(/^API_PROVIDER_/, '');
     const labels: Record<string, string> = {
@@ -83,13 +171,67 @@ function providerLabelHtml(provider: string): string {
     return resolved ? esc(resolved) : tBiHtml('Provider not available', '暂无提供商信息');
 }
 
+function providerRichTipAttrs(key: string, provider: string): string {
+    const normalized = provider.replace(/^API_PROVIDER_/, '');
+    const descMap: Record<string, readonly [string, string]> = {
+        GOOGLE_GEMINI: [
+            'Served directly by Google Gemini infrastructure and billed against the Gemini shared quota pool.',
+            '由 Google Gemini 平台直接提供服务，消耗 Gemini 共享配额池。',
+        ],
+        ANTHROPIC_VERTEX: [
+            'Anthropic Claude model hosted through Google Cloud Vertex AI, drawing from the Claude / GPT quota pool.',
+            '通过 Google Cloud Vertex AI 托管的 Anthropic Claude 模型，消耗 Claude / GPT 共享配额池。',
+        ],
+        ANTHROPIC: [
+            'Anthropic Claude model served via Anthropic API routing.',
+            '通过 Anthropic 接口路由提供的 Claude 模型。',
+        ],
+        OPENAI_VERTEX: [
+            'OpenAI model hosted via Vertex AI integration, drawing from the Claude / GPT quota pool.',
+            '通过 Vertex AI 接入的 OpenAI 模型，消耗 Claude / GPT 共享配额池。',
+        ],
+        OPENAI: [
+            'OpenAI model served via OpenAI API routing.',
+            '通过 OpenAI 接口路由提供的模型。',
+        ],
+    };
+    const desc = Object.hasOwn(descMap, normalized) ? descMap[normalized] : undefined;
+    if (!provider.trim()) {
+        return richTipAttrs(
+            key,
+            'Model Provider',
+            '模型提供商',
+            'The local service did not report a provider identifier for this catalog entry.',
+            '本地服务未上报此模型目录项的提供商标识。',
+        );
+    }
+    return richTipAttrs(
+        key,
+        'Model Provider',
+        '模型提供商',
+        desc ? desc[0] : `Model backend provider reported by the host (${normalized.replace(/_/g, ' ')}).`,
+        desc ? desc[1] : `宿主上报的模型后端提供商（${normalized.replace(/_/g, ' ')}）。`,
+        `Catalog enum: ${provider}`,
+        `目录枚举：${provider}`,
+    );
+}
+
 /** A configured route is a capability, not proof of per-request delegation. */
-function orchestrationDescription(spec: ModelSpec): string {
+function orchestrationDescription(spec: ModelSpec, cardKey: string): string {
     const target = spec.executionModelId;
     if (!target || !/^MODEL_[A-Z0-9_]+$/.test(target) || target.includes('UNSPECIFIED')
         || target === spec.placeholderId) { return ''; }
     const worker = getModelSpecs().find(candidate => candidate.placeholderId === target);
-    return `<div class="spec-orchestration">
+    const routeTip = richTipAttrs(
+        `models-spec-execroute-${cardKey}`,
+        'Configured Execution Model',
+        '配置的执行模型',
+        'Fixed worker model paired with this coordinator on the server to handle concrete tool and coding steps.',
+        '服务端为该编排模型预设的固定执行模型，负责具体代码编辑与工具执行步骤。',
+        'Capability only — actual usage & cost follow whichever model is reported per call.',
+        '仅为路由能力说明；实际用量与费用按每次调用真实上报的模型统计。',
+    );
+    return `<div class="spec-orchestration"${routeTip}>
         <p><strong>${tBiHtml('Configured execution model', '配置的执行模型')}:</strong> ${esc(worker?.displayName || target)}</p>
         <p><code>${esc(worker?.modelId || target)}</code></p>
         ${worker ? `<p>${tBiHtml('Execution context & max output', '执行上下文与最大输出')}: ${formatTokensHtml(worker.maxTokens)} / ${formatTokensHtml(worker.maxOutputTokens)}</p>` : ''}
@@ -117,22 +259,86 @@ function formatRoleFamilyName(stem: string): string {
         .join(' ');
 }
 
-function poolChipHtml(modelId: string): string {
+function poolChipHtml(modelId: string, keyPrefix: string): string {
     const pool = getQuotaPoolKey(modelId);
-    if (pool === 'gemini') { return '<span class="orch-pool-chip">Gemini</span>'; }
-    if (pool === 'premium') { return '<span class="orch-pool-chip">Claude / GPT</span>'; }
+    if (pool === 'gemini') {
+        const tip = richTipAttrs(
+            `${keyPrefix}-pool-gemini`,
+            'Gemini Shared Quota Pool',
+            'Gemini 共享配额池',
+            'All Gemini chat models and effort tiers draw from this shared 5-hour and weekly quota pool.',
+            '所有 Gemini 对话模型与不同推理档位共用此 5 小时与每周共享配额池。',
+            'Separate from the Claude / GPT pool.',
+            '与 Claude / GPT 配额池相互独立。',
+        );
+        return `<span class="orch-pool-chip"${tip}>Gemini</span>`;
+    }
+    if (pool === 'premium') {
+        const tip = richTipAttrs(
+            `${keyPrefix}-pool-premium`,
+            'Claude / GPT Shared Quota Pool',
+            'Claude / GPT 共享配额池',
+            'Claude and GPT models share this separate 5-hour and weekly quota pool.',
+            'Claude 与 GPT 系列模型共用此独立的 5 小时与每周配额池。',
+            'Cross-pool routing splits usage across Gemini and Claude / GPT pools.',
+            '跨池编排时，规划与执行调用会分别消耗各自所属配额池。',
+        );
+        return `<span class="orch-pool-chip"${tip}>Claude / GPT</span>`;
+    }
     return '';
+}
+
+function buildPricingProvenanceTipAttrs(
+    key: string,
+    provenance: 'official' | 'mapped_base' | 'custom' | 'unpriced',
+    mappedBaseLabel?: string,
+): string {
+    if (provenance === 'mapped_base') {
+        const baseTextEn = mappedBaseLabel ? ` (${mappedBaseLabel})` : '';
+        const baseTextZh = mappedBaseLabel ? `（${mappedBaseLabel}）` : '';
+        return richTipAttrs(
+            key,
+            'Est. via Base Model',
+            '按底座估算',
+            `Fixed Orchestrator model has no standalone public API list price; estimated using its underlying base model rate${baseTextEn}.`,
+            `固定编排模型无独立公开 API 标价，当前按对应底座模型${baseTextZh}的官方单价估算。`,
+            'Switch to Strict mode in Settings to mark mapped models Unpriced until custom rates are set.',
+            '可在「设置」切换为「严格模式」，在填写自定义单价前将其标记为未定价。',
+        );
+    }
+    if (provenance === 'custom') {
+        return richTipAttrs(
+            key,
+            'Custom Rate',
+            '自定义单价',
+            'Uses the custom per-1M token rate you saved in the Cost tab instead of built-in reference rates.',
+            '当前采用你在「成本」页自定义的每百万 Token 单价，覆盖内置参考价。',
+            'Reference estimate only — does not affect Antigravity subscription billing.',
+            '仅用于费用参考估算，不影响 Antigravity 实际订阅账单。',
+        );
+    }
+    return richTipAttrs(
+        key,
+        'Unpriced Model',
+        '未定价模型',
+        'No public per-1M token rate is available (or Strict mode hides mapped-base estimates), so USD cost is omitted.',
+        '暂无公开 API 参考单价（或已开启严格模式隐藏按底座估算），暂不计入参考费用。',
+        'You can enter a custom rate in the Cost tab at any time.',
+        '你可随时在「成本」页为此模型设置自定义单价。',
+    );
 }
 
 function buildRoleEffectiveRatesHtml(
     modelId: string,
+    roleKey: string,
     customPricing?: Record<string, ModelPricing>,
     orchestratorPricingMode?: OrchestratorPricingMode,
 ): string {
     if (!modelId) { return ''; }
     const detail = resolvePricingDetail(modelId, customPricing || {}, { orchestratorPricingMode });
     if (!detail.pricing) {
-        return `<div class="orch-role-rates" data-price-state="unpriced"><span class="spec-price-badge is-unpriced">${tBiHtml('Unpriced', '未定价')}</span></div>`;
+        const tip = buildPricingProvenanceTipAttrs(`models-orch-price-${roleKey}`, 'unpriced');
+        return `<div class="orch-role-rates" data-price-state="unpriced"><span class="spec-price-badge is-unpriced"${tip}>${tBiHtml('Unpriced', '未定价')}</span></div>`;
     }
     const items: string[] = [
         `${tBiHtml('In', '输入')} ${esc(formatUsdPerMillion(detail.pricing.input))}`,
@@ -144,12 +350,21 @@ function buildRoleEffectiveRatesHtml(
     if (detail.pricing.thinking > 0 && detail.pricing.thinking !== detail.pricing.output) {
         items.push(`${tBiHtml('Think', '思考')} ${esc(formatUsdPerMillion(detail.pricing.thinking))}`);
     }
+    const ratesTip = richTipAttrs(
+        `models-orch-rates-${roleKey}`,
+        'API Reference Rates',
+        'API 参考单价',
+        'Public per-1M token list rates used to estimate equivalent API cost — not your actual subscription charge.',
+        '按公开每百万 Token 标价计算的参考单价，用于衡量用量价值，并非实际订阅扣费。',
+        'In = fresh input · Out = output · Cache = prompt cache read (USD per 1M tokens).',
+        '输入 = 新输入 · 输出 = 生成输出 · 缓存 = 提示词缓存读取（USD / 1M tokens）。',
+    );
     const provTag = detail.provenance === 'mapped_base'
-        ? ` <span class="orch-role-status" data-pricing-provenance="mapped_base">${tBiHtml('Est. via Base Model', '按底座估算')}</span>`
+        ? ` <span class="orch-role-status" data-pricing-provenance="mapped_base"${buildPricingProvenanceTipAttrs(`models-orch-prov-${roleKey}`, 'mapped_base', detail.mappedBaseLabel)}>${tBiHtml('Est. via Base Model', '按底座估算')}</span>`
         : detail.provenance === 'custom'
-            ? ` <span class="orch-role-status is-custom" data-pricing-provenance="custom">${tBiHtml('Custom', '自定义')}</span>`
+            ? ` <span class="orch-role-status is-custom" data-pricing-provenance="custom"${buildPricingProvenanceTipAttrs(`models-orch-prov-${roleKey}`, 'custom')}>${tBiHtml('Custom', '自定义')}</span>`
             : '';
-    return `<div class="orch-role-rates" data-price-state="${detail.provenance === 'mapped_base' ? 'mapped' : 'priced'}"><span class="spec-price-values">${items.join(' · ')}</span>${provTag}</div>`;
+    return `<div class="orch-role-rates" data-price-state="${detail.provenance === 'mapped_base' ? 'mapped' : 'priced'}"><span class="spec-price-values"${ratesTip}>${items.join(' · ')}</span>${provTag}</div>`;
 }
 
 export function buildOrchestratorSettingsCard(
@@ -169,20 +384,99 @@ export function buildOrchestratorSettingsCard(
         language,
     );
     const modeBadge = settings.mode === 'custom'
-        ? `<span class="orch-mode-pill is-custom">${tBiHtml('Custom', '自定义')}</span>`
-        : `<span class="orch-mode-pill is-default">${tBiHtml('Default', '默认')}</span>`;
-    const roleStatus = (isCustom: boolean) => isCustom
-        ? `<span class="orch-role-status is-custom">${tBiHtml('Pinned', '已指定')}</span>`
-        : `<span class="orch-role-status">${tBiHtml('Auto default', '默认最高档')}</span>`;
+        ? `<span class="orch-mode-pill is-custom"${richTipAttrs(
+            'models-orch-mode',
+            'Custom Orchestrator Mode',
+            '自定义编排模式',
+            'You pinned a custom Orchestrator or Executor model instead of using the automatic platform default.',
+            '你手动指定了编排模型或执行模型，而非使用平台自动默认组合。',
+            'Each role draws from its own model quota pool.',
+            '两个角色各自消耗所属模型的配额池。',
+        )}>${tBiHtml('Custom', '自定义')}</span>`
+        : `<span class="orch-mode-pill is-default"${richTipAttrs(
+            'models-orch-mode',
+            'Default Orchestrator Mode',
+            '默认编排模式',
+            'Antigravity automatically pairs the highest-effort default models for planning and execution.',
+            'Antigravity 自动选用默认模型系列的最高推理档位进行规划与执行。',
+            'Configure custom pairing inside Antigravity Orchestrator Settings.',
+            '可在 Antigravity 编排设置中切换为自定义组合。',
+        )}>${tBiHtml('Default', '默认')}</span>`;
+    const roleStatus = (roleKey: string, isCustom: boolean) => isCustom
+        ? `<span class="orch-role-status is-custom"${richTipAttrs(
+            `models-orch-status-${roleKey}`,
+            'Pinned Role Model',
+            '已指定模型',
+            'Explicitly pinned in your Orchestrator Settings instead of following the automatic default.',
+            '你在编排设置中手动固定了该角色的模型，不会随默认档位自动切换。',
+            'Source: explicit user override.',
+            '触发条件：用户自定义配置。',
+        )}>${tBiHtml('Pinned', '已指定')}</span>`
+        : `<span class="orch-role-status"${richTipAttrs(
+            `models-orch-status-${roleKey}`,
+            'Auto Default',
+            '默认最高档',
+            'Automatically selects the highest available reasoning effort tier of the default model family.',
+            '自动选用默认模型系列中可用的最高推理档位。',
+            'Rule: active when no custom model is pinned for this role.',
+            '触发条件：该角色未手动指定自定义模型。',
+        )}>${tBiHtml('Auto default', '默认最高档')}</span>`;
     const orchFamilies = settings.roles.orchestrators.map(formatRoleFamilyName);
     const execFamilies = settings.roles.executors.map(formatRoleFamilyName);
-    const shortId = (id: string) => id ? `<code class="spec-short-id" title="${esc(id)}">${esc(id.replace(/^MODEL_PLACEHOLDER_/, ''))}</code>` : '';
+    const shortId = (roleKey: string, id: string) => id
+        ? `<code class="spec-short-id"${richTipAttrs(
+            `models-orch-shortid-${roleKey}`,
+            'Internal Model ID',
+            '模型内部 ID',
+            `Full catalog placeholder ID: ${id}`,
+            `完整目录内部占位 ID：${id}`,
+            'Used internally by Antigravity to route requests and match pricing.',
+            'Antigravity 内部用于路由请求与匹配价格的稳定标识。',
+        )}>${esc(id.replace(/^MODEL_PLACEHOLDER_/, ''))}</code>` : '';
     const sourceBadge = settings.settingsSource === 'config_fallback'
-        ? `<span class="orch-role-status" data-settings-source="config_fallback">${tBiHtml('Local config', '本地配置')}</span>`
+        ? `<span class="orch-role-status" data-settings-source="config_fallback"${richTipAttrs(
+            'models-orch-source',
+            'Local Config Fallback',
+            '本地配置兜底',
+            'Loaded from ~/.gemini/config/config.json because live orchestrator settings were not yet returned by the local service.',
+            '因本地服务暂未返回实时编排配置，当前回退读取自 ~/.gemini/config/config.json。',
+            'Updates automatically once live settings sync.',
+            '实时配置同步后会自动更新。',
+        )}>${tBiHtml('Local config', '本地配置')}</span>`
         : '';
     const creditsMeta = typeof settings.useAiCredits === 'boolean'
-        ? `<div class="orch-family-row"><dt>${tBiHtml('AI Credit Overages', 'AI 积分超额')}</dt><dd>${settings.useAiCredits ? tBiHtml('Enabled', '已开启') : tBiHtml('Disabled', '已关闭')}</dd></div>`
+        ? `<div class="orch-family-row"${richTipAttrs(
+            'models-orch-ai-credits',
+            'AI Credit Overages',
+            'AI 积分超额',
+            'When enabled, Antigravity can spend your Account AI Credits to keep running after a shared quota pool reaches 0%.',
+            '开启后，当共享配额池耗尽（0%）时，Antigravity 可继续消耗账号 AI 积分以维持运行。',
+            settings.useAiCredits
+                ? 'Current state: Enabled · Check balance in the Profile tab.'
+                : 'Current state: Disabled · Calls pause until quota resets.',
+            settings.useAiCredits
+                ? '当前状态：已开启 · 可在「账号」页查看积分余额。'
+                : '当前状态：已关闭 · 配额耗尽后会等待重置。',
+        )}><dt>${tBiHtml('AI Credit Overages', 'AI 积分超额')}</dt><dd>${settings.useAiCredits ? tBiHtml('Enabled', '已开启') : tBiHtml('Disabled', '已关闭')}</dd></div>`
         : '';
+    const orchRoleTip = richTipAttrs(
+        'models-orch-role-orchestrator',
+        'Orchestrator Model (Planner)',
+        '编排模型（规划）',
+        'High-level planner model that decomposes tasks, decides strategy, and coordinates tool/subagent steps.',
+        '负责拆解任务、制定策略并统筹调度工具与子步骤的高层规划模型。',
+        'Consumes its own quota pool and is metered per actual model reported on each call.',
+        '消耗自身所属配额池，并按每次调用实际报告的模型独立计量。',
+    );
+    const execRoleTip = richTipAttrs(
+        'models-orch-role-executor',
+        'Executor Model (Worker)',
+        '执行模型（执行）',
+        'Worker model delegated by the Orchestrator to perform routine edits, searches, and concrete execution steps.',
+        '由编排模型委派执行具体代码修改、检索与常规操作步骤的工作模型。',
+        'Can use a different quota pool from the Orchestrator (cross-pool routing).',
+        '可与编排模型分属不同配额池（跨池路由），分别独立计量。',
+    );
 
     return `
         <section class="card orch-settings-card" data-orchestrator-mode="${settings.mode}">
@@ -194,27 +488,27 @@ export function buildOrchestratorSettingsCard(
             <div class="orch-role-list">
                 <div class="orch-role-row" data-orch-role="orchestrator">
                     <div class="orch-role-meta">
-                        <span class="orch-role-title">${tBiHtml('Orchestrator Model', '编排模型')}</span>
-                        ${roleStatus(settings.isCustomOrchestrator)}
+                        <span class="orch-role-title"${orchRoleTip}>${tBiHtml('Orchestrator Model', '编排模型')}</span>
+                        ${roleStatus('orchestrator', settings.isCustomOrchestrator)}
                     </div>
                     <div class="orch-role-value">
                         <strong>${esc(orchLabel || '—')}</strong>
-                        ${shortId(settings.effectiveOrchestratorModel)}
-                        ${poolChipHtml(settings.effectiveOrchestratorModel)}
+                        ${shortId('orchestrator', settings.effectiveOrchestratorModel)}
+                        ${poolChipHtml(settings.effectiveOrchestratorModel, 'models-orch-planner')}
                     </div>
-                    ${buildRoleEffectiveRatesHtml(settings.effectiveOrchestratorModel, options?.customPricing, options?.orchestratorPricingMode)}
+                    ${buildRoleEffectiveRatesHtml(settings.effectiveOrchestratorModel, 'orchestrator', options?.customPricing, options?.orchestratorPricingMode)}
                 </div>
                 <div class="orch-role-row" data-orch-role="executor">
                     <div class="orch-role-meta">
-                        <span class="orch-role-title">${tBiHtml('Executor Model', '执行模型')}</span>
-                        ${roleStatus(settings.isCustomExecutor)}
+                        <span class="orch-role-title"${execRoleTip}>${tBiHtml('Executor Model', '执行模型')}</span>
+                        ${roleStatus('executor', settings.isCustomExecutor)}
                     </div>
                     <div class="orch-role-value">
                         <strong>${esc(execLabel || '—')}</strong>
-                        ${shortId(settings.effectiveExecutorModel)}
-                        ${poolChipHtml(settings.effectiveExecutorModel)}
+                        ${shortId('executor', settings.effectiveExecutorModel)}
+                        ${poolChipHtml(settings.effectiveExecutorModel, 'models-orch-worker')}
                     </div>
-                    ${buildRoleEffectiveRatesHtml(settings.effectiveExecutorModel, options?.customPricing, options?.orchestratorPricingMode)}
+                    ${buildRoleEffectiveRatesHtml(settings.effectiveExecutorModel, 'executor', options?.customPricing, options?.orchestratorPricingMode)}
                 </div>
             </div>
             ${(orchFamilies.length > 0 || execFamilies.length > 0 || creditsMeta) ? `
@@ -232,6 +526,7 @@ export function buildOrchestratorSettingsCard(
 
 function buildSpecPriceRowHtml(
     spec: ModelSpec,
+    cardKey: string,
     options?: Pick<ModelsTabOptions, 'customPricing' | 'orchestratorPricingMode'>,
 ): string {
     const custom = options?.customPricing || {};
@@ -245,10 +540,20 @@ function buildSpecPriceRowHtml(
                 : resolvePricingDetail(spec.modelId, custom, { orchestratorPricingMode: mode });
         })();
     const pricing = detail.pricing;
+    const labelTip = richTipAttrs(
+        `models-spec-pricelabel-${cardKey}`,
+        'API Reference Price',
+        'API 参考价',
+        'Public per-1M token list rates used only to estimate equivalent API value — not your actual subscription billing.',
+        '基于公开每百万 Token 标价的参考单价，仅用于估算等效 API 费用，并非实际订阅扣费。',
+        'Unit: USD per 1M tokens (In = fresh input, Out = output, Cache = cache read).',
+        '单位：USD / 每百万 Token（输入 = 新输入，输出 = 生成，缓存 = 缓存读取）。',
+    );
     if (!pricing) {
+        const unpricedTip = buildPricingProvenanceTipAttrs(`models-spec-unpriced-${cardKey}`, 'unpriced');
         return `<div class="spec-price-row is-unpriced" data-price-state="unpriced">
-            <span class="spec-price-label">${tBiHtml('API reference', 'API 参考价')}</span>
-            <span class="spec-price-badge is-unpriced">${tBiHtml('Unpriced', '未定价')}</span>
+            <span class="spec-price-label"${labelTip}>${tBiHtml('API reference', 'API 参考价')}</span>
+            <span class="spec-price-badge is-unpriced"${unpricedTip}>${tBiHtml('Unpriced', '未定价')}</span>
         </div>`;
     }
     const items: string[] = [
@@ -260,12 +565,12 @@ function buildSpecPriceRowHtml(
     }
     const isMapped = detail.provenance === 'mapped_base';
     const badgeHtml = isMapped
-        ? ` <span class="spec-price-badge is-mapped" data-pricing-provenance="mapped_base">${tBiHtml('Est. via Base Model', '按底座估算')}</span>`
+        ? ` <span class="spec-price-badge is-mapped" data-pricing-provenance="mapped_base"${buildPricingProvenanceTipAttrs(`models-spec-prov-${cardKey}`, 'mapped_base', detail.mappedBaseLabel)}>${tBiHtml('Est. via Base Model', '按底座估算')}</span>`
         : detail.provenance === 'custom'
-            ? ` <span class="spec-price-badge is-custom" data-pricing-provenance="custom">${tBiHtml('Custom', '自定义')}</span>`
+            ? ` <span class="spec-price-badge is-custom" data-pricing-provenance="custom"${buildPricingProvenanceTipAttrs(`models-spec-prov-${cardKey}`, 'custom')}>${tBiHtml('Custom', '自定义')}</span>`
             : '';
     return `<div class="spec-price-row${isMapped ? ' is-mapped' : ''}" data-price-state="${isMapped ? 'mapped' : 'priced'}">
-        <span class="spec-price-label">${tBiHtml('API reference', 'API 参考价')}</span>
+        <span class="spec-price-label"${labelTip}>${tBiHtml('API reference', 'API 参考价')}</span>
         <span class="spec-price-values">${items.join(' · ')}${badgeHtml}</span>
     </div>`;
 }
@@ -276,43 +581,97 @@ export function buildModelInfoGrid(
     options?: Pick<ModelsTabOptions, 'customPricing' | 'orchestratorPricingMode'>,
 ): string {
     const language = getLanguage();
-    const cards = specs.map((s) => {
+    const cards = specs.map((s, idx) => {
         const name = localizePickerEffortLabel(s.placeholderId, s.displayName, language);
+        const cardKey = `${kind}-${idx}-${slugKey(s.placeholderId || s.modelId)}`;
         const shortId = s.placeholderId.replace(/^MODEL_PLACEHOLDER_/, '');
         const extraId = s.placeholderId && s.placeholderId !== s.modelId
-            ? `<code class="spec-short-id" title="${esc(s.placeholderId)}">${esc(shortId)}</code>` : '';
+            ? `<code class="spec-short-id"${richTipAttrs(
+                `models-spec-shortid-${cardKey}`,
+                'Internal Model ID',
+                '模型内部 ID',
+                `Full placeholder identifier: ${s.placeholderId}`,
+                `完整内部占位标识：${s.placeholderId}`,
+                'Matches the internal model ID used in routing and diagnostics.',
+                '与路由和诊断日志中的内部模型 ID 对应。',
+            )}>${esc(shortId)}</code>` : '';
+        const compactionTip = richTipAttrs(
+            `models-spec-compaction-${cardKey}`,
+            'Effective Budget (Compaction Limit)',
+            '自动压缩上限（有效预算）',
+            'Token threshold where Antigravity automatically summarizes older turns so context stays fast and within budget.',
+            '对话上下文达到该 Token 上限时，Antigravity 会自动压缩较早历史以保持速度与稳定。',
+            'Usually lower than Native Ceiling; Overview usage % uses this budget as its denominator.',
+            '通常低于原生窗口上限；总览页上下文占用百分比即以此预算为分母。',
+        );
+        const checkpointTip = richTipAttrs(
+            `models-spec-checkpoint-${cardKey}`,
+            'Checkpoint Threshold',
+            '检查点阈值',
+            'Token size threshold that triggers Antigravity to write an internal checkpoint snapshot for recovery and summarization.',
+            '触发 Antigravity 记录内部检查点快照的 Token 阈值，用于状态恢复与摘要。',
+            'Separate platform setting from Effective Budget — does not hard-cap your prompt directly.',
+            '独立于自动压缩上限的平台参数，不直接等同于对话截断上限。',
+        );
+        const nativeTip = richTipAttrs(
+            `models-spec-native-${cardKey}`,
+            'Native Ceiling (Model Context)',
+            '原生窗口上限',
+            'Physical maximum context window reported for the underlying model before any platform compaction rule.',
+            '底层模型标称的物理最大上下文窗口上限。',
+            'Antigravity normally auto-compacts earlier at the Effective Budget rather than filling to this ceiling.',
+            '实际对话通常在更早的「自动压缩上限」就会触发压缩，而非填满整个原生窗口。',
+        );
+        const maxOutTip = richTipAttrs(
+            `models-spec-maxout-${cardKey}`,
+            'Max Output',
+            '最大输出',
+            'Maximum tokens the model can generate in a single response turn.',
+            '单次模型回复最多可生成的 Token 上限。',
+            'Includes internal thinking tokens when extended reasoning is active.',
+            '开启思考能力时，内部思考 Token 也计入此上限内。',
+        );
+        const modelIdTip = richTipAttrs(
+            `models-spec-modelid-${cardKey}`,
+            'Catalog Model ID',
+            '目录模型 ID',
+            `Full backend model identifier: ${s.modelId}`,
+            `完整后端模型标识：${s.modelId}`,
+            'Matches the model key reported in GM Data and Cost pricing tables.',
+            '与「GM 数据」和「成本」定价表中的模型标识一致。',
+        );
         return `
             <article class="spec-card" aria-label="${esc(name)}" data-model-id="${esc(s.placeholderId)}">
                 <header class="spec-header">
                     <h3 class="spec-name">${esc(name)}</h3>
-                    <p class="spec-provider" title="${esc(s.apiProvider)}">${providerLabelHtml(s.apiProvider)}</p>
+                    <p class="spec-provider"${providerRichTipAttrs(`models-spec-provider-${cardKey}`, s.apiProvider)}>${providerLabelHtml(s.apiProvider)}</p>
                 </header>
                 <dl class="spec-metrics">
-                    <div class="spec-metric spec-limit" data-metric="compression-limit">
-                        <dt>${tBiHtml('Compression limit', '压缩上限')}</dt>
+                    <div class="spec-metric spec-limit" data-metric="compression-limit"${compactionTip}>
+                        <dt>${tBiHtml('Effective Budget (Compaction Limit)', '自动压缩上限（有效预算）')}</dt>
                         <dd>${s.isImageGeneration ? tBiHtml('Not applicable', '不适用') : formatTokensHtml(s.cpLimit)}</dd>
                     </div>
-                    <div class="spec-metric" data-metric="checkpoint-threshold">
-                        <dt>${tBiHtml('Checkpoint threshold', '检查点阈值')}</dt>
+                    <div class="spec-metric" data-metric="checkpoint-threshold"${checkpointTip}>
+                        <dt>${tBiHtml('Checkpoint Threshold', '检查点阈值')}</dt>
                         <dd>${s.isImageGeneration ? tBiHtml('Not applicable', '不适用') : formatTokensHtml(s.cpThreshold)}</dd>
                     </div>
-                    <div class="spec-metric" data-metric="native-context">
-                        <dt>${tBiHtml('Model context', '模型上下文')}</dt>
+                    <div class="spec-metric" data-metric="native-context"${nativeTip}>
+                        <dt>${tBiHtml('Native Ceiling (Model Context)', '原生窗口上限')}</dt>
                         <dd>${formatTokensHtml(s.maxTokens)}</dd>
                     </div>
-                    <div class="spec-metric" data-metric="max-output">
-                        <dt>${tBiHtml('Max output', '最大输出')}</dt>
+                    <div class="spec-metric" data-metric="max-output"${maxOutTip}>
+                        <dt>${tBiHtml('Max Output', '最大输出')}</dt>
                         <dd>${formatTokensHtml(s.maxOutputTokens)}</dd>
                     </div>
-                    <div class="spec-metric spec-thinking">
+                    <div class="spec-metric spec-thinking"${thinkingRichTipAttrs(`models-spec-thinking-${cardKey}`, s)}>
                         <dt>${tBiHtml('Thinking', '思考能力')}</dt>
                         <dd>${thinkingDescriptionHtml(s)}</dd>
                     </div>
                 </dl>
-                ${buildSpecPriceRowHtml(s, options)}
-                ${orchestrationDescription(s)}
+                ${buildSpecPriceRowHtml(s, cardKey, options)}
+                ${orchestrationDescription(s, cardKey)}
                 <div class="spec-identity">
-                    <code class="spec-model-id" title="${esc(s.modelId)}">${esc(s.modelId)}</code>${extraId}
+                    <code class="spec-model-id"${modelIdTip}>${esc(s.modelId)}</code>${extraId}
                 </div>
             </article>`;
     }).join('');
@@ -327,7 +686,7 @@ export function buildModelInfoGrid(
             <h2>${icon} <span>${kind === 'image' ? tBiHtml('Image generation models', '图片生成模型') : tBiHtml('Model Info', '模型信息')}</span></h2>
             <p class="spec-description">${kind === 'image'
             ? tBiHtml('Image-generation models available in your IDE. Reported context and output limits may differ from public API limits; chat compression settings do not apply.', 'IDE 中可用的图片生成模型。IDE 报告的上下文和输出上限可能与公开 API 不同；聊天上下文压缩设置不适用。')
-            : tBiHtml('Limits reported by your IDE may differ from public API limits. Compression limit and checkpoint threshold are separate platform settings.', '以下限额由 IDE 报告，可能与公开 API 限额不同。压缩上限与检查点阈值是不同的平台设置。')}</p>
+            : tBiHtml('Limits reported by your IDE may differ from public API limits. Effective Budget (Compaction Limit), Checkpoint Threshold, and Native Ceiling are three separate parameters — hover or click any metric to see how they differ.', '以下限额由 IDE 报告，可能与公开 API 限额不同。自动压缩上限（有效预算）、检查点阈值与原生窗口上限属于三项不同参数——悬停或点击任意指标即可查看区别。')}</p>
             <div class="spec-grid">
                 ${cards}
             </div>
@@ -341,21 +700,83 @@ function formatRunwayPoolName(poolKey: string): string {
     return poolKey;
 }
 
+function buildRunwayItemTipAttrs(poolKey: string, estimate: QuotaRunwayEstimate): string {
+    const poolName = formatRunwayPoolName(poolKey);
+    const rateStr = typeof estimate.burnRatePctPerHour === 'number' && Number.isFinite(estimate.burnRatePctPerHour) && estimate.burnRatePctPerHour > 0
+        ? `${estimate.burnRatePctPerHour.toFixed(1)}%/h`
+        : '';
+    if (estimate.status === 'safe_until_reset') {
+        return richTipAttrs(
+            `models-runway-${slugKey(poolKey)}`,
+            `${poolName} · Safe Before Reset`,
+            `${poolName} · 重置前充裕`,
+            'At your current burn rate, remaining quota is projected to last past the next reset time.',
+            '按近期消耗速率估算，当前剩余配额足以支撑到下次配额重置。',
+            `Calculated from a 45-minute rolling usage window${rateStr ? ` (${rateStr})` : ''} vs the pool reset countdown.`,
+            `基于最近 45 分钟滚动窗口消耗速率${rateStr ? `（${rateStr}）` : ''}与重置倒计时对比得出。`,
+        );
+    }
+    if (estimate.status === 'at_risk') {
+        return richTipAttrs(
+            `models-runway-${slugKey(poolKey)}`,
+            `${poolName} · Quota At Risk`,
+            `${poolName} · 配额预计提前耗尽`,
+            'At your current burn rate, this quota pool may reach 0% before the next scheduled reset.',
+            '按近期消耗速率估算，该配额池可能在下次重置前提前归零。',
+            `Based on a 45-minute rolling usage window${rateStr ? ` (${rateStr})` : ''} compared against the reset countdown.`,
+            `基于最近 45 分钟滚动窗口消耗速率${rateStr ? `（${rateStr}）` : ''}与重置倒计时对比得出。`,
+        );
+    }
+    if (estimate.status === 'exhausted') {
+        return richTipAttrs(
+            `models-runway-${slugKey(poolKey)}`,
+            `${poolName} · Quota Exhausted`,
+            `${poolName} · 配额已耗尽`,
+            'Remaining quota for this shared pool is 0% until the reset window completes (unless AI Credit overages are enabled).',
+            '该共享配额池剩余额度已降至 0%，需等待窗口重置（除非已开启 AI 积分超额）。',
+            'Monitored over a 45-minute rolling window.',
+            '按 45 分钟滚动窗口持续追踪。',
+        );
+    }
+    return richTipAttrs(
+        `models-runway-${slugKey(poolKey)}`,
+        `${poolName} · Burn Rate`,
+        `${poolName} · 消耗速率`,
+        estimate.recoveredRecently
+            ? 'Quota recently increased after a reset; runway will resume once new consumption is observed.'
+            : 'Recent quota burn rate measured over a 45-minute rolling window (not enough drop yet to forecast exhaustion).',
+        estimate.recoveredRecently
+            ? '配额刚经历重置恢复，待出现新消耗后会重新估算续航。'
+            : '按最近 45 分钟滚动窗口统计的消耗速率（当前下降样本较少，暂不预测耗尽时间）。',
+        rateStr ? `Current observed rate: ${rateStr}.` : 'Rolling 45-minute window vs reset countdown.',
+        rateStr ? `当前观测速率：${rateStr}。` : '采用 45 分钟滚动窗口与重置倒计时对比。',
+    );
+}
+
 function buildModelsRunwayStrip(runways?: Record<string, QuotaRunwayEstimate>): string {
     if (!runways) { return ''; }
     const items: string[] = [];
     for (const [poolKey, estimate] of Object.entries(runways)) {
         const badgeHtml = formatRunwayBadgeHtml(estimate);
         if (!badgeHtml) { continue; }
-        items.push(`<div class="models-runway-item" data-runway-pool="${esc(poolKey)}">
+        items.push(`<div class="models-runway-item" data-runway-pool="${esc(poolKey)}"${buildRunwayItemTipAttrs(poolKey, estimate)}>
             <span class="models-runway-pool">${esc(formatRunwayPoolName(poolKey))}</span>
             ${badgeHtml}
         </div>`);
     }
     if (items.length === 0) { return ''; }
-    return `<section class="card models-runway-card" aria-label="${esc(tBiHtml('Quota Runway', '配额续航').replace(/<[^>]+>/g, ''))}">
+    const headingTip = richTipAttrs(
+        'models-runway-heading',
+        'Quota Runway',
+        '配额续航',
+        'Predicts whether each shared quota pool will last until its next reset based on recent consumption speed.',
+        '根据近期配额消耗速度，预测各共享配额池能否平稳撑到下次重置。',
+        'Uses a 45-minute rolling burn-rate window (%/h) compared against the pool reset countdown.',
+        '计算口径：45 分钟滚动窗口消耗速率（%/h）对比配额重置倒计时。',
+    );
+    return `<section class="card models-runway-card" aria-label="${esc(tBi('Quota Runway', '配额续航'))}">
         <div class="models-runway-head">
-            <h3>${ICON.clock} <span>${tBiHtml('Quota Runway', '配额续航')}</span></h3>
+            <h3${headingTip}>${ICON.clock} <span>${tBiHtml('Quota Runway', '配额续航')}</span></h3>
         </div>
         <div class="models-runway-grid acm-runway-grid">${items.join('')}</div>
     </section>`;
@@ -395,8 +816,17 @@ export function buildModelsTabContent(
     if (options.isCustomModelActive) {
         parts.push(buildCustomModelBannerHtml());
         if (quotaHtml) {
+            const byokSummaryTip = richTipAttrs(
+                'models-byok-pools-summary',
+                'BYOK / Custom Model Isolation',
+                'BYOK / 自定义模型配额隔离',
+                'BYOK (Bring Your Own Key) and custom-* models use your own API provider and do not consume Google Antigravity shared quota pools.',
+                'BYOK（自带 API 密钥）与 custom-* 自定义模型走独立接口，不消耗 Google Antigravity 共享配额池。',
+                'Pools are collapsed and low-quota alerts are suppressed while this session is active.',
+                '当前会话激活期间自动折叠配额池并静音低配额预警，点击可展开查看。',
+            );
             parts.push(`<details id="models-custom-model-pools" class="custom-model-pools-collapse" data-state-key="models-custom-model-pools">
-                <summary><span>${tBiHtml('Google Quota Pools (Paused for Custom Model)', 'Google 配额池（自定义模型已隔离）')}</span></summary>
+                <summary${byokSummaryTip}><span>${tBiHtml('Google Quota Pools (Paused for Custom Model)', 'Google 配额池（自定义模型已隔离）')}</span></summary>
                 ${quotaHtml}
             </details>`);
         }
@@ -474,8 +904,8 @@ export function buildModelsTabContent(
             <section class="card empty">
                 <h2>${ICON.bolt} <span>${tBiHtml('Models', '模型')}</span></h2>
                 <p class="empty-desc">${tBiHtml(
-            'Waiting for model-related data from LS...',
-            '等待 LS 返回模型相关数据...',
+            'Waiting for model-related data from the local service...',
+            '正在等待本地服务返回模型相关数据...',
         )}</p>
             </section>`;
     }

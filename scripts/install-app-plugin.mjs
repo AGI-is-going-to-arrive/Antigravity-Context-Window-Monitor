@@ -21,7 +21,7 @@
  *   --remove-cdp-launcher   Remove the zero-patch persistent CDP launcher
  *
  * Options:
- *   --version <v>        Specific release version (e.g. 1.17.10 or v1.17.10)
+ *   --version <v>        Specific release version (e.g. 1.17.11 or v1.17.11)
  *   --source <dir>       Explicit local plugin directory containing plugin.json
  *   --target <dir>       Override install path (default: ~/.gemini/config/plugins/antigravity-context-monitor)
  *   --use-cli            Use `agy plugin install` / `agy plugin uninstall` when available
@@ -35,7 +35,9 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import {
+    accessSync,
     chmodSync,
+    constants as fsConstants,
     copyFileSync,
     cpSync,
     existsSync,
@@ -47,12 +49,13 @@ import {
     rmdirSync,
     rmSync,
     statSync,
+    utimesSync,
     writeFileSync,
 } from 'node:fs';
 import * as http from 'node:http';
 import * as https from 'node:https';
 import * as net from 'node:net';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, join, resolve, sep, win32 as win32Path } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
@@ -149,7 +152,7 @@ export function getIdeExtensionDirs(env = process.env, platform = process.platfo
 export function normalizeVersionArg(raw) {
     const cleaned = String(raw || '').trim().replace(/^v/i, '');
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(cleaned)) {
-        throw new Error(`Invalid --version value "${raw}". Expected semver like 1.17.10 or v1.17.10.`);
+        throw new Error(`Invalid --version value "${raw}". Expected semver like 1.17.11 or v1.17.11.`);
     }
     return cleaned;
 }
@@ -1164,6 +1167,8 @@ export function runInstaller(options = {}) {
             platform,
             homeDir: options.homeDir,
             appPath: options.appPath,
+            systemAppsDir: options.systemAppsDir,
+            desktopDir: options.desktopDir,
             dryRun,
             execFileSyncFn: options.execFileSyncFn,
             commandExistsFn: options.commandExistsFn,
@@ -1176,7 +1181,10 @@ export function runInstaller(options = {}) {
             platform,
             homeDir: options.homeDir,
             appPath: options.appPath,
+            systemAppsDir: options.systemAppsDir,
+            desktopDir: options.desktopDir,
             dryRun,
+            execFileSyncFn: options.execFileSyncFn,
             commandExistsFn: options.commandExistsFn,
         });
     }
@@ -1523,6 +1531,9 @@ export async function collectStatus(options = {}) {
         platform,
         homeDir: options.homeDir,
         appPath: options.appPath,
+        systemAppsDir: options.systemAppsDir,
+        desktopDir: options.desktopDir,
+        execFileSyncFn: options.execFileSyncFn,
         commandExistsFn: options.commandExistsFn,
     });
     const cdpLauncher = {
@@ -1639,6 +1650,11 @@ export async function runInstallerAsync(options = {}) {
 export const CDP_LAUNCHER_DISPLAY_NAME = 'Antigravity (CDP)';
 export const MACOS_CDP_LAUNCHER_BUNDLE_ID = 'com.antigravity-context-monitor.cdp-launcher';
 export const MACOS_ANTIGRAVITY_BUNDLE_ID = 'com.google.antigravity';
+export const MACOS_CDP_BUNDLE_NAME = `${CDP_LAUNCHER_DISPLAY_NAME}.app`;
+export const MACOS_SYSTEM_APPLICATIONS_DIR = '/Applications';
+export const LINUX_CDP_ICON_FILENAME = 'antigravity-cdp.svg';
+
+const MAX_EMBEDDED_ICON_BYTES = 2 * 1024 * 1024;
 
 function joinLauncherTargetPath(platform, ...segments) {
     if (
@@ -1649,6 +1665,88 @@ function joinLauncherTargetPath(platform, ...segments) {
         return win32Path.join(...segments);
     }
     return join(...segments);
+}
+
+function dirnameLauncherTargetPath(platform, target) {
+    if (platform === 'win32' && (/^[A-Za-z]:/.test(target) || target.includes('\\'))) {
+        return win32Path.dirname(target);
+    }
+    return dirname(target);
+}
+
+function normalizeLauncherPosixPath(p) {
+    return resolve(p).replace(/\/+$/, '') || '/';
+}
+
+function getRealOsHomeDir() {
+    try {
+        const ui = userInfo();
+        if (ui && ui.homedir && ui.homedir.trim()) {
+            return ui.homedir.trim();
+        }
+    } catch {
+        // Fallback when passwd lookup is unavailable
+    }
+    return homedir();
+}
+
+function resolveMacSystemAppsDir(options = {}, env = process.env) {
+    if (options.systemAppsDir !== undefined) {
+        const trimmed = String(options.systemAppsDir || '').trim();
+        return trimmed || null;
+    }
+    if (typeof env.ACM_MACOS_APPLICATIONS_DIR === 'string') {
+        const trimmed = env.ACM_MACOS_APPLICATIONS_DIR.trim();
+        return trimmed || null;
+    }
+    if (options.homeDir && String(options.homeDir).trim()) {
+        return null;
+    }
+    const realHome = normalizeLauncherPosixPath(getRealOsHomeDir());
+    if (typeof env.HOME === 'string' && env.HOME.trim()) {
+        if (normalizeLauncherPosixPath(env.HOME.trim()) !== realHome) {
+            return null;
+        }
+    }
+    if (options.platform && options.platform !== process.platform) {
+        return null;
+    }
+    return MACOS_SYSTEM_APPLICATIONS_DIR;
+}
+
+function isDirectoryWritable(dirPath) {
+    try {
+        if (!existsSync(dirPath)) {
+            return false;
+        }
+        const st = statSync(dirPath);
+        if (!st.isDirectory()) {
+            return false;
+        }
+        if (process.platform !== 'win32' && (st.mode & 0o222) === 0) {
+            return false;
+        }
+        accessSync(dirPath, fsConstants.W_OK | fsConstants.X_OK);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function isMacAppBundleInstalled(appDir) {
+    if (!appDir) { return false; }
+    return existsSync(join(appDir, 'Contents', 'Info.plist'))
+        && existsSync(join(appDir, 'Contents', 'MacOS', 'launch'));
+}
+
+function createLauncherRunner(execFileSyncFn) {
+    return execFileSyncFn || ((file, args, opts) => execFileSync(file, [...args], {
+        env: opts?.env,
+        windowsHide: opts?.windowsHide ?? true,
+        stdio: opts?.stdio ?? 'pipe',
+        ...(typeof opts?.timeout === 'number' ? { timeout: opts.timeout } : {}),
+        ...(opts?.encoding ? { encoding: opts.encoding } : {}),
+    }));
 }
 
 function escapeSingleQuotedPosix(value) {
@@ -1684,6 +1782,36 @@ function defaultLauncherCommandExists(cmd, env = process.env) {
     return false;
 }
 
+export const WINDOWS_DESKTOP_PS_SCRIPT =
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Environment]::GetFolderPath('Desktop')";
+
+function resolveWindowsDesktopDir(options = {}, homeDir, env = process.env) {
+    if (options.desktopDir && String(options.desktopDir).trim()) {
+        return String(options.desktopDir).trim();
+    }
+    const fallback = joinLauncherTargetPath('win32', homeDir, 'Desktop');
+    if (process.platform === 'win32' || typeof options.execFileSyncFn === 'function') {
+        try {
+            const runner = createLauncherRunner(options.execFileSyncFn);
+            const raw = runner(
+                'powershell.exe',
+                ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_DESKTOP_PS_SCRIPT],
+                { env, windowsHide: true, stdio: 'pipe', timeout: 3_000, encoding: 'utf8' },
+            );
+            const text = Buffer.isBuffer(raw)
+                ? raw.toString('utf8')
+                : (typeof raw === 'string' ? raw : '');
+            const cleaned = text.replace(/^\uFEFF/, '').trim();
+            if (cleaned && !/[\r\n]/.test(cleaned)) {
+                return cleaned;
+            }
+        } catch {
+            // Fallback cleanly to %USERPROFILE%\Desktop
+        }
+    }
+    return fallback;
+}
+
 export function getSafeCdpLaunchCommand(platform = process.platform) {
     if (platform === 'darwin') {
         return 'while pgrep -f \'^/Applications/Antigravity\\.app/Contents/MacOS/Antigravity($| )\' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0';
@@ -1700,13 +1828,37 @@ export function resolveCdpLauncherPaths(options = {}) {
     const homeDir = (options.homeDir && String(options.homeDir).trim()) || resolveUserHome(env, platform);
 
     if (platform === 'darwin') {
-        const macAppDir = joinLauncherTargetPath('darwin', homeDir, 'Applications', `${CDP_LAUNCHER_DISPLAY_NAME}.app`);
-        let targetAppPath = (options.appPath && String(options.appPath).trim()) || '/Applications/Antigravity.app';
-        if (!options.appPath && !existsSync(targetAppPath)) {
-            const userApp = joinLauncherTargetPath('darwin', homeDir, 'Applications', 'Antigravity.app');
-            if (existsSync(userApp)) {
-                targetAppPath = userApp;
+        const macSystemAppsDir = resolveMacSystemAppsDir(options, env);
+        const macSystemAppDir = macSystemAppsDir
+            ? joinLauncherTargetPath('darwin', macSystemAppsDir, MACOS_CDP_BUNDLE_NAME)
+            : undefined;
+        const macUserAppDir = joinLauncherTargetPath('darwin', homeDir, 'Applications', MACOS_CDP_BUNDLE_NAME);
+
+        const macCandidateAppDirs = [];
+        const seenDirs = new Set();
+        for (const candidate of [macSystemAppDir, macUserAppDir]) {
+            if (!candidate) { continue; }
+            const key = normalizeLauncherPosixPath(candidate);
+            if (!seenDirs.has(key)) {
+                seenDirs.add(key);
+                macCandidateAppDirs.push(candidate);
             }
+        }
+
+        const preferSystem = Boolean(macSystemAppsDir && macSystemAppDir && isDirectoryWritable(macSystemAppsDir));
+        const macPreferredAppDir = preferSystem && macSystemAppDir ? macSystemAppDir : macUserAppDir;
+        const installedAppDir = macCandidateAppDirs.find(isMacAppBundleInstalled);
+        const macAppDir = installedAppDir || macPreferredAppDir;
+
+        let targetAppPath = (options.appPath && String(options.appPath).trim()) || '';
+        if (!targetAppPath) {
+            const targetCandidates = [
+                ...(macSystemAppsDir ? [joinLauncherTargetPath('darwin', macSystemAppsDir, 'Antigravity.app')] : []),
+                '/Applications/Antigravity.app',
+                joinLauncherTargetPath('darwin', homeDir, 'Applications', 'Antigravity.app'),
+            ];
+            targetAppPath = targetCandidates.find((p) => existsSync(p))
+                || (macSystemAppsDir ? joinLauncherTargetPath('darwin', macSystemAppsDir, 'Antigravity.app') : '/Applications/Antigravity.app');
         }
         return {
             platform,
@@ -1715,6 +1867,11 @@ export function resolveCdpLauncherPaths(options = {}) {
             launcherPath: macAppDir,
             targetAppPath,
             macAppDir,
+            ...(macSystemAppsDir ? { macSystemAppsDir } : {}),
+            ...(macSystemAppDir ? { macSystemAppDir } : {}),
+            macUserAppDir,
+            macPreferredAppDir,
+            macCandidateAppDirs,
         };
     }
 
@@ -1725,8 +1882,12 @@ export function resolveCdpLauncherPaths(options = {}) {
         const appData = env.APPDATA && env.APPDATA.trim()
             ? env.APPDATA.trim()
             : joinLauncherTargetPath('win32', homeDir, 'AppData', 'Roaming');
-        const winCmdPath = joinLauncherTargetPath('win32', localAppData, 'AntigravityContextMonitor', 'launch-antigravity-cdp.cmd');
-        const winDesktopLnkPath = joinLauncherTargetPath('win32', homeDir, 'Desktop', `${CDP_LAUNCHER_DISPLAY_NAME}.lnk`);
+        const winDataDir = joinLauncherTargetPath('win32', localAppData, 'AntigravityContextMonitor');
+        const winCmdPath = joinLauncherTargetPath('win32', winDataDir, 'launch-antigravity-cdp.cmd');
+        const winIconPath = joinLauncherTargetPath('win32', winDataDir, 'antigravity-cdp.ico');
+        const winDesktopDir = resolveWindowsDesktopDir(options, homeDir, env);
+        const winDesktopLnkPath = joinLauncherTargetPath('win32', winDesktopDir, `${CDP_LAUNCHER_DISPLAY_NAME}.lnk`);
+        const winFallbackDesktopLnkPath = joinLauncherTargetPath('win32', homeDir, 'Desktop', `${CDP_LAUNCHER_DISPLAY_NAME}.lnk`);
         const winStartMenuLnkPath = joinLauncherTargetPath(
             'win32',
             appData,
@@ -1745,8 +1906,11 @@ export function resolveCdpLauncherPaths(options = {}) {
             launcherPath: winDesktopLnkPath,
             targetAppPath,
             winCmdPath,
+            winDesktopDir,
             winDesktopLnkPath,
+            winFallbackDesktopLnkPath,
             winStartMenuLnkPath,
+            winIconPath,
         };
     }
 
@@ -1760,11 +1924,23 @@ export function resolveCdpLauncherPaths(options = {}) {
             'applications',
             'antigravity-cdp.desktop',
         );
+        const linuxIconPath = joinLauncherTargetPath(
+            'linux',
+            homeDir,
+            '.local',
+            'share',
+            'icons',
+            'hicolor',
+            'scalable',
+            'apps',
+            LINUX_CDP_ICON_FILENAME,
+        );
         let targetAppPath = (options.appPath && String(options.appPath).trim()) || '';
         if (!targetAppPath) {
             const candidates = [
                 '/usr/bin/antigravity',
                 '/usr/local/bin/antigravity',
+                '/snap/bin/antigravity',
                 '/opt/Antigravity/antigravity',
                 joinLauncherTargetPath('linux', homeDir, '.local', 'bin', 'antigravity'),
             ];
@@ -1778,6 +1954,7 @@ export function resolveCdpLauncherPaths(options = {}) {
             targetAppPath,
             linuxWrapperPath,
             linuxDesktopEntryPath,
+            linuxIconPath,
         };
     }
 
@@ -1790,7 +1967,7 @@ export function resolveCdpLauncherPaths(options = {}) {
     };
 }
 
-function buildMacOsLauncherPlist() {
+export function buildMacOsLauncherPlist() {
     return [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -1826,7 +2003,7 @@ function buildMacOsLauncherPlist() {
     ].join('\n');
 }
 
-function buildMacOsLauncherScript(targetAppPath = '/Applications/Antigravity.app') {
+export function buildMacOsLauncherScript(targetAppPath = '/Applications/Antigravity.app') {
     const cleanTarget = String(targetAppPath || '/Applications/Antigravity.app').replace(/\/+$/, '') || '/Applications/Antigravity.app';
     const mainBinaryRegex = `^${escapeExtendedRegex(`${cleanTarget}/Contents/MacOS/Antigravity`)}($| )`;
 
@@ -1914,54 +2091,7 @@ function buildMacOsLauncherScript(targetAppPath = '/Applications/Antigravity.app
     ].join('\n');
 }
 
-function buildWindowsLauncherCmd(targetExePath) {
-    const exeExpr = targetExePath && String(targetExePath).trim()
-        ? String(targetExePath).trim().replace(/\//g, '\\').replace(/"/g, '')
-        : '%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe';
-
-    return [
-        '@echo off',
-        'setlocal EnableExtensions',
-        'rem Zero-patch persistent CDP launcher generated by Antigravity Context Monitor.',
-        `set "APP_EXE=${exeExpr}"`,
-        'if not exist "%APP_EXE%" (',
-        '  set "APP_EXE=%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe"',
-        ')',
-        'if not exist "%APP_EXE%" (',
-        '  powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(\'Could not find Antigravity.exe. Please install Antigravity App first.\', \'Antigravity (CDP)\')" >nul 2>&1',
-        '  exit /b 1',
-        ')',
-        '',
-        'powershell -NoProfile -NonInteractive -Command "$p = Get-CimInstance Win32_Process -Filter \\"Name=\'Antigravity.exe\'\\" -ErrorAction SilentlyContinue; if ($p | Where-Object { $_.CommandLine -match \'--remote-debugging-port\' }) { exit 10 } elseif ($p) { exit 20 } else { exit 0 }" >nul 2>&1',
-        'set "STATE=%ERRORLEVEL%"',
-        '',
-        'if "%STATE%"=="10" (',
-        '  start "" "%APP_EXE%"',
-        '  exit /b 0',
-        ')',
-        'if not "%STATE%"=="20" goto launch_cdp',
-        '',
-        'set /a TICKS=0',
-        ':wait_loop',
-        'tasklist /FI "IMAGENAME eq Antigravity.exe" 2>nul | find /I "Antigravity.exe" >nul',
-        'if errorlevel 1 goto launch_cdp',
-        'if %TICKS% GEQ 12 goto still_running',
-        'set /a TICKS+=1',
-        'powershell -NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds 500" >nul 2>&1',
-        'goto wait_loop',
-        '',
-        ':still_running',
-        'powershell -NoProfile -NonInteractive -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(\'Antigravity is currently running without CDP remote debugging. Please close all Antigravity windows and tray icon first, then open Antigravity (CDP) again.\', \'Antigravity (CDP)\')" >nul 2>&1',
-        'exit /b 0',
-        '',
-        ':launch_cdp',
-        'start "" "%APP_EXE%" --remote-debugging-port=0',
-        'exit /b 0',
-        '',
-    ].join('\r\n');
-}
-
-function buildLinuxLauncherScript(targetAppPath) {
+export function buildLinuxLauncherScript(targetAppPath) {
     const rawTarget = targetAppPath && String(targetAppPath).trim() && String(targetAppPath).trim() !== 'antigravity'
         ? String(targetAppPath).trim().replace(/[\r\n]+/g, '')
         : 'antigravity';
@@ -1971,28 +2101,96 @@ function buildLinuxLauncherScript(targetAppPath) {
         'set -eu',
         '',
         '# Zero-patch persistent CDP launcher generated by Antigravity Context Monitor.',
+        '# Detects standard binary, Snap, and AppImage instances while excluding antigravity-cdp itself.',
+        '# Never kills Antigravity — shows a friendly non-killing dialog if an argless instance is open.',
         `DEFAULT_BIN=${escapeSingleQuotedPosix(cleanTarget)}`,
         'APP_BIN="${ANTIGRAVITY_BIN:-$DEFAULT_BIN}"',
         '',
-        'tick=0',
-        'while [ "$tick" -lt 20 ]; do',
-        '  if ! pgrep -x antigravity >/dev/null 2>&1; then',
-        '    break',
+        'detect_running_state() {',
+        '  ps -eo pid=,args= 2>/dev/null | awk -v self_pid="$$" \'',
+        '    BEGIN { found_cdp = 0; found_nocdp = 0 }',
+        '    {',
+        '      pid = $1',
+        '      if (pid == self_pid) next',
+        '      line = $0',
+        '      sub(/^[ \\t]*[0-9]+[ \\t]+/, "", line)',
+        '      lower = tolower(line)',
+        '      if (lower ~ /(^|[ \\t\\/"\\047])antigravity-cdp([ \\t"\\047]|$)/) next',
+        '      if (index(lower, "antigravity-context-monitor") > 0) next',
+        '      if (index(lower, "language_server") > 0) next',
+        '      if (index(lower, "crashpad") > 0) next',
+        '      if (index(lower, "chrome-sandbox") > 0) next',
+        '      if (lower ~ /(^|[ \\t])--type=/) next',
+        '      if (lower ~ /(^|[ \\t\\/])antigravity[ \\t-]+(ide|tools)([ \\t\\/]|$)/) next',
+        '      exe = tolower($2)',
+        '      cmd_head = lower',
+        '      sub(/[ \\t]+--.*/, "", cmd_head)',
+        '      is_shell = (exe ~ /(^|\\/)(sh|bash|dash|zsh|fish|awk|mawk|gawk|grep|pgrep|ps|env|node|python[0-9.]*)$/)',
+        '      is_main = 0',
+        '      if (exe ~ /(^|\\/)antigravity$/) is_main = 1',
+        '      else if (exe ~ /^\\/snap\\/(bin\\/antigravity|antigravity\\/.*\\/antigravity)$/) is_main = 1',
+        '      else if (exe ~ /(^|\\/)[^\\/]*antigravity[^\\/]*\\.appimage$/) is_main = 1',
+        '      else if (exe ~ /^\\/tmp\\/\\.mount_[^\\/]*antigravity[^\\/]*\\/(.*\\/)?(antigravity|apprun)$/) is_main = 1',
+        '      else if (!is_shell && cmd_head ~ /^\\//) {',
+        '        if (cmd_head ~ /(^|\\/)antigravity$/) is_main = 1',
+        '        else if (cmd_head ~ /(^|\\/)[^\\/]*antigravity[^\\/]*\\.appimage$/) is_main = 1',
+        '        else if (cmd_head ~ /^\\/tmp\\/\\.mount_[^\\/]*antigravity[^\\/]*\\/(.*\\/)?(antigravity|apprun)$/) is_main = 1',
+        '      }',
+        '      if (!is_main) next',
+        '      if (index(lower, "--remote-debugging-port") > 0) found_cdp = 1',
+        '      else found_nocdp = 1',
+        '    }',
+        '    END {',
+        '      if (found_cdp) print "cdp"',
+        '      else if (found_nocdp) print "nocdp"',
+        '      else print "none"',
+        '    }',
+        '  \' || printf \'none\\n\'',
+        '}',
+        '',
+        'show_conflict_notice() {',
+        '  msg="$1"',
+        '  if command -v zenity >/dev/null 2>&1 && zenity --warning --title="Antigravity (CDP)" --text="$msg" >/dev/null 2>&1; then',
+        '    return 0',
         '  fi',
-        '  if pgrep -af \'antigravity.*--remote-debugging-port\' >/dev/null 2>&1; then',
-        '    break',
+        '  if command -v kdialog >/dev/null 2>&1 && kdialog --title "Antigravity (CDP)" --sorry "$msg" >/dev/null 2>&1; then',
+        '    return 0',
         '  fi',
-        '  sleep 0.25',
-        '  tick=$((tick + 1))',
-        'done',
+        '  if command -v notify-send >/dev/null 2>&1 && notify-send "Antigravity (CDP)" "$msg" >/dev/null 2>&1; then',
+        '    return 0',
+        '  fi',
+        '  printf \'Antigravity (CDP): %s\\n\' "$msg" >&2',
+        '}',
+        '',
+        'STATE="$(detect_running_state)"',
+        '',
+        'if [ "$STATE" = "nocdp" ]; then',
+        '  # Wait cleanly up to 5s if an exiting Antigravity process is still tearing down.',
+        '  max_ticks="${ACM_EXIT_WAIT_TICKS:-20}"',
+        '  tick=0',
+        '  while [ "$tick" -lt "$max_ticks" ]; do',
+        '    sleep 0.25',
+        '    STATE="$(detect_running_state)"',
+        '    if [ "$STATE" != "nocdp" ]; then',
+        '      break',
+        '    fi',
+        '    tick=$((tick + 1))',
+        '  done',
+        'fi',
+        '',
+        'if [ "$STATE" = "nocdp" ]; then',
+        '  show_conflict_notice "Antigravity is already running without CDP remote debugging. Please quit Antigravity completely first, then open Antigravity (CDP) again."',
+        '  exit 1',
+        'fi',
         '',
         'exec "$APP_BIN" --remote-debugging-port=0 "$@"',
         '',
     ].join('\n');
 }
 
-function buildLinuxDesktopEntry(wrapperPath) {
+export function buildLinuxDesktopEntry(wrapperPath, iconValue = 'antigravity') {
     const escapedExec = escapeFreedesktopExecArg(wrapperPath);
+    const cleanIcon = (iconValue && String(iconValue).replace(/[\r\n]+/g, '').trim()) || 'antigravity';
     return [
         '[Desktop Entry]',
         'Type=Application',
@@ -2000,7 +2198,7 @@ function buildLinuxDesktopEntry(wrapperPath) {
         `Name=${CDP_LAUNCHER_DISPLAY_NAME}`,
         'Comment=Launch Antigravity with local CDP remote debugging enabled for Antigravity Context Monitor',
         `Exec=${escapedExec} %U`,
-        'Icon=antigravity',
+        `Icon=${cleanIcon}`,
         'Terminal=false',
         'Categories=Development;IDE;',
         'StartupWMClass=Antigravity',
@@ -2008,22 +2206,326 @@ function buildLinuxDesktopEntry(wrapperPath) {
     ].join('\n');
 }
 
-const WINDOWS_SHORTCUT_PS_SCRIPT = [
+export function buildLinuxBadgedSvg(embeddedIcon) {
+    const baseLayer = embeddedIcon
+        ? `  <image href="data:${embeddedIcon.mimeType};base64,${embeddedIcon.base64}" x="8" y="8" width="240" height="240" preserveAspectRatio="xMidYMid meet"/>`
+        : [
+            '  <defs>',
+            '    <linearGradient id="acmBg" x1="0%" y1="0%" x2="100%" y2="100%">',
+            '      <stop offset="0%" stop-color="#162033"/>',
+            '      <stop offset="100%" stop-color="#0B101A"/>',
+            '    </linearGradient>',
+            '    <linearGradient id="acmMark" x1="0%" y1="0%" x2="100%" y2="100%">',
+            '      <stop offset="0%" stop-color="#60A5FA"/>',
+            '      <stop offset="100%" stop-color="#3B82F6"/>',
+            '    </linearGradient>',
+            '  </defs>',
+            '  <rect x="12" y="12" width="232" height="232" rx="52" fill="url(#acmBg)" stroke="#2A3750" stroke-width="4"/>',
+            '  <path d="M128 52 L188 184 L156 184 L142 152 L114 152 L100 184 L68 184 Z M128 92 L119 128 L137 128 Z" fill="url(#acmMark)"/>',
+        ].join('\n');
+
+    return [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">',
+        baseLayer,
+        '  <g>',
+        '    <rect x="122" y="182" width="124" height="62" rx="18" fill="#0E1522" fill-opacity="0.96" stroke="#5B9CF6" stroke-width="5"/>',
+        '    <text x="184" y="224" text-anchor="middle" fill="#FFFFFF" font-family="Inter, Ubuntu, DejaVu Sans, sans-serif" font-size="38" font-weight="800" letter-spacing="1.5">CDP</text>',
+        '  </g>',
+        '</svg>',
+        '',
+    ].join('\n');
+}
+
+export const MACOS_ICON_BADGE_JXA = [
+    'ObjC.import("AppKit");',
+    'ObjC.import("Foundation");',
+    'const env = $.NSProcessInfo.processInfo.environment;',
+    'const srcPath = ObjC.unwrap(env.objectForKey("ACM_SRC_PNG"));',
+    'const dstPath = ObjC.unwrap(env.objectForKey("ACM_DST_PNG"));',
+    'const img = $.NSImage.alloc.initWithContentsOfFile(srcPath);',
+    'if (!img || img.isNil()) { throw new Error("Failed to load base icon PNG"); }',
+    'const size = 1024;',
+    'const rep = $.NSBitmapImageRep.alloc.initWithBitmapDataPlanesPixelsWidePixelsHighBitsPerSampleSamplesPerPixelHasAlphaIsPlanarColorSpaceNameBytesPerRowBitsPerPixel(null, size, size, 8, 4, true, false, $.NSCalibratedRGBColorSpace, 0, 0);',
+    'const ctx = $.NSGraphicsContext.graphicsContextWithBitmapImageRep(rep);',
+    '$.NSGraphicsContext.saveGraphicsState;',
+    '$.NSGraphicsContext.setCurrentContext(ctx);',
+    'img.drawInRectFromRectOperationFraction($.NSMakeRect(0, 0, size, size), $.NSZeroRect, $.NSCompositingOperationSourceOver, 1.0);',
+    'const badgeW = 468; const badgeH = 228; const badgeX = size - badgeW - 36; const badgeY = 44;',
+    'const rect = $.NSMakeRect(badgeX, badgeY, badgeW, badgeH);',
+    'const bp = $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius(rect, 60, 60);',
+    'const shadow = $.NSShadow.alloc.init;',
+    'shadow.setShadowColor($.NSColor.colorWithCalibratedRedGreenBlueAlpha(0, 0, 0, 0.58));',
+    'shadow.setShadowOffset($.NSMakeSize(0, -10));',
+    'shadow.setShadowBlurRadius(24);',
+    'shadow.set;',
+    '$.NSColor.colorWithCalibratedRedGreenBlueAlpha(0.055, 0.082, 0.133, 0.96).setFill;',
+    'bp.fill;',
+    'const noShadow = $.NSShadow.alloc.init; noShadow.set;',
+    '$.NSColor.colorWithCalibratedRedGreenBlueAlpha(0.357, 0.612, 0.965, 1.0).setStroke;',
+    'bp.setLineWidth(14);',
+    'bp.stroke;',
+    'const font = $.NSFont.systemFontOfSizeWeight(152, $.NSFontWeightHeavy);',
+    'const attrs = $.NSMutableDictionary.dictionary;',
+    'attrs.setObjectForKey(font, $.NSFontAttributeName);',
+    'attrs.setObjectForKey($.NSColor.whiteColor, $.NSForegroundColorAttributeName);',
+    'const text = $.NSString.stringWithString("CDP");',
+    'const textSize = text.sizeWithAttributes(attrs);',
+    'const textX = badgeX + (badgeW - textSize.width) / 2;',
+    'const textY = badgeY + (badgeH - textSize.height) / 2 - 4;',
+    'text.drawAtPointWithAttributes($.NSMakePoint(textX, textY), attrs);',
+    '$.NSGraphicsContext.restoreGraphicsState;',
+    'const pngData = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $.NSDictionary.dictionary);',
+    'if (!pngData.writeToFileAtomically(dstPath, true)) { throw new Error("Failed to write badged PNG"); }',
+].join(' ');
+
+export const WINDOWS_SHORTCUT_PS_SCRIPT = [
     '$ErrorActionPreference = "Stop"',
+    '$iconLoc = ""',
+    'if ($env:ACM_BADGE_ICON_PATH -and $env:ACM_TARGET_EXE -and (Test-Path -LiteralPath $env:ACM_TARGET_EXE)) {',
+    '  try {',
+    '    Add-Type -AssemblyName System.Drawing',
+    '    $iconDir = Split-Path -Parent $env:ACM_BADGE_ICON_PATH',
+    '    if ($iconDir -and -not (Test-Path -LiteralPath $iconDir)) { New-Item -ItemType Directory -Path $iconDir -Force | Out-Null }',
+    '    $srcIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($env:ACM_TARGET_EXE)',
+    '    if ($srcIcon) {',
+    '      $srcBmp = $srcIcon.ToBitmap()',
+    '      $size = 256',
+    '      $bmp = New-Object System.Drawing.Bitmap($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)',
+    '      $g = [System.Drawing.Graphics]::FromImage($bmp)',
+    '      try {',
+    '        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias',
+    '        $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic',
+    '        $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality',
+    '        $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit',
+    '        $g.Clear([System.Drawing.Color]::Transparent)',
+    '        $g.DrawImage($srcBmp, 0, 0, $size, $size)',
+    '        $bw = 124; $bh = 62; $bx = $size - $bw - 8; $by = $size - $bh - 8; $r = 16; $d = $r * 2',
+    '        $gp = New-Object System.Drawing.Drawing2D.GraphicsPath',
+    '        $gp.AddArc($bx, $by, $d, $d, 180, 90)',
+    '        $gp.AddArc($bx + $bw - $d, $by, $d, $d, 270, 90)',
+    '        $gp.AddArc($bx + $bw - $d, $by + $bh - $d, $d, $d, 0, 90)',
+    '        $gp.AddArc($bx, $by + $bh - $d, $d, $d, 90, 90)',
+    '        $gp.CloseFigure()',
+    '        $fillBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(245, 14, 21, 34))',
+    '        $borderPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 91, 156, 246), 4)',
+    '        $textBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)',
+    '        $font = New-Object System.Drawing.Font("Segoe UI", 30, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)',
+    '        $sf = New-Object System.Drawing.StringFormat',
+    '        $sf.Alignment = [System.Drawing.StringAlignment]::Center',
+    '        $sf.LineAlignment = [System.Drawing.StringAlignment]::Center',
+    '        $g.FillPath($fillBrush, $gp)',
+    '        $g.DrawPath($borderPen, $gp)',
+    '        $rectF = New-Object System.Drawing.RectangleF($bx, $by + 1, $bw, $bh)',
+    '        $g.DrawString("CDP", $font, $textBrush, $rectF, $sf)',
+    '        $sf.Dispose(); $font.Dispose(); $textBrush.Dispose(); $borderPen.Dispose(); $fillBrush.Dispose(); $gp.Dispose()',
+    '      } finally { $g.Dispose() }',
+    '      $pngMs = New-Object System.IO.MemoryStream',
+    '      try { $bmp.Save($pngMs, [System.Drawing.Imaging.ImageFormat]::Png); $pngBytes = $pngMs.ToArray() } finally { $pngMs.Dispose(); $bmp.Dispose(); $srcBmp.Dispose(); $srcIcon.Dispose() }',
+    '      $icoMs = New-Object System.IO.MemoryStream',
+    '      $bwStream = New-Object System.IO.BinaryWriter($icoMs)',
+    '      try {',
+    '        $bwStream.Write([UInt16]0); $bwStream.Write([UInt16]1); $bwStream.Write([UInt16]1)',
+    '        $bwStream.Write([Byte]0); $bwStream.Write([Byte]0); $bwStream.Write([Byte]0); $bwStream.Write([Byte]0)',
+    '        $bwStream.Write([UInt16]1); $bwStream.Write([UInt16]32)',
+    '        $bwStream.Write([UInt32]$pngBytes.Length); $bwStream.Write([UInt32]22)',
+    '        $bwStream.Write($pngBytes); $bwStream.Flush()',
+    '        [System.IO.File]::WriteAllBytes($env:ACM_BADGE_ICON_PATH, $icoMs.ToArray())',
+    '        $iconLoc = "$env:ACM_BADGE_ICON_PATH,0"',
+    '      } finally { $bwStream.Dispose(); $icoMs.Dispose() }',
+    '    }',
+    '  } catch {',
+    '    if (Test-Path -LiteralPath $env:ACM_BADGE_ICON_PATH) { Remove-Item -LiteralPath $env:ACM_BADGE_ICON_PATH -Force -ErrorAction SilentlyContinue }',
+    '    $iconLoc = ""',
+    '  }',
+    '}',
+    'if (-not $iconLoc -and $env:ACM_TARGET_EXE -and (Test-Path -LiteralPath $env:ACM_TARGET_EXE)) { $iconLoc = "$env:ACM_TARGET_EXE,0" }',
     '$ws = New-Object -ComObject WScript.Shell',
     '$targets = @($env:ACM_LNK_DESKTOP, $env:ACM_LNK_STARTMENU) | Where-Object { $_ -and $_.Trim().Length -gt 0 }',
     'foreach ($lnkPath in $targets) {',
     '  $dir = Split-Path -Parent $lnkPath',
     '  if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }',
     '  $sc = $ws.CreateShortcut($lnkPath)',
-    '  $sc.TargetPath = $env:ACM_CMD_PATH',
+    '  $sc.TargetPath = $env:ACM_TARGET_EXE',
+    '  $sc.Arguments = "--remote-debugging-port=0"',
     '  $sc.WorkingDirectory = $env:ACM_WORKDIR',
-    '  $sc.WindowStyle = 7',
+    '  $sc.WindowStyle = 1',
     '  $sc.Description = "Launch Antigravity with CDP remote debugging enabled (zero-patch)"',
-    '  if ($env:ACM_ICON_PATH -and (Test-Path -LiteralPath $env:ACM_ICON_PATH)) { $sc.IconLocation = "$env:ACM_ICON_PATH,0" }',
+    '  if ($iconLoc) { $sc.IconLocation = $iconLoc }',
     '  $sc.Save()',
     '}',
-].join('; ');
+].join('\n');
+
+function generateMacOsBadgedIcon(srcIcnsPath, destIcnsPath, options = {}) {
+    if (process.platform !== 'darwin' && typeof options.execFileSyncFn !== 'function') {
+        return false;
+    }
+    const runner = createLauncherRunner(options.execFileSyncFn);
+    const env = options.env || process.env;
+    let tmpDir = null;
+    try {
+        tmpDir = mkdtempSync(join(tmpdir(), 'acm-mac-icon-'));
+        const basePng = join(tmpDir, 'base.png');
+        const badgedPng = join(tmpDir, 'badged.png');
+        const iconsetDir = join(tmpDir, 'icon.iconset');
+
+        runner('sips', ['-s', 'format', 'png', '-z', '1024', '1024', srcIcnsPath, '--out', basePng], {
+            env,
+            stdio: 'pipe',
+            timeout: 5_000,
+        });
+        runner('osascript', ['-l', 'JavaScript', '-e', MACOS_ICON_BADGE_JXA], {
+            env: { ...env, ACM_SRC_PNG: basePng, ACM_DST_PNG: badgedPng },
+            stdio: 'pipe',
+            timeout: 8_000,
+        });
+
+        mkdirSync(iconsetDir, { recursive: true });
+        const iconsetSizes = [
+            ['icon_16x16.png', 16],
+            ['icon_16x16@2x.png', 32],
+            ['icon_32x32.png', 32],
+            ['icon_32x32@2x.png', 64],
+            ['icon_128x128.png', 128],
+            ['icon_128x128@2x.png', 256],
+            ['icon_256x256.png', 256],
+            ['icon_256x256@2x.png', 512],
+            ['icon_512x512.png', 512],
+            ['icon_512x512@2x.png', 1024],
+        ];
+        for (const [filename, px] of iconsetSizes) {
+            const outPng = join(iconsetDir, filename);
+            if (px === 1024 && existsSync(badgedPng)) {
+                copyFileSync(badgedPng, outPng);
+            } else {
+                runner('sips', ['-z', String(px), String(px), badgedPng, '--out', outPng], {
+                    env,
+                    stdio: 'pipe',
+                    timeout: 5_000,
+                });
+            }
+        }
+        runner('iconutil', ['-c', 'icns', iconsetDir, '-o', destIcnsPath], {
+            env,
+            stdio: 'pipe',
+            timeout: 5_000,
+        });
+        return existsSync(destIcnsPath) && statSync(destIcnsPath).size > 0;
+    } catch {
+        return false;
+    } finally {
+        if (tmpDir) {
+            try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        }
+    }
+}
+
+function writeMacOsBundleAt(appDir, targetAppPath, options = {}) {
+    const contentsDir = join(appDir, 'Contents');
+    const macOsDir = join(contentsDir, 'MacOS');
+    const resourcesDir = join(contentsDir, 'Resources');
+    mkdirSync(macOsDir, { recursive: true });
+    mkdirSync(resourcesDir, { recursive: true });
+    writeFileSync(join(contentsDir, 'Info.plist'), buildMacOsLauncherPlist(), 'utf8');
+    const launchScriptPath = join(macOsDir, 'launch');
+    writeFileSync(launchScriptPath, buildMacOsLauncherScript(targetAppPath), 'utf8');
+    chmodSync(launchScriptPath, 0o755);
+
+    if (targetAppPath) {
+        const iconCandidates = [
+            join(targetAppPath, 'Contents', 'Resources', 'icon.icns'),
+            join(targetAppPath, 'Contents', 'Resources', 'Antigravity.icns'),
+            join(targetAppPath, 'Contents', 'Resources', 'electron.icns'),
+        ];
+        const destIcns = join(resourcesDir, 'icon.icns');
+        for (const iconSrc of iconCandidates) {
+            if (!existsSync(iconSrc)) { continue; }
+            if (generateMacOsBadgedIcon(iconSrc, destIcns, options)) {
+                break;
+            }
+            try {
+                copyFileSync(iconSrc, destIcns);
+                break;
+            } catch {
+                // Best-effort icon copy fallback
+            }
+        }
+    }
+
+    try {
+        const now = new Date();
+        utimesSync(appDir, now, now);
+    } catch {
+        // Best-effort Finder icon cache refresh
+    }
+}
+
+function findLinuxOriginalIcon(homeDir, targetAppPath) {
+    const candidates = [];
+    if (targetAppPath && targetAppPath.includes('/')) {
+        const binDir = dirname(targetAppPath);
+        candidates.push(
+            join(binDir, 'antigravity.png'),
+            join(binDir, 'antigravity.svg'),
+            join(binDir, 'icon.png'),
+            join(binDir, 'resources', 'app', 'resources', 'linux', 'code.png'),
+        );
+    }
+    candidates.push(
+        '/usr/share/pixmaps/antigravity.png',
+        '/usr/share/pixmaps/antigravity.svg',
+        '/usr/share/icons/hicolor/512x512/apps/antigravity.png',
+        '/usr/share/icons/hicolor/256x256/apps/antigravity.png',
+        '/usr/share/icons/hicolor/128x128/apps/antigravity.png',
+        '/usr/share/icons/hicolor/scalable/apps/antigravity.svg',
+        '/opt/Antigravity/antigravity.png',
+        '/snap/antigravity/current/meta/gui/icon.png',
+        '/snap/antigravity/current/meta/gui/icon.svg',
+        joinLauncherTargetPath('linux', homeDir, '.local', 'share', 'icons', 'hicolor', 'scalable', 'apps', 'antigravity.svg'),
+        joinLauncherTargetPath('linux', homeDir, '.local', 'share', 'icons', 'hicolor', '256x256', 'apps', 'antigravity.png'),
+    );
+
+    for (const candidate of candidates) {
+        try {
+            if (!existsSync(candidate)) { continue; }
+            const st = statSync(candidate);
+            if (!st.isFile() || st.size === 0 || st.size > MAX_EMBEDDED_ICON_BYTES) { continue; }
+            const raw = readFileSync(candidate);
+            const mimeType = candidate.toLowerCase().endsWith('.svg') ? 'image/svg+xml' : 'image/png';
+            return { mimeType, base64: raw.toString('base64') };
+        } catch {
+            // Try next candidate
+        }
+    }
+    return undefined;
+}
+
+function writeLinuxBadgedIcon(iconPath, homeDir, targetAppPath) {
+    try {
+        mkdirSync(dirname(iconPath), { recursive: true });
+        const embedded = findLinuxOriginalIcon(homeDir, targetAppPath);
+        writeFileSync(iconPath, buildLinuxBadgedSvg(embedded), 'utf8');
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function runLinuxUpdateDesktopDatabase(applicationsDir, options = {}) {
+    if (process.platform !== 'linux' && typeof options.execFileSyncFn !== 'function') {
+        return;
+    }
+    try {
+        const runner = createLauncherRunner(options.execFileSyncFn);
+        runner('update-desktop-database', [applicationsDir], {
+            env: options.env || process.env,
+            stdio: 'ignore',
+            timeout: 5_000,
+        });
+    } catch {
+        // Best-effort — update-desktop-database may not be installed on minimal systems
+    }
+}
 
 export function inspectCdpLauncher(options = {}) {
     const resolved = resolveCdpLauncherPaths(options);
@@ -2031,13 +2533,18 @@ export function inspectCdpLauncher(options = {}) {
     let installed = false;
     let targetAppFound = false;
 
-    if (resolved.platform === 'darwin' && resolved.macAppDir) {
-        installed = existsSync(join(resolved.macAppDir, 'Contents', 'Info.plist'))
-            && existsSync(join(resolved.macAppDir, 'Contents', 'MacOS', 'launch'));
+    if (resolved.platform === 'darwin') {
+        const candidates = resolved.macCandidateAppDirs || (resolved.macAppDir ? [resolved.macAppDir] : []);
+        installed = candidates.some(isMacAppBundleInstalled);
         targetAppFound = Boolean(resolved.targetAppPath && existsSync(resolved.targetAppPath));
-    } else if (resolved.platform === 'win32' && resolved.winCmdPath) {
-        installed = existsSync(resolved.winCmdPath)
-            && (existsSync(resolved.winDesktopLnkPath) || existsSync(resolved.winStartMenuLnkPath));
+    } else if (resolved.platform === 'win32' && resolved.winDesktopLnkPath && resolved.winStartMenuLnkPath) {
+        const hasDesktopLnk = existsSync(resolved.winDesktopLnkPath)
+            || Boolean(
+                resolved.winFallbackDesktopLnkPath
+                && resolved.winFallbackDesktopLnkPath.toLowerCase() !== resolved.winDesktopLnkPath.toLowerCase()
+                && existsSync(resolved.winFallbackDesktopLnkPath),
+            );
+        installed = hasDesktopLnk || existsSync(resolved.winStartMenuLnkPath);
         targetAppFound = Boolean(resolved.targetAppPath && existsSync(resolved.targetAppPath));
     } else if (resolved.platform === 'linux' && resolved.linuxDesktopEntryPath && resolved.linuxWrapperPath) {
         installed = existsSync(resolved.linuxDesktopEntryPath) && existsSync(resolved.linuxWrapperPath);
@@ -2079,47 +2586,64 @@ export function setupCdpLauncher(options = {}) {
     }
 
     if (dryRun) {
+        const previewPath = resolved.platform === 'darwin' && resolved.macPreferredAppDir
+            ? resolved.macPreferredAppDir
+            : resolved.launcherPath;
         return {
             action: 'setup-cdp-launcher',
             ok: true,
             dryRun: true,
-            launcherPath: resolved.launcherPath,
+            launcherPath: previewPath,
             platform: resolved.platform,
-            status: inspectCdpLauncher(options),
+            status: inspectCdpLauncher(
+                resolved.winDesktopDir ? { ...options, desktopDir: resolved.winDesktopDir } : options,
+            ),
         };
     }
 
-    if (resolved.platform === 'darwin' && resolved.macAppDir) {
-        const contentsDir = join(resolved.macAppDir, 'Contents');
-        const macOsDir = join(contentsDir, 'MacOS');
-        const resourcesDir = join(contentsDir, 'Resources');
-        mkdirSync(macOsDir, { recursive: true });
-        mkdirSync(resourcesDir, { recursive: true });
-        writeFileSync(join(contentsDir, 'Info.plist'), buildMacOsLauncherPlist(), 'utf8');
-        const launchScriptPath = join(macOsDir, 'launch');
-        writeFileSync(launchScriptPath, buildMacOsLauncherScript(resolved.targetAppPath), 'utf8');
-        chmodSync(launchScriptPath, 0o755);
+    if (resolved.platform === 'darwin' && resolved.macPreferredAppDir) {
+        const primaryDir = resolved.macPreferredAppDir;
+        const fallbackDir = resolved.macUserAppDir || primaryDir;
+        let createdDir = primaryDir;
 
-        const iconCandidates = [
-            join(resolved.targetAppPath, 'Contents', 'Resources', 'icon.icns'),
-            join(resolved.targetAppPath, 'Contents', 'Resources', 'Antigravity.icns'),
-            join(resolved.targetAppPath, 'Contents', 'Resources', 'electron.icns'),
-        ];
-        for (const iconSrc of iconCandidates) {
-            if (existsSync(iconSrc)) {
+        try {
+            writeMacOsBundleAt(primaryDir, resolved.targetAppPath, options);
+        } catch (err) {
+            const code = err && typeof err === 'object' ? err.code : '';
+            const isPermError = code === 'EACCES' || code === 'EPERM' || code === 'EROFS';
+            if (isPermError && normalizeLauncherPosixPath(primaryDir) !== normalizeLauncherPosixPath(fallbackDir)) {
+                createdDir = fallbackDir;
+                writeMacOsBundleAt(fallbackDir, resolved.targetAppPath, options);
+            } else {
+                throw err;
+            }
+        }
+
+        const createdNorm = normalizeLauncherPosixPath(createdDir);
+        for (const candidate of resolved.macCandidateAppDirs || []) {
+            if (
+                normalizeLauncherPosixPath(candidate) !== createdNorm
+                && basename(candidate) === MACOS_CDP_BUNDLE_NAME
+                && existsSync(candidate)
+            ) {
                 try {
-                    copyFileSync(iconSrc, join(resourcesDir, 'icon.icns'));
-                    break;
+                    rmSync(candidate, { recursive: true, force: true });
                 } catch {
-                    // Best-effort icon copy
+                    // Best-effort stale copy cleanup
                 }
             }
         }
-    } else if (resolved.platform === 'win32' && resolved.winCmdPath) {
-        mkdirSync(dirname(resolved.winCmdPath), { recursive: true });
-        writeFileSync(resolved.winCmdPath, buildWindowsLauncherCmd(resolved.targetAppPath), 'utf8');
+    } else if (resolved.platform === 'win32' && resolved.winDesktopLnkPath && resolved.winStartMenuLnkPath) {
+        if (resolved.winCmdPath && existsSync(resolved.winCmdPath)) {
+            try {
+                rmSync(resolved.winCmdPath, { force: true });
+            } catch {
+                // Best-effort legacy .cmd cleanup
+            }
+        }
 
-        const runner = options.execFileSyncFn || ((file, args, opts) => execFileSync(file, args, opts));
+        const runner = createLauncherRunner(options.execFileSyncFn);
+        const targetExe = resolved.targetAppPath;
         runner(
             'powershell.exe',
             ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', WINDOWS_SHORTCUT_PS_SCRIPT],
@@ -2128,25 +2652,56 @@ export function setupCdpLauncher(options = {}) {
                     ...(options.env || process.env),
                     ACM_LNK_DESKTOP: resolved.winDesktopLnkPath,
                     ACM_LNK_STARTMENU: resolved.winStartMenuLnkPath,
-                    ACM_CMD_PATH: resolved.winCmdPath,
-                    ACM_WORKDIR: dirname(resolved.winCmdPath),
-                    ACM_ICON_PATH: resolved.targetAppPath || '',
+                    ACM_TARGET_EXE: targetExe,
+                    ACM_WORKDIR: dirnameLauncherTargetPath('win32', targetExe),
+                    ACM_BADGE_ICON_PATH: resolved.winIconPath || '',
                 },
                 windowsHide: true,
                 stdio: 'pipe',
+                timeout: 15_000,
             },
         );
+
+        if (
+            resolved.winFallbackDesktopLnkPath
+            && resolved.winFallbackDesktopLnkPath.toLowerCase() !== resolved.winDesktopLnkPath.toLowerCase()
+            && existsSync(resolved.winDesktopLnkPath)
+            && existsSync(resolved.winFallbackDesktopLnkPath)
+        ) {
+            try {
+                rmSync(resolved.winFallbackDesktopLnkPath, { force: true });
+            } catch {
+                // Best-effort stale Desktop shortcut cleanup
+            }
+        }
+
+        if (resolved.winCmdPath) {
+            const dataDir = dirnameLauncherTargetPath('win32', resolved.winCmdPath);
+            try {
+                if (existsSync(dataDir) && readdirSync(dataDir).length === 0) {
+                    rmdirSync(dataDir);
+                }
+            } catch { /* ignore */ }
+        }
     } else if (resolved.platform === 'linux' && resolved.linuxWrapperPath && resolved.linuxDesktopEntryPath) {
         mkdirSync(dirname(resolved.linuxWrapperPath), { recursive: true });
-        mkdirSync(dirname(resolved.linuxDesktopEntryPath), { recursive: true });
+        const applicationsDir = dirname(resolved.linuxDesktopEntryPath);
+        mkdirSync(applicationsDir, { recursive: true });
         writeFileSync(resolved.linuxWrapperPath, buildLinuxLauncherScript(resolved.targetAppPath), 'utf8');
         if (process.platform !== 'win32') {
             chmodSync(resolved.linuxWrapperPath, 0o755);
         }
-        writeFileSync(resolved.linuxDesktopEntryPath, buildLinuxDesktopEntry(resolved.linuxWrapperPath), 'utf8');
+        const iconWritten = resolved.linuxIconPath
+            ? writeLinuxBadgedIcon(resolved.linuxIconPath, resolved.homeDir, resolved.targetAppPath)
+            : false;
+        const iconValue = iconWritten && resolved.linuxIconPath ? resolved.linuxIconPath : 'antigravity';
+        writeFileSync(resolved.linuxDesktopEntryPath, buildLinuxDesktopEntry(resolved.linuxWrapperPath, iconValue), 'utf8');
+        runLinuxUpdateDesktopDatabase(applicationsDir, options);
     }
 
-    const status = inspectCdpLauncher(options);
+    const status = inspectCdpLauncher(
+        resolved.winDesktopDir ? { ...options, desktopDir: resolved.winDesktopDir } : options,
+    );
     return {
         action: 'setup-cdp-launcher',
         ok: true,
@@ -2160,7 +2715,8 @@ export function setupCdpLauncher(options = {}) {
 export function removeCdpLauncher(options = {}) {
     const resolved = resolveCdpLauncherPaths(options);
     const dryRun = Boolean(options.dryRun);
-    const before = inspectCdpLauncher(options);
+    const inspectOpts = resolved.winDesktopDir ? { ...options, desktopDir: resolved.winDesktopDir } : options;
+    const before = inspectCdpLauncher(inspectOpts);
 
     if (!resolved.supported) {
         return {
@@ -2178,20 +2734,30 @@ export function removeCdpLauncher(options = {}) {
 
     let existed = before.installed;
     if (!dryRun) {
-        if (resolved.platform === 'darwin' && resolved.macAppDir) {
-            if (basename(resolved.macAppDir) === `${CDP_LAUNCHER_DISPLAY_NAME}.app` && existsSync(resolved.macAppDir)) {
-                existed = true;
-                rmSync(resolved.macAppDir, { recursive: true, force: true });
+        if (resolved.platform === 'darwin') {
+            const candidates = resolved.macCandidateAppDirs || (resolved.macAppDir ? [resolved.macAppDir] : []);
+            for (const candidate of candidates) {
+                if (basename(candidate) === MACOS_CDP_BUNDLE_NAME && existsSync(candidate)) {
+                    existed = true;
+                    rmSync(candidate, { recursive: true, force: true });
+                }
             }
         } else if (resolved.platform === 'win32') {
-            for (const p of [resolved.winDesktopLnkPath, resolved.winStartMenuLnkPath, resolved.winCmdPath]) {
+            const winTargets = [
+                resolved.winDesktopLnkPath,
+                resolved.winFallbackDesktopLnkPath,
+                resolved.winStartMenuLnkPath,
+                resolved.winIconPath,
+                resolved.winCmdPath,
+            ];
+            for (const p of winTargets) {
                 if (p && existsSync(p)) {
                     existed = true;
                     rmSync(p, { force: true });
                 }
             }
             if (resolved.winCmdPath) {
-                const dir = dirname(resolved.winCmdPath);
+                const dir = dirnameLauncherTargetPath('win32', resolved.winCmdPath);
                 try {
                     if (existsSync(dir) && readdirSync(dir).length === 0) {
                         rmdirSync(dir);
@@ -2199,16 +2765,19 @@ export function removeCdpLauncher(options = {}) {
                 } catch { /* ignore */ }
             }
         } else if (resolved.platform === 'linux') {
-            for (const p of [resolved.linuxDesktopEntryPath, resolved.linuxWrapperPath]) {
+            for (const p of [resolved.linuxDesktopEntryPath, resolved.linuxWrapperPath, resolved.linuxIconPath]) {
                 if (p && existsSync(p)) {
                     existed = true;
                     rmSync(p, { force: true });
                 }
             }
+            if (resolved.linuxDesktopEntryPath) {
+                runLinuxUpdateDesktopDatabase(dirname(resolved.linuxDesktopEntryPath), options);
+            }
         }
     }
 
-    const status = inspectCdpLauncher(options);
+    const status = inspectCdpLauncher(inspectOpts);
     return {
         action: 'remove-cdp-launcher',
         ok: true,
@@ -2239,26 +2808,35 @@ RECOMMENDED — 1-Command Persistent Launcher (Zero Terminal After Setup, Auto-U
 推荐 — 一键创建持久化启动器（创建后无需终端，自动更新后依然有效，零二进制修改）：
   Create / 创建: node scripts/install-app-plugin.mjs --setup-cdp-launcher
   Remove / 移除: node scripts/install-app-plugin.mjs --remove-cdp-launcher
-  - macOS  : ~/Applications/Antigravity (CDP).app (pin to Dock or open via Spotlight; waits for 5s Cmd+Q teardown!)
-  - Windows: Desktop & Start Menu "Antigravity (CDP).lnk" + %LOCALAPPDATA%\\AntigravityContextMonitor\\launch-antigravity-cdp.cmd
-  - Linux  : ~/.local/share/applications/antigravity-cdp.desktop + ~/.local/bin/antigravity-cdp
+  - macOS  : /Applications/Antigravity (CDP).app (fallback ~/Applications/Antigravity (CDP).app; CDP-badged icon; waits for 5s Cmd+Q teardown!)
+  - Windows: Direct Desktop (OneDrive-aware) & Start Menu "Antigravity (CDP).lnk" -> Antigravity.exe --remote-debugging-port=0 (CDP-badged icon, native Pin to Taskbar, zero CMD flash)
+  - Linux  : ~/.local/share/applications/antigravity-cdp.desktop + ~/.local/bin/antigravity-cdp + ~/.local/share/icons/hicolor/scalable/apps/antigravity-cdp.svg
 
-IMPORTANT / 重要提示 (macOS 5-Second Background Teardown / macOS 5 秒后台退出陷阱):
-  Always quit Antigravity App COMPLETELY first before relaunching with --remote-debugging-port=0.
-  On macOS, pressing Cmd+Q closes all windows immediately, but Antigravity stays alive in the background
-  for up to ~5 seconds while terminating language_server. Running "open -a" during those 5 seconds
-  silently ignores --args! Wait until the Dock indicator dot disappears, or use the race-free command below.
-  请务必先完全退出 Antigravity App 再重启：macOS 按 Cmd+Q 后窗口会立刻消失，但后台仍需约 5 秒清理 language_server；
-  在此 5 秒内运行 open -a 会静默丢弃 --args。请等待程序坞指示灯彻底消失，或直接使用下方防竞态等待命令。
+IMPORTANT / 重要提示 (Dock / Taskbar Pinning Pitfall & macOS 5-Second Teardown):
+  - macOS Dock: Drag "Antigravity (CDP).app" from Finder into your Dock. NEVER right-click
+    the running Antigravity Dock icon and choose "Keep in Dock" — that pins argless Antigravity.app!
+    macOS 程序坞：请直接从访达将「Antigravity (CDP).app」拖入程序坞；切勿右键运行中的图标选「在程序坞中保留」（否则固定的是无参原版 Antigravity.app）！
+  - Windows Taskbar: Right-click the "Antigravity (CDP)" shortcut -> "Pin to taskbar" (avoid pinning the running taskbar icon).
+    Windows 任务栏：请右键「Antigravity (CDP)」快捷方式选「固定到任务栏」（勿直接右键运行中的任务栏图标固定）。
+  - Ubuntu / Linux Dock: Search "Antigravity (CDP)" in Show Apps / Application Launcher -> "Pin to Dash" / "Add to Favorites" (avoid pinning the running Dock window icon).
+    Ubuntu 停靠栏：请在「显示应用」中搜索「Antigravity (CDP)」并选「固定到停靠栏 / 添加到收藏夹」（勿右键运行中的窗口图标固定）。
+  - macOS 5-Second Background Teardown / macOS 5 秒后台退出陷阱:
+    Always quit Antigravity App COMPLETELY first before relaunching with --remote-debugging-port=0.
+    On macOS, pressing Cmd+Q closes all windows immediately, but Antigravity stays alive in the background
+    for up to ~5 seconds while terminating language_server. Running "open -a" during those 5 seconds
+    silently ignores --args! Wait until the Dock indicator dot disappears, or use the race-free command below.
+    请务必先完全退出 Antigravity App 再重启：macOS 按 Cmd+Q 后窗口会立刻消失，但后台仍需约 5 秒清理 language_server；
+    在此 5 秒内运行 open -a 会静默丢弃 --args。请等待程序坞指示灯彻底消失，或直接使用下方防竞态等待命令。
 
 [macOS]
   1. Recommended persistent Dock/Spotlight launcher (zero binary patching, survives auto-updates):
        node scripts/install-app-plugin.mjs --setup-cdp-launcher
+     (Drag Antigravity (CDP).app from Finder into the Dock — do NOT right-click running icon -> Keep in Dock!)
   2. Manual race-free Terminal command (after Cmd+Q, automatically waits for the 5s background exit):
        ${macSafeCmd}
 
 [Windows]
-  1. Recommended persistent Desktop & Start Menu shortcuts (zero binary patching):
+  1. Recommended persistent Desktop & Start Menu direct shortcuts (OneDrive-aware, zero binary patching):
        node scripts/install-app-plugin.mjs --setup-cdp-launcher
   2. Or close Antigravity Desktop completely (all windows & system tray icon), then launch:
      PowerShell:
@@ -2267,7 +2845,7 @@ IMPORTANT / 重要提示 (macOS 5-Second Background Teardown / macOS 5 秒后台
        "%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0
 
 [Linux]
-  1. Recommended persistent application menu / dock launcher (zero binary patching):
+  1. Recommended persistent application menu / dock launcher (Snap/AppImage aware, non-killing conflict dialog):
        node scripts/install-app-plugin.mjs --setup-cdp-launcher
   2. Or close Antigravity completely (all windows & tray icon), then launch from terminal:
        antigravity --remote-debugging-port=0
@@ -2302,7 +2880,7 @@ Modes:
   --remove-cdp-launcher   Remove the zero-patch persistent CDP launcher
 
 Options:
-  --version <v>           Target GitHub release version (e.g. 1.17.10 or v1.17.10)
+  --version <v>           Target GitHub release version (e.g. 1.17.11 or v1.17.11)
   --source <dir>          Explicit local plugin directory containing plugin.json
   --target <dir>          Override install path (default: ~/.gemini/config/plugins/antigravity-context-monitor)
   --use-cli               Use \`agy plugin install\` / \`agy plugin uninstall\` when available
@@ -2369,7 +2947,14 @@ function printCliResult(result, asJson) {
             console.log(`[dry-run] Would create persistent CDP launcher (${result.platform}): ${result.launcherPath}`);
             return;
         }
-        console.log(`✓ Created zero-patch persistent CDP launcher (${result.platform}):\n  ${result.launcherPath}\n已创建零侵入持久化 CDP 启动器。`);
+        const pinTip = result.platform === 'darwin'
+            ? '\n  Dock Tip / 程序坞提示: Drag "Antigravity (CDP).app" from Finder into your Dock — NEVER right-click the running icon to choose "Keep in Dock".\n  请从访达将「Antigravity (CDP).app」拖入程序坞固定，切勿右键运行中图标选「在程序坞中保留」。'
+            : (result.platform === 'win32'
+                ? '\n  Taskbar Tip / 任务栏提示: Right-click "Antigravity (CDP)" shortcut -> Pin to taskbar (avoid pinning the running taskbar icon directly).'
+                : (result.platform === 'linux'
+                    ? '\n  Dock Tip / 停靠栏提示: Pin "Antigravity (CDP)" from Show Apps / Application Launcher (avoid pinning the running Dock window icon).'
+                    : ''));
+        console.log(`✓ Created zero-patch persistent CDP launcher (${result.platform}):\n  ${result.launcherPath}\n已创建零侵入持久化 CDP 启动器。${pinTip}`);
         return;
     }
 

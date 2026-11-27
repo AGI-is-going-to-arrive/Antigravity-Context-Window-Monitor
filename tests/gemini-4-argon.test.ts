@@ -206,6 +206,6 @@ describe('Argon model and tooltip presentation', () => {
         expect(selectQuotaRows(configs, 'MODEL_PLACEHOLDER_M318', 3).rows[0].model).toBe('MODEL_PLACEHOLDER_M318');
         const unflagged = configs.map(c => ({ ...c, isRecommended: false }));
         expect(selectQuotaRows(unflagged, '', 3).rows[0].model).toBe('MODEL_PLACEHOLDER_M417');
-        expect(selectQuotaRows(unflagged, '', 3).rows[0].label).toBe('Gemini 4 Argon (High) · 4');
+        expect(selectQuotaRows(unflagged, '', 3).rows[0].label).toBe('Gemini 4 Argon (High) · 4 models');
     });
 });

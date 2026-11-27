@@ -79,6 +79,126 @@ function estimatedContextDescription(): string {
     );
 }
 
+function richTipAttrs(
+    key: string,
+    title: string,
+    body: string,
+    meta?: string,
+    htmlId?: string,
+): string {
+    const parts = [
+        `data-popover-key="${esc(key)}"`,
+        `data-tip-title="${esc(title)}"`,
+    ];
+    if (body) {
+        parts.push(`data-tip-body="${esc(body)}"`);
+    }
+    if (meta) {
+        parts.push(`data-tip-meta="${esc(meta)}"`);
+    }
+    if (htmlId) {
+        parts.push(`data-tip-html-id="${esc(htmlId)}"`);
+    }
+    return parts.join(' ');
+}
+
+function toSafeTipKey(raw: string): string {
+    return raw.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
+}
+
+function explainHttpError(codeOrMessage: string): { title: string; meaning: string } {
+    const raw = (codeOrMessage || '').trim();
+    const lower = raw.toLowerCase();
+    if (/\b429\b/.test(raw) || lower.includes('rate limit') || lower.includes('resource_exhausted') || lower.includes('too many requests')) {
+        return {
+            title: tBi('HTTP 429 — Rate Limited', 'HTTP 429 — 触发限流'),
+            meaning: tBi(
+                'Too many requests or temporary quota throttling from the upstream model API; retries usually recover automatically.',
+                '上游模型接口触发请求频率限制或临时配额限流，客户端通常会自动重试恢复。',
+            ),
+        };
+    }
+    if (/\b500\b/.test(raw) || lower.includes('internal error') || lower.includes('internal server')) {
+        return {
+            title: tBi('HTTP 500 — Server Error', 'HTTP 500 — 服务端内部错误'),
+            meaning: tBi(
+                'Transient upstream server failure while processing this call; usually resolved on retry.',
+                '上游推理服务器处理该请求时发生临时内部故障，重试后通常恢复。',
+            ),
+        };
+    }
+    if (/\b503\b/.test(raw) || lower.includes('unavailable') || lower.includes('overloaded')) {
+        return {
+            title: tBi('HTTP 503 — Service Unavailable', 'HTTP 503 — 服务暂时不可用'),
+            meaning: tBi(
+                'The upstream model backend is temporarily overloaded or undergoing capacity shedding.',
+                '上游模型服务暂时过载或容量受限，稍后重试一般可恢复。',
+            ),
+        };
+    }
+    if (/\b504\b/.test(raw) || lower.includes('deadline') || lower.includes('timeout') || lower.includes('timed out')) {
+        return {
+            title: tBi('HTTP 504 — Gateway Timeout', 'HTTP 504 — 网关超时'),
+            meaning: tBi(
+                'The upstream gateway timed out before the model finished responding.',
+                '等待上游模型返回响应时超出网关时限。',
+            ),
+        };
+    }
+    if (/\b401\b|\b403\b/.test(raw) || lower.includes('unauthorized') || lower.includes('permission')) {
+        return {
+            title: tBi('Auth / Permission Error', '鉴权或权限错误'),
+            meaning: tBi(
+                'Upstream API rejected credentials or account permissions for this request.',
+                '上游接口拒绝了本次请求的身份凭据或账号权限。',
+            ),
+        };
+    }
+    if (/\b400\b/.test(raw) || lower.includes('invalid argument') || lower.includes('bad request')) {
+        return {
+            title: tBi('HTTP 400 — Bad Request', 'HTTP 400 — 请求参数异常'),
+            meaning: tBi(
+                'The request payload or parameters were rejected by the model API (e.g. context overflow or malformed tool output).',
+                '请求内容或参数未被模型接口接受（如上下文超限或工具参数格式异常）。',
+            ),
+        };
+    }
+    return {
+        title: raw ? tBi(`Call Error (${raw.slice(0, 24)})`, `调用错误（${raw.slice(0, 24)}）`) : tBi('Call Error', '调用失败'),
+        meaning: tBi(
+            'The model call failed with an error returned by the upstream service.',
+            '本次模型调用因上游服务返回异常而失败。',
+        ),
+    };
+}
+
+const TOOL_DESC_ENTRIES: Record<string, readonly [string, string]> = {
+    view_file: ['View file contents', '查看文件内容'],
+    view_file_outline: ['Inspect file symbols and outline structure', '查看文件大纲结构'],
+    view_code_item: ['Inspect a specific class or function definition', '查看代码符号定义'],
+    run_command: ['Execute a terminal command', '执行终端命令'],
+    command_status: ['Check status and output of a running command', '检查命令执行状态'],
+    send_command_input: ['Send stdin input to a running process', '向进程发送输入'],
+    read_terminal: ['Read recent output from a terminal buffer', '读取终端输出'],
+    replace_file_content: ['Edit a single contiguous block in a file', '编辑替换文件内容'],
+    multi_replace_file_content: ['Apply multiple non-adjacent edits to a file', '多处编辑替换文件'],
+    write_to_file: ['Create or overwrite a file', '创建新文件'],
+    find_by_name: ['Search files and directories by filename pattern', '按文件名搜索'],
+    grep_search: ['Search file contents by text or regex', '文件内容搜索'],
+    codebase_search: ['Semantic search across the codebase', '语义代码搜索'],
+    list_dir: ['List files and subdirectories in a folder', '列出目录内容'],
+    search_web: ['Search the live web for information', '网页搜索'],
+    read_url_content: ['Fetch and read content from a web URL', '读取网页内容'],
+    generate_image: ['Generate an image asset from a prompt', '生成图片'],
+    browser_subagent: ['Run automated browser tasks via a subagent', '浏览器自动化'],
+    view_content_chunk: ['Read a specific chunk of a large document', '查看文档分片'],
+};
+
+function getLocalizedToolDesc(toolName: string): string {
+    const entry = Object.hasOwn(TOOL_DESC_ENTRIES, toolName) ? TOOL_DESC_ENTRIES[toolName] : undefined;
+    return entry ? tBi(entry[0], entry[1]) : '';
+}
+
 // ─── Account Snapshot Type ───────────────────────────────────────────────────
 
 /** A quota reset pool — models sharing the same reset time. */
@@ -457,6 +577,23 @@ export function getGMDataTabStyles(): string {
     .acct-quota-ok { background: var(--ed-good-fill); }
     .acct-quota-warn { background: var(--ed-warn-fill); }
     .acct-quota-danger { background: var(--ed-danger-fill); }
+    .acct-quota-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex-shrink: 0;
+    }
+    .acct-quota-pct {
+        font-size: 0.6875rem;
+        font-weight: 600;
+        color: var(--ed-ink-secondary);
+        font-variant-numeric: tabular-nums lining-nums;
+        min-width: 2.6em;
+        text-align: right;
+    }
+    .acct-quota-pct.is-warn { color: var(--ed-warn); }
+    .acct-quota-pct.is-danger { color: var(--ed-danger); }
+    .acct-quota-pct.is-unknown { color: var(--ed-ink-muted); font-weight: 500; }
     .acct-delete-link {
         font-size: 0.6875rem;
         font-weight: 550;
@@ -687,42 +824,6 @@ export function getGMDataTabStyles(): string {
     .act-stat-warn .act-stat-val,
     .act-stat-warn .act-stat-label {
         color: var(--ed-danger);
-    }
-    .act-stat[data-tooltip]::after {
-        bottom: auto;
-        top: calc(100% + 6px);
-        transform: translateX(-50%) scale(0.94);
-        padding: 5px 9px;
-        background: var(--ed-surface-overlay);
-        color: var(--ed-ink);
-        border: 1px solid var(--ed-border-strong);
-        border-radius: var(--ed-radius-sm);
-        font-size: 0.75rem;
-        font-weight: 400;
-        text-transform: none;
-        letter-spacing: 0;
-        white-space: normal;
-        max-width: 240px;
-        width: max-content;
-        text-align: center;
-        z-index: var(--z-tooltip, 500);
-        box-shadow: var(--ed-shadow-tooltip);
-    }
-    .act-stat[data-tooltip]:hover::after,
-    .act-stat[data-tooltip]:focus-visible::after {
-        transform: translateX(-50%) scale(1);
-    }
-    .act-summary-bar > .act-stat:first-child[data-tooltip]::after {
-        left: 0; right: auto; transform: translateX(0) scale(0.94); text-align: left;
-    }
-    .act-summary-bar > .act-stat:first-child[data-tooltip]:hover::after {
-        transform: translateX(0) scale(1);
-    }
-    .act-summary-bar > .act-stat:last-child[data-tooltip]::after {
-        left: auto; right: 0; transform: translateX(0) scale(0.94); text-align: left;
-    }
-    .act-summary-bar > .act-stat:last-child[data-tooltip]:hover::after {
-        transform: translateX(0) scale(1);
     }
     .act-stat-icon {
         display: inline-flex;
@@ -1688,28 +1789,35 @@ export function getGMDataTabStyles(): string {
     }
     .act-checkpoint-model { opacity: 0.9; }
 
-    /* ─── Timeline Legend Help Popover (L3 Overlay, zero backdrop-filter) ─── */
+    /* ─── Timeline Legend Help Trigger & Template Rows (#acmRichTipPopover) ─── */
     .act-tl-help-wrap {
         position: relative;
         display: inline-flex;
         margin-left: auto;
     }
     .act-tl-help-btn {
+        appearance: none;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         width: 20px;
         height: 20px;
+        padding: 0;
         border-radius: var(--ed-radius-pill);
         border: 1px solid var(--ed-control-border);
         background: var(--ed-surface);
         color: var(--ed-ink-muted);
+        font-family: inherit;
         font-size: 0.72rem;
         font-weight: 650;
-        cursor: help;
+        cursor: pointer;
         user-select: none;
         flex-shrink: 0;
         transition: background var(--ed-dur-fast) var(--ed-ease), border-color var(--ed-dur-fast) var(--ed-ease), color var(--ed-dur-fast) var(--ed-ease);
+    }
+    .act-tl-help-btn:focus-visible {
+        outline: 2px solid var(--ed-accent);
+        outline-offset: 2px;
     }
     @media (hover: hover) {
         .act-tl-help-btn:hover {
@@ -1717,33 +1825,6 @@ export function getGMDataTabStyles(): string {
             border-color: var(--ed-accent-border);
             color: var(--ed-accent);
         }
-        .act-tl-help-btn:hover + .act-tl-help-popup {
-            opacity: 1;
-            visibility: visible;
-            transform: translateY(0);
-        }
-    }
-    .act-tl-help-popup {
-        position: absolute;
-        top: calc(100% + 6px);
-        right: 0;
-        z-index: 100;
-        width: 290px;
-        max-height: 280px;
-        overflow-y: auto;
-        padding: 10px 12px;
-        background: var(--ed-surface-overlay);
-        border: 1px solid var(--ed-border-strong);
-        border-radius: var(--ed-radius-lg);
-        box-shadow: var(--ed-shadow-popover);
-        font-size: 0.75rem;
-        line-height: 1.5;
-        color: var(--ed-ink-secondary);
-        opacity: 0;
-        visibility: hidden;
-        transform: translateY(-4px);
-        transition: opacity var(--ed-dur-fast) var(--ed-ease), visibility var(--ed-dur-fast) var(--ed-ease), transform var(--ed-dur-fast) var(--ed-ease);
-        pointer-events: none;
     }
     .act-tl-help-row {
         display: flex;
@@ -2588,35 +2669,6 @@ export function getGMDataTabStyles(): string {
             color: var(--ed-ink);
         }
     }
-    .tool-cat-chip[data-tooltip]::after {
-        content: attr(data-tooltip);
-        position: absolute;
-        left: 50%;
-        bottom: calc(100% + 6px);
-        transform: translateX(-50%) scale(0.94);
-        padding: 4px 8px;
-        background: var(--ed-surface-overlay);
-        color: var(--ed-ink);
-        border: 1px solid var(--ed-border-strong);
-        border-radius: var(--ed-radius-sm);
-        font-family: var(--ed-sans);
-        font-size: 0.75rem;
-        font-weight: 400;
-        white-space: normal;
-        word-break: break-word;
-        max-width: 210px;
-        width: max-content;
-        text-align: center;
-        z-index: var(--z-tooltip, 500);
-        box-shadow: var(--ed-shadow-tooltip);
-        pointer-events: none;
-        opacity: 0;
-        transition: opacity var(--ed-dur-fast) var(--ed-ease), transform var(--ed-dur-fast) var(--ed-ease);
-    }
-    .tool-cat-chip[data-tooltip]:hover::after {
-        opacity: 1;
-        transform: translateX(-50%) scale(1);
-    }
     .tool-cat-footer {
         display: flex;
         justify-content: flex-end;
@@ -2820,16 +2872,6 @@ export function getGMDataTabStyles(): string {
             padding: 3px 6px;
         }
         .act-stat-warn { margin-left: 0; }
-        .act-summary-bar > .act-stat[data-tooltip]::after {
-            left: 50%;
-            right: auto;
-            max-width: calc(100% - 20px);
-            transform: translateX(-50%) scale(0.94);
-        }
-        .act-summary-bar > .act-stat[data-tooltip]:hover::after,
-        .act-summary-bar > .act-stat[data-tooltip]:focus-visible::after {
-            transform: translateX(-50%) scale(1);
-        }
         .act-tl-item,
         .act-tl-turn-header,
         .cp-card-header,
@@ -2857,7 +2899,6 @@ export function getGMDataTabStyles(): string {
             white-space: normal;
             overflow-wrap: anywhere;
         }
-        .act-tl-help-popup { width: min(260px, calc(100vw - 36px)); }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -2875,7 +2916,6 @@ export function getGMDataTabStyles(): string {
         .act-tl-turn-header,
         .act-tl-turn-header::before,
         .act-tl-help-btn,
-        .act-tl-help-popup,
         .act-conv-item,
         .gm-err-expand,
         .gm-ue-header::before,
@@ -2893,7 +2933,6 @@ export function getGMDataTabStyles(): string {
         .tool-cat-header,
         .tool-cat-header::before,
         .tool-cat-chip,
-        .tool-cat-chip[data-tooltip]::after,
         .tool-cat-clear-btn {
             transition: none;
         }
@@ -2928,46 +2967,76 @@ function buildSummaryBar(
     const buildTelemetryKpiCells = (tel: TelemetryAggregate): string => {
         if (!gm || tel.totalCalls <= 0) { return ''; }
 
-        const speedTipParts: string[] = [];
+        const speedMetaParts: string[] = [];
+        let speedBody = tBi(
+            'Token-weighted output generation speed across valid timed streaming calls.',
+            '所有有效流式耗时样本按 Token 加权计算的模型生成速度。',
+        );
         if (tel.weightedGenTokPerSec !== null) {
-            speedTipParts.push(`${tBi('Weighted generation speed', '加权生成速度')} (n=${tel.speedSampleCount})`);
+            speedMetaParts.push(`${tBi('Weighted generation speed', '加权生成速度')} (n=${tel.speedSampleCount})`);
             if (tel.hasThinking && tel.weightedVisibleTokPerSec !== null) {
-                speedTipParts.push(`${tBi('Visible resp', '可见输出')} ${formatSpeed(tel.weightedVisibleTokPerSec)}`);
+                speedMetaParts.push(`${tBi('Visible resp', '可见输出')} ${formatSpeed(tel.weightedVisibleTokPerSec)}`);
             }
             if (tel.medianGenTokPerSec !== null) {
-                speedTipParts.push(`${tBi('p50 median', 'p50 中位数')} ${formatSpeed(tel.medianGenTokPerSec)}`);
+                speedMetaParts.push(`${tBi('p50 median', 'p50 中位数')} ${formatSpeed(tel.medianGenTokPerSec)}`);
             }
             if (tel.weightedEndToEndTokPerSec !== null) {
-                speedTipParts.push(`${tBi('End-to-End', '端到端')} ${formatSpeed(tel.weightedEndToEndTokPerSec)}`);
+                speedMetaParts.push(`${tBi('End-to-End', '端到端')} ${formatSpeed(tel.weightedEndToEndTokPerSec)}`);
             }
         } else {
-            speedTipParts.push(tBi('No timed streaming samples yet', '暂无有效流式耗时样本'));
+            speedBody = tBi('No timed streaming samples yet', '暂无有效流式耗时样本');
         }
-        const speedTip = speedTipParts.join(' · ');
+        const speedTip = richTipAttrs(
+            'gm-stat-speed',
+            tBi('Generation Speed', '生成速度'),
+            speedBody,
+            speedMetaParts.join(' · ') || undefined,
+        );
 
-        const ttftTipParts: string[] = [];
+        const ttftMetaParts: string[] = [];
+        let ttftBody = tBi(
+            'Average time to first token (TTFT) from sending a request until the first streamed token arrives.',
+            '发送请求后到收到首个返回 Token 的平均等待时间（首字延迟 TTFT）。',
+        );
         if (tel.avgTtftSeconds !== null) {
-            ttftTipParts.push(`${tBi('Average TTFT (valid timed samples)', '平均首字延迟（仅有效计时样本）')} (n=${tel.ttftSampleCount})`);
+            ttftMetaParts.push(`${tBi('Average TTFT (valid timed samples)', '平均首字延迟（仅有效计时样本）')} (n=${tel.ttftSampleCount})`);
             if (tel.cachedAvgTtftSeconds !== null && tel.uncachedAvgTtftSeconds !== null) {
-                ttftTipParts.push(`${tBi('Cached', '命中缓存')} ${formatLatency(tel.cachedAvgTtftSeconds)} vs ${tBi('Uncached', '未命中')} ${formatLatency(tel.uncachedAvgTtftSeconds)}`);
+                ttftMetaParts.push(`${tBi('Cached', '命中缓存')} ${formatLatency(tel.cachedAvgTtftSeconds)} vs ${tBi('Uncached', '未命中')} ${formatLatency(tel.uncachedAvgTtftSeconds)}`);
             } else if (tel.medianTtftSeconds !== null) {
-                ttftTipParts.push(`p50 ${formatLatency(tel.medianTtftSeconds)}`);
+                ttftMetaParts.push(`p50 ${formatLatency(tel.medianTtftSeconds)}`);
             }
         } else {
-            ttftTipParts.push(tBi('No valid TTFT samples yet', '暂无有效首字延迟样本'));
+            ttftBody = tBi('No valid TTFT samples yet', '暂无有效首字延迟样本');
         }
-        const ttftTip = ttftTipParts.join(' · ');
+        const ttftTip = richTipAttrs(
+            'gm-stat-ttft',
+            tBi('Average TTFT', '平均首字延迟'),
+            ttftBody,
+            ttftMetaParts.join(' · ') || undefined,
+        );
 
-        const cacheHitTip = tel.tokenCacheHitRate !== null
-            ? `${tBi('Token-weighted prompt cache hit rate', '按 Token 加权的提示词缓存命中率')} · ${fmt(tel.totalCacheReadTokens)} / ${fmt(tel.totalPromptTokens)} tokens · ${tel.cachedCallCount}/${tel.totalCalls} ${tBi('calls', '调用')}`
+        const cacheHitBody = tel.tokenCacheHitRate !== null
+            ? tBi(
+                'Share of total prompt tokens served from prompt cache instead of fresh prefill.',
+                '全部提示词 Token 中由缓存读取直接命中、无需重新计算的比例。',
+            )
             : tBi('No prompt token data yet', '暂无提示词 Token 数据');
+        const cacheHitMeta = tel.tokenCacheHitRate !== null
+            ? `${tBi('Formula: Cache Read ÷ (Fresh + Cache Read + Cache Write)', '口径：缓存读取 ÷ (新增 + 缓存读取 + 缓存写入)')} · ${fmt(tel.totalCacheReadTokens)} / ${fmt(tel.totalPromptTokens)} · ${tel.cachedCallCount}/${tel.totalCalls} ${tBi('calls', '调用')}`
+            : undefined;
+        const cacheHitTip = richTipAttrs(
+            'gm-stat-cache-hit',
+            tBi('Prompt Cache Hit Rate', '提示词缓存命中率'),
+            cacheHitBody,
+            cacheHitMeta,
+        );
         const callRatioHtml = tel.tokenCacheHitRate !== null && tel.totalCalls > 0
             ? `<span class="act-stat-sub">${tel.cachedCallCount}/${tel.totalCalls}</span>`
             : '';
 
-        return `<div class="act-stat act-stat-speed" data-tooltip="${esc(speedTip)}"><span class="act-stat-icon">${iconSpeed}</span><span class="act-stat-val val-speed">${esc(formatSpeed(tel.weightedGenTokPerSec))}</span><span class="act-stat-label">${tBiHtml('Speed', '生成速度')}</span></div>
-            <div class="act-stat act-stat-ttft" data-tooltip="${esc(ttftTip)}"><span class="act-stat-icon">${iconTtft}</span><span class="act-stat-val val-ttft">${esc(formatLatency(tel.avgTtftSeconds))}</span><span class="act-stat-label">${tBiHtml('Avg TTFT', '平均首字')}</span></div>
-            <div class="act-stat act-stat-cache-hit" data-tooltip="${esc(cacheHitTip)}"><span class="act-stat-icon">${iconCacheHit}</span><span class="act-stat-val val-cache-hit"><span>${esc(formatCachePercent(tel.tokenCacheHitRate))}</span>${callRatioHtml}</span><span class="act-stat-label">${tBiHtml('Cache Hit', '缓存命中')}</span></div>`;
+        return `<div class="act-stat act-stat-speed" ${speedTip} tabindex="0"><span class="act-stat-icon">${iconSpeed}</span><span class="act-stat-val val-speed">${esc(formatSpeed(tel.weightedGenTokPerSec))}</span><span class="act-stat-label">${tBiHtml('Speed', '生成速度')}</span></div>
+            <div class="act-stat act-stat-ttft" ${ttftTip} tabindex="0"><span class="act-stat-icon">${iconTtft}</span><span class="act-stat-val val-ttft">${esc(formatLatency(tel.avgTtftSeconds))}</span><span class="act-stat-label">${tBiHtml('Avg TTFT', '平均首字')}</span></div>
+            <div class="act-stat act-stat-cache-hit" ${cacheHitTip} tabindex="0"><span class="act-stat-icon">${iconCacheHit}</span><span class="act-stat-val val-cache-hit"><span>${esc(formatCachePercent(tel.tokenCacheHitRate))}</span>${callRatioHtml}</span><span class="act-stat-label">${tBiHtml('Cache Hit', '缓存命中')}</span></div>`;
     };
 
     // ── Helper: build error chip from GM data ──
@@ -2980,19 +3049,81 @@ function buildSummaryBar(
         const convDelta = Object.values(currentConvErrs).reduce((a, b) => a + b, 0);
         const errCodes = Object.entries(gm2.retryErrorCodes || {}).sort((a, b) => b[1] - a[1]).map(([c, n]) => { const d = currentConvErrs[c] || 0; return d > 0 ? `${c} ×${n} (+${d})` : `${c} ×${n}`; }).join(', ');
         const wasteInfo = gm2.totalRetryTokens > 0 ? ` · ${fmt(gm2.totalRetryTokens)} ${tBi('tokens wasted', '浪费 tokens')}` : '';
-        const tipText = errCodes ? `${errCodes}${wasteInfo}` : `${gm2.totalRetryCount} ${tBi('retries', '重试')}${wasteInfo}`;
-        const deltaHtml = convDelta > 0 ? ` <span class="err-delta">+${convDelta}</span>` : '';
-        return `<div class="act-stat act-stat-warn" data-tooltip="${esc(tipText)}"><span class="act-stat-icon">${iconErr}</span><span class="act-stat-val">${errTotal > 0 ? errTotal : gm2.totalRetryCount}${deltaHtml}</span><span class="act-stat-label">${tBiHtml('Errors', '报错')}</span></div>`;
+        const errMeta = errCodes ? `${errCodes}${wasteInfo}` : `${gm2.totalRetryCount} ${tBi('retries', '重试')}${wasteInfo}`;
+        const errTip = richTipAttrs(
+            'gm-stat-errors',
+            tBi('API Errors & Retries', '接口报错与重试'),
+            tBi(
+                'Total failed or auto-retried upstream model calls recorded in GM telemetry.',
+                'GM 数据记录到的上游模型接口失败或自动重试总次数。',
+            ),
+            errMeta,
+        );
+        const deltaHtml = convDelta > 0
+            ? ` <span class="err-delta" ${richTipAttrs(
+                'gm-stat-errors-delta',
+                tBi('Current Conversation Errors', '当前对话报错数'),
+                tBi(
+                    `${convDelta} of the total errors occurred inside the currently active conversation.`,
+                    `全部报错中有 ${convDelta} 次发生在当前选中的对话内。`,
+                ),
+            )}>+${convDelta}</span>`
+            : '';
+        return `<div class="act-stat act-stat-warn" ${errTip} tabindex="0"><span class="act-stat-icon">${iconErr}</span><span class="act-stat-val">${errTotal > 0 ? errTotal : gm2.totalRetryCount}${deltaHtml}</span><span class="act-stat-label">${tBiHtml('Errors', '报错')}</span></div>`;
     };
 
-    // When no activity data, show GM-only summary
+    const callsTip = richTipAttrs(
+        'gm-stat-calls',
+        tBi('GM Model Calls', 'GM 模型调用次数'),
+        tBi(
+            'Total LLM API calls captured from Generator Metadata (GM) — Antigravity’s per-call model telemetry.',
+            '从生成器元数据（GM 数据）捕获的模型 API 调用总次数，每轮推理或工具循环均计为独立调用。',
+        ),
+        tBi('Scoped to the active account’s loaded conversations', '范围：当前账号已加载对话的实测汇总'),
+    );
+    const cacheTip = richTipAttrs(
+        'gm-stat-cache',
+        tBi('Cache Read Tokens', '缓存读取 Token'),
+        tBi(
+            'Cumulative prompt tokens served directly from upstream prompt cache instead of re-prefilling.',
+            '累计直接从上游提示词缓存读取、无需重新计算的输入 Token 总量。',
+        ),
+        tBi('Lower latency and discounted API reference cost', '可显著降低首字延迟并享受缓存折扣价'),
+    );
+    const creditsTip = richTipAttrs(
+        'gm-stat-credits',
+        tBi('GM Call Credits', 'GM 调用积分'),
+        tBi(
+            'Internal per-call credit units reported by Generator Metadata across recorded calls (distinct from Account AI Credits balance).',
+            '由 GM 单次调用元数据上报的调用积分累计值（区别于账号侧栏的 Google AI 积分余额）。',
+        ),
+    );
+
+    // When no activity data, show GM-only summary (with full rich-tip explanations!)
     if (!s && gm) {
+        const gmInTip = richTipAttrs(
+            'gm-stat-in',
+            tBi('Fresh Input Tokens', '新增输入 Token'),
+            tBi(
+                'Cumulative non-cached input tokens sent to models across recorded GM conversations.',
+                '所有已记录 GM 对话中累计发送给模型的新增（非缓存读取）输入 Token。',
+            ),
+            tBi('Excludes Cache Read tokens shown separately', '不含单独展示的缓存读取 Token'),
+        );
+        const gmOutTip = richTipAttrs(
+            'gm-stat-out',
+            tBi('Output Tokens', '输出 Token'),
+            tBi(
+                'Cumulative output tokens generated by models across recorded GM conversations (includes thinking tokens).',
+                '所有已记录 GM 对话中模型累计生成的输出 Token 总量（含思考 Token）。',
+            ),
+        );
         return `<div class="act-summary-bar">
-            <div class="act-stat"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val val-calls">${gm.totalCalls}</span><span class="act-stat-label">${tBiHtml('Calls', '调用')}</span></div>
-            <div class="act-stat"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(gm.totalInputTokens)}</span><span class="act-stat-label">${tBiHtml('In', '输入')}</span></div>
-            <div class="act-stat"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBiHtml('Out', '输出')}</span></div>
-            ${gm.totalCacheRead > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBiHtml('Cache', '缓存')}</span></div>` : ''}
-            ${gm.totalCredits > 0 ? `<div class="act-stat"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${gm.totalCredits.toFixed(1)}</span><span class="act-stat-label">${tBiHtml('Credits', '积分')}</span></div>` : ''}
+            <div class="act-stat" ${callsTip} tabindex="0"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val val-calls">${gm.totalCalls}</span><span class="act-stat-label">${tBiHtml('Calls', '调用')}</span></div>
+            <div class="act-stat" ${gmInTip} tabindex="0"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(gm.totalInputTokens)}</span><span class="act-stat-label">${tBiHtml('In', '输入')}</span></div>
+            <div class="act-stat" ${gmOutTip} tabindex="0"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(gm.totalOutputTokens)}</span><span class="act-stat-label">${tBiHtml('Out', '输出')}</span></div>
+            ${gm.totalCacheRead > 0 ? `<div class="act-stat" ${cacheTip} tabindex="0"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(gm.totalCacheRead)}</span><span class="act-stat-label">${tBiHtml('Cache', '缓存')}</span></div>` : ''}
+            ${gm.totalCredits > 0 ? `<div class="act-stat" ${creditsTip} tabindex="0"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${gm.totalCredits.toFixed(1)}</span><span class="act-stat-label">${tBiHtml('Credits', '积分')}</span></div>` : ''}
             ${buildTelemetryKpiCells(overall)}
             ${buildErrorChip(gm)}
         </div>`;
@@ -3003,7 +3134,7 @@ function buildSummaryBar(
     // GM-specific: calls chip
     let gmCallsChip = '';
     if (gm && gm.totalCalls > 0) {
-        gmCallsChip = `<div class="act-stat" data-tooltip="${esc(tBi('Total LLM API calls', 'LLM API 调用总次数'))}"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val val-calls">${gm.totalCalls}</span><span class="act-stat-label">${tBiHtml('Calls', '调用')}</span></div>`;
+        gmCallsChip = `<div class="act-stat" ${callsTip} tabindex="0"><span class="act-stat-icon">${iconCalls}</span><span class="act-stat-val val-calls">${gm.totalCalls}</span><span class="act-stat-label">${tBiHtml('Calls', '调用')}</span></div>`;
     }
 
     // Prefer account-filtered gm summary over cross-account ActivityTracker cached totals (#66 bug #7)
@@ -3011,29 +3142,47 @@ function buildSummaryBar(
     const hasGM = useFilteredGm || (s.gmTotalInputTokens || 0) > 0;
     const inTokens = useFilteredGm ? gm!.totalInputTokens : (hasGM ? s.gmTotalInputTokens! : s.totalInputTokens);
     const outTokens = useFilteredGm ? gm!.totalOutputTokens : (hasGM ? s.gmTotalOutputTokens! : s.totalOutputTokens);
-    const inTooltip = hasGM
-        ? tBi('Input tokens (all conversations)', '输入 tokens（全部对话）')
-        : tBi('Cumulative input tokens consumed', '累计消耗的输入 tokens');
-    const outTooltip = hasGM
-        ? tBi('Output tokens (all conversations)', '输出 tokens（全部对话）')
-        : tBi('Cumulative output tokens generated', '累计生成的输出 tokens');
+    const inTip = richTipAttrs(
+        'gm-stat-in',
+        tBi('Input Tokens', '输入 Token'),
+        hasGM
+            ? tBi('Fresh (non-cached) input tokens sent to models across all loaded conversations.', '全部已加载对话中累计发送给模型的新增（非缓存读取）输入 Token。')
+            : tBi('Cumulative input tokens consumed across tracked activity steps.', '已追踪活动步骤累计消耗的输入 Token。'),
+        hasGM ? tBi('Source: GM Data (account-scoped)', '来源：GM 数据（按当前账号过滤）') : tBi('Source: Activity step telemetry', '来源：活动步骤遥测'),
+    );
+    const outTip = richTipAttrs(
+        'gm-stat-out',
+        tBi('Output Tokens', '输出 Token'),
+        hasGM
+            ? tBi('Total output tokens generated by models across all loaded conversations (including thinking tokens).', '全部已加载对话中模型生成的输出 Token 总量（含思考 Token）。')
+            : tBi('Cumulative output tokens generated across tracked activity steps.', '已追踪活动步骤累计生成的输出 Token。'),
+        hasGM ? tBi('Source: GM Data (account-scoped)', '来源：GM 数据（按当前账号过滤）') : undefined,
+    );
 
     // Cache chip
     const cacheTokens = useFilteredGm ? gm!.totalCacheRead : (s.gmTotalCacheRead || 0);
-    const cacheChip = cacheTokens > 0 ? `<div class="act-stat" data-tooltip="${esc(tBi('Cache read tokens', '缓存读取 tokens'))}"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(cacheTokens)}</span><span class="act-stat-label">${tBiHtml('Cache', '缓存')}</span></div>` : '';
+    const cacheChip = cacheTokens > 0 ? `<div class="act-stat" ${cacheTip} tabindex="0"><span class="act-stat-icon">${iconCache}</span><span class="act-stat-val val-cache">${fmt(cacheTokens)}</span><span class="act-stat-label">${tBiHtml('Cache', '缓存')}</span></div>` : '';
 
     // Credits chip
     const credits = useFilteredGm ? gm!.totalCredits : (s.gmTotalCredits || 0);
-    const creditsChip = credits > 0 ? `<div class="act-stat" data-tooltip="${esc(tBi('Credits consumed', '消耗的积分'))}"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${credits.toFixed(1)}</span><span class="act-stat-label">${tBiHtml('Credits', '积分')}</span></div>` : '';
+    const creditsChip = credits > 0 ? `<div class="act-stat" ${creditsTip} tabindex="0"><span class="act-stat-icon">${iconCredits}</span><span class="act-stat-val val-credits">${credits.toFixed(1)}</span><span class="act-stat-label">${tBiHtml('Credits', '积分')}</span></div>` : '';
 
     // Tool output chip
-    const toolOutChip = s.totalToolReturnTokens > 0 ? `<div class="act-stat" data-tooltip="${esc(tBi('Tokens returned by tool calls', '工具调用返回的 tokens'))}"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg></span><span class="act-stat-val">${fmt(s.totalToolReturnTokens)}</span><span class="act-stat-label">${tBiHtml('Tool Out', '工具输出')}</span></div>` : '';
+    const toolOutTip = richTipAttrs(
+        'gm-stat-tool-out',
+        tBi('Tool Output Tokens', '工具输出 Token'),
+        tBi(
+            'Tokens returned by tool invocations (file reads, terminal output, searches) and fed back into the model context.',
+            '文件读取、终端执行、代码搜索等工具返回并注入模型上下文的 Token 总量。',
+        ),
+    );
+    const toolOutChip = s.totalToolReturnTokens > 0 ? `<div class="act-stat" ${toolOutTip} tabindex="0"><span class="act-stat-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></svg></span><span class="act-stat-val">${fmt(s.totalToolReturnTokens)}</span><span class="act-stat-label">${tBiHtml('Tool Out', '工具输出')}</span></div>` : '';
 
     return `
     <div class="act-summary-bar">
         ${gmCallsChip}
-        <div class="act-stat" data-tooltip="${esc(inTooltip)}"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(inTokens)}</span><span class="act-stat-label">${tBiHtml('In', '输入')}</span></div>
-        <div class="act-stat" data-tooltip="${esc(outTooltip)}"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(outTokens)}</span><span class="act-stat-label">${tBiHtml('Out', '输出')}</span></div>
+        <div class="act-stat" ${inTip} tabindex="0"><span class="act-stat-icon">${iconIn}</span><span class="act-stat-val val-in">${fmt(inTokens)}</span><span class="act-stat-label">${tBiHtml('In', '输入')}</span></div>
+        <div class="act-stat" ${outTip} tabindex="0"><span class="act-stat-icon">${iconOut}</span><span class="act-stat-val val-out">${fmt(outTokens)}</span><span class="act-stat-label">${tBiHtml('Out', '输出')}</span></div>
         ${toolOutChip}
         ${cacheChip}
         ${creditsChip}
@@ -3042,35 +3191,95 @@ function buildSummaryBar(
     </div>`;
 }
 
-function renderTurnStartPill(kind: TurnStartKind, compact = false): string {
+function renderTurnStartPill(kind: TurnStartKind, compact = false, keySuffix = 'turn'): string {
+    const safeSuffix = toSafeTipKey(keySuffix);
+    const formulaMeta = tBi(
+        'Thresholds: ≥70% Warm · 10%–70% Partial · <10% Cold (Cache Read ÷ [Fresh + Cache Read + Cache Write])',
+        '判定阈值：≥70% 热缓存 · 10%–70% 部分命中 · <10% 冷启动（缓存读取 ÷ [新增输入 + 缓存读取 + 缓存写入]）',
+    );
     switch (kind) {
-        case 'cold':
-            return `<span class="turn-start-pill is-cold${compact ? ' is-compact' : ''}" data-turn-start="cold">${compact ? tBiHtml('Cold', '冷启动') : tBiHtml('Cold Start', '冷启动')}</span>`;
-        case 'partial':
-            return `<span class="turn-start-pill is-partial${compact ? ' is-compact' : ''}" data-turn-start="partial">${compact ? tBiHtml('Partial', '部分') : tBiHtml('Partial Start', '部分命中')}</span>`;
-        case 'warm':
-            return `<span class="turn-start-pill is-warm${compact ? ' is-compact' : ''}" data-turn-start="warm">${compact ? tBiHtml('Warm', '热缓存') : tBiHtml('Warm Start', '热缓存启动')}</span>`;
+        case 'cold': {
+            const tip = richTipAttrs(
+                `gm-turn-start-${safeSuffix}`,
+                tBi('Cold Start', '冷启动'),
+                tBi(
+                    'Reflects real server-side Prompt Cache reuse (<10% hit): almost the entire prefix had to be re-read fresh — normal on a first turn, after >5m idle expiry, or right after switching models.',
+                    '反映服务端真实提示词缓存（Prompt Cache）复用率低于 10%：绝大部分历史前缀需从头重读——在首轮对话、静置超过 5 分钟缓存过期或刚切换模型时属正常现象。',
+                ),
+                formulaMeta,
+            );
+            return `<span class="turn-start-pill is-cold${compact ? ' is-compact' : ''}" data-turn-start="cold" ${tip}>${compact ? tBiHtml('Cold', '冷启动') : tBiHtml('Cold Start', '冷启动')}</span>`;
+        }
+        case 'partial': {
+            const tip = richTipAttrs(
+                `gm-turn-start-${safeSuffix}`,
+                tBi('Partial Cache Hit', '部分命中'),
+                tBi(
+                    'Reflects real server-side Prompt Cache reuse (10%–70% hit): part of the history prefix was reused, while edits, new tool outputs, or compaction caused the rest to be re-prefilled.',
+                    '反映服务端真实提示词缓存复用率在 10%–70% 之间：部分历史前缀成功复用，其余因新增内容、工具输出或上下文压缩而重新预填充。',
+                ),
+                formulaMeta,
+            );
+            return `<span class="turn-start-pill is-partial${compact ? ' is-compact' : ''}" data-turn-start="partial" ${tip}>${compact ? tBiHtml('Partial', '部分') : tBiHtml('Partial Start', '部分命中')}</span>`;
+        }
+        case 'warm': {
+            const tip = richTipAttrs(
+                `gm-turn-start-${safeSuffix}`,
+                tBi('Warm Start', '热缓存启动'),
+                tBi(
+                    'Reflects real server-side Prompt Cache reuse (≥70% hit): most of the conversation prefix was served directly from cache for faster first token and lower API reference cost.',
+                    '反映服务端真实提示词缓存复用率 ≥70%：大部分历史前缀直接命中热缓存，首字响应更快、API 参考成本更低。',
+                ),
+                formulaMeta,
+            );
+            return `<span class="turn-start-pill is-warm${compact ? ' is-compact' : ''}" data-turn-start="warm" ${tip}>${compact ? tBiHtml('Warm', '热缓存') : tBiHtml('Warm Start', '热缓存启动')}</span>`;
+        }
         default:
             return '';
     }
 }
 
-function formatSignedTokenDeltaHtml(deltaTokens: number | null, isCompactionDrop = false): string {
+function formatSignedTokenDeltaHtml(deltaTokens: number | null, isCompactionDrop = false, keySuffix = 'delta'): string {
     if (deltaTokens === null || !Number.isFinite(deltaTokens)) {
         return `<span class="rc-muted">—</span>`;
     }
+    const safeSuffix = toSafeTipKey(keySuffix);
     const absStr = fmtCompactTokens(Math.abs(deltaTokens));
     if (deltaTokens === 0) {
         return `<span class="rc-muted">0</span>`;
     }
     if (deltaTokens > 0) {
-        return `<span class="rc-delta rc-delta-pos" data-delta-tokens="${deltaTokens}">+${esc(absStr)}</span>`;
+        const tip = richTipAttrs(
+            `gm-net-delta-${safeSuffix}`,
+            tBi('Net Context Growth (+Δ)', '上下文净增量 (+Δ)'),
+            tBi(
+                `Total prompt grew by ${absStr} tokens compared with the previous call in this conversation.`,
+                `相比本对话上一次调用，总提示词上下文净增加了 ${absStr} tokens。`,
+            ),
+            tBi('Formula: current totalPrompt − previous totalPrompt', '计算口径：本次总提示词 Token − 上次总提示词 Token'),
+        );
+        return `<span class="rc-delta rc-delta-pos" data-delta-tokens="${deltaTokens}" ${tip}>+${esc(absStr)}</span>`;
     }
     const cls = isCompactionDrop ? 'rc-delta rc-delta-neg rc-delta-compaction' : 'rc-delta rc-delta-neg';
-    const titleAttr = isCompactionDrop
-        ? ` title="${esc(tBi('Context dropped (compaction / rewind)', '上下文显著下降（压缩或回退）'))}"`
-        : '';
-    return `<span class="${cls}" data-delta-tokens="${deltaTokens}"${titleAttr}>−${esc(absStr)}</span>`;
+    const tip = isCompactionDrop
+        ? richTipAttrs(
+            `gm-net-delta-${safeSuffix}`,
+            tBi('Context Compaction / Rewind', '上下文显著下降（压缩或回退）'),
+            tBi(
+                `Total prompt shrank by ${absStr} tokens — usually triggered by automatic context compaction, checkpoint summarization, or conversation rewind.`,
+                `总提示词上下文大幅减少 ${absStr} tokens，通常由自动压缩、检查点摘要或对话回退触发。`,
+            ),
+            tBi('Highlighted when context drop exceeds compaction threshold', '当单步降幅超过压缩阈值时高亮标出'),
+        )
+        : richTipAttrs(
+            `gm-net-delta-${safeSuffix}`,
+            tBi('Net Context Shrinkage (−Δ)', '上下文净减少 (−Δ)'),
+            tBi(
+                `Total prompt decreased by ${absStr} tokens compared with the previous call.`,
+                `相比上一次调用，总提示词上下文减少了 ${absStr} tokens。`,
+            ),
+        );
+    return `<span class="${cls}" data-delta-tokens="${deltaTokens}" ${tip}>−${esc(absStr)}</span>`;
 }
 
 function resolveEffectiveTurnDiagnostics(
@@ -3109,38 +3318,90 @@ function buildTelemetryLedgerSection(
     const cacheIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`;
 
     // ── Left L1 Card: Generation Speed & TTFT ──
+    const speedScopeTip = richTipAttrs(
+        'gm-tel-speed-scope',
+        tBi('Token-Weighted Speed', '按 Token 加权的平均速度'),
+        tBi(
+            'Sums total output tokens divided by total streaming seconds across valid timed calls, so short bursts do not skew the average.',
+            '用所有有效计时调用的总输出 Token 除以总流式耗时，避免极短回复拉偏平均值。',
+        ),
+        o.speedSampleCount > 0
+            ? tBi(`Computed from ${o.speedSampleCount} valid timed samples (excludes <16 tok or <0.3s bursts)`, `基于 ${o.speedSampleCount} 个有效样本（已过滤 <16 tokens 或 <0.3s 的短样本）`)
+            : tBi('Excludes untimed and short-burst samples', '已自动排除未计时与极短脉冲样本'),
+    );
     const speedScopePill = o.speedSampleCount > 0
-        ? `<span class="telemetry-pill"><span>${tBiHtml(`Weighted · ${o.speedSampleCount} timed`, `加权 · ${o.speedSampleCount} 次计时`)}</span></span>`
-        : `<span class="telemetry-pill"><span>${tBiHtml('Weighted Avg', '加权平均')}</span></span>`;
+        ? `<span class="telemetry-pill" ${speedScopeTip} tabindex="0"><span>${tBiHtml(`Weighted · ${o.speedSampleCount} timed`, `加权 · ${o.speedSampleCount} 次计时`)}</span></span>`
+        : `<span class="telemetry-pill" ${speedScopeTip} tabindex="0"><span>${tBiHtml('Weighted Avg', '加权平均')}</span></span>`;
 
-    const speedHeroTipParts: string[] = [];
+    const speedHeroMetaParts: string[] = [];
     if (o.weightedGenTokPerSec !== null) {
-        speedHeroTipParts.push(`${tBi('Weighted Avg', '加权平均')}: ${formatSpeed(o.weightedGenTokPerSec)}`);
+        speedHeroMetaParts.push(`${tBi('Weighted Avg', '加权平均')}: ${formatSpeed(o.weightedGenTokPerSec)}`);
     }
     if (o.weightedEndToEndTokPerSec !== null) {
-        speedHeroTipParts.push(`${tBi('End-to-End (incl. TTFT)', '端到端（含首字延迟）')}: ${formatSpeed(o.weightedEndToEndTokPerSec)}`);
+        speedHeroMetaParts.push(`${tBi('End-to-End (incl. TTFT)', '端到端（含首字延迟）')}: ${formatSpeed(o.weightedEndToEndTokPerSec)}`);
     }
     if (o.hasThinking && o.weightedVisibleTokPerSec !== null) {
-        speedHeroTipParts.push(`${tBi('Visible resp', '可见输出')}: ${formatSpeed(o.weightedVisibleTokPerSec)}`);
+        speedHeroMetaParts.push(`${tBi('Visible resp', '可见输出')}: ${formatSpeed(o.weightedVisibleTokPerSec)}`);
     }
-    const speedHeroTitle = speedHeroTipParts.length > 0 ? ` title="${esc(speedHeroTipParts.join(' · '))}"` : '';
+    const speedHeroTipAttr = speedHeroMetaParts.length > 0
+        ? ` ${richTipAttrs(
+            'gm-tel-speed-hero',
+            tBi('Decode Speed Summary', '流式生成速度总览'),
+            tBi(
+                'Steady-state token generation rate during streaming after the first token arrives.',
+                '收到首字后模型在流式输出阶段的稳态生成速度（Token/秒）。',
+            ),
+            speedHeroMetaParts.join(' · '),
+        )}`
+        : '';
 
     const e2eHeroMeta = o.weightedEndToEndTokPerSec !== null
-        ? `<span class="telemetry-hero-meta" title="${esc(tBi('End-to-end throughput including TTFT', '包含首字延迟的端到端速度'))}"><span>${tBiHtml('End-to-End', '端到端')} ${esc(formatSpeed(o.weightedEndToEndTokPerSec))}</span></span>`
+        ? `<span class="telemetry-hero-meta" ${richTipAttrs(
+            'gm-tel-speed-e2e',
+            tBi('End-to-End Throughput', '端到端速度'),
+            tBi(
+                'Effective output speed including both the initial TTFT wait and streaming decode time.',
+                '将首字等待（TTFT）与流式生成时间合并计算的真实端到端吞吐速度。',
+            ),
+            tBi('Formula: totalOutputTokens ÷ (totalTTFT + totalStreamingSeconds)', '计算公式：总输出 Token ÷ (首字延迟 + 流式耗时)'),
+        )} tabindex="0"><span>${tBiHtml('End-to-End', '端到端')} ${esc(formatSpeed(o.weightedEndToEndTokPerSec))}</span></span>`
         : '';
 
     const speedSubItems: string[] = [];
     if (o.latestGenTokPerSec !== null) {
-        speedSubItems.push(`<div class="telemetry-subitem"><span class="telemetry-sub-label">${tBiHtml('Latest', '最近')}</span><span class="telemetry-sub-val">${esc(formatSpeed(o.latestGenTokPerSec))}</span></div>`);
+        speedSubItems.push(`<div class="telemetry-subitem" ${richTipAttrs(
+            'gm-tel-speed-latest',
+            tBi('Latest Call Speed', '最近一次速度'),
+            tBi('Decode speed of the most recent valid timed model call.', '最近一次有效计时模型调用的流式生成速度。'),
+        )}><span class="telemetry-sub-label">${tBiHtml('Latest', '最近')}</span><span class="telemetry-sub-val">${esc(formatSpeed(o.latestGenTokPerSec))}</span></div>`);
     }
     if (o.medianGenTokPerSec !== null) {
-        speedSubItems.push(`<div class="telemetry-subitem"><span class="telemetry-sub-label">${tBiHtml('Median p50', '中位数 p50')}</span><span class="telemetry-sub-val">${esc(formatSpeed(o.medianGenTokPerSec))}</span></div>`);
+        speedSubItems.push(`<div class="telemetry-subitem" ${richTipAttrs(
+            'gm-tel-speed-p50',
+            tBi('Median Speed (p50)', '中位数速度 p50'),
+            tBi(
+                '50th-percentile speed: half of valid calls streamed faster than this value and half slower.',
+                '第 50 百分位速度：一半有效调用快于该值、一半慢于该值，比平均值更抗极端波动。',
+            ),
+        )}><span class="telemetry-sub-label">${tBiHtml('Median p50', '中位数 p50')}</span><span class="telemetry-sub-val">${esc(formatSpeed(o.medianGenTokPerSec))}</span></div>`);
     }
     if (o.minGenTokPerSec !== null && o.maxGenTokPerSec !== null && o.speedSampleCount >= 2) {
-        speedSubItems.push(`<div class="telemetry-subitem"><span class="telemetry-sub-label">${tBiHtml('Range', '范围')}</span><span class="telemetry-sub-val">${esc(formatSpeedRange(o.minGenTokPerSec, o.maxGenTokPerSec))}</span></div>`);
+        speedSubItems.push(`<div class="telemetry-subitem" ${richTipAttrs(
+            'gm-tel-speed-range',
+            tBi('Speed Range', '速度波动范围'),
+            tBi('Lowest and highest streaming speeds observed across valid timed calls.', '所有有效计时调用中观测到的最低与最高流式生成速度。'),
+        )}><span class="telemetry-sub-label">${tBiHtml('Range', '范围')}</span><span class="telemetry-sub-val">${esc(formatSpeedRange(o.minGenTokPerSec, o.maxGenTokPerSec))}</span></div>`);
     }
     if (o.hasThinking && o.weightedVisibleTokPerSec !== null) {
-        speedSubItems.push(`<div class="telemetry-subitem" title="${esc(tBi('Visible response tok/s excluding thinking tokens', '不含思考 Token 的可见回复速度'))}"><span class="telemetry-sub-label">${tBiHtml('Visible resp', '可见输出')}</span><span class="telemetry-sub-val">${esc(formatSpeed(o.weightedVisibleTokPerSec))}</span></div>`);
+        speedSubItems.push(`<div class="telemetry-subitem" ${richTipAttrs(
+            'gm-tel-speed-visible',
+            tBi('Visible Response Speed', '可见输出速度'),
+            tBi(
+                'Net rate of visible reply tokens delivered to you, excluding internal thinking tokens.',
+                '剔除模型内部思考 Token 后，实际呈现在回复正文中的可见输出速度。',
+            ),
+            tBi('Formula: (outputTokens − thinkingTokens) ÷ streamingSeconds', '计算公式：(总输出 Token − 思考 Token) ÷ 流式耗时'),
+        )} tabindex="0"><span class="telemetry-sub-label">${tBiHtml('Visible resp', '可见输出')}</span><span class="telemetry-sub-val">${esc(formatSpeed(o.weightedVisibleTokPerSec))}</span></div>`);
     }
     const speedSubHtml = speedSubItems.length > 0
         ? `<div class="telemetry-subgrid">${speedSubItems.join('')}</div>`
@@ -3152,12 +3413,30 @@ function buildTelemetryLedgerSection(
         const roundedDelta = Math.round(o.ttftCacheDeltaPct);
         const sign = roundedDelta > 0 ? '+' : '';
         const deltaCls = roundedDelta < 0 ? 'is-faster' : 'is-neutral';
-        const deltaTip = roundedDelta < 0
-            ? tBi(`Cached TTFT is ${Math.abs(roundedDelta)}% faster than uncached`, `命中缓存首字延迟比未命中快 ${Math.abs(roundedDelta)}%`)
+        const deltaBody = roundedDelta < 0
+            ? tBi(
+                `Cached calls had ${Math.abs(roundedDelta)}% lower time-to-first-token (TTFT) than uncached calls.`,
+                `命中提示词缓存时，首字延迟（TTFT）比未命中缓存时快 ${Math.abs(roundedDelta)}%。`,
+            )
             : roundedDelta > 0
-                ? tBi(`Cached TTFT is ${roundedDelta}% slower than uncached`, `命中缓存首字延迟比未命中慢 ${roundedDelta}%`)
-                : tBi('Cached and uncached TTFT are equal', '命中与未命中缓存首字延迟相同');
-        ttftDeltaHtml = `<span class="telemetry-delta-pill ${deltaCls}" title="${esc(deltaTip)}">${sign}${roundedDelta}%</span>`;
+                ? tBi(
+                    `Cached calls averaged ${roundedDelta}% slower TTFT than uncached calls in this sample (often caused by larger prompts or upstream jitter).`,
+                    `当前样本中命中缓存的平均首字延迟比未命中慢 ${roundedDelta}%（通常因上下文更长或服务端抖动导致）。`,
+                )
+                : tBi(
+                    'Cached and uncached calls averaged the exact same time-to-first-token (TTFT).',
+                    '命中缓存与未命中缓存的平均首字延迟相同。',
+                );
+        const deltaTip = richTipAttrs(
+            'gm-tel-ttft-delta',
+            tBi('Cached vs Uncached TTFT Delta', '缓存首字延迟变化幅度'),
+            deltaBody,
+            tBi(
+                `Cached ${formatLatency(o.cachedAvgTtftSeconds)} vs Uncached ${formatLatency(o.uncachedAvgTtftSeconds)} · Formula: (cached − uncached) ÷ uncached`,
+                `命中 ${formatLatency(o.cachedAvgTtftSeconds)} vs 未命中 ${formatLatency(o.uncachedAvgTtftSeconds)} · 口径：(命中 − 未命中) ÷ 未命中`,
+            ),
+        );
+        ttftDeltaHtml = `<span class="telemetry-delta-pill ${deltaCls}" ${deltaTip} tabindex="0">${sign}${roundedDelta}%</span>`;
     }
 
     let ttftTracksHtml = '';
@@ -3223,13 +3502,25 @@ function buildTelemetryLedgerSection(
 
     const ttftFootParts: string[] = [];
     if (o.medianTtftSeconds !== null) {
-        ttftFootParts.push(`p50 ${esc(formatLatency(o.medianTtftSeconds))}`);
+        ttftFootParts.push(`<span ${richTipAttrs(
+            'gm-tel-ttft-p50',
+            tBi('Median TTFT (p50)', '首字延迟中位数 p50'),
+            tBi('50th percentile first-token latency: typical wait time for a normal call.', '第 50 百分位首字延迟，代表大多数正常调用的典型等待时间。'),
+        )}>p50 ${esc(formatLatency(o.medianTtftSeconds))}</span>`);
     }
     if (o.p95TtftSeconds !== null && o.ttftSampleCount >= 2) {
-        ttftFootParts.push(`p95 ${esc(formatLatency(o.p95TtftSeconds))}`);
+        ttftFootParts.push(`<span ${richTipAttrs(
+            'gm-tel-ttft-p95',
+            tBi('95th Percentile TTFT (p95)', '95 分位慢尾首字延迟 p95'),
+            tBi('95% of calls responded faster than this; reflects worst-case slow-tail wait times.', '95% 的调用首字延迟低于该值，用于衡量偶发卡顿或长上下文预填充的慢尾耗时。'),
+        )}>p95 ${esc(formatLatency(o.p95TtftSeconds))}</span>`);
     }
     if (o.avgStreamingSeconds !== null) {
-        ttftFootParts.push(`<span>${tBiHtml('Avg Stream', '平均流耗时')} ${esc(formatLatency(o.avgStreamingSeconds))}</span>`);
+        ttftFootParts.push(`<span ${richTipAttrs(
+            'gm-tel-ttft-stream',
+            tBi('Average Stream Duration', '平均流式耗时'),
+            tBi('Average time spent streaming output tokens after the first token arrives (excludes TTFT).', '收到首个 Token 之后持续流式输出内容的平均耗时（不含首字等待）。'),
+        )}>${tBiHtml('Avg Stream', '平均流耗时')} ${esc(formatLatency(o.avgStreamingSeconds))}</span>`);
     }
     const ttftFootHtml = ttftFootParts.length > 0
         ? `<p class="telemetry-ttft-foot">${ttftFootParts.join(' · ')}</p>`
@@ -3240,7 +3531,7 @@ function buildTelemetryLedgerSection(
             <span class="telemetry-card-title-wrap">${speedIcon}<h3 class="telemetry-card-title">${tBiHtml('Generation Speed & TTFT', '生成速度与首字延迟')}</h3></span>
             ${speedScopePill}
         </div>
-        <div class="telemetry-hero-row"${speedHeroTitle}>
+        <div class="telemetry-hero-row"${speedHeroTipAttr}>
             <span class="telemetry-hero-val${o.weightedGenTokPerSec === null ? ' is-empty' : ''}">${esc(formatSpeed(o.weightedGenTokPerSec))}</span>
             ${e2eHeroMeta}
         </div>
@@ -3257,26 +3548,78 @@ function buildTelemetryLedgerSection(
 
     // ── Right L1 Card: Prompt Cache Efficiency & Savings ──
     const warmthLabels: Record<CacheState, string> = {
-        warm: tBiHtml('Warm', '已命中'),
+        warm: tBiHtml('Warm (Cached)', '热缓存（命中）'),
         warming: tBiHtml('Warming', '预热中'),
         cold: tBiHtml('Cold', '未命中'),
         unknown: tBiHtml('No data', '无数据'),
     };
-    const warmthBadge = `<span class="telemetry-warmth-badge is-${o.latestCacheState}"><span>${warmthLabels[o.latestCacheState]}</span></span>`;
+    const warmthDesc: Record<CacheState, string> = {
+        warm: tBi(
+            'The latest call hit the upstream prompt cache, reusing previously prefilled context.',
+            '最近一次调用已命中上游提示词热缓存，直接复用了已预填充的历史上下文。',
+        ),
+        warming: tBi(
+            'The latest call wrote new entries into the prompt cache (cache creation > 0) so upcoming turns can hit it.',
+            '最近一次调用正在写入新的提示词缓存（缓存写入 > 0），后续轮次即可开始命中。',
+        ),
+        cold: tBi(
+            'The latest call had 0 cache read tokens and had to prefill the prompt from scratch.',
+            '最近一次调用缓存读取为 0，提示词需要从头重新预填充。',
+        ),
+        unknown: tBi(
+            'No prompt cache telemetry has been recorded for recent calls yet.',
+            '最近调用暂未记录到提示词缓存相关数据。',
+        ),
+    };
+    const warmthTip = richTipAttrs(
+        'gm-tel-cache-warmth',
+        tBi('Latest Prompt Cache State', '最新提示词缓存状态'),
+        warmthDesc[o.latestCacheState],
+        tBi('Warm = cacheRead > 0 · Warming = cacheWrite > 0 · Cold = both 0', '口径：热缓存（缓存读取 > 0）· 预热中（缓存写入 > 0）· 未命中（均为 0）'),
+    );
+    const warmthBadge = `<span class="telemetry-warmth-badge is-${o.latestCacheState}" ${warmthTip} tabindex="0"><span>${warmthLabels[o.latestCacheState]}</span></span>`;
 
     const totalPrompt = o.totalPromptTokens;
     const readPct = totalPrompt > 0 ? (o.totalCacheReadTokens / totalPrompt) * 100 : 0;
     const freshPct = totalPrompt > 0 ? (o.totalFreshInputTokens / totalPrompt) * 100 : 0;
     const writePct = totalPrompt > 0 ? (o.totalCacheCreationTokens / totalPrompt) * 100 : 0;
+    const additivePromptMeta = tBi(
+        'Additive prompt semantics: Total Prompt = Fresh Input + Cache Read + Cache Write',
+        '累加提示词口径：总提示词 = 新增输入 + 缓存读取 + 缓存写入',
+    );
 
     const segRead = readPct > 0
-        ? `<span class="telemetry-cache-seg telemetry-cache-seg-read" style="width:${readPct.toFixed(2)}%" title="${esc(`${tBi('Cache Read', '缓存读取')}: ${fmt(o.totalCacheReadTokens)} tokens (${readPct.toFixed(1)}%)`)}"></span>`
+        ? `<span class="telemetry-cache-seg telemetry-cache-seg-read" style="width:${readPct.toFixed(2)}%" ${richTipAttrs(
+            'gm-tel-cache-seg-read',
+            tBi('Cache Read', '缓存读取'),
+            tBi(
+                `${fmt(o.totalCacheReadTokens)} tokens (${readPct.toFixed(1)}%) served from upstream prompt cache.`,
+                `共 ${fmt(o.totalCacheReadTokens)} tokens（占 ${readPct.toFixed(1)}%）直接从提示词缓存读取。`,
+            ),
+            additivePromptMeta,
+        )} tabindex="0"></span>`
         : '';
     const segFresh = freshPct > 0
-        ? `<span class="telemetry-cache-seg telemetry-cache-seg-fresh" style="width:${freshPct.toFixed(2)}%" title="${esc(`${tBi('Fresh Input', '新增输入')}: ${fmt(o.totalFreshInputTokens)} tokens (${freshPct.toFixed(1)}%)`)}"></span>`
+        ? `<span class="telemetry-cache-seg telemetry-cache-seg-fresh" style="width:${freshPct.toFixed(2)}%" ${richTipAttrs(
+            'gm-tel-cache-seg-fresh',
+            tBi('Fresh Input', '新增输入'),
+            tBi(
+                `${fmt(o.totalFreshInputTokens)} tokens (${freshPct.toFixed(1)}%) sent as uncached fresh prompt input.`,
+                `共 ${fmt(o.totalFreshInputTokens)} tokens（占 ${freshPct.toFixed(1)}%）作为未缓存的新增输入发送。`,
+            ),
+            additivePromptMeta,
+        )} tabindex="0"></span>`
         : '';
     const segWrite = writePct > 0
-        ? `<span class="telemetry-cache-seg telemetry-cache-seg-write" style="width:${writePct.toFixed(2)}%" title="${esc(`${tBi('Cache Write', '缓存写入')}: ${fmt(o.totalCacheCreationTokens)} tokens (${writePct.toFixed(1)}%)`)}"></span>`
+        ? `<span class="telemetry-cache-seg telemetry-cache-seg-write" style="width:${writePct.toFixed(2)}%" ${richTipAttrs(
+            'gm-tel-cache-seg-write',
+            tBi('Cache Write', '缓存写入'),
+            tBi(
+                `${fmt(o.totalCacheCreationTokens)} tokens (${writePct.toFixed(1)}%) written to initialize or refresh prompt cache.`,
+                `共 ${fmt(o.totalCacheCreationTokens)} tokens（占 ${writePct.toFixed(1)}%）写入以创建或刷新提示词缓存。`,
+            ),
+            additivePromptMeta,
+        )} tabindex="0"></span>`
         : '';
 
     const cacheWriteLegend = o.totalCacheCreationTokens > 0
@@ -3288,7 +3631,15 @@ function buildTelemetryLedgerSection(
         : '';
 
     const reuseSub = o.totalCacheCreationTokens > 0 && o.cacheReuseRate !== null
-        ? `<span class="telemetry-ledger-sub"><span>· ${tBiHtml('Reuse', '复用')} ${esc(formatCachePercent(o.cacheReuseRate))}</span></span>`
+        ? `<span class="telemetry-ledger-sub" ${richTipAttrs(
+            'gm-tel-cache-reuse',
+            tBi('Cache Reuse Ratio', '缓存复用率'),
+            tBi(
+                'Share of cache read tokens relative to total cache activity (reads + writes).',
+                '缓存读取量占总缓存操作（读取 + 写入）的比例，越高代表写入后的缓存被多次复用。',
+            ),
+            tBi('Formula: Cache Read ÷ (Cache Read + Cache Write)', '计算公式：缓存读取 ÷ (缓存读取 + 缓存写入)'),
+        )}><span>· ${tBiHtml('Reuse', '复用')} ${esc(formatCachePercent(o.cacheReuseRate))}</span></span>`
         : '';
 
     const savingsMoney = o.estCacheSavingsUsd !== null && o.estCacheSavingsUsd > 0
@@ -3300,7 +3651,15 @@ function buildTelemetryLedgerSection(
 
     const cacheHeroCls = o.tokenCacheHitRate === null ? ' is-empty' : o.tokenCacheHitRate > 0 ? ' is-cache' : '';
     const cacheHeroMeta = totalPrompt > 0
-        ? `<span class="telemetry-hero-meta"><span>${fmt(totalPrompt)} ${tBiHtml('prompt tokens', '提示词 tokens')}</span></span>`
+        ? `<span class="telemetry-hero-meta" ${richTipAttrs(
+            'gm-tel-prompt-total',
+            tBi('Additive Prompt Total', '提示词总 Token'),
+            tBi(
+                'Total prompt volume sent across calls (Fresh Input + Cache Read + Cache Write).',
+                '所有调用发送的提示词总规模（新增输入 + 缓存读取 + 缓存写入）。',
+            ),
+            additivePromptMeta,
+        )}><span>${fmt(totalPrompt)} ${tBiHtml('prompt tokens', '提示词 tokens')}</span></span>`
         : `<span class="telemetry-hero-meta"><span>${tBiHtml('Token-weighted hit rate', '按 Token 加权命中率')}</span></span>`;
 
     const lastTurnCacheRowHtml = (() => {
@@ -3313,9 +3672,16 @@ function buildTelemetryLedgerSection(
         const sessionPctStr = turnDiagnostics.sessionCacheHitPct !== null
             ? `${turnDiagnostics.sessionCacheHitPct.toFixed(1)}%`
             : formatCachePercent(o.tokenCacheHitRate);
-        const startPill = renderTurnStartPill(turnDiagnostics.lastTurnStartKind, false);
+        const startPill = renderTurnStartPill(turnDiagnostics.lastTurnStartKind, false, 'tel-last-turn');
         return `<div class="telemetry-ledger-row" data-turn-cache-comparison="true">
-                <span class="telemetry-ledger-key">${tBiHtml('Last-Turn / Session Cache', '上轮 / 会话缓存')}</span>
+                <span class="telemetry-ledger-key" ${richTipAttrs(
+                    'gm-tel-last-turn-cache',
+                    tBi('Last-Turn vs Session Cache', '上轮 vs 会话缓存'),
+                    tBi(
+                        'Compares the cache hit rate of the latest turn against the cumulative session average so sudden cache drops stand out immediately.',
+                        '将最近一轮的缓存命中率与整个会话累计均值对比，方便第一时间发现缓存突然失效。',
+                    ),
+                )}>${tBiHtml('Last-Turn / Session Cache', '上轮 / 会话缓存')}</span>
                 <span class="telemetry-ledger-val-group"><b>${esc(lastPctStr)}</b> ${startPill}<span class="telemetry-ledger-sub">· ${tBiHtml('Session', '会话')} ${esc(sessionPctStr)}</span></span>
             </div>`;
     })();
@@ -3348,14 +3714,32 @@ function buildTelemetryLedgerSection(
                 <span class="telemetry-ledger-val-group"><span><b>${o.cachedCallCount} / ${o.totalCalls}</b> ${tBiHtml(o.totalCalls === 1 ? 'call' : 'calls', '调用')}</span>${reuseSub}</span>
             </div>
             <div class="telemetry-ledger-row">
-                <span class="telemetry-ledger-key">${tBiHtml('Est. Cache Savings', '缓存节省')}</span>
+                <span class="telemetry-ledger-key" ${richTipAttrs(
+                    'gm-tel-cache-savings',
+                    tBi('Estimated Cache Savings', '缓存预计节省'),
+                    tBi(
+                        'Tokens served from cache and their estimated USD reference discount compared to paying full input pricing.',
+                        '由提示词缓存命中的 Token 数量，以及按公开 API 标价折算相比全价输入节省的美元参考值。',
+                    ),
+                    tBi('USD shown only for priced models (never fabricated for unpriced models)', '仅对已定价模型显示美元金额，未定价模型不伪造 $0.00'),
+                )}>${tBiHtml('Est. Cache Savings', '缓存节省')}</span>
                 <span class="telemetry-ledger-val-group">${savingsHtml}</span>
             </div>
         </div>
     </div>`;
 
+    const gmBadgeTip = richTipAttrs(
+        'gm-data-badge',
+        tBi('GM Data (Generator Metadata)', 'GM 数据（生成器元数据）'),
+        tBi(
+            'Per-call token, latency, prompt cache, and model execution records emitted directly by Antigravity’s local model runner.',
+            '由 Antigravity 模型执行层直接上报的逐次调用精确数据，包含真实 Token、首字延迟、生成速度与缓存命中明细。',
+        ),
+        tBi('More accurate than estimated step counts; scoped to the active account', '比步骤估算更精确，仅统计当前登录账号'),
+    );
+
     return `<section class="telemetry-ledger-section" id="telemetryLedgerSection">
-        <h2 class="act-section-title">${sectionIcon}<span>${tBiHtml('Speed & First-Token Cache', '生成速度与首字缓存')}</span></h2>
+        <h2 class="act-section-title">${sectionIcon}<span>${tBiHtml('Speed & First-Token Cache', '生成速度与首字缓存')}</span> <span class="act-badge" ${gmBadgeTip} tabindex="0">${tBiHtml('GM Data', 'GM 数据')}</span></h2>
         <div class="telemetry-ledger-grid">
             ${leftCard}
             ${rightCard}
@@ -3433,19 +3817,28 @@ function buildRecentCallsLedger(
     const recent = indexed.slice(0, MAX_RECENT_CALLS_ROWS);
     const rowsHtml: string[] = [];
 
-    for (const { call } of recent) {
+    for (let ri = 0; ri < recent.length; ri++) {
+        const { call } = recent[ri];
+        const rowKey = `rc-${toSafeTipKey(call.executionId || 'call')}-${ri}`;
         const timeStr = call.createdAt ? formatTime(call.createdAt) : '—';
         const actualModelRaw = call.responseModel || call.modelDisplay || call.model || '—';
         const displayModel = call.responseModel
             ? call.responseModel
             : (normalizeModelDisplayName(call.modelDisplay || call.model) || actualModelRaw);
-        const modelTooltip = [call.modelDisplay || call.model, call.responseModel]
-            .filter((v, i, arr) => v && arr.indexOf(v) === i)
-            .join(' · ');
+        const modelParts = [call.modelDisplay || call.model, call.responseModel]
+            .filter((v, i, arr) => v && arr.indexOf(v) === i);
+        const modelTip = richTipAttrs(
+            `${rowKey}-model`,
+            displayModel,
+            modelParts.length > 1
+                ? tBi(`Requested ${modelParts[0]} · Responded by ${modelParts[1]}`, `请求模型：${modelParts[0]} · 实际响应：${modelParts[1]}`)
+                : tBi('Actual model reported in Generator Metadata for this call.', '本次调用在 GM 元数据中记录的实际执行模型。'),
+            call.apiProvider ? call.apiProvider.replace('API_PROVIDER_', '').replace(/_/g, ' ') : undefined,
+        );
 
         const attr = callAttrMap.get(call);
         const roleBadgeHtml = attr && attr.role !== 'direct'
-            ? renderCallRoleBadgeHtml(attr.role, false)
+            ? renderCallRoleBadgeHtml(attr.role, false, undefined, rowKey)
             : '';
         const modelCellHtml = roleBadgeHtml
             ? `<span class="rc-role-wrap"><span>${esc(displayModel)}</span>${roleBadgeHtml}</span>`
@@ -3455,31 +3848,57 @@ function buildRecentCallsLedger(
         const totalOut = Math.max(0, call.outputTokens || 0);
         const thinkTok = Math.max(0, call.thinkingTokens || 0);
         const thinkPct = totalOut > 0 && thinkTok > 0 ? Math.min(100, Math.round((thinkTok / totalOut) * 100)) : 0;
+        const thinkTip = richTipAttrs(
+            `${rowKey}-think`,
+            tBi('Thinking Token Share', '思考 Token 占比'),
+            tBi(
+                `${formatNumber(thinkTok)} of ${formatNumber(totalOut)} output tokens (${thinkPct}%) were internal reasoning tokens.`,
+                `本次 ${formatNumber(totalOut)} 个输出 Token 中，有 ${formatNumber(thinkTok)} 个（${thinkPct}%）用于内部思考。`,
+            ),
+            tBi('Thinking is a subset of Output (excluded from visible reply)', '思考 Token 属于总输出的子集（不含在可见正文中）'),
+        );
         const outHtml = thinkPct > 0
-            ? `${formatNumber(totalOut)}<span class="rc-sub" title="${esc(tBi(`Thinking: ${formatNumber(thinkTok)} tokens`, `思考：${formatNumber(thinkTok)} tokens`))}">(${tBiHtml('Think', '思考')} ${thinkPct}%)</span>`
+            ? `${formatNumber(totalOut)}<span class="rc-sub" ${thinkTip}>(${tBiHtml('Think', '思考')} ${thinkPct}%)</span>`
             : formatNumber(totalOut);
 
         const diag = callDiagMap.get(call);
         const cacheRate = computeStepCacheHitRate(call.inputTokens, call.cacheReadTokens, call.cacheCreationTokens);
         const startKind: TurnStartKind = diag?.startKind
             ?? classifyTurnStartKind(cacheRate !== null ? cacheRate * 100 : null, Math.max(0, (call.inputTokens || 0) + (call.cacheReadTokens || 0) + (call.cacheCreationTokens || 0)));
-        const startPillHtml = renderTurnStartPill(startKind, true);
+        const startPillHtml = renderTurnStartPill(startKind, true, `${rowKey}-start`);
         const coldSwitchPillHtml = attr?.isColdCacheSwitch
-            ? renderCallRoleBadgeHtml('direct', true, attr.switchDirection)
+            ? renderCallRoleBadgeHtml('direct', true, attr.switchDirection, `${rowKey}-switch`)
             : '';
         const cacheHtml = cacheRate !== null
             ? `<span class="${cacheRate >= 0.5 ? 'rc-cache-hi' : ''}">${esc(formatRecentCallCachePct(cacheRate))}</span>${startPillHtml ? ` ${startPillHtml}` : ''}${coldSwitchPillHtml ? ` ${coldSwitchPillHtml}` : ''}`
             : `<span class="rc-muted">—</span>`;
-        const deltaHtml = formatSignedTokenDeltaHtml(diag?.deltaTokens ?? null, !!diag?.isCompactionDrop);
+        const deltaHtml = formatSignedTokenDeltaHtml(diag?.deltaTokens ?? null, !!diag?.isCompactionDrop, `${rowKey}-delta`);
 
         const pricingModel = selectPricingModel(call.model || call.modelDisplay, call.responseModel, customPricing);
         const pricingDetail = resolvePricingDetail(pricingModel, customPricing, { at: call.createdAt || '' });
-        const costTitle = pricingDetail.provenance === 'mapped_base' && pricingDetail.mappedBaseLabel
-            ? ` title="${esc(tBi(`Estimated via base model: ${pricingDetail.mappedBaseLabel}`, `按底座模型估算：${pricingDetail.mappedBaseLabel}`))}" data-pricing-provenance="mapped_base"`
+        const costAttrs = pricingDetail.provenance === 'mapped_base' && pricingDetail.mappedBaseLabel
+            ? ` ${richTipAttrs(
+                `${rowKey}-cost-mapped`,
+                tBi('Estimated via Base Model', '按底座估算'),
+                tBi(
+                    `Estimated via base model: ${pricingDetail.mappedBaseLabel} public API reference rates.`,
+                    `按底座模型估算：${pricingDetail.mappedBaseLabel} 的公开 API 参考单价。`,
+                ),
+                tBi('Switch between Mapped Base and Strict Mode in Cost tab', '可在成本页切换「按底座估算」或「严格模式」'),
+            )} data-pricing-provenance="mapped_base" tabindex="0"`
             : '';
+        const unpricedTip = richTipAttrs(
+            `${rowKey}-unpriced`,
+            tBi('Unpriced Call', '未定价调用'),
+            tBi(
+                'No verified public API rate (or call timestamp for a dated cutover) matched this call, so no dollar figure is guessed.',
+                '该调用未匹配到核实公开单价（或缺少调价日期），因此诚实显示未定价而不伪造金额。',
+            ),
+            tBi('Add a custom price in the Cost tab to estimate this model', '可在成本页填写自定义价格后重新估算'),
+        );
         const costHtml = pricingDetail.pricing
-            ? `<span class="rc-cost-val"${costTitle}>${esc(formatUsdCost(costFromTokens(call, pricingDetail.pricing), { precision: 'call' }))}</span>`
-            : `<span class="rc-unpriced">${tBiHtml('Unpriced', '未定价')}</span>`;
+            ? `<span class="rc-cost-val"${costAttrs}>${esc(formatUsdCost(costFromTokens(call, pricingDetail.pricing), { precision: 'call' }))}</span>`
+            : `<span class="rc-unpriced" ${unpricedTip} tabindex="0">${tBiHtml('Unpriced', '未定价')}</span>`;
 
         const ttftSec = Number.isFinite(call.ttftSeconds) && call.ttftSeconds > 0 ? call.ttftSeconds : 0;
         const streamSec = Number.isFinite(call.streamingSeconds) && call.streamingSeconds > 0 ? call.streamingSeconds : 0;
@@ -3492,26 +3911,55 @@ function buildRecentCallsLedger(
             streamingSeconds: call.streamingSeconds,
             ttftSeconds: call.ttftSeconds,
         });
+        const shortSampleTip = speedEval.isShortSample && speedEval.rawSpeed !== null
+            ? richTipAttrs(
+                `${rowKey}-short-sample`,
+                tBi('Short Sample Suppressed', '短样本保护（已隐藏瞬时速度）'),
+                tBi(
+                    `Output was too short (<16 tokens or <0.3s stream) for a reliable tok/s reading. Raw estimate: ${formatSpeed(speedEval.rawSpeed)}.`,
+                    `本次输出过短（少于 16 tokens 或流式耗时不足 0.3s），直接换算 tok/s 易产生失真尖峰。原始估算：${formatSpeed(speedEval.rawSpeed)}。`,
+                ),
+                tBi(
+                    `Noise gate: requires ≥16 output tokens and ≥0.3s stream · Observed ${formatNumber(Math.max(0, call.outputTokens || 0))} tok in ${formatLatency(streamSec)}`,
+                    `过滤门槛：需 ≥16 输出 Token 且流式耗时 ≥0.3s · 本次实测 ${formatNumber(Math.max(0, call.outputTokens || 0))} tok / ${formatLatency(streamSec)}`,
+                ),
+            )
+            : '';
         const speedHtml = speedEval.displaySpeed !== null
             ? esc(formatSpeed(speedEval.displaySpeed))
             : speedEval.isShortSample && speedEval.rawSpeed !== null
-                ? `<span class="rc-short-sample" data-short-sample="true" title="${esc(tBi(`Short sample (raw est. ${formatSpeed(speedEval.rawSpeed)})`, `短样本（原始估算 ${formatSpeed(speedEval.rawSpeed)}）`))}">${tBiHtml('Short sample', '短样本')}</span>`
+                ? `<span class="rc-short-sample" data-short-sample="true" ${shortSampleTip} tabindex="0">${tBiHtml('Short sample', '短样本')}</span>`
                 : `<span class="rc-muted">—</span>`;
 
         let statusCls = 'is-ok';
         let statusLabel = tBiHtml('OK', '成功');
+        let statusTipAttr = '';
         if (call.hasError) {
             statusCls = 'is-err';
             statusLabel = tBiHtml('Error', '失败');
+            const errInfo = explainHttpError(call.errorMessage || '');
+            statusTipAttr = ` ${richTipAttrs(
+                `${rowKey}-status-err`,
+                errInfo.title,
+                errInfo.meaning,
+                call.errorMessage ? call.errorMessage : undefined,
+            )} tabindex="0"`;
         } else if (call.retries > 0) {
             statusCls = 'is-retry';
             statusLabel = tBiHtml(`Retry ×${call.retries}`, `重试 ×${call.retries}`);
+            statusTipAttr = ` ${richTipAttrs(
+                `${rowKey}-status-retry`,
+                tBi('Auto-Retried Call', '自动重试后成功'),
+                tBi(
+                    `This request succeeded after ${call.retries} automatic ${call.retries === 1 ? 'retry' : 'retries'} following transient upstream errors.`,
+                    `请求遇到临时上游异常，经客户端自动重试 ${call.retries} 次后成功完成。`,
+                ),
+            )} tabindex="0"`;
         }
-        const statusTitle = call.hasError && call.errorMessage ? ` title="${esc(call.errorMessage)}"` : '';
 
         rowsHtml.push(`<tr>
             <td class="rc-muted">${esc(timeStr)}</td>
-            <td class="rc-model-cell" title="${esc(modelTooltip)}">${modelCellHtml}</td>
+            <td class="rc-model-cell" ${modelTip}>${modelCellHtml}</td>
             <td class="rc-num">${freshIn}</td>
             <td class="rc-num">${deltaHtml}</td>
             <td class="rc-num">${outHtml}</td>
@@ -3520,7 +3968,7 @@ function buildRecentCallsLedger(
             <td class="rc-num">${ttftHtml}</td>
             <td class="rc-num">${totalHtml}</td>
             <td class="rc-num">${speedHtml}</td>
-            <td><span class="rc-status ${statusCls}"${statusTitle}><span class="rc-status-dot" aria-hidden="true"></span><span>${statusLabel}</span></span></td>
+            <td><span class="rc-status ${statusCls}"${statusTipAttr}><span class="rc-status-dot" aria-hidden="true"></span><span>${statusLabel}</span></span></td>
         </tr>`);
     }
 
@@ -3528,6 +3976,45 @@ function buildRecentCallsLedger(
     const countLabel = allCalls.length > recent.length
         ? `${recent.length} / ${allCalls.length}`
         : `${recent.length}`;
+
+    const thDeltaTip = richTipAttrs(
+        'gm-rc-th-delta',
+        tBi('Net Context Delta (Net Δ)', '上下文净增量 (Net Δ)'),
+        tBi(
+            'Net change in total prompt tokens compared to the previous call in the same conversation.',
+            '相比同一对话上一次调用，总提示词上下文 Token 的净增减量。',
+        ),
+        tBi('Positive = grew · Large negative = compaction or rewind', '正数表示上下文增长 · 大幅负数通常代表自动压缩或回退'),
+    );
+    const thCacheTip = richTipAttrs(
+        'gm-rc-th-cache',
+        tBi('Prompt Cache Hit Rate', '提示词缓存命中率'),
+        tBi(
+            'Percentage of total prompt tokens served from cache on this call, with Warm/Partial/Cold start tag.',
+            '本次调用直接命中提示词缓存的比例，并附带热缓存 / 部分 / 冷启动状态标签。',
+        ),
+        tBi('Warm ≥70% · Partial 10%–70% · Cold <10%', '阈值：热缓存 ≥70% · 部分 10%–70% · 冷启动 <10%'),
+    );
+    const thCostTip = richTipAttrs(
+        'gm-rc-th-cost',
+        tBi('API Reference Cost', 'API 参考费用'),
+        tBi('Estimated single-call USD cost at public per-1M API rates (not subscription billing).', '按公开 API 每百万 Token 单价折算的单次估算美元费用（非订阅实际扣费）。'),
+    );
+    const thTtftTip = richTipAttrs(
+        'gm-rc-th-ttft',
+        tBi('Time to First Token (TTFT)', '首字延迟 (TTFT)'),
+        tBi('Wait time from request dispatch until the first streamed output token arrives.', '发出请求后等待模型吐出第一个 Token 的耗时。'),
+    );
+    const thTotalTip = richTipAttrs(
+        'gm-rc-th-total',
+        tBi('Total Latency', '总耗时'),
+        tBi('End-to-end duration combining TTFT plus streaming output time.', '首字延迟与流式输出耗时之和。'),
+    );
+    const thSpeedTip = richTipAttrs(
+        'gm-rc-th-speed',
+        tBi('Decode Speed', '生成速度'),
+        tBi('Streaming output rate (tok/s). Very short bursts (<16 tokens or <0.3s) are labeled Short sample.', '流式阶段输出速率（tok/s）；少于 16 tokens 或不足 0.3s 的极短样本标示为「短样本」。'),
+    );
 
     return `<details class="recent-calls-card" id="recentCallsLedger" open>
         <summary class="recent-calls-summary">
@@ -3541,13 +4028,13 @@ function buildRecentCallsLedger(
                         <th>${tBiHtml('Time', '时间')}</th>
                         <th>${tBiHtml('Actual Model', '实际模型')}</th>
                         <th class="rc-num">${tBiHtml('Input', '输入')}</th>
-                        <th class="rc-num">${tBiHtml('Net Δ', '净增量 Δ')}</th>
+                        <th class="rc-num" ${thDeltaTip}>${tBiHtml('Net Δ', '净增量 Δ')}</th>
                         <th class="rc-num">${tBiHtml('Output', '输出')}</th>
-                        <th class="rc-num">${tBiHtml('Cache Hit', '缓存命中率')}</th>
-                        <th class="rc-num">${tBiHtml('Cost', '费用')}</th>
-                        <th class="rc-num">${tBiHtml('TTFT', '首字耗时')}</th>
-                        <th class="rc-num">${tBiHtml('Total', '总耗时')}</th>
-                        <th class="rc-num">${tBiHtml('Speed', '速度')}</th>
+                        <th class="rc-num" ${thCacheTip}>${tBiHtml('Cache Hit', '缓存命中率')}</th>
+                        <th class="rc-num" ${thCostTip}>${tBiHtml('Cost', '费用')}</th>
+                        <th class="rc-num" ${thTtftTip}>${tBiHtml('TTFT', '首字耗时')}</th>
+                        <th class="rc-num" ${thTotalTip}>${tBiHtml('Total', '总耗时')}</th>
+                        <th class="rc-num" ${thSpeedTip}>${tBiHtml('Speed', '速度')}</th>
                         <th>${tBiHtml('Status', '状态')}</th>
                     </tr>
                 </thead>
@@ -3566,18 +4053,18 @@ function buildTurnDiagnosticsFallbackCard(td: TurnDiagnosticsSummary): string {
     if (recentTurns.length === 0) { return ''; }
     const lastPct = td.lastTurnCacheHitPct !== null ? `${td.lastTurnCacheHitPct.toFixed(1)}%` : '—';
     const sessPct = td.sessionCacheHitPct !== null ? `${td.sessionCacheHitPct.toFixed(1)}%` : '—';
-    const startBadge = renderTurnStartPill(td.lastTurnStartKind, false);
-    const rows = recentTurns.map(turn => {
+    const startBadge = renderTurnStartPill(td.lastTurnStartKind, false, 'td-summary');
+    const rows = recentTurns.map((turn, ti) => {
         const timeStr = turn.timestamp ? formatTime(turn.timestamp) : `#${turn.turnIndex}`;
         const cacheStr = turn.cacheHitPct !== null ? `${turn.cacheHitPct.toFixed(1)}%` : '—';
-        const pill = renderTurnStartPill(turn.startKind, true);
+        const pill = renderTurnStartPill(turn.startKind, true, `td-row-${ti}`);
         const ttftStr = turn.ttftMs !== null ? esc(formatLatency(turn.ttftMs / 1000)) : `<span class="rc-muted">—</span>`;
         const speedStr = turn.tokPerSec !== null ? esc(formatSpeed(turn.tokPerSec)) : `<span class="rc-muted">—</span>`;
         return `<tr>
             <td class="rc-muted">${esc(timeStr)}</td>
             <td class="rc-model-cell">${esc(turn.model || '—')}</td>
             <td class="rc-num">${formatNumber(turn.inputTokens)}</td>
-            <td class="rc-num">${formatSignedTokenDeltaHtml(turn.deltaTokens, turn.isCompactionDrop)}</td>
+            <td class="rc-num">${formatSignedTokenDeltaHtml(turn.deltaTokens, turn.isCompactionDrop, `td-delta-${ti}`)}</td>
             <td class="rc-num">${formatNumber(turn.outputTokens)}</td>
             <td class="rc-num"><span>${esc(cacheStr)}</span>${pill ? ` ${pill}` : ''}</td>
             <td class="rc-num">${ttftStr}</td>
@@ -3596,7 +4083,11 @@ function buildTurnDiagnosticsFallbackCard(td: TurnDiagnosticsSummary): string {
                         <th>${tBiHtml('Turn', '轮次')}</th>
                         <th>${tBiHtml('Model', '模型')}</th>
                         <th class="rc-num">${tBiHtml('Input', '输入')}</th>
-                        <th class="rc-num">${tBiHtml('Net Δ', '净增量 Δ')}</th>
+                        <th class="rc-num" ${richTipAttrs(
+                            'gm-td-th-delta',
+                            tBi('Net Context Delta (Net Δ)', '上下文净增量 (Net Δ)'),
+                            tBi('Net prompt token change compared to the previous turn.', '相比上一轮总提示词上下文的净增减量。'),
+                        )}>${tBiHtml('Net Δ', '净增量 Δ')}</th>
                         <th class="rc-num">${tBiHtml('Output', '输出')}</th>
                         <th class="rc-num">${tBiHtml('Cache Hit', '缓存命中率')}</th>
                         <th class="rc-num">${tBiHtml('TTFT', '首字耗时')}</th>
@@ -3725,7 +4216,7 @@ function buildModelCards(
         }
     }
     const userSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
-    const buildAccountSection = (modelName: string): string => {
+    const buildAccountSection = (modelName: string, cardKey: string): string => {
         const byAccount = accountCallsByModel.get(modelName);
         if (!byAccount || byAccount.size < 1) { return ''; }
         const errByAccount = accountErrorsByModel.get(modelName);
@@ -3737,13 +4228,24 @@ function buildModelCards(
             return b[1] - a[1];
         });
         const rows = sorted
-            .map(([email, count]) => {
+            .map(([email, count], ai) => {
                 const prefix = email.split('@')[0];
                 const isActive = activeEmail && email === activeEmail;
                 const cls = isActive ? ' gm-account-active' : '';
                 const errCount = errByAccount?.get(email) || 0;
+                const errTip = errCount > 0
+                    ? richTipAttrs(
+                        `gm-mcard-acct-err-${cardKey}-${ai}`,
+                        tBi('Account Model Errors', '该账号此模型报错数'),
+                        tBi(
+                            `${errCount} ${errCount === 1 ? 'error or retry' : 'errors / retries'} recorded today for ${prefix} on ${modelName}.`,
+                            `账号 ${prefix} 今日在 ${modelName} 上共记录到 ${errCount} 次报错或重试。`,
+                        ),
+                        tBi('Shown when the Errors toggle above is enabled', '开启上方「报错」开关后显示'),
+                    )
+                    : '';
                 const errHtml = errCount > 0
-                    ? `<span class="gm-account-err">+${errCount}</span>`
+                    ? `<span class="gm-account-err" ${errTip}>+${errCount}</span>`
                     : '';
                 return `<div class="gm-account-row${cls}"><span class="gm-account-label">${userSvg} ${esc(prefix)}</span><span class="gm-account-count">${count}${errHtml}</span></div>`;
             })
@@ -3751,14 +4253,18 @@ function buildModelCards(
         return `<div class="act-card-divider"></div><div class="gm-account-section">${rows}</div>`;
     };
 
-    const renderModelGmRows = (name: string, gmStats: GMModelStats): string => {
+    const renderModelGmRows = (name: string, gmStats: GMModelStats, cardKey: string): string => {
         const normalizedKey = (normalizeModelDisplayName(name) || name).trim();
         const modelTel: TelemetryAggregate = telemetry?.byModel[normalizedKey]
             ?? telemetry?.byModel[name]
             ?? computeTelemetryAggregateFromModelStats({ [normalizedKey || name]: gmStats }, custom);
         const creditCalls = gmStats.creditCallCount || 0;
         const speedSub = modelTel.hasThinking && modelTel.weightedVisibleTokPerSec !== null && modelTel.weightedGenTokPerSec !== null
-            ? `<span class="act-card-sub"><span>${tBiHtml('resp', '可见')} ${esc(formatSpeed(modelTel.weightedVisibleTokPerSec))}</span></span>`
+            ? `<span class="act-card-sub" ${richTipAttrs(
+                `gm-mcard-resp-${cardKey}`,
+                tBi('Visible Response Speed', '可见正文速度'),
+                tBi('Net output speed excluding internal thinking tokens.', '剔除思考 Token 后的可见正文输出速度。'),
+            )}><span>${tBiHtml('resp', '可见')} ${esc(formatSpeed(modelTel.weightedVisibleTokPerSec))}</span></span>`
             : '';
         const speedValHtml = speedSub
             ? `<span class="val val-speed act-card-val-stack"><span>${esc(formatSpeed(modelTel.weightedGenTokPerSec))}</span>${speedSub}</span>`
@@ -3780,7 +4286,7 @@ function buildModelCards(
         return `
         <div class="act-card-row"><span>${ICONS.tool} <span>${tBiHtml('Calls', '调用')}</span></span><span class="val val-calls">${gmStats.callCount}</span></div>
         <div class="act-card-row"><span>${ICONS.speed} <span>${tBiHtml('Speed', '生成速度')}</span></span>${speedValHtml}</div>
-        <div class="act-card-row"><span>${ICONS.clock} <span>${tBiHtml('Avg TTFT', '平均 TTFT')}</span></span>${ttftValHtml}</div>
+        <div class="act-card-row"><span>${ICONS.clock} <span>${tBiHtml('Avg TTFT', '平均首字')}</span></span>${ttftValHtml}</div>
         ${avgStream !== null ? `<div class="act-card-row"><span>${ICONS.sum} <span>${tBiHtml('Avg Stream', '平均流耗时')}</span></span><span class="val val-time">${esc(formatLatency(avgStream))}</span></div>` : ''}
         <div class="act-card-row"><span>${ICONS.coin} <span>${tBiHtml('In', '输入')}</span></span><span class="val val-in">${fmt(gmStats.totalInputTokens)}</span></div>
         <div class="act-card-row"><span>${ICONS.coin} <span>${tBiHtml('Out', '输出')}</span></span><span class="val val-out">${fmt(gmStats.totalOutputTokens)}</span></div>
@@ -3795,41 +4301,76 @@ function buildModelCards(
 
     // Error toggle button (only shown when any account has errors)
     const errToggleSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
+    const errToggleTip = richTipAttrs(
+        'gm-model-stats-err-toggle',
+        tBi('Toggle Per-Account Error Counts', '切换账号报错次数显示'),
+        tBi(
+            'Show or hide the red +N error/retry badges next to each account row inside Model Stats cards.',
+            '控制是否在下方各模型卡片的账号行右侧显示红色 +N 报错/重试次数徽章。',
+        ),
+        tBi('Click to toggle visibility', '点击切换显示或隐藏'),
+    );
     const errToggleBtn = hasAnyAccountErrors
-        ? `<button type="button" class="model-stats-err-toggle is-off" id="modelStatsErrToggle" title="${esc(tBi('Toggle error count visibility', '切换报错次数显示'))}">${errToggleSvg} <span>${tBiHtml('Errors', '报错')}</span></button>`
+        ? `<button type="button" class="model-stats-err-toggle is-off" id="modelStatsErrToggle" ${errToggleTip}>${errToggleSvg} <span>${tBiHtml('Errors', '报错')}</span></button>`
         : '';
     let html = `<h2 class="act-section-title"><svg class="act-icon act-icon-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg><span>${tBiHtml('Model Stats', '模型统计')}</span>${errToggleBtn}</h2>`;
 
     html += `<div class="act-cards-grid">`;
     const gmBreak = gmBreakEarly;
-    for (const [name, ms] of entries) {
+    for (let ei = 0; ei < entries.length; ei++) {
+        const [name, ms] = entries[ei];
+        const cardKey = `${toSafeTipKey(name)}-${ei}`;
+        const displayName = normalizeModelDisplayName(name);
         const isCheckpointOnly = ms.reasoning === 0 && ms.toolCalls === 0 && ms.checkpoints > 0 && ms.estSteps === 0;
 
         let gmSection = '';
         if (gmBreak) {
             const gmStats = gmBreak[name];
             if (gmStats && gmStats.callCount > 0) {
-                gmSection = renderModelGmRows(name, gmStats);
+                gmSection = renderModelGmRows(name, gmStats, cardKey);
             }
         }
 
+        const cpOnlyBadge = isCheckpointOnly
+            ? ` <span class="act-badge" ${richTipAttrs(
+                `gm-mcard-cp-only-${cardKey}`,
+                tBi('Checkpoint-Only Model', '仅含检查点记录'),
+                tBi(
+                    'This model appeared only in saved conversation checkpoints, with no live reasoning or tool steps in the current timeline.',
+                    '该模型目前仅出现在历史检查点快照中，在当前活动时间线里没有实时推理或工具步骤。',
+                ),
+                tBi(`${ms.checkpoints} checkpoint ${ms.checkpoints === 1 ? 'snapshot' : 'snapshots'}`, `共 ${ms.checkpoints} 个检查点快照`),
+            )} aria-label="${esc(tBi('Checkpoint-only model', '仅含检查点记录'))}" tabindex="0">${ICONS.save}</span>`
+            : '';
+
         html += `
         <div class="act-model-card${isCheckpointOnly ? ' act-checkpoint-model' : ''}">
-            <div class="act-card-header" title="${esc(normalizeModelDisplayName(name))}">${esc(normalizeModelDisplayName(name))}${isCheckpointOnly ? ` <span class="act-badge">${ICONS.save}</span>` : ''}</div>
+            <div class="act-card-header"><span ${richTipAttrs(
+                `gm-mcard-hdr-${cardKey}`,
+                displayName,
+                tBi('Aggregated GM telemetry and per-account call counts for this model.', '此模型的 GM 实测性能指标与按账号拆分的今日调用汇总。'),
+            )}>${esc(displayName)}</span>${cpOnlyBadge}</div>
             <div class="act-card-body">
                 ${gmSection}
-                ${buildAccountSection(name)}
+                ${buildAccountSection(name, cardKey)}
             </div>
         </div>`;
     }
     // GM-only models: models in GM data but not in Activity modelStats (unified Calls-first layout, #66 bug #5)
-    for (const [name, gms] of gmOnlyEntries) {
+    for (let gi = 0; gi < gmOnlyEntries.length; gi++) {
+        const [name, gms] = gmOnlyEntries[gi];
+        const cardKey = `gm-${toSafeTipKey(name)}-${gi}`;
+        const displayName = normalizeModelDisplayName(name);
         html += `
         <div class="act-model-card">
-            <div class="act-card-header" title="${esc(normalizeModelDisplayName(name))}">${esc(normalizeModelDisplayName(name))}</div>
+            <div class="act-card-header"><span ${richTipAttrs(
+                `gm-mcard-hdr-${cardKey}`,
+                displayName,
+                tBi('Aggregated GM telemetry and per-account call counts for this model.', '此模型的 GM 实测性能指标与按账号拆分的今日调用汇总。'),
+            )}>${esc(displayName)}</span></div>
             <div class="act-card-body">
-                ${renderModelGmRows(name, gms)}
-                ${buildAccountSection(name)}
+                ${renderModelGmRows(name, gms, cardKey)}
+                ${buildAccountSection(name, cardKey)}
             </div>
         </div>`;
     }
@@ -3878,13 +4419,25 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
     const titleText = sessionTitle || (currentCascadeId ? currentCascadeId.substring(0, 8) : '');
 
     const scopeBadge = currentCascadeId && titleText
-        ? ` <span class="act-badge" title="${esc(currentCascadeId)}">${esc(titleText)}</span>`
+        ? ` <span class="act-badge" ${richTipAttrs(
+            'gm-tl-scope-badge',
+            titleText,
+            tBi('Timeline is scoped to the currently active conversation.', '下方时间线仅展示当前选中对话的步骤记录。'),
+            `ID ${currentCascadeId.substring(0, 8)}`,
+        )} tabindex="0">${esc(titleText)}</span>`
         : '';
 
-    // Build compact help tooltip
+    // Focusable, click-pinnable & scrollable Timeline Legend via #acmRichTipPopover + <template>
+    const legendTitle = tBi('Timeline Legend', '时间线图例');
     const helpPopup = `<div class="act-tl-help-wrap">
-        <span class="act-tl-help-btn" aria-label="${esc(tBi('Timeline legend', '时间线图例'))}">?</span>
-        <div class="act-tl-help-popup">
+        <button type="button" class="act-tl-help-btn rich-tip-trigger" ${richTipAttrs(
+            'gm-timeline-legend',
+            legendTitle,
+            '',
+            tBi('Click to pin & scroll legend', '点击可钉住并滚动查看完整图例'),
+            'gmTimelineLegendTpl',
+        )} aria-label="${esc(legendTitle)}">?</button>
+        <template id="gmTimelineLegendTpl">
             <div class="act-tl-help-group-label">${tBiHtml('Step Basics', '步骤基础')}</div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-time">08:20</span></div><div class="act-tl-help-desc">${tBiHtml('Timestamp', '步骤时间')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-step-idx">#115</span></div><div class="act-tl-help-desc">${tBiHtml('Step index', '步骤索引')}</div></div>
@@ -3894,15 +4447,15 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-in"><span>1.3k ${tBiHtml('in', '输入')}</span></span></div><div class="act-tl-help-desc">${tBiHtml('Input tokens', '输入 tokens')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-out"><span>117 ${tBiHtml('out', '输出')}</span></span></div><div class="act-tl-help-desc">${tBiHtml('Output tokens', '输出 tokens')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ctx"><span>${tBiHtml('Estimated context 142k', '估算上下文 142k')}</span></span></div><div class="act-tl-help-desc">${esc(estimatedContextDescription())}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-credit"><span>9 ${tBiHtml('credits', '积分')}</span></span></div><div class="act-tl-help-desc">${tBiHtml('Credits', '积分')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-credit"><span>9 ${tBiHtml('credits', '积分')}</span></span></div><div class="act-tl-help-desc">${tBiHtml('GM call credits', 'GM 调用积分')}</div></div>
             <div class="act-tl-help-divider"></div>
             <div class="act-tl-help-group-label">${tBiHtml('Performance', '性能')}</div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-speed">64.2 tok/s</span></div><div class="act-tl-help-desc">${tBiHtml('Generation speed', '生成速度')}</div></div>
-            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ttft">TTFT 1.20s</span></div><div class="act-tl-help-desc">${tBiHtml('Time to first token', '首字延迟')}</div></div>
+            <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-ttft"><span>${tBiHtml('TTFT', '首字延迟')} 1.20s</span></span></div><div class="act-tl-help-desc">${tBiHtml('Time to first token', '首字延迟')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-stream"><span>${tBiHtml('Stream', '流式')} 2.50s</span></span></div><div class="act-tl-help-desc">${tBiHtml('Streaming decode time', '流式生成耗时')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-gm-tag act-tl-gm-cache-hit"><span>${tBiHtml('Cache', '缓存')} 82.0%</span></span></div><div class="act-tl-help-desc">${tBiHtml('Prompt cache hit rate', '提示词缓存命中率')}</div></div>
             <div class="act-tl-help-row"><div class="act-tl-help-sample"><span class="act-tl-dur">538ms</span></div><div class="act-tl-help-desc">${tBiHtml('Duration', '耗时')}</div></div>
-        </div>
+        </template>
     </div>`;
 
     // Build inline checkpoint viewer (from GM data for current conversation)
@@ -3915,7 +4468,9 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
     ${checkpointHtml}
     <div class="act-timeline" tabindex="0">`;
 
+    let tlRowSeq = 0;
     const renderEventRow = (e: any, extraClass = '') => {
+        const rowSeq = tlRowSeq++;
         const time = formatTime(e.timestamp);
         const dur = e.durationMs > 0 ? `<span class="act-tl-dur">${e.durationMs < 1000 ? e.durationMs + 'ms' : (e.durationMs / 1000).toFixed(1) + 's'}</span>` : '';
         let detail = '';
@@ -3965,7 +4520,14 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             }
             tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-in"><span>${fmtTok(e.gmInputTokens)} ${tBiHtml('in', '输入')}</span></span>`);
             if (e.gmOutputTokens) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-out"><span>${fmtTok(e.gmOutputTokens)} ${tBiHtml('out', '输出')}</span></span>`); }
-            if (e.gmContextTokensUsed) { tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-ctx" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')} ${fmtTok(e.gmContextTokensUsed)}</span>`); }
+            if (e.gmContextTokensUsed) {
+                const ctxTip = richTipAttrs(
+                    `gm-tl-ctx-${rowSeq}`,
+                    tBi('Estimated Context', '估算上下文'),
+                    estimatedContextDescription(),
+                );
+                tokenParts.push(`<span class="act-tl-gm-tag act-tl-gm-ctx" ${ctxTip}>${tBi('Estimated context', '估算上下文')} ${fmtTok(e.gmContextTokensUsed)}</span>`);
+            }
 
             const statusParts: string[] = [];
             if (e.gmRetries && e.gmRetries > 0) {
@@ -3988,7 +4550,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
                 statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-speed">${esc(formatSpeed(stepSpeed))}</span>`);
             }
             if (e.gmTTFT && e.gmTTFT > 0) {
-                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-ttft">TTFT ${esc(formatLatency(e.gmTTFT))}</span>`);
+                statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-ttft"><span>${tBiHtml('TTFT', '首字延迟')} ${esc(formatLatency(e.gmTTFT))}</span></span>`);
             }
             if (e.gmStreamingDuration && e.gmStreamingDuration > 0) {
                 statusParts.push(`<span class="act-tl-gm-tag act-tl-gm-stream"><span>${tBiHtml('Stream', '流式')} ${esc(formatLatency(e.gmStreamingDuration))}</span></span>`);
@@ -4003,13 +4565,21 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             gmTags = `${statusHtml}<span class="act-tl-gm">${tokenParts.join('')}</span>`;
         }
 
+        const modelSpan = e.model
+            ? `<span class="act-tl-model" ${richTipAttrs(
+                `gm-tl-model-${rowSeq}`,
+                e.model,
+                tBi('Model recorded for this timeline step.', '此时间线步骤记录的执行模型。'),
+            )}>${esc(e.model)}</span>`
+            : '';
+
         return `
         <div class="act-tl-item act-tl-${e.category}${extraClass ? ` ${extraClass}` : ''}">
             <span class="act-tl-time">${time}</span>
             ${stepIdx}
             <span class="act-tl-icon">${svgIcon}</span>
             <span class="act-tl-content">
-                ${e.model ? `<span class="act-tl-model" title="${esc(e.model)}">${esc(e.model)}</span>` : ''}
+                ${modelSpan}
                 ${detail}
             </span>
             <span class="act-tl-meta${gmTags ? ' act-tl-meta-gm' : ''}">
@@ -4130,7 +4700,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             chips.push(`<span class="seg-chip seg-chip-speed">${esc(formatSpeed(stats.turnSpeed))}</span>`);
         }
         if (stats.turnAvgTtft !== null) {
-            chips.push(`<span class="seg-chip seg-chip-ttft">TTFT ${esc(formatLatency(stats.turnAvgTtft))}</span>`);
+            chips.push(`<span class="seg-chip seg-chip-ttft"><span>${tBiHtml('TTFT', '首字延迟')} ${esc(formatLatency(stats.turnAvgTtft))}</span></span>`);
         }
         if (stats.totalCost > 0) {
             const costStr = stats.totalCost < 0.01 ? stats.totalCost.toFixed(3) : stats.totalCost.toFixed(2);
@@ -4146,7 +4716,12 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
             chips.push(`<span class="seg-chip seg-chip-tok"><span>${fmtTok(stats.totalIn)} ${tBiHtml('in', '输入')} · ${fmtTok(stats.totalOut)} ${tBiHtml('out', '输出')}</span></span>`);
         }
         if (stats.lastContextTokens > 0) {
-            chips.push(`<span class="seg-chip seg-chip-ctx" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')} ${fmtTok(stats.lastContextTokens)}</span>`);
+            const segCtxTip = richTipAttrs(
+                `gm-seg-ctx-${si}`,
+                tBi('Estimated Context', '估算上下文'),
+                estimatedContextDescription(),
+            );
+            chips.push(`<span class="seg-chip seg-chip-ctx" ${segCtxTip}>${tBi('Estimated context', '估算上下文')} ${fmtTok(stats.lastContextTokens)}</span>`);
         }
         const chipsHtml = chips.length > 0 ? `<span class="seg-chips">${chips.join('')}</span>` : '';
 
@@ -4154,6 +4729,17 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         const turnLabel = segment.user
             ? tBiHtml(`Turn ${turnNumber}`, `第 ${turnNumber} 轮`)
             : tBiHtml('AI actions (no user anchor)', 'AI 动作（缺少用户锚点）');
+        const noAnchorTipAttr = !segment.user
+            ? ` ${richTipAttrs(
+                `gm-tl-no-anchor-${si}`,
+                tBi('AI Actions Without User Anchor', '缺少用户锚点的 AI 动作'),
+                tBi(
+                    'These AI reasoning or tool steps occurred before the oldest user message still retained in the recent-steps buffer, or were triggered autonomously without a direct user message.',
+                    '这些推理或工具步骤早于最近操作缓存中保留的最早一条用户消息，或由后台/定时任务自主触发而没有对应的用户提问锚点。',
+                ),
+                tBi('Grouping fallback when no preceding USER_INPUT step is present', '当步骤窗口前部缺少用户输入步骤时的自动分组'),
+            )}`
+            : '';
 
         html += `<details class="act-tl-turn" id="turn-${si}"${isLatest ? ' open' : ''}>`;
         html += `<summary class="act-tl-turn-header">`;
@@ -4162,7 +4748,7 @@ function buildTimeline(s: ActivitySummary, currentUsage?: ContextUsage | null, g
         } else {
             html += `<span class="act-tl-turn-icon"><svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.2 6H8.2C6.3 13.7 5 11.5 5 9a7 7 0 0 1 7-7z"/><path d="M9 17h6M10 21h4"/></svg></span>`;
         }
-        html += `<span class="act-tl-turn-text">${turnLabel}</span>`;
+        html += `<span class="act-tl-turn-text"${noAnchorTipAttr}>${turnLabel}</span>`;
         html += chipsHtml;
         html += `</summary>`;
 
@@ -4195,7 +4781,13 @@ function buildContextGrowth(s: GMSummary): string {
     const areaPoints = `${PAD},${H - PAD} ${points} ${PAD + (data.length - 1) * xStep},${H - PAD}`;
     const gridYs = [0.25, 0.5, 0.75].map(r => (PAD + (H - PAD * 2) * r).toFixed(1));
     const gridLines = gridYs.map(y => `<line class="act-trend-grid" x1="${PAD}" y1="${y}" x2="${W - PAD}" y2="${y}" />`).join('');
-    return `<h2 class="act-section-title">${tBi('Estimated context growth', '估算上下文增长')} <span class="act-badge">${tBiHtml('Per-Call', '每次调用')}</span></h2><div class="act-trend-container" title="${esc(estimatedContextDescription())}"><svg class="act-trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${gridLines}<polygon class="act-trend-area" points="${areaPoints}"/><polyline class="act-trend-line" points="${points}" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg><div class="act-trend-labels"><span>${fmt(data[0].tokens)}</span><span>${data.length} ${tBiHtml('calls', '调用')}</span><span>${fmt(data[data.length - 1].tokens)}</span></div></div>`;
+    const growthTip = richTipAttrs(
+        'gm-ctx-growth-chart',
+        tBi('Estimated Context Growth', '估算上下文增长趋势'),
+        estimatedContextDescription(),
+        tBi(`${data.length} calls · ${fmt(data[0].tokens)} → ${fmt(data[data.length - 1].tokens)}`, `共 ${data.length} 次调用 · ${fmt(data[0].tokens)} → ${fmt(data[data.length - 1].tokens)}`),
+    );
+    return `<h2 class="act-section-title">${tBi('Estimated context growth', '估算上下文增长')} <span class="act-badge">${tBiHtml('Per-Call', '每次调用')}</span></h2><div class="act-trend-container" ${growthTip} tabindex="0"><svg class="act-trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${gridLines}<polygon class="act-trend-area" points="${areaPoints}"/><polyline class="act-trend-line" points="${points}" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg><div class="act-trend-labels"><span>${fmt(data[0].tokens)}</span><span>${data.length} ${tBiHtml('calls', '调用')}</span><span>${fmt(data[data.length - 1].tokens)}</span></div></div>`;
 }
 
 function buildConversations(s: GMSummary): string {
@@ -4216,7 +4808,8 @@ function buildConversations(s: GMSummary): string {
     const iconCalls = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`;
 
     let html = `<h2 class="act-section-title"><span>${tBiHtml('Conversations', '对话分布')}</span></h2><div class="act-conv-list" tabindex="0">`;
-    for (const c of convs) {
+    for (let ci = 0; ci < convs.length; ci++) {
+        const c = convs[ci];
         let totalCredits = 0;
         let earliest = '';
         let latest = '';
@@ -4225,18 +4818,40 @@ function buildConversations(s: GMSummary): string {
             if (call.createdAt && (!earliest || call.createdAt < earliest)) { earliest = call.createdAt; }
             if (call.createdAt && (!latest || call.createdAt > latest)) { latest = call.createdAt; }
         }
-        const displayName = c.title || c.cascadeId.substring(0, 8);
+        const shortId = c.cascadeId.substring(0, 8);
+        const convKey = `${toSafeTipKey(shortId)}-${ci}`;
+        const displayName = c.title || shortId;
         const startStr = fmtDate(earliest);
         const lastStr = fmtDate(latest);
         const dateChip = startStr
             ? `<span class="act-conv-meta-chip act-conv-date">${iconClock} ${startStr}${lastStr && lastStr !== startStr ? ` → ${lastStr}` : ''}</span>`
             : '';
         const acctCredits = c.accountCredits ?? 0;
+        const acctCreditsDeltaHtml = acctCredits > 0 && acctCredits < totalCredits
+            ? ` <span class="act-credit-calls" ${richTipAttrs(
+                `gm-conv-acct-credits-${convKey}`,
+                tBi('Active Account Share', '当前账号贡献积分'),
+                tBi(
+                    `${acctCredits} of the ${totalCredits} GM credits in this conversation belong to the currently active account.`,
+                    `本对话共 ${totalCredits} 积分，其中 ${acctCredits} 积分归属于当前活跃账号。`,
+                ),
+            )}>+${acctCredits}</span>`
+            : '';
         const creditsChip = totalCredits > 0
-            ? `<span class="act-conv-meta-chip act-conv-credits"><b>${totalCredits}</b> <span>${tBiHtml('credits', '积分')}</span>${acctCredits > 0 && acctCredits < totalCredits ? ` <span class="act-credit-calls">+${acctCredits}</span>` : ''}</span>`
+            ? `<span class="act-conv-meta-chip act-conv-credits"><b>${totalCredits}</b> <span>${tBiHtml('credits', '积分')}</span>${acctCreditsDeltaHtml}</span>`
             : '';
 
-        html += `<div class="act-conv-item" title="${esc(c.cascadeId)}">
+        const convItemTip = richTipAttrs(
+            `gm-conv-item-${convKey}`,
+            displayName,
+            tBi(
+                `${c.calls.length} recorded GM ${c.calls.length === 1 ? 'call' : 'calls'} in this conversation.`,
+                `此对话共包含 ${c.calls.length} 次已记录的 GM 模型调用。`,
+            ),
+            `ID ${shortId}`,
+        );
+
+        html += `<div class="act-conv-item" ${convItemTip}>
             <span class="act-conv-title-chip">${esc(displayName)}</span>
             <div class="act-conv-meta">
                 <span class="act-conv-meta-chip">${iconCalls} <b>${c.calls.length}</b></span>
@@ -4270,12 +4885,27 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
     const rows = entries.map(([name, count], i) => {
         const pct = maxCount > 0 ? (count / maxCount * 100).toFixed(1) : '0';
         const delta = currentConvCounts[name] || 0;
+        const toolSlug = `${toSafeTipKey(name)}-${i}`;
+        const desc = getLocalizedToolDesc(name);
+        const nameTip = richTipAttrs(
+            `gm-tool-rank-${toolSlug}`,
+            name,
+            desc || tBi('Tool invoked by the agent across recorded conversations.', '智能体在已记录对话中调用的工具。'),
+            tBi(`${count} total ${count === 1 ? 'call' : 'calls'}`, `累计调用 ${count} 次`),
+        );
         const deltaHtml = delta > 0
-            ? `<span class="tool-rank-delta">+${delta}</span>`
+            ? `<span class="tool-rank-delta" ${richTipAttrs(
+                `gm-tool-rank-delta-${toolSlug}`,
+                tBi('Current Conversation Calls', '当前对话调用次数'),
+                tBi(
+                    `${delta} of the ${count} total calls to ${name} happened in the currently active conversation.`,
+                    `工具 ${name} 的 ${count} 次总调用中，有 ${delta} 次来自当前选中的对话。`,
+                ),
+            )}>+${delta}</span>`
             : '';
         return `<li class="tool-rank-row">
             <span class="tool-rank-idx">${i + 1}</span>
-            <span class="tool-rank-name" title="${esc(name)}">${esc(name)}</span>
+            <span class="tool-rank-name" ${nameTip}>${esc(name)}</span>
             <span class="tool-rank-bar-wrap"><span class="tool-rank-bar" style="width:${pct}%"></span></span>
             <span class="tool-rank-count">${count}${deltaHtml}</span>
         </li>`;
@@ -4288,39 +4918,24 @@ function buildToolCallRanking(gm: GMSummary, currentCascadeId?: string): string 
     const catalog = gm.toolCatalog || [];
     let catalogHtml = '';
     if (catalog.length > 0) {
-        const toolDesc: Record<string, string> = {
-            view_file: '\u67e5\u770b\u6587\u4ef6\u5185\u5bb9',
-            view_file_outline: '\u67e5\u770b\u6587\u4ef6\u5927\u7eb2\u7ed3\u6784',
-            view_code_item: '\u67e5\u770b\u4ee3\u7801\u7b26\u53f7\u5b9a\u4e49',
-            run_command: '\u6267\u884c\u7ec8\u7aef\u547d\u4ee4',
-            command_status: '\u68c0\u67e5\u547d\u4ee4\u6267\u884c\u72b6\u6001',
-            send_command_input: '\u5411\u8fdb\u7a0b\u53d1\u9001\u8f93\u5165',
-            read_terminal: '\u8bfb\u53d6\u7ec8\u7aef\u8f93\u51fa',
-            replace_file_content: '\u7f16\u8f91\u66ff\u6362\u6587\u4ef6\u5185\u5bb9',
-            multi_replace_file_content: '\u591a\u5904\u7f16\u8f91\u66ff\u6362\u6587\u4ef6',
-            write_to_file: '\u521b\u5efa\u65b0\u6587\u4ef6',
-            find_by_name: '\u6309\u6587\u4ef6\u540d\u641c\u7d22',
-            grep_search: '\u6587\u4ef6\u5185\u5bb9\u641c\u7d22',
-            codebase_search: '\u8bed\u4e49\u4ee3\u7801\u641c\u7d22',
-            list_dir: '\u5217\u51fa\u76ee\u5f55\u5185\u5bb9',
-            search_web: '\u7f51\u9875\u641c\u7d22',
-            read_url_content: '\u8bfb\u53d6\u7f51\u9875\u5185\u5bb9',
-            generate_image: '\u751f\u6210\u56fe\u7247',
-            browser_subagent: '\u6d4f\u89c8\u5668\u81ea\u52a8\u5316',
-            view_content_chunk: '\u67e5\u770b\u6587\u6863\u5206\u7247',
-        };
         const sortedCatalog = [...catalog].sort((a, b) => {
             const ca = counts[a.name] || 0;
             const cb = counts[b.name] || 0;
             if (ca !== cb) { return cb - ca; }
             return a.firstSeen.localeCompare(b.firstSeen);
         });
-        const chips = sortedCatalog.map(entry => {
-            const desc = toolDesc[entry.name] || '';
-            const nameAttr = ` data-tooltip-name="${esc(entry.name)}"`;
-            const descAttr = desc ? ` data-tooltip-desc="${esc(desc)}"` : '';
-            const tooltipAttr = desc ? ` data-tooltip="${esc(desc)}"` : '';
-            return `<span class="tool-cat-chip"${nameAttr}${descAttr}${tooltipAttr}><span class="tool-cat-chip-text">${esc(entry.name)}</span></span>`;
+        const chips = sortedCatalog.map((entry, ci) => {
+            const desc = getLocalizedToolDesc(entry.name);
+            const calledCount = counts[entry.name] || 0;
+            const chipTip = richTipAttrs(
+                `gm-tool-cat-${toSafeTipKey(entry.name)}-${ci}`,
+                entry.name,
+                desc || tBi('Tool discovered in the agent prompt catalog (built-in or MCP tool).', '在智能体提示词工具目录中发现的内置或 MCP 工具。'),
+                calledCount > 0
+                    ? tBi(`Called ${calledCount} ${calledCount === 1 ? 'time' : 'times'}`, `已调用 ${calledCount} 次`)
+                    : tBi('Available in prompt tool catalog (not yet called)', '已注册到工具目录（尚未调用）'),
+            );
+            return `<span class="tool-cat-chip" ${chipTip} tabindex="0"><span class="tool-cat-chip-text">${esc(entry.name)}</span></span>`;
         }).join('');
         const catalogIcon = `<svg class="act-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`;
         catalogHtml = `<details class="tool-cat-section" id="toolCatSection">
@@ -4376,15 +4991,24 @@ function buildErrorDetailsSection(s: GMSummary, currentCascadeId?: string): stri
 
     const codeTags = Object.entries(errorCodes)
         .sort((a, b) => b[1] - a[1])
-        .map(([code, count]) => {
+        .map(([code, count], ci) => {
             const isRateLimit = code === '429';
             const isServer = code === '503' || code === '500' || code === '504';
             const tagClass = isRateLimit ? 'gm-err-tag-ratelimit' : isServer ? 'gm-err-tag-server' : 'gm-err-tag-other';
             const delta = currentConvErrors[code] || 0;
+            const errInfo = explainHttpError(code);
+            const tagTip = richTipAttrs(
+                `gm-err-code-${toSafeTipKey(code)}-${ci}`,
+                errInfo.title,
+                errInfo.meaning,
+                delta > 0
+                    ? tBi(`${count} total (${delta} in current conversation)`, `总计 ${count} 次（其中当前对话 ${delta} 次）`)
+                    : tBi(`${count} occurrences recorded`, `累计发生 ${count} 次`),
+            );
             const deltaHtml = delta > 0
                 ? `<span class="err-delta"> +${delta}</span>`
                 : '';
-            return `<span class="gm-err-tag ${tagClass}">${esc(code)} \u00d7${count}${deltaHtml}</span>`;
+            return `<span class="gm-err-tag ${tagClass}" ${tagTip} tabindex="0">${esc(code)} \u00d7${count}${deltaHtml}</span>`;
         }).join('');
 
     const convDeltaBadge = currentConvTotal > 0
@@ -4564,52 +5188,97 @@ function buildContextIntelViewer(s: GMSummary): string {
 
     const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
 
-    // Type → icon SVG + semantic tone class + localized label
-    const typeConfig: Record<string, { icon: string; tone: string; label: string }> = {
+    // Type → icon SVG + semantic tone class + localized label + plain-language rich-tip copy
+    const typeConfig: Record<string, { icon: string; tone: string; label: string; tipTitle: string; tipBody: string }> = {
         checkpoint: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2z"/><path d="M9 21V9h6v12"/></svg>',
             tone: 'ci-tone-warn',
             label: tBiHtml('Checkpoint', '检查点'),
+            tipTitle: tBi('Checkpoint Summary', '检查点摘要'),
+            tipBody: tBi(
+                'Compressed summary snapshot of earlier turns created automatically when context approaches the checkpoint/compaction limit.',
+                '当对话上下文接近检查点或自动压缩上限时，系统自动生成的历史摘要快照。',
+            ),
         },
         context_injection: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
             tone: 'ci-tone-accent',
             label: tBiHtml('Context Injection', '上下文注入'),
+            tipTitle: tBi('Context Injection', '上下文注入'),
+            tipBody: tBi(
+                'Dynamic workspace or editor context automatically injected into the model prompt.',
+                '由宿主自动注入模型提示词的动态工作区或编辑器状态上下文。',
+            ),
         },
         user_info: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
             tone: 'ci-tone-good',
             label: tBiHtml('User Information', '用户信息'),
+            tipTitle: tBi('User Information', '用户信息'),
+            tipBody: tBi(
+                'Environment block telling the model your OS, active workspace folders, and artifact directories.',
+                '告知模型操作系统、当前工作区路径与产物目录的环境元信息块。',
+            ),
         },
         user_rules: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
             tone: 'ci-tone-accent',
             label: tBiHtml('User Rules', '用户规则'),
+            tipTitle: tBi('User Rules', '用户规则'),
+            tipBody: tBi(
+                'Persistent global and workspace rules (e.g. AGENTS.md or user rules) prepended to guide agent behavior.',
+                '附加在提示词前部的全局或项目规则（如 AGENTS.md 与用户自定义规则）。',
+            ),
         },
         mcp_servers: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
             tone: 'ci-tone-cache',
             label: tBiHtml('MCP Servers', 'MCP 服务'),
+            tipTitle: tBi('MCP Servers', 'MCP 服务'),
+            tipBody: tBi(
+                'Connected Model Context Protocol servers and tool/resource schemas exposed to the agent.',
+                '已接入的 MCP（模型上下文协议）服务器及向模型暴露的工具/资源清单。',
+            ),
         },
         workflows: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
             tone: 'ci-tone-thinking',
             label: tBiHtml('Workflows', '工作流'),
+            tipTitle: tBi('Workflows', '工作流'),
+            tipBody: tBi(
+                'Configured slash-command workflows or skills registered in the prompt context.',
+                '注册到当前会话上下文中的斜杠工作流与技能说明。',
+            ),
         },
         artifacts: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
             tone: 'ci-tone-thinking',
             label: tBiHtml('Artifacts', '产物'),
+            tipTitle: tBi('Artifacts', '产物'),
+            tipBody: tBi(
+                'Persistent markdown plans, reports, or task checklists attached to this conversation.',
+                '关联到本次会话的持久化 Markdown 方案、报告或任务清单产物。',
+            ),
         },
         ephemeral: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>',
             tone: 'ci-tone-neutral',
             label: tBiHtml('Ephemeral', '临时'),
+            tipTitle: tBi('Ephemeral Context', '临时上下文'),
+            tipBody: tBi(
+                'Short-lived turn-only reminders (e.g. open tabs, cursor state, transient system hints) discarded after the turn.',
+                '仅对单轮生效的瞬时提示（如当前打开文件、光标状态或临时提醒），不会永久留存到后续轮次。',
+            ),
         },
         system_preamble: {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
             tone: 'ci-tone-neutral',
             label: tBiHtml('System Preamble', '系统前导'),
+            tipTitle: tBi('System Preamble', '系统前导提示词'),
+            tipBody: tBi(
+                'Base system instructions, identity, and tool-usage guidelines prepended before conversation turns.',
+                '放在所有对话轮次最前方的底层系统指令、身份设定与工具使用规范。',
+            ),
         },
     };
 
@@ -4628,12 +5297,13 @@ function buildContextIntelViewer(s: GMSummary): string {
             ? `<span class="cp-card-num ${conf.tone}">#${item.checkpointNumber}</span>`
             : '';
         const iconHtml = `<span class="ci-icon ${conf.tone}">${conf.icon}</span>`;
+        const cardTitleTip = richTipAttrs(`gm-ci-card-${toSafeTipKey(item.type)}-${idx}`, conf.tipTitle, conf.tipBody);
 
         return `<details class="cp-card" id="ciCard${idx}" data-ci-type="${item.type}">
             <summary class="cp-card-header">
                 ${iconHtml}
                 ${cpBadge}
-                <span class="ci-title-label">${conf.label}</span>
+                <span class="ci-title-label" ${cardTitleTip}>${conf.label}</span>
                 ${(item.stepIndex >= 0 && item.stepIndex < 100000) ? `<span class="cp-card-chip cp-card-chip-step">${tBiHtml(`Step ${formatNumber(item.stepIndex)}`, `步骤 ${formatNumber(item.stepIndex)}`)}</span>` : ''}
                 ${item.tokens > 0 ? `<span class="cp-card-chip cp-card-chip-tok">${fmt(item.tokens)} tokens</span>` : ''}
             </summary>
@@ -4651,9 +5321,11 @@ function buildContextIntelViewer(s: GMSummary): string {
         if (mn) { primaryModels.add(mn); }
     }
 
+    let dnaCardIdx = 0;
     for (const [modelName, ms] of Object.entries(s.modelBreakdown)) {
         if (ms.callCount <= 0) { continue; }
         if (!primaryModels.has(modelName)) { continue; }
+        const modelSlug = `${toSafeTipKey(modelName)}-${dnaCardIdx++}`;
 
         // 1. System Prompt Structure card
         if (ms.promptSectionTitles && ms.promptSectionTitles.length > 0) {
@@ -4692,13 +5364,13 @@ function buildContextIntelViewer(s: GMSummary): string {
             }
 
             const configRows: string[] = [];
-            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('temperature', '温度')}</span><span class="ci-cfg-val">${cc.temperature}</span></div>`);
+            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label" ${richTipAttrs(`gm-ci-cfg-temp-${modelSlug}`, tBi('Temperature', '采样温度'), tBi('Controls output randomness: 0 is deterministic, higher values increase variation.', '控制输出随机性：0 更确定稳定，越高则越具多样性。'))}>${tBiHtml('temperature', '温度')}</span><span class="ci-cfg-val">${cc.temperature}</span></div>`);
             if (cc.firstTemperature !== cc.temperature) {
                 configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('firstTemperature', '初始温度')}</span><span class="ci-cfg-val">${cc.firstTemperature}</span></div>`);
             }
-            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('topK', 'Top K')}</span><span class="ci-cfg-val">${cc.topK}</span></div>`);
+            configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label" ${richTipAttrs(`gm-ci-cfg-topk-${modelSlug}`, tBi('Top-K Sampling', 'Top-K 采样'), tBi('Restricts each token step to the K highest-probability candidates.', '限制每一步只从概率最高的 K 个候选词中采样。'))}>${tBiHtml('topK', 'Top K')}</span><span class="ci-cfg-val">${cc.topK}</span></div>`);
             if (cc.topP !== 1) {
-                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('topP', 'Top P')}</span><span class="ci-cfg-val">${cc.topP}</span></div>`);
+                configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label" ${richTipAttrs(`gm-ci-cfg-topp-${modelSlug}`, tBi('Top-P (Nucleus) Sampling', 'Top-P 核采样'), tBi('Samples from the smallest token set whose cumulative probability reaches P.', '从累计概率达到 P 的最小候选集合中采样。'))}>${tBiHtml('topP', 'Top P')}</span><span class="ci-cfg-val">${cc.topP}</span></div>`);
             }
             configRows.push(`<div class="ci-cfg-row"><span class="ci-cfg-label">${tBiHtml('maxOutputTokens', '最大输出 tokens')}</span><span class="ci-cfg-val">${fmt(cc.maxTokens)}</span></div>`);
             if (cc.stopPatternCount > 0) {
@@ -4712,10 +5384,15 @@ function buildContextIntelViewer(s: GMSummary): string {
                 const usagePct = cap > 0 ? Math.min(100, Math.round(latestContextUsed / cap * 100)) : 0;
                 const barColor = usagePct >= 80 ? 'var(--ed-danger-fill)' : usagePct >= 65 ? 'var(--ed-warn-fill)' : 'var(--ed-accent)';
                 const capLabel = contextCap > 0 ? fmt(contextCap) : `~${fmt(cap)}`;
+                const capEstTip = richTipAttrs(
+                    `gm-ci-cap-est-${modelSlug}`,
+                    tBi('Estimated Context', '估算上下文'),
+                    estimatedContextDescription(),
+                );
                 capacityHtml = `
                     <div class="ci-cap-box">
                         <div class="ci-cfg-row">
-                            <span class="ci-cfg-label" title="${esc(estimatedContextDescription())}">${tBiHtml('Estimated context', '估算上下文')}</span>
+                            <span class="ci-cfg-label" ${capEstTip}>${tBiHtml('Estimated context', '估算上下文')}</span>
                             <span class="ci-cfg-val">${fmt(latestContextUsed)} / ${capLabel}</span>
                         </div>
                         <div class="ci-cap-track">
@@ -4725,12 +5402,27 @@ function buildContextIntelViewer(s: GMSummary): string {
                     </div>`;
             }
 
+            const tempChipTip = richTipAttrs(
+                `gm-ci-temp-chip-${modelSlug}`,
+                tBi(`Temperature (T=${cc.temperature})`, `采样温度（T=${cc.temperature}）`),
+                tBi(
+                    'Sampling temperature sent to the model: 0 is focused/deterministic, 1.0+ is more varied.',
+                    '发送给模型的采样温度参数：0 更聚焦确定，1.0 及以上更具创造性与变化。',
+                ),
+                tBi(`topK=${cc.topK} · topP=${cc.topP} · maxOut=${fmt(cc.maxTokens)}`, `topK=${cc.topK} · topP=${cc.topP} · 最大输出=${fmt(cc.maxTokens)}`),
+            );
+            const ccCtxTip = richTipAttrs(
+                `gm-ci-cc-ctx-${modelSlug}`,
+                tBi('Estimated Context', '估算上下文'),
+                estimatedContextDescription(),
+            );
+
             dnaCards.push(`<details class="cp-card" id="ciDna-cc-${esc(modelName)}" data-ci-type="dna_config">
                 <summary class="cp-card-header">
                     <span class="ci-icon ci-tone-warn">${configIcon}</span>
                     <span class="ci-title-label">${tBiHtml('Generation Config', '生成配置')}</span>
-                    <span class="cp-card-chip cp-card-chip-tok">T=${cc.temperature}</span>
-                    ${latestContextUsed > 0 ? `<span class="cp-card-chip cp-card-chip-step" title="${esc(estimatedContextDescription())}">${tBi('Estimated context', '估算上下文')} ${fmt(latestContextUsed)}</span>` : ''}
+                    <span class="cp-card-chip cp-card-chip-tok" ${tempChipTip}>T=${cc.temperature}</span>
+                    ${latestContextUsed > 0 ? `<span class="cp-card-chip cp-card-chip-step" ${ccCtxTip}>${tBi('Estimated context', '估算上下文')} ${fmt(latestContextUsed)}</span>` : ''}
                 </summary>
                 <div class="cp-card-body is-structured">
                     <div class="ci-model-sub">${esc(modelName)}</div>
@@ -4810,10 +5502,20 @@ function buildContextIntelViewer(s: GMSummary): string {
     const badgeParts: string[] = [];
     for (const [type, count] of typeCounts) {
         const conf = typeConfig[type] || typeConfig.system_preamble;
-        badgeParts.push(`<span class="act-badge ci-badge ${conf.tone}" data-ci-type="${type}"><span>${conf.label}${count > 1 ? ` · ${count}` : ''}</span></span>`);
+        const badgeTip = richTipAttrs(`gm-ci-badge-${toSafeTipKey(type)}`, conf.tipTitle, conf.tipBody);
+        badgeParts.push(`<span class="act-badge ci-badge ${conf.tone}" data-ci-type="${type}" ${badgeTip}><span>${conf.label}${count > 1 ? ` · ${count}` : ''}</span></span>`);
     }
     if (dnaCards.length > 0) {
-        badgeParts.push(`<span class="act-badge ci-badge ci-tone-accent"><span>${tBiHtml('Model DNA', '模型 DNA')}${dnaCards.length > 1 ? ` · ${dnaCards.length}` : ''}</span></span>`);
+        const dnaBadgeTip = richTipAttrs(
+            'gm-ci-badge-model-dna',
+            tBi('Model DNA', '模型 DNA'),
+            tBi(
+                'Observed runtime profile of active models: prompt sections, sampling parameters (temperature/topK/topP), and estimated token composition.',
+                '当前活跃模型的运行时特征画像：包含系统提示词结构、采样参数（温度 / topK / topP）及估算 Token 分布。',
+            ),
+            tBi(`${dnaCards.length} profile ${dnaCards.length === 1 ? 'card' : 'cards'} inside`, `内含 ${dnaCards.length} 张特征卡片`),
+        );
+        badgeParts.push(`<span class="act-badge ci-badge ci-tone-accent" ${dnaBadgeTip}><span>${tBiHtml('Model DNA', '模型 DNA')}${dnaCards.length > 1 ? ` · ${dnaCards.length}` : ''}</span></span>`);
     }
 
     const titleIcon = `<svg class="act-icon act-icon-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>`;
@@ -4888,7 +5590,7 @@ function buildTodayLedgerPanel(
     const snapshotMap = new Map<string, AccountSnapshot>();
     for (const s of snapshots) { snapshotMap.set(s.email, s); }
 
-    const accountCards = activeBuckets.map(bucket => {
+    const accountCards = activeBuckets.map((bucket, bi) => {
         const snap = snapshotMap.get(bucket.accountEmail);
         const displayName = snap?.name || bucket.accountEmail || tBi('Unknown', '\u672a\u77e5');
         const emailShort = bucket.accountEmail ? bucket.accountEmail.split('@')[0] : '';
@@ -4911,10 +5613,20 @@ function buildTodayLedgerPanel(
 
         const modelChips = Object.entries(bucket.modelStats)
             .sort((a, b) => b[1].calls - a[1].calls)
-            .map(([model, ms]) => {
+            .map(([model, ms], mi) => {
                 const resetIso = modelResetMap.get(model);
+                const resetDateObj = resetIso ? new Date(resetIso) : null;
+                const resetLocalStr = resetDateObj && !isNaN(resetDateObj.getTime()) ? resetDateObj.toLocaleString() : resetIso;
                 const resetTag = resetIso
-                    ? ` <span class="ledger-reset-time" title="${esc(resetIso)}">${fmtReset(resetIso)}</span>`
+                    ? ` <span class="ledger-reset-time" ${richTipAttrs(
+                        `gm-ledger-reset-${bi}-${mi}`,
+                        tBi('Quota Pool Reset Time', '配额池重置时间'),
+                        tBi(
+                            `Time remaining until this model’s active quota pool resets (${resetLocalStr}).`,
+                            `距离此模型所属配额池下次重置的剩余时间（${resetLocalStr}）。`,
+                        ),
+                        resetIso,
+                    )} tabindex="0">${fmtReset(resetIso)}</span>`
                     : '';
                 return `<span class="pending-model-chip ledger-model-chip">${esc(normalizeModelDisplayName(model))} <b>${ms.calls}</b>${resetTag}</span>`;
             }).join('');
@@ -4988,11 +5700,29 @@ function buildLedgerSettledPanel(entries: LedgerSettledEntry[]): string {
 
     const settledIcon = `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M10.97 4.97a.75.75 0 0 1 1.07 1.05l-3.99 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425z"/><path d="M0 2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1v7.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 1 12.5V5a1 1 0 0 1-1-1zm2 3v7.5A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5zm13-3H1v2h14z"/></svg>`;
 
+    const settledTitleTip = richTipAttrs(
+        'gm-settled-title',
+        tBi('Settled (Quota Reset)', '已结算（配额重置）'),
+        tBi(
+            'Usage windows automatically snapshotted when a 5-hour quota pool reset today, kept separate from the active cycle until midnight Calendar archival.',
+            '今日配额重置时自动冻结保存的用量窗口，与当前新周期分开统计，并在午夜统一归档到日历。',
+        ),
+    );
+    const settledCyclesTip = richTipAttrs(
+        'gm-settled-cycles',
+        tBi('Settled Quota Cycles', '已结算周期数'),
+        tBi(
+            `Each cycle represents one completed quota-reset window finalized today (${entries.length} total).`,
+            `每个周期对应今日一次配额重置前完成结算的用量分段（共 ${entries.length} 个）。`,
+        ),
+        tBi('Merged into Calendar history at midnight rollover', '跨日午夜自动归档进日历历史'),
+    );
+
     return `<div class="pending-archive-panel settled-panel">
         <div class="pending-archive-header settled-header">
             ${settledIcon}
-            <span>${tBiHtml('Settled (Quota Reset)', '已结算（配额重置）')}</span>
-            <span class="pending-archive-count">${entries.length} ${tBiHtml(entries.length === 1 ? 'cycle' : 'cycles', '个周期')}</span>
+            <span ${settledTitleTip} tabindex="0">${tBiHtml('Settled (Quota Reset)', '已结算（配额重置）')}</span>
+            <span class="pending-archive-count" ${settledCyclesTip} tabindex="0">${entries.length} ${tBiHtml(entries.length === 1 ? 'cycle' : 'cycles', '个周期')}</span>
         </div>
         <div class="pending-archive-stats">
             <span class="pending-stat">${tBiHtml('Calls', '调用')} <b>${totalCalls}</b></span>
@@ -5036,7 +5766,8 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
         return b.lastSeen.localeCompare(a.lastSeen);
     });
 
-    const cards = sorted.map(snap => {
+    const cards = sorted.map((snap, si) => {
+        const acctKey = `${toSafeTipKey(snap.email || 'acct')}-${si}`;
         const indicatorClass = snap.isActive ? 'acct-indicator-active' : 'acct-indicator-cached';
         const planClass = getPlanClass(snap.planName || snap.tierName);
         const planLabelHtml = snap.tierName || snap.planName
@@ -5047,7 +5778,7 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
         let resetHtml = '';
 
         if (pools.length > 0) {
-            const poolRows = pools.map(pool => {
+            const poolRows = pools.map((pool, pi) => {
                 const resetDate = parseResetDate(pool.resetTime);
                 if (!resetDate) { return ''; }
                 const diffMs = resetDate.getTime() - nowMs;
@@ -5055,33 +5786,79 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
                 const maxShow = 3;
                 const labels = pool.modelLabels;
                 const shown = labels.slice(0, maxShow);
-                const extra = labels.length > maxShow ? labels.length - maxShow : 0;
-                const modelChips = shown.map(l =>
-                    `<span class="acct-pool-model" title="${esc(l)}">${esc(l)}</span>`
+                const hiddenLabels = labels.slice(maxShow);
+                const extra = hiddenLabels.length;
+                const modelChips = shown.map((l, mi) =>
+                    `<span class="acct-pool-model" ${richTipAttrs(
+                        `acct-pool-model-${acctKey}-${pi}-${mi}`,
+                        l,
+                        tBi('Model sharing this quota reset pool.', '共享同一配额重置窗口的模型。'),
+                        tBi(`${labels.length} models in pool`, `该配额池共 ${labels.length} 个模型`),
+                    )}>${esc(l)}</span>`,
                 ).join('');
-                const extraChip = extra > 0 ? `<span class="acct-pool-more" title="${esc(labels.slice(maxShow).join(', '))}">+${extra}</span>` : '';
+                const extraChip = extra > 0
+                    ? `<span class="acct-pool-more" ${richTipAttrs(
+                        `acct-pool-more-${acctKey}-${pi}`,
+                        tBi(`${extra} More Models in Pool`, `此配额池另外 ${extra} 个模型`),
+                        hiddenLabels.join(', '),
+                        tBi(`Total ${labels.length} models share this reset timer`, `共 ${labels.length} 个模型共享此配额窗口`),
+                    )} tabindex="0">+${extra}</span>`
+                    : '';
 
-                // Compact quota meter — semantic thresholds (≥50% healthy, 21–49% warn, ≤20% critical); unknown stays empty
+                // Compact quota meter + visible % so Sidecar users can read exact quota without hovering
                 const buildQuotaBar = (pct: number | undefined): string => {
                     if (pct === undefined || !Number.isFinite(pct)) {
-                        return `<div class="acct-quota-bar" title="${esc(tBi('Quota unknown', '配额未知'))}"></div>`;
+                        const unkTip = richTipAttrs(
+                            `acct-pool-quota-${acctKey}-${pi}`,
+                            tBi('Pool Remaining Quota', '配额池剩余比例'),
+                            tBi('Remaining quota percentage has not been reported for this pool yet.', '本地服务尚未上报此配额池的剩余百分比。'),
+                        );
+                        return `<span class="acct-quota-wrap" ${unkTip} tabindex="0"><span class="acct-quota-bar"></span><span class="acct-quota-pct is-unknown">—</span></span>`;
                     }
-                    const p = Math.max(0, Math.min(100, pct));
+                    const p = Math.max(0, Math.min(100, Math.round(pct)));
                     const colorClass = p >= 50 ? 'acct-quota-ok' : p > 20 ? 'acct-quota-warn' : 'acct-quota-danger';
-                    return `<div class="acct-quota-bar" title="${esc(`${p}% ${tBi('remaining', '剩余')}`)}"><div class="acct-quota-fill ${colorClass}" style="width:${p}%"></div></div>`;
+                    const pctToneClass = p >= 50 ? '' : p > 20 ? ' is-warn' : ' is-danger';
+                    const quotaTip = richTipAttrs(
+                        `acct-pool-quota-${acctKey}-${pi}`,
+                        tBi(`${p}% Remaining`, `剩余配额 ${p}%`),
+                        tBi(
+                            `Lowest remaining quota across the ${labels.length} models sharing this pool.`,
+                            `该配额池内 ${labels.length} 个共享模型中当前的最低剩余配额。`,
+                        ),
+                        tBi(`Resets at ${resetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ≥50% green / 21–49% amber / ≤20% red`, `重置时间：${resetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ≥50% 充裕 / 21–49% 偏低 / ≤20% 紧缺`),
+                    );
+                    return `<span class="acct-quota-wrap" ${quotaTip} tabindex="0"><span class="acct-quota-bar"><span class="acct-quota-fill ${colorClass}" style="width:${p}%"></span></span><span class="acct-quota-pct${pctToneClass}">${p}%</span></span>`;
                 };
 
                 if (pool.hasUsage === false) {
+                    const idleTip = richTipAttrs(
+                        `acct-pool-state-${acctKey}-${pi}`,
+                        tBi('Idle Pool', '未使用'),
+                        tBi(
+                            'No quota has been consumed in this pool yet (100% remaining), so no countdown timer is running.',
+                            '此配额池尚未产生消耗（剩余 100%），暂未触发重置倒计时。',
+                        ),
+                        tBi('Trigger: all models in pool report remainingFraction = 1.0', '口径：池内所有模型剩余配额均为 100%'),
+                    );
                     return `<div class="acct-pool-row acct-pool-idle">
                         <div class="acct-pool-models">${modelChips}${extraChip}</div>
-                        <span class="acct-reset-countdown acct-reset-idle">${tBiHtml('Idle', '未使用')}</span>
+                        <span class="acct-reset-countdown acct-reset-idle" ${idleTip} tabindex="0">${tBiHtml('Idle', '未使用')}</span>
                     </div>`;
                 }
 
                 if (diffMs <= 0) {
+                    const readyTip = richTipAttrs(
+                        `acct-pool-state-${acctKey}-${pi}`,
+                        tBi('Quota Ready', '已就绪'),
+                        tBi(
+                            'The previous quota reset timestamp has elapsed — this pool is refreshed and ready to use.',
+                            '上一轮配额重置时间已到，该配额池已恢复满额可随时使用。',
+                        ),
+                        tBi('Trigger: resetTime ≤ now on a previously used pool', '口径：曾有消耗的配额池已过重置时刻'),
+                    );
                     return `<div class="acct-pool-row">
                         <div class="acct-pool-models">${modelChips}${extraChip}</div>
-                        <span class="acct-reset-countdown acct-reset-countdown-expired">${tBiHtml('Ready', '已就绪')}</span>
+                        <span class="acct-reset-countdown acct-reset-countdown-expired" ${readyTip} tabindex="0">${tBiHtml('Ready', '已就绪')}</span>
                     </div>`;
                 }
 
@@ -5096,17 +5873,44 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
 
             resetHtml = `<div class="acct-pools">${poolRows}</div>`;
         } else if (!snap.isActive) {
+            const cachedResetTip = richTipAttrs(
+                `acct-reset-cached-${acctKey}`,
+                tBi('Cached Snapshot', '已缓存快照'),
+                tBi(
+                    'Saved locally from when this account was last signed in; live quota updates resume when you switch back to it.',
+                    '该账号当前未登录，此处显示的是上次在线时保存在本地的快照信息。',
+                ),
+            );
             resetHtml = `<div class="acct-reset">
-                <span class="acct-tag-cached">${tBiHtml('Cached', '已缓存')}</span>
+                <span class="acct-tag-cached" ${cachedResetTip} tabindex="0">${tBiHtml('Cached', '已缓存')}</span>
             </div>`;
         }
 
         const statusTag = snap.isActive
-            ? `<span class="acct-tag-active">${tBiHtml('Active', '在线')}</span>`
-            : `<span class="acct-tag-cached">${tBiHtml('Cached', '已缓存')}</span>`;
+            ? `<span class="acct-tag-active" ${richTipAttrs(
+                `acct-status-${acctKey}`,
+                tBi('Active Account', '当前在线账号'),
+                tBi('Currently signed-in Antigravity account being polled live.', '当前已登录且正在实时轮询配额与数据的 Antigravity 账号。'),
+            )}>${tBiHtml('Active', '在线')}</span>`
+            : `<span class="acct-tag-cached" ${richTipAttrs(
+                `acct-status-${acctKey}`,
+                tBi('Cached Account', '已缓存账号'),
+                tBi(
+                    'Previously signed-in account cached locally so you can track its reset timers while using another account.',
+                    '此前登录过并缓存在本地的账号快照，方便切号期间继续查看其重置倒计时。',
+                ),
+                snap.lastSeen ? tBi(`Last seen: ${snap.lastSeen}`, `上次同步：${snap.lastSeen}`) : undefined,
+            )} tabindex="0">${tBiHtml('Cached', '已缓存')}</span>`;
 
         const deleteLink = !snap.isActive
-            ? `<button type="button" class="acct-delete-link acct-delete-btn" data-email="${esc(snap.email)}" title="${esc(tBi('Remove cached account', '移除缓存账号'))}">${tBiHtml('Remove', '移除')}</button>`
+            ? `<button type="button" class="acct-delete-link acct-delete-btn" data-email="${esc(snap.email)}" ${richTipAttrs(
+                `acct-delete-${acctKey}`,
+                tBi('Remove Cached Account', '移除缓存账号'),
+                tBi(
+                    'Deletes only the local cached snapshot for this inactive account; it does not sign out or affect your Google account.',
+                    '仅从本地缓存列表中移除此非活跃账号快照，不会退出登录或影响账号本身。',
+                ),
+            )}>${tBiHtml('Remove', '移除')}</button>`
             : '';
 
         // Deduplicate & localize AI credits via currentAICredits(); never fabricate 0 for unknown balances
@@ -5133,10 +5937,19 @@ export function buildAccountStatusPanel(snapshots: AccountSnapshot[], billingDay
         let expiryChip = '';
         if (billingDay >= 1 && billingDay <= 31) {
             const daysLeft = getDaysUntilBillingDay(billingDay);
+            const expiryTip = richTipAttrs(
+                `acct-expiry-${acctKey}`,
+                tBi('Estimated Subscription Renewal', '订阅到期倒计时'),
+                tBi(
+                    `Calculated locally from your saved monthly billing day (day ${billingDay} of each month) — not fetched from Google billing.`,
+                    `根据你在本地设置的每月账单日（每月 ${billingDay} 日）推算，并非从 Google 账单服务器读取。`,
+                ),
+                tBi('Edit billing day in the Account tab', '可在「账号」页修改每月账单日'),
+            );
             if (daysLeft === 0) {
-                expiryChip = `<span class="acct-credit-chip acct-expiry-chip is-today"><span>${tBiHtml('Expires today', '今日到期')}</span></span>`;
+                expiryChip = `<span class="acct-credit-chip acct-expiry-chip is-today" ${expiryTip} tabindex="0"><span>${tBiHtml('Expires today', '今日到期')}</span></span>`;
             } else if (daysLeft !== null) {
-                expiryChip = `<span class="acct-credit-chip acct-expiry-chip"><span>${tBiHtml(`${daysLeft}d until expiry`, `${daysLeft} 天后到期`)}</span></span>`;
+                expiryChip = `<span class="acct-credit-chip acct-expiry-chip" ${expiryTip} tabindex="0"><span>${tBiHtml(`${daysLeft}d until expiry`, `${daysLeft} 天后到期`)}</span></span>`;
             }
         }
         const expiryRow = expiryChip ? `<div class="acct-credits">${expiryChip}</div>` : '';

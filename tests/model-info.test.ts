@@ -33,9 +33,9 @@ describe('model information rendering', () => {
     // The first locale render took 5.17s on a cold Windows CI runner. This checks
     // correctness, not startup latency; keep its budget separate from other tests.
     it.each([
-        ['en', 'Compression limit', 'Checkpoint threshold', 'Model context', 'Max output', 'Adaptive'],
-        ['zh', '压缩上限', '检查点阈值', '模型上下文', '最大输出', '自适应'],
-        ['both', 'Compression limit / 压缩上限', 'Checkpoint threshold / 检查点阈值', 'Model context / 模型上下文', 'Max output / 最大输出', 'Adaptive / 自适应'],
+        ['en', 'Effective Budget (Compaction Limit)', 'Checkpoint Threshold', 'Native Ceiling (Model Context)', 'Max Output', 'Adaptive'],
+        ['zh', '自动压缩上限（有效预算）', '检查点阈值', '原生窗口上限', '最大输出', '自适应'],
+        ['both', 'Effective Budget (Compaction Limit) / 自动压缩上限（有效预算）', 'Checkpoint Threshold / 检查点阈值', 'Native Ceiling (Model Context) / 原生窗口上限', 'Max Output / 最大输出', 'Adaptive / 自适应'],
     ] as const)('renders complete parameters in %s', async (language, limit, threshold, native, output, thinking) => {
         await setLanguageToState(language, state);
         const html = buildModelInfoGrid([{ ...spec, supportsAdaptiveThinking: true }]);
@@ -44,14 +44,14 @@ describe('model information rendering', () => {
             expect(text).toContain(value);
         }
         const expectedLabels: Array<[string, string, string]> = [
-            ['compression-limit', tBiHtml('Compression limit', '压缩上限'), '256,000'],
-            ['checkpoint-threshold', tBiHtml('Checkpoint threshold', '检查点阈值'), '50,000'],
-            ['native-context', tBiHtml('Model context', '模型上下文'), '1,000,000'],
-            ['max-output', tBiHtml('Max output', '最大输出'), '128,000'],
+            ['compression-limit', tBiHtml('Effective Budget (Compaction Limit)', '自动压缩上限（有效预算）'), '256,000'],
+            ['checkpoint-threshold', tBiHtml('Checkpoint Threshold', '检查点阈值'), '50,000'],
+            ['native-context', tBiHtml('Native Ceiling (Model Context)', '原生窗口上限'), '1,000,000'],
+            ['max-output', tBiHtml('Max Output', '最大输出'), '128,000'],
         ];
         for (const [metric, labelHtml, value] of expectedLabels) {
             const escaped = labelHtml.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            expect(html).toMatch(new RegExp(`data-metric="${metric}">\\s*<dt>${escaped}</dt>\\s*<dd>${value}</dd>`));
+            expect(html).toMatch(new RegExp(`data-metric="${metric}"[^>]*>\\s*<dt>${escaped}</dt>\\s*<dd>${value}</dd>`));
         }
         expect(html).toContain(tBiHtml('Adaptive', '自适应'));
         expect(html).not.toContain('压缩阈值');

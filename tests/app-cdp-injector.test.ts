@@ -216,6 +216,12 @@ class FakeElement {
         return this.attributes.get(name) ?? null;
     }
 
+    removeAttribute(name: string): void {
+        if (name === 'id') { this.id = ''; }
+        if (name === 'class') { this.className = ''; }
+        this.attributes.delete(name);
+    }
+
     attachShadow(_opts: { mode: string }): FakeElement {
         this.shadowRoot = new FakeElement('#shadow-root');
         return this.shadowRoot;
@@ -477,6 +483,17 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
             expect(macGuide.command).toContain('while pgrep -f');
             expect(macGuide.en).toMatch(/5s|5-second/);
             expect(macGuide.zh).toContain('5 秒');
+            expect(macGuide.en).toContain('/Applications/Antigravity (CDP).app');
+            expect(macGuide.en).toContain('Keep in Dock');
+            expect(macGuide.zh).toContain('在程序坞中保留');
+
+            const winGuide = getCdpPlatformGuide('win32');
+            expect(winGuide.en).toContain('Pin to taskbar');
+            expect(winGuide.zh).toContain('固定到任务栏');
+
+            const linuxGuide = getCdpPlatformGuide('linux');
+            expect(linuxGuide.en).toContain('Pin to Dash');
+            expect(linuxGuide.zh).toContain('固定到停靠栏');
         });
 
         it('parses Antigravity main host argv and walks grandparent PIDs read-only while excluding IDE/Helper processes', () => {
@@ -1442,6 +1459,87 @@ describe('App Opt-In CDP Ambient Overlays & Pure-Node WebSocket Client', () => {
             expect(stFixed.hostHasDebugFlag).toBe(true);
             expect(probedFixedPorts).toEqual([9222]);
             await mgrFixedPort.dispose();
+        });
+
+        it('validates and forwards focusConversation overlay bridge actions (UUID & new-chat) while rejecting invalid IDs', async () => {
+            const received: CdpOverlayBridgeAction[] = [];
+            const bridge = await createOverlayActionBridge({
+                allowedOrigin: 'https://127.0.0.1:62501',
+                onAction: (action) => { received.push(action); },
+            });
+            try {
+                const postAction = (body: Record<string, unknown>) =>
+                    new Promise<{ status: number; json: Record<string, unknown> }>((resolve, reject) => {
+                        const payload = JSON.stringify(body);
+                        const req = http.request({
+                            hostname: '127.0.0.1',
+                            port: bridge.port,
+                            path: '/api/overlay/action',
+                            method: 'POST',
+                            headers: {
+                                Origin: 'https://127.0.0.1:62501',
+                                'Content-Type': 'application/json',
+                                'X-Monitor-Token': bridge.token,
+                                'Content-Length': Buffer.byteLength(payload),
+                            },
+                        }, (res) => {
+                            const chunks: Buffer[] = [];
+                            res.on('data', (c: Buffer) => chunks.push(c));
+                            res.on('end', () => {
+                                resolve({
+                                    status: res.statusCode ?? 0,
+                                    json: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>,
+                                });
+                            });
+                        });
+                        req.on('error', reject);
+                        req.end(payload);
+                    });
+
+                const uuid = '0323401e-1fdf-418a-a0eb-8697e0becc9f';
+                const r1 = await postAction({
+                    command: 'focusConversation',
+                    source: 'topbar',
+                    conversationId: uuid,
+                    isNewConversation: false,
+                });
+                expect(r1.status).toBe(200);
+                expect(r1.json).toEqual({ ok: true, command: 'focusConversation' });
+
+                const r2 = await postAction({
+                    command: 'focusConversation',
+                    source: 'topbar',
+                    conversationId: null,
+                    isNewConversation: true,
+                });
+                expect(r2.status).toBe(200);
+
+                // Invalid non-UUID conversationId without isNewConversation: true is rejected with HTTP 400
+                const rBad = await postAction({
+                    command: 'focusConversation',
+                    source: 'topbar',
+                    conversationId: '<script>alert(1)</script>',
+                    isNewConversation: false,
+                });
+                expect(rBad.status).toBe(400);
+
+                expect(received).toEqual([
+                    {
+                        command: 'focusConversation',
+                        source: 'topbar',
+                        conversationId: uuid,
+                        isNewConversation: false,
+                    },
+                    {
+                        command: 'focusConversation',
+                        source: 'topbar',
+                        conversationId: null,
+                        isNewConversation: true,
+                    },
+                ]);
+            } finally {
+                await bridge.close();
+            }
         });
     });
 });

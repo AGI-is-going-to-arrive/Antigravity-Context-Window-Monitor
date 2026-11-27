@@ -509,10 +509,10 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
                 statusCode: 200,
                 headers: {},
                 buffer: Buffer.from(JSON.stringify({
-                    tag_name: 'v1.17.10',
-                    html_url: 'https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/tag/v1.17.10',
+                    tag_name: 'v1.17.11',
+                    html_url: 'https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/tag/v1.17.11',
                     assets: [
-                        { name: 'antigravity-context-monitor-app-1.17.10.zip', browser_download_url: 'https://github.com/a/b/x.zip' },
+                        { name: 'antigravity-context-monitor-app-1.17.11.zip', browser_download_url: 'https://github.com/a/b/x.zip' },
                         { name: 'SHA256SUMS.txt', browser_download_url: 'https://github.com/a/b/SHA256SUMS.txt' },
                     ],
                 })),
@@ -553,7 +553,7 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         });
         expect(status.remote).toMatchObject({
             checked: true,
-            latestVersion: '1.17.10',
+            latestVersion: '1.17.11',
             updateAvailable: true,
             hasChecksums: true,
             error: null,
@@ -750,5 +750,124 @@ describe('install-app-plugin CLI parsing, security & cross-platform helpers', ()
         expect(ps1Text).toContain('Programs\\Antigravity\\bin\\agy-node.cmd');
         expect(ps1Text).toContain('.gemini\\bin\\agy-node.exe');
         expect(ps1Text).toContain('ELECTRON_RUN_AS_NODE');
+    });
+
+    it('maintains 100% parity with src/app/cdp-launcher.ts across macOS, Windows, and Linux', async () => {
+        const installer = await loadInstaller();
+        const launcherMod = await import('../src/app/cdp-launcher');
+        const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'acm-parity-'));
+        tmpDirs.push(tmpBase);
+
+        // 1. Exact script & asset parity
+        expect(installer.buildMacOsLauncherPlist()).toBe(launcherMod.buildMacOsInfoPlist());
+        expect(installer.buildMacOsLauncherScript('/Applications/Antigravity.app'))
+            .toBe(launcherMod.buildMacOsLauncherScript('/Applications/Antigravity.app'));
+        expect(installer.buildLinuxLauncherScript('/opt/Antigravity/antigravity'))
+            .toBe(launcherMod.buildLinuxLauncherScript('/opt/Antigravity/antigravity'));
+        expect(installer.buildLinuxDesktopEntry('/home/alice/.local/bin/antigravity-cdp', '/home/alice/.local/share/icons/hicolor/scalable/apps/antigravity-cdp.svg'))
+            .toBe(launcherMod.buildLinuxDesktopEntry('/home/alice/.local/bin/antigravity-cdp', '/home/alice/.local/share/icons/hicolor/scalable/apps/antigravity-cdp.svg'));
+        expect(installer.buildLinuxBadgedSvg()).toBe(launcherMod.buildLinuxBadgedSvg());
+        expect(installer.MACOS_ICON_BADGE_JXA).toBe(launcherMod.MACOS_ICON_BADGE_JXA);
+        expect(installer.MACOS_ICON_BADGE_JXA).toContain('const textX = badgeX + (badgeW - textSize.width) / 2;');
+        expect(installer.MACOS_ICON_BADGE_JXA).toContain('text.drawAtPointWithAttributes($.NSMakePoint(textX, textY), attrs);');
+        expect(installer.MACOS_ICON_BADGE_JXA).not.toContain('NSTextAlignmentCenter');
+        expect(installer.WINDOWS_DESKTOP_PS_SCRIPT).toBe(launcherMod.WINDOWS_DESKTOP_PS_SCRIPT);
+        expect(installer.WINDOWS_SHORTCUT_PS_SCRIPT).toBe(launcherMod.WINDOWS_SHORTCUT_PS_SCRIPT);
+
+        // 2. macOS /Applications priority + stale ~/Applications cleanup + Dock anti-pitfall guide
+        const macHome = path.join(tmpBase, 'mac-home');
+        const macSysApps = path.join(tmpBase, 'MacSysApps');
+        const fakeMacApp = path.join(macSysApps, 'Antigravity.app');
+        fs.mkdirSync(path.join(fakeMacApp, 'Contents', 'Resources'), { recursive: true });
+        fs.writeFileSync(path.join(fakeMacApp, 'Contents', 'Resources', 'icon.icns'), 'icns');
+
+        const staleUserBundle = path.join(macHome, 'Applications', 'Antigravity (CDP).app');
+        fs.mkdirSync(path.join(staleUserBundle, 'Contents', 'MacOS'), { recursive: true });
+        fs.writeFileSync(path.join(staleUserBundle, 'Contents', 'Info.plist'), 'old', 'utf8');
+        fs.writeFileSync(path.join(staleUserBundle, 'Contents', 'MacOS', 'launch'), 'old', 'utf8');
+
+        const macSetup = installer.setupCdpLauncher({
+            platform: 'darwin',
+            homeDir: macHome,
+            systemAppsDir: macSysApps,
+            appPath: fakeMacApp,
+            execFileSyncFn: () => { throw new Error('fallback to raw icon'); },
+        });
+        expect(macSetup.ok).toBe(true);
+        expect(macSetup.launcherPath).toBe(path.join(macSysApps, 'Antigravity (CDP).app'));
+        expect(fs.existsSync(staleUserBundle)).toBe(false);
+
+        const guide = installer.formatCdpGuide();
+        expect(guide).toContain('/Applications/Antigravity (CDP).app');
+        expect(guide).toContain('Keep in Dock');
+        expect(guide).toContain('在程序坞中保留');
+        expect(guide).toContain('Pin to taskbar');
+        expect(guide).toContain('Pin to Dash');
+
+        // 3. Windows OneDrive Desktop + direct .lnk + legacy .cmd cleanup
+        const winHome = path.join(tmpBase, 'win-home');
+        const winOneDriveDesktop = path.join(winHome, 'OneDrive', 'Desktop');
+        const winLocal = path.join(winHome, 'AppData', 'Local');
+        const winRoaming = path.join(winHome, 'AppData', 'Roaming');
+        const legacyCmd = path.join(winLocal, 'AntigravityContextMonitor', 'launch-antigravity-cdp.cmd');
+        fs.mkdirSync(path.dirname(legacyCmd), { recursive: true });
+        fs.writeFileSync(legacyCmd, '@echo off\r\n', 'utf8');
+
+        const winEnv = { USERPROFILE: winHome, LOCALAPPDATA: winLocal, APPDATA: winRoaming };
+        const winRunner = (_file: string, args: readonly string[], opts?: { env?: NodeJS.ProcessEnv }) => {
+            const cmd = String(args[args.length - 1] ?? '');
+            if (cmd.includes("GetFolderPath('Desktop')")) {
+                return `${winOneDriveDesktop}\r\n`;
+            }
+            for (const p of [opts?.env?.ACM_LNK_DESKTOP, opts?.env?.ACM_LNK_STARTMENU]) {
+                if (p) {
+                    fs.mkdirSync(path.dirname(p), { recursive: true });
+                    fs.writeFileSync(p, 'lnk', 'utf8');
+                }
+            }
+            return '';
+        };
+        const winSetup = installer.setupCdpLauncher({
+            platform: 'win32',
+            homeDir: winHome,
+            env: winEnv,
+            execFileSyncFn: winRunner,
+        });
+        expect(winSetup.ok).toBe(true);
+        expect(winSetup.status.installed).toBe(true);
+        expect(winSetup.launcherPath).toBe(path.join(winOneDriveDesktop, 'Antigravity (CDP).lnk'));
+        expect(fs.existsSync(legacyCmd)).toBe(false);
+
+        const winRemove = installer.removeCdpLauncher({
+            platform: 'win32',
+            homeDir: winHome,
+            env: winEnv,
+            execFileSyncFn: winRunner,
+        });
+        expect(winRemove.removed).toBe(true);
+        expect(winRemove.status.installed).toBe(false);
+
+        // 4. Linux SVG icon badge + update-desktop-database on setup & remove
+        const linuxHome = path.join(tmpBase, 'linux-home');
+        const dbCalls: string[] = [];
+        const linuxSetup = installer.setupCdpLauncher({
+            platform: 'linux',
+            homeDir: linuxHome,
+            execFileSyncFn: (file: string) => { dbCalls.push(file); },
+        });
+        const linuxSvg = path.join(linuxHome, '.local', 'share', 'icons', 'hicolor', 'scalable', 'apps', 'antigravity-cdp.svg');
+        expect(linuxSetup.ok).toBe(true);
+        expect(fs.existsSync(linuxSvg)).toBe(true);
+        expect(fs.readFileSync(linuxSetup.launcherPath, 'utf8')).toContain(`Icon=${linuxSvg}`);
+        expect(dbCalls).toEqual(['update-desktop-database']);
+
+        const linuxRemove = installer.removeCdpLauncher({
+            platform: 'linux',
+            homeDir: linuxHome,
+            execFileSyncFn: (file: string) => { dbCalls.push(file); },
+        });
+        expect(linuxRemove.removed).toBe(true);
+        expect(fs.existsSync(linuxSvg)).toBe(false);
+        expect(dbCalls).toEqual(['update-desktop-database', 'update-desktop-database']);
     });
 });

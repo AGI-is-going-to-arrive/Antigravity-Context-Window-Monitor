@@ -39,17 +39,25 @@ export interface ConversationTrajectoryLike {
     status?: string;
     lastModifiedTime?: string;
     createdTime?: string;
+    lastUserInputTime?: string;
+    lastUserInputStepIndex?: number;
     requestedModel?: string;
     generatorModel?: string;
     workspaceUris?: readonly string[];
     workspaces?: ReadonlyArray<{ workspaceFolderAbsoluteUri?: string; [key: string]: unknown }>;
     repositoryName?: string;
     branchName?: string;
+    gitRootUri?: string;
     trajectoryType?: string;
     parentCascadeId?: string;
     parentTrajectoryId?: string;
+    parentConversationId?: string;
     isSubagent?: boolean;
     role?: string;
+    agentRole?: string;
+    agentType?: string;
+    spawnedBy?: string;
+    swarmId?: string;
     killed?: boolean;
     trajectoryMetadata?: TrajectoryMetadataLike | Record<string, unknown>;
 }
@@ -68,10 +76,20 @@ export interface ResolveTargetConversationInput {
     hostConversationId?: string | null;
     /** Currently active/tracked cascadeId for continuity when multiple tasks run. */
     currentActiveId?: string | null;
+    /** Optional epoch ms when `currentActiveId` became active (anchors 0-step new chats lacking createdTime). */
+    currentActiveSinceMs?: number;
     /** Current workspace folder URIs/paths used to prefer in-workspace trajectories. */
     workspaceUris?: ReadonlyArray<string>;
     /** Optional set of explicitly linked child/subagent cascadeIds (e.g. from invokeSubagent). */
     knownSubagentIds?: ReadonlySet<string>;
+    /** Optional set of cascadeIds newly observed on the current poll cycle. */
+    newlyCreatedIds?: ReadonlySet<string>;
+    /** Optional set of cascadeIds previously seen and now removed (deleted), preventing pending hold on deleted chats. */
+    deletedConversationIds?: ReadonlySet<string>;
+    /** When true (default), an unseen non-deleted hostConversationId stays pending at 0% instead of falling back to another session. */
+    hostConversationPendingAllowed?: boolean;
+    /** True when the host explicitly reports the user opened a blank New Conversation screen (no cascadeId yet). */
+    hostNewConversationPending?: boolean;
     /** Platform override for workspace URI normalization (defaults to `process.platform`). */
     platform?: NodeJS.Platform;
 }
@@ -86,6 +104,8 @@ export interface ResolvedConversationTarget {
     pinnedFallback: boolean;
     /** True when a subagent burst (running subagent or subagent hostId) was ignored due to Lock to Main Agent. */
     ignoredSubagentBurst: boolean;
+    /** True when the host's focused brand-new conversation is not yet present in `trajectories` (render 0% awaiting generation instead of falling back to another session). */
+    hostPending?: boolean;
     reason: string;
 }
 
@@ -272,6 +292,8 @@ const SUBAGENT_TITLE_PREFIX_PATTERNS: readonly RegExp[] = [
     /^(?:subagent|sub-agent|swarm\s+worker|delegated\s+agent)\s*[:—-]\s+/i,
     /^swarm-[a-z0-9][a-z0-9_-]*-[0-9a-f]{4,}$/i,
 ];
+const SWARM_WORKTREE_PATH_PATTERN = /(?:^|\/)\.gemini\/antigravity\/worktrees\/[^/]+\/swarm-[a-z0-9][a-z0-9_-]*-[0-9a-f]{4,}(?:\/|$)/i;
+const SWARM_BRANCH_PATTERN = /^swarm-[a-z0-9][a-z0-9_-]*-[0-9a-f]{6,}$/i;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -283,13 +305,26 @@ function nonEmptyString(value: unknown): string {
     return typeof value === 'string' ? value.trim() : '';
 }
 
+function matchesSwarmWorktreePath(rawUri: string): boolean {
+    if (!rawUri) { return false; }
+    let normalized = rawUri.trim();
+    try {
+        normalized = decodeURIComponent(normalized);
+    } catch {
+        // Keep raw if malformed percent encoding
+    }
+    normalized = normalized.replace(/\\/g, '/');
+    return SWARM_WORKTREE_PATH_PATTERN.test(normalized);
+}
+
 /**
  * Detect whether a trajectory belongs to a subagent / swarm worker / child agent.
  *
  * Uses authoritative structural metadata first (`isSubagent`, `parentCascadeId`,
- * `trajectoryType`, `trajectoryMetadata`, `knownSubagentIds`), plus strictly
- * anchored system title prefixes so normal user chats mentioning "subagent" or
- * "swarm" in their topic NEVER produce false positives.
+ * `trajectoryType`, `trajectoryMetadata`, `knownSubagentIds`), Antigravity Swarm
+ * worktree paths/branches (`.gemini/antigravity/worktrees/<id>/swarm-...`), plus
+ * strictly anchored system title prefixes so normal user chats mentioning
+ * "subagent" or "swarm" in their topic NEVER produce false positives.
  */
 export function isSubagentTrajectory(
     summary: ConversationTrajectoryLike | null | undefined,
@@ -317,6 +352,7 @@ export function isSubagentTrajectory(
     const parentIds = [
         nonEmptyString(summary.parentCascadeId),
         nonEmptyString(summary.parentTrajectoryId),
+        nonEmptyString(summary.parentConversationId),
         nonEmptyString(meta?.parentCascadeId),
         nonEmptyString(meta?.parentTrajectoryId),
         nonEmptyString(meta?.parentConversationId),
@@ -341,6 +377,8 @@ export function isSubagentTrajectory(
     // Explicit role / spawnedBy metadata
     const roles = [
         nonEmptyString(summary.role),
+        nonEmptyString(summary.agentRole),
+        nonEmptyString(summary.agentType),
         nonEmptyString(meta?.role),
         nonEmptyString(meta?.agentRole),
         nonEmptyString(meta?.agentType),
@@ -352,15 +390,31 @@ export function isSubagentTrajectory(
         }
     }
 
-    const spawnedBy = nonEmptyString(meta?.spawnedBy);
+    const spawnedBy = nonEmptyString(summary.spawnedBy) || nonEmptyString(meta?.spawnedBy);
     if (spawnedBy) {
         return true;
     }
 
     // Swarm worker metadata: has swarmId with a non-coordinator/non-main role
-    if (nonEmptyString(meta?.swarmId)) {
-        const effectiveRole = roles[0]?.toLowerCase() || '';
-        if (effectiveRole && effectiveRole !== 'coordinator' && effectiveRole !== 'main' && effectiveRole !== 'user') {
+    const swarmId = nonEmptyString(summary.swarmId) || nonEmptyString(meta?.swarmId);
+    const effectiveRole = roles[0]?.toLowerCase() || '';
+    const isExplicitMainOrCoordinator = effectiveRole === 'coordinator' || effectiveRole === 'main' || effectiveRole === 'user';
+    if (swarmId) {
+        if (effectiveRole && !isExplicitMainOrCoordinator) {
+            return true;
+        }
+    }
+
+    // Antigravity-managed Swarm worker worktrees & worker branches (unless explicitly marked coordinator/main)
+    if (!isExplicitMainOrCoordinator) {
+        const wsUris = extractTrajectoryWorkspaceUris(summary);
+        const gitRoot = nonEmptyString(summary.gitRootUri);
+        if (gitRoot) { wsUris.push(gitRoot); }
+        if (wsUris.some(matchesSwarmWorktreePath)) {
+            return true;
+        }
+        const branchName = nonEmptyString(summary.branchName);
+        if (branchName && SWARM_BRANCH_PATTERN.test(branchName)) {
             return true;
         }
     }
@@ -386,18 +440,43 @@ function isRunningTrajectory(summary: ConversationTrajectoryLike): boolean {
     return status.includes('RUNNING') && !status.includes('NOT_RUNNING');
 }
 
+function parseTimestampMs(raw: unknown): number {
+    const clean = nonEmptyString(raw);
+    if (!clean) { return 0; }
+    const ms = Date.parse(clean);
+    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
 function getTimestampScore(summary: ConversationTrajectoryLike): number {
-    const raw = nonEmptyString(summary.lastModifiedTime) || nonEmptyString(summary.createdTime);
-    if (!raw) { return 0; }
-    const ms = Date.parse(raw);
-    return Number.isFinite(ms) ? ms : 0;
+    return parseTimestampMs(summary.lastModifiedTime) || parseTimestampMs(summary.createdTime);
+}
+
+function getCreatedTimestampScore(summary: ConversationTrajectoryLike): number {
+    return parseTimestampMs(summary.createdTime);
+}
+
+/**
+ * Timestamp of the most recent explicit human user activity in this conversation:
+ * `lastUserInputTime` when present, or `createdTime` for brand-new 0-step conversations.
+ * Background checkpoints, title summaries, and async tool finishes update `lastModifiedTime`
+ * without advancing `lastUserInputTime`.
+ */
+function getUserActivityScore(summary: ConversationTrajectoryLike): number {
+    const userInputMs = parseTimestampMs(summary.lastUserInputTime);
+    const createdMs = parseTimestampMs(summary.createdTime);
+    if (userInputMs > 0) {
+        return (summary.stepCount || 0) === 0 ? Math.max(userInputMs, createdMs) : userInputMs;
+    }
+    return (summary.stepCount || 0) === 0 ? createdMs : 0;
 }
 
 function compareRecencyDesc(a: ConversationTrajectoryLike, b: ConversationTrajectoryLike): number {
     const timeDiff = getTimestampScore(b) - getTimestampScore(a);
     if (timeDiff !== 0) { return timeDiff; }
-    const rawA = nonEmptyString(a.lastModifiedTime);
-    const rawB = nonEmptyString(b.lastModifiedTime);
+    const createdDiff = getCreatedTimestampScore(b) - getCreatedTimestampScore(a);
+    if (createdDiff !== 0) { return createdDiff; }
+    const rawA = nonEmptyString(a.lastModifiedTime) || nonEmptyString(a.createdTime);
+    const rawB = nonEmptyString(b.lastModifiedTime) || nonEmptyString(b.createdTime);
     if (rawA !== rawB) {
         if (!rawA) { return 1; }
         if (!rawB) { return -1; }
@@ -408,11 +487,110 @@ function compareRecencyDesc(a: ConversationTrajectoryLike, b: ConversationTrajec
     return a.cascadeId.localeCompare(b.cascadeId);
 }
 
+/**
+ * Determine whether a background `RUNNING` candidate should preempt the user's
+ * currently tracked `IDLE` conversation (e.g. a brand-new 0-step chat or a chat at 9%
+ * waiting for the next prompt).
+ *
+ * Prevents older background sessions (e.g. a 54% session finishing an async tool/summary)
+ * from hijacking a newer user conversation, while immediately allowing genuine switches
+ * when the user submits a prompt in another conversation (`lastUserInputTime` advances).
+ */
+function shouldRunningCandidatePreemptActive(
+    candidate: ConversationTrajectoryLike,
+    active: ConversationTrajectoryLike,
+    workspaceSet: ReadonlySet<string>,
+    platform: NodeJS.Platform,
+    currentActiveSinceMs = 0,
+): boolean {
+    if (candidate.cascadeId === active.cascadeId) { return true; }
+
+    const candUserMs = getUserActivityScore(candidate);
+    const activeUserMs = getUserActivityScore(active);
+    const activeSinceAnchor = (active.stepCount || 0) === 0 && currentActiveSinceMs > 0
+        ? currentActiveSinceMs
+        : 0;
+    const effectiveActiveUserMs = Math.max(activeUserMs, activeSinceAnchor);
+
+    if (candUserMs > 0 && effectiveActiveUserMs > 0) {
+        if (candUserMs < effectiveActiveUserMs) {
+            return false;
+        }
+        if (candUserMs > effectiveActiveUserMs) {
+            return true;
+        }
+        const candCreated = getCreatedTimestampScore(candidate);
+        const activeCreated = Math.max(getCreatedTimestampScore(active), activeSinceAnchor);
+        if (candCreated > 0 && activeCreated > 0 && candCreated < activeCreated) {
+            return false;
+        }
+    } else if ((active.stepCount || 0) === 0) {
+        // Active is a brand-new 0-step conversation awaiting its first generation:
+        // never let an older conversation preempt it.
+        const activeCreated = Math.max(getCreatedTimestampScore(active), activeSinceAnchor);
+        const candCreated = getCreatedTimestampScore(candidate);
+        if (activeCreated > 0) {
+            if (candUserMs > 0 && candUserMs < activeCreated) {
+                return false;
+            }
+            if (candCreated > 0 && candCreated < activeCreated) {
+                return false;
+            }
+        }
+    }
+
+    // If active belongs to the current workspace, don't let a background RUNNING task
+    // from a different explicit workspace hijack it unless user activity is strictly newer.
+    if (workspaceSet.size > 0) {
+        const activeInWs = trajectoryMatchesWorkspaceSet(active, workspaceSet, platform);
+        const candInWs = trajectoryMatchesWorkspaceSet(candidate, workspaceSet, platform);
+        const candHasExplicitWs = extractTrajectoryWorkspaceUris(candidate).length > 0;
+        if (activeInWs && !candInWs && candHasExplicitWs && !(candUserMs > effectiveActiveUserMs)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * Determine whether another `IDLE` candidate should replace the currently tracked `IDLE`
+ * conversation. Prevents background metadata/checkpoint `lastModifiedTime` bumps on older
+ * sessions from causing 54% -> 9% jumps while still following explicit new user turns.
+ */
+function shouldIdleCandidatePreemptActive(
+    candidate: ConversationTrajectoryLike,
+    active: ConversationTrajectoryLike,
+    currentActiveSinceMs = 0,
+): boolean {
+    if (candidate.cascadeId === active.cascadeId) { return false; }
+
+    const candUserInputMs = parseTimestampMs(candidate.lastUserInputTime);
+    const activeUserInputMs = parseTimestampMs(active.lastUserInputTime);
+    const activeSinceAnchor = (active.stepCount || 0) === 0 && currentActiveSinceMs > 0
+        ? currentActiveSinceMs
+        : 0;
+    const activeAnchorMs = Math.max(activeUserInputMs, getCreatedTimestampScore(active), activeSinceAnchor);
+
+    if (candUserInputMs > 0 && activeAnchorMs > 0) {
+        return candUserInputMs > activeAnchorMs;
+    }
+
+    const candCreated = getCreatedTimestampScore(candidate);
+    const activeCreated = Math.max(getCreatedTimestampScore(active), activeSinceAnchor);
+    if (candCreated > 0 && activeCreated > 0) {
+        return candCreated > activeCreated;
+    }
+
+    return false;
+}
+
 function pickBestCandidate(
     candidates: readonly ConversationTrajectoryLike[],
     workspaceSet: ReadonlySet<string>,
     platform: NodeJS.Platform,
     currentActiveId?: string | null,
+    currentActiveSinceMs = 0,
 ): { target: ConversationTrajectoryLike | null; reason: string } {
     if (candidates.length === 0) {
         return { target: null, reason: 'no_candidates' };
@@ -422,6 +600,9 @@ function pickBestCandidate(
     const inWorkspace = workspaceSet.size > 0
         ? sorted.filter(t => trajectoryMatchesWorkspaceSet(t, workspaceSet, platform))
         : [];
+    const activeCandidate = currentActiveId
+        ? sorted.find(t => t.cascadeId === currentActiveId)
+        : undefined;
 
     // 1. Keep currently tracked RUNNING conversation in current workspace (prevents flicker)
     if (currentActiveId) {
@@ -431,8 +612,11 @@ function pickBestCandidate(
         }
     }
 
-    // 2. Most recent RUNNING conversation in current workspace
-    const runningLocal = inWorkspace.find(isRunningTrajectory);
+    // 2. Most recent RUNNING conversation in current workspace (guarded against older background hijacks)
+    const runningLocal = inWorkspace.find(t =>
+        isRunningTrajectory(t)
+        && (!activeCandidate || shouldRunningCandidatePreemptActive(t, activeCandidate, workspaceSet, platform, currentActiveSinceMs)),
+    );
     if (runningLocal) {
         return { target: runningLocal, reason: 'running_in_workspace' };
     }
@@ -445,7 +629,15 @@ function pickBestCandidate(
         }
     }
 
-    const runningAny = sorted.find(isRunningTrajectory);
+    // Keep currently tracked RUNNING conversation even if it has no workspace URI yet (brand-new chat)
+    if (activeCandidate && isRunningTrajectory(activeCandidate)) {
+        return { target: activeCandidate, reason: 'active_running' };
+    }
+
+    const runningAny = sorted.find(t =>
+        isRunningTrajectory(t)
+        && (!activeCandidate || shouldRunningCandidatePreemptActive(t, activeCandidate, workspaceSet, platform, currentActiveSinceMs)),
+    );
     if (runningAny) {
         return {
             target: runningAny,
@@ -453,13 +645,57 @@ function pickBestCandidate(
         };
     }
 
-    // 4. Most recent conversation in current workspace
+    // 4. Preserve currently tracked IDLE conversation against background lastModifiedTime bumps
+    //    (only switch when another conversation has strictly newer user input or creation time).
+    if (activeCandidate) {
+        const activeEligibleForWorkspace = workspaceSet.size === 0
+            || inWorkspace.length === 0
+            || trajectoryMatchesWorkspaceSet(activeCandidate, workspaceSet, platform)
+            || extractTrajectoryWorkspaceUris(activeCandidate).length === 0;
+        if (activeEligibleForWorkspace) {
+            const topIdlePool = inWorkspace.length > 0 ? inWorkspace : sorted;
+            const topIdle = topIdlePool[0];
+            if (!topIdle || topIdle.cascadeId === activeCandidate.cascadeId
+                || !shouldIdleCandidatePreemptActive(topIdle, activeCandidate, currentActiveSinceMs)) {
+                return { target: activeCandidate, reason: 'active_idle_preserved' };
+            }
+        }
+    }
+
+    // 5. Most recent conversation in current workspace
     if (inWorkspace.length > 0) {
         return { target: inWorkspace[0], reason: 'latest_in_workspace' };
     }
 
-    // 5. Fallback: most recent conversation overall
+    // 6. Fallback: most recent conversation overall
     return { target: sorted[0], reason: 'latest_overall' };
+}
+
+function pickNewestCreatedCandidate(
+    candidates: readonly ConversationTrajectoryLike[],
+    newlyCreatedIds: ReadonlySet<string> | undefined,
+    workspaceSet: ReadonlySet<string>,
+    platform: NodeJS.Platform,
+): ConversationTrajectoryLike | null {
+    if (!newlyCreatedIds || newlyCreatedIds.size === 0 || candidates.length === 0) {
+        return null;
+    }
+    const fresh = candidates.filter(t => newlyCreatedIds.has(t.cascadeId) && t.killed !== true);
+    if (fresh.length === 0) {
+        return null;
+    }
+    const sortedFresh = [...fresh].sort(compareRecencyDesc);
+    if (workspaceSet.size > 0) {
+        // Prefer newly created chats in the active workspace or brand-new chats without workspace URIs bound yet
+        const inWsOrUnbound = sortedFresh.filter(t =>
+            trajectoryMatchesWorkspaceSet(t, workspaceSet, platform)
+            || extractTrajectoryWorkspaceUris(t).length === 0,
+        );
+        if (inWsOrUnbound.length > 0) {
+            return inWsOrUnbound[0];
+        }
+    }
+    return sortedFresh[0];
 }
 
 // ─── Target Conversation Resolver ────────────────────────────────────────────
@@ -473,7 +709,8 @@ function pickBestCandidate(
  * 2. `locked_main` — `lockToMainAgent: true` ignores subagent bursts and stays on the
  *    active or most-recent main-agent trajectory.
  * 3. `auto_follow` — follows `hostConversationId` (e.g. `window.sidecar.conversationId`)
- *    or the latest active workspace trajectory.
+ *    or the latest active workspace trajectory, resisting subagent/swarm hijacks and
+ *    cross-session jumps when starting brand-new conversations.
  */
 export function resolveTargetConversation(
     input: ResolveTargetConversationInput,
@@ -485,10 +722,46 @@ export function resolveTargetConversation(
     const prevLockedMainId = nonEmptyString(input.lockedMainId);
     const hostConversationId = nonEmptyString(input.hostConversationId);
     const currentActiveId = nonEmptyString(input.currentActiveId);
+    const currentActiveSinceMs = typeof input.currentActiveSinceMs === 'number'
+        && Number.isFinite(input.currentActiveSinceMs)
+        && input.currentActiveSinceMs > 0
+        ? input.currentActiveSinceMs
+        : 0;
     const workspaceSet = buildNormalizedWorkspaceSet(input.workspaceUris, platform);
     const knownSubagents = input.knownSubagentIds;
+    const newlyCreatedIds = input.newlyCreatedIds;
+    const deletedIds = input.deletedConversationIds;
+    const hostPendingAllowed = input.hostConversationPendingAllowed !== false;
+    const hostNewConversationPending = input.hostNewConversationPending === true;
+
+    const hostIdIsKnownSubagent = Boolean(hostConversationId && knownSubagents?.has(hostConversationId));
+    const hostIdIsDeleted = Boolean(hostConversationId && deletedIds?.has(hostConversationId));
 
     if (trajectories.length === 0) {
+        if (!pinnedId && hostNewConversationPending) {
+            return {
+                target: null,
+                cascadeId: null,
+                mode: lockToMainAgent ? 'locked_main' : 'auto_follow',
+                lockedMainId: null,
+                pinnedFallback: false,
+                ignoredSubagentBurst: false,
+                hostPending: true,
+                reason: lockToMainAgent ? 'locked_main_new_conversation_pending' : 'host_new_conversation_pending',
+            };
+        }
+        if (hostConversationId && hostPendingAllowed && !hostIdIsDeleted && !(lockToMainAgent && hostIdIsKnownSubagent)) {
+            return {
+                target: null,
+                cascadeId: hostConversationId,
+                mode: lockToMainAgent ? 'locked_main' : 'auto_follow',
+                lockedMainId: lockToMainAgent ? hostConversationId : null,
+                pinnedFallback: Boolean(pinnedId),
+                ignoredSubagentBurst: false,
+                hostPending: true,
+                reason: lockToMainAgent ? 'locked_main_host_pending' : 'host_conversation_pending',
+            };
+        }
         return {
             target: null,
             cascadeId: null,
@@ -522,7 +795,7 @@ export function resolveTargetConversation(
                 return prev.cascadeId;
             }
         }
-        const bestMain = pickBestCandidate(mainTrajectories, workspaceSet, platform, currentActiveId).target;
+        const bestMain = pickBestCandidate(mainTrajectories, workspaceSet, platform, currentActiveId, currentActiveSinceMs).target;
         return bestMain ? bestMain.cascadeId : null;
     };
 
@@ -548,8 +821,43 @@ export function resolveTargetConversation(
     // ── Mode 2: Lock to Main Agent ───────────────────────────────────────────
     if (lockToMainAgent) {
         const hostTarget = hostConversationId ? byId.get(hostConversationId) : undefined;
-        const hostIsSubagent = Boolean(hostTarget && isSubagentTrajectory(hostTarget, knownSubagents));
+        const hostIsSubagent = Boolean(
+            (hostTarget && isSubagentTrajectory(hostTarget, knownSubagents))
+            || hostIdIsKnownSubagent,
+        );
         const hasRunningSubagent = subagentTrajectories.some(isRunningTrajectory);
+
+        if (hostNewConversationPending) {
+            return {
+                target: null,
+                cascadeId: null,
+                mode: 'locked_main',
+                lockedMainId: findFallbackMainId(),
+                pinnedFallback,
+                ignoredSubagentBurst: hasRunningSubagent,
+                hostPending: true,
+                reason: pinnedFallback
+                    ? 'pinned_missing_locked_main_new_conversation_pending'
+                    : 'locked_main_new_conversation_pending',
+            };
+        }
+
+        // Brand-new host main conversation not yet returned by GetAllCascadeTrajectories:
+        // NEVER fall back to an older locked main conversation (prevents 54% -> 9% jump!).
+        if (hostConversationId && !hostTarget && !hostIsSubagent && !hostIdIsDeleted && hostPendingAllowed) {
+            return {
+                target: null,
+                cascadeId: hostConversationId,
+                mode: 'locked_main',
+                lockedMainId: hostConversationId,
+                pinnedFallback,
+                ignoredSubagentBurst: hasRunningSubagent,
+                hostPending: true,
+                reason: pinnedFallback
+                    ? 'pinned_missing_locked_main_host_pending'
+                    : 'locked_main_host_pending',
+            };
+        }
 
         if (mainTrajectories.length === 0) {
             // Edge case: only subagent trajectories exist; fall back gracefully instead of blanking
@@ -574,6 +882,14 @@ export function resolveTargetConversation(
             chosen = hostTarget;
             reason = 'locked_main_host';
         }
+        // Priority 2a-new: newly created main trajectory (ignoring newly spawned swarm workers/subagents)
+        if (!chosen) {
+            const freshMain = pickNewestCreatedCandidate(mainTrajectories, newlyCreatedIds, workspaceSet, platform);
+            if (freshMain) {
+                chosen = freshMain;
+                reason = 'locked_main_new_conversation';
+            }
+        }
         // Priority 2b: previously locked main conversation while it still exists
         if (!chosen && prevLockedMainId) {
             const locked = byId.get(prevLockedMainId);
@@ -592,7 +908,7 @@ export function resolveTargetConversation(
         }
         // Priority 2d: best active/recent main trajectory (preferring current workspace)
         if (!chosen) {
-            const bestMain = pickBestCandidate(mainTrajectories, workspaceSet, platform, currentActiveId);
+            const bestMain = pickBestCandidate(mainTrajectories, workspaceSet, platform, currentActiveId, currentActiveSinceMs);
             chosen = bestMain.target;
             reason = `locked_main_${bestMain.reason}`;
         }
@@ -613,6 +929,19 @@ export function resolveTargetConversation(
     }
 
     // ── Mode 3: Auto-Follow ──────────────────────────────────────────────────
+    if (hostNewConversationPending) {
+        return {
+            target: null,
+            cascadeId: null,
+            mode: 'auto_follow',
+            lockedMainId: findFallbackMainId(),
+            pinnedFallback,
+            ignoredSubagentBurst: false,
+            hostPending: true,
+            reason: pinnedFallback ? 'pinned_missing_host_new_conversation_pending' : 'host_new_conversation_pending',
+        };
+    }
+
     if (hostConversationId) {
         const hostTarget = byId.get(hostConversationId);
         if (hostTarget) {
@@ -626,16 +955,53 @@ export function resolveTargetConversation(
                 reason: pinnedFallback ? 'pinned_missing_host_conversation' : 'host_conversation',
             };
         }
+        // Host reports a brand-new conversation ID not yet indexed by GetAllCascadeTrajectories:
+        // hold cleanly at pending 0% instead of jumping to an unrelated older session!
+        if (!hostIdIsDeleted && hostPendingAllowed) {
+            return {
+                target: null,
+                cascadeId: hostConversationId,
+                mode: 'auto_follow',
+                lockedMainId: findFallbackMainId(),
+                pinnedFallback,
+                ignoredSubagentBurst: false,
+                hostPending: true,
+                reason: pinnedFallback ? 'pinned_missing_host_conversation_pending' : 'host_conversation_pending',
+            };
+        }
     }
 
-    const best = pickBestCandidate(uniqueTrajectories, workspaceSet, platform, currentActiveId);
+    // Newly created main conversation takes immediate precedence (never newly spawned swarm workers/subagents)
+    const newlyCreatedMain = pickNewestCreatedCandidate(mainTrajectories, newlyCreatedIds, workspaceSet, platform);
+    if (newlyCreatedMain) {
+        return {
+            target: newlyCreatedMain,
+            cascadeId: newlyCreatedMain.cascadeId,
+            mode: 'auto_follow',
+            lockedMainId: newlyCreatedMain.cascadeId,
+            pinnedFallback,
+            ignoredSubagentBurst: subagentTrajectories.some(isRunningTrajectory),
+            reason: pinnedFallback ? 'pinned_missing_new_main_conversation' : 'new_main_conversation',
+        };
+    }
+
+    // Once a main conversation is actively tracked (or any main conversation is RUNNING),
+    // prevent concurrent background subagents / swarm workers from hijacking context display.
+    const currentActiveObj = currentActiveId ? byId.get(currentActiveId) : undefined;
+    const currentActiveIsMain = Boolean(currentActiveObj && !isSubagentTrajectory(currentActiveObj, knownSubagents));
+    const hasRunningMain = mainTrajectories.some(isRunningTrajectory);
+    const restrictToMain = mainTrajectories.length > 0 && (currentActiveIsMain || hasRunningMain);
+    const autoCandidates = restrictToMain ? mainTrajectories : uniqueTrajectories;
+
+    const best = pickBestCandidate(autoCandidates, workspaceSet, platform, currentActiveId, currentActiveSinceMs);
+    const ignoredSubagentBurst = restrictToMain && subagentTrajectories.some(isRunningTrajectory);
     return {
         target: best.target,
         cascadeId: best.target?.cascadeId ?? null,
         mode: 'auto_follow',
         lockedMainId: findFallbackMainId(best.target),
         pinnedFallback,
-        ignoredSubagentBurst: false,
+        ignoredSubagentBurst,
         reason: pinnedFallback ? `pinned_missing_${best.reason}` : best.reason,
     };
 }

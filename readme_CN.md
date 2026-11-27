@@ -2,9 +2,9 @@
 
 在 **Antigravity App（桌面版 2.0+ 原生 Sidecar 插件）** 与 **Antigravity IDE（VSIX 扩展）** 中实时监控会话上下文构成与双水位线（`自动压缩` + `200k` 档位）、带基础费率映射与全链路角色归因的 Orchestrator 编排/执行路由、带续航预测的双窗口模型配额（`5h` + `周`）、模型生成速度（`tok/s`）、首字延迟与逐轮提示词缓存诊断、52 周多源活动热力图（`App` / `IDE` / `CLI`）、多币种 API 等价费用与可选套餐回本估算、重置时间和 AI 积分。
 
-**1.17.10** 在 v1.17.9 基础上彻底修复 Windows Antigravity 2.35.2 下内联右上角状态条右侧出现多余空白的问题（[Issue #77](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/77)，致谢 [`@Number444`](https://github.com/Number444)），并全面加固跨平台 WCO 与锚定边界：(1) **消除内联幽灵 WCO 空白并加固 `computeWcoInsetPx` 边界校验**（内联锚定时直接返回 `0`，不再于双行标题栏下在胶囊与 `toggle-aux-sidebar` 之间插入约 146px 空白；`fixed` 模式同步防护隐藏预留节点、空 `DOMRect(0,0,0,0)` 撑爆及 Windows 全屏/RTL 误回退 `138px`）；(2) **内联同行右侧控件宽度预算与空首行 WCO 防碰撞**（内联模式不再虚扣 WCO 宽度并支持 `r.top < 96` 第二行兄弟元素测量，杜绝胶囊提前折叠进 `···`；当空首行 `pane-titlebar-toolbar` 落入右侧 WCO 按钮区时自动跳过并回退至 `fixed` 避让 `_ □ ×`）；(3) **幂等 `anchor.before` 归一化与 `geometrychange` 实时监听**（消除 Tier 3 重复 `insertBefore(host, host)` 抖动，实时响应 `navigator.windowControlsOverlay` `geometrychange` 并在卸载时完整释放）。
+**1.17.11** 在 v1.17.10 基础上带来易用性、准确性与三平台启动器的全面升级：(1) **三平台零魔改持久化 CDP 启动器升级与 `CDP` 图标角标**（macOS 优先 `/Applications/Antigravity (CDP).app` 并清理旧副本与合成原生 `CDP` 图标角标，Windows OneDrive 感知桌面直连 `.lnk` 快捷方式与 `.ico` 角标告别 CMD 黑框并原生固定任务栏，Linux 兼容标准/Snap/AppImage 进程检测、非强杀冲突提示与 `CDP` SVG 角标，搭配三平台程序坞/任务栏防坑指南且与 `install-app-plugin.mjs` 100% 同步）；(2) **彻底修复跨会话上下文用量跳变（新对话 `54% → 9%` 闪烁）**（`hostPending` 纯净 `0%` 起步、蜂群工作树 `.gemini/antigravity/worktrees/.../swarm-*` 隔离、单调 `telemetryRefreshSeq` 原子提交与严格 Trusted-Types 安全的 Hub `focusConversation` 聚焦同步）；(3) **统一挂载于 `document.body` 的自适应富文本提示引擎（`#acmRichTipPopover`）**（适配 CSS `zoom` 缩放、自动上下翻转、`320px` `AUX_PANE` 夹紧、5 秒刷新无闪烁重锚、禁用按钮原因说明，全面退役易裁切 CSS `[data-tooltip]::after`）；(4) **上下文构成交互与四主题色板重构**（分类级 Top 3 `topItems`、9 大分类四主题深/浅/高对比色板、悬停快览 + 跨刷新保持的点击锁定内联诊断抽屉与 `<=420px` `10×10` 点阵）；(5) **全 8 页签、顶栏/原生 HUD、账号浮层与 CDP 悬浮层术语统一与白话解释**（含 `200k 阶梯`非额外扣费说明、服务端 Prompt Cache `热缓存/部分命中/冷启动` 说明、总览折叠术语表、可悬停 CDP 水位线与 Turn Cache 提示及各页 UX 缺陷修复）。
 
-[English](README.md) · [AI 智能体一键安装（`AGENTS.md`）](AGENTS.md) · [1.17.10 发布说明与验证](docs/releases/1.17.10.md#中文) · [技术实现](docs/technical_implementation.md) · [项目结构](docs/project_structure.md) · [变更日志](CHANGELOG.md)
+[English](README.md) · [AI 智能体一键安装（`AGENTS.md`）](AGENTS.md) · [1.17.11 发布说明与验证](docs/releases/1.17.11.md#中文) · [技术实现](docs/technical_implementation.md) · [项目结构](docs/project_structure.md) · [变更日志](CHANGELOG.md)
 
 ## 给 AI 智能体的一句话安装 / 升级（`AGENTS.md`）
 
@@ -28,7 +28,22 @@
   ```
 - **在本地仓库中执行：** `node scripts/install-app-plugin.mjs --upgrade`（macOS/Linux 可用 `./scripts/install-app-plugin.sh --upgrade`，Windows 可用 `.\scripts\install-app-plugin.ps1 --upgrade`，均自动发现内置 `agy-node` 或 Electron `ELECTRON_RUN_AS_NODE=1`），执行 `node scripts/install-app-plugin.mjs --status --check-remote` 即可复核已安装版本、启用状态与实时 Sidecar 状态。完整安全边界见 [AGENTS.md](AGENTS.md)。
 
-## 1.17.10 核心更新
+## 1.17.11 核心更新
+
+- **三平台零魔改持久化 CDP 启动器升级、`CDP` 图标角标与固定防坑指引（`src/app/cdp-launcher.ts`、`src/app/cdp-injector.ts`、`scripts/install-app-plugin.mjs`）：**
+  - **macOS：** 优先写入可写的 `/Applications/Antigravity (CDP).app`（自动回退 `~/Applications`），安全清理另一目录旧副本，通过零依赖 JXA AppKit + `sips` + `iconutil` 合成原生 `CDP` 图标角标，并提示从访达拖入程序坞（切勿对运行中图标点「在程序坞中保留」）。
+  - **Windows：** 通过 UTF-8 PowerShell 解析 OneDrive 桌面路径，生成直连 `Antigravity.exe --remote-debugging-port=0` 的桌面与开始菜单 `.lnk` 快捷方式（`WindowStyle=1`、原生固定到任务栏、告别 CMD 黑框并清理旧 `.cmd`），并合成 `CDP` 角标 `.ico`。
+  - **Linux：** 精准识别标准安装/Snap/AppImage 进程而不误判辅助进程，提供非强杀冲突提示（`zenity` → `kdialog` → `notify-send` → `stderr`），生成 `CDP` 角标 SVG 图标（`~/.local/share/icons/hicolor/scalable/apps/antigravity-cdp.svg`），配置 `StartupWMClass=Antigravity` 并执行 `update-desktop-database`。
+- **修复跨会话上下文用量跳变（`54% → 9%` 闪烁）、蜂群子智能体隔离与 Hub `focusConversation` 同步（`src/conversation-selector.ts`、`src/tracker.ts`、`src/app/host-bridge.ts`、`src/app/sidecar-runtime.ts`、`src/app/sidecar-server.ts`、`src/app/cdp-injector.ts`、`src/app/cdp-overlay-assets.ts`）：**
+  - **新对话纯净 `0%` 起步与蜂群隔离：** 通过 `hostPending` / `hostNewConversationPending` 保障品牌新对话在首步落盘前纯净展示 `0%` / `0 tokens`（`processSteps([])` 返回 `0` 而非 `10,000`），通过 `.gemini/antigravity/worktrees/.../swarm-*` 识别与收紧的 `auto_follow` 抢占守卫杜绝后台蜂群子智能体或旧会话劫持主会话。
+  - **原子化遥测提交与 Hub 实时焦点同步（`CDP_OVERLAY_SCRIPT_VERSION = '1.17.11'`）：** 单调 `telemetryRefreshSeq` 代际守卫配合严格 `cascadeId` 校验原子提交用量/构成/诊断缓存；`host-bridge.ts` 实时响应 `window.sidecar.conversationId` 变化/清空；CDP 悬浮层经 `/api/overlay/action` 去重上报 Trusted-Types 安全的 `focusConversation` 事件。
+- **统一挂载于 `document.body` 的自适应富文本提示引擎（`#acmRichTipPopover` — `src/webview-document.ts`、`src/webview-script.ts`、`src/webview-editorial-styles.ts`、`src/webview-styles.ts`）：**
+  - 全面退役易被裁切的纯 CSS `[data-tooltip]::after`，改为单实例 body 级 `#acmRichTipPopover`，支持 CSS `zoom`（`80%–150%`）坐标缩放、自动上下翻转、`320px` `AUX_PANE` 夹紧、移入宽限计时器、点击/`Enter`/`Space` 锁定与 `Esc` 关闭、`.rich-tip-disabled-wrap` 禁用按钮说明，以及 5 秒 `applyIncrementalUpdate` 按 `data-popover-key` 零闪烁重锚。
+- **上下文构成重构与全 8 页签 / HUD / CDP 术语统一（`src/context-breakdown.ts`、`src/webview-overview-tab.ts`、`src/activity-panel.ts`、`src/pricing-panel.ts`、`src/webview-*-tab.ts`、`src/app/cdp-overlay-assets.ts`）：**
+  - **可诊断上下文构成：** 分类级 Top 3 `topItems`、9 大分类四主题色板（深/浅/高对比深/修复后高对比浅与 `forced-colors`）、悬停快览 + 跨 5 秒刷新保持的点击锁定内联 `#ctxSelectedDrawer` 抽屉，以及 `<=420px` 响应式 `10×10` 点阵。
+  - **全站白话解释与 UX 修复：** 全 8 页签、顶栏/原生 HUD（上下文危险阈值对齐 `>=80%`）、账号浮层（新增可见 `.acct-quota-pct`）与 CDP 悬浮层（修复全部 4 处水位线刻度悬停 + 新增 Turn Cache 胶囊提示）统一中英文术语；新增总览折叠术语表（`#overview-glossary`）、清晰说明 `200k 阶梯`不额外扣费与服务端 Prompt Cache（`热缓存 / 部分命中 / 冷启动`），并移除面向用户的 `M537/M667/M681/M669` 内部代号。
+
+### 基于 1.17.10 核心升级
 
 - **修复 Windows 内联右上角状态条 WCO 多余空白并加固 WCO 边界守卫（致谢 [`@Number444`](https://github.com/Number444) — [Issue #77](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/77)，`CDP_OVERLAY_SCRIPT_VERSION = '1.17.10'` — `src/app/cdp-overlay-assets.ts`）：**
   - **消除内联幽灵 `.acm-wco-spacer` 空白：** `computeWcoInsetPx(isFixedAnchor)` 在内联锚定（`!isFixedAnchor`）时立即返回 `0`，彻底消除 Windows Antigravity 2.35.2 双行标题栏下（第一行承载 `_ □ ×`、第二行承载会话顶栏且不含 `window-controls-reserve`）胶囊与 `toggle-aux-sidebar` 之间约 146px 的空白间距。
@@ -67,7 +82,7 @@
     - **macOS（`~/Applications/Antigravity (CDP).app`）：** 复用原生图标与 `LSUIElement=true`；精确识别运行中的 Antigravity App 主进程（忽略 IDE/Tools），若未带 CDP 启动则前台弹出系统确认框（含 TCC 权限回退提示）后优雅退出，并轮询最多 15 秒直至 `Cmd+Q` 后约 5 秒的 `language_server` 后台清理彻底结束再以 `--remote-debugging-port=0` 启动。
     - **Windows（桌面 + 开始菜单 `.lnk` + `%LOCALAPPDATA%\AntigravityContextMonitor\launch-antigravity-cdp.cmd`）** 与 **Linux（`~/.local/share/applications/antigravity-cdp.desktop` + `~/.local/bin/antigravity-cdp`）**。
   - **智能宿主参数发现与并发加固：** 修复 `selectAntigravityHubTarget()` 误挂自身 Sidecar（自动排除 `ANTIGRAVITY_SIDECAR_WEB_PORT`、`ANTIGRAVITY_SIDECAR_PORT`、独立监听端口、`plugin://` 及监控/蜂群标题，优先 `https:` 本地回环 Hub 与 `Jetski Web`）；新增只读父进程命令行检测（精准诊断 `host_missing_flag`、自定义 `--user-data-dir` 与固定 `--remote-debugging-port=<N>` 直连回退）；支持 IPv6 `[::1]` 回退、互斥锁与桥创建失败断开防泄漏；`install-app-plugin.mjs --status` 新增回环 TCP 探测识别过期 `DevToolsActivePort`（`cdp.stale`）及 `cdpLauncher` 状态。
-  - **悬浮层锚定、WCO、主题、「打开面板」与双端实时诊断（`CDP_OVERLAY_SCRIPT_VERSION = '1.17.10'`）：** 右上角状态条按 4 级右浮层优先锚定在 `[data-testid="toggle-maximize-pane"]` 之前，内联模式零 `.acm-wco-spacer` 留白（`computeWcoInsetPx(false) === 0`），配合边界加固的 `fixed` WCO 留白与 `geometrychange` 监听、同行右侧控件宽度预算（`getRightChromeLeftPx()`）、空首行 `pane-titlebar-toolbar` WCO 防碰撞回退及幂等 `anchor.before` 处理；弹窗经 Chromium Top Layer（`popover="manual"`）与侧边栏感知夹紧彻底消除裁切；输入框悬浮环严格锚定 `permissions-selector-trigger`（`Turbo` 左侧，绝不落入顶部 `This Computer` 元信息栏）；「打开面板」直接展开折叠侧栏并切换至对应视图标签页；完善深浅主题检测；打通 `#cdpStatusPill`、双语 `#cdpDiagnosticHint`（含 `host_missing_flag`）、`#cdpLauncherStatus`、`#cdpSetupLauncherBtn`、`#cdpRevealLauncherBtn`、`#cdpRecheckBtn`、一键复制按钮（`.cdp-copy-btn`）及 IDE 端打开开关实时探测。
+  - **悬浮层锚定、WCO、主题、「打开面板」与双端实时诊断（`CDP_OVERLAY_SCRIPT_VERSION = '1.17.11'`）：** 右上角状态条按 4 级右浮层优先锚定在 `[data-testid="toggle-maximize-pane"]` 之前，内联模式零 `.acm-wco-spacer` 留白（`computeWcoInsetPx(false) === 0`），配合边界加固的 `fixed` WCO 留白与 `geometrychange` 监听、同行右侧控件宽度预算（`getRightChromeLeftPx()`）、空首行 `pane-titlebar-toolbar` WCO 防碰撞回退及幂等 `anchor.before` 处理；弹窗经 Chromium Top Layer（`popover="manual"`）与侧边栏感知夹紧彻底消除裁切；输入框悬浮环严格锚定 `permissions-selector-trigger`（`Turbo` 左侧，绝不落入顶部 `This Computer` 元信息栏）；新增可悬停/键盘聚焦水位线刻度、Turn Cache 胶囊提示与 Hub `focusConversation` 焦点同步；「打开面板」直接展开折叠侧栏并切换至对应视图标签页；完善深浅主题检测；打通富提示 `#cdpStatusPill`、双语 `#cdpDiagnosticHint`（含 `host_missing_flag`）、`#cdpLauncherStatus`、`#cdpSetupLauncherBtn`、`#cdpRevealLauncherBtn`、`#cdpRecheckBtn`、一键复制按钮（`.cdp-copy-btn`）及 IDE 端打开开关实时探测。
 - **订阅套餐回本（Plan ROI）预设升级（`src/cli-usage-scanner.ts`、`package.json`、`src/webview-settings-tab.ts`、`src/webview-script.ts`）：**
   - 日历订阅回本预设更新为 **Google AI Pro（`$19.99/月`）**、**Google AI Ultra 5x（`$99.99/月`）** 与 **Google AI Ultra 20x（`$199.99/月`）**（及自定义月费），通过 `normalizeSubscriptionPlanId()` 无损兼容旧版 `'google-ai-ultra'` 配置（完整保留用户已保存的如 `$249.99` 历史月费）并动态同步 `#subscriptionFeeInput` 占位提示。
 
@@ -87,7 +102,7 @@
 
 1. **从 GitHub Releases 一键安装 / 升级（推荐）：**
    - 直接运行上方[给 AI 智能体的一句话安装 / 升级（`AGENTS.md`）](#给-ai-智能体的一句话安装--升级agentsmd)中的任意零克隆命令——自动校验 `SHA256SUMS.txt`、安全解压并无损注册到 `config.json`。
-   - 或前往 [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases) 手动下载 `antigravity-context-monitor-app-1.17.10.zip`（macOS / Windows / Linux）、`antigravity-context-monitor-app-1.17.10.tar.gz`（macOS / Linux）与 `SHA256SUMS.txt`，解压得到 `antigravity-context-monitor/` 后执行：
+   - 或前往 [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases) 手动下载 `antigravity-context-monitor-app-1.17.11.zip`（macOS / Windows / Linux）、`antigravity-context-monitor-app-1.17.11.tar.gz`（macOS / Linux）与 `SHA256SUMS.txt`，解压得到 `antigravity-context-monitor/` 后执行：
      ```bash
      agy plugin install ./antigravity-context-monitor
      ```
@@ -106,16 +121,16 @@
 
 ### 方式二 — Antigravity IDE（VSIX 扩展）
 
-1. 从 [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases) 下载 `antigravity-context-monitor-1.17.10.vsix`（并对照 `SHA256SUMS.txt` 校验），或运行 `npm run compile && npm run package` 在本地打包。
+1. 从 [GitHub Releases](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases) 下载 `antigravity-context-monitor-1.17.11.vsix`（并对照 `SHA256SUMS.txt` 校验），或运行 `npm run compile && npm run package` 在本地打包。
 2. 在 Antigravity IDE 命令面板（macOS：`Cmd+Shift+P`，Windows / Linux：`Ctrl+Shift+P`）执行 **Extensions: Install from VSIX...** 选择该文件，或命令行执行：
    ```bash
-   antigravity-ide --install-extension antigravity-context-monitor-1.17.10.vsix --force
+   antigravity-ide --install-extension antigravity-context-monitor-1.17.11.vsix --force
    ```
-3. 重载 IDE 窗口，在扩展详情或监控器的**关于**页确认版本为 **1.17.10**。
+3. 重载 IDE 窗口，在扩展详情或监控器的**关于**页确认版本为 **1.17.11**。
 
 IDE 扩展也可以通过 [Open VSX](https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor) 安装并自动获取更新。
 
-双端插件均支持 **macOS、Windows、Linux**（IDE 另支持 **WSL**）。1.17.10 原生实机验收在 macOS 完成，Windows 与 Linux 平台分支由自动化单元与模拟回归测试覆盖，详见发布说明。[验证](docs/releases/1.17.10.md#验证)
+双端插件均支持 **macOS、Windows、Linux**（IDE 另支持 **WSL**）。1.17.11 原生实机验收在 macOS 完成，Windows 与 Linux 平台分支由自动化单元与模拟回归测试覆盖，详见发布说明。[验证](docs/releases/1.17.11.md#验证)
 
 ## 使用监控器
 
@@ -199,7 +214,7 @@ IDE 扩展也可以通过 [Open VSX](https://open-vsx.org/extension/AGI-is-going
 <details>
 <summary>关于 — 版本与更新卡片、AGENTS.md 一句话提示、双端兼容性与功能导航</summary>
 
-查看实时**版本与更新**卡片（`v1.17.10`、上次检查时间、**检查更新**、App 端**立即升级**或 IDE 端 **Open VSX 市场**）、复制 **AGENTS.md** AI 智能体一句话安装/升级提示词、核对双端官方支持标识（**Antigravity IDE** + **Antigravity App（桌面版 2.0+ Sidecar）**），通过功能导航卡片直达各页面，并查阅社区致谢与兼容性记录。
+查看实时**版本与更新**卡片（`v1.17.11`、上次检查时间、**检查更新**、App 端**立即升级**或 IDE 端 **Open VSX 市场**）、复制 **AGENTS.md** AI 智能体一句话安装/升级提示词、核对双端官方支持标识（**Antigravity IDE** + **Antigravity App（桌面版 2.0+ Sidecar）**），通过功能导航卡片直达各页面，并查阅社区致谢与兼容性记录。
 
 ![Obsidian Slate 深色主题下的双语关于页，展示版本与更新卡片、AGENTS.md 提示与功能导航卡片](src/images/monitor-about.png)
 
@@ -271,7 +286,7 @@ IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 22 项；共享偏
 | `AUX_PANE`（`/`） | 紧凑侧边栏视图，从侧边面板 `+` 菜单或 `sidecar://antigravity-context-monitor/context_monitor/` 打开 |
 | `SIDEBAR`（`/full`） | 全宽仪表盘视图，从左侧栏 **Plugins → Context Monitor** 打开 |
 | `/api/health`、`/api/snapshot`、`/api/action` | 本地回环健康检查、可见性门控 ETag 快照接口与交互动作分发（含更新检查/自更新、日历筛选与导出、编排计价模式、币种/回本与 App↔IDE 热同步 `appSettings`） |
-| `POST /api/overlay/action` | 面向按需开启 CDP Shadow DOM 悬浮层的本地回环鉴权桥接接口——强制常量时间 256-bit `X-Monitor-Token` 校验、严格回环/Hub `Origin` 校验、`16 KB` 请求体上限及命令白名单（`ping`、`refresh`、`openSidecar`、`togglePanel`、`openPanel`、`togglePause`） |
+| `POST /api/overlay/action` | 面向按需开启 CDP Shadow DOM 悬浮层的本地回环鉴权桥接接口——强制常量时间 256-bit `X-Monitor-Token` 校验、严格回环/Hub `Origin` 校验、`16 KB` 请求体上限及命令白名单（`ping`、`refresh`、`openSidecar`、`togglePanel`、`openPanel`、`togglePause`、`focusConversation`） |
 
 ## 排障与限制
 
@@ -279,7 +294,7 @@ IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 22 项；共享偏
 - **同时运行 Antigravity App 与 Antigravity IDE：** 双端自动按运行端隔离各自的本地后端（`preferredSurface: 'app'` 与 `'ide'`）零串扰，并通过加固后的原子 `O_CREAT | O_EXCL` 文件锁（死进程 PID 过期回收 + 持有者令牌校验）与三方合并安全热同步 `state-v1.json` 历史记录与设置。
 - **升级 Antigravity App 插件：** 在面板内点击**立即升级**或命令行执行 `--upgrade` 后，请在 **Customizations → Installed**（`customization://antigravity-context-monitor`）中将插件**关闭再重新开启**，或在方便时由您自行重启 Antigravity App——绝不可在活跃对话期间强杀运行中的宿主进程。
 - **可选 CDP 悬浮层显示 `CDP 未就绪` / `CDP 不可用`：** 核心 Sidecar `AUX_PANE`、`SIDEBAR` 与原生精简 HUD 均 100% 原生工作，不依赖 CDP。如需启用输入框上下文环或右上角状态条（零 `app.asar` 修改）：
-  - **推荐方案（一键持久化，永久免疫自动更新丢参）：** 在**设置 → 悬浮层与 CDP** 点击**一键生成持久化启动器**（或运行 `node scripts/install-app-plugin.mjs --setup-cdp-launcher`），自动生成 `~/Applications/Antigravity (CDP).app`（macOS）、桌面与开始菜单 `.lnk`（Windows）或 `~/.local/share/applications/antigravity-cdp.desktop`（Linux），之后直接从该启动器打开即可。
+  - **推荐方案（一键持久化，永久免疫自动更新丢参）：** 在**设置 → 悬浮层与 CDP** 点击**一键生成持久化启动器**（或运行 `node scripts/install-app-plugin.mjs --setup-cdp-launcher`），自动生成带 `CDP` 图标角标的 `/Applications/Antigravity (CDP).app`（macOS，回退 `~/Applications`；从访达拖入程序坞而非点击「在程序坞中保留」）、直连桌面的 `.lnk` 快捷方式（Windows，原生固定任务栏且无 CMD 黑框）或 `~/.local/share/applications/antigravity-cdp.desktop` + `CDP` SVG 角标（Linux），之后直接从该启动器打开即可。
   - **手动终端重启：** **务必先完全退出 Antigravity App**（macOS 按 `Cmd+Q` 后请等待约 5 秒让后台 `language_server` 彻底退出，否则 `open -a` 会静默忽略 `--args`；Windows / Linux 关闭全部窗口与托盘图标），再带参重启并在设置页点击**重新检测**：
     - **macOS（无竞态等待并启动）：** `while pgrep -f '^/Applications/Antigravity\.app/Contents/MacOS/Antigravity($| )' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0`
     - **Windows（PowerShell）：** `& "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`
@@ -293,7 +308,7 @@ IDE 设置项使用 `antigravityContextMonitor.` 前缀（共 22 项；共享偏
 
 由 **AGI-is-going-to-arrive** 维护。感谢 **SecretLUL** 报告 Windows 后端发现问题（[Issue #64](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/64)），感谢 **@AxelDZP** 提出次要端口 TLS 优先探测、`GetUserStatus` 结构校验与等价 proto3 纪元零值 `resetTime` 修复（[PR #74](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/74)），感谢 **@reidentify** 定位并修复 Sidecar 空闲退避自锁、空闲/空调用 GM 缓存重复拉取、ETag 抖动与 `env` LS 冗余复验问题（[Issue #75](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/75) / [PR #76](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/76)），并感谢 **@Number444** 报告 Windows Antigravity 2.35.2 内联右上角状态条 WCO 多余空白问题（[Issue #77](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/77)）。
 
-衷心感谢以下 Antigravity 开源社区项目在交互设计与工程实践上的启发，为 **v1.17.5–v1.17.10** 的体验与架构升级提供了宝贵参考（本项目的实现完全基于自有 TypeScript 核心与官方 Sidecar / VSIX 接口从零独立编写，未修改 `app.asar`，亦未复制任何外部代码）：
+衷心感谢以下 Antigravity 开源社区项目在交互设计与工程实践上的启发，为 **v1.17.5–v1.17.11** 的体验与架构升级提供了宝贵参考（本项目的实现完全基于自有 TypeScript 核心与官方 Sidecar / VSIX 接口从零独立编写，未修改 `app.asar`，亦未复制任何外部代码）：
 
 - [`dimitr-io/antigravity-desktop-context`](https://github.com/dimitr-io/antigravity-desktop-context) — Antigravity App Sidecar `AUX_PANE` 工作流、20×5 点阵上下文可视化、双上限清晰标注及 CLI 风格 `/context` 纯文本导出。
 - [`elviscjn-cjn/antigravity-context-viewer`](https://github.com/elviscjn-cjn/antigravity-context-viewer) — 桌面端遥测交互探索、轮次与缓存可视化思路，以及 Antigravity v2.33+/v2.34+ 社区稳定性实践经验。

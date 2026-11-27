@@ -2442,6 +2442,86 @@ describe('v1.17.6 App <-> IDE bidirectional DurableState hot sync & IDE panel pa
         }
     });
 
+    it('triggers non-blocking initial probeIdeCdpStatus() when IDE panel opens with CDP overlay already enabled', async () => {
+        const tmp = makeTmpDir();
+        tmpDirs.push(tmp);
+        const stateFile = path.join(tmp, 'ide-initial-cdp-probe-state.json');
+        process.env.ANTIGRAVITY_CONTEXT_MONITOR_STATE_PATH = stateFile;
+
+        // Pre-seed shared state with Composer Ring enabled BEFORE opening the IDE panel
+        await updateSharedAppSetting('appComposerRingEnabled', true);
+
+        const prevPortFileEnv = process.env.AGY_BROWSER_ACTIVE_PORT_FILE;
+        const fakeCdpServer = http.createServer((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify([{
+                id: 'hub-initial-probe',
+                type: 'page',
+                title: 'Antigravity Hub',
+                url: 'https://127.0.0.1:49992/',
+                webSocketDebuggerUrl: 'ws://127.0.0.1:9445/devtools/page/hub-initial-probe',
+            }]));
+        });
+        await new Promise<void>(resolve => fakeCdpServer.listen(0, '127.0.0.1', resolve));
+        const cdpPort = (fakeCdpServer.address() as { port: number }).port;
+        const portFile = path.join(tmp, 'DevToolsActivePort');
+        fs.writeFileSync(portFile, `${cdpPort}\n/devtools/browser/initial-probe\n`, 'utf8');
+        process.env.AGY_BROWSER_ACTIVE_PORT_FILE = portFile;
+
+        const posted: Array<Record<string, unknown>> = [];
+        let onDispose: (() => void) | undefined;
+        const fakePanel = {
+            visible: true,
+            webview: {
+                html: '',
+                postMessage: (msg: Record<string, unknown>) => { posted.push(msg); return Promise.resolve(true); },
+                onDidReceiveMessage: () => ({ dispose: () => {} }),
+            },
+            reveal: () => {},
+            onDidChangeViewState: () => ({ dispose: () => {} }),
+            onDidDispose: (cb: () => void) => { onDispose = cb; return { dispose: () => {} }; },
+        };
+        vi.spyOn(vscode.window, 'createWebviewPanel').mockReturnValue(fakePanel as unknown as vscode.WebviewPanel);
+
+        try {
+            showMonitorPanel({
+                currentUsage: null,
+                allTrajectoryUsages: [],
+                modelConfigs: [],
+                userInfo: null,
+                dailyStore: new DailyStore(),
+                pricingStore: new PricingStore(),
+            });
+
+            // Initial HTML immediately renders neutral 'probing' (NEVER fabricated cdp_unavailable / missing_port_file)
+            expect(fakePanel.webview.html).toContain('data-cdp-state="probing"');
+            expect(fakePanel.webview.html).not.toContain('data-cdp-state="cdp_unavailable"');
+
+            // Non-blocking initial probe resolves automatically and posts connected status without clicking Recheck CDP
+            await vi.waitFor(() => {
+                const cdpMsg = posted.find(m => m.command === 'cdpStatusResult');
+                expect(cdpMsg).toBeDefined();
+                expect((cdpMsg!.cdpStatus as CdpStatus)?.state).toBe('connected');
+                expect((cdpMsg!.cdpStatus as CdpStatus)?.diagnosticCode).toBe('connected');
+                expect((cdpMsg!.cdpStatus as CdpStatus)?.discoveredPort).toBe(cdpPort);
+                expect((cdpMsg!.cdpStatus as CdpStatus)?.targetTitle).toBe('Antigravity Hub');
+            }, { timeout: 5_000 });
+
+            const syncMsg = posted.find(m => m.command === 'syncSettingsControls' && (m.cdpStatus as CdpStatus | undefined)?.state === 'connected');
+            expect(syncMsg).toBeDefined();
+            expect((syncMsg!.cdpStatus as CdpStatus).discoveredPort).toBe(cdpPort);
+        } finally {
+            onDispose?.();
+            await updateSharedAppSetting('appComposerRingEnabled', false).catch(() => {});
+            await new Promise<void>(resolve => fakeCdpServer.close(() => resolve()));
+            if (prevPortFileEnv === undefined) {
+                delete process.env.AGY_BROWSER_ACTIVE_PORT_FILE;
+            } else {
+                process.env.AGY_BROWSER_ACTIVE_PORT_FILE = prevPortFileEnv;
+            }
+        }
+    });
+
     it('clears GMTracker error backoff before gmTracker.fetchAll on IDE manual refresh and supports Pro / Ultra 5x / Ultra 20x in IDE', async () => {
         const tmp = makeTmpDir();
         tmpDirs.push(tmp);

@@ -13,6 +13,7 @@
 import type { CdpOverlayPayload, CdpOverlayToggles } from './sidecar-types';
 
 export const CDP_OVERLAY_SCRIPT_VERSION = '1.18.0';
+export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.11';
 export const CDP_COMPOSER_HOST_ID = 'acm-cdp-composer-host';
 export const CDP_TOPBAR_HOST_ID = 'acm-cdp-topbar-host';
 export const CDP_RUNTIME_GLOBAL_KEY = '__ACM_CDP_OVERLAY_V1__';
@@ -223,6 +224,50 @@ export function getSharedOverlayThemeCss(): string {
   border-color: var(--acm-accent-border);
 }
 
+.acm-pill-badge.acm-has-tip {
+  position: relative;
+  cursor: help;
+  pointer-events: auto;
+}
+
+.acm-pill-badge.acm-has-tip:focus-visible {
+  outline: 1.5px solid var(--acm-accent);
+  outline-offset: 2px;
+}
+
+.acm-pill-badge.acm-has-tip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  left: auto;
+  width: max-content;
+  max-width: 268px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--acm-border-strong);
+  background: var(--acm-surface-solid);
+  color: var(--acm-ink);
+  font-family: var(--acm-sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.38;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.30);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 25;
+  transition: opacity 120ms var(--acm-ease);
+}
+
+.acm-pill-badge.acm-has-tip:hover::after,
+.acm-pill-badge.acm-has-tip:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     transition: none !important;
@@ -409,20 +454,85 @@ export function getComposerOverlayCss(): string {
 
 .acm-watermark-tick {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
+  top: -3px;
+  bottom: -3px;
+  width: 10px;
+  transform: translateX(-5px);
+  background: transparent;
+  pointer-events: auto;
+  cursor: help;
+  z-index: 2;
+}
+
+.acm-watermark-tick::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 50%;
   width: 2px;
   border-radius: 1px;
   transform: translateX(-1px);
   pointer-events: none;
 }
 
-.acm-watermark-tick.is-compaction {
+.acm-watermark-tick.is-compaction::before {
   background: var(--acm-warn);
 }
 
-.acm-watermark-tick.is-tier200k {
+.acm-watermark-tick.is-tier200k::before {
   background: var(--acm-ink-muted);
+}
+
+.acm-watermark-tick:focus-visible {
+  outline: 1.5px solid var(--acm-accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+.acm-watermark-tick::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 280px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--acm-border-strong);
+  background: var(--acm-surface-solid);
+  color: var(--acm-ink);
+  font-family: var(--acm-sans);
+  font-size: 10.5px;
+  font-weight: 550;
+  line-height: 1.3;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 20;
+  transition: opacity 120ms var(--acm-ease);
+}
+
+.acm-watermark-tick.is-align-left::after {
+  left: 0;
+  right: auto;
+  transform: none;
+}
+
+.acm-watermark-tick.is-align-right::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.acm-watermark-tick:hover::after,
+.acm-watermark-tick:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
 }
 
 .acm-meter-caption {
@@ -926,20 +1036,85 @@ export function getTopBarOverlayCss(): string {
 
 .acm-qp-watermark-tick {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
+  top: -3px;
+  bottom: -3px;
+  width: 10px;
+  transform: translateX(-5px);
+  background: transparent;
+  pointer-events: auto;
+  cursor: help;
+  z-index: 2;
+}
+
+.acm-qp-watermark-tick::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 50%;
   width: 2px;
   border-radius: 1px;
   transform: translateX(-1px);
   pointer-events: none;
 }
 
-.acm-qp-watermark-tick.is-compaction {
+.acm-qp-watermark-tick.is-compaction::before {
   background: var(--acm-warn);
 }
 
-.acm-qp-watermark-tick.is-tier200k {
+.acm-qp-watermark-tick.is-tier200k::before {
   background: var(--acm-ink-muted);
+}
+
+.acm-qp-watermark-tick:focus-visible {
+  outline: 1.5px solid var(--acm-accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+.acm-qp-watermark-tick::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 280px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--acm-border-strong);
+  background: var(--acm-surface-solid);
+  color: var(--acm-ink);
+  font-family: var(--acm-sans);
+  font-size: 10.5px;
+  font-weight: 550;
+  line-height: 1.3;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 20;
+  transition: opacity 120ms var(--acm-ease);
+}
+
+.acm-qp-watermark-tick.is-align-left::after {
+  left: 0;
+  right: auto;
+  transform: none;
+}
+
+.acm-qp-watermark-tick.is-align-right::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.acm-qp-watermark-tick:hover::after,
+.acm-qp-watermark-tick:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
 }
 
 .acm-qp-stat-grid {
@@ -1286,17 +1461,65 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     return str;
   }
 
-  function buildTurnCacheBadge(lang, turnCacheState) {
+  function getTier200kTooltip(lang) {
+    return bi(
+      lang,
+      '200k long-context tier: API ref rate & latency rise above 200k — not an extra Antigravity subscription charge or hard cutoff',
+      '200k 长上下文参考阶梯：超过后延迟可能升高且 API 参考价翻倍，不会对订阅额外扣费或强制截断'
+    );
+  }
+
+  function getTurnCacheTooltip(lang, turnCacheState) {
     var tcState = turnCacheState || 'unknown';
-    var cls = 'acm-pill-badge' + (
+    if (tcState === 'warm') {
+      return bi(
+        lang,
+        'Prompt Cache warm (>=70% reused): reuses cached prefix for faster first token & lower API ref cost',
+        '热缓存命中（>=70% 复用）：直接复用历史前缀，首字更快且 API 参考费用更低'
+      );
+    }
+    if (tcState === 'partial') {
+      return bi(
+        lang,
+        'Prompt Cache partial (10-70% reused): partial prefix reuse after history edits or compaction',
+        '部分缓存命中（10-70% 复用）：仅复用部分前缀（常见于编辑历史或上下文压缩后）'
+      );
+    }
+    if (tcState === 'cold') {
+      return bi(
+        lang,
+        'Prompt Cache cold (<10% reused): prefix re-read on new chat, >5m idle expiry, or model switch',
+        '冷启动（<10% 复用）：新对话、静置超 5 分钟过期或切换模型后需重新读取前缀'
+      );
+    }
+    return bi(
+      lang,
+      'Prompt Cache reuse: >=70% warm (faster), 10-70% partial, <10% cold (new chat / idle / model switch)',
+      'Prompt 缓存复用：>=70% 热缓存（首字更快），10-70% 部分命中，<10% 冷启动（新对话/静置过期/切模型）'
+    );
+  }
+
+  function applyTurnCacheBadgeProps(badgeEl, lang, turnCacheState) {
+    var tcState = turnCacheState || 'unknown';
+    badgeEl.className = 'acm-pill-badge acm-has-tip' + (
       tcState === 'warm' ? ' is-good' : (tcState === 'partial' ? ' is-warn' : (tcState === 'cold' ? ' is-danger' : ''))
     );
-    var label = tcState === 'warm'
+    badgeEl.textContent = tcState === 'warm'
       ? bi(lang, 'Warm', '热缓存')
       : (tcState === 'partial'
         ? bi(lang, 'Partial', '部分命中')
         : (tcState === 'cold' ? bi(lang, 'Cold', '冷启动') : '—'));
-    return el('span', cls, label);
+    var tip = getTurnCacheTooltip(lang, tcState);
+    badgeEl.setAttribute('tabindex', '0');
+    if (typeof badgeEl.removeAttribute === 'function') { badgeEl.removeAttribute('title'); }
+    badgeEl.setAttribute('data-tooltip', tip);
+    badgeEl.setAttribute('aria-label', badgeEl.textContent + ' — ' + tip);
+  }
+
+  function buildTurnCacheBadge(lang, turnCacheState) {
+    var badge = el('span', 'acm-pill-badge acm-has-tip', '');
+    applyTurnCacheBadgeProps(badge, lang, turnCacheState);
+    return badge;
   }
 
   function getTargetTabForTopBarView(view) {
@@ -1548,7 +1771,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
         var extraKeys = Object.keys(extra);
         for (var i = 0; i < extraKeys.length; i++) {
           var k = extraKeys[i];
-          if (extra[k] !== undefined && extra[k] !== null) {
+          if (extra[k] !== undefined) {
             bodyObj[k] = extra[k];
           }
         }
@@ -2116,8 +2339,177 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     layoutSyncHandle: null,
     layoutSyncIsRaf: false,
     sidebarTransitionTimer: null,
-    boundWcoTarget: null
+    boundWcoTarget: null,
+    focusSyncTimer: null,
+    lastReportedFocusKey: null,
+    lastReportedBridgeUrl: null
   };
+
+  var HUB_UUID_EXACT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  var HUB_UUID_ROUTE_RE = /(?:^|[\\/#?&:=])([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?=$|[\\/#?&])/i;
+  var HUB_NEW_CHAT_ROUTE_RE = /(?:^|\\/)(?:new|new-chat|new-conversation)(?:\\/|$)/i;
+  var HUB_ROOT_ROUTE_RE = /^\\/(?:$|index\\.html$|hub\\/?$|chat\\/?$|c\\/?$|conversation\\/?$|conversations\\/?$)/i;
+
+  function extractHubUuid(raw) {
+    if (typeof raw !== 'string') { return null; }
+    var trimmed = raw.trim();
+    if (!trimmed) { return null; }
+    if (HUB_UUID_EXACT_RE.test(trimmed)) { return trimmed; }
+    var m = trimmed.match(HUB_UUID_ROUTE_RE);
+    return m && m[1] ? m[1] : null;
+  }
+
+  function isInsideUnfocusedPane(node) {
+    var cur = node;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      if (typeof cur.getAttribute === 'function' && cur.getAttribute('data-pane-unfocused') === 'true') {
+        return true;
+      }
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+
+  function isInsideSidebarContainer(node) {
+    var cur = node;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      if (typeof cur.getAttribute === 'function') {
+        var tid = cur.getAttribute('data-testid') || '';
+        if (tid === 'sidebar-split') { return false; }
+        if (tid.indexOf('sidebar') >= 0 && tid !== 'toggle-aux-sidebar') { return true; }
+      }
+      var tag = String(cur.tagName || '').toUpperCase();
+      if (tag === 'ASIDE' || tag === 'NAV') { return true; }
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+
+  function detectHubConversationFocus() {
+    var loc = null;
+    try {
+      loc = window && window.location ? window.location : null;
+    } catch (_e) {
+      loc = null;
+    }
+    var pathname = loc && typeof loc.pathname === 'string' ? loc.pathname : '';
+    var search = loc && typeof loc.search === 'string' ? loc.search : '';
+    var hash = loc && typeof loc.hash === 'string' ? loc.hash : '';
+
+    // 1. URL / route UUID takes top priority
+    var urlUuid = extractHubUuid(pathname) || extractHubUuid(hash) || extractHubUuid(search);
+    if (urlUuid) {
+      return { conversationId: urlUuid, isNewConversation: false };
+    }
+
+    // 2. Explicit active conversation DOM attributes or aria-current/aria-selected items
+    var explicitSelectors = [
+      '[data-active-conversation-id]',
+      '[aria-current="page"]',
+      '[aria-selected="true"]',
+      '[data-active="true"]'
+    ];
+    for (var si = 0; si < explicitSelectors.length; si++) {
+      var nodes = [];
+      try { nodes = document.querySelectorAll(explicitSelectors[si]); } catch (_e) { nodes = []; }
+      for (var ni = 0; ni < nodes.length; ni++) {
+        var n = nodes[ni];
+        if (!n || isInsideUnfocusedPane(n) || typeof n.getAttribute !== 'function') { continue; }
+        var candidate = n.getAttribute('data-active-conversation-id')
+          || n.getAttribute('data-conversation-id')
+          || n.getAttribute('data-cascade-id')
+          || n.getAttribute('href')
+          || '';
+        var foundUuid = extractHubUuid(candidate);
+        if (foundUuid) {
+          return { conversationId: foundUuid, isNewConversation: false };
+        }
+      }
+    }
+
+    // 3. Main-pane conversation/cascade ID attributes (strictly excluding sidebar lists & unfocused panes)
+    var paneSelectors = ['[data-conversation-id]', '[data-cascade-id]'];
+    for (var pi = 0; pi < paneSelectors.length; pi++) {
+      var pNodes = [];
+      try { pNodes = document.querySelectorAll(paneSelectors[pi]); } catch (_e) { pNodes = []; }
+      for (var pni = 0; pni < pNodes.length; pni++) {
+        var pn = pNodes[pni];
+        if (!pn || isInsideUnfocusedPane(pn) || isInsideSidebarContainer(pn) || typeof pn.getAttribute !== 'function') {
+          continue;
+        }
+        var pVal = pn.getAttribute('data-conversation-id') || pn.getAttribute('data-cascade-id') || '';
+        var paneUuid = extractHubUuid(pVal);
+        if (paneUuid) {
+          return { conversationId: paneUuid, isNewConversation: false };
+        }
+      }
+    }
+
+    // 4. Explicit new-chat DOM marker or Hub new-chat / empty composer route
+    try {
+      var newMarker = document.querySelector('[data-new-conversation="true"]');
+      if (newMarker && !isInsideUnfocusedPane(newMarker)) {
+        return { conversationId: null, isNewConversation: true };
+      }
+    } catch (_e) {}
+
+    if (pathname || hash) {
+      var cleanHashPath = hash.replace(/^#!?/, '');
+      if (HUB_NEW_CHAT_ROUTE_RE.test(pathname) || HUB_NEW_CHAT_ROUTE_RE.test(cleanHashPath)) {
+        return { conversationId: null, isNewConversation: true };
+      }
+      var isRootRoute = HUB_ROOT_ROUTE_RE.test(pathname)
+        && (!cleanHashPath || HUB_ROOT_ROUTE_RE.test(cleanHashPath));
+      if (isRootRoute) {
+        var hasComposer = Boolean(
+          document.querySelector('[data-testid="agent-input-box"]')
+          || document.querySelector('.surface-composer')
+          || document.querySelector('.agy-composer-footer')
+        );
+        if (hasComposer) {
+          return { conversationId: null, isNewConversation: true };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function syncHubConversationFocus() {
+    if (!state.topBarEnabled && !state.composerEnabled) { return; }
+    if (!hasLoopbackBridge(state.payload)) { return; }
+    var detected = detectHubConversationFocus();
+    if (!detected) { return; }
+    var key = detected.conversationId
+      ? ('id:' + detected.conversationId.toLowerCase())
+      : (detected.isNewConversation ? 'new' : '');
+    if (!key) { return; }
+    var bridgeUrl = state.payload && state.payload.bridgeUrl ? state.payload.bridgeUrl : '';
+    if (key === state.lastReportedFocusKey && bridgeUrl === state.lastReportedBridgeUrl) {
+      return;
+    }
+    state.lastReportedFocusKey = key;
+    state.lastReportedBridgeUrl = bridgeUrl;
+    var source = state.topBarEnabled ? 'topbar' : 'composer';
+    sendBridgeAction(state.payload, 'focusConversation', source, null, {
+      conversationId: detected.conversationId,
+      isNewConversation: Boolean(detected.isNewConversation)
+    });
+  }
+
+  function scheduleHubFocusSync() {
+    if (!state.topBarEnabled && !state.composerEnabled) { return; }
+    if (state.focusSyncTimer) { clearTimeout(state.focusSyncTimer); }
+    state.focusSyncTimer = setTimeout(function() {
+      state.focusSyncTimer = null;
+      syncHubConversationFocus();
+    }, 120);
+  }
+
+  function onHubNavigationChange() {
+    if (!state.topBarEnabled && !state.composerEnabled) { return; }
+    syncHubConversationFocus();
+  }
 
   function syncThemes() {
     var theme = detectHostTheme(state.payload && state.payload.theme);
@@ -2497,17 +2889,33 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
 
     var marks = [];
     if (typeof p.compactionThresholdPct === 'number' && Number.isFinite(p.compactionThresholdPct) && p.compactionThresholdPct > 2 && p.compactionThresholdPct < 99) {
+      var compPct = clampNum(p.compactionThresholdPct, 2, 98);
+      var compTip = bi(lang, 'Auto-compaction limit', '自动压缩上限') + ' ' + Math.round(p.compactionThresholdPct) + '%';
       r.tickCompaction.style.display = '';
-      r.tickCompaction.style.left = clampNum(p.compactionThresholdPct, 2, 98).toFixed(1) + '%';
-      r.tickCompaction.setAttribute('title', bi(lang, 'Compaction limit', '压缩阈值') + ' ' + Math.round(p.compactionThresholdPct) + '%');
+      r.tickCompaction.style.left = compPct.toFixed(1) + '%';
+      r.tickCompaction.classList.toggle('is-align-left', compPct <= 35);
+      r.tickCompaction.classList.toggle('is-align-right', compPct >= 62);
+      r.tickCompaction.setAttribute('role', 'img');
+      r.tickCompaction.setAttribute('tabindex', '0');
+      if (typeof r.tickCompaction.removeAttribute === 'function') { r.tickCompaction.removeAttribute('title'); }
+      r.tickCompaction.setAttribute('data-tooltip', compTip);
+      r.tickCompaction.setAttribute('aria-label', compTip);
       marks.push(bi(lang, 'Compact', '压缩') + ' ' + Math.round(p.compactionThresholdPct) + '%');
     } else {
       r.tickCompaction.style.display = 'none';
     }
     if (typeof p.tier200kMarkerPct === 'number' && Number.isFinite(p.tier200kMarkerPct) && p.tier200kMarkerPct > 2 && p.tier200kMarkerPct < 99) {
+      var tierPct = clampNum(p.tier200kMarkerPct, 2, 98);
+      var tierTip = getTier200kTooltip(lang);
       r.tick200k.style.display = '';
-      r.tick200k.style.left = clampNum(p.tier200kMarkerPct, 2, 98).toFixed(1) + '%';
-      r.tick200k.setAttribute('title', bi(lang, '200k pricing tier', '200k 计费阶梯'));
+      r.tick200k.style.left = tierPct.toFixed(1) + '%';
+      r.tick200k.classList.toggle('is-align-left', tierPct <= 35);
+      r.tick200k.classList.toggle('is-align-right', tierPct >= 62);
+      r.tick200k.setAttribute('role', 'img');
+      r.tick200k.setAttribute('tabindex', '0');
+      if (typeof r.tick200k.removeAttribute === 'function') { r.tick200k.removeAttribute('title'); }
+      r.tick200k.setAttribute('data-tooltip', tierTip);
+      r.tick200k.setAttribute('aria-label', tierTip);
       marks.push('200k');
     } else {
       r.tick200k.style.display = 'none';
@@ -2546,15 +2954,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     r.kvRecentCh.v.textContent = formatPct(p.recentCacheHitPct);
     r.kvAvgCh.v.textContent = formatPct(p.avgCacheHitPct);
 
-    var tcState = p.turnCacheState || 'unknown';
-    r.turnBadge.className = 'acm-pill-badge' + (
-      tcState === 'warm' ? ' is-good' : (tcState === 'partial' ? ' is-warn' : (tcState === 'cold' ? ' is-danger' : ''))
-    );
-    r.turnBadge.textContent = tcState === 'warm'
-      ? bi(lang, 'Warm', '热缓存')
-      : (tcState === 'partial'
-        ? bi(lang, 'Partial', '部分命中')
-        : (tcState === 'cold' ? bi(lang, 'Cold', '冷启动') : '—'));
+    applyTurnCacheBadgeProps(r.turnBadge, lang, p.turnCacheState);
 
     // Tokens & Cost
     r.tcLabel.textContent = bi(lang, 'Tokens & Cost', '用量与费用');
@@ -3299,16 +3699,26 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
 
     var marks = [];
     if (typeof p.compactionThresholdPct === 'number' && Number.isFinite(p.compactionThresholdPct) && p.compactionThresholdPct > 2 && p.compactionThresholdPct < 99) {
-      var tickComp = el('div', 'acm-qp-watermark-tick is-compaction');
-      tickComp.style.left = clampNum(p.compactionThresholdPct, 2, 98).toFixed(1) + '%';
-      tickComp.setAttribute('title', bi(lang, 'Compaction limit', '压缩阈值') + ' ' + Math.round(p.compactionThresholdPct) + '%');
+      var compPct = clampNum(p.compactionThresholdPct, 2, 98);
+      var compTip = bi(lang, 'Auto-compaction limit', '自动压缩上限') + ' ' + Math.round(p.compactionThresholdPct) + '%';
+      var tickComp = el('div', 'acm-qp-watermark-tick is-compaction' + (compPct <= 35 ? ' is-align-left' : (compPct >= 62 ? ' is-align-right' : '')));
+      tickComp.style.left = compPct.toFixed(1) + '%';
+      tickComp.setAttribute('role', 'img');
+      tickComp.setAttribute('tabindex', '0');
+      tickComp.setAttribute('data-tooltip', compTip);
+      tickComp.setAttribute('aria-label', compTip);
       meterWrap.appendChild(tickComp);
       marks.push(bi(lang, 'Compact', '压缩') + ' ' + Math.round(p.compactionThresholdPct) + '%');
     }
     if (typeof p.tier200kMarkerPct === 'number' && Number.isFinite(p.tier200kMarkerPct) && p.tier200kMarkerPct > 2 && p.tier200kMarkerPct < 99) {
-      var tick200k = el('div', 'acm-qp-watermark-tick is-tier200k');
-      tick200k.style.left = clampNum(p.tier200kMarkerPct, 2, 98).toFixed(1) + '%';
-      tick200k.setAttribute('title', bi(lang, '200k pricing tier', '200k 计费阶梯'));
+      var tierPct = clampNum(p.tier200kMarkerPct, 2, 98);
+      var tierTip = getTier200kTooltip(lang);
+      var tick200k = el('div', 'acm-qp-watermark-tick is-tier200k' + (tierPct <= 35 ? ' is-align-left' : (tierPct >= 62 ? ' is-align-right' : '')));
+      tick200k.style.left = tierPct.toFixed(1) + '%';
+      tick200k.setAttribute('role', 'img');
+      tick200k.setAttribute('tabindex', '0');
+      tick200k.setAttribute('data-tooltip', tierTip);
+      tick200k.setAttribute('aria-label', tierTip);
       meterWrap.appendChild(tick200k);
       marks.push('200k');
     }
@@ -3843,6 +4253,9 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
             runLayoutSyncNow();
           }, 150);
         }
+        if (hasLayoutAttrChange || hasRelevantChildChange) {
+          scheduleHubFocusSync();
+        }
       });
       state.domObserver.observe(document.body, {
         childList: true,
@@ -3884,6 +4297,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
     cancelScheduledLayoutSync();
     if (state.countdownTimer) { clearInterval(state.countdownTimer); state.countdownTimer = null; }
     if (state.composerHideTimer) { clearTimeout(state.composerHideTimer); state.composerHideTimer = null; }
+    if (state.focusSyncTimer) { clearTimeout(state.focusSyncTimer); state.focusSyncTimer = null; }
   }
 
   function unmountSlot(slot) {
@@ -3922,6 +4336,10 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       document.removeEventListener('keydown', onGlobalKeyDown, true);
       document.removeEventListener('transitionend', onTransitionEnd, true);
       window.removeEventListener('resize', onWindowResize);
+      window.removeEventListener('popstate', onHubNavigationChange);
+      window.removeEventListener('hashchange', onHubNavigationChange);
+      state.lastReportedFocusKey = null;
+      state.lastReportedBridgeUrl = null;
       try {
         var wcoTarget = state.boundWcoTarget || (navigator && navigator.windowControlsOverlay);
         if (wcoTarget && typeof wcoTarget.removeEventListener === 'function') {
@@ -3938,6 +4356,8 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
   document.addEventListener('keydown', onGlobalKeyDown, true);
   document.addEventListener('transitionend', onTransitionEnd, true);
   window.addEventListener('resize', onWindowResize);
+  window.addEventListener('popstate', onHubNavigationChange);
+  window.addEventListener('hashchange', onHubNavigationChange);
   ensureWcoListenerBound();
 
   window[GLOBAL_KEY] = {
@@ -3970,6 +4390,7 @@ export function buildOverlayBootstrapScript(config: CdpOverlayBootstrapConfig = 
       }
       if (nextComposer || nextTopBar) {
         refreshResizeObserverTargets();
+        syncHubConversationFocus();
       }
       syncThemes();
       return {

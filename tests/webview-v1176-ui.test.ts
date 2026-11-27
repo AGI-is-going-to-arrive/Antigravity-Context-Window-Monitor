@@ -503,10 +503,19 @@ describe('v1.17.6 Overview Tab: Orchestrator Split, Dual Watermarks, Speed/Turn 
         expect(html).toContain('data-turn-net-delta="20000"');
         expect(html).toContain('+20k');
 
-        // All 5 accessible inline jargon explainer tooltips + valid role="group" container
-        expect(html).toContain('<div class="overview-jargon-row" role="group" aria-label=');
-        for (const jargon of ['gm-data', 'ttft', 'dual-cap', 'compaction-vs-physical', 'mapped-base-rate']) {
+        // Deduplicated core jargon tips (fixed Session Cost ?, no internal M537/M667/M681/M669 codes)
+        // + bottom jargon row folded into default-collapsed #overview-glossary <details>
+        expect(html).not.toContain('class="overview-jargon-row"');
+        expect(html).toContain('id="overview-glossary"');
+        expect(html).toContain('data-state-key="overview-glossary"');
+        expect(html).not.toMatch(/<details[^>]*id="overview-glossary"[^>]*\bopen\b/);
+        for (const jargon of ['ttft', 'dual-cap', 'session-cost']) {
             expect(html, `missing jargon tip ${jargon}`).toContain(`data-jargon="${jargon}"`);
+        }
+        expect(html).not.toContain('data-jargon="mapped-base-rate"');
+        expect(html).not.toMatch(/M537|M667|M681|M669/);
+        for (const cell of ['speed', 'ttft', 'cache-hit', 'cache-saved', 'cost']) {
+            expect(html, `missing telemetry cell ${cell}`).toContain(`data-telemetry-cell="${cell}"`);
         }
     });
 
@@ -787,6 +796,18 @@ describe('v1.17.6 Settings Tab: Overlays/CDP, Updates, Cost/Currency/History, Co
         });
         expect(linuxInstalledHtml).toContain('Open Folder');
         expect(linuxInstalledHtml).toContain('打开所在目录');
+
+        const probingHtml = buildSettingsContent([], undefined, undefined, {
+            surface: 'ide',
+            appSettings: { appComposerRingEnabled: true, appTopBarEnabled: false },
+            cdpStatus: { ...connectedStatus, state: 'probing', diagnosticCode: 'probing' },
+        });
+        expect(probingHtml).toContain('data-cdp-state="probing"');
+        expect(probingHtml).toContain('data-cdp-diagnostic="probing"');
+        expect(probingHtml).toContain('Checking…');
+        expect(probingHtml).toContain('检测中…');
+        expect(probingHtml).toContain('Checking Antigravity App CDP connection…');
+        expect(probingHtml).not.toContain('data-cdp-diagnostic="missing_port_file"');
 
         const disabledHtml = buildSettingsContent([], undefined, undefined, {
             surface: 'app-sidecar',

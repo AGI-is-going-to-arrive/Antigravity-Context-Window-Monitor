@@ -53,6 +53,21 @@ interface FeatureCard {
     descriptionHtml: string;
 }
 
+function aboutRichTipAttrs(
+    key: string,
+    titleEn: string,
+    titleZh: string,
+    bodyEn: string,
+    bodyZh: string,
+    metaEn?: string,
+    metaZh?: string,
+): string {
+    const title = tBi(titleEn, titleZh);
+    const body = tBi(bodyEn, bodyZh);
+    const meta = metaEn || metaZh ? tBi(metaEn || '', metaZh || '') : '';
+    return ` data-popover-key="${esc(key)}" data-tip-title="${esc(title)}" data-tip-body="${esc(body)}"${meta ? ` data-tip-meta="${esc(meta)}"` : ''}`;
+}
+
 function getFeatureCards(): FeatureCard[] {
     return [
         {
@@ -69,8 +84,8 @@ function getFeatureCards(): FeatureCard[] {
             icon: ABOUT_ICON.gmdata,
             titleHtml: tBiHtml('GM Data', 'GM 数据'),
             descriptionHtml: tBiHtml(
-                'Real-time model call analytics: per-call tokens, credits, cost, latency, error tracking, tool usage ranking, and context intelligence from Generator Metadata.',
-                '实时模型调用分析：逐次调用的 Token、积分、费用、延迟、错误追踪、工具使用排行和上下文情报，全部来自 Generator Metadata。',
+                'Real-time model call analytics: per-call tokens, credits, reference cost, latency, error tracking, tool usage ranking, and context intelligence from runtime call telemetry (Generator Metadata).',
+                '实时模型调用分析：逐次调用的 Token、积分、参考费用、延迟、错误追踪、工具排行与上下文情报（来自模型调用遥测 Generator Metadata）。',
             ),
         },
         {
@@ -78,8 +93,8 @@ function getFeatureCards(): FeatureCard[] {
             icon: ABOUT_ICON.chats,
             titleHtml: tBiHtml('Sessions', '会话'),
             descriptionHtml: tBiHtml(
-                'Browse all AI conversations with quick access to Brain records, protobuf archives, and workspace folders.',
-                '浏览与 AI 的全部对话，快速访问每个会话的 Brain 记录、Protobuf 存档和工作区文件夹。',
+                'Browse all AI conversations with quick access to local session records (Brain), conversation archives (.pb / Protobuf), and workspace folders.',
+                '浏览与 AI 的全部对话，快速访问每个会话的本地会话记录（Brain）、对话存档（.pb / Protobuf）和工作区文件夹。',
             ),
         },
         {
@@ -96,8 +111,8 @@ function getFeatureCards(): FeatureCard[] {
             icon: ABOUT_ICON.models,
             titleHtml: tBiHtml('Models', '模型'),
             descriptionHtml: tBiHtml(
-                'All available AI models and specifications: shared quota pools, reset schedules, compression and context limits, and thinking capabilities.',
-                '所有可用 AI 模型及其规格：共享配额池、重置时间、压缩与上下文限制，以及思考能力参数。',
+                'All available AI models and specifications: shared quota pools, reset schedules, compaction and native context limits, and thinking capabilities.',
+                '所有可用 AI 模型及其规格：共享配额池、重置时间、自动压缩上限与原生窗口上限，以及思考能力参数。',
             ),
         },
         {
@@ -105,14 +120,14 @@ function getFeatureCards(): FeatureCard[] {
             icon: ABOUT_ICON.calendar,
             titleHtml: tBiHtml('Calendar', '日历'),
             descriptionHtml: tBiHtml(
-                'Daily usage archive with interactive monthly calendar view recording total calls, tokens, credits, and archived cycles.',
-                '每日用量归档与交互式月历视图，记录每日总调用、Token、积分和归档周期。',
+                'Daily usage archive with interactive heatmap and monthly calendar recording calls, tokens, credits, archived cycles, and optional local CLI usage logs.',
+                '每日用量归档、活动热力图与交互式月历，记录每日调用、Token、积分、归档周期及可选的本地 CLI 用量日志。',
             ),
         },
         {
             tabId: 'profile',
             icon: ABOUT_ICON.profile,
-            titleHtml: tBiHtml('Profile', '账号信息'),
+            titleHtml: tBiHtml('Profile', '账号'),
             descriptionHtml: tBiHtml(
                 'Account identity with privacy mask, shared model quota pools, AI credits and expiry countdown, plus plan limits and capabilities.',
                 '当前账号身份与隐私遮罩、共享模型配额池、AI 积分与到期倒计时，以及计划限制与功能配置。',
@@ -149,6 +164,9 @@ const OPEN_VSX_URL = 'https://open-vsx.org/extension/AGI-is-going-to-arrive/anti
 export function buildAboutTabContent(version = '1.18.0', options?: AboutTabOptions): string {
     const cards = getFeatureCards();
     const normalizedVersion = typeof version === 'string' && version.trim() ? version.trim() : '1.18.0';
+export function buildAboutTabContent(version = '1.17.11', options?: AboutTabOptions): string {
+    const cards = getFeatureCards();
+    const normalizedVersion = typeof version === 'string' && version.trim() ? version.trim() : '1.17.11';
     const versionTag = normalizedVersion.startsWith('v') ? normalizedVersion : `v${normalizedVersion}`;
     const surface = options?.surface ?? 'ide';
     const isAppSidecar = surface === 'app-sidecar' || surface === 'app';
@@ -163,14 +181,41 @@ export function buildAboutTabContent(version = '1.18.0', options?: AboutTabOptio
 
     let updateStatusPillHtml: string;
     if (updateAvailable && latestTag) {
-        updateStatusPillHtml = `<span class="stg-status-pill is-update" data-about-update-status="update_available">${tBiHtml(`Update available: ${latestTag}`, `有可用更新：${latestTag}`)}</span>`;
+        const tip = aboutRichTipAttrs(
+            'about-update-status-pill',
+            `Update Available (${latestTag})`,
+            `有可用更新（${latestTag}）`,
+            `A newer release (${latestTag}) is published on GitHub Releases (current: ${versionTag}).`,
+            `GitHub Releases 已发布新版本 ${latestTag}（当前版本：${versionTag}）。`,
+            'Use Upgrade Now (App) or Open VSX (IDE) to update.',
+            'App 端可点击「立即升级」，IDE 端可前往 Open VSX 更新。',
+        );
+        updateStatusPillHtml = `<span class="stg-status-pill is-update" data-about-update-status="update_available"${tip}>${tBiHtml(`Update available: ${latestTag}`, `有可用更新：${latestTag}`)}</span>`;
     } else if (updateStatus?.status === 'error') {
-        const errTitle = updateStatus.error ? ` title="${esc(updateStatus.error)}"` : '';
-        updateStatusPillHtml = `<span class="stg-status-pill is-error" data-about-update-status="error"${errTitle}>${tBiHtml('Check failed', '检查失败')}</span>`;
+        const errDetail = updateStatus.error?.trim()
+            || tBi('Unable to reach GitHub Releases to check for updates.', '无法连接 GitHub Releases 检查更新。');
+        const tip = ` data-popover-key="about-update-status-pill" data-tip-title="${esc(tBi('Update Check Failed', '更新检查失败'))}" data-tip-body="${esc(errDetail)}" data-tip-meta="${esc(tBi('Click "Check for Updates" to retry once network access is available.', '网络恢复后可点击「检查更新」重试。'))}"`;
+        updateStatusPillHtml = `<span class="stg-status-pill is-error" data-about-update-status="error"${tip}>${tBiHtml('Check failed', '检查失败')}</span>`;
     } else if (updateStatus?.status === 'up_to_date' || updateStatus?.status === 'not_modified' || (updateStatus?.checkedAt && !updateAvailable)) {
-        updateStatusPillHtml = `<span class="stg-status-pill is-uptodate" data-about-update-status="up_to_date">${tBiHtml('Up to date', '已是最新')}</span>`;
+        const tip = aboutRichTipAttrs(
+            'about-update-status-pill',
+            `Up to Date (${versionTag})`,
+            `已是最新（${versionTag}）`,
+            `Installed version ${versionTag} matches the latest GitHub Release.`,
+            `当前已安装的 ${versionTag} 已是 GitHub Releases 最新版本。`,
+        );
+        updateStatusPillHtml = `<span class="stg-status-pill is-uptodate" data-about-update-status="up_to_date"${tip}>${tBiHtml('Up to date', '已是最新')}</span>`;
     } else {
-        updateStatusPillHtml = `<span class="stg-status-pill" data-about-update-status="idle">${tBiHtml('Ready', '就绪')}</span>`;
+        const tip = aboutRichTipAttrs(
+            'about-update-status-pill',
+            `Installed Version ${versionTag}`,
+            `当前版本 ${versionTag}`,
+            'No update check has run yet in this session.',
+            '本次会话尚未执行更新检查。',
+            'Click "Check for Updates" to check GitHub Releases.',
+            '点击「检查更新」可立即查询 GitHub Releases。',
+        );
+        updateStatusPillHtml = `<span class="stg-status-pill" data-about-update-status="idle"${tip}>${tBiHtml('Ready', '就绪')}</span>`;
     }
 
     const versionUpdates = `
@@ -223,26 +268,52 @@ export function buildAboutTabContent(version = '1.18.0', options?: AboutTabOptio
         '一款开源社区监控工具，用于实时分析 Antigravity IDE 与 Antigravity App 中的上下文窗口、配额续航与 AI 模型遥测数据。',
     )}</p>
         <div class="about-platform-chips" role="group" aria-label="${esc(tBi('Supported platforms', '支持的平台'))}">
-            <span class="about-platform-chip about-platform-active" role="status" aria-label="${esc(tBi('Antigravity IDE: actively supported', 'Antigravity IDE：已支持'))}">
+            <span class="about-platform-chip about-platform-active" role="status" aria-label="${esc(tBi('Antigravity IDE: actively supported', 'Antigravity IDE：已支持'))}"${aboutRichTipAttrs(
+        'about-platform-ide',
+        'Antigravity IDE (VSIX)',
+        'Antigravity IDE（VSIX 扩展）',
+        'Actively supported via the standard VSIX extension with status bar telemetry and full webview dashboard.',
+        '通过标准 VSIX 扩展完整支持，提供状态栏监控与全功能面板。',
+    )}>
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                 <span>${tBiHtml('Antigravity IDE', 'Antigravity IDE')}</span>
             </span>
-            <span class="about-platform-chip about-platform-active" role="status" aria-label="${esc(tBi('Antigravity App (Desktop 2.0+ Sidecar): actively supported', 'Antigravity App（桌面版 2.0+ 侧边插件）：已支持'))}">
+            <span class="about-platform-chip about-platform-active" role="status" aria-label="${esc(tBi('Antigravity App (Desktop 2.0+ Sidecar): actively supported', 'Antigravity App（桌面版 2.0+ 侧边插件 (Sidecar)）：已支持'))}"${aboutRichTipAttrs(
+        'about-platform-app',
+        'Antigravity App (Sidecar)',
+        'Antigravity App（侧边插件 Sidecar）',
+        'Actively supported via Antigravity\'s official zero-patch Sidecar plugin API (side pane + sidebar + optional CDP overlays).',
+        '通过 Antigravity 官方零魔改侧边插件（Sidecar）接口完整支持，含辅助栏、主侧栏与可选 CDP 悬浮层。',
+    )}>
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><path d="M8 21h8"/><path d="M12 17v4"/><circle cx="12" cy="10" r="3"/></svg>
-                <span>${tBiHtml('Antigravity App (Desktop 2.0+ Sidecar)', 'Antigravity App（桌面版 2.0+ Sidecar）')}</span>
+                <span>${tBiHtml('Antigravity App (Desktop 2.0+ Sidecar)', 'Antigravity App（桌面版 2.0+ 侧边插件 (Sidecar)）')}</span>
             </span>
-            <span class="about-platform-chip" role="status" aria-label="${esc(tBi('SDK: not supported', 'SDK：不支持'))}">
+            <span class="about-platform-chip" role="status" aria-label="${esc(tBi('SDK: runtime plugin not supported', 'SDK：不支持运行时插件'))}"${aboutRichTipAttrs(
+        'about-platform-sdk',
+        'SDK (Not Supported)',
+        'SDK（暂不支持）',
+        'Programmatic SDK integrations are a separate product line without a monitor UI host.',
+        'SDK 属于独立的程序化开发产品线，不提供监控面板宿主，不在支持范围内。',
+    )}>
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                 <span>${tBiHtml('SDK', 'SDK')}</span>
             </span>
-            <span class="about-platform-chip" role="status" aria-label="${esc(tBi('CLI: not supported', 'CLI：不支持'))}">
+            <span class="about-platform-chip" role="status" aria-label="${esc(tBi('CLI: standalone runtime plugin not supported (Calendar reads local CLI usage logs)', 'CLI：不支持独立运行时插件（日历页可读取本地 CLI 用量日志）'))}"${aboutRichTipAttrs(
+        'about-platform-cli',
+        'CLI (History Logs Only)',
+        'CLI（仅读取历史日志）',
+        'There is no standalone CLI runtime monitor plugin, but the Calendar tab can still read local CLI usage logs into your history.',
+        '独立 CLI 不支持安装实时监控插件，但「日历」页仍可读取本地 CLI 用量日志并计入历史统计。',
+        'Filter by "CLI" in the Calendar tab to inspect scanned CLI history.',
+        '在「日历」页切换到「CLI」筛选即可查看已扫描的本地 CLI 历史记录。',
+    )}>
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
                 <span>${tBiHtml('CLI', 'CLI')}</span>
             </span>
         </div>
         <p class="about-platform-note">${tBiHtml(
-        'Actively supports both Antigravity IDE (VSIX extension) and Antigravity App (Desktop 2.0+ native Sidecar plugin). SDK and standalone CLI are separate product lines and are not supported.',
-        '现已同时支持 Antigravity IDE（VSIX 扩展）与 Antigravity App（桌面版 2.0+ 原生 Sidecar 插件）。SDK 与独立 CLI 属于不同产品线，不在支持范围内。',
+        'Actively supports both Antigravity IDE (VSIX extension) and Antigravity App (Desktop 2.0+ native Sidecar plugin). SDK and standalone CLI runtime plugins are not supported, though local CLI usage logs can still be read in Calendar history.',
+        '现已同时支持 Antigravity IDE（VSIX 扩展）与 Antigravity App（桌面版 2.0+ 原生侧边插件 (Sidecar)）。SDK 与独立 CLI 运行时插件不在支持范围内（日历页仍可读取本地 CLI 用量日志纳入历史统计）。',
     )}</p>
     </header>`;
 
@@ -402,7 +473,7 @@ export function buildAboutTabContent(version = '1.18.0', options?: AboutTabOptio
         <div class="about-info-box about-info-compat">
             <p><strong class="about-compat-lead">${tBiHtml(`Verified for ${versionTag}:`, `${versionTag} 本次验证：`)}</strong> ${tBiHtml(
         'Verified against both Antigravity IDE (agy hub LS 2.34.0) and Antigravity App (Desktop 2.0+ Sidecar plugin) on macOS. Includes Context Composition Breakdown (Bar & 100-Dot Matrix, Dual-Cap Clarity), Conversation Switcher & Main-Agent Lock, Quota Burn-Rate Runway with Stale-Safe fallback and custom-* isolation, Orchestrator Settings (Orchestrator Model + Executor Model, including Claude Opus 5.5 and Sonnet 5.5), dual-window (5h + Weekly) quota tracking, Extra High effort alignment across Gemini 4 Neon & Hydrogen, 512K context support across all Gemini 4 models, and official USD cost & telemetry tracking.',
-        '在 macOS 上同时通过 Antigravity IDE（agy hub LS 2.34.0）与 Antigravity App（桌面版 2.0+ Sidecar 插件）双端验证。包含上下文构成明细（条形 / 100 点阵视图与双上限标注）、会话切换与锁定主会话、配额续航预测与缓存保底及 custom-* 模型隔离、编排器设置（含 Claude Opus 5.5 与 Sonnet 5.5）、双窗口（5 小时 + 每周）配额追踪、Gemini 4 Neon 与 Hydrogen 统一 Extra High / 超高档位、全系列 Gemini 4 模型 512K 上下文支持以及官方 USD 费用与调用遥测追踪。',
+        '在 macOS 上同时通过 Antigravity IDE（agy hub 本地服务 2.34.0）与 Antigravity App（桌面版 2.0+ Sidecar）原生侧边插件双端验证。包含上下文构成明细（条形 / 100 点阵视图与双上限标注）、会话切换与锁定主会话、配额续航预测与缓存保底及 custom-* 模型隔离、编排设置（含 Claude Opus 5.5 与 Sonnet 5.5）、双窗口（5 小时 + 每周）配额追踪、Gemini 4 Neon 与 Hydrogen 统一 Extra High / 超高档位、全系列 Gemini 4 模型 512K 上下文支持以及官方 USD 费用与调用遥测追踪。',
     )}</p>
             <p><strong>${tBiHtml('Earlier contributor checks:', '此前贡献者验证版本：')}</strong> v1.18.4, v1.19.6, v1.20.6, v1.23.2.</p>
             <p>${tBiHtml(
@@ -428,8 +499,8 @@ export function buildAboutTabContent(version = '1.18.0', options?: AboutTabOptio
         '本工具仅以只读模式监控本地内部接口用于可视化个人日常数据，使用风险自负。',
     )}</p>
             <p>${tBiHtml(
-        'Data is derived from undocumented internal interfaces that may change without notice. Metrics come from Generator Metadata, checkpoint snapshots, or character-based heuristics, and all numbers are best-effort approximations.',
-        '数据通过未公开文档且可能随时变更的内部接口获取。指标来自 Generator Metadata、检查点快照或字符启发式计算，所有数值均为尽力计算的近似值。',
+        'Data is derived from undocumented internal interfaces that may change without notice. Metrics come from runtime call telemetry (Generator Metadata), checkpoint snapshots, or character-based heuristics, and all numbers are best-effort approximations.',
+        '数据通过未公开文档且可能随时变更的内部接口获取。指标来自模型调用遥测（Generator Metadata）、检查点快照或字符启发式计算，所有数值均为尽力计算的近似值。',
     )}</p>
             <p><strong>${tBiHtml('Context Window Limitation:', '上下文窗口限制：')}</strong> ${tBiHtml(
         'Antigravity does not always expose the full advertised context window of every underlying model. Effective compression limits are determined dynamically by each model\'s checkpoint parameters, currently ranging from 80K up to 512K tokens (with 512K across Gemini 4 Neon, Carbon, Argon, Hydrogen, and Orchestrator Neon/Carbon/Argon models; 256K on Claude Opus/Sonnet 5.5 and Gemini 3.8 Flash).',

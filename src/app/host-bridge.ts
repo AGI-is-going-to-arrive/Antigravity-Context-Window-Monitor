@@ -242,14 +242,23 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
   // ─── Sidecar / Standalone Transport & Visibility-Gated ETag Polling ───
   var urlParams = new URLSearchParams((window.location && window.location.search) || '');
   var initialUrlConversationId = urlParams.get('conversationId') || '';
+  var explicitHostConversationId = null;
   var currentWorkspaceUris = [];
 
   function getActiveConversationId() {
-    if (sidecarApi && typeof sidecarApi.conversationId === 'string' && sidecarApi.conversationId) {
-      return sidecarApi.conversationId;
+    if (sidecarApi && typeof sidecarApi.conversationId === 'string') {
+      var hostId = sidecarApi.conversationId.trim();
+      if (hostId) { return hostId; }
+      if (explicitHostConversationId !== null) { return explicitHostConversationId; }
+      return '';
+    }
+    if (explicitHostConversationId !== null) {
+      return explicitHostConversationId;
     }
     return initialUrlConversationId;
   }
+  var lastObservedConversationId = getActiveConversationId();
+  var pendingConversationCleared = false;
   var lastEtag = '';
   var configuredPollIntervalMs = DEFAULT_POLL_MS;
   var pollIntervalMs = DEFAULT_POLL_MS;
@@ -402,11 +411,37 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
     }
   }
 
+  function syncHostConversationChange(triggerImmediatePoll) {
+    var nextConvId = getActiveConversationId();
+    if (nextConvId === lastObservedConversationId) { return false; }
+    if (lastObservedConversationId && !nextConvId && detectViewMode() === 'aux') {
+      pendingConversationCleared = true;
+    } else if (nextConvId) {
+      pendingConversationCleared = false;
+    }
+    lastObservedConversationId = nextConvId;
+    lastEtag = '';
+    if (triggerImmediatePoll && surface !== 'vscode' && !pollPaused && !document.hidden) {
+      if (pollInFlight) {
+        pendingImmediateWakePoll = true;
+      } else {
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        void pollSnapshot(true);
+      }
+    }
+    return true;
+  }
+
   function buildSnapshotUrl(forceFull, isActive) {
+    syncHostConversationChange(false);
     var qs = new URLSearchParams();
     var view = detectViewMode();
     var activeConvId = getActiveConversationId();
-    if (activeConvId) { qs.set('conversationId', activeConvId); }
+    if (activeConvId) {
+      qs.set('conversationId', activeConvId);
+    } else if (pendingConversationCleared && view === 'aux') {
+      qs.set('conversationCleared', '1');
+    }
     if (currentWorkspaceUris.length > 0) { qs.set('workspaceUris', JSON.stringify(currentWorkspaceUris)); }
     if (!forceFull && lastEtag) { qs.set('etag', lastEtag); }
     if (isActive) { qs.set('active', '1'); }
@@ -450,6 +485,7 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
       })
       .then(function(data) {
         consecutivePollErrors = 0;
+        pendingConversationCleared = false;
         if (data && data.hash) { lastEtag = String(data.hash); }
         if (data && data.unchanged === false && data.snapshot) {
           notifySnapshot(data.snapshot, data.hash || '');
@@ -658,6 +694,18 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
         }
       }).catch(function() { /* ignore */ });
     }
+    if (typeof sidecarApi.onConversationChange === 'function') {
+      sidecarApi.onConversationChange(function(next) {
+        var nextId = '';
+        if (typeof next === 'string') {
+          nextId = next.trim();
+        } else if (next && typeof next === 'object' && typeof next.conversationId === 'string') {
+          nextId = next.conversationId.trim();
+        }
+        explicitHostConversationId = nextId;
+        syncHostConversationChange(true);
+      });
+    }
     if (typeof sidecarApi.onWorkspaceChange === 'function') {
       sidecarApi.onWorkspaceChange(function(uris) {
         currentWorkspaceUris = Array.isArray(uris) ? uris.slice() : [];
@@ -671,10 +719,24 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
   }
 
   if (surface !== 'vscode') {
+    window.addEventListener('message', function(event) {
+      var d = event && event.data;
+      if (!d || typeof d !== 'object') { return; }
+      if (d.type === 'conversation-change' || d.type === 'active-conversation-change') {
+        var cid = typeof d.conversationId === 'string'
+          ? d.conversationId.trim()
+          : (d.payload && typeof d.payload.conversationId === 'string' ? d.payload.conversationId.trim() : '');
+        explicitHostConversationId = cid;
+        syncHostConversationChange(true);
+      }
+    });
     window.addEventListener('pointerdown', markUserInteraction, { passive: true });
     window.addEventListener('keydown', markUserInteraction, { passive: true });
     window.addEventListener('wheel', markUserInteraction, { passive: true });
-    window.addEventListener('focus', markUserInteraction, { passive: true });
+    window.addEventListener('focus', function() {
+      markUserInteraction();
+      syncHostConversationChange(true);
+    }, { passive: true });
   }
 
   // Visibility-gated polling: pause immediately when tab/pane is hidden, resume on reveal
@@ -683,7 +745,9 @@ export function getHostBridgeScript(options: HostBridgeOptions = {}): string {
       if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     } else if (surface !== 'vscode' && AUTO_POLL && !pollPaused) {
       markUserInteraction();
-      pollSnapshot(false);
+      if (!syncHostConversationChange(true)) {
+        pollSnapshot(false);
+      }
     }
   });
 

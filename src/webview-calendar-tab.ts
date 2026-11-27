@@ -135,6 +135,31 @@ const MONTH_NAMES_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 
 const DAY_HEADERS_ZH = ['一', '二', '三', '四', '五', '六', '日'];
 const DAY_HEADERS_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+function calSlugKey(raw: string): string {
+    const cleaned = raw.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+    return (cleaned || 'item').slice(0, 48);
+}
+
+function calRichTipAttrs(
+    key: string,
+    titleEn: string,
+    titleZh: string,
+    bodyEn: string,
+    bodyZh: string,
+    bi: (en: string, zh: string) => string,
+    metaEn?: string,
+    metaZh?: string,
+): string {
+    const title = bi(titleEn, titleZh);
+    const body = bi(bodyEn, bodyZh);
+    const meta = metaEn || metaZh ? bi(metaEn || '', metaZh || '') : '';
+    return ` data-popover-key="${esc(key)}" data-tip-title="${esc(title)}" data-tip-body="${esc(body)}"${meta ? ` data-tip-meta="${esc(meta)}"` : ''}`;
+}
+
+function calRichTipRawAttrs(key: string, title: string, body: string, meta?: string): string {
+    return ` data-popover-key="${esc(key)}" data-tip-title="${esc(title)}" data-tip-body="${esc(body)}"${meta ? ` data-tip-meta="${esc(meta)}"` : ''}`;
+}
+
 function formatTokensCompact(n: number): string {
     if (!Number.isFinite(n) || n <= 0) { return '0'; }
     if (n >= 1_000_000_000) { return `${(n / 1_000_000_000).toFixed(2)}B`; }
@@ -780,8 +805,8 @@ export function buildCalendarTabContent(
 
     // ── 2. Legacy Backward-Compatible Monthly / All-Time Summary Card ──
     if (hasAnyData) {
-        const monthlySummary = buildMonthlySummaryGrid(filteredDays, currentYear, currentMonth, currency, biHtml);
-        const allTimeSummary = buildOverallSummaryGrid(filteredDays, currency, biHtml);
+        const monthlySummary = buildMonthlySummaryGrid(filteredDays, currentYear, currentMonth, currency, bi, biHtml);
+        const allTimeSummary = buildOverallSummaryGrid(filteredDays, currency, bi, biHtml);
         parts.push(`
             <section class="card cal-summary-card">
                 <div class="cal-summary-header">
@@ -998,14 +1023,63 @@ function buildControlsAndKpiCard(args: {
         { id: 'all', en: 'All-Time', zh: '累计总量' },
     ];
 
+    const sourceTips: Record<CalendarSourceFilter, readonly [string, string, string, string]> = {
+        all: [
+            'All Sources',
+            '全部来源',
+            'Combines Antigravity App, IDE, local CLI usage logs, and legacy unlabeled archive records.',
+            '合并显示 Antigravity App、IDE、本地 CLI 用量日志以及未区分来源的历史归档记录。',
+        ],
+        app: [
+            'Antigravity App Source',
+            'Antigravity App 来源',
+            'Filters history to calls recorded from Antigravity App (Desktop 2.0+ Sidecar).',
+            '仅筛选来自 Antigravity App（桌面版 2.0+ 侧边插件）的调用记录。',
+        ],
+        ide: [
+            'Antigravity IDE Source',
+            'Antigravity IDE 来源',
+            'Filters history to calls recorded from the Antigravity IDE extension.',
+            '仅筛选来自 Antigravity IDE 扩展的调用记录。',
+        ],
+        cli: [
+            'CLI Usage Logs',
+            'CLI 用量日志',
+            'Reads local Antigravity CLI usage logs into Calendar history (the live monitor plugin itself runs only in IDE & App).',
+            '读取本地 Antigravity CLI 用量日志并纳入日历历史统计（实时监控插件本身仅支持 IDE 与 App）。',
+        ],
+    };
+
     const sourcePills = sourceOptions.map(opt => {
         const active = sourceFilter === opt.id;
-        return `<button type="button" class="cal-pill-btn${active ? ' is-active' : ''}" data-action="calendarFilterSource" data-cal-source="${opt.id}" aria-pressed="${active ? 'true' : 'false'}"><span>${biHtml(opt.en, opt.zh)}</span></button>`;
+        const st = sourceTips[opt.id];
+        const tip = calRichTipAttrs(`cal-src-${opt.id}`, st[0], st[1], st[2], st[3], bi);
+        return `<button type="button" class="cal-pill-btn${active ? ' is-active' : ''}" data-action="calendarFilterSource" data-cal-source="${opt.id}" aria-pressed="${active ? 'true' : 'false'}"${tip}><span>${biHtml(opt.en, opt.zh)}</span></button>`;
     }).join('');
 
+    const tokensMetricTip = calRichTipAttrs(
+        'cal-metric-tokens',
+        'Tokens Metric (Additive)',
+        'Token 统计（累加口径）',
+        'Visualizes total additive tokens per day/period across models.',
+        '按天 / 区间展示模型累计处理的 Token 总量。',
+        bi,
+        'Formula: Fresh Input + Cache Read + Cache Write + Output (Thinking is a subset of Output, never double-counted).',
+        '计算公式：新输入 + 缓存读取 + 缓存写入 + 输出（思考 Token 已包含在输出中，不会重复相加）。',
+    );
+    const costMetricTip = calRichTipAttrs(
+        'cal-metric-cost',
+        'API Reference Cost',
+        'API 参考金额',
+        'Visualizes estimated API reference cost using public per-1M token list rates (or your custom rates in Cost tab).',
+        '按公开 API 每百万 Token 单价（或你在「成本」页设置的自定义单价）估算的参考金额。',
+        bi,
+        'Reference estimate only — not your actual subscription billing.',
+        '仅为等效 API 参考估值，并非实际订阅扣费。',
+    );
     const metricPills = `
-        <button type="button" class="cal-pill-btn${metricMode === 'tokens' ? ' is-active' : ''}" data-action="calendarSetMetric" data-cal-metric="tokens" aria-pressed="${metricMode === 'tokens' ? 'true' : 'false'}"><span>${biHtml('Tokens', 'Token 统计')}</span></button>
-        <button type="button" class="cal-pill-btn${metricMode === 'cost' ? ' is-active' : ''}" data-action="calendarSetMetric" data-cal-metric="cost" aria-pressed="${metricMode === 'cost' ? 'true' : 'false'}"><span>${biHtml('API Cost', 'API 参考金额')}</span></button>`;
+        <button type="button" class="cal-pill-btn${metricMode === 'tokens' ? ' is-active' : ''}" data-action="calendarSetMetric" data-cal-metric="tokens" aria-pressed="${metricMode === 'tokens' ? 'true' : 'false'}"${tokensMetricTip}><span>${biHtml('Tokens', 'Token 统计')}</span></button>
+        <button type="button" class="cal-pill-btn${metricMode === 'cost' ? ' is-active' : ''}" data-action="calendarSetMetric" data-cal-metric="cost" aria-pressed="${metricMode === 'cost' ? 'true' : 'false'}"${costMetricTip}><span>${biHtml('API Cost', 'API 参考金额')}</span></button>`;
 
     const periodPills = periodOptions.map(opt => {
         const active = periodMode === opt.id;
@@ -1059,8 +1133,18 @@ function buildControlsAndKpiCard(args: {
         ? formatCachePercent(kpiToday.cacheRead / kpiToday.promptTotal)
         : '';
 
+    const livePillTip = calRichTipAttrs(
+        'cal-live-today-pill',
+        'Live Today Merge',
+        '今日实时合并',
+        'Today\'s active session telemetry is merged live atop archived history so you see Day 1 and current-day progress immediately.',
+        '今日进行中的实时调用数据会直接叠加展示在归档历史之上，无需等待午夜归档即可即时查看。',
+        bi,
+        'Deduplicated automatically across quota resets and midnight rollovers — never double-counted.',
+        '跨配额重置与午夜跨天时自动去重，不会重复计入。',
+    );
     const livePillHtml = hasLiveToday
-        ? `<span class="cal-live-pill" role="status"><span class="cal-live-dot" aria-hidden="true"></span><span>${biHtml('Live Today', '今日实时')}</span></span>`
+        ? `<span class="cal-live-pill" role="status"${livePillTip}><span class="cal-live-dot" aria-hidden="true"></span><span>${biHtml('Live Today', '今日实时')}</span></span>`
         : '';
 
     const unknownNoticeHtml = sourceFilter === 'all' && availableSources.has('unknown') && availableSources.size > 1
@@ -1070,6 +1154,47 @@ function buildControlsAndKpiCard(args: {
         )}</p>`
         : '';
 
+    const csvExportTip = calRichTipAttrs(
+        'cal-export-csv',
+        'Export CSV',
+        '导出 CSV',
+        'Downloads a spreadsheet-friendly CSV table for the currently selected source filter and time period.',
+        '导出当前筛选来源与时间区间内的每日汇总 CSV 表格文件。',
+        bi,
+        'Includes additive token breakdown, API reference cost, calls, and active models.',
+        '包含 Token 累加明细、API 参考费用、调用次数与活跃模型。',
+    );
+    const jsonExportTip = calRichTipAttrs(
+        'cal-export-json',
+        'Export JSON',
+        '导出 JSON',
+        'Downloads structured JSON telemetry for the currently selected source filter and time period.',
+        '导出当前筛选来源与时间区间内的结构化 JSON 遥测数据。',
+        bi,
+        'Includes metadata, per-day totals, and per-model breakdowns.',
+        '包含筛选元数据、每日汇总及按模型拆分明细。',
+    );
+    const kpiAvgTip = (scope: 'total' | 'month' | 'year', daysCount: number) => calRichTipAttrs(
+        `cal-kpi-meta-${scope}`,
+        'Active Day Avg (KPI)',
+        '活跃日均（KPI 口径）',
+        `The per-day figure here divides total tokens by active days with usage (${daysCount}d), excluding idle days.`,
+        `此处的「/天」数值为活跃日均：用总 Token 除以有记录的活跃天数（${daysCount} 天），不含空闲日。`,
+        bi,
+        'Compare with "Calendar Daily Avg" in the summary footer below, which divides by every calendar day in the range.',
+        '下方区间摘要中的「折合每天」会除以区间内全部自然日（含无记录日期）。',
+    );
+    const kpiTodayTip = calRichTipAttrs(
+        'cal-kpi-meta-today',
+        'Today\'s Calls & Cache',
+        '今日调用与缓存',
+        'Total GM model calls today and prompt cache hit ratio across today\'s prompt tokens.',
+        '今日累计模型调用次数（GM 调用）及提示词缓存命中比例。',
+        bi,
+        'Cache hit % = Cache Read ÷ (Fresh Input + Cache Read + Cache Write).',
+        '缓存命中率 = 缓存读取 ÷（新输入 + 缓存读取 + 缓存写入）。',
+    );
+
     return `
         <section class="card cal-dashboard-card">
             <div class="cal-dashboard-top">
@@ -1078,10 +1203,10 @@ function buildControlsAndKpiCard(args: {
                     ${livePillHtml}
                 </div>
                 <div class="cal-export-actions" role="group" aria-label="${esc(bi('Export calendar data', '导出日历数据'))}">
-                    <button type="button" class="cal-export-btn" data-action="calendarExportCsv" data-cal-export="csv" title="${esc(bi('Export filtered range as CSV', '导出当前筛选区间为 CSV'))}">
+                    <button type="button" class="cal-export-btn" data-action="calendarExportCsv" data-cal-export="csv" aria-label="${esc(bi('Export filtered range as CSV', '导出当前筛选区间为 CSV'))}"${csvExportTip}>
                         ${EXPORT_ICON} <span>CSV</span>
                     </button>
-                    <button type="button" class="cal-export-btn" data-action="calendarExportJson" data-cal-export="json" title="${esc(bi('Export filtered range as JSON', '导出当前筛选区间为 JSON'))}">
+                    <button type="button" class="cal-export-btn" data-action="calendarExportJson" data-cal-export="json" aria-label="${esc(bi('Export filtered range as JSON', '导出当前筛选区间为 JSON'))}"${jsonExportTip}>
                         ${EXPORT_ICON} <span>JSON</span>
                     </button>
                 </div>
@@ -1106,25 +1231,25 @@ function buildControlsAndKpiCard(args: {
                     <div class="cal-kpi-label">${biHtml('Total', '累计处理')}</div>
                     <div class="cal-kpi-val">${fmtCardPrimary(kpiTotal)}</div>
                     <div class="cal-kpi-sub">${esc(fmtCardSecondary(kpiTotal))}</div>
-                    <div class="cal-kpi-meta">${kpiTotal.calls} ${biHtml('calls', '调用')} · ${kpiTotal.days}${biHtml('d', '天')} · ${totalDailyAvg}/${biHtml('d', '天')}</div>
+                    <div class="cal-kpi-meta"${kpiAvgTip('total', kpiTotal.days)}>${kpiTotal.calls} ${biHtml('calls', '调用')} · ${kpiTotal.days}${biHtml('d', '天')} · ${totalDailyAvg}/${biHtml('d', '天')}</div>
                 </article>
                 <article class="cal-kpi-card${hasLiveToday ? ' is-live' : ''}" data-cal-kpi="today">
                     <div class="cal-kpi-label">${biHtml('Today', '今日使用')}${hasLiveToday ? ` <span class="cal-kpi-live-tag">${biHtml('Live', '实时')}</span>` : ''}</div>
                     <div class="cal-kpi-val">${fmtCardPrimary(kpiToday)}</div>
                     <div class="cal-kpi-sub">${esc(fmtCardSecondary(kpiToday))}</div>
-                    <div class="cal-kpi-meta">${kpiToday.calls} ${biHtml('calls', '调用')}${todayCacheStr ? ` · ${biHtml('Cache', '缓存')} ${esc(todayCacheStr)}` : ''}</div>
+                    <div class="cal-kpi-meta"${kpiTodayTip}>${kpiToday.calls} ${biHtml('calls', '调用')}${todayCacheStr ? ` · ${biHtml('Cache', '缓存')} ${esc(todayCacheStr)}` : ''}</div>
                 </article>
                 <article class="cal-kpi-card" data-cal-kpi="month">
                     <div class="cal-kpi-label">${biHtml('This Month', '本月使用')}</div>
                     <div class="cal-kpi-val">${fmtCardPrimary(kpiMonth)}</div>
                     <div class="cal-kpi-sub">${esc(fmtCardSecondary(kpiMonth))}</div>
-                    <div class="cal-kpi-meta">${kpiMonth.calls} ${biHtml('calls', '调用')} · ${kpiMonth.days}${biHtml('d', '天')} · ${monthDailyAvg}/${biHtml('d', '天')}</div>
+                    <div class="cal-kpi-meta"${kpiAvgTip('month', kpiMonth.days)}>${kpiMonth.calls} ${biHtml('calls', '调用')} · ${kpiMonth.days}${biHtml('d', '天')} · ${monthDailyAvg}/${biHtml('d', '天')}</div>
                 </article>
                 <article class="cal-kpi-card" data-cal-kpi="year">
                     <div class="cal-kpi-label">${biHtml('This Year', '年度使用')}</div>
                     <div class="cal-kpi-val">${fmtCardPrimary(kpiYear)}</div>
                     <div class="cal-kpi-sub">${esc(fmtCardSecondary(kpiYear))}</div>
-                    <div class="cal-kpi-meta">${kpiYear.calls} ${biHtml('calls', '调用')} · ${kpiYear.days}${biHtml('d', '天')} · ${yearDailyAvg}/${biHtml('d', '天')}</div>
+                    <div class="cal-kpi-meta"${kpiAvgTip('year', kpiYear.days)}>${kpiYear.calls} ${biHtml('calls', '调用')} · ${kpiYear.days}${biHtml('d', '天')} · ${yearDailyAvg}/${biHtml('d', '天')}</div>
                 </article>
             </div>
         </section>`;
@@ -1186,12 +1311,22 @@ function buildHeatmapSection(
                 const level = computeIntensityLevel(dayMetricValue(day, metricMode), maxVal);
                 const costText = day.costUsd > 0 ? formatCostValue(day.costUsd, currency) : '—';
                 const tip = `${dateStr} · ${formatTokensCompact(day.totalTokens)} ${bi('tokens', 'tokens')} · ${costText} · ${day.calls} ${bi('calls', '调用')}${day.isLive ? ` · ${bi('Live', '实时')}` : ''}`;
+                const tipTitle = day.isLive ? `${dateStr} · ${bi('Live', '实时')}` : dateStr;
+                const tipBody = `${formatTokensCompact(day.totalTokens)} ${bi('tokens', 'tokens')} · ${costText} · ${day.calls} ${bi('calls', '调用')}`;
+                const tipMeta = bi(
+                    `Intensity level ${level}/4 (relative to visible peak) · Click to view breakdown.`,
+                    `相对强度 ${level}/4 档（对照当前窗口峰值）· 点击展开当日明细。`,
+                );
                 const cls = `cal-hm-cell has-data cal-lvl-${level}${isTodayCell ? ' is-today' : ''}${isSelected ? ' selected' : ''}${metricMode === 'cost' ? ' is-cost' : ''}`;
-                colCells.push(`<button type="button" class="${cls}" data-action="calendarSelectDate" data-cal-date="${dateStr}" data-cal-level="${level}" title="${esc(tip)}" aria-label="${esc(tip)}"></button>`);
+                colCells.push(`<button type="button" class="${cls}" data-action="calendarSelectDate" data-cal-date="${dateStr}" data-cal-level="${level}"${calRichTipRawAttrs(`cal-hm-${dateStr}`, tipTitle, tipBody, tipMeta)} aria-label="${esc(tip)}"></button>`);
             } else {
                 const emptyTip = `${dateStr} · ${bi('No activity', '无记录')}`;
+                const emptyBody = isFuture
+                    ? bi('Future date — no recorded activity.', '未来日期，暂无活动记录。')
+                    : bi('No recorded activity on this date.', '当日无活动记录。');
+                const emptyMeta = bi('Relative intensity level 0/4.', '相对强度 0/4 档（无记录）。');
                 const cls = `cal-hm-cell cal-lvl-0${isTodayCell ? ' is-today' : ''}${isFuture ? ' is-future' : ''}`;
-                colCells.push(`<span class="${cls}" data-cal-date="${dateStr}" data-cal-level="0" title="${esc(emptyTip)}" aria-hidden="true"></span>`);
+                colCells.push(`<span class="${cls}" data-cal-date="${dateStr}" data-cal-level="0"${calRichTipRawAttrs(`cal-hm-${dateStr}`, dateStr, emptyBody, emptyMeta)} aria-label="${esc(emptyTip)}"></span>`);
             }
         }
         cells.push(`<div class="cal-hm-col">${colCells.join('')}</div>`);
@@ -1200,6 +1335,16 @@ function buildHeatmapSection(
     const legendCells = [0, 1, 2, 3, 4]
         .map(lvl => `<span class="cal-hm-swatch cal-lvl-${lvl}${metricMode === 'cost' ? ' is-cost' : ''}" aria-hidden="true"></span>`)
         .join('');
+    const legendTip = calRichTipAttrs(
+        'cal-hm-legend',
+        '5-Level Relative Intensity Scale',
+        '5 档相对强度色阶',
+        'Each square\'s shade is scaled relative to the highest-activity day in the visible heatmap window.',
+        '每个方格的颜色深浅按当前可见热力图窗口内的最高峰值日做相对分档。',
+        bi,
+        '0 = none · 1 = <20% · 2 = 20–44% · 3 = 45–74% · 4 = ≥75% of peak.',
+        '0 档 = 无 · 1 档 = <20% · 2 档 = 20–44% · 3 档 = 45–74% · 4 档 = ≥75% 峰值。',
+    );
 
     const dayAxisLabels = [0, 2, 4].map(idx => {
         const label = lang === 'zh' ? DAY_HEADERS_ZH[idx] : DAY_HEADERS_EN[idx];
@@ -1210,7 +1355,7 @@ function buildHeatmapSection(
         <div class="cal-heatmap-section" data-cal-heatmap="true">
             <div class="cal-heatmap-head">
                 <span class="cal-heatmap-caption">${biHtml(`Last ${weeks} Weeks`, `近 ${weeks} 周活动热力图`)}</span>
-                <div class="cal-hm-legend" role="group" aria-label="${esc(bi('Activity intensity scale', '活动强度图例'))}">
+                <div class="cal-hm-legend" role="group" aria-label="${esc(bi('Activity intensity scale', '活动强度图例'))}"${legendTip}>
                     <span class="cal-hm-legend-text">${biHtml('Less', '较少')}</span>
                     ${legendCells}
                     <span class="cal-hm-legend-text">${biHtml('More', '较多')}</span>
@@ -1276,11 +1421,22 @@ function buildMonthGridSection(
             const highActivity = dayData.calls > 20 || dayData.costUsd > 0.5 || level >= 3;
             const costText = dayData.costUsd > 0 ? formatCostValue(dayData.costUsd, currency) : '—';
             const tooltip = `${dateStr} · ${formatTokensCompact(dayData.totalTokens)} ${bi('tokens', 'tokens')} · ${costText} · ${dayData.calls} ${bi('calls', '调用')}${dayData.isLive ? ` · ${bi('Live', '实时')}` : ''}`;
+            const tipTitle = dayData.isLive ? `${dateStr} · ${bi('Live', '实时')}` : dateStr;
+            const tipBody = `${formatTokensCompact(dayData.totalTokens)} ${bi('tokens', 'tokens')} · ${costText} · ${dayData.calls} ${bi('calls', '调用')}`;
+            const tipMeta = highActivity
+                ? bi(
+                    `High-activity day (calls > 20, API cost > $0.50, or level ≥ 3; currently level ${level}/4) · Click for details.`,
+                    `高活跃日（调用 > 20、参考费用 > $0.50 或强度 ≥ 3 档，当前 ${level}/4 档）· 点击查看详情。`,
+                )
+                : bi(
+                    `Activity level ${level}/4 (standard dot) · Click for full breakdown.`,
+                    `活动强度 ${level}/4 档（常规圆点）· 点击展开完整明细。`,
+                );
             const miniVal = metricMode === 'cost'
                 ? (dayData.costUsd > 0 ? formatCostValue(dayData.costUsd, currency) : formatTokensCompact(dayData.totalTokens))
                 : formatTokensCompact(dayData.totalTokens);
             cells.push(`
-                <button type="button" class="cal-cell has-data cal-cell-lvl-${level}${todayClass}${selectedClass}${metricMode === 'cost' ? ' is-cost' : ''}" data-cal-date="${dateStr}" data-cal-level="${level}" data-tooltip="${esc(tooltip)}" title="${esc(tooltip)}" aria-label="${esc(tooltip)}">
+                <button type="button" class="cal-cell has-data cal-cell-lvl-${level}${todayClass}${selectedClass}${metricMode === 'cost' ? ' is-cost' : ''}" data-cal-date="${dateStr}" data-cal-level="${level}"${calRichTipRawAttrs(`cal-grid-${dateStr}`, tipTitle, tipBody, tipMeta)} aria-label="${esc(tooltip)}">
                     <span class="cal-day-num">${dayNum}</span>
                     <span class="cal-cell-mini">${esc(miniVal)}</span>
                     <span class="cal-dot${highActivity ? ' high-activity' : ''}" aria-hidden="true"></span>
@@ -1294,6 +1450,16 @@ function buildMonthGridSection(
     const prevYear = month === 1 ? year - 1 : year;
     const nextMonth = month === 12 ? 1 : month + 1;
     const nextYear = month === 12 ? year + 1 : year;
+    const monthDotTip = calRichTipAttrs(
+        'cal-month-dot-legend',
+        'Month Grid Dots & Intensity',
+        '月历圆点与高活跃标记',
+        'Each date with recorded usage shows a dot; a highlighted high-activity dot marks heavy usage days.',
+        '有记录的日期下方会显示小圆点；高亮高活跃圆点代表高用量日期。',
+        bi,
+        'High-activity rule: calls > 20, API cost > $0.50, or relative level ≥ 3.',
+        '高活跃判定：当日调用 > 20 次、API 参考费用 > $0.50 或相对强度 ≥ 3 档。',
+    );
 
     return `
         <div class="cal-month-section">
@@ -1301,7 +1467,7 @@ function buildMonthGridSection(
                 <button type="button" class="cal-nav-btn" aria-label="${esc(bi('Previous month', '上个月'))}" data-cal-nav="prev" data-cal-year="${prevYear}" data-cal-month="${prevMonth}">
                     ${CHEVRON_LEFT}
                 </button>
-                <span class="cal-month-label">${monthLabel}</span>
+                <span class="cal-month-label"${monthDotTip}>${monthLabel}</span>
                 <button type="button" class="cal-nav-btn" aria-label="${esc(bi('Next month', '下个月'))}" data-cal-nav="next" data-cal-year="${nextYear}" data-cal-month="${nextMonth}">
                     ${CHEVRON_RIGHT}
                 </button>
@@ -1327,6 +1493,7 @@ interface PeriodBarDatum {
 }
 
 function buildPeriodBarsHtml(
+    chartKind: 'weekly' | 'monthly' | 'year',
     bars: readonly PeriodBarDatum[],
     metricMode: CalendarMetricMode,
     currency: CurrencyInput,
@@ -1360,18 +1527,24 @@ function buildPeriodBarsHtml(
         const secondaryText = metricMode === 'cost'
             ? `${formatTokensCompact(b.tokens)} · ${b.calls} ${bi('calls', '调用')}`
             : `${b.costUsd > 0 ? formatCostValue(b.costUsd, currency) : '—'} · ${b.calls} ${bi('calls', '调用')}`;
-        const tip = `${b.label} (${b.sublabel}) · ${formatTokensCompact(b.tokens)} ${bi('tokens', 'tokens')} · ${b.costUsd > 0 ? formatCostValue(b.costUsd, currency) : '—'} · ${b.calls} ${bi('calls', '调用')}`;
+        const costStr = b.costUsd > 0 ? formatCostValue(b.costUsd, currency) : '—';
+        const tip = `${b.label} (${b.sublabel}) · ${formatTokensCompact(b.tokens)} ${bi('tokens', 'tokens')} · ${costStr} · ${b.calls} ${bi('calls', '调用')}`;
+        const tipTitle = `${b.label} (${b.sublabel})`;
+        const tipBody = `${formatTokensCompact(b.tokens)} ${bi('tokens', 'tokens')} · ${costStr} · ${b.calls} ${bi('calls', '调用')} · ${b.activeDays} ${bi('active days', '活跃天')}`;
 
         const jumpAttrs = b.jumpYear && b.jumpMonth
             ? ` data-cal-nav="jump" data-cal-year="${b.jumpYear}" data-cal-month="${b.jumpMonth}"`
             : (b.jumpDate ? ` data-action="calendarJumpDate" data-cal-date="${b.jumpDate}"` : '');
+        const tipMeta = jumpAttrs
+            ? bi('Click to jump to this period in Daily view · Bar width scales to peak period.', '点击跳转至该区间日视图 · 柱宽按峰值区间缩放。')
+            : bi('No recorded activity in this period.', '该区间暂无活动记录。');
         const tag = jumpAttrs ? 'button type="button"' : 'div';
         const closeTag = jumpAttrs ? 'button' : 'div';
 
         const ariaLabelAttr = jumpAttrs ? ` aria-label="${esc(tip)}"` : '';
 
         return `
-            <${tag} class="cal-bar-row${isPeak ? ' is-peak' : ''}${jumpAttrs ? ' is-interactive' : ''}"${jumpAttrs} title="${esc(tip)}"${ariaLabelAttr}>
+            <${tag} class="cal-bar-row${isPeak ? ' is-peak' : ''}${jumpAttrs ? ' is-interactive' : ''}"${jumpAttrs}${calRichTipRawAttrs(`cal-bar-${chartKind}-${calSlugKey(b.key)}`, tipTitle, tipBody, tipMeta)}${ariaLabelAttr}>
                 <span class="cal-bar-label">
                     <span class="cal-bar-title">${esc(b.label)}</span>
                     <span class="cal-bar-sub">${esc(b.sublabel)}</span>
@@ -1440,6 +1613,7 @@ function buildWeeklyChartSection(
 
     const bars = orderedKeys.map(k => buckets.get(k)!);
     return `<div class="cal-period-chart" data-cal-chart="weekly">${buildPeriodBarsHtml(
+        'weekly',
         bars,
         metricMode,
         currency,
@@ -1490,6 +1664,7 @@ function buildMonthlyChartSection(
     }
 
     return `<div class="cal-period-chart" data-cal-chart="monthly">${buildPeriodBarsHtml(
+        'monthly',
         bars,
         metricMode,
         currency,
@@ -1537,6 +1712,7 @@ function buildYearChartSection(
     }
 
     return `<div class="cal-period-chart" data-cal-chart="year">${buildPeriodBarsHtml(
+        'year',
         bars,
         metricMode,
         currency,
@@ -1617,8 +1793,15 @@ function buildAllTimeStripSection(
         const share = spanGrandTotal > 0 ? (val / spanGrandTotal) * 100 : (100 / spans.length);
         const tone = idx % 4;
         const isPeak = s.ym === peakSpan.ym;
-        const tip = `${s.ym} · ${share.toFixed(1)}% · ${formatTokensCompact(s.tokens)} ${bi('tokens', 'tokens')} · ${s.costUsd > 0 ? formatCostValue(s.costUsd, currency) : '—'} · ${s.days} ${bi('days', '天')}`;
-        return `<button type="button" class="cal-cum-seg cal-cum-tone-${tone}${isPeak ? ' is-peak' : ''}" style="flex-grow:${Math.max(1, Math.round(share * 10))}" data-cal-nav="jump" data-cal-year="${s.year}" data-cal-month="${s.month}" title="${esc(tip)}" aria-label="${esc(tip)}"><span class="cal-cum-seg-label">${share >= 10 ? esc(s.ym) : ''}</span></button>`;
+        const costStr = s.costUsd > 0 ? formatCostValue(s.costUsd, currency) : '—';
+        const tip = `${s.ym} · ${share.toFixed(1)}% · ${formatTokensCompact(s.tokens)} ${bi('tokens', 'tokens')} · ${costStr} · ${s.days} ${bi('days', '天')}`;
+        const segTitle = `${s.ym} · ${share.toFixed(1)}%`;
+        const segBody = `${formatTokensCompact(s.tokens)} ${bi('tokens', 'tokens')} · ${costStr} · ${s.calls} ${bi('calls', '调用')} · ${s.days} ${bi('active days', '活跃天')}`;
+        const segMeta = bi(
+            `Proportional share of all-time ${useCostMetric ? 'API reference cost' : 'tokens'} · Click to jump to ${s.ym}.`,
+            `占历史累计${useCostMetric ? ' API 参考金额' : ' Token 总量'}的比例 · 点击跳转至 ${s.ym} 月历。`,
+        );
+        return `<button type="button" class="cal-cum-seg cal-cum-tone-${tone}${isPeak ? ' is-peak' : ''}" style="flex-grow:${Math.max(1, Math.round(share * 10))}" data-cal-nav="jump" data-cal-year="${s.year}" data-cal-month="${s.month}"${calRichTipRawAttrs(`cal-cum-${s.ym}`, segTitle, segBody, segMeta)} aria-label="${esc(tip)}"><span class="cal-cum-seg-label">${share >= 10 ? esc(s.ym) : ''}</span></button>`;
     }).join('');
 
     return `
@@ -1684,8 +1867,18 @@ function buildRangeSummaryFooter(
         : '—';
 
     const roi = estimateSubscriptionRoi(totalCostUsd, safeSpan, subscription, currency);
+    const roiTip = calRichTipAttrs(
+        'cal-range-roi',
+        'Plan ROI (Return on Investment)',
+        '订阅投入产出比 (ROI)',
+        'Compares estimated public API value of your usage against your subscription plan fee prorated for this date span.',
+        '将当前区间用量的等效 API 参考估值，与按天数折算后的订阅月费进行对比。',
+        bi,
+        `Formula: API reference value ÷ (monthly fee × ${safeSpan}d ÷ 30d). Reference estimate only.`,
+        `计算公式：API 参考估值 ÷（月费 × ${safeSpan} 天 ÷ 30 天）。仅供参考，非官方账单。`,
+    );
     const roiHtml = roi ? `
-        <div class="cal-roi-banner" data-cal-roi="true">
+        <div class="cal-roi-banner" data-cal-roi="true"${roiTip}>
             <span class="cal-roi-badge">
                 <strong>${esc(bi(roi.planLabelEn, roi.planLabelZh))} ROI:</strong>
                 ${roi.roiMultiple !== null ? `${roi.roiMultiple.toFixed(2)}×` : '—'}
@@ -1693,6 +1886,47 @@ function buildRangeSummaryFooter(
             </span>
             <span class="cal-roi-note">${biHtml(roi.disclaimerEn, roi.disclaimerZh)}</span>
         </div>` : '';
+
+    const rangeCostTip = calRichTipAttrs(
+        'cal-range-cost',
+        'API Reference Cost (Est.)',
+        'API 参考费用（估算）',
+        'Total estimated cost for this range computed from public per-1M token API list rates (or your custom rates).',
+        '当前区间按公开 API 每百万 Token 单价（或自定义单价）累计估算的参考费用。',
+        bi,
+        'Reference estimate only — matches API Cost metric toggle, not actual subscription billing.',
+        '与上方「API 参考金额」同一口径，仅供参考，并非实际订阅扣费。',
+    );
+    const calAvgTip = calRichTipAttrs(
+        'cal-range-cal-avg',
+        'Calendar Daily Avg',
+        '折合每天（自然日均）',
+        `Divides range total by every calendar day in this span (${safeSpan}d), including zero-activity days.`,
+        `用区间总量除以该跨度内的全部自然日（${safeSpan} 天），包含无记录的空闲日。`,
+        bi,
+        `Denominator: ${safeSpan} calendar days (vs Active Day Avg which divides by ${activeDays} active days).`,
+        `分母：${safeSpan} 个自然日（与右侧「活跃日均」按 ${activeDays} 个活跃日相除不同）。`,
+    );
+    const activeAvgTip = calRichTipAttrs(
+        'cal-range-active-avg',
+        'Active Day Avg',
+        '活跃日均',
+        `Divides range total only by days with recorded activity (${activeDays}d), matching the X/d figure on the top KPI cards.`,
+        `仅用区间总量除以有记录的活跃天数（${activeDays} 天），与顶部 KPI 卡片的「/天」口径一致。`,
+        bi,
+        `Denominator: ${activeDays} active days (idle days excluded).`,
+        `分母：${activeDays} 个活跃天（不含空闲日）。`,
+    );
+    const streakTip = calRichTipAttrs(
+        'cal-range-streak',
+        'Activity Streak',
+        '连续活跃天数',
+        'Number of consecutive calendar days with recorded usage ending today or yesterday.',
+        '截至今日或昨日的连续有使用记录的天数。',
+        bi,
+        `Current: ${streaks.currentStreak}d · Best in range: ${streaks.longestStreak}d.`,
+        `当前连续：${streaks.currentStreak} 天 · 区间最长：${streaks.longestStreak} 天。`,
+    );
 
     return `
         <footer class="cal-range-footer" aria-label="${esc(bi('Range summary', '区间统计摘要'))}">
@@ -1702,22 +1936,22 @@ function buildRangeSummaryFooter(
                     <div class="cal-range-val">${formatTokensCompact(totalTokens)}</div>
                     <div class="cal-range-sub">${totalCalls} ${biHtml('calls', '调用')}</div>
                 </div>
-                <div class="cal-range-item">
-                    <div class="cal-range-label">${biHtml('Est. Cost', '预估费用')}</div>
+                <div class="cal-range-item"${rangeCostTip}>
+                    <div class="cal-range-label">${biHtml('API Cost (Est.)', 'API 参考费用')}</div>
                     <div class="cal-range-val">${esc(costDisplay)}</div>
                     <div class="cal-range-sub">${esc(preset.code)}</div>
                 </div>
-                <div class="cal-range-item">
+                <div class="cal-range-item"${calAvgTip}>
                     <div class="cal-range-label">${biHtml('Calendar Daily Avg', '折合每天')}</div>
                     <div class="cal-range-val">${formatTokensCompact(calDailyAvgTok)}</div>
                     <div class="cal-range-sub">${calDailyAvgCost > 0 ? esc(formatCostValue(calDailyAvgCost, currency)) : '—'} · ${safeSpan}${biHtml('d', '天')}</div>
                 </div>
-                <div class="cal-range-item">
+                <div class="cal-range-item"${activeAvgTip}>
                     <div class="cal-range-label">${biHtml(`Active Day Avg (${activeDays}d)`, `活跃日均 (${activeDays}天)`)}</div>
                     <div class="cal-range-val">${formatTokensCompact(activeDailyAvgTok)}</div>
                     <div class="cal-range-sub">${activeDailyAvgCost > 0 ? esc(formatCostValue(activeDailyAvgCost, currency)) : '—'}</div>
                 </div>
-                <div class="cal-range-item">
+                <div class="cal-range-item"${streakTip}>
                     <div class="cal-range-label">${biHtml('Streak', '连续活跃')}</div>
                     <div class="cal-range-val">${streaks.currentStreak}${biHtml('d', '天')}</div>
                     <div class="cal-range-sub">${biHtml('Best', '最长')}: ${streaks.longestStreak}${biHtml('d', '天')}</div>
@@ -1778,8 +2012,18 @@ function buildDayDetail(
         const thinkNote = day.thinkingTokens > 0
             ? ` (${biHtml('Thinking', '思考')}: ${formatTokensCompact(day.thinkingTokens)})`
             : '';
+        const tokBreakdownTip = calRichTipAttrs(
+            `cal-day-tokbreakdown-${dateStr}`,
+            'Additive Token Breakdown',
+            'Token 累加构成',
+            'Total tokens = Fresh Input + Cache Read + Cache Write + Output.',
+            '总 Token = 新输入 + 缓存读取 + 缓存写入 + 输出。',
+            bi,
+            'Thinking tokens are a subset already included inside Output (shown in parentheses, never double-counted).',
+            '括号中的「思考」Token 属于「输出」的子集，不会重复计入总量。',
+        );
         return `
-            <div class="cal-token-breakdown" role="group" aria-label="${esc(bi('Token breakdown', 'Token 构成'))}">
+            <div class="cal-token-breakdown" role="group" aria-label="${esc(bi('Token breakdown', 'Token 构成'))}"${tokBreakdownTip}>
                 <div class="cal-tok-bar" aria-hidden="true">
                     ${day.inputTokens > 0 ? `<span class="cal-tok-seg is-input" style="width:${Math.max(1, inPct)}%"></span>` : ''}
                     ${day.cacheReadTokens > 0 ? `<span class="cal-tok-seg is-cache" style="width:${Math.max(1, crPct)}%"></span>` : ''}
@@ -1795,8 +2039,38 @@ function buildDayDetail(
             </div>`;
     })() : '';
 
-    const mergedGMHtml = buildMergedGMRows(day.models, currency, metricMode, bi, biHtml);
+    const mergedGMHtml = buildMergedGMRows(day.models, dateStr, currency, metricMode, bi, biHtml);
     const cyclesHtml = buildCyclesDetailsHtml(day.cycles, dateStr, currency, bi, biHtml);
+    const dayGmCallsTip = calRichTipAttrs(
+        `cal-day-gmcalls-${dateStr}`,
+        'GM Calls (Generator Metadata)',
+        'GM 调用次数',
+        'Total model generation calls recorded in runtime Generator Metadata on this date.',
+        '当日在模型调用遥测（Generator Metadata）中记录的总调用次数。',
+        bi,
+        'Includes calls across all cycles and sources matching your active filter.',
+        '涵盖当前筛选来源下当日全部周期的模型调用。',
+    );
+    const dayCostTip = calRichTipAttrs(
+        `cal-day-cost-${dateStr}`,
+        'API Reference Cost',
+        'API 参考费用',
+        'Estimated public API cost for this date based on per-1M token list rates (or your custom rates).',
+        '按公开 API 单价（或自定义单价）估算的当日参考费用。',
+        bi,
+        'Reference estimate only — not your actual subscription charge.',
+        '仅为等效 API 参考估值，并非实际订阅扣费。',
+    );
+    const dayCreditsTip = calRichTipAttrs(
+        `cal-day-credits-${dateStr}`,
+        'GM Call Credits',
+        'GM 调用积分',
+        'Per-call credit units reported in Generator Metadata for this date.',
+        '当日模型调用遥测（Generator Metadata）中上报的单次调用积分累计值。',
+        bi,
+        'Separate from your Account AI Credits balance shown in the Profile tab.',
+        '与「账号」页中展示的账号 AI 积分余额属于不同统计口径。',
+    );
 
     return `
         <div class="cal-detail${isOpen ? ' cal-detail-open' : ''}" id="cal-detail-${dateStr}" style="display:${isOpen ? 'block' : 'none'}" data-cal-detail="${dateStr}">
@@ -1808,7 +2082,7 @@ function buildDayDetail(
             </div>
             <div class="cal-day-summary">
                 ${day.calls > 0 ? `
-                <div class="cal-day-total">
+                <div class="cal-day-total"${dayGmCallsTip}>
                     <div class="cal-day-total-val">${day.calls}</div>
                     <div class="cal-day-total-label">${biHtml('GM Calls', 'GM 调用')}</div>
                 </div>` : ''}
@@ -1818,12 +2092,12 @@ function buildDayDetail(
                     <div class="cal-day-total-label">${biHtml('Tokens', 'Tokens')}</div>
                 </div>` : ''}
                 ${dayCostStr ? `
-                <div class="cal-day-total">
+                <div class="cal-day-total"${dayCostTip}>
                     <div class="cal-day-total-val">${esc(dayCostStr)}</div>
-                    <div class="cal-day-total-label">${biHtml('Cost', '费用')}</div>
+                    <div class="cal-day-total-label">${biHtml('API Cost', 'API 费用')}</div>
                 </div>` : ''}
                 ${day.credits > 0 ? `
-                <div class="cal-day-total">
+                <div class="cal-day-total"${dayCreditsTip}>
                     <div class="cal-day-total-val">${day.credits}</div>
                     <div class="cal-day-total-label">${biHtml('Credits', '积分')}</div>
                 </div>` : ''}
@@ -1842,6 +2116,7 @@ function buildDayDetail(
 /** Merged per-model GM rows across all cycles (with proportion bars & additive tokens) */
 function buildMergedGMRows(
     merged: Record<string, MergedCalendarGMModel>,
+    dateStr: string,
     currency: CurrencyInput,
     metricMode: CalendarMetricMode,
     bi: (en: string, zh: string) => string,
@@ -1856,44 +2131,128 @@ function buildMergedGMRows(
     if (entries.length === 0) { return ''; }
 
     const totalShareDenom = entries.reduce((sum, [, ms]) => sum + (metricMode === 'cost' && ms.cost > 0 ? ms.cost : ms.totalTokens), 0);
+    const gmSummaryTip = calRichTipAttrs(
+        `cal-gm-summary-label-${dateStr}`,
+        'GM Summary (Per-Model Telemetry)',
+        'GM 汇总（按模型遥测）',
+        'Aggregates Generator Metadata calls, speed, TTFT, prompt cache hit rate, reference cost, and tokens per model across all cycles on this date.',
+        '汇总当日所有周期中各模型的调用次数、速度、首字延迟、缓存命中率、参考费用与 Token 明细。',
+        bi,
+        'Hover or click any metric chip below to inspect its exact formula.',
+        '悬停或点击下方任意指标标签即可查看计算口径。',
+    );
 
     let html = '<div class="cal-model-rows">';
-    html += `<div class="cal-gm-section-label">${biHtml('GM Summary', 'GM 汇总')}</div>`;
-    for (const [name, ms] of entries) {
+    html += `<div class="cal-gm-section-label"${gmSummaryTip}>${biHtml('GM Summary', 'GM 汇总')}</div>`;
+    for (let idx = 0; idx < entries.length; idx++) {
+        const [name, ms] = entries[idx];
+        const rowKey = `${dateStr}-${idx}`;
         const chips: string[] = [];
         if (ms.calls > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tools">${CAL_ICON.calls} <span>${ms.calls} ${biHtml('calls', '调用')}</span></span>`);
+            const callsTip = calRichTipAttrs(
+                `cal-gm-calls-${rowKey}`,
+                'Model GM Calls',
+                '模型 GM 调用次数',
+                `${name} completed ${ms.calls} recorded model calls on ${dateStr}.`,
+                `${name} 在 ${dateStr} 共记录了 ${ms.calls} 次模型调用。`,
+                bi,
+            );
+            chips.push(`<span class="cal-chip cal-chip-tools"${callsTip}>${CAL_ICON.calls} <span>${ms.calls} ${biHtml('calls', '调用')}</span></span>`);
         }
         if (ms.credits > 0) {
-            chips.push(`<span class="cal-chip cal-chip-tokens">${CAL_ICON.credit} <span>${ms.credits}</span></span>`);
+            const creditsTip = calRichTipAttrs(
+                `cal-gm-credits-${rowKey}`,
+                'GM Call Credits',
+                'GM 调用积分',
+                `${ms.credits} call credits reported in Generator Metadata for ${name} on ${dateStr}.`,
+                `${name} 在 ${dateStr} 上报了 ${ms.credits} 点 GM 调用积分。`,
+                bi,
+                'Per-call telemetry credit units — separate from your Account AI Credits balance.',
+                '单次调用遥测积分单位，与「账号」页的账号 AI 积分余额相互独立。',
+            );
+            chips.push(`<span class="cal-chip cal-chip-credits cal-chip-tokens" aria-label="${esc(`${ms.credits} ${bi('GM call credits', 'GM 调用积分')}`)}"${creditsTip}>${CAL_ICON.credit} <span>${ms.credits} ${biHtml('credits', '积分')}</span></span>`);
         }
         const avgSpeed = ms.speedTimeSum > 0
             ? ms.speedOutputSum / ms.speedTimeSum
             : (ms.speedFallbackWeight > 0 ? ms.speedFallbackSum / ms.speedFallbackWeight : 0);
         if (avgSpeed > 0) {
-            chips.push(`<span class="cal-chip cal-chip-speed" title="${esc(bi('Avg generation speed', '平均生成速度'))}">${CAL_ICON.speed} <span>${esc(formatSpeed(avgSpeed))}</span></span>`);
+            const speedTip = calRichTipAttrs(
+                `cal-gm-speed-${rowKey}`,
+                'Avg Generation Speed',
+                '平均生成速度',
+                `Weighted average token output rate (${formatSpeed(avgSpeed)}) for ${name}.`,
+                `${name} 的加权平均 Token 生成速度（${formatSpeed(avgSpeed)}）。`,
+                bi,
+                'Formula: total output tokens ÷ total streaming duration across timed calls.',
+                '计算口径：计时调用的总输出 Token ÷ 总流式耗时。',
+            );
+            chips.push(`<span class="cal-chip cal-chip-speed" aria-label="${esc(`${bi('Avg generation speed', '平均生成速度')}: ${formatSpeed(avgSpeed)}`)}"${speedTip}>${CAL_ICON.speed} <span>${esc(formatSpeed(avgSpeed))}</span></span>`);
         }
         const avgTTFT = ms.ttftWeight > 0 ? ms.ttftSum / ms.ttftWeight : 0;
         if (avgTTFT > 0) {
-            chips.push(`<span class="cal-chip cal-chip-ttft" title="${esc(bi('Avg TTFT', '平均首字延迟'))}">${CAL_ICON.clock} <span>${esc(formatLatency(avgTTFT))}</span></span>`);
+            const ttftTip = calRichTipAttrs(
+                `cal-gm-ttft-${rowKey}`,
+                'Avg TTFT (Time to First Token)',
+                '平均首字延迟 (TTFT)',
+                `Average wait time (${formatLatency(avgTTFT)}) from sending a request until the first token begins streaming.`,
+                `从发起请求到模型返回第一个输出 Token 的平均等待时长（${formatLatency(avgTTFT)}）。`,
+                bi,
+                'Weighted by call count across timed calls.',
+                '按计时调用次数加权平均。',
+            );
+            chips.push(`<span class="cal-chip cal-chip-ttft" aria-label="${esc(`${bi('Avg TTFT', '平均首字延迟')}: ${formatLatency(avgTTFT)}`)}"${ttftTip}>${CAL_ICON.clock} <span>${esc(formatLatency(avgTTFT))}</span></span>`);
         }
         const hasTokenCache = ms.tokenCacheWeight > 0;
         const avgCache = hasTokenCache
             ? ms.tokenCacheSum / ms.tokenCacheWeight
             : (ms.legacyCacheWeight > 0 ? ms.legacyCacheSum / ms.legacyCacheWeight : 0);
         if (avgCache > 0) {
-            const cacheTitle = hasTokenCache
-                ? bi('Prompt cache hit rate (token-weighted)', '提示词缓存命中率（按 Token 加权）')
-                : bi('Cache hit rate (call ratio)', '缓存命中率（按调用占比）');
-            chips.push(`<span class="cal-chip cal-chip-cache" title="${esc(cacheTitle)}">${CAL_ICON.cache} <span>${esc(formatCachePercent(avgCache))}</span></span>`);
+            const cacheTip = calRichTipAttrs(
+                `cal-gm-cache-${rowKey}`,
+                'Prompt Cache Hit Rate',
+                '提示词缓存命中率',
+                hasTokenCache
+                    ? `Share of prompt tokens (${formatCachePercent(avgCache)}) reused from cache — reduces latency and API reference cost.`
+                    : `Share of model calls (${formatCachePercent(avgCache)}) that hit prompt cache.`,
+                hasTokenCache
+                    ? `从提示词缓存直接复用的输入 Token 占比（${formatCachePercent(avgCache)}），可显著降低首字延迟与参考费用。`
+                    : `命中提示词缓存的调用占比（${formatCachePercent(avgCache)}）。`,
+                bi,
+                hasTokenCache
+                    ? 'Method: token-weighted — Cache Read ÷ (Fresh Input + Cache Read + Cache Write).'
+                    : 'Method: legacy call-ratio fallback (token-level cache reads unavailable in older records).',
+                hasTokenCache
+                    ? '计算口径：按 Token 加权 — 缓存读取 ÷（新输入 + 缓存读取 + 缓存写入）。'
+                    : '计算口径：旧版按调用占比回退（历史记录缺少 Token 级缓存读取字段）。',
+            );
+            chips.push(`<span class="cal-chip cal-chip-cache" aria-label="${esc(`${bi('Prompt cache hit rate', '提示词缓存命中率')}: ${formatCachePercent(avgCache)}`)}"${cacheTip}>${CAL_ICON.cache} <span>${esc(formatCachePercent(avgCache))}</span></span>`);
         }
         const costChip = formatCostChipValue(ms.cost, currency);
         if (costChip) {
-            chips.push(`<span class="cal-chip cal-chip-cost">${CAL_ICON.dollar} <span>${esc(costChip)}</span></span>`);
+            const costChipTip = calRichTipAttrs(
+                `cal-gm-cost-${rowKey}`,
+                'API Reference Cost',
+                'API 参考费用',
+                `Estimated API cost (${costChip}) for ${name} on ${dateStr}.`,
+                `${name} 在 ${dateStr} 按 API 标价估算的参考费用（${costChip}）。`,
+                bi,
+                'Reference estimate based on public per-1M rates — not actual subscription billing.',
+                '基于公开每百万 Token 标价估算，并非实际订阅账单。',
+            );
+            chips.push(`<span class="cal-chip cal-chip-cost"${costChipTip}>${CAL_ICON.dollar} <span>${esc(costChip)}</span></span>`);
         }
         if (ms.totalTokens > 0) {
             const breakdownTip = `${bi('Input', '新输入')} ${formatTokensCompact(ms.inputTokens)} + ${bi('Cache', '缓存')} ${formatTokensCompact(ms.cacheReadTokens + ms.cacheCreationTokens)} + ${bi('Output', '输出')} ${formatTokensCompact(ms.outputTokens)}${ms.thinkingTokens > 0 ? ` (${bi('Thinking', '思考')} ${formatTokensCompact(ms.thinkingTokens)})` : ''}`;
-            chips.push(`<span class="cal-chip cal-chip-tokens" title="${esc(breakdownTip)}"><span>${formatTokensCompact(ms.totalTokens)} ${biHtml('tokens', 'tokens')}</span></span>`);
+            const tokensTip = calRichTipRawAttrs(
+                `cal-gm-tokens-${rowKey}`,
+                bi('Additive Token Breakdown', 'Token 累加构成'),
+                breakdownTip,
+                bi(
+                    'Total = Fresh Input + Cache Read + Cache Write + Output (Thinking is inside Output, never double-counted).',
+                    '总计 = 新输入 + 缓存读取 + 缓存写入 + 输出（思考已包含在输出中，不重复相加）。',
+                ),
+            );
+            chips.push(`<span class="cal-chip cal-chip-tokens"${tokensTip}><span>${formatTokensCompact(ms.totalTokens)} ${biHtml('tokens', 'tokens')}</span></span>`);
         }
 
         const shareVal = metricMode === 'cost' && ms.cost > 0 ? ms.cost : ms.totalTokens;
@@ -1902,8 +2261,17 @@ function buildMergedGMRows(
         const barSpan = sharePct > 0
             ? `<span class="cal-model-bar" aria-hidden="true"><span class="cal-model-bar-fill" style="width:${Math.max(2, sharePct)}%"></span></span>`
             : '';
+        const modelNameTip = calRichTipRawAttrs(
+            `cal-gm-model-${rowKey}`,
+            name,
+            bi(
+                `${sharePct}% share of ${dateStr}'s ${metricMode === 'cost' ? 'API reference cost' : 'total tokens'}.`,
+                `占 ${dateStr} 当日${metricMode === 'cost' ? ' API 参考费用' : '总 Token'}的 ${sharePct}%。`,
+            ),
+            `${ms.calls} ${bi('calls', '调用')} · ${formatTokensCompact(ms.totalTokens)} ${bi('tokens', 'tokens')}`,
+        );
 
-        html += `<div class="cal-model-row"><span class="cal-model-name" title="${esc(name)}">${esc(name)}${sharePct > 0 ? ` <span class="cal-model-share">${sharePct}%</span>` : ''}</span><span class="cal-model-chips">${chips.join('')}</span>${barSpan}</div>`;
+        html += `<div class="cal-model-row"><span class="cal-model-name"${modelNameTip}>${esc(name)}${sharePct > 0 ? ` <span class="cal-model-share">${sharePct}%</span>` : ''}</span><span class="cal-model-chips">${chips.join('')}</span>${barSpan}</div>`;
     }
     html += '</div>';
     return html;
@@ -1929,8 +2297,19 @@ function buildCyclesDetailsHtml(
         const retryTag = (c.gmRetryCount || 0) > 0
             ? `<span class="cal-chip cal-chip-errors">${c.gmRetryCount} ${biHtml('retries', '重试')}</span>`
             : '';
-        const triggerTag = c.triggeredBy && c.triggeredBy.length > 0
-            ? `<span class="cal-chip">${biHtml('Reset', '重置')}: ${esc(c.triggeredBy.slice(0, 2).join(', '))}</span>`
+        const triggerList = c.triggeredBy && c.triggeredBy.length > 0 ? c.triggeredBy.slice(0, 2).join(', ') : '';
+        const triggerTip = triggerList ? calRichTipAttrs(
+            `cal-cycle-reset-${dateStr}-${idx}`,
+            'Cycle Settlement Trigger',
+            '周期结算触发原因',
+            `This archival segment closed when a quota reset occurred for: ${triggerList}.`,
+            `当 ${triggerList} 触发配额重置时，该段历史用量自动封存为一个周期记录。`,
+            bi,
+            'Cycles split a day cleanly across quota resets or midnight rollovers without double-counting.',
+            '按配额重置或午夜跨天切分周期，确保全天汇总不重复统计。',
+        ) : '';
+        const triggerTag = triggerList
+            ? `<span class="cal-chip"${triggerTip}>${biHtml('Reset', '重置')}: ${esc(triggerList)}</span>`
             : '';
 
         return `
@@ -1952,9 +2331,20 @@ function buildCyclesDetailsHtml(
             </div>`;
     }).join('');
 
+    const cyclesSummaryTip = calRichTipAttrs(
+        `cal-cycles-summary-${dateStr}`,
+        'Cycle History',
+        '周期记录',
+        'Each cycle is an archival segment bounded by a quota pool reset or midnight rollover (plus today\'s live segment if active).',
+        '每条周期记录对应一次配额池重置或午夜跨天结算前的归档区间（当日进行中的会话显示为实时段）。',
+        bi,
+        `${cycles.length} segment(s) recorded on ${dateStr}.`,
+        `${dateStr} 共记录 ${cycles.length} 个周期段。`,
+    );
+
     return `
         <details class="cal-cycles-details" id="cal-cycles-${dateStr}" data-state-key="cal-cycles-${dateStr}">
-            <summary class="cal-cycles-summary">
+            <summary class="cal-cycles-summary"${cyclesSummaryTip}>
                 <span>${biHtml('Cycle History', '周期记录')} (${cycles.length})</span>
             </summary>
             <div class="cal-cycles-list">${items}</div>
@@ -1966,6 +2356,7 @@ function buildCyclesDetailsHtml(
 function buildOverallSummaryGrid(
     filteredDays: Map<string, AggregatedCalendarDay>,
     currency: CurrencyInput,
+    bi: (en: string, zh: string) => string,
     biHtml: (en: string, zh: string) => string,
 ): string {
     let totalCost = 0, totalGMCalls = 0, totalGMCredits = 0, totalGMTokens = 0;
@@ -1977,7 +2368,7 @@ function buildOverallSummaryGrid(
         totalGMTokens += day.totalTokens;
     }
 
-    return buildSummaryOverviewGrid(filteredDays.size, totalGMTokens, totalCost, totalGMCredits, totalGMCalls, currency, biHtml);
+    return buildSummaryOverviewGrid('alltime', filteredDays.size, totalGMTokens, totalCost, totalGMCredits, totalGMCalls, currency, bi, biHtml);
 }
 
 function buildMonthlySummaryGrid(
@@ -1985,6 +2376,7 @@ function buildMonthlySummaryGrid(
     year: number,
     month: number,
     currency: CurrencyInput,
+    bi: (en: string, zh: string) => string,
     biHtml: (en: string, zh: string) => string,
 ): string {
     const prefix = `${year}-${String(month).padStart(2, '0')}`;
@@ -2007,18 +2399,44 @@ function buildMonthlySummaryGrid(
         totalGMTokens += day.totalTokens;
     }
 
-    return buildSummaryOverviewGrid(matching.length, totalGMTokens, totalCost, totalGMCredits, totalGMCalls, currency, biHtml);
+    return buildSummaryOverviewGrid('monthly', matching.length, totalGMTokens, totalCost, totalGMCredits, totalGMCalls, currency, bi, biHtml);
 }
 
 function buildSummaryOverviewGrid(
+    scope: 'monthly' | 'alltime',
     dayCount: number,
     gmTokens: number,
     cost: number,
     gmCredits: number,
     gmCalls: number,
     currency: CurrencyInput,
+    bi: (en: string, zh: string) => string,
     biHtml: (en: string, zh: string) => string,
 ): string {
+    const callsTip = calRichTipAttrs(
+        `cal-sum-${scope}-gmcalls`,
+        'GM Calls',
+        'GM 调用',
+        'Total model generation calls captured in Generator Metadata across this summary window.',
+        '该汇总区间内由模型调用遥测（Generator Metadata）记录的总调用次数。',
+        bi,
+    );
+    const costTip = calRichTipAttrs(
+        `cal-sum-${scope}-cost`,
+        'API Reference Cost',
+        'API 参考费用',
+        'Estimated API cost using public per-1M token list rates (or custom rates) — not actual subscription charges.',
+        '按公开每百万 Token 标价（或自定义单价）估算的参考费用，并非实际订阅账单。',
+        bi,
+    );
+    const creditsTip = calRichTipAttrs(
+        `cal-sum-${scope}-credits`,
+        'GM Call Credits',
+        'GM 调用积分',
+        'Cumulative per-call credits reported in Generator Metadata — separate from your Account AI Credits balance.',
+        '模型调用遥测中累计记录的调用积分，不同于「账号」页的账号 AI 积分余额。',
+        bi,
+    );
     return `
             <div class="cal-overview-grid">
                 <div class="cal-overview-item">
@@ -2026,7 +2444,7 @@ function buildSummaryOverviewGrid(
                     <div class="cal-overview-label">${biHtml('Days', '天数')}</div>
                 </div>
                 ${gmCalls > 0 ? `
-                <div class="cal-overview-item">
+                <div class="cal-overview-item"${callsTip}>
                     <div class="cal-overview-val">${gmCalls}</div>
                     <div class="cal-overview-label">${biHtml('GM Calls', 'GM 调用')}</div>
                 </div>` : ''}
@@ -2036,12 +2454,12 @@ function buildSummaryOverviewGrid(
                     <div class="cal-overview-label">${biHtml('Tokens', 'Tokens')}</div>
                 </div>` : ''}
                 ${cost > 0 ? `
-                <div class="cal-overview-item">
+                <div class="cal-overview-item"${costTip}>
                     <div class="cal-overview-val">${esc(formatCostValue(cost, currency))}</div>
-                    <div class="cal-overview-label">${biHtml('Cost', '费用')}</div>
+                    <div class="cal-overview-label">${biHtml('API Cost', 'API 费用')}</div>
                 </div>` : ''}
                 ${gmCredits > 0 ? `
-                <div class="cal-overview-item">
+                <div class="cal-overview-item"${creditsTip}>
                     <div class="cal-overview-val">${gmCredits}</div>
                     <div class="cal-overview-label">${biHtml('Credits', '积分')}</div>
                 </div>` : ''}
@@ -2967,10 +3385,6 @@ export function getCalendarTabStyles(): string {
             background: transparent;
             pointer-events: none;
         }
-
-        .cal-cell[data-tooltip]:not(:hover, :focus-visible)::after { display: none; }
-        .cal-cell:nth-child(7n+1)[data-tooltip]::after { left: 0; right: auto; transform: none; }
-        .cal-cell:nth-child(7n)[data-tooltip]::after { left: auto; right: 0; transform: none; }
 
         .cal-dot {
             display: block;

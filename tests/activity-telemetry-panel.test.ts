@@ -454,8 +454,8 @@ describe('GM Data Tab — Speed, TTFT (Cached vs Uncached) & Prompt Cache Teleme
 
         // Per-step pills
         expect(html).toContain('<span class="act-tl-gm-tag act-tl-gm-speed">100.0 tok/s</span>');
-        expect(html).toContain('<span class="act-tl-gm-tag act-tl-gm-ttft">TTFT 740ms</span>');
-        expect(html).toContain('<span class="act-tl-gm-tag act-tl-gm-ttft">TTFT 1.50s</span>');
+        expect(html).toContain('<span class="act-tl-gm-tag act-tl-gm-ttft"><span>TTFT 740ms</span></span>');
+        expect(html).toContain('<span class="act-tl-gm-tag act-tl-gm-ttft"><span>TTFT 1.50s</span></span>');
         expect(html).toContain('<span class="act-tl-gm-tag act-tl-gm-stream"><span>Stream 5.00s</span></span>');
         expect(html).toContain('<span class="act-tl-gm-tag act-tl-gm-cache-hit"><span>Cache 80.0%</span></span>');
         // Invalid speed step (1 / 0.02 = 50 tok/s) MUST NOT appear as a speed tag
@@ -465,7 +465,7 @@ describe('GM Data Tab — Speed, TTFT (Cached vs Uncached) & Prompt Cache Teleme
         // Weighted speed from valid step only: 500 / 5.0 = 100.0 tok/s
         expect(html).toContain('<span class="seg-chip seg-chip-speed">100.0 tok/s</span>');
         // Turn avg TTFT: (0.74 + 1.5) / 2 = 1.12s
-        expect(html).toContain('<span class="seg-chip seg-chip-ttft">TTFT 1.12s</span>');
+        expect(html).toContain('<span class="seg-chip seg-chip-ttft"><span>TTFT 1.12s</span></span>');
         // Turn token-weighted Cache %: 16000 / (3000 + 1000 + 16000 + 1000) = 16000 / 21000 = 76.2%
         expect(html).toContain('<span class="seg-chip seg-chip-cache-hit"><span>Cache 76.2%</span></span>');
     });
