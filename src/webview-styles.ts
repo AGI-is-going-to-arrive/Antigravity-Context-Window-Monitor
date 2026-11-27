@@ -2193,37 +2193,21 @@ export function getStyles(): string {
         .ses-act-btn:active:not(:disabled) { transform: scale(0.96); }
         .ses-act-btn:disabled { cursor: not-allowed; opacity: 0.4; }
 
-        /* ─── CSS Tooltip (L3 Floating Overlay) ─── */
-        [data-tooltip] { position: relative; }
+        /* ─── Legacy CSS Tooltip Neutralized (replaced by body-level #acmRichTipPopover) ─── */
         [data-tooltip]::after {
-            content: attr(data-tooltip);
-            position: absolute;
-            bottom: calc(100% + 6px);
-            left: 50%;
-            transform: translateX(-50%) translateY(2px);
-            padding: 4px 9px;
-            border-radius: var(--ed-radius-sm, 6px);
-            background: var(--ed-surface-overlay);
-            color: var(--ed-ink);
-            border: 1px solid var(--ed-border-strong);
-            font-size: 11.5px;
-            font-weight: 500;
-            line-height: 1.35;
-            white-space: nowrap;
+            content: none !important;
+            display: none !important;
+        }
+        .rich-tip-disabled-wrap {
+            display: inline-flex;
+            align-items: center;
+            position: relative;
+            cursor: help;
+        }
+        .rich-tip-disabled-wrap > button:disabled,
+        .rich-tip-disabled-wrap > [disabled] {
             pointer-events: none;
-            opacity: 0;
-            transition: opacity 130ms cubic-bezier(0.2, 0, 0, 1),
-                        transform 130ms cubic-bezier(0.2, 0, 0, 1);
-            z-index: var(--z-tooltip);
-            box-shadow: var(--ed-shadow-tooltip);
         }
-        [data-tooltip]:hover::after,
-        [data-tooltip]:focus-visible::after {
-            opacity: 1;
-            transform: translateX(-50%) translateY(0);
-        }
-        [data-tooltip]:not(:hover, :focus-visible)::after,
-        [data-tooltip]:disabled::after { display: none; }
 
         @media (max-width: 640px) {
             .ses-shortcuts { grid-template-columns: minmax(0, 1fr); }

@@ -49,8 +49,23 @@ export interface ContextCategoryMeta {
     key: ContextCategoryKey;
     labelEn: string;
     labelZh: string;
+    descEn: string;
+    descZh: string;
+    tipEn: string;
+    tipZh: string;
     colorToken: string;
     fallbackColor: string;
+}
+
+export interface ContextFreeSpaceMeta {
+    key: 'free';
+    labelEn: string;
+    labelZh: string;
+    descEn: string;
+    descZh: string;
+    tipEn: string;
+    tipZh: string;
+    colorToken: string;
 }
 
 export interface ContextCategorySegment {
@@ -64,6 +79,8 @@ export interface ContextCategorySegment {
     /** Percentage share of total usedTokens (sums to ~100 across active segments). */
     sharePct: number;
     itemCount: number;
+    /** Top items (up to 3) attributed to this category, extracted before global top-5 truncation. */
+    topItems: ContextBreakdownItem[];
 }
 
 export interface DotMatrixCell {
@@ -93,6 +110,8 @@ export interface LargestContextItem {
     budgetPct: number;
     stepIndex?: number;
 }
+
+export type ContextBreakdownItem = LargestContextItem;
 
 export interface ContextBreakdownSnapshot {
     model: string;
@@ -234,27 +253,43 @@ export const CONTEXT_CATEGORY_META: Record<ContextCategoryKey, ContextCategoryMe
         key: 'system',
         labelEn: 'System Prompt',
         labelZh: '系统提示',
+        descEn: 'Base system instructions, environment metadata, and compaction summaries injected by Antigravity.',
+        descZh: '由 Antigravity 自动注入的系统指令、环境上下文与压缩摘要。',
+        tipEn: 'Platform-managed baseline; start a fresh handoff session if older compaction summaries accumulate.',
+        tipZh: '由平台自动维护；若多次压缩后摘要堆积偏多，建议通过交接提示词开启新会话。',
         colorToken: '--ctx-cat-system',
-        fallbackColor: '#6E8BB8',
+        fallbackColor: '#7C93B0',
     },
     rules_skills: {
         key: 'rules_skills',
         labelEn: 'Rules & Skills',
         labelZh: '规则与技能',
+        descEn: 'Active global/workspace rules, AGENTS.md guidelines, and loaded skill instructions.',
+        descZh: '当前生效的全局/工作区规则、AGENTS.md 约束与已加载的技能说明。',
+        tipEn: 'Keep rules concise and disable unused skills to lower fixed per-turn overhead.',
+        tipZh: '精简规则文案并停用当前不需要的技能，可降低每轮对话的固定占用。',
         colorToken: '--ctx-cat-rules-skills',
-        fallbackColor: '#8B7CF6',
+        fallbackColor: '#F97352',
     },
     plugins_mcp: {
         key: 'plugins_mcp',
         labelEn: 'Plugins & MCP',
         labelZh: '插件与 MCP',
+        descEn: 'Tool declarations and responses from installed plugins and connected MCP servers.',
+        descZh: '已安装插件与 MCP 服务器注册的工具定义及返回结果。',
+        tipEn: 'Disable unused MCP servers or plugins—their tool schemas are included on every turn.',
+        tipZh: '关闭暂不使用的 MCP 服务或插件，减少每轮重复发送的工具定义开销。',
         colorToken: '--ctx-cat-plugins-mcp',
-        fallbackColor: '#2DD4BF',
+        fallbackColor: '#22D3EE',
     },
     subagents: {
         key: 'subagents',
         labelEn: 'Subagents',
-        labelZh: '子代理',
+        labelZh: '子智能体',
+        descEn: 'Delegated subagent specs, swarm coordination briefs, and returned summaries.',
+        descZh: '子智能体配置说明、协作任务指派与执行汇报结果。',
+        tipEn: 'Ask subagents to return concise summaries rather than raw logs to protect the main window.',
+        tipZh: '让子智能体仅返回精简结论而非完整日志，可显著减少主上下文占用。',
         colorToken: '--ctx-cat-subagents',
         fallbackColor: '#F472B6',
     },
@@ -262,20 +297,32 @@ export const CONTEXT_CATEGORY_META: Record<ContextCategoryKey, ContextCategoryMe
         key: 'user',
         labelEn: 'User Messages',
         labelZh: '用户消息',
+        descEn: 'Your prompts, pasted snippets, and follow-up messages across this conversation.',
+        descZh: '你在本会话中发送的提问、粘贴片段与追问消息。',
+        tipEn: 'Reference file paths instead of pasting large code blocks or terminal logs directly.',
+        tipZh: '尽量直接引用文件路径，避免在输入框中粘贴大段源码或终端日志。',
         colorToken: '--ctx-cat-user',
-        fallbackColor: '#5B9CF6',
+        fallbackColor: '#3B82F6',
     },
     assistant_thinking: {
         key: 'assistant_thinking',
         labelEn: 'Assistant & Thinking',
         labelZh: '助手与思考',
+        descEn: 'Model replies and internal reasoning (Thinking) tokens retained in context.',
+        descZh: '模型已生成的回复正文与思考过程（Thinking）所占用的上下文空间。',
+        tipEn: 'Use a lower effort tier for routine edits, or hand off to a fresh thread when answers grow long.',
+        tipZh: '日常小改动可切换到较低思考档位，长对话接近上限时及时交接开启新会话。',
         colorToken: '--ctx-cat-assistant',
-        fallbackColor: '#A78BFA',
+        fallbackColor: '#A855F7',
     },
     tools: {
         key: 'tools',
         labelEn: 'Tools & Results',
         labelZh: '工具与结果',
+        descEn: 'Tool call arguments, terminal command outputs, grep matches, and build or test logs.',
+        descZh: '工具调用参数、终端命令输出、搜索结果与构建测试日志。',
+        tipEn: 'Filter verbose command output (tail/grep) and avoid printing full build or test logs.',
+        tipZh: '缩小搜索范围并过滤冗余终端输出，避免一次性打印整段构建或测试日志。',
         colorToken: '--ctx-cat-tools',
         fallbackColor: '#F5B841',
     },
@@ -283,25 +330,41 @@ export const CONTEXT_CATEGORY_META: Record<ContextCategoryKey, ContextCategoryMe
         key: 'media_files',
         labelEn: 'Files & Media',
         labelZh: '文件与媒体',
+        descEn: 'Files read into context, diffs, screenshots, images, and attached documents.',
+        descZh: '已读取的代码文件、差异对比、截图、图片与附件文档。',
+        tipEn: 'Read targeted line ranges for large files and avoid keeping unnecessary screenshots.',
+        tipZh: '大文件按需读取指定行段，并减少在长对话中保留无用图片或大附件。',
         colorToken: '--ctx-cat-media',
-        fallbackColor: '#34D399',
+        fallbackColor: '#22C55E',
     },
     other: {
         key: 'other',
         labelEn: 'Other Context',
         labelZh: '其他上下文',
+        descEn: 'Conversation framing and prompt tokens not tagged with a more specific category.',
+        descZh: '未标注具体分类的对话历史与其余提示词开销。',
+        tipEn: 'Typically drops automatically after auto-compaction or starting a fresh handoff session.',
+        tipZh: '通常会在触发自动压缩或通过交接提示词开启新会话后明显回落。',
         colorToken: '--ctx-cat-other',
-        fallbackColor: '#8C98A9',
+        fallbackColor: '#A8A29E',
     },
 };
 
-const FREE_CELL_META = {
-    colorToken: '--ctx-cat-free',
+export const CONTEXT_FREE_SPACE_META: ContextFreeSpaceMeta = {
+    key: 'free',
     labelEn: 'Free Space',
     labelZh: '剩余空间',
-} as const;
+    descEn: 'Unallocated tokens remaining before Antigravity reaches its auto-compaction ceiling.',
+    descZh: '距离 Antigravity 自动压缩上限前仍可自由使用的上下文余量。',
+    tipEn: 'Copy a Handoff Prompt before free space drops below 20% to keep responses sharp and avoid surprise compaction.',
+    tipZh: '当剩余空间低于 20% 时，建议复制交接提示词开启新会话，保持响应质量并避免被动压缩。',
+    colorToken: '--ctx-cat-free',
+};
+
+const FREE_CELL_META = CONTEXT_FREE_SPACE_META;
 
 const MAX_LARGEST_ITEMS = 5;
+const MAX_CATEGORY_TOP_ITEMS = 3;
 const MAX_ITEM_TITLE_LEN = 80;
 
 // ─── Primitive Helpers ───────────────────────────────────────────────────────
@@ -1380,6 +1443,16 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
         }
         if (measuredOutputTokens > 0) {
             addBucket('assistant_thinking', measuredOutputTokens, 1);
+            candidateItems.push({
+                title: latestMeasuredGm && latestMeasuredGm.thinkingTokens > 0
+                    ? 'Latest assistant response & thinking'
+                    : 'Latest assistant response',
+                category: 'assistant_thinking',
+                tokens: measuredOutputTokens,
+                ...(latestMeasuredGm && latestMeasuredGm.maxStepIndex >= 0
+                    ? { stepIndex: latestMeasuredGm.maxStepIndex }
+                    : {}),
+            });
         }
         if (postMeasuredStepsAttribution.totalTokens > 0) {
             mergeStepAttribution(counters, candidateItems, postMeasuredStepsAttribution);
@@ -1456,6 +1529,38 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
     const effectivePct = effectiveBudgetTokens > 0 ? round1((usedTokens / effectiveBudgetTokens) * 100) : 0;
     const nativePct = nativeLimitTokens > 0 ? round1((usedTokens / nativeLimitTokens) * 100) : 0;
 
+    // Sort all positive candidate items ONCE before global top-5 truncation so every
+    // category retains its own top 3 items even when dominated globally by another category.
+    const sortedNormalizedItems: ContextBreakdownItem[] = candidateItems
+        .filter(item => item.tokens > 0)
+        .sort((a, b) => (b.tokens - a.tokens) || a.title.localeCompare(b.title))
+        .map(item => ({
+            title: sanitizeTitle(item.title),
+            category: item.category,
+            tokens: item.tokens,
+            pct: usedTokens > 0 ? round1((item.tokens / usedTokens) * 100) : 0,
+            budgetPct: effectiveBudgetTokens > 0 ? round1((item.tokens / effectiveBudgetTokens) * 100) : 0,
+            ...(item.stepIndex !== undefined ? { stepIndex: item.stepIndex } : {}),
+        }));
+
+    const topItemsByCategory: Record<ContextCategoryKey, ContextBreakdownItem[]> = {
+        system: [],
+        rules_skills: [],
+        plugins_mcp: [],
+        subagents: [],
+        user: [],
+        assistant_thinking: [],
+        tools: [],
+        media_files: [],
+        other: [],
+    };
+    for (const item of sortedNormalizedItems) {
+        const list = topItemsByCategory[item.category];
+        if (list.length < MAX_CATEGORY_TOP_ITEMS) {
+            list.push(item);
+        }
+    }
+
     // Emit ONLY non-empty segments (never fabricate fake zero categories)
     const pctDenominator = effectiveBudgetTokens > 0 ? effectiveBudgetTokens : usedTokens;
     const segments: ContextCategorySegment[] = [];
@@ -1472,22 +1577,12 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
             pct: pctDenominator > 0 ? round1((entry.tokens / pctDenominator) * 100) : 0,
             sharePct: usedTokens > 0 ? round1((entry.tokens / usedTokens) * 100) : 0,
             itemCount: entry.itemCount,
+            topItems: topItemsByCategory[key],
         });
     }
 
-    // Top 5 largest items, safely truncated and sorted descending
-    const largestItems: LargestContextItem[] = candidateItems
-        .filter(item => item.tokens > 0)
-        .sort((a, b) => (b.tokens - a.tokens) || a.title.localeCompare(b.title))
-        .slice(0, MAX_LARGEST_ITEMS)
-        .map(item => ({
-            title: sanitizeTitle(item.title),
-            category: item.category,
-            tokens: item.tokens,
-            pct: usedTokens > 0 ? round1((item.tokens / usedTokens) * 100) : 0,
-            budgetPct: effectiveBudgetTokens > 0 ? round1((item.tokens / effectiveBudgetTokens) * 100) : 0,
-            ...(item.stepIndex !== undefined ? { stepIndex: item.stepIndex } : {}),
-        }));
+    // Top 5 largest items globally, safely truncated and sorted descending
+    const largestItems: LargestContextItem[] = sortedNormalizedItems.slice(0, MAX_LARGEST_ITEMS);
 
     return {
         model: resolvedModel,
@@ -1668,7 +1763,7 @@ export function formatDotMatrixRows(cells: readonly DotMatrixCell[], cols = 20):
 
 // ─── Report Formatters ───────────────────────────────────────────────────────
 
-function getMeasurementNote(state: ContextMeasurementState, lang: ReportLanguage): string {
+export function getMeasurementNote(state: ContextMeasurementState, lang: ReportLanguage): string {
     switch (state) {
         case 'measured':
             return biText(

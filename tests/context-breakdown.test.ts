@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
     CONTEXT_CATEGORY_META,
     CONTEXT_CATEGORY_ORDER,
+    CONTEXT_FREE_SPACE_META,
     buildDotMatrix,
     formatContextTextReport,
     formatDotMatrixRows,
     formatHandoffPrompt,
+    getMeasurementNote,
     mapTokenTypeToCategory,
     parseContextBreakdown,
     type ContextCategorySegment,
@@ -418,6 +420,71 @@ describe('parseContextBreakdown', () => {
         expect(snap.measurementState).toBe('measured');
         expect(snap.compactionCheckpoints).toEqual([]);
     });
+
+    it('extracts per-category topItems (max 3) before global top-5 truncation and exposes plain-language meta & unified 子智能体 label', () => {
+        // 6 huge tools items completely dominate global largestItems (top 5),
+        // while rules_skills (4 items) and plugins_mcp (2 items) must STILL retain their own top 3 topItems!
+        const snap = parseContextBreakdown({
+            generatorMetadata: [
+                {
+                    stepIndices: [10],
+                    chatModel: {
+                        model: 'MODEL_PLACEHOLDER_M532',
+                        promptSections: [
+                            { title: 'Tool Log 1', tokenType: 'TOKEN_TYPE_TOOL_RESULTS', numTokens: 30_000 },
+                            { title: 'Tool Log 2', tokenType: 'TOKEN_TYPE_TOOL_RESULTS', numTokens: 25_000 },
+                            { title: 'Tool Log 3', tokenType: 'TOKEN_TYPE_TOOL_RESULTS', numTokens: 20_000 },
+                            { title: 'Tool Log 4', tokenType: 'TOKEN_TYPE_TOOL_RESULTS', numTokens: 18_000 },
+                            { title: 'Tool Log 5', tokenType: 'TOKEN_TYPE_TOOL_RESULTS', numTokens: 15_000 },
+                            { title: 'Tool Log 6', tokenType: 'TOKEN_TYPE_TOOL_RESULTS', numTokens: 12_000 },
+                            { title: 'AGENTS.md Rule', tokenType: 'TOKEN_TYPE_RULES', numTokens: 4_500 },
+                            { title: 'Skill A', tokenType: 'TOKEN_TYPE_SKILLS', numTokens: 3_200 },
+                            { title: 'Skill B', tokenType: 'TOKEN_TYPE_SKILLS', numTokens: 2_100 },
+                            { title: 'Skill C', tokenType: 'TOKEN_TYPE_SKILLS', numTokens: 900 },
+                            { title: 'MCP Server Alpha', tokenType: 'TOKEN_TYPE_MCP_SERVERS', numTokens: 1_800 },
+                            { title: 'MCP Server Beta', tokenType: 'TOKEN_TYPE_MCP_TOOLS', numTokens: 1_100 },
+                            { title: 'Swarm Worker', tokenType: 'TOKEN_TYPE_SUBAGENTS', numTokens: 600 },
+                        ],
+                        usage: { inputTokens: 135_200, cacheReadTokens: 0, outputTokens: 1_000 },
+                    },
+                },
+            ],
+            effectiveBudgetTokens: 512_000,
+        });
+
+        expect(snap.largestItems).toHaveLength(5);
+        expect(snap.largestItems.every(it => it.category === 'tools')).toBe(true);
+
+        const byKey = Object.fromEntries(snap.segments.map(s => [s.key, s]));
+        expect(byKey.tools.topItems).toHaveLength(3);
+        expect(byKey.tools.topItems.map(i => i.title)).toEqual(['Tool Log 1', 'Tool Log 2', 'Tool Log 3']);
+
+        // Not lost to global top-5 truncation!
+        expect(byKey.rules_skills.topItems).toHaveLength(3);
+        expect(byKey.rules_skills.topItems.map(i => i.title)).toEqual(['AGENTS.md Rule', 'Skill A', 'Skill B']);
+        expect(byKey.plugins_mcp.topItems).toHaveLength(2);
+        expect(byKey.plugins_mcp.topItems.map(i => i.title)).toEqual(['MCP Server Alpha', 'MCP Server Beta']);
+        expect(byKey.subagents.labelZh).toBe('子智能体');
+        expect(byKey.subagents.topItems).toHaveLength(1);
+        expect(byKey.subagents.topItems[0].title).toBe('Swarm Worker');
+
+        // Verify metadata completeness & unified terminology across all 9 categories + free space
+        for (const key of CONTEXT_CATEGORY_ORDER) {
+            const m = CONTEXT_CATEGORY_META[key];
+            expect(m.descEn.trim().length, `missing descEn for ${key}`).toBeGreaterThan(10);
+            expect(m.descZh.trim().length, `missing descZh for ${key}`).toBeGreaterThan(5);
+            expect(m.tipEn.trim().length, `missing tipEn for ${key}`).toBeGreaterThan(10);
+            expect(m.tipZh.trim().length, `missing tipZh for ${key}`).toBeGreaterThan(5);
+            expect(m.labelZh).not.toContain('子代理');
+            expect(m.descZh + m.tipZh).not.toContain('令牌');
+        }
+        expect(CONTEXT_FREE_SPACE_META.descEn.length).toBeGreaterThan(10);
+        expect(CONTEXT_FREE_SPACE_META.descZh.length).toBeGreaterThan(5);
+        expect(CONTEXT_FREE_SPACE_META.tipEn.length).toBeGreaterThan(10);
+        expect(CONTEXT_FREE_SPACE_META.tipZh.length).toBeGreaterThan(5);
+        expect(getMeasurementNote('measured', 'zh')).toContain('实测');
+        expect(getMeasurementNote('estimated_post_compaction', 'en')).toContain('post-compaction');
+    });
 });
 
 describe('buildDotMatrix & formatDotMatrixRows', () => {
@@ -432,6 +499,7 @@ describe('buildDotMatrix & formatDotMatrixRows', () => {
             pct: 0,
             sharePct: 0,
             itemCount: 1,
+            topItems: [],
         };
     };
 
