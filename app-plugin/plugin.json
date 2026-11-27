@@ -3,7 +3,6 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Monitor",
   "version": "1.18.0",
-  "version": "1.17.11",
   "description": "Real-time context window telemetry, token breakdown, prompt cache diagnostics, and model quota runway monitor for Antigravity.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [

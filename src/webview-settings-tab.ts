@@ -716,7 +716,6 @@ export function buildSettingsContent(
 
     const resolvedZoom = clampNumber(options?.zoomLevel, 100, 60, 150);
     const currentVersion = (options?.version && options.version.trim()) || options?.updateStatus?.currentVersion || '1.18.0';
-    const currentVersion = (options?.version && options.version.trim()) || options?.updateStatus?.currentVersion || '1.17.11';
     const activePlatform = options?.cdpStatus?.launcherStatus?.platform
         || options?.cdpStatus?.platformGuide?.platform
         || (typeof process !== 'undefined' ? process.platform : 'darwin');

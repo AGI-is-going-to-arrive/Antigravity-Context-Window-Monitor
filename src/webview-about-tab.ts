@@ -164,9 +164,6 @@ const OPEN_VSX_URL = 'https://open-vsx.org/extension/AGI-is-going-to-arrive/anti
 export function buildAboutTabContent(version = '1.18.0', options?: AboutTabOptions): string {
     const cards = getFeatureCards();
     const normalizedVersion = typeof version === 'string' && version.trim() ? version.trim() : '1.18.0';
-export function buildAboutTabContent(version = '1.17.11', options?: AboutTabOptions): string {
-    const cards = getFeatureCards();
-    const normalizedVersion = typeof version === 'string' && version.trim() ? version.trim() : '1.17.11';
     const versionTag = normalizedVersion.startsWith('v') ? normalizedVersion : `v${normalizedVersion}`;
     const surface = options?.surface ?? 'ide';
     const isAppSidecar = surface === 'app-sidecar' || surface === 'app';
