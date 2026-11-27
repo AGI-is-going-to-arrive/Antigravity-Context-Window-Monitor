@@ -623,8 +623,8 @@ export function buildNativeHudHtml(input: NativeHudBuildInput): string {
         title: tBi('Prompt Cache Hit Rate', '提示词缓存命中率'),
         body: cacheBodyLines.join('\n'),
         meta: tBi(
-            'Formula: cacheReadTokens / (inputTokens + cacheReadTokens + cacheCreationTokens).',
-            '计算口径：缓存读取 ÷（新增输入 + 缓存读取 + 缓存创建）。',
+            'Real server-side Prompt Cache reuse: Warm ≥70% (faster TTFT) · Partial 10%–70% (after edits/compaction) · Cold <10% (first turn / >5m idle / model switch).',
+            '真实服务端提示词缓存复用：热缓存 ≥70%（首字更快）· 部分命中 10%–70%（改动/压缩）· 冷启动 <10%（首轮 / 闲置超 5 分钟 / 切换模型）。',
         ),
         focusable: true,
     });

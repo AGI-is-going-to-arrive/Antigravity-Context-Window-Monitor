@@ -1129,8 +1129,27 @@ describe('Overview Tab, Topbar & Native Ambient HUD De-noising & Threshold Align
 
         // 45-minute rolling window explanation present on runway tip
         expect(html).toContain('45');
-        // Thresholds present on turn-cache tip
+        // Thresholds & reassuring plain-language copy for 200k Tier & Warm/Partial/Cold Start (popover + collapsed glossary)
         expect(html).toContain('70%');
+        const glossarySlice = html.slice(html.indexOf('id="overview-glossary"'));
+        if (lang === 'en' || lang === 'both') {
+            expect(html).toContain('does NOT charge extra money');
+            expect(html).toContain('hard-truncate');
+            expect(html).toContain('server-side Prompt Cache reuse');
+            expect(html).toContain('&gt;5m idle');
+            expect(glossarySlice).toContain('200k Long-Context Tier');
+            expect(glossarySlice).toContain('does NOT charge extra money');
+            expect(glossarySlice).toContain('Prompt Cache (Warm / Partial / Cold Start)');
+        }
+        if (lang === 'zh' || lang === 'both') {
+            expect(html).toContain('不会额外扣费');
+            expect(html).toContain('强制截断');
+            expect(html).toContain('真实服务端提示词缓存复用');
+            expect(html).toContain('5 分钟');
+            expect(glossarySlice).toContain('200k 长上下文阶梯');
+            expect(glossarySlice).toContain('不会额外扣费');
+            expect(glossarySlice).toContain('提示词缓存（热缓存启动 / 部分命中 / 冷启动）');
+        }
 
         // Unified ZH terminology & no forbidden terms or internal codes
         expect(html).not.toMatch(/M537|M667|M681|M669/);

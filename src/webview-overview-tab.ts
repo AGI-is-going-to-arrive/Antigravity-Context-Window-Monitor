@@ -500,10 +500,16 @@ function buildOverviewGlossaryHtml(): string {
             descZh: '「自动压缩上限（有效预算）」是 Antigravity 自动总结旧对话的触发线；「原生窗口上限」是底层模型本身的物理最大上下文容量。',
         },
         {
-            termEn: 'Prompt Cache & Warm Start',
-            termZh: '提示词缓存与热缓存启动',
-            descEn: 'Reuses unchanged conversation prefixes on the server to cut wait time and API cost (Warm ≥70%, Partial 10%–70%, Cold <10%).',
-            descZh: '直接复用服务端已缓存的历史前缀，减少重复计算与等待（热缓存启动 ≥70%、部分命中 10%–70%、冷启动 <10%）。',
+            termEn: '200k Long-Context Tier',
+            termZh: '200k 长上下文阶梯',
+            descEn: '200k input tokens is the standard API long-context tier line where public API list prices double and latency/attention degradation increase. For Antigravity subscription users, crossing 200k does NOT charge extra money or hard-truncate your conversation — it is purely an API reference cost & speed/quality heads-up.',
+            descZh: '200k 输入 Token 是公开 API 的标准长上下文分界线（超过后公开 API 单价通常翻倍，且响应变慢、长文注意力更易衰减）。对 Antigravity 订阅用户而言，超过 200k 不会额外扣费，也不会强制截断会话，仅作为 API 参考费用与速度/质量提醒。',
+        },
+        {
+            termEn: 'Prompt Cache (Warm / Partial / Cold Start)',
+            termZh: '提示词缓存（热缓存启动 / 部分命中 / 冷启动）',
+            descEn: 'Reflects real server-side Prompt Cache reuse reported by local telemetry: Warm ≥70% reuses cached history for faster first token & lower API reference cost; Partial 10%–70% happens after edits or compaction; Cold <10% occurs on the first turn, >5m idle expiry, or a model switch when the prefix must be re-read.',
+            descZh: '反映本地遥测上报的真实服务端提示词缓存复用：热缓存启动（≥70%）直接复用已缓存历史，首字更快且 API 参考费用更低；部分命中（10%–70%）见于提示词改动或压缩后的部分复用；冷启动（<10%）见于首轮对话、闲置超 5 分钟缓存过期或切换模型，需重新读取前缀。',
         },
         {
             termEn: 'TTFT & Speed (Short Sample)',
@@ -1383,16 +1389,16 @@ function buildDualWatermarkMeterHtml(
         const exceeded = watermarks.exceedsLongContextTier;
         const tierBody = exceeded
             ? tBi(
-                `Context (${formatCompactTokens(watermarks.contextUsed)}) has crossed the 200k long-context tier; higher per-token API rates and latency may apply.`,
-                `当前上下文（${formatCompactTokens(watermarks.contextUsed)}）已超过 200k 长上下文阶梯线，可能触发更高阶梯单价与更长耗时。`,
+                `Context (${formatCompactTokens(watermarks.contextUsed)}) has crossed the 200k standard API long-context tier (standard API list prices double above 200k, with higher latency and attention degradation). For Antigravity subscription users, this does NOT charge extra money or hard-truncate your conversation — it is an API reference cost & speed/quality heads-up.`,
+                `当前上下文（${formatCompactTokens(watermarks.contextUsed)}）已超过 200k 标准 API 长上下文阶梯线（标准公开 API 超过 200k 输入后单价通常翻倍，且延迟升高、注意力衰减更明显）。对 Antigravity 订阅用户而言不会额外扣费，也不会强制截断会话，仅作 API 参考费用与速度/质量提醒。`,
             )
             : tBi(
-                `${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} tokens left before the 200k long-context pricing/latency tier.`,
-                `距离 200k 长上下文阶梯线还有 ${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} tokens。`,
+                `${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} tokens left before the 200k standard API long-context tier (above 200k standard API list prices double and latency/attention degradation increase). For Antigravity subscription users, crossing 200k does NOT charge extra money or hard-truncate your conversation — it is an API reference cost & speed/quality heads-up.`,
+                `距离 200k 标准 API 长上下文阶梯线还有 ${formatCompactTokens(watermarks.tokensUntilLongContextTier ?? 0)} tokens（标准公开 API 超过 200k 输入后单价通常翻倍，且延迟升高、注意力更易衰减）。对 Antigravity 订阅用户而言不会额外扣费，也不会强制截断会话，仅作 API 参考费用与速度/质量提醒。`,
             );
         const tierMeta = tBi(
-            'Trigger: shown on models supporting >200k context where >200k prompts enter the long-context pricing tier.',
-            '触发口径：仅在支持 >200k 上下文的模型上标注 200k 长上下文阶梯分界线。',
+            'Reference heads-up only (no extra subscription charge and no hard cutoff); shown on models supporting >200k context.',
+            '仅作参考提醒（不额外向订阅用户收费，也不会强行截断会话）；仅在支持 >200k 上下文的模型上标注。',
         );
         const tickAttrs = richTipAttrs({
             key: 'overview:watermark:200k-tick',
@@ -1459,22 +1465,22 @@ function buildTurnCacheSummaryHtml(turnCacheInfo: UserTurnCacheSummary | null | 
     let pillCls = 'is-cold';
     let pillHtml = tBiHtml('Cold Start', '冷启动');
     let pillBody = tBi(
-        'Latest user turn reused <10% of prompt tokens from cache, so the model had to re-encode most of the conversation.',
-        '最近一轮用户提问命中缓存不足 10%，模型需要重新编码大部分上下文。',
+        'Reflects real server-side Prompt Cache reuse from local telemetry: this turn reused <10% of cached history (common on the first turn, >5m idle expiry, or a model switch, so the prefix must be re-read).',
+        '反映本地遥测上报的真实服务端提示词缓存复用：本轮命中率不足 10%（常见于首轮新会话、闲置超 5 分钟缓存过期或切换模型，需重新读取前缀）。',
     );
     if (latest.cacheStart === 'warm') {
         pillCls = 'is-warm';
         pillHtml = tBiHtml('Warm Start', '热缓存启动');
         pillBody = tBi(
-            'Latest user turn reused ≥70% of prompt tokens from server cache for faster responses and lower API cost.',
-            '最近一轮用户提问复用 ≥70% 服务端热缓存，响应更快且参考费用更低。',
+            'Reflects real server-side Prompt Cache reuse from local telemetry: this turn reused ≥70% of cached history for faster first-token latency and lower API reference cost.',
+            '反映本地遥测上报的真实服务端提示词缓存复用：本轮复用了 ≥70% 的已缓存历史，首字响应更快、API 参考费用更低。',
         );
     } else if (latest.cacheStart === 'partial') {
         pillCls = 'is-partial';
         pillHtml = tBiHtml('Partial Start', '部分命中');
         pillBody = tBi(
-            'Latest user turn hit between 10% and 70% prompt cache — part of the prefix was reused while new or changed context was recomputed.',
-            '最近一轮用户提问缓存命中率介于 10%–70%，部分前缀复用、其余新增或变动部分重新计算。',
+            'Reflects real server-side Prompt Cache reuse from local telemetry: this turn reused 10%–70% of cached history (partial reuse after edits, file updates, or compaction).',
+            '反映本地遥测上报的真实服务端提示词缓存复用：本轮命中率介于 10%–70%（常见于编辑改动或上下文压缩后的部分复用）。',
         );
     }
     const pillTipAttrs = richTipAttrs({
@@ -1484,8 +1490,8 @@ function buildTurnCacheSummaryHtml(turnCacheInfo: UserTurnCacheSummary | null | 
             ? `${pillBody}\n${tBi('Latest turn cache hit', '本轮缓存命中率')}: ${latest.cacheHitPct.toFixed(1)}%`
             : pillBody,
         meta: tBi(
-            'Thresholds: Warm ≥70% · Partial 10%–70% · Cold <10%.',
-            '判定阈值：热缓存启动 ≥70% · 部分命中 10%–70% · 冷启动 <10%。',
+            'Thresholds: Warm ≥70% (cached history reused) · Partial 10%–70% (after edits/compaction) · Cold <10% (first turn / >5m idle expiry / model switch).',
+            '判定阈值：热缓存启动 ≥70%（复用历史）· 部分命中 10%–70%（改动/压缩后部分复用）· 冷启动 <10%（首轮 / 闲置超 5 分钟过期 / 切换模型需重读）。',
         ),
         focusable: true,
     });
