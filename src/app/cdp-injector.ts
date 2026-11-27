@@ -45,7 +45,13 @@ const DEFAULT_CDP_TIMEOUT_MS = 5_000;
 const DEFAULT_RECONNECT_BACKOFF_MS = 15_000;
 
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
-const ALLOWED_BRIDGE_COMMANDS = new Set<CdpOverlayBridgeActionCommand>(['openPanel', 'refresh', 'togglePause']);
+const ALLOWED_BRIDGE_COMMANDS = new Set<CdpOverlayBridgeActionCommand>([
+    'openPanel',
+    'refresh',
+    'togglePause',
+    'focusConversation',
+]);
+const OVERLAY_CONVERSATION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ALLOWED_OVERLAY_TARGET_TABS = new Set<CdpOverlayTargetTab>([
     'overview',
     'gm',
@@ -61,6 +67,13 @@ function parseOverlayTargetTab(raw: unknown): CdpOverlayTargetTab | undefined {
     if (typeof raw !== 'string') { return undefined; }
     const trimmed = raw.trim() as CdpOverlayTargetTab;
     return ALLOWED_OVERLAY_TARGET_TABS.has(trimmed) ? trimmed : undefined;
+}
+
+function parseOverlayConversationId(raw: unknown): string | null | undefined {
+    if (raw === null) { return null; }
+    if (typeof raw !== 'string') { return undefined; }
+    const trimmed = raw.trim();
+    return OVERLAY_CONVERSATION_UUID_RE.test(trimmed) ? trimmed : undefined;
 }
 
 // ─── Cross-Platform DevToolsActivePort Discovery ─────────────────────────────
@@ -406,23 +419,23 @@ export function getCdpPlatformGuide(platform: NodeJS.Platform = process.platform
         return {
             platform: 'darwin',
             command,
-            en: `Recommended: create the zero-patch Persistent Launcher (~/Applications/Antigravity (CDP).app) via Settings or \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`. Or quit Antigravity App (Cmd+Q), wait ~5s for background shutdown (until the Dock dot disappears — running \`open -a\` during teardown silently drops \`--args\`), and run \`${command}\`. Auto-updates restart without CLI flags.`,
-            zh: `推荐：在设置中一键创建零侵入持久化启动器（~/Applications/Antigravity (CDP).app，或运行 \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`）。若手动启动，请先按 Cmd+Q 退出并等待约 5 秒后台清理完成（待程序坞指示灯消失，否则 open -a 会静默丢弃 --args），再执行 \`${command}\`。自动更新重启后需再次通过启动器或带参命令启动。`,
+            en: `Recommended: create the zero-patch CDP-badged Persistent Launcher (/Applications/Antigravity (CDP).app, fallback ~/Applications/Antigravity (CDP).app) via Settings or \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`. To pin it, drag "Antigravity (CDP).app" from Finder into your Dock — NEVER right-click the running Antigravity icon to choose "Keep in Dock" (that saves argless Antigravity.app). Or quit Antigravity App (Cmd+Q), wait ~5s for background shutdown (until the Dock dot disappears — running \`open -a\` during teardown silently drops \`--args\`), and run \`${command}\`. Auto-updates restart without CLI flags.`,
+            zh: `推荐：在设置中一键创建带 CDP 角标的零侵入持久化启动器（优先 /Applications/Antigravity (CDP).app，无权限回退 ~/Applications/Antigravity (CDP).app，或运行 \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`）。固定程序坞时请直接从访达将「Antigravity (CDP).app」拖入程序坞，切勿右键运行中的图标选「在程序坞中保留」（否则会保存无参原版 Antigravity.app）。若手动启动，请先按 Cmd+Q 退出并等待约 5 秒后台清理完成（待程序坞指示灯消失，否则 open -a 会静默丢弃 --args），再执行 \`${command}\`。自动更新重启后需再次通过启动器或带参命令启动。`,
         };
     }
     if (platform === 'win32') {
         return {
             platform: 'win32',
             command,
-            en: `Recommended: create the zero-patch Persistent Launcher shortcuts (Desktop & Start Menu) via Settings or \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`. Or close all Antigravity windows and tray processes first, then launch in PowerShell with \`${command}\` (or CMD / shortcut target: \`"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0\`). Auto-updates restart without CLI flags.`,
-            zh: `推荐：在设置中一键创建桌面与开始菜单零侵入持久化快捷方式（或运行 \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`）。若手动启动，请先完全退出 Antigravity（含托盘进程），再在 PowerShell 运行 \`${command}\`（或 CMD / 快捷方式目标 \`"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0\`）。自动更新重启后需重新带参启动。`,
+            en: `Recommended: create the zero-patch Persistent Launcher shortcuts (OneDrive-aware Desktop & Start Menu, pointing directly to Antigravity.exe --remote-debugging-port=0 with native right-click "Pin to taskbar" and zero CMD flash) via Settings or \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`. Or close all Antigravity windows and tray processes first, then launch in PowerShell with \`${command}\` (or CMD / shortcut target: \`"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0\`). Auto-updates restart without CLI flags.`,
+            zh: `推荐：在设置中一键创建直连 Antigravity.exe --remote-debugging-port=0 的桌面（兼容 OneDrive）与开始菜单持久化快捷方式（支持原生右键「固定到任务栏」、无黑框闪烁；请勿直接右键运行中的任务栏图标固定；或运行 \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`）。若手动启动，请先完全退出 Antigravity（含托盘进程），再在 PowerShell 运行 \`${command}\`（或 CMD / 快捷方式目标 \`"%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe" --remote-debugging-port=0\`）。自动更新重启后需重新带参启动。`,
         };
     }
     return {
         platform: 'linux',
         command,
-        en: `Recommended: create the zero-patch Persistent Launcher (~/.local/share/applications/antigravity-cdp.desktop) via Settings or \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`. Or close all running Antigravity instances first, then launch with \`${command}\`. Auto-updates restart without CLI flags.`,
-        zh: `推荐：在设置中一键创建零侵入持久化启动入口（~/.local/share/applications/antigravity-cdp.desktop，或运行 \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`）。若手动启动，请先完全退出正在运行的 Antigravity，再运行 \`${command}\`。自动更新重启后需重新带参启动。`,
+        en: `Recommended: create the zero-patch Persistent Launcher (~/.local/share/applications/antigravity-cdp.desktop) via Settings or \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`. On Ubuntu, pin "Antigravity (CDP)" from Show Apps / Application Launcher ("Pin to Dash" / "Add to Favorites") — avoid pinning the running Dock icon directly (StartupWMClass=Antigravity merges with the argless system entry). Or close all running Antigravity instances first, then launch with \`${command}\`. Auto-updates restart without CLI flags.`,
+        zh: `推荐：在设置中一键创建零侵入持久化启动入口（~/.local/share/applications/antigravity-cdp.desktop，或运行 \`node scripts/install-app-plugin.mjs --setup-cdp-launcher\`）。Ubuntu 固定停靠栏时，请在「显示应用」菜单中搜索「Antigravity (CDP)」并选「固定到停靠栏 / 添加到收藏夹」，勿右键运行中的窗口图标固定（因 StartupWMClass=Antigravity 会与无参原版合并）。若手动启动，请先完全退出正在运行的 Antigravity，再运行 \`${command}\`。自动更新重启后需重新带参启动。`,
     };
 }
 
@@ -1259,6 +1272,26 @@ export async function createOverlayActionBridge(options: {
             }
             const source = parsed.source === 'composer' || parsed.source === 'topbar' ? parsed.source : undefined;
             const targetTab = parseOverlayTargetTab(parsed.targetTab);
+            if (cmd === 'focusConversation') {
+                const conversationId = parseOverlayConversationId(parsed.conversationId);
+                const isNewConversation = typeof parsed.isNewConversation === 'boolean'
+                    ? parsed.isNewConversation
+                    : false;
+                if (conversationId === undefined && !isNewConversation) {
+                    send(400, { ok: false, error: 'Invalid conversation focus payload' }, check.origin);
+                    return;
+                }
+                const sanitizedId = typeof conversationId === 'string' ? conversationId : null;
+                Promise.resolve(options.onAction?.({
+                    command: cmd,
+                    source,
+                    conversationId: sanitizedId,
+                    isNewConversation,
+                }))
+                    .then(() => send(200, { ok: true, command: cmd }, check.origin))
+                    .catch(() => send(500, { ok: false, error: 'Action handler failed' }, check.origin));
+                return;
+            }
             Promise.resolve(options.onAction?.({ command: cmd, source, ...(targetTab ? { targetTab } : {}) }))
                 .then(() => send(200, { ok: true, command: cmd }, check.origin))
                 .catch(() => send(500, { ok: false, error: 'Action handler failed' }, check.origin));

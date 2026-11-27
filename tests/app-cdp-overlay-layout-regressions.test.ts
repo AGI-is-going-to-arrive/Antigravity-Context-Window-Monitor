@@ -565,6 +565,12 @@ function createAntigravityShellHarness(options: {
         navObj.windowControlsOverlay = wcoObj;
     }
 
+    const fetchCalls: Array<{ url: string; init: { method?: string; headers?: Record<string, string>; body?: string } }> = [];
+    const fetchMock = vi.fn().mockImplementation((url: string, init: { method?: string; headers?: Record<string, string>; body?: string }) => {
+        fetchCalls.push({ url, init });
+        return Promise.resolve({ ok: true });
+    });
+
     const sandbox: Record<string, unknown> = {
         window: win,
         document: doc,
@@ -584,7 +590,7 @@ function createAntigravityShellHarness(options: {
         clearTimeout,
         setInterval: () => 1,
         clearInterval: () => {},
-        fetch: vi.fn().mockResolvedValue({ ok: true }),
+        fetch: fetchMock,
     };
 
     const ctx = vm.createContext(sandbox);
@@ -654,6 +660,12 @@ function createAntigravityShellHarness(options: {
         }
     }
 
+    function dispatchWinEvent(type: string) {
+        for (const fn of (winListeners.get(type) ?? [])) {
+            fn({});
+        }
+    }
+
     return {
         ctx,
         win,
@@ -685,10 +697,14 @@ function createAntigravityShellHarness(options: {
         triggerLayoutAttributeMutation,
         dispatchTransitionEnd,
         dispatchResize,
+        dispatchWinEvent,
         flushRaf,
+        fetchCalls,
+        fetchMock,
         resizeObservers,
         mutationObservers,
         docListeners,
+        winListeners,
         wcoListeners,
     };
 }
@@ -1961,5 +1977,240 @@ describe('Antigravity App CDP Overlay Layout, Top Layer Popover & Composer Ancho
         // unmount('all') removes the geometrychange listener cleanly
         vm.runInContext(buildOverlayUnmountScript('all'), dom.ctx);
         expect(dom.wcoListeners.get('geometrychange')?.length).toBe(0);
+    });
+
+    it('makes all 4 watermark tick tooltips (Composer & TopBar compaction + 200k tier) pointer-interactive, keyboard-focusable, edge-clamped, and localized (EN/ZH/both)', () => {
+        // 1. CSS rules: tick hit targets MUST have pointer-events: auto (NEVER pointer-events: none!) and render Shadow DOM ::after tooltips
+        const composerCss = getComposerOverlayCss();
+        const topBarCss = getTopBarOverlayCss();
+
+        const extractRule = (css: string, selector: string) => {
+            const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const m = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
+            return m ? m[1] : '';
+        };
+
+        const composerTickRule = extractRule(composerCss, '.acm-watermark-tick');
+        const topBarTickRule = extractRule(topBarCss, '.acm-qp-watermark-tick');
+        expect(composerTickRule).toContain('pointer-events: auto');
+        expect(composerTickRule).not.toContain('pointer-events: none');
+        expect(composerTickRule).toContain('cursor: help');
+        expect(topBarTickRule).toContain('pointer-events: auto');
+        expect(topBarTickRule).not.toContain('pointer-events: none');
+        expect(topBarTickRule).toContain('cursor: help');
+
+        // Both Shadow DOM stylesheets include ::before hairline + ::after tooltip + left/right edge alignment + :hover/:focus-visible + Turn Cache pill tooltip
+        for (const [css, prefix] of [
+            [composerCss, '.acm-watermark-tick'],
+            [topBarCss, '.acm-qp-watermark-tick'],
+        ] as const) {
+            expect(css).toContain(`${prefix}::before`);
+            expect(css).toContain(`${prefix}::after`);
+            expect(css).toContain('content: attr(data-tooltip)');
+            expect(css).toContain(`${prefix}.is-align-left::after`);
+            expect(css).toContain(`${prefix}.is-align-right::after`);
+            expect(css).toContain(`${prefix}:hover::after`);
+            expect(css).toContain(`${prefix}:focus-visible::after`);
+            expect(css).toContain('.acm-pill-badge.acm-has-tip::after');
+            expect(css).toContain('.acm-pill-badge.acm-has-tip:hover::after');
+        }
+
+        // 2. Live VM DOM verification across EN, ZH, and bilingual ('both') modes + edge alignment clamping + Turn Cache plain-language tooltips
+        const dom = createAntigravityShellHarness({ innerWidth: 1440, innerHeight: 900 });
+        buildLiveComposerDom(dom.mainPane, { metadataBarPosition: 'top', permTestId: true, actionKind: 'send' });
+        vm.runInContext(buildOverlayBootstrapScript(), dom.ctx);
+
+        const scenarios: Array<{
+            lang: 'en' | 'zh' | 'both';
+            compactionPct: number;
+            tier200kPct: number;
+            turnCacheState: 'warm' | 'partial' | 'cold';
+            expectCompSub: string;
+            expectTierSubs: string[];
+            expectCacheSubs: string[];
+            expectCompAlign: 'left' | 'right' | 'center';
+            expectTierAlign: 'left' | 'right' | 'center';
+        }> = [
+            {
+                lang: 'both',
+                compactionPct: 85,
+                tier200kPct: 20,
+                turnCacheState: 'warm',
+                expectCompSub: 'Auto-compaction limit / 自动压缩上限 85%',
+                expectTierSubs: ['not an extra Antigravity subscription charge', '不会对订阅额外扣费或强制截断'],
+                expectCacheSubs: ['>=70%', 'faster first token', '热缓存命中'],
+                expectCompAlign: 'right',
+                expectTierAlign: 'left',
+            },
+            {
+                lang: 'en',
+                compactionPct: 50,
+                tier200kPct: 78.1,
+                turnCacheState: 'partial',
+                expectCompSub: 'Auto-compaction limit 50%',
+                expectTierSubs: ['200k long-context tier', 'not an extra Antigravity subscription charge'],
+                expectCacheSubs: ['10-70% reused', 'partial prefix reuse'],
+                expectCompAlign: 'center',
+                expectTierAlign: 'right',
+            },
+            {
+                lang: 'zh',
+                compactionPct: 85,
+                tier200kPct: 25,
+                turnCacheState: 'cold',
+                expectCompSub: '自动压缩上限 85%',
+                expectTierSubs: ['200k 长上下文参考阶梯', '不会对订阅额外扣费或强制截断'],
+                expectCacheSubs: ['冷启动', '<10%', '切换模型'],
+                expectCompAlign: 'right',
+                expectTierAlign: 'left',
+            },
+        ];
+
+        for (const sc of scenarios) {
+            vm.runInContext(
+                buildOverlayUpdateScript(
+                    makePayload({
+                        language: sc.lang,
+                        compactionThresholdPct: sc.compactionPct,
+                        tier200kMarkerPct: sc.tier200kPct,
+                        turnCacheState: sc.turnCacheState,
+                    }),
+                    { appComposerRingEnabled: true, appTopBarEnabled: true },
+                ),
+                dom.ctx,
+            );
+
+            // Composer ticks (ticks #1 and #2) + Turn Cache badge
+            const compSr = dom.doc.getElementById(CDP_COMPOSER_HOST_ID)!.shadowRoot!;
+            const compTickComp = compSr.querySelector('.acm-watermark-tick.is-compaction') ?? compSr.querySelector('.is-compaction')!;
+            const compTick200k = compSr.querySelector('.acm-watermark-tick.is-tier200k') ?? compSr.querySelector('.is-tier200k')!;
+            const compTurnBadge = compSr.querySelector('.acm-has-tip')!;
+
+            // TopBar Context view ticks (ticks #3 and #4) + Turn Cache badge
+            const topSr = dom.doc.getElementById(CDP_TOPBAR_HOST_ID)!.shadowRoot!;
+            const ctxPill = topSr.querySelector('[data-view="context"]')!;
+            if (!topSr.querySelector('.acm-quota-popover')!.classList.contains('is-open')) {
+                ctxPill.click();
+            } else if (topSr.querySelector('.acm-quota-popover')!.getAttribute('data-active-view') !== 'context') {
+                ctxPill.click();
+            }
+            const topBody = topSr.querySelector('.acm-qp-body')!;
+            const topTickComp = topBody.querySelector('.is-compaction')!;
+            const topTick200k = topBody.querySelector('.is-tier200k')!;
+            const topCtxTurnBadge = topBody.querySelector('.acm-has-tip')!;
+
+            const verifyTick = (
+                el: LayoutTestElement,
+                expectedSubs: string[],
+                expectedAlign: 'left' | 'right' | 'center',
+            ) => {
+                expect(el).toBeTruthy();
+                const tip = el.getAttribute('data-tooltip') ?? '';
+                expect(el.getAttribute('title')).toBe(tip);
+                expect(el.getAttribute('aria-label')).toBe(tip);
+                for (const sub of expectedSubs) {
+                    expect(tip).toContain(sub);
+                }
+                expect(el.getAttribute('tabindex')).toBe('0');
+                expect(el.getAttribute('role')).toBe('img');
+                expect(el.classList.contains('is-align-left')).toBe(expectedAlign === 'left');
+                expect(el.classList.contains('is-align-right')).toBe(expectedAlign === 'right');
+            };
+
+            const verifyTurnBadge = (el: LayoutTestElement, expectedSubs: string[]) => {
+                expect(el).toBeTruthy();
+                const tip = el.getAttribute('data-tooltip') ?? '';
+                expect(el.getAttribute('title')).toBe(tip);
+                expect(el.getAttribute('tabindex')).toBe('0');
+                for (const sub of expectedSubs) {
+                    expect(tip).toContain(sub);
+                }
+            };
+
+            verifyTick(compTickComp, [sc.expectCompSub], sc.expectCompAlign);
+            verifyTick(compTick200k, sc.expectTierSubs, sc.expectTierAlign);
+            verifyTick(topTickComp, [sc.expectCompSub], sc.expectCompAlign);
+            verifyTick(topTick200k, sc.expectTierSubs, sc.expectTierAlign);
+            verifyTurnBadge(compTurnBadge, sc.expectCacheSubs);
+            verifyTurnBadge(topCtxTurnBadge, sc.expectCacheSubs);
+        }
+    });
+
+    it('reports Hub focusConversation transitions (UUID, brand-new chat, deduplication, sidebar isolation, and listener cleanup on unmount)', () => {
+        const dom = createAntigravityShellHarness({ innerWidth: 1440, innerHeight: 900 });
+        buildLiveComposerDom(dom.mainPane, { metadataBarPosition: 'top', permTestId: true, actionKind: 'send' });
+
+        // Add an unrelated historical conversation item inside sidebar to verify it NEVER hijacks New Chat detection
+        const sidebarNav = dom.doc.createElement('aside');
+        const oldSidebarItem = dom.doc.createElement('div');
+        oldSidebarItem.setAttribute('data-conversation-id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+        sidebarNav.appendChild(oldSidebarItem);
+        dom.sidebarOuter.appendChild(sidebarNav);
+
+        const uuidA = '0323401e-1fdf-418a-a0eb-8697e0becc9f';
+        const uuidB = '11111111-2222-4333-8444-555555555555';
+        const loc = { pathname: `/c/${uuidA}`, search: '', hash: '' };
+        dom.win.location = loc;
+
+        const payload = makePayload();
+        vm.runInContext(buildOverlayBootstrapScript(), dom.ctx);
+        vm.runInContext(
+            buildOverlayUpdateScript(payload, { appComposerRingEnabled: true, appTopBarEnabled: true }),
+            dom.ctx,
+        );
+
+        // 1. Initial mount on /c/<uuidA> reports focusConversation with uuidA
+        expect(dom.fetchCalls).toHaveLength(1);
+        expect(dom.fetchCalls[0].url).toBe(`${payload.bridgeUrl}/api/overlay/action`);
+        expect(dom.fetchCalls[0].init.headers?.['X-Monitor-Token']).toBe(payload.bridgeToken);
+        expect(JSON.parse(dom.fetchCalls[0].init.body || '{}')).toEqual({
+            command: 'focusConversation',
+            source: 'topbar',
+            conversationId: uuidA,
+            isNewConversation: false,
+        });
+
+        // 2. Subsequent identical applyState ticks are strictly deduplicated (ZERO extra fetch calls!)
+        vm.runInContext(
+            buildOverlayUpdateScript(makePayload({ contextPct: 12, bridgeUrl: payload.bridgeUrl, bridgeToken: payload.bridgeToken }), {
+                appComposerRingEnabled: true,
+                appTopBarEnabled: true,
+            }),
+            dom.ctx,
+        );
+        expect(dom.fetchCalls).toHaveLength(1);
+
+        // 3. Navigating to brand-new empty chat route '/' (with composer visible + sidebar history item) emits conversationId: null, isNewConversation: true
+        loc.pathname = '/';
+        dom.dispatchWinEvent('popstate');
+        expect(dom.fetchCalls).toHaveLength(2);
+        expect(JSON.parse(dom.fetchCalls[1].init.body || '{}')).toEqual({
+            command: 'focusConversation',
+            source: 'topbar',
+            conversationId: null,
+            isNewConversation: true,
+        });
+
+        // Repeated popstate on same new-chat route is deduplicated
+        dom.dispatchWinEvent('popstate');
+        expect(dom.fetchCalls).toHaveLength(2);
+
+        // 4. Navigating via hashchange to #/c/<uuidB> reports uuidB immediately
+        loc.hash = `#/c/${uuidB}`;
+        dom.dispatchWinEvent('hashchange');
+        expect(dom.fetchCalls).toHaveLength(3);
+        expect(JSON.parse(dom.fetchCalls[2].init.body || '{}')).toEqual({
+            command: 'focusConversation',
+            source: 'topbar',
+            conversationId: uuidB,
+            isNewConversation: false,
+        });
+
+        // 5. unmount('all') removes popstate & hashchange listeners cleanly
+        expect(dom.winListeners.get('popstate')?.length).toBe(1);
+        expect(dom.winListeners.get('hashchange')?.length).toBe(1);
+        vm.runInContext(buildOverlayUnmountScript('all'), dom.ctx);
+        expect(dom.winListeners.get('popstate')?.length).toBe(0);
+        expect(dom.winListeners.get('hashchange')?.length).toBe(0);
     });
 });

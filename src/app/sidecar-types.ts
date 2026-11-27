@@ -148,7 +148,7 @@ export interface CdpOverlayPayload {
     bridgeToken?: string;
 }
 
-export type CdpOverlayBridgeActionCommand = 'openPanel' | 'refresh' | 'togglePause';
+export type CdpOverlayBridgeActionCommand = 'openPanel' | 'refresh' | 'togglePause' | 'focusConversation';
 
 export type CdpOverlayTargetTab =
     | 'overview'
@@ -164,6 +164,8 @@ export interface CdpOverlayBridgeAction {
     command: CdpOverlayBridgeActionCommand;
     source?: 'composer' | 'topbar';
     targetTab?: CdpOverlayTargetTab;
+    conversationId?: string | null;
+    isNewConversation?: boolean;
 }
 
 // ─── Self-Updater Engine Contracts (v1.17.6) ─────────────────────────────────
