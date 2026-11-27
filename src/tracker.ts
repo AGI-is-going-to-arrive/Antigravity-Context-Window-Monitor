@@ -86,6 +86,14 @@ export interface TrajectorySummary {
     trajectoryType?: string;
     /** Optional parent cascade ID when trajectory was spawned as a subagent */
     parentCascadeId?: string;
+    /** Optional parent trajectory ID when trajectory was spawned as a child */
+    parentTrajectoryId?: string;
+    /** Optional explicit subagent flag from trajectory summary */
+    isSubagent?: boolean;
+    /** Optional agent/swarm role (e.g. coordinator vs worker) */
+    role?: string;
+    /** Optional swarm identifier if trajectory belongs to a swarm */
+    swarmId?: string;
     /** Optional raw trajectoryMetadata bag from GetAllCascadeTrajectories */
     trajectoryMetadata?: Record<string, unknown>;
     /** Whether the trajectory has been explicitly killed */
@@ -315,15 +323,57 @@ export async function getAllTrajectories(ls: LSInfo, signal?: AbortSignal): Prom
         const branchName = (firstWs?.branchName as string) || '';
         const gitRootUri = (firstWs?.gitRootAbsoluteUri as string) || '';
 
-        const trajectoryMetadata = data.trajectoryMetadata && typeof data.trajectoryMetadata === 'object'
-            && !Array.isArray(data.trajectoryMetadata)
-            ? data.trajectoryMetadata as Record<string, unknown>
-            : undefined;
-        const rawParentCascadeId = typeof data.parentCascadeId === 'string' && data.parentCascadeId.trim()
-            ? data.parentCascadeId.trim()
-            : typeof trajectoryMetadata?.parentCascadeId === 'string' && trajectoryMetadata.parentCascadeId.trim()
-                ? trajectoryMetadata.parentCascadeId.trim()
+        const asMetaBag = (raw: unknown): Record<string, unknown> | undefined =>
+            raw && typeof raw === 'object' && !Array.isArray(raw)
+                ? (raw as Record<string, unknown>)
                 : undefined;
+        const rawMetaBags = [
+            asMetaBag(data.metadata),
+            asMetaBag(data.cascadeMetadata),
+            asMetaBag(data.swarmMetadata),
+            asMetaBag(data.trajectoryMetadata),
+        ].filter((bag): bag is Record<string, unknown> => Boolean(bag));
+        const trajectoryMetadata = rawMetaBags.length > 0
+            ? Object.assign({}, ...rawMetaBags) as Record<string, unknown>
+            : undefined;
+        const pickMetaStr = (...values: unknown[]): string | undefined => {
+            for (const v of values) {
+                if (typeof v === 'string' && v.trim()) { return v.trim(); }
+            }
+            return undefined;
+        };
+        const rawParentCascadeId = pickMetaStr(
+            data.parentCascadeId,
+            data.parentConversationId,
+            trajectoryMetadata?.parentCascadeId,
+            trajectoryMetadata?.parentConversationId,
+        );
+        const rawParentTrajectoryId = pickMetaStr(
+            data.parentTrajectoryId,
+            trajectoryMetadata?.parentTrajectoryId,
+        );
+        const rawTrajectoryType = pickMetaStr(
+            data.trajectoryType,
+            trajectoryMetadata?.trajectoryType,
+        );
+        const rawRole = pickMetaStr(
+            data.role,
+            data.agentRole,
+            data.agentType,
+            data.swarmRole,
+            trajectoryMetadata?.role,
+            trajectoryMetadata?.agentRole,
+            trajectoryMetadata?.agentType,
+            trajectoryMetadata?.swarmRole,
+        );
+        const rawSwarmId = pickMetaStr(
+            data.swarmId,
+            trajectoryMetadata?.swarmId,
+        );
+        const rawIsSubagent = data.isSubagent === true
+            || data.isChild === true
+            || trajectoryMetadata?.isSubagent === true
+            || trajectoryMetadata?.isChild === true;
 
         result.push({
             cascadeId,
@@ -342,18 +392,34 @@ export async function getAllTrajectories(ls: LSInfo, signal?: AbortSignal): Prom
             gitOriginUrl,
             branchName,
             gitRootUri,
-            ...(typeof data.trajectoryType === 'string' && data.trajectoryType ? { trajectoryType: data.trajectoryType } : {}),
+            ...(rawTrajectoryType ? { trajectoryType: rawTrajectoryType } : {}),
             ...(rawParentCascadeId ? { parentCascadeId: rawParentCascadeId } : {}),
+            ...(rawParentTrajectoryId ? { parentTrajectoryId: rawParentTrajectoryId } : {}),
+            ...(rawIsSubagent ? { isSubagent: true } : {}),
+            ...(rawRole ? { role: rawRole } : {}),
+            ...(rawSwarmId ? { swarmId: rawSwarmId } : {}),
             ...(trajectoryMetadata ? { trajectoryMetadata } : {}),
             ...(typeof data.killed === 'boolean' ? { killed: data.killed } : {}),
         });
     }
 
-    // Sort by lastModifiedTime descending (most recent first)
+    // Sort chronologically by lastModifiedTime (falling back to createdTime so brand-new
+    // conversations with empty lastModifiedTime stay at the top instead of sinking to the bottom).
+    const sortTimestampMs = (item: TrajectorySummary): number => {
+        const raw = (item.lastModifiedTime || item.createdTime || '').trim();
+        if (!raw) { return 0; }
+        const parsed = Date.parse(raw);
+        return Number.isFinite(parsed) ? parsed : 0;
+    };
     result.sort((a, b) => {
-        if (!a.lastModifiedTime) { return 1; }
-        if (!b.lastModifiedTime) { return -1; }
-        return b.lastModifiedTime.localeCompare(a.lastModifiedTime);
+        const diff = sortTimestampMs(b) - sortTimestampMs(a);
+        if (diff !== 0) { return diff; }
+        const rawA = a.lastModifiedTime || a.createdTime;
+        const rawB = b.lastModifiedTime || b.createdTime;
+        if (!rawA && !rawB) { return a.cascadeId.localeCompare(b.cascadeId); }
+        if (!rawA) { return 1; }
+        if (!rawB) { return -1; }
+        return rawB.localeCompare(rawA);
     });
 
     return result;
@@ -434,19 +500,56 @@ export function isImageGenStep(step: Record<string, unknown>, stepModel: string)
     return type !== StepType.USER_INPUT && type !== StepType.CHECKPOINT && isImageGenerationModel(stepModel);
 }
 
-/** Follow only the typed invocation result, never arbitrary IDs in prompts or tool arguments. */
+/** Follow only typed subagent / swarm spawn invocation results, never arbitrary IDs in prompts or tool arguments. */
 export function extractLinkedSubagentIds(steps: Array<Record<string, unknown>>): string[] {
     const ids = new Set<string>();
+    const addId = (value: unknown): void => {
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (trimmed && trimmed.length <= 256) {
+                ids.add(trimmed);
+            }
+        }
+    };
+    const collectFromRecord = (rec: Record<string, unknown>): void => {
+        addId(rec.conversationId);
+        addId(rec.cascadeId);
+        addId(rec.childCascadeId);
+        addId(rec.workerConversationId);
+        addId(rec.workerCascadeId);
+    };
     for (const step of steps) {
-        if (step.type !== 'CORTEX_STEP_TYPE_INVOKE_SUBAGENT') { continue; }
-        const invocation = step.invokeSubagent;
-        if (!invocation || typeof invocation !== 'object' || Array.isArray(invocation)) { continue; }
-        const results = (invocation as Record<string, unknown>).results;
-        if (!Array.isArray(results)) { continue; }
-        for (const result of results) {
-            if (!result || typeof result !== 'object' || Array.isArray(result)) { continue; }
-            const id = (result as Record<string, unknown>).conversationId;
-            if (typeof id === 'string' && id.trim() && id.length <= 256) { ids.add(id.trim()); }
+        if (step.type === 'CORTEX_STEP_TYPE_INVOKE_SUBAGENT') {
+            const invocation = step.invokeSubagent;
+            if (!invocation || typeof invocation !== 'object' || Array.isArray(invocation)) { continue; }
+            const invRec = invocation as Record<string, unknown>;
+            collectFromRecord(invRec);
+            const results = invRec.results;
+            if (Array.isArray(results)) {
+                for (const result of results) {
+                    if (!result || typeof result !== 'object' || Array.isArray(result)) { continue; }
+                    collectFromRecord(result as Record<string, unknown>);
+                }
+            }
+            continue;
+        }
+        // Also collect typed child IDs from native swarm spawn steps when present
+        const rawType = typeof step.type === 'string' ? step.type : '';
+        if (rawType === 'CORTEX_STEP_TYPE_SWARM' || rawType === 'CORTEX_STEP_TYPE_SPAWN_SUBAGENT') {
+            for (const key of ['swarm', 'swarmAdd', 'spawnSubagent', 'subagentSpawn'] as const) {
+                const bag = step[key];
+                if (!bag || typeof bag !== 'object' || Array.isArray(bag)) { continue; }
+                const bagRec = bag as Record<string, unknown>;
+                collectFromRecord(bagRec);
+                for (const arrKey of ['results', 'workers', 'agents'] as const) {
+                    const list = bagRec[arrKey];
+                    if (!Array.isArray(list)) { continue; }
+                    for (const item of list) {
+                        if (!item || typeof item !== 'object' || Array.isArray(item)) { continue; }
+                        collectFromRecord(item as Record<string, unknown>);
+                    }
+                }
+            }
         }
     }
     return [...ids];
@@ -719,8 +822,11 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         };
     }
 
-    // Fallback: estimate total context window usage
-    const estimatedTotal = toolOutputTokens + SYSTEM_PROMPT_OVERHEAD + estimationOverhead;
+    // Fallback: estimate total context window usage.
+    // A brand-new 0-step conversation has zero context occupancy until its first turn begins.
+    const estimatedTotal = steps.length === 0
+        ? 0
+        : (toolOutputTokens + SYSTEM_PROMPT_OVERHEAD + estimationOverhead);
 
     return {
         tokenUsageSource: 'estimated',

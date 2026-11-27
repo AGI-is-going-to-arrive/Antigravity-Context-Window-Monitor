@@ -42,6 +42,7 @@ import {
 } from '../context-breakdown';
 import {
     buildConversationOptions,
+    isSubagentTrajectory,
     resolveTargetConversation,
     type ConversationOption,
     type ResolvedConversationTarget,
@@ -506,6 +507,8 @@ const LS_REVALIDATION_INTERVAL = 6;
 const MAX_CHECKPOINTER_SYNC_ATTEMPTS = 5;
 const MAX_AUX_METADATA_FAILURES = 3;
 const RESET_TIME_TURNOVER_MIN_JUMP_MS = 10 * 60 * 1000;
+const HOST_CONVERSATION_STALE_MS = 20_000;
+const HOST_PENDING_MAX_MS = 60_000;
 const SAFE_CASCADE_ID_RE = /^[a-zA-Z0-9_-]{4,128}$/;
 const ALLOWED_OVERLAY_TARGET_TABS: ReadonlySet<CdpOverlayTargetTab> = new Set([
     'overview',
@@ -1398,10 +1401,16 @@ export function createSidecarRuntimeProvider(
             token: overlayBridgeToken,
         }),
         onBridgeAction: async (bridgeAction) => {
+            const ext = bridgeAction as typeof bridgeAction & {
+                conversationId?: string | null;
+                isNewConversation?: boolean;
+            };
             await handleOverlayAction({
-                command: bridgeAction.command,
+                command: bridgeAction.command as SidecarOverlayBridgeRequest['command'],
                 source: bridgeAction.source,
                 ...(bridgeAction.targetTab ? { targetTab: bridgeAction.targetTab } : {}),
+                ...(ext.conversationId !== undefined ? { conversationId: ext.conversationId } : {}),
+                ...(ext.isNewConversation !== undefined ? { isNewConversation: ext.isNewConversation } : {}),
             });
         },
         log,
@@ -1420,15 +1429,22 @@ export function createSidecarRuntimeProvider(
     let monitorStatus: MonitorStatus = { state: 'connecting' };
 
     let contextBreakdown: ContextBreakdownSnapshot | null = null;
+    let contextBreakdownCascadeId: string | null = null;
     let turnDiagnostics: TurnDiagnosticsSummary | null = null;
+    let turnDiagnosticsCascadeId: string | null = null;
     let quotaRunways: Record<string, QuotaRunwayEstimate> = {};
     let isCustomModelActive = false;
 
     let hostConversationId: string | null = (process.env.ANTIGRAVITY_CONVERSATION_ID || '').trim() || null;
+    let hostConversationSource: 'env' | 'aux' | 'cdp' | 'query' | null = hostConversationId ? 'env' : null;
+    let hostConversationUpdatedAtMs: number = hostConversationId ? deps.now() : 0;
+    let hostNewConversationPending = false;
+    let hostNewConversationAtMs = 0;
     let pinnedConversationId: string | null = null;
     let lockToMainAgent = false;
     let lockedMainId: string | null = null;
     let trackedCascadeId: string | null = null;
+    let trackedCascadeSinceMs = 0;
     let lastResolution: ResolvedConversationTarget = {
         target: null,
         cascadeId: null,
@@ -1436,14 +1452,20 @@ export function createSidecarRuntimeProvider(
         lockedMainId: null,
         pinnedFallback: false,
         ignoredSubagentBurst: false,
+        hostPending: false,
         reason: 'initializing',
     };
     let conversationOptions: ConversationOption[] = [];
 
-    // Rewind & per-conversation telemetry caches
+    // Rewind, cross-session isolation & per-conversation telemetry caches
     const maxStepCountByCascade = new Map<string, number>();
     const prevUsedTokensByCascade = new Map<string, number>();
     const knownSubagentIds = new Set<string>();
+    const seenTrajectoryIds = new Set<string>();
+    const deletedConversationIds = new Set<string>();
+    let hasCompletedInitialTrajectoryScan = false;
+    let latestNewlyCreatedIds = new Set<string>();
+    let telemetryRefreshSeq = 0;
     let cachedRawTelemetryKey = '';
     let cachedRawGmEntries: RawGeneratorMetadataEntry[] = [];
     let cachedRawSteps: Array<Record<string, unknown>> = [];
@@ -1890,12 +1912,35 @@ export function createSidecarRuntimeProvider(
         const customPricing = pricingStore.getCustom();
         const orchMode = appSettings.orchestratorPricingMode;
         const uiGmSummary = getActiveUiGmSummary();
-        const activeId = currentUsage?.cascadeId ?? lastResolution.cascadeId ?? undefined;
+        const isPendingNewChat = Boolean(lastResolution.hostPending || hostNewConversationPending);
+        const activeId = isPendingNewChat
+            ? (lastResolution.cascadeId ?? undefined)
+            : (currentUsage?.cascadeId ?? lastResolution.cascadeId ?? undefined);
+        const matchedUsage = !isPendingNewChat
+            && currentUsage
+            && (!activeId || currentUsage.cascadeId === activeId)
+            ? currentUsage
+            : null;
+        const matchedBreakdown = !isPendingNewChat
+            && contextBreakdown
+            && (!matchedUsage || contextBreakdownCascadeId === matchedUsage.cascadeId)
+            ? contextBreakdown
+            : null;
+        const matchedTurnDiagnostics = !isPendingNewChat
+            && turnDiagnostics
+            && (!matchedUsage || turnDiagnosticsCascadeId === matchedUsage.cascadeId)
+            ? turnDiagnostics
+            : null;
+        const isEmptyNewSession = isPendingNewChat
+            || Boolean(matchedUsage && matchedUsage.stepCount === 0 && !matchedUsage.lastModelUsage);
+
         const costs = computeLiveCostSnapshot(uiGmSummary, activeId);
         const currencyCfg = buildCurrencyConfig();
-        const estCostUsd = costs.sessionCostUsd > 0
-            ? costs.sessionCostUsd
-            : (costs.todayCostUsd > 0 ? costs.todayCostUsd : null);
+        const estCostUsd = isEmptyNewSession
+            ? null
+            : (costs.sessionCostUsd > 0
+                ? costs.sessionCostUsd
+                : (costs.todayCostUsd > 0 ? costs.todayCostUsd : null));
         const estCostFormatted = estCostUsd !== null
             ? formatCurrencyAmount(estCostUsd, { code: 'USD' })
             : '—';
@@ -1903,28 +1948,36 @@ export function createSidecarRuntimeProvider(
             ? formatCurrencyAmount(estCostUsd, currencyCfg)
             : null;
 
-        const contextUsedTokens = (contextBreakdown && contextBreakdown.usedTokens > 0)
-            ? contextBreakdown.usedTokens
-            : (currentUsage?.contextUsed ?? 0);
-        const contextEffectiveLimit = (contextBreakdown && contextBreakdown.effectiveBudgetTokens > 0)
-            ? contextBreakdown.effectiveBudgetTokens
-            : (currentUsage?.contextLimit ?? 0);
-        const contextNativeLimit = (contextBreakdown && contextBreakdown.nativeLimitTokens > 0)
-            ? contextBreakdown.nativeLimitTokens
-            : contextEffectiveLimit;
+        const contextEffectiveLimit = isPendingNewChat
+            ? 0
+            : ((matchedBreakdown && matchedBreakdown.effectiveBudgetTokens > 0)
+                ? matchedBreakdown.effectiveBudgetTokens
+                : (matchedUsage?.contextLimit ?? 0));
+        const contextNativeLimit = isPendingNewChat
+            ? 0
+            : ((matchedBreakdown && matchedBreakdown.nativeLimitTokens > 0)
+                ? matchedBreakdown.nativeLimitTokens
+                : contextEffectiveLimit);
+        const contextUsedTokens = isEmptyNewSession
+            ? 0
+            : ((matchedBreakdown && matchedBreakdown.usedTokens > 0)
+                ? matchedBreakdown.usedTokens
+                : (matchedUsage?.contextUsed ?? 0));
         const contextPct = contextEffectiveLimit > 0
             ? Math.round((contextUsedTokens / contextEffectiveLimit) * 1000) / 10
             : 0;
-        const watermarks = currentUsage || contextEffectiveLimit > 0
+        const watermarks = matchedUsage || contextEffectiveLimit > 0
             ? computeContextWatermarks({
                 contextUsed: contextUsedTokens,
                 compactionLimit: contextEffectiveLimit > 0 ? contextEffectiveLimit : undefined,
                 physicalContextWindow: contextNativeLimit > 0 ? contextNativeLimit : undefined,
-                model: currentUsage?.model,
+                model: matchedUsage?.model,
             })
             : null;
 
-        const telemetry = extractOverviewTelemetry(uiGmSummary, activeId, customPricing, orchMode);
+        const telemetry = isEmptyNewSession
+            ? null
+            : extractOverviewTelemetry(uiGmSummary, activeId, customPricing, orchMode);
         const primary = telemetry?.primary ?? null;
         const latestCall = primary?.latestCall ?? null;
         const speedEval = primary?.latestSpeedSample
@@ -1936,12 +1989,14 @@ export function createSidecarRuntimeProvider(
                 })
                 : null);
 
-        const activeConvCalls = activeId
+        const activeConvCalls = (!isEmptyNewSession && activeId)
             ? (uiGmSummary?.conversations.find(c => c.cascadeId === activeId)?.calls ?? [])
             : [];
-        const recentSpeedCalls = activeConvCalls.length > 0
-            ? activeConvCalls
-            : (uiGmSummary?.conversations.flatMap(c => c.calls) ?? []);
+        const recentSpeedCalls = isEmptyNewSession
+            ? []
+            : (activeConvCalls.length > 0
+                ? activeConvCalls
+                : (uiGmSummary?.conversations.flatMap(c => c.calls) ?? []));
         let peakOutputSpeedTps: number | null = null;
         for (const c of recentSpeedCalls) {
             const ev = evaluateSpeedSample({
@@ -1956,23 +2011,27 @@ export function createSidecarRuntimeProvider(
                 }
             }
         }
-        const liveOutputSpeedTps = speedEval?.isShortSample || speedEval?.isWaitingTtft
+        const liveOutputSpeedTps = isEmptyNewSession
             ? null
-            : (speedEval?.displaySpeed ?? telemetry?.speedPrimary ?? null);
+            : (speedEval?.isShortSample || speedEval?.isWaitingTtft
+                ? null
+                : (speedEval?.displaySpeed ?? telemetry?.speedPrimary ?? null));
         if (peakOutputSpeedTps === null && typeof liveOutputSpeedTps === 'number' && Number.isFinite(liveOutputSpeedTps) && liveOutputSpeedTps > 0) {
             peakOutputSpeedTps = liveOutputSpeedTps;
         }
         if (peakOutputSpeedTps !== null) {
             peakOutputSpeedTps = Math.round(peakOutputSpeedTps * 10) / 10;
         }
-        const recentCallCount = activeConvCalls.length > 0
-            ? activeConvCalls.length
-            : (uiGmSummary && uiGmSummary.totalCalls > 0 ? uiGmSummary.totalCalls : null);
+        const recentCallCount = isEmptyNewSession
+            ? null
+            : (activeConvCalls.length > 0
+                ? activeConvCalls.length
+                : (uiGmSummary && uiGmSummary.totalCalls > 0 ? uiGmSummary.totalCalls : null));
 
-        const turnCache = activeConvCalls.length > 0
+        const turnCache = (!isEmptyNewSession && activeConvCalls.length > 0)
             ? analyzeUserTurnCacheStates(activeConvCalls, {
-                orchestratorConfig: currentUsage?.orchestratorConfig,
-                orchestratorHistory: currentUsage?.orchestratorHistory,
+                orchestratorConfig: matchedUsage?.orchestratorConfig,
+                orchestratorHistory: matchedUsage?.orchestratorHistory,
                 orchestratorSettings: cachedOrchestratorSettings,
                 orchestratorPricingMode: orchMode,
             })
@@ -1982,18 +2041,20 @@ export function createSidecarRuntimeProvider(
         let outputTokens = 0;
         let cacheReadTokens = 0;
         let cacheCreationTokens = 0;
-        if (activeConvCalls.length > 0) {
-            for (const c of activeConvCalls) {
-                inputTokens += c.inputTokens || 0;
-                outputTokens += c.outputTokens || 0;
-                cacheReadTokens += c.cacheReadTokens || 0;
-                cacheCreationTokens += c.cacheCreationTokens || 0;
+        if (!isEmptyNewSession) {
+            if (activeConvCalls.length > 0) {
+                for (const c of activeConvCalls) {
+                    inputTokens += c.inputTokens || 0;
+                    outputTokens += c.outputTokens || 0;
+                    cacheReadTokens += c.cacheReadTokens || 0;
+                    cacheCreationTokens += c.cacheCreationTokens || 0;
+                }
+            } else if (matchedUsage?.lastModelUsage) {
+                inputTokens = matchedUsage.lastModelUsage.inputTokens || 0;
+                outputTokens = matchedUsage.lastModelUsage.outputTokens || 0;
+                cacheReadTokens = matchedUsage.lastModelUsage.cacheReadTokens || 0;
+                cacheCreationTokens = matchedUsage.lastModelUsage.cacheCreationTokens || 0;
             }
-        } else if (currentUsage?.lastModelUsage) {
-            inputTokens = currentUsage.lastModelUsage.inputTokens || 0;
-            outputTokens = currentUsage.lastModelUsage.outputTokens || 0;
-            cacheReadTokens = currentUsage.lastModelUsage.cacheReadTokens || 0;
-            cacheCreationTokens = currentUsage.lastModelUsage.cacheCreationTokens || 0;
         }
         const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
 
@@ -2051,8 +2112,8 @@ export function createSidecarRuntimeProvider(
         let sessionQuotaWeeklyReset: string | undefined;
 
         if (!isCustomModelActive && cachedModelConfigs.length > 0) {
-            const activeModelId = currentUsage?.model ? (resolveModelId(currentUsage.model) || currentUsage.model) : '';
-            const groups = selectMonitorQuotaGroups(cachedModelConfigs, currentUsage?.model, cachedQuotaSummary);
+            const activeModelId = matchedUsage?.model ? (resolveModelId(matchedUsage.model) || matchedUsage.model) : '';
+            const groups = selectMonitorQuotaGroups(cachedModelConfigs, matchedUsage?.model, cachedQuotaSummary);
             for (const g of groups) {
                 const isGroupActive = Boolean(activeModelId && g.readings.some(r => r.model === activeModelId));
                 const frac5h = g.fiveHourQuota?.remainingFraction ?? g.minimum;
@@ -2105,23 +2166,29 @@ export function createSidecarRuntimeProvider(
             }
         }
 
-        const recentCacheHitPct = turnCache?.latestTurn?.cacheHitPct != null
-            ? Math.round(turnCache.latestTurn.cacheHitPct * 10) / 10
-            : (turnDiagnostics?.lastTurnCacheHitPct ?? null);
-        const avgCacheHitPct = primary?.tokenCacheHitRate != null
-            ? Math.round(primary.tokenCacheHitRate * 1000) / 10
-            : (turnDiagnostics?.sessionCacheHitPct ?? null);
-        const turnCacheState = turnCache?.latestTurn?.cacheStart
-            ?? (turnDiagnostics?.lastTurnStartKind === 'warm' || turnDiagnostics?.lastTurnStartKind === 'partial' || turnDiagnostics?.lastTurnStartKind === 'cold'
-                ? turnDiagnostics.lastTurnStartKind
-                : 'unknown');
+        const recentCacheHitPct = isEmptyNewSession
+            ? null
+            : (turnCache?.latestTurn?.cacheHitPct != null
+                ? Math.round(turnCache.latestTurn.cacheHitPct * 10) / 10
+                : (matchedTurnDiagnostics?.lastTurnCacheHitPct ?? null));
+        const avgCacheHitPct = isEmptyNewSession
+            ? null
+            : (primary?.tokenCacheHitRate != null
+                ? Math.round(primary.tokenCacheHitRate * 1000) / 10
+                : (matchedTurnDiagnostics?.sessionCacheHitPct ?? null));
+        const turnCacheState = isEmptyNewSession
+            ? 'unknown'
+            : (turnCache?.latestTurn?.cacheStart
+                ?? (matchedTurnDiagnostics?.lastTurnStartKind === 'warm' || matchedTurnDiagnostics?.lastTurnStartKind === 'partial' || matchedTurnDiagnostics?.lastTurnStartKind === 'cold'
+                    ? matchedTurnDiagnostics.lastTurnStartKind
+                    : 'unknown'));
 
         return {
             updatedAt: new Date(nowMs).toISOString(),
             nextRefreshSec: clamp(settings.pollingInterval, 1, 60),
             language: lang,
             theme: 'auto',
-            modelName: currentUsage?.modelDisplayName || (currentUsage?.model ? normalizeModelDisplayName(currentUsage.model) : ''),
+            modelName: matchedUsage?.modelDisplayName || (matchedUsage?.model ? normalizeModelDisplayName(matchedUsage.model) : ''),
             contextUsedTokens,
             contextEffectiveLimit,
             contextNativeLimit,
@@ -2299,6 +2366,42 @@ export function createSidecarRuntimeProvider(
                 return { ok: true, result: { refreshed: true, time: lastUpdatedTime, source: action.source } };
             case 'togglePause':
                 return handleAction({ command: 'togglePause' });
+            case 'focusConversation': {
+                const rawId = typeof action.conversationId === 'string' ? action.conversationId.trim() : '';
+                if (rawId && !SAFE_CASCADE_ID_RE.test(rawId)) {
+                    return { ok: false, statusCode: 400, error: 'Invalid conversationId' };
+                }
+                const nextId = rawId ? rawId : null;
+                const isNewConv = action.isNewConversation === true;
+                const changed = setHostConversationFocus(nextId, 'cdp', {
+                    isNewConversation: isNewConv,
+                    conversationCleared: action.conversationId === null && !isNewConv,
+                });
+                if (changed) {
+                    const resolved = recomputeConversationResolution();
+                    const targetTrajectory = findResolvedTrajectory(resolved);
+                    if (resolved.hostPending || !targetTrajectory) {
+                        clearActiveConversationTelemetry(resolved.cascadeId, deps.now());
+                    } else if (cachedLsInfo && targetTrajectory.cascadeId !== currentUsage?.cascadeId) {
+                        try {
+                            await refreshActiveConversationTelemetry(cachedLsInfo, targetTrajectory, deps.now());
+                        } catch {
+                            clearActiveConversationTelemetry(targetTrajectory.cascadeId, deps.now());
+                        }
+                    }
+                    bumpStateRevision();
+                    pushOverlayPayloadAsync();
+                }
+                return {
+                    ok: true,
+                    result: {
+                        focused: true,
+                        activeConversationId: lastResolution.cascadeId,
+                        hostPending: Boolean(lastResolution.hostPending),
+                        source: action.source,
+                    },
+                };
+            }
             case 'openSidecar':
             case 'togglePanel':
             case 'openPanel': {
@@ -2644,7 +2747,11 @@ export function createSidecarRuntimeProvider(
         }
     }
 
-    function computeLiveCostSnapshot(summary: GMSummary | null, activeCascadeId?: string): {
+    function computeLiveCostSnapshot(
+        summary: GMSummary | null,
+        activeCascadeId?: string,
+        strictActiveOnly = false,
+    ): {
         todayCostUsd: number;
         sessionCostUsd: number;
     } {
@@ -2668,7 +2775,7 @@ export function createSidecarRuntimeProvider(
                 : undefined;
             const calls = activeConv && activeConv.calls.length > 0
                 ? activeConv.calls
-                : summary.conversations.flatMap(c => c.calls);
+                : (strictActiveOnly ? [] : summary.conversations.flatMap(c => c.calls));
             for (const call of calls) {
                 const pricingModel = selectPricingModel(call.model || call.modelDisplay, call.responseModel, custom);
                 const pricing = findPricingForDate(pricingModel, custom, call.createdAt || '', undefined, orchMode);
@@ -2691,6 +2798,152 @@ export function createSidecarRuntimeProvider(
         return { isStale, lastSuccessAtMs, lastError };
     }
 
+    function parseTrajectoryTimeMs(raw: string | undefined): number {
+        const clean = (raw || '').trim();
+        if (!clean) { return 0; }
+        const ms = Date.parse(clean);
+        return Number.isFinite(ms) && ms > 0 ? ms : 0;
+    }
+
+    function setHostConversationFocus(
+        nextId: string | null,
+        source: 'aux' | 'cdp' | 'query',
+        opts?: { isNewConversation?: boolean; conversationCleared?: boolean },
+    ): boolean {
+        const nowMs = deps.now();
+        if (opts?.isNewConversation === true && !nextId) {
+            const changed = !hostNewConversationPending || hostConversationId !== null;
+            hostConversationId = null;
+            hostConversationSource = source;
+            hostConversationUpdatedAtMs = nowMs;
+            hostNewConversationPending = true;
+            hostNewConversationAtMs = nowMs;
+            return changed;
+        }
+        if (nextId && nextId.trim()) {
+            const clean = nextId.trim();
+            const changed = clean !== hostConversationId || hostNewConversationPending;
+            hostConversationId = clean;
+            hostConversationSource = source;
+            hostConversationUpdatedAtMs = nowMs;
+            hostNewConversationPending = false;
+            hostNewConversationAtMs = 0;
+            deletedConversationIds.delete(clean);
+            return changed;
+        }
+        if (opts?.conversationCleared === true) {
+            const changed = hostConversationId !== null || hostNewConversationPending;
+            hostConversationId = null;
+            hostConversationSource = null;
+            hostConversationUpdatedAtMs = 0;
+            hostNewConversationPending = false;
+            hostNewConversationAtMs = 0;
+            return changed;
+        }
+        return false;
+    }
+
+    function reconcileHostFocusBeforeResolution(
+        trajectories: TrajectorySummary[],
+        nowMs: number,
+    ): void {
+        const currentIds = new Set<string>();
+        for (const tr of trajectories) {
+            if (tr.cascadeId) {
+                currentIds.add(tr.cascadeId);
+                deletedConversationIds.delete(tr.cascadeId);
+            }
+        }
+        for (const prevId of seenTrajectoryIds) {
+            if (!currentIds.has(prevId)) {
+                deletedConversationIds.add(prevId);
+            }
+        }
+
+        // If hostConversationId existed previously and disappeared from LS, it was deleted -> clear it.
+        if (hostConversationId && !currentIds.has(hostConversationId) && deletedConversationIds.has(hostConversationId)) {
+            hostConversationId = null;
+            hostConversationSource = null;
+            hostConversationUpdatedAtMs = 0;
+        }
+
+        // Never hang indefinitely on an unseen ghost hostConversationId.
+        if (hostConversationId && !currentIds.has(hostConversationId)
+            && hostConversationUpdatedAtMs > 0
+            && nowMs - hostConversationUpdatedAtMs > HOST_PENDING_MAX_MS) {
+            hostConversationId = null;
+            hostConversationSource = null;
+            hostConversationUpdatedAtMs = 0;
+        }
+
+        // Check whether any brand-new non-subagent main trajectory appeared on this poll.
+        const hasNewMainTrajectory = latestNewlyCreatedIds.size > 0 && trajectories.some(tr =>
+            latestNewlyCreatedIds.has(tr.cascadeId)
+            && tr.killed !== true
+            && !isSubagentTrajectory(tr, knownSubagentIds),
+        );
+
+        // Once a brand-new main conversation lands in trajectories (or pending window expires),
+        // exit blank new-conversation hold so newlyCreatedIds takes over seamlessly.
+        if (hostNewConversationPending && (hasNewMainTrajectory || (nowMs - hostNewConversationAtMs > HOST_PENDING_MAX_MS))) {
+            hostNewConversationPending = false;
+            hostNewConversationAtMs = 0;
+        }
+
+        // Expire stale hostConversationId (e.g. AUX_PANE was closed earlier or startup env var is outdated)
+        // when a different non-subagent main conversation starts or is newly created.
+        if (hostConversationId) {
+            const hostAgeMs = hostConversationUpdatedAtMs > 0 ? Math.max(0, nowMs - hostConversationUpdatedAtMs) : 0;
+            const isHostStale = hostConversationSource === 'env'
+                ? (hostAgeMs > HOST_CONVERSATION_STALE_MS || hasNewMainTrajectory)
+                : (hostConversationUpdatedAtMs > 0 && hostAgeMs > HOST_CONVERSATION_STALE_MS);
+
+            if (isHostStale) {
+                const hostTraj = trajectories.find(tr => tr.cascadeId === hostConversationId);
+                const hostIsRunning = hostTraj?.status === CascadeStatus.RUNNING && hostTraj.killed !== true;
+                const anotherMainRunningNewer = trajectories.some(tr =>
+                    tr.cascadeId !== hostConversationId
+                    && tr.status === CascadeStatus.RUNNING
+                    && tr.killed !== true
+                    && !isSubagentTrajectory(tr, knownSubagentIds)
+                    && Math.max(
+                        parseTrajectoryTimeMs(tr.lastUserInputTime),
+                        parseTrajectoryTimeMs(tr.lastModifiedTime),
+                        parseTrajectoryTimeMs(tr.createdTime),
+                    ) > hostConversationUpdatedAtMs,
+                );
+                if (hasNewMainTrajectory || (!hostIsRunning && anotherMainRunningNewer)) {
+                    hostConversationId = null;
+                    hostConversationSource = null;
+                    hostConversationUpdatedAtMs = 0;
+                }
+            }
+        }
+    }
+
+    function clearActiveConversationTelemetry(pendingCascadeId: string | null, nowMs: number): void {
+        telemetryRefreshSeq++;
+        currentUsage = null;
+        contextBreakdown = (pendingCascadeId || hostNewConversationPending)
+            ? parseContextBreakdown({
+                generatorMetadata: [],
+                steps: [],
+                currentStepCount: 0,
+            })
+            : null;
+        contextBreakdownCascadeId = pendingCascadeId;
+        turnDiagnostics = null;
+        turnDiagnosticsCascadeId = pendingCascadeId;
+        cachedRawTelemetryKey = '';
+        cachedRawGmEntries = [];
+        cachedRawSteps = [];
+        isCustomModelActive = false;
+        quotaRunways = quotaRunwayTracker.estimateAll(nowMs);
+        monitorStatus = (pendingCascadeId || hostNewConversationPending)
+            ? { state: 'idle' }
+            : { state: 'empty' };
+    }
+
     function recomputeConversationResolution(): ResolvedConversationTarget {
         const resolved = resolveTargetConversation({
             trajectories: allTrajectories,
@@ -2699,15 +2952,26 @@ export function createSidecarRuntimeProvider(
             lockedMainId,
             hostConversationId,
             currentActiveId: trackedCascadeId,
+            currentActiveSinceMs: trackedCascadeSinceMs,
             workspaceUris: activeWorkspaceUris,
             knownSubagentIds,
+            newlyCreatedIds: latestNewlyCreatedIds,
+            deletedConversationIds,
+            hostConversationPendingAllowed: hostConversationSource !== null && hostConversationSource !== 'env',
+            hostNewConversationPending,
         });
         lastResolution = resolved;
         if (resolved.lockedMainId) {
             lockedMainId = resolved.lockedMainId;
         }
         if (resolved.cascadeId) {
+            if (resolved.cascadeId !== trackedCascadeId) {
+                trackedCascadeSinceMs = deps.now();
+            }
             trackedCascadeId = resolved.cascadeId;
+        } else if (resolved.hostPending) {
+            trackedCascadeId = null;
+            trackedCascadeSinceMs = 0;
         }
         conversationOptions = buildConversationOptions(
             allTrajectories,
@@ -2732,23 +2996,27 @@ export function createSidecarRuntimeProvider(
         activeTrajectory: TrajectorySummary,
         nowMs: number,
     ): Promise<void> {
-        // 1. ContextUsage
-        const persistedUsage = monitorStore.getSnapshot(activeTrajectory.cascadeId);
-        if (hasSameUsageInputs(currentUsage, activeTrajectory)) {
-            currentUsage = await deps.refreshWorkflowImageUsage(ls, currentUsage, abortController.signal);
-        } else if (hasSameUsageInputs(persistedUsage, activeTrajectory)) {
-            currentUsage = await deps.refreshWorkflowImageUsage(ls, persistedUsage, abortController.signal);
-        } else {
-            currentUsage = await deps.getContextUsage(ls, activeTrajectory, undefined, abortController.signal);
-        }
+        const mySeq = ++telemetryRefreshSeq;
 
-        if (currentUsage?.imageWorkflow?.linkedCascadeIds) {
-            for (const subId of currentUsage.imageWorkflow.linkedCascadeIds) {
+        // 1. ContextUsage (computed into local variable — never mutated mid-await!)
+        const persistedUsage = monitorStore.getSnapshot(activeTrajectory.cascadeId);
+        let nextUsage: ContextUsage;
+        if (hasSameUsageInputs(currentUsage, activeTrajectory)) {
+            nextUsage = await deps.refreshWorkflowImageUsage(ls, currentUsage, abortController.signal);
+        } else if (hasSameUsageInputs(persistedUsage, activeTrajectory)) {
+            nextUsage = await deps.refreshWorkflowImageUsage(ls, persistedUsage, abortController.signal);
+        } else {
+            nextUsage = await deps.getContextUsage(ls, activeTrajectory, undefined, abortController.signal);
+        }
+        if (mySeq !== telemetryRefreshSeq || disposed) { return; }
+
+        if (nextUsage?.imageWorkflow?.linkedCascadeIds) {
+            for (const subId of nextUsage.imageWorkflow.linkedCascadeIds) {
                 knownSubagentIds.add(subId);
             }
         }
-        if (lastGMSummary && currentUsage) {
-            applyGMContextToUsage(currentUsage, getLatestGMContextUsed(lastGMSummary, activeTrajectory.cascadeId));
+        if (lastGMSummary && nextUsage) {
+            applyGMContextToUsage(nextUsage, getLatestGMContextUsed(lastGMSummary, activeTrajectory.cascadeId));
         }
 
         // 2. Raw GeneratorMetadata + Raw Steps for Context Breakdown & Turn Diagnostics
@@ -2756,30 +3024,28 @@ export function createSidecarRuntimeProvider(
         const canReuseRawCache = activeTrajectory.status !== CascadeStatus.RUNNING
             && cachedRawTelemetryKey === rawCacheKey;
 
-        let rawGmEntries = cachedRawGmEntries;
-        let rawSteps = cachedRawSteps;
+        let rawGmEntries = canReuseRawCache ? cachedRawGmEntries : [];
+        let rawSteps = canReuseRawCache ? cachedRawSteps : [];
         if (!canReuseRawCache) {
             const [gmMetaRes, stepsRes] = await Promise.allSettled([
                 deps.fetchTrajectoryGeneratorMetadata(ls, activeTrajectory.cascadeId, abortController.signal),
                 deps.fetchTrajectorySteps(ls, activeTrajectory.cascadeId, activeTrajectory.stepCount, abortController.signal),
             ]);
+            if (mySeq !== telemetryRefreshSeq || disposed) { return; }
             rawGmEntries = gmMetaRes.status === 'fulfilled' ? gmMetaRes.value : [];
             rawSteps = stepsRes.status === 'fulfilled' ? stepsRes.value.steps : [];
-            cachedRawGmEntries = rawGmEntries;
-            cachedRawSteps = rawSteps;
-            cachedRawTelemetryKey = rawCacheKey;
         }
 
         // 3. Rewind tracking & Dual-Cap Context Breakdown
         const prevMaxSteps = maxStepCountByCascade.get(activeTrajectory.cascadeId);
         const prevUsedTokens = prevUsedTokensByCascade.get(activeTrajectory.cascadeId);
-        const effectiveModel = currentUsage?.model || activeTrajectory.requestedModel || activeTrajectory.generatorModel || '';
-        const modelDisplayName = currentUsage?.modelDisplayName || normalizeModelDisplayName(effectiveModel);
+        const effectiveModel = nextUsage?.model || activeTrajectory.requestedModel || activeTrajectory.generatorModel || '';
+        const modelDisplayName = nextUsage?.modelDisplayName || normalizeModelDisplayName(effectiveModel);
         const spec = effectiveModel ? guessContextLimitSpec(effectiveModel) : undefined;
-        const effectiveBudgetTokens = currentUsage?.contextLimit || getContextLimit(effectiveModel);
+        const effectiveBudgetTokens = nextUsage?.contextLimit || getContextLimit(effectiveModel);
         const nativeLimitTokens = Math.max(spec?.maxTokens || 0, effectiveBudgetTokens);
 
-        contextBreakdown = parseContextBreakdown({
+        const nextBreakdown = parseContextBreakdown({
             generatorMetadata: rawGmEntries,
             steps: rawSteps,
             currentStepCount: activeTrajectory.stepCount,
@@ -2791,25 +3057,39 @@ export function createSidecarRuntimeProvider(
             nativeLimitTokens,
         });
 
+        // 4. Turn Diagnostics (prefer raw GM entries; fall back to active GMTracker calls)
+        const activeGmConvCalls = lastGMSummary?.conversations.find(c => c.cascadeId === activeTrajectory.cascadeId)?.calls || [];
+        const nextTurnDiagnostics = analyzeTurnDiagnostics(rawGmEntries.length > 0 ? rawGmEntries : activeGmConvCalls);
+
+        // 5. Custom-model isolation & Quota Runway estimates
+        const nextIsCustomModel = isCustomModel(effectiveModel, modelDisplayName);
+        const nextQuotaRunways = quotaRunwayTracker.estimateAll(nowMs, {
+            modelId: effectiveModel,
+            modelLabel: modelDisplayName,
+            isCustomModel: nextIsCustomModel,
+        });
+
+        // 6. Atomic commit — guarantees currentUsage, contextBreakdown, and turnDiagnostics
+        //    never tear across conversations and stale out-of-order RPCs are discarded.
+        if (mySeq !== telemetryRefreshSeq || disposed) { return; }
+        currentUsage = nextUsage;
+        cachedRawGmEntries = rawGmEntries;
+        cachedRawSteps = rawSteps;
+        cachedRawTelemetryKey = rawCacheKey;
+        contextBreakdown = nextBreakdown;
+        contextBreakdownCascadeId = activeTrajectory.cascadeId;
+        turnDiagnostics = nextTurnDiagnostics;
+        turnDiagnosticsCascadeId = activeTrajectory.cascadeId;
+        isCustomModelActive = nextIsCustomModel;
+        quotaRunways = nextQuotaRunways;
+
         maxStepCountByCascade.set(
             activeTrajectory.cascadeId,
             Math.max(prevMaxSteps ?? 0, activeTrajectory.stepCount),
         );
-        if (contextBreakdown.usedTokens > 0) {
-            prevUsedTokensByCascade.set(activeTrajectory.cascadeId, contextBreakdown.usedTokens);
+        if (nextBreakdown.usedTokens > 0) {
+            prevUsedTokensByCascade.set(activeTrajectory.cascadeId, nextBreakdown.usedTokens);
         }
-
-        // 4. Turn Diagnostics (prefer raw GM entries; fall back to active GMTracker calls)
-        const activeGmConvCalls = lastGMSummary?.conversations.find(c => c.cascadeId === activeTrajectory.cascadeId)?.calls || [];
-        turnDiagnostics = analyzeTurnDiagnostics(rawGmEntries.length > 0 ? rawGmEntries : activeGmConvCalls);
-
-        // 5. Custom-model isolation & Quota Runway estimates
-        isCustomModelActive = isCustomModel(effectiveModel, modelDisplayName);
-        quotaRunways = quotaRunwayTracker.estimateAll(nowMs, {
-            modelId: effectiveModel,
-            modelLabel: modelDisplayName,
-            isCustomModel: isCustomModelActive,
-        });
 
         monitorStatus = currentUsage
             ? { state: 'active' }
@@ -2870,6 +3150,8 @@ export function createSidecarRuntimeProvider(
             lockedMainId: lastResolution.lockedMainId,
             pinnedFallback: lastResolution.pinnedFallback,
             ignoredSubagentBurst: lastResolution.ignoredSubagentBurst,
+            hostPending: Boolean(lastResolution.hostPending),
+            hostNewConv: hostNewConversationPending,
             usage: currentUsage
                 ? `${currentUsage.cascadeId}:${currentUsage.contextUsed}:${currentUsage.stepCount}:${currentUsage.model}:${currentUsage.modelDisplayName}:${currentUsage.status}:${currentUsage.lastModifiedTime}:${currentUsage.totalOutputTokens}:${currentUsage.totalToolCallOutputTokens}:${currentUsage.contextLimit}:${currentUsage.isEstimated ? 1 : 0}:${currentUsage.compressionDetected ? 1 : 0}:${currentUsage.imageGenStepCount}`
                 : '',
@@ -3068,27 +3350,54 @@ export function createSidecarRuntimeProvider(
                 consecutiveFailures = 0;
                 allTrajectories = trajectories;
 
+                // Track brand-new trajectories appearing after the initial baseline scan
+                const nextNewlyCreated = new Set<string>();
+                if (hasCompletedInitialTrajectoryScan) {
+                    for (const tr of trajectories) {
+                        if (tr.cascadeId && !seenTrajectoryIds.has(tr.cascadeId)) {
+                            nextNewlyCreated.add(tr.cascadeId);
+                        }
+                    }
+                }
+                latestNewlyCreatedIds = nextNewlyCreated;
+                reconcileHostFocusBeforeResolution(trajectories, nowMs);
+                for (const tr of trajectories) {
+                    if (tr.cascadeId) {
+                        seenTrajectoryIds.add(tr.cascadeId);
+                    }
+                }
+                hasCompletedInitialTrajectoryScan = true;
+
                 if (trajectories.length === 0) {
-                    currentUsage = null;
-                    contextBreakdown = null;
-                    turnDiagnostics = null;
-                    isCustomModelActive = false;
-                    quotaRunways = quotaRunwayTracker.estimateAll(nowMs);
-                    recomputeConversationResolution();
-                    monitorStatus = { state: 'empty' };
+                    const emptyResolved = recomputeConversationResolution();
+                    clearActiveConversationTelemetry(emptyResolved.hostPending ? emptyResolved.cascadeId : null, nowMs);
+                    if (!emptyResolved.hostPending) {
+                        monitorStatus = { state: 'empty' };
+                    }
                     return;
                 }
 
-                // 3. Resolve target conversation (pin -> lock-to-main -> hostConversationId -> workspace/latest)
+                // 3. Resolve target conversation (pin -> lock-to-main -> hostConversationId -> new main -> workspace/latest)
                 const resolved = recomputeConversationResolution();
                 const activeTrajectory = findResolvedTrajectory(resolved);
-                if (!activeTrajectory) {
-                    monitorStatus = { state: 'empty' };
+                if (resolved.hostPending || !activeTrajectory) {
+                    clearActiveConversationTelemetry(resolved.hostPending ? resolved.cascadeId : null, nowMs);
+                    if (!resolved.hostPending) {
+                        monitorStatus = { state: 'empty' };
+                    }
                     return;
                 }
 
                 // 4. Fetch active conversation context usage, breakdown, turn diagnostics, runways
-                await refreshActiveConversationTelemetry(lsInfo, activeTrajectory, nowMs);
+                const isSwitchingConversation = Boolean(currentUsage && currentUsage.cascadeId !== activeTrajectory.cascadeId);
+                try {
+                    await refreshActiveConversationTelemetry(lsInfo, activeTrajectory, nowMs);
+                } catch (err) {
+                    if (isSwitchingConversation) {
+                        clearActiveConversationTelemetry(activeTrajectory.cascadeId, nowMs);
+                    }
+                    throw err;
+                }
 
                 // 5. Record usage snapshot in MonitorStore
                 if (currentUsage) {
@@ -3287,7 +3596,16 @@ export function createSidecarRuntimeProvider(
         const nowMs = deps.now();
         const uiGmSummary = getActiveUiGmSummary();
         const uiGmFullSummary = deps.fetchGM ? uiGmSummary : (gmTracker.getUiFullSummary() || uiGmSummary);
-        const costs = computeLiveCostSnapshot(uiGmSummary, currentUsage?.cascadeId ?? lastResolution.cascadeId ?? undefined);
+        const isPendingOrEmptyNewChat = Boolean(
+            lastResolution.hostPending
+            || hostNewConversationPending
+            || (currentUsage && currentUsage.stepCount === 0 && !currentUsage.lastModelUsage),
+        );
+        const costs = computeLiveCostSnapshot(
+            uiGmSummary,
+            currentUsage?.cascadeId ?? lastResolution.cascadeId ?? undefined,
+            isPendingOrEmptyNewChat,
+        );
         const staleState = getCombinedStaleState(nowMs);
         const activeEmail = selectedAccountKey || cachedUserInfo?.email || currentAccountEmail || '';
         const customPricing = pricingStore.getCustom();
@@ -3553,6 +3871,7 @@ export function createSidecarRuntimeProvider(
                     selectionReason: lastResolution.reason,
                     ignoredSubagentBurst: lastResolution.ignoredSubagentBurst,
                     pinnedFallback: lastResolution.pinnedFallback,
+                    hostPending: Boolean(lastResolution.hostPending),
                     pollCount,
                     lastPollAtMs,
                     effectivePollIntervalMs,
@@ -3582,11 +3901,26 @@ export function createSidecarRuntimeProvider(
         reqWorkspaces?: string[],
         reqPinnedId?: string,
         reqLockMain?: boolean,
+        reqOpts?: {
+            viewMode?: SidecarViewMode;
+            conversationCleared?: boolean;
+            isNewConversation?: boolean;
+        },
     ): boolean {
         let selectionChanged = false;
-        if (reqConvId && reqConvId.trim() && reqConvId.trim() !== hostConversationId) {
-            hostConversationId = reqConvId.trim();
-            selectionChanged = true;
+        const source: 'aux' | 'query' = reqOpts?.viewMode === 'aux' ? 'aux' : 'query';
+        if (reqOpts?.isNewConversation === true && (!reqConvId || !reqConvId.trim())) {
+            if (setHostConversationFocus(null, source, { isNewConversation: true })) {
+                selectionChanged = true;
+            }
+        } else if (reqConvId && reqConvId.trim()) {
+            if (setHostConversationFocus(reqConvId.trim(), source)) {
+                selectionChanged = true;
+            }
+        } else if (reqOpts?.conversationCleared === true && reqOpts?.viewMode === 'aux') {
+            if (setHostConversationFocus(null, 'aux', { conversationCleared: true })) {
+                selectionChanged = true;
+            }
         }
         if (Array.isArray(reqWorkspaces) && reqWorkspaces.length > 0) {
             const cleanWs = reqWorkspaces.filter(u => typeof u === 'string' && u.trim().length > 0);
@@ -3599,6 +3933,7 @@ export function createSidecarRuntimeProvider(
         }
         if (typeof reqPinnedId === 'string' && reqPinnedId.trim() && reqPinnedId.trim() !== pinnedConversationId) {
             pinnedConversationId = reqPinnedId.trim();
+            hostNewConversationPending = false;
             selectionChanged = true;
         }
         if (typeof reqLockMain === 'boolean' && reqLockMain && !lockToMainAgent) {
@@ -3982,7 +4317,7 @@ export function createSidecarRuntimeProvider(
     async function renderHtml(ctx: SidecarRenderContext): Promise<string> {
         markClientActivity();
         syncFromDurableStateIfChanged();
-        if (applyContextFromRequest(ctx.conversationId, ctx.workspaceUris)) {
+        if (applyContextFromRequest(ctx.conversationId, ctx.workspaceUris, undefined, undefined, { viewMode: ctx.viewMode })) {
             bumpStateRevision();
         }
         if (pollCount === 0 && options.autoStart !== false) {
@@ -3994,8 +4329,11 @@ export function createSidecarRuntimeProvider(
             setLanguageInMemory(langOverride);
         }
         try {
-            if (allTrajectories.length > 0) {
-                recomputeConversationResolution();
+            if (allTrajectories.length > 0 || hostConversationId || hostNewConversationPending) {
+                const resolved = recomputeConversationResolution();
+                if (resolved.hostPending) {
+                    clearActiveConversationTelemetry(resolved.cascadeId, deps.now());
+                }
             }
             const params = buildDocumentParams(ctx.viewMode, langOverride);
             return renderDocumentHtml(params);
@@ -4007,7 +4345,12 @@ export function createSidecarRuntimeProvider(
     }
 
     async function getSnapshot(
-        query: SidecarSnapshotQuery & { lang?: Language; includeHtml?: boolean },
+        query: SidecarSnapshotQuery & {
+            lang?: Language;
+            includeHtml?: boolean;
+            conversationCleared?: boolean;
+            isNewConversation?: boolean;
+        },
     ): Promise<SidecarSnapshotPayload> {
         syncFromDurableStateIfChanged();
         const selectionChanged = applyContextFromRequest(
@@ -4015,6 +4358,11 @@ export function createSidecarRuntimeProvider(
             query.workspaceUris,
             query.pinnedConversationId,
             query.lockToMainAgent,
+            {
+                viewMode: query.viewMode,
+                conversationCleared: query.conversationCleared,
+                isNewConversation: query.isNewConversation,
+            },
         );
         if (selectionChanged) {
             bumpStateRevision();
@@ -4022,15 +4370,20 @@ export function createSidecarRuntimeProvider(
         if (query.userActive === true || selectionChanged) {
             markClientActivity();
         }
-        if (selectionChanged && allTrajectories.length > 0) {
+        if (selectionChanged && (allTrajectories.length > 0 || hostConversationId || hostNewConversationPending)) {
             const resolved = recomputeConversationResolution();
             const targetTrajectory = findResolvedTrajectory(resolved);
-            if (targetTrajectory && cachedLsInfo && targetTrajectory.cascadeId !== currentUsage?.cascadeId) {
+            if (resolved.hostPending || !targetTrajectory) {
+                clearActiveConversationTelemetry(resolved.hostPending ? resolved.cascadeId : null, deps.now());
+            } else if (cachedLsInfo && targetTrajectory.cascadeId !== currentUsage?.cascadeId) {
                 try {
                     await refreshActiveConversationTelemetry(cachedLsInfo, targetTrajectory, deps.now());
-                } catch { /* keep cached */ }
+                } catch {
+                    clearActiveConversationTelemetry(targetTrajectory.cascadeId, deps.now());
+                }
             }
             bumpStateRevision();
+            pushOverlayPayloadAsync();
         }
         const viewMode: SidecarViewMode = query.viewMode || 'aux';
         const langOverride = query.lang && isLanguage(query.lang) ? query.lang : undefined;
@@ -4049,7 +4402,13 @@ export function createSidecarRuntimeProvider(
             ? action.viewMode
             : 'aux';
         if (typeof action.conversationId === 'string' && action.command !== 'selectConversation' && action.command !== 'pinConversation') {
-            if (applyContextFromRequest(action.conversationId, Array.isArray(action.workspaceUris) ? action.workspaceUris as string[] : undefined)) {
+            if (applyContextFromRequest(
+                action.conversationId,
+                Array.isArray(action.workspaceUris) ? action.workspaceUris as string[] : undefined,
+                undefined,
+                undefined,
+                { viewMode },
+            )) {
                 bumpStateRevision();
             }
         }
@@ -4115,17 +4474,26 @@ export function createSidecarRuntimeProvider(
                     pinnedConversationId = null;
                 } else if (typeof rawTarget === 'string' && rawTarget.trim()) {
                     pinnedConversationId = rawTarget.trim();
+                    hostNewConversationPending = false;
                 } else {
                     return { ok: false, statusCode: 400, error: 'Invalid conversationId' };
                 }
                 const resolved = recomputeConversationResolution();
                 const targetTrajectory = findResolvedTrajectory(resolved);
-                if (targetTrajectory && cachedLsInfo) {
+                if (resolved.hostPending || !targetTrajectory) {
+                    clearActiveConversationTelemetry(resolved.hostPending ? resolved.cascadeId : null, deps.now());
+                } else if (cachedLsInfo) {
+                    const isSwitch = Boolean(currentUsage && currentUsage.cascadeId !== targetTrajectory.cascadeId);
                     try {
                         await refreshActiveConversationTelemetry(cachedLsInfo, targetTrajectory, deps.now());
-                    } catch { /* keep last good state */ }
+                    } catch {
+                        if (isSwitch) {
+                            clearActiveConversationTelemetry(targetTrajectory.cascadeId, deps.now());
+                        }
+                    }
                 }
                 lastUpdatedTime = formatClockTime(new Date(deps.now()), getLanguage());
+                pushOverlayPayloadAsync();
                 return {
                     ok: true,
                     result: {
@@ -4151,12 +4519,17 @@ export function createSidecarRuntimeProvider(
                 await persistAppSettingsToDisk();
                 const resolved = recomputeConversationResolution();
                 const targetTrajectory = findResolvedTrajectory(resolved);
-                if (targetTrajectory && cachedLsInfo && targetTrajectory.cascadeId !== currentUsage?.cascadeId) {
+                if (resolved.hostPending || !targetTrajectory) {
+                    clearActiveConversationTelemetry(resolved.hostPending ? resolved.cascadeId : null, deps.now());
+                } else if (cachedLsInfo && targetTrajectory.cascadeId !== currentUsage?.cascadeId) {
                     try {
                         await refreshActiveConversationTelemetry(cachedLsInfo, targetTrajectory, deps.now());
-                    } catch { /* keep last good state */ }
+                    } catch {
+                        clearActiveConversationTelemetry(targetTrajectory.cascadeId, deps.now());
+                    }
                 }
                 lastUpdatedTime = formatClockTime(new Date(deps.now()), getLanguage());
+                pushOverlayPayloadAsync();
                 return {
                     ok: true,
                     result: {
