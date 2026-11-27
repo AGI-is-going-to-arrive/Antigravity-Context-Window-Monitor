@@ -706,13 +706,13 @@ describe('overview telemetry strip and helper', () => {
                 expect(html).toContain('首字延迟');
                 expect(html).toContain('缓存命中');
                 expect(html).toContain('缓存节省');
-                expect(html).toContain('已命中');
+                expect(html).toContain('热缓存（已命中）');
             } else {
                 expect(html).toContain(tBiHtml('Speed', '生成速度'));
                 expect(html).toContain(tBiHtml('TTFT', '首字延迟'));
                 expect(html).toContain(tBiHtml('Cache Hit', '缓存命中'));
                 expect(html).toContain(tBiHtml('Cache Saved', '缓存节省'));
-                expect(html).toContain(tBiHtml('Warm', '已命中'));
+                expect(html).toContain(tBiHtml('Warm', '热缓存（已命中）'));
             }
         }
 

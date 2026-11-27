@@ -583,7 +583,7 @@ describe('Settings & About tabs UX: error pills fixed, plain CDP/Dock copy, no M
 
     it.each(['en', 'zh', 'both'] as Language[])('fixes About error pill, reconciles CLI note, unifies Sidecar ZH & softens jargon in %s', (lang) => {
         setLanguageInMemory(lang);
-        const html = buildAboutTabContent('1.17.10', {
+        const html = buildAboutTabContent('1.17.11', {
             surface: 'app-sidecar',
             updateStatus: { status: 'error', error: 'TLS certificate expired' },
         });
@@ -682,7 +682,7 @@ describe('tooltip-budget & i18n-core backward compatibility and unification', ()
             buildProfileContent(makeUserInfo(), configs, 15, SAMPLE_QUOTA_SUMMARY),
             buildCalendarTabContent(store, 2026, 11, { selectedDate: '2026-11-20', now: new Date(2026, 10, 20, 12, 0), language: 'both' }),
             buildSettingsContent(configs, undefined, undefined, { surface: 'app-sidecar', updateStatus: { status: 'error', error: 'Timeout' } }),
-            buildAboutTabContent('1.17.10', { surface: 'app-sidecar', updateStatus: { status: 'error', error: 'Timeout' } }),
+            buildAboutTabContent('1.17.11', { surface: 'app-sidecar', updateStatus: { status: 'error', error: 'Timeout' } }),
         ].join('\n');
 
         assertFrozenPopoverContract(combined, 'all-5-tabs-combined');

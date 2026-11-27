@@ -12,7 +12,7 @@
 
 import type { CdpOverlayPayload, CdpOverlayToggles } from './sidecar-types';
 
-export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.10';
+export const CDP_OVERLAY_SCRIPT_VERSION = '1.17.11';
 export const CDP_COMPOSER_HOST_ID = 'acm-cdp-composer-host';
 export const CDP_TOPBAR_HOST_ID = 'acm-cdp-topbar-host';
 export const CDP_RUNTIME_GLOBAL_KEY = '__ACM_CDP_OVERLAY_V1__';

@@ -437,9 +437,9 @@ function getTopBarControls(doc: ReturnType<typeof createTopBarDomHarness>['doc']
     };
 }
 
-describe('Top-Right Persistent Status Bar 4-View Popover (v1.17.10)', () => {
-    it('bumps CDP_OVERLAY_SCRIPT_VERSION to 1.17.10 and passes strict ZERO-innerHTML / syntax security audit', () => {
-        expect(CDP_OVERLAY_SCRIPT_VERSION).toBe('1.17.10');
+describe('Top-Right Persistent Status Bar 4-View Popover (v1.17.11)', () => {
+    it('bumps CDP_OVERLAY_SCRIPT_VERSION to 1.17.11 and passes strict ZERO-innerHTML / syntax security audit', () => {
+        expect(CDP_OVERLAY_SCRIPT_VERSION).toBe('1.17.11');
 
         const xssPayload = makeRichPayload({
             modelName: '<img src=x onerror=alert(1)>',
