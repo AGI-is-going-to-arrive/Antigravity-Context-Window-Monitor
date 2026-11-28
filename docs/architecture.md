@@ -1,6 +1,8 @@
-# Architecture & Multi-Agent Telemetry Design (v1.18.0)
+# Architecture & Multi-Agent Telemetry Design (v1.18.1)
 
-This guide summarizes the v1.18.0 dual-host architecture shared across **Antigravity App** (native Sidecar plugin), **Antigravity IDE** (VS Code VSIX extension), and opt-in **`agy` CLI** (`statusLine`).
+[简体中文](zh/architecture.md)
+
+This guide summarizes the dual-host architecture shared across **Antigravity App** (native Sidecar plugin), **Antigravity IDE** (VS Code VSIX extension), and opt-in **`agy` CLI** (`statusLine`).
 
 ## 1. Pure Shared Core (`src/core/*`)
 
@@ -26,6 +28,8 @@ Every telemetry cycle publishes one deeply-frozen `PublishedMonitorObservation` 
 - **Context & dual caps:** `measuredModel` (distinct from Swarm manifest `assignedModel`), `tokenSource`, `usedTokens`, `compactionLimit` + `compactionLimitProvenance`, `nativeLimit` + `nativeLimitProvenance`, `requestedBasis`, `actualBasis`, `primaryPct`, `primaryPctRaw` (un-clamped overflow text), `geometryFillPct` (clamped `0–100%`), `healthStatus`, `compactionWarningLevel`, and active-axis `markers` (`200k`, `Compaction`).
 - **Speed & cost sample identity:** `speedMode` (`decode` | `e2e`), `speedSampleScope`, `speedCallId`, `displaySpeedTps`, `sessionCostUsd`.
 - **Edge states:** Confirmed 0-step fresh conversations emit `isZeroStepFresh: true` (`0%`, no speed/cost); missing or partial measurements emit `isIncomplete: true` (`—`). Every surface rendering the same `(subjectCascadeId, dataRevision)` projects from this single observation, guaranteeing identical numbers, denominators, rounding, and severity.
+
+When a completed full checkpoint follows the last planner measurement, App and IDE publish a post-compaction estimate from the retained summary and available context evidence. They show an unavailable reading when that evidence cannot establish an estimate. The next measured planner call restores the measured state. On idle sessions both hosts check the selected trajectory revision and periodically re-read its telemetry. Manual refresh also requests fresh data. Worker timestamps come from the call itself or from a matching planner step in a bounded read. [Telemetry and pricing](telemetry-and-pricing.md)
 
 ## 3. Per-Window 3-Field Lock State Machine (`src/conversation-selector.ts`)
 
@@ -59,7 +63,7 @@ Shared preferences (`AppSettings` synced via `state-v1.json`) are strictly separ
   1. **IDE VSIX (`dist/antigravity-context-monitor-<v>.vsix`):** Allowlisted `.vscodeignore` shipping `dist-stage/ide/extension.js`, `package.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, and `256×256` `assets/icon.png`.
   2. **App Sidecar (`dist/antigravity-context-monitor-app-<v>.{zip,tar.gz}`):** Allowlisted plugin manifest, SVG logo, `SKILL.md`, `bin/agy-statusline.mjs`, `sidecar-bundle.js` + compatibility entry shims, and `main.mjs` enforcing positive `ACM_REAL_PROVIDER === true` verification (explicit error on failure, never silently serving an empty fallback).
   3. **Single-source CLI tools:** `scripts/install-app-plugin.mjs` and `app-plugin/bin/agy-statusline.mjs` bundled to pure Node ESM.
-  4. **Canonical `dist/SHA256SUMS.txt`:** Run `npm run package` followed by `node scripts/package-app-plugin.mjs` for the three release files. Use `--app-only` for a local plugin build. The release manifest requires a VSIX from the same output directory. From 1.18.0 onward, packaging and `npm run test:dist` enforce a VSIX below 1 MiB unpacked and 400 KiB compressed, and an App ZIP below 0.55 MiB.
+  4. **Canonical `dist/SHA256SUMS.txt`:** Run `npm run package` followed by `node scripts/package-app-plugin.mjs` for the three release files. Use `--app-only` for a local plugin build. The release manifest requires a VSIX from the same output directory. From 1.18.0 onward, packaging and `npm run test:dist` enforce release ceilings of 1,625,292 bytes unpacked and 573,440 bytes compressed for the VSIX, and 576,716 bytes for the App ZIP.
 
 ## 6. Security, Privacy & Persistence Boundaries
 

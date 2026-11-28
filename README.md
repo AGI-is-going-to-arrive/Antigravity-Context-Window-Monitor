@@ -1,17 +1,19 @@
 # Antigravity Context Window Monitor
 
-Real-time, strictly read-only context window, prompt cache, generation speed, Swarm/subagent, multi-currency API-equivalent cost, and dual-window (`5h` + `7d`) model quota telemetry for **Antigravity App** (Desktop 2.0+ Native Sidecar), **Antigravity IDE** (VSIX Extension), and opt-in **`agy` CLI** (`statusLine`).
+See how much context a conversation has left in Antigravity App and IDE. Inspect individual model calls, follow swarm members, compare cache usage and reference costs, and check when your 5-hour and weekly quotas reset. You can also show context usage in the `agy` CLI status line.
 
-[中文文档](readme_CN.md) · [AI Agent Install (`AGENTS.md`)](AGENTS.md) · [v1.18.0 Release Notes](docs/releases/1.18.0.md) · [Architecture](docs/architecture.md) · [Telemetry & Pricing](docs/telemetry-and-pricing.md) · [Opt-In CDP Overlays](docs/cdp-overlays.md) · [Changelog](CHANGELOG.md)
+[中文文档](readme_CN.md) · [Install](#3-step-install--upgrade) · [AI agent instructions](AGENTS.md) · [Interface gallery](#interface-gallery) · [v1.18.1 release notes](docs/releases/1.18.1.md) · [Changelog](CHANGELOG.md)
 
-![Overview with session context, 5-hour and weekly quotas, speed, cache and cost](docs/images/en/hero-overview.webp)
+**[Watch the English walkthrough (MP4)](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/download/v1.18.1/acm-promo-07-sticker-en.mp4)**
+
+[![Context Monitor walkthrough in English](docs/images/en/hero-overview.webp)](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/download/v1.18.1/acm-promo-07-sticker-en.mp4)
 
 ## Capability Matrix
 
 | Capability | Antigravity App (Sidecar) | Antigravity IDE (VSIX) | `agy` CLI (`statusLine`) |
 | --- | :---: | :---: | :---: |
 | **Integration Surface** | `AUX_PANE` (`/`) + `SIDEBAR` (`/full`) + `SKILL.md` | Status Bar + Hover + Webview Panel | Opt-in read-only stdin pipe (`agy-statusline.mjs`) |
-| **6-Tab Monitor UI + Topbar `ⓘ`** | Full (zero-scroll `320px–1440px` + onboarding) | Full (4 themes, nonce IPC, safe hotkeys) | Single-line ANSI/plain summary |
+| **6-Tab Monitor UI + Topbar `ⓘ`** | Six tabs in the side pane and full dashboard | Full (4 themes, nonce IPC, safe hotkeys) | Single-line ANSI/plain summary |
 | **Unified Observation & 3-Field Root Lock** | Yes (App + Native HUD + CDP parity) | Yes (Panel + Status Bar parity) | Shares context & currency contract |
 | **Swarm / Subagent Live Tracking** | Yes (20+ members, Inspect / Back to Main) | Yes (read-only topology + group cost) | Active subagent count (`sub:N`) |
 | **Native HUD / Opt-In CDP Overlays** | Native HUD (`on`) + Opt-In CDP (`off`) | Native HUD (`off`) + Status Bar | Terminal status line (`NO_COLOR` safe) |
@@ -53,34 +55,63 @@ Reload the IDE window (`Developer: Reload Window`). Open the panel anytime with 
 - **Persistent CDP Overlays (App, default `OFF`):** Core Sidecar and Native HUD work without CDP. First-open Overview displays a dismissible **Overlays & CDP Quick Setup** banner, and **Settings → Overlays & CDP** provides 1-click **Create Persistent Launcher** (or run `node scripts/install-app-plugin.mjs --setup-cdp-launcher`). See [docs/cdp-overlays.md](docs/cdp-overlays.md).
 - **Opt-In `agy` CLI `statusLine`:** Point `~/.gemini/antigravity-cli/settings.json` at `~/.gemini/config/plugins/antigravity-context-monitor/bin/agy-statusline.mjs`. See [docs/telemetry-and-pricing.md](docs/telemetry-and-pricing.md).
 
-## Highlights in v1.18.0
+## Highlights in v1.18.1
 
-- **Inspect a swarm member.** In Overview or Sessions, expand **Member details** to see the member’s last reported state and available measurements. Choose **Open member overview** to read that member directly. **Back to Main** returns to the root. The App and IDE also show members missing from the host’s public session list when a local swarm manifest identifies them.
-- **Read the group estimate.** Usage & Cost shows how many members have call records. Each recorded call counts once toward its group. A worker with no recorded calls has no estimate. The current group’s session history and the ledger for the selected period have separate labels.
-- **Find model limits and quota.** Expand **Model Info** under Models & Quotas, then a model name to see its limits and reference rates. Open multiple models to compare them. **Lower remaining quota** selects between the 5-hour and weekly windows. The reading names the selected window, for example **Weekly quota remaining 71%**.
-- **Find updates and credit settings.** **Version & Updates** is first in Settings. About links directly there. **Set credits expiry day** in Overview opens Models & Quotas and focuses the monthly expiry field for the current account.
+- **Follow a conversation through `/compact`.** The App and IDE show a post-compaction estimate when enough data is available. A fresh model measurement replaces it. The panel also rechecks idle sessions for call records that arrive late.
+- **Refresh the member you are inspecting.** Refresh reads the selected session again. In the IDE, refreshing on the same backend keeps the inspected swarm member selected.
+- **Reconcile reference costs.** Overview and Usage & Cost use the ledger date and available per-model and per-call records to price settled usage. This matters when a rate changes or you edit custom pricing.
 
-The release also adds root-session locking, Decode/E2E speed readings, weekly quota forecasts, CAD display, handoff and recovery reports, and Markdown/CSV/JSON exports.
+## Interface gallery
 
-Global Rules editing in both hosts adapts the implementation contributed by @gitstq. @GHTGXL reported large-session crashes and locked-directory updates on Windows. [PR #78](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/78) · [Issue #79](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/79)
+[Open the overview screenshot at full size](docs/images/en/hero-overview.webp).
 
-## Interface Gallery (v1.18.0)
+### Overview · swarm members
 
-| Member details and recorded group cost | Version & Updates, Overlays & CDP, and Global Rules |
-| :---: | :---: |
-| ![Member details and recorded group cost](docs/images/en/overview-swarm.webp) | ![Version & Updates, Overlays & CDP, and Global Rules](docs/images/en/settings-global-rules.webp) |
+Expand a member to see its model, context usage and share of the recorded group cost.
 
-| Output speed, first-token latency and recent calls | Workspace usage and members with recorded calls |
-| :---: | :---: |
-| ![Output speed, first-token latency and recent calls](docs/images/en/model-calls.webp) | ![Workspace usage and members with recorded calls](docs/images/en/usage-cost.webp) |
+[![Overview · swarm members](docs/images/en/overview-swarm.webp)](docs/images/en/overview-swarm.webp)
 
-| Weekly quota forecast and expandable model specifications | Optional CDP overlays for context and quota |
-| :---: | :---: |
-| ![Weekly quota forecast and expandable model specifications](docs/images/en/models-quotas.webp) | ![Optional CDP overlays for context and quota](docs/images/en/cdp-overlays.webp) |
+### Model Calls
 
-| IDE light theme with the About tooltip open | Member details in narrow and wide Sessions views |
-| :---: | :---: |
-| ![IDE light theme with the About tooltip open](docs/images/en/ide-light.webp) | ![Member details in narrow and wide Sessions views](docs/images/en/aux-pane-sessions.webp) |
+Compare generation speed, time to first token and cache hits, then inspect the latest call.
+
+[![Model Calls](docs/images/en/model-calls.webp)](docs/images/en/model-calls.webp)
+
+### Sessions
+
+Open a session and expand a member to inspect its latest measurements.
+
+[![Sessions](docs/images/en/aux-pane-sessions.webp)](docs/images/en/aux-pane-sessions.webp)
+
+### Usage & Cost
+
+Review usage by workspace and see which swarm members have recorded calls.
+
+[![Usage & Cost](docs/images/en/usage-cost.webp)](docs/images/en/usage-cost.webp)
+
+### Models & Quotas
+
+Compare weekly quota forecasts and expand a model to see its limits.
+
+[![Models & Quotas](docs/images/en/models-quotas.webp)](docs/images/en/models-quotas.webp)
+
+### Settings
+
+Check for an update, configure overlays or open the Global Rules editor.
+
+[![Settings](docs/images/en/settings-global-rules.webp)](docs/images/en/settings-global-rules.webp)
+
+### Antigravity IDE
+
+Open the monitor from the IDE status bar to inspect the current session alongside your editor.
+
+[![Antigravity IDE](docs/images/en/ide-light.webp)](docs/images/en/ide-light.webp)
+
+### App overlays
+
+Open the context ring or the quota indicator for details while you work in the conversation.
+
+[![App overlays](docs/images/en/cdp-overlays.webp)](docs/images/en/cdp-overlays.webp)
 
 ## Thresholds & Quick Troubleshooting
 
@@ -91,19 +122,24 @@ Global Rules editing in both hosts adapts the implementation contributed by @git
 | **Model Quota Pools** | Healthy `>=50%` · Caution `20%–49%` · Critical `<20%` (alert threshold default `20%`) | Switch `5h` / `7d` / **Lower remaining quota** and `remaining` / `used`; weekly forecast requires `>=2` active hours across `>=2` days |
 | **`reloadRequired` After Upgrade** | On-disk plugin version/buildId differs from running Sidecar | Open `customization://antigravity-context-monitor` and toggle **Off → On** (never force-quit Antigravity) |
 | **`CDP Inactive` / `host_missing_flag`** | Opt-in CDP overlays enabled without `--remote-debugging-port` | Use **Create Persistent Launcher** in **Settings → Overlays & CDP**, quit cleanly (`Cmd+Q` + ~5s wait on macOS), relaunch, click **Recheck CDP** |
-| **Huge Session / `Unattributed`** | `>50 MB` / `>1,200`-step conversations or pre-v1.18 rows without workspace tags | Bounded suffix binary-search recovers latest context safely without OOM; legacy rows stay honestly under **Unattributed** |
+| **Huge Session / `Unattributed`** | `>50 MB` / `>1,200`-step conversations or pre-v1.18 rows without workspace tags | The monitor reads a bounded tail of oversized histories. **Unattributed** groups older calls that have no workspace tag. |
 
 ## Architecture & Technical Compliance Boundaries
 
 | Boundary | Technical Fact |
 | --- | --- |
 | **Host Binaries & `app.asar`** | Zero modification, unpacking, patching, or code-signing of `app.asar`, `Info.plist`, `language_server`, or `agy` |
-| **Telemetry & Global Rules Access** | Strictly read-only loopback RPC to local `language_server`, read-only CLI logs, and allowlisted `members.json`/`swarm.json` metadata (never reads `board.jsonl`, `transcript.jsonl`, or prompts); explicit user-triggered Global Rules editing is strictly scoped to exact non-symlink `~/.gemini/GEMINI.md` (`<=200 KiB`) |
+| **Telemetry & Global Rules Access** | The monitor processes local language-server RPC data, which can include prompt metadata, text snippets and checkpoint summaries. It reads CLI logs for usage and the swarm manifests `members.json` and `swarm.json` for membership. The Global Rules editor saves user edits only to `~/.gemini/GEMINI.md`, rejects symbolic links and enforces a 200 KiB limit. |
 | **Credentials & Network** | Never extracts CloudCode/Google OAuth tokens, switches accounts, sends synthetic wake-up requests, or uploads telemetry; only optional outbound traffic is ETag-throttled HTTPS `443` GitHub Releases checks |
 | **Opt-In CDP Overlays** | Default `OFF`; mounts read-only Trusted-Types-safe Shadow DOM widgets only when explicitly launched with CDP; per-target Origin-bound credentials revoked on navigation/detach |
 | **Runtime Dependencies & License** | Zero external runtime npm dependencies (pure Node.js built-ins + bundled `esbuild` artifacts); independent clean-room **MIT** codebase |
 
-## Deep Guides & License
+## Guides and license
 
-- [Architecture & D9 Swarm Design](docs/architecture.md) · [Telemetry, Pricing & `agy-statusline`](docs/telemetry-and-pricing.md) · [Opt-In CDP Overlays & Launchers](docs/cdp-overlays.md) · [Full Changelog](CHANGELOG.md) · [Design System](DESIGN.md) · [Product Spec](PRODUCT.md)
-- Maintained by **AGI-is-going-to-arrive** under the [MIT License](LICENSE). Community acknowledgments are listed in [v1.18.0 Release Notes](docs/releases/1.18.0.md#acknowledgments) and the **About** view.
+Maintained by **AGI-is-going-to-arrive**. [Architecture](docs/architecture.md) · [Telemetry, pricing and CLI status line](docs/telemetry-and-pricing.md) · [CDP overlays](docs/cdp-overlays.md) · [Design system](DESIGN.md) · [Product specification](PRODUCT.md) · [MIT License](LICENSE)
+
+## Acknowledgments
+
+Thank you to @gitstq for the Global Rules editor and to @GHTGXL for documenting the Windows crashes and update failures in large sessions. [PR #78](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/pull/78) · [Issue #79](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues/79)
+
+Thank you to the [LINUX DO community](https://linux.do/).

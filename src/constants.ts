@@ -62,3 +62,6 @@ export const MAX_DISCOVERY_BACKOFF_MS = 15_000;
 /** Number of poll cycles to persist the compression indicator. */
 export const COMPRESSION_PERSIST_POLLS = 3;
 
+
+/** Maximum supported trajectory length and wire step index. */
+export const MAX_TRAJECTORY_STEPS = 200_000;

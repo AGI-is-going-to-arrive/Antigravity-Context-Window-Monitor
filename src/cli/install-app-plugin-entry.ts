@@ -383,7 +383,7 @@ export interface ParsedInstallerArgs {
 export function normalizeVersionArg(raw: unknown): string {
     const cleaned = String(raw || '').trim().replace(/^v/i, '');
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(cleaned)) {
-        throw new Error(`Invalid --version value "${raw}". Expected semver like 1.18.0 or v1.18.0.`);
+        throw new Error(`Invalid --version value "${raw}". Expected semver like ${FALLBACK_APP_VERSION} or v${FALLBACK_APP_VERSION}.`);
     }
     return cleaned;
 }
@@ -3499,7 +3499,7 @@ Modes:
   --remove-cdp-launcher   Remove the zero-patch persistent CDP launcher
 
 Options:
-  --version <v>           Target GitHub release version (e.g. 1.18.0 or v1.18.0)
+  --version <v>           Target GitHub release version (e.g. ${FALLBACK_APP_VERSION} or v${FALLBACK_APP_VERSION})
   --local-dir <dir>       Explicit local plugin directory containing plugin.json (never falls back to GitHub)
   --source <dir>          Alias for --local-dir
   --no-remote-fallback    Refuse silent fallback to GitHub Releases when local source is missing

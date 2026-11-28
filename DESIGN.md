@@ -643,7 +643,7 @@ Because `src/webview-panel.ts` injects base `getStyles()`, per-tab styles, and f
 
 ---
 
-### Tab-by-Tab Structural Polish Contract (v1.18.0 5 Primary Tabs + Topbar `⚙️`/`ⓘ`)
+### Dashboard layout in v1.18.1
 
 The six primary tabs are Overview, Model Calls, Sessions, Usage & Cost, Models & Quotas, and Settings. About opens from the top bar. All **18 historical tab IDs and deep-link aliases** (`overview`, `gm`, `gmdata`, `gm-data`, `activity`, `sessions`, `chats`, `chat-history`, `usage`, `cost`, `pricing`, `calendar`, `models`, `profile`, `account`, `accounts`, `settings`, `about`) resolve cleanly to their canonical tab and anchor slot (`#slot-gm`, `#slot-activity`, `#slot-sessions`, `#slot-calendar`, `#slot-pricing`, `#slot-models`, `#slot-profile`).
 
@@ -691,7 +691,7 @@ The six primary tabs are Overview, Model Calls, Sessions, Usage & Cost, Models &
 ## Dual-Surface Architecture & v1.18.0 Telemetry Extensions
 
 ### Shared Pure Core (`src/core/*`), Independent Browser Bundles & App Sidecar (`src/app/`)
-- **Single HTML & observation truth:** `src/webview-document.ts` renders the 5-tab + topbar `⚙️`/`ⓘ` Studio Telemetry Ledger with zero `vscode` imports, fed by `PublishedMonitorObservation` (`src/core/context-display.ts`) and 10-currency formatting (`src/core/currency.ts`). Client scripts are built independently via `src/client/*` + `tsconfig.client.json` + `esbuild` with 16-hex `buildId` content hashes, strict `preload → bridge → client` ordering, and zero `Function.prototype.toString()` stitching.
+- **Single HTML & observation truth:** `src/webview-document.ts` renders the six dashboard tabs and topbar About view with zero `vscode` imports, fed by `PublishedMonitorObservation` (`src/core/context-display.ts`) and 10-currency formatting (`src/core/currency.ts`). Client scripts are built independently via `src/client/*` + `tsconfig.client.json` + `esbuild` with 16-hex `buildId` content hashes, strict `preload → bridge → client` ordering, and zero `Function.prototype.toString()` stitching.
 - **Authenticated App Sidecar (`SEC-01/02/04`):** Serves `AUX_PANE` (`/`), `SIDEBAR` (`/full`), `/api/health`, bodyless `304` `/api/snapshot` (SDK `200 { unchanged: true }`), `/api/action`, one-time private `/api/auth/pair` (inert unpaired Standalone shell), and per-target Origin-bound `POST /api/overlay/action`. Full-chain privacy redaction strips sensitive identity/path fields prior to serialization; OS Reveal authorizes only registered host workspace roots.
 - **Host Theme Adapter (`src/app/theme-adapter.ts`):** Bridges Antigravity App CSS variables onto `--vscode-*` / `--ed-*` tokens across `dark`, `light`, `hc`, and `hc-light` while overriding `/preload.js` inline fallbacks.
 

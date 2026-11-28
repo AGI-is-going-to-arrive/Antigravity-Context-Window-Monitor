@@ -374,6 +374,73 @@ describe('[gm-tracker-restore-fetch]', () => {
             expect(rpcCallMock).not.toHaveBeenCalled();
         });
 
+        it('rechecks changed idle revisions, delayed active metadata and explicit refreshes without polling idle history', async () => {
+            vi.useFakeTimers();
+            try {
+                const tracker = new GMTracker();
+                const ls = { pid: 1, port: 1, csrfToken: 'fixture', useTls: false };
+                const root = { cascadeId: 'root', title: 'Root', stepCount: 8, status: 'CASCADE_RUN_STATUS_IDLE',
+                    lastModifiedTime: 'before', trajectoryId: 'original' };
+                const history = { ...root, cascadeId: 'old' };
+                let revision = 0;
+                rpcCallMock.mockImplementation(async (_ls, endpoint, req) => {
+                    if (endpoint !== 'GetCascadeTrajectoryGeneratorMetadata') { return { trajectory: { steps: [] } }; }
+                    return { generatorMetadata: [{ executionId: String(revision), stepIndices: [3],
+                        chatModel: { model: 'MODEL_PLACEHOLDER_M419', usage: { inputTokens: 12 },
+                            chatStartMetadata: { createdAt: '2026-11-01T00:00:00Z' } } }] };
+                });
+                const poll = () => tracker.fetchAll(ls, [root, history], root.cascadeId);
+                await poll();
+                rpcCallMock.mockClear();
+                await poll();
+                expect(rpcCallMock).not.toHaveBeenCalled();
+                for (const mutate of [
+                    () => { root.lastModifiedTime = 'after'; },
+                    () => { root.trajectoryId = 'replacement'; },
+                    () => { vi.advanceTimersByTime(61_000); },
+                    () => { tracker.clearErrorBackoff(root.cascadeId); },
+                ]) {
+                    mutate();
+                    revision++;
+                    await poll();
+                    const gmRequests = rpcCallMock.mock.calls.filter(([, endpoint]) => endpoint === 'GetCascadeTrajectoryGeneratorMetadata');
+                    expect(gmRequests.map(([, , req]) => req.cascadeId)).toEqual(['root']);
+                    expect(tracker.getAllConversationData().find(c => c.cascadeId === 'root')?.calls[0].executionId).toBe(String(revision));
+                    rpcCallMock.mockClear();
+                }
+                tracker.clearErrorBackoff(root.cascadeId);
+                rpcCallMock.mockResolvedValueOnce({ code: 13, error: 'incomplete' });
+                await poll();
+                expect(tracker.getAllConversationData().find(c => c.cascadeId === 'root')?.calls[0].executionId).toBe(String(revision));
+            } finally { vi.useRealTimers(); }
+        });
+
+        it('dates recent manifest worker calls from matching planner steps on the bounded tail', async () => {
+            const tracker = new GMTracker();
+            const ls = { pid: 1, port: 1, csrfToken: 'fixture', useTls: false };
+            const worker = { cascadeId: 'worker', title: 'Worker', stepCount: 240, status: 'CASCADE_RUN_STATUS_IDLE', manifestMember: true };
+            const time = '2026-11-28T11:25:51.000Z';
+            const gm = vi.fn().mockResolvedValue([200, 235, 239].map(idx => ({
+                executionId: String(idx), stepIndices: [idx],
+                chatModel: { model: 'MODEL_PLACEHOLDER_M419', usage: { inputTokens: 12 } },
+            })));
+            rpcCallMock.mockImplementation(async (_ls, endpoint, req) => {
+                if (endpoint !== 'GetCascadeTrajectorySteps') { throw new Error('unexpected full trajectory read'); }
+                const start = Number(req.stepOffset);
+                return { steps: Array.from({ length: 240 - start }, (_, offset) => {
+                    const idx = offset + start;
+                    return { type: idx === 200 ? 'CORTEX_STEP_TYPE_CHECKPOINT' : 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+                        metadata: { createdAt: time, executionId: idx === 235 ? 'different' : String(idx) } };
+                }) };
+            });
+            await tracker.fetchAll(ls, [worker], undefined, undefined, gm);
+            expect(tracker.getAllConversationData()[0].calls.map(c => c.createdAt)).toEqual(['', '', time]);
+            expect(rpcCallMock).toHaveBeenCalledTimes(1);
+            expect(rpcCallMock.mock.calls[0][2]).toMatchObject({ stepOffset: 200, endIndex: 240 });
+            await tracker.fetchAll(ls, [worker], undefined, undefined, gm);
+            expect(rpcCallMock).toHaveBeenCalledTimes(1);
+        });
+
         it('baselines a failed startup conversation after recovery and counts new sessions normally', async () => {
             const inventory = (id: string) => ({ cascadeId: id, title: id, stepCount: 2, status: 'CASCADE_RUN_STATUS_RUNNING' });
             const ls = { pid: 1, port: 1, csrfToken: 'fixture', useTls: false };

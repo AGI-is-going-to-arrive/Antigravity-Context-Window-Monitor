@@ -1,8 +1,6 @@
 # Cross-platform PowerShell installer wrapper for Antigravity Context Monitor App Plugin (Windows).
-param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$InstallerArgs
-)
+# Preserve option/value pairs (including --local-dir paths) for the Node CLI.
+$InstallerArgs = $args
 
 $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -43,11 +41,13 @@ function Test-NodeRuntimeCompatible {
         if ($RunAsNode) {
             $env:ELECTRON_RUN_AS_NODE = '1'
         }
-        $rawVer = (& $CandidatePath -v 2>$null | Select-Object -First 1)
-        if ($LASTEXITCODE -ne 0 -or -not $rawVer) {
+        # Let the native process exit before checking its result. An early
+        # pipeline stop can leave LASTEXITCODE unset or from a previous tool.
+        $versionLines = @(& $CandidatePath -v 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $versionLines.Count -eq 0) {
             return $false
         }
-        if ($rawVer.ToString().Trim() -match '^v?(\d+)\.') {
+        if ($versionLines[0].ToString().Trim() -match '^v?(\d+)\.') {
             return ([int]$Matches[1] -ge $MinNodeMajor)
         }
         return $false

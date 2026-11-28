@@ -56,6 +56,7 @@ export interface PanelPayload {
     modelDNA?: Record<string, PersistedModelDNA>;
     accountSnapshots?: AccountSnapshot[];
     /** DailyLedger: today's active (unsettled) account buckets */
+    ledgerDateKey?: string;
     todayLedgerActive?: LedgerAccountBucket[];
     /** DailyLedger: settled entries from quota resets */
     ledgerSettled?: LedgerSettledEntry[];

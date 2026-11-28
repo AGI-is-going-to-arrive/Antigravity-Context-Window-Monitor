@@ -118,6 +118,7 @@ import { PricingStore, calculateLedgerModelCosts, costFromTokens, findPricingFor
 import { DailyStore, type DailyStoreState } from './daily-store';
 import { MonitorStore } from './monitor-store';
 import {
+    calculateSettledEntryCosts,
     flushLateDaysToDailyStoreAsync,
     performDailyArchivalAsync,
     type DailyArchivalContext,
@@ -539,6 +540,8 @@ const userStatusStaleGuard = new StaleCacheGuard<FullUserStatus>();
 const trajectoriesStaleGuard = new StaleCacheGuard<TrajectorySummary[]>();
 let lastContextBreakdown: ContextBreakdownSnapshot | null = null;
 let lastContextBreakdownKey = '';
+let lastActiveUsageReadAt = 0;
+const ACTIVE_TELEMETRY_RECHECK_MS = 60_000;
 let lastTurnDiagnostics: TurnDiagnosticsSummary | null = null;
 const branchStepPeaks = new Map<string, BranchStepPeakState>();
 const previousBreakdownUsedTokens = new Map<string, number>();
@@ -682,6 +685,7 @@ export function buildIdePublishedObservation(
     options?: {
         summary?: GMSummary | null;
         gmEnhanced?: boolean;
+        breakdown?: Pick<ContextBreakdownSnapshot, 'measurementState' | 'usedTokens'> | null;
         bumpRevision?: boolean;
         nowMs?: number;
     },
@@ -732,18 +736,23 @@ export function buildIdePublishedObservation(
         ? mapCatalogProvenanceToObservation(limits.nativeLimitProvenance)
         : 'unavailable';
 
+    const breakdown = options?.breakdown ?? (usage === currentUsage ? lastContextBreakdown : null);
+    const pendingCompaction = breakdown?.measurementState === 'estimated_post_compaction';
+    const hasBreakdownTokens = !!breakdown && breakdown.usedTokens > 0;
+    const usedTokens = (hasBreakdownTokens || pendingCompaction) ? breakdown.usedTokens : usage.contextUsed;
     const isZeroStepFresh = usage.stepCount === 0
         && usage.contextUsed === 0
         && !usage.lastModelUsage
         && !usage.hasGaps;
     const isSuffixRecovered = Boolean((usage as { suffixRecovered?: boolean } | null | undefined)?.suffixRecovered);
     const hasValidCurrentMeasurement = Boolean(
-        (isSuffixRecovered && usage.lastModelUsage && usage.contextUsed > 0)
+        (isSuffixRecovered && (usage.lastModelUsage || usage.postCompactionPending) && usedTokens > 0)
         || (options?.gmEnhanced && usage.contextUsed > 0),
     );
     const isIncomplete = Boolean(
-        (usage.hasGaps && !hasValidCurrentMeasurement)
-        || (!isZeroStepFresh && usage.contextUsed <= 0 && !usage.lastModelUsage),
+        (pendingCompaction && usedTokens <= 0)
+        || (usage.hasGaps && !hasValidCurrentMeasurement)
+        || (!isZeroStepFresh && usedTokens <= 0 && !usage.lastModelUsage),
     );
 
     let tokenSource: ContextTokenSource;
@@ -751,6 +760,8 @@ export function buildIdePublishedObservation(
         tokenSource = 'zero_step_fresh';
     } else if (isIncomplete) {
         tokenSource = 'unavailable';
+    } else if (hasBreakdownTokens) {
+        tokenSource = breakdown.measurementState === 'measured' ? 'gm_usage' : 'breakdown_buckets';
     } else if (usage.lastModelUsage) {
         tokenSource = 'tracker_usage';
     } else if (options?.gmEnhanced) {
@@ -836,7 +847,7 @@ export function buildIdePublishedObservation(
         dataRevision,
         measuredModel,
         tokenSource,
-        usedTokens: isIncomplete ? null : usage.contextUsed,
+        usedTokens: isIncomplete ? null : usedTokens,
         compactionLimit,
         compactionLimitProvenance: compactionProv,
         nativeLimit,
@@ -2625,7 +2636,7 @@ const compressionPersistCounters = new Map<string, number>();
 
 export function hasSameUsageInputs(
     cached: ContextUsage | null | undefined,
-    trajectory: Pick<TrajectorySummary, 'cascadeId' | 'stepCount' | 'lastModifiedTime' | 'status'>,
+    trajectory: Pick<TrajectorySummary, 'cascadeId' | 'stepCount' | 'lastModifiedTime' | 'status' | 'branchName'> & { trajectoryId?: string },
 ): cached is ContextUsage {
     return !!cached
         && !cached.hasGaps
@@ -2635,6 +2646,8 @@ export function hasSameUsageInputs(
         && trajectory.status !== CascadeStatus.RUNNING
         && cached.status === trajectory.status
         && cached.cascadeId === trajectory.cascadeId
+        && (cached.trajectoryId || '') === (trajectory.trajectoryId || '')
+        && cached.branchName === trajectory.branchName
         && cached.stepCount === trajectory.stepCount
         && cached.lastModifiedTime === trajectory.lastModifiedTime;
 }
@@ -2764,7 +2777,7 @@ function buildGMConversationSignature(summary: GMSummary): string {
             const latestCall = conversation.calls[conversation.calls.length - 1];
             const totalConvCredits = conversation.calls.reduce((sum, call) => sum + call.credits, 0);
             const callIds = conversation.calls
-                .map(call => call.executionId || `${call.model}:${call.createdAt}:${call.stepIndices.join(',')}`)
+                .map(call => `${call.executionId || `${call.model}:${call.stepIndices.join(',')}`}:${call.createdAt || ''}`)
                 .join(',');
             const checkpointSig = (conversation.checkpointSummaries || [])
                 .map(cp => `${cp.checkpointNumber}:${cp.stepIndex}:${cp.tokens}:${hashText(cp.fullText || '')}`)
@@ -2951,7 +2964,7 @@ function computeLiveCostSnapshot(
             }
         }
         for (const entry of dailyLedger.getSettledEntries()) {
-            todayCostUsd += entry.totalEstimatedCost || 0;
+            todayCostUsd += calculateSettledEntryCosts(entry, dailyLedger.dateKey, custom, orchMode).totalCost;
             if (!todayHasUnpriced && entry.totalCalls > 0 && entry.modelCalls) {
                 for (const [modelKey, calls] of Object.entries(entry.modelCalls)) {
                     if (calls > 0 && !findPricingForDate(modelKey, custom, entry.settledAt, undefined, orchMode)) {
@@ -3031,6 +3044,7 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         storageDiagnostics: getStorageDiagnostics(),
         modelDNA: persistedModelDNA,
         accountSnapshots: getAccountSnapshotArray(),
+        ledgerDateKey: dailyLedger.dateKey,
         todayLedgerActive: dailyLedger.getTodayActive(),
         customPricing: pricingStore.getCustom(),
         ledgerSettled: dailyLedger.getSettledEntries(),
@@ -3687,6 +3701,9 @@ async function performDailyArchival(force = false, activeLs?: LSInfo | null): Pr
                                 title: t.summary || t.cascadeId.substring(0, 8),
                                 stepCount: t.stepCount,
                                 status: t.status,
+                                lastModifiedTime: t.lastModifiedTime,
+                                trajectoryId: t.trajectoryId,
+                                killed: t.killed,
                                 manifestMember: t.manifestMember,
                             })),
                             currentUsage?.cascadeId,
@@ -4072,8 +4089,11 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
             log('Manual refresh triggered');
             statusBar.refreshFromConfig();
-            cachedLsInfo = null;
-            invalidateLiveModelMetadata();
+            // Revalidate the live connection. An unchanged backend retains its inspected member.
+            lsRevalidationCounter = LS_REVALIDATION_INTERVAL;
+            statusPollCount = STATUS_REFRESH_INTERVAL;
+            hasSyncedCheckpointer = false;
+            checkpointerSyncAttempts = 0;
             consecutiveFailures = 0;
             currentIntervalMs = baseIntervalMs;
             restartPolling();
@@ -4471,7 +4491,7 @@ function getLatestGMContextUsed(summary: GMSummary, cascadeId: string): number {
 
 /** Fill missing provider usage with the GM pre-request context estimate. */
 export function applyGMContextToUsage(usage: ContextUsage, gmContextUsed: number): boolean {
-    if (usage.lastModelUsage || !Number.isSafeInteger(gmContextUsed)
+    if (usage.postCompactionPending || usage.lastModelUsage || !Number.isSafeInteger(gmContextUsed)
         || gmContextUsed <= 0 || gmContextUsed === usage.contextUsed) { return false; }
     usage.contextUsed = gmContextUsed;
     // The source field is estimatedTokensUsed, not a measured provider token count.
@@ -4988,12 +5008,15 @@ async function runContextPoll(isManualRefresh: boolean): Promise<void> {
 
         // 5. Get context usage for selected trajectory
         const persistedUsage = monitorStore.getSnapshot(activeTrajectory.cascadeId);
-        if (hasSameUsageInputs(currentUsage, activeTrajectory)) {
+        const activeReadAge = Date.now() - lastActiveUsageReadAt;
+        const recheckActive = isManualRefresh || !lastContextBreakdownKey || activeReadAge < 0 || activeReadAge >= ACTIVE_TELEMETRY_RECHECK_MS;
+        if (!recheckActive && hasSameUsageInputs(currentUsage, activeTrajectory)) {
             currentUsage = await refreshWorkflowImageUsage(lsInfo, rehydrateUsageForDisplay(currentUsage), abortController.signal);
-        } else if (hasSameUsageInputs(persistedUsage, activeTrajectory)) {
+        } else if (!recheckActive && hasSameUsageInputs(persistedUsage, activeTrajectory)) {
             currentUsage = await refreshWorkflowImageUsage(lsInfo, rehydrateUsageForDisplay(persistedUsage), abortController.signal);
         } else {
             currentUsage = await getContextUsage(lsInfo, activeTrajectory, undefined, abortController.signal);
+            lastActiveUsageReadAt = Date.now();
         }
         const linkedForActive = currentUsage.imageWorkflow?.linkedCascadeIds || [];
         if (linkedForActive.length > 0) {
@@ -5025,9 +5048,12 @@ async function runContextPoll(isManualRefresh: boolean): Promise<void> {
         const previousObservation = previousContextObservations.get(currentUsage.cascadeId);
         const prevUsed = previousObservation?.contextUsed;
         const prevSteps = previousStepCounts.get(activeTrajectory.cascadeId);
-        const isUndo = prevSteps !== undefined && activeTrajectory.stepCount < prevSteps;
+        const activeBranchRevision = JSON.stringify([activeTrajectory.trajectoryId, activeTrajectory.branchName]);
+        const previousBranchRevision = branchStepPeaks.get(activeTrajectory.cascadeId)?.lastBranchRevision;
+        const branchChanged = Boolean(previousBranchRevision && previousBranchRevision !== activeBranchRevision);
+        const isUndo = !branchChanged && prevSteps !== undefined && activeTrajectory.stepCount < prevSteps;
 
-        if (isUndo || currentUsage.compressionDetected) {
+        if (branchChanged || isUndo || currentUsage.compressionDetected) {
             cascadeCompactionBoundaries.set(currentUsage.cascadeId, {
                 stepIndex: activeTrajectory.stepCount, timestampMs: activeTrajectory.lastModifiedTime || Date.now(),
             });
@@ -5039,7 +5065,7 @@ async function runContextPoll(isManualRefresh: boolean): Promise<void> {
             gmEnhancedPre = applyGMContextToUsage(currentUsage, getLatestGMContextUsed(lastGMSummary, trackedCascadeId));
         }
 
-        if (!currentUsage.compressionDetected) {
+        if (!branchChanged && !currentUsage.compressionDetected) {
             const drop = measuredContextDrop(previousObservation, currentUsage, isUndo);
             if (drop > 0) {
                 currentUsage.compressionDetected = true;
@@ -5103,6 +5129,100 @@ async function runContextPoll(isManualRefresh: boolean): Promise<void> {
             nowMs: Date.now(),
             lang: getLanguage(),
         });
+
+        // The status bar also needs the post-compaction boundary when the panel is closed.
+        const branchRevision = `${activeTrajectory.trajectoryId}:${activeTrajectory.stepCount}:${activeTrajectory.lastModifiedTime}:${activeTrajectory.status}:${activeTrajectory.branchName || ''}`;
+        const activeCalls = lastGMSummary?.conversations.find(c => c.cascadeId === activeTrajectory.cascadeId)?.calls;
+        const latestCall = activeCalls && activeCalls[activeCalls.length - 1];
+        const breakdownKey = `${backendEpoch}:${activeTrajectory.cascadeId}:${branchRevision}:${currentUsage.contextUsed}:${currentUsage.contextLimit}:${activeCalls?.length ?? 0}:${latestCall?.createdAt ?? ''}`;
+        if (recheckActive || breakdownKey !== lastContextBreakdownKey) {
+            if (breakdownKey !== lastContextBreakdownKey) {
+                // A failed read for this revision must not publish the prior revision's counts.
+                clearActiveContextTelemetry();
+            }
+            try {
+                const authority = getLsAuthority(lsInfo);
+                const metaRes: FetchTrajectoryGeneratorMetadataResult = activeTrajectory.manifestMember
+                    ? await fetchMemberMetadata(lsInfo, activeTrajectory.cascadeId)
+                    : await pollCache.getOrFetch(
+                    {
+                        backendEpoch,
+                        authority,
+                        method: 'GetCascadeTrajectoryGeneratorMetadata',
+                        cascadeId: activeTrajectory.cascadeId,
+                        range: 'all',
+                        branchRevision,
+                    },
+                    (upstreamSignal) => fetchTrajectoryGeneratorMetadataResult(lsInfo!, activeTrajectory!.cascadeId, upstreamSignal),
+                    abortController.signal,
+                    { shouldCache: (r) => r.ok },
+                );
+                const embeddedSteps = currentUsage._fetchedSteps;
+                let stepsRes: FetchTrajectoryStepsResult = { ok: true, steps: [], hasGaps: false };
+                let rawSteps: Array<Record<string, unknown>> | undefined;
+                if (Array.isArray(embeddedSteps) && embeddedSteps.length > 0) {
+                    stepsRes = {
+                        ok: !currentUsage.hasGaps,
+                        steps: embeddedSteps,
+                        hasGaps: Boolean(currentUsage.hasGaps),
+                        ...(currentUsage.suffixRecovered ? { suffixRecovered: true, suffixStartOffset: currentUsage.suffixStartOffset } : {}),
+                    };
+                    rawSteps = embeddedSteps;
+                } else if (metaRes.ok && activeTrajectory.stepCount > 0) {
+                    stepsRes = await pollCache.getOrFetch(
+                        {
+                            backendEpoch,
+                            authority,
+                            method: 'GetCascadeTrajectorySteps',
+                            cascadeId: activeTrajectory.cascadeId,
+                            range: `0:${activeTrajectory.stepCount}`,
+                            branchRevision,
+                        },
+                        (upstreamSignal) => fetchTrajectorySteps(lsInfo!, activeTrajectory!.cascadeId, activeTrajectory!.stepCount, upstreamSignal),
+                        abortController.signal,
+                        { shouldCache: (r) => r.ok && !r.hasGaps },
+                    );
+                    rawSteps = stepsRes.steps;
+                }
+                const stepsSuffixRecovered = Boolean(
+                    stepsRes.steps.length > 0
+                    && (stepsRes.suffixRecovered || stepsRes.suffixStartOffset !== undefined),
+                );
+                const stepsComplete = stepsRes.ok && !stepsRes.hasGaps;
+                const stepsUsable = stepsComplete || stepsSuffixRecovered;
+                if (metaRes.ok && stepsUsable) {
+                    const peak = advanceBranchStepPeak(branchStepPeaks.get(activeTrajectory.cascadeId), {
+                        stepCount: activeTrajectory.stepCount,
+                        branchRevision: activeBranchRevision,
+                    });
+                    const prevUsedTokens = previousBreakdownUsedTokens.get(activeTrajectory.cascadeId);
+                    lastContextBreakdown = parseContextBreakdown({
+                        generatorMetadata: metaRes.metadata,
+                        steps: rawSteps,
+                        ...(stepsRes.suffixStartOffset !== undefined ? { suffixStartOffset: stepsRes.suffixStartOffset } : {}),
+                        currentStepCount: activeTrajectory.stepCount,
+                        branchPeakStepCount: peak.effectiveBranchPeakStepCount,
+                        previousUsedTokens: prevUsedTokens,
+                        model: currentUsage.model,
+                        modelDisplayName: currentUsage.modelDisplayName,
+                        effectiveBudgetTokens: currentUsage.contextLimit,
+                    });
+                    lastTurnDiagnostics = metaRes.metadata.length > 0 ? analyzeTurnDiagnostics(metaRes.metadata) : null;
+                    // Only latch caches and peak tracking when history is complete (never cache partial suffix steps as complete).
+                    if (stepsComplete && !currentUsage.hasGaps) {
+                        branchStepPeaks.set(activeTrajectory.cascadeId, peak.state);
+                        if (lastContextBreakdown.usedTokens > 0) {
+                            previousBreakdownUsedTokens.set(activeTrajectory.cascadeId, lastContextBreakdown.usedTokens);
+                        }
+                        lastContextBreakdownKey = breakdownKey;
+                    }
+                } else {
+                    log(`Skipped latching context breakdown cache for ${diagnosticAliasMap.aliasConversation(activeTrajectory.cascadeId)} (metaOk=${metaRes.ok}, stepsOk=${stepsRes.ok}, stepsHasGaps=${stepsRes.hasGaps})`);
+                }
+            } catch (bdErr) {
+                log(`Context breakdown fetch error: ${bdErr instanceof Error ? bdErr.name : 'Error'}`);
+            }
+        }
 
         syncStatusBarTelemetry(false, currentUsage.cascadeId);
         const initialObservation = buildIdePublishedObservation(currentUsage, {
@@ -5200,7 +5320,10 @@ async function runContextPoll(isManualRefresh: boolean): Promise<void> {
                         generatorModel: t.generatorModel,
                     })),
                     abortController.signal,
-                ));
+                )).catch(() => {
+                    log('Activity refresh failed; continuing with model calls');
+                    return false;
+                });
 
                 // Fetch GM data (piggyback on same poll cycle)
                 let gmChanged = false;
@@ -5208,11 +5331,13 @@ async function runContextPoll(isManualRefresh: boolean): Promise<void> {
                 try {
                     const prevSummary = lastGMSummary;
                     if (isManualRefresh) {
-                        gmTracker.clearErrorBackoff();
+                        gmTracker.clearErrorBackoff(activeTrajectory.cascadeId);
                     }
                     const gmSummary = await gmTracker.fetchAll(
                         lsInfo,
-                        telemetryOrder.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status, manifestMember: t.manifestMember })),
+                        telemetryOrder.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status,
+                            lastModifiedTime: t.lastModifiedTime, trajectoryId: t.trajectoryId,
+                            manifestMember: t.manifestMember, killed: t.killed })),
                         currentUsage?.cascadeId,
                         abortController.signal,
                         async id => requireGeneratorMetadata(await fetchMemberMetadata(lsInfo!, id)),
@@ -5333,105 +5458,6 @@ async function runContextPoll(isManualRefresh: boolean): Promise<void> {
                 }
             } catch (err) {
                 log(`Activity processing error: ${err instanceof Error ? err.name : 'Error'}`);
-            }
-        }
-
-        // 6d. Compute Context Composition Breakdown & Turn Diagnostics for active conversation.
-        // Deduplicated via PollRpcCache and strictly gated on `metaRes.ok && stepsRes.ok && !stepsRes.hasGaps`
-        // before latching caches or updating peak/turn state.
-        if (!activeTrajectory || !currentUsage) {
-            clearActiveContextTelemetry();
-        } else if (lsInfo && isMonitorPanelVisible()) {
-            const branchRevision = `${activeTrajectory.stepCount}:${activeTrajectory.lastModifiedTime}:${activeTrajectory.status}:${activeTrajectory.branchName || ''}`;
-            const breakdownKey = `${backendEpoch}:${activeTrajectory.cascadeId}:${branchRevision}:${currentUsage.contextUsed}:${currentUsage.contextLimit}`;
-            if (breakdownKey !== lastContextBreakdownKey) {
-                try {
-                    const authority = getLsAuthority(lsInfo);
-                        const metaRes: FetchTrajectoryGeneratorMetadataResult = activeTrajectory.manifestMember
-                            ? await fetchMemberMetadata(lsInfo, activeTrajectory.cascadeId)
-                            : await pollCache.getOrFetch(
-                        {
-                            backendEpoch,
-                            authority,
-                            method: 'GetCascadeTrajectoryGeneratorMetadata',
-                            cascadeId: activeTrajectory.cascadeId,
-                            range: 'all',
-                            branchRevision,
-                        },
-                        (upstreamSignal) => fetchTrajectoryGeneratorMetadataResult(lsInfo!, activeTrajectory!.cascadeId, upstreamSignal),
-                        abortController.signal,
-                        { shouldCache: (r) => r.ok },
-                    );
-                    const latestGmWithChat = metaRes.ok
-                        ? [...metaRes.metadata].reverse().find(entry => Boolean(entry?.chatModel))
-                        : undefined;
-                    const latestCm = latestGmWithChat?.chatModel as { promptSections?: unknown[] } | undefined;
-                    const hasPromptSections = metaRes.ok && Array.isArray(latestCm?.promptSections) && latestCm.promptSections.length > 0;
-                    const embeddedSteps = currentUsage._fetchedSteps;
-                    let stepsRes: FetchTrajectoryStepsResult = { ok: true, steps: [], hasGaps: false };
-                    let rawSteps: Array<Record<string, unknown>> | undefined;
-                    if (Array.isArray(embeddedSteps) && embeddedSteps.length > 0) {
-                        stepsRes = {
-                            ok: !currentUsage.hasGaps,
-                            steps: embeddedSteps,
-                            hasGaps: Boolean(currentUsage.hasGaps),
-                            ...(currentUsage.suffixRecovered ? { suffixRecovered: true, suffixStartOffset: currentUsage.suffixStartOffset } : {}),
-                        };
-                        rawSteps = embeddedSteps;
-                    } else if (metaRes.ok && !hasPromptSections && activeTrajectory.stepCount > 0) {
-                        stepsRes = await pollCache.getOrFetch(
-                            {
-                                backendEpoch,
-                                authority,
-                                method: 'GetCascadeTrajectorySteps',
-                                cascadeId: activeTrajectory.cascadeId,
-                                range: `0:${activeTrajectory.stepCount}`,
-                                branchRevision,
-                            },
-                            (upstreamSignal) => fetchTrajectorySteps(lsInfo!, activeTrajectory!.cascadeId, activeTrajectory!.stepCount, upstreamSignal),
-                            abortController.signal,
-                            { shouldCache: (r) => r.ok && !r.hasGaps },
-                        );
-                        rawSteps = stepsRes.steps;
-                    }
-                    const stepsSuffixRecovered = Boolean(
-                        stepsRes.steps.length > 0
-                        && (stepsRes.suffixRecovered || stepsRes.suffixStartOffset !== undefined),
-                    );
-                    const stepsComplete = stepsRes.ok && !stepsRes.hasGaps;
-                    const stepsUsable = stepsComplete || stepsSuffixRecovered;
-                    if (metaRes.ok && stepsUsable) {
-                        const peak = advanceBranchStepPeak(branchStepPeaks.get(activeTrajectory.cascadeId), {
-                            stepCount: activeTrajectory.stepCount,
-                            branchRevision: activeTrajectory.branchName,
-                        });
-                        const prevUsedTokens = previousBreakdownUsedTokens.get(activeTrajectory.cascadeId);
-                        lastContextBreakdown = parseContextBreakdown({
-                            generatorMetadata: metaRes.metadata,
-                            steps: rawSteps,
-                            ...(stepsRes.suffixStartOffset !== undefined ? { suffixStartOffset: stepsRes.suffixStartOffset } : {}),
-                            currentStepCount: activeTrajectory.stepCount,
-                            branchPeakStepCount: peak.effectiveBranchPeakStepCount,
-                            previousUsedTokens: prevUsedTokens,
-                            model: currentUsage.model,
-                            modelDisplayName: currentUsage.modelDisplayName,
-                            effectiveBudgetTokens: currentUsage.contextLimit,
-                        });
-                        lastTurnDiagnostics = metaRes.metadata.length > 0 ? analyzeTurnDiagnostics(metaRes.metadata) : null;
-                        // Only latch caches and peak tracking when history is complete (never cache partial suffix steps as complete).
-                        if (stepsComplete && !currentUsage.hasGaps) {
-                            branchStepPeaks.set(activeTrajectory.cascadeId, peak.state);
-                            if (lastContextBreakdown.usedTokens > 0) {
-                                previousBreakdownUsedTokens.set(activeTrajectory.cascadeId, lastContextBreakdown.usedTokens);
-                            }
-                            lastContextBreakdownKey = breakdownKey;
-                        }
-                    } else {
-                        log(`Skipped latching context breakdown cache for ${diagnosticAliasMap.aliasConversation(activeTrajectory.cascadeId)} (metaOk=${metaRes.ok}, stepsOk=${stepsRes.ok}, stepsHasGaps=${stepsRes.hasGaps})`);
-                    }
-                } catch (bdErr) {
-                    log(`Context breakdown fetch error: ${bdErr instanceof Error ? bdErr.name : 'Error'}`);
-                }
             }
         }
 

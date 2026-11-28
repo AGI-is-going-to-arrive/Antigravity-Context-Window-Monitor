@@ -1,4 +1,6 @@
-# Opt-In Zero-Patch CDP Overlays & Persistent Launchers (`v1.18.0`)
+# Opt-In Zero-Patch CDP Overlays & Persistent Launchers (`v1.18.1`)
+
+[简体中文](zh/cdp-overlays.md)
 
 Core **Antigravity App** Sidecar views (`AUX_PANE` and `SIDEBAR`) and the **Native Panel Compact HUD** work natively with **zero CDP flags**. Desktop floating overlays (**Composer Context Ring** and **Top-Right 4-View Status Bar**) are strictly opt-in (both default `OFF`) and require **zero modification** of `app.asar`, `Info.plist`, `language_server`, or host binaries.
 
@@ -45,7 +47,7 @@ Then open **Settings → Overlays & CDP** and click **Recheck CDP**.
 - **Split-Pane Focus Preservation (`?focused=` / `%2B`):** Explicitly parses `?focused=` and encoded `%2B` split-pane parameters via a single unified `isInsideUnfocusedPane` helper, and guards overlay trigger `mousedown` with `e.preventDefault()` so clicking pills or rings never steals focus from the active chat composer.
 - **Zero Streaming Reflow Churn:** Narrows `MutationObserver` scope to skip streaming assistant message body mutations; uses `250ms` hover-intent before opening popovers and `350ms` sibling grace for instant cross-pill switching across the 4 TopBar views (`Quota`, `Context`, `Speed`, `Total`).
 - **Layout, Accessibility & Presets:** Top Layer popovers (`popover="manual"`) escape host stacking contexts; inline Windows WCO `computeWcoInsetPx(false) === 0` avoids blank gaps; adds `compact` / `normal` / `large` font-size presets (`cdpOverlayFontSize`), high-contrast palette toggle (`cdpOverlayHighContrast`), localized `aria-label` attributes, and honest `0%` / `—` rendering (never mislabeling unknown readings as `Healthy`).
-- **Full 18-Alias `openPanel` Routing:** Clicking **Open Panel** routes seamlessly across all 5 v1.18.0 primary tabs (`overview`, `gm`, `sessions`, `calendar`, `models`), topbar views (`settings`, `about`), and all historical aliases (`gmdata`, `gm-data`, `activity`, `chats`, `chat-history`, `usage`, `cost`, `pricing`, `profile`, `account`, `accounts`).
+- **Full 18-Alias `openPanel` Routing:** Clicking **Open Panel** routes seamlessly across the six main tabs (`overview`, `gm`, `sessions`, `calendar`, `models`, `settings`), the About utility (`about`), and all historical aliases (`gmdata`, `gm-data`, `activity`, `chats`, `chat-history`, `usage`, `cost`, `pricing`, `profile`, `account`, `accounts`).
 
 ## 4. Multi-Window Security & Dock Self-Heal (`src/app/cdp-injector.ts`)
 

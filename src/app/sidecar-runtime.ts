@@ -122,6 +122,7 @@ import {
 } from '../core/swarm-registry';
 import { resolveRuntimeVersion } from '../core/version';
 import {
+    calculateSettledEntryCosts,
     flushLateDaysToDailyStoreAsync,
     mergeArchivedAndLiveRecords,
     performDailyArchival as performDailyArchivalCore,
@@ -497,6 +498,7 @@ export interface SidecarDocumentParams extends MonitorDocumentV1175Extras {
     activitySummary: ActivitySummary | null;
     dailyLedger: DailyLedger | { active: LedgerAccountBucket[]; settled: LedgerSettledEntry[] };
     todayLedgerActive: LedgerAccountBucket[];
+    ledgerDateKey: string;
     ledgerSettled: LedgerSettledEntry[];
     dailyStore: DailyStore;
     dailyStoreSnapshot: DailyStoreState;
@@ -708,6 +710,7 @@ export interface SidecarRuntimeProvider extends SidecarProvider {
 
 const LARGE_STATE_FILE_WARN_BYTES = 1 * 1024 * 1024;
 const DEFAULT_IDLE_THRESHOLD_MS = 60_000;
+const ACTIVE_TELEMETRY_RECHECK_MS = 60_000;
 const DEFAULT_IDLE_POLL_INTERVAL_MS = 30_000;
 const STATUS_REFRESH_INTERVAL = 2;
 const LS_REVALIDATION_INTERVAL = 6;
@@ -895,9 +898,13 @@ function isSuffixRecoveredResult(val: unknown): boolean {
     return Boolean((val as { suffixRecovered?: boolean } | null | undefined)?.suffixRecovered);
 }
 
+function trajectoryRevision(tr: TrajectorySummary): string {
+    return JSON.stringify([tr.trajectoryId, tr.branchName, tr.stepCount, tr.lastModifiedTime, tr.status]);
+}
+
 function hasSameUsageInputs(
     cached: ContextUsage | null | undefined,
-    trajectory: Pick<TrajectorySummary, 'cascadeId' | 'stepCount' | 'lastModifiedTime' | 'status'>,
+    trajectory: Pick<TrajectorySummary, 'cascadeId' | 'trajectoryId' | 'branchName' | 'stepCount' | 'lastModifiedTime' | 'status'>,
 ): cached is ContextUsage {
     return !!cached
         && !cached.hasGaps
@@ -907,12 +914,14 @@ function hasSameUsageInputs(
         && trajectory.status !== CascadeStatus.RUNNING
         && cached.status === trajectory.status
         && cached.cascadeId === trajectory.cascadeId
+        && (cached.trajectoryId || '') === (trajectory.trajectoryId || '')
+        && cached.branchName === trajectory.branchName
         && cached.stepCount === trajectory.stepCount
         && cached.lastModifiedTime === trajectory.lastModifiedTime;
 }
 
 function applyGMContextToUsage(usage: ContextUsage, gmContextUsed: number): boolean {
-    if (usage.lastModelUsage || !Number.isSafeInteger(gmContextUsed)
+    if (usage.postCompactionPending || usage.lastModelUsage || !Number.isSafeInteger(gmContextUsed)
         || gmContextUsed <= 0 || gmContextUsed === usage.contextUsed) { return false; }
     usage.contextUsed = gmContextUsed;
     usage.isEstimated = true;
@@ -1690,6 +1699,7 @@ export function createSidecarRuntimeProvider(
     let latestNewlyCreatedIds = new Set<string>();
     let telemetryRefreshSeq = 0;
     let cachedRawTelemetryKey = '';
+    let rawTelemetryReadAt: number | null = null;
     let cachedRawGmEntries: RawGeneratorMetadataEntry[] = [];
     let cachedRawSteps: Array<Record<string, unknown>> = [];
 
@@ -1698,6 +1708,7 @@ export function createSidecarRuntimeProvider(
     let disposed = false;
     let isPolling = false;
     let activePollPromise: Promise<void> | null = null;
+    let activePollIsManual = false;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let pollGeneration = 0;
     let pollCount = 0;
@@ -2058,6 +2069,10 @@ export function createSidecarRuntimeProvider(
                                     allTrajectories.map(tr => ({
                                         cascadeId: tr.cascadeId,
                                         title: tr.summary || tr.cascadeId.slice(0, 8),
+                                        trajectoryId: tr.trajectoryId,
+                                        lastModifiedTime: tr.lastModifiedTime,
+                                        manifestMember: tr.manifestMember,
+                                        killed: tr.killed,
                                         stepCount: tr.stepCount,
                                         status: tr.status,
                                     })),
@@ -2285,7 +2300,7 @@ export function createSidecarRuntimeProvider(
     }
 
     function getActiveUiGmSummary(): GMSummary | null {
-        return deps.fetchGM ? lastGMSummary : (gmTracker.getUiSummary() || lastGMSummary);
+        return deps.fetchGM ? lastGMSummary : gmTracker.getUiSummary();
     }
 
     function evaluateActivePromptCacheTtl(
@@ -2397,12 +2412,15 @@ export function createSidecarRuntimeProvider(
             || Boolean(matchedUsage && !matchedUsage.hasGaps && matchedUsage.contextUsed === 0 && matchedUsage.stepCount === 0 && !matchedUsage.lastModelUsage && (!matchedBd || matchedBd.usedTokens === 0))
             || Boolean(!matchedUsage && subjTraj && subjTraj.stepCount === 0 && (!matchedBd || matchedBd.usedTokens === 0));
         const hasSuffixRecoveredMeasurement = Boolean(
-            isSuffixRecoveredResult(matchedUsage) && matchedUsage?.lastModelUsage && matchedUsage.contextUsed > 0,
+            isSuffixRecoveredResult(matchedUsage)
+            && (matchedUsage?.lastModelUsage || matchedUsage?.postCompactionPending)
+            && (matchedBd?.usedTokens || matchedUsage.contextUsed) > 0,
         );
         let usedTokens: number | null, tokenSource: ContextTokenSource, isIncomplete = false;
         if (isZeroStepFresh) { usedTokens = 0; tokenSource = 'zero_step_fresh'; }
         else if (matchedUsage?.hasGaps && !hasSuffixRecoveredMeasurement) { usedTokens = null; tokenSource = 'unavailable'; isIncomplete = true; }
         else if (matchedBd && matchedBd.usedTokens > 0) { usedTokens = matchedBd.usedTokens; tokenSource = matchedBd.measurementState === 'measured' ? 'gm_usage' : 'breakdown_buckets'; }
+        else if (matchedBd?.measurementState === 'estimated_post_compaction' && !matchedUsage?.postCompactionPending) { usedTokens = null; tokenSource = 'unavailable'; isIncomplete = true; }
         else if (matchedUsage && matchedUsage.contextUsed > 0) { usedTokens = matchedUsage.contextUsed; tokenSource = matchedUsage.isEstimated ? 'step_estimate' : 'tracker_usage'; }
         else { usedTokens = null; tokenSource = 'unavailable'; isIncomplete = true; }
 
@@ -2450,14 +2468,20 @@ export function createSidecarRuntimeProvider(
         return value;
     }
 
+    function getResolvedUsage(subjectId: string | null): ContextUsage | null {
+        if (!subjectId) { return null; }
+        if (currentUsage?.cascadeId === subjectId) { return currentUsage; }
+        // The active read failed or is still pending. Only inactive windows use stored snapshots.
+        return subjectId === lastResolution.cascadeId ? null : monitorStore.getSnapshot(subjectId);
+    }
+
     function buildCdpOverlayPayload(nowMs = deps.now(), windowId = activeWindowId, privacyMaskedOverride?: boolean): CdpOverlayPayload {
         const lang = getLanguage(), customPricing = pricingStore.getCustom(), orchMode = appSettings.orchestratorPricingMode;
         const overlayMasked = typeof privacyMaskedOverride === 'boolean' ? privacyMaskedOverride : isPrivacyMaskedForWindow(windowId);
         const active = windowId === activeWindowId;
         const resolution = active ? lastResolution : resolveWindowState(getOrCreateWindowSelectionState(windowId)).resolution;
         const subjectId = resolution.cascadeId;
-        const usage = subjectId && currentUsage?.cascadeId === subjectId ? currentUsage
-            : subjectId ? monitorStore.getSnapshot(subjectId) ?? null : null;
+        const usage = resolution.hostPending ? null : getResolvedUsage(subjectId);
         const uiGmSummary = getActiveUiGmSummary(), obs = publishCurrentObservation(nowMs, windowId, resolution, usage);
         const top = projectForCdpTopbar(obs), ring = projectForCdpComposerRing(obs);
         const activeId = obs.subjectCascadeId ?? undefined, fresh = obs.isZeroStepFresh;
@@ -3050,7 +3074,7 @@ export function createSidecarRuntimeProvider(
             }
         }
         for (const entry of dailyLedger.getSettledEntries()) {
-            todayCostUsd += entry.totalEstimatedCost || 0;
+            todayCostUsd += calculateSettledEntryCosts(entry, dailyLedger.dateKey, custom, orchMode).totalCost;
         }
 
         let sessionCostUsd = 0;
@@ -3299,6 +3323,7 @@ export function createSidecarRuntimeProvider(
         turnDiagnostics = null;
         turnDiagnosticsCascadeId = pendingCascadeId;
         cachedRawTelemetryKey = '';
+        rawTelemetryReadAt = null;
         cachedRawGmEntries = [];
         cachedRawSteps = [];
         isCustomModelActive = false;
@@ -3525,7 +3550,7 @@ export function createSidecarRuntimeProvider(
                     return { ok: false, requestsUsed: 0, pagesUsed: 0 };
                 }
                 try {
-                    const branchRev = `${tr.stepCount}:${tr.lastModifiedTime}:${tr.status}`;
+                    const branchRev = trajectoryRevision(tr);
                     const res = await fetchGmMetaCached(lsInfo, cascadeId, tr.manifestMember ? 'manifest-member' : branchRev, pollEpoch, pollRpcCache);
                     const bytesUsed = Buffer.byteLength(JSON.stringify(res.metadata || []));
                     if (res.ok !== false && !disposed && backendEpoch === pollEpoch) {
@@ -3563,6 +3588,7 @@ export function createSidecarRuntimeProvider(
         expectedEpoch = backendEpoch,
         expectedSelGen = selectionGeneration,
         pollRpcCache?: PollRpcCache,
+        force = false,
     ): Promise<void> {
         const mySeq = ++telemetryRefreshSeq;
         const isStale = (): boolean =>
@@ -3573,10 +3599,13 @@ export function createSidecarRuntimeProvider(
 
         // 1. ContextUsage (computed into local variable — never mutated mid-await!)
         const persistedUsage = monitorStore.getSnapshot(activeTrajectory.cascadeId);
+        // GM and checkpoint payloads can settle after the idle summary stops advancing.
+        const cacheAgeMs = rawTelemetryReadAt === null ? Infinity : nowMs - rawTelemetryReadAt;
+        const reuseUsage = !force && cacheAgeMs >= 0 && cacheAgeMs < ACTIVE_TELEMETRY_RECHECK_MS;
         let nextUsage: ContextUsage;
-        if (hasSameUsageInputs(currentUsage, activeTrajectory)) {
+        if (reuseUsage && hasSameUsageInputs(currentUsage, activeTrajectory)) {
             nextUsage = await deps.refreshWorkflowImageUsage(ls, currentUsage, abortController.signal);
-        } else if (hasSameUsageInputs(persistedUsage, activeTrajectory)) {
+        } else if (reuseUsage && hasSameUsageInputs(persistedUsage, activeTrajectory)) {
             nextUsage = await deps.refreshWorkflowImageUsage(ls, persistedUsage, abortController.signal);
         } else {
             nextUsage = await deps.getContextUsage(ls, activeTrajectory, undefined, abortController.signal);
@@ -3602,7 +3631,7 @@ export function createSidecarRuntimeProvider(
         }
         const previousPeak = branchStepPeaks.get(activeTrajectory.cascadeId);
         const peak = advanceBranchStepPeak(previousPeak, {
-            stepCount: activeTrajectory.stepCount, branchRevision: activeTrajectory.branchName,
+            stepCount: activeTrajectory.stepCount, branchRevision: JSON.stringify([activeTrajectory.trajectoryId, activeTrajectory.branchName]),
         });
         const minGmTimestamp = peak.peakReset || nextUsage.compressionDetected
             ? activeTrajectory.lastModifiedTime || nowMs
@@ -3616,8 +3645,9 @@ export function createSidecarRuntimeProvider(
         }
 
         // 2. Raw GeneratorMetadata + Raw Steps for Context Breakdown & Turn Diagnostics
-        const rawCacheKey = `${activeTrajectory.cascadeId}:${activeTrajectory.stepCount}:${activeTrajectory.lastModifiedTime}:${activeTrajectory.status}`;
-        const canReuseRawCache = activeTrajectory.status !== CascadeStatus.RUNNING
+        const branchRev = trajectoryRevision(activeTrajectory);
+        const rawCacheKey = `${expectedEpoch}:${activeTrajectory.cascadeId}:${branchRev}`;
+        const canReuseRawCache = reuseUsage && activeTrajectory.status !== CascadeStatus.RUNNING
             && cachedRawTelemetryKey === rawCacheKey;
 
         let rawGmEntries = canReuseRawCache ? cachedRawGmEntries : [];
@@ -3626,7 +3656,6 @@ export function createSidecarRuntimeProvider(
         let canLatchRawCache = canReuseRawCache;
         if (!canReuseRawCache) {
             const authority = getLsAuthority(ls);
-            const branchRev = `${activeTrajectory.stepCount}:${activeTrajectory.lastModifiedTime}:${activeTrajectory.status}`;
             const fetchGmMeta = () => fetchGmMetaCached(ls, activeTrajectory.cascadeId, activeTrajectory.manifestMember ? 'manifest-member' : branchRev, expectedEpoch, pollRpcCache);
             const embeddedSteps = nextUsage._fetchedSteps;
             const fetchSteps = () => {
@@ -3654,15 +3683,13 @@ export function createSidecarRuntimeProvider(
             if (isStale()) { return; }
             const gmOk = gmMetaRes.status === 'fulfilled' && gmMetaRes.value.ok !== false;
             rawGmEntries = gmMetaRes.status === 'fulfilled' ? gmMetaRes.value.metadata : [];
-            const latestGmWithChat = gmOk ? [...rawGmEntries].reverse().find((entry) => Boolean(entry?.chatModel)) : undefined;
-            const latestCm = latestGmWithChat?.chatModel as { promptSections?: unknown[] } | undefined;
-            const hasPromptSections = gmOk && Array.isArray(latestCm?.promptSections) && latestCm.promptSections.length > 0;
             let stepsOk = true;
             if (Array.isArray(embeddedSteps) && embeddedSteps.length > 0) {
                 rawSteps = embeddedSteps;
                 stepsOk = !nextUsage.hasGaps;
                 stepsSuffixStartOffset = isSuffixRecoveredResult(nextUsage) ? nextUsage.suffixStartOffset : undefined;
-            } else if (!hasPromptSections && activeTrajectory.stepCount > 0) {
+            } else if (activeTrajectory.stepCount > 0) {
+                // Persisted usage has no embedded steps. GM prompt sections can predate a later checkpoint.
                 const stepsRes = await fetchSteps().then(
                     (value) => ({ status: 'fulfilled' as const, value }),
                     (reason) => ({ status: 'rejected' as const, reason }),
@@ -3747,9 +3774,21 @@ export function createSidecarRuntimeProvider(
         // 6. Atomic commit — guarantees currentUsage, contextBreakdown, and turnDiagnostics
         //    never tear across conversations and stale out-of-order RPCs are discarded.
         if (isStale()) { return; }
+        if (nextBreakdown.measurementState === 'estimated_post_compaction') {
+            nextUsage = {
+                ...nextUsage,
+                contextUsed: nextBreakdown.usedTokens,
+                usagePercent: nextUsage.contextLimit > 0 ? nextBreakdown.usedTokens / nextUsage.contextLimit * 100 : 0,
+                isEstimated: true,
+                postCompactionPending: true,
+                lastModelUsage: null,
+                tokenUsageSource: 'estimated',
+            };
+        }
         currentUsage = nextUsage;
         cachedRawGmEntries = rawGmEntries;
         cachedRawSteps = rawSteps;
+        if (!canReuseRawCache) { rawTelemetryReadAt = canLatchRawCache ? nowMs : null; }
         cachedRawTelemetryKey = canLatchRawCache ? rawCacheKey : '';
         contextBreakdown = nextBreakdown;
         contextBreakdownCascadeId = activeTrajectory.cascadeId;
@@ -3830,7 +3869,12 @@ export function createSidecarRuntimeProvider(
 
     async function runPollCycle(isManualRefresh = false): Promise<void> {
         if (disposed) { return; }
-        if (isPolling && activePollPromise) { return activePollPromise; }
+        if (isPolling && activePollPromise) {
+            if (!isManualRefresh || activePollIsManual) { return activePollPromise; }
+            await activePollPromise.catch(() => {});
+            return runPollCycle(true);
+        }
+        activePollIsManual = isManualRefresh;
         isPolling = true;
         const discoverAppLs = () => deps.discoverLS({ preferredSurface: 'app', workspaceUri: activeWorkspaceUris[0], signal: abortController.signal, log });
         const fetchAllTraj = (ls: LSInfo, epoch: number, cache: PollRpcCache) => cache.getOrFetch(
@@ -3980,21 +4024,18 @@ export function createSidecarRuntimeProvider(
                 }
 
                 // 4. Fetch active conversation context usage, breakdown, turn diagnostics, runways
-                const isSwitchingConversation = Boolean(currentUsage && currentUsage.cascadeId !== activeTrajectory.cascadeId);
                 try {
-                    await refreshActiveConversationTelemetry(lsInfo, activeTrajectory, nowMs, pollEpoch, pollSelGen, pollRpcCache);
-                } catch (err) {
-                    // Outer catch guard: ONLY clear pending state if this target is still current!
+                    await refreshActiveConversationTelemetry(lsInfo, activeTrajectory, nowMs, pollEpoch, pollSelGen, pollRpcCache, isManualRefresh);
+                } catch {
+                    // An unavailable steps endpoint must not prevent independent GM updates.
                     if (
-                        isSwitchingConversation
-                        && !disposed
+                        !disposed
                         && backendEpoch === pollEpoch
                         && selectionGeneration === pollSelGen
                         && lastResolution.cascadeId === activeTrajectory.cascadeId
                     ) {
                         clearActiveConversationTelemetry(activeTrajectory.cascadeId, nowMs);
                     }
-                    throw err;
                 }
 
                 if (disposed || backendEpoch !== pollEpoch) { return; }
@@ -4033,14 +4074,14 @@ export function createSidecarRuntimeProvider(
                                 generatorModel: tr.generatorModel,
                             })),
                             abortController.signal,
-                        ));
+                        )).catch(() => false);
                     if (disposed || backendEpoch !== pollEpoch) { return; }
                     if (activityChanged) {
                         activityChangeSeq++;
                     }
 
                     if (isManualRefresh) {
-                        gmTracker.clearErrorBackoff();
+                        gmTracker.clearErrorBackoff(activeTrajectory.cascadeId);
                     }
 
                     try {
@@ -4051,7 +4092,10 @@ export function createSidecarRuntimeProvider(
                                 telemetryOrder.map(tr => ({
                                     cascadeId: tr.cascadeId,
                                     title: tr.summary || tr.cascadeId.slice(0, 8),
+                                    trajectoryId: tr.trajectoryId,
+                                    lastModifiedTime: tr.lastModifiedTime,
                                     manifestMember: tr.manifestMember,
+                                    killed: tr.killed,
                                     stepCount: tr.stepCount,
                                     status: tr.status,
                                 })),
@@ -4442,8 +4486,7 @@ export function createSidecarRuntimeProvider(
         const curWin = getOrCreateWindowSelectionState(winId);
         const resolution = active ? lastResolution : resolveWindowState(curWin).resolution;
         const subjectId = resolution.cascadeId;
-        const usage = subjectId && !resolution.hostPending
-            ? (currentUsage?.cascadeId === subjectId ? currentUsage : monitorStore.getSnapshot(subjectId)) ?? null : null;
+        const usage = resolution.hostPending ? null : getResolvedUsage(subjectId);
         const displayBreakdown = subjectId && contextBreakdownCascadeId === subjectId ? contextBreakdown : null;
         const displayDiagnostics = subjectId && turnDiagnosticsCascadeId === subjectId ? turnDiagnostics : null;
         const displayLock = Boolean(curWin.lockToMainAgent);
@@ -4625,6 +4668,7 @@ export function createSidecarRuntimeProvider(
             userInfo: outUserInfo, modelConfigs: cachedModelConfigs, workspaceUri: outWorkspaceUri,
             gmSummary: outGmSummary, gmFullSummary: outGmFullSummary, gmConversations: outGmConversations,
             activitySummary: outActivitySummary, dailyLedger: outDailyLedger, todayLedgerActive, ledgerSettled,
+            ledgerDateKey: dailyLedger.dateKey,
             dailyStore: outDailyStore, dailyStoreSnapshot: outDailyStoreSnap,
             pricingStore, pricingOverrides: customPricing, customPricing,
             accountSnapshots: snapArray, activeAccountKey: outActiveAccountKey,
@@ -4686,9 +4730,7 @@ export function createSidecarRuntimeProvider(
             ? lastResolution
             : (winKnown ? resolveWindowState(curWin).resolution : { cascadeId: null, target: null, hostPending: false });
         const subjectId = resolution.cascadeId;
-        const scopedUsage = subjectId && !resolution.hostPending
-            ? (currentUsage?.cascadeId === subjectId ? currentUsage : monitorStore.getSnapshot(subjectId) ?? null)
-            : null;
+        const scopedUsage = resolution.hostPending ? null : getResolvedUsage(subjectId);
         const scopedTraj = subjectId ? allTrajectories.find(tr => tr.cascadeId === subjectId) ?? null : null;
         const scopedBd = subjectId && contextBreakdown && contextBreakdownCascadeId === subjectId ? contextBreakdown : null;
         const scopedTd = subjectId && turnDiagnostics && turnDiagnosticsCascadeId === subjectId ? turnDiagnostics : null;
@@ -4732,14 +4774,8 @@ export function createSidecarRuntimeProvider(
         const active = winId === activeWindowId;
         const curWin = getOrCreateWindowSelectionState(winId);
         const resolution = active ? lastResolution : resolveWindowState(curWin).resolution;
-        const expectedSelRev = active ? selectionRevision : curWin.selectionRevision;
-        const scopedUsage = resolution.cascadeId && !resolution.hostPending
-            ? (currentUsage?.cascadeId === resolution.cascadeId ? currentUsage : monitorStore.getSnapshot(resolution.cascadeId) ?? null)
-            : null;
-        const cachedObs = observationsByWindow.get(winId)?.value;
-        const obs = (cachedObs && cachedObs.subjectCascadeId === resolution.cascadeId && cachedObs.selectionRevision === expectedSelRev)
-            ? cachedObs
-            : publishCurrentObservation(deps.now(), winId, resolution, scopedUsage);
+        const scopedUsage = resolution.hostPending ? null : getResolvedUsage(resolution.cascadeId);
+        const obs = publishCurrentObservation(deps.now(), winId, resolution, scopedUsage);
         const subjectId = obs.subjectCascadeId;
         const matchedUsage = subjectId && scopedUsage && scopedUsage.cascadeId === subjectId
             ? scopedUsage
@@ -5901,22 +5937,11 @@ export function createSidecarRuntimeProvider(
 
             case 'previewHandoffV2': {
                 const winId = resolvePrivacyWindowId(reqWindowId);
-                const active = winId === activeWindowId;
-                const curWin = getOrCreateWindowSelectionState(winId);
-                const resolution = active ? lastResolution : resolveWindowState(curWin).resolution;
-                const expectedSelRev = active ? selectionRevision : curWin.selectionRevision;
-                const scopedUsage = resolution.cascadeId && !resolution.hostPending
-                    ? (currentUsage?.cascadeId === resolution.cascadeId ? currentUsage : monitorStore.getSnapshot(resolution.cascadeId) ?? null)
-                    : null;
-                const cachedObs = observationsByWindow.get(winId)?.value;
-                const obs = (cachedObs && cachedObs.subjectCascadeId === resolution.cascadeId && cachedObs.selectionRevision === expectedSelRev)
-                    ? cachedObs
-                    : publishCurrentObservation(deps.now(), winId, resolution, scopedUsage);
-                const reqCid = typeof action.cascadeId === 'string' && action.cascadeId.trim() ? action.cascadeId.trim() : null;
-                if (reqCid && obs.subjectCascadeId && reqCid !== obs.subjectCascadeId) {
-                    return { ok: false, statusCode: 409, error: 'Handoff subject mismatch', result: { staleSubject: true, windowId: winId, expectedCascadeId: obs.subjectCascadeId, requestedCascadeId: reqCid, dataRevision: obs.dataRevision } };
-                }
                 const handoff = buildHandoffV2ForCurrentSubject(getLanguage(), reqWindowId, reqMasked);
+                const reqCid = typeof action.cascadeId === 'string' && action.cascadeId.trim() ? action.cascadeId.trim() : null;
+                if (reqCid && reqCid !== handoff.subjectCascadeId) {
+                    return { ok: false, statusCode: 409, error: 'Handoff subject mismatch', result: { staleSubject: true, windowId: winId, expectedCascadeId: handoff.subjectCascadeId, requestedCascadeId: reqCid, dataRevision: handoff.dataRevision } };
+                }
                 const revisionMismatch = typeof action.dataRevision === 'number' && Number.isSafeInteger(action.dataRevision) && action.dataRevision !== handoff.dataRevision;
                 if (revisionMismatch) {
                     const stalePayload = {

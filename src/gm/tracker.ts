@@ -3,7 +3,7 @@
 
 import { LSInfo } from '../discovery';
 import { rpcCall } from '../rpc-client';
-import type { RawGeneratorMetadataEntry } from '../tracker';
+import { fetchTrajectoryGeneratorMetadataResult, requireGeneratorMetadata, validateStepsPageResponse, type RawGeneratorMetadataEntry } from '../tracker';
 import { normalizeModelDisplayName, getQuotaPoolKey, resolveModelId, type ModelConfig } from '../models';
 import type { QuotaSession } from '../quota-tracker';
 import type {
@@ -173,6 +173,7 @@ function deduplicateSystemContextItems(calls: GMCallEntry[]): GMSystemContextIte
     return [...byKey.values()].sort((a, b) => a.stepIndex - b.stepIndex);
 }
 
+const ACTIVE_IDLE_RECHECK_MS = 60_000;
 const IDLE_ERROR_BACKOFF_BASE_MS = 60 * 1000;
 const IDLE_ERROR_BACKOFF_MAX_MS = 10 * 60 * 1000;
 /** Bounded concurrency for GMTracker.fetchAll() per-conversation RPC fetches. */
@@ -187,6 +188,42 @@ function hasConflictingExecutionId(
     b: Pick<GMCallEntry, 'executionId'>,
 ): boolean {
     return Boolean(a.executionId && b.executionId && a.executionId !== b.executionId);
+}
+
+// Worker GM records can omit timestamps. Read the indexed planner steps for the
+// recent calls shown by the ledger, bounded independently of the worker's history.
+async function dateRecentMemberCalls(
+    ls: LSInfo, cascadeId: string, stepCount: number, calls: GMCallEntry[], signal?: AbortSignal,
+): Promise<GMCallEntry[]> {
+    const recent = calls.slice(-20).filter(call => !isValidCallTimestamp(call.createdAt));
+    const indices = recent.flatMap(call => call.stepIndices).filter(idx => Number.isSafeInteger(idx) && idx >= 0 && idx < stepCount);
+    if (!indices.length) { return calls; }
+    const last = indices.reduce((max, idx) => Math.max(max, idx), -1);
+    const first = Math.max(last - 39, indices.reduce((min, idx) => Math.min(min, idx), last));
+    const read = async (start: number) => {
+        const response = await rpcCall(ls, 'GetCascadeTrajectorySteps', {
+            cascadeId, stepOffset: start, startIndex: start, endIndex: last + 1,
+        }, 4_000, signal, { maxResponseBytes: 2 * 1024 * 1024 });
+        const page = validateStepsPageResponse(response, start);
+        if (!page.ok || page.steps.length < last - start + 1 || page.steps.length > stepCount - start) {
+            throw new Error('Incomplete member planner step range');
+        }
+        const steps = page.steps.slice(0, last - start + 1).map((step, i) => ({ ...step, stepIndex: start + i }));
+        const covered = recent.filter(call => call.stepIndices.length && call.stepIndices.every(idx => idx >= start && idx <= last));
+        const enriched = applyTrajectoryModelHints(covered, steps);
+        const byCall = new Map(covered.map((call, i) => [call, enriched[i]]));
+        return calls.map(call => byCall.get(call) ?? call);
+    };
+    try {
+        return await read(first);
+    } catch (err) {
+        if (signal?.aborted || first === last || !/response (?:exceeded|too large)|Incomplete member planner step range/i.test(String(err))) { throw err; }
+        // A large tool result or short page may obscure only the earlier calls.
+        const mostRecent = [...recent].reverse().find(call => call.stepIndices.includes(last));
+        const retryFrom = mostRecent?.stepIndices.reduce((min, idx) => Math.min(min, idx), last);
+        if (retryFrom === undefined || retryFrom <= first) { throw err; }
+        return read(retryFrom);
+    }
 }
 
 function inheritEnrichedCallFields(calls: GMCallEntry[], cachedCalls: GMCallEntry[] | undefined): GMCallEntry[] {
@@ -305,11 +342,11 @@ export class GMTracker {
     /** Tracks per-conversation RUNNING status to detect RUNNING→IDLE transition. */
     private _lastRunningStatus = new Map<string, boolean>();
     /** In-memory only: non-running conversations settled at stepCount (not serialized). */
-    private _settledIdleStepCounts = new Map<string, number>();
+    private _settledIdle = new Map<string, { stepCount: number; revision: string; fetchedAt: number }>();
     /** In-memory only: latest stepCount:callCount snapshot already enriched via GetCascadeTrajectory. */
     private _enrichedSnapshots = new Map<string, string>();
     /** In-memory only: bounded exponential backoff for idle RPC failures. */
-    private _errorBackoffByCascade = new Map<string, { stepCount: number; attempts: number; nextRetryAt: number }>();
+    private _errorBackoffByCascade = new Map<string, { stepCount: number; revision: string; attempts: number; nextRetryAt: number }>();
     /** Per-conversation call position already submitted to DailyLedger.
      *  Key = cascadeId, Value = number of calls already recorded.
      *  Used by getNewCallsSinceLastRecord() to extract incremental diff. */
@@ -336,15 +373,16 @@ export class GMTracker {
         }
     }
 
-    private _recordIdleErrorBackoff(cascadeId: string, stepCount: number, nowMs: number): void {
+    private _recordIdleErrorBackoff(cascadeId: string, stepCount: number, revision: string, nowMs: number): void {
         const prev = this._errorBackoffByCascade.get(cascadeId);
-        const attempts = prev && prev.stepCount === stepCount ? prev.attempts + 1 : 1;
+        const attempts = prev && prev.stepCount === stepCount && prev.revision === revision ? prev.attempts + 1 : 1;
         const delayMs = Math.min(
             IDLE_ERROR_BACKOFF_MAX_MS,
             IDLE_ERROR_BACKOFF_BASE_MS * Math.pow(2, attempts - 1),
         );
         this._errorBackoffByCascade.set(cascadeId, {
             stepCount,
+            revision,
             attempts,
             nextRetryAt: nowMs + delayMs,
         });
@@ -354,10 +392,14 @@ export class GMTracker {
      * Reset idle RPC/enrichment error backoff timers (e.g. on manual refresh)
      * so previously failed conversations retry immediately on the next fetchAll().
      */
-    clearErrorBackoff(): void {
+    clearErrorBackoff(activeCascadeId?: string): void {
+        if (activeCascadeId) {
+            this._settledIdle.delete(activeCascadeId);
+            this._enrichedSnapshots.delete(activeCascadeId);
+        }
         for (const [cascadeId, entry] of this._errorBackoffByCascade.entries()) {
             this._errorBackoffByCascade.set(cascadeId, {
-                stepCount: entry.stepCount,
+                ...entry,
                 attempts: 0,
                 nextRetryAt: 0,
             });
@@ -367,7 +409,7 @@ export class GMTracker {
     /** Clear cached GM state for a conversation that was reset/rewound to 0 steps. */
     private _clearConversationForZeroSteps(cascadeId: string): void {
         const hadCached = this._cache.delete(cascadeId);
-        this._settledIdleStepCounts.delete(cascadeId);
+        this._settledIdle.delete(cascadeId);
         this._enrichedSnapshots.delete(cascadeId);
         this._errorBackoffByCascade.delete(cascadeId);
         this._lastRunningStatus.delete(cascadeId);
@@ -389,7 +431,7 @@ export class GMTracker {
      */
     async fetchAll(
         ls: LSInfo,
-        trajectories: { cascadeId: string; title: string; stepCount: number; status: string; manifestMember?: boolean }[],
+        trajectories: { cascadeId: string; title: string; stepCount: number; status: string; manifestMember?: boolean; lastModifiedTime?: string; trajectoryId?: string; killed?: boolean }[],
         activeCascadeId?: string,
         signal?: AbortSignal,
         fetchManifestMetadata?: (cascadeId: string) => Promise<RawGeneratorMetadataEntry[]>,
@@ -449,7 +491,7 @@ export class GMTracker {
             // Skip IDLE conversations that haven't changed AND already have calls data
             // (or settled at this stepCount after a real fetch during this process lifetime).
             // After restore (calls stripped for storage), cached.calls is empty and
-            // _settledIdleStepCounts is empty — must re-fetch once to hydrate.
+            // _settledIdle is empty — must re-fetch once to hydrate.
             // EXCEPTION: force one re-fetch when a conversation JUST transitioned from
             // RUNNING → IDLE, because the last GM call may not have been captured
             // during the final RUNNING poll (GM API lags behind Steps API).
@@ -458,15 +500,19 @@ export class GMTracker {
             this._lastRunningStatus.set(t.cascadeId, isRunning);
             const justBecameIdle = wasRunning && !isRunning;
 
-            if (justBecameIdle || (cached && t.stepCount < cached.totalSteps)) {
+            const revision = `${t.trajectoryId || ''}|${t.lastModifiedTime || ''}`;
+            const settled = this._settledIdle.get(t.cascadeId);
+            const revisionChanged = !!settled && settled.revision !== revision;
+            const trajectoryReplaced = !!t.trajectoryId && !!cached?.trajectoryId && cached.trajectoryId !== t.trajectoryId;
+            if (justBecameIdle || revisionChanged || trajectoryReplaced || (cached && t.stepCount < cached.totalSteps)) {
                 this._enrichedSnapshots.delete(t.cascadeId);
-                this._settledIdleStepCounts.delete(t.cascadeId);
+                this._settledIdle.delete(t.cascadeId);
             }
 
             let retryingAfterBackoff = false;
             const existingBackoff = this._errorBackoffByCascade.get(t.cascadeId);
             if (existingBackoff) {
-                if (isRunning || justBecameIdle || existingBackoff.stepCount !== t.stepCount) {
+                if (isRunning || justBecameIdle || existingBackoff.stepCount !== t.stepCount || existingBackoff.revision !== revision) {
                     this._errorBackoffByCascade.delete(t.cascadeId);
                 } else if (nowMs < existingBackoff.nextRetryAt) {
                     return;
@@ -478,13 +524,20 @@ export class GMTracker {
             const alreadyHydrated = !!cached
                 && cached.calls.length > 0
                 && cached.calls.every(call => isValidCallTimestamp(call.createdAt));
-            const alreadySettledAtSteps = this._settledIdleStepCounts.get(t.cascadeId) === t.stepCount;
+            // A selected, idle conversation can receive delayed GM records even when the
+            // summary revision stays unchanged. Bound that probe to one per minute.
+            const watchForLateCalls = t.cascadeId === activeCascadeId || (t.manifestMember === true && !t.killed);
+            const alreadySettledAtSteps = !!settled && settled.stepCount === t.stepCount && !revisionChanged;
+            const needsActiveProbe = watchForLateCalls && (!settled || nowMs - settled.fetchedAt >= ACTIVE_IDLE_RECHECK_MS);
             const canSkipIdle = !!cached
                 && !isRunning
                 && !justBecameIdle
+                && !revisionChanged
+                && !trajectoryReplaced
+                && !needsActiveProbe
                 && !retryingAfterBackoff
                 && cached.totalSteps === t.stepCount
-                && (alreadyHydrated || alreadySettledAtSteps);
+                && (alreadySettledAtSteps || (alreadyHydrated && !t.trajectoryId && !t.lastModifiedTime));
 
             if (canSkipIdle) {
                 baselineIfPending(t.cascadeId, cached.calls);
@@ -496,18 +549,28 @@ export class GMTracker {
                 if (t.manifestMember && fetchManifestMetadata) {
                     rawGM = await fetchManifestMetadata(t.cascadeId);
                 } else {
-                    const resp = await rpcCall(ls, 'GetCascadeTrajectoryGeneratorMetadata',
-                        { cascadeId: t.cascadeId, ...meta }, 30000, signal) as { generatorMetadata?: RawGeneratorMetadataEntry[] };
-                    rawGM = resp.generatorMetadata || [];
+                    rawGM = requireGeneratorMetadata(await fetchTrajectoryGeneratorMetadataResult(ls, t.cascadeId, signal, 30_000));
                 }
 
-                let calls = inheritEnrichedCallFields(rawGM.map(parseGMEntry), cached?.calls);
-                const enrichKey = `${t.stepCount}:${calls.length}`;
+                const previous = trajectoryReplaced ? undefined : cached;
+                let calls = inheritEnrichedCallFields(rawGM.map(parseGMEntry), previous?.calls);
+                const recentWorkerCalls = t.manifestMember ? calls.slice(-20) : [];
+                const enrichKey = [t.stepCount, calls.length, recentWorkerCalls.filter(c => isValidCallTimestamp(c.createdAt)).length,
+                    recentWorkerCalls.length ? buildGMMatchKey(recentWorkerCalls[recentWorkerCalls.length - 1]) : ''].join(':');
                 const skipCachedEnrichment = !isRunning
                     && !justBecameIdle
                     && this._enrichedSnapshots.get(t.cascadeId) === enrichKey;
                 let trajectorySteps: any[] = [];
                 let enrichmentFailed = false;
+                if (t.manifestMember && !skipCachedEnrichment && recentWorkerCalls.some(c => !isValidCallTimestamp(c.createdAt))) {
+                    try {
+                        calls = await dateRecentMemberCalls(ls, t.cascadeId, t.stepCount, calls, signal);
+                        if (!isRunning) { this._enrichedSnapshots.set(t.cascadeId, enrichKey); }
+                    } catch (err) {
+                        if (signal?.aborted) { throw err; }
+                        enrichmentFailed = true;
+                    }
+                }
                 if (!t.manifestMember && !skipCachedEnrichment && shouldEnrichConversation(t.stepCount, calls)) {
                     try {
                         const fullResp = await rpcCall(ls, 'GetCascadeTrajectory',
@@ -580,8 +643,8 @@ export class GMTracker {
                         finalCPs.push(tcp);
                     }
                 }
-                if (trajectorySteps.length === 0 && cached && cached.totalSteps <= t.stepCount) {
-                    for (const prevCp of cached.checkpointSummaries || []) {
+                if (trajectorySteps.length === 0 && previous && previous.totalSteps <= t.stepCount) {
+                    for (const prevCp of previous.checkpointSummaries || []) {
                         if (!existingCPNums.has(prevCp.checkpointNumber)) {
                             existingCPNums.add(prevCp.checkpointNumber);
                             finalCPs.push(prevCp);
@@ -605,9 +668,9 @@ export class GMTracker {
                         });
                     }
                 }
-                if (trajectorySteps.length === 0 && cached && cached.totalSteps <= t.stepCount) {
+                if (trajectorySteps.length === 0 && previous && previous.totalSteps <= t.stepCount) {
                     const existingCtxKeys = new Set(finalContextItems.map(i => `${i.type}:${i.stepIndex}`));
-                    for (const prevItem of cached.systemContextItems || []) {
+                    for (const prevItem of previous.systemContextItems || []) {
                         const itemKey = `${prevItem.type}:${prevItem.stepIndex}`;
                         if (!existingCtxKeys.has(itemKey)) {
                             existingCtxKeys.add(itemKey);
@@ -620,6 +683,7 @@ export class GMTracker {
                 this._cache.set(t.cascadeId, {
                     cascadeId: t.cascadeId,
                     title: t.title,
+                    trajectoryId: t.trajectoryId,
                     totalSteps: t.stepCount,
                     calls,
                     lifetimeCalls: Math.max(cached?.lifetimeCalls ?? cached?.calls.length ?? 0, calls.length),
@@ -630,14 +694,14 @@ export class GMTracker {
                 });
                 baselineIfPending(t.cascadeId, calls);
                 if (enrichmentFailed && !isRunning) {
-                    this._settledIdleStepCounts.delete(t.cascadeId);
-                    this._recordIdleErrorBackoff(t.cascadeId, t.stepCount, nowMs);
+                    this._settledIdle.delete(t.cascadeId);
+                    this._recordIdleErrorBackoff(t.cascadeId, t.stepCount, revision, nowMs);
                 } else {
                     this._errorBackoffByCascade.delete(t.cascadeId);
                     if (!isRunning) {
-                        this._settledIdleStepCounts.set(t.cascadeId, t.stepCount);
+                        this._settledIdle.set(t.cascadeId, { stepCount: t.stepCount, revision, fetchedAt: nowMs });
                     } else {
-                        this._settledIdleStepCounts.delete(t.cascadeId);
+                        this._settledIdle.delete(t.cascadeId);
                     }
                 }
             } catch (err) {
@@ -648,7 +712,7 @@ export class GMTracker {
                 // Leave deferred members eligible for the next fair polling round.
                 if (t.manifestMember && /Trajectory poll (?:byte )?budget exhausted/i.test(String(err))) { return; }
                 if (!isRunning) {
-                    this._recordIdleErrorBackoff(t.cascadeId, t.stepCount, nowMs);
+                    this._recordIdleErrorBackoff(t.cascadeId, t.stepCount, revision, nowMs);
                 }
                 // Keep stale cache on error
                 if (!cached) {
@@ -1863,7 +1927,7 @@ export class GMTracker {
         // is permanent and accumulates across all days (never reset).
         this._lastSummary = null;
         this._lastFetchedAt = '';
-        this._settledIdleStepCounts.clear();
+        this._settledIdle.clear();
         this._enrichedSnapshots.clear();
         this._errorBackoffByCascade.clear();
     }
@@ -1897,7 +1961,7 @@ export class GMTracker {
         this._lastSummary = null;
         this._lastFetchedAt = '';
         this._lastRunningStatus.clear();
-        this._settledIdleStepCounts.clear();
+        this._settledIdle.clear();
         this._enrichedSnapshots.clear();
         this._errorBackoffByCascade.clear();
         this._needsBaselineInit = true;

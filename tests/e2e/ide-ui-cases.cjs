@@ -1346,9 +1346,15 @@ function runNativeSmoke(args) {
     const app = args.app || (process.platform === 'darwin' ? 'com.google.antigravity-ide' : 'Antigravity IDE');
     const snapshotTimeout = String(Math.max(3000, parseInt(args['timeout-ms'], 10) || 8000));
     const snapshotArgs = ['snapshot', '--app', app, '--compact', '--max-depth', '45', '--timeout-ms', snapshotTimeout];
-    if (args['window-id']) { snapshotArgs.push('--window-id', args['window-id']); }
+    if (args['window-id']) {
+        snapshotArgs.push('--window-id', args['window-id']);
+    }
 
     const snapshot = () => {
+        // macOS can omit the nested WebView from a background window's accessibility tree.
+        if (process.platform === 'darwin' && args['window-id']) {
+            desktop.jsonResult(['focus-window', '--app', app, '--window-id', args['window-id']]);
+        }
         const result = desktop.jsonResult(snapshotArgs);
         if (!result.ok) {
             if (result.error?.disposition?.retry === 'safe'
@@ -1420,7 +1426,8 @@ function runNativeSmoke(args) {
         waitFor(nodes => has(nodes, 'heading', LANGUAGES[lang].heading), `monitor heading in ${lang}`);
     };
     const clickMainTab = (label, description) => click(
-        node => (node.role === 'tab' || node.role === 'button') && matches(node, node.role, label),
+        node => (node.role === 'tab' || node.role === 'radiobutton'
+            || (node.role === 'button' && node.ancestors.includes('tablist'))) && node.name === label,
         description,
     );
 
@@ -1440,12 +1447,12 @@ function runNativeSmoke(args) {
             if (!sweptAll) {
                 for (const key of ['gm', 'sessions', 'calendar', 'models']) {
                     clickMainTab(labels[key], `${key} tab in ${lang}`);
-                    waitFor(nodes => hasText(nodes, labels[key]), `${key} mounted in ${lang}`);
+                    waitFor(nodes => has(nodes, 'tabpanel', labels[key]), `${key} mounted in ${lang}`);
                 }
                 clickMainTab(labels.settings, `Settings tab in ${lang}`);
                 waitFor(nodes => hasText(nodes, /Updates|版本与更新|Backup|备份/), `Settings view in ${lang}`);
 
-                click(node => matches(node, 'button', labels.about), `topbar About in ${lang}`);
+                click(node => (node.role === 'button' || node.role === 'checkbox') && node.name === labels.about, `topbar About in ${lang}`);
                 waitFor(
                     nodes => nodes.some(n => (n.name || '').includes(harness.MANIFEST.version)),
                     `About version ${harness.MANIFEST.version} in ${lang}`,

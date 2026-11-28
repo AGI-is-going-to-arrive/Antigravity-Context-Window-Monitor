@@ -1,4 +1,6 @@
-# Telemetry, Pricing & Opt-In CLI Status Line (`v1.18.0`)
+# Telemetry, Pricing & Opt-In CLI Status Line (`v1.18.1`)
+
+[简体中文](zh/telemetry-and-pricing.md)
 
 This guide documents the measurement definitions, heuristics, 10-currency pricing contract, export guarantees, and `agy-statusline.mjs` setup in **Antigravity Context Window Monitor**.
 
@@ -25,6 +27,10 @@ This guide documents the measurement definitions, heuristics, 10-currency pricin
   - No disjoint thinking or tool-execution timeline bar is ever fabricated from token counts or tool names.
 - **Model Calls anomaly filters (`DEFAULT_GM_ANOMALY_THRESHOLDS`):**
   - Slow TTFT (`>=5.0s`), Cache Miss (`<10%` reuse with `>=1,000` prompt tokens), High Cost (`>=$0.25`), High Context (`>=80%` or `>=200k`), and Errors/Retries.
+
+### Reading the panel after compaction
+
+A completed full checkpoint records the summarizer's own input and output. The Overview labels the retained context as an estimate until a later planner call reports usage. An unavailable estimate appears as `—`. **Recent Model Calls** sorts recorded calls by time. A worker can therefore have a newer call while the main conversation waits. For workers whose call metadata lacks the time, the monitor checks matching planner steps within the polling budget. Calls with unresolved times follow dated rows. Manual refresh rechecks the selected conversation, including an idle conversation whose step count stayed the same.
 
 ## 3. Quota Horizons, Direction & Weekly Active-Hours Forecast
 
@@ -62,6 +68,10 @@ This guide documents the measurement definitions, heuristics, 10-currency pricin
   - **GPT-OSS 120B (Medium):** `$0.09` in / `$0.36` out (`Notice` sunset badge when reported).
   - **Orchestrators (`M537`/`M667`/`M681`/`M669`):** `mapped` mode (default) uses verified Gemini 4 base rates; `strict` mode marks unpriced until custom rates are entered. Custom overrides always take highest precedence.
 - **Plan ROI disclaimer:** Optional **Subscription Plan ROI** (`Google AI Pro $19.99/mo`, `Google AI Ultra 5x $99.99/mo`, `Google AI Ultra 20x $199.99/mo`, or custom fee) lives in the collapsible Advanced section of **Usage & Cost**. It displays an **API-equivalent reference ratio, not actual billing or subscription charges**.
+
+### Usage after quota settlement
+
+The pricing panel and today's Overview use the recorded tokens for each model in modern settled ledgers. Retained call timestamps select the rate at usage time. The ledger day supplies the date for undated settled usage. For a scheduled rate change, an existing historical total can preserve the amount when the call-level split is missing. A legacy settlement containing only a pool total keeps that amount and apportions it by recorded call counts. Strict mode excludes mapped Orchestrator estimates from the known subtotal unless a custom rate applies.
 
 ## 5. Workspace Attribution, Swarm Costs & Safe Exports
 

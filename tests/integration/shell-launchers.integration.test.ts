@@ -1,4 +1,4 @@
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -13,6 +13,8 @@ import { createTempDirTracker } from '../helpers/factories';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const INSTALLER_SH_PATH = path.join(REPO_ROOT, 'scripts', 'install-app-plugin.sh');
+const powerShell = ['pwsh', ...(process.platform === 'win32' ? ['powershell.exe'] : [])]
+    .find(shell => spawnSync(shell, ['-NoProfile', '-Command', 'exit 0']).status === 0);
 
 describe('Real-System Integration: Live OS Shell Launchers & Installer Wrapper Scripts', () => {
     const tracker = createTempDirTracker('acm-int-shell-');
@@ -26,6 +28,19 @@ describe('Real-System Integration: Live OS Shell Launchers & Installer Wrapper S
     afterEach(() => {
         clearWindowsLauncherCaches();
         tracker.cleanup();
+    });
+
+    it.runIf(powerShell)('selects Node and forwards installer arguments in a fresh PowerShell process', () => {
+        const wrapper = path.join(tempRoot, 'install-app-plugin.ps1');
+        fs.copyFileSync(path.join(REPO_ROOT, 'scripts', 'install-app-plugin.ps1'), wrapper);
+        fs.writeFileSync(path.join(tempRoot, 'install-app-plugin.mjs'),
+            'console.log(JSON.stringify(process.argv.slice(2)))');
+        const installerArgs = ['--install', '--local-dir', path.join(tempRoot, 'plugin bundle'), '--no-remote-fallback', '--json'];
+        const output = execFileSync(powerShell!, ['-NoProfile', '-File', wrapper, ...installerArgs], {
+            encoding: 'utf8',
+            env: { ...process.env, PATH: [path.dirname(process.execPath), process.env.PATH].join(path.delimiter) },
+        });
+        expect(JSON.parse(output)).toEqual(installerArgs);
     });
 
     it('detects Linux standard/Snap/AppImage processes (excluding antigravity-cdp) and executes non-killing dialog fallback chain (zenity -> kdialog -> notify-send -> stderr)', () => {

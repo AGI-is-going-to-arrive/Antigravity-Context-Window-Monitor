@@ -1,4 +1,6 @@
+import { parseGeneratorStepIndex } from './gm/types';
 import { parseCreditBalance } from './account-credits';
+import { isFullCompactionCheckpoint, parseContextBreakdown } from './context-breakdown';
 import { LSInfo } from './discovery';
 import { rpcCall, rpcStreamFirstFrame } from './rpc-client';
 import { getTrajectoryPollBudgetSnapshot } from './core/swarm-registry';
@@ -35,6 +37,7 @@ import {
     PLANNER_RESPONSE_ESTIMATE,
     COMPRESSION_MIN_DROP,
     MAX_CONCURRENT_BATCHES,
+    MAX_TRAJECTORY_STEPS,
     MAX_RESPONSE_BODY_SIZE,
     STEP_BATCH_SIZE,
 } from './constants';
@@ -183,6 +186,7 @@ export interface ConversationOrchestratorConfig {
 }
 
 export interface TokenUsageResult {
+    postCompactionPending?: boolean;
     /** Source of the latest token snapshot; absent only in pre-1.16.19 caches. */
     tokenUsageSource?: 'checkpoint' | 'planner' | 'estimated';
     /** Actual input tokens from the latest provider snapshot (if available) */
@@ -250,9 +254,13 @@ export function estimateTokensFromText(text: string): number {
 }
 
 export interface ContextUsage {
+    /** A full compaction has completed and the next planner measurement is pending. */
+    postCompactionPending?: boolean;
     /** Source of the latest token snapshot; also invalidates legacy usage caches. */
     tokenUsageSource?: 'checkpoint' | 'planner' | 'estimated';
     cascadeId: string;
+    /** Host trajectory identity within the conversation (when exposed by the backend). */
+    trajectoryId?: string;
     title: string;
     model: string;
     modelDisplayName: string;
@@ -648,6 +656,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
     let lastModelUsage: ModelUsageInfo | null = null;
     let tokenUsageSource: 'checkpoint' | 'planner' | 'estimated' = 'estimated';
     let checkpointModel = '';
+    let pendingCheckpoint = -1;
     let imageGenStepCount = 0;
     const imageGenStepIndices = new Set<number>();
     const imageGenerationModels = new Set<string>();
@@ -774,7 +783,9 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         const explicitStepIdx = typeof step.stepIndex === 'number' && Number.isSafeInteger(step.stepIndex) && step.stepIndex >= 0
             ? step.stepIndex
             : null;
-        if (stepType === 'CORTEX_STEP_TYPE_BRANCH' || stepType === 'CORTEX_STEP_TYPE_REWIND' || meta?.isBranchStart === true) {
+        const previousBranch = activeBranch;
+        const startsBranch = stepType === 'CORTEX_STEP_TYPE_BRANCH' || stepType === 'CORTEX_STEP_TYPE_REWIND' || meta?.isBranchStart === true;
+        if (startsBranch) {
             branchEpoch++;
             activeBranch = `epoch:${branchEpoch}`;
         }
@@ -783,6 +794,18 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
             activeBranch = explicitBranch;
         }
         const stepBranch = explicitBranch || activeBranch;
+        if (pendingCheckpoint >= 0 && (startsBranch || stepBranch !== previousBranch)) {
+            // A different branch may have forked before the compacted prefix.
+            pendingCheckpoint = -1;
+            lastModelUsage = null;
+            estimationOverhead = 0;
+            outputTokensSinceCheckpoint = 0;
+            prevPlanner = null;
+            prevCheckpoint = null;
+        }
+        if (stepType === StepType.CHECKPOINT && isFullCompactionCheckpoint(step)) {
+            pendingCheckpoint = globalStepIdx;
+        }
 
         // Count user input steps
         if (stepType === StepType.USER_INPUT) {
@@ -832,7 +855,10 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         }
 
         // Extract modelUsage from CHECKPOINT steps
-        if (stepType === StepType.CHECKPOINT && meta) {
+        // Payload-less legacy checkpoints carry measured context snapshots.
+        // Modern checkpoints carry the separate summarizer's usage, including
+        // for intent-only, failed, and in-flight summaries.
+        if (stepType === StepType.CHECKPOINT && meta && !isPlainRecord(step.checkpoint)) {
             const usage = extractModelUsage(meta);
             if (usage) {
                 // Detect compression by comparing consecutive checkpoint inputTokens on the same model & branch
@@ -880,6 +906,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         if (stepType === StepType.PLANNER_RESPONSE && meta && !imageStep) {
             const usage = extractModelUsage(meta);
             if (usage) {
+                pendingCheckpoint = -1;
                 // Detect input-drop compaction on modern PLANNER_RESPONSE snapshots ONLY within
                 // the same canonical model, same role, and same branch (and forward step order),
                 // ignoring delegated Orchestrator sub-executor / subagent steps so model/role/branch
@@ -979,6 +1006,15 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
     }
 
     const estimatedDelta = outputTokensSinceCheckpoint + estimationOverhead;
+    // CHECKPOINT.modelUsage measures the summarizer's input. Only a later
+    // planner call measures the resulting context. Use the dashboard's same
+    // post-checkpoint estimator until then, including any new tool/user steps.
+    let postCompactionEstimate: number | undefined;
+    if (pendingCheckpoint >= 0) {
+        const snapshot = parseContextBreakdown({ steps: steps.slice(pendingCheckpoint), model });
+        postCompactionEstimate = snapshot.usedTokens;
+        lastModelUsage = null;
+    }
 
     // Priority 1: Use the latest measured input + output snapshot and subsequent estimated delta
     if (lastModelUsage) {
@@ -1008,12 +1044,13 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
 
     // Fallback: estimate total context window usage.
     // A brand-new 0-step conversation has zero context occupancy until its first turn begins.
-    const estimatedTotal = steps.length === 0
+    const estimatedTotal = postCompactionEstimate ?? (steps.length === 0
         ? 0
-        : (toolOutputTokens + SYSTEM_PROMPT_OVERHEAD + estimationOverhead);
+        : outputTokensSinceCheckpoint + SYSTEM_PROMPT_OVERHEAD + estimationOverhead);
 
     return {
         tokenUsageSource: 'estimated',
+        postCompactionPending: pendingCheckpoint >= 0,
         inputTokens: 0,
         totalOutputTokens: 0,
         totalToolCallOutputTokens: toolOutputTokens,
@@ -1027,7 +1064,7 @@ export function processSteps(steps: Array<Record<string, unknown>>): TokenUsageR
         imageGenerationModels: [...imageGenerationModels],
         linkedSubagentCascadeIds: extractLinkedSubagentIds(steps),
         hasGaps: false,
-        checkpointCompressionDetected: false,
+        checkpointCompressionDetected: pendingCheckpoint >= 0,
         checkpointCompressionDrop: 0,
         checkpointModel: '',
         ...(orchestratorConfig ? { orchestratorConfig } : {}),
@@ -1041,7 +1078,6 @@ export function isRpcUnimplementedError(err: unknown): boolean {
     return /\bHTTP\s+(?:404|501)\b/i.test(message) || /\bunimplemented\b/i.test(message);
 }
 
-const MAX_TRAJECTORY_STEPS = 200_000;
 const MAX_STEP_FETCH_PAGES = 10_000;
 const MAX_GENERATOR_METADATA_ENTRIES = 100_000;
 const MAX_SUFFIX_RECOVERY_PROBES = 8;
@@ -1066,23 +1102,12 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isBoundedNonNegativeInt(value: unknown, max: number): boolean {
-    if (typeof value === 'number') {
-        return Number.isSafeInteger(value) && value >= 0 && value <= max;
-    }
-    if (typeof value === 'string' && /^\d+$/.test(value)) {
-        const parsed = Number(value);
-        return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= max;
-    }
-    return false;
-}
-
 function isValidGeneratorMetadataEntry(item: unknown): item is RawGeneratorMetadataEntry {
     if (!isPlainRecord(item)) { return false; }
     if (item.stepIndices !== undefined) {
         if (!Array.isArray(item.stepIndices)) { return false; }
         for (const idx of item.stepIndices) {
-            if (!isBoundedNonNegativeInt(idx, MAX_TRAJECTORY_STEPS)) { return false; }
+            if (parseGeneratorStepIndex(idx) === null) { return false; }
         }
     }
     if (item.chatModel !== undefined) {
@@ -1109,12 +1134,13 @@ export async function fetchTrajectoryGeneratorMetadataResult(
     ls: LSInfo,
     cascadeId: string,
     signal?: AbortSignal,
+    timeoutMs = 15_000,
 ): Promise<FetchTrajectoryGeneratorMetadataResult> {
     try {
         const resp = await rpcCall(ls, 'GetCascadeTrajectoryGeneratorMetadata', {
             cascadeId,
             metadata: { ideName: 'antigravity', extensionName: 'antigravity' },
-        }, 15000, signal);
+        }, timeoutMs, signal);
         if (!isPlainRecord(resp)) {
             return { ok: false, metadata: [], error: 'Invalid GetCascadeTrajectoryGeneratorMetadata response' };
         }
@@ -1137,7 +1163,9 @@ export async function fetchTrajectoryGeneratorMetadataResult(
         let invalidCount = 0;
         for (const item of raw) {
             if (isValidGeneratorMetadataEntry(item)) {
-                metadata.push(item);
+                metadata.push(item.stepIndices?.some(idx => typeof idx !== 'number')
+                    ? { ...item, stepIndices: item.stepIndices.map(Number) }
+                    : item);
             } else {
                 invalidCount++;
             }
@@ -1209,7 +1237,7 @@ export function requireGeneratorMetadata(result: FetchTrajectoryGeneratorMetadat
     return result.metadata;
 }
 
-function validateStepsPageResponse(resp: unknown, expectedStart: number): ValidatedStepsPage {
+export function validateStepsPageResponse(resp: unknown, expectedStart: number): ValidatedStepsPage {
     if (!isPlainRecord(resp)) {
         return {
             ok: false,
@@ -2185,7 +2213,7 @@ async function getMemberTokenUsage(ls: LSInfo, trajectory: TrajectorySummary, si
                 result.hasGaps = start > 0;
                 if (start > 0) { result.suffixRecovered = true; result.suffixStartOffset = start; }
                 result._fetchedSteps = steps;
-                if (result.lastModelUsage || start === 0) { return result; }
+                if (result.lastModelUsage || result.postCompactionPending || start === 0) { return result; }
             }
         } catch (error) {
             if (signal?.aborted) { throw error; }
@@ -2863,8 +2891,10 @@ export async function getContextUsage(
     const usagePercent = contextLimit > 0 ? (result.contextUsed / contextLimit) * 100 : 0;
 
     const usage: ContextUsage = {
+        postCompactionPending: result.postCompactionPending === true,
         tokenUsageSource: result.tokenUsageSource,
         cascadeId: trajectory.cascadeId,
+        ...(trajectory.trajectoryId ? { trajectoryId: trajectory.trajectoryId } : {}),
         title: trajectory.summary,
         model: effectiveModel,
         modelDisplayName: normalizeModelDisplayName(effectiveModel),

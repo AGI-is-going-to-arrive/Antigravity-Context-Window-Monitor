@@ -431,6 +431,21 @@ describe('[carbon-pricing]', () => {
             expect(calculateCosts(incomplete, { 'gemini-4-carbon': custom }).grandTotal).toBeCloseTo(8, 10);
         });
 
+        it('excludes a frozen mapped Orchestrator cost in strict mode while honoring explicit custom overrides', () => {
+            const id = 'MODEL_PLACEHOLDER_M667';
+            const at = '2026-11-28T12:00:00Z';
+            const usage = { inputTokens: 1_000_000, outputTokens: 0, thinkingTokens: 0, cacheReadTokens: 0 };
+            const options = { at, frozenCost: 2, callCount: 1 };
+            expect(calculateUsageCosts(id, usage, {}, { ...options, orchestratorPricingMode: 'mapped' }).totalCost).toBe(2);
+            for (const calls of [[], [{ ...usage, model: id, createdAt: at }]]) {
+                const strict = { ...options, orchestratorPricingMode: 'strict' as const, calls };
+                expect(calculateUsageCosts(id, usage, {}, strict)).toMatchObject({ pricing: null, provenance: 'unpriced', totalCost: 0 });
+                expect(calculateUsageCosts(id, usage, { [id]: { ...custom, input: 7 } }, strict)).toMatchObject({
+                    provenance: 'custom', totalCost: 7,
+                });
+            }
+        });
+
         it('preserves positive frozen totals when call evidence is missing and respects custom overrides', () => {
             const frozen = calculateUsageCosts(model, tokens, {}, { at: '2026-12-01', frozenCost: 3.75 });
             expect(frozen).toMatchObject({ totalCost: 3.75, costBreakdownUnavailable: true });

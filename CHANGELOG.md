@@ -4,7 +4,27 @@
 >
 > **v1.17.11 及更早版本**的完整历史记录已归档保留于 [docs/CHANGELOG_ARCHIVE.md](docs/CHANGELOG_ARCHIVE.md)。
 
-## [1.18.0] - Upcoming
+## [1.18.1] - 2026-11-28
+
+### English
+
+- After a full compaction, Overview shows an estimate until the next planner measurement arrives. A missing estimate is displayed as unavailable. Delayed calls, branch changes and manual refresh can update an idle session.
+- Model Calls can recover missing worker timestamps from matching planner steps. Recent worker calls appear in chronological order while the root stays selected.
+- Usage & Cost uses retained model usage and call dates for settlements. Strict pricing excludes inherited mapped costs for unpriced Orchestrator calls. The App and IDE use the same ledger day for historical rates.
+- Fixed Node detection in a fresh PowerShell session and local installation from paths containing spaces.
+- Added English and Chinese walkthroughs, light-theme galleries and Chinese guides. [Release notes](docs/releases/1.18.1.md)
+
+<a id="1181-中文"></a>
+
+### 中文
+
+- 完整压缩后，概览先显示估算值。如果缺少估算依据则显示暂不可用。下一次主模型测量到达后切回实测。空闲会话也能在调用迟到、分支变化或手动刷新后更新。
+- 模型调用页可从匹配的步骤补齐子智能体调用时间，使近期记录按时间排序，同时保持主会话选中。
+- 用量与费用页按各模型的实际用量和保留的调用时间计算结算金额。严格模式会排除未定价 Orchestrator 调用遗留的映射费用。App 与 IDE 按同一账本日期选取历史费率。
+- 修复 PowerShell 在新进程中误报找不到 Node，以及带空格路径的本地安装问题。
+- 更新中英文演示视频和浅色截图库，补充中文指南。[中文发布说明](docs/releases/1.18.1.md#中文)
+
+## [1.18.0] - 2026-11-28
 
 ### English
 

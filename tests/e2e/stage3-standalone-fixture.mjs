@@ -893,8 +893,10 @@ export async function createStage3FixtureProvider(mods, env, options = {}) {
         const outAccountSnapshots = effectiveMasked
             ? rawAccountSnapshots.map((a) => ({ ...a, name: 'S***', email: '****@redacted' }))
             : rawAccountSnapshots;
+        // A locked root can remain in the swarm manifest while its RPC trajectory is unavailable.
+        const readableTrajectories = rawTrajectories.filter(tr => !lockPendingUnavailable || tr.cascadeId !== lockedRootId);
         const outTrajectories = effectiveMasked
-            ? rawTrajectories.map((tr) => ({
+            ? readableTrajectories.map((tr) => ({
                 ...tr,
                 summary: redactSentinelText(tr.summary),
                 workspaceUris: ['[Redacted Workspace]'],
@@ -902,7 +904,7 @@ export async function createStage3FixtureProvider(mods, env, options = {}) {
                 branchName: '[Redacted Branch]',
                 gitRootUri: '',
             }))
-            : rawTrajectories;
+            : readableTrajectories;
         const outUsage = effectiveMasked
             ? {
                 ...currentUsageRaw,

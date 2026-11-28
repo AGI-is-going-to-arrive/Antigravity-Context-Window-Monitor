@@ -37,14 +37,14 @@ Instead, guide the user to enable the plugin and sidecar in Customizations:
 3. Once active, open **Context Monitor** from the side panel **`+`** menu or
    **Plugins** in the left sidebar.
 
-## 5-Tab Monitor Views & Topbar Utilities (`v1.18.0`)
+## Six dashboard tabs in v1.18.1
 
 1. **Overview (`overview`):** Single immutable observation (`PublishedMonitorObservation`) with dual-cap context limits (compaction vs native), interactive 9-category Bar/Dot-Matrix breakdown, live **Swarm / Subagent Tracking Strip** (20+ workers via read-only allowlisted `members.json`/`swarm.json`, one-click **Inspect** + pinned banner + **Back to Main** preserving `lockedRootId`), **3-Field Root Lock** resisting subagent/new-chat hijacks, **Handoff v2** (allowlisted previewable continuation prompt), read-only **Compaction Recovery Brief**, `5h`/`7d` quota pools, and AI credits.
 2. **Model Calls (`gm`):** Model-call **Decode vs E2E** speed (`output / (TTFT + streaming)`), local 5-minute **Prompt Cache Idle TTL** heuristic (`180s` warn / `300s` expire) + possible miss causes, anomaly filters (`Slow TTFT`, `Cache Miss`, `High Cost`, `High Context`, `Errors/Retries`), Orchestrator Split, Recent Calls Ledger, and activity timeline.
 3. **Sessions (`sessions`):** Searchable conversation & Swarm hierarchy grouped by workspace with positive workspace-root OS Reveal links (Brain, `.pb` archive, workspace folder).
 4. **Usage & Cost (`calendar`):** 52-week multi-source (`All / App / IDE / CLI`) heatmap, ingestion-time **Workspace Leaderboard** (`Unattributed` for legacy rows), **10-currency** API-equivalent pricing (incl. **`CAD`** `CA$`), direct vs deduplicated Swarm group costs, collapsible **Advanced Plan ROI** (API reference ratio, not actual billing), and unified **Markdown / CSV / JSON** exports.
 5. **Models & Quotas (`models`):** Privacy-masked account status, `5h`/`7d`/`tightest` & `remaining`/`used` quota controls, persistent **Weekly Active-Hours Forecast**, Orchestrator Settings, and zero-day model specifications.
-- **Topbar `⚙️ Settings` (5 Groups) & `ⓘ About`:** (1) Display & Language (auto single-language default, per-view `<=480px` compact mode, split App/IDE Native HUD with Overview auto-hide), (2) Telemetry & Metrics, (3) Currency & Pricing, (4) Opt-In Overlays & CDP, (5) Data, Backup & Diagnostics (allowlisted JSON settings backup/import + redacted diagnostic export). All 18 historical tab aliases remain supported.
+6. **Settings:** Open Version & Updates, configure display, telemetry, currency and overlays, or manage settings backups and diagnostics. About opens from the top bar. All 18 historical tab aliases remain supported.
 
 ## Checking Status, Upgrading & Opt-In CLI `statusLine`
 

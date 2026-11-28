@@ -679,7 +679,7 @@ function parseCliArgs(argv) {
 
 function formatUsage() {
     return [
-        'Antigravity IDE / WebView E2E UI Verification Runner (v1.18.0)',
+        `Antigravity IDE / WebView E2E UI Verification Runner (v${MANIFEST.version})`,
         '',
         'Usage:',
         '  node tests/installed-ide-ui.cjs --help',
@@ -1199,7 +1199,7 @@ function createDesktopClient() {
 function createBrowserSession(fixtureEnv, options = {}) {
     assertIsolatedFixtureDir(fixtureEnv.rootDir, { label: 'browser session fixture root' });
     const sessionPrefix = options.sessionPrefix || `installed-monitor-ui-${process.pid}`;
-    const TRANSIENT_BROWSER_ERROR = /CDP (?:connection closed|response channel closed|error .*Target closed: CDP session .* detached)|Timed out after \d+ms waiting for load state|Target closed|Browser not launched|Execution context was destroyed|ECONNRESET|EPIPE|ETIMEDOUT|socket hang up|broken pipe/i;
+    const TRANSIENT_BROWSER_ERROR = /Fixture browser lost its page|CDP (?:connection closed|response channel closed|error .*Target closed: CDP session .* detached)|Timed out after \d+ms waiting for load state|Target closed|Browser not launched|Execution context was destroyed|ECONNRESET|EPIPE|ETIMEDOUT|socket hang up|broken pipe/i;
     const MAX_OPENS_PER_SESSION = options.maxOpensPerSession || 12;
 
     let session = sessionPrefix;
@@ -1209,9 +1209,20 @@ function createBrowserSession(fixtureEnv, options = {}) {
     let browserRetries = 0;
     let navigation = 0;
 
+    function assertBrowserAction(result) {
+        if (!result.success && opensInSession > 0 && /Element not found|No element matches selector/i.test(result.error || '')) {
+            // The CLI can silently relaunch Chromium on about:blank after a renderer disconnect.
+            const probe = jsonResult('agent-browser', ['--session', session, 'eval', 'location.href', '--json']);
+            if (probe.success && probe.data.result === 'about:blank') {
+                throw new Error('Fixture browser lost its page (about:blank)');
+            }
+        }
+        assert(result.success, result.error);
+    }
+
     const browser = (argv, input) => {
         const result = jsonResult('agent-browser', ['--session', session, ...argv, '--json'], input);
-        assert(result.success, result.error);
+        assertBrowserAction(result);
         return result.data;
     };
 
@@ -1310,7 +1321,7 @@ function createBrowserSession(fixtureEnv, options = {}) {
             ['eval', `(async () => { window.scrollTo(0, 0); await new Promise(requestAnimationFrame); return (${readingsFn})(); })()`],
         ];
         const results = jsonResult('agent-browser', ['--session', session, 'batch', '--bail', '--omit-command', '--json'], JSON.stringify(actions));
-        for (const action of results) { assert(action.success, action.error); }
+        for (const action of results) { assertBrowserAction(action); }
         assert.equal(results.length, actions.length, `complete keyboard and layout observation for ${canonical}`);
         return results.at(-1).result.result;
     }

@@ -1,4 +1,5 @@
 // Consolidated Domain Suite: Orchestrator Attribution, Settings & Webview UI
+import packageManifest from '../package.json';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as os from 'os';
@@ -2090,13 +2091,13 @@ describe('[webview-orchestrator-ui]', () => {
             expect(extremeHtml).not.toContain('NaN');
         });
 
-        it.each(['en', 'zh', 'both'] as Language[])('renders About tab v1.18.0, Extra High, and full Gemini 4 512K disclaimer in %s', async lang => {
+        it.each(['en', 'zh', 'both'] as Language[])('renders the current About tab version, Extra High, and full Gemini 4 512K disclaimer in %s', async lang => {
             await setLanguageToState(lang, memState);
             const html = buildAboutTabContent();
-            expect(html).toContain('<span class="about-version-pill">v1.18.0</span>');
+            expect(html).toContain(`<span class="about-version-pill">v${packageManifest.version}</span>`);
             expect(html).toContain('USD');
             expect(html).not.toMatch(/USD\s*\/\s*[A-Z]{3}|[\u00a5\uffe5]/);
-            expect(html).toContain('v1.18.0');
+            expect(html).toContain(`v${packageManifest.version}`);
             expect(html).toContain('Extra High');
             expect(html).toContain('512K');
             expect(html).toContain('Gemini 4 Neon');
@@ -2110,8 +2111,8 @@ describe('[webview-orchestrator-ui]', () => {
                 expect(html).toContain(tBiHtml('Context Window Limitation:', '上下文窗口限制：'));
             }
             // Blank or whitespace version must fall back cleanly (never render bare 'v')
-            expect(buildAboutTabContent('')).toContain('<span class="about-version-pill">v1.18.0</span>');
-            expect(buildAboutTabContent('   ')).toContain('<span class="about-version-pill">v1.18.0</span>');
+            expect(buildAboutTabContent('')).toContain(`<span class="about-version-pill">v${packageManifest.version}</span>`);
+            expect(buildAboutTabContent('   ')).toContain(`<span class="about-version-pill">v${packageManifest.version}</span>`);
             expect(buildAboutTabContent('1.19.0')).toContain('<span class="about-version-pill">v1.19.0</span>');
         });
 

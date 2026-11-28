@@ -1,6 +1,7 @@
 // Consolidated Domain Suite: App CDP Overlays, Topbar Views & P3A Polish
 import * as crypto from 'crypto';
 import * as vm from 'vm';
+import packageManifest from '../package.json';
 import {
     afterEach,
     describe,
@@ -3833,8 +3834,8 @@ describe('[app-cdp-topbar-views]', () => {
 
 
     describe('Top-Right Persistent Status Bar 4-View Popover (v1.18.0)', () => {
-        it('resolves CDP_OVERLAY_SCRIPT_VERSION to 1.18.0 and passes strict ZERO-innerHTML / syntax security audit', () => {
-            expect(CDP_OVERLAY_SCRIPT_VERSION).toBe('1.18.0');
+        it('resolves CDP_OVERLAY_SCRIPT_VERSION to the package version and passes strict ZERO-innerHTML / syntax security audit', () => {
+            expect(CDP_OVERLAY_SCRIPT_VERSION).toBe(packageManifest.version);
 
             const xssPayload = makeRichPayload({
                 modelName: '<img src=x onerror=alert(1)>',
