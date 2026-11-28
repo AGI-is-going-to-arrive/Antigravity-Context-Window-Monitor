@@ -3062,8 +3062,11 @@ export function mountWebviewClient(config: WebviewClientBootstrapConfigV118): We
             e.preventDefault();
             const scrollTarget = scrollLink.dataset.scrollTo ? byId(scrollLink.dataset.scrollTo) : null;
             if (scrollTarget) {
-                scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                scrollTarget.focus();
+                cancelInitialScrollRestore();
+                const disclosure = scrollTarget.closest('details');
+                if (disclosure) { disclosure.open = true; }
+                scrollTarget.focus({ preventScroll: true });
+                scrollTarget.scrollIntoView({ block: 'start' });
             }
             return;
         }

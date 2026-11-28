@@ -2,7 +2,7 @@
 
 在 Antigravity App 和 IDE 中查看当前会话还剩多少上下文。你可以逐次查看模型调用、跟踪子智能体、核对缓存与参考费用，也可以查看 5 小时和每周配额的重置时间。`agy` CLI 用户还可以在终端状态行查看上下文用量。
 
-[English](README.md) · [安装与升级](#三步安装与升级) · [AI 安装指引](AGENTS.md#中文) · [界面实景](#界面实景) · [v1.18.1 发布说明](docs/releases/1.18.1.md#中文) · [变更日志](CHANGELOG.md#1181-中文)
+[English](README.md) · [安装与升级](#三步安装与升级) · [AI 安装指引](AGENTS.md#中文) · [界面实景](#界面实景) · [v1.18.2 发布说明](docs/releases/1.18.2.md#中文) · [变更日志](CHANGELOG.md#1182-中文)
 
 **中文演示 · 54 秒**
 
@@ -57,11 +57,11 @@ antigravity-ide --install-extension antigravity-context-monitor-<version>.vsix -
 - **持久化 CDP 悬浮层（App 端，默认关闭）：** 核心侧边面板与原生 HUD 完全无需 CDP。App 首次打开概览页会展示可关闭的**悬浮层与 CDP 引导**横幅，且 App 端**设置 → 悬浮层与 CDP** 提供**一键生成持久化启动器**（或运行 `node scripts/install-app-plugin.mjs --setup-cdp-launcher`），详见 [CDP 悬浮层指南](docs/zh/cdp-overlays.md)。
 - **可选只读 `agy` CLI `statusLine`：** 在 `~/.gemini/antigravity-cli/settings.json` 中指向 `~/.gemini/config/plugins/antigravity-context-monitor/bin/agy-statusline.mjs`，详见 [CLI 状态行与遥测指南](docs/zh/telemetry-and-pricing.md)。
 
-## v1.18.1 更新亮点
+## v1.18.2 更新亮点
 
-- **跟踪 `/compact` 之后的上下文。** 压缩后，App 和 IDE 会在有足够数据时显示估算值。模型返回新读数后，面板会更新为实测值。会话进入空闲后，插件也会复查延迟到达的模型调用记录。
-- **刷新正在查看的成员。** 手动刷新会重新读取所选会话。只要后端连接相同，IDE 就会保留当前查看的子成员。
-- **核对参考费用。** 概览和用量与费用页按账本日期和已记录的模型、调用数据计算已结算用量的参考费用，支持跨调价日和自定义价格。
+App 和 IDE 的**模型与配额**页现在只显示一组配额卡。点击账号区的**查看上方模型配额**即可跳回卡片；AI 积分和到期提醒仍在账号区。
+
+压缩后的上下文读数、子成员刷新和参考费用修复，详见 [v1.18.1 发布说明](docs/releases/1.18.1.md#中文)。
 
 ## 界面实景
 

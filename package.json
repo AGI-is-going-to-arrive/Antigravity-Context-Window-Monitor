@@ -2,7 +2,7 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Window Monitor",
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
-  "version": "1.18.1",
+  "version": "1.18.2",
   "publisher": "AGI-is-going-to-arrive",
   "license": "MIT",
   "icon": "assets/icon.png",
@@ -352,7 +352,7 @@
     "test:all": "npm test && npm run test:integration",
     "test:watch": "vitest",
     "test:dist": "node scripts/test-dist.mjs",
-    "package": "node scripts/package-app-plugin.mjs --package-vsix --baseImagesUrl https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/v1.18.1 --baseContentUrl https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/blob/v1.18.1"
+    "package": "node scripts/package-app-plugin.mjs --package-vsix --baseImagesUrl https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/v1.18.2 --baseContentUrl https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/blob/v1.18.2"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

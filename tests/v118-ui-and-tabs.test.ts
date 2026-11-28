@@ -749,17 +749,17 @@ describe('[v118-tabs-plan-c]', () => {
                 expect(modelsHtml).toContain('spec-zeroday-badge');
 
                 // 4. Profile SEC-04: opaque data-account-handle, ZERO data-email on #profileBillingDayInput, zero plaintext email when masked
-                const profileHtml = buildProfileContent(makeUserInfo(), configs, 15, quotaSummary, {
+                const profileHtml = buildProfileContent(makeUserInfo(), 15, {
                     privacyMasked: true,
                     accountHandle: 'acct_handle_profile_01',
-                    quotaWindowMode: '5h',
-                    quotaDirectionMode: 'remaining',
                 });
                 expect(profileHtml).toContain('id="profileBillingDayInput"');
                 expect(profileHtml).toContain('data-account-handle="acct_handle_profile_01"');
                 expect(profileHtml).not.toContain('data-email=');
                 expect(profileHtml).not.toContain('alice.secret@example.com');
-                expect(profileHtml).toContain(lang === 'zh' ? '剩余' : 'Remaining');
+                expect(profileHtml).toContain(lang === 'zh' ? '查看上方模型配额' : 'View model quota above');
+                expect(profileHtml).not.toContain('data-quota-family=');
+                expect(modelsHtml).toContain('id="model-quota-heading" tabindex="-1"');
 
                 // Single-window quota grid also labels window + direction while preserving >72%</span>
                 const gridHtml = buildModelQuotaGrid([makeModelConfig({ quotaInfo: { remainingFraction: 0.72, resetTime: '2026-11-27T15:00:00.000Z' } })], {

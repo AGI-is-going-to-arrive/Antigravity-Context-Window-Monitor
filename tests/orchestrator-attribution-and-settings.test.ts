@@ -1885,9 +1885,9 @@ describe('[webview-orchestrator-ui]', () => {
             expect(html).toContain('72%');
             expect(html).not.toContain('令牌');
 
-            const profileHtml = buildProfileContent(makeUserInfo(), configs, 15, SAMPLE_QUOTA_SUMMARY);
-            expect(profileHtml).toContain('class="quota-dual-row"');
-            expect(profileHtml).toContain('tag-notice');
+            const profileHtml = buildProfileContent(makeUserInfo(), 15);
+            expect(profileHtml).toContain('href="#model-quota-heading"');
+            expect(profileHtml).not.toContain('class="quota-dual-row"');
         });
     });
 
@@ -2010,12 +2010,12 @@ describe('[webview-orchestrator-ui]', () => {
             expect(overviewHtml).toContain('overview-meter is-unknown');
             expect(overviewHtml).toContain('&lt;1%');
 
-            const profileHtml = buildProfileContent(makeUserInfo(), configs, 0, malformedQuotaSummary);
-            expect(profileHtml).not.toMatch(/NaN|width:150%|width:-20%|aria-valuenow="150"/);
-            expect(profileHtml).toContain('quota-bar-wrap is-unknown');
-            expect(profileHtml).toContain('Reset time unavailable');
-            expect(profileHtml).not.toContain('Reset 0m');
-            expect(profileHtml).toContain('&lt;1%');
+            const quotaHtml = buildModelQuotaGrid(configs, { quotaSummary: malformedQuotaSummary });
+            expect(quotaHtml).not.toMatch(/NaN|width:150%|width:-20%|aria-valuenow="150"/);
+            expect(quotaHtml).toContain('quota-bar-wrap is-unknown');
+            expect(quotaHtml).toContain('Reset time unavailable');
+            expect(quotaHtml).not.toContain('Reset 0m');
+            expect(quotaHtml).toContain('&lt;1%');
         });
     });
 
@@ -2133,7 +2133,7 @@ describe('[webview-orchestrator-ui]', () => {
                 '.quota-dual-row',
                 '.spec-price-row',
                 '.tag-notice',
-                '.model-tag-badge:not(.tag-notice)',
+                '.model-tag-badge.tag-notice',
                 '.cal-overview-val',
                 '.cal-day-total-val',
             ]) {

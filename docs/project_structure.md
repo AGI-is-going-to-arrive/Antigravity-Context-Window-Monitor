@@ -596,7 +596,7 @@ npm run test:watch
 npm run package
 ```
 
-在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `dist/antigravity-context-monitor-1.18.1.vsix` 后重载窗口（命令行：`antigravity-ide --install-extension dist/antigravity-context-monitor-1.18.1.vsix --force`）。对于 Antigravity App 插件，可运行 `node scripts/package-app-plugin.mjs --app-only && node scripts/install-app-plugin.mjs --install --local-dir dist/antigravity-context-monitor-app --no-remote-fallback`（或使用 `AGENTS.md` 中的 `--from-github` / `--upgrade` 一键命令）。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
+在 Antigravity IDE 命令面板中执行 `Extensions: Install from VSIX...`，选择 `dist/antigravity-context-monitor-1.18.2.vsix` 后重载窗口（命令行：`antigravity-ide --install-extension dist/antigravity-context-monitor-1.18.2.vsix --force`）。对于 Antigravity App 插件，可运行 `node scripts/package-app-plugin.mjs --app-only && node scripts/install-app-plugin.mjs --install --local-dir dist/antigravity-context-monitor-app --no-remote-fallback`（或使用 `AGENTS.md` 中的 `--from-github` / `--upgrade` 一键命令）。命令面板快捷键为 Windows/Linux 的 `Ctrl+Shift+P`、macOS 的 `Cmd+Shift+P`。
 
 测试文件位于 `tests/`，仅供 Vitest 与本地浏览器/原生验收使用，不会被打包到 VSIX 或 App 插件包中。
 

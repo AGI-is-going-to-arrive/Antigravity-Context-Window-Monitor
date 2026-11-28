@@ -724,7 +724,10 @@ describe('[model-quota]', () => {
         it('clears families when the account catalog becomes empty', () => {
             expect(groupModelQuotas([config('M438')])).toHaveLength(1);
             expect(groupModelQuotas([])).toEqual([]);
-            expect(buildModelQuotaGrid([])).toBe('');
+            const emptyHtml = buildModelQuotaGrid([]);
+            expect(emptyHtml).toContain('id="model-quota-heading"');
+            expect(emptyHtml).toContain('class="empty-msg"');
+            expect(emptyHtml).not.toContain('data-quota-family=');
         });
 
         it('does not treat an unknown raw ID equal to a pool name as a canonical pool', () => {

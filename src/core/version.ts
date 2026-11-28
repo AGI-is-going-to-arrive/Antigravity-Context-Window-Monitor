@@ -19,7 +19,7 @@ declare const __ACM_APP_VERSION__: string | undefined;
 declare const __ACM_BUILD_ID__: string | undefined;
 
 /** Last-resort fallback version when neither build metadata nor an owned manifest is readable. */
-export const FALLBACK_APP_VERSION = '1.18.1';
+export const FALLBACK_APP_VERSION = '1.18.2';
 
 const OWNED_MANIFEST_NAMES: ReadonlySet<string> = new Set([
     'antigravity-context-monitor',

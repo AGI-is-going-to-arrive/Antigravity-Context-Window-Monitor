@@ -1,6 +1,4 @@
 // ─── Profile Tab Content Builder ─────────────────────────────────────────────
-// Builds HTML for the "Profile" tab: Account info, shared model quota pools,
-// AI credits & expiry day, and collapsible plan limits / feature / team config.
 
 import { currentAICredits } from './account-credits';
 import { formatNumber, getLanguage, tBi, tHtml } from './i18n-core';
@@ -18,8 +16,6 @@ import { getDaysUntilBillingDay } from './billing-day';
 import { groupModelQuotas, type QuotaEffort } from './model-quota';
 
 export interface ModelQuotaGridOptions {
-    embedded?: boolean;
-    hideHeading?: boolean;
     quotaSummary?: UserQuotaSummary | null;
     /** Active quota horizon window mode (`'5h' | '7d' | 'tightest'`). Default: `'tightest'`. */
     quotaWindowMode?: QuotaWindowMode;
@@ -32,10 +28,6 @@ export interface ProfileContentOptions {
     privacyMasked?: boolean;
     /** Opaque account handle bound to `#profileBillingDayInput` instead of plaintext `data-email`. */
     accountHandle?: string;
-    /** Active quota horizon window mode (`'5h' | '7d' | 'tightest'`). */
-    quotaWindowMode?: QuotaWindowMode;
-    /** Active quota display direction (`'remaining' | 'used'`). */
-    quotaDirectionMode?: QuotaDirectionMode;
 }
 
 /**
@@ -178,9 +170,7 @@ function creditExpiryHtml(days: number | null): string {
 /** Build the complete Profile tab HTML. */
 export function buildProfileContent(
     userInfo: UserStatusInfo | null,
-    configs: ModelConfig[],
     billingDay?: number,
-    quotaSummary?: UserQuotaSummary | null,
     options?: ProfileContentOptions,
 ): string {
     if (!userInfo) {
@@ -196,24 +186,10 @@ export function buildProfileContent(
 
     const privacyMasked = options?.privacyMasked !== false;
     const accountHandle = options?.accountHandle || '';
-    const sortedConfigs = sortModels(configs, userInfo.modelSortOrder);
-    const quota = buildModelQuotaGrid(sortedConfigs, {
-        embedded: true,
-        quotaSummary,
-        quotaWindowMode: options?.quotaWindowMode,
-        quotaDirectionMode: options?.quotaDirectionMode,
-    });
     return `
         <div class="profile-page">
-            ${buildAccountSection(userInfo, privacyMasked)}
             <div class="profile-body-grid">
-                <section class="profile-quota" aria-labelledby="profile-quota-heading">
-                    <header class="profile-section-header">
-                        <h2 id="profile-quota-heading">${tBiHtml('Model quota', '模型配额')}</h2>
-                        <button type="button" class="overview-action" data-overview-target="models"><span>${tBiHtml('View models', '查看模型')}</span> ${ICON.externalLink}</button>
-                    </header>
-                    ${quota || `<p class="empty-msg">${tBiHtml('Waiting for model quota data.', '等待模型配额数据。')}</p>`}
-                </section>
+                ${buildAccountSection(userInfo, privacyMasked)}
                 ${buildCreditSection(userInfo, billingDay, privacyMasked, accountHandle)}
             </div>
             <details id="profile-plan-details" class="profile-technical">
@@ -260,6 +236,7 @@ function buildAccountSection(userInfo: UserStatusInfo, privacyMasked = true): st
                     ${emailNode}
                 </div>
                 ${plan ? `<p class="profile-plan-name">${esc(plan)}</p>` : ''}
+                <div><a href="#model-quota-heading" data-scroll-to="model-quota-heading">${tBiHtml('View model quota above', '查看上方模型配额')}</a></div>
             </div>
             <button type="button" class="${btnCls}" id="privacyToggle" aria-pressed="${ariaPressed}">
                 ${ICON.shield}<span>${tBiHtml('Privacy mask', '隐私遮罩')}</span>
@@ -414,9 +391,7 @@ export function buildModelQuotaGrid(
     options: ModelQuotaGridOptions = {},
 ): string {
     const groups = groupModelQuotas(configs, options.quotaSummary);
-    if (groups.length === 0) { return ''; }
-
-    const scopePrefix = options.embedded ? 'profile-quota' : 'models-quota';
+    const scopePrefix = 'models-quota';
     const windowMode: QuotaWindowMode = options.quotaWindowMode ?? 'tightest';
     const directionMode: QuotaDirectionMode = options.quotaDirectionMode ?? 'remaining';
 
@@ -577,14 +552,10 @@ export function buildModelQuotaGrid(
             </div>`;
     }).join('');
 
-    if (options.embedded) {
-        return `<div class="model-grid" data-quota-window-mode="${esc(windowMode)}" data-quota-direction="${esc(directionMode)}">${cards}</div>`;
-    }
-
     return `
         <section class="card model-quota-section" data-quota-window-mode="${esc(windowMode)}" data-quota-direction="${esc(directionMode)}">
-            ${options.hideHeading ? '' : `<h2>${ICON.bolt} <span>${tBiHtml('Model Quota', '模型配额')}</span></h2>`}
-            <div class="model-grid">${cards}</div>
+            <h2 id="model-quota-heading" tabindex="-1">${ICON.bolt} <span>${tBiHtml('Model Quota', '模型配额')}</span></h2>
+            ${cards ? `<div class="model-grid">${cards}</div>` : `<p class="empty-msg">${tBiHtml('Waiting for model quota data.', '等待模型配额数据。')}</p>`}
         </section>`;
 }
 

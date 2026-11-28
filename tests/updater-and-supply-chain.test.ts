@@ -1191,24 +1191,24 @@ describe('[supply-chain-unit]', () => {
             } as unknown as UserStatusInfo;
 
             it('never emits plaintext name or email into data-real attributes when privacy mask is enabled (default)', () => {
-                const maskedHtml = buildProfileContent(sampleUser, [], 15);
+                const maskedHtml = buildProfileContent(sampleUser, 15);
                 expect(maskedHtml).not.toContain('data-real=');
                 expect(maskedHtml).not.toContain('Secret Alice');
                 expect(maskedHtml).toContain('S***');
                 expect(maskedHtml).toContain('se****@example.com');
                 expect(maskedHtml).toContain('id="privacyToggle" aria-pressed="true"');
 
-                const explicitlyMasked = buildProfileContent(sampleUser, [], 15, null, { privacyMasked: true });
+                const explicitlyMasked = buildProfileContent(sampleUser, 15, { privacyMasked: true });
                 expect(explicitlyMasked).not.toContain('data-real=');
                 expect(explicitlyMasked).not.toContain('Secret Alice');
 
-                const unmaskedHtml = buildProfileContent(sampleUser, [], 15, null, { privacyMasked: false });
+                const unmaskedHtml = buildProfileContent(sampleUser, 15, { privacyMasked: false });
                 expect(unmaskedHtml).toContain('Secret Alice');
                 expect(unmaskedHtml).toContain('id="privacyToggle" aria-pressed="false"');
             });
 
             it('routes EVERY external https:// anchor across Profile, About, and Pricing panels through data-action="openExternalUrl" and allowlisted hosts', () => {
-                const profileHtml = buildProfileContent(sampleUser, [], 15);
+                const profileHtml = buildProfileContent(sampleUser, 15);
                 const aboutHtml = buildAboutTabContent('1.18.0', { surface: 'ide' });
                 const pricingHtml = buildPricingTabContent(null, new PricingStore(), undefined, undefined, undefined, true);
 

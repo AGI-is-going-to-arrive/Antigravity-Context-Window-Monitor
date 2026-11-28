@@ -2,7 +2,7 @@
 
 See how much context a conversation has left in Antigravity App and IDE. Inspect individual model calls, follow swarm members, compare cache usage and reference costs, and check when your 5-hour and weekly quotas reset. You can also show context usage in the `agy` CLI status line.
 
-[中文文档](readme_CN.md) · [Install](#3-step-install--upgrade) · [AI agent instructions](AGENTS.md) · [Interface gallery](#interface-gallery) · [v1.18.1 release notes](docs/releases/1.18.1.md) · [Changelog](CHANGELOG.md)
+[中文文档](readme_CN.md) · [Install](#3-step-install--upgrade) · [AI agent instructions](AGENTS.md) · [Interface gallery](#interface-gallery) · [v1.18.2 release notes](docs/releases/1.18.2.md) · [Changelog](CHANGELOG.md)
 
 **English walkthrough · 54 seconds**
 
@@ -57,11 +57,11 @@ Reload the IDE window (`Developer: Reload Window`). Open the panel anytime with 
 - **Persistent CDP Overlays (App, default `OFF`):** Core Sidecar and Native HUD work without CDP. First-open Overview displays a dismissible **Overlays & CDP Quick Setup** banner, and **Settings → Overlays & CDP** provides 1-click **Create Persistent Launcher** (or run `node scripts/install-app-plugin.mjs --setup-cdp-launcher`). See [docs/cdp-overlays.md](docs/cdp-overlays.md).
 - **Opt-In `agy` CLI `statusLine`:** Point `~/.gemini/antigravity-cli/settings.json` at `~/.gemini/config/plugins/antigravity-context-monitor/bin/agy-statusline.mjs`. See [docs/telemetry-and-pricing.md](docs/telemetry-and-pricing.md).
 
-## Highlights in v1.18.1
+## Highlights in v1.18.2
 
-- **Follow a conversation through `/compact`.** The App and IDE show a post-compaction estimate when enough data is available. A fresh model measurement replaces it. The panel also rechecks idle sessions for call records that arrive late.
-- **Refresh the member you are inspecting.** Refresh reads the selected session again. In the IDE, refreshing on the same backend keeps the inspected swarm member selected.
-- **Reconcile reference costs.** Overview and Usage & Cost use the ledger date and available per-model and per-call records to price settled usage. This matters when a rate changes or you edit custom pricing.
+**Models & Quotas** now shows one set of quota cards in both the App and IDE. Select **View model quota above** in the account section to return to those cards. AI credits and their expiry reminder stay with the account.
+
+For post-compaction readings, swarm refresh and reference cost fixes, see the [v1.18.1 release notes](docs/releases/1.18.1.md).
 
 ## Interface gallery
 

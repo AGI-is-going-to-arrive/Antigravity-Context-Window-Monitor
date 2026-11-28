@@ -1307,9 +1307,7 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
         : defaultCalendarOptions;
 
     const calendarHtml = buildCalendarTabContent(dailyStore, calYear, calMonth, mergedCalendarOptions);
-    const profileHtml = buildProfileContent(userInfo, modelConfigs, activeBillingDay, params.quotaSummary, {
-        quotaWindowMode: extras.quotaWindowMode ?? '5h',
-        quotaDirectionMode: extras.quotaDirectionMode,
+    const profileHtml = buildProfileContent(userInfo, activeBillingDay, {
         privacyMasked,
         accountHandle: activeAccountHandle || undefined,
     });

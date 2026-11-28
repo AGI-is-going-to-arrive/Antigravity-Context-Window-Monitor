@@ -4,6 +4,18 @@
 >
 > **v1.17.11 及更早版本**的完整历史记录已归档保留于 [docs/CHANGELOG_ARCHIVE.md](docs/CHANGELOG_ARCHIVE.md)。
 
+## [1.18.2] - 2026-11-29
+
+### English
+
+- **Models & Quotas** shows the shared model quota once in the App and IDE. The account section links to it instead of repeating the cards; AI credits and the monthly expiry reminder remain separate. [Release notes](docs/releases/1.18.2.md)
+
+<a id="1182-中文"></a>
+
+### 中文
+
+- App 和 IDE 的**模型与配额**页只显示一组共享配额卡。账号区通过「查看上方模型配额」跳回配额，保留独立的 AI 积分和每月到期提醒。[中文发布说明](docs/releases/1.18.2.md#中文)
+
 ## [1.18.1] - 2026-11-28
 
 ### English
