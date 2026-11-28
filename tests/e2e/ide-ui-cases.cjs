@@ -846,7 +846,7 @@ function editorialReadings() {
         '.cal-grid', '.cal-cell', '.cal-detail', '.cal-overview-grid', '.cal-chip-speed',
         '.ses-row', '.ses-shortcuts', '.ses-filters', '.ses-filter-btn', '.ses-group',
         '.model-card', '.spec-card', '.orch-settings-card', '.orch-role-row', '.spec-price-row', '.quota-dual-row',
-        '.profile-page', '.profile-identity', '.profile-quota', '.profile-ai', '.profile-technical',
+        '.profile-page', '.profile-identity', '.profile-ai', '.profile-technical',
         '.act-summary-bar', '#telemetryLedgerSection', '.telemetry-ledger-card', '.telemetry-subgrid',
         '.recent-calls-card', '.recent-calls-table-wrap', '.act-model-card',
         '.about-card', '.about-info-box', '.overview-context', '.orch-route-pill',
@@ -1559,6 +1559,29 @@ async function runScreenshotExport(args, panel, configs, fixtures, browserSessio
     console.log(JSON.stringify({ mode: 'screenshots', lang: screenshotLang, themes, width: shotWidth, height: shotHeight, count: saved.length, output }, null, 2));
 }
 
+function checkAccountQuotaShortcut(browserSession, { empty = false, custom = false } = {}) {
+    browserSession.selectTab('models');
+    assert.equal(browserSession.evaluate("document.querySelectorAll('#tab-models .model-quota-section').length"), 1);
+    assert.equal(browserSession.evaluate("document.querySelectorAll('#slot-profile [data-quota-family]').length"), 0);
+    assert.equal(browserSession.evaluate("!!document.querySelector('#slot-models [data-quota-family]')"), !empty);
+    assert.equal(browserSession.evaluate("!!document.querySelector('#slot-models .model-quota-section .empty-msg')"), empty);
+    assert.equal(browserSession.evaluate("!!document.querySelector('#slot-profile #profileBillingDayInput')"), true);
+    if (custom) {
+        assert.equal(browserSession.evaluate("document.getElementById('models-custom-model-pools').open"), false);
+    }
+    browserSession.browser(['focus', '#slot-profile a[href="#model-quota-heading"]']);
+    browserSession.browser(['press', 'Enter']);
+    browserSession.waitFor("document.activeElement?.id === 'model-quota-heading'", 'Quota shortcut focuses the heading');
+    assert.equal(browserSession.evaluate(`(() => {
+        const heading = document.activeElement.getBoundingClientRect();
+        return heading.top >= document.querySelector('.panel-topbar').getBoundingClientRect().bottom - 1
+            && heading.bottom <= innerHeight && document.documentElement.scrollWidth <= innerWidth + 1;
+    })()`), true);
+    if (custom) {
+        assert.equal(browserSession.evaluate("document.getElementById('models-custom-model-pools').open"), true);
+    }
+}
+
 async function runBrowserMatrix(args, packageJSON, installedDir) {
     const fixtureEnv = createIsolatedFixtureEnv({
         prefix: 'installed-monitor-ui-',
@@ -1756,6 +1779,21 @@ async function runBrowserMatrix(args, packageJSON, installedDir) {
                 assert.equal(browserSession.evaluate("testState.messages.some(m => m.command === 'setAccountBillingDay')"), false);
             }, reopenRich);
 
+            for (const [surface, width, lang, empty, custom] of [
+                ['ide', 1280, 'zh', false, false], ['app-sidecar', 320, 'both', false, true],
+                ['ide', 320, 'en', true, false], ['app-sidecar', 1280, 'zh', true, true],
+            ]) {
+                const html = await panel.renderDocument(lang, {
+                    ...fixtures.populated, surface, modelConfigs: empty ? [] : configs, isCustomModelActive: custom, data: activeUsage,
+                });
+                const openQuotaFixture = () => browserSession.open(browserFixture(html, 'vscode-light', THEME_TOKENS['vscode-light']), width);
+                openQuotaFixture();
+                runCase(`Account quota shortcut ${surface} ${width}px empty=${empty} custom=${custom}`, () => {
+                    checkAccountQuotaShortcut(browserSession, { empty, custom });
+                }, openQuotaFixture);
+            }
+            reopenRich();
+
             runCase('Account popover & Profile privacy toggle with opaque accountHandle (SEC-04)', () => {
                 browserSession.click('#acctPopoverTrigger');
                 browserSession.waitFor("Boolean(document.querySelector('#acctPopoverPanel:not([hidden])'))", 'Account popover opened');
@@ -1851,6 +1889,7 @@ async function runBrowserMatrix(args, packageJSON, installedDir) {
 }
 
 module.exports = {
+    checkAccountQuotaShortcut,
     buildEditorialFixtures,
     buildModelCatalogFixture,
     editorialReadings,

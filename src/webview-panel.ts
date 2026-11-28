@@ -3752,9 +3752,7 @@ function applyUnmaskedProfileFallback(
         : 0;
     const unmaskedProfile = buildProfileContent(
         params.userInfo,
-        params.modelConfigs ?? [],
         billingDay,
-        params.quotaSummary,
         { privacyMasked: false },
     );
     const eocIndex = profileHtml.indexOf('<div class="eoc-sentinel"');
@@ -3803,9 +3801,7 @@ function buildHtml(
             : 0;
         const unmaskedProfile = buildProfileContent(
             params.userInfo,
-            params.modelConfigs ?? [],
             billingDay,
-            params.quotaSummary,
             { privacyMasked: false },
         );
         html = html.replace(

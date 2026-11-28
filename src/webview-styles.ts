@@ -1000,7 +1000,6 @@ export function getStyles(): string {
             gap: 16px;
             align-items: start;
         }
-        .profile-quota,
         .profile-ai {
             background: var(--ed-surface);
             border: 1px solid var(--ed-border);

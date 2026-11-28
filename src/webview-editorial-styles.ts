@@ -808,27 +808,7 @@ export function getEditorialStyles(): string {
             padding-top: 0;
             margin-top: 0;
         }
-        /* Flatten nested card / duplicate heading inside Profile quota & technical disclosure */
-        body .tab-pane .profile-quota .model-quota-section {
-            border: 0;
-            padding: 0;
-            margin: 0;
-            background: transparent;
-        }
-        body .tab-pane .profile-quota .model-quota-section > h2 { display: none; }
-        body .tab-pane .profile-quota .model-grid {
-            grid-template-columns: minmax(0, 1fr);
-            gap: 10px;
-        }
-        body .tab-pane .profile-quota .model-card {
-            background: var(--ed-surface-well);
-            border: 1px solid var(--ed-border);
-            border-radius: 8px;
-            padding: 12px 14px;
-        }
-        body .tab-pane .profile-quota .model-card .model-tag-badge:not(.tag-notice) {
-            background: var(--ed-surface);
-        }
+        #model-quota-heading { scroll-margin-block-start: calc(var(--acm-topbar-h, 118px) + 12px); }
         body .tab-pane .profile-technical-body .card {
             background: transparent;
             border: 0;
@@ -1187,7 +1167,6 @@ export function getEditorialStyles(): string {
             body .overview-connection,
             body .tab-pane .telemetry-ledger-card,
             body .profile-identity,
-            body .profile-quota,
             body .profile-ai,
             body .stg-card,
             body .spec-card,

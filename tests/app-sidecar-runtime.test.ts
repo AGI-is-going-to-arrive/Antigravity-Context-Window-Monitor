@@ -1731,9 +1731,7 @@ describe('[w1b-app-runtime-hardening]', () => {
 
                 const profileHtml = buildProfileContent(
                     makeSentinelUserInfo({ name: 'Account #1', email: '****@redacted' }),
-                    makeModelConfigs(),
                     15,
-                    null,
                     { privacyMasked: true, accountHandle: 'acct_deadbeef1234' },
                 );
                 expect(profileHtml).toContain('data-account-handle="acct_deadbeef1234"');

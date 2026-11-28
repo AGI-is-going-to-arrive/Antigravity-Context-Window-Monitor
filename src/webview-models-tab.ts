@@ -900,21 +900,19 @@ export function buildModelsTabContent(
     });
     if (options.isCustomModelActive) {
         parts.push(buildCustomModelBannerHtml());
-        if (quotaHtml) {
-            const byokSummaryTip = richTipAttrs(
-                'models-byok-pools-summary',
-                'BYOK / Custom Model Isolation',
-                'BYOK / 自定义模型配额隔离',
-                'BYOK (Bring Your Own Key) and custom-* models use your own API provider and do not consume Google Antigravity shared quota pools.',
-                'BYOK（自带 API 密钥）与 custom-* 自定义模型走独立接口，不消耗 Google Antigravity 共享配额池。',
-                'Pools are collapsed and low-quota alerts are suppressed while this session is active.',
-                '当前会话激活期间自动折叠配额池并静音低配额预警，点击可展开查看。',
-            );
-            parts.push(`<details id="models-custom-model-pools" class="custom-model-pools-collapse" data-state-key="models-custom-model-pools">
-                <summary${byokSummaryTip}><span>${tBiHtml('Google Quota Pools (Paused for Custom Model)', 'Google 配额池（自定义模型已隔离）')}</span></summary>
-                ${quotaHtml}
-            </details>`);
-        }
+        const byokSummaryTip = richTipAttrs(
+            'models-byok-pools-summary',
+            'BYOK / Custom Model Isolation',
+            'BYOK / 自定义模型配额隔离',
+            'BYOK (Bring Your Own Key) and custom-* models use your own API provider and do not consume Google Antigravity shared quota pools.',
+            'BYOK（自带 API 密钥）与 custom-* 自定义模型走独立接口，不消耗 Google Antigravity 共享配额池。',
+            'Pools are collapsed and low-quota alerts are suppressed while this session is active.',
+            '当前会话激活期间自动折叠配额池并静音低配额预警，点击可展开查看。',
+        );
+        parts.push(`<details id="models-custom-model-pools" class="custom-model-pools-collapse" data-state-key="models-custom-model-pools">
+            <summary${byokSummaryTip}><span>${tBiHtml('Google Quota Pools (Paused for Custom Model)', 'Google 配额池（自定义模型已隔离）')}</span></summary>
+            ${quotaHtml}
+        </details>`);
     } else {
         const runwayHtml = buildModelsRunwayStrip(options.quotaRunways);
         if (runwayHtml) {
@@ -924,9 +922,7 @@ export function buildModelsTabContent(
         if (weeklyPaceHtml) {
             parts.push(weeklyPaceHtml);
         }
-        if (quotaHtml) {
-            parts.push(quotaHtml);
-        }
+        parts.push(quotaHtml);
     }
 
     // 3. Official Model Info Grid

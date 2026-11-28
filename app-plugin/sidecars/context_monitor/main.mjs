@@ -84,7 +84,7 @@ export function readPluginVersion(baseDir = __dirname) {
             return parsed.version.trim();
         }
     }
-    return '1.18.1';
+    return '1.18.2';
 }
 
 /**

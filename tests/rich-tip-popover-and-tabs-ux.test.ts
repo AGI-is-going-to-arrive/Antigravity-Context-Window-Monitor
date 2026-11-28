@@ -2681,10 +2681,10 @@ describe('[tabs-meta-ux-tooltips]', () => {
         it('omits unreported plan limits and preserves the host sentinel separately from explicit zero', () => {
             const unknown = { maxNumChatInputTokens: null, maxNumPremiumChatMessages: null, maxCustomChatInstructionCharacters: null,
                 maxNumPinnedContextItems: null, maxLocalIndexSize: null, monthlyFlexCreditPurchaseAmount: null };
-            const empty = buildProfileContent(makeUserInfo({ planLimits: unknown }), []);
+            const empty = buildProfileContent(makeUserInfo({ planLimits: unknown }));
             expect(empty).not.toContain('data-plan-limit=');
             const partial = buildProfileContent(makeUserInfo({ planLimits: { ...unknown,
-                maxNumPremiumChatMessages: -1, monthlyFlexCreditPurchaseAmount: 0 } }), []);
+                maxNumPremiumChatMessages: -1, monthlyFlexCreditPurchaseAmount: 0 } }));
             expect(partial.match(/data-plan-limit=/g)).toHaveLength(2);
             expect(partial).toContain('−1');
             expect(partial).toContain('class="profile-metric-value">0</dd>');
@@ -2704,15 +2704,16 @@ describe('[tabs-meta-ux-tooltips]', () => {
                     tagDescription: 'Standalone notice text from catalog',
                 }),
             ];
-            const html = buildProfileContent(makeUserInfo(), configs, 15, SAMPLE_QUOTA_SUMMARY);
+            const html = buildProfileContent(makeUserInfo(), 15);
+            const quotaHtml = buildModelQuotaGrid(configs, { quotaSummary: SAMPLE_QUOTA_SUMMARY });
 
             assertFrozenPopoverContract(html, `profile-${lang}`);
             expect(html).not.toMatch(/\stitle="/);
 
             // Bug fix: Notice badge surfaces real config.tagDescription via rich-tip (NOT redundant title="Notice")
-            expect(html).toContain('Scheduled for sunset on 2026-12-31; migrate to Gemini 4.');
-            expect(html).toContain('Latest flagship reasoning tier');
-            expect(html).toContain('Standalone notice text from catalog');
+            expect(quotaHtml).toContain('Scheduled for sunset on 2026-12-31; migrate to Gemini 4.');
+            expect(quotaHtml).toContain('Latest flagship reasoning tier');
+            expect(quotaHtml).toContain('Standalone notice text from catalog');
 
             // Unified ZH heading 账号 (never 个人 or 账户)
             if (lang !== 'en') {
@@ -2722,8 +2723,8 @@ describe('[tabs-meta-ux-tooltips]', () => {
             }
 
             // Dual-window, efforts, AI credits, billingDay, Plan Limits (with units), Feature Flags & Team Config
-            expect(html).toContain('data-popover-key="profile-quota-win-0-pool-gemini-5h"');
-            expect(html).toContain('data-popover-key="profile-quota-win-0-pool-gemini-weekly"');
+            expect(quotaHtml).toContain('data-popover-key="models-quota-win-0-pool-gemini-5h"');
+            expect(quotaHtml).toContain('data-popover-key="models-quota-win-0-pool-gemini-weekly"');
             expect(html).toContain('data-popover-key="profile-ai-credits-heading"');
             expect(html).toContain('data-popover-key="profile-billing-day-label"');
             expect(html).toContain('data-popover-key="profile-limit-max-input"');
@@ -2750,7 +2751,7 @@ describe('[tabs-meta-ux-tooltips]', () => {
             expect(html).toContain('data-flag-state="disabled"');
 
             // Empty state: unified 账号 + local service (no raw LS)
-            const emptyHtml = buildProfileContent(null, []);
+            const emptyHtml = buildProfileContent(null);
             expect(emptyHtml).not.toContain('LS');
             expect(emptyHtml).not.toContain('>个人<');
             expect(emptyHtml).toContain(lang === 'en' ? 'local service' : '本地服务');
@@ -3056,7 +3057,7 @@ describe('[tabs-meta-ux-tooltips]', () => {
                     quotaSummary: SAMPLE_QUOTA_SUMMARY,
                     quotaRunways: SAMPLE_RUNWAYS,
                 }),
-                buildProfileContent(makeUserInfo(), configs, 15, SAMPLE_QUOTA_SUMMARY),
+                buildProfileContent(makeUserInfo(), 15),
                 buildCalendarTabContent(store, 2026, 11, { selectedDate: '2026-11-20', now: new Date(2026, 10, 20, 12, 0), language: 'both' }),
                 buildSettingsContent(configs, undefined, undefined, { surface: 'app-sidecar', updateStatus: { status: 'error', error: 'Timeout' } }),
                 buildAboutTabContent('1.17.11', { surface: 'app-sidecar', updateStatus: { status: 'error', error: 'Timeout' } }),
