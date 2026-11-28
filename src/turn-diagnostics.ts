@@ -15,14 +15,22 @@
 import { COMPRESSION_MIN_DROP } from './constants';
 import type { GMCallEntry } from './gm/types';
 import { normalizeModelDisplayName } from './models';
+import {
+    PROMPT_CACHE_COLD_THRESHOLD_PCT,
+    PROMPT_CACHE_WARM_THRESHOLD_PCT,
+    classifyPromptCacheState,
+    type PromptCacheState,
+} from './telemetry-metrics';
+
+export { classifyPromptCacheState, type PromptCacheState };
 
 // ─── Thresholds & Constants ──────────────────────────────────────────────────
 
 /** Cache hit % below this threshold is classified as Cold Start. */
-export const COLD_START_THRESHOLD_PCT = 10;
+export const COLD_START_THRESHOLD_PCT = PROMPT_CACHE_COLD_THRESHOLD_PCT;
 
 /** Cache hit % at or above this threshold is classified as Warm Start. */
-export const WARM_START_THRESHOLD_PCT = 70;
+export const WARM_START_THRESHOLD_PCT = PROMPT_CACHE_WARM_THRESHOLD_PCT;
 
 /** Minimum valid TTFT in milliseconds (sub-1ms timing is treated as invalid/noise). */
 export const MIN_VALID_TTFT_MS = 1;
@@ -37,7 +45,7 @@ export const DEFAULT_MAX_TURNS = 50;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type TurnStartKind = 'cold' | 'partial' | 'warm' | 'unknown';
+export type TurnStartKind = PromptCacheState;
 
 export type CacheTokenSemantics = 'additive' | 'inclusive';
 
@@ -238,16 +246,7 @@ export function classifyTurnStartKind(
     if (!Number.isFinite(inputTokens) || inputTokens <= 0) {
         return 'unknown';
     }
-    if (typeof cacheHitPct !== 'number' || !Number.isFinite(cacheHitPct) || cacheHitPct < 0) {
-        return 'unknown';
-    }
-    if (cacheHitPct < COLD_START_THRESHOLD_PCT) {
-        return 'cold';
-    }
-    if (cacheHitPct < WARM_START_THRESHOLD_PCT) {
-        return 'partial';
-    }
-    return 'warm';
+    return classifyPromptCacheState(cacheHitPct);
 }
 
 // ─── Normalization ───────────────────────────────────────────────────────────

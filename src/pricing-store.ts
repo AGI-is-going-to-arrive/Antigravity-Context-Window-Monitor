@@ -912,6 +912,13 @@ export class PricingStore {
         await this._persist();
     }
 
+    /** Reload custom pricing from committed globalState into memory without writing back. */
+    reloadFromStorage(): void {
+        if (this._globalState) {
+            this._custom = { ...this._globalState.get<Record<string, ModelPricing>>(STORAGE_KEY, {}) };
+        }
+    }
+
     /** Reset all custom pricing to defaults */
     async reset(): Promise<void> {
         this._custom = {};

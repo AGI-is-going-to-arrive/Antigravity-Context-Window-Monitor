@@ -9,7 +9,7 @@
 // - Enhanced Click-Day Detail Drawer with token breakdown, model proportion bars & collapsible cycle history
 // - Safe two-step confirmation for Clear History; WCAG 2.1 AA compliant across Dark/Light/HC themes.
 
-import { getLanguage, tBi, tBiHtml, type Language } from './i18n-core';
+import { getLanguage, tBi, tBiHtml, tHtml, type Language } from './i18n-core';
 import {
     computeAdditiveTokens,
     computeCycleTokenTotals,
@@ -25,33 +25,40 @@ import {
     type LiveLedgerSource,
 } from './daily-archival';
 import {
+    aggregateWorkspaceLeaderboard,
     normalizeUsageSurface,
     type DailyLedger,
     type LedgerAccountBucket,
     type LedgerSettledEntry,
+    type SwarmGroupAttributionSpec,
     type UsageSurface,
+    type WorkspaceLeaderboardResult,
 } from './daily-ledger';
+import type { SwarmGroupCostSummary, SwarmTopologySnapshot } from './core/swarm-registry';
 import {
     buildCalendarExportCsv,
     buildCalendarExportJson,
+    buildCalendarExportMarkdown,
     cliDayRecordToDailyRecord,
     computeActivityStreaks,
     estimateSubscriptionRoi,
-    formatCurrencyAmount,
-    formatDualCurrencyAmount,
-    resolveCurrencyConfig,
     type CalendarExportDayRow,
     type CalendarExportMetadata,
     type CalendarExportModelRow,
     type CliDailyUsageRecord,
+    type SubscriptionConfig,
+} from './cli-usage-scanner';
+import {
+    formatCurrencyAmount,
+    formatDualCurrencyAmount,
+    resolveCurrencyConfig,
     type CurrencyCode,
     type CurrencyConfig,
     type CurrencyInput,
-    type SubscriptionConfig,
-} from './cli-usage-scanner';
+} from './core/currency';
 import type { ModelPricing } from './pricing-store';
 import { ICON } from './webview-icons';
-import { esc, formatShortTime } from './webview-helpers';
+import { esc, formatShortTime, richTipAttrs, slugKey } from './webview-helpers';
 import { normalizeModelDisplayName } from './models';
 import { formatCachePercent, formatLatency, formatSpeed } from './telemetry-metrics';
 
@@ -103,6 +110,25 @@ export interface CalendarRenderOptions {
     customPricing?: Record<string, ModelPricing>;
     /** Render the two-step Clear History confirmation bar expanded when true (default: false). */
     confirmingClear?: boolean;
+    /** Optional explicit inclusive start date ('YYYY-MM-DD') for range-scoped exports. */
+    rangeStart?: string;
+    /** Optional explicit inclusive end date ('YYYY-MM-DD') for range-scoped exports. */
+    rangeEnd?: string;
+    /** When true, scope export strictly to `selectedDate` (returns empty when `selectedDate` is blank/unmatched). */
+    exportSelectedDateOnly?: boolean;
+    /** Optional explicit list of selected `YYYY-MM-DD` dates (empty array strictly produces empty export/range). */
+    selectedDates?: readonly string[];
+    /** Optional Swarm group specs for direct vs inclusive unique-call group cost breakdown. */
+    swarmGroups?: readonly SwarmGroupAttributionSpec[];
+    /** Optional pre-computed Swarm group cost summaries keyed by rootId. */
+    swarmGroupCosts?: Record<string, SwarmGroupCostSummary>;
+    swarmTopology?: SwarmTopologySnapshot;
+    /** When true, redact account emails and workspace project names in calendar drawers/leaderboard. */
+    privacyMasked?: boolean;
+    /** Optional timezone label carried through export metadata. */
+    timezone?: string;
+    /** Optional week-start convention (`1` Monday ISO default, `0` Sunday). */
+    weekStartsOn?: 0 | 1;
 }
 
 export interface CalendarExportBundle {
@@ -110,6 +136,7 @@ export interface CalendarExportBundle {
     meta: CalendarExportMetadata;
     json: string;
     csv: string;
+    markdown: string;
 }
 
 // ─── SVG Icons ───────────────────────────────────────────────────────────────
@@ -117,15 +144,15 @@ export interface CalendarExportBundle {
 const CALENDAR_ICON = '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5M1 4v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4z"/></svg>';
 const CHEVRON_LEFT = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0"/></svg>';
 const CHEVRON_RIGHT = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708"/></svg>';
-const EXPORT_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5"/><path fill="currentColor" d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708z"/></svg>';
+const EXPORT_ICON = ICON.file;
 
 const CAL_ICON = {
-    calls: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2.5 1A1.5 1.5 0 0 0 1 2.5v11A1.5 1.5 0 0 0 2.5 15h11a1.5 1.5 0 0 0 1.5-1.5v-11A1.5 1.5 0 0 0 13.5 1zm4.168 4.413a.5.5 0 0 1 .497.034l3.5 2.5a.5.5 0 0 1 0 .806l-3.5 2.5A.5.5 0 0 1 6.5 10.5v-5a.5.5 0 0 1 .168-.087"/></svg>',
-    credit: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16"/><path fill="currentColor" d="M4 5.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8m0 2.5a.5.5 0 0 1 .5-.5h4a.5.5 0 0 1 0 1h-4a.5.5 0 0 1-.5-.5"/></svg>',
-    speed: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M5.52.359A.5.5 0 0 1 6 0h4a.5.5 0 0 1 .474.658L8.694 6H12.5a.5.5 0 0 1 .395.807l-7 9a.5.5 0 0 1-.873-.454L6.823 9H3.5a.5.5 0 0 1-.48-.641z"/></svg>',
-    clock: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 3.5a.5.5 0 0 0-1 0V8a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 7.71z"/><path fill="currentColor" d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0"/></svg>',
-    cache: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2zm15 2h-4v3h4zm0 4h-4v3h4zm0 4h-4v3h3a1 1 0 0 0 1-1zm-5 3v-3H6v3zm-5 0v-3H1v2a1 1 0 0 0 1 1zm-4-4h4V8H1zm0-4h4V4H1zm5-3v3h4V4zm4 4H6v3h4z"/></svg>',
-    dollar: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M4 10.781c.148 1.667 1.513 2.85 3.591 3.003V15h1.043v-1.216c2.27-.179 3.678-1.438 3.678-3.3 0-1.59-.947-2.51-2.956-3.028l-.722-.187V3.467c1.122.11 1.879.714 2.07 1.616h1.47c-.166-1.6-1.54-2.748-3.54-2.875V1H7.591v1.233c-1.939.23-3.27 1.472-3.27 3.156 0 1.454.966 2.483 2.661 2.917l.61.162v4.031c-1.149-.17-1.94-.8-2.131-1.718zm3.391-3.836c-1.043-.263-1.6-.825-1.6-1.616 0-.944.704-1.641 1.8-1.828v3.495zM8.634 8.1C9.858 8.418 10.44 9 10.44 9.89c0 1.12-.789 1.816-2.007 1.931V8.1z"/></svg>',
+    calls: ICON.bolt,
+    credit: ICON.star,
+    speed: ICON.bolt,
+    clock: ICON.clock,
+    cache: ICON.database,
+    dollar: ICON.chart,
 } as const;
 
 // ─── Constants & Formatters ──────────────────────────────────────────────────
@@ -136,8 +163,7 @@ const DAY_HEADERS_ZH = ['一', '二', '三', '四', '五', '六', '日'];
 const DAY_HEADERS_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 function calSlugKey(raw: string): string {
-    const cleaned = raw.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-    return (cleaned || 'item').slice(0, 48);
+    return slugKey(raw, 48);
 }
 
 function calRichTipAttrs(
@@ -152,12 +178,12 @@ function calRichTipAttrs(
 ): string {
     const title = bi(titleEn, titleZh);
     const body = bi(bodyEn, bodyZh);
-    const meta = metaEn || metaZh ? bi(metaEn || '', metaZh || '') : '';
-    return ` data-popover-key="${esc(key)}" data-tip-title="${esc(title)}" data-tip-body="${esc(body)}"${meta ? ` data-tip-meta="${esc(meta)}"` : ''}`;
+    const meta = metaEn || metaZh ? bi(metaEn || '', metaZh || '') : undefined;
+    return richTipAttrs({ key, title, body, meta, leadingSpace: true });
 }
 
 function calRichTipRawAttrs(key: string, title: string, body: string, meta?: string): string {
-    return ` data-popover-key="${esc(key)}" data-tip-title="${esc(title)}" data-tip-body="${esc(body)}"${meta ? ` data-tip-meta="${esc(meta)}"` : ''}`;
+    return richTipAttrs({ key, title, body, meta, leadingSpace: true });
 }
 
 function formatTokensCompact(n: number): string {
@@ -283,29 +309,10 @@ function safeInt(n: number | undefined): number {
     return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-function scaleModelStatsForSurface(
-    gm: GMModelCycleStats,
-    ratio: number,
-): GMModelCycleStats {
-    if (ratio >= 0.999999) { return gm; }
-    return {
-        ...gm,
-        calls: Math.max(0, Math.round(gm.calls * ratio)),
-        credits: gm.credits * ratio,
-        inputTokens: Math.round(gm.inputTokens * ratio),
-        outputTokens: Math.round(gm.outputTokens * ratio),
-        thinkingTokens: Math.round(gm.thinkingTokens * ratio),
-        cacheReadTokens: gm.cacheReadTokens !== undefined ? Math.round(gm.cacheReadTokens * ratio) : undefined,
-        cacheCreationTokens: gm.cacheCreationTokens !== undefined ? Math.round(gm.cacheCreationTokens * ratio) : undefined,
-        estimatedCost: gm.estimatedCost !== undefined && Number.isFinite(gm.estimatedCost)
-            ? gm.estimatedCost * ratio
-            : undefined,
-    };
-}
-
 /**
  * Filter a single DailyCycleEntry for a requested source ('all' | 'app' | 'ide' | 'cli').
  * Returns `null` when the cycle has no activity matching the source.
+ * Strictly uses exact per-surface counts — NEVER proportionally scales models across surfaces.
  */
 function filterCycleBySource(
     cycle: DailyCycleEntry,
@@ -316,24 +323,37 @@ function filterCycleBySource(
         return { cycle, surfaces };
     }
 
-    // Exact surfaceBreakdown match (supports mixed App + IDE days cleanly!)
+    // Exact surfaceBreakdown match (zero proportional model scaling across mixed surfaces!)
     if (cycle.surfaceBreakdown) {
         const surfStats = cycle.surfaceBreakdown[sourceFilter];
         if (!surfStats || (surfStats.calls <= 0 && computeAdditiveTokens(surfStats) <= 0 && surfStats.estimatedCost <= 0)) {
             return null;
         }
-        const totalCycleTok = computeCycleTokenTotals(cycle).totalTokens;
         const surfTok = computeAdditiveTokens(surfStats);
-        const totalCycleCalls = safeInt(cycle.gmTotalCalls);
-        const ratio = totalCycleTok > 0
-            ? Math.min(1, surfTok / totalCycleTok)
-            : (totalCycleCalls > 0 ? Math.min(1, surfStats.calls / totalCycleCalls) : 1);
-
-        let scaledModels: Record<string, GMModelCycleStats> | undefined;
-        if (cycle.gmModelStats) {
-            scaledModels = {};
-            for (const [k, gm] of Object.entries(cycle.gmModelStats)) {
-                scaledModels[k] = scaleModelStatsForSurface(gm, ratio);
+        const isPureMatchingSurface = surfaces.length === 1 && surfaces[0] === sourceFilter;
+        let exactModels: Record<string, GMModelCycleStats> | undefined;
+        if (isPureMatchingSurface) {
+            exactModels = cycle.gmModelStats;
+        } else if (cycle.lateMergedCalls) {
+            const matchingCalls = Object.values(cycle.lateMergedCalls).filter(
+                c => normalizeUsageSurface(c.surface) === sourceFilter,
+            );
+            if (matchingCalls.length > 0) {
+                exactModels = {};
+                for (const c of matchingCalls) {
+                    const key = c.modelId || 'unknown';
+                    const entry = exactModels[key] || (exactModels[key] = {
+                        calls: 0, credits: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0,
+                        cacheReadTokens: 0, cacheCreationTokens: 0, avgTTFT: 0, cacheHitRate: 0, estimatedCost: 0,
+                    });
+                    entry.calls += 1;
+                    entry.inputTokens += safeInt(c.inputTokens);
+                    entry.outputTokens += safeInt(c.outputTokens);
+                    entry.thinkingTokens += safeInt(c.thinkingTokens);
+                    entry.cacheReadTokens = (entry.cacheReadTokens || 0) + safeInt(c.cacheReadTokens);
+                    entry.cacheCreationTokens = (entry.cacheCreationTokens || 0) + safeInt(c.cacheCreationTokens);
+                    entry.estimatedCost = (entry.estimatedCost || 0) + (c.unpriced ? 0 : safeCost(c.estimatedCost));
+                }
             }
         }
         const filteredCycle: DailyCycleEntry = {
@@ -346,7 +366,7 @@ function filterCycleBySource(
             gmTotalCacheCreation: surfStats.cacheCreationTokens,
             gmTotalThinkingTokens: surfStats.thinkingTokens,
             estimatedCost: surfStats.estimatedCost > 0 ? surfStats.estimatedCost : undefined,
-            gmModelStats: scaledModels,
+            gmModelStats: exactModels,
             surface: sourceFilter,
             surfaceBreakdown: { [sourceFilter]: surfStats },
         };
@@ -563,6 +583,7 @@ function buildUnifiedDayMap(
     allSourceDays: Map<string, AggregatedCalendarDay>;
     filteredDays: Map<string, AggregatedCalendarDay>;
     availableSources: Set<UsageSurface>;
+    mergedRaw: Map<string, DailyRecord>;
 } {
     const cliRecords = (options.cliDays || []).map(cliDayRecordToDailyRecord);
     const mergedRaw = mergeArchivedAndLiveRecords({
@@ -592,7 +613,7 @@ function buildUnifiedDayMap(
         }
     }
 
-    return { allSourceDays, filteredDays, availableSources };
+    return { allSourceDays, filteredDays, availableSources, mergedRaw };
 }
 
 function computeIntensityLevel(value: number, maxValue: number): 0 | 1 | 2 | 3 | 4 {
@@ -613,15 +634,131 @@ function dayMetricValue(day: AggregatedCalendarDay | undefined, metricMode: Cale
     return day.totalTokens > 0 ? day.totalTokens : day.calls;
 }
 
+const WEEKLY_CHART_WEEKS = 16;
+
+interface WeeklyWindowSpec {
+    weekInfos: Array<{ key: string; startDate: string; endDate: string }>;
+    rangeStart: string;
+    rangeEnd: string;
+    spanDays: number;
+}
+
+/**
+ * Single authoritative 16-ISO-week window resolver shared by BOTH `buildWeeklyChartSection`
+ * and `filterDaysForRange` / `buildCalendarExportData` so 16w display and exports match 1:1.
+ */
+function resolveWeekly16Window(todayDate: Date): WeeklyWindowSpec {
+    const todayKey = toLocalDateKey(todayDate);
+    const seen = new Set<string>();
+    const weekInfos: Array<{ key: string; startDate: string; endDate: string }> = [];
+    for (let w = WEEKLY_CHART_WEEKS - 1; w >= 0; w--) {
+        const refDate = addLocalDays(todayDate, -w * 7);
+        const info = getIsoWeekKey(toLocalDateKey(refDate));
+        if (!seen.has(info.key)) {
+            seen.add(info.key);
+            weekInfos.push(info);
+        }
+    }
+    const rangeStart = weekInfos[0]?.startDate || toLocalDateKey(addLocalDays(todayDate, -(WEEKLY_CHART_WEEKS * 7 - 1)));
+    const startD = parseDateKeyLocal(rangeStart);
+    const spanDays = startD
+        ? Math.max(1, utcDayNumber(todayDate) - utcDayNumber(startD) + 1)
+        : WEEKLY_CHART_WEEKS * 7;
+    return { weekInfos, rangeStart, rangeEnd: todayKey, spanDays };
+}
+
+/**
+ * Single authoritative `heatmapWeeks` (default 52w) ISO-Monday-aligned window resolver
+ * shared by BOTH `buildHeatmapSection` and `filterDaysForRange` / `buildCalendarExportData`.
+ */
+function resolveDailyHeatmapWindow(anchorDate: Date, heatmapWeeks: number, capEndKey?: string): {
+    startMonday: Date;
+    endSunday: Date;
+    rangeStart: string;
+    rangeEnd: string;
+    spanDays: number;
+} {
+    const anchorDay = anchorDate.getDay() === 0 ? 7 : anchorDate.getDay(); // 1=Mon..7=Sun
+    const endSunday = addLocalDays(anchorDate, 7 - anchorDay);
+    const startMonday = addLocalDays(endSunday, -(heatmapWeeks * 7 - 1));
+    const rangeStart = toLocalDateKey(startMonday);
+    const endSundayKey = toLocalDateKey(endSunday);
+    const rangeEnd = capEndKey && capEndKey < endSundayKey ? capEndKey : endSundayKey;
+    const endD = parseDateKeyLocal(rangeEnd) ?? endSunday;
+    const spanDays = Math.max(1, utcDayNumber(endD) - utcDayNumber(startMonday) + 1);
+    return { startMonday, endSunday, rangeStart, rangeEnd, spanDays };
+}
+
 function filterDaysForRange(
     filteredDays: Map<string, AggregatedCalendarDay>,
     periodMode: CalendarPeriodMode,
     currentYear: number,
     todayDate: Date,
     heatmapWeeks: number,
+    explicitSelection?: {
+        rangeStart?: string;
+        rangeEnd?: string;
+        selectedDate?: string;
+        exportSelectedDateOnly?: boolean;
+        selectedDates?: readonly string[];
+    },
 ): { days: AggregatedCalendarDay[]; rangeStart: string; rangeEnd: string; spanDays: number } {
     const todayKey = toLocalDateKey(todayDate);
     const allSorted = [...filteredDays.values()].sort((a, b) => a.date.localeCompare(b.date));
+
+    // Explicit multi-date selection array: empty array MUST export strictly empty!
+    if (explicitSelection?.selectedDates !== undefined) {
+        const validSet = new Set(
+            explicitSelection.selectedDates
+                .map(d => (d || '').trim())
+                .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)),
+        );
+        if (validSet.size === 0) {
+            return { days: [], rangeStart: '', rangeEnd: '', spanDays: 0 };
+        }
+        const sortedKeys = [...validSet].sort();
+        const matched = allSorted.filter(d => validSet.has(d.date));
+        return {
+            days: matched,
+            rangeStart: sortedKeys[0],
+            rangeEnd: sortedKeys[sortedKeys.length - 1],
+            spanDays: sortedKeys.length,
+        };
+    }
+
+    // Explicit single-date selection export: empty or unmatched selection MUST export empty!
+    if (explicitSelection?.exportSelectedDateOnly) {
+        const cleanSel = (explicitSelection.selectedDate || '').trim();
+        if (!cleanSel || !/^\d{4}-\d{2}-\d{2}$/.test(cleanSel)) {
+            return { days: [], rangeStart: '', rangeEnd: '', spanDays: 0 };
+        }
+        const match = filteredDays.get(cleanSel);
+        return {
+            days: match ? [match] : [],
+            rangeStart: cleanSel,
+            rangeEnd: cleanSel,
+            spanDays: 1,
+        };
+    }
+
+    // Explicit date range selection: strict inclusive filter with ZERO fallback to all history!
+    const hasExplicitRange = Boolean(explicitSelection?.rangeStart || explicitSelection?.rangeEnd);
+    if (hasExplicitRange) {
+        const startKey = (explicitSelection?.rangeStart || '').trim();
+        const endKey = (explicitSelection?.rangeEnd || '').trim();
+        const validStart = /^\d{4}-\d{2}-\d{2}$/.test(startKey) ? startKey : '';
+        const validEnd = /^\d{4}-\d{2}-\d{2}$/.test(endKey) ? endKey : '';
+        if ((startKey && !validStart) || (endKey && !validEnd) || (validStart && validEnd && validStart > validEnd)) {
+            return { days: [], rangeStart: validStart, rangeEnd: validEnd, spanDays: 0 };
+        }
+        const effStart = validStart || validEnd;
+        const effEnd = validEnd || validStart;
+        const inExplicit = allSorted.filter(d => d.date >= effStart && d.date <= effEnd);
+        const sD = parseDateKeyLocal(effStart);
+        const eD = parseDateKeyLocal(effEnd);
+        const spanDays = sD && eD && eD >= sD ? utcDayNumber(eD) - utcDayNumber(sD) + 1 : 0;
+        return { days: inExplicit, rangeStart: effStart, rangeEnd: effEnd, spanDays };
+    }
 
     if (periodMode === 'year') {
         const yearPrefix = `${currentYear}-`;
@@ -653,20 +790,22 @@ function filterDaysForRange(
     }
 
     if (periodMode === 'weekly') {
-        const weeks = 16;
-        const startD = addLocalDays(todayDate, -(weeks * 7 - 1));
-        const rangeStart = toLocalDateKey(startD);
+        // Unified 16-ISO-week window matching buildWeeklyChartSection 1:1
+        const w16 = resolveWeekly16Window(todayDate);
         return {
-            days: allSorted.filter(d => d.date >= rangeStart && d.date <= todayKey),
-            rangeStart,
-            rangeEnd: todayKey,
-            spanDays: weeks * 7,
+            days: allSorted.filter(d => d.date >= w16.rangeStart && d.date <= w16.rangeEnd),
+            rangeStart: w16.rangeStart,
+            rangeEnd: w16.rangeEnd,
+            spanDays: w16.spanDays,
         };
     }
 
     if (periodMode === 'all') {
-        const rangeStart = allSorted[0]?.date || todayKey;
-        const rangeEnd = allSorted[allSorted.length - 1]?.date || todayKey;
+        if (allSorted.length === 0) {
+            return { days: [], rangeStart: '', rangeEnd: '', spanDays: 0 };
+        }
+        const rangeStart = allSorted[0].date;
+        const rangeEnd = allSorted[allSorted.length - 1].date;
         const sD = parseDateKeyLocal(rangeStart);
         const eD = parseDateKeyLocal(rangeEnd);
         const spanDays = sD && eD && eD >= sD
@@ -675,31 +814,23 @@ function filterDaysForRange(
         return { days: allSorted, rangeStart, rangeEnd, spanDays };
     }
 
-    // Default 'daily': 52-week heatmap span
-    const totalDays = heatmapWeeks * 7;
-    const startD = addLocalDays(todayDate, -(totalDays - 1));
-    const rangeStart = toLocalDateKey(startD);
-    // Keep days within the heatmap window (or if all data is outside today's window — e.g., tests viewing a historical/future month — include all filtered days!)
-    const inWindow = allSorted.filter(d => d.date >= rangeStart && d.date <= todayKey);
-    const effectiveDays = inWindow.length > 0 ? inWindow : allSorted;
-    const effectiveStart = inWindow.length > 0 ? rangeStart : (allSorted[0]?.date || rangeStart);
-    const effectiveEnd = inWindow.length > 0 ? todayKey : (allSorted[allSorted.length - 1]?.date || todayKey);
-    const spanDays = inWindow.length > 0
-        ? totalDays
-        : Math.max(1, (() => {
-            const sD = parseDateKeyLocal(effectiveStart);
-            const eD = parseDateKeyLocal(effectiveEnd);
-            return sD && eD && eD >= sD ? utcDayNumber(eD) - utcDayNumber(sD) + 1 : 1;
-        })());
-
-    return { days: effectiveDays, rangeStart: effectiveStart, rangeEnd: effectiveEnd, spanDays };
+    // Default 'daily': unified 52-week (heatmapWeeks) window — strictly NO fallback to allSorted when empty!
+    const win = resolveDailyHeatmapWindow(todayDate, heatmapWeeks, todayKey);
+    const inWindow = allSorted.filter(d => d.date >= win.rangeStart && d.date <= win.rangeEnd);
+    return {
+        days: inWindow,
+        rangeStart: win.rangeStart,
+        rangeEnd: win.rangeEnd,
+        spanDays: win.spanDays,
+    };
 }
 
 // ─── Public Export Data Builder ──────────────────────────────────────────────
 
 /**
- * Build structured JSON & CSV exports for the active Calendar filters & date range.
- * Shared by Phase B webview / sidecar export command handlers.
+ * Build structured JSON, CSV & Markdown exports for the active Calendar filters & date range.
+ * Shared by webview / sidecar export command handlers.
+ * Empty selections or ranges with zero matching days strictly export EMPTY (never falling back to all history).
  */
 export function buildCalendarExportData(
     store?: DailyStore,
@@ -714,7 +845,13 @@ export function buildCalendarExportData(
     const heatmapWeeks = Math.min(53, Math.max(12, Math.floor(options.heatmapWeeks ?? 52)));
 
     const { filteredDays } = buildUnifiedDayMap(store, options, nowDate);
-    const range = filterDaysForRange(filteredDays, periodMode, currentYear, nowDate, heatmapWeeks);
+    const range = filterDaysForRange(filteredDays, periodMode, currentYear, nowDate, heatmapWeeks, {
+        rangeStart: options.rangeStart,
+        rangeEnd: options.rangeEnd,
+        selectedDate: options.selectedDate,
+        exportSelectedDateOnly: options.exportSelectedDateOnly,
+        selectedDates: options.selectedDates,
+    });
     const rows = range.days.map(toExportDayRow);
 
     const meta: CalendarExportMetadata = {
@@ -733,6 +870,7 @@ export function buildCalendarExportData(
         meta,
         json: buildCalendarExportJson(rows, meta),
         csv: buildCalendarExportCsv(rows, meta),
+        markdown: buildCalendarExportMarkdown(rows, meta),
     };
 }
 
@@ -751,6 +889,7 @@ export function buildCalendarTabContent(
 
     const hasExternalSources = Boolean(
         options.liveLedger
+        || (options.swarmGroupCosts && Object.keys(options.swarmGroupCosts).length > 0)
         || (options.cliDays && options.cliDays.length > 0),
     );
     if (!store && !hasExternalSources) {
@@ -776,12 +915,17 @@ export function buildCalendarTabContent(
     const heatmapWeeks = Math.min(53, Math.max(12, Math.floor(options.heatmapWeeks ?? 52)));
     const selectedDate = options.selectedDate || '';
 
-    const { allSourceDays, filteredDays, availableSources } = buildUnifiedDayMap(store, options, nowDate);
-    const hasAnyData = allSourceDays.size > 0;
+    const { allSourceDays, filteredDays, availableSources, mergedRaw } = buildUnifiedDayMap(store, options, nowDate);
     const todayAgg = filteredDays.get(todayKey);
     const hasLiveToday = Boolean(todayAgg?.isLive);
 
-    const range = filterDaysForRange(filteredDays, periodMode, currentYear, nowDate, heatmapWeeks);
+    const range = filterDaysForRange(filteredDays, periodMode, currentYear, nowDate, heatmapWeeks, {
+        rangeStart: options.rangeStart,
+        rangeEnd: options.rangeEnd,
+        selectedDate: options.selectedDate,
+        exportSelectedDateOnly: options.exportSelectedDateOnly,
+        selectedDates: options.selectedDates,
+    });
     const parts: string[] = [];
 
     // ── 1. Dashboard Controls + 4-Card KPI Header ──
@@ -803,29 +947,8 @@ export function buildCalendarTabContent(
         biHtml,
     }));
 
-    // ── 2. Legacy Backward-Compatible Monthly / All-Time Summary Card ──
-    if (hasAnyData) {
-        const monthlySummary = buildMonthlySummaryGrid(filteredDays, currentYear, currentMonth, currency, bi, biHtml);
-        const allTimeSummary = buildOverallSummaryGrid(filteredDays, currency, bi, biHtml);
-        parts.push(`
-            <section class="card cal-summary-card">
-                <div class="cal-summary-header">
-                    <h2>${ICON.chart} <span>${biHtml('Usage Summary', '用量汇总')}</span></h2>
-                    <div class="cal-summary-toggle" id="calSummaryToggle" role="group" aria-label="${esc(bi('Usage summary range', '用量汇总范围'))}">
-                        <button type="button" class="cal-summary-btn active" data-summary-mode="monthly"><span>${biHtml('Monthly', '月度')}</span></button>
-                        <button type="button" class="cal-summary-btn" data-summary-mode="alltime"><span>${biHtml('All-Time', '全部')}</span></button>
-                    </div>
-                </div>
-                <div class="cal-summary-pane" id="calSummaryMonthly" style="display:block">
-                    ${monthlySummary}
-                </div>
-                <div class="cal-summary-pane" id="calSummaryAllTime" style="display:none">
-                    ${allTimeSummary}
-                </div>
-            </section>`);
-    }
-
-    // ── 3. Main Activity Visualization Card (Heatmap / Period Chart / Month Grid / Range Footer / Day Details) ──
+    // ── 2. Main Activity Visualization Card (Heatmap / Period Chart / Month Grid / Range Footer / Day Details) ──
+    // Note: Redundant legacy "Usage Summary" card removed per D5 (superseded by 4-card KPI header + Range Summary Footer).
     const vizParts: string[] = [];
 
     if (periodMode === 'daily') {
@@ -866,13 +989,14 @@ export function buildCalendarTabContent(
         vizParts.push(buildAllTimeStripSection(filteredDays, metricMode, currency, todayKey, bi, biHtml));
     }
 
-    // Range Summary Footer (with active day avg, calendar daily avg, streak & optional Plan ROI)
+    // Range Summary Footer (with active day avg, calendar daily avg, streak & collapsible Plan ROI)
     vizParts.push(buildRangeSummaryFooter(
         range.days,
         range.spanDays,
         todayKey,
         currency,
         options.subscription ?? null,
+        lang,
         bi,
         biHtml,
     ));
@@ -898,7 +1022,7 @@ export function buildCalendarTabContent(
     for (const dateStr of [...detailDateSet].sort()) {
         const day = filteredDays.get(dateStr);
         if (day) {
-            detailPanels.push(buildDayDetail(day, dateStr, todayKey, currency, metricMode, selectedDate === dateStr, bi, biHtml));
+            detailPanels.push(buildDayDetail(day, dateStr, todayKey, currency, metricMode, selectedDate === dateStr, bi, biHtml, Boolean(options.privacyMasked)));
         }
     }
 
@@ -922,6 +1046,42 @@ export function buildCalendarTabContent(
                 ${detailPanels.join('')}
             </div>
         </section>`);
+
+    // ── 3. Workspace Project Leaderboard & Swarm Group Cost (Plan C / §5.2.5) ──
+    const rangeDateKeys = new Set(range.days.map(d => d.date));
+    const rangeRawRecords: DailyRecord[] = [];
+    for (const dateKey of rangeDateKeys) {
+        const rec = mergedRaw.get(dateKey);
+        if (rec) { rangeRawRecords.push(rec); }
+    }
+    const leaderboard = aggregateWorkspaceLeaderboard({
+        records: rangeRawRecords,
+        surfaceFilter: sourceFilter,
+        swarmGroups: options.swarmGroups,
+    });
+    const leaderboardHtml = buildWorkspaceLeaderboardCard(leaderboard, currency, lang, Boolean(options.privacyMasked), bi, biHtml);
+    if (leaderboardHtml) {
+        parts.push(leaderboardHtml);
+    }
+    const filteredLeaderboardSwarmCosts = leaderboard.swarmGroupCosts
+        ? Object.fromEntries(
+            Object.entries(leaderboard.swarmGroupCosts).filter(([, s]) =>
+                (s.uniqueCallCount || 0) > 0 || (s.inclusiveGroupCostUsd || 0) > 0 || (s.unpricedCallCount || 0) > 0,
+            ),
+        )
+        : undefined;
+    const hasExplicitRange = Boolean(options.rangeStart || options.rangeEnd || options.exportSelectedDateOnly);
+    const rangeIncludesToday = options.selectedDates !== undefined
+        ? options.selectedDates.some(date => date.trim() === todayKey)
+        : (!hasExplicitRange && periodMode === 'all')
+            || (range.spanDays > 0 && range.rangeStart <= todayKey && todayKey <= range.rangeEnd);
+    const swarmCostHtml = buildSwarmGroupCostCard(
+        filteredLeaderboardSwarmCosts, rangeIncludesToday ? options.swarmGroupCosts : undefined,
+        currency, lang, Boolean(options.privacyMasked), bi, biHtml, options.swarmTopology,
+    );
+    if (swarmCostHtml) {
+        parts.push(swarmCostHtml);
+    }
 
     // ── 4. Safe Two-Step Clear History Action ──
     if (store && store.totalDays > 0) {
@@ -1071,8 +1231,8 @@ function buildControlsAndKpiCard(args: {
         'cal-metric-cost',
         'API Reference Cost',
         'API 参考金额',
-        'Visualizes estimated API reference cost using public per-1M token list rates (or your custom rates in Cost tab).',
-        '按公开 API 每百万 Token 单价（或你在「成本」页设置的自定义单价）估算的参考金额。',
+        'Visualizes estimated API reference cost using public per-1M token list rates (or your custom rates in Usage & Cost).',
+        '按公开 API 每百万 Token 单价（或你在「用量与费用」页设置的自定义单价）估算的参考费用。',
         bi,
         'Reference estimate only — not your actual subscription billing.',
         '仅为等效 API 参考估值，并非实际订阅扣费。',
@@ -1154,6 +1314,14 @@ function buildControlsAndKpiCard(args: {
         )}</p>`
         : '';
 
+    const mdExportTip = calRichTipAttrs(
+        'cal-export-md',
+        'Export Markdown',
+        '导出 Markdown',
+        'Exports a GitHub-Flavored Markdown table for the exact active filter, currency, and date range (empty selection exports empty).',
+        '按当前筛选、币种与日期范围导出 Markdown 表格（空选择导出为空）。',
+        bi,
+    );
     const csvExportTip = calRichTipAttrs(
         'cal-export-csv',
         'Export CSV',
@@ -1203,6 +1371,9 @@ function buildControlsAndKpiCard(args: {
                     ${livePillHtml}
                 </div>
                 <div class="cal-export-actions" role="group" aria-label="${esc(bi('Export calendar data', '导出日历数据'))}">
+                    <button type="button" class="cal-export-btn" data-action="calendarExportMarkdown" data-cal-export="markdown" aria-label="${esc(bi('Export filtered range as Markdown', '导出当前筛选区间为 Markdown'))}"${mdExportTip}>
+                        ${EXPORT_ICON} <span>Markdown</span>
+                    </button>
                     <button type="button" class="cal-export-btn" data-action="calendarExportCsv" data-cal-export="csv" aria-label="${esc(bi('Export filtered range as CSV', '导出当前筛选区间为 CSV'))}"${csvExportTip}>
                         ${EXPORT_ICON} <span>CSV</span>
                     </button>
@@ -1267,10 +1438,8 @@ function buildHeatmapSection(
     bi: (en: string, zh: string) => string,
     biHtml: (en: string, zh: string) => string,
 ): string {
-    // Align heatmap end to Sunday of anchorDate's ISO week so columns are Mon..Sun
-    const anchorDay = anchorDate.getDay() === 0 ? 7 : anchorDate.getDay(); // 1=Mon..7=Sun
-    const endSunday = addLocalDays(anchorDate, 7 - anchorDay);
-    const startMonday = addLocalDays(endSunday, -(weeks * 7 - 1));
+    // Align heatmap end to Sunday of anchorDate's ISO week via the shared window resolver
+    const { startMonday } = resolveDailyHeatmapWindow(anchorDate, weeks);
 
     // Find max value across visible weeks for 5-level scaling
     let maxVal = 0;
@@ -1318,7 +1487,7 @@ function buildHeatmapSection(
                     `相对强度 ${level}/4 档（对照当前窗口峰值）· 点击展开当日明细。`,
                 );
                 const cls = `cal-hm-cell has-data cal-lvl-${level}${isTodayCell ? ' is-today' : ''}${isSelected ? ' selected' : ''}${metricMode === 'cost' ? ' is-cost' : ''}`;
-                colCells.push(`<button type="button" class="${cls}" data-action="calendarSelectDate" data-cal-date="${dateStr}" data-cal-level="${level}"${calRichTipRawAttrs(`cal-hm-${dateStr}`, tipTitle, tipBody, tipMeta)} aria-label="${esc(tip)}"></button>`);
+                colCells.push(`<button type="button" class="${cls}" data-action="calendarSelectDate" data-cal-date="${esc(dateStr)}" data-cal-level="${level}"${calRichTipRawAttrs(`cal-hm-${dateStr}`, tipTitle, tipBody, tipMeta)} aria-label="${esc(tip)}"></button>`);
             } else {
                 const emptyTip = `${dateStr} · ${bi('No activity', '无记录')}`;
                 const emptyBody = isFuture
@@ -1326,7 +1495,7 @@ function buildHeatmapSection(
                     : bi('No recorded activity on this date.', '当日无活动记录。');
                 const emptyMeta = bi('Relative intensity level 0/4.', '相对强度 0/4 档（无记录）。');
                 const cls = `cal-hm-cell cal-lvl-0${isTodayCell ? ' is-today' : ''}${isFuture ? ' is-future' : ''}`;
-                colCells.push(`<span class="${cls}" data-cal-date="${dateStr}" data-cal-level="0"${calRichTipRawAttrs(`cal-hm-${dateStr}`, dateStr, emptyBody, emptyMeta)} aria-label="${esc(emptyTip)}"></span>`);
+                colCells.push(`<span class="${cls}" role="img" data-cal-date="${esc(dateStr)}" data-cal-level="0"${calRichTipRawAttrs(`cal-hm-${dateStr}`, dateStr, emptyBody, emptyMeta)} aria-label="${esc(emptyTip)}"></span>`);
             }
         }
         cells.push(`<div class="cal-hm-col">${colCells.join('')}</div>`);
@@ -1436,7 +1605,7 @@ function buildMonthGridSection(
                 ? (dayData.costUsd > 0 ? formatCostValue(dayData.costUsd, currency) : formatTokensCompact(dayData.totalTokens))
                 : formatTokensCompact(dayData.totalTokens);
             cells.push(`
-                <button type="button" class="cal-cell has-data cal-cell-lvl-${level}${todayClass}${selectedClass}${metricMode === 'cost' ? ' is-cost' : ''}" data-cal-date="${dateStr}" data-cal-level="${level}"${calRichTipRawAttrs(`cal-grid-${dateStr}`, tipTitle, tipBody, tipMeta)} aria-label="${esc(tooltip)}">
+                <button type="button" class="cal-cell has-data cal-cell-lvl-${level}${todayClass}${selectedClass}${metricMode === 'cost' ? ' is-cost' : ''}" data-cal-date="${esc(dateStr)}" data-cal-level="${level}"${calRichTipRawAttrs(`cal-grid-${dateStr}`, tipTitle, tipBody, tipMeta)} aria-label="${esc(tooltip)}">
                     <span class="cal-day-num">${dayNum}</span>
                     <span class="cal-cell-mini">${esc(miniVal)}</span>
                     <span class="cal-dot${highActivity ? ' high-activity' : ''}" aria-hidden="true"></span>
@@ -1534,7 +1703,7 @@ function buildPeriodBarsHtml(
 
         const jumpAttrs = b.jumpYear && b.jumpMonth
             ? ` data-cal-nav="jump" data-cal-year="${b.jumpYear}" data-cal-month="${b.jumpMonth}"`
-            : (b.jumpDate ? ` data-action="calendarJumpDate" data-cal-date="${b.jumpDate}"` : '');
+            : (b.jumpDate ? ` data-action="calendarJumpDate" data-cal-date="${esc(b.jumpDate)}"` : '');
         const tipMeta = jumpAttrs
             ? bi('Click to jump to this period in Daily view · Bar width scales to peak period.', '点击跳转至该区间日视图 · 柱宽按峰值区间缩放。')
             : bi('No recorded activity in this period.', '该区间暂无活动记录。');
@@ -1577,28 +1746,27 @@ function buildWeeklyChartSection(
     bi: (en: string, zh: string) => string,
     biHtml: (en: string, zh: string) => string,
 ): string {
-    const weeks = 16;
+    // Shares resolveWeekly16Window() with filterDaysForRange / buildCalendarExportData
+    // so the 16-week display bars and 16-week CSV/JSON/Markdown exports match 1:1.
+    const w16 = resolveWeekly16Window(nowDate);
     const buckets = new Map<string, PeriodBarDatum>();
     const orderedKeys: string[] = [];
 
-    for (let w = weeks - 1; w >= 0; w--) {
-        const refDate = addLocalDays(nowDate, -w * 7);
-        const info = getIsoWeekKey(toLocalDateKey(refDate));
-        if (!buckets.has(info.key)) {
-            orderedKeys.push(info.key);
-            buckets.set(info.key, {
-                key: info.key,
-                label: info.key,
-                sublabel: `${info.startDate.slice(5)}–${info.endDate.slice(5)}`,
-                tokens: 0,
-                costUsd: 0,
-                calls: 0,
-                activeDays: 0,
-            });
-        }
+    for (const info of w16.weekInfos) {
+        orderedKeys.push(info.key);
+        buckets.set(info.key, {
+            key: info.key,
+            label: info.key,
+            sublabel: `${info.startDate.slice(5)}–${info.endDate.slice(5)}`,
+            tokens: 0,
+            costUsd: 0,
+            calls: 0,
+            activeDays: 0,
+        });
     }
 
     for (const day of filteredDays.values()) {
+        if (day.date < w16.rangeStart || day.date > w16.rangeEnd) { continue; }
         const info = getIsoWeekKey(day.date);
         const bucket = buckets.get(info.key);
         if (!bucket) { continue; }
@@ -1814,7 +1982,7 @@ function buildAllTimeStripSection(
                 ${segments}
             </div>
             <div class="cal-peak-callouts">
-                <button type="button" class="cal-peak-chip" data-action="calendarJumpDate" data-cal-date="${peakDay.date}">
+                <button type="button" class="cal-peak-chip" data-action="calendarJumpDate" data-cal-date="${esc(peakDay.date)}">
                     <span class="cal-peak-chip-k">${biHtml('Peak Day', '单日峰值')}</span>
                     <strong class="cal-peak-chip-v">${esc(peakDay.date)}</strong>
                     <span class="cal-peak-chip-m">${formatTokensCompact(peakDay.totalTokens)}${peakDay.costUsd > 0 ? ` · ${esc(formatCostValue(peakDay.costUsd, currency))}` : ''}</span>
@@ -1839,6 +2007,7 @@ function buildRangeSummaryFooter(
     todayKey: string,
     currency: CurrencyInput,
     subscription: SubscriptionConfig | null,
+    lang: Language,
     bi: (en: string, zh: string) => string,
     biHtml: (en: string, zh: string) => string,
 ): string {
@@ -1869,23 +2038,29 @@ function buildRangeSummaryFooter(
     const roi = estimateSubscriptionRoi(totalCostUsd, safeSpan, subscription, currency);
     const roiTip = calRichTipAttrs(
         'cal-range-roi',
-        'Plan ROI (Return on Investment)',
-        '订阅投入产出比 (ROI)',
-        'Compares estimated public API value of your usage against your subscription plan fee prorated for this date span.',
-        '将当前区间用量的等效 API 参考估值，与按天数折算后的订阅月费进行对比。',
+        'Plan ROI Reference',
+        '订阅方案 ROI 参考',
+        'API Equivalent Reference Ratio, Not Actual Bill. Compares estimated public API value against prorated subscription fee.',
+        'API 等效参考比，非实际账单。将区间用量的等效 API 参考估值与按天折算的订阅月费进行对比。',
         bi,
-        `Formula: API reference value ÷ (monthly fee × ${safeSpan}d ÷ 30d). Reference estimate only.`,
-        `计算公式：API 参考估值 ÷（月费 × ${safeSpan} 天 ÷ 30 天）。仅供参考，非官方账单。`,
+        `Formula: API reference value ÷ (monthly fee × ${safeSpan}d ÷ 30d).`,
+        `计算公式：API 参考估值 ÷（月费 × ${safeSpan} 天 ÷ 30 天）。`,
     );
     const roiHtml = roi ? `
-        <div class="cal-roi-banner" data-cal-roi="true"${roiTip}>
-            <span class="cal-roi-badge">
-                <strong>${esc(bi(roi.planLabelEn, roi.planLabelZh))} ROI:</strong>
-                ${roi.roiMultiple !== null ? `${roi.roiMultiple.toFixed(2)}×` : '—'}
-                (${esc(formatCurrencyAmount(roi.apiReferenceValueUsd, currency))} / ${esc(formatCurrencyAmount(roi.proratedFeeUsd, currency))})
-            </span>
-            <span class="cal-roi-note">${biHtml(roi.disclaimerEn, roi.disclaimerZh)}</span>
-        </div>` : '';
+        <details class="cal-roi-advanced" id="calPlanRoiAdvanced" data-cal-roi-advanced="true" data-state-key="cal-plan-roi-advanced">
+            <summary class="cal-roi-advanced-summary">
+                <span>${biHtml('Advanced', '高级')} · ${tHtml('usage.planRoiTitle', lang)}</span>
+                <span class="cal-roi-summary-pill">${roi.roiMultiple !== null ? `${roi.roiMultiple.toFixed(2)}×` : '—'}</span>
+            </summary>
+            <div class="cal-roi-banner" data-cal-roi="true"${roiTip}>
+                <span class="cal-roi-badge">
+                    <strong>${esc(bi(roi.planLabelEn, roi.planLabelZh))} ROI:</strong>
+                    ${roi.roiMultiple !== null ? `${roi.roiMultiple.toFixed(2)}×` : '—'}
+                    (${esc(formatCurrencyAmount(roi.apiReferenceValueUsd, currency))} / ${esc(formatCurrencyAmount(roi.proratedFeeUsd, currency))})
+                </span>
+                <span class="cal-roi-note" data-roi-disclaimer="true">${biHtml('API Equivalent Reference Ratio, Not Actual Bill', 'API 等效参考比，非实际账单')}</span>
+            </div>
+        </details>` : '';
 
     const rangeCostTip = calRichTipAttrs(
         'cal-range-cost',
@@ -1961,6 +2136,139 @@ function buildRangeSummaryFooter(
         </footer>`;
 }
 
+// ─── Workspace Project Leaderboard & Swarm Group Cost (Plan C) ──────────────
+
+function safeCalInt(v: unknown): number {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
+}
+function safeCalNum(v: unknown): number {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+}
+
+function buildWorkspaceLeaderboardCard(
+    leaderboard: WorkspaceLeaderboardResult,
+    currency: CurrencyInput,
+    lang: Language,
+    privacyMasked: boolean,
+    bi: (en: string, zh: string) => string,
+    biHtml: (en: string, zh: string) => string,
+): string {
+    if (!leaderboard.rows || leaderboard.rows.length === 0) { return ''; }
+    const maxTok = Math.max(1, ...leaderboard.rows.map(r => r.totalTokens));
+    let attributedIndex = 0;
+    const rowsHtml = leaderboard.rows.map((row, idx) => {
+        if (!row.isUnattributed) { attributedIndex += 1; }
+        const labelHtml = row.isUnattributed
+            ? `<span class="cal-ws-name is-unattributed">${tHtml('usage.unattributed', lang)}</span>`
+            : `<span class="cal-ws-name">${esc(privacyMasked ? bi(`Project #${attributedIndex}`, `项目 #${attributedIndex}`) : row.displayLabel)}</span>`;
+        const barPct = row.totalTokens > 0 ? Math.max(4, Math.round((row.totalTokens / maxTok) * 100)) : 0;
+        const costStr = row.knownCostUsd > 0
+            ? formatCurrencyAmount(row.knownCostUsd, currency)
+            : (row.unpricedCalls > 0 ? '—' : formatCurrencyAmount(0, currency));
+        const safeCalls = safeCalInt(row.calls);
+        const safeUnpricedCalls = safeCalInt(row.unpricedCalls);
+        const unpricedHtml = safeUnpricedCalls > 0
+            ? `<span class="cal-ws-unpriced" data-unpriced-calls="${esc(String(safeUnpricedCalls))}">${esc(String(safeUnpricedCalls))} ${tHtml('swarm.unpricedCalls', lang)}</span>`
+            : '';
+        const wsKeyAttr = privacyMasked && !row.isUnattributed ? `project-${attributedIndex}` : row.workspaceKey;
+        const tip = calRichTipAttrs(
+            `cal-ws-row-${idx}-${calSlugKey(wsKeyAttr)}`,
+            row.isUnattributed ? 'Unattributed Usage' : (privacyMasked ? `Project #${attributedIndex}` : row.displayLabel),
+            row.isUnattributed ? '未归属用量' : (privacyMasked ? `项目 #${attributedIndex}` : row.displayLabel),
+            row.isUnattributed ? 'Legacy/unattributed records kept explicit.' : `${safeCalls} calls · ${formatTokensCompact(row.totalTokens)} · ${costStr}.`,
+            row.isUnattributed ? '未归属记录单独展示，不按比例平摊。' : `${safeCalls} 次调用 · ${formatTokensCompact(row.totalTokens)} · ${costStr}。`,
+            bi,
+        );
+        return `<div class="cal-ws-row${row.isUnattributed ? ' is-unattributed' : ''}" data-workspace-key="${esc(wsKeyAttr)}" data-workspace-unattributed="${row.isUnattributed ? 'true' : 'false'}"${tip}>
+            <div class="cal-ws-head">${labelHtml}<span class="cal-ws-metrics"><span>${esc(String(safeCalls))} ${biHtml('calls', '调用')}</span><span>${esc(formatTokensCompact(row.totalTokens))}</span><strong>${esc(costStr)}</strong>${unpricedHtml}</span></div>
+            <div class="cal-ws-bar-track"><div class="cal-ws-bar-fill${row.isUnattributed ? ' is-unattributed' : ''}" style="width:${barPct}%"></div></div>
+        </div>`;
+    }).join('');
+    const safeTotalUnpriced = safeCalInt(leaderboard.totals.unpricedCalls);
+    const totalUnpricedBadge = safeTotalUnpriced > 0
+        ? `<span class="cal-ws-unpriced">${esc(String(safeTotalUnpriced))} ${tHtml('swarm.unpricedCalls', lang)}</span>`
+        : '';
+    return `<section class="card cal-workspace-card" id="calWorkspaceLeaderboard" data-workspace-leaderboard="true">
+        <div class="cal-card-head cal-ws-card-head">
+            <h2>${ICON.folder} <span>${tHtml('usage.workspaceLeaderboard', lang)}</span></h2>
+            ${totalUnpricedBadge}
+        </div>
+        <div class="cal-ws-list">${rowsHtml}</div>
+    </section>`;
+}
+
+function buildSwarmGroupCostCard(
+    periodCosts: Record<string, SwarmGroupCostSummary> | undefined,
+    sessionCosts: Record<string, SwarmGroupCostSummary> | undefined,
+    currency: CurrencyInput,
+    lang: Language,
+    privacyMasked: boolean,
+    bi: (en: string, zh: string) => string,
+    biHtml: (en: string, zh: string) => string,
+    topology: SwarmTopologySnapshot | undefined,
+): string {
+    const entries = [
+        ...Object.values(sessionCosts ?? {}).map(summary => ({ summary, source: 'session' as const })),
+        ...Object.values(periodCosts ?? {}).map(summary => ({ summary, source: 'period' as const })),
+    ];
+    if (entries.length === 0) { return ''; }
+
+    const groupsHtml = entries.map(({ summary, source }, gi) => {
+        const rootId = summary.rootId;
+        const group = privacyMasked ? undefined : topology?.groupsByRootId.get(rootId);
+        const groupAlias = bi(`Group #${gi + 1}`, `智能体组 #${gi + 1}`);
+        const displayRoot = group?.title || groupAlias;
+        const scopeLabel = source === 'session' ? biHtml('Current group · session history', '当前组 · 会话历史') : biHtml('Selected period · ledger', '所选时段 · 账本');
+        const members = Object.values(summary.directCostByMember);
+        const withCalls = members.filter(m => m.callCount > 0).length;
+        const root = summary.directCostByMember[summary.rootId];
+        const workerPriced = members.some(m => m.cascadeId !== summary.rootId && m.pricedCallCount > 0);
+        const costText = (amount: number, hasPrice: boolean) => hasPrice
+            ? formatCurrencyAmount(amount, currency) : '—';
+        const memberRows = members.map((m, mi) => {
+            const isRoot = m.cascadeId === summary.rootId;
+            const name = privacyMasked ? undefined : topology?.nodesById.get(m.cascadeId)?.memberName;
+            const alias = isRoot ? bi('Coordinator', '主智能体') : bi(`Member #${mi + 1}`, `成员 #${mi + 1}`);
+            const memberLabel = name || alias;
+            const safeMemberCalls = safeCalInt(m.callCount);
+            const safeMemberUnpriced = safeCalInt(m.unpricedCallCount);
+            const memberUnpriced = safeMemberUnpriced > 0
+                ? `<span class="cal-ws-unpriced">${tHtml('swarm.unpricedCalls', lang)}: ${safeMemberUnpriced}</span>`
+                : '';
+            const amount = m.pricedCallCount > 0 ? safeCalNum(m.directCostUsd) : null;
+            return `<div class="cal-swarm-member" data-swarm-member="${esc(memberLabel)}"${amount !== null ? ` data-swarm-direct-cost="${amount}"` : ''}>
+                <span class="cal-swarm-member-id">${esc(memberLabel)}</span>
+                <span class="cal-swarm-member-vals">${safeMemberCalls ? `<span>${safeMemberCalls} ${biHtml('calls', '次调用')}</span><strong>${esc(costText(m.directCostUsd, amount !== null))}</strong>` : tHtml('swarm.noCalls', lang)}${memberUnpriced}</span>
+            </div>`;
+        }).join('');
+        const safeUniqueCalls = safeCalInt(summary.uniqueCallCount);
+        const safeGroupUnpriced = safeCalInt(summary.unpricedCallCount);
+        const safeGroupTotal = safeCalNum(summary.inclusiveGroupCostUsd);
+        return `<div class="cal-swarm-group" data-swarm-source="${source}" data-swarm-root="${esc(privacyMasked ? groupAlias : rootId)}"${summary.pricedCallCount > 0 ? ` data-swarm-group-total="${safeGroupTotal}"` : ''} data-swarm-unpriced-calls="${safeGroupUnpriced}">
+            <div class="cal-swarm-group-head">
+                <strong>${scopeLabel} · ${esc(displayRoot)}</strong>
+                <span class="cal-swarm-group-total"><strong>${esc(costText(safeGroupTotal, summary.pricedCallCount > 0))}</strong> · ${safeUniqueCalls} ${biHtml('unique calls', '次去重调用')}${safeGroupUnpriced > 0 ? ` · <span class="cal-ws-unpriced">${tHtml('swarm.unpricedCalls', lang)}: ${safeGroupUnpriced}</span>` : ''}</span>
+            </div>
+            <div class="cal-swarm-split-meta">
+                <span>${tHtml('swarm.rootLabel', lang)}: ${esc(costText(summary.coordinatorDirectCostUsd, Boolean(root?.pricedCallCount)))}</span>
+                <span>${biHtml('Workers', '子成员')}: ${esc(costText(summary.workersDirectCostUsd, workerPriced))}</span>
+            </div>
+            ${memberRows ? `<details id="cal-swarm-members-${source}-${gi + 1}"><summary>${tHtml('swarm.costCoverage', lang)} ${withCalls}/${members.length}</summary><div class="cal-swarm-members">${memberRows}</div></details>` : ''}
+        </div>`;
+    }).join('');
+
+    return `<section class="card cal-swarm-cost-card" id="calSwarmGroupCost" data-swarm-group-cost="true">
+        <div class="cal-card-head">
+            <h2>${ICON.bolt} <span>${tHtml('swarm.groupCost', lang)}</span></h2>
+        </div>
+        <p class="cal-swarm-note">${biHtml('API reference cost of recorded calls. Members without call records are excluded.', '按已记录调用估算 API 费用，未计入缺少调用记录的成员。')}</p>
+        <div class="cal-swarm-groups">${groupsHtml}</div>
+        ${periodCosts && Object.keys(periodCosts).length ? `<p class="cal-swarm-note">${biHtml('Ledger totals use the calls retained for this period. Older records can combine several calls from the same execution and understate costs.', '账本仅统计所选时段留存的调用。旧记录可能合并同一轮执行中的多次调用，使估算偏低。')}</p>` : ''}
+    </section>`;
+}
+
 // ─── Day Detail Drawer (with Token Breakdown, Model Proportion Bars & Cycles) ─
 
 function formatSurfaceBadgeHtml(surface: UsageSurface, biHtml: (en: string, zh: string) => string): string {
@@ -1986,6 +2294,7 @@ function buildDayDetail(
     isOpen: boolean,
     bi: (en: string, zh: string) => string,
     biHtml: (en: string, zh: string) => string,
+    privacyMasked = false,
 ): string {
     const todayBadge = dateStr === todayKey
         ? `<span class="badge info-badge cal-today-badge"><span>${biHtml('Today', '今天')}</span></span>`
@@ -2040,7 +2349,7 @@ function buildDayDetail(
     })() : '';
 
     const mergedGMHtml = buildMergedGMRows(day.models, dateStr, currency, metricMode, bi, biHtml);
-    const cyclesHtml = buildCyclesDetailsHtml(day.cycles, dateStr, currency, bi, biHtml);
+    const cyclesHtml = buildCyclesDetailsHtml(day.cycles, dateStr, currency, bi, biHtml, privacyMasked);
     const dayGmCallsTip = calRichTipAttrs(
         `cal-day-gmcalls-${dateStr}`,
         'GM Calls (Generator Metadata)',
@@ -2072,23 +2381,26 @@ function buildDayDetail(
         '与「账号」页中展示的账号 AI 积分余额属于不同统计口径。',
     );
 
+    const safeDateAttr = esc(dateStr);
+    const safeDayCalls = safeCalInt(day.calls);
+    const safeDayCredits = safeCalNum(day.credits);
     return `
-        <div class="cal-detail${isOpen ? ' cal-detail-open' : ''}" id="cal-detail-${dateStr}" style="display:${isOpen ? 'block' : 'none'}" data-cal-detail="${dateStr}">
+        <div class="cal-detail${isOpen ? ' cal-detail-open' : ''}" id="cal-detail-${safeDateAttr}" style="display:${isOpen ? 'block' : 'none'}" data-cal-detail="${safeDateAttr}">
             <div class="cal-detail-header">
                 <span class="cal-detail-date">
-                    ${CALENDAR_ICON} <span>${dateStr}</span> ${todayBadge} ${liveBadge}
+                    ${CALENDAR_ICON} <span>${safeDateAttr}</span> ${todayBadge} ${liveBadge}
                 </span>
                 <span class="cal-detail-sources">${sourceBadges}</span>
             </div>
             <div class="cal-day-summary">
-                ${day.calls > 0 ? `
+                ${safeDayCalls > 0 ? `
                 <div class="cal-day-total"${dayGmCallsTip}>
-                    <div class="cal-day-total-val">${day.calls}</div>
+                    <div class="cal-day-total-val">${esc(String(safeDayCalls))}</div>
                     <div class="cal-day-total-label">${biHtml('GM Calls', 'GM 调用')}</div>
                 </div>` : ''}
                 ${day.totalTokens > 0 ? `
                 <div class="cal-day-total">
-                    <div class="cal-day-total-val">${formatTokensCompact(day.totalTokens)}</div>
+                    <div class="cal-day-total-val">${esc(formatTokensCompact(day.totalTokens))}</div>
                     <div class="cal-day-total-label">${biHtml('Tokens', 'Tokens')}</div>
                 </div>` : ''}
                 ${dayCostStr ? `
@@ -2096,9 +2408,9 @@ function buildDayDetail(
                     <div class="cal-day-total-val">${esc(dayCostStr)}</div>
                     <div class="cal-day-total-label">${biHtml('API Cost', 'API 费用')}</div>
                 </div>` : ''}
-                ${day.credits > 0 ? `
+                ${safeDayCredits > 0 ? `
                 <div class="cal-day-total"${dayCreditsTip}>
-                    <div class="cal-day-total-val">${day.credits}</div>
+                    <div class="cal-day-total-val">${esc(String(safeDayCredits))}</div>
                     <div class="cal-day-total-label">${biHtml('Credits', '积分')}</div>
                 </div>` : ''}
                 ${day.cacheHitRate !== undefined && day.cacheHitRate > 0 ? `
@@ -2148,29 +2460,31 @@ function buildMergedGMRows(
         const [name, ms] = entries[idx];
         const rowKey = `${dateStr}-${idx}`;
         const chips: string[] = [];
-        if (ms.calls > 0) {
+        const safeMsCalls = safeCalInt(ms.calls);
+        const safeMsCredits = safeCalNum(ms.credits);
+        if (safeMsCalls > 0) {
             const callsTip = calRichTipAttrs(
                 `cal-gm-calls-${rowKey}`,
                 'Model GM Calls',
                 '模型 GM 调用次数',
-                `${name} completed ${ms.calls} recorded model calls on ${dateStr}.`,
-                `${name} 在 ${dateStr} 共记录了 ${ms.calls} 次模型调用。`,
+                `${name} completed ${safeMsCalls} recorded model calls on ${dateStr}.`,
+                `${name} 在 ${dateStr} 共记录了 ${safeMsCalls} 次模型调用。`,
                 bi,
             );
-            chips.push(`<span class="cal-chip cal-chip-tools"${callsTip}>${CAL_ICON.calls} <span>${ms.calls} ${biHtml('calls', '调用')}</span></span>`);
+            chips.push(`<span class="cal-chip cal-chip-tools"${callsTip}>${CAL_ICON.calls} <span>${esc(String(safeMsCalls))} ${biHtml('calls', '调用')}</span></span>`);
         }
-        if (ms.credits > 0) {
+        if (safeMsCredits > 0) {
             const creditsTip = calRichTipAttrs(
                 `cal-gm-credits-${rowKey}`,
                 'GM Call Credits',
                 'GM 调用积分',
-                `${ms.credits} call credits reported in Generator Metadata for ${name} on ${dateStr}.`,
-                `${name} 在 ${dateStr} 上报了 ${ms.credits} 点 GM 调用积分。`,
+                `${safeMsCredits} call credits reported in Generator Metadata for ${name} on ${dateStr}.`,
+                `${name} 在 ${dateStr} 上报了 ${safeMsCredits} 点 GM 调用积分。`,
                 bi,
                 'Per-call telemetry credit units — separate from your Account AI Credits balance.',
                 '单次调用遥测积分单位，与「账号」页的账号 AI 积分余额相互独立。',
             );
-            chips.push(`<span class="cal-chip cal-chip-credits cal-chip-tokens" aria-label="${esc(`${ms.credits} ${bi('GM call credits', 'GM 调用积分')}`)}"${creditsTip}>${CAL_ICON.credit} <span>${ms.credits} ${biHtml('credits', '积分')}</span></span>`);
+            chips.push(`<span class="cal-chip cal-chip-credits cal-chip-tokens" aria-label="${esc(`${safeMsCredits} ${bi('GM call credits', 'GM 调用积分')}`)}"${creditsTip}>${CAL_ICON.credit} <span>${esc(String(safeMsCredits))} ${biHtml('credits', '积分')}</span></span>`);
         }
         const avgSpeed = ms.speedTimeSum > 0
             ? ms.speedOutputSum / ms.speedTimeSum
@@ -2284,6 +2598,7 @@ function buildCyclesDetailsHtml(
     currency: CurrencyInput,
     bi: (en: string, zh: string) => string,
     biHtml: (en: string, zh: string) => string,
+    privacyMasked = false,
 ): string {
     if (cycles.length === 0) { return ''; }
 
@@ -2293,9 +2608,12 @@ function buildCyclesDetailsHtml(
         const endT = c.isLive ? bi('Live', '实时') : (c.endTime ? formatShortTime(c.endTime) : '23:59:59');
         const surfaces = getCycleSurfaces(c).map(s => formatSurfaceBadgeHtml(s, biHtml)).join('');
         const costStr = safeCost(c.estimatedCost) > 0 ? formatCostValue(safeCost(c.estimatedCost), currency) : '';
-        const acctTag = c.accountEmail ? `<span class="cal-account-tag">${esc(c.accountEmail)}</span>` : '';
-        const retryTag = (c.gmRetryCount || 0) > 0
-            ? `<span class="cal-chip cal-chip-errors">${c.gmRetryCount} ${biHtml('retries', '重试')}</span>`
+        const acctTag = c.accountEmail && !privacyMasked ? `<span class="cal-account-tag">${esc(c.accountEmail)}</span>` : '';
+        const safeCycleCalls = safeCalInt(c.gmTotalCalls);
+        const safeCycleCredits = safeCalNum(c.gmTotalCredits);
+        const safeCycleRetries = safeCalInt(c.gmRetryCount);
+        const retryTag = safeCycleRetries > 0
+            ? `<span class="cal-chip cal-chip-errors">${esc(String(safeCycleRetries))} ${biHtml('retries', '重试')}</span>`
             : '';
         const triggerList = c.triggeredBy && c.triggeredBy.length > 0 ? c.triggeredBy.slice(0, 2).join(', ') : '';
         const triggerTip = triggerList ? calRichTipAttrs(
@@ -2321,10 +2639,10 @@ function buildCyclesDetailsHtml(
                     ${acctTag}
                 </div>
                 <div class="cal-cycle-stats">
-                    ${(c.gmTotalCalls || 0) > 0 ? `<span class="cal-chip cal-chip-tools">${c.gmTotalCalls} ${biHtml('calls', '调用')}</span>` : ''}
-                    ${tok.totalTokens > 0 ? `<span class="cal-chip cal-chip-tokens">${formatTokensCompact(tok.totalTokens)} ${biHtml('tokens', 'tokens')}</span>` : ''}
+                    ${safeCycleCalls > 0 ? `<span class="cal-chip cal-chip-tools">${esc(String(safeCycleCalls))} ${biHtml('calls', '调用')}</span>` : ''}
+                    ${tok.totalTokens > 0 ? `<span class="cal-chip cal-chip-tokens">${esc(formatTokensCompact(tok.totalTokens))} ${biHtml('tokens', 'tokens')}</span>` : ''}
                     ${costStr ? `<span class="cal-chip cal-chip-cost">${esc(costStr)}</span>` : ''}
-                    ${(c.gmTotalCredits || 0) > 0 ? `<span class="cal-chip">${c.gmTotalCredits} ${biHtml('credits', '积分')}</span>` : ''}
+                    ${safeCycleCredits > 0 ? `<span class="cal-chip">${esc(String(safeCycleCredits))} ${biHtml('credits', '积分')}</span>` : ''}
                     ${retryTag}
                     ${triggerTag}
                 </div>
@@ -2342,128 +2660,14 @@ function buildCyclesDetailsHtml(
         `${dateStr} 共记录 ${cycles.length} 个周期段。`,
     );
 
+    const safeDateAttr = esc(dateStr);
     return `
-        <details class="cal-cycles-details" id="cal-cycles-${dateStr}" data-state-key="cal-cycles-${dateStr}">
+        <details class="cal-cycles-details" id="cal-cycles-${safeDateAttr}" data-state-key="cal-cycles-${safeDateAttr}">
             <summary class="cal-cycles-summary"${cyclesSummaryTip}>
                 <span>${biHtml('Cycle History', '周期记录')} (${cycles.length})</span>
             </summary>
             <div class="cal-cycles-list">${items}</div>
         </details>`;
-}
-
-// ─── Legacy Backward-Compatible Monthly / All-Time Summary Grids ─────────────
-
-function buildOverallSummaryGrid(
-    filteredDays: Map<string, AggregatedCalendarDay>,
-    currency: CurrencyInput,
-    bi: (en: string, zh: string) => string,
-    biHtml: (en: string, zh: string) => string,
-): string {
-    let totalCost = 0, totalGMCalls = 0, totalGMCredits = 0, totalGMTokens = 0;
-
-    for (const day of filteredDays.values()) {
-        totalCost += day.costUsd;
-        totalGMCalls += day.calls;
-        totalGMCredits += day.credits;
-        totalGMTokens += day.totalTokens;
-    }
-
-    return buildSummaryOverviewGrid('alltime', filteredDays.size, totalGMTokens, totalCost, totalGMCredits, totalGMCalls, currency, bi, biHtml);
-}
-
-function buildMonthlySummaryGrid(
-    filteredDays: Map<string, AggregatedCalendarDay>,
-    year: number,
-    month: number,
-    currency: CurrencyInput,
-    bi: (en: string, zh: string) => string,
-    biHtml: (en: string, zh: string) => string,
-): string {
-    const prefix = `${year}-${String(month).padStart(2, '0')}`;
-    const matching = [...filteredDays.values()].filter(d => d.date.startsWith(prefix));
-
-    if (matching.length === 0) {
-        const enMonth = `${MONTH_NAMES_EN[month - 1]} ${year}`;
-        const zhMonth = `${year}年${MONTH_NAMES_ZH[month - 1]}`;
-        return `<p class="cal-summary-empty">${biHtml(
-            `No data for ${enMonth} yet.`,
-            `${zhMonth}暂无数据。`,
-        )}</p>`;
-    }
-
-    let totalCost = 0, totalGMCalls = 0, totalGMCredits = 0, totalGMTokens = 0;
-    for (const day of matching) {
-        totalCost += day.costUsd;
-        totalGMCalls += day.calls;
-        totalGMCredits += day.credits;
-        totalGMTokens += day.totalTokens;
-    }
-
-    return buildSummaryOverviewGrid('monthly', matching.length, totalGMTokens, totalCost, totalGMCredits, totalGMCalls, currency, bi, biHtml);
-}
-
-function buildSummaryOverviewGrid(
-    scope: 'monthly' | 'alltime',
-    dayCount: number,
-    gmTokens: number,
-    cost: number,
-    gmCredits: number,
-    gmCalls: number,
-    currency: CurrencyInput,
-    bi: (en: string, zh: string) => string,
-    biHtml: (en: string, zh: string) => string,
-): string {
-    const callsTip = calRichTipAttrs(
-        `cal-sum-${scope}-gmcalls`,
-        'GM Calls',
-        'GM 调用',
-        'Total model generation calls captured in Generator Metadata across this summary window.',
-        '该汇总区间内由模型调用遥测（Generator Metadata）记录的总调用次数。',
-        bi,
-    );
-    const costTip = calRichTipAttrs(
-        `cal-sum-${scope}-cost`,
-        'API Reference Cost',
-        'API 参考费用',
-        'Estimated API cost using public per-1M token list rates (or custom rates) — not actual subscription charges.',
-        '按公开每百万 Token 标价（或自定义单价）估算的参考费用，并非实际订阅账单。',
-        bi,
-    );
-    const creditsTip = calRichTipAttrs(
-        `cal-sum-${scope}-credits`,
-        'GM Call Credits',
-        'GM 调用积分',
-        'Cumulative per-call credits reported in Generator Metadata — separate from your Account AI Credits balance.',
-        '模型调用遥测中累计记录的调用积分，不同于「账号」页的账号 AI 积分余额。',
-        bi,
-    );
-    return `
-            <div class="cal-overview-grid">
-                <div class="cal-overview-item">
-                    <div class="cal-overview-val">${dayCount}</div>
-                    <div class="cal-overview-label">${biHtml('Days', '天数')}</div>
-                </div>
-                ${gmCalls > 0 ? `
-                <div class="cal-overview-item"${callsTip}>
-                    <div class="cal-overview-val">${gmCalls}</div>
-                    <div class="cal-overview-label">${biHtml('GM Calls', 'GM 调用')}</div>
-                </div>` : ''}
-                ${gmTokens > 0 ? `
-                <div class="cal-overview-item">
-                    <div class="cal-overview-val">${formatTokensCompact(gmTokens)}</div>
-                    <div class="cal-overview-label">${biHtml('Tokens', 'Tokens')}</div>
-                </div>` : ''}
-                ${cost > 0 ? `
-                <div class="cal-overview-item"${costTip}>
-                    <div class="cal-overview-val">${esc(formatCostValue(cost, currency))}</div>
-                    <div class="cal-overview-label">${biHtml('API Cost', 'API 费用')}</div>
-                </div>` : ''}
-                ${gmCredits > 0 ? `
-                <div class="cal-overview-item"${creditsTip}>
-                    <div class="cal-overview-val">${gmCredits}</div>
-                    <div class="cal-overview-label">${biHtml('Credits', '积分')}</div>
-                </div>` : ''}
-            </div>`;
 }
 
 // ─── Calendar Styles (Studio Telemetry Ledger, WCAG 2.1 AA) ──────────────────
@@ -2690,7 +2894,6 @@ export function getCalendarTabStyles(): string {
             line-height: 1.2;
             color: var(--ed-ink);
             margin-top: 5px;
-            font-variant-numeric: tabular-nums lining-nums;
             overflow-wrap: anywhere;
         }
 
@@ -2699,94 +2902,16 @@ export function getCalendarTabStyles(): string {
             font-weight: 550;
             color: var(--ed-ink-secondary);
             margin-top: 2px;
-            font-variant-numeric: tabular-nums lining-nums;
         }
 
         .cal-kpi-meta {
             font-size: 11px;
             color: var(--ed-ink-muted);
             margin-top: 4px;
-            font-variant-numeric: tabular-nums lining-nums;
             overflow-wrap: anywhere;
         }
 
-        /* ── Legacy Summary Toggle Band ─── */
-        .cal-summary-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 8px 12px;
-            margin-bottom: 14px;
-        }
-
-        .cal-summary-header h2 {
-            margin: 0;
-            min-width: 0;
-        }
-
-        .cal-summary-toggle {
-            display: inline-flex;
-            align-items: center;
-            gap: 2px;
-            padding: 2px;
-            background: var(--ed-surface-well);
-            border: 1px solid var(--ed-border);
-            border-radius: var(--ed-radius-sm);
-            flex-shrink: 0;
-            max-width: 100%;
-        }
-
-        .cal-summary-btn {
-            appearance: none;
-            background: transparent;
-            color: var(--ed-ink-muted);
-            border: 1px solid transparent;
-            border-radius: var(--ed-radius-xs);
-            padding: 4px 10px;
-            font: inherit;
-            font-size: 12px;
-            font-weight: 500;
-            cursor: pointer;
-            min-width: 0;
-            transition: background var(--ed-dur-fast) var(--ed-ease),
-                color var(--ed-dur-fast) var(--ed-ease),
-                border-color var(--ed-dur-fast) var(--ed-ease),
-                transform 100ms var(--ed-ease);
-        }
-
-        .cal-summary-btn.active {
-            background: var(--ed-surface);
-            color: var(--ed-ink);
-            font-weight: 600;
-            border-color: var(--ed-border);
-            box-shadow: var(--ed-shadow-segment);
-        }
-
-        .cal-summary-btn:focus-visible {
-            outline: 2px solid var(--ed-accent);
-            outline-offset: 2px;
-        }
-
-        .cal-summary-btn:active { transform: scale(0.98); }
-
-        @media (hover: hover) {
-            .cal-summary-btn:not(.active):hover {
-                background: var(--ed-surface-hover);
-                color: var(--ed-ink);
-            }
-        }
-
-        .cal-summary-pane { min-width: 0; }
-
-        .cal-summary-empty {
-            color: var(--ed-ink-muted);
-            font-size: 0.88em;
-            text-align: center;
-            padding: 12px 4px;
-            margin: 0;
-        }
-
+        /* ── Overview Grid Helpers ─── */
         .cal-overview-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(min(100%, 96px), 1fr));
@@ -2797,28 +2922,11 @@ export function getCalendarTabStyles(): string {
             overflow: hidden;
         }
 
-        .cal-overview-item {
-            text-align: center;
-            padding: 10px 8px;
-            background: var(--ed-surface);
-            min-width: 0;
-        }
-
         .cal-overview-val {
             font-weight: 650;
             font-size: 1.08em;
             line-height: 1.25;
             color: var(--ed-ink);
-            font-variant-numeric: tabular-nums lining-nums;
-        }
-
-        .cal-overview-label {
-            font-size: 11.5px;
-            font-weight: 500;
-            color: var(--ed-ink-muted);
-            margin-top: 3px;
-            line-height: 1.35;
-            overflow-wrap: anywhere;
         }
 
         /* ── 52-Week 5-Level Intensity Heatmap ─── */
@@ -2986,7 +3094,7 @@ export function getCalendarTabStyles(): string {
         }
 
         .cal-peak-label { color: var(--ed-ink-secondary); }
-        .cal-peak-meta { color: var(--ed-ink-secondary); font-variant-numeric: tabular-nums; }
+        .cal-peak-meta { color: var(--ed-ink-secondary); }
 
         .cal-bar-chart {
             display: flex;
@@ -3068,7 +3176,6 @@ export function getCalendarTabStyles(): string {
             flex-direction: column;
             align-items: flex-end;
             min-width: 0;
-            font-variant-numeric: tabular-nums;
         }
 
         .cal-bar-primary { font-size: 12px; font-weight: 650; color: var(--ed-ink); }
@@ -3085,7 +3192,6 @@ export function getCalendarTabStyles(): string {
             font-size: 12px;
             color: var(--ed-ink-secondary);
             margin-bottom: 8px;
-            font-variant-numeric: tabular-nums;
         }
 
         .cal-cum-strip {
@@ -3157,8 +3263,8 @@ export function getCalendarTabStyles(): string {
         }
 
         .cal-peak-chip-k { font-size: 11px; color: var(--ed-ink-muted); }
-        .cal-peak-chip-v { font-size: 13px; font-weight: 650; color: var(--ed-ink); font-variant-numeric: tabular-nums; }
-        .cal-peak-chip-m { font-size: 11px; color: var(--ed-ink-secondary); font-variant-numeric: tabular-nums; }
+        .cal-peak-chip-v { font-size: 13px; font-weight: 650; color: var(--ed-ink); }
+        .cal-peak-chip-m { font-size: 11px; color: var(--ed-ink-secondary); }
 
         /* ── Range Summary Footer & Plan ROI ─── */
         .cal-range-footer {
@@ -3195,7 +3301,6 @@ export function getCalendarTabStyles(): string {
             font-weight: 650;
             color: var(--ed-ink);
             margin-top: 3px;
-            font-variant-numeric: tabular-nums lining-nums;
             overflow-wrap: anywhere;
         }
 
@@ -3203,7 +3308,6 @@ export function getCalendarTabStyles(): string {
             font-size: 11px;
             color: var(--ed-ink-secondary);
             margin-top: 2px;
-            font-variant-numeric: tabular-nums lining-nums;
         }
 
         .cal-roi-banner {
@@ -3223,7 +3327,6 @@ export function getCalendarTabStyles(): string {
         .cal-roi-badge {
             color: var(--ed-good);
             font-weight: 600;
-            font-variant-numeric: tabular-nums;
         }
 
         .cal-roi-note {
@@ -3283,7 +3386,6 @@ export function getCalendarTabStyles(): string {
             min-width: 116px;
             text-align: center;
             color: var(--ed-ink);
-            font-variant-numeric: tabular-nums lining-nums;
         }
 
         .cal-grid {
@@ -3317,7 +3419,6 @@ export function getCalendarTabStyles(): string {
             border-radius: var(--ed-radius-sm);
             font: inherit;
             font-size: 12.5px;
-            font-variant-numeric: tabular-nums lining-nums;
             color: var(--ed-ink-muted);
             background: transparent;
             border: 1.5px solid transparent;
@@ -3430,7 +3531,6 @@ export function getCalendarTabStyles(): string {
             align-items: center;
             flex-wrap: wrap;
             gap: 8px;
-            font-variant-numeric: tabular-nums lining-nums;
         }
 
         .cal-detail-date .icon {
@@ -3523,7 +3623,6 @@ export function getCalendarTabStyles(): string {
             font-size: 1.05em;
             line-height: 1.25;
             color: var(--ed-ink);
-            font-variant-numeric: tabular-nums lining-nums;
             overflow-wrap: anywhere;
         }
 
@@ -3534,8 +3633,6 @@ export function getCalendarTabStyles(): string {
             margin-top: 2px;
             line-height: 1.35;
         }
-
-        .cal-day-total-danger { color: var(--ed-danger); }
 
         /* ── Token Breakdown Strip ─── */
         .cal-token-breakdown {
@@ -3568,7 +3665,6 @@ export function getCalendarTabStyles(): string {
             gap: 6px 14px;
             font-size: 11.5px;
             color: var(--ed-ink-secondary);
-            font-variant-numeric: tabular-nums;
         }
 
         .cal-tok-item {
@@ -3665,7 +3761,6 @@ export function getCalendarTabStyles(): string {
             font-size: 11.5px;
             font-weight: 550;
             line-height: 1.45;
-            font-variant-numeric: tabular-nums lining-nums;
             border: 1px solid var(--ed-border);
             background: var(--ed-surface-well);
             color: var(--ed-ink-secondary);
@@ -3676,9 +3771,8 @@ export function getCalendarTabStyles(): string {
         .cal-chip svg { width: 11px; height: 11px; flex-shrink: 0; }
         .cal-chip-tools { background: var(--ed-accent-tint); color: var(--ed-accent); border-color: var(--ed-accent-border); }
         .cal-chip-tokens { background: var(--ed-good-tint); color: var(--ed-good); border-color: var(--ed-good-border); }
-        .cal-chip-cost, .cal-chip-est { background: var(--ed-warn-tint); color: var(--ed-warn); border-color: var(--ed-warn-border); }
+        .cal-chip-cost { background: var(--ed-warn-tint); color: var(--ed-warn); border-color: var(--ed-warn-border); }
         .cal-chip-errors { background: var(--ed-danger-tint); color: var(--ed-danger); border-color: var(--ed-danger-border); }
-        .cal-chip-reasoning { background: var(--ed-surface-well); color: var(--ed-chart-thinking); border-color: var(--ed-border-strong); }
         .cal-chip-speed { background: var(--ed-surface-well); color: var(--ed-accent); border-color: var(--ed-accent-border); }
         .cal-chip-cache { background: var(--ed-surface-well); color: var(--ed-chart-cache); border-color: var(--ed-border-strong); }
         .cal-chip-ttft { background: var(--ed-surface-well); color: var(--ed-ink-muted); border-color: var(--ed-border); }
@@ -3783,7 +3877,6 @@ export function getCalendarTabStyles(): string {
             align-items: center;
             flex-wrap: wrap;
             gap: 6px;
-            font-variant-numeric: tabular-nums;
         }
 
         .cal-cycle-idx { font-weight: 650; color: var(--ed-ink); }
@@ -3926,5 +4019,29 @@ export function getCalendarTabStyles(): string {
                 transition: none;
             }
         }
-    `;
+
+    .cal-roi-advanced{margin-top:10px;border:1px solid var(--ed-border);border-radius:var(--ed-radius-sm);background:var(--ed-surface-well)}
+.cal-roi-advanced-summary{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;cursor:pointer;font-size:12px;font-weight:550;color:var(--ed-ink-secondary);list-style:none}
+.cal-roi-advanced-summary::-webkit-details-marker{display:none}
+.cal-roi-summary-pill{font-family:var(--ed-mono);font-size:11px;padding:1px 7px;border-radius:var(--ed-radius-pill);background:var(--ed-surface);border:1px solid var(--ed-border);color:var(--ed-ink)}
+.cal-roi-advanced .cal-roi-banner{margin:0;border:none;border-top:1px solid var(--ed-border);border-radius:0 0 var(--ed-radius-sm) var(--ed-radius-sm)}
+.cal-ws-card-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+.cal-ws-list,.cal-swarm-groups,.cal-swarm-members{display:flex;flex-direction:column;gap:8px}
+.cal-ws-row{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border:1px solid var(--ed-border);border-radius:var(--ed-radius-sm);background:var(--ed-surface-well)}
+.cal-ws-row.is-unattributed{border-style:dashed}
+.cal-ws-head,.cal-swarm-group-head,.cal-swarm-member{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;font-size:12px}
+.cal-ws-name{font-weight:600;color:var(--ed-ink);overflow-wrap:anywhere}
+.cal-ws-name.is-unattributed{color:var(--ed-ink-muted);font-style:italic}
+.cal-ws-metrics,.cal-swarm-member-vals,.cal-swarm-split-meta{display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:11.5px;color:var(--ed-ink-secondary);font-variant-numeric:tabular-nums}
+.cal-ws-bar-track{height:5px;border-radius:999px;overflow:hidden;background:var(--ed-surface)}
+.cal-ws-bar-fill{height:100%;background:var(--ed-accent);border-radius:999px}
+.cal-ws-bar-fill.is-unattributed{background:var(--ed-ink-muted)}
+.cal-ws-unpriced{padding:1px 6px;border-radius:var(--ed-radius-pill);font-size:10.5px;background:var(--ed-warn-tint);color:var(--ed-warn);border:1px solid var(--ed-warn-border)}
+.cal-swarm-group{padding:8px 10px;border:1px solid var(--ed-border);border-radius:var(--ed-radius-sm);background:var(--ed-surface-well);display:flex;flex-direction:column;gap:6px}
+.cal-swarm-member{padding:4px 8px;border-radius:var(--ed-radius-xs);background:var(--ed-surface);border:1px solid var(--ed-border)}
+.cal-swarm-member-id,.cal-swarm-group-head strong{overflow-wrap:anywhere;min-width:0}
+.cal-swarm-note,.cal-swarm-group summary{font-size:12px;color:var(--ed-ink-secondary)}
+.cal-swarm-group summary{cursor:pointer;padding:4px 0}
+.cal-swarm-members{margin-top:6px}
+`;
 }

@@ -16,6 +16,18 @@ import {
     type ModelPricing,
 } from './pricing-store';
 import {
+    formatCurrencyAmount,
+    resolveCurrencyConfig,
+    type CurrencyConfig,
+    type CurrencyInput,
+} from './core/currency';
+import {
+    projectForIdeStatusBar,
+    type ContextHealthStatus,
+    type PublishedMonitorObservation,
+    type SurfaceObservationProjection,
+} from './core/context-display';
+import {
     getModelDisplayName,
     getQuotaPoolKey,
     localizePickerEffortLabel,
@@ -36,8 +48,11 @@ import {
     formatCachePercent,
     formatLatency,
     formatSpeed,
+    selectAggregateSpeedMetric,
     type CacheState,
+    type PromptCacheTtlEvaluation,
     type SessionTelemetrySummary,
+    type SpeedMetricMode,
     type TelemetryAggregate,
 } from './telemetry-metrics';
 import {
@@ -73,7 +88,13 @@ import {
     type CompressionStats,
     type MonitorStaleState,
 } from './webview-overview-tab';
-import type { QuotaRunwayEstimate } from './quota-runway';
+import {
+    projectQuotaDisplay,
+    type QuotaDirectionMode,
+    type QuotaRunwayEstimate,
+    type QuotaWindowMode,
+    type WeeklyQuotaRunwayEstimate,
+} from './quota-runway';
 
 export { calculateCompressionStats, computeOrchestratorSplit };
 export type { CompressionStats, OrchestratorSplitSummary };
@@ -428,6 +449,19 @@ function getSeverityIcon(severity: StatusBarSeverity): string {
     }
 }
 
+function severityFromHealthStatus(status: ContextHealthStatus): StatusBarSeverity {
+    switch (status) {
+        case 'overflow': return 'critical';
+        case 'high_pressure': return 'error';
+        case 'elevated': return 'warning';
+        case 'fresh':
+        case 'healthy':
+        case 'incomplete':
+        default:
+            return 'ok';
+    }
+}
+
 // ─── Tooltip density diagnostics (one-shot per signature, PATH-check style) ───
 
 let lastDensityDiagKey = '';
@@ -498,6 +532,13 @@ export class StatusBarManager {
     private cachedCostSnapshot: HoverCostSnapshot = {};
     private cachedStaleState: MonitorStaleState | null = null;
     private cachedQuotaRunways: Record<string, QuotaRunwayEstimate> = {};
+    private cachedWeeklyQuotaRunways: Record<string, WeeklyQuotaRunwayEstimate> = {};
+    private cachedPromptCacheTtl: PromptCacheTtlEvaluation | null = null;
+    private quotaWindowMode: QuotaWindowMode = '5h';
+    private quotaDirectionMode: QuotaDirectionMode = 'remaining';
+    private speedMetricMode: SpeedMetricMode = 'decode';
+    private cachedCurrency: CurrencyConfig = { code: 'USD' };
+    private cachedObservation: PublishedMonitorObservation | null = null;
     private lastRender: LastRender = { kind: 'initializing' };
 
     // Last committed StatusBarItem property values — prevents redundant setter
@@ -564,6 +605,45 @@ export class StatusBarManager {
         this.cachedQuotaRunways = runways ?? {};
     }
 
+    /** Record optional weekly active-hours quota runway estimates for at-risk tooltip notice. */
+    setWeeklyQuotaRunways(runways: Record<string, WeeklyQuotaRunwayEstimate> | null): void {
+        this.cachedWeeklyQuotaRunways = runways ?? {};
+    }
+
+    /** Record optional 5-minute idle prompt cache TTL heuristic state. */
+    setPromptCacheTtl(ttl: PromptCacheTtlEvaluation | null): void {
+        this.cachedPromptCacheTtl = ttl ?? null;
+    }
+
+    /** Configure v1.18 quota window (`5h`/`7d`/`tightest`), direction (`remaining`/`used`), and speed mode (`decode`/`e2e`). */
+    setQuotaDisplayModes(opts: {
+        quotaWindowMode?: QuotaWindowMode;
+        quotaDirectionMode?: QuotaDirectionMode;
+        speedMetricMode?: SpeedMetricMode;
+    }): void {
+        if (opts.quotaWindowMode === '5h' || opts.quotaWindowMode === '7d' || opts.quotaWindowMode === 'tightest') {
+            this.quotaWindowMode = opts.quotaWindowMode;
+        }
+        if (opts.quotaDirectionMode === 'remaining' || opts.quotaDirectionMode === 'used') {
+            this.quotaDirectionMode = opts.quotaDirectionMode;
+        }
+        if (opts.speedMetricMode === 'decode' || opts.speedMetricMode === 'e2e') {
+            this.speedMetricMode = opts.speedMetricMode;
+        }
+    }
+
+    getQuotaDisplayModes(): {
+        quotaWindowMode: QuotaWindowMode;
+        quotaDirectionMode: QuotaDirectionMode;
+        speedMetricMode: SpeedMetricMode;
+    } {
+        return {
+            quotaWindowMode: this.quotaWindowMode,
+            quotaDirectionMode: this.quotaDirectionMode,
+            speedMetricMode: this.speedMetricMode,
+        };
+    }
+
     private stabilizeResetMinute(key: string, rawResetMs: number): number {
         const prevMinuteMs = this.stabilizedResetMinutes.get(key);
         if (
@@ -615,6 +695,72 @@ export class StatusBarManager {
 
     setCostSnapshot(snapshot: HoverCostSnapshot): void {
         this.cachedCostSnapshot = { ...snapshot };
+    }
+
+    /** Configure display currency & bound custom FX rate (all 10 D5 currencies incl. CAD). */
+    setCurrencyConfig(currency: CurrencyInput): void {
+        const resolved = resolveCurrencyConfig(currency);
+        this.cachedCurrency = {
+            code: resolved.preset.code,
+            ...(resolved.isCustomRate
+                ? { customRatePerUsd: resolved.ratePerUsd, customFxCurrency: resolved.customFxCurrency }
+                : {}),
+        };
+    }
+
+    getCurrencyConfig(): CurrencyConfig {
+        return { ...this.cachedCurrency };
+    }
+
+    /** Publish the single immutable D9 observation shared across IDE Status Bar & Webview. */
+    setPublishedObservation(observation: PublishedMonitorObservation | null): void {
+        this.cachedObservation = observation;
+    }
+
+    getPublishedObservation(): PublishedMonitorObservation | null {
+        return this.cachedObservation;
+    }
+
+    getObservationProjection(): SurfaceObservationProjection | null {
+        return this.cachedObservation ? projectForIdeStatusBar(this.cachedObservation) : null;
+    }
+
+    private getActiveObservationProjection(usage: ContextUsage | null): SurfaceObservationProjection | null {
+        const obs = this.cachedObservation;
+        if (!obs) { return null; }
+        if (usage && obs.subjectCascadeId && obs.subjectCascadeId !== usage.cascadeId) {
+            return null;
+        }
+        return projectForIdeStatusBar(obs);
+    }
+
+    private formatDisplayCost(usd: number, precision: 'standard' | 'call' = 'standard'): string {
+        if (this.cachedCurrency.code === 'USD') {
+            return formatUsdCost(usd, { precision });
+        }
+        return formatCurrencyAmount(usd, this.cachedCurrency, {
+            mode: precision === 'call' ? 'call' : 'standard',
+        });
+    }
+
+    private formatDisplaySavings(usdSaved: number): string {
+        if (!Number.isFinite(usdSaved) || usdSaved <= 0) { return '—'; }
+        if (this.cachedCurrency.code === 'USD') {
+            return formatUsdSavings(usdSaved);
+        }
+        const formatted = formatCurrencyAmount(-usdSaved, this.cachedCurrency, {
+            mode: 'standard',
+            allowNegative: true,
+        });
+        return formatted.startsWith('-') || formatted.startsWith('>-') ? formatted : '—';
+    }
+
+    private formatDisplayPerMillion(usdPerMillion: number): string {
+        if (this.cachedCurrency.code === 'USD') {
+            return formatUsdPerMillion(usdPerMillion);
+        }
+        const formatted = formatCurrencyAmount(usdPerMillion, this.cachedCurrency, { mode: 'rate' });
+        return formatted === '—' ? '—' : `${formatted}/M`;
     }
 
     /**
@@ -772,21 +918,52 @@ export class StatusBarManager {
         ], undefined, nowMs);
     }
 
-    update(usage: ContextUsage): void {
+    update(usage: ContextUsage, observation?: PublishedMonitorObservation | null): void {
+        if (observation !== undefined) {
+            this.cachedObservation = observation;
+        }
         this.lastRender = { kind: 'update', usage };
         const nowMs = Date.now();
-        const { used, limit, percent } = getContextReading(usage);
-        const severity = getSeverity(percent ?? 0);
+        const projection = this.getActiveObservationProjection(usage);
+        let used: number | null;
+        let limit: number | null;
+        let percent: number | null;
+        let severity: StatusBarSeverity;
+        let isOverflow: boolean;
+
+        if (projection) {
+            used = projection.isIncomplete ? null : projection.usedTokens;
+            limit = projection.isIncomplete ? null : projection.denominatorTokens;
+            percent = projection.isIncomplete ? null : projection.primaryPct;
+            severity = severityFromHealthStatus(projection.healthStatus);
+            isOverflow = projection.isOverflow;
+        } else {
+            const reading = getContextReading(usage);
+            used = reading.used;
+            limit = reading.limit;
+            percent = reading.percent;
+            severity = getSeverity(percent ?? 0);
+            isOverflow = percent !== null && percent > 100;
+        }
+
         const backgroundColor = this.displayPrefs.showContext ? getSeverityColor(severity) : undefined;
         const context = used !== null && limit !== null ? `${formatTokenCount(used)}/${formatContextLimit(limit)}` : '—';
-        const flags = usage.hasGaps ? ' $(warning)' : percent !== null && percent > 100 ? ' $(fold)' : '';
+        const flags = usage.hasGaps ? ' $(warning)' : isOverflow ? ' $(fold)' : '';
         this.renderStatus(this.displayPrefs.showContext ? getSeverityIcon(severity) : '$(pulse)', [
             this.displayPrefs.showContext ? `${context}${flags}` : '',
-            ...this.indicators(usage.model, nowMs),
+            ...this.indicators(usage.model, nowMs, projection),
         ], backgroundColor, nowMs);
     }
 
-    private effectiveSessionCost(): number | null {
+    private effectiveSessionCost(projection?: SurfaceObservationProjection | null): number | null {
+        if (projection) {
+            if (projection.isZeroStepFresh || projection.isIncomplete) {
+                return null;
+            }
+            if (projection.sessionCostUsd !== null && Number.isFinite(projection.sessionCostUsd) && projection.sessionCostUsd > 0) {
+                return projection.sessionCostUsd;
+            }
+        }
         const override = this.cachedCostSnapshot.sessionCostUsd;
         if (override !== undefined && override !== null && Number.isFinite(override) && override > 0) {
             return override;
@@ -795,37 +972,89 @@ export class StatusBarManager {
         return computed !== null && Number.isFinite(computed) && computed > 0 ? computed : null;
     }
 
-    private indicators(modelId: string | undefined, nowMs: number): string[] {
+    private indicators(
+        modelId: string | undefined,
+        nowMs: number,
+        projection?: SurfaceObservationProjection | null,
+    ): string[] {
         const id = modelId ? resolveModelId(modelId) || modelId : undefined;
         const config = id ? this.cachedConfigs.find(c => (resolveModelId(c.model) || c.model) === id) : undefined;
         let quota = '';
         let reset = '';
         const activeBarKeys = new Set<string>();
+        const matchedGroup = id
+            ? this.selectQuotaGroupsWithWindows(id).find(g => g.readings.some(r => r.model === id))
+            : undefined;
+        const projInput5h = config && usableCount(config.quotaInfo?.remainingFraction) && config.quotaInfo!.remainingFraction! <= 1
+            ? { remainingFraction: config.quotaInfo!.remainingFraction!, resetTimeMs: validResetTimestamp(config.quotaInfo?.resetTime) }
+            : (matchedGroup && validQuotaFraction(matchedGroup.fiveHourQuota?.remainingFraction ?? matchedGroup.minimum) !== null
+                ? {
+                    remainingFraction: validQuotaFraction(matchedGroup.fiveHourQuota?.remainingFraction ?? matchedGroup.minimum)!,
+                    resetTimeMs: validResetTimestamp(matchedGroup.fiveHourQuota?.resetTime ?? matchedGroup.resetTime),
+                }
+                : null);
+        const projInput7d = matchedGroup && validQuotaFraction(matchedGroup.weeklyQuota?.remainingFraction) !== null
+            ? {
+                remainingFraction: validQuotaFraction(matchedGroup.weeklyQuota?.remainingFraction)!,
+                resetTimeMs: validResetTimestamp(matchedGroup.weeklyQuota?.resetTime),
+            }
+            : null;
+        const quotaProj = (projInput5h || projInput7d)
+            ? projectQuotaDisplay({
+                windowMode: this.quotaWindowMode,
+                directionMode: this.quotaDirectionMode,
+                window5h: projInput5h,
+                window7d: projInput7d,
+                nowMs,
+            })
+            : null;
+
+        const formatProjectedBarQuota = (fallbackPct: string): string => {
+            if (!quotaProj || quotaProj.displayPct === null) {
+                if (this.quotaWindowMode === '7d') { return ''; }
+                return `$(layers) ${fallbackPct}`;
+            }
+            const pctStr = `${Math.round(quotaProj.displayPct)}%`;
+            if (this.quotaWindowMode === '5h' && this.quotaDirectionMode === 'remaining') {
+                return `$(layers) ${pctStr}`;
+            }
+            return `$(layers) ${tBi(quotaProj.metricLabelEn, quotaProj.metricLabelZh)} ${pctStr}`;
+        };
+
         if (config) {
             const fraction = config.quotaInfo?.remainingFraction;
-            if (this.displayPrefs.showQuota && usableCount(fraction) && fraction <= 1) {
-                quota = `$(layers) ${Math.round(fraction * 100)}%`;
+            if (this.displayPrefs.showQuota) {
+                if (quotaProj && quotaProj.displayPct !== null) {
+                    quota = formatProjectedBarQuota(`${Math.round(quotaProj.displayPct)}%`);
+                } else if (this.quotaWindowMode !== '7d' && usableCount(fraction) && fraction <= 1) {
+                    quota = `$(layers) ${Math.round(fraction * 100)}%`;
+                }
             }
             if (this.displayPrefs.showResetCountdown) {
                 const poolKey = getQuotaPoolKey(config.model) || config.model;
                 const barKey = `bar:${poolKey}`;
-                reset = this.formatResetCountdown(config.quotaInfo?.resetTime, nowMs, barKey);
+                const targetResetIso = quotaProj?.resetTimeMs
+                    ? new Date(quotaProj.resetTimeMs).toISOString()
+                    : config.quotaInfo?.resetTime;
+                reset = this.formatResetCountdown(targetResetIso, nowMs, barKey);
                 if (reset) { activeBarKeys.add(barKey); }
             }
         } else if (id) {
             const canonicalPool = getQuotaPoolKey(id);
             const poolKey = canonicalPool !== id && (canonicalPool === 'gemini' || canonicalPool === 'premium')
                 ? canonicalPool : undefined;
-            const group = poolKey
-                ? selectMonitorQuotaGroups(this.cachedConfigs, id).find(g => g.pool === poolKey)
-                : undefined;
+            const group = matchedGroup
+                ?? (poolKey ? selectMonitorQuotaGroups(this.cachedConfigs, id).find(g => g.pool === poolKey) : undefined);
             if (group) {
-                if (this.displayPrefs.showQuota && group.minimum !== null) {
-                    quota = `$(layers) ${quotaPercentage(group)}`;
+                if (this.displayPrefs.showQuota && (group.minimum !== null || (quotaProj && quotaProj.displayPct !== null))) {
+                    quota = formatProjectedBarQuota(quotaPercentage(group));
                 }
-                if (this.displayPrefs.showResetCountdown && !group.resetDiffers && group.resetTime) {
+                if (this.displayPrefs.showResetCountdown && (!group.resetDiffers && group.resetTime || quotaProj?.resetTimeMs)) {
                     const barKey = `bar:${group.pool || group.key}`;
-                    reset = this.formatResetCountdown(group.resetTime, nowMs, barKey);
+                    const targetResetIso = quotaProj?.resetTimeMs
+                        ? new Date(quotaProj.resetTimeMs).toISOString()
+                        : (group.resetTime ?? undefined);
+                    reset = this.formatResetCountdown(targetResetIso, nowMs, barKey);
                     if (reset) { activeBarKeys.add(barKey); }
                 }
             }
@@ -834,18 +1063,24 @@ export class StatusBarManager {
         const credits = this.displayPrefs.showAiCredits && this.cachedCreditsTotal !== null
             ? `$(zap) ${formatNumber(this.cachedCreditsTotal)}` : '';
         const primary = this.cachedTelemetry?.primary;
-        const speed = primary ? (primary.latestGenTokPerSec ?? primary.weightedGenTokPerSec) : null;
+        const aggSpeed = primary ? selectAggregateSpeedMetric(primary, this.speedMetricMode) : null;
+        const fallbackSpeed = aggSpeed ? (aggSpeed.latestTokPerSec ?? aggSpeed.weightedTokPerSec) : null;
+        const speed = projection
+            ? (projection.isZeroStepFresh ? null : (projection.displaySpeedTps ?? fallbackSpeed))
+            : fallbackSpeed;
+        const speedModeSuffix = this.speedMetricMode === 'e2e' ? ' E2E' : '';
         const speedSegment = this.displayPrefs.showSpeed && speed !== null && speed > 0
-            ? `$(pulse) ${formatSpeed(speed)}` : '';
+            ? `$(pulse) ${formatSpeed(speed)}${speedModeSuffix}` : '';
         const cacheLabel = getLanguage() === 'zh' ? '缓存' : 'Cache';
         const cacheSegment = this.displayPrefs.showCacheHit
+            && !projection?.isZeroStepFresh
             && primary
             && primary.totalPromptTokens > 0
             && primary.tokenCacheHitRate !== null
             ? `${cacheLabel} ${formatCachePercent(primary.tokenCacheHitRate)}` : '';
-        const sessionCost = this.effectiveSessionCost();
+        const sessionCost = this.effectiveSessionCost(projection);
         const costSegment = this.displayPrefs.showSessionCost && sessionCost !== null
-            ? `$(credit-card) ${formatUsdCost(sessionCost, { precision: 'standard' })}`
+            ? `$(credit-card) ${this.formatDisplayCost(sessionCost, 'standard')}`
             : '';
         return [quota, reset, credits, speedSegment, cacheSegment, costSegment];
     }
@@ -875,11 +1110,11 @@ export class StatusBarManager {
         const state = monitorStatusLabel(this.monitorStatus.state);
         const spoken = text.filter(part => part !== state)
             .map(part => part
-                .replace('$(layers)', tBi('Quota remaining', '剩余配额'))
-                .replace('$(clock)', tBi('Reset in', '距离重置还有'))
-                .replace('$(zap)', tBi('AI credits', 'AI 积分'))
-                .replace('$(pulse)', tBi('Speed', '生成速度'))
-                .replace('$(credit-card)', t('telemetry.cost'))
+                .replace('$(layers)', () => tBi('Quota remaining', '剩余配额'))
+                .replace('$(clock)', () => tBi('Reset in', '距离重置还有'))
+                .replace('$(zap)', () => tBi('AI credits', 'AI 积分'))
+                .replace('$(pulse)', () => tBi('Speed', '生成速度'))
+                .replace('$(credit-card)', () => t('telemetry.cost'))
                 .replace(/\$\([^)]*\)\s*/g, '').trim());
         const nextAriaLabel = [t('statusBar.name'), state, ...spoken].join(' · ');
         const nextAriaRole = 'button';
@@ -1063,20 +1298,41 @@ export class StatusBarManager {
     }
 
     private buildContextSection(usage: ContextUsage, mode: EffectiveMode, full: boolean): HoverSection {
-        const { used, limit, percent } = getContextReading(usage);
+        const projection = this.getActiveObservationProjection(usage);
+        const fallbackReading = projection ? null : getContextReading(usage);
+        const used = projection
+            ? (projection.isIncomplete ? null : projection.usedTokens)
+            : fallbackReading!.used;
+        const limit = projection
+            ? (projection.isIncomplete ? null : projection.denominatorTokens)
+            : fallbackReading!.limit;
+        const percent = projection
+            ? (projection.isIncomplete ? null : projection.primaryPct)
+            : fallbackReading!.percent;
+        const pctLabel = projection
+            ? projection.primaryPctText
+            : (percent !== null ? `${percent.toFixed(1)}%` : '—');
+        const gaugePct = projection ? projection.geometryFillPct : (percent ?? 0);
+        const compactionWarn = projection
+            ? projection.compactionWarningActive
+            : (percent !== null && percent >= 80);
+        const isOverflow = projection ? projection.isOverflow : (percent !== null && percent > 100);
+        const basisSuffix = projection && projection.actualBasis === 'native' && projection.hasDualCap
+            ? ` *(${tBi('Native', '原生窗口')})*`
+            : '';
         const remaining = getContextRemaining(used, limit);
         const lines: string[] = [];
         const compactLines: string[] = [];
 
         if (used !== null && limit !== null && percent !== null) {
             const number = full ? (n: number) => formatNumber(n) : formatTokenCount;
-            const gauge = buildUnicodeGauge(percent, 8);
-            const lead = `$(dashboard) **${tBi('Context', '上下文')}** \`${gauge}\` **${percent.toFixed(1)}%** · **${number(used)}** / ${number(limit)} tokens`;
+            const gauge = buildUnicodeGauge(gaugePct, 8);
+            const lead = `$(dashboard) **${tBi('Context', '上下文')}** \`${gauge}\` **${pctLabel}**${basisSuffix} · **${number(used)}** / ${number(limit)} tokens`;
             compactLines.push(lead);
             if (mode === 'compact') {
                 lines.push(lead);
             } else {
-                const nearWarn = percent >= 80
+                const nearWarn = compactionWarn
                     ? ` · $(warning) ${tBi('Near compression', '接近自动压缩')}`
                     : '';
                 if (!full) {
@@ -1125,7 +1381,7 @@ export class StatusBarManager {
         if (usage.hasGaps) {
             criticalAlerts.push(`$(warning) ${tBi('Some steps are missing', '部分步骤缺失')}`);
         }
-        if (percent !== null && percent > 100) {
+        if (isOverflow) {
             criticalAlerts.push(`$(fold) ${tBi('Above the context limit', '已超过上下文上限')}`);
         }
         if (usage.imageGenerationIncomplete) {
@@ -1162,7 +1418,7 @@ export class StatusBarManager {
             ? `**${(latest.cacheHitRate * 100).toFixed(2)}%**`
             : '—';
         const costCell = latest.costUsd !== null
-            ? `**${formatUsdCost(latest.costUsd, { precision: 'call' })}**`
+            ? `**${this.formatDisplayCost(latest.costUsd, 'call')}**`
             : t('telemetry.unpriced');
         const ttftStr = latest.ttftSeconds !== null ? formatLatency(latest.ttftSeconds) : '—';
         const totalStr = latest.totalSeconds !== null ? formatLatency(latest.totalSeconds) : '—';
@@ -1211,23 +1467,26 @@ export class StatusBarManager {
 
         if (!hasTel && sessionCost === null && todayCost === null) { return null; }
 
-        const speed = primary ? (primary.latestGenTokPerSec ?? primary.weightedGenTokPerSec) : null;
+        const aggSpeed = primary ? selectAggregateSpeedMetric(primary, this.speedMetricMode) : null;
+        const speed = aggSpeed ? (aggSpeed.latestTokPerSec ?? aggSpeed.weightedTokPerSec) : null;
         const ttft = primary ? (primary.avgTtftSeconds ?? primary.latestTtftSeconds) : null;
         const cacheRate = primary ? primary.tokenCacheHitRate : null;
 
         // Compact 1–2 line summary (used directly in compact mode AND as compactLines fallback)
         const compactParts: string[] = [];
-        if (speed !== null) { compactParts.push(`**${formatSpeed(speed)}**`); }
+        if (speed !== null) {
+            compactParts.push(`**${formatSpeed(speed)}**${this.speedMetricMode === 'e2e' ? ' E2E' : ''}`);
+        }
         if (ttft !== null) { compactParts.push(`${tBi('TTFT', '首字')} ${formatLatency(ttft)}`); }
         if (cacheRate !== null) { compactParts.push(`${tBi('Cache', '缓存')} ${formatCachePercent(cacheRate)}`); }
         const compactCostParts: string[] = [];
         if (sessionCost !== null) {
-            compactCostParts.push(`${t('telemetry.sessionCost')} **${formatUsdCost(sessionCost)}**`);
+            compactCostParts.push(`${t('telemetry.sessionCost')} **${this.formatDisplayCost(sessionCost)}**`);
         } else if (sessionUnpriced && hasTel) {
             compactCostParts.push(`${t('telemetry.sessionCost')} ${t('telemetry.unpriced')}`);
         }
         if (todayCost !== null) {
-            compactCostParts.push(`${t('telemetry.todayCost')} **${formatUsdCost(todayCost)}**`);
+            compactCostParts.push(`${t('telemetry.todayCost')} **${this.formatDisplayCost(todayCost)}**`);
         }
         const compactLines: string[] = [];
         if (compactParts.length > 0 && compactCostParts.length > 0) {
@@ -1255,16 +1514,16 @@ export class StatusBarManager {
         // Row 1: Cost (Session / Today / Savings or Unpriced)
         if (sessionCost !== null || todayCost !== null || sessionUnpriced) {
             const sessionCell = sessionCost !== null
-                ? `**${formatUsdCost(sessionCost)}**${sessionUnpriced ? ` *(${tBi('partial', '部分')})*` : ''}`
+                ? `**${this.formatDisplayCost(sessionCost)}**${sessionUnpriced ? ` *(${tBi('partial', '部分')})*` : ''}`
                 : (sessionUnpriced ? t('telemetry.unpriced') : '—');
             const todayCell = todayCost !== null
-                ? `**${formatUsdCost(todayCost)}**${todayUnpriced ? ` *(${tBi('partial', '部分')})*` : ''}`
+                ? `**${this.formatDisplayCost(todayCost)}**${todayUnpriced ? ` *(${tBi('partial', '部分')})*` : ''}`
                 : '—';
             let costNote = '—';
             if (primary?.estCacheSavingsUsd !== null && primary?.estCacheSavingsUsd !== undefined && primary.estCacheSavingsUsd >= 0.0001) {
-                const savedSigned = formatUsdSavings(primary.estCacheSavingsUsd);
+                const savedSigned = this.formatDisplaySavings(primary.estCacheSavingsUsd);
                 if (savedSigned !== '—') {
-                    const savedPositive = savedSigned.replace(/^-/, '');
+                    const savedPositive = savedSigned.replace(/^>?-/, '');
                     costNote = tBi(`est. ${savedSigned}`, `缓存省 ${savedPositive}`);
                 }
             } else if (sessionCost !== null && sessionUnpriced) {
@@ -1280,10 +1539,18 @@ export class StatusBarManager {
                 `${formatTokenCount(primary.totalCacheReadTokens)}/${formatTokenCount(primary.totalPromptTokens)} tokens`,
             ];
             if (this.cachedExtras?.blendedInputUsdPerMillion !== null && this.cachedExtras?.blendedInputUsdPerMillion !== undefined) {
-                detailParts.push(`${t('telemetry.blendedInput')} ${formatUsdPerMillion(this.cachedExtras.blendedInputUsdPerMillion)}`);
+                detailParts.push(`${t('telemetry.blendedInput')} ${this.formatDisplayPerMillion(this.cachedExtras.blendedInputUsdPerMillion)}`);
             }
             if (full && primary.totalCacheCreationTokens > 0) {
                 detailParts.push(`${tBi('write', '写入')} ${formatTokenCount(primary.totalCacheCreationTokens)}`);
+            }
+            if (this.cachedPromptCacheTtl && this.cachedPromptCacheTtl.ttlEstimateState !== 'unknown') {
+                const ttlBadge = this.cachedPromptCacheTtl.ttlEstimateState === 'warm'
+                    ? tBi('5m TTL warm', '5m TTL 热')
+                    : this.cachedPromptCacheTtl.ttlEstimateState === 'cooling'
+                        ? tBi('5m TTL cooling', '5m TTL 冷却中')
+                        : tBi('5m TTL cold', '5m TTL 已过期');
+                detailParts.push(ttlBadge);
             }
             rows.push(`| ${t('telemetry.promptCache')} | **${formatCachePercent(cacheRate)}** | ${ratioCell} | ${detailParts.join(' · ')} |`);
         }
@@ -1291,19 +1558,26 @@ export class StatusBarManager {
         // Row 3: Speed / TTFT
         if (primary && (speed !== null || ttft !== null)) {
             const speedParts: string[] = [];
-            if (primary.latestGenTokPerSec !== null && primary.weightedGenTokPerSec !== null && primary.speedSampleCount > 1) {
-                speedParts.push(`**${formatSpeed(primary.latestGenTokPerSec)}**`);
-                speedParts.push(`${tBi('avg', '均')} ${formatSpeed(primary.weightedGenTokPerSec)}`);
+            const modeLatest = aggSpeed?.latestTokPerSec ?? null;
+            const modeWeighted = aggSpeed?.weightedTokPerSec ?? null;
+            const measuredCount = aggSpeed?.coverage.measuredCount ?? primary.speedSampleCount;
+            const totalCount = aggSpeed?.coverage.totalCount ?? primary.totalCalls;
+            if (modeLatest !== null && modeWeighted !== null && measuredCount > 1) {
+                speedParts.push(`**${formatSpeed(modeLatest)}**`);
+                speedParts.push(`${tBi('avg', '均')} ${formatSpeed(modeWeighted)}`);
             } else if (speed !== null) {
                 speedParts.push(`**${formatSpeed(speed)}**`);
             }
-            if (primary.hasThinking && primary.weightedVisibleTokPerSec !== null) {
+            if (this.speedMetricMode === 'decode' && primary.hasThinking && primary.weightedVisibleTokPerSec !== null) {
                 speedParts.push(`${tBi('resp', '可见')} ${formatSpeed(primary.weightedVisibleTokPerSec)}`);
             }
             const speedCell = speedParts.length > 0 ? speedParts.join(' · ') : '—';
             const ttftCell = ttft !== null ? `TTFT **${formatLatency(ttft)}**` : '—';
 
             const timingNotes: string[] = [];
+            if (this.speedMetricMode === 'e2e' && totalCount > 0) {
+                timingNotes.push(`${tBi('model-call E2E', '模型调用 E2E')} ${measuredCount}/${totalCount}`);
+            }
             if (
                 primary.cachedTtftCount >= 1
                 && primary.uncachedTtftCount >= 1
@@ -1313,13 +1587,16 @@ export class StatusBarManager {
                 const delta = formatSignedPercentDelta(primary.ttftCacheDeltaPct);
                 timingNotes.push(`${formatLatency(primary.cachedAvgTtftSeconds)} ${tBi('cached', '命中')} vs ${formatLatency(primary.uncachedAvgTtftSeconds)} ${tBi('uncached', '未命中')}${delta ? ` ${delta}` : ''}`);
             }
-            if (full && primary.medianGenTokPerSec !== null && primary.speedSampleCount >= 2) {
+            if (full && this.speedMetricMode === 'decode' && primary.medianGenTokPerSec !== null && primary.speedSampleCount >= 2) {
                 timingNotes.push(`p50 ${formatSpeed(primary.medianGenTokPerSec)}`);
             }
             if (full && primary.medianTtftSeconds !== null && primary.ttftSampleCount >= 2) {
                 timingNotes.push(`p50 ${formatLatency(primary.medianTtftSeconds)}`);
             }
-            rows.push(`| ${tBi('Speed / TTFT', '速度 / 首字')} | ${speedCell} | ${ttftCell} | ${timingNotes.length > 0 ? timingNotes.join(' · ') : '—'} |`);
+            const speedRowLabel = this.speedMetricMode === 'e2e'
+                ? tBi('Speed (E2E) / TTFT', '端到端速度 / 首字')
+                : tBi('Speed / TTFT', '速度 / 首字');
+            rows.push(`| ${speedRowLabel} | ${speedCell} | ${ttftCell} | ${timingNotes.length > 0 ? timingNotes.join(' · ') : '—'} |`);
         }
 
         if (rows.length === 0) { return null; }
@@ -1343,10 +1620,10 @@ export class StatusBarManager {
             );
             if (split) {
                 const planCost = split.plannerCostUsd !== null
-                    ? ` **${formatUsdCost(split.plannerCostUsd)}**`
+                    ? ` **${this.formatDisplayCost(split.plannerCostUsd)}**`
                     : '';
                 const execCost = split.executorCostUsd !== null
-                    ? ` **${formatUsdCost(split.executorCostUsd)}**`
+                    ? ` **${this.formatDisplayCost(split.executorCostUsd)}**`
                     : '';
                 const coldHint = split.coldCacheSwitchCount > 0
                     ? ` · ${split.coldCacheSwitchCount}× ${tBi('cold switch', '切换冷启动')}`
@@ -1372,7 +1649,15 @@ export class StatusBarManager {
     ): HoverSection {
         const maxPools = getMaxQuotaRows(full ? 'full' : 'auto', mode);
         const shown = groups.slice(0, maxPools);
-        const title = `$(shield) **${tBi('Quota remaining', '剩余配额')}**`;
+        const isUsedDir = this.quotaDirectionMode === 'used';
+        const winBadge = this.quotaWindowMode === '7d'
+            ? ` · ${tBi('7d', '7天')}`
+            : this.quotaWindowMode === 'tightest'
+                ? ` · ${t('quota.windowTightest')}`
+                : '';
+        const title = isUsedDir
+            ? `$(shield) **${tBi('Quota used', '已用配额')}**${winBadge}`
+            : `$(shield) **${tBi('Quota remaining', '剩余配额')}**${winBadge}`;
 
         if (groups.length === 0) {
             this.clearStabilizedResetKeys('5h:');
@@ -1418,11 +1703,14 @@ export class StatusBarManager {
             const fiveHourValid = validQuotaFraction(group.fiveHourQuota?.remainingFraction);
             const fallbackMin = validQuotaFraction(group.minimum);
             const fiveHourFraction = fiveHourValid ?? fallbackMin;
-            const fiveHourPct = fiveHourValid !== null
-                ? `${Math.round(fiveHourValid * 100)}%`
-                : quotaPercentage(group);
-            const gauge = fiveHourFraction !== null
-                ? `\`${buildUnicodeGauge(fiveHourFraction * 100, 6)}\` `
+            const fiveHourDisplayNum = fiveHourFraction !== null
+                ? Math.round((isUsedDir ? (1 - fiveHourFraction) : fiveHourFraction) * 100)
+                : null;
+            const fiveHourPct = !isUsedDir
+                ? (fiveHourValid !== null ? `${Math.round(fiveHourValid * 100)}%` : quotaPercentage(group))
+                : (fiveHourDisplayNum !== null ? `${fiveHourDisplayNum}%` : quotaPercentage(group));
+            const gauge = fiveHourDisplayNum !== null
+                ? `\`${buildUnicodeGauge(fiveHourDisplayNum, 6)}\` `
                 : '';
 
             const fiveHourResetTs = validResetTimestamp(group.fiveHourQuota?.resetTime);
@@ -1449,14 +1737,17 @@ export class StatusBarManager {
             }
 
             const weeklyValid = validQuotaFraction(group.weeklyQuota?.remainingFraction);
+            const weeklyDisplayNum = weeklyValid !== null
+                ? Math.round((isUsedDir ? (1 - weeklyValid) : weeklyValid) * 100)
+                : null;
             const shortLabel = formatHoverText(group.label, 14);
-            const shortWeekly = hasWeekly && weeklyValid !== null ? ` (${t('quota.weekly')} ${Math.round(weeklyValid * 100)}%)` : '';
+            const shortWeekly = hasWeekly && weeklyDisplayNum !== null ? ` (${t('quota.weekly')} ${weeklyDisplayNum}%)` : '';
             const shortReset = shown.length <= 2 && reset5h ? ` · ${reset5h}` : '';
             singleLineItems.push(`${isHighlighted ? `**${shortLabel}**` : shortLabel} **${fiveHourPct}**${shortWeekly}${shortReset}`);
 
             if (hasWeekly) {
-                const weeklyPct = weeklyValid !== null
-                    ? `**${Math.round(weeklyValid * 100)}%**`
+                const weeklyPct = weeklyDisplayNum !== null
+                    ? `**${weeklyDisplayNum}%**`
                     : '—';
                 const weeklyResetTs = validResetTimestamp(group.weeklyQuota?.resetTime);
                 let weeklyReset = '';
@@ -1502,7 +1793,7 @@ export class StatusBarManager {
         const firstColHeader = full ? tBi('Pool', '额度池') : title;
         const headerRow = hasWeekly
             ? `| ${firstColHeader} | ${t('quota.fiveHour')} | ${t('quota.weekly')} | ${tBi('Reset', '重置')} |`
-            : `| ${firstColHeader} | ${tBi('Remaining', '剩余')} | ${tBi('Reset', '重置')} |`;
+            : `| ${firstColHeader} | ${isUsedDir ? tBi('Used', '已用') : tBi('Remaining', '剩余')} | ${tBi('Reset', '重置')} |`;
         const alignRow = hasWeekly ? '| :--- | :--- | ---: | :--- |' : '| :--- | :--- | :--- |';
 
         const lines = full
@@ -1530,6 +1821,7 @@ export class StatusBarManager {
         if (this.cachedStaleState?.isStale) {
             lines.push(`$(history) **${t('quota.cachedStale')}**`);
         }
+        let emittedRunwayAlert = false;
         for (const [poolKey, runway] of Object.entries(this.cachedQuotaRunways)) {
             if (runway.status === 'at_risk' && runway.estExhaustMs !== null && Number.isFinite(runway.estExhaustMs)) {
                 const mins = Math.max(1, Math.ceil(runway.estExhaustMs / 60_000));
@@ -1538,7 +1830,21 @@ export class StatusBarManager {
                 const dur = hrs > 0 ? (remM > 0 ? `${hrs}h ${remM}m` : `${hrs}h`) : `${mins}m`;
                 const poolLabel = poolKey === 'gemini' ? 'Gemini' : poolKey === 'premium' ? 'Claude / GPT' : poolKey;
                 lines.push(`$(flame) **${t('quota.runway')}** · ${escapeMarkdown(poolLabel)} ${t('quota.exhaustsIn')} ~${dur}`);
+                emittedRunwayAlert = true;
                 break;
+            }
+        }
+        if (!emittedRunwayAlert) {
+            for (const [poolKey, wk] of Object.entries(this.cachedWeeklyQuotaRunways)) {
+                if (wk.status === 'at_risk' && wk.estExhaustMs !== null && Number.isFinite(wk.estExhaustMs)) {
+                    const hrs = Math.max(1, Math.ceil(wk.estExhaustMs / 3_600_000));
+                    const days = Math.floor(hrs / 24);
+                    const remH = hrs % 24;
+                    const dur = days > 0 ? (remH > 0 ? `${days}d ${remH}h` : `${days}d`) : `${hrs}h`;
+                    const poolLabel = poolKey === 'gemini' ? 'Gemini' : poolKey === 'premium' ? 'Claude / GPT' : poolKey;
+                    lines.push(`$(flame) **${t('quota.runway')} (${t('quota.weekly')})** · ${escapeMarkdown(poolLabel)} ${t('quota.exhaustsIn')} ~${dur}`);
+                    break;
+                }
             }
         }
 
@@ -1578,7 +1884,7 @@ export class StatusBarManager {
         const retry = this.cachedExtras?.retryWaste;
         if (retry && retry.retryCount > 0) {
             const wasteCostStr = retry.estWasteCostUsd !== null
-                ? ` (${formatUsdCost(retry.estWasteCostUsd)})`
+                ? ` (${this.formatDisplayCost(retry.estWasteCostUsd)})`
                 : '';
             const codeStr = retry.topErrorCode ? ` · ${formatInlineCode(retry.topErrorCode, 16)}` : '';
             lines.push(`$(warning) **${t('telemetry.retryWaste')}** · ${retry.retryCount}× · ${formatTokenCount(retry.retryTokens)} tokens${wasteCostStr}${codeStr}`);

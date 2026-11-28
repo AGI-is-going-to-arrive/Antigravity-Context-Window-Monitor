@@ -10,28 +10,52 @@ import {
 } from './backend-connection';
 import {
     getAllTrajectories,
+    readUnlistedMemberStepCount,
+    requireGeneratorMetadata,
     getContextUsage,
     refreshWorkflowImageUsage,
     resetImageWorkflowCache,
     getContextLimit,
     normalizeModelDisplayName,
-    normalizeUri,
     fetchFullUserStatus,
     fetchOrchestratorSettings,
     fetchUserQuotaSummary,
-    fetchTrajectoryGeneratorMetadata,
+    fetchTrajectoryGeneratorMetadataResult,
     fetchTrajectorySteps,
-    parseStrictResetTimestamp,
     updateModelDisplayNames,
     ContextUsage,
     TrajectorySummary,
     UserStatusInfo,
+    type FetchTrajectoryGeneratorMetadataResult,
+    type FetchTrajectoryStepsResult,
+    type FullUserStatusFetchResult,
 } from './tracker';
-import { getQuotaPoolKey, setShowModelShortId, overrideContextLimits, resolveModelId, registerResponseModelAlias, setAvailableImageModelIds, type ModelConfig, type FullUserStatus, type OrchestratorSettings, type UserQuotaSummary, updateModelSpec, getModelSpecs } from './models';
+import {
+    applyModelCatalogSync,
+    clearLiveModelSyncProvenance,
+    getQuotaPoolKey,
+    resolveModelContextLimits,
+    resolveModelId,
+    setAvailableImageModelIds,
+    setShowModelShortId,
+    type FullUserStatus,
+    type ModelConfig,
+    type OrchestratorSettings,
+    type UserQuotaSummary,
+} from './models';
 import { rpcCall } from './rpc-client';
 import { StatusBarManager, formatContextLimit, setTooltipDiagLogger } from './statusbar';
-import { getLanguage, initI18n, initI18nFromState, setLanguageToState, showLanguagePicker, tBi } from './i18n';
-import { parseContextBreakdown, type ContextBreakdownSnapshot } from './context-breakdown';
+import {
+    getIdeLocaleSources,
+    getLanguage,
+    initI18nForIde,
+    initI18nFromState,
+    setLanguageToState,
+    showLanguagePicker,
+    tBi,
+} from './i18n';
+import { isLanguagePreference, setLanguagePreferenceInMemory } from './i18n-core';
+import { advanceBranchStepPeak, parseContextBreakdown, type BranchStepPeakState, type ContextBreakdownSnapshot } from './context-breakdown';
 import { analyzeTurnDiagnostics, type TurnDiagnosticsSummary } from './turn-diagnostics';
 import {
     QuotaRunwayTracker,
@@ -39,18 +63,54 @@ import {
     isCustomModel,
     type QuotaRunwayEstimate,
     type SerializedQuotaRunwayState,
+    type WeeklyQuotaRunwayEstimate,
+    type WeeklyQuotaSeriesState,
 } from './quota-runway';
 import {
+    PromptCacheTtlTracker,
+    computeWeightedSpeedMetric,
+    type PromptCacheTtlEvaluation,
+    type WeightedSpeedMetricSummary,
+} from './telemetry-metrics';
+import {
+    advanceWindowBackendEpoch,
     buildConversationOptions,
-    resolveTargetConversation,
+    clearInspect,
+    createWindowSelectionState,
+    disableLockToMainAgent,
+    enableLockToMainAgent,
+    filterTrajectoriesByWorkspaces,
+    inspectMember,
+    isSubagentTrajectory,
+    normalizeWorkspaceUri,
+    resolveIdeAutoFollowConversation,
+    retargetLockedRoot,
+    selectConversation,
     type ConversationOption,
+    type NormalizeWorkspaceUriOptions,
+    type WindowSelectionState,
 } from './conversation-selector';
 import type { MonitorStaleState } from './webview-overview-tab';
 import { aiCreditTotal, currentAICredits } from './account-credits';
 import { groupModelQuotas } from './model-quota';
 import { MONITOR_COMMAND } from './monitor-overview';
-import { showMonitorPanel, refreshMonitorPanelLanguage, updateMonitorPanel, syncMonitorPanelSettings, isMonitorPanelVisible, setPanelDurableState, PanelPayload, LARGE_STATE_FILE_WARN_BYTES } from './webview-panel';
+import {
+    OPEN_VSX_EXTENSION_URL,
+    registerIdePanelHostBridge,
+    type PanelPayload,
+} from './ide-panel-types';
+export { OPEN_VSX_EXTENSION_URL };
+import {
+    showMonitorPanel,
+    refreshMonitorPanelLanguage,
+    updateMonitorPanel,
+    syncMonitorPanelSettings,
+    isMonitorPanelVisible,
+    setPanelDurableState,
+    LARGE_STATE_FILE_WARN_BYTES,
+} from './webview-panel';
 import { ActivityTracker, ActivityTrackerState } from './activity-tracker';
+import { SwarmMemberInventory } from './core/swarm-member-inventory';
 import { CascadeStatus, MAX_BACKOFF_INTERVAL_MS, MAX_DISCOVERY_BACKOFF_MS, COMPRESSION_PERSIST_POLLS } from './constants';
 import { QuotaTracker } from './quota-tracker';
 import { GMTracker, GMSummary, GMTrackerState, slimSummaryForPersistence } from './gm-tracker';
@@ -58,34 +118,101 @@ import { PricingStore, calculateLedgerModelCosts, costFromTokens, findPricingFor
 import { DailyStore, type DailyStoreState } from './daily-store';
 import { MonitorStore } from './monitor-store';
 import {
-    performDailyArchival as performDailyArchivalCore,
+    flushLateDaysToDailyStoreAsync,
+    performDailyArchivalAsync,
     type DailyArchivalContext,
+    type DailyArchivalResult,
 } from './daily-archival';
 import {
     DEFAULT_APP_SETTINGS,
     DurableState,
     StateBucket,
+    isUpdateAvailableForVersion,
     normalizeAppSettings,
     type AppSettings,
+    type DurableStateCommitReceipt,
     type LastUpdateCheckRecord,
 } from './durable-state';
+import { extractLegacyDataAsync, runLegacyMigrationOnceAsync } from './legacy-migration';
 import { mergeModelDNAState, PersistedModelDNA, restoreModelDNAState, serializeModelDNAState, type ModelDNAStoreState } from './model-dna-store';
 import type { StorageDiagnostics, UpdateStatusView } from './webview-settings-tab';
 import type { AccountSnapshot } from './activity-panel';
 import { isBillingDay, isBillingDaySetting } from './billing-day';
-import { expandModelIdsToPool } from './pool-utils';
+import {
+    comparePoolResetTimes,
+    expandModelIdsToPool,
+    groupModelConfigsByQuotaPool,
+    parsePositivePoolResetMs,
+    type ModelQuotaPoolGroup,
+} from './pool-utils';
+export {
+    comparePoolResetTimes,
+    groupModelConfigsByQuotaPool,
+    parsePositivePoolResetMs,
+    type ModelQuotaPoolGroup,
+};
 import { DailyLedger, toLocalDateKey, type DailyLedgerState } from './daily-ledger';
 import {
     CliUsageScanner,
-    isSubscriptionPlanPresetId,
-    normalizeSubscriptionPlanId,
-    SUBSCRIPTION_PLAN_PRESETS,
     type CliDailyUsageRecord,
-    type SubscriptionPlanPresetId,
 } from './cli-usage-scanner';
 import { checkForUpdates } from './app/plugin-updater';
-import type { UpdateCheckResult } from './app/sidecar-types';
+import {
+    CompactionRecoveryBriefTracker,
+    buildRedactedDiagnostics,
+    buildSettingsBackupJson,
+    combineSerializedRunwayWithWeekly,
+    enrichLedgerEntriesForIngestion,
+    isCdpOverlayFontSize,
+    normalizeCdpOverlayFontSize,
+    parseAndValidateSettingsBackup,
+    registerIdeV118HostHooks,
+    type CdpOverlayFontSizePreset,
+    type CompactionRecoveryBrief,
+    type UpdateCheckResult,
+} from './app/sidecar-types';
+import { WEBVIEW_CLIENT_BUILD_ID } from './client/generated/client-bundles.generated';
 import { parseTooltipDensity } from './tooltip-budget';
+import { resolveRuntimeVersion } from './core/version';
+import {
+    getLatestGMContextUsedForCascade,
+    type GMCompactionBoundary,
+} from './core/gm-context-fallback';
+import {
+    bindCustomFxRate,
+    switchDisplayCurrency,
+} from './core/currency';
+import {
+    SUBSCRIPTION_PLAN_PRESETS,
+    normalizeSubscriptionPlanId,
+    validateCustomFxRate,
+    validateDisplayCurrency,
+    validateOrchestratorPricingMode,
+    validateSubscriptionCurrency,
+    validateSubscriptionMonthlyFee,
+    validateSubscriptionPlan,
+    type SubscriptionPlanPresetId,
+} from './core/pricing-validation';
+import {
+    DiagnosticAliasMap,
+    buildPublishedMonitorObservation,
+    type ContextLimitProvenance as ObservationLimitProvenance,
+    type ContextTokenSource,
+    type ObservationSubjectKind,
+    type PublishedMonitorObservation,
+} from './core/context-display';
+import type { ContextLimitProvenance as CatalogLimitProvenance } from './core/model-catalog-sync';
+import {
+    DEFAULT_SWARM_POLL_BUDGET,
+    withTrajectoryPollBudget, withTrajectoryRequestShare, withoutTrajectoryPollBudget,
+    priceSwarmGroup,
+    orderTelemetryPoll,
+    SwarmPollScheduler,
+    SwarmTopologyRegistry,
+    type BrainRootScopeOptions,
+    type RpcTopologyLinkProjection,
+    type SwarmTopologySnapshot,
+} from './core/swarm-registry';
 
 // ─── Extension State ──────────────────────────────────────────────────────────
 // Each VS Code window runs its own extension instance, so module-level
@@ -143,35 +270,591 @@ let extensionContext: vscode.ExtensionContext;
 
 /** The cascade ID that THIS window instance is tracking. */
 let trackedCascadeId: string | null = null;
+/** Timestamp when `trackedCascadeId` became active (anchors brand-new 0-step chats). */
+let trackedCascadeSinceMs: number | undefined;
+/** Monotonic backend generation incremented on reconnect / metadata invalidation. */
+let backendEpoch = 0;
+/** Flag set when workspace folders change or a manual refresh arrives mid-poll so no change is dropped. */
+let repollNeeded = false;
+let repollForceManual = false;
+/** Tracks whether the user explicitly modified displayLanguage during async activation. */
+let displayLanguageModifiedByUser = false;
+/** In-flight startup archival promise (awaited before the first poll cycle). */
+let startupArchivalPromise: Promise<void> | null = null;
+/** In-flight non-blocking legacy migration promise (for deterministic test awaiting). */
+let legacyMigrationPromise: Promise<unknown> | null = null;
+/** Set of explicitly linked child/subagent cascade IDs observed in this session. */
+const knownSubagentCascadeIds = new Set<string>();
 
-// ─── v1.17.5 Telemetry, Runway, Stale Guard & Conversation Lock State ─────────
+/** Mark displayLanguage as explicitly modified by the user during the current activation. */
+export function markDisplayLanguageModified(): void {
+    displayLanguageModifiedByUser = true;
+}
+
+/** Return the in-flight async legacy migration promise launched during activate(), if any. */
+export function getLegacyMigrationPromise(): Promise<unknown> | null {
+    return legacyMigrationPromise;
+}
+
+/** Inspect whether a follow-up repoll is queued (e.g. after workspace folder change mid-poll). */
+export function isRepollNeeded(): boolean {
+    return repollNeeded;
+}
+
+// ─── Single-Poll RPC Deduplication Cache (PERF-02) ───────────────────────────
+
+export interface PollRpcCacheKey {
+    backendEpoch: number;
+    authority: string;
+    method: string;
+    cascadeId: string;
+    range: string;
+    branchRevision: string;
+}
+
+export interface PollRpcCacheOptions<T> {
+    /** Predicate deciding whether a fulfilled response may be cached for subsequent calls in the same poll. */
+    shouldCache?: (value: T) => boolean;
+}
+
+/** Build a collision-free canonical wire-request key from all 6 required dimensions. */
+export function buildPollRpcCacheKey(key: PollRpcCacheKey): string {
+    return JSON.stringify([
+        key.backendEpoch,
+        key.authority,
+        key.method,
+        key.cascadeId,
+        key.range,
+        key.branchRevision,
+    ]);
+}
+
+/** Build a secret-free authority string identifying the active LS endpoint. */
+export function getLsAuthority(ls: Pick<LSInfo, 'hostname' | 'port' | 'useTls' | 'pid'>): string {
+    const host = (ls.hostname || '127.0.0.1').trim().toLowerCase();
+    return `${host}:${ls.port}:${ls.useTls ? 'tls' : 'http'}:pid=${ls.pid}`;
+}
+
+interface PollRpcInFlightEntry<T> {
+    controller: AbortController;
+    waiters: Set<{
+        resolve: (value: T) => void;
+        reject: (err: unknown) => void;
+        cleanup: () => void;
+    }>;
+    settled: boolean;
+}
+
+/**
+ * Single-poll wire-request deduplication cache keyed by
+ * `{ backendEpoch, authority, method, cascadeId, range, branchRevision }`.
+ *
+ * Guarantees:
+ * - Deduplicates ONLY equivalent wire requests sharing all 6 key fields.
+ * - Single consumer cancellation rejects ONLY that consumer and NEVER aborts or
+ *   poisons sibling consumers sharing the in-flight upstream RPC.
+ * - Upstream is aborted ONLY when EVERY subscribed consumer cancels.
+ * - Incomplete/gapped/failed responses (where `shouldCache(val) === false` or rejected)
+ *   are NEVER cached for subsequent callers.
+ */
+export class PollRpcCache {
+    private readonly _resolved = new Map<string, unknown>();
+    private readonly _inFlight = new Map<string, PollRpcInFlightEntry<unknown>>();
+
+    get size(): number {
+        return this._resolved.size;
+    }
+
+    get inFlightCount(): number {
+        return this._inFlight.size;
+    }
+
+    getOrFetch<T>(
+        key: PollRpcCacheKey,
+        fetcher: (upstreamSignal: AbortSignal) => Promise<T>,
+        consumerSignal?: AbortSignal,
+        options?: PollRpcCacheOptions<T>,
+    ): Promise<T> {
+        if (consumerSignal?.aborted) {
+            return Promise.reject(new Error('RPC aborted'));
+        }
+
+        const cacheKey = buildPollRpcCacheKey(key);
+        if (this._resolved.has(cacheKey)) {
+            return Promise.resolve(this._resolved.get(cacheKey) as T);
+        }
+
+        let entry = this._inFlight.get(cacheKey) as PollRpcInFlightEntry<T> | undefined;
+        let isStarter = false;
+        if (!entry) {
+            entry = {
+                controller: new AbortController(),
+                waiters: new Set(),
+                settled: false,
+            };
+            this._inFlight.set(cacheKey, entry as PollRpcInFlightEntry<unknown>);
+            isStarter = true;
+        }
+
+        const activeEntry = entry;
+        const consumerPromise = new Promise<T>((resolve, reject) => {
+            let done = false;
+            const onAbort = () => {
+                if (done) { return; }
+                done = true;
+                waiter.cleanup();
+                activeEntry.waiters.delete(waiter);
+                reject(new Error('RPC aborted'));
+                // Abort upstream ONLY if every single consumer cancelled
+                if (!activeEntry.settled && activeEntry.waiters.size === 0) {
+                    activeEntry.settled = true;
+                    if (this._inFlight.get(cacheKey) === (activeEntry as PollRpcInFlightEntry<unknown>)) {
+                        this._inFlight.delete(cacheKey);
+                    }
+                    activeEntry.controller.abort();
+                }
+            };
+
+            const waiter = {
+                resolve: (value: T) => {
+                    if (done) { return; }
+                    done = true;
+                    waiter.cleanup();
+                    resolve(value);
+                },
+                reject: (err: unknown) => {
+                    if (done) { return; }
+                    done = true;
+                    waiter.cleanup();
+                    reject(err);
+                },
+                cleanup: () => {
+                    if (consumerSignal) {
+                        consumerSignal.removeEventListener('abort', onAbort);
+                    }
+                },
+            };
+
+            activeEntry.waiters.add(waiter);
+            if (consumerSignal) {
+                consumerSignal.addEventListener('abort', onAbort, { once: true });
+            }
+        });
+
+        if (isStarter) {
+            let upstreamPromise: Promise<T>;
+            try {
+                upstreamPromise = Promise.resolve(fetcher(activeEntry.controller.signal));
+            } catch (syncErr) {
+                upstreamPromise = Promise.reject(syncErr);
+            }
+            upstreamPromise.then(
+                (value) => {
+                    if (activeEntry.settled) { return; }
+                    activeEntry.settled = true;
+                    if (this._inFlight.get(cacheKey) === (activeEntry as PollRpcInFlightEntry<unknown>)) {
+                        this._inFlight.delete(cacheKey);
+                        const allowCache = options?.shouldCache ? options.shouldCache(value) : true;
+                        if (allowCache) {
+                            this._resolved.set(cacheKey, value);
+                        }
+                    }
+                    const waiters = [...activeEntry.waiters];
+                    activeEntry.waiters.clear();
+                    for (const w of waiters) {
+                        w.resolve(value);
+                    }
+                },
+                (err) => {
+                    if (activeEntry.settled) { return; }
+                    activeEntry.settled = true;
+                    if (this._inFlight.get(cacheKey) === (activeEntry as PollRpcInFlightEntry<unknown>)) {
+                        this._inFlight.delete(cacheKey);
+                    }
+                    const waiters = [...activeEntry.waiters];
+                    activeEntry.waiters.clear();
+                    for (const w of waiters) {
+                        w.reject(err);
+                    }
+                },
+            );
+        }
+
+        return consumerPromise;
+    }
+
+    clear(): void {
+        const entries = [...this._inFlight.values()];
+        this._inFlight.clear();
+        this._resolved.clear();
+        for (const entry of entries) {
+            if (!entry.settled) {
+                entry.settled = true;
+                entry.controller.abort();
+                const waiters = [...entry.waiters];
+                entry.waiters.clear();
+                for (const w of waiters) {
+                    w.reject(new Error('RPC aborted'));
+                }
+            }
+        }
+    }
+}
+
+// ─── v1.17.5 / v1.18 Telemetry, Runway, Stale Guard & 3-Field Selection State ─
 let lockToMainAgent = false;
 let pinnedConversationId: string | null = null;
 let lockedMainCascadeId: string | null = null;
+let windowId = 'ide-default';
+let windowSelectionState: WindowSelectionState = createWindowSelectionState({
+    backendEpoch,
+    windowId,
+});
+let dataRevision = 0;
+let lastPublishedObservation: PublishedMonitorObservation | null = null;
+let swarmRegistry = new SwarmTopologyRegistry({ scope: resolveIdeBrainRootScope([]) });
+const swarmMemberInventory = new SwarmMemberInventory();
+let swarmRegistryScopeKey = '';
+let swarmPollScheduler = new SwarmPollScheduler();
+let telemetryPollTick = 0;
+let lastSwarmTopology: SwarmTopologySnapshot | null = null;
+const missingCascadeAbsenceCounts = new Map<string, number>();
+const confirmedDeletedCascadeIds = new Set<string>();
+const cascadeCompactionBoundaries = new Map<string, GMCompactionBoundary>();
 let quotaRunwayTracker = new QuotaRunwayTracker();
 let lastRunwayPersistMs = 0;
+let runwayStateDirty = false;
+let lastWeeklyQuotaRunways: Record<string, WeeklyQuotaRunwayEstimate> = {};
+const promptCacheTtlTracker = new PromptCacheTtlTracker();
+let lastRecordedCacheTtlCallKey = '';
+let latestPromptCacheTtl: PromptCacheTtlEvaluation | null = null;
+let latestSpeedMetric: WeightedSpeedMetricSummary | null = null;
+const recoveryBriefTracker = new CompactionRecoveryBriefTracker();
+let activeRecoveryBrief: CompactionRecoveryBrief | null = null;
+const diagnosticAliasMap = new DiagnosticAliasMap();
+let lastGmCallActivityMs = 0;
+let sharedCdpOverlayFontSize: CdpOverlayFontSizePreset = 'normal';
+let sharedCdpOverlayHighContrast = false;
 const userStatusStaleGuard = new StaleCacheGuard<FullUserStatus>();
 const trajectoriesStaleGuard = new StaleCacheGuard<TrajectorySummary[]>();
 let lastContextBreakdown: ContextBreakdownSnapshot | null = null;
 let lastContextBreakdownKey = '';
 let lastTurnDiagnostics: TurnDiagnosticsSummary | null = null;
-const maxObservedStepCounts = new Map<string, number>();
+const branchStepPeaks = new Map<string, BranchStepPeakState>();
 const previousBreakdownUsedTokens = new Map<string, number>();
 
-// ─── v1.17.6 Shared App Settings, CLI Scanner, Updates & Bidirectional Hot Sync ─
-export const OPEN_VSX_EXTENSION_URL = 'https://open-vsx.org/extension/AGI-is-going-to-arrive/antigravity-context-monitor';
+// ─── v1.18 Shared App Settings, CLI Scanner, Updates & Bidirectional Hot Sync ─
 const CLI_SCAN_TTL_MS = 60_000;
 
-let sharedAppSettings: AppSettings = { ...DEFAULT_APP_SETTINGS, showNativeHudBar: false };
+let sharedAppSettings: AppSettings = { ...DEFAULT_APP_SETTINGS, showNativeHudBar: false, ideShowNativeHudBar: false };
 let sharedSubscriptionPlan: SubscriptionPlanPresetId = 'none';
 let lastSyncedDiskAppSettings: AppSettings | null = null;
 let hasHydratedSharedSettings = false;
 let pendingConfigSyncCount = 0;
 const cliUsageScanner = new CliUsageScanner();
-let cachedCliDays: CliDailyUsageRecord[] = [];
-let lastCliScanAtMs = 0;
 let lastUpdateStatusView: UpdateStatusView | null = null;
 let autoUpdateCheckInFlight = false;
+
+/**
+ * Resolve host-scoped `brain/` root options for `SwarmTopologyRegistry`.
+ * When VS Code is connected to a Remote-SSH / WSL / tunnel / container host
+ * without a verified remote brain directory, local `~/.gemini/antigravity/brain`
+ * is strictly disabled (`isRemoteHost: true`, `remoteBrainVerified: false`).
+ */
+export function resolveIdeBrainRootScope(
+    workspaceUris: readonly string[] = [],
+    options?: { remoteName?: string | null; env?: Record<string, string | undefined> },
+): BrainRootScopeOptions {
+    const envObj = options?.env ?? process.env;
+    const vscodeRemoteName = options?.remoteName !== undefined
+        ? (options.remoteName || '').trim()
+        : (typeof (vscode.env as { remoteName?: unknown } | undefined)?.remoteName === 'string'
+            ? ((vscode.env as { remoteName: string }).remoteName || '').trim()
+            : '');
+    if (vscodeRemoteName) {
+        return {
+            env: envObj,
+            isRemoteHost: true,
+            remoteAuthority: vscodeRemoteName,
+            remoteBrainVerified: false,
+        };
+    }
+    for (const rawUri of workspaceUris) {
+        const uri = typeof rawUri === 'string' ? rawUri.trim() : '';
+        const remoteMatch = /^vscode-remote:\/\/([^/]+)/i.exec(uri) || /^ssh:\/\/([^/]+)/i.exec(uri);
+        if (remoteMatch) {
+            return {
+                env: envObj,
+                isRemoteHost: true,
+                remoteAuthority: remoteMatch[1],
+                remoteBrainVerified: false,
+            };
+        }
+    }
+    return {
+        env: envObj,
+        isRemoteHost: false,
+    };
+}
+
+function ensureSwarmRegistryForWorkspaces(workspaceUris: readonly string[]): void {
+    const scope = resolveIdeBrainRootScope(workspaceUris);
+    const key = `${scope.isRemoteHost ? 'remote' : 'local'}:${scope.remoteAuthority ?? ''}:${scope.brainDir ?? ''}`;
+    if (key !== swarmRegistryScopeKey) {
+        swarmRegistryScopeKey = key;
+        swarmMemberInventory.reset();
+        swarmRegistry = new SwarmTopologyRegistry({ scope });
+        swarmRegistry.setBackendEpoch(backendEpoch);
+        lastSwarmTopology = null;
+    }
+}
+
+function mapCatalogProvenanceToObservation(
+    provenance: CatalogLimitProvenance,
+): ObservationLimitProvenance {
+    switch (provenance) {
+        case 'custom_override': return 'explicit_override';
+        case 'live_checkpointer': return 'planner_config';
+        case 'live_catalog': return 'ls_metadata';
+        case 'static_verified': return 'model_catalog';
+        case 'heuristic_guess':
+        case 'default_fallback':
+            return 'model_guess';
+        case 'none':
+        default:
+            return 'unavailable';
+    }
+}
+
+function computeScopedConversationSpeed(
+    summary: GMSummary | null,
+    cascadeId: string | null,
+    speedMode: 'decode' | 'e2e',
+    isStreaming = false,
+): {
+    tps: number | null;
+    scope: 'latest_call' | 'conversation_weighted' | 'none';
+    callId: string | null;
+    metric: WeightedSpeedMetricSummary | null;
+} {
+    if (!summary || !cascadeId) {
+        return { tps: null, scope: 'none', callId: null, metric: null };
+    }
+    const conv = summary.conversations.find(c => c.cascadeId === cascadeId);
+    if (!conv || conv.calls.length === 0) {
+        return { tps: null, scope: 'none', callId: null, metric: null };
+    }
+    const metric = computeWeightedSpeedMetric(conv.calls, speedMode, { isStreaming });
+    const latestCall = conv.calls[conv.calls.length - 1];
+    const isLatestCallValidForMode = Boolean(
+        latestCall
+        && typeof latestCall.outputTokens === 'number' && latestCall.outputTokens >= 8
+        && typeof latestCall.streamingSeconds === 'number' && latestCall.streamingSeconds >= 0.3
+        && (speedMode === 'decode' || (typeof latestCall.ttftSeconds === 'number' && Number.isFinite(latestCall.ttftSeconds) && latestCall.ttftSeconds > 0)),
+    );
+    if (isLatestCallValidForMode && metric.latestTokPerSec !== null && Number.isFinite(metric.latestTokPerSec) && metric.latestTokPerSec > 0) {
+        return {
+            tps: metric.latestTokPerSec,
+            scope: 'latest_call',
+            callId: latestCall?.executionId || `${cascadeId}:${conv.calls.length - 1}`,
+            metric,
+        };
+    }
+    if (metric.weightedTokPerSec !== null && Number.isFinite(metric.weightedTokPerSec) && metric.weightedTokPerSec > 0) {
+        return {
+            tps: metric.weightedTokPerSec,
+            scope: 'conversation_weighted',
+            callId: null,
+            metric,
+        };
+    }
+    return { tps: null, scope: 'none', callId: null, metric };
+}
+
+/**
+ * Construct and publish a single deeply-frozen `PublishedMonitorObservation` for the
+ * current IDE `(backendEpoch, windowId, subjectCascadeId, selectionRevision, dataRevision)`
+ * so IDE Status Bar and Webview Overview render 100% identical percentage, denominator,
+ * rounding, health status, and threshold markers.
+ */
+export function buildIdePublishedObservation(
+    usage: ContextUsage | null,
+    options?: {
+        summary?: GMSummary | null;
+        gmEnhanced?: boolean;
+        bumpRevision?: boolean;
+        nowMs?: number;
+    },
+): PublishedMonitorObservation | null {
+    if (!usage) {
+        lastPublishedObservation = null;
+        return null;
+    }
+    if (options?.bumpRevision !== false) {
+        dataRevision++;
+    }
+    const subjectCascadeId = usage.cascadeId || trackedCascadeId || null;
+    const rootFromTopology = subjectCascadeId ? swarmRegistry.resolveRootId(subjectCascadeId) : null;
+    const rootCascadeId = (windowSelectionState.inspectedMemberId ? rootFromTopology : null)
+        || windowSelectionState.lockedRootId
+        || rootFromTopology
+        || subjectCascadeId;
+
+    let subjectKind: ObservationSubjectKind = 'main';
+    if (subjectCascadeId) {
+        const node = swarmRegistry.getNode(subjectCascadeId);
+        if (node && (node.relationshipKind === 'direct_subagent' || node.relationshipKind === 'nested_helper')) {
+            subjectKind = 'subagent';
+        } else if (swarmRegistry.isKnownWorkerOrSubagent(subjectCascadeId)) {
+            subjectKind = 'worker';
+        } else if (knownSubagentCascadeIds.has(subjectCascadeId)) {
+            subjectKind = 'subagent';
+        }
+    }
+
+    const measuredModel = usage.lastModelUsage?.model || usage.model || null;
+    const limitModel = usage.tokenUsageSource === 'planner' && usage.lastModelUsage?.model
+        ? usage.lastModelUsage.model
+        : (usage.model || measuredModel || '');
+    const limits = limitModel ? resolveModelContextLimits(limitModel) : null;
+
+    // Preserve explicit live/custom/verified limits; fall back to usage.contextLimit if model is unknown
+    let compactionLimit = limits?.compactionLimit ?? null;
+    let compactionProv: ObservationLimitProvenance = limits
+        ? mapCatalogProvenanceToObservation(limits.compactionLimitProvenance)
+        : 'unavailable';
+    if (compactionLimit === null && !limits?.isNativeOnly && usage.contextLimit > 0) {
+        compactionLimit = usage.contextLimit;
+        compactionProv = 'model_guess';
+    }
+    const nativeLimit = limits?.nativeLimit ?? null;
+    const nativeProv: ObservationLimitProvenance = limits
+        ? mapCatalogProvenanceToObservation(limits.nativeLimitProvenance)
+        : 'unavailable';
+
+    const isZeroStepFresh = usage.stepCount === 0
+        && usage.contextUsed === 0
+        && !usage.lastModelUsage
+        && !usage.hasGaps;
+    const isSuffixRecovered = Boolean((usage as { suffixRecovered?: boolean } | null | undefined)?.suffixRecovered);
+    const hasValidCurrentMeasurement = Boolean(
+        (isSuffixRecovered && usage.lastModelUsage && usage.contextUsed > 0)
+        || (options?.gmEnhanced && usage.contextUsed > 0),
+    );
+    const isIncomplete = Boolean(
+        (usage.hasGaps && !hasValidCurrentMeasurement)
+        || (!isZeroStepFresh && usage.contextUsed <= 0 && !usage.lastModelUsage),
+    );
+
+    let tokenSource: ContextTokenSource;
+    if (isZeroStepFresh) {
+        tokenSource = 'zero_step_fresh';
+    } else if (isIncomplete) {
+        tokenSource = 'unavailable';
+    } else if (usage.lastModelUsage) {
+        tokenSource = 'tracker_usage';
+    } else if (options?.gmEnhanced) {
+        tokenSource = 'gm_usage';
+    } else if (usage.isEstimated) {
+        tokenSource = 'step_estimate';
+    } else {
+        tokenSource = 'tracker_usage';
+    }
+
+    const summary = options?.summary !== undefined
+        ? options.summary
+        : (typeof gmTracker !== 'undefined' ? gmTracker.getUiSummary() : lastGMSummary);
+    const speedMode = sharedAppSettings.speedMetricMode;
+    const obsNowMs = options?.nowMs ?? Date.now();
+    const speedInfo = isZeroStepFresh
+        ? { tps: null, scope: 'none' as const, callId: null, metric: null }
+        : computeScopedConversationSpeed(summary, subjectCascadeId, speedMode, usage.status === CascadeStatus.RUNNING);
+    latestSpeedMetric = speedInfo.metric;
+    if (!isZeroStepFresh && subjectCascadeId) {
+        const convCalls = summary?.conversations.find(c => c.cascadeId === subjectCascadeId)?.calls ?? [];
+        const ttlKey = {
+            account: cachedUserInfo?.email || currentAccountEmail || 'default',
+            backend: cachedLsInfo ? getLsAuthority(cachedLsInfo) : 'default',
+            conversation: subjectCascadeId,
+            model: measuredModel || 'unknown',
+            branch: usage.branchName || 'main',
+        };
+        const latestCall = convCalls.length > 0 ? convCalls[convCalls.length - 1] : null;
+        let measured: { inputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; cacheTelemetryAvailable?: boolean } | null = null;
+        if (latestCall) {
+            const callMs = latestCall.createdAt ? Date.parse(latestCall.createdAt) : NaN;
+            const eventMs = Number.isFinite(callMs) && callMs > 0 ? callMs : obsNowMs;
+            const callKey = `${subjectCascadeId}|${latestCall.executionId || ''}|${latestCall.createdAt || ''}|${convCalls.length}`;
+            const explicitAvail = (latestCall as { cacheTelemetryAvailable?: boolean }).cacheTelemetryAvailable;
+            const cacheTelemetryAvailable = explicitAvail === false
+                ? false
+                : (explicitAvail === true
+                    || typeof latestCall.cacheReadTokens === 'number'
+                    || typeof latestCall.cacheCreationTokens === 'number');
+            measured = {
+                inputTokens: latestCall.inputTokens,
+                cacheReadTokens: latestCall.cacheReadTokens,
+                cacheCreationTokens: latestCall.cacheCreationTokens,
+                cacheTelemetryAvailable,
+            };
+            if (callKey !== lastRecordedCacheTtlCallKey) {
+                lastRecordedCacheTtlCallKey = callKey;
+                promptCacheTtlTracker.recordEvent({
+                    key: ttlKey,
+                    eventMs,
+                    measured,
+                    modelConfirmed: Boolean(measuredModel),
+                    branchConfirmed: Boolean(usage.branchName),
+                });
+            }
+        }
+        latestPromptCacheTtl = promptCacheTtlTracker.evaluate({ key: ttlKey, nowMs: obsNowMs, measured });
+    } else {
+        latestPromptCacheTtl = null;
+    }
+    if (typeof statusBar !== 'undefined') {
+        statusBar.setPromptCacheTtl(latestPromptCacheTtl);
+    }
+    const scopedCost = isZeroStepFresh || !subjectCascadeId
+        ? null
+        : (() => {
+            const c = computeLiveCostSnapshot(summary, subjectCascadeId);
+            return c.sessionCostUsd > 0 ? c.sessionCostUsd : null;
+        })();
+
+    const extraThresholds = limits?.compactionThreshold && limits.compactionThreshold > 0
+        ? [{ id: 'checkpointer_trigger', label: 'Compaction trigger', tokens: limits.compactionThreshold }]
+        : undefined;
+
+    const observation = buildPublishedMonitorObservation({
+        backendEpoch,
+        windowId,
+        rootCascadeId,
+        subjectCascadeId,
+        subjectKind,
+        selectionRevision: windowSelectionState.selectionRevision,
+        dataRevision,
+        measuredModel,
+        tokenSource,
+        usedTokens: isIncomplete ? null : usage.contextUsed,
+        compactionLimit,
+        compactionLimitProvenance: compactionProv,
+        nativeLimit,
+        nativeLimitProvenance: nativeProv,
+        requestedBasis: sharedAppSettings.contextPctBasis,
+        speedMode,
+        speedSampleScope: speedInfo.scope,
+        speedCallId: speedInfo.callId,
+        displaySpeedTps: speedInfo.tps,
+        isZeroStepFresh,
+        isIncomplete,
+        sessionCostUsd: scopedCost,
+        extraThresholds,
+        observedAtMs: options?.nowMs ?? Date.now(),
+    });
+    lastPublishedObservation = observation;
+    return observation;
+}
 
 function clampNum(value: number, min: number, max: number): number {
     return Math.min(Math.max(value, min), max);
@@ -186,7 +869,9 @@ function inferIdeSubscriptionPlan(
 
 function getIdeExtensionVersion(): string {
     const raw = (extensionContext?.extension?.packageJSON as { version?: unknown } | undefined)?.version;
-    return typeof raw === 'string' && raw.trim() ? raw.trim() : '1.17.11';
+    return resolveRuntimeVersion({
+        explicitVersion: typeof raw === 'string' && raw.trim() ? raw.trim() : null,
+    });
 }
 
 const VSCODE_TO_APP_SETTING_MAP: ReadonlyArray<{
@@ -209,11 +894,18 @@ const VSCODE_TO_APP_SETTING_MAP: ReadonlyArray<{
     { vscodeKey: 'orchestratorPricingMode', appKey: 'orchestratorPricingMode' },
     { vscodeKey: 'displayCurrency', appKey: 'displayCurrency' },
     { vscodeKey: 'customFxRate', appKey: 'customFxRate' },
+    { vscodeKey: 'customFxCurrency', appKey: 'customFxCurrency' },
     { vscodeKey: 'subscriptionMonthlyFee', appKey: 'subscriptionMonthlyFee' },
     { vscodeKey: 'subscriptionCurrency', appKey: 'subscriptionCurrency' },
     { vscodeKey: 'calendarRetentionDays', appKey: 'calendarRetentionDays' },
     { vscodeKey: 'autoCheckUpdates', appKey: 'autoCheckUpdates' },
     { vscodeKey: 'showNativeHudBar', appKey: 'showNativeHudBar' },
+    { vscodeKey: 'nativeHudAutoHideOnOverview', appKey: 'nativeHudAutoHideOnOverview' },
+    { vscodeKey: 'languagePreference', appKey: 'languagePreference' },
+    { vscodeKey: 'contextPctBasis', appKey: 'contextPctBasis' },
+    { vscodeKey: 'speedMetricMode', appKey: 'speedMetricMode' },
+    { vscodeKey: 'quotaWindowMode', appKey: 'quotaWindowMode' },
+    { vscodeKey: 'quotaDirectionMode', appKey: 'quotaDirectionMode' },
 ];
 
 function mirrorVscodeKeysFromAppSettings(
@@ -276,31 +968,48 @@ function hydrateSharedAppSettingsFromDisk(initialLoad: boolean): {
         pricingStore.setOrchestratorPricingModeSync(resolvedOrchMode);
     }
 
-    // Reconcile lockToMainAgent
-    const persistedLock = durableFileGlobalState.get<boolean | undefined>('lockToMainAgent', undefined);
-    const resolvedLock = typeof persistedLock === 'boolean' ? persistedLock : diskNormalized.lockToMainAgent;
+    // Reconcile lockToMainAgent via single-time legacy migration guard:
+    // once `legacyLockMigrated === true`, legacy top-level `lockToMainAgent` NEVER overrides appSettings!
+    const migratedLock = durableState.resolveMigratedLegacyLock();
+    const resolvedLock = migratedLock.lockToMainAgent;
     lockToMainAgent = resolvedLock;
+    windowSelectionState = {
+        ...windowSelectionState,
+        lockToMainAgent: resolvedLock,
+        lockedRootId: resolvedLock ? windowSelectionState.lockedRootId : null,
+    };
+    if (!resolvedLock) {
+        lockedMainCascadeId = null;
+    }
 
-    // Respect explicit disk showNativeHudBar (including hot-reloads); otherwise preserve IDE's default false / prior value
-    const explicitDiskHud = hasRawDiskObj && typeof rawDisk!.showNativeHudBar === 'boolean'
-        ? rawDisk!.showNativeHudBar
-        : undefined;
-    const resolvedNativeHud = explicitDiskHud !== undefined
-        ? explicitDiskHud
-        : (prevSettings ? prevSettings.showNativeHudBar : cfg.get<boolean>('showNativeHudBar', false));
+    // Respect explicit disk ideShowNativeHudBar / showNativeHudBar; otherwise preserve IDE's default false / prior value
+    const explicitDiskIdeHud = hasRawDiskObj && typeof rawDisk!.ideShowNativeHudBar === 'boolean'
+        ? rawDisk!.ideShowNativeHudBar
+        : (hasRawDiskObj && typeof rawDisk!.showNativeHudBar === 'boolean'
+            ? rawDisk!.showNativeHudBar
+            : undefined);
+    const resolvedNativeHud = explicitDiskIdeHud !== undefined
+        ? explicitDiskIdeHud
+        : (prevSettings ? prevSettings.ideShowNativeHudBar : cfg.get<boolean>('showNativeHudBar', false));
+
+    const persistedPlan = durableFileGlobalState.get<string>('subscriptionPlan', '');
+    const rawDiskPlan = hasRawDiskObj && typeof rawDisk!.subscriptionPlan === 'string' && rawDisk!.subscriptionPlan.trim()
+        ? rawDisk!.subscriptionPlan.trim()
+        : '';
+    const nextPlan = inferIdeSubscriptionPlan(
+        rawDiskPlan || persistedPlan || (initialLoad ? cfg.get<string>('subscriptionPlan', 'none') : ''),
+        diskNormalized.subscriptionMonthlyFee,
+    );
 
     const nextSettings: AppSettings = {
         ...diskNormalized,
         lockToMainAgent: resolvedLock,
+        legacyLockMigrated: diskNormalized.legacyLockMigrated || migratedLock.needsMigrationPersist,
         orchestratorPricingMode: resolvedOrchMode,
+        subscriptionPlan: nextPlan,
         showNativeHudBar: resolvedNativeHud,
+        ideShowNativeHudBar: resolvedNativeHud,
     };
-
-    const persistedPlan = durableFileGlobalState.get<string>('subscriptionPlan', '');
-    const nextPlan = inferIdeSubscriptionPlan(
-        persistedPlan || (initialLoad ? cfg.get<string>('subscriptionPlan', 'none') : ''),
-        nextSettings.subscriptionMonthlyFee,
-    );
 
     // On initial load when DurableState has no appSettings yet, seed from VS Code config
     if (initialLoad && !hasRawDiskObj) {
@@ -321,36 +1030,60 @@ function hydrateSharedAppSettingsFromDisk(initialLoad: boolean): {
             orchestratorPricingMode: cfg.get<string>('orchestratorPricingMode', resolvedOrchMode),
             displayCurrency: cfg.get<string>('displayCurrency', 'USD'),
             customFxRate: cfg.get<number | null>('customFxRate', null),
+            subscriptionPlan: cfg.get<string>('subscriptionPlan', 'none'),
             subscriptionMonthlyFee: cfg.get<number | null>('subscriptionMonthlyFee', null),
             subscriptionCurrency: cfg.get<string>('subscriptionCurrency', 'USD'),
             calendarRetentionDays: cfg.get<number>('calendarRetentionDays', 400),
             autoCheckUpdates: cfg.get<boolean>('autoCheckUpdates', true),
             showNativeHudBar: cfg.get<boolean>('showNativeHudBar', false),
+            ideShowNativeHudBar: cfg.get<boolean>('showNativeHudBar', false),
+            nativeHudAutoHideOnOverview: cfg.get<boolean>('nativeHudAutoHideOnOverview', true),
+            languagePreference: cfg.get<string>('languagePreference', 'auto'),
+            contextPctBasis: cfg.get<string>('contextPctBasis', 'compaction'),
+            speedMetricMode: cfg.get<string>('speedMetricMode', 'decode'),
+            quotaWindowMode: cfg.get<string>('quotaWindowMode', '5h'),
+            quotaDirectionMode: cfg.get<string>('quotaDirectionMode', 'remaining'),
+            customFxCurrency: cfg.get<string | null>('customFxCurrency', null),
             lockToMainAgent: resolvedLock,
+            legacyLockMigrated: migratedLock.needsMigrationPersist,
         });
+        sharedCdpOverlayFontSize = normalizeCdpOverlayFontSize(
+            durableFileGlobalState.get<unknown>('cdpOverlayFontSize', cfg.get<string>('cdpOverlayFontSize', 'normal')),
+        );
+        sharedCdpOverlayHighContrast = Boolean(
+            durableFileGlobalState.get<boolean>('cdpOverlayHighContrast', cfg.get<boolean>('cdpOverlayHighContrast', false)),
+        );
         sharedAppSettings = seeded;
-        sharedSubscriptionPlan = inferIdeSubscriptionPlan(cfg.get<string>('subscriptionPlan', 'none'), seeded.subscriptionMonthlyFee);
+        sharedSubscriptionPlan = seeded.subscriptionPlan;
         lastSyncedDiskAppSettings = { ...seeded };
         hasHydratedSharedSettings = true;
         return { changed: false, prevSettings };
     }
 
+    sharedCdpOverlayFontSize = normalizeCdpOverlayFontSize(
+        durableFileGlobalState.get<unknown>('cdpOverlayFontSize', cfg.get<string>('cdpOverlayFontSize', sharedCdpOverlayFontSize)),
+    );
+    sharedCdpOverlayHighContrast = Boolean(
+        durableFileGlobalState.get<boolean>('cdpOverlayHighContrast', cfg.get<boolean>('cdpOverlayHighContrast', sharedCdpOverlayHighContrast)),
+    );
     const changed = !prevSettings || JSON.stringify(prevSettings) !== JSON.stringify(nextSettings) || prevPlan !== nextPlan;
     sharedAppSettings = nextSettings;
     sharedSubscriptionPlan = nextPlan;
     lastSyncedDiskAppSettings = { ...nextSettings };
     hasHydratedSharedSettings = true;
 
-    // Hydrate update status view from persisted lastUpdateCheck
+    // Hydrate update status view from persisted lastUpdateCheck using version-aware comparison
     if (nextSettings.lastUpdateCheck) {
         const luc = nextSettings.lastUpdateCheck;
+        const currentVersion = getIdeExtensionVersion();
+        const updateAvailable = isUpdateAvailableForVersion(luc, currentVersion);
         if (!lastUpdateStatusView || (luc.checkedAt && (!lastUpdateStatusView.checkedAt || luc.checkedAt > lastUpdateStatusView.checkedAt))) {
             lastUpdateStatusView = {
-                currentVersion: getIdeExtensionVersion(),
+                currentVersion,
                 latestVersion: luc.latestVersion ?? null,
-                updateAvailable: Boolean(luc.hasUpdate),
-                hasUpdate: Boolean(luc.hasUpdate),
-                status: luc.error ? 'error' : (luc.hasUpdate ? 'update_available' : 'up_to_date'),
+                updateAvailable,
+                hasUpdate: updateAvailable,
+                status: luc.error ? 'error' : (updateAvailable ? 'update_available' : 'up_to_date'),
                 checkedAt: luc.checkedAt,
                 releaseUrl: luc.releaseUrl ?? null,
                 releaseNotesSummary: luc.releaseNotesSummary ?? null,
@@ -386,12 +1119,19 @@ export function syncFromDurableStateIfChanged(refreshUi = true): boolean {
     if (!reloaded) { return false; }
 
     const prevLang = getLanguage();
-    initI18nFromState(durableFileGlobalState);
+    initI18nFromState(durableFileGlobalState, getIdeLocaleSources());
     const nextLang = getLanguage();
     const langChanged = prevLang !== nextLang;
-    if (langChanged && extensionContext?.globalState) {
-        void extensionContext.globalState.update('displayLanguage', nextLang);
+    if (langChanged) {
+        markDisplayLanguageModified();
+        if (extensionContext?.globalState) {
+            void extensionContext.globalState.update('displayLanguage', nextLang);
+        }
     }
+    mergeDiskQuotaRunwaysIntoIdeTracker();
+    recoveryBriefTracker.restoreDismissedKeys(
+        durableFileGlobalState.get<string[]>('dismissedRecoveryBriefKeys', []),
+    );
 
     if (pricingStore) {
         pricingStore.init(durableGlobalState);
@@ -425,6 +1165,12 @@ export function syncFromDurableStateIfChanged(refreshUi = true): boolean {
 
     // Apply live runtime side effects
     setShowModelShortId(sharedAppSettings.showModelInternalId);
+    if (activityTracker) {
+        activityTracker.updateConfig({
+            maxRecentSteps: sharedAppSettings.activityMaxRecentSteps,
+            maxArchives: sharedAppSettings.activityMaxArchives,
+        });
+    }
     if (prevSettings && prevSettings.pollingInterval !== sharedAppSettings.pollingInterval) {
         baseIntervalMs = Math.max(1, sharedAppSettings.pollingInterval) * 1000;
         currentIntervalMs = baseIntervalMs;
@@ -434,6 +1180,10 @@ export function syncFromDurableStateIfChanged(refreshUi = true): boolean {
     if (refreshUi) {
         if (typeof statusBar !== 'undefined') {
             applyDisplayPrefs();
+            if (currentUsage) {
+                const obs = buildIdePublishedObservation(currentUsage, { bumpRevision: true });
+                statusBar.update(currentUsage, obs);
+            }
             syncStatusBarTelemetry(true);
         }
         if (isMonitorPanelVisible()) {
@@ -451,6 +1201,51 @@ export function syncFromDurableStateIfChanged(refreshUi = true): boolean {
 /** Alias exported for webview-panel.ts & external callers. */
 export const syncDurableStateFromDisk = syncFromDurableStateIfChanged;
 
+export const MONITOR_COMMAND_DESTINATIONS: ReadonlySet<string> = new Set([
+    'overview',
+    'gm',
+    'gmdata',
+    'gm-data',
+    'activity',
+    'sessions',
+    'chats',
+    'chat-history',
+    'calendar',
+    'usage',
+    'cost',
+    'pricing',
+    'models',
+    'profile',
+    'account',
+    'accounts',
+    'settings',
+    'about',
+]);
+
+/**
+ * Normalize the argument passed to `antigravity-context-monitor.showDetails`
+ * (including hover tooltip command URIs, array-wrapped command args, and object payloads)
+ * while accepting ALL canonical and legacy tab destinations.
+ */
+export function resolveMonitorCommandDestination(destination: unknown): string {
+    let raw: unknown = destination;
+    if (Array.isArray(raw)) {
+        raw = raw[0];
+    }
+    if (raw && typeof raw === 'object') {
+        const rec = raw as Record<string, unknown>;
+        raw = rec.tab ?? rec.destination ?? rec.initialTab ?? '';
+    }
+    if (typeof raw !== 'string') {
+        return 'overview';
+    }
+    const normalized = raw.trim().toLowerCase().replace(/^#(?:tab-)?/, '');
+    if (normalized && MONITOR_COMMAND_DESTINATIONS.has(normalized)) {
+        return normalized;
+    }
+    return 'overview';
+}
+
 export function isSharedAppSettingsHydrated(): boolean {
     return Boolean(durableState && hasHydratedSharedSettings);
 }
@@ -459,23 +1254,52 @@ export function getSharedAppSettings(): AppSettings & { subscriptionPlan: Subscr
     return { ...sharedAppSettings, subscriptionPlan: sharedSubscriptionPlan };
 }
 
-export async function flushDurableState(): Promise<void> {
-    if (durableState) {
-        await durableState.flush();
-    }
+function makeMemoryCommittedReceipt(): DurableStateCommitReceipt {
+    return {
+        committed: true,
+        revision: 0,
+        pendingRevision: 0,
+        status: 'committed',
+        retryScheduled: false,
+    };
 }
 
-export async function setSharedOrchestratorPricingMode(mode: OrchestratorPricingMode): Promise<void> {
-    const normalized = normalizeOrchestratorPricingMode(mode);
+export async function flushDurableState(): Promise<DurableStateCommitReceipt> {
+    if (!durableState) {
+        return makeMemoryCommittedReceipt();
+    }
+    return durableState.flush();
+}
+
+export async function setSharedOrchestratorPricingMode(
+    mode: OrchestratorPricingMode,
+): Promise<{ ok: boolean; committed: boolean; receipt: DurableStateCommitReceipt; error?: string }> {
+    const validated = validateOrchestratorPricingMode(mode);
+    const normalized = validated.ok ? validated.value : normalizeOrchestratorPricingMode(mode);
     sharedAppSettings.orchestratorPricingMode = normalized;
     const pStore = pricingStore ? pricingStore.setOrchestratorPricingMode(normalized) : undefined;
+    let receipt: DurableStateCommitReceipt = makeMemoryCommittedReceipt();
     if (durableState) {
-        const pSettings = durableState.updateAppSettings({ orchestratorPricingMode: normalized });
-        await durableState.flush();
-        sharedAppSettings = await pSettings;
-        lastSyncedDiskAppSettings = { ...sharedAppSettings };
+        const writeRes = await durableState.patchAppSettingsWithReceipt({ orchestratorPricingMode: normalized });
+        const flushReceipt = await durableState.flush();
+        receipt = flushReceipt.committed ? writeRes.receipt : flushReceipt;
+        sharedAppSettings = writeRes.settings;
+        if (receipt.committed && flushReceipt.committed) {
+            lastSyncedDiskAppSettings = { ...sharedAppSettings };
+        } else {
+            log(`[DurableState] Failed to commit orchestratorPricingMode: ${flushReceipt.status}`);
+        }
     }
     if (pStore) { await pStore; }
+    if (!receipt.committed) {
+        syncStatusBarTelemetry(true);
+        return {
+            ok: false,
+            committed: false,
+            receipt,
+            error: receipt.error || 'Failed to persist orchestratorPricingMode to disk',
+        };
+    }
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
     if (typeof cfg.update === 'function') {
         pendingConfigSyncCount++;
@@ -486,18 +1310,20 @@ export async function setSharedOrchestratorPricingMode(mode: OrchestratorPricing
         }
     }
     syncStatusBarTelemetry(true);
+    return { ok: true, committed: true, receipt };
 }
 
 export async function updateSharedAppSetting(
     key: string,
     value: unknown,
-): Promise<{ ok: boolean; normalizedKey: string; error?: string }> {
+): Promise<{ ok: boolean; normalizedKey: string; committed?: boolean; receipt?: DurableStateCommitReceipt; error?: string }> {
     const cleanKey = key.trim();
     const patch: Partial<AppSettings> = {};
     let normalizedKey = cleanKey;
     let vscodeMirrorKey: string | undefined;
     let vscodeMirrorValue: unknown;
     let mirrorPlan: SubscriptionPlanPresetId | undefined;
+    let refreshObservation = false;
 
     switch (cleanKey) {
         case 'appComposerRingEnabled':
@@ -506,51 +1332,183 @@ export async function updateSharedAppSetting(
         case 'appTopBarEnabled':
             patch.appTopBarEnabled = Boolean(value);
             break;
+        case 'appShowNativeHudBar':
+            patch.appShowNativeHudBar = Boolean(value);
+            break;
+        case 'appOnboardingDismissed':
+            patch.appOnboardingDismissed = Boolean(value);
+            break;
+        case 'ideShowNativeHudBar':
         case 'showNativeHudBar':
+            patch.ideShowNativeHudBar = Boolean(value);
             patch.showNativeHudBar = Boolean(value);
             vscodeMirrorKey = 'showNativeHudBar';
-            vscodeMirrorValue = patch.showNativeHudBar;
+            vscodeMirrorValue = patch.ideShowNativeHudBar;
             break;
-        case 'orchestratorPricingMode': {
-            if (value !== 'mapped' && value !== 'strict') {
-                return { ok: false, normalizedKey: cleanKey, error: 'Invalid orchestratorPricingMode' };
+        case 'nativeHudAutoHideOnOverview':
+            patch.nativeHudAutoHideOnOverview = Boolean(value);
+            vscodeMirrorKey = 'nativeHudAutoHideOnOverview';
+            vscodeMirrorValue = patch.nativeHudAutoHideOnOverview;
+            break;
+        case 'languagePreference': {
+            if (!isLanguagePreference(value)) {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid languagePreference' };
             }
-            await setSharedOrchestratorPricingMode(value);
-            return { ok: true, normalizedKey: 'orchestratorPricingMode' };
+            patch.languagePreference = value;
+            setLanguagePreferenceInMemory(value, getIdeLocaleSources());
+            vscodeMirrorKey = 'languagePreference';
+            vscodeMirrorValue = value;
+            break;
+        }
+        case 'contextPctBasis': {
+            if (value !== 'compaction' && value !== 'native') {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid contextPctBasis' };
+            }
+            patch.contextPctBasis = value;
+            vscodeMirrorKey = 'contextPctBasis';
+            vscodeMirrorValue = value;
+            refreshObservation = true;
+            break;
+        }
+        case 'speedMetricMode': {
+            if (value !== 'decode' && value !== 'e2e') {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid speedMetricMode' };
+            }
+            patch.speedMetricMode = value;
+            vscodeMirrorKey = 'speedMetricMode';
+            vscodeMirrorValue = value;
+            refreshObservation = true;
+            break;
+        }
+        case 'quotaWindowMode': {
+            if (value !== '5h' && value !== '7d' && value !== 'tightest') {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid quotaWindowMode' };
+            }
+            patch.quotaWindowMode = value;
+            vscodeMirrorKey = 'quotaWindowMode';
+            vscodeMirrorValue = value;
+            break;
+        }
+        case 'quotaDirectionMode': {
+            if (value !== 'remaining' && value !== 'used') {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid quotaDirectionMode' };
+            }
+            patch.quotaDirectionMode = value;
+            vscodeMirrorKey = 'quotaDirectionMode';
+            vscodeMirrorValue = value;
+            break;
+        }
+        case 'cdpOverlayFontSize': {
+            if (!isCdpOverlayFontSize(value)) {
+                return { ok: false, normalizedKey: cleanKey, error: 'Invalid cdpOverlayFontSize' };
+            }
+            sharedCdpOverlayFontSize = value;
+            let fontReceipt: DurableStateCommitReceipt = makeMemoryCommittedReceipt();
+            if (durableState) {
+                const r = await durableState.updateGlobalWithReceipt('cdpOverlayFontSize', value);
+                const f = await durableState.flush();
+                fontReceipt = r.committed ? f : r;
+            }
+            if (!fontReceipt.committed) {
+                return { ok: false, normalizedKey: cleanKey, committed: false, receipt: fontReceipt, error: fontReceipt.error };
+            }
+            const cfgFont = vscode.workspace.getConfiguration('antigravityContextMonitor');
+            if (typeof cfgFont.update === 'function') {
+                pendingConfigSyncCount++;
+                try { await cfgFont.update('cdpOverlayFontSize', value, vscode.ConfigurationTarget?.Global); }
+                finally { pendingConfigSyncCount = Math.max(0, pendingConfigSyncCount - 1); }
+            }
+            return { ok: true, normalizedKey: 'cdpOverlayFontSize', committed: true, receipt: fontReceipt };
+        }
+        case 'cdpOverlayHighContrast': {
+            const nextHc = Boolean(value);
+            sharedCdpOverlayHighContrast = nextHc;
+            let hcReceipt: DurableStateCommitReceipt = makeMemoryCommittedReceipt();
+            if (durableState) {
+                const r = await durableState.updateGlobalWithReceipt('cdpOverlayHighContrast', nextHc);
+                const f = await durableState.flush();
+                hcReceipt = r.committed ? f : r;
+            }
+            if (!hcReceipt.committed) {
+                return { ok: false, normalizedKey: cleanKey, committed: false, receipt: hcReceipt, error: hcReceipt.error };
+            }
+            const cfgHc = vscode.workspace.getConfiguration('antigravityContextMonitor');
+            if (typeof cfgHc.update === 'function') {
+                pendingConfigSyncCount++;
+                try { await cfgHc.update('cdpOverlayHighContrast', nextHc, vscode.ConfigurationTarget?.Global); }
+                finally { pendingConfigSyncCount = Math.max(0, pendingConfigSyncCount - 1); }
+            }
+            return { ok: true, normalizedKey: 'cdpOverlayHighContrast', committed: true, receipt: hcReceipt };
+        }
+        case 'orchestratorPricingMode': {
+            const validated = validateOrchestratorPricingMode(value);
+            if (!validated.ok) {
+                return { ok: false, normalizedKey: cleanKey, committed: false, error: validated.error };
+            }
+            const res = await setSharedOrchestratorPricingMode(validated.value);
+            return {
+                ok: res.ok,
+                normalizedKey: 'orchestratorPricingMode',
+                committed: res.committed,
+                receipt: res.receipt,
+                ...(res.error ? { error: res.error } : {}),
+            };
         }
         case 'displayCurrency': {
-            if (typeof value !== 'string' || !value.trim()) {
-                return { ok: false, normalizedKey: cleanKey, error: 'Invalid displayCurrency' };
+            const validated = validateDisplayCurrency(value);
+            if (!validated.ok) {
+                return { ok: false, normalizedKey: cleanKey, error: validated.error };
             }
-            const norm = normalizeAppSettings({ displayCurrency: value });
-            patch.displayCurrency = norm.displayCurrency;
+            const switched = switchDisplayCurrency(
+                {
+                    displayCurrency: sharedAppSettings.displayCurrency,
+                    customFxRate: sharedAppSettings.customFxRate,
+                    customFxCurrency: sharedAppSettings.customFxCurrency,
+                },
+                validated.value,
+            );
+            patch.displayCurrency = switched.displayCurrency;
+            patch.customFxRate = switched.customFxRate;
+            patch.customFxCurrency = switched.customFxCurrency;
             vscodeMirrorKey = 'displayCurrency';
-            vscodeMirrorValue = norm.displayCurrency;
+            vscodeMirrorValue = switched.displayCurrency;
             break;
         }
         case 'customFxRate': {
-            if (value === null || value === '' || value === undefined) {
-                patch.customFxRate = null;
-            } else {
-                const n = Number(value);
-                if (!Number.isFinite(n) || n <= 0 || n > 100_000) {
-                    return { ok: false, normalizedKey: cleanKey, error: 'Invalid customFxRate' };
-                }
-                patch.customFxRate = n;
+            const validated = validateCustomFxRate(value);
+            if (!validated.ok) {
+                return { ok: false, normalizedKey: cleanKey, error: validated.error };
             }
+            const bound = bindCustomFxRate(sharedAppSettings.displayCurrency, validated.value);
+            patch.customFxRate = bound.customFxRate;
+            patch.customFxCurrency = bound.customFxCurrency;
             vscodeMirrorKey = 'customFxRate';
             vscodeMirrorValue = patch.customFxRate;
             break;
         }
-        case 'subscriptionPlan': {
-            const rawPlan = typeof value === 'string' ? value.trim() : '';
-            if (!isSubscriptionPlanPresetId(rawPlan) && rawPlan !== 'google-ai-ultra') {
-                return { ok: false, normalizedKey: cleanKey, error: 'Invalid subscriptionPlan' };
+        case 'customFxCurrency': {
+            if (value === null || value === '' || value === undefined) {
+                patch.customFxCurrency = null;
+                patch.customFxRate = null;
+            } else {
+                const validated = validateDisplayCurrency(value);
+                if (!validated.ok) {
+                    return { ok: false, normalizedKey: cleanKey, error: validated.error };
+                }
+                patch.customFxCurrency = validated.value;
             }
-            const nextPlan = normalizeSubscriptionPlanId(rawPlan);
+            break;
+        }
+        case 'subscriptionPlan': {
+            const validated = validateSubscriptionPlan(value, sharedAppSettings.subscriptionMonthlyFee);
+            if (!validated.ok) {
+                return { ok: false, normalizedKey: cleanKey, error: validated.error };
+            }
+            const nextPlan = validated.value;
             const preset = SUBSCRIPTION_PLAN_PRESETS[nextPlan];
             sharedSubscriptionPlan = nextPlan;
             mirrorPlan = nextPlan;
+            patch.subscriptionPlan = nextPlan;
             if (nextPlan === 'none') {
                 patch.subscriptionMonthlyFee = null;
             } else if (preset.monthlyUsd > 0) {
@@ -560,31 +1518,28 @@ export async function updateSharedAppSetting(
             break;
         }
         case 'subscriptionMonthlyFee': {
-            if (value === null || value === '' || value === undefined) {
-                patch.subscriptionMonthlyFee = null;
-            } else {
-                const n = Number(value);
-                if (!Number.isFinite(n) || n < 0 || n > 1_000_000) {
-                    return { ok: false, normalizedKey: cleanKey, error: 'Invalid subscriptionMonthlyFee' };
-                }
-                patch.subscriptionMonthlyFee = n > 0 ? n : null;
-                if (patch.subscriptionMonthlyFee !== null && sharedSubscriptionPlan === 'none') {
-                    sharedSubscriptionPlan = 'custom';
-                    mirrorPlan = 'custom';
-                }
+            const validated = validateSubscriptionMonthlyFee(value);
+            if (!validated.ok) {
+                return { ok: false, normalizedKey: cleanKey, error: validated.error };
+            }
+            patch.subscriptionMonthlyFee = validated.value;
+            if (patch.subscriptionMonthlyFee !== null && sharedSubscriptionPlan === 'none') {
+                sharedSubscriptionPlan = 'custom';
+                mirrorPlan = 'custom';
+                patch.subscriptionPlan = 'custom';
             }
             vscodeMirrorKey = 'subscriptionMonthlyFee';
             vscodeMirrorValue = patch.subscriptionMonthlyFee;
             break;
         }
         case 'subscriptionCurrency': {
-            if (typeof value !== 'string' || !value.trim()) {
-                return { ok: false, normalizedKey: cleanKey, error: 'Invalid subscriptionCurrency' };
+            const validated = validateSubscriptionCurrency(value);
+            if (!validated.ok) {
+                return { ok: false, normalizedKey: cleanKey, error: validated.error };
             }
-            const norm = normalizeAppSettings({ subscriptionCurrency: value });
-            patch.subscriptionCurrency = norm.subscriptionCurrency;
+            patch.subscriptionCurrency = validated.value;
             vscodeMirrorKey = 'subscriptionCurrency';
-            vscodeMirrorValue = norm.subscriptionCurrency;
+            vscodeMirrorValue = validated.value;
             break;
         }
         case 'calendarRetentionDays': {
@@ -612,6 +1567,7 @@ export async function updateSharedAppSetting(
             const clamped = clampNum(Math.round(n), 10, 500);
             patch.activityMaxRecentSteps = clamped;
             patch.maxRecentSteps = clamped;
+            activityTracker?.updateConfig({ maxRecentSteps: clamped });
             normalizedKey = 'activityMaxRecentSteps';
             vscodeMirrorKey = 'activity.maxRecentSteps';
             vscodeMirrorValue = clamped;
@@ -625,6 +1581,7 @@ export async function updateSharedAppSetting(
             const clamped = clampNum(Math.round(n), 1, 100);
             patch.activityMaxArchives = clamped;
             patch.maxArchives = clamped;
+            activityTracker?.updateConfig({ maxArchives: clamped });
             normalizedKey = 'activityMaxArchives';
             vscodeMirrorKey = 'activity.maxArchives';
             vscodeMirrorValue = clamped;
@@ -657,9 +1614,17 @@ export async function updateSharedAppSetting(
             vscodeMirrorKey = 'showModelInternalId';
             vscodeMirrorValue = patch.showModelInternalId;
             break;
-        case 'lockToMainAgent':
+        case 'lockToMainAgent': {
             setLockToMainAgent(Boolean(value));
-            return { ok: true, normalizedKey: 'lockToMainAgent' };
+            const receipt = await flushDurableState();
+            return {
+                ok: receipt.committed,
+                normalizedKey: 'lockToMainAgent',
+                committed: receipt.committed,
+                receipt,
+                ...(receipt.committed ? {} : { error: receipt.error || 'Failed to persist lockToMainAgent' }),
+            };
+        }
         case 'statusBar.tooltipDensity':
         case 'tooltipDensity':
             patch.tooltipDensity = parseTooltipDensity(value);
@@ -721,15 +1686,38 @@ export async function updateSharedAppSetting(
     }
 
     sharedAppSettings = { ...sharedAppSettings, ...patch };
+    let commitReceipt: DurableStateCommitReceipt = makeMemoryCommittedReceipt();
     if (durableState) {
-        const pSettings = durableState.updateAppSettings(patch);
-        const pPlan = durableFileGlobalState
-            ? durableFileGlobalState.update('subscriptionPlan', sharedSubscriptionPlan)
-            : undefined;
-        await durableState.flush();
-        sharedAppSettings = await pSettings;
-        if (pPlan) { await pPlan; }
-        lastSyncedDiskAppSettings = { ...sharedAppSettings };
+        const writeRes = await durableState.patchAppSettingsWithReceipt(patch);
+        let planReceipt: DurableStateCommitReceipt = makeMemoryCommittedReceipt();
+        if (durableFileGlobalState && (mirrorPlan !== undefined || patch.subscriptionPlan !== undefined)) {
+            planReceipt = await durableState.updateGlobalWithReceipt('subscriptionPlan', sharedSubscriptionPlan);
+        }
+        if (durableFileGlobalState && patch.languagePreference !== undefined) {
+            await durableState.updateGlobalWithReceipt('languagePreference', patch.languagePreference);
+            await durableState.updateGlobalWithReceipt(
+                'displayLanguage',
+                patch.languagePreference === 'auto' ? undefined : patch.languagePreference,
+            );
+        }
+        const flushReceipt = await durableState.flush();
+        sharedAppSettings = writeRes.settings;
+        const allCommitted = writeRes.receipt.committed && planReceipt.committed && flushReceipt.committed;
+        commitReceipt = !writeRes.receipt.committed
+            ? writeRes.receipt
+            : (!planReceipt.committed ? planReceipt : flushReceipt);
+        if (allCommitted) {
+            lastSyncedDiskAppSettings = { ...sharedAppSettings };
+        } else {
+            log(`[DurableState] Failed to commit setting '${normalizedKey}': ${commitReceipt.status}`);
+            return {
+                ok: false,
+                normalizedKey,
+                committed: false,
+                receipt: commitReceipt,
+                error: commitReceipt.error || `Failed to persist setting '${normalizedKey}' to disk`,
+            };
+        }
     }
 
     const cfg = vscode.workspace.getConfiguration('antigravityContextMonitor');
@@ -737,6 +1725,9 @@ export async function updateSharedAppSetting(
         const cfgWrites: Array<[string, unknown]> = [];
         if (vscodeMirrorKey) {
             cfgWrites.push([vscodeMirrorKey, vscodeMirrorValue]);
+        }
+        if (cleanKey === 'displayCurrency' && patch.customFxRate === null) {
+            cfgWrites.push(['customFxRate', null]);
         }
         if (mirrorPlan !== undefined) {
             cfgWrites.push(['subscriptionPlan', mirrorPlan]);
@@ -761,30 +1752,23 @@ export async function updateSharedAppSetting(
 
     if (typeof statusBar !== 'undefined') {
         applyDisplayPrefs();
+        if (refreshObservation && currentUsage) {
+            const obs = buildIdePublishedObservation(currentUsage, { bumpRevision: true });
+            statusBar.update(currentUsage, obs);
+        }
         syncStatusBarTelemetry(true);
     }
 
-    return { ok: true, normalizedKey };
+    return { ok: true, normalizedKey, committed: true, receipt: commitReceipt };
 }
 
 export function getCachedCliUsageDays(force = false): CliDailyUsageRecord[] {
-    const nowMs = Date.now();
-    if (!force && lastCliScanAtMs > 0 && nowMs - lastCliScanAtMs < CLI_SCAN_TTL_MS) {
-        return cachedCliDays;
-    }
-    try {
-        const res = cliUsageScanner.scan({
-            cliRootDir: process.env.ANTIGRAVITY_CLI_DATA_DIR || undefined,
-            customPricing: pricingStore?.getCustom(),
-            now: nowMs,
-        });
-        cachedCliDays = res.available ? res.days : [];
-        lastCliScanAtMs = nowMs;
-    } catch {
-        cachedCliDays = [];
-        lastCliScanAtMs = nowMs;
-    }
-    return cachedCliDays;
+    const options = {
+        cliRootDir: process.env.ANTIGRAVITY_CLI_DATA_DIR || undefined,
+        customPricing: pricingStore?.getCustom(),
+    };
+    if (force) { void cliUsageScanner.scanAsync(options).catch(() => {}); }
+    return cliUsageScanner.getCachedScan({ ...options, maxAgeMs: CLI_SCAN_TTL_MS, triggerRefresh: !force })?.days ?? [];
 }
 
 export function getLastUpdateStatusView(): UpdateStatusView | null {
@@ -813,20 +1797,26 @@ export async function checkIdeReleaseUpdates(force = true): Promise<UpdateCheckR
             checksumsUrl: res.releaseInfo?.checksumsUrl ?? (res.status === 'not_modified' ? prev?.checksumsUrl ?? null : null),
             error: res.status === 'error' ? (res.error ?? 'Update check failed') : null,
         };
+        const versionAwareHasUpdate = isUpdateAvailableForVersion(record, currentVersion);
+        record.hasUpdate = versionAwareHasUpdate;
         if (durableState) {
-            const pSettings = durableState.updateAppSettings({ lastUpdateCheck: record });
-            await durableState.flush();
-            sharedAppSettings = await pSettings;
-            lastSyncedDiskAppSettings = { ...sharedAppSettings };
+            const writeRes = await durableState.patchAppSettingsWithReceipt({ lastUpdateCheck: record });
+            const flushReceipt = await durableState.flush();
+            sharedAppSettings = writeRes.settings;
+            if (writeRes.receipt.committed && flushReceipt.committed) {
+                lastSyncedDiskAppSettings = { ...sharedAppSettings };
+            }
         } else {
             sharedAppSettings = { ...sharedAppSettings, lastUpdateCheck: record };
         }
         lastUpdateStatusView = {
             currentVersion,
             latestVersion: record.latestVersion,
-            updateAvailable: Boolean(record.hasUpdate),
-            hasUpdate: Boolean(record.hasUpdate),
-            status: res.status,
+            updateAvailable: versionAwareHasUpdate,
+            hasUpdate: versionAwareHasUpdate,
+            status: res.status === 'not_modified'
+                ? (versionAwareHasUpdate ? 'update_available' : 'up_to_date')
+                : res.status,
             checkedAt: record.checkedAt,
             releaseUrl: record.releaseUrl,
             releaseNotesSummary: record.releaseNotesSummary,
@@ -859,32 +1849,113 @@ function discoverLanguageServer(
     });
 }
 
+/** Get the current per-window 3-field selection state (D9). */
+export function getWindowSelectionState(): WindowSelectionState {
+    return windowSelectionState;
+}
+
+/** Get the latest immutable PublishedMonitorObservation (D9). */
+export function getPublishedMonitorObservation(): PublishedMonitorObservation | null {
+    return lastPublishedObservation;
+}
+
+/** Get the latest reconciled SwarmTopologySnapshot (D9). */
+export function getSwarmTopologySnapshot(): SwarmTopologySnapshot | null {
+    return lastSwarmTopology;
+}
+
 /** Get whether Main-Agent Lock is enabled. */
 export function getLockToMainAgent(): boolean {
     return lockToMainAgent;
 }
 
-/** Toggle or explicitly set Main-Agent Lock, persisting in shared DurableState. */
+/** Toggle or explicitly set Main-Agent Lock synchronously, persisting atomically in shared AppSettings. */
 export function setLockToMainAgent(locked?: boolean): boolean {
     const next = typeof locked === 'boolean' ? locked : !lockToMainAgent;
+    if (next) {
+        windowSelectionState = enableLockToMainAgent(windowSelectionState, {
+            trajectories: lastTrajectories,
+            currentActiveId: trackedCascadeId,
+            workspaceUris: getWorkspaceUris(),
+            knownSubagentIds: knownSubagentCascadeIds,
+            topologyResolveRootId: (id) => swarmRegistry.resolveRootId(id),
+            ...getWorkspaceNormOptions(),
+        });
+    } else {
+        windowSelectionState = disableLockToMainAgent(windowSelectionState);
+    }
     lockToMainAgent = next;
+    lockedMainCascadeId = windowSelectionState.lockedRootId;
     sharedAppSettings.lockToMainAgent = next;
-    if (next && trackedCascadeId) {
-        lockedMainCascadeId = trackedCascadeId;
-    } else if (!next) {
-        lockedMainCascadeId = null;
-    }
-    if (durableFileGlobalState) {
-        void durableFileGlobalState.update('lockToMainAgent', lockToMainAgent);
-    }
+    sharedAppSettings.legacyLockMigrated = true;
+
     if (durableState) {
-        void durableState.updateAppSettings({ lockToMainAgent: next }).then((updated) => {
-            sharedAppSettings = updated;
-            lastSyncedDiskAppSettings = { ...updated };
-            return durableState.flush();
+        void durableState.patchAppSettingsWithReceipt({
+            lockToMainAgent: next,
+            legacyLockMigrated: true,
+        }).then(async ({ settings, receipt }) => {
+            sharedAppSettings = settings;
+            const flushReceipt = await durableState.flush();
+            if (receipt.committed && flushReceipt.committed) {
+                lastSyncedDiskAppSettings = { ...settings };
+            }
         });
     }
     return lockToMainAgent;
+}
+
+/** Inspect a swarm worker / subagent member without overwriting `lockedRootId`. */
+export function inspectSwarmMember(memberCascadeId: string): WindowSelectionState {
+    const clean = typeof memberCascadeId === 'string' ? memberCascadeId.trim() : '';
+    if (!clean) { return windowSelectionState; }
+    windowSelectionState = inspectMember(windowSelectionState, clean, trackedCascadeId);
+    trackedCascadeId = clean;
+    clearActiveContextTelemetry();
+    return windowSelectionState;
+}
+
+/** Exit swarm member inspection ("Back to Main"), instantly restoring `lockedRootId`. */
+export function clearInspectedSwarmMember(): WindowSelectionState {
+    const restore = windowSelectionState.lockedRootId || pinnedConversationId || windowSelectionState.inspectionReturnId;
+    windowSelectionState = clearInspect(windowSelectionState);
+    if (restore) { trackedCascadeId = restore; }
+    clearActiveContextTelemetry();
+    return windowSelectionState;
+}
+
+/** Explicitly retarget `lockedRootId` to a new main conversation (clearing inspection & retarget offers). */
+export function retargetLockedRootConversation(newRootId: string): WindowSelectionState {
+    const clean = typeof newRootId === 'string' ? newRootId.trim() : '';
+    if (!clean) { return windowSelectionState; }
+    windowSelectionState = retargetLockedRoot(windowSelectionState, clean, {
+        trajectories: lastTrajectories,
+        currentActiveId: trackedCascadeId,
+        workspaceUris: getWorkspaceUris(),
+        knownSubagentIds: knownSubagentCascadeIds,
+        topologyResolveRootId: (id) => swarmRegistry.resolveRootId(id),
+        ...getWorkspaceNormOptions(),
+    });
+    lockToMainAgent = true;
+    lockedMainCascadeId = windowSelectionState.lockedRootId;
+    if (lockedMainCascadeId) {
+        trackedCascadeId = lockedMainCascadeId;
+    }
+    sharedAppSettings.lockToMainAgent = true;
+    sharedAppSettings.legacyLockMigrated = true;
+    clearActiveContextTelemetry();
+    if (durableState) {
+        void durableState.patchAppSettingsWithReceipt({
+            lockToMainAgent: true,
+            legacyLockMigrated: true,
+        }).then(async ({ settings, receipt }) => {
+            sharedAppSettings = settings;
+            const flushReceipt = await durableState.flush();
+            if (receipt.committed && flushReceipt.committed) {
+                lastSyncedDiskAppSettings = { ...settings };
+            }
+        });
+    }
+    return windowSelectionState;
 }
 
 /** Get the manually pinned conversation ID (or null for Follow Active). */
@@ -901,6 +1972,7 @@ function clearActiveContextTelemetry(): void {
 /** Pin a specific conversation ID or pass null/empty to return to Follow Active. */
 export function selectPinnedConversation(cascadeId: string | null): void {
     const normalized = typeof cascadeId === 'string' && cascadeId.trim() ? cascadeId.trim() : null;
+    windowSelectionState = clearInspect(windowSelectionState);
     pinnedConversationId = normalized;
     if (normalized) {
         trackedCascadeId = normalized;
@@ -911,36 +1983,508 @@ export function selectPinnedConversation(cascadeId: string | null): void {
     }
 }
 
+export function exportIdeSettingsBackup(nowMs = Date.now()): {
+    filename: string;
+    content: string;
+    schemaVersion: number;
+    keyCount: number;
+} {
+    const fullSettings = {
+        ...getSharedAppSettings(),
+        cdpOverlayFontSize: sharedCdpOverlayFontSize,
+        cdpOverlayHighContrast: sharedCdpOverlayHighContrast,
+    };
+    const built = buildSettingsBackupJson(fullSettings, pricingStore?.getCustom() ?? {}, nowMs);
+    const filename = `antigravity-settings-backup-${toLocalDateKey(new Date(nowMs))}.json`;
+    return {
+        filename,
+        content: built.json,
+        schemaVersion: built.payload.schemaVersion,
+        keyCount: Object.keys(built.payload.settings).length,
+    };
+}
+
+export async function importIdeSettingsBackup(rawJson: unknown): Promise<{
+    ok: boolean;
+    appliedKeys?: string[];
+    strippedKeys?: string[];
+    customPricingImported?: boolean;
+    error?: string;
+}> {
+    const parsed = parseAndValidateSettingsBackup(rawJson);
+    if (!parsed.ok) {
+        return { ok: false, strippedKeys: parsed.strippedKeys, error: parsed.error };
+    }
+    const prevSettings = { ...sharedAppSettings };
+    const prevPlan = sharedSubscriptionPlan;
+    const prevFont = sharedCdpOverlayFontSize;
+    const prevHc = sharedCdpOverlayHighContrast;
+    const prevCustomPricing = pricingStore?.getCustom() ?? {};
+
+    const appPatch: Partial<AppSettings> = {};
+    const appliedKeys: string[] = [];
+    let nextFont = sharedCdpOverlayFontSize;
+    let nextHc = sharedCdpOverlayHighContrast;
+    let hasFont = false;
+    let hasHc = false;
+    for (const [k, v] of Object.entries(parsed.settingsPatch)) {
+        if (k === 'cdpOverlayFontSize' && isCdpOverlayFontSize(v)) {
+            nextFont = v;
+            hasFont = true;
+            appliedKeys.push(k);
+        } else if (k === 'cdpOverlayHighContrast' && typeof v === 'boolean') {
+            nextHc = v;
+            hasHc = true;
+            appliedKeys.push(k);
+        } else {
+            (appPatch as Record<string, unknown>)[k] = v;
+            appliedKeys.push(k);
+        }
+    }
+    const prevLangPref = sharedAppSettings.languagePreference;
+
+    let durableCommitted = false;
+    try {
+        if (durableState) {
+            // Stage EVERY imported mutation into durableState BEFORE flushing once atomically so a
+            // partial failure never commits half the backup to disk while rolling back only memory.
+            const stagedPromises: Array<Promise<unknown>> = [];
+            if (Object.keys(appPatch).length > 0) {
+                stagedPromises.push(durableState.patchAppSettingsWithReceipt(appPatch));
+            }
+            if (hasFont) {
+                stagedPromises.push(durableState.updateGlobalWithReceipt('cdpOverlayFontSize', nextFont));
+            }
+            if (hasHc) {
+                stagedPromises.push(durableState.updateGlobalWithReceipt('cdpOverlayHighContrast', nextHc));
+            }
+            if (appPatch.languagePreference) {
+                stagedPromises.push(durableState.updateGlobalWithReceipt('languagePreference', appPatch.languagePreference));
+                stagedPromises.push(durableState.updateGlobalWithReceipt(
+                    'displayLanguage',
+                    appPatch.languagePreference === 'auto' ? undefined : appPatch.languagePreference,
+                ));
+            }
+            if (parsed.customPricing !== undefined && pricingStore) {
+                stagedPromises.push(durableState.updateGlobalWithReceipt('customModelPricing', parsed.customPricing));
+            }
+            const flushReceipt = await durableState.flush();
+            if (!flushReceipt.committed) {
+                throw new Error(flushReceipt.error || 'Failed to flush imported settings');
+            }
+            await Promise.all(stagedPromises);
+            durableCommitted = true;
+            if (parsed.customPricing !== undefined && pricingStore) {
+                // Sync from the committed durable state in memory only so we never overwrite concurrent merged App edits.
+                pricingStore.reloadFromStorage();
+            }
+            sharedAppSettings = durableState.getAppSettings();
+            if (appPatch.subscriptionPlan) {
+                sharedSubscriptionPlan = appPatch.subscriptionPlan;
+            }
+            sharedCdpOverlayFontSize = nextFont;
+            sharedCdpOverlayHighContrast = nextHc;
+            if (appPatch.languagePreference && isLanguagePreference(appPatch.languagePreference)) {
+                setLanguagePreferenceInMemory(appPatch.languagePreference, getIdeLocaleSources());
+            }
+            lastSyncedDiskAppSettings = { ...sharedAppSettings };
+        } else {
+            if (parsed.customPricing !== undefined && pricingStore) {
+                await pricingStore.setAll(parsed.customPricing);
+            }
+            if (appPatch.subscriptionPlan) {
+                sharedSubscriptionPlan = appPatch.subscriptionPlan;
+            }
+            if (appPatch.languagePreference && isLanguagePreference(appPatch.languagePreference)) {
+                setLanguagePreferenceInMemory(appPatch.languagePreference, getIdeLocaleSources());
+            }
+            sharedAppSettings = { ...sharedAppSettings, ...appPatch };
+            sharedCdpOverlayFontSize = nextFont;
+            sharedCdpOverlayHighContrast = nextHc;
+        }
+    } catch (err) {
+        if (!durableCommitted) {
+            sharedAppSettings = prevSettings;
+            sharedSubscriptionPlan = prevPlan;
+            sharedCdpOverlayFontSize = prevFont;
+            sharedCdpOverlayHighContrast = prevHc;
+            if (prevLangPref && isLanguagePreference(prevLangPref)) {
+                setLanguagePreferenceInMemory(prevLangPref, getIdeLocaleSources());
+            }
+            if (durableState) {
+                // Re-sync durableState from last committed disk state so staged dirty mutations are rolled back.
+                durableState.patchAppSettings(prevSettings);
+                if (hasFont) { void durableFileGlobalState?.update('cdpOverlayFontSize', prevFont); }
+                if (hasHc) { void durableFileGlobalState?.update('cdpOverlayHighContrast', prevHc); }
+                if (appPatch.languagePreference && prevLangPref) {
+                    void durableFileGlobalState?.update('languagePreference', prevLangPref);
+                    void durableFileGlobalState?.update('displayLanguage', prevLangPref === 'auto' ? undefined : prevLangPref);
+                }
+                if (parsed.customPricing !== undefined && pricingStore) {
+                    void durableFileGlobalState?.update('customModelPricing', prevCustomPricing);
+                    pricingStore.reloadFromStorage();
+                }
+            } else if (parsed.customPricing !== undefined && pricingStore) {
+                await pricingStore.setAll(prevCustomPricing).catch(() => {});
+            }
+        }
+        return {
+            ok: false,
+            strippedKeys: parsed.strippedKeys,
+            error: err instanceof Error ? err.message : 'Failed to import settings backup',
+        };
+    }
+
+    if (typeof appPatch.showModelInternalId === 'boolean') {
+        setShowModelShortId(appPatch.showModelInternalId);
+    }
+    if (typeof appPatch.calendarRetentionDays === 'number' && dailyStore) {
+        dailyStore.setMaxDays(appPatch.calendarRetentionDays);
+    }
+    if (typeof statusBar !== 'undefined') {
+        applyDisplayPrefs();
+        if (currentUsage) {
+            const obs = buildIdePublishedObservation(currentUsage, { bumpRevision: true });
+            statusBar.update(currentUsage, obs);
+        }
+        syncStatusBarTelemetry(true);
+    }
+    return {
+        ok: true,
+        appliedKeys,
+        strippedKeys: parsed.strippedKeys,
+        customPricingImported: parsed.customPricing !== undefined,
+    };
+}
+
+export async function dismissIdeRecoveryBrief(eventKey: string): Promise<{
+    ok: boolean;
+    dismissed?: boolean;
+    error?: string;
+}> {
+    const clean = typeof eventKey === 'string' ? eventKey.trim() : (activeRecoveryBrief?.eventKey ?? '');
+    if (!clean) {
+        return { ok: false, error: 'Missing recovery brief eventKey' };
+    }
+    recoveryBriefTracker.dismiss(clean);
+    if (durableState) {
+        const r = await durableState.updateGlobalWithReceipt(
+            'dismissedRecoveryBriefKeys',
+            recoveryBriefTracker.exportDismissedKeys(),
+        );
+        const f = await durableState.flush();
+        if (!r.committed || !f.committed) {
+            return { ok: false, error: f.error || r.error || 'Failed to persist recovery brief dismissal' };
+        }
+    }
+    if (activeRecoveryBrief?.eventKey === clean) {
+        activeRecoveryBrief = null;
+    }
+    return { ok: true, dismissed: true };
+}
+
+export function exportIdeRedactedDiagnostics(nowMs = Date.now()) {
+    const obs = lastPublishedObservation ?? (currentUsage ? buildIdePublishedObservation(currentUsage, { bumpRevision: false, nowMs }) : null);
+    const stale = getCurrentStaleState();
+    const rootId = obs?.rootCascadeId ?? windowSelectionState.lockedRootId ?? null;
+    const activeGroup = rootId && lastSwarmTopology ? lastSwarmTopology.groupsByRootId.get(rootId) : undefined;
+    const runways = getCurrentQuotaRunways(nowMs);
+    const runwayRows = Object.entries(runways).map(([poolKey, r]) => {
+        const wk = lastWeeklyQuotaRunways[poolKey];
+        return {
+            poolKey,
+            status: r.status,
+            ...(wk ? {
+                weeklyStatus: wk.status,
+                activeHours: wk.coverage.activeHours,
+                activeDays: wk.coverage.activeDays,
+                meetsThreshold: wk.coverage.meetsThreshold,
+            } : {}),
+        };
+    });
+    let stateSize = 0;
+    try {
+        const p = durableState?.getFilePath();
+        if (p && fs.existsSync(p)) { stateSize = fs.statSync(p).size; }
+    } catch { /* ignore */ }
+    const built = buildRedactedDiagnostics({
+        surface: 'ide',
+        version: getIdeExtensionVersion(),
+        nowMs,
+        buildIds: { webviewClient: WEBVIEW_CLIENT_BUILD_ID },
+        counters: {
+            backendEpoch,
+            selectionRevision: windowSelectionState.selectionRevision,
+            dataRevision,
+            trajectoryCount: lastTrajectories.length,
+            modelConfigCount: cachedModelConfigs.length,
+            accountCount: accountSnapshots.size,
+            dailyStoreDayCount: dailyStore?.totalDays ?? 0,
+            stateFileSizeBytes: stateSize,
+        },
+        freshness: {
+            isStale: Boolean(stale?.isStale),
+            lastSuccessAtMs: stale?.lastSuccessAtMs ?? null,
+            staleSources: stale?.isStale ? ['ide'] : [],
+            lastError: stale?.lastError ?? null,
+        },
+        observation: obs,
+        aliasMap: diagnosticAliasMap,
+        selection: {
+            mode: lockToMainAgent ? 'lock_main' : (pinnedConversationId ? 'pinned' : 'auto_follow'),
+            lockToMainAgent,
+            lockedRootId: windowSelectionState.lockedRootId,
+            inspectedMemberId: windowSelectionState.inspectedMemberId,
+            lockPendingUnavailable: Boolean(windowSelectionState.lockPendingUnavailable),
+        },
+        swarm: lastSwarmTopology
+            ? {
+                groupCount: lastSwarmTopology.groupsByRootId.size,
+                totalNodes: lastSwarmTopology.nodesById.size,
+                activeMembers: activeGroup?.activeMemberIds.length ?? 0,
+                activeRootId: rootId,
+            }
+            : undefined,
+        cacheTtl: latestPromptCacheTtl
+            ? {
+                ttlEstimateState: latestPromptCacheTtl.ttlEstimateState,
+                measuredCacheState: latestPromptCacheTtl.measuredCacheState,
+                clockAnomaly: latestPromptCacheTtl.clockAnomaly,
+                idleSeconds: latestPromptCacheTtl.idleSeconds,
+                causeKinds: latestPromptCacheTtl.possibleCauses.map(c => c.cause),
+            }
+            : null,
+        quotaRunway: runwayRows,
+        preferences: {
+            languagePreference: sharedAppSettings.languagePreference,
+            displayCurrency: sharedAppSettings.displayCurrency,
+            contextPctBasis: sharedAppSettings.contextPctBasis,
+            speedMetricMode: sharedAppSettings.speedMetricMode,
+            quotaWindowMode: sharedAppSettings.quotaWindowMode,
+            quotaDirectionMode: sharedAppSettings.quotaDirectionMode,
+            nativeHudAutoHideOnOverview: sharedAppSettings.nativeHudAutoHideOnOverview,
+            orchestratorPricingMode: sharedAppSettings.orchestratorPricingMode,
+        },
+    });
+    const filename = `antigravity-diagnostics-redacted-${toLocalDateKey(new Date(nowMs))}.json`;
+    return { filename, content: built.json, diagnostics: built.diagnostics };
+}
+
+function bindIdePanelHostBridge(): void {
+    registerIdePanelHostBridge({
+        removeAccountSnapshot,
+        getBillingDaysMap,
+        setAccountBillingDay,
+        getLockToMainAgent,
+        setLockToMainAgent,
+        getPinnedConversationId,
+        selectPinnedConversation,
+        refreshStatusBarTelemetry,
+        markDisplayLanguageModified,
+        getSharedAppSettings,
+        isSharedAppSettingsHydrated,
+        updateSharedAppSetting,
+        setSharedOrchestratorPricingMode,
+        flushDurableState,
+        syncDurableStateFromDisk: syncFromDurableStateIfChanged,
+        getCachedCliUsageDays,
+        checkIdeReleaseUpdates,
+        getLastUpdateStatusView,
+        getWindowSelectionState,
+        inspectSwarmMember,
+        refreshSelection: () => { void pollContextUsage(true); },
+        clearInspectedSwarmMember,
+        retargetLockedRoot: retargetLockedRootConversation,
+    });
+    registerIdeV118HostHooks({
+        getWeeklyQuotaRunways: () => ({ ...lastWeeklyQuotaRunways }),
+        getPromptCacheTtl: () => latestPromptCacheTtl,
+        getRecoveryBrief: () => activeRecoveryBrief,
+        dismissRecoveryBrief: dismissIdeRecoveryBrief,
+        getOverlayVisualPrefs: () => ({
+            cdpOverlayFontSize: sharedCdpOverlayFontSize,
+            cdpOverlayHighContrast: sharedCdpOverlayHighContrast,
+        }),
+        exportSettingsBackup: exportIdeSettingsBackup,
+        importSettingsBackup: importIdeSettingsBackup,
+        exportRedactedDiagnostics: exportIdeRedactedDiagnostics,
+        getCurrentObservationMeta: () => ({
+            subjectCascadeId: lastPublishedObservation?.subjectCascadeId ?? currentUsage?.cascadeId ?? trackedCascadeId ?? null,
+            dataRevision: lastPublishedObservation?.dataRevision ?? dataRevision,
+            rootCascadeId: lastPublishedObservation?.rootCascadeId ?? windowSelectionState.lockedRootId ?? null,
+        }),
+        getSwarmSummary: () => {
+            const rootId = lastPublishedObservation?.rootCascadeId ?? windowSelectionState.lockedRootId;
+            if (!rootId || !lastSwarmTopology) { return null; }
+            const grp = lastSwarmTopology.groupsByRootId.get(rootId);
+            if (!grp || grp.memberIds.length <= 1) { return null; }
+            const rootTraj = lastTrajectories.find(t => t.cascadeId === rootId);
+            return {
+                rootCascadeId: rootId,
+                rootTitle: rootTraj?.summary || rootId.slice(0, 8),
+                activeCount: grp.activeMemberIds.length,
+                totalCount: grp.memberIds.length,
+                members: grp.memberIds.slice(0, 8).map(cid => {
+                    const node = lastSwarmTopology!.nodesById.get(cid);
+                    const tr = lastTrajectories.find(t => t.cascadeId === cid);
+                    const usageSnap = allTrajectoryUsages.find(u => u.cascadeId === cid);
+                    return {
+                        name: node?.memberName || tr?.summary || cid.slice(0, 8),
+                        pct: usageSnap && usageSnap.contextLimit > 0
+                            ? Math.round((usageSnap.contextUsed / usageSnap.contextLimit) * 1000) / 10
+                            : null,
+                        phase: node?.killed || tr?.killed ? 'killed' : (tr?.status === CascadeStatus.RUNNING ? 'running' : 'idle'),
+                        isInspected: windowSelectionState.inspectedMemberId === cid,
+                    };
+                }),
+            };
+        },
+    });
+}
+// Bind once on module load so decoupled webview-panel.ts resolves live IDE host callbacks
+bindIdePanelHostBridge();
+
+function mergeDiskQuotaRunwaysIntoIdeTracker(): void {
+    if (!durableFileGlobalState) { return; }
+    const diskRunway = durableFileGlobalState.get<SerializedQuotaRunwayState | null>('quotaRunwayState', null);
+    const diskWeekly = durableFileGlobalState.get<Record<string, WeeklyQuotaSeriesState> | null>('quotaRunwayWeeklyBuckets', null);
+    const combined = combineSerializedRunwayWithWeekly(diskRunway, diskWeekly);
+    if (combined) {
+        quotaRunwayTracker.mergeFrom(combined as unknown as SerializedQuotaRunwayState);
+    }
+}
+
+function persistIdeQuotaRunwaysIfDue(nowMs = Date.now(), forcePersist = false): void {
+    if (!durableFileGlobalState || !runwayStateDirty) { return; }
+    if (!forcePersist && lastRunwayPersistMs > 0 && (nowMs - lastRunwayPersistMs) < 30_000) {
+        return;
+    }
+    durableState?.reloadIfChanged();
+    mergeDiskQuotaRunwaysIntoIdeTracker();
+    const serialized = quotaRunwayTracker.serialize();
+    void durableFileGlobalState.update('quotaRunwayState', serialized);
+    if (serialized.weeklyBuckets && Object.keys(serialized.weeklyBuckets).length > 0) {
+        void durableFileGlobalState.update('quotaRunwayWeeklyBuckets', serialized.weeklyBuckets);
+    }
+    lastRunwayPersistMs = nowMs;
+    runwayStateDirty = false;
+}
+
+function getCurrentWeeklyQuotaRunways(nowMs = Date.now()): Record<string, WeeklyQuotaRunwayEstimate> {
+    const acct = cachedUserInfo?.email || currentAccountEmail || 'default';
+    const isCustomActive = isCustomModel(currentUsage?.model, currentUsage?.modelDisplayName);
+    const out: Record<string, WeeklyQuotaRunwayEstimate> = {};
+    const seenPools = new Set<string>();
+    for (const g of groupModelQuotas(cachedModelConfigs, cachedQuotaSummary)) {
+        const poolKey = g.pool || g.key;
+        if (!poolKey || seenPools.has(poolKey)) { continue; }
+        seenPools.add(poolKey);
+        const has7d = g.weeklyQuota?.remainingFraction !== undefined;
+        out[poolKey] = quotaRunwayTracker.estimateWeekly(
+            { account: acct, pool: poolKey, window: has7d ? '7d' : '5h' },
+            nowMs,
+            {
+                modelId: currentUsage?.model,
+                modelLabel: currentUsage?.modelDisplayName,
+                isCustomModel: isCustomActive,
+            },
+        );
+    }
+    return out;
+}
+
 function recordQuotaRunwaysFromState(
     configs: ModelConfig[],
     quotaSummary?: UserQuotaSummary | null,
     nowMs = Date.now(),
 ): void {
+    const acct = cachedUserInfo?.email || currentAccountEmail || 'default';
+    const hasActivityEvidence = (lastGmCallActivityMs > 0 && (nowMs - lastGmCallActivityMs) < 300_000)
+        || lastTrajectories.some(t => t.status === CascadeStatus.RUNNING);
     const recordedPools = new Set<string>();
+    let recordedAny = false;
     if (quotaSummary?.groups) {
         for (const group of quotaSummary.groups) {
-            const win = group.fiveHour;
-            if (!win || typeof win.remainingFraction !== 'number' || !Number.isFinite(win.remainingFraction)) {
-                continue;
-            }
             const poolKey = group.pool || group.displayName;
-            if (!poolKey || recordedPools.has(poolKey)) { continue; }
-            recordedPools.add(poolKey);
-            const resetMs = win.resetTime ? parsePositivePoolResetMs(win.resetTime) : null;
-            quotaRunwayTracker.record(poolKey, win.remainingFraction, nowMs, resetMs);
+            if (!poolKey) { continue; }
+            const win = group.fiveHour;
+            if (win && typeof win.remainingFraction === 'number' && Number.isFinite(win.remainingFraction)) {
+                if (!recordedPools.has(poolKey)) {
+                    recordedPools.add(poolKey);
+                    const resetMs = win.resetTime ? parsePositivePoolResetMs(win.resetTime) : null;
+                    quotaRunwayTracker.record(poolKey, win.remainingFraction, nowMs, resetMs);
+                    quotaRunwayTracker.recordWeeklyObservation({
+                        account: acct,
+                        pool: poolKey,
+                        window: '5h',
+                        remainingFraction: win.remainingFraction,
+                        timestampMs: nowMs,
+                        resetTimeMs: resetMs,
+                        userActivityEvidence: hasActivityEvidence,
+                        surface: 'ide',
+                    });
+                    recordedAny = true;
+                }
+            }
+            const wk = group.weekly;
+            if (wk && typeof wk.remainingFraction === 'number' && Number.isFinite(wk.remainingFraction)) {
+                const resetMs = wk.resetTime ? parsePositivePoolResetMs(wk.resetTime) : null;
+                quotaRunwayTracker.recordWeeklyObservation({
+                    account: acct,
+                    pool: poolKey,
+                    window: '7d',
+                    remainingFraction: wk.remainingFraction,
+                    timestampMs: nowMs,
+                    resetTimeMs: resetMs,
+                    userActivityEvidence: hasActivityEvidence,
+                    surface: 'ide',
+                });
+                recordedAny = true;
+            }
         }
     }
     for (const group of groupModelQuotas(configs, quotaSummary)) {
         const poolKey = group.pool || group.key;
-        if (!poolKey || recordedPools.has(poolKey) || group.minimum === null) { continue; }
-        recordedPools.add(poolKey);
-        const resetMs = group.resetTime ? parsePositivePoolResetMs(group.resetTime) : null;
-        quotaRunwayTracker.record(poolKey, group.minimum, nowMs, resetMs);
+        if (!poolKey) { continue; }
+        if (!recordedPools.has(poolKey) && group.minimum !== null) {
+            recordedPools.add(poolKey);
+            const resetMs = group.resetTime ? parsePositivePoolResetMs(group.resetTime) : null;
+            quotaRunwayTracker.record(poolKey, group.minimum, nowMs, resetMs);
+            quotaRunwayTracker.recordWeeklyObservation({
+                account: acct,
+                pool: poolKey,
+                window: '5h',
+                remainingFraction: group.minimum,
+                timestampMs: nowMs,
+                resetTimeMs: resetMs,
+                userActivityEvidence: hasActivityEvidence,
+                surface: 'ide',
+            });
+            recordedAny = true;
+        }
+        const f7d = group.weeklyQuota?.remainingFraction;
+        if (typeof f7d === 'number' && Number.isFinite(f7d)) {
+            quotaRunwayTracker.recordWeeklyObservation({
+                account: acct,
+                pool: poolKey,
+                window: '7d',
+                remainingFraction: f7d,
+                timestampMs: nowMs,
+                resetTimeMs: group.weeklyQuota?.resetTime ? parsePositivePoolResetMs(group.weeklyQuota.resetTime) : null,
+                userActivityEvidence: hasActivityEvidence,
+                surface: 'ide',
+            });
+            recordedAny = true;
+        }
     }
-    if (durableFileGlobalState && nowMs - lastRunwayPersistMs >= 30_000) {
-        lastRunwayPersistMs = nowMs;
-        void durableFileGlobalState.update('quotaRunwayState', quotaRunwayTracker.serialize());
+    if (recordedAny) {
+        runwayStateDirty = true;
+        lastWeeklyQuotaRunways = getCurrentWeeklyQuotaRunways(nowMs);
+        if (typeof statusBar !== 'undefined') {
+            statusBar.setWeeklyQuotaRunways(lastWeeklyQuotaRunways);
+        }
     }
+    persistIdeQuotaRunwaysIfDue(nowMs, false);
 }
 
 function getCurrentQuotaRunways(nowMs = Date.now()): Record<string, QuotaRunwayEstimate> {
@@ -955,16 +2499,20 @@ function getCurrentQuotaRunways(nowMs = Date.now()): Record<string, QuotaRunwayE
 function getCurrentStaleState(): MonitorStaleState | null {
     const userSnap = userStatusStaleGuard.getSnapshot();
     const trajSnap = trajectoriesStaleGuard.getSnapshot();
-    const staleSnap = trajSnap.isStale
-        ? trajSnap
-        : (userSnap.isStale ? userSnap : null);
-    if (!staleSnap || staleSnap.lastSuccessAtMs === null) {
+    const candidates = [trajSnap, userSnap].filter(
+        (snap): snap is typeof trajSnap & { lastSuccessAtMs: number } =>
+            snap.isStale && snap.lastSuccessAtMs !== null,
+    );
+    if (candidates.length === 0) {
         return null;
     }
+    // Never let a fresher source mask an older stale source: report the stalest (oldest lastSuccessAtMs).
+    candidates.sort((a, b) => a.lastSuccessAtMs - b.lastSuccessAtMs);
+    const stalest = candidates[0];
     return {
         isStale: true,
-        lastSuccessAtMs: staleSnap.lastSuccessAtMs,
-        lastError: staleSnap.lastError,
+        lastSuccessAtMs: stalest.lastSuccessAtMs,
+        lastError: stalest.lastError,
     };
 }
 
@@ -1002,7 +2550,19 @@ let modelMetadataGeneration = 0;
 
 /** Do not carry tool-model availability across accounts or backend lifetimes. */
 export function invalidateLiveModelMetadata(): void {
+    backendEpoch++;
     modelMetadataGeneration++;
+    clearLiveModelSyncProvenance();
+    windowSelectionState = advanceWindowBackendEpoch(windowSelectionState, backendEpoch);
+    lockedMainCascadeId = windowSelectionState.lockedRootId;
+    swarmRegistry.setBackendEpoch(backendEpoch);
+    swarmPollScheduler.resetForBackendEpoch();
+    swarmMemberInventory.reset();
+    missingCascadeAbsenceCounts.clear();
+    confirmedDeletedCascadeIds.clear();
+    cascadeCompactionBoundaries.clear();
+    branchStepPeaks.clear();
+    lastPublishedObservation = null;
     resetImageWorkflowCache();
     setAvailableImageModelIds([]);
     hasSyncedCheckpointer = false;
@@ -1016,6 +2576,7 @@ export function invalidateLiveModelMetadata(): void {
     lastContextBreakdownKey = '';
     lastTurnDiagnostics = null;
     if (typeof statusBar !== 'undefined') {
+        statusBar.setPublishedObservation(null);
         statusBar.setOrchestratorSettings(null);
         statusBar.setQuotaSummary(null);
         statusBar.setStaleState(null);
@@ -1067,6 +2628,7 @@ export function hasSameUsageInputs(
     trajectory: Pick<TrajectorySummary, 'cascadeId' | 'stepCount' | 'lastModifiedTime' | 'status'>,
 ): cached is ContextUsage {
     return !!cached
+        && !cached.hasGaps
         && cached.tokenUsageSource !== undefined
         && cached.imageWorkflow !== undefined
         && (!cached.compressionDetected || cached.checkpointCompressionDrop > 0)
@@ -1401,16 +2963,12 @@ function computeLiveCostSnapshot(
         }
     }
 
-    // Active conversation (or session fallback) cost from account-filtered GM summary
+    // Active conversation cost strictly scoped to activeCascadeId (NEVER fall back to
+    // other conversations' calls when a specific conversation has 0 calls!).
     let sessionCostUsd = 0;
     let sessionHasUnpriced = false;
-    if (summary && summary.conversations.length > 0) {
-        const activeConv = activeCascadeId
-            ? summary.conversations.find(c => c.cascadeId === activeCascadeId)
-            : undefined;
-        const calls = activeConv && activeConv.calls.length > 0
-            ? activeConv.calls
-            : summary.conversations.flatMap(c => c.calls);
+    if (summary && activeCascadeId) {
+        const calls = summary.conversations.find(c => c.cascadeId === activeCascadeId)?.calls ?? [];
         for (const call of calls) {
             const pricingModel = selectPricingModel(call.model || call.modelDisplay, call.responseModel, custom);
             const pricing = findPricingForDate(pricingModel, custom, call.createdAt || '', undefined, orchMode);
@@ -1429,19 +2987,31 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
     const gmSummary = gmTracker.getUiSummary();
     const activeId = currentUsage?.cascadeId ?? trackedCascadeId ?? undefined;
     const costs = computeLiveCostSnapshot(gmSummary, activeId);
-    const workspaceUri = getWorkspaceUri();
+    const workspaceUris = getWorkspaceUris();
+    const workspaceUri = workspaceUris[0];
     const isCustomActive = isCustomModel(currentUsage?.model, currentUsage?.modelDisplayName);
     const quotaRunways = getCurrentQuotaRunways();
     const staleState = getCurrentStaleState();
     const conversationOptions: ConversationOption[] = buildConversationOptions(
         lastTrajectories,
         activeId ?? null,
-        lockedMainCascadeId,
+        windowSelectionState.lockedRootId ?? lockedMainCascadeId,
         {
-            workspaceUris: workspaceUri ? [workspaceUri] : [],
+            workspaceUris,
+            knownSubagentIds: knownSubagentCascadeIds,
             lang: getLanguage(),
+            ...getWorkspaceNormOptions(),
         },
     );
+    const root = lastPublishedObservation?.rootCascadeId;
+    const custom = pricingStore.getCustom();
+    const group = root ? lastSwarmTopology?.groupsByRootId.get(root) : undefined;
+    const swarmConversations = group ? gmTracker.getGroupCostConversations([group.rootId, ...group.memberIds]) : [];
+    const swarmGroupCost = priceSwarmGroup(group, swarmConversations, call => {
+        const model = selectPricingModel(call.model || call.modelDisplay, call.responseModel, custom);
+        const price = findPricingForDate(model, custom, call.createdAt || '', undefined, sharedAppSettings.orchestratorPricingMode);
+        return price ? costFromTokens(call, price) : null;
+    });
     return {
         currentUsage,
         monitorStatus: statusBar?.monitorStatus,
@@ -1481,6 +3051,10 @@ function makePanelPayload(extra: Partial<PanelPayload> = {}): PanelPayload {
         orchestratorPricingMode: sharedAppSettings.orchestratorPricingMode,
         appSettings: getSharedAppSettings(),
         updateStatus: lastUpdateStatusView,
+        publishedObservation: lastPublishedObservation,
+        windowSelectionState,
+        swarmTopology: lastSwarmTopology,
+        swarmGroupCost,
         ...extra,
     };
 }
@@ -1570,7 +3144,7 @@ interface LiveModelStatusHandlers {
 /** Apply an authenticated empty picker, while retaining cached state on RPC failure.
  *  The same transition is used on discovery, LS replacement, and periodic refresh. */
 export function applyLiveModelStatus(
-    fullStatus: Pick<FullUserStatus, 'configs' | 'userInfo'>,
+    fullStatus: Pick<FullUserStatus, 'configs' | 'userInfo' | 'ok'>,
     handlers: LiveModelStatusHandlers = {
         replaceConfigs: configs => {
             cachedModelConfigs = configs;
@@ -1587,6 +3161,7 @@ export function applyLiveModelStatus(
         },
     },
 ): boolean {
+    if (fullStatus.ok === false) { return false; }
     if (fullStatus.configs.length === 0 && !fullStatus.userInfo) { return false; }
     updateModelDisplayNames(fullStatus.configs, { authoritative: true });
     handlers.replaceConfigs(fullStatus.configs);
@@ -1615,75 +3190,6 @@ function buildUsedModelIds(email?: string): Set<string> {
     return ids;
 }
 
-export interface ModelQuotaPoolGroup {
-    key: string;
-    resetTime: string;
-    labels: string[];
-    modelIds: string[];
-    minFraction: number;
-}
-
-/**
- * Parse a quota pool resetTime strictly as an ISO-8601 timestamp with timezone
- * and valid calendar date, rejecting proto3 epoch-0 (`1970-01-01T00:00:00Z`,
- * `.000Z`, `+00:00`), negative epochs, and malformed date strings.
- */
-export function parsePositivePoolResetMs(raw: unknown): number | null {
-    const ms = parseStrictResetTimestamp(raw);
-    return ms !== null && ms > 0 ? ms : null;
-}
-
-/** Sort pool resetTime strings chronologically by UTC epoch ms (valid positive timestamps first). */
-export function comparePoolResetTimes(a: string, b: string): number {
-    const aMs = parsePositivePoolResetMs(a);
-    const bMs = parsePositivePoolResetMs(b);
-    if (aMs !== null && bMs !== null) {
-        return aMs - bMs || a.localeCompare(b);
-    }
-    if (aMs !== null) { return -1; }
-    if (bMs !== null) { return 1; }
-    return a.localeCompare(b);
-}
-
-export function groupModelConfigsByQuotaPool(configs: ModelConfig[]): ModelQuotaPoolGroup[] {
-    const poolMap = new Map<string, { labels: string[]; modelIds: string[]; resetEntries: Map<string, number>; minFraction: number }>();
-    for (const c of configs) {
-        if (!c.quotaInfo) { continue; }
-        const rawReset = typeof c.quotaInfo.resetTime === 'string' ? c.quotaInfo.resetTime.trim() : '';
-        const resetMs = parsePositivePoolResetMs(rawReset);
-        const resetTime = resetMs !== null ? rawReset : '';
-        const key = getQuotaPoolKey(c.model, resetTime || undefined);
-        const pool = poolMap.get(key) || { labels: [], modelIds: [], resetEntries: new Map<string, number>(), minFraction: 1 };
-        const label = c.label || c.model;
-        if (label && !pool.labels.includes(label)) {
-            pool.labels.push(label);
-        }
-        if (c.model && !pool.modelIds.includes(c.model)) {
-            pool.modelIds.push(c.model);
-        }
-        if (resetTime && resetMs !== null && !pool.resetEntries.has(resetTime)) {
-            pool.resetEntries.set(resetTime, resetMs);
-        }
-        const fraction = c.quotaInfo.remainingFraction;
-        if (typeof fraction === 'number' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1) {
-            pool.minFraction = Math.min(pool.minFraction, fraction);
-        }
-        poolMap.set(key, pool);
-    }
-
-    return [...poolMap.entries()].map(([key, pool]) => {
-        const sortedResets = [...pool.resetEntries.entries()]
-            .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
-        return {
-            key,
-            resetTime: sortedResets[0]?.[0] || '',
-            labels: pool.labels,
-            modelIds: pool.modelIds,
-            minFraction: pool.minFraction,
-        };
-    });
-}
-
 const RESET_TIME_TURNOVER_MIN_JUMP_MS = 10 * 60 * 1000;
 
 /**
@@ -1710,38 +3216,6 @@ export function shouldSettleOnResetTimeChange(
     return (newMs - oldMs) >= RESET_TIME_TURNOVER_MIN_JUMP_MS;
 }
 
-/**
- * Whether a value has the shape of a canonical platform model identifier
- * (MODEL_PLACEHOLDER_M298, MODEL_OPENAI_GPT_OSS_120B_MEDIUM, …).
- * Used to accept models the platform ships before the local registry knows about them.
- * MODEL_UNSPECIFIED is excluded — it is a sentinel, not an addressable model.
- */
-function isPlatformModelId(value: string): boolean {
-    const clean = (value || '').trim();
-    return /^MODEL_[A-Z0-9_]+$/.test(clean) && !clean.includes('UNSPECIFIED');
-}
-
-interface AvailableModelMetadata {
-    model?: string;
-    displayName?: string;
-    modelId?: string;
-    model_id?: string;
-    apiProvider?: string;
-    maxTokens?: number;
-    maxOutputTokens?: number;
-    thinkingBudget?: number;
-    supportsThinking?: boolean;
-    supportsAdaptiveThinking?: boolean;
-    thinkingLevel?: number;
-    modelExperiments?: { experiments?: Record<string, { stringValue?: string }> };
-}
-
-function positiveTokenLimit(value: unknown): number {
-    if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) { return 0; }
-    const parsed = Number(value);
-    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
-}
-
 export async function fetchAndOverrideCheckpointerLimits(
     ls: LSInfo, logMessage: (message: string) => void = log, isCurrent: () => boolean = () => true,
 ): Promise<boolean> {
@@ -1751,156 +3225,25 @@ export async function fetchAndOverrideCheckpointerLimits(
             metadata: { ideName: 'antigravity', extensionName: 'antigravity' }
         }, 10000);
         if (!isCurrent()) { return false; }
-        const response = resp.response as { models?: Record<string, AvailableModelMetadata>; imageGenerationModelIds?: unknown } | undefined;
-        const models = response?.models || (resp.models as Record<string, AvailableModelMetadata> | undefined) || {};
-        const rawImageIds = response?.imageGenerationModelIds ?? resp.imageGenerationModelIds;
-        const hasImageList = Array.isArray(rawImageIds) && rawImageIds.every(id => typeof id === 'string');
-        const imageIds = new Set<string>(hasImageList ? (rawImageIds as string[]).map(id => id.trim()).filter(Boolean) : []);
-        const overrides: Record<string, number> = {};
-        const allFetchedInfo: string[] = [];
-        let imageMetadataSynced = false;
 
-        for (const [catalogId, c] of Object.entries(models)) {
-            if (!c || typeof c !== 'object') { continue; }
-            const modelVal = typeof c.model === 'string' ? c.model : '';
-            // Current LS catalog entries carry their response/model ID in the map
-            // key, not a modelId field. Keeping it prevents live sync replacing a
-            // useful catalog alias with the opaque placeholder.
-            const modelIdVal = (typeof c.modelId === 'string' && c.modelId)
-                || (typeof c.model_id === 'string' && c.model_id) || catalogId;
-            if (!modelVal && !modelIdVal) continue;
+        const syncRes = applyModelCatalogSync(resp, {
+            isInLivePicker: (resolvedId) => cachedModelConfigs.some(cfg => cfg.model === resolvedId),
+        });
 
-            // The platform hands us the canonical placeholder in `model` (e.g. MODEL_PLACEHOLDER_M298).
-            // Trust that shape directly instead of requiring it to already be in the local registry:
-            // a model the platform ships BEFORE we register it would otherwise resolve to undefined,
-            // skip the updateModelSpec() call below, and be stuck with no spec at all — which is how a
-            // brand-new model ends up showing a permanent "calculating threshold…" shimmer even though
-            // its real parameters were sitting in the response we just parsed.
-            const resolved = (isPlatformModelId(modelVal) ? modelVal : undefined)
-                || (modelVal ? resolveModelId(modelVal) : undefined)
-                || (modelIdVal ? resolveModelId(modelIdVal) : undefined);
-
-            const exps = c.modelExperiments?.experiments || {};
-            const checkpointerStr = exps.CASCADE_USE_EXPERIMENT_CHECKPOINTER?.stringValue;
-            let limitNum = 0;
-            let thresholdNum = 0;
-
-            if (checkpointerStr) {
-                allFetchedInfo.push(`[${modelIdVal || modelVal}] Exp JSON: ${checkpointerStr}`);
-                try {
-                    const cp = JSON.parse(checkpointerStr) as Record<string, unknown>;
-                    limitNum = positiveTokenLimit(cp.max_token_limit ?? cp.max_limit);
-                    thresholdNum = positiveTokenLimit(cp.token_threshold ?? cp.threshold);
-
-                    if (limitNum && !isNaN(limitNum) && limitNum > 0) {
-                        const resolvedKey = resolved || modelVal || modelIdVal;
-                        if (resolvedKey) {
-                            overrides[resolvedKey] = limitNum;
-                        }
-                        if (modelVal) overrides[modelVal] = limitNum;
-                        if (modelIdVal) overrides[modelIdVal] = limitNum;
-                    }
-                } catch { /* ignore JSON parse error */ }
-            } else {
-                allFetchedInfo.push(`[${modelIdVal || modelVal}] Exp JSON: undefined (No active checkpointer experiment)`);
-            }
-
-            // 同步更新 activeModelSpecs 数据库
-            // Update anything already registered, but only CREATE a spec for a model the platform
-            // actually describes. The catalog also carries internal entries (MODEL_CHAT_*, the tab
-            // completion models) whose checkpointer and token fields are null — filing
-            // specs for those would pad the registry with rows that render as a bare ID and a zero
-            // context limit.
-            const previousSpec = resolved ? getModelSpecs().find(s => s.placeholderId === resolved) : undefined;
-            const alreadyRegistered = !!previousSpec;
-            const imageModel = imageIds.has(catalogId) || imageIds.has(modelIdVal)
-                || !!previousSpec?.isImageGeneration;
-            // A model the user can actually pick must always get a spec, even before the platform
-            // enables a checkpointer experiment on it: without one, getQuotaPoolKey() has no provider
-            // to pool by and the new model splits into its own phantom quota pool — the exact failure
-            // the provider fallback in models.ts exists to prevent.
-            const inLivePicker = !!resolved && cachedModelConfigs.some(cfg => cfg.model === resolved);
-            const maxTokens = positiveTokenLimit(c.maxTokens);
-            const maxOutputTokens = positiveTokenLimit(c.maxOutputTokens);
-            // Image tools are real catalog models even though they have no chat
-            // checkpointer and are intentionally absent from the chat picker.
-            const describesARealModel = (limitNum > 0 || imageModel) && maxTokens > 0;
-            if (resolved && (alreadyRegistered || inLivePicker || describesARealModel)) {
-                registerResponseModelAlias(modelIdVal, resolved);
-                // Full protobuf catalog records omit default-valued fields. When
-                // the provider and both token capacities are present, an absent
-                // thinking budget/flag means zero/false, not "keep last month's
-                // value". Partial or malformed records must preserve known data.
-                const completeMetadata = isPlatformModelId(modelVal)
-                    && typeof c.apiProvider === 'string' && !!c.apiProvider.trim()
-                    && maxTokens > 0 && maxOutputTokens > 0;
-                // Missing data in a partial response must not erase a known route.
-                // A full record with no plan/execute experiment clears an old route.
-                const executionLink: Partial<import('./models').ModelSpec> = {};
-                const planExecute = exps['plan-execute-config'];
-                if (typeof planExecute?.stringValue === 'string') {
-                    try {
-                        const parsed: unknown = JSON.parse(planExecute.stringValue);
-                        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                            const candidate = (parsed as Record<string, unknown>).executionModel;
-                            if (typeof candidate === 'string' && isPlatformModelId(candidate)
-                                && candidate === candidate.trim() && candidate !== resolved) {
-                                executionLink.executionModelId = candidate;
-                            }
-                        }
-                    } catch { /* Preserve last known route for malformed metadata. */ }
-                } else if (completeMetadata && planExecute === undefined) {
-                    executionLink.executionModelId = undefined;
-                }
-                updateModelSpec(resolved, {
-                    ...executionLink,
-                    modelId: modelIdVal || modelVal,
-                    ...(typeof c.displayName === 'string' && c.displayName.trim() ? { displayName: c.displayName.trim() } : {}),
-                    ...(imageModel ? { isImageGeneration: true, thinkingCapabilityReported: typeof c.supportsThinking === 'boolean' } : {}),
-                    ...(typeof c.apiProvider === 'string' ? { apiProvider: c.apiProvider.replace('API_PROVIDER_', '') } : {}),
-                    ...(maxTokens ? { maxTokens } : {}),
-                    ...(maxOutputTokens ? { maxOutputTokens } : {}),
-                    ...(typeof c.thinkingBudget === 'number' && Number.isFinite(c.thinkingBudget) ? { thinkingBudget: c.thinkingBudget } : {}),
-                    ...(completeMetadata && c.thinkingBudget === undefined ? { thinkingBudget: 0 } : {}),
-                    ...(typeof c.supportsThinking === 'boolean' ? { supportsThinking: c.supportsThinking } : {}),
-                    ...(completeMetadata && c.supportsThinking === undefined ? { supportsThinking: false } : {}),
-                    ...(typeof c.supportsAdaptiveThinking === 'boolean' ? { supportsAdaptiveThinking: c.supportsAdaptiveThinking } : {}),
-                    ...(completeMetadata && c.supportsAdaptiveThinking === undefined ? { supportsAdaptiveThinking: false } : {}),
-                    ...(typeof c.thinkingLevel === 'number' && Number.isSafeInteger(c.thinkingLevel) && c.thinkingLevel >= 0
-                        ? { thinkingLevel: c.thinkingLevel } : {}),
-                    ...(completeMetadata && c.thinkingLevel === undefined ? { thinkingLevel: 0 } : {}),
-                    ...(limitNum > 0 ? { cpLimit: limitNum } : {}),
-                    ...(thresholdNum > 0 ? { cpThreshold: thresholdNum } : {}),
-                    ...(imageModel && completeMetadata && !checkpointerStr ? { cpLimit: 0, cpThreshold: 0 } : {}),
-                });
-                if (imageModel && completeMetadata) { imageMetadataSynced = true; }
-            }
-        }
-        if (hasImageList) { setAvailableImageModelIds([...imageIds]); }
-
-        if (allFetchedInfo.length > 0) {
-            logMessage(`[Checkpointer Sync] Official checkpointer parameters fetched for ${allFetchedInfo.length} models.`);
+        if (syncRes.diagnostics.length > 0) {
+            logMessage(`[Checkpointer Sync] Official checkpointer parameters fetched for ${syncRes.diagnostics.length} models.`);
         }
 
-
-
-        if (Object.keys(overrides).length > 0) {
-            overrideContextLimits(overrides);
-            logMessage(`[Checkpointer Sync] Dynamically resolved and overridden ${Object.keys(overrides).length} model context limits from official Checkpointer!`);
+        const overrideCount = Object.keys(syncRes.contextLimitOverrides).length;
+        if (overrideCount > 0) {
+            logMessage(`[Checkpointer Sync] Dynamically resolved and overridden ${overrideCount} model context limits from official Checkpointer!`);
             return true;
         }
-        if (imageMetadataSynced) {
+        if (syncRes.imageMetadataSynced) {
             logMessage('[Checkpointer Sync] Image model metadata synchronized; no chat compression limit was reported.');
             return true;
         }
 
-        // Parsed fine but produced nothing. Report failure so the caller retries on the next poll
-        // instead of latching hasSyncedCheckpointer and never syncing again for the whole session:
-        // an empty result means either the platform moved the response envelope (this reader is the
-        // only nested `response.models` reader in the codebase — everything else reads a top-level
-        // field) or no model currently carries a checkpointer experiment. Both are transient states
-        // that a later poll can resolve, and both otherwise leave every model on its static fallback
-        // while the log cheerfully reports success.
         logMessage(`[Checkpointer Sync] Parsed the response but found no checkpointer overrides — will retry. Envelope keys: ${Object.keys(resp ?? {}).join(', ') || '(none)'}`);
         return false;
     } catch (e: any) {
@@ -1918,13 +3261,14 @@ function updateAccountSnapshot(
     const nowMs = Date.now();
 
     // Group models by their stable quota pool first — we need the NEW resetTimes.
-    const poolMap = new Map<string, { resetTime: string; labels: string[]; modelIds: string[]; hasUsage: boolean; minFraction: number }>();
+    // Preserve `minFraction: number | null` so all-NaN / unknown pools never fabricate 100% or 0%.
+    const poolMap = new Map<string, { resetTime: string; labels: string[]; modelIds: string[]; hasUsage: boolean; minFraction: number | null }>();
     for (const group of groupModelConfigsByQuotaPool(configs)) {
         poolMap.set(group.key, {
             resetTime: group.resetTime,
             labels: group.labels,
             modelIds: group.modelIds,
-            hasUsage: group.minFraction < 1.0,
+            hasUsage: group.minFraction !== null && group.minFraction < 1.0,
             minFraction: group.minFraction,
         });
     }
@@ -1962,7 +3306,7 @@ function updateAccountSnapshot(
             const baselinedCount = gmTracker.baselineForQuotaReset(email, newPool.modelIds, oldResetTime);
             const settled = dailyLedger.settleForQuotaReset(newPool.modelIds, email, cutoffTime);
             if (baselinedCount > 0 || settled) {
-                log(`[DailyLedger] cycle-change settlement: ${baselinedCount} GM calls baselined, ${settled ? settled.totalCalls : 0} ledger calls settled for [${newPool.labels.slice(0, 3).join(', ')}] (${email}) — resetTime changed ${oldResetTime} → ${newPool.resetTime}`);
+                log(`[DailyLedger] cycle-change settlement: ${baselinedCount} GM calls baselined, ${settled ? settled.totalCalls : 0} ledger calls settled for [${newPool.labels.slice(0, 3).join(', ')}] (${diagnosticAliasMap.aliasLabel(email)}) — resetTime changed ${oldResetTime} → ${newPool.resetTime}`);
                 lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
                 durableGlobalState.update('gmTrackerState', gmTracker.serialize());
                 durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
@@ -1999,7 +3343,9 @@ function updateAccountSnapshot(
     const allResetTimes: string[] = [];
     for (const [, pool] of [...poolMap.entries()].sort((a, b) => comparePoolResetTimes(a[1].resetTime, b[1].resetTime))) {
         const resetTime = pool.resetTime;
-        const remainingPct = pool.hasUsage ? Math.round(pool.minFraction * 100) : undefined;
+        const remainingPct = pool.hasUsage && pool.minFraction !== null
+            ? Math.round(pool.minFraction * 100)
+            : undefined;
         resetPools.push({ resetTime, modelLabels: pool.labels, modelIds: pool.modelIds, hasUsage: pool.hasUsage, remainingPercent: remainingPct });
         if (resetTime && !allResetTimes.includes(resetTime)) {
             allResetTimes.push(resetTime);
@@ -2085,7 +3431,7 @@ function getAccountSnapshotArray(): AccountSnapshot[] {
 
 function persistBillingDays(): void {
     void durableFileGlobalState.update('accountBillingDays', billingDaysMap).then(undefined, err => {
-        log(`Failed to persist account billing days: ${err}`);
+        log(`Failed to persist account billing days: ${err instanceof Error ? err.name : 'Error'}`);
     });
 }
 
@@ -2145,7 +3491,7 @@ function handleAccountSwitchIfNeeded(newEmail: string): boolean {
     if (!newEmail) { return false; }
     if (currentAccountEmail && currentAccountEmail !== newEmail) {
         invalidateLiveModelMetadata();
-        log(`Account switch detected: ${currentAccountEmail} → ${newEmail}`);
+        log(`Account switch detected: ${diagnosticAliasMap.aliasLabel(currentAccountEmail)} → ${diagnosticAliasMap.aliasLabel(newEmail)}`);
 
         // Before switching, check both accounts for expired pools that need archival.
         // The OLD account (currentAccountEmail) is about to become "cached" (inactive),
@@ -2210,7 +3556,7 @@ function baselineExpiredPoolsForAccount(email: string): void {
         // Skip if already archived in persisted state
         if (gmTracker.isPoolArchived(email, pool.modelIds || pool.modelLabels)) {
             notifiedAccountResets.add(key);
-            log(`Account switch baseline: ${email} pool [${pool.modelLabels.slice(0, 3).join(', ')}] already archived — skipped`);
+            log(`Account switch baseline: ${diagnosticAliasMap.aliasLabel(email)} pool [${pool.modelLabels.slice(0, 3).join(', ')}] already archived — skipped`);
             continue;
         }
 
@@ -2222,7 +3568,7 @@ function baselineExpiredPoolsForAccount(email: string): void {
         const cutoffTime = resetMs;
         const settled = dailyLedger.settleForQuotaReset(pool.modelIds || pool.modelLabels, email, cutoffTime);
         if (baselinedCount > 0 || settled) {
-            log(`Account switch baseline: ${email} — ${baselinedCount} GM calls baselined for pool [${pool.modelLabels.slice(0, 3).join(', ')}]`);
+            log(`Account switch baseline: ${diagnosticAliasMap.aliasLabel(email)} — ${baselinedCount} GM calls baselined for pool [${pool.modelLabels.slice(0, 3).join(', ')}]`);
             if (settled) {
                 log(`  DailyLedger settled: ${settled.totalCalls} calls`);
             }
@@ -2249,15 +3595,74 @@ function baselineExpiredPoolsForAccount(email: string): void {
                 vscode.commands.executeCommand('antigravity-context-monitor.showDetails');
             }
         });
-        log(`Account switch reset notification: ${displayName} — ${modelNames}${extra}`);
+        log(`Account switch reset notification: ${diagnosticAliasMap.aliasLabel(displayName)} — ${modelNames}${extra}`);
     }
 }
 
+async function confirmDurablePersist(): Promise<boolean> {
+    if (!durableState) { return true; }
+    const receipt = await durableState.flush();
+    return receipt.committed;
+}
+
 /**
- * Perform daily archival by delegating to the testable core logic.
- * Wires module-level state into a DailyArchivalContext.
+ * Record newly extracted GM calls into DailyLedger using Wave 1A's `recordCallsDetailed`,
+ * advancing per-conversation cursors strictly via `detailed.statuses` (never skipping
+ * retryable entries) and persisting whenever new calls or rewinds occurred.
  */
-function performDailyArchival(force = false): void {
+function recordGMCallsIntoDailyLedgerDetailed(): { added: number; extracted: number } {
+    if (!gmTracker || !dailyLedger) { return { added: 0, extracted: 0 }; }
+    const { entries: newEntries, revertedCascadeIds } = gmTracker.getNewCallsSinceLastRecord();
+    for (const cid of revertedCascadeIds) {
+        dailyLedger.clearRecordedIdsForConversation(cid);
+        log(`[DailyLedger] cleared dedup IDs for reverted conversation ${diagnosticAliasMap.aliasConversation(cid)}`);
+    }
+    let added = 0;
+    if (newEntries.length > 0) {
+        const ledgerDateBeforeRecord = dailyLedger.dateKey;
+        const ledgerNormalizedBeforeRecord = dailyLedger.normalizeIfStaleEmpty();
+        if (ledgerNormalizedBeforeRecord) {
+            log(`[DailyLedger] normalized empty ledger date ${ledgerDateBeforeRecord} → ${dailyLedger.dateKey} before recording`);
+        }
+        const wsUris = getWorkspaceUris();
+        const enrichedEntries = enrichLedgerEntriesForIngestion(newEntries, {
+            trajectories: lastTrajectories,
+            activeCascadeId: currentUsage?.cascadeId ?? trackedCascadeId,
+            activeWorkspaceUri: wsUris[0],
+            fallbackAuthority: resolveIdeBrainRootScope(wsUris).remoteAuthority || 'local',
+            fallbackAccount: cachedUserInfo?.email || currentAccountEmail,
+        });
+        const detailed = dailyLedger.recordCallsDetailed(enrichedEntries, 'ide');
+        added = detailed.added;
+        const nonAdded = detailed.statuses.filter(s => s !== 'added').length;
+        log(`[DailyLedger] extracted=${newEntries.length} added=${detailed.added} non_added=${nonAdded} advance=${detailed.contiguousAdvanceCount}`);
+        if (detailed.added > 0) {
+            lastGmCallActivityMs = Date.now();
+            durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+        }
+        if (detailed.contiguousAdvanceCount > 0 || detailed.statuses.some(s => s !== 'retryable')) {
+            gmTracker.markLedgerEntriesRecorded(newEntries, detailed.statuses);
+        } else {
+            log('[DailyLedger] ledger positions retained for retry because all entries were retryable');
+        }
+    }
+    if (revertedCascadeIds.length > 0) {
+        durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
+    }
+    return { added, extracted: newEntries.length };
+}
+
+/**
+ * Perform daily archival asynchronously by delegating to `performDailyArchivalAsync`.
+ * Runs an explicit async `preArchivalFlush` (fetching final GM telemetry before midnight
+ * rollover when LS is available) and requires durable commit confirmation before draining
+ * pending late-day queues.
+ */
+async function performDailyArchival(force = false, activeLs?: LSInfo | null): Promise<DailyArchivalResult> {
+    if (!force && dailyLedger && dailyLedger.hasData && dailyLedger.dateKey && dailyLedger.dateKey !== toLocalDateKey()) {
+        lastArchivalDateKey = dailyLedger.dateKey;
+    }
+    const lsForPreFlush = activeLs ?? cachedLsInfo;
     const ctx: DailyArchivalContext = {
         activityTracker,
         gmTracker,
@@ -2268,7 +3673,35 @@ function performDailyArchival(force = false): void {
         lastArchivalDateKey,
         dailyLedger,
         surface: 'ide',
-        persist: (updates) => {
+        preArchivalFlush: async () => {
+            if (lsForPreFlush && !disposed && gmTracker) {
+                try {
+                    const trajs = lastTrajectories.length > 0
+                        ? lastTrajectories
+                        : await getAllTrajectories(lsForPreFlush, abortController.signal);
+                    if (trajs.length > 0) {
+                        const gmSummary = await gmTracker.fetchAll(
+                            lsForPreFlush,
+                            trajs.map(t => ({
+                                cascadeId: t.cascadeId,
+                                title: t.summary || t.cascadeId.substring(0, 8),
+                                stepCount: t.stepCount,
+                                status: t.status,
+                                manifestMember: t.manifestMember,
+                            })),
+                            currentUsage?.cascadeId,
+                            abortController.signal,
+                        );
+                        lastGMSummary = gmTracker.getDetailedSummary() || gmSummary;
+                    }
+                } catch {
+                    // Non-fatal: still flush already-cached GM calls below
+                }
+            }
+            recordGMCallsIntoDailyLedgerDetailed();
+        },
+        confirmPersist: confirmDurablePersist,
+        persist: async (updates) => {
             lastArchivalDateKey = updates.lastArchivalDateKey;
             lastGMSummary = updates.lastGMSummary;
             if (updates.modelDNAChanged && updates.persistedModelDNA) {
@@ -2280,22 +3713,47 @@ function performDailyArchival(force = false): void {
             durableGlobalState.update('gmTrackerState', gmTracker.serialize());
             durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
             persistGMSummaryToFile(lastGMSummary);
+            if (durableState) {
+                await durableState.flush();
+            }
             syncStatusBarTelemetry(true);
         },
         log,
     };
-    performDailyArchivalCore(ctx, force);
+    return performDailyArchivalAsync(ctx, force);
 }
 
 // ─── Activation ───────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
     extensionContext = context;
+    bindIdePanelHostBridge();
     abortController = new AbortController();
     disposed = false;
+    repollNeeded = false;
+    repollForceManual = false;
+    displayLanguageModifiedByUser = false;
+    startupArchivalPromise = null;
+    legacyMigrationPromise = null;
+    trackedCascadeSinceMs = undefined;
+    knownSubagentCascadeIds.clear();
+    missingCascadeAbsenceCounts.clear();
+    confirmedDeletedCascadeIds.clear();
+    cascadeCompactionBoundaries.clear();
+    branchStepPeaks.clear();
+    lastPublishedObservation = null;
+    lastSwarmTopology = null;
+    swarmPollScheduler.resetForBackendEpoch();
+    swarmMemberInventory.reset();
     outputChannel = vscode.window.createOutputChannel('Antigravity Context Monitor');
     log('Extension activating...');
-    const workspaceKey = normalizeUri(getWorkspaceUri() || 'no-workspace');
+    const initialWorkspaceUris = getWorkspaceUris();
+    const workspaceKey = initialWorkspaceUris.length > 0
+        ? initialWorkspaceUris.map(u => normalizeWorkspaceUri(u, getWorkspaceNormOptions())).filter(Boolean).sort().join('|') || 'no-workspace'
+        : 'no-workspace';
+    windowId = `ide:${hashText(workspaceKey)}`;
+    swarmRegistryScopeKey = '';
+    ensureSwarmRegistryForWorkspaces(initialWorkspaceUris);
     const customStatePath = process.env.ANTIGRAVITY_CONTEXT_MONITOR_STATE_PATH?.trim() || undefined;
     durableState = new DurableState(customStatePath);
     durableGlobalState = durableState.globalBucket(context.globalState);
@@ -2306,11 +3764,30 @@ export function activate(context: vscode.ExtensionContext): void {
     // Inject durable state into webview-panel for zoom persistence
     setPanelDurableState(durableFileGlobalState);
 
-    // Restore v1.17.5 conversation lock, pinned session, and quota runway history
-    lockToMainAgent = durableFileGlobalState.get<boolean>('lockToMainAgent', false);
+    // Single-time migration of legacy top-level `lockToMainAgent` into `appSettings`
+    const initialMigratedLock = durableState.resolveMigratedLegacyLock();
+    lockToMainAgent = initialMigratedLock.lockToMainAgent;
+    if (initialMigratedLock.needsMigrationPersist) {
+        void durableState.migrateLegacyLockOnce();
+    }
+    windowSelectionState = createWindowSelectionState({
+        backendEpoch,
+        windowId,
+        lockToMainAgent,
+        lockedRootId: null,
+    });
     pinnedConversationId = durableFileWorkspaceState.get<string | null>('pinnedConversationId', null);
     const savedRunway = durableFileGlobalState.get<SerializedQuotaRunwayState | undefined>('quotaRunwayState', undefined);
-    quotaRunwayTracker = savedRunway ? QuotaRunwayTracker.deserialize(savedRunway) : new QuotaRunwayTracker();
+    const savedRunwayWeekly = durableFileGlobalState.get<Record<string, WeeklyQuotaSeriesState> | undefined>('quotaRunwayWeeklyBuckets', undefined);
+    const combinedSavedRunway = combineSerializedRunwayWithWeekly(savedRunway, savedRunwayWeekly);
+    quotaRunwayTracker = combinedSavedRunway ? QuotaRunwayTracker.deserialize(combinedSavedRunway) : new QuotaRunwayTracker();
+    recoveryBriefTracker.restoreDismissedKeys(
+        durableFileGlobalState.get<string[]>('dismissedRecoveryBriefKeys', []),
+    );
+    promptCacheTtlTracker.reset();
+    lastRecordedCacheTtlCallKey = '';
+    latestPromptCacheTtl = null;
+    activeRecoveryBrief = null;
 
     // Initialize quota tracker
     quotaTracker = new QuotaTracker(context, durableGlobalState);
@@ -2344,9 +3821,8 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     };
 
-    // Initialize i18n from persisted state
-    initI18n(context);
-    initI18nFromState(durableGlobalState);
+    // Initialize i18n from persisted state with IDE locale priority (`vscode.env.language` before OS/Node)
+    initI18nForIde(context, durableGlobalState);
 
     // Restore persisted lastKnownModel from workspaceState
     lastKnownModel = durableWorkspaceState.get<string>('lastKnownModel', '');
@@ -2362,9 +3838,18 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBar = new StatusBarManager();
     setTooltipDiagLogger(log);
 
-    // Initialize activity tracker
+    pricingStore = new PricingStore();
+    pricingStore.init(durableGlobalState);
+    // Hydrate v1.18 shared app settings BEFORE restoring ActivityTracker so constructor-injected limits apply immediately
+    hydrateSharedAppSettingsFromDisk(true);
+
+    // Initialize activity tracker with constructor-injected retention limits (zero vscode dependency in ActivityTracker)
+    const activityCfg = {
+        maxRecentSteps: sharedAppSettings.activityMaxRecentSteps,
+        maxArchives: sharedAppSettings.activityMaxArchives,
+    };
     const savedActivity = durableGlobalState.get<ActivityTrackerState | undefined>('activityTrackerState', undefined);
-    activityTracker = savedActivity ? ActivityTracker.restore(savedActivity) : new ActivityTracker();
+    activityTracker = savedActivity ? ActivityTracker.restore(savedActivity, activityCfg) : new ActivityTracker(activityCfg);
     if (savedActivity) {
         const normalizedActivityState = activityTracker.serialize();
         if (JSON.stringify(savedActivity) !== JSON.stringify(normalizedActivityState)) {
@@ -2378,10 +3863,6 @@ export function activate(context: vscode.ExtensionContext): void {
     persistedModelDNA = restoreModelDNAState(
         durableGlobalState.get<ModelDNAStoreState | null>('modelDNAState', null),
     );
-    pricingStore = new PricingStore();
-    pricingStore.init(durableGlobalState);
-    // Hydrate v1.17.6 shared app settings (reconciles orchestratorPricingMode, retention, currency, etc.)
-    hydrateSharedAppSettingsFromDisk(true);
     // Restore multi-account snapshots from file-backed state
     restoreAccountSnapshots();
     restoreBillingDays();
@@ -2402,46 +3883,92 @@ export function activate(context: vscode.ExtensionContext): void {
         log(`[DailyLedger] normalized empty ledger date ${savedLedger.dateKey} → ${dailyLedger.dateKey} during startup restore`);
     }
 
-    // ── Immediate cross-day archival on startup ──
+    // Restore daily archival date key BEFORE checking for cross-day startup archival
+    lastArchivalDateKey = durableGlobalState.get<string>('lastArchivalDateKey', '');
+
+    // ── Immediate cross-day archival on startup (async, awaited before first poll) ──
     // If the ledger has data from a previous day (IDE was off overnight),
-    // archive it NOW — don't wait for the polling loop or conversation load.
+    // archive it immediately — without blocking activate() synchronously.
     if (dailyLedger.hasData && dailyLedger.dateKey !== toLocalDateKey()) {
         log(`[Startup] Ledger has stale data from ${dailyLedger.dateKey}, archiving immediately`);
-        // Override lastArchivalDateKey to the stale date so performDailyArchival's
+        // Override lastArchivalDateKey to the stale date so performDailyArchivalAsync's
         // "sameDay" guard doesn't reject it (it may already be today's date if a
         // previous instance or polling cycle set it without rolling over the ledger).
         lastArchivalDateKey = dailyLedger.dateKey;
-        performDailyArchival();
+        startupArchivalPromise = performDailyArchival(false, null)
+            .then(() => {
+                const backfilled = dailyStore.backfillMissingCosts(pricingStore.getCustom());
+                if (backfilled > 0) {
+                    log(`Cost backfill (post-startup archival): re-priced ${backfilled} archived per-model row(s)`);
+                }
+            })
+            .catch((archErr) => {
+                log(`[Startup] Cross-day archival failed: ${archErr instanceof Error ? archErr.name : 'Error'}`);
+            })
+            .finally(() => {
+                startupArchivalPromise = null;
+            });
     }
 
     // ── One-time migration: auto-recover data from legacy Antigravity (pre-2.0) ──
-    // Detects old "Antigravity" globalState DB and imports calendar + language.
-    // Also supports manual migration-import.json as a fallback.
+    // Non-blocking async runner (`runLegacyMigrationOnceAsync`) with `settingsGuard`
+    // so user edits made during async activation are NEVER clobbered.
     try {
         const migrationDir = path.dirname(durableState.getFilePath());
         const migrationDone = durableFileGlobalState.get<boolean>('legacyMigrationDone', false);
+        const initialPersistedDisplayLang =
+            durableGlobalState.get<string | undefined>('displayLanguage', undefined)
+            ?? context.globalState.get<string | undefined>('displayLanguage', undefined);
 
-        // --- Auto-detect old Antigravity DB ---
+        // --- Auto-detect old Antigravity DB (non-blocking async) ---
         if (!migrationDone) {
-            const { extractLegacyData, runLegacyMigrationOnce } = require('./legacy-migration') as typeof import('./legacy-migration');
-            runLegacyMigrationOnce({
+            legacyMigrationPromise = runLegacyMigrationOnceAsync({
                 migrationDone,
-                extractLegacyData: () => extractLegacyData(log),
-                importLegacyData: (legacyData) => {
+                extractLegacyData: () => extractLegacyDataAsync(log),
+                settingsGuard: {
+                    getCurrentDisplayLanguage: () =>
+                        durableGlobalState.get<string | undefined>('displayLanguage', undefined)
+                        ?? context.globalState.get<string | undefined>('displayLanguage', undefined)
+                        ?? getLanguage(),
+                    isDisplayLanguageModified: () =>
+                        displayLanguageModifiedByUser || Boolean(initialPersistedDisplayLang),
+                },
+                importLegacyData: async (legacyData) => {
+                    if (disposed) { return; }
                     if (legacyData.dailyStoreState) {
                         const added = dailyStore.mergeRecords(legacyData.dailyStoreState);
                         log(`Legacy migration: merged ${added} calendar records`);
+                        if (added > 0) {
+                            const backfilled = dailyStore.backfillMissingCosts(pricingStore.getCustom());
+                            if (backfilled > 0) {
+                                log(`Legacy migration cost backfill: re-priced ${backfilled} archived per-model row(s)`);
+                            }
+                        }
                     }
                     if (legacyData.displayLanguage && ['zh', 'en', 'both'].includes(legacyData.displayLanguage)) {
-                        setLanguageToState(legacyData.displayLanguage as any, durableGlobalState);
-                        context.globalState.update('displayLanguage', legacyData.displayLanguage);
+                        await setLanguageToState(legacyData.displayLanguage as any, durableGlobalState);
+                        await context.globalState.update('displayLanguage', legacyData.displayLanguage);
                         log(`Legacy migration: restored language to '${legacyData.displayLanguage}'`);
+                        if (typeof statusBar !== 'undefined') {
+                            statusBar.refreshFromConfig();
+                        }
+                        if (isMonitorPanelVisible()) {
+                            refreshMonitorPanelLanguage();
+                        }
+                    }
+                    if (durableState) {
+                        await durableState.flush();
                     }
                 },
-                markDone: () => {
-                    durableFileGlobalState.update('legacyMigrationDone', true);
+                markDone: async () => {
+                    await durableFileGlobalState.update('legacyMigrationDone', true);
+                    if (durableState) {
+                        await durableState.flush();
+                    }
                 },
                 log,
+            }).catch((migrationAsyncErr) => {
+                log(`Legacy migration (async): failed — ${migrationAsyncErr instanceof Error ? migrationAsyncErr.name : 'Error'}`);
             });
         } else {
             log('Legacy migration: data OK, no migration needed');
@@ -2460,32 +3987,33 @@ export function activate(context: vscode.ExtensionContext): void {
                 const added = dailyStore.mergeRecords(migration.dailyStoreState);
                 log(`Migration: merged ${added} calendar records from manual file`);
             }
-            if (migration.displayLanguage && ['zh', 'en', 'both'].includes(migration.displayLanguage)) {
+            if (
+                migration.displayLanguage
+                && ['zh', 'en', 'both'].includes(migration.displayLanguage)
+                && !displayLanguageModifiedByUser
+                && !initialPersistedDisplayLang
+            ) {
                 setLanguageToState(migration.displayLanguage as any, durableGlobalState);
                 context.globalState.update('displayLanguage', migration.displayLanguage);
                 log(`Migration: restored language preference to '${migration.displayLanguage}'`);
             }
             const donePath = migrationFile.replace('.json', '.done.json');
             fs.renameSync(migrationFile, donePath);
-            log(`Migration: completed, file renamed to ${donePath}`);
+            log(`Migration: completed, input file archived`);
         }
     } catch (migrationErr) {
-        log(`Migration: failed — ${migrationErr}`);
+        log(`Migration: failed — ${migrationErr instanceof Error ? migrationErr.name : 'Error'}`);
     }
 
     // ── Self-healing cost backfill ──
     // Days archived while their model had no price row carry no cost. Re-pricing them from
     // their stored tokens only fills gaps and never overwrites, so it runs on every startup
     // rather than behind a "migration done" flag: a row still unpriced today is filled by
-    // whichever future release adds that price. Placed after the startup archival and both
-    // migration merges so anything they just wrote is covered in this same session.
+    // whichever future release adds that price.
     const backfilledCostRows = dailyStore.backfillMissingCosts(pricingStore.getCustom());
     if (backfilledCostRows > 0) {
         log(`Cost backfill: re-priced ${backfilledCostRows} archived per-model row(s) that had no cost`);
     }
-
-    // Restore daily archival date key
-    lastArchivalDateKey = durableGlobalState.get<string>('lastArchivalDateKey', '');
 
     // Restore cached user status from globalState for instant tooltip display
     const savedConfigs = durableGlobalState.get<import('./models').ModelConfig[]>('cachedModelConfigs', []);
@@ -2538,9 +4066,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Register commands
     context.subscriptions.push(
         vscode.commands.registerCommand(MONITOR_COMMAND, (destination: unknown) => {
-            const initialTab = destination === 'models' || destination === 'settings' || destination === 'gmdata' || destination === 'pricing'
-                ? destination
-                : 'overview';
+            const initialTab = resolveMonitorCommandDestination(destination) as PanelPayload['initialTab'];
             showMonitorPanel(makePanelPayload({ context, initialTab }));
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.refresh', () => {
@@ -2555,6 +4081,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('antigravity-context-monitor.switchLanguage', () => {
             showLanguagePicker(context, durableGlobalState).then(async () => {
+                markDisplayLanguageModified();
                 await flushDurableState();
                 // Rebuild statusBar and WebView to reflect new language immediately
                 statusBar.refreshFromConfig();
@@ -2660,6 +4187,27 @@ export function activate(context: vscode.ExtensionContext): void {
                     }
                 }
 
+                if (e.affectsConfiguration('antigravityContextMonitor.cdpOverlayFontSize')) {
+                    const nextFont = normalizeCdpOverlayFontSize(cfgNow.get<string>('cdpOverlayFontSize', 'normal'));
+                    if (nextFont !== sharedCdpOverlayFontSize) {
+                        sharedCdpOverlayFontSize = nextFont;
+                        if (durableState) {
+                            void durableState.updateGlobalWithReceipt('cdpOverlayFontSize', nextFont).then(() => durableState.flush());
+                        }
+                        if (isMonitorPanelVisible()) { syncMonitorPanelSettings(); }
+                    }
+                }
+                if (e.affectsConfiguration('antigravityContextMonitor.cdpOverlayHighContrast')) {
+                    const nextHc = Boolean(cfgNow.get<boolean>('cdpOverlayHighContrast', false));
+                    if (nextHc !== sharedCdpOverlayHighContrast) {
+                        sharedCdpOverlayHighContrast = nextHc;
+                        if (durableState) {
+                            void durableState.updateGlobalWithReceipt('cdpOverlayHighContrast', nextHc).then(() => durableState.flush());
+                        }
+                        if (isMonitorPanelVisible()) { syncMonitorPanelSettings(); }
+                    }
+                }
+
                 let planChanged = false;
                 if (e.affectsConfiguration('antigravityContextMonitor.subscriptionPlan')) {
                     const nextPlan = inferIdeSubscriptionPlan(cfgNow.get<string>('subscriptionPlan', 'none'), patch.subscriptionMonthlyFee ?? sharedAppSettings.subscriptionMonthlyFee);
@@ -2679,15 +4227,48 @@ export function activate(context: vscode.ExtensionContext): void {
                 }
 
                 if (anyChanged || planChanged) {
+                    if (patch.displayCurrency !== undefined && patch.displayCurrency !== sharedAppSettings.displayCurrency) {
+                        const switched = switchDisplayCurrency(
+                            {
+                                displayCurrency: sharedAppSettings.displayCurrency,
+                                customFxRate: sharedAppSettings.customFxRate,
+                                customFxCurrency: sharedAppSettings.customFxCurrency,
+                            },
+                            patch.displayCurrency,
+                        );
+                        patch.customFxRate = switched.customFxRate;
+                        patch.customFxCurrency = switched.customFxCurrency;
+                    } else if (patch.customFxRate !== undefined) {
+                        const bound = bindCustomFxRate(
+                            patch.displayCurrency ?? sharedAppSettings.displayCurrency,
+                            patch.customFxRate,
+                        );
+                        patch.customFxCurrency = bound.customFxCurrency;
+                    }
+                    if (patch.showNativeHudBar !== undefined) {
+                        patch.ideShowNativeHudBar = patch.showNativeHudBar;
+                    }
+                    if (planChanged) {
+                        patch.subscriptionPlan = sharedSubscriptionPlan;
+                    }
                     if (orchModeChanged && patch.orchestratorPricingMode && pricingStore) {
                         void pricingStore.setOrchestratorPricingMode(patch.orchestratorPricingMode);
                     }
                     if (retentionChanged && typeof patch.calendarRetentionDays === 'number' && dailyStore) {
                         dailyStore.setMaxDays(patch.calendarRetentionDays);
                     }
+                    if (
+                        (typeof patch.activityMaxRecentSteps === 'number' || typeof patch.activityMaxArchives === 'number')
+                        && activityTracker
+                    ) {
+                        activityTracker.updateConfig({
+                            ...(typeof patch.activityMaxRecentSteps === 'number' ? { maxRecentSteps: patch.activityMaxRecentSteps } : {}),
+                            ...(typeof patch.activityMaxArchives === 'number' ? { maxArchives: patch.activityMaxArchives } : {}),
+                        });
+                    }
                     sharedAppSettings = { ...sharedAppSettings, ...patch };
                     if (durableState) {
-                        void durableState.updateAppSettings(patch).then(async (updated) => {
+                        void durableState.patchAppSettings(patch).then(async (updated) => {
                             sharedAppSettings = updated;
                             lastSyncedDiskAppSettings = { ...updated };
                             if (planChanged && durableFileGlobalState) {
@@ -2696,6 +4277,7 @@ export function activate(context: vscode.ExtensionContext): void {
                             await durableState.flush();
                         });
                     }
+                    applyDisplayPrefs();
                     syncStatusBarTelemetry(true);
                     if (isMonitorPanelVisible()) {
                         updateMonitorPanel(makePanelPayload());
@@ -2706,21 +4288,27 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         // ─── Workspace Switch Detection ─────────────────────────────────────
         // When workspace folders change (open different project, add/remove folder),
-        // the cached LS and tracked cascade may be stale. Force full re-discovery
-        // so trajectories are re-filtered for the new workspace URI.
+        // the cached LS and tracked cascade may be stale. Mark `repollNeeded = true`
+        // so an active poll never drops the change, and force full re-discovery so
+        // trajectories are re-filtered across ALL active multi-root workspace folders.
         vscode.workspace.onDidChangeWorkspaceFolders(() => {
-            log('Workspace folders changed — forcing LS re-discovery');
+            log('Workspace folders changed — marking repollNeeded and forcing LS re-discovery');
             cachedLsInfo = null;
             invalidateLiveModelMetadata();
+            ensureSwarmRegistryForWorkspaces(getWorkspaceUris());
             trackedCascadeId = null;
+            trackedCascadeSinceMs = undefined;
             lastPolledWorkspaceUri = undefined;
             consecutiveFailures = 0;
             currentIntervalMs = baseIntervalMs;
             lsRevalidationCounter = 0;
             consecutiveIdlePolls = 0;
             stalenessConfirmedIdle = false;
+            repollNeeded = true;
             restartPolling();
-            void pollContextUsage();
+            if (!isPolling) {
+                void pollContextUsage();
+            }
         })
     );
 
@@ -2736,7 +4324,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export async function deactivate(): Promise<void> {
     disposed = true;
+    repollNeeded = false;
+    repollForceManual = false;
     hasHydratedSharedSettings = false;
+    cachedLsInfo = null;
+    lastUpdateStatusView = null;
+    lastContextBreakdownKey = '';
+    firstPollDone = false;
+    trackedCascadeId = null;
+    trackedCascadeSinceMs = undefined;
+    lastPolledWorkspaceUri = undefined;
     resetImageWorkflowCache();
     if (pollingTimer) {
         clearTimeout(pollingTimer);
@@ -2751,12 +4348,37 @@ export async function deactivate(): Promise<void> {
     if (gmTracker && durableGlobalState) {
         pendingUpdates.push(durableGlobalState.update('gmTrackerState', gmTracker.serialize()));
     }
+    persistIdeQuotaRunwaysIfDue(Date.now(), true);
     if (durableState) {
         await durableState.flush();
     }
     if (pendingUpdates.length > 0) {
         await Promise.allSettled(pendingUpdates);
     }
+    cachedUserInfo = null;
+    cachedModelConfigs = [];
+    currentAccountEmail = '';
+    accountSnapshots.clear();
+    billingDaysMap = {};
+    lastGMSummary = null;
+    currentUsage = null;
+    allTrajectoryUsages = [];
+    lastTrajectories = [];
+    pinnedConversationId = null;
+    lockedMainCascadeId = null;
+    lastPublishedObservation = null;
+    lastSwarmTopology = null;
+    windowSelectionState = createWindowSelectionState({ backendEpoch, windowId: 'ide-default' });
+    swarmPollScheduler.resetForBackendEpoch();
+    swarmMemberInventory.reset();
+    missingCascadeAbsenceCounts.clear();
+    confirmedDeletedCascadeIds.clear();
+    cascadeCompactionBoundaries.clear();
+    branchStepPeaks.clear();
+    knownSubagentCascadeIds.clear();
+    previousStepCounts.clear();
+    previousTrajectoryIds.clear();
+    previousContextObservations.clear();
     if (statusBar) {
         statusBar.dispose();
     }
@@ -2777,6 +4399,18 @@ function applyDisplayPrefs(): void {
         showCacheHit: cfg.get<boolean>('statusBar.showCacheHit', false),
         showSessionCost: cfg.get<boolean>('statusBar.showSessionCost', false),
     });
+    statusBar.setCurrencyConfig({
+        code: sharedAppSettings.displayCurrency,
+        customRatePerUsd: sharedAppSettings.customFxRate,
+        customFxCurrency: sharedAppSettings.customFxCurrency,
+    });
+    statusBar.setQuotaDisplayModes({
+        quotaWindowMode: sharedAppSettings.quotaWindowMode,
+        quotaDirectionMode: sharedAppSettings.quotaDirectionMode,
+        speedMetricMode: sharedAppSettings.speedMetricMode,
+    });
+    statusBar.setWeeklyQuotaRunways(lastWeeklyQuotaRunways);
+    statusBar.setPromptCacheTtl(latestPromptCacheTtl);
     statusBar.setBillingDay(billingDaysMap[currentAccountEmail] ?? 0);
 }
 
@@ -2786,6 +4420,11 @@ function applyDisplayPrefs(): void {
  */
 function syncStatusBarTelemetry(refresh = false, activeCascadeOverride?: string | null): void {
     if (typeof statusBar === 'undefined' || typeof gmTracker === 'undefined') { return; }
+    statusBar.setCurrencyConfig({
+        code: sharedAppSettings.displayCurrency,
+        customRatePerUsd: sharedAppSettings.customFxRate,
+        customFxCurrency: sharedAppSettings.customFxCurrency,
+    });
     const summary = gmTracker.getUiSummary();
     const activeCascadeId = activeCascadeOverride === null
         ? undefined
@@ -2818,21 +4457,16 @@ function updateStatusBarCredits(userInfo: UserStatusInfo | null): void {
 }
 
 /**
- * Extract the latest GM contextTokensUsed for a given cascade from a GMSummary.
- * Returns the value if found and > 0, otherwise 0.
+ * Extract the latest GM contextTokensUsed for a given cascade from a GMSummary via the
+ * shared rewind/compaction-safe `getLatestGMContextUsedForCascade` selector.
  */
 function getLatestGMContextUsed(summary: GMSummary, cascadeId: string): number {
-    const conv = summary.conversations.find(c => c.cascadeId === cascadeId);
-    if (!conv || conv.calls.length === 0) { return 0; }
-    let latest = 0;
-    let latestTime = '';
-    for (const call of conv.calls) {
-        if (call.contextTokensUsed > 0 && call.createdAt > latestTime) {
-            latestTime = call.createdAt;
-            latest = call.contextTokensUsed;
-        }
-    }
-    return latest;
+    const boundary = cascadeCompactionBoundaries.get(cascadeId);
+    return getLatestGMContextUsedForCascade(
+        summary,
+        cascadeId,
+        boundary ? { compactionBoundary: boundary } : undefined,
+    );
 }
 
 /** Fill missing provider usage with the GM pre-request context estimate. */
@@ -2849,43 +4483,140 @@ export function applyGMContextToUsage(usage: ContextUsage, gmContextUsed: number
 
 // ─── Polling Logic ────────────────────────────────────────────────────────────
 
-async function pollContextUsage(isManualRefresh = false): Promise<void> {
+function applyFullUserStatusIfOk(
+    fullStatus: FullUserStatusFetchResult,
+    lsForAux: LSInfo,
+    contextLabel: string,
+): boolean {
+    if (fullStatus.ok !== true) {
+        const errMsg = fullStatus.error || `GetUserStatus returned ok=false (${contextLabel})`;
+        userStatusStaleGuard.recordFailure(errMsg);
+        if (typeof statusBar !== 'undefined') {
+            statusBar.setStaleState(getCurrentStaleState());
+        }
+        log(`GetUserStatus failed (${contextLabel})`);
+        return false;
+    }
+    userStatusStaleGuard.recordSuccess(fullStatus);
+    if (typeof statusBar !== 'undefined') {
+        statusBar.setStaleState(getCurrentStaleState());
+    }
+    if (applyLiveModelStatus(fullStatus)) {
+        log(`Updated model display names (${contextLabel}): ${fullStatus.configs.map(c => c.label).join(', ')}`);
+    }
+    if (fullStatus.userInfo) {
+        cachedUserInfo = fullStatus.userInfo;
+        updateStatusBarCredits(fullStatus.userInfo);
+        statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
+        durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
+        durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
+        durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
+        log(`User plan (${contextLabel}): ${fullStatus.userInfo.planName}`);
+        updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
+    }
+    triggerLiveAuxiliaryMetadataRefresh(lsForAux, cachedModelConfigs, modelMetadataGeneration, abortController.signal);
+    return true;
+}
+
+async function fetchFullStatusViaPollCache(
+    pollCache: PollRpcCache,
+    ls: LSInfo,
+    signal?: AbortSignal,
+): Promise<FullUserStatusFetchResult> {
+    return pollCache.getOrFetch(
+        {
+            backendEpoch,
+            authority: getLsAuthority(ls),
+            method: 'GetUserStatus',
+            cascadeId: '',
+            range: 'all',
+            branchRevision: `epoch:${backendEpoch}`,
+        },
+        (upstreamSignal) => fetchFullUserStatus(ls, upstreamSignal),
+        signal,
+        { shouldCache: (res) => res.ok === true },
+    );
+}
+
+async function fetchAllTrajectoriesViaPollCache(
+    pollCache: PollRpcCache,
+    ls: LSInfo,
+    signal?: AbortSignal,
+): Promise<TrajectorySummary[]> {
+    return pollCache.getOrFetch(
+        {
+            backendEpoch,
+            authority: getLsAuthority(ls),
+            method: 'GetAllCascadeTrajectories',
+            cascadeId: '',
+            range: 'all',
+            branchRevision: `epoch:${backendEpoch}`,
+        },
+        (upstreamSignal) => getAllTrajectories(ls, upstreamSignal),
+        signal,
+    );
+}
+
+function pollContextUsage(isManualRefresh = false): Promise<void> {
+    return withTrajectoryPollBudget(DEFAULT_SWARM_POLL_BUDGET, () => runContextPoll(isManualRefresh));
+}
+
+async function runContextPoll(isManualRefresh: boolean): Promise<void> {
     if (isPolling) {
-        if (isManualRefresh && typeof statusBar !== 'undefined') {
-            statusBar.showInitializing();
+        if (isManualRefresh) {
+            repollNeeded = true;
+            repollForceManual = true;
+            if (typeof statusBar !== 'undefined') {
+                statusBar.showInitializing();
+            }
         }
         return;
     }
     isPolling = true;
+    repollNeeded = false;
+    repollForceManual = false;
+    const pollCache = new PollRpcCache();
     let lsInfo = cachedLsInfo;
+    const fetchMemberMetadata = (ls: LSInfo, id: string) => pollCache.getOrFetch(
+        { backendEpoch, authority: getLsAuthority(ls), method: 'GetCascadeTrajectoryGeneratorMetadata', cascadeId: id, range: 'all', branchRevision: 'manifest-member' },
+        signal => fetchTrajectoryGeneratorMetadataResult(ls, id, signal),
+        abortController.signal, { shouldCache: result => result.ok },
+    );
     try {
-        // 1. Determine workspace URI for this window
-        const workspaceUri = getWorkspaceUri();
-        const normalizedWs = workspaceUri ? normalizeUri(workspaceUri) : '(none)';
+        if (startupArchivalPromise) {
+            await startupArchivalPromise;
+        }
+
+        // 1. Determine multi-root workspace URIs for this window
+        const workspaceUris = getWorkspaceUris();
+        const workspaceUri = workspaceUris[0];
+        const normOpts = getWorkspaceNormOptions();
+        const workspaceSignature = buildWorkspaceSignature(workspaceUris, normOpts);
+        ensureSwarmRegistryForWorkspaces(workspaceUris);
 
         // ─── Workspace URI Change Detection (fallback) ──────────────────
-        // If the workspace URI changed since the last poll (e.g., user opened
-        // a different folder), invalidate the cached LS and tracked cascade
-        // so we re-discover and re-filter trajectories for the new workspace.
-        // This is a fallback — the primary detection is onDidChangeWorkspaceFolders.
-        if (lastPolledWorkspaceUri !== undefined && lastPolledWorkspaceUri !== normalizedWs) {
-            log(`Workspace URI changed: ${lastPolledWorkspaceUri} → ${normalizedWs} — resetting LS cache`);
+        // If the workspace folder set changed since the last poll (e.g., user opened
+        // a different folder or added/removed a multi-root folder), invalidate the
+        // cached LS and tracked cascade so we re-discover and re-filter trajectories.
+        if (lastPolledWorkspaceUri !== undefined && lastPolledWorkspaceUri !== workspaceSignature) {
+            log(`Workspace folders changed: ${workspaceUris.length} registered roots — resetting LS cache`);
             cachedLsInfo = null;
             invalidateLiveModelMetadata();
             lsInfo = null;
             trackedCascadeId = null;
+            trackedCascadeSinceMs = undefined;
             consecutiveIdlePolls = 0;
             stalenessConfirmedIdle = false;
         }
-        lastPolledWorkspaceUri = normalizedWs;
+        lastPolledWorkspaceUri = workspaceSignature;
 
         // Hot-reload shared DurableState changes written externally (e.g. by App Sidecar)
         syncFromDurableStateIfChanged(false);
 
-        // 午夜归档必须在本轮轮询前半段执行：
+        // 午夜归档必须在本轮轮询前半段执行（异步等待 preArchivalFlush 与持久化确认）：
         // 1. 不能被“无会话 / 无活跃对话”的提前 return 跳过
         // 2. 新一天的 GM / DailyLedger 记录必须建立在已 rollover 的干净状态上
-        performDailyArchival();
+        await withoutTrajectoryPollBudget(() => performDailyArchival(false, lsInfo));
 
         // 2. Discover LS (with caching + fast hint-change reconnect + periodic revalidation)
         if (lsInfo) {
@@ -2905,7 +4636,12 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             if (isManualRefresh || statusBar.monitorStatus.state !== 'disconnected') {
                 statusBar.showInitializing();
             }
+            const discoveryEpoch = backendEpoch;
             lsInfo = await discoverLanguageServer(workspaceUri, abortController.signal, log);
+            if (disposed || backendEpoch !== discoveryEpoch) {
+                log('Discarding stale LS discovery result after workspace/backend invalidation');
+                return;
+            }
             cachedLsInfo = lsInfo;
             lsRevalidationCounter = 0;
             consecutiveIdlePolls = 0;
@@ -2917,35 +4653,16 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             resetBackoff();
             log(`LS found: pid=${lsInfo.pid} port=${lsInfo.port}, tls=${lsInfo.useTls}${lsInfo.hostname ? `, host=${lsInfo.hostname}` : ''}`);
 
-            // Dynamically update model display names from GetUserStatus
+            // Dynamically update model display names from GetUserStatus (verify fullStatus.ok === true)
             try {
-                const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
-                userStatusStaleGuard.recordSuccess(fullStatus);
-                statusBar.setStaleState(getCurrentStaleState());
-                if (applyLiveModelStatus(fullStatus)) {
-                    log(`Updated model display names: ${fullStatus.configs.map(c => c.label).join(', ')}`);
-                }
-                if (fullStatus.userInfo) {
-                    cachedUserInfo = fullStatus.userInfo;
-                    updateStatusBarCredits(fullStatus.userInfo);
-                    statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
-                    // Persist for instant display on next activation
-                    durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
-                    durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
-                    durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
-                    log(`User plan: ${fullStatus.userInfo.planName}`);
-                    updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
-                }
-                triggerLiveAuxiliaryMetadataRefresh(lsInfo, cachedModelConfigs, modelMetadataGeneration, abortController.signal);
+                const fullStatus = await fetchFullStatusViaPollCache(pollCache, lsInfo, abortController.signal);
+                applyFullUserStatusIfOk(fullStatus, lsInfo, 'initial');
             } catch (statusErr) {
                 userStatusStaleGuard.recordFailure(statusErr);
                 statusBar.setStaleState(getCurrentStaleState());
             }
         } else {
             // ─── Periodic LS Connection Revalidation ─────────────────────────
-            // BUG FIX: When Antigravity updates or restarts, a new LS may start
-            // while the old one is still alive or port/token/TLS changed (even
-            // when pid=0 via direct hint). Compare full connection identity.
             lsRevalidationCounter++;
             if (lsRevalidationCounter >= LS_REVALIDATION_INTERVAL) {
                 lsRevalidationCounter = 0;
@@ -2957,52 +4674,27 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                         cachedLsInfo = freshLs;
                         invalidateLiveModelMetadata();
                         consecutiveIdlePolls = 0;
-                        // Re-fetch user status from new LS
+                        // Re-fetch user status from new LS (verify fullStatus.ok === true)
                         try {
-                            const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
-                            applyLiveModelStatus(fullStatus);
-                            if (fullStatus.userInfo) {
-                                cachedUserInfo = fullStatus.userInfo;
-                                updateStatusBarCredits(fullStatus.userInfo);
-                                statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
-                                durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
-                                durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
-                                durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
-                                updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
-                            }
-                            triggerLiveAuxiliaryMetadataRefresh(lsInfo, cachedModelConfigs, modelMetadataGeneration, abortController.signal);
-                        } catch { /* Silent */ }
+                            const fullStatus = await fetchFullStatusViaPollCache(pollCache, lsInfo, abortController.signal);
+                            applyFullUserStatusIfOk(fullStatus, lsInfo, 'revalidation');
+                        } catch (statusErr) {
+                            userStatusStaleGuard.recordFailure(statusErr);
+                            statusBar.setStaleState(getCurrentStaleState());
+                        }
                     }
                 } catch {
-                    // Discovery failed — keep using current connection
                     log('LS revalidation: discovery failed, keeping current connection');
                 }
             }
 
             // Periodic refresh of user status (every STATUS_REFRESH_INTERVAL polls)
-            // IMPORTANT: force refresh on first poll (!firstPollDone) so that
-            // _currentAccountEmail is set BEFORE the first fetchAll(). Without this,
-            // fetchAll() on restart would tag new calls with the stale account email
-            // restored from persistence, causing error attribution mismatch.
             statusPollCount++;
             if (statusPollCount >= STATUS_REFRESH_INTERVAL || !firstPollDone) {
                 statusPollCount = 0;
                 try {
-                    const fullStatus = await fetchFullUserStatus(lsInfo, abortController.signal);
-                    userStatusStaleGuard.recordSuccess(fullStatus);
-                    statusBar.setStaleState(getCurrentStaleState());
-                    applyLiveModelStatus(fullStatus);
-                    if (fullStatus.userInfo) {
-                        cachedUserInfo = fullStatus.userInfo;
-                        updateStatusBarCredits(fullStatus.userInfo);
-                        statusBar.setPlanName(fullStatus.userInfo.planName, fullStatus.userInfo.userTierName);
-                        durableGlobalState.update('cachedModelConfigs', cachedModelConfigs);
-                        durableGlobalState.update('cachedPlanName', fullStatus.userInfo.planName);
-                        durableGlobalState.update('cachedTierName', fullStatus.userInfo.userTierName);
-                        updateAccountSnapshot(fullStatus.userInfo, fullStatus.configs);
-                    }
-                    triggerLiveAuxiliaryMetadataRefresh(lsInfo, cachedModelConfigs, modelMetadataGeneration, abortController.signal);
-                    log('Refreshed user status (periodic)');
+                    const fullStatus = await fetchFullStatusViaPollCache(pollCache, lsInfo, abortController.signal);
+                    applyFullUserStatusIfOk(fullStatus, lsInfo, 'periodic');
                 } catch (statusErr) {
                     userStatusStaleGuard.recordFailure(statusErr);
                     statusBar.setStaleState(getCurrentStaleState());
@@ -3011,11 +4703,6 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
         }
 
         // Dynamically override context limits once per LS connection, with BOUNDED retry on failure.
-        // A failed sync must be retried — a transient empty response used to latch permanently and
-        // leave every model on its static fallback for the whole session. But it must not retry
-        // forever either: an account that genuinely has no checkpointer experiments would otherwise
-        // issue this RPC on every poll for as long as the window stays open. Give up after a handful
-        // of attempts and let a reconnect (which resets the counter below) be the way back in.
         if (lsInfo && !hasSyncedCheckpointer && !isSyncingCheckpointer
             && checkpointerSyncAttempts < MAX_CHECKPOINTER_SYNC_ATTEMPTS) {
             isSyncingCheckpointer = true;
@@ -3035,14 +4722,14 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             });
         }
 
-        // 3. Get all trajectories
+        // 3. Get all trajectories (deduplicated per poll via PollRpcCache)
         let trajectories: TrajectorySummary[];
         try {
-            trajectories = await getAllTrajectories(lsInfo, abortController.signal);
+            trajectories = await fetchAllTrajectoriesViaPollCache(pollCache, lsInfo, abortController.signal);
             trajectoriesStaleGuard.recordSuccess(trajectories);
             statusBar.setStaleState(getCurrentStaleState());
         } catch (err) {
-            log(`RPC failed, retrying discovery: ${err}`);
+            log(`RPC failed, retrying discovery: ${err instanceof Error ? err.name : 'Error'}`);
             trajectoriesStaleGuard.recordFailure(err);
             statusBar.setStaleState(getCurrentStaleState());
             invalidateLiveModelMetadata();
@@ -3053,7 +4740,15 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                 return;
             }
             resetBackoff();
-            trajectories = await getAllTrajectories(lsInfo, abortController.signal);
+            // Verify fullStatus.ok === true on RPC-failure rediscovery path
+            try {
+                const fullStatus = await fetchFullStatusViaPollCache(pollCache, lsInfo, abortController.signal);
+                applyFullUserStatusIfOk(fullStatus, lsInfo, 'rediscovery');
+            } catch (statusErr) {
+                userStatusStaleGuard.recordFailure(statusErr);
+                statusBar.setStaleState(getCurrentStaleState());
+            }
+            trajectories = await fetchAllTrajectoriesViaPollCache(pollCache, lsInfo, abortController.signal);
             trajectoriesStaleGuard.recordSuccess(trajectories);
             statusBar.setStaleState(getCurrentStaleState());
         }
@@ -3076,37 +4771,17 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             return;
         }
 
-        for (const t of trajectories.slice(0, 5)) {
-            const wsUris = t.workspaceUris.map(u => `"${u}" → "${normalizeUri(u)}"`).join(', ');
-            log(`  Trajectory "${t.summary?.substring(0, 30)}" status=${t.status} steps=${t.stepCount} workspaces=[${wsUris}]`);
-        }
+        // 4. Multi-root workspace filtering (Remote-SSH / WSL / APFS-safe via conversation-selector.ts)
+        let qualifiedTrajectories = filterTrajectoriesByWorkspaces(trajectories, workspaceUris, normOpts);
+        let qualifiedRunning = qualifiedTrajectories.filter(t => t.status === CascadeStatus.RUNNING);
 
-        // 4. Per-window cascade tracking — Workspace Isolation
-        // With a workspace: strict filter — only show trajectories belonging to this workspace.
-        // Without a workspace (no folder opened): show ALL trajectories, since there is
-        // no folder to filter by and Antigravity assigns workspace URIs to all conversations.
-        const qualifiedTrajectories = workspaceUri
-            ? trajectories.filter(t => t.workspaceUris.some(u => normalizeUri(u) === normalizedWs))
-            : trajectories;
-
-        const runningSelection = selectRunningTrajectoryCandidate(
-            trajectories,
-            qualifiedTrajectories,
-            trackedCascadeId,
-        );
-        const qualifiedRunning = runningSelection.qualifiedRunning;
-        let newCandidateId = runningSelection.candidateId;
-        let selectionReason = runningSelection.selectionReason;
-
-        log(`Trajectories: ${trajectories.length} total, ${qualifiedTrajectories.length} qualified in ws, ${qualifiedRunning.length} running in ws`);
+        log(`Trajectories: ${trajectories.length} total, ${qualifiedTrajectories.length} qualified across ${workspaceUris.length} ws root(s), ${qualifiedRunning.length} running in ws`);
 
         // ─── Staleness Heuristic ───────────────────────────────────────────
-        // BUG FIX: If we're tracking a RUNNING cascade but LS reports it as IDLE
-        // for too many consecutive polls, the LS is probably stale. Force re-discovery.
         if (qualifiedRunning.length === 0 && trackedCascadeId) {
             consecutiveIdlePolls++;
             if (consecutiveIdlePolls >= STALE_LS_IDLE_THRESHOLD && !stalenessConfirmedIdle) {
-                log(`⚠ Staleness detected: tracked cascade ${trackedCascadeId.substring(0, 8)} has been IDLE for ${consecutiveIdlePolls} consecutive polls. Forcing LS re-discovery.`);
+                log(`⚠ Staleness detected: tracked cascade ${diagnosticAliasMap.aliasConversation(trackedCascadeId)} has been IDLE for ${consecutiveIdlePolls} consecutive polls. Forcing LS re-discovery.`);
                 consecutiveIdlePolls = 0;
                 try {
                     const freshLs = await discoverLanguageServer(workspaceUri, abortController.signal, log);
@@ -3117,9 +4792,18 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                         invalidateLiveModelMetadata();
                         lsRevalidationCounter = 0;
                         stalenessConfirmedIdle = false;
-                        // Re-fetch trajectories from the new LS
-                        trajectories = await getAllTrajectories(lsInfo, abortController.signal);
+                        // Verify fullStatus.ok === true on staleness rediscovery path
+                        try {
+                            const fullStatus = await fetchFullStatusViaPollCache(pollCache, lsInfo, abortController.signal);
+                            applyFullUserStatusIfOk(fullStatus, lsInfo, 'staleness_rediscovery');
+                        } catch (statusErr) {
+                            userStatusStaleGuard.recordFailure(statusErr);
+                            statusBar.setStaleState(getCurrentStaleState());
+                        }
+                        trajectories = await fetchAllTrajectoriesViaPollCache(pollCache, lsInfo, abortController.signal);
                         lastTrajectories = trajectories;
+                        qualifiedTrajectories = filterTrajectoriesByWorkspaces(trajectories, workspaceUris, normOpts);
+                        qualifiedRunning = qualifiedTrajectories.filter(t => t.status === CascadeStatus.RUNNING);
                     } else if (freshLs) {
                         log('LS connection unchanged — staleness was a false alarm (cascade genuinely IDLE)');
                         stalenessConfirmedIdle = true;
@@ -3133,99 +4817,139 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             stalenessConfirmedIdle = false;
         }
 
-        if (runningSelection.selectedOutsideWorkspace && newCandidateId) {
-            const selected = trajectories.find(t => t.cascadeId === newCandidateId);
-            const hasWs = !!selected && selected.workspaceUris.length > 0;
-            log(`Priority 1b: found RUNNING trajectory ${newCandidateId.substring(0, 8)} ${hasWs ? 'in other workspace' : 'without workspace URI'}`);
+        // ─── Bounded Swarm Topology Sweep & Reconciliation (Remote-SSH/WSL safe) ─
+        const presentCascadeIds = new Set(trajectories.map(t => t.cascadeId));
+        for (const cid of presentCascadeIds) {
+            missingCascadeAbsenceCounts.delete(cid);
+            confirmedDeletedCascadeIds.delete(cid);
         }
-        // --- Priority 2: stepCount CHANGE detection ---
-        if (!newCandidateId && firstPollDone) {
-            const activeChanges = qualifiedTrajectories.filter(t => {
-                const prev = previousStepCounts.get(t.cascadeId);
-                return prev !== undefined && t.stepCount !== prev;
-            });
-            const trackedChange = activeChanges.find(t => t.cascadeId === trackedCascadeId);
-            if (trackedChange) {
-                newCandidateId = trackedChange.cascadeId;
-                const prev = previousStepCounts.get(trackedChange.cascadeId) || 0;
-                const direction = trackedChange.stepCount > prev ? 'increased' : 'decreased (undo/rewind)';
-                selectionReason = `stepCount ${direction}: ${prev} → ${trackedChange.stepCount}`;
-            } else if (!trackedCascadeId && activeChanges.length > 0) {
-                newCandidateId = activeChanges[0].cascadeId;
-                selectionReason = 'stepCount changed in ws';
+        const trackedAbsenceCandidates = new Set<string>([
+            ...previousTrajectoryIds,
+            ...(windowSelectionState.lockedRootId ? [windowSelectionState.lockedRootId] : []),
+            ...(windowSelectionState.inspectedMemberId ? [windowSelectionState.inspectedMemberId] : []),
+        ]);
+        for (const cid of trackedAbsenceCandidates) {
+            if (!presentCascadeIds.has(cid)) {
+                const count = (missingCascadeAbsenceCounts.get(cid) ?? 0) + 1;
+                missingCascadeAbsenceCounts.set(cid, count);
+                if (count >= 2) {
+                    confirmedDeletedCascadeIds.add(cid);
+                }
             }
         }
-
-        // --- Priority 3: New trajectory detection ---
-        // Switch to new conversations immediately — even if we're already tracking
-        // another cascade. Without this, a new conversation would be ignored on
-        // its first poll cycle, causing a visible one-cycle delay before data appears.
-        if (!newCandidateId && firstPollDone) {
-            const newlyCreated = qualifiedTrajectories.filter(t => !previousTrajectoryIds.has(t.cascadeId));
-            if (newlyCreated.length > 0) {
-                newCandidateId = newlyCreated[0].cascadeId;
-                selectionReason = 'new trajectory appeared in ws';
-            }
-        }
-
-        // --- Priority 3b: Keep tracked cascade stable if still present ---
-        if (!newCandidateId && trackedCascadeId) {
-            const trackedQualified = qualifiedTrajectories.find(t => t.cascadeId === trackedCascadeId)
-                || trajectories.find(t => t.cascadeId === trackedCascadeId);
-            if (trackedQualified) {
-                newCandidateId = trackedQualified.cascadeId;
-                selectionReason = 'sticky tracked cascade';
-            }
-        }
-
-        // --- Priority 4: Most recently modified trajectory in workspace ---
-        if (!newCandidateId && qualifiedTrajectories.length > 0) {
-            const mostRecent = qualifiedTrajectories[0];
-            newCandidateId = mostRecent.cascadeId;
-            selectionReason = 'most recently modified in ws (fallback)';
-        }
-
-        // --- v1.17.5 Override: Manual Conversation Pin or Lock to Main Agent ---
-        if (pinnedConversationId || lockToMainAgent) {
-            const resolved = resolveTargetConversation({
+        try {
+            const priorityIds = [
+                windowSelectionState.lockedRootId,
+                windowSelectionState.inspectedMemberId,
+                trackedCascadeId,
+            ].filter((x): x is string => Boolean(x));
+            await swarmRegistry.sweepManifests({ priorityCascadeIds: priorityIds });
+            lastSwarmTopology = swarmRegistry.reconcile({
+                backendEpoch,
                 trajectories,
+                deletedConversationIds: confirmedDeletedCascadeIds,
+            });
+            for (const [cid] of lastSwarmTopology.nodesById) {
+                if (swarmRegistry.isKnownWorkerOrSubagent(cid)) {
+                    knownSubagentCascadeIds.add(cid);
+                }
+            }
+        } catch {
+            // Non-fatal: continue with RPC trajectories if manifest sweep errors
+        }
+
+        if (lastSwarmTopology) {
+            const inspected = windowSelectionState.inspectedMemberId;
+            const epoch = backendEpoch;
+            trajectories = await withTrajectoryRequestShare(() => swarmMemberInventory.expand(
+                trajectories, lastSwarmTopology!, [inspected, pinnedConversationId, windowSelectionState.lockedRootId, trackedCascadeId, qualifiedTrajectories[0]?.cascadeId],
+                inspected, id => readUnlistedMemberStepCount(lsInfo!, id, abortController.signal, fetchMemberMetadata), Date.now(),
+            ));
+            if (epoch !== backendEpoch || abortController.signal.aborted) { return; }
+            for (const tr of trajectories) {
+                if (tr.manifestMember) {
+                    missingCascadeAbsenceCounts.delete(tr.cascadeId);
+                    confirmedDeletedCascadeIds.delete(tr.cascadeId);
+                }
+            }
+            lastTrajectories = trajectories;
+            qualifiedTrajectories = filterTrajectoriesByWorkspaces(trajectories, workspaceUris, normOpts);
+        }
+
+        // ─── Unified 3-Field Lock & Worker-Isolated Multi-Root IDE Selection ─
+        const newlyCreatedIds = firstPollDone
+            ? new Set(trajectories.filter(t => !previousTrajectoryIds.has(t.cascadeId)).map(t => t.cascadeId))
+            : undefined;
+        let resolved: ReturnType<typeof resolveIdeAutoFollowConversation>;
+        if (windowSelectionState.lockToMainAgent || windowSelectionState.inspectedMemberId !== null) {
+            const selRes = selectConversation(windowSelectionState, {
+                trajectories,
+                backendEpoch,
+                workspaceUris,
+                pinnedId: pinnedConversationId,
+                currentActiveId: trackedCascadeId,
+                currentActiveSinceMs: trackedCascadeSinceMs,
+                knownSubagentIds: knownSubagentCascadeIds,
+                newlyCreatedIds,
+                deletedConversationIds: confirmedDeletedCascadeIds,
+                strictWorkspaceIsolation: true,
+                isolateWorkers: true,
+                topologyResolveRootId: (id) => swarmRegistry.resolveRootId(id),
+                ...normOpts,
+            });
+            windowSelectionState = selRes.state;
+            resolved = selRes.resolution;
+            lockedMainCascadeId = windowSelectionState.lockedRootId;
+        } else {
+            resolved = resolveIdeAutoFollowConversation({
+                trajectories,
+                workspaceUris,
                 pinnedId: pinnedConversationId,
                 lockToMainAgent,
                 lockedMainId: lockedMainCascadeId,
-                currentActiveId: newCandidateId || trackedCascadeId,
-                workspaceUris: workspaceUri ? [workspaceUri] : [],
+                currentActiveId: trackedCascadeId,
+                currentActiveSinceMs: trackedCascadeSinceMs,
+                knownSubagentIds: knownSubagentCascadeIds,
+                newlyCreatedIds,
+                previousStepCounts: firstPollDone ? previousStepCounts : undefined,
+                strictWorkspaceIsolation: true,
+                isolateWorkers: true,
+                ...normOpts,
             });
-            if (resolved.pinnedFallback && pinnedConversationId) {
-                log(`Pinned conversation ${pinnedConversationId.substring(0, 8)} no longer exists — returning to auto-follow`);
-                pinnedConversationId = null;
-                if (durableFileWorkspaceState) {
-                    void durableFileWorkspaceState.update('pinnedConversationId', null);
-                }
-            }
             lockedMainCascadeId = resolved.lockedMainId;
-            if (resolved.cascadeId) {
-                newCandidateId = resolved.cascadeId;
-                selectionReason = resolved.reason;
+        }
+        if (resolved.pinnedFallback && pinnedConversationId) {
+            log(`Pinned conversation ${diagnosticAliasMap.aliasConversation(pinnedConversationId)} no longer exists — returning to auto-follow`);
+            pinnedConversationId = null;
+            if (durableFileWorkspaceState) {
+                void durableFileWorkspaceState.update('pinnedConversationId', null);
             }
+        }
+        const newCandidateId = resolved.cascadeId;
+        let selectionReason = resolved.reason;
+        if (resolved.ignoredSubagentBurst) {
+            log(`Ignored background subagent/worker burst while tracking ${diagnosticAliasMap.aliasConversation(newCandidateId) || 'none'} (${selectionReason})`);
         }
 
         // Update tracked cascade
         if (newCandidateId) {
             if (trackedCascadeId !== newCandidateId) {
-                log(`Switched cascade: ${trackedCascadeId?.substring(0, 8) || 'none'} → ${newCandidateId.substring(0, 8)} (${selectionReason})`);
+                log(`Switched cascade: ${diagnosticAliasMap.aliasConversation(trackedCascadeId) || 'none'} → ${diagnosticAliasMap.aliasConversation(newCandidateId)} (${selectionReason})`);
                 trackedCascadeId = newCandidateId;
+                trackedCascadeSinceMs = Date.now();
                 consecutiveIdlePolls = 0;
                 stalenessConfirmedIdle = false;
                 clearActiveContextTelemetry();
             } else if (selectionReason) {
-                log(`Refreshing cascade ${trackedCascadeId?.substring(0, 8)} (${selectionReason})`);
+                log(`Refreshing cascade ${diagnosticAliasMap.aliasConversation(trackedCascadeId)} (${selectionReason})`);
             }
         } else if (trackedCascadeId) {
             const currentTracked = qualifiedTrajectories.find(t => t.cascadeId === trackedCascadeId)
                 || trajectories.find(t => t.cascadeId === trackedCascadeId);
             if (!currentTracked) {
-                log(`Tracked cascade ${trackedCascadeId.substring(0, 8)} no longer in any list, clearing`);
+                log(`Tracked cascade ${diagnosticAliasMap.aliasConversation(trackedCascadeId)} no longer in any list, clearing`);
                 trackedCascadeId = null;
+                trackedCascadeSinceMs = undefined;
                 clearActiveContextTelemetry();
             }
         }
@@ -3246,19 +4970,21 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             const idleLimit = getContextLimit(lastKnownModel);
             const idleLimitStr = formatContextLimit(idleLimit);
             log(`No active trajectory — showing idle (model=${lastKnownModel || 'default'}, limit=${idleLimitStr})`);
+            lastPublishedObservation = null;
+            statusBar.setPublishedObservation(null);
             syncStatusBarTelemetry(false, null);
             statusBar.showIdle(idleLimitStr, lastKnownModel);
             currentUsage = null;
             clearActiveContextTelemetry();
             allTrajectoryUsages = monitorStore.getAll();
             if (isMonitorPanelVisible()) {
-                updateMonitorPanel(makePanelPayload({ currentUsage: null }));
+                updateMonitorPanel(makePanelPayload({ currentUsage: null, publishedObservation: null }));
             }
             updateBaselines(trajectories);
             return;
         }
 
-        log(`Selected: "${activeTrajectory.summary}" (${activeTrajectory.cascadeId.substring(0, 8)}) reason=${selectionReason} status=${activeTrajectory.status}`);
+        log(`Selected: (${diagnosticAliasMap.aliasConversation(activeTrajectory.cascadeId)}) reason=${selectionReason} status=${activeTrajectory.status}`);
 
         // 5. Get context usage for selected trajectory
         const persistedUsage = monitorStore.getSnapshot(activeTrajectory.cascadeId);
@@ -3269,12 +4995,25 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
         } else {
             currentUsage = await getContextUsage(lsInfo, activeTrajectory, undefined, abortController.signal);
         }
-        log(`  → contextUsed=${currentUsage.contextUsed} model=${currentUsage.model} steps=${currentUsage.stepCount} estimated=${currentUsage.isEstimated} ckpt_in=${currentUsage.lastModelUsage?.inputTokens ?? 'none'} ckpt_out=${currentUsage.lastModelUsage?.outputTokens ?? 'none'} estDelta=${currentUsage.estimatedDeltaSinceCheckpoint}`);
-
-        // ── Pre-enhance with cached GM data to prevent step→GM flickering ──
-        if (lastGMSummary && trackedCascadeId) {
-            applyGMContextToUsage(currentUsage, getLatestGMContextUsed(lastGMSummary, trackedCascadeId));
+        const linkedForActive = currentUsage.imageWorkflow?.linkedCascadeIds || [];
+        if (linkedForActive.length > 0) {
+            const rpcLinks: RpcTopologyLinkProjection[] = [];
+            const observedAtMs = Date.now();
+            for (const linkedId of linkedForActive) {
+                if (!linkedId) { continue; }
+                knownSubagentCascadeIds.add(linkedId);
+                rpcLinks.push({
+                    parentCascadeId: currentUsage.cascadeId,
+                    childCascadeId: linkedId,
+                    kind: 'direct_subagent',
+                    observedAtMs,
+                });
+            }
+            if (rpcLinks.length > 0) {
+                swarmRegistry.ingestRpcProjections(rpcLinks, backendEpoch);
+            }
         }
+        log(`  → contextUsed=${currentUsage.contextUsed} model=${currentUsage.model} steps=${currentUsage.stepCount} estimated=${currentUsage.isEstimated} ckpt_in=${currentUsage.lastModelUsage?.inputTokens ?? 'none'} ckpt_out=${currentUsage.lastModelUsage?.outputTokens ?? 'none'} estDelta=${currentUsage.estimatedDeltaSinceCheckpoint}`);
 
         // Track the model for idle-state display
         if (currentUsage.model) {
@@ -3282,12 +5021,23 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             durableWorkspaceState.update('lastKnownModel', lastKnownModel);
         }
 
-        // ─── Compression Detection ─────────────────────────────────────────
-        // Run before statusBar.update() so compression flags land in a single render pass.
+        // ─── Compression Detection & Rewind/Compaction Boundary Recording ───
         const previousObservation = previousContextObservations.get(currentUsage.cascadeId);
         const prevUsed = previousObservation?.contextUsed;
         const prevSteps = previousStepCounts.get(activeTrajectory.cascadeId);
         const isUndo = prevSteps !== undefined && activeTrajectory.stepCount < prevSteps;
+
+        if (isUndo || currentUsage.compressionDetected) {
+            cascadeCompactionBoundaries.set(currentUsage.cascadeId, {
+                stepIndex: activeTrajectory.stepCount, timestampMs: activeTrajectory.lastModifiedTime || Date.now(),
+            });
+        }
+
+        // ── Pre-enhance with cached GM data to prevent step→GM flickering ──
+        let gmEnhancedPre = false;
+        if (lastGMSummary && trackedCascadeId) {
+            gmEnhancedPre = applyGMContextToUsage(currentUsage, getLatestGMContextUsed(lastGMSummary, trackedCascadeId));
+        }
 
         if (!currentUsage.compressionDetected) {
             const drop = measuredContextDrop(previousObservation, currentUsage, isUndo);
@@ -3295,8 +5045,15 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                 currentUsage.compressionDetected = true;
                 currentUsage.previousContextUsed = prevUsed;
                 compressionPersistCounters.set(currentUsage.cascadeId, COMPRESSION_PERSIST_POLLS);
-                log(`Compression detected (fallback) for ${currentUsage.cascadeId.substring(0, 8)}: ${prevUsed} → ${currentUsage.contextUsed} (dropped ${drop})`);
+                log(`Compression detected (fallback) for ${diagnosticAliasMap.aliasConversation(currentUsage.cascadeId)}: ${prevUsed} → ${currentUsage.contextUsed} (dropped ${drop})`);
             }
+        }
+
+        if (currentUsage.compressionDetected || isUndo) {
+            cascadeCompactionBoundaries.set(currentUsage.cascadeId, {
+                stepIndex: activeTrajectory.stepCount,
+                timestampMs: activeTrajectory.lastModifiedTime || Date.now(),
+            });
         }
 
         if (currentUsage.compressionDetected && !compressionPersistCounters.has(currentUsage.cascadeId)) {
@@ -3305,9 +5062,9 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             }
             compressionPersistCounters.set(currentUsage.cascadeId, COMPRESSION_PERSIST_POLLS);
             if (currentUsage.checkpointCompressionDrop > 0) {
-                log(`Compression detected (checkpoint) for ${currentUsage.cascadeId.substring(0, 8)}: checkpoint inputTokens dropped ${currentUsage.checkpointCompressionDrop}`);
+                log(`Compression detected (checkpoint) for ${diagnosticAliasMap.aliasConversation(currentUsage.cascadeId)}: checkpoint inputTokens dropped ${currentUsage.checkpointCompressionDrop}`);
             } else {
-                log(`Compression detected (checkpoint) for ${currentUsage.cascadeId.substring(0, 8)}: checkpoint inputTokens dropped`);
+                log(`Compression detected (checkpoint) for ${diagnosticAliasMap.aliasConversation(currentUsage.cascadeId)}: checkpoint inputTokens dropped`);
             }
         }
 
@@ -3326,41 +5083,116 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
             contextUsed: currentUsage.contextUsed, isEstimated: currentUsage.isEstimated,
             model: currentUsage.model, tokenUsageSource: currentUsage.tokenUsageSource,
         });
+        const ideRole = currentUsage.tokenUsageSource === 'planner'
+            ? 'planner'
+            : (currentUsage.orchestratorConfig ? 'executor' : 'single');
+        const ideCpAnchor = cascadeCompactionBoundaries.get(currentUsage.cascadeId)?.stepIndex ?? activeTrajectory.stepCount;
+        activeRecoveryBrief = recoveryBriefTracker.evaluate({
+            cascadeId: currentUsage.cascadeId,
+            model: currentUsage.model || 'unknown',
+            role: ideRole,
+            branch: currentUsage.branchName || activeTrajectory.branchName || 'main',
+            stepCount: activeTrajectory.stepCount,
+            compactionEventAnchor: ideCpAnchor,
+            previousTokens: prevUsed ?? null,
+            currentTokens: currentUsage.contextUsed,
+            dropTokens: currentUsage.checkpointCompressionDrop > 0 ? currentUsage.checkpointCompressionDrop : null,
+            limitTokens: currentUsage.contextLimit,
+            compressionDetected: Boolean(currentUsage.compressionDetected),
+            isUndo,
+            nowMs: Date.now(),
+            lang: getLanguage(),
+        });
 
         syncStatusBarTelemetry(false, currentUsage.cascadeId);
-        statusBar.update(currentUsage);
+        const initialObservation = buildIdePublishedObservation(currentUsage, {
+            gmEnhanced: gmEnhancedPre,
+            bumpRevision: true,
+        });
+        statusBar.update(currentUsage, initialObservation);
 
         const sourceLabel = currentUsage.isEstimated ? 'estimated' : 'precise';
         log(`Context: ${currentUsage.contextUsed} tokens (${sourceLabel}) | ${currentUsage.usagePercent.toFixed(1)}% | modelOut=${currentUsage.totalOutputTokens} | toolOut=${currentUsage.totalToolCallOutputTokens} | delta=${currentUsage.estimatedDeltaSinceCheckpoint} | imageGen=${currentUsage.imageGenStepCount}`);
 
-        // 6. Background: compute usage for other recent trajectories
-        const scopeTrajectories = buildUsageScopeTrajectories(qualifiedTrajectories, trajectories, activeTrajectory);
-        const recentTrajectories = scopeTrajectories.slice(0, 5);
-        const usagePromises = recentTrajectories.map(async (t) => {
-            if (t.cascadeId === activeTrajectory!.cascadeId) {
-                return currentUsage!;
+        // 6. Background: compute usage for other recent trajectories via fair SwarmPollScheduler (<= 3 concurrency)
+        const baseScope = buildUsageScopeTrajectories(qualifiedTrajectories, trajectories, activeTrajectory);
+        const baseIds = new Set(baseScope.map(t => t.cascadeId));
+        const scopeTrajectories = [...baseScope, ...trajectories.filter(t => t.manifestMember && !baseIds.has(t.cascadeId))];
+        const scopedById = new Map(scopeTrajectories.map(t => [t.cascadeId, t]));
+        const usageById = new Map<string, ContextUsage>([[activeTrajectory.cascadeId, currentUsage]]);
+
+        const otherTrajectories = scopeTrajectories.filter(t => t.cascadeId !== activeTrajectory!.cascadeId);
+        if (otherTrajectories.length > 0) {
+            await withTrajectoryRequestShare(() => swarmPollScheduler.runTick({
+                rootCascadeId: swarmRegistry.resolveRootId(activeTrajectory.cascadeId) ?? activeTrajectory.cascadeId,
+                inspectedMemberId: windowSelectionState.inspectedMemberId,
+                members: otherTrajectories.map(t => ({
+                    cascadeId: t.cascadeId,
+                    isRunning: t.status === CascadeStatus.RUNNING,
+                    isKilled: swarmRegistry.getNode(t.cascadeId)?.killed === true,
+                })),
+                budget: { maxConcurrency: 3 },
+                pollMember: async (cid) => {
+                    const t = scopedById.get(cid);
+                    if (!t) { return { ok: true, requestsUsed: 0, pagesUsed: 0 }; }
+                    const cachedUsage = monitorStore.getSnapshot(t.cascadeId);
+                    if (hasSameUsageInputs(cachedUsage, t)) {
+                        const refreshed = await refreshWorkflowImageUsage(lsInfo!, rehydrateUsageForDisplay(cachedUsage), abortController.signal);
+                        usageById.set(cid, refreshed);
+                        return { ok: true, requestsUsed: 0, pagesUsed: 0 };
+                    }
+                    try {
+                        const fetched = await getContextUsage(lsInfo!, t, undefined, abortController.signal);
+                        usageById.set(cid, fetched);
+                        return { ok: true, requestsUsed: 1, pagesUsed: 1 };
+                    } catch {
+                        return { ok: false, requestsUsed: 1, pagesUsed: 1 };
+                    }
+                },
+            }));
+        }
+        allTrajectoryUsages = scopeTrajectories
+            .map(t => usageById.get(t.cascadeId))
+            .filter((u): u is ContextUsage => u !== undefined);
+        lastSwarmTopology = swarmRegistry.recordMemberMeasurements(backendEpoch, new Map(allTrajectoryUsages.map(u => {
+            const limits = resolveModelContextLimits(u.lastModelUsage?.model || u.model);
+            const limit = sharedAppSettings.contextPctBasis === 'native' ? limits.nativeLimit ?? u.contextLimit : u.contextLimit;
+            return [u.cascadeId, {
+                lastObservedAt: Date.now(), measuredModel: u.lastModelUsage?.model || undefined,
+                contextPct: !u.hasGaps && limit > 0 ? Math.round(u.contextUsed / limit * 1000) / 10 : undefined,
+            }];
+        })));
+        const bgRpcLinks: RpcTopologyLinkProjection[] = [];
+        const bgObservedAtMs = Date.now();
+        for (const u of allTrajectoryUsages) {
+            for (const linkedId of u.imageWorkflow?.linkedCascadeIds || []) {
+                if (linkedId) {
+                    knownSubagentCascadeIds.add(linkedId);
+                    bgRpcLinks.push({
+                        parentCascadeId: u.cascadeId,
+                        childCascadeId: linkedId,
+                        kind: 'direct_subagent',
+                        observedAtMs: bgObservedAtMs,
+                    });
+                }
             }
-            const cachedUsage = monitorStore.getSnapshot(t.cascadeId);
-            if (hasSameUsageInputs(cachedUsage, t)) {
-                return refreshWorkflowImageUsage(lsInfo!, rehydrateUsageForDisplay(cachedUsage), abortController.signal);
-            }
-            try {
-                return await getContextUsage(lsInfo!, t, undefined, abortController.signal);
-            } catch {
-                return null;
-            }
-        });
-        const usageResults = await Promise.all(usagePromises);
-        allTrajectoryUsages = usageResults.filter((u): u is ContextUsage => u !== null);
+        }
+        if (bgRpcLinks.length > 0) {
+            swarmRegistry.ingestRpcProjections(bgRpcLinks, backendEpoch);
+        }
         monitorStore.record(allTrajectoryUsages, currentUsage.cascadeId);
         allTrajectoryUsages = monitorStore.getAll();
 
         // 6c. Activity processing (merged — reuses already-fetched trajectories, no duplicate RPC)
         if (activityTracker && lsInfo) {
             try {
-                const activityChanged = await activityTracker.processTrajectories(
-                    lsInfo,
-                    trajectories.map(t => ({
+                const groupRoot = swarmRegistry.resolveRootId(activeTrajectory.cascadeId) ?? activeTrajectory.cascadeId;
+                const groupIds = lastSwarmTopology?.groupsByRootId.get(groupRoot)?.memberIds ?? [];
+                const telemetryOrder = orderTelemetryPoll(trajectories, [activeTrajectory.cascadeId, groupRoot,
+                    ...gmTracker.getUnmeasuredMemberIds(groupIds)], telemetryPollTick++);
+                const activityChanged = await withTrajectoryRequestShare(() => activityTracker.processTrajectories(
+                    lsInfo!,
+                    telemetryOrder.filter(t => !t.manifestMember || t.cascadeId === activeTrajectory.cascadeId).map(t => ({
                         cascadeId: t.cascadeId,
                         stepCount: t.stepCount,
                         status: t.status,
@@ -3368,7 +5200,7 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                         generatorModel: t.generatorModel,
                     })),
                     abortController.signal,
-                );
+                ));
 
                 // Fetch GM data (piggyback on same poll cycle)
                 let gmChanged = false;
@@ -3380,9 +5212,10 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                     }
                     const gmSummary = await gmTracker.fetchAll(
                         lsInfo,
-                        trajectories.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status })),
+                        telemetryOrder.map(t => ({ cascadeId: t.cascadeId, title: t.summary || t.cascadeId.substring(0, 8), stepCount: t.stepCount, status: t.status, manifestMember: t.manifestMember })),
                         currentUsage?.cascadeId,
                         abortController.signal,
+                        async id => requireGeneratorMetadata(await fetchMemberMetadata(lsInfo!, id)),
                     );
                     const detailedSummary = gmTracker.getDetailedSummary() || gmSummary;
                     gmChanged = hasGMSummaryChanged(prevSummary, detailedSummary);
@@ -3398,51 +5231,31 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                     }
                 } catch { /* GM fetch failure is non-critical */ }
 
-                // ── DailyLedger: record new GM calls incrementally ──
-                // This is the core "write-once" mechanism: once a call is recorded
-                // in the ledger, it survives even if the LS drops the conversation.
+                // ── DailyLedger: record new GM calls via recordCallsDetailed + idempotent late-day flush ──
                 try {
-                    const { entries: newEntries, debug: ledgerDebug, revertedCascadeIds } = gmTracker.getNewCallsSinceLastRecord();
-                    // Clear stale dedup IDs for reverted conversations BEFORE recording
-                    for (const cid of revertedCascadeIds) {
-                        dailyLedger.clearRecordedIdsForConversation(cid);
-                        log(`[DailyLedger] cleared dedup IDs for reverted conversation ${cid.substring(0, 8)}`);
-                    }
-                    if (newEntries.length > 0) {
-                        const ledgerDateBeforeRecord = dailyLedger.dateKey;
-                        const ledgerNormalizedBeforeRecord = dailyLedger.normalizeIfStaleEmpty();
-                        if (ledgerNormalizedBeforeRecord) {
-                            log(`[DailyLedger] normalized empty ledger date ${ledgerDateBeforeRecord} → ${dailyLedger.dateKey} before recording`);
-                        }
-                        const added = dailyLedger.recordCalls(newEntries, 'ide');
-                        log(`[DailyLedger] extracted=${newEntries.length} added=${added} dedup_rejected=${newEntries.length - added}`);
-                        for (const d of ledgerDebug) { log(`[DailyLedger]   ${d}`); }
-                        if (added === newEntries.length) {
-                            gmTracker.markLedgerEntriesRecorded(newEntries);
-                        } else {
-                            log('[DailyLedger] ledger positions retained for retry because not all entries were accepted');
-                        }
-                        // Persist only when calls were actually added — a normalization-only
-                        // (still empty) flush could overwrite another window's fresh data (LWW).
-                        if (added > 0) {
+                    recordGMCallsIntoDailyLedgerDetailed();
+                    if (dailyLedger.getLateDaySnapshots().length > 0 && dailyStore) {
+                        const lateFlushed = await flushLateDaysToDailyStoreAsync(
+                            dailyLedger,
+                            dailyStore,
+                            pricingStore?.getCustom(),
+                            'ide',
+                            log,
+                            sharedAppSettings.orchestratorPricingMode,
+                            confirmDurablePersist,
+                        );
+                        if (lateFlushed > 0) {
                             durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
                         }
                     }
-                    if (revertedCascadeIds.length > 0) {
-                        durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
-                    }
                     const reconciled = dailyLedger.reconcileRecordedCalls(gmTracker.getLedgerReconciliationEntries());
                     if (reconciled > 0) {
-                        // This may repair old unpriced calls even when the normal
-                        // write-once cursor produces no new entries this poll.
                         durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
                         log(`[DailyLedger] reconciled metadata/pricing for ${reconciled} recorded calls without adding calls`);
                     }
                 } catch { /* Ledger recording failure is non-critical */ }
 
                 // ── DailyLedger: proactive settlement by resetTime ──
-                // Unlike QuotaTracker's heuristic detection, this directly checks
-                // whether each pool's resetTime has passed and settles unsettled pools.
                 try {
                     const nowMs = Date.now();
                     for (const snap of accountSnapshots.values()) {
@@ -3451,28 +5264,22 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                             const resetMs = parsePositivePoolResetMs(pool.resetTime);
                             if (resetMs === null || resetMs > nowMs) { continue; }
 
-
-                            // Skip if no usage or already settled
-                            // hasUsage from snapshot may be stale for inactive accounts,
-                            // so also check if ledger has actual recorded calls for this pool
                             if (pool.hasUsage === false
                                 && !dailyLedger.hasActiveCallsForPool(pool.modelIds, snap.email)) { continue; }
                             if (dailyLedger.isPoolSettled(pool.modelIds, snap.email, resetMs)) { continue; }
-                            // Settle!
                             const settled = dailyLedger.settleForQuotaReset(pool.modelIds, snap.email, resetMs);
                             if (settled) {
-                                log(`[DailyLedger] proactive settlement: ${settled.totalCalls} calls for [${settled.poolModelLabels.join(', ')}] (${snap.email})`);
+                                log(`[DailyLedger] proactive settlement: ${settled.totalCalls} calls for [${settled.poolModelLabels.join(', ')}] (${diagnosticAliasMap.aliasLabel(snap.email)})`);
                                 durableGlobalState.update('dailyLedgerState', dailyLedger.serialize());
-                                
-                                // 同步对 GMTracker 进行 quota-reset 归档
+
                                 try {
                                     const blCount = gmTracker.baselineForQuotaReset(snap.email, pool.modelIds, pool.resetTime);
-                                    log(`[GMTracker] proactive baseline: ${blCount} calls for [${pool.modelIds.join(', ')}] (${snap.email})`);
+                                    log(`[GMTracker] proactive baseline: ${blCount} calls for [${pool.modelIds.join(', ')}] (${diagnosticAliasMap.aliasLabel(snap.email)})`);
                                     lastGMSummary = gmTracker.getDetailedSummary() || gmTracker.getCachedSummary();
                                     durableGlobalState.update('gmTrackerState', gmTracker.serialize());
                                     persistGMSummaryToFile(lastGMSummary);
                                 } catch (e) {
-                                    log(`[GMTracker] proactive baseline failed: ${e}`);
+                                    log(`[GMTracker] proactive baseline failed: ${e instanceof Error ? e.name : 'Error'}`);
                                 }
                             }
                         }
@@ -3480,13 +5287,11 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                 } catch { /* Proactive settlement failure is non-critical */ }
 
                 // Inject GM precision data into activity timeline events.
-                // GM is the SOLE source of truth for timeline — always inject when data exists.
                 let timelineChanged = false;
                 let gmEnhancedStatusBar = false;
                 if (lastGMSummary) {
                     timelineChanged = activityTracker.injectGMData(lastGMSummary);
 
-                    // ── Enhance status bar with fresh GM data (new calls since last poll) ──
                     if (currentUsage && trackedCascadeId) {
                         const gmCtx = getLatestGMContextUsed(lastGMSummary, trackedCascadeId);
                         const oldUsed = currentUsage.contextUsed;
@@ -3498,9 +5303,20 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                 }
                 syncStatusBarTelemetry(false, currentUsage?.cascadeId || trackedCascadeId || undefined);
                 if (gmEnhancedStatusBar && currentUsage) {
-                    statusBar.update(currentUsage);
+                    const updatedObs = buildIdePublishedObservation(currentUsage, {
+                        gmEnhanced: true,
+                        bumpRevision: true,
+                    });
+                    statusBar.update(currentUsage, updatedObs);
                 } else if (gmChanged || timelineChanged || (!hadUiSummary && gmTracker.getUiSummary() !== null)) {
-                    statusBar.refreshFromConfig();
+                    if (currentUsage) {
+                        const refreshedObs = buildIdePublishedObservation(currentUsage, {
+                            bumpRevision: true,
+                        });
+                        statusBar.update(currentUsage, refreshedObs);
+                    } else {
+                        statusBar.refreshFromConfig();
+                    }
                 }
 
                 // Throttled activity persistence (max once per 30s)
@@ -3516,50 +5332,105 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
                     lastActivityPersistTime = now;
                 }
             } catch (err) {
-                log(`Activity processing error: ${err}`);
+                log(`Activity processing error: ${err instanceof Error ? err.name : 'Error'}`);
             }
         }
 
-        // 6d. Compute v1.17.5 Context Composition Breakdown & Turn Diagnostics for active conversation
+        // 6d. Compute Context Composition Breakdown & Turn Diagnostics for active conversation.
+        // Deduplicated via PollRpcCache and strictly gated on `metaRes.ok && stepsRes.ok && !stepsRes.hasGaps`
+        // before latching caches or updating peak/turn state.
         if (!activeTrajectory || !currentUsage) {
             clearActiveContextTelemetry();
         } else if (lsInfo && isMonitorPanelVisible()) {
-            const breakdownKey = `${activeTrajectory.cascadeId}:${activeTrajectory.stepCount}:${activeTrajectory.lastModifiedTime}:${currentUsage.contextUsed}:${currentUsage.contextLimit}`;
+            const branchRevision = `${activeTrajectory.stepCount}:${activeTrajectory.lastModifiedTime}:${activeTrajectory.status}:${activeTrajectory.branchName || ''}`;
+            const breakdownKey = `${backendEpoch}:${activeTrajectory.cascadeId}:${branchRevision}:${currentUsage.contextUsed}:${currentUsage.contextLimit}`;
             if (breakdownKey !== lastContextBreakdownKey) {
                 try {
-                    const rawMeta = await fetchTrajectoryGeneratorMetadata(lsInfo, activeTrajectory.cascadeId, abortController.signal);
-                    const hasPromptSections = rawMeta.some(entry => {
-                        const cm = entry?.chatModel as { promptSections?: unknown[] } | undefined;
-                        return Array.isArray(cm?.promptSections) && cm.promptSections.length > 0;
-                    });
-                    let rawSteps: Array<Record<string, unknown>> | undefined;
-                    if (!hasPromptSections && activeTrajectory.stepCount > 0) {
-                        const fetched = await fetchTrajectorySteps(lsInfo, activeTrajectory.cascadeId, activeTrajectory.stepCount, abortController.signal);
-                        rawSteps = fetched.steps;
-                    }
-                    const prevMaxSteps = maxObservedStepCounts.get(activeTrajectory.cascadeId);
-                    const prevUsedTokens = previousBreakdownUsedTokens.get(activeTrajectory.cascadeId);
-                    lastContextBreakdown = parseContextBreakdown({
-                        generatorMetadata: rawMeta,
-                        steps: rawSteps,
-                        currentStepCount: activeTrajectory.stepCount,
-                        previousMaxStepCount: prevMaxSteps,
-                        previousUsedTokens: prevUsedTokens,
-                        model: currentUsage.model,
-                        modelDisplayName: currentUsage.modelDisplayName,
-                        effectiveBudgetTokens: currentUsage.contextLimit,
-                    });
-                    maxObservedStepCounts.set(
-                        activeTrajectory.cascadeId,
-                        Math.max(prevMaxSteps ?? 0, activeTrajectory.stepCount),
+                    const authority = getLsAuthority(lsInfo);
+                        const metaRes: FetchTrajectoryGeneratorMetadataResult = activeTrajectory.manifestMember
+                            ? await fetchMemberMetadata(lsInfo, activeTrajectory.cascadeId)
+                            : await pollCache.getOrFetch(
+                        {
+                            backendEpoch,
+                            authority,
+                            method: 'GetCascadeTrajectoryGeneratorMetadata',
+                            cascadeId: activeTrajectory.cascadeId,
+                            range: 'all',
+                            branchRevision,
+                        },
+                        (upstreamSignal) => fetchTrajectoryGeneratorMetadataResult(lsInfo!, activeTrajectory!.cascadeId, upstreamSignal),
+                        abortController.signal,
+                        { shouldCache: (r) => r.ok },
                     );
-                    if (lastContextBreakdown.usedTokens > 0) {
-                        previousBreakdownUsedTokens.set(activeTrajectory.cascadeId, lastContextBreakdown.usedTokens);
+                    const latestGmWithChat = metaRes.ok
+                        ? [...metaRes.metadata].reverse().find(entry => Boolean(entry?.chatModel))
+                        : undefined;
+                    const latestCm = latestGmWithChat?.chatModel as { promptSections?: unknown[] } | undefined;
+                    const hasPromptSections = metaRes.ok && Array.isArray(latestCm?.promptSections) && latestCm.promptSections.length > 0;
+                    const embeddedSteps = currentUsage._fetchedSteps;
+                    let stepsRes: FetchTrajectoryStepsResult = { ok: true, steps: [], hasGaps: false };
+                    let rawSteps: Array<Record<string, unknown>> | undefined;
+                    if (Array.isArray(embeddedSteps) && embeddedSteps.length > 0) {
+                        stepsRes = {
+                            ok: !currentUsage.hasGaps,
+                            steps: embeddedSteps,
+                            hasGaps: Boolean(currentUsage.hasGaps),
+                            ...(currentUsage.suffixRecovered ? { suffixRecovered: true, suffixStartOffset: currentUsage.suffixStartOffset } : {}),
+                        };
+                        rawSteps = embeddedSteps;
+                    } else if (metaRes.ok && !hasPromptSections && activeTrajectory.stepCount > 0) {
+                        stepsRes = await pollCache.getOrFetch(
+                            {
+                                backendEpoch,
+                                authority,
+                                method: 'GetCascadeTrajectorySteps',
+                                cascadeId: activeTrajectory.cascadeId,
+                                range: `0:${activeTrajectory.stepCount}`,
+                                branchRevision,
+                            },
+                            (upstreamSignal) => fetchTrajectorySteps(lsInfo!, activeTrajectory!.cascadeId, activeTrajectory!.stepCount, upstreamSignal),
+                            abortController.signal,
+                            { shouldCache: (r) => r.ok && !r.hasGaps },
+                        );
+                        rawSteps = stepsRes.steps;
                     }
-                    lastTurnDiagnostics = rawMeta.length > 0 ? analyzeTurnDiagnostics(rawMeta) : null;
-                    lastContextBreakdownKey = breakdownKey;
+                    const stepsSuffixRecovered = Boolean(
+                        stepsRes.steps.length > 0
+                        && (stepsRes.suffixRecovered || stepsRes.suffixStartOffset !== undefined),
+                    );
+                    const stepsComplete = stepsRes.ok && !stepsRes.hasGaps;
+                    const stepsUsable = stepsComplete || stepsSuffixRecovered;
+                    if (metaRes.ok && stepsUsable) {
+                        const peak = advanceBranchStepPeak(branchStepPeaks.get(activeTrajectory.cascadeId), {
+                            stepCount: activeTrajectory.stepCount,
+                            branchRevision: activeTrajectory.branchName,
+                        });
+                        const prevUsedTokens = previousBreakdownUsedTokens.get(activeTrajectory.cascadeId);
+                        lastContextBreakdown = parseContextBreakdown({
+                            generatorMetadata: metaRes.metadata,
+                            steps: rawSteps,
+                            ...(stepsRes.suffixStartOffset !== undefined ? { suffixStartOffset: stepsRes.suffixStartOffset } : {}),
+                            currentStepCount: activeTrajectory.stepCount,
+                            branchPeakStepCount: peak.effectiveBranchPeakStepCount,
+                            previousUsedTokens: prevUsedTokens,
+                            model: currentUsage.model,
+                            modelDisplayName: currentUsage.modelDisplayName,
+                            effectiveBudgetTokens: currentUsage.contextLimit,
+                        });
+                        lastTurnDiagnostics = metaRes.metadata.length > 0 ? analyzeTurnDiagnostics(metaRes.metadata) : null;
+                        // Only latch caches and peak tracking when history is complete (never cache partial suffix steps as complete).
+                        if (stepsComplete && !currentUsage.hasGaps) {
+                            branchStepPeaks.set(activeTrajectory.cascadeId, peak.state);
+                            if (lastContextBreakdown.usedTokens > 0) {
+                                previousBreakdownUsedTokens.set(activeTrajectory.cascadeId, lastContextBreakdown.usedTokens);
+                            }
+                            lastContextBreakdownKey = breakdownKey;
+                        }
+                    } else {
+                        log(`Skipped latching context breakdown cache for ${diagnosticAliasMap.aliasConversation(activeTrajectory.cascadeId)} (metaOk=${metaRes.ok}, stepsOk=${stepsRes.ok}, stepsHasGaps=${stepsRes.hasGaps})`);
+                    }
                 } catch (bdErr) {
-                    log(`Context breakdown fetch error: ${bdErr}`);
+                    log(`Context breakdown fetch error: ${bdErr instanceof Error ? bdErr.name : 'Error'}`);
                 }
             }
         }
@@ -3573,20 +5444,26 @@ async function pollContextUsage(isManualRefresh = false): Promise<void> {
         updateBaselines(trajectories);
 
     } catch (err) {
-        log(`Polling error: ${err}`);
+        log(`Polling error: ${err instanceof Error ? err.name : 'Error'}`);
         handleLsFailure(`Error: ${err}`);
         lsInfo = null;
         cachedLsInfo = null;
         invalidateLiveModelMetadata();
     } finally {
+        pollCache.clear();
         // Always run cached-account reset check — independent of polling success/failure.
-        // Wrapped in its own try/catch so errors are logged, never silently swallowed.
         try {
             checkCachedAccountResets();
         } catch (resetErr) {
-            log(`[ResetCheck] ERROR: ${resetErr}`);
+            log(`[ResetCheck] ERROR: ${resetErr instanceof Error ? resetErr.name : 'Error'}`);
         }
         isPolling = false;
+        if (repollNeeded && !disposed) {
+            const nextManual = repollForceManual;
+            repollNeeded = false;
+            repollForceManual = false;
+            void pollContextUsage(nextManual);
+        }
     }
 }
 
@@ -3651,7 +5528,7 @@ function schedulePoll(): void {
         try {
             await pollContextUsage();
         } catch (err) {
-            try { log(`Unexpected polling error: ${err}`); } catch { /* ignore */ }
+            try { log(`Unexpected polling error: ${err instanceof Error ? err.name : 'Error'}`); } catch { /* ignore */ }
         } finally {
             if (pollGeneration === myGeneration) {
                 schedulePoll();
@@ -3688,13 +5565,17 @@ function checkQuotaNotification(configs: import('./models').ModelConfig[]): void
         }
     }
 
-    const groups = new Map<string, { labels: string[]; minFraction: number }>();
+    const groups = new Map<string, { labels: string[]; minFraction: number | null }>();
     for (const group of groupModelConfigsByQuotaPool(configs)) {
         const displayLabels = mergedLabelsByPool.get(group.key) || group.labels;
         groups.set(group.key, { labels: displayLabels, minFraction: group.minFraction });
     }
 
     for (const [groupKey, group] of groups) {
+        // Never treat unknown (`minFraction === null`) quota pools as 0% or 100%.
+        if (group.minFraction === null) {
+            continue;
+        }
         if (group.minFraction <= thresholdFrac) {
             // Only notify once per group per threshold crossing
             if (!quotaNotifiedModels.has(groupKey)) {
@@ -3762,12 +5643,12 @@ function checkCachedAccountResets(): void {
             // ── Guard: skip if this pool was already archived (persisted state) ──
             if (gmTracker.isPoolArchived(snap.email, pool.modelIds || pool.modelLabels)) {
                 notifiedAccountResets.add(key);
-                log(`[ResetCheck] ${snap.email} [${modelNames}]: already-archived — skipped`);
+                log(`[ResetCheck] ${diagnosticAliasMap.aliasLabel(snap.email)} [${modelNames}]: already-archived — skipped`);
                 continue;
             }
 
             // ── WILL TRIGGER ──
-            log(`[ResetCheck]   [${modelNames}] >>> TRIGGERING archival for ${snap.email}`);
+            log(`[ResetCheck]   [${modelNames}] >>> TRIGGERING archival for ${diagnosticAliasMap.aliasLabel(snap.email)}`);
             notifiedAccountResets.add(key);
 
             const extra = pool.modelLabels.length > 3 ? ` +${pool.modelLabels.length - 3}` : '';
@@ -3808,7 +5689,7 @@ function checkCachedAccountResets(): void {
                     vscode.commands.executeCommand('antigravity-context-monitor.showDetails');
                 }
             });
-            log(`[ResetCheck]   Notification sent: ${displayName} — ${modelNames}${extra}`);
+            log(`[ResetCheck]   Notification sent: ${diagnosticAliasMap.aliasLabel(displayName)} — ${modelNames}${extra}`);
         }
     }
 }
@@ -3839,15 +5720,48 @@ function log(message: string): void {
 
 // ─── Workspace Detection ──────────────────────────────────────────────────────
 
-function getWorkspaceUri(): string | undefined {
+function getWorkspaceNormOptions(): NormalizeWorkspaceUriOptions {
+    const wslDistro = process.env.WSL_DISTRO_NAME?.trim() || undefined;
+    return {
+        platform: process.platform,
+        ...(wslDistro ? { wslDistro } : {}),
+    };
+}
+
+function buildWorkspaceSignature(
+    uris: readonly string[],
+    normOpts: NormalizeWorkspaceUriOptions = getWorkspaceNormOptions(),
+): string {
+    if (!uris || uris.length === 0) {
+        return '(none)';
+    }
+    const normalized = [...new Set(
+        uris
+            .map(u => normalizeWorkspaceUri(u, normOpts))
+            .filter(Boolean),
+    )].sort();
+    return normalized.length > 0 ? normalized.join('\0') : '(none)';
+}
+
+/** Collect all active workspace folder URIs in this IDE window (multi-root aware). */
+export function getWorkspaceUris(): string[] {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
-        return undefined;
+        return [];
     }
-    const uri = folders[0].uri.toString();
-    // Log remote URIs for diagnostic purposes
-    if (uri.startsWith('vscode-remote://')) {
-        log(`Remote workspace URI detected: ${uri}`);
+    const uris: string[] = [];
+    for (const folder of folders) {
+        const uri = folder?.uri?.toString?.();
+        if (uri && !uris.includes(uri)) {
+            if (uri.startsWith('vscode-remote://')) {
+                log(`Remote workspace detected`);
+            }
+            uris.push(uri);
+        }
     }
-    return uri;
+    return uris;
+}
+
+function getWorkspaceUri(): string | undefined {
+    return getWorkspaceUris()[0];
 }

@@ -2,17 +2,18 @@
 name: context-monitor
 description: >-
   Open the Antigravity Context Monitor sidecar panel to inspect real-time
-  context window utilization, token category breakdown, prompt cache hit rate,
-  session cost, and model quota runway. Use when the user asks about context
-  usage, token limits, quota remaining, cache efficiency, or wants to open the
-  Context Monitor panel.
+  context window utilization, Swarm/subagent live tracking, token category
+  breakdown, prompt cache 5m TTL diagnostics, model-call Decode/E2E speed,
+  10-currency session/workspace costs, and 5h/7d quota runway. Use when the
+  user asks about context usage, token limits, Swarm workers, quota remaining,
+  cache efficiency, or wants to open the Context Monitor panel.
 ---
 
 # Antigravity Context Monitor
 
 Use this skill when the user wants to inspect their live context window usage,
-token breakdown, prompt cache diagnostics, model quota runway, or open the
-Context Monitor UI inside Antigravity App.
+Swarm/subagent activity, token breakdown, prompt cache diagnostics, model quota
+runway, workspace spend, or open the Context Monitor UI inside Antigravity App.
 
 ## Opening the Monitor Panel
 
@@ -36,61 +37,32 @@ Instead, guide the user to enable the plugin and sidecar in Customizations:
 3. Once active, open **Context Monitor** from the side panel **`+`** menu or
    **Plugins** in the left sidebar.
 
-## What the Monitor Shows
+## 5-Tab Monitor Views & Topbar Utilities (`v1.18.0`)
 
-- **Context Window & Dual-Cap Budget**: Effective autocompact budget vs native
-  model ceiling, with a dot-matrix and category breakdown (`system`, `rules/skills`,
-  `plugins/MCP`, `subagents`, `user`, `assistant/thinking`, `tools`) and top
-  heaviest items.
-- **Prompt Cache & Turn Diagnostics**: Last-turn and session cumulative cache
-  hit rate, Cold/Partial/Warm start classification, and net context growth.
-- **Model Quota Runway**: 5-hour and weekly pools, reset countdowns, burn-rate
-  runway estimates, and custom-model isolation.
-- **Conversation Switcher & Quick Actions**: Lock to Main Agent toggle,
-  multi-conversation selector, one-click `/context` report copy, and compact
-  handoff prompt generator.
+1. **Overview (`overview`):** Single immutable observation (`PublishedMonitorObservation`) with dual-cap context limits (compaction vs native), interactive 9-category Bar/Dot-Matrix breakdown, live **Swarm / Subagent Tracking Strip** (20+ workers via read-only allowlisted `members.json`/`swarm.json`, one-click **Inspect** + pinned banner + **Back to Main** preserving `lockedRootId`), **3-Field Root Lock** resisting subagent/new-chat hijacks, **Handoff v2** (allowlisted previewable continuation prompt), read-only **Compaction Recovery Brief**, `5h`/`7d` quota pools, and AI credits.
+2. **Model Calls (`gm`):** Model-call **Decode vs E2E** speed (`output / (TTFT + streaming)`), local 5-minute **Prompt Cache Idle TTL** heuristic (`180s` warn / `300s` expire) + possible miss causes, anomaly filters (`Slow TTFT`, `Cache Miss`, `High Cost`, `High Context`, `Errors/Retries`), Orchestrator Split, Recent Calls Ledger, and activity timeline.
+3. **Sessions (`sessions`):** Searchable conversation & Swarm hierarchy grouped by workspace with positive workspace-root OS Reveal links (Brain, `.pb` archive, workspace folder).
+4. **Usage & Cost (`calendar`):** 52-week multi-source (`All / App / IDE / CLI`) heatmap, ingestion-time **Workspace Leaderboard** (`Unattributed` for legacy rows), **10-currency** API-equivalent pricing (incl. **`CAD`** `CA$`), direct vs deduplicated Swarm group costs, collapsible **Advanced Plan ROI** (API reference ratio, not actual billing), and unified **Markdown / CSV / JSON** exports.
+5. **Models & Quotas (`models`):** Privacy-masked account status, `5h`/`7d`/`tightest` & `remaining`/`used` quota controls, persistent **Weekly Active-Hours Forecast**, Orchestrator Settings, and zero-day model specifications.
+- **Topbar `⚙️ Settings` (5 Groups) & `ⓘ About`:** (1) Display & Language (auto single-language default, per-view `<=480px` compact mode, split App/IDE Native HUD with Overview auto-hide), (2) Telemetry & Metrics, (3) Currency & Pricing, (4) Opt-In Overlays & CDP, (5) Data, Backup & Diagnostics (allowlisted JSON settings backup/import + redacted diagnostic export). All 18 historical tab aliases remain supported.
 
-## Checking Status & Upgrading
+## Checking Status, Upgrading & Opt-In CLI `statusLine`
 
-When the user asks to check their installed version, verify plugin health, or
-upgrade Antigravity Context Monitor:
+- **In-panel update check:** Check GitHub Releases and apply fail-closed `SHA256SUMS.txt`-verified updates from **Settings** or **About**.
+- **CLI status & upgrade:** From a checkout (or via root `AGENTS.md` zero-clone one-liner):
+  - Status & remote check: `node scripts/install-app-plugin.mjs --status --check-remote` (add `--json` to verify `version` & `buildId`)
+  - Upgrade from GitHub Releases: `node scripts/install-app-plugin.mjs --upgrade`
+  - Explicit local install (zero silent remote fallback): `node scripts/install-app-plugin.mjs --install --local-dir dist/antigravity-context-monitor-app --no-remote-fallback`
+- **Safe reload rule:** Never force-quit or kill the running Antigravity App process during an active session. After upgrading files on disk, guide the user to open [Antigravity Context Monitor](customization://antigravity-context-monitor) and toggle the plugin **Off → On**.
+- **Opt-in read-only `agy` CLI `statusLine`:** Point `~/.gemini/antigravity-cli/settings.json` at `~/.gemini/config/plugins/antigravity-context-monitor/bin/agy-statusline.mjs` (`--currency <10 codes>`, `--basis <compaction|native>`, `--no-color`).
 
-- **In-panel update check:** Users can check for new GitHub Releases and apply
-  verified updates directly from the **Settings** / **About** panel inside
-  Context Monitor.
-- **CLI status & one-command upgrade:** From a repository checkout (or using the
-  zero-clone one-liner in root `AGENTS.md`), run:
-  - Status & remote check: `node scripts/install-app-plugin.mjs --status --check-remote`
-  - Upgrade from GitHub Releases (SHA-256 verified, atomic swap): `node scripts/install-app-plugin.mjs --upgrade`
-- **Safe reload rule:** Never force-quit or kill the running Antigravity App
-  process during an active session. After upgrading files on disk, guide the
-  user to open [Antigravity Context Monitor](customization://antigravity-context-monitor)
-  and toggle the plugin **Off → On** so the sidecar loads the new version safely.
+## Optional CDP Desktop Overlays (Strictly Opt-In, Zero Binary Patching)
 
-## Optional CDP Desktop Overlays (Strictly Opt-In)
+Core `AUX_PANE`, `SIDEBAR`, and the **Native Panel Compact HUD** operate natively with zero CDP flags and zero modification of `app.asar` or host binaries. Only if the user explicitly opts into the **Composer Context Ring** or **Top-Right 4-View Status Bar** Shadow DOM overlays:
 
-Core `AUX_PANE`, `SIDEBAR`, and the **Native Panel Compact HUD** work 100%
-natively without CDP. Only if the user explicitly wants the optional Composer
-Context Ring or Top-Right Status Bar floating overlays inside Antigravity App
-(zero `app.asar` patching), recommend the 1-click Persistent CDP Launcher first:
-
-- **Recommended (1-click, auto-update proof):** Click **Create Persistent
-  Launcher** in **Settings → Overlays & CDP** (or run
-  `node scripts/install-app-plugin.mjs --setup-cdp-launcher`) to create
-  `~/Applications/Antigravity (CDP).app` (macOS), Desktop/Start Menu `.lnk`
-  (Windows), or `~/.local/share/applications/antigravity-cdp.desktop` (Linux),
-  then click **Reveal in Finder / Explorer / Folder** in Settings to open its
-  location directly. It waits cleanly for Antigravity's ~5s background shutdown
-  and launches with `--remote-debugging-port=0` without patching any host
-  binaries. Once active, clicking any Top-Right Status Bar metric opens its
-  matching 4-view popover (`Quota`, `Context`, `Speed`, or `Total`) with
-  context-aware **Open Panel** tab switching.
+- **Recommended (1-click, auto-update proof):** Click **Create Persistent Launcher** in **Settings → Overlays & CDP** (or run `node scripts/install-app-plugin.mjs --setup-cdp-launcher`) to create `/Applications/Antigravity (CDP).app` (macOS, fallback `~/Applications`, confirmation dialog defaults safely to **`Cancel`**), Desktop/Start Menu direct `.lnk` shortcuts (Windows), or `~/.local/share/applications/antigravity-cdp.desktop` (Linux), then click **Reveal in Finder / Explorer / Folder** in Settings.
 - **Manual terminal relaunch:**
-  1. **Quit Antigravity App completely first** (macOS: press `Cmd+Q` and wait
-     ~5s for background `language_server` teardown to complete — running
-     `open -a` while the old PID is still exiting silently ignores `--args`;
-     Windows/Linux: close all windows and tray icon). Never kill the app
-     yourself during an active chat.
+  1. **Quit Antigravity App completely first** (macOS: `Cmd+Q` and wait ~5s for background `language_server` teardown; Windows/Linux: close all windows and tray icon). Never kill the app yourself during an active chat.
   2. **Relaunch with `--remote-debugging-port=0`:**
      - **macOS (race-free):** `while pgrep -f '^/Applications/Antigravity\.app/Contents/MacOS/Antigravity($| )' >/dev/null; do sleep 0.5; done; open -a "/Applications/Antigravity.app" --args --remote-debugging-port=0`
      - **Windows (PowerShell):** `& "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe" --remote-debugging-port=0`

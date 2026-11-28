@@ -2,14 +2,13 @@
 // Centralizes model-related information: default model, personal model quota,
 // and official model configurations and limit parameters without GM data contamination.
 
-import { formatNumber, getLanguage, tBi } from './i18n';
+import { formatNumber, getLanguage, tBi, tHtml } from './i18n-core';
 import {
+    DEFAULT_CONTEXT_LIMITS,
     ModelConfig,
     UserStatusInfo,
     getModelSpecs,
     ModelSpec,
-    updateModelSpec,
-    guessContextLimitSpec,
     getAvailableImageModelSpecs,
     getQuotaPoolKey,
     localizePickerEffortLabel,
@@ -22,7 +21,12 @@ import {
     type ModelPricing,
     type OrchestratorPricingMode,
 } from './pricing-store';
-import type { QuotaRunwayEstimate } from './quota-runway';
+import type {
+    QuotaDirectionMode,
+    QuotaRunwayEstimate,
+    QuotaWindowMode,
+    WeeklyQuotaRunwayEstimate,
+} from './quota-runway';
 import { ICON } from './webview-icons';
 import {
     buildCustomModelBannerHtml,
@@ -31,7 +35,7 @@ import {
     type MonitorStaleState,
 } from './webview-overview-tab';
 import { buildDefaultModelCard, buildModelQuotaGrid, sortModels } from './webview-profile-tab';
-import { esc, tBiHtml } from './webview-helpers';
+import { esc, richTipBiAttrs as richTipAttrs, slugKey, tBiHtml } from './webview-helpers';
 
 export interface ModelsTabOptions {
     orchestratorSettings?: OrchestratorSettings | null;
@@ -39,6 +43,14 @@ export interface ModelsTabOptions {
     customPricing?: Record<string, ModelPricing>;
     orchestratorPricingMode?: OrchestratorPricingMode;
     quotaRunways?: Record<string, QuotaRunwayEstimate>;
+    /** Optional Weekly Active-Hours Quota Pace Forecast estimates keyed by pool (or array). */
+    weeklyRunways?: Record<string, WeeklyQuotaRunwayEstimate> | readonly WeeklyQuotaRunwayEstimate[];
+    /** Active quota horizon window mode (`'5h' | '7d' | 'tightest'`). */
+    quotaWindowMode?: QuotaWindowMode;
+    /** Active quota display direction (`'remaining' | 'used'`). */
+    quotaDirectionMode?: QuotaDirectionMode;
+    /** Explicit zero-day unseen model IDs to tag with the adaptive badge (auto-detected when omitted). */
+    zeroDayModelIds?: readonly string[] | ReadonlySet<string>;
     isCustomModelActive?: boolean;
     staleState?: MonitorStaleState | null;
 }
@@ -48,26 +60,6 @@ const ORCH_ICON_SVG = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" 
 const SPEC_ICON_SVG = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
 const IMAGE_SPEC_ICON_SVG = '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>';
 
-function slugKey(raw: string): string {
-    const cleaned = raw.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-    return (cleaned || 'item').slice(0, 48);
-}
-
-function richTipAttrs(
-    key: string,
-    titleEn: string,
-    titleZh: string,
-    bodyEn: string,
-    bodyZh: string,
-    metaEn?: string,
-    metaZh?: string,
-): string {
-    const title = tBi(titleEn, titleZh);
-    const body = tBi(bodyEn, bodyZh);
-    const meta = metaEn || metaZh ? tBi(metaEn || '', metaZh || '') : '';
-    return ` data-popover-key="${esc(key)}" data-tip-title="${esc(title)}" data-tip-body="${esc(body)}"${meta ? ` data-tip-meta="${esc(meta)}"` : ''}`;
-}
-
 /** Use the selected UI locale, independent of the extension host's OS locale. */
 function formatTokensHtml(value: number): string {
     return Number.isSafeInteger(value) && value > 0
@@ -76,8 +68,8 @@ function formatTokensHtml(value: number): string {
 }
 
 function thinkingDescriptionHtml(spec: ModelSpec): string {
-    if (spec.isImageGeneration && spec.thinkingCapabilityReported === false) {
-        return tBiHtml('Not reported by IDE', 'IDE 未上报');
+    if (spec.thinkingCapabilityReported === false) {
+        return tBiHtml('Not reported by host', '宿主未上报');
     }
     if (!spec.supportsThinking) { return tBiHtml('Not supported', '不支持'); }
     if (spec.supportsAdaptiveThinking) { return tBiHtml('Adaptive', '自适应'); }
@@ -91,15 +83,13 @@ function thinkingDescriptionHtml(spec: ModelSpec): string {
 }
 
 function thinkingRichTipAttrs(key: string, spec: ModelSpec): string {
-    if (spec.isImageGeneration && spec.thinkingCapabilityReported === false) {
+    if (spec.thinkingCapabilityReported === false) {
         return richTipAttrs(
             key,
             'Thinking Capability',
             '思考能力',
-            'Image-generation catalog entries do not report text reasoning metadata.',
-            '图片生成模型目录未上报文本推理（思考）能力参数。',
-            'Applies to chat reasoning models only.',
-            '仅适用于对话推理模型。',
+            'The host has not reported reasoning capabilities for this model.',
+            '宿主尚未提供该模型的思考能力信息。',
         );
     }
     if (!spec.supportsThinking) {
@@ -311,8 +301,8 @@ function buildPricingProvenanceTipAttrs(
             key,
             'Custom Rate',
             '自定义单价',
-            'Uses the custom per-1M token rate you saved in the Cost tab instead of built-in reference rates.',
-            '当前采用你在「成本」页自定义的每百万 Token 单价，覆盖内置参考价。',
+            'Uses the custom per-1M token rate you saved in the Usage & Cost tab instead of built-in reference rates.',
+            '当前采用你在「用量与费用」页自定义的每百万 Token 单价，覆盖内置参考价。',
             'Reference estimate only — does not affect Antigravity subscription billing.',
             '仅用于费用参考估算，不影响 Antigravity 实际订阅账单。',
         );
@@ -323,8 +313,8 @@ function buildPricingProvenanceTipAttrs(
         '未定价模型',
         'No public per-1M token rate is available (or Strict mode hides mapped-base estimates), so USD cost is omitted.',
         '暂无公开 API 参考单价（或已开启严格模式隐藏按底座估算），暂不计入参考费用。',
-        'You can enter a custom rate in the Cost tab at any time.',
-        '你可随时在「成本」页为此模型设置自定义单价。',
+        'You can enter a custom rate in the Usage & Cost tab at any time.',
+        '你可随时在「用量与费用」页为此模型设置自定义单价。',
     );
 }
 
@@ -575,16 +565,44 @@ function buildSpecPriceRowHtml(
     </div>`;
 }
 
+export function isZeroDayUnknownModel(
+    placeholderId: string,
+    explicitZeroDayIds?: readonly string[] | ReadonlySet<string>,
+): boolean {
+    const clean = (placeholderId || '').trim();
+    if (!clean || clean === 'MODEL_UNSPECIFIED' || clean === 'MODEL_PLACEHOLDER_M21') {
+        return false;
+    }
+    if (explicitZeroDayIds) {
+        if (explicitZeroDayIds instanceof Set) {
+            if (explicitZeroDayIds.has(clean)) { return true; }
+        } else if (Array.isArray(explicitZeroDayIds) && explicitZeroDayIds.includes(clean)) {
+            return true;
+        }
+    }
+    return !Object.prototype.hasOwnProperty.call(DEFAULT_CONTEXT_LIMITS, clean);
+}
+
 export function buildModelInfoGrid(
     specs: ModelSpec[],
     kind: 'chat' | 'image' = 'chat',
-    options?: Pick<ModelsTabOptions, 'customPricing' | 'orchestratorPricingMode'>,
+    options?: Pick<ModelsTabOptions, 'customPricing' | 'orchestratorPricingMode' | 'zeroDayModelIds'>,
 ): string {
     const language = getLanguage();
     const cards = specs.map((s, idx) => {
         const name = localizePickerEffortLabel(s.placeholderId, s.displayName, language);
         const cardKey = `${kind}-${idx}-${slugKey(s.placeholderId || s.modelId)}`;
         const shortId = s.placeholderId.replace(/^MODEL_PLACEHOLDER_/, '');
+        const isZeroDay = kind === 'chat' && isZeroDayUnknownModel(s.placeholderId, options?.zeroDayModelIds);
+        const zeroDayBadgeHtml = isZeroDay
+            ? `<span class="spec-zeroday-badge" data-zero-day-model="true"${richTipAttrs(
+                `models-spec-zeroday-${cardKey}`,
+                'Zero-Day Adaptive Model',
+                '零日新模型（自适应）',
+                'Unseen model ID adapted dynamically from live host metadata.',
+                '静态目录未收录的新模型，已按宿主元数据动态适配。',
+            )}>${tBiHtml('Adaptive · Zero-Day', '自适应 · 零日新模型')}</span>`
+            : '';
         const extraId = s.placeholderId && s.placeholderId !== s.modelId
             ? `<code class="spec-short-id"${richTipAttrs(
                 `models-spec-shortid-${cardKey}`,
@@ -637,43 +655,44 @@ export function buildModelInfoGrid(
             '目录模型 ID',
             `Full backend model identifier: ${s.modelId}`,
             `完整后端模型标识：${s.modelId}`,
-            'Matches the model key reported in GM Data and Cost pricing tables.',
-            '与「GM 数据」和「成本」定价表中的模型标识一致。',
+            'Matches the model key reported in Model Calls and Usage & Cost pricing tables.',
+            '与「模型调用」和「用量与费用」定价表中的模型标识一致。',
         );
         return `
-            <article class="spec-card" aria-label="${esc(name)}" data-model-id="${esc(s.placeholderId)}">
-                <header class="spec-header">
-                    <h3 class="spec-name">${esc(name)}</h3>
+            <details class="spec-card" id="spec-${cardKey}" data-state-key="model-spec-${kind}-${esc(s.placeholderId || s.modelId)}" data-model-id="${esc(s.placeholderId)}"${isZeroDay ? ' data-zero-day="true"' : ''}>
+                <summary class="spec-header"><h3 class="spec-name">${esc(name)}</h3></summary>
+                <div class="spec-body">
+                    ${zeroDayBadgeHtml}
                     <p class="spec-provider"${providerRichTipAttrs(`models-spec-provider-${cardKey}`, s.apiProvider)}>${providerLabelHtml(s.apiProvider)}</p>
-                </header>
-                <dl class="spec-metrics">
-                    <div class="spec-metric spec-limit" data-metric="compression-limit"${compactionTip}>
-                        <dt>${tBiHtml('Effective Budget (Compaction Limit)', '自动压缩上限（有效预算）')}</dt>
-                        <dd>${s.isImageGeneration ? tBiHtml('Not applicable', '不适用') : formatTokensHtml(s.cpLimit)}</dd>
+                    <dl class="spec-metrics">
+                        <div class="spec-metric spec-limit" data-metric="compression-limit"${compactionTip}>
+                            <dt>${tBiHtml('Effective Budget (Compaction Limit)', '自动压缩上限（有效预算）')}</dt>
+                            <dd>${s.isImageGeneration ? tBiHtml('Not applicable', '不适用') : formatTokensHtml(s.cpLimit)}</dd>
+                        </div>
+                        <div class="spec-metric" data-metric="checkpoint-threshold"${checkpointTip}>
+                            <dt>${tBiHtml('Checkpoint Threshold', '检查点阈值')}</dt>
+                            <dd>${s.isImageGeneration ? tBiHtml('Not applicable', '不适用') : formatTokensHtml(s.cpThreshold)}</dd>
+                        </div>
+                        <div class="spec-metric" data-metric="native-context"${nativeTip}>
+                            <dt>${tBiHtml('Native Ceiling (Model Context)', '原生窗口上限')}</dt>
+                            <dd>${formatTokensHtml(s.maxTokens)}</dd>
+                        </div>
+                        <div class="spec-metric" data-metric="max-output"${maxOutTip}>
+                            <dt>${tBiHtml('Max Output', '最大输出')}</dt>
+                            <dd>${formatTokensHtml(s.maxOutputTokens)}</dd>
+                        </div>
+                        <div class="spec-metric spec-thinking"${thinkingRichTipAttrs(`models-spec-thinking-${cardKey}`, s)}>
+                            <dt>${tBiHtml('Thinking', '思考能力')}</dt>
+                            <dd>${thinkingDescriptionHtml(s)}</dd>
+                        </div>
+                    </dl>
+                    ${buildSpecPriceRowHtml(s, cardKey, options)}
+                    ${orchestrationDescription(s, cardKey)}
+                    <div class="spec-identity">
+                        <code class="spec-model-id"${modelIdTip}>${esc(s.modelId)}</code>${extraId}
                     </div>
-                    <div class="spec-metric" data-metric="checkpoint-threshold"${checkpointTip}>
-                        <dt>${tBiHtml('Checkpoint Threshold', '检查点阈值')}</dt>
-                        <dd>${s.isImageGeneration ? tBiHtml('Not applicable', '不适用') : formatTokensHtml(s.cpThreshold)}</dd>
-                    </div>
-                    <div class="spec-metric" data-metric="native-context"${nativeTip}>
-                        <dt>${tBiHtml('Native Ceiling (Model Context)', '原生窗口上限')}</dt>
-                        <dd>${formatTokensHtml(s.maxTokens)}</dd>
-                    </div>
-                    <div class="spec-metric" data-metric="max-output"${maxOutTip}>
-                        <dt>${tBiHtml('Max Output', '最大输出')}</dt>
-                        <dd>${formatTokensHtml(s.maxOutputTokens)}</dd>
-                    </div>
-                    <div class="spec-metric spec-thinking"${thinkingRichTipAttrs(`models-spec-thinking-${cardKey}`, s)}>
-                        <dt>${tBiHtml('Thinking', '思考能力')}</dt>
-                        <dd>${thinkingDescriptionHtml(s)}</dd>
-                    </div>
-                </dl>
-                ${buildSpecPriceRowHtml(s, cardKey, options)}
-                ${orchestrationDescription(s, cardKey)}
-                <div class="spec-identity">
-                    <code class="spec-model-id"${modelIdTip}>${esc(s.modelId)}</code>${extraId}
                 </div>
-            </article>`;
+            </details>`;
     }).join('');
 
     const icon = kind === 'image' ? IMAGE_SPEC_ICON_SVG : SPEC_ICON_SVG;
@@ -683,13 +702,15 @@ export function buildModelInfoGrid(
 
     return `
         <section class="${sectionClass}" data-model-kind="${kind}">
-            <h2>${icon} <span>${kind === 'image' ? tBiHtml('Image generation models', '图片生成模型') : tBiHtml('Model Info', '模型信息')}</span></h2>
-            <p class="spec-description">${kind === 'image'
-            ? tBiHtml('Image-generation models available in your IDE. Reported context and output limits may differ from public API limits; chat compression settings do not apply.', 'IDE 中可用的图片生成模型。IDE 报告的上下文和输出上限可能与公开 API 不同；聊天上下文压缩设置不适用。')
-            : tBiHtml('Limits reported by your IDE may differ from public API limits. Effective Budget (Compaction Limit), Checkpoint Threshold, and Native Ceiling are three separate parameters — hover or click any metric to see how they differ.', '以下限额由 IDE 报告，可能与公开 API 限额不同。自动压缩上限（有效预算）、检查点阈值与原生窗口上限属于三项不同参数——悬停或点击任意指标即可查看区别。')}</p>
-            <div class="spec-grid">
-                ${cards}
-            </div>
+            <details id="model-specs-${kind}" class="spec-catalog">
+                <summary class="spec-catalog-summary"><h2>${icon} <span>${kind === 'image' ? tBiHtml('Image generation models', '图片生成模型') : tBiHtml('Model Info', '模型信息')}</span> <span class="spec-count">${specs.length}</span></h2></summary>
+                <p class="spec-description">${kind === 'image'
+                ? tBiHtml('Available image models. Catalog limits may differ from public API limits.', '当前可用的图片生成模型。目录上限可能与公开 API 不同。')
+                : tBiHtml('Choose a model to inspect its limits and reference pricing. Catalog limits may differ from public API limits.', '展开模型可查看上下文上限、思考能力与参考价格。目录上限可能与公开 API 限额不同。')}</p>
+                <div class="spec-grid">
+                    ${cards}
+                </div>
+            </details>
         </section>`;
 }
 
@@ -733,7 +754,7 @@ function buildRunwayItemTipAttrs(poolKey: string, estimate: QuotaRunwayEstimate)
             `${poolName} · Quota Exhausted`,
             `${poolName} · 配额已耗尽`,
             'Remaining quota for this shared pool is 0% until the reset window completes (unless AI Credit overages are enabled).',
-            '该共享配额池剩余额度已降至 0%，需等待窗口重置（除非已开启 AI 积分超额）。',
+            '该共享配额池剩余配额已降至 0%，需等待窗口重置（除非已开启 AI 积分超额）。',
             'Monitored over a 45-minute rolling window.',
             '按 45 分钟滚动窗口持续追踪。',
         );
@@ -782,6 +803,66 @@ function buildModelsRunwayStrip(runways?: Record<string, QuotaRunwayEstimate>): 
     </section>`;
 }
 
+function buildWeeklyQuotaPaceCard(
+    weeklyRunways: ModelsTabOptions['weeklyRunways'],
+    quotaSummary?: UserQuotaSummary | null,
+): string {
+    const list: WeeklyQuotaRunwayEstimate[] = Array.isArray(weeklyRunways)
+        ? [...weeklyRunways]
+        : (weeklyRunways ? Object.values(weeklyRunways) : []);
+    const hasWeeklySummary = Boolean(quotaSummary?.groups?.some(g => g.weekly));
+    if (list.length === 0 && weeklyRunways === undefined && !hasWeeklySummary) {
+        return '';
+    }
+
+    const itemsHtml = list.length > 0
+        ? list.map((est, idx) => {
+            const poolName = formatRunwayPoolName(est.pool);
+            const cov = est.coverage;
+            const covStr = `${cov.activeHours.toFixed(1)}h / ${cov.minActiveHours}h · ${cov.activeDays}/${cov.minActiveDays}d`;
+            const isInsufficient = est.status === 'insufficient_history' || est.status === 'insufficient_data' || !cov.meetsThreshold;
+            const statusTone = isInsufficient
+                ? 'is-insufficient'
+                : est.status === 'safe_until_reset'
+                    ? 'is-safe'
+                    : est.status === 'at_risk'
+                        ? 'is-risk'
+                        : 'is-exhausted';
+            const detailHtml = isInsufficient
+                ? `<span class="weekly-pace-badge is-insufficient" data-weekly-status="insufficient_history">${tHtml('quota.insufficientHistory')}</span><span class="weekly-pace-meta">${tHtml('quota.activeHoursSample')}: ${esc(covStr)}</span>`
+                : `<span class="weekly-pace-badge ${statusTone}" data-weekly-status="${esc(est.status)}">${est.status === 'safe_until_reset'
+                    ? tBiHtml('On Pace (Safe)', '节奏安全')
+                    : est.status === 'at_risk'
+                        ? tBiHtml('At Risk Before Reset', '重置前可能耗尽')
+                        : tBiHtml('Exhausted', '已耗尽')}</span>`
+                + `<span class="weekly-pace-meta">${tHtml('quota.burnRate')}: ${est.burnRatePctPerActiveHour !== null ? `${est.burnRatePctPerActiveHour.toFixed(1)}%/h` : '—'} · ${est.projectedDailyBurnPct !== null ? `${est.projectedDailyBurnPct.toFixed(1)}%/d` : '—'} · ${esc(covStr)}</span>`;
+            const tip = richTipAttrs(
+                `models-weekly-pace-${idx}-${slugKey(est.pool)}`,
+                `${poolName} · Weekly Pace`,
+                `${poolName} · 周节奏`,
+                isInsufficient ? `Insufficient active-hours history (${covStr}).` : `Active-hours burn pace (${covStr}, offline gaps excluded).`,
+                isInsufficient ? `活跃时长历史不足（${covStr}）。` : `按实测活跃时段估算（${covStr}，排除离线空洞）。`,
+            );
+            return `<div class="models-runway-item weekly-pace-item" data-weekly-pool="${esc(est.pool)}" data-weekly-meets-threshold="${cov.meetsThreshold ? 'true' : 'false'}"${tip}><span class="models-runway-pool">${esc(poolName)} (${esc(est.window)})</span><div class="weekly-pace-body">${detailHtml}</div></div>`;
+        }).join('')
+        : `<div class="models-runway-item weekly-pace-item" data-weekly-meets-threshold="false" data-weekly-status="insufficient_history"><span class="weekly-pace-badge is-insufficient">${tHtml('quota.insufficientHistory')}</span><span class="weekly-pace-meta">${tHtml('quota.activeHoursSample')}: ≥2h / ≥2d</span></div>`;
+
+    const headTip = richTipAttrs(
+        'models-weekly-pace-heading',
+        'Weekly Active-Hours Quota Pace Forecast',
+        '周活跃时长节奏预测',
+        'Uses persisted hourly active buckets (excluding offline gaps), or shows Insufficient history below threshold.',
+        '基于持久化活跃小时样本（排除离线空洞）预测周节奏；覆盖不足时显示「历史不足」。',
+    );
+
+    return `<section class="card models-weekly-pace-card" id="modelsWeeklyPaceCard" data-weekly-forecast="true" aria-label="${esc(tBi('Weekly Active-Hours Forecast', '周活跃时长节奏预测'))}">
+        <div class="models-runway-head">
+            <h3${headTip}>${ICON.clock} <span>${tHtml('quota.weeklyActiveForecast')}</span></h3>
+        </div>
+        <div class="models-runway-grid acm-runway-grid">${itemsHtml}</div>
+    </section>`;
+}
+
 export function buildModelsTabContent(
     userInfo: UserStatusInfo | null,
     configs: ModelConfig[],
@@ -811,8 +892,12 @@ export function buildModelsTabContent(
         parts.push(orchestratorSettingsHtml);
     }
 
-    // 2. Personal Model Quota Grid (dual-window 5h + Weekly + Runway + Custom-Model Isolation)
-    const quotaHtml = buildModelQuotaGrid(sortedConfigs, { quotaSummary: options.quotaSummary });
+    // 2. Personal Model Quota Grid (dual-window 5h + Weekly + Runway + Weekly Active-Hours Forecast + Custom-Model Isolation)
+    const quotaHtml = buildModelQuotaGrid(sortedConfigs, {
+        quotaSummary: options.quotaSummary,
+        quotaWindowMode: options.quotaWindowMode,
+        quotaDirectionMode: options.quotaDirectionMode,
+    });
     if (options.isCustomModelActive) {
         parts.push(buildCustomModelBannerHtml());
         if (quotaHtml) {
@@ -835,6 +920,10 @@ export function buildModelsTabContent(
         if (runwayHtml) {
             parts.push(runwayHtml);
         }
+        const weeklyPaceHtml = buildWeeklyQuotaPaceCard(options.weeklyRunways, options.quotaSummary);
+        if (weeklyPaceHtml) {
+            parts.push(weeklyPaceHtml);
+        }
         if (quotaHtml) {
             parts.push(quotaHtml);
         }
@@ -849,32 +938,19 @@ export function buildModelsTabContent(
         specMap.set(spec.placeholderId, spec);
     }
 
+    const shown = new Set<string>();
     for (const config of sortedConfigs) {
-        let spec = specMap.get(config.model);
-        if (!spec) {
-            // 动态利用 guess 机制为此新未知模型注册一个合理的 Spec，杜绝界面挂起，保障新模型智能自适应
-            const guess = guessContextLimitSpec(config.model);
-            updateModelSpec(config.model, {
-                modelId: config.model,
-                displayName: config.label,
-                // Leave the provider EMPTY rather than inventing a placeholder value. getQuotaPoolKey()
-                // uses the spec's apiProvider as its last-resort pooling signal, and a sentinel like
-                // 'AUTO_DETECT' matches none of its provider tests — so filing one here would silently
-                // send this model to the resetTime fallback and give it its own phantom quota pool.
-                apiProvider: '',
-                maxTokens: guess.maxTokens,
-                cpLimit: guess.cpLimit,
-                cpThreshold: guess.cpThreshold,
-                supportsThinking: guess.supportsThinking,
-            });
-            // 重新在已完成动态注册的 Spec 列表中获取实例
-            spec = getModelSpecs().find(x => x.placeholderId === config.model);
-        }
-        if (spec && !spec.isImageGeneration) {
-            // displayName 采用前端 config 里的 label，保持与界面选项一致
-            const specCopy = { ...spec, displayName: config.label };
-            specs.push(specCopy);
-        }
+        if (!config.model || shown.has(config.model)) { continue; }
+        shown.add(config.model);
+        const spec = specMap.get(config.model);
+        if (spec?.isImageGeneration) { continue; }
+        // A picker label establishes availability. It supplies no context or reasoning limits.
+        specs.push(spec ? { ...spec, displayName: config.label } : {
+            modelId: config.modelId || config.model, placeholderId: config.model,
+            displayName: config.label, apiProvider: '', maxTokens: 0, maxOutputTokens: 0,
+            cpLimit: 0, cpThreshold: 0, thinkingBudget: 0, supportsThinking: false,
+            thinkingCapabilityReported: false,
+        });
     }
 
     if (specs.length > 0) {

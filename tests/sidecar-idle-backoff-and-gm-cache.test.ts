@@ -38,14 +38,25 @@ interface HttpResponse {
     json(): any;
 }
 
-function httpRequest(baseUrl: string, method: string, reqPath: string): Promise<HttpResponse> {
+function httpRequest(
+    baseUrl: string,
+    method: string,
+    reqPath: string,
+    options: { headers?: Record<string, string>; body?: string } = {},
+): Promise<HttpResponse> {
     return new Promise((resolve, reject) => {
         const url = new URL(reqPath, baseUrl);
+        const body = options.body;
+        const headers: Record<string, string> = { ...(options.headers || {}) };
+        if (body !== undefined && !headers['Content-Length']) {
+            headers['Content-Length'] = String(Buffer.byteLength(body, 'utf8'));
+        }
         const req = http.request({
             hostname: url.hostname,
             port: url.port,
             path: url.pathname + url.search,
             method,
+            headers,
         }, (res) => {
             const chunks: Buffer[] = [];
             res.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
@@ -60,8 +71,20 @@ function httpRequest(baseUrl: string, method: string, reqPath: string): Promise<
             });
         });
         req.on('error', reject);
+        if (body !== undefined) {
+            req.write(body);
+        }
         req.end();
     });
+}
+
+async function pairStandaloneSession(handle: StandaloneServerHandle): Promise<string> {
+    const pairRes = await httpRequest(handle.url, 'POST', '/api/auth/pair', {
+        headers: { 'Content-Type': 'application/json', Origin: handle.url },
+        body: JSON.stringify({ pairingCode: handle.bootstrapPairing!.code }),
+    });
+    expect(pairRes.status).toBe(200);
+    return pairRes.json().sessionToken as string;
 }
 
 function makeMockLS(overrides: Partial<LSInfo> = {}): LSInfo {
@@ -250,6 +273,7 @@ describe('sidecar idle backoff and GM cache fixes', () => {
 
         const server = await startStandaloneServer(provider, { port: 0, host: '127.0.0.1' });
         servers.push(server);
+        const sessionToken = await pairStandaloneSession(server);
 
         await provider.renderHtml({
             viewMode: 'aux',
@@ -262,7 +286,9 @@ describe('sidecar idle backoff and GM cache fixes', () => {
         let flippedAtSec: number | null = null;
         for (let elapsedSec = 4; elapsedSec <= 72; elapsedSec += 4) {
             nowMs += 4_000;
-            const res = await httpRequest(server.url, 'GET', '/api/snapshot?view=aux');
+            const res = await httpRequest(server.url, 'GET', '/api/snapshot?view=aux', {
+                headers: { 'X-Monitor-Session': sessionToken },
+            });
             expect(res.status).toBe(200);
             const body = res.json();
             expect(body.unchanged).toBe(false);
@@ -279,7 +305,9 @@ describe('sidecar idle backoff and GM cache fixes', () => {
         expect(flippedAtSec).toBe(64);
 
         // Sending active=1 immediately restores 5000ms cadence
-        const activeRes = await httpRequest(server.url, 'GET', '/api/snapshot?view=aux&active=1');
+        const activeRes = await httpRequest(server.url, 'GET', '/api/snapshot?view=aux&active=1', {
+            headers: { 'X-Monitor-Session': sessionToken },
+        });
         expect(activeRes.status).toBe(200);
         expect(activeRes.json().snapshot.meta.effectivePollIntervalMs).toBe(5000);
 
@@ -369,9 +397,12 @@ describe('sidecar idle backoff and GM cache fixes', () => {
 
         const server = await startStandaloneServer(provider, { port: 0, host: '127.0.0.1' });
         servers.push(server);
+        const sessionToken = await pairStandaloneSession(server);
 
         await provider.pollNow(false);
-        const firstRes = await httpRequest(server.url, 'GET', '/api/snapshot?view=aux');
+        const firstRes = await httpRequest(server.url, 'GET', '/api/snapshot?view=aux', {
+            headers: { 'X-Monitor-Session': sessionToken },
+        });
         expect(firstRes.status).toBe(200);
         const firstBody = firstRes.json();
         expect(firstBody.unchanged).toBe(false);
@@ -388,9 +419,11 @@ describe('sidecar idle backoff and GM cache fixes', () => {
             server.url,
             'GET',
             `/api/snapshot?view=aux&etag=${encodeURIComponent(firstBody.hash)}`,
+            { headers: { 'X-Monitor-Session': sessionToken } },
         );
-        expect(etagRes.status).toBe(200);
-        expect(etagRes.json()).toEqual({ unchanged: true, hash: firstBody.hash });
+        expect(etagRes.status).toBe(304);
+        expect(etagRes.text).toBe('');
+        expect(etagRes.headers.etag).toBe(`"${firstBody.hash}"`);
         expect(renderTabsSpy).toHaveBeenCalledTimes(1);
 
         // Direct computeSnapshotHash check ignoring meta.pollCount
@@ -627,34 +660,49 @@ describe('sidecar idle backoff and GM cache fixes', () => {
 
         const server = await startStandaloneServer(provider, { port: 0, host: '127.0.0.1' });
         servers.push(server);
+        const sessionToken = await pairStandaloneSession(server);
 
         await provider.pollNow(false);
-        const aux1 = (await httpRequest(server.url, 'GET', '/api/snapshot?view=aux')).json();
-        const side1 = (await httpRequest(server.url, 'GET', '/api/snapshot?view=sidebar')).json();
+        const aux1Res = await httpRequest(server.url, 'GET', '/api/snapshot?view=aux', {
+            headers: { 'X-Monitor-Session': sessionToken },
+        });
+        const side1Res = await httpRequest(server.url, 'GET', '/api/snapshot?view=sidebar', {
+            headers: { 'X-Monitor-Session': sessionToken },
+        });
+        expect(aux1Res.status).toBe(200);
+        expect(side1Res.status).toBe(200);
+        const aux1 = aux1Res.json();
+        const side1 = side1Res.json();
         expect(aux1.unchanged).toBe(false);
         expect(side1.unchanged).toBe(false);
         expect(renderTabsSpy).toHaveBeenCalledTimes(2);
 
-        // Interleave polls from both panels across unchanged backend polls: 0 re-renders
+        // Interleave polls from both panels across unchanged backend polls: 0 re-renders (HTTP 304)
         for (let i = 0; i < 3; i++) {
             await provider.pollNow(false);
-            const auxNext = (await httpRequest(
+            const auxNext = await httpRequest(
                 server.url,
                 'GET',
                 `/api/snapshot?view=aux&etag=${encodeURIComponent(aux1.hash)}`,
-            )).json();
-            const sideNext = (await httpRequest(
+                { headers: { 'X-Monitor-Session': sessionToken } },
+            );
+            const sideNext = await httpRequest(
                 server.url,
                 'GET',
                 `/api/snapshot?view=sidebar&etag=${encodeURIComponent(side1.hash)}`,
-            )).json();
-            expect(auxNext).toEqual({ unchanged: true, hash: aux1.hash });
-            expect(sideNext).toEqual({ unchanged: true, hash: side1.hash });
+                { headers: { 'X-Monitor-Session': sessionToken } },
+            );
+            expect(auxNext.status).toBe(304);
+            expect(auxNext.text).toBe('');
+            expect(auxNext.headers.etag).toBe(`"${aux1.hash}"`);
+            expect(sideNext.status).toBe(304);
+            expect(sideNext.text).toBe('');
+            expect(sideNext.headers.etag).toBe(`"${side1.hash}"`);
         }
         expect(renderTabsSpy).toHaveBeenCalledTimes(2);
     });
 
-    it('10. refreshes time-dependent countdowns across 1-minute bucket while keeping intra-minute ETag cache hits', async () => {
+    it('10. keeps ETag & snapshot cache stable across countdown clock ticks (countdowns stay client-side) while invalidating on real state changes', async () => {
         let nowMs = Date.parse('2026-11-22T18:00:05.000Z');
         const resetMs = Date.parse('2026-11-22T18:05:00.000Z');
         const renderTabsSpy = vi.fn((params: { now: number }) => ({
@@ -673,33 +721,56 @@ describe('sidecar idle backoff and GM cache fixes', () => {
 
         const server = await startStandaloneServer(provider, { port: 0, host: '127.0.0.1' });
         servers.push(server);
+        const sessionToken = await pairStandaloneSession(server);
 
         await provider.pollNow(false);
-        const first = (await httpRequest(server.url, 'GET', '/api/snapshot?view=aux')).json();
+        const firstRes = await httpRequest(server.url, 'GET', '/api/snapshot?view=aux', {
+            headers: { 'X-Monitor-Session': sessionToken },
+        });
+        expect(firstRes.status).toBe(200);
+        const first = firstRes.json();
         expect(first.snapshot.tabs.overview).toContain('resetIn=5m');
         expect(renderTabsSpy).toHaveBeenCalledTimes(1);
 
-        // 25s later (same minute bucket): cache hit + ETag unchanged
+        // 25s later (same minute): cache hit + HTTP 304 ETag unchanged
         nowMs += 25_000;
-        const intraMin = (await httpRequest(
+        const intraMin = await httpRequest(
             server.url,
             'GET',
             `/api/snapshot?view=aux&etag=${encodeURIComponent(first.hash)}`,
-        )).json();
-        expect(intraMin).toEqual({ unchanged: true, hash: first.hash });
+            { headers: { 'X-Monitor-Session': sessionToken } },
+        );
+        expect(intraMin.status).toBe(304);
+        expect(intraMin.text).toBe('');
+        expect(intraMin.headers.etag).toBe(`"${first.hash}"`);
         expect(renderTabsSpy).toHaveBeenCalledTimes(1);
 
-        // Cross into next minute (18:01:05): bucket changes -> fresh render with updated countdown
+        // Cross into next minute (18:01:05) with NO data change: ETag remains stable (no server-side minuteBucket churn!)
         nowMs = Date.parse('2026-11-22T18:01:05.000Z');
-        const nextMin = (await httpRequest(
+        const nextMin = await httpRequest(
             server.url,
             'GET',
             `/api/snapshot?view=aux&etag=${encodeURIComponent(first.hash)}`,
-        )).json();
-        expect(nextMin.unchanged).toBe(false);
-        expect(nextMin.hash).not.toBe(first.hash);
-        expect(nextMin.snapshot.tabs.overview).toContain('resetIn=4m');
-        expect(renderTabsSpy).toHaveBeenCalledTimes(2);
+            { headers: { 'X-Monitor-Session': sessionToken } },
+        );
+        expect(nextMin.status).toBe(304);
+        expect(nextMin.text).toBe('');
+        expect(nextMin.headers.etag).toBe(`"${first.hash}"`);
+        expect(renderTabsSpy).toHaveBeenCalledTimes(1);
+
+        // Real state change (e.g., privacy mask toggle) invalidates cache & ETag immediately
+        await provider.handleAction({ command: 'setPrivacyMask', masked: false });
+        const afterChangeRes = await httpRequest(
+            server.url,
+            'GET',
+            `/api/snapshot?view=aux&etag=${encodeURIComponent(first.hash)}`,
+            { headers: { 'X-Monitor-Session': sessionToken } },
+        );
+        expect(afterChangeRes.status).toBe(200);
+        const afterChange = afterChangeRes.json();
+        expect(afterChange.unchanged).toBe(false);
+        expect(afterChange.hash).not.toBe(first.hash);
+        expect(renderTabsSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
     it('11. prevents async handleAction() cache poisoning when GET /api/snapshot runs concurrently during await', async () => {
@@ -748,9 +819,11 @@ describe('sidecar idle backoff and GM cache fixes', () => {
         });
         await convBStarted;
 
-        // Concurrent GET /api/snapshot arrives mid-await (sees pre-action usage conv-a and populates snapshotCache)
+        // While B is loading, the snapshot must not attach the old A sample to B.
         const midFlightSnap = await provider.getSnapshot({ viewMode: 'aux' });
-        expect((midFlightSnap.data as { usage: ContextUsage | null }).usage?.cascadeId).toBe('conv-a');
+        expect(midFlightSnap.activeConversationId).toBe('conv-b');
+        expect((midFlightSnap.data as { usage: ContextUsage | null }).usage).toBeNull();
+        expect(midFlightSnap.tabs?.overview).toBe('<div>none</div>');
 
         // Finish conv-b telemetry fetch
         resolveConvB(makeUsage(trajB));

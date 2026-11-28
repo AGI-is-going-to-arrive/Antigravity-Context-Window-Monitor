@@ -3,6 +3,7 @@
 
 import { LSInfo } from '../discovery';
 import { rpcCall } from '../rpc-client';
+import type { RawGeneratorMetadataEntry } from '../tracker';
 import { normalizeModelDisplayName, getQuotaPoolKey, resolveModelId, type ModelConfig } from '../models';
 import type { QuotaSession } from '../quota-tracker';
 import type {
@@ -34,7 +35,12 @@ import {
 } from './parser';
 import { buildSummaryFromConversations, normalizeGMSummary, parseErrorCode, normalizeErrorMessage, MAX_RECENT_ERRORS } from './summary';
 import { MIN_OUTPUT_TOKENS_FOR_SPEED, MIN_STREAM_SECONDS } from '../telemetry-metrics';
-import { toLocalDateKey, type LedgerCallEntry } from '../daily-ledger';
+import {
+    LATE_CROSS_MIDNIGHT_WINDOW_MS,
+    toLocalDateKey,
+    type LedgerCallEntry,
+    type RecordCallStatus,
+} from '../daily-ledger';
 
 /**
  * Whether a (lower-cased) string is a raw platform model identifier rather than a display label.
@@ -64,7 +70,8 @@ function isUsableArchiveCutoff(cutoff: string, nowMs = Date.now()): boolean {
         && cutoffMs <= nowMs + ARCHIVE_CUTOFF_FUTURE_TOLERANCE_MS;
 }
 
-function ledgerCallIdentity(call: GMCallEntry): string {
+/** Stable call fingerprint (`executionId` or composite of createdAt + model + inputTokens/usage). */
+export function computeGMCallFingerprint(call: GMCallEntry): string {
     if (call.executionId) {
         return `exec:${call.executionId}`;
     }
@@ -77,6 +84,10 @@ function ledgerCallIdentity(call: GMCallEntry): string {
         `cache:${call.cacheReadTokens}`,
         `start:${call.startStepIndex}`,
     ].join('|');
+}
+
+function ledgerCallIdentity(call: GMCallEntry): string {
+    return computeGMCallFingerprint(call);
 }
 
 /** Enriching a missing timestamp must not turn an already recorded call into a new one. */
@@ -96,18 +107,38 @@ function sameLedgerCallIdentity(previous: string, current: string): boolean {
         || Date.parse(old.date) === Date.parse(next.date);
 }
 
-function ledgerDedupKey(cascadeId: string, index: number, call: GMCallEntry): string {
-    return `${cascadeId}:${index}|${encodeURIComponent(ledgerCallIdentity(call))}`;
+/**
+ * Durable logical call ID independent of mutable array indices.
+ * Scoped by `cascadeId` + stable call fingerprint (`exec:<executionId>` or `archive|...`).
+ */
+export function ledgerDedupKey(cascadeId: string, call: GMCallEntry): string {
+    return `${cascadeId}|${encodeURIComponent(ledgerCallIdentity(call))}`;
+}
+
+function parseLedgerDedupConversation(dedupKey: string): string | null {
+    if (!dedupKey) { return null; }
+    const pipeIdx = dedupKey.indexOf('|');
+    if (pipeIdx > 0) {
+        const prefix = dedupKey.slice(0, pipeIdx);
+        return prefix.replace(/:\d+$/, '') || null;
+    }
+    const colonIdx = dedupKey.lastIndexOf(':');
+    if (colonIdx > 0) {
+        return dedupKey.slice(0, colonIdx);
+    }
+    return null;
 }
 
 function parseLedgerDedupPosition(dedupKey: string): { conversationId: string; index: number } | null {
-    const splitAt = dedupKey.lastIndexOf(':');
+    const prefix = dedupKey.split('|', 1)[0];
+    const splitAt = prefix.lastIndexOf(':');
     if (splitAt <= 0) { return null; }
-    const indexPart = dedupKey.slice(splitAt + 1).split('|', 1)[0];
+    const indexPart = prefix.slice(splitAt + 1);
+    if (!/^\d+$/.test(indexPart)) { return null; }
     const index = Number.parseInt(indexPart, 10);
     if (Number.isNaN(index)) { return null; }
     return {
-        conversationId: dedupKey.slice(0, splitAt),
+        conversationId: prefix.slice(0, splitAt),
         index,
     };
 }
@@ -144,6 +175,8 @@ function deduplicateSystemContextItems(calls: GMCallEntry[]): GMSystemContextIte
 
 const IDLE_ERROR_BACKOFF_BASE_MS = 60 * 1000;
 const IDLE_ERROR_BACKOFF_MAX_MS = 10 * 60 * 1000;
+/** Bounded concurrency for GMTracker.fetchAll() per-conversation RPC fetches. */
+export const GM_FETCH_CONCURRENCY = 3;
 
 function sameStepIndices(a: number[], b: number[]): boolean {
     return a.length === b.length && a.every((v, idx) => v === b[idx]);
@@ -234,6 +267,7 @@ export class GMTracker {
     private _callBaselines = new Map<string, number>();
     /** When true, first fetchAll() baselines all existing API data before counting new calls. */
     private _needsBaselineInit = true;
+    private _pendingStartupBaselines = new Set<string>();
     /** executionIds of calls already archived by per-pool resets — excluded from _buildSummary() */
     private _archivedCallIds = new Set<string>();
     /** Model ID → ISO cutoff: calls with createdAt ≤ cutoff are excluded — survives empty _cache.calls */
@@ -281,8 +315,13 @@ export class GMTracker {
      *  Used by getNewCallsSinceLastRecord() to extract incremental diff. */
     private _ledgerPositions = new Map<string, number>();
     /** Per-conversation submitted call identities by calls[] index.
-     *  Lets reverted conversations skip unchanged calls that later return. */
+     *  Lets reverted conversations skip unchanged calls that later return
+     *  and detects equal-length or longer branch rewinds via prefix comparison. */
     private _ledgerCallIdentities = new Map<string, string[]>();
+    /** Per-conversation set of durably acknowledged logical call identities (handles out-of-order persistence without cursor skipping). */
+    private _ledgerAcknowledgedIds = new Map<string, Set<string>>();
+    /** Conversations reverted all the way to stepCount === 0 since the last getNewCallsSinceLastRecord() call. */
+    private _pendingRevertedCascadeIds = new Set<string>();
     /** Whether fetchAll() has successfully repopulated calls[] since restore.
      *  When false, _cache.calls is empty (stripped during serialize) and
      *  _buildSummary() would return totalCalls=0. In that state, getters
@@ -325,21 +364,86 @@ export class GMTracker {
         }
     }
 
+    /** Clear cached GM state for a conversation that was reset/rewound to 0 steps. */
+    private _clearConversationForZeroSteps(cascadeId: string): void {
+        const hadCached = this._cache.delete(cascadeId);
+        this._settledIdleStepCounts.delete(cascadeId);
+        this._enrichedSnapshots.delete(cascadeId);
+        this._errorBackoffByCascade.delete(cascadeId);
+        this._lastRunningStatus.delete(cascadeId);
+        this._callBaselines.delete(cascadeId);
+        this._pendingStartupBaselines.delete(cascadeId);
+        const prevPos = this._ledgerPositions.get(cascadeId) || 0;
+        if (prevPos > 0) {
+            this._ledgerPositions.set(cascadeId, 0);
+            this._pendingRevertedCascadeIds.add(cascadeId);
+        } else if (hadCached) {
+            this._ledgerPositions.delete(cascadeId);
+        }
+    }
+
     /**
-     * Fetch GM data for the given trajectories.
+     * Fetch GM data for the given trajectories using a bounded concurrency pool (concurrency = 3).
      * Only re-fetches RUNNING conversations; IDLE ones use cache.
+     * Immediately aborts and rethrows when `signal` is aborted without recording backoff errors.
      */
     async fetchAll(
         ls: LSInfo,
-        trajectories: { cascadeId: string; title: string; stepCount: number; status: string }[],
+        trajectories: { cascadeId: string; title: string; stepCount: number; status: string; manifestMember?: boolean }[],
         activeCascadeId?: string,
         signal?: AbortSignal,
+        fetchManifestMetadata?: (cascadeId: string) => Promise<RawGeneratorMetadataEntry[]>,
     ): Promise<GMSummary> {
+        if (signal?.aborted) {
+            throw new Error('RPC aborted');
+        }
+
         const meta = { metadata: { ideName: 'antigravity', extensionName: 'antigravity' } };
         const nowMs = Date.now();
 
+        // Deduplicate by cascadeId preserving input order, and clear cached state for stepCount === 0.
+        const seenIds = new Set<string>();
+        const toProcess: typeof trajectories = [];
         for (const t of trajectories) {
-            if (t.stepCount === 0) { continue; }
+            if (!t.cascadeId || seenIds.has(t.cascadeId)) { continue; }
+            seenIds.add(t.cascadeId);
+            if (t.stepCount === 0) {
+                this._clearConversationForZeroSteps(t.cascadeId);
+                if (t.manifestMember) {
+                    this._pendingStartupBaselines.delete(t.cascadeId);
+                    this._callBaselines.set(t.cascadeId, 0);
+                }
+                continue;
+            }
+            // A historical worker can be discovered after the initial inventory. Keep
+            // its full call history for inspection, and start recording deltas only
+            // after a successful read. Preserve existing member cursors on restore.
+            if (t.manifestMember && !this._callBaselines.has(t.cascadeId)
+                && !this._ledgerPositions.has(t.cascadeId) && !this._ledgerCallIdentities.has(t.cascadeId)) {
+                this._pendingStartupBaselines.add(t.cascadeId);
+            }
+            toProcess.push(t);
+        }
+
+        if (this._needsBaselineInit) {
+            for (const t of toProcess) {
+                if (!this._callBaselines.has(t.cascadeId)) { this._pendingStartupBaselines.add(t.cascadeId); }
+            }
+            this._needsBaselineInit = false;
+        }
+        const baselineIfPending = (id: string, calls: GMCallEntry[]) => {
+            if (this._pendingStartupBaselines.delete(id)) {
+                this._callBaselines.set(id, calls.length);
+                this._rememberLedgerCallIdentities(id, calls, calls.length);
+            }
+        };
+
+        const processOne = async (
+            t: (typeof trajectories)[number],
+        ): Promise<void> => {
+            if (signal?.aborted) {
+                throw new Error('RPC aborted');
+            }
 
             const cached = this._cache.get(t.cascadeId);
             // Skip IDLE conversations that haven't changed AND already have calls data
@@ -365,7 +469,7 @@ export class GMTracker {
                 if (isRunning || justBecameIdle || existingBackoff.stepCount !== t.stepCount) {
                     this._errorBackoffByCascade.delete(t.cascadeId);
                 } else if (nowMs < existingBackoff.nextRetryAt) {
-                    continue;
+                    return;
                 } else {
                     retryingAfterBackoff = true;
                 }
@@ -383,13 +487,19 @@ export class GMTracker {
                 && (alreadyHydrated || alreadySettledAtSteps);
 
             if (canSkipIdle) {
-                continue;
+                baselineIfPending(t.cascadeId, cached.calls);
+                return;
             }
 
             try {
-                const resp = await rpcCall(ls, 'GetCascadeTrajectoryGeneratorMetadata',
-                    { cascadeId: t.cascadeId, ...meta }, 30000, signal) as Record<string, unknown>;
-                const rawGM = (resp.generatorMetadata || []) as Record<string, unknown>[];
+                let rawGM: RawGeneratorMetadataEntry[];
+                if (t.manifestMember && fetchManifestMetadata) {
+                    rawGM = await fetchManifestMetadata(t.cascadeId);
+                } else {
+                    const resp = await rpcCall(ls, 'GetCascadeTrajectoryGeneratorMetadata',
+                        { cascadeId: t.cascadeId, ...meta }, 30000, signal) as { generatorMetadata?: RawGeneratorMetadataEntry[] };
+                    rawGM = resp.generatorMetadata || [];
+                }
 
                 let calls = inheritEnrichedCallFields(rawGM.map(parseGMEntry), cached?.calls);
                 const enrichKey = `${t.stepCount}:${calls.length}`;
@@ -398,7 +508,7 @@ export class GMTracker {
                     && this._enrichedSnapshots.get(t.cascadeId) === enrichKey;
                 let trajectorySteps: any[] = [];
                 let enrichmentFailed = false;
-                if (!skipCachedEnrichment && shouldEnrichConversation(t.stepCount, calls)) {
+                if (!t.manifestMember && !skipCachedEnrichment && shouldEnrichConversation(t.stepCount, calls)) {
                     try {
                         const fullResp = await rpcCall(ls, 'GetCascadeTrajectory',
                             { cascadeId: t.cascadeId, ...meta }, 60000, signal) as Record<string, unknown>;
@@ -417,7 +527,10 @@ export class GMTracker {
                         if (!isRunning) {
                             this._enrichedSnapshots.set(t.cascadeId, enrichKey);
                         }
-                    } catch {
+                    } catch (enrichErr) {
+                        if (signal?.aborted) {
+                            throw enrichErr;
+                        }
                         enrichmentFailed = true;
                         // Enrichment is best-effort only; keep lightweight GM payload.
                     }
@@ -515,6 +628,7 @@ export class GMTracker {
                     checkpointSummaries: finalCPs,
                     systemContextItems: finalContextItems,
                 });
+                baselineIfPending(t.cascadeId, calls);
                 if (enrichmentFailed && !isRunning) {
                     this._settledIdleStepCounts.delete(t.cascadeId);
                     this._recordIdleErrorBackoff(t.cascadeId, t.stepCount, nowMs);
@@ -526,7 +640,13 @@ export class GMTracker {
                         this._settledIdleStepCounts.delete(t.cascadeId);
                     }
                 }
-            } catch {
+            } catch (err) {
+                if (signal?.aborted) {
+                    throw err;
+                }
+                // An exhausted local scheduling allowance is not an idle backend error.
+                // Leave deferred members eligible for the next fair polling round.
+                if (t.manifestMember && /Trajectory poll (?:byte )?budget exhausted/i.test(String(err))) { return; }
                 if (!isRunning) {
                     this._recordIdleErrorBackoff(t.cascadeId, t.stepCount, nowMs);
                 }
@@ -545,20 +665,38 @@ export class GMTracker {
                     });
                 }
             }
+        };
+
+        // Bounded concurrency pool (concurrency = 3)
+        let cursor = 0;
+        let abortError: unknown = null;
+        const workerCount = Math.min(GM_FETCH_CONCURRENCY, toProcess.length);
+        const workers: Promise<void>[] = [];
+        for (let w = 0; w < workerCount; w++) {
+            workers.push((async () => {
+                while (cursor < toProcess.length && !abortError && !signal?.aborted) {
+                    const item = toProcess[cursor++];
+                    try {
+                        await processOne(item);
+                    } catch (err) {
+                        if (!abortError) {
+                            abortError = err;
+                        }
+                        break;
+                    }
+                }
+            })());
+        }
+        await Promise.allSettled(workers);
+
+        if (abortError) {
+            throw abortError;
+        }
+        if (signal?.aborted) {
+            throw new Error('RPC aborted');
         }
 
         this._lastFetchedAt = new Date().toISOString();
-
-        // On fresh start (no persisted state), baseline all existing API data
-        // so only calls from this point forward are counted.
-        if (this._needsBaselineInit) {
-            for (const [id, conv] of this._cache) {
-                if (!this._callBaselines.has(id)) {
-                    this._callBaselines.set(id, conv.calls.length);
-                }
-            }
-            this._needsBaselineInit = false;
-        }
 
         this._hasFetchedCalls = true;
         // _lastSummary stores the FULL cross-account summary so that
@@ -1150,42 +1288,122 @@ export class GMTracker {
         const entries: LedgerCallEntry[] = [];
         for (const [id, conversation] of this._cache) {
             conversation.calls.forEach((call, index) => {
-                entries.push({ call, dedupKey: ledgerDedupKey(id, index, call) });
+                entries.push({
+                    call,
+                    dedupKey: ledgerDedupKey(id, call),
+                    cascadeId: id,
+                    callIndex: index,
+                });
             });
         }
         return entries;
     }
 
+    private _isCallAcknowledged(conversationId: string, identity: string): boolean {
+        const acked = this._ledgerAcknowledgedIds.get(conversationId);
+        if (!acked || acked.size === 0) { return false; }
+        if (acked.has(identity)) { return true; }
+        for (const prev of acked) {
+            if (sameLedgerCallIdentity(prev, identity)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private _recordAcknowledgedIdentity(conversationId: string, identity: string): void {
+        if (!identity) { return; }
+        let acked = this._ledgerAcknowledgedIds.get(conversationId);
+        if (!acked) {
+            acked = new Set<string>();
+            this._ledgerAcknowledgedIds.set(conversationId, acked);
+        }
+        acked.add(identity);
+    }
+
     /**
      * Extract GM calls that have not yet been recorded by the DailyLedger.
      * Compares each conversation's call count against the last recorded position.
-     * Only returns calls from the current cycle (after baseline).
+     * Only returns calls from the current cycle (after baseline), allowing late
+     * cross-midnight calls within the bounded 48h window to route into their true
+     * local date bucket without rescanning first-start baselined calls.
      * Call this after fetchAll() in the polling loop.
      */
     getNewCallsSinceLastRecord(): { entries: LedgerCallEntry[]; debug: string[]; revertedCascadeIds: string[] } {
         const entries: LedgerCallEntry[] = [];
         const debug: string[] = [];
-        const revertedCascadeIds: string[] = [];
+        const revertedSet = new Set<string>(this._pendingRevertedCascadeIds);
+        this._pendingRevertedCascadeIds.clear();
+
+        const nowMs = Date.now();
+        const todayKey = toLocalDateKey(new Date(nowMs));
+        const dayStartMs = dateKeyToStartOfDayMs(todayKey);
+        const minEligibleMs = dayStartMs > 0
+            ? Math.min(dayStartMs, nowMs - LATE_CROSS_MIDNIGHT_WINDOW_MS)
+            : 0;
+
         for (const [id, conv] of this._cache) {
-            const baseline = this._callBaselines.get(id) || 0;
+            let baseline = this._callBaselines.get(id) || 0;
             let lastRecorded = this._ledgerPositions.get(id) || 0;
-            if (lastRecorded > 0 && lastRecorded <= conv.calls.length) {
-                this._rememberLedgerCallIdentities(id, conv.calls, lastRecorded);
+            let knownIdentities = this._ledgerCallIdentities.get(id) || [];
+
+            // Compare stable fingerprints across the recorded/baselined prefix `0..limit-1`
+            // so equal-length or longer branch rewinds are detected and never skipped.
+            const prefixEnd = Math.min(Math.max(baseline, lastRecorded), conv.calls.length, knownIdentities.length);
+            let divergedAt = -1;
+            for (let i = 0; i < prefixEnd; i++) {
+                const expectedIdentity = knownIdentities[i];
+                if (!expectedIdentity) { continue; }
+                const actualIdentity = ledgerCallIdentity(conv.calls[i]);
+                if (!sameLedgerCallIdentity(expectedIdentity, actualIdentity)) {
+                    divergedAt = i;
+                    break;
+                }
             }
-            // Conversation revert: user went back to an earlier step, shrinking
-            // the calls array.  Clamp position down so new calls from the
-            // reverted point onwards get captured.  Signal caller to clear
-            // stale dedup IDs for this conversation.
-            if (lastRecorded > conv.calls.length) {
+
+            if (divergedAt >= 0) {
+                debug.push(`${id.substring(0, 8)}: BRANCH REWIND pos=${lastRecorded} → ${divergedAt} (len=${conv.calls.length})`);
+                lastRecorded = divergedAt;
+                this._ledgerPositions.set(id, divergedAt);
+                if (baseline > divergedAt) {
+                    baseline = divergedAt;
+                    this._callBaselines.set(id, divergedAt);
+                }
+                knownIdentities = knownIdentities.slice(0, divergedAt);
+                this._ledgerCallIdentities.set(id, knownIdentities);
+                // Rebuild acknowledged set strictly from the surviving prefix
+                const surviving = new Set<string>();
+                for (const ident of knownIdentities) {
+                    if (ident) { surviving.add(ident); }
+                }
+                if (surviving.size > 0) {
+                    this._ledgerAcknowledgedIds.set(id, surviving);
+                } else {
+                    this._ledgerAcknowledgedIds.delete(id);
+                }
+                revertedSet.add(id);
+            } else if (lastRecorded > conv.calls.length) {
+                // Conversation revert: user went back to an earlier step, shrinking
+                // the calls array. Clamp position down so new calls from the
+                // reverted point onwards get captured. Signal caller to clear
+                // stale dedup IDs for this conversation, while preserving
+                // knownIdentities so unchanged calls returning later are not double-counted.
                 debug.push(`${id.substring(0, 8)}: REVERT pos=${lastRecorded} → ${conv.calls.length}`);
                 lastRecorded = conv.calls.length;
                 this._ledgerPositions.set(id, lastRecorded);
-                revertedCascadeIds.push(id);
+                if (baseline > conv.calls.length) {
+                    baseline = conv.calls.length;
+                    this._callBaselines.set(id, baseline);
+                }
+                revertedSet.add(id);
+            } else if (lastRecorded > 0 && lastRecorded <= conv.calls.length) {
+                this._rememberLedgerCallIdentities(id, conv.calls, lastRecorded);
+                knownIdentities = this._ledgerCallIdentities.get(id) || knownIdentities;
             }
+
             if (conv.calls.length === 0) { continue; }
             // Start from whichever is higher: baseline or last recorded position
             let start = Math.max(baseline, lastRecorded);
-            const knownIdentities = this._ledgerCallIdentities.get(id) || [];
             const originalStart = start;
             while (start < conv.calls.length
                 && knownIdentities[start]
@@ -1203,22 +1421,30 @@ export class GMTracker {
             if (delta > 0) {
                 debug.push(`${id.substring(0, 8)}: bl=${baseline} pos=${lastRecorded} len=${conv.calls.length} → +${delta}`);
             }
-            const todayKey = toLocalDateKey();
-            const dayStartMs = dateKeyToStartOfDayMs(todayKey);
 
             for (let i = start; i < conv.calls.length; i++) {
                 const call = conv.calls[i];
-                // Prevent history data pollution
-                if (dayStartMs > 0 && call.createdAt) {
+                // Bounded cross-midnight window: allow late calls within the last 48h to reach
+                // DailyLedger's true local date bucket while excluding ancient multi-day history.
+                if (minEligibleMs > 0 && call.createdAt) {
                     const callMs = Date.parse(call.createdAt);
-                    if (!isNaN(callMs) && callMs < dayStartMs) {
+                    if (!isNaN(callMs) && callMs < minEligibleMs) {
                         continue;
                     }
                 }
-                entries.push({ call, dedupKey: ledgerDedupKey(id, i, call) });
+                const identity = ledgerCallIdentity(call);
+                if (this._isCallAcknowledged(id, identity)) {
+                    continue;
+                }
+                entries.push({
+                    call,
+                    dedupKey: ledgerDedupKey(id, call),
+                    cascadeId: id,
+                    callIndex: i,
+                });
             }
         }
-        return { entries, debug, revertedCascadeIds };
+        return { entries, debug, revertedCascadeIds: [...revertedSet] };
     }
 
     private _rememberLedgerCallIdentities(conversationId: string, calls: GMCallEntry[], submittedCount: number): void {
@@ -1228,7 +1454,9 @@ export class GMTracker {
         let changed = false;
         for (let i = 0; i < limit; i++) {
             if (identities[i]) { continue; }
-            identities[i] = ledgerCallIdentity(calls[i]);
+            const ident = ledgerCallIdentity(calls[i]);
+            identities[i] = ident;
+            this._recordAcknowledgedIdentity(conversationId, ident);
             changed = true;
         }
         if (changed) {
@@ -1237,29 +1465,121 @@ export class GMTracker {
     }
 
     /**
-     * Commit DailyLedger positions after recordCalls accepted a batch.
-     * Keeping extraction and commit separate prevents data loss when a stale
-     * ledger rejects new-day calls before archival has rolled over.
+     * Commit DailyLedger positions after recordCalls/recordCallsDetailed accepted a batch.
+     * Advances each conversation's cursor strictly along contiguously persisted calls
+     * (never jumping past a retryable/unpersisted gap), while remembering acknowledged
+     * durable logical identities so out-of-order persisted calls are not re-emitted.
      */
-    markLedgerEntriesRecorded(entries: LedgerCallEntry[]): void {
-        const maxPositionByConversation = new Map<string, number>();
-        for (const entry of entries) {
-            const parsed = parseLedgerDedupPosition(entry.dedupKey);
-            if (!parsed) { continue; }
-            const { conversationId, index } = parsed;
-            const identities = this._ledgerCallIdentities.get(conversationId) || [];
-            identities[index] = ledgerCallIdentity(entry.call);
-            this._ledgerCallIdentities.set(conversationId, identities);
-            const nextPosition = index + 1;
-            const existing = maxPositionByConversation.get(conversationId) || 0;
-            if (nextPosition > existing) {
-                maxPositionByConversation.set(conversationId, nextPosition);
+    markLedgerEntriesRecorded(
+        entries: LedgerCallEntry[],
+        statuses?: readonly RecordCallStatus[],
+    ): void {
+        const ackedIndicesByConversation = new Map<string, Set<number>>();
+        const touchedConversations = new Set<string>();
+
+        for (let i = 0; i < entries.length; i++) {
+            if (statuses && i < statuses.length && statuses[i] === 'retryable') {
+                continue;
+            }
+            const entry = entries[i];
+            const parsedLegacy = parseLedgerDedupPosition(entry.dedupKey);
+            const conversationId = entry.cascadeId
+                || parsedLegacy?.conversationId
+                || parseLedgerDedupConversation(entry.dedupKey);
+            if (!conversationId) { continue; }
+
+            const identity = ledgerCallIdentity(entry.call);
+            this._recordAcknowledgedIdentity(conversationId, identity);
+            touchedConversations.add(conversationId);
+
+            let resolvedIndex: number | undefined = typeof entry.callIndex === 'number' && Number.isInteger(entry.callIndex) && entry.callIndex >= 0
+                ? entry.callIndex
+                : parsedLegacy?.index;
+
+            if (resolvedIndex === undefined) {
+                const cachedConv = this._cache.get(conversationId);
+                if (cachedConv) {
+                    const cursorFloor = Math.max(
+                        this._callBaselines.get(conversationId) || 0,
+                        this._ledgerPositions.get(conversationId) || 0,
+                    );
+                    for (let idx = cursorFloor; idx < cachedConv.calls.length; idx++) {
+                        if (sameLedgerCallIdentity(identity, ledgerCallIdentity(cachedConv.calls[idx]))) {
+                            resolvedIndex = idx;
+                            break;
+                        }
+                    }
+                    if (resolvedIndex === undefined) {
+                        for (let idx = 0; idx < cursorFloor && idx < cachedConv.calls.length; idx++) {
+                            if (sameLedgerCallIdentity(identity, ledgerCallIdentity(cachedConv.calls[idx]))) {
+                                resolvedIndex = idx;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (resolvedIndex !== undefined) {
+                const identities = this._ledgerCallIdentities.get(conversationId) || [];
+                identities[resolvedIndex] = identity;
+                this._ledgerCallIdentities.set(conversationId, identities);
+                let set = ackedIndicesByConversation.get(conversationId);
+                if (!set) {
+                    set = new Set<number>();
+                    ackedIndicesByConversation.set(conversationId, set);
+                }
+                set.add(resolvedIndex);
             }
         }
-        for (const [conversationId, nextPosition] of maxPositionByConversation) {
-            const existing = this._ledgerPositions.get(conversationId) || 0;
-            if (nextPosition > existing) {
-                this._ledgerPositions.set(conversationId, nextPosition);
+
+        const nowMs = Date.now();
+        const todayKey = toLocalDateKey(new Date(nowMs));
+        const dayStartMs = dateKeyToStartOfDayMs(todayKey);
+        const minEligibleMs = dayStartMs > 0
+            ? Math.min(dayStartMs, nowMs - LATE_CROSS_MIDNIGHT_WINDOW_MS)
+            : 0;
+
+        for (const conversationId of touchedConversations) {
+            const baseline = this._callBaselines.get(conversationId) || 0;
+            const existingPos = this._ledgerPositions.get(conversationId) || 0;
+            const ackedIndices = ackedIndicesByConversation.get(conversationId) || new Set<number>();
+            const cachedConv = this._cache.get(conversationId);
+            const maxAckedIndex = ackedIndices.size > 0 ? Math.max(...ackedIndices) : -1;
+
+            let cursor = Math.max(baseline, existingPos);
+            while (true) {
+                if (ackedIndices.has(cursor)) {
+                    cursor++;
+                    continue;
+                }
+                if (cachedConv && cursor < cachedConv.calls.length) {
+                    const call = cachedConv.calls[cursor];
+                    const ident = ledgerCallIdentity(call);
+                    if (this._isCallAcknowledged(conversationId, ident)) {
+                        const identities = this._ledgerCallIdentities.get(conversationId) || [];
+                        if (!identities[cursor]) {
+                            identities[cursor] = ident;
+                            this._ledgerCallIdentities.set(conversationId, identities);
+                        }
+                        cursor++;
+                        continue;
+                    }
+                    // Only step past an unacknowledged slot if it is permanently outside the 48h window
+                    // AND a later call in the same conversation was already acknowledged.
+                    if (cursor < maxAckedIndex && minEligibleMs > 0 && call.createdAt) {
+                        const callMs = Date.parse(call.createdAt);
+                        if (!isNaN(callMs) && callMs < minEligibleMs) {
+                            cursor++;
+                            continue;
+                        }
+                    }
+                }
+                break;
+            }
+
+            if (cursor > existingPos) {
+                this._ledgerPositions.set(conversationId, cursor);
             }
         }
     }
@@ -1529,6 +1849,8 @@ export class GMTracker {
         this._callAccountMap.clear();
         this._ledgerPositions.clear();
         this._ledgerCallIdentities.clear();
+        this._ledgerAcknowledgedIds.clear();
+        this._pendingRevertedCascadeIds.clear();
         this._persistedToolCounts = {};
         this._persistedToolCountsByConv = {};
         this._persistedRecentErrors = [];
@@ -1554,6 +1876,7 @@ export class GMTracker {
     fullReset(): void {
         this._cache.clear();
         this._callBaselines.clear();
+        this._pendingStartupBaselines.clear();
         this._archivedCallIds.clear();
         this._archivedModelCutoffs.clear();
         this._archivedAccountModelCutoffs.clear();
@@ -1561,6 +1884,8 @@ export class GMTracker {
         this._callAccountMap.clear();
         this._ledgerPositions.clear();
         this._ledgerCallIdentities.clear();
+        this._ledgerAcknowledgedIds.clear();
+        this._pendingRevertedCascadeIds.clear();
         this._persistedToolCounts = {};
         this._persistedToolCountsByConv = {};
         this._persistedRecentErrors = [];
@@ -1768,6 +2093,24 @@ export class GMTracker {
         };
     }
 
+    /** Read member histories for session costs, including calls before a quota reset. */
+    getGroupCostConversations(memberIds: readonly string[]): Pick<GMConversationData, 'cascadeId' | 'calls'>[] {
+        const conversations: Pick<GMConversationData, 'cascadeId' | 'calls'>[] = [];
+        for (const cascadeId of new Set(memberIds)) {
+            const conversation = this._cache.get(cascadeId);
+            if (!conversation) { continue; }
+            const calls = this._currentAccountEmail
+                ? conversation.calls.filter(call => !call.accountEmail || call.accountEmail === this._currentAccountEmail)
+                : conversation.calls;
+            conversations.push({ cascadeId, calls });
+        }
+        return conversations;
+    }
+
+    getUnmeasuredMemberIds(ids: readonly string[]): string[] {
+        return ids.filter(id => !this._cache.get(id)?.calls.length);
+    }
+
     /** Raw conversation cache for monitor persistence (ignores quota-cycle filtering). */
     getAllConversationData(): GMConversationData[] {
         return [...this._cache.values()]
@@ -1807,6 +2150,8 @@ export class GMTracker {
         };
         return {
             version: 1, summary: slim, baselines, callBaselines,
+            ...(this._needsBaselineInit ? { needsStartupBaseline: true } : {}),
+            ...(this._pendingStartupBaselines.size ? { pendingStartupBaselines: [...this._pendingStartupBaselines] } : {}),
             archivedCallIds: this._archivedCallIds.size > 0 ? [...this._archivedCallIds] : undefined,
             archivedModelCutoffs: this._archivedModelCutoffs.size > 0 ? Object.fromEntries(this._archivedModelCutoffs) : undefined,
             currentAccountEmail: this._currentAccountEmail || undefined,
@@ -1822,7 +2167,14 @@ export class GMTracker {
             persistedUniqueErrorsByAccount: Object.keys(this._persistedUniqueErrorsByAccount).length > 0 ? this._persistedUniqueErrorsByAccount : undefined,
             persistedToolCatalogByAccount: Object.keys(this._persistedToolCatalogByAccount).length > 0 ? this._persistedToolCatalogByAccount : undefined,
             ledgerPositions: this._ledgerPositions.size > 0 ? Object.fromEntries(this._ledgerPositions) : undefined,
-            ledgerCallIdentities: this._ledgerCallIdentities.size > 0 ? Object.fromEntries(this._ledgerCallIdentities) : undefined,
+            ledgerCallIdentities: this._ledgerCallIdentities.size > 0
+                ? Object.fromEntries(
+                    [...this._ledgerCallIdentities.entries()].map(([cid, list]) => [
+                        cid,
+                        Array.from(list, item => (typeof item === 'string' ? item : '')),
+                    ]),
+                )
+                : undefined,
         };
     }
 
@@ -1831,7 +2183,10 @@ export class GMTracker {
         const tracker = new GMTracker();
         if (!data || data.version !== 1) { return tracker; }
 
-        tracker._needsBaselineInit = false; // restored = not a manual clear
+        tracker._needsBaselineInit = data.needsStartupBaseline === true;
+        if (Array.isArray(data.pendingStartupBaselines)) {
+            tracker._pendingStartupBaselines = new Set(data.pendingStartupBaselines.filter(id => typeof id === 'string' && id));
+        }
         tracker._hasFetchedCalls = false;    // calls[] stripped — don't rebuild from empty cache
         tracker._lastSummary = normalizeGMSummary(data.summary);
         tracker._lastFetchedAt = tracker._lastSummary.fetchedAt || '';
@@ -1964,7 +2319,16 @@ export class GMTracker {
         if (data.ledgerCallIdentities && typeof data.ledgerCallIdentities === 'object') {
             for (const [id, identities] of Object.entries(data.ledgerCallIdentities)) {
                 if (Array.isArray(identities)) {
-                    tracker._ledgerCallIdentities.set(id, identities.filter((item): item is string => typeof item === 'string'));
+                    // Preserve positional alignment across sparse holes (serialized as '' or null)
+                    const aligned = identities.map(item => (typeof item === 'string' ? item : ''));
+                    tracker._ledgerCallIdentities.set(id, aligned);
+                    const ackSet = new Set<string>();
+                    for (const ident of aligned) {
+                        if (ident) { ackSet.add(ident); }
+                    }
+                    if (ackSet.size > 0) {
+                        tracker._ledgerAcknowledgedIds.set(id, ackSet);
+                    }
                 }
             }
         }

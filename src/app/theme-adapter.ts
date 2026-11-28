@@ -14,7 +14,6 @@
 export function getThemeAdapterStyles(): string {
     return `
         /* ═══ Antigravity App Host Token → VS Code CSS Variable Bridge ═══ */
-        :root,
         body[data-acm-surface="app-sidecar"] {
             --vscode-editor-background: var(--background, #0D1014);
             --vscode-editorWidget-background: var(--card, var(--popover, var(--background, #14181F)));
@@ -44,16 +43,47 @@ export function getThemeAdapterStyles(): string {
 
         /* ═══ App Sidecar Theme Polarity (Light / Dark / High-Contrast) ═══ */
         body[data-acm-theme="dark"] {
+            --vscode-editor-background: var(--background, #0D1014);
+            --vscode-editorWidget-background: var(--card, #14181F);
+            --vscode-foreground: var(--foreground, #F2F4F8);
+            --vscode-descriptionForeground: var(--muted-foreground, #8C98A9);
+            --vscode-widget-border: var(--border, #232A35);
+            --vscode-contrastBorder: var(--border, transparent);
+            --vscode-focusBorder: var(--ring, var(--primary, #5B9CF6));
+            --vscode-textLink-foreground: var(--primary, #5B9CF6);
+            --vscode-progressBar-background: var(--primary, #5B9CF6);
+            --vscode-list-hoverBackground: var(--accent, #222A36);
+            --vscode-toolbar-hoverBackground: var(--accent, #222A36);
+            --vscode-errorForeground: var(--destructive, #F87171);
+            --vscode-editorError-foreground: var(--destructive, #F87171);
+            --vscode-editorWarning-foreground: var(--warning, #FBBF24);
+            --vscode-scrollbarSlider-background: var(--border, rgba(140, 152, 169, 0.28));
             --ed-bg: var(--background, #0D1014);
             --ed-surface: var(--card, #14181F);
             --ed-surface-well: var(--secondary, #1B212B);
             --ed-surface-hover: var(--accent, #222A36);
             --ed-surface-overlay: var(--popover, #181E27);
+            --ed-input-bg: var(--card, #12161D);
+            --ed-track: #252E3C;
             --ed-border: var(--border, #232A35);
+            --ed-border-strong: #323C4C;
+            --ed-control-border: #4B586E;
             --ed-ink: var(--foreground, #F2F4F8);
+            --ed-ink-secondary: #C5CDD8;
             --ed-ink-muted: var(--muted-foreground, #8C98A9);
             --ed-accent: var(--primary, #5B9CF6);
+            --ed-accent-hover: #7BB1FA;
+            --ed-accent-tint: rgba(91, 156, 246, 0.14);
+            --ed-accent-border: rgba(91, 156, 246, 0.36);
+            --ed-warn: #FBBF24;
+            --ed-warn-tint: rgba(251, 191, 36, 0.14);
             --ed-danger: var(--destructive, #F87171);
+            --ed-danger-tint: rgba(248, 113, 113, 0.15);
+            --ctx-cat-system: #7C8798;
+            --ctx-cat-user: #5B9CF6;
+            --ctx-cat-assistant: #A78BFA;
+            --ctx-cat-tools: #F59E0B;
+            --ctx-cat-other: #64748B;
             color-scheme: dark;
         }
 
@@ -72,6 +102,7 @@ export function getThemeAdapterStyles(): string {
             --vscode-errorForeground: var(--destructive, #C02430);
             --vscode-editorError-foreground: var(--destructive, #C02430);
             --vscode-editorWarning-foreground: var(--warning, #945605);
+            --vscode-scrollbarSlider-background: var(--border, rgba(90, 100, 117, 0.28));
             --ed-bg: var(--background, #FAFBFC);
             --ed-surface: var(--card, #FFFFFF);
             --ed-surface-well: var(--secondary, #F2F4F8);
@@ -103,7 +134,23 @@ export function getThemeAdapterStyles(): string {
             --ed-danger-fill: #D02B37;
             --ed-danger-tint: rgba(220, 38, 38, 0.10);
             --ed-danger-border: rgba(192, 36, 48, 0.30);
+            --ed-chart-input: #4E6588;
+            --ed-chart-output: #2563EB;
             --ed-chart-cache: #0D7A64;
+            --ed-chart-thinking: #7C3AED;
+            --ctx-cat-system: #475569;
+            --ctx-cat-rules-skills: #C2410C;
+            --ctx-cat-plugins-mcp: #0E7490;
+            --ctx-cat-subagents: #BE185D;
+            --ctx-cat-user: #1D4ED8;
+            --ctx-cat-assistant: #7E22CE;
+            --ctx-cat-tools: #A16207;
+            --ctx-cat-media: #15803D;
+            --ctx-cat-other: #78716C;
+            --ctx-cat-free: var(--ed-track);
+            --ed-shadow-popover: 0 12px 30px rgba(17, 19, 24, 0.12), 0 2px 8px rgba(17, 19, 24, 0.06);
+            --ed-shadow-tooltip: 0 4px 12px rgba(17, 19, 24, 0.14);
+            --ed-shadow-segment: 0 1px 2px rgba(17, 19, 24, 0.08);
             color-scheme: light;
         }
 
@@ -215,10 +262,69 @@ export function getThemeAdapterStyles(): string {
 
         @media (prefers-color-scheme: light) {
             body[data-acm-surface="app-sidecar"]:not([data-acm-theme="dark"]):not([data-acm-theme="hc"]):not([data-acm-theme="hc-light"]):not(.vscode-dark) {
+                --vscode-editor-background: var(--background, #FAFBFC);
+                --vscode-editorWidget-background: var(--card, #FFFFFF);
+                --vscode-foreground: var(--foreground, #111318);
+                --vscode-descriptionForeground: var(--muted-foreground, #5A6475);
+                --vscode-widget-border: var(--border, #E4E8EF);
+                --vscode-contrastBorder: var(--border, transparent);
+                --vscode-focusBorder: var(--ring, var(--primary, #1D4ED8));
+                --vscode-textLink-foreground: var(--primary, #1D4ED8);
+                --vscode-progressBar-background: var(--primary, #1D4ED8);
+                --vscode-list-hoverBackground: var(--accent, #E9EEF5);
+                --vscode-toolbar-hoverBackground: var(--accent, #E9EEF5);
+                --vscode-errorForeground: var(--destructive, #C02430);
+                --vscode-editorError-foreground: var(--destructive, #C02430);
+                --vscode-editorWarning-foreground: var(--warning, #945605);
+                --vscode-scrollbarSlider-background: var(--border, rgba(90, 100, 117, 0.28));
                 --ed-bg: var(--background, #FAFBFC);
                 --ed-surface: var(--card, #FFFFFF);
-                --ed-ink: var(--foreground, #111318);
+                --ed-surface-well: var(--secondary, #F2F4F8);
+                --ed-surface-hover: var(--accent, #E9EEF5);
+                --ed-surface-overlay: var(--popover, #FFFFFF);
+                --ed-input-bg: var(--card, #FFFFFF);
+                --ed-track: #E2E7EF;
                 --ed-border: var(--border, #E4E8EF);
+                --ed-border-strong: #C8D0DC;
+                --ed-control-border: #8792A4;
+                --ed-ink: var(--foreground, #111318);
+                --ed-ink-secondary: #454D5B;
+                --ed-ink-muted: var(--muted-foreground, #5A6475);
+                --ed-accent: var(--primary, #1D4ED8);
+                --ed-accent-hover: #1E40AF;
+                --ed-accent-track: var(--primary, #1D4ED8);
+                --ed-accent-ink: #FFFFFF;
+                --ed-accent-tint: rgba(29, 78, 216, 0.10);
+                --ed-accent-border: rgba(29, 78, 216, 0.28);
+                --ed-good: #0E7448;
+                --ed-good-fill: #128052;
+                --ed-good-tint: rgba(14, 116, 72, 0.10);
+                --ed-good-border: rgba(14, 116, 72, 0.28);
+                --ed-warn: #945605;
+                --ed-warn-fill: #B46909;
+                --ed-warn-tint: rgba(217, 119, 6, 0.12);
+                --ed-warn-border: rgba(180, 105, 9, 0.30);
+                --ed-danger: var(--destructive, #C02430);
+                --ed-danger-fill: #D02B37;
+                --ed-danger-tint: rgba(220, 38, 38, 0.10);
+                --ed-danger-border: rgba(192, 36, 48, 0.30);
+                --ed-chart-input: #4E6588;
+                --ed-chart-output: #2563EB;
+                --ed-chart-cache: #0D7A64;
+                --ed-chart-thinking: #7C3AED;
+                --ctx-cat-system: #475569;
+                --ctx-cat-rules-skills: #C2410C;
+                --ctx-cat-plugins-mcp: #0E7490;
+                --ctx-cat-subagents: #BE185D;
+                --ctx-cat-user: #1D4ED8;
+                --ctx-cat-assistant: #7E22CE;
+                --ctx-cat-tools: #A16207;
+                --ctx-cat-media: #15803D;
+                --ctx-cat-other: #78716C;
+                --ctx-cat-free: var(--ed-track);
+                --ed-shadow-popover: 0 12px 30px rgba(17, 19, 24, 0.12), 0 2px 8px rgba(17, 19, 24, 0.06);
+                --ed-shadow-tooltip: 0 4px 12px rgba(17, 19, 24, 0.14);
+                --ed-shadow-segment: 0 1px 2px rgba(17, 19, 24, 0.08);
                 color-scheme: light;
             }
         }

@@ -3,143 +3,299 @@
  * Antigravity App native Sidecar plugin (`antigravity-context-monitor`).
  *
  * Security & Runtime Guarantees:
- * - Zero external npm dependencies (pure Node built-ins: `https`, `crypto`, `fs`, `path`, `zlib`).
- * - Strict HTTPS host allowlist (`github.com`, `api.github.com`, `objects.githubusercontent.com`,
- *   `release-assets.githubusercontent.com`) re-validated on EVERY redirect hop (max 5 hops).
- * - SHA-256 checksum verification against `SHA256SUMS.txt` when published in the release.
- * - Pure-Node ZIP extractor supporting Stored + Deflate with IEEE CRC-32 check, zip-bomb byte/count
- *   caps, and strict rejection of zip-slip (`..`), absolute paths, encrypted entries, and symlinks.
- * - Bundle validation (`plugin.json`, `name`, valid semver, `sidecars/context_monitor/main.mjs`).
- * - Atomic install with backup & automatic rollback on failure (including Windows `EPERM`/`EBUSY` fallback).
+ * - Zero external npm dependencies (pure Node built-ins: `crypto`, `fs`, `http`, `https`, `net`, `path`, `tls`, `zlib`).
+ * - Reuses `src/core/release-security.ts` as single source of truth for semver, strict HTTPS port-443
+ *   GitHub host allowlist (`github.com`, `api.github.com`, `objects.githubusercontent.com`,
+ *   `release-assets.githubusercontent.com`), lowercase SHA256SUMS.txt normalization, safe ZIP
+ *   extraction (Stored + Deflate, CRC-32, zip-slip / symlink / encryption / zip-bomb rejection),
+ *   and release-tag <-> `plugin.json` version parity enforcement.
+ * - Fail-closed SHA-256 verification: `SHA256SUMS.txt` is ALWAYS required in App self-update.
+ * - Supports `HTTPS_PROXY` / `ALL_PROXY` HTTP CONNECT tunneling (respecting `NO_PROXY`).
+ * - Supports strict HTTPS port-443 `github.com/.../releases.atom` check-only fallback when the
+ *   GitHub API is rate-limited (never downloads/installs without fail-closed `SHA256SUMS.txt`).
+ * - Atomic install with backup & transactional rollback (including Windows locked-dir staging swap).
  */
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as http from 'http';
 import * as https from 'https';
+import type * as net from 'net';
 import * as path from 'path';
-import * as zlib from 'zlib';
+import * as tls from 'tls';
+import {
+    ALLOWED_RELEASE_HOSTS,
+    APPROVED_GITHUB_REPO_NAME,
+    APPROVED_GITHUB_REPO_OWNER,
+    APPROVED_GITHUB_REPO_SLUG,
+    CHECKSUMS_ASSET_NAME,
+    DEFAULT_UPDATE_LOCK_STALE_MS,
+    DEFAULT_UPDATE_LOCK_TIMEOUT_MS,
+    EXPECTED_PLUGIN_NAME,
+    MAX_API_BODY_BYTES,
+    MAX_ARCHIVE_BYTES,
+    MAX_CHECKSUMS_BYTES,
+    MAX_EXTRACTED_BYTES,
+    MAX_REDIRECT_HOPS,
+    MAX_ZIP_ENTRIES,
+    acquirePluginUpdateLock,
+    assertReleaseVersionMatches,
+    assertSafeArchiveEntryPath,
+    buildApprovedReleaseApiUrl,
+    compareSemver,
+    computeSha256Hex,
+    crc32,
+    expectedAppZipAssetName,
+    extractZipSafe,
+    getPluginUpdateLockPath,
+    isApprovedReleaseRepo,
+    isNewerVersion,
+    lookupSha256Sum,
+    parseSemver,
+    parseSha256Sums,
+    resolveExtractedPluginRoot,
+    sanitizeZipEntryPath,
+    validateApprovedReleaseAssetUrl,
+    validateApprovedReleaseHtmlUrl,
+    validateExtractedPluginBundle,
+    validateReleaseIdentity,
+    validateReleaseUrl,
+    validateRepoSlug,
+    verifyBufferSha256,
+    type AcquireUpdateLockOptions,
+    type ExpectedReleaseAssetBinding,
+    type ExtractZipOptions,
+    type ExtractZipResult,
+    type PluginUpdateLockHandle,
+    type ReleaseIdentityInput,
+    type SemverParts,
+    type ValidateBundleOptions,
+    type ValidatedPluginBundle,
+    type ValidatedReleaseIdentity,
+} from '../core/release-security';
 import type {
     ApplyPluginUpdateResult,
     PluginReleaseInfo,
     UpdateCheckResult,
 } from './sidecar-types';
 
-export const GITHUB_REPO_OWNER = 'AGI-is-going-to-arrive';
-export const GITHUB_REPO_NAME = 'Antigravity-Context-Window-Monitor';
+export {
+    ALLOWED_RELEASE_HOSTS,
+    APPROVED_GITHUB_REPO_NAME,
+    APPROVED_GITHUB_REPO_OWNER,
+    APPROVED_GITHUB_REPO_SLUG,
+    CHECKSUMS_ASSET_NAME,
+    DEFAULT_UPDATE_LOCK_STALE_MS,
+    DEFAULT_UPDATE_LOCK_TIMEOUT_MS,
+    EXPECTED_PLUGIN_NAME,
+    MAX_API_BODY_BYTES,
+    MAX_ARCHIVE_BYTES,
+    MAX_CHECKSUMS_BYTES,
+    MAX_EXTRACTED_BYTES,
+    MAX_REDIRECT_HOPS,
+    MAX_ZIP_ENTRIES,
+    acquirePluginUpdateLock,
+    assertReleaseVersionMatches,
+    assertSafeArchiveEntryPath,
+    buildApprovedReleaseApiUrl,
+    compareSemver,
+    computeSha256Hex,
+    crc32,
+    expectedAppZipAssetName,
+    extractZipSafe,
+    getPluginUpdateLockPath,
+    isApprovedReleaseRepo,
+    isNewerVersion,
+    lookupSha256Sum,
+    parseSemver,
+    parseSha256Sums,
+    resolveExtractedPluginRoot,
+    sanitizeZipEntryPath,
+    validateApprovedReleaseAssetUrl,
+    validateApprovedReleaseHtmlUrl,
+    validateExtractedPluginBundle,
+    validateReleaseIdentity,
+    validateReleaseUrl,
+    validateRepoSlug,
+    verifyBufferSha256,
+    type AcquireUpdateLockOptions,
+    type ExpectedReleaseAssetBinding,
+    type ExtractZipOptions,
+    type ExtractZipResult,
+    type PluginUpdateLockHandle,
+    type ReleaseIdentityInput,
+    type SemverParts,
+    type ValidateBundleOptions,
+    type ValidatedPluginBundle,
+    type ValidatedReleaseIdentity,
+};
+
+export const GITHUB_REPO_OWNER = APPROVED_GITHUB_REPO_OWNER;
+export const GITHUB_REPO_NAME = APPROVED_GITHUB_REPO_NAME;
 export const GITHUB_LATEST_RELEASE_URL =
     `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/latest`;
-export const EXPECTED_PLUGIN_NAME = 'antigravity-context-monitor';
+export const GITHUB_RELEASES_ATOM_URL =
+    `https://github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases.atom`;
 
 export const DEFAULT_UPDATE_CHECK_THROTTLE_MS = 6 * 60 * 60 * 1000; // 6 hours
 export const DEFAULT_API_TIMEOUT_MS = 12_000;
 export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 60_000;
-export const MAX_REDIRECT_HOPS = 5;
-export const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
-export const MAX_CHECKSUMS_BYTES = 256 * 1024;
-export const MAX_API_BODY_BYTES = 2 * 1024 * 1024;
-export const MAX_EXTRACTED_BYTES = 100 * 1024 * 1024;
-export const MAX_ZIP_ENTRIES = 2_000;
 
-export const ALLOWED_RELEASE_HOSTS: ReadonlySet<string> = new Set([
-    'github.com',
-    'api.github.com',
-    'objects.githubusercontent.com',
-    'release-assets.githubusercontent.com',
-]);
+// ─── Proxy Resolution & HTTP CONNECT Tunnel ──────────────────────────────────
 
-// ─── Semver Parsing & Comparison ─────────────────────────────────────────────
-
-export interface SemverParts {
-    major: number;
-    minor: number;
-    patch: number;
-    prerelease: string[];
-    normalized: string;
+export function isHostBypassedByNoProxy(
+    hostname: string,
+    port = '443',
+    noProxyRaw?: string,
+): boolean {
+    if (!noProxyRaw || !noProxyRaw.trim()) { return false; }
+    const targetHost = hostname.trim().toLowerCase();
+    const targetPort = port || '443';
+    for (const rawEntry of noProxyRaw.split(',')) {
+        const entry = rawEntry.trim().toLowerCase();
+        if (!entry) { continue; }
+        if (entry === '*') { return true; }
+        let patternHost = entry;
+        let patternPort = '';
+        const colonIdx = entry.lastIndexOf(':');
+        if (colonIdx > 0 && !entry.endsWith(']')) {
+            const candidatePort = entry.slice(colonIdx + 1);
+            if (/^\d+$/.test(candidatePort)) {
+                patternHost = entry.slice(0, colonIdx);
+                patternPort = candidatePort;
+            }
+        }
+        if (patternPort && patternPort !== targetPort) {
+            continue;
+        }
+        if (patternHost.startsWith('.')) {
+            const bare = patternHost.slice(1);
+            if (targetHost === bare || targetHost.endsWith(patternHost)) {
+                return true;
+            }
+        } else if (targetHost === patternHost || targetHost.endsWith(`.${patternHost}`)) {
+            return true;
+        }
+    }
+    return false;
 }
 
-const SEMVER_RE = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/;
-
-export function parseSemver(raw: string): SemverParts | null {
-    if (typeof raw !== 'string') { return null; }
-    const match = raw.trim().match(SEMVER_RE);
-    if (!match) { return null; }
-    const major = Number(match[1]);
-    const minor = Number(match[2]);
-    const patch = Number(match[3]);
-    if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor) || !Number.isSafeInteger(patch)) {
+/**
+ * Resolve an HTTP/HTTPS CONNECT proxy URL for an outbound HTTPS request from
+ * `HTTPS_PROXY` / `https_proxy` / `ALL_PROXY` / `all_proxy`, respecting `NO_PROXY` / `no_proxy`.
+ */
+export function resolveHttpsProxyUrl(
+    targetUrl: URL,
+    env: NodeJS.ProcessEnv = process.env,
+): URL | null {
+    const noProxy = env.NO_PROXY || env.no_proxy;
+    if (isHostBypassedByNoProxy(targetUrl.hostname, targetUrl.port || '443', noProxy)) {
         return null;
     }
-    const prerelease = match[4] ? match[4].split('.').filter(Boolean) : [];
-    const normalized = `${major}.${minor}.${patch}${prerelease.length > 0 ? `-${prerelease.join('.')}` : ''}`;
-    return { major, minor, patch, prerelease, normalized };
+    const candidates = [
+        env.HTTPS_PROXY,
+        env.https_proxy,
+        env.ALL_PROXY,
+        env.all_proxy,
+    ];
+    for (const raw of candidates) {
+        if (typeof raw !== 'string' || !raw.trim()) { continue; }
+        const trimmed = raw.trim();
+        const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)
+            ? trimmed
+            : `http://${trimmed}`;
+        try {
+            const parsed = new URL(withScheme);
+            if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+                return parsed;
+            }
+        } catch {
+            // Ignore malformed proxy entry and continue checking fallbacks
+        }
+    }
+    return null;
 }
 
-export function compareSemver(a: string, b: string): number {
-    const pa = parseSemver(a);
-    const pb = parseSemver(b);
-    if (!pa || !pb) {
-        throw new Error(`Invalid semantic version comparison: "${a}" vs "${b}"`);
-    }
-    if (pa.major !== pb.major) { return pa.major - pb.major; }
-    if (pa.minor !== pb.minor) { return pa.minor - pb.minor; }
-    if (pa.patch !== pb.patch) { return pa.patch - pb.patch; }
+/**
+ * Establish an HTTP CONNECT tunnel socket through an HTTP or HTTPS proxy server.
+ */
+export function establishHttpConnectTunnel(
+    proxyUrl: URL,
+    targetHost: string,
+    targetPort: number,
+    timeoutMs: number,
+): Promise<net.Socket> {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const authority = `${targetHost}:${targetPort}`;
 
-    // Stable release has higher precedence than a pre-release of the same version
-    if (pa.prerelease.length === 0 && pb.prerelease.length === 0) { return 0; }
-    if (pa.prerelease.length === 0) { return 1; }
-    if (pb.prerelease.length === 0) { return -1; }
+        const headers: Record<string, string> = {
+            Host: authority,
+        };
+        if (proxyUrl.username || proxyUrl.password) {
+            const creds = `${decodeURIComponent(proxyUrl.username)}:${decodeURIComponent(proxyUrl.password)}`;
+            headers['Proxy-Authorization'] = `Basic ${Buffer.from(creds, 'utf8').toString('base64')}`;
+        }
 
-    const len = Math.max(pa.prerelease.length, pb.prerelease.length);
-    for (let i = 0; i < len; i++) {
-        if (i >= pa.prerelease.length) { return -1; }
-        if (i >= pb.prerelease.length) { return 1; }
-        const ia = pa.prerelease[i];
-        const ib = pb.prerelease[i];
-        if (ia === ib) { continue; }
-        const numA = /^\d+$/.test(ia);
-        const numB = /^\d+$/.test(ib);
-        if (numA && numB) { return Number(ia) - Number(ib); }
-        if (numA) { return -1; }
-        if (numB) { return 1; }
-        return ia < ib ? -1 : 1;
-    }
-    return 0;
-}
+        const isHttpsProxy = proxyUrl.protocol === 'https:';
+        const proxyPort = proxyUrl.port
+            ? Number(proxyUrl.port)
+            : (isHttpsProxy ? 443 : 80);
 
-export function isNewerVersion(candidate: string, current: string): boolean {
-    const pc = parseSemver(candidate);
-    const pb = parseSemver(current);
-    if (!pc || !pb) { return false; }
-    return compareSemver(pc.normalized, pb.normalized) > 0;
+        const requester = isHttpsProxy ? https.request : http.request;
+        const connectReq = requester({
+            protocol: proxyUrl.protocol,
+            hostname: proxyUrl.hostname,
+            port: proxyPort,
+            method: 'CONNECT',
+            path: authority,
+            headers,
+            agent: false,
+        });
+
+        const finish = (err: Error | null, socket?: net.Socket) => {
+            if (settled) { return; }
+            settled = true;
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (err) {
+                try { connectReq.destroy(); } catch { /* ignore */ }
+                reject(err);
+            } else {
+                resolve(socket!);
+            }
+        };
+
+        timer = setTimeout(() => {
+            finish(new Error(`Proxy CONNECT timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        timer.unref?.();
+
+        connectReq.once('connect', (proxyRes, socket, head) => {
+            const status = proxyRes.statusCode ?? 0;
+            if (status !== 200) {
+                socket.destroy();
+                finish(new Error(`Proxy CONNECT to ${authority} failed (HTTP ${status})`));
+                return;
+            }
+            if (head && head.length > 0) {
+                socket.unshift(head);
+            }
+            finish(null, socket);
+        });
+
+        connectReq.once('response', (proxyRes) => {
+            const status = proxyRes.statusCode ?? 0;
+            proxyRes.resume();
+            finish(new Error(`Proxy CONNECT to ${authority} failed (HTTP ${status})`));
+        });
+
+        connectReq.once('error', (err) => finish(err));
+        connectReq.end();
+    });
 }
 
 // ─── Strict HTTPS Host Allowlist & Safe Redirect Fetch ───────────────────────
-
-export function validateReleaseUrl(rawUrl: string): URL {
-    if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
-        throw new Error('Release URL is empty');
-    }
-    let parsed: URL;
-    try {
-        parsed = new URL(rawUrl.trim());
-    } catch {
-        throw new Error(`Malformed release URL: ${rawUrl}`);
-    }
-    if (parsed.protocol !== 'https:') {
-        throw new Error(`Refusing non-HTTPS release URL protocol: ${parsed.protocol}`);
-    }
-    if (parsed.username || parsed.password) {
-        throw new Error('Refusing release URL containing embedded credentials');
-    }
-    if (parsed.port && parsed.port !== '443') {
-        throw new Error(`Refusing non-standard HTTPS port in release URL: ${parsed.port}`);
-    }
-    const host = parsed.hostname.toLowerCase();
-    if (!ALLOWED_RELEASE_HOSTS.has(host)) {
-        throw new Error(`Refusing release URL with non-allowlisted host: ${host}`);
-    }
-    return parsed;
-}
 
 export interface HttpsTransportResponse {
     statusCode: number;
@@ -147,77 +303,141 @@ export interface HttpsTransportResponse {
     body: Buffer;
 }
 
+export interface HttpsTransportRequestOptions {
+    headers: Record<string, string>;
+    timeoutMs: number;
+    maxBytes: number;
+    env?: NodeJS.ProcessEnv;
+    /** Optional additional trusted CA PEM/DER certificate(s) for TLS verification (rejectUnauthorized is always true). */
+    ca?: string | Buffer | Array<string | Buffer>;
+}
+
 export type HttpsRequestTransport = (
     url: URL,
-    options: {
-        headers: Record<string, string>;
-        timeoutMs: number;
-        maxBytes: number;
-    },
+    options: HttpsTransportRequestOptions,
 ) => Promise<HttpsTransportResponse>;
 
 export function defaultHttpsTransport(
     url: URL,
-    options: {
-        headers: Record<string, string>;
-        timeoutMs: number;
-        maxBytes: number;
-    },
+    options: HttpsTransportRequestOptions,
 ): Promise<HttpsTransportResponse> {
     return new Promise((resolve, reject) => {
+        const startedAt = Date.now();
         let settled = false;
+        let activeReq: http.ClientRequest | null = null;
+        let tunnelSocket: net.Socket | null = null;
+        let tunnelAgent: https.Agent | null = null;
+        let hardTimer: ReturnType<typeof setTimeout> | null = null;
+
         const finish = (err: Error | null, result?: HttpsTransportResponse) => {
             if (settled) { return; }
             settled = true;
-            if (err) { reject(err); } else { resolve(result!); }
+            if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
+            if (err) {
+                try { activeReq?.destroy(); } catch { /* ignore */ }
+                try { tunnelSocket?.destroy(); } catch { /* ignore */ }
+                try { tunnelAgent?.destroy(); } catch { /* ignore */ }
+                reject(err);
+            } else {
+                try { tunnelAgent?.destroy(); } catch { /* ignore */ }
+                resolve(result!);
+            }
         };
 
-        const req = https.request({
-            protocol: url.protocol,
-            hostname: url.hostname,
-            port: 443,
-            path: `${url.pathname}${url.search}`,
-            method: 'GET',
-            headers: options.headers,
-            timeout: options.timeoutMs,
-        }, (res) => {
-            const statusCode = res.statusCode ?? 0;
-            const headers: Record<string, string | string[] | undefined> = {};
-            for (const [k, v] of Object.entries(res.headers)) {
-                headers[k.toLowerCase()] = v;
-            }
-            // Don't buffer redirect response bodies
-            if (statusCode >= 300 && statusCode < 400) {
-                res.resume();
-                finish(null, { statusCode, headers, body: Buffer.alloc(0) });
+        hardTimer = setTimeout(() => {
+            finish(new Error(`HTTPS request timed out after ${options.timeoutMs}ms`));
+        }, options.timeoutMs);
+        hardTimer.unref?.();
+
+        const targetPort = url.port ? Number(url.port) : 443;
+
+        const runRequest = (socketForTunnel?: net.Socket) => {
+            if (settled) {
+                socketForTunnel?.destroy();
                 return;
             }
+            const remainingMs = Math.max(1, options.timeoutMs - (Date.now() - startedAt));
+            let requestAgent: https.Agent | undefined;
+            if (socketForTunnel) {
+                // Node.js ignores request-level `createConnection` whenever `agent: false` is set.
+                // Use a dedicated single-use `https.Agent` whose `createConnection` upgrades the
+                // established HTTP CONNECT tunnel with strict TLS verification (`rejectUnauthorized: true`).
+                const agent = new https.Agent({ keepAlive: false, maxSockets: 1 });
+                agent.createConnection = () => tls.connect({
+                    socket: socketForTunnel,
+                    servername: url.hostname,
+                    rejectUnauthorized: true,
+                    ...(options.ca ? { ca: options.ca } : {}),
+                });
+                tunnelAgent = agent;
+                requestAgent = agent;
+            }
 
-            const chunks: Buffer[] = [];
-            let total = 0;
-            res.on('data', (chunk: Buffer | string) => {
-                if (settled) { return; }
-                const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
-                total += buf.length;
-                if (total > options.maxBytes) {
-                    req.destroy();
-                    finish(new Error(`Response body exceeded maximum allowed limit (${options.maxBytes} bytes)`));
+            const reqOptions: https.RequestOptions = {
+                protocol: url.protocol,
+                hostname: url.hostname,
+                port: targetPort,
+                path: `${url.pathname}${url.search}`,
+                method: 'GET',
+                headers: options.headers,
+                timeout: remainingMs,
+                rejectUnauthorized: true,
+                ...(options.ca ? { ca: options.ca } : {}),
+                ...(requestAgent ? { agent: requestAgent } : {}),
+            };
+
+            const req = https.request(reqOptions, (res) => {
+                const statusCode = res.statusCode ?? 0;
+                const headers: Record<string, string | string[] | undefined> = {};
+                for (const [k, v] of Object.entries(res.headers)) {
+                    headers[k.toLowerCase()] = v;
+                }
+                // Don't buffer redirect response bodies
+                if (statusCode >= 300 && statusCode < 400) {
+                    res.resume();
+                    finish(null, { statusCode, headers, body: Buffer.alloc(0) });
                     return;
                 }
-                chunks.push(buf);
-            });
-            res.on('error', (err) => finish(err));
-            res.on('end', () => {
-                finish(null, { statusCode, headers, body: Buffer.concat(chunks) });
-            });
-        });
 
-        req.on('error', (err) => finish(err));
-        req.on('timeout', () => {
-            req.destroy();
-            finish(new Error(`HTTPS request timed out after ${options.timeoutMs}ms`));
-        });
-        req.end();
+                const chunks: Buffer[] = [];
+                let total = 0;
+                res.on('data', (chunk: Buffer | string) => {
+                    if (settled) { return; }
+                    const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+                    total += buf.length;
+                    if (total > options.maxBytes) {
+                        req.destroy();
+                        finish(new Error(`Response body exceeded maximum allowed limit (${options.maxBytes} bytes)`));
+                        return;
+                    }
+                    chunks.push(buf);
+                });
+                res.on('error', (err) => finish(err));
+                res.on('end', () => {
+                    finish(null, { statusCode, headers, body: Buffer.concat(chunks) });
+                });
+            });
+
+            activeReq = req;
+            req.on('error', (err) => finish(err));
+            req.on('timeout', () => {
+                req.destroy();
+                finish(new Error(`HTTPS request timed out after ${options.timeoutMs}ms`));
+            });
+            req.end();
+        };
+
+        const proxyUrl = resolveHttpsProxyUrl(url, options.env ?? process.env);
+        if (proxyUrl) {
+            establishHttpConnectTunnel(proxyUrl, url.hostname, targetPort, options.timeoutMs)
+                .then((sock) => {
+                    tunnelSocket = sock;
+                    runRequest(sock);
+                })
+                .catch((err) => finish(err instanceof Error ? err : new Error(String(err))));
+        } else {
+            runRequest();
+        }
     });
 }
 
@@ -240,6 +460,8 @@ export async function fetchAllowedHttps(
         maxBytes?: number;
         maxRedirects?: number;
         transport?: HttpsRequestTransport;
+        env?: NodeJS.ProcessEnv;
+        ca?: string | Buffer | Array<string | Buffer>;
     } = {},
 ): Promise<HttpsTransportResponse & { finalUrl: string }> {
     const transport = options.transport ?? defaultHttpsTransport;
@@ -255,6 +477,8 @@ export async function fetchAllowedHttps(
             headers: baseHeaders,
             timeoutMs,
             maxBytes,
+            ...(options.env ? { env: options.env } : {}),
+            ...(options.ca ? { ca: options.ca } : {}),
         });
 
         const isRedirect = res.statusCode === 301
@@ -284,6 +508,135 @@ export async function fetchAllowedHttps(
     throw new Error('Redirect loop exhausted');
 }
 
+// ─── GitHub `releases.atom` Check-Only Rate-Limit Fallback ───────────────────
+
+export interface ParsedAtomRelease {
+    tagName: string;
+    version: string;
+    releaseUrl: string;
+    publishedAt?: string;
+    title?: string;
+}
+
+export function isGitHubRateLimitResponse(res: HttpsTransportResponse): boolean {
+    if (res.statusCode === 429) {
+        return true;
+    }
+    if (res.statusCode === 403) {
+        const remaining = headerFirst(res.headers, 'x-ratelimit-remaining');
+        if (remaining !== undefined && remaining.trim() === '0') {
+            return true;
+        }
+        const snippet = res.body.toString('utf8', 0, Math.min(res.body.length, 1024));
+        if (/rate\s*limit/i.test(snippet)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function decodeXmlEntities(raw: string): string {
+    return raw
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'");
+}
+
+/**
+ * Parse a GitHub `releases.atom` feed to extract the latest stable semver release
+ * for check-only update discovery when the JSON API is rate-limited.
+ *
+ * Strictly validates that the parsed release URL is an HTTPS port-443 `github.com` URL.
+ */
+export function parseReleasesAtomLatest(atomXml: string): ParsedAtomRelease | null {
+    if (typeof atomXml !== 'string' || !atomXml.trim()) { return null; }
+
+    const entryRe = /<entry\b[^>]*>([\s\S]*?)<\/entry>/gi;
+    const candidates: Array<ParsedAtomRelease & { isPrerelease: boolean }> = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = entryRe.exec(atomXml)) !== null) {
+        const entry = match[1];
+        const linkMatch = entry.match(/<link\b[^>]*\bhref=["']([^"']+)["'][^>]*\/?>/i);
+        const rawHref = linkMatch ? decodeXmlEntities(linkMatch[1].trim()) : '';
+
+        let rawTag = '';
+        let validatedUrl = '';
+        let rejectedForeignHref = false;
+        if (rawHref) {
+            try {
+                const parsedHref = validateReleaseUrl(rawHref);
+                const segments = parsedHref.pathname.split('/').filter(Boolean).map((s) => decodeURIComponent(s));
+                if (
+                    parsedHref.hostname.toLowerCase() === 'github.com'
+                    && segments.length === 5
+                    && segments[0].toLowerCase() === GITHUB_REPO_OWNER.toLowerCase()
+                    && segments[1].toLowerCase() === GITHUB_REPO_NAME.toLowerCase()
+                    && segments[2] === 'releases'
+                    && segments[3] === 'tag'
+                ) {
+                    validatedUrl = parsedHref.toString();
+                    rawTag = segments[4];
+                } else {
+                    rejectedForeignHref = true;
+                }
+            } catch {
+                rejectedForeignHref = true;
+            }
+        }
+        if (rejectedForeignHref) { continue; }
+
+        if (!rawTag) {
+            const idMatch = entry.match(/<id\b[^>]*>([\s\S]*?)<\/id>/i);
+            const idText = idMatch ? decodeXmlEntities(idMatch[1].trim()) : '';
+            const idTail = idText.split('/').pop() || '';
+            if (idTail) {
+                rawTag = idTail;
+            }
+        }
+
+        const semver = parseSemver(rawTag);
+        if (!semver) { continue; }
+
+        if (!validatedUrl) {
+            validatedUrl = `https://github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/tag/${encodeURIComponent(rawTag)}`;
+        }
+
+        const updatedMatch = entry.match(/<updated\b[^>]*>([\s\S]*?)<\/updated>/i);
+        const titleMatch = entry.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+
+        candidates.push({
+            tagName: rawTag,
+            version: semver.normalized,
+            releaseUrl: validatedUrl,
+            ...(updatedMatch ? { publishedAt: decodeXmlEntities(updatedMatch[1].trim()) } : {}),
+            ...(titleMatch ? { title: decodeXmlEntities(titleMatch[1].trim()) } : {}),
+            isPrerelease: semver.prerelease.length > 0,
+        });
+    }
+
+    if (candidates.length === 0) { return null; }
+
+    // Prefer stable releases (matching `/releases/latest` semantics), choosing the highest semver.
+    const stable = candidates.filter((c) => !c.isPrerelease);
+    const pool = stable.length > 0 ? stable : candidates;
+    let best = pool[0];
+    for (let i = 1; i < pool.length; i++) {
+        if (compareSemver(pool[i].version, best.version) > 0) {
+            best = pool[i];
+        }
+    }
+    return {
+        tagName: best.tagName,
+        version: best.version,
+        releaseUrl: best.releaseUrl,
+        ...(best.publishedAt ? { publishedAt: best.publishedAt } : {}),
+        ...(best.title ? { title: best.title } : {}),
+    };
+}
+
 // ─── GitHub Release Update Checker ───────────────────────────────────────────
 
 export interface CheckForUpdatesOptions {
@@ -294,8 +647,12 @@ export interface CheckForUpdatesOptions {
     throttleMs?: number;
     timeoutMs?: number;
     releaseApiUrl?: string;
+    /** Optional check-only Atom feed URL (must be strict HTTPS port-443 `github.com`). */
+    releasesAtomUrl?: string;
     now?: () => number;
     transport?: HttpsRequestTransport;
+    env?: NodeJS.ProcessEnv;
+    ca?: string | Buffer | Array<string | Buffer>;
 }
 
 interface GitHubReleaseAsset {
@@ -312,6 +669,162 @@ interface GitHubReleasePayload {
     assets?: unknown;
 }
 
+function parseApprovedReleasePayload(
+    parsed: GitHubReleasePayload,
+    options: { expectedTagOrVersion?: string; requireChecksums?: boolean } = {},
+): { latestVersion: string; tagName: string; releaseInfo?: PluginReleaseInfo } {
+    const tagName = typeof parsed.tag_name === 'string' ? parsed.tag_name.trim() : '';
+    const semver = parseSemver(tagName);
+    if (!semver) {
+        throw new Error(`Invalid release tag version: ${tagName || '(empty)'}`);
+    }
+    const latestVersion = semver.normalized;
+    if (options.expectedTagOrVersion && options.expectedTagOrVersion.trim()) {
+        assertReleaseVersionMatches(latestVersion, options.expectedTagOrVersion);
+    }
+
+    const assets = Array.isArray(parsed.assets) ? (parsed.assets as GitHubReleaseAsset[]) : [];
+    const expectedZipName = expectedAppZipAssetName(latestVersion);
+    const matchingZips = assets.filter((a) => typeof a?.name === 'string' && a.name === expectedZipName);
+    if (matchingZips.length > 1) {
+        throw new Error(`Release ${tagName} contains duplicate ${expectedZipName} assets`);
+    }
+    const zipAsset = matchingZips[0];
+
+    const matchingChecksums = assets.filter(
+        (a) => typeof a?.name === 'string' && a.name.toLowerCase() === CHECKSUMS_ASSET_NAME.toLowerCase(),
+    );
+    if (matchingChecksums.length > 1) {
+        throw new Error(`Release ${tagName} contains conflicting duplicate ${CHECKSUMS_ASSET_NAME} assets`);
+    }
+    const checksumAsset = matchingChecksums[0];
+
+    let releaseInfo: PluginReleaseInfo | undefined;
+    if (zipAsset && typeof zipAsset.name === 'string' && typeof zipAsset.browser_download_url === 'string') {
+        // Strictly bind every asset URL to the approved repo, exact tag, and exact asset filename
+        const validatedZipUrl = validateApprovedReleaseAssetUrl(zipAsset.browser_download_url, {
+            repoSlug: APPROVED_GITHUB_REPO_SLUG,
+            tagName,
+            assetName: expectedZipName,
+        }).toString();
+
+        let validatedChecksumsUrl: string | null = null;
+        if (checksumAsset && typeof checksumAsset.browser_download_url === 'string') {
+            validatedChecksumsUrl = validateApprovedReleaseAssetUrl(checksumAsset.browser_download_url, {
+                repoSlug: APPROVED_GITHUB_REPO_SLUG,
+                tagName,
+                assetName: CHECKSUMS_ASSET_NAME,
+                caseInsensitiveAssetName: true,
+            }).toString();
+        } else if (options.requireChecksums) {
+            throw new Error(
+                `SHA256SUMS.txt is required for plugin self-update but was not published for release ${tagName}`,
+            );
+        }
+
+        const rawHtmlUrl = typeof parsed.html_url === 'string' && parsed.html_url.trim()
+            ? validateApprovedReleaseHtmlUrl(parsed.html_url, {
+                repoSlug: APPROVED_GITHUB_REPO_SLUG,
+                tagName,
+            }).toString()
+            : `https://github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/tag/${encodeURIComponent(tagName)}`;
+
+        releaseInfo = {
+            version: latestVersion,
+            tagName,
+            releaseUrl: rawHtmlUrl,
+            publishedAt: typeof parsed.published_at === 'string' ? parsed.published_at : undefined,
+            releaseNotesSummary: summarizeReleaseNotes(typeof parsed.body === 'string' ? parsed.body : ''),
+            assetName: zipAsset.name,
+            assetUrl: validatedZipUrl,
+            assetSize: typeof zipAsset.size === 'number' && Number.isFinite(zipAsset.size) ? zipAsset.size : undefined,
+            checksumsUrl: validatedChecksumsUrl,
+        };
+    } else if (options.requireChecksums) {
+        throw new Error(
+            `Release ${tagName} does not publish the exact expected asset ${expectedZipName}`,
+        );
+    }
+
+    return { latestVersion, tagName, releaseInfo };
+}
+
+export interface ResolveApprovedReleaseOptions {
+    currentVersion: string;
+    tagOrVersion?: string;
+    timeoutMs?: number;
+    transport?: HttpsRequestTransport;
+    env?: NodeJS.ProcessEnv;
+    ca?: string | Buffer | Array<string | Buffer>;
+}
+
+/**
+ * Re-resolve an approved GitHub Release directly from the official repository API
+ * (`AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor`) and bind its exact
+ * tag, expected ZIP asset, and fail-closed `SHA256SUMS.txt` asset before Apply.
+ */
+export async function resolveApprovedRelease(
+    options: ResolveApprovedReleaseOptions,
+): Promise<PluginReleaseInfo> {
+    const currentVersion = (options.currentVersion || '0.0.0').trim();
+    const timeoutMs = options.timeoutMs ?? DEFAULT_API_TIMEOUT_MS;
+    const headers: Record<string, string> = {
+        'User-Agent': `Antigravity-Context-Monitor/${currentVersion}`,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+    };
+
+    const candidateUrls: string[] = [];
+    if (options.tagOrVersion && options.tagOrVersion.trim()) {
+        const raw = options.tagOrVersion.trim();
+        const parsed = parseSemver(raw);
+        if (!parsed) {
+            throw new Error(`Invalid target release version/tag: "${raw}"`);
+        }
+        const primaryUrl = buildApprovedReleaseApiUrl(raw, APPROVED_GITHUB_REPO_SLUG);
+        candidateUrls.push(primaryUrl);
+        if (!raw.startsWith('v') && !raw.startsWith('V')) {
+            const bareUrl = `https://api.github.com/repos/${APPROVED_GITHUB_REPO_SLUG}/releases/tags/${encodeURIComponent(parsed.normalized)}`;
+            if (!candidateUrls.includes(bareUrl)) {
+                candidateUrls.push(bareUrl);
+            }
+        }
+    } else {
+        candidateUrls.push(buildApprovedReleaseApiUrl(undefined, APPROVED_GITHUB_REPO_SLUG));
+    }
+
+    let lastStatus = 0;
+    for (const apiUrl of candidateUrls) {
+        const res = await fetchAllowedHttps(apiUrl, {
+            headers,
+            timeoutMs,
+            maxBytes: MAX_API_BODY_BYTES,
+            transport: options.transport,
+            env: options.env,
+            ca: options.ca,
+        });
+        lastStatus = res.statusCode;
+        if (res.statusCode === 404 && candidateUrls.length > 1) {
+            continue;
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+            throw new Error(`Failed to resolve approved release metadata (HTTP ${res.statusCode})`);
+        }
+        const payload = JSON.parse(res.body.toString('utf8')) as GitHubReleasePayload;
+        const { releaseInfo } = parseApprovedReleasePayload(payload, {
+            expectedTagOrVersion: options.tagOrVersion,
+            requireChecksums: true,
+        });
+        if (!releaseInfo) {
+            throw new Error('Approved release metadata did not include required release assets');
+        }
+        validateReleaseIdentity(releaseInfo);
+        return releaseInfo;
+    }
+
+    throw new Error(`Failed to resolve approved release metadata (HTTP ${lastStatus || 404})`);
+}
+
 export function summarizeReleaseNotes(rawBody: string, maxChars = 600): string {
     if (typeof rawBody !== 'string' || !rawBody.trim()) { return ''; }
     const cleaned = rawBody
@@ -325,10 +838,63 @@ export function summarizeReleaseNotes(rawBody: string, maxChars = 600): string {
     return `${cleaned.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
+async function tryCheckViaReleasesAtom(
+    options: CheckForUpdatesOptions,
+    currentVersion: string,
+    nowMs: number,
+    nextEtag: string | null,
+): Promise<UpdateCheckResult | null> {
+    try {
+        const atomUrl = validateReleaseUrl(options.releasesAtomUrl || GITHUB_RELEASES_ATOM_URL);
+        const atomSegments = atomUrl.pathname.split('/').filter(Boolean);
+        if (
+            atomUrl.hostname.toLowerCase() !== 'github.com'
+            || atomSegments.length !== 3
+            || atomSegments[0].toLowerCase() !== GITHUB_REPO_OWNER.toLowerCase()
+            || atomSegments[1].toLowerCase() !== GITHUB_REPO_NAME.toLowerCase()
+            || atomSegments[2] !== 'releases.atom'
+        ) {
+            return null;
+        }
+        const atomRes = await fetchAllowedHttps(atomUrl.toString(), {
+            headers: {
+                'User-Agent': `Antigravity-Context-Monitor/${currentVersion}`,
+                'Accept': 'application/atom+xml, application/xml;q=0.9',
+            },
+            timeoutMs: options.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
+            maxBytes: MAX_API_BODY_BYTES,
+            transport: options.transport,
+            env: options.env,
+            ca: options.ca,
+        });
+        if (atomRes.statusCode < 200 || atomRes.statusCode >= 300) {
+            return null;
+        }
+        const parsedAtom = parseReleasesAtomLatest(atomRes.body.toString('utf8'));
+        if (!parsedAtom) {
+            return null;
+        }
+        const hasUpdate = isNewerVersion(parsedAtom.version, currentVersion);
+        return {
+            status: hasUpdate ? 'update_available' : 'up_to_date',
+            hasUpdate,
+            currentVersion,
+            latestVersion: parsedAtom.version,
+            etag: nextEtag,
+            checkedAt: nowMs,
+            // Check-only discovery: intentionally omit `releaseInfo` so download/install
+            // can never bypass fail-closed `SHA256SUMS.txt` verification.
+        };
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Check GitHub Releases for a newer App plugin release.
  * Throttled by default (6h) unless `force: true`; supports ETag (`If-None-Match`)
- * conditional requests and 12s timeout.
+ * conditional requests, 12s timeout, and strict HTTPS `github.com` `releases.atom`
+ * check-only fallback when the GitHub API is rate-limited (HTTP 403/429).
  */
 export async function checkForUpdates(options: CheckForUpdatesOptions): Promise<UpdateCheckResult> {
     const currentVersion = (options.currentVersion || '0.0.0').trim();
@@ -364,6 +930,8 @@ export async function checkForUpdates(options: CheckForUpdatesOptions): Promise<
             timeoutMs: options.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
             maxBytes: MAX_API_BODY_BYTES,
             transport: options.transport,
+            env: options.env,
+            ca: options.ca,
         });
 
         const nextEtag = headerFirst(res.headers, 'etag') || etag;
@@ -379,6 +947,12 @@ export async function checkForUpdates(options: CheckForUpdatesOptions): Promise<
         }
 
         if (res.statusCode < 200 || res.statusCode >= 300) {
+            if (isGitHubRateLimitResponse(res)) {
+                const atomFallback = await tryCheckViaReleasesAtom(options, currentVersion, nowMs, nextEtag);
+                if (atomFallback) {
+                    return atomFallback;
+                }
+            }
             return {
                 status: 'error',
                 hasUpdate: false,
@@ -390,50 +964,9 @@ export async function checkForUpdates(options: CheckForUpdatesOptions): Promise<
         }
 
         const parsed = JSON.parse(res.body.toString('utf8')) as GitHubReleasePayload;
-        const tagName = typeof parsed.tag_name === 'string' ? parsed.tag_name.trim() : '';
-        const semver = parseSemver(tagName);
-        if (!semver) {
-            return {
-                status: 'error',
-                hasUpdate: false,
-                currentVersion,
-                etag: nextEtag,
-                checkedAt: nowMs,
-                error: `Invalid release tag version: ${tagName || '(empty)'}`,
-            };
-        }
-
-        const latestVersion = semver.normalized;
-        const assets = Array.isArray(parsed.assets) ? (parsed.assets as GitHubReleaseAsset[]) : [];
-        const expectedZipName = `antigravity-context-monitor-app-${latestVersion}.zip`;
-        const zipAsset = assets.find(a => typeof a.name === 'string' && a.name === expectedZipName)
-            || assets.find(a => typeof a.name === 'string' && /^antigravity-context-monitor-app-[\w.-]+\.zip$/i.test(a.name));
-        const checksumAsset = assets.find(a => typeof a.name === 'string' && a.name.toLowerCase() === 'sha256sums.txt');
-
-        let releaseInfo: PluginReleaseInfo | undefined;
-        if (zipAsset && typeof zipAsset.name === 'string' && typeof zipAsset.browser_download_url === 'string') {
-            // Validate download URLs strictly before exposing them
-            const validatedZipUrl = validateReleaseUrl(zipAsset.browser_download_url).toString();
-            let validatedChecksumsUrl: string | null = null;
-            if (checksumAsset && typeof checksumAsset.browser_download_url === 'string') {
-                validatedChecksumsUrl = validateReleaseUrl(checksumAsset.browser_download_url).toString();
-            }
-            const rawHtmlUrl = typeof parsed.html_url === 'string' && parsed.html_url.trim()
-                ? validateReleaseUrl(parsed.html_url).toString()
-                : `https://github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/tag/${encodeURIComponent(tagName)}`;
-
-            releaseInfo = {
-                version: latestVersion,
-                tagName,
-                releaseUrl: rawHtmlUrl,
-                publishedAt: typeof parsed.published_at === 'string' ? parsed.published_at : undefined,
-                releaseNotesSummary: summarizeReleaseNotes(typeof parsed.body === 'string' ? parsed.body : ''),
-                assetName: zipAsset.name,
-                assetUrl: validatedZipUrl,
-                assetSize: typeof zipAsset.size === 'number' && Number.isFinite(zipAsset.size) ? zipAsset.size : undefined,
-                checksumsUrl: validatedChecksumsUrl,
-            };
-        }
+        const { latestVersion, releaseInfo } = parseApprovedReleasePayload(parsed, {
+            requireChecksums: false,
+        });
 
         const hasUpdate = isNewerVersion(latestVersion, currentVersion);
         return {
@@ -457,411 +990,447 @@ export async function checkForUpdates(options: CheckForUpdatesOptions): Promise<
     }
 }
 
-// ─── SHA-256 Checksum Utilities ──────────────────────────────────────────────
-
-export function computeSha256Hex(buf: Buffer): string {
-    return crypto.createHash('sha256').update(buf).digest('hex').toLowerCase();
-}
-
-export function verifyBufferSha256(buf: Buffer, expectedHex: string): boolean {
-    const cleanExpected = expectedHex.trim().toLowerCase();
-    if (!/^[a-f0-9]{64}$/.test(cleanExpected)) { return false; }
-    const actualHex = computeSha256Hex(buf);
-    return crypto.timingSafeEqual(Buffer.from(actualHex, 'utf8'), Buffer.from(cleanExpected, 'utf8'));
-}
-
-/**
- * Parse a `SHA256SUMS.txt` file into a lookup map from filename (and basename)
- * to 64-character lowercase SHA-256 hex digest.
- */
-export function parseSha256Sums(content: string): Map<string, string> {
-    const map = new Map<string, string>();
-    if (typeof content !== 'string') { return map; }
-    for (const rawLine of content.replace(/^\uFEFF/, '').split(/\r?\n/)) {
-        const line = rawLine.trim();
-        if (!line || line.startsWith('#')) { continue; }
-        const match = line.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
-        if (!match) { continue; }
-        const digest = match[1].toLowerCase();
-        const rawName = match[2].trim().replace(/\\/g, '/').replace(/^\.\//, '');
-        if (!rawName) { continue; }
-        map.set(rawName.toLowerCase(), digest);
-        const base = path.posix.basename(rawName).toLowerCase();
-        if (base && !map.has(base)) {
-            map.set(base, digest);
-        }
-    }
-    return map;
-}
-
-// ─── Pure-Node Safe ZIP Extractor (Stored + Deflate, Zero Deps) ──────────────
-
-const CRC32_TABLE = (() => {
-    const table = new Uint32Array(256);
-    for (let i = 0; i < 256; i++) {
-        let c = i;
-        for (let k = 0; k < 8; k++) {
-            c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
-        }
-        table[i] = c >>> 0;
-    }
-    return table;
-})();
-
-export function crc32(buf: Buffer): number {
-    let c = 0xffffffff;
-    for (let i = 0; i < buf.length; i++) {
-        c = CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-    }
-    return (c ^ 0xffffffff) >>> 0;
-}
-
-function findEocdOffset(zipBuf: Buffer): number {
-    if (zipBuf.length < 22) {
-        throw new Error('Invalid ZIP archive: file too small');
-    }
-    const minOffset = Math.max(0, zipBuf.length - 22 - 65_535);
-    for (let i = zipBuf.length - 22; i >= minOffset; i--) {
-        if (zipBuf.readUInt32LE(i) === 0x06054b50) {
-            const commentLen = zipBuf.readUInt16LE(i + 20);
-            if (i + 22 + commentLen === zipBuf.length) {
-                return i;
-            }
-        }
-    }
-    throw new Error('Invalid ZIP archive: missing End-Of-Central-Directory record');
-}
-
-function sanitizeZipEntryPath(rawName: string): { relPath: string; isDir: boolean } {
-    if (!rawName || rawName.includes('\0')) {
-        throw new Error('Unsafe ZIP entry: empty or contains NUL byte');
-    }
-    const normalized = rawName.replace(/\\/g, '/');
-    if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
-        throw new Error(`Unsafe ZIP entry (absolute path rejected): ${rawName}`);
-    }
-    const isDir = normalized.endsWith('/');
-    const trimmed = normalized.replace(/\/+$/, '');
-    if (!trimmed) {
-        if (isDir) { return { relPath: '', isDir: true }; }
-        throw new Error(`Unsafe ZIP entry path: ${rawName}`);
-    }
-    const segments = trimmed.split('/');
-    for (const seg of segments) {
-        if (!seg || seg === '.' || seg === '..') {
-            throw new Error(`Unsafe ZIP entry (path traversal rejected): ${rawName}`);
-        }
-    }
-    return { relPath: segments.join('/'), isDir };
-}
-
-export interface ExtractZipOptions {
-    maxEntries?: number;
-    maxTotalBytes?: number;
-}
-
-export interface ExtractZipResult {
-    entries: string[];
-    totalBytes: number;
-}
-
-/**
- * Pure-Node safe ZIP extractor supporting Stored (method 0) and Deflate (method 8).
- * Strictly rejects zip-slip (`..`), absolute paths, symlinks, special Unix file types,
- * encrypted entries, CRC-32 mismatches, and zip-bomb size/entry limits.
- */
-export function extractZipSafe(
-    zipBuf: Buffer,
-    destDir: string,
-    options: ExtractZipOptions = {},
-): ExtractZipResult {
-    const maxEntries = options.maxEntries ?? MAX_ZIP_ENTRIES;
-    const maxTotalBytes = options.maxTotalBytes ?? MAX_EXTRACTED_BYTES;
-
-    const eocdOffset = findEocdOffset(zipBuf);
-    const totalEntries = zipBuf.readUInt16LE(eocdOffset + 10);
-    const centralDirSize = zipBuf.readUInt32LE(eocdOffset + 12);
-    const centralDirOffset = zipBuf.readUInt32LE(eocdOffset + 16);
-
-    if (totalEntries === 0) {
-        throw new Error('Invalid ZIP archive: archive contains 0 entries');
-    }
-    if (totalEntries > maxEntries) {
-        throw new Error(`ZIP archive exceeds maximum entry limit (${totalEntries} > ${maxEntries})`);
-    }
-    if (centralDirOffset + centralDirSize > eocdOffset) {
-        throw new Error('Invalid ZIP archive: central directory exceeds bounds');
-    }
-
-    const resolvedDest = path.resolve(destDir);
-    fs.mkdirSync(resolvedDest, { recursive: true });
-
-    let cursor = centralDirOffset;
-    let totalExtractedBytes = 0;
-    const extractedEntries: string[] = [];
-
-    for (let i = 0; i < totalEntries; i++) {
-        if (cursor + 46 > centralDirOffset + centralDirSize) {
-            throw new Error('Invalid ZIP archive: truncated central directory entry');
-        }
-        const sig = zipBuf.readUInt32LE(cursor);
-        if (sig !== 0x02014b50) {
-            throw new Error(`Invalid ZIP archive: bad central directory signature at offset ${cursor}`);
-        }
-
-        const versionMadeBy = zipBuf.readUInt16LE(cursor + 4);
-        const flags = zipBuf.readUInt16LE(cursor + 8);
-        const method = zipBuf.readUInt16LE(cursor + 10);
-        const expectedCrc = zipBuf.readUInt32LE(cursor + 16);
-        const compressedSize = zipBuf.readUInt32LE(cursor + 20);
-        const uncompressedSize = zipBuf.readUInt32LE(cursor + 24);
-        const nameLen = zipBuf.readUInt16LE(cursor + 28);
-        const extraLen = zipBuf.readUInt16LE(cursor + 30);
-        const commentLen = zipBuf.readUInt16LE(cursor + 32);
-        const externalAttrs = zipBuf.readUInt32LE(cursor + 38);
-        const localHeaderOffset = zipBuf.readUInt32LE(cursor + 42);
-
-        const nameEnd = cursor + 46 + nameLen;
-        if (nameEnd + extraLen + commentLen > centralDirOffset + centralDirSize) {
-            throw new Error('Invalid ZIP archive: central directory entry overflows bounds');
-        }
-        const rawName = zipBuf.subarray(cursor + 46, nameEnd).toString('utf8');
-        cursor = nameEnd + extraLen + commentLen;
-
-        if ((flags & 0x0001) !== 0) {
-            throw new Error(`Unsupported encrypted ZIP entry: ${rawName}`);
-        }
-
-        // Check Unix file mode bits for symlinks / special files (versionMadeBy high byte 3 = Unix)
-        const hostOs = (versionMadeBy >>> 8) & 0xff;
-        const unixMode = (externalAttrs >>> 16) & 0xffff;
-        const unixFileType = unixMode & 0o170000;
-        if (unixFileType === 0o120000) {
-            throw new Error(`Unsafe ZIP entry (symlink rejected): ${rawName}`);
-        }
-        if (hostOs === 3 && unixFileType !== 0 && unixFileType !== 0o100000 && unixFileType !== 0o040000) {
-            throw new Error(`Unsafe ZIP entry (special file type rejected): ${rawName}`);
-        }
-
-        const { relPath, isDir } = sanitizeZipEntryPath(rawName);
-        if (!relPath) { continue; }
-
-        const targetPath = path.resolve(resolvedDest, relPath);
-        const relCheck = path.relative(resolvedDest, targetPath);
-        if (!relCheck || relCheck.startsWith('..') || path.isAbsolute(relCheck)) {
-            throw new Error(`Unsafe ZIP entry escapes destination directory: ${rawName}`);
-        }
-
-        if (isDir || unixFileType === 0o040000) {
-            fs.mkdirSync(targetPath, { recursive: true });
-            continue;
-        }
-
-        if (method !== 0 && method !== 8) {
-            throw new Error(`Unsupported ZIP compression method ${method} for entry: ${rawName}`);
-        }
-
-        if (localHeaderOffset + 30 > zipBuf.length) {
-            throw new Error(`Invalid ZIP archive: local header out of bounds for ${rawName}`);
-        }
-        if (zipBuf.readUInt32LE(localHeaderOffset) !== 0x04034b50) {
-            throw new Error(`Invalid ZIP archive: bad local file header signature for ${rawName}`);
-        }
-        const localNameLen = zipBuf.readUInt16LE(localHeaderOffset + 26);
-        const localExtraLen = zipBuf.readUInt16LE(localHeaderOffset + 28);
-        const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
-        const dataEnd = dataStart + compressedSize;
-        if (dataEnd > zipBuf.length) {
-            throw new Error(`Invalid ZIP archive: compressed payload out of bounds for ${rawName}`);
-        }
-
-        if (totalExtractedBytes + uncompressedSize > maxTotalBytes) {
-            throw new Error(`ZIP archive exceeds maximum extracted size limit (${maxTotalBytes} bytes)`);
-        }
-
-        const compressedSlice = zipBuf.subarray(dataStart, dataEnd);
-        let fileData: Buffer;
-        if (method === 0) {
-            fileData = Buffer.from(compressedSlice);
-        } else {
-            const remainingBudget = Math.max(0, maxTotalBytes - totalExtractedBytes);
-            fileData = zlib.inflateRawSync(compressedSlice, { maxOutputLength: remainingBudget });
-        }
-
-        if (fileData.length !== uncompressedSize) {
-            throw new Error(`ZIP entry size mismatch for ${rawName} (expected ${uncompressedSize}, got ${fileData.length})`);
-        }
-        if (crc32(fileData) !== expectedCrc) {
-            throw new Error(`ZIP entry CRC-32 mismatch for ${rawName}`);
-        }
-
-        totalExtractedBytes += fileData.length;
-        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-        fs.writeFileSync(targetPath, fileData);
-        if (process.platform !== 'win32' && hostOs === 3 && (unixMode & 0o111) !== 0) {
-            try { fs.chmodSync(targetPath, 0o755); } catch { /* ignore */ }
-        }
-        extractedEntries.push(relPath);
-    }
-
-    return { entries: extractedEntries, totalBytes: totalExtractedBytes };
-}
-
-// ─── Extracted Bundle Validation ─────────────────────────────────────────────
-
-export interface ValidatedPluginBundle {
-    name: string;
-    version: string;
-    pluginRootDir: string;
-    manifest: Record<string, unknown>;
-}
-
-/**
- * Locate the plugin root directory inside an extracted archive staging folder
- * (supports both `antigravity-context-monitor/plugin.json` and flat `plugin.json`).
- */
-export function resolveExtractedPluginRoot(extractDir: string): string {
-    if (fs.existsSync(path.join(extractDir, 'plugin.json'))) {
-        return extractDir;
-    }
-    const namedDir = path.join(extractDir, EXPECTED_PLUGIN_NAME);
-    if (fs.existsSync(path.join(namedDir, 'plugin.json'))) {
-        return namedDir;
-    }
-    const entries = fs.readdirSync(extractDir).filter(name => !name.startsWith('.'));
-    if (entries.length === 1) {
-        const candidate = path.join(extractDir, entries[0]);
-        try {
-            if (fs.lstatSync(candidate).isDirectory() && fs.existsSync(path.join(candidate, 'plugin.json'))) {
-                return candidate;
-            }
-        } catch {
-            // fall through
-        }
-    }
-    throw new Error('Extracted update archive does not contain a valid plugin.json root');
-}
-
-/**
- * Validate an extracted plugin bundle before atomic swap:
- * - `plugin.json` exists, is a regular file, and parses cleanly
- * - `name === 'antigravity-context-monitor'`
- * - valid semver `version`
- * - `sidecars/context_monitor/main.mjs` exists and is a regular file
- */
-export function validateExtractedPluginBundle(pluginRootDir: string): ValidatedPluginBundle {
-    const manifestPath = path.join(pluginRootDir, 'plugin.json');
-    if (!fs.existsSync(manifestPath)) {
-        throw new Error('Plugin bundle validation failed: missing plugin.json');
-    }
-    const manifestStat = fs.lstatSync(manifestPath);
-    if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
-        throw new Error('Plugin bundle validation failed: plugin.json must be a regular file');
-    }
-    let manifest: Record<string, unknown>;
-    try {
-        const raw = fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, '');
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            throw new Error('manifest is not an object');
-        }
-        manifest = parsed as Record<string, unknown>;
-    } catch (err) {
-        throw new Error(`Plugin bundle validation failed: invalid plugin.json (${err instanceof Error ? err.message : String(err)})`);
-    }
-
-    if (manifest.name !== EXPECTED_PLUGIN_NAME) {
-        throw new Error(`Plugin bundle validation failed: unexpected plugin name "${String(manifest.name ?? '')}"`);
-    }
-    const versionStr = typeof manifest.version === 'string' ? manifest.version.trim() : '';
-    const semver = parseSemver(versionStr);
-    if (!semver) {
-        throw new Error(`Plugin bundle validation failed: invalid semver version "${versionStr}"`);
-    }
-
-    const entrypointPath = path.join(pluginRootDir, 'sidecars', 'context_monitor', 'main.mjs');
-    if (!fs.existsSync(entrypointPath)) {
-        throw new Error('Plugin bundle validation failed: missing sidecars/context_monitor/main.mjs');
-    }
-    const entryStat = fs.lstatSync(entrypointPath);
-    if (!entryStat.isFile() || entryStat.isSymbolicLink()) {
-        throw new Error('Plugin bundle validation failed: sidecars/context_monitor/main.mjs must be a regular file');
-    }
-
-    return {
-        name: EXPECTED_PLUGIN_NAME,
-        version: semver.normalized,
-        pluginRootDir,
-        manifest,
-    };
-}
-
-// ─── Atomic Install with Backup & Rollback ───────────────────────────────────
+// ─── Atomic Install with Backup, Windows Transactional Swap & Rollback ───────
 
 const SWAP_RETRY_DELAYS_MS = [20, 50, 100, 200];
+const STAGING_TEMP_FILE_RE = /\.acm-(?:stage|restore)-[0-9a-f-]+$/i;
+
+function isRetryableFsLockError(err: unknown): boolean {
+    const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+    return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+}
+
+function isStagingTempFilename(name: string): boolean {
+    return STAGING_TEMP_FILE_RE.test(name);
+}
 
 async function sleep(ms: number): Promise<void> {
     await new Promise<void>(resolve => setTimeout(resolve, ms));
 }
 
-async function renameDirWithRetry(
-    src: string,
-    dest: string,
-    renameFn: (oldPath: string, newPath: string) => Promise<void> = (a, b) => fs.promises.rename(a, b),
-): Promise<void> {
+async function retryOnFsLock(op: () => Promise<void>): Promise<void> {
     for (let attempt = 0; ; attempt++) {
         try {
-            await renameFn(src, dest);
+            await op();
             return;
         } catch (err) {
-            const code = (err as NodeJS.ErrnoException).code;
-            const retryable = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
-            if (!retryable || attempt >= SWAP_RETRY_DELAYS_MS.length) {
-                throw err;
-            }
+            if (!isRetryableFsLockError(err) || attempt >= SWAP_RETRY_DELAYS_MS.length) { throw err; }
             await sleep(SWAP_RETRY_DELAYS_MS[attempt]);
         }
     }
 }
 
+const renameWithRetry = (
+    src: string,
+    dest: string,
+    renameFn: (oldPath: string, newPath: string) => Promise<void> = (a, b) => fs.promises.rename(a, b),
+): Promise<void> => retryOnFsLock(() => renameFn(src, dest));
+
+const rmWithRetry = (
+    targetPath: string,
+    options: fs.RmOptions,
+    rmFn: (p: string, opts?: fs.RmOptions) => Promise<void> = (p, o) => fs.promises.rm(p, o),
+): Promise<void> => retryOnFsLock(() => rmFn(targetPath, options));
+
 async function copyDirContents(srcDir: string, destDir: string): Promise<void> {
     await fs.promises.mkdir(destDir, { recursive: true });
-    await fs.promises.cp(srcDir, destDir, { recursive: true, force: true });
+    await fs.promises.cp(srcDir, destDir, {
+        recursive: true,
+        force: true,
+        filter: (src) => !isStagingTempFilename(path.basename(src)),
+    });
 }
 
-async function clearDirEntries(dirPath: string): Promise<void> {
-    const entries = await fs.promises.readdir(dirPath);
+async function listRelativeFiles(rootDir: string, prefix = ''): Promise<string[]> {
+    const out: string[] = [];
+    if (!fs.existsSync(rootDir)) { return out; }
+    const entries = await fs.promises.readdir(rootDir, { withFileTypes: true });
     for (const entry of entries) {
-        await fs.promises.rm(path.join(dirPath, entry), { recursive: true, force: true });
+        const rel = prefix ? path.posix.join(prefix, entry.name) : entry.name;
+        const full = path.join(rootDir, entry.name);
+        if (entry.isDirectory()) {
+            out.push(...await listRelativeFiles(full, rel));
+        } else if (entry.isFile() || entry.isSymbolicLink()) {
+            out.push(rel);
+        }
     }
+    return out;
+}
+
+/**
+ * Best-effort pruning of empty subdirectories inside `rootDir`.
+ * NEVER throws on `EBUSY`/`EPERM`/`EACCES`/`ENOTEMPTY`/`ENOENT` so locked Windows
+ * working directories (such as a running sidecar's `sidecars/context_monitor` CWD)
+ * are left harmlessly in place instead of failing an update or rollback.
+ */
+async function pruneEmptyDirs(
+    rootDir: string,
+    currentDir = rootDir,
+    rmdirFn: (dirPath: string) => Promise<void> = (dirPath) => fs.promises.rmdir(dirPath),
+): Promise<void> {
+    if (!fs.existsSync(currentDir)) { return; }
+    let entries: fs.Dirent[];
+    try {
+        entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+    } catch {
+        return;
+    }
+    for (const entry of entries) {
+        if (entry.isDirectory()) {
+            await pruneEmptyDirs(rootDir, path.join(currentDir, entry.name), rmdirFn);
+        }
+    }
+    if (path.resolve(currentDir) !== path.resolve(rootDir)) {
+        try {
+            const remaining = await fs.promises.readdir(currentDir);
+            if (remaining.length === 0) {
+                await rmdirFn(currentDir).catch(() => {});
+            }
+        } catch {
+            // Ignore locked/transient unreadable dirs during best-effort prune
+        }
+    }
+}
+
+interface TransactionalSwapState {
+    stagedTempFiles: string[];
+    swappedRelPaths: string[];
+    movedObsoleteRelPaths: string[];
+    obsoleteDir: string;
+}
+
+/**
+ * Windows locked-directory fallback: stages every new file to a sibling temp file
+ * BEFORE modifying any live file, then atomically renames each staged file into place
+ * and moves obsolete entries into `obsoleteDir` so any mid-swap lock failure cleanly
+ * rolls back every touched file from `backupDir` / `obsoleteDir` without leaving a
+ * half-overwritten plugin directory or failing `rmdir` on a running sidecar's CWD.
+ */
+const IS_CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin';
+const normRelPath = (rel: string): string => (IS_CASE_INSENSITIVE_FS ? rel.toLowerCase() : rel);
+
+async function swapDirectoryContentsTransactionally(
+    extractedRoot: string,
+    targetPluginDir: string,
+    obsoleteDir: string,
+    nonce: string,
+    renameFileFn: (src: string, dest: string) => Promise<void>,
+    swapState: TransactionalSwapState,
+    rmdirDirFn: (dirPath: string) => Promise<void> = (dirPath) => fs.promises.rmdir(dirPath),
+): Promise<void> {
+    const newFiles = await listRelativeFiles(extractedRoot);
+    const existingFiles = await listRelativeFiles(targetPluginDir);
+    const newFileSet = new Set(newFiles.map(normRelPath));
+    const obsoleteFiles = existingFiles.filter((rel) => !newFileSet.has(normRelPath(rel)));
+    const movedObsoleteSet = new Set<string>(swapState.movedObsoleteRelPaths.map(normRelPath));
+
+    const moveObsoleteFileToTrash = async (rel: string): Promise<void> => {
+        const key = normRelPath(rel);
+        if (movedObsoleteSet.has(key)) { return; }
+        const livePath = path.join(targetPluginDir, ...rel.split('/'));
+        if (!fs.existsSync(livePath)) { return; }
+        const trashPath = path.join(obsoleteDir, ...rel.split('/'));
+        await fs.promises.mkdir(path.dirname(trashPath), { recursive: true });
+        await renameWithRetry(livePath, trashPath, renameFileFn);
+        movedObsoleteSet.add(key);
+        swapState.movedObsoleteRelPaths.push(rel);
+    };
+
+    // Pre-phase: resolve file-vs-directory type collisions (e.g. obsolete file sitting at a path
+    // that must now be a parent directory, or obsolete directory sitting at a new file's path).
+    for (const rel of newFiles) {
+        const parts = rel.split('/');
+        for (let depth = 1; depth < parts.length; depth++) {
+            const ancestorRel = parts.slice(0, depth).join('/');
+            const ancestorPath = path.join(targetPluginDir, ...parts.slice(0, depth));
+            let st: fs.Stats | null = null;
+            try {
+                st = await fs.promises.lstat(ancestorPath);
+            } catch {
+                st = null;
+            }
+            if (st && !st.isDirectory()) {
+                await moveObsoleteFileToTrash(ancestorRel);
+            }
+        }
+        const destPath = path.join(targetPluginDir, ...parts);
+        let destStat: fs.Stats | null = null;
+        try {
+            destStat = await fs.promises.lstat(destPath);
+        } catch {
+            destStat = null;
+        }
+        if (destStat && destStat.isDirectory()) {
+            const nestedObsolete = await listRelativeFiles(destPath, rel);
+            for (const nestedRel of nestedObsolete) {
+                await moveObsoleteFileToTrash(nestedRel);
+            }
+            await pruneEmptyDirs(destPath, destPath, rmdirDirFn);
+            await rmdirDirFn(destPath);
+        }
+    }
+
+    // Phase 1: Stage all new payloads into temp files without touching any live file yet
+    const stagedPairs: Array<{ rel: string; stagedPath: string; destPath: string }> = [];
+    for (const rel of newFiles) {
+        const srcPath = path.join(extractedRoot, ...rel.split('/'));
+        const destPath = path.join(targetPluginDir, ...rel.split('/'));
+        const stagedPath = `${destPath}.acm-stage-${nonce}`;
+        await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+        await fs.promises.copyFile(srcPath, stagedPath);
+        swapState.stagedTempFiles.push(stagedPath);
+        stagedPairs.push({ rel, stagedPath, destPath });
+    }
+
+    // Phase 2: Atomically swap each staged file into its final path
+    for (const pair of stagedPairs) {
+        await renameWithRetry(pair.stagedPath, pair.destPath, renameFileFn);
+        swapState.swappedRelPaths.push(pair.rel);
+    }
+
+    // Phase 3: Move obsolete old files out to `obsoleteDir` (reversible on rollback)
+    if (obsoleteFiles.length > 0) {
+        await fs.promises.mkdir(obsoleteDir, { recursive: true });
+        for (const rel of obsoleteFiles) {
+            await moveObsoleteFileToTrash(rel);
+        }
+    }
+
+    // Phase 4: Best-effort prune empty directories without ever failing on locked Windows CWDs
+    await pruneEmptyDirs(targetPluginDir, targetPluginDir, rmdirDirFn);
+}
+
+interface RollbackSwapOutcome {
+    ok: boolean;
+    failedFiles: string[];
+    error?: string;
+}
+
+async function rollbackTransactionalSwap(
+    targetPluginDir: string,
+    backupDir: string,
+    nonce: string,
+    swapState: TransactionalSwapState,
+    rollbackRenameFileFn: (src: string, dest: string) => Promise<void> = fs.promises.rename,
+    rmdirDirFn: (dirPath: string) => Promise<void> = (dirPath) => fs.promises.rmdir(dirPath),
+    rmPathFn: (p: string, opts?: fs.RmOptions) => Promise<void> = (p, o) => fs.promises.rm(p, o),
+): Promise<RollbackSwapOutcome> {
+    const failedFiles: string[] = [];
+    const errors: string[] = [];
+
+    // 1. Clean up any unswapped temp stage files first
+    for (const stagedPath of swapState.stagedTempFiles) {
+        if (fs.existsSync(stagedPath)) {
+            await rmWithRetry(stagedPath, { force: true }, rmPathFn).catch(() => {});
+        }
+    }
+
+    // 2. Restore every swapped file from backupDir (or remove newly introduced files) first
+    //    so any newly-created files/directories blocking obsolete paths are cleared cleanly.
+    const backupFileMap = new Map<string, string>();
+    for (const bRel of await listRelativeFiles(backupDir)) {
+        backupFileMap.set(normRelPath(bRel), bRel);
+    }
+    for (const rel of swapState.swappedRelPaths) {
+        const livePath = path.join(targetPluginDir, ...rel.split('/'));
+        const matchedBackupRel = backupFileMap.get(normRelPath(rel));
+        try {
+            if (matchedBackupRel !== undefined) {
+                const backupFile = path.join(backupDir, ...matchedBackupRel.split('/'));
+                const restoreTmp = `${livePath}.acm-restore-${nonce}`;
+                await fs.promises.mkdir(path.dirname(livePath), { recursive: true });
+                await fs.promises.copyFile(backupFile, restoreTmp);
+                try {
+                    await renameWithRetry(restoreTmp, livePath, rollbackRenameFileFn);
+                } catch (renameErr) {
+                    await rmWithRetry(restoreTmp, { force: true }, rmPathFn).catch(() => {});
+                    throw renameErr;
+                }
+            } else if (fs.existsSync(livePath)) {
+                await rmWithRetry(livePath, { force: true }, rmPathFn);
+            }
+        } catch (err) {
+            failedFiles.push(rel);
+            errors.push(`${rel}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+
+    await pruneEmptyDirs(targetPluginDir, targetPluginDir, rmdirDirFn);
+
+    // 3. Restore any obsolete files moved out of targetPluginDir
+    for (const rel of swapState.movedObsoleteRelPaths) {
+        const trashPath = path.join(swapState.obsoleteDir, ...rel.split('/'));
+        const livePath = path.join(targetPluginDir, ...rel.split('/'));
+        if (fs.existsSync(trashPath)) {
+            try {
+                await fs.promises.mkdir(path.dirname(livePath), { recursive: true });
+                await renameWithRetry(trashPath, livePath, rollbackRenameFileFn);
+            } catch (err) {
+                failedFiles.push(rel);
+                errors.push(`${rel}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+    }
+
+    await pruneEmptyDirs(targetPluginDir, targetPluginDir, rmdirDirFn);
+
+    if (failedFiles.length === 0) {
+        // Retain backupDir / obsoleteDir until caller completes post-rollback bundle verification!
+        return { ok: true, failedFiles: [] };
+    }
+
+    // Preserve backupDir / obsoleteDir when rollback could not restore every file!
+    return {
+        ok: false,
+        failedFiles,
+        error: `Rollback failed for ${failedFiles.join(', ')} (${errors.join('; ')})`,
+    };
+}
+
+export interface ObservedPluginDiskState {
+    targetExists: boolean;
+    manifestVersion: string | null;
+    bundleValid: boolean;
+    integrity: 'intact' | 'partial' | 'missing' | 'corrupt';
+    backupPreservedAt?: string;
+    rollbackError?: string;
+    failedRollbackFiles?: string[];
+}
+
+export interface ApplyAppPluginUpdateResult extends ApplyPluginUpdateResult {
+    observedDiskState?: ObservedPluginDiskState;
+}
+
+function observeInstalledPluginDiskState(
+    targetPluginDir: string,
+    opts: {
+        expectedIntactVersion: string;
+        mutated: boolean;
+        rolledBack: boolean;
+        backupDir: string;
+        rollbackError?: string;
+        failedRollbackFiles?: string[];
+    },
+): { observed: ObservedPluginDiskState; honestInstalledVersion: string } {
+    const targetExists = fs.existsSync(targetPluginDir);
+    let manifestVersion: string | null = null;
+    let bundleValid = false;
+
+    if (targetExists) {
+        const manifestPath = path.join(targetPluginDir, 'plugin.json');
+        if (fs.existsSync(manifestPath)) {
+            try {
+                const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, '')) as { version?: unknown };
+                if (typeof parsed?.version === 'string' && parsed.version.trim()) {
+                    manifestVersion = parsed.version.trim();
+                }
+            } catch {
+                manifestVersion = null;
+            }
+        }
+        try {
+            validateExtractedPluginBundle(targetPluginDir);
+            bundleValid = true;
+        } catch {
+            bundleValid = false;
+        }
+    }
+
+    const backupPreservedAt = fs.existsSync(opts.backupDir) ? opts.backupDir : undefined;
+
+    let integrity: ObservedPluginDiskState['integrity'];
+    if (!targetExists) {
+        integrity = 'missing';
+    } else if (opts.mutated && !opts.rolledBack) {
+        integrity = manifestVersion !== null ? 'partial' : 'corrupt';
+    } else if (bundleValid && manifestVersion === opts.expectedIntactVersion) {
+        integrity = 'intact';
+    } else if (bundleValid && manifestVersion !== null) {
+        integrity = 'intact';
+    } else {
+        integrity = 'corrupt';
+    }
+
+    const honestInstalledVersion =
+        integrity === 'intact' && manifestVersion
+            ? manifestVersion
+            : 'unknown';
+
+    const observed: ObservedPluginDiskState = {
+        targetExists,
+        manifestVersion,
+        bundleValid,
+        integrity,
+        ...(backupPreservedAt ? { backupPreservedAt } : {}),
+        ...(opts.rollbackError ? { rollbackError: opts.rollbackError } : {}),
+        ...(opts.failedRollbackFiles && opts.failedRollbackFiles.length > 0
+            ? { failedRollbackFiles: opts.failedRollbackFiles }
+            : {}),
+    };
+    return { observed, honestInstalledVersion };
 }
 
 export interface ApplyAppPluginUpdateOptions {
     targetPluginDir: string;
-    releaseInfo: PluginReleaseInfo;
+    releaseInfo?: PluginReleaseInfo;
+    /** Optional explicit tag or version to re-resolve directly from the approved GitHub repo before Apply. */
+    targetTagOrVersion?: string;
     currentVersion: string;
     timeoutMs?: number;
     now?: () => number;
     transport?: HttpsRequestTransport;
-    /** Optional hook invoked right before swapping staging into target (for rollback testing). */
+    env?: NodeJS.ProcessEnv;
+    ca?: string | Buffer | Array<string | Buffer>;
+    /**
+     * Re-resolve the exact approved release assets & SHA256SUMS.txt from the official GitHub API
+     * before downloading. Defaults to `true` for live transport, or `false` when a custom unit-test
+     * `transport` is injected without `reResolveRelease: true`.
+     */
+    reResolveRelease?: boolean;
+    /** Cross-process update lock wait timeout in ms (default 10s). */
+    lockTimeoutMs?: number;
+    /** Stale lock age threshold in ms (default 5m). */
+    lockStaleMs?: number;
+    /** Optional test hook fired inside the update lock immediately before filesystem swap. */
+    onBeforeSwap?: () => Promise<void> | void;
+    /** Optional hook invoked when renaming directories (for rollback/lock testing). */
     renameDir?: (src: string, dest: string) => Promise<void>;
+    /** Optional hook invoked when renaming individual files during Windows transactional fallback testing. */
+    renameFile?: (src: string, dest: string) => Promise<void>;
+    /** Optional hook invoked when renaming directories during rollback testing. */
+    rollbackRenameDir?: (src: string, dest: string) => Promise<void>;
+    /** Optional hook invoked when renaming individual files during Windows transactional rollback testing. */
+    rollbackRenameFile?: (src: string, dest: string) => Promise<void>;
+    /** Optional hook invoked when removing empty subdirectories (for Windows CWD EBUSY testing). */
+    rmdirDir?: (dirPath: string) => Promise<void>;
+    /** Optional hook invoked when removing files/dirs during cleanup or rollback (for Windows EBUSY testing). */
+    rmPath?: (targetPath: string, options?: fs.RmOptions) => Promise<void>;
 }
 
 /**
- * Download, verify (SHA-256 + safe ZIP + bundle manifest), and atomically install
- * a GitHub Release App plugin update into `targetPluginDir` with automatic backup & rollback.
+ * Download, verify (approved repo+tag+asset identity + fail-closed SHA-256 + safe ZIP +
+ * bundle manifest & release-tag version parity), and atomically install a GitHub Release
+ * App plugin update into `targetPluginDir` under a cross-process lock with automatic
+ * backup, rollback, and honest post-failure disk state reporting.
  */
 export async function applyAppPluginUpdate(
     options: ApplyAppPluginUpdateOptions,
-): Promise<ApplyPluginUpdateResult> {
+): Promise<ApplyAppPluginUpdateResult> {
     const currentVersion = (options.currentVersion || '0.0.0').trim();
     const targetPluginDir = path.resolve(options.targetPluginDir);
     const parentDir = path.dirname(targetPluginDir);
-    const nowMs = (options.now ?? (() => Date.now()))();
+    const nowFn = options.now ?? (() => Date.now());
+    const nowMs = nowFn();
     const nonce = crypto.randomBytes(4).toString('hex');
     const stageDir = path.join(parentDir, `.${path.basename(targetPluginDir)}.stage-${nowMs}-${nonce}`);
     const backupDir = `${targetPluginDir}.bak-${nowMs}-${nonce}`;
-    const renameFn = options.renameDir ?? fs.promises.rename;
+    const obsoleteDir = `${targetPluginDir}.obsolete-${nowMs}-${nonce}`;
+    const renameDirFn = options.renameDir ?? fs.promises.rename;
+    const renameFileFn = options.renameFile ?? fs.promises.rename;
+    const rollbackRenameDirFn = options.rollbackRenameDir ?? fs.promises.rename;
+    const rollbackRenameFileFn = options.rollbackRenameFile ?? fs.promises.rename;
+    const rmdirDirFn = options.rmdirDir ?? ((dirPath: string) => fs.promises.rmdir(dirPath));
+    const rmPathFn = options.rmPath ?? ((targetPath: string, opts?: fs.RmOptions) => fs.promises.rm(targetPath, opts));
     const downloadTimeoutMs = options.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
 
     const reqHeaders = {
@@ -872,66 +1441,139 @@ export async function applyAppPluginUpdate(
     let checksumVerified = false;
     let movedExistingToBackup = false;
     let copiedExistingToBackup = false;
+    let previousDiskVersion = currentVersion;
+    let lockHandle: PluginUpdateLockHandle | null = null;
+    const swapState: TransactionalSwapState = {
+        stagedTempFiles: [],
+        swappedRelPaths: [],
+        movedObsoleteRelPaths: [],
+        obsoleteDir,
+    };
 
     try {
-        // 1. Validate URLs up front (strict HTTPS host allowlist)
-        const zipUrl = validateReleaseUrl(options.releaseInfo.assetUrl).toString();
-        const checksumsUrl = options.releaseInfo.checksumsUrl
-            ? validateReleaseUrl(options.releaseInfo.checksumsUrl).toString()
-            : null;
+        // 1. Resolve & strictly bind release identity (approved repo + tag + exact ZIP + fail-closed SHA256SUMS.txt)
+        const shouldReResolve = options.reResolveRelease ?? (!options.transport);
+        let activeRelease: PluginReleaseInfo;
+        if (shouldReResolve) {
+            const targetTagOrVersion =
+                options.targetTagOrVersion
+                || options.releaseInfo?.tagName
+                || options.releaseInfo?.version;
+            activeRelease = await resolveApprovedRelease({
+                currentVersion,
+                tagOrVersion: targetTagOrVersion,
+                timeoutMs: DEFAULT_API_TIMEOUT_MS,
+                transport: options.transport,
+                env: options.env,
+                ca: options.ca,
+            });
+        } else {
+            if (!options.releaseInfo) {
+                throw new Error('Release metadata is required when reResolveRelease is disabled');
+            }
+            activeRelease = options.releaseInfo;
+        }
 
-        // 2. Download ZIP archive
-        const zipRes = await fetchAllowedHttps(zipUrl, {
+        const boundIdentity = validateReleaseIdentity({
+            repoSlug: APPROVED_GITHUB_REPO_SLUG,
+            version: activeRelease.version,
+            tagName: activeRelease.tagName,
+            assetName: activeRelease.assetName,
+            assetUrl: activeRelease.assetUrl,
+            checksumsUrl: activeRelease.checksumsUrl,
+            releaseUrl: activeRelease.releaseUrl,
+        });
+
+        // 2. Acquire cross-process lock to serialize concurrent UI/CLI updates on targetPluginDir
+        lockHandle = await acquirePluginUpdateLock(targetPluginDir, {
+            owner: 'ui-updater',
+            timeoutMs: options.lockTimeoutMs,
+            staleMs: options.lockStaleMs,
+            now: nowFn,
+        });
+
+        // 3. Download ZIP archive
+        const zipRes = await fetchAllowedHttps(boundIdentity.assetUrl, {
             headers: reqHeaders,
             timeoutMs: downloadTimeoutMs,
             maxBytes: MAX_ARCHIVE_BYTES,
             transport: options.transport,
+            env: options.env,
+            ca: options.ca,
         });
         if (zipRes.statusCode < 200 || zipRes.statusCode >= 300) {
             throw new Error(`Failed to download update archive (HTTP ${zipRes.statusCode})`);
         }
         const zipBuf = zipRes.body;
 
-        // 3. Download & verify SHA256SUMS.txt if published (fail closed whenever published)
-        if (checksumsUrl) {
-            const sumRes = await fetchAllowedHttps(checksumsUrl, {
-                headers: {
-                    'User-Agent': `Antigravity-Context-Monitor/${currentVersion}`,
-                    'Accept': 'text/plain',
-                },
-                timeoutMs: DEFAULT_API_TIMEOUT_MS,
-                maxBytes: MAX_CHECKSUMS_BYTES,
-                transport: options.transport,
-            });
-            if (sumRes.statusCode < 200 || sumRes.statusCode >= 300) {
-                throw new Error(`Failed to download SHA256SUMS.txt (HTTP ${sumRes.statusCode})`);
-            }
-            const sums = parseSha256Sums(sumRes.body.toString('utf8'));
-            const assetKey = options.releaseInfo.assetName.trim().toLowerCase();
-            const expectedDigest = sums.get(assetKey) || sums.get(path.posix.basename(assetKey));
-            if (!expectedDigest) {
-                throw new Error(`SHA256SUMS.txt did not contain an entry for ${options.releaseInfo.assetName}`);
-            }
-            if (!verifyBufferSha256(zipBuf, expectedDigest)) {
-                throw new Error(`SHA-256 checksum mismatch for ${options.releaseInfo.assetName}`);
-            }
-            checksumVerified = true;
+        // 4. Download & verify SHA256SUMS.txt (strict fail-closed — NEVER skipped in App self-update)
+        const sumRes = await fetchAllowedHttps(boundIdentity.checksumsUrl, {
+            headers: {
+                'User-Agent': `Antigravity-Context-Monitor/${currentVersion}`,
+                'Accept': 'text/plain',
+            },
+            timeoutMs: DEFAULT_API_TIMEOUT_MS,
+            maxBytes: MAX_CHECKSUMS_BYTES,
+            transport: options.transport,
+            env: options.env,
+            ca: options.ca,
+        });
+        if (sumRes.statusCode < 200 || sumRes.statusCode >= 300) {
+            throw new Error(`Failed to download SHA256SUMS.txt (HTTP ${sumRes.statusCode})`);
         }
+        const sums = parseSha256Sums(sumRes.body.toString('utf8'));
+        const expectedDigest = lookupSha256Sum(sums, boundIdentity.assetName);
+        if (!expectedDigest) {
+            throw new Error(`SHA256SUMS.txt did not contain an entry for ${boundIdentity.assetName}`);
+        }
+        if (!verifyBufferSha256(zipBuf, expectedDigest)) {
+            throw new Error(`SHA-256 checksum mismatch for ${boundIdentity.assetName}`);
+        }
+        checksumVerified = true;
 
-        // 4. Safe pure-Node ZIP extraction into temp staging dir
+        // 5. Safe pure-Node ZIP extraction into temp staging dir
         await fs.promises.mkdir(parentDir, { recursive: true });
         await fs.promises.mkdir(stageDir, { recursive: true });
         extractZipSafe(zipBuf, stageDir);
 
-        // 5. Resolve & validate extracted plugin bundle
+        // 6. Resolve & validate extracted plugin bundle AND enforce tag <-> plugin.json version parity
         const extractedRoot = resolveExtractedPluginRoot(stageDir);
-        const validated = validateExtractedPluginBundle(extractedRoot);
+        const validated = validateExtractedPluginBundle(extractedRoot, {
+            expectedVersion: boundIdentity.version,
+        });
 
-        // 6. Atomic swap with backup & Windows EPERM/EBUSY fallback
+        if (typeof options.onBeforeSwap === 'function') {
+            await options.onBeforeSwap();
+        }
+
+        // Re-verify lock ownership immediately before mutating the live plugin directory
+        if (lockHandle?.verifyOwned && !lockHandle.verifyOwned()) {
+            throw new Error('Lost plugin update lock ownership before filesystem swap');
+        }
+
+        // Capture actual pre-update on-disk version (which may differ from the running process's
+        // `currentVersion` when a previous upgrade is awaiting reload) so rollback verifies honestly.
         const hadExisting = fs.existsSync(targetPluginDir);
         if (hadExisting) {
             try {
-                await renameDirWithRetry(targetPluginDir, backupDir, renameFn);
+                const existingManifest = path.join(targetPluginDir, 'plugin.json');
+                if (fs.existsSync(existingManifest)) {
+                    const parsedExisting = JSON.parse(
+                        fs.readFileSync(existingManifest, 'utf8').replace(/^\uFEFF/, ''),
+                    ) as { version?: unknown };
+                    if (typeof parsedExisting?.version === 'string' && parseSemver(parsedExisting.version.trim())) {
+                        previousDiskVersion = parsedExisting.version.trim();
+                    }
+                }
+            } catch {
+                // Keep fallback `currentVersion` when existing manifest is unreadable
+            }
+        }
+
+        // 7. Atomic swap with backup & Windows locked-dir transactional staging swap fallback
+        if (hadExisting) {
+            try {
+                await renameWithRetry(targetPluginDir, backupDir, renameDirFn);
                 movedExistingToBackup = true;
             } catch (backupErr) {
                 const code = (backupErr as NodeJS.ErrnoException).code;
@@ -939,27 +1581,40 @@ export async function applyAppPluginUpdate(
                 if (!isLockErr) {
                     throw backupErr;
                 }
-                // Windows open-handle fallback: copy existing dir to backup, then replace contents cleanly
+                // Windows open-handle fallback: snapshot existing dir to backup, then perform
+                // per-file staging + atomic rename swap (never pre-wiping targetPluginDir).
                 await copyDirContents(targetPluginDir, backupDir);
                 copiedExistingToBackup = true;
             }
         }
 
         if (copiedExistingToBackup) {
-            await clearDirEntries(targetPluginDir);
-            await copyDirContents(extractedRoot, targetPluginDir);
+            await swapDirectoryContentsTransactionally(
+                extractedRoot,
+                targetPluginDir,
+                obsoleteDir,
+                nonce,
+                renameFileFn,
+                swapState,
+                rmdirDirFn,
+            );
         } else {
-            await renameDirWithRetry(extractedRoot, targetPluginDir, renameFn);
+            await renameWithRetry(extractedRoot, targetPluginDir, renameDirFn);
         }
 
-        // 7. Post-swap sanity validation
-        validateExtractedPluginBundle(targetPluginDir);
+        // 8. Post-swap sanity validation (including version parity)
+        validateExtractedPluginBundle(targetPluginDir, {
+            expectedVersion: boundIdentity.version,
+        });
 
-        // 8. Cleanup backup & staging on success
+        // 9. Cleanup backup, obsolete trash & staging on success (never fails on Windows locks)
         if (fs.existsSync(backupDir)) {
-            await fs.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+            await rmWithRetry(backupDir, { recursive: true, force: true }, rmPathFn).catch(() => {});
         }
-        await fs.promises.rm(stageDir, { recursive: true, force: true }).catch(() => {});
+        if (fs.existsSync(obsoleteDir)) {
+            await rmWithRetry(obsoleteDir, { recursive: true, force: true }, rmPathFn).catch(() => {});
+        }
+        await rmWithRetry(stageDir, { recursive: true, force: true }, rmPathFn).catch(() => {});
 
         return {
             ok: true,
@@ -971,40 +1626,136 @@ export async function applyAppPluginUpdate(
         };
     } catch (err) {
         let rolledBack = false;
+        let rollbackError: string | undefined;
+        let failedRollbackFiles: string[] = [];
+        const mutated = movedExistingToBackup
+            || swapState.swappedRelPaths.length > 0
+            || swapState.movedObsoleteRelPaths.length > 0;
+
         if (movedExistingToBackup || copiedExistingToBackup) {
             try {
                 if (movedExistingToBackup) {
+                    let removedLockedTarget = true;
                     if (fs.existsSync(targetPluginDir)) {
-                        await fs.promises.rm(targetPluginDir, { recursive: true, force: true });
+                        try {
+                            await rmWithRetry(targetPluginDir, { recursive: true, force: true }, rmPathFn);
+                        } catch (rmErr) {
+                            if (!isRetryableFsLockError(rmErr)) {
+                                throw rmErr;
+                            }
+                            removedLockedTarget = false;
+                        }
                     }
-                    if (fs.existsSync(backupDir)) {
-                        await renameDirWithRetry(backupDir, targetPluginDir, fs.promises.rename);
+                    if (!fs.existsSync(backupDir)) {
+                        rollbackError = 'Backup directory missing during rollback';
+                    } else if (removedLockedTarget) {
+                        await renameWithRetry(backupDir, targetPluginDir, rollbackRenameDirFn);
+                        rolledBack = true;
+                    } else {
+                        // Windows locked target dir during post-swap rollback: restore in-place
+                        // from `backupDir` without requiring `rmdir` on the locked CWD!
+                        const restoreObsoleteDir = `${targetPluginDir}.rb-obsolete-${nowMs}-${nonce}`;
+                        const restoreState: TransactionalSwapState = {
+                            stagedTempFiles: [],
+                            swappedRelPaths: [],
+                            movedObsoleteRelPaths: [],
+                            obsoleteDir: restoreObsoleteDir,
+                        };
+                        await swapDirectoryContentsTransactionally(
+                            backupDir,
+                            targetPluginDir,
+                            restoreObsoleteDir,
+                            `rb-${nonce}`,
+                            rollbackRenameFileFn,
+                            restoreState,
+                            rmdirDirFn,
+                        );
+                        await rmWithRetry(restoreObsoleteDir, { recursive: true, force: true }, rmPathFn).catch(() => {});
                         rolledBack = true;
                     }
                 } else if (copiedExistingToBackup && fs.existsSync(backupDir)) {
-                    await fs.promises.mkdir(targetPluginDir, { recursive: true });
-                    await clearDirEntries(targetPluginDir);
-                    await copyDirContents(backupDir, targetPluginDir);
-                    await fs.promises.rm(backupDir, { recursive: true, force: true }).catch(() => {});
-                    rolledBack = true;
+                    const rb = await rollbackTransactionalSwap(
+                        targetPluginDir,
+                        backupDir,
+                        nonce,
+                        swapState,
+                        rollbackRenameFileFn,
+                        rmdirDirFn,
+                        rmPathFn,
+                    );
+                    rolledBack = rb.ok;
+                    failedRollbackFiles = rb.failedFiles;
+                    if (!rb.ok) {
+                        rollbackError = rb.error;
+                    }
                 }
-            } catch {
+            } catch (rbErr) {
                 rolledBack = false;
+                rollbackError = rbErr instanceof Error ? rbErr.message : String(rbErr);
             }
         }
-        await fs.promises.rm(stageDir, { recursive: true, force: true }).catch(() => {});
+
+        // Verify that a claimed rollback actually restored a valid bundle matching the pre-update
+        // on-disk version BEFORE deleting backupDir / obsoleteDir!
+        if (rolledBack) {
+            try {
+                validateExtractedPluginBundle(targetPluginDir, {
+                    expectedVersion: previousDiskVersion,
+                });
+            } catch (verifyErr) {
+                rolledBack = false;
+                rollbackError = `Post-rollback verification failed: ${verifyErr instanceof Error ? verifyErr.message : String(verifyErr)}`;
+            }
+        }
+
+        // Preserve recovery artifacts when rollback failed on a mutated directory;
+        // clean up backup/obsolete/stage artifacts ONLY when pre-mutation or after verified rollback.
+        if (!mutated || rolledBack) {
+            await rmWithRetry(backupDir, { recursive: true, force: true }, rmPathFn).catch(() => {});
+            await rmWithRetry(obsoleteDir, { recursive: true, force: true }, rmPathFn).catch(() => {});
+        }
+        await rmWithRetry(stageDir, { recursive: true, force: true }, rmPathFn).catch(() => {});
+
+        const { observed, honestInstalledVersion } = observeInstalledPluginDiskState(targetPluginDir, {
+            expectedIntactVersion: previousDiskVersion,
+            mutated,
+            rolledBack,
+            backupDir,
+            rollbackError,
+            failedRollbackFiles,
+        });
+
         const msg = err instanceof Error ? err.message : String(err);
+        let detailedMessage: string;
+        if (rolledBack) {
+            detailedMessage = `Plugin update failed and was rolled back to v${honestInstalledVersion}: ${msg}`;
+        } else if (mutated) {
+            const diskDesc = !observed.targetExists
+                ? 'target directory missing on disk'
+                : (observed.manifestVersion
+                    ? `partial/unverified on-disk state (observed plugin.json v${observed.manifestVersion})`
+                    : 'corrupt/unreadable on-disk state');
+            const backupHint = observed.backupPreservedAt
+                ? `; backup preserved at ${observed.backupPreservedAt}`
+                : '';
+            const rbDetail = rollbackError ? `; rollback failed (${rollbackError})` : '; rollback incomplete';
+            detailedMessage = `Plugin update failed (${msg})${rbDetail}; ${diskDesc}${backupHint}.`;
+        } else {
+            detailedMessage = `Plugin update failed: ${msg}`;
+        }
+
         return {
             ok: false,
             previousVersion: currentVersion,
-            installedVersion: currentVersion,
+            installedVersion: honestInstalledVersion,
             requiresReload: false,
             checksumVerified,
             rolledBack,
-            message: rolledBack
-                ? `Plugin update failed and was rolled back to v${currentVersion}: ${msg}`
-                : `Plugin update failed: ${msg}`,
-            error: msg,
+            observedDiskState: observed,
+            message: detailedMessage,
+            error: mutated && !rolledBack && rollbackError ? `${msg}; ${rollbackError}` : msg,
         };
+    } finally {
+        lockHandle?.release();
     }
 }

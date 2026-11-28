@@ -368,10 +368,10 @@ describe('Antigravity App + IDE unified discovery & cross-platform hardening', (
             ].join('\n');
 
             const inodes = new Set(['111111', '222222', '333333', '444444']);
-            // Rejects 10.0.0.1 (non-loopback) and st=01 (ESTABLISHED), keeps 127.0.0.1:62502
-            expect(parseProcNetTcp(tcpContent, false, inodes)).toEqual([{ port: 62502 }]);
-            // Keeps [::1]:62501 marked ipv6Only
-            expect(parseProcNetTcp(tcp6Content, true, inodes)).toEqual([{ port: 62501, ipv6Only: true }]);
+            // Rejects 10.0.0.1 (non-loopback) and st=01 (ESTABLISHED), keeps 127.0.0.1:62502 with explicit loopback family
+            expect(parseProcNetTcp(tcpContent, false, inodes)).toEqual([{ port: 62502, hostname: '127.0.0.1' }]);
+            // Keeps [::1]:62501 marked ipv6Only with explicit ::1 hostname so IPv4 probes are never sent
+            expect(parseProcNetTcp(tcp6Content, true, inodes)).toEqual([{ port: 62501, ipv6Only: true, hostname: '::1' }]);
 
             // Full synthetic /proc tree with real symlinks on POSIX
             if (process.platform !== 'win32') {
@@ -385,8 +385,8 @@ describe('Antigravity App + IDE unified discovery & cross-platform hardening', (
                 fs.writeFileSync(path.join(fakeProc, 'net', 'tcp6'), tcp6Content, 'utf8');
 
                 expect(findListeningPortsFromProc(9876, fakeProc)).toEqual([
-                    { port: 62502 },
-                    { port: 62501, ipv6Only: true },
+                    { port: 62502, hostname: '127.0.0.1' },
+                    { port: 62501, ipv6Only: true, hostname: '::1' },
                 ]);
             }
         });

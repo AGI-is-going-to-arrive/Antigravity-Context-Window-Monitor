@@ -2,24 +2,46 @@
   "name": "antigravity-context-monitor",
   "displayName": "Antigravity Context Window Monitor",
   "description": "Real-time context window usage monitor for Antigravity (实时显示 Antigravity 当前会话的上下文窗口使用量和剩余量)",
-  "version": "1.17.11",
+  "version": "1.18.0",
   "publisher": "AGI-is-going-to-arrive",
   "license": "MIT",
+  "icon": "assets/icon.png",
+  "homepage": "https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor#readme",
+  "bugs": {
+    "url": "https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor.git"
   },
+  "galleryBanner": {
+    "color": "#0D1014",
+    "theme": "dark"
+  },
+  "keywords": [
+    "antigravity",
+    "context-window",
+    "tokens",
+    "quota",
+    "telemetry",
+    "gemini",
+    "claude",
+    "ai",
+    "swarm",
+    "sidecar"
+  ],
   "engines": {
     "vscode": "^1.85.0",
     "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "categories": [
+    "Visualization",
     "Other"
   ],
   "activationEvents": [
     "onStartupFinished"
   ],
-  "main": "./out/extension.js",
+  "main": "./dist-stage/ide/extension.js",
   "extensionKind": [
     "ui",
     "workspace"
@@ -41,6 +63,20 @@
       {
         "command": "antigravity-context-monitor.showActivityPanel",
         "title": "Show Model Activity / 显示模型活动"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "antigravity-context-monitor.showDetails",
+        "key": "ctrl+alt+m",
+        "mac": "cmd+alt+m",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "antigravity-context-monitor.refresh",
+        "key": "ctrl+alt+shift+r",
+        "mac": "cmd+alt+shift+r",
+        "when": "antigravityContextMonitor.panelFocused || !inputFocus"
       }
     ],
     "configuration": {
@@ -211,21 +247,118 @@
           "type": "boolean",
           "default": false,
           "description": "Show the compact Native Ambient HUD bar at the top of the monitor panel / 在监控面板顶部显示原生精简 HUD 状态条"
+        },
+        "antigravityContextMonitor.nativeHudAutoHideOnOverview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically hide the Native Ambient HUD bar while viewing the Overview tab / 在概览页自动隐藏原生精简 HUD 状态条"
+        },
+        "antigravityContextMonitor.languagePreference": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "en",
+            "zh",
+            "both"
+          ],
+          "default": "auto",
+          "description": "Preferred UI display language ('auto' follows IDE/system locale; explicit 'both' is preserved) / 界面显示语言偏好（auto 跟随系统语言，保留显式双语）"
+        },
+        "antigravityContextMonitor.contextPctBasis": {
+          "type": "string",
+          "enum": [
+            "compaction",
+            "native"
+          ],
+          "default": "compaction",
+          "description": "Denominator basis for primary context percentage ('compaction' checkpointer limit or 'native' model window) / 主上下文百分比基准（自动压缩上限或原生窗口上限）"
+        },
+        "antigravityContextMonitor.speedMetricMode": {
+          "type": "string",
+          "enum": [
+            "decode",
+            "e2e"
+          ],
+          "default": "decode",
+          "description": "Model-call throughput metric ('decode' streaming speed or 'e2e' model-call output/(TTFT+streaming)) / 模型调用速度口径（解码流速度或模型调用级端到端速度）"
+        },
+        "antigravityContextMonitor.quotaWindowMode": {
+          "type": "string",
+          "enum": [
+            "5h",
+            "7d",
+            "tightest"
+          ],
+          "default": "5h",
+          "description": "Primary quota horizon window displayed alongside quota percentages ('5h', '7d', or 'tightest') / 配额百分比主显示窗口（5 小时 / 每周 / 按剩余较少的窗口）"
+        },
+        "antigravityContextMonitor.quotaDirectionMode": {
+          "type": "string",
+          "enum": [
+            "remaining",
+            "used"
+          ],
+          "default": "remaining",
+          "description": "Display quota percentages as 'remaining' or 'used' / 配额百分比显示方向（剩余或已用）"
+        },
+        "antigravityContextMonitor.cdpOverlayFontSize": {
+          "type": "string",
+          "enum": [
+            "compact",
+            "normal",
+            "large"
+          ],
+          "default": "normal",
+          "description": "Font size preset for optional Antigravity App CDP ambient overlays / 可选桌面悬浮层字号档位"
+        },
+        "antigravityContextMonitor.cdpOverlayHighContrast": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable high-contrast palette for optional Antigravity App CDP ambient overlays / 为可选桌面悬浮层启用高对比度配色"
+        },
+        "antigravityContextMonitor.customFxCurrency": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "USD",
+            "CNY",
+            "EUR",
+            "JPY",
+            "GBP",
+            "KRW",
+            "HKD",
+            "TWD",
+            "CAD",
+            "AUD",
+            null
+          ],
+          "default": null,
+          "description": "Display currency bound to customFxRate (cleared when switching currency) / 与自定义汇率绑定的目标币种（切换币种时自动解绑）"
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "tsc -p ./",
-    "compile": "tsc -p ./",
+    "vscode:prepublish": "npm run typecheck && npm run typecheck:client && npm run build:bundles",
+    "compile": "node scripts/build-bundles.mjs && tsc -p ./",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:client": "tsc --noEmit -p tsconfig.client.json",
+    "build:bundles": "node scripts/build-bundles.mjs",
     "watch": "tsc -watch -p ./",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.mts",
+    "test:all": "npm test && npm run test:integration",
     "test:watch": "vitest",
-    "package": "npx -y @vscode/vsce package --no-dependencies"
+    "test:dist": "node scripts/test-dist.mjs",
+    "package": "node scripts/package-app-plugin.mjs --package-vsix --baseImagesUrl https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/v1.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "4.1.1",
+    "esbuild": "0.28.2",
     "typescript": "^5.3.0",
     "vitest": "^4.1.12"
   }
