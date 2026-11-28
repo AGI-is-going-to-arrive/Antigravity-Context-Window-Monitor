@@ -4,9 +4,9 @@ See how much context a conversation has left in Antigravity App and IDE. Inspect
 
 [中文文档](readme_CN.md) · [Install](#3-step-install--upgrade) · [AI agent instructions](AGENTS.md) · [Interface gallery](#interface-gallery) · [v1.18.1 release notes](docs/releases/1.18.1.md) · [Changelog](CHANGELOG.md)
 
-**[Watch the English walkthrough (MP4)](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/download/v1.18.1/acm-promo-07-sticker-en.mp4)**
+**English walkthrough · 54 seconds**
 
-[![Context Monitor walkthrough in English](docs/images/en/hero-overview.webp)](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/download/v1.18.1/acm-promo-07-sticker-en.mp4)
+[Download the full-quality MP4](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/download/v1.18.1/acm-promo-07-sticker-en.mp4)
 
 ## Capability Matrix
 
@@ -63,7 +63,7 @@ Reload the IDE window (`Developer: Reload Window`). Open the panel anytime with 
 
 ## Interface gallery
 
-[Open the overview screenshot at full size](docs/images/en/hero-overview.webp).
+[![Overview with session context and quota](docs/images/en/hero-overview.webp)](docs/images/en/hero-overview.webp)
 
 ### Overview · swarm members
 
