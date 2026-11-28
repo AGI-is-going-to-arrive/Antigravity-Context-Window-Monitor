@@ -44,6 +44,8 @@ import {
 import type { LedgerSettledEntry, LedgerAccountBucket } from './daily-ledger';
 
 export interface PricingTabOptions {
+    /** Recorded ledger day for settled usage without individual call times. */
+    ledgerDateKey?: string;
     orchestratorSettings?: OrchestratorSettings | null;
     orchestratorPricingMode?: OrchestratorPricingMode;
     /** Optional 10-currency display configuration (supports all 10 currencies incl. CAD & bound FX). Default: `'USD'`. */
@@ -100,7 +102,7 @@ export function buildPricingTabContent(
         ?? store.getOrchestratorPricingMode?.()
         ?? getOrchestratorPricingMode();
     const custom = store.getCustom();
-    const pendingArchiveCost = ledgerSettled ? ledgerSettled.reduce((s, e) => s + (e.totalEstimatedCost || 0), 0) : 0;
+    let pendingArchiveCost = 0;
     const hasActive = !!((todayLedgerActive && todayLedgerActive.some(b => b.totalCalls > 0)) || (summary && summary.totalCalls > 0));
     const hasSettled = !!(ledgerSettled && ledgerSettled.length > 0);
     const hasGM = hasActive || hasSettled;
@@ -125,52 +127,63 @@ export function buildPricingTabContent(
     const mergedRowsMap = new Map<string, ModelCostRow>();
     let activeGrandTotal = 0;
 
-    // 优先从 100% 精确的今日活跃账本中提取模型明细与计算
+    // Both active and modern settled ledgers retain the per-model token totals.
+    // Use call timestamps when present to preserve rates across a UTC cutover.
+    function addLedgerModelRows(
+        modelStats: LedgerAccountBucket['modelStats'],
+        recordedCalls: LedgerAccountBucket['recordedCalls'],
+        ledgerDateKey?: string,
+    ): number {
+        let subtotal = 0;
+        for (const [modelKey, ms] of Object.entries(modelStats)) {
+            if (ms.calls <= 0) { continue; }
+            const displayName = normalizeModelDisplayName(modelKey);
+            const baseName = getModelBaseName(modelKey) || displayName;
+            // Retained call timestamps keep rate changes from re-pricing old
+            // usage; custom prices still apply consistently to every call.
+            const { pricing, provenance, mappedBaseLabel, inputCost, outputCost, cacheCost, thinkingCost, totalCost, costBreakdownUnavailable, usesHistoricalRates } =
+                calculateLedgerModelCosts(modelKey, ms, { recordedCalls }, custom, ledgerDateKey, mode);
+            subtotal += totalCost;
+
+            const existing = mergedRowsMap.get(baseName);
+            if (existing) {
+                existing.inputCost += inputCost;
+                existing.outputCost += outputCost;
+                existing.cacheCost += cacheCost;
+                existing.thinkingCost += thinkingCost;
+                existing.totalCost += totalCost;
+                existing.inputTokens += ms.inputTokens;
+                existing.outputTokens += Math.max(0, ms.outputTokens - ms.thinkingTokens);
+                existing.cacheTokens += ms.cacheReadTokens;
+                existing.thinkingTokens += ms.thinkingTokens;
+                existing.costBreakdownUnavailable ||= costBreakdownUnavailable;
+                existing.usesHistoricalRates ||= usesHistoricalRates;
+                if (!pricing) {
+                    existing.pricing = null;
+                    existing.provenance = 'unpriced';
+                }
+            } else {
+                mergedRowsMap.set(baseName, {
+                    name: displayName, responseModel: modelKey,
+                    inputCost, outputCost, cacheCost, thinkingCost, totalCost,
+                    inputTokens: ms.inputTokens,
+                    outputTokens: Math.max(0, ms.outputTokens - ms.thinkingTokens),
+                    cacheTokens: ms.cacheReadTokens,
+                    thinkingTokens: ms.thinkingTokens,
+                    pricing: pricing || null,
+                    provenance: pricing ? (provenance ?? 'official') : 'unpriced',
+                    ...(mappedBaseLabel ? { mappedBaseLabel } : {}),
+                    costBreakdownUnavailable,
+                    usesHistoricalRates,
+                });
+            }
+        }
+        return subtotal;
+    }
+
     if (todayLedgerActive && todayLedgerActive.length > 0) {
         for (const bucket of todayLedgerActive) {
-            for (const [modelKey, ms] of Object.entries(bucket.modelStats)) {
-                if (ms.calls <= 0) { continue; }
-                const displayName = normalizeModelDisplayName(modelKey);
-                const baseName = getModelBaseName(modelKey) || displayName;
-                // Retained call timestamps keep rate changes from re-pricing old
-                // usage; custom prices still apply consistently to every call.
-                const { pricing, provenance, mappedBaseLabel, inputCost, outputCost, cacheCost, thinkingCost, totalCost, costBreakdownUnavailable, usesHistoricalRates } =
-                    calculateLedgerModelCosts(modelKey, ms, bucket, custom, undefined, mode);
-                activeGrandTotal += totalCost;
-
-                const existing = mergedRowsMap.get(baseName);
-                if (existing) {
-                    existing.inputCost += inputCost;
-                    existing.outputCost += outputCost;
-                    existing.cacheCost += cacheCost;
-                    existing.thinkingCost += thinkingCost;
-                    existing.totalCost += totalCost;
-                    existing.inputTokens += ms.inputTokens;
-                    existing.outputTokens += Math.max(0, ms.outputTokens - ms.thinkingTokens);
-                    existing.cacheTokens += ms.cacheReadTokens;
-                    existing.thinkingTokens += ms.thinkingTokens;
-                    existing.costBreakdownUnavailable ||= costBreakdownUnavailable;
-                    existing.usesHistoricalRates ||= usesHistoricalRates;
-                    if (!pricing) {
-                        existing.pricing = null;
-                        existing.provenance = 'unpriced';
-                    }
-                } else {
-                    mergedRowsMap.set(baseName, {
-                        name: displayName, responseModel: modelKey,
-                        inputCost, outputCost, cacheCost, thinkingCost, totalCost,
-                        inputTokens: ms.inputTokens,
-                        outputTokens: Math.max(0, ms.outputTokens - ms.thinkingTokens),
-                        cacheTokens: ms.cacheReadTokens,
-                        thinkingTokens: ms.thinkingTokens,
-                        pricing: pricing || null,
-                        provenance: pricing ? (provenance ?? 'official') : 'unpriced',
-                        ...(mappedBaseLabel ? { mappedBaseLabel } : {}),
-                        costBreakdownUnavailable,
-                        usesHistoricalRates,
-                    });
-                }
-            }
+            activeGrandTotal += addLedgerModelRows(bucket.modelStats, bucket.recordedCalls);
         }
     } else {
         // 没有任何今日活跃账本（极罕见），降级使用活跃 Summary 的统计
@@ -189,6 +202,12 @@ export function buildPricingTabContent(
     if (ledgerSettled && ledgerSettled.length > 0) {
         for (const entry of ledgerSettled) {
             if (entry.totalCalls <= 0) { continue; }
+            if (entry.modelStats && Object.keys(entry.modelStats).length) {
+                pendingArchiveCost += addLedgerModelRows(entry.modelStats, entry.settledCalls ?? [], options?.ledgerDateKey);
+                continue;
+            }
+            // Legacy archives retain only pool totals and per-model call counts.
+            pendingArchiveCost += entry.totalEstimatedCost || 0;
             for (const [modelKey, calls] of Object.entries(entry.modelCalls)) {
                 const ratio = calls / entry.totalCalls;
                 const inputTokens = Math.round(entry.totalInputTokens * ratio);

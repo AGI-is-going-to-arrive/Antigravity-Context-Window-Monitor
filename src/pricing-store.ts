@@ -732,7 +732,8 @@ export function calculateUsageCosts(
     const override = findPricingWithCustom(model, custom, {}, 'strict');
     const builtIn = findPricing(model, DEFAULT_PRICING, mode);
     const scheduled = isScheduledPricingRate(builtIn, DEFAULT_PRICING);
-    if (hasRemainder && !override && (scheduled || !pricing)
+    const strictUnpricedRoute = mode === 'strict' && detail.provenance === 'unpriced' && !!detail.mappedBaseKey;
+    if (hasRemainder && !strictUnpricedRoute && !override && (scheduled || !pricing)
         && Number.isFinite(options.frozenCost) && (options.frozenCost || 0) > 0) {
         // A pool/day aggregate may cross a UTC price boundary. Preserve its
         // already-recorded total instead of inventing a split between rate eras.
@@ -769,7 +770,7 @@ export function calculateUsageCosts(
 export function calculateLedgerModelCosts(
     modelKey: string,
     stats: LedgerModelStats,
-    bucket: LedgerAccountBucket,
+    bucket: Pick<LedgerAccountBucket, 'recordedCalls'>,
     custom: Record<string, ModelPricing>,
     date?: PricingDate,
     orchestratorPricingMode?: OrchestratorPricingMode,

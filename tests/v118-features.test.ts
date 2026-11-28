@@ -1,3 +1,4 @@
+import { FALLBACK_APP_VERSION } from '../src/core/version';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -330,11 +331,11 @@ describe('v1.18 Wave 3B Dual-Host Features & Wiring', () => {
         delete process.env.ANTIGRAVITY_CONTEXT_MONITOR_STATE_PATH;
     });
 
-    it('1. package.json has conflict-free IDE keybindings (ZERO Cmd+Shift+Q), v1.18 settings, version 1.18.0, zero runtime deps', () => {
+    it('1. package.json has conflict-free IDE keybindings (ZERO Cmd+Shift+Q), v1.18 settings, synchronized runtime version, zero runtime deps', () => {
         const pkgPath = path.resolve(__dirname, '../package.json');
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
 
-        expect(pkg.version).toBe('1.18.0');
+        expect(pkg.version).toBe(FALLBACK_APP_VERSION);
         expect(pkg.dependencies).toBeUndefined();
 
         const keybindings: Array<{ command: string; key: string; mac?: string; when?: string }> = pkg.contributes.keybindings;

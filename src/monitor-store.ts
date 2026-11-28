@@ -35,6 +35,9 @@ function sameModelUsage(a: ContextUsage['lastModelUsage'], b: ContextUsage['last
 
 function sameUsageSnapshot(prev: ContextUsage, next: ContextUsage): boolean {
     return prev.cascadeId === next.cascadeId
+        && prev.trajectoryId === next.trajectoryId
+        && prev.postCompactionPending === next.postCompactionPending
+        && prev.tokenUsageSource === next.tokenUsageSource
         && prev.model === next.model
         && prev.modelDisplayName === next.modelDisplayName
         && prev.contextUsed === next.contextUsed
@@ -70,7 +73,7 @@ function sameGMConversationSnapshot(prev: GMConversationData, next: GMConversati
         const latestCall = conversation.calls[conversation.calls.length - 1];
         const totalCredits = conversation.calls.reduce((sum, call) => sum + call.credits, 0);
         const callIds = conversation.calls
-            .map(call => call.executionId || `${call.model}:${call.createdAt}:${call.stepIndices.join(',')}`)
+            .map(call => `${call.executionId || `${call.model}:${call.stepIndices.join(',')}`}:${call.createdAt}`)
             .join(',');
         const latestModel = latestCall?.responseModel || latestCall?.modelDisplay || latestCall?.model || '';
         return [

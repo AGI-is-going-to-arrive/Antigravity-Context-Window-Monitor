@@ -317,6 +317,7 @@ export interface MonitorDocumentBuildParams extends MonitorDocumentV1175Extras {
     billingDays?: Record<string, number>;
     todayLedgerActive?: LedgerAccountBucket[];
     ledgerSettled?: LedgerSettledEntry[];
+    ledgerDateKey?: string;
     orchestratorSettings?: OrchestratorSettings | null;
     quotaSummary?: UserQuotaSummary | null;
     todayCostUsd?: number;
@@ -1248,6 +1249,7 @@ export function buildMonitorTabsPayload(params: MonitorDocumentBuildParams): Mon
             [usage, ...allUsages].some(item => (item?.imageGenStepCount || 0) > 0),
             {
                 orchestratorSettings: params.orchestratorSettings,
+                ledgerDateKey: params.ledgerDateKey,
                 orchestratorPricingMode,
                 currency: displayCurrency,
             },

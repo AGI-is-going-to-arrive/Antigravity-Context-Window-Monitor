@@ -1,6 +1,23 @@
 // ─── GM Types ────────────────────────────────────────────────────────────────
 // All type definitions for GM (Generator Metadata) tracking.
 
+import { MAX_TRAJECTORY_STEPS } from '../constants';
+
+export function parseGeneratorStepIndex(value: unknown): number | null {
+    const index = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+    return typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 && index <= MAX_TRAJECTORY_STEPS ? index : null;
+}
+
+export function parseGeneratorStepIndices(raw: unknown): number[] {
+    if (!Array.isArray(raw)) { return []; }
+    const indices: number[] = [];
+    for (const value of raw) {
+        const index = parseGeneratorStepIndex(value);
+        if (index !== null) { indices.push(index); }
+    }
+    return indices;
+}
+
 /** completionConfig extracted from chatModel */
 export interface GMCompletionConfig {
     maxTokens: number;
@@ -214,6 +231,8 @@ export interface GMModelStats {
 /** Per-conversation GM data */
 export interface GMConversationData {
     cascadeId: string;
+    /** Backend trajectory owning the cached enrichment. Older snapshots omit this. */
+    trajectoryId?: string;
     title: string;
     totalSteps: number;
     calls: GMCallEntry[];

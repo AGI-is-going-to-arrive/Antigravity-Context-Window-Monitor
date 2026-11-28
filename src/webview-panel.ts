@@ -407,6 +407,7 @@ let lastDailyStore: DailyStore | undefined;
 let lastStorageDiagnostics: StorageDiagnostics | undefined;
 let panelDurableState: StateBucket | undefined;
 let lastAccountSnapshots: AccountSnapshot[] = [];
+let lastLedgerDateKey: string | undefined;
 let lastTodayLedgerActive: LedgerAccountBucket[] = [];
 let lastLedgerSettled: LedgerSettledEntry[] = [];
 let lastCustomPricing: Record<string, ModelPricing> = {};
@@ -1840,7 +1841,10 @@ function cachePayload(p: PanelPayload): void {
     if (p.dailyStore) { lastDailyStore = p.dailyStore; }
     if (p.storageDiagnostics) { lastStorageDiagnostics = p.storageDiagnostics; }
     if (p.accountSnapshots) { lastAccountSnapshots = p.accountSnapshots; }
-    if (p.todayLedgerActive) { lastTodayLedgerActive = p.todayLedgerActive; }
+    if (p.todayLedgerActive) {
+        lastTodayLedgerActive = p.todayLedgerActive;
+        lastLedgerDateKey = p.ledgerDateKey;
+    }
     if (p.ledgerSettled) { lastLedgerSettled = p.ledgerSettled; }
     if (p.customPricing !== undefined) { lastCustomPricing = p.customPricing; }
     if (p.orchestratorSettings !== undefined) { lastOrchestratorSettings = p.orchestratorSettings; }
@@ -3530,6 +3534,7 @@ function makeDocumentParams(
             zoomLevel: panelDurableState?.get<number>('panelZoomLevel', 100) ?? 100,
             accountSnapshots: lastAccountSnapshots,
             billingDays: rawBillingDays,
+            ledgerDateKey: lastLedgerDateKey,
             todayLedgerActive: lastTodayLedgerActive,
             ledgerSettled: lastLedgerSettled,
             orchestratorSettings: lastOrchestratorSettings,
@@ -3698,6 +3703,7 @@ function makeDocumentParams(
         zoomLevel: panelDurableState?.get<number>('panelZoomLevel', 100) ?? 100,
         accountSnapshots: redactedSnapshots,
         billingDays: redactedBillingDays,
+        ledgerDateKey: lastLedgerDateKey,
         todayLedgerActive: redactedTodayLedger,
         ledgerSettled: redactedSettled,
         orchestratorSettings: lastOrchestratorSettings,

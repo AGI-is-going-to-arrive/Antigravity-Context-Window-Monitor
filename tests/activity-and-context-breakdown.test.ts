@@ -1010,6 +1010,46 @@ describe('[context-breakdown]', () => {
             expect(pendingCompactionSnap.compactionCheckpoints[0].savedTokens).toBeGreaterThan(150_000);
         });
 
+        it('treats a completed checkpoint at the start of a recovered suffix as an estimate until a later planner reading', () => {
+            const before = { stepIndices: [218], chatModel: { usage: { inputTokens: 330_000, outputTokens: 800 } } };
+            const checkpoint = { type: StepType.CHECKPOINT, status: 'CORTEX_STEP_STATUS_DONE',
+                checkpoint: { sessionSummary: 'Existing summary' },
+                metadata: { modelUsage: { inputTokens: 331_000, outputTokens: 5515 } } };
+            for (const generatorMetadata of [[], [before], [{ ...before, stepIndices: [221] }]]) {
+                const snap = parseContextBreakdown({ steps: [checkpoint], suffixStartOffset: 221, generatorMetadata });
+                expect(snap.measurementState).toBe('estimated_post_compaction');
+                expect(snap.usedTokens).toBeGreaterThan(0);
+                expect(snap.usedTokens).toBeLessThan(100);
+            }
+            const toolOnly = parseContextBreakdown({ steps: [checkpoint,
+                { type: 'CORTEX_STEP_TYPE_TOOL', metadata: { modelUsage: { inputTokens: 200_000 } } }],
+                suffixStartOffset: 221, generatorMetadata: [before] });
+            expect(toolOnly.measurementState).toBe('estimated_post_compaction');
+            expect(toolOnly.usedTokens).toBeLessThan(100);
+            const resumed = parseContextBreakdown({ steps: [checkpoint,
+                { type: StepType.PLANNER_RESPONSE, metadata: { modelUsage: { inputTokens: 30_000, outputTokens: 120 } } }],
+                suffixStartOffset: 221, generatorMetadata: [before] });
+            expect(resumed.measurementState).toBe('measured');
+            expect(resumed.usedTokens).toBe(30_120);
+            for (const status of ['CORTEX_STEP_STATUS_ERROR', 'CORTEX_STEP_STATUS_RUNNING']) {
+                const failed = parseContextBreakdown({ steps: [{ ...checkpoint, status }], suffixStartOffset: 221, generatorMetadata: [before] });
+                expect(failed.measurementState).toBe('measured');
+                expect(failed.compactionCheckpoints).toEqual([]);
+            }
+        });
+
+        it('uses wire decimal indices for a post-checkpoint call and rejects out-of-range indices', () => {
+            const steps = [{ stepIndex: 12, type: StepType.CHECKPOINT, checkpoint: { sessionSummary: 'summary' } }];
+            const newer = { stepIndices: ['13'], chatModel: { usage: { inputTokens: 5300 } } };
+            expect(parseGMEntry(newer).stepIndices).toEqual([13]);
+            expect(parseContextBreakdown({ steps, generatorMetadata: [newer] })).toMatchObject({
+                usedTokens: 5300, measurementState: 'measured',
+            });
+            const invalid = { ...newer, stepIndices: ['', -1, '12.5', '200001', '3e2'] };
+            expect(parseGMEntry(invalid).stepIndices).toEqual([]);
+            expect(parseContextBreakdown({ steps, generatorMetadata: [invalid] }).measurementState).toBe('estimated_post_compaction');
+        });
+
         it('classifies shrinking step count as estimated_rewind and NEVER as compaction', () => {
             const snap = parseContextBreakdown({
                 generatorMetadata: [

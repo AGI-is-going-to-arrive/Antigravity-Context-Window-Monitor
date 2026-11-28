@@ -2,6 +2,7 @@
 // Parsing helpers, prompt extraction, and entry builder for GM data.
 
 import { normalizeModelDisplayName, registerResponseModelAlias, resolveModelId } from '../models';
+import { parseGeneratorStepIndices } from './types';
 import type {
     GMCallEntry,
     GMCheckpointSummary,
@@ -1139,7 +1140,7 @@ export function parseGMEntry(gm: Record<string, unknown>): GMCallEntry {
     const cacheTelemetryAvailable = parsedCacheRead !== null || parsedCacheCreation !== null;
 
     return {
-        stepIndices: (gm.stepIndices as number[]) || [],
+        stepIndices: parseGeneratorStepIndices(gm.stepIndices),
         executionId: (gm.executionId as string) || '',
         model: modelId,
         modelDisplay: normalizeModelDisplayName(modelId || responseModel || cleanModelCandidate(cm.model)),

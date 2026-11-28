@@ -1,6 +1,7 @@
 // Consolidated Gate Suite #3: Schema, Docs, Icon, Manifest, Client Bundle & Packaging Hygiene
 import * as fs from 'fs';
 import * as path from 'path';
+import packageManifest from '../package.json';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'child_process';
 import * as os from 'os';
@@ -105,6 +106,8 @@ describe('[schema-and-package-hygiene]', () => {
         const counts = new Map<string, number>();
         const slugs = new Set<string>();
         for (const line of cleaned.split('\n')) {
+            const anchor = /^\s*<a\s+(?:id|name)=(["'])([^"']+)\1\s*>\s*<\/a>\s*$/i.exec(line);
+            if (anchor) { slugs.add(anchor[2].toLowerCase()); }
             const m = /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
             if (!m) { continue; }
             const base = githubHeadingSlug(m[1]);
@@ -176,7 +179,7 @@ describe('[schema-and-package-hygiene]', () => {
             // Core sections present in README.md
             expect(readme).toContain('## Capability Matrix');
             expect(readme).toContain('## 3-Step Install & Upgrade');
-            expect(readme).toContain('## Highlights in v1.18.0');
+            expect(readme).toContain(`## Highlights in v${packageManifest.version}`);
             expect(readme).toContain('## Thresholds & Quick Troubleshooting');
             expect(readme).toContain('## Architecture & Technical Compliance Boundaries');
         });
@@ -194,7 +197,7 @@ describe('[schema-and-package-hygiene]', () => {
 
             const changelog = fs.readFileSync(changelogPath, 'utf8');
             const archive = fs.readFileSync(archivePath, 'utf8');
-            expect(changelog).toContain('## [1.18.0]');
+            expect(changelog).toContain(`## [${packageManifest.version}]`);
             expect(changelog).toContain('docs/CHANGELOG_ARCHIVE.md');
             expect(archive).toContain('## [1.17.11]');
             expect(archive).toContain('## [1.16.0]');
@@ -314,7 +317,7 @@ describe('[schema-and-package-hygiene]', () => {
             expect(Array.isArray(pkg.keywords)).toBe(true);
             expect(pkg.keywords.length).toBeGreaterThanOrEqual(5);
             expect(pkg.scripts.package).toBe(
-                'node scripts/package-app-plugin.mjs --package-vsix --baseImagesUrl https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/v1.18.0',
+                `node scripts/package-app-plugin.mjs --package-vsix --baseImagesUrl https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/v${pkg.version} --baseContentUrl https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/blob/v${pkg.version}`,
             );
 
             // 10 currencies incl. CAD
@@ -356,6 +359,7 @@ describe('[schema-and-package-hygiene]', () => {
                 'readme_CN.md',
                 'CHANGELOG.md',
                 'docs/releases/1.18.0.md',
+                `docs/releases/${packageManifest.version}.md`,
                 'docs/architecture.md',
                 'docs/telemetry-and-pricing.md',
                 'docs/cdp-overlays.md',
@@ -1081,7 +1085,7 @@ describe('[client-bundle-and-packaging]', () => {
             expect(pkg.main).toBe('./dist-stage/ide/extension.js');
             expect(pkg.scripts['vscode:prepublish']).toContain('build:bundles');
             expect(pkg.scripts['vscode:prepublish']).not.toContain('tsc -p ./');
-            expect(pkg.scripts.package).toBe('node scripts/package-app-plugin.mjs --package-vsix --baseImagesUrl https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/v1.18.0');
+            expect(pkg.scripts.package).toBe(`node scripts/package-app-plugin.mjs --package-vsix --baseImagesUrl https://raw.githubusercontent.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/v${pkg.version} --baseContentUrl https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/blob/v${pkg.version}`);
             expect(pkg.scripts.package).not.toContain('npx');
             expect(pkg.scripts['test:dist']).toBe('node scripts/test-dist.mjs');
             expect(pkg.scripts['typecheck:client']).toContain('tsconfig.client.json');

@@ -29,7 +29,11 @@ import {
     getWorkspaceUris,
     groupModelConfigsByQuotaPool,
     hasSameUsageInputs,
+    buildIdePublishedObservation,
+    applyGMContextToUsage,
     isRepollNeeded,
+    inspectSwarmMember,
+    getWindowSelectionState,
     markDisplayLanguageModified,
     setAccountBillingDay,
     syncFromDurableStateIfChanged,
@@ -116,6 +120,7 @@ function makeTrajectory(
 function makeUsage(traj: TrajectorySummary, overrides: Partial<ContextUsage> = {}): ContextUsage {
     return {
         tokenUsageSource: 'planner',
+        trajectoryId: traj.trajectoryId,
         cascadeId: traj.cascadeId,
         title: traj.summary,
         model: traj.requestedModel || 'MODEL_PLACEHOLDER_M535',
@@ -378,6 +383,48 @@ describe('Wave 1B IDE Wiring: minFraction null, fullStatus.ok, cache gating, mul
         const gappedUsage = makeUsage(traj, { hasGaps: true, status: 'CASCADE_RUN_STATUS_IDLE' });
         expect(hasSameUsageInputs(cleanUsage, traj)).toBe(true);
         expect(hasSameUsageInputs(gappedUsage, traj)).toBe(false);
+    });
+
+    it('invalidates an idle usage cache when its branch changes at the same step count', () => {
+        const trajectory = makeTrajectory('branch', { status: CascadeStatus.IDLE });
+        const usage = makeUsage(trajectory);
+        expect(hasSameUsageInputs(usage, { ...trajectory, branchName: 'changed' })).toBe(false);
+        expect(hasSameUsageInputs(usage, { ...trajectory, trajectoryId: 'replaced' })).toBe(false);
+        expect(hasSameUsageInputs({ ...usage, trajectoryId: undefined }, trajectory)).toBe(false);
+    });
+
+    it('rejects a cached pre-compaction GM estimate while waiting for a fresh usage sample', () => {
+        const usage = makeUsage(makeTrajectory('waiting'), {
+            lastModelUsage: null, contextUsed: 124, postCompactionPending: true, isEstimated: true,
+        });
+        expect(applyGMContextToUsage(usage, 320_000)).toBe(false);
+        expect(usage.contextUsed).toBe(124);
+    });
+
+    it('replaces the pre-compaction count with an estimate, then accepts the next measured call', () => {
+        const usage = makeUsage(makeTrajectory('compacted'));
+        for (const [state, used, expected, source] of [
+            ['estimated_post_compaction', 0, null, 'unavailable'],
+            ['estimated_post_compaction', 1000, 1000, 'breakdown_buckets'],
+            ['measured', 3200, 3200, 'gm_usage'],
+        ] as const) {
+            const observation = buildIdePublishedObservation(usage, {
+                summary: null, breakdown: { measurementState: state, usedTokens: used },
+            });
+            expect(observation?.usedTokens).toBe(expected);
+            expect(observation?.isIncomplete).toBe(expected === null);
+            expect(observation?.tokenSource).toBe(source);
+        }
+    });
+
+    it('accepts a positive post-checkpoint estimate from a recovered tail', () => {
+        const usage = makeUsage(makeTrajectory('tail'), {
+            hasGaps: true, suffixRecovered: true, postCompactionPending: true,
+            lastModelUsage: null, isEstimated: true, contextUsed: 125,
+        });
+        expect(buildIdePublishedObservation(usage, {
+            summary: null, breakdown: { measurementState: 'estimated_post_compaction', usedTokens: 125 },
+        })).toMatchObject({ isIncomplete: false, usedTokens: 125, tokenSource: 'breakdown_buckets' });
     });
 
     it('computes version-aware update availability via isUpdateAvailableForVersion (no App vs IDE collision)', async () => {
@@ -688,6 +735,11 @@ describe('Wave 1B IDE Wiring: minFraction null, fullStatus.ok, cache gating, mul
             expect(stepCascadeIds.every(id => id === 'conv-main-root-b')).toBe(true);
             // All-NaN quota pool NEVER emitted a false low-quota warning!
             expect(warnSpy).not.toHaveBeenCalled();
+
+            // A manual refresh against the same backend retains the inspected target.
+            inspectSwarmMember('worker-burst');
+            registeredCommands.get('antigravity-context-monitor.refresh')!();
+            expect(getWindowSelectionState().inspectedMemberId).toBe('worker-burst');
         } finally {
             dispose();
         }

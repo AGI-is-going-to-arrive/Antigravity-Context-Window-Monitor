@@ -985,11 +985,23 @@ registerHooks({
                     assert.equal(authSnapJson.unchanged, false);
 
                     // Authenticated GET /api/snapshot with matching If-None-Match -> bodyless 304
-                    const notModified = await rawHttp(baseUrl, 'GET', '/api/snapshot', {
-                        headers: { 'X-Monitor-Session': sessionToken, 'If-None-Match': etag },
-                    });
-                    assert.equal(notModified.status, 304, `${label} ETag hit must return HTTP 304`);
-                    assert.equal(notModified.buffer.length, 0, `${label} HTTP 304 must be bodyless`);
+                    let validator = etag;
+                    let response;
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        response = await rawHttp(baseUrl, 'GET', '/api/snapshot', {
+                            headers: { 'X-Monitor-Session': sessionToken, 'If-None-Match': validator },
+                        });
+                        if (response.status === 304) { break; }
+                        // The live provider may finish a startup poll between requests.
+                        assert.equal(response.status, 200);
+                        const next = response.headers.etag;
+                        assert.ok(typeof next === 'string' && next.length > 4);
+                        assert.notEqual(next, validator, `${label} returned HTTP 200 with a matching ETag`);
+                        assert.equal(response.json().unchanged, false);
+                        validator = next;
+                    }
+                    assert.equal(response.status, 304, `${label} ETag hit must return HTTP 304`);
+                    assert.equal(response.buffer.length, 0, `${label} HTTP 304 must be bodyless`);
                 } finally {
                     try { child.kill('SIGTERM'); } catch { /* ignore */ }
                     await waitForChildExit(child, 5_000);

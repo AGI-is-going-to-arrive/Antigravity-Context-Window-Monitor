@@ -17,6 +17,7 @@ import {
 import { CascadeStatus, StepType } from '../src/constants';
 import type { LSInfo } from '../src/discovery';
 import type { ModelConfig } from '../src/models';
+import { MonitorStore } from '../src/monitor-store';
 import {
     decodeConnectFirstFrame,
     destroyRpcAgents,
@@ -301,6 +302,68 @@ describe('[rpc-tracker-accuracy]', () => {
     // ─── 2. tracker.ts (ACC-04, ACC-05) ──────────────────────────────────────────
 
     describe('tracker: fetchFullUserStatus ok/error, fetchTrajectorySteps/Metadata ok/hasGaps, PLANNER_RESPONSE compaction', () => {
+        describe('full checkpoint between planner calls', () => {
+            const planner = {
+                stepIndex: 218, type: StepType.PLANNER_RESPONSE,
+                metadata: { modelUsage: { inputTokens: '11932', cacheReadTokens: '318717', outputTokens: '822' } },
+            };
+            const checkpoint = {
+                stepIndex: 221, type: StepType.CHECKPOINT, status: 'CORTEX_STEP_STATUS_DONE',
+                checkpoint: { includedStepIndexEnd: 221, sessionSummary: 'A short summary' },
+                metadata: { modelUsage: { inputTokens: '3889', cacheReadTokens: '328600', outputTokens: '5515' } },
+            };
+            const waiting = { stepIndex: 222, type: StepType.PLANNER_RESPONSE, plannerResponse: { response: 'Waiting' } };
+
+            it('estimates only retained context, even when only a suffix is available', () => {
+                const full = processSteps([planner, checkpoint, waiting]);
+                expect(full).toMatchObject({ postCompactionPending: true, lastModelUsage: null, isEstimated: true });
+                expect(full.contextUsed).toBeGreaterThan(0);
+                expect(full.contextUsed).toBeLessThan(1000);
+                expect(processSteps([checkpoint, waiting]).contextUsed).toBe(full.contextUsed);
+                expect(processSteps([planner, checkpoint, waiting, {
+                    ...planner, stepIndex: 224, metadata: { modelUsage: { inputTokens: '47952', outputTokens: '138' } },
+                }])).toMatchObject({ contextUsed: 48090, isEstimated: false, tokenUsageSource: 'planner' });
+            });
+
+            it('ignores non-compacting or unfinished checkpoint usage', () => {
+                for (const marker of [
+                    { ...checkpoint, checkpoint: { intentOnly: true } },
+                    { ...checkpoint, status: 'CORTEX_STEP_STATUS_RUNNING' },
+                    { ...checkpoint, status: 'CORTEX_STEP_STATUS_ERROR' },
+                ]) {
+                    expect(processSteps([planner, marker])).toMatchObject({
+                        contextUsed: 331471, isEstimated: false, tokenUsageSource: 'planner',
+                    });
+                }
+            });
+
+            it('clears a pending compaction estimate on rewind or a different branch', () => {
+                for (const boundary of [{ type: 'CORTEX_STEP_TYPE_REWIND' }, { branchId: 'new-branch' }]) {
+                    expect(processSteps([planner, checkpoint, boundary])).toMatchObject({
+                        postCompactionPending: false, isEstimated: true, lastModelUsage: null,
+                    });
+                }
+            });
+
+            it('persists changed compaction state and trajectory identity with otherwise identical telemetry', async () => {
+                await withHttpServer((_req, res) => res.end(JSON.stringify({ steps: [{ ...planner, stepIndex: 0 }] })), async ls => {
+                    const usage = await getContextUsage(ls, {
+                        cascadeId: 'root', trajectoryId: 'first', stepCount: 1, status: CascadeStatus.IDLE,
+                        summary: '', createdTime: '', lastModifiedTime: '', requestedModel: '', generatorModel: '',
+                        workspaceUris: [], lastUserInputTime: '', lastUserInputStepIndex: 0,
+                        repositoryName: '', gitOriginUrl: '', branchName: '', gitRootUri: '',
+                    });
+                    expect(usage).toMatchObject({ trajectoryId: 'first', postCompactionPending: false });
+                    const store = new MonitorStore();
+                    store.record([usage], 'root');
+                    store.record([{ ...usage, postCompactionPending: true }]);
+                    expect(store.restore().currentUsage?.postCompactionPending).toBe(true);
+                    store.record([{ ...usage, postCompactionPending: true, trajectoryId: 'second' }]);
+                    expect(store.restore().currentUsage?.trajectoryId).toBe('second');
+                });
+            });
+        });
+
         it('preserves explicit zero and -1 in plan fields, without coercing missing or malformed values', async () => {
             await withHttpServer((_req, res) => {
                 res.writeHead(200, { 'Content-Type': 'application/json' });

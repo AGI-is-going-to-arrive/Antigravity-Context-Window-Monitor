@@ -692,6 +692,17 @@ describe('[monitor-store-gm]', () => {
 
 
     describe('MonitorStore GM conversation snapshots', () => {
+        it('retains an enriched timestamp for an older call with a stable execution ID', () => {
+            const store = new MonitorStore();
+            const first = { ...makeCall(), executionId: 'first', createdAt: '' };
+            const last = { ...makeCall(), executionId: 'last' };
+            const conv = { ...makeConversation(last), calls: [first, last] };
+            store.recordGMConversations([conv]);
+            const dated = { ...first, createdAt: '2026-05-31T23:59:00.000Z' };
+            store.recordGMConversations([{ ...conv, calls: [dated, last] }]);
+            expect(store.getGMConversations()[conv.cascadeId].calls[0].createdAt).toBe(dated.createdAt);
+        });
+
         it('persists again when latest GM call details change without changing call count', () => {
             const updates: unknown[] = [];
             const workspaceState = {

@@ -24,6 +24,7 @@ import { computeSnapshotHash, createSidecarHandler, type StandaloneServerHandle,
 import { CascadeStatus } from '../src/constants';
 import type { LSInfo } from '../src/discovery';
 import { DurableState } from '../src/durable-state';
+import { toLocalDateKey } from '../src/daily-ledger';
 import type { FullUserStatus, ModelConfig, UserStatusInfo } from '../src/models';
 import type { ContextUsage, RawGeneratorMetadataEntry, TrajectorySummary } from '../src/tracker';
 import { buildAccountStatusPanel } from '../src/activity-panel';
@@ -199,6 +200,7 @@ describe('[app-sidecar-runtime]', () => {
         return {
             tokenUsageSource: 'planner',
             cascadeId: traj.cascadeId,
+            trajectoryId: traj.trajectoryId,
             title: traj.summary,
             model: traj.requestedModel || 'MODEL_PLACEHOLDER_M37',
             modelDisplayName: 'Gemini 3.1 Pro (High)',
@@ -592,6 +594,165 @@ describe('[app-sidecar-runtime]', () => {
             });
             expect(capturedParams).not.toBeNull();
             expect(customHtml).toContain('conv-main-0001');
+        });
+
+        it('recalculates today’s overview cost for settled calls under the active prices and strict mode', async () => {
+            const statePath = path.join(makeTempDir(), 'state.json');
+            const stats = { calls: 1, inputTokens: 1_000_000, outputTokens: 0, thinkingTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, credits: 0 };
+            fs.writeFileSync(statePath, JSON.stringify({
+                version: 1, workspaces: {}, global: {
+                    appSettings: { orchestratorPricingMode: 'strict' },
+                    customModelPricing: { 'model-a': { input: 3, output: 1, thinking: 1, cacheRead: 0.1, cacheWrite: 1 } },
+                    dailyLedgerState: {
+                        version: 1, dateKey: toLocalDateKey(), accounts: {},
+                        settled: [{
+                            settledAt: new Date().toISOString(), accountEmail: '', poolModelIds: [], poolModelLabels: [],
+                            totalCalls: 2, totalInputTokens: 2_000_000, totalOutputTokens: 0, totalCacheRead: 0,
+                            totalThinkingTokens: 0, totalCacheCreation: 0, totalCredits: 0, totalEstimatedCost: 10,
+                            modelCalls: { 'model-a': 1, MODEL_PLACEHOLDER_M667: 1 },
+                            modelStats: { 'model-a': { ...stats, estimatedCost: 1 }, MODEL_PLACEHOLDER_M667: { ...stats, estimatedCost: 9 } },
+                        }],
+                    },
+                },
+            }));
+            let overviewTotal: number | undefined;
+            const provider = createSidecarRuntimeProvider({
+                statePath, autoStart: false, disableCliScan: true, deps: createMockDeps({ now: () => Date.now() }),
+                renderDocument(params) {
+                    expect(params.ledgerDateKey).toBe(toLocalDateKey());
+                    overviewTotal = params.todayCostUsd;
+                    return '<html></html>';
+                },
+            });
+            providers.push(provider);
+            await provider.pollNow(false);
+            await provider.renderHtml({ viewMode: 'aux', pathname: '/', isSidecarEnv: true, version: 'test' });
+            expect(overviewTotal).toBe(3);
+        });
+
+        it('refreshes idle telemetry on a trajectory replacement and manual refresh even at identical step count and timestamp', async () => {
+            let trajectory = makeTrajectory({ status: CascadeStatus.IDLE });
+            let used = 12_000;
+            let now = Date.parse(trajectory.lastModifiedTime);
+            const fetchUsage = vi.fn(async (_ls: LSInfo, tr: TrajectorySummary) => makeUsage(tr, { contextUsed: used }));
+            const provider = createSidecarRuntimeProvider({
+                statePath: path.join(makeTempDir(), 'state.json'),
+                autoStart: false,
+                deps: createMockDeps({
+                    now: () => now,
+                    getAllTrajectories: async () => [trajectory],
+                    getContextUsage: fetchUsage,
+                    fetchTrajectoryGeneratorMetadata: async () => [{
+                        stepIndices: [0], chatModel: { usage: { inputTokens: used } },
+                    }],
+                    steps: [],
+                }),
+            });
+            providers.push(provider);
+
+            await provider.pollNow(false);
+            await provider.pollNow(false);
+            expect(fetchUsage).toHaveBeenCalledTimes(1);
+            for (const change of [{ trajectoryId: 'replacement' }, { branchName: 'other' }]) {
+                trajectory = { ...trajectory, ...change };
+                used += 1000;
+                await provider.pollNow(false);
+                expect(provider.getState().currentUsage?.contextUsed).toBe(used);
+                expect(provider.getState().latestObservation?.usedTokens).toBe(used);
+            }
+            used += 1000;
+            await provider.handleAction({ command: 'refresh' });
+            expect(provider.getState().latestObservation?.usedTokens).toBe(used);
+            expect(fetchUsage).toHaveBeenCalledTimes(4);
+            used += 1000;
+            now += 60_000;
+            await provider.pollNow(false);
+            expect(provider.getState().latestObservation?.usedTokens).toBe(used);
+            expect(fetchUsage).toHaveBeenCalledTimes(5);
+        });
+
+        it('reads the checkpoint after the last GM even when the old call has prompt sections', async () => {
+            const provider = createSidecarRuntimeProvider({
+                statePath: path.join(makeTempDir(), 'state.json'),
+                autoStart: false,
+                deps: createMockDeps({
+                    trajectories: [makeTrajectory({ stepCount: 13 })],
+                    gmEntries: makeMockGeneratorMetadata(),
+                    steps: [{ stepIndex: 12, type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'Short checkpoint' } }],
+                }),
+            });
+            providers.push(provider);
+            await provider.pollNow(false);
+            const state = provider.getState();
+            expect(state.contextBreakdown?.measurementState).toBe('estimated_post_compaction');
+            expect(state.latestObservation?.usedTokens).toBe(state.contextBreakdown?.usedTokens);
+            expect(state.latestObservation!.usedTokens).toBe(26_004);
+        });
+
+        it('shows unavailable context after an unsized checkpoint until a later planner call measures it', async () => {
+            const trajectory = makeTrajectory({ stepCount: 4 });
+            const gm = [{ stepIndices: [1], chatModel: { usage: { inputTokens: 90_000 } } }];
+            const provider = createSidecarRuntimeProvider({
+                statePath: path.join(makeTempDir(), 'state.json'),
+                autoStart: false,
+                deps: createMockDeps({
+                    trajectories: [trajectory],
+                    getContextUsage: async () => makeUsage(trajectory, { contextUsed: 90_000 }),
+                    gmEntries: gm,
+                    steps: [{ stepIndex: 2, type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: {} }],
+                }),
+            });
+            providers.push(provider);
+            await provider.pollNow(false);
+            expect(provider.getState().latestObservation?.usedTokens).toBeNull();
+            expect(provider.getState().currentUsage?.postCompactionPending).toBe(true);
+            gm.push({ stepIndices: [3], chatModel: { usage: { inputTokens: 12_000 } } });
+            await provider.pollNow(false);
+            expect(provider.getState().contextBreakdown?.measurementState).toBe('measured');
+            expect(provider.getState().latestObservation?.usedTokens).toBe(12_000);
+        });
+
+        it('rejects a second window’s pre-compaction handoff revision after the active window updates', async () => {
+            const tr = makeTrajectory();
+            const steps: Array<Record<string, unknown>> = [];
+            const provider = createSidecarRuntimeProvider({
+                statePath: path.join(makeTempDir(), 'state.json'),
+                autoStart: false,
+                deps: createMockDeps({ trajectories: [tr], steps }),
+            });
+            providers.push(provider);
+            await provider.pollNow(false);
+            const windowId = 'background-window';
+            const focus = await provider.handleAction({ command: 'syncHostFocus', conversationId: tr.cascadeId, windowId, focusRevision: 1, isFocusedPane: false });
+            expect(focus.result?.accepted).toBe(true);
+            const request = { command: 'previewHandoffV2', cascadeId: tr.cascadeId, windowId } as const;
+            const original = await provider.handleAction(request);
+            expect(original.ok).toBe(true);
+            const oldRevision = original.result!.dataRevision;
+            steps.push({ stepIndex: tr.stepCount++, type: 'CORTEX_STEP_TYPE_CHECKPOINT', checkpoint: { sessionSummary: 'New summary' } });
+            await provider.pollNow(false);
+            const stale = await provider.handleAction({ ...request, dataRevision: oldRevision });
+            expect(stale.statusCode).toBe(409);
+            const fresh = await provider.handleAction(request);
+            expect(fresh.ok).toBe(true);
+            expect(fresh.result!.dataRevision).toBeGreaterThan(oldRevision);
+        });
+
+        it('continues polling model calls when context and activity reads fail', async () => {
+            const fetchGM = vi.fn(async () => null);
+            const provider = createSidecarRuntimeProvider({
+                statePath: path.join(makeTempDir(), 'state.json'),
+                autoStart: false,
+                deps: createMockDeps({
+                    getContextUsage: async () => { throw new Error('steps unavailable'); },
+                    processActivity: async () => { throw new Error('activity unavailable'); },
+                    fetchGM,
+                }),
+            });
+            providers.push(provider);
+            await provider.pollNow(false);
+            expect(fetchGM).toHaveBeenCalledTimes(1);
+            expect(provider.getState().latestObservation?.usedTokens).toBeNull();
         });
 
         it('detects rewind across polls when step count shrinks (estimated_rewind, not compaction)', async () => {
@@ -1516,6 +1677,49 @@ describe('[w1b-app-runtime-hardening]', () => {
             while (tmpDirs.length > 0) {
                 fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
             }
+        });
+
+        it('renders a late worker call first in the newest 20 account-wide rows while the root stays selected', async () => {
+            const root = makeTrajectory({ cascadeId: 'root-monitor' });
+            const worker = makeTrajectory({ cascadeId: 'worker-monitor', parentCascadeId: root.cascadeId });
+            const gm = makeGmSummary(root.cascadeId);
+            const rootCalls = gm.conversations[0].calls;
+            const first = rootCalls[0];
+            for (let i = 1; i <= 20; i++) {
+                rootCalls.push({ ...first, executionId: `root-call-${i}`, createdAt: new Date(Date.parse(first.createdAt) + i * 1000).toISOString() });
+            }
+            const member = makeGmSummary(worker.cascadeId).conversations[0];
+            const provider = createSidecarRuntimeProvider({
+                statePath: path.join(makeTempDir(), 'state.json'),
+                autoStart: false,
+                deps: {
+                    discoverLS: async () => makeMockLS(),
+                    fetchFullUserStatus: async () => ({ configs: [], userInfo: makeSentinelUserInfo() }),
+                    getAllTrajectories: async () => [root, worker],
+                    getContextUsage: async (_ls, tr) => makeUsage(tr),
+                    fetchTrajectoryGeneratorMetadata: async () => [],
+                    fetchTrajectorySteps: async () => ({ steps: [], hasGaps: false }),
+                    fetchOrchestratorSettings: async () => null,
+                    fetchUserQuotaSummary: async () => null,
+                    fetchAvailableModels: async () => null,
+                    processActivity: async () => false,
+                    fetchGM: async () => gm,
+                },
+            });
+            providers.push(provider);
+            await provider.pollNow(false);
+            member.calls[0] = { ...first, responseModel: 'worker-model', executionId: 'worker-new', createdAt: '2026-11-27T18:05:00Z' };
+            gm.conversations.push(member);
+            gm.totalCalls = 22;
+            await provider.pollNow(false);
+            const html = await provider.renderHtml({ viewMode: 'aux', lang: 'en', pathname: '/', isSidecarEnv: true, version: 'test' });
+            const ledger = html.split('id="recentCallsLedger"')[1].split('</details>')[0];
+            const rows = ledger.match(/<tr data-gm-anomalies=[\s\S]*?<\/tr>/g) ?? [];
+            expect(rows).toHaveLength(20);
+            expect(rows[0]).toContain('worker-model');
+            expect(rows[1]).toContain('root-call-20');
+            expect(ledger).toContain('20 / 22');
+            expect(provider.getState().activeConversationId).toBe(root.cascadeId);
         });
 
         describe('SEC-04 Full-Chain Sentinel Identity Privacy Redaction', () => {

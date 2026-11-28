@@ -44,6 +44,7 @@ import type { GMModelStats, GMSummary } from '../src/gm-tracker';
 import { DailyStore, type DailyStoreState, type GMModelCycleStats } from '../src/daily-store';
 import { type DailyArchivalContext, performDailyArchival } from '../src/daily-archival';
 import { parseGMEntry } from '../src/gm/parser';
+import type { LedgerSettledEntry } from '../src/daily-ledger';
 import { buildSummaryFromConversations } from '../src/gm/summary';
 import { getDaysUntilBillingDay } from '../src/billing-day';
 import {
@@ -435,6 +436,49 @@ describe('[pricing-panel]', () => {
             expect(html).not.toContain('data-model=""');
             expect(html).toContain('data-model="claude-opus-4-6"');
             expect(html).toContain('data-model="gemini-3-flash"');
+        });
+
+        it('reprices settled models using their own tokens, while keeping legacy aggregate totals', () => {
+            const stats = (inputTokens: number, estimatedCost: number) => ({
+                calls: 1, inputTokens, outputTokens: 0, thinkingTokens: 0, cacheReadTokens: 0,
+                cacheCreationTokens: 0, credits: 0, estimatedCost,
+            });
+            const entry: LedgerSettledEntry = {
+                settledAt: '2026-11-28T10:00:00Z', accountEmail: '', poolModelIds: [], poolModelLabels: [],
+                totalCalls: 2, totalInputTokens: 10_000_000, totalOutputTokens: 0, totalThinkingTokens: 0,
+                totalCacheRead: 0, totalCacheCreation: 0, totalCredits: 0, totalEstimatedCost: 10,
+                modelCalls: { 'model-a': 1, 'model-b': 1 },
+                modelStats: { 'model-a': stats(1_000_000, 1), 'model-b': stats(9_000_000, 9) },
+            };
+            const rate = { input: 1, output: 1, thinking: 1, cacheRead: 0.1, cacheWrite: 1 };
+            const store = makeStore({ 'model-a': rate, 'model-b': rate });
+            const render = (prices: PricingStore, settled: LedgerSettledEntry) =>
+                buildPricingTabContent(null, prices, undefined, [settled], []);
+            const bars = (html: string) => [...html.matchAll(/class="cost-bar-val">([^<]+)/g)]
+                .map(match => Number(match[1].replace('$', '')));
+            expect(bars(render(store, entry))).toEqual([9, 1]);
+            const updated = render(makeStore({ 'model-a': rate, 'model-b': { ...rate, input: 2 } }), entry);
+            expect(bars(updated)).toEqual([18, 1]);
+            expect(updated).toMatch(/class="cost-chip cost-chip-total"[^>]*><span>\$19(?:\.00)?</);
+            const legacy = render(store, { ...entry, modelStats: undefined });
+            expect(bars(legacy)).toEqual([5, 5]);
+            expect(legacy).toContain('Historical total');
+        });
+
+        it('uses the ledger day for an undated settled model across a scheduled price change', () => {
+            const model = 'gemini-4-carbon';
+            const entry: LedgerSettledEntry = {
+                settledAt: '2026-12-02T06:00:00Z', accountEmail: '', poolModelIds: [model], poolModelLabels: [model],
+                totalCalls: 1, totalInputTokens: 1_000_000, totalOutputTokens: 0, totalThinkingTokens: 0,
+                totalCacheRead: 0, totalCacheCreation: 0, totalCredits: 0, totalEstimatedCost: 0,
+                modelCalls: { [model]: 1 },
+                modelStats: { [model]: { calls: 1, inputTokens: 1_000_000, outputTokens: 0, thinkingTokens: 0,
+                    cacheReadTokens: 0, cacheCreationTokens: 0, credits: 0, estimatedCost: 0 } },
+            };
+            const render = (ledgerDateKey?: string) => buildPricingTabContent(null, makeStore(), undefined, [entry], [], false, { ledgerDateKey });
+            expect(render('2026-11-28')).toMatch(/class="cost-bar-val">\$2(?:\.00)?</);
+            expect(render('2026-12-02')).toMatch(/class="cost-bar-val">\$4(?:\.00)?</);
+            expect(render()).toContain('Cost Not Available');
         });
 
         it('marks pricing inputs with their original value and custom state', () => {

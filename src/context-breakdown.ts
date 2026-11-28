@@ -6,6 +6,7 @@
 //
 // Zero VS Code, DOM, or external npm dependencies.
 
+import { parseGeneratorStepIndex, parseGeneratorStepIndices } from './gm/types';
 import {
     COMPRESSION_MIN_DROP,
     PLANNER_RESPONSE_ESTIMATE,
@@ -828,13 +829,10 @@ function parseGmRecord(raw: unknown, index: number): ParsedGmRecord | null {
     const cwm = asRecord(csm?.contextWindowMetadata);
     const plannerConfig = asRecord(gm.plannerConfig);
 
-    const stepIndices = Array.isArray(gm.stepIndices)
-        ? gm.stepIndices.filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0)
-        : [];
-    const startStepIndex = parseNonNegInt(csm?.startStepIndex);
+    const stepIndices = parseGeneratorStepIndices(gm.stepIndices);
     const maxStepIndex = stepIndices.length > 0
-        ? Math.max(...stepIndices)
-        : (startStepIndex > 0 ? startStepIndex : -1);
+        ? stepIndices.reduce((max, n) => Math.max(max, n), -1)
+        : (parseGeneratorStepIndex(csm?.startStepIndex) ?? -1);
 
     const inputTokens = parseNonNegInt(usage?.inputTokens);
     const cacheReadTokens = parseNonNegInt(usage?.cacheReadTokens);
@@ -910,6 +908,7 @@ function extractStepUsagePoint(step: Record<string, unknown>, fallbackIndex: num
     const isCheckpoint = stepType === StepType.CHECKPOINT || stepType.toUpperCase().includes('CHECKPOINT');
     const cp = asRecord(step.checkpoint);
     const intentOnly = cp?.intentOnly === true;
+    if (isCheckpoint && cp && !isFullCompactionCheckpoint(step)) { return null; }
 
     const meta = asRecord(step.metadata);
     const mu = asRecord(meta?.modelUsage);
@@ -1112,6 +1111,15 @@ function attributeSteps(
     return { byCategory, items, totalTokens };
 }
 
+/** Legacy hubs omit completion status on a finished checkpoint. */
+export function isFullCompactionCheckpoint(step: Record<string, unknown>): boolean {
+    const type = typeof step.type === 'string' ? step.type.toUpperCase() : '';
+    const payload = asRecord(step.checkpoint);
+    return !!payload && type.includes('CHECKPOINT')
+        && (step.status === undefined || step.status === 'CORTEX_STEP_STATUS_DONE')
+        && payload.intentOnly !== true;
+}
+
 function detectCompactionCheckpoints(
     gmRecords: readonly ParsedGmRecord[],
     stepPoints: readonly StepUsagePoint[],
@@ -1135,11 +1143,10 @@ function detectCompactionCheckpoints(
         const stepIndex = typeof step.stepIndex === 'number' && Number.isFinite(step.stepIndex) && step.stepIndex >= 0
             ? Math.round(step.stepIndex)
             : stepIndexOffset + i;
-        const cp = asRecord(step.checkpoint);
         const meta = asRecord(step.metadata);
         checkpointStepIndices.push({
             stepIndex,
-            intentOnly: cp?.intentOnly === true,
+            intentOnly: !isFullCompactionCheckpoint(step),
             timestamp: (typeof meta?.createdAt === 'string' && meta.createdAt) || undefined,
         });
     }
@@ -1179,7 +1186,7 @@ function detectCompactionCheckpoints(
             );
             if (drop >= COMPRESSION_MIN_DROP && (checkpointIncremented || interveningCheckpoint !== undefined || gm.promptTokens <= prevGm.promptTokens * 0.75)) {
                 const cpStep = interveningCheckpoint?.stepIndex
-                    ?? (gm.stepIndices.length > 0 ? Math.min(...gm.stepIndices) : Math.max(0, gm.maxStepIndex));
+                    ?? (gm.stepIndices.length > 0 ? gm.stepIndices.reduce((min, n) => Math.min(min, n), Infinity) : Math.max(0, gm.maxStepIndex));
                 if (!seenSteps.has(cpStep)) {
                     seenSteps.add(cpStep);
                     checkpoints.push({
@@ -1207,7 +1214,7 @@ function detectCompactionCheckpoints(
         }
     }
     for (const pt of stepPoints) {
-        if (!pt.isCheckpoint && pt.stepIndex > latestMeasuredStepIndex) {
+        if (pt.stepType === StepType.PLANNER_RESPONSE && pt.stepIndex > latestMeasuredStepIndex) {
             latestMeasuredStepIndex = pt.stepIndex;
         }
     }
@@ -1218,8 +1225,7 @@ function detectCompactionCheckpoints(
         : null;
 
     const hasUnmeasuredPostCompaction = newestFullCheckpoint !== null
-        && latestMeasuredStepIndex >= 0
-        && newestFullCheckpoint.stepIndex > latestMeasuredStepIndex;
+        && newestFullCheckpoint.stepIndex >= latestMeasuredStepIndex;
 
     const lastCompactionStepIndex = Math.max(
         checkpoints.length > 0 ? checkpoints[checkpoints.length - 1].stepIndex : -1,
@@ -1343,13 +1349,6 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
         isRewind = stepCount < input.previousMaxStepCount!;
     }
 
-    const latestMeasuredGm = [...gmRecords].reverse().find(g => g.hasUsage) || null;
-    const latestSectionsGm = [...gmRecords].reverse().find(g => g.promptSections.length > 0) || null;
-    const latestBreakdownGm = [...gmRecords].reverse().find(g => g.tokenBreakdownGroups.length > 0) || null;
-    const latestStepUsage = stepPoints.length > 0 ? stepPoints[stepPoints.length - 1] : null;
-
-    const hasMeasuredUsage = latestMeasuredGm !== null || latestStepUsage !== null;
-
     // Compaction detection (suppressed during rewind so rewind is never misclassified as compaction)
     const compactionInfo = isRewind
         ? {
@@ -1359,6 +1358,21 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
             newestFullCheckpoint: null as { stepIndex: number; timestamp?: string } | null,
         }
         : detectCompactionCheckpoints(gmRecords, stepPoints, rawSteps, stepIndexOffset);
+
+    // A summarizer reads the old prompt to write a smaller summary. Its own
+    // modelUsage does not measure the planner context after compaction.
+    const boundary = compactionInfo.newestFullCheckpoint?.stepIndex;
+    const afterCheckpoint = (step: number) => boundary === undefined || step > boundary;
+    const recentGm = [...gmRecords].reverse();
+    const pending = compactionInfo.hasUnmeasuredPostCompaction;
+    const latestStepUsage = [...stepPoints].reverse().find(p => afterCheckpoint(p.stepIndex)
+        && (boundary === undefined || p.stepType === StepType.PLANNER_RESPONSE)) || null;
+    const measuredGmCandidate = recentGm.find(g => g.hasUsage && afterCheckpoint(g.maxStepIndex)) || null;
+    const latestMeasuredGm = measuredGmCandidate && latestStepUsage && measuredGmCandidate.maxStepIndex >= 0
+        && latestStepUsage.stepIndex > measuredGmCandidate.maxStepIndex ? null : measuredGmCandidate;
+    const latestSectionsGm = recentGm.find(g => g.promptSections.length > 0 && (pending || afterCheckpoint(g.maxStepIndex))) || null;
+    const latestBreakdownGm = recentGm.find(g => g.tokenBreakdownGroups.length > 0 && afterCheckpoint(g.maxStepIndex)) || null;
+    const hasMeasuredUsage = latestMeasuredGm !== null || latestStepUsage !== null;
 
     // Branch-scoped peak recommendation: resets to `stepCount` on rewind, fork, branch switch, or post-compaction
     // so callers carrying forward `recommendedBranchPeakStepCount` never get stuck on an old all-time peak.
@@ -1375,10 +1389,10 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
     let measurementState: ContextMeasurementState;
     if (isRewind) {
         measurementState = 'estimated_rewind';
+    } else if (pending) {
+        measurementState = 'estimated_post_compaction';
     } else if (!hasMeasuredUsage) {
         measurementState = 'awaiting_generation';
-    } else if (compactionInfo.hasUnmeasuredPostCompaction) {
-        measurementState = 'estimated_post_compaction';
     } else {
         measurementState = 'measured';
     }
@@ -1484,7 +1498,8 @@ export function parseContextBreakdown(input: ContextBreakdownInput): ContextBrea
 
         let estAfter = 0;
         for (const cat of CONTEXT_CATEGORY_ORDER) { estAfter += counters[cat].tokens; }
-        const preTokens = latestMeasuredGm?.promptTokens ?? latestStepUsage?.promptTokens ?? 0;
+        const preTokens = recentGm.find(g => g.hasUsage && g.maxStepIndex < cpIdx)?.promptTokens
+            ?? [...stepPoints].reverse().find(p => p.stepIndex <= cpIdx)?.promptTokens ?? 0;
         if (
             preTokens > estAfter
             && (preTokens - estAfter) >= COMPRESSION_MIN_DROP
