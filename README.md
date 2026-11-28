@@ -6,6 +6,8 @@ See how much context a conversation has left in Antigravity App and IDE. Inspect
 
 **English walkthrough · 54 seconds**
 
+https://github.com/user-attachments/assets/2a84844d-1f4a-4b27-b5b8-ffdc964f80cb
+
 [Download the full-quality MP4](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/download/v1.18.1/acm-promo-07-sticker-en.mp4)
 
 ## Capability Matrix

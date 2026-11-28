@@ -6,6 +6,8 @@
 
 **中文演示 · 54 秒**
 
+https://github.com/user-attachments/assets/ec0e1ff2-88bd-43d3-8eda-c61b3712a47c
+
 [下载高清原片（MP4）](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/download/v1.18.1/acm-promo-07-sticker-zh.mp4)
 
 ## 能力矩阵
