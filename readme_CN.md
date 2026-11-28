@@ -4,9 +4,11 @@
 
 [English](README.md) · [安装与升级](#三步安装与升级) · [AI 安装指引](AGENTS.md#中文) · [界面实景](#界面实景) · [v1.18.1 发布说明](docs/releases/1.18.1.md#中文) · [变更日志](CHANGELOG.md#1181-中文)
 
-**[观看中文演示（MP4）](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/download/v1.18.1/acm-promo-07-sticker-zh.mp4)**
+**中文演示 · 54 秒**
 
-[![上下文窗口监控中文演示](docs/images/zh/hero-overview.webp)](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/download/v1.18.1/acm-promo-07-sticker-zh.mp4)
+https://github.com/user-attachments/assets/ec0e1ff2-88bd-43d3-8eda-c61b3712a47c
+
+[下载高清原片（MP4）](https://github.com/AGI-is-going-to-arrive/Antigravity-Context-Window-Monitor/releases/download/v1.18.1/acm-promo-07-sticker-zh.mp4)
 
 ## 能力矩阵
 
@@ -63,7 +65,7 @@ antigravity-ide --install-extension antigravity-context-monitor-<version>.vsix -
 
 ## 界面实景
 
-[查看概览页原图](docs/images/zh/hero-overview.webp)。
+[![概览中的会话上下文和配额](docs/images/zh/hero-overview.webp)](docs/images/zh/hero-overview.webp)
 
 ### 概览 · 多智能体
 
